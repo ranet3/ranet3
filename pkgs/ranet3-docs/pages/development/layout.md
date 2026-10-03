@@ -15,7 +15,8 @@ with the nix that builds and deploys them beside it.
 flake.nix               the flake, loaded by directory through autopilot
 licenses/               the license texts every file names
 lib/                    nix helpers
-modules/flake/          checks, packages, overlays, the shell and the formatter
+modules/flake/          the formatter, the overlay, the package and check outputs,
+                        the module loader under modules/flake/modules/, and the shells
 modules/nixos/          the NixOS module, networking.ranet3
 modules/darwin/         the nix-darwin module, networking.ranet3
 modules/common/         the options both modules import
