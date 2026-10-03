@@ -14,7 +14,7 @@ file from `networking.ranet3.settings`, and gives the control socket a
 
 ```nix
 {
-  imports = [ inputs.ranet3.nixosModules.default ];
+  imports = [ inputs.ranet3.nixosModules.ranet3 ];
 
   networking.ranet3 = {
     enable = true;
@@ -50,9 +50,10 @@ that must stay out of the store entirely is named by `configFile` instead.
 rewritten trust document without dropping an SA and fails when the daemon
 refuses what it read. A restart drops every one.
 
-The nix-darwin module is the same options over `launchd.daemons`, with the log
-file taking the place of the journal and `admin` as the default group, because
-that is a group macOS already has and nothing here creates one. It was evaluated
-by hand against nix-darwin, which produced the expected plist, and it has never
-been loaded on a Mac. No check covers it: verifying it in CI would mean taking
-nix-darwin as an input of this flake, which nothing else here needs.
+The nix-darwin module, `darwinModules.ranet3`, is the same options over
+`launchd.daemons`, with the log file taking the place of the journal and `admin`
+as the default group, because that is a group macOS already has and nothing here
+creates one. It was evaluated by hand against nix-darwin, which produced the
+expected plist, and it has never been loaded on a Mac. No check covers it:
+verifying it in CI would mean taking nix-darwin as an input of this flake, which
+nothing else here needs.

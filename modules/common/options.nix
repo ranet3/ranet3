@@ -20,7 +20,7 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      default = inputs.self.legacyPackages.${pkgs.stdenv.hostPlatform.system}.ranet3;
       defaultText = lib.literalExpression "the ranet3 package of the flake this module came from";
       description = "The build this machine runs.";
     };

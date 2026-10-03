@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: FSL-1.1-ALv2
 
-{ inputs }:
+{ inputs, ... }:
 
 {
   config,
@@ -27,7 +27,7 @@ let
   ++ lib.optional (generated && cfg.settings.link.port < 1024) "CAP_NET_BIND_SERVICE";
 in
 {
-  imports = [ (import ../options.nix { inherit inputs; }) ];
+  imports = [ (import ../common/options.nix { inherit inputs; }) ];
 
   config = lib.mkIf cfg.enable {
     assertions = [
