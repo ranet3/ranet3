@@ -60,6 +60,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -80,7 +81,14 @@ func (d Duration) String() string { return time.Duration(d).String() }
 
 func (d *Duration) UnmarshalText(text []byte) error {
 	// ParseDuration takes a bare "0" and nothing else without a unit, which is
-	// the spelling an operator writes for a disabled timer.
+	// the spelling an operator writes for a disabled timer. A zero written as
+	// any other integer is taken as well, because the toml decoder hands
+	// "0x0" over as the number it is and so takes it whatever this says, and
+	// the yaml decoder passes the same word through as written.
+	if number, err := strconv.ParseInt(string(text), 0, 64); err == nil && number == 0 {
+		*d = 0
+		return nil
+	}
 	parsed, err := time.ParseDuration(string(text))
 	if err != nil {
 		return err
@@ -256,8 +264,12 @@ func (t *TableID) UnmarshalText(text []byte) error {
 		*t = TableDefault
 		return nil
 	}
-	number, err := strconv.ParseUint(string(text), 0, 32)
-	if err != nil {
+	// Read as a signed integer and held to the range of a table, because the
+	// toml decoder hands an integer over as the number it is: a toml file
+	// writing "+200" or "-0" reaches this as 200 or 0, and the yaml decoder
+	// passes the same words through as written.
+	number, err := strconv.ParseInt(string(text), 0, 64)
+	if err != nil || number < 0 || number > math.MaxUint32 {
 		return fmt.Errorf("table %q is neither a number nor one of main, local and default", text)
 	}
 	*t = TableID(number)

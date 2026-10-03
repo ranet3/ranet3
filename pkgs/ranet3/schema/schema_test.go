@@ -216,6 +216,53 @@ func TestZeroIntervalIsTakenByBothDecoders(t *testing.T) {
 	}
 }
 
+// An integer written for a table, or a zero written for a disabled timer,
+// reads the same under both decoders. The toml one hands an integer over as
+// the number it is, so "+200" and "-0" reach a table as 200 and 0 and "0x0"
+// reaches an interval as 0, while the yaml one passes the same words through
+// as written, and each of those loaded under one extension and was refused
+// under the other.
+func TestBothDecodersReadAnIntegerAlike(t *testing.T) {
+	for _, one := range []struct {
+		key, written string
+		want         holder
+		refused      bool
+	}{
+		{key: "table", written: "+200", want: holder{Table: 200}},
+		{key: "table", written: "+0", want: holder{}},
+		{key: "table", written: "-0", want: holder{}},
+		{key: "table", written: "0x1F", want: holder{Table: 31}},
+		{key: "table", written: "1_000", want: holder{Table: 1000}},
+		{key: "table", written: "-5", refused: true},
+		{key: "table", written: "4294967296", refused: true},
+		{key: "interval", written: "0x0", want: holder{}},
+		{key: "interval", written: "0o0", want: holder{}},
+		{key: "interval", written: "0b0", want: holder{}},
+		{key: "interval", written: "-0", want: holder{}},
+		{key: "interval", written: "5", refused: true},
+		{key: "interval", written: "0x5", refused: true},
+	} {
+		t.Run(one.key+" "+one.written, func(t *testing.T) {
+			fromYAML, yamlErr := decodeYAML(t, one.key+": "+one.written+"\n")
+			fromTOML, tomlErr := decodeTOML(t, one.key+" = "+one.written+"\n")
+			for _, read := range []struct {
+				decoder string
+				got     holder
+				err     error
+			}{{"yaml", fromYAML, yamlErr}, {"toml", fromTOML, tomlErr}} {
+				switch {
+				case one.refused && read.err == nil:
+					t.Errorf("%s took %s as %+v", read.decoder, one.written, read.got)
+				case !one.refused && read.err != nil:
+					t.Errorf("%s refused %s: %v", read.decoder, one.written, read.err)
+				case !one.refused && !equal(read.got, one.want):
+					t.Errorf("%s read %s as %+v, want %+v", read.decoder, one.written, read.got, one.want)
+				}
+			}
+		})
+	}
+}
+
 func TestTableNamesSurviveARoundTrip(t *testing.T) {
 	for _, table := range []TableID{TableMain, TableLocal, TableDefault, 200, 51820} {
 		text, err := table.MarshalText()
