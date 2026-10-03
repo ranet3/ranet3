@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1186,6 +1187,164 @@ func testIKEAuthAuthenticatesBeforeChildFailure(t *testing.T, remoteOrganization
 	}
 	if err := <-peerDone; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An active attacker that answered IKE_SA_INIT itself holds SK_er, so the
+// checks the initiator makes on the IKE_AUTH answer are all that keep it from
+// installing a Child SA with that attacker. Each case answers a real IKE_AUTH
+// request from a scripted responder that signs correctly and gets one thing
+// wrong. completeIKEAuth, the half of InitiateContext that reads the answer,
+// has to refuse it and name the cause. Once AUTH has verified, the IKE SA is
+// authenticated, so the initiator also deletes it before returning.
+func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
+	full := fullRangeSelectors()
+	narrowed := EncodeTS([]TrafficSelector{{Type: TS_IPV4_ADDR_RANGE, EndPort: 0xffff,
+		StartAddr: net.IPv4(10, 0, 0, 0).To4(), EndAddr: net.IPv4(10, 255, 255, 255).To4()}, FullRangeV6()})
+	child := func(spi []byte, transforms ...Transform) []byte {
+		return EncodeSA([]Proposal{{Number: 1, Protocol: ProtoESP, SPI: spi, Transforms: transforms}})
+	}
+	encryption := Transform{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128}
+	esn := Transform{Type: TransESN, ID: ESN_NO}
+	usable := child([]byte{0, 0, 0, 9}, encryption, esn)
+	for name, test := range map[string]struct {
+		idr           string // the common name the answer's IDr carries
+		sa, tsi, tsr  []byte // nil leaves the payload out
+		want          string
+		authenticated bool
+	}{
+		"an IDr naming another node": {idr: "elsewhere", sa: usable, tsi: full, tsr: full,
+			want: "does not match configured IDr"},
+		"narrowed initiator selectors": {sa: usable, tsi: narrowed, tsr: full,
+			want: "unsupported initiator traffic selectors", authenticated: true},
+		"narrowed responder selectors": {sa: usable, tsi: full, tsr: narrowed,
+			want: "unsupported responder traffic selectors", authenticated: true},
+		"no traffic selectors": {sa: usable,
+			want: "incomplete IKE_AUTH response", authenticated: true},
+		"no Child SA": {tsi: full, tsr: full,
+			want: "incomplete IKE_AUTH response", authenticated: true},
+		"a Child SA with a zero SPI": {sa: child([]byte{0, 0, 0, 0}, encryption, esn), tsi: full, tsr: full,
+			want: "zero SPI", authenticated: true},
+		"two encryption transforms": {sa: child([]byte{0, 0, 0, 9}, encryption, encryption), tsi: full, tsr: full,
+			want: "duplicate encryption transforms", authenticated: true},
+		"a transform type the offer did not name": {sa: child([]byte{0, 0, 0, 9}, encryption, Transform{Type: TransInteg, ID: INTEG_NONE}),
+			tsi: full, tsr: full, want: "transform type 3", authenticated: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			peer := listenPeer(t)
+			peerAddr := peer.LocalAddr().(*net.UDPAddr)
+			mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mux.Close()
+			_, localPrivate, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			remotePublic, remotePrivate, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := PeerConfig{
+				Organization: "ranet-test", LocalCommonName: "initiator", LocalSerial: "1",
+				LocalPrivateKey: localPrivate, RemoteCommonName: "responder", RemoteSerial: "2",
+				RemotePublicKey: remotePublic,
+			}
+			const spiI, spiR = 0x0102030405060708, 0x1112131415161718
+			suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+			s := &Session{
+				mux: mux,
+				current: &ikeContext{
+					suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2,
+					skei: make([]byte, 20), sker: make([]byte, 20),
+					skD: make([]byte, 32), skpi: make([]byte, 32), skpr: make([]byte, 32),
+				},
+				requests: make(chan *localRequest, 1),
+			}
+			realMessage2 := []byte("test IKE_SA_INIT response")
+			ni, nr := make([]byte, 32), make([]byte, 32)
+
+			// receive reads requests until the one with this message ID and
+			// checks it decrypts under SK_ei, passing over retransmits of a
+			// request already answered, which the initiator sends when an
+			// answer takes longer than its timer, as on a loaded machine
+			buf := make([]byte, 4096)
+			receive := func(exchange ExchangeType, messageID uint32) (*net.UDPAddr, error) {
+				for {
+					_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+					n, from, err := peer.ReadFromUDP(buf)
+					if err != nil || n <= 4 {
+						return nil, fmt.Errorf("read request %d: %d bytes, %v", messageID, n, err)
+					}
+					raw := slices.Clone(buf[4:n])
+					request, err := DecodeMessage(raw)
+					if err != nil {
+						return nil, err
+					}
+					if request.Header.MessageID < messageID {
+						continue
+					}
+					if request.Header.ExchangeType != exchange || request.Header.MessageID != messageID {
+						return nil, fmt.Errorf("request is exchange %d message %d, want %d and %d",
+							request.Header.ExchangeType, request.Header.MessageID, exchange, messageID)
+					}
+					_, err = DecryptMessage(suite, s.current.skei, raw, request)
+					return from, err
+				}
+			}
+			answer := func(to *net.UDPAddr, exchange ExchangeType, messageID uint32, payloads []RawPayload) error {
+				response, err := EncryptMessage(suite, s.current.sker, Header{SPIInitiator: spiI, SPIResponder: spiR,
+					ExchangeType: exchange, Flags: FlagResponse, MessageID: messageID}, nil, payloads)
+				if err != nil {
+					return err
+				}
+				_, err = peer.WriteToUDP(withNonESPMarker(response), to)
+				return err
+			}
+			peerDone := make(chan error, 1)
+			go func() {
+				peerDone <- func() error {
+					from, err := receive(IKE_AUTH, 1)
+					if err != nil {
+						return err
+					}
+					commonName := cfg.RemoteCommonName
+					if test.idr != "" {
+						commonName = test.idr
+					}
+					idr := EncodeID(ID_DER_ASN1_DN, EncodeIdentityDN(cfg.Organization, commonName, cfg.RemoteSerial))
+					auth := BuildAuth(remotePrivate, concat(realMessage2, ni, prf(suite.PRFID, s.current.skpr, idr)))
+					payloads := []RawPayload{{Type: PayloadIDr, Body: idr}, {Type: PayloadAUTH, Body: auth}}
+					for _, p := range []RawPayload{{Type: PayloadSA, Body: test.sa}, {Type: PayloadTSi, Body: test.tsi}, {Type: PayloadTSr, Body: test.tsr}} {
+						if p.Body != nil {
+							payloads = append(payloads, p)
+						}
+					}
+					if err := answer(from, IKE_AUTH, 1, payloads); err != nil {
+						return err
+					}
+					if !test.authenticated {
+						return nil
+					}
+					if from, err = receive(INFORMATIONAL, 2); err != nil {
+						return fmt.Errorf("IKE Delete: %w", err)
+					}
+					return answer(from, INFORMATIONAL, 2, nil)
+				}()
+			}()
+
+			err = s.completeIKEAuth(cfg, []byte("test IKE_SA_INIT request"), realMessage2, ni, nr)
+			if err == nil {
+				t.Fatal("the initiator took an IKE_AUTH answer it should have refused")
+			}
+			if !strings.Contains(err.Error(), test.want) || strings.Contains(err.Error(), "failed to delete") {
+				t.Fatalf("the initiator refused with %q, want a refusal naming %q", err, test.want)
+			}
+			if err := <-peerDone; err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
