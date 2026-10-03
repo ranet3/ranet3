@@ -8,7 +8,7 @@ trusted-public-keys = [
 
 systems = ["x86_64-linux", "aarch64-linux", "aarch64-darwin"]
 
-include = ["checks.*.*", "devShells.*.*", "formatter.*", "packages.*.*"]
+include = ["legacyPackages.*.**", "devShells.*.**", "checks.*.*", "formatter.*"]
 
 exclude = [
   "checks.aarch64-linux.integration-initiator", # runner does not have kvm
@@ -27,4 +27,7 @@ exclude = [
   # on every platform. go-lint stays on darwin: the build tags put 1200 lines
   # in front of vet and staticcheck there that no linux run ever compiles.
   "checks.aarch64-darwin.tree",
+
+  "packages.*.*",             # the same derivation as legacyPackages.*.ranet3
+  "legacyPackages.*.profile", # on demand, never in CI
 ]

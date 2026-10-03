@@ -30,8 +30,9 @@ The go module is one module with one dependency set. Its packages at the top of
 program's own. Go commands run from `pkgs/ranet3`.
 
 Every directory under `pkgs/` with a `default.nix` is a package of the flake,
-named after the directory, so `pkgs/ranet3` builds as `packages.<system>.ranet3`
-and the default package.
+named after the directory, so `pkgs/ranet3` builds as
+`legacyPackages.<system>.ranet3`. `packages.<system>.default` is the same build,
+for `nix run` with no attribute.
 
 Every file names its license in SPDX lines at its top, or in a `REUSE.toml` in
 its own directory or one above it when it cannot carry a comment. `license.txt`
