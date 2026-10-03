@@ -11,7 +11,7 @@ let
   socketfilterfw = "/usr/libexec/ApplicationFirewall/socketfilterfw";
 in
 {
-  imports = [ (import ../common/options.nix { inherit inputs; }) ];
+  imports = [ (lib.modules.importApply ../common/options.nix { inherit inputs; }) ];
 
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ cfg.package ];
