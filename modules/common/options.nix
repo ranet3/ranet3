@@ -21,7 +21,7 @@ in
     package = lib.mkOption {
       type = lib.types.package;
       default = inputs.self.legacyPackages.${pkgs.stdenv.hostPlatform.system}.ranet3;
-      defaultText = lib.literalExpression "the ranet3 package of the flake this module came from";
+      defaultText = lib.literalMD "the ranet3 package of the flake this module came from";
       description = "The build this machine runs.";
     };
 
@@ -58,7 +58,7 @@ in
     configFile = lib.mkOption {
       type = lib.types.path;
       default = format.generate "ranet3.toml" cfg.settings;
-      defaultText = lib.literalExpression "the file generated from networking.ranet3.settings";
+      defaultText = lib.literalMD "the file generated from networking.ranet3.settings";
       description = "The config file to run, in place of settings.";
     };
 
@@ -97,10 +97,10 @@ in
     };
 
     logFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
+      type = lib.types.nullOr lib.types.externalPath;
       default = if pkgs.stdenv.hostPlatform.isDarwin then "/var/log/ranet3.log" else null;
       defaultText = lib.literalExpression ''if darwin then "/var/log/ranet3.log" else null'';
-      description = "Where the daemon's output goes. Null keeps it in the journal on NixOS.";
+      description = "Where the daemon's output goes, or null to keep it in the journal on NixOS and discard it on darwin.";
     };
   };
 }

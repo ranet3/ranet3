@@ -27,7 +27,7 @@ let
   ++ lib.optional (generated && cfg.settings.link.port < 1024) "CAP_NET_BIND_SERVICE";
 in
 {
-  imports = [ (import ../common/options.nix { inherit inputs; }) ];
+  imports = [ (lib.modules.importApply ../common/options.nix { inherit inputs; }) ];
 
   config = lib.mkIf cfg.enable {
     assertions = [
