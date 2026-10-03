@@ -91,7 +91,7 @@
             ''
               cd ${../../.}
               export DENO_DIR="$TMPDIR/deno"
-              deno fmt --check readme.md examples/config.json
+              deno fmt --check readme.md pkgs/ranet3/examples/config.json
               # found rather than globbed, so a directory added under modules,
               # lib or pkgs cannot quietly drop out of the check. The count
               # tells a narrowed walk from a tree that lost files.
@@ -102,7 +102,7 @@
                 exit 1
               fi
               nixfmt --check $files
-              taplo format --check atelier.toml examples/*.toml gomod2nix.toml
+              taplo format --check atelier.toml pkgs/ranet3/examples/*.toml pkgs/ranet3/gomod2nix.toml
               touch "$out"
             '';
       }

@@ -36,7 +36,7 @@ in
         }
       '';
       description = ''
-        The config file, in the schema examples/config.toml documents. The
+        The config file, in the schema pkgs/ranet3/examples/config.toml documents. The
         daemon refuses a key it does not know, so a typo here stops the daemon
         rather than being ignored.
 

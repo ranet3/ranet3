@@ -11,7 +11,7 @@
     }:
     {
       packages = {
-        default = pkgs.ranet-lite;
+        default = pkgs.ranet3;
         iperf3-benchmark = pkgs.iperf3-benchmark;
       }
       # profiling variants are built on demand, never as part of a check
