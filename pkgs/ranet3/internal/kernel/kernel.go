@@ -312,6 +312,12 @@ func (t Table) Validate() error {
 	if address := t.PrefSrc4; address.IsValid() && !address.Unmap().Is4() {
 		return fmt.Errorf("kernel: cap.table prefsrc4 %s is not an IPv4 address", address)
 	}
+	if address := t.PrefSrc4; address.Zone() != "" {
+		// Only the IPv4-mapped spelling can carry one, and the type a file
+		// writes the field in has no spelling for it, so a capability built
+		// with one renders to a file nothing loads.
+		return fmt.Errorf("kernel: cap.table prefsrc4 %s carries a zone, which a preferred source cannot", address)
+	}
 	for _, prefix := range t.Addresses {
 		// Assigning the unspecified address is not something an interface can
 		// do, and Assigned skips it, so taking the entry and dropping it
