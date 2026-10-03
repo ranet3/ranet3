@@ -4,6 +4,7 @@
   lib,
   runCommand,
   jq,
+  python3,
   yq-go,
 }:
 
@@ -24,6 +25,7 @@ runCommand "ranet3-docs"
       };
     nativeBuildInputs = [
       jq
+      (python3.withPackages (ps: [ ps.pyyaml ]))
       yq-go
     ];
     meta.license = with lib.licenses; [
@@ -32,6 +34,9 @@ runCommand "ranet3-docs"
     ];
   }
   ''
+    # the pages keep the frontmatter every engine reads, and the site keeps a
+    # go-import the go command accepts
+    python3 ${./check.py} "$src/pkgs/ranet3-docs"
     dest="$out/share/ranet3-docs"
     mkdir -p "$dest/licenses"
     cp -r "$src/pkgs/ranet3-docs/pages" "$src/pkgs/ranet3-docs/site.yaml" "$dest/"
