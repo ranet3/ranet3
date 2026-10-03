@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: MIT AND CC-BY-4.0
 title: "Testing"
-description: "The unit tests, the VM tests, the root-only tests and the benchmarks."
+description: "The unit and property tests, the VM tests, the root-only tests and the benchmarks."
 created: 2026-08-17
 updated: 2026-10-03
 order: 20
@@ -33,6 +33,20 @@ privilege, and the one thing it leaves with the running kernel is `IP_BOUND_IF`
 on the transport's own UDP socket. The `netlink` VM check runs both binaries as
 root against a real kernel, which is the only place the `nf_tables` encoding is
 checked against something other than the decoder it was written beside.
+
+The packages that read bytes a peer or a file chooses also carry property tests,
+in files ending in `_property_test.go`: `esp`, `ike`, `sadr`, `srv6`,
+`internal/babel`, `internal/packet`, `schema`, `internal/config`,
+`internal/kernel` and `control`. They run with the rest of `go test`, under
+hegel-go through `internal/pbt`, whose `Check` gives every property the same
+terms: 200 cases, no example database, and a derandomized engine. hegel v0.9.13
+still seeds the labels of nested generators per process, so two runs need not
+draw the same sample, and a boundary the code branches on is drawn outright,
+with `pbt.Spanning` or by name, rather than left to the sample. A failing
+property prints the smallest input it found. hegel is a test dependency only:
+`internal/notices` refuses a non-test file that imports it, so it never reaches
+the binary or its notices.
+
 Protocol-level interoperability is covered by the NixOS VM tests in
 `modules/flake/checks.nix`. Each boots separate client and gateway VMs; the
 client runs the packaged, user-facing `ranet3` binary with a real TUN device,
