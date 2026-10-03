@@ -525,6 +525,23 @@ func TestExtensionHeaderWalkRefusesWhatAPeerCanChoose(t *testing.T) {
 			raw[6] = nextHeaderHopByHop
 			return raw
 		},
+		// the two lengths at which the walk reads a header's own first octets
+		// past the end of the packet, rather than a length it then checks
+		"a packet that ends where its next header would start": func() []byte {
+			raw := segmentRouted(t)[:ipv6HeaderLen]
+			raw[6] = nextHeaderHopByHop
+			return raw
+		},
+		"a packet that ends one octet into its next header": func() []byte {
+			raw := segmentRouted(t)[:ipv6HeaderLen+1]
+			raw[6] = nextHeaderHopByHop
+			return raw
+		},
+		"a routing header one unit shorter than its segments": func() []byte {
+			raw := segmentRouted(t)
+			raw[ipv6HeaderLen+1]--
+			return raw
+		},
 		"a chain longer than this node walks": func() []byte {
 			raw := segmentRouted(t)
 			chain := []byte(nil)
