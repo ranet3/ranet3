@@ -191,7 +191,20 @@ func (o *OutboundSA) reserveSequenceNumbers(count int) (uint64, uint64, error) {
 		return 0, 0, fmt.Errorf("esp: sequence range must contain at least one packet")
 	}
 	n := uint64(count)
-	end := o.seq.Add(n)
+	// The 64 bit counter behind the space must never wrap, or the numbers it
+	// handed out would be handed out again. A count larger than the 2^32-1
+	// numbers an SA holds is refused before the counter moves, and once the
+	// counter is past the end, a reservation leaves it where it is and is
+	// refused below. Reservers that pass the load together add at most 2^32-1
+	// each, and it would take 2^32 of them at once to carry the counter from
+	// the end of the space to 2^64.
+	if n > 0xffffffff {
+		return 0, 0, fmt.Errorf("esp: sequence range of %d packets is larger than the sequence space", count)
+	}
+	end := o.seq.Load()
+	if end <= 0xffffffff {
+		end = o.seq.Add(n)
+	}
 	first := end - n + 1
 	// Asked on every reservation past the mark rather than once for the life
 	// of the SA. The margin above is sized for "a rekey has already failed",
