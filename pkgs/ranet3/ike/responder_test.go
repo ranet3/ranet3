@@ -87,6 +87,12 @@ func newResponderHarness(t *testing.T, lookup func(Identity) (ed25519.PublicKey,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	// Serve turns delivery on when its goroutine first runs, and the hub drops
+	// an unclaimed datagram until then. Several tests here send one request
+	// and wait for its answer without retransmitting, and on a loaded machine
+	// that goroutine can start after the request has arrived. Delivery is on
+	// before the harness is returned, and Serve's own call gets the same queue.
+	responderHub.Listen()
 	go responder.Serve(ctx, func(s *Session, accepted Accepted) {
 		h.sessions <- s
 		h.identities <- accepted
