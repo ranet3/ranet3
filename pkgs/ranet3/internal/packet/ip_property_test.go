@@ -15,28 +15,11 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
-// integer is every type hegel draws integers of.
-type integer interface {
-	~int | ~int8 | ~int16 | ~int32 | ~int64 | ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr
-}
-
-// spanning draws from lo to hi, with the two ends drawn outright a quarter of
-// the time, so every run meets them rather than only a run whose sample
-// happens to land there.
-func spanning[T integer](lo, hi T) hegel.Generator[T] {
-	return hegel.Composite(func(tc hegel.TestCase) T {
-		if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
-			return hegel.Draw(tc, hegel.SampledFrom([]T{lo, hi}))
-		}
-		return hegel.Draw(tc, hegel.Integers(lo, hi))
-	})
-}
-
 // bytesUpTo draws up to limit bytes, the length drawn first so that sizes
 // spread over the whole range rather than staying as short as byte strings
 // are drawn by default.
 func bytesUpTo(tc hegel.TestCase, limit int) []byte {
-	size := hegel.Draw(tc, spanning(0, limit))
+	size := hegel.Draw(tc, pbt.Spanning(0, limit))
 	return hegel.Draw(tc, hegel.Binary(size, size))
 }
 
@@ -62,7 +45,7 @@ func builtPackets() hegel.Generator[built] {
 			trailing = bytesUpTo(tc, 64)
 		}
 		if hegel.Draw(tc, hegel.Booleans()) {
-			headerLen := 4 * hegel.Draw(tc, spanning(5, 15))
+			headerLen := 4 * hegel.Draw(tc, pbt.Spanning(5, 15))
 			payload := bytesUpTo(tc, 1500-headerLen)
 			p := built{version: 4, length: headerLen + len(payload), trailing: len(trailing),
 				src: hegel.Draw(tc, hegel.IPAddresses().IPv4()), dst: hegel.Draw(tc, hegel.IPAddresses().IPv4())}
@@ -81,7 +64,7 @@ func builtPackets() hegel.Generator[built] {
 		p := built{version: 6, length: 40 + len(payload), trailing: len(trailing),
 			src: hegel.Draw(tc, hegel.IPAddresses().IPv6()), dst: hegel.Draw(tc, hegel.IPAddresses().IPv6())}
 		p.raw = ipv6(len(payload), len(payload)+len(trailing))
-		binary.BigEndian.PutUint32(p.raw, 6<<28|hegel.Draw(tc, spanning[uint32](0, 1<<28-1)))
+		binary.BigEndian.PutUint32(p.raw, 6<<28|hegel.Draw(tc, pbt.Spanning[uint32](0, 1<<28-1)))
 		p.raw[6], p.raw[7] = hegel.Draw(tc, hegel.Integers[byte](0, 255)), hegel.Draw(tc, hegel.Integers[byte](0, 255))
 		copy(p.raw[8:], p.src.AsSlice())
 		copy(p.raw[24:], p.dst.AsSlice())
@@ -140,7 +123,7 @@ func lengthsAtTheirEdges() hegel.Generator[[]byte] {
 			binary.BigEndian.PutUint16(raw[4:], uint16(len(raw)-40+hegel.Draw(tc, hegel.Integers(0, 1))))
 			return raw
 		}
-		ihl := hegel.Draw(tc, spanning[byte](5, 15))
+		ihl := hegel.Draw(tc, pbt.Spanning[byte](5, 15))
 		raw[0] = 0x40 | ihl
 		header := 4 * int(ihl)
 		claims := []int{len(raw), len(raw) + 1, header}
@@ -180,13 +163,13 @@ func TestHeaderParsingNeverPanicsOnArbitraryBytes(t *testing.T) {
 						raw[hegel.Draw(tc, hegel.Integers(0, min(60, len(raw))-1))] = hegel.Draw(tc, hegel.Integers[byte](0, 255))
 					}
 				case 2:
-					raw = raw[:hegel.Draw(tc, spanning(0, len(raw)))]
+					raw = raw[:hegel.Draw(tc, pbt.Spanning(0, len(raw)))]
 				case 3:
 					if p.version == 4 {
-						raw[0] = 0x40 | hegel.Draw(tc, spanning[byte](0, 15))
-						binary.BigEndian.PutUint16(raw[2:], hegel.Draw(tc, spanning[uint16](0, uint16(len(raw)+8))))
+						raw[0] = 0x40 | hegel.Draw(tc, pbt.Spanning[byte](0, 15))
+						binary.BigEndian.PutUint16(raw[2:], hegel.Draw(tc, pbt.Spanning[uint16](0, uint16(len(raw)+8))))
 					} else {
-						binary.BigEndian.PutUint16(raw[4:], hegel.Draw(tc, spanning[uint16](0, uint16(len(raw)-40+8))))
+						binary.BigEndian.PutUint16(raw[4:], hegel.Draw(tc, pbt.Spanning[uint16](0, uint16(len(raw)-40+8))))
 					}
 				}
 				return raw

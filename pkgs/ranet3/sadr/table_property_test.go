@@ -112,23 +112,6 @@ func (op tableOp) GoString() string {
 	return fmt.Sprintf("Lookup(%v, %v)", op.from, op.to)
 }
 
-// integer is every type hegel draws integers of.
-type integer interface {
-	~int | ~int8 | ~int16 | ~int32 | ~int64 | ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr
-}
-
-// spanning draws from lo to hi, with the two ends drawn outright a quarter of
-// the time, so every run meets them rather than only a run whose sample
-// happens to land there.
-func spanning[T integer](lo, hi T) hegel.Generator[T] {
-	return hegel.Composite(func(tc hegel.TestCase) T {
-		if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
-			return hegel.Draw(tc, hegel.SampledFrom([]T{lo, hi}))
-		}
-		return hegel.Draw(tc, hegel.Integers(lo, hi))
-	})
-}
-
 // near keeps the first keep bits of address and draws the rest.
 func near(tc hegel.TestCase, address netip.Addr, keep int) netip.Addr {
 	raw := address.AsSlice()
@@ -165,7 +148,7 @@ func drawPrefixPool(tc hegel.TestCase, anchors []netip.Addr) prefixPool {
 	prefixes := func(lengths hegel.Generator[int]) hegel.Generator[netip.Prefix] {
 		return hegel.Composite(func(tc hegel.TestCase) netip.Prefix {
 			anchor := hegel.Draw(tc, hegel.SampledFrom(anchors))
-			address := near(tc, anchor, hegel.Draw(tc, spanning(0, width)))
+			address := near(tc, anchor, hegel.Draw(tc, pbt.Spanning(0, width)))
 			// the host bits are kept, since the table masks them itself
 			return netip.PrefixFrom(address, hegel.Draw(tc, lengths))
 		})
@@ -175,7 +158,7 @@ func drawPrefixPool(tc hegel.TestCase, anchors []netip.Addr) prefixPool {
 	// and a single host among them. A source can be the invalid prefix that
 	// matches everything, spelled as the zero prefix or as one whose length
 	// does not fit its address.
-	lengths := hegel.Draw(tc, hegel.Lists(spanning(0, width)).MinSize(1).MaxSize(2))
+	lengths := hegel.Draw(tc, hegel.Lists(pbt.Spanning(0, width)).MinSize(1).MaxSize(2))
 	sources := hegel.Composite(func(tc hegel.TestCase) netip.Prefix {
 		if hegel.Draw(tc, hegel.WeightedBooleans(1.0/3)) {
 			if hegel.Draw(tc, hegel.Booleans()) {
@@ -186,7 +169,7 @@ func drawPrefixPool(tc hegel.TestCase, anchors []netip.Addr) prefixPool {
 		return hegel.Draw(tc, prefixes(hegel.SampledFrom(lengths)))
 	})
 	return prefixPool{
-		dsts: hegel.Draw(tc, hegel.Lists(prefixes(spanning(0, width))).MinSize(1).MaxSize(3)),
+		dsts: hegel.Draw(tc, hegel.Lists(prefixes(pbt.Spanning(0, width))).MinSize(1).MaxSize(3)),
 		srcs: hegel.Draw(tc, hegel.Lists(sources).MinSize(4).MaxSize(16)),
 	}
 }
