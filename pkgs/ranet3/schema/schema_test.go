@@ -6,6 +6,7 @@ package schema
 import (
 	"encoding"
 	"encoding/json"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -260,6 +261,67 @@ func TestBothDecodersReadAnIntegerAlike(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// encoding/json is the control plane's decoder, and the file and the wire form
+// are one schema. It hands a bare number to a text unmarshaler as an error
+// rather than as its digits, so the wire refused "table": 200 and a disabled
+// timer written as 0, both of which every file takes, a .json one included.
+// The same value written each way reads the same, and what a file refuses the
+// wire refuses as well.
+func TestJSONTakesTheBareNumbersAFileTakes(t *testing.T) {
+	for _, one := range []struct {
+		key, written string
+		want         holder
+		refused      bool
+	}{
+		{key: "table", written: "200", want: holder{Table: 200}},
+		{key: "table", written: "254", want: holder{Table: TableMain}},
+		{key: "table", written: "0", want: holder{}},
+		{key: "table", written: "-0", want: holder{}},
+		{key: "table", written: "4294967295", want: holder{Table: math.MaxUint32}},
+		{key: "table", written: `"main"`, want: holder{Table: TableMain}},
+		{key: "table", written: "4294967296", refused: true},
+		{key: "table", written: "-5", refused: true},
+		{key: "table", written: "2e2", refused: true},
+		{key: "table", written: "true", refused: true},
+		{key: "interval", written: "0", want: holder{}},
+		{key: "interval", written: "-0", want: holder{}},
+		{key: "interval", written: `"4s"`, want: holder{Interval: Duration(4 * time.Second)}},
+		{key: "interval", written: "4", refused: true},
+		{key: "interval", written: "0.0", refused: true},
+		{key: "interval", written: "false", refused: true},
+	} {
+		t.Run(one.key+" "+one.written, func(t *testing.T) {
+			document := `{"` + one.key + `": ` + one.written + `}`
+			var overWire holder
+			wireErr := json.Unmarshal([]byte(document), &overWire)
+			// The same document as the loader reads a .json file, through the
+			// yaml decoder.
+			fromFile, fileErr := decodeYAML(t, document)
+			fromTOML, tomlErr := decodeTOML(t, one.key+" = "+one.written+"\n")
+			for _, read := range []struct {
+				decoder string
+				got     holder
+				err     error
+			}{{"json", overWire, wireErr}, {"a .json file", fromFile, fileErr}, {"toml", fromTOML, tomlErr}} {
+				switch {
+				case one.refused && read.err == nil:
+					t.Errorf("%s took %s as %+v", read.decoder, one.written, read.got)
+				case !one.refused && read.err != nil:
+					t.Errorf("%s refused %s: %v", read.decoder, one.written, read.err)
+				case !one.refused && !equal(read.got, one.want):
+					t.Errorf("%s read %s as %+v, want %+v", read.decoder, one.written, read.got, one.want)
+				}
+			}
+		})
+	}
+	// A null leaves a field as it was under encoding/json, as it does for any
+	// text unmarshaler, rather than being read as a spelling and refused.
+	var overWire holder
+	if err := json.Unmarshal([]byte(`{"table": null, "interval": null}`), &overWire); err != nil || !equal(overWire, holder{}) {
+		t.Errorf("json read null as %+v, %v", overWire, err)
 	}
 }
 

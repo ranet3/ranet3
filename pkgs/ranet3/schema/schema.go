@@ -31,9 +31,9 @@
 // # Adding a scalar
 //
 // A capability with a scalar of its own, a behavior or a link quality, writes
-// five methods on it. The three encoders this tree reads and writes dispatch
-// differently, and a method left out is found by an operator rather than by
-// the compiler.
+// five methods on it, and a sixth where a file may write it as a number. The
+// three encoders this tree reads and writes dispatch differently, and a method
+// left out is found by an operator rather than by the compiler.
 //
 //   - UnmarshalText and UnmarshalYAML. yaml.v3 asks a type for
 //     [yaml.Unmarshaler] and never for [encoding.TextUnmarshaler];
@@ -52,11 +52,19 @@
 //     other way around: omitempty never drops a struct at all, so a struct
 //     field here spells its json tag omitzero rather than omitempty, the one
 //     option under which json asks for IsZero.
+//   - UnmarshalJSON, when a file may write the value as a bare number, as it
+//     may a table or a disabled timer. encoding/json hands a number to a text
+//     unmarshaler as an error rather than as its digits, while the other two
+//     decoders pass the digits through the text half, so without it the
+//     control plane refuses a value every file takes. [TableID] and
+//     [Duration] write it through one helper, which reads a number by the
+//     digits written.
 //
-// Each of those three has cost this tree a round of debugging already.
+// Each of the first three has cost this tree a round of debugging already.
 package schema
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"fmt"
@@ -98,6 +106,13 @@ func (d *Duration) UnmarshalText(text []byte) error {
 }
 
 func (d Duration) MarshalText() ([]byte, error) { return []byte(d.String()), nil }
+
+// UnmarshalJSON takes a zero written as a bare number as well as a string,
+// which is how every file decoder reads one: without it the wire refused the
+// disabled timer a file writes as 0.
+func (d *Duration) UnmarshalJSON(data []byte) error {
+	return scalarJSON(data, "a duration such as 4s", d)
+}
 
 func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	// Value is empty for a mapping or a sequence, so without the check the
@@ -278,6 +293,12 @@ func (t *TableID) UnmarshalText(text []byte) error {
 
 func (t TableID) MarshalText() ([]byte, error) { return []byte(t.String()), nil }
 
+// UnmarshalJSON is Duration.UnmarshalJSON for a table, which a file writes as
+// a number more often than as a name.
+func (t *TableID) UnmarshalJSON(data []byte) error {
+	return scalarJSON(data, "a table as a number or a name such as main", t)
+}
+
 func (t *TableID) UnmarshalYAML(value *yaml.Node) error {
 	return Scalar(value, "a table as a number or a name such as main", t)
 }
@@ -445,6 +466,29 @@ func Scalar(value *yaml.Node, want string, target interface{ UnmarshalText([]byt
 		return fmt.Errorf("line %d: %w", value.Line, err)
 	}
 	return nil
+}
+
+// scalarJSON is Scalar for encoding/json: a string goes through the text half,
+// and so does a bare number, by the digits written, the same digits the yaml
+// decoder hands the text half for the same document read from a .json file.
+// null leaves the value as it was, as encoding/json does for a text
+// unmarshaler, and anything else is refused by what it is.
+func scalarJSON(data []byte, want string, target interface{ UnmarshalText([]byte) error }) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var written any
+	if err := decoder.Decode(&written); err != nil {
+		return err
+	}
+	switch value := written.(type) {
+	case nil:
+		return nil
+	case string:
+		return target.UnmarshalText([]byte(value))
+	case json.Number:
+		return target.UnmarshalText([]byte(value))
+	}
+	return fmt.Errorf("%s is written as a string or a number, not %T", want, written)
 }
 
 func nodeKind(kind yaml.Kind) string {
