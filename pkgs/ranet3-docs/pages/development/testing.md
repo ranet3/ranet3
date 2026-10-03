@@ -66,10 +66,10 @@ nix build .#checks.x86_64-linux.egress -L
 
 `responder` inverts the exchange: strongSwan dials and ranet3 answers, which
 upstream could not do at all, and the check asserts that ranet3 never dials.
-`kernel` exercises the route reconciler against a real table. `nixos-module`
-boots nothing: it evaluates the nixos module into the unit systemd would run and
-reads back the binary, the runtime directory and the group, since otherwise a
-wrong option name in it is found by the first machine that imports it.
+`kernel` exercises the route reconciler against a real table. In every one of
+these checks the client runs ranet3 through the nixos module, which writes its
+settings as the TOML a deployed node runs, and the check reads back the unit's
+runtime directory and group.
 
 `egress` makes the client an exit node and boots a third machine behind it,
 holding prefixes the gateway can reach through the mesh and no other way. It

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: FSL-1.1-ALv2
 
-{ inputs, lib, ... }:
+{ lib, ... }:
 
 {
   perSystem =
@@ -44,31 +44,6 @@
           install -Dm755 egress-tests "$out/bin/egress-tests"
         '';
       });
-
-      # the nixos module evaluated into the unit it generates. A machine that
-      # imports it is the only other way to learn that an option name or a
-      # type is wrong, since the vm arms configure the daemon by hand rather
-      # than through the module.
-      node = inputs.nixpkgs.lib.nixosSystem {
-        modules = [
-          inputs.self.nixosModules.default
-          {
-            nixpkgs.hostPlatform = system;
-            system.stateVersion = lib.trivial.release;
-            networking.ranet3 = {
-              enable = true;
-              settings = {
-                node = {
-                  org = "example";
-                  name = "check";
-                };
-                auth.key = "/var/lib/ranet3/key.pem";
-                link.port = 13000;
-              };
-            };
-          }
-        ];
-      };
     in
     {
       checks = {
@@ -137,16 +112,6 @@
         netlink = pkgs.testers.runNixOSTest (
           import ../../integration/netlink-test.nix { inherit pkgs netlinkTests; }
         );
-        nixos-module = pkgs.runCommand "ranet3-nixos-module" { } ''
-          unit="${node.config.systemd.units."ranet3.service".unit}/ranet3.service"
-          grep -qF 'ExecStart="${lib.getExe pkgs.ranet3}" "daemon" "--config" ' "$unit"
-          # the runtime directory is where the control socket is bound and the
-          # group is who may then read it, so a typo in either leaves a node
-          # nobody can ask anything or one anybody can
-          grep -qF 'RuntimeDirectory=ranet3' "$unit"
-          grep -qF 'Group=ranet3' "$unit"
-          touch "$out"
-        '';
       };
     };
 }

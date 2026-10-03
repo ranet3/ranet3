@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
 
 {
+  inputs,
   pkgs,
-  ranet3,
   cores ? 1,
   profile ? false,
   # responder inverts the exchange: strongSwan dials and ranet3 answers,
@@ -283,7 +283,10 @@ in
     client =
       { nodes, ... }:
       {
-        imports = [ common ];
+        imports = [
+          common
+          inputs.self.nixosModules.default
+        ];
 
         boot.kernelModules = [ "tun" ];
 
@@ -320,7 +323,6 @@ in
             curl
             iperf3
             iproute2
-            ranet3
           ]
           # nft reads back what this tree wrote through netlink, and jq asks
           # the control socket a question the shell cannot.
@@ -404,64 +406,115 @@ in
               ];
             }
           ];
-          # Written in the capability schema, and in flow style wherever an
-          # optional block is interpolated: nix strips a nested string's own
-          # indentation, so a multi-line block would land back at column zero.
-          "ranet3/config.yaml".text = ''
-            node:
-              org: testorg
-              name: client
-            auth:
-              key: /etc/ranet3/key.pem
-              trust: /etc/ranet3/registry.json
-            link:
-              port: 14000
-              endpoints: [{ serial: "2", family: ip4 }]
-              tun: ranet0
-              ${pkgs.lib.optionalString responder "listen: true"}
-            ${pkgs.lib.optionalString (!responder) ''dial: { to: [{ name: server, serial: "1" }] }''}
-            cap:
-              route:
-                announce: [
-                  "${clientTunnel}/128",
-                  "${clientTunnelV4}/32"${pkgs.lib.optionalString segments '', "${clientSID}/128"''}
-                ]
-              babel: { hello: 500ms, update: 1s }
-              crypto:
-                rekey:
-                  child: ${if profile then "0" else "5s"}
-                  ike: ${if profile then "0" else "15s"}
-                  margin: 0
-                  jitter: 0
-              ${pkgs.lib.optionalString segments ''segment: { source: "${clientTunnel}", local: [{ sid: "${clientSID}", behavior: "End.DT46" }], steer: [{ from: "${clientTunnel}/128", to: "${gatewayBehind}/128", via: ["${gatewaySID}"] }] }''}
-              ${pkgs.lib.optionalString egress ''egress: { advertise: ["${exitNetV4}", "${exitNetV6}"], sweep: 2s }''}
-              ${pkgs.lib.optionalString (kernel || egress)
-                "table: { id: ${toString kernelTable}, proto: ${toString kernelProtocol}, metric: 32, prefsrc4: ${clientTunnelV4}, reconcile: 2s${
-                  # A reply to a translated flow has its destination put back
-                  # before the forwarding lookup runs, so the route to the peer
-                  # has to be in a table that lookup consults. The mesh's routes
-                  # are in a table of the reconciler's own, and a rule is how
-                  # anything else reaches them.
-                  pkgs.lib.optionalString egress
-                    ", rules: [{ to: \"10.99.0.0/24\", table: ${toString kernelTable}, priority: 100 }, { to: \"fd00:99::/64\", table: ${toString kernelTable}, priority: 100 }]"
-                } }"
-              }
-          '';
         };
 
-        systemd.services.ranet3 = {
-          description = "Ranet3 integration-test client";
-          wantedBy = [ "multi-user.target" ];
-          wants = [ "network-online.target" ];
-          after = [ "network-online.target" ];
-          serviceConfig = {
-            ExecStart =
-              "${ranet3}/bin/ranet3 daemon --config /etc/ranet3/config.yaml --log-level debug --metrics 127.0.0.1:9669"
-              + pkgs.lib.optionalString profile " --pprof 127.0.0.1:6060";
-            TimeoutStopSec = "15s";
-            Restart = "on-failure";
-            AmbientCapabilities = [ "CAP_NET_ADMIN" ];
-            CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+        networking.ranet3 = {
+          enable = true;
+          logLevel = "debug";
+          extraArgs = [
+            "--metrics"
+            "127.0.0.1:9669"
+          ]
+          ++ pkgs.lib.optionals profile [
+            "--pprof"
+            "127.0.0.1:6060"
+          ];
+          settings = {
+            node = {
+              org = "testorg";
+              name = "client";
+            };
+            auth = {
+              key = "/etc/ranet3/key.pem";
+              trust = "/etc/ranet3/registry.json";
+            };
+            link = {
+              port = 14000;
+              endpoints = [
+                {
+                  serial = "2";
+                  family = "ip4";
+                }
+              ];
+              tun = "ranet0";
+              listen = pkgs.lib.mkIf responder true;
+            };
+            dial = pkgs.lib.mkIf (!responder) {
+              to = [
+                {
+                  name = "server";
+                  serial = "1";
+                }
+              ];
+            };
+            cap = {
+              route.announce = [
+                "${clientTunnel}/128"
+                "${clientTunnelV4}/32"
+              ]
+              ++ pkgs.lib.optional segments "${clientSID}/128";
+              babel = {
+                hello = "500ms";
+                update = "1s";
+              };
+              crypto.rekey = {
+                child = if profile then 0 else "5s";
+                ike = if profile then 0 else "15s";
+                margin = 0;
+                jitter = 0;
+              };
+              segment = pkgs.lib.mkIf segments {
+                source = clientTunnel;
+                local = [
+                  {
+                    sid = clientSID;
+                    behavior = "End.DT46";
+                  }
+                ];
+                steer = [
+                  {
+                    from = "${clientTunnel}/128";
+                    to = "${gatewayBehind}/128";
+                    via = [ gatewaySID ];
+                  }
+                ];
+              };
+              egress = pkgs.lib.mkIf egress {
+                advertise = [
+                  exitNetV4
+                  exitNetV6
+                ];
+                sweep = "2s";
+              };
+              table = pkgs.lib.mkIf (kernel || egress) (
+                {
+                  id = kernelTable;
+                  proto = kernelProtocol;
+                  metric = 32;
+                  prefsrc4 = clientTunnelV4;
+                  reconcile = "2s";
+                }
+                # A reply to a translated flow has its destination put back
+                # before the forwarding lookup runs, so the route to the peer
+                # has to be in a table that lookup consults. The mesh's routes
+                # are in a table of the reconciler's own, and a rule is how
+                # anything else reaches them.
+                // pkgs.lib.optionalAttrs egress {
+                  rules = [
+                    {
+                      to = "10.99.0.0/24";
+                      table = kernelTable;
+                      priority = 100;
+                    }
+                    {
+                      to = "fd00:99::/64";
+                      table = kernelTable;
+                      priority = 100;
+                    }
+                  ];
+                }
+              );
+            };
           };
         };
       };
@@ -509,6 +562,13 @@ in
             return f"journalctl -u {unit} --after-cursor='{cursor}' --no-pager"
 
         start_all()
+
+        # The runtime directory is where the control socket is bound and the
+        # group is who may then use it, so a typo in either leaves a node nobody
+        # can ask anything or one anybody can.
+        for key, want in [("RuntimeDirectory", "ranet3"), ("Group", "ranet3")]:
+            got = client.succeed(f"systemctl show -p {key} --value ranet3.service").strip()
+            assert got == want, f"ranet3.service has {key}={got}, want {want}"
 
       '';
 
