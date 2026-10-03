@@ -94,8 +94,7 @@
               deno fmt --check readme.md examples/config.json
               # found rather than globbed, so a directory added under modules,
               # lib or pkgs cannot quietly drop out of the check. The count
-              # tells a narrowed walk from a tree that lost files, the same
-              # guard the prose checks in internal use.
+              # tells a narrowed walk from a tree that lost files.
               files="$(find . -name '*.nix' -not -path './.*/*' | sort)"
               reached="$(printf '%s\n' "$files" | wc -l)"
               if [ "$reached" -lt 15 ]; then

@@ -38,17 +38,6 @@ buildGoApplication (
           # the example is parsed by a test, so it has to be in the source the
           # checks see or that test passes only outside the sandbox
           (root + "/examples")
-          # and the readme is read by the prose checks, for the same reason:
-          # without it here they walk the go files alone and say nothing
-          (root + "/readme.md")
-          # the prose rules cover the nix and python that build and measure
-          # this too, and those checks count what they reached, so a source
-          # missing them fails rather than narrowing in silence
-          (root + "/integration")
-          (root + "/lib")
-          (root + "/modules")
-          (root + "/pkgs")
-          (root + "/flake.nix")
           # meta
           (root + "/go.mod")
           (root + "/go.sum")
