@@ -6,7 +6,6 @@
 {
   perSystem =
     {
-      config,
       nixosTest,
       pkgs,
       system,
@@ -19,11 +18,10 @@
       # a go tool run inside the package build, so the modules are on hand
       go =
         name: tools: command:
-        config.packages.default.overrideAttrs (old: {
+        pkgs.ranet3.overrideAttrs (prev: {
           pname = "ranet3-${name}";
-          nativeBuildInputs = old.nativeBuildInputs ++ tools;
+          nativeBuildInputs = prev.nativeBuildInputs ++ tools ++ [ pkgs.writableTmpDirAsHomeHook ];
           buildPhase = ''
-            export HOME="$TMPDIR"
             ${command}
           '';
           installPhase = ''touch "$out"'';
@@ -34,10 +32,10 @@
 
       # the internal/kernel and internal/egress test binaries, to be run as
       # root in a vm where the netlink round trips they hold are not skipped
-      netlinkTests = config.packages.default.overrideAttrs (_: {
+      netlinkTests = pkgs.ranet3.overrideAttrs (prev: {
         pname = "ranet3-netlink-tests";
+        nativeBuildInputs = prev.nativeBuildInputs ++ [ pkgs.writableTmpDirAsHomeHook ];
         buildPhase = ''
-          export HOME="$TMPDIR"
           go test -c -o netlink-tests ./internal/kernel/
           go test -c -o egress-tests ./internal/egress/
         '';
@@ -146,7 +144,7 @@
         );
         nixos-module = pkgs.runCommand "ranet3-nixos-module" { } ''
           unit="${node.config.systemd.units."ranet3.service".unit}/ranet3.service"
-          grep -qF 'ExecStart=${lib.getExe config.packages.default} daemon --config ' "$unit"
+          grep -qF 'ExecStart=${lib.getExe pkgs.ranet3} daemon --config ' "$unit"
           # the runtime directory is where the control socket is bound and the
           # group is who may then read it, so a typo in either leaves a node
           # nobody can ask anything or one anybody can

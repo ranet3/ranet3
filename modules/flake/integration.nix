@@ -3,7 +3,7 @@
 
 {
   perSystem =
-    { config, pkgs, ... }:
+    { pkgs, ... }:
     {
       # A nixos vm test of the harness in integration/, given the arguments it
       # is parameterized on. The checks and the profiling packages both build
@@ -14,7 +14,7 @@
           import ../../integration/nixos-test.nix (
             {
               inherit pkgs;
-              ranet3 = config.packages.default;
+              ranet3 = pkgs.ranet3;
             }
             // args
           )
