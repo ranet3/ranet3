@@ -58,6 +58,15 @@ func (r Routes) Announced() []netip.Prefix {
 // says, and nothing downstream says so.
 func (r Routes) Validate() error {
 	for _, entry := range r.Announce {
+		// A prefix that is set and is not one has no spelling, and neither
+		// has an announcement with no prefix, so no file can carry either.
+		// Only a source nobody wrote is left out.
+		switch {
+		case !entry.Prefix.IsValid():
+			return fmt.Errorf("babel: cap.route announce carries no prefix a file can spell")
+		case entry.From.Prefix != (netip.Prefix{}) && !entry.From.IsValid():
+			return fmt.Errorf("babel: cap.route announce %s carries a source a file cannot spell", entry.Prefix)
+		}
 		// In this order, so an entry whose prefix and from are both wrong
 		// names the same one every time it is loaded.
 		for _, field := range []struct {
