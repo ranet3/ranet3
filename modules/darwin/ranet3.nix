@@ -1,111 +1,42 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: FSL-1.1-ALv2
 
-{ self }:
+{ inputs }:
 
-{
-  config,
-  lib,
-  pkgs,
-  ...
-}:
+{ config, lib, ... }:
 
 let
   cfg = config.networking.ranet3;
-  format = pkgs.formats.toml { };
+  ranet3 = lib.getExe cfg.package;
+  socketfilterfw = "/usr/libexec/ApplicationFirewall/socketfilterfw";
 in
 {
-  options.networking.ranet3 = {
-    enable = lib.mkEnableOption "the ranet3 mesh daemon";
-
-    package = lib.mkOption {
-      type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-      defaultText = lib.literalExpression "the ranet3 package of the flake this module came from";
-      description = "The build this machine runs.";
-    };
-
-    settings = lib.mkOption {
-      type = format.type;
-      default = { };
-      example = lib.literalExpression ''
-        {
-          node = { org = "example"; name = "my-laptop"; };
-          auth = {
-            key = "/var/lib/ranet3/key.pem";
-            trust = "/var/lib/ranet3/trust.json";
-          };
-          link = { port = 13000; underlay.bind = true; };
-        }
-      '';
-      description = ''
-        The config file, in the schema pkgs/ranet3/examples/config.toml documents. The
-        daemon refuses a key it does not know, so a typo here stops the daemon
-        rather than being ignored.
-
-        This is written to the store and is world readable there. The key and
-        the trust document are named by path rather than carried inline, so
-        neither has to be.
-      '';
-    };
-
-    configFile = lib.mkOption {
-      type = lib.types.path;
-      default = format.generate "ranet3.toml" cfg.settings;
-      defaultText = lib.literalExpression "the file generated from networking.ranet3.settings";
-      description = ''
-        The config file to run. Set this to a path outside the store to keep
-        the file itself out of the nix store, in which case settings is unused.
-      '';
-    };
-
-    logLevel = lib.mkOption {
-      type = lib.types.enum [
-        "debug"
-        "info"
-        "warn"
-        "error"
-      ];
-      default = "info";
-      description = "The lowest level the daemon logs, its --log-level.";
-    };
-
-    group = lib.mkOption {
-      type = lib.types.str;
-      default = "admin";
-      description = ''
-        The group that may read the control socket. The daemon runs as root
-        with this as its primary group and leaves the socket at mode 0660, so
-        a member of this group can run the read-only subcommands without being
-        root. The socket answers no request that writes.
-
-        The default is a group macOS already has and every administrator is
-        in, because nothing here creates one: a group this module declared
-        would need a gid of its own to be stable across machines.
-      '';
-    };
-
-    logFile = lib.mkOption {
-      type = lib.types.path;
-      default = "/var/log/ranet3.log";
-      description = ''
-        Where launchd writes the daemon's output. There is no journal on this
-        platform, and a daemon whose refusals go nowhere is one that looks
-        like it started.
-      '';
-    };
-  };
+  imports = [ (import ../options.nix { inherit inputs; }) ];
 
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ cfg.package ];
 
     launchd.daemons.ranet3 = {
       # creating a utun and writing the route table both need root, and the
-      # group leaves the control socket readable without it. The daemon
+      # group leaves the control socket usable without it. The daemon
       # creates /var/run/ranet3 itself, at a mode that group can enter,
-      # which is why nothing here makes the directory.
+      # which is why nothing here makes the directory. configFile is
+      # interpolated before it is quoted, since escapeShellArg leaves a path
+      # literal naming the source tree rather than the store
       script = ''
-        exec ${lib.getExe cfg.package} daemon --config ${cfg.configFile} --log-level ${cfg.logLevel}
+        exec ${
+          lib.escapeShellArgs (
+            [
+              ranet3
+              "daemon"
+              "--config"
+              "${cfg.configFile}"
+              "--log-level"
+              cfg.logLevel
+            ]
+            ++ cfg.extraArgs
+          )
+        }
       '';
       serviceConfig = {
         RunAtLoad = true;
@@ -120,5 +51,10 @@ in
         ExitTimeOut = 20;
       };
     };
+
+    system.activationScripts.postActivation.text = lib.mkIf cfg.openFirewall ''
+      ${socketfilterfw} --add ${lib.escapeShellArg ranet3}
+      ${socketfilterfw} --unblockapp ${lib.escapeShellArg ranet3}
+    '';
   };
 }
