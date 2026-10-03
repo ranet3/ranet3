@@ -209,6 +209,11 @@ func (e Egress) Validate() error {
 			// that does not load.
 			return fmt.Errorf("egress: cap.egress %s %s carries a zone, which a translated address cannot", named.field, named.source.Addr)
 		}
+		if named.source.Auto {
+			// A file writes one or the other, and this one is written as the
+			// address and read back without the auto.
+			return fmt.Errorf("egress: cap.egress %s is both auto and %s, and a source is one or the other", named.field, named.source.Addr)
+		}
 		if named.source.Addr.Is4In6() {
 			// Refused rather than judged in the family it is written in, as an
 			// advertised prefix in this spelling is. The decoder unmaps it, so

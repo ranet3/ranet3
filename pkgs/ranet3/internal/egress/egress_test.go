@@ -445,6 +445,19 @@ func TestValidateRefusesWhatCannotBeTranslated(t *testing.T) {
 			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Source4: Source{Addr: netip.MustParseAddr("::ffff:198.51.100.7%eth0")}},
 			"carries a zone",
 		},
+		// A file writes a source as auto or as an address, and one carrying
+		// both is written as the address and read back without the auto, so
+		// the capability taken here is not the one its own file loads.
+		{
+			"a source4 both auto and an address",
+			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Source4: Source{Auto: true, Addr: netip.MustParseAddr("198.51.100.7")}},
+			"both auto and 198.51.100.7",
+		},
+		{
+			"a source6 both auto and an address",
+			Egress{Advertise: prefixes(t, "::/0"), Source6: Source{Auto: true, Addr: netip.MustParseAddr("2001:db8::7")}},
+			"both auto and 2001:db8::7",
+		},
 		{
 			"a source nothing can reply to",
 			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Source4: Source{Addr: netip.MustParseAddr("127.0.0.1")}},
