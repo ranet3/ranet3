@@ -73,9 +73,17 @@ func (m *Message) encode(reserveTrailer int) []byte {
 // pointers chained in order; shared by Message.encode and the SK payload's
 // inner-plaintext construction (sk.go).
 func encodePayloadChain(payloads []RawPayload) []byte {
+	return encodePayloadChainBefore(payloads, PayloadNone)
+}
+
+// encodePayloadChainBefore is encodePayloadChain for a chain another payload
+// follows: the last payload's Next Payload names following rather than ending
+// the message, RFC 7296 section 3.2. The payloads sent in the clear ahead of SK
+// are such a chain.
+func encodePayloadChainBefore(payloads []RawPayload, following PayloadType) []byte {
 	body := make([]byte, 0, 256)
 	for i, p := range payloads {
-		next := PayloadNone
+		next := following
 		if i+1 < len(payloads) {
 			next = payloads[i+1].Type
 		}
