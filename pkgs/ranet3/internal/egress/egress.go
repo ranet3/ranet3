@@ -203,6 +203,13 @@ func (e Egress) Validate() error {
 		if !named.source.Addr.IsValid() {
 			continue
 		}
+		if named.source.Addr.Is4In6() {
+			// Refused rather than judged in the family it is written in, as an
+			// advertised prefix in this spelling is. The decoder unmaps it, so
+			// a capability carrying one renders to a file that reads back as
+			// an IPv4 source, which source6 refuses after taking the value.
+			return fmt.Errorf("egress: cap.egress %s %s is an IPv4 address written as IPv6, so write it as %s", named.field, named.source.Addr, named.source.Addr.Unmap())
+		}
 		if named.source.Addr.Is4() != named.is4 {
 			return fmt.Errorf("egress: cap.egress %s %s is not of that family", named.field, named.source.Addr)
 		}
