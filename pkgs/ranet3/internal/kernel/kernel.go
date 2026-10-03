@@ -675,9 +675,13 @@ func (t Table) ReadsMark(mark uint32) bool {
 	return false
 }
 
-// selectsMark is the kernel's own comparison: (skb->mark & FRA_FWMASK) against
-// FRA_FWMARK, with an absent mask read as all ones, which is how a rule
-// written with a mark and no mask matches.
+// selectsMark reports a rule that selects on a mark and takes this one by the
+// kernel's own comparison, fib_rule_match's ((mark ^ FRA_FWMARK) &
+// FRA_FWMASK) == 0, with an absent mask read as all ones, which is how a rule
+// written with a mark and no mask matches. The bits of the rule's mark outside
+// its mask are never compared: fwmark 0x726c/0xff0000 takes every mark whose
+// third byte is zero, unmarked packets among them. A rule selecting on no
+// mark does not count, since it reads none.
 func (r Rule) selectsMark(mark uint32) bool {
 	if r.FWMark == 0 {
 		return false
@@ -686,7 +690,7 @@ func (r Rule) selectsMark(mark uint32) bool {
 	if mask == 0 {
 		mask = ^uint32(0)
 	}
-	return mark&mask == r.FWMark
+	return (mark^r.FWMark)&mask == 0
 }
 
 func (r Rule) canonical() Rule {
