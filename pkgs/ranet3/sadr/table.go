@@ -396,9 +396,10 @@ func (t *Table[V]) Lookup(src, dst netip.Addr) (V, bool) {
 		// instead cost, and indexSrcs for when the walk is the cheaper of the
 		// two and there is no index to use. A deeper node still overwrites
 		// this, which is destination specificity beating source specificity,
-		// as before.
+		// as before. A zoned source takes the scan: PrefixFrom drops its
+		// zone, where Contains matches it against no prefix at all.
 		matched := false
-		if byLen := n.index(); byLen != nil {
+		if byLen := n.index(); byLen != nil && src.Zone() == "" {
 			for _, group := range byLen {
 				if value, ok := group.m[netip.PrefixFrom(src, int(group.bits)).Masked()]; ok {
 					result, found, matched = value, true, true
