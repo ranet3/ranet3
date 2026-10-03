@@ -318,7 +318,13 @@ func (t Table) Validate() error {
 		// with one renders to a file nothing loads.
 		return fmt.Errorf("kernel: cap.table prefsrc4 %s carries a zone, which a preferred source cannot", address)
 	}
-	for _, prefix := range t.Addresses {
+	for i, prefix := range t.Addresses {
+		// An entry left at zero, or an address under a length it cannot
+		// carry, has no spelling, so a capability built with one renders to a
+		// file nothing loads. Assigned skipped it without a word.
+		if !prefix.IsValid() {
+			return fmt.Errorf("kernel: cap.table addresses entry %d is not a prefix", i+1)
+		}
 		// Assigning the unspecified address is not something an interface can
 		// do, and Assigned skips it, so taking the entry and dropping it
 		// silently is the one outcome that tells the operator nothing.
@@ -701,8 +707,13 @@ func (r Rule) validate() error {
 		name   string
 		prefix netip.Prefix
 	}{{"to", r.To.Prefix}, {"from", r.From.Prefix}} {
-		if !named.prefix.IsValid() {
+		if named.prefix == (netip.Prefix{}) {
 			continue
+		}
+		if !named.prefix.IsValid() {
+			// An address under a length it cannot carry was read as no
+			// selector at all, which no file can write.
+			return fmt.Errorf("kernel: cap.table rules %s: %s is set and is not a prefix", r, named.name)
 		}
 		if familyOf(named.prefix.Addr()) != r.Family {
 			return fmt.Errorf("kernel: cap.table rules %s: %s %s is not of the rule's family", r, named.name, named.prefix)

@@ -732,6 +732,27 @@ func TestNewRejectsReservedProtocol(t *testing.T) {
 	}
 }
 
+// A prefix that is set and is not one, an entry left at zero or an address
+// under a length it cannot carry, has no spelling in any file, so a capability
+// built with one is refused here rather than taken and rendered into a file
+// that does not load. Assigned skipped such an address without a word, and a
+// rule read such a selector as no selector at all.
+func TestValidateRefusesAPrefixThatIsNotOne(t *testing.T) {
+	notOne := schema.PrefixFrom(netip.PrefixFrom(addr("2001:db8::"), 200))
+	for name, table := range map[string]Table{
+		"an address left at zero":                   {Addresses: []schema.Prefix{schema.MustPrefix("10.66.0.5/32"), {}}},
+		"an address under a length it cannot carry": {Addresses: []schema.Prefix{notOne}},
+		"a destination that is not a prefix":        {Rules: []Rule{{To: notOne, FWMark: 0x726c, Family: FamilyIPv6, Table: 200, Priority: 40}}},
+		"a source that is not a prefix":             {Rules: []Rule{{From: notOne, FWMark: 0x726c, Family: FamilyIPv6, Table: 200, Priority: 40}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := table.Validate(); err == nil || !strings.Contains(err.Error(), "not a prefix") {
+				t.Errorf("refused with %v, want it refused as not a prefix", err)
+			}
+		})
+	}
+}
+
 // A preferred source is an IPv4 address, and only the IPv4-mapped spelling of
 // one can carry a zone. The type a file writes it in refuses a zone, so a
 // capability built with one is refused here as well, rather than taken and
