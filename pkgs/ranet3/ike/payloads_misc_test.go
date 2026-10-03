@@ -52,6 +52,22 @@ func TestDecodeDeleteEnforcesProtocolSPISize(t *testing.T) {
 	}
 }
 
+// RFC 7296 section 3.11 fixes the SPI Size by protocol, zero for IKE and four
+// for AH and ESP, however many SPIs follow. Taken from the first SPI, it came
+// out zero for a Child SA delete carrying none, which is the size
+// DecodeDelete refuses for those protocols, as a peer should.
+func TestEmptyChildSADeleteKeepsItsProtocolsSPISize(t *testing.T) {
+	for _, protocol := range []ProtocolID{ProtoAH, ProtoESP} {
+		body := EncodeDelete(Delete{Protocol: protocol})
+		if body[1] != 4 {
+			t.Errorf("a protocol %d delete with no SPIs gives SPI Size %d, want 4", protocol, body[1])
+		}
+		if _, err := DecodeDelete(body); err != nil {
+			t.Errorf("a protocol %d delete with no SPIs does not read back: %v", protocol, err)
+		}
+	}
+}
+
 func TestDecodeTSRejectsUndersizedSelector(t *testing.T) {
 	body := []byte{1, 0, 0, 0, 7, 0, 0, 7, 0, 0, 0}
 	if _, err := DecodeTS(body); err == nil {
