@@ -404,6 +404,39 @@ func TestEveryMarshallerRefusesAValueWithNoSpelling(t *testing.T) {
 	}
 }
 
+// The same for a prefix inside a value that writes it. yaml and json ask
+// IsZero whether to write an omitempty field at all and the toml encoder does
+// not, so a prefix that is set and is not one, an address under a length it
+// cannot carry, was dropped by the first two and refused by the third. An
+// announcement carrying no prefix went out under yaml as the "invalid Prefix"
+// String gives for one, which no decoder reads back, and one whose source was
+// not a prefix went out without its source.
+func TestEveryMarshallerRefusesAPrefixWithNoSpelling(t *testing.T) {
+	notOne := PrefixFrom(netip.PrefixFrom(netip.MustParseAddr("2001:db8::"), 200))
+	type optional struct {
+		Prefix Prefix `yaml:"prefix,omitempty" json:"prefix,omitzero" toml:"prefix,omitempty"`
+	}
+	for name, value := range map[string]any{
+		"an announcement carrying no prefix":         Announce{},
+		"an announcement whose prefix is not one":    Announce{Prefix: notOne},
+		"an announcement whose source is not one":    Announce{Prefix: MustPrefix("::/0"), From: notOne},
+		"an optional prefix that is set and not one": optional{notOne},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if body, err := yaml.Marshal(value); err == nil {
+				t.Errorf("yaml wrote %q", body)
+			}
+			if body, err := json.Marshal(value); err == nil {
+				t.Errorf("json wrote %s", body)
+			}
+			var asTOML strings.Builder
+			if err := toml.NewEncoder(&asTOML).Encode(value); err == nil {
+				t.Errorf("toml wrote %q", asTOML.String())
+			}
+		})
+	}
+}
+
 // encoding/json is the control plane's decoder, and the file and the wire form
 // are one schema. Without UnmarshalJSON the bare spelling went through the
 // text half and the mapping one was refused outright, so an exit's

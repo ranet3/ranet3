@@ -143,7 +143,12 @@ func MustPrefix(s string) Prefix { return Prefix{netip.MustParsePrefix(s)} }
 // because yaml.v3 judges emptiness by walking a struct's exported fields, and
 // every field of a netip.Prefix is private, so without this every prefix in the
 // tree reads as empty and is dropped on the way out.
-func (p Prefix) IsZero() bool { return !p.IsValid() }
+//
+// Only the prefix nobody wrote is zero. One that is set and is not a prefix,
+// an address under a length it cannot carry, is written and refused like any
+// other value with no spelling: the toml encoder never asks IsZero, so reading
+// it as zero had yaml and json drop what toml refused.
+func (p Prefix) IsZero() bool { return p.Prefix == netip.Prefix{} }
 
 func (p *Prefix) UnmarshalText(text []byte) error {
 	parsed, err := ParsePrefix(string(text))
@@ -460,8 +465,10 @@ func (a *Announce) complete() error {
 // marshaler ahead of a struct's own fields, and an announcement carrying a
 // source has no text form, so the source would be dropped on the way out.
 func (a Announce) MarshalYAML() (any, error) {
-	if !a.From.IsValid() {
-		return a.Prefix.String(), nil
+	if a.From.IsZero() {
+		// Through the prefix's own marshaller, which refuses a prefix with no
+		// spelling rather than writing the "invalid Prefix" String gives.
+		return a.Prefix.MarshalYAML()
 	}
 	return struct {
 		Prefix Prefix `yaml:"prefix"`
