@@ -385,6 +385,28 @@ func TestRekeyOffersOnlyTheCipherItsAnswerReaderWillTake(t *testing.T) {
 	}
 }
 
+// The other half of the test above: a rekey answer naming a cipher other than
+// the one the SA being replaced uses is refused, though the initial offer
+// names it and an answer to that offer would be taken.
+func TestRekeyAnswerWithAnotherCipherIsRefused(t *testing.T) {
+	old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128}
+	for name, encryption := range map[string]Transform{
+		"a longer key":   {Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 256},
+		"another cipher": {Type: TransEncr, ID: ENCR_CHACHA20_POLY1305},
+	} {
+		t.Run(name, func(t *testing.T) {
+			answer := encodedChildProposal(encryption)
+			if _, _, _, err := decodeChildProposal(answer, nil); err != nil {
+				t.Fatalf("the answer was refused with no SA to hold it to: %v", err)
+			}
+			_, _, _, err := decodeChildProposal(answer, &old)
+			if err == nil || !strings.Contains(err.Error(), "changed encryption transform") {
+				t.Errorf("a rekey answer of %v for an SA keyed with %v got %v, want it refused", encryption, old, err)
+			}
+		})
+	}
+}
+
 // RFC 7296 section 1.3 gives INVALID_KE_PAYLOAD "two octets of data
 // associated with this notification: the accepted Diffie-Hellman group number
 // in big endian order", and has the initiator retry in the group the responder
