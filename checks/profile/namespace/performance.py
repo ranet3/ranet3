@@ -143,7 +143,7 @@ for name in [
 ]:
     executable = shutil.which(name)
     if executable is None:
-        parser.error(f"required program {name!r} is missing; use nix develop")
+        parser.error(f"required program {name!r} is missing, use nix develop .#ranet3")
     commands[name] = str(Path(executable).resolve())
 for name in ["sleep", "cat"]:
     # Preserve argv[0] for coreutils' multicall binary.

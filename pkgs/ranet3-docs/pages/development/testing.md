@@ -102,8 +102,8 @@ integration-test VMs; the guest's CPU and clock still affect results.
 For measurements without VM overhead, use the namespace harness:
 
 ```sh
-nix develop -c go build -C pkgs/ranet3 -o /tmp/ranet-bench ./cmd/ranet3
-nix develop -c unshare --user --map-root-user --mount --net \
+nix develop .#ranet3 -c go build -C pkgs/ranet3 -o /tmp/ranet-bench ./cmd/ranet3
+nix develop .#ranet3 -c unshare --user --map-root-user --mount --net \
   python3 checks/profile/namespace/performance.py --client /tmp/ranet-bench \
   --output /tmp/ranet-perf-6 --cores 6 --affinity 0-5 \
   --directions outbound,inbound,bidir
@@ -135,7 +135,7 @@ unchanged.
 Raw ESP encryption and decryption have separate benchmarks:
 
 ```sh
-nix develop -c go test ./esp -run '^$' -bench 'BenchmarkESP' \
+nix develop .#ranet3 -c go test ./esp -run '^$' -bench 'BenchmarkESP' \
   -benchmem -cpu=1,2,4,8 -count=5
 ```
 
