@@ -293,7 +293,7 @@ testers.runNixOSTest {
       {
         imports = [
           common
-          inputs.self.nixosModules.default
+          inputs.self.nixosModules.ranet3
         ];
 
         boot.kernelModules = [ "tun" ];
