@@ -732,6 +732,24 @@ func TestNewRejectsReservedProtocol(t *testing.T) {
 	}
 }
 
+// A preferred source is an IPv4 address, and only the IPv4-mapped spelling of
+// one can carry a zone. The type a file writes it in refuses a zone, so a
+// capability built with one is refused here as well, rather than taken and
+// rendered into a file that does not load. Normalized dropped the zone
+// without a word.
+func TestValidateRefusesAPreferredSourceCarryingAZone(t *testing.T) {
+	zoned := Table{PrefSrc4: schema.AddrFrom(addr("::ffff:198.18.104.5%eth0"))}
+	if err := zoned.Validate(); err == nil || !strings.Contains(err.Error(), "prefsrc4") {
+		t.Fatalf("a preferred source carrying a zone was refused with %v, want it refused by name", err)
+	}
+	// The same address without the zone is still taken, in either spelling.
+	for _, address := range []string{"198.18.104.5", "::ffff:198.18.104.5"} {
+		if err := (Table{PrefSrc4: schema.AddrFrom(addr(address))}).Validate(); err != nil {
+			t.Errorf("%s was refused: %v", address, err)
+		}
+	}
+}
+
 // An announced default is installed unscoped on linux, so a reconciler given
 // the main table would put the whole machine's default out of the tun and take
 // the ESP underlay with it. Nothing else refuses a route in main, and the one
