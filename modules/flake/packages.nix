@@ -6,7 +6,6 @@
 {
   perSystem =
     {
-      config,
       nixosTest,
       pkgs,
       system,
@@ -29,8 +28,8 @@
           namespace-profile = pkgs.testers.runNixOSTest (
             import ../../integration/nixos-performance.nix {
               inherit pkgs;
-              ranet3 = config.packages.default;
-              benchmarkIperf = config.packages.iperf3-benchmark;
+              ranet3 = pkgs.ranet3;
+              benchmarkIperf = pkgs.iperf3-benchmark;
             }
           );
         };

@@ -4,7 +4,6 @@
 {
   perSystem =
     {
-      config,
       lib,
       pkgs,
       ...
@@ -26,7 +25,7 @@
           ++ lib.optionals stdenv.hostPlatform.isLinux [
             bird3
             ethtool
-            config.packages.iperf3-benchmark
+            pkgs.iperf3-benchmark
             iproute2
             iputils
             strongswan
