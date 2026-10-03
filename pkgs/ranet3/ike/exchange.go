@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/NickCao/ranet-lite/transport"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // encryptedRoundTrip ignores unauthenticated packets even if their public

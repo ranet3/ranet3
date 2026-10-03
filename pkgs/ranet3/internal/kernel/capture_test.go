@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/internal/netstack"
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // start is an arbitrary fixed instant, so every elapsed time below reads as

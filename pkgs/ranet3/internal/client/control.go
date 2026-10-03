@@ -6,13 +6,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NickCao/ranet-lite/control"
-	"github.com/NickCao/ranet-lite/ike"
-	"github.com/NickCao/ranet-lite/internal/babel"
-	"github.com/NickCao/ranet-lite/internal/config"
-	"github.com/NickCao/ranet-lite/internal/netstack"
-	"github.com/NickCao/ranet-lite/internal/version"
-	"github.com/NickCao/ranet-lite/srv6"
+	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/ike"
+	"ranet3.com/pkgs/ranet3/internal/babel"
+	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/version"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 // This file is the runtime's side of the control socket's reads. Every method

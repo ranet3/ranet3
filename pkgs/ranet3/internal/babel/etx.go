@@ -3,8 +3,8 @@ package babel
 import (
 	"fmt"
 
-	"github.com/NickCao/ranet-lite/schema"
 	"go.yaml.in/yaml/v3"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // Hello history and the link-quality estimators of RFC 8966 Appendix A.

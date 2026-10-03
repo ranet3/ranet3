@@ -1,6 +1,6 @@
 // Package ike is an IKEv2 initiator and responder in the minimal shape
 // [RFC 7815] describes, negotiating a tunnel-mode Child SA that
-// [github.com/NickCao/ranet-lite/esp] then carries. It offers one set of
+// [ranet3.com/pkgs/ranet3/esp] then carries. It offers one set of
 // transforms and no others: raw Ed25519 public key authentication ([RFC 7427]
 // Digital Signature with an ASN1_DN identity), X25519, AES-GCM or
 // ChaCha20-Poly1305, UDP encapsulation forced on, and 0.0.0.0/0 with ::/0 as
@@ -13,7 +13,7 @@
 //
 // # What a caller uses
 //
-// Both roles run over a [github.com/NickCao/ranet-lite/transport] hub, which
+// Both roles run over a [ranet3.com/pkgs/ranet3/transport] hub, which
 // the caller binds and hands in, because IKE and the ESP it negotiates share
 // one UDP port.
 //
@@ -32,7 +32,7 @@
 //   - Timing. [Crypto] is the cap.crypto capability, carrying yaml, json and
 //     toml tags and the replay window alongside the rekey intervals, since a
 //     session captures all of them when it is set up. Its durations come from
-//     [github.com/NickCao/ranet-lite/schema], and the Default constants below
+//     [ranet3.com/pkgs/ranet3/schema], and the Default constants below
 //     give the values an absent block runs with.
 //
 // The message, payload and transform codecs are exported beside those, so a

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/schema"
 	"golang.org/x/sys/unix"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // This is the only test that speaks to a real kernel. It refuses to run

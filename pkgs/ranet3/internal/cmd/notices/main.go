@@ -4,7 +4,7 @@
 // Apache 2.0 and the BSD and MIT licenses all require their text and their
 // copyright line to be reproduced in a distribution, and a Go binary is a
 // distribution of every module linked into it. The file this writes is
-// embedded in the daemon and printed by `ranet-lite licenses`, so the
+// embedded in the daemon and printed by `ranet3 licenses`, so the
 // obligation travels with the binary rather than with the repository.
 //
 // Only modules actually linked are listed. The module graph is far larger than
@@ -61,8 +61,8 @@ func run() error {
 
 const header = `# Third party notices
 
-Every module linked into a ranet-lite binary, with the license it is under.
-` + "`ranet-lite licenses`" + ` prints this same text out of the binary.
+Every module linked into a ranet3 binary, with the license it is under.
+` + "`ranet3 licenses`" + ` prints this same text out of the binary.
 
 This file is generated. Run the formatter rather than editing it.
 `
@@ -77,9 +77,9 @@ type module struct{ path, version string }
 // one here; the binary answers the same way everywhere. It is also the more
 // honest question, since the obligation attaches to what is distributed.
 func linkedModules() ([]module, error) {
-	binary := filepath.Join(os.TempDir(), "ranet-lite-notices-subject")
+	binary := filepath.Join(os.TempDir(), "ranet3-notices-subject")
 	defer os.Remove(binary)
-	if _, err := output("go", "build", "-o", binary, "./cmd/ranet-lite"); err != nil {
+	if _, err := output("go", "build", "-o", binary, "./cmd/ranet3"); err != nil {
 		return nil, err
 	}
 	listed, err := output("go", "version", "-m", binary)

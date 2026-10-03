@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 // fillRouteTable builds a speaker holding prefixes routes, each one learned

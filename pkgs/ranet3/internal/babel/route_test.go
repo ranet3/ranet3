@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 func TestRouteTableExpiryAndRecovery(t *testing.T) {

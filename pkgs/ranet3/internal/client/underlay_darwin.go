@@ -5,9 +5,9 @@ package client
 import (
 	"path/filepath"
 
-	"github.com/NickCao/ranet-lite/control"
-	"github.com/NickCao/ranet-lite/internal/kernel"
-	"github.com/NickCao/ranet-lite/transport"
+	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // underlayStatePath is where the record of the routes this process wrote

@@ -8,8 +8,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/NickCao/ranet-lite/schema"
 	"golang.org/x/sys/unix"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // ruleAttrs reads back the attributes of a rule message the backend wrote, so

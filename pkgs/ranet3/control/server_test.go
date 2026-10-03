@@ -40,7 +40,7 @@ func (fakeSource) Peers() []Peer {
 }
 
 func (fakeSource) Metrics(w io.Writer) {
-	io.WriteString(w, "ranet_lite_sessions 1\n")
+	io.WriteString(w, "ranet3_sessions 1\n")
 }
 
 // Every path answers, and each answers with its own subsystem rather than
@@ -104,7 +104,7 @@ func TestReadPathsRefuseAWrite(t *testing.T) {
 // name and a random suffix under TMPDIR, which comes to 110 bytes in the
 // darwin nix sandbox and up to 129 under a default macOS TMPDIR, over the
 // limit Listen refuses at: a test of what happens under that limit cannot be
-// written over it. cmd/ranet-lite/cli_test.go keeps the same helper, because
+// written over it. cmd/ranet3/cli_test.go keeps the same helper, because
 // the length of a path is a property of the platform rather than of either
 // package.
 func socketPath(t *testing.T) string {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // The capability is refused by name where there is no packet filter to write

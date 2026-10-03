@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/transport"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 type responderHarness struct {
@@ -129,7 +129,7 @@ func (h *responderHarness) peerConfig() PeerConfig {
 	}
 }
 
-// Two ranet-lite nodes could never reach each other before the responder
+// Two ranet3 nodes could never reach each other before the responder
 // existed, so this is the case the whole feature is for.
 func TestResponderCompletesHandshakeWithInitiator(t *testing.T) {
 	h := newResponderHarness(t, nil)

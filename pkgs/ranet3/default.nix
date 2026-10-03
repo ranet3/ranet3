@@ -13,7 +13,7 @@ in
 buildGoApplication (
   lib.fix (finalAttrs: {
     meta.mainProgram = finalAttrs.pname;
-    pname = "ranet-lite";
+    pname = "ranet3";
     version = lib.fileContents ./version.txt;
 
     src =
@@ -45,16 +45,16 @@ buildGoApplication (
 
     modules = ./gomod2nix.toml;
 
-    subPackages = [ "cmd/ranet-lite" ];
+    subPackages = [ "cmd/ranet3" ];
 
     ldflags = [
       "-s"
       "-w"
-      "-X github.com/NickCao/ranet-lite/internal/version.Value=${finalAttrs.version}"
+      "-X ranet3.com/pkgs/ranet3/internal/version.Value=${finalAttrs.version}"
     ]
     ++ lib.optional (
       revision != null
-    ) "-X github.com/NickCao/ranet-lite/internal/version.Revision=${revision}";
+    ) "-X ranet3.com/pkgs/ranet3/internal/version.Revision=${revision}";
 
     # the test suite runs as a flake check, never inside the package build
     doCheck = false;

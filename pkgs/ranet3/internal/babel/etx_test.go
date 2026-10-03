@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 // The receive half of RFC 8966 Appendix A.1, which decides what the vector

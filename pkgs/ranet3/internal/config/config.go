@@ -31,13 +31,13 @@ import (
 	"github.com/BurntSushi/toml"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/NickCao/ranet-lite/ike"
-	"github.com/NickCao/ranet-lite/internal/babel"
-	"github.com/NickCao/ranet-lite/internal/egress"
-	"github.com/NickCao/ranet-lite/internal/kernel"
-	"github.com/NickCao/ranet-lite/internal/netstack"
-	"github.com/NickCao/ranet-lite/srv6"
-	"github.com/NickCao/ranet-lite/transport"
+	"ranet3.com/pkgs/ranet3/ike"
+	"ranet3.com/pkgs/ranet3/internal/babel"
+	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/srv6"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 type Config struct {

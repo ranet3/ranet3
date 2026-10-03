@@ -1,7 +1,7 @@
 # Third party notices
 
-Every module linked into a ranet-lite binary, with the license it is under.
-`ranet-lite licenses` prints this same text out of the binary.
+Every module linked into a ranet3 binary, with the license it is under.
+`ranet3 licenses` prints this same text out of the binary.
 
 This file is generated. Run the formatter rather than editing it.
 

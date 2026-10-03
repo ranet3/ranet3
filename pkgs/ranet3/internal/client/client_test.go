@@ -23,18 +23,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/esp"
-	"github.com/NickCao/ranet-lite/ike"
-	"github.com/NickCao/ranet-lite/internal/babel"
-	"github.com/NickCao/ranet-lite/internal/config"
-	"github.com/NickCao/ranet-lite/internal/egress"
-	"github.com/NickCao/ranet-lite/internal/kernel"
-	"github.com/NickCao/ranet-lite/internal/netstack"
-	"github.com/NickCao/ranet-lite/internal/registry"
-	"github.com/NickCao/ranet-lite/schema"
-	"github.com/NickCao/ranet-lite/srv6"
-	"github.com/NickCao/ranet-lite/transport"
 	yaml "go.yaml.in/yaml/v3"
+	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/ike"
+	"ranet3.com/pkgs/ranet3/internal/babel"
+	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/registry"
+	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/srv6"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 func TestInboundBatchOrderMergesConsecutiveCompletedBatches(t *testing.T) {
@@ -700,22 +700,22 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	c.Metrics(&out)
 	text := out.String()
 	for _, want := range []string{
-		"ranet_lite_babel_routes_originated 1",
-		fmt.Sprintf("ranet_lite_babel_routes_selected %d", stats.Selected),
-		fmt.Sprintf("ranet_lite_receive_refused_total %d", refused),
+		"ranet3_babel_routes_originated 1",
+		fmt.Sprintf("ranet3_babel_routes_selected %d", stats.Selected),
+		fmt.Sprintf("ranet3_receive_refused_total %d", refused),
 		// Nothing here fills a receive queue, which is the only thing that
 		// raises the other one, so it reads zero and says so.
-		"ranet_lite_receive_dropped_total 0",
-		"ranet_lite_sessions 1",
-		"ranet_lite_esp_inbound_packets_total 7",
-		"ranet_lite_esp_inbound_dropped_total 2",
-		`ranet_lite_session_up{path="example/gateway/1@0"} 1`,
-		fmt.Sprintf(`ranet_lite_babel_neighbor_up{peer="gateway"} %d`, boolValue(stats.Neighbors[0].Alive)),
-		fmt.Sprintf(`ranet_lite_babel_routes_received{peer="gateway"} %d`, stats.Neighbors[0].Routes),
+		"ranet3_receive_dropped_total 0",
+		"ranet3_sessions 1",
+		"ranet3_esp_inbound_packets_total 7",
+		"ranet3_esp_inbound_dropped_total 2",
+		`ranet3_session_up{path="example/gateway/1@0"} 1`,
+		fmt.Sprintf(`ranet3_babel_neighbor_up{peer="gateway"} %d`, boolValue(stats.Neighbors[0].Alive)),
+		fmt.Sprintf(`ranet3_babel_routes_received{peer="gateway"} %d`, stats.Neighbors[0].Routes),
 		// A neighbor that has said nothing costs infinity, and the peer above
 		// refused at least one packet, so neither line is zero either way.
-		fmt.Sprintf(`ranet_lite_babel_neighbor_cost{peer="gateway"} %d`, stats.Neighbors[0].Cost),
-		fmt.Sprintf(`ranet_lite_peer_send_dropped_total{peer="gateway"} %d`, stats.Neighbors[0].Dropped),
+		fmt.Sprintf(`ranet3_babel_neighbor_cost{peer="gateway"} %d`, stats.Neighbors[0].Cost),
+		fmt.Sprintf(`ranet3_peer_send_dropped_total{peer="gateway"} %d`, stats.Neighbors[0].Dropped),
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("metrics output is missing %q:\n%s", want, text)
@@ -723,10 +723,10 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	}
 	// Every series needs its HELP and TYPE, or a scrape rejects the sample.
 	for _, name := range []string{
-		"ranet_lite_sessions", "ranet_lite_esp_inbound_packets_total",
-		"ranet_lite_session_up", "ranet_lite_babel_neighbor_up",
-		"ranet_lite_babel_neighbor_cost", "ranet_lite_babel_routes_received",
-		"ranet_lite_peer_send_dropped_total", "ranet_lite_receive_dropped_total",
+		"ranet3_sessions", "ranet3_esp_inbound_packets_total",
+		"ranet3_session_up", "ranet3_babel_neighbor_up",
+		"ranet3_babel_neighbor_cost", "ranet3_babel_routes_received",
+		"ranet3_peer_send_dropped_total", "ranet3_receive_dropped_total",
 	} {
 		if !strings.Contains(text, "# HELP "+name+" ") || !strings.Contains(text, "# TYPE "+name+" ") {
 			t.Errorf("metric %s has no HELP or TYPE", name)

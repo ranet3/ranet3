@@ -4,7 +4,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/NickCao/ranet-lite/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 // Each authenticated ESP tunnel is a point-to-point Babel link. Speaker.mu

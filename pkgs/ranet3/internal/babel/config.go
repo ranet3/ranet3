@@ -6,8 +6,8 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/NickCao/ranet-lite/internal/netstack"
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // Config is the cap.babel capability, parsed straight out of the file: the

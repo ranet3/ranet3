@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/control"
-	"github.com/NickCao/ranet-lite/ike"
-	"github.com/NickCao/ranet-lite/internal/babel"
-	"github.com/NickCao/ranet-lite/internal/config"
-	"github.com/NickCao/ranet-lite/internal/netstack"
-	"github.com/NickCao/ranet-lite/internal/registry"
-	"github.com/NickCao/ranet-lite/schema"
-	"github.com/NickCao/ranet-lite/srv6"
+	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/ike"
+	"ranet3.com/pkgs/ranet3/internal/babel"
+	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/registry"
+	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 // writable builds a node with all three subsystems configured, so a test below
@@ -334,10 +334,10 @@ func TestReloadUsesThePathTheDaemonWasStartedWith(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "never told") {
 		t.Errorf("the refusal reads %q", err)
 	}
-	c.SetConfigPath("/nonexistent/ranet-lite.toml")
+	c.SetConfigPath("/nonexistent/ranet3.toml")
 	if _, err := c.Reload(); err == nil {
 		t.Error("a reload of a file that does not exist reported success")
-	} else if !strings.Contains(err.Error(), "/nonexistent/ranet-lite.toml") {
+	} else if !strings.Contains(err.Error(), "/nonexistent/ranet3.toml") {
 		t.Errorf("the failure reads %q, want it to name the file it read", err)
 	}
 }

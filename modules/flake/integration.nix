@@ -11,7 +11,7 @@
           import ../../integration/nixos-test.nix (
             {
               inherit pkgs;
-              ranetLite = config.packages.default;
+              ranet3 = config.packages.default;
             }
             // args
           )

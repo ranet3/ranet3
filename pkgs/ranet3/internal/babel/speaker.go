@@ -40,7 +40,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NickCao/ranet-lite/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 var multicastGroup = netip.MustParseAddr("ff02::1:6")

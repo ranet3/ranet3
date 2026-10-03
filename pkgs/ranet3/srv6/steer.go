@@ -5,8 +5,8 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/NickCao/ranet-lite/sadr"
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/sadr"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // This file is the sending half of steering: which of this node's own packets

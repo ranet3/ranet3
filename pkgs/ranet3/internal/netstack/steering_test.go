@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/schema"
-	"github.com/NickCao/ranet-lite/srv6"
 	"golang.zx2c4.com/wireguard/tun"
+	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 // Steering happens before the route lookup, so a steered packet goes to the

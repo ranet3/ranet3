@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NickCao/ranet-lite/transport"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // Identity is one ASN1_DN name, the only identity type this profile uses.
@@ -437,7 +437,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 }
 
 // buildSAInitResponse mirrors the initiator's IKE_SA_INIT, including the
-// deliberately wrong NAT_DETECTION_SOURCE_IP. ranet-lite's transport accepts
+// deliberately wrong NAT_DETECTION_SOURCE_IP. ranet3's transport accepts
 // UDP-encapsulated ESP only, so the initiator has to conclude that we are
 // behind a NAT; hashing a random address guarantees the mismatch that makes
 // it, exactly as strongSwan's own force_encap does (ike_natd.c).

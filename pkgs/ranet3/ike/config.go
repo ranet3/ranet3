@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // Crypto is the cap.crypto capability, parsed straight out of the file: how

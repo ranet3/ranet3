@@ -1,9 +1,9 @@
 {
   pkgs,
-  ranetLite,
+  ranet3,
   cores ? 1,
   profile ? false,
-  # responder inverts the exchange: strongSwan dials and ranet-lite answers,
+  # responder inverts the exchange: strongSwan dials and ranet3 answers,
   # which is the direction upstream could not do at all.
   responder ? false,
   # kernel turns on the route reconciler, so the routes babel learns from BIRD
@@ -67,15 +67,15 @@ in
 {
   name =
     if responder then
-      "ranet-lite-responder"
+      "ranet3-responder"
     else if kernel then
-      "ranet-lite-kernel"
+      "ranet3-kernel"
     else if segments then
-      "ranet-lite-segments"
+      "ranet3-segments"
     else if egress then
-      "ranet-lite-egress"
+      "ranet3-egress"
     else
-      "ranet-lite-integration";
+      "ranet3-integration";
 
   nodes = {
     gateway =
@@ -316,7 +316,7 @@ in
             curl
             iperf3
             iproute2
-            ranetLite
+            ranet3
           ]
           # nft reads back what this tree wrote through netlink, and jq asks
           # the control socket a question the shell cannot.
@@ -367,8 +367,8 @@ in
         };
 
         environment.etc = {
-          "ranet-lite/key.pem".source = ./org-key.pem;
-          "ranet-lite/registry.json".text = builtins.toJSON [
+          "ranet3/key.pem".source = ./org-key.pem;
+          "ranet3/registry.json".text = builtins.toJSON [
             {
               public_key = publicKey;
               organization = "testorg";
@@ -403,13 +403,13 @@ in
           # Written in the capability schema, and in flow style wherever an
           # optional block is interpolated: nix strips a nested string's own
           # indentation, so a multi-line block would land back at column zero.
-          "ranet-lite/config.yaml".text = ''
+          "ranet3/config.yaml".text = ''
             node:
               org: testorg
               name: client
             auth:
-              key: /etc/ranet-lite/key.pem
-              trust: /etc/ranet-lite/registry.json
+              key: /etc/ranet3/key.pem
+              trust: /etc/ranet3/registry.json
             link:
               port: 14000
               endpoints: [{ serial: "2", family: ip4 }]
@@ -445,14 +445,14 @@ in
           '';
         };
 
-        systemd.services.ranet-lite = {
-          description = "Ranet-lite integration-test client";
+        systemd.services.ranet3 = {
+          description = "Ranet3 integration-test client";
           wantedBy = [ "multi-user.target" ];
           wants = [ "network-online.target" ];
           after = [ "network-online.target" ];
           serviceConfig = {
             ExecStart =
-              "${ranetLite}/bin/ranet-lite daemon --config /etc/ranet-lite/config.yaml --log-level debug --metrics 127.0.0.1:9669"
+              "${ranet3}/bin/ranet3 daemon --config /etc/ranet3/config.yaml --log-level debug --metrics 127.0.0.1:9669"
               + pkgs.lib.optionalString profile " --pprof 127.0.0.1:6060";
             TimeoutStopSec = "15s";
             Restart = "on-failure";
@@ -524,7 +524,7 @@ in
         gateway.wait_for_unit("systemd-networkd-wait-online.service")
         gateway.wait_for_unit("strongswan-swanctl.service")
         gateway.wait_for_unit("bird.service")
-        client.wait_for_unit("ranet-lite.service")
+        client.wait_for_unit("ranet3.service")
 
         # The unsteered path first, so a failure below is the segment rather
         # than the mesh.
@@ -570,7 +570,7 @@ in
         # And the kernel took the header off.
         assert bare_inner(carried), f"the kernel did not decapsulate this tree's header:\n{carried}"
 
-        status = json.loads(client.succeed("ranet-lite status --json"))
+        status = json.loads(client.succeed("ranet3 status --json"))
         print(json.dumps(status["segment_counters"], indent=2))
         assert status["segment_counters"]["steered"] > 0, "nothing was steered"
         assert status["segment_counters"]["unsteered"] == 0, "a packet could not be steered"
@@ -595,12 +595,12 @@ in
         )
         print(gateway.succeed("ip -6 route show ${clientBehind}/128"))
 
-        before = json.loads(client.succeed("ranet-lite status --json"))["segment_counters"]
+        before = json.loads(client.succeed("ranet3 status --json"))["segment_counters"]
         gateway.wait_until_succeeds(
             "ping -c 1 -W 2 -I ${gatewayTunnel} ${clientBehind}", timeout=timeout
         )
         gateway.succeed("ping -c 3 -i 0.3 -W 2 -I ${gatewayTunnel} ${clientBehind}")
-        status = json.loads(client.succeed("ranet-lite status --json"))
+        status = json.loads(client.succeed("ranet3 status --json"))
         after = status["segment_counters"]
         print(json.dumps(after, indent=2))
         assert after["delivered"] > before["delivered"], (
@@ -629,7 +629,7 @@ in
             # waits for the addresses themselves.
             for address in ["${behindV4}", "${behindV6}"]:
                 behind.wait_until_succeeds(f"ip addr show dev eth1 | grep -qF {address}", timeout=timeout)
-            client.wait_for_unit("ranet-lite.service")
+            client.wait_for_unit("ranet3.service")
 
             # The mesh first, so a failure below is the exit rather than the tunnel.
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
@@ -637,9 +637,9 @@ in
             # Only this tree's own tables exist, and only in the families it was
             # asked for. Anything else here would be a rule written outside what
             # the ownership rules allow.
-            client.wait_until_succeeds("nft list table ip ranet-lite", timeout=timeout)
+            client.wait_until_succeeds("nft list table ip ranet3", timeout=timeout)
             tables = sorted(t for t in client.succeed("nft list tables").splitlines() if t.strip())
-            assert tables == ["table ip ranet-lite", "table ip6 ranet-lite"], tables
+            assert tables == ["table ip ranet3", "table ip6 ranet3"], tables
             ruleset = client.succeed("nft list ruleset")
             print(ruleset)
             for want in ["chain postrouting", "type nat hook postrouting", "masquerade",
@@ -685,7 +685,7 @@ in
                 assert source not in capture, (
                     f"the mesh address reached the far side untranslated:\n{capture}")
 
-            status = json.loads(client.succeed("ranet-lite status --json"))["egress"]
+            status = json.loads(client.succeed("ranet3 status --json"))["egress"]
             print(json.dumps(status, indent=2))
             assert status["enabled"], status
             assert status["installed"] == 2, status
@@ -694,9 +694,9 @@ in
             assert not status.get("err"), status
             metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics")
             for want in [
-                'ranet_lite_egress_prefixes{state="advertised"} 2',
-                'ranet_lite_egress_prefixes{state="announced"} 2',
-                "ranet_lite_egress_pass_failed 0",
+                'ranet3_egress_prefixes{state="advertised"} 2',
+                'ranet3_egress_prefixes{state="announced"} 2',
+                "ranet3_egress_pass_failed 0",
             ]:
                 assert want in metrics, f"the scrape does not carry {want}:\n{metrics}"
 
@@ -704,7 +704,7 @@ in
             # is the proof that the spelling the host hands back is the one this
             # node wrote. Many sweeps have run by now.
             installs = client.succeed(
-                "journalctl -u ranet-lite.service --no-pager | grep -c 'egress rules installed'").strip()
+                "journalctl -u ranet3.service --no-pager | grep -c 'egress rules installed'").strip()
             assert installs == "1", f"the ruleset was rewritten {installs} times, so a pass does not recognize its own rules"
 
             # An exit that cannot forward must stop advertising rather than
@@ -713,24 +713,24 @@ in
             # forward one family and not the other.
             client.succeed("sysctl -w net.ipv4.ip_forward=0")
             client.wait_until_succeeds(
-                "ranet-lite status --json | jq -e '.egress.announced == [\"${exitNetV6}\"]'", timeout=timeout)
+                "ranet3 status --json | jq -e '.egress.announced == [\"${exitNetV6}\"]'", timeout=timeout)
             gateway.wait_until_fails("ip -4 route show ${exitNetV4} | grep -q swan0", timeout=timeout)
             client.succeed("sysctl -w net.ipv4.ip_forward=1")
             client.wait_until_succeeds(
-                "ranet-lite status --json | jq -e '.egress.announced | length == 2'", timeout=timeout)
+                "ranet3 status --json | jq -e '.egress.announced | length == 2'", timeout=timeout)
             gateway.wait_until_succeeds("ip -4 route show ${exitNetV4} | grep -q swan0", timeout=timeout)
 
             # Shutdown takes the tables with it. A rule left behind would go on
             # translating for a process that is no longer running.
-            client.succeed("systemctl stop ranet-lite.service")
-            assert client.succeed("systemctl show -p Result --value ranet-lite.service").strip() == "success"
+            client.succeed("systemctl stop ranet3.service")
+            assert client.succeed("systemctl show -p Result --value ranet3.service").strip() == "success"
             left = client.succeed("nft list tables").strip()
             assert left == "", f"shutdown left tables behind: {left}"
 
             # And a restart installs them again, so the withdrawal above was a
             # shutdown rather than a failure to write.
-            client.succeed("systemctl start ranet-lite.service")
-            client.wait_until_succeeds("nft list table ip ranet-lite", timeout=timeout)
+            client.succeed("systemctl start ranet3.service")
+            client.wait_until_succeeds("nft list table ip ranet3", timeout=timeout)
         finally:
             print(client.execute("nft list ruleset")[1])
             print(client.execute("ip -4 rule show")[1])
@@ -738,14 +738,14 @@ in
             print(gateway.execute("birdc show route")[1])
       '';
 
-      # strongSwan answers, ranet-lite dials: upstream's original exchange.
+      # strongSwan answers, ranet3 dials: upstream's original exchange.
       initiator = ''
         try:
             gateway.wait_for_unit("systemd-networkd-wait-online.service")
             gateway.wait_for_unit("strongswan-swanctl.service")
             gateway.wait_for_unit("bird.service")
             gateway.wait_for_unit("iperf3.service")
-            client.wait_for_unit("ranet-lite.service")
+            client.wait_for_unit("ranet3.service")
 
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnelV4}", timeout=timeout)
@@ -756,7 +756,7 @@ in
             peer_rekey = journal_after(gateway, "strongswan-swanctl.service")
             print(gateway.succeed("swanctl --rekey --ike ranet"))
             gateway.wait_until_succeeds(f"{peer_rekey} | grep -E 'IKE_SA ranet.* rekeyed between'", timeout=timeout)
-            local_rekeys = journal_after(client, "ranet-lite.service")
+            local_rekeys = journal_after(client, "ranet3.service")
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
 
             profile = ${if profile then "True" else "False"}
@@ -771,7 +771,7 @@ in
             for direction, flags in [("outbound", ""), ("inbound", "--reverse"), ("bidir", "--bidir")]:
                 if profile:
                     client.succeed(f"systemd-run --unit=ranet-{direction}-profile --collect curl --silent --show-error 'http://127.0.0.1:6060/debug/pprof/profile?seconds=20' --output /tmp/{direction}.pprof")
-                    pid = client.succeed("systemctl show -p MainPID --value ranet-lite.service").strip()
+                    pid = client.succeed("systemctl show -p MainPID --value ranet3.service").strip()
                     client.succeed(f"systemd-run --unit=ranet-{direction}-kernel-profile --collect perf record -e cpu-clock:k -F 199 -g -p {pid} -o /tmp/{direction}.perf -- sleep 20")
                 # iperf3's server closes and reopens its listening socket between
                 # tests, so a client that connects in that window is refused.
@@ -797,7 +797,7 @@ in
 
             # A graceful BIRD stop retracts routes, then fresh announcements restore
             # them without reconnecting IKE. Check the client publication as well as IP.
-            withdrawal = journal_after(client, "ranet-lite.service")
+            withdrawal = journal_after(client, "ranet3.service")
             gateway.succeed("systemctl stop bird.service")
             client.wait_until_succeeds(f"{withdrawal} | grep -F 'babel route retracted'", timeout=timeout)
             gateway.succeed("systemctl start bird.service")
@@ -821,45 +821,45 @@ in
                 assert "10.99.0.0/24" not in leaked, leaked
             # The endpoint that replaces prometheus-bird-exporter has to report a
             # live neighbor and a selected route, not just answer.
-            client.wait_until_succeeds("curl -sf http://127.0.0.1:9669/metrics | grep -q '^ranet_lite_babel_neighbor_up{.*} 1$'", timeout=timeout)
+            client.wait_until_succeeds("curl -sf http://127.0.0.1:9669/metrics | grep -q '^ranet3_babel_neighbor_up{.*} 1$'", timeout=timeout)
             metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics")
             print(metrics)
-            assert "ranet_lite_sessions 1" in metrics, metrics
-            assert "ranet_lite_babel_routes_originated 2" in metrics, metrics
-            selected = [line for line in metrics.splitlines() if line.startswith("ranet_lite_babel_routes_selected ")]
+            assert "ranet3_sessions 1" in metrics, metrics
+            assert "ranet3_babel_routes_originated 2" in metrics, metrics
+            selected = [line for line in metrics.splitlines() if line.startswith("ranet3_babel_routes_selected ")]
             assert selected and int(selected[0].split()[1]) > 0, metrics
 
-            assert client.succeed("journalctl -u ranet-lite.service --no-pager | grep -c ': connected (SPI'").strip() == "1"
-            client.fail("journalctl -u ranet-lite.service --no-pager | grep -F 'no matching inbound ESP SA'")
+            assert client.succeed("journalctl -u ranet3.service --no-pager | grep -c ': connected (SPI'").strip() == "1"
+            client.fail("journalctl -u ranet3.service --no-pager | grep -F 'no matching inbound ESP SA'")
             gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built'")
 
             # Closing an idle TUN read must stop promptly without SIGKILL.
-            client.succeed("systemctl stop ranet-lite.service")
-            assert client.succeed("systemctl show -p Result --value ranet-lite.service").strip() == "success"
+            client.succeed("systemctl stop ranet3.service")
+            assert client.succeed("systemctl show -p Result --value ranet3.service").strip() == "success"
             if kernel_enabled:
                 # Shutdown withdraws what it installed rather than leaving it behind.
                 assert client.succeed(f"ip -4 route show table {kernel_table}").strip() == "", "ipv4 routes survived shutdown"
                 assert client.succeed(f"ip -6 route show table {kernel_table}").strip() == "", "ipv6 routes survived shutdown"
-            client.succeed("systemctl start ranet-lite.service")
+            client.succeed("systemctl start ranet3.service")
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
         finally:
             for command in ["swanctl --list-sas", "birdc show babel neighbors", "birdc show babel routes"]:
                 print(gateway.execute(command)[1])
       '';
 
-      # strongSwan dials, ranet-lite answers.
+      # strongSwan dials, ranet3 answers.
       responderScript = ''
         try:
             gateway.wait_for_unit("systemd-networkd-wait-online.service")
             gateway.wait_for_unit("strongswan-swanctl.service")
             gateway.wait_for_unit("bird.service")
-            client.wait_for_unit("ranet-lite.service")
+            client.wait_for_unit("ranet3.service")
 
-            # ranet-lite has no peers configured here, so it never dials. A tunnel
+            # ranet3 has no peers configured here, so it never dials. A tunnel
             # exists only if it answered strongSwan's IKE_SA_INIT.
-            client.fail("journalctl -u ranet-lite.service --no-pager | grep -F ': dialing '")
+            client.fail("journalctl -u ranet3.service --no-pager | grep -F ': dialing '")
             gateway.succeed("swanctl --initiate --child default")
-            client.wait_until_succeeds("journalctl -u ranet-lite.service --no-pager | grep -F ': connected (SPI'", timeout=timeout)
+            client.wait_until_succeeds("journalctl -u ranet3.service --no-pager | grep -F ': connected (SPI'", timeout=timeout)
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnelV4}", timeout=timeout)
 
@@ -874,18 +874,18 @@ in
             gateway.wait_until_succeeds(f"{peer_rekey} | grep -E 'IKE_SA ranet.* rekeyed between'", timeout=timeout)
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
 
-            client.fail("journalctl -u ranet-lite.service --no-pager | grep -F 'no matching inbound ESP SA'")
+            client.fail("journalctl -u ranet3.service --no-pager | grep -F 'no matching inbound ESP SA'")
             gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built'")
 
-            # Losing the answered SA has to be recoverable without ranet-lite ever
+            # Losing the answered SA has to be recoverable without ranet3 ever
             # dialing, so the responder accepts a second SA for a peer it already
             # knew. Drive the peer rather than waiting out its DPD timers: what is
             # under test is the responder, not how long charon takes to notice.
-            client.succeed("systemctl restart ranet-lite.service")
+            client.succeed("systemctl restart ranet3.service")
             gateway.execute("swanctl --terminate --ike ranet")
             gateway.wait_until_succeeds("swanctl --initiate --child default", timeout=timeout)
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
-            client.fail("journalctl -u ranet-lite.service --no-pager | grep -F ': dialing '")
+            client.fail("journalctl -u ranet3.service --no-pager | grep -F ': dialing '")
         finally:
             for command in [
                 "swanctl --list-sas",

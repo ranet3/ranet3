@@ -5,7 +5,7 @@ import (
 	"net/netip"
 	"sort"
 
-	"github.com/NickCao/ranet-lite/sadr"
+	"ranet3.com/pkgs/ranet3/sadr"
 )
 
 // RouteTable adds peer diagnostics to the shared SADR implementation. The

@@ -10,7 +10,7 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/NickCao/ranet-lite/ike"
+	"ranet3.com/pkgs/ranet3/ike"
 )
 
 func main() {

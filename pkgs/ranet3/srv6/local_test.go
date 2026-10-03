@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/netip"
 
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/schema"
 	"testing"
 )
 

@@ -53,7 +53,7 @@ func TestFirstSignalShutsDownAndTheSecondGivesUp(t *testing.T) {
 	}
 }
 
-// `ranet-lite daemon config.yaml`, one missing dash, otherwise starts against
+// `ranet3 daemon config.yaml`, one missing dash, otherwise starts against
 // the default path and reports nothing: the node comes up with a
 // configuration nobody asked for. An unreadable --log-level is the same shape.
 func TestDaemonRefusesWhatItCannotActOn(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/NickCao/ranet-lite/internal/config"
-	"github.com/NickCao/ranet-lite/internal/registry"
+	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/registry"
 )
 
 // validateRuntimeConfig refuses a configuration the trust document does not

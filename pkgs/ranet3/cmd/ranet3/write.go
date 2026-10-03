@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/NickCao/ranet-lite/control"
+	"ranet3.com/pkgs/ranet3/control"
 )
 
 // This file is the write half of the command tree: the verbs that act on a

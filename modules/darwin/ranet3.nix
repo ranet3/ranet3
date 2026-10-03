@@ -8,17 +8,17 @@
 }:
 
 let
-  cfg = config.services.ranet-lite;
+  cfg = config.networking.ranet3;
   format = pkgs.formats.toml { };
 in
 {
-  options.services.ranet-lite = {
-    enable = lib.mkEnableOption "the ranet-lite mesh daemon";
+  options.networking.ranet3 = {
+    enable = lib.mkEnableOption "the ranet3 mesh daemon";
 
     package = lib.mkOption {
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-      defaultText = lib.literalExpression "the ranet-lite package of the flake this module came from";
+      defaultText = lib.literalExpression "the ranet3 package of the flake this module came from";
       description = "The build this machine runs.";
     };
 
@@ -29,8 +29,8 @@ in
         {
           node = { org = "example"; name = "my-laptop"; };
           auth = {
-            key = "/var/lib/ranet-lite/key.pem";
-            trust = "/var/lib/ranet-lite/trust.json";
+            key = "/var/lib/ranet3/key.pem";
+            trust = "/var/lib/ranet3/trust.json";
           };
           link = { port = 13000; underlay.bind = true; };
         }
@@ -48,8 +48,8 @@ in
 
     configFile = lib.mkOption {
       type = lib.types.path;
-      default = format.generate "ranet-lite.toml" cfg.settings;
-      defaultText = lib.literalExpression "the file generated from services.ranet-lite.settings";
+      default = format.generate "ranet3.toml" cfg.settings;
+      defaultText = lib.literalExpression "the file generated from networking.ranet3.settings";
       description = ''
         The config file to run. Set this to a path outside the store to keep
         the file itself out of the nix store, in which case settings is unused.
@@ -84,7 +84,7 @@ in
 
     logFile = lib.mkOption {
       type = lib.types.path;
-      default = "/var/log/ranet-lite.log";
+      default = "/var/log/ranet3.log";
       description = ''
         Where launchd writes the daemon's output. There is no journal on this
         platform, and a daemon whose refusals go nowhere is one that looks
@@ -96,10 +96,10 @@ in
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ cfg.package ];
 
-    launchd.daemons.ranet-lite = {
+    launchd.daemons.ranet3 = {
       # creating a utun and writing the route table both need root, and the
       # group leaves the control socket readable without it. The daemon
-      # creates /var/run/ranet-lite itself, at a mode that group can enter,
+      # creates /var/run/ranet3 itself, at a mode that group can enter,
       # which is why nothing here makes the directory.
       script = ''
         exec ${lib.getExe cfg.package} daemon --config ${cfg.configFile} --log-level ${cfg.logLevel}

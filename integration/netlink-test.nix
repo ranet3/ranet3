@@ -9,7 +9,7 @@
   netlinkTests,
 }:
 {
-  name = "ranet-lite-netlink";
+  name = "ranet3-netlink";
 
   # The tests build their own namespaces, links, rules and tables, so the
   # machine needs nothing but a kernel, root, and iproute2 and nft to read the
@@ -27,7 +27,7 @@
     # anything under test has run, and the assertion below has to be about this
     # tool's own name rather than about the ruleset being empty.
     def foreign():
-        return [t for t in machine.succeed("nft list tables").splitlines() if "ranet-lite" not in t]
+        return [t for t in machine.succeed("nft list tables").splitlines() if "ranet3" not in t]
 
     before = foreign()
     print("the host's own tables:", before)
@@ -60,7 +60,7 @@
     assert "proto 155" not in machine.succeed("ip rule show; ip -6 rule show")
     machine.fail("ip link show mesh")
     tables = machine.succeed("nft list tables")
-    assert "ranet-lite" not in tables, f"a table outlived the namespace it was written in:\n{tables}"
+    assert "ranet3" not in tables, f"a table outlived the namespace it was written in:\n{tables}"
     # And nothing of the host's went with it: the tests write into a namespace
     # of their own, so the four tables the firewall had are still here.
     assert foreign() == before, f"the host's own tables changed under the tests: {before} then {foreign()}"

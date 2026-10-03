@@ -23,7 +23,7 @@
         namespace-profile = pkgs.testers.runNixOSTest (
           import ../../integration/nixos-performance.nix {
             inherit pkgs;
-            ranetLite = config.packages.default;
+            ranet3 = config.packages.default;
             benchmarkIperf = config.packages.iperf3-benchmark;
           }
         );

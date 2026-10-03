@@ -13,7 +13,7 @@ import (
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 
-	"github.com/NickCao/ranet-lite/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 )
 
 // recordedKernel is a machine with a routing table this package's tests write

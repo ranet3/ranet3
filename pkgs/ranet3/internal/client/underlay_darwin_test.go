@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/NickCao/ranet-lite/ike"
-	"github.com/NickCao/ranet-lite/transport"
+	"ranet3.com/pkgs/ranet3/ike"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // noLinks is a host with no default route, the state a laptop is in for the

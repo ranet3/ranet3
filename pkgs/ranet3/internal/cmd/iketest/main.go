@@ -16,7 +16,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/NickCao/ranet-lite/ike"
+	"ranet3.com/pkgs/ranet3/ike"
 )
 
 func loadPriv(path string) ed25519.PrivateKey {

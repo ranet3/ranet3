@@ -49,14 +49,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 const (
 	// TableName is the nftables table this package owns, and the whole of its
 	// ownership claim. It is the binary's own name so that an operator reading
 	// `nft list ruleset` on a shared host can tell at a glance who wrote it.
-	TableName = "ranet-lite"
+	TableName = "ranet3"
 	// ChainName is the one chain in that table, a nat postrouting base chain.
 	ChainName = "postrouting"
 	// DefaultSweep is the periodic pass a capability that names none takes.

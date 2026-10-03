@@ -26,7 +26,7 @@ import (
 // is the interface itself and not a next hop. A route out of our own utun that
 // this process did not install is adopted and withdrawn with the rest, which is
 // how a crashed instance's routes get cleaned up. That rests on one condition:
-// nothing else writes routes out of a utun ranet-lite created. Give it a device
+// nothing else writes routes out of a utun ranet3 created. Give it a device
 // no other daemon writes.
 //
 // The kernel's own entries for the interface are excluded by shape. An address
@@ -437,7 +437,7 @@ func (p *routePlatform) sourceIsOurs(source netip.Prefix) (bool, error) {
 
 // routeMessage encodes one RTM_ADD or RTM_DELETE. The gateway is the interface
 // itself, a sockaddr_dl carrying only its index, which
-// "route -interface" sends and the only thing ifa_ifwithnet reads: ranet-lite
+// "route -interface" sends and the only thing ifa_ifwithnet reads: ranet3
 // picks the peer after the kernel hands over the packet, so there is no next
 // hop to name.
 //

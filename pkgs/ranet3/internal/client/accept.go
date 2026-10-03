@@ -8,9 +8,9 @@ import (
 	"log"
 	"sync"
 
-	"github.com/NickCao/ranet-lite/control"
-	"github.com/NickCao/ranet-lite/ike"
-	"github.com/NickCao/ranet-lite/internal/registry"
+	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/ike"
+	"ranet3.com/pkgs/ranet3/internal/registry"
 )
 
 // acceptPeers answers peers that dial us, as a full mesh needs and
