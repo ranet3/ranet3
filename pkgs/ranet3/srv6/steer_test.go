@@ -112,6 +112,13 @@ func TestSteeringRefusesWhatWouldClaimItsOwnEncapsulation(t *testing.T) {
 		// Neither the entry nor the block names an outer source, so there is
 		// nothing to send the encapsulation from.
 		"no source at all": {From: sprefix("2001:db8::/32"), Via: []schema.Addr{saddr(exit)}},
+		// A selector that is set and is not a prefix, an address under a
+		// length it cannot carry, has no spelling, so no file can write the
+		// entry back. Read as left out, it steered on the other half alone.
+		"a destination that is not a prefix": {From: sprefix("0.0.0.0/1"),
+			To: schema.PrefixFrom(netip.PrefixFrom(addr("0.0.0.0"), 33)), Source: saddr(source), Via: []schema.Addr{saddr(exit)}},
+		"a source that is not a prefix": {From: schema.PrefixFrom(netip.PrefixFrom(addr("2001:db8::"), 200)),
+			To: sprefix("2001:db8::/32"), Source: saddr(source), Via: []schema.Addr{saddr(exit)}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NewSteerTable([]Steer{entry}, schema.Addr{}); err == nil {
