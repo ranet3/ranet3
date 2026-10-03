@@ -1,10 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
+//go:build linux || darwin
+
 // Package pbt holds the settings every property test in this module runs
 // under, so the engine is configured in one place and a property is written
 // against the same terms wherever it lives. Test files import it and nothing
 // else does, which keeps the property engine out of the daemon.
+//
+// The engine is a prebuilt library that purego opens at run time, and purego
+// does not build everywhere the daemon does: freebsd without cgo needs a
+// compiler flag, and openbsd it does not build on at all. The property tests
+// run on linux and darwin, the two platforms ranet3 supports, and this package
+// and every file that imports the engine or this package carry a build
+// constraint naming those two. go build and go vet over the whole tree then
+// work on the others.
 package pbt
 
 import (
