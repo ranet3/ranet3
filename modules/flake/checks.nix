@@ -91,7 +91,7 @@
             ''
               cd ${../../.}
               export DENO_DIR="$TMPDIR/deno"
-              deno fmt --check readme.md pkgs/ranet3/examples/config.json
+              deno fmt --check readme.md pkgs/ranet3-docs/pages pkgs/ranet3/examples/config.json
               # found rather than globbed, so a directory added under modules,
               # lib or pkgs cannot quietly drop out of the check. The count
               # tells a narrowed walk from a tree that lost files.
@@ -103,6 +103,15 @@
               fi
               nixfmt --check $files
               taplo format --check atelier.toml pkgs/ranet3/examples/*.toml pkgs/ranet3/gomod2nix.toml
+              touch "$out"
+            '';
+        # the pages keep the frontmatter every engine reads, and the site keeps
+        # a go-import the go command accepts
+        docs =
+          pkgs.runCommand "ranet3-docs-check"
+            { nativeBuildInputs = [ (pkgs.python3.withPackages (ps: [ ps.pyyaml ])) ]; }
+            ''
+              python3 ${../../pkgs/ranet3-docs/check.py} ${../../pkgs/ranet3-docs}
               touch "$out"
             '';
       }

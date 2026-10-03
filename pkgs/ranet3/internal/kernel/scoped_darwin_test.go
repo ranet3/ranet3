@@ -150,8 +150,8 @@ func TestDarwinScopedRouteSelection(t *testing.T) {
 
 // A prefix that covers a peer's own endpoint takes the ESP into the tun it is
 // carrying, and a default is not the only one that can: nothing bounds what a
-// mesh member announces, and the guarantee the readme and the fwmark refusal
-// both state rested on the destination's own length alone.
+// mesh member announces, and the guarantee the documentation and the fwmark
+// refusal both state rested on the destination's own length alone.
 func TestDarwinScopesARouteThatCoversTheUnderlay(t *testing.T) {
 	peer := netip.MustParseAddr("2001:db8:beef::1")
 	plat, _ := testPlatform(t, Table{}, Runtime{Underlay: func() []netip.Addr { return []netip.Addr{peer} }})

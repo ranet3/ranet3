@@ -439,7 +439,7 @@ type auditor interface {
 // What the rules express is portable even where the mechanism is not: keeping
 // the underlay out of the mesh, and sending traffic from an address into it.
 // Each backend reaches those its own way, and the ones that cannot take a rule
-// list say so. See the platform notes in readme.md.
+// list say so. See the platform notes in pkgs/ranet3-docs/pages/platforms.md.
 type ruler interface {
 	// Rules returns only the rules carrying this reconciler's protocol.
 	Rules() ([]Rule, error)

@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 Yifei Sun
+# SPDX-License-Identifier: CC-BY-4.0
+title: ranet3
+url: https://ranet3.com
+repository: https://github.com/ranet3/ranet3
+# every page carries these, the 404 page included, so the go command finds
+# the module whatever path it asks for
+metas:
+  go-import: ranet3.com git https://github.com/ranet3/ranet3
+  go-source: ranet3.com https://github.com/ranet3/ranet3 https://github.com/ranet3/ranet3/tree/master{/dir} https://github.com/ranet3/ranet3/blob/master{/dir}/{file}#L{line}
