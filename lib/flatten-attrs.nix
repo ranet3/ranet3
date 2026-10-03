@@ -13,10 +13,12 @@ let
       in
       if lib.isDerivation value then
         { ${path} = value; }
-      else if lib.isAttrs value && !(value ? __functor) then
+      else if lib.isFunction value then
+        { }
+      else if lib.isAttrs value then
         flatten path value
       else
-        { }
+        throw "flattenAttrs: ${path} is neither a derivation nor an attribute set"
     );
 in
 flatten ""
