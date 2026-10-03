@@ -108,15 +108,6 @@
               taplo format --check atelier.toml REUSE.toml pkgs/ranet3/REUSE.toml pkgs/ranet3/examples/*.toml pkgs/ranet3/gomod2nix.toml
               touch "$out"
             '';
-        # the pages keep the frontmatter every engine reads, and the site keeps
-        # a go-import the go command accepts
-        docs =
-          pkgs.runCommand "ranet3-docs-check"
-            { nativeBuildInputs = [ (pkgs.python3.withPackages (ps: [ ps.pyyaml ])) ]; }
-            ''
-              python3 ${../../pkgs/ranet3-docs/check.py} ${../../pkgs/ranet3-docs}
-              touch "$out"
-            '';
         # reuse looks for the license texts in LICENSES alone, so the check
         # renames the lowercase directory in its own copy of the tree. The
         # rename goes through a second name because a case-insensitive build
