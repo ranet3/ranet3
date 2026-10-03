@@ -113,6 +113,14 @@ func NewSteerTable(entries []Steer, source schema.Addr) (*SteerTable, error) {
 		if err := CheckPath(policy.Source, policy.Path); err != nil {
 			return nil, err
 		}
+		// Only a selector nobody wrote is left out. One that is set and is
+		// not a prefix has no spelling, so no file can write the entry back,
+		// and reading it as left out would steer on the other half alone.
+		for _, prefix := range [2]netip.Prefix{from, to} {
+			if prefix != (netip.Prefix{}) && !prefix.IsValid() {
+				return nil, fmt.Errorf("srv6: cap.segment steer %s carries a selector a file cannot spell", steerName(entry, &policy))
+			}
+		}
 		if !from.IsValid() && !to.IsValid() {
 			// Every packet this node sends is matched, the babel traffic that
 			// carries the mesh's own routing included, so the steering would
