@@ -609,6 +609,20 @@ func TestResponderTakesSlotBeforeKeyExchange(t *testing.T) {
 	if answer.Type != N_NO_PROPOSAL_CHOSEN {
 		t.Fatalf("an unacceptable offer drew notify %d, want NO_PROPOSAL_CHOSEN", answer.Type)
 	}
+	// The answer goes out before the handshake that sent it gives its slot
+	// back, and the fill below would take the last slot from under it. It
+	// waits for the release instead.
+	for deadline := time.Now().Add(answerBudget); ; time.Sleep(time.Millisecond) {
+		h.responder.mu.Lock()
+		held := h.responder.halfOpen
+		h.responder.mu.Unlock()
+		if held == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the responder still holds %d half-open slots after answering", held)
+		}
+	}
 
 	// Filled from enough distinct addresses that the global cap runs out
 	// rather than any one source's share.
