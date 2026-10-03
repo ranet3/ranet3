@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: FSL-1.1-ALv2
+
 // Package schema holds the scalar spellings a configuration file is written
 // in: a duration, a prefix, an address, a routing table and one announcement.
 // Every capability takes its fields from here, which fixes one spelling per

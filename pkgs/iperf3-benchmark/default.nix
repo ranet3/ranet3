@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Nick Cao
+# SPDX-FileCopyrightText: 2026 Yifei Sun
+# SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 { iperf3 }:
 
 # iperf 3.21's GRO receive uses MSG_DONTWAIT inside a worker loop that never

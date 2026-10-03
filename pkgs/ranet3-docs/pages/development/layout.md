@@ -33,6 +33,6 @@ Every directory under `pkgs/` with a `default.nix` is a package of the flake,
 named after the directory, so `pkgs/ranet3` builds as `packages.<system>.ranet3`
 and the default package.
 
-Every file names its license in SPDX lines at its top, or in a sidecar file of
-the same name ending in `.license` when it cannot carry a comment. `license.txt`
+Every file names its license in SPDX lines at its top, or in a `REUSE.toml` in
+its own directory or one above it when it cannot carry a comment. `license.txt`
 at the root says which license covers what.

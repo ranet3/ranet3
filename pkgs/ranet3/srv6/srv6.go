@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: FSL-1.1-ALv2
+
 // Package srv6 implements segment routing over IPv6 in userspace: the routing
 // header of [RFC 8754], H.Encaps of [RFC 8986] section 5.1, and the two
 // endpoint behaviors a mesh needs, End, a waypoint that forwards to the next

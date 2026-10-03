@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Nick Cao
+# SPDX-FileCopyrightText: 2026 Yifei Sun
+# SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 {
   description = "A mesh network with Babel routing over IKEv2 and userspace ESP";
 
@@ -20,6 +24,11 @@
           gomod2nix.overlays.default
           self.overlays.default
         ];
+        # FSL-1.1-ALv2 is unfree to nixpkgs. The flake's own instance allows
+        # this project's derivations by name, so nix run and both modules work
+        # with no configuration on the host.
+        nixpkgs.config.allowUnfreePredicate =
+          pkg: inputs.nixpkgs.lib.hasPrefix "ranet3" (inputs.nixpkgs.lib.getName pkg);
 
         parts.path = ./modules/flake;
       };

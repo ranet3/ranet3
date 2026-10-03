@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 // babeltest brings up the full client stack (IKE + ESP + TUN device)
 // against a real strongSwan responder, then runs the Babel speaker against
 // a real peer (e.g. BIRD) on the tunnel's link-local IPv6 address, and

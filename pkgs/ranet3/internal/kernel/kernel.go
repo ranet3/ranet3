@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: FSL-1.1-ALv2
+
 // Package kernel mirrors the mesh forwarding table into the host's routing
 // table, taking over from the BIRD kernel protocols a ranet deployment runs
 // today. It is a one-way reconciler: internal/netstack keeps owning the

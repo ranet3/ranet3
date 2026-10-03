@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 // Package packet validates the IP envelope shared by TUN intake and ESP
 // decapsulation. Transport checksums and extension headers remain the kernel's
 // responsibility, and neither path accepts a packet shorter than its own

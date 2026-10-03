@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Yifei Sun
+# SPDX-License-Identifier: FSL-1.1-ALv2
+
 # The same schema under the other decoder. A configuration file is read by the
 # extension it carries. A .toml file goes to the TOML parser, and .yaml, .yml
 # and .json go to the YAML one. The keys are identical under both, so a

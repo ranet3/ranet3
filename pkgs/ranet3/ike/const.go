@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 // Package ike is an IKEv2 initiator and responder in the minimal shape
 // [RFC 7815] describes, negotiating a tunnel-mode Child SA that
 // [ranet3.com/pkgs/ranet3/esp] then carries. It offers one set of

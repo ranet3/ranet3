@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-License-Identifier: MIT
+
 // esptest runs an IKEv2 handshake, then hand-builds one ICMP echo request
 // inside a raw IPv4 packet, ESP-seals it, and sends it to the strongSwan
 // responder's kernel XFRM stack directly. A successful, decryptable ICMP

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 // Package esp implements userspace ESP (RFC 4303) tunnel-mode AEAD
 // encapsulation/decapsulation for exactly the Child SA negotiated by
 // package ike: AES-GCM or ChaCha20-Poly1305, no ESN, one SA per direction.

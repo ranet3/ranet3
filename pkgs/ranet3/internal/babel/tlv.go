@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-License-Identifier: MIT
+
 package babel
 
 import (

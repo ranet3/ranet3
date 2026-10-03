@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 // Package transport shares one UDP socket between IKE control messages and
 // UDP-encapsulated ESP packets. IKE packets carry a four-byte non-ESP marker,
 // ESP packets are bare and begin with their nonzero inbound SPI. That rule is

@@ -1,21 +1,23 @@
-MIT License
+SPDX-FileCopyrightText: 2026 Yifei Sun
+SPDX-License-Identifier: CC-BY-4.0
 
-Copyright (c) 2026 Nick Cao
+ranet3's own work is licensed under the Functional Source License, Version
+1.1, ALv2 Future License (FSL-1.1-ALv2), copyright 2026 Yifei Sun. Each
+version becomes available under the Apache License, Version 2.0 on the second
+anniversary of the date it is made available.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+ranet3 began as a fork of ranet-lite by Nick Cao,
+https://github.com/NickCao/ranet-lite, copyright 2026 Nick Cao, licensed under
+the MIT License. The portions derived from it remain under the MIT License.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+The documentation under pkgs/ranet3-docs is licensed under the Creative
+Commons Attribution 4.0 International License (CC-BY-4.0).
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Every file names its license and its copyright holders in
+SPDX-License-Identifier and SPDX-FileCopyrightText lines at its top, or in a
+REUSE.toml in its own directory or one above it when it cannot carry a
+comment. The full texts are in licenses/:
+
+    licenses/FSL-1.1-ALv2.txt
+    licenses/MIT.txt
+    licenses/CC-BY-4.0.txt

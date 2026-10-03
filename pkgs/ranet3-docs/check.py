@@ -25,10 +25,14 @@ for page in pages:
         failures.append(f"{page}: no frontmatter")
         continue
     front = match.group(1)
+    # the patterns below spell out the tags they look for, which reuse would
+    # otherwise read as this file's own
+    # REUSE-IgnoreStart
     if not re.search(r"^# SPDX-FileCopyrightText: \d{4} .+$", front, re.M):
         failures.append(f"{page}: no SPDX-FileCopyrightText line in the frontmatter")
     if len(re.findall(r"^# SPDX-License-Identifier: .+$", front, re.M)) != 1:
         failures.append(f"{page}: want exactly one SPDX-License-Identifier line in the frontmatter")
+    # REUSE-IgnoreEnd
     fields = yaml.safe_load(front) or {}
     for key, (kind, words) in FIELDS.items():
         if not isinstance(fields.get(key), kind):

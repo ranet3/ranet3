@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: FSL-1.1-ALv2
+
 // Package version carries the build's own version string. The control surface
 // reports it so a fleet can be asked what it is running without reading a nix
 // store path off every node.

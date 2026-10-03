@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Nick Cao
+# SPDX-FileCopyrightText: 2026 Yifei Sun
+# SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 """Run only inside unshare --user --map-root-user --mount --net.
 
 The client and the peer communicate over a private veth pair. The peer owns a

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Yifei Sun
+# SPDX-License-Identifier: FSL-1.1-ALv2
+
 substituters = ["https://cache.ysun.co"]
 trusted-public-keys = [
   "cache.ysun.co-1:WxPYwT5g3kt9XhUhHPpNLZKI9HIOsVVAuqSHpok8Qt4=",
@@ -22,16 +25,18 @@ exclude = [
   "checks.aarch64-linux.gofmt",
   "checks.aarch64-linux.format",
   "checks.aarch64-linux.docs",
+  "checks.aarch64-linux.reuse",
   "checks.aarch64-linux.staticcheck",
   "checks.aarch64-linux.vet",
   "checks.aarch64-linux.cross",
-  # gofmt, the docs check and the prose, nix and toml formatter read one text
-  # on every platform, and the freebsd cross build is the same build from
-  # either host. vet and staticcheck stay on darwin: the build tags put 1200
-  # lines in front of them there that no linux run ever compiles.
+  # gofmt, the docs check, the reuse lint and the prose, nix and toml formatter
+  # read one text on every platform, and the freebsd cross build is the same
+  # build from either host. vet and staticcheck stay on darwin: the build tags
+  # put 1200 lines in front of them there that no linux run ever compiles.
   "checks.aarch64-darwin.gofmt",
   "checks.aarch64-darwin.format",
   "checks.aarch64-darwin.docs",
+  "checks.aarch64-darwin.reuse",
   "checks.aarch64-darwin.cross",
   "packages.*.integration-profile", # built on demand, not checked
   "packages.*.namespace-profile",

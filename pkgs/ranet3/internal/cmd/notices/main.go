@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: FSL-1.1-ALv2
+
 // Command notices writes internal/notices/third_party.md, the notice that has
 // to travel with a binary built from this tree.
 //
@@ -11,8 +14,10 @@
 // the link set, because one dependency's own test and tooling requirements
 // reach it, and nothing in that tail is distributed.
 //
-// The formatter runs this, and a check compares what it writes against what is
-// committed, so the file cannot drift from go.mod.
+// The formatter regenerates the file. A nix build has no module cache to read
+// license texts from, which rules out running this there, and the tests in
+// internal/notices hold the committed file instead: its sections against
+// go.mod and its first section against license.txt.
 package main
 
 import (
@@ -40,8 +45,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	own, err := os.ReadFile("license.txt")
+	if err != nil {
+		return fmt.Errorf("read this module's license: %w", err)
+	}
 	var out strings.Builder
 	out.WriteString(header)
+	fmt.Fprintf(&out, "\n## ranet3.com/pkgs/ranet3\n\nThis module's own license, from `license.txt`.\n\n```\n%s\n```\n",
+		strings.TrimRight(string(own), "\n"))
 	for _, m := range modules {
 		text, name, err := license(cache, m)
 		if err != nil {
@@ -50,18 +61,13 @@ func run() error {
 		fmt.Fprintf(&out, "\n## %s\n\n%s %s, from `%s`.\n\n```\n%s\n```\n",
 			m.path, m.path, m.version, name, strings.TrimRight(text, "\n"))
 	}
-	// A check writes somewhere else and compares, since the source a nix build
-	// sees is read only and the point is to prove the committed file matches.
 	path := filepath.Join("internal", "notices", "third_party.md")
-	if len(os.Args) > 1 {
-		path = os.Args[1]
-	}
 	return os.WriteFile(path, []byte(out.String()), 0o644)
 }
 
 const header = `# Third party notices
 
-Every module linked into a ranet3 binary, with the license it is under.
+Every module linked into a ranet3 binary, with the license it is under, this one first.
 ` + "`ranet3 licenses`" + ` prints this same text out of the binary.
 
 This file is generated. Run the formatter rather than editing it.
