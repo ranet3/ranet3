@@ -5,8 +5,6 @@
 }:
 
 let
-  root = ../..;
-
   # the commit this build came from, which tells two nodes apart between
   # releases: version.txt moves once per release and a fleet converts one node
   # at a time in between. A dirty tree has no revision to report.
@@ -16,37 +14,36 @@ buildGoApplication (
   lib.fix (finalAttrs: {
     meta.mainProgram = finalAttrs.pname;
     pname = "ranet-lite";
-    version = lib.fileContents (root + "/version.txt");
+    version = lib.fileContents ./version.txt;
 
     src =
       with lib.fileset;
       toSource {
-        inherit root;
+        root = ./.;
         fileset = unions [
           # code. This is an allow list, so a package promoted out of internal
           # has to be named here in the same commit that moves it, or the
           # sandbox builds a tree that cannot compile.
-          (root + "/cmd")
-          (root + "/control")
-          (root + "/esp")
-          (root + "/ike")
-          (root + "/internal")
-          (root + "/sadr")
-          (root + "/schema")
-          (root + "/srv6")
-          (root + "/transport")
+          ./cmd
+          ./control
+          ./esp
+          ./ike
+          ./internal
+          ./sadr
+          ./schema
+          ./srv6
+          ./transport
           # the example is parsed by a test, so it has to be in the source the
           # checks see or that test passes only outside the sandbox
-          (root + "/examples")
+          ./examples
           # meta
-          (root + "/go.mod")
-          (root + "/go.sum")
-          (root + "/gomod2nix.toml")
-          (root + "/version.txt")
+          ./go.mod
+          ./go.sum
+          ./version.txt
         ];
       };
 
-    modules = root + "/gomod2nix.toml";
+    modules = ./gomod2nix.toml;
 
     subPackages = [ "cmd/ranet-lite" ];
 
