@@ -32,10 +32,11 @@ var testOnly = []string{
 // named here, except the ones only tests use, and nothing may be named that
 // go.mod no longer requires at all.
 //
-// The check reads go.mod rather than asking the toolchain because a nix build
-// has neither a module cache nor an in-tree vendor directory, so `go list` and
-// go version -m both come back empty there and a check that used them would
-// pass by finding nothing.
+// The check reads go.mod rather than asking the toolchain. A nix build has no
+// module cache and builds from the vendor directory it links into the module
+// root, where `go list -m all` refuses to compute the module graph and go
+// version -m names no dependency of the binary it built. A check that asked
+// either would fail there or pass by finding nothing.
 func TestEveryDirectRequirementIsNoticed(t *testing.T) {
 	body, err := os.ReadFile("../../go.mod")
 	if err != nil {
