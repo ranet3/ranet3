@@ -52,7 +52,7 @@ in
       };
     };
 
-    system.activationScripts.postActivation.text = lib.mkIf cfg.openFirewall ''
+    system.activationScripts.extraActivation.text = lib.mkIf cfg.openFirewall ''
       ${socketfilterfw} --add ${lib.escapeShellArg ranet3}
       ${socketfilterfw} --unblockapp ${lib.escapeShellArg ranet3}
     '';
