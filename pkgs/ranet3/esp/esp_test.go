@@ -11,7 +11,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -117,6 +119,72 @@ func TestExhaustionIsReportedAsItsOwnError(t *testing.T) {
 	}
 	if got := called.Load(); got == 0 {
 		t.Error("a spent sequence space asked for no replacement")
+	}
+}
+
+// RFC 4303 section 3.3.3: "the sender MUST NOT send a packet on an SA if doing
+// so would cause the sequence number to cycle", and RFC 4106 section 3.1: "For
+// a given key, the IV MUST NOT repeat." A refused reservation used to move the
+// 64 bit counter anyway, so two counts of math.MaxInt carried it past 2^64, as
+// would enough refusals of the largest count once it was past the end, and
+// the space was handed out again from its start. Each case starts the counter
+// where the numbers up to it have been handed out.
+func TestRefusedReservationsCannotWrapTheSequenceSpace(t *testing.T) {
+	if strconv.IntSize < 64 {
+		t.Skip("an int count cannot exceed the sequence space on this platform")
+	}
+	space := uint64(math.MaxUint32)
+	largest := int(space)
+	for name, test := range map[string]struct {
+		start  uint64
+		counts []int
+	}{
+		"two numbers, two of math.MaxInt, then one":      {0, []int{2, math.MaxInt, math.MaxInt, 1}},
+		"one number, two of math.MaxInt, then two":       {0, []int{1, math.MaxInt, math.MaxInt, 1, 1}},
+		"just past the end, the largest count, then one": {space + 1, []int{largest, 1}},
+		"where the largest count wraps it, then one":     {math.MaxUint64 - space + 1, []int{largest, 1}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := NewOutbound(testChild(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var asked int
+			out.SetRekeyCallback(func() { asked++ })
+			out.seq.Store(test.start)
+			sent := map[uint32]bool{}
+			for i, count := range test.counts {
+				before, askedBefore := out.seq.Load(), asked
+				r, err := out.ReserveSequenceRange(count)
+				if before > space || uint64(count) > space {
+					if err == nil {
+						t.Errorf("reservation %d of %d numbers was granted with the counter at %d", i, count, before)
+					} else if after := out.seq.Load(); after != before {
+						t.Errorf("reservation %d of %d numbers was refused and moved the counter from %d to %d", i, count, before, after)
+					}
+					// an SA past the end will never send again, so its refusals
+					// are the asks that matter most
+					if before > space && asked == askedBefore {
+						t.Errorf("reservation %d found the counter past the end and asked for no replacement", i)
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatalf("reservation %d of %d numbers was refused: %v", i, count, err)
+				}
+				for range count {
+					packet, err := r.Seal(nil, NextHeaderIPv4)
+					if err != nil {
+						t.Fatalf("reservation %d of %d numbers would not seal: %v", i, count, err)
+					}
+					seq := binary.BigEndian.Uint32(packet[4:8])
+					if seq == 0 || uint64(seq) <= test.start || sent[seq] {
+						t.Fatalf("reservation %d handed out sequence %d, which is zero or was sent before", i, seq)
+					}
+					sent[seq] = true
+				}
+			}
+		})
 	}
 }
 
