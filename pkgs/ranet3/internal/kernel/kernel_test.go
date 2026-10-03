@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/internal/netstack"
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 func prefix(s string) netip.Prefix { return netip.MustParsePrefix(s) }
@@ -962,7 +962,7 @@ func TestPrefixesTheMeshCannotCarryAreNotInstalled(t *testing.T) {
 // ever removed again." Both platforms assign by upsert, so the same address
 // under a different prefix length rewrites an entry somebody else put there
 // and reports success. Recording that as owned takes it away at shutdown, and
-// ranet-lite attaches to a tun it did not necessarily create.
+// ranet3 attaches to a tun it did not necessarily create.
 func TestAddressAnotherWriterHoldsIsLeftAlone(t *testing.T) {
 	wanted := prefix("2001:db8::1/128")
 	r, _, kernel := harness(t, Table{Addresses: prefixes(wanted)})

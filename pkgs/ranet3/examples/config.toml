@@ -1,4 +1,4 @@
-# Example ranet-lite configuration, and the reference for every key it takes.
+# Example ranet3 configuration, and the reference for every key it takes.
 # See examples/config.yaml for the same schema under the other decoder: .toml
 # goes to the TOML parser, .yaml, .yml and .json to the YAML one, and the keys
 # are the same under both.
@@ -19,8 +19,8 @@ name = "my-laptop"
 [auth]
 # This node's own key, a PKCS8 PEM Ed25519 file, and the document saying who
 # may join, which is a ranet registry.json today.
-key = "/etc/ranet-lite/key.pem"
-trust = "/etc/ranet-lite/trust.json"
+key = "/etc/ranet3/key.pem"
+trust = "/etc/ranet3/trust.json"
 
 [link]
 port = 13000

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/control"
-	"github.com/NickCao/ranet-lite/internal/netstack"
-	"github.com/NickCao/ranet-lite/transport"
+	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // countingWriter counts writes rather than keeping them, the unit a report
@@ -90,9 +90,9 @@ func TestMetricsRendersWhatTheHubRefused(t *testing.T) {
 	var out strings.Builder
 	c.renderReceiveCounters(&out)
 	for _, want := range []string{
-		"# TYPE ranet_lite_receive_refused_total counter",
-		fmt.Sprintf("ranet_lite_receive_refused_total %d", hub.Refused()),
-		"ranet_lite_receive_dropped_total 0",
+		"# TYPE ranet3_receive_refused_total counter",
+		fmt.Sprintf("ranet3_receive_refused_total %d", hub.Refused()),
+		"ranet3_receive_dropped_total 0",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the scrape does not carry %q:\n%s", want, out.String())
@@ -110,16 +110,16 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 	var segments strings.Builder
 	c.renderSegmentCounters(&segments)
 	for _, want := range []string{
-		"# TYPE ranet_lite_segments_forwarded_total counter",
-		"ranet_lite_segments_delivered_total 0",
-		"ranet_lite_segments_dropped_total 0",
-		"ranet_lite_segments_answered_total 0",
-		"ranet_lite_steered_total 0",
+		"# TYPE ranet3_segments_forwarded_total counter",
+		"ranet3_segments_delivered_total 0",
+		"ranet3_segments_dropped_total 0",
+		"ranet3_segments_answered_total 0",
+		"ranet3_steered_total 0",
 		// The two ways this node's own steering loses a packet are one series
 		// with a reason, since an alert wants their sum and a reader wants
 		// which one.
-		`ranet_lite_steer_dropped_total{reason="too_large"} 0`,
-		`ranet_lite_steer_dropped_total{reason="no_route"} 0`,
+		`ranet3_steer_dropped_total{reason="too_large"} 0`,
+		`ranet3_steer_dropped_total{reason="no_route"} 0`,
 	} {
 		if !strings.Contains(segments.String(), want) {
 			t.Errorf("the scrape does not carry %q:\n%s", want, segments.String())
@@ -133,10 +133,10 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 	var kernel strings.Builder
 	c.renderKernel(&kernel)
 	for _, want := range []string{
-		"ranet_lite_kernel_routes_installed 150",
-		"ranet_lite_kernel_routes_skipped 8",
-		fmt.Sprintf("ranet_lite_kernel_pass_timestamp_seconds %d", pass.Unix()),
-		"ranet_lite_kernel_pass_failed 1",
+		"ranet3_kernel_routes_installed 150",
+		"ranet3_kernel_routes_skipped 8",
+		fmt.Sprintf("ranet3_kernel_pass_timestamp_seconds %d", pass.Unix()),
+		"ranet3_kernel_pass_failed 1",
 	} {
 		if !strings.Contains(kernel.String(), want) {
 			t.Errorf("the scrape does not carry %q:\n%s", want, kernel.String())
@@ -157,7 +157,7 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 	c.SetKernelStatus(func() control.KernelStatus { return control.KernelStatus{Enabled: true} })
 	var first strings.Builder
 	c.renderKernel(&first)
-	if !strings.Contains(first.String(), "ranet_lite_kernel_pass_timestamp_seconds 0") {
+	if !strings.Contains(first.String(), "ranet3_kernel_pass_timestamp_seconds 0") {
 		t.Errorf("before the first pass the scrape reads:\n%s", first.String())
 	}
 }
@@ -183,13 +183,13 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 	var out strings.Builder
 	c.renderEgress(&out)
 	for _, want := range []string{
-		"ranet_lite_egress_rules_installed 3",
-		`ranet_lite_egress_prefixes{state="advertised"} 2`,
-		`ranet_lite_egress_prefixes{state="announced"} 1`,
-		"ranet_lite_egress_flows_total 91",
-		"ranet_lite_egress_conflicts 1",
-		fmt.Sprintf("ranet_lite_egress_pass_timestamp_seconds %d", pass.Unix()),
-		"ranet_lite_egress_pass_failed 0",
+		"ranet3_egress_rules_installed 3",
+		`ranet3_egress_prefixes{state="advertised"} 2`,
+		`ranet3_egress_prefixes{state="announced"} 1`,
+		"ranet3_egress_flows_total 91",
+		"ranet3_egress_conflicts 1",
+		fmt.Sprintf("ranet3_egress_pass_timestamp_seconds %d", pass.Unix()),
+		"ranet3_egress_pass_failed 0",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the scrape does not carry %q:\n%s", want, out.String())

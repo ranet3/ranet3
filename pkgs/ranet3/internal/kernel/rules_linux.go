@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"net/netip"
 
-	"github.com/NickCao/ranet-lite/schema"
 	"golang.org/x/sys/unix"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // This file is the linux realization of policy routing and of the VRF the mesh

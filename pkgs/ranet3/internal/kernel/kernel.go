@@ -60,10 +60,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/NickCao/ranet-lite/internal/netstack"
-	"github.com/NickCao/ranet-lite/sadr"
-	"github.com/NickCao/ranet-lite/schema"
 	"go.yaml.in/yaml/v3"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/sadr"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 const (
@@ -1169,7 +1169,7 @@ func stopTimer(t *time.Timer) {
 //
 // The pass is recorded here rather than inside applyRoutes, so that what a
 // diagnostic reports is the error Run logged rather than one fifth of it: a
-// node whose rules or VRF fail on every pass would otherwise answer `ranet-lite
+// node whose rules or VRF fail on every pass would otherwise answer `ranet3
 // status` with a clean route count and no error at all. See
 // refuseWhatThePlatformLacks for why that particular silence is the expensive
 // one.
@@ -1704,7 +1704,7 @@ func (r *Reconciler) applyAddresses() error {
 		// different prefix length rewrites somebody else's entry and reports
 		// success. The reconciler would then record it as its own and take it
 		// away at shutdown, against the rule that only an address it added
-		// itself is ever removed. ranet-lite attaches to a tun it did not
+		// itself is ever removed. ranet3 attaches to a tun it did not
 		// necessarily create, so this is reachable without anything unusual.
 		if existing, taken := held[prefix.Addr()]; taken {
 			if !r.warnedAddrs[prefix] {

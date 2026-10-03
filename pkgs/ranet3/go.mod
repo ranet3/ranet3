@@ -1,4 +1,4 @@
-module github.com/NickCao/ranet-lite
+module ranet3.com/pkgs/ranet3
 
 go 1.26.3
 

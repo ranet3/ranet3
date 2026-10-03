@@ -17,7 +17,7 @@
       go =
         name: tools: command:
         config.packages.default.overrideAttrs (old: {
-          pname = "ranet-lite-${name}";
+          pname = "ranet3-${name}";
           nativeBuildInputs = old.nativeBuildInputs ++ tools;
           buildPhase = ''
             export HOME="$TMPDIR"
@@ -32,7 +32,7 @@
       # the internal/kernel and internal/egress test binaries, to be run as
       # root in a vm where the netlink round trips they hold are not skipped
       netlinkTests = config.packages.default.overrideAttrs (_: {
-        pname = "ranet-lite-netlink-tests";
+        pname = "ranet3-netlink-tests";
         buildPhase = ''
           export HOME="$TMPDIR"
           go test -c -o netlink-tests ./internal/kernel/
@@ -54,7 +54,7 @@
           {
             nixpkgs.hostPlatform = system;
             system.stateVersion = lib.trivial.release;
-            services.ranet-lite = {
+            networking.ranet3 = {
               enable = true;
               settings.node = {
                 org = "example";
@@ -80,7 +80,7 @@
         # the formatter rewrites markdown, nix and toml, so without these
         # only its go half is ever checked
         format =
-          pkgs.runCommand "ranet-lite-format"
+          pkgs.runCommand "ranet3-format"
             {
               nativeBuildInputs = [
                 pkgs.deno
@@ -116,14 +116,14 @@
         netlink = pkgs.testers.runNixOSTest (
           import ../../integration/netlink-test.nix { inherit pkgs netlinkTests; }
         );
-        nixos-module = pkgs.runCommand "ranet-lite-nixos-module" { } ''
-          unit="${node.config.systemd.units."ranet-lite.service".unit}/ranet-lite.service"
+        nixos-module = pkgs.runCommand "ranet3-nixos-module" { } ''
+          unit="${node.config.systemd.units."ranet3.service".unit}/ranet3.service"
           grep -qF 'ExecStart=${lib.getExe config.packages.default} daemon --config ' "$unit"
           # the runtime directory is where the control socket is bound and the
           # group is who may then read it, so a typo in either leaves a node
           # nobody can ask anything or one anybody can
-          grep -qF 'RuntimeDirectory=ranet-lite' "$unit"
-          grep -qF 'Group=ranet-lite' "$unit"
+          grep -qF 'RuntimeDirectory=ranet3' "$unit"
+          grep -qF 'Group=ranet3' "$unit"
           touch "$out"
         '';
       };

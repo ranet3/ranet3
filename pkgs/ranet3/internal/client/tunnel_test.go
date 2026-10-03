@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/esp"
-	"github.com/NickCao/ranet-lite/transport"
+	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 func tunnelChild(id uint32) esp.ChildSA {

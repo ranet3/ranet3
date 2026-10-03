@@ -3,7 +3,7 @@
 
 The client and the peer communicate over a private veth pair. The peer owns a
 second network namespace and is either a Linux/strongSwan gateway or, under
---peer ranet-lite, a second ranet-lite instance answering as a responder. No
+--peer ranet3, a second ranet3 instance answering as a responder. No
 host interfaces or services are modified. Logs and profiles remain in --output
 after processes exit.
 """
@@ -39,12 +39,12 @@ parser.add_argument(
     type=int,
     default=4096,
     help="anti-replay window for every instance in the run, strongSwan and "
-    "ranet-lite alike, so a value other than the default still compares the "
+    "ranet3 alike, so a value other than the default still compares the "
     "two arms at the same window rather than one against the other's default",
 )
 parser.add_argument("--affinity")
 parser.add_argument(
-    "--peer", choices=["strongswan", "ranet-lite"], default="strongswan"
+    "--peer", choices=["strongswan", "ranet3"], default="strongswan"
 )
 parser.add_argument("--peer-affinity")
 parser.add_argument("--peer-cores", type=int)
@@ -55,7 +55,7 @@ parser.add_argument(
 )
 parser.add_argument("--client-port", type=int, default=20000)
 args = parser.parse_args()
-ranet_peer = args.peer == "ranet-lite"
+ranet_peer = args.peer == "ranet3"
 
 
 def cpu_list(spec):
@@ -77,7 +77,7 @@ if args.cores < 1 or args.duration < 1 or args.streams < 1 or args.rate < 0:
         "cores, duration, and streams must be positive; rate must be nonnegative"
     )
 if not ranet_peer and (args.peer_affinity or args.peer_cores):
-    parser.error("--peer-affinity and --peer-cores require --peer ranet-lite")
+    parser.error("--peer-affinity and --peer-cores require --peer ranet3")
 if args.peer_cores is not None and args.peer_cores < 1:
     parser.error("peer-cores must be positive")
 specs = {
@@ -275,10 +275,10 @@ def sample(text, metric):
 def babel_state(text):
     # The four numbers that separate a converged mesh from a degraded one.
     return {
-        "sessions": sample(text, "ranet_lite_sessions"),
-        "neighbors": sample(text, "ranet_lite_babel_neighbor_up"),
-        "routes_selected": sample(text, "ranet_lite_babel_routes_selected"),
-        "routes_originated": sample(text, "ranet_lite_babel_routes_originated"),
+        "sessions": sample(text, "ranet3_sessions"),
+        "neighbors": sample(text, "ranet3_babel_neighbor_up"),
+        "routes_selected": sample(text, "ranet3_babel_routes_selected"),
+        "routes_originated": sample(text, "ranet3_babel_routes_originated"),
     }
 
 
@@ -404,7 +404,7 @@ try:
         ["ip", "addr", "add", "10.201.0.2/30", "dev", "manage1"],
         ["ip", "link", "set", "manage1", "up"],
     ]
-    # swan0 is strongSwan's half of the tunnel. A ranet-lite peer terminates
+    # swan0 is strongSwan's half of the tunnel. A ranet3 peer terminates
     # ESP in userspace and creates its own TUN instead.
     swan_links = [
         ["ip", "link", "add", "swan0", "type", "xfrm", "dev", "gateway0", "if_id", "1"],
@@ -741,8 +741,8 @@ cap:
                 live[name] = {
                     metric: sample(text, metric)
                     for metric in [
-                        "ranet_lite_sessions",
-                        "ranet_lite_babel_neighbor_up",
+                        "ranet3_sessions",
+                        "ranet3_babel_neighbor_up",
                     ]
                 }
             return all(
@@ -821,13 +821,13 @@ cap:
         )
     # Both arms, not only the two-instance one. The client exports metrics
     # either way, and a strongSwan run that ended with no session or with ESP
-    # drops is exactly as unusable as a ranet-lite one.
+    # drops is exactly as unusable as a ranet3 one.
     for name, _, metrics in instances:
         final = scrape(metrics)
         (args.output / ("final" + suffix(name) + "-metrics.txt")).write_text(final)
         report = {"instance": name} | babel_state(final)
         for counter in ["esp_inbound_packets", "esp_inbound_dropped"]:
-            metric = "ranet_lite_" + counter + "_total"
+            metric = "ranet3_" + counter + "_total"
             report[counter] = sample(final, metric) - sample(converged[name], metric)
         print(json.dumps(report), flush=True)
         # Each instance decrypts what the other sent, so a direction whose

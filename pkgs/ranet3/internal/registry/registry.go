@@ -1,5 +1,5 @@
 // Package registry reads ranet's own registry and key file formats
-// unchanged, so a ranet-lite deployment can point at the exact same
+// unchanged, so a ranet3 deployment can point at the exact same
 // registry.json and Ed25519 keys an existing ranet mesh already uses.
 // Schema mirrors github.com/NickCao/ranet's src/registry.rs field for
 // field (verified against its own test fixture, not guessed).

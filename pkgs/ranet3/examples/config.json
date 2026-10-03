@@ -1,8 +1,8 @@
 {
   "node": { "org": "example", "name": "my-laptop" },
   "auth": {
-    "key": "/etc/ranet-lite/key.pem",
-    "trust": "/etc/ranet-lite/trust.json"
+    "key": "/etc/ranet3/key.pem",
+    "trust": "/etc/ranet3/trust.json"
   },
   "link": {
     "port": 13000,

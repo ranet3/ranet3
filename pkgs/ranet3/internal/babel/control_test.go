@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 func routePacket(prefix netip.Prefix, routerID byte, metric, interval uint16) []byte {

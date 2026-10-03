@@ -19,7 +19,7 @@ import (
 // darwinNetTestEnv gates the only test in this package that speaks to the real
 // routing socket. It is off by default and stays off: the machine running the
 // suite is the laptop this backend was written for, and it is on the mesh.
-const darwinNetTestEnv = "RANET_LITE_DARWIN_NETTEST"
+const darwinNetTestEnv = "RANET3_DARWIN_NETTEST"
 
 // The prefixes this test is allowed to name, and the only ones it ever does.
 // RFC 5737 and RFC 3849 reserve both for documentation, so neither can collide

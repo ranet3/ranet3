@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/NickCao/ranet-lite/schema"
 	"go.yaml.in/yaml/v3"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // Segments is the cap.segment capability, parsed straight out of the file: the

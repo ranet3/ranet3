@@ -10,10 +10,10 @@ import (
 	"reflect"
 	"slices"
 
-	"github.com/NickCao/ranet-lite/internal/babel"
-	"github.com/NickCao/ranet-lite/internal/config"
-	"github.com/NickCao/ranet-lite/internal/egress"
-	"github.com/NickCao/ranet-lite/internal/registry"
+	"ranet3.com/pkgs/ranet3/internal/babel"
+	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/registry"
 )
 
 // peerPath names one dialer, and is the same name the session it establishes is

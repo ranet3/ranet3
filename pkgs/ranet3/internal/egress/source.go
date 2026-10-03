@@ -6,7 +6,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // Source is the address a translated packet leaves under, written either as

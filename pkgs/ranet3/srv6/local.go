@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // This file is the receiving half: the segments this node answers for, and

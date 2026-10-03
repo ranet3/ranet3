@@ -3,8 +3,8 @@
 package client
 
 import (
-	"github.com/NickCao/ranet-lite/internal/kernel"
-	"github.com/NickCao/ranet-lite/transport"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // underlayRuntime has nothing to open here. linux keeps its underlay out of

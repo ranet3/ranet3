@@ -20,8 +20,8 @@ node:
 # This node's own key, a PKCS8 PEM Ed25519 file, and the document saying who
 # may join, which is a ranet registry.json today.
 auth:
-  key: /etc/ranet-lite/key.pem
-  trust: /etc/ranet-lite/trust.json
+  key: /etc/ranet3/key.pem
+  trust: /etc/ranet3/trust.json
 
 # The one socket carrying IKE and ESP, and the device the mesh runs on.
 link:

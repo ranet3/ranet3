@@ -1,9 +1,9 @@
-// Command ranet-lite connects a real TUN device to a ranet mesh through
+// Command ranet3 connects a real TUN device to a ranet mesh through
 // userspace IKEv2/ESP and an embedded Babel speaker. Babel exchanges control
 // packets inside ESP. Address and route configuration are external unless the
 // file carries a cap.table block, which turns the route reconciler on.
 //
-// `ranet-lite daemon` is the node. Every other subcommand reads a running
+// `ranet3 daemon` is the node. Every other subcommand reads a running
 // one's control socket; see cli.go.
 package main
 
@@ -26,11 +26,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/NickCao/ranet-lite/control"
-	"github.com/NickCao/ranet-lite/internal/client"
-	"github.com/NickCao/ranet-lite/internal/config"
-	"github.com/NickCao/ranet-lite/internal/egress"
-	"github.com/NickCao/ranet-lite/internal/kernel"
+	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/client"
+	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 )
 
 // main runs the command tree and turns what it returns into a process status.
@@ -84,7 +84,7 @@ func daemonCommand() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&o.configPath, "config", "c", "/etc/ranet-lite/config.toml", "path to the ranet-lite config file, .toml, .yaml, .yml or .json")
+	f.StringVarP(&o.configPath, "config", "c", "/etc/ranet3/config.toml", "path to the ranet3 config file, .toml, .yaml, .yml or .json")
 	f.StringVar(&o.pprofAddr, "pprof", "", "if set, serve net/http/pprof on this address (e.g. 127.0.0.1:6060) for profiling, CPU at /debug/pprof/profile and flamegraph at go tool pprof -http=:8081 'http://<addr>/debug/pprof/profile?seconds=30'")
 	f.BoolVar(&o.contentionProfiles, "contention-profiles", false, "record every mutex and blocking event while pprof is enabled (high overhead)")
 	f.StringVar(&o.metricsAddr, "metrics", "", "if set, serve Prometheus metrics on this address (e.g. 127.0.0.1:9669) at /metrics")
@@ -98,7 +98,7 @@ func daemonCommand() *cobra.Command {
 // which --log-level warn and above drop, so every refusal below was a process
 // that exited 1 having written nothing at all.
 func refuseToStart(err error) int {
-	slog.Error("ranet-lite is not starting", "err", err)
+	slog.Error("ranet3 is not starting", "err", err)
 	return 1
 }
 

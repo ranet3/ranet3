@@ -14,7 +14,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // fakeBackend stands in for a kernel. Everything above the backend seam is

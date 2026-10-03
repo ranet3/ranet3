@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/NickCao/ranet-lite/control"
+	"ranet3.com/pkgs/ranet3/control"
 )
 
 // stubSource stands in for a running node, so the subcommands are exercised
@@ -38,7 +38,7 @@ func (stubSource) Peers() []control.Peer {
 }
 
 func (stubSource) Metrics(w io.Writer) {
-	io.WriteString(w, "ranet_lite_babel_routes_selected 15\n")
+	io.WriteString(w, "ranet3_babel_routes_selected 15\n")
 }
 
 // serveStub starts a control socket for one test and returns its path.
@@ -131,7 +131,7 @@ func TestMetricsComeOverTheControlSocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("metrics failed: %v", err)
 	}
-	if out != "ranet_lite_babel_routes_selected 15\n" {
+	if out != "ranet3_babel_routes_selected 15\n" {
 		t.Errorf("metrics printed %q, want the daemon's own scrape", out)
 	}
 }
@@ -220,7 +220,7 @@ func TestCompletionCoversEveryShell(t *testing.T) {
 			if err != nil {
 				t.Fatalf("completion %s failed: %v", shell, err)
 			}
-			if !strings.Contains(out, "ranet-lite") {
+			if !strings.Contains(out, "ranet3") {
 				t.Errorf("the %s script does not name the binary: %q", shell, out)
 			}
 		})

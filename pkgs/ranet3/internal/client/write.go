@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/NickCao/ranet-lite/control"
+	"ranet3.com/pkgs/ranet3/control"
 )
 
 // This file is the runtime's side of the control socket's write path: the four

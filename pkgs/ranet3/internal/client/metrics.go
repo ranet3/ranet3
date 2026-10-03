@@ -20,58 +20,58 @@ func (c *Client) Metrics(w io.Writer) {
 	babel := c.speaker.Stats()
 	sessions := c.sessions.paths()
 
-	fmt.Fprint(w, "# HELP ranet_lite_babel_neighbor_up Whether a babel neighbor is alive.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_babel_neighbor_up gauge\n")
+	fmt.Fprint(w, "# HELP ranet3_babel_neighbor_up Whether a babel neighbor is alive.\n")
+	fmt.Fprint(w, "# TYPE ranet3_babel_neighbor_up gauge\n")
 	for _, neighbor := range babel.Neighbors {
-		fmt.Fprintf(w, "ranet_lite_babel_neighbor_up{peer=\"%s\"} %d\n", label(neighbor.Peer), boolValue(neighbor.Alive))
+		fmt.Fprintf(w, "ranet3_babel_neighbor_up{peer=\"%s\"} %d\n", label(neighbor.Peer), boolValue(neighbor.Alive))
 	}
-	fmt.Fprint(w, "# HELP ranet_lite_babel_neighbor_cost Link cost to a babel neighbor, where 65535 is infinity.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_babel_neighbor_cost gauge\n")
+	fmt.Fprint(w, "# HELP ranet3_babel_neighbor_cost Link cost to a babel neighbor, where 65535 is infinity.\n")
+	fmt.Fprint(w, "# TYPE ranet3_babel_neighbor_cost gauge\n")
 	for _, neighbor := range babel.Neighbors {
-		fmt.Fprintf(w, "ranet_lite_babel_neighbor_cost{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Cost)
+		fmt.Fprintf(w, "ranet3_babel_neighbor_cost{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Cost)
 	}
-	fmt.Fprint(w, "# HELP ranet_lite_babel_routes_received Routes learned from one neighbor, selected or not.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_babel_routes_received gauge\n")
+	fmt.Fprint(w, "# HELP ranet3_babel_routes_received Routes learned from one neighbor, selected or not.\n")
+	fmt.Fprint(w, "# TYPE ranet3_babel_routes_received gauge\n")
 	for _, neighbor := range babel.Neighbors {
-		fmt.Fprintf(w, "ranet_lite_babel_routes_received{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Routes)
+		fmt.Fprintf(w, "ranet3_babel_routes_received{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Routes)
 	}
-	fmt.Fprint(w, "# HELP ranet_lite_peer_send_dropped_total Packets a peer did not send: no transmission slot free, the peer closing, or its outbound SA unable to give out a sequence range.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_peer_send_dropped_total counter\n")
+	fmt.Fprint(w, "# HELP ranet3_peer_send_dropped_total Packets a peer did not send: no transmission slot free, the peer closing, or its outbound SA unable to give out a sequence range.\n")
+	fmt.Fprint(w, "# TYPE ranet3_peer_send_dropped_total counter\n")
 	for _, neighbor := range babel.Neighbors {
-		fmt.Fprintf(w, "ranet_lite_peer_send_dropped_total{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Dropped)
+		fmt.Fprintf(w, "ranet3_peer_send_dropped_total{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Dropped)
 	}
-	fmt.Fprint(w, "# HELP ranet_lite_peer_send_failed_total Packets a peer sealed and the transport then lost.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_peer_send_failed_total counter\n")
+	fmt.Fprint(w, "# HELP ranet3_peer_send_failed_total Packets a peer sealed and the transport then lost.\n")
+	fmt.Fprint(w, "# TYPE ranet3_peer_send_failed_total counter\n")
 	for _, neighbor := range babel.Neighbors {
-		fmt.Fprintf(w, "ranet_lite_peer_send_failed_total{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.SendFailed)
+		fmt.Fprintf(w, "ranet3_peer_send_failed_total{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.SendFailed)
 	}
-	fmt.Fprint(w, "# HELP ranet_lite_babel_routes_selected Routes currently installed in the forwarding table.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_babel_routes_selected gauge\n")
-	fmt.Fprintf(w, "ranet_lite_babel_routes_selected %d\n", babel.Selected)
-	fmt.Fprint(w, "# HELP ranet_lite_babel_routes_originated Prefixes this node announces itself.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_babel_routes_originated gauge\n")
-	fmt.Fprintf(w, "ranet_lite_babel_routes_originated %d\n", babel.Originated)
+	fmt.Fprint(w, "# HELP ranet3_babel_routes_selected Routes currently installed in the forwarding table.\n")
+	fmt.Fprint(w, "# TYPE ranet3_babel_routes_selected gauge\n")
+	fmt.Fprintf(w, "ranet3_babel_routes_selected %d\n", babel.Selected)
+	fmt.Fprint(w, "# HELP ranet3_babel_routes_originated Prefixes this node announces itself.\n")
+	fmt.Fprint(w, "# TYPE ranet3_babel_routes_originated gauge\n")
+	fmt.Fprintf(w, "ranet3_babel_routes_originated %d\n", babel.Originated)
 
-	fmt.Fprint(w, "# HELP ranet_lite_session_up Whether an IKE session is established for one path.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_session_up gauge\n")
+	fmt.Fprint(w, "# HELP ranet3_session_up Whether an IKE session is established for one path.\n")
+	fmt.Fprint(w, "# TYPE ranet3_session_up gauge\n")
 	for _, path := range sessions {
-		fmt.Fprintf(w, "ranet_lite_session_up{path=\"%s\"} 1\n", label(path))
+		fmt.Fprintf(w, "ranet3_session_up{path=\"%s\"} 1\n", label(path))
 	}
-	fmt.Fprint(w, "# HELP ranet_lite_sessions Established IKE sessions.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_sessions gauge\n")
-	fmt.Fprintf(w, "ranet_lite_sessions %d\n", len(sessions))
+	fmt.Fprint(w, "# HELP ranet3_sessions Established IKE sessions.\n")
+	fmt.Fprint(w, "# TYPE ranet3_sessions gauge\n")
+	fmt.Fprintf(w, "ranet3_sessions %d\n", len(sessions))
 
 	// Authenticated and validated, which is not the same as delivered: the
 	// count includes babel control packets the speaker consumed, RFC 4303
 	// section 2.6 dummy packets that carry nothing, and packets a closing mesh
 	// discards. A dashboard already references the name, so the help text
 	// carries the qualification instead.
-	fmt.Fprint(w, "# HELP ranet_lite_esp_inbound_packets_total ESP packets that authenticated and passed validation, including babel control traffic and dummy packets.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_esp_inbound_packets_total counter\n")
-	fmt.Fprintf(w, "ranet_lite_esp_inbound_packets_total %d\n", c.inboundPackets.Load())
-	fmt.Fprint(w, "# HELP ranet_lite_esp_inbound_dropped_total ESP packets that failed to decrypt or validate.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_esp_inbound_dropped_total counter\n")
-	fmt.Fprintf(w, "ranet_lite_esp_inbound_dropped_total %d\n", c.inboundDropped.Load())
+	fmt.Fprint(w, "# HELP ranet3_esp_inbound_packets_total ESP packets that authenticated and passed validation, including babel control traffic and dummy packets.\n")
+	fmt.Fprint(w, "# TYPE ranet3_esp_inbound_packets_total counter\n")
+	fmt.Fprintf(w, "ranet3_esp_inbound_packets_total %d\n", c.inboundPackets.Load())
+	fmt.Fprint(w, "# HELP ranet3_esp_inbound_dropped_total ESP packets that failed to decrypt or validate.\n")
+	fmt.Fprint(w, "# TYPE ranet3_esp_inbound_dropped_total counter\n")
+	fmt.Fprintf(w, "ranet3_esp_inbound_dropped_total %d\n", c.inboundDropped.Load())
 
 	c.renderReceiveCounters(w)
 	c.renderSegmentCounters(w)
@@ -92,25 +92,25 @@ func (c *Client) renderEgress(w io.Writer) {
 	if !egress.Enabled {
 		return
 	}
-	fmt.Fprint(w, "# HELP ranet_lite_egress_rules_installed Source translation rules the host holds for this node as of its last pass.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_egress_rules_installed gauge\n")
-	fmt.Fprintf(w, "ranet_lite_egress_rules_installed %d\n", egress.Installed)
-	fmt.Fprint(w, "# HELP ranet_lite_egress_prefixes Prefixes this node offers to carry, and the ones it is announcing: announcing fewer is this node withholding a prefix whose rule is not installed or whose family the kernel will not forward.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_egress_prefixes gauge\n")
-	fmt.Fprintf(w, "ranet_lite_egress_prefixes{state=\"advertised\"} %d\n", len(egress.Advertise))
-	fmt.Fprintf(w, "ranet_lite_egress_prefixes{state=\"announced\"} %d\n", len(egress.Announced))
-	fmt.Fprint(w, "# HELP ranet_lite_egress_flows_total Connections the translation rules have rewritten. A nat chain is consulted once per connection, so this counts flows rather than packets.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_egress_flows_total counter\n")
-	fmt.Fprintf(w, "ranet_lite_egress_flows_total %d\n", egress.Flows)
-	fmt.Fprint(w, "# HELP ranet_lite_egress_conflicts Other source translation at the same hook, which the first chain to claim a connection keeps.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_egress_conflicts gauge\n")
-	fmt.Fprintf(w, "ranet_lite_egress_conflicts %d\n", len(egress.Conflicts))
-	fmt.Fprint(w, "# HELP ranet_lite_egress_pass_timestamp_seconds When the last pass finished, and zero before the first one has.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_egress_pass_timestamp_seconds gauge\n")
-	fmt.Fprintf(w, "ranet_lite_egress_pass_timestamp_seconds %d\n", unixOrZero(egress.PassAt))
-	fmt.Fprint(w, "# HELP ranet_lite_egress_pass_failed Whether the last pass reported an error.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_egress_pass_failed gauge\n")
-	fmt.Fprintf(w, "ranet_lite_egress_pass_failed %d\n", boolValue(egress.Err != ""))
+	fmt.Fprint(w, "# HELP ranet3_egress_rules_installed Source translation rules the host holds for this node as of its last pass.\n")
+	fmt.Fprint(w, "# TYPE ranet3_egress_rules_installed gauge\n")
+	fmt.Fprintf(w, "ranet3_egress_rules_installed %d\n", egress.Installed)
+	fmt.Fprint(w, "# HELP ranet3_egress_prefixes Prefixes this node offers to carry, and the ones it is announcing: announcing fewer is this node withholding a prefix whose rule is not installed or whose family the kernel will not forward.\n")
+	fmt.Fprint(w, "# TYPE ranet3_egress_prefixes gauge\n")
+	fmt.Fprintf(w, "ranet3_egress_prefixes{state=\"advertised\"} %d\n", len(egress.Advertise))
+	fmt.Fprintf(w, "ranet3_egress_prefixes{state=\"announced\"} %d\n", len(egress.Announced))
+	fmt.Fprint(w, "# HELP ranet3_egress_flows_total Connections the translation rules have rewritten. A nat chain is consulted once per connection, so this counts flows rather than packets.\n")
+	fmt.Fprint(w, "# TYPE ranet3_egress_flows_total counter\n")
+	fmt.Fprintf(w, "ranet3_egress_flows_total %d\n", egress.Flows)
+	fmt.Fprint(w, "# HELP ranet3_egress_conflicts Other source translation at the same hook, which the first chain to claim a connection keeps.\n")
+	fmt.Fprint(w, "# TYPE ranet3_egress_conflicts gauge\n")
+	fmt.Fprintf(w, "ranet3_egress_conflicts %d\n", len(egress.Conflicts))
+	fmt.Fprint(w, "# HELP ranet3_egress_pass_timestamp_seconds When the last pass finished, and zero before the first one has.\n")
+	fmt.Fprint(w, "# TYPE ranet3_egress_pass_timestamp_seconds gauge\n")
+	fmt.Fprintf(w, "ranet3_egress_pass_timestamp_seconds %d\n", unixOrZero(egress.PassAt))
+	fmt.Fprint(w, "# HELP ranet3_egress_pass_failed Whether the last pass reported an error.\n")
+	fmt.Fprint(w, "# TYPE ranet3_egress_pass_failed gauge\n")
+	fmt.Fprintf(w, "ranet3_egress_pass_failed %d\n", boolValue(egress.Err != ""))
 }
 
 // renderSegmentCounters writes the segment routing half. Nothing exported it
@@ -126,25 +126,25 @@ func (c *Client) renderEgress(w io.Writer) {
 // cannot reach.
 func (c *Client) renderSegmentCounters(w io.Writer) {
 	segments := c.Mesh.SegmentCounters()
-	fmt.Fprint(w, "# HELP ranet_lite_segments_forwarded_total Packets an End behavior sent on to their next segment.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_segments_forwarded_total counter\n")
-	fmt.Fprintf(w, "ranet_lite_segments_forwarded_total %d\n", segments.Forwarded)
-	fmt.Fprint(w, "# HELP ranet_lite_segments_delivered_total Packets an End.DT46 behavior took the outer header off and handed to the stack.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_segments_delivered_total counter\n")
-	fmt.Fprintf(w, "ranet_lite_segments_delivered_total %d\n", segments.Delivered)
-	fmt.Fprint(w, "# HELP ranet_lite_segments_dropped_total Packets addressed to one of this node's segments that it would not act on.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_segments_dropped_total counter\n")
-	fmt.Fprintf(w, "ranet_lite_segments_dropped_total %d\n", segments.Dropped)
-	fmt.Fprint(w, "# HELP ranet_lite_segments_answered_total ICMP errors sent for refused packets, which is the half of the dropped ones whose sender was told why.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_segments_answered_total counter\n")
-	fmt.Fprintf(w, "ranet_lite_segments_answered_total %d\n", segments.Answered)
-	fmt.Fprint(w, "# HELP ranet_lite_steered_total This node's own packets a steering policy encapsulated.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_steered_total counter\n")
-	fmt.Fprintf(w, "ranet_lite_steered_total %d\n", segments.Steered)
-	fmt.Fprint(w, "# HELP ranet_lite_steer_dropped_total Packets a steering policy claimed and this node did not send: too large to encapsulate, or with no route to their first segment.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_steer_dropped_total counter\n")
-	fmt.Fprintf(w, "ranet_lite_steer_dropped_total{reason=\"too_large\"} %d\n", segments.Unsteered)
-	fmt.Fprintf(w, "ranet_lite_steer_dropped_total{reason=\"no_route\"} %d\n", segments.Unrouted)
+	fmt.Fprint(w, "# HELP ranet3_segments_forwarded_total Packets an End behavior sent on to their next segment.\n")
+	fmt.Fprint(w, "# TYPE ranet3_segments_forwarded_total counter\n")
+	fmt.Fprintf(w, "ranet3_segments_forwarded_total %d\n", segments.Forwarded)
+	fmt.Fprint(w, "# HELP ranet3_segments_delivered_total Packets an End.DT46 behavior took the outer header off and handed to the stack.\n")
+	fmt.Fprint(w, "# TYPE ranet3_segments_delivered_total counter\n")
+	fmt.Fprintf(w, "ranet3_segments_delivered_total %d\n", segments.Delivered)
+	fmt.Fprint(w, "# HELP ranet3_segments_dropped_total Packets addressed to one of this node's segments that it would not act on.\n")
+	fmt.Fprint(w, "# TYPE ranet3_segments_dropped_total counter\n")
+	fmt.Fprintf(w, "ranet3_segments_dropped_total %d\n", segments.Dropped)
+	fmt.Fprint(w, "# HELP ranet3_segments_answered_total ICMP errors sent for refused packets, which is the half of the dropped ones whose sender was told why.\n")
+	fmt.Fprint(w, "# TYPE ranet3_segments_answered_total counter\n")
+	fmt.Fprintf(w, "ranet3_segments_answered_total %d\n", segments.Answered)
+	fmt.Fprint(w, "# HELP ranet3_steered_total This node's own packets a steering policy encapsulated.\n")
+	fmt.Fprint(w, "# TYPE ranet3_steered_total counter\n")
+	fmt.Fprintf(w, "ranet3_steered_total %d\n", segments.Steered)
+	fmt.Fprint(w, "# HELP ranet3_steer_dropped_total Packets a steering policy claimed and this node did not send: too large to encapsulate, or with no route to their first segment.\n")
+	fmt.Fprint(w, "# TYPE ranet3_steer_dropped_total counter\n")
+	fmt.Fprintf(w, "ranet3_steer_dropped_total{reason=\"too_large\"} %d\n", segments.Unsteered)
+	fmt.Fprintf(w, "ranet3_steer_dropped_total{reason=\"no_route\"} %d\n", segments.Unrouted)
 }
 
 // renderKernel writes the route reconciler's last pass, the half of a node
@@ -156,18 +156,18 @@ func (c *Client) renderKernel(w io.Writer) {
 	if !kernel.Enabled {
 		return
 	}
-	fmt.Fprint(w, "# HELP ranet_lite_kernel_routes_installed Routes the kernel holds for this reconciler as of its last pass.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_kernel_routes_installed gauge\n")
-	fmt.Fprintf(w, "ranet_lite_kernel_routes_installed %d\n", kernel.Installed)
-	fmt.Fprint(w, "# HELP ranet_lite_kernel_routes_skipped Routes the mesh selected that the last pass did not install: one the platform cannot represent, or one whose key another writer holds.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_kernel_routes_skipped gauge\n")
-	fmt.Fprintf(w, "ranet_lite_kernel_routes_skipped %d\n", kernel.Skipped)
-	fmt.Fprint(w, "# HELP ranet_lite_kernel_pass_timestamp_seconds When the last pass finished, and zero before the first one has.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_kernel_pass_timestamp_seconds gauge\n")
-	fmt.Fprintf(w, "ranet_lite_kernel_pass_timestamp_seconds %d\n", unixOrZero(kernel.PassAt))
-	fmt.Fprint(w, "# HELP ranet_lite_kernel_pass_failed Whether the last pass reported an error.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_kernel_pass_failed gauge\n")
-	fmt.Fprintf(w, "ranet_lite_kernel_pass_failed %d\n", boolValue(kernel.Err != ""))
+	fmt.Fprint(w, "# HELP ranet3_kernel_routes_installed Routes the kernel holds for this reconciler as of its last pass.\n")
+	fmt.Fprint(w, "# TYPE ranet3_kernel_routes_installed gauge\n")
+	fmt.Fprintf(w, "ranet3_kernel_routes_installed %d\n", kernel.Installed)
+	fmt.Fprint(w, "# HELP ranet3_kernel_routes_skipped Routes the mesh selected that the last pass did not install: one the platform cannot represent, or one whose key another writer holds.\n")
+	fmt.Fprint(w, "# TYPE ranet3_kernel_routes_skipped gauge\n")
+	fmt.Fprintf(w, "ranet3_kernel_routes_skipped %d\n", kernel.Skipped)
+	fmt.Fprint(w, "# HELP ranet3_kernel_pass_timestamp_seconds When the last pass finished, and zero before the first one has.\n")
+	fmt.Fprint(w, "# TYPE ranet3_kernel_pass_timestamp_seconds gauge\n")
+	fmt.Fprintf(w, "ranet3_kernel_pass_timestamp_seconds %d\n", unixOrZero(kernel.PassAt))
+	fmt.Fprint(w, "# HELP ranet3_kernel_pass_failed Whether the last pass reported an error.\n")
+	fmt.Fprint(w, "# TYPE ranet3_kernel_pass_failed gauge\n")
+	fmt.Fprintf(w, "ranet3_kernel_pass_failed %d\n", boolValue(kernel.Err != ""))
 }
 
 // unixOrZero is the unix time of a pass, and zero rather than a negative
@@ -190,17 +190,17 @@ func unixOrZero(at time.Time) int64 {
 // raise any of them, so none is a fault by itself, and mixing them would make
 // the first two unreadable.
 func (c *Client) renderReceiveCounters(w io.Writer) {
-	fmt.Fprint(w, "# HELP ranet_lite_receive_dropped_total Inbound datagrams a full receive queue refused.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_receive_dropped_total counter\n")
-	fmt.Fprintf(w, "ranet_lite_receive_dropped_total %d\n", c.hubDropped())
+	fmt.Fprint(w, "# HELP ranet3_receive_dropped_total Inbound datagrams a full receive queue refused.\n")
+	fmt.Fprint(w, "# TYPE ranet3_receive_dropped_total counter\n")
+	fmt.Fprintf(w, "ranet3_receive_dropped_total %d\n", c.hubDropped())
 
-	fmt.Fprint(w, "# HELP ranet_lite_receive_refused_total Inbound datagrams nothing here wanted: naming no SPI this node holds, too short or empty, for a full unclaimed queue, or with an unreadable control message or source.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_receive_refused_total counter\n")
-	fmt.Fprintf(w, "ranet_lite_receive_refused_total %d\n", c.hubRefused())
+	fmt.Fprint(w, "# HELP ranet3_receive_refused_total Inbound datagrams nothing here wanted: naming no SPI this node holds, too short or empty, for a full unclaimed queue, or with an unreadable control message or source.\n")
+	fmt.Fprint(w, "# TYPE ranet3_receive_refused_total counter\n")
+	fmt.Fprintf(w, "ranet3_receive_refused_total %d\n", c.hubRefused())
 
-	fmt.Fprint(w, "# HELP ranet_lite_receive_keepalives_total Inbound RFC 3948 NAT keepalives, ignored on arrival.\n")
-	fmt.Fprint(w, "# TYPE ranet_lite_receive_keepalives_total counter\n")
-	fmt.Fprintf(w, "ranet_lite_receive_keepalives_total %d\n", c.hubKeepalives())
+	fmt.Fprint(w, "# HELP ranet3_receive_keepalives_total Inbound RFC 3948 NAT keepalives, ignored on arrival.\n")
+	fmt.Fprint(w, "# TYPE ranet3_receive_keepalives_total counter\n")
+	fmt.Fprintf(w, "ranet3_receive_keepalives_total %d\n", c.hubKeepalives())
 }
 
 // hubDropped and hubRefused are zero before the hub exists, which is every

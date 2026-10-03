@@ -5,7 +5,7 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/NickCao/ranet-lite/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 func BenchmarkReceiveData(b *testing.B) {

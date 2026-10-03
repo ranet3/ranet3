@@ -8,17 +8,17 @@
 }:
 
 let
-  cfg = config.services.ranet-lite;
+  cfg = config.networking.ranet3;
   format = pkgs.formats.toml { };
 in
 {
-  options.services.ranet-lite = {
-    enable = lib.mkEnableOption "the ranet-lite mesh daemon";
+  options.networking.ranet3 = {
+    enable = lib.mkEnableOption "the ranet3 mesh daemon";
 
     package = lib.mkOption {
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-      defaultText = lib.literalExpression "the ranet-lite package of the flake this module came from";
+      defaultText = lib.literalExpression "the ranet3 package of the flake this module came from";
       description = "The build this node runs.";
     };
 
@@ -29,8 +29,8 @@ in
         {
           node = { org = "example"; name = "gateway"; };
           auth = {
-            key = "/var/lib/ranet-lite/key.pem";
-            trust = "/var/lib/ranet-lite/trust.json";
+            key = "/var/lib/ranet3/key.pem";
+            trust = "/var/lib/ranet3/trust.json";
           };
           link = {
             port = 13000;
@@ -52,8 +52,8 @@ in
 
     configFile = lib.mkOption {
       type = lib.types.path;
-      default = format.generate "ranet-lite.toml" cfg.settings;
-      defaultText = lib.literalExpression "the file generated from services.ranet-lite.settings";
+      default = format.generate "ranet3.toml" cfg.settings;
+      defaultText = lib.literalExpression "the file generated from networking.ranet3.settings";
       description = ''
         The config file to run. Set this to a path outside the store to keep
         the file itself out of the nix store, in which case settings is unused.
@@ -73,7 +73,7 @@ in
 
     group = lib.mkOption {
       type = lib.types.str;
-      default = "ranet-lite";
+      default = "ranet3";
       description = ''
         The group that may read the control socket. The daemon runs as root
         with this as its primary group and leaves the socket at mode 0660, so
@@ -88,8 +88,8 @@ in
 
     environment.systemPackages = [ cfg.package ];
 
-    systemd.services.ranet-lite = {
-      description = "ranet-lite mesh daemon";
+    systemd.services.ranet3 = {
+      description = "ranet3 mesh daemon";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
@@ -104,9 +104,9 @@ in
         # shutdown closes every session with a grace period and withdraws the
         # routes it installed, and a kill partway through leaves them behind
         TimeoutStopSec = "15s";
-        # control.DefaultSocket is /var/run/ranet-lite/control.sock, which
+        # control.DefaultSocket is /var/run/ranet3/control.sock, which
         # linux resolves to /run, so this is the directory it is bound in
-        RuntimeDirectory = "ranet-lite";
+        RuntimeDirectory = "ranet3";
         RuntimeDirectoryMode = "0750";
         Group = cfg.group;
         # creating the tun, and the routes, rules and addresses cap.table

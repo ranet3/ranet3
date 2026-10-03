@@ -3,7 +3,7 @@ package babel
 import (
 	"time"
 
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // nowMicros is a 32-bit microsecond clock for RFC 9616 Timestamp sub-TLVs
@@ -93,7 +93,7 @@ func DefaultCostParams() CostParams {
 	return CostParams{
 		// 96 is the value RFC 8966 Appendix B gives for a wired link, what BIRD
 		// uses as BABEL_RXCOST_WIRED, and what the fleet sets explicitly. At
-		// 32 a ranet-lite hop looks three times cheaper than a BIRD hop, so a
+		// 32 a ranet3 hop looks three times cheaper than a BIRD hop, so a
 		// mixed fleet pulls transit onto whichever nodes run this.
 		RxCost: 96,
 		RTT: RTTCost{

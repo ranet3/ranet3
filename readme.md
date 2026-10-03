@@ -1,4 +1,4 @@
-# ranet-lite
+# ranet3
 
 Binary Cache:
 
@@ -41,8 +41,8 @@ ranet's full N-to-N reconciliation.
 
 ## What it deliberately doesn't do
 
-**ranet-lite carries transit in this fork.** Upstream is an RFC 8966 Appendix E
-stub that never re-advertises a learned route, which made it loop-free by
+**ranet3 carries transit in this fork.** Upstream is an RFC 8966 Appendix E stub
+that never re-advertises a learned route, which made it loop-free by
 construction. The speaker here implements the source table and the feasibility
 condition instead, and redistributes its selected routes, so loop freedom comes
 from the mechanism the RFC provides rather than from an inability to relay. A
@@ -104,8 +104,8 @@ writes exactly that for every interface but the primary one, which is why
 binding looks sufficient right up until the mesh takes the default away from the
 primary.
 
-ranet-lite writes it, and it is the only route this tree puts out of an
-interface it does not own, so the rules around it are narrower than the tun's.
+ranet3 writes it, and it is the only route this tree puts out of an interface it
+does not own, so the rules around it are narrower than the tun's.
 
 It is written whenever the socket is bound rather than only when the mesh looks
 like it is capturing. Writing it under a condition meant every set that slipped
@@ -140,24 +140,24 @@ kernel, so a withdrawal that failed upstream cannot take the fallback away from
 under one.
 
 The record outlives the process. It is written to
-`/var/run/ranet-lite/underlay.json`, beside the control socket's lock, before
-the route is written and after it is withdrawn, so a daemon killed with
-`SIGKILL` is cleaned up by the next one rather than leaking. That is the same
-ownership claim made durable, not a weaker one: a restart withdraws a recorded
-route only when the kernel still holds one matching its destination, interface
-index, next hop and `RTF_IFSCOPE`, only when the recorded interface name still
-resolves to the recorded index, and only when that interface also carries the
-host's own unscoped default. The last clause separates our route from the
-system's, because macOS writes a scoped default for every interface except the
-one holding the unscoped default;
-`TestNoOtherProgramScopesADefaultToThePrimaryInterface` asserts that on whatever
-machine the suite runs on rather than taking it on trust. A record failing any
-clause is kept where nothing in the process can delete it, so the clauses are
-not undone by the next ordinary withdrawal, and the next start weighs them
-again. The file is locked before it is read, so a second daemon starting beside
-a running one reclaims nothing and overwrites nothing; a state file that is
-missing, truncated or not JSON is reported and treated as empty, because a node
-that will not start is worse than a route left behind.
+`/var/run/ranet3/underlay.json`, beside the control socket's lock, before the
+route is written and after it is withdrawn, so a daemon killed with `SIGKILL` is
+cleaned up by the next one rather than leaking. That is the same ownership claim
+made durable, not a weaker one: a restart withdraws a recorded route only when
+the kernel still holds one matching its destination, interface index, next hop
+and `RTF_IFSCOPE`, only when the recorded interface name still resolves to the
+recorded index, and only when that interface also carries the host's own
+unscoped default. The last clause separates our route from the system's, because
+macOS writes a scoped default for every interface except the one holding the
+unscoped default; `TestNoOtherProgramScopesADefaultToThePrimaryInterface`
+asserts that on whatever machine the suite runs on rather than taking it on
+trust. A record failing any clause is kept where nothing in the process can
+delete it, so the clauses are not undone by the next ordinary withdrawal, and
+the next start weighs them again. The file is locked before it is read, so a
+second daemon starting beside a running one reclaims nothing and overwrites
+nothing; a state file that is missing, truncated or not JSON is reported and
+treated as empty, because a node that will not start is worse than a route left
+behind.
 
 The edge that leaves is worth knowing. The last clause is a snapshot, so a host
 that makes another interface primary while our route is in place, and later
@@ -206,8 +206,8 @@ among equally-specific destinations) using each packet's real source address as
 it arrives on the TUN device, not an approximation based on a single configured
 "our address".
 
-**ranet-lite does not manage the TUN device's address or routes unless you ask
-it to.** It creates the device and brings it up, or attaches to the configured
+**ranet3 does not manage the TUN device's address or routes unless you ask it
+to.** It creates the device and brings it up, or attaches to the configured
 `tun` device, and by default assigning its addresses and kernel routes is
 external. This fork adds an optional reconciler, `internal/kernel`, which
 mirrors the learned routes into one routing table it owns, or on darwin into the
@@ -224,7 +224,7 @@ IPv4 announcements use the control link's IPv6 link-local next hop (AE 4). The
 BIRD peer needs Babel's `extended next hop` support, enabled by default in
 BIRD 3. Both ordinary IPv4 updates and AE 4 updates are accepted on receive.
 
-On Linux, ranet-lite opens one multiqueue TUN lane per Go execution context and
+On Linux, ranet3 opens one multiqueue TUN lane per Go execution context and
 keeps inner flows on a stable lane. When more than one execution context is
 available, an existing named TUN must therefore be created with
 `IFF_MULTI_QUEUE` (for a systemd-networkd `.netdev`, set `MultiQueue=yes` in its
@@ -258,7 +258,7 @@ Delete acknowledgment so queued and reordered packets can drain during a rekey.
 
 ## Deliberate protocol deviations
 
-ranet-lite uses a private IKEv2 transport profile tailored to a ranet deployment
+ranet3 uses a private IKEv2 transport profile tailored to a ranet deployment
 rather than general-purpose
 [RFC 7296 NAT traversal](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.23).
 The RFC uses UDP ports 500 and 4500, hashes the actual source and destination
@@ -289,10 +289,10 @@ RFC 7296 port selection or raw ESP.
 
 There is one separate SHOULD-level deviation from
 [RFC 7296 section 2.25.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.25.1).
-If both peers initiate a rekey of the same Child SA concurrently, ranet-lite
-answers the peer's rekey with `TEMPORARY_FAILURE`. The RFC recommends completing
-both exchanges, temporarily retaining the redundant SAs, and using the four
-nonces to decide which new SA to delete. Returning the error keeps ranet-lite's
+If both peers initiate a rekey of the same Child SA concurrently, ranet3 answers
+the peer's rekey with `TEMPORARY_FAILURE`. The RFC recommends completing both
+exchanges, temporarily retaining the redundant SAs, and using the four nonces to
+decide which new SA to delete. Returning the error keeps ranet3's
 single-Child-SA state machine simple. Both ends fail at the same instant and
 reset the same backoff, so the retry is drawn from the upper half of its window
 rather than run at the window's end. Without that spread the retry reproduces
@@ -339,7 +339,7 @@ exchange.
 ## Building
 
 ```sh
-go build -o ranet-lite ./cmd/ranet-lite
+go build -o ranet3 ./cmd/ranet3
 ```
 
 Requires Go 1.26+. Creating the TUN device needs `CAP_NET_ADMIN` (root, or that
@@ -348,7 +348,7 @@ capability granted to the binary).
 ## Running
 
 ```sh
-sudo ./ranet-lite daemon --config /etc/ranet-lite/config.toml
+sudo ./ranet3 daemon --config /etc/ranet3/config.toml
 ```
 
 On startup it logs the TUN device's name (e.g. `ranet0`). Traffic won't flow
@@ -360,19 +360,18 @@ ip route add 10.66.0.0/16 dev ranet0
 ```
 
 `daemon` is the node; every other subcommand speaks to a running one over its
-control socket, so `ranet-lite status` and its siblings work alongside a
-deployment's own `ranet-lite daemon` with no second binary and no second unit.
-Most of them ask a question; `disable`, `enable`, `redial`, `rekey` and `reload`
-act on one. See [Control socket](#control-socket).
-`ranet-lite completion
-bash|zsh|fish` writes the shell's completion script,
-generated from the command tree so a command added without one is completed
-anyway, and a peer or a subsystem an argument takes is completed from the
-running node.
+control socket, so `ranet3 status` and its siblings work alongside a
+deployment's own `ranet3 daemon` with no second binary and no second unit. Most
+of them ask a question; `disable`, `enable`, `redial`, `rekey` and `reload` act
+on one. See [Control socket](#control-socket). `ranet3 completion
+bash|zsh|fish`
+writes the shell's completion script, generated from the command tree so a
+command added without one is completed anyway, and a peer or a subsystem an
+argument takes is completed from the running node.
 
 ## Configuration
 
-ranet-lite needs two files:
+ranet3 needs two files:
 
 - A **trust document**, today a `registry.json` in the exact format ranet itself
   uses (see `internal/registry/testdata/registry.json` for a fully worked,
@@ -404,8 +403,8 @@ org = "example"
 name = "my-laptop"
 
 [auth]
-key = "/etc/ranet-lite/key.pem"     # this node's own PKCS8 PEM Ed25519 key
-trust = "/etc/ranet-lite/trust.json" # the document saying who may join
+key = "/etc/ranet3/key.pem"     # this node's own PKCS8 PEM Ed25519 key
+trust = "/etc/ranet3/trust.json" # the document saying who may join
 
 [link]
 port = 13000
@@ -668,8 +667,8 @@ extension's own channel.
 
 ## Control socket
 
-`--control /var/run/ranet-lite/control.sock` is where the daemon answers, and is
-the default, so a node is askable without having been configured to be.
+`--control /var/run/ranet3/control.sock` is where the daemon answers, and is the
+default, so a node is askable without having been configured to be.
 `--control ""` turns it off. The socket is mode 0660 and the unit names the
 group that can reach it, and that mode is the whole authorization story; see
 [the verbs](#acting-on-a-running-node) for the line that keeps it sufficient. A
@@ -691,14 +690,14 @@ having been asked for.
 
 The version a node reports is `version.txt` and the commit the binary was built
 from, because `version.txt` moves once per release and a fleet is converted one
-node at a time in between. `ranet-lite version` asks the binary the same
-question without a node running, and `ranet-lite version --daemon` asks the
-node, which is how the two are told apart during a conversion.
+node at a time in between. `ranet3 version` asks the binary the same question
+without a node running, and `ranet3 version --daemon` asks the node, which is
+how the two are told apart during a conversion.
 
 The subcommands read it and print a table, or the wire form with `--json`:
 
 ```
-$ ranet-lite status
+$ ranet3 status
 node        example/laptop
 version     2026.912.0+860393bf1c2e
 uptime      3h12m0s
@@ -718,12 +717,12 @@ segments    3fff:1:69c:8c6::1 End.DT46 (0 forwarded, 5 delivered, 0 dropped)
 steering    from 3fff:a::198:18:104:117/128 via 3fff:1:69c:98d6::1 (12 steered, 2 with no route to their first segment)
 esp         41822931 in, 0 dropped, 14 refused
 
-$ ranet-lite neighbors
+$ ranet3 neighbors
 peer            state  cost  rxcost  rtt      routes  expires  dropped  failed
 example/gateway@0  up     116   96      27.2ms   15      11.3s    0        0
 example/relay@1    up     194   96      176.7ms  130     9.8s     0        0
 
-$ ranet-lite routes
+$ ranet3 routes
 destination  from            via             metric  router-id         seqno  paths
 ::/0         3fff:a::/36  example/gateway@0  212     0a1b2c3d4e5f6071  42     7
 ```
@@ -777,7 +776,7 @@ a reload leaves a stopped subsystem stopped, because the trust document is
 rewritten every time any node joins the mesh and a reload that started one again
 would undo a decision an operator took minutes earlier on a schedule nobody
 chose. A node running less than its file says reports it on the `disabled` line
-of `ranet-lite status`, which is the only place that difference shows.
+of `ranet3 status`, which is the only place that difference shows.
 
 `disable reconciler` withdraws every route, address and rule the reconciler
 installed, as `birdc disable` did to a kernel protocol, rather than freezing a
@@ -795,8 +794,8 @@ put in place before the process starts.
 
 ## Sharing a host with other networking
 
-ranet-lite is built to run next to Tailscale, NetBird, ZeroTier, an SD-WAN
-agent, or anything else that owns interfaces and routes on the same box, and the
+ranet3 is built to run next to Tailscale, NetBird, ZeroTier, an SD-WAN agent, or
+anything else that owns interfaces and routes on the same box, and the
 reconciler's ownership rules make that true rather than a hope. `cap.egress`
 follows the same rules in the host's packet filter, see below.
 
@@ -847,13 +846,12 @@ address. Invisibility to an ordinary lookup is the safety property, and it
 applies to every unbound socket, so Safari, curl and ssh keep the address of
 whatever interface the machine was already using. macOS has no `ip rule`:
 selecting a scoped route means `bind()` to an address on the tun or
-`IP_BOUND_IF` to the tun itself, per application, and ranet-lite provides
-neither. There is a second-order effect too. Once the outgoing interface has no
-address of a family, which happens on an IPv4-only network where the mesh
-address is the box's only global IPv6, RFC 6724 rule 5 makes the mesh address a
-candidate source for traffic that is not going through the mesh at all, and
-those packets die at the first BCP 38 filter with nothing to show for it
-locally.
+`IP_BOUND_IF` to the tun itself, per application, and ranet3 provides neither.
+There is a second-order effect too. Once the outgoing interface has no address
+of a family, which happens on an IPv4-only network where the mesh address is the
+box's only global IPv6, RFC 6724 rule 5 makes the mesh address a candidate
+source for traffic that is not going through the mesh at all, and those packets
+die at the first BCP 38 filter with nothing to show for it locally.
 
 An install that collides with a route another program holds is reported once and
 left alone. darwin has no replace, and the collision does not resolve itself, so
@@ -864,7 +862,7 @@ rather than as added, and says nothing at all about a pass that moved nothing.
 Addresses are narrower still: only an address this process added is ever
 removed, and one already on the link belongs to whoever put it there. That rule
 has one consequence worth knowing about on a TUN the operator created rather
-than one ranet-lite made, which is the only kind that outlives the process. An
+than one ranet3 made, which is the only kind that outlives the process. An
 instance killed outright leaves its addresses on the device, and the next one
 finds them already there, so it never adds them, never records them as its own,
 and never removes them, even on a clean shutdown. Its routes do come back, since
@@ -982,7 +980,7 @@ The rest is this program's own assembly, or is held inside by one import:
 - `internal/packet` validates TUN and decrypted IP packets.
 - `internal/registry` reads a ranet-compatible `registry.json` and Ed25519 key
   loading.
-- `internal/config` is ranet-lite's own config format.
+- `internal/config` is ranet3's own config format.
 - `internal/egress` is the exit node and subnet router capability: the source
   translation, the nftables table it owns, and the advertisement it withholds
   while that table does not hold the rules the configuration asks for.
@@ -990,7 +988,7 @@ The rest is this program's own assembly, or is held inside by one import:
 - `internal/kernel/rules_linux.go` is the policy rules and the VRF, which exist
   on linux alone and are therefore optional halves of the platform rather than
   methods every backend stubs out.
-- `cmd/ranet-lite` is the production binary, and the only thing under `cmd`.
+- `cmd/ranet3` is the production binary, and the only thing under `cmd`.
 - `internal/cmd/*` are the tools this tree runs on itself: `notices`, which
   regenerates the third-party notice file, and the standalone interop and
   smoke-test binaries used during development (IKE, ESP, babel tests). They are
@@ -1013,7 +1011,7 @@ over [autopilot](https://github.com/stepbrobd/autopilot), which loads `lib/` and
   `integration.nix`, which holds the VM test helper the checks and the profiling
   packages share.
 - `pkgs/` holds one directory per package, imported into `overlays.default` by
-  `lib.importPackagesTree`. `pkgs.ranet-lite` is the daemon and
+  `lib.importPackagesTree`. `pkgs.ranet3` is the daemon and
   `pkgs.iperf3-benchmark` is the patched iperf the namespace benchmark needs.
 - `modules/nixos/` and `modules/darwin/` are the deployment modules, exported as
   `nixosModules.default` and `darwinModules.default`. See
@@ -1023,24 +1021,24 @@ over [autopilot](https://github.com/stepbrobd/autopilot), which loads `lib/` and
 ## Running it as a service
 
 The nixos module runs the daemon from this flake's package, writes the config
-file from `services.ranet-lite.settings`, and gives the control socket a
+file from `networking.ranet3.settings`, and gives the control socket a
 `RuntimeDirectory` and a group:
 
 ```nix
 {
-  imports = [ inputs.ranet-lite.nixosModules.default ];
+  imports = [ inputs.ranet3.nixosModules.default ];
 
-  services.ranet-lite = {
+  networking.ranet3 = {
     enable = true;
-    group = "ranet-lite";
+    group = "ranet3";
     settings = {
       node = {
         org = "example";
         name = "gateway";
       };
       auth = {
-        key = "/var/lib/ranet-lite/key.pem";
-        trust = "/var/lib/ranet-lite/trust.json";
+        key = "/var/lib/ranet3/key.pem";
+        trust = "/var/lib/ranet3/trust.json";
       };
       link = {
         port = 13000;
@@ -1059,7 +1057,7 @@ file from `services.ranet-lite.settings`, and gives the control socket a
 `settings` is written to the store and is world readable there, so the key and
 the trust document are named by path rather than carried inline. A config file
 that must stay out of the store entirely is named by `configFile` instead.
-`systemctl reload ranet-lite` sends SIGHUP, which reconciles against a rewritten
+`systemctl reload ranet3` sends SIGHUP, which reconciles against a rewritten
 trust document without dropping an SA. A restart drops every one.
 
 The nix-darwin module is the same options over `launchd.daemons`, with the log
@@ -1079,8 +1077,7 @@ The unit tests need no privileges, with two exceptions: `internal/kernel` has
 tests that write to a real routing table, and `internal/egress` one that writes
 into a real packet filter. Both unshare a network namespace and refuse to
 continue unless it is empty, and both skip unless run as root, on darwin unless
-`RANET_LITE_DARWIN_NETTEST=1` is also set, because that machine is on a live
-mesh.
+`RANET3_DARWIN_NETTEST=1` is also set, because that machine is on a live mesh.
 
 `internal/kernel` names the machine it reads and writes, `kernel.Host`, so the
 darwin backend can be driven without either. `internal/client`'s
@@ -1095,11 +1092,11 @@ root against a real kernel, which is the only place the `nf_tables` encoding is
 checked against something other than the decoder it was written beside.
 Protocol-level interoperability is covered by the NixOS VM tests in
 `modules/flake/checks.nix`. Each boots separate client and gateway VMs; the
-client runs the packaged, user-facing `ranet-lite` binary with a real TUN
-device, while the gateway runs `charon-systemd`/`swanctl`, BIRD, and iperf3. The
-default test verifies an Ed25519-authenticated IKEv2 and Child SA negotiation
-across asymmetric local and remote UDP ports, checks Babel route exchange in
-both directions, and measures TCP bandwidth through the negotiated ESP tunnel:
+client runs the packaged, user-facing `ranet3` binary with a real TUN device,
+while the gateway runs `charon-systemd`/`swanctl`, BIRD, and iperf3. The default
+test verifies an Ed25519-authenticated IKEv2 and Child SA negotiation across
+asymmetric local and remote UDP ports, checks Babel route exchange in both
+directions, and measures TCP bandwidth through the negotiated ESP tunnel:
 
 ```sh
 nix build .#checks.x86_64-linux.integration -L
@@ -1110,8 +1107,8 @@ nix build .#checks.x86_64-linux.segments -L
 nix build .#checks.x86_64-linux.egress -L
 ```
 
-`responder` inverts the exchange: strongSwan dials and ranet-lite answers, which
-upstream could not do at all, and the check asserts that ranet-lite never dials.
+`responder` inverts the exchange: strongSwan dials and ranet3 answers, which
+upstream could not do at all, and the check asserts that ranet3 never dials.
 `kernel` exercises the route reconciler against a real table. `nixos-module`
 boots nothing: it evaluates the nixos module into the unit systemd would run and
 reads back the binary, the runtime directory and the group, since otherwise a
@@ -1149,7 +1146,7 @@ integration-test VMs; the guest's CPU and clock still affect results.
 For measurements without VM overhead, use the namespace harness:
 
 ```sh
-nix develop -c go build -o /tmp/ranet-bench ./cmd/ranet-lite
+nix develop -c go build -o /tmp/ranet-bench ./cmd/ranet3
 nix develop -c unshare --user --map-root-user --mount --net \
   python3 integration/performance.py --client /tmp/ranet-bench \
   --output /tmp/ranet-perf-6 --cores 6 --affinity 0-5 \
@@ -1209,9 +1206,9 @@ Immutable snapshots favor packet lookups over route-write latency. Each changed
 route allocates the copied trie path; this costs more than an in-place update,
 but readers never contend with other readers or wait for a route writer.
 
-The VM console, systemd, strongSwan, BIRD, ranet-lite, and iperf3 output is
-streamed by the Nix test driver. The test also prints strongSwan SA state and
-BIRD neighbors and routes on exit, including after a failed check.
+The VM console, systemd, strongSwan, BIRD, ranet3, and iperf3 output is streamed
+by the Nix test driver. The test also prints strongSwan SA state and BIRD
+neighbors and routes on exit, including after a failed check.
 
 ## License
 

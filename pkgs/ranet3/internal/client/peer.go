@@ -10,9 +10,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/NickCao/ranet-lite/ike"
-	"github.com/NickCao/ranet-lite/internal/config"
-	"github.com/NickCao/ranet-lite/internal/registry"
+	"ranet3.com/pkgs/ranet3/ike"
+	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/registry"
 )
 
 const defaultReconnectDelay = 10 * time.Second

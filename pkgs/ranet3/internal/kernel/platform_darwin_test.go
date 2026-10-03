@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/schema"
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // testIndex is the interface index every test in this file pretends to own.
@@ -919,7 +919,7 @@ func TestDarwinHoldIsInstalledAsReject(t *testing.T) {
 	}
 }
 
-// ranet-lite attaches to a tun it did not necessarily create, so an instance
+// ranet3 attaches to a tun it did not necessarily create, so an instance
 // can start on an interface that already carries its predecessor's scoped
 // routes. Darwin has no replace, so a scoped route the dump does not report is
 // one this process can neither withdraw nor install over: the add comes back

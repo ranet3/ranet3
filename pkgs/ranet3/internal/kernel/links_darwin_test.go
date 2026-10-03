@@ -17,7 +17,7 @@ import (
 // forwarding table and onto the link the machine reaches its peers through.
 //
 // It needs no privilege and writes nothing, so it runs in the ordinary suite
-// rather than behind RANET_LITE_DARWIN_NETTEST. A host with no default route
+// rather than behind RANET3_DARWIN_NETTEST. A host with no default route
 // is the one honest reason to skip.
 func TestDefaultInterfaceNamesALinkThisHostHas(t *testing.T) {
 	links, err := WatchLinks(nil, 0)

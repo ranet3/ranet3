@@ -1,5 +1,5 @@
 {
-  description = "A lightweight ranet client";
+  description = "A mesh network with Babel routing over IKEv2 and userspace ESP";
 
   outputs =
     { self, ... }@inputs:
@@ -16,7 +16,7 @@
 
         nixpkgs.instances.pkgs = inputs.nixpkgs;
         nixpkgs.overlays = with inputs; [
-          # buildGoApplication, which pkgs/ranet-lite is written against
+          # buildGoApplication, which pkgs/ranet3 is written against
           gomod2nix.overlays.default
           self.overlays.default
         ];

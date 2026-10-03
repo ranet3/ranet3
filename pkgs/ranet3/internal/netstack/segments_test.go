@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/NickCao/ranet-lite/schema"
-	"github.com/NickCao/ranet-lite/srv6"
+	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 func segAddr(s string) netip.Addr     { return netip.MustParseAddr(s) }

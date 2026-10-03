@@ -13,14 +13,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/NickCao/ranet-lite/control"
-	"github.com/NickCao/ranet-lite/internal/babel"
-	"github.com/NickCao/ranet-lite/internal/config"
-	"github.com/NickCao/ranet-lite/internal/kernel"
-	"github.com/NickCao/ranet-lite/internal/netstack"
-	"github.com/NickCao/ranet-lite/internal/registry"
-	"github.com/NickCao/ranet-lite/srv6"
-	"github.com/NickCao/ranet-lite/transport"
+	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/babel"
+	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/registry"
+	"ranet3.com/pkgs/ranet3/srv6"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 type Client struct {

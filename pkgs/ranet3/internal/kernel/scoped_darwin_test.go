@@ -256,8 +256,8 @@ func readTUN(fd int, within time.Duration) bool {
 
 func requireNetTest(t *testing.T) {
 	t.Helper()
-	if os.Getenv("RANET_LITE_DARWIN_NETTEST") != "1" {
-		t.Skip("set RANET_LITE_DARWIN_NETTEST=1 to run against the real kernel")
+	if os.Getenv("RANET3_DARWIN_NETTEST") != "1" {
+		t.Skip("set RANET3_DARWIN_NETTEST=1 to run against the real kernel")
 	}
 	if os.Geteuid() != 0 {
 		t.Skip("run as root to create a utun and write routes")

@@ -1,11 +1,11 @@
 {
   pkgs,
-  ranetLite,
+  ranet3,
   benchmarkIperf ? pkgs.callPackage ../pkgs/iperf3-benchmark { },
 }:
 
 {
-  name = "ranet-lite-namespace-profile";
+  name = "ranet3-namespace-profile";
 
   nodes.machine = {
     virtualisation.cores = 6;
@@ -39,12 +39,12 @@
     machine.succeed("echo kvm-clock > /sys/devices/system/clocksource/clocksource0/current_clocksource")
     machine.succeed("perf record -a -e cpu-clock:k -F 99 -g -o /tmp/kernel.perf -- sleep 180 > /tmp/perf.log 2>&1 & echo $! > /tmp/perf.pid")
     try:
-        print(machine.succeed("runuser -u bench -- unshare --user --map-root-user --mount --net python3 ${./performance.py} --repo ${../.} --client ${ranetLite}/bin/ranet-lite --output /tmp/ranet-performance --cores 6 --duration 15 --directions outbound,inbound,bidir", timeout=dt.timedelta(seconds=150)))
+        print(machine.succeed("runuser -u bench -- unshare --user --map-root-user --mount --net python3 ${./performance.py} --repo ${../.} --client ${ranet3}/bin/ranet3 --output /tmp/ranet-performance --cores 6 --duration 15 --directions outbound,inbound,bidir", timeout=dt.timedelta(seconds=150)))
     finally:
         machine.execute("kill -INT $(cat /tmp/perf.pid)")
         machine.wait_until_fails("kill -0 $(cat /tmp/perf.pid)")
         print(machine.succeed("cat /tmp/perf.log"))
-        print(machine.succeed("perf report --stdio --no-children --percentage relative --percent-limit 1 -g none --comms ranet-lite -i /tmp/kernel.perf"))
+        print(machine.succeed("perf report --stdio --no-children --percentage relative --percent-limit 1 -g none --comms ranet3 -i /tmp/kernel.perf"))
         # Preserve the guest's symbol addresses for analysis on another kernel.
         machine.succeed("cat /proc/kallsyms > /tmp/kernel.kallsyms")
         machine.copy_from_machine("/tmp/kernel.kallsyms")

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NickCao/ranet-lite/control"
+	"ranet3.com/pkgs/ranet3/control"
 )
 
 // meshStub answers with a route table and an originate set rich enough for the
@@ -36,7 +36,7 @@ func (meshStub) Routes() []control.Route {
 	}
 }
 
-func (meshStub) Metrics(w io.Writer) { io.WriteString(w, "ranet_lite_sessions 2\n") }
+func (meshStub) Metrics(w io.Writer) { io.WriteString(w, "ranet3_sessions 2\n") }
 
 // serveMesh starts a socket behind a node with something to query.
 func serveMesh(t *testing.T) string {
@@ -126,7 +126,7 @@ func TestBugreportCarriesEverySubsystem(t *testing.T) {
 		t.Error("the report carries no sessions")
 	case len(report.Peers) == 0:
 		t.Error("the report carries no peers")
-	case !strings.Contains(report.Metrics, "ranet_lite_sessions"):
+	case !strings.Contains(report.Metrics, "ranet3_sessions"):
 		t.Errorf("the report carries no scrape: %q", report.Metrics)
 	case report.Socket != socket:
 		t.Errorf("the report names %q as the socket it read", report.Socket)

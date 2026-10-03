@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // A node that writes no cap.crypto runs these, and a fleet mid-migration has

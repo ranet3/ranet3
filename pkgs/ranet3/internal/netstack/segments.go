@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/NickCao/ranet-lite/esp"
-	"github.com/NickCao/ranet-lite/srv6"
+	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 // This file is where segment routing meets the dataplane. The decision itself

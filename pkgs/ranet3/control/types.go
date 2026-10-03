@@ -91,7 +91,7 @@ const (
 // DefaultSocket is where the daemon listens and where the client looks. It is
 // under /var/run rather than /run because darwin has only the former and linux
 // resolves it to the latter, so one path serves both platforms.
-const DefaultSocket = "/var/run/ranet-lite/control.sock"
+const DefaultSocket = "/var/run/ranet3/control.sock"
 
 // Source is everything the control surface reads. The runtime implements it.
 // Each method takes the lock its own subsystem runs under and returns a value,

@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NickCao/ranet-lite/internal/netstack"
-	"github.com/NickCao/ranet-lite/schema"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // wireSpeakerPair connects two Speakers via a plain in-memory relay (no
@@ -568,7 +568,7 @@ func TestNewSpeakerCarriesItsConfigurationIntoTheRouteTable(t *testing.T) {
 func TestBabelDefaultsMatchFleet(t *testing.T) {
 	cost := DefaultCostParams()
 	// BABEL_RXCOST_WIRED, the value BIRD uses and the fleet sets
-	// explicitly. At 32 a ranet-lite hop looks three times cheaper than a BIRD
+	// explicitly. At 32 a ranet3 hop looks three times cheaper than a BIRD
 	// hop and a mixed fleet pulls transit onto whichever nodes run this.
 	if cost.RxCost != 96 {
 		t.Errorf("default rxcost is %d, want 96", cost.RxCost)
@@ -825,7 +825,7 @@ func TestPrefixNoLongerOriginatedCanBeReachedAgain(t *testing.T) {
 
 // These four numbers set what a node announces itself as costing and how
 // fast it notices a neighbor has gone. They are not internal tuning: the fleet this
-// replaces runs BIRD, and a ranet-lite node whose hop looks cheaper than a BIRD
+// replaces runs BIRD, and a ranet3 node whose hop looks cheaper than a BIRD
 // hop pulls transit onto itself across the whole mesh, while one that takes
 // seventy seconds to notice a silent peer is a different network from the one
 // being replaced. Nothing else in the suite would notice them changing.

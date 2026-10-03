@@ -35,7 +35,7 @@
 // [Segments] is the serialized form of both tables together, carrying yaml,
 // json and toml tags and validating itself, and [Segments.Tables] builds the
 // pair from it. Its scalars come from
-// [github.com/NickCao/ranet-lite/schema].
+// [ranet3.com/pkgs/ranet3/schema].
 //
 // [Parse] reads a routing header on its own, and [TimeExceeded] and
 // [ParameterProblem] build the ICMPv6 errors RFC 8986's pseudocode answers a

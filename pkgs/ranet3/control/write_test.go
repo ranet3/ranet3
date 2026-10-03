@@ -40,7 +40,7 @@ func (s *writingSource) Rekey(peer string, all bool) (Result, error) {
 
 func (s *writingSource) Reload() (Result, error) {
 	s.verb = "reload"
-	return s.answer("/etc/ranet-lite/config.toml")
+	return s.answer("/etc/ranet3/config.toml")
 }
 
 func (s *writingSource) answer(acted string) (Result, error) {
@@ -245,7 +245,7 @@ func TestMetricsAreServedAsTheExpositionFormat(t *testing.T) {
 		t.Errorf("the scrape is served as %q", got)
 	}
 	body, _ := io.ReadAll(response.Body)
-	if !strings.Contains(string(body), "ranet_lite_sessions 1") {
+	if !strings.Contains(string(body), "ranet3_sessions 1") {
 		t.Errorf("the scrape reads %q", body)
 	}
 	if refused := post(t, server.URL+PathMetrics, "{}"); refused.StatusCode != http.StatusMethodNotAllowed {

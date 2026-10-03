@@ -7,12 +7,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/NickCao/ranet-lite/control"
-	"github.com/NickCao/ranet-lite/internal/notices"
-	"github.com/NickCao/ranet-lite/internal/version"
+	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/notices"
+	"ranet3.com/pkgs/ranet3/internal/version"
 )
 
-// This file is the command tree. `ranet-lite daemon` is the node itself and
+// This file is the command tree. `ranet3 daemon` is the node itself and
 // every other command speaks to a running one's control socket. They are
 // subcommands of one binary rather than two programs because a fleet deploys
 // one file, and because the wire types and the renderer are then shared with
@@ -35,7 +35,7 @@ type reader struct {
 func newRoot() *cobra.Command {
 	r := &reader{}
 	root := &cobra.Command{
-		Use:     "ranet-lite",
+		Use:     "ranet3",
 		Short:   "A ranet mesh node, and the commands that read and act on one",
 		Version: version.String(),
 		// main prints the one error and the usage is on --help, so neither is

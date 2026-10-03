@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/NickCao/ranet-lite/control"
+	"ranet3.com/pkgs/ranet3/control"
 )
 
 // writingStub is a stubSource that also takes the verbs, recording the call so
@@ -136,8 +136,8 @@ func TestVerbsRefuseWhatTheyCannotActOn(t *testing.T) {
 		// The same sentence as the first, from the other validator: rekey
 		// decides on --all where disable takes a fixed count.
 		"rekey with neither":      {args: []string{"rekey"}, want: "accepts 1 arg(s), received 0"},
-		"rekey with both":         {args: []string{"rekey", "example/gateway", "--all"}, want: `ranet-lite rekey takes no arguments, got "example/gateway"`},
-		"reload with an argument": {args: []string{"reload", "now"}, want: `ranet-lite reload takes no arguments, got "now"`},
+		"rekey with both":         {args: []string{"rekey", "example/gateway", "--all"}, want: `ranet3 rekey takes no arguments, got "example/gateway"`},
+		"reload with an argument": {args: []string{"reload", "now"}, want: `ranet3 reload takes no arguments, got "now"`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out, err := execute(t, append(test.args, "--control", socket)...)
