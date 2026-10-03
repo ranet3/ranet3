@@ -11,33 +11,20 @@ systems = ["x86_64-linux", "aarch64-linux", "aarch64-darwin"]
 include = ["checks.*.*", "devShells.*.*", "formatter.*", "packages.*.*"]
 
 exclude = [
-  "checks.aarch64-linux.integration",           # runner does not have kvm
-  "checks.aarch64-linux.integration-multicore",
-  "checks.aarch64-linux.responder",
-  "checks.aarch64-linux.kernel",
-  "checks.aarch64-linux.segments",
-  "checks.aarch64-linux.egress",
+  "checks.aarch64-linux.integration-initiator", # runner does not have kvm
+  "checks.aarch64-linux.integration-responder",
+  "checks.aarch64-linux.integration-kernel",
+  "checks.aarch64-linux.integration-segments",
+  "checks.aarch64-linux.integration-egress",
   "checks.aarch64-linux.netlink",
   # both linux arches put the same files in front of these, so the
   # x86_64-linux arm covers the aarch64 one exactly. go test stays on both,
   # since the race detector is the one check whose answer depends on the
   # memory model underneath it.
-  "checks.aarch64-linux.gofmt",
-  "checks.aarch64-linux.format",
-  "checks.aarch64-linux.docs",
-  "checks.aarch64-linux.reuse",
-  "checks.aarch64-linux.staticcheck",
-  "checks.aarch64-linux.vet",
-  "checks.aarch64-linux.cross",
-  # gofmt, the docs check, the reuse lint and the prose, nix and toml formatter
-  # read one text on every platform, and the freebsd cross build is the same
-  # build from either host. vet and staticcheck stay on darwin: the build tags
-  # put 1200 lines in front of them there that no linux run ever compiles.
-  "checks.aarch64-darwin.gofmt",
-  "checks.aarch64-darwin.format",
-  "checks.aarch64-darwin.docs",
-  "checks.aarch64-darwin.reuse",
-  "checks.aarch64-darwin.cross",
-  "packages.*.integration-profile", # built on demand, not checked
-  "packages.*.namespace-profile",
+  "checks.aarch64-linux.go-lint",
+  "checks.aarch64-linux.tree",
+  # gofmt, the reuse lint and the prose, nix and toml formatter read one text
+  # on every platform. go-lint stays on darwin: the build tags put 1200 lines
+  # in front of vet and staticcheck there that no linux run ever compiles.
+  "checks.aarch64-darwin.tree",
 ]

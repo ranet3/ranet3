@@ -8,18 +8,39 @@
 # nf_tables encoding asserted nowhere any check ran. These are the same test
 # binaries, run as root against a real kernel.
 {
-  pkgs,
-  netlinkTests,
+  lib,
+  iproute2,
+  nftables,
+  ranet3,
+  testers,
+  writableTmpDirAsHomeHook,
 }:
-{
+
+let
+  netlinkTests = ranet3.overrideAttrs (prev: {
+    pname = "ranet3-netlink-tests";
+    nativeBuildInputs = prev.nativeBuildInputs ++ [ writableTmpDirAsHomeHook ];
+    buildPhase = ''
+      go test -c -o netlink-tests ./internal/kernel/
+      go test -c -o egress-tests ./internal/egress/
+    '';
+    installPhase = ''
+      install -Dm755 netlink-tests "$out/bin/netlink-tests"
+      install -Dm755 egress-tests "$out/bin/egress-tests"
+    '';
+  });
+in
+testers.runNixOSTest {
   name = "ranet3-netlink";
+
+  meta.platforms = lib.platforms.linux;
 
   # The tests build their own namespaces, links, rules and tables, so the
   # machine needs nothing but a kernel, root, and iproute2 and nft to read the
   # result back with.
   nodes.machine.environment.systemPackages = [
-    pkgs.iproute2
-    pkgs.nftables
+    iproute2
+    nftables
   ];
 
   testScript = ''

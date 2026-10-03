@@ -27,7 +27,9 @@ from pathlib import Path
 parser = argparse.ArgumentParser()
 parser.add_argument("--client", required=True, type=Path)
 parser.add_argument("--output", required=True, type=Path)
-parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent.parent)
+parser.add_argument(
+    "--fixtures", type=Path, default=Path(__file__).resolve().parents[2] / "fixtures"
+)
 parser.add_argument("--cores", type=int, default=6)
 parser.add_argument("--duration", type=int, default=15)
 parser.add_argument("--streams", type=int, default=8)
@@ -115,9 +117,9 @@ if (
     parser.error(
         "run with unshare --user --map-root-user --mount --net as an ordinary user"
     )
-args.client, args.repo, args.output = (
+args.client, args.fixtures, args.output = (
     args.client.resolve(),
-    args.repo.resolve(),
+    args.fixtures.resolve(),
     args.output.resolve(),
 )
 if not args.client.is_file():
@@ -463,9 +465,7 @@ try:
             ("pubkey", "org-pub.pem"),
         ]:
             (swan_dir / directory).mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(
-                args.repo / "integration" / fixture, swan_dir / directory / fixture
-            )
+            shutil.copyfile(args.fixtures / fixture, swan_dir / directory / fixture)
         swan_conf = swan_dir / "swanctl.conf"
         swan_conf.write_text("""connections {
   ranet {
@@ -584,7 +584,7 @@ protocol babel {
         "iperf-server",
         gateway=True,
     )
-    public = (args.repo / "integration/org-pub.pem").read_text()
+    public = (args.fixtures / "org-pub.pem").read_text()
     registry = args.output / "registry.json"
     registry.write_text(
         json.dumps(
@@ -625,32 +625,33 @@ protocol babel {
         # nothing to dial: this instance only answers. Its tunnel addresses are
         # swan0's, so both modes measure the same path between the same two
         # endpoints.
-        peer_conf = args.output / "peer.yaml"
-        peer_conf.write_text(f"""node:
-  org: testorg
-  name: server
-auth:
-  key: {args.repo / "integration/org-key.pem"}
-  trust: {registry}
-link:
-  port: 13000
-  endpoints:
-    - serial: "1"
-      family: ip4
-  tun: ranet1
-  listen: true
-cap:
-  route:
-    announce: ["fd00:99::/64"]
-  babel:
-    hello: 500ms
-    update: 1s
-  crypto:
-    replay: {args.replay_window}
-    rekey:
-      child: 0
-      ike: 0
-""")
+        peer_conf = args.output / "peer.json"
+        peer_conf.write_text(
+            json.dumps(
+                {
+                    "node": {"org": "testorg", "name": "server"},
+                    "auth": {
+                        "key": str(args.fixtures / "org-key.pem"),
+                        "trust": str(registry),
+                    },
+                    "link": {
+                        "port": 13000,
+                        "endpoints": [{"serial": "1", "family": "ip4"}],
+                        "tun": "ranet1",
+                        "listen": True,
+                    },
+                    "cap": {
+                        "route": {"announce": ["fd00:99::/64"]},
+                        "babel": {"hello": "500ms", "update": "1s"},
+                        "crypto": {
+                            "replay": args.replay_window,
+                            "rekey": {"child": 0, "ike": 0},
+                        },
+                    },
+                },
+                indent=2,
+            )
+        )
         peer_command = [
             str(args.client),
             "daemon",
@@ -683,35 +684,33 @@ cap:
             ["ip", "route", "add", "fd00:88::2/128", "dev", "ranet1"],
         ]:
             run(command, gateway=True)
-    client_conf = args.output / "client.yaml"
-    client_conf.write_text(f"""node:
-  org: testorg
-  name: client
-auth:
-  key: {args.repo / "integration/org-key.pem"}
-  trust: {registry}
-link:
-  port: 14000
-  endpoints:
-    - serial: "2"
-      family: ip4
-  tun: ranet0
-dial:
-  to:
-    - name: server
-      serial: "1"
-cap:
-  route:
-    announce: ["fd00:88::2/128"]
-  babel:
-    hello: 500ms
-    update: 1s
-  crypto:
-    replay: {args.replay_window}
-    rekey:
-      child: 0
-      ike: 0
-""")
+    client_conf = args.output / "client.json"
+    client_conf.write_text(
+        json.dumps(
+            {
+                "node": {"org": "testorg", "name": "client"},
+                "auth": {
+                    "key": str(args.fixtures / "org-key.pem"),
+                    "trust": str(registry),
+                },
+                "link": {
+                    "port": 14000,
+                    "endpoints": [{"serial": "2", "family": "ip4"}],
+                    "tun": "ranet0",
+                },
+                "dial": {"to": [{"name": "server", "serial": "1"}]},
+                "cap": {
+                    "route": {"announce": ["fd00:88::2/128"]},
+                    "babel": {"hello": "500ms", "update": "1s"},
+                    "crypto": {
+                        "replay": args.replay_window,
+                        "rekey": {"child": 0, "ike": 0},
+                    },
+                },
+            },
+            indent=2,
+        )
+    )
     client_command = [
         str(args.client),
         "daemon",
