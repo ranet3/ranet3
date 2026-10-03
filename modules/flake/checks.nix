@@ -78,8 +78,13 @@
         # tags no configured system matches. vet rather than build, because
         # go build drops _test.go files, and freebsd has no arm that runs
         # them, so a test file that stopped compiling off this platform
-        # would reach a release unmentioned
-        cross = go "cross" [ ] "GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go vet ./...";
+        # would reach a release unmentioned. The gcflags let the property
+        # engine's loader define the two symbols a freebsd binary built
+        # without cgo needs, which the compiler allows only in code cgo
+        # generated and in the standard library
+        cross =
+          go "cross" [ ]
+            "GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go vet -gcflags=github.com/ebitengine/purego/internal/fakecgo=-std ./...";
         # the formatter rewrites markdown, nix and toml, so without these
         # only its go half is ever checked
         format =

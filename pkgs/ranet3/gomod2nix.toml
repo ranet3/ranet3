@@ -5,6 +5,10 @@ schema = 3
 version = 'v1.6.0'
 hash = 'sha256-ptdUJvuc21ixeLt+M5way/na3aCnCO4MYHWulWp8NEY='
 
+[mod.'github.com/ebitengine/purego']
+version = 'v0.11.0-alpha.6.0.20260707033313-5f49e7c49322'
+hash = 'sha256-cMuzqPxsdSbioL7TIRSz2GeW24jJ+izaBXmVby7IvFM='
+
 [mod.'github.com/inconshreveable/mousetrap']
 version = 'v1.1.0'
 hash = 'sha256-XWlYH0c8IcxAwQTnIi6WYqq44nOKUylSWxWO/vi+8pE='
@@ -44,3 +48,7 @@ hash = 'sha256-qfF39wqSCUlsXsaJyjcnv9n8ZjRJfIKDo6i2DursedU='
 [mod.'gvisor.dev/gvisor']
 version = 'v0.0.0-20260815055033-7d8fb7f28de4'
 hash = 'sha256-qNul+ILbeffSiOxFoVeNtayahFZVp+/W2YIJf53Hfc8='
+
+[mod.'hegel.dev/go/hegel']
+version = 'v0.9.13'
+hash = 'sha256-IbUZ6QaQ3rcLefIyQ/MBBc8O0cDE0CutpBCCtO5tqWM='
