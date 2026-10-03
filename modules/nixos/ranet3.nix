@@ -42,7 +42,10 @@ in
     environment.systemPackages = [ cfg.package ];
 
     # the daemon names its tun ranet0 and up unless link.tun says otherwise
-    networking.dhcpcd.denyInterfaces = [ "ranet*" ];
+    networking.dhcpcd.denyInterfaces = [
+      "ranet*"
+    ]
+    ++ lib.optional (generated && cfg.settings.link ? tun) cfg.settings.link.tun;
 
     networking.firewall.allowedUDPPorts = lib.mkIf cfg.openFirewall [ cfg.settings.link.port ];
 
