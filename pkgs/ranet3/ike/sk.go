@@ -61,7 +61,7 @@ func encryptMessagePlaintextIV(suite SASuite, key []byte, hdr Header, cleartext 
 	}
 	nonce := append(append([]byte{}, salt...), iv...)
 
-	cleartextBytes := encodePayloadChain(cleartext)
+	cleartextBytes := encodePayloadChainBefore(cleartext, PayloadSK)
 
 	skHdr := make([]byte, genericPayloadHeaderLen)
 	skHdr[0] = byte(innerFirst)
