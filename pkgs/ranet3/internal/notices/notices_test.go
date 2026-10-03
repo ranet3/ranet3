@@ -4,17 +4,33 @@
 package notices
 
 import (
+	"fmt"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"os"
+	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
 
+// testOnly is the direct requirements that no binary links. The notice lists
+// what the built binary contains, so a section for one of these would
+// reproduce a license for code that nobody is given. A module belongs here
+// while no package a binary links imports it. The property engine is one:
+// internal/pbt imports it and only test files import internal/pbt.
+var testOnly = []string{
+	"hegel.dev/go/hegel",
+}
+
 // The notice is generated, so the thing worth holding is not its text but that
 // nobody added a dependency and shipped without regenerating it. A direct
 // requirement gets added by hand, so every one of them has to be
-// named here, and nothing may be named that go.mod no longer requires at all.
+// named here, except the ones only tests use, and nothing may be named that
+// go.mod no longer requires at all.
 //
 // The check reads go.mod rather than asking the toolchain because a nix build
 // has neither a module cache nor an in-tree vendor directory, so `go list` and
@@ -33,6 +49,9 @@ func TestEveryDirectRequirementIsNoticed(t *testing.T) {
 	// would take it for one
 	noticed := sections(ThirdParty)
 	for _, module := range direct {
+		if slices.Contains(testOnly, module) {
+			continue
+		}
 		if !slices.Contains(noticed, module) {
 			t.Errorf("%s is a direct requirement with no license section: run the formatter", module)
 		}
@@ -45,6 +64,69 @@ func TestEveryDirectRequirementIsNoticed(t *testing.T) {
 		if !all[module] {
 			t.Errorf("%s has a license section and go.mod does not require it: run the formatter", module)
 		}
+	}
+}
+
+// The exemption above rests on a fact that neither go.mod nor the notice can
+// show, which is that no package a binary links imports a module it names. A
+// daemon package that began to import one would link that module into every
+// release with no section in the notice, while the test above went on skipping
+// it. So the source is read for the imports. The files are found by walking the
+// tree and their headers parsed, for the reason the test above gives for not
+// asking the toolchain.
+//
+// The walk covers what the go tool counts as this module's packages. A nix
+// build puts a vendor directory in the module root with the source of every
+// module the build uses, hegel among them, and none of that is this module's
+// code.
+func TestOnlyTestsImportTestOnlyModules(t *testing.T) {
+	body, err := os.ReadFile("../../go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// internal/pbt may import the engine, and only test files may import
+	// internal/pbt
+	pbtPath := modulePath(string(body)) + "/internal/pbt"
+	root := os.DirFS("../..")
+	looked := 0
+	err = fs.WalkDir(root, ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if name != "." && outsideModule(root, name) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+		imports, err := importsOf(root, name)
+		if err != nil {
+			return err
+		}
+		looked++
+		for _, imported := range imports {
+			if within(imported, pbtPath) {
+				t.Errorf("%s imports %s, which only test files may import: it would link the property engine into a binary with no notice for it", name, imported)
+			}
+			if strings.HasPrefix(name, "internal/pbt/") {
+				continue
+			}
+			for _, module := range testOnly {
+				if within(imported, module) {
+					t.Errorf("%s imports %s, from a module only tests may use: import it from a test file or through internal/pbt, or take the module out of testOnly and run the formatter", name, imported)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if looked == 0 {
+		t.Fatal("the walk found no Go file outside the tests, which cannot be right")
 	}
 }
 
@@ -196,4 +278,45 @@ func sections(text string) []string {
 		out = append(out, s.module)
 	}
 	return out
+}
+
+// outsideModule is whether the go tool leaves a directory out of ./..., which
+// it does for testdata, for vendor, for a name starting with a dot or an
+// underscore, and for a directory holding a go.mod of its own, since that one
+// is another module.
+func outsideModule(root fs.FS, dir string) bool {
+	base := path.Base(dir)
+	if base == "testdata" || base == "vendor" || strings.HasPrefix(base, ".") || strings.HasPrefix(base, "_") {
+		return true
+	}
+	_, err := fs.Stat(root, path.Join(dir, "go.mod"))
+	return err == nil
+}
+
+// importsOf is the paths a Go file imports, read from its header alone so that
+// a file which does not compile still answers.
+func importsOf(root fs.FS, name string) ([]string, error) {
+	src, err := fs.ReadFile(root, name)
+	if err != nil {
+		return nil, err
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), name, src, parser.ImportsOnly)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, spec := range file.Imports {
+		imported, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		out = append(out, imported)
+	}
+	return out, nil
+}
+
+// within is whether an import path names a package or one below it. A bare
+// prefix test would take hegel.dev/go/hegelx for a package of hegel.dev/go/hegel.
+func within(imported, root string) bool {
+	return imported == root || strings.HasPrefix(imported, root+"/")
 }

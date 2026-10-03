@@ -1,6 +1,8 @@
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
+github.com/ebitengine/purego v0.11.0-alpha.6.0.20260707033313-5f49e7c49322 h1:DRV0C+Y8n0cds50o0yWKHWLtfldN40JYRyPuXzSZ4Ac=
+github.com/ebitengine/purego v0.11.0-alpha.6.0.20260707033313-5f49e7c49322/go.mod h1:DCHPP08djqhNSoTfImcnHYQRZmd0qhakvrozqaEYhGQ=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
@@ -29,3 +31,5 @@ golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446/go.mod h1:rpwXGsir
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gvisor.dev/gvisor v0.0.0-20260815055033-7d8fb7f28de4 h1:LW5p5O3WcDFDdctq38E5jI9j1B1y10M/jUhE+yDmS44=
 gvisor.dev/gvisor v0.0.0-20260815055033-7d8fb7f28de4/go.mod h1:8aLQqUBHDH8fY5y60lzmwDpMMbQCcT3EBfoSwhfaGCY=
+hegel.dev/go/hegel v0.9.13 h1:kcRJFJTJCeUrcf1qmEx23WPA5hAJUVMArfMseD+NLgA=
+hegel.dev/go/hegel v0.9.13/go.mod h1:V/dVvRrW9MAzB7m1PLGgVnYtF/Psb4BvKCWkthw5eII=
