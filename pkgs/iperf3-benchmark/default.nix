@@ -9,8 +9,8 @@
 # CPUs even on an idle link, starving a tunnel on the same machine. Match the
 # ordinary UDP receiver's blocking behavior; pthread cancellation still stops
 # each worker when the test ends.
-iperf3.overrideAttrs (old: {
-  postPatch = (old.postPatch or "") + ''
+iperf3.overrideAttrs (prev: {
+  postPatch = (prev.postPatch or "") + ''
     substituteInPlace src/net.c \
       --replace-fail 'recvmsg(fd, &msg, MSG_DONTWAIT)' 'recvmsg(fd, &msg, 0)'
   '';
