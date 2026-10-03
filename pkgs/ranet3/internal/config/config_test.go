@@ -875,6 +875,30 @@ func TestBlockPresenceAgreesAcrossDecoders(t *testing.T) {
 	}
 }
 
+// Every format a configuration is written in is text, and a string that is not
+// UTF-8 survives none of them alike: toml refuses it, json rewrites it and
+// yaml carries it only as binary. A configuration built with one, in a name, a
+// path or a device, is refused by the path a file writes it under, rather than
+// taken and rendered into a file that does not load or loads as another node.
+func TestValidateRefusesAStringThatIsNotText(t *testing.T) {
+	for path, change := range map[string]func(*Config){
+		"node.name":             func(c *Config) { c.Node.Name = "lap\xfftop" },
+		"auth.key":              func(c *Config) { c.Auth.Key = "key\xfe.pem" },
+		"link.tun":              func(c *Config) { c.Link.TUN = "ranet\xff" },
+		"link.endpoints.serial": func(c *Config) { c.Link.Endpoints[0].Serial = "\xc3" },
+		"dial.to.name":          func(c *Config) { c.Dial.To[0].Name = "gate\xffway" },
+		"cap.table.vrf.name":    func(c *Config) { c.Cap.Table.VRF.Name = "mesh\xff" },
+	} {
+		t.Run(path, func(t *testing.T) {
+			cfg := fullConfig()
+			change(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), path) {
+				t.Errorf("refused with %v, want it refused by the path %s", err, path)
+			}
+		})
+	}
+}
+
 // link.underlay mark and cap.table rules are two halves of one setting, in two
 // blocks, with nothing in either to say the other is missing. A node that sets
 // the mark and forgets the rule marks its ESP socket, nothing reads the mark,
