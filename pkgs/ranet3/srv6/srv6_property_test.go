@@ -16,23 +16,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
-// integer is every type hegel draws integers of.
-type integer interface {
-	~int | ~int8 | ~int16 | ~int32 | ~int64 | ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr
-}
-
-// spanning draws from lo to hi, with the two ends drawn outright a quarter of
-// the time, so every run meets them rather than only a run whose sample
-// happens to land there.
-func spanning[T integer](lo, hi T) hegel.Generator[T] {
-	return hegel.Composite(func(tc hegel.TestCase) T {
-		if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
-			return hegel.Draw(tc, hegel.SampledFrom([]T{lo, hi}))
-		}
-		return hegel.Draw(tc, hegel.Integers(lo, hi))
-	})
-}
-
 // usableAddresses draws addresses CheckPath takes as a segment or a source.
 func usableAddresses() hegel.Generator[netip.Addr] {
 	return hegel.Filter(hegel.IPAddresses().IPv6(), Usable)
@@ -41,7 +24,7 @@ func usableAddresses() hegel.Generator[netip.Addr] {
 // usablePaths draws a segment list CheckPath accepts, one to MaxSegments long.
 func usablePaths() hegel.Generator[[]netip.Addr] {
 	return hegel.Composite(func(tc hegel.TestCase) []netip.Addr {
-		count := hegel.Draw(tc, spanning(1, MaxSegments))
+		count := hegel.Draw(tc, pbt.Spanning(1, MaxSegments))
 		return hegel.Draw(tc, hegel.Lists(usableAddresses()).MinSize(count).MaxSize(count))
 	})
 }
@@ -50,7 +33,7 @@ func usablePaths() hegel.Generator[[]netip.Addr] {
 // spread over the whole range rather than staying as short as byte strings
 // are drawn by default.
 func payloads(tc hegel.TestCase, limit int) string {
-	size := hegel.Draw(tc, spanning(0, limit))
+	size := hegel.Draw(tc, pbt.Spanning(0, limit))
 	return string(hegel.Draw(tc, hegel.Binary(size, size)))
 }
 
@@ -69,12 +52,12 @@ func innerPackets() hegel.Generator[[]byte] {
 	return hegel.Composite(func(tc hegel.TestCase) []byte {
 		if hegel.Draw(tc, hegel.Booleans()) {
 			raw := innerV4(payloads(tc, 1500-ipv4HeaderLen))
-			raw[1] = hegel.Draw(tc, spanning[byte](0, 0xff))
+			raw[1] = hegel.Draw(tc, pbt.Spanning[byte](0, 0xff))
 			raw[8] = hegel.Draw(tc, hopLimits())
 			return raw
 		}
 		raw := innerV6Hops(payloads(tc, 1500-ipv6HeaderLen), hegel.Draw(tc, hopLimits()))
-		binary.BigEndian.PutUint32(raw, 6<<28|hegel.Draw(tc, spanning[uint32](0, 1<<28-1)))
+		binary.BigEndian.PutUint32(raw, 6<<28|hegel.Draw(tc, pbt.Spanning[uint32](0, 1<<28-1)))
 		return raw
 	})
 }
@@ -146,7 +129,7 @@ func mangledPackets() hegel.Generator[[]byte] {
 				raw[hegel.Draw(tc, hegel.Integers(0, headers-1))] = hegel.Draw(tc, hegel.Integers[byte](0, 255))
 			}
 		case 2:
-			raw = raw[:hegel.Draw(tc, spanning(0, headers))]
+			raw = raw[:hegel.Draw(tc, pbt.Spanning(0, headers))]
 		case 3, 4:
 			at := lengths[0]
 			if len(lengths) > 1 && hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)) {
@@ -384,11 +367,11 @@ func TestEncapsulateInPlaceWritesWhatEncapsulateReturns(t *testing.T) {
 		inner := hegel.Draw(ht, mostly(innerPackets(), hegel.Binary(0, 64)))
 		source := hegel.Draw(ht, mostly(usableAddresses(), hegel.Generator[netip.Addr](hegel.IPAddresses())))
 		path := hegel.Draw(ht, mostly(usablePaths(), hegel.Lists(hegel.IPAddresses()).MaxSize(MaxSegments+1)))
-		offset := hegel.Draw(ht, spanning(0, 64))
+		offset := hegel.Draw(ht, pbt.Spanning(0, 64))
 		// the room past the packet, now and then too little for the header
-		room := Overhead(len(path)) + hegel.Draw(ht, spanning(0, 64))
+		room := Overhead(len(path)) + hegel.Draw(ht, pbt.Spanning(0, 64))
 		if hegel.Draw(ht, hegel.WeightedBooleans(1.0/8)) {
-			room = hegel.Draw(ht, spanning(0, Overhead(len(path))-1))
+			room = hegel.Draw(ht, pbt.Spanning(0, Overhead(len(path))-1))
 		}
 
 		want, wantErr := Encapsulate(inner, source, path)

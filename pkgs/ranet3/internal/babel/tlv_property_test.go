@@ -163,29 +163,12 @@ func (s said) heard(got []RawTLV, prefixes *PrefixDecoder) error {
 	return nil
 }
 
-// integer is every type hegel draws integers of.
-type integer interface {
-	~int | ~int8 | ~int16 | ~int32 | ~int64 | ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr
-}
-
-// spanning draws from lo to hi, with the two ends drawn outright a quarter of
-// the time, so every run meets them rather than only a run whose sample
-// happens to land there.
-func spanning[T integer](lo, hi T) hegel.Generator[T] {
-	return hegel.Composite(func(tc hegel.TestCase) T {
-		if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
-			return hegel.Draw(tc, hegel.SampledFrom([]T{lo, hi}))
-		}
-		return hegel.Draw(tc, hegel.Integers(lo, hi))
-	})
-}
-
 // maskedPrefixes draws a masked prefix over addresses, from the default route
 // to a single host.
 func maskedPrefixes(addresses hegel.Generator[netip.Addr]) hegel.Generator[netip.Prefix] {
 	return hegel.Composite(func(tc hegel.TestCase) netip.Prefix {
 		address := hegel.Draw(tc, addresses)
-		return netip.PrefixFrom(address, hegel.Draw(tc, spanning(0, address.BitLen()))).Masked()
+		return netip.PrefixFrom(address, hegel.Draw(tc, pbt.Spanning(0, address.BitLen()))).Masked()
 	})
 }
 
@@ -201,7 +184,7 @@ func routeKeys() hegel.Generator[routeKey] {
 				addresses = hegel.IPAddresses().IPv4()
 			}
 			source := hegel.Draw(tc, addresses)
-			key.source = netip.PrefixFrom(source, hegel.Draw(tc, spanning(1, source.BitLen()))).Masked()
+			key.source = netip.PrefixFrom(source, hegel.Draw(tc, pbt.Spanning(1, source.BitLen()))).Masked()
 		}
 		return key
 	})
@@ -214,16 +197,16 @@ func learnedKeys() hegel.Generator[routeKey] {
 	return hegel.Filter(routeKeys(), func(key routeKey) bool { return !key.dest.Addr().Is4In6() })
 }
 
-func uint16s() hegel.Generator[uint16] { return spanning[uint16](0, 0xffff) }
+func uint16s() hegel.Generator[uint16] { return pbt.Spanning[uint16](0, 0xffff) }
 
-func uint32s() hegel.Generator[uint32] { return spanning[uint32](0, 0xffffffff) }
+func uint32s() hegel.Generator[uint32] { return pbt.Spanning[uint32](0, 0xffffffff) }
 
 // routeSaids draws a route as the speaker advertises it, every update
 // interval Config.Validate allows, 10ms to maxInterval, among them.
 func routeSaids() hegel.Generator[said] {
 	return hegel.Composite(func(tc hegel.TestCase) said {
 		route := routeSaid{key: hegel.Draw(tc, routeKeys()),
-			interval: hegel.Draw(tc, spanning(10*time.Millisecond, maxInterval))}
+			interval: hegel.Draw(tc, pbt.Spanning(10*time.Millisecond, maxInterval))}
 		copy(route.adv.routerID[:], hegel.Draw(tc, hegel.Binary(8, 8)))
 		route.adv.seqno, route.adv.metric = hegel.Draw(tc, uint16s()), hegel.Draw(tc, uint16s())
 		return said{route}
@@ -268,7 +251,7 @@ func saids() hegel.Generator[said] {
 		case 6:
 			key := hegel.Draw(tc, learnedKeys())
 			request := SeqnoRequest{AE: aeFor(key.dest), Prefix: key.dest, SourcePrefix: key.source,
-				Seqno: hegel.Draw(tc, uint16s()), HopCount: hegel.Draw(tc, spanning[uint8](0, 255))}
+				Seqno: hegel.Draw(tc, uint16s()), HopCount: hegel.Draw(tc, pbt.Spanning[uint8](0, 255))}
 			copy(request.RouterID[:], hegel.Draw(tc, hegel.Binary(8, 8)))
 			return said{request}
 		case 7:
@@ -387,7 +370,7 @@ func addressed() hegel.Generator[[]byte] {
 				full := f.length + 16 + 8
 				body := hegel.Draw(tc, hegel.Binary(full, full))
 				body[0] = ae
-				tlvs = append(tlvs, RawTLV{Type: f.tlv, Body: body[:hegel.Draw(tc, spanning(0, full))]})
+				tlvs = append(tlvs, RawTLV{Type: f.tlv, Body: body[:hegel.Draw(tc, pbt.Spanning(0, full))]})
 			}
 		}
 		return EncodePacket(tlvs)
@@ -415,9 +398,9 @@ func compressed() hegel.Generator[[]byte] {
 			width := first.Addr().BitLen()
 			tlvs = append(tlvs, EncodeUpdate(Update{AE: ae, Plen: first.Bits(), Interval: 100, Prefix: first.Addr().AsSlice()}))
 			for range hegel.Draw(tc, hegel.Integers(1, 3)) {
-				plen := hegel.Draw(tc, hegel.OneOf(hegel.SampledFrom([]int{width, width + 1}), spanning(0, width+8)))
+				plen := hegel.Draw(tc, hegel.OneOf(hegel.SampledFrom([]int{width, width + 1}), pbt.Spanning(0, width+8)))
 				covered := prefixByteLen(plen)
-				omitted := hegel.Draw(tc, hegel.OneOf(hegel.SampledFrom([]int{covered, covered + 1}), spanning(0, width/8+2)))
+				omitted := hegel.Draw(tc, hegel.OneOf(hegel.SampledFrom([]int{covered, covered + 1}), pbt.Spanning(0, width/8+2)))
 				size := max(0, covered-omitted)
 				sent := hegel.Draw(tc, hegel.Binary(size, size))
 				if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
@@ -546,7 +529,7 @@ func TestPacketParserNeverPanicsOnArbitraryBytes(t *testing.T) {
 		// up to what a 1500 byte packet leaves after its two headers
 		const most = 1500 - ipv6HeaderLen - udpHeaderLen
 		drawn := func(tc hegel.TestCase, limit int) []byte {
-			size := hegel.Draw(tc, spanning(0, limit))
+			size := hegel.Draw(tc, pbt.Spanning(0, limit))
 			return hegel.Draw(tc, hegel.Binary(size, size))
 		}
 		var payload []byte
