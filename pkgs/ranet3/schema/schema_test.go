@@ -174,6 +174,18 @@ func TestBothDecodersRefuseTheSameSpellings(t *testing.T) {
 			asYAML: "announce: [{ from: 2001:db8::/48 }]\n",
 			asTOML: "announce = [{ from = \"2001:db8::/48\" }]\n",
 		},
+		// The strict decoder refuses a key written twice in every other
+		// mapping in a file, and toml refuses it here too, so a yaml
+		// announcement taking the last of two would announce a prefix or a
+		// source the file names alongside another and say nothing.
+		"an announcement with its prefix written twice": {
+			asYAML: "announce: [{ prefix: \"::/0\", prefix: 2001:db8::/48 }]\n",
+			asTOML: "announce = [{ prefix = \"::/0\", prefix = \"2001:db8::/48\" }]\n",
+		},
+		"an announcement with its source written twice": {
+			asYAML: "announce: [{ prefix: \"::/0\", from: 2001:db8::/48, from: 2001:db8:1::/48 }]\n",
+			asTOML: "announce = [{ prefix = \"::/0\", from = \"2001:db8::/48\", from = \"2001:db8:1::/48\" }]\n",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := decodeYAML(t, pair.asYAML); err == nil {
@@ -181,6 +193,69 @@ func TestBothDecodersRefuseTheSameSpellings(t *testing.T) {
 			}
 			if _, err := decodeTOML(t, pair.asTOML); err == nil {
 				t.Errorf("toml took %q", pair.asTOML)
+			}
+		})
+	}
+}
+
+// An alias reads inside an announcement as it reads everywhere else in a file,
+// in a value and in a key. The decoder follows one before it hands a node to
+// an unmarshaler, while the announcement's own walk handed the alias node on:
+// the prefix refused it as a scalar written as an alias, and a key written as
+// an alias was read by its alias name and refused as an unknown field.
+//
+// A key written twice is refused when one of the two is an alias as well,
+// and the refusal names the lines the two are written on, the second first.
+// Compared by its alias name, the second spelling would replace the first
+// without a word, and a line read from the anchor would name a line in
+// another announcement.
+func TestAnnouncementFollowsAnAlias(t *testing.T) {
+	for name, one := range map[string]struct {
+		written string
+		want    []Announce
+		refused string
+	}{
+		"a source written as an alias": {
+			written: "prefix: &p 2001:db8::/48\nannounce: [{ prefix: \"::/0\", from: *p }]\n",
+			want:    []Announce{{Prefix: MustPrefix("::/0"), From: MustPrefix("2001:db8::/48")}},
+		},
+		"an announcement written as an alias": {
+			written: "prefix: &p 2001:db8::/48\nannounce: [*p]\n",
+			want:    []Announce{{Prefix: MustPrefix("2001:db8::/48")}},
+		},
+		"a key written as an alias": {
+			written: "announce:\n  - { prefix: \"::/0\", &k from: 2001:db8::/48 }\n  - { prefix: \"::/0\", *k : 2001:db8:1::/48 }\n",
+			want: []Announce{
+				{Prefix: MustPrefix("::/0"), From: MustPrefix("2001:db8::/48")},
+				{Prefix: MustPrefix("::/0"), From: MustPrefix("2001:db8:1::/48")},
+			},
+		},
+		"a key written twice through an alias": {
+			written: "announce:\n  - { prefix: \"::/0\", &k from: 2001:db8::/48, *k : 2001:db8:1::/48 }\n",
+			refused: `line 2: mapping key "from" already defined at line 2`,
+		},
+		"a key written again through an alias anchored in another announcement": {
+			written: "announce:\n  - { prefix: \"::/0\", &k from: 2001:db8::/48 }\n  - prefix: \"::/0\"\n    from: 2001:db8:1::/48\n    *k : 2001:db8:2::/48\n",
+			refused: `line 5: mapping key "from" already defined at line 4`,
+		},
+		"a key first written through an alias anchored in another announcement": {
+			written: "announce:\n  - { prefix: \"::/0\", &k from: 2001:db8::/48 }\n  - prefix: \"::/0\"\n    *k : 2001:db8:1::/48\n    from: 2001:db8:2::/48\n",
+			refused: `line 5: mapping key "from" already defined at line 4`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := decodeYAML(t, one.written)
+			if one.refused != "" {
+				if err == nil || err.Error() != one.refused {
+					t.Fatalf("read %v with the error %v, want the refusal %q", got.Announce, err, one.refused)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("an alias was refused: %v", err)
+			}
+			if !slices.Equal(got.Announce, one.want) {
+				t.Errorf("read %v, want %v", got.Announce, one.want)
 			}
 		})
 	}
