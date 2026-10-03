@@ -379,7 +379,9 @@ func removeValue[V comparable](n *trieNode[V], value V) *trieNode[V] {
 func (t *Table[V]) Lookup(src, dst netip.Addr) (V, bool) {
 	var result V
 	current := t.roots.Load()
-	if current == nil || !dst.IsValid() {
+	// A zoned destination is inside no prefix, as Prefix.Contains has it,
+	// which is also how a zoned source is read below.
+	if current == nil || !dst.IsValid() || dst.Zone() != "" {
 		return result, false
 	}
 	n := current.ipv6

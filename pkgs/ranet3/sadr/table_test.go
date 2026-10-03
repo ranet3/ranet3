@@ -88,6 +88,24 @@ func TestZonedSourceMatchesNoSourcePrefix(t *testing.T) {
 	}
 }
 
+// A zoned destination is inside no prefix either, as Prefix.Contains has it.
+// It was looked up by its address alone, so one Lookup ignored the zone on its
+// destination while honoring it on its source, and a zoned destination
+// matched routes a zoned source could not.
+func TestZonedDestinationMatchesNoPrefix(t *testing.T) {
+	var table Table[int]
+	table.Set(netip.Prefix{}, prefix("1000::/4"), 1)
+	table.Set(prefix("2000::/4"), prefix("1000::/4"), 2)
+	for _, from := range []netip.Addr{addr("2000::1"), addr("2000::1%eth0"), {}} {
+		if got, ok := table.Lookup(from, addr("1000::1%eth0")); ok {
+			t.Errorf("from %v, a zoned destination matched the entry holding %d", from, got)
+		}
+	}
+	if got, ok := table.Lookup(addr("2000::1"), addr("1000::1")); !ok || got != 2 {
+		t.Errorf("the same destination without its zone answered %d, %v, want 2", got, ok)
+	}
+}
+
 func TestTableFallsBackPastInapplicableDestination(t *testing.T) {
 	var table Table[string]
 	table.Set(netip.Prefix{}, prefix("2001:db8::/32"), "fallback")
