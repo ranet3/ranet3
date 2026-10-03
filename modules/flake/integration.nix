@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: FSL-1.1-ALv2
 
+{ inputs, ... }:
+
 {
   perSystem =
     { pkgs, ... }:
@@ -11,13 +13,7 @@
       _module.args.nixosTest =
         args:
         pkgs.testers.runNixOSTest (
-          import ../../integration/nixos-test.nix (
-            {
-              inherit pkgs;
-              ranet3 = pkgs.ranet3;
-            }
-            // args
-          )
+          import ../../integration/nixos-test.nix ({ inherit inputs pkgs; } // args)
         );
     };
 }
