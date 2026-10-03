@@ -7,6 +7,7 @@ import (
 	"encoding"
 	"encoding/json"
 	"math"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -322,6 +323,47 @@ func TestJSONTakesTheBareNumbersAFileTakes(t *testing.T) {
 	var overWire holder
 	if err := json.Unmarshal([]byte(`{"table": null, "interval": null}`), &overWire); err != nil || !equal(overWire, holder{}) {
 		t.Errorf("json read null as %+v, %v", overWire, err)
+	}
+}
+
+// An address written here names a host and never a link: every field typed
+// Addr is a segment, a segment source or a preferred source. A zone is refused
+// by every decoder rather than carried, since the segment checks refused one
+// anyway and the reconciler dropped one from a preferred source without a
+// word, and a value carrying one has no spelling, so no marshaller writes a
+// file the decoders would then refuse.
+func TestAddressCarryingAZoneIsRefused(t *testing.T) {
+	for _, written := range []string{"fe80::1%eth0", "::ffff:10.66.0.5%eth0", "2001:db8::1%1"} {
+		t.Run(written, func(t *testing.T) {
+			if got, err := ParseAddr(written); err == nil {
+				t.Errorf("the text form took it as %v", got)
+			}
+			var overWire holder
+			if err := json.Unmarshal([]byte(`{"address": "`+written+`"}`), &overWire); err == nil {
+				t.Errorf("json took it as %v", overWire.Address)
+			}
+			if got, err := decodeYAML(t, "address: "+written+"\n"); err == nil {
+				t.Errorf("yaml took it as %v", got.Address)
+			}
+			if got, err := decodeTOML(t, "address = \""+written+"\"\n"); err == nil {
+				t.Errorf("toml took it as %v", got.Address)
+			}
+
+			zoned := map[string]Addr{"address": AddrFrom(netip.MustParseAddr(written))}
+			if text, err := zoned["address"].MarshalText(); err == nil {
+				t.Errorf("the text form wrote %q", text)
+			}
+			if body, err := json.Marshal(zoned); err == nil {
+				t.Errorf("json wrote %s", body)
+			}
+			if body, err := yaml.Marshal(zoned); err == nil {
+				t.Errorf("yaml wrote %s", body)
+			}
+			var asTOML strings.Builder
+			if err := toml.NewEncoder(&asTOML).Encode(zoned); err == nil {
+				t.Errorf("toml wrote %s", asTOML.String())
+			}
+		})
 	}
 }
 

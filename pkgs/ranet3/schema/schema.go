@@ -192,10 +192,13 @@ func ComparePrefix(a, b Prefix) int {
 // CompareAddr orders two addresses, and is there for the same reason.
 func CompareAddr(a, b Addr) int { return a.Addr.Compare(b.Addr) }
 
-// Addr is one address, with no prefix length and no zone.
+// Addr is one address, with no prefix length and no zone. Every field written
+// as one names a host, a segment or a source and never a link, so a zone is
+// refused by name rather than carried somewhere it means nothing.
 type Addr struct{ netip.Addr }
 
-// AddrFrom carries a parsed address into the file's spelling of one.
+// AddrFrom carries a parsed address into the file's spelling of one. An
+// address carrying a zone has no spelling, and every marshaller refuses it.
 func AddrFrom(address netip.Addr) Addr { return Addr{address} }
 
 func ParseAddr(s string) (Addr, error) {
@@ -203,11 +206,20 @@ func ParseAddr(s string) (Addr, error) {
 	if err != nil {
 		return Addr{}, err
 	}
+	if address.Zone() != "" {
+		return Addr{}, fmt.Errorf("address %q carries a zone, and an address written here names no link", s)
+	}
 	return Addr{address}, nil
 }
 
 // MustAddr is ParseAddr for a literal written in this tree.
-func MustAddr(s string) Addr { return Addr{netip.MustParseAddr(s)} }
+func MustAddr(s string) Addr {
+	address, err := ParseAddr(s)
+	if err != nil {
+		panic(err)
+	}
+	return address
+}
 
 // IsZero is Prefix.IsZero for an address, and is there for the same reason.
 func (a Addr) IsZero() bool { return !a.IsValid() }
@@ -224,6 +236,10 @@ func (a *Addr) UnmarshalText(text []byte) error {
 func (a Addr) MarshalText() ([]byte, error) {
 	if !a.IsValid() {
 		return nil, fmt.Errorf("schema: an address carrying no value has no spelling")
+	}
+	// Refused rather than written, since no decoder here reads one back.
+	if a.Zone() != "" {
+		return nil, fmt.Errorf("schema: address %s carries a zone, which has no spelling", a.Addr)
 	}
 	return []byte(a.String()), nil
 }
