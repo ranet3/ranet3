@@ -14,10 +14,12 @@ runCommand "ranet3-docs"
     src =
       with lib.fileset;
       toSource {
-        root = ./.;
+        root = ../..;
         fileset = unions [
           ./pages
           ./site.yaml
+          ../../licenses/CC-BY-4.0.txt
+          ../../licenses/MIT.txt
         ];
       };
     nativeBuildInputs = [
@@ -31,13 +33,14 @@ runCommand "ranet3-docs"
   }
   ''
     dest="$out/share/ranet3-docs"
-    mkdir -p "$dest"
-    cp -r "$src/pages" "$src/site.yaml" "$dest/"
+    mkdir -p "$dest/licenses"
+    cp -r "$src/pkgs/ranet3-docs/pages" "$src/pkgs/ranet3-docs/site.yaml" "$dest/"
+    cp "$src/licenses/CC-BY-4.0.txt" "$src/licenses/MIT.txt" "$dest/licenses/"
     # each value taken from site.yaml is escaped for html, and a missing one
     # fails the build rather than printing null
-    metas="$(yq -e -o=json '.metas' "$src/site.yaml" | jq -r 'to_entries[] | @html "<meta name=\"\(.key)\" content=\"\(.value)\">"')"
-    repository="$(yq -e -o=json '.repository' "$src/site.yaml" | jq -r '@html')"
-    title="$(yq -e -o=json '.title' "$src/site.yaml" | jq -r '@html')"
+    metas="$(yq -e -o=json '.metas' "$src/pkgs/ranet3-docs/site.yaml" | jq -r 'to_entries[] | @html "<meta name=\"\(.key)\" content=\"\(.value)\">"')"
+    repository="$(yq -e -o=json '.repository' "$src/pkgs/ranet3-docs/site.yaml" | jq -r '@html')"
+    title="$(yq -e -o=json '.title' "$src/pkgs/ranet3-docs/site.yaml" | jq -r '@html')"
     for page in index 404; do
       {
         echo '<!doctype html>'

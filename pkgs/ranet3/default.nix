@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Yifei Sun
+# SPDX-License-Identifier: FSL-1.1-ALv2
+
 {
   inputs,
   lib,
@@ -13,6 +16,10 @@ in
 buildGoApplication (
   lib.fix (finalAttrs: {
     meta.mainProgram = finalAttrs.pname;
+    meta.license = with lib.licenses; [
+      fsl11Asl20
+      mit
+    ];
     pname = "ranet3";
     version = lib.fileContents ./version.txt;
 
@@ -39,6 +46,7 @@ buildGoApplication (
           # meta
           ./go.mod
           ./go.sum
+          ./license.txt
           ./version.txt
         ];
       };

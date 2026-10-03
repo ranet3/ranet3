@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 // Package netstack wires a real Linux TUN device to the ranet mesh: outbound
 // packets the kernel routes to it are forwarded to whichever peer's Child SA
 // can reach the destination (see RouteTable), and inbound packets decrypted

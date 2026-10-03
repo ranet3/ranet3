@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 // Package client owns the mesh runtime: peer reconnection, IKE/ESP lifetimes,
 // and Babel registration. The command only handles flags, signals and logging.
 package client

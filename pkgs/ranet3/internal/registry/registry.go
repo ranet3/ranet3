@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 // Package registry reads ranet's own registry and key file formats
 // unchanged, so a ranet3 deployment can point at the exact same
 // registry.json and Ed25519 keys an existing ranet mesh already uses.

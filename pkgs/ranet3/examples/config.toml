@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Yifei Sun
+# SPDX-License-Identifier: FSL-1.1-ALv2
+
 # Example ranet3 configuration, and the reference for every key it takes.
 # See examples/config.yaml for the same schema under the other decoder: .toml
 # goes to the TOML parser, .yaml, .yml and .json to the YAML one, and the keys

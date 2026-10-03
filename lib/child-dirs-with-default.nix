@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Yifei Sun
+# SPDX-License-Identifier: MIT
+
 # Adapted from stepbrobd/inc, MIT.
 { lib }:
 

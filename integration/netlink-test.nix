@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Yifei Sun
+# SPDX-License-Identifier: FSL-1.1-ALv2
+
 # The netlink round trips in internal/kernel and internal/egress need root and
 # a network namespace to make a mess in, so they skip themselves under the go
 # check, which builds as an unprivileged user. That left every rule and VRF

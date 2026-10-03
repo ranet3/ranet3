@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 // Command ranet3 connects a real TUN device to a ranet mesh through
 // userspace IKEv2/ESP and an embedded Babel speaker. Babel exchanges control
 // packets inside ESP. Address and route configuration are external unless the

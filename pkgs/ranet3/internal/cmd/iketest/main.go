@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 // iketest is a throwaway interop-test harness: it runs one IKEv2 initiator
 // handshake against a real strongSwan responder and prints the negotiated
 // Child SA. Used to validate package ike against the netns test rig before

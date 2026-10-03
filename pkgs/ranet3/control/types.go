@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: FSL-1.1-ALv2
+
 // Package control is the wire format of a running node's live view and of the
 // few verbs that act on it, the client that speaks it and the server that
 // answers. The daemon serves JSON over a unix socket and the same binary's

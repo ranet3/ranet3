@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+
 // Package babel implements RFC 8966 over ESP tunnels. It originates local
 // prefixes, learns ordinary and source-specific routes, and re-advertises the
 // routes it selects. Control packets bypass the TUN.

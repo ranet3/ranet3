@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Nick Cao
+// SPDX-License-Identifier: MIT
+
 // gendn prints the strongSwan "asn1dn:#hex" identity string for a given
 // organization/common-name/serial-number triple, using the exact same DER
 // encoding the ike package uses for IDi/IDr payloads. Used to build test

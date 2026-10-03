@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: FSL-1.1-ALv2
+
 // Package egress translates the source address of a packet the mesh hands to
 // this node and lets the host forward it by its ordinary routes. It is the one
 // action behind an exit node and a subnet router: an exit advertises a default
