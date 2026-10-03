@@ -28,6 +28,6 @@ exclude = [
   # in front of vet and staticcheck there that no linux run ever compiles.
   "checks.aarch64-darwin.tree",
 
-  "packages.*.*",             # the same derivation as legacyPackages.*.ranet3
-  "legacyPackages.*.profile", # on demand, never in CI
+  "packages.*.*",                # the same derivation as legacyPackages.*.ranet3
+  "legacyPackages.*.profile.**", # on demand, never in CI
 ]
