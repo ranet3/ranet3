@@ -205,13 +205,11 @@ func decodeChildProposal(body []byte, expected *ChildSA) (Proposal, Transform, u
 	// echoes only what it was offered, which is the rule read from the other
 	// side.
 	//
-	// The count is a statement of the shape rather than the thing that
-	// enforces it: the switch below refuses every type the offer did not name
-	// and the two flags refuse a repeat, so nothing reaches this that the rest
-	// would let through. It stays because the rule is "one of each type the
-	// offer included" and that is easier to read as a number than as the
-	// absence of three other refusals.
-	if p.Number != 1 || p.Protocol != ProtoESP || len(p.SPI) != 4 || len(p.Transforms) != 2 {
+	// Nothing here counts the transforms. The switch below refuses every type
+	// the offer did not name, the two flags refuse a repeat, and the check
+	// after the loop refuses an answer that leaves one out, which together
+	// hold the answer to one of each.
+	if p.Number != 1 || p.Protocol != ProtoESP || len(p.SPI) != 4 {
 		return Proposal{}, Transform{}, 0, fmt.Errorf("ike: invalid Child SA proposal shape")
 	}
 	remoteSPI := binary.BigEndian.Uint32(p.SPI)

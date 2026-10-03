@@ -254,6 +254,25 @@ func TestChildAnswerIsCheckedAgainstWhatThisEndOffered(t *testing.T) {
 	}
 }
 
+// One of each type the offer included rules out an answer that leaves a type
+// out as much as one that adds a type, and RFC 7296 section 3.3.3 makes both
+// of the types espProposal names mandatory for ESP.
+func TestChildAnswerMissingAnOfferedTypeIsRefused(t *testing.T) {
+	spi := []byte{0, 0, 0, 9}
+	for name, transforms := range map[string][]Transform{
+		"no esn":    {{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 256}},
+		"no cipher": {{Type: TransESN, ID: ESN_NO}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			answer := EncodeSA([]Proposal{{Number: 1, Protocol: ProtoESP, SPI: spi, Transforms: transforms}})
+			_, _, _, err := decodeChildProposal(answer, nil)
+			if err == nil || !strings.Contains(err.Error(), "incomplete Child SA proposal") {
+				t.Errorf("an answer without every offered type got %v, want it refused as incomplete", err)
+			}
+		})
+	}
+}
+
 // This is a drift guard on the offer, not a test of the reader: the reader
 // knows two transform types, and a type added to espProposal has to be added
 // to it in the same change, or every answer to the new offer is refused as
