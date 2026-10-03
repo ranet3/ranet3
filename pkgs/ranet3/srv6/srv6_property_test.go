@@ -166,8 +166,8 @@ func mangledPackets() hegel.Generator[[]byte] {
 // units past it. Those are where findRouting and Parse decide between a
 // header they can read and one they must refuse, and mangledPackets reaches
 // them only now and then. Where there is an extension header, the one in
-// front of the routing header is the one lying half the time, since only its
-// length carries the walk on to the routing header.
+// front of the routing header is the one lying in at least half the draws,
+// since only its length carries the walk on to the routing header.
 func lyingLengths() hegel.Generator[[]byte] {
 	return hegel.Composite(func(tc hegel.TestCase) []byte {
 		inner := hegel.Draw(tc, innerPackets())
