@@ -727,6 +727,11 @@ func scalarTypes(ty reflect.Type, found map[reflect.Type]bool) {
 // digits is every number a file writes as one digit.
 var digits = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
 
+// edgeNumerals is the numbers a decoder is likeliest to read differently: a
+// signed zero, a negative, the ends of a table's range and one past it, and
+// the words toml reads as numbers.
+var edgeNumerals = []string{"0", "+0", "-0", "-1", "254", "4294967295", "4294967296", "inf", "nan"}
+
 // numerals draws a number as a file might write one: a single digit, an
 // integer up to 255, a decimal integer with or without a sign or digit
 // separators, one in another base, a fraction or an exponent, a word toml
@@ -736,8 +741,8 @@ var digits = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
 // run of digits almost never lands on one. A digit is one integer draw
 // whichever way it is written, as one of ten spellings or as an integer up to
 // 9, and the engine spreads that draw so unevenly that a run leaves some
-// digits out. The test reads every digit before it draws, and that sweep
-// alone makes sure each one is read.
+// digits out. The test reads every digit and every edge before it draws, and
+// that sweep alone makes sure each one is read.
 func numerals() hegel.Generator[string] {
 	run := func(alphabet string) hegel.Generator[string] {
 		return hegel.Text().Alphabet(alphabet).MinSize(1).MaxSize(12)
@@ -746,7 +751,7 @@ func numerals() hegel.Generator[string] {
 	return hegel.OneOf(
 		hegel.SampledFrom(digits),
 		hegel.Map(hegel.Integers(0, 255), strconv.Itoa),
-		hegel.SampledFrom([]string{"0", "+0", "-0", "-1", "254", "4294967295", "4294967296", "inf", "nan"}),
+		hegel.SampledFrom(edgeNumerals),
 		hegel.Composite(func(tc hegel.TestCase) string {
 			return hegel.Draw(tc, sign) + hegel.Draw(tc, run("0123456789_"))
 		}),
@@ -785,11 +790,11 @@ func TestEveryScalarReadsABareNumberAlike(t *testing.T) {
 	found := make(map[reflect.Type]bool)
 	scalarTypes(reflect.TypeFor[Config](), found)
 	types := slices.SortedFunc(maps.Keys(found), func(a, b reflect.Type) int { return strings.Compare(a.String(), b.String()) })
-	// every digit is read before anything is drawn, since a run leaves some
-	// digits undrawn and a scalar taking one digit, a family as 4, is the
-	// likeliest to take a number at all
-	for _, digit := range digits {
-		readsAlike(t, types, digit)
+	// every digit and every edge is read before anything is drawn, since a run
+	// leaves some of each undrawn, and a scalar taking one of them, a family as
+	// 4 or a table as 254, is the likeliest to take a number at all
+	for _, numeral := range slices.Concat(digits, edgeNumerals) {
+		readsAlike(t, types, numeral)
 	}
 	pbt.Check(t, func(ht *hegel.T) {
 		readsAlike(ht, types, hegel.Draw(ht, numerals()))
