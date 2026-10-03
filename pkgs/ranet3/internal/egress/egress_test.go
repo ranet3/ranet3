@@ -432,6 +432,19 @@ func TestValidateRefusesWhatCannotBeTranslated(t *testing.T) {
 			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Source4: Source{Addr: netip.MustParseAddr("::ffff:198.51.100.7")}},
 			"written as IPv6, so write it as 198.51.100.7",
 		},
+		// The decoder refuses a zone, so a source carrying one renders to a
+		// file that does not load. Only the IPv4-mapped spelling of a source4
+		// can carry one, and the zone is the refusal it is told about first.
+		{
+			"a source6 carrying a zone",
+			Egress{Advertise: prefixes(t, "::/0"), Source6: Source{Addr: netip.MustParseAddr("2001:db8::1%eth0")}},
+			"carries a zone",
+		},
+		{
+			"a source4 carrying a zone",
+			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Source4: Source{Addr: netip.MustParseAddr("::ffff:198.51.100.7%eth0")}},
+			"carries a zone",
+		},
 		{
 			"a source nothing can reply to",
 			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Source4: Source{Addr: netip.MustParseAddr("127.0.0.1")}},
