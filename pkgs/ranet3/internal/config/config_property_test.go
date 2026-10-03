@@ -652,14 +652,9 @@ func TestValidatedEgressSourceReadsBackFromItsFile(t *testing.T) {
 // or a steering selector that is set and is not a prefix. A configuration
 // carrying none of them reads back unchanged. One carrying one of them has to
 // be refused, and since the configuration without it was taken, the refusal
-// is the value's own. While those packages take the values, the second half
-// fails, which is the skip below. Once they refuse them both halves hold, and
-// most cases still reach the round trip rather than every one being refused.
-// Shrunk, while they were taken: an announcement with no prefix, ::/0 from
-// 0.0.0.0 under a length it cannot carry, quality 2, and a steering entry from
-// 0.0.0.0/1 whose to is 0.0.0.0 under a length it cannot carry.
+// is the value's own. Most cases still reach the round trip rather than every
+// one being refused.
 func TestValidatedRouteSpeakerAndSegmentsReadBackFromTheirFile(t *testing.T) {
-	t.Skip("babel and srv6: Validate takes a prefix with no spelling and a link quality other than etx and none")
 	pbt.Check(t, func(ht *hegel.T) {
 		drawn := hegel.Draw(ht, nodes())
 		drawn.Dial.All = true
