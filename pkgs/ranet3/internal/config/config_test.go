@@ -895,9 +895,14 @@ func TestUnderlayMarkNeedsTheRuleThatReadsIt(t *testing.T) {
 			asYAML: "cap:\n  table:\n    id: 200\n    rules: [{ fwmark: 0x726c, table: 200, priority: 40, family: both }]\n",
 			asTOML: "[cap.table]\nid = 200\nrules = [{ fwmark = 0x726c, table = 200, priority = 40, family = \"both\" }]\n",
 		},
-		"a rule's mask masks it out": {
-			asYAML: "cap:\n  table:\n    rules: [{ fwmark: 0x726c, fwmask: 0xff0000, table: main, priority: 40, family: both }]\n",
-			asTOML: "[cap.table]\nrules = [{ fwmark = 0x726c, fwmask = 0xff0000, table = \"main\", priority = 40, family = \"both\" }]\n",
+		// The mask compares the third byte alone, and this rule takes the
+		// marks whose third byte is 1, so the socket's 0x726c is not among
+		// them. The case used to write 0x726c under the same mask, which the
+		// kernel does match the socket's mark against, since it never compares
+		// the bits of a rule's mark outside its mask.
+		"a rule's mask selects another mark": {
+			asYAML: "cap:\n  table:\n    rules: [{ fwmark: 0x10000, fwmask: 0xff0000, table: main, priority: 40, family: both }]\n",
+			asTOML: "[cap.table]\nrules = [{ fwmark = 0x10000, fwmask = 0xff0000, table = \"main\", priority = 40, family = \"both\" }]\n",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -924,6 +929,13 @@ func TestUnderlayMarkNeedsTheRuleThatReadsIt(t *testing.T) {
 		if _, err := loadYAML(t, body); err != nil {
 			t.Errorf("the documented rule was refused with table %s: %v", table, err)
 		}
+	}
+	// So does a rule whose mark has bits outside its mask, when the bits it
+	// compares agree: the kernel takes every mark whose third byte is zero
+	// under 0x726c/0xff0000, the socket's included, and the refusal used to
+	// say no rule read it.
+	if _, err := loadYAML(t, markedYAML+"cap:\n  table:\n    rules: [{ fwmark: 0x726c, fwmask: 0xff0000, table: main, priority: 40, family: both }]\n"); err != nil {
+		t.Errorf("a rule the kernel matches the mark against was refused: %v", err)
 	}
 	// A node that writes no cap.table writes no rules either, so the rule is
 	// installed by whatever configures its routes and this file cannot see it.
