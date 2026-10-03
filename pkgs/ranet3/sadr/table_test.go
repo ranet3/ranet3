@@ -60,6 +60,34 @@ func TestTableIPv4AndIPv6(t *testing.T) {
 	}
 }
 
+// A zoned address is inside no prefix, as Prefix.Contains has it, so a zoned
+// source matches only the match-all entry. The scan of a destination's sources
+// reads it that way. The index of one holding four sources of a length dropped
+// the zone and answered with the source the address falls in without it, so
+// the answer turned on how many sources the destination happened to hold.
+func TestZonedSourceMatchesNoSourcePrefix(t *testing.T) {
+	zoned := addr("1000::%eth0")
+	for _, sources := range []int{3, 4} {
+		var table Table[int]
+		for i := range sources {
+			table.Set(netip.PrefixFrom(netip.AddrFrom16([16]byte{byte(i) << 4}), 4), prefix("::/0"), i+1)
+		}
+		// Both readings are only asked if the four are indexed and the three
+		// scanned, which indexThreshold decides, so that is checked first.
+		if node := table.roots.Load().ipv6; node.prefixLen != 0 || (node.index() != nil) != (sources == 4) {
+			t.Fatalf("with %d sources the node at length %d is indexed %v, want %v",
+				sources, node.prefixLen, node.index() != nil, sources == 4)
+		}
+		if got, ok := table.Lookup(zoned, addr("::")); ok {
+			t.Errorf("with %d sources, %v matched the entry holding %d", sources, zoned, got)
+		}
+		table.Set(netip.Prefix{}, prefix("::/0"), 99)
+		if got, ok := table.Lookup(zoned, addr("::")); !ok || got != 99 {
+			t.Errorf("with %d sources, %v answered %d, %v, want the match-all entry", sources, zoned, got, ok)
+		}
+	}
+}
+
 func TestTableFallsBackPastInapplicableDestination(t *testing.T) {
 	var table Table[string]
 	table.Set(netip.Prefix{}, prefix("2001:db8::/32"), "fallback")
