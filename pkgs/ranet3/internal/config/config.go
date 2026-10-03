@@ -31,6 +31,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 	"go.yaml.in/yaml/v3"
@@ -472,6 +473,9 @@ func (c *Config) setDefaults() {
 // is deliberate: what a policy rule may say belongs with the reconciler that
 // installs it, and repeating it here is how the two come to disagree.
 func (c *Config) Validate() error {
+	if path, written, found := notText(reflect.ValueOf(c).Elem(), ""); found {
+		return fmt.Errorf("config: %s %q is not valid UTF-8, which a toml or a json file cannot hold", path, written)
+	}
 	if err := c.validateNode(); err != nil {
 		return err
 	}
@@ -509,6 +513,47 @@ func (c *Config) Validate() error {
 		}
 	}
 	return c.validateAcrossCapabilities()
+}
+
+// notText finds the first string under value that is not valid UTF-8 and
+// names it by the path a file writes it under. Every format a configuration is
+// written in is text: toml refuses such a string, json rewrites it and yaml
+// carries it only as binary, so a configuration holding one, built in Go or
+// read from yaml, renders to a file that does not load or loads as another
+// node. The walk takes in every block, since a capability's names are written
+// in the same file.
+func notText(value reflect.Value, path string) (string, string, bool) {
+	switch value.Kind() {
+	case reflect.String:
+		if !utf8.ValidString(value.String()) {
+			return path, value.String(), true
+		}
+	case reflect.Pointer:
+		if !value.IsNil() {
+			return notText(value.Elem(), path)
+		}
+	case reflect.Slice:
+		for i := range value.Len() {
+			if found, written, ok := notText(value.Index(i), path); ok {
+				return found, written, true
+			}
+		}
+	case reflect.Struct:
+		for i := range value.NumField() {
+			field := value.Type().Field(i)
+			if !field.IsExported() {
+				continue
+			}
+			key, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
+			if key == "" {
+				key = strings.ToLower(field.Name)
+			}
+			if found, written, ok := notText(value.Field(i), strings.TrimPrefix(path+"."+key, ".")); ok {
+				return found, written, true
+			}
+		}
+	}
+	return "", "", false
 }
 
 func (c *Config) validateNode() error {
