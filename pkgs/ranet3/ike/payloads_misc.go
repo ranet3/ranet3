@@ -78,6 +78,9 @@ func EncodeDelete(d Delete) []byte {
 	spiSize := 0
 	if len(d.SPIs) > 0 {
 		spiSize = len(d.SPIs[0])
+	} else if d.Protocol == ProtoAH || d.Protocol == ProtoESP {
+		// RFC 7296 section 3.11 fixes the size by protocol, with or without SPIs
+		spiSize = 4
 	}
 	b := make([]byte, 4, 4+spiSize*len(d.SPIs))
 	b[0] = byte(d.Protocol)
