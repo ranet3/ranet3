@@ -109,6 +109,12 @@ func (c Config) Validate() error {
 				named.field, named.interval, maxInterval)
 		}
 	}
+	// Only these two have a spelling. The speaker runs any other value as
+	// none while both marshallers write it as etx, so the file a node renders
+	// would describe another speaker than the one it runs.
+	if c.Quality != LinkQualityETX && c.Quality != LinkQualityNone {
+		return fmt.Errorf("babel: cap.babel quality %d is not etx or none", c.Quality)
+	}
 	cost := c.CostEffective()
 	if cost.RTT.Min < 0 || cost.RTT.Max < cost.RTT.Min {
 		return fmt.Errorf("babel: cap.babel cost rtt min %s is negative or larger than rtt max %s", cost.RTT.Min, cost.RTT.Max)
