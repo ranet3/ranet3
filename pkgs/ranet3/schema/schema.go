@@ -363,11 +363,27 @@ func (a *Announce) UnmarshalYAML(value *yaml.Node) error {
 	}
 	// Walked by hand rather than decoded into a helper struct: a nested
 	// decoder does not inherit the outer one's rejection of unknown fields.
+	// The walk makes two more of the strict decoder's moves on a mapping. It
+	// refuses a key written twice, where taking the last would announce
+	// something the file names alongside another, and it reads through an
+	// alias, in a key as in a value. A merge key, which the decoder takes as
+	// well, is refused here as an unknown field rather than followed.
+	//
+	// A key written as an alias is compared by the name its anchor gives it,
+	// and a refusal names the line the key is written on rather than the
+	// anchor's, which may sit in another mapping altogether. A key written
+	// twice is then refused at its second spelling, naming its first.
+	read := make(map[string]int, 2)
 	for i := 0; i+1 < len(value.Content); i += 2 {
-		key, item := value.Content[i], value.Content[i+1]
+		written := value.Content[i]
+		key, item := followed(written), followed(value.Content[i+1])
+		if line, twice := read[key.Value]; twice {
+			return fmt.Errorf("line %d: mapping key %q already defined at line %d", written.Line, key.Value, line)
+		}
+		read[key.Value] = written.Line
 		target, err := a.field(key.Value)
 		if err != nil {
-			return fmt.Errorf("line %d: %w", key.Line, err)
+			return fmt.Errorf("line %d: %w", written.Line, err)
 		}
 		if err := target.UnmarshalYAML(item); err != nil {
 			return err
@@ -512,6 +528,15 @@ func scalarJSON(data []byte, want string, target interface{ UnmarshalText([]byte
 		return target.UnmarshalText([]byte(value))
 	}
 	return fmt.Errorf("%s is written as a string or a number, not %T", want, written)
+}
+
+// followed is the node an alias names, which the decoder reads in its place
+// before it hands a node to an unmarshaler.
+func followed(node *yaml.Node) *yaml.Node {
+	for node.Kind == yaml.AliasNode && node.Alias != nil {
+		node = node.Alias
+	}
+	return node
 }
 
 func nodeKind(kind yaml.Kind) string {
