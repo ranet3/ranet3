@@ -1,11 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: FSL-1.1-ALv2
 
-# the licenses of the files that cannot carry a comment
 version = 1
 
-# each annotation overrides what reuse would find in the files themselves, such
-# as the copyright lines third_party.md quotes from the modules it lists
 [[annotations]]
 path = "flake.lock"
 precedence = "override"
