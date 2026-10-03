@@ -248,33 +248,7 @@ func TestDarwinPlatformOnRealKernel(t *testing.T) {
 // route on it, so this one cleanup is total even when the test fails halfway.
 func createUTUN(t *testing.T) string {
 	t.Helper()
-	const (
-		utunControl = "com.apple.net.utun_control"
-		// SYSPROTO_CONTROL and UTUN_OPT_IFNAME, neither of which
-		// golang.org/x/sys/unix carries.
-		sysprotoControl = 2
-		utunOptIfname   = 2
-	)
-	fd, err := unix.Socket(unix.AF_SYSTEM, unix.SOCK_DGRAM, sysprotoControl)
-	if err != nil {
-		t.Fatalf("open a system control socket: %v", err)
-	}
-	t.Cleanup(func() { _ = unix.Close(fd) })
-	info := &unix.CtlInfo{}
-	copy(info.Name[:], utunControl)
-	if err := unix.IoctlCtlInfo(fd, info); err != nil {
-		t.Fatalf("look up %s: %v", utunControl, err)
-	}
-	// unit 0 asks for the first free utun rather than naming one, so the test
-	// cannot land on a device something else is already using.
-	if err := unix.Connect(fd, &unix.SockaddrCtl{ID: info.Id, Unit: 0}); err != nil {
-		t.Fatalf("create a utun: %v", err)
-	}
-	name, err := unix.GetsockoptString(fd, sysprotoControl, utunOptIfname)
-	if err != nil {
-		t.Fatalf("read the name of the new utun: %v", err)
-	}
-	t.Logf("created %s, which goes away with this test", name)
+	name, _ := createUTUNWithFD(t)
 	return name
 }
 

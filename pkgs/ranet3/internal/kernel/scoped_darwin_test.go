@@ -7,6 +7,7 @@ package kernel
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"testing"
@@ -273,22 +274,47 @@ func requireNetTest(t *testing.T) {
 func createUTUNWithFD(t *testing.T) (string, int) {
 	t.Helper()
 	const (
-		utunControl     = "com.apple.net.utun_control"
+		utunControl = "com.apple.net.utun_control"
+		// SYSPROTO_CONTROL and UTUN_OPT_IFNAME, neither of which
+		// golang.org/x/sys/unix carries.
 		sysprotoControl = 2
 		utunOptIfname   = 2
 	)
-	fd, err := unix.Socket(unix.AF_SYSTEM, unix.SOCK_DGRAM, sysprotoControl)
+	connect := func() (int, error) {
+		fd, err := unix.Socket(unix.AF_SYSTEM, unix.SOCK_DGRAM, sysprotoControl)
+		if err != nil {
+			return -1, fmt.Errorf("open a system control socket: %w", err)
+		}
+		info := &unix.CtlInfo{}
+		copy(info.Name[:], utunControl)
+		if err := unix.IoctlCtlInfo(fd, info); err != nil {
+			_ = unix.Close(fd)
+			return -1, fmt.Errorf("look up %s: %w", utunControl, err)
+		}
+		// unit 0 asks for the first free utun rather than naming one, so the
+		// test cannot land on a device something else is already using.
+		if err := unix.Connect(fd, &unix.SockaddrCtl{ID: info.Id, Unit: 0}); err != nil {
+			_ = unix.Close(fd)
+			return -1, fmt.Errorf("create a utun: %w", err)
+		}
+		return fd, nil
+	}
+	// The connect has still failed once with EBUSY, in a full root run, and
+	// passed on its own every time after. A busy answer is retried for up to
+	// 5 seconds, on a new socket each time, because a refused connect leaves
+	// its socket unable to send or receive.
+	fd, err := connect()
+	busy := 0
+	for deadline := time.Now().Add(5 * time.Second); errors.Is(err, unix.EBUSY) && time.Now().Before(deadline); busy++ {
+		time.Sleep(10 * time.Millisecond)
+		fd, err = connect()
+	}
 	if err != nil {
-		t.Fatalf("open a system control socket: %v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = unix.Close(fd) })
-	info := &unix.CtlInfo{}
-	copy(info.Name[:], utunControl)
-	if err := unix.IoctlCtlInfo(fd, info); err != nil {
-		t.Fatalf("look up %s: %v", utunControl, err)
-	}
-	if err := unix.Connect(fd, &unix.SockaddrCtl{ID: info.Id, Unit: 0}); err != nil {
-		t.Fatalf("create a utun: %v", err)
+	if busy > 0 {
+		t.Logf("the utun control answered busy %d times first", busy)
 	}
 	name, err := unix.GetsockoptString(fd, sysprotoControl, utunOptIfname)
 	if err != nil {
