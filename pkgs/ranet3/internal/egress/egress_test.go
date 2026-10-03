@@ -419,6 +419,19 @@ func TestValidateRefusesWhatCannotBeTranslated(t *testing.T) {
 			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Source4: Source{Addr: netip.MustParseAddr("2001:db8::1")}},
 			"is not of that family",
 		},
+		// The decoder unmaps this spelling, so a source6 carrying it renders to
+		// a file that reads back as an IPv4 source6, which this then refuses: a
+		// capability taken here whose own file would not load.
+		{
+			"an IPv4 source6 written as IPv6",
+			Egress{Advertise: prefixes(t, "::/0"), Source6: Source{Addr: netip.MustParseAddr("::ffff:198.51.100.7")}},
+			"written as IPv6, so write it as 198.51.100.7",
+		},
+		{
+			"an IPv4 source4 written as IPv6",
+			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Source4: Source{Addr: netip.MustParseAddr("::ffff:198.51.100.7")}},
+			"written as IPv6, so write it as 198.51.100.7",
+		},
 		{
 			"a source nothing can reply to",
 			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Source4: Source{Addr: netip.MustParseAddr("127.0.0.1")}},
