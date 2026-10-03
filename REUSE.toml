@@ -10,7 +10,7 @@ SPDX-FileCopyrightText = ["2026 Nick Cao", "2026 Yifei Sun"]
 SPDX-License-Identifier = "MIT AND FSL-1.1-ALv2"
 
 [[annotations]]
-path = ["integration/org-key.pem", "integration/org-pub.pem"]
+path = ["checks/fixtures/org-key.pem", "checks/fixtures/org-pub.pem"]
 precedence = "override"
 SPDX-FileCopyrightText = "2026 Nick Cao"
 SPDX-License-Identifier = "MIT"

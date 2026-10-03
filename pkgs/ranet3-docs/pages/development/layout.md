@@ -18,7 +18,7 @@ lib/                    nix helpers
 modules/flake/          checks, packages, overlays, the shell and the formatter
 modules/nixos/          the NixOS module, networking.ranet3
 modules/darwin/         the nix-darwin module, networking.ranet3
-integration/            NixOS VM tests and the namespace benchmark
+checks/                 checks, the VM tests among them, and the profiling runs
 pkgs/ranet3/            the go module, ranet3.com/pkgs/ranet3
 pkgs/ranet3-docs/       these pages
 pkgs/iperf3-benchmark/  the iperf3 build the benchmarks use

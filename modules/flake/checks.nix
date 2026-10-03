@@ -1,117 +1,31 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: FSL-1.1-ALv2
 
-{ lib, ... }:
+{ inputs, lib, ... }:
 
 {
   perSystem =
-    {
-      nixosTest,
-      pkgs,
-      system,
-      ...
-    }:
+    { pkgs, ... }:
     let
-      # nixos vm tests need a linux builder with kvm
-      linux = lib.hasSuffix "linux" system;
-
-      # a go tool run inside the package build, so the modules are on hand
-      go =
-        name: tools: command:
-        pkgs.ranet3.overrideAttrs (prev: {
-          pname = "ranet3-${name}";
-          nativeBuildInputs = prev.nativeBuildInputs ++ tools ++ [ pkgs.writableTmpDirAsHomeHook ];
-          buildPhase = ''
-            ${command}
-          '';
-          installPhase = ''touch "$out"'';
-          # the ike and transport tests bind loopback, which the darwin
-          # sandbox forbids by default
-          __darwinAllowLocalNetworking = true;
-        });
-
-      # the internal/kernel and internal/egress test binaries, to be run as
-      # root in a vm where the netlink round trips they hold are not skipped
-      netlinkTests = pkgs.ranet3.overrideAttrs (prev: {
-        pname = "ranet3-netlink-tests";
-        nativeBuildInputs = prev.nativeBuildInputs ++ [ pkgs.writableTmpDirAsHomeHook ];
-        buildPhase = ''
-          go test -c -o netlink-tests ./internal/kernel/
-          go test -c -o egress-tests ./internal/egress/
-        '';
-        installPhase = ''
-          install -Dm755 netlink-tests "$out/bin/netlink-tests"
-          install -Dm755 egress-tests "$out/bin/egress-tests"
-        '';
-      });
+      tree = lib.importPackagesTree {
+        dir = ../../checks;
+        currentFinal = pkgs;
+        currentPrev = { };
+        inheritedArgs = {
+          inherit inputs lib;
+          pkgsFinal = pkgs;
+          checksFinal = tree;
+        };
+      };
+      found = lib.localPackagesFrom {
+        dir = ../../checks;
+        scope = tree;
+      };
     in
     {
-      checks = {
-        gofmt = go "gofmt" [ ] ''test -z "$(gofmt -l $(go list -f '{{.Dir}}' ./...))"'';
-        staticcheck = go "staticcheck" [ pkgs.go-tools ] "staticcheck ./...";
-        test = go "test" [ ] "go test -race ./...";
-        vet = go "vet" [ ] "go vet ./...";
-        # platform_unsupported.go and tun_name_other.go sit behind build
-        # tags no configured system matches. vet rather than build, because
-        # go build drops _test.go files, and freebsd has no arm that runs
-        # them, so a test file that stopped compiling off this platform
-        # would reach a release unmentioned. The property tests build on
-        # linux and darwin alone, as internal/pbt says, and this is also the
-        # check that fails when a new one leaves the constraint out
-        cross = go "cross" [ ] "GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go vet ./...";
-        # the formatter rewrites markdown, nix and toml, so without these
-        # only its go half is ever checked
-        format =
-          pkgs.runCommand "ranet3-format"
-            {
-              nativeBuildInputs = [
-                pkgs.deno
-                pkgs.nixfmt
-                pkgs.taplo
-              ];
-            }
-            ''
-              cd ${../../.}
-              export DENO_DIR="$TMPDIR/deno"
-              deno fmt --check readme.md pkgs/ranet3-docs/pages pkgs/ranet3/examples/config.json
-              # found rather than globbed, so a directory added under modules,
-              # lib or pkgs cannot quietly drop out of the check. The count
-              # tells a narrowed walk from a tree that lost files.
-              files="$(find . -name '*.nix' -not -path './.*/*' | sort)"
-              reached="$(printf '%s\n' "$files" | wc -l)"
-              if [ "$reached" -lt 15 ]; then
-                echo "the format check reached $reached nix files, want at least 15" >&2
-                exit 1
-              fi
-              nixfmt --check $files
-              taplo format --check atelier.toml REUSE.toml pkgs/ranet3/REUSE.toml pkgs/ranet3/examples/*.toml pkgs/ranet3/gomod2nix.toml
-              touch "$out"
-            '';
-        # reuse looks for the license texts in LICENSES alone, so the check
-        # renames the lowercase directory in its own copy of the tree. The
-        # rename goes through a second name because a case-insensitive build
-        # directory reads licenses and LICENSES as one file, and mv may refuse
-        # a rename that changes only the case
-        reuse = pkgs.runCommand "ranet3-reuse" { nativeBuildInputs = [ pkgs.reuse ]; } ''
-          cp -r ${../../.} tree
-          chmod -R u+w tree
-          mv tree/licenses tree/licenses.moved
-          mv tree/licenses.moved tree/LICENSES
-          cd tree
-          reuse lint
-          touch "$out"
-        '';
-      }
-      // lib.optionalAttrs linux {
-        integration = nixosTest { };
-        integration-multicore = nixosTest { cores = 4; };
-        responder = nixosTest { responder = true; };
-        kernel = nixosTest { kernel = true; };
-        segments = nixosTest { segments = true; };
-        egress = nixosTest { egress = true; };
-        netlink = pkgs.testers.runNixOSTest (
-          import ../../integration/netlink-test.nix { inherit pkgs netlinkTests; }
-        );
-      };
+      checks = lib.filterAttrs (_: lib.meta.availableOn pkgs.stdenv.hostPlatform) (
+        lib.flattenAttrs (removeAttrs found [ "profile" ])
+      );
+      legacyPackages.profile = found.profile;
     };
 }

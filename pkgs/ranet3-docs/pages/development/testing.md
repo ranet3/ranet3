@@ -48,37 +48,36 @@ property prints the smallest input it found. hegel is a test dependency only:
 the binary or its notices.
 
 Protocol-level interoperability is covered by the NixOS VM tests in
-`modules/flake/checks.nix`. Each boots separate client and gateway VMs; the
-client runs the packaged, user-facing `ranet3` binary with a real TUN device,
-while the gateway runs `charon-systemd`/`swanctl`, BIRD, and iperf3. The default
-test verifies an Ed25519-authenticated IKEv2 and Child SA negotiation across
+`checks/integration`. Each boots separate client and gateway VMs. The client
+runs the packaged, user-facing `ranet3` binary with a real TUN device, while the
+gateway runs `charon-systemd`/`swanctl`, BIRD, and iperf3. The default test
+verifies an Ed25519-authenticated IKEv2 and Child SA negotiation across
 asymmetric local and remote UDP ports, checks Babel route exchange in both
 directions, and measures TCP bandwidth through the negotiated ESP tunnel:
 
 ```sh
-nix build .#checks.x86_64-linux.integration -L
-nix build .#checks.x86_64-linux.integration-multicore -L
-nix build .#checks.x86_64-linux.responder -L
-nix build .#checks.x86_64-linux.kernel -L
-nix build .#checks.x86_64-linux.segments -L
-nix build .#checks.x86_64-linux.egress -L
+nix build .#checks.x86_64-linux.integration-initiator -L
+nix build .#checks.x86_64-linux.integration-responder -L
+nix build .#checks.x86_64-linux.integration-kernel -L
+nix build .#checks.x86_64-linux.integration-segments -L
+nix build .#checks.x86_64-linux.integration-egress -L
 ```
 
-`responder` inverts the exchange: strongSwan dials and ranet3 answers, which
-upstream could not do at all, and the check asserts that ranet3 never dials.
-`kernel` exercises the route reconciler against a real table. In every one of
-these checks the client runs ranet3 through the nixos module, which writes its
-settings as the TOML a deployed node runs, and the check reads back the unit's
-runtime directory and group.
+`integration-responder` inverts the exchange: strongSwan dials and ranet3
+answers, which upstream could not do at all, and the check asserts that ranet3
+never dials. `integration-kernel` exercises the route reconciler against a real
+table. In every one of these checks the client runs ranet3 through the nixos
+module, which writes its settings as the TOML a deployed node runs, and the
+check reads back the unit's runtime directory and group.
 
-`egress` makes the client an exit node and boots a third machine behind it,
-holding prefixes the gateway can reach through the mesh and no other way. It
-asserts that the announcement reaches BIRD on the far side, that the machine
-behind the exit sees the exit's own address on both families and never the mesh
-address the packet started with, that the sweep recognizes its own rules rather
-than rewriting them, that turning `net.ipv4.ip_forward` off withdraws the IPv4
-advertisement and leaves the IPv6 one alone, and that a stop leaves no nftables
-table behind.
+`integration-egress` makes the client an exit node and boots a third machine
+behind it, holding prefixes the gateway can reach through the mesh and no other
+way. It asserts that the announcement reaches BIRD on the far side, that the
+machine behind the exit sees the exit's own address on both families and never
+the mesh address the packet started with, that the sweep recognizes its own
+rules rather than rewriting them, that turning `net.ipv4.ip_forward` off
+withdraws the IPv4 advertisement and leaves the IPv6 one alone, and that a stop
+leaves no nftables table behind.
 
 These checks exercise one-core and four-core clients, IPv4 and IPv6 routes,
 locally scheduled and peer-initiated rekeys, BIRD withdrawal/recovery, and a
@@ -88,14 +87,14 @@ during longer throughput runs, including simultaneous traffic in both
 directions:
 
 ```sh
-nix build .#integration-profile --no-link -L
+nix build .#profile.integration --no-link -L
 ```
 
 The kernel profiler runs as root inside the disposable VM. It does not require
 host root or changes to the host's profiling permissions. Profiles are copied
 into the test result.
 
-`nix build .#namespace-profile --no-link -L` runs the namespace harness below
+`nix build .#profile.namespace --no-link -L` runs the namespace harness below
 inside one six-core VM and captures a system-wide kernel profile. This keeps the
 veth topology used by host measurements and avoids the virtual switch between
 integration-test VMs; the guest's CPU and clock still affect results.
@@ -105,7 +104,7 @@ For measurements without VM overhead, use the namespace harness:
 ```sh
 nix develop -c go build -C pkgs/ranet3 -o /tmp/ranet-bench ./cmd/ranet3
 nix develop -c unshare --user --map-root-user --mount --net \
-  python3 integration/performance.py --client /tmp/ranet-bench \
+  python3 checks/profile/namespace/performance.py --client /tmp/ranet-bench \
   --output /tmp/ranet-perf-6 --cores 6 --affinity 0-5 \
   --directions outbound,inbound,bidir
 ```

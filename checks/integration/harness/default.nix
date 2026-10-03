@@ -3,8 +3,14 @@
 # SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
 
 {
+  lib,
   inputs,
   pkgs,
+  testers,
+  ...
+}:
+
+{
   cores ? 1,
   profile ? false,
   # responder inverts the exchange: strongSwan dials and ranet3 answers,
@@ -56,7 +62,7 @@ let
   behindV6 = "fd00:aa::1";
   exitV4 = "198.51.100.2";
   exitV6 = "fd00:aa::2";
-  publicKey = builtins.readFile ./org-pub.pem;
+  publicKey = builtins.readFile ../../fixtures/org-pub.pem;
 
   common = {
     virtualisation.vlans = [ 1 ];
@@ -68,7 +74,7 @@ let
     };
   };
 in
-{
+testers.runNixOSTest {
   name =
     if responder then
       "ranet3-responder"
@@ -80,6 +86,8 @@ in
       "ranet3-egress"
     else
       "ranet3-integration";
+
+  meta.platforms = lib.platforms.linux;
 
   nodes = {
     gateway =
@@ -117,8 +125,8 @@ in
           ++ pkgs.lib.optionals segments [ tcpdump ];
 
         environment.etc = {
-          "swanctl/private/org-key.pem".source = ./org-key.pem;
-          "swanctl/pubkey/org-pub.pem".source = ./org-pub.pem;
+          "swanctl/private/org-key.pem".source = ../../fixtures/org-key.pem;
+          "swanctl/pubkey/org-pub.pem".source = ../../fixtures/org-pub.pem;
         };
 
         systemd.network = {
@@ -373,7 +381,7 @@ in
         };
 
         environment.etc = {
-          "ranet3/key.pem".source = ./org-key.pem;
+          "ranet3/key.pem".source = ../../fixtures/org-key.pem;
           "ranet3/registry.json".text = builtins.toJSON [
             {
               public_key = publicKey;

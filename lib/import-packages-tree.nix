@@ -3,7 +3,7 @@
 
 # Adapted from stepbrobd/inc, MIT. The scope recursion is kept as it is there
 # so that a package directory added here behaves the same way it would in inc
-# or in howfastly, even though this tree has only flat ones today.
+# or in howfastly.
 { lib }:
 
 # importPackagesTree { dir, currentFinal, currentPrev, inheritedArgs }

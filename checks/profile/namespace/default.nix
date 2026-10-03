@@ -3,13 +3,17 @@
 # SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
 
 {
+  lib,
   pkgs,
+  iperf3-benchmark,
   ranet3,
-  benchmarkIperf ? pkgs.callPackage ../pkgs/iperf3-benchmark { },
+  testers,
 }:
 
-{
+testers.runNixOSTest {
   name = "ranet3-namespace-profile";
+
+  meta.platforms = lib.platforms.linux;
 
   nodes.machine = {
     virtualisation.cores = 6;
@@ -26,7 +30,7 @@
       iputils
       strongswan
       bird3
-      benchmarkIperf
+      iperf3-benchmark
       ethtool
       perf
     ];
@@ -43,7 +47,7 @@
     machine.succeed("echo kvm-clock > /sys/devices/system/clocksource/clocksource0/current_clocksource")
     machine.succeed("perf record -a -e cpu-clock:k -F 99 -g -o /tmp/kernel.perf -- sleep 180 > /tmp/perf.log 2>&1 & echo $! > /tmp/perf.pid")
     try:
-        print(machine.succeed("runuser -u bench -- unshare --user --map-root-user --mount --net python3 ${./performance.py} --repo ${../.} --client ${ranet3}/bin/ranet3 --output /tmp/ranet-performance --cores 6 --duration 15 --directions outbound,inbound,bidir", timeout=dt.timedelta(seconds=150)))
+        print(machine.succeed("runuser -u bench -- unshare --user --map-root-user --mount --net python3 ${./performance.py} --fixtures ${../../fixtures} --client ${ranet3}/bin/ranet3 --output /tmp/ranet-performance --cores 6 --duration 15 --directions outbound,inbound,bidir", timeout=dt.timedelta(seconds=150)))
     finally:
         machine.execute("kill -INT $(cat /tmp/perf.pid)")
         machine.wait_until_fails("kill -0 $(cat /tmp/perf.pid)")
