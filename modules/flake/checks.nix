@@ -57,9 +57,13 @@
             system.stateVersion = lib.trivial.release;
             networking.ranet3 = {
               enable = true;
-              settings.node = {
-                org = "example";
-                name = "check";
+              settings = {
+                node = {
+                  org = "example";
+                  name = "check";
+                };
+                auth.key = "/var/lib/ranet3/key.pem";
+                link.port = 13000;
               };
             };
           }
@@ -135,7 +139,7 @@
         );
         nixos-module = pkgs.runCommand "ranet3-nixos-module" { } ''
           unit="${node.config.systemd.units."ranet3.service".unit}/ranet3.service"
-          grep -qF 'ExecStart=${lib.getExe pkgs.ranet3} daemon --config ' "$unit"
+          grep -qF 'ExecStart="${lib.getExe pkgs.ranet3}" "daemon" "--config" ' "$unit"
           # the runtime directory is where the control socket is bound and the
           # group is who may then read it, so a typo in either leaves a node
           # nobody can ask anything or one anybody can

@@ -1,108 +1,80 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: FSL-1.1-ALv2
 
-{ self }:
+{ inputs }:
 
 {
   config,
   lib,
-  pkgs,
+  options,
+  utils,
   ...
 }:
 
 let
   cfg = config.networking.ranet3;
-  format = pkgs.formats.toml { };
+  ranet3 = lib.getExe cfg.package;
+  # whether the daemon runs the file rendered from settings, the one case in
+  # which the module can read the port. Read from priorities alone, so a
+  # configFile set by hand never forces the settings it replaces
+  generated = options.networking.ranet3.configFile.highestPrio == (lib.mkOptionDefault null).priority;
+  # creating the tun, and the routes, rules and addresses cap.table owns.
+  # cap.egress additionally writes an nftables table of its own, which is why
+  # the set is not narrower than this
+  capabilities = [
+    "CAP_NET_ADMIN"
+  ]
+  ++ lib.optional (generated && cfg.settings.link.port < 1024) "CAP_NET_BIND_SERVICE";
 in
 {
-  options.networking.ranet3 = {
-    enable = lib.mkEnableOption "the ranet3 mesh daemon";
-
-    package = lib.mkOption {
-      type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-      defaultText = lib.literalExpression "the ranet3 package of the flake this module came from";
-      description = "The build this node runs.";
-    };
-
-    settings = lib.mkOption {
-      type = format.type;
-      default = { };
-      example = lib.literalExpression ''
-        {
-          node = { org = "example"; name = "gateway"; };
-          auth = {
-            key = "/var/lib/ranet3/key.pem";
-            trust = "/var/lib/ranet3/trust.json";
-          };
-          link = {
-            port = 13000;
-            endpoints = [ { serial = "0"; family = "ip4"; } ];
-          };
-          dial.all = true;
-        }
-      '';
-      description = ''
-        The config file, in the schema pkgs/ranet3/examples/config.toml documents. The
-        daemon refuses a key it does not know, so a typo here stops the unit
-        rather than being ignored.
-
-        This is written to the store and is world readable there. The key and
-        the trust document are named by path rather than carried inline, so
-        neither has to be.
-      '';
-    };
-
-    configFile = lib.mkOption {
-      type = lib.types.path;
-      default = format.generate "ranet3.toml" cfg.settings;
-      defaultText = lib.literalExpression "the file generated from networking.ranet3.settings";
-      description = ''
-        The config file to run. Set this to a path outside the store to keep
-        the file itself out of the nix store, in which case settings is unused.
-      '';
-    };
-
-    logLevel = lib.mkOption {
-      type = lib.types.enum [
-        "debug"
-        "info"
-        "warn"
-        "error"
-      ];
-      default = "info";
-      description = "The lowest level the daemon logs, its --log-level.";
-    };
-
-    group = lib.mkOption {
-      type = lib.types.str;
-      default = "ranet3";
-      description = ''
-        The group that may read the control socket. The daemon runs as root
-        with this as its primary group and leaves the socket at mode 0660, so
-        a member of this group can run the read-only subcommands without being
-        root. The socket answers no request that writes.
-      '';
-    };
-  };
+  imports = [ (import ../options.nix { inherit inputs; }) ];
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.openFirewall -> generated;
+        message = "networking.ranet3.openFirewall reads the port from settings, which a configFile set by hand replaces.";
+      }
+    ];
+
     users.groups.${cfg.group} = { };
 
     environment.systemPackages = [ cfg.package ];
+
+    # the daemon names its tun ranet0 and up unless link.tun says otherwise
+    networking.dhcpcd.denyInterfaces = [ "ranet*" ];
+
+    networking.firewall.allowedUDPPorts = lib.mkIf cfg.openFirewall [ cfg.settings.link.port ];
 
     systemd.services.ranet3 = {
       description = "ranet3 mesh daemon";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
+      # one restart once a switch is done rather than a stop before it, so a
+      # node switched over its own mesh is not cut off while the switch runs
+      stopIfChanged = false;
 
       serviceConfig = {
-        ExecStart = "${lib.getExe cfg.package} daemon --config ${cfg.configFile} --log-level ${cfg.logLevel}";
+        ExecStart = utils.escapeSystemdExecArgs (
+          [
+            ranet3
+            "daemon"
+            "--config"
+            cfg.configFile
+            "--log-level"
+            cfg.logLevel
+          ]
+          ++ cfg.extraArgs
+        );
         # the trust document is rewritten every time a node joins the mesh,
-        # and the daemon reconciles on SIGHUP. A restart to pick that up would
-        # drop every SA this node is carrying.
-        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
+        # and a restart to pick that up would drop every SA this node is
+        # carrying. The socket verb rather than SIGHUP, so a reload the
+        # daemon refuses fails here instead of only reaching the log
+        ExecReload = utils.escapeSystemdExecArgs [
+          ranet3
+          "reload"
+        ];
         Restart = "on-failure";
         # shutdown closes every session with a grace period and withdraws the
         # routes it installed, and a kill partway through leaves them behind
@@ -112,11 +84,12 @@ in
         RuntimeDirectory = "ranet3";
         RuntimeDirectoryMode = "0750";
         Group = cfg.group;
-        # creating the tun, and the routes, rules and addresses cap.table
-        # owns. cap.egress additionally writes an nftables table of its own,
-        # which is why the set is not narrower than this.
-        AmbientCapabilities = [ "CAP_NET_ADMIN" ];
-        CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+        AmbientCapabilities = capabilities;
+        CapabilityBoundingSet = capabilities;
+      }
+      // lib.optionalAttrs (cfg.logFile != null) {
+        StandardOutput = "append:${cfg.logFile}";
+        StandardError = "append:${cfg.logFile}";
       };
     };
   };

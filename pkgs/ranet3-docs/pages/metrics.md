@@ -8,8 +8,8 @@ updated: 2026-10-03
 order: 90
 ---
 
-`-metrics 127.0.0.1:9669` serves `/metrics` in the Prometheus text format on its
-own listener, separate from `-pprof` so a fleet node can be scraped without
+`--metrics 127.0.0.1:9669` serves `/metrics` in the Prometheus text format on
+its own listener, separate from `--pprof` so a fleet node can be scraped without
 exposing a profiler. It reports what `prometheus-bird-exporter` reported while
 Babel lived in BIRD: neighbor liveness and link cost, routes received per
 neighbor, routes selected and originated, established sessions per path, packets

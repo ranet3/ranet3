@@ -37,6 +37,7 @@ file from `networking.ranet3.settings`, and gives the control socket a
           }
         ];
       };
+      dial.all = true;
     };
   };
 }
@@ -45,8 +46,9 @@ file from `networking.ranet3.settings`, and gives the control socket a
 `settings` is written to the store and is world readable there, so the key and
 the trust document are named by path rather than carried inline. A config file
 that must stay out of the store entirely is named by `configFile` instead.
-`systemctl reload ranet3` sends SIGHUP, which reconciles against a rewritten
-trust document without dropping an SA. A restart drops every one.
+`systemctl reload ranet3` runs `ranet3 reload`, which reconciles against a
+rewritten trust document without dropping an SA and fails when the daemon
+refuses what it read. A restart drops every one.
 
 The nix-darwin module is the same options over `launchd.daemons`, with the log
 file taking the place of the journal and `admin` as the default group, because
