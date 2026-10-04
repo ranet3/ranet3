@@ -82,6 +82,7 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 			}
 			if !n.alive {
 				slog.Info("babel neighbor up", "peer", n.peer.ID)
+				s.events.Emit("babel.neighbor.up", n.peer.ID)
 			}
 			n.alive = true
 			// An unscheduled Hello cannot extend the last scheduled promise.

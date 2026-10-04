@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -34,7 +35,7 @@ type Config struct {
 
 // Runtime is the half the speaker is handed rather than told: the router id
 // and the link-local address it speaks from, which are generated when nothing
-// names them, and the largest packet the device will carry. None of the three
+// names them, and the largest packet the device will carry. None of them
 // is a fact an operator writes down, so none of them is in the capability.
 type Runtime struct {
 	RouterID      [8]byte
@@ -42,6 +43,9 @@ type Runtime struct {
 	// PacketSize is the maximum Babel UDP payload, its four-byte protocol
 	// header included.
 	PacketSize int
+	// Events records each neighbor coming up or going down and each change of a selected next hop
+	// nil records nothing
+	Events *events.Bus
 }
 
 const maxInterval = 65535 * 10 * time.Millisecond
