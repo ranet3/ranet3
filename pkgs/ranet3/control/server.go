@@ -170,6 +170,9 @@ func (l *ownedListener) Close() error {
 // The reads are always served. The writes are served when src also implements
 // [Sink], and refused by name when it does not, rather than answering 404 on a
 // path this build does have.
+//
+// a stream under PathDebug is the exception, written batch by batch as its subscription delivers
+// the subscription's queue holds no lock of the node, so a slow reader still holds none open
 func Handler(src Source) http.Handler {
 	mux := http.NewServeMux()
 	answer(mux, PathStatus, func() any { return src.Status() })

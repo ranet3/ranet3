@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 )
 
 // PathDebug is the prefix every debug path sits under
@@ -115,6 +116,9 @@ type debugServer struct {
 	access DebugAccess
 	// euid is the daemon's own user, which the root class admits beside uid 0
 	euid uint32
+	// streams holds a place for every stream open, see stream
+	streams           chan struct{}
+	budget, heartbeat time.Duration
 }
 
 func newDebugServer(src Source) *debugServer {
@@ -122,7 +126,8 @@ func newDebugServer(src Source) *debugServer {
 	if accessor, ok := src.(DebugAccessor); ok {
 		access = accessor.DebugAccess()
 	}
-	return &debugServer{src: src, access: access, euid: uint32(os.Geteuid())}
+	return &debugServer{src: src, access: access, euid: uint32(os.Geteuid()),
+		streams: make(chan struct{}, maxStreams), budget: streamBudget, heartbeat: streamHeartbeat}
 }
 
 func (d *debugServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
