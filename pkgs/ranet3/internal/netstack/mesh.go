@@ -11,7 +11,7 @@
 // crypto.
 //
 // This package never touches the device's address or route configuration —
-// creating it and bringing it up is all it does. Assigning an address,
+// creating it, bringing it up and, on linux, setting its gso_max_segs is all it does. Assigning an address,
 // and adding kernel routes to the TUN are the operator's responsibility.
 // The embedded Babel speaker exchanges control traffic only inside ESP.
 package netstack
@@ -151,21 +151,6 @@ func NewNamed(mtu int, name string) (*Mesh, error) {
 	}
 	queueCount := max(1, runtime.GOMAXPROCS(0))
 	devs, actualName, err := createTUNQueues(name, mtu, queueCount)
-	if err != nil && queueCount == 1 {
-		// A pre-existing single-queue TUN rejects an IFF_MULTI_QUEUE attach.
-		// Preserve the single-core compatibility path while new interfaces and
-		// multicore processes use the scalable multiqueue setup.
-		var dev tun.Device
-		dev, err = tun.CreateTUN(name, mtu)
-		if err == nil {
-			actualName, err = dev.Name()
-			if err == nil {
-				devs = []tun.Device{dev}
-			} else {
-				_ = dev.Close()
-			}
-		}
-	}
 	if err != nil {
 		return nil, fmt.Errorf("netstack: create tun device: %w", err)
 	}
