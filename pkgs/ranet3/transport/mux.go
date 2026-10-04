@@ -110,6 +110,8 @@ type Hub struct {
 	// under mu, which the follower goroutine and a status reader share.
 	underlay Underlay
 	boundTo  int
+	// events is Runtime.Events, nil where the caller records nothing
+	events func(kind string, attrs ...slog.Attr)
 
 	mu        sync.Mutex
 	ike       map[uint64]*Mux
@@ -265,7 +267,7 @@ func NewHub(localAddr string, underlay Underlay, rt Runtime) (*Hub, error) {
 			return nil, fmt.Errorf("transport: settle on interface %d: %w", index, err)
 		}
 	}
-	h := &Hub{bind: bind, port: port, underlay: underlay, boundTo: index,
+	h := &Hub{bind: bind, port: port, underlay: underlay, boundTo: index, events: rt.Events,
 		ike: make(map[uint64]*Mux), esp: make(map[uint32]*Mux),
 		muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now()}
 	h.reported.Store(-int64(dropReportInterval))

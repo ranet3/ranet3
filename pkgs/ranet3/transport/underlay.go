@@ -65,6 +65,9 @@ type Runtime struct {
 	// interface can reach anything off it. Nil leaves that to the operator,
 	// and the probe after each binding says so.
 	Routes UnderlayRoutes
+	// Events records each move of the socket onto another interface
+	// nil records nothing
+	Events func(kind string, attrs ...slog.Attr)
 }
 
 // UnderlayRoutes is the seam onto the routing this socket depends on.
@@ -268,6 +271,9 @@ func (h *Hub) bindUnderlayTo(index int, routed bool) error {
 	h.boundTo = index
 	h.mu.Unlock()
 	slog.Info("transport bound the underlay socket", "interface_index", index)
+	if h.events != nil {
+		h.events("transport.underlay.bound", slog.Int("interface_index", index))
+	}
 	return nil
 }
 
