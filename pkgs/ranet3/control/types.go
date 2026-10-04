@@ -37,7 +37,8 @@
 // configuration: the file stays its only entry point.
 //
 // A node's configuration comes from its file, so the socket's mode is the
-// whole authorization story, and every verb here stays inside it. Each one
+// whole authorization story for the reads and the verbs, and every verb here
+// stays inside it. Each one
 // acts on something the file already decides -- cap.table, cap.segment's
 // steering, link.listen, the peers list, and the file itself -- so whoever
 // may edit the file could already ask for it, by editing and restarting if
@@ -54,6 +55,16 @@
 // GET and HEAD and nothing else, so a caller that reaches a write path with a
 // GET is refused rather than acted on; a write answers POST alone, because a
 // second rekey is a second exchange rather than the same one repeated.
+//
+// # Debug paths
+//
+// the paths under [PathDebug] sit outside the file's argument
+// a profile, a capture or a log level is nothing the file can express
+// so the caller's peer credentials authorize them instead
+// a read class path is open to whoever can open the socket
+// a root class path takes uid 0 or the daemon's own user
+// [DebugAccess] opens the root class to the socket's group or closes every debug path
+// a debug path may change or go in any revision
 //
 // # Versioning
 //

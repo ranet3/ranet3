@@ -28,7 +28,7 @@ const MaxSocketPath = 103
 // socketMode is the permission the socket is left at. Group reachable rather
 // than owner only, so an operator in the daemon's group runs the subcommands
 // without root: the unit names that group, since nothing here changes the
-// socket's owner. This mode is the whole authorization story, the verbs
+// socket's owner. Outside PathDebug this mode is all the authorization, the verbs
 // included, because no verb reaches past what the node's own file already
 // decides; see the package doc. dirMode lets that same group traverse the
 // directory holding it, and lockMode is owner-only because only the daemon
@@ -184,6 +184,7 @@ func Handler(src Source) http.Handler {
 	act(mux, PathRedial, sink, func(s Sink, r Request) (Result, error) { return s.Redial(r.Peer) })
 	act(mux, PathRekey, sink, func(s Sink, r Request) (Result, error) { return s.Rekey(r.Peer, r.All) })
 	act(mux, PathReload, sink, func(s Sink, r Request) (Result, error) { return s.Reload() })
+	mux.Handle(PathDebug, newDebugServer(src))
 	return mux
 }
 
@@ -192,19 +193,31 @@ func Handler(src Source) http.Handler {
 // reader looks like a write that succeeded.
 func answer(mux *http.ServeMux, path string, read func() any) {
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			w.Header().Set("Allow", "GET, HEAD")
-			http.Error(w, "this is a read, so it takes a GET", http.StatusMethodNotAllowed)
-			return
+		if reading(w, r) {
+			writeJSON(w, read())
 		}
-		body, err := json.Marshal(read())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(append(body, '\n'))
 	})
+}
+
+// reading lets GET and HEAD through and refuses every other method
+func reading(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return true
+	}
+	w.Header().Set("Allow", "GET, HEAD")
+	http.Error(w, "this is a read, so it takes a GET", http.StatusMethodNotAllowed)
+	return false
+}
+
+// writeJSON writes one answer, marshaled whole before anything reaches the socket
+func writeJSON(w http.ResponseWriter, value any) {
+	body, err := json.Marshal(value)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(append(body, '\n'))
 }
 
 // scrape registers the one read that is not JSON. A scrape belongs on this
@@ -214,9 +227,7 @@ func answer(mux *http.ServeMux, path string, read func() any) {
 // for the reason [Source] gives.
 func scrape(mux *http.ServeMux, path string, src Source) {
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			w.Header().Set("Allow", "GET, HEAD")
-			http.Error(w, "this is a read, so it takes a GET", http.StatusMethodNotAllowed)
+		if !reading(w, r) {
 			return
 		}
 		var body bytes.Buffer
@@ -276,13 +287,7 @@ func act(mux *http.ServeMux, path string, sink Sink, run func(Sink, Request) (Re
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		answered, err := json.Marshal(result)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(append(answered, '\n'))
+		writeJSON(w, result)
 	})
 }
 
@@ -308,7 +313,8 @@ func Serve(listener net.Listener, src Source) error {
 // bounds rather than wait out the ones a live node needs.
 func newServer(src Source) *http.Server {
 	return &http.Server{
-		Handler: Handler(src),
+		Handler:     Handler(src),
+		ConnContext: connCaller,
 		// A unix socket has no network in front of it, so these bound a local
 		// client that stops reading rather than an attacker.
 		ReadHeaderTimeout: 5 * time.Second,

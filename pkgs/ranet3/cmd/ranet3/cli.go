@@ -47,7 +47,7 @@ func newRoot() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.AddCommand(
-		daemonCommand(),
+		daemonCommand(runDaemon),
 		r.command("status", "this node: identity, role, counts and the reconciler's last pass",
 			func(c *control.Client, w io.Writer, asJSON bool) error {
 				status, err := c.Status()
