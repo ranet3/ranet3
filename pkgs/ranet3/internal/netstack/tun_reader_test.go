@@ -5,8 +5,13 @@ package netstack
 
 import (
 	"bytes"
+	"log/slog"
 	"net/netip"
 	"os"
+	"regexp"
+	"slices"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,5 +91,96 @@ func TestReaderKeepsReadingPastACutGSOFrame(t *testing.T) {
 		if !bytes.Equal(got[i], want[i]) {
 			t.Errorf("packet %d is %x, want %x", i, got[i], want[i])
 		}
+	}
+	if cut := m.TUNReadsTruncated(); cut != 1 {
+		t.Errorf("%d reads were counted as cut short, want the one", cut)
+	}
+}
+
+// warnedReads points the default logger at a buffer for the test
+// and returns the reads= count of every warning written so far
+func warnedReads(t *testing.T) func() []uint64 {
+	t.Helper()
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return func() []uint64 {
+		var counts []uint64
+		for _, match := range regexp.MustCompile(`reads=(\d+)`).FindAllStringSubmatch(logs.String(), -1) {
+			count, err := strconv.ParseUint(match[1], 10, 64)
+			if err != nil {
+				t.Fatalf("a warning carried %q: %v", match[0], err)
+			}
+			counts = append(counts, count)
+		}
+		return counts
+	}
+}
+
+// startedMesh spaces its cut-read warnings the way NewNamed sets them up
+func startedMesh() *Mesh {
+	m := &Mesh{Name: "test0"}
+	m.startSegmentReports()
+	m.truncatedWarned.Store(-int64(truncatedReadInterval))
+	return m
+}
+
+// a sender with a small MSS cuts read after read
+// the count stays exact while the log gets one line an interval
+// and each line says how many reads were cut since the one before
+func TestCutReadsAreCountedExactlyAndWarnedRarely(t *testing.T) {
+	warned := warnedReads(t)
+	m := startedMesh()
+	const cut = 1000
+	for range cut {
+		m.noteTruncatedRead()
+	}
+	if got := m.TUNReadsTruncated(); got != cut {
+		t.Errorf("the counter reads %d for %d reads cut short", got, cut)
+	}
+	if got := warned(); !slices.Equal(got, []uint64{1}) {
+		t.Fatalf("%d reads cut short warned with counts %v, want one line for the first", cut, got)
+	}
+
+	m.truncatedWarned.Add(-int64(truncatedReadInterval))
+	m.noteTruncatedRead()
+	if got := warned(); !slices.Equal(got, []uint64{1, cut}) {
+		t.Errorf("once the interval passed the warnings carried %v, want the %d cut since the first line", got, cut)
+	}
+}
+
+// every queue has a reader of its own that can cut a read
+// and all of them share one warning an interval
+// whose counts add up to the counter
+func TestCutReadsOnEveryQueueShareOneWarning(t *testing.T) {
+	warned := warnedReads(t)
+	m := startedMesh()
+	const queues, cutsPerQueue = 8, 125
+	start := make(chan struct{})
+	var readers sync.WaitGroup
+	for range queues {
+		readers.Go(func() {
+			<-start
+			for range cutsPerQueue {
+				m.noteTruncatedRead()
+			}
+		})
+	}
+	close(start)
+	readers.Wait()
+	if got := warned(); len(got) != 1 {
+		t.Fatalf("%d readers cutting reads at once wrote warnings %v in one interval, want one", queues, got)
+	}
+
+	m.truncatedWarned.Add(-int64(truncatedReadInterval))
+	m.noteTruncatedRead()
+	got := warned()
+	var sum uint64
+	for _, count := range got {
+		sum += count
+	}
+	if len(got) != 2 || sum != m.TUNReadsTruncated() {
+		t.Errorf("the warnings carried %v, want two whose counts add up to the %d reads counted", got, m.TUNReadsTruncated())
 	}
 }

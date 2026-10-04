@@ -25,6 +25,8 @@ import (
 	"net/netip"
 	"runtime"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"golang.zx2c4.com/wireguard/tun"
 	"ranet3.com/pkgs/ranet3/esp"
@@ -92,6 +94,14 @@ type Mesh struct {
 	outboundReaderWG   sync.WaitGroup
 	outboundWorkerWG   sync.WaitGroup
 	writerWG           sync.WaitGroup
+
+	// tunReadsTruncated counts the reads that lost the tail of a GSO frame
+	tunReadsTruncated atomic.Uint64
+	// truncatedWarned is when the last warning about those reads went out
+	// in nanoseconds since segmentsStarted, which keeps it on the monotonic clock
+	// truncatedAtWarning is tunReadsTruncated as that warning reported it
+	truncatedWarned    atomic.Int64
+	truncatedAtWarning atomic.Uint64
 
 	// segmentCounters is the segment routing state, in its own struct so that
 	// everything this file does not touch stays in segments.go with the code
@@ -173,6 +183,8 @@ func NewNamed(mtu int, name string) (*Mesh, error) {
 		closed:             make(chan struct{}),
 	}
 	m.startSegmentReports()
+	// one interval back so the first cut read warns at once
+	m.truncatedWarned.Store(-int64(truncatedReadInterval))
 	m.startInboundWriters()
 	m.startOutboundPipeline()
 	return m, nil
@@ -265,6 +277,9 @@ func (m *Mesh) outboundReader(dev tun.Device) {
 			m.outboundFree <- b
 			return
 		}
+		if err != nil {
+			m.noteTruncatedRead()
+		}
 		b.n = n
 		for i := range n {
 			raw := b.bufs[i][tunOffset : tunOffset+b.sizes[i]]
@@ -314,6 +329,23 @@ func (m *Mesh) outboundReader(dev tun.Device) {
 		}
 		m.dispatchOutbound(b)
 	}
+}
+
+// TUNReadsTruncated is how many reads off the tun lost the tail of a GSO frame
+// because it split into more segments than one read holds
+func (m *Mesh) TUNReadsTruncated() uint64 { return m.tunReadsTruncated.Load() }
+
+// noteTruncatedRead counts one read cut short
+// and warns at most once an interval with the count since the last warning
+// the reader that wins the swap writes the line and the others go on
+func (m *Mesh) noteTruncatedRead() {
+	total := m.tunReadsTruncated.Add(1)
+	now := int64(time.Since(m.segmentsStarted))
+	previous := m.truncatedWarned.Load()
+	if now-previous < int64(truncatedReadInterval) || !m.truncatedWarned.CompareAndSwap(previous, now) {
+		return
+	}
+	slog.Warn("netstack tun reads lost the tail of a gso frame", "interface", m.Name, "reads", total-m.truncatedAtWarning.Swap(total))
 }
 
 // Reserve and submit each batch as one operation. Otherwise two readers can
