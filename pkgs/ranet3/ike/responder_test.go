@@ -43,7 +43,8 @@ type responderHarness struct {
 // pass rather than a spurious failure.
 const answerBudget = 30 * time.Second
 
-func newResponderHarness(t *testing.T, lookup func(Identity) (ed25519.PublicKey, bool)) *responderHarness {
+// events, where a test passes one, is the responder's Recorder
+func newResponderHarness(t *testing.T, lookup func(Identity) (ed25519.PublicKey, bool), events ...Recorder) *responderHarness {
 	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -66,13 +67,17 @@ func newResponderHarness(t *testing.T, lookup func(Identity) (ed25519.PublicKey,
 			return public, id == Identity{Organization: "testorg", CommonName: "client", SerialNumber: "2"}
 		}
 	}
-	responder, err := NewResponder(ResponderConfig{
+	cfg := ResponderConfig{
 		Hub:              responderHub,
 		Local:            []Identity{local},
 		LocalPrivateKey:  private,
 		Lookup:           lookup,
 		HandshakeTimeout: 10 * time.Second,
-	})
+	}
+	if len(events) == 1 {
+		cfg.Events = events[0]
+	}
+	responder, err := NewResponder(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1567,9 +1572,19 @@ func TestFailedInboundHandshakeIsSaidOncePerSource(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	slog.SetDefault(slog.New(&levelRecorder{levels: &levels}))
 	r := newFailureRecorder()
+	// the event goes with the warn line, so a source failing over and over costs the recorder what it costs the log
+	failures := &recorder{}
+	r.cfg.Events = failures.record
+	recordedAsWarned := func(warned int) {
+		t.Helper()
+		if recorded := len(failures.recorded()); recorded != warned {
+			t.Errorf("%d warn lines so far went with %d recorded failures", warned, recorded)
+		}
+	}
 	for range 4 {
 		r.noteHandshakeFailure(first, errors.New("no registry entry"))
 	}
+	recordedAsWarned(1)
 	if len(levels) != 4 {
 		t.Fatalf("four failures wrote %d lines", len(levels))
 	}
@@ -1589,6 +1604,7 @@ func TestFailedInboundHandshakeIsSaidOncePerSource(t *testing.T) {
 	if len(levels) != 1 || levels[0] != slog.LevelDebug {
 		t.Errorf("a second port from one address wrote %v, want one debug line", levels)
 	}
+	recordedAsWarned(1)
 
 	// A different address is a different peer and is said at once, as long as
 	// the floor that bounds the lines whatever their source has passed.
@@ -1597,12 +1613,14 @@ func TestFailedInboundHandshakeIsSaidOncePerSource(t *testing.T) {
 	if len(levels) != 1 || levels[0] != slog.LevelDebug {
 		t.Errorf("a second address inside the floor wrote %v, want one debug line", levels)
 	}
+	recordedAsWarned(1)
 	levels = nil
 	r.failureSaid -= handshakeFloor
 	r.noteHandshakeFailure(other, errors.New("no registry entry"))
 	if len(levels) != 1 || levels[0] != slog.LevelWarn {
 		t.Errorf("a second address past the floor wrote %v, want one warn line", levels)
 	}
+	recordedAsWarned(2)
 }
 
 // The record is bounded, because the sources in it are unauthenticated, and a

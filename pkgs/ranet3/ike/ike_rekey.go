@@ -15,9 +15,11 @@ import (
 
 // RekeyIKE replaces the IKE SA while retaining the current Child SAs. Run
 // must be active to service the serialized IKE requests.
-func (s *Session) RekeyIKE() error {
+func (s *Session) RekeyIKE() (err error) {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
+	s.emit("ike.rekey.started", slog.String("sa", "ike"))
+	defer func() { s.rekeyEnded("ike", err) }()
 
 	old := s.currentContext()
 	// Neither SPI of the SA being replaced, for the reason handleIKERekey
@@ -48,7 +50,6 @@ func (s *Session) RekeyIKE() error {
 	var (
 		dh       *DHKeyPair
 		response []RawPayload
-		err      error
 	)
 	for attempt := range 2 {
 		dh, err = GenerateDH(group)
