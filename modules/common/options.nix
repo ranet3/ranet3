@@ -93,7 +93,7 @@ in
       type = lib.types.str;
       default = if pkgs.stdenv.hostPlatform.isDarwin then "admin" else "ranet3";
       defaultText = lib.literalExpression ''if darwin then "admin" else "ranet3"'';
-      description = "The group that may use the control socket, every subcommand included.";
+      description = "The group that may use the control socket: every subcommand, and the read paths of the hidden `ranet3 debug` tree. Its other paths take root or the daemon's own user unless extraArgs passes `--debug-access group`.";
     };
 
     logFile = lib.mkOption {
