@@ -33,6 +33,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
@@ -1491,7 +1492,7 @@ func TestDialerStandsDownForSessionPeerOpened(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, hub: hub, sessions: newSessionSet()}
+	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: events.New()}
 	c.cfg.Store(cfg)
 	c.reg.Store(&reg)
 	c.sessions.close = func(*ike.Session) {}
@@ -1511,6 +1512,9 @@ func TestDialerStandsDownForSessionPeerOpened(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Errorf("the stand-down took %s, so it happened after the dial rather than instead of it", elapsed)
+	}
+	if failed := recorded(c.events, "dial.failed"); len(failed) != 0 {
+		t.Errorf("standing down for the peer's session was recorded as a failed dial: %+v", failed)
 	}
 }
 

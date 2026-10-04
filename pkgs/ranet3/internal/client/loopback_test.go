@@ -25,6 +25,7 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 )
@@ -39,6 +40,7 @@ type loopbackNode struct {
 	client     *Client
 	cfg        *config.Config
 	configPath string
+	events     *events.Bus
 }
 
 // freeUDPPort asks the kernel for a port and gives it straight back, which is
@@ -143,7 +145,8 @@ func tryLoopbackMesh(t *testing.T) (_, _ *loopbackNode, err error) {
 		peer := nodes[1-i]
 		node.configPath = filepath.Join(dir, node.name+".yaml")
 		node.cfg = writeLoopbackConfig(t, node, peer, keyPath, registryPath, []string{node.prefix.String()})
-		client, err := newClient(node.cfg, private, reg, netstack.NewRoutesOnly(), nil)
+		node.events = events.New()
+		client, err := newClient(node.cfg, private, reg, netstack.NewRoutesOnly(), nil, node.events)
 		if err != nil {
 			for _, built := range nodes[:i] {
 				built.client.Close()
@@ -343,7 +346,7 @@ func TestStoppedResponderRefusesLiveHandshakes(t *testing.T) {
 	// Short enough that alpha comes round several times inside the budget
 	// below, since each refused handshake sends it back to the delay.
 	alpha.client.dialRetry = 200 * time.Millisecond
-	if _, err := bravo.client.SetSubsystem(control.SubsystemResponder, false); err != nil {
+	if _, err := bravo.client.SetSubsystem(context.Background(), control.SubsystemResponder, false); err != nil {
 		t.Fatal(err)
 	}
 	run(t, alpha, bravo)
@@ -359,7 +362,7 @@ func TestStoppedResponderRefusesLiveHandshakes(t *testing.T) {
 		t.Errorf("the dialer settled on %d sessions against a stopped responder", held)
 	}
 
-	if _, err := bravo.client.SetSubsystem(control.SubsystemResponder, true); err != nil {
+	if _, err := bravo.client.SetSubsystem(context.Background(), control.SubsystemResponder, true); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, convergeBudget, "the responder started again to answer a dial", func() bool {

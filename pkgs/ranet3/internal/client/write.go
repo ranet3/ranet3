@@ -4,9 +4,11 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"slices"
 	"strings"
 
@@ -52,9 +54,37 @@ func (c *Client) SetReconcilerEnable(set func(bool)) { c.reconcilerEnable.Store(
 // test built by hand has none and reloads through ReloadFrom with its own path.
 func (c *Client) SetConfigPath(path string) { c.configPath.Store(&path) }
 
+// noteVerb records a verb with the caller the socket reported, and what it came to
+// it is recorded under the path of each session or dialer it acted on, as every other event about a peer is
+// one that acted on none is recorded once without a peer
+// the peer as the caller named it goes in the attribute peer
+func (c *Client) noteVerb(ctx context.Context, verb, peer string, acted []string, err error, attrs ...slog.Attr) {
+	attrs = append([]slog.Attr{slog.String("verb", verb)}, attrs...)
+	if peer != "" {
+		attrs = append(attrs, slog.String("peer", peer))
+	}
+	if caller, known := control.CallerOf(ctx); known {
+		attrs = append(attrs, slog.Any("uid", caller.UID), slog.Any("pid", caller.PID))
+	}
+	if err != nil {
+		attrs = append(attrs, slog.String("err", err.Error()))
+	}
+	if len(acted) == 0 {
+		c.events.Emit("control.verb", "", attrs...)
+	}
+	for _, path := range acted {
+		c.events.Emit("control.verb", path, attrs...)
+	}
+}
+
 // SetSubsystem stops or starts one subsystem, reporting whether the state moved
 // and refusing a subsystem this node does not run.
-func (c *Client) SetSubsystem(name control.Subsystem, on bool) (control.Result, error) {
+func (c *Client) SetSubsystem(ctx context.Context, name control.Subsystem, on bool) (_ control.Result, err error) {
+	verb := "disable"
+	if on {
+		verb = "enable"
+	}
+	defer func() { c.noteVerb(ctx, verb, "", nil, err, slog.String("subsystem", string(name))) }()
 	if !slices.Contains(control.Subsystems, name) {
 		return control.Result{}, fmt.Errorf("control: no subsystem is called %q, so nothing changed: this node runs %s",
 			name, strings.Join(control.SubsystemNames(), ", "))
@@ -152,7 +182,8 @@ func startedStopped(on bool) string {
 // own operator saying so, on the side that can act. The sessions go first and
 // the dialers are woken after, so a dialer does not find the path still held
 // and stand down for another reconnect delay.
-func (c *Client) Redial(peer string) (control.Result, error) {
+func (c *Client) Redial(ctx context.Context, peer string) (result control.Result, err error) {
+	defer func() { c.noteVerb(ctx, "redial", peer, result.Acted, err) }()
 	if peer == "" {
 		return control.Result{}, errors.New("control: redial takes the peer to redial")
 	}
@@ -203,7 +234,8 @@ func (c *Client) wakeDialers(paths []string) {
 }
 
 // Rekey asks one peer's sessions, or every session, to replace their Child SA.
-func (c *Client) Rekey(peer string, all bool) (control.Result, error) {
+func (c *Client) Rekey(ctx context.Context, peer string, all bool) (result control.Result, err error) {
+	defer func() { c.noteVerb(ctx, "rekey", peer, result.Acted, err, slog.Bool("all", all)) }()
 	if all == (peer != "") {
 		return control.Result{}, errors.New("control: rekey takes either a peer or every session, not both and not neither")
 	}
@@ -221,7 +253,8 @@ func (c *Client) Rekey(peer string, all bool) (control.Result, error) {
 
 // Reload re-reads the configuration file and the trust document it names, as
 // SIGHUP does, so a supervisor is not the only way to ask.
-func (c *Client) Reload() (control.Result, error) {
+func (c *Client) Reload(ctx context.Context) (_ control.Result, err error) {
+	defer func() { c.noteVerb(ctx, "reload", "", nil, err) }()
 	path := c.configPath.Load()
 	if path == nil || *path == "" {
 		return control.Result{}, errors.New("control: this node was never told which file it was configured from, so there is nothing to re-read")

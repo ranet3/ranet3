@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"slices"
+	"strconv"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/ike"
@@ -112,6 +113,7 @@ func (c *Client) runPeer(ctx context.Context, local config.Endpoint, p config.Pe
 		case <-ctx.Done():
 			return
 		case <-wake:
+			c.events.Emit("dial.woken", peerPath(p, local))
 		case <-time.After(c.reconnectDelay()):
 		}
 	}
@@ -183,7 +185,16 @@ func resolveEndpoint(ctx context.Context, node registry.Node, serial, family str
 // ESP setup, mesh/babel registration, and servicing the connection until
 // it dies (network failure, peer restart, DPD timeout). Returning means
 // the connection is gone; runPeer decides whether/when to retry.
-func (c *Client) connectPeer(ctx context.Context, local config.Endpoint, p config.Peer, name string) error {
+func (c *Client) connectPeer(ctx context.Context, local config.Endpoint, p config.Peer, name string) (err error) {
+	// recorded under the dialer's path until the endpoint resolves and under the session's path after, as the dialing log line is
+	path := peerPath(p, local)
+	established := false
+	defer func() {
+		// a dial that ended short of a session, which another session holding the path and a node going down are not
+		if !established && err != nil && !errors.Is(err, errSessionEstablished) && ctx.Err() == nil {
+			c.events.Emit("dial.failed", path, slog.String("err", err.Error()))
+		}
+	}()
 	cfg, reg := c.config(), c.registry()
 	crypto := cfg.Crypto()
 	org, node, ok := reg.FindNode(p.Org, p.Name)
@@ -198,7 +209,10 @@ func (c *Client) connectPeer(ctx context.Context, local config.Endpoint, p confi
 	if err != nil {
 		return err
 	}
-	sessionName := fmt.Sprintf("%s/%s/%s@%s", p.Org, p.Name, ep.SerialNumber, local.Serial)
+	localIdentity := ike.Identity{Organization: cfg.Node.Org, CommonName: cfg.Node.Name, SerialNumber: local.Serial}
+	remoteIdentity := ike.Identity{Organization: p.Org, CommonName: node.CommonName, SerialNumber: ep.SerialNumber}
+	sessionName := sessionPath(remoteIdentity, localIdentity)
+	path = sessionName
 	if c.sessions.holds(sessionName) {
 		// The peer already reached us over this same pair of endpoints. Dialing
 		// anyway opens a second SA that one end or the other has to resolve
@@ -207,6 +221,7 @@ func (c *Client) connectPeer(ctx context.Context, local config.Endpoint, p confi
 		return errSessionEstablished
 	}
 	log.Printf("peer %s: dialing %s:%d", sessionName, remoteIP, ep.Port)
+	c.events.Emit("dial.attempt", sessionName, slog.String("remote", net.JoinHostPort(remoteIP.String(), strconv.Itoa(int(ep.Port)))))
 
 	ikeCfg := ike.PeerConfig{
 		Organization:       cfg.Node.Org,
@@ -226,13 +241,13 @@ func (c *Client) connectPeer(ctx context.Context, local config.Endpoint, p confi
 		RekeyJitter:        crypto.Jitter(),
 		RekeyRetryInitial:  crypto.RetryFirst(),
 		RekeyRetryMax:      crypto.RetryMax(),
+		Events:             c.ikeEvent,
 	}
 	sess, err := ike.InitiateContext(ctx, ikeCfg)
 	if err != nil {
 		return fmt.Errorf("handshake: %w", err)
 	}
-	localIdentity := ike.Identity{Organization: cfg.Node.Org, CommonName: cfg.Node.Name, SerialNumber: local.Serial}
-	remoteIdentity := ike.Identity{Organization: p.Org, CommonName: node.CommonName, SerialNumber: ep.SerialNumber}
+	established = true
 	return c.serveSession(ctx, sess, name, sessionName, localIdentity, remoteIdentity, remoteIdentity)
 }
 

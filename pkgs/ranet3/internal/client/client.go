@@ -11,6 +11,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/netip"
 	"runtime"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
@@ -102,6 +104,9 @@ type Client struct {
 	// built by hand, where the verb says so rather than guessing at a path.
 	configPath atomic.Pointer[string]
 
+	// events is the daemon's bus, nil on a Client a test built by hand
+	events *events.Bus
+
 	inboundPackets atomic.Uint64
 	inboundDropped atomic.Uint64
 	// dropReported is nanoseconds since started, read through time.Since so it
@@ -154,7 +159,8 @@ func underlayAddrs(reg registry.Registry) []netip.Addr {
 	return out
 }
 
-func New(cfg *config.Config) (_ *Client, err error) {
+// New builds the node from its configuration, recording what it does on bus
+func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	privateKey, err := registry.LoadPrivateKey(cfg.Auth.Key)
 	if err != nil {
 		return nil, err
@@ -195,7 +201,7 @@ func New(cfg *config.Config) (_ *Client, err error) {
 			mesh.Close()
 		}
 	}()
-	return newClient(cfg, privateKey, reg, mesh, nil)
+	return newClient(cfg, privateKey, reg, mesh, nil, bus)
 }
 
 // steeredMTU is the device MTU once the largest configured segment list has
@@ -211,7 +217,7 @@ func steeredMTU(steering *srv6.SteerTable) (int, error) {
 // around a mesh it built itself rather than a privileged TUN. host is the
 // machine the underlay reads and writes, nil for the one this process is
 // running on, as New passes and as a deployment gets.
-func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.Registry, mesh *netstack.Mesh, host kernel.Host) (_ *Client, err error) {
+func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.Registry, mesh *netstack.Mesh, host kernel.Host, bus *events.Bus) (_ *Client, err error) {
 	underlay, capture, closeUnderlay, err := underlayRuntime(cfg.Link.Underlay, mesh.Name, host)
 	if err != nil {
 		return nil, err
@@ -221,6 +227,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.R
 			closeUnderlay()
 		}
 	}()
+	underlay.Events = func(kind string, attrs ...slog.Attr) { bus.Emit(kind, "", attrs...) }
 	hub, err := transport.NewHub(fmt.Sprintf(":%d", cfg.Link.Port), cfg.Link.Underlay, underlay)
 	if err != nil {
 		return nil, err
@@ -232,7 +239,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.R
 	}()
 	// Two capabilities configure the speaker: cap.babel is the protocol's own
 	// timers and cost, and cap.route the prefixes this node puts into the mesh.
-	speaker, err := babel.New(cfg.Babel(), cfg.Routes(), babel.Runtime{}, mesh)
+	speaker, err := babel.New(cfg.Babel(), cfg.Routes(), babel.Runtime{Events: bus}, mesh)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +254,9 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.R
 		dialers: make(map[string]*dialer),
 		running: startedSubsystems(),
 		started: time.Now(),
+		events:  bus,
 	}
+	c.sessions.events = bus
 	c.dropReported.Store(-int64(espDropReportInterval))
 	c.cfg.Store(cfg)
 	c.storeRegistry(reg)
@@ -328,6 +337,7 @@ func (c *Client) KernelRuntime() kernel.Runtime {
 		BoundUnderlay: cfg.Link.Underlay.Bind,
 		Capture:       c.CaptureRoutes(),
 		Host:          c.host,
+		Events:        c.events,
 	}
 }
 

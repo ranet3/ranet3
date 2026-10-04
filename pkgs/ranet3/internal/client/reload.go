@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -96,7 +97,14 @@ func (c *Client) syncPeers() {
 //
 // SIGHUP calls this, and so does the control socket's reload verb through
 // Reload, which supplies the path the daemon was started with.
-func (c *Client) ReloadFrom(path string) error {
+func (c *Client) ReloadFrom(path string) (err error) {
+	defer func() {
+		attrs := []slog.Attr{slog.String("path", path)}
+		if err != nil {
+			attrs = append(attrs, slog.String("err", err.Error()))
+		}
+		c.events.Emit("daemon.reload", "", attrs...)
+	}()
 	cfg, err := config.Load(path)
 	if err != nil {
 		return err

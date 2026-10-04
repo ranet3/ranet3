@@ -144,7 +144,7 @@ func tryDaemon(t *testing.T, bind bool, host *recordedKernel) (*daemon, error) {
 	mesh.Name = "mesh0"
 	t.Cleanup(mesh.Close)
 
-	node, err := newClient(cfg, privateKey, reg, mesh, host)
+	node, err := newClient(cfg, privateKey, reg, mesh, host, nil)
 	if err != nil {
 		return nil, err
 	}

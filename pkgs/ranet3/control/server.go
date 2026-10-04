@@ -5,6 +5,7 @@ package control
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -182,11 +183,15 @@ func Handler(src Source) http.Handler {
 	answer(mux, PathPeers, func() any { return src.Peers() })
 	scrape(mux, PathMetrics, src)
 	sink, _ := src.(Sink)
-	act(mux, PathDisable, sink, func(s Sink, r Request) (Result, error) { return s.SetSubsystem(r.Subsystem, false) })
-	act(mux, PathEnable, sink, func(s Sink, r Request) (Result, error) { return s.SetSubsystem(r.Subsystem, true) })
-	act(mux, PathRedial, sink, func(s Sink, r Request) (Result, error) { return s.Redial(r.Peer) })
-	act(mux, PathRekey, sink, func(s Sink, r Request) (Result, error) { return s.Rekey(r.Peer, r.All) })
-	act(mux, PathReload, sink, func(s Sink, r Request) (Result, error) { return s.Reload() })
+	act(mux, PathDisable, sink, func(ctx context.Context, s Sink, r Request) (Result, error) {
+		return s.SetSubsystem(ctx, r.Subsystem, false)
+	})
+	act(mux, PathEnable, sink, func(ctx context.Context, s Sink, r Request) (Result, error) {
+		return s.SetSubsystem(ctx, r.Subsystem, true)
+	})
+	act(mux, PathRedial, sink, func(ctx context.Context, s Sink, r Request) (Result, error) { return s.Redial(ctx, r.Peer) })
+	act(mux, PathRekey, sink, func(ctx context.Context, s Sink, r Request) (Result, error) { return s.Rekey(ctx, r.Peer, r.All) })
+	act(mux, PathReload, sink, func(ctx context.Context, s Sink, r Request) (Result, error) { return s.Reload(ctx) })
 	mux.Handle(PathDebug, newDebugServer(src))
 	return mux
 }
@@ -258,7 +263,7 @@ const maxRequest = 64 << 10
 // here inspects a credential, because every verb acts on state the node's own
 // file already decides. See the package doc for the line that keeps a verb
 // from needing one.
-func act(mux *http.ServeMux, path string, sink Sink, run func(Sink, Request) (Result, error)) {
+func act(mux *http.ServeMux, path string, sink Sink, run func(context.Context, Sink, Request) (Result, error)) {
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")
@@ -283,7 +288,7 @@ func act(mux *http.ServeMux, path string, sink Sink, run func(Sink, Request) (Re
 				return
 			}
 		}
-		result, err := run(sink, request)
+		result, err := run(r.Context(), sink, request)
 		if err != nil {
 			// The caller named something this node does not run, which is a
 			// request to correct rather than a failure on this side.
