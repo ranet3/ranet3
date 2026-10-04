@@ -63,7 +63,7 @@ func TestSubsystemStopsAndStartsWhatItNames(t *testing.T) {
 	var reconciler []bool
 	c.SetReconcilerEnable(func(on bool) { reconciler = append(reconciler, on) })
 
-	if _, err := c.SetSubsystem(control.SubsystemSteering, false); err != nil {
+	if _, err := c.SetSubsystem(context.Background(), control.SubsystemSteering, false); err != nil {
 		t.Fatal(err)
 	}
 	if c.Mesh.SteeringEnabled() {
@@ -72,10 +72,10 @@ func TestSubsystemStopsAndStartsWhatItNames(t *testing.T) {
 	if c.Mesh.Steering() == nil {
 		t.Error("stopping steering unloaded the table, so a diagnostic can no longer report what was stopped")
 	}
-	if _, err := c.SetSubsystem(control.SubsystemReconciler, false); err != nil {
+	if _, err := c.SetSubsystem(context.Background(), control.SubsystemReconciler, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.SetSubsystem(control.SubsystemResponder, false); err != nil {
+	if _, err := c.SetSubsystem(context.Background(), control.SubsystemResponder, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := c.Status().Disabled; len(got) != 3 {
@@ -85,7 +85,7 @@ func TestSubsystemStopsAndStartsWhatItNames(t *testing.T) {
 		t.Errorf("the reconciler was told %v, want one stop", reconciler)
 	}
 
-	result, err := c.SetSubsystem(control.SubsystemSteering, true)
+	result, err := c.SetSubsystem(context.Background(), control.SubsystemSteering, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestSubsystemStopsAndStartsWhatItNames(t *testing.T) {
 	}
 	// A second ask is answered as the no-op it is rather than reported as a
 	// change somebody then goes looking for in the logs.
-	again, err := c.SetSubsystem(control.SubsystemSteering, true)
+	again, err := c.SetSubsystem(context.Background(), control.SubsystemSteering, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestSubsystemStopsAndStartsWhatItNames(t *testing.T) {
 // their node is in a state it was never in.
 func TestSubsystemRefusesWhatThisNodeDoesNotRun(t *testing.T) {
 	c := writable(t)
-	if _, err := c.SetSubsystem("dataplane", false); err == nil {
+	if _, err := c.SetSubsystem(context.Background(), "dataplane", false); err == nil {
 		t.Error("a subsystem outside the set was accepted")
 	} else if !strings.Contains(err.Error(), "reconciler") {
 		t.Errorf("the refusal reads %q, want it to name the set", err)
@@ -124,7 +124,7 @@ func TestSubsystemRefusesWhatThisNodeDoesNotRun(t *testing.T) {
 		control.SubsystemSteering:   "cap.segment",
 		control.SubsystemResponder:  "link.listen",
 	} {
-		if _, err := bare.SetSubsystem(name, false); err == nil {
+		if _, err := bare.SetSubsystem(context.Background(), name, false); err == nil {
 			t.Errorf("%s was stopped on a node that does not run it", name)
 		} else if !strings.Contains(err.Error(), want) {
 			t.Errorf("the %s refusal reads %q, want it to name %s", name, err, want)
@@ -148,7 +148,7 @@ func TestStoppedResponderKeepsTheSessionsItHolds(t *testing.T) {
 	c.sessions.active = func(*ike.Session) bool { return true }
 	c.sessions.adoptPreferred("example/gateway/1@0", &ike.Session{}, true, nil)
 
-	if _, err := c.SetSubsystem(control.SubsystemResponder, false); err != nil {
+	if _, err := c.SetSubsystem(context.Background(), control.SubsystemResponder, false); err != nil {
 		t.Fatal(err)
 	}
 	if c.subsystemRunning(control.SubsystemResponder) {
@@ -182,7 +182,7 @@ func TestRedialDropsSessionsAndWakesDialers(t *testing.T) {
 	other := &dialer{cancel: func() {}, wake: make(chan struct{}, 1)}
 	c.dialers["example/elsewhere/1@0"] = other
 
-	result, err := c.Redial("gateway")
+	result, err := c.Redial(context.Background(), "gateway")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestRedialDropsSessionsAndWakesDialers(t *testing.T) {
 		t.Errorf("redial answered %q", result.Detail)
 	}
 
-	if _, err := c.Redial("nobody"); err == nil {
+	if _, err := c.Redial(context.Background(), "nobody"); err == nil {
 		t.Error("redialing a peer this node neither dials nor holds was accepted")
 	}
 }
@@ -220,7 +220,7 @@ func TestRedialDropsResponderOnlySession(t *testing.T) {
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
 	c.sessions.adoptPreferred("example/inbound/1@0", &ike.Session{}, true, nil)
-	result, err := c.Redial("example/inbound")
+	result, err := c.Redial(context.Background(), "example/inbound")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestRekeyAsksTheSessionsItNames(t *testing.T) {
 	c.sessions.adoptPreferred("example/gateway/1@0", gateway, true, nil)
 	c.sessions.adoptPreferred("example/elsewhere/1@0", elsewhere, true, nil)
 
-	result, err := c.Rekey("gateway", false)
+	result, err := c.Rekey(context.Background(), "gateway", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestRekeyAsksTheSessionsItNames(t *testing.T) {
 		t.Fatal("no session was asked to rekey")
 	}
 
-	if _, err := c.Rekey("", true); err != nil {
+	if _, err := c.Rekey(context.Background(), "", true); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -316,13 +316,13 @@ func TestRekeyAsksTheSessionsItNames(t *testing.T) {
 		}
 	}
 
-	if _, err := c.Rekey("gateway", true); err == nil {
+	if _, err := c.Rekey(context.Background(), "gateway", true); err == nil {
 		t.Error("a peer and --all together were accepted")
 	}
-	if _, err := c.Rekey("", false); err == nil {
+	if _, err := c.Rekey(context.Background(), "", false); err == nil {
 		t.Error("a rekey naming neither a peer nor --all was accepted")
 	}
-	if _, err := c.Rekey("nobody", false); err == nil {
+	if _, err := c.Rekey(context.Background(), "nobody", false); err == nil {
 		t.Error("rekeying a peer this node holds no session with was accepted")
 	}
 }
@@ -332,13 +332,13 @@ func TestRekeyAsksTheSessionsItNames(t *testing.T) {
 // re-reading a file this process is not running.
 func TestReloadUsesThePathTheDaemonWasStartedWith(t *testing.T) {
 	c := writable(t)
-	if _, err := c.Reload(); err == nil {
+	if _, err := c.Reload(context.Background()); err == nil {
 		t.Error("a node that was never told where its file is reloaded anyway")
 	} else if !strings.Contains(err.Error(), "never told") {
 		t.Errorf("the refusal reads %q", err)
 	}
 	c.SetConfigPath("/nonexistent/ranet3.toml")
-	if _, err := c.Reload(); err == nil {
+	if _, err := c.Reload(context.Background()); err == nil {
 		t.Error("a reload of a file that does not exist reported success")
 	} else if !strings.Contains(err.Error(), "/nonexistent/ranet3.toml") {
 		t.Errorf("the failure reads %q, want it to name the file it read", err)

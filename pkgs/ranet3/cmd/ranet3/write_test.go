@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -23,7 +24,10 @@ type writingStub struct {
 	last string
 }
 
-func (s *writingStub) SetSubsystem(name control.Subsystem, on bool) (control.Result, error) {
+// a stub that stopped matching the interface would leave every verb refused rather than fail to build
+var _ control.Sink = (*writingStub)(nil)
+
+func (s *writingStub) SetSubsystem(_ context.Context, name control.Subsystem, on bool) (control.Result, error) {
 	state := "stopped"
 	if on {
 		state = "running"
@@ -31,18 +35,18 @@ func (s *writingStub) SetSubsystem(name control.Subsystem, on bool) (control.Res
 	return s.record(fmt.Sprintf("set %s %s", name, state))
 }
 
-func (s *writingStub) Redial(peer string) (control.Result, error) {
+func (s *writingStub) Redial(_ context.Context, peer string) (control.Result, error) {
 	return s.record("redial " + peer)
 }
 
-func (s *writingStub) Rekey(peer string, all bool) (control.Result, error) {
+func (s *writingStub) Rekey(_ context.Context, peer string, all bool) (control.Result, error) {
 	if all {
 		return s.record("rekey --all")
 	}
 	return s.record("rekey " + peer)
 }
 
-func (s *writingStub) Reload() (control.Result, error) { return s.record("reload") }
+func (s *writingStub) Reload(context.Context) (control.Result, error) { return s.record("reload") }
 
 // Sessions names a peer the peers list does not. The completion unions the
 // two, and a peer that only dials this node has no entry in the peers list and

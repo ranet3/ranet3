@@ -4,6 +4,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,22 +27,22 @@ type writingSource struct {
 	refuse    error
 }
 
-func (s *writingSource) SetSubsystem(name Subsystem, on bool) (Result, error) {
+func (s *writingSource) SetSubsystem(_ context.Context, name Subsystem, on bool) (Result, error) {
 	s.verb, s.subsystem, s.on = "set", name, on
 	return s.answer(string(name))
 }
 
-func (s *writingSource) Redial(peer string) (Result, error) {
+func (s *writingSource) Redial(_ context.Context, peer string) (Result, error) {
 	s.verb, s.peer = "redial", peer
 	return s.answer(peer)
 }
 
-func (s *writingSource) Rekey(peer string, all bool) (Result, error) {
+func (s *writingSource) Rekey(_ context.Context, peer string, all bool) (Result, error) {
 	s.verb, s.peer, s.all = "rekey", peer, all
 	return s.answer(peer)
 }
 
-func (s *writingSource) Reload() (Result, error) {
+func (s *writingSource) Reload(context.Context) (Result, error) {
 	s.verb = "reload"
 	return s.answer("/etc/ranet3/config.toml")
 }

@@ -41,6 +41,7 @@ func (c *Client) acceptPeers(ctx context.Context) error {
 		RekeyJitter:        crypto.Jitter(),
 		RekeyRetryInitial:  crypto.RetryFirst(),
 		RekeyRetryMax:      crypto.RetryMax(),
+		Events:             c.ikeEvent,
 	})
 	if err != nil {
 		return err
@@ -64,7 +65,7 @@ func (c *Client) acceptPeers(ctx context.Context) error {
 			// The same shape a dialed session uses, so one path through the
 			// mesh has one name whichever end opened it and the replace rule
 			// in sessionSet applies across both directions.
-			sessionName := fmt.Sprintf("%s/%s/%s@%s", peer.Organization, peer.CommonName, peer.SerialNumber, accepted.Local.SerialNumber)
+			sessionName := sessionPath(peer, accepted.Local)
 			// We answered, so the peer is this SA's initiator and we are its
 			// responder. Losing to a session the other end also prefers is
 			// ordinary on a full mesh and is not worth a line in the log.

@@ -76,6 +76,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -186,25 +187,27 @@ type Result struct {
 // not run. A verb that found nothing is an error rather than a quiet success,
 // because an operator told "steering is off" by a node that never steered has
 // been told nothing.
+//
+// ctx is the request's, which carries its caller for [CallerOf]
 type Sink interface {
 	// SetSubsystem stops or starts one subsystem. The state lives in the
 	// process, so a restart returns to whatever the file says and a reload
 	// leaves it as an operator set it: a registry rewrite arrives on every
 	// node that joins the mesh, and re-enabling on one would undo a decision
 	// made minutes earlier.
-	SetSubsystem(name Subsystem, on bool) (Result, error)
+	SetSubsystem(ctx context.Context, name Subsystem, on bool) (Result, error)
 	// Redial drops the sessions this node holds for one peer and sets its
 	// dialers going again at once rather than after the reconnect delay. It is
 	// the answer to a peer that holds a session this node no longer has, on
 	// the side that can act.
-	Redial(peer string) (Result, error)
+	Redial(ctx context.Context, peer string) (Result, error)
 	// Rekey asks one peer's sessions, or every session, to replace their Child
 	// SA. The exchange runs on its own and the new SPIs appear under
 	// [Client.Sessions]; the answer says how many were asked.
-	Rekey(peer string, all bool) (Result, error)
+	Rekey(ctx context.Context, peer string, all bool) (Result, error)
 	// Reload re-reads the configuration file and the trust document it names,
 	// as SIGHUP does, so a supervisor is not the only way to ask.
-	Reload() (Result, error)
+	Reload(ctx context.Context) (Result, error)
 }
 
 // Duration is a time.Duration that reads as "4s" in JSON rather than as a

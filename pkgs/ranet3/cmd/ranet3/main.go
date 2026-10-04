@@ -36,7 +36,9 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/client"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/version"
 )
 
 // main runs the command tree and turns what it returns into a process status.
@@ -149,7 +151,8 @@ func runDaemon(opts options) int {
 	if err != nil {
 		return refuseToStart(err)
 	}
-	node, err := client.New(cfg)
+	bus := events.New()
+	node, err := client.New(cfg, bus)
 	if err != nil {
 		return refuseToStart(err)
 	}
@@ -264,6 +267,7 @@ func runDaemon(opts options) int {
 			// would drop. The prefixes are read back from the translator, so
 			// this callback only has to say that they changed.
 			Announce: func([]netip.Prefix) { node.Republish() },
+			Events:   bus,
 		})
 		if err != nil {
 			return refuseToStart(err)
@@ -305,6 +309,10 @@ func runDaemon(opts options) int {
 	defer stopMesh()
 	go func() {
 		<-ctx.Done()
+		bus.Emit("daemon.stopping", "")
+		// the subscriptions end as the shutdown starts rather than at exit
+		// so every stream writes its closing line while the process still has seconds to run
+		bus.Close()
 		reconciler.Wait()
 		stopMesh()
 	}()
@@ -335,6 +343,7 @@ func runDaemon(opts options) int {
 		}
 	}()
 
+	bus.Emit("daemon.started", "", slog.String("version", version.String()), slog.String("config", *configPath))
 	if err := node.Run(meshCtx); err != nil && ctx.Err() == nil {
 		log.Printf("client: %v", err)
 		failed.Store(true)

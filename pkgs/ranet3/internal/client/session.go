@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/ike"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -33,6 +35,13 @@ import (
 func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sessionName string, initiator, responder, remote ike.Identity) error {
 	defer sess.Mux().Close()
 	log.Printf("peer %s: connected (SPI %08x/%08x)", name, sess.Child.LocalSPI, sess.Child.RemoteSPI)
+	role := "responder"
+	if remote == responder {
+		role = "initiator"
+	}
+	// read before adopt publishes the session, after which a rekey may write sess.Child
+	established := []slog.Attr{slog.String("role", role),
+		slog.String("spi_in", fmt.Sprintf("%08x", sess.Child.LocalSPI)), slog.String("spi_out", fmt.Sprintf("%08x", sess.Child.RemoteSPI))}
 
 	tunnel := &tunnel{replayWindow: c.config().Crypto().ReplayWindow(), started: time.Now()}
 	tunnel.askedAt.Store(-int64(rekeyAskInterval))
@@ -83,6 +92,8 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 	if !adopted {
 		return errSessionEstablished
 	}
+	// recorded once the session holds its path, so one that lost the path is recorded only as resolved
+	c.events.Emit("ike.session.established", sessionName, established...)
 	// A dialer that a reload dropped cancels this context while the node keeps
 	// running, and this end then stops: the peer carries on sending ESP
 	// into an SPI nobody answers until its own liveness check expires, which
@@ -137,10 +148,13 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 	first := <-results
 	_ = sess.Mux().Close()
 	<-results
+	ended := fmt.Errorf("%s session ended: %w", first.component, first.err)
 	if ctx.Err() != nil {
-		return ctx.Err()
+		ended = ctx.Err()
 	}
-	return fmt.Errorf("%s session ended: %w", first.component, first.err)
+	// with the role and the SPIs its established event carried, so a reader pairs the two across a replacement
+	c.events.Emit("ike.session.ended", sessionName, append(established, slog.String("err", ended.Error()))...)
+	return ended
 }
 
 // sessionSet keeps at most one live SA per peer. In a full mesh every node
@@ -175,6 +189,9 @@ type sessionSet struct {
 	close  func(*ike.Session)
 	active func(*ike.Session) bool
 	rekey  func(*ike.Session) error
+
+	// events records each resolution between two sessions for one path
+	events *events.Bus
 }
 
 type liveSession struct {
@@ -206,6 +223,21 @@ func preferInitiator(initiator, responder ike.Identity) bool {
 
 func identityOrder(id ike.Identity) string {
 	return id.Organization + "/" + id.CommonName + "/" + id.SerialNumber
+}
+
+// sessionPath names one session by its two ends, the same name whichever end dialed
+func sessionPath(remote, local ike.Identity) string {
+	return fmt.Sprintf("%s/%s/%s@%s", remote.Organization, remote.CommonName, remote.SerialNumber, local.SerialNumber)
+}
+
+// ikeEvent is the ike Recorder, which records under the session's path
+// a change before any peer authenticated has no path
+func (c *Client) ikeEvent(local, remote ike.Identity, kind string, attrs ...slog.Attr) {
+	path := ""
+	if remote != (ike.Identity{}) {
+		path = sessionPath(remote, local)
+	}
+	c.events.Emit(kind, path, attrs...)
 }
 
 // adopt makes sess the live session for one path unless an equally named
@@ -257,6 +289,7 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, re
 	if previous != nil && previous.session != sess && previous.preferred && !preferred {
 		s.mu.Unlock()
 		log.Printf("peer %s: keeping the session the other end also prefers", path)
+		s.events.Emit("ike.session.resolved", path, slog.String("kept", "the session already held"))
 		s.close(sess)
 		return func() {}, false
 	}
@@ -274,6 +307,7 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, re
 	s.mu.Unlock()
 	if previous != nil && previous.session != sess {
 		log.Printf("peer %s: replacing the previous session", path)
+		s.events.Emit("ike.session.resolved", path, slog.String("kept", "the new session"))
 		s.close(previous.session)
 	}
 	return func() {
