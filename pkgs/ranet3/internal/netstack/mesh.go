@@ -18,6 +18,7 @@ package netstack
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -245,7 +246,10 @@ func (m *Mesh) outboundReader(dev tun.Device) {
 			return
 		}
 		n, err := dev.Read(b.bufs, b.sizes, tunOffset)
-		if err != nil {
+		// ErrTooManySegments comes with n packets, one fewer than the batch holds
+		// only the rest of that one GSO frame is lost
+		// the device stays readable
+		if err != nil && !errors.Is(err, tun.ErrTooManySegments) {
 			// Closure is the ordinary reason and says nothing. Anything else
 			// ends this queue's reader for the life of the process, and on
 			// linux the kernel keeps steering its share of flows to the queue
