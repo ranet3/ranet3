@@ -6,8 +6,10 @@ package main
 import "time"
 
 const (
-	// readTimeout bounds one debug read by default, the bound the control client puts on every read
-	readTimeout = 10 * time.Second
+	// defaultConfig is the file the daemon reads when --config names none, the conventional place for a host's own
+	defaultConfig = "/etc/ranet3/config.toml"
+	// defaultLogLevel is the daemon's --log-level when none is given, which says what changed without each packet
+	defaultLogLevel = "info"
 	// followFor is how long debug events -f follows by default, a look rather than a watch
 	followFor = 30 * time.Second
 	// waitTimeout is how long debug wait waits by default, as long as a session takes to come up on a slow link

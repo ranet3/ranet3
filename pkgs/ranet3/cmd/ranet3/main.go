@@ -98,12 +98,12 @@ func daemonCommand(run func(options) int) *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&o.configPath, "config", "c", "/etc/ranet3/config.toml", "path to the ranet3 config file, .toml, .yaml, .yml or .json")
+	f.StringVarP(&o.configPath, "config", "c", defaultConfig, "path to the ranet3 config file, .toml, .yaml, .yml or .json")
 	f.StringVar(&o.pprofAddr, "pprof", "", "if set, serve net/http/pprof on this address (e.g. 127.0.0.1:6060) for profiling, CPU at /debug/pprof/profile and flamegraph at go tool pprof -http=:8081 'http://<addr>/debug/pprof/profile?seconds=30'")
 	f.BoolVar(&o.contentionProfiles, "contention-profiles", false, "record every mutex and blocking event while pprof is enabled (high overhead)")
 	f.StringVar(&o.metricsAddr, "metrics", "", "if set, serve Prometheus metrics on this address (e.g. 127.0.0.1:9669) at /metrics")
 	f.StringVar(&o.controlPath, "control", control.DefaultSocket, "unix socket serving the read-only control surface the other subcommands read; empty disables it")
-	f.StringVar(&logLevel, "log-level", "info", "minimum log level: debug, info, warn, or error")
+	f.StringVar(&logLevel, "log-level", defaultLogLevel, "minimum log level: debug, info, warn, or error")
 	f.StringVar(&debugAccess, "debug-access", string(control.DebugRoot),
 		"who may use the control socket's debug paths, one of "+strings.Join(control.DebugAccessNames(), ", "))
 	cmd.RegisterFlagCompletionFunc("debug-access", cobra.FixedCompletions(control.DebugAccessNames(), cobra.ShellCompDirectiveNoFileComp))

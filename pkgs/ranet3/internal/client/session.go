@@ -107,7 +107,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 		}
 	}()
 
-	plain := make([][]byte, 0, 128)
+	var plain [][]byte
 	emit := func(results []inboundDecrypted) {
 		esp.CommitBatch(results)
 		plain = plain[:0]
@@ -321,10 +321,6 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, re
 		}
 	}, true
 }
-
-// deleteGrace bounds how long a teardown waits for the peer to acknowledge the
-// Delete. The point is to tell it, not to be sure it heard.
-const deleteGrace = 2 * time.Second
 
 // closeSession tells the peer the SA is gone and then drops it, whether or not
 // the Delete was answered.

@@ -20,8 +20,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/registry"
 )
 
-const defaultReconnectDelay = 10 * time.Second
-
 // reconnectDelay is how long a dialer waits between attempts. A test that has
 // to see the loop come round again overrides it; zero means the default.
 func (c *Client) reconnectDelay() time.Duration {
@@ -129,11 +127,6 @@ type repeatedFailure struct {
 	reason string
 	said   time.Time
 }
-
-const (
-	dialFailureInterval = 10 * time.Minute
-	dialFailureFloor    = time.Minute
-)
 
 // alreadySaid reports whether an equivalent failure has been said recently
 // enough to keep this one at debug, and records the one it says. What it

@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"syscall"
-	"time"
 )
 
 // Client reads one daemon's control socket. It is the other half of Handler,
@@ -38,7 +37,7 @@ func Dial(path string) *Client {
 	}
 	return &Client{
 		path:    path,
-		http:    &http.Client{Timeout: 10 * time.Second, Transport: transport},
+		http:    &http.Client{Timeout: ReadTimeout, Transport: transport},
 		streams: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 	}
 }
@@ -102,7 +101,7 @@ func (c *Client) Metrics() (string, error) {
 		return "", c.explain(err)
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<20))
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxAnswer))
 	if err != nil {
 		return "", fmt.Errorf("control: reading %s: %w", PathMetrics, err)
 	}
@@ -144,7 +143,7 @@ func (c *Client) call(path string, request Request) (Result, error) {
 func decode[T any](path string, response *http.Response) (T, error) {
 	var out T
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<20))
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxAnswer))
 	if err != nil {
 		return out, fmt.Errorf("control: reading %s: %w", path, err)
 	}
