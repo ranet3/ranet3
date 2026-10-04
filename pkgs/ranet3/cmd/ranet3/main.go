@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"net/netip"
@@ -24,6 +25,7 @@ import (
 	"os/signal"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -65,14 +67,17 @@ type options struct {
 	controlPath        string
 	contentionProfiles bool
 	level              slog.Level
+	debugAccess        control.DebugAccess
 }
 
 // daemonCommand is the node itself. Its flags are its own rather than the
 // root's: a reader's --control names a socket to read and this one names a
 // socket to bind, and the two would share a description that fits neither.
-func daemonCommand() *cobra.Command {
+//
+// run starts the node from the options the flags came to, runDaemon unless a test reads them instead
+func daemonCommand(run func(options) int) *cobra.Command {
 	var o options
-	var logLevel string
+	var logLevel, debugAccess string
 	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "run this node: IKEv2, ESP, the babel speaker and the optional route reconciler",
@@ -81,7 +86,10 @@ func daemonCommand() *cobra.Command {
 			if err := o.level.UnmarshalText([]byte(logLevel)); err != nil {
 				return fmt.Errorf("invalid --log-level %q: %w", logLevel, err)
 			}
-			if code := runDaemon(o); code != 0 {
+			if err := o.debugAccess.UnmarshalText([]byte(debugAccess)); err != nil {
+				return fmt.Errorf("invalid --debug-access %q: %w", debugAccess, err)
+			}
+			if code := run(o); code != 0 {
 				return exitCode(code)
 			}
 			return nil
@@ -94,6 +102,9 @@ func daemonCommand() *cobra.Command {
 	f.StringVar(&o.metricsAddr, "metrics", "", "if set, serve Prometheus metrics on this address (e.g. 127.0.0.1:9669) at /metrics")
 	f.StringVar(&o.controlPath, "control", control.DefaultSocket, "unix socket serving the read-only control surface the other subcommands read; empty disables it")
 	f.StringVar(&logLevel, "log-level", "info", "minimum log level: debug, info, warn, or error")
+	f.StringVar(&debugAccess, "debug-access", string(control.DebugRoot),
+		"who may use the control socket's debug paths, one of "+strings.Join(control.DebugAccessNames(), ", "))
+	cmd.RegisterFlagCompletionFunc("debug-access", cobra.FixedCompletions(control.DebugAccessNames(), cobra.ShellCompDirectiveNoFileComp))
 	return cmd
 }
 
@@ -278,23 +289,12 @@ func runDaemon(opts options) int {
 	// one case that warns and carries on: it is on without being asked for, so
 	// a node whose unit cannot reach /var/run would otherwise stop starting on
 	// upgrade over a diagnostic it never requested. --control "" is the opt-out.
-	if opts.controlPath != "" {
-		listener, err := control.Listen(opts.controlPath)
-		if err != nil && opts.controlPath == control.DefaultSocket {
-			slog.Warn("running without a control socket, so the subcommands have nothing to read", "err", err)
-		} else if err != nil {
-			return refuseToStart(err)
-		}
-		if listener != nil {
-			defer listener.Close()
-			go func() {
-				log.Printf("control socket listening on %s", opts.controlPath)
-				if err := control.Serve(listener, node); err != nil {
-					log.Printf("control: %v", err)
-					failed.Store(true)
-				}
-			}()
-		}
+	listener, err := serveControl(opts, node, &failed)
+	if err != nil {
+		return refuseToStart(err)
+	}
+	if listener != nil {
+		defer listener.Close()
 	}
 
 	// The reconciler has to finish withdrawing while the TUN still exists,
@@ -347,6 +347,38 @@ func runDaemon(opts options) int {
 		return 1
 	}
 	return 0
+}
+
+// debugNode is the node under the --debug-access it was started with
+type debugNode struct {
+	*client.Client
+	access control.DebugAccess
+}
+
+func (n debugNode) DebugAccess() control.DebugAccess { return n.access }
+
+// serveControl binds the socket opts names and answers it for node, the debug paths under opts' --debug-access
+// a nil listener and no error is a node running without a socket, for the reasons runDaemon gives
+func serveControl(opts options, node *client.Client, failed *atomic.Bool) (net.Listener, error) {
+	if opts.controlPath == "" {
+		return nil, nil
+	}
+	listener, err := control.Listen(opts.controlPath)
+	switch {
+	case err != nil && opts.controlPath == control.DefaultSocket:
+		slog.Warn("running without a control socket, so the subcommands have nothing to read", "err", err)
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	go func() {
+		log.Printf("control socket listening on %s", opts.controlPath)
+		if err := control.Serve(listener, debugNode{node, opts.debugAccess}); err != nil {
+			log.Printf("control: %v", err)
+			failed.Store(true)
+		}
+	}()
+	return listener, nil
 }
 
 // watchSignals starts the shutdown on the first signal and gives up on the
