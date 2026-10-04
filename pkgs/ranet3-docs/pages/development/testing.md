@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the VM tests, the root-only tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-03
+updated: 2026-10-04
 order: 20
 ---
 
@@ -16,11 +16,13 @@ everything else from the root of the repository.
 go test ./... -race
 ```
 
-The unit tests need no privileges, with two exceptions: `internal/kernel` has
-tests that write to a real routing table, and `internal/egress` one that writes
-into a real packet filter. Both unshare a network namespace and refuse to
-continue unless it is empty, and both skip unless run as root, on darwin unless
-`RANET3_DARWIN_NETTEST=1` is also set, because that machine is on a live mesh.
+The unit tests need no privileges, with three exceptions: `internal/kernel` has
+tests that write to a real routing table, `internal/egress` one that writes into
+a real packet filter, and `internal/netstack` one that creates and attaches to a
+real TUN on linux and reads its `gso_max_segs` back. All three unshare a network
+namespace and refuse to continue unless it is empty, and all three skip unless
+run as root, on darwin unless `RANET3_DARWIN_NETTEST=1` is also set, because
+that machine is on a live mesh.
 
 `internal/kernel` names the machine it reads and writes, `kernel.Host`, so the
 darwin backend can be driven without either. `internal/client`'s
@@ -30,9 +32,10 @@ writes the default its bound socket depends on, and the reconciler holds an
 announced default out of the kernel until a session is live, all asserted on the
 routes that arrive rather than on the calls that made them. It needs no
 privilege, and the one thing it leaves with the running kernel is `IP_BOUND_IF`
-on the transport's own UDP socket. The `netlink` VM check runs both binaries as
-root against a real kernel, which is the only place the `nf_tables` encoding is
-checked against something other than the decoder it was written beside.
+on the transport's own UDP socket. The `netlink` VM check runs the three
+binaries as root against a real kernel, which is the only place the `nf_tables`
+encoding is checked against something other than the decoder it was written
+beside.
 
 The packages that read bytes a peer or a file chooses also carry property tests,
 in files ending in `_property_test.go`: `esp`, `ike`, `sadr`, `srv6`,
