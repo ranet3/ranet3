@@ -44,6 +44,7 @@ import (
 	"sync"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -146,6 +147,7 @@ type Speaker struct {
 	linkLocal     netip.Addr
 	packetSize    int
 	noTransit     bool
+	events        *events.Bus
 
 	mesh *netstack.Mesh
 
@@ -250,8 +252,8 @@ func New(cfg Config, routes Routes, rt Runtime, mesh *netstack.Mesh) (*Speaker, 
 	s := &Speaker{
 		hello: cfg.HelloInterval(), update: cfg.UpdateInterval(), cost: cfg.CostEffective(),
 		routerID: rt.RouterID, linkLocal: rt.LinkLocalAddr, packetSize: rt.PacketSize,
-		noTransit: !routes.Transits(),
-		mesh:      mesh,
+		noTransit: !routes.Transits(), events: rt.Events,
+		mesh: mesh,
 
 		neighbors:      make(map[string]*neighborState),
 		originate:      make(map[routeKey]struct{}),
@@ -279,6 +281,10 @@ func (s *Speaker) AddPeer(peer *netstack.Peer) *PeerHandle {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old := s.neighbors[peer.ID]; old != nil {
+		// a live neighbor replaced with its session goes down here, since no sweep sees it again
+		if old.alive {
+			s.events.Emit("babel.neighbor.down", old.peer.ID)
+		}
 		s.routes.expireNeighbor(old, time.Now())
 	}
 	n := &neighborState{peer: peer,
@@ -296,6 +302,10 @@ func (s *Speaker) removePeer(n *neighborState) {
 		return
 	}
 	delete(s.neighbors, n.peer.ID)
+	// a live neighbor leaving with its session goes down here, since no sweep sees it again
+	if n.alive {
+		s.events.Emit("babel.neighbor.down", n.peer.ID)
+	}
 	// Dropping this neighbor's suppression entries with it keeps a retired
 	// neighborState from being pinned until the next sweep, and lets the next
 	// session for the same peer ask immediately rather than inheriting a
@@ -662,12 +672,14 @@ func (s *Speaker) installRoute(key routeKey, sel routeSelection) {
 		peer = sel.neighbor.peer.ID
 		s.mesh.Routes.Set(key.source, key.dest, sel.neighbor.peer)
 		slog.Debug("babel route installed", "route", desc, "peer", peer, "metric", sel.cost)
+		s.events.Emit("babel.route.selected", peer, slog.String("route", desc), slog.Int("metric", int(sel.cost)))
 	} else {
 		// Held as unreachable rather than removed. The entry still exists,
 		// RFC 8966 section 3.5.4, and until it is flushed a packet for this
 		// prefix must not follow a shorter one instead.
 		s.mesh.Routes.Set(key.source, key.dest, netstack.Unreachable)
 		slog.Debug("babel route retracted", "route", desc)
+		s.events.Emit("babel.route.retracted", "", slog.String("route", desc))
 	}
 	s.routeChanges++
 	now := time.Now()
@@ -698,6 +710,7 @@ func (s *Speaker) sweepExpiredLocked(now time.Time) {
 		}
 		if n.alive && !n.isAlive(now) {
 			slog.Info("babel neighbor down", "peer", n.peer.ID)
+			s.events.Emit("babel.neighbor.down", n.peer.ID)
 			n.alive, n.haveReportedCost = false, false
 			n.forgetLink()
 		}
