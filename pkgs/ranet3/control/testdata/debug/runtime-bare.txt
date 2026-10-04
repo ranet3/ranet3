@@ -1,0 +1,13 @@
+version      2026.912.0+ed50ac2a11a7
+go           go1.26.7
+revision     not recorded in this build
+uptime       20m3s
+cpus         16, gomaxprocs 16
+goroutines   412
+threads      129
+descriptors  not countable, the limit is 524288
+heap         38.0 MiB in use, 183244 objects, next cycle at 64.0 MiB
+memory       105.0 MiB from the system
+gc           no cycle yet
+gc pause     0s
+resolver     cgo

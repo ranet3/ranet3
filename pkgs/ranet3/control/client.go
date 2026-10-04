@@ -22,23 +22,39 @@ import (
 type Client struct {
 	path string
 	http *http.Client
+	// streams carries an answer of no fixed length, which its caller's context bounds
+	// it hands a redirect back as it came, since a raw call answers with what the daemon said to the path asked
+	streams *http.Client
 }
 
 // Dial prepares a client. Nothing is opened until a read, so a command that
 // only prints its usage never touches the socket.
 func Dial(path string) *Client {
-	return &Client{
-		path: path,
-		http: &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, "unix", path)
-				},
-			},
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", path)
 		},
 	}
+	return &Client{
+		path:    path,
+		http:    &http.Client{Timeout: 10 * time.Second, Transport: transport},
+		streams: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+	}
+}
+
+// Raw sends one request as written and returns the answer unread
+// the caller's context bounds the whole exchange, the body included
+func (c *Client) Raw(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	request, err := http.NewRequestWithContext(ctx, method, "http://control"+path, body)
+	if err != nil {
+		return nil, fmt.Errorf("control: %w", err)
+	}
+	response, err := c.streams.Do(request)
+	if err != nil {
+		return nil, c.explain(err)
+	}
+	return response, nil
 }
 
 func (c *Client) Path() string { return c.path }

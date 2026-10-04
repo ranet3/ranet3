@@ -1,0 +1,21 @@
+{
+  "version": "2026.912.0+ed50ac2a11a7",
+  "go_version": "go1.26.7",
+  "revision": "ed50ac2a11a77f5827de2084b6427ddad87701d2",
+  "modified": true,
+  "gomaxprocs": 16,
+  "cpus": 16,
+  "goroutines": 412,
+  "threads": 129,
+  "descriptors": 233,
+  "descriptor_limit": 524288,
+  "heap_alloc": 39845888,
+  "heap_objects": 183244,
+  "next_gc": 67108864,
+  "sys": 110100480,
+  "gc_cycles": 1,
+  "gc_pause_total": "4.2ms",
+  "last_gc": "37s",
+  "uptime": "20m3s",
+  "resolver": "cgo"
+}

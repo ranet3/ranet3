@@ -29,6 +29,15 @@ func table(w io.Writer, header []string, rows [][]string) {
 	out.Flush()
 }
 
+// pairs writes rows of a name and its value, aligned
+func pairs(w io.Writer, rows [][]string) {
+	out := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, row := range rows {
+		fmt.Fprintf(out, "%s\t%s\n", row[0], row[1])
+	}
+	out.Flush()
+}
+
 // RenderStatus writes the node's own summary as aligned name and value pairs,
 // which reads better than a one-row table for a record with this many fields.
 func RenderStatus(w io.Writer, s Status) {
@@ -60,11 +69,7 @@ func RenderStatus(w io.Writer, s Status) {
 	if len(s.Disabled) > 0 {
 		rows = append(rows, []string{"disabled", disabledLine(s.Disabled)})
 	}
-	out := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	for _, row := range rows {
-		fmt.Fprintf(out, "%s\t%s\n", row[0], row[1])
-	}
-	out.Flush()
+	pairs(w, rows)
 }
 
 // role is the three settings that decide what this node is on a fleet, said as
