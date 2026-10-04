@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -48,8 +49,65 @@ func (stubSource) DebugRuntime() control.RuntimeInfo {
 	return control.RuntimeInfo{Version: "1.2.3", GoVersion: "go1.26.7", Goroutines: 41, Threads: 9, Resolver: "go"}
 }
 
+// stubbed selects the stub's events the way the daemon's query does, by kind and by attribute
+func stubbed(query control.EventQuery, events ...control.Event) []control.Event {
+	var out []control.Event
+	for _, event := range events {
+		taken := len(query.Kinds) == 0
+		for _, kind := range query.Kinds {
+			taken = taken || event.Kind == kind || strings.HasPrefix(event.Kind, kind+".")
+		}
+		for key, value := range query.Attrs {
+			taken = taken && event.Attrs[key] == value
+		}
+		if taken {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
+// the recorder holds a dial dialAge old
+func (stubSource) DebugEvents(query control.EventQuery) []control.Event {
+	return stubbed(query, control.Event{Seq: 1, At: time.Now().Add(-dialAge), Kind: "dial.attempt", Peer: "example/gateway/0@0"})
+}
+
+// sessionAfter is how long after a follow begins the stub's session comes up
+// dialAge is how old the stub's recorded dial is when it is read
+const (
+	sessionAfter = 100 * time.Millisecond
+	dialAge      = time.Second
+)
+
+// a session comes up sessionAfter the follow begins, and the feed stays open after it
+func (s stubSource) DebugFollow(query control.EventQuery) ([]control.Event, control.Subscription) {
+	live := make(chan control.Delivery, 1)
+	go func() {
+		time.Sleep(sessionAfter)
+		for _, event := range stubbed(query, control.Event{Seq: 2, At: time.Now(), Kind: "ike.session.established",
+			Peer: "example/gateway/0@0", Attrs: map[string]string{"role": "initiator"}}) {
+			live <- control.Delivery{Event: event}
+		}
+	}()
+	return s.DebugEvents(query), scripted{live}
+}
+
+// scripted is a subscription that carries what its script sends and never ends by itself
+type scripted struct{ events chan control.Delivery }
+
+func (s scripted) C() <-chan control.Delivery { return s.events }
+func (scripted) Dropped() uint64              { return 0 }
+func (scripted) Reason() string               { return "" }
+func (scripted) Close()                       {}
+
 // serveStub starts a control socket for one test and returns its path.
 func serveStub(t *testing.T) string {
+	t.Helper()
+	return serve(t, stubSource{})
+}
+
+// serve answers from src on a control socket for one test and returns its path
+func serve(t *testing.T, src control.Source) string {
 	t.Helper()
 	path := socketPath(t)
 	listener, err := control.Listen(path)
@@ -57,7 +115,7 @@ func serveStub(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { listener.Close() })
-	go control.Serve(listener, stubSource{})
+	go control.Serve(listener, src)
 	return path
 }
 

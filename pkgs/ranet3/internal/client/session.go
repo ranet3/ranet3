@@ -500,7 +500,7 @@ func matchesPeer(path, peer string) bool {
 	if !ok {
 		return false
 	}
-	return peer == name || peer == organization+"/"+name
+	return peer == name || peer == path[:len(organization)+len("/")+len(name)]
 }
 
 // closeAll tells every live peer the session is ending and drops it, and shuts

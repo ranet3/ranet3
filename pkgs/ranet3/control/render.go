@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -489,6 +490,26 @@ func sinceText(d time.Duration) string {
 		return countOf(minutes, "minute")
 	}
 	return countOf((minutes+30)/60, "hour")
+}
+
+// Spelled writes a duration the way a sentence carries one, to the millisecond with its unit written out
+// it keeps the milliseconds sinceText leaves out, which a wait is measured in
+func Spelled(d time.Duration) string {
+	d = d.Round(time.Millisecond)
+	// the whole milliseconds over 1000 print as the decimal they are, where Seconds adds the fraction in floating point
+	value, unit := strconv.FormatFloat(float64(d.Milliseconds())/1000, 'f', -1, 64), "second"
+	switch {
+	case d < time.Second:
+		value, unit = strconv.FormatInt(d.Milliseconds(), 10), "millisecond"
+	case d%time.Hour == 0:
+		value, unit = strconv.FormatInt(int64(d/time.Hour), 10), "hour"
+	case d%time.Minute == 0:
+		value, unit = strconv.FormatInt(int64(d/time.Minute), 10), "minute"
+	}
+	if value != "1" {
+		unit += "s"
+	}
+	return value + " " + unit
 }
 
 func countOf(n int, unit string) string {

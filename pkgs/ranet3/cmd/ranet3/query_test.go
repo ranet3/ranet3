@@ -44,14 +44,7 @@ func (meshStub) Metrics(w io.Writer) { io.WriteString(w, "ranet3_sessions 2\n") 
 // serveMesh starts a socket behind a node with something to query.
 func serveMesh(t *testing.T) string {
 	t.Helper()
-	path := socketPath(t)
-	listener, err := control.Listen(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { listener.Close() })
-	go control.Serve(listener, meshStub{})
-	return path
+	return serve(t, meshStub{})
 }
 
 // Each query answers from the read paths, so none of them needs anything the

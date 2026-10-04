@@ -1,0 +1,6 @@
+2026-10-04T12:20:01.123Z +1m2s #41 dial.attempt example/gateway/0@0 remote=192.0.2.7:13000
+2026-10-04T12:20:01.161Z +1m2s #42 ike.session.established example/gateway/0@0 role=initiator spi_in=c0ffee01 spi_out=0badf00d
+2026-10-04T12:20:02.123Z +1m3s #43 kernel.pass empty="" err="list routes: netlink is busy" took=1.2ms trigger=mesh
+2026-10-04T12:20:02.623Z stream.live
+2026-10-04T12:20:03.123Z stream.dropped count=12
+2026-10-04T12:20:04.123Z stream.closed reason="the daemon is stopping"
