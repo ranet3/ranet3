@@ -73,15 +73,8 @@ func (s *writingStub) asked() string {
 // its path with the stub behind it.
 func serveWritingStub(t *testing.T) (string, *writingStub) {
 	t.Helper()
-	path := socketPath(t)
-	listener, err := control.Listen(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { listener.Close() })
 	sink := &writingStub{}
-	go control.Serve(listener, sink)
-	return path, sink
+	return serve(t, sink), sink
 }
 
 // Every verb reaches the daemon with the argument that was typed, and prints

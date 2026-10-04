@@ -17,4 +17,11 @@ const (
 	streamBatch = 64
 	// maxLine is the longest stream line a client reads, in bytes, far past any event and short of a runaway
 	maxLine = 1 << 20
+	// maxEventKinds is how many kinds one events query may name, more than a selection a person spells needs
+	// past it a query asks the daemon for work and memory nobody bounds
+	maxEventKinds = 16
+	// maxEventAttrs is how many attributes one events query may name, more than a wait a person spells needs
+	// past it a query costs the daemon a parse and a match nobody bounds when it subscribes
+	// the match's work at an emit is bounded by the event's own attributes, since it stops at the first named one the event lacks
+	maxEventAttrs = 16
 )

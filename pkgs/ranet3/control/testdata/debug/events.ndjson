@@ -1,0 +1,6 @@
+{"seq":41,"at":"2026-10-04T12:20:01.123456789Z","mono":"1m2.345s","kind":"dial.attempt","peer":"example/gateway/0@0","attrs":{"remote":"192.0.2.7:13000"}}
+{"seq":42,"at":"2026-10-04T12:20:01.161456789Z","mono":"1m2.383s","kind":"ike.session.established","peer":"example/gateway/0@0","attrs":{"role":"initiator","spi_in":"c0ffee01","spi_out":"0badf00d"}}
+{"seq":43,"at":"2026-10-04T14:20:02.123456789+02:00","mono":"1m3.345s","kind":"kernel.pass","attrs":{"empty":"","err":"list routes: netlink is busy","took":"1.2ms","trigger":"mesh"}}
+{"at":"2026-10-04T12:20:02.623456789Z","kind":"stream.live"}
+{"at":"2026-10-04T12:20:03.123456789Z","kind":"stream.dropped","attrs":{"count":"12"}}
+{"at":"2026-10-04T12:20:04.123456789Z","kind":"stream.closed","attrs":{"reason":"the daemon is stopping"}}

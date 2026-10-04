@@ -1,0 +1,15 @@
+{
+  "event": {
+    "seq": 42,
+    "at": "2026-10-04T12:20:01.161456789Z",
+    "mono": "1m2.383s",
+    "kind": "ike.session.established",
+    "peer": "example/gateway/0@0",
+    "attrs": {
+      "role": "initiator",
+      "spi_in": "c0ffee01",
+      "spi_out": "0badf00d"
+    }
+  },
+  "after": "38ms"
+}

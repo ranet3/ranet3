@@ -1,0 +1,14 @@
+2026-10-04T12:20:01.161Z +1m2s #42 ike.session.established example/gateway/0@0 role=initiator spi_in=c0ffee01 spi_out=0badf00d
+after 38 milliseconds
+2026-10-04T12:20:01.123Z +1m2s #41 dial.attempt example/gateway/0@0 remote=192.0.2.7:13000
+1.2 seconds before the wait began
+2026-10-04T12:20:02.123Z +1m3s #43 kernel.pass empty="" err="list routes: netlink is busy" took=1.2ms trigger=mesh
+after 1 second
+2026-10-04T12:20:02.123Z +1m3s #43 kernel.pass empty="" err="list routes: netlink is busy" took=1.2ms trigger=mesh
+after 2 minutes
+2026-10-04T12:20:02.123Z +1m3s #43 kernel.pass empty="" err="list routes: netlink is busy" took=1.2ms trigger=mesh
+after 1 hour
+2026-10-04T12:20:02.123Z +1m3s #43 kernel.pass empty="" err="list routes: netlink is busy" took=1.2ms trigger=mesh
+after 39 milliseconds
+2026-10-04T12:20:02.123Z +1m3s #43 kernel.pass empty="" err="list routes: netlink is busy" took=1.2ms trigger=mesh
+after 1.235 seconds
