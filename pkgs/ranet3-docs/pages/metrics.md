@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-10-03
+updated: 2026-10-04
 order: 90
 ---
 
@@ -26,6 +26,16 @@ found at the same hook, and the two prefix counts whose difference says this
 node is withholding an advertisement it cannot stand behind. A node with the
 reconciler or the capability off writes none of its series rather than zeroes
 that read as a subsystem installing nothing.
+
+`ranet3_tun_reads_truncated_total` counts reads off the TUN device that lost the
+tail of a GSO frame, because the frame split into more packets than one read
+holds. ranet3 sets the device's `gso_max_segs` to that read batch, 128 packets,
+whenever it creates the device or attaches to one, which has the kernel split a
+larger frame before it reaches the TUN and keeps the counter at zero. A kernel
+that refuses the setting leaves a warning in the log at startup, and a sender
+with a small MSS then cuts reads short. Each such read loses the rest of its
+frame, which TCP sends again, and the reader goes on. A warning carries their
+count since the previous warning, at most once every 30 seconds.
 
 Everything is read from live state at scrape time, so a scrape reflects the
 instant it happened rather than a sampled snapshot. What a counter cannot carry,
