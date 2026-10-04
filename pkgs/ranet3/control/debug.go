@@ -5,7 +5,9 @@ package control
 
 import (
 	"fmt"
+	"iter"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"reflect"
@@ -159,3 +161,6 @@ func refusal(access DebugAccess, class debugClass, caller Caller, known bool, eu
 	}
 	return fmt.Sprintf("this debug path is for uid 0 or the daemon's own uid %d under --debug-access root, and %s", euid, who)
 }
+
+// DebugPaths is every debug path this build serves
+func DebugPaths() iter.Seq[string] { return maps.Keys(debugRoutes) }

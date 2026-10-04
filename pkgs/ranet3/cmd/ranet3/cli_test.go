@@ -44,6 +44,10 @@ func (stubSource) Metrics(w io.Writer) {
 	io.WriteString(w, "ranet3_babel_routes_selected 15\n")
 }
 
+func (stubSource) DebugRuntime() control.RuntimeInfo {
+	return control.RuntimeInfo{Version: "1.2.3", GoVersion: "go1.26.7", Goroutines: 41, Threads: 9, Resolver: "go"}
+}
+
 // serveStub starts a control socket for one test and returns its path.
 func serveStub(t *testing.T) string {
 	t.Helper()

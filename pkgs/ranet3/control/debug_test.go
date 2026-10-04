@@ -179,6 +179,25 @@ func TestDebugNamesAViewTheSourceDoesNotServe(t *testing.T) {
 	}
 }
 
+// a raw call hands back the daemon's own answer, a redirect included, rather than the answer it leads to
+func TestRawHandsBackARedirect(t *testing.T) {
+	path := socketPath(t)
+	listener, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go Serve(listener, debugSource{access: DebugRoot})
+	response, err := Dial(path).Raw(t.Context(), http.MethodGet, strings.TrimSuffix(PathDebug, "/"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode/100 != 3 {
+		t.Errorf("a path the daemon redirects answered %s through a raw call", response.Status)
+	}
+}
+
 // --debug-access off refuses every path under the prefix, an unknown one too
 // root is no exception
 func TestDebugAccessOffRefusesEveryPath(t *testing.T) {

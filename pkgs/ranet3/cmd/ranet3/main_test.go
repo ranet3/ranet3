@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -163,7 +162,7 @@ func TestStartupRefusalsSurviveAProductionLogLevel(t *testing.T) {
 // --debug-access reaches the socket the daemon serves
 // off refuses every debug path, and the other two let a socket user read one
 func TestDebugAccessReachesTheControlSocket(t *testing.T) {
-	for access, refused := range map[string]bool{"off": true, "root": false, "group": false} {
+	for access, want := range map[string]int{"off": http.StatusForbidden, "root": http.StatusOK, "group": http.StatusOK} {
 		t.Run(access, func(t *testing.T) {
 			var parsed options
 			daemon := daemonCommand(func(o options) int {
@@ -181,18 +180,13 @@ func TestDebugAccessReachesTheControlSocket(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer listener.Close()
-			reader := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var dialer net.Dialer
-				return dialer.DialContext(ctx, "unix", socket)
-			}}}
-			defer reader.CloseIdleConnections()
-			response, err := reader.Get("http://control" + control.PathDebug + "runtime")
+			response, err := control.Dial(socket).Raw(t.Context(), http.MethodGet, control.PathDebugRuntime, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			response.Body.Close()
-			if got := response.StatusCode == http.StatusForbidden; got != refused {
-				t.Errorf("a daemon started with --debug-access %s answered a debug read with %s", access, response.Status)
+			if response.StatusCode != want {
+				t.Errorf("a daemon started with --debug-access %s answered a debug read with %s, want %d", access, response.Status, want)
 			}
 		})
 	}

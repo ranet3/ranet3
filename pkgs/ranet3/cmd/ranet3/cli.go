@@ -92,6 +92,7 @@ func newRoot() *cobra.Command {
 		versionCommand(r),
 		licensesCommand(),
 		completionCommand(root),
+		debugCommand(),
 	)
 	root.AddCommand(r.queryCommands()...)
 	root.AddCommand(r.writeCommands()...)

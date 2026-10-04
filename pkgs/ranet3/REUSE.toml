@@ -18,6 +18,13 @@ precedence = "override"
 SPDX-FileCopyrightText = "2026 Nick Cao"
 SPDX-License-Identifier = "MIT"
 
+# a golden file holds a debug render byte for byte, so it has no room for a header
+[[annotations]]
+path = "control/testdata/debug/**"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Yifei Sun"
+SPDX-License-Identifier = "FSL-1.1-ALv2"
+
 [[annotations]]
 path = ["examples/config.json", "gomod2nix.toml", "version.txt"]
 precedence = "override"

@@ -7,9 +7,11 @@ package control
 
 import (
 	"encoding/json"
+	"maps"
 	"math"
 	"net/netip"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -108,6 +110,18 @@ func fill(tc hegel.TestCase, value reflect.Value) {
 			}
 			value.Set(list)
 		}
+	case reflect.Map:
+		// an empty map stays nil for the reason an empty list does
+		if length := hegel.Draw(tc, edges(0, 4)); length > 0 {
+			table := reflect.MakeMapWithSize(value.Type(), length)
+			for range length {
+				key, element := reflect.New(value.Type().Key()).Elem(), reflect.New(value.Type().Elem()).Elem()
+				fill(tc, key)
+				fill(tc, element)
+				table.SetMapIndex(key, element)
+			}
+			value.Set(table)
+		}
 	case reflect.Struct:
 		for i := range value.NumField() {
 			if value.Type().Field(i).IsExported() {
@@ -148,9 +162,18 @@ func inUTC(value reflect.Value) {
 // node reporting something other than what it holds, to the operator and to
 // any control plane reading it, and a write that came back changed is a verb
 // acting on something nobody named.
+//
+// every debug path's answer is held the same way
+// the route table names its type, so a view registered later is held without an edit here
 func TestEveryWireTypeRoundTripsThroughJSON(t *testing.T) {
+	var kinds []reflect.Type
 	for _, wire := range []any{Status{}, []Neighbor{}, []Route{}, []Session{}, []Peer{}, Request{}, Result{}} {
-		kind := reflect.TypeOf(wire)
+		kinds = append(kinds, reflect.TypeOf(wire))
+	}
+	for _, path := range slices.Sorted(maps.Keys(debugRoutes)) {
+		kinds = append(kinds, debugRoutes[path].wire)
+	}
+	for _, kind := range kinds {
 		t.Run(kind.String(), func(t *testing.T) {
 			pbt.Check(t, func(ht *hegel.T) {
 				want := reflect.New(kind).Elem()
