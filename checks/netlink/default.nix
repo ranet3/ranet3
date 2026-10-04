@@ -7,6 +7,7 @@
 # write, the FRA_PROTOCOL ownership they rest on, and every byte of the
 # nf_tables encoding asserted nowhere any check ran. These are the same test
 # binaries, run as root against a real kernel.
+# internal/netstack's tun round trips run here for the same reason
 {
   lib,
   iproute2,
@@ -23,10 +24,12 @@ let
     buildPhase = ''
       go test -c -o netlink-tests ./internal/kernel/
       go test -c -o egress-tests ./internal/egress/
+      go test -c -o netstack-tests ./internal/netstack/
     '';
     installPhase = ''
       install -Dm755 netlink-tests "$out/bin/netlink-tests"
       install -Dm755 egress-tests "$out/bin/egress-tests"
+      install -Dm755 netstack-tests "$out/bin/netstack-tests"
     '';
   });
 in
@@ -78,11 +81,22 @@ testers.runNixOSTest {
     assert "SKIP" not in out, f"the nftables round trip skipped itself under root:\n{out}"
     assert "--- PASS" in out, f"the nftables round trip did not run:\n{out}"
 
+    # the tun round trips create a device, attach to one and read its gso limit back
+    # the test and its three ways to a device count four passes
+    out = machine.succeed(
+        "${netlinkTests}/bin/netstack-tests -test.v -test.run 'TestTUN' 2>&1"
+    )
+    print(out)
+    assert "SKIP" not in out, f"the tun round trips skipped themselves under root:\n{out}"
+    ran = out.count("--- PASS")
+    assert ran >= 4, f"only {ran} tun round trips ran:\n{out}"
+
     # Nothing the tests wrote may outlive them: they run against the host's own
     # kernel here rather than against a fake, so a rule, a VRF or a table left
     # behind is a leak this check is the only thing positioned to see.
     assert "proto 155" not in machine.succeed("ip rule show; ip -6 rule show")
     machine.fail("ip link show mesh")
+    machine.fail("ip link show gsocap0")
     tables = machine.succeed("nft list tables")
     assert "ranet3" not in tables, f"a table outlived the namespace it was written in:\n{tables}"
     # And nothing of the host's went with it: the tests write into a namespace

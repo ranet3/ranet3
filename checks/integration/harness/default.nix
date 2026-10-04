@@ -558,6 +558,8 @@ testers.runNixOSTest {
         import datetime as dt
 
         timeout = dt.timedelta(seconds=30)
+        # how long an iperf3 client retries a server that refused it between tests
+        iperf_timeout = dt.timedelta(seconds=120)
 
         kernel_enabled = ${if kernel then "True" else "False"}
         kernel_table = "${toString kernelTable}"
@@ -851,7 +853,7 @@ testers.runNixOSTest {
                 # that is genuinely unreachable still fails once they run out.
                 print(client.wait_until_succeeds(
                     f"iperf3 --client ${gatewayTunnel} --parallel 8 --time {duration} {flags}",
-                    timeout=120,
+                    timeout=iperf_timeout,
                 ))
                 if profile:
                     client.wait_until_succeeds(f"test -s /tmp/{direction}.pprof")
@@ -859,6 +861,25 @@ testers.runNixOSTest {
                     print(client.succeed(f"perf report --stdio --no-children --percent-limit 1 -g none -i /tmp/{direction}.perf"))
                     client.copy_from_machine(f"/tmp/{direction}.pprof")
                     client.copy_from_machine(f"/tmp/{direction}.perf")
+
+            # ranet3 attached to the tun networkd made
+            # and set its gso_max_segs to the read batch of 128 packets
+            segments = client.succeed("ip -d link show ranet0").split("gso_max_segs ")[1].split()[0]
+            assert segments == "128", f"ranet0 holds gso_max_segs {segments}, want the read batch of 128"
+
+            # at this segment size one gso frame can carry more packets than a tun read holds
+            # which may cost the tail of that frame and never the reader of its queue
+            stops = journal_after(client, "ranet3.service")
+            print(client.wait_until_succeeds(
+                "iperf3 --client ${gatewayTunnel} --parallel 8 --time 5 --set-mss 400",
+                timeout=iperf_timeout,
+            ))
+            client.fail(f"{stops} | grep -F 'tun reader stopped'")
+            client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
+            # the kernel splits such a frame before the tun
+            # and no read came back cut short
+            metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics")
+            assert "ranet3_tun_reads_truncated_total 0" in metrics.splitlines(), metrics
 
             if not profile:
                 # Verify both new IKE keys and subsequent ESP keys are usable.
