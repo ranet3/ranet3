@@ -28,7 +28,16 @@ func (s *Session) RekeyChildProactively() error {
 	return s.rekeyChild(true)
 }
 
-func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) error {
+// rekeyEnded records how a rekey this end started came out, sa naming which SA it replaced
+func (s *Session) rekeyEnded(sa string, err error) {
+	if err != nil {
+		s.emit("ike.rekey.failed", slog.String("sa", sa), slog.String("err", err.Error()))
+		return
+	}
+	s.emit("ike.rekey.completed", slog.String("sa", sa))
+}
+
+func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 	if !s.childRekeying.CompareAndSwap(false, true) {
 		if alreadyRunningIsSuccess {
 			return nil
@@ -36,6 +45,8 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) error {
 		return fmt.Errorf("ike: Child SA rekey already in progress")
 	}
 	defer s.childRekeying.Store(false)
+	s.emit("ike.rekey.started", slog.String("sa", "child"))
+	defer func() { s.rekeyEnded("child", err) }()
 	old := s.currentChild()
 	if old.LocalSPI == 0 && old.RemoteSPI == 0 {
 		return s.negotiateChild(nil)
@@ -43,7 +54,7 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) error {
 	if old.LocalSPI == 0 || old.RemoteSPI == 0 {
 		return fmt.Errorf("ike: no Child SA to rekey")
 	}
-	err := s.negotiateChild(&old)
+	err = s.negotiateChild(&old)
 	var rejected *childNegotiationRejectedError
 	if !errors.As(err, &rejected) || rejected.notify.Type != N_CHILD_SA_NOT_FOUND {
 		return err

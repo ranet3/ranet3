@@ -50,6 +50,23 @@ type PeerConfig struct {
 	RekeyJitter        time.Duration
 	RekeyRetryInitial  time.Duration
 	RekeyRetryMax      time.Duration
+
+	// Events records the session's state changes
+	// nil records nothing
+	Events Recorder
+}
+
+// Recorder takes one state change of a session, with the session's two ends
+// both ends are zero where no peer has authenticated yet
+type Recorder func(local, remote Identity, kind string, attrs ...slog.Attr)
+
+// identities are the two ends a configuration authenticates, the remote organization defaulted
+func (c PeerConfig) identities() (local, remote Identity) {
+	remote = Identity{Organization: c.RemoteOrganization, CommonName: c.RemoteCommonName, SerialNumber: c.RemoteSerial}
+	if remote.Organization == "" {
+		remote.Organization = c.Organization
+	}
+	return Identity{Organization: c.Organization, CommonName: c.LocalCommonName, SerialNumber: c.LocalSerial}, remote
 }
 
 // ChildSA is the negotiated ESP keying material and parameters handed to
@@ -154,6 +171,16 @@ type Session struct {
 	rekeyJitterSource  func(time.Duration) (time.Duration, error)
 	// dpdEvery overrides defaultDPDInterval; zero means the default.
 	dpdEvery time.Duration
+
+	// events is the configuration's Recorder, set with the two ends before the session is handed out
+	events        Recorder
+	local, remote Identity
+}
+
+func (s *Session) emit(kind string, attrs ...slog.Attr) {
+	if s.events != nil {
+		s.events(s.local, s.remote, kind, attrs...)
+	}
 }
 
 type ikeRekey struct {
@@ -719,6 +746,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		return nil, err
 	}
 
+	localID, remoteID := cfg.identities()
 	sess := &Session{
 		started:          time.Now(),
 		childRetireDelay: 5 * time.Second,
@@ -727,6 +755,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 			skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr,
 			spiI: spiI, spiR: spiR, nextLocalMID: 2},
 		requests: make(chan *localRequest, 1),
+		events:   cfg.Events, local: localID, remote: remoteID,
 	}
 	if err := sess.completeIKEAuth(cfg, req, respRaw, ni, nr); err != nil {
 		mux.Close()
@@ -889,12 +918,9 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	spiBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(spiBuf, mySPI)
 
-	idiBody := EncodeID(ID_DER_ASN1_DN, EncodeIdentityDN(cfg.Organization, cfg.LocalCommonName, cfg.LocalSerial))
-	remoteOrganization := cfg.RemoteOrganization
-	if remoteOrganization == "" {
-		remoteOrganization = cfg.Organization
-	}
-	idrBody := EncodeID(ID_DER_ASN1_DN, EncodeIdentityDN(remoteOrganization, cfg.RemoteCommonName, cfg.RemoteSerial))
+	local, remote := cfg.identities()
+	idiBody := EncodeID(ID_DER_ASN1_DN, EncodeIdentityDN(local.Organization, local.CommonName, local.SerialNumber))
+	idrBody := EncodeID(ID_DER_ASN1_DN, EncodeIdentityDN(remote.Organization, remote.CommonName, remote.SerialNumber))
 
 	macedIDForI := prf(s.current.suite.PRFID, s.current.skpi, idiBody)
 	signedOctets := concat(realMessage1, nr, macedIDForI)
@@ -956,7 +982,7 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	if err != nil {
 		return false, err
 	}
-	if got != (Identity{Organization: remoteOrganization, CommonName: cfg.RemoteCommonName, SerialNumber: cfg.RemoteSerial}) {
+	if got != remote {
 		return false, fmt.Errorf("ike: responder identity %s does not match configured IDr", got)
 	}
 

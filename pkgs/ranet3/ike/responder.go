@@ -88,6 +88,10 @@ type ResponderConfig struct {
 	RekeyJitter        time.Duration
 	RekeyRetryInitial  time.Duration
 	RekeyRetryMax      time.Duration
+
+	// Events records each answered session's state changes and the handshakes it refuses
+	// nil records nothing
+	Events Recorder
 }
 
 const (
@@ -436,6 +440,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	if err := session.SetRekeyRetry(retryInitial, retryMax); err != nil {
 		return nil, Accepted{}, err
 	}
+	session.events, session.local, session.remote = r.cfg.Events, accepted.Local, accepted.Peer
 	session.noteEstablished()
 	return session, accepted, nil
 }
@@ -679,6 +684,10 @@ func (r *Responder) noteHandshakeFailure(endpoint transport.Endpoint, err error)
 		return
 	}
 	slog.Warn("ike responder handshake failed", "peer", endpoint, "err", err)
+	// recorded where it is said, so a source that fails over and over costs the record what it costs the log
+	if r.cfg.Events != nil {
+		r.cfg.Events(Identity{}, Identity{}, "ike.handshake.failed", slog.String("from", endpoint.String()), slog.String("err", err.Error()))
+	}
 }
 
 // failureIsDue reports whether this source's failure is the one to say out
