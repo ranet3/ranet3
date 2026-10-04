@@ -4,21 +4,26 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-10-03
+updated: 2026-10-06
 order: 80
 ---
 
 `--control /var/run/ranet3/control.sock` is where the daemon answers, and is the
 default, so a node is askable without having been configured to be.
 `--control ""` turns it off. The socket is mode 0660 and the unit names the
-group that can reach it, and that mode is the whole authorization story; see
-[the verbs](#acting-on-a-running-node) for the line that keeps it sufficient. A
-caller is bounded by an idle timeout and by a limit on the connections open at
-once across every caller, because a client that accumulates them costs the
-daemon a descriptor apiece and a node out of descriptors is one that cannot be
-asked anything at all. Past that limit a connection is closed as it is accepted,
-so a client holding every place is refused at once rather than left waiting, and
-a shutdown is not held up behind it.
+group that can reach it, and that mode authorizes every path outside
+`/v0/debug/`. [The verbs](#acting-on-a-running-node) say what keeps it
+sufficient for them. The debug paths are authorized by the caller's peer
+credentials instead. Their snapshots and the event stream are open to the
+socket's group, and profiles, dumps, logs, captures, the trust document and
+every action take root or the daemon's own user, as
+[debugging](development/debug.md) describes. A caller is bounded by an idle
+timeout and by a limit on the connections open at once across every caller,
+because a client that accumulates them costs the daemon a descriptor apiece and
+a node out of descriptors is one that cannot be asked anything at all. Past that
+limit a connection is closed as it is accepted, so a client holding every place
+is refused at once rather than left waiting, and a shutdown is not held up
+behind it.
 
 Which process owns the path is settled by an exclusive lock on a sibling file
 rather than by dialing the socket to see whether anything answers, since a live
