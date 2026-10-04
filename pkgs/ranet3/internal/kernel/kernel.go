@@ -64,6 +64,7 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v3"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/sadr"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -237,6 +238,9 @@ type Runtime struct {
 	// route on the wire can be run without a kernel; see Host. Only the darwin
 	// backend reads it.
 	Host Host
+	// Events records every pass that changed the kernel, skipped a route it had not skipped before or failed
+	// nil records nothing
+	Events *events.Bus
 }
 
 // Name is the master device, empty for a table bound to none.
@@ -827,6 +831,15 @@ type Reconciler struct {
 	// record reconcile makes of the whole pass. Only the reconcile goroutine
 	// touches it.
 	routePass Stats
+	// trigger names what woke the reconcile goroutine for the pass it runs, and belongs to that goroutine
+	trigger string
+	// refused is the routes the last route pass wanted and the platform refused, and belongs to the same goroutine
+	// a refused route is tried and refused on every pass, so refusedAnew marks the pass that refused one first
+	refused     map[Route]bool
+	refusedAnew bool
+	// changed says the pass under way wrote a rule, an address, the master or the vrf, which the route counts do not show
+	// it belongs to the same goroutine, and the withdrawal never sets it
+	changed bool
 }
 
 // Stats is one finished route pass. Installed counts the routes the kernel
@@ -1098,6 +1111,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	r.audit()
 
 	backoff := time.Duration(0)
+	r.trigger = "start"
 	for ctx.Err() == nil {
 		switch {
 		case !r.enabled.Load():
@@ -1106,12 +1120,13 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			// it reads zero installed, so a diagnostic does not go on
 			// reporting the routes of the last pass that ran.
 			if !r.withdrawn {
+				started := time.Now()
 				err := r.withdraw()
 				if err != nil {
 					slog.Warn("kernel could not withdraw everything it was asked to stop holding", "err", err)
 				}
 				r.routePass = Stats{}
-				r.recordPass(err)
+				r.recordPass(err, time.Since(started))
 				r.withdrawn = true
 				backoff = 0
 				stopTimer(retry)
@@ -1142,12 +1157,22 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 		case <-ticker.C:
+			r.trigger = "sweep"
 		case <-retry.C:
+			r.trigger = "retry"
 		case <-grace.C:
+			r.trigger = "grace"
 		case <-r.wake:
+			// SetEnabled wakes the loop whichever way it went
+			r.trigger = "disable"
+			if r.enabled.Load() {
+				r.trigger = "enable"
+			}
 		case <-changed:
+			r.trigger = "mesh"
 			r.settle(ctx, changed, notify)
 		case <-notify:
+			r.trigger = "kernel"
 			r.settle(ctx, changed, notify)
 		}
 	}
@@ -1198,6 +1223,7 @@ func stopTimer(t *time.Timer) {
 // refuseWhatThePlatformLacks for why that particular silence is the expensive
 // one.
 func (r *Reconciler) reconcile() error {
+	started := time.Now()
 	// Sampled once for the whole pass, before any of the steps: a route
 	// installed under one answer and withdrawn under another would leave the
 	// kernel holding a key the diff never names again.
@@ -1205,7 +1231,7 @@ func (r *Reconciler) reconcile() error {
 	// The VRF first, because applyMaster enslaves the link to it and a master
 	// that does not exist yet is a master the link cannot join.
 	err := errors.Join(r.applyVRF(), r.applyMaster(), r.applyAddresses(), r.applyRoutes(), r.applyRules())
-	r.recordPass(err)
+	r.recordPass(err, time.Since(started))
 	return err
 }
 
@@ -1253,13 +1279,26 @@ func (r *Reconciler) captureDeadline() (time.Time, bool) {
 // error rather than the route half's. A pass that failed before applyRoutes
 // could count anything still records the attempt, so a stale PassAt cannot
 // read as a reconciler that is keeping up.
-func (r *Reconciler) recordPass(err error) {
+func (r *Reconciler) recordPass(err error, took time.Duration) {
 	stats := r.routePass
 	stats.At = time.Now()
 	if err != nil {
 		stats.Err = err.Error()
 	}
 	r.stats.Store(&stats)
+	anew, changed := r.refusedAnew, r.changed
+	r.refusedAnew, r.changed = false, false
+	// only a pass that changed the kernel, refused a route anew or failed is recorded
+	if stats.Added == 0 && stats.Removed == 0 && !changed && !anew && err == nil {
+		return
+	}
+	attrs := []slog.Attr{slog.String("trigger", r.trigger), slog.Duration("took", took),
+		slog.Int("added", stats.Added), slog.Int("removed", stats.Removed),
+		slog.Int("skipped", stats.Skipped), slog.Int("installed", stats.Installed)}
+	if err != nil {
+		attrs = append(attrs, slog.String("err", stats.Err))
+	}
+	r.rt.Events.Emit("kernel.pass", "", attrs...)
 }
 
 // audit reports, once at startup, what in the space this reconciler is about
@@ -1317,7 +1356,7 @@ func (r *Reconciler) applyVRF() error {
 		return fmt.Errorf("create vrf %s: %w", r.table.Name(), err)
 	}
 	if created {
-		r.madeVRF = true
+		r.madeVRF, r.changed = true, true
 		slog.Info("kernel created the mesh vrf", "vrf", r.table.Name(), "table", uint32(r.table.ID))
 	}
 	return nil
@@ -1366,6 +1405,7 @@ func (r *Reconciler) applyRules() error {
 		}
 	}
 	if added > 0 || removed > 0 {
+		r.changed = true
 		slog.Info("kernel rules reconciled", "added", added, "removed", removed)
 	}
 	return errors.Join(errs...)
@@ -1412,15 +1452,22 @@ func (r *Reconciler) applyRoutes() error {
 			removed++
 		}
 	}
+	var refused map[Route]bool
 	for _, route := range add {
 		if err := r.plat.AddRoute(route); err == nil {
 			added++
 		} else if errors.Is(err, errRouteSkipped) {
 			skipped++
+			if refused == nil {
+				refused = make(map[Route]bool)
+			}
+			refused[route] = true
+			r.refusedAnew = r.refusedAnew || !r.refused[route]
 		} else {
 			errs = append(errs, fmt.Errorf("add route %s: %w", route, err))
 		}
 	}
+	r.refused = refused
 	// Reported only when something moved. A route the platform refuses stays
 	// in the diff on purpose, because the install is retried on every pass
 	// until it lands, so a node holding one permanently unrepresentable route
@@ -1743,7 +1790,7 @@ func (r *Reconciler) applyAddresses() error {
 			continue
 		}
 		slog.Info("kernel address assigned", "interface", r.rt.Interface, "address", prefix)
-		r.owned[prefix] = true
+		r.owned[prefix], r.changed = true, true
 	}
 	r.warnedAddrs = warned
 	return errors.Join(errs...)
@@ -1768,7 +1815,7 @@ func (r *Reconciler) applyMaster() error {
 		if err := r.plat.Enslave(r.table.Name()); err != nil {
 			return fmt.Errorf("enslave %s to %s: %w", r.rt.Interface, r.table.Name(), err)
 		}
-		r.enslaved, r.master = true, r.table.Name()
+		r.enslaved, r.master, r.changed = true, r.table.Name(), true
 		slog.Info("kernel interface enslaved", "interface", r.rt.Interface, "master", r.table.Name())
 		return nil
 	default:
