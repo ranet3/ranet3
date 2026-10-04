@@ -52,6 +52,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -134,6 +135,9 @@ type Runtime struct {
 	// empty list while nothing may be advertised. Nil means the caller does
 	// not announce, which only a test does.
 	Announce func([]netip.Prefix)
+	// Events records every pass that rewrote the rules, moved the announcement or failed
+	// nil records nothing
+	Events *events.Bus
 }
 
 // Normalized is the capability as the translator runs it: the sweep the file
@@ -402,6 +406,8 @@ type Translator struct {
 	// warned holds the conflicts already reported, so a shared host costs one
 	// log line per new conflict rather than one per pass.
 	warned []string
+	// trigger names what woke the run goroutine for the pass it runs, and belongs to that goroutine
+	trigger string
 }
 
 // New validates the capability against the platform and opens whatever the
@@ -529,6 +535,7 @@ func (t *Translator) Run(ctx context.Context) error {
 	defer retry.Stop()
 
 	backoff := time.Duration(0)
+	t.trigger = "start"
 	for ctx.Err() == nil {
 		if err := t.reconcile(); err != nil {
 			backoff = min(max(2*backoff, minRetryInterval), t.cfg.sweep())
@@ -542,7 +549,9 @@ func (t *Translator) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 		case <-ticker.C:
+			t.trigger = "sweep"
 		case <-retry.C:
+			t.trigger = "retry"
 		}
 	}
 	// The advertisement goes before the rules do. A peer that keeps selecting
@@ -567,7 +576,9 @@ func stopTimer(timer *time.Timer) {
 // before they are written, so a pass that changes nothing costs one dump and
 // leaves the counters where they are.
 func (t *Translator) reconcile() error {
+	started := time.Now()
 	desired := t.desired()
+	applied := false
 	held, err := t.be.Rules()
 	if err != nil {
 		err = fmt.Errorf("list rules: %w", err)
@@ -575,6 +586,7 @@ func (t *Translator) reconcile() error {
 		if applyErr := t.be.Apply(desired); applyErr != nil {
 			err = fmt.Errorf("install rules: %w", applyErr)
 		} else {
+			applied = true
 			slog.Info("egress rules installed", "rules", len(desired), "replaced", len(held), "where", t.Where())
 			// Read back rather than assumed. The counters below are the
 			// host's, and a rule the kernel accepted under a spelling other
@@ -614,7 +626,7 @@ func (t *Translator) reconcile() error {
 			announced = append(announced, entry.Prefix)
 		}
 	}
-	t.publish(announced)
+	moved := t.publish(announced)
 
 	var flows, bytes uint64
 	for _, rule := range held {
@@ -630,6 +642,14 @@ func (t *Translator) reconcile() error {
 		stats.Err = err.Error()
 	}
 	t.stats.Store(&stats)
+	if applied || moved || err != nil {
+		attrs := []slog.Attr{slog.String("trigger", t.trigger), slog.Duration("took", time.Since(started)),
+			slog.Int("installed", stats.Installed), slog.Int("announced", len(announced))}
+		if err != nil {
+			attrs = append(attrs, slog.String("err", stats.Err))
+		}
+		t.rt.Events.Emit("egress.pass", "", attrs...)
+	}
 	return err
 }
 
@@ -695,10 +715,12 @@ func (t *Translator) desired() []Rule {
 // publish hands the announcement to the caller, and only when it changed. A
 // republish rebuilds the speaker's originated set, which an unchanged pass
 // every thirty seconds has no reason to do.
-func (t *Translator) publish(prefixes []netip.Prefix) {
+//
+// it reports whether the announcement moved
+func (t *Translator) publish(prefixes []netip.Prefix) bool {
 	previous := t.announced.Load()
 	if previous != nil && slices.Equal(*previous, prefixes) {
-		return
+		return false
 	}
 	stored := slices.Clone(prefixes)
 	t.announced.Store(&stored)
@@ -712,6 +734,7 @@ func (t *Translator) publish(prefixes []netip.Prefix) {
 	if t.rt.Announce != nil {
 		t.rt.Announce(slices.Clone(prefixes))
 	}
+	return true
 }
 
 // reportConflicts names other source translation on this host once per new
