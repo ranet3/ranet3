@@ -33,18 +33,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
-const DefaultMTU = 1400 // leaves room for outer IP/UDP/ESP overhead under a 1500-byte link MTU
-
-const (
-	outboundPacketBufferSize = 2048
-	inboundWriteBatchSize    = 128
-	inboundWriteQueueSize    = 64
-	// inboundPacketBufferSize leaves enough tail capacity for the TUN
-	// backend to merge adjacent TCP packets into a single GSO frame before
-	// writing it. Exact-capacity packet buffers silently disable that GRO.
-	inboundPacketBufferSize = tunOffset + 65535
-)
-
 var (
 	// Pooled as a pointer to the array rather than as a slice. A sync.Pool
 	// takes an any, and a slice header does not fit in one, so putting a slice
@@ -55,22 +43,6 @@ var (
 	// ns and 1 at 64 bytes, 8358 against 6561 at 1400.
 	inboundPacketPool = sync.Pool{New: func() any { return new([inboundPacketBufferSize]byte) }}
 )
-
-// tunOffset is how much leading space every Device.Read and Device.Write
-// needs in each buffer, the same offset wireguard-go's own device code uses
-// (device.MessageTransportOffsetContent), and for the same reasons. A backend
-// slices backwards from it to reach its own framing: linux prepends a
-// virtio-net header (the tun package always requests IFF_VNET_HDR), darwin
-// prepends the four-byte address family header a utun frame carries. Offset 0
-// doesn't just lose performance, it fails outright, and on darwin it fails
-// before the first packet arrives: tun_darwin.go's Read evaluates
-// bufs[0][offset-4:] on entry, so offset 0 panics the reader goroutine and
-// takes the process down with it.
-//
-// The contract on the way back is that a read leaves packet i at
-// bufs[i][tunOffset : tunOffset+sizes[i]], which is where linux puts each
-// packet it splits out of one GRO'd read as well.
-const tunOffset = 16
 
 type Mesh struct {
 	Routes *RouteTable
@@ -195,7 +167,7 @@ func (m *Mesh) MTU() int {
 
 func (m *Mesh) startOutboundPipeline() {
 	workers := max(1, runtime.GOMAXPROCS(0))
-	m.outboundJobs = make(chan *outboundBatch, 2*workers)
+	m.outboundJobs = make(chan *outboundBatch, outboundJobsPerWorker*workers)
 	batchSize := 1
 	for _, dev := range m.devs {
 		batchSize = max(batchSize, dev.BatchSize())

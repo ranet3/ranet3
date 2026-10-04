@@ -294,11 +294,6 @@ func (c *Client) countInbound(delivered int) {
 	}
 }
 
-// espDropReportInterval bounds how often refused ESP packets are said out
-// loud. The counter behind it is exact, and an operator reads that; the log
-// line only has to point at it.
-const espDropReportInterval = 10 * time.Second
-
 // noteInboundDropped reports ESP packets that did not survive decryption or
 // validation, at most once an interval.
 //
