@@ -75,7 +75,7 @@ func (r *reader) socketCommand() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().DurationVar(&timeout, "timeout", readTimeout, "how long the request may take, the answer's body included")
+	cmd.Flags().DurationVar(&timeout, "timeout", control.ReadTimeout, "how long the request may take, the answer's body included")
 	cmd.RegisterFlagCompletionFunc("timeout", cobra.NoFileCompletions)
 	return cmd
 }

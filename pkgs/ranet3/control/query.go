@@ -24,7 +24,7 @@ import (
 // held rather than removed exactly so a packet does not follow a shorter
 // prefix instead, and a reader asking where an address goes needs to see that.
 func Covering(routes []Route, address netip.Addr) []Route {
-	out := make([]Route, 0, 4)
+	out := []Route{}
 	for _, route := range routes {
 		if route.Destination.Contains(address) {
 			out = append(out, route)
@@ -47,7 +47,7 @@ func Covering(routes []Route, address netip.Addr) []Route {
 // alone: a /0 is the only prefix that covers everything, and spelling it this
 // way refuses a prefix whose length happens to be zero for another reason.
 func Defaults(routes []Route) []Route {
-	out := make([]Route, 0, 2)
+	out := []Route{}
 	for _, route := range routes {
 		if route.Destination.Bits() == 0 && route.Destination.Addr().IsUnspecified() {
 			out = append(out, route)

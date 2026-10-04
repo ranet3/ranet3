@@ -33,7 +33,7 @@ func (r *reader) eventsCommand() *cobra.Command {
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !query.Follow {
-				bound = readTimeout
+				bound = control.ReadTimeout
 			}
 			if bound <= 0 {
 				return fmt.Errorf("--for takes a duration above zero, not %s", bound)

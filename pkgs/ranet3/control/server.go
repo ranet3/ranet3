@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -25,20 +24,6 @@ import (
 // terminator. Binding a longer one fails as "invalid argument", which names
 // neither the path nor the limit, so the check is here instead.
 const MaxSocketPath = 103
-
-// socketMode is the permission the socket is left at. Group reachable rather
-// than owner only, so an operator in the daemon's group runs the subcommands
-// without root: the unit names that group, since nothing here changes the
-// socket's owner. Outside PathDebug this mode is all the authorization, the verbs
-// included, because no verb reaches past what the node's own file already
-// decides; see the package doc. dirMode lets that same group traverse the
-// directory holding it, and lockMode is owner-only because only the daemon
-// takes the lock.
-const (
-	socketMode = 0o660
-	dirMode    = 0o750
-	lockMode   = 0o600
-)
 
 // lockSuffix names the file whose lock says which process owns the socket.
 const lockSuffix = ".lock"
@@ -245,11 +230,6 @@ func scrape(mux *http.ServeMux, path string, src Source) {
 	})
 }
 
-// maxRequest bounds a write's body. A [Request] is four short fields, so
-// anything near this is a client that has lost track of what it is sending and
-// should be told rather than allocated for.
-const maxRequest = 64 << 10
-
 // act registers one write.
 //
 // POST rather than GET, and the method carries the whole separation between
@@ -299,13 +279,6 @@ func act(mux *http.ServeMux, path string, sink Sink, run func(context.Context, S
 	})
 }
 
-// maxConnections bounds how many connections are open at once. A diagnostic
-// makes one request and exits, so a client past a handful is one accumulating
-// them, and each costs the daemon a goroutine and a descriptor. Running out of
-// descriptors is how a node stops being able to answer at all, which is the
-// one thing this socket exists to prevent.
-const maxConnections = 32
-
 // Serve runs the control surface on listener until it is closed. It returns
 // nil for an ordinary close so a caller can tell a shutdown from a failure.
 func Serve(listener net.Listener, src Source) error {
@@ -325,14 +298,14 @@ func newServer(src Source) *http.Server {
 		ConnContext: connCaller,
 		// A unix socket has no network in front of it, so these bound a local
 		// client that stops reading rather than an attacker.
-		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		ReadHeaderTimeout: readHeaderTimeout,
+		WriteTimeout:      writeTimeout,
 		// A connection that finished a request and went quiet is bounded by
 		// this and by nothing else. net/http clears the read deadline between
 		// requests and starts ReadHeaderTimeout only once the next request's
 		// first byte has arrived, so without this a client holds a goroutine
 		// and a descriptor for as long as it likes.
-		IdleTimeout: 30 * time.Second,
+		IdleTimeout: idleTimeout,
 	}
 }
 
