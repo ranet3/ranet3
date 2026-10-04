@@ -76,6 +76,10 @@ func (c *Client) Metrics(w io.Writer) {
 	fmt.Fprint(w, "# TYPE ranet3_esp_inbound_dropped_total counter\n")
 	fmt.Fprintf(w, "ranet3_esp_inbound_dropped_total %d\n", c.inboundDropped.Load())
 
+	fmt.Fprint(w, "# HELP ranet3_tun_reads_truncated_total Reads off the tun that lost the tail of a GSO frame, because the frame split into more packets than one read holds.\n")
+	fmt.Fprint(w, "# TYPE ranet3_tun_reads_truncated_total counter\n")
+	fmt.Fprintf(w, "ranet3_tun_reads_truncated_total %d\n", c.Mesh.TUNReadsTruncated())
+
 	c.renderReceiveCounters(w)
 	c.renderSegmentCounters(w)
 	c.renderKernel(w)
