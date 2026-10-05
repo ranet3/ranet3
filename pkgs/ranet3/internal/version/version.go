@@ -6,7 +6,10 @@
 // store path off every node.
 package version
 
-import "runtime/debug"
+import (
+	"runtime/debug"
+	"strings"
+)
 
 // Value is set at link time from version.txt by the nix build, and Revision
 // from the commit that build came from. A plain `go build` leaves Value at
@@ -24,7 +27,10 @@ var (
 // The revision comes from the build info the go toolchain embeds rather than
 // from a second link flag, so it is right for a plain `go build` as well.
 func String() string {
-	revision, modified := vcs()
+	revision, modified := VCS()
+	if len(revision) > shortRevision {
+		revision = revision[:shortRevision]
+	}
 	switch {
 	case revision == "":
 		return Value
@@ -35,11 +41,13 @@ func String() string {
 	}
 }
 
-func vcs() (revision string, modified bool) {
+// VCS is the revision the build came from, whole, and whether its tree had uncommitted changes
+// a revision passed in at link time says the latter by ending in -dirty
+func VCS() (revision string, modified bool) {
 	if Revision != "" {
 		// A nix build has no .git in its source, so the toolchain embeds
 		// nothing and the flake passes the revision in instead.
-		return Revision, false
+		return strings.CutSuffix(Revision, "-dirty")
 	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -49,9 +57,6 @@ func vcs() (revision string, modified bool) {
 		switch setting.Key {
 		case "vcs.revision":
 			revision = setting.Value
-			if len(revision) > 12 {
-				revision = revision[:12]
-			}
 		case "vcs.modified":
 			modified = setting.Value == "true"
 		}
