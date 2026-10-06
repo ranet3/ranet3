@@ -61,7 +61,7 @@ func TestQueriesAnswerFromTheReads(t *testing.T) {
 		},
 		"whois in this node's own": {
 			args: []string{"whois", "198.18.104.117"},
-			want: []string{"this node originates"},
+			want: []string{"originated by this node"},
 		},
 		"ip": {
 			args: []string{"ip"},

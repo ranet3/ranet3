@@ -63,7 +63,7 @@ func TestDebugEventsPrintsTheRecorderAndFollows(t *testing.T) {
 func TestDebugWaitEndsWithTheEventOrTheTimeout(t *testing.T) {
 	socket := serveStub(t)
 	out, err := execute(t, "debug", "wait", "ike.session.established", "--attr", "role=initiator", "--timeout", waitLong.String(), "--control", socket)
-	if err != nil || !strings.Contains(out, "ike.session.established example/gateway/0@0") || !strings.Contains(out, "after ") {
+	if err != nil || !strings.Contains(out, "ike.session.established example/gateway/0@0") || !strings.Contains(out, "After ") {
 		t.Errorf("a wait for an event that came printed %q and ended with %v", out, err)
 	}
 	// the recorder's dial is older than the wait, so only --past reaches it
@@ -76,7 +76,7 @@ func TestDebugWaitEndsWithTheEventOrTheTimeout(t *testing.T) {
 		{"debug", "wait", "dial.attempt", "--timeout", waitShort.String(), "--control", socket},
 		{"debug", "wait", "ike.session.established", "--attr", "role=responder", "--timeout", waitShort.String(), "--control", socket},
 	} {
-		if out, err := execute(t, args...); !errors.Is(err, waitTimedOut) || !strings.Contains(out, "arrived within 300 milliseconds") {
+		if out, err := execute(t, args...); !errors.Is(err, waitTimedOut) || !strings.Contains(out, "event arrived within 300 milliseconds") {
 			t.Errorf("%q printed %q and ended with %v, want the timeout", args, out, err)
 		}
 	}
@@ -160,7 +160,7 @@ func (steppedSource) DebugFollow(control.EventQuery) ([]control.Event, control.S
 // an event that came after the wait subscribed is taken whatever its stamp, and never reads as before the wait began
 func TestDebugWaitTakesALiveEventWhateverItsStamp(t *testing.T) {
 	out, err := execute(t, "debug", "wait", "ike.session.established", "--timeout", waitLong.String(), "--control", serve(t, steppedSource{}))
-	if err != nil || !strings.Contains(out, "ike.session.established example/gateway/0@0") || !strings.Contains(out, "after 0 milliseconds") {
+	if err != nil || !strings.Contains(out, "ike.session.established example/gateway/0@0") || !strings.Contains(out, "After 0 milliseconds") {
 		t.Errorf("a wait for an event stamped before it began printed %q and ended with %v", out, err)
 	}
 }

@@ -262,13 +262,13 @@ func TestMetricsAreServedAsTheExpositionFormat(t *testing.T) {
 func TestStatusNamesStoppedSubsystems(t *testing.T) {
 	var out strings.Builder
 	RenderStatus(&out, Status{Organization: "example", CommonName: "laptop"})
-	if strings.Contains(out.String(), "disabled") {
+	if strings.Contains(out.String(), "Disabled") {
 		t.Errorf("a node with everything running reports %q", out.String())
 	}
 	out.Reset()
 	RenderStatus(&out, Status{Organization: "example", CommonName: "laptop",
 		Disabled: []Subsystem{SubsystemReconciler, SubsystemSteering}})
-	for _, want := range []string{"disabled", "reconciler, steering", "restart"} {
+	for _, want := range []string{"Disabled", "reconciler, steering", "restart"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("status printed %q, want it to carry %q", out.String(), want)
 		}

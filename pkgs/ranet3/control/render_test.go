@@ -19,19 +19,19 @@ func TestRenderersKeepTheirColumns(t *testing.T) {
 	}{
 		"neighbors": {
 			render: func(b *strings.Builder) { RenderNeighbors(b, nil) },
-			want:   []string{"peer", "state", "cost", "rxcost", "rtt", "routes", "expires", "dropped", "failed"},
+			want:   []string{"Peer", "State", "Cost", "Rx cost", "RTT", "Routes", "Expires", "Dropped", "Failed"},
 		},
 		"routes": {
 			render: func(b *strings.Builder) { RenderRoutes(b, nil) },
-			want:   []string{"destination", "from", "via", "metric", "router-id", "seqno", "paths"},
+			want:   []string{"Destination", "From", "Via", "Metric", "Router ID", "Seqno", "Paths"},
 		},
 		"sessions": {
 			render: func(b *strings.Builder) { RenderSessions(b, nil) },
-			want:   []string{"path", "peer", "remote", "end", "state", "spi in/out", "age", "idle"},
+			want:   []string{"Path", "Peer", "Remote", "End", "State", "SPI in/out", "Age", "Idle"},
 		},
 		"peers": {
 			render: func(b *strings.Builder) { RenderPeers(b, nil) },
-			want:   []string{"path", "peer", "serial", "from", "state"},
+			want:   []string{"Path", "Peer", "Serial", "From", "State"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -133,9 +133,9 @@ func TestKernelLineNamesAVRFAndWhatItIsMissing(t *testing.T) {
 		want     string
 		unwanted string
 	}{
-		"no vrf":        {status: KernelStatus{Enabled: true, Where: "table 200 protocol 155"}, want: "table 200 protocol 155", unwanted: "vrf"},
-		"vrf, accepted": {status: KernelStatus{Enabled: true, VRF: "mesh", L3mdevAccept: &on}, want: "vrf mesh", unwanted: "l3mdev"},
-		"vrf, refused":  {status: KernelStatus{Enabled: true, VRF: "mesh", L3mdevAccept: &off}, want: "vrf mesh without l3mdev accept"},
+		"no vrf":        {status: KernelStatus{Enabled: true, Where: "table 200 protocol 155"}, want: "table 200 protocol 155", unwanted: "VRF"},
+		"vrf, accepted": {status: KernelStatus{Enabled: true, VRF: "mesh", L3mdevAccept: &on}, want: "VRF mesh", unwanted: "l3mdev"},
+		"vrf, refused":  {status: KernelStatus{Enabled: true, VRF: "mesh", L3mdevAccept: &off}, want: "VRF mesh without l3mdev accept"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			line := kernelLine(test.status)

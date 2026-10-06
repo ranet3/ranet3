@@ -43,32 +43,32 @@ func pairs(w io.Writer, rows [][]string) {
 // which reads better than a one-row table for a record with this many fields.
 func RenderStatus(w io.Writer, s Status) {
 	rows := [][]string{
-		{"node", s.Organization + "/" + s.CommonName},
-		{"version", s.Version},
-		{"uptime", shortDuration(time.Duration(s.Uptime))},
-		{"port", fmt.Sprint(s.Port)},
-		{"endpoints", strings.Join(s.Endpoints, " ")},
-		{"tun", fmt.Sprintf("%s mtu %d queues %d", s.TUN, s.MTU, s.Queues)},
-		{"role", role(s)},
-		{"forwarding", fmt.Sprintf("ipv4 %s ipv6 %s", onOff(s.ForwardsIPv4), onOff(s.ForwardsIPv6))},
-		{"registry", fmt.Sprintf("%s, %d nodes in %d organizations", s.Registry.Path, s.Registry.Nodes, s.Registry.Organizations)},
-		{"kernel", kernelLine(s.Kernel)},
-		{"egress", egressLine(s.Egress)},
-		{"dialers", fmt.Sprintf("%d running", s.Counts.Dialers)},
-		{"sessions", fmt.Sprint(s.Counts.Sessions)},
-		{"neighbors", fmt.Sprintf("%d, %d alive", s.Counts.Neighbors, s.Counts.NeighborsAlive)},
-		{"routes", fmt.Sprintf("%d prefixes, %d selected, %d originated", s.Counts.Prefixes, s.Counts.Selected, s.Counts.Originated)},
-		{"originate", originateLine(s.Originate)},
-		{"segments", segmentLine(s)},
-		{"steering", steeringLine(s)},
-		{"esp", fmt.Sprintf("%d in, %d dropped, %d refused", s.ESP.InboundPackets, s.ESP.InboundDropped, s.ESP.ReceiveRefused)},
+		{"Node", s.Organization + "/" + s.CommonName},
+		{"Version", s.Version},
+		{"Uptime", shortDuration(time.Duration(s.Uptime))},
+		{"Port", fmt.Sprint(s.Port)},
+		{"Endpoints", strings.Join(s.Endpoints, " ")},
+		{"TUN", fmt.Sprintf("%s MTU %d queues %d", s.TUN, s.MTU, s.Queues)},
+		{"Role", role(s)},
+		{"Forwarding", fmt.Sprintf("IPv4 %s IPv6 %s", onOff(s.ForwardsIPv4), onOff(s.ForwardsIPv6))},
+		{"Registry", fmt.Sprintf("%s, %d nodes in %d organizations", s.Registry.Path, s.Registry.Nodes, s.Registry.Organizations)},
+		{"Kernel", kernelLine(s.Kernel)},
+		{"Egress", egressLine(s.Egress)},
+		{"Dialers", fmt.Sprintf("%d running", s.Counts.Dialers)},
+		{"Sessions", fmt.Sprint(s.Counts.Sessions)},
+		{"Neighbors", fmt.Sprintf("%d, %d alive", s.Counts.Neighbors, s.Counts.NeighborsAlive)},
+		{"Routes", fmt.Sprintf("%d prefixes, %d selected, %d originated", s.Counts.Prefixes, s.Counts.Selected, s.Counts.Originated)},
+		{"Originate", originateLine(s.Originate)},
+		{"Segments", segmentLine(s)},
+		{"Steering", steeringLine(s)},
+		{"ESP", fmt.Sprintf("%d in, %d dropped, %d refused", s.ESP.InboundPackets, s.ESP.InboundDropped, s.ESP.ReceiveRefused)},
 	}
 	// Only where something is off. Every other row above answers a question a
 	// healthy node has an answer to, and this one would read "none" on all of
 	// them; it is here so that a node running less than its file says carries
 	// the difference where somebody will see it.
 	if len(s.Disabled) > 0 {
-		rows = append(rows, []string{"disabled", disabledLine(s.Disabled)})
+		rows = append(rows, []string{"Disabled", disabledLine(s.Disabled)})
 	}
 	pairs(w, rows)
 }
@@ -97,7 +97,7 @@ func kernelLine(k KernelStatus) string {
 	}
 	line := fmt.Sprintf("%s, %d installed", k.Where, k.Installed)
 	if k.VRF != "" {
-		line += ", vrf " + k.VRF
+		line += ", VRF " + k.VRF
 		// Only when it is off, and named rather than described, because it is
 		// the one thing that leaves a correct mesh with nothing able to use
 		// it and the startup warning has the whole sentence.
@@ -261,7 +261,7 @@ func RenderNeighbors(w io.Writer, neighbors []Neighbor) {
 			fmt.Sprint(n.SendFailed),
 		})
 	}
-	table(w, []string{"peer", "state", "cost", "rxcost", "rtt", "routes", "expires", "dropped", "failed"}, rows)
+	table(w, []string{"Peer", "State", "Cost", "Rx cost", "RTT", "Routes", "Expires", "Dropped", "Failed"}, rows)
 }
 
 // RenderRoutes writes the mesh route table, one line per prefix, which is the
@@ -290,7 +290,7 @@ func RenderRoutes(w io.Writer, routes []Route) {
 			fmt.Sprint(r.Candidates),
 		})
 	}
-	table(w, []string{"destination", "from", "via", "metric", "router-id", "seqno", "paths"}, rows)
+	table(w, []string{"Destination", "From", "Via", "Metric", "Router ID", "Seqno", "Paths"}, rows)
 }
 
 // RenderWhois writes where an address goes: the sentence naming the prefix
@@ -309,11 +309,11 @@ func RenderWhois(w io.Writer, address netip.Addr, covering []Route) {
 	best := covering[0]
 	switch {
 	case best.Originated:
-		fmt.Fprintf(w, "%s is in %s, which this node originates\n", address, best.Destination)
+		fmt.Fprintf(w, "%s is in %s originated by this node\n", address, best.Destination)
 	case best.Via == "":
-		fmt.Fprintf(w, "%s is in %s, which is held unreachable\n", address, best.Destination)
+		fmt.Fprintf(w, "%s is in %s held unreachable\n", address, best.Destination)
 	default:
-		fmt.Fprintf(w, "%s is in %s, reached through %s\n", address, best.Destination, best.Via)
+		fmt.Fprintf(w, "%s is in %s via %s\n", address, best.Destination, best.Via)
 	}
 	fmt.Fprintln(w)
 	RenderRoutes(w, covering)
@@ -328,7 +328,7 @@ func RenderWhois(w io.Writer, address netip.Addr, covering []Route) {
 // this node's traffic can take, and one without is an exit that has withdrawn.
 func RenderExitNodes(w io.Writer, defaults []Route) {
 	if len(defaults) == 0 {
-		fmt.Fprintln(w, "no node in this mesh advertises a default, so there is no exit to take")
+		fmt.Fprintln(w, "No node advertises a default route")
 		return
 	}
 	rows := make([][]string, 0, len(defaults))
@@ -347,7 +347,7 @@ func RenderExitNodes(w io.Writer, defaults []Route) {
 			exitState(route),
 		})
 	}
-	table(w, []string{"destination", "from", "via", "metric", "router-id", "paths", "state"}, rows)
+	table(w, []string{"Destination", "From", "Via", "Metric", "Router ID", "Paths", "State"}, rows)
 }
 
 func exitVia(route Route) string {
@@ -397,7 +397,7 @@ func RenderSessions(w io.Writer, sessions []Session) {
 			shortDuration(time.Duration(s.Idle)),
 		})
 	}
-	table(w, []string{"path", "peer", "remote", "end", "state", "spi in/out", "age", "idle"}, rows)
+	table(w, []string{"Path", "Peer", "Remote", "End", "State", "SPI in/out", "Age", "Idle"}, rows)
 }
 
 // RenderPeers writes what this node dials and whether it got there, which is
@@ -417,7 +417,7 @@ func RenderPeers(w io.Writer, peers []Peer) {
 			upDown(p.Connected),
 		})
 	}
-	table(w, []string{"path", "peer", "serial", "from", "state"}, rows)
+	table(w, []string{"Path", "Peer", "Serial", "From", "State"}, rows)
 }
 
 func upDown(up bool) string {

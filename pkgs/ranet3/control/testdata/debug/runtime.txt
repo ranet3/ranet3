@@ -1,13 +1,13 @@
-version      2026.912.0+ed50ac2a11a7
-go           go1.26.7
-revision     ed50ac2a11a77f5827de2084b6427ddad87701d2 with uncommitted changes
-uptime       20m3s
-cpus         16, gomaxprocs 16
-goroutines   412
-threads      129
-descriptors  233 of 524288
-heap         38.0 MiB in use, 183244 objects, next cycle at 64.0 MiB
-memory       105.0 MiB from the system
-gc           1 cycle, the last 37 seconds ago
-gc pause     4.2ms
-resolver     cgo
+Version      2026.912.0+ed50ac2a11a7
+Go           go1.26.7
+Revision     ed50ac2a11a77f5827de2084b6427ddad87701d2 with uncommitted changes
+Uptime       20m3s
+CPUs         16, GOMAXPROCS 16
+Goroutines   412
+Threads      129
+Descriptors  233 of 524288
+Heap         38.0 MiB in use, 183244 objects, next cycle at 64.0 MiB
+Memory       105.0 MiB from the system
+GC           1 cycle, the last 37 seconds ago
+GC pause     4.2ms
+Resolver     cgo
