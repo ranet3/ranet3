@@ -286,15 +286,18 @@ func (p *netlinkPlatform) AddRoute(route Route) error {
 	if errors.Is(err, unix.EINVAL) && route.PrefSrc.IsValid() {
 		// The one EINVAL with a cause an operator can act on, and the reason
 		// this names it rather than leaving "invalid argument" to be guessed
-		// at: the kernel refuses RTA_PREFSRC that is not an address of this
-		// box, and every IPv4 route this reconciler installs carries the
-		// configured prefsrc4. So one wrong address in the config file takes
-		// out IPv4 routing entirely, on every pass, for the life of the
-		// process. It stays a retried failure rather than a startup refusal
-		// because the address is normally the node's own mesh address, which
-		// this same reconciler assigns, so the first passes can legitimately
-		// run before it is there.
-		err = fmt.Errorf("%w (prefsrc %s is not an address of this host)", err, route.PrefSrc)
+		// at: the kernel refuses RTA_PREFSRC that is not a local address in
+		// the route's own table or in the local table, and every IPv4 route
+		// this reconciler installs carries the configured prefsrc4. So one
+		// wrong address in the config file takes out IPv4 routing entirely,
+		// on every pass, for the life of the process. It stays a retried
+		// failure rather than a startup refusal because the address is
+		// normally the node's own mesh address, which this same reconciler
+		// assigns, so the first passes can legitimately run before it is
+		// there.
+		// an address on a link inside a vrf is local only in the vrf's table
+		// a vrf bound to another table then breaks the rule with the address present
+		err = fmt.Errorf("%w (prefsrc %s is not a local address in table %d or in the local table)", err, route.PrefSrc, uint32(p.table.ID))
 	}
 	if err == nil {
 		delete(p.occupied, route)
