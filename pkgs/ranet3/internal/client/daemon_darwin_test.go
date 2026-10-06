@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -95,13 +96,8 @@ func recordedHost(t *testing.T) *recordedKernel {
 	return host
 }
 
-// startDaemon builds one node and its reconciler, retrying the port. A
-// configuration file has to name a port, since link.port is required, and the
-// only way to name a free one is to bind zero, read it back and give it up, so
-// anything else on the machine can take it in between. newLoopbackMesh in this
-// package retries for the same reason; the wait makes a run of losses unlikely
-// rather than merely improbable.
-func startDaemon(t *testing.T, bind bool, host *recordedKernel) *daemon {
+// redirectUnderlayState keeps the record of what this process wrote in a directory of this test's own
+func redirectUnderlayState(t *testing.T) {
 	t.Helper()
 	// The record of what this process wrote is an ownership claim over routes
 	// on a shared interface, so it goes somewhere of this test's own rather
@@ -109,30 +105,29 @@ func startDaemon(t *testing.T, bind bool, host *recordedKernel) *daemon {
 	state := underlayStatePath
 	underlayStatePath = filepath.Join(t.TempDir(), "underlay.json")
 	t.Cleanup(func() { underlayStatePath = state })
-
-	const attempts = 10
-	for attempt := range attempts {
-		d, err := tryDaemon(t, bind, host)
-		if err == nil {
-			return d
-		}
-		t.Logf("attempt %d could not bind the port the kernel had just handed back: %v", attempt, err)
-		time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
-	}
-	t.Fatalf("%d attempts in a row could not bind a port the kernel had just handed back", attempts)
-	return nil
 }
 
-// tryDaemon writes a configuration, loads it through the loader the daemon
-// uses, builds the node around a mesh with no TUN, and builds the route
-// reconciler out of what the node says about itself. The last step is the one
-// under test: main does exactly this and nothing more.
+// startDaemon builds one node and its reconciler, retrying the port
+func startDaemon(t *testing.T, bind bool, host *recordedKernel) *daemon {
+	t.Helper()
+	redirectUnderlayState(t)
+	var d *daemon
+	retryPort(t, "bind", func() (err error) {
+		d, err = tryDaemon(t, loadDaemonConfig(t, bind), host)
+		return err
+	})
+	return d
+}
+
+// tryDaemon builds the node a loaded configuration describes around a mesh
+// with no TUN, and builds the route reconciler out of what the node says about
+// itself. The last step is the one under test: main does exactly this and
+// nothing more.
 //
 // Only the port it could not take comes back as an error; anything else is
 // this test being wrong about the tree and ends it.
-func tryDaemon(t *testing.T, bind bool, host *recordedKernel) (*daemon, error) {
+func tryDaemon(t *testing.T, cfg *config.Config, host *recordedKernel) (*daemon, error) {
 	t.Helper()
-	cfg := loadDaemonConfig(t, bind)
 	privateKey := daemonIdentity(t, cfg)
 	reg, err := registry.Load(cfg.Auth.Trust)
 	if err != nil {
@@ -459,6 +454,42 @@ func TestUnderlayRoutingOutlivesACaptureStillInTheKernel(t *testing.T) {
 	t.Cleanup(closeUnderlay)
 	if got := d.host.scopedDefaults(); len(got) != 0 {
 		t.Errorf("the next start left %+v behind, so a node killed holding one leaks it for good", got)
+	}
+}
+
+// a start that fails after the transport prepared its interface leaves the machine as it found it
+// another socket holds the port, which is how a second node on one port fails once the first half of its start has run
+// the scoped default the transport wrote for the underlay is withdrawn, and the route socket and the link watcher are closed
+func TestFailedStartLeavesTheMachineAsItFoundIt(t *testing.T) {
+	host := recordedHost(t)
+	redirectUnderlayState(t)
+
+	// the port is chosen by binding zero and giving it back, so another process can take it before this one holds it again
+	var cfg *config.Config
+	var held net.PacketConn
+	retryPort(t, "hold", func() (err error) {
+		cfg = loadDaemonConfig(t, true)
+		held, err = net.ListenPacket("udp4", fmt.Sprintf("127.0.0.1:%d", cfg.Link.Port))
+		return err
+	})
+	t.Cleanup(func() { _ = held.Close() })
+
+	_, err := tryDaemon(t, cfg, host)
+	if err == nil {
+		t.Fatal("a node started on a port another socket holds, so this measures nothing")
+	}
+	// the underlay wrote its default before the port refused the start, which is the state this leaves behind
+	prepared := slices.ContainsFunc(host.writes(), func(write recordedWrite) bool {
+		return write.add && write.scoped && write.index == host.uplink
+	})
+	if !prepared {
+		t.Fatalf("the start failed before the underlay wrote a default (%v), so this measures nothing", err)
+	}
+	if got := host.scopedDefaults(); len(got) != 0 {
+		t.Errorf("the failed start left %d defaults scoped to an interface this node does not own", len(got))
+	}
+	if sockets, watchers := host.stillOpen(); sockets != 0 || watchers != 0 {
+		t.Errorf("the failed start left %d route sockets and %d link watchers open", sockets, watchers)
 	}
 }
 
