@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What the route reconciler can do on Linux and on macOS."
 created: 2026-09-21
-updated: 2026-10-03
+updated: 2026-10-06
 order: 100
 ---
 
@@ -13,6 +13,12 @@ so the configuration names what it wants and each backend reaches it the way its
 kernel allows. A backend that cannot reach something refuses the configuration
 by name at startup rather than coming up with a working mesh and no steering,
 which is the failure that reads as a routing problem for a day.
+
+The tun is `ranet3` on linux unless `link.tun` names another device, and a utun
+on darwin, `utun` for the next free unit or `utunN` for unit N, since the utun
+control creates nothing else. Either way the reconciler works on the name the
+device was given rather than the one configured, which on darwin is the unit it
+got, `utun6` for instance.
 
 **linux** has policy rules and 2^32 tables. `cap.table.rules` are installed with
 `FRA_PROTOCOL` set to `cap.table.proto`, the same ownership marker the routes

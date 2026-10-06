@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the VM tests, the root-only tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-04
+updated: 2026-10-06
 order: 20
 ---
 
@@ -18,11 +18,12 @@ go test ./... -race
 
 The unit tests need no privileges, with three exceptions: `internal/kernel` has
 tests that write to a real routing table, `internal/egress` one that writes into
-a real packet filter, and `internal/netstack` one that creates and attaches to a
-real TUN on linux and reads its `gso_max_segs` back. All three unshare a network
-namespace and refuse to continue unless it is empty, and all three skip unless
-run as root, on darwin unless `RANET3_DARWIN_NETTEST=1` is also set, because
-that machine is on a live mesh.
+a real packet filter, and `internal/netstack` three that create and attach to a
+real TUN on linux, read its `gso_max_segs` back, open several lanes as one
+device and refuse a mesh under the default name where a device of that name
+exists. All three unshare a network namespace and refuse to continue unless it
+is empty, and all three skip unless run as root, on darwin unless
+`RANET3_DARWIN_NETTEST=1` is also set, because that machine is on a live mesh.
 
 `internal/kernel` names the machine it reads and writes, `kernel.Host`, so the
 darwin backend can be driven without either. `internal/client`'s

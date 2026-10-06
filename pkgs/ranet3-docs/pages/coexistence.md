@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-10-03
+updated: 2026-10-06
 order: 110
 ---
 
@@ -33,9 +33,10 @@ that interface. That condition is the whole guarantee: nothing else writes
 routes out of our utun. Tailscale's `100.64.0.0/10` on its own utun has exactly
 the shape described above, so a reconciler pointed at that interface would adopt
 and withdraw it. Two things keep that from happening. The device is created by
-asking for the next free unit, so it is never one another tunnel is already
-using, and XNU allocates interface indices by incrementing a counter with no
-free list, so a destroyed utun's index is never handed out again.
+asking for the next free unit, or for the unit `link.tun` names, whose creation
+fails while another tunnel holds it, so it is never one another tunnel is
+already using, and XNU allocates interface indices by incrementing a counter
+with no free list, so a destroyed utun's index is never handed out again.
 
 Interface-scoped routes are narrower still, because this reconciler installs a
 scoped route for a source-specific announcement, and so do other tools. A macOS
@@ -82,8 +83,9 @@ finds them already there, so it never adds them, never records them as its own,
 and never removes them, even on a clean shutdown. Its routes do come back, since
 they carry the protocol marker that identifies them. The TUN is enslaved to a
 VRF only while it has no master at all, so systemd-networkd keeps whatever it
-already claimed. The device itself is created by asking for the next free unit,
-so it never takes a name another tunnel is using.
+already claimed. Under the default name the device itself is only ever created:
+a `ranet3` that already exists is refused rather than joined, so it never takes
+a device another tunnel is using.
 
 `cap.egress` writes into the packet filter, where the same three rules hold. It
 creates an nftables table named after this tool, one per address family, holding
