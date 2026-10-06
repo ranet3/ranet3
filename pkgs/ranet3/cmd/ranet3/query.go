@@ -90,10 +90,10 @@ it is.`,
 }
 
 // exitNodeCommand is a parent, so that whatever else an exit grows a verb for
-// later has a place to go and `exit-node` on its own prints what it can do.
+// later has a place to go and `exit` on its own prints what it can do.
 func (r *reader) exitNodeCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "exit-node",
+		Use:   "exit",
 		Short: "Show exit nodes",
 		Long: `An exit node advertises a default route into the mesh. Run the list
 command to see which ones the mesh offers and which one this node takes.`,

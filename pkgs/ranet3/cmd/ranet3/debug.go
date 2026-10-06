@@ -142,7 +142,7 @@ func rawRequest(args []string, stdin io.Reader) (method, path string, body io.Re
 // the daemon's own build is under debug runtime
 func (r *reader) buildInfoCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "go-buildinfo",
+		Use:   "buildinfo",
 		Short: "Print Go build information",
 		Long: `The information is the one this binary carries. The build of the running
 node is under debug runtime.`,
