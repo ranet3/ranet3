@@ -40,11 +40,11 @@ func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
 
 	const device = "ranettest0"
 	createTUN(t, device)
-	index, _, err := conn.link(device)
+	tun, err := conn.link(0, device)
 	if err != nil {
 		t.Fatalf("look up %s: %v", device, err)
 	}
-	setLinkFlags(t, conn, index, unix.IFF_UP)
+	setLinkFlags(t, conn, tun.index, unix.IFF_UP)
 
 	tbl, rt := platformFor(device)
 	opened, err := newPlatform(tbl, rt)
@@ -196,11 +196,11 @@ func TestNetlinkReportsOccupiedRoute(t *testing.T) {
 	requireEmptyNamespace(t, conn)
 	// the namespace's own loopback needs no optional link driver
 	const device = "lo"
-	index, _, err := conn.link(device)
+	lo, err := conn.link(0, device)
 	if err != nil {
 		t.Fatal(err)
 	}
-	setLinkFlags(t, conn, index, unix.IFF_UP)
+	setLinkFlags(t, conn, lo.index, unix.IFF_UP)
 	tbl, rt := platformFor(device)
 	opened, err := newPlatform(tbl, rt)
 	if err != nil {
@@ -209,7 +209,7 @@ func TestNetlinkReportsOccupiedRoute(t *testing.T) {
 	t.Cleanup(func() { _ = opened.Close() })
 	plat := opened.(*netlinkPlatform)
 	tbl.Proto++
-	foreign := &netlinkPlatform{table: tbl, rt: rt, index: index, conn: conn}
+	foreign := &netlinkPlatform{table: tbl, rt: rt, index: lo.index, conn: conn}
 	announced := Route{Destination: prefix("198.51.100.0/24")}
 	if err := foreign.AddRoute(announced); err != nil {
 		t.Fatal(err)
@@ -236,14 +236,18 @@ func testVRFEnslavement(t *testing.T, conn *nlConn, plat *netlinkPlatform) {
 	if err := createLink(conn, master, "vrf", data); err != nil {
 		t.Skipf("no vrf support in this kernel: %v", err)
 	}
-	index, _, err := conn.link(master)
+	vrf, err := conn.link(0, master)
 	if err != nil {
 		t.Fatalf("look up %s: %v", master, err)
 	}
-	setLinkFlags(t, conn, index, unix.IFF_UP)
+	setLinkFlags(t, conn, vrf.index, unix.IFF_UP)
 
 	if current, err := plat.Master(); err != nil || current != "" {
 		t.Fatalf("the device already has master %q (err %v)", current, err)
+	}
+	// a device that is not a vrf is refused by name, read from this kernel's own linkinfo
+	if err := plat.Enslave("lo"); err == nil || !strings.Contains(err.Error(), "lo is not a vrf") {
+		t.Fatalf("enslaving to lo reported %v, want it refused as not a vrf", err)
 	}
 	for range 2 { // enslaving twice must be indistinguishable from once
 		if err := plat.Enslave(master); err != nil {
@@ -395,14 +399,14 @@ func TestNetlinkHoldsRetractedPrefix(t *testing.T) {
 	requireEmptyNamespace(t, conn)
 	const device = "ranethold0"
 	createTUN(t, device)
-	index, _, err := conn.link(device)
+	tun, err := conn.link(0, device)
 	if err != nil {
 		t.Fatal(err)
 	}
-	setLinkFlags(t, conn, index, unix.IFF_UP)
+	setLinkFlags(t, conn, tun.index, unix.IFF_UP)
 	plat := &netlinkPlatform{
 		table: Table{ID: DefaultTable, Proto: DefaultProtocol}, rt: Runtime{Interface: device},
-		index:    index,
+		index:    tun.index,
 		conn:     conn,
 		occupied: map[Route]bool{}, refused: map[Route]bool{},
 	}
@@ -523,17 +527,17 @@ func TestNetlinkRulesAndVRFInNetworkNamespace(t *testing.T) {
 	if !created {
 		t.Fatal("creating a vrf that did not exist reported that it was already there")
 	}
-	if _, _, err := conn.link("gravitytest"); err != nil {
+	if _, err := conn.link(0, "gravitytest"); err != nil {
 		t.Fatalf("the vrf is not there after being created: %v", err)
 	}
 	// The binding the shared-table audit reads back, decoded from this
 	// kernel's own encoding rather than from a hand-built message: the nest
 	// flags and the terminator on the kind are whatever it sends.
-	if table, ok, err := conn.vrfTable("gravitytest"); err != nil || !ok || table != DefaultTable {
-		t.Fatalf("the vrf read back as bound to %d (ok %v, err %v), want %d", table, ok, err, DefaultTable)
+	if vrf, err := conn.link(0, "gravitytest"); err != nil || vrf.vrfTable != DefaultTable {
+		t.Fatalf("the vrf read back as bound to %d (err %v), want %d", vrf.vrfTable, err, DefaultTable)
 	}
-	if _, ok, err := conn.vrfTable("lo"); err != nil || ok {
-		t.Fatalf("lo read back as a vrf (ok %v, err %v)", ok, err)
+	if lo, err := conn.link(0, "lo"); err != nil || lo.vrfTable != 0 {
+		t.Fatalf("lo read back as a vrf bound to %d (err %v)", lo.vrfTable, err)
 	}
 	// A second call finds it and says so, which is the answer that keeps
 	// shutdown from removing a device this process did not make.
@@ -546,10 +550,7 @@ func TestNetlinkRulesAndVRFInNetworkNamespace(t *testing.T) {
 	if err := plat.RemoveVRF("gravitytest"); err != nil {
 		t.Fatalf("removing a vrf that is already gone: %v", err)
 	}
-	if _, _, err := conn.link("gravitytest"); err == nil {
+	if _, err := conn.link(0, "gravitytest"); !errors.Is(err, unix.ENODEV) {
 		t.Fatal("the vrf survived its removal")
-	}
-	if _, ok, err := conn.vrfTable("gravitytest"); err != nil || ok {
-		t.Fatalf("a removed vrf still read back as bound (ok %v, err %v)", ok, err)
 	}
 }

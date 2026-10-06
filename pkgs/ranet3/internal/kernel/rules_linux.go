@@ -203,7 +203,7 @@ func (p *netlinkPlatform) DelRule(rule Rule) error {
 // table it is bound to: rebinding somebody else's VRF moves every route in it,
 // and replacing a device of another kind takes its addresses with it.
 func (p *netlinkPlatform) EnsureVRF(name string, table uint32) (bool, error) {
-	if _, _, err := p.conn.link(name); err == nil {
+	if _, err := p.conn.link(0, name); err == nil {
 		return false, nil
 	} else if !errors.Is(err, unix.ENODEV) {
 		return false, fmt.Errorf("kernel: look up %s: %w", name, err)
@@ -232,7 +232,7 @@ func (p *netlinkPlatform) EnsureVRF(name string, table uint32) (bool, error) {
 }
 
 func (p *netlinkPlatform) RemoveVRF(name string) error {
-	index, _, err := p.conn.link(name)
+	link, err := p.conn.link(0, name)
 	if errors.Is(err, unix.ENODEV) {
 		return nil
 	}
@@ -241,7 +241,7 @@ func (p *netlinkPlatform) RemoveVRF(name string) error {
 	}
 	body := make([]byte, unix.SizeofIfInfomsg)
 	body[0] = unix.AF_UNSPEC
-	binary.NativeEndian.PutUint32(body[4:], index)
+	binary.NativeEndian.PutUint32(body[4:], link.index)
 	if _, err := p.conn.execute(unix.RTM_DELLINK, unix.NLM_F_ACK, body); err != nil {
 		if errors.Is(err, unix.ENODEV) {
 			return nil

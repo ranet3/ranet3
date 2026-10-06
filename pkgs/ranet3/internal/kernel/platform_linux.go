@@ -26,11 +26,7 @@ import (
 // seam.
 type netlinkConn interface {
 	execute(kind, flags uint16, body []byte) ([]nlMessage, error)
-	link(name string) (index, master uint32, err error)
-	linkName(index uint32) (string, error)
-	// vrfTable reports the table a VRF device is bound to, and false when no
-	// device of that name exists or it is not a VRF.
-	vrfTable(name string) (table uint32, ok bool, err error)
+	link(index uint32, name string) (linkInfo, error)
 	Close() error
 }
 
@@ -67,7 +63,7 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 	// the index is resolved once: netstack owns the TUN for the whole
 	// process lifetime, so a changed index means a different device and the
 	// routes of the old one are already gone with it.
-	index, _, err := conn.link(rt.Interface)
+	tun, err := conn.link(0, rt.Interface)
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("kernel: look up interface %s: %w", rt.Interface, err)
@@ -77,7 +73,7 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	return &netlinkPlatform{table: t, rt: rt, index: index, conn: conn, monitor: monitor,
+	return &netlinkPlatform{table: t, rt: rt, index: tun.index, conn: conn, monitor: monitor,
 		occupied: make(map[Route]bool), refused: make(map[Route]bool)}, nil
 }
 
@@ -396,22 +392,30 @@ func (p *netlinkPlatform) DelAddr(prefix netip.Prefix) error {
 }
 
 func (p *netlinkPlatform) Master() (string, error) {
-	_, master, err := p.conn.link(p.rt.Interface)
+	tun, err := p.conn.link(0, p.rt.Interface)
 	if err != nil {
 		return "", err
 	}
-	if master == 0 {
+	if tun.master == 0 {
 		return "", nil
 	}
-	return p.conn.linkName(master)
+	master, err := p.conn.link(tun.master, "")
+	if err != nil {
+		return "", err
+	}
+	return master.name, nil
 }
 
 func (p *netlinkPlatform) Enslave(master string) error {
-	index, _, err := p.conn.link(master)
+	link, err := p.conn.link(0, master)
 	if err != nil {
 		return err
 	}
-	return p.setMaster(index)
+	// a device of another kind holding the name refuses the tun with a bare errno that names neither
+	if link.vrfTable == 0 {
+		return fmt.Errorf("kernel: %s is not a vrf", master)
+	}
+	return p.setMaster(link.index)
 }
 
 func (p *netlinkPlatform) Release() error {
@@ -583,7 +587,14 @@ func (p *netlinkPlatform) vrfBinding() (uint32, bool, error) {
 	if p.table.VRF == nil {
 		return 0, false, nil
 	}
-	return p.conn.vrfTable(p.table.VRF.Name)
+	link, err := p.conn.link(0, p.table.VRF.Name)
+	if errors.Is(err, unix.ENODEV) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return link.vrfTable, link.vrfTable != 0, nil
 }
 
 // protocolLabel names a routing protocol the way iproute2 prints it, from the
