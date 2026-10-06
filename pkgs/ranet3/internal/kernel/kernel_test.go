@@ -495,26 +495,58 @@ func (a *auditingKernel) foreignWriters(ownVRF bool) ([]string, error) {
 	return a.writers, nil
 }
 
+// logRecord is the one record carrying msg among the logs captureKernelLogs collected, and nil when there is none
+func logRecord(t *testing.T, logs *bytes.Buffer, msg string) map[string]any {
+	t.Helper()
+	var found map[string]any
+	for line := range strings.Lines(logs.String()) {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("a log line is not a json record: %q", line)
+		}
+		if record["msg"] != msg {
+			continue
+		}
+		if found != nil {
+			t.Fatalf("%q was logged twice: %q", msg, logs.String())
+		}
+		found = record
+	}
+	return found
+}
+
 // A VRF that existed first keeps its own table, and traffic inside it never
 // looks at this one, so the mesh comes up looking complete and carries nothing
 // from inside the VRF. The pass says so, only when the two tables differ, and
 // names both, since either one is the setting an operator changes.
+// the fix stands in an attribute of its own
+// it is one an operator can follow, whatever made the device and whatever table it is bound to
 func TestPassSaysWhenTheVRFIsBoundToAnotherTable(t *testing.T) {
-	for name, test := range map[string]struct {
+	type binding struct {
 		bound  uint32
 		create bool
-		want   []string
-	}{
-		"bound to this table": {bound: DefaultTable},
-		"bound to another table": {bound: 300, want: []string{
-			"bound to another table", `"vrf_table":300`, fmt.Sprintf(`"table":%d`, DefaultTable),
-			"recreate the device bound to this table",
-		}},
-		"bound to another table with create set": {bound: 300, create: true, want: []string{
-			"bound to another table", "the next pass recreates it",
-		}},
-		"not a vrf yet": {},
-	} {
+		fix    string
+	}
+	cases := map[string]binding{
+		"bound to this table":    {bound: DefaultTable},
+		"bound to another table": {bound: 300, fix: "bind the vrf to table 200 in whatever creates it, or set cap.table id to 300"},
+		"not a vrf yet":          {},
+		// deleting the device would detach the vrf's other links
+		// the one made again in its place would be a device this process removes at its next stop
+		"bound to another table with create set": {bound: 300, create: true, fix: "bind the vrf to table 200 in whatever creates it, or set cap.table id to 300"},
+	}
+	// the kernel keeps tables 253 to 255 for itself
+	// the sweep takes one table past each end as well
+	// cap.table id is offered exactly where cap.table takes it
+	// a node told to follow the vrf into a table cap.table refuses would not start
+	for bound := uint32(252); bound <= 256; bound++ {
+		fix := "bind the vrf to table 200 in whatever creates it"
+		if (Table{ID: schema.TableID(bound)}).Validate() == nil {
+			fix += fmt.Sprintf(", or set cap.table id to %d", bound)
+		}
+		cases[fmt.Sprintf("bound to table %d", bound)] = binding{bound: bound, fix: fix}
+	}
+	for name, test := range cases {
 		t.Run(name, func(t *testing.T) {
 			reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh", Create: test.create}})
 			if test.bound != 0 {
@@ -524,14 +556,27 @@ func TestPassSaysWhenTheVRFIsBoundToAnotherTable(t *testing.T) {
 			if err := reconciler.reconcile(); err != nil {
 				t.Fatal(err)
 			}
-			got := logs.String()
-			if len(test.want) == 0 && strings.Contains(got, "bound to another table") {
-				t.Errorf("the pass said %s", got)
-			}
-			for _, want := range test.want {
-				if !strings.Contains(got, want) {
-					t.Errorf("the pass said %q, want it to include %s", got, want)
+			record := logRecord(t, logs, "kernel's vrf is bound to another table than the one it writes")
+			if test.fix == "" {
+				if record != nil {
+					t.Errorf("the pass said %v", record)
 				}
+				return
+			}
+			if record == nil {
+				t.Fatalf("the pass said nothing about a vrf bound to table %d: %q", test.bound, logs.String())
+			}
+			if record["vrf"] != "mesh" || record["vrf_table"] != float64(test.bound) || record["table"] != float64(DefaultTable) {
+				t.Errorf("the warning names %v, %v and %v, want the vrf, both tables", record["vrf"], record["vrf_table"], record["table"])
+			}
+			if record["fix"] != test.fix {
+				t.Errorf("the fix reads %q, want %q", record["fix"], test.fix)
+			}
+			// with no unreachable default in the vrf's table a miss leaves by the uplink
+			// a ping that answers then makes the warning read as spurious
+			detail, _ := record["detail"].(string)
+			if !strings.Contains(detail, "falls through to the main table") || strings.ContainsRune(detail, ';') {
+				t.Errorf("the detail reads %q, want it to say a miss falls through to the main table, with no semicolon", detail)
 			}
 		})
 	}
@@ -619,6 +664,38 @@ func TestCensusAsksTheKernelWhichTableTheVRFIsBoundTo(t *testing.T) {
 			}
 			if test.logged != "" && strings.Count(got, test.logged) != 1 {
 				t.Errorf("the failed read was reported %d times, want once: %q", strings.Count(got, test.logged), got)
+			}
+		})
+	}
+}
+
+// the census says what sharing a table costs
+// it gives the one fix this node can follow in an attribute of its own
+// a node with a vrf cannot hand the reconciler another table, since the vrf looks this one up
+// it is told to stop the other writer instead
+// told to take another table, a fleet node mid-migration met the binding warning pointing back, one restart per step
+func TestCensusGivesTheFixTheNodeCanFollow(t *testing.T) {
+	for name, test := range map[string]struct {
+		vrf *VRF
+		fix string
+	}{
+		"a node without a vrf": {fix: "give this reconciler a table of its own"},
+		"a node with a vrf":    {vrf: &VRF{Name: "mesh"}, fix: "stop the other writer exporting into this table"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reconciler, _, fake := harness(t, Table{VRF: test.vrf})
+			reconciler.plat = &auditingKernel{fakeKernel: fake, writers: []string{"bird (12)"}}
+			logs := captureKernelLogs(t)
+			reconciler.audit()
+			record := logRecord(t, logs, "kernel is sharing its table with another routing protocol")
+			if record == nil {
+				t.Fatalf("the census said nothing about bird: %q", logs.String())
+			}
+			if record["fix"] != test.fix {
+				t.Errorf("the fix reads %q, want %q", record["fix"], test.fix)
+			}
+			if detail, _ := record["detail"].(string); strings.Contains(detail, "a table of its own") {
+				t.Errorf("the detail reads %q, which gives advice beside the fix", detail)
 			}
 		})
 	}

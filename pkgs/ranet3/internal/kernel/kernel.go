@@ -1339,9 +1339,16 @@ func (r *Reconciler) audit() {
 	if writers, err := audit.foreignWriters(ownVRF); err != nil {
 		slog.Warn("kernel could not check the table for other writers", "err", err)
 	} else if len(writers) > 0 {
+		fix := "give this reconciler a table of its own"
+		// a vrf looks this table up
+		// moving the reconciler to another table would move it away from the vrf's traffic
+		if r.table.Name() != "" {
+			fix = "stop the other writer exporting into this table"
+		}
 		slog.Warn("kernel is sharing its table with another routing protocol",
 			"table", uint32(r.table.ID), "protocols", strings.Join(writers, ", "),
-			"detail", "an install refuses a key another writer already holds, so give this reconciler a table of its own")
+			"detail", "an install refuses a key another writer already holds, so where both write a prefix the one that wrote it first keeps it",
+			"fix", fix)
 	}
 }
 
@@ -1361,13 +1368,18 @@ func (r *Reconciler) checkBinding() error {
 	// can be recreated while this process runs, and with create set the next
 	// pass makes it bound to this table.
 	if bound != r.bound && bound != 0 && bound != uint32(r.table.ID) {
-		fix := "recreate the device bound to this table, or set cap.table id to the vrf's table"
-		if r.table.creates() {
-			fix = "delete the device and the next pass recreates it bound to this table, or set cap.table id to the vrf's table"
+		// the fix never deletes the device, which would detach the vrf's other links
+		// the one made again in its place would also be a device this process removes at its next stop
+		fix := fmt.Sprintf("bind the vrf to table %d in whatever creates it", uint32(r.table.ID))
+		// cap.table refuses the tables the kernel keeps for itself
+		// a node told to follow the vrf into one of them would not start
+		if bound < reservedTable || bound > lastByteTable {
+			fix += fmt.Sprintf(", or set cap.table id to %d", bound)
 		}
 		slog.Warn("kernel's vrf is bound to another table than the one it writes",
 			"vrf", r.table.Name(), "vrf_table", bound, "table", uint32(r.table.ID),
-			"detail", "traffic in the vrf looks up the vrf's own table and misses the routes installed here unless a policy rule sends it here; "+fix)
+			"detail", "traffic in the vrf is looked up in the vrf's own table and falls through to the main table wherever nothing there matches, so it reaches the routes installed here only through a policy rule",
+			"fix", fix)
 	}
 	r.bound = bound
 	return nil
