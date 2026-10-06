@@ -191,6 +191,55 @@ func TestMeshCloseDrainsQueuedTickets(t *testing.T) {
 	}
 }
 
+// closeHold is how long a test watches Close to see that it is still waiting
+const closeHold = 100 * time.Millisecond
+
+// heldDevice holds every write until the test lets it go
+// and says when one has started
+type heldDevice struct {
+	recordingDevice
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (d *heldDevice) Write(bufs [][]byte, _ int) (int, error) {
+	d.entered <- struct{}{}
+	<-d.release
+	return len(bufs), nil
+}
+
+// an inbound writer can be inside a write when Close comes
+// and Close has to wait for it, or the writer outlives the mesh
+// writing into a device Close has already closed
+func TestCloseWaitsForInboundWriters(t *testing.T) {
+	dev := &heldDevice{entered: make(chan struct{}, 2), release: make(chan struct{})}
+	// two lanes, so the writers run, both on the one device so either lane is held
+	m := &Mesh{devs: []tun.Device{dev, dev}, closed: make(chan struct{})}
+	m.startInboundWriters()
+	m.DeliverInboundBatch([][]byte{ipv6TCPPacket(40000, 5201, 1)})
+	select {
+	case <-dev.entered:
+	case <-time.After(deliveryTimeout):
+		close(dev.release)
+		t.Fatal("no writer took the delivered packet, so this proves nothing")
+	}
+
+	closed := make(chan struct{})
+	go func() { m.Close(); close(closed) }()
+	select {
+	case <-closed:
+		close(dev.release)
+		t.Fatal("Close returned while a writer was still inside a write to the device")
+	case <-time.After(closeHold):
+	}
+	close(dev.release)
+	select {
+	case <-closed:
+	case <-time.After(deliveryTimeout):
+		t.Fatal("Close did not return once the write it waited for had finished")
+	}
+}
+
 func TestSingleQueueInboundSplitsLargeBatches(t *testing.T) {
 	dev := &recordingDevice{writes: make(chan recordedWrite, 2)}
 	m := &Mesh{devs: []tun.Device{dev}, closed: make(chan struct{})}
