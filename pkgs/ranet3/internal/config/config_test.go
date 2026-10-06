@@ -1328,16 +1328,12 @@ func unwritten(value reflect.Value, path string) []string {
 		// rule the loader refuses.
 		missing := unwritten(value.Index(0), path)
 		for i := 1; i < value.Len() && len(missing) > 0; i++ {
-			missing = alsoMissing(missing, unwritten(value.Index(i), path))
+			next := unwritten(value.Index(i), path)
+			missing = slices.DeleteFunc(missing, func(p string) bool { return !slices.Contains(next, p) })
 		}
 		out = append(out, missing...)
 	}
 	return out
-}
-
-// alsoMissing is the paths left unwritten by both entries.
-func alsoMissing(first, second []string) []string {
-	return slices.DeleteFunc(first, func(path string) bool { return !slices.Contains(second, path) })
 }
 
 // oneEndpoint is a link writing the one endpoint the schema requires and
@@ -1346,13 +1342,6 @@ func alsoMissing(first, second []string) []string {
 // empty sequence and reads that back as an empty list, so a case leaving it out
 // reports a difference no block it was probing had caused.
 func oneEndpoint() Link { return Link{Endpoints: []Endpoint{{Serial: "0", Family: "ip4"}}} }
-
-// withUnderlay is oneEndpoint carrying an underlay setting.
-func withUnderlay(underlay transport.Underlay) Link {
-	link := oneEndpoint()
-	link.Underlay = underlay
-	return link
-}
 
 // spellsItself reports a type writing itself as one value rather than as the
 // fields behind it, by either of the two marshalers this tree's encoders
@@ -1365,6 +1354,21 @@ func spellsItself(ty reflect.Type) bool {
 		ty.Implements(reflect.TypeFor[encoding.TextMarshaler]())
 }
 
+// blockEncoders is each encoder the two checks below ask about a block
+// with the decoder that reads the block back at its own type
+var blockEncoders = []struct {
+	name   string
+	render func(any) ([]byte, error)
+	parse  func([]byte, any) error
+}{
+	{"yaml", yaml.Marshal, yaml.Unmarshal},
+	{"json", json.Marshal, json.Unmarshal},
+	{"toml", renderTOML, func(body []byte, target any) error {
+		_, err := toml.Decode(string(body), target)
+		return err
+	}},
+}
+
 // A block holding one written field and nothing else still reaches the
 // daemon. That shape finds what a full configuration hides: yaml.v3 decides
 // omitempty for a struct by asking for IsZero and otherwise walking the
@@ -1372,8 +1376,8 @@ func spellsItself(ty reflect.Type) bool {
 // dropped with the operator's value in it, while a fully populated block
 // always has some other field for the walk to find.
 //
-// Each case below is one nested block the omitempty finding names, rendered
-// and read back at its own type so no validation stands between the two.
+// Each case below is one nested block, rendered and read back at its own
+// type so no validation stands between the two.
 func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 	rx := uint16(96)
 	rttMin := schema.Duration(10 * time.Millisecond)
@@ -1384,14 +1388,12 @@ func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 		"cap.crypto rekey retry": ike.Rekey{Retry: ike.Retry{First: &retryFirst}},
 		"cap.babel cost":         babel.Config{Cost: babel.CostOptions{Rx: &rx}},
 		"cap.babel cost rtt":     babel.CostOptions{RTT: babel.RTTOptions{Min: &rttMin}},
-		// The three cases standing on a whole Config write the one endpoint
-		// the schema requires as well, since an endpoint list is the one
-		// required field here that is a list: yaml writes a nil one as an
-		// empty sequence and reads that back as an empty list rather than as
-		// nothing, which would read as a difference the block never caused.
-		"dial":          Config{Link: oneEndpoint(), Dial: Dial{All: true}},
-		"cap":           Config{Link: oneEndpoint(), Cap: Caps{Crypto: &ike.Crypto{Replay: &replay}}},
-		"link underlay": Config{Link: withUnderlay(transport.Underlay{Mark: 0x726c})},
+		"dial":                   Config{Link: oneEndpoint(), Dial: Dial{All: true}},
+		"cap":                    Config{Link: oneEndpoint(), Cap: Caps{Crypto: &ike.Crypto{Replay: &replay}}},
+		"link underlay": Config{Link: Link{
+			Endpoints: oneEndpoint().Endpoints,
+			Underlay:  transport.Underlay{Mark: 0x726c},
+		}},
 		"cap.route announce from": babel.Routes{Announce: []schema.Announce{
 			{Prefix: schema.MustPrefix("::/0"), From: schema.MustPrefix("2001:db8:1::/48")},
 		}},
@@ -1416,18 +1418,7 @@ func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 		"cap.table vrf": kernel.Table{VRF: &kernel.VRF{Name: "mesh"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, encoder := range []struct {
-				name   string
-				render func(any) ([]byte, error)
-				parse  func([]byte, any) error
-			}{
-				{"yaml", yaml.Marshal, yaml.Unmarshal},
-				{"json", json.Marshal, json.Unmarshal},
-				{"toml", renderTOML, func(body []byte, target any) error {
-					_, err := toml.Decode(string(body), target)
-					return err
-				}},
-			} {
+			for _, encoder := range blockEncoders {
 				body, err := encoder.render(want)
 				if err != nil {
 					t.Fatalf("render as %s: %v", encoder.name, err)
@@ -1466,33 +1457,16 @@ func TestUnwrittenBlockLeavesNoKey(t *testing.T) {
 		// because cap.crypto and cap.babel drop those two whole
 		"cap.crypto rekey": {ike.Rekey{}, []string{"retry"}},
 		"cap.babel cost":   {babel.CostOptions{}, []string{"rtt"}},
-		// The two standing on a whole Link write the endpoint the schema
-		// requires and nothing else, since an endpoint list is the one
-		// required field that is a list: yaml writes a nil one as an empty
-		// sequence and reads that back as an empty list, which would read as a
-		// difference no optional block caused.
-		"link":           {oneEndpoint(), []string{"underlay"}},
-		"a whole config": {Config{Link: oneEndpoint()}, []string{"dial", "cap", "underlay"}},
+		"link":             {oneEndpoint(), []string{"underlay"}},
+		"config":           {Config{Link: oneEndpoint()}, []string{"dial", "cap", "underlay"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, encoder := range []struct {
-				name   string
-				render func(any) ([]byte, error)
-				parse  func([]byte, any) error
-				names  bool
-			}{
-				{"yaml", yaml.Marshal, yaml.Unmarshal, true},
-				{"json", json.Marshal, json.Unmarshal, true},
-				{"toml", renderTOML, func(body []byte, target any) error {
-					_, err := toml.Decode(string(body), target)
-					return err
-				}, false},
-			} {
+			for _, encoder := range blockEncoders {
 				body, err := encoder.render(probe.value)
 				if err != nil {
 					t.Fatalf("render as %s: %v", encoder.name, err)
 				}
-				if encoder.names {
+				if encoder.name != "toml" {
 					for _, key := range probe.absent {
 						if strings.Contains(string(body), key) {
 							t.Errorf("%s writes %q for a block nobody wrote:\n%s", encoder.name, key, body)
