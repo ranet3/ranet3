@@ -186,6 +186,12 @@ func TestBothDecodersRefuseTheSameSpellings(t *testing.T) {
 			asYAML: "announce: [{ prefix: \"::/0\", from: 2001:db8::/48, from: 2001:db8:1::/48 }]\n",
 			asTOML: "announce = [{ prefix = \"::/0\", from = \"2001:db8::/48\", from = \"2001:db8:1::/48\" }]\n",
 		},
+		// a list inside the list is neither spelling
+		// walked as a mapping's items two at a time, it announced the source-specific default its four words spell
+		"an announcement written as a sequence": {
+			asYAML: "announce: [[prefix, \"::/0\", from, 2001:db8::/48]]\n",
+			asTOML: "announce = [[\"prefix\", \"::/0\", \"from\", \"2001:db8::/48\"]]\n",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := decodeYAML(t, pair.asYAML); err == nil {
