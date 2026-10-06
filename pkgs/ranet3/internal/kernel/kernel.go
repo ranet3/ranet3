@@ -472,12 +472,14 @@ type ruler interface {
 // configuration asking for one where there are no VRFs is refused by name.
 type vrfMaker interface {
 	// EnsureVRF creates the device when no device of that name exists and
-	// reports whether it created it. A device that is already there is left
-	// alone, whatever it is bound to, because it belongs to whoever made it.
-	EnsureVRF(name string, table uint32) (bool, error)
-	// RemoveVRF deletes a device this reconciler created. A device that is
-	// already gone is success.
-	RemoveVRF(name string) error
+	// returns the index the kernel gave it, or 0 when it created none. A
+	// device that is already there is left alone, whatever it is bound to,
+	// because it belongs to whoever made it.
+	EnsureVRF(name string, table uint32) (index uint32, err error)
+	// RemoveVRF deletes the device of that name this reconciler created under
+	// index. A device that is already gone is success.
+	// one holding the name under another index was made by somebody else after this one went, and stays
+	RemoveVRF(name string, index uint32) error
 }
 
 // platform is the kernel surface the reconciler drives. Everything above it is
@@ -801,9 +803,10 @@ type Reconciler struct {
 	// for nothing.
 	rules ruler
 	vrfs  vrfMaker
-	// madeVRF records that this reconciler created the VRF device itself, the
-	// only condition under which it removes one again.
-	madeVRF bool
+	// madeVRF is the index of the VRF device this reconciler created itself, 0
+	// for none, and the only device it removes again.
+	// a name proves nothing, since somebody else can remake a device under it
+	madeVRF uint32
 
 	// gate holds back the routes that would carry this machine's own traffic
 	// until the mesh has proved it can carry them. Only the reconcile
@@ -1351,12 +1354,12 @@ func (r *Reconciler) applyVRF() error {
 	if r.vrfs == nil || !r.table.creates() || r.table.Name() == "" {
 		return nil
 	}
-	created, err := r.vrfs.EnsureVRF(r.table.Name(), uint32(r.table.ID))
+	index, err := r.vrfs.EnsureVRF(r.table.Name(), uint32(r.table.ID))
 	if err != nil {
 		return fmt.Errorf("create vrf %s: %w", r.table.Name(), err)
 	}
-	if created {
-		r.madeVRF, r.changed = true, true
+	if index != 0 {
+		r.madeVRF, r.changed = index, true
 		slog.Info("kernel created the mesh vrf", "vrf", r.table.Name(), "table", uint32(r.table.ID))
 	}
 	return nil
@@ -1903,11 +1906,11 @@ func (r *Reconciler) withdraw() error {
 	// Only a VRF this process created. One that was already there when it
 	// started belongs to whoever made it, and removing it would take every
 	// route in its table with it.
-	if r.madeVRF {
-		if err := r.vrfs.RemoveVRF(r.table.Name()); err != nil {
+	if r.madeVRF != 0 {
+		if err := r.vrfs.RemoveVRF(r.table.Name(), r.madeVRF); err != nil {
 			errs = append(errs, fmt.Errorf("remove vrf %s: %w", r.table.Name(), err))
 		} else {
-			r.madeVRF = false
+			r.madeVRF = 0
 		}
 	}
 	// Every count is of something that left, so a line reporting nothing

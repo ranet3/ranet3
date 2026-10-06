@@ -58,6 +58,11 @@ type fakeKernel struct {
 	ruleAdds int
 	ruleDels int
 	vrfErr   error
+	// vrfIndex is the index of each vrf EnsureVRF made
+	// lastIndex is the last index it handed out, 40 before the first
+	// a flag in place of an index reads as 1, which names none of the fake's vrfs
+	vrfIndex  map[string]uint32
+	lastIndex uint32
 
 	failAdd     map[Route]error
 	failDel     map[Route]error
@@ -77,6 +82,8 @@ func newFakeKernel(t *testing.T) *fakeKernel {
 		addrs:       make(map[netip.Prefix]bool),
 		rules:       make(map[Rule]bool),
 		vrfs:        make(map[string]uint32),
+		vrfIndex:    make(map[string]uint32),
+		lastIndex:   40,
 		failAdd:     make(map[Route]error),
 		failDel:     make(map[Route]error),
 		failAddRule: make(map[Rule]error),
@@ -1196,23 +1203,28 @@ func (f *fakeKernel) DelRule(rule Rule) error {
 	return nil
 }
 
-func (f *fakeKernel) EnsureVRF(name string, table uint32) (bool, error) {
+func (f *fakeKernel) EnsureVRF(name string, table uint32) (uint32, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.vrfErr != nil {
-		return false, f.vrfErr
+		return 0, f.vrfErr
 	}
 	if _, exists := f.vrfs[name]; exists {
-		return false, nil
+		return 0, nil
 	}
-	f.vrfs[name] = table
-	return true, nil
+	f.lastIndex++
+	f.vrfs[name], f.vrfIndex[name] = table, f.lastIndex
+	return f.lastIndex, nil
 }
 
-func (f *fakeKernel) RemoveVRF(name string) error {
+// RemoveVRF leaves a device holding the name under another index, as the linux backend does
+func (f *fakeKernel) RemoveVRF(name string, index uint32) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	delete(f.vrfs, name)
+	if f.vrfIndex[name] == index {
+		delete(f.vrfs, name)
+		delete(f.vrfIndex, name)
+	}
 	return nil
 }
 
@@ -1402,6 +1414,31 @@ func TestVRFThatWasAlreadyThereIsLeftAlone(t *testing.T) {
 	}
 	if table, ok := fake.vrfs["mesh"]; !ok || table != 42 {
 		t.Errorf("shutdown removed a vrf it did not create: %v %d", ok, table)
+	}
+}
+
+// a vrf this process made is removed at shutdown by the index the kernel gave it
+// a device made again after somebody deleted it carries a new index, which the reconciler keeps
+// a flag or the first index in its place leaves the device behind
+func TestWithdrawRemovesTheVRFItMadeByItsIndex(t *testing.T) {
+	reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh", Create: true}})
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	first := fake.vrfIndex["mesh"]
+	delete(fake.vrfs, "mesh")
+	delete(fake.vrfIndex, "mesh")
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if again := fake.vrfIndex["mesh"]; again == 0 || again == first {
+		t.Fatalf("the vrf was made again under index %d after %d, so this proves nothing", again, first)
+	}
+	if err := reconciler.withdraw(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fake.vrfs["mesh"]; ok {
+		t.Error("shutdown left behind the vrf this process made")
 	}
 }
 

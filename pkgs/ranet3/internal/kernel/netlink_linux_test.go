@@ -452,6 +452,7 @@ func TestNetlinkRulesAndVRFInNetworkNamespace(t *testing.T) {
 		t.Fatalf("dial rtnetlink: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
+	requireEmptyNamespace(t, conn)
 
 	const device = "ranettest0"
 	createTUN(t, device)
@@ -520,34 +521,55 @@ func TestNetlinkRulesAndVRFInNetworkNamespace(t *testing.T) {
 		t.Fatalf("after withdrawal the kernel holds %v (err %v)", rules, err)
 	}
 
-	created, err := plat.EnsureVRF("gravitytest", DefaultTable)
+	made, err := plat.EnsureVRF("gravitytest", DefaultTable)
 	if err != nil {
 		t.Fatalf("create the vrf: %v", err)
 	}
-	if !created {
+	if made == 0 {
 		t.Fatal("creating a vrf that did not exist reported that it was already there")
-	}
-	if _, err := conn.link(0, "gravitytest"); err != nil {
-		t.Fatalf("the vrf is not there after being created: %v", err)
 	}
 	// The binding the shared-table audit reads back, decoded from this
 	// kernel's own encoding rather than from a hand-built message: the nest
 	// flags and the terminator on the kind are whatever it sends.
-	if vrf, err := conn.link(0, "gravitytest"); err != nil || vrf.vrfTable != DefaultTable {
-		t.Fatalf("the vrf read back as bound to %d (err %v), want %d", vrf.vrfTable, err, DefaultTable)
+	if vrf, err := conn.link(0, "gravitytest"); err != nil || vrf.index != made || vrf.vrfTable != DefaultTable {
+		t.Fatalf("the vrf read back as index %d bound to %d (err %v), want index %d bound to %d", vrf.index, vrf.vrfTable, err, made, DefaultTable)
 	}
 	if lo, err := conn.link(0, "lo"); err != nil || lo.vrfTable != 0 {
 		t.Fatalf("lo read back as a vrf bound to %d (err %v)", lo.vrfTable, err)
 	}
 	// A second call finds it and says so, which is the answer that keeps
 	// shutdown from removing a device this process did not make.
-	if created, err := plat.EnsureVRF("gravitytest", DefaultTable); err != nil || created {
-		t.Fatalf("a second EnsureVRF reported created=%v (err %v)", created, err)
+	if again, err := plat.EnsureVRF("gravitytest", DefaultTable); err != nil || again != 0 {
+		t.Fatalf("a second EnsureVRF reported index %d (err %v)", again, err)
 	}
-	if err := plat.RemoveVRF("gravitytest"); err != nil {
-		t.Fatalf("remove the vrf: %v", err)
+
+	// somebody else deletes the device and makes their own under the name, bound to another table
+	gone := make([]byte, unix.SizeofIfInfomsg)
+	binary.NativeEndian.PutUint32(gone[4:], made)
+	if _, err := conn.execute(unix.RTM_DELLINK, unix.NLM_F_ACK, gone); err != nil {
+		t.Fatalf("delete the vrf by hand: %v", err)
 	}
-	if err := plat.RemoveVRF("gravitytest"); err != nil {
+	if err := createLink(conn, "gravitytest", "vrf", putAttrU32(nil, unix.IFLA_VRF_TABLE, DefaultTable+1)); err != nil {
+		t.Fatalf("make another vrf under the name: %v", err)
+	}
+	theirs, err := conn.link(0, "gravitytest")
+	if err != nil {
+		t.Fatalf("look up the other vrf: %v", err)
+	}
+	if theirs.index == made {
+		t.Fatalf("the kernel gave the other vrf index %d again, so this proves nothing", made)
+	}
+	// removing what this process made leaves theirs with everything in its table
+	if err := plat.RemoveVRF("gravitytest", made); err != nil {
+		t.Fatalf("remove the vrf this process made: %v", err)
+	}
+	if vrf, err := conn.link(0, "gravitytest"); err != nil || vrf.index != theirs.index {
+		t.Fatalf("the other writer's vrf is gone or changed (index %d, err %v)", vrf.index, err)
+	}
+	if err := plat.RemoveVRF("gravitytest", theirs.index); err != nil {
+		t.Fatalf("remove the vrf by its own index: %v", err)
+	}
+	if err := plat.RemoveVRF("gravitytest", theirs.index); err != nil {
 		t.Fatalf("removing a vrf that is already gone: %v", err)
 	}
 	if _, err := conn.link(0, "gravitytest"); !errors.Is(err, unix.ENODEV) {

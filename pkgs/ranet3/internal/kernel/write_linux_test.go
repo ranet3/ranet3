@@ -261,6 +261,49 @@ func TestLinuxEnslavesTheTunOnlyToAVRF(t *testing.T) {
 	}
 }
 
+// lookupFails is the fake whose lookups fail from the nth on
+// every other request is answered as the fake answers it
+type lookupFails struct {
+	*fakeNetlink
+	lookups, from int
+}
+
+func (f *lookupFails) link(index uint32, name string) (linkInfo, error) {
+	if f.lookups++; f.lookups >= f.from {
+		return linkInfo{}, unix.ENOBUFS
+	}
+	return f.fakeNetlink.link(index, name)
+}
+
+// a vrf made and then not found by the lookup after it has an index nobody read
+// no stop could remove it by that index
+// it is deleted by name before the error returns
+// the next pass then makes it again and reads the index back
+func TestLinuxRemovesAVRFItMadeAndCouldNotLookUp(t *testing.T) {
+	plat, conn := writePlatform(t)
+	plat.conn = &lookupFails{fakeNetlink: conn, from: 2}
+	if index, err := plat.EnsureVRF("mesh", 200); !errors.Is(err, unix.ENOBUFS) || index != 0 {
+		t.Fatalf("a vrf whose lookup failed after the create reported index %d and %v", index, err)
+	}
+	if len(conn.sent) != 2 || conn.sent[0].kind != unix.RTM_NEWLINK || conn.sent[1].kind != unix.RTM_DELLINK {
+		t.Fatalf("the create and the failed lookup after it wrote %d messages, want the create and a delete", len(conn.sent))
+	}
+	removed := conn.sent[1]
+	name := ""
+	for kind, value := range (nlMessage{Data: removed.body}).attributes(unix.SizeofIfInfomsg) {
+		if kind == unix.IFLA_IFNAME {
+			name = unix.ByteSliceToString(value)
+		}
+	}
+	if index := binary.NativeEndian.Uint32(removed.body[4:]); index != 0 || name != "mesh" {
+		t.Errorf("the delete named index %d and device %q, want mesh by its name", index, name)
+	}
+	// without the ack the kernel sends nothing back, and the request waits forever
+	if removed.flags&unix.NLM_F_ACK == 0 {
+		t.Errorf("the delete carries flags %#x, without the ack", removed.flags)
+	}
+}
+
 // The report reaches an operator through slog, whose text handler quotes
 // anything shaped like a byte slice rather than listing it, so a []uint8 of
 // protocols 2 and 12 arrived on a live fleet node as protocols="\x02\f" and
