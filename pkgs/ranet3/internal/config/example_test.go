@@ -160,7 +160,7 @@ func TestExampleTakesTheIntervalsTheHarnessWrites(t *testing.T) {
 	if rewritten == string(body) {
 		t.Fatal("the example no longer spells the intervals the way this test rewrites")
 	}
-	cfg, err := load(t, ".yaml", rewritten)
+	cfg, err := loadYAML(t, rewritten)
 	if err != nil {
 		t.Fatalf("the sub-second spelling the integration test uses was refused: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestExampleTakesTheIntervalsTheHarnessWrites(t *testing.T) {
 	// Every other duration in this file takes a bare zero for "leave the
 	// default alone", and the two decoders have to agree about that too.
 	zeroed := strings.Replace(string(body), "hello: 4s", "hello: 0", 1)
-	cfg, err = load(t, ".yaml", zeroed)
+	cfg, err = loadYAML(t, zeroed)
 	if err != nil {
 		t.Fatalf("a zero interval was refused: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestExampleTakesTheIntervalsTheHarnessWrites(t *testing.T) {
 	// the empty string, and `invalid duration ""` names neither the line nor
 	// what was written there.
 	sequence := strings.Replace(string(body), "hello: 4s", "hello: [4s]", 1)
-	_, err = load(t, ".yaml", sequence)
+	_, err = loadYAML(t, sequence)
 	if err == nil {
 		t.Fatal("a sequence was accepted as a duration")
 	}

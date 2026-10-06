@@ -529,7 +529,7 @@ func TestGeneratedConfigurationSurvivesEachEncoder(t *testing.T) {
 		drawn := hegel.Draw(ht, configurations())
 		want := defaulted(drawn)
 		ht.Assume(want.Validate() == nil)
-		sameAfterEachEncoder(ht, t, drawn, want)
+		sameAfterEachEncoder(ht, drawn, want)
 	})
 }
 
@@ -547,7 +547,7 @@ func TestValidatedEgressSourceReadsBackFromItsFile(t *testing.T) {
 		drawn.Cap.Egress = &exit
 		want := defaulted(drawn)
 		ht.Assume(want.Validate() == nil)
-		sameAfterEachEncoder(ht, t, drawn, want)
+		sameAfterEachEncoder(ht, drawn, want)
 	})
 }
 
@@ -569,7 +569,7 @@ func TestValidatedRouteSpeakerAndSegmentsReadBackFromTheirFile(t *testing.T) {
 		want := defaulted(drawn)
 		ht.Assume(want.Validate() == nil)
 		if !hegel.Draw(ht, hegel.WeightedBooleans(0.25)) {
-			sameAfterEachEncoder(ht, t, drawn, want)
+			sameAfterEachEncoder(ht, drawn, want)
 			return
 		}
 
@@ -878,7 +878,7 @@ func TestDocumentAfterTheNodeThatDoesNotParseIsRefused(t *testing.T) {
 		tb.Helper()
 		body := nodeYAML + strings.Repeat("---\n", empty+1) + construct(word)
 		for _, extension := range []string{".yaml", ".yml", ".json"} {
-			if _, err := load(t, extension, body); err == nil {
+			if _, err := load(tb, extension, body); err == nil {
 				tb.Fatalf("%s took %q, whose last document does not parse", extension, body)
 			}
 		}
