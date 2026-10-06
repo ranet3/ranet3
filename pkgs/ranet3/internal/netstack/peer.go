@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"runtime"
+	"math/bits"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -49,31 +49,34 @@ type Peer struct {
 	// order discardQueued gives batches back in, which nothing else can see.
 	noteDiscarded func(ticket uint64)
 
-	// Reserved peers hand completed crypto batches to one sender. slots bounds
-	// the total number of batches that may be encrypting, queued out of order,
-	// or in the transport syscall at once.
+	// Reserved peers hand completed crypto batches to one sender. dataBudget
+	// bounds the packets this peer holds from their reservation through
+	// encryption, the wait behind an earlier ticket and the transport syscall.
 	//
-	// controlSlots is the same bound for babel, kept separate on purpose. The
-	// data budget is sized by the core count and is entirely consumed by a
-	// bulk transfer, so sharing it dropped 98 of every 100 control packets
-	// under load, measured; three lost hellos withdraw every route through the
-	// peer and the transfer then has nowhere to go. Control traffic is small
-	// and rare enough that a budget of its own costs a few hundred kilobytes.
+	// controlBudget is the same bound for babel, kept separate on purpose. The
+	// data budget is entirely consumed by a bulk transfer, so sharing it
+	// dropped 98 of every 100 control packets under load, measured. Three lost
+	// hellos withdraw every route through the peer and the transfer then has
+	// nowhere to go. Control traffic is small and rare enough that a budget of
+	// its own costs a few hundred kilobytes.
 	// queueMu makes closing the queue and inserting into it one decision.
 	// The sender's stop path drains what it holds and returns, so a batch
 	// that lands in the queue after that drain is read by nobody: never
-	// transmitted, never counted, its slot never given back, and its caller
+	// transmitted, never counted, its budget never given back, and its caller
 	// told it succeeded. Testing p.stop before the send cannot close that,
 	// because the drain can happen between the test and the send.
-	queueMu      sync.Mutex
-	queueClosed  bool
-	completed    chan *peerBatch
-	slots        chan struct{}
-	controlSlots chan struct{}
-	stop         chan struct{}
-	senderDone   chan struct{}
-	closeOnce    sync.Once
-	sealedPool   sync.Pool // *[][]byte, returned only after the transport finishes
+	queueMu       sync.Mutex
+	queueClosed   bool
+	completed     chan *peerBatch
+	dataBudget    packetBudget
+	controlBudget packetBudget
+	stop          chan struct{}
+	senderDone    chan struct{}
+	closeOnce     sync.Once
+	// sealedPool holds sealed storage, each a *[][]byte returned only after the transport finishes
+	// it keeps one pool for each power of two of a batch's packets up to transmitBatchSize
+	// so a batch reuses only storage grown by at most twice its own packets
+	sealedPool []sync.Pool
 
 	// Compatibility peers allocate their sequence number during encryption,
 	// so their complete encrypt/send operation remains synchronously ordered.
@@ -122,10 +125,12 @@ func newPeer(id string, encryptFn func(raw []byte, nextHeader byte) ([]byte, err
 	if reserveFn == nil {
 		p.sendCond = sync.NewCond(&p.sendMu)
 	} else {
-		queueSize := max(2, 2*runtime.GOMAXPROCS(0))
-		p.completed = make(chan *peerBatch, queueSize+controlQueueSize)
-		p.slots = make(chan struct{}, queueSize)
-		p.controlSlots = make(chan struct{}, controlQueueSize)
+		p.dataBudget.limit = peerDataBudget
+		p.controlBudget.limit = controlQueueSize
+		// every batch with a ticket holds at least one packet of a budget
+		// so the queue holds them all and enqueue never waits
+		p.completed = make(chan *peerBatch, peerDataBudget+controlQueueSize)
+		p.sealedPool = make([]sync.Pool, bits.Len(transmitBatchSize))
 		p.stop = make(chan struct{})
 		p.senderDone = make(chan struct{})
 		go p.senderLoop()
@@ -163,7 +168,7 @@ var ErrSendQueueFull = errors.New("netstack: peer send queue is full")
 type Place struct{ batch *peerBatch }
 
 // ReserveRawOrDrop takes the peer's next place for one packet, and drops the
-// packet rather than waiting when no transmission slot is free. Babel sends
+// packet rather than waiting when the control budget has no room. Babel sends
 // this way because waiting does not stay local: the speaker walks every
 // neighbor from one goroutine, and Receive runs on the sending peer's own
 // decrypt path, so one peer whose queue is backed up would stop hellos,
@@ -176,7 +181,7 @@ type Place struct{ batch *peerBatch }
 // under that lock, after which nothing can invert them. Every place taken has
 // to be sent, because one that is never used stalls everything behind it.
 func (p *Peer) ReserveRawOrDrop(raw []byte, nextHeader byte) (*Place, error) {
-	b := p.reserveNow(p.controlSlots, 1, true)
+	b := p.reserveNow(&p.controlBudget, 1, true)
 	if b == nil {
 		return nil, ErrSendQueueFull
 	}
@@ -231,57 +236,73 @@ type peerBatch struct {
 	// several sites decide it.
 	onFailure func(error)
 	failed    bool
-	hasSlot   bool
+	// held is the packets this batch holds of its peer's budget
+	// zero once they are given back, or for a peer with no budget
+	held int
 	// control says which budget the place came from, so it goes back where it
 	// was taken from.
 	control bool
 }
 
-// reserveBatchNow takes a transmission slot only if one is free. A caller that
-// would rather drop its packets than wait gets nil, having consumed neither a
-// ticket nor a sequence range, which is why the slot is taken before either: a
-// reserved ticket that never reaches the sender stalls it forever. The count
-// is the caller's packet count, and the refusal is counted in the same unit.
+// packetBudget is the room a peer has for packets from their reservation until the transmit that carried them returns
+type packetBudget struct {
+	used  atomic.Int64
+	limit int64
+}
+
+// take holds count packets if they fit, without waiting, and says whether they did
+func (b *packetBudget) take(count int) bool {
+	for {
+		used := b.used.Load()
+		if used+int64(count) > b.limit {
+			return false
+		}
+		if b.used.CompareAndSwap(used, used+int64(count)) {
+			return true
+		}
+	}
+}
+
+// reserveBatchNow takes count packets of the data budget only if they fit.
+// A caller that would rather drop its packets than wait gets nil, having
+// consumed neither a ticket nor a sequence range, which is why the budget is
+// taken before either: a reserved ticket that never reaches the sender stalls
+// it forever. The count is the caller's packet count, at least one, and the
+// refusal is counted in the same unit.
 //
-// It does not wait at all, even briefly. A slot frees when the peer's sender
-// returns from the transport, so a queue that is full is one whose socket is
-// backpressured, and that lasts far longer than any wait worth having; a wait
+// It does not wait at all, even briefly. The budget frees as the peer's sender
+// returns from the transport, so a budget that is full is one whose socket is
+// backpressured, and that lasts far longer than any wait worth having. A wait
 // would only add latency before dropping anyway. The caller also runs on a
 // goroutine that serves other peers: Mesh dispatches under a lock every TUN
 // reader takes. ReserveRawOrDrop says the same of its own callers.
 func (p *Peer) reserveBatchNow(count int) *peerBatch {
-	return p.reserveNow(p.slots, count, false)
+	return p.reserveNow(&p.dataBudget, count, false)
 }
 
-// reserveNow takes one place from budget if a place is free, and otherwise
+// reserveNow takes count packets from budget if they fit, and otherwise
 // reports the packets dropped.
-func (p *Peer) reserveNow(budget chan struct{}, count int, control bool) *peerBatch {
-	if budget == nil {
-		return p.reserveBatchWithSlot(count, false, control)
+func (p *Peer) reserveNow(budget *packetBudget, count int, control bool) *peerBatch {
+	// a compatibility peer sends in its caller and holds no budget
+	if p.completed == nil {
+		return p.reserveTicket(count, 0, control)
 	}
-	// Checked before the budget, not beside it: a select with both ready picks
-	// uniformly, so half of what a closed peer was offered would be accepted,
-	// reported as sent, never transmitted and never counted.
+	// a closed peer refuses and counts everything it is offered
 	select {
 	case <-p.stop:
 		p.dropped.Add(uint64(count))
 		return nil
 	default:
 	}
-	select {
-	case budget <- struct{}{}:
-		return p.reserveBatchWithSlot(count, true, control)
-	case <-p.stop:
-		p.dropped.Add(uint64(count))
-		return nil
-	default:
+	if !budget.take(count) {
 		p.dropped.Add(uint64(count))
 		return nil
 	}
+	return p.reserveTicket(count, count, control)
 }
 
-// Dropped counts the packets this peer did not transmit on purpose: no
-// transmission slot was free, the peer was already closing, or the outbound SA
+// Dropped counts the packets this peer did not transmit on purpose: its
+// budget had no room for them, the peer was already closing, or the outbound SA
 // could not give out a sequence range, which is how a peer that deleted its
 // Child SA looks from here. A peer whose path is congested or whose SA is
 // gone shows up as a rising counter rather than as latency somewhere else.
@@ -291,11 +312,13 @@ func (p *Peer) Dropped() uint64 { return p.dropped.Load() }
 // wire. See Peer.sendFailed.
 func (p *Peer) SendFailed() uint64 { return p.sendFailed.Load() }
 
-func (p *Peer) reserveBatchWithSlot(count int, hasSlot, control bool) *peerBatch {
+// reserveTicket takes the peer's next ticket and its sequence range for count packets
+// for a batch that holds held packets of a budget
+func (p *Peer) reserveTicket(count, held int, control bool) *peerBatch {
 	p.reserveMu.Lock()
 	ticket := p.reserved
 	p.reserved++
-	b := &peerBatch{peer: p, ticket: ticket, reserved: p.reserveFn != nil, hasSlot: hasSlot, control: control}
+	b := &peerBatch{peer: p, ticket: ticket, reserved: p.reserveFn != nil, held: held, control: control}
 	if p.reserveFn != nil {
 		b.sealer, b.err = p.reserveFn(count)
 	}
@@ -327,7 +350,7 @@ func (b *peerBatch) encrypt() {
 	}
 	b.encrypted = true
 	if b.reserved {
-		b.storage, _ = b.peer.sealedPool.Get().(*[][]byte)
+		b.storage, _ = b.peer.storagePool(len(b.raw)).Get().(*[][]byte)
 		if b.storage == nil {
 			b.storage = new([][]byte)
 		}
@@ -360,9 +383,10 @@ func (b *peerBatch) enqueue() error {
 		return b.abandon()
 	}
 	// Never blocks: p.completed holds every batch the two budgets can hand a
-	// ticket to, and every batch that reaches here holds one. The default arm
-	// is therefore unreachable, and giving the batch back is the answer if it
-	// ever is, rather than blocking with queueMu held.
+	// ticket to, since each such batch holds at least one of their packets, and
+	// every batch that reaches here is one of them. The default arm is
+	// therefore unreachable, and giving the batch back is the answer if it ever
+	// is, rather than blocking with queueMu held.
 	select {
 	case p.completed <- b:
 		p.queueMu.Unlock()
@@ -386,7 +410,7 @@ func (b *peerBatch) abandon() error {
 		b.counted = true
 	}
 	b.releaseStorage()
-	b.releaseSlot()
+	b.releaseBudget()
 	err := fmt.Errorf("netstack: peer %s closed", b.peer.ID)
 	b.fail(err)
 	return err
@@ -496,24 +520,28 @@ func (p *Peer) discardQueued(pending map[uint64]*peerBatch) {
 	}
 }
 
-func (b *peerBatch) releaseSlot() {
-	if !b.hasSlot {
-		return
-	}
+// releaseBudget gives back the packets the batch holds of its peer's budget
+func (b *peerBatch) releaseBudget() {
+	budget := &b.peer.dataBudget
 	if b.control {
-		<-b.peer.controlSlots
-	} else {
-		<-b.peer.slots
+		budget = &b.peer.controlBudget
 	}
-	b.hasSlot = false
+	budget.used.Add(-int64(b.held))
+	b.held = 0
 }
 
 func (b *peerBatch) releaseStorage() {
 	if b.storage != nil {
 		*b.storage = b.sealed
-		b.peer.sealedPool.Put(b.storage)
+		b.peer.storagePool(len(b.raw)).Put(b.storage)
 		b.storage, b.sealed = nil, nil
 	}
+}
+
+// storagePool is where a batch of n packets takes its sealed storage and gives it back
+// the pool of the power of two at or above n, the last one also taking any batch longer than transmitBatchSize
+func (p *Peer) storagePool(n int) *sync.Pool {
+	return &p.sealedPool[min(bits.Len(uint(n-1)), len(p.sealedPool)-1)]
 }
 
 func (p *Peer) noteSendError(err error) {
@@ -527,8 +555,8 @@ func (p *Peer) noteSendError(err error) {
 
 func (p *Peer) senderLoop() {
 	defer close(p.senderDone)
-	pending := make(map[uint64]*peerBatch, cap(p.completed))
-	ready := make([]*peerBatch, 0, cap(p.completed))
+	pending := make(map[uint64]*peerBatch)
+	ready := make([]*peerBatch, 0, transmitBatchSize)
 	packets := make([][]byte, 0, transmitBatchSize)
 	next := uint64(0)
 	for {
@@ -538,7 +566,7 @@ func (p *Peer) senderLoop() {
 				pending[b.ticket] = b
 			case <-p.stop:
 				// Everything queued behind the stop is given back rather than
-				// left where it is: each of these holds a transmission slot
+				// left where it is: each of these holds packets of a budget
 				// and a place in the order, and its packets have been counted
 				// by nothing. A caller waiting on one is told, or transmit
 				// never returns.
@@ -588,7 +616,7 @@ func (p *Peer) senderLoop() {
 				b.counted = true
 			}
 			b.releaseStorage()
-			b.releaseSlot()
+			b.releaseBudget()
 			if b.err != nil {
 				b.fail(b.err)
 			}

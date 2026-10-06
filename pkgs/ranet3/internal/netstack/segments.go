@@ -221,18 +221,16 @@ type forwardedSegment struct {
 // forwardSegments sends the packets a waypoint has rewritten on to the peers
 // their new destinations select.
 //
-// It takes one place on each peer's budget for that peer's whole share of the
-// batch, as dispatchOutbound does for a tun read. Taking one per packet
-// instead would be the same accounting at a 128th of the batch size, since an
-// ESP receive batch is 128 packets against a budget of twice the core count:
-// most of a forwarded burst would be dropped on an idle machine, and a peer
-// could spend this node's whole allowance to a third peer.
+// It reserves each peer's whole share of the batch at once, as dispatchOutbound
+// does for a tun read, so the share takes one ticket and one sequence range
+// and is sealed in one call, against as many packets of the peer's budget as
+// it carries.
 //
 // The budget is the peer's ordinary one rather than the control budget babel
 // runs on, because this is somebody else's traffic: a segment list pointed at
 // this node must not be able to spend the allowance this node's own routing
-// protocol needs. A peer with no place free drops its share and counts it, the
-// way a full egress queue drops.
+// protocol needs. A peer whose budget has no room for its share drops it and
+// counts it, the way a full egress queue drops.
 func (m *Mesh) forwardSegments(segments []forwardedSegment) {
 	if len(segments) == 0 {
 		return

@@ -38,7 +38,7 @@ func (c *Client) Metrics(w io.Writer) {
 	for _, neighbor := range babel.Neighbors {
 		fmt.Fprintf(w, "ranet3_babel_routes_received{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Routes)
 	}
-	fmt.Fprint(w, "# HELP ranet3_peer_send_dropped_total Packets a peer did not send: no transmission slot free, the peer closing, or its outbound SA unable to give out a sequence range.\n")
+	fmt.Fprint(w, "# HELP ranet3_peer_send_dropped_total Packets a peer did not send: no room in its budget, the peer closing, or its outbound SA unable to give out a sequence range.\n")
 	fmt.Fprint(w, "# TYPE ranet3_peer_send_dropped_total counter\n")
 	for _, neighbor := range babel.Neighbors {
 		fmt.Fprintf(w, "ranet3_peer_send_dropped_total{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Dropped)

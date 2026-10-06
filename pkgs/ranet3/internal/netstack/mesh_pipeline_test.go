@@ -209,7 +209,7 @@ func TestReservedSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
 	cryptoErr := errors.New("crypto failed")
 	transmitted := make(chan []byte, 1)
 	p := &Peer{
-		ID: "peer", completed: make(chan *peerBatch, 3), slots: make(chan struct{}, 3),
+		ID: "peer", completed: make(chan *peerBatch, 3),
 		stop: make(chan struct{}), senderDone: make(chan struct{}),
 		transmitBatchFn: func(packets [][]byte) error {
 			var order []byte
@@ -222,11 +222,11 @@ func TestReservedSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
 	}
 	var done []chan error
 	for i := range 3 {
-		b := &peerBatch{peer: p, ticket: uint64(i), hasSlot: true, done: make(chan error, 1), sealed: [][]byte{{byte(i)}}}
+		b := &peerBatch{peer: p, ticket: uint64(i), held: 1, done: make(chan error, 1), sealed: [][]byte{{byte(i)}}}
 		if i == 1 {
 			b.sealed, b.err = nil, cryptoErr
 		}
-		p.slots <- struct{}{}
+		p.dataBudget.used.Add(1)
 		p.completed <- b
 		done = append(done, b.done)
 	}
@@ -254,8 +254,8 @@ func TestReservedSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
 			t.Fatalf("ticket %d never completed", i)
 		}
 	}
-	if len(p.slots) != 0 {
-		t.Fatal("merged transmission leaked reservation slots")
+	if got := p.dataBudget.used.Load(); got != 0 {
+		t.Fatalf("merged transmission kept %d packets of the budget", got)
 	}
 }
 

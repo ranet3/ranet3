@@ -317,15 +317,15 @@ func (m *Mesh) claimTruncatedWarning(now, next int64) bool {
 
 // Reserve and submit each batch as one operation. Otherwise two readers can
 // retain the first tickets for different peers while later completed batches
-// fill both peers' slots, preventing either reader from reserving its second
+// fill both peers' budgets, preventing either reader from reserving its second
 // peer. Submission order also keeps compatibility workers from all waiting on
 // an earlier ticket that is still queued behind them.
 //
 // Nothing here waits. Every TUN reader passes through this lock, and a batch
 // read off one queue carries whichever destinations the kernel hashed onto it,
-// so waiting for one peer's transmission slot would stop forwarding to every
+// so waiting for room in one peer's budget would stop forwarding to every
 // other peer as well: a single backpressured socket would take the whole
-// dataplane down with it, and a queue that is full stays full for as long as
+// dataplane down with it, and a budget that is full stays full for as long as
 // the transport is behind. That peer's share of the batch is dropped instead,
 // the way a full egress queue drops, and every other peer's packets go out on
 // time. The drop is counted per peer.
@@ -347,7 +347,7 @@ func (m *Mesh) outboundWorker() {
 	defer m.outboundWorkerWG.Done()
 	for b := range m.outboundJobs {
 		for i := 0; i < b.n; i++ {
-			// A peer with no batch had no transmission slot, so its share of
+			// A peer with no batch had no room in its budget, so its share of
 			// this read was dropped before the tickets were handed out.
 			if peer := b.peers[i]; peer != nil && b.batches[peer] != nil {
 				b.batches[peer].append(b.bufs[i][tunOffset:tunOffset+b.sizes[i]], b.headers[i])
