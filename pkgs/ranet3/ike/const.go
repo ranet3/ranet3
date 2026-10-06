@@ -6,10 +6,10 @@
 // [RFC 7815] describes, negotiating a tunnel-mode Child SA that
 // [ranet3.com/pkgs/ranet3/esp] then carries. It offers one set of
 // transforms and no others: raw Ed25519 public key authentication ([RFC 7427]
-// Digital Signature with an ASN1_DN identity), X25519, AES-GCM or
-// ChaCha20-Poly1305, UDP encapsulation forced on, and 0.0.0.0/0 with ::/0 as
-// the traffic selectors. It interoperates with a strongSwan responder
-// configured the same way.
+// Digital Signature with an ASN1_DN identity), a key exchange in X25519, P-384
+// or P-256, encryption in AES-GCM or ChaCha20-Poly1305, UDP encapsulation
+// forced on, and 0.0.0.0/0 with ::/0 as the traffic selectors. It
+// interoperates with a strongSwan responder configured the same way.
 //
 // Certificates, EAP, MOBIKE and the legacy transforms, CBC ciphers, MODP
 // groups and SHA-1 or MD5, are left out rather than unfinished, and a peer
@@ -31,8 +31,11 @@
 //   - Answering. [NewResponder] takes a [ResponderConfig] whose Lookup
 //     resolves an initiator's asserted identity to the key that has to verify
 //     it, and [Responder.Serve] calls back with a [Session] and an [Accepted]
-//     for each peer that authenticates. One responder serves every peer, and
-//     holds no state for one until IDi is verified.
+//     for each peer that authenticates. One responder serves every peer. Each
+//     IKE_SA_INIT it accepts holds a half-open slot, a mux and the keys it
+//     derived until IKE_AUTH completes or the handshake timeout passes. The
+//     slots are bounded in total and for each source address, and under load
+//     an IKE_SA_INIT is answered with a cookie before anything is held.
 //   - Timing. [Crypto] is the cap.crypto capability, carrying yaml, json and
 //     toml tags and the replay window alongside the rekey intervals, since a
 //     session captures all of them when it is set up. Its durations come from
