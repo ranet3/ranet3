@@ -318,7 +318,7 @@ func TestDefaultInterfaceIgnoresTheMeshItself(t *testing.T) {
 	}
 
 	// The ordinary question answers with the tun, which is the trap.
-	if answer, err := routeTo(netip.IPv4Unspecified()); err == nil && answer.Index != plat.index {
+	if answer, err := routeRequest(netip.IPv4Unspecified(), netip.Addr{}); err == nil && answer.Index != plat.index {
 		t.Logf("a longest-prefix lookup answered index %d rather than the tun, so the trap is not armed here", answer.Index)
 	}
 	index, err := links.DefaultInterface()
