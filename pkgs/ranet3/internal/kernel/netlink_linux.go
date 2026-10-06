@@ -66,38 +66,42 @@ type nlMessage struct {
 
 // execute sends one request and collects every reply the kernel sends for it.
 // A dump ends at NLMSG_DONE and a modify request at its NLMSG_ERROR ack, so
-// every modify request must carry NLM_F_ACK or this blocks forever. A nonzero
-// ack comes back as the errno it carries; nothing is discarded without an error.
+// every modify request must carry NLM_F_ACK or this blocks forever.
 func (c *nlConn) execute(kind, flags uint16, body []byte) ([]nlMessage, error) {
 	c.seq++
-	seq := c.seq
 	request := make([]byte, unix.SizeofNlMsghdr+len(body))
 	binary.NativeEndian.PutUint32(request[0:], uint32(len(request)))
 	binary.NativeEndian.PutUint16(request[4:], kind)
 	binary.NativeEndian.PutUint16(request[6:], flags|unix.NLM_F_REQUEST)
-	binary.NativeEndian.PutUint32(request[8:], seq)
+	binary.NativeEndian.PutUint32(request[8:], c.seq)
 	binary.NativeEndian.PutUint32(request[12:], c.pid)
 	copy(request[unix.SizeofNlMsghdr:], body)
 	if err := unix.Sendto(c.fd, request, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
 		return nil, err
 	}
+	return collect(c.seq, c.pid, c.receive)
+}
+
+// collect reads datagrams until the message ending request seq of port pid, and returns the replies before it
+// NLMSG_DONE carries an errno as an ack does, and a dump the kernel cut short still ends at DONE
+// so a nonzero errno comes back as the error with none of the replies, never as a table that looks complete
+// it takes the socket's read as a function so any sequence of messages can be decoded without a socket
+func collect(seq, pid uint32, receive func() ([]nlMessage, error)) ([]nlMessage, error) {
 	var replies []nlMessage
 	for {
-		messages, err := c.receive()
+		messages, err := receive()
 		if err != nil {
 			return nil, err
 		}
 		for _, message := range messages {
-			if message.Seq != seq || message.Pid != c.pid {
+			if message.Seq != seq || message.Pid != pid {
 				continue // a late reply to an abandoned request
 			}
 			switch message.Kind {
 			case unix.NLMSG_NOOP:
-			case unix.NLMSG_DONE:
-				return replies, nil
-			case unix.NLMSG_ERROR:
+			case unix.NLMSG_DONE, unix.NLMSG_ERROR:
 				if len(message.Data) < 4 {
-					return nil, errors.New("kernel: truncated netlink error")
+					return nil, errors.New("kernel: truncated netlink errno")
 				}
 				if code := int32(binary.NativeEndian.Uint32(message.Data)); code != 0 {
 					return nil, unix.Errno(-code)
