@@ -132,6 +132,21 @@ func TestLinuxReportsOccupiedRouteAsSkipped(t *testing.T) {
 	}
 }
 
+// the kernel takes a preferred source only when it is local in the route's own table or in the local table
+// an address on a link inside a vrf bound to another table is local in neither
+// the refusal names that rule and the table, not a missing address that is there
+func TestLinuxNamesTheRuleAPreferredSourceBroke(t *testing.T) {
+	plat, conn := writePlatform(t)
+	conn.err = unix.EINVAL
+	err := plat.AddRoute(Route{Destination: netip.MustParsePrefix("10.0.0.0/8"), PrefSrc: netip.MustParseAddr("10.99.0.1")})
+	if !errors.Is(err, unix.EINVAL) {
+		t.Fatalf("the refusal lost its errno: %v", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "local address in table 200 or in the local table") || strings.Contains(msg, "of this host") {
+		t.Errorf("the refusal reads %q, want the rule the kernel applies and the table it applied it in", msg)
+	}
+}
+
 // Withdrawing matches on this reconciler's own protocol, so a route another
 // writer put at the same prefix stays.
 func TestLinuxWithdrawalNamesOurOwnProtocol(t *testing.T) {
