@@ -596,16 +596,14 @@ func TestSealConcurrentUniqueSeq(t *testing.T) {
 	pkts := make([][]byte, n)
 	var wg sync.WaitGroup
 	for i := range n {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+		wg.Go(func() {
 			pkt, err := out.Seal([]byte(fmt.Sprintf("packet-%d", i)), NextHeaderIPv4)
 			if err != nil {
 				t.Errorf("Seal: %v", err)
 				return
 			}
 			pkts[i] = pkt
-		}(i)
+		})
 	}
 	wg.Wait()
 
@@ -661,16 +659,14 @@ func TestOpenConcurrent(t *testing.T) {
 	var mu sync.Mutex
 	var failed int
 	for _, pkt := range pkts {
-		wg.Add(1)
-		go func(pkt []byte) {
-			defer wg.Done()
+		wg.Go(func() {
 			if _, _, err := in.Open(pkt); err != nil {
 				mu.Lock()
 				failed++
 				mu.Unlock()
 				t.Errorf("concurrent Open: %v", err)
 			}
-		}(pkt)
+		})
 	}
 	wg.Wait()
 	if failed != 0 {
