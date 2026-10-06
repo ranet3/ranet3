@@ -95,7 +95,8 @@ func setGSOMaxSegs(name string, segments int) error {
 	return nil
 }
 
-// openTUNQueues opens one file descriptor per Linux multiqueue TUN lane.
+// openTUNQueues opens one file descriptor per lane of name
+// multiqueue is IFF_MULTI_QUEUE, or 0 for a tun made without that flag
 // Each descriptor is wrapped in its own wireguard-go Device, which gives every
 // data-plane worker independent read buffers, GRO tables, and I/O locks.
 func openTUNQueues(name string, mtu, queueCount int, multiqueue uint16) ([]tun.Device, string, error) {
@@ -104,6 +105,12 @@ func openTUNQueues(name string, mtu, queueCount int, multiqueue uint16) ([]tun.D
 		for _, device := range devices {
 			_ = device.Close()
 		}
+	}
+	// a tun made without IFF_MULTI_QUEUE refuses a multiqueue attach
+	// and naming the mode in the error points at that device
+	attach := "attach tun"
+	if multiqueue != 0 {
+		attach = "attach multiqueue tun"
 	}
 
 	actualName := name
@@ -126,7 +133,7 @@ func openTUNQueues(name string, mtu, queueCount int, multiqueue uint16) ([]tun.D
 		if err != nil {
 			_ = unix.Close(fd)
 			closeDevices()
-			return nil, "", fmt.Errorf("attach tun %q queue %d: %w", requestName, i, err)
+			return nil, "", fmt.Errorf("%s %q queue %d: %w", attach, requestName, i, err)
 		}
 		if i == 0 {
 			actualName = ifr.Name()
