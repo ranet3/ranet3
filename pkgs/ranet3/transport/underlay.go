@@ -152,12 +152,6 @@ func bindUnderlay(underlay Underlay, rt Runtime) (int, error) {
 	return index, nil
 }
 
-// linkSettle absorbs the rest of a burst of routing changes before the socket
-// is moved, the way the reconciler's own settle window does. A link coming up
-// is several messages, and answering the first of them costs a route lookup
-// and a rebind that the last of them would only redo.
-const linkSettle = 250 * time.Millisecond
-
 // follow rebinds the socket whenever the host's default route moves to another
 // interface. It runs for the life of the hub.
 func (h *Hub) follow(links LinkSource, routes UnderlayRoutes) {
