@@ -42,7 +42,7 @@ func TestDebugIsListedAndListsItsCommands(t *testing.T) {
 	}
 	// the description is wrapped, so a phrase may break across lines
 	tree = strings.Join(strings.Fields(tree), " ")
-	for _, want := range []string{"socket", "runtime", "go-buildinfo", "not a stable interface", "--control", "--json"} {
+	for _, want := range []string{"socket", "runtime", "buildinfo", "not a stable interface", "--control", "--json"} {
 		if !strings.Contains(tree, want) {
 			t.Errorf("debug --help reads %q, want it to carry %q", tree, want)
 		}

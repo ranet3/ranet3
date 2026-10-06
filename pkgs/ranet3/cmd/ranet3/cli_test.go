@@ -240,7 +240,9 @@ func TestCommandsRefuseWhatTheyCannotActOn(t *testing.T) {
 		// a group that only holds commands refuses a word naming none of them
 		// where cobra would print its help and exit zero
 		"an unknown command under debug": {args: []string{"debug", "evnts"}, want: `unknown command "evnts" for "ranet3 debug"`},
-		"an unknown command under exit":  {args: []string{"exit-node", "lst"}, want: `unknown command "lst" for "ranet3 exit-node"`},
+		"an unknown command under exit":  {args: []string{"exit", "lst"}, want: `unknown command "lst" for "ranet3 exit"`},
+		// debug buildinfo was go-buildinfo, and the old name stays refused
+		"the old name of debug buildinfo": {args: []string{"debug", "go-buildinfo"}, want: `unknown command "go-buildinfo" for "ranet3 debug"`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out, err := execute(t, test.args...)
@@ -262,7 +264,7 @@ func TestUnknownCommandSuggestsTheOneThatExists(t *testing.T) {
 		want string
 	}{
 		"at the root":   {args: []string{"neighbours"}, want: "neighbors"},
-		"under a group": {args: []string{"exit-node", "lst"}, want: "list"},
+		"under a group": {args: []string{"exit", "lst"}, want: "list"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := execute(t, test.args...)
@@ -317,7 +319,7 @@ func TestSubcommandHelpExitsClean(t *testing.T) {
 		// help names no command of a group, which prints its own help for it
 		// as the root's help command does for the group's name
 		"the word under debug": {args: []string{"debug", "help"}, want: "Usage:\n  ranet3 debug [command]"},
-		"the word under exit":  {args: []string{"exit-node", "help"}, want: "Usage:\n  ranet3 exit-node [command]"},
+		"the word under exit":  {args: []string{"exit", "help"}, want: "Usage:\n  ranet3 exit [command]"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out, err := execute(t, test.args...)

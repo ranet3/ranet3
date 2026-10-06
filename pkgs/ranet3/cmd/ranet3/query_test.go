@@ -67,8 +67,8 @@ func TestQueriesAnswerFromTheReads(t *testing.T) {
 			args: []string{"ip"},
 			want: []string{"198.18.104.117", "2001:db8:1::5"},
 		},
-		"exit-node list": {
-			args: []string{"exit-node", "list"},
+		"exit list": {
+			args: []string{"exit", "list"},
 			want: []string{"example/exit@0", "selected", "2001:db8::/32"},
 		},
 	} {
