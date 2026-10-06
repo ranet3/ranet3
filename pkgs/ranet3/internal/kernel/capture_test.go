@@ -148,7 +148,7 @@ func TestCaptureGateAsksToBeWokenOnlyWhileTheGraceRuns(t *testing.T) {
 // TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress is the measurement.
 func TestCapturesTheMachineCoversEverySpellingOfADefault(t *testing.T) {
 	for name, destinations := range map[string][]string{
-		"half the address space or more": {"0.0.0.0/0", "::/0", "0.0.0.0/1", "::/1"},
+		"half the address space or more": {"0.0.0.0/0", "::/0", "0.0.0.0/1", "::/1", "128.0.0.0/1", "8000::/1"},
 		"any prefix over the zero address": {
 			"0.0.0.0/2", "0.0.0.0/8", "0.0.0.0/24", "0.0.0.0/32",
 			"::/2", "::/64", "::/128",
@@ -162,9 +162,7 @@ func TestCapturesTheMachineCoversEverySpellingOfADefault(t *testing.T) {
 			}
 		})
 	}
-	// The upper half is neither: measured, 128.0.0.0/1 alone leaves a bound
-	// socket reaching, and holding it back would hide half the mesh for
-	// nothing.
+	// a prefix over neither half of the space nor the zero address is an ordinary mesh route
 	for _, destination := range []string{"10.0.0.0/8", "2000::/3", "3fff:a::/36", "64.0.0.0/2", "192.0.2.0/24"} {
 		if capturesTheMachine(Route{Destination: prefix(destination)}) {
 			t.Errorf("%s reads as carrying this machine's own traffic", destination)
