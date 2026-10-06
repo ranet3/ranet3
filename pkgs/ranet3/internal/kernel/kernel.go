@@ -1010,11 +1010,6 @@ func canonicalRules(rules []Rule) []Rule {
 }
 
 func newReconciler(t Table, rt Runtime, rules []Rule, addresses []netip.Prefix, src RouteSource, plat platform) *Reconciler {
-	if t.CaptureGrace <= 0 {
-		// Filled here rather than only in New, because the tests reach this
-		// directly and a gate with no grace withdraws on the first idle pass.
-		t.CaptureGrace = schema.Duration(DefaultCaptureGrace)
-	}
 	r := &Reconciler{
 		table: t, rt: rt, ruleSet: rules, addresses: addresses,
 		src: src, plat: plat,
