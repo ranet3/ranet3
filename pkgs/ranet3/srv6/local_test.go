@@ -5,11 +5,15 @@ package srv6
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/netip"
+	"testing"
+
+	"github.com/BurntSushi/toml"
+	"go.yaml.in/yaml/v3"
 
 	"ranet3.com/pkgs/ranet3/schema"
-	"testing"
 )
 
 // A packet not addressed to one of this node's segments costs a map lookup and
@@ -169,6 +173,31 @@ func TestBehaviorSpellsItselfTheWayTheFleetWritesIt(t *testing.T) {
 	}
 	if got := BehaviorEndDT46.String(); got != "End.DT46" {
 		t.Errorf("BehaviorEndDT46 prints as %q", got)
+	}
+}
+
+// a behavior with no spelling is refused by every marshaller, since a file naming one is a file no decoder reads back
+// the type is one byte, so every value is tried, and a behavior has a spelling when the word it prints reads back as itself
+func TestEveryMarshallerRefusesABehaviorWithNoSpelling(t *testing.T) {
+	type holder struct {
+		Behavior Behavior `yaml:"behavior" json:"behavior" toml:"behavior"`
+	}
+	for name, render := range map[string]func(any) ([]byte, error){
+		"yaml": yaml.Marshal,
+		"json": json.Marshal,
+		"toml": toml.Marshal,
+	} {
+		t.Run(name, func(t *testing.T) {
+			for value := range 256 {
+				behavior := Behavior(value)
+				if read, err := ParseBehavior(behavior.String()); err == nil && read == behavior {
+					continue
+				}
+				if written, err := render(holder{behavior}); err == nil {
+					t.Errorf("behavior %d has no spelling and was written as %q", value, written)
+				}
+			}
+		})
 	}
 }
 
