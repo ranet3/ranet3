@@ -4,8 +4,9 @@
 package transport
 
 import (
+	"errors"
 	"net"
-	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -27,7 +28,9 @@ func TestHubRefusesAPortSomethingElseHolds(t *testing.T) {
 		hub.Close()
 		t.Fatalf("the hub took %s while another socket held it", addr)
 	}
-	if !strings.Contains(err.Error(), "bind") {
-		t.Errorf("the refusal reads %q, which does not name the bind", err)
+	// every refusal of the bind reads "open bind"
+	// and only the errno tells the held port from another cause
+	if !errors.Is(err, syscall.EADDRINUSE) {
+		t.Errorf("the refusal reads %q, which is not the port being in use", err)
 	}
 }
