@@ -16,13 +16,9 @@ import (
 )
 
 // The two interfaces every test here moves between, and the next hops on them.
-//
-// The values are past any index a machine hands out, so a test that builds an
-// UnderlayDefaults without namedDevices fails everywhere rather than only
-// where the number happens to be free. 16 and 19 named real interfaces on the
-// author's laptop and named nothing on a CI runner, so the one literal that
-// forgot the fake passed every local run and failed only there.
 const (
+	// far above the indexes a host hands out
+	// and a test that reaches the running kernel fails alike on every machine
 	uplinkIndex = 916
 	dockIndex   = 919
 )
@@ -575,16 +571,8 @@ func TestCloseLeavesTheRouteWhileACaptureIsStillInstalled(t *testing.T) {
 	const meshIndex = 77
 	links := &fakeDefaults{v4: hostDefault{index: uplinkIndex, gateway: addr("192.168.0.1")}}
 	var held []dumpEntry
-	sock := &fakeRouteSocket{t: t}
-	underlay := &UnderlayDefaults{
-		sock: sock, links: links, mesh: meshIndex, host: namedDevices{},
-		written:      make(map[writtenDefault]bool),
-		refused:      make(map[writtenDefault]bool),
-		covered:      make(map[netip.Prefix]bool),
-		warned:       make(map[netip.Prefix]bool),
-		dump:         func() ([]byte, error) { return hostRIB(t, held...), nil },
-		lookupDevice: resolvesTo(uplinkIndex),
-	}
+	underlay, sock := testUnderlay(t, links, func() []byte { return hostRIB(t, held...) })
+	underlay.mesh = meshIndex
 	if err := underlay.Prepare(uplinkIndex); err != nil {
 		t.Fatal(err)
 	}
