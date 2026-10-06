@@ -39,6 +39,12 @@ func dialNetlink() (*nlConn, error) {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("kernel: bind rtnetlink socket: %w", err)
 	}
+	// the kernel honors the filters a dump carries only on a strict socket
+	// without them a dump of one table reads every route on the host
+	if err := unix.SetsockoptInt(fd, unix.SOL_NETLINK, unix.NETLINK_GET_STRICT_CHK, 1); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("kernel: ask rtnetlink for strict checking, which needs linux 4.20 or later: %w", err)
+	}
 	name, err := unix.Getsockname(fd)
 	if err != nil {
 		_ = unix.Close(fd)

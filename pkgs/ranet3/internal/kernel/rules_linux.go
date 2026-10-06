@@ -88,9 +88,9 @@ func (p *netlinkPlatform) ruleMessage(rule Rule) []byte {
 }
 
 // Rules dumps every policy rule and keeps the ones carrying this reconciler's
-// protocol. A rule with no FRA_PROTOCOL, which a kernel older than 4.17 and
-// the kernel's own three built-in rules give back, is somebody else's by
-// definition: this file never writes one without it.
+// protocol. A rule with no FRA_PROTOCOL, which the kernel's own three built-in
+// rules give back, is somebody else's by definition: this file never writes
+// one without it.
 func (p *netlinkPlatform) Rules() ([]Rule, error) {
 	body := make([]byte, sizeofFibRuleHdr)
 	body[0] = unix.AF_UNSPEC

@@ -94,11 +94,9 @@ func (p *netlinkPlatform) Close() error {
 func (p *netlinkPlatform) Routes() ([]Route, error) {
 	var out []Route
 	for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
-		body := make([]byte, unix.SizeofRtMsg)
-		body[0] = family
-		// the kernel honors dump filters only on a strict-check socket, so
-		// the protocol, table and interface filter is applied here instead.
-		replies, err := p.conn.execute(unix.RTM_GETROUTE, unix.NLM_F_DUMP, body)
+		// the kernel filters on the table and the protocol
+		// decodeRoute holds every route to the whole marker all the same
+		replies, err := p.dumpTable(family, p.table.Proto)
 		if err != nil {
 			return nil, err
 		}
@@ -115,6 +113,23 @@ func (p *netlinkPlatform) Routes() ([]Route, error) {
 	// rotates its own.
 	p.occupied, p.refused = p.refused, make(map[Route]bool, len(p.refused))
 	return out, nil
+}
+
+// dumpTable dumps one family's routes in this reconciler's table, only those of protocol when it is set
+// the kernel filters the dump
+// a host holding a full table in main then pays nothing for it here
+// a table nothing has written yet does not exist
+// its dump ends on ENOENT, which reads as empty here and in no other dump
+func (p *netlinkPlatform) dumpTable(family, protocol uint8) ([]nlMessage, error) {
+	body := make([]byte, unix.SizeofRtMsg)
+	body[0] = family
+	body[5] = protocol
+	body = putAttrU32(body, unix.RTA_TABLE, uint32(p.table.ID))
+	replies, err := p.conn.execute(unix.RTM_GETROUTE, unix.NLM_F_DUMP, body)
+	if errors.Is(err, unix.ENOENT) {
+		return nil, nil
+	}
+	return replies, err
 }
 
 // decodeRoute keeps only the routes this reconciler owns. Everything else in
@@ -564,9 +579,7 @@ func notificationTable(message nlMessage) uint32 {
 func (p *netlinkPlatform) foreignWriters(ownVRF bool) ([]string, error) {
 	seen := map[uint8]bool{}
 	for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
-		body := make([]byte, unix.SizeofRtMsg)
-		body[0] = family
-		replies, err := p.conn.execute(unix.RTM_GETROUTE, unix.NLM_F_DUMP, body)
+		replies, err := p.dumpTable(family, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -632,21 +645,15 @@ func protocolLabel(protocol uint8) string {
 // collectForeignWriters is the filter half of foreignWriters, split out so the
 // rule can be tested without a netlink socket. ownVRF says the table is the
 // one this reconciler's configured VRF is bound to.
+// replies hold the routes of table alone
+// the kernel filtered the dump to it
 func collectForeignWriters(replies []nlMessage, table uint32, ours uint8, ownVRF bool, seen map[uint8]bool) {
 	for _, reply := range replies {
 		if reply.Kind != unix.RTM_NEWROUTE || len(reply.Data) < unix.SizeofRtMsg {
 			continue
 		}
-		routeTable, protocol, kind := uint32(reply.Data[4]), reply.Data[5], reply.Data[7]
+		protocol, kind := reply.Data[5], reply.Data[7]
 		if kind != unix.RTN_UNICAST || protocol == ours {
-			continue
-		}
-		for attr, value := range reply.attributes(unix.SizeofRtMsg) {
-			if attr == unix.RTA_TABLE && len(value) == 4 {
-				routeTable = binary.NativeEndian.Uint32(value)
-			}
-		}
-		if routeTable != table {
 			continue
 		}
 		// RTPROT_KERNEL marks the kernel's own entries, and two tables hold

@@ -129,6 +129,25 @@ func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
 	if got, _ := plat.Routes(); !slices.Equal(got, want) {
 		t.Fatalf("dump picked up routes of other owners: %v", got)
 	}
+	// the kernel filters the dumps itself
+	// the other protocol's route reaches only the census
+	// the other table's route reaches neither dump
+	recorder := &replyRecorder{netlinkConn: plat.conn}
+	filtered := &netlinkPlatform{table: plat.table, rt: plat.rt, index: plat.index, conn: recorder,
+		occupied: map[Route]bool{}, refused: map[Route]bool{}}
+	if got, err := filtered.Routes(); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("the filtered dump read %v (err %v), want %v", got, err, want)
+	}
+	if len(recorder.replies) != len(want) {
+		t.Errorf("the dump carried %d routes for the %d of ours", len(recorder.replies), len(want))
+	}
+	recorder.replies = nil
+	if writers, err := filtered.foreignWriters(false); err != nil || !slices.Equal(writers, []string{protocolLabel(DefaultProtocol + 1)}) {
+		t.Errorf("the census read %v (err %v), want the other protocol in this table alone", writers, err)
+	}
+	if len(recorder.replies) != len(want)+1 {
+		t.Errorf("the census dump carried %d routes, want the %d in this table", len(recorder.replies), len(want)+1)
+	}
 
 	// A notification for this table has to reach the monitor; the reconcile
 	// loop has nothing else to tell it that somebody edited the table.
@@ -350,6 +369,18 @@ func createLink(conn *nlConn, name, kind string, data []byte) error {
 	flags := uint16(unix.NLM_F_CREATE | unix.NLM_F_EXCL | unix.NLM_F_ACK)
 	_, err := conn.execute(unix.RTM_NEWLINK, flags, body)
 	return err
+}
+
+// replyRecorder keeps every reply a request drew, the messages the kernel sent before any decoding filtered them
+type replyRecorder struct {
+	netlinkConn
+	replies []nlMessage
+}
+
+func (r *replyRecorder) execute(kind, flags uint16, body []byte) ([]nlMessage, error) {
+	replies, err := r.netlinkConn.execute(kind, flags, body)
+	r.replies = append(r.replies, replies...)
+	return replies, err
 }
 
 func drain(signal <-chan struct{}) {

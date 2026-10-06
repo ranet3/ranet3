@@ -183,9 +183,6 @@ func TestLinuxForeignWritersDumpsBothFamilies(t *testing.T) {
 		routeDump(ourTable, 187, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.0.0/24")),
 		// Our own routes, which are not foreign.
 		routeDump(ourTable, ourProtocol, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.1.0/24")),
-		// Another daemon in another table, which is none of our business: the
-		// point of the report is a collision on one key, not a census.
-		routeDump(unix.RT_TABLE_MAIN, 42, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.2.0/24")),
 	}
 	got, err := plat.foreignWriters(false)
 	if err != nil {
@@ -205,9 +202,82 @@ func TestLinuxForeignWritersDumpsBothFamilies(t *testing.T) {
 	}
 }
 
+// both dumps of the table name it
+// the one reading routes back names the protocol too
+// the kernel then filters them
+// unfiltered, every pass read every route on the host, a full table in main included
+// the configured table is 201 rather than the default
+// a dump asking for the default table then names the wrong one
+func TestLinuxDumpsCarryTheTableFilter(t *testing.T) {
+	plat, conn := writePlatform(t)
+	plat.table.ID = 201
+	if _, err := plat.Routes(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plat.foreignWriters(false); err != nil {
+		t.Fatal(err)
+	}
+	if len(conn.sent) != 4 {
+		t.Fatalf("the two reads sent %d requests, want a dump per family each", len(conn.sent))
+	}
+	for i, sent := range conn.sent {
+		// the census asks for every protocol in the table
+		protocol := uint8(DefaultProtocol)
+		if i >= 2 {
+			protocol = 0
+		}
+		if sent.kind != unix.RTM_GETROUTE || sent.flags&unix.NLM_F_DUMP == 0 || sent.body[5] != protocol {
+			t.Errorf("request %d is type %d, flags %#x and protocol %d, want a route dump of protocol %d", i, sent.kind, sent.flags, sent.body[5], protocol)
+		}
+		table := uint32(0)
+		for kind, value := range (nlMessage{Data: sent.body}).attributes(unix.SizeofRtMsg) {
+			if kind == unix.RTA_TABLE && len(value) == 4 {
+				table = binary.NativeEndian.Uint32(value)
+			}
+		}
+		if table != 201 {
+			t.Errorf("request %d names table %d, want 201", i, table)
+		}
+	}
+}
+
+// endingOn is a socket on which the kernel ends every request with errno
+// the end goes through collect, as every answer of a real socket does
+type endingOn unix.Errno
+
+func (e endingOn) execute(uint16, uint16, []byte) ([]nlMessage, error) {
+	end := nlMessage{Kind: unix.NLMSG_DONE, Flags: unix.NLM_F_MULTI, Seq: 1, Pid: 1,
+		Data: binary.NativeEndian.AppendUint32(nil, uint32(-int32(e)))}
+	return collect(1, 1, func() ([]nlMessage, error) { return []nlMessage{end}, nil })
+}
+
+func (endingOn) link(uint32, string) (linkInfo, error) { return linkInfo{}, unix.ENODEV }
+func (endingOn) Close() error                          { return nil }
+
+// a table nothing has written yet does not exist
+// the kernel ends a dump filtered on it with ENOENT, which every fresh node meets
+// the table's own two dumps read that as an empty table
+// an ENOENT ending any other dump stays the failure it is
+func TestLinuxReadsATableNothingWroteAsEmpty(t *testing.T) {
+	plat, _ := writePlatform(t)
+	plat.conn = endingOn(unix.ENOENT)
+	if routes, err := plat.Routes(); err != nil || len(routes) != 0 {
+		t.Errorf("a table that does not exist yet read as %v and %v, want it empty", routes, err)
+	}
+	if writers, err := plat.foreignWriters(false); err != nil || len(writers) != 0 {
+		t.Errorf("the census of a table that does not exist yet read as %v and %v, want nobody", writers, err)
+	}
+	if _, err := plat.Addrs(); !errors.Is(err, unix.ENOENT) {
+		t.Errorf("an address dump ending on ENOENT read as %v, want the errno", err)
+	}
+	if _, err := plat.Rules(); !errors.Is(err, unix.ENOENT) {
+		t.Errorf("a rule dump ending on ENOENT read as %v, want the errno", err)
+	}
+}
+
 // the census and the binding check run on the linux platform itself
 // the table is not the default one and the vrf is not named mesh
-// a check that compares against DefaultTable, filters on it or reads a vrf by a fixed name fails a case here
+// a check that compares against DefaultTable or reads a vrf by a fixed name fails a case here
 // a vrf that existed first keeps whatever table it was bound to
 // the configured name proves nothing about that table, which the kernel is asked for
 func TestLinuxCensusAndBindingReadTheConfiguredTableAndVRF(t *testing.T) {
@@ -219,7 +289,7 @@ func TestLinuxCensusAndBindingReadTheConfiguredTableAndVRF(t *testing.T) {
 		"vrf bound to the configured table": {
 			bound:   201,
 			want:    []string{"bird (12)"},
-			without: []string{"kernel (2)", "static (4)", "bound to another table"},
+			without: []string{"kernel (2)", "bound to another table"},
 		},
 		"vrf bound to another table": {
 			bound: 300,
@@ -238,7 +308,6 @@ func TestLinuxCensusAndBindingReadTheConfiguredTableAndVRF(t *testing.T) {
 			conn.replies = []nlMessage{
 				routeDump(201, unix.RTPROT_BIRD, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.0.0/24")),
 				routeDump(201, unix.RTPROT_KERNEL, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.1.0/24")),
-				routeDump(DefaultTable, unix.RTPROT_STATIC, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.2.0/24")),
 			}
 			reconciler := newReconciler(plat.table, plat.rt, nil, nil, netstack.NewRouteTable(), plat)
 			logs := captureKernelLogs(t)

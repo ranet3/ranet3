@@ -51,10 +51,6 @@ func TestForeignWritersReportsOnlyOurOwnTable(t *testing.T) {
 			table:   200,
 			replies: []nlMessage{routeReply(200, ours, unix.RTN_UNICAST)},
 		},
-		"another table is not ours to report": {
-			table:   200,
-			replies: []nlMessage{routeReply(52, unix.RTPROT_STATIC, unix.RTN_UNICAST)},
-		},
 		"a route that is not unicast is not a writer": {
 			table:   200,
 			replies: []nlMessage{routeReply(200, unix.RTPROT_BIRD, unix.RTN_LOCAL)},
