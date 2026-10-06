@@ -1,36 +1,32 @@
-# SPDX-FileCopyrightText: 2026 Nick Cao
 # SPDX-FileCopyrightText: 2026 Yifei Sun
-# SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
+# SPDX-License-Identifier: FSL-1.1-ALv2
 
 {
-  description = "A mesh network with Babel routing over IKEv2 and userspace ESP";
-
   outputs =
-    { self, ... }@inputs:
+    inputs:
     inputs.autopilot.lib.mkFlake {
       inherit inputs;
 
       autopilot = {
-        lib.path = ./lib;
-        lib.extender = inputs.nixpkgs.lib;
-        lib.extensions = with inputs; [
-          autopilot.lib
-          parts.lib
-        ];
-
-        nixpkgs.instances.pkgs = inputs.nixpkgs;
-        nixpkgs.overlays = with inputs; [
-          # buildGoApplication, which pkgs/ranet3 is written against
-          gomod2nix.overlays.default
-          self.overlays.default
-        ];
-        # FSL-1.1-ALv2 is unfree to nixpkgs. The flake's own instance allows
-        # this project's derivations by name, so nix run and both modules work
-        # with no configuration on the host.
-        nixpkgs.config.allowUnfreePredicate =
-          pkg: inputs.nixpkgs.lib.hasPrefix "ranet3" (inputs.nixpkgs.lib.getName pkg);
-
         parts.path = ./modules/flake;
+
+        lib = {
+          path = ./lib;
+          extender = inputs.nixpkgs.lib;
+          extensions = with inputs; [
+            autopilot.lib
+            parts.lib
+          ];
+        };
+
+        nixpkgs = {
+          instances.pkgs = inputs.nixpkgs;
+          config.allowUnfree = true;
+          overlays = with inputs; [
+            self.overlays.default
+            gomod2nix.overlays.default
+          ];
+        };
       };
     } { systems = import inputs.systems; };
 
