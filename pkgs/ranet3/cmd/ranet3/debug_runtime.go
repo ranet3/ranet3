@@ -13,8 +13,10 @@ func init() { debugCommands = append(debugCommands, (*reader).runtimeCommand) }
 
 func (r *reader) runtimeCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:               "runtime",
-		Short:             "the daemon's build, goroutines, threads, descriptors, heap and resolver",
+		Use:   "runtime",
+		Short: "Show daemon runtime state",
+		Long: `The output covers the build, goroutines, threads, file descriptors, heap
+and resolver of the running node.`,
 		Args:              noArguments,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) error {

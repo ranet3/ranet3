@@ -82,11 +82,29 @@ func daemonCommand(run func(options) int) *cobra.Command {
 	var logLevel, debugAccess string
 	cmd := &cobra.Command{
 		Use:   "daemon",
-		Short: "run this node: IKEv2, ESP, the babel speaker and the optional route reconciler",
-		Args:  noArguments,
+		Short: "Run the ranet3 node",
+		Long: `The node connects to its peers with IKEv2 and ESP, runs a Babel speaker
+over those sessions, and writes the routes it learns into a kernel
+routing table when the config file asks for it. The config file is TOML,
+YAML or JSON, told apart by its extension: .toml, .yaml, .yml or .json.
+Most other commands reach the node through its control socket.
+
+The --debug-access flag decides who may use the debug paths that serve
+profiles, logs and captures. The value root admits uid 0 and the user
+the daemon runs as, group admits everyone who can open the socket, and
+off refuses every debug path.
+
+The --pprof flag serves pprof on an address such as 127.0.0.1:6060. A CPU
+profile is at /debug/pprof/profile, and this opens one as a flamegraph:
+
+go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
+
+The --contention-profiles flag adds mutex and blocking profiles while
+pprof is served, at a high cost in overhead.`,
+		Args: noArguments,
 		RunE: func(*cobra.Command, []string) error {
 			if err := o.level.UnmarshalText([]byte(logLevel)); err != nil {
-				return fmt.Errorf("invalid --log-level %q: %w", logLevel, err)
+				return fmt.Errorf("invalid --log-level %q: log level is one of %s", logLevel, strings.Join(logLevelNames(), ", "))
 			}
 			if err := o.debugAccess.UnmarshalText([]byte(debugAccess)); err != nil {
 				return fmt.Errorf("invalid --debug-access %q: %w", debugAccess, err)
@@ -98,16 +116,26 @@ func daemonCommand(run func(options) int) *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&o.configPath, "config", "c", defaultConfig, "path to the ranet3 config file, .toml, .yaml, .yml or .json")
-	f.StringVar(&o.pprofAddr, "pprof", "", "if set, serve net/http/pprof on this address (e.g. 127.0.0.1:6060) for profiling, CPU at /debug/pprof/profile and flamegraph at go tool pprof -http=:8081 'http://<addr>/debug/pprof/profile?seconds=30'")
-	f.BoolVar(&o.contentionProfiles, "contention-profiles", false, "record every mutex and blocking event while pprof is enabled (high overhead)")
-	f.StringVar(&o.metricsAddr, "metrics", "", "if set, serve Prometheus metrics on this address (e.g. 127.0.0.1:9669) at /metrics")
-	f.StringVar(&o.controlPath, "control", control.DefaultSocket, "unix socket serving the read-only control surface the other subcommands read; empty disables it")
-	f.StringVar(&logLevel, "log-level", defaultLogLevel, "minimum log level: debug, info, warn, or error")
-	f.StringVar(&debugAccess, "debug-access", string(control.DebugRoot),
-		"who may use the control socket's debug paths, one of "+strings.Join(control.DebugAccessNames(), ", "))
+	f.StringVarP(&o.configPath, "config", "c", defaultConfig, "Path to the config file")
+	f.StringVar(&o.pprofAddr, "pprof", "", "Serve pprof on this address")
+	f.BoolVar(&o.contentionProfiles, "contention-profiles", false, "Record lock contention profiles")
+	f.StringVar(&o.metricsAddr, "metrics", "", "Serve Prometheus metrics on this address")
+	f.StringVar(&o.controlPath, "control", control.DefaultSocket, "Control socket to serve or empty for none")
+	f.StringVar(&logLevel, "log-level", defaultLogLevel, "Minimum log level")
+	f.StringVar(&debugAccess, "debug-access", string(control.DebugRoot), "Who may use the debug commands")
+	cmd.RegisterFlagCompletionFunc("log-level", cobra.FixedCompletions(logLevelNames(), cobra.ShellCompDirectiveNoFileComp))
 	cmd.RegisterFlagCompletionFunc("debug-access", cobra.FixedCompletions(control.DebugAccessNames(), cobra.ShellCompDirectiveNoFileComp))
 	return cmd
+}
+
+// logLevelNames is the levels --log-level takes by name, as slog spells them in lowercase
+func logLevelNames() []string {
+	levels := []slog.Level{slog.LevelDebug, slog.LevelInfo, slog.LevelWarn, slog.LevelError}
+	names := make([]string, 0, len(levels))
+	for _, level := range levels {
+		names = append(names, strings.ToLower(level.String()))
+	}
+	return names
 }
 
 // refuseToStart reports a startup this node will not attempt, at the level an

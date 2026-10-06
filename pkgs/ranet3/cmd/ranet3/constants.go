@@ -16,6 +16,8 @@ const (
 	waitTimeout = 10 * time.Second
 	// completionTimeout bounds a completion that asks the daemon, so a shell does not stall on one that is gone
 	completionTimeout = time.Second
+	// suggestionDistance is the most edits a mistyped command may be from a real one and still have it suggested, as cobra allows the root
+	suggestionDistance = 2
 	// waitTimedOut is debug wait's status when no event came within --timeout, as grep's when nothing matched
 	waitTimedOut exitCode = 1
 	// waitUnwatched is its status when it could not watch for the event or lost it, as grep's on an error

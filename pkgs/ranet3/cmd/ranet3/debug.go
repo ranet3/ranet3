@@ -23,18 +23,21 @@ import (
 // each cmd/ranet3/debug_<view>.go appends its own from an init
 var debugCommands []func(*reader) *cobra.Command
 
-// debugCommand is the hidden tree, which promises nothing beyond the revision that built it
+// debugCommand is the debug tree, which promises nothing beyond the revision that built it
 // its --control and --json are persistent here and nowhere else, since no command under debug binds a socket
 func debugCommand() *cobra.Command {
 	r := &reader{}
 	cmd := &cobra.Command{
-		Use:    "debug",
-		Short:  "look inside a running node, through commands that are not a stable interface",
-		Hidden: true,
+		Use:   "debug",
+		Short: "Debug commands",
+		Long: `Most of these commands look inside a running node. They are not a
+stable interface, so a command, its output and the events it reports may
+change in any revision.`,
 	}
+	refuseUnknownCommands(cmd)
 	flags := cmd.PersistentFlags()
-	flags.StringVar(&r.socket, "control", control.DefaultSocket, "path to the daemon's control socket")
-	flags.BoolVar(&r.asJSON, "json", false, "print the wire form instead of text")
+	flags.StringVar(&r.socket, "control", control.DefaultSocket, "Path to the control socket")
+	flags.BoolVar(&r.asJSON, "json", false, "Print JSON output")
 	cmd.MarkPersistentFlagFilename("control", "sock")
 	cmd.AddCommand(r.socketCommand(), r.buildInfoCommand())
 	for _, build := range debugCommands {
@@ -48,8 +51,12 @@ func debugCommand() *cobra.Command {
 func (r *reader) socketCommand() *cobra.Command {
 	var timeout time.Duration
 	cmd := &cobra.Command{
-		Use:               "socket [METHOD] PATH [BODY|-]",
-		Short:             "send one raw request to the control socket and print the answer as it arrives",
+		Use:   "socket [METHOD] PATH [BODY|-]",
+		Short: "Send a raw control socket request",
+		Long: `The method is GET, or POST when a body follows the path, and a body of -
+is read from standard input. The answer prints as it arrives and its
+status line goes to standard error. The command exits 1 when the status
+is not 2xx.`,
 		Args:              cobra.RangeArgs(1, 3),
 		ValidArgsFunction: completeRaw,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -75,7 +82,7 @@ func (r *reader) socketCommand() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().DurationVar(&timeout, "timeout", control.ReadTimeout, "how long the request may take, the answer's body included")
+	cmd.Flags().DurationVar(&timeout, "timeout", control.ReadTimeout, "Request timeout")
 	cmd.RegisterFlagCompletionFunc("timeout", cobra.NoFileCompletions)
 	return cmd
 }
@@ -135,8 +142,10 @@ func rawRequest(args []string, stdin io.Reader) (method, path string, body io.Re
 // the daemon's own build is under debug runtime
 func (r *reader) buildInfoCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:               "go-buildinfo",
-		Short:             "print the go build information of this binary",
+		Use:   "go-buildinfo",
+		Short: "Print Go build information",
+		Long: `The information is the one this binary carries. The build of the running
+node is under debug runtime.`,
 		Args:              noArguments,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) error {

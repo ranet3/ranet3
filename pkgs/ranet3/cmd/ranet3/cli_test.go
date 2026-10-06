@@ -237,6 +237,10 @@ func TestCommandsRefuseWhatTheyCannotActOn(t *testing.T) {
 		// thing the daemon is told, rather than "connect: invalid argument".
 		"a path over the limit": {args: []string{"status", "--control", filepath.Join(t.TempDir(), strings.Repeat("d", control.MaxSocketPath), "control.sock")}, want: "unix socket holds"},
 		"an unknown shell":      {args: []string{"completion", "tcsh"}, want: "tcsh"},
+		// a group that only holds commands refuses a word naming none of them
+		// where cobra would print its help and exit zero
+		"an unknown command under debug": {args: []string{"debug", "evnts"}, want: `unknown command "evnts" for "ranet3 debug"`},
+		"an unknown command under exit":  {args: []string{"exit-node", "lst"}, want: `unknown command "lst" for "ranet3 exit-node"`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out, err := execute(t, test.args...)
@@ -253,12 +257,22 @@ func TestCommandsRefuseWhatTheyCannotActOn(t *testing.T) {
 // A mistyped command names the one that was meant, which is the question
 // somebody typing a wrong one is asking.
 func TestUnknownCommandSuggestsTheOneThatExists(t *testing.T) {
-	_, err := execute(t, "neighbours")
-	if err == nil {
-		t.Fatal("a mistyped command was accepted")
-	}
-	if !strings.Contains(err.Error(), "neighbors") {
-		t.Errorf("the refusal reads %q, want it to suggest neighbors", err)
+	for name, test := range map[string]struct {
+		args []string
+		want string
+	}{
+		"at the root":   {args: []string{"neighbours"}, want: "neighbors"},
+		"under a group": {args: []string{"exit-node", "lst"}, want: "list"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := execute(t, test.args...)
+			if err == nil {
+				t.Fatalf("%q was accepted", test.args)
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Errorf("the refusal reads %q, want it to suggest %s", err, test.want)
+			}
+		})
 	}
 }
 
@@ -295,12 +309,25 @@ func TestCompletionCoversEveryShell(t *testing.T) {
 // --help is a request cobra answers by writing the usage, and reporting it as
 // a failure exits nonzero on a question that was answered.
 func TestSubcommandHelpExitsClean(t *testing.T) {
-	out, err := execute(t, "status", "--help")
-	if err != nil {
-		t.Errorf("asking for help failed: %v", err)
-	}
-	if !strings.Contains(out, "--control") {
-		t.Errorf("the usage does not name the flags: %q", out)
+	for name, test := range map[string]struct {
+		args []string
+		want string
+	}{
+		"the flag": {args: []string{"status", "--help"}, want: "--control"},
+		// help names no command of a group, which prints its own help for it
+		// as the root's help command does for the group's name
+		"the word under debug": {args: []string{"debug", "help"}, want: "Usage:\n  ranet3 debug [command]"},
+		"the word under exit":  {args: []string{"exit-node", "help"}, want: "Usage:\n  ranet3 exit-node [command]"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := execute(t, test.args...)
+			if err != nil {
+				t.Errorf("asking for help failed: %v", err)
+			}
+			if !strings.Contains(out, test.want) {
+				t.Errorf("the help reads %q, want it to carry %q", out, test.want)
+			}
+		})
 	}
 }
 
