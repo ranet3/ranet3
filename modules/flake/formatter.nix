@@ -12,7 +12,7 @@
         root="$(${lib.getExe pkgs.git} rev-parse --show-toplevel)"
         pushd "$root" > /dev/null
 
-        ${lib.getExe pkgs.deno} fmt **/*.md pkgs/ranet3/examples/*.json
+        ${lib.getExe pkgs.deno} fmt **/*.md pkgs/ranet3/examples/*.json pkgs/ranet3-site/*.{html,svg}
         ${lib.getExe pkgs.nixfmt-tree} .
 
         pushd pkgs/ranet3 > /dev/null
