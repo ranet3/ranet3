@@ -381,7 +381,7 @@ func (u *UnderlayDefaults) ensure() error {
 				"destination", destination, "host_uses", index, "socket_on", u.on)
 			continue
 		}
-		device, err := u.deviceName(index)
+		device, err := u.host.InterfaceName(index)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -526,12 +526,6 @@ func (u *UnderlayDefaults) removeOne(held writtenDefault) error {
 	slog.Info("kernel withdrew the default scoped to the underlay interface",
 		"destination", held.destination, "interface_index", held.index, "next_hop", held.gateway)
 	return nil
-}
-
-// deviceName is the name of one interface index, which the record carries so
-// that a reused index cannot be mistaken for the device that was recorded.
-func (u *UnderlayDefaults) deviceName(index int) (string, error) {
-	return hostOr(u.host).InterfaceName(index)
 }
 
 // stillOurs reports whether the kernel holds a default at this destination

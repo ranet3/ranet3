@@ -8,7 +8,6 @@ package kernel
 import (
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -35,16 +34,8 @@ func reclaimFrom(t *testing.T, rib []byte, records []writtenDefault, lookup func
 	if err := saveUnderlayState(state, records); err != nil {
 		t.Fatal(err)
 	}
-	sock := &fakeRouteSocket{t: t}
-	u := &UnderlayDefaults{
-		sock: sock, links: &fakeDefaults{}, host: namedDevices{}, statePath: state,
-		written:      make(map[writtenDefault]bool),
-		refused:      make(map[writtenDefault]bool),
-		covered:      make(map[netip.Prefix]bool),
-		warned:       make(map[netip.Prefix]bool),
-		dump:         func() ([]byte, error) { return rib, nil },
-		lookupDevice: lookup,
-	}
+	u, sock := testUnderlay(t, &fakeDefaults{}, func() []byte { return rib })
+	u.statePath, u.lookupDevice = state, lookup
 	loaded, err := loadUnderlayState(state)
 	if err != nil {
 		t.Fatalf("the state this test just wrote would not load: %v", err)
@@ -223,16 +214,8 @@ func loadInto(t *testing.T, body string) ([]writtenDefault, error) {
 		t.Fatal(err)
 	}
 	records, err := loadUnderlayState(state)
-	sock := &fakeRouteSocket{t: t}
-	u := &UnderlayDefaults{
-		sock: sock, links: &fakeDefaults{}, host: namedDevices{}, statePath: state,
-		written:      make(map[writtenDefault]bool),
-		refused:      make(map[writtenDefault]bool),
-		covered:      make(map[netip.Prefix]bool),
-		warned:       make(map[netip.Prefix]bool),
-		dump:         func() ([]byte, error) { return dumpRIB(t), nil },
-		lookupDevice: resolvesTo(uplinkIndex),
-	}
+	u, sock := testUnderlay(t, &fakeDefaults{}, func() []byte { return dumpRIB(t) })
+	u.statePath = state
 	u.reclaim(records)
 	for _, message := range sent(t, sock) {
 		t.Errorf("a file the load did not take whole produced %+v", message)
@@ -335,17 +318,10 @@ func (w *watchingSocket) WriteRoute(message *route.RouteMessage) error {
 // says nothing may ever remove that.
 func TestRecordIsOnDiskBeforeTheRouteReachesTheKernel(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "underlay.json")
-	sock := &watchingSocket{fakeRouteSocket: &fakeRouteSocket{t: t}, state: state}
-	u := &UnderlayDefaults{
-		sock: sock, host: namedDevices{}, statePath: state,
-		links:        &fakeDefaults{v4: hostDefault{index: uplinkIndex, gateway: addr("192.168.0.1")}},
-		written:      make(map[writtenDefault]bool),
-		refused:      make(map[writtenDefault]bool),
-		covered:      make(map[netip.Prefix]bool),
-		warned:       make(map[netip.Prefix]bool),
-		dump:         func() ([]byte, error) { return hostRIB(t), nil },
-		lookupDevice: resolvesTo(uplinkIndex),
-	}
+	links := &fakeDefaults{v4: hostDefault{index: uplinkIndex, gateway: addr("192.168.0.1")}}
+	u, inner := testUnderlay(t, links, func() []byte { return hostRIB(t) })
+	sock := &watchingSocket{fakeRouteSocket: inner, state: state}
+	u.sock, u.statePath = sock, state
 	if err := u.Prepare(uplinkIndex); err != nil {
 		t.Fatal(err)
 	}
@@ -377,16 +353,8 @@ func TestReclaimKeepsItsRecordsWhenTheTableWillNotReadBack(t *testing.T) {
 			if err := saveUnderlayState(state, []writtenDefault{ourRecord()}); err != nil {
 				t.Fatal(err)
 			}
-			sock := &fakeRouteSocket{t: t}
-			u := &UnderlayDefaults{
-				sock: sock, links: &fakeDefaults{}, host: namedDevices{}, statePath: state,
-				written:      make(map[writtenDefault]bool),
-				refused:      make(map[writtenDefault]bool),
-				covered:      make(map[netip.Prefix]bool),
-				warned:       make(map[netip.Prefix]bool),
-				dump:         dump,
-				lookupDevice: resolvesTo(uplinkIndex),
-			}
+			u, sock := testUnderlay(t, &fakeDefaults{}, nil)
+			u.statePath, u.dump = state, dump
 			u.reclaim([]writtenDefault{ourRecord()})
 
 			for _, message := range sent(t, sock) {
@@ -592,16 +560,8 @@ func TestRefusedRecordsAreNotReachableByAWithdrawal(t *testing.T) {
 	if err := saveUnderlayState(state, []writtenDefault{ourRecord()}); err != nil {
 		t.Fatal(err)
 	}
-	sock := &fakeRouteSocket{t: t}
-	u := &UnderlayDefaults{
-		sock: sock, links: &fakeDefaults{}, host: namedDevices{}, statePath: state,
-		written:      make(map[writtenDefault]bool),
-		refused:      make(map[writtenDefault]bool),
-		covered:      make(map[netip.Prefix]bool),
-		warned:       make(map[netip.Prefix]bool),
-		dump:         func() ([]byte, error) { return rib, nil },
-		lookupDevice: resolvesTo(uplinkIndex),
-	}
+	u, sock := testUnderlay(t, &fakeDefaults{}, func() []byte { return rib })
+	u.statePath = state
 	records, err := loadUnderlayState(state)
 	if err != nil {
 		t.Fatal(err)
