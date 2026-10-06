@@ -862,6 +862,36 @@ func TestTOMLRefusesAValueOfTheWrongKindWhereverItIsWritten(t *testing.T) {
 	}
 }
 
+// a document after the first that does not parse is refused, behind any number of empty ones, under every extension that reads yaml
+// the first document alone was taken and the failure of the second said nothing, so a half pasted file started on its first half
+// every construct is tried once before anything is drawn, since a run leaves some of them undrawn
+func TestDocumentAfterTheNodeThatDoesNotParseIsRefused(t *testing.T) {
+	constructs := []func(word string) string{
+		func(word string) string { return "link: [" + word + "\n" },
+		func(word string) string { return "link: {" + word + "\n" },
+		func(word string) string { return "\t" + word + ": x\n" },
+		func(word string) string { return "link: *" + word + "\n" },
+		func(word string) string { return `link: "` + word + "\n" },
+		func(word string) string { return "- - [" + word + "\n" },
+	}
+	check := func(tb testing.TB, construct func(string) string, word string, empty int) {
+		tb.Helper()
+		body := nodeYAML + strings.Repeat("---\n", empty+1) + construct(word)
+		for _, extension := range []string{".yaml", ".yml", ".json"} {
+			if _, err := load(t, extension, body); err == nil {
+				tb.Fatalf("%s took %q, whose last document does not parse", extension, body)
+			}
+		}
+	}
+	for _, construct := range constructs {
+		check(t, construct, "word", 0)
+	}
+	pbt.Check(t, func(ht *hegel.T) {
+		word := hegel.Draw(ht, hegel.Text().Alphabet("abcdefghijklmnopqrstuvwxyz").MinSize(1).MaxSize(8))
+		check(ht, constructs[hegel.Draw(ht, hegel.Integers(0, len(constructs)-1))], word, hegel.Draw(ht, hegel.Integers(0, 3)))
+	})
+}
+
 // readsAlike fails unless numeral reads as each of types alike under every
 // decoder able to read it, the text form included. It fails through tb, the
 // test itself or one property case, so vet's printf check sees its format
