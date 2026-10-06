@@ -7,6 +7,7 @@ package config
 import (
 	"encoding"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/netip"
 	"os"
@@ -181,138 +182,6 @@ rekey = { child = "1h", retry = { first = "5s", max = "5m" } }
 	}
 	if fromYAML.Routes().Transits() || fromYAML.Babel().Quality != babel.LinkQualityNone {
 		t.Error("the capability values did not reach the struct")
-	}
-}
-
-// parse(render(x)) is x under both decoders, for every capability. It is the
-// property that makes a generated configuration and a hand written one the
-// same thing, and the one that catches a field whose two halves disagree: a
-// prefix that renders as empty, a duration that renders as a number.
-func TestRenderedCapabilitiesParseBackToThemselves(t *testing.T) {
-	node := func() Config {
-		return Config{
-			Node: Node{Org: "example", Name: "laptop"},
-			Auth: Auth{Key: "key.pem", Trust: "trust.json"},
-			Link: Link{
-				Port:      13000,
-				Listen:    true,
-				TUN:       "ranet0",
-				Underlay:  transport.Underlay{Mark: 0x726c, Bind: true},
-				Endpoints: []Endpoint{{Serial: "0", Family: "ip4"}},
-			},
-			Dial: Dial{All: true, To: []Peer{{Org: "example", Name: "gateway", Serial: "1"}}},
-		}
-	}
-	transit := false
-	rxcost, weight := uint16(96), uint16(1024)
-	rttMin, rttMax := schema.Duration(10*time.Millisecond), schema.Duration(1024*time.Millisecond)
-	replay := uint32(2048)
-	child := schema.Duration(90 * time.Minute)
-	retry := schema.Duration(7 * time.Second)
-	for name, capability := range map[string]func(*Config){
-		"nothing at all": func(*Config) {},
-		"cap.route": func(c *Config) {
-			c.Cap.Route = &babel.Routes{
-				Announce: []schema.Announce{
-					{Prefix: schema.MustPrefix("10.66.0.5/32")},
-					{Prefix: schema.MustPrefix("::/0"), From: schema.MustPrefix("2001:db8:1::/48")},
-				},
-				Transit: &transit,
-			}
-		},
-		"cap.babel": func(c *Config) {
-			c.Cap.Babel = &babel.Config{
-				Hello:   schema.Duration(4 * time.Second),
-				Update:  schema.Duration(16 * time.Second),
-				Quality: babel.LinkQualityNone,
-				Cost: babel.CostOptions{Rx: &rxcost, RTT: babel.RTTOptions{
-					Weight: &weight,
-					Min:    &rttMin,
-					Max:    &rttMax,
-				}},
-			}
-		},
-		"cap.table": func(c *Config) {
-			c.Cap.Table = &kernel.Table{
-				ID:              200,
-				Proto:           155,
-				Metric:          64,
-				PrefSrc4:        schema.MustAddr("10.66.0.5"),
-				Addresses:       []schema.Prefix{schema.MustPrefix("10.66.0.5/32")},
-				AssignAnnounced: true,
-				VRF:             &kernel.VRF{Name: "mesh", Create: true},
-				Reconcile:       schema.Duration(30 * time.Second),
-				CaptureGrace:    schema.Duration(10 * time.Second),
-				Rules: []kernel.Rule{
-					{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: kernel.FamilyBoth},
-					{To: schema.MustPrefix("3fff:1:69c::/48"), Table: 200, Priority: 100},
-				},
-			}
-		},
-		"cap.segment": func(c *Config) {
-			c.Cap.Segment = &srv6.Segments{
-				Source: schema.MustAddr("3fff:1:69c:8c0::1"),
-				Local: []srv6.Segment{
-					{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEndDT46},
-					{SID: schema.MustAddr("3fff:1:69c:8c6::2"), Behavior: srv6.BehaviorEnd},
-				},
-				Steer: []srv6.Steer{{
-					From: schema.MustPrefix("3fff:a::198:18:104:117/128"),
-					Via:  []schema.Addr{schema.MustAddr("3fff:1:69c:98d6::1")},
-				}},
-			}
-		},
-		"cap.crypto": func(c *Config) {
-			c.Cap.Crypto = &ike.Crypto{
-				Replay: &replay,
-				Rekey: ike.Rekey{
-					Child: &child,
-					Retry: ike.Retry{First: &retry, Max: &child},
-				},
-			}
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			want := node()
-			capability(&want)
-			for _, rendered := range []struct {
-				extension string
-				render    func(any) ([]byte, error)
-			}{
-				{".yaml", yaml.Marshal},
-				{".toml", renderTOML},
-			} {
-				body, err := rendered.render(&want)
-				if err != nil {
-					t.Fatalf("render %s: %v", rendered.extension, err)
-				}
-				got, err := load(t, rendered.extension, string(body))
-				if err != nil {
-					t.Fatalf("parse %s:\n%s\n%v", rendered.extension, body, err)
-				}
-				if !reflect.DeepEqual(*got, want) {
-					t.Errorf("%s round trip gave\n%+v\nfrom\n%s", rendered.extension, *got, body)
-				}
-			}
-			// And the control plane's own decoder, which is encoding/json
-			// rather than the yaml one a .json file goes to. The file and the
-			// wire form are one schema, so a capability a file spells has to
-			// survive the wire too. It did not: a prefix nobody wrote went out
-			// through MarshalText, which refuses one carrying no address, so
-			// rendering any capability with an optional selector failed
-			// outright.
-			wire, err := json.Marshal(&want)
-			if err != nil {
-				t.Fatalf("render as json: %v", err)
-			}
-			var overWire Config
-			if err := json.Unmarshal(wire, &overWire); err != nil {
-				t.Fatalf("parse %s: %v", wire, err)
-			}
-			if !reflect.DeepEqual(overWire, want) {
-				t.Errorf("the json round trip gave\n%+v\nfrom\n%s", overWire, wire)
-			}
-		})
 	}
 }
 
@@ -1226,9 +1095,9 @@ func fullConfig() Config {
 				VRF:             &kernel.VRF{Name: "mesh", Create: true},
 				Reconcile:       schema.Duration(30 * time.Second),
 				CaptureGrace:    schema.Duration(10 * time.Second),
-				// Two rules, because a rule naming an address is refused for
-				// also naming the family that address already says, so no one
-				// rule can carry every field the type has.
+				// More than one rule, because a rule naming an address is
+				// refused for also naming the family that address already
+				// says, so no one rule can carry every field the type has.
 				Rules: []kernel.Rule{{
 					To:       schema.MustPrefix("3fff:1:69c::/48"),
 					From:     schema.MustPrefix("3fff:a::/32"),
@@ -1242,11 +1111,20 @@ func fullConfig() Config {
 					Table:    schema.TableMain,
 					Priority: 41,
 					Family:   kernel.FamilyIPv6,
+				}, {
+					// family both and a table by number, spellings the two above leave out
+					FWMark:   0x726c,
+					Table:    100,
+					Priority: 42,
+					Family:   kernel.FamilyBoth,
 				}},
 			},
 			Segment: &srv6.Segments{
 				Source: schema.MustAddr("3fff:1:69c:8c0::1"),
-				Local:  []srv6.Segment{{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEndDT46}},
+				Local: []srv6.Segment{
+					{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEndDT46},
+					{SID: schema.MustAddr("3fff:1:69c:8c6::2"), Behavior: srv6.BehaviorEnd},
+				},
 				Steer: []srv6.Steer{{
 					From:   schema.MustPrefix("3fff:a::198:18:104:117/128"),
 					To:     schema.MustPrefix("3fff:1:69c:8c9::/64"),
@@ -1255,6 +1133,11 @@ func fullConfig() Config {
 						schema.MustAddr("3fff:1:69c:98d6::1"),
 						schema.MustAddr("3fff:1:69c:98d6::2"),
 					},
+				}, {
+					// a source selector and next hops alone
+					// whose unset destination and source json has to leave out rather than refuse to spell
+					From: schema.MustPrefix("3fff:a::198:18:104:118/128"),
+					Via:  []schema.Addr{schema.MustAddr("3fff:1:69c:98d6::1")},
 				}},
 			},
 			Crypto: &ike.Crypto{
@@ -1295,38 +1178,102 @@ func TestEveryWrittenFieldSurvivesEachEncoder(t *testing.T) {
 		t.Fatalf("fullConfig leaves %d field(s) at zero, so no encoder below is asked to carry them: %s",
 			len(missing), strings.Join(missing, ", "))
 	}
-	for _, rendered := range []struct {
+	sameAfterEachEncoder(t, t, want, want)
+}
+
+// difference names the first field at which got parts from want, in the path
+// a file writes it under, so a failure reads as one setting rather than as two
+// renderings that may share the fault being looked for.
+func difference(want, got reflect.Value, path string) string {
+	switch {
+	case want.Kind() == reflect.Pointer && !want.IsNil() && !got.IsNil():
+		return difference(want.Elem(), got.Elem(), path)
+	case want.Kind() == reflect.Struct && !spellsItself(want.Type()):
+		for i := range want.NumField() {
+			field := want.Type().Field(i)
+			if !field.IsExported() {
+				continue
+			}
+			key, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
+			if key == "" {
+				key = strings.ToLower(field.Name)
+			}
+			if !reflect.DeepEqual(want.Field(i).Interface(), got.Field(i).Interface()) {
+				return difference(want.Field(i), got.Field(i), strings.TrimPrefix(path+"."+key, "."))
+			}
+		}
+	case want.Kind() == reflect.Slice && want.Len() == got.Len():
+		for i := range want.Len() {
+			if !reflect.DeepEqual(want.Index(i).Interface(), got.Index(i).Interface()) {
+				return difference(want.Index(i), got.Index(i), fmt.Sprintf("%s[%d]", path, i))
+			}
+		}
+	}
+	gotShown, wantShown := shown(got, "%v"), shown(want, "%v")
+	if gotShown == wantShown {
+		gotShown, wantShown = shown(got, "%#v"), shown(want, "%#v")
+	}
+	return fmt.Sprintf("%s is %s, want %s", path, gotShown, wantShown)
+}
+
+// shown spells one side of a difference, through the pointer where there is
+// one, since an address says nothing about what it points at. verb is %v, or
+// %#v where the two sides would print alike under it.
+func shown(value reflect.Value, verb string) string {
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return "absent"
+		}
+		value = value.Elem()
+	}
+	return fmt.Sprintf(verb, value.Interface())
+}
+
+// sameAfterEachEncoder renders drawn under each file encoder, loads each
+// rendering the way the daemon loads its file and fails at the first one that
+// reads back anything but want, naming the setting it changed. want is drawn
+// with the documented default filled in by defaulted. The json rendering is
+// read by the control plane's own decoder as well, which fills in no default
+// and so has to read back drawn, since the file and the wire form are one
+// schema.
+func sameAfterEachEncoder(tb testing.TB, t *testing.T, drawn, want Config) {
+	tb.Helper()
+	for _, encoder := range []struct {
 		extension string
 		render    func(any) ([]byte, error)
 	}{
 		{".yaml", yaml.Marshal},
 		{".toml", renderTOML},
+		{".json", json.Marshal},
 	} {
-		body, err := rendered.render(&want)
+		body, err := encoder.render(&drawn)
 		if err != nil {
-			t.Fatalf("render %s: %v", rendered.extension, err)
+			tb.Fatalf("render %s: %v", encoder.extension, err)
 		}
-		got, err := load(t, rendered.extension, string(body))
+		got, err := load(t, encoder.extension, string(body))
 		if err != nil {
-			t.Fatalf("parse %s:\n%s\n%v", rendered.extension, body, err)
+			tb.Fatalf("%s refused the configuration it rendered:\n%s\n%v", encoder.extension, body, err)
+		}
+		// a peer org the file wrote reads back as written, whatever the
+		// default does for one the file left out
+		for i, peer := range drawn.Dial.To {
+			if peer.Org != "" && i < len(got.Dial.To) && got.Dial.To[i].Org != peer.Org {
+				tb.Fatalf("%s read dial.to[%d] org %q as %q, from\n%s", encoder.extension, i, peer.Org, got.Dial.To[i].Org, body)
+			}
 		}
 		if !reflect.DeepEqual(*got, want) {
-			t.Errorf("%s round trip gave\n%+v\nfrom\n%s", rendered.extension, *got, body)
+			tb.Fatalf("%s read back %s, from\n%s", encoder.extension, difference(reflect.ValueOf(want), reflect.ValueOf(*got), ""), body)
 		}
-	}
-	// The control plane's own decoder, which is encoding/json rather than the
-	// yaml one a .json file goes to. The file and the wire form are one
-	// schema, so a field a file spells has to survive the wire too.
-	wire, err := json.Marshal(&want)
-	if err != nil {
-		t.Fatalf("render as json: %v", err)
-	}
-	var overWire Config
-	if err := json.Unmarshal(wire, &overWire); err != nil {
-		t.Fatalf("parse %s: %v", wire, err)
-	}
-	if !reflect.DeepEqual(overWire, want) {
-		t.Errorf("the json round trip gave\n%+v\nfrom\n%s", overWire, wire)
+		if encoder.extension != ".json" {
+			continue
+		}
+		var overWire Config
+		if err := json.Unmarshal(body, &overWire); err != nil {
+			tb.Fatalf("the control plane refused\n%s\n%v", body, err)
+		}
+		if !reflect.DeepEqual(overWire, drawn) {
+			tb.Fatalf("the control plane read back %s, from\n%s", difference(reflect.ValueOf(drawn), reflect.ValueOf(overWire), ""), body)
+		}
 	}
 }
 
