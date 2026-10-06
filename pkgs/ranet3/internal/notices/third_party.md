@@ -11,6 +11,7 @@ This module's own license, from `license.txt`.
 
 ```
 SPDX-FileCopyrightText: 2026 Nick Cao
+SPDX-FileCopyrightText: 2021 SCP-2000
 SPDX-FileCopyrightText: 2026 Yifei Sun
 SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
 
@@ -121,11 +122,13 @@ CONDITIONS OF ANY KIND, either express or implied. See the License for the
 specific language governing permissions and limitations under the License.
 
 Portions of this software are derived from ranet-lite by Nick Cao,
-https://github.com/NickCao/ranet-lite, and remain under the MIT License:
+https://github.com/NickCao/ranet-lite, and from ranet,
+https://github.com/NickCao/ranet, and remain under the MIT License:
 
 MIT License
 
 Copyright (c) 2026 Nick Cao
+Copyright (c) 2021 SCP-2000
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
 associated documentation files (the "Software"), to deal in the Software without restriction, including
