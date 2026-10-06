@@ -358,6 +358,27 @@ func drain(signal <-chan struct{}) {
 	}
 }
 
+// a dump the kernel ends early still ends at NLMSG_DONE, with the errno it ended on as that message's payload
+// a rule dump for a family with no rules engine ends that way on its first call, with no privileges and nothing written
+func TestExecuteReportsTheErrnoADumpEndedOn(t *testing.T) {
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatalf("dial rtnetlink: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	rules := make([]byte, sizeofFibRuleHdr)
+	rules[0] = unix.AF_BRIDGE
+	if replies, err := conn.execute(unix.RTM_GETRULE, unix.NLM_F_DUMP, rules); !errors.Is(err, unix.EAFNOSUPPORT) || replies != nil {
+		t.Errorf("a rule dump the kernel ended on EAFNOSUPPORT read as %d replies and %v", len(replies), err)
+	}
+	// the socket is still in step, so the next request is answered as its own
+	routes := make([]byte, unix.SizeofRtMsg)
+	routes[0] = unix.AF_INET
+	if _, err := conn.execute(unix.RTM_GETROUTE, unix.NLM_F_DUMP, routes); err != nil {
+		t.Errorf("a dump after the one the kernel ended early failed: %v", err)
+	}
+}
+
 // The RFC 8966 section 3.5.4 hold has to reach the kernel as a route that
 // answers with an error, naming no output device, and has to come back from a
 // dump the same way or every pass would delete and reinstall it.
