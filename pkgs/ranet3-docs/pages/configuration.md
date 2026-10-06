@@ -21,10 +21,15 @@ ranet3 needs two files:
   not at all. The YAML parser refuses a `\/` escape, the surrogate pair escape
   of a character outside the Basic Multilingual Plane, a raw DEL and a key
   written twice, among others, and reads a raw NEL, LS or PS in a string as a
-  line break. An extension neither knows is refused by name rather than sniffed.
-  Both decoders are strict, so an unknown key is an error under either: a
-  mistyped capability that silently does nothing is the worst failure a
-  configuration file has. See
+  line break. In those files the loader refuses a number written with a
+  fraction, an exponent or a minus sign in an integer field such as `link.port`,
+  with its line, where the parser alone cuts `13000.5` to `13000` and reads `-0`
+  as zero. It refuses a merge key (`<<`) with its line too, because TOML and
+  JSON have no spelling for one, and a file that shares settings through it
+  writes them out where each is used. An extension neither knows is refused by
+  name rather than sniffed. Both decoders are strict, so an unknown key is an
+  error under either: a mistyped capability that silently does nothing is the
+  worst failure a configuration file has. See
   [`examples/config.toml`](https://github.com/ranet3/ranet3/blob/master/pkgs/ranet3/examples/config.toml)
   for the annotated reference,
   [`examples/config.yaml`](https://github.com/ranet3/ranet3/blob/master/pkgs/ranet3/examples/config.yaml)
