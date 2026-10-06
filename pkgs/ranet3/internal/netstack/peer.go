@@ -26,6 +26,12 @@ type Peer struct {
 	reserveMu sync.Mutex
 	reserved  uint64
 	dropped   atomic.Uint64
+	// delayDropped is the part of dropped the sender dropped for the delay through the queue
+	// delay is the control that decides those drops, which only the sender touches
+	delayDropped atomic.Uint64
+	delay        codel
+	// events records the peer's changes of state, nil recording nothing
+	events func(kind, peer string, attrs ...slog.Attr)
 	// sendFailed counts packets that were sealed, handed to the transport and
 	// lost in the syscall. Separate from dropped, which counts what this peer
 	// refused on purpose: one says the link or the socket is failing and the
@@ -107,20 +113,21 @@ func NewPeer(id string, encryptFn func(raw []byte, nextHeader byte) ([]byte, err
 // reserve sequence ranges. Its complete encrypt-and-send operation is ordered,
 // so it is safe but intentionally cannot encrypt multiple batches in parallel.
 func NewPeerBatched(id string, encryptFn func(raw []byte, nextHeader byte) ([]byte, error), transmitBatchFn func(sealed [][]byte) error) *Peer {
-	return newPeer(id, encryptFn, nil, transmitBatchFn)
+	return newPeer(id, encryptFn, nil, transmitBatchFn, nil)
 }
 
 // NewPeerReserved constructs a peer whose expensive encryption can run in
 // parallel. reserveFn is called in packet-intake order and must return a sealer
 // owning count consecutive sequence numbers from the current outbound SA.
 // transmitBatchFn must finish using every packet before returning.
-func NewPeerReserved(id string, reserveFn func(count int) (BatchSealer, error), transmitBatchFn func(sealed [][]byte) error) *Peer {
-	return newPeer(id, nil, reserveFn, transmitBatchFn)
+// events records the peer's changes of state under its ID, nil recording nothing
+func NewPeerReserved(id string, reserveFn func(count int) (BatchSealer, error), transmitBatchFn func(sealed [][]byte) error, events func(kind, peer string, attrs ...slog.Attr)) *Peer {
+	return newPeer(id, nil, reserveFn, transmitBatchFn, events)
 }
 
-func newPeer(id string, encryptFn func(raw []byte, nextHeader byte) ([]byte, error), reserveFn func(count int) (BatchSealer, error), transmitBatchFn func(sealed [][]byte) error) *Peer {
+func newPeer(id string, encryptFn func(raw []byte, nextHeader byte) ([]byte, error), reserveFn func(count int) (BatchSealer, error), transmitBatchFn func(sealed [][]byte) error, events func(kind, peer string, attrs ...slog.Attr)) *Peer {
 	p := &Peer{ID: id, encryptFn: encryptFn, reserveFn: reserveFn, transmitBatchFn: transmitBatchFn,
-		started: time.Now()}
+		events: events, started: time.Now()}
 	p.sendErrReported.Store(-int64(sendErrReportInterval))
 	if reserveFn == nil {
 		p.sendCond = sync.NewCond(&p.sendMu)
@@ -242,6 +249,10 @@ type peerBatch struct {
 	// control says which budget the place came from, so it goes back where it
 	// was taken from.
 	control bool
+	// admitted is when the batch was reserved, as time since the peer started
+	admitted time.Duration
+	// shed is how many sealed packets the delay control dropped from the head of the batch
+	shed int
 }
 
 // packetBudget is the room a peer has for packets from their reservation until the transmit that carried them returns
@@ -302,11 +313,19 @@ func (p *Peer) reserveNow(budget *packetBudget, count int, control bool) *peerBa
 }
 
 // Dropped counts the packets this peer did not transmit on purpose: its
-// budget had no room for them, the peer was already closing, or the outbound SA
+// budget had no room for them, the peer was already closing, the outbound SA
 // could not give out a sequence range, which is how a peer that deleted its
-// Child SA looks from here. A peer whose path is congested or whose SA is
-// gone shows up as a rising counter rather than as latency somewhere else.
+// Child SA looks from here, a batch of them failed to seal, or the delay
+// through its queue had stayed above the target. A peer whose path is
+// congested or whose SA is gone shows up as a rising counter rather than as
+// latency somewhere else.
 func (p *Peer) Dropped() uint64 { return p.dropped.Load() }
+
+// DelayDropped is the part of Dropped the sender dropped from the head of the queue
+// because the delay of the data batches through it had stayed above codelTarget for codelInterval
+// it counts a queue that stands
+// the rest of Dropped counts reads the budget refused, a closing peer's packets, reservations the outbound SA refused and batches that sealed nothing
+func (p *Peer) DelayDropped() uint64 { return p.delayDropped.Load() }
 
 // SendFailed is how many packets this peer sealed and could not put on the
 // wire. See Peer.sendFailed.
@@ -323,6 +342,7 @@ func (p *Peer) reserveTicket(count, held int, control bool) *peerBatch {
 		b.sealer, b.err = p.reserveFn(count)
 	}
 	p.reserveMu.Unlock()
+	b.admitted = time.Since(p.started)
 	if b.err != nil {
 		// The batch keeps its ticket, so the sender is not stranded, but
 		// nothing in it will be transmitted: the sequence range it needed does
@@ -561,6 +581,11 @@ func (p *Peer) senderLoop() {
 	next := uint64(0)
 	for {
 		if pending[next] == nil {
+			// with nothing of the data budget held no data packet waits between its reservation and its transmit
+			// so the queue the delay control measures is empty
+			if p.dataBudget.used.Load() == 0 && p.delay.empty() {
+				p.recordDelayState(0)
+			}
 			select {
 			case b := <-p.completed:
 				pending[b.ticket] = b
@@ -585,6 +610,7 @@ func (p *Peer) senderLoop() {
 				break drain
 			}
 		}
+		now := time.Since(p.started)
 		for len(packets) < transmitBatchSize {
 			b := pending[next]
 			if b == nil {
@@ -592,7 +618,8 @@ func (p *Peer) senderLoop() {
 			}
 			delete(pending, next)
 			ready = append(ready, b)
-			packets = append(packets, b.sealed...)
+			p.shedHead(b, now)
+			packets = append(packets, b.sealed[b.shed:]...)
 			next++
 		}
 		var sendErr error
@@ -611,7 +638,7 @@ func (p *Peer) senderLoop() {
 				if len(b.sealed) == 0 {
 					p.dropped.Add(uint64(len(b.raw)))
 				} else {
-					p.sendFailed.Add(uint64(len(b.raw)))
+					p.sendFailed.Add(uint64(len(b.raw) - b.shed))
 				}
 				b.counted = true
 			}
@@ -630,4 +657,40 @@ func (p *Peer) senderLoop() {
 		clear(ready)
 		packets, ready = packets[:0], ready[:0]
 	}
+}
+
+// shedHead runs the delay control on a batch the sender has just taken in ticket order
+// and drops the batch's head packet when the control calls for a drop
+// a control batch carries babel and the completion its caller waits for
+// so it neither feeds the control nor loses a packet to it
+// a batch whose reservation or seal failed sealed nothing and has no packet to lose
+func (p *Peer) shedHead(b *peerBatch, now time.Duration) {
+	if b.control || len(b.sealed) == 0 {
+		return
+	}
+	sojourn := now - b.admitted
+	dropping := p.delay.dropping
+	if p.delay.drop(now, sojourn) {
+		b.shed = 1
+		// the total goes up first
+		// so a reader that loads the delay drops before the total never sees more of them than of it
+		p.dropped.Add(1)
+		p.delayDropped.Add(1)
+	}
+	if p.delay.dropping != dropping {
+		p.recordDelayState(sojourn)
+	}
+}
+
+// recordDelayState records that the delay control began or stopped dropping
+// sojourn is how long the batch that changed the state had waited since its reservation, zero when the queue emptied
+func (p *Peer) recordDelayState(sojourn time.Duration) {
+	if p.events == nil {
+		return
+	}
+	kind := "netstack.codel.drained"
+	if p.delay.dropping {
+		kind = "netstack.codel.dropping"
+	}
+	p.events(kind, p.ID, slog.Duration("sojourn", sojourn), slog.Duration("target", codelTarget))
 }

@@ -306,7 +306,7 @@ func TestWaypointBatchTakesOnePlacePerPeer(t *testing.T) {
 			forwarded.Add(int64(len(raw)))
 			return out[:0], nil
 		}, nil
-	}, func([][]byte) error { return nil })
+	}, func([][]byte) error { return nil }, nil)
 	defer peer.Close()
 
 	m := &Mesh{Routes: NewRouteTable()}

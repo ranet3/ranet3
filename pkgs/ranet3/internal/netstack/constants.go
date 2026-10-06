@@ -57,8 +57,18 @@ const truncatedReadInterval = 30 * time.Second
 // peerDataBudget is the packets one peer may hold from their reservation until the transmit that carried them returns
 // 5.7 MB of 1400-byte packets, which last 4.7 milliseconds at 9.7 Gbit/s and 15 milliseconds at 3 Gbit/s
 // their sealed storage stays under twice that, about 12 MB, since a batch reuses only storage grown by at most twice its packets
+// below about 9.2 Gbit/s they last longer than codelTarget, so there the delay control rather than the budget bounds the queue
+// both see only the delay after the tun read, and a backlog in the tun's own ring is out of their reach
 // one sender drains each peer, so the budget does not grow with the cores
 const peerDataBudget = 4096
+
+// codelTarget is the delay a peer's sender holds its queue to, and codelInterval how long the delay may stay above it before the sender starts dropping
+// both are the defaults RFC 8289 gives and the kernel's CoDel uses
+// the interval is long enough that one late ticket, which delays every batch behind it at once, drops nothing
+const (
+	codelTarget   = 5 * time.Millisecond
+	codelInterval = 100 * time.Millisecond
+)
 
 // transmitBatchSize is the most packets a peer's sender merges into one transmit
 // the transport hands its socket at most espSendBatch datagrams per send, so one merge fills one send

@@ -429,9 +429,9 @@ type Neighbor struct {
 	RTT     *Duration `json:"rtt,omitempty"`
 	Routes  int       `json:"routes"`
 	Expires Duration  `json:"expires"`
-	// Dropped is packets this node's dataplane refused to queue for the peer,
-	// and SendFailed packets the transport lost after they were sealed. The
-	// first is this node running out of room and the second is the link.
+	// Dropped is packets this node's dataplane chose not to send to the peer, among them those dropped for the delay through its queue
+	// SendFailed is packets the transport lost after they were sealed
+	// the first is this node choosing not to send and the second is the link failing
 	Dropped    uint64 `json:"dropped"`
 	SendFailed uint64 `json:"send_failed"`
 }

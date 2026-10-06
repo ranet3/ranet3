@@ -92,6 +92,15 @@ type budgetMachine struct {
 	offered         uint64
 }
 
+// holdData records a data reservation of count packets the budget admitted
+// stamped an hour ahead, so the delay control reads it below its target however long the case runs
+// and the model need not count delay drops
+func (m *budgetMachine) holdData(b *peerBatch, count int) {
+	b.admitted += time.Hour
+	m.data += count
+	m.held = append(m.held, &heldBatch{batch: b, count: count})
+}
+
 // reservationKinds are where a data reservation is drawn
 // anywhere, exactly the room left, or one packet past it
 var reservationKinds = []string{"any size", "the room left", "one past the room left"}
@@ -116,8 +125,7 @@ func (m *budgetMachine) RuleReserveData(tc hegel.TestCase) {
 		m.dropped += uint64(count)
 		return
 	}
-	m.data += count
-	m.held = append(m.held, &heldBatch{batch: b, count: count})
+	m.holdData(b, count)
 }
 
 // RuleReserveControl asks the control budget for one packet's place, as babel does
@@ -223,12 +231,11 @@ func TestBudgetAgreesWithItsModel(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		v := newValve()
 		m := &budgetMachine{valve: v, peer: NewPeerReserved("peer",
-			func(int) (BatchSealer, error) { return passThrough, nil }, v.transmit)}
+			func(int) (BatchSealer, error) { return passThrough, nil }, v.transmit, nil)}
 		// most of a budget taken up front, so a case reaches its edge in a few steps
 		if prefill := hegel.Draw(ht, pbt.Spanning(0, peerDataBudget)); prefill > 0 {
 			m.offered += uint64(prefill)
-			m.data = prefill
-			m.held = append(m.held, &heldBatch{batch: filled(m.peer, prefill), count: prefill})
+			m.holdData(filled(m.peer, prefill), prefill)
 		}
 		for range hegel.Draw(ht, pbt.Spanning(0, controlQueueSize)) {
 			m.RuleReserveControl(ht)

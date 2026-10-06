@@ -484,7 +484,7 @@ func TestStalledNeighborDoesNotHoldOthers(t *testing.T) {
 	stalled := netstack.NewPeerReserved("stalled", seal, func([][]byte) error {
 		<-block
 		return nil
-	})
+	}, nil)
 	// The transport has to be released before Close, which waits for the
 	// sender goroutine sitting inside it.
 	defer func() { close(block); stalled.Close() }()
@@ -497,7 +497,7 @@ func TestStalledNeighborDoesNotHoldOthers(t *testing.T) {
 			}
 		}
 		return nil
-	})
+	}, nil)
 	defer moving.Close()
 	speaker.AddPeer(stalled)
 	speaker.AddPeer(moving)
@@ -613,7 +613,7 @@ func TestDroppedRetractionIsSentAgain(t *testing.T) {
 		}
 		delivered.Add(int64(len(sealed)))
 		return nil
-	})
+	}, nil)
 	defer func() { unblock(); peer.Close() }()
 	defer speaker.AddPeer(peer).Close()
 
@@ -755,7 +755,7 @@ func TestEmittersCannotInvertWhatTheyDecided(t *testing.T) {
 				}
 			}
 			return nil
-		})
+		}, nil)
 	defer peer.Close()
 	handle := speaker.AddPeer(peer)
 	defer handle.Close()
@@ -970,7 +970,7 @@ func TestDroppedDumpDoesNotRefundTheRateLimit(t *testing.T) {
 				return append(out[:0], raw...), nil
 			}, nil
 		},
-		func([][]byte) error { <-blocked; return nil })
+		func([][]byte) error { <-blocked; return nil }, nil)
 	defer func() { close(blocked); stuck.Close() }()
 	speaker.mu.Lock()
 	neighbor.peer = stuck
@@ -1035,7 +1035,7 @@ func TestRetractionLostInTheTransportIsAdvertisedAgain(t *testing.T) {
 				return append(out[:0], raw...), nil
 			}, nil
 		},
-		func([][]byte) error { return errors.New("sendto: network is unreachable") })
+		func([][]byte) error { return errors.New("sendto: network is unreachable") }, nil)
 	defer failing.Close()
 	speaker.mu.Lock()
 	neighbor.peer = failing
@@ -1075,7 +1075,7 @@ func addPeer(t *testing.T, s *Speaker, peer *netstack.Peer) *neighborState {
 func refusingPeer(id string) *netstack.Peer {
 	return netstack.NewPeerReserved(id,
 		func(int) (netstack.BatchSealer, error) { return nil, errors.New("no child sa") },
-		func([][]byte) error { return nil })
+		func([][]byte) error { return nil }, nil)
 }
 
 // A prefix this node stops originating has left both of its tables, and the
@@ -1128,7 +1128,7 @@ func TestLostPacketsDoNotWakeTheLoopPerPacket(t *testing.T) {
 				return append(out[:0], raw...), nil
 			}, nil
 		},
-		func([][]byte) error { return errors.New("sendto: network is unreachable") })
+		func([][]byte) error { return errors.New("sendto: network is unreachable") }, nil)
 	defer losing.Close()
 	speaker.mu.Lock()
 	neighbor.peer = losing
@@ -1179,7 +1179,7 @@ func partialPeer(id string, accept int) *netstack.Peer {
 				return append(out[:0], raw...), nil
 			}, nil
 		},
-		func([][]byte) error { return nil })
+		func([][]byte) error { return nil }, nil)
 }
 
 // A dump that placed all but its last packets has to leave the neighbor owing
@@ -1247,7 +1247,7 @@ func TestDumpDoesNotStarveRequestsDecidedWithIt(t *testing.T) {
 				}
 			}
 			return nil
-		})
+		}, nil)
 	defer func() { unblock(); peer.Close() }()
 	handle := speaker.AddPeer(peer)
 	defer handle.Close()
@@ -1304,7 +1304,7 @@ func TestRetractionForUnadvertisedPrefixCostsNothing(t *testing.T) {
 				return append(out[:0], raw...), nil
 			}, nil
 		},
-		func([][]byte) error { <-blocked; return nil })
+		func([][]byte) error { <-blocked; return nil }, nil)
 	defer func() { release.Do(func() { close(blocked) }); stuck.Close() }()
 	speaker.mu.Lock()
 	neighbor.peer = stuck
@@ -1374,7 +1374,7 @@ func TestHelloSurvivesPassThatFillsTheBudget(t *testing.T) {
 				}
 			}
 			return nil
-		})
+		}, nil)
 	defer func() { unblock(); peer.Close() }()
 	handle := speaker.AddPeer(peer)
 	defer handle.Close()
@@ -1442,7 +1442,7 @@ func TestDroppedTriggeredUpdateIsStillOwed(t *testing.T) {
 				return append(out[:0], raw...), nil
 			}, nil
 		},
-		func([][]byte) error { <-blocked; return nil })
+		func([][]byte) error { <-blocked; return nil }, nil)
 	defer func() { release.Do(func() { close(blocked) }); stuck.Close() }()
 	speaker.mu.Lock()
 	neighbor.peer = stuck
@@ -1489,7 +1489,7 @@ func TestOneJammedNeighborDoesNotRepeatTheUpdateToTheRest(t *testing.T) {
 				return append(out[:0], raw...), nil
 			}, nil
 		},
-		func([][]byte) error { <-blocked; return nil })
+		func([][]byte) error { <-blocked; return nil }, nil)
 	defer func() { release.Do(func() { close(blocked) }); stuck.Close() }()
 	speaker.mu.Lock()
 	jammed.peer = stuck
@@ -1548,7 +1548,7 @@ func TestDroppedHelloIsSentAgainOnTheNextWake(t *testing.T) {
 				return append(out[:0], raw...), nil
 			}, nil
 		},
-		func([][]byte) error { return nil })
+		func([][]byte) error { return nil }, nil)
 	closed.Close()
 	speaker.mu.Lock()
 	neighbor.peer = closed
@@ -2381,7 +2381,7 @@ func TestRefusedDumpIsStillOwed(t *testing.T) {
 				return append(out[:0], raw...), nil
 			}, nil
 		},
-		func([][]byte) error { return nil }))
+		func([][]byte) error { return nil }, nil))
 	stuck.addr = netip.MustParseAddr("fe80::3")
 	makeNeighborReachable(stuck)
 

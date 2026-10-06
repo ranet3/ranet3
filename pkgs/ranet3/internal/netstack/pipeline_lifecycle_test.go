@@ -25,16 +25,12 @@ func TestOnFailureReportsAPacketLostAfterItWasQueued(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			peer := NewPeerReserved("peer",
-				func(int) (BatchSealer, error) {
-					return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-						return append(out[:0], raw...), nil
-					}, nil
-				}, func([][]byte) error {
+				func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error {
 					if fails {
 						return errors.New("sendto: network is unreachable")
 					}
 					return nil
-				})
+				}, nil)
 			defer peer.Close()
 			place, err := peer.ReserveRawOrDrop([]byte("packet"), 41)
 			if err != nil {
@@ -66,11 +62,7 @@ func TestOnFailureReportsAPacketLostAfterItWasQueued(t *testing.T) {
 // caller has to hear about that the same way.
 func TestOnFailureReportsWhatAClosedPeerDropped(t *testing.T) {
 	peer := NewPeerReserved("peer",
-		func(int) (BatchSealer, error) {
-			return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-				return append(out[:0], raw...), nil
-			}, nil
-		}, func([][]byte) error { return nil })
+		func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error { return nil }, nil)
 	place, err := peer.ReserveRawOrDrop([]byte("packet"), 41)
 	if err != nil {
 		t.Fatal(err)
@@ -113,11 +105,11 @@ func TestOutboundDispatchKeepsMixedPeerReservationsTogether(t *testing.T) {
 	a := NewPeerReserved("a", func(int) (BatchSealer, error) {
 		firstOnce.Do(func() { close(firstReserved); <-releaseFirst })
 		return sealer, nil
-	}, send)
+	}, send, nil)
 	b := NewPeerReserved("b", func(int) (BatchSealer, error) {
 		secondReserved <- struct{}{}
 		return sealer, nil
-	}, send)
+	}, send, nil)
 	m := &Mesh{closed: make(chan struct{}), outboundJobs: make(chan *outboundBatch, 4), outboundFree: make(chan *outboundBatch, 4)}
 	m.outboundWorkerWG.Add(2)
 	go m.outboundWorker()
@@ -160,7 +152,7 @@ func TestOutboundDispatchKeepsMixedPeerReservationsTogether(t *testing.T) {
 func TestMeshCloseDrainsQueuedTickets(t *testing.T) {
 	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) {
 		return func(raw [][]byte, _ []byte, _ [][]byte) ([][]byte, error) { return [][]byte{bytes.Clone(raw[0])}, nil }, nil
-	}, func([][]byte) error { return nil })
+	}, func([][]byte) error { return nil }, nil)
 	defer peer.Close()
 	// Keep the sender waiting on its first ticket, with the whole budget
 	// spoken for, so the dispatch below reserves nothing and Close still has a
@@ -283,12 +275,12 @@ func TestCongestedPeerDoesNotStallOthers(t *testing.T) {
 		<-release
 		returned.Add(1)
 		return nil
-	})
+	}, nil)
 	var transmitted atomic.Int64
 	healthy := NewPeerReserved("healthy", reserve, func(packets [][]byte) error {
 		transmitted.Add(int64(len(packets)))
 		return nil
-	})
+	}, nil)
 
 	const perRead = 64
 	const reads = peerDataBudget/perRead + 4
@@ -406,12 +398,9 @@ func TestTunReadFailureIsReportedAndGivesTheBatchBack(t *testing.T) {
 func TestClosingAPeerDoesNotWaitOnTheTransportForever(t *testing.T) {
 	stuck, entered := make(chan struct{}), make(chan struct{})
 	defer close(stuck)
-	sealer := func(raw [][]byte, _ []byte, reuse [][]byte) ([][]byte, error) {
-		return append(reuse[:0], raw...), nil
-	}
 	p := NewPeerReserved("stuck",
-		func(int) (BatchSealer, error) { return sealer, nil },
-		func([][]byte) error { close(entered); <-stuck; return nil })
+		func(int) (BatchSealer, error) { return passThrough, nil },
+		func([][]byte) error { close(entered); <-stuck; return nil }, nil)
 	p.closeGrace = 100 * time.Millisecond
 
 	place, err := p.ReserveRawOrDrop([]byte("one packet"), 4)

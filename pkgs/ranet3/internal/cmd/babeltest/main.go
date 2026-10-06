@@ -104,7 +104,7 @@ func main() {
 			return nil, err
 		}
 		return sequenceRange.SealBatchInto, nil
-	}, sess.Mux().SendESPBatch)
+	}, sess.Mux().SendESPBatch, nil)
 
 	speaker, err := babel.New(babel.Config{Hello: schema.Duration(4 * time.Second)}, babel.Routes{}, babel.Runtime{}, mesh)
 	if err != nil {

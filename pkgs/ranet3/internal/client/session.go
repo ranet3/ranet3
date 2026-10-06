@@ -75,7 +75,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 			_ = sess.Mux().Close()
 		}
 		return sealer, err
-	}, sess.Mux().SendESPBatch)
+	}, sess.Mux().SendESPBatch, c.events.Emit)
 	// The mux is closed before the peer's sender is waited for, not after.
 	// Peer.Close waits with no deadline for a sender that may be inside
 	// SendESPBatch on this very mux, and the defer at the top of this function

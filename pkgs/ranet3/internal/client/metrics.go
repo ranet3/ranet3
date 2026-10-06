@@ -38,10 +38,15 @@ func (c *Client) Metrics(w io.Writer) {
 	for _, neighbor := range babel.Neighbors {
 		fmt.Fprintf(w, "ranet3_babel_routes_received{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Routes)
 	}
-	fmt.Fprint(w, "# HELP ranet3_peer_send_dropped_total Packets a peer did not send: no room in its budget, the peer closing, or its outbound SA unable to give out a sequence range.\n")
+	fmt.Fprint(w, "# HELP ranet3_peer_send_dropped_total Packets a peer did not send: no room in its budget, the peer closing, its outbound SA unable to give out a sequence range, or the delay through its queue staying above the target.\n")
 	fmt.Fprint(w, "# TYPE ranet3_peer_send_dropped_total counter\n")
 	for _, neighbor := range babel.Neighbors {
 		fmt.Fprintf(w, "ranet3_peer_send_dropped_total{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Dropped)
+	}
+	fmt.Fprint(w, "# HELP ranet3_peer_send_delay_dropped_total Packets of ranet3_peer_send_dropped_total a peer dropped from the head of its queue because the delay through it stayed above the target.\n")
+	fmt.Fprint(w, "# TYPE ranet3_peer_send_delay_dropped_total counter\n")
+	for _, neighbor := range babel.Neighbors {
+		fmt.Fprintf(w, "ranet3_peer_send_delay_dropped_total{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.DelayDropped)
 	}
 	fmt.Fprint(w, "# HELP ranet3_peer_send_failed_total Packets a peer sealed and the transport then lost.\n")
 	fmt.Fprint(w, "# TYPE ranet3_peer_send_failed_total counter\n")
