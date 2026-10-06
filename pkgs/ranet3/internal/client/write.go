@@ -96,7 +96,7 @@ func (c *Client) SetSubsystem(ctx context.Context, name control.Subsystem, on bo
 	defer c.runningMu.Unlock()
 	if c.running[name] == on {
 		return control.Result{Acted: []string{string(name)},
-			Detail: fmt.Sprintf("the %s was already %s", name, startedStopped(on))}, nil
+			Detail: fmt.Sprintf("The %s was already %s", name, startedStopped(on))}, nil
 	}
 	// The effect before the record, under the lock a second write would have
 	// to take, so no reader is told a subsystem is stopped while it is still
@@ -105,7 +105,7 @@ func (c *Client) SetSubsystem(ctx context.Context, name control.Subsystem, on bo
 	c.running[name] = on
 	log.Printf("control: the %s is %s", name, startedStopped(on))
 	return control.Result{Acted: []string{string(name)},
-		Detail: fmt.Sprintf("the %s is %s", name, startedStopped(on))}, nil
+		Detail: fmt.Sprintf("The %s is %s", name, startedStopped(on))}, nil
 }
 
 // subsystemRuns refuses a subsystem this node's file never turned on. It is a
@@ -197,7 +197,7 @@ func (c *Client) Redial(ctx context.Context, peer string) (result control.Result
 	slices.Sort(acted)
 	log.Printf("control: redialing %s, %d session(s) closed", peer, len(dropped))
 	return control.Result{Acted: slices.Compact(acted),
-		Detail: fmt.Sprintf("closed %d session(s) and set %d dialer(s) going again",
+		Detail: fmt.Sprintf("Closed %d session(s) and set %d dialer(s) going again",
 			len(dropped), len(dialers))}, nil
 }
 
@@ -248,7 +248,7 @@ func (c *Client) Rekey(ctx context.Context, peer string, all bool) (result contr
 	}
 	log.Printf("control: %d session(s) asked to replace their child SA", len(asked))
 	return control.Result{Acted: asked,
-		Detail: fmt.Sprintf("asked %d session(s) to replace their child SA; the new SPIs appear under sessions as each lands", len(asked))}, nil
+		Detail: fmt.Sprintf("Asked %d session(s) to replace their child SA and the new SPIs appear under sessions as each lands", len(asked))}, nil
 }
 
 // Reload re-reads the configuration file and the trust document it names, as
@@ -263,5 +263,5 @@ func (c *Client) Reload(ctx context.Context) (_ control.Result, err error) {
 		return control.Result{}, err
 	}
 	return control.Result{Acted: []string{*path},
-		Detail: "re-read " + *path + " and the trust document it names"}, nil
+		Detail: "Re-read " + *path + " and the trust document it names"}, nil
 }

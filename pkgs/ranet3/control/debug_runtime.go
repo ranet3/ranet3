@@ -73,20 +73,20 @@ func RenderRuntime(w io.Writer, info RuntimeInfo) {
 		collector = fmt.Sprintf("%s, the last %s ago", countOf(int(info.GCCycles), "cycle"), sinceText(time.Duration(info.LastGC)))
 	}
 	pairs(w, [][]string{
-		{"version", info.Version},
-		{"go", info.GoVersion},
-		{"revision", revision},
-		{"uptime", shortDuration(time.Duration(info.Uptime))},
-		{"cpus", fmt.Sprintf("%d, gomaxprocs %d", info.CPUs, info.GOMAXPROCS)},
-		{"goroutines", fmt.Sprint(info.Goroutines)},
-		{"threads", fmt.Sprint(info.Threads)},
-		{"descriptors", descriptors},
-		{"heap", fmt.Sprintf("%s in use, %d objects, next cycle at %s",
+		{"Version", info.Version},
+		{"Go", info.GoVersion},
+		{"Revision", revision},
+		{"Uptime", shortDuration(time.Duration(info.Uptime))},
+		{"CPUs", fmt.Sprintf("%d, GOMAXPROCS %d", info.CPUs, info.GOMAXPROCS)},
+		{"Goroutines", fmt.Sprint(info.Goroutines)},
+		{"Threads", fmt.Sprint(info.Threads)},
+		{"Descriptors", descriptors},
+		{"Heap", fmt.Sprintf("%s in use, %d objects, next cycle at %s",
 			bytesText(info.HeapAlloc), info.HeapObjects, bytesText(info.NextGC))},
-		{"memory", bytesText(info.Sys) + " from the system"},
-		{"gc", collector},
-		{"gc pause", shortDuration(time.Duration(info.GCPauseTotal))},
-		{"resolver", info.Resolver},
+		{"Memory", bytesText(info.Sys) + " from the system"},
+		{"GC", collector},
+		{"GC pause", shortDuration(time.Duration(info.GCPauseTotal))},
+		{"Resolver", info.Resolver},
 	})
 }
 

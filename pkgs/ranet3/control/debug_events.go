@@ -168,7 +168,7 @@ func RenderWaited(w io.Writer, waited Waited) {
 	if after := time.Duration(waited.After); after < 0 {
 		fmt.Fprintf(w, "%s before the wait began\n", Spelled(-after))
 	} else {
-		fmt.Fprintf(w, "after %s\n", Spelled(after))
+		fmt.Fprintf(w, "After %s\n", Spelled(after))
 	}
 }
 

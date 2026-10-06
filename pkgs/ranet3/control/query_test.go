@@ -90,7 +90,7 @@ func TestMeshAddressesTakeOnlyTheHostPrefixes(t *testing.T) {
 func TestWhoisNamesThePrefixAndTheNextHop(t *testing.T) {
 	var out strings.Builder
 	RenderWhois(&out, netip.MustParseAddr("2001:db8:1::5"), Covering(meshRoutes(), netip.MustParseAddr("2001:db8:1::5")))
-	for _, want := range []string{"2001:db8:1::5 is in 2001:db8:1::5/128", "reached through example/gateway@0", "::/0"} {
+	for _, want := range []string{"2001:db8:1::5 is in 2001:db8:1::5/128 via example/gateway@0", "::/0"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("whois printed %q, want it to carry %q", out.String(), want)
 		}
@@ -98,7 +98,7 @@ func TestWhoisNamesThePrefixAndTheNextHop(t *testing.T) {
 
 	out.Reset()
 	RenderWhois(&out, netip.MustParseAddr("198.18.104.117"), Covering(meshRoutes(), netip.MustParseAddr("198.18.104.117")))
-	if !strings.Contains(out.String(), "this node originates") {
+	if !strings.Contains(out.String(), "originated by this node") {
 		t.Errorf("a prefix this node originates printed as %q", out.String())
 	}
 
@@ -121,7 +121,7 @@ func TestWhoisNamesThePrefixAndTheNextHop(t *testing.T) {
 func TestExitNodesSayWhichDefaultIsTaken(t *testing.T) {
 	var out strings.Builder
 	RenderExitNodes(&out, Defaults(meshRoutes()))
-	for _, want := range []string{"destination", "state", "example/exit@0", "selected", "withdrawn", "2001:db8::/32"} {
+	for _, want := range []string{"Destination", "State", "example/exit@0", "selected", "withdrawn", "2001:db8::/32"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the exit list printed %q, want it to carry %q", out.String(), want)
 		}
@@ -135,7 +135,7 @@ func TestExitNodesSayWhichDefaultIsTaken(t *testing.T) {
 
 	out.Reset()
 	RenderExitNodes(&out, nil)
-	if !strings.Contains(out.String(), "no node in this mesh advertises a default") {
+	if !strings.Contains(out.String(), "No node advertises a default route") {
 		t.Errorf("a mesh with no exit printed as %q", out.String())
 	}
 }

@@ -140,7 +140,7 @@ by name.`,
 			for event, err := range control.Dial(r.socket).Events(ctx, query) {
 				switch {
 				case errors.Is(err, context.DeadlineExceeded):
-					fmt.Fprintf(cmd.ErrOrStderr(), "no %s arrived within %s\n", args[0], control.Spelled(timeout))
+					fmt.Fprintf(cmd.ErrOrStderr(), "No %s event arrived within %s\n", args[0], control.Spelled(timeout))
 					return waitTimedOut
 				case err != nil:
 					return unwatched(cmd, err)
