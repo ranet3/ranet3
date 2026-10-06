@@ -243,6 +243,18 @@ func (p *netlinkPlatform) EnsureVRF(name string, table uint32) (uint32, error) {
 	return made.index, nil
 }
 
+// VRFTable answers 0 for a name nothing holds yet, which is the state before the first pass creates the vrf
+func (p *netlinkPlatform) VRFTable(name string) (uint32, error) {
+	link, err := p.conn.link(0, name)
+	if errors.Is(err, unix.ENODEV) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return link.vrfTable, nil
+}
+
 func (p *netlinkPlatform) RemoveVRF(name string, index uint32) error {
 	link, err := p.conn.link(0, name)
 	if errors.Is(err, unix.ENODEV) {

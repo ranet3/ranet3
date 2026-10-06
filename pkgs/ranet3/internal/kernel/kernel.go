@@ -442,10 +442,9 @@ type auditor interface {
 	// foreignWriters returns each protocol already writing into the space,
 	// labeled for an operator rather than numbered, since the numbering is
 	// the platform's own registry.
-	foreignWriters() ([]string, error)
-	// vrfBinding reports the table the configured VRF is bound to, and false
-	// when none is configured or nothing of that name is a VRF yet.
-	vrfBinding() (table uint32, ok bool, err error)
+	// ownVRF says the space is the table the configured vrf is bound to
+	// the kernel files the connected routes of the vrf's links there
+	foreignWriters(ownVRF bool) ([]string, error)
 }
 
 // ruler is implemented by a platform that has a policy routing engine. linux
@@ -480,6 +479,9 @@ type vrfMaker interface {
 	// index. A device that is already gone is success.
 	// one holding the name under another index was made by somebody else after this one went, and stays
 	RemoveVRF(name string, index uint32) error
+	// VRFTable reports the table the vrf of that name is bound to, read from the kernel
+	// it is 0 when nothing holds the name or the device holding it is not a vrf, since no vrf is bound to table 0
+	VRFTable(name string) (uint32, error)
 }
 
 // platform is the kernel surface the reconciler drives. Everything above it is
@@ -787,6 +789,10 @@ type Reconciler struct {
 	// master is the last master observed, so a link somebody else owns is
 	// reported once per transition rather than once per pass.
 	master string
+	// bound is the table the configured vrf was last seen bound to, 0 before a pass has read it
+	// it is kept the way master is
+	// a binding to another table is then reported once per change rather than once per pass
+	bound uint32
 	// warned holds the routes already reported as unrepresentable. It is
 	// rebuilt from each pass, so it stays bounded by the snapshot.
 	warned map[Route]bool
@@ -1306,22 +1312,45 @@ func (r *Reconciler) recordPass(err error, took time.Duration) {
 
 // audit reports, once at startup, what in the space this reconciler is about
 // to take over would defeat it without anything failing.
+// it runs before the first pass
+// that pass enslaves the tun, which flushes every route out of it, another writer's among them
 func (r *Reconciler) audit() {
 	audit, ok := r.plat.(auditor)
 	if !ok {
 		return
+	}
+	// Read from the kernel rather than taken from the configuration: a VRF
+	// that existed before this process keeps whatever table it was bound to,
+	// so naming one does not make this table its table.
+	// read once, and a read that fails still leaves the census to run
+	ownVRF := false
+	if name := r.table.Name(); name != "" {
+		bound, err := r.vrfs.VRFTable(name)
+		if err != nil {
+			slog.Warn("kernel could not read which table its vrf is bound to", "vrf", name, "err", err)
+		}
+		ownVRF = bound == uint32(r.table.ID)
 	}
 	// An install refuses a key another writer already holds, so sharing a table
 	// with another daemon means the routes it refuses are routes the mesh
 	// wanted. Say so once at startup: on a fleet node mid-migration the other
 	// writer is BIRD in table 200, which is the intended overlap and still
 	// worth seeing.
-	if writers, err := audit.foreignWriters(); err != nil {
+	if writers, err := audit.foreignWriters(ownVRF); err != nil {
 		slog.Warn("kernel could not check the table for other writers", "err", err)
 	} else if len(writers) > 0 {
 		slog.Warn("kernel is sharing its table with another routing protocol",
 			"table", uint32(r.table.ID), "protocols", strings.Join(writers, ", "),
 			"detail", "an install refuses a key another writer already holds, so give this reconciler a table of its own")
+	}
+}
+
+// checkBinding reads which table the vrf holding the tun is bound to, on every pass that finds the tun in it
+// a vrf made or remade while this process runs can be bound to another table as much as one made before it
+func (r *Reconciler) checkBinding() error {
+	bound, err := r.vrfs.VRFTable(r.table.Name())
+	if err != nil {
+		return fmt.Errorf("read the table vrf %s is bound to: %w", r.table.Name(), err)
 	}
 	// A VRF that existed before this process keeps the table it was bound to,
 	// since applyVRF never rebinds one. Traffic inside a VRF is looked up in
@@ -1331,11 +1360,7 @@ func (r *Reconciler) audit() {
 	// than a refusal, as with the l3mdev sysctls the client checks: the device
 	// can be recreated while this process runs, and with create set the next
 	// pass makes it bound to this table.
-	bound, ok, err := audit.vrfBinding()
-	switch {
-	case err != nil:
-		slog.Warn("kernel could not read which table its vrf is bound to", "vrf", r.table.Name(), "err", err)
-	case ok && bound != uint32(r.table.ID):
+	if bound != r.bound && bound != 0 && bound != uint32(r.table.ID) {
 		fix := "recreate the device bound to this table, or set cap.table id to the vrf's table"
 		if r.table.creates() {
 			fix = "delete the device and the next pass recreates it bound to this table, or set cap.table id to the vrf's table"
@@ -1344,6 +1369,8 @@ func (r *Reconciler) audit() {
 			"vrf", r.table.Name(), "vrf_table", bound, "table", uint32(r.table.ID),
 			"detail", "traffic in the vrf looks up the vrf's own table and misses the routes installed here unless a policy rule sends it here; "+fix)
 	}
+	r.bound = bound
+	return nil
 }
 
 // applyVRF creates the master device when the configuration asked for one and
@@ -1813,14 +1840,12 @@ func (r *Reconciler) applyMaster() error {
 	switch master {
 	case r.table.Name():
 		r.master = master
-		return nil
 	case "":
 		if err := r.plat.Enslave(r.table.Name()); err != nil {
 			return fmt.Errorf("enslave %s to %s: %w", r.rt.Interface, r.table.Name(), err)
 		}
 		r.enslaved, r.master, r.changed = true, r.table.Name(), true
 		slog.Info("kernel interface enslaved", "interface", r.rt.Interface, "master", r.table.Name())
-		return nil
 	default:
 		if r.master != master {
 			slog.Warn("kernel leaving interface in the master it already has",
@@ -1829,6 +1854,7 @@ func (r *Reconciler) applyMaster() error {
 		r.master = master
 		return nil
 	}
+	return r.checkBinding()
 }
 
 // withdraw removes exactly what this reconciler installed: every route still

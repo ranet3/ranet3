@@ -55,6 +55,14 @@ type netlinkPlatform struct {
 	refused  map[Route]bool
 }
 
+// each optional half is reached only through a type assertion
+// a method renamed on one side would drop it without a word
+var (
+	_ auditor  = (*netlinkPlatform)(nil)
+	_ ruler    = (*netlinkPlatform)(nil)
+	_ vrfMaker = (*netlinkPlatform)(nil)
+)
+
 func newPlatform(t Table, rt Runtime) (platform, error) {
 	conn, err := dialNetlink()
 	if err != nil {
@@ -550,15 +558,7 @@ func notificationTable(message nlMessage) uint32 {
 // this reconciler is pointed at during a migration. Reporting it is the
 // difference between a migration that looks fine and one that is visibly
 // sharing a table.
-func (p *netlinkPlatform) foreignWriters() ([]string, error) {
-	// Read from the kernel rather than taken from the configuration: a VRF
-	// that existed before this process keeps whatever table it was bound to,
-	// so naming one does not make this table its table.
-	bound, ok, err := p.vrfBinding()
-	if err != nil {
-		return nil, err
-	}
-	ownVRF := ok && bound == uint32(p.table.ID)
+func (p *netlinkPlatform) foreignWriters(ownVRF bool) ([]string, error) {
 	seen := map[uint8]bool{}
 	for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
 		body := make([]byte, unix.SizeofRtMsg)
@@ -578,23 +578,6 @@ func (p *netlinkPlatform) foreignWriters() ([]string, error) {
 		labels = append(labels, protocolLabel(protocol))
 	}
 	return labels, nil
-}
-
-// vrfBinding reports the table the configured VRF is bound to, read from the
-// kernel. It answers false when no VRF is configured or nothing of that name
-// is a VRF yet, which is the state before the first pass creates one.
-func (p *netlinkPlatform) vrfBinding() (uint32, bool, error) {
-	if p.table.VRF == nil {
-		return 0, false, nil
-	}
-	link, err := p.conn.link(0, p.table.VRF.Name)
-	if errors.Is(err, unix.ENODEV) {
-		return 0, false, nil
-	}
-	if err != nil {
-		return 0, false, err
-	}
-	return link.vrfTable, link.vrfTable != 0, nil
 }
 
 // protocolLabel names a routing protocol the way iproute2 prints it, from the
