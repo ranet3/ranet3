@@ -62,8 +62,13 @@ func TestDebugRuntimeCountsThisProcess(t *testing.T) {
 		info.HeapAlloc == 0 || info.HeapObjects == 0 || info.NextGC < info.HeapAlloc || info.Sys < info.HeapAlloc {
 		t.Errorf("the heap and the collector read %+v", info)
 	}
-	// stdin, stdout and stderr at least
-	if info.Descriptors < 3 || uint64(info.Descriptors) > info.DescriptorLimit {
+	// a build sandbox may hide the descriptor listing, where the view says so with -1
+	// otherwise stdin, stdout and stderr at least
+	if openDescriptors() < 0 {
+		if info.Descriptors != -1 {
+			t.Errorf("%d descriptors reported where the listing cannot be read", info.Descriptors)
+		}
+	} else if info.Descriptors < 3 || uint64(info.Descriptors) > info.DescriptorLimit {
 		t.Errorf("%d descriptors open against a limit of %d", info.Descriptors, info.DescriptorLimit)
 	}
 	if info.Uptime < control.Duration(time.Minute) {
