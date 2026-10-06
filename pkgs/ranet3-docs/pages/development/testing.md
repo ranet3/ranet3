@@ -43,7 +43,7 @@ in files ending in `_property_test.go`: `esp`, `ike`, `sadr`, `srv6`,
 `internal/babel`, `internal/packet`, `schema`, `internal/config`,
 `internal/kernel` and `control`. They run with the rest of `go test`, under
 hegel-go through `internal/pbt`, whose `Check` gives every property the same
-terms: 200 cases, no example database, and a derandomized engine. hegel v0.9.13
+terms: 200 cases, no example database, and a derandomized engine. hegel v0.9.14
 still seeds the labels of nested generators per process, so two runs need not
 draw the same sample, and a boundary the code branches on is drawn outright,
 with `pbt.Spanning` or by name, rather than left to the sample. A failing
