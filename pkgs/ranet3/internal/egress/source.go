@@ -78,5 +78,3 @@ func (s Source) MarshalText() ([]byte, error) { return []byte(s.String()), nil }
 func (s *Source) UnmarshalYAML(value *yaml.Node) error {
 	return schema.Scalar(value, "a source, auto or an address", s)
 }
-
-func (s Source) MarshalYAML() (any, error) { return s.String(), nil }
