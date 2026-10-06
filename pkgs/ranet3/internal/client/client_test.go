@@ -365,6 +365,13 @@ func hasDialer(c *Client, path string) bool {
 	return c.dialers[path] != nil
 }
 
+// durationOf is an optional duration as a config holds it
+// an absent one is nil, so a present one is behind a pointer
+func durationOf(d time.Duration) *schema.Duration {
+	value := schema.Duration(d)
+	return &value
+}
+
 func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 	base := &config.Config{
 		Node: config.Node{Org: "example", Name: "node"},
@@ -385,10 +392,33 @@ func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 		"endpoints": func(c *config.Config) {
 			c.Link.Endpoints = []config.Endpoint{{Serial: "1", Family: "ip6"}}
 		},
-		"cap.babel":  func(c *config.Config) { c.Cap.Babel = &babel.Config{Cost: babel.CostOptions{Rx: &rxcost}} },
-		"cap.route":  func(c *config.Config) { c.Cap.Route = &babel.Routes{Transit: new(bool)} },
-		"cap.table":  func(c *config.Config) { c.Cap.Table = &kernel.Table{ID: 201} },
-		"cap.crypto": func(c *config.Config) { c.Cap.Crypto = &ike.Crypto{Replay: &window} },
+		"cap.babel":         func(c *config.Config) { c.Cap.Babel = &babel.Config{Cost: babel.CostOptions{Rx: &rxcost}} },
+		"cap.babel quality": func(c *config.Config) { c.Cap.Babel = &babel.Config{Quality: babel.LinkQualityNone} },
+		"cap.route":         func(c *config.Config) { c.Cap.Route = &babel.Routes{Transit: new(bool)} },
+		"cap.table":         func(c *config.Config) { c.Cap.Table = &kernel.Table{ID: 201} },
+		// a session takes the replay window and the rekey timers from the listener built at startup when it is accepted
+		// and from the file when it is dialed, and one field let through runs two policies at once
+		"cap.crypto replay": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Replay: &window}
+		},
+		"cap.crypto rekey child": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{Child: durationOf(2 * ike.DefaultChildRekey)}}
+		},
+		"cap.crypto rekey ike": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{IKE: durationOf(2 * ike.DefaultIKERekey)}}
+		},
+		"cap.crypto rekey margin": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{Margin: durationOf(2 * ike.DefaultRekeyMargin)}}
+		},
+		"cap.crypto rekey jitter": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{Jitter: durationOf(2 * ike.DefaultRekeyJitter)}}
+		},
+		"cap.crypto rekey retry first": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{Retry: ike.Retry{First: durationOf(2 * ike.DefaultRetryFirst)}}}
+		},
+		"cap.crypto rekey retry max": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{Retry: ike.Retry{Max: durationOf(2 * ike.DefaultRetryMax)}}}
+		},
 		"cap.segment": func(c *config.Config) {
 			c.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{
 				{SID: schema.MustAddr("2001:db8::1"), Behavior: srv6.BehaviorEnd},
@@ -1189,6 +1219,7 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 	params := base.Babel().CostEffective()
 	defaults := babel.CostOptions{Rx: &params.RxCost, RTT: babel.RTTOptions{
 		Weight: &params.RTT.Weight, Min: &params.RTT.Min, Max: &params.RTT.Max}}
+	replay := uint32(ike.DefaultReplayWindow)
 
 	// Every block the reconciler is configured with once at startup, with each
 	// defaulted field written out as the value already running. These are the
@@ -1210,6 +1241,27 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 		},
 		"the capture grace": func(c *config.Config) {
 			c.Cap.Table = &kernel.Table{CaptureGrace: schema.Duration(kernel.DefaultCaptureGrace)}
+		},
+		"the replay window": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Replay: &replay}
+		},
+		"the child rekey interval": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{Child: durationOf(ike.DefaultChildRekey)}}
+		},
+		"the IKE rekey interval": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{IKE: durationOf(ike.DefaultIKERekey)}}
+		},
+		"the rekey margin": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{Margin: durationOf(ike.DefaultRekeyMargin)}}
+		},
+		"the rekey jitter": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{Jitter: durationOf(ike.DefaultRekeyJitter)}}
+		},
+		"the first rekey retry": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{Retry: ike.Retry{First: durationOf(ike.DefaultRetryFirst)}}}
+		},
+		"the longest rekey retry": func(c *config.Config) {
+			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{Retry: ike.Retry{Max: durationOf(ike.DefaultRetryMax)}}}
 		},
 		"an empty address list": func(c *config.Config) {
 			c.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{}, Rules: []kernel.Rule{}}
