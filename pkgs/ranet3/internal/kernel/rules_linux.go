@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 
 	"golang.org/x/sys/unix"
@@ -202,11 +203,11 @@ func (p *netlinkPlatform) DelRule(rule Rule) error {
 // is already there is left exactly as it is, whatever kind it is and whatever
 // table it is bound to: rebinding somebody else's VRF moves every route in it,
 // and replacing a device of another kind takes its addresses with it.
-func (p *netlinkPlatform) EnsureVRF(name string, table uint32) (bool, error) {
+func (p *netlinkPlatform) EnsureVRF(name string, table uint32) (uint32, error) {
 	if _, err := p.conn.link(0, name); err == nil {
-		return false, nil
+		return 0, nil
 	} else if !errors.Is(err, unix.ENODEV) {
-		return false, fmt.Errorf("kernel: look up %s: %w", name, err)
+		return 0, fmt.Errorf("kernel: look up %s: %w", name, err)
 	}
 	body := make([]byte, unix.SizeofIfInfomsg)
 	body[0] = unix.AF_UNSPEC
@@ -224,20 +225,36 @@ func (p *netlinkPlatform) EnsureVRF(name string, table uint32) (bool, error) {
 		// Something else won the race between the lookup and the create, which
 		// is a device that now exists and is therefore not ours to have made.
 		if errors.Is(err, unix.EEXIST) {
-			return false, nil
+			return 0, nil
 		}
-		return false, fmt.Errorf("kernel: create vrf %s: %w", name, err)
+		return 0, fmt.Errorf("kernel: create vrf %s: %w", name, err)
 	}
-	return true, nil
+	made, err := p.conn.link(0, name)
+	if err != nil {
+		// no stop can remove a device whose index this process never read
+		// it goes now
+		// the next pass makes it again and reads the index
+		byName := putAttrString(make([]byte, unix.SizeofIfInfomsg), unix.IFLA_IFNAME, name)
+		if _, removeErr := p.conn.execute(unix.RTM_DELLINK, unix.NLM_F_ACK, byName); removeErr != nil && !errors.Is(removeErr, unix.ENODEV) {
+			return 0, fmt.Errorf("kernel: look up the vrf %s just created: %w, and remove it again: %w", name, err, removeErr)
+		}
+		return 0, fmt.Errorf("kernel: look up the vrf %s just created: %w", name, err)
+	}
+	return made.index, nil
 }
 
-func (p *netlinkPlatform) RemoveVRF(name string) error {
+func (p *netlinkPlatform) RemoveVRF(name string, index uint32) error {
 	link, err := p.conn.link(0, name)
 	if errors.Is(err, unix.ENODEV) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("kernel: look up %s: %w", name, err)
+	}
+	if link.index != index {
+		slog.Warn("kernel is leaving a vrf it did not create", "vrf", name,
+			"detail", "the device it created is gone and another one holds the name now")
+		return nil
 	}
 	body := make([]byte, unix.SizeofIfInfomsg)
 	body[0] = unix.AF_UNSPEC
