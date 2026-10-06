@@ -537,6 +537,81 @@ func TestUnderlayDefaultsDoesNotOwnARouteThatWasAlreadyThere(t *testing.T) {
 	}
 }
 
+// an add the kernel refused leaves no record, since the record is the whole of this process's claim to delete
+// one left behind names a route somebody else may write at that key later, and the next withdrawal deletes theirs
+func TestUnderlayDefaultsDoesNotRecordAnAddTheKernelRefused(t *testing.T) {
+	links := &fakeDefaults{v4: hostDefault{index: uplinkIndex, gateway: addr("192.168.0.1")}}
+	var held []dumpEntry
+	underlay, sock := testUnderlay(t, links, func() []byte { return hostRIB(t, held...) })
+	sock.err = unix.ENETUNREACH
+
+	if err := underlay.Prepare(uplinkIndex); err == nil {
+		t.Fatal("an add the kernel refused was reported as written")
+	}
+	if got := underlay.Written(); len(got) != 0 {
+		t.Fatalf("the record holds %d routes for one that was never written", len(got))
+	}
+	// somebody else writes the route afterwards
+	held = append(held, ourScoped(uplinkIndex, addr("192.168.0.1")))
+	sock.err = nil
+	if err := underlay.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range sent(t, sock) {
+		if message.kind == unix.RTM_DELETE {
+			t.Errorf("a route this process never wrote was deleted: %+v", message)
+		}
+	}
+}
+
+// a route that appears between the dump and the write is satisfied and not ours
+// macOS writes one for every interface but the primary, and the add meets EEXIST where the dump saw nothing
+// the add is not a failure, and the record never holds what a later withdrawal would delete from them
+func TestUnderlayDefaultsDoesNotOwnARouteThatAppearsBetweenTheDumpAndTheWrite(t *testing.T) {
+	links := &fakeDefaults{v4: hostDefault{index: uplinkIndex, gateway: addr("192.168.0.1")}}
+	var held []dumpEntry
+	underlay, sock := testUnderlay(t, links, func() []byte { return hostRIB(t, held...) })
+	sock.err = unix.EEXIST
+
+	if err := underlay.Prepare(uplinkIndex); err != nil {
+		t.Fatalf("an add that met the route already there was reported as a failure: %v", err)
+	}
+	if got := underlay.Written(); len(got) != 0 {
+		t.Fatalf("a route somebody else wrote was recorded as ours, %d routes in the record", len(got))
+	}
+	// it is in the table now, as the other writer left it
+	held = append(held, ourScoped(uplinkIndex, addr("192.168.0.1")))
+	sock.err = nil
+	if err := underlay.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range sent(t, sock) {
+		if message.kind == unix.RTM_DELETE {
+			t.Errorf("a route this process did not create was deleted: %+v", message)
+		}
+	}
+}
+
+// a withdrawal the kernel refuses is an error and keeps the record
+// dropping it leaves the scoped default on the primary interface with nothing that will remove it, which the state file exists to close
+func TestUnderlayDefaultsKeepsTheRecordOfAWithdrawalTheKernelRefused(t *testing.T) {
+	links := &fakeDefaults{v4: hostDefault{index: uplinkIndex, gateway: addr("192.168.0.1")}}
+	var held []dumpEntry
+	underlay, sock := testUnderlay(t, links, func() []byte { return hostRIB(t, held...) })
+	if err := underlay.Prepare(uplinkIndex); err != nil {
+		t.Fatal(err)
+	}
+	held = append(held, ourScoped(uplinkIndex, addr("192.168.0.1")))
+	sock.err = unix.EPERM
+
+	if err := underlay.Close(); err == nil {
+		t.Error("a withdrawal the kernel refused was reported as done")
+	}
+	if got := underlay.Written(); len(got) != 1 {
+		t.Errorf("the record of a route still in the kernel holds %d routes, want the one", len(got))
+	}
+}
+
 // Close leaves the socket gone, so every entry point afterwards has to say so
 // rather than dereference it. Nothing reaches this from the daemon today,
 // because the reconciler always withdraws first and the hub's follower is not
