@@ -5,7 +5,7 @@
 title: "ranet3"
 description: "What ranet3 is, and how a node turns a registry into encrypted routes."
 created: 2026-08-17
-updated: 2026-10-03
+updated: 2026-10-06
 order: 10
 ---
 
@@ -22,8 +22,8 @@ ranet's full N-to-N reconciliation.
 ## How it works
 
 - **IKEv2** ([RFC 7815](https://www.rfc-editor.org/rfc/rfc7815)-style minimal
-  initiator) using modern cryptography only: X25519, AES-GCM /
-  ChaCha20-Poly1305, SHA-256/384. Authenticates with a raw Ed25519 key via
+  initiator) using X25519, P-384 or P-256, AES-GCM / ChaCha20-Poly1305,
+  SHA-256/384. Authenticates with a raw Ed25519 key via
   [RFC 7427](https://www.rfc-editor.org/rfc/rfc7427) Digital Signature auth
   ([RFC 8420](https://www.rfc-editor.org/rfc/rfc8420) EdDSA), and forces UDP
   encapsulation unconditionally on the one explicit registry port, interoperates
