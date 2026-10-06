@@ -465,7 +465,7 @@ func (m *Mesh) startInboundWriters() {
 		queue := make(chan inboundWriteBatch, inboundWriteQueueSize)
 		m.inboundWriters[lane] = queue
 		m.writerWG.Go(func() {
-			pending := make([][]byte, 0, 2*inboundWriteBatchSize)
+			pending := make([][]byte, 0, inboundPendingBatches*inboundWriteBatchSize)
 			for {
 				var first inboundWriteBatch
 				select {

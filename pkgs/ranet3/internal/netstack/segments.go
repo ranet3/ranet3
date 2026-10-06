@@ -28,20 +28,6 @@ import (
 // than silently dropped so that a change which made it possible is visible.
 var errNotIP = errors.New("netstack: a forwarded segment is not an IP packet")
 
-// segmentDropInterval bounds how often a refused segment is reported. A peer
-// choosing to send malformed headers should cost this node a counter, not a
-// log line per packet.
-const segmentDropInterval = 30 * time.Second
-
-// icmpBurst and icmpRefill bound the ICMP errors this node answers refused
-// packets with. A traceroute sends three probes per hop, so the burst carries
-// two hops' worth without waiting, and the refill bounds what a peer sending
-// refused headers in a loop gets out of this node.
-const (
-	icmpBurst  = 8
-	icmpRefill = 250 * time.Millisecond
-)
-
 // SetSteering installs the table deciding which of this node's own packets go
 // through a segment list, or nil for none. Like SetSegments it is called
 // before the device carries anything and read on the hot path, so the pointer
