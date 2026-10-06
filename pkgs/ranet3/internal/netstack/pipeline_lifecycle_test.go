@@ -162,12 +162,10 @@ func TestMeshCloseDrainsQueuedTickets(t *testing.T) {
 		return func(raw [][]byte, _ []byte, _ [][]byte) ([][]byte, error) { return [][]byte{bytes.Clone(raw[0])}, nil }, nil
 	}, func([][]byte) error { return nil })
 	defer peer.Close()
-	// Keep the sender waiting on its first ticket, with every slot spoken for,
-	// so the dispatch below reserves nothing and Close still has a peer that
-	// will never finish.
-	for range cap(peer.slots) {
-		peer.reserveBatch(1)
-	}
+	// Keep the sender waiting on its first ticket, with the whole budget
+	// spoken for, so the dispatch below reserves nothing and Close still has a
+	// peer that will never finish.
+	peer.reserveBatch(peerDataBudget)
 	m := &Mesh{closed: make(chan struct{}), outboundJobs: make(chan *outboundBatch, 4), outboundFree: make(chan *outboundBatch, 4)}
 	m.outboundWorkerWG.Add(1)
 	go m.outboundWorker()
@@ -265,6 +263,11 @@ func TestSingleQueueInboundSplitsLargeBatches(t *testing.T) {
 // queue carries whichever destinations the kernel hashed onto it, so a
 // reservation that waits there puts the whole dataplane behind the slowest
 // peer on the mesh.
+//
+// the bound is no wait at all
+// every read reaches the other peer while the stuck transport has not returned once
+// through more reads than the stuck peer's budget holds
+// and the stuck peer drops exactly what its budget had no room for
 func TestCongestedPeerDoesNotStallOthers(t *testing.T) {
 	sealer := func(raw [][]byte, _ []byte, _ [][]byte) ([][]byte, error) {
 		sealed := make([][]byte, len(raw))
@@ -274,48 +277,61 @@ func TestCongestedPeerDoesNotStallOthers(t *testing.T) {
 		return sealed, nil
 	}
 	reserve := func(int) (BatchSealer, error) { return sealer, nil }
-	transmitted := make(chan struct{}, 4)
-	stuck := NewPeerReserved("stuck", reserve, func([][]byte) error { return nil })
-	defer stuck.Close()
-	healthy := NewPeerReserved("healthy", reserve, func(packets [][]byte) error {
-		for range packets {
-			transmitted <- struct{}{}
-		}
+	release := make(chan struct{})
+	var returned atomic.Int64
+	stuck := NewPeerReserved("stuck", reserve, func([][]byte) error {
+		<-release
+		returned.Add(1)
 		return nil
 	})
-	defer healthy.Close()
-	// Every slot spoken for and never returned, which is how a socket that
-	// cannot keep up looks from this side.
-	for range cap(stuck.slots) {
-		stuck.reserveBatch(1)
-	}
+	var transmitted atomic.Int64
+	healthy := NewPeerReserved("healthy", reserve, func(packets [][]byte) error {
+		transmitted.Add(int64(len(packets)))
+		return nil
+	})
 
-	m := &Mesh{closed: make(chan struct{}), outboundJobs: make(chan *outboundBatch, 4), outboundFree: make(chan *outboundBatch, 4)}
-	m.outboundWorkerWG.Add(1)
+	const perRead = 64
+	const reads = peerDataBudget/perRead + 4
+	m := &Mesh{closed: make(chan struct{}), outboundJobs: make(chan *outboundBatch, 4), outboundFree: make(chan *outboundBatch, reads)}
+	m.outboundWorkerWG.Add(2)
 	go m.outboundWorker()
-	defer m.Close()
-
+	go m.outboundWorker()
 	dispatched := make(chan struct{})
+	// the transport lets go first, so a dispatch that waited on it can finish before the queue closes
+	t.Cleanup(func() {
+		close(release)
+		<-dispatched
+		m.Close()
+		stuck.Close()
+		healthy.Close()
+	})
+
 	go func() {
 		defer close(dispatched)
-		m.dispatchOutbound(&outboundBatch{
-			n: 2, bufs: [][]byte{framed(1), framed(2)}, sizes: []int{1, 1}, headers: []byte{0, 0},
-			peers: []*Peer{stuck, healthy}, peerOrder: []*Peer{stuck, healthy},
-			counts: map[*Peer]int{stuck: 1, healthy: 1}, batches: make(map[*Peer]*peerBatch),
-		})
+		for range reads {
+			b := &outboundBatch{counts: map[*Peer]int{stuck: perRead, healthy: perRead},
+				batches: make(map[*Peer]*peerBatch), peerOrder: []*Peer{stuck, healthy}}
+			for i := range 2 * perRead {
+				b.bufs = append(b.bufs, framed(byte(i)))
+				b.sizes = append(b.sizes, 1)
+				b.headers = append(b.headers, 0)
+				b.peers = append(b.peers, []*Peer{stuck, healthy}[i%2])
+			}
+			b.n = len(b.bufs)
+			m.dispatchOutbound(b)
+		}
 	}()
 	select {
 	case <-dispatched:
-	case <-time.After(2 * time.Second):
+	case <-time.After(deliveryTimeout):
 		t.Fatal("the congested peer held the dispatch lock every reader shares")
 	}
-	select {
-	case <-transmitted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the packet for the peer that was not congested never reached its transport")
+	waitUntil(t, "the peer that was not congested to send every packet it was given", func() bool { return transmitted.Load() >= reads*perRead })
+	if got := returned.Load(); got != 0 {
+		t.Fatalf("the stuck transport returned %d times, so this proves nothing", got)
 	}
-	if got := stuck.Dropped(); got != 1 {
-		t.Errorf("the congested peer counted %d dropped packets, want 1", got)
+	if got := stuck.Dropped(); got != reads*perRead-peerDataBudget {
+		t.Errorf("the congested peer counted %d dropped packets, want the %d its budget had no room for", got, reads*perRead-peerDataBudget)
 	}
 	if got := healthy.Dropped(); got != 0 {
 		t.Errorf("the peer that was not congested counted %d dropped packets, want 0", got)

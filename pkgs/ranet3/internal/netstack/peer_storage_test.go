@@ -108,7 +108,7 @@ func TestSendRawOrDropDoesNotWaitForBackedUpPeer(t *testing.T) {
 	// coming, so the whole run is bounded. The sends are on their own
 	// goroutine so a blocking one is reported rather than hanging.
 	const beyond = 20
-	attempts := cap(peer.controlSlots) + beyond
+	attempts := controlQueueSize + beyond
 	dropped := make(chan int, 1)
 	go func() {
 		n := 0
@@ -160,7 +160,7 @@ func TestControlPacketDropsAreReported(t *testing.T) {
 	defer func() { unblock(); peer.Close() }()
 
 	var dropped int
-	for range cap(peer.controlSlots) + 50 {
+	for range controlQueueSize + 50 {
 		if err := sendOrDrop(peer, []byte("control packet"), 41); errors.Is(err, ErrSendQueueFull) {
 			dropped++
 		}
@@ -185,7 +185,7 @@ func TestControlPacketDropsAreReported(t *testing.T) {
 
 // A peer whose outbound SA cannot give out a sequence range transmits nothing,
 // which is how a peer that has just deleted its Child SA looks from this
-// side. Counting only the slot refusals would leave the drop counter reading
+// side. Counting only the budget refusals would leave the drop counter reading
 // zero through exactly that window.
 func TestReservationFailureCountsAsADrop(t *testing.T) {
 	refused := errors.New("no child sa")
@@ -204,11 +204,10 @@ func TestReservationFailureCountsAsADrop(t *testing.T) {
 	}
 }
 
-// Babel and the dataplane must not share one budget. The data budget is sized
-// by the core count, a bulk transfer consumes all of it, and sharing dropped
-// 98 of every 100 control packets under load. Three lost hellos withdraw every
-// route through the peer, so the transfer then has nowhere to go: the loss
-// feeds itself.
+// Babel and the dataplane must not share one budget. A bulk transfer consumes
+// all of the data budget, and sharing dropped 98 of every 100 control packets
+// under load. Three lost hellos withdraw every route through the peer, so the
+// transfer then has nowhere to go and the loss feeds itself.
 func TestControlTrafficHasItsOwnBudget(t *testing.T) {
 	release := make(chan struct{})
 	var once sync.Once
@@ -224,17 +223,15 @@ func TestControlTrafficHasItsOwnBudget(t *testing.T) {
 
 	// The dataplane takes everything it is allowed, which is how a bulk
 	// transfer through a backpressured socket looks from here.
-	for i := range cap(peer.slots) {
-		if peer.reserveBatchNow(1) == nil {
-			t.Fatalf("the dataplane was refused place %d below its own budget", i)
-		}
+	if peer.reserveBatchNow(peerDataBudget) == nil {
+		t.Fatal("the dataplane was refused its own budget")
 	}
 	if peer.reserveBatchNow(1) != nil {
 		t.Fatal("the dataplane took more than its budget, so this proves nothing")
 	}
 
 	// Babel still gets through, for as many packets as a periodic dump needs.
-	for i := range cap(peer.controlSlots) {
+	for i := range controlQueueSize {
 		if _, err := peer.ReserveRawOrDrop([]byte("hello"), 41); err != nil {
 			t.Fatalf("control packet %d was dropped because the dataplane had filled its own budget: %v", i, err)
 		}
@@ -288,16 +285,15 @@ func TestBatchReservedBeforeCloseIsRefusedAndCounted(t *testing.T) {
 		},
 		func([][]byte) error { t.Error("a closed peer transmitted"); return nil })
 
-	// Reserved while the peer is open, so each holds a ticket and a slot. The
-	// dataplane budget is sized by the core count, so this takes all of it.
-	reserved := cap(peer.slots)
+	// Reserved while the peer is open, so each holds a ticket and its packets
+	// of the budget, all of it between them.
+	sizes := []int{1, 5, peerDataBudget - 6}
 	var batches []*peerBatch
-	for i := range reserved {
-		b := peer.reserveBatchNow(1)
+	for i, size := range sizes {
+		b := filled(peer, size)
 		if b == nil {
 			t.Fatalf("the peer refused reservation %d while it was open", i)
 		}
-		b.append([]byte{1}, 0)
 		batches = append(batches, b)
 	}
 	peer.Close()
@@ -307,8 +303,12 @@ func TestBatchReservedBeforeCloseIsRefusedAndCounted(t *testing.T) {
 			t.Fatalf("batch %d was accepted by a closed peer and will never be transmitted", i)
 		}
 	}
-	if got := peer.Dropped(); got != uint64(reserved) {
-		t.Errorf("the peer counted %d of the %d packets it will never send", got, reserved)
+	if got := peer.Dropped(); got != peerDataBudget {
+		t.Errorf("the peer counted %d of the %d packets it will never send", got, peerDataBudget)
+	}
+	// and gave back every packet of the budget they held
+	if got := peer.dataBudget.used.Load(); got != 0 {
+		t.Errorf("a closed peer kept %d packets of its budget", got)
 	}
 }
 
@@ -373,7 +373,7 @@ func TestSealFailureOnAClosedPeerIsStillCounted(t *testing.T) {
 
 // Every packet a peer will not send has to reach the counter exactly once, and
 // the sender's own stop path was the hole: a batch already queued behind the
-// one the sender is waiting for is holding a transmission slot and a place in
+// one the sender is waiting for is holding packets of the budget and a place in
 // the transmission order, and returning from the loop left both, with its
 // packets counted by nothing.
 func TestBatchesStrandedInTheSenderAreCounted(t *testing.T) {
@@ -505,9 +505,9 @@ func TestTransportFailureIsSaidRarely(t *testing.T) {
 		func([][]byte) error { return sending })
 	defer peer.Close()
 
-	// The transmission budget is the core count, and the sender gives a slot
-	// back only after the transport returns, so a batch that finds none free
-	// is waited for rather than counted as a failure to send.
+	// The sender gives the budget back only after the transport returns, so a
+	// batch that finds no room is waited for rather than counted as a failure
+	// to send.
 	const batches = 200
 	for sent := 0; sent < batches; {
 		b := peer.reserveBatchNow(1)
@@ -540,7 +540,7 @@ type countingWriter struct{ n *atomic.Int64 }
 func (w countingWriter) Write(b []byte) (int, error) { w.n.Add(1); return len(b), nil }
 
 // A batch that lands in the queue after the sender's last drain is read by
-// nobody: never transmitted, never counted, its slot never given back, and its
+// nobody: never transmitted, never counted, its budget never given back, and its
 // caller told it went. Testing the stop channel before the send cannot close
 // that, because the drain happens between the test and the send, and the queue
 // is sized so its send arm is always ready. Every teardown and every session
@@ -595,10 +595,10 @@ func TestNoBatchIsLostBetweenTheStopCheckAndTheQueue(t *testing.T) {
 		// enqueue returning nil promises the queue took the batch, not that it
 		// left: the sender may still give it back, and that is counted above.
 		_ = sent.Load()
-		// And every transmission slot came back, or the next session on this
-		// peer has fewer of them for good.
-		if got := len(peer.slots) + len(peer.controlSlots); got != 0 {
-			t.Fatalf("%d transmission slots were not given back", got)
+		// And every packet of the budgets came back, or the next session on
+		// this peer has less room for good.
+		if got := peer.dataBudget.used.Load() + peer.controlBudget.used.Load(); got != 0 {
+			t.Fatalf("%d packets of the budgets were not given back", got)
 		}
 	}
 }

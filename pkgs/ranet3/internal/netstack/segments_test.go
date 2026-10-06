@@ -285,10 +285,9 @@ func TestPacketThatCannotBeSteeredGoesOutUnchanged(t *testing.T) {
 	}
 }
 
-// A whole inbound batch of waypointed packets takes one place on the peer's
-// budget, as a tun read does. One per packet is the same accounting at a
-// 128th of the batch size, so most of a forwarded burst is dropped on an idle
-// machine and a peer can spend this node's whole allowance to a third peer.
+// A whole inbound batch of waypointed packets reserves once for each peer, as
+// a tun read does: one ticket, one sequence range and one seal for the share,
+// rather than one of each per packet.
 func TestWaypointBatchTakesOnePlacePerPeer(t *testing.T) {
 	waypoint := segAddr("3fff:1:69c:8c6::2")
 	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}})
@@ -332,9 +331,8 @@ func TestWaypointBatchTakesOnePlacePerPeer(t *testing.T) {
 	if got := batches.Load(); got != 1 {
 		t.Errorf("a batch of %d waypointed packets was split into %d, want one for the peer", count, got)
 	}
-	// Reserving for fewer than are appended is the same accounting at a 128th
-	// of the batch size, which drops most of a forwarded burst and lets a peer
-	// spend this node's whole allowance to a third peer.
+	// The budget counts packets, so the reservation names every packet the
+	// share carries, or the share holds less of the budget than it uses.
 	if got := reserved.Load(); got != count {
 		t.Errorf("the peer reserved for %d packets and was handed %d", got, count)
 	}

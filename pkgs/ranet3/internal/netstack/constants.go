@@ -54,6 +54,12 @@ const tunOffset = 16
 // the counter keeps the exact count, and the line only has to point at it
 const truncatedReadInterval = 30 * time.Second
 
+// peerDataBudget is the packets one peer may hold from their reservation until the transmit that carried them returns
+// 5.7 MB of 1400-byte packets, which last 4.7 milliseconds at 9.7 Gbit/s and 15 milliseconds at 3 Gbit/s
+// their sealed storage stays under twice that, about 12 MB, since a batch reuses only storage grown by at most twice its packets
+// one sender drains each peer, so the budget does not grow with the cores
+const peerDataBudget = 4096
+
 // transmitBatchSize is the most packets a peer's sender merges into one transmit
 // the transport hands its socket at most espSendBatch datagrams per send, so one merge fills one send
 const transmitBatchSize = 128
