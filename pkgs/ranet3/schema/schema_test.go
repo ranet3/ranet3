@@ -166,6 +166,11 @@ func TestBothDecodersRefuseTheSameSpellings(t *testing.T) {
 			asYAML: "table: mane\n",
 			asTOML: "table = \"mane\"\n",
 		},
+		// the names are the lowercase ones iproute2 matches case-sensitively, and a second spelling of each is not taken
+		"a table name in another case": {
+			asYAML: "table: Main\n",
+			asTOML: "table = \"MAIN\"\n",
+		},
 		"an announcement with an unknown field": {
 			asYAML: "announce: [{ prefix: \"::/0\", form: 2001:db8::/48 }]\n",
 			asTOML: "announce = [{ prefix = \"::/0\", form = \"2001:db8::/48\" }]\n",

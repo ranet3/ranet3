@@ -74,7 +74,6 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"go.yaml.in/yaml/v3"
@@ -267,7 +266,7 @@ func (t TableID) String() string {
 }
 
 func (t *TableID) UnmarshalText(text []byte) error {
-	switch strings.ToLower(string(text)) {
+	switch string(text) {
 	case "main":
 		*t = TableMain
 		return nil
