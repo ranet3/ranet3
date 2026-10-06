@@ -6,8 +6,8 @@ package babel
 import "testing"
 
 // A file spells a link quality as etx or none and nothing else. Any other
-// value passed Validate, and then the speaker ran it as none while both
-// marshallers wrote it as etx, so the file a node renders describes another
+// value passed Validate, and then the speaker ran it as none while the
+// marshaller wrote it as etx, so the file a node renders describes another
 // speaker than the one it runs.
 func TestValidateRefusesALinkQualityWithNoSpelling(t *testing.T) {
 	for _, quality := range []LinkQuality{LinkQualityETX, LinkQualityNone} {

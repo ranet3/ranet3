@@ -166,8 +166,6 @@ func (q *LinkQuality) UnmarshalYAML(value *yaml.Node) error {
 	return schema.Scalar(value, "a link quality, etx or none", q)
 }
 
-func (q LinkQuality) MarshalYAML() (any, error) { return q.String(), nil }
-
 // rxCost is the figure this node advertises in its IHU, C/beta of A.2.2 with
 // the nominal hop cost C in place of the RFC's 256. Using the configured
 // rxcost keeps a lossless link at exactly that figure, so the fleet's tuning
