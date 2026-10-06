@@ -493,12 +493,11 @@ func TestIKESAInitKEOutsideItsOfferIsAnsweredWithTheGroup(t *testing.T) {
 // a peer's Child SA rekey whose KE is in a group its offer leaves out
 // is told the offered group to retry in and keeps the Child SA it has
 func TestPeerChildRekeyKEOutsideItsOfferIsAnsweredWithTheGroup(t *testing.T) {
-	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),
 		skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20), responder: true}
 	old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
-	s := &Session{mux: mux, current: ctx, Child: old}
+	s := &Session{current: ctx, Child: old}
 	offer := espProposal(binary.BigEndian.AppendUint32(nil, 32))
 	offer.Transforms = append(offer.Transforms, Transform{Type: TransDH, ID: DH_ECP_256})
 	// group 14 is MODP 2048, which this end has no code for
