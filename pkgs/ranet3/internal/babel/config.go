@@ -114,7 +114,7 @@ func (c Config) Validate() error {
 		}
 	}
 	// Only these two have a spelling. The speaker runs any other value as
-	// none while both marshallers write it as etx, so the file a node renders
+	// none while the marshaller writes it as etx, so the file a node renders
 	// would describe another speaker than the one it runs.
 	if c.Quality != LinkQualityETX && c.Quality != LinkQualityNone {
 		return fmt.Errorf("babel: cap.babel quality %d is not etx or none", c.Quality)
