@@ -843,6 +843,25 @@ func TestEveryIntegerFieldReadsABareNumberAlike(t *testing.T) {
 	})
 }
 
+// a toml value of the wrong kind is refused wherever it is written, whichever key or block it is
+// the decoder stops at the first value it cannot take, and the keys it had not reached are left to read as unknown ones
+// a document of one key has nothing left for that, so the refusal has to be the decoder's own
+func TestTOMLRefusesAValueOfTheWrongKindWhereverItIsWritten(t *testing.T) {
+	var fields []schemaField
+	schemaFields(reflect.TypeFor[Config](), nil, &fields)
+	for _, field := range fields {
+		wrong := "true"
+		if field.boolean {
+			wrong = `"x"`
+		}
+		document := field.nested(wrong, true)
+		var c Config
+		if err := decodeTOML([]byte(document), &c); err == nil {
+			t.Errorf("toml took %q, which has the wrong kind for %v", strings.TrimSpace(document), field.path)
+		}
+	}
+}
+
 // readsAlike fails unless numeral reads as each of types alike under every
 // decoder able to read it, the text form included. It fails through tb, the
 // test itself or one property case, so vet's printf check sees its format
