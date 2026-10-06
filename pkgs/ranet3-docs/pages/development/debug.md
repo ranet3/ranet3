@@ -2,19 +2,18 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: CC-BY-4.0
 title: "Debugging a running node"
-description: "The hidden debug tree: who may call it, what it promises, its commands and how a view is added."
+description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
 updated: 2026-10-06
 order: 30
 ---
 
-`ranet3 debug` is a hidden command tree for looking inside a running node. It
-speaks to the daemon over the control socket, under paths starting with
-`/v0/debug/`, and it is not a stable interface: a debug path, a field of its
-answer, an event kind and a command may each change or go in any revision. A
-client and a daemon built from the same revision agree, and nothing wider is
-promised. `ranet3 --help` leaves the tree out and `ranet3 debug --help` lists
-it.
+`ranet3 debug` is a command tree for looking inside a running node. It speaks to
+the daemon over the control socket, under paths starting with `/v0/debug/`, and
+it is not a stable interface: a debug path, a field of its answer, an event kind
+and a command may each change or go in any revision. A client and a daemon built
+from the same revision agree, and nothing wider is promised.
+`ranet3 debug --help` lists its commands.
 
 Every command prints text, or the wire form with `--json`, and every command
 that could run for long is bounded by a flag, `--for` or `--timeout`, so a
@@ -65,7 +64,7 @@ the caller already reads as uid 0.
   to the C library, which holds an OS thread for as long as it takes. The view
   is read without stopping the daemon's goroutines, so polling it leaves the
   data path running.
-- `debug go-buildinfo` prints this binary's own go build information.
+- `debug buildinfo` prints this binary's own go build information.
 - `debug events [-f] [--kind K]... [--peer P] [--since 5m] [--for 30s]` prints
   the events the daemon has recorded and exits, or with `-f` goes on printing
   the ones after them until `--for` has passed. `--kind`, given up to 16 times,
