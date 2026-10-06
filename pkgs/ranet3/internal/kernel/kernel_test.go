@@ -1840,3 +1840,120 @@ func TestStoppedReconcilerWithdrawsAndStartsAgain(t *testing.T) {
 		t.Fatal("run did not return after cancellation")
 	}
 }
+
+// a stop whose withdrawal failed is still a stop the reconciler owes
+// it tries again rather than recording the routes as gone
+// the sweep is a minute out
+// only the retry a failed pass takes can then withdraw the route within the wait
+func TestStoppedReconcilerRetriesAWithdrawalThatFailed(t *testing.T) {
+	reconciler, table, fake := harness(t, Table{Reconcile: schema.Duration(time.Minute)})
+	route := Route{Destination: prefix("10.0.0.0/8")}
+	table.Set(netip.Prefix{}, route.Destination, nil)
+	// the first pass reads the route
+	// the change it made then wakes nothing after it
+	// one failed withdrawal leaves the retry minRetryInterval out
+	<-table.Changed()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- reconciler.Run(ctx) }()
+	waitFor(t, func() bool { return fake.has(route) })
+
+	fake.mu.Lock()
+	fake.failDel[route] = syscall.EPERM
+	fake.mu.Unlock()
+	reconciler.SetEnabled(false)
+	waitFor(t, func() bool { return strings.Contains(reconciler.Stats().Err, "operation not permitted") })
+
+	fake.mu.Lock()
+	delete(fake.failDel, route)
+	fake.mu.Unlock()
+	waitFor(t, func() bool { return !fake.has(route) && reconciler.Stats().Err == "" })
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("run: %v", err)
+	}
+}
+
+// retryDelays is a log handler keeping the retry_in of every record that carries one
+// the reconcile goroutine logs while the test reads
+type retryDelays struct {
+	mu     sync.Mutex
+	delays []time.Duration
+}
+
+func (h *retryDelays) Enabled(context.Context, slog.Level) bool { return true }
+func (h *retryDelays) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *retryDelays) WithGroup(string) slog.Handler            { return h }
+
+func (h *retryDelays) Handle(_ context.Context, record slog.Record) error {
+	record.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == "retry_in" {
+			h.mu.Lock()
+			h.delays = append(h.delays, attr.Value.Duration())
+			h.mu.Unlock()
+		}
+		return true
+	})
+	return nil
+}
+
+func (h *retryDelays) seen() []time.Duration {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.delays)
+}
+
+// a failed pass and a failed withdrawal are retried after minRetryInterval
+// each retry after that waits twice the delay before it, and never longer than the sweep
+// without the doubling a kernel refusing every pass costs a full pass each minRetryInterval for as long as it refuses
+// the sweep sits between one and two minRetryInterval
+// the second delay then tells the doubling and the cap apart from a delay that never grows
+func TestRetryDoublesItsDelayUpToTheSweep(t *testing.T) {
+	sweep := minRetryInterval * 3 / 2
+	for name, fail := range map[string]func(*Reconciler, *fakeKernel, Route){
+		"a failed pass": func(_ *Reconciler, fake *fakeKernel, _ Route) {
+			fake.mu.Lock()
+			fake.failList = errors.New("netlink is busy")
+			fake.mu.Unlock()
+			fake.signal <- struct{}{}
+		},
+		"a failed withdrawal": func(reconciler *Reconciler, fake *fakeKernel, route Route) {
+			fake.mu.Lock()
+			fake.failDel[route] = syscall.EPERM
+			fake.mu.Unlock()
+			reconciler.SetEnabled(false)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			delays := &retryDelays{}
+			previous := slog.Default()
+			slog.SetDefault(slog.New(delays))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			reconciler, table, fake := harness(t, Table{Reconcile: schema.Duration(sweep)})
+			route := Route{Destination: prefix("10.0.0.0/8")}
+			table.Set(netip.Prefix{}, route.Destination, nil)
+			<-table.Changed()
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- reconciler.Run(ctx) }()
+			waitFor(t, func() bool { return fake.has(route) })
+			fail(reconciler, fake, route)
+			waitFor(t, func() bool { return len(delays.seen()) >= 1 })
+			// a wake other than the retry brings the second failure before the first delay is out
+			fake.signal <- struct{}{}
+			waitFor(t, func() bool { return len(delays.seen()) >= 2 })
+			if got, want := delays.seen()[:2], []time.Duration{minRetryInterval, sweep}; !slices.Equal(got, want) {
+				t.Errorf("the retries waited %v, want %v", got, want)
+			}
+			fake.mu.Lock()
+			fake.failList = nil
+			delete(fake.failDel, route)
+			fake.mu.Unlock()
+			cancel()
+			if err := <-done; err != nil {
+				t.Fatalf("run: %v", err)
+			}
+		})
+	}
+}

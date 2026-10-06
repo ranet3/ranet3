@@ -1128,19 +1128,23 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			// stop rather than once per wake-up, and the pass recorded after
 			// it reads zero installed, so a diagnostic does not go on
 			// reporting the routes of the last pass that ran.
+			// a withdrawal that failed is still owed
+			// it is retried on the backoff a failed pass takes rather than reported done
 			if !r.withdrawn {
 				started := time.Now()
 				err := r.withdraw()
-				if err != nil {
-					slog.Warn("kernel could not withdraw everything it was asked to stop holding", "err", err)
-				}
 				r.routePass = Stats{}
 				r.recordPass(err, time.Since(started))
-				r.withdrawn = true
-				backoff = 0
 				stopTimer(retry)
 				stopTimer(grace)
-				slog.Info("kernel reconciler stopped, its routes withdrawn", "where", r.Where())
+				if err != nil {
+					backoff = min(max(2*backoff, minRetryInterval), r.table.Reconcile.Duration())
+					slog.Warn("kernel could not withdraw everything it was asked to stop holding, retrying", "err", err, "retry_in", backoff)
+					retry.Reset(backoff)
+				} else {
+					r.withdrawn, backoff = true, 0
+					slog.Info("kernel reconciler stopped, its routes withdrawn", "where", r.Where())
+				}
 			}
 		default:
 			if r.withdrawn {
