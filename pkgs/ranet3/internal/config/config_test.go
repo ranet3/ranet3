@@ -68,7 +68,7 @@ to = [{ name = "gateway" }]
 // load writes a body under the extension it is written in and reads it back
 // the way the daemon does, through the loader rather than through a decoder,
 // so the test covers the dispatch and the validation as well as the parse.
-func load(t *testing.T, extension, body string) (*Config, error) {
+func load(t testing.TB, extension, body string) (*Config, error) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config"+extension)
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
@@ -183,14 +183,6 @@ rekey = { child = "1h", retry = { first = "5s", max = "5m" } }
 	if fromYAML.Routes().Transits() || fromYAML.Babel().Quality != babel.LinkQualityNone {
 		t.Error("the capability values did not reach the struct")
 	}
-}
-
-func renderTOML(value any) ([]byte, error) {
-	var out strings.Builder
-	if err := toml.NewEncoder(&out).Encode(value); err != nil {
-		return nil, err
-	}
-	return []byte(out.String()), nil
 }
 
 // Every refusal below is a configuration that loads into a node doing
@@ -1240,7 +1232,7 @@ func TestEveryWrittenFieldSurvivesEachEncoder(t *testing.T) {
 		t.Fatalf("fullConfig leaves %d field(s) at zero, so no encoder below is asked to carry them: %s",
 			len(missing), strings.Join(missing, ", "))
 	}
-	sameAfterEachEncoder(t, t, want, want)
+	sameAfterEachEncoder(t, want, want)
 }
 
 // difference names the first field at which got parts from want, in the path
@@ -1294,21 +1286,14 @@ func shown(value reflect.Value, verb string) string {
 // read by the control plane's own decoder as well, which fills in no default
 // and so has to read back drawn, since the file and the wire form are one
 // schema.
-func sameAfterEachEncoder(tb testing.TB, t *testing.T, drawn, want Config) {
+func sameAfterEachEncoder(tb testing.TB, drawn, want Config) {
 	tb.Helper()
-	for _, encoder := range []struct {
-		extension string
-		render    func(any) ([]byte, error)
-	}{
-		{".yaml", yaml.Marshal},
-		{".toml", renderTOML},
-		{".json", json.Marshal},
-	} {
+	for _, encoder := range encoders {
 		body, err := encoder.render(&drawn)
 		if err != nil {
 			tb.Fatalf("render %s: %v", encoder.extension, err)
 		}
-		got, err := load(t, encoder.extension, string(body))
+		got, err := load(tb, encoder.extension, string(body))
 		if err != nil {
 			tb.Fatalf("%s refused the configuration it rendered:\n%s\n%v", encoder.extension, body, err)
 		}
@@ -1408,19 +1393,16 @@ func spellsItself(ty reflect.Type) bool {
 		ty.Implements(reflect.TypeFor[encoding.TextMarshaler]())
 }
 
-// blockEncoders is each encoder the two checks below ask about a block
-// with the decoder that reads the block back at its own type
-var blockEncoders = []struct {
-	name   string
-	render func(any) ([]byte, error)
-	parse  func([]byte, any) error
+// encoders is each way a configuration is written, named by its extension
+// parse reads a block back at its own type, for the checks that stop short of the loader
+var encoders = []struct {
+	extension string
+	render    func(any) ([]byte, error)
+	parse     func([]byte, any) error
 }{
-	{"yaml", yaml.Marshal, yaml.Unmarshal},
-	{"json", json.Marshal, json.Unmarshal},
-	{"toml", renderTOML, func(body []byte, target any) error {
-		_, err := toml.Decode(string(body), target)
-		return err
-	}},
+	{".yaml", yaml.Marshal, yaml.Unmarshal},
+	{".toml", toml.Marshal, toml.Unmarshal},
+	{".json", json.Marshal, json.Unmarshal},
 }
 
 // A block holding one written field and nothing else still reaches the
@@ -1472,17 +1454,17 @@ func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 		"cap.table vrf": kernel.Table{VRF: &kernel.VRF{Name: "mesh"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, encoder := range blockEncoders {
+			for _, encoder := range encoders {
 				body, err := encoder.render(want)
 				if err != nil {
-					t.Fatalf("render as %s: %v", encoder.name, err)
+					t.Fatalf("render as %s: %v", encoder.extension, err)
 				}
 				got := reflect.New(reflect.TypeOf(want))
 				if err := encoder.parse(body, got.Interface()); err != nil {
-					t.Fatalf("parse the %s\n%s\n%v", encoder.name, body, err)
+					t.Fatalf("parse the %s\n%s\n%v", encoder.extension, body, err)
 				}
 				if !reflect.DeepEqual(got.Elem().Interface(), want) {
-					t.Errorf("%s dropped it: wrote\n%s\nand read back %+v", encoder.name, body, got.Elem().Interface())
+					t.Errorf("%s dropped it: wrote\n%s\nand read back %+v", encoder.extension, body, got.Elem().Interface())
 				}
 			}
 		})
@@ -1515,24 +1497,24 @@ func TestUnwrittenBlockLeavesNoKey(t *testing.T) {
 		"config":           {Config{Link: oneEndpoint()}, []string{"dial", "cap", "underlay"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, encoder := range blockEncoders {
+			for _, encoder := range encoders {
 				body, err := encoder.render(probe.value)
 				if err != nil {
-					t.Fatalf("render as %s: %v", encoder.name, err)
+					t.Fatalf("render as %s: %v", encoder.extension, err)
 				}
-				if encoder.name != "toml" {
+				if encoder.extension != ".toml" {
 					for _, key := range probe.absent {
 						if strings.Contains(string(body), key) {
-							t.Errorf("%s writes %q for a block nobody wrote:\n%s", encoder.name, key, body)
+							t.Errorf("%s writes %q for a block nobody wrote:\n%s", encoder.extension, key, body)
 						}
 					}
 				}
 				got := reflect.New(reflect.TypeOf(probe.value))
 				if err := encoder.parse(body, got.Interface()); err != nil {
-					t.Fatalf("parse the %s\n%s\n%v", encoder.name, body, err)
+					t.Fatalf("parse the %s\n%s\n%v", encoder.extension, body, err)
 				}
 				if !reflect.DeepEqual(got.Elem().Interface(), probe.value) {
-					t.Errorf("%s read %s back as %+v rather than as the zero it was written from", encoder.name, body, got.Elem().Interface())
+					t.Errorf("%s read %s back as %+v rather than as the zero it was written from", encoder.extension, body, got.Elem().Interface())
 				}
 			}
 		})
