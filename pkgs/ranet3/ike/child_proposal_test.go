@@ -5,12 +5,14 @@
 package ike
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
-	"os"
+	"net"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func encodedChildProposal(encryption Transform) []byte {
@@ -455,33 +457,158 @@ func preferredGroupFromNotify(n Notify) (uint16, bool) {
 	return binary.BigEndian.Uint16(n.Data), true
 }
 
-// The property the test above asserts about the helper, asserted about the
-// sites instead. Three of them answer with this notify and each builds the
-// data separately, so a site that forgets it tells a peer its group is wrong
-// and not which one to use, and that peer's retry is a guess. Reverting the
-// third site alone left the suite green, which is how one of them came to be
-// forgotten in the first place.
-func TestEverySiteThatSendsInvalidKECarriesTheGroup(t *testing.T) {
-	// Read out of the source rather than driven, because one of the three sits
-	// inside completeResponderAuth and is reachable only through a whole
-	// handshake. It holds that no site spells this notify without the data,
-	// which the text requires.
-	for _, name := range []string{"child_rekey.go", "ike_rekey.go", "responder.go"} {
-		body, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		lines := strings.Split(string(body), "\n")
-		for i, line := range lines {
-			if !strings.Contains(line, "N_INVALID_KE_PAYLOAD") || strings.Contains(line, "notify.Type") {
-				continue
-			}
-			// The data is built on the same line or within the few after it,
-			// where the notify is assembled.
-			window := strings.Join(lines[max(0, i-4):min(len(lines), i+5)], "\n")
-			if !strings.Contains(window, "invalidKENotifyData") && !strings.Contains(window, "group)") {
-				t.Errorf("%s:%d sends INVALID_KE_PAYLOAD with no group: %s", name, i+1, strings.TrimSpace(line))
-			}
-		}
+// wantInvalidKE fails a test whose answer is not INVALID_KE_PAYLOAD
+// with the two octets of group as its data
+func wantInvalidKE(t *testing.T, answer Notify, group uint16) {
+	t.Helper()
+	if got, ok := preferredGroupFromNotify(answer); !ok || len(answer.Data) != 2 || got != group {
+		t.Errorf("answered notify %d with data %x, want INVALID_KE_PAYLOAD naming group %d", answer.Type, answer.Data, group)
 	}
+}
+
+// an IKE_SA_INIT whose KE is in a group its offer leaves out
+// is told the offered group to retry in
+func TestIKESAInitKEOutsideItsOfferIsAnsweredWithTheGroup(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	spiI := randUint64Nonzero()
+	if err := mux.RegisterIKE(spiI); err != nil {
+		t.Fatal(err)
+	}
+	// encodeTestSAInit writes its KE in X25519
+	offer := Proposal{Number: 1, Protocol: ProtoIKE, Transforms: []Transform{
+		{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 256},
+		{Type: TransPRF, ID: PRF_HMAC_SHA2_256},
+		{Type: TransDH, ID: DH_ECP_256},
+	}}
+	request := encodeTestSAInit(t, spiI, bytes.Repeat([]byte{1}, 32), offer, nil)
+	reply := statelessAnswer(t, mux, request, "a KE outside the offer drew no answer")
+	wantInvalidKE(t, firstTestNotify(t, reply), DH_ECP_256)
+}
+
+// a peer's Child SA rekey whose KE is in a group its offer leaves out
+// is told the offered group to retry in and keeps the Child SA it has
+func TestPeerChildRekeyKEOutsideItsOfferIsAnsweredWithTheGroup(t *testing.T) {
+	mux, _ := lifecycleMuxes(t)
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),
+		skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20), responder: true}
+	old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
+	s := &Session{mux: mux, current: ctx, Child: old}
+	offer := espProposal(binary.BigEndian.AppendUint32(nil, 32))
+	offer.Transforms = append(offer.Transforms, Transform{Type: TransDH, ID: DH_ECP_256})
+	// group 14 is MODP 2048, which this end has no code for
+	raw, err := s.handleChildRekey(ctx, 0, []RawPayload{
+		{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_REKEY_SA, Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, old.RemoteSPI)})},
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{offer})},
+		{Type: PayloadNonce, Body: bytes.Repeat([]byte{4}, 32)},
+		{Type: PayloadKE, Body: EncodeKE(14, bytes.Repeat([]byte{5}, 32))},
+		{Type: PayloadTSi, Body: fullRangeSelectors()},
+		{Type: PayloadTSr, Body: fullRangeSelectors()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := DecodeMessage(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := DecryptMessage(suite, ctx.localEncryptionKey(), raw, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := findType(inner, PayloadN)
+	if payload == nil {
+		t.Fatalf("the answer carried no notify: %v", inner)
+	}
+	notify, err := DecodeNotify(payload.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInvalidKE(t, notify, DH_ECP_256)
+	if s.currentChild().LocalSPI != old.LocalSPI {
+		t.Error("a refused rekey replaced the Child SA")
+	}
+}
+
+// an IKE_AUTH whose Child SA offer names a group
+// is answered with this end's AUTH and the offered group it would take
+func TestIKEAuthChildOfferNamingAGroupIsAnsweredWithTheGroup(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	// the session's SPI routes the request to this mux ahead of the harness's Serve
+	mux, err := h.responder.cfg.Hub.NewMux(net.IPv4(127, 0, 0, 1), h.initiator.LocalAddr().(*net.UDPAddr).Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	peer, err := h.initiator.NewMux(net.IPv4(127, 0, 0, 1), h.remotePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { peer.Close() })
+
+	const spiI, spiR = 0x2122232425262728, 0x3132333435363738
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	ctx := &ikeContext{suite: suite, spiI: spiI, spiR: spiR, responder: true,
+		skD: bytes.Repeat([]byte{1}, 32), skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20),
+		skpi: bytes.Repeat([]byte{4}, 32), skpr: bytes.Repeat([]byte{5}, 32)}
+	s := &Session{mux: mux, current: ctx}
+	if err := mux.RegisterIKE(spiI); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.RegisterIKE(spiI); err != nil {
+		t.Fatal(err)
+	}
+
+	// two stand-ins for the IKE_SA_INIT messages the AUTH payloads sign
+	message1, message2 := []byte("the IKE_SA_INIT request"), []byte("the IKE_SA_INIT response")
+	ni, nr := bytes.Repeat([]byte{6}, 32), bytes.Repeat([]byte{7}, 32)
+	idi := Identity{Organization: "testorg", CommonName: "client", SerialNumber: "2"}.encodeID()
+	child := espProposal([]byte{0, 0, 0, 9})
+	child.Transforms = append(child.Transforms, Transform{Type: TransDH, ID: DH_ECP_256})
+	header := Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	request, err := EncryptMessage(suite, ctx.skei, header, nil, []RawPayload{
+		{Type: PayloadIDi, Body: idi},
+		{Type: PayloadAUTH, Body: BuildAuth(h.private, concat(message1, nr, prf(suite.PRFID, ctx.skpi, idi)))},
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{child})},
+		{Type: PayloadTSi, Body: fullRangeSelectors()},
+		{Type: PayloadTSr, Body: fullRangeSelectors()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.SendIKE(request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.completeResponderAuth(h.responder, message1, message2, ni, nr, time.Now().Add(answerBudget)); err == nil {
+		t.Fatal("an IKE_AUTH Child SA offer naming a group was taken")
+	}
+	raw, err := peer.RecvIKEUntil(time.Now().Add(answerBudget))
+	if err != nil {
+		t.Fatalf("no IKE_AUTH answer: %v", err)
+	}
+	message, err := DecodeMessage(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := DecryptMessage(suite, ctx.sker, raw, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findType(inner, PayloadAUTH) == nil {
+		t.Fatal("the answer carried no AUTH, which means the exchange ended before the Child SA")
+	}
+	payload := findType(inner, PayloadN)
+	if payload == nil {
+		t.Fatalf("the answer carried no notify: %v", inner)
+	}
+	notify, err := DecodeNotify(payload.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInvalidKE(t, notify, DH_ECP_256)
 }
