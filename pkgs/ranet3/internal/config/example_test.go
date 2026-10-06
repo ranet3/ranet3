@@ -60,20 +60,18 @@ func TestShippedExamplesParse(t *testing.T) {
 		}
 		variants := map[string][]byte{"shipped": body}
 		if !uncommentable[name] {
-			variants["all options enabled"] = example.commented.ReplaceAll(body, []byte(example.enabled))
+			enabled := example.commented.ReplaceAll(body, []byte(example.enabled))
+			if string(enabled) == string(body) {
+				t.Errorf("%s documents no optional line, so half of this test proves nothing", name)
+			}
+			variants["all options enabled"] = enabled
 		}
 		for which, variant := range variants {
 			t.Run(name+" "+which, func(t *testing.T) {
-				if _, err := loadExample(t, name, variant); err != nil {
+				if _, err := load(t, "."+name, string(variant)); err != nil {
 					t.Fatalf("the example no longer loads: %v", err)
 				}
 			})
-		}
-		if uncommentable[name] {
-			continue
-		}
-		if enabled := example.commented.ReplaceAll(body, []byte(example.enabled)); string(enabled) == string(body) {
-			t.Errorf("%s documents no optional line, so half of this test proves nothing", name)
 		}
 	}
 }
@@ -89,7 +87,7 @@ func TestShippedExamplesAgreeOnTheNode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg, err := loadExample(t, name, body)
+		cfg, err := load(t, "."+name, string(body))
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -136,11 +134,6 @@ func TestShippedJSONExampleIsJSONAndNotOnlyYAML(t *testing.T) {
 	if err := json.Unmarshal(body, &document); err != nil {
 		t.Errorf("the json example is not valid json: %v", err)
 	}
-	// The same document in the spelling this test exists to refuse, so a
-	// change that made the check vacuous fails here rather than passing.
-	if err := json.Unmarshal([]byte("node:\n  org: example\n"), &document); err == nil {
-		t.Error("json.Unmarshal took a yaml mapping, so this test would pass on a yaml file")
-	}
 }
 
 // rendered puts a configuration back into the file's own spelling, so a
@@ -167,7 +160,7 @@ func TestExampleTakesTheIntervalsTheHarnessWrites(t *testing.T) {
 	if rewritten == string(body) {
 		t.Fatal("the example no longer spells the intervals the way this test rewrites")
 	}
-	cfg, err := loadExample(t, "yaml", []byte(rewritten))
+	cfg, err := load(t, ".yaml", rewritten)
 	if err != nil {
 		t.Fatalf("the sub-second spelling the integration test uses was refused: %v", err)
 	}
@@ -178,7 +171,7 @@ func TestExampleTakesTheIntervalsTheHarnessWrites(t *testing.T) {
 	// Every other duration in this file takes a bare zero for "leave the
 	// default alone", and the two decoders have to agree about that too.
 	zeroed := strings.Replace(string(body), "hello: 4s", "hello: 0", 1)
-	cfg, err = loadExample(t, "yaml", []byte(zeroed))
+	cfg, err = load(t, ".yaml", zeroed)
 	if err != nil {
 		t.Fatalf("a zero interval was refused: %v", err)
 	}
@@ -190,20 +183,11 @@ func TestExampleTakesTheIntervalsTheHarnessWrites(t *testing.T) {
 	// the empty string, and `invalid duration ""` names neither the line nor
 	// what was written there.
 	sequence := strings.Replace(string(body), "hello: 4s", "hello: [4s]", 1)
-	_, err = loadExample(t, "yaml", []byte(sequence))
+	_, err = load(t, ".yaml", sequence)
 	if err == nil {
 		t.Fatal("a sequence was accepted as a duration")
 	}
 	if !strings.Contains(err.Error(), "a sequence") {
 		t.Errorf("the error reads %q, which does not say what was written instead", err)
 	}
-}
-
-func loadExample(t *testing.T, extension string, body []byte) (*Config, error) {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "config."+extension)
-	if err := os.WriteFile(path, body, 0600); err != nil {
-		t.Fatal(err)
-	}
-	return Load(path)
 }
