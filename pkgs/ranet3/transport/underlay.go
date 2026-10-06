@@ -244,7 +244,7 @@ func (h *Hub) BindUnderlay(index int) error {
 
 // bindUnderlayTo is BindUnderlay with what the caller knows about the routing.
 // routed says this node writes the route a bound socket needs, which changes
-// the probe afterwards from advice for an operator into a check that the
+// the probe afterward from advice for an operator into a check that the
 // mechanism worked.
 func (h *Hub) bindUnderlayTo(index int, routed bool) error {
 	binder, ok := h.bind.(interfaceBinder)

@@ -45,7 +45,7 @@ func innerV4(payload string) []byte {
 
 // The wire order is the reverse of the path, and the outer destination is the
 // first segment the packet visits. Getting the reversal wrong sends the packet
-// to the exit first and the waypoints afterwards, which still forwards and
+// to the exit first and the waypoints afterward, which still forwards and
 // still arrives, so nothing but this test would report it.
 func TestEncapsulationPutsTheFirstSegmentOnTheOuterHeader(t *testing.T) {
 	path := []netip.Addr{addr("3fff:1:69c:98d6::2"), addr("3fff:1:69c:6c46::2"), addr("3fff:1:69c:29a6::1")}

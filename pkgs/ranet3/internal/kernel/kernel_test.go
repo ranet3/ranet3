@@ -1479,7 +1479,7 @@ func TestPlatformWithoutRulesRefusesThemByName(t *testing.T) {
 	}
 }
 
-// A rule the kernel would take and an operator would not recognize afterwards
+// A rule the kernel would take and an operator would not recognize afterward
 // is refused at startup, because the alternative is finding it in a rule list
 // on a live node.
 func TestRuleValidationRefusesWhatReadsWrong(t *testing.T) {

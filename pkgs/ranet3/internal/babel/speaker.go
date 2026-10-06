@@ -547,7 +547,7 @@ func (s *Speaker) noteSendRetryLocked(now time.Time) {
 }
 
 // sendRetryInterval is how long a pass waits before trying again what it could
-// not send. Read from cfg, which New settles and nothing writes afterwards, so
+// not send. Read from cfg, which New settles and nothing writes afterward, so
 // the sender goroutine may ask too.
 func (s *Speaker) sendRetryInterval() time.Duration {
 	return max(s.hello/4, time.Millisecond)
@@ -776,7 +776,7 @@ func (s *Speaker) noteRequestSweep(at time.Time) {
 
 func (s *Speaker) sweepRequestsLocked(now time.Time) {
 	// Cleared first and rebuilt by the walk, which is the one pass that reads
-	// every window, so the kept minimum is exact again afterwards.
+	// every window, so the kept minimum is exact again afterward.
 	s.nextRequestSweep = time.Time{}
 	for index, pending := range s.pendingSeqno {
 		if !now.Before(pending.sentAt.Add(seqnoRequestSuppress)) {

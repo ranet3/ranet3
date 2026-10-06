@@ -80,7 +80,7 @@ type UnderlayDefaults struct {
 	// host is the machine this writes to and reads back, the running kernel
 	// unless the caller named another; see Host.
 	host Host
-	// closed is set by Close. Every entry point refuses afterwards rather than
+	// closed is set by Close. Every entry point refuses afterward rather than
 	// dereferencing a socket that is gone.
 	closed bool
 	// links answers which interface the host's own default leaves by and what

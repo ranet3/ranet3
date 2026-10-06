@@ -347,7 +347,7 @@ type liveSessionView struct {
 }
 
 // snapshot copies the live set. The sessions themselves are pointers, so a
-// caller reads each one through its own accessors afterwards; what the lock
+// caller reads each one through its own accessors afterward. What the lock
 // protects is the map, and it is released before any of that happens.
 func (s *sessionSet) snapshot() []liveSessionView {
 	s.mu.Lock()
@@ -424,7 +424,7 @@ func (s *sessionSet) revoke(trusted func(ike.Identity) bool) []string {
 // session this node no longer has.
 //
 // The entry leaves the map before the session is closed, as revoke does, so
-// the dialer woken straight afterwards sees the path as free rather than
+// the dialer woken straight afterward sees the path as free rather than
 // standing down behind a session that is already going. serveSession's own
 // release then finds the path held by nobody and leaves it alone.
 func (s *sessionSet) closeMatching(peer string) []string {

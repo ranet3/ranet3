@@ -524,7 +524,7 @@ func TestStalledNeighborDoesNotHoldOthers(t *testing.T) {
 		t.Fatal("the speaker was held by one neighbor whose transport never returned")
 	}
 	// Waited for rather than sampled: a place is taken under the lock and the
-	// peer's own sender goroutine transmits it afterwards, so a machine that
+	// peer's own sender goroutine transmits it afterward, so a machine that
 	// has not scheduled that goroutine yet is not a speaker that is stuck.
 	select {
 	case <-healthy:
@@ -1906,7 +1906,7 @@ func TestStarveRetryDeadlineIsNeverLate(t *testing.T) {
 		exact("remembering one")
 	}
 	// The same prefix again pulls its own deadline back in, which is the write
-	// that reading the map afterwards would have caught for free.
+	// that reading the map afterward would have caught for free.
 	first := routeKey{dest: netip.MustParsePrefix("fd00:0::/64")}
 	speaker.rememberStarved(first, [8]byte{0}, 9, neighbor.peer.ID, now.Add(-time.Hour))
 	exact("bringing one forward")
@@ -2446,7 +2446,7 @@ func TestCongestedPeerDoesNotReopenTheWakeThroughARefusedDump(t *testing.T) {
 
 	// A dump the stuck peer refuses, in the order Run runs it: build, clear
 	// the flag this branch was entered on, then emit. emitLocked runs the
-	// rollback under the lock, so anything set afterwards came from there.
+	// rollback under the lock, so anything set afterward came from there.
 	now := time.Now()
 	speaker.mu.Lock()
 	actions := speaker.updateActions(now)

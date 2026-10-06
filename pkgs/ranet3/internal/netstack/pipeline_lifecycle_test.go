@@ -331,7 +331,7 @@ func TestCongestedPeerDoesNotStallOthers(t *testing.T) {
 }
 
 // failingReadDevice returns one transient read error and would go on reading
-// afterwards, which is how a netlink failure on linux or a route-socket
+// afterward, which is how a netlink failure on linux or a route-socket
 // overflow on darwin looks from here. Neither is device closure.
 type failingReadDevice struct {
 	recordingDevice
