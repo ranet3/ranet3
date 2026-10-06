@@ -605,26 +605,6 @@ func TestValidatedRouteSpeakerAndSegmentsReadBackFromTheirFile(t *testing.T) {
 	})
 }
 
-// scalarTypes collects every type under ty that reads itself from text, which
-// is every scalar a configuration file can write, the schema's and each
-// capability's own. The walk stops at one, since what stands behind a
-// spelling is the type's own business.
-func scalarTypes(ty reflect.Type, found map[reflect.Type]bool) {
-	for ty.Kind() == reflect.Pointer || ty.Kind() == reflect.Slice {
-		ty = ty.Elem()
-	}
-	switch {
-	case reflect.PointerTo(ty).Implements(reflect.TypeFor[encoding.TextUnmarshaler]()):
-		found[ty] = true
-	case ty.Kind() == reflect.Struct:
-		for field := range ty.Fields() {
-			if field.IsExported() {
-				scalarTypes(field.Type, found)
-			}
-		}
-	}
-}
-
 // digits is every number a file writes as one digit.
 var digits = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
 
@@ -688,9 +668,7 @@ func decodeOne(numeral string, target any) error {
 // under all of them. json and toml each spell only some numbers, and a number
 // one of them cannot spell is left out of its comparison.
 func TestEveryScalarReadsABareNumberAlike(t *testing.T) {
-	found := make(map[reflect.Type]bool)
-	scalarTypes(reflect.TypeFor[Config](), found)
-	types := slices.SortedFunc(maps.Keys(found), func(a, b reflect.Type) int { return strings.Compare(a.String(), b.String()) })
+	types := scalarTypes()
 	// every digit and every edge is read before anything is drawn, since a run
 	// leaves some of each undrawn, and a scalar taking one of them, a family as
 	// 4 or a table as 254, is the likeliest to take a number at all
@@ -699,6 +677,169 @@ func TestEveryScalarReadsABareNumberAlike(t *testing.T) {
 	}
 	pbt.Check(t, func(ht *hegel.T) {
 		readsAlike(ht, types, hegel.Draw(ht, numerals()))
+	})
+}
+
+// schemaField is a field or a block a file writes, by the yaml keys that lead to it
+// a key ending in [] holds a list, and the field is the one in its first entry
+// scalar is the type of a field that reads itself from text, and nil for any other
+type schemaField struct {
+	path             []string
+	integer, boolean bool
+	scalar           reflect.Type
+}
+
+// schemaFields finds every field under ty, by reflection so that a field added later is held as well
+// a scalar that reads its own text is a field of its own, and the walk goes no further into it
+func schemaFields(ty reflect.Type, path []string, found *[]schemaField) {
+	for field := range ty.Fields() {
+		if !field.IsExported() {
+			continue
+		}
+		key := yamlKey(field)
+		under := field.Type
+		for under.Kind() == reflect.Pointer {
+			under = under.Elem()
+		}
+		if under.Kind() == reflect.Slice {
+			under, key = under.Elem(), key+"[]"
+		}
+		here := append(slices.Clone(path), key)
+		this := schemaField{path: here}
+		switch {
+		case reflect.PointerTo(under).Implements(reflect.TypeFor[encoding.TextUnmarshaler]()):
+			this.scalar = under
+		case under.Kind() >= reflect.Int && under.Kind() <= reflect.Uint64:
+			this.integer = true
+		case under.Kind() == reflect.Bool:
+			this.boolean = true
+		}
+		*found = append(*found, this)
+		if this.scalar == nil && under.Kind() == reflect.Struct {
+			schemaFields(under, here, found)
+		}
+	}
+}
+
+// scalarTypes is every distinct type a configuration file writes as one scalar, in a stable order
+// each of them reads itself from text, the schema's and each capability's own
+func scalarTypes() []reflect.Type {
+	var fields []schemaField
+	schemaFields(reflect.TypeFor[Config](), nil, &fields)
+	found := make(map[reflect.Type]bool)
+	for _, field := range fields {
+		if field.scalar != nil {
+			found[field.scalar] = true
+		}
+	}
+	return slices.SortedFunc(maps.Keys(found), func(a, b reflect.Type) int { return strings.Compare(a.String(), b.String()) })
+}
+
+// nested writes a document that sets the field to value, in the flow syntax json and yaml share
+// or in toml inline tables, which are the one nesting toml can write on a line
+func (f schemaField) nested(value string, inTOML bool) string {
+	for i := len(f.path) - 1; i >= 0; i-- {
+		key, list := strings.CutSuffix(f.path[i], "[]")
+		if list {
+			value = "[" + value + "]"
+		}
+		switch {
+		case i == 0 && inTOML:
+			return key + " = " + value + "\n"
+		case inTOML:
+			value = "{ " + key + " = " + value + " }"
+		default:
+			value = `{"` + key + `": ` + value + "}"
+		}
+	}
+	return value + "\n"
+}
+
+// readInteger reads the field out of a decoded configuration
+func (f schemaField) readInteger(c Config) uint64 {
+	value := reflect.ValueOf(c)
+	for _, step := range f.path {
+		key, list := strings.CutSuffix(step, "[]")
+		for value.Kind() == reflect.Pointer && !value.IsNil() {
+			value = value.Elem()
+		}
+		if value.Kind() != reflect.Struct {
+			return 0
+		}
+		value = fieldByKey(value, key)
+		if list && value.Len() > 0 {
+			value = value.Index(0)
+		}
+	}
+	for value.Kind() == reflect.Pointer && !value.IsNil() {
+		value = value.Elem()
+	}
+	if !value.IsValid() || !value.CanUint() {
+		return 0
+	}
+	return value.Uint()
+}
+
+// a whole number is read alike by every decoder that can read it, wherever a file writes an integer
+// the yaml decoder cut 13000.5, 1.3e4 and 13000.0 to 13000 and read -0 as zero, where encoding/json refuses all four
+// json and toml each spell only some numbers, and a number one of them cannot spell is left out of its comparison
+// toml takes a signed zero as the zero it is and the loader sees the number it hands over, so -0 is left out of that comparison
+// every digit is read as a whole number first, which fits every field and has to be taken by all three
+func TestEveryIntegerFieldReadsABareNumberAlike(t *testing.T) {
+	var all, fields []schemaField
+	schemaFields(reflect.TypeFor[Config](), nil, &all)
+	for _, field := range all {
+		if field.integer {
+			fields = append(fields, field)
+		}
+	}
+	if len(fields) < 8 {
+		t.Fatalf("found %d integer fields, so the walk lost the ones a configuration carries: %v", len(fields), fields)
+	}
+	check := func(tb testing.TB, field schemaField, numeral string) {
+		tb.Helper()
+		var fromYAML Config
+		yamlErr := decodeYAML([]byte(field.nested(numeral, false)), &fromYAML)
+		yamlValue := field.readInteger(fromYAML)
+		digit := len(numeral) == 1 && numeral[0] >= '0' && numeral[0] <= '9'
+		if digit && (yamlErr != nil || yamlValue != uint64(numeral[0]-'0')) {
+			tb.Fatalf("%v: yaml read %s as %d (%v)", field.path, numeral, yamlValue, yamlErr)
+		}
+		var parsed map[string]any
+		if _, unspelled := toml.Decode("v = "+numeral+"\n", &parsed); unspelled == nil {
+			var fromTOML Config
+			tomlErr := decodeTOML([]byte(field.nested(numeral, true)), &fromTOML)
+			tomlValue := field.readInteger(fromTOML)
+			switch {
+			case digit && (tomlErr != nil || tomlValue != yamlValue):
+				tb.Fatalf("%v: toml read %s as %d (%v)", field.path, numeral, tomlValue, tomlErr)
+			case numeral == "-0":
+			case (tomlErr == nil) != (yamlErr == nil):
+				tb.Fatalf("%v: %s is %v under yaml and %v under toml", field.path, numeral, yamlErr, tomlErr)
+			case tomlErr == nil && tomlValue != yamlValue:
+				tb.Fatalf("%v: %s reads as %d under yaml and %d under toml", field.path, numeral, yamlValue, tomlValue)
+			}
+		}
+		if json.Valid([]byte(numeral)) {
+			var overWire Config
+			wireErr := json.Unmarshal([]byte(field.nested(numeral, false)), &overWire)
+			wireValue := field.readInteger(overWire)
+			switch {
+			case (wireErr == nil) != (yamlErr == nil):
+				tb.Fatalf("%v: %s is %v under yaml and %v over the wire", field.path, numeral, yamlErr, wireErr)
+			case wireErr == nil && wireValue != yamlValue:
+				tb.Fatalf("%v: %s reads as %d under yaml and %d over the wire", field.path, numeral, yamlValue, wireValue)
+			}
+		}
+	}
+	// every digit and every edge is read before anything is drawn, since a run leaves some of each undrawn
+	for _, numeral := range slices.Concat(digits, edgeNumerals, []string{"13000.5", "1.3e4", "13000.0", "13000"}) {
+		for _, field := range fields {
+			check(t, field, numeral)
+		}
+	}
+	pbt.Check(t, func(ht *hegel.T) {
+		check(ht, fields[hegel.Draw(ht, hegel.Integers(0, len(fields)-1))], hegel.Draw(ht, numerals()))
 	})
 }
 

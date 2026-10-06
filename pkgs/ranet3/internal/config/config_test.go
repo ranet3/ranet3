@@ -620,6 +620,72 @@ func TestRefusalsNameTheBlockTheOperatorWrote(t *testing.T) {
 	}
 }
 
+// a number that is not whole is refused with its line, where the yaml decoder cut it to a whole one
+// 13000.5, 1.3e4 and 13000.0 became 13000 and -0 became 0, and encoding/json refuses all four
+// the field is found by its position in a list, behind a pointer and in a block of its own, since the walk takes each differently
+// the number is also found through an anchor and its alias, and under a key written as an alias or as !!binary, which the decoder reads through
+// a merge key is refused whatever it merges, since the walk does not follow it and toml and json cannot spell it
+func TestIntegerFieldRefusesANumberThatIsNotWhole(t *testing.T) {
+	const asJSON = `{"node":{"org":"example","name":"laptop"},"auth":{"key":"key.pem","trust":"trust.json"},` +
+		`"link":{"port":%s,"endpoints":[{"serial":"0","family":"ip4"}]},"dial":{"to":[{"name":"gateway"}]}}`
+	type row struct{ extension, body, field string }
+	// refuses wants the file refused with an error reading "line N: " and then text, N being the line field is written on
+	refuses := func(t *testing.T, test row, text string) {
+		t.Helper()
+		_, err := load(t, test.extension, test.body)
+		if err == nil {
+			t.Fatalf("%s was taken", text)
+		}
+		line := 1 + strings.Count(test.body[:strings.Index(test.body, test.field)], "\n")
+		if want := fmt.Sprintf("line %d: %s", line, text); !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal reads %q, want it to name %q", err, want)
+		}
+	}
+	for _, written := range []string{"13000.5", "1.3e4", "13000.0", "-0"} {
+		for name, test := range map[string]row{
+			"a port in a yaml file": {".yaml", strings.Replace(nodeYAML, "port: 13000", "port: "+written, 1), "port:"},
+			"a port in a json file": {".json", fmt.Sprintf(asJSON, written), `"port"`},
+			"a replay window, behind a pointer": {
+				".yaml", nodeYAML + "cap:\n  crypto:\n    replay: " + written + "\n", "replay:"},
+			"a rule priority, in a list": {
+				".yaml", nodeYAML + "cap:\n  table:\n    rules:\n      - to: 10.0.0.0/8\n        table: 200\n        priority: " + written + "\n", "priority:"},
+			// the anchor sits on a field that takes any text, and the alias carries the number into one that takes a whole one
+			"a port read through an alias": {
+				".yaml", strings.NewReplacer("name: laptop", "name: &n "+written, "port: 13000", "port: *n").Replace(nodeYAML), "&n"},
+			// the anchor holds the word port, which is the key the number is written under
+			"a port under a key written as an alias": {
+				".yaml", strings.NewReplacer("name: laptop", "name: &k port", "port: 13000", "*k : "+written).Replace(nodeYAML), "*k"},
+			// cG9ydA== is the word port in base64, which the decoder reads a !!binary key as
+			"a port under a key written as !!binary": {
+				".yaml", strings.Replace(nodeYAML, "port: 13000", "!!binary cG9ydA==: "+written, 1), "!!binary"},
+		} {
+			t.Run(name+" written "+written, func(t *testing.T) { refuses(t, test, written) })
+		}
+	}
+	// the refusal is of the key that brings the number in, and a whole number is refused with it
+	for name, test := range map[string]row{
+		"a merge key in a block": {
+			".yaml", strings.Replace(nodeYAML, "port: 13000", "<<: { port: 13000.5 }", 1), "<<"},
+		// the mapping begins on the line of port, so only the key's own line is right
+		"a merge key after another key of its mapping": {
+			".yaml", strings.Replace(nodeYAML, "port: 13000", "port: 13000\n  <<: { listen: false }", 1), "<<"},
+		"a merge key holding a whole number": {
+			".yaml", strings.Replace(nodeYAML, "port: 13000", "<<: { port: 13000 }", 1), "<<"},
+		"a merge key holding a sequence of mappings": {
+			".yaml", strings.Replace(nodeYAML, "port: 13000", "<<: [ { port: 1.3e4 } ]", 1), "<<"},
+		"a merge key inside a merged mapping": {
+			".yaml", strings.Replace(nodeYAML, "port: 13000", "<<: { <<: { port: 13000.5 } }", 1), "<<"},
+		"a merge key in a nested block": {
+			".yaml", nodeYAML + "cap:\n  crypto:\n    <<: { replay: 4096.7 }\n", "<<"},
+		"a merge key in a list": {
+			".yaml", nodeYAML + "cap:\n  table:\n    rules:\n      - <<: { priority: 100.5 }\n        to: 10.0.0.0/8\n        table: 200\n", "<<"},
+		"a merge key at the top of the file": {
+			".yaml", "<<: { dial: { all: true } }\n" + nodeYAML, "<<"},
+	} {
+		t.Run(name, func(t *testing.T) { refuses(t, test, "a merge key is refused") })
+	}
+}
+
 // A key whose spelling differs from the tag in case alone is refused by name,
 // under the decoder that would otherwise fold it. BurntSushi matches a field
 // case-insensitively when the exact spelling misses and records the key as
@@ -700,7 +766,7 @@ func TestCapabilityIsOnBecauseItsBlockIsThere(t *testing.T) {
 func TestBlockPresenceAgreesAcrossDecoders(t *testing.T) {
 	caps := reflect.TypeFor[Caps]()
 	for i := range caps.NumField() {
-		key, _, _ := strings.Cut(caps.Field(i).Tag.Get("yaml"), ",")
+		key := yamlKey(caps.Field(i))
 		// Either the block is on, or the capability refused the empty block by
 		// name. Never off, which is the outcome an operator cannot see.
 		outcome := func(t *testing.T, extension, body string) string {
@@ -1025,11 +1091,7 @@ func pointerScalars(ty reflect.Type, prefix string) []string {
 		if !field.IsExported() {
 			continue
 		}
-		key, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
-		if key == "" {
-			key = strings.ToLower(field.Name)
-		}
-		path := strings.TrimPrefix(prefix+"."+key, ".")
+		path := strings.TrimPrefix(prefix+"."+yamlKey(field), ".")
 		under := field.Type
 		if under.Kind() == reflect.Pointer {
 			if under.Elem().Kind() != reflect.Struct {
@@ -1194,12 +1256,8 @@ func difference(want, got reflect.Value, path string) string {
 			if !field.IsExported() {
 				continue
 			}
-			key, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
-			if key == "" {
-				key = strings.ToLower(field.Name)
-			}
 			if !reflect.DeepEqual(want.Field(i).Interface(), got.Field(i).Interface()) {
-				return difference(want.Field(i), got.Field(i), strings.TrimPrefix(path+"."+key, "."))
+				return difference(want.Field(i), got.Field(i), strings.TrimPrefix(path+"."+yamlKey(field), "."))
 			}
 		}
 	case want.Kind() == reflect.Slice && want.Len() == got.Len():
@@ -1314,11 +1372,7 @@ func unwritten(value reflect.Value, path string) []string {
 			if !field.IsExported() {
 				continue
 			}
-			key, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
-			if key == "" {
-				key = strings.ToLower(field.Name)
-			}
-			out = append(out, unwritten(value.Field(i), strings.TrimPrefix(path+"."+key, "."))...)
+			out = append(out, unwritten(value.Field(i), strings.TrimPrefix(path+"."+yamlKey(field), "."))...)
 		}
 	case reflect.Slice:
 		// A list carries a set of entries rather than one entry holding one of

@@ -352,7 +352,7 @@ func (a *Announce) UnmarshalYAML(value *yaml.Node) error {
 	read := make(map[string]int, 2)
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		written := value.Content[i]
-		key, item := followed(written), followed(value.Content[i+1])
+		key, item := Followed(written), Followed(value.Content[i+1])
 		if line, twice := read[key.Value]; twice {
 			return fmt.Errorf("line %d: mapping key %q already defined at line %d", written.Line, key.Value, line)
 		}
@@ -506,9 +506,10 @@ func scalarJSON(data []byte, want string, target interface{ UnmarshalText([]byte
 	return fmt.Errorf("%s is written as a string or a number, not %T", want, written)
 }
 
-// followed is the node an alias names, which the decoder reads in its place
-// before it hands a node to an unmarshaler.
-func followed(node *yaml.Node) *yaml.Node {
+// Followed is the node an alias names, which the decoder reads in its place
+// before it hands a node to an unmarshaler, and which a walk of the same
+// document has to read the same way.
+func Followed(node *yaml.Node) *yaml.Node {
 	for node.Kind == yaml.AliasNode && node.Alias != nil {
 		node = node.Alias
 	}
