@@ -78,26 +78,6 @@ const (
 	nonESPMarkerLen = 4
 	// natKeepaliveByte is the payload of that one octet datagram.
 	natKeepaliveByte = 0xff
-	readBufferSize   = 65536
-	espSendBatch     = 128
-	// espChanSize absorbs receive bursts before a peer's workers can drain
-	// them. It counts socket batches, which is the datagram count only where
-	// the backend returns one datagram per batch, as darwin's does. The
-	// channel is allocated with the mux, so a half-open SA carries this cost
-	// while its handshake runs: 40 KiB a piece here, against 160 KiB at the
-	// 4096 this used to be, and a flood can pin halfOpenLimit of them at
-	// once.
-	espChanSize = 1024
-	// espQueueBytes is the bound that actually holds that queue. A batch holds up to
-	// espSendBatch datagrams of up to readBufferSize each, so the batch count
-	// alone bounds nothing: even at 1024 that is 8.6 GB per peer at the UDP
-	// maximum.
-	// An ESP SPI is cleartext on the wire and the queue is filled before
-	// anything is authenticated, so whoever has seen one packet from a peer
-	// can aim that at us. Steady-state occupancy is a handful of batches
-	// either way, since the workers drain continuously; this only has to
-	// absorb a burst.
-	espQueueBytes = 8 << 20
 )
 
 // Hub owns one local UDP port and routes incoming packets to registered Muxes.
@@ -152,10 +132,6 @@ type Hub struct {
 	reported atomic.Int64
 	started  time.Time
 }
-
-// dropReportInterval bounds how often a full receive queue is logged. The
-// counter behind it is exact.
-const dropReportInterval = 10 * time.Second
 
 // Dropped is how many inbound datagrams a full receive queue has refused. It
 // is the inbound counterpart of Peer.Dropped, and the only signal that this
@@ -307,7 +283,7 @@ func (h *Hub) NewMuxTo(endpoint Endpoint) (*Mux, error) {
 }
 
 func (h *Hub) newMux(endpoint Endpoint, dialed bool) (*Mux, error) {
-	m := &Mux{hub: h, endpoint: endpoint, dialed: dialed, ikeCh: make(chan Datagram, 16), espCh: make(chan espDatagramBatch, espChanSize), done: make(chan struct{})}
+	m := &Mux{hub: h, endpoint: endpoint, dialed: dialed, ikeCh: make(chan Datagram, ikeQueueSize), espCh: make(chan espDatagramBatch, espChanSize), done: make(chan struct{})}
 	h.mu.Lock()
 	if h.closed.Load() {
 		h.mu.Unlock()
@@ -331,7 +307,7 @@ func (h *Hub) Listen() <-chan Unclaimed {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.listen == nil {
-		h.listen = make(chan Unclaimed, 64)
+		h.listen = make(chan Unclaimed, unclaimedQueueSize)
 	}
 	return h.listen
 }

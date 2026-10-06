@@ -121,7 +121,7 @@ func openPacketBind(port uint16, underlay Underlay, index int, routed bool, even
 	// The port selected by the IPv4 bind may already be occupied on IPv6.
 	// Retry ephemeral allocation; an explicitly requested port still fails.
 	var err error
-	for range 10 {
+	for range ephemeralPortRetries {
 		var bind packetBind
 		var receivers []receiveFunc
 		var bound uint16
@@ -141,7 +141,7 @@ func listenPacketBind(port uint16, fwmark uint32, events func(string, ...slog.At
 		lc := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
 			if err := raw.Control(func(fd uintptr) {
 				for _, option := range []int{unix.SO_RCVBUF, unix.SO_SNDBUF, unix.SO_RCVBUFFORCE, unix.SO_SNDBUFFORCE} {
-					_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, option, 7<<20)
+					_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, option, socketBufferSize)
 				}
 				_ = unix.SetsockoptInt(int(fd), unix.IPPROTO_UDP, unix.UDP_GRO, 1)
 				if fwmark != 0 {
@@ -202,7 +202,7 @@ func (s *udpSocket) receiver() receiveFunc {
 	messages := make([]ipv4.Message, espSendBatch)
 	for i := range messages {
 		messages[i].Buffers = [][]byte{make([]byte, readBufferSize)}
-		messages[i].OOB = make([]byte, 128)
+		messages[i].OOB = make([]byte, controlMessageSize)
 	}
 	read := func() (int, error) { return s.pc.ReadBatch(messages, 0) }
 	if s.raw != nil {
@@ -351,7 +351,7 @@ func newUDPSendBatch() *udpSendBatch {
 	b := new(udpSendBatch)
 	for i := range b.messages {
 		b.messages[i].Buffers = make([][]byte, 1)
-		b.messages[i].OOB = make([]byte, 0, 128)
+		b.messages[i].OOB = make([]byte, 0, controlMessageSize)
 	}
 	return b
 }
@@ -376,7 +376,7 @@ func (b *udpSendBatch) prepare(packets [][]byte, to *net.UDPAddr, control []byte
 		size := len(payload)
 		end := first + 1
 		if segment && size > 0 {
-			for end < len(packets) && end-first < 64 && len(packets[end]) > 0 && len(packets[end]) <= size &&
+			for end < len(packets) && end-first < gsoMaxSegments && len(packets[end]) > 0 && len(packets[end]) <= size &&
 				len(payload)+len(packets[end]) <= min(cap(payload), 65507) {
 				if &payload[len(payload):cap(payload)][0] != &packets[end][0] {
 					break

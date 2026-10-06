@@ -295,7 +295,7 @@ func openPacketBind(port uint16, underlay Underlay, index int, routed bool, _ fu
 	// The port selected by the IPv4 bind may already be occupied on IPv6.
 	// Retry ephemeral allocation; an explicitly requested port still fails.
 	var err error
-	for range 10 {
+	for range ephemeralPortRetries {
 		var bind packetBind
 		var receivers []receiveFunc
 		var bound uint16
@@ -325,7 +325,7 @@ func listenPacketBind(port uint16, index int) (packetBind, []receiveFunc, uint16
 				for _, option := range []int{unix.SO_RCVBUF, unix.SO_SNDBUF} {
 					// Tuning, so a kernel that clamps or refuses it costs
 					// throughput and nothing else.
-					_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, option, 7<<20)
+					_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, option, socketBufferSize)
 				}
 				if index == 0 {
 					return
