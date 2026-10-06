@@ -41,6 +41,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 	"ranet3.com/pkgs/ranet3/transport"
 )
@@ -375,7 +376,8 @@ func decodeYAML(body []byte, c *Config) error {
 //
 // The strict decode above has already refused an unknown key and a value of
 // the wrong shape, so this pass has only to find the keys and fill in the
-// pointers an empty one left nil.
+// pointers an empty one left nil, to refuse a number the decode changed on its
+// way into an integer field, and to refuse a merge key.
 func blocksWritten(body []byte, c *Config) error {
 	var document yaml.Node
 	if err := yaml.Unmarshal(body, &document); err != nil {
@@ -384,28 +386,26 @@ func blocksWritten(body []byte, c *Config) error {
 	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 {
 		return nil
 	}
-	fillBlocks(document.Content[0], reflect.ValueOf(c).Elem())
-	return nil
+	return fillBlocks(document.Content[0], reflect.ValueOf(c).Elem())
 }
 
 // fillBlocks walks the document beside the value it decoded to and allocates
 // every block a written key left nil, at whatever depth: cap.table.vrf obeys
 // the same rule cap.table does. It descends by the yaml key rather than by
 // field order, and stops at a type that reads its own yaml, since such a type
-// spells a scalar and carries no block under it.
-func fillBlocks(node *yaml.Node, target reflect.Value) {
-	for node.Kind == yaml.AliasNode && node.Alias != nil {
-		node = node.Alias
-	}
+// spells a scalar and carries no block under it. It hands every other scalar
+// to wholeNumber.
+func fillBlocks(node *yaml.Node, target reflect.Value) error {
+	node = schema.Followed(node)
 	if decodesItself(target.Type()) {
-		return
+		return nil
 	}
 	if target.Kind() == reflect.Pointer {
 		// A pointer to a scalar is left alone. An explicit null there asks for
 		// the default rather than for a zero, and TOML cannot write a key with
 		// no value at all, so there is no second spelling to agree with.
 		if target.Type().Elem().Kind() != reflect.Struct {
-			return
+			return wholeNumber(node, target.Type().Elem())
 		}
 		if target.IsNil() {
 			target.Set(reflect.New(target.Type().Elem()))
@@ -415,15 +415,56 @@ func fillBlocks(node *yaml.Node, target reflect.Value) {
 	switch {
 	case target.Kind() == reflect.Struct && node.Kind == yaml.MappingNode:
 		for i := 0; i+1 < len(node.Content); i += 2 {
-			if field := fieldByKey(target, node.Content[i].Value); field.IsValid() {
-				fillBlocks(node.Content[i+1], field)
+			key := node.Content[i]
+			// a merge key is refused rather than followed, as Announce refuses one
+			// following it would copy the decoder's precedence between a merged key and a written one
+			// and toml and json have no spelling for it
+			if key.Tag == "!!merge" {
+				return fmt.Errorf("line %d: a merge key is refused, since toml and json have no spelling for one", key.Line)
+			}
+			// the key is read as the decoder reads it, through an alias and from a !!binary spelling
+			var name string
+			if err := key.Decode(&name); err != nil {
+				return err
+			}
+			if field := fieldByKey(target, name); field.IsValid() {
+				if err := fillBlocks(node.Content[i+1], field); err != nil {
+					return err
+				}
 			}
 		}
 	case target.Kind() == reflect.Slice && node.Kind == yaml.SequenceNode:
 		for i := 0; i < len(node.Content) && i < target.Len(); i++ {
-			fillBlocks(node.Content[i], target.Index(i))
+			if err := fillBlocks(node.Content[i], target.Index(i)); err != nil {
+				return err
+			}
 		}
+	default:
+		return wholeNumber(node, target.Type())
 	}
+	return nil
+}
+
+// wholeNumber refuses a number the decode changed on its way into an integer field
+// 13000.5, 1.3e4 and 13000.0 became 13000 and -0 became 0, and encoding/json refuses all four
+// the wire form of this schema is read by encoding/json, so a file and the control plane would disagree about the number
+// every integer field the walk reaches is unsigned, since a signed one is a duration and reads its own text
+func wholeNumber(node *yaml.Node, field reflect.Type) error {
+	if node.Kind != yaml.ScalarNode {
+		return nil
+	}
+	switch field.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if strings.HasPrefix(node.Value, "-") {
+			return fmt.Errorf("line %d: %s has a minus sign, and this field is never negative", node.Line, node.Value)
+		}
+	default:
+		return nil
+	}
+	if node.Tag == "!!float" {
+		return fmt.Errorf("line %d: %s is written as a float, and this field takes a whole number in digits", node.Line, node.Value)
+	}
+	return nil
 }
 
 // fieldByKey finds the field a written key names, under the same tag the
@@ -432,19 +473,21 @@ func fillBlocks(node *yaml.Node, target reflect.Value) {
 func fieldByKey(target reflect.Value, key string) reflect.Value {
 	structure := target.Type()
 	for i := range structure.NumField() {
-		field := structure.Field(i)
-		if !field.IsExported() {
-			continue
-		}
-		name, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
-		if name == "" {
-			name = strings.ToLower(field.Name)
-		}
-		if name == key {
+		if field := structure.Field(i); field.IsExported() && yamlKey(field) == key {
 			return target.Field(i)
 		}
 	}
 	return reflect.Value{}
+}
+
+// yamlKey is the key a yaml file writes a field under
+// the tag's name, or the lowercased field name where the tag has none
+func yamlKey(field reflect.StructField) string {
+	name, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
+	if name == "" {
+		name = strings.ToLower(field.Name)
+	}
+	return name
 }
 
 // decodesItself reports a type that reads its own yaml. Everything in
@@ -553,11 +596,7 @@ func notText(value reflect.Value, path string) (string, string, bool) {
 			if !field.IsExported() {
 				continue
 			}
-			key, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
-			if key == "" {
-				key = strings.ToLower(field.Name)
-			}
-			if found, written, ok := notText(value.Field(i), strings.TrimPrefix(path+"."+key, ".")); ok {
+			if found, written, ok := notText(value.Field(i), strings.TrimPrefix(path+"."+yamlKey(field), ".")); ok {
 				return found, written, true
 			}
 		}
