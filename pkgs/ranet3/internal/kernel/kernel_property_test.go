@@ -122,11 +122,7 @@ func capabilities(rules hegel.Generator[Rule]) hegel.Generator[Table] {
 			table.Addresses = append(table.Addresses, schema.PrefixFrom(netip.PrefixFrom(address, hegel.Draw(tc, edges(1, address.BitLen())))))
 		}
 		if hegel.Draw(tc, hegel.Booleans()) {
-			address := hegel.Draw(tc, hegel.IPAddresses().IPv4())
-			if hegel.Draw(tc, hegel.Booleans()) {
-				address = netip.AddrFrom16(address.As16())
-			}
-			table.PrefSrc4 = schema.AddrFrom(address)
+			table.PrefSrc4 = schema.AddrFrom(hegel.Draw(tc, hegel.IPAddresses().IPv4()))
 		}
 		return table
 	})
