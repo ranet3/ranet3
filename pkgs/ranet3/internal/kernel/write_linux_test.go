@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 // fakeNetlink stands in for the socket so what this backend writes can be read
@@ -171,7 +172,7 @@ func TestLinuxForeignWritersDumpsBothFamilies(t *testing.T) {
 		// point of the report is a collision on one key, not a census.
 		routeDump(unix.RT_TABLE_MAIN, 42, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.2.0/24")),
 	}
-	got, err := plat.foreignWriters()
+	got, err := plat.foreignWriters(false)
 	if err != nil {
 		t.Fatalf("dump: %v", err)
 	}
@@ -189,50 +190,71 @@ func TestLinuxForeignWritersDumpsBothFamilies(t *testing.T) {
 	}
 }
 
-// The filter is told whether the table is its own VRF's, and the platform
-// has to find that out from the kernel: a VRF that existed first keeps
-// whatever table it was bound to, so a configured name proves nothing. A
-// platform that trusted the name would pass every case of the filter and
-// still hide another VRF sharing this table, so the wiring is held here.
-func TestLinuxForeignWritersAsksWhichTableTheVRFIsBoundTo(t *testing.T) {
+// the census and the binding check run on the linux platform itself
+// the table is not the default one and the vrf is not named mesh
+// a check that compares against DefaultTable, filters on it or reads a vrf by a fixed name fails a case here
+// a vrf that existed first keeps whatever table it was bound to
+// the configured name proves nothing about that table, which the kernel is asked for
+func TestLinuxCensusAndBindingReadTheConfiguredTableAndVRF(t *testing.T) {
 	for name, test := range map[string]struct {
-		links []linkInfo
-		want  []string
+		bound   uint32
+		want    []string
+		without []string
 	}{
-		"bound to this table":    {links: []linkInfo{{index: 9, name: "mesh", vrfTable: 200}}, want: []string{"bird (12)"}},
-		"bound to another table": {links: []linkInfo{{index: 9, name: "mesh", vrfTable: 300}}, want: []string{"kernel (2)", "bird (12)"}},
-		"not created yet":        {want: []string{"kernel (2)", "bird (12)"}},
+		"vrf bound to the configured table": {
+			bound:   201,
+			want:    []string{"bird (12)"},
+			without: []string{"kernel (2)", "static (4)", "bound to another table"},
+		},
+		"vrf bound to another table": {
+			bound: 300,
+			want:  []string{"bird (12)", "kernel (2)", "bound to another table", `"vrf_table":300`, `"table":201`},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			plat, conn := writePlatform(t)
-			plat.table.VRF = &VRF{Name: "mesh"}
-			conn.links = test.links
+			plat.table.ID = 201
+			plat.table.VRF = &VRF{Name: "gravity"}
+			conn.links = []linkInfo{
+				{index: 7, name: "ranet0", master: 9},
+				{index: 9, name: "gravity", vrfTable: test.bound},
+				{index: 11, name: "mesh", vrfTable: 999},
+			}
 			conn.replies = []nlMessage{
-				routeDump(200, unix.RTPROT_KERNEL, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.0.0/24")),
-				routeDump(200, unix.RTPROT_BIRD, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.1.0/24")),
+				routeDump(201, unix.RTPROT_BIRD, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.0.0/24")),
+				routeDump(201, unix.RTPROT_KERNEL, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.1.0/24")),
+				routeDump(DefaultTable, unix.RTPROT_STATIC, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.2.0/24")),
 			}
-			got, err := plat.foreignWriters()
-			if err != nil {
-				t.Fatalf("dump: %v", err)
+			reconciler := newReconciler(plat.table, plat.rt, nil, nil, netstack.NewRouteTable(), plat)
+			logs := captureKernelLogs(t)
+			reconciler.audit()
+			if err := reconciler.reconcile(); err != nil {
+				t.Fatalf("pass: %v", err)
 			}
-			if !slices.Equal(got, test.want) {
-				t.Errorf("reported %v, want %v", got, test.want)
+			got := logs.String()
+			for _, want := range test.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("the census and the pass said %q, want them to include %s", got, want)
+				}
+			}
+			for _, not := range test.without {
+				if strings.Contains(got, not) {
+					t.Errorf("the census and the pass said %q, want nothing about %s", got, not)
+				}
 			}
 		})
 	}
 }
 
-// With no VRF configured there is nothing to ask the kernel, and a configured
-// one is looked up by the name the operator wrote rather than by any other.
-func TestLinuxVRFBindingAsksForTheConfiguredDevice(t *testing.T) {
+// a vrf nothing has made yet reads as bound to no table rather than as a failure
+// every fresh start with create set meets one
+func TestLinuxVRFTableReadsAMissingVRFAsUnbound(t *testing.T) {
 	plat, conn := writePlatform(t)
-	conn.links = []linkInfo{{index: 9, name: "mesh", vrfTable: 300}, {index: 10, name: "other", vrfTable: 200}}
-	if _, ok, err := plat.vrfBinding(); err != nil || ok {
-		t.Errorf("with no vrf configured the binding read ok=%v err=%v", ok, err)
-	}
-	plat.table.VRF = &VRF{Name: "mesh"}
-	if table, ok, err := plat.vrfBinding(); err != nil || !ok || table != 300 {
-		t.Errorf("the configured vrf read as %d ok=%v err=%v, want 300", table, ok, err)
+	conn.links = []linkInfo{{index: 9, name: "mesh", vrfTable: 300}, {index: 10, name: "dummy0"}}
+	for name, want := range map[string]uint32{"mesh": 300, "dummy0": 0, "absent": 0} {
+		if got, err := plat.VRFTable(name); err != nil || got != want {
+			t.Errorf("%s read as bound to %d (err %v), want %d", name, got, err, want)
+		}
 	}
 }
 
@@ -315,7 +337,7 @@ func TestForeignWriterReportRendersReadably(t *testing.T) {
 		routeDump(200, unix.RTPROT_BIRD, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.0.0/24")),
 		routeDump(200, unix.RTPROT_KERNEL, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.1.0/24")),
 	}
-	writers, err := plat.foreignWriters()
+	writers, err := plat.foreignWriters(false)
 	if err != nil {
 		t.Fatalf("dump: %v", err)
 	}

@@ -63,6 +63,8 @@ type fakeKernel struct {
 	// a flag in place of an index reads as 1, which names none of the fake's vrfs
 	vrfIndex  map[string]uint32
 	lastIndex uint32
+	// bindErr fails every read of a vrf's binding
+	bindErr error
 
 	failAdd     map[Route]error
 	failDel     map[Route]error
@@ -480,56 +482,172 @@ func captureKernelLogs(t *testing.T) *bytes.Buffer {
 	return &logs
 }
 
-// auditingKernel is the fake with a startup audit, answering the VRF half of
-// it as each case sets and reporting no other writer.
+// auditingKernel is the fake with a startup census
+// it names the writers each case sets and keeps what it was told about the table
 type auditingKernel struct {
 	*fakeKernel
-	bound uint32
-	isVRF bool
-	err   error
+	writers []string
+	ownVRF  []bool
 }
 
-func (a *auditingKernel) foreignWriters() ([]string, error) { return nil, nil }
-func (a *auditingKernel) vrfBinding() (uint32, bool, error) { return a.bound, a.isVRF, a.err }
+func (a *auditingKernel) foreignWriters(ownVRF bool) ([]string, error) {
+	a.ownVRF = append(a.ownVRF, ownVRF)
+	return a.writers, nil
+}
 
 // A VRF that existed first keeps its own table, and traffic inside it never
 // looks at this one, so the mesh comes up looking complete and carries nothing
-// from inside the VRF. The audit says so, only when the two tables differ, and
+// from inside the VRF. The pass says so, only when the two tables differ, and
 // names both, since either one is the setting an operator changes.
-func TestAuditSaysWhenTheVRFIsBoundToAnotherTable(t *testing.T) {
+func TestPassSaysWhenTheVRFIsBoundToAnotherTable(t *testing.T) {
 	for name, test := range map[string]struct {
 		bound  uint32
-		isVRF  bool
-		err    error
 		create bool
 		want   []string
 	}{
-		"bound to this table": {bound: DefaultTable, isVRF: true},
-		"bound to another table": {bound: 300, isVRF: true, want: []string{
+		"bound to this table": {bound: DefaultTable},
+		"bound to another table": {bound: 300, want: []string{
 			"bound to another table", `"vrf_table":300`, fmt.Sprintf(`"table":%d`, DefaultTable),
 			"recreate the device bound to this table",
 		}},
-		"bound to another table with create set": {bound: 300, isVRF: true, create: true, want: []string{
+		"bound to another table with create set": {bound: 300, create: true, want: []string{
 			"bound to another table", "the next pass recreates it",
 		}},
 		"not a vrf yet": {},
-		"unreadable":    {err: errors.New("netlink went away"), want: []string{"could not read", "netlink went away"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh", Create: test.create}})
-			reconciler.plat = &auditingKernel{fakeKernel: fake, bound: test.bound, isVRF: test.isVRF, err: test.err}
+			if test.bound != 0 {
+				fake.vrfs["mesh"] = test.bound
+			}
 			logs := captureKernelLogs(t)
-			reconciler.audit()
+			if err := reconciler.reconcile(); err != nil {
+				t.Fatal(err)
+			}
 			got := logs.String()
-			if len(test.want) == 0 && got != "" {
-				t.Errorf("the audit said %s", got)
+			if len(test.want) == 0 && strings.Contains(got, "bound to another table") {
+				t.Errorf("the pass said %s", got)
 			}
 			for _, want := range test.want {
 				if !strings.Contains(got, want) {
-					t.Errorf("the audit said %q, want it to include %s", got, want)
+					t.Errorf("the pass said %q, want it to include %s", got, want)
 				}
 			}
 		})
+	}
+	// a binding that cannot be read fails the pass, which says so where an operator reads it
+	reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh"}})
+	fake.bindErr = errors.New("netlink went away")
+	if err := reconciler.reconcile(); err == nil || !strings.Contains(err.Error(), "netlink went away") {
+		t.Errorf("a binding that could not be read left the pass with %v", err)
+	}
+}
+
+// a vrf that appears or is remade bound to another table while this process runs is reported once
+// the first pass to find it reports it
+// a binding read once at startup missed such a vrf
+// the status line then read like a healthy node's
+func TestPassReportsAVRFBoundElsewhereOnceItAppears(t *testing.T) {
+	logs := captureKernelLogs(t)
+	reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh"}})
+	reported := func() int { return strings.Count(logs.String(), "bound to another table") }
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got := reported(); got != 0 {
+		t.Fatalf("a pass that found no vrf reported a binding %d times", got)
+	}
+	fake.mu.Lock()
+	fake.vrfs["mesh"] = 300
+	fake.mu.Unlock()
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got := reported(); got != 1 {
+		t.Fatalf("the pass that found the vrf bound to table 300 reported it %d times, want once", got)
+	}
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got := reported(); got != 1 {
+		t.Errorf("a binding that did not change was reported again, %d times in all", got)
+	}
+	// the vrf goes while the tun still names it as its master
+	// it then reads as bound to table 0, which is no binding to report
+	fake.mu.Lock()
+	delete(fake.vrfs, "mesh")
+	fake.mu.Unlock()
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got := reported(); got != 1 {
+		t.Errorf("a vrf that went was reported as bound to table 0, %d reports in all", got)
+	}
+}
+
+// the census is told the table is its vrf's own only when the kernel says the vrf is bound there
+// a binding that cannot be read is reported once
+// the census still runs, rather than dropping the whole report over one lookup
+func TestCensusAsksTheKernelWhichTableTheVRFIsBoundTo(t *testing.T) {
+	for name, test := range map[string]struct {
+		bound  uint32
+		err    error
+		ownVRF bool
+		logged string
+	}{
+		"bound to this table":    {bound: DefaultTable, ownVRF: true},
+		"bound to another table": {bound: 300},
+		"not a vrf yet":          {},
+		"unreadable":             {err: errors.New("netlink went away"), logged: "netlink went away"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh"}})
+			if test.bound != 0 {
+				fake.vrfs["mesh"] = test.bound
+			}
+			fake.bindErr = test.err
+			census := &auditingKernel{fakeKernel: fake, writers: []string{"bird (12)"}}
+			reconciler.plat = census
+			logs := captureKernelLogs(t)
+			reconciler.audit()
+			if !slices.Equal(census.ownVRF, []bool{test.ownVRF}) {
+				t.Errorf("the census was told ownVRF %v, want once %v", census.ownVRF, test.ownVRF)
+			}
+			got := logs.String()
+			if !strings.Contains(got, "bird (12)") {
+				t.Errorf("the census report was dropped: %q", got)
+			}
+			if test.logged != "" && strings.Count(got, test.logged) != 1 {
+				t.Errorf("the failed read was reported %d times, want once: %q", strings.Count(got, test.logged), got)
+			}
+		})
+	}
+}
+
+// Run takes the census before its first pass
+// that pass enslaves the tun
+// the enslave flushes every route out of the tun, another writer's among them
+func TestRunTakesTheCensusBeforeItsFirstPass(t *testing.T) {
+	reconciler, table, fake := harness(t, Table{VRF: &VRF{Name: "mesh"}})
+	reconciler.plat = &auditingKernel{fakeKernel: fake, writers: []string{"bird (12)"}}
+	route := Route{Destination: prefix("10.0.0.0/8")}
+	table.Set(netip.Prefix{}, route.Destination, nil)
+	logs := captureKernelLogs(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- reconciler.Run(ctx) }()
+	waitFor(t, func() bool { return fake.has(route) })
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	got := logs.String()
+	census, enslaved := strings.Index(got, "sharing its table"), strings.Index(got, "kernel interface enslaved")
+	if census < 0 {
+		t.Fatalf("a run over a table bird writes into said nothing about it: %q", got)
+	}
+	if enslaved < 0 || census > enslaved {
+		t.Errorf("the census did not come before the first pass enslaved the tun: %q", got)
 	}
 }
 
@@ -1215,6 +1333,15 @@ func (f *fakeKernel) EnsureVRF(name string, table uint32) (uint32, error) {
 	f.lastIndex++
 	f.vrfs[name], f.vrfIndex[name] = table, f.lastIndex
 	return f.lastIndex, nil
+}
+
+func (f *fakeKernel) VRFTable(name string) (uint32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.bindErr != nil {
+		return 0, f.bindErr
+	}
+	return f.vrfs[name], nil
 }
 
 // RemoveVRF leaves a device holding the name under another index, as the linux backend does
