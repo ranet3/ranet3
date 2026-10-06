@@ -31,20 +31,22 @@
 // # Adding a scalar
 //
 // A capability with a scalar of its own, a behavior or a link quality, writes
-// five methods on it, and a sixth where a file may write it as a number. The
-// three encoders this tree reads and writes dispatch differently, and a method
-// left out is found by an operator rather than by the compiler.
+// the methods below on it. The three encoders this tree reads and writes
+// dispatch differently, and a method left out is found by an operator rather
+// than by the compiler.
 //
-//   - UnmarshalText and UnmarshalYAML. yaml.v3 asks a type for
-//     [yaml.Unmarshaler] and never for [encoding.TextUnmarshaler];
-//     BurntSushi/toml asks for the text one and never for the yaml one. A type
-//     carrying one alone parses under one file extension and is refused under
-//     the other. [Scalar] routes the yaml half into the text half, which
-//     leaves both decoders reading the same spellings and only the wrapping
-//     differing.
-//   - MarshalText and MarshalYAML, for the same split going the other way. A
-//     type whose written form is a mapping rather than a word takes the yaml
-//     one alone, and [Announce] records why.
+//   - UnmarshalText and UnmarshalYAML. BurntSushi/toml asks a type for
+//     [encoding.TextUnmarshaler] and never for [yaml.Unmarshaler]. yaml.v3
+//     asks for its own first and falls back to UnmarshalText for a scalar,
+//     whose error then carries no line. It refuses a mapping or a sequence
+//     written where the word belongs as a type mismatch, or reads a mapping
+//     into the fields of a type wrapping a struct. [Scalar] is the yaml half.
+//     It hands a scalar to the text half with its line and refuses any other
+//     node by what it is. Both decoders then read the same spellings, and only
+//     the wrapping differs.
+//   - MarshalText, which yaml.v3, BurntSushi/toml and encoding/json all write
+//     a word through. A type whose written form is a mapping rather than a
+//     word takes MarshalYAML alone, and [Announce] records why.
 //   - IsZero, when the type wraps a struct. yaml.v3 decides omitempty for a
 //     struct by asking for IsZero and otherwise walking the exported fields,
 //     and a [net/netip] value exports none, so a prefix holding 10.0.0.0/8 is
