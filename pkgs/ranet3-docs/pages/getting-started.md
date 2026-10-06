@@ -5,7 +5,7 @@
 title: "Getting started"
 description: "Building the binary, the binary cache, and running a node by hand."
 created: 2026-08-17
-updated: 2026-10-03
+updated: 2026-10-06
 order: 20
 ---
 
@@ -37,12 +37,13 @@ Or with the binary built above:
 sudo ./ranet3 daemon --config /etc/ranet3/config.toml
 ```
 
-On startup it logs the TUN device's name (e.g. `ranet0`). Traffic won't flow
-until you configure it yourself, e.g.:
+On startup it logs the TUN device's name, `ranet3` on linux unless `link.tun`
+names another (see [Configuration](configuration.md)). Traffic won't flow until
+you configure it yourself, e.g.:
 
 ```sh
-ip addr add 10.66.0.5/32 dev ranet0
-ip route add 10.66.0.0/16 dev ranet0
+ip addr add 10.66.0.5/32 dev ranet3
+ip route add 10.66.0.0/16 dev ranet3
 ```
 
 `daemon` is the node; every other subcommand speaks to a running one over its

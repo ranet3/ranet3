@@ -59,7 +59,7 @@ trust = "/etc/ranet3/trust.json" # the document saying who may join
 port = 13000
 endpoints = [{ serial = "0", family = "ip4" }]
 # listen = true                     # answer peers that dial this node
-# tun = "ranet0"                    # attach to this device rather than a new one
+# tun = "ranet0"                    # this device rather than ranet3, see below
 # [link.underlay]                   # keep the underlay out of the mesh's own routing
 # mark = 0x726c                     # SO_MARK plus a rule under cap.table.rules, linux only
 # bind = true                       # IP_BOUND_IF plus a scoped default, darwin only
@@ -79,6 +79,22 @@ set, at least one `dial.to` entry. Everything else has a default, and an absent
 capability is its own default: a node with no `cap.babel` runs the 4s and 16s
 intervals of RFC 8966 Appendix B, and a node with no `cap.route` announces
 nothing and still carries transit.
+
+`link.tun` names the device the mesh runs on. Left out, linux creates `ranet3`
+and darwin takes the next free `utun`. A queue opened under the name of a
+multiqueue TUN joins that device, and `ranet3` is therefore only ever created,
+never attached to: ranet3 refuses to start, naming the device, when one called
+`ranet3` already exists, and a second instance on one host names a device of its
+own in `link.tun`. Any other name is attached to on linux when the device
+exists, such as one systemd-networkd made with `MultiQueue=yes`, and created
+when it does not. Two instances given the same name share that one device when
+it is multiqueue, as every device ranet3 creates is, and a single-queue TUN made
+by something else admits one queue and refuses the second instance with `EBUSY`.
+darwin's utun control creates nothing but `utun`, its next free unit, and
+`utunN`, unit N, and ranet3 refuses to start there on any other name, while the
+file itself loads on either platform, as with `link.underlay`. The name the
+device was given, `utun6` for instance, is the one ranet3 logs at startup,
+reports in `ranet3 status` and hands the route reconciler.
 
 The capabilities, each documented in full in the example:
 
