@@ -5,6 +5,7 @@
 package ike
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -109,5 +110,46 @@ func TestSendRecvReportsTheBudgetItSpent(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 3*requestTimeout {
 		t.Errorf("one attempt took %s, which is more than the budget it was given", elapsed)
+	}
+}
+
+// a request whose first copy is lost is sent again within its budget
+// and the answer to the second copy is the one returned
+func TestSendRecvSendsAnUnansweredRequestAgain(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.Close()
+	header := Header{SPIInitiator: randUint64Nonzero(), SPIResponder: randUint64Nonzero(),
+		ExchangeType: INFORMATIONAL, Flags: FlagInitiator, MessageID: 4}
+	request := encodeTestMessage(t, header, nil)
+	header.Flags = FlagResponse
+	answer := encodeTestMessage(t, header, nil)
+	peerLoop(t, peer, func() {
+		buf := make([]byte, 2048)
+		for read := 1; ; read++ {
+			n, from, err := peer.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if !bytes.Equal(buf[:n], withNonESPMarker(request)) {
+				t.Errorf("copy %d differs from the request", read)
+			}
+			// the first copy goes unanswered, as if it had been lost
+			if read == 2 {
+				_, _ = peer.WriteToUDP(withNonESPMarker(answer), from)
+			}
+		}
+	})
+
+	raw, err := sendRecvWithin(mux, request, 2, nil)
+	if err != nil {
+		t.Fatalf("a request whose first copy went unanswered failed: %v", err)
+	}
+	if !bytes.Equal(raw, answer) {
+		t.Errorf("returned %x, want the answer to the second copy %x", raw, answer)
 	}
 }
