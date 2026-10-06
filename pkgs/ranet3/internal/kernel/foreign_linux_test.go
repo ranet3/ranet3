@@ -6,6 +6,7 @@
 package kernel
 
 import (
+	"encoding/binary"
 	"maps"
 	"slices"
 	"testing"
@@ -112,17 +113,25 @@ func linkReply(kind string, value uint32) nlMessage {
 // carries its VNI under the same attribute number and width, so a parser that
 // skipped the kind check would read VNI 200 as a VRF bound to table 200.
 func TestLinkVRFTableReadsTheNestedBinding(t *testing.T) {
-	if table, ok := linkVRFTable(linkReply("vrf", 200)); !ok || table != 200 {
-		t.Errorf("a vrf bound to 200 read as %d, %v", table, ok)
+	if table := linkVRFTable(linkReply("vrf", 200)); table != 200 {
+		t.Errorf("a vrf bound to 200 read as %d", table)
 	}
-	if table, ok := linkVRFTable(linkReply("vrf", 51820)); !ok || table != 51820 {
-		t.Errorf("a vrf bound to 51820 read as %d, %v", table, ok)
+	if table := linkVRFTable(linkReply("vrf", 51820)); table != 51820 {
+		t.Errorf("a vrf bound to 51820 read as %d", table)
 	}
-	if table, ok := linkVRFTable(linkReply("vxlan", 200)); ok {
+	if table := linkVRFTable(linkReply("vxlan", 200)); table != 0 {
 		t.Errorf("a vxlan device with VNI 200 read as a vrf bound to %d", table)
 	}
 	bare := nlMessage{Kind: unix.RTM_NEWLINK, Data: make([]byte, unix.SizeofIfInfomsg)}
-	if _, ok := linkVRFTable(bare); ok {
-		t.Error("a link with no linkinfo read as a vrf")
+	if table := linkVRFTable(bare); table != 0 {
+		t.Errorf("a link with no linkinfo read as a vrf bound to %d", table)
+	}
+	// the index, the name and the master come out of the same message as the binding
+	reply := linkReply("vrf", 200)
+	binary.NativeEndian.PutUint32(reply.Data[4:], 9)
+	reply.Data = putAttrString(reply.Data, unix.IFLA_IFNAME, "mesh")
+	reply.Data = putAttrU32(reply.Data, unix.IFLA_MASTER, 4)
+	if got, want := decodeLink(reply), (linkInfo{index: 9, master: 4, name: "mesh", vrfTable: 200}); got != want {
+		t.Errorf("the link read as %+v, want %+v", got, want)
 	}
 }

@@ -206,50 +206,49 @@ func (m nlMessage) attributes(offset int) iter.Seq2[uint16, []byte] {
 	}
 }
 
-// link resolves a device name to its index and the index of its master, using
-// a keyed RTM_GETLINK rather than a dump.
-func (c *nlConn) link(name string) (index, master uint32, err error) {
-	body := make([]byte, unix.SizeofIfInfomsg)
-	body = putAttrString(body, unix.IFLA_IFNAME, name)
-	replies, err := c.execute(unix.RTM_GETLINK, 0, body)
-	if err != nil {
-		return 0, 0, err
-	}
-	for _, reply := range replies {
-		if reply.Kind != unix.RTM_NEWLINK || len(reply.Data) < unix.SizeofIfInfomsg {
-			continue
-		}
-		index = binary.NativeEndian.Uint32(reply.Data[4:])
-		for kind, value := range reply.attributes(unix.SizeofIfInfomsg) {
-			if kind == unix.IFLA_MASTER && len(value) == 4 {
-				master = binary.NativeEndian.Uint32(value)
-			}
-		}
-		return index, master, nil
-	}
-	return 0, 0, unix.ENODEV
+// linkInfo holds the fields of one RTM_NEWLINK this package reads
+type linkInfo struct {
+	index, master uint32
+	name          string
+	// vrfTable is the table a vrf is bound to, and 0 for a device of another kind
+	// the kernel binds no vrf to table 0
+	vrfTable uint32
 }
 
-// linkName is the reverse lookup, for turning a master index back into the
-// name the operator wrote in the configuration.
-func (c *nlConn) linkName(index uint32) (string, error) {
+// link asks about one device by index, or by name when index is 0, with a keyed RTM_GETLINK rather than a dump
+// a name nothing holds answers ENODEV
+func (c *nlConn) link(index uint32, name string) (linkInfo, error) {
 	body := make([]byte, unix.SizeofIfInfomsg)
 	binary.NativeEndian.PutUint32(body[4:], index)
+	if index == 0 {
+		body = putAttrString(body, unix.IFLA_IFNAME, name)
+	}
 	replies, err := c.execute(unix.RTM_GETLINK, 0, body)
 	if err != nil {
-		return "", err
+		return linkInfo{}, err
 	}
 	for _, reply := range replies {
-		if reply.Kind != unix.RTM_NEWLINK {
-			continue
+		if reply.Kind == unix.RTM_NEWLINK && len(reply.Data) >= unix.SizeofIfInfomsg {
+			return decodeLink(reply), nil
 		}
-		for kind, value := range reply.attributes(unix.SizeofIfInfomsg) {
-			if kind == unix.IFLA_IFNAME {
-				return unix.ByteSliceToString(value), nil
+	}
+	return linkInfo{}, unix.ENODEV
+}
+
+// decodeLink reads one RTM_NEWLINK, split from the socket so the nesting is checked without one
+func decodeLink(reply nlMessage) linkInfo {
+	link := linkInfo{index: binary.NativeEndian.Uint32(reply.Data[4:]), vrfTable: linkVRFTable(reply)}
+	for kind, value := range reply.attributes(unix.SizeofIfInfomsg) {
+		switch kind {
+		case unix.IFLA_IFNAME:
+			link.name = unix.ByteSliceToString(value)
+		case unix.IFLA_MASTER:
+			if len(value) == 4 {
+				link.master = binary.NativeEndian.Uint32(value)
 			}
 		}
 	}
-	return "", unix.ENODEV
+	return link
 }
 
 // putAttr appends one rtnetlink attribute, padded the way the kernel's own
@@ -270,34 +269,12 @@ func putAttrU32(buf []byte, kind uint16, value uint32) []byte {
 	return putAttr(buf, kind, raw[:])
 }
 
-// vrfTable reads the table a VRF device is bound to out of its link
-// attributes, with a keyed RTM_GETLINK like link. A name nothing holds and a
-// device of another kind both answer false, which is also the state before a
-// Create has made the device.
-func (c *nlConn) vrfTable(name string) (uint32, bool, error) {
-	body := make([]byte, unix.SizeofIfInfomsg)
-	body = putAttrString(body, unix.IFLA_IFNAME, name)
-	replies, err := c.execute(unix.RTM_GETLINK, 0, body)
-	if errors.Is(err, unix.ENODEV) {
-		return 0, false, nil
-	}
-	if err != nil {
-		return 0, false, err
-	}
-	for _, reply := range replies {
-		if reply.Kind == unix.RTM_NEWLINK && len(reply.Data) >= unix.SizeofIfInfomsg {
-			table, ok := linkVRFTable(reply)
-			return table, ok, nil
-		}
-	}
-	return 0, false, nil
-}
-
 // linkVRFTable finds IFLA_VRF_TABLE two levels down in one RTM_NEWLINK, inside
 // IFLA_INFO_DATA inside IFLA_LINKINFO, and only when IFLA_INFO_KIND names a
-// VRF. Split from the socket so the nesting is checked without one. The nest
-// flag is masked off because the kernel is free to set it on either level.
-func linkVRFTable(reply nlMessage) (uint32, bool) {
+// VRF. The nest flag is masked off because the kernel is free to set it on
+// either level.
+// a device of another kind answers 0
+func linkVRFTable(reply nlMessage) uint32 {
 	for kind, info := range reply.attributes(unix.SizeofIfInfomsg) {
 		if kind&^unix.NLA_F_NESTED != unix.IFLA_LINKINFO {
 			continue
@@ -313,16 +290,16 @@ func linkVRFTable(reply nlMessage) (uint32, bool) {
 			}
 		}
 		if !vrf {
-			return 0, false
+			return 0
 		}
 		for kind, value := range (nlMessage{Data: data}).attributes(0) {
 			if kind == unix.IFLA_VRF_TABLE && len(value) == 4 {
-				return binary.NativeEndian.Uint32(value), true
+				return binary.NativeEndian.Uint32(value)
 			}
 		}
-		return 0, false
+		return 0
 	}
-	return 0, false
+	return 0
 }
 
 func putAttrString(buf []byte, kind uint16, value string) []byte {

@@ -7,6 +7,7 @@ package kernel
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"log/slog"
 	"net/netip"
@@ -27,9 +28,8 @@ type fakeNetlink struct {
 	}
 	replies []nlMessage
 	err     error
-	// vrfs is the table each VRF device is bound to. A name missing here has
-	// no such device, which is the state before a Create makes one.
-	vrfs map[string]uint32
+	// links is every device the fake kernel holds, a name missing here being one nothing holds
+	links []linkInfo
 }
 
 func (f *fakeNetlink) execute(kind, flags uint16, body []byte) ([]nlMessage, error) {
@@ -40,12 +40,15 @@ func (f *fakeNetlink) execute(kind, flags uint16, body []byte) ([]nlMessage, err
 	return f.replies, f.err
 }
 
-func (f *fakeNetlink) link(string) (uint32, uint32, error) { return 0, 0, nil }
-func (f *fakeNetlink) linkName(uint32) (string, error)     { return "", nil }
-func (f *fakeNetlink) vrfTable(name string) (uint32, bool, error) {
-	table, ok := f.vrfs[name]
-	return table, ok, nil
+func (f *fakeNetlink) link(index uint32, name string) (linkInfo, error) {
+	for _, link := range f.links {
+		if index != 0 && index == link.index || index == 0 && name == link.name {
+			return link, nil
+		}
+	}
+	return linkInfo{}, unix.ENODEV
 }
+
 func (f *fakeNetlink) Close() error { return nil }
 
 func writePlatform(t *testing.T) (*netlinkPlatform, *fakeNetlink) {
@@ -193,17 +196,17 @@ func TestLinuxForeignWritersDumpsBothFamilies(t *testing.T) {
 // still hide another VRF sharing this table, so the wiring is held here.
 func TestLinuxForeignWritersAsksWhichTableTheVRFIsBoundTo(t *testing.T) {
 	for name, test := range map[string]struct {
-		bound map[string]uint32
+		links []linkInfo
 		want  []string
 	}{
-		"bound to this table":    {bound: map[string]uint32{"mesh": 200}, want: []string{"bird (12)"}},
-		"bound to another table": {bound: map[string]uint32{"mesh": 300}, want: []string{"kernel (2)", "bird (12)"}},
+		"bound to this table":    {links: []linkInfo{{index: 9, name: "mesh", vrfTable: 200}}, want: []string{"bird (12)"}},
+		"bound to another table": {links: []linkInfo{{index: 9, name: "mesh", vrfTable: 300}}, want: []string{"kernel (2)", "bird (12)"}},
 		"not created yet":        {want: []string{"kernel (2)", "bird (12)"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			plat, conn := writePlatform(t)
 			plat.table.VRF = &VRF{Name: "mesh"}
-			conn.vrfs = test.bound
+			conn.links = test.links
 			conn.replies = []nlMessage{
 				routeDump(200, unix.RTPROT_KERNEL, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.0.0/24")),
 				routeDump(200, unix.RTPROT_BIRD, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.1.0/24")),
@@ -223,13 +226,38 @@ func TestLinuxForeignWritersAsksWhichTableTheVRFIsBoundTo(t *testing.T) {
 // one is looked up by the name the operator wrote rather than by any other.
 func TestLinuxVRFBindingAsksForTheConfiguredDevice(t *testing.T) {
 	plat, conn := writePlatform(t)
-	conn.vrfs = map[string]uint32{"mesh": 300, "other": 200}
+	conn.links = []linkInfo{{index: 9, name: "mesh", vrfTable: 300}, {index: 10, name: "other", vrfTable: 200}}
 	if _, ok, err := plat.vrfBinding(); err != nil || ok {
 		t.Errorf("with no vrf configured the binding read ok=%v err=%v", ok, err)
 	}
 	plat.table.VRF = &VRF{Name: "mesh"}
 	if table, ok, err := plat.vrfBinding(); err != nil || !ok || table != 300 {
 		t.Errorf("the configured vrf read as %d ok=%v err=%v, want 300", table, ok, err)
+	}
+}
+
+// a device of another kind holding the vrf's name is refused by name, and the tun is never handed to it
+// the kernel answers that enslave with a bare errno on every pass, naming neither the device nor its kind
+func TestLinuxEnslavesTheTunOnlyToAVRF(t *testing.T) {
+	plat, conn := writePlatform(t)
+	conn.links = []linkInfo{{index: 9, name: "mesh"}}
+	if err := plat.Enslave("mesh"); err == nil || !strings.Contains(err.Error(), "mesh is not a vrf") {
+		t.Errorf("enslaving to a device that is not a vrf reported %v", err)
+	}
+	if len(conn.sent) != 0 {
+		t.Fatalf("the refusal still wrote %d messages", len(conn.sent))
+	}
+	conn.links[0].vrfTable = 200
+	if err := plat.Enslave("mesh"); err != nil {
+		t.Fatalf("enslave to a vrf: %v", err)
+	}
+	if len(conn.sent) != 1 || conn.sent[0].kind != unix.RTM_NEWLINK {
+		t.Fatalf("the enslave wrote %d messages", len(conn.sent))
+	}
+	for kind, value := range (nlMessage{Data: conn.sent[0].body}).attributes(unix.SizeofIfInfomsg) {
+		if kind == unix.IFLA_MASTER && binary.NativeEndian.Uint32(value) != 9 {
+			t.Errorf("the tun was handed to master %d, want the vrf's index 9", binary.NativeEndian.Uint32(value))
+		}
 	}
 }
 
