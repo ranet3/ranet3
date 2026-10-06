@@ -82,14 +82,14 @@ testers.runNixOSTest {
     assert "--- PASS" in out, f"the nftables round trip did not run:\n{out}"
 
     # the tun round trips create a device, attach to one and read its gso limit back
-    # the test and its three ways to a device count four passes
+    # the test and its four ways to a device count five passes
     out = machine.succeed(
         "${netlinkTests}/bin/netstack-tests -test.v -test.run 'TestTUN' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the tun round trips skipped themselves under root:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 4, f"only {ran} tun round trips ran:\n{out}"
+    assert ran >= 5, f"only {ran} tun round trips ran:\n{out}"
 
     # Nothing the tests wrote may outlive them: they run against the host's own
     # kernel here rather than against a fake, so a rule, a VRF or a table left

@@ -21,14 +21,17 @@ import (
 // and every way the mesh comes by its device has to set that value
 func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 	for _, path := range []struct {
-		name  string
-		setup func(t *testing.T, device string)
+		name string
+		// asked is the name the mesh is opened with and device the one the kernel gives it
+		asked, device string
+		setup         func(t *testing.T, device string)
 	}{
-		{"created", func(*testing.T, string) {}},
-		{"multiqueue attach", func(t *testing.T, device string) {
+		{"created", "gsocap0", "gsocap0", func(*testing.T, string) {}},
+		{"created from a name the kernel numbers", "gsocap%d", "gsocap0", func(*testing.T, string) {}},
+		{"multiqueue attach", "gsocap0", "gsocap0", func(t *testing.T, device string) {
 			persistTUN(t, device, unix.IFF_MULTI_QUEUE)
 		}},
-		{"single-queue attach at one core", func(t *testing.T, device string) {
+		{"single-queue attach at one core", "gsocap0", "gsocap0", func(t *testing.T, device string) {
 			persistTUN(t, device, 0)
 			previous := runtime.GOMAXPROCS(1)
 			t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
@@ -36,17 +39,19 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 	} {
 		t.Run(path.name, func(t *testing.T) {
 			enterEmptyNamespace(t)
-			const device = "gsocap0"
-			path.setup(t, device)
-			if _, err := net.InterfaceByName(device); err == nil {
-				t.Logf("gso_max_segs %d before the mesh attached", gsoMaxSegs(t, device))
+			path.setup(t, path.device)
+			if _, err := net.InterfaceByName(path.device); err == nil {
+				t.Logf("gso_max_segs %d before the mesh attached", gsoMaxSegs(t, path.device))
 			}
 
-			m, err := NewNamed(0, device)
+			m, err := NewNamed(0, path.asked)
 			if err != nil {
-				t.Fatalf("open the mesh on %s: %v", device, err)
+				t.Fatalf("open the mesh on %q: %v", path.asked, err)
 			}
 			t.Cleanup(m.Close)
+			if m.Name != path.device {
+				t.Fatalf("the mesh opened %q as %s, want %s", path.asked, m.Name, path.device)
+			}
 			batch := m.devs[0].BatchSize()
 			if batch < 2 {
 				t.Fatalf("the device reads %d packet at a time, so it takes no GSO frame and this proves nothing", batch)
