@@ -38,6 +38,10 @@ let
   kernelTable = 200;
   kernelProtocol = 155;
   clientTunnelV4 = "10.88.0.2";
+  # networkd makes the client's tun under a name of its own
+  # and link.tun names it for ranet3 to attach to
+  # the default name, ranet3, is only ever created
+  clientDevice = "ranet0";
   # Inside the /64 BIRD already announces, so the segment is reachable over
   # the mesh without a second announcement to keep in step with this one.
   gatewaySID = "fd00:99::6:1";
@@ -344,9 +348,9 @@ testers.runNixOSTest {
           ];
 
         systemd.network = {
-          netdevs."20-ranet0" = {
+          netdevs."20-${clientDevice}" = {
             netdevConfig = {
-              Name = "ranet0";
+              Name = clientDevice;
               Kind = "tun";
             };
             tunConfig = {
@@ -362,8 +366,8 @@ testers.runNixOSTest {
             # segment and nothing else, because nothing announces it.
             addresses = [ { Address = "${clientBehind}/128"; } ];
           };
-          networks."40-ranet0" = {
-            matchConfig.Name = "ranet0";
+          networks."40-${clientDevice}" = {
+            matchConfig.Name = clientDevice;
             linkConfig = {
               MTUBytes = 1400;
               RequiredForOnline = false;
@@ -444,7 +448,7 @@ testers.runNixOSTest {
                   family = "ip4";
                 }
               ];
-              tun = "ranet0";
+              tun = clientDevice;
               listen = pkgs.lib.mkIf responder true;
             };
             dial = pkgs.lib.mkIf (!responder) {
@@ -565,6 +569,7 @@ testers.runNixOSTest {
         kernel_table = "${toString kernelTable}"
         kernel_protocol = "${toString kernelProtocol}"
         client_tunnel_v4 = "${clientTunnelV4}"
+        client_device = "${clientDevice}"
 
         def journal_after(machine, unit):
             output = machine.succeed(f"journalctl -u {unit} -n 1 --show-cursor --no-pager")
@@ -717,7 +722,7 @@ testers.runNixOSTest {
             ruleset = client.succeed("nft list ruleset")
             print(ruleset)
             for want in ["chain postrouting", "type nat hook postrouting", "masquerade",
-                         'iifname "ranet0"', 'oifname != "ranet0"']:
+                         f'iifname "{client_device}"', f'oifname != "{client_device}"']:
                 assert want in ruleset, f"the ruleset does not carry {want}:\n{ruleset}"
 
             # The announcement reaches a peer that has never heard of this
@@ -864,8 +869,8 @@ testers.runNixOSTest {
 
             # ranet3 attached to the tun networkd made
             # and set its gso_max_segs to the read batch of 128 packets
-            segments = client.succeed("ip -d link show ranet0").split("gso_max_segs ")[1].split()[0]
-            assert segments == "128", f"ranet0 holds gso_max_segs {segments}, want the read batch of 128"
+            segments = client.succeed(f"ip -d link show {client_device}").split("gso_max_segs ")[1].split()[0]
+            assert segments == "128", f"{client_device} holds gso_max_segs {segments}, want the read batch of 128"
 
             # at this segment size one gso frame can carry more packets than a tun read holds
             # which may cost the tail of that frame and never the reader of its queue
@@ -908,7 +913,7 @@ testers.runNixOSTest {
                 print(v6)
                 assert f"proto {kernel_protocol}" in v4, v4
                 assert f"src {client_tunnel_v4}" in v4, v4
-                assert "dev ranet0" in v4, v4
+                assert f"dev {client_device}" in v4, v4
                 # The main table is not this reconciler's to write.
                 leaked = client.succeed(f"ip -4 route show proto {kernel_protocol}")
                 assert "10.99.0.0/24" not in leaked, leaked
@@ -990,7 +995,7 @@ testers.runNixOSTest {
                 "ip -s link show swan0",
             ]:
                 print(gateway.execute(command)[1])
-            print(client.execute("ip -s link show ranet0")[1])
+            print(client.execute(f"ip -s link show {client_device}")[1])
       '';
     in
     preamble

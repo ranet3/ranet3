@@ -41,7 +41,8 @@ in
 
     environment.systemPackages = [ cfg.package ];
 
-    # the daemon names its tun ranet0 and up unless link.tun says otherwise
+    # the daemon names its tun ranet3 unless link.tun says otherwise
+    # ranet* also covers a ranet%d template and a ranet0 that a hand-written configFile names
     networking.dhcpcd.denyInterfaces = [
       "ranet*"
     ]
