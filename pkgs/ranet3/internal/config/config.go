@@ -79,7 +79,12 @@ type Link struct {
 	// mesh needs it on, since every node both dials and answers.
 	Listen bool `yaml:"listen,omitempty" json:"listen,omitempty" toml:"listen,omitempty"`
 	// TUN names an existing device to attach to, or the device to create when
-	// it does not exist. Empty creates an automatically named one.
+	// it does not exist.
+	// empty takes the platform's default, ranet3 on linux and the next free utun on darwin
+	// ranet3 is only ever created
+	// a second instance on one host names its own
+	// darwin creates nothing but utun and utun followed by a unit number
+	// the daemon refuses any other name there when it starts, as with Underlay
 	TUN string `yaml:"tun,omitempty" json:"tun,omitempty" toml:"tun,omitempty"`
 	// Underlay keeps the one UDP socket carrying IKE and ESP out of the reach
 	// of the routes the mesh installs, which lets an exit-announced default be

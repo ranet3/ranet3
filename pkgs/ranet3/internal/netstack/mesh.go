@@ -118,9 +118,18 @@ func NewNamed(mtu int, name string) (*Mesh, error) {
 	if name == "" {
 		name = defaultTUNName
 	}
+	// refused when the daemon starts, the file naming it having loaded on every platform
+	// wireguard-go would open utun5x as utun5 and turn a unit past 32 bits into another one
+	if utunNamesOnly && !isUTUNName(name) {
+		return nil, fmt.Errorf("netstack: create tun device: link.tun %q is a name darwin cannot create: its utun control makes %s, the next free unit, and %s followed by a unit number, and nothing else", name, utunName, utunName)
+	}
 	queueCount := max(1, runtime.GOMAXPROCS(0))
 	devs, actualName, err := createTUNQueues(name, mtu, queueCount)
 	if err != nil {
+		// wireguard-go hands back the utun control's errno without the name it was asked for
+		if utunNamesOnly {
+			err = fmt.Errorf("link.tun %q: %w", name, err)
+		}
 		return nil, fmt.Errorf("netstack: create tun device: %w", err)
 	}
 	if err := bringTUNUp(actualName); err != nil {

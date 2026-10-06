@@ -25,6 +25,10 @@ const (
 	// outboundJobsPerWorker is the read batches queued for each crypto worker
 	// one waits while the worker encrypts another
 	outboundJobsPerWorker = 2
+	// utunName asks darwin's utun control for its next free unit
+	// followed by a unit number it asks for that unit
+	// the control creates no other name
+	utunName = "utun"
 )
 
 // tunOffset is how much leading space every Device.Read and Device.Write

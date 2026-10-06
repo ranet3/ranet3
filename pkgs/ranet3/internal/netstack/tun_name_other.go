@@ -7,3 +7,6 @@ package netstack
 
 // defaultTUNName is empty so the platform backend picks its own name.
 const defaultTUNName = ""
+
+// utunNamesOnly is false, the backend judging a name when it makes the device
+const utunNamesOnly = false
