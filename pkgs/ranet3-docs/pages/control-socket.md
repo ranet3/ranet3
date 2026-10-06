@@ -44,37 +44,38 @@ The subcommands read it and print a table, or the wire form with `--json`:
 
 ```
 $ ranet3 status
-node        example/laptop
-version     2026.912.0+860393bf1c2e
-uptime      3h12m0s
-port        13000
-endpoints   0/ip6 1/ip4
-tun         ranet0 mtu 1400 queues 16
-role        initiator, responder, full mesh, no transit
-forwarding  ipv4 on ipv6 on
-registry    /etc/ranet/registry.json, 142 nodes in 31 organizations
-kernel      table 200 protocol 155, 609 installed, last pass 12 seconds ago
-dialers     117 running
-sessions    83
-neighbors   83, 81 alive
-routes      611 prefixes, 604 selected, 3 originated
-originate   198.18.104.117/32 3fff:a::198:18:104:117/128 3fff:1:69c:8c0::/60
-segments    3fff:1:69c:8c6::1 End.DT46 (0 forwarded, 5 delivered, 0 dropped)
-steering    from 3fff:a::198:18:104:117/128 via 3fff:1:69c:98d6::1 (12 steered, 2 with no route to their first segment)
-esp         41822931 in, 0 dropped, 14 refused
+Node        example/laptop
+Version     2026.912.0+860393bf1c2e
+Uptime      3h12m0s
+Port        13000
+Endpoints   0/ip6 1/ip4
+TUN         ranet0 MTU 1400 queues 16
+Role        initiator, responder, full mesh, no transit
+Forwarding  IPv4 on IPv6 on
+Registry    /etc/ranet/registry.json, 142 nodes in 31 organizations
+Kernel      table 200 protocol 155, 609 installed, last pass 12 seconds ago
+Egress      off, this node carries no traffic for others
+Dialers     117 running
+Sessions    83
+Neighbors   83, 81 alive
+Routes      611 prefixes, 604 selected, 3 originated
+Originate   198.18.104.117/32 3fff:a::198:18:104:117/128 3fff:1:69c:8c0::/60
+Segments    3fff:1:69c:8c6::1 End.DT46 (0 forwarded, 5 delivered, 0 dropped)
+Steering    from 3fff:a::198:18:104:117/128 via 3fff:1:69c:98d6::1 (12 steered, 2 with no route to their first segment)
+ESP         41822931 in, 0 dropped, 14 refused
 
 $ ranet3 neighbors
-peer            state  cost  rxcost  rtt      routes  expires  dropped  failed
-example/gateway@0  up     116   96      27.2ms   15      11.3s    0        0
-example/relay@1    up     194   96      176.7ms  130     9.8s     0        0
+Peer               State  Cost  Rx cost  RTT      Routes  Expires  Dropped  Failed
+example/gateway@0  up     116   96       27.2ms   15      11.3s    0        0
+example/relay@1    up     194   96       176.7ms  130     9.8s     0        0
 
 $ ranet3 routes
-destination  from            via             metric  router-id         seqno  paths
+Destination  From         Via                Metric  Router ID         Seqno  Paths
 ::/0         3fff:a::/36  example/gateway@0  212     0a1b2c3d4e5f6071  42     7
 ```
 
 `neighbors` answers `birdc show babel neighbors`, with the neighbor's own
-reported rxcost beside this node's cost so a link that carries one way can be
+reported Rx cost beside this node's cost so a link that carries one way can be
 told from one that carries neither, and with the two dataplane counters BIRD has
 no equivalent of. `routes` answers `birdc show route`, over the Babel route
 table rather than the forwarding table, so a prefix every neighbor has retracted
@@ -89,7 +90,7 @@ fall back to. It names the peer and not the originating node, because Babel
 carries a router id and no name and this tree gives each speaker a random one,
 so an origin is nameable only where it is a neighbor. `ip` prints this node's
 own mesh addresses, one per line, taken from the host prefixes it announces.
-`exit-node list` is the defaults the mesh advertises and which of them this node
+`exit list` is the defaults the mesh advertises and which of them this node
 would take, with a withdrawn one told from one that is carrying traffic.
 `bugreport` is every subsystem in one JSON object, and a read that did not
 answer leaves its own line in it rather than replacing the report, so a node
@@ -121,13 +122,13 @@ The state lives in the process. A restart starts everything the file names, and
 a reload leaves a stopped subsystem stopped, because the trust document is
 rewritten every time any node joins the mesh and a reload that started one again
 would undo a decision an operator took minutes earlier on a schedule nobody
-chose. A node running less than its file says reports it on the `disabled` line
+chose. A node running less than its file says reports it on the `Disabled` line
 of `ranet3 status`, which is the only place that difference shows.
 
 `disable reconciler` withdraws every route, address and rule the reconciler
 installed, as `birdc disable` did to a kernel protocol, rather than freezing a
 table nobody is maintaining. A withdrawal the kernel refuses part of is retried
-on the backoff of a failed pass until it completes, and the kernel line of
+on the backoff of a failed pass until it completes, and the `Kernel` line of
 `ranet3 status` carries its error until then. `disable steering` leaves the
 policies loaded and stops acting on them, so a diagnostic still reports what was
 stopped. `disable responder` refuses the next handshake and leaves the sessions
