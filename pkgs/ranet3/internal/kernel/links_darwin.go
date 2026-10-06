@@ -128,34 +128,25 @@ func (l *Links) DefaultInterface() (int, error) {
 // name whichever interface somebody else was asking about.
 var lookupSeq atomic.Int32
 
-// lookupTimeout bounds one request. Without it a reply that never comes holds
-// the goroutine asking for it forever, and one of the callers is the startup
-// path that opens the transport socket.
-const lookupTimeout = 2 * time.Second
-
-// interfaceIndexFor asks the kernel which interface it would send to
-// destination through, by making the same RTM_GET request `route -n get` makes
-// and reading the link index off the gateway of the answer.
-//
-// A gateway that is an address rather than a link is a next hop, which names
-// no interface of its own, so the address is looked up in turn. That recursion
-// runs exactly once: a correct table resolves a next hop to a connected route
-// on the second lookup, and a table that does not is a loop rather than a
-// deeper answer.
-//
-// The technique is tailscale's, read from net/netns/netns_darwin.go, which is
-// BSD-3-Clause. Nothing here is copied from it.
-func interfaceIndexFor(destination netip.Addr, canRecurse bool) (int, error) {
-	answer, err := routeTo(destination)
+// lookupSocket opens the routing socket one lookup writes its request to and reads its answer from
+// it is apart from routeRequest so that a test can read back the receive queue the kernel granted it
+func lookupSocket() (int, error) {
+	fd, err := unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, unix.AF_UNSPEC)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("kernel: open a routing socket to ask for a route: %w", err)
 	}
-	return gatewayIndex(answer, canRecurse)
-}
+	unix.CloseOnExec(fd)
+	// SO_USELOOPBACK stays on, unlike the reconciler's write socket: the reply
+	// to an RTM_GET comes back the same way an echo does, and silencing the
+	// echo would silence the answer.
 
-// routeTo is a longest-prefix lookup, the question `route -n get` asks.
-func routeTo(destination netip.Addr) (*route.RouteMessage, error) {
-	return routeRequest(destination, netip.Addr{})
+	// the replies other lookups make queue here ahead of this one's own
+	// and a routing socket that overflows drops the excess without telling its reader
+	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, routeReceiveBuffer); err != nil {
+		_ = unix.Close(fd)
+		return 0, fmt.Errorf("kernel: size the receive queue of the route lookup: %w", err)
+	}
+	return fd, nil
 }
 
 // routeRequest is the request itself, separated from what is read off the
@@ -165,20 +156,16 @@ func routeTo(destination netip.Addr) (*route.RouteMessage, error) {
 // XNU turns an RTM_GET carrying a netmask into a lookup of that key alone.
 // Links.Default asks that way, since the mesh's own routes cover the key it
 // is after and a match would answer with those.
+//
+// The request is the one `route -n get` makes. The technique is tailscale's,
+// read from net/netns/netns_darwin.go, which is BSD-3-Clause. Nothing here is
+// copied from it.
 func routeRequest(destination, mask netip.Addr) (*route.RouteMessage, error) {
-	fd, err := unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, unix.AF_UNSPEC)
+	fd, err := lookupSocket()
 	if err != nil {
-		return nil, fmt.Errorf("kernel: open a routing socket to ask for a route: %w", err)
+		return nil, err
 	}
 	defer unix.Close(fd)
-	unix.CloseOnExec(fd)
-	// SO_USELOOPBACK stays on, unlike the reconciler's write socket: the reply
-	// to an RTM_GET comes back the same way an echo does, and silencing the
-	// echo would silence the answer.
-	timeout := unix.NsecToTimeval(int64(lookupTimeout))
-	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout); err != nil {
-		return nil, fmt.Errorf("kernel: bound the route lookup: %w", err)
-	}
 	seq := int(lookupSeq.Add(1))
 	addrs := make([]route.Addr, unix.RTAX_MAX)
 	addrs[unix.RTAX_DST] = routeAddr(destination)
@@ -205,12 +192,30 @@ func routeRequest(destination, mask netip.Addr) (*route.RouteMessage, error) {
 		}
 		return nil, fmt.Errorf("kernel: ask for the route to %s: %w", destination, err)
 	}
+	return readAnswer(fd, seq, destination)
+}
+
+// readAnswer reads a routing socket until the reply to request seq arrives or lookupTimeout is over
+// the deadline runs from the call, which routeRequest makes as soon as its write returns
+// it is apart from routeRequest so that a test can give it a socket whose traffic the test chooses
+func readAnswer(fd, seq int, destination netip.Addr) (*route.RouteMessage, error) {
 	// A routing socket reports one message per read and the reply shares the
-	// socket with whatever else the kernel is announcing, so the reads are
-	// bounded rather than single and each one is matched against the request.
-	buf := make([]byte, 4096)
-	for range 16 {
+	// socket with whatever else the kernel is announcing, so the reads go on
+	// until the reply or the deadline and each one is matched against the request.
+	//
+	// SO_RCVTIMEO bounds one read only, so each read is given what is left of the deadline
+	deadline := time.Now().Add(lookupTimeout)
+	buf := make([]byte, lookupReadSize)
+	for left := lookupTimeout; left > 0; left = time.Until(deadline) {
+		timeout := unix.NsecToTimeval(int64(left))
+		if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout); err != nil {
+			return nil, fmt.Errorf("kernel: bound the route lookup: %w", err)
+		}
 		n, err := unix.Read(fd, buf)
+		if errors.Is(err, unix.EAGAIN) {
+			// the receive timeout, and the loop asks the deadline whether it is over
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("kernel: read the route to %s: %w", destination, err)
 		}
@@ -227,32 +232,4 @@ func routeRequest(destination, mask netip.Addr) (*route.RouteMessage, error) {
 		}
 	}
 	return nil, fmt.Errorf("kernel: the route to %s was not answered", destination)
-}
-
-// gatewayIndex reads the interface off one RTM_GET answer.
-func gatewayIndex(rm *route.RouteMessage, canRecurse bool) (int, error) {
-	if len(rm.Addrs) <= unix.RTAX_GATEWAY {
-		return 0, ErrNoDefaultRoute
-	}
-	switch gateway := rm.Addrs[unix.RTAX_GATEWAY].(type) {
-	case *route.LinkAddr:
-		if gateway.Index == 0 {
-			return 0, ErrNoDefaultRoute
-		}
-		return gateway.Index, nil
-	case *route.Inet4Addr:
-		if !canRecurse {
-			return 0, ErrNoDefaultRoute
-		}
-		return interfaceIndexFor(netip.AddrFrom4(gateway.IP), false)
-	case *route.Inet6Addr:
-		if !canRecurse {
-			return 0, ErrNoDefaultRoute
-		}
-		// The zone the kernel embeds in a link-local gateway is dropped the
-		// way addressFromRouteAddr drops it, because the lookup that follows
-		// is keyed on the address alone.
-		return interfaceIndexFor(netip.AddrFrom16(gateway.IP), false)
-	}
-	return 0, ErrNoDefaultRoute
 }
