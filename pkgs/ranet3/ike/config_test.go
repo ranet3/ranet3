@@ -26,8 +26,8 @@ func TestCryptoDefaultsAreTheOnesDocumented(t *testing.T) {
 			t.Errorf("default %s is %s, want %s", name, got.have, got.want)
 		}
 	}
-	if absent.ReplayWindow() != DefaultReplayWindow {
-		t.Errorf("default replay window is %d, want %d", absent.ReplayWindow(), DefaultReplayWindow)
+	if absent.ReplayWindow() != 4096 {
+		t.Errorf("default replay window is %d, want 4096", absent.ReplayWindow())
 	}
 	if err := absent.Validate(); err != nil {
 		t.Errorf("the defaults do not validate: %v", err)

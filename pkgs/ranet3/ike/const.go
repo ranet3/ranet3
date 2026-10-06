@@ -34,8 +34,9 @@
 //     for each peer that authenticates. One responder serves every peer. Each
 //     IKE_SA_INIT it accepts holds a half-open slot, a mux and the keys it
 //     derived until IKE_AUTH completes or the handshake timeout passes. The
-//     slots are bounded in total and for each source address, and under load
-//     an IKE_SA_INIT is answered with a cookie before anything is held.
+//     slots are bounded in total and for each source address, and under load,
+//     or once its address holds two of them, an IKE_SA_INIT is answered with a
+//     cookie before anything is held.
 //   - Timing. [Crypto] is the cap.crypto capability, carrying yaml, json and
 //     toml tags and the replay window alongside the rekey intervals, since a
 //     session captures all of them when it is set up. Its durations come from
