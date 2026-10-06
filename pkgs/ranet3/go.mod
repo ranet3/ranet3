@@ -14,7 +14,7 @@ require (
 	golang.org/x/net v0.59.0
 	golang.org/x/sys v0.48.0
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
-	hegel.dev/go/hegel v0.9.13
+	hegel.dev/go/hegel v0.9.14
 )
 
 require (

@@ -29,7 +29,7 @@ import (
 // The example database is off. A run writes nothing into the tree and replays
 // nothing an earlier run left behind, so the result depends on the code alone.
 // The run is derandomized, though not to the point of repeating itself: hegel
-// v0.9.13 hashes the labels of nested generators with a seed each process
+// v0.9.14 hashes the labels of nested generators with a seed each process
 // picks for itself, so a property built from them draws a different sample in
 // each run. A failure is still printed shrunk, with what reproduces it. A
 // boundary the code branches on is drawn outright, through Spanning or by
