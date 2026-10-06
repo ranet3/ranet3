@@ -486,7 +486,7 @@ func newRouteMonitor(table uint32) (*routeMonitor, error) {
 	}
 	// a large receive buffer keeps a route flood from costing an ENOBUFS,
 	// which is survivable but forces a full resync.
-	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, 1<<20)
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, monitorReceiveBuffer)
 	// the socket is nonblocking, so os.NewFile registers it with the runtime
 	// poller and Close unblocks the reader without racing on the descriptor.
 	monitor := &routeMonitor{
@@ -501,7 +501,7 @@ func newRouteMonitor(table uint32) (*routeMonitor, error) {
 
 func (m *routeMonitor) run() {
 	defer close(m.done)
-	buf := make([]byte, 64*1024)
+	buf := make([]byte, monitorReadSize)
 	for {
 		n, err := m.file.Read(buf)
 		if err != nil {

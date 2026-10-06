@@ -905,7 +905,7 @@ func TestRunWithdrawsOnCancel(t *testing.T) {
 		if err != nil {
 			t.Fatalf("run: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitBudget):
 		t.Fatal("run did not return after cancellation")
 	}
 
@@ -1040,14 +1040,23 @@ func TestDiffRoutesIsSorted(t *testing.T) {
 	}
 }
 
+// waitBudget is how long a test waits for the reconcile goroutine, generous for a loaded machine
+// it stays well short of DefaultReconcileInterval
+// a wait the default sweep alone would end then tells a broken interval from a slow machine
+// waitPoll is how often it looks
+const (
+	waitBudget = 5 * time.Second
+	waitPoll   = time.Millisecond
+)
+
 func waitFor(t *testing.T, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waitBudget)
 	for time.Now().Before(deadline) {
 		if done() {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(waitPoll)
 	}
 	t.Fatal("condition was not reached in time")
 }
@@ -1814,9 +1823,9 @@ func TestStoppedReconcilerWithdrawsAndStartsAgain(t *testing.T) {
 		defer fake.mu.Unlock()
 		return len(fake.addrs) == 0
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waitBudget)
 	for !withdrawn() && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+		time.Sleep(waitPoll)
 	}
 	if !withdrawn() {
 		fake.mu.Lock()
@@ -1837,7 +1846,7 @@ func TestStoppedReconcilerWithdrawsAndStartsAgain(t *testing.T) {
 		if err != nil {
 			t.Fatalf("run: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitBudget):
 		t.Fatal("run did not return after cancellation")
 	}
 }

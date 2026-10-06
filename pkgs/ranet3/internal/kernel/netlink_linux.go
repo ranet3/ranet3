@@ -55,7 +55,7 @@ func dialNetlink() (*nlConn, error) {
 		_ = unix.Close(fd)
 		return nil, errors.New("kernel: rtnetlink socket is not a netlink socket")
 	}
-	return &nlConn{fd: fd, pid: local.Pid, buf: make([]byte, 64*1024)}, nil
+	return &nlConn{fd: fd, pid: local.Pid, buf: make([]byte, netlinkReadSize)}, nil
 }
 
 func (c *nlConn) Close() error { return unix.Close(c.fd) }

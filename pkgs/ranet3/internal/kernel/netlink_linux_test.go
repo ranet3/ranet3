@@ -157,7 +157,7 @@ func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
 	}
 	select {
 	case <-plat.Notify():
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitBudget):
 		t.Fatal("no route notification arrived")
 	}
 	if err := plat.DelRoute(Route{Destination: prefix("192.0.2.0/24")}); err != nil {
