@@ -359,6 +359,42 @@ func TestAnnouncementRoundTripsThroughEveryEncoding(t *testing.T) {
 	})
 }
 
+// a sequence written where an announcement belongs is refused by every decoder, whatever it holds
+// the yaml refusal names the line and what was written
+// the yaml walk read a mapping's items two at a time, so a sequence of keys and prefixes announced what it spelled
+func TestEveryDecoderRefusesASequenceWhereAnAnnouncementBelongs(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		pair := hegel.Composite(func(tc hegel.TestCase) []string {
+			return []string{
+				hegel.Draw(tc, hegel.SampledFrom([]string{"prefix", "from"})),
+				hegel.Draw(tc, prefixes()).String(),
+			}
+		})
+		var quoted []string
+		for _, one := range hegel.Draw(ht, hegel.Lists(pair).MinSize(1).MaxSize(2)) {
+			for _, word := range one {
+				quoted = append(quoted, strconv.Quote(word))
+			}
+		}
+		sequence := "[" + strings.Join(quoted, ", ") + "]"
+
+		_, err := decodeYAML(t, "announce: ["+sequence+"]\n")
+		if err == nil {
+			ht.Fatalf("yaml took %s as an announcement", sequence)
+		}
+		if !strings.Contains(err.Error(), "line 1") || !strings.Contains(err.Error(), "a sequence") {
+			ht.Fatalf("yaml refused %s with %q, which names neither the line nor what was written", sequence, err)
+		}
+		if _, err := decodeTOML(t, "announce = ["+sequence+"]\n"); err == nil {
+			ht.Fatalf("toml took %s as an announcement", sequence)
+		}
+		var overWire holder
+		if err := json.Unmarshal([]byte(`{"announce": [`+sequence+`]}`), &overWire); err == nil {
+			ht.Fatalf("json took %s as an announcement", sequence)
+		}
+	})
+}
+
 // readText reads written through a scalar's text form.
 func readText[V any, P interface {
 	*V
