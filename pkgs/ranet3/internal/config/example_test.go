@@ -14,6 +14,10 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v3"
+
+	"ranet3.com/pkgs/ranet3/ike"
+	"ranet3.com/pkgs/ranet3/internal/babel"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 )
 
 // The three shipped examples, one per extension a configuration may carry. An
@@ -50,29 +54,71 @@ var examples = map[string]struct {
 // half without saying so.
 var uncommentable = map[string]bool{"json": true}
 
+// readExample reads one shipped example
+// with every optional line it documents switched on when options is set
+func readExample(t *testing.T, name string, options bool) string {
+	t.Helper()
+	example := examples[name]
+	body, err := os.ReadFile(example.path)
+	if err != nil {
+		t.Fatalf("read the example: %v", err)
+	}
+	if !options {
+		return string(body)
+	}
+	enabled := example.commented.ReplaceAll(body, []byte(example.enabled))
+	if string(enabled) == string(body) {
+		t.Errorf("%s documents no optional line, so half of this test proves nothing", name)
+	}
+	return string(enabled)
+}
+
 // Both the shipped defaults and the optional lines get copied into real
 // configurations, so neither may hide an invalid field or a duplicate block.
 func TestShippedExamplesParse(t *testing.T) {
-	for name, example := range examples {
-		body, err := os.ReadFile(example.path)
-		if err != nil {
-			t.Fatalf("read the example: %v", err)
-		}
-		variants := map[string][]byte{"shipped": body}
+	for name := range examples {
+		variants := map[string]string{"shipped": readExample(t, name, false)}
 		if !uncommentable[name] {
-			enabled := example.commented.ReplaceAll(body, []byte(example.enabled))
-			if string(enabled) == string(body) {
-				t.Errorf("%s documents no optional line, so half of this test proves nothing", name)
-			}
-			variants["all options enabled"] = enabled
+			variants["all options enabled"] = readExample(t, name, true)
 		}
 		for which, variant := range variants {
 			t.Run(name+" "+which, func(t *testing.T) {
-				if _, err := load(t, "."+name, string(variant)); err != nil {
+				if _, err := load(t, "."+name, variant); err != nil {
 					t.Fatalf("the example no longer loads: %v", err)
 				}
 			})
 		}
+	}
+}
+
+// an example writes an option beside the value the node runs without it
+// a default changed where the code sets it and not where the example says it leaves every operator who copied the line running another node
+// the speaker's two intervals and its cost, the reconcile interval, the capture grace and the replay window are the ones documented
+func TestExamplesDocumentTheDefaultsTheNodeRuns(t *testing.T) {
+	for name := range examples {
+		if uncommentable[name] {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg, err := load(t, "."+name, readExample(t, name, true))
+			if err != nil {
+				t.Fatalf("the example with its options on does not load: %v", err)
+			}
+			if cfg.Cap.Table == nil || cfg.Cap.Crypto == nil {
+				t.Fatalf("the example documents no cap.table or no cap.crypto, so this measures nothing: %+v", cfg.Cap)
+			}
+			table, unwritten := cfg.Cap.Table, kernel.Table{}.Normalized()
+			for what, pair := range map[string][2]any{
+				"cap.babel":               {cfg.Babel().Effective(), babel.Config{}.Effective()},
+				"cap.table reconcile":     {table.Reconcile, unwritten.Reconcile},
+				"cap.table capture_grace": {table.CaptureGrace, unwritten.CaptureGrace},
+				"cap.crypto replay":       {cfg.Crypto().ReplayWindow(), ike.Crypto{}.ReplayWindow()},
+			} {
+				if pair[0] != pair[1] {
+					t.Errorf("the example writes %s as %v and a node that leaves it out runs %v", what, pair[0], pair[1])
+				}
+			}
+		})
 	}
 }
 
