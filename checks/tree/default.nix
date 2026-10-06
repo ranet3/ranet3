@@ -30,7 +30,7 @@ runCommand "ranet3-tree"
     # assigned first, so a file gofmt cannot parse fails the check as well
     unformatted="$(gofmt -l . | tee /dev/stderr)"
     test -z "$unformatted"
-    deno fmt --check readme.md pkgs/ranet3-docs/pages pkgs/ranet3/examples/config.json
+    deno fmt --check readme.md pkgs/ranet3-docs/pages pkgs/ranet3/examples/config.json pkgs/ranet3-site
     # found rather than globbed, so a new directory cannot quietly drop out of
     # the check. The count tells a narrowed walk from a tree that lost files
     files="$(find . -name '*.nix' -not -path './.*/*' | sort)"
