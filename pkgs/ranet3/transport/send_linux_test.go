@@ -291,8 +291,8 @@ func kernelBind(kernel *fakeKernel, events *eventLog) *udpBind {
 }
 
 func kernelHub(kernel *fakeKernel, events *eventLog) *Hub {
-	h := &Hub{bind: kernelBind(kernel, events), ike: make(map[uint64]*Mux), esp: make(map[uint32]*Mux),
-		muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now()}
+	h := &Hub{bind: kernelBind(kernel, events), muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now()}
+	h.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}})
 	h.reported.Store(-int64(dropReportInterval))
 	return h
 }
