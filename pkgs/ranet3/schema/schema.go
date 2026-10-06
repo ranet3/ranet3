@@ -122,8 +122,6 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	return Scalar(value, "a duration such as 4s", d)
 }
 
-func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
-
 // Prefix is a CIDR prefix, "10.66.0.5/32" or "2001:db8::/48".
 type Prefix struct{ netip.Prefix }
 
@@ -170,18 +168,6 @@ func (p Prefix) MarshalText() ([]byte, error) {
 
 func (p *Prefix) UnmarshalYAML(value *yaml.Node) error {
 	return Scalar(value, "a prefix such as 2001:db8::/48", p)
-}
-
-// MarshalYAML makes the refusal MarshalText makes, rather than writing the
-// "invalid Prefix" that String answers for a prefix carrying no address: that
-// literal renders without complaint and no decoder reads it back, so a
-// rendered configuration would be one nothing can load.
-func (p Prefix) MarshalYAML() (any, error) {
-	text, err := p.MarshalText()
-	if err != nil {
-		return nil, err
-	}
-	return string(text), nil
 }
 
 // ComparePrefix orders two prefixes, by address and then by length. It is a
@@ -255,16 +241,6 @@ func (a *Addr) UnmarshalYAML(value *yaml.Node) error {
 	return Scalar(value, "an address such as 2001:db8::1", a)
 }
 
-// MarshalYAML is Prefix.MarshalYAML for an address, and is there for the same
-// reason.
-func (a Addr) MarshalYAML() (any, error) {
-	text, err := a.MarshalText()
-	if err != nil {
-		return nil, err
-	}
-	return string(text), nil
-}
-
 // TableID is a routing table, as a number or as one of the names the kernel
 // reserves, so a rule sending the underlay to the main table reads as
 // "table: main" rather than as "table: 254".
@@ -325,8 +301,6 @@ func (t *TableID) UnmarshalJSON(data []byte) error {
 func (t *TableID) UnmarshalYAML(value *yaml.Node) error {
 	return Scalar(value, "a table as a number or a name such as main", t)
 }
-
-func (t TableID) MarshalYAML() (any, error) { return t.String(), nil }
 
 // Announce is one prefix a node puts into the mesh, either bare or carrying
 // the source prefix it is reachable from:
@@ -486,7 +460,7 @@ func (a Announce) MarshalYAML() (any, error) {
 	if a.From.IsZero() {
 		// Through the prefix's own marshaller, which refuses a prefix with no
 		// spelling rather than writing the "invalid Prefix" String gives.
-		return a.Prefix.MarshalYAML()
+		return a.Prefix, nil
 	}
 	return struct {
 		Prefix Prefix `yaml:"prefix"`

@@ -458,10 +458,10 @@ func TestTableNamesSurviveARoundTrip(t *testing.T) {
 	}
 }
 
-// A value with no spelling is refused by every marshaller, not only by the
-// text one. MarshalYAML used to answer the "invalid Prefix" String gives for a
-// zero prefix, which renders without complaint and which no decoder reads
-// back, so a rendered configuration would be one nothing can load.
+// A value with no spelling is refused by every marshaller, since each of them
+// writes through MarshalText. The "invalid Prefix" String gives for a zero
+// prefix renders without complaint and no decoder reads it back, so a rendered
+// configuration would be one nothing can load.
 func TestEveryMarshallerRefusesAValueWithNoSpelling(t *testing.T) {
 	for name, empty := range map[string]any{
 		"a prefix carrying no address": Prefix{},

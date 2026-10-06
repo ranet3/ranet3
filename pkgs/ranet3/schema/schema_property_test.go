@@ -324,8 +324,7 @@ func announcements() hegel.Generator[Announce] {
 // for the bare spelling alone, which is the one an operator writes as a string.
 //
 // One with no spelling, carrying no prefix or a prefix or a source that is set
-// and is not one, is refused by every encoder, where yaml used to write the
-// "invalid Prefix" String gives for one and to drop such a source.
+// and is not one, is refused by every encoder.
 func TestAnnouncementRoundTripsThroughEveryEncoding(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		want := hegel.Draw(ht, announcements())
