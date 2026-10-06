@@ -58,6 +58,30 @@ func freeUDPPort(t *testing.T) uint16 {
 	return port
 }
 
+const (
+	// portAttempts is how often a test asks for a port the kernel had just handed back
+	portAttempts = 10
+	// portBackoff is the wait after the first failed ask, and each later wait is one step longer
+	portBackoff = 20 * time.Millisecond
+)
+
+// retryPort runs try until it succeeds, for a port the kernel had just handed back
+// a port is chosen by binding zero, reading it back and giving it up, and anything else on the machine can take it in between
+// on a loaded machine several tests do this at once, and the wait makes a run of losses unlikely rather than merely improbable
+// without it a busy machine lost every attempt in the same handful of microseconds
+func retryPort(t *testing.T, what string, try func() error) {
+	t.Helper()
+	for attempt := range portAttempts {
+		err := try()
+		if err == nil {
+			return
+		}
+		t.Logf("attempt %d could not %s the port the kernel had just handed back: %v", attempt, what, err)
+		time.Sleep(time.Duration(attempt+1) * portBackoff)
+	}
+	t.Fatalf("%d attempts in a row could not %s a port the kernel had just handed back", portAttempts, what)
+}
+
 // newLoopbackMesh builds two clients that know about each other, each on its
 // own UDP port, sharing one organization key. Neither owns a TUN: babel
 // intercepts its own traffic before delivery, so nothing reaches one.
@@ -67,25 +91,13 @@ func freeUDPPort(t *testing.T) uint16 {
 // find each other, so anything else on the machine can take it in the gap.
 // Retrying with fresh ports is the difference between a rare unexplained
 // failure somewhere in this package and none.
-// newLoopbackMesh retries, because the ports are chosen by binding to zero,
-// reading the port back and binding it again: anything else on the machine can
-// take it in between, and on a loaded one several tests are doing this at
-// once. The wait between attempts makes a run of losses unlikely
-// rather than merely improbable; without it a busy machine lost every attempt
-// in the same handful of microseconds.
-func newLoopbackMesh(t *testing.T) (*loopbackNode, *loopbackNode) {
+func newLoopbackMesh(t *testing.T) (alpha, bravo *loopbackNode) {
 	t.Helper()
-	const attempts = 10
-	for attempt := range attempts {
-		alpha, bravo, err := tryLoopbackMesh(t)
-		if err == nil {
-			return alpha, bravo
-		}
-		t.Logf("attempt %d could not bind the ports it was given: %v", attempt, err)
-		time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
-	}
-	t.Fatalf("%d attempts in a row could not bind a port the kernel had just handed back", attempts)
-	return nil, nil
+	retryPort(t, "bind", func() (err error) {
+		alpha, bravo, err = tryLoopbackMesh(t)
+		return err
+	})
+	return alpha, bravo
 }
 
 func tryLoopbackMesh(t *testing.T) (_, _ *loopbackNode, err error) {
