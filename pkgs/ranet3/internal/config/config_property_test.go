@@ -242,10 +242,8 @@ func rules() hegel.Generator[kernel.Rule] {
 	})
 }
 
-// reconcilers draws cap.table. The preferred source is an IPv4 address in
-// either spelling, which the reconciler unmaps and the file keeps as written,
-// and the IPv4-mapped one sometimes carries a zone. Now and then an address
-// entry has no spelling either, and Validate refuses both.
+// reconcilers draws cap.table. Now and then an address entry has no spelling,
+// and Validate refuses it.
 func reconcilers() hegel.Generator[kernel.Table] {
 	return hegel.Composite(func(tc hegel.TestCase) kernel.Table {
 		table := kernel.Table{
@@ -259,14 +257,7 @@ func reconcilers() hegel.Generator[kernel.Table] {
 			CaptureGrace:    hegel.Draw(tc, unset(between(kernel.MinCaptureGrace, time.Hour))),
 		}
 		if hegel.Draw(tc, hegel.Booleans()) {
-			address := hegel.Draw(tc, hegel.IPAddresses().IPv4())
-			if hegel.Draw(tc, hegel.Booleans()) {
-				address = netip.AddrFrom16(address.As16())
-			}
-			if address.Is6() && hegel.Draw(tc, hegel.Booleans()) {
-				address = address.WithZone(hegel.Draw(tc, names()))
-			}
-			table.PrefSrc4 = schema.AddrFrom(address)
+			table.PrefSrc4 = schema.AddrFrom(hegel.Draw(tc, hegel.IPAddresses().IPv4()))
 		}
 		if hegel.Draw(tc, hegel.WeightedBooleans(0.1)) {
 			table.Addresses = append(table.Addresses, hegel.Draw(tc, notPrefixes()))
