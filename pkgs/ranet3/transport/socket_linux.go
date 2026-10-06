@@ -71,7 +71,6 @@ func (e *udpEndpoint) AddrPort() netip.AddrPort {
 func (e *udpEndpoint) withoutSource() Endpoint { return &udpEndpoint{addr: e.addr} }
 
 type udpBatchConn interface {
-	ReadBatch([]ipv4.Message, int) (int, error)
 	WriteBatch([]ipv4.Message, int) (int, error)
 }
 
@@ -199,26 +198,28 @@ func listenPacketBind(port uint16, fwmark uint32, events func(string, ...slog.At
 // calls before any receive storage is reused. ESP does not need source-address
 // objects: only IKE packets retain a reply endpoint.
 func (s *udpSocket) receiver() receiveFunc {
+	messages := receiveVector()
+	return s.walk(messages, newUDPReader(s.raw, messages).read)
+}
+
+// receiveVector is the storage a socket receives into for its lifetime
+func receiveVector() []ipv4.Message {
 	messages := make([]ipv4.Message, espSendBatch)
 	for i := range messages {
 		messages[i].Buffers = [][]byte{make([]byte, readBufferSize)}
 		messages[i].OOB = make([]byte, controlMessageSize)
 	}
-	read := func() (int, error) { return s.pc.ReadBatch(messages, 0) }
-	if s.raw != nil {
-		read = newUDPReader(s.raw, messages).read
-	}
+	return messages
+}
+
+// walk hands out the datagrams read leaves in messages and reads again once it has handed out the last
+func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) receiveFunc {
 	var count, index, offset, segment, refused int
 	return func(bufs [][]byte, sizes []int, endpoints []Endpoint) (int, int, error) {
 		refused = 0
 		if index == count {
 			var err error
 			count, err = read()
-			if errors.Is(err, unix.ENOSYS) {
-				// Older 32-bit kernels expose recvmmsg only via socketcall.
-				read = func() (int, error) { return s.pc.ReadBatch(messages, 0) }
-				count, err = read()
-			}
 			if err != nil {
 				return 0, 0, err
 			}
