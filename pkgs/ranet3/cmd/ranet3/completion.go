@@ -16,7 +16,8 @@ import (
 func completionCommand(root *cobra.Command) *cobra.Command {
 	return &cobra.Command{
 		Use:       "completion [bash|zsh|fish]",
-		Short:     "write the shell completion script this command tree generates",
+		Short:     "Generate shell completion scripts",
+		Long:      `The script for bash, zsh or fish goes to standard output.`,
 		Args:      cobra.ExactArgs(1),
 		ValidArgs: []string{"bash", "zsh", "fish"},
 		RunE: func(cmd *cobra.Command, args []string) error {

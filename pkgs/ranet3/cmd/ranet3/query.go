@@ -41,8 +41,11 @@ func (r *reader) queryCommands() []*cobra.Command {
 func (r *reader) whoisCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "whois <address>",
-		Short: "which prefix covers an address and which peer this node reaches it through",
-		Args:  cobra.ExactArgs(1),
+		Short: "Show the prefix and peer that reach an IP",
+		Long: `The longest prefix that covers the address comes first, then the shorter
+ones it would fall back to. The peer is the next hop of this node, which
+is the originating node only when that node is a neighbor.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			address, err := netip.ParseAddr(args[0])
 			if err != nil {
@@ -67,8 +70,11 @@ func (r *reader) whoisCommand() *cobra.Command {
 func (r *reader) addressCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ip",
-		Short: "this node's mesh addresses, one per line",
-		Args:  noArguments,
+		Short: "Show mesh IP addresses",
+		Long: `The addresses are the host prefixes this node announces. They print one
+per line and nothing else, so the output goes into a shell variable as
+it is.`,
+		Args: noArguments,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			status, err := control.Dial(r.socket).Status()
 			if err != nil {
@@ -88,12 +94,18 @@ func (r *reader) addressCommand() *cobra.Command {
 func (r *reader) exitNodeCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "exit-node",
-		Short: "the nodes advertising a default, and which one this node takes",
+		Short: "Show exit nodes",
+		Long: `An exit node advertises a default route into the mesh. Run the list
+command to see which ones the mesh offers and which one this node takes.`,
 	}
+	refuseUnknownCommands(cmd)
 	list := &cobra.Command{
 		Use:   "list",
-		Short: "list the defaults the mesh advertises and say which this node would take",
-		Args:  noArguments,
+		Short: "List exit nodes and the one in use",
+		Long: `Each row is a default route that a node advertises. Its state is
+selected for the one this node takes, withdrawn for one that its node
+stopped advertising, and advertised by this node for this node's own.`,
+		Args: noArguments,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			routes, err := control.Dial(r.socket).Routes()
 			if err != nil {
@@ -135,8 +147,11 @@ type bugreport struct {
 func (r *reader) bugreportCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bugreport",
-		Short: "every subsystem in one json blob, for pasting into a report",
-		Args:  noArguments,
+		Short: "Print node state for a bug report",
+		Long: `The output is one JSON object with the status, neighbors, routes,
+sessions, peers and metrics of the node. A read that fails is named in
+the object and does not stop the report.`,
+		Args: noArguments,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client := control.Dial(r.socket)
 			report := bugreport{Binary: version.String(), Socket: client.Path(), TakenAt: time.Now()}
@@ -174,7 +189,7 @@ func (r *reader) bugreportCommand() *cobra.Command {
 			return emit(cmd.OutOrStdout(), true, report, nil)
 		},
 	}
-	cmd.Flags().StringVar(&r.socket, "control", control.DefaultSocket, "path to the daemon's control socket")
+	cmd.Flags().StringVar(&r.socket, "control", control.DefaultSocket, "Path to the control socket")
 	return cmd
 }
 

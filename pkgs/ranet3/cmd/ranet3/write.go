@@ -26,8 +26,11 @@ import (
 // usage lists what a node answers before what it does.
 func (r *reader) writeCommands() []*cobra.Command {
 	return []*cobra.Command{
-		r.subsystemCommand("disable", "stop a subsystem until it is enabled again or the node restarts", false),
-		r.subsystemCommand("enable", "start a subsystem somebody disabled", true),
+		r.subsystemCommand("disable", "Disable a subsystem", `The subsystem stays stopped until it is enabled again or the node
+restarts, and a reload does not start it. A node refuses the command for
+a subsystem it does not run.`, false),
+		r.subsystemCommand("enable", "Enable a subsystem", `This starts a subsystem that somebody disabled. A node refuses the
+command for a subsystem it does not run.`, true),
 		r.redialCommand(),
 		r.rekeyCommand(),
 		r.reloadCommand(),
@@ -38,10 +41,11 @@ func (r *reader) writeCommands() []*cobra.Command {
 // they ask for. The argument is completed from the closed set rather than from
 // the daemon, because the set is the same on every node and a completion that
 // needed a running one would offer nothing where it is most wanted.
-func (r *reader) subsystemCommand(use, short string, on bool) *cobra.Command {
+func (r *reader) subsystemCommand(use, short, long string, on bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:       use + " <" + strings.Join(control.SubsystemNames(), "|") + ">",
 		Short:     short,
+		Long:      long,
 		Args:      cobra.ExactArgs(1),
 		ValidArgs: control.SubsystemNames(),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -63,8 +67,10 @@ func (r *reader) subsystemCommand(use, short string, on bool) *cobra.Command {
 // came back only when its own daemon was reloaded by hand.
 func (r *reader) redialCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:               "redial <peer>",
-		Short:             "drop the sessions held for a peer and dial it again now rather than after the reconnect delay",
+		Use:   "redial <peer>",
+		Short: "Reconnect to a peer now",
+		Long: `This drops the sessions held for the peer and sets its dialers going at
+once, instead of after the reconnect delay.`,
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: r.completePeers,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -81,7 +87,10 @@ func (r *reader) rekeyCommand() *cobra.Command {
 	var all bool
 	cmd := &cobra.Command{
 		Use:   "rekey [peer]",
-		Short: "replace the child SA of one peer's sessions, or with --all of every session",
+		Short: "Rekey sessions now",
+		Long: `Each session replaces its child SA without waiting for its own schedule.
+Name a peer to rekey its sessions, or pass --all to rekey every session
+this node holds.`,
 		// The peer and --all are exclusive, and the daemon says so as well:
 		// this is the local half, so a command line that names neither is
 		// answered without a round trip.
@@ -101,7 +110,7 @@ func (r *reader) rekeyCommand() *cobra.Command {
 			return r.report(cmd, result, err)
 		},
 	}
-	cmd.Flags().BoolVar(&all, "all", false, "rekey every session this node holds rather than one peer's")
+	cmd.Flags().BoolVar(&all, "all", false, "Rekey every session")
 	r.flags(cmd)
 	return cmd
 }
@@ -111,8 +120,11 @@ func (r *reader) rekeyCommand() *cobra.Command {
 func (r *reader) reloadCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reload",
-		Short: "re-read the configuration file and the trust document, as SIGHUP does",
-		Args:  noArguments,
+		Short: "Reload the config and trust document",
+		Long: `This does what SIGHUP does. The node reads its config file and the trust
+document again without restarting, and a subsystem that was disabled
+stays disabled.`,
+		Args: noArguments,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			result, err := control.Dial(r.socket).Reload()
 			return r.report(cmd, result, err)

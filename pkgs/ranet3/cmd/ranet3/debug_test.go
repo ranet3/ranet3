@@ -27,19 +27,21 @@ func executeApart(t *testing.T, args ...string) (stdout, stderr string, err erro
 	return out.String(), errOut.String(), err
 }
 
-// the debug tree is hidden from the usage and lists its own commands when asked
-func TestDebugIsHiddenAndListsItsCommands(t *testing.T) {
+// the debug tree is listed in the usage and lists its own commands when asked
+func TestDebugIsListedAndListsItsCommands(t *testing.T) {
 	usage, err := execute(t, "--help")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(usage, "debug") {
-		t.Errorf("the usage names the hidden debug tree: %q", usage)
+	if !strings.Contains(usage, "debug") {
+		t.Errorf("the usage does not name the debug tree: %q", usage)
 	}
 	tree, err := execute(t, "debug", "--help")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// the description is wrapped, so a phrase may break across lines
+	tree = strings.Join(strings.Fields(tree), " ")
 	for _, want := range []string{"socket", "runtime", "go-buildinfo", "not a stable interface", "--control", "--json"} {
 		if !strings.Contains(tree, want) {
 			t.Errorf("debug --help reads %q, want it to carry %q", tree, want)

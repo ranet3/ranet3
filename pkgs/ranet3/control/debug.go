@@ -34,7 +34,7 @@ const (
 // DebugAccesses is every --debug-access value, the one list the parser, the flag and the tests read
 var DebugAccesses = []DebugAccess{DebugRoot, DebugGroup, DebugOff}
 
-// DebugAccessNames is the same set as plain strings, for a usage line and for shell completion
+// DebugAccessNames is the same set as plain strings, for the refusal that names them and for shell completion
 func DebugAccessNames() []string {
 	out := make([]string, 0, len(DebugAccesses))
 	for _, access := range DebugAccesses {

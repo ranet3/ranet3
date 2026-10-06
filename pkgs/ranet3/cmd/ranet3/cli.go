@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -38,8 +39,10 @@ type reader struct {
 func newRoot() *cobra.Command {
 	r := &reader{}
 	root := &cobra.Command{
-		Use:     "ranet3",
-		Short:   "A ranet mesh node, and the commands that read and act on one",
+		Use:   "ranet3",
+		Short: "Run and control a ranet3 mesh node",
+		Long: `The daemon command runs the node. Most other commands ask a running
+node a question or tell it to act, through its control socket.`,
 		Version: version.String(),
 		// main prints the one error and the usage is on --help, so neither is
 		// written twice.
@@ -48,7 +51,9 @@ func newRoot() *cobra.Command {
 	}
 	root.AddCommand(
 		daemonCommand(runDaemon),
-		r.command("status", "this node: identity, role, counts and the reconciler's last pass",
+		r.command("status", "Show state of this node", `The output covers the identity and role of the node, the counts of its
+sessions, neighbors and routes, and the last pass of the route
+reconciler.`,
 			func(c *control.Client, w io.Writer, asJSON bool) error {
 				status, err := c.Status()
 				if err != nil {
@@ -56,7 +61,10 @@ func newRoot() *cobra.Command {
 				}
 				return emit(w, asJSON, status, func() { control.RenderStatus(w, status) })
 			}),
-		r.command("neighbors", "babel neighbors, their link costs and what each one is offering",
+		r.command("neighbors", "Show Babel neighbors and link costs", `Each row is a neighbor with the cost of its link, the cost it reports
+back, its round trip time and the number of routes it offers. The
+Dropped and Failed columns count the packets this node chose not to
+send and the packets the transport lost.`,
 			func(c *control.Client, w io.Writer, asJSON bool) error {
 				neighbors, err := c.Neighbors()
 				if err != nil {
@@ -64,7 +72,9 @@ func newRoot() *cobra.Command {
 				}
 				return emit(w, asJSON, neighbors, func() { control.RenderNeighbors(w, neighbors) })
 			}),
-		r.command("routes", "the mesh route table, selected and held alike",
+		r.command("routes", "Show the Babel route table", `Every prefix has a row, whether its route is selected or held
+unreachable after a retraction. This is Babel's table and not the
+routing table of the kernel.`,
 			func(c *control.Client, w io.Writer, asJSON bool) error {
 				routes, err := c.Routes()
 				if err != nil {
@@ -72,7 +82,8 @@ func newRoot() *cobra.Command {
 				}
 				return emit(w, asJSON, routes, func() { control.RenderRoutes(w, routes) })
 			}),
-		r.command("sessions", "live IKE SAs, their SPIs and how long since each peer last answered",
+		r.command("sessions", "Show IKE sessions", `Each row is a live IKE SA with its SPIs, its age and how long since the
+peer last answered.`,
 			func(c *control.Client, w io.Writer, asJSON bool) error {
 				sessions, err := c.Sessions()
 				if err != nil {
@@ -80,7 +91,9 @@ func newRoot() *cobra.Command {
 				}
 				return emit(w, asJSON, sessions, func() { control.RenderSessions(w, sessions) })
 			}),
-		r.command("peers", "who this node dials, from the config file or from the registry, and whether it got there",
+		r.command("peers", "Show peers and their connection state", `The peers are the nodes this node dials, named in the config file or
+taken from the registry. The State column says whether a session holds
+the path.`,
 			func(c *control.Client, w io.Writer, asJSON bool) error {
 				peers, err := c.Peers()
 				if err != nil {
@@ -96,16 +109,44 @@ func newRoot() *cobra.Command {
 	)
 	root.AddCommand(r.queryCommands()...)
 	root.AddCommand(r.writeCommands()...)
+	wordCobraDefaults(root)
 	return root
+}
+
+// wordCobraDefaults makes the help command, every help flag and the root's version flag now and words them here
+// cobra makes them at execution and words them in lowercase
+// it also opens the description of every command with its summary, so each command writes its summary once
+func wordCobraDefaults(root *cobra.Command) {
+	// cobra lists how to run a command that runs, and a group runs only to print its help
+	// so a command that holds others lists those and nothing above them, as a command that never runs does
+	root.SetUsageTemplate(strings.Replace(root.UsageTemplate(),
+		"Usage:{{if .Runnable}}", "Usage:{{if and .Runnable (not .HasAvailableSubCommands)}}", 1))
+	root.InitDefaultHelpCmd()
+	root.InitDefaultVersionFlag()
+	root.Flags().Lookup("version").Usage = "Print ranet3 version"
+	help, _, _ := root.Find([]string{"help"})
+	help.Short = "Show help for any command"
+	help.Long = "Type ranet3 help and the path to a command for full details."
+	var walk func(*cobra.Command)
+	walk = func(cmd *cobra.Command) {
+		cmd.InitDefaultHelpFlag()
+		cmd.Flags().Lookup("help").Usage = "Help for " + cmd.Name()
+		cmd.Long = cmd.Short + "\n\n" + cmd.Long
+		for _, child := range cmd.Commands() {
+			walk(child)
+		}
+	}
+	walk(root)
 }
 
 // command builds one read-only subcommand from what it asks the daemon for and
 // how it prints the answer. The five are written out at the call sites rather
 // than generated, so the type each one gets is the type the compiler checked.
-func (r *reader) command(use, short string, run func(*control.Client, io.Writer, bool) error) *cobra.Command {
+func (r *reader) command(use, short, long string, run func(*control.Client, io.Writer, bool) error) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   use,
 		Short: short,
+		Long:  long,
 		Args:  noArguments,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return run(control.Dial(r.socket), cmd.OutOrStdout(), r.asJSON)
@@ -120,8 +161,8 @@ func (r *reader) command(use, short string, run func(*control.Client, io.Writer,
 // and "read here" to everything else, and --json is meaningless to the daemon.
 func (r *reader) flags(cmd *cobra.Command) {
 	f := cmd.Flags()
-	f.StringVar(&r.socket, "control", control.DefaultSocket, "path to the daemon's control socket")
-	f.BoolVar(&r.asJSON, "json", false, "print the wire form instead of a table")
+	f.StringVar(&r.socket, "control", control.DefaultSocket, "Path to the control socket")
+	f.BoolVar(&r.asJSON, "json", false, "Print JSON output")
 }
 
 // metricsCommand prints the scrape this node would serve on a metrics
@@ -132,8 +173,10 @@ func (r *reader) flags(cmd *cobra.Command) {
 func metricsCommand(r *reader) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "metrics",
-		Short: "print this node's prometheus scrape, without the daemon binding a metrics listener",
-		Args:  noArguments,
+		Short: "Print metrics in Prometheus format",
+		Long: `The output is the scrape the node would serve on a metrics listener,
+read over the control socket so the node needs no listener of its own.`,
+		Args: noArguments,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			text, err := control.Dial(r.socket).Metrics()
 			if err != nil {
@@ -143,7 +186,7 @@ func metricsCommand(r *reader) *cobra.Command {
 			return err
 		},
 	}
-	cmd.Flags().StringVar(&r.socket, "control", control.DefaultSocket, "path to the daemon's control socket")
+	cmd.Flags().StringVar(&r.socket, "control", control.DefaultSocket, "Path to the control socket")
 	return cmd
 }
 
@@ -155,8 +198,11 @@ func versionCommand(r *reader) *cobra.Command {
 	var fromDaemon bool
 	cmd := &cobra.Command{
 		Use:   "version",
-		Short: "the version this binary was built from, or with --daemon the running node's",
-		Args:  noArguments,
+		Short: "Print ranet3 version",
+		Long: `The version is the one this binary was built from. With --daemon it is
+the one the running node reports, which differs from the binary's until
+the node restarts on an upgraded file.`,
+		Args: noArguments,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !fromDaemon {
 				fmt.Fprintln(cmd.OutOrStdout(), version.String())
@@ -170,8 +216,8 @@ func versionCommand(r *reader) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&fromDaemon, "daemon", false, "ask the running node rather than reporting this binary")
-	cmd.Flags().StringVar(&r.socket, "control", control.DefaultSocket, "path to the daemon's control socket")
+	cmd.Flags().BoolVar(&fromDaemon, "daemon", false, "Ask the running daemon")
+	cmd.Flags().StringVar(&r.socket, "control", control.DefaultSocket, "Path to the control socket")
 	return cmd
 }
 
@@ -183,6 +229,37 @@ func noArguments(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%s takes no arguments, got %q", cmd.CommandPath(), args[0])
 	}
 	return nil
+}
+
+// refuseUnknownCommands makes a command that only holds others refuse a word that names none of them
+// cobra checks what follows a command only when the command runs, so the group runs to print its help
+func refuseUnknownCommands(cmd *cobra.Command) {
+	cmd.Args = unknownCommand
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error { return cmd.Help() }
+	cmd.SuggestionsMinimumDistance = suggestionDistance
+}
+
+// unknownCommand is cobra's refusal of a word that names no command, with the suggestions cobra writes for the root alone
+// the root's refusal comes from a check that only a command without a parent reaches
+// the word help is taken, since the group answers it with its help as the root's help command answers the group's name
+func unknownCommand(cmd *cobra.Command, args []string) error {
+	if len(args) > 0 && args[0] == "help" {
+		return nil
+	}
+	err := cobra.NoArgs(cmd, args)
+	if err == nil {
+		return nil
+	}
+	suggestions := cmd.SuggestionsFor(args[0])
+	if len(suggestions) == 0 {
+		return err
+	}
+	var lines strings.Builder
+	lines.WriteString("\n\nDid you mean this?\n")
+	for _, suggestion := range suggestions {
+		fmt.Fprintf(&lines, "\t%s\n", suggestion)
+	}
+	return fmt.Errorf("%w%s", err, lines.String())
 }
 
 // emit writes one answer, as indented JSON or through its renderer. The JSON
@@ -209,7 +286,8 @@ func emit(w io.Writer, asJSON bool, value any, render func()) error {
 func licensesCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "licenses",
-		Short: "print the license of every module linked into this binary",
+		Short: "Print open source license information",
+		Long:  `The output is the notice of every module linked into this binary.`,
 		Args:  noArguments,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, err := io.WriteString(cmd.OutOrStdout(), notices.ThirdParty)

@@ -27,8 +27,13 @@ func (r *reader) eventsCommand() *cobra.Command {
 	var query control.EventQuery
 	var bound time.Duration
 	cmd := &cobra.Command{
-		Use:               "events",
-		Short:             "the events the node recorded, and with -f the ones after them for --for",
+		Use:   "events",
+		Short: "Show node events",
+		Long: `The node records what it did, a state change and never a packet. This
+prints the recorded events and exits. With --follow it goes on printing
+new events until --for has passed. A kind also selects the events under
+it, so babel selects every Babel event, and --kind may be repeated. A
+peer is named by its path, by org/name or by name.`,
 		Args:              noArguments,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -58,11 +63,11 @@ func (r *reader) eventsCommand() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.BoolVarP(&query.Follow, "follow", "f", false, "keep printing the events after the recorded ones until --for has passed")
-	f.DurationVar(&bound, "for", followFor, "how long -f follows before it exits")
-	f.StringArrayVar(&query.Kinds, "kind", nil, "only events of this kind or under it, so babel takes every babel event, and it may be given more than once")
-	f.DurationVar(&query.Since, "since", 0, "only the recorded events this recent")
-	r.peerFlag(cmd, &query.Peer)
+	f.BoolVarP(&query.Follow, "follow", "f", false, "Follow new events")
+	f.DurationVar(&bound, "for", followFor, "How long to follow")
+	f.StringArrayVar(&query.Kinds, "kind", nil, "Only show events of this kind")
+	f.DurationVar(&query.Since, "since", 0, "Only show events this recent")
+	r.peerFlag(cmd, &query.Peer, "Only show events about this peer")
 	cmd.RegisterFlagCompletionFunc("for", cobra.NoFileCompletions)
 	cmd.RegisterFlagCompletionFunc("kind", r.recorded(func(e control.Event) string { return e.Kind }))
 	cmd.RegisterFlagCompletionFunc("since", cobra.NoFileCompletions)
@@ -70,8 +75,8 @@ func (r *reader) eventsCommand() *cobra.Command {
 }
 
 // peerFlag is the --peer both events and wait take, with its completion
-func (r *reader) peerFlag(cmd *cobra.Command, peer *string) {
-	cmd.Flags().StringVar(peer, "peer", "", "only events about this peer, named by its path, org/name or name")
+func (r *reader) peerFlag(cmd *cobra.Command, peer *string, usage string) {
+	cmd.Flags().StringVar(peer, "peer", "", usage)
 	cmd.RegisterFlagCompletionFunc("peer", r.recorded(func(e control.Event) string { return e.Peer }))
 }
 
@@ -90,7 +95,12 @@ func (r *reader) waitCommand() *cobra.Command {
 	var past, timeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "wait <kind>",
-		Short: "wait for an event of a kind and print it with how long it took, exiting 1 when none comes within --timeout",
+		Short: "Wait for a node event",
+		Long: `This prints the first event of the kind and how long after the wait
+began it happened, then exits 0. It exits 1 when none came within
+--timeout and 2 when it could not watch for one. Repeat --attr to
+require several attributes. A peer is named by its path, by org/name or
+by name.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if err := cobra.ExactArgs(1)(cmd, args); err != nil {
 				return unwatched(cmd, err)
@@ -155,10 +165,10 @@ func (r *reader) waitCommand() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringArrayVar(&attrs, "attr", nil, "only an event carrying this key=value attribute, and it may be given more than once")
-	f.DurationVar(&past, "past", 0, "take an event this recent from the recorder as well, rather than only one after the wait began")
-	f.DurationVar(&timeout, "timeout", waitTimeout, "how long to wait before exiting 1")
-	r.peerFlag(cmd, &query.Peer)
+	f.StringArrayVar(&attrs, "attr", nil, "Require this key=value attribute")
+	f.DurationVar(&past, "past", 0, "Also match a recorded event this recent")
+	f.DurationVar(&timeout, "timeout", waitTimeout, "How long to wait")
+	r.peerFlag(cmd, &query.Peer, "Only match events about this peer")
 	cmd.RegisterFlagCompletionFunc("attr", cobra.NoFileCompletions)
 	cmd.RegisterFlagCompletionFunc("past", cobra.NoFileCompletions)
 	cmd.RegisterFlagCompletionFunc("timeout", cobra.NoFileCompletions)

@@ -167,10 +167,11 @@ func TestVerbsSayWhenNoDaemonAnswers(t *testing.T) {
 // A subsystem is completed from the closed set, which a node that is not
 // running still answers for, and a peer is completed from the daemon, which
 // knows what this node dials and answers.
-func TestVerbArgumentsAreCompleted(t *testing.T) {
+func TestArgumentsAndFlagValuesAreCompleted(t *testing.T) {
 	socket, _ := serveWritingStub(t)
 	for name, test := range map[string]struct {
 		command string
+		flag    string
 		want    string
 	}{
 		"a subsystem":                      {command: "disable", want: "steering"},
@@ -179,9 +180,16 @@ func TestVerbArgumentsAreCompleted(t *testing.T) {
 		// rekey takes the same completion, so this holds the wiring rather
 		// than the function the case above already drives.
 		"the same peers under rekey": {command: "rekey", want: "example/inbound"},
+		// the usage of --log-level no longer lists the levels
+		// so completion is where the command line names them
+		"a log level": {command: "daemon", flag: "--log-level", want: "debug\ninfo\nwarn\nerror\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := execute(t, cobra.ShellCompRequestCmd, test.command, "--control", socket, "")
+			words := []string{cobra.ShellCompRequestCmd, test.command, "--control", socket}
+			if test.flag != "" {
+				words = append(words, test.flag)
+			}
+			out, err := execute(t, append(words, "")...)
 			if err != nil {
 				t.Fatalf("completing %s failed: %v", test.command, err)
 			}
