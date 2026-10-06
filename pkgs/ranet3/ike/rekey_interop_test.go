@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -139,6 +140,46 @@ func TestIKERekeyProposalKeepsPRF(t *testing.T) {
 		if !ok || suite.PRFID != prf {
 			t.Fatalf("selected PRF %d, want %d", suite.PRFID, prf)
 		}
+	}
+}
+
+// an answer to this end's IKE SA rekey that chooses a PRF the rekey offer left out
+// is refused and leaves the SA it would have replaced current
+func TestRekeyIKERefusesAPRFItsOfferLeftOut(t *testing.T) {
+	mux, _ := lifecycleMuxes(t)
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
+	s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1)}
+	done := make(chan error, 1)
+	go func() { done <- s.RekeyIKE() }()
+	request := <-s.requests
+	dh, err := GenerateDH(DH_CURVE25519)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := Proposal{Number: 1, Protocol: ProtoIKE, SPI: binary.BigEndian.AppendUint64(nil, 22), Transforms: []Transform{
+		{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128},
+		{Type: TransPRF, ID: PRF_HMAC_SHA2_384},
+		{Type: TransDH, ID: DH_CURVE25519},
+	}}
+	request.result <- requestResult{inner: []RawPayload{
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{answer})},
+		// a nonce long enough for HMAC-SHA2-384
+		// leaves the refusal to the offer check
+		{Type: PayloadNonce, Body: bytes.Repeat([]byte{1}, 32)},
+		{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, dh.PublicBytes())},
+	}}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "unsupported transform 2/6") {
+			t.Errorf("RekeyIKE returned %v, want the answer's PRF refused by name", err)
+		}
+	case next := <-s.requests:
+		next.result <- requestResult{err: errors.New("nothing answers past the rekey")}
+		t.Fatalf("RekeyIKE installed the answer and asked for exchange %d next, then returned %v", next.exchange, <-done)
+	}
+	if current, _ := s.contexts(); current != old {
+		t.Error("a refused rekey answer replaced the IKE SA")
 	}
 }
 
