@@ -28,7 +28,8 @@ func ourRecord() writtenDefault {
 
 // reclaimFrom runs one reclaim against a table and a set of devices the test
 // decides, and reports what reached the kernel and what survived the pass.
-func reclaimFrom(t *testing.T, rib []byte, records []writtenDefault, lookup func(string) (int, error)) ([]sentRoute, []writtenDefault, string) {
+// refusal is the error the routing socket answers every write with, or nil
+func reclaimFrom(t *testing.T, rib []byte, records []writtenDefault, lookup func(string) (int, error), refusal error) ([]sentRoute, []writtenDefault, string) {
 	t.Helper()
 	state := filepath.Join(t.TempDir(), "underlay.json")
 	if err := saveUnderlayState(state, records); err != nil {
@@ -36,6 +37,7 @@ func reclaimFrom(t *testing.T, rib []byte, records []writtenDefault, lookup func
 	}
 	u, sock := testUnderlay(t, &fakeDefaults{}, func() []byte { return rib })
 	u.statePath, u.lookupDevice = state, lookup
+	sock.err = refusal
 	loaded, err := loadUnderlayState(state)
 	if err != nil {
 		t.Fatalf("the state this test just wrote would not load: %v", err)
@@ -91,7 +93,7 @@ func TestReclaimLeavesARouteThatDiffersOnAnyAttribute(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			rib := dumpRIB(t, primary, held)
-			messages, _, _ := reclaimFrom(t, rib, []writtenDefault{ourRecord()}, resolvesTo(uplinkIndex))
+			messages, _, _ := reclaimFrom(t, rib, []writtenDefault{ourRecord()}, resolvesTo(uplinkIndex), nil)
 			for _, message := range messages {
 				t.Errorf("a record that did not match sent %+v", message)
 			}
@@ -111,7 +113,7 @@ func TestReclaimWithdrawsARouteThatMatchesInEveryWay(t *testing.T) {
 		},
 		ourScoped(uplinkIndex, addr("192.168.0.1")),
 	)
-	messages, kept, state := reclaimFrom(t, rib, []writtenDefault{ourRecord()}, resolvesTo(uplinkIndex))
+	messages, kept, state := reclaimFrom(t, rib, []writtenDefault{ourRecord()}, resolvesTo(uplinkIndex), nil)
 	if len(messages) != 1 || messages[0].kind != unix.RTM_DELETE {
 		t.Fatalf("the reclaim sent %+v, want one delete", messages)
 	}
@@ -133,18 +135,45 @@ func TestReclaimWithdrawsARouteThatMatchesInEveryWay(t *testing.T) {
 // that signature, and its route is left alone.
 func TestReclaimLeavesARouteOnAnInterfaceThatIsNoLongerPrimary(t *testing.T) {
 	ours := ourScoped(uplinkIndex, addr("192.168.0.1"))
-	for name, rib := range map[string][]byte{
-		"the host's default moved to another interface": dumpRIB(t,
-			dumpEntry{
-				index: dockIndex,
-				flags: unix.RTF_UP | unix.RTF_GATEWAY | unix.RTF_STATIC,
-				dst:   v4default, gateway: routeAddr(addr("10.0.0.1")),
-			},
-			ours),
-		"the host has no default of that family at all": dumpRIB(t, ours),
+	// the primary interface is read for the family a record is in
+	// a dual stack host has its IPv4 default on one interface and its IPv6 default elsewhere, or nowhere
+	// a scoped IPv6 default on the interface carrying the IPv4 default is then a route macOS writes, and cannot be told from one this tool wrote
+	record6 := writtenDefault{destination: v6default, index: uplinkIndex, device: "en0", gateway: addr("2001:db8::1")}
+	primary4 := dumpEntry{
+		index: uplinkIndex,
+		flags: unix.RTF_UP | unix.RTF_GATEWAY | unix.RTF_STATIC,
+		dst:   v4default, gateway: routeAddr(addr("192.168.0.1")),
+	}
+	ours6 := ourScoped(uplinkIndex, addr("2001:db8::1"))
+	for name, test := range map[string]struct {
+		rib    []byte
+		record writtenDefault
+	}{
+		"the host's default moved to another interface": {
+			rib: dumpRIB(t,
+				dumpEntry{
+					index: dockIndex,
+					flags: unix.RTF_UP | unix.RTF_GATEWAY | unix.RTF_STATIC,
+					dst:   v4default, gateway: routeAddr(addr("10.0.0.1")),
+				},
+				ours),
+			record: ourRecord(),
+		},
+		"the host has no default of that family at all": {rib: dumpRIB(t, ours), record: ourRecord()},
+		"the host's IPv6 default is on another interface than its IPv4 one": {
+			rib: dumpRIB(t, primary4,
+				dumpEntry{
+					index: dockIndex,
+					flags: unix.RTF_UP | unix.RTF_GATEWAY | unix.RTF_STATIC,
+					dst:   v6default, gateway: routeAddr(addr("2001:db8:1::1")),
+				},
+				ours6),
+			record: record6,
+		},
+		"the host has an IPv4 default and no IPv6 one": {rib: dumpRIB(t, primary4, ours6), record: record6},
 	} {
 		t.Run(name, func(t *testing.T) {
-			messages, kept, _ := reclaimFrom(t, rib, []writtenDefault{ourRecord()}, resolvesTo(uplinkIndex))
+			messages, kept, _ := reclaimFrom(t, test.rib, []writtenDefault{test.record}, resolvesTo(uplinkIndex), nil)
 			for _, message := range messages {
 				t.Errorf("a route on an interface that is no longer primary sent %+v", message)
 			}
@@ -172,7 +201,7 @@ func TestReclaimLeavesARouteWhoseInterfaceWasRenumbered(t *testing.T) {
 		"the device is not present":          func(string) (int, error) { return 0, os.ErrNotExist },
 	} {
 		t.Run(name, func(t *testing.T) {
-			messages, kept, _ := reclaimFrom(t, rib, []writtenDefault{ourRecord()}, lookup)
+			messages, kept, _ := reclaimFrom(t, rib, []writtenDefault{ourRecord()}, lookup, nil)
 			for _, message := range messages {
 				t.Errorf("a renumbered interface sent %+v", message)
 			}
@@ -180,6 +209,34 @@ func TestReclaimLeavesARouteWhoseInterfaceWasRenumbered(t *testing.T) {
 				t.Errorf("the record was dropped rather than kept: %+v", kept)
 			}
 		})
+	}
+}
+
+// a withdrawal the kernel refuses during a reclaim keeps its record, in memory and on disk
+// the route is still there, and a start that forgot it would leave it on the interface for good
+func TestReclaimKeepsARecordWhoseWithdrawalFailed(t *testing.T) {
+	rib := dumpRIB(t,
+		dumpEntry{
+			index: uplinkIndex,
+			flags: unix.RTF_UP | unix.RTF_GATEWAY | unix.RTF_STATIC,
+			dst:   v4default, gateway: routeAddr(addr("192.168.0.1")),
+		},
+		ourScoped(uplinkIndex, addr("192.168.0.1")),
+	)
+	messages, kept, state := reclaimFrom(t, rib, []writtenDefault{ourRecord()}, resolvesTo(uplinkIndex), unix.EPERM)
+
+	if len(messages) != 1 || messages[0].kind != unix.RTM_DELETE {
+		t.Fatalf("the reclaim sent %+v, want the one delete the kernel refused", messages)
+	}
+	if want := []writtenDefault{ourRecord()}; !slices.Equal(kept, want) {
+		t.Errorf("the pass kept %d records, want the one held for the next start", len(kept))
+	}
+	got, err := loadUnderlayState(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []writtenDefault{ourRecord()}; !slices.Equal(got, want) {
+		t.Errorf("the file holds %d records, want the one the kernel would not withdraw", len(got))
 	}
 }
 
@@ -191,7 +248,7 @@ func TestReclaimForgetsARecordWhoseRouteIsGone(t *testing.T) {
 		flags: unix.RTF_UP | unix.RTF_GATEWAY | unix.RTF_STATIC,
 		dst:   v4default, gateway: routeAddr(addr("192.168.0.1")),
 	})
-	messages, kept, state := reclaimFrom(t, rib, []writtenDefault{ourRecord()}, resolvesTo(uplinkIndex))
+	messages, kept, state := reclaimFrom(t, rib, []writtenDefault{ourRecord()}, resolvesTo(uplinkIndex), nil)
 	for _, message := range messages {
 		t.Errorf("a record whose route is gone sent %+v", message)
 	}
