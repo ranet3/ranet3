@@ -140,5 +140,3 @@ func (b Behavior) MarshalText() ([]byte, error) {
 func (b *Behavior) UnmarshalYAML(value *yaml.Node) error {
 	return schema.Scalar(value, "a behavior, End or End.DT46", b)
 }
-
-func (b Behavior) MarshalYAML() (any, error) { return b.String(), nil }
