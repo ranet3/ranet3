@@ -100,9 +100,11 @@ func TestReconcilerRecordsAPassThatMovedNoRoute(t *testing.T) {
 }
 
 // passWait is how long a test waits for a pass it expects, generous for a loaded machine
+// it stays well short of DefaultReconcileInterval
+// a wait the default sweep alone would end then tells a broken interval from a slow machine
 // passPoll is how often it looks
 const (
-	passWait = 30 * time.Second
+	passWait = 5 * time.Second
 	passPoll = 5 * time.Millisecond
 )
 
@@ -174,6 +176,8 @@ func awaitPass(t *testing.T, last func() string, what, trigger string, done func
 }
 
 // a pass the sweep woke, putting back a route somebody else removed without a word, is named for the sweep
+// the sweep runs on the configured reconcile interval
+// one on the default interval would come only after the wait gave up
 func TestReconcilerNamesTheSweep(t *testing.T) {
 	bus := events.New()
 	reconciler, table, fake := harness(t, Table{Reconcile: schema.Duration(sweepEvery)}, Runtime{Events: bus})
