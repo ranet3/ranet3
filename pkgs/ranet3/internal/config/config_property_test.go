@@ -680,6 +680,23 @@ func TestEveryScalarReadsABareNumberAlike(t *testing.T) {
 	})
 }
 
+// a list or a mapping written where a scalar belongs is refused, for every scalar a configuration can write
+// the text half of a scalar reads the empty text such a node leaves, and one that takes it for a default or a word ran quality: [none] as etx
+func TestEveryScalarRefusesAListOrAMappingWrittenInItsPlace(t *testing.T) {
+	types := scalarTypes()
+	if len(types) < 8 {
+		t.Fatalf("found %d scalar types, so the walk lost the ones a configuration carries: %v", len(types), types)
+	}
+	for _, ty := range types {
+		for _, written := range []string{"[x]", "[]", "{}", "{ x: y }"} {
+			holder := reflect.New(reflect.StructOf([]reflect.StructField{{Name: "V", Type: ty, Tag: `yaml:"v"`}}))
+			if err := yaml.Unmarshal([]byte("v: "+written+"\n"), holder.Interface()); err == nil {
+				t.Errorf("%s took %s as its value", ty, written)
+			}
+		}
+	}
+}
+
 // schemaField is a field or a block a file writes, by the yaml keys that lead to it
 // a key ending in [] holds a list, and the field is the one in its first entry
 // scalar is the type of a field that reads itself from text, and nil for any other
