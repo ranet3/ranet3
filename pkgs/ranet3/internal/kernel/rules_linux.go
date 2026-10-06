@@ -29,22 +29,16 @@ import (
 // to RTPROT_STATIC on the rules it installs, so the fleet's own rules and this
 // reconciler's are already distinguishable on a running node.
 
-// afInet and afInet6 are AF_INET and AF_INET6, and af is one rule's family as
-// this backend writes it into the header. They live with the netlink encoder
-// rather than beside the Family type, because a family is a word everywhere
-// else in this tree and a number only here.
-const (
-	afInet  uint8 = 2
-	afInet6 uint8 = 10
-)
-
+// af is one rule's family as this backend writes it into the header. It lives
+// with the netlink encoder rather than beside the Family type, because a
+// family is a word everywhere else in this tree and a number only here.
 // af never sees an unresolved family: expandRules names one on every rule and
 // validate refuses anything else.
 func (f Family) af() uint8 {
 	if f == FamilyIPv4 {
-		return afInet
+		return unix.AF_INET
 	}
-	return afInet6
+	return unix.AF_INET6
 }
 
 // sizeofFibRuleHdr is struct fib_rule_hdr, which has the same shape as rtmsg:
@@ -116,7 +110,7 @@ func (p *netlinkPlatform) decodeRule(message nlMessage) (Rule, bool) {
 		return Rule{}, false
 	}
 	family := message.Data[0]
-	if family != afInet && family != afInet6 {
+	if family != unix.AF_INET && family != unix.AF_INET6 {
 		return Rule{}, false
 	}
 	// Only the action this file writes. A rule that blackholes or that reaches
@@ -127,7 +121,7 @@ func (p *netlinkPlatform) decodeRule(message nlMessage) (Rule, bool) {
 		return Rule{}, false
 	}
 	rule := Rule{Family: FamilyIPv6}
-	if family == afInet {
+	if family == unix.AF_INET {
 		rule.Family = FamilyIPv4
 	}
 	dstLen, srcLen := message.Data[1], message.Data[2]

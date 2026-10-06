@@ -242,22 +242,10 @@ func harness(t *testing.T, tbl Table, runtime ...Runtime) (*Reconciler, *netstac
 			rt.Interface = "ranet0"
 		}
 	}
-	if tbl.ID == 0 {
-		tbl.ID = DefaultTable
-	}
-	if tbl.Proto == 0 {
-		tbl.Proto = DefaultProtocol
-	}
-	if tbl.Reconcile == 0 {
-		tbl.Reconcile = schema.Duration(DefaultReconcileInterval)
-	}
-	rules, err := expandRules(tbl.Rules)
-	if err != nil {
-		t.Fatal(err)
-	}
+	tbl = tbl.Normalized()
 	table := netstack.NewRouteTable()
 	fake := newFakeKernel(t)
-	return newReconciler(tbl, rt, canonicalRules(rules), tbl.Assigned(rt.Announced), table, fake), table, fake
+	return newReconciler(tbl, rt, tbl.Rules, tbl.Assigned(rt.Announced), table, fake), table, fake
 }
 
 // platformFor is the pair newPlatform takes, for a test that varies only the

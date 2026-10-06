@@ -38,7 +38,7 @@ func TestRuleMessageCarriesTheOwnershipMarker(t *testing.T) {
 	rule := Rule{Family: FamilyIPv6, From: schema.MustPrefix("3fff:a::/36"), Table: 200, Priority: 150}
 	hdr, attrs := ruleAttrs(t, plat.ruleMessage(rule))
 
-	if hdr[0] != afInet6 {
+	if hdr[0] != unix.AF_INET6 {
 		t.Errorf("family byte is %d", hdr[0])
 	}
 	if hdr[2] != 36 {
