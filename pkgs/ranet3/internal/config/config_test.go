@@ -929,6 +929,7 @@ func TestBabelCostFieldsReachTheSpeaker(t *testing.T) {
   babel:
     hello: 3s
     update: 9s
+    quality: none
     cost:
       rx: 42
       rtt: { weight: 4242, min: 7ms, max: 77ms }
@@ -938,6 +939,10 @@ func TestBabelCostFieldsReachTheSpeaker(t *testing.T) {
 	}
 	speaker := cfg.Babel()
 	cost := speaker.CostEffective()
+	// the estimator rides in the cost the speaker runs, and a file writing none ran etx without it
+	if cost.Quality != babel.LinkQualityNone {
+		t.Errorf("the quality reached the speaker as %s, want none", cost.Quality)
+	}
 	if cost.RxCost != 42 || cost.RTT.Weight != 4242 {
 		t.Errorf("the costs reached the speaker as %d and %d, want 42 and 4242", cost.RxCost, cost.RTT.Weight)
 	}
