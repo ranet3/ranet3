@@ -1462,6 +1462,10 @@ func TestUnwrittenBlockLeavesNoKey(t *testing.T) {
 		"cap.crypto": {ike.Crypto{}, []string{"rekey", "retry"}},
 		"cap.babel":  {babel.Config{}, []string{"cost", "rtt"}},
 		"cap.table":  {kernel.Table{}, []string{"vrf", "rules"}},
+		// the blocks inside rekey and cost are asked on their own
+		// because cap.crypto and cap.babel drop those two whole
+		"cap.crypto rekey": {ike.Rekey{}, []string{"retry"}},
+		"cap.babel cost":   {babel.CostOptions{}, []string{"rtt"}},
 		// The two standing on a whole Link write the endpoint the schema
 		// requires and nothing else, since an endpoint list is the one
 		// required field that is a list: yaml writes a nil one as an empty
