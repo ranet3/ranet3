@@ -51,12 +51,23 @@ func (d *scriptedDevice) Close() error {
 	return nil
 }
 
-// deliveryTimeout bounds the wait for the packets a reader hands on
-// and deliveryPoll is how often the test looks for them
+// deliveryTimeout bounds every wait of these tests for something they expect to happen
+// and deliveryPoll is how often one looks again
 const (
 	deliveryTimeout = 5 * time.Second
 	deliveryPoll    = time.Millisecond
 )
+
+// waitUntil looks at cond every deliveryPoll until it holds
+// and fails the test with what it waited for once deliveryTimeout has passed
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(deliveryTimeout); !cond(); time.Sleep(deliveryPoll) {
+		if time.Now().After(deadline) {
+			t.Fatalf("waited %s for %s", deliveryTimeout, what)
+		}
+	}
+}
 
 // a GSO frame of more segments than one read holds
 // comes back cut short with ErrTooManySegments
@@ -96,6 +107,70 @@ func TestReaderKeepsReadingPastACutGSOFrame(t *testing.T) {
 	}
 	if cut := m.TUNReadsTruncated(); cut != 1 {
 		t.Errorf("%d reads were counted as cut short, want the one", cut)
+	}
+}
+
+// a linux read hands over every segment of a GSO frame at once
+// and a read off one queue can carry packets for several peers
+// so every packet of the read goes to its own peer, in the order the read held them
+func TestReaderRoutesEveryPacketOfOneRead(t *testing.T) {
+	dev := &scriptedDevice{reads: make(chan scriptedRead, 1), closed: make(chan struct{})}
+	var mu sync.Mutex
+	sent := map[string][][]byte{}
+	peer := func(id string) *Peer {
+		p := NewPeerReserved(id, func(int) (BatchSealer, error) {
+			return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
+				out = out[:0]
+				for _, packet := range raw {
+					out = append(out, bytes.Clone(packet))
+				}
+				return out, nil
+			}, nil
+		}, func(sealed [][]byte) error {
+			mu.Lock()
+			defer mu.Unlock()
+			sent[id] = append(sent[id], sealed...)
+			return nil
+		})
+		t.Cleanup(p.Close)
+		return p
+	}
+	a, b := peer("a"), peer("b")
+	m := &Mesh{
+		Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{}),
+		outboundBufferSize: tunOffset + outboundPacketBufferSize,
+	}
+	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("fd00::a/128"), a)
+	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("fd00::b/128"), b)
+	m.startOutboundPipeline()
+	t.Cleanup(m.Close)
+
+	source := segAddr("fd00::1")
+	read := [][]byte{
+		plainV6(source, segAddr("fd00::a"), "a first"),
+		plainV6(source, segAddr("fd00::b"), "b first"),
+		plainV6(source, segAddr("fd00::a"), "a second"),
+		plainV6(source, segAddr("fd00::b"), "b second"),
+		plainV6(source, segAddr("fd00::a"), "a third"),
+	}
+	want := map[string][][]byte{"a": {read[0], read[2], read[4]}, "b": {read[1], read[3]}}
+	dev.reads <- scriptedRead{packets: read}
+
+	sentTo := func(id string) [][]byte {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(sent[id])
+	}
+	waitUntil(t, "every packet of one read to reach its peer", func() bool {
+		return len(sentTo("a")) >= len(want["a"]) && len(sentTo("b")) >= len(want["b"])
+	})
+	for id := range want {
+		if got := sentTo(id); !slices.EqualFunc(got, want[id], bytes.Equal) {
+			t.Errorf("peer %s was sent %q, want %q", id, got, want[id])
+		}
+	}
+	if a.Dropped() != 0 || b.Dropped() != 0 {
+		t.Errorf("the peers counted %d and %d packets dropped out of one read they had room for", a.Dropped(), b.Dropped())
 	}
 }
 
