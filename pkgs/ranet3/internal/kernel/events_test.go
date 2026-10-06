@@ -99,15 +99,6 @@ func TestReconcilerRecordsAPassThatMovedNoRoute(t *testing.T) {
 	}
 }
 
-// passWait is how long a test waits for a pass it expects, generous for a loaded machine
-// it stays well short of DefaultReconcileInterval
-// a wait the default sweep alone would end then tells a broken interval from a slow machine
-// passPoll is how often it looks
-const (
-	passWait = 5 * time.Second
-	passPoll = 5 * time.Millisecond
-)
-
 // a running reconciler names what woke it for each pass it records
 // its first pass, a change of the mesh, a change somebody else made to the kernel, the retry of a failed pass, a stop over the control socket whose withdrawal failed, and the start after it
 func TestReconcilerNamesWhatWokeIt(t *testing.T) {
@@ -168,7 +159,7 @@ func runToRecord(t *testing.T, reconciler *Reconciler, table *netstack.RouteTabl
 // awaitPass waits until done holds and the last pass recorded was woken by trigger
 func awaitPass(t *testing.T, last func() string, what, trigger string, done func() bool) {
 	t.Helper()
-	for deadline := time.Now().Add(passWait); !done() || last() != trigger; time.Sleep(passPoll) {
+	for deadline := time.Now().Add(waitBudget); !done() || last() != trigger; time.Sleep(waitPoll) {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s, the last pass recorded was woken by %q", what, last())
 		}
