@@ -129,12 +129,21 @@ its connections to the reads.
 | `kernel.pass`                        | a reconciler pass that changed the kernel, skipped anew or failed           |
 | `egress.pass`                        | a translator pass that rewrote its rules, moved its prefixes or failed      |
 | `transport.underlay.bound`           | the underlay socket moved onto another interface                            |
+| `netstack.codel.dropping`            | a peer's sender began dropping for a queue delay above its target           |
+| `netstack.codel.drained`             | that peer's queue emptied, or its delay fell back below the target          |
 
 A `control.verb` carries the caller's uid and pid, and in its `peer` attribute
 the peer as the verb named it, when it named one. The event's peer is the path
 of the session or dialer it was recorded under, which `--peer` takes by any name
 of that peer. A verb that acted on none, a refused one included, is recorded
 once without a peer.
+
+A `netstack.codel` event carries the `sojourn` of the batch that changed the
+state, how long that batch had waited since it was reserved, and the `target`. A
+`drained` recorded because the queue emptied carries a `sojourn` of 0. The
+sender drops one packet at a time on its own schedule and records no event per
+packet, so `ranet3_peer_send_delay_dropped_total` is where the drops are
+counted.
 
 ## Adding a view
 

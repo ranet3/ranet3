@@ -18,12 +18,14 @@ go test ./... -race
 
 The unit tests need no privileges, with three exceptions: `internal/kernel` has
 tests that write to a real routing table, `internal/egress` one that writes into
-a real packet filter, and `internal/netstack` three that create and attach to a
+a real packet filter, and `internal/netstack` four that create and attach to a
 real TUN on linux, read its `gso_max_segs` back, open several lanes as one
-device and refuse a mesh under the default name where a device of that name
-exists. All three unshare a network namespace and refuse to continue unless it
-is empty, and all three skip unless run as root, on darwin unless
-`RANET3_DARWIN_NETTEST=1` is also set, because that machine is on a live mesh.
+device, refuse a mesh under the default name where a device of that name exists
+and warn at a new mesh's first cut read. On linux all three unshare a network
+namespace, refuse to continue unless it is empty, and skip unless run as root.
+On darwin the `internal/kernel` tests against the real routing socket and the
+`internal/netstack` arms that create a utun run as root only with
+`RANET3_DARWIN_NETTEST=1` set, because that machine is on a live mesh.
 
 `internal/kernel` names the machine it reads and writes, `kernel.Host`, so the
 darwin backend can be driven without either. `internal/client`'s

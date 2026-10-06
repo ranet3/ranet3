@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-03
+updated: 2026-10-06
 order: 10
 ---
 
@@ -198,8 +198,14 @@ keeps inner flows on a stable lane. When more than one execution context is
 available, an existing named TUN must therefore be created with
 `IFF_MULTI_QUEUE` (for a systemd-networkd `.netdev`, set `MultiQueue=yes` in its
 `[Tun]` section). Single-core processes can also attach to a legacy single-queue
-TUN. TUN readers hand bounded batches to shared encryption workers; sequence
-reservation and queue submission preserve packet order across workers.
+TUN. TUN readers hand bounded batches to shared encryption workers, and sequence
+reservation and queue submission preserve packet order across workers. Each peer
+admits a read's packets against a budget of its own, 4096 packets, without
+waiting: a read that does not fit is dropped and counted, so a peer whose
+transport stalls costs the others nothing. Its sender bounds the delay through
+that queue with CoDel, dropping one packet at the head once the delay has stayed
+above 5 milliseconds for 100 milliseconds. The readers wait only for the read
+batches every peer shares.
 
 The Babel control state and forwarding publication share one mutex. Selection
 runs over feasible routes only, against the source table this fork added, since
