@@ -242,9 +242,6 @@ func parseSendControl(oob []byte) (source netip.Addr, index int, pinned bool, se
 
 type kernelConn struct{ kernel *fakeKernel }
 
-func (c kernelConn) ReadBatch([]ipv4.Message, int) (int, error) {
-	return 0, errors.New("the fake kernel receives nothing")
-}
 func (c kernelConn) WriteBatch(messages []ipv4.Message, _ int) (int, error) {
 	if c.kernel.together != nil && c.kernel.arrived.Add(1) <= 2 {
 		c.kernel.together.Done()

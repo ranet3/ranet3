@@ -20,20 +20,22 @@ import (
 )
 
 type scriptedUDP struct {
-	read  func([]ipv4.Message) (int, error)
 	write func([]ipv4.Message) (int, error)
 }
 
-func (s scriptedUDP) ReadBatch(messages []ipv4.Message, _ int) (int, error) {
-	return s.read(messages)
-}
 func (s scriptedUDP) WriteBatch(messages []ipv4.Message, _ int) (int, error) {
 	return s.write(messages)
 }
 
+// scriptedReceiver hands out what read leaves in the socket's receive vector, in place of a recvmmsg
+func scriptedReceiver(socket *udpSocket, read func([]ipv4.Message) (int, error)) receiveFunc {
+	messages := receiveVector()
+	return socket.walk(messages, func() (int, error) { return read(messages) })
+}
+
 func TestUDPReceivePreservesGROOverflowAndFullBatchReads(t *testing.T) {
 	reads := 0
-	socket := &udpSocket{pc: scriptedUDP{read: func(messages []ipv4.Message) (int, error) {
+	receive := scriptedReceiver(&udpSocket{}, func(messages []ipv4.Message) (int, error) {
 		reads++
 		if len(messages) != espSendBatch {
 			t.Fatalf("receive vector has %d messages, want %d", len(messages), espSendBatch)
@@ -51,8 +53,7 @@ func TestUDPReceivePreservesGROOverflowAndFullBatchReads(t *testing.T) {
 			m.NN = len(control)
 		}
 		return 4, nil
-	}}}
-	receive := socket.receiver()
+	})
 	packets, sizes, endpoints := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128)
 	for batch := range 2 {
 		n, _, err := receive(packets, sizes, endpoints)
@@ -137,7 +138,7 @@ func TestUDPSendDoesNotOverwriteNonadjacentPackets(t *testing.T) {
 }
 
 func TestUDPReceiveSkipsTruncatedMessagesAndPreservesGROTail(t *testing.T) {
-	socket := &udpSocket{pc: scriptedUDP{read: func(messages []ipv4.Message) (int, error) {
+	receive := scriptedReceiver(&udpSocket{}, func(messages []ipv4.Message) (int, error) {
 		for i, flags := range []int{unix.MSG_TRUNC, unix.MSG_CTRUNC, 0} {
 			m := &messages[i]
 			m.N, m.Flags = 20, flags
@@ -147,9 +148,9 @@ func TestUDPReceiveSkipsTruncatedMessagesAndPreservesGROTail(t *testing.T) {
 		(*unix.Cmsghdr)(unsafe.Pointer(&control[0])).Type = unix.UDP_GRO
 		messages[2].NN = len(control)
 		return 3, nil
-	}}}
+	})
 	packets, sizes, endpoints := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128)
-	n, refused, err := socket.receiver()(packets, sizes, endpoints)
+	n, refused, err := receive(packets, sizes, endpoints)
 	if err != nil || n != 3 {
 		t.Fatalf("receive: n=%d err=%v, want three intact GRO segments", n, err)
 	}
@@ -234,7 +235,7 @@ func TestUDPKernelGSORoundTrip(t *testing.T) {
 // sizing two branches up already skips the same class of failure, and without
 // a reply endpoint the responder could not answer this datagram anyway.
 func TestUDPReceiveDropsDatagramWithNoUsableSource(t *testing.T) {
-	socket := &udpSocket{ipv6: true, pc: scriptedUDP{read: func(messages []ipv4.Message) (int, error) {
+	receive := scriptedReceiver(&udpSocket{ipv6: true}, func(messages []ipv4.Message) (int, error) {
 		for i := range 3 {
 			m := &messages[i]
 			m.N = 8
@@ -256,8 +257,7 @@ func TestUDPReceiveDropsDatagramWithNoUsableSource(t *testing.T) {
 			m.Addr = &source
 		}
 		return 3, nil
-	}}}
-	receive := socket.receiver()
+	})
 	packets, sizes, endpoints := make([][]byte, 8), make([]int, 8), make([]Endpoint, 8)
 	n, refused, err := receive(packets, sizes, endpoints)
 	if err != nil {
@@ -284,16 +284,16 @@ func TestUDPReceiveDropsDatagramWithNoUsableSource(t *testing.T) {
 // much, from an arm adjacent to one that counts them individually.
 func TestTruncatedGROReadIsCountedInDatagrams(t *testing.T) {
 	const segment, total = 8, 40
-	socket := &udpSocket{pc: scriptedUDP{read: func(messages []ipv4.Message) (int, error) {
+	receive := scriptedReceiver(&udpSocket{}, func(messages []ipv4.Message) (int, error) {
 		m := &messages[0]
 		m.N, m.Flags = segment*total, unix.MSG_TRUNC
 		control := appendUDPSegment(m.OOB[:0], segment)
 		(*unix.Cmsghdr)(unsafe.Pointer(&control[0])).Type = unix.UDP_GRO
 		m.NN = len(control)
 		return 1, nil
-	}}}
+	})
 	packets, sizes, endpoints := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128)
-	n, refused, err := socket.receiver()(packets, sizes, endpoints)
+	n, refused, err := receive(packets, sizes, endpoints)
 	if err != nil || n != 0 {
 		t.Fatalf("receive: n=%d err=%v, want the whole truncated read discarded", n, err)
 	}
