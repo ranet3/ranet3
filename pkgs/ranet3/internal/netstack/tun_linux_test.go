@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -27,6 +28,7 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 		setup         func(t *testing.T, device string)
 	}{
 		{"created", "gsocap0", "gsocap0", func(*testing.T, string) {}},
+		{"created under the default name", "", "ranet3", func(*testing.T, string) {}},
 		{"created from a name the kernel numbers", "gsocap%d", "gsocap0", func(*testing.T, string) {}},
 		{"multiqueue attach", "gsocap0", "gsocap0", func(t *testing.T, device string) {
 			persistTUN(t, device, unix.IFF_MULTI_QUEUE)
@@ -60,6 +62,91 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 			t.Logf("gso_max_segs %d with the mesh on it, reading %d packets at a time", got, batch)
 			if got != uint32(batch) {
 				t.Errorf("the kernel holds gso_max_segs %d for %s, want the read batch of %d", got, m.Name, batch)
+			}
+		})
+	}
+}
+
+// a queue opened under the name of a multiqueue tun joins that device
+// and a mesh under the default name has to be refused instead when a device of that name is there
+// whether its link.tun is empty or names ranet3
+// at one core a multiqueue open that a single-queue device refuses is tried again single-queue
+// and that open has to refuse the device too
+func TestTUNUnderTheDefaultNameIsNeverShared(t *testing.T) {
+	heldByAMesh := func(t *testing.T) {
+		first, err := NewNamed(0, "")
+		if err != nil {
+			t.Fatalf("open the first mesh: %v", err)
+		}
+		t.Cleanup(first.Close)
+	}
+	singleQueueAtOneCore := func(t *testing.T) {
+		persistTUN(t, "ranet3", 0)
+		previous := runtime.GOMAXPROCS(1)
+		t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
+	}
+	for _, arm := range []struct {
+		name  string
+		asked string
+		setup func(t *testing.T)
+	}{
+		{"held by a mesh, empty link.tun", "", heldByAMesh},
+		{"held by a mesh, link.tun naming it", "ranet3", heldByAMesh},
+		{"single-queue at one core, empty link.tun", "", singleQueueAtOneCore},
+		{"single-queue at one core, link.tun naming it", "ranet3", singleQueueAtOneCore},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			enterEmptyNamespace(t)
+			arm.setup(t)
+
+			m, err := NewNamed(0, arm.asked)
+			if err == nil {
+				m.Close()
+				t.Fatalf("a mesh asking for %q joined %s, which was there before it", arm.asked, m.Name)
+			}
+			t.Logf("the refusal reads: %v", err)
+			for _, want := range []string{`"ranet3"`, "link.tun"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal reads %q, which does not name %s", err, want)
+				}
+			}
+		})
+	}
+}
+
+// every lane after the first joins the device the first one made, under the name the kernel gave it
+// only the first lane may refuse a device that exists, or the default name would never get a second lane
+// a template asked of every lane would make one device per lane
+// the lane count is given outright, so a runner of any core count opens several
+func TestTUNLanesJoinTheDeviceTheFirstLaneMade(t *testing.T) {
+	const lanes = 4
+	for _, name := range []string{"ranet3", "gsocap%d"} {
+		t.Run(name, func(t *testing.T) {
+			enterEmptyNamespace(t)
+			devices, actualName, err := createTUNQueues(name, DefaultMTU, lanes)
+			if err != nil {
+				t.Fatalf("open %d lanes of %q: %v", lanes, name, err)
+			}
+			t.Cleanup(func() {
+				for _, device := range devices {
+					_ = device.Close()
+				}
+			})
+			if len(devices) != lanes {
+				t.Fatalf("%q opened %d lanes, want %d", name, len(devices), lanes)
+			}
+			links, err := net.Interfaces()
+			if err != nil {
+				t.Fatalf("list the links: %v", err)
+			}
+			var made []string
+			for _, link := range links {
+				if strings.HasPrefix(link.Name, strings.TrimSuffix(name, "%d")) {
+					made = append(made, link.Name)
+				}
+			}
+			if len(made) != 1 || made[0] != actualName {
+				t.Errorf("%d lanes of %q made %v, want the one device %s", lanes, name, made, actualName)
 			}
 		})
 	}

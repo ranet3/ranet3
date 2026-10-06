@@ -46,7 +46,7 @@ var (
 
 type Mesh struct {
 	Routes *RouteTable
-	// Name is the TUN device's real interface name (e.g. "ranet0"), as
+	// Name is the TUN device's real interface name (e.g. "utun6" for "utun"), as
 	// reported by the kernel — needed by whoever configures its address
 	// and routes, since the kernel doesn't always honor the requested
 	// name exactly.
@@ -100,9 +100,6 @@ type inboundWriteBatch struct {
 	packets [][]byte
 }
 
-// New creates an automatically named TUN device.
-func New(mtu int) (*Mesh, error) { return NewNamed(mtu, "") }
-
 // NewRoutesOnly is a mesh with a forwarding table and no device, for a test
 // that exercises routing and sessions rather than the dataplane. Creating a
 // TUN needs root on every platform, and babel intercepts its own traffic
@@ -113,7 +110,7 @@ func NewRoutesOnly() *Mesh {
 }
 
 // NewNamed attaches to or creates name through wireguard-go's TUN backend.
-// An empty name retains the project's automatically assigned ranet%d name.
+// an empty name opens defaultTUNName, which is always created and never attached to
 func NewNamed(mtu int, name string) (*Mesh, error) {
 	if mtu == 0 {
 		mtu = DefaultMTU
@@ -151,7 +148,7 @@ func NewNamed(mtu int, name string) (*Mesh, error) {
 func (m *Mesh) QueueCount() int { return len(m.devs) }
 
 // MTU is the device's own, asked of the kernel rather than reported from the
-// value New was given: attaching to a device somebody else created takes
+// value NewNamed was given: attaching to a device somebody else created takes
 // whatever MTU that device already has. Zero means the device could not
 // answer, which is a device on its way out.
 func (m *Mesh) MTU() int {
