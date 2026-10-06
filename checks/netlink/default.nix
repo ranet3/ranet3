@@ -82,14 +82,16 @@ testers.runNixOSTest {
     assert "--- PASS" in out, f"the nftables round trip did not run:\n{out}"
 
     # the tun round trips create a device, attach to one and read its gso limit back
-    # the test and its four ways to a device count five passes
+    # refuse a mesh under the default name where a device of that name is there
+    # and open several lanes as one device
+    # the three tests, five ways to a device, four ways to meet the default and two lane names count fourteen passes
     out = machine.succeed(
         "${netlinkTests}/bin/netstack-tests -test.v -test.run 'TestTUN' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the tun round trips skipped themselves under root:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 5, f"only {ran} tun round trips ran:\n{out}"
+    assert ran >= 14, f"only {ran} tun round trips ran:\n{out}"
 
     # Nothing the tests wrote may outlive them: they run against the host's own
     # kernel here rather than against a fake, so a rule, a VRF or a table left
@@ -97,6 +99,7 @@ testers.runNixOSTest {
     assert "proto 155" not in machine.succeed("ip rule show; ip -6 rule show")
     machine.fail("ip link show mesh")
     machine.fail("ip link show gsocap0")
+    machine.fail("ip link show ranet3")
     tables = machine.succeed("nft list tables")
     assert "ranet3" not in tables, f"a table outlived the namespace it was written in:\n{tables}"
     # And nothing of the host's went with it: the tests write into a namespace

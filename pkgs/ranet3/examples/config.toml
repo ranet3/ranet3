@@ -38,8 +38,10 @@ endpoints = [{ serial = "0", family = "ip4" }]
 # dial us; dial.to below says who we dial, not who we answer.
 # listen = true
 
-# Attach to this device, creating it when it does not exist. Omitted creates an
-# automatically named ranet%d on linux, or the next free utun on darwin.
+# Attach to this device, creating it when it does not exist. Omitted creates
+# ranet3 on linux, which is never attached to: a second instance on the host
+# needs a tun of its own here, as does a device made for this one. darwin takes
+# the next free utun.
 # tun = "ranet0"
 
 # Keep the one UDP socket carrying IKE and ESP out of the reach of the routes

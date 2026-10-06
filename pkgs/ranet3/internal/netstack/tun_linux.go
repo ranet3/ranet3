@@ -8,6 +8,7 @@ package netstack
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -18,9 +19,6 @@ import (
 )
 
 const cloneDevicePath = "/dev/net/tun"
-
-// defaultTUNName lets the kernel number the interface.
-const defaultTUNName = "ranet%d"
 
 func bringTUNUp(name string) error {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
@@ -42,10 +40,19 @@ func bringTUNUp(name string) error {
 // createTUNQueues opens the lanes of name
 // and sets the device's gso_max_segs to the read batch
 func createTUNQueues(name string, mtu, queueCount int) ([]tun.Device, string, error) {
-	devices, actualName, err := openTUNQueues(name, mtu, queueCount, unix.IFF_MULTI_QUEUE)
+	// IFF_TUN_EXCL has the kernel refuse a device of the default name that exists
+	// where a queue opened under that name would join it, another instance's or not
+	var exclusive uint16
+	if name == defaultTUNName {
+		exclusive = unix.IFF_TUN_EXCL
+	}
+	devices, actualName, err := openTUNQueues(name, mtu, queueCount, unix.IFF_MULTI_QUEUE, exclusive)
 	if err != nil && queueCount == 1 {
 		// a tun made without IFF_MULTI_QUEUE refuses a multiqueue attach
-		devices, actualName, err = openTUNQueues(name, mtu, 1, 0)
+		devices, actualName, err = openTUNQueues(name, mtu, 1, 0, exclusive)
+	}
+	if exclusive != 0 && errors.Is(err, unix.EBUSY) {
+		return nil, "", fmt.Errorf("a device named %q already exists, and the default name is never attached to: a second instance on this host needs a link.tun of its own, as does a device made for this one", name)
 	}
 	if err != nil {
 		return nil, "", err
@@ -97,9 +104,10 @@ func setGSOMaxSegs(name string, segments int) error {
 
 // openTUNQueues opens one file descriptor per lane of name
 // multiqueue is IFF_MULTI_QUEUE, or 0 for a tun made without that flag
+// exclusive is IFF_TUN_EXCL when the first lane has to create the device, or 0
 // Each descriptor is wrapped in its own wireguard-go Device, which gives every
 // data-plane worker independent read buffers, GRO tables, and I/O locks.
-func openTUNQueues(name string, mtu, queueCount int, multiqueue uint16) ([]tun.Device, string, error) {
+func openTUNQueues(name string, mtu, queueCount int, multiqueue, exclusive uint16) ([]tun.Device, string, error) {
 	devices := make([]tun.Device, 0, queueCount)
 	closeDevices := func() {
 		for _, device := range devices {
@@ -121,19 +129,20 @@ func openTUNQueues(name string, mtu, queueCount int, multiqueue uint16) ([]tun.D
 			return nil, "", fmt.Errorf("open %s for queue %d: %w", cloneDevicePath, i, err)
 		}
 
-		requestName := actualName
+		flags := unix.IFF_TUN | unix.IFF_NO_PI | unix.IFF_VNET_HDR | multiqueue
 		if i == 0 {
-			requestName = name
+			// the later lanes join the device this one makes, under the name it got
+			flags |= exclusive
 		}
-		ifr, err := unix.NewIfreq(requestName)
+		ifr, err := unix.NewIfreq(actualName)
 		if err == nil {
-			ifr.SetUint16(unix.IFF_TUN | unix.IFF_NO_PI | unix.IFF_VNET_HDR | multiqueue)
+			ifr.SetUint16(flags)
 			err = unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr)
 		}
 		if err != nil {
 			_ = unix.Close(fd)
 			closeDevices()
-			return nil, "", fmt.Errorf("%s %q queue %d: %w", attach, requestName, i, err)
+			return nil, "", fmt.Errorf("%s %q queue %d: %w", attach, actualName, i, err)
 		}
 		if i == 0 {
 			actualName = ifr.Name()
