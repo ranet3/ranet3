@@ -131,7 +131,7 @@ func TestReaderRoutesEveryPacketOfOneRead(t *testing.T) {
 			defer mu.Unlock()
 			sent[id] = append(sent[id], sealed...)
 			return nil
-		})
+		}, nil)
 		t.Cleanup(p.Close)
 		return p
 	}

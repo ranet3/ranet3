@@ -32,7 +32,7 @@ func TestDataBudgetAdmitsByPackets(t *testing.T) {
 	peer := NewPeerReserved("peer", func(count int) (BatchSealer, error) {
 		asked.Add(int64(count))
 		return passThrough, nil
-	}, func([][]byte) error { return nil })
+	}, func([][]byte) error { return nil }, nil)
 	defer peer.Close()
 
 	// one full read, then single packets, up to one packet short of the budget
@@ -180,7 +180,7 @@ func TestBudgetComesBackOnEveryPath(t *testing.T) {
 				// the transport holds the batch past the grace Close waits for
 				send = func([][]byte) error { close(entered); <-release; return nil }
 			}
-			p := NewPeerReserved("peer", test.reserve, send)
+			p := NewPeerReserved("peer", test.reserve, send, nil)
 			defer p.Close()
 			test.drive(t, p)
 			if test.graceful {
@@ -219,7 +219,7 @@ func TestQueueHoldsEverythingTheBudgetsAdmit(t *testing.T) {
 		}
 		transmitted.Add(int64(len(sealed)))
 		return nil
-	})
+	}, nil)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
@@ -283,7 +283,7 @@ func TestSmallBatchIsNeverHandedStorageALargeOneGrew(t *testing.T) {
 		handed = cap(reuse)
 		return append(reuse[:0], raw...), nil
 	}
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return sealer, nil }, func([][]byte) error { return nil })
+	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return sealer, nil }, func([][]byte) error { return nil }, nil)
 	defer peer.Close()
 	const large = 45
 	// sync.Pool drops a quarter of what it is given under the race detector

@@ -821,10 +821,13 @@ type NeighborStat struct {
 	// passes, zero once it already has.
 	Expires time.Duration
 	Routes  int
-	// Dropped counts the packets the dataplane refused to queue for this
-	// neighbor, both its control traffic and whatever the mesh was forwarding
+	// Dropped counts the packets the dataplane did not send to this neighbor
+	// on purpose, both its control traffic and whatever the mesh was forwarding
 	// through it.
 	Dropped uint64
+	// DelayDropped is the part of Dropped the dataplane dropped from the head of a queue whose delay had stood above its target
+	// never one of this speaker's own packets, which the delay control leaves alone
+	DelayDropped uint64
 	// SendFailed counts the packets the transport lost after this node had
 	// sealed them, which is the link failing rather than this node running
 	// out of room.
@@ -872,6 +875,9 @@ func (s *Speaker) Stats() Stats {
 		}
 	}
 	for _, neighbor := range s.neighbors {
+		// read before Dropped, which the dataplane raises first
+		// so a snapshot never holds more delay drops than drops
+		delayDropped := neighbor.peer.DelayDropped()
 		stats.Neighbors = append(stats.Neighbors, NeighborStat{
 			Peer:             neighbor.peer.ID,
 			Addr:             neighbor.addr,
@@ -884,6 +890,7 @@ func (s *Speaker) Stats() Stats {
 			Expires:          remaining(now, neighbor.helloExpiry()),
 			Routes:           received[neighbor],
 			Dropped:          neighbor.peer.Dropped(),
+			DelayDropped:     delayDropped,
 			SendFailed:       neighbor.peer.SendFailed(),
 		})
 	}

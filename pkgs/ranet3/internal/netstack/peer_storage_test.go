@@ -40,7 +40,7 @@ func TestReservedPeerKeepsCiphertextUntilSendCompletes(t *testing.T) {
 					sent = append(sent, packet[0])
 				}
 				return sendErr
-			})
+			}, nil)
 			t.Cleanup(func() { once.Do(func() { close(release) }); p.Close() })
 			first := p.reserveBatch(1)
 			first.append([]byte{1}, 0)
@@ -92,15 +92,11 @@ func TestSendRawOrDropDoesNotWaitForBackedUpPeer(t *testing.T) {
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
 	var sent atomic.Int64
-	peer := NewPeerReserved("stalled", func(int) (BatchSealer, error) {
-		return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-			return append(out[:0], raw...), nil
-		}, nil
-	}, func(sealed [][]byte) error {
+	peer := NewPeerReserved("stalled", func(int) (BatchSealer, error) { return passThrough, nil }, func(sealed [][]byte) error {
 		<-release
 		sent.Add(int64(len(sealed))) // the sender merges batches into one call
 		return nil
-	})
+	}, nil)
 	defer func() { unblock(); peer.Close() }()
 
 	// Fill the queue, then keep going against a transport that never returns.
@@ -149,14 +145,10 @@ func TestControlPacketDropsAreReported(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
-	peer := NewPeerReserved("busy", func(int) (BatchSealer, error) {
-		return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-			return append(out[:0], raw...), nil
-		}, nil
-	}, func([][]byte) error {
+	peer := NewPeerReserved("busy", func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error {
 		<-release
 		return nil
-	})
+	}, nil)
 	defer func() { unblock(); peer.Close() }()
 
 	var dropped int
@@ -191,7 +183,7 @@ func TestReservationFailureCountsAsADrop(t *testing.T) {
 	refused := errors.New("no child sa")
 	peer := NewPeerReserved("peer",
 		func(int) (BatchSealer, error) { return nil, refused },
-		func([][]byte) error { return nil })
+		func([][]byte) error { return nil }, nil)
 	defer peer.Close()
 
 	// The caller is told, so it can give back whatever the packet consumed,
@@ -213,12 +205,8 @@ func TestControlTrafficHasItsOwnBudget(t *testing.T) {
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
 	peer := NewPeerReserved("peer",
-		func(int) (BatchSealer, error) {
-			return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-				return append(out[:0], raw...), nil
-			}, nil
-		},
-		func([][]byte) error { <-release; return nil })
+		func(int) (BatchSealer, error) { return passThrough, nil },
+		func([][]byte) error { <-release; return nil }, nil)
 	defer func() { unblock(); peer.Close() }()
 
 	// The dataplane takes everything it is allowed, which is how a bulk
@@ -247,12 +235,8 @@ func TestControlTrafficHasItsOwnBudget(t *testing.T) {
 // never counted as dropped, which is the one counter that would have shown it.
 func TestClosedPeerRefusesAndCountsEverything(t *testing.T) {
 	peer := NewPeerReserved("peer",
-		func(int) (BatchSealer, error) {
-			return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-				return append(out[:0], raw...), nil
-			}, nil
-		},
-		func([][]byte) error { return nil })
+		func(int) (BatchSealer, error) { return passThrough, nil },
+		func([][]byte) error { return nil }, nil)
 	peer.Close()
 
 	const offered = 64
@@ -278,12 +262,8 @@ func TestClosedPeerRefusesAndCountsEverything(t *testing.T) {
 // replacement creates that overlap.
 func TestBatchReservedBeforeCloseIsRefusedAndCounted(t *testing.T) {
 	peer := NewPeerReserved("peer",
-		func(int) (BatchSealer, error) {
-			return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-				return append(out[:0], raw...), nil
-			}, nil
-		},
-		func([][]byte) error { t.Error("a closed peer transmitted"); return nil })
+		func(int) (BatchSealer, error) { return passThrough, nil },
+		func([][]byte) error { t.Error("a closed peer transmitted"); return nil }, nil)
 
 	// Reserved while the peer is open, so each holds a ticket and its packets
 	// of the budget, all of it between them.
@@ -321,7 +301,7 @@ func TestReservationFailureIsCountedOnce(t *testing.T) {
 	refused := errors.New("no child sa")
 	peer := NewPeerReserved("peer",
 		func(int) (BatchSealer, error) { return nil, refused },
-		func([][]byte) error { return nil })
+		func([][]byte) error { return nil }, nil)
 
 	b := peer.reserveBatchNow(1)
 	if b == nil {
@@ -351,7 +331,7 @@ func TestSealFailureOnAClosedPeerIsStillCounted(t *testing.T) {
 		func(int) (BatchSealer, error) {
 			return func([][]byte, []byte, [][]byte) ([][]byte, error) { return nil, sealing }, nil
 		},
-		func([][]byte) error { t.Error("a closed peer transmitted"); return nil })
+		func([][]byte) error { t.Error("a closed peer transmitted"); return nil }, nil)
 
 	b := peer.reserveBatchNow(2)
 	if b == nil {
@@ -378,12 +358,8 @@ func TestSealFailureOnAClosedPeerIsStillCounted(t *testing.T) {
 // packets counted by nothing.
 func TestBatchesStrandedInTheSenderAreCounted(t *testing.T) {
 	peer := NewPeerReserved("peer",
-		func(int) (BatchSealer, error) {
-			return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-				return append(out[:0], raw...), nil
-			}, nil
-		},
-		func([][]byte) error { return nil })
+		func(int) (BatchSealer, error) { return passThrough, nil },
+		func([][]byte) error { return nil }, nil)
 
 	var discarded []uint64
 	peer.noteDiscarded = func(ticket uint64) { discarded = append(discarded, ticket) }
@@ -435,7 +411,7 @@ func TestSealFailureOnAnOpenPeerIsCounted(t *testing.T) {
 		func(int) (BatchSealer, error) {
 			return func([][]byte, []byte, [][]byte) ([][]byte, error) { return nil, sealing }, nil
 		},
-		func([][]byte) error { t.Error("a batch that sealed nothing reached the transport"); return nil })
+		func([][]byte) error { t.Error("a batch that sealed nothing reached the transport"); return nil }, nil)
 	defer peer.Close()
 
 	b := peer.reserveBatchNow(4)
@@ -460,12 +436,8 @@ func TestSealFailureOnAnOpenPeerIsCounted(t *testing.T) {
 func TestTransportFailureIsCountedApartFromARefusal(t *testing.T) {
 	sending := errors.New("no route to host")
 	peer := NewPeerReserved("peer",
-		func(int) (BatchSealer, error) {
-			return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-				return append(out[:0], raw...), nil
-			}, nil
-		},
-		func([][]byte) error { return sending })
+		func(int) (BatchSealer, error) { return passThrough, nil },
+		func([][]byte) error { return sending }, nil)
 	defer peer.Close()
 
 	b := peer.reserveBatchNow(3)
@@ -497,12 +469,8 @@ func TestTransportFailureIsSaidRarely(t *testing.T) {
 
 	sending := errors.New("no route to host")
 	peer := NewPeerReserved("peer",
-		func(int) (BatchSealer, error) {
-			return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-				return append(out[:0], raw...), nil
-			}, nil
-		},
-		func([][]byte) error { return sending })
+		func(int) (BatchSealer, error) { return passThrough, nil },
+		func([][]byte) error { return sending }, nil)
 	defer peer.Close()
 
 	// The sender gives the budget back only after the transport returns, so a
@@ -555,12 +523,8 @@ func TestNoBatchIsLostBetweenTheStopCheckAndTheQueue(t *testing.T) {
 	for range teardowns {
 		var transmitted atomic.Int64
 		peer := NewPeerReserved("peer",
-			func(int) (BatchSealer, error) {
-				return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-					return append(out[:0], raw...), nil
-				}, nil
-			},
-			func(sealed [][]byte) error { transmitted.Add(int64(len(sealed))); return nil })
+			func(int) (BatchSealer, error) { return passThrough, nil },
+			func(sealed [][]byte) error { transmitted.Add(int64(len(sealed))); return nil }, nil)
 
 		var sent atomic.Int64
 		var wg sync.WaitGroup
@@ -648,16 +612,12 @@ func TestTransmitPrefersTheAnswerOverTheStopSignal(t *testing.T) {
 		entered, release := make(chan struct{}), make(chan struct{})
 		var once sync.Once
 		peer := NewPeerReserved("peer",
-			func(int) (BatchSealer, error) {
-				return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-					return append(out[:0], raw...), nil
-				}, nil
-			},
+			func(int) (BatchSealer, error) { return passThrough, nil },
 			func([][]byte) error {
 				once.Do(func() { close(entered) })
 				<-release
 				return nil
-			})
+			}, nil)
 
 		b := peer.reserveBatchNow(1)
 		if b == nil {

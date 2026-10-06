@@ -660,7 +660,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 				return append(out[:0], raw...), nil
 			}, nil
 		},
-		func([][]byte) error { <-blocked; return nil })
+		func([][]byte) error { <-blocked; return nil }, nil)
 	defer func() { drain.Do(func() { close(blocked) }); peer.Close() }()
 	handle := speaker.AddPeer(peer)
 	defer handle.Close()
@@ -751,6 +751,9 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 		// refused at least one packet, so neither line is zero either way.
 		fmt.Sprintf(`ranet3_babel_neighbor_cost{peer="gateway"} %d`, stats.Neighbors[0].Cost),
 		fmt.Sprintf(`ranet3_peer_send_dropped_total{peer="gateway"} %d`, stats.Neighbors[0].Dropped),
+		// every drop above is a refusal at the budget
+		// so the delay's own series reads zero while the total does not
+		`ranet3_peer_send_delay_dropped_total{peer="gateway"} 0`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("metrics output is missing %q:\n%s", want, text)
@@ -761,7 +764,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 		"ranet3_sessions", "ranet3_esp_inbound_packets_total",
 		"ranet3_session_up", "ranet3_babel_neighbor_up",
 		"ranet3_babel_neighbor_cost", "ranet3_babel_routes_received",
-		"ranet3_peer_send_dropped_total", "ranet3_receive_dropped_total",
+		"ranet3_peer_send_dropped_total", "ranet3_peer_send_delay_dropped_total", "ranet3_receive_dropped_total",
 	} {
 		if !strings.Contains(text, "# HELP "+name+" ") || !strings.Contains(text, "# TYPE "+name+" ") {
 			t.Errorf("metric %s has no HELP or TYPE", name)

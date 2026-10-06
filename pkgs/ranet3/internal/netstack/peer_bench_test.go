@@ -26,7 +26,7 @@ func benchPeer(b *testing.B) *Peer {
 	b.Helper()
 	peer := NewPeerReserved("bench",
 		func(int) (BatchSealer, error) { return benchSealer, nil },
-		func([][]byte) error { return nil })
+		func([][]byte) error { return nil }, nil)
 	b.Cleanup(peer.Close)
 	return peer
 }

@@ -84,7 +84,7 @@ func TestOutboundWorkersEncryptOneQueueInParallelAndTransmitInOrder(t *testing.T
 			transmitted <- packet[0]
 		}
 		return nil
-	})
+	}, nil)
 	defer peer.Close()
 
 	m := &Mesh{
@@ -161,7 +161,7 @@ func TestReservedPeerWorkersDoNotWaitForOrderedSender(t *testing.T) {
 			transmitted <- packet[0]
 		}
 		return nil
-	})
+	}, nil)
 	t.Cleanup(func() {
 		releaseOnce.Do(func() { close(releaseSend) })
 		peer.Close()
@@ -209,7 +209,7 @@ func TestReservedSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
 	cryptoErr := errors.New("crypto failed")
 	transmitted := make(chan []byte, 1)
 	p := &Peer{
-		ID: "peer", completed: make(chan *peerBatch, 3),
+		ID: "peer", completed: make(chan *peerBatch, 3), started: time.Now(),
 		stop: make(chan struct{}), senderDone: make(chan struct{}),
 		transmitBatchFn: func(packets [][]byte) error {
 			var order []byte
@@ -419,7 +419,7 @@ func TestOutboundReaderLeavesRoomForPlatformFrameHeader(t *testing.T) {
 			routed <- append([]byte(nil), raw[0]...)
 			return out[:0], nil
 		}, nil
-	}, func([][]byte) error { return nil })
+	}, func([][]byte) error { return nil }, nil)
 	defer peer.Close()
 
 	m := &Mesh{

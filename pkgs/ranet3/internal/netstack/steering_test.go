@@ -183,7 +183,7 @@ func sealingPeer(t *testing.T, id string, seen chan []byte) *Peer {
 			seen <- append([]byte(nil), raw[0]...)
 			return out[:0], nil
 		}, nil
-	}, func([][]byte) error { return nil })
+	}, func([][]byte) error { return nil }, nil)
 	t.Cleanup(peer.Close)
 	return peer
 }
