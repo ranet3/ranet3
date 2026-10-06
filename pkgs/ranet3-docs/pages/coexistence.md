@@ -25,7 +25,10 @@ which a mesh node hands it: a replace compares neither the protocol nor the
 route type, so it would have displaced the kernel's own local and connected
 entries for an address on an enslaved link, at the same priority an IPv4 route
 with no configured metric uses. The reconciler also names any other routing
-protocol it finds in the table at startup.
+protocol it finds in the table at startup, before its first pass, with the one
+change that node can make in a `fix` attribute: on a node with a VRF, which
+looks that table up, to stop the other writer exporting into it, and on any
+other node to give the reconciler a table of its own.
 
 On darwin there are no tables and no `rt_proto`, so ownership is by interface
 and by shape: a route out of its own utun whose gateway is a link address naming
@@ -83,9 +86,15 @@ finds them already there, so it never adds them, never records them as its own,
 and never removes them, even on a clean shutdown. Its routes do come back, since
 they carry the protocol marker that identifies them. The TUN is enslaved to a
 VRF only while it has no master at all, so systemd-networkd keeps whatever it
-already claimed. Under the default name the device itself is only ever created:
-a `ranet3` that already exists is refused rather than joined, so it never takes
-a device another tunnel is using.
+already claimed. Enslaving cycles the device, and the kernel then removes every
+route out of it, in every table and whoever wrote it. Measured in a namespace of
+its own: another writer's `198.51.100.0/24` and `2001:db8:5::/48`, both
+`proto static` in table 200 out of the tun, were gone after
+`ip link set probe0 master mesh`, while a route out of the VRF device itself
+stayed. That is why the startup report of other writers runs before the first
+pass, which enslaves. Under the default name the device itself is only ever
+created: a `ranet3` that already exists is refused rather than joined, so it
+never takes a device another tunnel is using.
 
 `cap.egress` writes into the packet filter, where the same three rules hold. It
 creates an nftables table named after this tool, one per address family, holding

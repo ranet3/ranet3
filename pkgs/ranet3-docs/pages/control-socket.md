@@ -126,13 +126,15 @@ of `ranet3 status`, which is the only place that difference shows.
 
 `disable reconciler` withdraws every route, address and rule the reconciler
 installed, as `birdc disable` did to a kernel protocol, rather than freezing a
-table nobody is maintaining. `disable steering` leaves the policies loaded and
-stops acting on them, so a diagnostic still reports what was stopped.
-`disable responder` refuses the next handshake and leaves the sessions this node
-already holds alone. `redial` is for a peer that dials this node and cannot be
-dialed back, which does not retry on its own and has been seen to carry a dead
-session for sixteen minutes. It drops what this node holds for that peer and
-sets its dialers going at once rather than after the reconnect delay.
+table nobody is maintaining. A withdrawal the kernel refuses part of is retried
+on the backoff of a failed pass until it completes, and the kernel line of
+`ranet3 status` carries its error until then. `disable steering` leaves the
+policies loaded and stops acting on them, so a diagnostic still reports what was
+stopped. `disable responder` refuses the next handshake and leaves the sessions
+this node already holds alone. `redial` is for a peer that dials this node and
+cannot be dialed back, which does not retry on its own and has been seen to
+carry a dead session for sixteen minutes. It drops what this node holds for that
+peer and sets its dialers going at once rather than after the reconnect delay.
 
 This is still not the daemon and client split tailscale has: there is no login
 flow here, identity being a static key and a registry entry that nix and sops

@@ -20,16 +20,38 @@ control creates nothing else. Either way the reconciler works on the name the
 device was given rather than the one configured, which on darwin is the unit it
 got, `utun6` for instance.
 
-**linux** has policy rules and 2^32 tables. `cap.table.rules` are installed with
-`FRA_PROTOCOL` set to `cap.table.proto`, the same ownership marker the routes
-carry, so a dump reads back only this reconciler's and a delete can never reach
-another writer's. systemd-networkd stamps `RTPROT_STATIC` on the rules it
-writes, so a node mid-migration keeps the two sets apart on its own.
+**linux** has policy rules and 2^32 tables, and the reconciler needs linux 4.20
+or later. It asks the kernel to filter its route dumps to its own table, with
+`NETLINK_GET_STRICT_CHK`, so a host holding a full table in main costs it no
+more than its own routes, and it marks rules with `FRA_PROTOCOL`, which arrived
+in 4.17. `cap.table.rules` are installed with `FRA_PROTOCOL` set to
+`cap.table.proto`, the same ownership marker the routes carry, so a dump reads
+back only this reconciler's and a delete can never reach another writer's.
+systemd-networkd stamps `RTPROT_STATIC` on the rules it writes, so a node
+mid-migration keeps the two sets apart on its own. `cap.table.prefsrc4` takes an
+IPv4 address in its plain spelling. The IPv4-mapped one, `::ffff:198.18.104.5`
+for instance, is refused with the spelling to write instead.
+
 `cap.table.vrf.create` makes the master device the mesh table is bound to when
 no device of that name exists. One this process created is removed again at
-shutdown. One it found is left alone with everything in its table, whatever
-table that is: a device somebody else bound to another table is adopted as it
-stands, so the tun's lookups go there rather than to `cap.table.id`.
+shutdown, found by the index it was created under, so a device somebody else
+made under the same name in the meantime stays with everything in its table. One
+it found is left alone with everything in its table, whatever table that is: a
+device somebody else bound to another table is adopted as it stands, so the
+tun's lookups go there rather than to `cap.table.id`. A device of another kind
+holding the name is refused by name rather than answered with a bare errno.
+
+Every pass that finds the tun in the VRF reads which table the VRF is bound to,
+and warns once per change when that is another table than `cap.table.id`, so a
+VRF made or remade while ranet3 runs is reported as well as one made before it.
+Traffic inside the VRF is looked up in the VRF's own table and falls through to
+main wherever nothing there matches, so it reaches the mesh's routes only
+through a policy rule, and a ping that leaves by the uplink proves nothing. The
+warning's `fix` attribute names the change to make: bind the VRF to
+`cap.table.id` in whatever creates it, or set `cap.table.id` to the VRF's table,
+the second offered only outside 253 to 255, which `cap.table` refuses. It never
+advises deleting the device, which would detach the VRF's other links and leave
+the one recreated in its place a device this process removes at shutdown.
 
 **darwin** has one forwarding table, no rules and no VRFs, and refuses
 `cap.table.rules`, `cap.table.vrf` and `cap.table.prefsrc4` by name. It reaches
