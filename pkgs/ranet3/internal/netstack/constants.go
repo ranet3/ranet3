@@ -18,6 +18,9 @@ const (
 	// inboundWriteQueueSize is the batches one inbound writer lane queues before a delivery to it waits
 	// a busy writer merges the ones ready into its next tun write
 	inboundWriteQueueSize = 64
+	// inboundPendingBatches is how many write batches a lane's pending list holds before it grows
+	// collectReadyInbound stops once one batch is pending, and the second leaves room for the entry that crossed it
+	inboundPendingBatches = 2
 	// inboundPacketBufferSize leaves enough tail capacity for the TUN
 	// backend to merge adjacent TCP packets into a single GSO frame before
 	// writing it. Exact-capacity packet buffers silently disable that GRO.
@@ -50,3 +53,55 @@ const tunOffset = 16
 // truncatedReadInterval is the least time between two warnings about tun reads cut short
 // the counter keeps the exact count, and the line only has to point at it
 const truncatedReadInterval = 30 * time.Second
+
+// transmitBatchSize is the most packets a peer's sender merges into one transmit
+// the transport hands its socket at most espSendBatch datagrams per send, so one merge fills one send
+const transmitBatchSize = 128
+
+// controlQueueSize is how many control packets one peer may have in flight.
+// It has to hold a whole periodic dump, which is one packet per forty plain
+// prefixes or thirty-four source-specific ones, or the dump is truncated and
+// the rest waits for the next interval. Two hundred and fifty-six covers about
+// ten thousand plain prefixes and costs under a megabyte per peer at the link
+// MTU, counting the packet and the sealer's copy of it.
+//
+// That is below maxRouteKeys, so a table at its own limit still truncates, and
+// because the dump walks maps each one carries a different subset: a prefix
+// missed four dumps running expires at the neighbor. A table that large needs
+// the dump to resume where the last one stopped rather than resample, which is
+// not what this does.
+const controlQueueSize = 256
+
+// defaultCloseGrace bounds how long Close waits for the ordered sender.
+//
+// Closing a Mux does not interrupt a send already in the socket: Mux.Close
+// consults its done channel once on entry and then loops on the hub's bind,
+// which only Hub.Close closes and which carries no write deadline. Process
+// shutdown reaches Hub.Close and so always finishes. One session's teardown,
+// a dialer a reload dropped or the loser of a session replacement, leaves
+// the hub open, and an unbounded wait there holds the client's peer group for
+// as long as the socket stays unwritable, which the next clean shutdown then
+// waits behind.
+//
+// Giving up leaves the sender running. It writes only to the transport and to
+// batches it owns, both of which outlive it, so this is a goroutine that
+// outlives Close rather than a use after free.
+const defaultCloseGrace = 5 * time.Second
+
+// sendErrReportInterval bounds how often a batch the transport refused is said
+// out loud. See Peer.sendErrReported.
+const sendErrReportInterval = 10 * time.Second
+
+// segmentDropInterval bounds how often a refused segment is reported. A peer
+// choosing to send malformed headers should cost this node a counter, not a
+// log line per packet.
+const segmentDropInterval = 30 * time.Second
+
+// icmpBurst and icmpRefill bound the ICMP errors this node answers refused
+// packets with. A traceroute sends three probes per hop, so the burst carries
+// two hops' worth without waiting, and the refill bounds what a peer sending
+// refused headers in a loop gets out of this node.
+const (
+	icmpBurst  = 8
+	icmpRefill = 250 * time.Millisecond
+)

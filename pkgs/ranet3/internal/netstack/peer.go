@@ -133,22 +133,6 @@ func newPeer(id string, encryptFn func(raw []byte, nextHeader byte) ([]byte, err
 	return p
 }
 
-// defaultCloseGrace bounds how long Close waits for the ordered sender.
-//
-// Closing a Mux does not interrupt a send already in the socket: Mux.Close
-// consults its done channel once on entry and then loops on the hub's bind,
-// which only Hub.Close closes and which carries no write deadline. Process
-// shutdown reaches Hub.Close and so always finishes. One session's teardown --
-// a dialer a reload dropped, or the loser of a session replacement -- leaves
-// the hub open, and an unbounded wait there holds the client's peer group for
-// as long as the socket stays unwritable, which the next clean shutdown then
-// waits behind.
-//
-// Giving up leaves the sender running. It writes only to the transport and to
-// batches it owns, both of which outlive it, so this is a goroutine that
-// outlives Close rather than a use after free.
-const defaultCloseGrace = 5 * time.Second
-
 // Close stops the reserved peer's ordered sender. Compatibility peers do not
 // own a goroutine, so closing them is a no-op.
 func (p *Peer) Close() {
@@ -268,20 +252,6 @@ type peerBatch struct {
 func (p *Peer) reserveBatchNow(count int) *peerBatch {
 	return p.reserveNow(p.slots, count, false)
 }
-
-// controlQueueSize is how many control packets one peer may have in flight.
-// It has to hold a whole periodic dump, which is one packet per forty plain
-// prefixes or thirty-four source-specific ones, or the dump is truncated and
-// the rest waits for the next interval. Two hundred and fifty-six covers about
-// ten thousand plain prefixes and costs under a megabyte per peer at the link
-// MTU, counting the packet and the sealer's copy of it.
-//
-// That is below maxRouteKeys, so a table at its own limit still truncates, and
-// because the dump walks maps each one carries a different subset: a prefix
-// missed four dumps running expires at the neighbor. A table that large needs
-// the dump to resume where the last one stopped rather than resample, which is
-// not what this does.
-const controlQueueSize = 256
 
 // reserveNow takes one place from budget if a place is free, and otherwise
 // reports the packets dropped.
@@ -546,10 +516,6 @@ func (b *peerBatch) releaseStorage() {
 	}
 }
 
-// sendErrReportInterval bounds how often a batch the transport refused is said
-// out loud. See Peer.sendErrReported.
-const sendErrReportInterval = 10 * time.Second
-
 func (p *Peer) noteSendError(err error) {
 	now := int64(time.Since(p.started))
 	previous := p.sendErrReported.Load()
@@ -563,7 +529,7 @@ func (p *Peer) senderLoop() {
 	defer close(p.senderDone)
 	pending := make(map[uint64]*peerBatch, cap(p.completed))
 	ready := make([]*peerBatch, 0, cap(p.completed))
-	packets := make([][]byte, 0, 128)
+	packets := make([][]byte, 0, transmitBatchSize)
 	next := uint64(0)
 	for {
 		if pending[next] == nil {
@@ -591,7 +557,7 @@ func (p *Peer) senderLoop() {
 				break drain
 			}
 		}
-		for len(packets) < 128 {
+		for len(packets) < transmitBatchSize {
 			b := pending[next]
 			if b == nil {
 				break
