@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-10-03
+updated: 2026-10-06
 order: 30
 ---
 
@@ -16,11 +16,15 @@ ranet3 needs two files:
   synthetic example spanning multiple organizations, nodes, and endpoint address
   families).
 - A **configuration file**, read by the extension it carries: `.toml` goes to
-  the TOML parser, and `.yaml`, `.yml` and `.json` go to the YAML one, since
-  valid JSON is valid YAML. An extension neither knows is refused by name rather
-  than sniffed. Both decoders are strict, so an unknown key is an error under
-  either: a mistyped capability that silently does nothing is the worst failure
-  a configuration file has. See
+  the TOML parser, and `.yaml`, `.yml` and `.json` go to the YAML one. A `.json`
+  file is read as YAML, and JSON that YAML reads otherwise loads differently or
+  not at all. The YAML parser refuses a `\/` escape, the surrogate pair escape
+  of a character outside the Basic Multilingual Plane, a raw DEL and a key
+  written twice, among others, and reads a raw NEL, LS or PS in a string as a
+  line break. An extension neither knows is refused by name rather than sniffed.
+  Both decoders are strict, so an unknown key is an error under either: a
+  mistyped capability that silently does nothing is the worst failure a
+  configuration file has. See
   [`examples/config.toml`](https://github.com/ranet3/ranet3/blob/master/pkgs/ranet3/examples/config.toml)
   for the annotated reference,
   [`examples/config.yaml`](https://github.com/ranet3/ranet3/blob/master/pkgs/ranet3/examples/config.yaml)
@@ -29,8 +33,13 @@ ranet3 needs two files:
   for it in JSON. All three describe one node, which a test holds by loading
   each and comparing the three whole. JSON carries no comment and the decoder
   refuses an unknown key, so that example cannot annotate itself and cannot
-  smuggle an explanation in under a spare key either; it is the form a generator
+  smuggle an explanation in under a spare key either. It is the form a generator
   or a control plane writes, and the TOML file is where the keys are explained.
+  PHP's `json_encode` writes a solidus as `\/` unless given
+  `JSON_UNESCAPED_SLASHES`. It and Python's `json.dumps` write a character
+  outside the Basic Multilingual Plane as a surrogate pair unless given
+  `JSON_UNESCAPED_UNICODE` and `ensure_ascii=False` respectively, as `jq` does
+  with `-a`.
 
 The top level says what the node **is**. Everything it **does** lives under
 `cap`, one block per capability, and writing the block turns that capability on.
