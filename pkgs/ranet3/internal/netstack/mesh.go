@@ -69,11 +69,12 @@ type Mesh struct {
 
 	// tunReadsTruncated counts the reads that lost the tail of a GSO frame
 	tunReadsTruncated atomic.Uint64
-	// truncatedWarned is when the last warning about those reads went out
+	// truncatedNextWarning is the earliest the next warning about those reads may go out
 	// in nanoseconds since segmentsStarted, which keeps it on the monotonic clock
-	// truncatedAtWarning is tunReadsTruncated as that warning reported it
-	truncatedWarned    atomic.Int64
-	truncatedAtWarning atomic.Uint64
+	// zero lets the first cut read warn at once
+	// truncatedAtWarning is tunReadsTruncated as the last warning reported it
+	truncatedNextWarning atomic.Int64
+	truncatedAtWarning   atomic.Uint64
 
 	// segmentCounters is the segment routing state, in its own struct so that
 	// everything this file does not touch stays in segments.go with the code
@@ -146,8 +147,6 @@ func NewNamed(mtu int, name string) (*Mesh, error) {
 		closed:             make(chan struct{}),
 	}
 	m.startSegmentReports()
-	// one interval back so the first cut read warns at once
-	m.truncatedWarned.Store(-int64(truncatedReadInterval))
 	m.startInboundWriters()
 	m.startOutboundPipeline()
 	return m, nil
@@ -300,15 +299,20 @@ func (m *Mesh) TUNReadsTruncated() uint64 { return m.tunReadsTruncated.Load() }
 
 // noteTruncatedRead counts one read cut short
 // and warns at most once an interval with the count since the last warning
-// the reader that wins the swap writes the line and the others go on
 func (m *Mesh) noteTruncatedRead() {
 	total := m.tunReadsTruncated.Add(1)
-	now := int64(time.Since(m.segmentsStarted))
-	previous := m.truncatedWarned.Load()
-	if now-previous < int64(truncatedReadInterval) || !m.truncatedWarned.CompareAndSwap(previous, now) {
+	if !m.claimTruncatedWarning(int64(time.Since(m.segmentsStarted)), m.truncatedNextWarning.Load()) {
 		return
 	}
 	slog.Warn("netstack tun reads lost the tail of a gso frame", "interface", m.Name, "reads", total-m.truncatedAtWarning.Swap(total))
+}
+
+// claimTruncatedWarning says whether the reader that cut a read at now writes the warning
+// next is the earliest time of the next warning as that reader loaded it
+// of the readers that loaded the same next only the first to claim it writes one
+// and its claim moves the next warning an interval past now
+func (m *Mesh) claimTruncatedWarning(now, next int64) bool {
+	return now >= next && m.truncatedNextWarning.CompareAndSwap(next, now+int64(truncatedReadInterval))
 }
 
 // Reserve and submit each batch as one operation. Otherwise two readers can

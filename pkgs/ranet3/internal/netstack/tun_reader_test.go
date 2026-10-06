@@ -9,9 +9,11 @@ import (
 	"net/netip"
 	"os"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -122,7 +124,6 @@ func warnedReads(t *testing.T) func() []uint64 {
 func startedMesh() *Mesh {
 	m := &Mesh{Name: "test0"}
 	m.startSegmentReports()
-	m.truncatedWarned.Store(-int64(truncatedReadInterval))
 	return m
 }
 
@@ -143,7 +144,7 @@ func TestCutReadsAreCountedExactlyAndWarnedRarely(t *testing.T) {
 		t.Fatalf("%d reads cut short warned with counts %v, want one line for the first", cut, got)
 	}
 
-	m.truncatedWarned.Add(-int64(truncatedReadInterval))
+	m.truncatedNextWarning.Add(-int64(truncatedReadInterval))
 	m.noteTruncatedRead()
 	if got := warned(); !slices.Equal(got, []uint64{1, cut}) {
 		t.Errorf("once the interval passed the warnings carried %v, want the %d cut since the first line", got, cut)
@@ -153,34 +154,61 @@ func TestCutReadsAreCountedExactlyAndWarnedRarely(t *testing.T) {
 // every queue has a reader of its own that can cut a read
 // and all of them share one warning an interval
 // whose counts add up to the counter
+// each wave lets every reader go at once just as an interval has run out
 func TestCutReadsOnEveryQueueShareOneWarning(t *testing.T) {
 	warned := warnedReads(t)
 	m := startedMesh()
-	const queues, cutsPerQueue = 8, 125
-	start := make(chan struct{})
-	var readers sync.WaitGroup
-	for range queues {
-		readers.Go(func() {
-			<-start
-			for range cutsPerQueue {
+	const queues, waves = 8, 200
+	for wave := range waves {
+		var start atomic.Bool
+		var readers sync.WaitGroup
+		for range queues {
+			readers.Go(func() {
+				for !start.Load() {
+					runtime.Gosched()
+				}
 				m.noteTruncatedRead()
-			}
-		})
-	}
-	close(start)
-	readers.Wait()
-	if got := warned(); len(got) != 1 {
-		t.Fatalf("%d readers cutting reads at once wrote warnings %v in one interval, want one", queues, got)
+			})
+		}
+		start.Store(true)
+		readers.Wait()
+		if got := warned(); len(got) != wave+1 {
+			t.Fatalf("after wave %d of %d readers cutting reads at once the warnings are %v, want one a wave", wave, queues, got)
+		}
+		m.truncatedNextWarning.Add(-int64(truncatedReadInterval))
 	}
 
-	m.truncatedWarned.Add(-int64(truncatedReadInterval))
 	m.noteTruncatedRead()
 	got := warned()
 	var sum uint64
 	for _, count := range got {
 		sum += count
 	}
-	if len(got) != 2 || sum != m.TUNReadsTruncated() {
-		t.Errorf("the warnings carried %v, want two whose counts add up to the %d reads counted", got, m.TUNReadsTruncated())
+	if len(got) != waves+1 || sum != m.TUNReadsTruncated() {
+		t.Errorf("the warnings carried %v, want %d whose counts add up to the %d reads counted", got, waves+1, m.TUNReadsTruncated())
+	}
+}
+
+// readers that cut a read at the same moment can all load the same time for the next warning
+// and only the first of them to claim it writes the line
+// the claims are made one after another here, so the check holds on one cpu as on many
+func TestOnlyOneReaderClaimsAWarning(t *testing.T) {
+	m := startedMesh()
+	now, next := int64(time.Since(m.segmentsStarted)), m.truncatedNextWarning.Load()
+	if !m.claimTruncatedWarning(now, next) {
+		t.Fatal("the first reader to cut a read did not get to warn")
+	}
+	if m.claimTruncatedWarning(now, next) {
+		t.Fatal("a second reader warned as well, with the time it had loaded before the first claim")
+	}
+	later := m.truncatedNextWarning.Load()
+	if later != now+int64(truncatedReadInterval) {
+		t.Fatalf("the claim put the next warning %s after it, want %s", time.Duration(later-now), truncatedReadInterval)
+	}
+	if m.claimTruncatedWarning(later-1, later) {
+		t.Error("a reader warned before the interval had passed")
+	}
+	if !m.claimTruncatedWarning(later, later) {
+		t.Error("the first reader once the interval had passed did not get to warn")
 	}
 }

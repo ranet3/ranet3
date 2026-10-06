@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -64,6 +65,22 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 				t.Errorf("the kernel holds gso_max_segs %d for %s, want the read batch of %d", got, m.Name, batch)
 			}
 		})
+	}
+}
+
+// a node whose kernel refused the cap can cut a burst of reads just after it opens the tun and then no more
+// so the first cut read of a mesh NewNamed opened warns at once rather than an interval later
+func TestTUNMeshWarnsAtItsFirstCutRead(t *testing.T) {
+	enterEmptyNamespace(t)
+	m, err := NewNamed(0, "gsocap0")
+	if err != nil {
+		t.Fatalf("open the mesh: %v", err)
+	}
+	t.Cleanup(m.Close)
+	warned := warnedReads(t)
+	m.noteTruncatedRead()
+	if got := warned(); !slices.Equal(got, []uint64{1}) {
+		t.Errorf("the first cut read of a new mesh warned with counts %v, want one line at once", got)
 	}
 }
 
