@@ -22,6 +22,16 @@ import (
 // and a datagram that never comes still fails the test, only later
 const arrivalBudget = 5 * time.Second
 
+// the waits of the transport tests
+const (
+	// silenceWait is how long a test listens for a datagram it expects never to arrive
+	silenceWait = 20 * time.Millisecond
+	// pollInterval is how often a test looks again at a counter or a queue it waits on
+	pollInterval = 5 * time.Millisecond
+	// settleWait gives the receive loop time to work through a flood before a test reads a counter that should stay still
+	settleWait = 200 * time.Millisecond
+)
+
 // listenPeer opens a plain UDP socket standing in for "the peer" at the
 // far end of a Mux, on the given loopback address (v4 or v6) — used to
 // verify what a Mux actually puts on the wire without needing a second
@@ -59,7 +69,7 @@ func testSendESPBatch(t *testing.T, network, addr string) {
 
 	got := map[int]bool{}
 	buf := make([]byte, 64)
-	peer.SetReadDeadline(time.Now().Add(5 * time.Second))
+	peer.SetReadDeadline(time.Now().Add(arrivalBudget))
 	for i := range n {
 		rn, _, err := peer.ReadFromUDP(buf)
 		if err != nil {
@@ -218,7 +228,7 @@ func TestSendIKEUnbatchedAndMarked(t *testing.T) {
 	}
 
 	buf := make([]byte, 64)
-	peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	peer.SetReadDeadline(time.Now().Add(arrivalBudget))
 	n, _, err := peer.ReadFromUDP(buf)
 	if err != nil {
 		t.Fatalf("SendIKE should be written immediately, not queued: %v", err)
@@ -303,7 +313,7 @@ func TestSendIKEToReceivedSourceEndpoint(t *testing.T) {
 			if err != nil || string(buf[nonESPMarkerLen:n]) != "future" {
 				t.Fatalf("the next request reached %s as %q, %v", want.LocalAddr(), buf[:n], err)
 			}
-			other.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+			other.SetReadDeadline(time.Now().Add(silenceWait))
 			if _, _, err := other.ReadFromUDP(buf); err == nil {
 				t.Fatalf("the next request also reached %s", other.LocalAddr())
 			}
@@ -448,7 +458,7 @@ func TestHubRoutesBySPIAndMuxCloseDoesNotCloseHub(t *testing.T) {
 	if _, err := server.WriteToUDP(ikePkt, dst); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := first.RecvIKEUntil(time.Now().Add(time.Second)); err != nil || string(got) != string(ikePkt[4:]) {
+	if got, err := first.RecvIKEUntil(time.Now().Add(arrivalBudget)); err != nil || string(got) != string(ikePkt[4:]) {
 		t.Fatalf("RecvIKE = %x, %v", got, err)
 	}
 	if err := first.Close(); err != nil {
@@ -459,7 +469,7 @@ func TestHubRoutesBySPIAndMuxCloseDoesNotCloseHub(t *testing.T) {
 	if _, err := server.WriteToUDP(espPkt, dst); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := second.RecvESPUntil(time.Now().Add(time.Second)); err != nil || string(got) != string(espPkt) {
+	if got, err := second.RecvESPUntil(time.Now().Add(arrivalBudget)); err != nil || string(got) != string(espPkt) {
 		t.Fatalf("RecvESP = %x, %v", got, err)
 	}
 }
@@ -484,7 +494,7 @@ func TestListenDeliversUnclaimedIKEAndNewMuxToAnswers(t *testing.T) {
 	var first Unclaimed
 	select {
 	case first = <-unclaimed:
-	case <-time.After(time.Second):
+	case <-time.After(arrivalBudget):
 		t.Fatal("unclaimed IKE datagram was not delivered")
 	}
 	if binary.BigEndian.Uint64(first.Raw[:8]) != spiI {
@@ -505,7 +515,7 @@ func TestListenDeliversUnclaimedIKEAndNewMuxToAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 	buf := make([]byte, 64)
-	peer.SetReadDeadline(time.Now().Add(time.Second))
+	peer.SetReadDeadline(time.Now().Add(arrivalBudget))
 	n, _, err := peer.ReadFromUDP(buf)
 	if err != nil || string(buf[nonESPMarkerLen:n]) != "response" {
 		t.Fatalf("response = %q, %v", buf[:n], err)
@@ -515,7 +525,7 @@ func TestListenDeliversUnclaimedIKEAndNewMuxToAnswers(t *testing.T) {
 	if _, err := peer.WriteToUDP(withMarker(request), dst); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := m.RecvIKEFromUntil(time.Now().Add(time.Second)); err != nil {
+	if _, _, err := m.RecvIKEFromUntil(time.Now().Add(arrivalBudget)); err != nil {
 		t.Fatalf("registered SPI did not reach the mux: %v", err)
 	}
 	select {
@@ -536,7 +546,7 @@ func TestHubDoneIsClosedOnFailure(t *testing.T) {
 	}
 	select {
 	case <-h.Done():
-	case <-time.After(time.Second):
+	case <-time.After(arrivalBudget):
 		t.Fatal("Done was not closed")
 	}
 }
@@ -587,7 +597,7 @@ func TestEveryESPReceivePathReleasesItsBudget(t *testing.T) {
 		"RecvESP":      func(m *Mux) error { _, err := m.RecvESP(); return err },
 		"RecvESPBatch": func(m *Mux) error { _, err := m.RecvESPBatch(nil); return err },
 		"RecvESPUntil": func(m *Mux) error {
-			_, err := m.RecvESPUntil(time.Now().Add(time.Second))
+			_, err := m.RecvESPUntil(time.Now().Add(arrivalBudget))
 			return err
 		},
 		"RecvESPBatchConcurrent": func(m *Mux) error { _, _, err := m.RecvESPBatchConcurrent(); return err },
@@ -637,9 +647,9 @@ func TestFloodOfUnclaimedIKEDatagramsIsNotCopied(t *testing.T) {
 		}
 	}
 	// Give the receive loop time to drop what it cannot keep.
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(arrivalBudget)
 	for time.Now().Before(deadline) && len(unclaimed) < cap(unclaimed) {
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(pollInterval)
 	}
 	runtime.ReadMemStats(&after)
 	allocated = after.TotalAlloc - before.TotalAlloc
@@ -688,9 +698,9 @@ func TestFloodOnMuxIKEQueueIsNotCopied(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(arrivalBudget)
 	for time.Now().Before(deadline) && len(mux.IKE()) < cap(mux.IKE()) {
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(pollInterval)
 	}
 	runtime.ReadMemStats(&after)
 	allocated := after.TotalAlloc - before.TotalAlloc
@@ -848,12 +858,12 @@ func TestDatagramsWithNowhereToGoAreCounted(t *testing.T) {
 			if _, err := sender.Write(raw); err != nil {
 				t.Fatal(err)
 			}
-			deadline := time.Now().Add(10 * time.Second)
+			deadline := time.Now().Add(arrivalBudget)
 			for hub.Refused() == before {
 				if time.Now().After(deadline) {
 					t.Fatal("the datagram was discarded without being counted, so a flood reads as silence")
 				}
-				time.Sleep(5 * time.Millisecond)
+				time.Sleep(pollInterval)
 			}
 			// One datagram, one count: a counter that moves is not the same
 			// as a counter that is right, and the HELP text says datagrams.
@@ -873,8 +883,8 @@ func TestDatagramsWithNowhereToGoAreCounted(t *testing.T) {
 // counter carries them, and an operator reading it gets one number for
 // "arrived here and went nowhere" rather than two halves of one.
 func TestWhatTheReceiverRefusedReachesTheCounter(t *testing.T) {
-	h := &Hub{bind: closedBind{}, ike: make(map[uint64]*Mux), esp: make(map[uint32]*Mux),
-		muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now()}
+	h := &Hub{bind: closedBind{}, muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now()}
+	h.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}})
 	h.reported.Store(-int64(dropReportInterval))
 	done := make(chan struct{})
 	calls := 0
@@ -930,14 +940,14 @@ func TestUnclaimedFloodDoesNotReadAsBeingBehind(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(arrivalBudget)
 	for hub.Refused() == 0 && hub.Dropped() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the flood raised neither counter, so nothing here is being exercised")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(pollInterval)
 	}
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(settleWait)
 	if got := hub.Dropped(); got != 0 {
 		t.Errorf("the flood raised the queue-full counter to %d, which an operator reads as this node falling behind", got)
 	}
@@ -953,7 +963,7 @@ func TestUnclaimedFloodDoesNotReadAsBeingBehind(t *testing.T) {
 // counter an operator reads as traffic somebody is aiming at this node.
 //
 // Ignored is a rule about processing the datagram, not about counting it. Each
-// one still costs a read, a demultiplex under the hub lock and, coalesced by
+// one still costs a read, a demultiplex and, coalesced by
 // GRO, up to forty iterations per read, so they go on a counter of their own:
 // an arm that reaches no Mux and raises nothing leaves an operator with an
 // accounting that does not add up.
@@ -980,12 +990,12 @@ func TestNATKeepaliveIsIgnoredRatherThanCounted(t *testing.T) {
 	if _, err := sender.Write([]byte{1, 2}); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(arrivalBudget)
 	for hub.Refused() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the refused datagram was never counted, so this proves nothing")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(pollInterval)
 	}
 	if got := hub.Refused(); got != 1 {
 		t.Errorf("sixty-four keepalives and one refused datagram raised the counter by %d", got)

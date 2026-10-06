@@ -45,6 +45,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"maps"
 	"net"
 	"net/netip"
 	"strconv"
@@ -93,11 +94,10 @@ type Hub struct {
 	// events is Runtime.Events, nil where the caller records nothing
 	events func(kind string, attrs ...slog.Attr)
 
-	mu        sync.Mutex
-	ike       map[uint64]*Mux
-	esp       map[uint32]*Mux
+	mu sync.Mutex
+	// tables is replaced whole under mu and loaded by the receive loops without it
+	tables    atomic.Pointer[spiTables]
 	muxes     map[*Mux]struct{}
-	listen    chan Unclaimed
 	done      chan struct{}
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -131,6 +131,16 @@ type Hub struct {
 	// a hub that has only just opened.
 	reported atomic.Int64
 	started  time.Time
+}
+
+// spiTables maps each registered SPI to its mux, for the receive loops to demultiplex by
+// a published one is never written, so a loop reads it without a lock
+// a change copies it and publishes the copy under Hub.mu
+type spiTables struct {
+	ike map[uint64]*Mux
+	esp map[uint32]*Mux
+	// listen is nil until Listen opens the queue of IKE datagrams no mux claimed
+	listen chan Unclaimed
 }
 
 // Dropped is how many inbound datagrams a full receive queue has refused. It
@@ -248,8 +258,8 @@ func NewHub(localAddr string, underlay Underlay, rt Runtime) (*Hub, error) {
 		}
 	}
 	h := &Hub{bind: bind, port: port, underlay: underlay, boundTo: index, events: rt.Events,
-		ike: make(map[uint64]*Mux), esp: make(map[uint32]*Mux),
 		muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now()}
+	h.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}})
 	h.reported.Store(-int64(dropReportInterval))
 	for _, fn := range fns {
 		go h.receiveLoop(fn)
@@ -306,10 +316,14 @@ func (h *Hub) newMux(endpoint Endpoint, dialed bool) (*Mux, error) {
 func (h *Hub) Listen() <-chan Unclaimed {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.listen == nil {
-		h.listen = make(chan Unclaimed, unclaimedQueueSize)
+	tables := h.tables.Load()
+	if tables.listen != nil {
+		return tables.listen
 	}
-	return h.listen
+	next := *tables
+	next.listen = make(chan Unclaimed, unclaimedQueueSize)
+	h.tables.Store(&next)
+	return next.listen
 }
 
 // SendIKETo writes one IKE message to an endpoint without a Mux. A responder
@@ -343,8 +357,7 @@ func (h *Hub) fail(cause error) (bindErr error) {
 		for m := range h.muxes {
 			muxes = append(muxes, m)
 		}
-		h.ike = make(map[uint64]*Mux)
-		h.esp = make(map[uint32]*Mux)
+		h.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}, listen: h.tables.Load().listen})
 		h.muxes = make(map[*Mux]struct{})
 		h.mu.Unlock()
 		for _, m := range muxes {
@@ -358,10 +371,8 @@ func (h *Hub) fail(cause error) (bindErr error) {
 func (h *Hub) receiveLoop(fn receiveFunc) {
 	batch := espSendBatch
 	bufs, sizes, eps := make([][]byte, batch), make([]int, batch), make([]Endpoint, batch)
-	// Only the index is recorded while h.mu is held. The copy onto the heap
-	// happens after unlocking: h.mu also serializes ESP demultiplexing and
-	// every RegisterESP, and on linux one acquisition can otherwise cover up
-	// to espSendBatch datagrams of copying.
+	// demultiplexing records where each datagram goes and copies nothing
+	// a datagram is copied below, once its queue has room for it
 	type pendingIKE struct {
 		mux   *Mux
 		index int
@@ -386,7 +397,10 @@ func (h *Hub) receiveLoop(fn receiveFunc) {
 		ikeDatagrams = ikeDatagrams[:0]
 		unclaimed = unclaimed[:0]
 		unwanted := 0
-		h.mu.Lock()
+		// one load for the whole batch, under no lock
+		// a mux that closes after this load can still be handed this batch
+		// nobody reads that mux's queues any more, and the collector frees the batch with the mux
+		tables := h.tables.Load()
 		for i := range n {
 			raw := bufs[i][:sizes[i]]
 			// Every arm that reaches no Mux is counted. The SPI is cleartext,
@@ -395,7 +409,7 @@ func (h *Hub) receiveLoop(fn receiveFunc) {
 			if len(raw) == 1 && raw[0] == natKeepaliveByte {
 				// RFC 3948 section 2.3 has the receiver ignore these. Counted
 				// all the same, on its own counter: a flood of them costs a
-				// read, a demultiplex under this lock and, coalesced by GRO,
+				// read, a demultiplex and, coalesced by GRO,
 				// up to forty iterations per read, and an arm that reaches no
 				// Mux and raises nothing is the one gap in the accounting.
 				h.keepalives.Add(1)
@@ -411,9 +425,9 @@ func (h *Hub) receiveLoop(fn receiveFunc) {
 					continue
 				}
 				spi := uint64(raw[4])<<56 | uint64(raw[5])<<48 | uint64(raw[6])<<40 | uint64(raw[7])<<32 | uint64(raw[8])<<24 | uint64(raw[9])<<16 | uint64(raw[10])<<8 | uint64(raw[11])
-				if m := h.ike[spi]; m != nil {
+				if m := tables.ike[spi]; m != nil {
 					ikeDatagrams = append(ikeDatagrams, pendingIKE{mux: m, index: i})
-				} else if h.listen != nil && eps[i] != nil {
+				} else if tables.listen != nil && eps[i] != nil {
 					// An SA no Mux owns yet. Only a listening hub keeps
 					// these; otherwise they stay dropped as before.
 					unclaimed = append(unclaimed, i)
@@ -422,7 +436,7 @@ func (h *Hub) receiveLoop(fn receiveFunc) {
 				}
 			} else {
 				spi := uint32(raw[0])<<24 | uint32(raw[1])<<16 | uint32(raw[2])<<8 | uint32(raw[3])
-				if m := h.esp[spi]; m != nil {
+				if m := tables.esp[spi]; m != nil {
 					// Keep views into the receive buffers only until this socket
 					// batch has been demultiplexed. packReceivedBatch below moves
 					// all packets for a peer into one allocation before fn is
@@ -433,7 +447,6 @@ func (h *Hub) receiveLoop(fn receiveFunc) {
 				}
 			}
 		}
-		h.mu.Unlock()
 		if unwanted > 0 {
 			h.refused.Add(uint64(unwanted))
 		}
@@ -463,7 +476,7 @@ func (h *Hub) receiveLoop(fn receiveFunc) {
 		// us, so anyone who can reach the port fills it, and dropped is the
 		// one signal that says this node is behind on receive.
 		for _, i := range unclaimed {
-			if len(h.listen) == cap(h.listen) {
+			if len(tables.listen) == cap(tables.listen) {
 				h.refused.Add(1)
 				continue
 			}
@@ -473,7 +486,7 @@ func (h *Hub) receiveLoop(fn receiveFunc) {
 				Endpoint: eps[i],
 			}
 			select {
-			case h.listen <- datagram:
+			case tables.listen <- datagram:
 			default:
 				h.refused.Add(1)
 			}
@@ -589,8 +602,7 @@ func (m *Mux) IsClosed() bool      { return m.closed.Load() || m.hub.closed.Load
 func (m *Mux) Done() <-chan struct{} { return m.done }
 
 // RegisterIKE routes packets whose marked IKE header has spi as SPIi to m.
-func (m *Mux) RegisterIKE(spi uint64) error { return m.registerIKE(spi) }
-func (m *Mux) registerIKE(spi uint64) error {
+func (m *Mux) RegisterIKE(spi uint64) error {
 	if spi == 0 {
 		// RFC 7296 section 3.1 on the initiator's SPI: "This value MUST NOT be
 		// zero." Claiming it here would route every datagram carrying one to
@@ -602,20 +614,33 @@ func (m *Mux) registerIKE(spi uint64) error {
 	if m.closed.Load() || m.hub.closed.Load() {
 		return fmt.Errorf("transport: closed")
 	}
-	if owner := m.hub.ike[spi]; owner != nil && owner != m {
+	tables := m.hub.tables.Load()
+	owner := tables.ike[spi]
+	if owner == m {
+		return nil
+	}
+	if owner != nil {
 		return fmt.Errorf("transport: IKE SPI %016x already registered", spi)
 	}
-	m.hub.ike[spi] = m
+	next := *tables
+	next.ike = maps.Clone(tables.ike)
+	next.ike[spi] = m
+	m.hub.tables.Store(&next)
 	return nil
 }
 
 // UnregisterIKE stops routing IKE packets for spi to m.
 func (m *Mux) UnregisterIKE(spi uint64) {
 	m.hub.mu.Lock()
-	if m.hub.ike[spi] == m {
-		delete(m.hub.ike, spi)
+	defer m.hub.mu.Unlock()
+	tables := m.hub.tables.Load()
+	if tables.ike[spi] != m {
+		return
 	}
-	m.hub.mu.Unlock()
+	next := *tables
+	next.ike = maps.Clone(tables.ike)
+	delete(next.ike, spi)
+	m.hub.tables.Store(&next)
 }
 
 // RegisterESP routes bare ESP packets whose inbound SPI is spi to m.
@@ -628,20 +653,33 @@ func (m *Mux) RegisterESP(spi uint32) error {
 	if m.closed.Load() || m.hub.closed.Load() {
 		return fmt.Errorf("transport: closed")
 	}
-	if owner := m.hub.esp[spi]; owner != nil && owner != m {
+	tables := m.hub.tables.Load()
+	owner := tables.esp[spi]
+	if owner == m {
+		return nil
+	}
+	if owner != nil {
 		return fmt.Errorf("transport: ESP SPI %08x already registered", spi)
 	}
-	m.hub.esp[spi] = m
+	next := *tables
+	next.esp = maps.Clone(tables.esp)
+	next.esp[spi] = m
+	m.hub.tables.Store(&next)
 	return nil
 }
 
 // UnregisterESP stops routing ESP packets for spi to m.
 func (m *Mux) UnregisterESP(spi uint32) {
 	m.hub.mu.Lock()
-	if m.hub.esp[spi] == m {
-		delete(m.hub.esp, spi)
+	defer m.hub.mu.Unlock()
+	tables := m.hub.tables.Load()
+	if tables.esp[spi] != m {
+		return
 	}
-	m.hub.mu.Unlock()
+	next := *tables
+	next.esp = maps.Clone(tables.esp)
+	delete(next.esp, spi)
+	m.hub.tables.Store(&next)
 }
 
 func (m *Mux) SendIKE(b []byte) error {
@@ -853,16 +891,13 @@ func (m *Mux) Close() error {
 		return nil
 	}
 	m.hub.mu.Lock()
-	for spi, owner := range m.hub.ike {
-		if owner == m {
-			delete(m.hub.ike, spi)
-		}
-	}
-	for spi, owner := range m.hub.esp {
-		if owner == m {
-			delete(m.hub.esp, spi)
-		}
-	}
+	tables := m.hub.tables.Load()
+	next := *tables
+	next.ike = maps.Clone(tables.ike)
+	maps.DeleteFunc(next.ike, func(_ uint64, owner *Mux) bool { return owner == m })
+	next.esp = maps.Clone(tables.esp)
+	maps.DeleteFunc(next.esp, func(_ uint32, owner *Mux) bool { return owner == m })
+	m.hub.tables.Store(&next)
 	delete(m.hub.muxes, m)
 	m.hub.mu.Unlock()
 	m.closeDone(fmt.Errorf("transport: closed"))
