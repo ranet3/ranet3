@@ -593,7 +593,7 @@ testers.runNixOSTest {
       #
       # The assertion is on the capture rather than on a round trip, because
       # what is being tested is whether the kernel accepts this tree's header
-      # and takes it off. Where the inner packet goes afterwards is the test
+      # and takes it off. Where the inner packet goes afterward is the test
       # topology's business: End.DT6 looks the decapsulated destination up in
       # the table it is given, and a local address of the gateway's is not in
       # main.

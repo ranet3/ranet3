@@ -96,7 +96,7 @@ func twoInterfaces(t *testing.T) (first, second int) {
 }
 
 // waitFor polls until the socket carries index, because the rebind happens on
-// the hub's own goroutine and a link change carries no acknowledgement.
+// the hub's own goroutine and a link change carries no acknowledgment.
 func waitFor(t *testing.T, bind *darwinBind, index int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -302,7 +302,7 @@ func captureBoundReachLogs(t *testing.T) *lockedLog {
 }
 
 // answering replaces the probe with one the test decides, per family, and puts
-// the real one back afterwards.
+// the real one back afterward.
 func answering(t *testing.T, reaches map[bool]error) {
 	t.Helper()
 	previous := boundReachProbe
@@ -390,7 +390,7 @@ func TestBoundReachIsReportedOnlyWhenNeitherFamilyWorks(t *testing.T) {
 // The report is made where the socket is bound, on both paths that bind one:
 // the first binding at startup, which is the one a node starting next to the
 // default a previous run installed depends on, and every rebind the link
-// follower makes afterwards.
+// follower makes afterward.
 func TestBindingReportsWhatTheSocketCanReach(t *testing.T) {
 	first, second := twoInterfaces(t)
 	answering(t, map[bool]error{true: unix.ENETUNREACH, false: unix.ENETUNREACH})

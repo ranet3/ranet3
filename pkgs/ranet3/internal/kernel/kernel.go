@@ -690,7 +690,7 @@ func (r Rule) canonical() Rule {
 }
 
 // validate refuses a rule the kernel would accept and an operator would not
-// recognize afterwards. It runs at startup, so a mistake costs a refusal to
+// recognize afterward. It runs at startup, so a mistake costs a refusal to
 // start rather than a rule installed against a live fleet.
 func (r Rule) validate() error {
 	if r.Family != FamilyIPv4 && r.Family != FamilyIPv6 {
@@ -867,7 +867,7 @@ func New(t Table, rt Runtime, src RouteSource) (*Reconciler, error) {
 	if src == nil {
 		return nil, errors.New("kernel: route source is required")
 	}
-	// Checked as written and canonicalized afterwards, so a refusal names the
+	// Checked as written and canonicalized afterward, so a refusal names the
 	// field an operator can find in their own file rather than the one
 	// canonicalization left behind. The loader has already run this; a caller
 	// that built the capability by hand has not.

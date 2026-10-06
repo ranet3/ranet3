@@ -366,7 +366,7 @@ func TestShutdownRetractsBeforeItWithdraws(t *testing.T) {
 
 // Another writer's translation is named rather than removed. Several chains
 // coexist at the same hook and the first to claim a connection keeps it, so a
-// tool that deleted its neighbours' rules would break whatever installed them.
+// tool that deleted its neighbors' rules would break whatever installed them.
 func TestConflictsAreReportedRatherThanRemoved(t *testing.T) {
 	cfg := Egress{Advertise: prefixes(t, "0.0.0.0/0")}
 	be := &fakeBackend{conflicts: []string{"ip table nat chain POSTROUTING at priority 100"}}

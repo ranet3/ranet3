@@ -61,7 +61,7 @@ func TestRoundTripPenaltyLandsOnTheCostThisNodeComputes(t *testing.T) {
 }
 
 // A neighbor with no round-trip sample yet must cost exactly what it reports,
-// or every link starts penalised before a single timestamp has been exchanged.
+// or every link starts penalized before a single timestamp has been exchanged.
 func TestNoRoundTripSampleAddsNoPenalty(t *testing.T) {
 	now := time.Now()
 	n := &neighborState{alive: true, haveReportedCost: true, reportedCost: 96, ihuExpiry: now.Add(time.Minute)}

@@ -312,7 +312,7 @@ func (n *nftables) ownTables() ([]uint8, error) {
 // Conflicts names the other source translation this node's traffic can meet: a
 // nat chain at the postrouting hook in a table this tool did not create. They
 // are reported rather than removed. Several such chains coexist, the first to
-// translate a connection keeps it, and a tool that deleted its neighbours'
+// translate a connection keeps it, and a tool that deleted its neighbors'
 // rules to win that race would break docker, an SD-WAN agent or the operator's
 // own ruleset, which is exactly the failure internal/kernel's ownership rules
 // exist to avoid.
@@ -610,7 +610,7 @@ type nftConn struct {
 // stop the reconcile loop with no error to report.
 const replyTimeout = 10
 
-// receiveBuffer is asked for so that a whole transaction's acknowledgements
+// receiveBuffer is asked for so that a whole transaction's acknowledgments
 // fit while the sender is still sending. See dialNetfilter.
 const receiveBuffer = 1 << 20
 
@@ -681,7 +681,7 @@ type nftMessage struct {
 //
 // A failure inside the batch is reported against the message that caused it,
 // and a failure of the commit itself against the batch marker, so any nonzero
-// error in the range this call owns ends it. Acknowledgements left in the
+// error in the range this call owns ends it. Acknowledgments left in the
 // socket by an earlier call carry earlier sequence numbers and are ignored
 // rather than mistaken for this call's.
 func (c *nftConn) batch(requests []nftRequest) error {

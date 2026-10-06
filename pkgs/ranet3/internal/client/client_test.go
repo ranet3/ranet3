@@ -1420,7 +1420,7 @@ func TestRegistrationCannotOutliveItsSession(t *testing.T) {
 
 // A node decommissioned elsewhere leaves an entry behind in this node's peers
 // list. Refusing the whole reload over it would mean this node never sees
-// another registry, and every node that joins afterwards is unreachable from
+// another registry, and every node that joins afterward is unreachable from
 // here, over a peer that is unreachable either way.
 func TestReloadSkipsPeerRegistryNoLongerNames(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
@@ -2053,7 +2053,7 @@ func TestValidatePeersReportsAnEndpointWithNoAddress(t *testing.T) {
 
 // A node taken out of the registry while its dialer is running stops being
 // dialed. The check before the loop covers a node that was already gone;
-// this one covers the reload that removes it afterwards, and without it the
+// this one covers the reload that removes it afterward, and without it the
 // dialer logs the same lookup failure every reconnect delay for the life of
 // the process while Reload's "so nothing will dial it" is not true.
 func TestDialerGivesUpOnANodeAReloadRemoved(t *testing.T) {

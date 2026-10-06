@@ -551,7 +551,7 @@ func TestUnderlayDefaultsDoesNotRecordAnAddTheKernelRefused(t *testing.T) {
 	if got := underlay.Written(); len(got) != 0 {
 		t.Fatalf("the record holds %d routes for one that was never written", len(got))
 	}
-	// somebody else writes the route afterwards
+	// somebody else writes the route afterward
 	held = append(held, ourScoped(uplinkIndex, addr("192.168.0.1")))
 	sock.err = nil
 	if err := underlay.Close(); err != nil {
@@ -612,7 +612,7 @@ func TestUnderlayDefaultsKeepsTheRecordOfAWithdrawalTheKernelRefused(t *testing.
 	}
 }
 
-// Close leaves the socket gone, so every entry point afterwards has to say so
+// Close leaves the socket gone, so every entry point afterward has to say so
 // rather than dereference it. Nothing reaches this from the daemon today,
 // because the reconciler always withdraws first and the hub's follower is not
 // joined, which is exactly the kind of invariant that holds until a refactor.
@@ -682,7 +682,7 @@ func TestCloseLeavesTheRouteWhileACaptureIsStillInstalled(t *testing.T) {
 //
 // The comment on moveUnderlay used to claim the opposite, that a Prepare which
 // covered nothing stopped the move. It did not, and holding it would have been
-// the worse behaviour.
+// the worse behavior.
 func TestPrepareMovesOntoAnInterfaceItCannotCover(t *testing.T) {
 	for name, links := range map[string]*fakeDefaults{
 		"the host reaches this family another way": {

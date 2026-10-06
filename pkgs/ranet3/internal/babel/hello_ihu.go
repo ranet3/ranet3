@@ -66,7 +66,7 @@ func DecodeHello(body []byte) (Hello, error) {
 }
 
 // IHU ("I Heard You") is RFC 8966 §4.6.6. AE=Wildcard omits the address
-// entirely, which that section permits as an optimisation: the AE "MAY be 0 if
+// entirely, which that section permits as an optimization: the AE "MAY be 0 if
 // the TLV is sent to a unicast address, if the association is over a
 // point-to-point link, or when bidirectional reachability is ascertained by
 // means outside of the Babel protocol." Every association here is a

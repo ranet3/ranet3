@@ -1104,7 +1104,7 @@ func pointerScalars(ty reflect.Type, prefix string) []string {
 
 // fullConfig writes every capability block and sets every field of every one
 // of them to a value of its own, so a field that arrives holding its
-// neighbour's value reads back wrong rather than equal. The values satisfy
+// neighbor's value reads back wrong rather than equal. The values satisfy
 // every check Load makes, since the round trip below goes through the loader
 // rather than through a decoder alone.
 func fullConfig() Config {
