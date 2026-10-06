@@ -180,10 +180,14 @@ func (c *Config) Crypto() ike.Crypto {
 func (c *Config) Egress() *egress.Egress { return c.Cap.Egress }
 
 // Load reads a configuration, picking the decoder by file extension: .toml
-// goes to the TOML decoder and .yaml, .yml and .json to the YAML one, since
-// valid JSON is valid YAML. An extension neither knows is refused by name
-// rather than sniffed, because a file whose contents and whose name disagree
-// is one somebody is going to have to debug.
+// goes to the TOML decoder and .yaml, .yml and .json to the YAML one. A .json
+// file is read as YAML, and JSON that YAML reads otherwise loads differently
+// or not at all. The YAML decoder refuses a \/ escape, the surrogate pair
+// escape of a character outside the BMP, a raw DEL and a key written twice,
+// among others, and reads a raw NEL, LS or PS in a string as a line break. An
+// extension neither knows is refused by name rather than sniffed, because a
+// file whose contents and whose name disagree is one somebody is going to
+// have to debug.
 //
 // Both decoders run strict, so an unknown key is an error under either: a
 // typo'd capability that silently does nothing is the worst failure a
