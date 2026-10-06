@@ -313,14 +313,13 @@ func (t Table) Validate() error {
 		// is the one warning that would have said so.
 		return fmt.Errorf("kernel: cap.table id %d is reserved, use anything else from 1 to %d", id, ^uint32(0))
 	}
-	if address := t.PrefSrc4; address.IsValid() && !address.Unmap().Is4() {
-		return fmt.Errorf("kernel: cap.table prefsrc4 %s is not an IPv4 address", address)
+	// the mapped spelling would reach the kernel as sixteen bytes on every IPv4 route
+	// a route carrying them never reads back equal
+	if address := t.PrefSrc4; address.Is4In6() {
+		return fmt.Errorf("kernel: cap.table prefsrc4 %s is an IPv4 address written as IPv6, so write it as %s", address, address.Unmap())
 	}
-	if address := t.PrefSrc4; address.Zone() != "" {
-		// Only the IPv4-mapped spelling can carry one, and the type a file
-		// writes the field in has no spelling for it, so a capability built
-		// with one renders to a file nothing loads.
-		return fmt.Errorf("kernel: cap.table prefsrc4 %s carries a zone, which a preferred source cannot", address)
+	if address := t.PrefSrc4; address.IsValid() && !address.Is4() {
+		return fmt.Errorf("kernel: cap.table prefsrc4 %s is not an IPv4 address", address)
 	}
 	for i, prefix := range t.Addresses {
 		// An entry left at zero, or an address under a length it cannot
@@ -947,9 +946,6 @@ func (t Table) Normalized() Table {
 	}
 	if t.Proto == 0 {
 		t.Proto = DefaultProtocol
-	}
-	if t.PrefSrc4.IsValid() {
-		t.PrefSrc4 = schema.AddrFrom(t.PrefSrc4.Unmap().WithZone(""))
 	}
 	if t.Reconcile <= 0 {
 		t.Reconcile = schema.Duration(DefaultReconcileInterval)
