@@ -534,79 +534,6 @@ func TestReloadRefusesARotatedPrivateKey(t *testing.T) {
 	}
 }
 
-func TestReloadRefusesAssignedAddressChanges(t *testing.T) {
-	for name, change := range map[string]func(*config.Config){
-		"an addition": func(c *config.Config) {
-			c.Cap.Route = &babel.Routes{Announce: announce("fd00:1::1/64", "fd00:2::1/64")}
-		},
-		"a removal": func(c *config.Config) { c.Cap.Route = &babel.Routes{} },
-		"a source-specific addition": func(c *config.Config) {
-			c.Cap.Route = &babel.Routes{Announce: []schema.Announce{
-				{Prefix: schema.MustPrefix("fd00:1::1/64")},
-				{Prefix: schema.MustPrefix("fd00:2::1/64"), From: schema.MustPrefix("fd00:3::/64")},
-			}}
-		},
-		"a host address change": func(c *config.Config) {
-			c.Cap.Route = &babel.Routes{Announce: announce("fd00:1::2/64")}
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			c, path := reloadFixture(t)
-			old := c.config()
-			old.Cap.Table = &kernel.Table{AssignAnnounced: true}
-			old.Cap.Route = &babel.Routes{Announce: announce("fd00:1::1/64")}
-			next := *old
-			change(&next)
-			writeConfig(t, path, &next)
-			if _, err := config.Load(path); err != nil {
-				t.Fatalf("invalid reload fixture: %v", err)
-			}
-			if err := c.ReloadFrom(path); err == nil {
-				t.Fatal("reload accepted an assigned address change")
-			}
-			if !slices.Equal(c.config().Routes().Announce, old.Routes().Announce) {
-				t.Error("refused reload changed the active announcements")
-			}
-		})
-	}
-}
-
-func TestReloadAllowsUnchangedAssignedAddresses(t *testing.T) {
-	base := &config.Config{Cap: config.Caps{
-		Table: &kernel.Table{AssignAnnounced: true},
-		Route: &babel.Routes{Announce: announce("fd00:1::1/64", "fd00:2::1/64")},
-	}}
-	for name, change := range map[string]func(*config.Config){
-		"reorder and duplicate": func(c *config.Config) {
-			c.Cap.Route = &babel.Routes{Announce: announce("fd00:2::1/64", "fd00:1::1/64", "fd00:2::1/64")}
-		},
-		"one of them given a source": func(c *config.Config) {
-			c.Cap.Route = &babel.Routes{Announce: []schema.Announce{
-				{Prefix: schema.MustPrefix("fd00:1::1/64")},
-				{Prefix: schema.MustPrefix("fd00:2::1/64"), From: schema.MustPrefix("fd00:3::/64")},
-			}}
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			next := *base
-			change(&next)
-			if err := reloadable(base, &next); err != nil {
-				t.Fatalf("unchanged assigned addresses were refused: %v", err)
-			}
-		})
-	}
-	// A reconciler that assigns nothing, and no reconciler at all: an
-	// announcement changes what the mesh hears and nothing the device carries.
-	for _, table := range []*kernel.Table{{}, nil} {
-		old := &config.Config{Cap: config.Caps{Table: table}}
-		next := *old
-		next.Cap.Route = &babel.Routes{Announce: announce("fd00:4::/64")}
-		if err := reloadable(old, &next); err != nil {
-			t.Fatalf("announcement-only change was refused: %v", err)
-		}
-	}
-}
-
 // announce is the capability's list built from the prefixes a test holds.
 func announce(prefixes ...string) []schema.Announce {
 	out := make([]schema.Announce, 0, len(prefixes))
@@ -1276,6 +1203,9 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 			if err := reloadable(base, &next); err != nil {
 				t.Errorf("writing a default out in full was refused: %v", err)
 			}
+			if !sameTable(base, &next) {
+				t.Error("writing a default out in full hands the reconciler a table it already runs")
+			}
 		})
 	}
 
@@ -1337,6 +1267,9 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 			if err := reloadable(&before, &after); err != nil {
 				t.Errorf("writing a default out in full was refused: %v", err)
 			}
+			if !sameTable(&before, &after) {
+				t.Error("writing a default out in full hands the reconciler a table it already runs")
+			}
 		})
 	}
 
@@ -1358,8 +1291,8 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 	differs, differsToo := *base, *base
 	differs.Cap = config.Caps{Table: &kernel.Table{Rules: []kernel.Rule{marked}}}
 	differsToo.Cap = config.Caps{Table: &kernel.Table{Rules: []kernel.Rule{elsewhereRule}}}
-	if err := reloadable(&differs, &differsToo); err == nil {
-		t.Error("two rules looking up different tables compared as one")
+	if sameTable(&differs, &differsToo) {
+		t.Error("two rules looking up different tables compared as one, so the reconciler is never handed the second")
 	}
 
 	// A real change is still refused, or the comparison would be useless.
