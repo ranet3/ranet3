@@ -62,7 +62,7 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 	// sends a packet of malformed ones costs one log line rather than ninety.
 	// RFC 8966 section 4.6.9 asks for them to be "silently ignored".
 	badUpdates := 0
-	linkChanged := false
+	linkChanged, cameUp := false, false
 	for _, t := range tlvs {
 		switch t.Type {
 		case TLVHello:
@@ -83,10 +83,8 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 			if !n.alive {
 				slog.Info("babel neighbor up", "peer", n.peer.ID)
 				s.events.Emit("babel.neighbor.up", n.peer.ID)
-				// the dump sent at session start may have preceded this node's session
-				actions = append(actions, sendAction{neighbor: n, dest: n.destination(), priority: priorityRequest,
-					tlvs: []RawTLV{EncodeRouteRequest(RouteRequest{AE: AEWildcard})}})
 				s.events.Emit("babel.request.sent", n.peer.ID)
+				cameUp = true
 			}
 			n.alive = true
 			// An unscheduled Hello cannot extend the last scheduled promise.
@@ -272,6 +270,13 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 	if badUpdates > 1 {
 		slog.Warn("babel ignored more malformed updates in the same packet",
 			"peer", n.peer.ID, "count", badUpdates-1)
+	}
+	if cameUp {
+		// after the loop, so a returning neighbor reads as alive and the IHU echoes this Hello's timestamps
+		actions = append(actions, s.helloAction(n, now))
+		// the dump sent at session start may have preceded this node's session
+		actions = append(actions, sendAction{neighbor: n, dest: n.destination(), priority: priorityRequest,
+			tlvs: []RawTLV{EncodeRouteRequest(RouteRequest{AE: AEWildcard})}})
 	}
 	if linkChanged {
 		s.routes.recomputeNeighbor(n, now)

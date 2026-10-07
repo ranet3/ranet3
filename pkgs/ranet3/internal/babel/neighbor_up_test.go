@@ -78,6 +78,8 @@ func (w *heldWire) deliver() {
 	}
 }
 
+func (w *heldWire) helloFromA() { w.b.Receive(w.peerAForB, helloPacket(w.a, "b")) }
+
 func (w *heldWire) helloFromB() { w.a.Receive(w.peerBForA, helloPacket(w.b, "a")) }
 
 func helloPacket(from *Speaker, neighbor string) []byte {
@@ -108,47 +110,95 @@ func TestNodeThatMissedAStartupIsToldTheNeighborsRoutesAtItsFirstHello(t *testin
 	}
 }
 
-func TestNeighborComingUpIsAskedForItsWholeTable(t *testing.T) {
+func TestDialerThatMissedTheFirstHelloMarksTheResponderUpWithinARoundTrip(t *testing.T) {
+	w := newHeldWire(t, 0)
+	w.joinB()
+	w.helloFromB()
+	w.joinA()
+	w.helloFromA()
+	w.deliver()
+	if !w.a.neighbors["b"].alive {
+		t.Error("the dialer still waits for the responder's next scheduled hello")
+	}
+}
+
+func TestNeighborComingUpIsSentAHelloAndAskedForItsWholeTable(t *testing.T) {
 	bus := events.New()
 	speaker, neighbor, packets := captureSpeaker(t, Config{}, Runtime{Events: bus})
+	// every hello has a timestamp of its own, so an IHU shows which one it echoes
+	stamp := func(seqno uint16) uint32 { return 1000 * uint32(seqno) }
 	hello := func(seqno, interval uint16) []byte {
-		return EncodePacket([]RawTLV{EncodeHello(Hello{Seqno: seqno, Interval: interval})})
+		return EncodePacket([]RawTLV{EncodeHello(Hello{Seqno: seqno, Interval: interval, HasTS: true, TxTS: stamp(seqno)})})
 	}
-	requests := func() []RouteRequest {
+	// the hellos that bring the neighbor up, in order
+	broughtUp := []uint16{2, 4}
+	type greeting struct {
+		hello Hello
+		ihu   IHU
+	}
+	sent := func() (greetings []greeting, requests []RouteRequest) {
 		t.Helper()
-		var out []RouteRequest
 		for _, raw := range *packets {
 			to, _ := netip.AddrFromSlice(raw[24:40])
 			from, payload, err := parsePacket(raw, neighbor.addr)
-			if err != nil || from != speaker.linkLocal || to != neighbor.addr {
-				t.Fatalf("a packet from %v to %v was sent, want one from %v to %v: %v", from, to, speaker.linkLocal, neighbor.addr, err)
+			if err != nil || from != speaker.linkLocal {
+				t.Fatalf("a packet from %v was sent, want one from %v: %v", from, speaker.linkLocal, err)
 			}
 			tlvs, err := DecodePacket(payload)
-			if err != nil || len(tlvs) != 1 || tlvs[0].Type != TLVRouteRequest {
-				t.Fatalf("a packet carrying %v was sent, want one Route Request: %v", tlvs, err)
-			}
-			request, err := DecodeRouteRequest(tlvs[0].Body)
 			if err != nil {
 				t.Fatal(err)
 			}
-			out = append(out, request)
+			switch {
+			case len(tlvs) == 2 && tlvs[0].Type == TLVHello && tlvs[1].Type == TLVIHU && to == multicastGroup:
+				h, err := DecodeHello(tlvs[0].Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ihu, _, err := DecodeIHU(tlvs[1].Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				greetings = append(greetings, greeting{h, ihu})
+			case len(tlvs) == 1 && tlvs[0].Type == TLVRouteRequest && to == neighbor.addr:
+				request, err := DecodeRouteRequest(tlvs[0].Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				requests = append(requests, request)
+			default:
+				t.Fatalf("a packet carrying %v was sent to %v, want a Hello and an IHU to the group or a Route Request to the neighbor", tlvs, to)
+			}
 		}
-		return out
+		return greetings, requests
 	}
 	recorded := func(kind string) int {
 		return len(bus.Recorded(func(got, peer string, _ []slog.Attr) bool {
 			return got == kind && peer == neighbor.peer.ID
 		}, 0))
 	}
+	interval := uint16(speaker.hello / (10 * time.Millisecond))
 	check := func(step string, want int) {
 		t.Helper()
-		got := requests()
-		if len(got) != want || recorded("babel.request.sent") != want {
-			t.Fatalf("%s: %d requests sent and %d recorded, want %d of each", step, len(got), recorded("babel.request.sent"), want)
+		greetings, requests := sent()
+		if len(greetings) != want || len(requests) != want || recorded("babel.request.sent") != want {
+			t.Fatalf("%s: %d hellos and %d requests sent and %d requests recorded, want %d of each",
+				step, len(greetings), len(requests), recorded("babel.request.sent"), want)
 		}
-		for _, request := range got {
+		for _, request := range requests {
 			if request != (RouteRequest{AE: AEWildcard}) {
 				t.Fatalf("%s: the request was %+v, want the wildcard", step, request)
+			}
+		}
+		for i, got := range greetings {
+			if got.hello.Seqno != uint16(i+1) || got.hello.Interval != interval || got.hello.Unicast {
+				t.Fatalf("%s: hello %d is %+v, want the next number at the normal interval of %d", step, i+1, got.hello, interval)
+			}
+			if got.ihu.RxCost != speaker.cost.RxCost {
+				t.Fatalf("%s: hello %d carries an rxcost of %d, want the nominal %d", step, i+1, got.ihu.RxCost, speaker.cost.RxCost)
+			}
+			if !got.ihu.HasTS || got.ihu.OriginTS != stamp(broughtUp[i]) {
+				t.Fatalf("%s: hello %d carries the timestamps %+v, want the origin of hello %d, which brought the neighbor up",
+					step, i+1, got.ihu, broughtUp[i])
 			}
 		}
 	}
@@ -182,18 +232,22 @@ func TestRequestLeavesWithTheRepliesToTheHelloThatBroughtTheNeighborUp(t *testin
 		EncodeHello(Hello{Seqno: 1, Interval: 100}),
 		EncodeRouteRequest(RouteRequest{AE: AEWildcard}),
 	}))
-	if len(*packets) != 1 {
-		t.Fatalf("the neighbor was sent %d packets, want the answer and the request in one", len(*packets))
+	var answers [][]TLVType
+	for _, raw := range *packets {
+		tlvs, err := DecodePacket(raw[ipv6HeaderLen+udpHeaderLen:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tlvs[0].Type == TLVHello {
+			continue
+		}
+		var kinds []TLVType
+		for _, tlv := range tlvs {
+			kinds = append(kinds, tlv.Type)
+		}
+		answers = append(answers, kinds)
 	}
-	tlvs, err := DecodePacket((*packets)[0][ipv6HeaderLen+udpHeaderLen:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	var kinds []TLVType
-	for _, tlv := range tlvs {
-		kinds = append(kinds, tlv.Type)
-	}
-	if want := []TLVType{TLVRouteRequest, TLVRouterID, TLVUpdate}; !slices.Equal(kinds, want) {
-		t.Errorf("the packet carries %v, want the request and then the route announced", kinds)
+	if want := [][]TLVType{{TLVRouterID, TLVUpdate, TLVRouteRequest}}; !slices.EqualFunc(answers, want, slices.Equal) {
+		t.Errorf("the neighbor was sent %v besides the hello, want its answer and the request in one packet", answers)
 	}
 }
