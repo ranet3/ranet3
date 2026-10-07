@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/netip"
 	"slices"
 	"strings"
 
@@ -88,6 +89,32 @@ func refuseEgressAdvertisedUnconditionally(cfg *config.Config) error {
 		}
 	}
 	return nil
+}
+
+// MeshAddresses is every address this node carries on the mesh, which cap.egress translates into the mesh under
+// it is the host prefixes cap.route announces and what cap.table assigns
+// the announced ones count because a node that configures its tun externally assigns nothing
+func MeshAddresses(cfg *config.Config) []netip.Addr {
+	announced := cfg.Routes().Announced()
+	var out []netip.Addr
+	add := func(prefix netip.Prefix) {
+		// Only a host prefix. A shorter one is a range this node carries
+		// traffic for rather than an address it answers at, and translating
+		// to its base address would send replies to a host that may not exist.
+		if prefix.Bits() != prefix.Addr().BitLen() || slices.Contains(out, prefix.Addr()) {
+			return
+		}
+		out = append(out, prefix.Addr())
+	}
+	for _, prefix := range announced {
+		add(prefix)
+	}
+	if table := cfg.Cap.Table; table != nil {
+		for _, prefix := range table.Assigned(announced) {
+			add(prefix)
+		}
+	}
+	return out
 }
 
 // effectivePeers is who this node dials: the configured list, or every node
