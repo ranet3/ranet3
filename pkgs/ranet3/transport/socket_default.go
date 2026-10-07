@@ -7,6 +7,7 @@
 package transport
 
 import (
+	"log/slog"
 	"net/netip"
 
 	"golang.zx2c4.com/wireguard/conn"
@@ -51,7 +52,7 @@ const (
 	bindsSockets = false
 )
 
-func openPacketBind(port uint16, underlay Underlay, index int, routed bool) (packetBind, []receiveFunc, uint16, error) {
+func openPacketBind(port uint16, underlay Underlay, index int, routed bool, _ func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	b := &portableBind{conn.NewStdNetBind()}
 	fns, port, err := b.Open(port)
 	if err != nil {

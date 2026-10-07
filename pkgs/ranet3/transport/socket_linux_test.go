@@ -116,7 +116,7 @@ func TestUDPSendKeepsEmptyDatagramSeparate(t *testing.T) {
 	b := newUDPSendBatch()
 	first := make([]byte, 16, 64)
 	packets := [][]byte{first, {}, []byte("last")}
-	if got := b.prepare(packets, &udpEndpoint{addr: &net.UDPAddr{}}, true); got != 3 {
+	if got := b.prepare(packets, &net.UDPAddr{}, nil, true); got != 3 {
 		t.Fatalf("got %d messages, want the empty datagram preserved", got)
 	}
 }
@@ -128,7 +128,7 @@ func TestUDPSendDoesNotOverwriteNonadjacentPackets(t *testing.T) {
 	middle := bytes.Repeat([]byte{2}, 8)
 	packets := [][]byte{first, middle, last}
 	b := newUDPSendBatch()
-	if got := b.prepare(packets, &udpEndpoint{addr: &net.UDPAddr{}}, true); got != 3 {
+	if got := b.prepare(packets, &net.UDPAddr{}, nil, true); got != 3 {
 		t.Fatalf("got %d messages, want three nonadjacent datagrams", got)
 	}
 	if !bytes.Equal(last, bytes.Repeat([]byte{3}, 16)) {
@@ -170,7 +170,7 @@ func TestUDPReceiveSkipsTruncatedMessagesAndPreservesGROTail(t *testing.T) {
 func TestUDPKernelGSORoundTrip(t *testing.T) {
 	for _, address := range []string{"127.0.0.1", "::1"} {
 		t.Run(address, func(t *testing.T) {
-			receiver, receivers, port, err := openPacketBind(0, Underlay{}, 0, false)
+			receiver, receivers, port, err := openPacketBind(0, Underlay{}, 0, false, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -188,7 +188,7 @@ func TestUDPKernelGSORoundTrip(t *testing.T) {
 			if err := socket.conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 				t.Fatal(err)
 			}
-			sender, _, _, err := openPacketBind(0, Underlay{}, 0, false)
+			sender, _, _, err := openPacketBind(0, Underlay{}, 0, false, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -309,7 +309,7 @@ func TestTruncatedGROReadIsCountedInDatagrams(t *testing.T) {
 // skipped.
 func TestFWMarkIsEitherSetOrReported(t *testing.T) {
 	const mark = 0x5115
-	bind, _, _, err := listenPacketBind(0, mark)
+	bind, _, _, err := listenPacketBind(0, mark, nil)
 	if err != nil {
 		if os.Geteuid() == 0 {
 			t.Fatalf("root could not set a mark: %v", err)
@@ -347,7 +347,7 @@ func TestFWMarkIsEitherSetOrReported(t *testing.T) {
 // Zero asks for nothing and must not touch the socket, so a host with no rule
 // for any mark keeps the behavior it had before this option existed.
 func TestNoFWMarkLeavesTheSocketUnmarked(t *testing.T) {
-	bind, _, _, err := listenPacketBind(0, 0)
+	bind, _, _, err := listenPacketBind(0, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
