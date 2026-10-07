@@ -551,7 +551,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## golang.zx2c4.com/wireguard
 
-golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446, from `LICENSE`.
+golang.zx2c4.com/wireguard v0.0.0-20261006164505-2631ce99a06f, from `LICENSE`.
 
 ```
 Permission is hereby granted, free of charge, to any person obtaining a copy of
