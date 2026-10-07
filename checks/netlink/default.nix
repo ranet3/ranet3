@@ -8,6 +8,7 @@
 # nf_tables encoding asserted nowhere any check ran. These are the same test
 # binaries, run as root against a real kernel.
 # internal/netstack's tun round trips run here for the same reason
+# and so does transport's send through a path whose mtu is locked
 {
   lib,
   iproute2,
@@ -25,11 +26,13 @@ let
       go test -c -o netlink-tests ./internal/kernel/
       go test -c -o egress-tests ./internal/egress/
       go test -c -o netstack-tests ./internal/netstack/
+      go test -c -o transport-tests ./transport/
     '';
     installPhase = ''
       install -Dm755 netlink-tests "$out/bin/netlink-tests"
       install -Dm755 egress-tests "$out/bin/egress-tests"
       install -Dm755 netstack-tests "$out/bin/netstack-tests"
+      install -Dm755 transport-tests "$out/bin/transport-tests"
     '';
   });
 in
@@ -92,6 +95,15 @@ testers.runNixOSTest {
     assert "SKIP" not in out, f"the tun round trips skipped themselves under root:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 14, f"only {ran} tun round trips ran:\n{out}"
+
+    # the segmentation stop against linux itself
+    # a veth pair to a second namespace behind a route whose path mtu is locked below the segment size
+    out = machine.succeed(
+        "${netlinkTests}/bin/transport-tests -test.v -test.run 'TestKernelRefusesSegmentsALockedPathCannotCarry' 2>&1"
+    )
+    print(out)
+    assert "SKIP" not in out, f"the locked path test skipped itself under root:\n{out}"
+    assert "--- PASS" in out, f"the locked path test did not run:\n{out}"
 
     # Nothing the tests wrote may outlive them: they run against the host's own
     # kernel here rather than against a fake, so a rule, a VRF or a table left
