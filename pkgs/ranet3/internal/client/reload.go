@@ -279,6 +279,28 @@ func reloadable(old, next *config.Config) error {
 		// running any more.
 		return fmt.Errorf("config: cap.egress changed, restart to apply")
 	}
+	return sameReturnSources(old, next)
+}
+
+// sameReturnSources refuses a reload whose mesh addresses resolve another return source than the running translator's, or fail to resolve one
+// the translator resolved an auto source of each family it advertises among the mesh addresses once, at startup
+// the capability itself is unchanged, since sameEgress refuses a reload that changes it
+func sameReturnSources(old, next *config.Config) error {
+	exit := next.Egress()
+	if exit == nil {
+		return nil
+	}
+	running, err := exit.ReturnSources(MeshAddresses(old))
+	if err != nil {
+		return err
+	}
+	sources, err := exit.ReturnSources(MeshAddresses(next))
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(running, sources) {
+		return errors.New("config: cap.route or cap.table moved the mesh address cap.egress return translates to, restart to apply")
+	}
 	return nil
 }
 

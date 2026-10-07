@@ -425,16 +425,29 @@ func New(cfg Egress, rt Runtime) (*Translator, error) {
 	}
 	// Resolved before the backend is opened, so a return direction with no
 	// mesh address to translate to is refused with nothing to clean up.
-	for _, family := range cfg.families() {
-		if _, err := returnSource(cfg, rt, family); err != nil {
-			return nil, err
-		}
+	if _, err := cfg.ReturnSources(rt.MeshAddresses); err != nil {
+		return nil, err
 	}
 	be, err := newBackend(cfg, rt)
 	if err != nil {
 		return nil, err
 	}
 	return &Translator{cfg: cfg, rt: rt, be: be}, nil
+}
+
+// ReturnSources is the address the In direction translates to under each family the capability advertises, an auto source picked among mesh
+// it refuses what New refuses, an auto source with no address or several to pick from
+// without return set every one is the zero address
+func (e Egress) ReturnSources(mesh []netip.Addr) ([]netip.Addr, error) {
+	var out []netip.Addr
+	for _, family := range e.families() {
+		source, err := returnSource(e, Runtime{MeshAddresses: mesh}, family)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, source)
+	}
+	return out, nil
 }
 
 // returnSource is the address the In direction translates to for one family:

@@ -101,7 +101,7 @@ func MeshAddresses(cfg *config.Config) []netip.Addr {
 		// Only a host prefix. A shorter one is a range this node carries
 		// traffic for rather than an address it answers at, and translating
 		// to its base address would send replies to a host that may not exist.
-		if prefix.Bits() != prefix.Addr().BitLen() || slices.Contains(out, prefix.Addr()) {
+		if prefix.Bits() != prefix.Addr().BitLen() {
 			return
 		}
 		out = append(out, prefix.Addr())
