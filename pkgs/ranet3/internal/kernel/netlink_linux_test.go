@@ -8,6 +8,7 @@ package kernel
 import (
 	"encoding/binary"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"os"
 	"runtime"
@@ -17,6 +18,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -243,6 +246,174 @@ func TestNetlinkReportsOccupiedRoute(t *testing.T) {
 	}
 	if got, err := foreign.Routes(); err != nil || !slices.Equal(got, []Route{announced}) {
 		t.Fatalf("foreign route changed: %v, error %v", got, err)
+	}
+}
+
+// a reload against a real kernel, IPv4 alone
+// the preferred source moves at an unchanged metric and a rule is replaced
+// then the tun is renumbered and the metric moves
+// each takes the one pass that follows it
+func TestNetlinkReloadRenumbersTheTunAndReplacesARule(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real netlink path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatalf("dial rtnetlink: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	requireEmptyNamespace(t, conn)
+	const device = "ranetreload0"
+	createTUN(t, device)
+	tun, err := conn.link(0, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLinkFlags(t, conn, tun.index, unix.IFF_UP)
+
+	first, second, third := prefix("10.99.0.1/32"), prefix("10.99.0.2/32"), prefix("10.99.0.3/32")
+	before := Rule{To: schema.MustPrefix("198.18.104.0/24"), Table: DefaultTable, Priority: 100}
+	after := Rule{To: schema.MustPrefix("198.18.105.0/24"), Table: DefaultTable, Priority: 100}
+	installed := func(rule Rule) Rule { rule.Family = FamilyIPv4; return rule }
+	mesh := netstack.NewRouteTable()
+	mesh.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
+	r, err := New(Table{Addresses: prefixes(first, second), PrefSrc4: schema.AddrFrom(first.Addr()), Rules: []Rule{before}},
+		Runtime{Interface: device}, mesh)
+	if err != nil {
+		t.Fatalf("start the reconciler: %v", err)
+	}
+	t.Cleanup(func() { _ = r.plat.Close() })
+	plat := r.plat.(*netlinkPlatform)
+	// a dump of a family this kernel lacks answers with the other one's entries, so each is read as a set of IPv4 entries
+	holds := func(step string, addresses []netip.Prefix, route Route, rule Rule) {
+		t.Helper()
+		assigned, err := plat.Addrs()
+		if err != nil {
+			t.Fatalf("%s: list addresses: %v", step, err)
+		}
+		routes, err := plat.Routes()
+		if err != nil {
+			t.Fatalf("%s: list routes: %v", step, err)
+		}
+		rules, err := plat.Rules()
+		if err != nil {
+			t.Fatalf("%s: list rules: %v", step, err)
+		}
+		got := slices.Compact(slices.SortedFunc(slices.Values(slices.DeleteFunc(assigned, func(p netip.Prefix) bool { return !p.Addr().Is4() })), comparePrefixes))
+		if want := slices.SortedFunc(slices.Values(addresses), comparePrefixes); !slices.Equal(got, want) {
+			t.Errorf("%s: the tun carries %v, want %v", step, got, want)
+		}
+		if got := slices.Compact(slices.SortedFunc(slices.Values(routes), compareRoutes)); !slices.Equal(got, []Route{route}) {
+			t.Errorf("%s: the table holds %v with preferred sources %v, want %s with %s", step, got, prefSrcs(got), route, route.PrefSrc)
+		}
+		if got := slices.Compact(rules); !slices.Equal(got, []Rule{rule}) {
+			t.Errorf("%s: the rules are %v, want %s", step, got, rule)
+		}
+	}
+	if err := r.reconcile(); err != nil {
+		t.Fatalf("the first pass: %v", err)
+	}
+	holds("the first pass", []netip.Prefix{first, second}, Route{Destination: prefix("10.0.0.0/8"), PrefSrc: first.Addr()}, installed(before))
+
+	reload(t, r, Table{Addresses: prefixes(first, second), PrefSrc4: schema.AddrFrom(second.Addr()), Rules: []Rule{after}})
+	holds("a new preferred source and rule", []netip.Prefix{first, second}, Route{Destination: prefix("10.0.0.0/8"), PrefSrc: second.Addr()}, installed(after))
+
+	reload(t, r, Table{Addresses: prefixes(second, third), PrefSrc4: schema.AddrFrom(second.Addr()), Metric: 32, Rules: []Rule{after}})
+	holds("a renumbered tun and a new metric", []netip.Prefix{second, third}, Route{Destination: prefix("10.0.0.0/8"), PrefSrc: second.Addr(), Metric: 32}, installed(after))
+
+	if err := r.withdraw(); err != nil {
+		t.Fatalf("withdraw: %v", err)
+	}
+	if assigned, _ := plat.Addrs(); slices.ContainsFunc(assigned, func(p netip.Prefix) bool { return p.Addr().Is4() }) {
+		t.Errorf("the withdrawal left %v on the tun", assigned)
+	}
+	if routes, _ := plat.Routes(); len(routes) != 0 {
+		t.Errorf("the withdrawal left %v in the table", routes)
+	}
+	if rules, _ := plat.Rules(); len(rules) != 0 {
+		t.Errorf("the withdrawal left %v", rules)
+	}
+}
+
+// a reload renumbering the tun's only IPv4 address leaves another writer's IPv4 routes out of the tun in place
+// linux flushes every IPv4 route out of a device that loses its last IPv4 address, so the new address goes on before the old one comes off
+// the pass after the reload then moves only what the reload changed
+func TestNetlinkReloadRenumberingTheOnlyAddressKeepsAnotherWritersRoutes(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real netlink path needs root on linux")
+	}
+	first, second := prefix("10.99.0.1/32"), prefix("10.99.0.2/32")
+	for name, renumber := range map[string]struct {
+		start, next    Table
+		added, removed string
+	}{
+		"no preferred source": {Table{Addresses: prefixes(first)}, Table{Addresses: prefixes(second)}, "0", "0"},
+		"the preferred source moving": {
+			Table{Addresses: prefixes(first), PrefSrc4: schema.AddrFrom(first.Addr())},
+			Table{Addresses: prefixes(second), PrefSrc4: schema.AddrFrom(second.Addr())}, "1", "1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			enterThrowawayNamespace(t)
+			conn, err := dialNetlink()
+			if err != nil {
+				t.Fatalf("dial rtnetlink: %v", err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			requireEmptyNamespace(t, conn)
+			const device = "ranetrenumber0"
+			createTUN(t, device)
+			tun, err := conn.link(0, device)
+			if err != nil {
+				t.Fatal(err)
+			}
+			setLinkFlags(t, conn, tun.index, unix.IFF_UP)
+			mesh := netstack.NewRouteTable()
+			mesh.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
+			bus := events.New()
+			r, err := New(renumber.start, Runtime{Interface: device, Events: bus}, mesh)
+			if err != nil {
+				t.Fatalf("start the reconciler: %v", err)
+			}
+			t.Cleanup(func() { _ = r.plat.Close() })
+			if err := r.reconcile(); err != nil {
+				t.Fatalf("the first pass: %v", err)
+			}
+			// one in the reconciler's table under another protocol, and one in main as networkd writes it
+			others := []struct {
+				writer *netlinkPlatform
+				route  Route
+			}{
+				{&netlinkPlatform{table: Table{ID: DefaultTable, Proto: 99}, rt: r.rt, index: tun.index, conn: conn}, Route{Destination: prefix("192.0.2.0/24")}},
+				{&netlinkPlatform{table: Table{ID: schema.TableMain, Proto: protocolStatic}, rt: r.rt, index: tun.index, conn: conn}, Route{Destination: prefix("198.51.100.0/24")}},
+			}
+			for _, other := range others {
+				if err := other.writer.AddRoute(other.route); err != nil {
+					t.Fatalf("another writer in %s: %v", other.writer.where(other.writer.table), err)
+				}
+			}
+
+			reload(t, r, renumber.next)
+			for _, other := range others {
+				if got, err := other.writer.Routes(); err != nil || !slices.Equal(got, []Route{other.route}) {
+					t.Errorf("another writer in %s holds %v after the reload (err %v), want %s", other.writer.where(other.writer.table), got, err, other.route)
+				}
+			}
+			assigned, err := r.plat.Addrs()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := slices.DeleteFunc(assigned, func(p netip.Prefix) bool { return !p.Addr().Is4() }); !slices.Equal(got, []netip.Prefix{second}) {
+				t.Errorf("the tun carries %v after the reload, want %s", got, second)
+			}
+			passes := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "kernel.pass" }, 0)
+			if len(passes) == 0 {
+				t.Fatal("no pass was recorded")
+			}
+			if got := passes[len(passes)-1].Attrs; got["added"] != renumber.added || got["removed"] != renumber.removed {
+				t.Errorf("the pass after the reload was recorded with added=%s removed=%s, want added=%s removed=%s", got["added"], got["removed"], renumber.added, renumber.removed)
+			}
+		})
 	}
 }
 
