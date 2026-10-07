@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the VM tests, the root-only tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-06
+updated: 2026-10-07
 order: 20
 ---
 
@@ -54,12 +54,13 @@ property prints the smallest input it found. hegel is a test dependency only:
 the binary or its notices.
 
 Protocol-level interoperability is covered by the NixOS VM tests in
-`checks/integration`. Each boots separate client and gateway VMs. The client
-runs the packaged, user-facing `ranet3` binary with a real TUN device, while the
-gateway runs `charon-systemd`/`swanctl`, BIRD, and iperf3. The default test
-verifies an Ed25519-authenticated IKEv2 and Child SA negotiation across
-asymmetric local and remote UDP ports, checks Babel route exchange in both
-directions, and measures TCP bandwidth through the negotiated ESP tunnel:
+`checks/integration`. Except `integration-reload`, each boots separate client
+and gateway VMs. The client runs the packaged, user-facing `ranet3` binary with
+a real TUN device, while the gateway runs `charon-systemd`/`swanctl`, BIRD, and
+iperf3. The default test verifies an Ed25519-authenticated IKEv2 and Child SA
+negotiation across asymmetric local and remote UDP ports, checks Babel route
+exchange in both directions, and measures TCP bandwidth through the negotiated
+ESP tunnel:
 
 ```sh
 nix build .#checks.x86_64-linux.integration-initiator -L
@@ -85,11 +86,28 @@ rules rather than rewriting them, that turning `net.ipv4.ip_forward` off
 withdraws the IPv4 advertisement and leaves the IPv6 one alone, and that a stop
 leaves no nftables table behind.
 
-These checks exercise one-core and four-core clients, IPv4 and IPv6 routes,
-locally scheduled and peer-initiated rekeys, BIRD withdrawal/recovery, and a
-clean stop/restart with an idle TUN read. The integration test also accepts
-`profile = true` when imported from Nix to capture Go and kernel CPU profiles
-during longer throughput runs, including simultaneous traffic in both
+`integration-reload` boots one machine and no gateway. It runs ranet3 through
+the nixos module with a trust document that names only itself, and the machine
+has two specialisations that the test script switches to the way a deployment
+does:
+
+```sh
+nix build .#checks.x86_64-linux.integration-reload -L
+```
+
+The first changes an announced prefix and the trust document, which a reload
+applies. The switch exits with status 0, the daemon keeps its process and so its
+sessions, and the control socket reports the new prefix and document. The second
+changes the port, which a reload refuses. The switch exits with status 4, the
+daemon's reason is in the journal, and the old configuration keeps running until
+a restart applies the new file. No other check switches a configuration, so this
+one holds the unit's reload triggers and the stable path its command line names.
+
+The checks with a gateway exercise one-core and four-core clients, IPv4 and IPv6
+routes, locally scheduled and peer-initiated rekeys, BIRD withdrawal/recovery,
+and a clean stop/restart with an idle TUN read. The integration test also
+accepts `profile = true` when imported from Nix to capture Go and kernel CPU
+profiles during longer throughput runs, including simultaneous traffic in both
 directions:
 
 ```sh
