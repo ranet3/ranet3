@@ -1402,11 +1402,11 @@ func TestTearingDownUnusableIKESADoesNotSpendTheWholeBudget(t *testing.T) {
 	}
 	var budget time.Duration
 	for attempt := range teardownRetransmits {
-		budget += retransmitDelay(attempt + 1)
+		budget += retransmitDelay(requestTimeout, attempt+1)
 	}
 	var full time.Duration
 	for attempt := range maxRetransmits {
-		full += retransmitDelay(attempt + 1)
+		full += retransmitDelay(requestTimeout, attempt+1)
 	}
 	// runPeer redials every ten seconds, so a teardown that outlasts that
 	// delays the next attempt rather than the failed one.

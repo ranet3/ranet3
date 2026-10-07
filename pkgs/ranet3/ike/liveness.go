@@ -20,11 +20,7 @@ import (
 
 const (
 	defaultDPDInterval = 10 * time.Second
-	// dpdRetryDelay is how long a liveness probe that could not be sent at all
-	// waits before it is tried again. Short, because nothing is outstanding
-	// and the peer may well be there.
-	dpdRetryDelay = time.Second
-	maxMessageID  = ^uint32(0)
+	maxMessageID       = ^uint32(0)
 )
 
 var errMessageIDExhausted = errors.New("ike: Message ID space exhausted")
@@ -185,6 +181,13 @@ func (s *Session) dpdInterval() time.Duration {
 		return s.dpdEvery
 	}
 	return defaultDPDInterval
+}
+
+func (s *Session) retransmitTimeout() time.Duration {
+	if s.retransmitAfter > 0 {
+		return s.retransmitAfter
+	}
+	return requestTimeout
 }
 
 func (s *Session) Run(ctx context.Context) error {
@@ -379,10 +382,7 @@ func (s *Session) Run(ctx context.Context) error {
 			// a routing daemon is an ordinary moment, and tearing the SA down
 			// for it takes every route through the peer with it. The attempt
 			// counter declares the peer dead, above.
-			if err := s.sendPending(pending); err != nil {
-				slog.Warn("ike request retransmission failed, retrying", "exchange", pending.exchange,
-					"message_id", pending.msgID, "dpd", pending.dpd, "err", err)
-			}
+			s.sendPending(pending)
 			continue
 		}
 		// Re-read the traffic edge here rather than relying on the one at
@@ -396,20 +396,24 @@ func (s *Session) Run(ctx context.Context) error {
 			s.noteActive()
 		}
 		if pending == nil && !time.Now().Before(lastAuthenticated.Add(s.dpdInterval())) {
-			started, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, result: make(chan requestResult, 1), dpd: true})
+			started, err := s.startLiveness()
 			if err != nil {
-				// The probe was not sent, which is the retransmission case
-				// above rather than a dead peer: startRequest fails on the
-				// same local errors, and a pending it did build carries its
-				// own attempt budget. Nothing is pending, so the next pass
-				// tries again at the next deadline.
-				slog.Warn("ike liveness probe not sent, retrying", "err", err)
-				lastAuthenticated = time.Now().Add(-s.dpdInterval()).Add(dpdRetryDelay)
+				s.mux.Close()
+				return err
 			}
 			pending = started
 		}
 		continue
 	}
+}
+
+// startLiveness sends the empty INFORMATIONAL request of RFC 7296 section 2.4
+func (s *Session) startLiveness() (*pendingRequest, error) {
+	pending, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, result: make(chan requestResult, 1), dpd: true})
+	if err != nil {
+		return nil, fmt.Errorf("ike: start a liveness check: %w", err)
+	}
+	return pending, nil
 }
 
 // request starts a serialized local exchange through Run. Future Child SA
@@ -476,26 +480,40 @@ func (s *Session) startRequest(req *localRequest) (*pendingRequest, error) {
 	if err != nil {
 		return nil, err
 	}
+	// the request owns its Message ID even when this send fails, which spends an attempt as an unanswered one does
 	pending := &pendingRequest{localRequest: *req, context: context, msgID: msgID, raw: raw}
-	if err := s.sendPending(pending); err != nil {
-		return nil, err
-	}
-	// A failed first send did not put a request on the wire, so it must not
-	// consume a Message ID. Once sent, this exact request owns the ID until its
-	// response arrives (RFC 7296 §2.1-§2.2).
 	context.nextLocalMID++
+	s.sendPending(pending)
 	return pending, nil
 }
 
-func (s *Session) sendPending(pending *pendingRequest) error {
+// sendPending counts one attempt against the budget whether or not it goes out
+func (s *Session) sendPending(pending *pendingRequest) {
 	pending.sent++
 	nextAttempt := min(pending.attempts+1, maxRetransmits)
-	pending.deadline = time.Now().Add(retransmitDelay(nextAttempt))
+	pending.deadline = time.Now().Add(retransmitDelay(s.retransmitTimeout(), nextAttempt))
 	pending.attempts = nextAttempt
-	if err := s.mux.SendIKE(pending.raw); err != nil {
-		return err
+	s.noteSend(s.mux.SendIKE(pending.raw))
+}
+
+// noteSend warns at the first failed send of an outage and records when the outage starts and ends
+func (s *Session) noteSend(err error) {
+	if err == nil {
+		if s.sendFailures > 0 {
+			slog.Info("ike can send to the peer again", "peer", s.mux.Endpoint(), "failed", s.sendFailures)
+			s.emit("ike.send.recovered", slog.Int("failed", s.sendFailures))
+			s.sendFailures = 0
+		}
+		return
 	}
-	return nil
+	s.sendFailures++
+	if s.sendFailures > 1 {
+		slog.Debug("ike send failed again", "peer", s.mux.Endpoint(), "err", err, "failed", s.sendFailures)
+		return
+	}
+	slog.Warn("ike cannot send to the peer", "peer", s.mux.Endpoint(), "err", err,
+		"detail", "the session holds until a request's retransmission budget runs out")
+	s.emit("ike.send.failed", slog.String("err", err.Error()))
 }
 
 func pendingRetransmitsExhausted(pending *pendingRequest, peerAlive bool) bool {
@@ -518,11 +536,11 @@ func pendingRetransmitsExhausted(pending *pendingRequest, peerAlive bool) bool {
 	return pending.sent >= maxRetransmitsWhileBusy
 }
 
-func retransmitDelay(attempt int) time.Duration {
+func retransmitDelay(first time.Duration, attempt int) time.Duration {
 	if attempt <= 1 {
-		return requestTimeout
+		return first
 	}
-	return requestTimeout << min(attempt-1, maxRetransmits-1)
+	return first << min(attempt-1, maxRetransmits-1)
 }
 
 // dispatch returns true only when raw is a fresh authenticated message. Run

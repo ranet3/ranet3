@@ -121,6 +121,8 @@ type Session struct {
 
 	requestMu sync.Mutex // IKEv2 permits only one outstanding local request.
 	requests  chan *localRequest
+	// sendFailures counts failed IKE sends since the last that went out, and only Run's goroutine touches it
+	sendFailures int
 
 	childMu  sync.RWMutex
 	Child    ChildSA
@@ -171,6 +173,8 @@ type Session struct {
 	rekeyJitterSource  func(time.Duration) (time.Duration, error)
 	// dpdEvery overrides defaultDPDInterval; zero means the default.
 	dpdEvery time.Duration
+	// retransmitAfter overrides requestTimeout for Run's requests, and zero means the default
+	retransmitAfter time.Duration
 
 	// events is the configuration's Recorder, set with the two ends before the session is handed out
 	events        Recorder
