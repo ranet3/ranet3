@@ -97,17 +97,17 @@ func TestUDPSendPartialGSOFallbackDoesNotDuplicatePackets(t *testing.T) {
 		}
 		return len(messages), nil
 	}}}
-	socket.gso.Store(true)
 	socket.send.New = func() any { return newUDPSendBatch() }
-	b := &udpBind{v4: socket}
-	if err := b.Send(packets, &udpEndpoint{addr: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4500}}); err != nil {
+	b := &udpBind{v4: socket, started: time.Now()}
+	ep := &udpEndpoint{addr: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4500}}
+	if err := b.Send(packets, ep); err != nil {
 		t.Fatal(err)
 	}
 	want := make([]byte, count)
 	for i := range want {
 		want[i] = byte(i)
 	}
-	if !bytes.Equal(got, want) || socket.gso.Load() {
+	if !bytes.Equal(got, want) || ep.unsegmentedUntil.Load() == 0 {
 		t.Fatalf("partial fallback changed datagram order/count: %v", got)
 	}
 }

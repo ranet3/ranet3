@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/net/ipv4"
@@ -28,6 +29,8 @@ type udpEndpoint struct {
 	control []byte // immutable reply source address and interface
 	// unpinned records a fallback that worked and is never cleared
 	unpinned atomic.Bool
+	// unsegmentedUntil is when sends segment again, on the bind's clock in nanoseconds, and zero while they never stopped
+	unsegmentedUntil atomic.Int64
 }
 
 func pinnedEndpoint(addr *net.UDPAddr, source net.IP, index int, ipv6Socket bool) *udpEndpoint {
@@ -77,13 +80,14 @@ type udpSocket struct {
 	raw  syscall.RawConn
 	pc   udpBatchConn
 	ipv6 bool
-	gso  atomic.Bool
 	send sync.Pool
 }
 
 type udpBind struct {
 	v4, v6 *udpSocket
 	events func(kind string, attrs ...slog.Attr)
+	// started is the clock unsegmentedUntil counts from, which a test moves back
+	started time.Time
 }
 
 func (b *udpBind) ParseEndpoint(s string) (Endpoint, error) {
@@ -130,7 +134,7 @@ func openPacketBind(port uint16, underlay Underlay, index int, routed bool, even
 }
 
 func listenPacketBind(port uint16, fwmark uint32, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
-	b := &udpBind{events: events}
+	b := &udpBind{events: events, started: time.Now()}
 	var receivers []receiveFunc
 	for i, network := range []string{"udp4", "udp6"} {
 		var markErr error
@@ -162,7 +166,6 @@ func listenPacketBind(port uint16, fwmark uint32, events func(string, ...slog.At
 			return nil, nil, 0, err
 		}
 		socket := &udpSocket{conn: pc.(*net.UDPConn), ipv6: i == 1}
-		socket.gso.Store(true)
 		socket.send.New = func() any { return newUDPSendBatch() }
 		if socket.ipv6 {
 			p := ipv6.NewPacketConn(pc)
@@ -411,11 +414,11 @@ func (b *udpBind) Send(packets [][]byte, endpoint Endpoint) error {
 	batch := socket.send.Get().(*udpSendBatch)
 	defer socket.send.Put(batch)
 	control := ep.pin()
-	sent, err := socket.sendAll(batch, packets, ep.addr, control)
+	sent, err := b.sendWithSegmentFallback(socket, batch, packets, ep, control)
 	if err == nil || control == nil || !unpinnable(err) {
 		return err
 	}
-	if _, err := socket.sendAll(batch, packets[sent:], ep.addr, nil); err != nil {
+	if _, err := b.sendWithSegmentFallback(socket, batch, packets[sent:], ep, nil); err != nil {
 		return err
 	}
 	if ep.unpinned.CompareAndSwap(false, true) {
@@ -430,32 +433,63 @@ func unpinnable(err error) bool {
 		errors.Is(err, unix.ENODEV) || errors.Is(err, unix.EADDRNOTAVAIL)
 }
 
-// sendAll reports how many datagrams went out before an error
-func (s *udpSocket) sendAll(batch *udpSendBatch, packets [][]byte, to *net.UDPAddr, control []byte) (int, error) {
+// sendWithSegmentFallback segments packets to ep unless sends to ep have stopped segmenting
+// when linux refuses a message of several datagrams with an errno segments can cause and they then pass one to a message
+// ep stops segmenting until linux forgets the path MTU it learned
+func (b *udpBind) sendWithSegmentFallback(socket *udpSocket, batch *udpSendBatch, packets [][]byte, ep *udpEndpoint, control []byte) (int, error) {
 	done := 0
-	for done < len(packets) {
-		gso := s.gso.Load()
-		n := batch.prepare(packets[done:min(len(packets), done+espSendBatch)], to, control, gso)
-		sent, err := s.pc.WriteBatch(batch.messages[:n], 0)
+	for {
+		until := ep.unsegmentedUntil.Load()
+		segment := until == 0 || int64(time.Since(b.started)) >= until
+		sent, refused, err := socket.write(batch, packets[done:], ep.addr, control, segment)
+		done += sent
+		if err == nil || refused < 2 || !segmentRefusal(err) {
+			return done, err
+		}
+		plain, _, plainErr := socket.write(batch, packets[done:done+refused], ep.addr, control, false)
+		done += plain
+		if plainErr != nil {
+			return done, plainErr
+		}
+		if ep.unsegmentedUntil.CompareAndSwap(until, int64(time.Since(b.started)+unsegmentedFor)) {
+			b.fellBack(ep, "transport.endpoint.unsegmented", "transport stopped segmenting sends to an endpoint", err)
+		}
+	}
+}
+
+// segmentRefusal reports whether err is linux refusing a message for its segments
+// EMSGSIZE or EINVAL by kernel version for segments the path is too narrow for, EIO for a device or route that cannot segment
+func segmentRefusal(err error) bool {
+	return errors.Is(err, unix.EMSGSIZE) || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EIO)
+}
+
+// write stops at the first refused message and reports the datagrams sent before it and those it carried
+func (s *udpSocket) write(batch *udpSendBatch, packets [][]byte, to *net.UDPAddr, control []byte, segment bool) (sent, refused int, err error) {
+	for sent < len(packets) {
+		n := batch.prepare(packets[sent:min(len(packets), sent+espSendBatch)], to, control, segment)
+		var written int
+		// sendmmsg answers -1 when the first message is refused and a short count with no error when a later one is
+		written, err = s.pc.WriteBatch(batch.messages[:n], 0)
 		for i := range n {
 			batch.messages[i].Buffers[0], batch.messages[i].Addr = nil, nil
 		}
-		if sent > 0 {
-			done += batch.ends[sent-1]
+		written = max(written, 0)
+		start := 0
+		if written > 0 {
+			start = batch.ends[written-1]
 		}
+		sent += start
 		if err != nil {
-			if gso && (errors.Is(err, unix.EIO) || errors.Is(err, unix.EINVAL) ||
-				errors.Is(err, unix.ENOPROTOOPT) || errors.Is(err, unix.EOPNOTSUPP)) {
-				s.gso.Store(false)
-				continue
+			if written < n {
+				refused = batch.ends[written] - start
 			}
-			return done, err
+			return sent, refused, err
 		}
-		if sent == 0 {
-			return done, errors.New("transport: UDP send made no progress")
+		if written == 0 {
+			return sent, 0, errors.New("transport: UDP send made no progress")
 		}
 	}
-	return done, nil
+	return sent, 0, nil
 }
 
 // fellBack logs and records a fallback a send to ep took after linux refused it with err
