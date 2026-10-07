@@ -14,18 +14,23 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
+type tester interface {
+	Helper()
+	Fatal(args ...any)
+}
+
 // packets deliver hands over before it takes the exchange for endless
 const deliveryBudget = 1 << 10
 
 // heldWire holds each packet until deliver, so a reply never goes out from inside the delivery that caused it
 type heldWire struct {
-	t                    *testing.T
+	t                    tester
 	a, b                 *Speaker
 	peerBForA, peerAForB *netstack.Peer
 	toA, toB             [][]byte
 }
 
-func newHeldWire(t *testing.T, packetSize int) *heldWire {
+func newHeldWire(t tester, packetSize int) *heldWire {
 	t.Helper()
 	cfg := Config{Hello: dur(time.Second), Update: dur(10 * time.Minute)}
 	w := &heldWire{t: t}
