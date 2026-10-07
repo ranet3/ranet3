@@ -83,6 +83,10 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 			if !n.alive {
 				slog.Info("babel neighbor up", "peer", n.peer.ID)
 				s.events.Emit("babel.neighbor.up", n.peer.ID)
+				// the dump sent at session start may have preceded this node's session
+				actions = append(actions, sendAction{neighbor: n, dest: n.destination(), priority: priorityRequest,
+					tlvs: []RawTLV{EncodeRouteRequest(RouteRequest{AE: AEWildcard})}})
+				s.events.Emit("babel.request.sent", n.peer.ID)
 			}
 			n.alive = true
 			// An unscheduled Hello cannot extend the last scheduled promise.

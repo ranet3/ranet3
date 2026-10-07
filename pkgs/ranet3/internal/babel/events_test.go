@@ -16,7 +16,7 @@ import (
 
 func everything(string, string, []slog.Attr) bool { return true }
 
-// a neighbor coming up, every change of a selected next hop and the neighbor going down are recorded
+// a neighbor coming up and the request sent to it, every change of a selected next hop and the neighbor going down are recorded
 // the selection is recorded every time, where its log line is said once a second at most
 func TestSpeakerRecordsNeighborsAndSelections(t *testing.T) {
 	bus := events.New()
@@ -41,7 +41,7 @@ func TestSpeakerRecordsNeighborsAndSelections(t *testing.T) {
 		got = append(got, event.Kind+" "+event.Peer+" "+event.Attrs["route"])
 	}
 	selected, retracted := "babel.route.selected peer fd00:1::/64", "babel.route.retracted  fd00:1::/64"
-	want := []string{"babel.neighbor.up peer ",
+	want := []string{"babel.neighbor.up peer ", "babel.request.sent peer ",
 		selected, retracted, selected, retracted, selected, retracted,
 		"babel.neighbor.down peer "}
 	if !slices.Equal(got, want) {
@@ -66,8 +66,8 @@ func TestSpeakerRecordsANeighborLeavingWithItsSession(t *testing.T) {
 	for _, event := range bus.Recorded(everything, 0) {
 		got = append(got, event.Kind+" "+event.Peer)
 	}
-	up, down := "babel.neighbor.up "+neighbor.peer.ID, "babel.neighbor.down "+neighbor.peer.ID
-	if want := []string{up, down, up, down}; !slices.Equal(got, want) {
+	up, asked, down := "babel.neighbor.up "+neighbor.peer.ID, "babel.request.sent "+neighbor.peer.ID, "babel.neighbor.down "+neighbor.peer.ID
+	if want := []string{up, asked, down, up, asked, down}; !slices.Equal(got, want) {
 		t.Errorf("a neighbor replaced and then closed recorded %q, want %q", got, want)
 	}
 }
