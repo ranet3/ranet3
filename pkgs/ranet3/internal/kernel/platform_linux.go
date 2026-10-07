@@ -266,6 +266,12 @@ func (p *netlinkPlatform) where(t Table) string {
 	return fmt.Sprintf("table %d protocol %d", uint32(t.ID), t.Proto)
 }
 
+func (p *netlinkPlatform) retable(t Table) { p.table = t }
+
+// refuseMeaningless refuses nothing
+// every cap.table setting means something on linux
+func refuseMeaningless(Table, string) error { return nil }
+
 func (p *netlinkPlatform) AddRoute(route Route) error {
 	// EXCL rather than REPLACE. A replace takes over whatever sits first at the
 	// same prefix, tos and priority no matter who wrote it: fib_table_insert

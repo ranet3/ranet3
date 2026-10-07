@@ -105,7 +105,7 @@ var errRouteSkipped = errors.New("kernel: route was not installed")
 // routing table this reconciler owns and everything it writes into it.
 // Writing the block turns the reconciler on, so a deployment configuring its
 // routes externally writes no cap.table and gets no reconciler. Every field is checked by Validate, which the loader calls, and
-// again by New.
+// again by New and by SetTable on a reload.
 type Table struct {
 	// ID is the routing table the reconciler owns; the fleet uses 200, the
 	// table its policy rules and its End.DT46 look up. Zero uses DefaultTable.
@@ -126,7 +126,8 @@ type Table struct {
 	// source-specific IPv6 routes carry RTA_SRC instead.
 	PrefSrc4 schema.Addr `yaml:"prefsrc4,omitempty" json:"prefsrc4,omitzero" toml:"prefsrc4,omitempty"`
 	// Addresses are assigned to the device when absent and removed again at
-	// shutdown; only addresses the reconciler added itself are ever removed.
+	// shutdown or when a reload stops assigning them. Only addresses the
+	// reconciler added itself are ever removed.
 	Addresses []schema.Prefix `yaml:"addresses,omitempty" json:"addresses,omitempty" toml:"addresses,omitempty"`
 	// AssignAnnounced assigns every prefix cap.route announces as well, which
 	// is the locally originated address an operator otherwise configures by
@@ -220,7 +221,7 @@ type Runtime struct {
 	// route on the wire can be run without a kernel; see Host. Only the darwin
 	// backend reads it.
 	Host Host
-	// Events records every pass that changed the kernel, skipped a route it had not skipped before or failed
+	// Events records every pass that changed the kernel, skipped a route it had not skipped before, followed a reload or failed
 	// nil records nothing
 	Events *events.Bus
 }
@@ -489,6 +490,8 @@ type platform interface {
 	// Notify carries one coalesced wake-up per batch of kernel route
 	// notifications in the reconciler's table.
 	Notify() <-chan struct{}
+	// retable takes the capability a reload installed, on the id, proto and vrf the platform was opened with
+	retable(Table)
 	Close() error
 }
 
@@ -746,8 +749,9 @@ func familyOf(address netip.Addr) Family {
 
 type Reconciler struct {
 	// table is the capability with its defaults filled in, rt what the caller
-	// resolved, and rules and addresses what New made of the two: the rules
-	// with their families expanded and the address set the device is to carry.
+	// resolved, and rules and addresses what New or SetTable made of the two:
+	// the rules with their families expanded and the address set the device is
+	// to carry.
 	table     Table
 	rt        Runtime
 	ruleSet   []Rule
@@ -785,9 +789,9 @@ type Reconciler struct {
 	capturing bool
 
 	// rules and vrfs are the optional halves of the platform, nil where it has
-	// no policy engine or no VRFs. New refuses a configuration that needs one
-	// of them on such a platform, so nil here means the configuration asked
-	// for nothing.
+	// no policy engine or no VRFs. New and SetTable refuse a configuration that
+	// needs one of them on such a platform, so nil here means the configuration
+	// asked for nothing.
 	rules ruler
 	vrfs  vrfMaker
 	// madeVRF is the index of the VRF device this reconciler created itself, 0
@@ -812,6 +816,13 @@ type Reconciler struct {
 	enabled   atomic.Bool
 	wake      chan struct{}
 	withdrawn bool
+	// next is the capability SetTable accepted last, which reload wakes the loop to take
+	next   atomic.Pointer[accepted]
+	reload chan struct{}
+	// inForce is table as another goroutine reads it, stored whole when the loop takes a capability
+	inForce atomic.Pointer[Table]
+	// reloaded says the pass under way follows a capability the loop took, and belongs to that goroutine
+	reloaded bool
 
 	// stats is the last route pass as an operator reads it. The single
 	// reconcile goroutine publishes a whole value and a reader takes one, so
@@ -885,13 +896,9 @@ func New(t Table, rt Runtime, src RouteSource) (*Reconciler, error) {
 		// answered on.
 		return nil, errors.New("kernel: a bound underlay needs a session source, or an announced default would install before the mesh has carried anything")
 	}
-	addresses := make([]netip.Prefix, 0, len(t.Addresses))
-	for _, prefix := range t.Assigned(rt.Announced) {
-		if _, ok := canonicalPrefix(prefix); !ok {
-			return nil, fmt.Errorf("kernel: address %s is not a valid prefix", prefix)
-		}
-		// an assigned address keeps its host bits; only a route key is masked.
-		addresses = append(addresses, netip.PrefixFrom(prefix.Addr().WithZone(""), prefix.Bits()))
+	addresses, err := resolveAddresses(t, rt.Announced)
+	if err != nil {
+		return nil, err
 	}
 	plat, err := newPlatform(t, rt)
 	if err != nil {
@@ -904,6 +911,19 @@ func New(t Table, rt Runtime, src RouteSource) (*Reconciler, error) {
 	// The rules as Normalized left them: expanded, canonical and in one order,
 	// which is the form the reconciler installs and diffs against the kernel.
 	return newReconciler(t, rt, t.Rules, addresses, src, plat), nil
+}
+
+// resolveAddresses is the address set a reconciler of t carries on the device, given the prefixes cap.route announces
+func resolveAddresses(t Table, announced []netip.Prefix) ([]netip.Prefix, error) {
+	addresses := make([]netip.Prefix, 0, len(t.Addresses))
+	for _, prefix := range t.Assigned(announced) {
+		if _, ok := canonicalPrefix(prefix); !ok {
+			return nil, fmt.Errorf("kernel: address %s is not a valid prefix", prefix)
+		}
+		// an assigned address keeps its host bits and only a route key is masked
+		addresses = append(addresses, netip.PrefixFrom(prefix.Addr().WithZone(""), prefix.Bits()))
+	}
+	return addresses, nil
 }
 
 // Normalized is the capability as the reconciler runs it: every field the file
@@ -974,9 +994,26 @@ func sortedRules(rules []Rule) []Rule {
 	return rules
 }
 
-// refuseWhatThePlatformLacks stops a startup that asked for a facility this
-// platform does not have. It is one place rather than one per backend, so a
-// refusal says what the platform does instead as well as what it will not do.
+// Unreloadable names the setting next changes that a reconciler running t keeps for its life, or is empty
+// the platform reads the id and proto it was opened on
+// and the tun is bound to the vrf
+func (t Table) Unreloadable(next Table) string {
+	t, next = t.Normalized(), next.Normalized()
+	switch {
+	case t.ID != next.ID:
+		return "id"
+	case t.Proto != next.Proto:
+		return "proto"
+	case (t.VRF == nil) != (next.VRF == nil) || t.VRF != nil && *t.VRF != *next.VRF:
+		return "vrf"
+	}
+	return ""
+}
+
+// refuseWhatThePlatformLacks stops a startup or a reload that asked for a
+// facility this platform does not have. It is one place rather than one per
+// backend, so a refusal says what the platform does instead as well as what it
+// will not do.
 //
 // Refusing matters more than it looks. Policy rules and a VRF are the two
 // halves of the steering a fleet node needs, and a platform that accepted the
@@ -1019,8 +1056,10 @@ func newReconciler(t Table, rt Runtime, rules []Rule, addresses []netip.Prefix, 
 		gate:        captureGate{grace: t.CaptureGrace.Duration()},
 		now:         time.Now,
 		wake:        make(chan struct{}, 1),
+		reload:      make(chan struct{}, 1),
 	}
 	r.enabled.Store(true)
+	r.inForce.Store(&t)
 	// Nil on a platform without them, which New has already refused to
 	// configure, so every use below is reached only where the backend answers.
 	r.rules, _ = plat.(ruler)
@@ -1031,13 +1070,13 @@ func newReconciler(t Table, rt Runtime, rules []Rule, addresses []netip.Prefix, 
 // Where names the space this reconciler owns, for an operator reading a log
 // line: a routing table where the platform has them, and the interface itself
 // where it does not.
-func (r *Reconciler) Where() string { return r.plat.where(r.table) }
+func (r *Reconciler) Where() string { return r.plat.where(r.Table()) }
 
 // Table is the capability this reconciler is running, defaults applied. New
 // takes its argument by value and fills the gaps in its own copy, so the
 // caller's is not the one in force and a diagnostic reporting that one names a
 // table of zero on every deployment that left it out.
-func (r *Reconciler) Table() Table { return r.table }
+func (r *Reconciler) Table() Table { return *r.inForce.Load() }
 
 // SetEnabled stops or starts this reconciler while it runs, which is the
 // `birdc disable` a kernel protocol took while Babel lived in BIRD. Stopping
@@ -1060,6 +1099,56 @@ func (r *Reconciler) SetEnabled(on bool) {
 
 // Enabled reports whether this reconciler is writing to the kernel.
 func (r *Reconciler) Enabled() bool { return r.enabled.Load() }
+
+// accepted is a capability SetTable took, resolved as New resolves one
+type accepted struct {
+	table     Table
+	addresses []netip.Prefix
+}
+
+// SetTable hands the loop the capability a reload read, with the prefixes cap.route announces, for a pass at once
+// it refuses what New refuses and a change of id, proto or vrf
+// a refusal changes nothing
+func (r *Reconciler) SetTable(t Table, announced []netip.Prefix) error {
+	if err := t.Validate(); err != nil {
+		return err
+	}
+	t = t.Normalized()
+	if setting := r.Table().Unreloadable(t); setting != "" {
+		return fmt.Errorf("kernel: cap.table %s changed, restart to apply", setting)
+	}
+	if err := refuseMeaningless(t, r.rt.Interface); err != nil {
+		return err
+	}
+	if err := refuseWhatThePlatformLacks(t, r.plat); err != nil {
+		return err
+	}
+	addresses, err := resolveAddresses(t, announced)
+	if err != nil {
+		return err
+	}
+	r.next.Store(&accepted{table: t, addresses: addresses})
+	select {
+	case r.reload <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// adopt installs the capability SetTable accepted last, and reports whether there was one
+func (r *Reconciler) adopt() bool {
+	next := r.next.Swap(nil)
+	if next == nil {
+		return false
+	}
+	r.table, r.ruleSet, r.addresses = next.table, next.table.Rules, next.addresses
+	r.gate.grace = next.table.CaptureGrace.Duration()
+	r.plat.retable(next.table)
+	r.inForce.Store(&next.table)
+	r.reloaded = true
+	slog.Info("kernel reconciler took a reloaded cap.table", "where", r.Where())
+	return true
+}
 
 // Run reconciles until ctx is canceled, then withdraws everything this
 // reconciler installed and closes its netlink sockets. It is called once.
@@ -1153,6 +1242,11 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			r.trigger = "disable"
 			if r.enabled.Load() {
 				r.trigger = "enable"
+			}
+		case <-r.reload:
+			r.trigger = "reload"
+			if r.adopt() {
+				ticker.Reset(r.table.Reconcile.Duration())
 			}
 		case <-changed:
 			r.trigger = "mesh"
@@ -1272,10 +1366,10 @@ func (r *Reconciler) recordPass(err error, took time.Duration) {
 		stats.Err = err.Error()
 	}
 	r.stats.Store(&stats)
-	anew, changed := r.refusedAnew, r.changed
-	r.refusedAnew, r.changed = false, false
-	// only a pass that changed the kernel, refused a route anew or failed is recorded
-	if stats.Added == 0 && stats.Removed == 0 && !changed && !anew && err == nil {
+	anew, changed, reloaded := r.refusedAnew, r.changed, r.reloaded
+	r.refusedAnew, r.changed, r.reloaded = false, false, false
+	// only a pass that changed the kernel, refused a route anew, failed or followed a reload is recorded
+	if stats.Added == 0 && stats.Removed == 0 && !changed && !anew && !reloaded && err == nil {
 		return
 	}
 	attrs := []slog.Attr{slog.String("trigger", r.trigger), slog.Duration("took", took),
@@ -1765,25 +1859,46 @@ func compareSourceSpecificity(a, b netip.Prefix) int {
 	return cmp.Or(cmp.Compare(b.Bits(), a.Bits()), a.Addr().Compare(b.Addr()))
 }
 
-// applyAddresses adds the configured addresses that are missing. It removes
-// nothing: an address on the link that is not configured belongs to somebody
-// else, and the only addresses ever removed are the ones recorded in owned.
+// applyAddresses brings the link to the configured addresses. The only ones it
+// removes are recorded in owned: an address on the link that is not configured
+// and not recorded belongs to somebody else.
 func (r *Reconciler) applyAddresses() error {
-	if len(r.addresses) == 0 {
+	if len(r.addresses) == 0 && len(r.owned) == 0 {
 		return nil
 	}
 	actual, err := r.plat.Addrs()
 	if err != nil {
 		return fmt.Errorf("list addresses: %w", err)
 	}
+	var relengthed, stale []netip.Prefix
+	for prefix := range r.owned {
+		if slices.Contains(r.addresses, prefix) {
+			continue
+		}
+		if slices.ContainsFunc(r.addresses, func(wanted netip.Prefix) bool { return wanted.Addr() == prefix.Addr() }) {
+			relengthed = append(relengthed, prefix)
+		} else {
+			stale = append(stale, prefix)
+		}
+	}
+	slices.SortFunc(relengthed, comparePrefixes)
+	slices.SortFunc(stale, comparePrefixes)
+	// before the adds, so an address of ours given another length is replaced rather than left as another writer's
+	removed, errs := r.release(relengthed, actual)
+	for _, prefix := range removed {
+		slog.Info("kernel address removed", "interface", r.rt.Interface, "address", prefix)
+		r.changed = true
+	}
 	have := make(map[netip.Prefix]bool, len(actual))
 	held := make(map[netip.Addr]netip.Prefix, len(actual))
 	for _, prefix := range actual {
+		if slices.Contains(removed, prefix) {
+			continue
+		}
 		have[prefix] = true
 		held[prefix.Addr()] = prefix
 	}
 	warned := make(map[netip.Prefix]bool, len(r.warnedAddrs))
-	var errs []error
 	for _, prefix := range r.addresses {
 		if have[prefix] {
 			continue
@@ -1810,6 +1925,14 @@ func (r *Reconciler) applyAddresses() error {
 		}
 		slog.Info("kernel address assigned", "interface", r.rt.Interface, "address", prefix)
 		r.owned[prefix], r.changed = true, true
+	}
+	// the rest after the adds, so a renumbered tun is never left without an IPv4 address
+	// linux flushes every IPv4 route out of a device that has none, another writer's among them
+	gone, failed := r.release(stale, actual)
+	errs = append(errs, failed...)
+	for _, prefix := range gone {
+		slog.Info("kernel address removed", "interface", r.rt.Interface, "address", prefix)
+		r.changed = true
 	}
 	r.warnedAddrs = warned
 	return errors.Join(errs...)
@@ -1873,27 +1996,14 @@ func (r *Reconciler) withdraw() error {
 	// failure: a readback that did not happen is not one that said yes.
 	held, err := r.plat.Addrs()
 	addresses := slices.SortedFunc(maps.Keys(r.owned), comparePrefixes)
-	removed := 0
 	if err != nil {
 		errs = append(errs, fmt.Errorf("list addresses: %w", err))
 		slog.Warn("kernel is leaving every address it installed, the link would not read back",
 			"interface", r.rt.Interface, "addresses", len(addresses))
 		addresses = nil
 	}
-	for _, prefix := range addresses {
-		if !slices.Contains(held, prefix) {
-			slog.Warn("kernel is leaving an address it no longer holds as it installed it",
-				"interface", r.rt.Interface, "address", prefix)
-			delete(r.owned, prefix)
-			continue
-		}
-		if err := r.plat.DelAddr(prefix); err != nil {
-			errs = append(errs, fmt.Errorf("delete address %s: %w", prefix, err))
-			continue
-		}
-		delete(r.owned, prefix)
-		removed++
-	}
+	removed, failed := r.release(addresses, held)
+	errs = append(errs, failed...)
 	if r.enslaved {
 		if err := r.plat.Release(); err != nil {
 			errs = append(errs, fmt.Errorf("release %s from %s: %w", r.rt.Interface, r.table.Name(), err))
@@ -1930,8 +2040,28 @@ func (r *Reconciler) withdraw() error {
 	}
 	// Every count is of something that left, so a line reporting nothing
 	// removed is a shutdown that removed nothing.
-	slog.Info("kernel reconciler withdrawn", "routes", withdrawn, "addresses", removed, "rules", rules)
+	slog.Info("kernel reconciler withdrawn", "routes", withdrawn, "addresses", len(removed), "rules", rules)
 	return errors.Join(errs...)
+}
+
+// release takes each address of ours in prefixes off the link while held shows it as it was added
+// it forgets one held shows otherwise, which is no longer this reconciler's to take
+func (r *Reconciler) release(prefixes, held []netip.Prefix) (removed []netip.Prefix, errs []error) {
+	for _, prefix := range prefixes {
+		if !slices.Contains(held, prefix) {
+			slog.Warn("kernel is leaving an address it no longer holds as it installed it",
+				"interface", r.rt.Interface, "address", prefix)
+			delete(r.owned, prefix)
+			continue
+		}
+		if err := r.plat.DelAddr(prefix); err != nil {
+			errs = append(errs, fmt.Errorf("delete address %s: %w", prefix, err))
+			continue
+		}
+		delete(r.owned, prefix)
+		removed = append(removed, prefix)
+	}
+	return removed, errs
 }
 
 // canonicalPrefix puts a prefix in the one form the kernel reports, so a diff

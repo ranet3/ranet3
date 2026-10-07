@@ -29,3 +29,15 @@ func TestNewRefusesRulesOnAPlatformWithoutThem(t *testing.T) {
 		t.Errorf("the refusal reads %q, want it to name the rules", err)
 	}
 }
+
+// a reload is refused what New refuses here, a preferred source darwin has no way to honor among it
+func TestDarwinRefusesAReloadNamingAPreferredSource(t *testing.T) {
+	reconciler, _, _ := harness(t, Table{}, Runtime{Interface: "utun9"})
+	err := reconciler.SetTable(Table{PrefSrc4: schema.MustAddr("198.18.104.117")}, nil)
+	if err == nil || !strings.Contains(err.Error(), "prefsrc4") {
+		t.Errorf("a reload naming a preferred source was refused with %v", err)
+	}
+	if reconciler.adopt() {
+		t.Error("the refused reload was handed to the loop")
+	}
+}
