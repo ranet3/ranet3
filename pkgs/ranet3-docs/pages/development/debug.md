@@ -123,12 +123,17 @@ its connections to the reads.
 | `ike.session.resolved`               | two sessions for one path were resolved to one                              |
 | `ike.rekey.started`, `.completed`    | a rekey this end started, of the Child SA or of the IKE SA                  |
 | `ike.rekey.failed`                   | the same rekey failing, with its error                                      |
+| `ike.endpoint.moved`                 | a session moved to where its peer's latest fresh request came from          |
+| `ike.send.failed`, `.recovered`      | a session's sends to its peer began to fail, and one went out again         |
+| `ike.probe`                          | asked to prove its path, a session started a check or resent its request    |
 | `babel.neighbor.up`, `.down`         | a neighbor's hellos started arriving, or stopped or its session ended       |
 | `babel.request.sent`                 | this node asked a neighbor that came up for its whole table                 |
 | `babel.route.selected`, `.retracted` | a prefix's next hop changed, every time rather than once a second as logged |
 | `kernel.pass`                        | a reconciler pass that changed the kernel, skipped anew or failed           |
 | `egress.pass`                        | a translator pass that rewrote its rules, moved its prefixes or failed      |
 | `transport.underlay.bound`           | the underlay socket moved onto another interface                            |
+| `transport.endpoint.unpinned`        | sends to a peer left the address its datagram arrived on, which was gone    |
+| `transport.endpoint.unsegmented`     | sends to a peer stopped segmenting, since its path refused a segment        |
 | `netstack.codel.dropping`            | a peer's sender began dropping for a queue delay above its target           |
 | `netstack.codel.drained`             | that peer's queue emptied, or its delay fell back below the target          |
 
@@ -141,6 +146,14 @@ once without a peer.
 A `babel.request.sent` is recorded when the node decides to send the request,
 and a send queue with no room can still refuse it, which
 `ranet3_peer_send_dropped_total` counts.
+
+A `transport.endpoint` event carries the peer's `endpoint` and the `errno` the
+kernel refused the send with. An `unpinned` one is recorded once for an
+endpoint, and an `unsegmented` one each time segmentation stops, which for a
+path that stays narrow is at most once every 10 minutes. An `ike.send.failed`
+carries the error of the first send that failed, and its `ike.send.recovered`
+how many failed before one went out. A reply to a retransmitted request counts
+toward neither, since a replay can come from any address.
 
 A `netstack.codel` event carries the `sojourn` of the batch that changed the
 state, how long that batch had waited since it was reserved, and the `target`. A

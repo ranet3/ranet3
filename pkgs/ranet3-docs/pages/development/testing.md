@@ -16,16 +16,18 @@ everything else from the root of the repository.
 go test ./... -race
 ```
 
-The unit tests need no privileges, with three exceptions: `internal/kernel` has
+The unit tests need no privileges, with four exceptions: `internal/kernel` has
 tests that write to a real routing table, `internal/egress` one that writes into
-a real packet filter, and `internal/netstack` four that create and attach to a
-real TUN on linux, read its `gso_max_segs` back, open several lanes as one
-device, refuse a mesh under the default name where a device of that name exists
-and warn at a new mesh's first cut read. On linux all three unshare a network
-namespace, refuse to continue unless it is empty, and skip unless run as root.
-On darwin the `internal/kernel` tests against the real routing socket and the
-`internal/netstack` arms that create a utun run as root only with
-`RANET3_DARWIN_NETTEST=1` set, because that machine is on a live mesh.
+a real packet filter, `internal/netstack` four that create and attach to a real
+TUN on linux, read its `gso_max_segs` back, open several lanes as one device,
+refuse a mesh under the default name where a device of that name exists and warn
+at a new mesh's first cut read, and `transport` one that sends through a veth
+pair to a peer in a second namespace, behind a route with a locked path MTU. On
+linux all four unshare a network namespace, refuse to continue unless it is
+empty, and skip unless run as root. On darwin the `internal/kernel` tests
+against the real routing socket and the `internal/netstack` arms that create a
+utun run as root only with `RANET3_DARWIN_NETTEST=1` set, because that machine
+is on a live mesh.
 
 `internal/kernel` names the machine it reads and writes, `kernel.Host`, so the
 darwin backend can be driven without either. `internal/client`'s
@@ -35,14 +37,13 @@ writes the default its bound socket depends on, and the reconciler holds an
 announced default out of the kernel until a session is live, all asserted on the
 routes that arrive rather than on the calls that made them. It needs no
 privilege, and the one thing it leaves with the running kernel is `IP_BOUND_IF`
-on the transport's own UDP socket. The `netlink` VM check runs the three
-binaries as root against a real kernel, which is the only place the `nf_tables`
-encoding is checked against something other than the decoder it was written
-beside.
+on the transport's own UDP socket. The `netlink` VM check runs the four binaries
+as root against a real kernel, which is the only place the `nf_tables` encoding
+is checked against something other than the decoder it was written beside.
 
 The packages that read bytes a peer or a file chooses also carry property tests,
-in files ending in `_property_test.go`: `esp`, `ike`, `sadr`, `srv6`,
-`internal/babel`, `internal/packet`, `schema`, `internal/config`,
+in files ending in `_property_test.go`: `esp`, `ike`, `transport`, `sadr`,
+`srv6`, `internal/babel`, `internal/packet`, `schema`, `internal/config`,
 `internal/kernel` and `control`. They run with the rest of `go test`, under
 hegel-go through `internal/pbt`, whose `Check` gives every property the same
 terms: 200 cases, no example database, and a derandomized engine. hegel v0.9.14
