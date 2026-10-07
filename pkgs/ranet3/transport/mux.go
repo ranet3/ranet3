@@ -201,6 +201,10 @@ type Endpoint interface {
 	// AddrPort is the peer's address as this socket observed it, which NAT
 	// detection has to hash (RFC 7296 section 2.23).
 	AddrPort() netip.AddrPort
+	// sameDestination reports whether sends to other leave for the same address and port from the same source
+	sameDestination(other Endpoint) bool
+	// withoutSource is this endpoint with the source address and interface left to the kernel
+	withoutSource() Endpoint
 }
 
 type packetBind interface {
@@ -288,15 +292,7 @@ func (h *Hub) NewMux(remoteIP net.IP, remotePort int) (*Mux, error) {
 	if err != nil {
 		return nil, fmt.Errorf("transport: parse remote endpoint: %w", err)
 	}
-	m := &Mux{hub: h, endpoint: endpoint, ikeCh: make(chan Datagram, 16), espCh: make(chan espDatagramBatch, espChanSize), done: make(chan struct{})}
-	h.mu.Lock()
-	if h.closed.Load() {
-		h.mu.Unlock()
-		return nil, fmt.Errorf("transport: hub closed")
-	}
-	h.muxes[m] = struct{}{}
-	h.mu.Unlock()
-	return m, nil
+	return h.newMux(endpoint, true)
 }
 
 // NewMuxTo creates a logical peer channel for an endpoint a datagram arrived
@@ -307,7 +303,11 @@ func (h *Hub) NewMuxTo(endpoint Endpoint) (*Mux, error) {
 	if endpoint == nil {
 		return nil, fmt.Errorf("transport: nil remote endpoint")
 	}
-	m := &Mux{hub: h, endpoint: endpoint, ikeCh: make(chan Datagram, 16), espCh: make(chan espDatagramBatch, espChanSize), done: make(chan struct{})}
+	return h.newMux(endpoint, false)
+}
+
+func (h *Hub) newMux(endpoint Endpoint, dialed bool) (*Mux, error) {
+	m := &Mux{hub: h, endpoint: endpoint, dialed: dialed, ikeCh: make(chan Datagram, 16), espCh: make(chan espDatagramBatch, espChanSize), done: make(chan struct{})}
 	h.mu.Lock()
 	if h.closed.Load() {
 		h.mu.Unlock()
@@ -540,6 +540,7 @@ type Mux struct {
 	hub           *Hub
 	endpointMu    sync.RWMutex
 	endpoint      Endpoint
+	dialed        bool
 	ikeCh         chan Datagram
 	espRecvMu     sync.Mutex
 	espDispatchMu sync.Mutex
@@ -677,12 +678,22 @@ func (m *Mux) currentEndpoint() Endpoint {
 	return m.endpoint
 }
 
-// AdoptEndpoint changes the destination used for subsequent IKE and ESP
-// traffic. IKE calls this only after authenticating a request from endpoint.
-func (m *Mux) AdoptEndpoint(endpoint Endpoint) {
+// AdoptEndpoint moves this mux to endpoint and reports whether that changed the address, port or source its sends leave with
+// IKE calls it only with the source of a fresh authenticated request, as RFC 7296 section 2.23 asks
+// a mux NewMux made takes the address and port alone and leaves the source to the kernel
+// so a session this node dialed sends from whatever address this host holds now
+func (m *Mux) AdoptEndpoint(endpoint Endpoint) bool {
+	if m.dialed {
+		endpoint = endpoint.withoutSource()
+	}
 	m.endpointMu.Lock()
+	defer m.endpointMu.Unlock()
+	// the current endpoint keeps what its sends learned about the path
+	if m.endpoint.sameDestination(endpoint) {
+		return false
+	}
 	m.endpoint = endpoint
-	m.endpointMu.Unlock()
+	return true
 }
 
 // Endpoint is the destination this mux currently sends to, which a NAT may

@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -243,32 +245,54 @@ func TestMessageIDExhaustionCannotWrap(t *testing.T) {
 	})
 }
 
+// acceptedMux is the mux a responder makes from a datagram configured sent
+func acceptedMux(t *testing.T, configured *net.UDPConn, spiI uint64) *transport.Mux {
+	t.Helper()
+	hub := listenHub(t)
+	unclaimed := hub.Listen()
+	opening := make([]byte, 28)
+	binary.BigEndian.PutUint64(opening[:8], spiI)
+	to := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: hub.LocalAddr().(*net.UDPAddr).Port}
+	if _, err := configured.WriteToUDP(withNonESPMarker(opening), to); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case first := <-unclaimed:
+		mux, err := hub.NewMuxTo(first.Endpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return mux
+	case <-time.After(answerBudget):
+		t.Fatal("the opening datagram never arrived")
+		return nil
+	}
+}
+
+func recordedKind(r *recorder, kind string) int {
+	count := 0
+	for _, line := range r.recorded() {
+		if strings.HasPrefix(line, kind+" ") {
+			count++
+		}
+	}
+	return count
+}
+
 func TestReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
 	configured := listenPeer(t)
 	rebound := listenPeer(t)
-	configuredAddr := configured.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", configuredAddr.IP, configuredAddr.Port)
-	if err != nil {
-		t.Fatal(err)
-	}
+
+	ikeCtx := testContext()
+	mux := acceptedMux(t, configured, ikeCtx.spiI)
 	defer mux.Close()
-
-	const spiI = 0x0102030405060708
-	const spiR = 0x1112131415161718
-	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
-	ikeCtx := &ikeContext{
-		suite: suite,
-		spiI:  spiI,
-		spiR:  spiR,
-		skei:  make([]byte, 20),
-		sker:  make([]byte, 20),
-	}
-	s := &Session{mux: mux, current: ikeCtx}
-	if err := mux.RegisterIKE(spiI); err != nil {
+	moves := &recorder{}
+	s := &Session{mux: mux, current: ikeCtx, events: moves.record}
+	if err := mux.RegisterIKE(ikeCtx.spiI); err != nil {
 		t.Fatal(err)
 	}
 
-	dst := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: mux.LocalAddr().(*net.UDPAddr).Port}
+	dst := muxLoopback(mux)
 	readIKE := func(peer *net.UDPConn) []byte {
 		t.Helper()
 		buf := make([]byte, 2048)
@@ -294,9 +318,9 @@ func TestReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
 		return s.dispatch(raw, source, &pending)
 	}
 
-	request, err := EncryptMessage(suite, ikeCtx.sker, Header{
-		SPIInitiator: spiI,
-		SPIResponder: spiR,
+	request, err := EncryptMessage(ikeCtx.suite, ikeCtx.sker, Header{
+		SPIInitiator: ikeCtx.spiI,
+		SPIResponder: ikeCtx.spiR,
 		ExchangeType: INFORMATIONAL,
 		MessageID:    0,
 	}, nil, nil)
@@ -307,6 +331,9 @@ func TestReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
 		t.Fatal("fresh request was not reported as peer activity")
 	}
 	response := readIKE(configured)
+	if got := recordedKind(moves, "ike.endpoint.moved"); got != 0 {
+		t.Errorf("a request from where the session already sends recorded %d moves", got)
+	}
 
 	if dispatchFrom(rebound, request) {
 		t.Fatal("replayed request was reported as fresh peer activity")
@@ -321,9 +348,9 @@ func TestReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
 		t.Fatalf("packet after replay = %q, want configured endpoint", got)
 	}
 
-	freshRequest, err := EncryptMessage(suite, ikeCtx.sker, Header{
-		SPIInitiator: spiI,
-		SPIResponder: spiR,
+	freshRequest, err := EncryptMessage(ikeCtx.suite, ikeCtx.sker, Header{
+		SPIInitiator: ikeCtx.spiI,
+		SPIResponder: ikeCtx.spiR,
 		ExchangeType: INFORMATIONAL,
 		MessageID:    1,
 	}, nil, nil)
@@ -340,6 +367,93 @@ func TestReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
 	if got := readIKE(rebound); string(got) != "future" {
 		t.Fatalf("packet after fresh request = %q, want rebound endpoint", got)
 	}
+	if got := recordedKind(moves, "ike.endpoint.moved"); got != 1 {
+		t.Errorf("the session recorded %d moves, want the one a fresh request from a new endpoint made", got)
+	}
+}
+
+// a dialed session follows its peer to where a fresh request that passed its integrity check came from, RFC 7296 section 2.23,
+// and leaves by the kernel's choice of source rather than the address the request arrived on
+// linux holds all of 127.0.0.0/8 and chooses 127.0.0.1 to reach any of it, which tells the two apart
+func TestDialedSessionFollowsItsPeerFromTheKernelsSource(t *testing.T) {
+	movedTo, arrival := net.IPv4(127, 0, 0, 1), net.IPv4(127, 0, 0, 1)
+	if runtime.GOOS == "linux" {
+		movedTo, arrival = net.IPv4(127, 0, 0, 2), net.IPv4(127, 0, 0, 3)
+	}
+	configured := listenPeer(t)
+	moved, err := net.ListenUDP("udp4", &net.UDPAddr{IP: movedTo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { moved.Close() })
+	hub := listenHub(t)
+	configuredAddr := configured.LocalAddr().(*net.UDPAddr)
+	mux, err := hub.NewMux(configuredAddr.IP, configuredAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ikeCtx := testContext()
+	moves := &recorder{}
+	s := &Session{mux: mux, current: ikeCtx, events: moves.record}
+	if err := mux.RegisterIKE(ikeCtx.spiI); err != nil {
+		t.Fatal(err)
+	}
+	request, err := EncryptMessage(ikeCtx.suite, ikeCtx.sker, Header{SPIInitiator: ikeCtx.spiI, SPIResponder: ikeCtx.spiR,
+		ExchangeType: INFORMATIONAL}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrive := func(raw []byte) bool {
+		t.Helper()
+		if _, err := moved.WriteToUDP(withNonESPMarker(raw), &net.UDPAddr{IP: arrival, Port: muxLoopback(mux).Port}); err != nil {
+			t.Fatal(err)
+		}
+		received, source, err := mux.RecvIKEFromUntil(time.Now().Add(answerBudget))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pending *pendingRequest
+		return s.dispatch(received, source, &pending)
+	}
+	dialedTo := mux.Endpoint().String()
+	forged := append([]byte(nil), request...)
+	forged[len(forged)-1] ^= 1
+	if arrive(forged) || mux.Endpoint().String() != dialedTo {
+		t.Fatalf("a request that failed its integrity check moved the session to %s", mux.Endpoint())
+	}
+	if !arrive(request) {
+		t.Fatal("a fresh request was not taken")
+	}
+	read := func() (string, *net.UDPAddr) {
+		t.Helper()
+		buf := make([]byte, 2048)
+		if err := moved.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+			t.Fatal(err)
+		}
+		n, from, err := moved.ReadFromUDP(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(buf[NonESPMarkerLen:n]), from
+	}
+	if _, from := read(); !from.IP.Equal(arrival) {
+		t.Errorf("the reply came from %s, want the address the request arrived on", from)
+	}
+	if err := mux.SendIKE([]byte("next")); err != nil {
+		t.Fatal(err)
+	}
+	if got, from := read(); got != "next" || !from.IP.Equal(net.IPv4(127, 0, 0, 1)) {
+		t.Errorf("the peer read %q from %s where it moved, want the next request from the kernel's choice of 127.0.0.1", got, from)
+	}
+	if got := recordedKind(moves, "ike.endpoint.moved"); got != 1 {
+		t.Errorf("the session recorded %d moves, want one", got)
+	}
+}
+
+// testContext is an SA this node dialed, keyed with zeros
+func testContext() *ikeContext {
+	return &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256},
+		spiI: 0x0102030405060708, spiR: 0x1112131415161718, skei: make([]byte, 20), sker: make([]byte, 20)}
 }
 
 func TestAuthenticatedMalformedRequestGetsInvalidSyntax(t *testing.T) {

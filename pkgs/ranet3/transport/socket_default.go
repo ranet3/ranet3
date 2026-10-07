@@ -18,6 +18,14 @@ type portableEndpoint struct{ conn.Endpoint }
 func (*portableEndpoint) transportEndpoint() {}
 func (e *portableEndpoint) String() string   { return e.DstToString() }
 
+// no endpoint here carries a source, which wireguard's keeps on linux alone
+func (e *portableEndpoint) sameDestination(other Endpoint) bool {
+	o, ok := other.(*portableEndpoint)
+	return ok && e.DstToString() == o.DstToString()
+}
+
+func (e *portableEndpoint) withoutSource() Endpoint { return e }
+
 func (e *portableEndpoint) AddrPort() netip.AddrPort {
 	addr, err := netip.ParseAddrPort(e.DstToString())
 	if err != nil {
