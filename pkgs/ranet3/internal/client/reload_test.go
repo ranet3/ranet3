@@ -17,6 +17,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/registry"
@@ -308,4 +309,57 @@ func TestReloadTheReconcilerRefusesChangesNothing(t *testing.T) {
 		t.Errorf("the reconciler was asked %d times, want once", len(reconciler.tables))
 	}
 	changedNothing(t, c, old, bus)
+}
+
+// a translator with return set resolved an auto source among the mesh addresses once, at startup
+// a reload is refused when the new addresses resolve another source or none, and applied when they resolve the same
+func TestReloadRefusesMovingTheSourceCapEgressReturnsUnder(t *testing.T) {
+	auto := &egress.Egress{Advertise: []schema.Prefix{schema.MustPrefix("198.51.100.0/24")}, Return: true}
+	written := &egress.Egress{Advertise: auto.Advertise, Return: true, Source4: egress.Source{Addr: netip.MustParseAddr("10.66.0.5")}}
+	noReturn := &egress.Egress{Advertise: auto.Advertise}
+	assigning := func(list ...string) *kernel.Table {
+		table := &kernel.Table{}
+		for _, prefix := range list {
+			table.Addresses = append(table.Addresses, schema.MustPrefix(prefix))
+		}
+		return table
+	}
+	node := func(exit *egress.Egress, table *kernel.Table, announced ...string) *config.Config {
+		return &config.Config{Cap: config.Caps{Egress: exit, Table: table, Route: &babel.Routes{Announce: announce(announced...)}}}
+	}
+	// one IPv4 mesh address and an auto source, a node that starts
+	start := node(auto, assigning("10.66.0.5/32"))
+	for name, move := range map[string]struct {
+		next   *config.Config
+		naming string
+	}{
+		"the address renumbered":        {node(auto, assigning("10.66.0.6/32")), "cap.route or cap.table moved the mesh address cap.egress return translates to"},
+		"cap.table assigning a second":  {node(auto, assigning("10.66.0.5/32", "10.66.0.6/32")), "egress.source4"},
+		"cap.route announcing a second": {node(auto, assigning("10.66.0.5/32"), "10.66.1.6/32"), "egress.source4"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := reloadable(start, move.next); err == nil || !strings.Contains(err.Error(), move.naming) {
+				t.Errorf("the reload was refused with %v, want it to say %q", err, move.naming)
+			}
+		})
+	}
+	for name, move := range map[string]struct{ old, next *config.Config }{
+		"a written source beside another address renumbered": {
+			node(written, assigning("10.66.0.5/32", "10.66.0.7/32")), node(written, assigning("10.66.0.5/32", "10.66.0.8/32")),
+		},
+		"an address of a family the node does not advertise": {start, node(auto, assigning("10.66.0.5/32", "fd00:66::5/128"))},
+		"a link-local address beside it":                     {start, node(auto, assigning("10.66.0.5/32", "169.254.0.5/32"))},
+		"a range rather than an address":                     {start, node(auto, assigning("10.66.0.5/32", "10.66.2.0/24"))},
+		"the announced address no longer assigned as well": {
+			node(auto, &kernel.Table{AssignAnnounced: true}, "10.66.0.5/32"), node(auto, &kernel.Table{}, "10.66.0.5/32"),
+		},
+		"another metric": {start, node(auto, &kernel.Table{Metric: 64, Addresses: start.Cap.Table.Addresses})},
+		"no return":      {node(noReturn, assigning("10.66.0.5/32")), node(noReturn, assigning("10.66.0.6/32"))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := reloadable(move.old, move.next); err != nil {
+				t.Errorf("a reload leaving the translator's source where it was was refused: %v", err)
+			}
+		})
+	}
 }
