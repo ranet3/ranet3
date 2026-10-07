@@ -31,6 +31,11 @@ let
     "CAP_NET_ADMIN"
   ]
   ++ lib.optional (generated && cfg.settings.link.port < 1024) "CAP_NET_BIND_SERVICE";
+  configExtension = lib.last (
+    lib.splitString "." (baseNameOf (builtins.unsafeDiscardStringContext (toString cfg.configFile)))
+  );
+  etcName = "ranet3/config.${configExtension}";
+  configPath = "/etc/${etcName}";
 in
 {
   key = toString ./ranet3.nix;
@@ -43,6 +48,10 @@ in
         assertion = cfg.openFirewall -> generated;
         message = "networking.ranet3.openFirewall reads the port from settings, which a configFile set by hand replaces.";
       }
+      {
+        assertion = toString cfg.configFile != configPath;
+        message = "networking.ranet3.configFile names ${configPath}, the path the module installs it at, so the link would point at itself.";
+      }
     ];
 
     users.groups.${cfg.group} = { };
@@ -54,11 +63,14 @@ in
 
     networking.firewall.allowedUDPPorts = lib.mkIf cfg.openFirewall [ cfg.settings.link.port ];
 
+    environment.etc.${etcName}.source = cfg.configFile;
+
     systemd.services.ranet3 = {
       description = "ranet3 mesh daemon";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
+      reloadTriggers = [ cfg.configFile ];
       # one restart once a switch is done rather than a stop before it, so a
       # node switched over its own mesh is not cut off while the switch runs
       stopIfChanged = false;
@@ -69,7 +81,7 @@ in
             ranet3
             "daemon"
             "--config"
-            cfg.configFile
+            configPath
             "--log-level"
             cfg.logLevel
           ]
