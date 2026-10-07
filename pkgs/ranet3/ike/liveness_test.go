@@ -1012,3 +1012,82 @@ func TestSessionThatCannotSendEndsAfterItsBudget(t *testing.T) {
 		t.Errorf("the outage recorded %d failures and %d recoveries, want one failure", failed, recovered)
 	}
 }
+
+// an outage of replies is said once and ended by a reply that goes out
+// a cached reply goes to wherever a replay came from, so it neither adds to an outage nor ends one
+func TestFailedReplyKeepsTheSession(t *testing.T) {
+	levels := captureLevels(t)
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := listenHub(t).NewMux(peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ikeCtx := testContext()
+	events := &recorder{}
+	s := &Session{mux: mux, current: ikeCtx, events: events.record}
+	if err := mux.RegisterIKE(ikeCtx.spiI); err != nil {
+		t.Fatal(err)
+	}
+	// sends to it are refused as to an arrival address that went away
+	unreachable := unsendableMux(t).Endpoint()
+	request := func(id uint32) []byte {
+		t.Helper()
+		raw, err := EncryptMessage(ikeCtx.suite, ikeCtx.sker, Header{SPIInitiator: ikeCtx.spiI, SPIResponder: ikeCtx.spiR,
+			ExchangeType: INFORMATIONAL, MessageID: id}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	var pending *pendingRequest
+	fromPeer := func(raw []byte) bool {
+		t.Helper()
+		if _, err := peer.WriteToUDP(withNonESPMarker(raw), muxLoopback(mux)); err != nil {
+			t.Fatal(err)
+		}
+		received, source, err := mux.RecvIKEFromUntil(time.Now().Add(answerBudget))
+		if err != nil {
+			t.Fatal(err)
+		}
+		taken := s.dispatch(received, source, &pending)
+		buf := make([]byte, 2048)
+		if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+			t.Fatal(err)
+		}
+		if n, _, err := peer.ReadFromUDP(buf); err != nil || !bytes.Equal(buf[NonESPMarkerLen:n], ikeCtx.lastPeerResponse) {
+			t.Fatalf("the peer was not answered with the reply kept for its request: %v", err)
+		}
+		return taken
+	}
+	outage := func(step string, failures, warned, failed, recovered int) {
+		t.Helper()
+		got := [4]int{s.sendFailures, countLevel(*levels, slog.LevelWarn), recordedKind(events, "ike.send.failed"), recordedKind(events, "ike.send.recovered")}
+		if want := [4]int{failures, warned, failed, recovered}; got != want {
+			t.Errorf("%s: the session counts failures, warnings, recorded failures and recoveries as %v, want %v", step, got, want)
+		}
+	}
+
+	if !s.dispatch(request(0), unreachable, &pending) {
+		t.Fatal("a fresh request was not taken")
+	}
+	if mux.IsClosed() {
+		t.Fatal("a reply that could not go out ended the session")
+	}
+	outage("a reply that could not go out", 1, 1, 1, 0)
+	if s.dispatch(request(0), unreachable, &pending) {
+		t.Fatal("a replay was taken as fresh")
+	}
+	if fromPeer(request(0)) {
+		t.Fatal("a replay was taken as fresh")
+	}
+	outage("replays answered from the cache", 1, 1, 1, 0)
+	if !fromPeer(request(1)) {
+		t.Fatal("a fresh request from the peer was not taken")
+	}
+	outage("a reply that went out", 0, 1, 1, 1)
+	if !s.dispatch(request(2), unreachable, &pending) {
+		t.Fatal("a fresh request was not taken")
+	}
+	outage("a second outage", 1, 2, 2, 1)
+}

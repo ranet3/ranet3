@@ -584,9 +584,8 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		s.stateMu.RUnlock()
 		if hdr.MessageID != nextPeerMID {
 			if nextPeerMID > 0 && hdr.MessageID == nextPeerMID-1 && lastPeerResponseID == hdr.MessageID {
-				if err := s.mux.SendIKETo(lastPeerResponse, source); err != nil {
-					s.mux.Close()
-				}
+				// a replay can come from any address, so this send says nothing about the path to the peer
+				_ = s.mux.SendIKETo(lastPeerResponse, source)
 			}
 			return false
 		}
@@ -646,10 +645,8 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	ctx.lastPeerResponse = response
 	ctx.nextPeerMID++
 	s.stateMu.Unlock()
-	if err := s.mux.SendIKETo(response, source); err != nil {
-		s.mux.Close()
-		return true
-	}
+	// a failed reply keeps the session, since the peer retransmits and is answered from the reply kept above
+	s.noteSend(s.mux.SendIKETo(response, source))
 	return true
 }
 
