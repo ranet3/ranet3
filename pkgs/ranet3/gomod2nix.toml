@@ -6,8 +6,8 @@ version = 'v1.6.0'
 hash = 'sha256-ptdUJvuc21ixeLt+M5way/na3aCnCO4MYHWulWp8NEY='
 
 [mod.'github.com/ebitengine/purego']
-version = 'v0.11.0-alpha.6.0.20260707033313-5f49e7c49322'
-hash = 'sha256-cMuzqPxsdSbioL7TIRSz2GeW24jJ+izaBXmVby7IvFM='
+version = 'v0.11.1'
+hash = 'sha256-SMr46MKG4T/Md3vggfz5FCpZsNXQlgI7zQIZcTIbIuM='
 
 [mod.'github.com/inconshreveable/mousetrap']
 version = 'v1.1.0'
@@ -42,13 +42,13 @@ version = 'v0.0.0-20230126152724-0fa3db229ce2'
 hash = 'sha256-cjMLNjKnnupVROWmeASORVieAL9ieYdzX3cFzG8bCpo='
 
 [mod.'golang.zx2c4.com/wireguard']
-version = 'v0.0.0-20260522210424-ecfc5a8d5446'
-hash = 'sha256-qfF39wqSCUlsXsaJyjcnv9n8ZjRJfIKDo6i2DursedU='
+version = 'v0.0.0-20261006164505-2631ce99a06f'
+hash = 'sha256-dZxsmcQuRyC5K0zKkuvYAjPfNxnettsuGHg6ztfT/5o='
 
 [mod.'gvisor.dev/gvisor']
 version = 'v0.0.0-20260815055033-7d8fb7f28de4'
 hash = 'sha256-qNul+ILbeffSiOxFoVeNtayahFZVp+/W2YIJf53Hfc8='
 
 [mod.'hegel.dev/go/hegel']
-version = 'v0.9.14'
-hash = 'sha256-JlZkomMnC7YSDbDlTs3apgnf8vpxXb3ZdfmS7MrjHFI='
+version = 'v0.9.17'
+hash = 'sha256-qrWgXcUb1G+vdpXYzzv4RHgnG9Yh2DUArxW5C95HlkA='
