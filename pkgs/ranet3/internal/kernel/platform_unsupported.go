@@ -13,3 +13,5 @@ package kernel
 // when it gets one; until then New reports it rather than starting a reconciler
 // that installs nothing and reports no error.
 func newPlatform(Table, Runtime) (platform, error) { return nil, ErrUnsupported }
+
+func refuseMeaningless(Table, string) error { return ErrUnsupported }

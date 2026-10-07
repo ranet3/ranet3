@@ -119,25 +119,8 @@ type routePlatform struct {
 }
 
 func newPlatform(t Table, rt Runtime) (platform, error) {
-	// a linux-shaped configuration names a table and a protocol that mean
-	// nothing here. Rejecting them is the difference between a deployment that
-	// is wrong at startup and one that looks like it works.
-	if uint32(t.ID) != DefaultTable {
-		return nil, fmt.Errorf("kernel: darwin has no routing tables, table %d has no meaning here", uint32(t.ID))
-	}
-	if t.Proto != DefaultProtocol {
-		return nil, fmt.Errorf("kernel: darwin has no route protocol, protocol %d has no meaning here", t.Proto)
-	}
-	if t.Name() != "" {
-		return nil, fmt.Errorf("kernel: darwin has no VRF, %s cannot be enslaved to %s", rt.Interface, t.Name())
-	}
-	if t.PrefSrc4.IsValid() {
-		// The same reasoning as the three above. There is no RTA_PREFSRC here,
-		// and the address a route prefers is whichever one the interface
-		// carries, so a configuration that names one is asking for something
-		// this platform decides for itself. Put the address on the tun with
-		// kernel.addresses and source selection reaches the same answer.
-		return nil, fmt.Errorf("kernel: darwin has no preferred source, prefsrc4 %s has no meaning here", t.PrefSrc4)
+	if err := refuseMeaningless(t, rt.Interface); err != nil {
+		return nil, err
 	}
 	if len(rt.Interface) >= unix.IFNAMSIZ {
 		return nil, fmt.Errorf("kernel: interface name %q does not fit an ifreq", rt.Interface)
@@ -164,6 +147,31 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 		return nil, err
 	}
 	return plat, nil
+}
+
+// refuseMeaningless refuses a setting naming something darwin does not have, before anything is opened for it
+func refuseMeaningless(t Table, device string) error {
+	// a linux-shaped configuration names a table and a protocol that mean
+	// nothing here. Rejecting them is the difference between a deployment that
+	// is wrong at startup and one that looks like it works.
+	if uint32(t.ID) != DefaultTable {
+		return fmt.Errorf("kernel: darwin has no routing tables, table %d has no meaning here", uint32(t.ID))
+	}
+	if t.Proto != DefaultProtocol {
+		return fmt.Errorf("kernel: darwin has no route protocol, protocol %d has no meaning here", t.Proto)
+	}
+	if t.Name() != "" {
+		return fmt.Errorf("kernel: darwin has no VRF, %s cannot be enslaved to %s", device, t.Name())
+	}
+	if t.PrefSrc4.IsValid() {
+		// The same reasoning as the three above. There is no RTA_PREFSRC here,
+		// and the address a route prefers is whichever one the interface
+		// carries, so a configuration that names one is asking for something
+		// this platform decides for itself. Put the address on the tun with
+		// cap.table addresses and source selection reaches the same answer.
+		return fmt.Errorf("kernel: darwin has no preferred source, prefsrc4 %s has no meaning here", t.PrefSrc4)
+	}
+	return nil
 }
 
 // open takes the descriptors the platform holds for its whole lifetime: the
@@ -793,6 +801,9 @@ func (p *routePlatform) Release() error { return nil }
 
 // where is the interface itself: darwin has one FIB and no routing tables.
 func (p *routePlatform) where(Table) string { return "interface " + p.rt.Interface }
+
+// retable takes the metric a dump mirrors from the capability a reload installed
+func (p *routePlatform) retable(t Table) { p.table = t }
 
 // scopes is scopeRoute as the diff reads it.
 func (p *routePlatform) scopes(r Route) bool { return p.scopeRoute(r) }

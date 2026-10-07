@@ -70,10 +70,13 @@ type fakeKernel struct {
 	failDel     map[Route]error
 	failList    error
 	failAddrs   error
+	failDelAddr error
 	failRules   error
 	failAddRule map[Rule]error
 
 	signal chan struct{}
+	// retabled is every capability the reconciler handed over after a reload
+	retabled []Table
 }
 
 func newFakeKernel(t *testing.T) *fakeKernel {
@@ -169,6 +172,9 @@ func (f *fakeKernel) DelAddr(address netip.Prefix) error {
 	// the kernels do and would otherwise hide a withdrawal that named the
 	// wrong prefix length, which linux does refuse.
 	f.deleted = append(f.deleted, address)
+	if f.failDelAddr != nil {
+		return f.failDelAddr
+	}
 	for held := range f.addrs {
 		if held.Addr() == address.Addr() {
 			delete(f.addrs, held)
@@ -199,6 +205,12 @@ func (f *fakeKernel) Release() error {
 
 func (f *fakeKernel) Notify() <-chan struct{} { return f.signal }
 
+func (f *fakeKernel) retable(t Table) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retabled = append(f.retabled, t)
+}
+
 func (f *fakeKernel) where(t Table) string {
 	if f.name != "" {
 		return f.name
@@ -222,6 +234,11 @@ func (f *fakeKernel) has(route Route) bool {
 func (f *fakeKernel) snapshot() []Route {
 	routes, _ := f.Routes()
 	return routes
+}
+
+func (f *fakeKernel) heldAddresses() []netip.Prefix {
+	addresses, _ := f.Addrs()
+	return addresses
 }
 
 func (f *fakeKernel) counts() (adds, dels int) {
@@ -1446,6 +1463,7 @@ func (p routesOnly) Master() (string, error)           { return p.inner.Master()
 func (p routesOnly) Enslave(master string) error       { return p.inner.Enslave(master) }
 func (p routesOnly) Release() error                    { return p.inner.Release() }
 func (p routesOnly) Notify() <-chan struct{}           { return p.inner.Notify() }
+func (p routesOnly) retable(t Table)                   { p.inner.retable(t) }
 func (p routesOnly) Close() error                      { return p.inner.Close() }
 
 // A platform with no policy engine refuses a configuration that asks for one,

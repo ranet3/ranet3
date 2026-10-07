@@ -366,6 +366,20 @@ func TestDarwinDumpMirrorsDiffKeyFields(t *testing.T) {
 	}
 }
 
+// a dump read under the old metric after a reload would put every route on both lists of every pass
+func TestDarwinDumpMirrorsTheMetricAReloadInstalled(t *testing.T) {
+	plat, _ := testPlatform(t, Table{Metric: 32}, Runtime{})
+	plat.retable(Table{Metric: 64})
+	rib := dumpRIB(t, dumpEntry{index: testIndex, flags: unix.RTF_UP, dst: prefix("198.51.100.0/24"), gateway: ourGateway()})
+	got, err := plat.ownedRoutes(rib)
+	if err != nil {
+		t.Fatalf("decode the dump: %v", err)
+	}
+	if want := []Route{{Destination: prefix("198.51.100.0/24"), Metric: 64}}; !slices.Equal(got, want) {
+		t.Fatalf("the dump decoded to %v, want %v", got, want)
+	}
+}
+
 func TestDarwinSkipsSourceSpecificRoutes(t *testing.T) {
 	plat, sock := testPlatform(t, Table{}, Runtime{})
 	specific := Route{
