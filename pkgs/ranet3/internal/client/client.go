@@ -99,10 +99,14 @@ type Client struct {
 	// cap.table, where the verb is refused by name rather than reported as
 	// having stopped something.
 	reconcilerEnable atomic.Pointer[func(bool)]
+	// reconcilerTable hands the route reconciler a reloaded cap.table, supplied as reconcilerEnable is
+	reconcilerTable atomic.Pointer[func(kernel.Table, []netip.Prefix) error]
 	// configPath is where the daemon read this node's configuration, so the
 	// reload verb re-reads the same file SIGHUP does. Empty on a client a test
 	// built by hand, where the verb says so rather than guessing at a path.
 	configPath atomic.Pointer[string]
+	// reloadMu runs one reload at a time, so the reconciler takes each cap.table in the order the node stores the files
+	reloadMu sync.Mutex
 
 	// events is the daemon's bus, nil on a Client a test built by hand
 	events *events.Bus

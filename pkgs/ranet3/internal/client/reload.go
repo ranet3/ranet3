@@ -7,16 +7,19 @@ import (
 	"cmp"
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
 	"net/netip"
 	"reflect"
 	"slices"
+	"strings"
 
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 )
 
@@ -85,8 +88,8 @@ func (c *Client) syncPeers() {
 
 // ReloadFrom re-reads the configuration and the trust document at path and
 // applies what can be applied without dropping the tunnels this node is
-// carrying: the document itself, the peers we dial, and the prefixes we
-// announce. ranet reconciles the same way rather than restarting, and it
+// carrying: the document itself, the peers we dial, the prefixes we announce
+// and cap.table. ranet reconciles the same way rather than restarting, and it
 // matters here because the document is rewritten every time any node joins the
 // mesh.
 //
@@ -98,8 +101,14 @@ func (c *Client) syncPeers() {
 // SIGHUP calls this, and so does the control socket's reload verb through
 // Reload, which supplies the path the daemon was started with.
 func (c *Client) ReloadFrom(path string) (err error) {
+	c.reloadMu.Lock()
+	defer c.reloadMu.Unlock()
+	var applied []string
 	defer func() {
 		attrs := []slog.Attr{slog.String("path", path)}
+		if len(applied) > 0 {
+			attrs = append(attrs, slog.String("applied", strings.Join(applied, ",")))
+		}
 		if err != nil {
 			attrs = append(attrs, slog.String("err", err.Error()))
 		}
@@ -120,8 +129,15 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if err != nil {
 		return err
 	}
-	if err := reloadable(c.config(), cfg); err != nil {
+	old := c.config()
+	if err := reloadable(old, cfg); err != nil {
 		return err
+	}
+	// the last refusal, since the reconciler takes a table it accepts at once
+	if !sameTable(old, cfg) {
+		if err := c.retable(cfg); err != nil {
+			return err
+		}
 	}
 	// A peer the trust document cannot support is reported and skipped rather
 	// than refused. The two drift, so one entry left behind by a decommissioned
@@ -152,8 +168,35 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	for _, organization := range reg {
 		nodes += len(organization.Nodes)
 	}
+	applied = changedCapabilities(old, cfg)
 	log.Printf("reloaded %s: %d peers, %d nodes in the trust document", path, len(effectivePeers(cfg, reg)), nodes)
 	return nil
+}
+
+// SetReconcilerTable hands the reload path the route reconciler's SetTable, as SetReconcilerEnable hands the write path its stop and start
+func (c *Client) SetReconcilerTable(set func(kernel.Table, []netip.Prefix) error) {
+	c.reconcilerTable.Store(&set)
+}
+
+// retable hands the running reconciler the cap.table next carries, with the prefixes its cap.route announces
+func (c *Client) retable(next *config.Config) error {
+	set := c.reconcilerTable.Load()
+	if set == nil {
+		return errors.New("config: cap.table changed and no reconciler is running to take it, restart to apply")
+	}
+	return (*set)(*next.Cap.Table, next.Routes().Announced())
+}
+
+// changedCapabilities names each capability a reload from old to next applied in place
+func changedCapabilities(old, next *config.Config) []string {
+	var out []string
+	if !reflect.DeepEqual(old.Routes(), next.Routes()) {
+		out = append(out, "cap.route")
+	}
+	if !sameTable(old, next) {
+		out = append(out, "cap.table")
+	}
+	return out
 }
 
 // sameIdentityKey refuses a reload that would change the key this node signs
@@ -178,7 +221,7 @@ func (c *Client) sameIdentityKey(path string) error {
 // whole, rather than field by field, so a capability that grows a field does
 // not grow a check here as well.
 func reloadable(old, next *config.Config) error {
-	switch {
+	switch moved := tableMoved(old.Cap.Table, next.Cap.Table); {
 	case old.Node != next.Node:
 		return fmt.Errorf("config: node changed, restart to apply")
 	case old.Link.Underlay != next.Link.Underlay:
@@ -222,11 +265,8 @@ func reloadable(old, next *config.Config) error {
 		// path reads it without asking whether it changed. Applying a new one
 		// here would leave packets already in flight acted on under the old.
 		return fmt.Errorf("config: cap.segment changed, restart to apply")
-	case !sameTable(old, next):
-		// The reconciler is configured once in main, including the addresses
-		// assign_announced expands into, so none of this block can be applied
-		// here.
-		return fmt.Errorf("config: cap.table changed, restart to apply")
+	case moved != "":
+		return fmt.Errorf("config: cap.table %s, restart to apply", moved)
 	case !sameCrypto(old, next):
 		// Accepted sessions take these from the listener built at startup, so
 		// applying them to newly dialed sessions alone would leave the node
@@ -271,16 +311,27 @@ func sameCrypto(old, next *config.Config) bool {
 		a.ReplayWindow() == b.ReplayWindow()
 }
 
-// sameTable compares the reconciler's capability, which is read once at
-// startup, by what it was given rather than by how the file was written:
-// kernel.Table.Normalized is the capability as New resolves it, so a field
-// spelled out as its own default is not a change. Comparing them as written
-// refuses a reload that changes nothing, which writing "id = 200" or
-// "capture_grace = 10s" into the file, the values already running and the
-// lines examples/config.toml documents, would have been enough to cause, and
-// the restart that answer asks for drops every SA on the node. The addresses
-// are compared as the reconciler resolves them, since assign_announced expands
-// cap.route into them.
+// tableMoved says what of cap.table only a restart applies, or is empty
+// main builds the reconciler for the block written at startup
+// and kernel.Table.Unreloadable names what that reconciler keeps for its life
+func tableMoved(old, next *kernel.Table) string {
+	switch {
+	case old == nil && next != nil:
+		return "added"
+	case old != nil && next == nil:
+		return "removed"
+	case old == nil:
+		return ""
+	}
+	if setting := old.Unreloadable(*next); setting != "" {
+		return setting + " changed"
+	}
+	return ""
+}
+
+// sameTable reports that next gives the reconciler the capability it runs
+// the two are compared as New resolves one, so a field spelled out as its own default is no change
+// the addresses are compared as assign_announced expands cap.route into them
 func sameTable(old, next *config.Config) bool {
 	if (old.Cap.Table == nil) != (next.Cap.Table == nil) {
 		return false
