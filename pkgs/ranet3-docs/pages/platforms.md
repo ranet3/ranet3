@@ -2,9 +2,9 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: CC-BY-4.0
 title: "Platforms"
-description: "What the route reconciler can do on Linux and on macOS."
+description: "What the route reconciler can do on Linux and on macOS, and how sessions follow a host that moves."
 created: 2026-09-21
-updated: 2026-10-06
+updated: 2026-10-07
 order: 100
 ---
 
@@ -76,6 +76,31 @@ all. The underlay stays out of the tunnel because the platform keeps it out,
 other, so a mark is unnecessary there as well. What the reconciler computes, the
 set of prefixes the mesh reaches and the source prefix each one is for, maps
 onto those lists directly; what it will not have is a table to put them in.
+
+A node keeps its sessions when its own addresses change, as a laptop's do when
+it moves from wifi to a dock or a DHCP lease renews, and when its peer's do.
+Every session follows its peer to the address and port its latest fresh
+authenticated request came from, and answers a request from the address it
+arrived on. Beyond those answers, a session this node dialed leaves the source
+address to the kernel, so its sends leave from whatever address the host holds
+at the time, while a session a peer opened sends from the address the peer's
+latest request arrived on. On linux, once that address has gone and the kernel
+refuses a send from it, the session sends from the kernel's choice until a later
+request moves it to the address that one arrived on. darwin never names a
+source, so there the kernel always chooses.
+
+A session that cannot send at all, because the host has no route to the peer,
+holds while its liveness check retransmits on the usual schedule, and ends once
+the check has gone unanswered through its whole budget of 62 seconds. Its dialer
+then dials again. The first send that fails is logged as a warning, and the
+failures after it at debug until a send goes out again.
+
+On linux a batch of ESP for one peer goes out as segmented messages where it
+can. A path too narrow for the segments refuses such a message, and its
+datagrams go again one to a message. That peer is then sent single datagrams for
+10 minutes, the time linux keeps a path MTU it learned, and every other peer
+keeps segmenting. Only a refusal that segments can cause, and that single
+datagrams then pass, stops segmentation.
 
 The control surface is platform-neutral by construction. `control` holds the
 types and the handler and speaks no transport of its own, so the unix socket is

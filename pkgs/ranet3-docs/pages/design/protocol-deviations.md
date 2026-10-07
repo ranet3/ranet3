@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP and Babel specifications on purpose."
 created: 2026-08-23
-updated: 2026-10-03
+updated: 2026-10-07
 order: 20
 ---
 
@@ -37,6 +37,18 @@ NAT changes the observed source port: replies follow the observed source, and a
 fresh authenticated IKE request can update the stored peer endpoint. It is
 deliberately not interoperable with an otherwise generic peer expecting standard
 RFC 7296 port selection or raw ESP.
+
+Every session moves the stored peer endpoint to the address and port of a fresh
+request whose integrity protection validates, as
+[RFC 7296 section 2.23](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.23)
+asks of a host that is not behind a NAT. The section asks a host behind a NAT
+not to, and a node never learns whether it is behind one, since it does not
+compare the `NAT_DETECTION_DESTINATION_IP` it receives with its own address.
+Behind a NAT this lets a request captured and resent from another address ahead
+of the original move a session's sends there, until the peer's next fresh
+request moves them back, which comes once the peer has heard nothing for its
+liveness interval. In exchange a session follows a peer that moved, whichever
+end dialed.
 
 There is one separate SHOULD-level deviation from
 [RFC 7296 section 2.25.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.25.1).
