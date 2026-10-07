@@ -169,3 +169,26 @@ func TestNeighborComingUpIsAskedForItsWholeTable(t *testing.T) {
 	}
 	check("a hello from a neighbor that returned", 2)
 }
+
+func TestRequestLeavesWithTheRepliesToTheHelloThatBroughtTheNeighborUp(t *testing.T) {
+	speaker, neighbor, packets := captureSpeaker(t, Config{})
+	speaker.Originate(netip.MustParsePrefix("fd00:a::/64"))
+	speaker.handlePacket(neighbor, EncodePacket([]RawTLV{
+		EncodeHello(Hello{Seqno: 1, Interval: 100}),
+		EncodeRouteRequest(RouteRequest{AE: AEWildcard}),
+	}))
+	if len(*packets) != 1 {
+		t.Fatalf("the neighbor was sent %d packets, want the answer and the request in one", len(*packets))
+	}
+	tlvs, err := DecodePacket((*packets)[0][ipv6HeaderLen+udpHeaderLen:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []TLVType
+	for _, tlv := range tlvs {
+		kinds = append(kinds, tlv.Type)
+	}
+	if want := []TLVType{TLVRouteRequest, TLVRouterID, TLVUpdate}; !slices.Equal(kinds, want) {
+		t.Errorf("the packet carries %v, want the request and then the route announced", kinds)
+	}
+}
