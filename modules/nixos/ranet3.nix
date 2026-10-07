@@ -18,6 +18,12 @@ let
   # which the module can read the port. Read from priorities alone, so a
   # configFile set by hand never forces the settings it replaces
   generated = options.networking.ranet3.configFile.highestPrio == (lib.mkOptionDefault null).priority;
+  # the daemon names its tun ranet3 unless link.tun says otherwise
+  # ranet* also covers a ranet%d template and a ranet0 that a hand-written configFile names
+  tunNames = [
+    "ranet*"
+  ]
+  ++ lib.optional (generated && cfg.settings.link ? tun) cfg.settings.link.tun;
   # creating the tun, and the routes, rules and addresses cap.table owns.
   # cap.egress additionally writes an nftables table of its own, which is why
   # the set is not narrower than this
@@ -43,12 +49,8 @@ in
 
     environment.systemPackages = [ cfg.package ];
 
-    # the daemon names its tun ranet3 unless link.tun says otherwise
-    # ranet* also covers a ranet%d template and a ranet0 that a hand-written configFile names
-    networking.dhcpcd.denyInterfaces = [
-      "ranet*"
-    ]
-    ++ lib.optional (generated && cfg.settings.link ? tun) cfg.settings.link.tun;
+    networking.dhcpcd.denyInterfaces = tunNames;
+    networking.networkmanager.unmanaged = map (name: "interface-name:${name}") tunNames;
 
     networking.firewall.allowedUDPPorts = lib.mkIf cfg.openFirewall [ cfg.settings.link.port ];
 
