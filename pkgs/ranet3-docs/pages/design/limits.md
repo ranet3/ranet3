@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-06
+updated: 2026-10-07
 order: 10
 ---
 
@@ -216,6 +216,16 @@ Every finite advertisement leaves through one function, which records the
 feasibility distance before the packet is built. Local prefixes take precedence
 even after a router-ID change. Remote Hello, IHU, and Update expiration is
 scheduled independently of local send intervals.
+
+When a neighbor comes up, a node sends it a Hello at once and asks it for its
+whole table with a wildcard Route Request, which
+[RFC 8966 section 3.8.2](https://www.rfc-editor.org/rfc/rfc8966.html#section-3.8.2)
+allows at any time. The end that dialed, which can start its session just after
+its neighbor, then learns the neighbor and its routes about one round trip after
+the neighbor hears it, not after the neighbor's next Hello and next periodic
+update, up to 4 and 16 seconds at the defaults. That needs a neighbor running
+this version. An older ranet3 sends no early Hello and BIRD 3 sends its table at
+its next Hello, so the dialer waits up to one hello interval.
 
 Packet lookups read an immutable SADR trie snapshot without locking. Route
 changes copy the affected path and publish it atomically; diagnostics iterate

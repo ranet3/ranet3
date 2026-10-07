@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-06
+updated: 2026-10-07
 order: 30
 ---
 
@@ -124,6 +124,7 @@ its connections to the reads.
 | `ike.rekey.started`, `.completed`    | a rekey this end started, of the Child SA or of the IKE SA                  |
 | `ike.rekey.failed`                   | the same rekey failing, with its error                                      |
 | `babel.neighbor.up`, `.down`         | a neighbor's hellos started arriving, or stopped or its session ended       |
+| `babel.request.sent`                 | this node asked a neighbor that came up for its whole table                 |
 | `babel.route.selected`, `.retracted` | a prefix's next hop changed, every time rather than once a second as logged |
 | `kernel.pass`                        | a reconciler pass that changed the kernel, skipped anew or failed           |
 | `egress.pass`                        | a translator pass that rewrote its rules, moved its prefixes or failed      |
@@ -136,6 +137,10 @@ the peer as the verb named it, when it named one. The event's peer is the path
 of the session or dialer it was recorded under, which `--peer` takes by any name
 of that peer. A verb that acted on none, a refused one included, is recorded
 once without a peer.
+
+A `babel.request.sent` is recorded when the node decides to send the request,
+and a send queue with no room can still refuse it, which
+`ranet3_peer_send_dropped_total` counts.
 
 A `netstack.codel` event carries the `sojourn` of the batch that changed the
 state, how long that batch had waited since it was reserved, and the `target`. A
