@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"runtime"
@@ -15,6 +16,11 @@ import (
 	"testing"
 	"time"
 )
+
+// arrivalBudget is how long a test waits for a datagram it expects
+// loopback takes far less even on a loaded machine
+// and a datagram that never comes still fails the test, only later
+const arrivalBudget = 5 * time.Second
 
 // listenPeer opens a plain UDP socket standing in for "the peer" at the
 // far end of a Mux, on the given loopback address (v4 or v6) — used to
@@ -230,50 +236,78 @@ func TestSendIKEUnbatchedAndMarked(t *testing.T) {
 	}
 }
 
+// a mux follows a request's endpoint for what it sends next, whichever end dialed
 func TestSendIKEToReceivedSourceEndpoint(t *testing.T) {
-	configured := listenPeer(t, "udp4", "127.0.0.1")
-	rebound := listenPeer(t, "udp4", "127.0.0.1")
-	configuredAddr := configured.LocalAddr().(*net.UDPAddr)
-	m, err := Dial("", configuredAddr.IP, configuredAddr.Port)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.Close()
-	const spiI = uint64(0x0102030405060708)
-	if err := m.RegisterIKE(spiI); err != nil {
-		t.Fatal(err)
-	}
-	dst := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: m.LocalAddr().(*net.UDPAddr).Port}
-	request := make([]byte, 28)
-	binary.BigEndian.PutUint64(request[:8], spiI)
-	if _, err := rebound.WriteToUDP(withMarker(request), dst); err != nil {
-		t.Fatal(err)
-	}
-	_, source, err := m.RecvIKEFromUntil(time.Now().Add(time.Second))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := m.SendIKETo([]byte("response"), source); err != nil {
-		t.Fatal(err)
-	}
-	buf := make([]byte, 64)
-	rebound.SetReadDeadline(time.Now().Add(time.Second))
-	n, _, err := rebound.ReadFromUDP(buf)
-	if err != nil || string(buf[nonESPMarkerLen:n]) != "response" {
-		t.Fatalf("rebound endpoint response = %q, %v", buf[:n], err)
-	}
-	m.AdoptEndpoint(source)
-	if err := m.SendIKE([]byte("future")); err != nil {
-		t.Fatal(err)
-	}
-	rebound.SetReadDeadline(time.Now().Add(time.Second))
-	n, _, err = rebound.ReadFromUDP(buf)
-	if err != nil || string(buf[nonESPMarkerLen:n]) != "future" {
-		t.Fatalf("adopted endpoint response = %q, %v", buf[:n], err)
-	}
-	configured.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
-	if _, _, err := configured.ReadFromUDP(buf); err == nil {
-		t.Fatal("response was also sent to the stale configured endpoint")
+	for _, accepted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("accepted %v", accepted), func(t *testing.T) {
+			configured := listenPeer(t, "udp4", "127.0.0.1")
+			rebound := listenPeer(t, "udp4", "127.0.0.1")
+			configuredAddr := configured.LocalAddr().(*net.UDPAddr)
+			hub, err := NewHub(":0", Underlay{}, Runtime{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer hub.Close()
+			dst := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: hub.LocalAddr().(*net.UDPAddr).Port}
+			const spiI = uint64(0x0102030405060708)
+			request := make([]byte, 28)
+			binary.BigEndian.PutUint64(request[:8], spiI)
+			var m *Mux
+			if accepted {
+				// as a responder makes its mux
+				unclaimed := hub.Listen()
+				if _, err := configured.WriteToUDP(withMarker(request), dst); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case first := <-unclaimed:
+					m, err = hub.NewMuxTo(first.Endpoint)
+				case <-time.After(arrivalBudget):
+					t.Fatal("the opening datagram did not arrive")
+				}
+			} else {
+				m, err = hub.NewMux(configuredAddr.IP, configuredAddr.Port)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer m.Close()
+			if err := m.RegisterIKE(spiI); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := rebound.WriteToUDP(withMarker(request), dst); err != nil {
+				t.Fatal(err)
+			}
+			_, source, err := m.RecvIKEFromUntil(time.Now().Add(arrivalBudget))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := m.SendIKETo([]byte("response"), source); err != nil {
+				t.Fatal(err)
+			}
+			buf := make([]byte, 64)
+			rebound.SetReadDeadline(time.Now().Add(arrivalBudget))
+			n, _, err := rebound.ReadFromUDP(buf)
+			if err != nil || string(buf[nonESPMarkerLen:n]) != "response" {
+				t.Fatalf("rebound endpoint response = %q, %v", buf[:n], err)
+			}
+			if !m.AdoptEndpoint(source) {
+				t.Error("adopting another endpoint reported no move")
+			}
+			if err := m.SendIKE([]byte("future")); err != nil {
+				t.Fatal(err)
+			}
+			want, other := rebound, configured
+			want.SetReadDeadline(time.Now().Add(arrivalBudget))
+			n, _, err = want.ReadFromUDP(buf)
+			if err != nil || string(buf[nonESPMarkerLen:n]) != "future" {
+				t.Fatalf("the next request reached %s as %q, %v", want.LocalAddr(), buf[:n], err)
+			}
+			other.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+			if _, _, err := other.ReadFromUDP(buf); err == nil {
+				t.Fatalf("the next request also reached %s", other.LocalAddr())
+			}
+		})
 	}
 }
 

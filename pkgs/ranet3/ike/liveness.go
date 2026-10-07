@@ -583,7 +583,9 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		// the live peer rather than being a replay. Only now may it update the
 		// endpoint used for future IKE and ESP traffic after NAT port rebinding
 		// (RFC 7296 §2.4 and §2.23).
-		s.mux.AdoptEndpoint(source)
+		if s.mux.AdoptEndpoint(source) {
+			s.emit("ike.endpoint.moved", slog.String("endpoint", source.String()))
+		}
 	}
 	inner, err := decodeMessagePlaintext(innerFirst, plaintext)
 	if err != nil {

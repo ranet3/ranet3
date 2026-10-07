@@ -5,6 +5,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -29,6 +30,12 @@ type udpEndpoint struct {
 func (*udpEndpoint) transportEndpoint() {}
 func (e *udpEndpoint) String() string   { return e.addr.String() }
 
+func (e *udpEndpoint) sameDestination(other Endpoint) bool {
+	o, ok := other.(*udpEndpoint)
+	return ok && e.addr.IP.Equal(o.addr.IP) && e.addr.Port == o.addr.Port && e.addr.Zone == o.addr.Zone &&
+		bytes.Equal(e.control, o.control)
+}
+
 func (e *udpEndpoint) AddrPort() netip.AddrPort {
 	addr, ok := netip.AddrFromSlice(e.addr.IP)
 	if !ok {
@@ -36,6 +43,8 @@ func (e *udpEndpoint) AddrPort() netip.AddrPort {
 	}
 	return netip.AddrPortFrom(addr.Unmap(), uint16(e.addr.Port))
 }
+
+func (e *udpEndpoint) withoutSource() Endpoint { return &udpEndpoint{addr: e.addr} }
 
 type udpBatchConn interface {
 	ReadBatch([]ipv4.Message, int) (int, error)

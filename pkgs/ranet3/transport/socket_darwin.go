@@ -53,6 +53,13 @@ func (e *darwinEndpoint) AddrPort() netip.AddrPort {
 	return netip.AddrPortFrom(e.addr.Addr().WithZone(""), e.addr.Port())
 }
 
+func (e *darwinEndpoint) sameDestination(other Endpoint) bool {
+	o, ok := other.(*darwinEndpoint)
+	return ok && e.addr == o.addr
+}
+
+func (e *darwinEndpoint) withoutSource() Endpoint { return e }
+
 // darwinSocket is one bound UDP socket of one family. raw is retained for the
 // whole life of the socket so the interface binding can be moved without
 // reopening it: the socket carries every SA this node holds, and a new
