@@ -110,7 +110,7 @@ func BenchmarkEmitDump(b *testing.B) {
 			s.mu.Lock()
 			for _, n := range s.neighbors {
 				n.peer = netstack.NewPeer(n.peer.ID,
-					func(raw []byte, _ byte) ([]byte, error) { return raw, nil },
+					plainEncrypt,
 					func([]byte) error { return nil })
 			}
 			s.mu.Unlock()

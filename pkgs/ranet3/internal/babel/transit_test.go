@@ -17,9 +17,9 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
-// meshFabric wires several speakers over in-memory relays, one per link, with
-// the same per-peer dispatch as wireSpeakerPair. Neighbors start reachable and
-// packets are delivered inline, so a test drives the protocol one exchange at a
+// meshFabric wires several speakers over in-memory relays, one per link.
+// Neighbors start reachable, and flush and inject deliver every packet they
+// cause before they return, so a test drives the protocol one exchange at a
 // time instead of waiting for timers.
 type meshFabric struct {
 	t        *testing.T
@@ -28,9 +28,18 @@ type meshFabric struct {
 	handles  map[string]*PeerHandle
 	sentMu   sync.Mutex
 	sent     map[string][]RawTLV
+	// packets sent and not yet delivered, so a reply never goes out from inside the delivery that caused it
+	held []heldPacket
 	// routes is the cap.route capability every node in the fabric runs, which
 	// decides whether they relay each other's prefixes.
 	routes Routes
+}
+
+type heldPacket struct {
+	speaker *Speaker
+	peer    *netstack.Peer
+	mesh    *netstack.Mesh
+	raw     []byte
 }
 
 // newMeshFabric builds the topology described by links of the form "a-b".
@@ -79,19 +88,18 @@ func (f *meshFabric) node(cfg Config, name string) *Speaker {
 
 func (f *meshFabric) connect(cfg Config, x, y string) {
 	speakerX, speakerY := f.node(cfg, x), f.node(cfg, y)
-	noopEncrypt := func(raw []byte, _ byte) ([]byte, error) { return raw, nil }
 	var peerXforY, peerYforX *netstack.Peer
-	deliver := func(from, to string, speaker *Speaker, peer **netstack.Peer, mesh *netstack.Mesh) func([]byte) error {
+	hold := func(from, to string, speaker *Speaker, peer **netstack.Peer, mesh *netstack.Mesh) func([]byte) error {
 		return func(raw []byte) error {
 			f.record(from, to, raw)
-			if !speaker.Receive(*peer, raw) {
-				mesh.DeliverInbound(raw)
-			}
+			f.sentMu.Lock()
+			defer f.sentMu.Unlock()
+			f.held = append(f.held, heldPacket{speaker, *peer, mesh, slices.Clone(raw)})
 			return nil
 		}
 	}
-	peerYforX = netstack.NewPeer(y, noopEncrypt, deliver(x, y, speakerY, &peerXforY, f.meshes[y]))
-	peerXforY = netstack.NewPeer(x, noopEncrypt, deliver(y, x, speakerX, &peerYforX, f.meshes[x]))
+	peerYforX = netstack.NewPeer(y, plainEncrypt, hold(x, y, speakerY, &peerXforY, f.meshes[y]))
+	peerXforY = netstack.NewPeer(x, plainEncrypt, hold(y, x, speakerX, &peerYforX, f.meshes[x]))
 	f.handles[x+"-"+y] = speakerX.AddPeer(peerYforX)
 	f.handles[y+"-"+x] = speakerY.AddPeer(peerXforY)
 	makeNeighborReachable(f.neighbor(x, y))
@@ -126,11 +134,29 @@ func (f *meshFabric) cost(node, peer string, cost uint16) {
 	f.neighbor(node, peer).reportedCost = cost
 }
 
-// flush sends a full update dump from each named node, in order. Deliveries are
-// inline, so one call carries a change as far as the named nodes reach.
+// flush sends a full update dump from each named node, in order. Everything a
+// dump causes is delivered before the next node sends, so one call carries a
+// change as far as the named nodes reach.
 func (f *meshFabric) flush(nodes ...string) {
 	for _, node := range nodes {
 		f.speakers[node].flushUpdates()
+		f.deliver()
+	}
+}
+
+func (f *meshFabric) deliver() {
+	for {
+		f.sentMu.Lock()
+		if len(f.held) == 0 {
+			f.sentMu.Unlock()
+			return
+		}
+		packet := f.held[0]
+		f.held = f.held[1:]
+		f.sentMu.Unlock()
+		if !packet.speaker.Receive(packet.peer, packet.raw) {
+			packet.mesh.DeliverInbound(packet.raw)
+		}
 	}
 }
 
@@ -150,6 +176,7 @@ func (f *meshFabric) tlvs(from, to string) []RawTLV {
 // reaches a neighbor that split horizon would otherwise keep quiet.
 func (f *meshFabric) inject(node, peer string, tlvs ...RawTLV) {
 	f.speakers[node].handlePacket(f.neighbor(node, peer), EncodePacket(tlvs))
+	f.deliver()
 }
 
 // down drops both ends of a link, as a peer whose ESP session is gone does.
