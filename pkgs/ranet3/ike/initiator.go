@@ -121,6 +121,8 @@ type Session struct {
 
 	requestMu sync.Mutex // IKEv2 permits only one outstanding local request.
 	requests  chan *localRequest
+	// probes holds at most the one probe Run has not acted on
+	probes chan struct{}
 	// sendFailures counts failed IKE sends since the last that went out, and only Run's goroutine touches it
 	sendFailures int
 
@@ -759,6 +761,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 			skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr,
 			spiI: spiI, spiR: spiR, nextLocalMID: 2},
 		requests: make(chan *localRequest, 1),
+		probes:   make(chan struct{}, 1),
 		events:   cfg.Events, local: localID, remote: remoteID,
 	}
 	if err := sess.completeIKEAuth(cfg, req, respRaw, ni, nr); err != nil {
