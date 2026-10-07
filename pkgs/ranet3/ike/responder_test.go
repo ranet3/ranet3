@@ -43,6 +43,11 @@ type responderHarness struct {
 // pass rather than a spurious failure.
 const answerBudget = 30 * time.Second
 
+// quietPeriod is how long a test waits to see that something it expects not to happen does not
+// what it watches for would follow the event before it within milliseconds
+// and a machine too slow to show it in time lets the test pass rather than fail
+const quietPeriod = 300 * time.Millisecond
+
 // events, where a test passes one, is the responder's Recorder
 func newResponderHarness(t *testing.T, lookup func(Identity) (ed25519.PublicKey, bool), events ...Recorder) *responderHarness {
 	t.Helper()

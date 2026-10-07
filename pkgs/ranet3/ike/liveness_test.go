@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -954,7 +955,7 @@ func unbuildableSession(t *testing.T, dpdEvery time.Duration) (*Session, string)
 	if refused == nil {
 		t.Fatal("encrypt took a three-byte key, so this session proves nothing")
 	}
-	return &Session{mux: mux, current: ikeCtx, requests: make(chan *localRequest), dpdEvery: dpdEvery},
+	return &Session{mux: mux, current: ikeCtx, requests: make(chan *localRequest), probes: make(chan struct{}, 1), dpdEvery: dpdEvery},
 		"ike: start a liveness check: " + refused.Error()
 }
 
@@ -1090,4 +1091,189 @@ func TestFailedReplyKeepsTheSession(t *testing.T) {
 		t.Fatal("a fresh request was not taken")
 	}
 	outage("a second outage", 1, 2, 2, 1)
+}
+
+// probedSession dials a peer socket with its timers an hour out
+func probedSession(t *testing.T) (*Session, *net.UDPConn, *recorder) {
+	t.Helper()
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := listenHub(t).NewMux(peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := &recorder{}
+	return &Session{mux: mux, current: testContext(), requests: make(chan *localRequest), probes: make(chan struct{}, 1),
+		dpdEvery: time.Hour, retransmitAfter: time.Hour, events: events.record}, peer, events
+}
+
+// readRequest checks the session sent an empty INFORMATIONAL request
+func readRequest(t *testing.T, s *Session, peer *net.UDPConn) []byte {
+	t.Helper()
+	buf := make([]byte, 2048)
+	if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err := peer.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("no request arrived within %s: %v", answerBudget, err)
+	}
+	raw := append([]byte(nil), buf[NonESPMarkerLen:n]...)
+	message, err := DecodeMessage(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := DecryptMessage(s.current.suite, s.current.skei, raw, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Header.ExchangeType != INFORMATIONAL || message.Header.IsResponse() || len(inner) != 0 {
+		t.Fatalf("the session sent exchange %d response %v with %d payloads, want a liveness check",
+			message.Header.ExchangeType, message.Header.IsResponse(), len(inner))
+	}
+	return raw
+}
+
+func awaitProbes(t *testing.T, events *recorder, count int) {
+	t.Helper()
+	for deadline := time.Now().Add(answerBudget); recordedKind(events, "ike.probe") < count; time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the session acted on %d probes, want %d", recordedKind(events, "ike.probe"), count)
+		}
+	}
+}
+
+// the liveness interval here is an hour
+func TestProbeStartsALivenessCheckAtOnce(t *testing.T) {
+	s, peer, events := probedSession(t)
+	runSession(t, s)
+	s.Probe()
+	readRequest(t, s, peer)
+	awaitProbes(t, events, 1)
+	if got := events.recorded(); !slices.Contains(got, "ike.probe > action=liveness check message_id=0") {
+		t.Errorf("the session recorded %q, want the liveness check it sent", got)
+	}
+}
+
+// the retransmission is due an hour later, and RFC 7296 section 2.1 has it sent bit for bit
+func TestProbeRetransmitsTheOutstandingRequestAtOnce(t *testing.T) {
+	s, peer, events := probedSession(t)
+	runSession(t, s)
+	s.Probe()
+	first := readRequest(t, s, peer)
+	awaitProbes(t, events, 1)
+	s.Probe()
+	if again := readRequest(t, s, peer); !bytes.Equal(again, first) {
+		t.Error("the probe sent something other than the outstanding request")
+	}
+	awaitProbes(t, events, 2)
+	if got := events.recorded(); !slices.Contains(got, "ike.probe > action=retransmission message_id=0") {
+		t.Errorf("the session recorded %q, want the retransmission it sent", got)
+	}
+}
+
+// a probe resends the outstanding request bit for bit and leaves its attempts and its backoff to the schedule
+func TestProbeResendsWithoutSpendingAnAttempt(t *testing.T) {
+	s, peer, _ := probedSession(t)
+	pending, err := s.startLiveness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := readRequest(t, s, peer)
+	sent, attempts, deadline := pending.sent, pending.attempts, pending.deadline
+	for range maxRetransmits {
+		if probed, err := s.probe(pending); err != nil || probed != pending {
+			t.Fatalf("a probe with a request outstanding answered %v, another request %v", err, probed != pending)
+		}
+		if again := readRequest(t, s, peer); !bytes.Equal(again, first) {
+			t.Fatal("a probe sent something other than the outstanding request")
+		}
+	}
+	if pending.sent != sent || pending.attempts != attempts || !pending.deadline.Equal(deadline) {
+		t.Errorf("probes left %d sends and %d attempts due at %s, want the %d and %d due at %s they found",
+			pending.sent, pending.attempts, pending.deadline, sent, attempts, deadline)
+	}
+}
+
+// both ends of a real handshake take probes, which the constructors make room for
+func TestProbesRunHasNotGotToAreOne(t *testing.T) {
+	answered, dialed := &recorder{}, &recorder{}
+	h := newResponderHarness(t, nil, answered.record)
+	cfg := h.peerConfig()
+	cfg.Events = dialed.record
+	ctx, cancel := context.WithTimeout(context.Background(), answerBudget)
+	defer cancel()
+	initiator, err := InitiateContext(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responder := <-h.sessions
+	<-h.identities
+	for range 5 {
+		initiator.Probe()
+		responder.Probe()
+	}
+	runSession(t, initiator)
+	runSession(t, responder)
+	awaitProbes(t, dialed, 1)
+	awaitProbes(t, answered, 1)
+	time.Sleep(quietPeriod)
+	if got := recordedKind(dialed, "ike.probe"); got != 1 {
+		t.Errorf("five probes before the dialed session's loop ran were acted on %d times, want once", got)
+	}
+	if got := recordedKind(answered, "ike.probe"); got != 1 {
+		t.Errorf("five probes before the answered session's loop ran were acted on %d times, want once", got)
+	}
+}
+
+// a probe that cannot build the check it asks for ends the session as that check would
+// the liveness interval here is an hour, and only the probe starts a check
+func TestProbeThatCannotBuildACheckEndsTheSession(t *testing.T) {
+	s, want := unbuildableSession(t, time.Hour)
+	done := runSession(t, s)
+	s.Probe()
+	select {
+	case err := <-done:
+		if err == nil || err.Error() != want {
+			t.Errorf("the session ended with %v, want %s", err, want)
+		}
+	case <-time.After(answerBudget):
+		t.Fatal("a session whose probe cannot build a check never ended")
+	}
+	if !s.mux.IsClosed() {
+		t.Error("the session ended with its mux open")
+	}
+}
+
+// probes resend an unanswered exchange without spending its attempts, so it ends on its schedule and not before
+func TestProbesLeaveAnUnansweredExchangeToItsSchedule(t *testing.T) {
+	const first, every = 20 * time.Millisecond, 5 * time.Millisecond
+	s := &Session{mux: unsendableMux(t), current: testContext(), requests: make(chan *localRequest), probes: make(chan struct{}, 1),
+		dpdEvery: time.Hour, retransmitAfter: first}
+	started := time.Now()
+	done := runSession(t, s)
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		tick := time.NewTicker(every)
+		defer tick.Stop()
+		for {
+			s.Probe()
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+			}
+		}
+	}()
+	// the check the first probe starts waits 1, 2, 4, 8 and 16 times first
+	scheduled := first * (1 + 2 + 4 + 8 + 16)
+	select {
+	case err := <-done:
+		if elapsed := time.Since(started); elapsed < scheduled {
+			t.Errorf("the exchange ended after %s, before its schedule of %s ran out: %v", elapsed, scheduled, err)
+		}
+	case <-time.After(answerBudget):
+		t.Fatal("probes kept an exchange the peer never answers alive")
+	}
 }

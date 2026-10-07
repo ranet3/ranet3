@@ -352,6 +352,14 @@ func (s *Session) Run(ctx context.Context) error {
 		case req := <-requests:
 			s.requests <- req
 			continue
+		case <-s.probes:
+			probed, err := s.probe(pending)
+			if err != nil {
+				s.mux.Close()
+				return err
+			}
+			pending = probed
+			continue
 		case <-timer.C:
 		}
 		// An exchange whose IKE SA has gone can never be answered, and
@@ -413,6 +421,31 @@ func (s *Session) startLiveness() (*pendingRequest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ike: start a liveness check: %w", err)
 	}
+	return pending, nil
+}
+
+// Probe asks Run to prove the path to the peer now, and never blocks
+// probes Run has not acted on yet count as one
+func (s *Session) Probe() {
+	select {
+	case s.probes <- struct{}{}:
+	default:
+	}
+}
+
+// probe starts a liveness check, or sends the outstanding request again now
+// the resend leaves the request's attempts and backoff to their schedule, so probes can neither end an exchange early nor keep it alive
+func (s *Session) probe(pending *pendingRequest) (*pendingRequest, error) {
+	if pending == nil {
+		started, err := s.startLiveness()
+		if err != nil {
+			return nil, err
+		}
+		s.emit("ike.probe", slog.String("action", "liveness check"), slog.Uint64("message_id", uint64(started.msgID)))
+		return started, nil
+	}
+	s.noteSend(s.mux.SendIKE(pending.raw))
+	s.emit("ike.probe", slog.String("action", "retransmission"), slog.Uint64("message_id", uint64(pending.msgID)))
 	return pending, nil
 }
 
