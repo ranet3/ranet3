@@ -114,7 +114,7 @@ its connections to the reads.
 | kind                                 | when                                                                        |
 | ------------------------------------ | --------------------------------------------------------------------------- |
 | `daemon.started`, `daemon.stopping`  | the node is up, and its shutdown has begun                                  |
-| `daemon.reload`                      | the file and the trust document were read again, with the error if any      |
+| `daemon.reload`                      | the file and trust document were read again, with what applied or the error |
 | `control.verb`                       | a verb over the socket, once under each session or dialer it acted on       |
 | `dial.attempt`, `dial.failed`        | a dialer sent a handshake, or ended short of a session                      |
 | `dial.woken`                         | a dialer was set going before its delay, as `redial` does                   |
@@ -129,13 +129,21 @@ its connections to the reads.
 | `babel.neighbor.up`, `.down`         | a neighbor's hellos started arriving, or stopped or its session ended       |
 | `babel.request.sent`                 | this node asked a neighbor that came up for its whole table                 |
 | `babel.route.selected`, `.retracted` | a prefix's next hop changed, every time rather than once a second as logged |
-| `kernel.pass`                        | a reconciler pass that changed the kernel, skipped anew or failed           |
+| `kernel.pass`                        | a reconciler pass that took a reload, changed, skipped anew or failed       |
 | `egress.pass`                        | a translator pass that rewrote its rules, moved its prefixes or failed      |
 | `transport.underlay.bound`           | the underlay socket moved onto another interface                            |
 | `transport.endpoint.unpinned`        | sends to a peer left the address its datagram arrived on, which was gone    |
 | `transport.endpoint.unsegmented`     | sends to a peer stopped segmenting, since its path refused a segment        |
 | `netstack.codel.dropping`            | a peer's sender began dropping for a queue delay above its target           |
 | `netstack.codel.drained`             | that peer's queue emptied, or its delay fell back below the target          |
+
+A `daemon.reload` names in `applied` the capabilities the reload changed in
+place, and carries none when it changed only the trust document or the peers
+dialed. A `kernel.pass` names what woke the reconciler in `trigger`, and the
+pass a reload causes reads `trigger=reload` and is recorded whether or not it
+moved anything. A reconciler stopped with `disable` runs no pass when it takes a
+reload, and the pass that installs the block once it is enabled again reads
+`trigger=enable`.
 
 A `control.verb` carries the caller's uid and pid, and in its `peer` attribute
 the peer as the verb named it, when it named one. The event's peer is the path

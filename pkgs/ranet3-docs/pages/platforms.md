@@ -11,8 +11,8 @@ order: 100
 The reconciler's job is the same everywhere and the facilities under it are not,
 so the configuration names what it wants and each backend reaches it the way its
 kernel allows. A backend that cannot reach something refuses the configuration
-by name at startup rather than coming up with a working mesh and no steering,
-which is the failure that reads as a routing problem for a day.
+by name, at startup or on a reload, rather than coming up with a working mesh
+and no steering, which is the failure that reads as a routing problem for a day.
 
 The tun is `ranet3` on linux unless `link.tun` names another device, and a utun
 on darwin, `utun` for the next free unit or `utunN` for unit N, since the utun
