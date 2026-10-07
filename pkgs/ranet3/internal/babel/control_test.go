@@ -8,6 +8,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -280,5 +281,49 @@ func TestIgnoredNextHopStillSetsTheParserState(t *testing.T) {
 	})))
 	if got, _ := s.mesh.Routes.Lookup(src, dest.Addr()); got != a {
 		t.Error("the update after an ignored next hop was dropped, so the whole packet's IPv4 routes go with it")
+	}
+}
+
+// a Hello and an IHU each rerun route selection, RFC 8966 sections 3.4.1 and 3.4.2
+func TestRouteHeardAheadOfItsLinkCostIsUsedWhenTheCostArrives(t *testing.T) {
+	dest := netip.MustParsePrefix("fd00:5::/64")
+	key := routeKey{dest: dest}
+	route := []RawTLV{
+		EncodeRouterID([8]byte{1}),
+		EncodeUpdate(Update{AE: AEIPv6, Plen: dest.Bits(), Prefix: dest.Addr().AsSlice(), Interval: 6000, Seqno: 1, Metric: 60}),
+	}
+	hello := EncodeHello(Hello{Seqno: 1, Interval: 100})
+	ihu := EncodeIHU(IHU{RxCost: 96, Interval: 300})
+	for _, test := range []struct {
+		name string
+		// the last packet completes the link cost
+		packets [][]RawTLV
+	}{
+		{"before its hello and its ihu", [][]RawTLV{route, {hello, ihu}}},
+		{"between its hello and its ihu", [][]RawTLV{{hello}, route, {ihu}}},
+		{"after its ihu and before its hello", [][]RawTLV{{ihu}, route, {hello}}},
+		{"in the packet that carries its hello and its ihu", [][]RawTLV{append(slices.Clone(route), hello, ihu)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			speaker, neighbor, _ := captureSpeaker(t, Config{})
+			last := len(test.packets) - 1
+			for _, tlvs := range test.packets[:last] {
+				speaker.handlePacket(neighbor, EncodePacket(tlvs))
+			}
+			if forwards(speaker.mesh, dest) {
+				t.Fatal("the route was used before the link had a cost, so this proves nothing")
+			}
+			speaker.handlePacket(neighbor, EncodePacket(test.packets[last]))
+
+			speaker.mu.Lock()
+			held := speaker.routes.entries[key] != nil && speaker.routes.entries[key].routes[neighbor] != nil
+			speaker.mu.Unlock()
+			if !held {
+				t.Fatal("the route was not kept")
+			}
+			if peer, ok := speaker.mesh.Routes.Lookup(dest.Addr(), dest.Addr()); !ok || peer != neighbor.peer {
+				t.Errorf("the packet that completed the link cost left the route unused, so it waits for whatever reselects next: %v", speaker.mesh.Routes.Debug())
+			}
+		})
 	}
 }
