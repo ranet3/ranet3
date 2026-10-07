@@ -43,7 +43,7 @@ type Runtime struct {
 	// PacketSize is the maximum Babel UDP payload, its four-byte protocol
 	// header included.
 	PacketSize int
-	// Events records each neighbor coming up or going down and each change of a selected next hop
+	// Events records each neighbor coming up or going down, the request sent to one that came up and each change of a selected next hop
 	// nil records nothing
 	Events *events.Bus
 }
