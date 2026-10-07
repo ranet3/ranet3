@@ -74,6 +74,12 @@ in
     system.activationScripts.extraActivation.text = lib.mkIf cfg.openFirewall ''
       ${socketfilterfw} --add ${lib.escapeShellArg ranet3}
       ${socketfilterfw} --unblockapp ${lib.escapeShellArg ranet3}
+      ranet3_entries=$(${socketfilterfw} --listapps | sed -n 's|^.*\(${builtins.storeDir}/[^/ ]*/bin/${baseNameOf ranet3}\).*$|\1|p') || echo "ranet3: could not list the firewall entries" >&2
+      for ranet3_entry in $ranet3_entries; do
+        if [ "$ranet3_entry" != ${lib.escapeShellArg ranet3} ]; then
+          ${socketfilterfw} --remove "$ranet3_entry" || echo "ranet3: could not remove the firewall entry $ranet3_entry" >&2
+        fi
+      done
     '';
   };
 }
