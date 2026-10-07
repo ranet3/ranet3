@@ -11,6 +11,8 @@ let
   socketfilterfw = "/usr/libexec/ApplicationFirewall/socketfilterfw";
 in
 {
+  key = toString ./ranet3.nix;
+
   imports = [ (lib.modules.importApply ../common/options.nix { inherit inputs; }) ];
 
   config = lib.mkIf cfg.enable {
