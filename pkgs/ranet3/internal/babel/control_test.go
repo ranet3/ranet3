@@ -24,7 +24,7 @@ func routePacket(prefix netip.Prefix, routerID byte, metric, interval uint16) []
 }
 
 func addReachablePeer(s *Speaker, id string, cost uint16) *netstack.Peer {
-	p := netstack.NewPeer(id, func(raw []byte, _ byte) ([]byte, error) { return raw, nil }, func([]byte) error { return nil })
+	p := netstack.NewPeer(id, plainEncrypt, func([]byte) error { return nil })
 	s.AddPeer(p)
 	s.Receive(p, buildPacket(netip.MustParseAddr("fe80::2"), multicastGroup, EncodePacket([]RawTLV{
 		EncodeHello(Hello{Seqno: 1, Interval: 1000}), EncodeIHU(IHU{RxCost: cost, Interval: 1000}),

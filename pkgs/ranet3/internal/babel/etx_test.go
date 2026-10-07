@@ -371,7 +371,7 @@ func TestIHUSaysWhatThisNodeHearsFromTheNeighbor(t *testing.T) {
 	}
 
 	fresh, _, _ := captureSpeaker(t, Config{Hello: dur(interval)})
-	b := netstack.NewPeer("b", func(raw []byte, _ byte) ([]byte, error) { return raw, nil }, func([]byte) error { return nil })
+	b := netstack.NewPeer("b", plainEncrypt, func([]byte) error { return nil })
 	handle := fresh.AddPeer(b)
 	defer func() { handle.Close(); b.Close() }()
 	freshCost := func() uint16 {
