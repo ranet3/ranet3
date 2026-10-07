@@ -258,7 +258,7 @@ func NewHub(localAddr string, underlay Underlay, rt Runtime) (*Hub, error) {
 			return nil, fmt.Errorf("transport: prepare interface %d: %w", index, err)
 		}
 	}
-	bind, fns, port, err := openPacketBind(uint16(laddr.Port), underlay, index, rt.Routes != nil)
+	bind, fns, port, err := openPacketBind(uint16(laddr.Port), underlay, index, rt.Routes != nil, rt.Events)
 	if err != nil {
 		return nil, fmt.Errorf("transport: open bind: %w", err)
 	}

@@ -65,7 +65,7 @@ type Runtime struct {
 	// interface can reach anything off it. Nil leaves that to the operator,
 	// and the probe after each binding says so.
 	Routes UnderlayRoutes
-	// Events records each move of the socket onto another interface
+	// Events records each move of the socket onto another interface, and on linux each fallback a send to a peer took
 	// nil records nothing
 	Events func(kind string, attrs ...slog.Attr)
 }

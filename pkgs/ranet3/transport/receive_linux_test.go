@@ -45,7 +45,7 @@ func BenchmarkUDPReceiveVector(b *testing.B) {
 			name = "fixed"
 		}
 		b.Run(name, func(b *testing.B) {
-			bind, _, port, err := openPacketBind(0, Underlay{}, 0, false)
+			bind, _, port, err := openPacketBind(0, Underlay{}, 0, false, nil)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -64,7 +64,7 @@ func BenchmarkUDPReceiveVector(b *testing.B) {
 				socket.raw = nil
 			}
 			receive := socket.receiver()
-			sender, _, _, err := openPacketBind(0, Underlay{}, 0, false)
+			sender, _, _, err := openPacketBind(0, Underlay{}, 0, false, nil)
 			if err != nil {
 				b.Fatal(err)
 			}

@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
@@ -25,15 +26,35 @@ import (
 type udpEndpoint struct {
 	addr    *net.UDPAddr
 	control []byte // immutable reply source address and interface
+	// unpinned records a fallback that worked and is never cleared
+	unpinned atomic.Bool
+}
+
+func pinnedEndpoint(addr *net.UDPAddr, source net.IP, index int, ipv6Socket bool) *udpEndpoint {
+	ep := &udpEndpoint{addr: addr}
+	if ipv6Socket {
+		ep.control = (&ipv6.ControlMessage{Src: source, IfIndex: index}).Marshal()
+	} else {
+		ep.control = (&ipv4.ControlMessage{Src: source, IfIndex: index}).Marshal()
+	}
+	return ep
+}
+
+func (e *udpEndpoint) pin() []byte {
+	if e.unpinned.Load() {
+		return nil
+	}
+	return e.control
 }
 
 func (*udpEndpoint) transportEndpoint() {}
 func (e *udpEndpoint) String() string   { return e.addr.String() }
 
+// sameDestination compares the pin as sends now carry it, so a fallen-back endpoint differs from a fresh one
 func (e *udpEndpoint) sameDestination(other Endpoint) bool {
 	o, ok := other.(*udpEndpoint)
 	return ok && e.addr.IP.Equal(o.addr.IP) && e.addr.Port == o.addr.Port && e.addr.Zone == o.addr.Zone &&
-		bytes.Equal(e.control, o.control)
+		bytes.Equal(e.pin(), o.pin())
 }
 
 func (e *udpEndpoint) AddrPort() netip.AddrPort {
@@ -60,7 +81,10 @@ type udpSocket struct {
 	send sync.Pool
 }
 
-type udpBind struct{ v4, v6 *udpSocket }
+type udpBind struct {
+	v4, v6 *udpSocket
+	events func(kind string, attrs ...slog.Attr)
+}
 
 func (b *udpBind) ParseEndpoint(s string) (Endpoint, error) {
 	addr, err := netip.ParseAddrPort(s)
@@ -89,7 +113,7 @@ const (
 
 // openPacketBind takes the one socket this node's IKE and ESP share. index
 // names an interface to bind it to, which this platform never asks for.
-func openPacketBind(port uint16, underlay Underlay, index int, routed bool) (packetBind, []receiveFunc, uint16, error) {
+func openPacketBind(port uint16, underlay Underlay, index int, routed bool, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	// The port selected by the IPv4 bind may already be occupied on IPv6.
 	// Retry ephemeral allocation; an explicitly requested port still fails.
 	var err error
@@ -97,7 +121,7 @@ func openPacketBind(port uint16, underlay Underlay, index int, routed bool) (pac
 		var bind packetBind
 		var receivers []receiveFunc
 		var bound uint16
-		bind, receivers, bound, err = listenPacketBind(port, underlay.Mark)
+		bind, receivers, bound, err = listenPacketBind(port, underlay.Mark, events)
 		if port != 0 || !errors.Is(err, unix.EADDRINUSE) {
 			return bind, receivers, bound, err
 		}
@@ -105,8 +129,8 @@ func openPacketBind(port uint16, underlay Underlay, index int, routed bool) (pac
 	return nil, nil, 0, err
 }
 
-func listenPacketBind(port uint16, fwmark uint32) (packetBind, []receiveFunc, uint16, error) {
-	b := new(udpBind)
+func listenPacketBind(port uint16, fwmark uint32, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
+	b := &udpBind{events: events}
 	var receivers []receiveFunc
 	for i, network := range []string{"udp4", "udp6"} {
 		var markErr error
@@ -284,21 +308,18 @@ func (s *udpSocket) replyEndpoint(m *ipv4.Message) (*udpEndpoint, error) {
 	} else {
 		addr = m.Addr.(*net.UDPAddr)
 	}
-	ep := &udpEndpoint{addr: addr}
 	if s.ipv6 {
 		var cm ipv6.ControlMessage
 		if err := cm.Parse(m.OOB[:m.NN]); err != nil {
 			return nil, err
 		}
-		ep.control = (&ipv6.ControlMessage{Src: cm.Dst, IfIndex: cm.IfIndex}).Marshal()
-	} else {
-		var cm ipv4.ControlMessage
-		if err := cm.Parse(m.OOB[:m.NN]); err != nil {
-			return nil, err
-		}
-		ep.control = (&ipv4.ControlMessage{Src: cm.Dst, IfIndex: cm.IfIndex}).Marshal()
+		return pinnedEndpoint(addr, cm.Dst, cm.IfIndex, true), nil
 	}
-	return ep, nil
+	var cm ipv4.ControlMessage
+	if err := cm.Parse(m.OOB[:m.NN]); err != nil {
+		return nil, err
+	}
+	return pinnedEndpoint(addr, cm.Dst, cm.IfIndex, false), nil
 }
 
 func udpGROSize(control []byte) (int, error) {
@@ -345,13 +366,13 @@ func appendUDPSegment(control []byte, size int) []byte {
 // prepare coalesces adjacent ciphertext from SealBatch without copying it.
 // Nonadjacent packets stay separate: using spare capacity for packing could
 // overwrite another packet that has not been sent yet.
-func (b *udpSendBatch) prepare(packets [][]byte, ep *udpEndpoint, gso bool) int {
+func (b *udpSendBatch) prepare(packets [][]byte, to *net.UDPAddr, control []byte, segment bool) int {
 	n := 0
 	for first := 0; first < len(packets); {
 		payload := packets[first]
 		size := len(payload)
 		end := first + 1
-		if gso && size > 0 {
+		if segment && size > 0 {
 			for end < len(packets) && end-first < 64 && len(packets[end]) > 0 && len(packets[end]) <= size &&
 				len(payload)+len(packets[end]) <= min(cap(payload), 65507) {
 				if &payload[len(payload):cap(payload)][0] != &packets[end][0] {
@@ -365,8 +386,8 @@ func (b *udpSendBatch) prepare(packets [][]byte, ep *udpEndpoint, gso bool) int 
 			}
 		}
 		m := &b.messages[n]
-		m.Buffers[0], m.Addr = payload, ep.addr
-		m.OOB = append(m.OOB[:0], ep.control...)
+		m.Buffers[0], m.Addr = payload, to
+		m.OOB = append(m.OOB[:0], control...)
 		if end-first > 1 {
 			m.OOB = appendUDPSegment(m.OOB, size)
 		}
@@ -377,6 +398,7 @@ func (b *udpSendBatch) prepare(packets [][]byte, ep *udpEndpoint, gso bool) int 
 	return n
 }
 
+// Send resends from the kernel's choice of source when a pinned one is refused as gone, and keeps that choice once it worked
 func (b *udpBind) Send(packets [][]byte, endpoint Endpoint) error {
 	ep := endpoint.(*udpEndpoint)
 	socket := b.v4
@@ -388,27 +410,60 @@ func (b *udpBind) Send(packets [][]byte, endpoint Endpoint) error {
 	}
 	batch := socket.send.Get().(*udpSendBatch)
 	defer socket.send.Put(batch)
-	for len(packets) > 0 {
-		gso := socket.gso.Load()
-		n := batch.prepare(packets[:min(len(packets), espSendBatch)], ep, gso)
-		sent, err := socket.pc.WriteBatch(batch.messages[:n], 0)
+	control := ep.pin()
+	sent, err := socket.sendAll(batch, packets, ep.addr, control)
+	if err == nil || control == nil || !unpinnable(err) {
+		return err
+	}
+	if _, err := socket.sendAll(batch, packets[sent:], ep.addr, nil); err != nil {
+		return err
+	}
+	if ep.unpinned.CompareAndSwap(false, true) {
+		b.fellBack(ep, "transport.endpoint.unpinned", "transport stopped sending to an endpoint from the address its datagram arrived on", err)
+	}
+	return nil
+}
+
+// unpinnable reports whether err is linux refusing a source address or interface the host no longer has
+func unpinnable(err error) bool {
+	return errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EINVAL) ||
+		errors.Is(err, unix.ENODEV) || errors.Is(err, unix.EADDRNOTAVAIL)
+}
+
+// sendAll reports how many datagrams went out before an error
+func (s *udpSocket) sendAll(batch *udpSendBatch, packets [][]byte, to *net.UDPAddr, control []byte) (int, error) {
+	done := 0
+	for done < len(packets) {
+		gso := s.gso.Load()
+		n := batch.prepare(packets[done:min(len(packets), done+espSendBatch)], to, control, gso)
+		sent, err := s.pc.WriteBatch(batch.messages[:n], 0)
 		for i := range n {
 			batch.messages[i].Buffers[0], batch.messages[i].Addr = nil, nil
 		}
 		if sent > 0 {
-			packets = packets[batch.ends[sent-1]:]
+			done += batch.ends[sent-1]
 		}
 		if err != nil {
 			if gso && (errors.Is(err, unix.EIO) || errors.Is(err, unix.EINVAL) ||
 				errors.Is(err, unix.ENOPROTOOPT) || errors.Is(err, unix.EOPNOTSUPP)) {
-				socket.gso.Store(false)
+				s.gso.Store(false)
 				continue
 			}
-			return err
+			return done, err
 		}
 		if sent == 0 {
-			return errors.New("transport: UDP send made no progress")
+			return done, errors.New("transport: UDP send made no progress")
 		}
 	}
-	return nil
+	return done, nil
+}
+
+// fellBack logs and records a fallback a send to ep took after linux refused it with err
+func (b *udpBind) fellBack(ep *udpEndpoint, kind, message string, err error) {
+	errno, _ := errors.AsType[unix.Errno](err)
+	attrs := []slog.Attr{slog.String("endpoint", ep.String()), slog.String("errno", unix.ErrnoName(errno))}
+	slog.LogAttrs(context.Background(), slog.LevelInfo, message, attrs...)
+	if b.events != nil {
+		b.events(kind, attrs...)
+	}
 }

@@ -291,7 +291,7 @@ const (
 // binds it to that interface, and zero leaves it following the forwarding
 // table as every other socket on the machine does. routed says the caller has
 // already written that interface's own routing; see reportBoundReach.
-func openPacketBind(port uint16, underlay Underlay, index int, routed bool) (packetBind, []receiveFunc, uint16, error) {
+func openPacketBind(port uint16, underlay Underlay, index int, routed bool, _ func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	// The port selected by the IPv4 bind may already be occupied on IPv6.
 	// Retry ephemeral allocation; an explicitly requested port still fails.
 	var err error
