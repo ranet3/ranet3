@@ -84,6 +84,8 @@ in
           "reload"
         ];
         Restart = "on-failure";
+        # a delay of 5 seconds keeps a failing daemon under systemd's limit of 5 starts in 10 seconds
+        RestartSec = "5s";
         # shutdown closes every session with a grace period and withdraws the
         # routes it installed, and a kill partway through leaves them behind
         TimeoutStopSec = "15s";
