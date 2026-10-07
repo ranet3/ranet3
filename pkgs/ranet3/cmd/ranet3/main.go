@@ -24,7 +24,6 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -287,7 +286,7 @@ func runDaemon(opts options) int {
 	if exit := cfg.Egress(); exit != nil {
 		translator, err := egress.New(*exit, egress.Runtime{
 			Interface:     mesh.Name,
-			MeshAddresses: meshAddresses(cfg),
+			MeshAddresses: client.MeshAddresses(cfg),
 			Forwarding:    client.Forwarding,
 			// Published through the runtime rather than read out of the
 			// config, which is how an exit whose rule is not installed
@@ -476,32 +475,4 @@ func egressStatus(translator *egress.Translator) control.EgressStatus {
 		Conflicts: stats.Conflicts,
 		Err:       stats.Err,
 	}
-}
-
-// meshAddresses is every address this node carries on the mesh, which
-// cap.egress translates into the mesh under. It is the announced host prefixes
-// plus whatever cap.table assigns, because a node that configures its tun
-// externally assigns nothing and still has exactly one address the mesh
-// returns to.
-func meshAddresses(cfg *config.Config) []netip.Addr {
-	announced := cfg.Routes().Announced()
-	var out []netip.Addr
-	add := func(prefix netip.Prefix) {
-		// Only a host prefix. A shorter one is a range this node carries
-		// traffic for rather than an address it answers at, and translating
-		// to its base address would send replies to a host that may not exist.
-		if prefix.Bits() != prefix.Addr().BitLen() || slices.Contains(out, prefix.Addr()) {
-			return
-		}
-		out = append(out, prefix.Addr())
-	}
-	for _, prefix := range announced {
-		add(prefix)
-	}
-	if table := cfg.Cap.Table; table != nil {
-		for _, prefix := range table.Assigned(announced) {
-			add(prefix)
-		}
-	}
-	return out
 }
