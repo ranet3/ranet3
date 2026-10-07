@@ -73,7 +73,7 @@ func sendRecvWithin(mux *transport.Mux, req []byte, attempts int, accept func([]
 		if err := mux.SendIKE(req); err != nil {
 			return nil, err
 		}
-		deadline := time.Now().Add(retransmitDelay(attempt + 1))
+		deadline := time.Now().Add(retransmitDelay(requestTimeout, attempt+1))
 		for time.Now().Before(deadline) {
 			raw, err := mux.RecvIKEUntil(deadline)
 			if err != nil {

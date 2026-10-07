@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"runtime"
 	"strings"
@@ -125,7 +126,7 @@ func TestRekeyRetryDelayIsSpreadOverUpperHalfOfWindow(t *testing.T) {
 func TestRequestRetransmitDelayIsExponential(t *testing.T) {
 	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second}
 	for i, delay := range want {
-		if got := retransmitDelay(i + 1); got != delay {
+		if got := retransmitDelay(requestTimeout, i+1); got != delay {
 			t.Fatalf("attempt %d delay = %v, want %v", i+1, got, delay)
 		}
 	}
@@ -162,7 +163,8 @@ func TestNoteTrafficCoalescesPacketsUntilRunConsumesThem(t *testing.T) {
 	}
 }
 
-func TestStartRequestConsumesMessageIDOnlyAfterSuccessfulSend(t *testing.T) {
+// a request whose first send fails is pending with that attempt spent
+func TestStartRequestConsumesMessageIDWhetherOrNotItsSendGoesOut(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	ctx := &ikeContext{
 		suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128},
@@ -176,24 +178,34 @@ func TestStartRequestConsumesMessageIDOnlyAfterSuccessfulSend(t *testing.T) {
 		t.Fatalf("Message ID after successful send = %d, want 8", ctx.nextLocalMID)
 	}
 
-	failedMux, err := transport.Dial(":0", net.IPv4(127, 0, 0, 1), 4500)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := failedMux.Close(); err != nil {
-		t.Fatal(err)
-	}
 	failedCtx := &ikeContext{
 		suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128},
 		skei:  make([]byte, 20), spiI: 3, spiR: 4, nextLocalMID: 11,
 	}
-	failed := &Session{mux: failedMux, current: failedCtx}
-	if _, err := failed.startRequest(&localRequest{exchange: INFORMATIONAL}); err == nil {
-		t.Fatal("startRequest succeeded with a closed transport")
+	failed := &Session{mux: unsendableMux(t), current: failedCtx}
+	pending, err := failed.startRequest(&localRequest{exchange: INFORMATIONAL})
+	if err != nil {
+		t.Fatalf("a request whose send failed was refused rather than left pending: %v", err)
 	}
-	if failedCtx.nextLocalMID != 11 {
-		t.Fatalf("Message ID after failed send = %d, want 11", failedCtx.nextLocalMID)
+	if failedCtx.nextLocalMID != 12 || pending.msgID != 11 {
+		t.Fatalf("the request took Message ID %d and left %d next, want 11 and 12", pending.msgID, failedCtx.nextLocalMID)
 	}
+	if pending.sent != 1 || pending.attempts != 1 || failed.sendFailures != 1 {
+		t.Errorf("the failed send counted %d sends and %d attempts with %d failures, want one of each", pending.sent, pending.attempts, failed.sendFailures)
+	}
+}
+
+// unsendableMux sends to port zero, which linux and darwin both refuse
+func unsendableMux(t *testing.T) *transport.Mux {
+	t.Helper()
+	mux, err := listenHub(t).NewMux(net.IPv4(127, 0, 0, 1), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.SendIKE([]byte("refused")); err == nil {
+		t.Fatal("a send to port zero went out, so this mux proves nothing")
+	}
+	return mux
 }
 
 func TestMessageIDExhaustionCannotWrap(t *testing.T) {
@@ -892,39 +904,111 @@ func TestRunLoopWakesForRetainedIKESA(t *testing.T) {
 	<-done
 }
 
-// A liveness probe this end cannot send is not evidence about the peer, and
-// tearing the SA down for it takes every route through that peer with it. The
-// attempt counter above declares a peer dead; a send that never left this node
-// says nothing either way, so the loop retries on dpdRetryDelay and keeps
-// serving. Reverting this closed the mux on the first probe that failed.
-func TestProbeThisEndCannotSendDoesNotEndTheSession(t *testing.T) {
+// captureLevels keeps the level of every record logged until the test ends
+func captureLevels(t *testing.T) *[]slog.Level {
+	t.Helper()
+	levels := new([]slog.Level)
+	previous := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	slog.SetDefault(slog.New(&levelRecorder{levels: levels}))
+	return levels
+}
+
+func countLevel(levels []slog.Level, level slog.Level) int {
+	count := 0
+	for _, logged := range levels {
+		if logged == level {
+			count++
+		}
+	}
+	return count
+}
+
+func runSession(t *testing.T, s *Session) <-chan error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	result, exited := make(chan error, 1), make(chan struct{})
+	go func() {
+		defer close(exited)
+		result <- s.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-exited:
+		case <-time.After(answerBudget):
+			t.Error("the session's control loop did not return")
+		}
+	})
+	return result
+}
+
+// unbuildableSession holds a key encrypt refuses, and with it builds no request
+// it answers the error a check it starts ends the session with
+func unbuildableSession(t *testing.T, dpdEvery time.Duration) (*Session, string) {
+	t.Helper()
 	mux, _ := lifecycleMuxes(t)
-	// A key the AEAD will not take, so every startRequest fails inside
-	// encrypt: a probe that never reaches the wire, which is the shape a
-	// transport failure has from the loop's side.
-	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
-	ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32),
-		skei: []byte{1, 2, 3}, sker: []byte{1, 2, 3}}
-	// The interval shortened so the probe is reached in milliseconds rather
-	// than in the ten seconds a session uses.
-	s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest),
-		dpdEvery: 50 * time.Millisecond}
+	ikeCtx := testContext()
+	ikeCtx.skei = []byte{1, 2, 3}
+	_, refused := EncryptMessage(ikeCtx.suite, ikeCtx.skei, Header{}, nil, nil)
+	if refused == nil {
+		t.Fatal("encrypt took a three-byte key, so this session proves nothing")
+	}
+	return &Session{mux: mux, current: ikeCtx, requests: make(chan *localRequest), dpdEvery: dpdEvery},
+		"ike: start a liveness check: " + refused.Error()
+}
 
-	runCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- s.Run(runCtx) }()
+// a liveness check that cannot be built ends the session with why
+// retrying it would send nothing for as long as the session stood
+func TestLivenessCheckThatCannotBeBuiltEndsTheSession(t *testing.T) {
+	const interval = 20 * time.Millisecond
+	s, want := unbuildableSession(t, interval)
+	select {
+	case err := <-runSession(t, s):
+		if err == nil || err.Error() != want {
+			t.Errorf("the session ended with %v, want %s", err, want)
+		}
+	case <-time.After(answerBudget):
+		t.Fatal("a session whose liveness check cannot be built never ended")
+	}
+	if !s.mux.IsClosed() {
+		t.Error("the session ended with its mux open")
+	}
+}
 
-	// Past the first probe and the retries behind it. dpdRetryDelay is a
-	// second, so this is the first failure and two more after it.
+// a failed send says nothing about the peer, RFC 7296 section 2.4, so only the spent budget ends the session
+func TestSessionThatCannotSendEndsAfterItsBudget(t *testing.T) {
+	levels := captureLevels(t)
+	const interval, first = 20 * time.Millisecond, 10 * time.Millisecond
+	// the check starts an interval in
+	// and its attempts wait 1, 2, 4, 8 and 16 times first
+	budget := interval + first*(1+2+4+8+16)
+	events := &recorder{}
+	s := &Session{mux: unsendableMux(t), current: testContext(), requests: make(chan *localRequest),
+		dpdEvery: interval, retransmitAfter: first, events: events.record}
+	started := time.Now()
+	done := runSession(t, s)
 	select {
 	case err := <-done:
-		t.Fatalf("a probe that could not be sent ended the session: %v", err)
-	case <-time.After(s.dpdInterval() + 2*dpdRetryDelay):
+		if elapsed := time.Since(started); elapsed < budget {
+			t.Errorf("the session ended after %s, before its budget of %s ran out: %v", elapsed, budget, err)
+		}
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("unresponsive after %d attempts", maxRetransmits)) {
+			t.Errorf("the session ended with %v, want its budget run out", err)
+		}
+	case <-time.After(answerBudget):
+		t.Fatal("a session that cannot send never ended, so its dialer never dials again")
 	}
-	if mux.IsClosed() {
-		t.Error("a probe that could not be sent closed the mux, which drops every route through this peer")
+	if s.sendFailures != maxRetransmits {
+		t.Errorf("%d sends failed, want every one of the %d attempts", s.sendFailures, maxRetransmits)
 	}
-	cancel()
-	<-done
+	if got := countLevel(*levels, slog.LevelWarn); got != 1 {
+		t.Errorf("%d failed sends warned %d times, want once", maxRetransmits, got)
+	}
+	if got := countLevel(*levels, slog.LevelDebug); got != maxRetransmits-1 {
+		t.Errorf("the failures after the first logged %d debug lines, want %d", got, maxRetransmits-1)
+	}
+	if failed, recovered := recordedKind(events, "ike.send.failed"), recordedKind(events, "ike.send.recovered"); failed != 1 || recovered != 0 {
+		t.Errorf("the outage recorded %d failures and %d recoveries, want one failure", failed, recovered)
+	}
 }
