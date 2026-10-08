@@ -266,8 +266,9 @@ func dataCharge(count, bytes int) int { return min(max(bytes, count*leastPacketB
 // returns from the transport, so a budget that is full is one whose socket is
 // backpressured, and that lasts far longer than any wait worth having. A wait
 // would only add latency before dropping anyway. The caller also runs on a
-// goroutine that serves other peers: Mesh dispatches under a lock every TUN
-// reader takes. ReserveRawOrDrop says the same of its own callers.
+// goroutine that serves other peers: a TUN reader holds the tickets it has
+// reserved for the rest of its read until it submits them. ReserveRawOrDrop
+// says the same of its own callers.
 func (p *Peer) reserveBatchNow(count, bytes int) *peerBatch {
 	return p.reserveNow(count, dataCharge(count, bytes), false)
 }
@@ -315,14 +316,13 @@ func (p *Peer) SendFailed() uint64 { return p.sendFailed.Load() }
 // reserveTicket takes the peer's next ticket and its sequence range for count packets
 // for a batch of size, which holds size of the data budget or count places of the control one
 func (p *Peer) reserveTicket(count, size int, control bool) *peerBatch {
-	held := size
+	b := &peerBatch{peer: p, size: size, held: size, control: control}
 	if control {
-		held = count
+		b.held = count
 	}
 	p.reserveMu.Lock()
-	ticket := p.reserved
+	b.ticket = p.reserved
 	p.reserved++
-	b := &peerBatch{peer: p, ticket: ticket, size: size, held: held, control: control}
 	b.sealer, b.err = p.reserveFn(count)
 	p.reserveMu.Unlock()
 	b.admitted = time.Since(p.started)
