@@ -57,7 +57,6 @@ type Mesh struct {
 	outboundBufferSize int
 	outboundJobs       chan *outboundBatch
 	outboundFree       chan *outboundBatch
-	outboundDispatchMu sync.Mutex
 	inboundWriters     []chan inboundWriteBatch
 	closed             chan struct{}
 	closeOnce          sync.Once
@@ -458,23 +457,18 @@ func (m *Mesh) claimTruncatedWarning(now, next int64) bool {
 	return now >= next && m.truncatedNextWarning.CompareAndSwap(next, now+int64(truncatedReadInterval))
 }
 
-// Reserve and submit each batch as one operation. Otherwise two readers can
-// retain the first tickets for different peers while later completed batches
-// fill both peers' budgets, preventing either reader from reserving its second
-// peer. Submission order also keeps compatibility workers from all waiting on
-// an earlier ticket that is still queued behind them.
+// a reservation takes its peer's reserveMu alone
+// so a reader preempted between two reservations holds back only the peers whose tickets it holds
 //
-// Nothing here waits. Every TUN reader passes through this lock, and a batch
-// read off one queue carries whichever destinations the kernel hashed onto it,
-// so waiting for room in one peer's budget would stop forwarding to every
-// other peer as well: a single backpressured socket would take the whole
-// dataplane down with it, and a budget that is full stays full for as long as
-// the transport is behind. That peer's share of the batch is dropped instead,
-// the way a full egress queue drops, and every other peer's packets go out on
-// time. The drop is counted per peer.
+// Nothing here waits. A batch read off one queue carries whichever
+// destinations the kernel hashed onto it, so waiting for room in one peer's
+// budget would stop forwarding to every other peer as well: a single
+// backpressured socket would take the whole dataplane down with it, and a
+// budget that is full stays full for as long as the transport is behind. That
+// peer's share of the batch is dropped instead, the way a full egress queue
+// drops, and every other peer's packets go out on time. The drop is counted
+// per peer.
 func (m *Mesh) dispatchOutbound(b *outboundBatch) {
-	m.outboundDispatchMu.Lock()
-	defer m.outboundDispatchMu.Unlock()
 	for _, peer := range b.peerOrder {
 		// a peer whose packets of the read were all answered or refused takes no place
 		if share := b.shares[peer]; share.count != 0 {

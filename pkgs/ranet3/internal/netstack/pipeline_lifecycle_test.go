@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"errors"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,68 +79,6 @@ func TestOnFailureReportsWhatAClosedPeerDropped(t *testing.T) {
 	case <-lost:
 	case <-time.After(2 * time.Second):
 		t.Error("a packet a closing peer gave back was never reported to its caller")
-	}
-}
-
-func TestOutboundDispatchKeepsMixedPeerReservationsTogether(t *testing.T) {
-	firstReserved := make(chan struct{})
-	releaseFirst := make(chan struct{})
-	var releaseOnce, firstOnce sync.Once
-	secondReserved := make(chan struct{}, 2)
-	transmitted := make(chan struct{}, 4)
-	sealer := func(raw [][]byte, _ []byte, _ [][]byte) ([][]byte, error) {
-		sealed := make([][]byte, len(raw))
-		for i := range raw {
-			sealed[i] = bytes.Clone(raw[i])
-		}
-		return sealed, nil
-	}
-	send := func(packets [][]byte) error {
-		for range packets {
-			transmitted <- struct{}{}
-		}
-		return nil
-	}
-	a := NewPeer("a", func(int) (BatchSealer, error) {
-		firstOnce.Do(func() { close(firstReserved); <-releaseFirst })
-		return sealer, nil
-	}, send, nil)
-	b := NewPeer("b", func(int) (BatchSealer, error) {
-		secondReserved <- struct{}{}
-		return sealer, nil
-	}, send, nil)
-	m := &Mesh{closed: make(chan struct{}), outboundJobs: make(chan *outboundBatch, 4), outboundFree: make(chan *outboundBatch, 4)}
-	m.outboundWorkerWG.Add(2)
-	go m.outboundWorker()
-	go m.outboundWorker()
-	t.Cleanup(func() {
-		releaseOnce.Do(func() { close(releaseFirst) })
-		m.Close()
-		a.Close()
-		b.Close()
-	})
-	dispatch := func(peers []*Peer) {
-		batch := &outboundBatch{
-			n: 2, bufs: [][]byte{framed(1), framed(2)}, sizes: []int{1, 1}, headers: []byte{0, 0}, peers: peers,
-			peerOrder: append([]*Peer(nil), peers...), shares: map[*Peer]outboundShare{a: {count: 1, bytes: 1}, b: {count: 1, bytes: 1}}, batches: make(map[*Peer]*peerBatch),
-		}
-		m.outboundReaderWG.Go(func() { m.dispatchOutbound(batch) })
-	}
-	dispatch([]*Peer{a, b})
-	<-firstReserved
-	dispatch([]*Peer{b, a})
-	select {
-	case <-secondReserved:
-		t.Fatal("another reader reserved B before the first mixed batch could be submitted")
-	case <-time.After(20 * time.Millisecond):
-	}
-	releaseOnce.Do(func() { close(releaseFirst) })
-	for range 4 {
-		select {
-		case <-transmitted:
-		case <-time.After(time.Second):
-			t.Fatal("mixed-peer batches stopped making progress")
-		}
 	}
 }
 
@@ -251,9 +188,9 @@ func TestSingleQueueInboundSplitsLargeBatches(t *testing.T) {
 }
 
 // One peer whose transport is behind must not stop the mesh forwarding to any
-// other. Every TUN reader dispatches under one lock, and a batch read off one
-// queue carries whichever destinations the kernel hashed onto it, so a
-// reservation that waits there puts the whole dataplane behind the slowest
+// other. A batch read off one queue carries whichever destinations the kernel
+// hashed onto it, so a reservation that waits there puts every other peer of
+// that read, and every read the reader has not taken yet, behind the slowest
 // peer on the mesh.
 //
 // the bound is no wait at all
@@ -317,7 +254,7 @@ func TestCongestedPeerDoesNotStallOthers(t *testing.T) {
 	select {
 	case <-dispatched:
 	case <-time.After(deliveryTimeout):
-		t.Fatal("the congested peer held the dispatch lock every reader shares")
+		t.Fatal("the congested peer held up the reader that feeds the other peer")
 	}
 	waitUntil(t, "the peer that was not congested to send every packet it was given", func() bool { return transmitted.Load() >= reads*perRead })
 	if got := returned.Load(); got != 0 {

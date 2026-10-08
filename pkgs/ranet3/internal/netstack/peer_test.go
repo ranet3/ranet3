@@ -4,10 +4,12 @@
 package netstack
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -133,5 +135,77 @@ func TestSenderMarksTheDataItHandsTheTransport(t *testing.T) {
 	}
 	if peer.TakeSent() {
 		t.Error("the mark outlived the call that took it")
+	}
+}
+
+// a reservation takes its ticket and its sequence range in one section of its peer's reserveMu
+// so a second reservation on the peer, made while the first is parked in reserveFn after its ticket, waits for the first
+// and the wire carries the first's sequence numbers before the second's, as their tickets order them
+func TestReservationsOverlappingOnOnePeerLeaveInTicketOrder(t *testing.T) {
+	parked, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int64
+	var next uint64
+	carried := make(chan []uint64, 4)
+	peer := NewPeer("peer", func(count int) (BatchSealer, error) {
+		if calls.Add(1) == 1 {
+			close(parked)
+			<-release
+		}
+		first := next
+		next += uint64(count)
+		return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
+			out = out[:0]
+			for i := range raw {
+				out = append(out, binary.BigEndian.AppendUint64(nil, first+uint64(i)))
+			}
+			return out, nil
+		}, nil
+	}, func(sealed [][]byte) error {
+		var numbers []uint64
+		for _, packet := range sealed {
+			numbers = append(numbers, binary.BigEndian.Uint64(packet))
+		}
+		carried <- numbers
+		return nil
+	}, nil)
+	t.Cleanup(peer.Close)
+
+	var first, second *peerBatch
+	firstReserved, secondReserved := make(chan struct{}), make(chan struct{})
+	go func() { first = filled(peer, 2); close(firstReserved) }()
+	<-parked
+	// tried before the second reservation starts, so only the parked one can hold the section
+	inSection := !peer.reserveMu.TryLock()
+	if !inSection {
+		peer.reserveMu.Unlock()
+	}
+	go func() { second = filled(peer, 2); close(secondReserved) }()
+	if inSection {
+		// the second has taken its budget and waits on the section the first holds
+		waitUntil(t, "the second reservation to take its budget", func() bool { return peer.dataBudget.used.Load() == int64(2*dataCharge(2, 2)) })
+	} else {
+		// with no section held, the second takes its ticket and its sequence range before the first takes its range
+		<-secondReserved
+	}
+	close(release)
+	<-firstReserved
+	<-secondReserved
+	for _, b := range []*peerBatch{first, second} {
+		if err := b.enqueue(); err != nil {
+			t.Fatalf("an open peer refused the batch: %v", err)
+		}
+	}
+
+	var wire []uint64
+	for len(wire) < 4 {
+		select {
+		case numbers := <-carried:
+			wire = append(wire, numbers...)
+		case <-time.After(deliveryTimeout):
+			t.Fatalf("the wire carried %v of the 4 packets reserved", wire)
+		}
+	}
+	if !slices.Equal(wire, []uint64{0, 1, 2, 3}) {
+		t.Errorf("the wire carried sequence numbers %v in ticket order, want them rising from 0", wire)
 	}
 }
