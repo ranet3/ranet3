@@ -40,7 +40,7 @@ type Peer struct {
 	// sendFailed counts packets that were sealed, handed to the transport and
 	// lost in the syscall. Separate from dropped, which counts what this peer
 	// refused on purpose: one says the link or the socket is failing and the
-	// other says this node is out of room, and an operator reading the second
+	// other says this node chose not to send, and an operator reading the second
 	// needs it not to move for the first. The sender merges several batches
 	// into one call, so an error covers every packet in it. How many of them
 	// actually left is not knowable from here, but for a bare path report,
