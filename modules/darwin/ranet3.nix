@@ -28,10 +28,10 @@ in
     launchd.daemons.ranet3 = {
       # creating a utun and writing the route table both need root, and the
       # group leaves the control socket usable without it. The daemon
-      # creates /var/run/ranet3 itself, at a mode that group can enter,
-      # which is why nothing here makes the directory. configFile is
-      # interpolated before it is quoted, since escapeShellArg leaves a path
-      # literal naming the source tree rather than the store
+      # creates /var/run/ranet3 itself, in that group and at a mode the
+      # group can enter, which is why nothing here makes the directory.
+      # configFile is interpolated before it is quoted, since escapeShellArg
+      # leaves a path literal naming the source tree rather than the store
       script =
         lib.optionalString generated ''
           key=${lib.escapeShellArg cfg.settings.auth.key}

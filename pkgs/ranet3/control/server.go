@@ -69,6 +69,13 @@ func Listen(path string) (net.Listener, error) {
 		lock.Close()
 		return nil, fmt.Errorf("control: %w", err)
 	}
+	// BSD hands a new socket the group of its directory rather than the process's
+	// the daemon's group comes before the mode that lets a group in
+	if err := os.Lchown(path, -1, os.Getegid()); err != nil {
+		socket.Close()
+		lock.Close()
+		return nil, fmt.Errorf("control: %w", err)
+	}
 	// After the bind rather than through a umask: the umask is the process's
 	// and belongs to whoever started it, and a socket left at 0755 by one is a
 	// socket the group cannot read.
@@ -81,15 +88,27 @@ func Listen(path string) (net.Listener, error) {
 }
 
 // makeParent creates the socket's directory at a mode the daemon's group can
-// traverse. MkdirAll takes the process umask off the mode it is given, so a
+// traverse. Mkdir takes the process umask off the mode it is given, so a
 // unit with a restrictive one would otherwise leave a directory nobody but the
 // daemon can enter and a socket inside it that says it is group readable. A
 // directory that already exists is left exactly as it is.
+//
+// each missing directory above it is made the same way
+// BSD hands a new directory the group of the one above it rather than the process's
+// a directory starts with no access and takes the daemon's group before its mode lets that group in
 func makeParent(dir string) error {
 	if _, err := os.Stat(dir); err == nil {
 		return nil
 	}
-	if err := os.MkdirAll(dir, dirMode); err != nil {
+	if parent := filepath.Dir(dir); parent != dir {
+		if err := makeParent(parent); err != nil {
+			return err
+		}
+	}
+	if err := os.Mkdir(dir, 0); err != nil {
+		return fmt.Errorf("control: %w", err)
+	}
+	if err := os.Lchown(dir, -1, os.Getegid()); err != nil {
 		return fmt.Errorf("control: %w", err)
 	}
 	if err := os.Chmod(dir, dirMode); err != nil {
