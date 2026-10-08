@@ -412,6 +412,41 @@ func TestNodeFactsAreRefusedWhenTheyCannotBeActedOn(t *testing.T) {
 	}
 }
 
+// a link.mtu under 1280, under 1280 plus what the longest steering list puts in front of a packet, or past 65470 is refused under either decoder
+// and the refusal names the field, the value written and the bound it misses
+func TestLinkMTURefusalsNameTheFieldUnderEitherDecoder(t *testing.T) {
+	const (
+		twoSegmentsYAML = "cap:\n  segment:\n    source: \"3fff:1:69c:8c0::1\"\n    steer: [{ from: \"3fff:a::1/128\", via: [\"3fff:1:69c::1\", \"3fff:1:69c::2\"] }]\n"
+		twoSegmentsTOML = "[cap.segment]\nsource = \"3fff:1:69c:8c0::1\"\nsteer = [{ from = \"3fff:a::1/128\", via = [\"3fff:1:69c::1\", \"3fff:1:69c::2\"] }]\n"
+	)
+	for name, refusal := range map[string]struct {
+		mtu        string
+		yaml, toml string
+		names      []string
+	}{
+		"under what IPv6 requires of every link":            {"1279", "", "", []string{"link.mtu", "1279", "1280"}},
+		"past what one ESP-in-UDP datagram carries":         {"65471", "", "", []string{"link.mtu", "65471", "65470"}},
+		"under what a list of two segments leaves room for": {"1359", twoSegmentsYAML, twoSegmentsTOML, []string{"link.mtu", "1359", "cap.segment steer", "80 bytes"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for extension, body := range map[string]string{
+				".yaml": strings.Replace(nodeYAML, "  port: 13000\n", "  port: 13000\n  mtu: "+refusal.mtu+"\n", 1) + refusal.yaml,
+				".toml": strings.Replace(nodeTOML, "port = 13000\n", "port = 13000\nmtu = "+refusal.mtu+"\n", 1) + refusal.toml,
+			} {
+				_, err := load(t, extension, body)
+				if err == nil {
+					t.Fatalf("%s took link.mtu %s", extension, refusal.mtu)
+				}
+				for _, named := range refusal.names {
+					if !strings.Contains(err.Error(), named) {
+						t.Errorf("%s refused link.mtu %s with %q, which does not name %s", extension, refusal.mtu, err, named)
+					}
+				}
+			}
+		})
+	}
+}
+
 // An announcement that cannot mean what it looks like. Each of these loads
 // into a node announcing something other than what its file says, and the
 // mapping spelling is the one an exit actually uses.
@@ -1123,6 +1158,7 @@ func fullConfig() Config {
 			Endpoints: []Endpoint{{Serial: "0", Family: "ip4"}},
 			Listen:    true,
 			TUN:       "ranet0",
+			MTU:       8918,
 			Underlay:  transport.Underlay{Mark: 0x726c, Bind: true},
 		},
 		Dial: Dial{All: true, To: []Peer{{Org: "example", Name: "gateway", Serial: "1"}}},

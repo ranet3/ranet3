@@ -406,3 +406,30 @@ func TestNoCountHandsOutANumberTwice(t *testing.T) {
 		}
 	})
 }
+
+// Inner is the largest inner packet whose sealed form fits the path under the outer IP and UDP headers, for every suite
+// held to a search of every length from the path's MTU down, which finds none on a path too narrow for an empty packet
+// padding to 4 bytes gives four lengths one sealed size, so a path that is not a multiple of 4 past the headers gives back up to 3 bytes
+func TestInnerIsTheLargestPacketAPathCarries(t *testing.T) {
+	t.Cleanup(settle)
+	pbt.Check(t, func(ht *hegel.T) {
+		out, _ := drawLoopback(ht)
+		header := hegel.Draw(ht, hegel.SampledFrom([]int{20, 40}))
+		// the widest path an empty packet does not fit, the narrowest it does, the ones the configuration names, and the most a datagram holds
+		wire := hegel.Draw(ht, withEdges(hegel.Integers(0, math.MaxUint16), 0, header+43, header+44, 1280, 1500, 9000, math.MaxUint16))
+		largest := -1
+		for n := wire; n >= 0; n-- {
+			if header+8+out.sealedLen(n) <= wire {
+				largest = n
+				break
+			}
+		}
+		got := Inner(wire, header)
+		switch {
+		case largest < 0 && got >= 0:
+			ht.Fatalf("Inner gives %d bytes on a %d byte path under a %d byte header, where no packet fits", got, wire, header)
+		case largest >= 0 && got != largest:
+			ht.Fatalf("Inner gives %d bytes on a %d byte path under a %d byte header, and the largest that fits is %d", got, wire, header, largest)
+		}
+	})
+}

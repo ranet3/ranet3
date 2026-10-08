@@ -112,9 +112,16 @@ func NewRoutesOnly() *Mesh {
 
 // NewNamed attaches to or creates name through wireguard-go's TUN backend.
 // an empty name opens defaultTUNName, which is always created and never attached to
-func NewNamed(mtu int, name string) (*Mesh, error) {
+// mtu is the device's MTU
+// largest is the largest packet a session carries, which a steering header grows a read off the tun to in place
+// every outbound read buffer holds the larger of the two
+// zero takes DefaultMTU for either
+func NewNamed(mtu, largest int, name string) (*Mesh, error) {
 	if mtu == 0 {
 		mtu = DefaultMTU
+	}
+	if largest == 0 {
+		largest = DefaultMTU
 	}
 	if name == "" {
 		name = defaultTUNName
@@ -143,7 +150,7 @@ func NewNamed(mtu int, name string) (*Mesh, error) {
 		Routes:             NewRouteTable(),
 		Name:               actualName,
 		devs:               devs,
-		outboundBufferSize: tunOffset + max(mtu, outboundPacketBufferSize),
+		outboundBufferSize: tunOffset + max(mtu, largest, outboundPacketBufferSize),
 		closed:             make(chan struct{}),
 	}
 	m.startSegmentReports()

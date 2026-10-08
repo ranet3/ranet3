@@ -303,6 +303,17 @@ func (o *OutboundSA) sealedLen(innerLen int) int {
 	return headerLen + o.params.IVLen + innerLen + padLen + trailerLen + o.params.ICVLen
 }
 
+// Inner is the largest inner packet one ESP-in-UDP datagram carries on a path whose MTU is wire
+// under an outer IP header of header bytes, 20 for IPv4 and 40 for IPv6
+// every suite here takes an 8 byte IV and a 16 byte ICV, RFC 4106 and RFC 7634
+// and pads the plaintext with its two trailer octets to a multiple of 4, as sealedLen does
+// a result under zero is a path no packet fits
+func Inner(wire, header int) int {
+	const udpHeaderLen, ivLen, icvLen, trailerLen = 8, 8, 16, 2
+	room := wire - header - udpHeaderLen - headerLen - ivLen - icvLen
+	return room - room%4 - trailerLen
+}
+
 func (o *OutboundSA) appendSealed(dst, nonce, innerIPPacket []byte, nextHeader byte, seq uint64) []byte {
 	const trailerLen = 2 // pad length + next header octets
 	total := len(innerIPPacket) + trailerLen

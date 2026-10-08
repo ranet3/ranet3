@@ -47,7 +47,7 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 				t.Logf("gso_max_segs %d before the mesh attached", gsoMaxSegs(t, path.device))
 			}
 
-			m, err := NewNamed(0, path.asked)
+			m, err := NewNamed(0, 0, path.asked)
 			if err != nil {
 				t.Fatalf("open the mesh on %q: %v", path.asked, err)
 			}
@@ -72,7 +72,7 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 // so the first cut read of a mesh NewNamed opened warns at once rather than an interval later
 func TestTUNMeshWarnsAtItsFirstCutRead(t *testing.T) {
 	enterEmptyNamespace(t)
-	m, err := NewNamed(0, "gsocap0")
+	m, err := NewNamed(0, 0, "gsocap0")
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestTUNMeshWarnsAtItsFirstCutRead(t *testing.T) {
 // and that open has to refuse the device too
 func TestTUNUnderTheDefaultNameIsNeverShared(t *testing.T) {
 	heldByAMesh := func(t *testing.T) {
-		first, err := NewNamed(0, "")
+		first, err := NewNamed(0, 0, "")
 		if err != nil {
 			t.Fatalf("open the first mesh: %v", err)
 		}
@@ -116,7 +116,7 @@ func TestTUNUnderTheDefaultNameIsNeverShared(t *testing.T) {
 			enterEmptyNamespace(t)
 			arm.setup(t)
 
-			m, err := NewNamed(0, arm.asked)
+			m, err := NewNamed(0, 0, arm.asked)
 			if err == nil {
 				m.Close()
 				t.Fatalf("a mesh asking for %q joined %s, which was there before it", arm.asked, m.Name)

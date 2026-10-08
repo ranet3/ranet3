@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -36,6 +37,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"go.yaml.in/yaml/v3"
 
+	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/egress"
@@ -87,6 +89,10 @@ type Link struct {
 	// darwin creates nothing but utun and utun followed by a unit number
 	// the daemon refuses any other name there when it starts, as with Underlay
 	TUN string `yaml:"tun,omitempty" json:"tun,omitempty" toml:"tun,omitempty"`
+	// MTU is the largest inner packet a session carries, the plaintext ESP seals
+	// the device runs at it less the longest cap.segment steer list, which a steered packet carries inside the tunnel
+	// zero takes netstack.DefaultMTU, see SessionMTU
+	MTU uint16 `yaml:"mtu,omitempty" json:"mtu,omitempty" toml:"mtu,omitempty"`
 	// Underlay keeps the one UDP socket carrying IKE and ESP out of the reach
 	// of the routes the mesh installs, which lets an exit-announced default be
 	// a real default rather than one no ordinary socket can see.
@@ -101,6 +107,15 @@ type Link struct {
 	// refusal is at startup rather than at load, as cap.table's rules and VRF
 	// are, so one file can carry a fleet's settings and a laptop's.
 	Underlay transport.Underlay `yaml:"underlay,omitempty" json:"underlay,omitzero" toml:"underlay,omitempty"`
+}
+
+// SessionMTU is link.mtu in force, netstack.DefaultMTU where the file leaves it out
+// two files are compared through it, since an omitted mtu and one written as the default describe one node
+func (l Link) SessionMTU() int {
+	if l.MTU == 0 {
+		return netstack.DefaultMTU
+	}
+	return int(l.MTU)
 }
 
 // Endpoint is one local socket identity. Address selection is global: the
@@ -541,13 +556,9 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
-	// cap.segment is asked with the device it steers from, since one of its
-	// refusals is about a segment list the device cannot carry. The MTU is a
-	// node fact rather than part of the block, and passing it here makes a file
-	// this accepts a file the daemon will run: the same refusal used to live
-	// where the tun is made, so a configuration check reported a file good that
-	// the daemon then would not start on.
-	if err := c.Segments().Validate(netstack.DefaultMTU); err != nil {
+	// cap.segment is asked alone here
+	// its longest steering list is checked against link.mtu with the checks spanning two blocks
+	if err := c.Segments().Validate(0); err != nil {
 		return err
 	}
 	// Table and Egress are asked only where the block was written, because
@@ -629,6 +640,11 @@ func (c *Config) validateNode() error {
 		// knows. Without one, a node with neither would do nothing at all.
 		return errors.New("config: at least one dial.to entry is required unless link.listen or dial.all is set")
 	}
+	// the most one ESP-in-UDP datagram carries over IPv4, whose 16 bit total length counts its own 20 byte header
+	largest := esp.Inner(math.MaxUint16, 20)
+	if mtu := c.Link.SessionMTU(); mtu < srv6.MinimumIPv6MTU || mtu > largest {
+		return fmt.Errorf("config: link.mtu %d is outside %d to %d, the least IPv6 requires of every link to the most one ESP-in-UDP datagram carries over IPv4", mtu, srv6.MinimumIPv6MTU, largest)
+	}
 	serials := make(map[string]struct{}, len(c.Link.Endpoints))
 	for _, endpoint := range c.Link.Endpoints {
 		if endpoint.Serial == "" || (endpoint.Family != "ip4" && endpoint.Family != "ip6") {
@@ -659,6 +675,9 @@ func (c *Config) validateAcrossCapabilities() error {
 	if err := c.validateUnderlayMark(); err != nil {
 		return err
 	}
+	if err := c.validateSteeredMTU(); err != nil {
+		return err
+	}
 	// A SID this node also carries as an ordinary address would go dark: the
 	// inbound seam acts on a packet by its destination before the tun sees it,
 	// so every packet to that address would be refused as carrying no routing
@@ -676,6 +695,20 @@ func (c *Config) validateAcrossCapabilities() error {
 		if carried[segment.SID.Addr] {
 			return fmt.Errorf("config: cap.segment local %s is an address cap.table assigns to this node's own device, so every packet to it would be taken as a segment", segment.SID)
 		}
+	}
+	return nil
+}
+
+// validateSteeredMTU refuses a link.mtu the longest cap.segment steer list takes under the 1280 bytes IPv6 requires of every link
+// the device runs at link.mtu less that list
+// the daemon makes the device with the same call, so a file this takes is one the daemon starts on
+func (c *Config) validateSteeredMTU() error {
+	_, steering, err := c.Segments().Tables()
+	if err != nil {
+		return err
+	}
+	if _, err := steering.CheckMTU(c.Link.SessionMTU()); err != nil {
+		return fmt.Errorf("config: link.mtu %d: %w", c.Link.SessionMTU(), err)
 	}
 	return nil
 }

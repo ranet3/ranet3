@@ -387,6 +387,7 @@ func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 		"underlay": func(c *config.Config) { c.Link.Underlay.Mark = 0x726c },
 		"port":     func(c *config.Config) { c.Link.Port = 14000 },
 		"tun":      func(c *config.Config) { c.Link.TUN = "ranet9" },
+		"mtu":      func(c *config.Config) { c.Link.MTU = 9000 },
 		"endpoints": func(c *config.Config) {
 			c.Link.Endpoints = []config.Endpoint{{Serial: "1", Family: "ip6"}}
 		},
@@ -1140,6 +1141,9 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 	// "restart to apply" to a file that changed nothing, where the restart
 	// drops every SA on the node.
 	for name, write := range map[string]func(*config.Config){
+		"link.mtu": func(c *config.Config) {
+			c.Link.MTU = netstack.DefaultMTU
+		},
 		"babel costs": func(c *config.Config) {
 			c.Cap.Babel = &babel.Config{Cost: defaults}
 		},
