@@ -115,11 +115,11 @@ func takeUndos(rollback []tlvUndo, from, to int) ([]tlvUndo, []tlvUndo) {
 // neighbor after it, and the neighbor would hold the wrong answer until the
 // next periodic dump.
 //
-// A packet with no transmission slot free is dropped here, and the bookkeeping
-// it consumed is rolled back while the lock is still held. One that takes a
-// slot and is then lost in the transport is given back on a later pass
-// instead, because that answer arrives on the sender's own goroutine. See
-// noteLost.
+// A packet its peer's control budget has no room for is dropped here, and the
+// bookkeeping it consumed is rolled back while the lock is still held. One
+// that takes its place and is then lost in the transport is given back on a
+// later pass instead, because that answer arrives on the sender's own
+// goroutine. See noteLost.
 func (s *Speaker) emitLocked(actions []sendAction) func() {
 	var packets []reservedPacket
 	// Ordered by what a pass can afford to lose, least first. Sorting on the
@@ -270,7 +270,8 @@ func coalesce(actions []sendAction) []sendAction {
 }
 
 // reserveTo builds one packet and takes its place in the peer's transmission
-// order, or reports nil when the peer has no slot free.
+// order, or reports nil when the peer refuses it: its control budget has no
+// room, its SA no sequence range, or it is closing.
 func (s *Speaker) reserveTo(n *neighborState, destination netip.Addr, tlvs []RawTLV) *netstack.Place {
 	// Timestamp as the packet takes its place in the queue, rather than when
 	// the timer collected actions for potentially many peers.
