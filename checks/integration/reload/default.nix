@@ -63,6 +63,19 @@ let
     };
     cap.route.announce = [ "fd00:1::/64" ];
   };
+
+  # what a reload applies, an announced prefix and a trust document that
+  # names a second node
+  applied = lib.recursiveUpdate settings {
+    auth.trust = "${trust [
+      (member "1" "machine")
+      (member "2" "other")
+    ]}";
+    cap.route.announce = [ "fd00:2::/64" ];
+  };
+
+  # a control socket away from the one ranet3 reload asks by itself
+  movedSocket = "/run/ranet3/moved.sock";
 in
 testers.runNixOSTest {
   name = "ranet3-reload";
@@ -82,21 +95,24 @@ testers.runNixOSTest {
     };
 
     specialisation = {
-      # what a reload applies, an announced prefix and a trust document that
-      # names a second node
-      applied.configuration.networking.ranet3.settings = lib.mkForce (
-        lib.recursiveUpdate settings {
-          auth.trust = "${trust [
-            (member "1" "machine")
-            (member "2" "other")
-          ]}";
-          cap.route.announce = [ "fd00:2::/64" ];
-        }
-      );
+      applied.configuration.networking.ranet3.settings = lib.mkForce applied;
       # what a reload refuses, since the socket is bound once
       refused.configuration.networking.ranet3.settings = lib.mkForce (
         lib.recursiveUpdate settings { link.port = 14001; }
       );
+      # the daemon serving its control socket somewhere else, which the switch into it restarts it for
+      moved.configuration.networking.ranet3.extraArgs = [
+        "--control"
+        movedSocket
+      ];
+      # what a reload applies, handed to the daemon through the socket it moved
+      moved-applied.configuration.networking.ranet3 = {
+        extraArgs = [
+          "--control"
+          movedSocket
+        ];
+        settings = lib.mkForce applied;
+      };
     };
   };
 
@@ -115,8 +131,8 @@ testers.runNixOSTest {
       def main_pid():
           return machine.succeed("systemctl show --property MainPID --value ranet3.service").strip()
 
-      def status():
-          return json.loads(machine.succeed("ranet3 status --json"))
+      def status(flags=""):
+          return json.loads(machine.succeed(f"ranet3 status --json {flags}"))
 
       def announced(state):
           return [route["prefix"] for route in state["originate"]]
@@ -176,5 +192,29 @@ testers.runNixOSTest {
       assert announced(state) == ["fd00:1::/64"], state["originate"]
       assert state["registry"]["nodes"] == 1, state["registry"]
       machine.wait_until_succeeds(listening(14001), timeout=timeout)
+
+      # extraArgs that move the control socket restart the daemon on it
+      pid = main_pid()
+      status_code, output = switch("moved")
+      print(output)
+      assert status_code == 0, f"the switch exited with {status_code}"
+      machine.wait_until_succeeds("ranet3 status --control ${movedSocket}", timeout=timeout)
+      assert main_pid() != pid, "the switch kept the process serving the old socket"
+      machine.fail("ranet3 status")
+      pid = main_pid()
+      state = status("--control ${movedSocket}")
+      assert announced(state) == ["fd00:1::/64"], state["originate"]
+      assert state["registry"]["nodes"] == 1, state["registry"]
+
+      # a change a reload applies reaches the daemon through the moved socket
+      status_code, output = switch("moved-applied")
+      print(output)
+      assert status_code == 0, f"the switch exited with {status_code}"
+      assert "ranet3.service" in reloaded(output), output
+      assert "restarting the following units" not in output, output
+      assert main_pid() == pid, "the switch restarted the daemon"
+      state = status("--control ${movedSocket}")
+      assert announced(state) == ["fd00:2::/64"], state["originate"]
+      assert state["registry"]["nodes"] == 2, state["registry"]
     '';
 }
