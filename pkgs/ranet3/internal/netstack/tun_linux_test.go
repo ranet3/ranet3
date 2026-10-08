@@ -169,6 +169,35 @@ func TestTUNLanesJoinTheDeviceTheFirstLaneMade(t *testing.T) {
 	}
 }
 
+// the kernel attaches at most 256 queues to one tun and refuses the next with E2BIG
+// so a mesh opens a lane a core up to 256, and 256 on a host with more cores than that
+func TestTUNQueuesStopAtTheMostOneTunTakes(t *testing.T) {
+	for _, procs := range []int{1, 2, 255, 256, 257, 300, 1024, 1 << 20} {
+		if got, want := tunQueues(procs), min(procs, 256); got != want {
+			t.Errorf("a host of %d cores opens %d queues, want %d", procs, got, want)
+		}
+	}
+}
+
+// a mesh asking the kernel for more lanes than one tun takes opens the 256 it takes
+// rather than failing at the next one with E2BIG
+func TestTUNOpensNoMoreLanesThanTheKernelAttaches(t *testing.T) {
+	const asked = 300
+	enterEmptyNamespace(t)
+	devices, actualName, err := createTUNQueues("lanes0", DefaultMTU, asked)
+	if err != nil {
+		t.Fatalf("open %d lanes: %v", asked, err)
+	}
+	t.Cleanup(func() {
+		for _, device := range devices {
+			_ = device.Close()
+		}
+	})
+	if len(devices) != 256 {
+		t.Errorf("%d lanes asked of %s opened %d, want the 256 one tun takes", asked, actualName, len(devices))
+	}
+}
+
 // enterEmptyNamespace moves the test's thread into a network namespace of its own
 // and refuses to go on unless that namespace is new and holds no route
 // a loaded tunnel module puts a fallback device in every new namespace
