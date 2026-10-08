@@ -1870,12 +1870,16 @@ func (r *Reconciler) applyAddresses() error {
 	if err != nil {
 		return fmt.Errorf("list addresses: %w", err)
 	}
+	keysByLength := func(netip.Addr) bool { return false }
+	if p, ok := r.plat.(lengthKeyer); ok {
+		keysByLength = p.keysByLength
+	}
 	var relengthed, stale []netip.Prefix
 	for prefix := range r.owned {
 		if slices.Contains(r.addresses, prefix) {
 			continue
 		}
-		if slices.ContainsFunc(r.addresses, func(wanted netip.Prefix) bool { return wanted.Addr() == prefix.Addr() }) {
+		if !keysByLength(prefix.Addr()) && slices.ContainsFunc(r.addresses, func(wanted netip.Prefix) bool { return wanted.Addr() == prefix.Addr() }) {
 			relengthed = append(relengthed, prefix)
 		} else {
 			stale = append(stale, prefix)
@@ -1892,7 +1896,8 @@ func (r *Reconciler) applyAddresses() error {
 	have := make(map[netip.Prefix]bool, len(actual))
 	held := make(map[netip.Addr]netip.Prefix, len(actual))
 	for _, prefix := range actual {
-		if slices.Contains(removed, prefix) {
+		// a stale prefix at a wanted address is ours at another length on a platform that keeps the two apart
+		if slices.Contains(removed, prefix) || slices.Contains(stale, prefix) {
 			continue
 		}
 		have[prefix] = true
@@ -2063,6 +2068,11 @@ func (r *Reconciler) release(prefixes, held []netip.Prefix) (removed []netip.Pre
 	}
 	return removed, errs
 }
+
+// lengthKeyer is implemented by a platform whose kernel keys an address of a family by its prefix length as well, which is linux IPv4 alone
+// there a new length goes on beside the old one, which comes off after it
+// a family keyed by address alone takes the old length off first
+type lengthKeyer interface{ keysByLength(netip.Addr) bool }
 
 // canonicalPrefix puts a prefix in the one form the kernel reports, so a diff
 // key built from a snapshot compares equal to one built from a route dump. The

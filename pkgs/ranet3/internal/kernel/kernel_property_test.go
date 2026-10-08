@@ -412,8 +412,10 @@ func announcements() hegel.Generator[[]netip.Prefix] {
 }
 
 // reloadHarness is a reconciler started on table over one mesh every case shares, on a link where another writer already put foreign
-func reloadHarness(t *testing.T, table Table, announced, foreign []netip.Prefix) (*Reconciler, *fakeKernel) {
+// byLength has the link key an IPv4 address by its length as well, as linux does
+func reloadHarness(t *testing.T, table Table, announced, foreign []netip.Prefix, byLength bool) (*Reconciler, *fakeKernel) {
 	r, routes, fake := harness(t, table, Runtime{Announced: announced})
+	fake.byLength = byLength
 	routes.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
 	routes.Set(netip.Prefix{}, prefix("2001:db8:100::/48"), nil)
 	routes.Set(prefix("2001:db8:1::/48"), prefix("::/0"), nil)
@@ -497,6 +499,7 @@ func meaningfulHere(t Table) bool {
 // a reload is taken when it validates, means something on this platform and keeps the id, the proto and the vrf the reconciler started on
 // the pass after one it took leaves the kernel holding what a reconciler started on that capability holds after its first pass
 // that includes the addresses another writer holds
+// on a link that keys an IPv4 address by its length, a link carrying IPv4 before and after that pass carries it throughout
 // one it refused changes nothing at all
 func TestReloadConvergesOnWhatAFreshReconcilerHolds(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
@@ -505,7 +508,8 @@ func TestReloadConvergesOnWhatAFreshReconcilerHolds(t *testing.T) {
 		foreign := hegel.Draw(ht, hegel.Lists(hegel.SampledFrom([]netip.Prefix{
 			prefix("198.18.104.9/32"), prefix("198.18.104.6/32"), prefix("2001:db8::5/96"),
 		})).MaxSize(2))
-		r, kernel := reloadHarness(t, first, hegel.Draw(ht, announcements()), foreign)
+		byLength := hegel.Draw(ht, hegel.Booleans())
+		r, kernel := reloadHarness(t, first, hegel.Draw(ht, announcements()), foreign, byLength)
 		if err := r.reconcile(); err != nil {
 			ht.Fatalf("the first pass on %+v: %v", first, err)
 		}
@@ -545,10 +549,15 @@ func TestReloadConvergesOnWhatAFreshReconcilerHolds(t *testing.T) {
 			if !r.adopt() {
 				ht.Fatalf("the reload to %+v handed the loop nothing", next)
 			}
+			kernel.emptied = false
 			if err := r.reconcile(); err != nil {
 				ht.Fatalf("the pass after the reload to %+v: %v", next, err)
 			}
-			fresh, freshKernel := reloadHarness(t, next, announced, foreign)
+			v4 := func(address netip.Prefix) bool { return address.Addr().Is4() }
+			if after := heldBy(kernel); byLength && kernel.emptied && slices.ContainsFunc(before.addresses, v4) && slices.ContainsFunc(after.addresses, v4) {
+				ht.Fatalf("the reload to %+v took every IPv4 address off the link on its way from %v to %v", next, before.addresses, after.addresses)
+			}
+			fresh, freshKernel := reloadHarness(t, next, announced, foreign, byLength)
 			if err := fresh.reconcile(); err != nil {
 				ht.Fatalf("the first pass on %+v: %v", next, err)
 			}

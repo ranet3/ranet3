@@ -58,10 +58,14 @@ type netlinkPlatform struct {
 // each optional half is reached only through a type assertion
 // a method renamed on one side would drop it without a word
 var (
-	_ auditor  = (*netlinkPlatform)(nil)
-	_ ruler    = (*netlinkPlatform)(nil)
-	_ vrfMaker = (*netlinkPlatform)(nil)
+	_ auditor     = (*netlinkPlatform)(nil)
+	_ ruler       = (*netlinkPlatform)(nil)
+	_ vrfMaker    = (*netlinkPlatform)(nil)
+	_ lengthKeyer = (*netlinkPlatform)(nil)
 )
+
+// ipv4DevconfPromoteSecondaries is IPV4_DEVCONF_PROMOTE_SECONDARIES of linux/ip.h, which x/sys does not carry
+const ipv4DevconfPromoteSecondaries = 20
 
 func newPlatform(t Table, rt Runtime) (platform, error) {
 	conn, err := dialNetlink()
@@ -75,6 +79,10 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("kernel: look up interface %s: %w", rt.Interface, err)
+	}
+	if err := promoteSecondaries(conn, tun.index); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("kernel: promote secondary addresses on %s: %w", rt.Interface, err)
 	}
 	monitor, err := newRouteMonitor(uint32(t.ID))
 	if err != nil {
@@ -420,6 +428,22 @@ func (p *netlinkPlatform) DelAddr(prefix netip.Prefix) error {
 	if gone(err) {
 		return nil
 	}
+	return err
+}
+
+// keysByLength holds for IPv4, whose entry linux matches by address and mask, and not for IPv6, whose it matches by address alone
+func (p *netlinkPlatform) keysByLength(address netip.Addr) bool { return address.Is4() }
+
+// promoteSecondaries has linux promote the next address of a subnet when its primary comes off the tun
+// with it off the secondaries go with the primary, and a renumber within the subnet leaves the tun without IPv4
+// a tun without IPv4 loses every IPv4 route through it, another writer's among them
+func promoteSecondaries(conn netlinkConn, index uint32) error {
+	conf := putAttrU32(nil, ipv4DevconfPromoteSecondaries, 1)
+	inet := putAttr(nil, unix.AF_INET, putAttr(nil, unix.IFLA_INET_CONF, conf))
+	body := make([]byte, unix.SizeofIfInfomsg)
+	binary.NativeEndian.PutUint32(body[4:], index)
+	body = putAttr(body, unix.IFLA_AF_SPEC, inet)
+	_, err := conn.execute(unix.RTM_NEWLINK, unix.NLM_F_ACK, body)
 	return err
 }
 
