@@ -189,6 +189,8 @@ type sessionSet struct {
 	close  func(*ike.Session)
 	active func(*ike.Session) bool
 	rekey  func(*ike.Session) error
+	// probe is (*ike.Session).Probe in production, replaced the same way
+	probe func(*ike.Session)
 
 	// events records each resolution between two sessions for one path
 	events *events.Bus
@@ -211,6 +213,7 @@ func newSessionSet() *sessionSet {
 		close:  closeSession,
 		active: (*ike.Session).Active,
 		rekey:  (*ike.Session).RekeyChildProactively,
+		probe:  (*ike.Session).Probe,
 	}
 }
 
@@ -452,32 +455,39 @@ func (s *sessionSet) closeMatching(peer string) []string {
 	return paths
 }
 
-// rekeyMatching asks every live session naming one peer, or every session at
-// all, to replace its Child SA, and reports which were asked.
-//
-// Each exchange runs on its own and none of them is waited for. A rekey is two
-// messages and a retransmit schedule against a peer that may be gone, so
-// waiting would make the answer to a mesh-wide ask depend on its least
-// reachable member. The new SPIs appear under Sessions as each one lands.
-func (s *sessionSet) rekeyMatching(peer string, all bool) []string {
+// matching runs act on every live session naming one peer, or every session at all, and reports their paths sorted
+func (s *sessionSet) matching(peer string, all bool, act func(liveSessionView)) []string {
 	if s == nil {
 		return nil
 	}
 	var paths []string
 	for _, live := range s.snapshot() {
-		if !all && !matchesPeer(live.path, peer) {
-			continue
+		if all || matchesPeer(live.path, peer) {
+			paths = append(paths, live.path)
+			act(live)
 		}
-		paths = append(paths, live.path)
-		go func() {
-			if err := s.rekey(live.session); err != nil {
-				log.Printf("peer %s: rekey asked for on the control socket: %v", live.path, err)
-			}
-		}()
 	}
 	slices.Sort(paths)
 	return paths
 }
+
+// startRekey asks one session to replace its Child SA
+//
+// Each exchange runs on its own and none of them is waited for. A rekey is two
+// messages and a retransmit schedule against a peer that may be gone, so
+// waiting would make the answer to a mesh-wide ask depend on its least
+// reachable member. The new SPIs appear under Sessions as each one lands.
+func (s *sessionSet) startRekey(live liveSessionView) {
+	go func() {
+		if err := s.rekey(live.session); err != nil {
+			log.Printf("peer %s: rekey asked for on the control socket: %v", live.path, err)
+		}
+	}()
+}
+
+// startProbe asks one session to prove its path now
+// a probe never blocks, so the answer comes before any of the liveness checks it starts
+func (s *sessionSet) startProbe(live liveSessionView) { s.probe(live.session) }
 
 // matchesPeer reports whether a dialer or session path names the peer somebody
 // asked about. A path is "org/name/serial@local", and the argument is compared

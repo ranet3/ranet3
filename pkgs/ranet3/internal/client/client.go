@@ -111,6 +111,9 @@ type Client struct {
 
 	// events is the daemon's bus, nil on a Client a test built by hand
 	events *events.Bus
+	// network is the host's network watch, which Run follows and Close closes
+	// nil on a platform without one and on a Client a test built by hand
+	network networkSource
 
 	inboundPackets atomic.Uint64
 	inboundDropped atomic.Uint64
@@ -248,6 +251,10 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.R
 	if err != nil {
 		return nil, err
 	}
+	network, err := openNetwork(host, mesh.Name)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
 		Mesh: mesh, privateKey: privateKey,
@@ -260,6 +267,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.R
 		running: startedSubsystems(),
 		started: time.Now(),
 		events:  bus,
+		network: network,
 	}
 	c.sessions.events = bus
 	c.dropReported.Store(-int64(espDropReportInterval))
@@ -285,6 +293,9 @@ func (c *Client) Run(ctx context.Context) error {
 	if ctx.Err() != nil {
 		c.cancel()
 	}
+	if c.network != nil {
+		c.peers.Go(func() { c.followNetwork(c.ctx) })
+	}
 	c.syncPeers()
 	c.syncResponder()
 	err := c.speaker.Run(c.ctx)
@@ -303,6 +314,9 @@ func (c *Client) Close() {
 	_ = c.hub.Close()
 	if c.closeUnderlay != nil {
 		c.closeUnderlay()
+	}
+	if c.network != nil {
+		_ = c.network.Close()
 	}
 	c.Mesh.Close()
 }
