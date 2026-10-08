@@ -123,7 +123,7 @@ func TestOutboundDispatchKeepsMixedPeerReservationsTogether(t *testing.T) {
 	dispatch := func(peers []*Peer) {
 		batch := &outboundBatch{
 			n: 2, bufs: [][]byte{framed(1), framed(2)}, sizes: []int{1, 1}, headers: []byte{0, 0}, peers: peers,
-			peerOrder: append([]*Peer(nil), peers...), counts: map[*Peer]int{a: 1, b: 1}, batches: make(map[*Peer]*peerBatch),
+			peerOrder: append([]*Peer(nil), peers...), shares: map[*Peer]outboundShare{a: {count: 1}, b: {count: 1}}, batches: make(map[*Peer]*peerBatch),
 		}
 		m.outboundReaderWG.Go(func() { m.dispatchOutbound(batch) })
 	}
@@ -164,7 +164,7 @@ func TestMeshCloseDrainsQueuedTickets(t *testing.T) {
 	m.outboundReaderWG.Go(func() {
 		m.dispatchOutbound(&outboundBatch{
 			n: 1, bufs: [][]byte{framed(1)}, sizes: []int{1}, headers: []byte{0}, peers: []*Peer{peer},
-			peerOrder: []*Peer{peer}, counts: map[*Peer]int{peer: 1}, batches: make(map[*Peer]*peerBatch),
+			peerOrder: []*Peer{peer}, shares: map[*Peer]outboundShare{peer: {count: 1}}, batches: make(map[*Peer]*peerBatch),
 		})
 	})
 	done := make(chan struct{})
@@ -301,7 +301,7 @@ func TestCongestedPeerDoesNotStallOthers(t *testing.T) {
 	go func() {
 		defer close(dispatched)
 		for range reads {
-			b := &outboundBatch{counts: map[*Peer]int{stuck: perRead, healthy: perRead},
+			b := &outboundBatch{shares: map[*Peer]outboundShare{stuck: {count: perRead}, healthy: {count: perRead}},
 				batches: make(map[*Peer]*peerBatch), peerOrder: []*Peer{stuck, healthy}}
 			for i := range 2 * perRead {
 				b.bufs = append(b.bufs, framed(byte(i)))

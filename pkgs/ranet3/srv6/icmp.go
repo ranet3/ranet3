@@ -6,6 +6,8 @@ package srv6
 import (
 	"encoding/binary"
 	"net/netip"
+
+	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
 // This file builds the ICMPv6 errors RFC 8986's pseudocode answers a refused
@@ -26,8 +28,10 @@ const (
 	icmpHopLimitInTranst = 0
 	icmpParameterProblem = 4
 	icmpErroneousHeader  = 0
+	// icmpPacketTooBig is RFC 4443 section 3.2, whose one code is 0 and whose four octets carry the MTU
+	icmpPacketTooBig = 2
 	// icmpHeaderLen is the type, the code, the checksum and the four octets
-	// the two messages use differently.
+	// the three messages use differently.
 	icmpHeaderLen = 8
 	// segmentsLeftInHeader is where Segments Left sits inside a routing header,
 	// which findRouting says where to find.
@@ -55,6 +59,12 @@ func ParameterProblem(offending []byte, source netip.Addr) ([]byte, bool) {
 		return nil, false
 	}
 	return icmpError(offending, source, icmpParameterProblem, icmpErroneousHeader, uint32(offset+segmentsLeftInHeader))
+}
+
+// PacketTooBig answers a packet larger than the next link carries, RFC 4443 section 3.2, with that link's mtu
+// source is the address the answer comes from
+func PacketTooBig(offending []byte, source netip.Addr, mtu int) ([]byte, bool) {
+	return icmpError(offending, source, icmpPacketTooBig, 0, uint32(mtu))
 }
 
 // icmpError builds one message carrying as much of the offending packet as
@@ -129,22 +139,5 @@ func icmpChecksum(source, destination netip.Addr, body []byte) uint16 {
 	binary.BigEndian.PutUint32(pseudo[32:], uint32(len(body)))
 	pseudo[39] = icmpv6Next
 
-	sum := ones(0, pseudo[:])
-	sum = ones(sum, body)
-	return ^uint16(sum)
-}
-
-// ones accumulates the one's complement sum of b into carrying, folding the
-// carries in as it goes.
-func ones(carrying uint32, b []byte) uint32 {
-	for i := 0; i+1 < len(b); i += 2 {
-		carrying += uint32(binary.BigEndian.Uint16(b[i:]))
-	}
-	if len(b)%2 == 1 {
-		carrying += uint32(b[len(b)-1]) << 8
-	}
-	for carrying>>16 != 0 {
-		carrying = carrying&0xffff + carrying>>16
-	}
-	return carrying
+	return ^uint16(packet.Sum(packet.Sum(0, pseudo[:]), body))
 }
