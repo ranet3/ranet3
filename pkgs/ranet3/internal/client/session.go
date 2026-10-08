@@ -112,6 +112,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 	emit := func(results []inboundDecrypted) {
 		esp.CommitBatch(results)
 		plain = plain[:0]
+		mtu := peer.MTU()
 		var dropped int
 		var lastError error
 		for _, result := range results {
@@ -127,6 +128,8 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 				continue
 			}
 			if deliver && !c.speaker.Receive(peer, inner) {
+				// a SYN from the peer has its MSS lowered to what this session carries back to it
+				netstack.ClampMSS(inner, mtu)
 				plain = append(plain, inner)
 			}
 		}
