@@ -16,18 +16,27 @@ everything else from the root of the repository.
 go test ./... -race
 ```
 
-The unit tests need no privileges, with four exceptions: `internal/kernel` has
+The unit tests need no privileges, with five exceptions: `internal/kernel` has
 tests that write to a real routing table, `internal/egress` one that writes into
 a real packet filter, `internal/netstack` four that create and attach to a real
 TUN on linux, read its `gso_max_segs` back, open several lanes as one device,
 refuse a mesh under the default name where a device of that name exists and warn
-at a new mesh's first cut read, and `transport` one that sends through a veth
-pair to a peer in a second namespace, behind a route with a locked path MTU. On
-linux all four unshare a network namespace, refuse to continue unless it is
+at a new mesh's first cut read, `transport` one that sends through a veth pair
+to a peer in a second namespace, behind a route with a locked path MTU, and
+`control` one on darwin that gives a directory a group of any number. On linux
+the first four unshare a network namespace, refuse to continue unless it is
 empty, and skip unless run as root. On darwin the `internal/kernel` tests
 against the real routing socket and the `internal/netstack` arms that create a
 utun run as root only with `RANET3_DARWIN_NETTEST=1` set, because that machine
-is on a live mesh.
+is on a live mesh. The `control` one takes the same variable, as every darwin
+test that runs as root does.
+
+That `control` test holds the control socket and the directories the daemon
+makes for it to the daemon's group where their directory hands down another, as
+darwin's `/var/run` does. Its unprivileged twin does the same on linux and
+darwin with a second group of the running user, which a setgid directory hands
+down on linux, and skips where the user belongs to no second group it can give a
+directory, as in the linux nix sandbox and under `unshare -rn`.
 
 `internal/kernel` names the machine it reads and writes, `kernel.Host`, so the
 darwin backend can be driven without either. `internal/client`'s

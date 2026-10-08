@@ -10,20 +10,33 @@ order: 80
 
 `--control /var/run/ranet3/control.sock` is where the daemon answers, and is the
 default, so a node is askable without having been configured to be.
-`--control ""` turns it off. The socket is mode 0660 and the unit names the
-group that can reach it, and that mode authorizes every path outside
-`/v0/debug/`. [The verbs](#acting-on-a-running-node) say what keeps it
-sufficient for them. The debug paths are authorized by the caller's peer
-credentials instead. Their snapshots and the event stream are open to the
-socket's group, and profiles, dumps, logs, captures, the trust document and
-every action take root or the daemon's own user, as
-[debugging](development/debug.md) describes. A caller is bounded by an idle
-timeout and by a limit on the connections open at once across every caller,
-because a client that accumulates them costs the daemon a descriptor apiece and
-a node out of descriptors is one that cannot be asked anything at all. Past that
-limit a connection is closed as it is accepted, so a client holding every place
-is refused at once rather than left waiting, and a shutdown is not held up
-behind it.
+`--control ""` turns it off. The socket is mode 0660 in the daemon's group,
+which the unit names, and that mode authorizes every path outside `/v0/debug/`.
+[The verbs](#acting-on-a-running-node) say what keeps it sufficient for them.
+The debug paths are authorized by the caller's peer credentials instead. Their
+snapshots and the event stream are open to the socket's group, and profiles,
+dumps, logs, captures, the trust document and every action take root or the
+daemon's own user, as [debugging](development/debug.md) describes. A caller is
+bounded by an idle timeout and by a limit on the connections open at once across
+every caller, because a client that accumulates them costs the daemon a
+descriptor apiece and a node out of descriptors is one that cannot be asked
+anything at all. Past that limit a connection is closed as it is accepted, so a
+client holding every place is refused at once rather than left waiting, and a
+shutdown is not held up behind it.
+
+The socket takes the daemon's group on every platform, and so does each
+directory the daemon makes on the way to it, at mode 0750. linux gives a new
+file the group of the process that makes it, outside a setgid directory, while
+darwin gives it the group of the directory it is made in, which under `/var/run`
+is `daemon`. The daemon sets the group itself, before the mode lets that group
+in. A directory that is already there is left as it is, and one an earlier
+version made keeps its group until it is removed, which on darwin leaves the
+socket out of its group's reach. Stop the daemon, remove the directory and start
+the daemon again, which makes it afresh.
+[Running it as a service](service.md#nix-darwin) gives the commands for the
+nix-darwin job. Under the nixos module systemd makes `/run/ranet3` in the unit's
+group and removes it when the unit stops, so an earlier version's directory
+never outlives that version.
 
 Which process owns the path is settled by an exclusive lock on a sibling file
 rather than by dialing the socket to see whether anything answers, since a live

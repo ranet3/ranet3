@@ -94,6 +94,16 @@ expected plist, and it has never been loaded on a Mac. No check covers it:
 verifying it in CI would mean taking nix-darwin as an input of this flake, which
 nothing else here needs.
 
+The daemon makes `/var/run/ranet3` in the job's group. One an earlier version
+made is in `daemon`, the group of `/var/run`, which keeps the control socket out
+of the job group's reach until the directory is removed with the job stopped:
+
+```sh
+sudo launchctl bootout system/org.nixos.ranet3
+sudo rm -r /var/run/ranet3
+sudo launchctl bootstrap system /Library/LaunchDaemons/org.nixos.ranet3.plist
+```
+
 launchd has no reload path, so the job names the store path of the config file,
 and any change to `settings` restarts the daemon.
 
