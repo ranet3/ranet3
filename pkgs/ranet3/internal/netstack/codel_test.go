@@ -37,7 +37,6 @@ func TestCodelEntersStaysLeavesAndReenters(t *testing.T) {
 // codelPhases runs the delay control through the phases of TestCodelEntersStaysLeavesAndReenters on a clock that reads age at its start
 func codelPhases(t *testing.T, age time.Duration) {
 	var c codel
-	total := 0
 	for _, phase := range []struct {
 		name              string
 		from, to, sojourn int // milliseconds
@@ -49,26 +48,30 @@ func codelPhases(t *testing.T, age time.Duration) {
 		{name: "below the target", from: 1, to: 50, sojourn: 1},
 		{name: "above it for less than an interval", from: 51, to: 120, sojourn: 20},
 		{name: "below it again", from: 121, to: 130, sojourn: 1},
-		// an interval after the delay went above, then 100, 70.7, 57.7, 50, 44.7 and 40.8 milliseconds apart
+		// an interval after the delay went above, then each drop the interval over the square root of the one before's count after it
 		{name: "above it for long enough", from: 131, to: 600, sojourn: 20, dropping: true,
 			drops: []int{231, 331, 402, 460, 510, 555, 595}},
 		{name: "below it", from: 601, to: 650, sojourn: 1},
-		// soon after the last state, so the count starts at its 6 drops past the first
+		// soon after the last state, so the count starts at the drops that state made past its first
 		{name: "above it soon after", from: 651, to: 900, sojourn: 20, dropping: true,
 			drops: []int{751, 792, 830, 865, 899}},
 		// a batch before the next drop is due, after which the queue is empty
 		{name: "the queue empties while dropping", from: 901, to: 901, sojourn: 20, empty: true},
 		// so the interval starts over rather than finding a drop long due
-		// and the entry that follows is soon enough for the count to start at the state's 4 drops past its first
+		// and the entry that follows is soon enough for the count to start at the drops the state made past its first
 		{name: "above it again once the queue emptied", from: 902, to: 1150, sojourn: 20, dropping: true,
 			drops: []int{1002, 1052, 1097, 1138}},
-		{name: "below it for 2 seconds", from: 1151, to: 2900, sojourn: 1},
-		// past 16 intervals, so the count starts over at one
-		{name: "above it long after", from: 2901, to: 3200, sojourn: 20, dropping: true,
-			drops: []int{3001, 3101, 3172}},
-		{name: "below it once more", from: 3201, to: 3300, sojourn: 1},
+		{name: "below it until the re-entry window has almost closed", from: 1151, to: 2675, sojourn: 1},
+		// just past 16 intervals after the last drop was due, so the count starts over at one
+		{name: "above it just past 16 intervals later", from: 2676, to: 2975, sojourn: 20, dropping: true,
+			drops: []int{2776, 2876, 2947}},
+		{name: "below it until the re-entry window has almost closed again", from: 2976, to: 4503, sojourn: 1},
+		// just inside 16 intervals after the last drop was due, so the count starts at the drops the state made past its first
+		{name: "above it just inside 16 intervals later", from: 4504, to: 4700, sojourn: 20, dropping: true,
+			drops: []int{4604, 4675}},
+		{name: "below it once more", from: 4701, to: 4800, sojourn: 1},
 		// each batch alone in the queue, so none finds the interval of the one before it run out
-		{name: "lone batches above it further apart than the interval", from: 3301, to: 5301, gap: 200, sojourn: 8, empty: true},
+		{name: "lone batches above it further apart than the interval", from: 4801, to: 6801, gap: 200, sojourn: 8, empty: true},
 	} {
 		var drops []int
 		for at := phase.from; at <= phase.to; at += max(phase.gap, 1) {
@@ -85,10 +88,6 @@ func codelPhases(t *testing.T, age time.Duration) {
 		if c.dropping != phase.dropping {
 			t.Errorf("%s: ended in the dropping state %v, want %v", phase.name, c.dropping, phase.dropping)
 		}
-		total += len(drops)
-	}
-	if total != 19 {
-		t.Errorf("the delay control dropped %d times, want 19", total)
 	}
 }
 
