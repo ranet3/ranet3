@@ -20,6 +20,25 @@ import (
 
 const cloneDevicePath = "/dev/net/tun"
 
+// tunMTUSettable is true, the kernel taking a new MTU on a tun whose queues are open
+const tunMTUSettable = true
+
+// setTUNMTU sets the MTU of the link name with SIOCSIFMTU
+// wireguard-go sets it only when it opens a queue and exports no setter
+func setTUNMTU(name string, mtu int) error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		return err
+	}
+	ifr.SetUint32(uint32(mtu))
+	return unix.IoctlIfreq(fd, unix.SIOCSIFMTU, ifr)
+}
+
 func bringTUNUp(name string) error {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {

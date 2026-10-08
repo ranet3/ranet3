@@ -91,7 +91,7 @@ func (c *Client) syncPeers() {
 // ReloadFrom re-reads the configuration and the trust document at path and
 // applies what can be applied without dropping the tunnels this node is
 // carrying: the document itself, the peers we dial, the prefixes we announce,
-// cap.babel, cap.segment, link.listen and cap.table. ranet reconciles the same
+// cap.babel, cap.segment, link.listen, link.mtu and cap.table. ranet reconciles the same
 // way rather than restarting, and it matters here because the document is
 // rewritten every time any node joins the mesh.
 //
@@ -135,7 +135,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if err := reloadable(old, cfg); err != nil {
 		return err
 	}
-	segments, steering, err := c.segmentTables(old, cfg)
+	tun, err := c.planTUN(old, cfg)
 	if err != nil {
 		return err
 	}
@@ -171,13 +171,22 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	c.republish(cfg)
 	c.syncPeers()
 	c.speaker.SetConfig(cfg.Babel())
-	if !sameSegments(old, cfg) {
-		c.Mesh.SetSegments(segments)
-		c.Mesh.SetSteering(steering)
-	}
 	if old.Link.Listen != cfg.Link.Listen {
 		closed := c.syncResponder()
 		c.events.Emit("responder.changed", "", slog.Bool("listen", cfg.Link.Listen), slog.Int("closed", closed))
+	}
+	if tun.tables {
+		c.Mesh.SetSegments(tun.segments)
+	}
+	switch {
+	case tun.to != tun.from:
+		// SetMTU fails only for a device that is gone, by when everything else here has applied
+		if err := c.Mesh.SetMTU(tun.to, tun.steering); err != nil {
+			return err
+		}
+	case tun.tables:
+		// the device keeps its MTU, so swapping the table is the whole change
+		c.Mesh.SetSteering(tun.steering)
 	}
 	nodes := 0
 	for _, organization := range reg {
@@ -220,31 +229,51 @@ func changedCapabilities(old, next *config.Config) []string {
 	if old.Link.Listen != next.Link.Listen {
 		out = append(out, "link.listen")
 	}
+	if old.Link.SessionMTU() != next.Link.SessionMTU() {
+		out = append(out, "link.mtu")
+	}
 	return out
 }
 
-// segmentTables builds the cap.segment next carries as New does, or nil tables where it is unchanged
-// a steering that needs another tun MTU than the running steering is refused, since New sizes the tun to it once
-func (c *Client) segmentTables(old, next *config.Config) (*srv6.LocalTable, *srv6.SteerTable, error) {
-	if sameSegments(old, next) {
-		return nil, nil, nil
+// tunPlan holds the changes a reload makes to the tun
+type tunPlan struct {
+	// tables is set where cap.segment changed, and segments and steering are then the tables New would build from it
+	// steering is otherwise the table in force
+	tables   bool
+	segments *srv6.LocalTable
+	steering *srv6.SteerTable
+	// from and to are the device MTU before and after, link.mtu less the longest steering list
+	from, to int
+}
+
+// planTUN builds what a reload from old to next changes on the tun, nothing where cap.segment and link.mtu stay
+// a move the running mesh cannot take is refused, past the read buffers NewNamed sized or on a platform that sets the MTU only at the open
+func (c *Client) planTUN(old, next *config.Config) (tunPlan, error) {
+	plan := tunPlan{tables: !sameSegments(old, next)}
+	if !plan.tables && old.Link.SessionMTU() == next.Link.SessionMTU() {
+		return plan, nil
 	}
-	segments, steering, err := next.Segments().Tables()
-	if err != nil {
-		return nil, nil, err
+	plan.steering = c.Mesh.Steering()
+	if plan.tables {
+		segments, steering, err := next.Segments().Tables()
+		if err != nil {
+			return tunPlan{}, err
+		}
+		plan.segments, plan.steering = segments, steering
 	}
-	running, err := steeredMTU(old.Link.SessionMTU(), c.Mesh.Steering())
-	if err != nil {
-		return nil, nil, err
+	var err error
+	if plan.from, err = steeredMTU(old.Link.SessionMTU(), c.Mesh.Steering()); err != nil {
+		return tunPlan{}, err
 	}
-	needed, err := steeredMTU(next.Link.SessionMTU(), steering)
-	if err != nil {
-		return nil, nil, err
+	if plan.to, err = steeredMTU(next.Link.SessionMTU(), plan.steering); err != nil {
+		return tunPlan{}, err
 	}
-	if needed != running {
-		return nil, nil, fmt.Errorf("config: cap.segment steer needs a %d byte tun and the running one is %d bytes, restart to apply", needed, running)
+	if plan.to != plan.from || old.Link.SessionMTU() != next.Link.SessionMTU() {
+		if err := c.Mesh.CheckMTU(next.Link.SessionMTU()); err != nil {
+			return tunPlan{}, fmt.Errorf("config: tun mtu %d to %d: %w", plan.from, plan.to, err)
+		}
 	}
-	return segments, steering, nil
+	return plan, nil
 }
 
 // sameSegments compares cap.segment as the tables are built from it
@@ -334,9 +363,6 @@ func reloadable(old, next *config.Config) error {
 		return fmt.Errorf("config: link.port changed, restart to apply")
 	case old.Link.TUN != next.Link.TUN:
 		return fmt.Errorf("config: link.tun changed, restart to apply")
-	case old.Link.SessionMTU() != next.Link.SessionMTU():
-		// NewNamed sized the tun and its read buffers for the link.mtu the node started on
-		return fmt.Errorf("config: link.mtu changed, restart to apply")
 	case !slices.Equal(sortedEndpoints(old.Link.Endpoints), sortedEndpoints(next.Link.Endpoints)):
 		// The listener answers to one identity per local endpoint and builds
 		// that set once, and each endpoint runs its own dialers. Compared as a

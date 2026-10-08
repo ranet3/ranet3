@@ -456,8 +456,95 @@ func TestReloadInstallsTheSegmentTablesItBuilds(t *testing.T) {
 	}
 }
 
-// the tun is sized once to the longest segment list, so a steering needing another size is refused before anything else applies
-func TestReloadRefusesASteeringThatNeedsAnotherMTUAndChangesNothing(t *testing.T) {
+// a steering whose longest list needs another tun MTU applies in place, the device moving with it
+func TestReloadAppliesASteeringThatNeedsAnotherMTU(t *testing.T) {
+	c, path, _, bus := reloadOf(t, func(old *config.Config) { old.Cap.Segment = steering("3fff:1:69c:98d6::1") })
+	segmentsOf(t, c)
+	for _, via := range [][]string{
+		{"3fff:1:69c:98d6::1", "3fff:1:69c:6c46::1"},
+		{"3fff:1:69c:6c46::1"},
+	} {
+		next := *c.config()
+		next.Cap.Segment = steering(via...)
+		writeConfig(t, path, &next)
+		if err := c.ReloadFrom(path); err != nil {
+			t.Fatalf("a steering through %d segments was refused: %v", len(via), err)
+		}
+		_, steered, err := next.Segments().Tables()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := c.Mesh.Steering().Entries(); !slices.Equal(got, steered.Entries()) {
+			t.Errorf("the mesh steers %v, want %v", got, steered.Entries())
+		}
+		if got := lastReload(t, bus)["applied"]; got != "cap.segment" {
+			t.Errorf("the reload was recorded as applying %q, want cap.segment", got)
+		}
+	}
+}
+
+// a link.mtu within the read buffers the mesh opened with applies in place
+func TestReloadAppliesALinkMTUWithinTheReadBuffers(t *testing.T) {
+	c, path, _, bus := reloadOf(t, func(*config.Config) {})
+	c.Mesh = netstack.NewRoutesOnly()
+	next := *c.config()
+	next.Link.MTU = 2048
+	writeConfig(t, path, &next)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("a link.mtu of 2048 under buffers of 2048 bytes was refused: %v", err)
+	}
+	if got := c.config().Link.SessionMTU(); got != 2048 {
+		t.Errorf("the node runs link.mtu %d, want 2048", got)
+	}
+	if got := lastReload(t, bus)["applied"]; got != "link.mtu" {
+		t.Errorf("the reload was recorded as applying %q, want link.mtu", got)
+	}
+}
+
+// a reload moves the device to the new link.mtu less the longest list the new steering carries
+// from the device the running link.mtu and steering leave
+// the expected sizes count an outer IPv6 header, the fixed part of the segment routing header and 16 bytes a segment, RFC 8754
+func TestReloadPlansTheTUNAtLinkMTULessTheLongestList(t *testing.T) {
+	header := func(segments int) int { return 40 + 8 + 16*segments }
+	node := func(mtu uint16, via ...string) func(*config.Config) {
+		return func(c *config.Config) {
+			c.Link.MTU = mtu
+			c.Cap.Segment = nil
+			if len(via) > 0 {
+				c.Cap.Segment = steering(via...)
+			}
+		}
+	}
+	a, b := "3fff:1:69c:98d6::1", "3fff:1:69c:6c46::1"
+	for name, move := range map[string]struct {
+		old, next func(*config.Config)
+		from, to  int
+	}{
+		"a list one segment longer":             {node(0, a), node(0, a, b), 1400 - header(1), 1400 - header(2)},
+		"a list one segment shorter":            {node(0, a, b), node(0, a), 1400 - header(2), 1400 - header(1)},
+		"the steering taken out":                {node(0, a), node(0), 1400 - header(1), 1400},
+		"link.mtu raised under one list":        {node(1400, a), node(2000, a), 1400 - header(1), 2000 - header(1)},
+		"link.mtu lowered with the list longer": {node(2000, a), node(1500, a, b), 2000 - header(1), 1500 - header(2)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _, _, _ := reloadOf(t, move.old)
+			segmentsOf(t, c)
+			next := *c.config()
+			move.next(&next)
+			plan, err := c.planTUN(c.config(), &next)
+			if err != nil {
+				t.Fatalf("the plan was refused: %v", err)
+			}
+			if plan.from != move.from || plan.to != move.to {
+				t.Errorf("the plan moves the tun from %d to %d bytes, want %d to %d", plan.from, plan.to, move.from, move.to)
+			}
+		})
+	}
+}
+
+// the read buffers are sized once for the link.mtu the mesh opened with, so a link.mtu past them is refused before anything else applies
+// the refusal names both sizes and says a restart applies it
+func TestReloadRefusesALinkMTUPastTheReadBuffersAndChangesNothing(t *testing.T) {
 	c, path, reconciler, bus := reloadOf(t, func(old *config.Config) {
 		old.Cap.Segment = steering("3fff:1:69c:98d6::1")
 		old.Cap.Table = &kernel.Table{}
@@ -473,6 +560,7 @@ func TestReloadRefusesASteeringThatNeedsAnotherMTUAndChangesNothing(t *testing.T
 	segments, steered := c.Mesh.Segments(), c.Mesh.Steering()
 	old := c.config()
 	next := *old
+	next.Link.MTU = 9000
 	next.Cap.Segment = steering("3fff:1:69c:98d6::1", "3fff:1:69c:6c46::1")
 	next.Cap.Segment.Local = []srv6.Segment{{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEnd}}
 	next.Cap.Babel = &babel.Config{Hello: schema.Duration(2 * time.Second)}
@@ -480,8 +568,14 @@ func TestReloadRefusesASteeringThatNeedsAnotherMTUAndChangesNothing(t *testing.T
 	next.Link.Listen = true
 	joinedAndAnnounced(t, c, &next)
 	writeConfig(t, path, &next)
-	if err := c.ReloadFrom(path); err == nil || !strings.Contains(err.Error(), "cap.segment steer needs a") {
-		t.Fatalf("the reload answered %v, want the steering refused by name", err)
+	err = c.ReloadFrom(path)
+	if err == nil {
+		t.Fatal("a link.mtu past the read buffers the mesh opened with was applied")
+	}
+	for _, want := range []string{"9000", "2048", "restart to apply"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal reads %q, which does not say %s", err, want)
+		}
 	}
 	changedNothing(t, c, old, bus)
 	if c.Mesh.Segments() != segments || c.Mesh.Steering() != steered {

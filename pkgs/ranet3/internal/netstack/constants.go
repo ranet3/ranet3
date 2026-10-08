@@ -12,7 +12,7 @@ const DefaultMTU = 1400
 
 const (
 	// outboundPacketBufferSize is the least bytes an outbound read buffer holds past tunOffset
-	// a device the mesh attaches to keeps its own MTU, which can be larger than the one asked for
+	// a device MTU raised after the open, by a reload or by hand, still fits a read up to it
 	outboundPacketBufferSize = 2048
 	// inboundWriteBatchSize is the most packets one tun write carries
 	// wireguard-go's tun write sizes its GRO tables for that many
