@@ -27,7 +27,7 @@ const ruleRestoreBudget = time.Second
 // another writer's rule comes and goes without a pass, and a rule the reconciler adds itself is already in place
 func TestRouteMonitorWakesOnlyOnADeletedRuleItOwns(t *testing.T) {
 	plat, _ := writePlatform(t)
-	monitor := &routeMonitor{table: uint32(plat.table.ID), proto: plat.table.Proto}
+	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto)
 	owned := plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x726c, Table: schema.TableMain, Priority: 40})
 	for name, arm := range map[string]struct {
 		kind uint16
@@ -39,7 +39,7 @@ func TestRouteMonitorWakesOnlyOnADeletedRuleItOwns(t *testing.T) {
 		"another writer's rule deleted":  {unix.RTM_DELRULE, replaceProtocol(t, owned, unix.RTPROT_STATIC), false},
 		"a rule without a protocol gone": {unix.RTM_DELRULE, stripProtocol(t, owned), false},
 	} {
-		if got := monitor.wakesOn(nlMessage{Kind: arm.kind, Data: arm.body}); got != arm.want {
+		if got := wakesOn(nlMessage{Kind: arm.kind, Data: arm.body}); got != arm.want {
 			t.Errorf("%s: the monitor woke %v, want %v", name, got, arm.want)
 		}
 	}

@@ -85,11 +85,16 @@ func (l *Links) Mesh() int { return l.mesh }
 // there is no entry at all the exact lookup falls back to a match, which is
 // why the mesh interface is rejected here too and not only there.
 func (l *Links) Default(family netip.Addr) (index int, gateway netip.Addr, err error) {
-	answer, err := l.host.Lookup(family.Unmap(), zeroMaskOf(family))
+	return lookupDefault(l.host, l.mesh, family)
+}
+
+// lookupDefault is Links.Default for any host and mesh, which the network watch asks as well
+func lookupDefault(host Host, mesh int, family netip.Addr) (index int, gateway netip.Addr, err error) {
+	answer, err := host.Lookup(family.Unmap(), zeroMaskOf(family))
 	if err != nil {
 		return 0, netip.Addr{}, err
 	}
-	if answer.Index == l.mesh {
+	if answer.Index == mesh {
 		// The only entry covering the unspecified address of this family is
 		// one of ours, so the host has no default of its own to fall back to.
 		return 0, netip.Addr{}, ErrNoDefaultRoute
