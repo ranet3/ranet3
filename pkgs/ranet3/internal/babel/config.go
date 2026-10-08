@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/events"
-	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -35,8 +34,8 @@ type Config struct {
 
 // Runtime is the half the speaker is handed rather than told: the router id
 // and the link-local address it speaks from, which are generated when nothing
-// names them, and the largest packet the device will carry. None of them
-// is a fact an operator writes down, so none of them is in the capability.
+// names them, and the largest packet it sends. None of them is a fact an
+// operator writes down, so none of them is in the capability.
 type Runtime struct {
 	RouterID      [8]byte
 	LinkLocalAddr netip.Addr
@@ -134,7 +133,7 @@ func (c Config) Validate() error {
 }
 
 // resolve fills in what the speaker was not given: a random router id and a
-// random link-local address, and the packet size the device allows.
+// random link-local address, and a packet size every session carries.
 func (r Runtime) resolve() (Runtime, error) {
 	if r.RouterID == ([8]byte{}) {
 		rand.Read(r.RouterID[:])
@@ -143,7 +142,7 @@ func (r Runtime) resolve() (Runtime, error) {
 		r.LinkLocalAddr = randomLinkLocal()
 	}
 	if r.PacketSize == 0 {
-		r.PacketSize = netstack.DefaultMTU - ipv6HeaderLen - udpHeaderLen
+		r.PacketSize = defaultPacketSize
 	}
 	if !r.LinkLocalAddr.Is6() || !r.LinkLocalAddr.IsLinkLocalUnicast() || r.LinkLocalAddr.Zone() != "" {
 		return r, fmt.Errorf("babel: local address must be an unzoned IPv6 link-local address")
