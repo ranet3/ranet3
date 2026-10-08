@@ -498,25 +498,30 @@ func (p *netlinkPlatform) setMaster(master uint32) error {
 // window in Run absorbs the burst and the following pass finds nothing to do.
 // it wakes as well on a deleted rule carrying proto
 // systemd-networkd removes every rule it did not ask for when it configures a link
+// the network watch reads its own groups through the same type
 type routeMonitor struct {
-	file   *os.File
-	table  uint32
-	proto  uint8
-	signal chan struct{}
-	done   chan struct{}
+	file    *os.File
+	wakesOn func(nlMessage) bool
+	signal  chan struct{}
+	done    chan struct{}
 }
 
 func newRouteMonitor(table uint32, proto uint8) (*routeMonitor, error) {
+	// the IPv6 rule group has no RTMGRP_ name, its bit is its group number less one
+	groups := uint32(unix.RTMGRP_IPV4_ROUTE | unix.RTMGRP_IPV6_ROUTE | unix.RTMGRP_IPV4_RULE | 1<<(unix.RTNLGRP_IPV6_RULE-1))
+	return openMonitor("rtnetlink-monitor", groups, reconcilerWakes(table, proto))
+}
+
+// openMonitor joins groups and wakes once per datagram holding a message wakesOn takes
+func openMonitor(name string, groups uint32, wakesOn func(nlMessage) bool) (*routeMonitor, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK,
 		unix.SOCK_RAW|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, unix.NETLINK_ROUTE)
 	if err != nil {
-		return nil, fmt.Errorf("kernel: open route monitor socket: %w", err)
+		return nil, fmt.Errorf("kernel: open %s socket: %w", name, err)
 	}
-	// the IPv6 rule group has no RTMGRP_ name, its bit is its group number less one
-	groups := uint32(unix.RTMGRP_IPV4_ROUTE | unix.RTMGRP_IPV6_ROUTE | unix.RTMGRP_IPV4_RULE | 1<<(unix.RTNLGRP_IPV6_RULE-1))
 	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Groups: groups}); err != nil {
 		_ = unix.Close(fd)
-		return nil, fmt.Errorf("kernel: join route notification groups: %w", err)
+		return nil, fmt.Errorf("kernel: join the notification groups of %s: %w", name, err)
 	}
 	// a large receive buffer keeps a route flood from costing an ENOBUFS,
 	// which is survivable but forces a full resync.
@@ -524,11 +529,10 @@ func newRouteMonitor(table uint32, proto uint8) (*routeMonitor, error) {
 	// the socket is nonblocking, so os.NewFile registers it with the runtime
 	// poller and Close unblocks the reader without racing on the descriptor.
 	monitor := &routeMonitor{
-		file:   os.NewFile(uintptr(fd), "rtnetlink-monitor"),
-		table:  table,
-		proto:  proto,
-		signal: make(chan struct{}, 1),
-		done:   make(chan struct{}),
+		file:    os.NewFile(uintptr(fd), name),
+		wakesOn: wakesOn,
+		signal:  make(chan struct{}, 1),
+		done:    make(chan struct{}),
 	}
 	go monitor.run()
 	return monitor, nil
@@ -549,10 +553,10 @@ func (m *routeMonitor) run() {
 			// periodic sweep in Run remains as the backstop.
 			m.wake()
 			if errors.Is(err, unix.ENOBUFS) {
-				slog.Debug("kernel route notifications dropped, resyncing")
+				slog.Debug("kernel notifications dropped, resyncing", "socket", m.file.Name())
 				continue
 			}
-			slog.Warn("kernel route monitor stopped, falling back to the periodic sweep", "err", err)
+			slog.Warn("kernel notifications stopped", "socket", m.file.Name(), "err", err)
 			return
 		}
 		messages, err := parseMessages(buf[:n])
@@ -569,16 +573,18 @@ func (m *routeMonitor) run() {
 	}
 }
 
-// wakesOn reports whether one notification touches what the reconciler owns
+// reconcilerWakes takes a notification touching what the reconciler owns
 // a rule is woken on only when it goes, since the pass that follows puts it back
-func (m *routeMonitor) wakesOn(message nlMessage) bool {
-	switch message.Kind {
-	case unix.RTM_NEWROUTE, unix.RTM_DELROUTE:
-		return notificationTable(message) == m.table
-	case unix.RTM_DELRULE:
-		return ruleProtocol(message) == m.proto
+func reconcilerWakes(table uint32, proto uint8) func(nlMessage) bool {
+	return func(message nlMessage) bool {
+		switch message.Kind {
+		case unix.RTM_NEWROUTE, unix.RTM_DELROUTE:
+			return notificationTable(message) == table
+		case unix.RTM_DELRULE:
+			return ruleProtocol(message) == proto
+		}
+		return false
 	}
-	return false
 }
 
 // ruleProtocol is the FRA_PROTOCOL one rule notification carries, 0 where it carries none

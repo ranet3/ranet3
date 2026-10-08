@@ -24,4 +24,7 @@ const (
 	// notifications the reconciler's own writes generate, so one batch of
 	// babel updates costs one kernel dump rather than one per route.
 	settleDelay = 250 * time.Millisecond
+	// watchSettle is how long the network watch lets a change finish before it reads the host
+	// a laptop moving networks drops an address, a route and a link in one burst, and every session is probed once for it
+	watchSettle = 250 * time.Millisecond
 )

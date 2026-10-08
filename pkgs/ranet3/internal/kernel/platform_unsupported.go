@@ -15,3 +15,6 @@ package kernel
 func newPlatform(Table, Runtime) (platform, error) { return nil, ErrUnsupported }
 
 func refuseMeaningless(Table, string) error { return ErrUnsupported }
+
+// WatchNetwork has no routing table to read here, for the same reason
+func WatchNetwork(Host, string) (*NetworkWatch, error) { return nil, ErrUnsupported }
