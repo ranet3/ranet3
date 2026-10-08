@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/ike"
@@ -19,7 +20,8 @@ import (
 // acceptPeers answers peers that dial us, as a full mesh needs and
 // what a node behind no reachable address cannot do without. It returns when
 // ctx ends or the hub's socket is gone.
-func (c *Client) acceptPeers(ctx context.Context) error {
+// the count is the answered sessions ctx ended while the node kept running, each closed with a Delete
+func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 	cfg := c.config()
 	crypto := cfg.Crypto()
 	local := make([]ike.Identity, 0, len(cfg.Link.Endpoints))
@@ -44,12 +46,13 @@ func (c *Client) acceptPeers(ctx context.Context) error {
 		Events:             c.ikeEvent,
 	})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var serving sync.WaitGroup
-	defer serving.Wait()
+	var closed atomic.Int64
 	err = responder.Serve(ctx, func(sess *ike.Session, accepted ike.Accepted) {
-		if !c.subsystemRunning(control.SubsystemResponder) {
+		// a handshake finished after a reload turned link.listen off gets the same answer
+		if ctx.Err() != nil || !c.subsystemRunning(control.SubsystemResponder) {
 			// Stopped over the control socket. The handshake has already
 			// finished, which is the cost of gating here rather than in the
 			// responder, and the peer is told the SA is gone rather than left
@@ -70,15 +73,20 @@ func (c *Client) acceptPeers(ctx context.Context) error {
 			// responder. Losing to a session the other end also prefers is
 			// ordinary on a full mesh and is not worth a line in the log.
 			err := c.serveSession(ctx, sess, name, sessionName, peer, accepted.Local, peer)
+			// serveSession ends a session its ctx ended with a Delete, as it does for a dialer a reload dropped
+			if errors.Is(err, context.Canceled) && c.ctx.Err() == nil {
+				closed.Add(1)
+			}
 			if err != nil && !errors.Is(err, errSessionEstablished) && ctx.Err() == nil {
 				log.Printf("peer %s: %v", name, err)
 			}
 		})
 	})
+	serving.Wait()
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return int(closed.Load()), ctx.Err()
 	}
-	return err
+	return int(closed.Load()), err
 }
 
 // lookupPeerKey resolves an authenticated identity to the key that must verify
