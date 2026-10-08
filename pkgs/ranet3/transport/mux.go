@@ -306,8 +306,9 @@ func (h *Hub) newMux(endpoint Endpoint, dialed bool) (*Mux, error) {
 
 // Listen turns on delivery of unclaimed IKE datagrams and returns the channel
 // they arrive on. Until it is called nothing accumulates: an initiator-only
-// node keeps dropping them exactly as before. Calling it again returns the
-// same channel, and the channel is never closed; use Done to stop.
+// node keeps dropping them exactly as before. Calling it again before
+// StopListening returns the same channel. No channel it returns is ever
+// closed, and Done says when to stop.
 //
 // The queue is bounded and a full queue drops the datagram rather than
 // blocking the receive loop, because an unauthenticated peer must not be able
@@ -324,6 +325,17 @@ func (h *Hub) Listen() <-chan Unclaimed {
 	next.listen = make(chan Unclaimed, unclaimedQueueSize)
 	h.tables.Store(&next)
 	return next.listen
+}
+
+// StopListening turns delivery of unclaimed IKE datagrams off and lets go of the queue
+// the next Listen opens a new queue, and a responder started then reads only handshakes that arrived after it
+// the old queue stays open, and what a receive loop still on the old tables adds to it reaches no later responder
+func (h *Hub) StopListening() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	next := *h.tables.Load()
+	next.listen = nil
+	h.tables.Store(&next)
 }
 
 // SendIKETo writes one IKE message to an endpoint without a Mux. A responder

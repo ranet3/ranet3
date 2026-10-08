@@ -535,6 +535,55 @@ func TestListenDeliversUnclaimedIKEAndNewMuxToAnswers(t *testing.T) {
 	}
 }
 
+// a responder stopped and started again answers only handshakes that arrived while it was on
+func TestStoppedListenDropsWhatItQueuedAndQueuesNothingUntilListenAgain(t *testing.T) {
+	h, err := NewHub(":0", Underlay{}, Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	unclaimed := h.Listen()
+	peer := listenPeer(t, "udp4", "127.0.0.1")
+	dst := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: h.LocalAddr().(*net.UDPAddr).Port}
+	send := func(spi uint64) {
+		t.Helper()
+		request := make([]byte, 28)
+		binary.BigEndian.PutUint64(request[:8], spi)
+		if _, err := peer.WriteToUDP(withMarker(request), dst); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor := func(what string, done func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(arrivalBudget); !done(); time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s within %s", what, arrivalBudget)
+			}
+		}
+	}
+
+	send(1)
+	waitFor("the first datagram was not queued", func() bool { return len(unclaimed) == 1 })
+	h.StopListening()
+	refused := h.Refused()
+	send(2)
+	waitFor("the datagram sent while stopped was not read", func() bool { return h.Refused() > refused })
+	if len(unclaimed) != 1 {
+		t.Fatal("a datagram sent while stopped was queued")
+	}
+
+	again := h.Listen()
+	send(3)
+	select {
+	case got := <-again:
+		if spi := binary.BigEndian.Uint64(got.Raw[:8]); spi != 3 {
+			t.Fatalf("the restarted listener read SPI %d, want only the 3 sent after it started", spi)
+		}
+	case <-time.After(arrivalBudget):
+		t.Fatal("the restarted listener was not delivered the datagram sent after it started")
+	}
+}
+
 func TestHubDoneIsClosedOnFailure(t *testing.T) {
 	h, err := NewHub(":0", Underlay{}, Runtime{})
 	if err != nil {
