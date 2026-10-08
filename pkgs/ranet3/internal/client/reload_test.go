@@ -4,24 +4,37 @@
 package client
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/srv6"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // reconcilerStandIn is the reconciler a reload hands cap.table to, answering with refusal
@@ -362,4 +375,426 @@ func TestReloadRefusesMovingTheSourceCapEgressReturnsUnder(t *testing.T) {
 			}
 		})
 	}
+}
+
+// speakerRecording gives c a speaker of its configuration that records on bus
+func speakerRecording(t *testing.T, c *Client, bus *events.Bus) {
+	t.Helper()
+	speaker, err := babel.New(c.config().Babel(), c.config().Routes(), babel.Runtime{Events: bus}, netstack.NewRoutesOnly())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.speaker = speaker
+}
+
+// steering is a cap.segment steering one source through via, which sizes the tun by the length of via
+func steering(via ...string) *srv6.Segments {
+	addresses := make([]schema.Addr, 0, len(via))
+	for _, address := range via {
+		addresses = append(addresses, schema.MustAddr(address))
+	}
+	return &srv6.Segments{Source: schema.MustAddr("3fff:1:69c:8c0::1"),
+		Steer: []srv6.Steer{{From: schema.MustPrefix("3fff:a::1/128"), Via: addresses}}}
+}
+
+// segmentsOf gives c a mesh holding the tables of its cap.segment, as New installs them
+func segmentsOf(t *testing.T, c *Client) {
+	t.Helper()
+	segments, steering, err := c.config().Segments().Tables()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Mesh = netstack.NewRoutesOnly()
+	c.Mesh.SetSegments(segments)
+	c.Mesh.SetSteering(steering)
+}
+
+func TestReloadHandsTheSpeakerAChangedCapBabel(t *testing.T) {
+	c, path, _, bus := reloadOf(t, func(*config.Config) {})
+	speakerRecording(t, c, bus)
+	next := *c.config()
+	next.Cap.Babel = &babel.Config{Hello: schema.Duration(2 * time.Second)}
+	writeConfig(t, path, &next)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("a changed cap.babel was refused: %v", err)
+	}
+	if got := recorded(bus, "babel.config.applied"); len(got) != 1 || got[0].Attrs["hello"] != "2s" {
+		t.Errorf("the speaker recorded %v, want one change to a 2s hello", got)
+	}
+	if got := lastReload(t, bus)["applied"]; got != "cap.babel" {
+		t.Errorf("the reload was recorded as applying %q, want cap.babel", got)
+	}
+}
+
+// a reload installs the tables cap.segment builds, and a steering stopped over the control socket stays stopped with the new table
+func TestReloadInstallsTheSegmentTablesItBuilds(t *testing.T) {
+	c, path, _, bus := reloadOf(t, func(old *config.Config) { old.Cap.Segment = steering("3fff:1:69c:98d6::1") })
+	segmentsOf(t, c)
+	c.Mesh.SetSteeringEnabled(false)
+	next := *c.config()
+	next.Cap.Segment = steering("3fff:1:69c:6c46::1")
+	next.Cap.Segment.Local = []srv6.Segment{{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEnd}}
+	writeConfig(t, path, &next)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("a steering of the same length was refused: %v", err)
+	}
+	segments, steered, err := next.Segments().Tables()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Mesh.Segments().Segments(); !slices.Equal(got, segments.Segments()) {
+		t.Errorf("the mesh answers for %v, want %v", got, segments.Segments())
+	}
+	if got := c.Mesh.Steering().Entries(); !slices.Equal(got, steered.Entries()) {
+		t.Errorf("the mesh steers %v, want %v", got, steered.Entries())
+	}
+	if c.Mesh.SteeringEnabled() {
+		t.Error("the reload started the steering an operator had stopped")
+	}
+	if got := lastReload(t, bus)["applied"]; got != "cap.segment" {
+		t.Errorf("the reload was recorded as applying %q, want cap.segment", got)
+	}
+}
+
+// the tun is sized once to the longest segment list, so a steering needing another size is refused before anything else applies
+func TestReloadRefusesASteeringThatNeedsAnotherMTUAndChangesNothing(t *testing.T) {
+	c, path, reconciler, bus := reloadOf(t, func(old *config.Config) {
+		old.Cap.Segment = steering("3fff:1:69c:98d6::1")
+		old.Cap.Table = &kernel.Table{}
+	})
+	segmentsOf(t, c)
+	speakerRecording(t, c, bus)
+	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { hub.Close() })
+	c.hub = hub
+	segments, steered := c.Mesh.Segments(), c.Mesh.Steering()
+	old := c.config()
+	next := *old
+	next.Cap.Segment = steering("3fff:1:69c:98d6::1", "3fff:1:69c:6c46::1")
+	next.Cap.Segment.Local = []srv6.Segment{{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEnd}}
+	next.Cap.Babel = &babel.Config{Hello: schema.Duration(2 * time.Second)}
+	next.Cap.Table = &kernel.Table{Metric: 32}
+	next.Link.Listen = true
+	joinedAndAnnounced(t, c, &next)
+	writeConfig(t, path, &next)
+	if err := c.ReloadFrom(path); err == nil || !strings.Contains(err.Error(), "cap.segment steer needs a") {
+		t.Fatalf("the reload answered %v, want the steering refused by name", err)
+	}
+	changedNothing(t, c, old, bus)
+	if c.Mesh.Segments() != segments || c.Mesh.Steering() != steered {
+		t.Error("the refused reload installed segment tables")
+	}
+	if got := recorded(bus, "babel.config.applied"); len(got) != 0 {
+		t.Errorf("the refused reload reached the speaker: %v", got)
+	}
+	if len(reconciler.tables) != 0 {
+		t.Errorf("the refused reload handed the reconciler %+v", reconciler.tables)
+	}
+	c.dialersMu.Lock()
+	defer c.dialersMu.Unlock()
+	if c.responder != nil {
+		t.Error("the refused reload started the responder")
+	}
+}
+
+// longDialRetry keeps a dialer whose session went from dialing again within convergeBudget, so only a wake brings it back
+const longDialRetry = 10 * time.Minute
+
+// listenNode is one node of a mesh whose nodes answer and dial as each says
+type listenNode struct {
+	name       string
+	port       uint16
+	listen     bool
+	dials      []*listenNode
+	client     *Client
+	events     *events.Bus
+	configPath string
+	keyPath    string
+	trustPath  string
+}
+
+// writeListenConfig writes node's config file with link.listen at listen and loads it back
+func writeListenConfig(t *testing.T, node *listenNode, listen bool) *config.Config {
+	t.Helper()
+	body := fmt.Sprintf("node:\n  org: example\n  name: %s\nauth:\n  key: %s\n  trust: %s\n"+
+		"link:\n  port: %d\n  endpoints:\n    - serial: \"0\"\n      family: ip4\n  listen: %t\n"+
+		"cap:\n  babel:\n    hello: 200ms\n    update: 400ms\n",
+		node.name, node.keyPath, node.trustPath, node.port, listen)
+	if len(node.dials) > 0 {
+		body += "dial:\n  to:\n"
+		for _, peer := range node.dials {
+			body += fmt.Sprintf("    - name: %s\n      serial: \"0\"\n", peer.name)
+		}
+	}
+	if err := os.WriteFile(node.configPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(node.configPath)
+	if err != nil {
+		t.Fatalf("%s: %v", node.name, err)
+	}
+	return cfg
+}
+
+// listenMesh builds a client for each node on 127.0.0.1 under one organization key, with names unique to this mesh
+func listenMesh(t *testing.T, nodes ...*listenNode) {
+	t.Helper()
+	retryPort(t, "bind", func() error { return tryListenMesh(t, nodes) })
+}
+
+func tryListenMesh(t *testing.T, nodes []*listenNode) error {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mesh := meshCounter.Add(1)
+	loopback := "127.0.0.1"
+	org := registry.Organization{PublicKey: string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), Organization: "example"}
+	for _, node := range nodes {
+		node.name = fmt.Sprintf("%s-%d", strings.SplitN(node.name, "-", 2)[0], mesh)
+		node.port = freeUDPPort(t)
+		org.Nodes = append(org.Nodes, registry.Node{CommonName: node.name, Endpoints: []registry.Endpoint{{
+			SerialNumber: "0", AddressFamily: "ip4", Address: &loopback, Port: node.port,
+		}}})
+	}
+	dir := t.TempDir()
+	trustPath, keyPath := filepath.Join(dir, "registry.json"), filepath.Join(dir, "key.pem")
+	writeRegistry(t, trustPath, registry.Registry{org})
+	writeKey(t, keyPath, private)
+	for i, node := range nodes {
+		node.configPath, node.keyPath, node.trustPath = filepath.Join(dir, node.name+".yaml"), keyPath, trustPath
+		node.events = events.New()
+		client, err := newClient(writeListenConfig(t, node, node.listen), private, registry.Registry{org}, netstack.NewRoutesOnly(), nil, node.events)
+		if err != nil {
+			for _, built := range nodes[:i] {
+				built.client.Close()
+			}
+			return fmt.Errorf("%s: %w", node.name, err)
+		}
+		node.client = client
+		t.Cleanup(client.Close)
+	}
+	return nil
+}
+
+// runListen starts each node as run does for a loopbackNode
+func runListen(t *testing.T, nodes ...*listenNode) func() {
+	t.Helper()
+	loopbacks := make([]*loopbackNode, 0, len(nodes))
+	for _, node := range nodes {
+		loopbacks = append(loopbacks, &loopbackNode{name: node.name, client: node.client})
+	}
+	_, stop := run(t, loopbacks...)
+	return stop
+}
+
+// pathTo is the name of the session or dialer from node to peer
+func pathTo(peer *listenNode) string { return "example/" + peer.name + "/0@0" }
+
+// sessionEvents is every event of kind node recorded for the session with peer
+func sessionEvents(node, peer *listenNode, kind string) []control.Event {
+	return node.events.Recorded(func(got, path string, _ []slog.Attr) bool { return got == kind && path == pathTo(peer) }, 0)
+}
+
+// held is the session node holds with peer, or nil
+func held(node, peer *listenNode) *ike.Session {
+	node.client.sessions.mu.Lock()
+	defer node.client.sessions.mu.Unlock()
+	if live := node.client.sessions.live[pathTo(peer)]; live != nil {
+		return live.session
+	}
+	return nil
+}
+
+// hub answers a and dials d, so it holds one session it answered and one it dialed
+// turning link.listen off closes the answered one with a Delete, keeps the dialed one and wakes the dialer that brings a back
+// an IKE_SA_INIT arriving while it is off is refused, and turning it on again answers the next dial and not that one
+func TestReloadTurningListenOffClosesAnsweredSessionsAndOnAnswersAgain(t *testing.T) {
+	a, hub, d := &listenNode{name: "a", listen: true}, &listenNode{name: "h", listen: true}, &listenNode{name: "d", listen: true}
+	a.dials, hub.dials = []*listenNode{hub}, []*listenNode{d}
+	listenMesh(t, a, hub, d)
+	a.client.dialRetry, hub.client.dialRetry = longDialRetry, longDialRetry
+	runListen(t, a, hub, d)
+	waitFor(t, convergeBudget, "hub's dialed session with d", func() bool { return held(hub, d) != nil })
+	waitFor(t, convergeBudget, "hub's answered session with a", func() bool { return held(hub, a) != nil })
+	if got := sessionEvents(hub, a, "ike.session.established"); len(got) != 1 || got[0].Attrs["role"] != "responder" {
+		t.Fatalf("hub holds a by %v, want the one session it answered, so this proves nothing", got)
+	}
+	dialed := held(hub, d)
+	// hub dials a as well from here, and its dialer stands down behind the session a opened
+	hub.dials = []*listenNode{a, d}
+	if err := hub.client.ReloadFrom(writeListenPath(t, hub, true)); err != nil {
+		t.Fatalf("dialing a as well was refused: %v", err)
+	}
+
+	if err := hub.client.ReloadFrom(writeListenPath(t, hub, false)); err != nil {
+		t.Fatalf("turning link.listen off was refused: %v", err)
+	}
+	if got := recorded(hub.events, "responder.changed"); len(got) != 1 || got[0].Attrs["listen"] != "false" || got[0].Attrs["closed"] != "1" {
+		t.Errorf("turning listen off was recorded as %v, want one answered session closed", got)
+	}
+	if got := lastReload(t, hub.events)["applied"]; got != "link.listen" {
+		t.Errorf("the reload was recorded as applying %q, want link.listen", got)
+	}
+	// without the Delete, a would hold its session until its liveness check gave up, 10 seconds idle and 62 of retransmissions
+	waitFor(t, convergeBudget, "a to be told its session is gone", func() bool {
+		return len(sessionEvents(a, hub, "ike.session.ended")) > 0
+	})
+	waitFor(t, convergeBudget, "hub's dialer for a to be woken", func() bool {
+		return len(sessionEvents(hub, a, "dial.woken")) > 0
+	})
+	waitFor(t, convergeBudget, "hub to dial a again, which only the wake can do in time", func() bool {
+		established := sessionEvents(hub, a, "ike.session.established")
+		return len(established) == 2 && established[1].Attrs["role"] == "initiator" && held(hub, a) != nil
+	})
+	if held(hub, d) != dialed || len(sessionEvents(hub, d, "ike.session.ended")) != 0 {
+		t.Error("turning listen off closed a session hub dialed")
+	}
+	stale, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stale.Close()
+	refused := hub.client.hub.Refused()
+	if _, err := stale.WriteToUDP(unclaimedInit(), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(hub.port)}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, convergeBudget, "hub to refuse an IKE_SA_INIT while listen is off", func() bool { return hub.client.hub.Refused() > refused })
+
+	if err := hub.client.ReloadFrom(writeListenPath(t, hub, true)); err != nil {
+		t.Fatalf("turning link.listen on was refused: %v", err)
+	}
+	if _, err := a.client.Redial(t.Context(), hub.name); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, convergeBudget, "hub to answer a's next dial", func() bool {
+		established := sessionEvents(hub, a, "ike.session.established")
+		return len(established) == 3 && established[2].Attrs["role"] == "responder" && held(hub, a) != nil
+	})
+	// the responder reads the hub's queue in arrival order
+	// an IKE_SA_INIT held over from listen off would have failed before a's dial was answered
+	for _, failed := range recorded(hub.events, "ike.handshake.failed") {
+		if from, err := netip.ParseAddrPort(failed.Attrs["from"]); err == nil && int(from.Port()) == stale.LocalAddr().(*net.UDPAddr).Port {
+			t.Errorf("turning listen on answered an IKE_SA_INIT that arrived while it was off: %v", failed)
+		}
+	}
+}
+
+// writeListenPath rewrites node's config with link.listen at listen and returns its path
+func writeListenPath(t *testing.T, node *listenNode, listen bool) string {
+	t.Helper()
+	writeListenConfig(t, node, listen)
+	return node.configPath
+}
+
+// reloads turning the responder off and on while the node shuts down start nothing behind the wait in Run
+func TestReloadTurningListenWhileTheNodeStopsDoesNotPanic(t *testing.T) {
+	node, peer := &listenNode{name: "n", listen: true}, &listenNode{name: "p", listen: true}
+	node.dials = []*listenNode{peer}
+	listenMesh(t, node, peer)
+	stop := runListen(t, node)
+	off, on := filepath.Join(filepath.Dir(node.configPath), "off.yaml"), node.configPath
+	body, err := os.ReadFile(on)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(off, []byte(strings.Replace(string(body), "listen: true", "listen: false", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var reloaded atomic.Int64
+	go func() {
+		defer close(done)
+		for i := range racingReloads {
+			path := off
+			if i%2 == 1 {
+				path = on
+			}
+			if err := node.client.ReloadFrom(path); err != nil {
+				t.Errorf("a reload failed: %v", err)
+				return
+			}
+			reloaded.Add(1)
+		}
+	}()
+	waitFor(t, convergeBudget, "the first reloads", func() bool { return reloaded.Load() >= racingReloads/4 })
+	stop()
+	<-done
+	// once Run has returned, a reload turning listen on starts nothing that its wait would have had to cover
+	for _, path := range []string{off, on} {
+		if err := node.client.ReloadFrom(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	node.client.dialersMu.Lock()
+	defer node.client.dialersMu.Unlock()
+	if node.client.responder != nil {
+		t.Error("a reload after the node stopped started a responder")
+	}
+}
+
+// racingReloads is how many reloads race the stop, enough that some land before it, some during and some after
+const racingReloads = 200
+
+// a reload turning link.listen on before Run leaves Run with the responder it started rather than a second one on the hub
+// turning listen off then stops that one responder
+func TestReloadTurningListenOnBeforeRunStartsOneResponder(t *testing.T) {
+	node, peer := &listenNode{name: "n"}, &listenNode{name: "p", listen: true}
+	node.dials = []*listenNode{peer}
+	listenMesh(t, node, peer)
+	if err := node.client.ReloadFrom(writeListenPath(t, node, true)); err != nil {
+		t.Fatalf("turning link.listen on was refused: %v", err)
+	}
+	node.client.dialersMu.Lock()
+	first := node.client.responder
+	node.client.dialersMu.Unlock()
+	if first == nil {
+		t.Fatal("turning link.listen on started no responder, so this proves nothing")
+	}
+	runListen(t, node)
+	// Run starts its speaker after its own start of the responder
+	waitFor(t, convergeBudget, "Run to start its speaker", func() bool { return node.client.speaker.Passes() > 0 })
+	if err := node.client.ReloadFrom(writeListenPath(t, node, false)); err != nil {
+		t.Fatalf("turning link.listen off was refused: %v", err)
+	}
+	select {
+	case <-first.done:
+	default:
+		t.Error("turning link.listen off left the responder the first reload started reading the hub")
+	}
+}
+
+// link.listen turned off right after it went on stops a responder that may not have reached the hub yet
+// the hub refuses unclaimed IKE afterward rather than queueing it for a responder started later
+func TestListenTurnedOffRightAfterOnLeavesTheHubRefusing(t *testing.T) {
+	node, peer := &listenNode{name: "n"}, &listenNode{name: "p", listen: true}
+	node.dials = []*listenNode{peer}
+	listenMesh(t, node, peer)
+	c := node.client
+	off := c.config()
+	on := *off
+	on.Link.Listen = true
+	c.cfg.Store(&on)
+	c.syncResponder()
+	c.cfg.Store(off)
+	c.syncResponder()
+
+	sender, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	refused := c.hub.Refused()
+	if _, err := sender.WriteToUDP(unclaimedInit(), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(node.port)}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, convergeBudget, "the hub to refuse an IKE_SA_INIT while listen is off", func() bool { return c.hub.Refused() > refused })
 }

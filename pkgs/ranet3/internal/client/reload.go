@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -20,7 +21,9 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 // peerPath names one dialer, and is the same name the session it establishes is
@@ -88,10 +91,10 @@ func (c *Client) syncPeers() {
 
 // ReloadFrom re-reads the configuration and the trust document at path and
 // applies what can be applied without dropping the tunnels this node is
-// carrying: the document itself, the peers we dial, the prefixes we announce
-// and cap.table. ranet reconciles the same way rather than restarting, and it
-// matters here because the document is rewritten every time any node joins the
-// mesh.
+// carrying: the document itself, the peers we dial, the prefixes we announce,
+// cap.babel, cap.segment, link.listen and cap.table. ranet reconciles the same
+// way rather than restarting, and it matters here because the document is
+// rewritten every time any node joins the mesh.
 //
 // Everything a reload cannot reach is refused rather than applied, because
 // each such change alters what peers have already authenticated or what the
@@ -133,6 +136,10 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if err := reloadable(old, cfg); err != nil {
 		return err
 	}
+	segments, steering, err := c.segmentTables(old, cfg)
+	if err != nil {
+		return err
+	}
 	// the last refusal, since the reconciler takes a table it accepts at once
 	if !sameTable(old, cfg) {
 		if err := c.retable(cfg); err != nil {
@@ -164,6 +171,15 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	}
 	c.republish(cfg)
 	c.syncPeers()
+	c.speaker.SetConfig(cfg.Babel())
+	if !sameSegments(old, cfg) {
+		c.Mesh.SetSegments(segments)
+		c.Mesh.SetSteering(steering)
+	}
+	if old.Link.Listen != cfg.Link.Listen {
+		closed := c.syncResponder()
+		c.events.Emit("responder.changed", "", slog.Bool("listen", cfg.Link.Listen), slog.Int("closed", closed))
+	}
 	nodes := 0
 	for _, organization := range reg {
 		nodes += len(organization.Nodes)
@@ -190,13 +206,105 @@ func (c *Client) retable(next *config.Config) error {
 // changedCapabilities names each capability a reload from old to next applied in place
 func changedCapabilities(old, next *config.Config) []string {
 	var out []string
+	if old.Babel().Effective() != next.Babel().Effective() {
+		out = append(out, "cap.babel")
+	}
 	if !reflect.DeepEqual(old.Routes(), next.Routes()) {
 		out = append(out, "cap.route")
+	}
+	if !sameSegments(old, next) {
+		out = append(out, "cap.segment")
 	}
 	if !sameTable(old, next) {
 		out = append(out, "cap.table")
 	}
+	if old.Link.Listen != next.Link.Listen {
+		out = append(out, "link.listen")
+	}
 	return out
+}
+
+// segmentTables builds the cap.segment next carries as New does, or nil tables where it is unchanged
+// a steering that needs another tun MTU than the running steering is refused, since New sizes the tun to it once
+func (c *Client) segmentTables(old, next *config.Config) (*srv6.LocalTable, *srv6.SteerTable, error) {
+	if sameSegments(old, next) {
+		return nil, nil, nil
+	}
+	segments, steering, err := next.Segments().Tables()
+	if err != nil {
+		return nil, nil, err
+	}
+	tunMTU := func(steering *srv6.SteerTable) (int, error) {
+		mtu, err := steeredMTU(steering)
+		if mtu == 0 {
+			mtu = netstack.DefaultMTU
+		}
+		return mtu, err
+	}
+	running, err := tunMTU(c.Mesh.Steering())
+	if err != nil {
+		return nil, nil, err
+	}
+	needed, err := tunMTU(steering)
+	if err != nil {
+		return nil, nil, err
+	}
+	if needed != running {
+		return nil, nil, fmt.Errorf("config: cap.segment steer needs a %d byte tun and the running one is %d bytes, restart to apply", needed, running)
+	}
+	return segments, steering, nil
+}
+
+// sameSegments compares cap.segment as the tables are built from it
+func sameSegments(old, next *config.Config) bool {
+	return reflect.DeepEqual(old.Segments().Normalized(), next.Segments().Normalized())
+}
+
+// responderRun is one acceptPeers a responder start began, with what it reports once done is closed
+type responderRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	closed int
+}
+
+// syncResponder starts the responder where link.listen is on and none runs, and stops the running one where it is off
+// it reads the configuration under dialersMu, as syncPeers does, so a start in Run and a stop in a reload cannot cross
+// and starts nothing once stopDialers has run, so c.peers.Go never races the wait in Run
+// it reports how many answered sessions the stop closed
+func (c *Client) syncResponder() int {
+	c.dialersMu.Lock()
+	listen, run := c.config().Link.Listen, c.responder
+	if listen && run == nil && !c.stopped && c.ctx.Err() == nil {
+		ctx, cancel := context.WithCancel(c.ctx)
+		started := &responderRun{cancel: cancel, done: make(chan struct{})}
+		c.responder = started
+		c.peers.Go(func() {
+			defer close(started.done)
+			defer cancel()
+			closed, err := c.acceptPeers(ctx)
+			started.closed = closed
+			if err != nil && ctx.Err() == nil {
+				log.Printf("responder: %v", err)
+			}
+		})
+	}
+	if listen || run == nil {
+		c.dialersMu.Unlock()
+		return 0
+	}
+	c.responder = nil
+	c.dialersMu.Unlock()
+	run.cancel()
+	<-run.done
+	// only once the responder is gone, since a Serve it had not yet reached would Listen again
+	// a responder started later answers nothing that arrived while this one was off
+	c.hub.StopListening()
+	// a peer this node also dials comes back now rather than after the reconnect delay
+	c.dialersMu.Lock()
+	paths := slices.Collect(maps.Keys(c.dialers))
+	c.dialersMu.Unlock()
+	c.wakeDialers(paths)
+	return run.closed
 }
 
 // sameIdentityKey refuses a reload that would change the key this node signs
@@ -234,10 +342,6 @@ func reloadable(old, next *config.Config) error {
 		return fmt.Errorf("config: link.port changed, restart to apply")
 	case old.Link.TUN != next.Link.TUN:
 		return fmt.Errorf("config: link.tun changed, restart to apply")
-	case old.Link.Listen != next.Link.Listen:
-		// acceptPeers is started once by Run, so turning the listener on or
-		// off here would report success and change nothing.
-		return fmt.Errorf("config: link.listen changed, restart to apply")
 	case !slices.Equal(sortedEndpoints(old.Link.Endpoints), sortedEndpoints(next.Link.Endpoints)):
 		// The listener answers to one identity per local endpoint and builds
 		// that set once, and each endpoint runs its own dialers. Compared as a
@@ -247,24 +351,11 @@ func reloadable(old, next *config.Config) error {
 		// and every capability beside this one is compared as the subsystem
 		// reads it rather than as the file spells it.
 		return fmt.Errorf("config: link.endpoints changed, restart to apply")
-	case old.Babel().Effective() != next.Babel().Effective():
-		// The speaker is built once, so a changed interval or cost would be
-		// read back from the file and never reach it. Refusing says so instead
-		// of reporting a reload that did nothing. The comparison is on the
-		// speaker each one would run rather than on the fields as written: an
-		// omitted cost and one spelled out as its own default are the same
-		// speaker.
-		return fmt.Errorf("config: cap.babel changed, restart to apply")
 	case old.Routes().Transits() != next.Routes().Transits():
 		// The announcements are the reloadable half of cap.route, and
 		// SetRoutes applies them. Whether this node relays is read while a
 		// packet is being built and is fixed for the speaker's life.
 		return fmt.Errorf("config: cap.route transit changed, restart to apply")
-	case !reflect.DeepEqual(old.Segments().Normalized(), next.Segments().Normalized()):
-		// The table is built once, before the tun exists, and the inbound
-		// path reads it without asking whether it changed. Applying a new one
-		// here would leave packets already in flight acted on under the old.
-		return fmt.Errorf("config: cap.segment changed, restart to apply")
 	case moved != "":
 		return fmt.Errorf("config: cap.table %s, restart to apply", moved)
 	case !sameCrypto(old, next):

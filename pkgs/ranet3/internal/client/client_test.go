@@ -377,7 +377,6 @@ func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 		Node: config.Node{Org: "example", Name: "node"},
 		Link: config.Link{Port: 13000, Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
 	}
-	rxcost := uint16(64)
 	window := uint32(8192)
 	// Every refusal, not a sample of them. Each of these is read once at
 	// startup by something a reload cannot reach, so accepting one would
@@ -388,14 +387,11 @@ func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 		"underlay": func(c *config.Config) { c.Link.Underlay.Mark = 0x726c },
 		"port":     func(c *config.Config) { c.Link.Port = 14000 },
 		"tun":      func(c *config.Config) { c.Link.TUN = "ranet9" },
-		"listen":   func(c *config.Config) { c.Link.Listen = !c.Link.Listen },
 		"endpoints": func(c *config.Config) {
 			c.Link.Endpoints = []config.Endpoint{{Serial: "1", Family: "ip6"}}
 		},
-		"cap.babel":         func(c *config.Config) { c.Cap.Babel = &babel.Config{Cost: babel.CostOptions{Rx: &rxcost}} },
-		"cap.babel quality": func(c *config.Config) { c.Cap.Babel = &babel.Config{Quality: babel.LinkQualityNone} },
-		"cap.route":         func(c *config.Config) { c.Cap.Route = &babel.Routes{Transit: new(bool)} },
-		"cap.table":         func(c *config.Config) { c.Cap.Table = &kernel.Table{ID: 201} },
+		"cap.route": func(c *config.Config) { c.Cap.Route = &babel.Routes{Transit: new(bool)} },
+		"cap.table": func(c *config.Config) { c.Cap.Table = &kernel.Table{ID: 201} },
 		// a session takes the replay window and the rekey timers from the listener built at startup when it is accepted
 		// and from the file when it is dialed, and one field let through runs two policies at once
 		"cap.crypto replay": func(c *config.Config) {
@@ -418,11 +414,6 @@ func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 		},
 		"cap.crypto rekey retry max": func(c *config.Config) {
 			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{Retry: ike.Retry{Max: durationOf(2 * ike.DefaultRetryMax)}}}
-		},
-		"cap.segment": func(c *config.Config) {
-			c.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{
-				{SID: schema.MustAddr("2001:db8::1"), Behavior: srv6.BehaviorEnd},
-			}}
 		},
 		"cap.egress": func(c *config.Config) {
 			c.Cap.Egress = &egress.Egress{Advertise: []schema.Prefix{schema.MustPrefix("0.0.0.0/0")}}
@@ -449,6 +440,7 @@ func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 // examples/config.yaml ships, then reads as a change and refuses this reload
 // and every later one, and with it every registry the node would have picked
 // up.
+// a reload that writes them out applies no cap.babel, and a changed interval does
 func TestReloadTakesABabelDefaultWrittenOut(t *testing.T) {
 	omitted := &config.Config{Node: config.Node{Org: "example", Name: "node"}, Link: config.Link{Port: 13000}}
 	written := *omitted
@@ -459,9 +451,12 @@ func TestReloadTakesABabelDefaultWrittenOut(t *testing.T) {
 	if err := reloadable(omitted, &written); err != nil {
 		t.Errorf("writing out the intervals already running was refused: %v", err)
 	}
+	if got := changedCapabilities(omitted, &written); len(got) != 0 {
+		t.Errorf("writing out the intervals already running applied %v", got)
+	}
 	written.Cap.Babel = &babel.Config{Hello: schema.Duration(8 * time.Second)}
-	if err := reloadable(omitted, &written); err == nil {
-		t.Error("a changed hello interval was accepted, and the speaker is built once")
+	if got := changedCapabilities(omitted, &written); !slices.Equal(got, []string{"cap.babel"}) {
+		t.Errorf("a changed hello interval applied %v, want cap.babel", got)
 	}
 }
 
@@ -1107,18 +1102,6 @@ func writeKey(t *testing.T, path string, key ed25519.PrivateKey) {
 	}
 }
 
-// The responder decides whether this node answers at all, and acceptPeers is
-// started once by Run. Accepting the change would report a reload that turned
-// the responder on while nobody answered.
-func TestReloadRefusesResponderChange(t *testing.T) {
-	base := &config.Config{Node: config.Node{Org: "example", Name: "node"}, Link: config.Link{Port: 13000}}
-	next := *base
-	next.Link.Listen = !base.Link.Listen
-	if err := reloadable(base, &next); err == nil {
-		t.Error("a listen change was accepted, and nothing applies it")
-	}
-}
-
 // A field written out as its own default is the same configuration as an
 // omitted one. Comparing them as written refuses a reload that changes
 // nothing, so writing "rxcost: 96" into the file, the value the speaker
@@ -1203,8 +1186,8 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 			if err := reloadable(base, &next); err != nil {
 				t.Errorf("writing a default out in full was refused: %v", err)
 			}
-			if !sameTable(base, &next) {
-				t.Error("writing a default out in full hands the reconciler a table it already runs")
+			if got := changedCapabilities(base, &next); len(got) != 0 {
+				t.Errorf("writing a default out in full applied %v", got)
 			}
 		})
 	}
@@ -1267,8 +1250,8 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 			if err := reloadable(&before, &after); err != nil {
 				t.Errorf("writing a default out in full was refused: %v", err)
 			}
-			if !sameTable(&before, &after) {
-				t.Error("writing a default out in full hands the reconciler a table it already runs")
+			if got := changedCapabilities(&before, &after); len(got) != 0 {
+				t.Errorf("writing a default out in full applied %v", got)
 			}
 		})
 	}
@@ -1281,7 +1264,7 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 	reordered, viaSwapped := *base, *base
 	reordered.Cap = config.Caps{Segment: &srv6.Segments{Source: source, Steer: []srv6.Steer{steered}}}
 	viaSwapped.Cap = config.Caps{Segment: &srv6.Segments{Source: source, Steer: []srv6.Steer{viaBack}}}
-	if err := reloadable(&reordered, &viaSwapped); err == nil {
+	if sameSegments(&reordered, &viaSwapped) {
 		t.Error("a segment list visited in the other order was taken as the same steering")
 	}
 
@@ -1295,14 +1278,14 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 		t.Error("two rules looking up different tables compared as one, so the reconciler is never handed the second")
 	}
 
-	// A real change is still refused, or the comparison would be useless.
+	// A real change still applies, or the comparison would be useless.
 	louder := defaults
 	raised := params.RxCost + 1
 	louder.Rx = &raised
 	changed := *base
 	changed.Cap.Babel = &babel.Config{Cost: louder}
-	if err := reloadable(base, &changed); err == nil {
-		t.Error("a changed link cost was accepted, which the speaker would never see")
+	if got := changedCapabilities(base, &changed); !slices.Equal(got, []string{"cap.babel"}) {
+		t.Errorf("a changed link cost applied %v, want cap.babel", got)
 	}
 }
 
@@ -1591,6 +1574,19 @@ func babelPacket(t *testing.T, tlvs ...babel.RawTLV) []byte {
 	return raw
 }
 
+// unclaimedInit is an IKE_SA_INIT request header behind the non-ESP marker, which a hub hands to whoever listens
+func unclaimedInit() []byte {
+	const marker = 4
+	datagram := make([]byte, marker+28)
+	header := datagram[marker:]
+	binary.BigEndian.PutUint64(header[0:8], 1) // an initiator SPI no Mux has registered
+	header[17] = 0x20                          // version 2.0
+	header[18] = 34                            // IKE_SA_INIT
+	header[19] = 0x08                          // initiator
+	binary.BigEndian.PutUint32(header[24:28], uint32(len(header)))
+	return datagram
+}
+
 // fillUnclaimedQueue sends IKE_SA_INIT-shaped datagrams at a hub nobody is
 // listening on until its queue refuses one, which is the ordinary way an
 // inbound receive queue fills: the SPIs belong to no Mux, so every datagram
@@ -1607,14 +1603,7 @@ func fillUnclaimedQueue(t *testing.T, hub *transport.Hub) uint64 {
 	}
 	defer peer.Close()
 	dst := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: hub.LocalAddr().(*net.UDPAddr).Port}
-	const marker = 4
-	datagram := make([]byte, marker+28)
-	header := datagram[marker:]
-	binary.BigEndian.PutUint64(header[0:8], 1) // an initiator SPI no Mux has registered
-	header[17] = 0x20                          // version 2.0
-	header[18] = 34                            // IKE_SA_INIT
-	header[19] = 0x08                          // initiator
-	binary.BigEndian.PutUint32(header[24:28], uint32(len(header)))
+	datagram := unclaimedInit()
 
 	deadline := time.Now().Add(20 * time.Second)
 	for hub.Refused() < 64 {

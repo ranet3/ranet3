@@ -10,7 +10,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/netip"
 	"runtime"
@@ -71,6 +70,8 @@ type Client struct {
 	// the WaitGroup after the wait has begun, which panics.
 	stopped bool
 	peers   sync.WaitGroup
+	// responder is the running acceptPeers, nil while link.listen is off, guarded by dialersMu so it is started and stopped against stopped as dialers are
+	responder *responderRun
 
 	// regReadAt is when the registry now installed was read, in unix
 	// nanoseconds, so a diagnostic can tell a registry that reloaded from one
@@ -285,13 +286,7 @@ func (c *Client) Run(ctx context.Context) error {
 		c.cancel()
 	}
 	c.syncPeers()
-	if c.config().Link.Listen {
-		c.peers.Go(func() {
-			if err := c.acceptPeers(c.ctx); err != nil && c.ctx.Err() == nil {
-				log.Printf("responder: %v", err)
-			}
-		})
-	}
+	c.syncResponder()
 	err := c.speaker.Run(c.ctx)
 	// Canceled before the hub closes, so a dialer reads the session ending as
 	// this node stopping. See stopping.
