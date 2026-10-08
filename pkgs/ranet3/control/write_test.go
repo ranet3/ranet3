@@ -32,8 +32,8 @@ func (s *writingSource) SetSubsystem(_ context.Context, name Subsystem, on bool)
 	return s.answer(string(name))
 }
 
-func (s *writingSource) Redial(_ context.Context, peer string) (Result, error) {
-	s.verb, s.peer = "redial", peer
+func (s *writingSource) Redial(_ context.Context, peer string, all bool) (Result, error) {
+	s.verb, s.peer, s.all = "redial", peer, all
 	return s.answer(peer)
 }
 
@@ -84,9 +84,14 @@ func TestHandlerRoutesEveryVerb(t *testing.T) {
 				t.Errorf("enable reached %+v", s)
 			}
 		}},
-		"redial": {path: PathRedial, body: `{"peer":"example/gateway"}`, check: func(t *testing.T, s *writingSource) {
-			if s.verb != "redial" || s.peer != "example/gateway" {
+		"redial one": {path: PathRedial, body: `{"peer":"example/gateway"}`, check: func(t *testing.T, s *writingSource) {
+			if s.verb != "redial" || s.peer != "example/gateway" || s.all {
 				t.Errorf("redial reached %+v", s)
+			}
+		}},
+		"redial all": {path: PathRedial, body: `{"all":true}`, check: func(t *testing.T, s *writingSource) {
+			if s.verb != "redial" || !s.all {
+				t.Errorf("redial --all reached %+v", s)
 			}
 		}},
 		"rekey one": {path: PathRekey, body: `{"peer":"example/gateway"}`, check: func(t *testing.T, s *writingSource) {
@@ -214,11 +219,17 @@ func TestClientRoundTripsEveryVerb(t *testing.T) {
 	if !sink.on {
 		t.Errorf("enable arrived as %+v", sink)
 	}
-	if _, err := client.Redial("example/gateway"); err != nil {
+	if _, err := client.Redial("example/gateway", false); err != nil {
 		t.Fatal(err)
 	}
-	if sink.verb != "redial" || sink.peer != "example/gateway" {
+	if sink.verb != "redial" || sink.peer != "example/gateway" || sink.all {
 		t.Errorf("redial arrived as %+v", sink)
+	}
+	if _, err := client.Redial("", true); err != nil {
+		t.Fatal(err)
+	}
+	if sink.verb != "redial" || !sink.all {
+		t.Errorf("redial --all arrived as %+v", sink)
 	}
 	if _, err := client.Rekey("", true); err != nil {
 		t.Fatal(err)

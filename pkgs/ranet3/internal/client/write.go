@@ -174,28 +174,36 @@ func startedStopped(on bool) string {
 	return "stopped"
 }
 
-// Redial drops the sessions this node holds for a peer and sets its dialers
-// going again at once.
+// Redial drops the sessions this node holds for a peer, or every session, and
+// sets the matching dialers going again at once.
 //
 // A peer holding a session whose far end is gone does not retry on its own,
 // and one was seen to sit that way for sixteen minutes. This is that peer's
 // own operator saying so, on the side that can act. The sessions go first and
 // the dialers are woken after, so a dialer does not find the path still held
 // and stand down for another reconnect delay.
-func (c *Client) Redial(ctx context.Context, peer string) (result control.Result, err error) {
-	defer func() { c.noteVerb(ctx, "redial", peer, result.Acted, err) }()
-	if peer == "" {
-		return control.Result{}, errors.New("control: redial takes the peer to redial")
+// every peer at once answers a network change the watch cannot see, such as a captive portal
+func (c *Client) Redial(ctx context.Context, peer string, all bool) (result control.Result, err error) {
+	defer func() { c.noteVerb(ctx, "redial", peer, result.Acted, err, slog.Bool("all", all)) }()
+	if all == (peer != "") {
+		return control.Result{}, errors.New("control: redial takes either a peer or every peer, not both and not neither")
 	}
-	dialers := c.matchingDialers(peer, false)
-	dropped := c.sessions.closeMatching(peer)
+	dialers := c.matchingDialers(peer, all)
+	dropped := c.sessions.closeMatching(peer, all)
 	if len(dialers) == 0 && len(dropped) == 0 {
+		if all {
+			return control.Result{}, errors.New("control: this node neither dials nor holds a session, so there is nothing to redial")
+		}
 		return control.Result{}, fmt.Errorf("control: this node neither dials nor holds a session with %q, so there is nothing to redial", peer)
 	}
 	c.wakeDialers(dialers)
 	acted := slices.Concat(dialers, dropped)
 	slices.Sort(acted)
-	log.Printf("control: redialing %s, %d session(s) closed", peer, len(dropped))
+	if all {
+		log.Printf("control: redialing every peer, %d session(s) closed", len(dropped))
+	} else {
+		log.Printf("control: redialing %s, %d session(s) closed", peer, len(dropped))
+	}
 	return control.Result{Acted: slices.Compact(acted),
 		Detail: fmt.Sprintf("Closed %d session(s) and set %d dialer(s) going again",
 			len(dropped), len(dialers))}, nil

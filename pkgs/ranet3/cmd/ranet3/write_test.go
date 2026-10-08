@@ -35,7 +35,10 @@ func (s *writingStub) SetSubsystem(_ context.Context, name control.Subsystem, on
 	return s.record(fmt.Sprintf("set %s %s", name, state))
 }
 
-func (s *writingStub) Redial(_ context.Context, peer string) (control.Result, error) {
+func (s *writingStub) Redial(_ context.Context, peer string, all bool) (control.Result, error) {
+	if all {
+		return s.record("redial --all")
+	}
 	return s.record("redial " + peer)
 }
 
@@ -85,12 +88,13 @@ func TestVerbsReachTheDaemonAsTyped(t *testing.T) {
 		args []string
 		want string
 	}{
-		"disable":   {args: []string{"disable", "steering"}, want: "set steering stopped"},
-		"enable":    {args: []string{"enable", "reconciler"}, want: "set reconciler running"},
-		"redial":    {args: []string{"redial", "example/gateway"}, want: "redial example/gateway"},
-		"rekey one": {args: []string{"rekey", "example/gateway"}, want: "rekey example/gateway"},
-		"rekey all": {args: []string{"rekey", "--all"}, want: "rekey --all"},
-		"reload":    {args: []string{"reload"}, want: "reload"},
+		"disable":    {args: []string{"disable", "steering"}, want: "set steering stopped"},
+		"enable":     {args: []string{"enable", "reconciler"}, want: "set reconciler running"},
+		"redial":     {args: []string{"redial", "example/gateway"}, want: "redial example/gateway"},
+		"redial all": {args: []string{"redial", "--all"}, want: "redial --all"},
+		"rekey one":  {args: []string{"rekey", "example/gateway"}, want: "rekey example/gateway"},
+		"rekey all":  {args: []string{"rekey", "--all"}, want: "rekey --all"},
+		"reload":     {args: []string{"reload"}, want: "reload"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out, err := execute(t, append(test.args, "--control", socket)...)
@@ -129,14 +133,16 @@ func TestVerbsRefuseWhatTheyCannotActOn(t *testing.T) {
 		want string
 	}{
 		// The whole message rather than a substring every cobra argument
-		// error carries: with "arg" alone any of these five refusals
-		// satisfies any of the five expectations.
+		// error carries: with "arg" alone any of these refusals
+		// satisfies any of the expectations.
 		"disable with no subsystem": {args: []string{"disable"}, want: "accepts 1 arg(s), received 0"},
 		"disable with two":          {args: []string{"disable", "steering", "responder"}, want: "accepts 1 arg(s), received 2"},
 		// The same sentence as the first, from the other validator: rekey
 		// decides on --all where disable takes a fixed count.
 		"rekey with neither":      {args: []string{"rekey"}, want: "accepts 1 arg(s), received 0"},
 		"rekey with both":         {args: []string{"rekey", "example/gateway", "--all"}, want: `ranet3 rekey takes no arguments, got "example/gateway"`},
+		"redial with neither":     {args: []string{"redial"}, want: "accepts 1 arg(s), received 0"},
+		"redial with both":        {args: []string{"redial", "example/gateway", "--all"}, want: `ranet3 redial takes no arguments, got "example/gateway"`},
 		"reload with an argument": {args: []string{"reload", "now"}, want: `ranet3 reload takes no arguments, got "now"`},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -172,11 +178,14 @@ func TestArgumentsAndFlagValuesAreCompleted(t *testing.T) {
 	for name, test := range map[string]struct {
 		command string
 		flag    string
-		want    string
+		// word is the one being completed, empty for a fresh argument
+		word string
+		want string
 	}{
 		"a subsystem":                      {command: "disable", want: "steering"},
 		"a peer this node dials":           {command: "redial", want: "example/gateway"},
 		"a peer that only dials this node": {command: "redial", want: "example/inbound"},
+		"every peer":                       {command: "redial", word: "--a", want: "--all"},
 		// rekey takes the same completion, so this holds the wiring rather
 		// than the function the case above already drives.
 		"the same peers under rekey": {command: "rekey", want: "example/inbound"},
@@ -189,7 +198,7 @@ func TestArgumentsAndFlagValuesAreCompleted(t *testing.T) {
 			if test.flag != "" {
 				words = append(words, test.flag)
 			}
-			out, err := execute(t, append(words, "")...)
+			out, err := execute(t, append(words, test.word)...)
 			if err != nil {
 				t.Fatalf("completing %s failed: %v", test.command, err)
 			}

@@ -422,15 +422,15 @@ func (s *sessionSet) revoke(trusted func(ike.Identity) bool) []string {
 	return paths
 }
 
-// closeMatching closes every live session naming one peer and reports which
-// went, which is the half of a redial this side can do about a peer holding a
-// session this node no longer has.
+// closeMatching closes every live session naming one peer, or every live
+// session, and reports which went, which is the half of a redial this side can
+// do about a peer holding a session this node no longer has.
 //
 // The entry leaves the map before the session is closed, as revoke does, so
 // the dialer woken straight afterward sees the path as free rather than
 // standing down behind a session that is already going. serveSession's own
 // release then finds the path held by nobody and leaves it alone.
-func (s *sessionSet) closeMatching(peer string) []string {
+func (s *sessionSet) closeMatching(peer string, all bool) []string {
 	if s == nil {
 		return nil // a Client built by hand in a test carries no sessions
 	}
@@ -438,7 +438,7 @@ func (s *sessionSet) closeMatching(peer string) []string {
 	var paths []string
 	var sessions []*ike.Session
 	for path, live := range s.live {
-		if !matchesPeer(path, peer) {
+		if !all && !matchesPeer(path, peer) {
 			continue
 		}
 		paths = append(paths, path)

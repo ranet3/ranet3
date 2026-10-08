@@ -81,8 +81,8 @@ func (c *Client) Enable(subsystem Subsystem) (Result, error) {
 	return c.call(PathEnable, Request{Subsystem: subsystem})
 }
 
-func (c *Client) Redial(peer string) (Result, error) {
-	return c.call(PathRedial, Request{Peer: peer})
+func (c *Client) Redial(peer string, all bool) (Result, error) {
+	return c.call(PathRedial, Request{Peer: peer, All: all})
 }
 
 func (c *Client) Rekey(peer string, all bool) (Result, error) {

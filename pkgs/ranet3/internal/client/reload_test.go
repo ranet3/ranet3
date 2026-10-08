@@ -672,7 +672,7 @@ func TestReloadTurningListenOffClosesAnsweredSessionsAndOnAnswersAgain(t *testin
 	if err := hub.client.ReloadFrom(writeListenPath(t, hub, true)); err != nil {
 		t.Fatalf("turning link.listen on was refused: %v", err)
 	}
-	if _, err := a.client.Redial(t.Context(), hub.name); err != nil {
+	if _, err := a.client.Redial(t.Context(), hub.name, false); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, convergeBudget, "hub to answer a's next dial", func() bool {
