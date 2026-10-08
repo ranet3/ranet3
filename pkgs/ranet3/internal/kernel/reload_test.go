@@ -146,6 +146,25 @@ func TestReloadRemovesOnlyTheAddressesItAdded(t *testing.T) {
 	}
 }
 
+// a platform without keysByLength keys an address by address alone, as darwin does
+// one of ours given another length there is replaced in the one pass rather than added and then deleted under its old length
+func TestReloadGivingAnAddressAnotherLengthOnAPlatformKeyingByAddressKeepsIt(t *testing.T) {
+	short, long := prefix("198.18.104.7/32"), prefix("198.18.104.7/24")
+	table := Table{Addresses: prefixes(short)}.Normalized()
+	fake := newFakeKernel(t)
+	r := newReconciler(table, Runtime{Interface: "ranet0"}, nil, table.Assigned(nil), netstack.NewRouteTable(), struct{ platform }{fake})
+	if _, ok := r.plat.(lengthKeyer); ok {
+		t.Fatal("the platform still keys addresses by length")
+	}
+	if err := r.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	reload(t, r, Table{Addresses: prefixes(long)})
+	if got := fake.heldAddresses(); !slices.Equal(got, []netip.Prefix{long}) {
+		t.Errorf("the pass after the reload left %v on the link, want %s", got, long)
+	}
+}
+
 // the addresses assign_announced expands cap.route into follow the announcements a reload hands over
 func TestReloadAssignsWhatTheNewAnnouncementsExpandInto(t *testing.T) {
 	first, second := prefix("2001:db8:1::1/64"), prefix("2001:db8:2::1/64")

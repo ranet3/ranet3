@@ -77,6 +77,10 @@ type fakeKernel struct {
 	signal chan struct{}
 	// retabled is every capability the reconciler handed over after a reload
 	retabled []Table
+	// byLength keys an IPv4 address by its length as well, as linux does
+	// emptied is set by a delete that takes the last IPv4 address off the link
+	byLength bool
+	emptied  bool
 }
 
 func newFakeKernel(t *testing.T) *fakeKernel {
@@ -157,7 +161,7 @@ func (f *fakeKernel) AddAddr(address netip.Prefix) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for held := range f.addrs {
-		if held.Addr() == address.Addr() {
+		if held.Addr() == address.Addr() && !f.keysByLength(held.Addr()) {
 			delete(f.addrs, held)
 		}
 	}
@@ -175,13 +179,28 @@ func (f *fakeKernel) DelAddr(address netip.Prefix) error {
 	if f.failDelAddr != nil {
 		return f.failDelAddr
 	}
+	holdsIPv4 := func() bool {
+		for held := range f.addrs {
+			if held.Addr().Is4() {
+				return true
+			}
+		}
+		return false
+	}
+	had := holdsIPv4()
 	for held := range f.addrs {
-		if held.Addr() == address.Addr() {
+		if held == address || held.Addr() == address.Addr() && !f.keysByLength(held.Addr()) {
 			delete(f.addrs, held)
 		}
 	}
+	if had && !holdsIPv4() {
+		f.emptied = true
+	}
 	return nil
 }
+
+// keysByLength reads byLength without the lock, which is set before the reconciler runs
+func (f *fakeKernel) keysByLength(address netip.Addr) bool { return f.byLength && address.Is4() }
 
 func (f *fakeKernel) Master() (string, error) {
 	f.mu.Lock()

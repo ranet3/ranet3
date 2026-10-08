@@ -338,20 +338,32 @@ func TestNetlinkReloadRenumbersTheTunAndReplacesARule(t *testing.T) {
 
 // a reload renumbering the tun's only IPv4 address leaves another writer's IPv4 routes out of the tun in place
 // linux flushes every IPv4 route out of a device that loses its last IPv4 address, so the new address goes on before the old one comes off
+// a new prefix length goes on beside the old one, since linux keys an IPv4 address by its length as well
+// a new address within the subnet goes on as a secondary, which the tun promotes once the primary comes off
+// an IPv6 address given another length is replaced in place, since linux keys it by address alone
 // the pass after the reload then moves only what the reload changed
 func TestNetlinkReloadRenumberingTheOnlyAddressKeepsAnotherWritersRoutes(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
 	first, second := prefix("10.99.0.1/32"), prefix("10.99.0.2/32")
+	subnet, renumbered := prefix("10.99.0.1/24"), prefix("10.99.0.2/24")
+	host6, subnet6 := prefix("3fff:a::1/128"), prefix("3fff:a::1/64")
 	for name, renumber := range map[string]struct {
 		start, next    Table
+		want           netip.Prefix
 		added, removed string
+		// promote_secondaries is off on the tun before the reconciler starts
+		noPromotion bool
 	}{
-		"no preferred source": {Table{Addresses: prefixes(first)}, Table{Addresses: prefixes(second)}, "0", "0"},
+		"no preferred source": {Table{Addresses: prefixes(first)}, Table{Addresses: prefixes(second)}, second, "0", "0", false},
 		"the preferred source moving": {
 			Table{Addresses: prefixes(first), PrefSrc4: schema.AddrFrom(first.Addr())},
-			Table{Addresses: prefixes(second), PrefSrc4: schema.AddrFrom(second.Addr())}, "1", "1"},
+			Table{Addresses: prefixes(second), PrefSrc4: schema.AddrFrom(second.Addr())}, second, "1", "1", false},
+		"another prefix length": {Table{Addresses: prefixes(first)}, Table{Addresses: prefixes(subnet)}, subnet, "0", "0", false},
+		"within the subnet with promote_secondaries off": {
+			Table{Addresses: prefixes(subnet)}, Table{Addresses: prefixes(renumbered)}, renumbered, "0", "0", true},
+		"another IPv6 prefix length": {Table{Addresses: prefixes(host6)}, Table{Addresses: prefixes(subnet6)}, subnet6, "0", "0", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			enterThrowawayNamespace(t)
@@ -368,8 +380,18 @@ func TestNetlinkReloadRenumberingTheOnlyAddressKeepsAnotherWritersRoutes(t *test
 				t.Fatal(err)
 			}
 			setLinkFlags(t, conn, tun.index, unix.IFF_UP)
+			if renumber.noPromotion {
+				if err := os.WriteFile("/proc/sys/net/ipv4/conf/"+device+"/promote_secondaries", []byte("0"), 0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			meshRoute, foreign := prefix("10.0.0.0/8"), []Route{{Destination: prefix("192.0.2.0/24")}, {Destination: prefix("198.51.100.0/24")}}
+			if renumber.want.Addr().Is6() {
+				// linux gives an IPv6 route without a metric 1024
+				meshRoute, foreign = prefix("3fff:b::/48"), []Route{{Destination: prefix("2001:db8:1::/48"), Metric: 1024}, {Destination: prefix("2001:db8:2::/48"), Metric: 1024}}
+			}
 			mesh := netstack.NewRouteTable()
-			mesh.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
+			mesh.Set(netip.Prefix{}, meshRoute, nil)
 			bus := events.New()
 			r, err := New(renumber.start, Runtime{Interface: device, Events: bus}, mesh)
 			if err != nil {
@@ -384,8 +406,8 @@ func TestNetlinkReloadRenumberingTheOnlyAddressKeepsAnotherWritersRoutes(t *test
 				writer *netlinkPlatform
 				route  Route
 			}{
-				{&netlinkPlatform{table: Table{ID: DefaultTable, Proto: 99}, rt: r.rt, index: tun.index, conn: conn}, Route{Destination: prefix("192.0.2.0/24")}},
-				{&netlinkPlatform{table: Table{ID: schema.TableMain, Proto: protocolStatic}, rt: r.rt, index: tun.index, conn: conn}, Route{Destination: prefix("198.51.100.0/24")}},
+				{&netlinkPlatform{table: Table{ID: DefaultTable, Proto: 99}, rt: r.rt, index: tun.index, conn: conn}, foreign[0]},
+				{&netlinkPlatform{table: Table{ID: schema.TableMain, Proto: protocolStatic}, rt: r.rt, index: tun.index, conn: conn}, foreign[1]},
 			}
 			for _, other := range others {
 				if err := other.writer.AddRoute(other.route); err != nil {
@@ -403,8 +425,10 @@ func TestNetlinkReloadRenumberingTheOnlyAddressKeepsAnotherWritersRoutes(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := slices.DeleteFunc(assigned, func(p netip.Prefix) bool { return !p.Addr().Is4() }); !slices.Equal(got, []netip.Prefix{second}) {
-				t.Errorf("the tun carries %v after the reload, want %s", got, second)
+			if got := slices.DeleteFunc(assigned, func(p netip.Prefix) bool {
+				return p.Addr().Is4() != renumber.want.Addr().Is4() || p.Addr().IsLinkLocalUnicast()
+			}); !slices.Equal(got, []netip.Prefix{renumber.want}) {
+				t.Errorf("the tun carries %v after the reload, want %s", got, renumber.want)
 			}
 			passes := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "kernel.pass" }, 0)
 			if len(passes) == 0 {
