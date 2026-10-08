@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -67,6 +68,77 @@ func TestTUNSteersAReadAsLargeAsTheDevice(t *testing.T) {
 	if counters := m.SegmentCounters(); counters.Steered != 1 || counters.Unsteered != 0 {
 		t.Errorf("the mesh counts %d packets steered and %d it could not steer, want one steered", counters.Steered, counters.Unsteered)
 	}
+}
+
+// a reload moves the tun's MTU down and back up within the read buffers the mesh opened with, read back from the kernel each time
+// a datagram as large as the raised MTU allows then crosses the tun whole to the peer its route names
+// a mesh opened at the default refuses a move past its buffers, which wireguard-go copies every read into
+func TestTUNTakesAnMTUSetAfterOpening(t *testing.T) {
+	const jumbo = 9000
+	t.Run("opened at 9000", func(t *testing.T) {
+		enterEmptyNamespace(t)
+		m, err := NewNamed(jumbo, jumbo, "mtutest0")
+		if err != nil {
+			t.Fatalf("open the mesh: %v", err)
+		}
+		t.Cleanup(m.Close)
+		if got := linkMTU(t, m.Name); got != jumbo {
+			t.Fatalf("the kernel holds %d for %s opened at %d", got, m.Name, jumbo)
+		}
+		for _, mtu := range []int{DefaultMTU, jumbo} {
+			if err := m.CheckMTU(mtu); err != nil {
+				t.Fatalf("a move to %d on a mesh opened at %d was refused: %v", mtu, jumbo, err)
+			}
+			if err := m.SetMTU(mtu, nil); err != nil {
+				t.Fatalf("set the mtu to %d: %v", mtu, err)
+			}
+			if got := linkMTU(t, m.Name); got != mtu {
+				t.Fatalf("the kernel holds %d for %s after it was set to %d", got, m.Name, mtu)
+			}
+		}
+
+		sent := &recordingPeer{}
+		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(tunPeer, 32), sent.peer("peer"))
+		assignPeer(t, m.Name, tunAddress, tunPeer)
+		payload := bytes.Repeat([]byte("eight kib"), 1024)[:8<<10]
+		sendUDP(t, tunPeer, payload)
+		waitUntil(t, "the datagram to reach the peer", func() bool { return len(sent.packets()) > 0 })
+		packet := sent.packets()[0]
+		if len(packet) != 20+8+len(payload) || !bytes.Equal(packet[20+8:], payload) {
+			t.Fatalf("the peer was sent %d bytes, want the %d byte datagram whole", len(packet), 20+8+len(payload))
+		}
+	})
+	t.Run("opened at the default", func(t *testing.T) {
+		enterEmptyNamespace(t)
+		m, err := NewNamed(0, 0, "mtutest0")
+		if err != nil {
+			t.Fatalf("open the mesh: %v", err)
+		}
+		t.Cleanup(m.Close)
+		err = m.CheckMTU(jumbo)
+		if err == nil {
+			t.Fatalf("a move to %d on a mesh whose read buffers hold %d was taken", jumbo, outboundPacketBufferSize)
+		}
+		for _, want := range []string{"9000", "2048", "restart to apply"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal reads %q, which does not say %s", err, want)
+			}
+		}
+		if got := linkMTU(t, m.Name); got != DefaultMTU {
+			t.Errorf("the kernel holds %d for %s, want the %d it opened at", got, m.Name, DefaultMTU)
+		}
+	})
+}
+
+// linkMTU is the MTU the kernel holds for the link name
+// read through the standard library rather than through the code under test
+func linkMTU(t *testing.T, name string) int {
+	t.Helper()
+	link, err := net.InterfaceByName(name)
+	if err != nil {
+		t.Fatalf("look up %s: %v", name, err)
+	}
+	return link.MTU
 }
 
 // assignPeer gives the point-to-point link name the address local and the far end peer

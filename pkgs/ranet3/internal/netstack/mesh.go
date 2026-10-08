@@ -31,6 +31,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/internal/packet"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 var (
@@ -66,6 +67,10 @@ type Mesh struct {
 	outboundReaderWG   sync.WaitGroup
 	outboundWorkerWG   sync.WaitGroup
 	writerWG           sync.WaitGroup
+
+	// setMTU sets the MTU of the device named name, nil for a mesh with no device
+	// a field so a test can record when it runs against the steering table in force
+	setMTU func(name string, mtu int) error
 
 	// tunReadsTruncated counts the reads that lost the tail of a GSO frame
 	tunReadsTruncated atomic.Uint64
@@ -106,8 +111,10 @@ type inboundWriteBatch struct {
 // TUN needs root on every platform, and babel intercepts its own traffic
 // before delivery, so a mesh that never carries a data packet does not need
 // one. Delivering one to it is a no-op.
+// CheckMTU takes what it takes on a mesh opened at DefaultMTU
+// SetMTU installs the steering and sets no MTU
 func NewRoutesOnly() *Mesh {
-	return &Mesh{Routes: NewRouteTable(), closed: make(chan struct{})}
+	return &Mesh{Routes: NewRouteTable(), outboundBufferSize: tunOffset + outboundPacketBufferSize, closed: make(chan struct{})}
 }
 
 // NewNamed attaches to or creates name through wireguard-go's TUN backend.
@@ -150,6 +157,7 @@ func NewNamed(mtu, largest int, name string) (*Mesh, error) {
 		Routes:             NewRouteTable(),
 		Name:               actualName,
 		devs:               devs,
+		setMTU:             setTUNMTU,
 		outboundBufferSize: tunOffset + max(mtu, largest, outboundPacketBufferSize),
 		closed:             make(chan struct{}),
 	}
@@ -162,10 +170,10 @@ func NewNamed(mtu, largest int, name string) (*Mesh, error) {
 // QueueCount reports the number of independent TUN I/O lanes.
 func (m *Mesh) QueueCount() int { return len(m.devs) }
 
-// MTU is the device's own, asked of the kernel rather than reported from the
-// value NewNamed was given: attaching to a device somebody else created takes
-// whatever MTU that device already has. Zero means the device could not
-// answer, which is a device on its way out.
+// MTU is the device's own, asked of the kernel each time
+// NewNamed sets it on a device it attaches to as on one it creates, and SetMTU on a reload
+// anything else on the host may change it after, which this reports as it finds it
+// zero means the device could not answer, which is a device on its way out
 func (m *Mesh) MTU() int {
 	if len(m.devs) == 0 {
 		return 0
@@ -175,6 +183,45 @@ func (m *Mesh) MTU() int {
 		return 0
 	}
 	return mtu
+}
+
+// CheckMTU refuses a move of the tun's MTU this mesh cannot take without a restart
+// largest is link.mtu after the move, the largest packet a session carries, which a steering header grows a read off the tun to in place
+// each outbound read buffer has to hold it, and NewNamed sized them once
+func (m *Mesh) CheckMTU(largest int) error {
+	if !tunMTUSettable {
+		return errors.New("netstack: this platform sets the tun mtu only when the mesh opens it, restart to apply")
+	}
+	if capacity := m.outboundBufferSize - tunOffset; largest > capacity {
+		return fmt.Errorf("netstack: a %d byte packet needs a tun read buffer of that size and this mesh opened its buffers at %d bytes, restart to apply", largest, capacity)
+	}
+	return nil
+}
+
+// SetMTU sets the device's MTU to mtu and installs steering, the table the device runs under
+// a longer list than the one in force goes in after the device comes down for it
+// a shorter one goes in before the device goes up
+// so no read off the tun, with the steering header in force on it, outgrows the larger of the two link MTUs at any moment
+// CheckMTU has to have taken the largest packet beside mtu
+func (m *Mesh) SetMTU(mtu int, steering *srv6.SteerTable) error {
+	set := func() error {
+		if m.setMTU == nil {
+			return nil
+		}
+		if err := m.setMTU(m.Name, mtu); err != nil {
+			return fmt.Errorf("netstack: set the mtu of %s to %d: %w", m.Name, mtu, err)
+		}
+		return nil
+	}
+	if steering.Overhead() > m.Steering().Overhead() {
+		if err := set(); err != nil {
+			return err
+		}
+		m.SetSteering(steering)
+		return nil
+	}
+	m.SetSteering(steering)
+	return set()
 }
 
 func (m *Mesh) startOutboundPipeline() {
