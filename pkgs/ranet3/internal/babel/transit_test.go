@@ -28,18 +28,19 @@ type meshFabric struct {
 	handles  map[string]*PeerHandle
 	sentMu   sync.Mutex
 	sent     map[string][]RawTLV
-	// packets sent and not yet delivered, so a reply never goes out from inside the delivery that caused it
-	held []heldPacket
+	// links in the order they were made, each direction apart, so a pass over them is the same in every run
+	links []*fabricLink
 	// routes is the cap.route capability every node in the fabric runs, which
 	// decides whether they relay each other's prefixes.
 	routes Routes
 }
 
-type heldPacket struct {
-	speaker *Speaker
-	peer    *netstack.Peer
-	mesh    *netstack.Mesh
-	raw     []byte
+// fabricLink is one direction of a link
+type fabricLink struct {
+	// peer holds the packets its sender handed over until deliver takes them
+	peer *testPeer
+	// receive hands one packet to the far end
+	receive func(raw []byte)
 }
 
 // newMeshFabric builds the topology described by links of the form "a-b".
@@ -88,26 +89,36 @@ func (f *meshFabric) node(cfg Config, name string) *Speaker {
 
 func (f *meshFabric) connect(cfg Config, x, y string) {
 	speakerX, speakerY := f.node(cfg, x), f.node(cfg, y)
-	var peerXforY, peerYforX *netstack.Peer
-	hold := func(from, to string, speaker *Speaker, peer **netstack.Peer, mesh *netstack.Mesh) func([]byte) error {
-		return func(raw []byte) error {
-			f.record(from, to, raw)
-			f.sentMu.Lock()
-			defer f.sentMu.Unlock()
-			f.held = append(f.held, heldPacket{speaker, *peer, mesh, slices.Clone(raw)})
-			return nil
+	var xToY, yToX *fabricLink
+	link := func(from, to string, speaker *Speaker, back **fabricLink, mesh *netstack.Mesh) *fabricLink {
+		l := &fabricLink{}
+		l.peer = newHeldPeer(f.t, to, func(raw []byte) { f.record(from, to, raw) })
+		l.receive = func(raw []byte) {
+			if !speaker.Receive((*back).peer.Peer, raw) {
+				mesh.DeliverInbound(raw, (*back).peer.MTU())
+			}
 		}
+		return l
 	}
-	peerYforX = netstack.NewPeer(y, plainEncrypt, hold(x, y, speakerY, &peerXforY, f.meshes[y]))
-	peerXforY = netstack.NewPeer(x, plainEncrypt, hold(y, x, speakerX, &peerYforX, f.meshes[x]))
-	f.handles[x+"-"+y] = speakerX.AddPeer(peerYforX)
-	f.handles[y+"-"+x] = speakerY.AddPeer(peerXforY)
+	xToY = link(x, y, speakerY, &yToX, f.meshes[y])
+	yToX = link(y, x, speakerX, &xToY, f.meshes[x])
+	f.links = append(f.links, xToY, yToX)
+	f.handles[x+"-"+y] = speakerX.AddPeer(xToY.peer.Peer)
+	f.handles[y+"-"+x] = speakerY.AddPeer(yToX.peer.Peer)
 	makeNeighborReachable(f.neighbor(x, y))
 	makeNeighborReachable(f.neighbor(y, x))
 }
 
-// record, reset and tlvs take sentMu because a test that runs a real
-// Speaker.Run records from that goroutine while the test body reads.
+// settle returns once every link has handed over what was reserved on it before the call
+func (f *meshFabric) settle() {
+	f.t.Helper()
+	for _, l := range f.links {
+		l.peer.settle(f.t)
+	}
+}
+
+// record, reset and tlvs take sentMu because every link's sender records from
+// its own goroutine while the test body reads.
 func (f *meshFabric) record(from, to string, raw []byte) {
 	tlvs, err := DecodePacket(raw[ipv6HeaderLen+udpHeaderLen:])
 	if err != nil {
@@ -145,28 +156,38 @@ func (f *meshFabric) flush(nodes ...string) {
 }
 
 func (f *meshFabric) deliver() {
+	f.t.Helper()
 	for {
-		f.sentMu.Lock()
-		if len(f.held) == 0 {
-			f.sentMu.Unlock()
+		f.settle()
+		type heldPacket struct {
+			link *fabricLink
+			raw  []byte
+		}
+		// every held packet is taken before any is delivered, so a reply never goes out from inside the delivery that caused it
+		var due []heldPacket
+		for _, l := range f.links {
+			for raw := l.peer.take(); raw != nil; raw = l.peer.take() {
+				due = append(due, heldPacket{l, raw})
+			}
+		}
+		if len(due) == 0 {
 			return
 		}
-		packet := f.held[0]
-		f.held = f.held[1:]
-		f.sentMu.Unlock()
-		if !packet.speaker.Receive(packet.peer, packet.raw) {
-			packet.mesh.DeliverInbound(packet.raw, packet.peer.MTU())
+		for _, packet := range due {
+			packet.link.receive(packet.raw)
 		}
 	}
 }
 
 func (f *meshFabric) reset() {
+	f.settle()
 	f.sentMu.Lock()
 	defer f.sentMu.Unlock()
 	clear(f.sent)
 }
 
 func (f *meshFabric) tlvs(from, to string) []RawTLV {
+	f.settle()
 	f.sentMu.Lock()
 	defer f.sentMu.Unlock()
 	return slices.Clone(f.sent[from+">"+to])
@@ -525,7 +546,7 @@ func TestSourceTableGarbageCollection(t *testing.T) {
 	// worsened unreachable for the life of the process: the route stays
 	// unfeasible, so it stays referenced, so the distance that refuses it is
 	// never collected.
-	n := &neighborState{peer: netstack.NewPeer("peer", nil, nil)}
+	n := &neighborState{peer: &netstack.Peer{ID: "peer"}}
 	makeNeighborReachable(n)
 	rt.update(n, key, advertisement{routerID: adv.routerID, seqno: 2, metric: 1}, time.Hour, now)
 	rt.sweepSources(now.Add(2 * sourceGCTime))

@@ -17,7 +17,7 @@ func BenchmarkReceiveData(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	peer := netstack.NewPeer("peer", nil, nil)
+	peer := &netstack.Peer{ID: "peer"}
 	s.AddPeer(peer)
 	for _, protocol := range []byte{6, 17} {
 		name := "TCP"

@@ -142,8 +142,10 @@ type starveRetry struct {
 }
 
 // Speaker.mu serializes all protocol state and forwarding-table changes.
-// Packet transmission always happens after unlocking: a slow peer cannot
-// prevent a route retraction, and in-memory transports may re-enter Receive.
+// Places in a peer's order are taken under it, and their packets are sealed
+// by Send after unlocking, so no seal runs under the lock every neighbor's
+// receive path takes. The one Send under it is ReserveRawOrDrop's own, for a
+// place whose sequence range the SA refused, which carries nothing to seal.
 type Speaker struct {
 	// the intervals and the cost as resolved, defaults filled in, which SetConfig replaces under s.mu
 	// hello is also written under lostMu, which noteLost reads it under

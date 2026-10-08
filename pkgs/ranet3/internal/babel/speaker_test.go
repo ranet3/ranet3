@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -48,27 +49,20 @@ func wireSpeakerPair(t *testing.T, cfg Config) (meshA, meshB *netstack.Mesh, spe
 
 	// Crypto and transport are tested separately. This pair only exercises
 	// Babel and mesh delivery.
-	var peerAForB, peerBForA *netstack.Peer
+	var peerAForB, peerBForA *testPeer
 	// a sender per direction, so a reply sent inside a delivery does not wait on the peer that is delivering it
-	peerBForA = netstack.NewPeerReserved("b", plainSealer, func(sealed [][]byte) error {
-		for _, raw := range sealed {
-			if !speakerB.Receive(peerAForB, raw) {
-				meshB.DeliverInbound(raw, peerAForB.MTU())
-			}
+	peerBForA = newTestPeer(t, "b", func(raw []byte) {
+		if !speakerB.Receive(peerAForB.Peer, raw) {
+			meshB.DeliverInbound(raw, peerAForB.MTU())
 		}
-		return nil
-	}, nil)
-	peerAForB = netstack.NewPeerReserved("a", plainSealer, func(sealed [][]byte) error {
-		for _, raw := range sealed {
-			if !speakerA.Receive(peerBForA, raw) {
-				meshA.DeliverInbound(raw, peerBForA.MTU())
-			}
+	})
+	peerAForB = newTestPeer(t, "a", func(raw []byte) {
+		if !speakerA.Receive(peerBForA.Peer, raw) {
+			meshA.DeliverInbound(raw, peerBForA.MTU())
 		}
-		return nil
-	}, nil)
-	t.Cleanup(func() { peerAForB.Close(); peerBForA.Close() })
-	speakerA.AddPeer(peerBForA)
-	speakerB.AddPeer(peerAForB)
+	})
+	speakerA.AddPeer(peerBForA.Peer)
+	speakerB.AddPeer(peerAForB.Peer)
 	return meshA, meshB, speakerA, speakerB
 }
 
@@ -78,7 +72,98 @@ func plainSealer(int) (netstack.BatchSealer, error) {
 	}, nil
 }
 
-func plainEncrypt(raw []byte, _ byte) ([]byte, error) { return raw, nil }
+// settleTimeout bounds how long settle waits for a peer's sender to reach the barrier
+const settleTimeout = 5 * time.Second
+
+// testPeer is a peer whose sender hands each packet it transmits to deliver,
+// nil dropping it, and a held one also keeps each packet until take takes it
+type testPeer struct {
+	*netstack.Peer
+	// settleMu keeps one barrier in flight, so each settle waits for its own
+	settleMu sync.Mutex
+	settled  chan struct{}
+	// mu guards held, which the sender appends to
+	mu   sync.Mutex
+	held [][]byte
+}
+
+func newTestPeer(t tester, id string, deliver func(raw []byte)) *testPeer {
+	p := &testPeer{settled: make(chan struct{}, 1)}
+	p.Peer = netstack.NewPeerReserved(id, plainSealer, func(sealed [][]byte) error {
+		for _, raw := range sealed {
+			switch {
+			case len(raw) == 0:
+				p.settled <- struct{}{}
+			case deliver != nil:
+				deliver(raw)
+			}
+		}
+		return nil
+	}, nil)
+	t.Cleanup(p.Close)
+	return p
+}
+
+// newHeldPeer is a testPeer that also keeps every packet its sender hands over
+func newHeldPeer(t tester, id string, deliver func(raw []byte)) *testPeer {
+	var p *testPeer
+	p = newTestPeer(t, id, func(raw []byte) {
+		p.mu.Lock()
+		p.held = append(p.held, slices.Clone(raw))
+		p.mu.Unlock()
+		if deliver != nil {
+			deliver(raw)
+		}
+	})
+	return p
+}
+
+// sent is every packet the peer holds, once its sender has handed over everything reserved before the call
+func (p *testPeer) sent(t tester) [][]byte {
+	t.Helper()
+	p.settle(t)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.held)
+}
+
+// take removes the first packet the peer holds and returns it, nil when it holds none
+// a caller settles first for the packets reserved before it
+func (p *testPeer) take() []byte {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.held) == 0 {
+		return nil
+	}
+	raw := p.held[0]
+	p.held = p.held[1:]
+	return raw
+}
+
+// settle returns once the sender has handed over every packet reserved before it
+// the empty packet it sends takes the next place in the peer's order, which the sender keeps
+// a control budget full of earlier places makes room as the sender hands them over
+func (p *testPeer) settle(t tester) {
+	t.Helper()
+	p.settleMu.Lock()
+	defer p.settleMu.Unlock()
+	place, err := p.ReserveRawOrDrop(nil, 0)
+	for deadline := time.Now().Add(settleTimeout); errors.Is(err, netstack.ErrSendQueueFull) && time.Now().Before(deadline); {
+		runtime.Gosched()
+		place, err = p.ReserveRawOrDrop(nil, 0)
+	}
+	if err != nil {
+		t.Fatalf("peer %s refused the barrier: %v", p.ID, err)
+	}
+	if err := place.Send(); err != nil {
+		t.Fatalf("peer %s did not queue the barrier: %v", p.ID, err)
+	}
+	select {
+	case <-p.settled:
+	case <-time.After(settleTimeout):
+		t.Fatalf("peer %s did not reach the barrier within %s", p.ID, settleTimeout)
+	}
+}
 
 func TestSpeakerLearnsRouteAndRTT(t *testing.T) {
 	fast := Config{Hello: dur(50 * time.Millisecond), Update: dur(100 * time.Millisecond)}
@@ -288,7 +373,7 @@ func TestPeerHandleRemovesExactNeighborAndRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer := netstack.NewPeer("peer", nil, nil)
+	peer := &netstack.Peer{ID: "peer"}
 	handle := speaker.AddPeer(peer)
 	n := speaker.neighbors[peer.ID]
 	dest := netip.MustParsePrefix("10.88.0.0/16")
@@ -305,7 +390,7 @@ func TestPeerHandleRemovesExactNeighborAndRoutes(t *testing.T) {
 		t.Fatal("closed peer route remains installed")
 	}
 
-	newPeer := netstack.NewPeer("peer", nil, nil)
+	newPeer := &netstack.Peer{ID: "peer"}
 	newHandle := speaker.AddPeer(newPeer)
 	defer newHandle.Close()
 	handle.Close()
@@ -320,7 +405,7 @@ func TestWildcardUpdateRetractsEveryRouteFromNeighbor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer := netstack.NewPeer("peer", nil, nil)
+	peer := &netstack.Peer{ID: "peer"}
 	handle := speaker.AddPeer(peer)
 	defer handle.Close()
 	neighbor := speaker.neighbors[peer.ID]
@@ -347,11 +432,8 @@ func TestAcknowledgmentUsesUnicastDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	var sent []byte
-	peer := netstack.NewPeer("peer", plainEncrypt, func(raw []byte) error {
-		sent = append([]byte(nil), raw...)
-		return nil
-	})
-	handle := speaker.AddPeer(peer)
+	peer := newTestPeer(t, "peer", func(raw []byte) { sent = append([]byte(nil), raw...) })
+	handle := speaker.AddPeer(peer.Peer)
 	defer handle.Close()
 	neighbor := speaker.neighbors[peer.ID]
 	destination := netip.MustParseAddr("fe80::2")
@@ -359,6 +441,7 @@ func TestAcknowledgmentUsesUnicastDestination(t *testing.T) {
 	if reserved := speaker.reserveTo(neighbor, destination, []RawTLV{EncodeAck(1)}); reserved != nil {
 		reserved.Send()
 	}
+	peer.settle(t)
 	got, ok := netip.AddrFromSlice(sent[24:40])
 	if !ok || got != destination {
 		t.Fatalf("Ack destination = %v, want %v", got, destination)
@@ -371,7 +454,7 @@ func dur(d time.Duration) schema.Duration { return schema.Duration(d) }
 // captureSpeaker builds one speaker over a recording peer. The runtime is
 // optional, since most tests care about the capability alone and let the
 // router id and the packet size be resolved for them.
-func captureSpeaker(t *testing.T, cfg Config, runtime ...Runtime) (*Speaker, *neighborState, *[][]byte) {
+func captureSpeaker(t *testing.T, cfg Config, runtime ...Runtime) (*Speaker, *neighborState, *capture) {
 	t.Helper()
 	var rt Runtime
 	if len(runtime) == 1 {
@@ -382,15 +465,32 @@ func captureSpeaker(t *testing.T, cfg Config, runtime ...Runtime) (*Speaker, *ne
 	if err != nil {
 		t.Fatal(err)
 	}
-	packets := new([][]byte)
-	peer := netstack.NewPeer("peer", plainEncrypt, func(raw []byte) error {
-		*packets = append(*packets, append([]byte(nil), raw...))
-		return nil
-	})
-	speaker.AddPeer(peer)
-	neighbor := speaker.neighbors[peer.ID]
+	c := &capture{t: t, peer: newHeldPeer(t, "peer", nil)}
+	speaker.AddPeer(c.peer.Peer)
+	neighbor := speaker.neighbors[c.peer.ID]
 	neighbor.addr = netip.MustParseAddr("fe80::2")
-	return speaker, neighbor, packets
+	return speaker, neighbor, c
+}
+
+// capture reads what captureSpeaker's peer transmitted
+type capture struct {
+	t    *testing.T
+	peer *testPeer
+}
+
+// sent is every packet transmitted since the last reset, once the peer has
+// transmitted everything reserved before the call
+func (c *capture) sent() [][]byte {
+	c.t.Helper()
+	return c.peer.sent(c.t)
+}
+
+// reset forgets every packet reserved before the call
+func (c *capture) reset() {
+	c.t.Helper()
+	c.peer.settle(c.t)
+	for c.peer.take() != nil {
+	}
 }
 
 func TestUnscheduledAndUnicastHelloState(t *testing.T) {
@@ -441,32 +541,34 @@ func TestOriginRequestsAndUpdateSplitting(t *testing.T) {
 	// A third, because every Update in this dump carries the same origin and
 	// only the first spells its id out: two of them now fit in one packet.
 	speaker.Originate(netip.MustParsePrefix("2001:db8::2/128"))
-	*packets = nil
+	packets.reset()
 	speaker.flushUpdates()
-	if len(*packets) < 2 {
-		t.Fatalf("oversized update dump used %d packet(s), want multiple", len(*packets))
+	dump := packets.sent()
+	if len(dump) < 2 {
+		t.Fatalf("oversized update dump used %d packet(s), want multiple", len(dump))
 	}
-	for _, packet := range *packets {
+	for _, packet := range dump {
 		if got := len(packet) - ipv6HeaderLen - udpHeaderLen; got > speaker.packetSize {
 			t.Fatalf("Babel packet is %d bytes, limit %d", got, speaker.packetSize)
 		}
 	}
 
-	*packets = nil
+	packets.reset()
 	speaker.handlePacket(neighbor, EncodePacket([]RawTLV{EncodeSeqnoRequest(SeqnoRequest{
 		AE: AEIPv4, Prefix: first, Seqno: 9, HopCount: 64, RouterID: routerID,
 	})}))
-	if len(*packets) != 1 || speaker.originSeqno != 2 {
-		t.Fatalf("Seqno Request produced %d replies and seqno %d", len(*packets), speaker.originSeqno)
+	if replies := packets.sent(); len(replies) != 1 || speaker.originSeqno != 2 {
+		t.Fatalf("Seqno Request produced %d replies and seqno %d", len(replies), speaker.originSeqno)
 	}
 
-	*packets = nil
+	packets.reset()
 	missing := netip.MustParsePrefix("10.0.0.9/32")
 	speaker.handlePacket(neighbor, EncodePacket([]RawTLV{EncodeRouteRequest(RouteRequest{AE: AEIPv4, Prefix: missing})}))
-	if len(*packets) != 1 {
-		t.Fatalf("missing Route Request produced %d replies", len(*packets))
+	replies := packets.sent()
+	if len(replies) != 1 {
+		t.Fatalf("missing Route Request produced %d replies", len(replies))
 	}
-	payload := (*packets)[0][ipv6HeaderLen+udpHeaderLen:]
+	payload := replies[0][ipv6HeaderLen+udpHeaderLen:]
 	tlvs, err := DecodePacket(payload)
 	if err != nil {
 		t.Fatal(err)
@@ -722,11 +824,11 @@ func TestUnscheduledHelloDoesNotFlapANeighbor(t *testing.T) {
 }
 
 // Two goroutines emit: Run, and Receive on the sending peer's own decrypt
-// path. Both decide under s.mu and both have to send after releasing it,
-// because an in-memory transport delivers inline and would otherwise re-enter
-// Receive. Whichever reaches the peer first would then win, so a retraction
-// decided before the update that replaces it can reach the neighbor after it,
-// and the neighbor holds the wrong answer until the next periodic dump.
+// path. Both decide under s.mu and both send after releasing it, which keeps
+// the seal each send runs outside the lock. Whichever reaches the peer first
+// would then win, so a retraction decided before the update that replaces it
+// can reach the neighbor after it, and the neighbor holds the wrong answer
+// until the next periodic dump.
 func TestEmittersCannotInvertWhatTheyDecided(t *testing.T) {
 	speaker, err := New(Config{}, Routes{}, Runtime{}, &netstack.Mesh{Routes: netstack.NewRouteTable()})
 	if err != nil {
@@ -1470,9 +1572,8 @@ func TestOneJammedNeighborDoesNotRepeatTheUpdateToTheRest(t *testing.T) {
 	}
 
 	var healthy atomic.Int64
-	peer := netstack.NewPeer("healthy", plainEncrypt,
-		func([]byte) error { healthy.Add(1); return nil })
-	handle := speaker.AddPeer(peer)
+	peer := newTestPeer(t, "healthy", func([]byte) { healthy.Add(1) })
+	handle := speaker.AddPeer(peer.Peer)
 	defer handle.Close()
 	makeNeighborReachable(speaker.neighbors[peer.ID])
 
@@ -1491,6 +1592,7 @@ func TestOneJammedNeighborDoesNotRepeatTheUpdateToTheRest(t *testing.T) {
 		speaker.mu.Unlock()
 		send()
 	}
+	peer.settle(t)
 	if got := healthy.Load(); got > 2 {
 		t.Errorf("the healthy neighbor was sent %d copies of one triggered update across %d passes", got, passes)
 	}
@@ -1752,10 +1854,11 @@ func TestRepeatedRouterIDIsSentOncePerPacket(t *testing.T) {
 	send := speaker.emitLocked([]sendAction{{neighbor: neighbor, dest: neighbor.addr, priority: priorityDump, tlvs: tlvs}})
 	speaker.mu.Unlock()
 	send()
-	if len(*packets) != 1 {
-		t.Fatalf("the batch left as %d packets", len(*packets))
+	out := packets.sent()
+	if len(out) != 1 {
+		t.Fatalf("the batch left as %d packets", len(out))
 	}
-	sent, err := DecodePacket((*packets)[0][ipv6HeaderLen+udpHeaderLen:])
+	sent, err := DecodePacket(out[0][ipv6HeaderLen+udpHeaderLen:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1772,7 +1875,7 @@ func TestRepeatedRouterIDIsSentOncePerPacket(t *testing.T) {
 	// origin on every Update that followed the one it dropped.
 	reader, peer, _ := captureSpeaker(t, Config{})
 	makeNeighborReachable(peer)
-	reader.handlePacket(peer, (*packets)[0][ipv6HeaderLen+udpHeaderLen:])
+	reader.handlePacket(peer, out[0][ipv6HeaderLen+udpHeaderLen:])
 	reader.mu.Lock()
 	defer reader.mu.Unlock()
 	for prefix, want := range map[string][8]byte{
@@ -1803,10 +1906,11 @@ func TestSplitPacketCarriesTheRouterIDAgain(t *testing.T) {
 	send := speaker.emitLocked([]sendAction{{neighbor: neighbor, dest: neighbor.addr, priority: priorityDump, tlvs: tlvs}})
 	speaker.mu.Unlock()
 	send()
-	if len(*packets) < 2 {
-		t.Fatalf("the batch left as %d packets, so nothing was split", len(*packets))
+	out := packets.sent()
+	if len(out) < 2 {
+		t.Fatalf("the batch left as %d packets, so nothing was split", len(out))
 	}
-	for i, raw := range *packets {
+	for i, raw := range out {
 		sent, err := DecodePacket(raw[ipv6HeaderLen+udpHeaderLen:])
 		if err != nil {
 			t.Fatal(err)
@@ -2313,10 +2417,11 @@ func TestSuppressedRouterIDMakesRoomInThePacket(t *testing.T) {
 	send()
 	// Four bytes of header, twelve for the one id and twenty an Update, which
 	// is ninety-six exactly. With the id charged four times it is two packets.
-	if got := len(*packets); got != 1 {
+	out := packets.sent()
+	if got := len(out); got != 1 {
 		t.Errorf("four Updates sharing one id left as %d packets, the shape they have with the id repeated", got)
 	}
-	for _, raw := range *packets {
+	for _, raw := range out {
 		if got := len(raw) - ipv6HeaderLen - udpHeaderLen; got > speaker.packetSize {
 			t.Errorf("a packet came out %d bytes, past the %d configured", got, speaker.packetSize)
 		}
@@ -2436,14 +2541,14 @@ func TestCongestedPeerDoesNotReopenTheWakeThroughARefusedDump(t *testing.T) {
 	}
 	speaker.mu.Unlock()
 
-	before := len(*packets)
+	before := len(packets.sent())
 	for seqno := 9; seqno < 29; seqno++ {
 		speaker.handlePacket(healthy, EncodePacket([]RawTLV{EncodeHello(Hello{Seqno: uint16(seqno), Interval: 400})}))
 	}
 	if len(speaker.changed) != 0 {
 		t.Error("one peer that refused a dump made a refreshing Hello from another wake a full sweep")
 	}
-	if sent := len(*packets) - before; sent != 0 {
+	if sent := len(packets.sent()) - before; sent != 0 {
 		t.Errorf("twenty refreshing Hellos drew %d packets at the healthy neighbor, want none", sent)
 	}
 

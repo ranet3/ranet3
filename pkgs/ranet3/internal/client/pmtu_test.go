@@ -96,7 +96,7 @@ func probingRig(t *testing.T, hub *transport.Hub, to string, timeout time.Durati
 		r.probes.Add(1)
 		return probe(r, size, nonce)
 	}, r.bus, &r.totals, r.steering.Load, timeout, confirmInterval)
-	r.driver.peer = netstack.NewPeer("example/peer/0@0", nil, nil)
+	r.driver.peer = sinkPeer(t, "example/peer/0@0")
 	return r
 }
 
@@ -545,7 +545,7 @@ func TestSessionSetHandsMovesAndAcksToTheirSearch(t *testing.T) {
 	var searches []*pathDriver
 	for _, path := range []string{sessionPath(remote, local), sessionPath(other, local)} {
 		search := newPathDriver(nil, nil, c.events, &c.probes, noSteering, driverProbeTimeout, confirmInterval)
-		search.peer = netstack.NewPeer(path, nil, nil)
+		search.peer = sinkPeer(t, path)
 		c.sessions.live[path] = &liveSession{pmtu: search}
 		searches = append(searches, search)
 	}
@@ -557,7 +557,7 @@ func TestSessionSetHandsMovesAndAcksToTheirSearch(t *testing.T) {
 	if kept.moved.Load() {
 		t.Error("an endpoint change of one session reached the search of another")
 	}
-	c.sessions.probeAcked(netstack.NewPeer(moved.peer.ID, nil, nil), 1)
+	c.sessions.probeAcked(sinkPeer(t, moved.peer.ID), 1)
 	c.sessions.probeAcked(moved.peer, 2)
 	if got := len(moved.acks); got != 1 || <-moved.acks != 2 {
 		t.Errorf("the search took %d Acks, want the one through its own peer alone, 2", got)

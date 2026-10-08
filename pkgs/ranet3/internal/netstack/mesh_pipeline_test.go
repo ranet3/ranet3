@@ -220,15 +220,16 @@ func TestReservedSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
 			return sendErr
 		},
 	}
-	var done []chan error
+	var failures []chan error
 	for i := range 3 {
-		b := &peerBatch{peer: p, ticket: uint64(i), held: 1, done: make(chan error, 1), sealed: [][]byte{{byte(i)}}}
+		failed := make(chan error, 1)
+		b := &peerBatch{peer: p, ticket: uint64(i), held: 1, sealed: [][]byte{{byte(i)}}, onFailure: func(err error) { failed <- err }}
 		if i == 1 {
 			b.sealed, b.err = nil, cryptoErr
 		}
 		p.dataBudget.used.Add(1)
 		p.completed <- b
-		done = append(done, b.done)
+		failures = append(failures, failed)
 	}
 	go p.senderLoop()
 	defer p.Close()
@@ -240,7 +241,7 @@ func TestReservedSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("ready packets were not transmitted")
 	}
-	for i, result := range done {
+	for i, result := range failures {
 		want := sendErr
 		if i == 1 {
 			want = cryptoErr

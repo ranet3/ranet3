@@ -55,8 +55,7 @@ func TestSpeakerRecordsANeighborLeavingWithItsSession(t *testing.T) {
 	speaker, neighbor, _ := captureSpeaker(t, Config{}, Runtime{Events: bus})
 	hello := EncodePacket([]RawTLV{EncodeHello(Hello{Seqno: 1, Interval: 100})})
 	speaker.handlePacket(neighbor, hello)
-	handle := speaker.AddPeer(netstack.NewPeer(neighbor.peer.ID, plainEncrypt,
-		func([]byte) error { return nil }))
+	handle := speaker.AddPeer(newTestPeer(t, neighbor.peer.ID, nil).Peer)
 	replacement := speaker.neighbors[neighbor.peer.ID]
 	replacement.addr = neighbor.addr
 	speaker.handlePacket(replacement, hello)
@@ -77,7 +76,7 @@ func TestSpeakerRecordsANeighborLeavingWithItsSession(t *testing.T) {
 func TestSpeakerRecordsOneDownPerNeighborLost(t *testing.T) {
 	hello := EncodePacket([]RawTLV{EncodeHello(Hello{Seqno: 1, Interval: 100})})
 	newPeer := func() *netstack.Peer {
-		return netstack.NewPeer("other", plainEncrypt, func([]byte) error { return nil })
+		return newTestPeer(t, "other", nil).Peer
 	}
 	for _, test := range []struct {
 		name  string

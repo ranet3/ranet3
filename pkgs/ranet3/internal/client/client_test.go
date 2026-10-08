@@ -1540,6 +1540,15 @@ func babelPacket(tlvs ...babel.RawTLV) []byte {
 	return raw
 }
 
+// sinkPeer is a session whose transport takes every packet and carries none, closed when the test ends
+func sinkPeer(tb testing.TB, id string) *netstack.Peer {
+	peer := netstack.NewPeerReserved(id, func(int) (netstack.BatchSealer, error) {
+		return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) { return append(out[:0], raw...), nil }, nil
+	}, func([][]byte) error { return nil }, nil)
+	tb.Cleanup(peer.Close)
+	return peer
+}
+
 // unclaimedInit is an IKE_SA_INIT request header behind the non-ESP marker, which a hub hands to whoever listens
 func unclaimedInit() []byte {
 	const marker = 4
@@ -1616,8 +1625,7 @@ func TestMetricsLabelsUseOnlyTheEscapesTheFormatDefines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer := netstack.NewPeer("gate\tway", func(raw []byte, _ byte) ([]byte, error) { return raw, nil },
-		func([]byte) error { return nil })
+	peer := &netstack.Peer{ID: "gate\tway"}
 	handle := speaker.AddPeer(peer)
 	defer handle.Close()
 	c := &Client{speaker: speaker, sessions: newSessionSet(), Mesh: mesh}

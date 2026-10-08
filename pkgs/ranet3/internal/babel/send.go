@@ -107,8 +107,8 @@ func takeUndos(rollback []tlvUndo, from, to int) ([]tlvUndo, []tlvUndo) {
 // is released. It must be called with s.mu held.
 //
 // Two goroutines emit: Run, and Receive on the sending peer's own decrypt
-// path. Both decide under this lock and both have to send after releasing it,
-// because an in-memory transport delivers inline and would re-enter Receive.
+// path. Both decide under this lock and both send after releasing it, which
+// keeps the seal each send runs outside the lock.
 // Taking each packet's place in its peer's transmission order here, rather
 // than at send time, stops the second one overtaking the first: a retraction
 // decided before the update that replaces it would otherwise reach the
@@ -156,8 +156,8 @@ func (s *Speaker) emitLocked(actions []sendAction) func() {
 	}
 	return func() {
 		for _, packet := range packets {
-			// Registered before the send, because the sender may finish with
-			// the packet inside Send on a peer that transmits synchronously.
+			// Registered before the send, because the peer's sender may
+			// finish with the packet before Send returns.
 			packet.place.OnFailure(s.noteLost(packet.neighbor, packet.undo))
 			if err := packet.place.Send(); err != nil {
 				slog.Warn("babel send failed", "err", err)

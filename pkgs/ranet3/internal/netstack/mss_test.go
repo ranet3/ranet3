@@ -113,7 +113,7 @@ func TestReaderCountsTheSYNsItClamps(t *testing.T) {
 	const session = 1300
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), outboundBufferSize: tunOffset + session}
 	m.startSegmentReports()
-	peer := (&recordingPeer{}).peer("peer")
+	peer := (&recordingPeer{}).peer(t, "peer")
 	peer.SetMTU(session)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)

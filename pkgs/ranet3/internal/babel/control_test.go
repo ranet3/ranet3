@@ -23,8 +23,8 @@ func routePacket(prefix netip.Prefix, routerID byte, metric, interval uint16) []
 	}))
 }
 
-func addReachablePeer(s *Speaker, id string, cost uint16) *netstack.Peer {
-	p := netstack.NewPeer(id, plainEncrypt, func([]byte) error { return nil })
+func addReachablePeer(t *testing.T, s *Speaker, id string, cost uint16) *netstack.Peer {
+	p := newTestPeer(t, id, nil).Peer
 	s.AddPeer(p)
 	s.Receive(p, buildPacket(netip.MustParseAddr("fe80::2"), multicastGroup, EncodePacket([]RawTLV{
 		EncodeHello(Hello{Seqno: 1, Interval: 1000}), EncodeIHU(IHU{RxCost: cost, Interval: 1000}),
@@ -36,8 +36,8 @@ func TestStubSelectsLowestCostAndReselectsOnWorsening(t *testing.T) {
 	s, _, _ := captureSpeaker(t, Config{})
 	dest := netip.MustParsePrefix("10.5.0.0/16")
 	src := netip.MustParseAddr("192.0.2.1")
-	a := addReachablePeer(s, "a", 100)
-	b := addReachablePeer(s, "b", 10)
+	a := addReachablePeer(t, s, "a", 100)
+	b := addReachablePeer(t, s, "b", 10)
 	s.Receive(a, routePacket(dest, 1, 20, 1000))
 	s.Receive(b, routePacket(dest, 2, 20, 1000))
 	if got, _ := s.mesh.Routes.Lookup(src, dest.Addr()); got != b {
@@ -54,7 +54,7 @@ func TestStubSelectsLowestCostAndReselectsOnWorsening(t *testing.T) {
 
 func TestStubPrefersLocalPrefixAfterRouterIDChanges(t *testing.T) {
 	s, _, _ := captureSpeaker(t, Config{})
-	p := addReachablePeer(s, "remote", 10)
+	p := addReachablePeer(t, s, "remote", 10)
 	dest := netip.MustParsePrefix("10.5.0.0/16")
 	s.Originate(dest)
 	s.Receive(p, routePacket(dest, 99, 10, 1000))
@@ -65,8 +65,8 @@ func TestStubPrefersLocalPrefixAfterRouterIDChanges(t *testing.T) {
 
 func TestReceiveFromReplacedPeerCannotChangeRoutes(t *testing.T) {
 	s, _, _ := captureSpeaker(t, Config{})
-	old := addReachablePeer(s, "remote", 10)
-	addReachablePeer(s, "remote", 10)
+	old := addReachablePeer(t, s, "remote", 10)
+	addReachablePeer(t, s, "remote", 10)
 	dest := netip.MustParsePrefix("10.5.0.0/16")
 	s.Receive(old, routePacket(dest, 99, 10, 1000))
 	if _, ok := s.mesh.Routes.Lookup(netip.MustParseAddr("192.0.2.1"), dest.Addr()); ok {
@@ -78,7 +78,7 @@ func TestExpiryUsesRemoteDeadlines(t *testing.T) {
 	for _, expiry := range []string{"update", "ihu", "hello"} {
 		t.Run(expiry, func(t *testing.T) {
 			s, _, _ := captureSpeaker(t, Config{Hello: dur(time.Second), Update: dur(4 * time.Second)})
-			p := addReachablePeer(s, "remote", 10)
+			p := addReachablePeer(t, s, "remote", 10)
 			dest := netip.MustParsePrefix("10.5.0.0/16")
 			interval := uint16(1000)
 			switch expiry {
@@ -135,7 +135,7 @@ func TestIPv4UpdateWithNoNextHopIsIgnored(t *testing.T) {
 		Seqno: 1, Metric: 20, Interval: 1000})
 
 	s, _, _ := captureSpeaker(t, Config{})
-	a := addReachablePeer(s, "a", 100)
+	a := addReachablePeer(t, s, "a", 100)
 	s.Receive(a, buildPacket(netip.MustParseAddr("fe80::2"), multicastGroup,
 		EncodePacket([]RawTLV{EncodeRouterID([8]byte{1}), plain})))
 	if got, _ := s.mesh.Routes.Lookup(src, dest.Addr()); got != nil {
@@ -192,7 +192,7 @@ func TestZeroIHUIntervalIsIgnoredRatherThanHonored(t *testing.T) {
 	dest := netip.MustParsePrefix("10.5.0.0/16")
 	src := netip.MustParseAddr("192.0.2.1")
 	s, _, _ := captureSpeaker(t, Config{})
-	a := addReachablePeer(s, "a", 100)
+	a := addReachablePeer(t, s, "a", 100)
 	s.Receive(a, buildPacket(netip.MustParseAddr("fe80::2"), multicastGroup, EncodePacket([]RawTLV{
 		EncodeNextHop(net.ParseIP("192.0.2.254")), EncodeRouterID([8]byte{1}),
 		EncodeUpdate(Update{AE: AEIPv4, Plen: dest.Bits(), Prefix: dest.Addr().AsSlice(),
@@ -224,8 +224,8 @@ func TestStatsCountWhatEachNeighborSent(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Originate(netip.MustParsePrefix("10.66.0.5/32"))
-	a := addReachablePeer(s, "a", 100)
-	b := addReachablePeer(s, "b", 10)
+	a := addReachablePeer(t, s, "a", 100)
+	b := addReachablePeer(t, s, "b", 10)
 	// Two prefixes from a, one of which b also has, so the counts differ from
 	// each other and from the selected total.
 	s.Receive(a, routePacket(netip.MustParsePrefix("10.5.0.0/16"), 1, 20, 1000))
@@ -269,7 +269,7 @@ func TestIgnoredNextHopStillSetsTheParserState(t *testing.T) {
 	dest := netip.MustParsePrefix("10.5.0.0/16")
 	src := netip.MustParseAddr("192.0.2.1")
 	s, _, _ := captureSpeaker(t, Config{})
-	a := addReachablePeer(s, "a", 100)
+	a := addReachablePeer(t, s, "a", 100)
 
 	nextHop := EncodeNextHop(net.ParseIP("192.0.2.254"))
 	nextHop.Body = append(append([]byte(nil), nextHop.Body...), 0x80, 0) // unknown, mandatory

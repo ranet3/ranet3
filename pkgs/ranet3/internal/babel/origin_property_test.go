@@ -108,8 +108,10 @@ type originRig struct {
 	ht      *hegel.T
 	disk    *originDisk
 	process *originProcess
-	inUse   map[[8]byte][]uint16
-	done    []string
+	// asker is the session the last start's speaker holds, which the next start closes
+	asker *netstack.Peer
+	inUse map[[8]byte][]uint16
+	done  []string
 }
 
 func (r *originRig) fail(format string, args ...any) {
@@ -144,12 +146,15 @@ func (r *originRig) start() {
 		r.ht.Fatalf("%v", err)
 	}
 	speaker.Originate(originPrefix)
-	asker := netstack.NewPeer("asker", plainEncrypt, func([]byte) error { return nil })
-	speaker.AddPeer(asker)
+	if r.asker != nil {
+		r.asker.Close()
+	}
+	r.asker = netstack.NewPeerReserved("asker", plainSealer, func([][]byte) error { return nil }, nil)
+	speaker.AddPeer(r.asker)
 	if !r.survives(func() { speaker.SetOrigin(from, r.disk.save, "") }) {
 		return
 	}
-	r.process = &originProcess{speaker: speaker, neighbor: speaker.neighbors[asker.ID]}
+	r.process = &originProcess{speaker: speaker, neighbor: speaker.neighbors[r.asker.ID]}
 	origin, seqno := speaker.Origin()
 	if from.RouterID != ([8]byte{}) && origin.RouterID != from.RouterID {
 		r.fail("the start advertises router id %x, and the disk holds %x", origin.RouterID, from.RouterID)
@@ -245,6 +250,7 @@ func TestSeqnoOutlivesEveryStartAndCrash(t *testing.T) {
 			r.disk.saved = &Origin{RouterID: originRouterID, Limit: uint16(hegel.Draw(ht, pbt.Spanning(0, 65535)))}
 		}
 		r.start()
+		defer func() { r.asker.Close() }()
 		for range hegel.Draw(ht, pbt.Spanning(1, originSteps)) {
 			move := hegel.Draw(ht, pbt.Spanning(0, originMoves-1))
 			if r.process == nil {

@@ -42,9 +42,10 @@ func TestReservedPeerKeepsCiphertextUntilSendCompletes(t *testing.T) {
 				return sendErr
 			}, nil)
 			t.Cleanup(func() { once.Do(func() { close(release) }); p.Close() })
+			failures := make(chan error, 2)
 			first := p.reserveBatch(1, 1)
 			first.append([]byte{1}, 0)
-			first.done = make(chan error, 1)
+			first.onFailure = func(err error) { failures <- err }
 			if err := first.enqueue(); err != nil {
 				t.Fatal(err)
 			}
@@ -58,20 +59,31 @@ func TestReservedPeerKeepsCiphertextUntilSendCompletes(t *testing.T) {
 			}
 			second := p.reserveBatch(1, 1)
 			second.append([]byte{2}, 0)
-			second.done = make(chan error, 1)
+			second.onFailure = func(err error) { failures <- err }
 			if err := second.enqueue(); err != nil {
 				t.Fatal(err)
 			}
 			once.Do(func() { close(release) })
-			for _, b := range []*peerBatch{first, second} {
+			waitForBudget(t, p)
+			// both batches are told the transport's error, and neither is told anything when it took them
+			told := 0
+			if sendErr != nil {
+				told = 2
+			}
+			for range told {
 				select {
-				case err := <-b.done:
+				case err := <-failures:
 					if !errors.Is(err, sendErr) {
 						t.Fatalf("send result = %v, want %v", err, sendErr)
 					}
 				case <-time.After(time.Second):
 					t.Fatal("sender did not complete")
 				}
+			}
+			if len(failures) != 0 {
+				t.Fatalf("a batch the transport took was told it failed: %v", <-failures)
+			}
+			for _, b := range []*peerBatch{first, second} {
 				if b.storage != nil || b.sealed != nil {
 					t.Fatal("completed batch retained pooled ciphertext")
 				}
@@ -401,6 +413,23 @@ func TestBatchesStrandedInTheSenderAreCounted(t *testing.T) {
 	}
 }
 
+// failure queues the batch and waits for the error its failure callback is told
+func failure(t *testing.T, b *peerBatch) error {
+	t.Helper()
+	told := make(chan error, 1)
+	b.onFailure = func(err error) { told <- err }
+	if err := b.enqueue(); err != nil {
+		return err
+	}
+	select {
+	case err := <-told:
+		return err
+	case <-time.After(deliveryTimeout):
+		t.Fatal("the sender never told the batch it failed")
+		return nil
+	}
+}
+
 // A batch that could not seal produced nothing for the transport, so its
 // packets are gone whether or not the peer is closing. The sender logged that
 // and counted nothing, which put every packet lost this way outside the one
@@ -421,8 +450,8 @@ func TestSealFailureOnAnOpenPeerIsCounted(t *testing.T) {
 	for range 4 {
 		b.append([]byte{1}, 0)
 	}
-	if err := b.transmit(); !errors.Is(err, sealing) {
-		t.Fatalf("transmit reported %v, want the sealer's own error", err)
+	if err := failure(t, b); !errors.Is(err, sealing) {
+		t.Fatalf("the batch was told %v, want the sealer's own error", err)
 	}
 	if got := peer.Dropped(); got != 4 {
 		t.Errorf("the peer counted %d of the 4 packets that never reached the transport", got)
@@ -447,8 +476,8 @@ func TestTransportFailureIsCountedApartFromARefusal(t *testing.T) {
 	for range 3 {
 		b.append([]byte{1}, 0)
 	}
-	if err := b.transmit(); !errors.Is(err, sending) {
-		t.Fatalf("transmit reported %v, want the transport's own error", err)
+	if err := failure(t, b); !errors.Is(err, sending) {
+		t.Fatalf("the batch was told %v, want the transport's own error", err)
 	}
 	if got := peer.SendFailed(); got != 3 {
 		t.Errorf("the peer counted %d of the 3 packets the transport lost", got)
@@ -567,81 +596,36 @@ func TestNoBatchIsLostBetweenTheStopCheckAndTheQueue(t *testing.T) {
 	}
 }
 
-// A compatibility peer has no sender goroutine, so nothing between the
-// encryptor and the transport counted anything: NewPeer and NewPeerBatched are
-// exported with a Dropped that was structurally zero. A partial failure is the
-// case that shows it, because the batch reports an error for the whole of
-// itself while some of its packets did leave.
-func TestCompatibilityPeerCountsWhatItLoses(t *testing.T) {
-	refused := errors.New("no key")
-	var seen int
-	peer := NewPeerBatched("peer",
-		func(raw []byte, _ byte) ([]byte, error) {
-			seen++
-			if seen == 2 {
-				return nil, refused
-			}
-			return raw, nil
-		},
-		func(sealed [][]byte) error { return nil })
+// a batch the transport took reached the wire, so a peer that closes while the transport holds it tells its caller of no failure
+func TestBatchInTheTransportWhenThePeerClosesIsNotToldItFailed(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	peer := NewPeerReserved("peer",
+		func(int) (BatchSealer, error) { return passThrough, nil },
+		func([][]byte) error {
+			close(entered)
+			<-release
+			return nil
+		}, nil)
 
-	b := peer.reserveBatchNow(3, 3)
+	b := peer.reserveBatchNow(1, 1)
 	if b == nil {
 		t.Fatal("the peer refused a reservation while it was open")
 	}
-	for range 3 {
-		b.append([]byte{1}, 0)
+	b.append([]byte{1}, 0)
+	failed := make(chan error, 1)
+	b.onFailure = func(err error) { failed <- err }
+	if err := b.enqueue(); err != nil {
+		t.Fatalf("an open peer refused the batch: %v", err)
 	}
-	if err := b.transmit(); !errors.Is(err, refused) {
-		t.Fatalf("transmit reported %v, want the encryptor's own error", err)
-	}
-	if got := peer.Dropped(); got != 1 {
-		t.Errorf("the peer counted %d of the one packet that never sealed", got)
-	}
-	if got := peer.SendFailed(); got != 0 {
-		t.Errorf("it counted %d as lost by the transport, which took everything it was given", got)
-	}
-}
 
-// Once the peer is closing, both arms of transmit's select are ready and Go
-// picks uniformly, so a batch the sender had already transmitted was reported
-// as closed about half the time. The sender always answers a batch that
-// carries done, so a finished answer is the one to take.
-func TestTransmitPrefersTheAnswerOverTheStopSignal(t *testing.T) {
-	for range 200 {
-		entered, release := make(chan struct{}), make(chan struct{})
-		var once sync.Once
-		peer := NewPeerReserved("peer",
-			func(int) (BatchSealer, error) { return passThrough, nil },
-			func([][]byte) error {
-				once.Do(func() { close(entered) })
-				<-release
-				return nil
-			}, nil)
-
-		b := peer.reserveBatchNow(1, 1)
-		if b == nil {
-			t.Fatal("the peer refused a reservation while it was open")
-		}
-		b.append([]byte{1}, 0)
-		done := make(chan error, 1)
-		go func() { done <- b.transmit() }()
-
-		// The transport has the batch, so the answer is about to arrive.
-		<-entered
-		// Closed directly rather than through Close, which would wait on the
-		// sender this test has parked inside the transport.
-		close(peer.stop)
-		close(release)
-
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("transmit reported %v for a batch the transport took", err)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatal("transmit never returned")
-		}
-		<-peer.senderDone
+	<-entered
+	// closed directly rather than through Close, which would wait on the sender this test holds inside the transport
+	close(peer.stop)
+	close(release)
+	<-peer.senderDone
+	select {
+	case err := <-failed:
+		t.Fatalf("the batch the transport took was told %v", err)
+	default:
 	}
 }

@@ -34,32 +34,39 @@ func plainV6(src, dst netip.Addr, payload string) []byte {
 	return raw
 }
 
-// recordingPeer collects what the mesh sent through it, sealing inline so a
-// test sees the bytes the caller handed over.
-// headers are the next headers the packets were sealed under, in the same order
+// recordingPeer collects what the mesh sent through one peer, sealing each
+// packet into a copy so a test sees the bytes the caller handed over.
+// headers are the next headers the packets were sealed under, in the order they were sealed
 type recordingPeer struct {
 	mu      sync.Mutex
 	sent    [][]byte
 	headers []byte
+	sender  *Peer
 }
 
-func (r *recordingPeer) peer(id string) *Peer {
-	return NewPeer(id,
-		func(raw []byte, nextHeader byte) ([]byte, error) {
+func (r *recordingPeer) peer(tb testing.TB, id string) *Peer {
+	r.sender = NewPeerReserved(id, func(int) (BatchSealer, error) { return r.seal, nil },
+		func(sealed [][]byte) error {
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			r.headers = append(r.headers, nextHeader)
-			return bytes.Clone(raw), nil
-		},
-		func(sealed []byte) error {
-			r.mu.Lock()
-			defer r.mu.Unlock()
-			r.sent = append(r.sent, bytes.Clone(sealed))
+			r.sent = append(r.sent, sealed...)
 			return nil
-		})
+		}, nil)
+	tb.Cleanup(r.sender.Close)
+	return r.sender
 }
 
-func (r *recordingPeer) packets() [][]byte {
+func (r *recordingPeer) seal(raw [][]byte, headers []byte, out [][]byte) ([][]byte, error) {
+	r.mu.Lock()
+	r.headers = append(r.headers, headers...)
+	r.mu.Unlock()
+	return cloning(raw, headers, out)
+}
+
+// packets returns the packets the peer transmitted, once its sender has given
+// back all of both its budgets
+func (r *recordingPeer) packets(tb testing.TB) [][]byte {
+	waitForBudget(tb, r.sender)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([][]byte(nil), r.sent...)
@@ -131,7 +138,7 @@ func TestWaypointForwardsInsteadOfDelivering(t *testing.T) {
 	mesh := &Mesh{Routes: NewRouteTable()}
 	mesh.SetSegments(table)
 	recorder := &recordingPeer{}
-	mesh.Routes.Set(netip.Prefix{}, segPrefix("3fff:1:69c:98d6::/64"), recorder.peer("exit"))
+	mesh.Routes.Set(netip.Prefix{}, segPrefix("3fff:1:69c:98d6::/64"), recorder.peer(t, "exit"))
 
 	inner := plainV6(segAddr("3fff:a::1"), segAddr("3fff:a::2"), "payload")
 	outer, err := srv6.Encapsulate(inner, segAddr("3fff:1:69c:8c0::1"), []netip.Addr{waypoint, exit})
@@ -143,7 +150,7 @@ func TestWaypointForwardsInsteadOfDelivering(t *testing.T) {
 	if len(got) != 0 {
 		t.Fatalf("a forwarded packet was also delivered to the tun: %v", got)
 	}
-	sent := recorder.packets()
+	sent := recorder.packets(t)
 	if len(sent) != 1 {
 		t.Fatalf("the waypoint sent %d packets", len(sent))
 	}
@@ -374,7 +381,7 @@ func TestRefusedPacketsAreAnsweredAtABoundedRate(t *testing.T) {
 	m.SetSegments(table)
 	// The error goes back to the node that encapsulated the packet, so the
 	// route that has to exist is the one to its tunnel source.
-	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1:69c::/48"), recorder.peer("sender"))
+	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1:69c::/48"), recorder.peer(t, "sender"))
 
 	// A segment list this node will not act on, which is the refusal RFC 8986
 	// section 4.1 S10 answers with a Parameter Problem.
@@ -403,7 +410,7 @@ func TestRefusedPacketsAreAnsweredAtABoundedRate(t *testing.T) {
 	if counters.Answered == 0 {
 		t.Error("nothing was answered, so a traceroute through this node sees nothing")
 	}
-	if sent := len(recorder.packets()); uint64(sent) != counters.Answered {
+	if sent := len(recorder.packets(t)); uint64(sent) != counters.Answered {
 		t.Errorf("%d packets went to the peer against %d counted", sent, counters.Answered)
 	}
 }

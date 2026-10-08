@@ -25,6 +25,7 @@ func TestNodeHoldsExactlyWhatItsNeighborAnnouncesAfterItsFirstHello(t *testing.T
 		returns := hegel.Draw(ht, hegel.Booleans())
 
 		w := newHeldWire(ht, packetSize)
+		defer w.close()
 		for _, key := range keysA {
 			w.a.OriginateFrom(key.dest, key.source)
 		}
@@ -43,7 +44,7 @@ func TestNodeHoldsExactlyWhatItsNeighborAnnouncesAfterItsFirstHello(t *testing.T
 			}
 			return want
 		}
-		wantA, wantB := held(keysA, keysB, w.peerBForA), held(keysB, keysA, w.peerAForB)
+		wantA, wantB := held(keysA, keysB, w.peerBForA.Peer), held(keysB, keysA, w.peerAForB.Peer)
 		forwarded := func(s *Speaker) map[routeKey]*netstack.Peer {
 			got := make(map[routeKey]*netstack.Peer)
 			for _, route := range s.mesh.Routes.Snapshot() {
@@ -80,7 +81,7 @@ func TestNodeHoldsExactlyWhatItsNeighborAnnouncesAfterItsFirstHello(t *testing.T
 			through := func(s *Speaker, neighbor *netstack.Peer) bool {
 				return slices.Contains(slices.Collect(maps.Values(forwarded(s))), neighbor)
 			}
-			if through(w.a, w.peerBForA) || through(w.b, w.peerAForB) {
+			if through(w.a, w.peerBForA.Peer) || through(w.b, w.peerAForB.Peer) {
 				ht.Fatal("an end still forwards through its neighbor after it declared it down, so this proves nothing")
 			}
 			w.helloFromB()

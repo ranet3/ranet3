@@ -37,8 +37,7 @@ func benchPeer(b *testing.B) *Peer {
 // allocation under one lock, the allocations ReportAllocs counts, the handoff
 // to the ordered sender, and its reorder map.
 //
-// enqueue is the data path and does not wait for the send, while transmit is the
-// control path, measured separately below, and does.
+// enqueue does not wait for the send, which BenchmarkPeerTransmitSerial waits for.
 func benchmarkPeerEnqueue(b *testing.B, workers, batch int) {
 	peer := benchPeer(b)
 	payload := make([]byte, 1400)
@@ -85,20 +84,24 @@ func BenchmarkPeerEnqueueParallelBatched(b *testing.B) {
 	benchmarkPeerEnqueue(b, runtime.GOMAXPROCS(0), 128)
 }
 
-// One packet, with the caller waiting for the ordered sender to report the
-// result. Babel no longer waits, but the compatibility peers do, and this is
-// what that costs.
+// One packet, with the caller waiting for the ordered sender to hand it to the
+// transport, which is the round trip of one batch through the sender.
 func BenchmarkPeerTransmitSerial(b *testing.B) {
-	peer := benchPeer(b)
+	carried := make(chan struct{}, 1)
+	peer := NewPeerReserved("bench",
+		func(int) (BatchSealer, error) { return benchSealer, nil },
+		func([][]byte) error { carried <- struct{}{}; return nil }, nil)
+	b.Cleanup(peer.Close)
 	payload := make([]byte, 1400)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
 		pb := peer.reserveBatch(1, len(payload))
 		pb.append(payload, 4)
-		if err := pb.transmit(); err != nil {
+		if err := pb.enqueue(); err != nil {
 			b.Fatal(err)
 		}
+		<-carried
 	}
 }
 

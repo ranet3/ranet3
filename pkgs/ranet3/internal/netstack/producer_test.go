@@ -9,8 +9,8 @@ import (
 	"runtime"
 )
 
-// reserveBatch assigns the peer's transmission ticket and, when supported, its
-// ESP sequence range under one lock, waiting for room in the data budget
+// reserveBatch assigns the peer's transmission ticket and its ESP sequence
+// range under one lock, waiting for room in the data budget
 // rather than dropping. Nothing in the dataplane does that: Mesh reserves
 // through reserveBatchNow so one backpressured peer cannot stall the readers
 // feeding every other peer. This is the unthrottled producer the ordering
@@ -18,18 +18,15 @@ import (
 // them.
 func (p *Peer) reserveBatch(count, bytes int) *peerBatch {
 	charge := dataCharge(count, bytes)
-	if p.completed == nil {
-		return p.reserveTicket(count, charge, 0, false)
-	}
 	for !p.dataBudget.take(charge) {
 		select {
 		case <-p.stop:
-			return &peerBatch{peer: p, reserved: true, err: fmt.Errorf("netstack: peer %s closed", p.ID)}
+			return &peerBatch{peer: p, err: fmt.Errorf("netstack: peer %s closed", p.ID)}
 		default:
 			runtime.Gosched()
 		}
 	}
-	return p.reserveTicket(count, charge, charge, false)
+	return p.reserveTicket(count, charge, false)
 }
 
 // filled reserves count one-byte packets of the data budget without waiting and appends that many

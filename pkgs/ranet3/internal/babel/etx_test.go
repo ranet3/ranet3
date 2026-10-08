@@ -7,8 +7,6 @@ import (
 	"net/netip"
 	"testing"
 	"time"
-
-	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 // The receive half of RFC 8966 Appendix A.1, which decides what the vector
@@ -227,7 +225,7 @@ func TestSilenceDegradesTheLinkBeforeItDies(t *testing.T) {
 // and reads back the cost selection would use.
 func TestHelloLossReachesTheCostSelectionUses(t *testing.T) {
 	s, _, _ := captureSpeaker(t, Config{Hello: dur(time.Second)})
-	a := addReachablePeer(s, "a", 100)
+	a := addReachablePeer(t, s, "a", 100)
 	hello := func(seqno uint16) {
 		s.Receive(a, buildPacket(netip.MustParseAddr("fe80::2"), multicastGroup,
 			EncodePacket([]RawTLV{
@@ -283,7 +281,7 @@ func TestHelloLossReachesTheCostSelectionUses(t *testing.T) {
 func TestLinkThatComesBackIsNotCostedByItsOutage(t *testing.T) {
 	const interval = time.Second
 	s, _, _ := captureSpeaker(t, Config{Hello: dur(interval)})
-	a := addReachablePeer(s, "a", 96)
+	a := addReachablePeer(t, s, "a", 96)
 	start := time.Now()
 	// The peer numbers its Hellos whether or not they arrive, one per
 	// interval, so the first one after an outage of any length is in sequence.
@@ -338,7 +336,7 @@ func TestLinkThatComesBackIsNotCostedByItsOutage(t *testing.T) {
 func TestIHUSaysWhatThisNodeHearsFromTheNeighbor(t *testing.T) {
 	const interval = time.Second
 	s, _, _ := captureSpeaker(t, Config{Hello: dur(interval)})
-	a := addReachablePeer(s, "a", 96)
+	a := addReachablePeer(t, s, "a", 96)
 	start := time.Now()
 	rxcost := func(at time.Time) uint16 {
 		s.mu.Lock()
@@ -371,9 +369,9 @@ func TestIHUSaysWhatThisNodeHearsFromTheNeighbor(t *testing.T) {
 	}
 
 	fresh, _, _ := captureSpeaker(t, Config{Hello: dur(interval)})
-	b := netstack.NewPeer("b", plainEncrypt, func([]byte) error { return nil })
-	handle := fresh.AddPeer(b)
-	defer func() { handle.Close(); b.Close() }()
+	b := newTestPeer(t, "b", nil)
+	handle := fresh.AddPeer(b.Peer)
+	defer handle.Close()
 	freshCost := func() uint16 {
 		fresh.mu.Lock()
 		defer fresh.mu.Unlock()
@@ -406,7 +404,7 @@ func TestIHUSaysWhatThisNodeHearsFromTheNeighbor(t *testing.T) {
 // the Hello's own rollback.
 func TestRefusedHelloDoesNotSpendASequenceNumber(t *testing.T) {
 	s, _, _ := captureSpeaker(t, Config{Hello: dur(time.Second)})
-	addReachablePeer(s, "a", 96)
+	addReachablePeer(t, s, "a", 96)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

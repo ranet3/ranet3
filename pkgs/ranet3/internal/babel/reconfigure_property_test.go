@@ -59,6 +59,7 @@ type leftHello struct {
 func TestReconfiguredSpeakerRunsAsASpeakerBuiltFromItsConfig(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		w := newHeldWire(ht, 0)
+		defer w.close()
 		w.a.Originate(netip.MustParsePrefix("fd00:a::/64"))
 		w.b.Originate(netip.MustParsePrefix("fd00:b::/64"))
 		// set before either end has a neighbor, so it sends nothing and starts the pair above the floor as well
@@ -77,23 +78,24 @@ func TestReconfiguredSpeakerRunsAsASpeakerBuiltFromItsConfig(t *testing.T) {
 			}
 		}
 		deliver := func(dropFromA bool) {
-			for delivered := 0; len(w.toA) > 0 || len(w.toB) > 0; delivered++ {
+			for delivered := 0; ; delivered++ {
 				if delivered >= deliveryBudget {
 					ht.Fatal("the speakers were still answering each other past the delivery budget")
 				}
-				if len(w.toB) > 0 {
-					raw := w.toB[0]
-					w.toB = w.toB[1:]
-					take(w.a, raw)
+				w.settle()
+				toB, toA := w.peerBForA.take(), w.peerAForB.take()
+				if toB == nil && toA == nil {
+					return
+				}
+				if toB != nil {
+					take(w.a, toB)
 					if !dropFromA {
-						w.b.Receive(w.peerAForB, raw)
+						w.b.Receive(w.peerAForB.Peer, toB)
 					}
 				}
-				if len(w.toA) > 0 {
-					raw := w.toA[0]
-					w.toA = w.toA[1:]
-					take(w.b, raw)
-					w.a.Receive(w.peerBForA, raw)
+				if toA != nil {
+					take(w.b, toA)
+					w.a.Receive(w.peerBForA.Peer, toA)
 				}
 			}
 		}
@@ -123,9 +125,9 @@ func TestReconfiguredSpeakerRunsAsASpeakerBuiltFromItsConfig(t *testing.T) {
 
 		steps := hegel.Draw(ht, pbt.Spanning(1, 8))
 		for range steps {
-			s, queue, other := w.a, &w.toB, "b"
+			s, held, other := w.a, w.peerBForA, "b"
 			if hegel.Draw(ht, hegel.Booleans()) {
-				s, queue, other = w.b, &w.toA, "a"
+				s, held, other = w.b, w.peerAForB, "a"
 			}
 			cfg := running[s]
 			if !hegel.Draw(ht, hegel.Booleans()) {
@@ -137,9 +139,9 @@ func TestReconfiguredSpeakerRunsAsASpeakerBuiltFromItsConfig(t *testing.T) {
 			neighbor := s.neighbors[other]
 			history, seqno := neighbor.multicastHistory, neighbor.helloSeqno
 			s.mu.Unlock()
-			before := len(*queue)
+			before := len(held.sent(ht))
 			s.SetConfig(cfg)
-			sent := (*queue)[before:]
+			sent := held.sent(ht)[before:]
 			switch {
 			case equal && len(sent) != 0:
 				ht.Fatalf("an equal config sent %d packets", len(sent))

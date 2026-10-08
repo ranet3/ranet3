@@ -14,8 +14,8 @@ func mustPrefix(s string) netip.Prefix { return netip.MustParsePrefix(s) }
 
 func TestRouteTableOrdinaryLookup(t *testing.T) {
 	rt := NewRouteTable()
-	a := NewPeer("a", nil, nil)
-	b := NewPeer("b", nil, nil)
+	a := &Peer{ID: "a"}
+	b := &Peer{ID: "b"}
 
 	rt.Set(netip.Prefix{}, mustPrefix("10.0.0.0/8"), a)
 	rt.Set(netip.Prefix{}, mustPrefix("10.1.0.0/16"), b)
@@ -36,8 +36,8 @@ func TestRouteTableOrdinaryLookup(t *testing.T) {
 
 func TestRouteTableSourceSpecificTakesPriorityAtEqualDestSpecificity(t *testing.T) {
 	rt := NewRouteTable()
-	any := NewPeer("any", nil, nil)
-	specific := NewPeer("specific", nil, nil)
+	any := &Peer{ID: "any"}
+	specific := &Peer{ID: "specific"}
 
 	dest := mustPrefix("2001:db8::/64")
 	rt.Set(netip.Prefix{}, dest, any)
@@ -60,8 +60,8 @@ func TestRouteTableSourceSpecificTakesPriorityAtEqualDestSpecificity(t *testing.
 
 func TestRouteTableDestSpecificityBeatsSourceSpecificity(t *testing.T) {
 	rt := NewRouteTable()
-	broad := NewPeer("broad", nil, nil)
-	narrow := NewPeer("narrow", nil, nil)
+	broad := &Peer{ID: "broad"}
+	narrow := &Peer{ID: "narrow"}
 
 	// A source-specific route to a *less specific* destination must not
 	// beat an any-source route to a *more specific* destination: the
@@ -78,8 +78,8 @@ func TestRouteTableDestSpecificityBeatsSourceSpecificity(t *testing.T) {
 
 func TestRouteTableSetReplacesSameKey(t *testing.T) {
 	rt := NewRouteTable()
-	a := NewPeer("a", nil, nil)
-	b := NewPeer("b", nil, nil)
+	a := &Peer{ID: "a"}
+	b := &Peer{ID: "b"}
 	dest := mustPrefix("10.0.0.0/24")
 
 	rt.Set(netip.Prefix{}, dest, a)
@@ -96,8 +96,8 @@ func TestRouteTableSetReplacesSameKey(t *testing.T) {
 
 func TestRouteTableSourceSpecificAndOrdinaryCoexistIndependently(t *testing.T) {
 	rt := NewRouteTable()
-	any := NewPeer("any", nil, nil)
-	specific := NewPeer("specific", nil, nil)
+	any := &Peer{ID: "any"}
+	specific := &Peer{ID: "specific"}
 	dest := mustPrefix("10.0.0.0/24")
 
 	rt.Set(netip.Prefix{}, dest, any)
@@ -116,8 +116,8 @@ func TestRouteTableSourceSpecificAndOrdinaryCoexistIndependently(t *testing.T) {
 
 func TestRouteTableRemovePeer(t *testing.T) {
 	rt := NewRouteTable()
-	a := NewPeer("a", nil, nil)
-	b := NewPeer("b", nil, nil)
+	a := &Peer{ID: "a"}
+	b := &Peer{ID: "b"}
 	rt.Set(netip.Prefix{}, mustPrefix("10.0.0.0/24"), a)
 	rt.Set(mustPrefix("192.168.0.0/16"), mustPrefix("10.0.0.0/24"), a)
 	rt.Set(netip.Prefix{}, mustPrefix("10.1.0.0/24"), b)
@@ -202,10 +202,10 @@ func TestAddrsOfRejectsShortOrUnknownPackets(t *testing.T) {
 // internally.
 func TestRouteTableTrieRealBranching(t *testing.T) {
 	rt := NewRouteTable()
-	root := NewPeer("root", nil, nil)     // 10.0.0.0/8
-	mid := NewPeer("mid", nil, nil)       // 10.64.0.0/10
-	narrow := NewPeer("narrow", nil, nil) // 10.64.5.0/24
-	other := NewPeer("other", nil, nil)   // 10.128.0.0/9 (diverges from mid/narrow high up)
+	root := &Peer{ID: "root"}     // 10.0.0.0/8
+	mid := &Peer{ID: "mid"}       // 10.64.0.0/10
+	narrow := &Peer{ID: "narrow"} // 10.64.5.0/24
+	other := &Peer{ID: "other"}   // 10.128.0.0/9 (diverges from mid/narrow high up)
 
 	rt.Set(netip.Prefix{}, mustPrefix("10.0.0.0/8"), root)
 	rt.Set(netip.Prefix{}, mustPrefix("10.64.0.0/10"), mid)
@@ -242,8 +242,8 @@ func TestRouteTableTrieRealBranching(t *testing.T) {
 // the route actually being removed.
 func TestRouteTableTrieCompactionPreservesSiblings(t *testing.T) {
 	rt := NewRouteTable()
-	a := NewPeer("a", nil, nil)
-	b := NewPeer("b", nil, nil)
+	a := &Peer{ID: "a"}
+	b := &Peer{ID: "b"}
 	rt.Set(netip.Prefix{}, mustPrefix("10.0.0.0/9"), a)
 	rt.Set(netip.Prefix{}, mustPrefix("10.128.0.0/9"), b)
 
@@ -271,8 +271,8 @@ func TestRouteTableTrieCompactionPreservesSiblings(t *testing.T) {
 // both address families.
 func TestRouteTableTrieRemovePeerCompactsAcrossFamilies(t *testing.T) {
 	rt := NewRouteTable()
-	a := NewPeer("a", nil, nil)
-	b := NewPeer("b", nil, nil)
+	a := &Peer{ID: "a"}
+	b := &Peer{ID: "b"}
 
 	rt.Set(netip.Prefix{}, mustPrefix("10.0.0.0/9"), a)
 	rt.Set(netip.Prefix{}, mustPrefix("10.128.0.0/9"), a)
@@ -302,7 +302,7 @@ func TestRouteTableTrieRemovePeerCompactsAcrossFamilies(t *testing.T) {
 // hold window.
 func TestSnapshotCarriesUnreachableHold(t *testing.T) {
 	rt := NewRouteTable()
-	peer := NewPeer("peer", nil, nil)
+	peer := &Peer{ID: "peer"}
 	held := netip.MustParsePrefix("2001:db8:1::/48")
 	rt.Set(netip.Prefix{}, netip.MustParsePrefix("2001:db8::/48"), peer)
 	rt.Set(netip.Prefix{}, held, Unreachable)
@@ -331,7 +331,7 @@ func TestSnapshotCarriesUnreachableHold(t *testing.T) {
 // kernel disagreeing with the mesh.
 func TestEveryTableChangeWakesReconciler(t *testing.T) {
 	rt := NewRouteTable()
-	peer := NewPeer("peer", nil, nil)
+	peer := &Peer{ID: "peer"}
 	drain := func() {
 		select {
 		case <-rt.Changed():

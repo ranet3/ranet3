@@ -363,7 +363,7 @@ func TestAtomicFragmentIsReadApartFromItsDatagram(t *testing.T) {
 func TestOnlyFragmentsSentToTheSpeakerAreConsumed(t *testing.T) {
 	speaker, neighbor, _ := captureSpeaker(t, Config{})
 	// a session the neighbor's peer has since replaced
-	retired := netstack.NewPeer(neighbor.peer.ID, plainEncrypt, func([]byte) error { return nil })
+	retired := newTestPeer(t, neighbor.peer.ID, nil).Peer
 	linkLocal, mesh := netip.MustParseAddr("fe80::2"), netip.MustParseAddr("fd00::1")
 	for id, test := range []struct {
 		name           string
@@ -424,7 +424,7 @@ func TestReplacedSessionTakesItsDatagramsAlong(t *testing.T) {
 	speaker, neighbor, _ := captureSpeaker(t, Config{})
 	fragments := fragment(fieldPacket(t, neighbor.addr, 1443), 1, 1336)
 	speaker.Receive(neighbor.peer, fragments[0])
-	replacement := addPeer(t, speaker, netstack.NewPeer(neighbor.peer.ID, plainEncrypt, func([]byte) error { return nil }))
+	replacement := addPeer(t, speaker, newTestPeer(t, neighbor.peer.ID, nil).Peer)
 	speaker.Receive(replacement.peer, fragments[1])
 	if read, datagrams := replacement.reassembly.stats.Read, len(replacement.reassembly.datagrams); read != 0 || datagrams != 1 {
 		t.Fatalf("the new session read %d packets and keeps %d datagrams, want none read and its own datagram under way", read, datagrams)
@@ -453,7 +453,7 @@ func TestFragmentedPacketsAreCountedAndTheFirstRecorded(t *testing.T) {
 // another neighbor's packet, cut around the flood, is read whole meanwhile
 func TestFloodingNeighborStaysInItsBoundsAndCrowdsOutNoOther(t *testing.T) {
 	speaker, flooding, _ := captureSpeaker(t, Config{})
-	quiet := addPeer(t, speaker, netstack.NewPeer("quiet", plainEncrypt, func([]byte) error { return nil }))
+	quiet := addPeer(t, speaker, newTestPeer(t, "quiet", nil).Peer)
 	makeNeighborReachable(quiet)
 	prefixes := fieldPrefixes(64)
 	fragments := fragment(fieldPacket(t, netip.MustParseAddr("fe80::3"), 1443, prefixes...), 1, 1336)

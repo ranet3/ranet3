@@ -60,11 +60,11 @@ const (
 
 // waitUntil looks at cond every deliveryPoll until it holds
 // and fails the test with what it waited for once deliveryTimeout has passed
-func waitUntil(t *testing.T, what string, cond func() bool) {
-	t.Helper()
+func waitUntil(tb testing.TB, what string, cond func() bool) {
+	tb.Helper()
 	for deadline := time.Now().Add(deliveryTimeout); !cond(); time.Sleep(deliveryPoll) {
 		if time.Now().After(deadline) {
-			t.Fatalf("waited %s for %s", deliveryTimeout, what)
+			tb.Fatalf("waited %s for %s", deliveryTimeout, what)
 		}
 	}
 }
@@ -79,7 +79,7 @@ func TestReaderKeepsReadingPastACutGSOFrame(t *testing.T) {
 		Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{}),
 		outboundBufferSize: tunOffset + outboundPacketBufferSize,
 	}
-	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("::/0"), sent.peer("peer"))
+	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("::/0"), sent.peer(t, "peer"))
 	m.startOutboundPipeline()
 	t.Cleanup(m.Close)
 
@@ -93,10 +93,10 @@ func TestReaderKeepsReadingPastACutGSOFrame(t *testing.T) {
 	dev.reads <- scriptedRead{packets: want[2:]}
 
 	deadline := time.Now().Add(deliveryTimeout)
-	for len(sent.packets()) < len(want) && time.Now().Before(deadline) {
+	for len(sent.packets(t)) < len(want) && time.Now().Before(deadline) {
 		time.Sleep(deliveryPoll)
 	}
-	got := sent.packets()
+	got := sent.packets(t)
 	if len(got) != len(want) {
 		t.Fatalf("the peer was sent %d packets, want the two of the cut read and the one after it", len(got))
 	}
@@ -115,33 +115,13 @@ func TestReaderKeepsReadingPastACutGSOFrame(t *testing.T) {
 // so every packet of the read goes to its own peer, in the order the read held them
 func TestReaderRoutesEveryPacketOfOneRead(t *testing.T) {
 	dev := &scriptedDevice{reads: make(chan scriptedRead, 1), closed: make(chan struct{})}
-	var mu sync.Mutex
-	sent := map[string][][]byte{}
-	peer := func(id string) *Peer {
-		p := NewPeerReserved(id, func(int) (BatchSealer, error) {
-			return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-				out = out[:0]
-				for _, packet := range raw {
-					out = append(out, bytes.Clone(packet))
-				}
-				return out, nil
-			}, nil
-		}, func(sealed [][]byte) error {
-			mu.Lock()
-			defer mu.Unlock()
-			sent[id] = append(sent[id], sealed...)
-			return nil
-		}, nil)
-		t.Cleanup(p.Close)
-		return p
-	}
-	a, b := peer("a"), peer("b")
+	a, b := &recordingPeer{}, &recordingPeer{}
 	m := &Mesh{
 		Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{}),
 		outboundBufferSize: tunOffset + outboundPacketBufferSize,
 	}
-	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("fd00::a/128"), a)
-	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("fd00::b/128"), b)
+	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("fd00::a/128"), a.peer(t, "a"))
+	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("fd00::b/128"), b.peer(t, "b"))
 	m.startOutboundPipeline()
 	t.Cleanup(m.Close)
 
@@ -153,24 +133,19 @@ func TestReaderRoutesEveryPacketOfOneRead(t *testing.T) {
 		plainV6(source, segAddr("fd00::b"), "b second"),
 		plainV6(source, segAddr("fd00::a"), "a third"),
 	}
-	want := map[string][][]byte{"a": {read[0], read[2], read[4]}, "b": {read[1], read[3]}}
+	want := map[*recordingPeer][][]byte{a: {read[0], read[2], read[4]}, b: {read[1], read[3]}}
 	dev.reads <- scriptedRead{packets: read}
 
-	sentTo := func(id string) [][]byte {
-		mu.Lock()
-		defer mu.Unlock()
-		return slices.Clone(sent[id])
-	}
 	waitUntil(t, "every packet of one read to reach its peer", func() bool {
-		return len(sentTo("a")) >= len(want["a"]) && len(sentTo("b")) >= len(want["b"])
+		return len(a.packets(t)) >= len(want[a]) && len(b.packets(t)) >= len(want[b])
 	})
-	for id := range want {
-		if got := sentTo(id); !slices.EqualFunc(got, want[id], bytes.Equal) {
-			t.Errorf("peer %s was sent %q, want %q", id, got, want[id])
+	for peer, packets := range want {
+		if got := peer.packets(t); !slices.EqualFunc(got, packets, bytes.Equal) {
+			t.Errorf("peer %s was sent %q, want %q", peer.sender.ID, got, packets)
 		}
 	}
-	if a.Dropped() != 0 || b.Dropped() != 0 {
-		t.Errorf("the peers counted %d and %d packets dropped out of one read they had room for", a.Dropped(), b.Dropped())
+	if a.sender.Dropped() != 0 || b.sender.Dropped() != 0 {
+		t.Errorf("the peers counted %d and %d packets dropped out of one read they had room for", a.sender.Dropped(), b.sender.Dropped())
 	}
 }
 
