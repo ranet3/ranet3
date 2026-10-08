@@ -326,8 +326,8 @@ func (s *Speaker) reserveBatchesTo(action sendAction) ([]reservedPacket, []tlvUn
 	// twelve bytes against the twenty an IPv6 /64 Update takes. It repeats
 	// most in the answer a neighbor can ask for: a Route Request for a prefix
 	// this node has no route to draws a retraction carrying this node's own
-	// id, and three hundred and thirty seven four byte requests fit in one
-	// packet at the default size, the figure routeReply uses for the same TLV.
+	// id, and one packet of defaultPacketSize holds hundreds of four byte
+	// requests, as routeReply counts for the same TLV.
 	// Cleared with the batch, because the state does not cross the boundary.
 	var inEffect []byte
 	batchFrom := 0

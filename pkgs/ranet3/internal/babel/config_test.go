@@ -13,6 +13,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 // A file spells a link quality as etx or none and nothing else. Any other
@@ -80,5 +81,53 @@ func TestSpeakerAdvertisesTheConfiguredUpdateInterval(t *testing.T) {
 		if got := time.Duration(advertised.Interval) * 10 * time.Millisecond; got != update {
 			t.Errorf("an update carries the interval %s, want the %s the file writes", got, update)
 		}
+	}
+}
+
+// a speaker given no packet size keeps every packet of a dump of many prefixes within the IPv6 minimum MTU
+// every session carries an inner packet that large whatever its path
+// no session is sure to carry a larger one
+func TestDumpPacketsFitTheIPv6MinimumMTU(t *testing.T) {
+	speaker, _, packets := captureSpeaker(t, Config{})
+	// every shape of key a dump carries, to fill its packets unevenly up to the limit
+	source := netip.MustParsePrefix("2001:db8::/32")
+	var routes []OriginatedRoute
+	for i := range 128 {
+		hi, lo := byte(i>>8), byte(i)
+		routes = append(routes,
+			OriginatedRoute{Destination: netip.PrefixFrom(netip.AddrFrom4([4]byte{10, hi, lo, 0}), 24)},
+			OriginatedRoute{Destination: netip.PrefixFrom(netip.AddrFrom16([16]byte{0xfd, 0, hi, lo}), 48)},
+			OriginatedRoute{Destination: netip.PrefixFrom(netip.AddrFrom16([16]byte{0xfd, 1, 14: hi, 15: lo}), 128)},
+			OriginatedRoute{Destination: netip.PrefixFrom(netip.AddrFrom16([16]byte{0xfd, 2, hi, lo}), 64), Source: source},
+		)
+	}
+	speaker.SetOriginated(routes)
+	*packets = nil
+	speaker.flushUpdates()
+
+	carried := make(map[OriginatedRoute]bool)
+	for _, raw := range *packets {
+		if len(raw) > srv6.MinimumIPv6MTU {
+			t.Fatalf("a packet of the dump is %d bytes, past the %d every session carries", len(raw), srv6.MinimumIPv6MTU)
+		}
+		tlvs, err := DecodePacket(raw[ipv6HeaderLen+udpHeaderLen:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var prefixes PrefixDecoder
+		for _, tlv := range tlvs {
+			if tlv.Type != TLVUpdate {
+				continue
+			}
+			update, err := prefixes.Decode(tlv.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			address, _ := netip.AddrFromSlice(update.Prefix)
+			carried[OriginatedRoute{Destination: netip.PrefixFrom(address.Unmap(), update.Plen), Source: update.SourcePrefix}] = true
+		}
+	}
+	if len(carried) != len(routes) {
+		t.Fatalf("the dump carried %d of the %d prefixes in %d packets", len(carried), len(routes), len(*packets))
 	}
 }

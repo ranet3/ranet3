@@ -28,6 +28,9 @@
 //     forwarded onwards instead of answered at all.
 //   - 3.8.2.3: a selected route is not refreshed with a route request shortly
 //     before it expires.
+//   - 4: a packet is not made as large as the link's MTU allows. It stays
+//     within the IPv6 minimum MTU with its IPv6 and UDP headers, which every
+//     session carries whatever its path. See defaultPacketSize.
 //   - Appendix A.3: the smoothed metric follows an increase immediately and
 //     only damps improvements, so that a selected route which has genuinely
 //     gone bad is left at once. See routeInfo.smooth.
