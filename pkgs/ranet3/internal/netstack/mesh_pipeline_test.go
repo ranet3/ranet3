@@ -108,7 +108,7 @@ func TestOutboundWorkersEncryptOneQueueInParallelAndTransmitInOrder(t *testing.T
 			sizes:     []int{1},
 			peers:     []*Peer{peer},
 			headers:   []byte{0},
-			counts:    map[*Peer]int{peer: 1},
+			shares:    map[*Peer]outboundShare{peer: {count: 1}},
 			batches:   map[*Peer]*peerBatch{peer: peer.reserveBatch(1)},
 			peerOrder: []*Peer{peer},
 		}

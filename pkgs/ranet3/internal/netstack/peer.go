@@ -22,6 +22,8 @@ type Peer struct {
 	encryptFn       func(raw []byte, nextHeader byte) ([]byte, error)
 	reserveFn       func(count int) (BatchSealer, error)
 	transmitBatchFn func(sealed [][]byte) error
+	// mtu is the largest inner packet the session carries, DefaultMTU until whoever builds the peer sets it
+	mtu atomic.Int64
 
 	reserveMu sync.Mutex
 	reserved  uint64
@@ -128,6 +130,7 @@ func NewPeerReserved(id string, reserveFn func(count int) (BatchSealer, error), 
 func newPeer(id string, encryptFn func(raw []byte, nextHeader byte) ([]byte, error), reserveFn func(count int) (BatchSealer, error), transmitBatchFn func(sealed [][]byte) error, events func(kind, peer string, attrs ...slog.Attr)) *Peer {
 	p := &Peer{ID: id, encryptFn: encryptFn, reserveFn: reserveFn, transmitBatchFn: transmitBatchFn,
 		events: events, started: time.Now()}
+	p.mtu.Store(DefaultMTU)
 	p.sendErrReported.Store(-int64(sendErrReportInterval))
 	if reserveFn == nil {
 		p.sendCond = sync.NewCond(&p.sendMu)
@@ -144,6 +147,13 @@ func newPeer(id string, encryptFn func(raw []byte, nextHeader byte) ([]byte, err
 	}
 	return p
 }
+
+// SetMTU sets the largest inner packet the peer's session carries
+func (p *Peer) SetMTU(mtu int) { p.mtu.Store(int64(mtu)) }
+
+// MTU is the largest inner packet the peer's session carries
+// the mesh answers a packet past it, or cuts it into fragments, rather than send it
+func (p *Peer) MTU() int { return int(p.mtu.Load()) }
 
 // Close stops the reserved peer's ordered sender. Compatibility peers do not
 // own a goroutine, so closing them is a no-op.

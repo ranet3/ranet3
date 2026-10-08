@@ -231,8 +231,8 @@ func TestSteeredPacketIsRoutedByItsFirstSegment(t *testing.T) {
 	inner := plainV6(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), "payload")
 	copy(buf[tunOffset:], inner)
 
-	size, action := mesh.steer(buf, len(inner), segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"))
-	if action != steerSent {
+	size, policy, action := mesh.steer(buf, len(inner), segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"))
+	if action != steerSent || policy == nil {
 		t.Fatal("a packet the policy names was not steered")
 	}
 	if size != len(inner)+srv6.Overhead(1) {
@@ -247,7 +247,7 @@ func TestSteeredPacketIsRoutedByItsFirstSegment(t *testing.T) {
 
 	// A packet from another address is left exactly as it was.
 	other := len(inner)
-	if size, action := mesh.steer(buf, other, segAddr("3fff:a::18"), segAddr("2001:4860:4860::8888")); action != steerPass || size != other {
+	if size, policy, action := mesh.steer(buf, other, segAddr("3fff:a::18"), segAddr("2001:4860:4860::8888")); action != steerPass || policy != nil || size != other {
 		t.Errorf("a packet no policy names was steered, size %d", size)
 	}
 }
@@ -270,7 +270,7 @@ func TestPacketThatCannotBeSteeredGoesOutUnchanged(t *testing.T) {
 	// A buffer with no room for the header at all.
 	buf := make([]byte, tunOffset+len(inner))
 	copy(buf[tunOffset:], inner)
-	size, action := mesh.steer(buf, len(inner), segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"))
+	size, _, action := mesh.steer(buf, len(inner), segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"))
 	// Dropped rather than sent as it was: the policy selects an exit, so the
 	// route this packet would otherwise take puts it out of a different node
 	// under a source that node does not announce.
@@ -398,6 +398,45 @@ func TestRefusedPacketsAreAnsweredAtABoundedRate(t *testing.T) {
 // ipv6HeaderOffsetSegmentsLeft is where Segments Left sits in a packet whose
 // routing header follows the fixed header.
 const ipv6HeaderOffsetSegmentsLeft = 40 + 3
+
+// a waypoint whose next segment's session cannot carry the packet drops it and counts it
+// and answers the packet's source back through the mesh with packet too big, from the segment it was going to, carrying that session's MTU
+func TestWaypointAnswersASegmentItsNextSessionCannotCarry(t *testing.T) {
+	waypoint, exit := segAddr("3fff:1:69c:8c6::2"), segAddr("3fff:1:69c:98d6::1")
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, sender := &recordingPeer{}, &recordingPeer{}
+	narrow := next.peer("exit")
+	narrow.SetMTU(srv6.MinimumIPv6MTU)
+	m := &Mesh{Routes: NewRouteTable()}
+	m.startSegmentReports()
+	m.SetSegments(table)
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(exit, 128), narrow)
+	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1:69c:8c0::/64"), sender.peer("sender"))
+
+	inner := plainV6(segAddr("3fff:a::1"), segAddr("3fff:a::2"), string(bytes.Repeat([]byte("jumbo"), 300)))
+	outer, err := srv6.Encapsulate(inner, segAddr("3fff:1:69c:8c0::1"), []netip.Addr{waypoint, exit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left := m.applySegments([][]byte{outer}); len(left) != 0 {
+		t.Fatalf("a segment its next session cannot carry reached the tun: %v", left)
+	}
+	if sent := next.packets(); len(sent) != 0 {
+		t.Fatalf("a %d byte segment went on to a session carrying %d bytes", len(sent[0]), srv6.MinimumIPv6MTU)
+	}
+	if counters := m.SegmentCounters(); counters.Dropped != 1 || counters.Forwarded != 0 || counters.Answered != 1 {
+		t.Errorf("the waypoint counted %+v, want one dropped and one answered", counters)
+	}
+	answers := sender.packets()
+	if len(answers) != 1 {
+		t.Fatalf("the packet's source was sent %d packets, want one packet too big", len(answers))
+	}
+	// End rewrote the packet in place before its next session was known, and the answer quotes it as it was to leave
+	checkAnswer(t, answers[0], outer, srv6.MinimumIPv6MTU)
+}
 
 // A segment list may name two segments of one node, which the fleet's own
 // addressing makes spellable: an End and an End.DT46 sit on the same node.

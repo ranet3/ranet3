@@ -149,7 +149,8 @@ func TestStoppedSteeringPassesTheClaimedPacket(t *testing.T) {
 		packet := plainV6(source, destination, "payload")
 		buf := make([]byte, tunOffset+outboundPacketBufferSize)
 		copy(buf[tunOffset:], packet)
-		return m.steer(buf, len(packet), source, destination)
+		size, _, action := m.steer(buf, len(packet), source, destination)
+		return size, action
 	}
 
 	if _, action := offer(); action != steerSent {

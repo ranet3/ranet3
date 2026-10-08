@@ -74,25 +74,26 @@ const (
 // the encapsulation can fail is refused when the configuration is read, so
 // what is left needs a packet larger than the device MTU this node set, and
 // that is a deployment to fix rather than to carry.
-func (m *Mesh) steer(buf []byte, size int, source, destination netip.Addr) (int, steerAction) {
+// the policy of a packet it encapsulated comes back with it, for the fragments its session may need cut from it
+func (m *Mesh) steer(buf []byte, size int, source, destination netip.Addr) (int, *srv6.Policy, steerAction) {
 	table := m.steerTable.Load()
 	// The stop is read after the table, so a node that steers nothing pays the
 	// one load it already paid and the second is on the nodes that do steer.
 	if table == nil || m.steerStopped.Load() {
-		return size, steerPass
+		return size, nil, steerPass
 	}
 	policy := table.Lookup(source, destination)
 	if policy == nil {
-		return size, steerPass
+		return size, nil, steerPass
 	}
 	encapsulated, err := srv6.EncapsulateInPlace(buf, tunOffset, size, policy.Source, policy.Path)
 	if err != nil {
 		m.segmentsUnsteered.Add(1)
 		m.reportSegmentDrop("a packet a policy claimed could not be encapsulated", "policy", policy, "err", err)
-		return size, steerDrop
+		return size, nil, steerDrop
 	}
 	m.segmentsSteered.Add(1)
-	return encapsulated, steerSent
+	return encapsulated, policy, steerSent
 }
 
 // SetSegments installs the segments this node answers for, or nil for none.
@@ -239,7 +240,7 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment) {
 	// inbound batch is up to 128 packets and names one peer in the ordinary
 	// case, so hinting the packet count is several kilobytes of garbage per
 	// batch that nothing reads.
-	counts := make(map[*Peer]int)
+	counts := make(map[*Peer]outboundShare)
 	order := make([]*Peer, 0, 4)
 	for i := range segments {
 		segment := &segments[i]
@@ -254,19 +255,32 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment) {
 			m.reportSegmentDrop("no route to the next segment", "segment", segment.next)
 			continue
 		}
-		if counts[peer] == 0 {
+		share, seen := counts[peer]
+		if !seen {
+			share.mtu = peer.MTU()
 			order = append(order, peer)
 		}
-		counts[peer]++
-		segment.peer, segment.nextHeader = peer, nextHeader
+		if len(segment.raw) > share.mtu {
+			m.segmentsDropped.Add(1)
+			m.reportSegmentDrop("a forwarded segment is larger than the session to its next segment carries", "segment", segment.next, "mtu", share.mtu)
+			m.answerTooBig(segment.raw, share.mtu)
+		} else {
+			share.count++
+			segment.peer, segment.nextHeader = peer, nextHeader
+		}
+		counts[peer] = share
 	}
 	batches := make(map[*Peer]*peerBatch, len(order))
 	for _, peer := range order {
-		batch := peer.reserveBatchNow(counts[peer])
+		count := counts[peer].count
+		if count == 0 {
+			continue
+		}
+		batch := peer.reserveBatchNow(count)
 		if batch == nil {
 			// The peer counts its own share of this; the segment counter says
 			// how much of it was somebody else's traffic.
-			m.segmentsDropped.Add(uint64(counts[peer]))
+			m.segmentsDropped.Add(uint64(count))
 			continue
 		}
 		batches[peer] = batch
@@ -282,11 +296,11 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment) {
 			continue
 		}
 		if err := batch.enqueue(); err != nil {
-			m.segmentsDropped.Add(uint64(counts[peer]))
+			m.segmentsDropped.Add(uint64(counts[peer].count))
 			m.reportSegmentDrop("the transport lost a forwarded segment", "err", err)
 			continue
 		}
-		m.segmentsForwarded.Add(uint64(counts[peer]))
+		m.segmentsForwarded.Add(uint64(counts[peer].count))
 	}
 }
 
@@ -318,7 +332,24 @@ func (m *Mesh) answerRefused(offending []byte, reason error) {
 	if !ok || !m.takeICMPToken() {
 		return
 	}
-	peer, ok := m.Routes.Lookup(source, netip.AddrFrom16([16]byte(offending[8:24])))
+	m.sendBack(answer)
+}
+
+// answerTooBig answers a forwarded segment larger than the session to its next segment carries with packet too big
+// from the segment it is going to, under the bucket answerRefused draws from
+// nearly every such packet is one an error may answer, and the token goes first, which spares a flood the answers it would build and drop
+func (m *Mesh) answerTooBig(offending []byte, mtu int) {
+	if !m.takeICMPToken() {
+		return
+	}
+	if answer, ok := srv6.PacketTooBig(offending, netip.AddrFrom16([16]byte(offending[24:40])), mtu); ok {
+		m.sendBack(answer)
+	}
+}
+
+// sendBack sends an ICMPv6 error to the source of the packet it answers, through the peer its own addresses route to
+func (m *Mesh) sendBack(answer []byte) {
+	peer, ok := m.Routes.Lookup(netip.AddrFrom16([16]byte(answer[8:24])), netip.AddrFrom16([16]byte(answer[24:40])))
 	if !ok || peer == nil {
 		return
 	}

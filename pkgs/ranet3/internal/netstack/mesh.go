@@ -97,9 +97,27 @@ type outboundBatch struct {
 	sizes     []int
 	peers     []*Peer
 	headers   []byte
-	counts    map[*Peer]int
+	shares    map[*Peer]outboundShare
 	batches   map[*Peer]*peerBatch
 	peerOrder []*Peer
+	// fragments are the packets of the read cut to fit their peers' sessions, which the worker sends after the rest of the read
+	// fragmentBytes holds them and keeps its storage from read to read
+	fragments     []outboundFragment
+	fragmentBytes []byte
+}
+
+// outboundShare is one peer's part of a read
+// count is the packets and fragments the read sends it, and mtu the largest packet its session carries, loaded once a read
+type outboundShare struct {
+	count int
+	mtu   int
+}
+
+// outboundFragment is one fragment a read cut for a peer, with the next header its ESP trailer names
+type outboundFragment struct {
+	peer   *Peer
+	header byte
+	raw    []byte
 }
 
 type inboundWriteBatch struct {
@@ -251,7 +269,7 @@ func (m *Mesh) newOutboundBatch(size int) *outboundBatch {
 		sizes:     make([]int, size),
 		peers:     make([]*Peer, size),
 		headers:   make([]byte, size),
-		counts:    make(map[*Peer]int),
+		shares:    make(map[*Peer]outboundShare),
 		batches:   make(map[*Peer]*peerBatch),
 		peerOrder: make([]*Peer, 0, size),
 	}
@@ -297,47 +315,7 @@ func (m *Mesh) outboundReader(dev tun.Device) {
 			m.noteTruncatedRead()
 		}
 		b.n = n
-		for i := range n {
-			raw := b.bufs[i][tunOffset : tunOffset+b.sizes[i]]
-			src, dst, nh, ok := addrsOf(raw)
-			if !ok {
-				continue
-			}
-			// Steering happens before the route lookup, because a steered
-			// packet is routed by the segment it is going to rather than by
-			// the address it was addressed to.
-			size, action := m.steer(b.bufs[i], b.sizes[i], src, dst)
-			if action == steerDrop {
-				continue
-			}
-			steered := action == steerSent
-			if steered {
-				b.sizes[i] = size
-				if src, dst, nh, ok = addrsOf(b.bufs[i][tunOffset : tunOffset+size]); !ok {
-					continue
-				}
-			}
-			peer, ok := m.Routes.Lookup(src, dst)
-			if !ok {
-				// A steered packet whose first segment the mesh cannot reach
-				// is gone at this point, so it is counted here: without this
-				// the steered counter climbs while the traffic disappears. It
-				// is counted apart from Dropped, which holds the packets this
-				// node refused to act on for a peer: an operator who
-				// configures steering and no local segment would otherwise
-				// see the loss on a line reporting a table they do not have.
-				if steered {
-					m.segmentsUnrouted.Add(1)
-					m.reportSegmentDrop("no route to the first segment of a steered packet", "segment", dst)
-				}
-				continue
-			}
-			b.peers[i], b.headers[i] = peer, nh
-			if b.counts[peer] == 0 {
-				b.peerOrder = append(b.peerOrder, peer)
-			}
-			b.counts[peer]++
-		}
+		m.classify(b)
 		if len(b.peerOrder) == 0 {
 			b.reset()
 			m.outboundFree <- b
@@ -345,6 +323,117 @@ func (m *Mesh) outboundReader(dev tun.Device) {
 		}
 		m.dispatchOutbound(b)
 	}
+}
+
+// classify picks the peer of every packet of a read and holds each packet to the largest its peer's session carries
+// a packet past that is answered or cut into fragments rather than sent
+func (m *Mesh) classify(b *outboundBatch) {
+	for i := range b.n {
+		raw := b.bufs[i][tunOffset : tunOffset+b.sizes[i]]
+		src, dst, nh, ok := addrsOf(raw)
+		if !ok {
+			continue
+		}
+		// Steering happens before the route lookup, because a steered
+		// packet is routed by the segment it is going to rather than by
+		// the address it was addressed to.
+		size, policy, action := m.steer(b.bufs[i], b.sizes[i], src, dst)
+		if action == steerDrop {
+			continue
+		}
+		steered := action == steerSent
+		if steered {
+			b.sizes[i] = size
+			if src, dst, nh, ok = addrsOf(b.bufs[i][tunOffset : tunOffset+size]); !ok {
+				continue
+			}
+		}
+		peer, ok := m.Routes.Lookup(src, dst)
+		if !ok {
+			// A steered packet whose first segment the mesh cannot reach
+			// is gone at this point, so it is counted here: without this
+			// the steered counter climbs while the traffic disappears. It
+			// is counted apart from Dropped, which holds the packets this
+			// node refused to act on for a peer: an operator who
+			// configures steering and no local segment would otherwise
+			// see the loss on a line reporting a table they do not have.
+			if steered {
+				m.segmentsUnrouted.Add(1)
+				m.reportSegmentDrop("no route to the first segment of a steered packet", "segment", dst)
+			}
+			continue
+		}
+		share, seen := b.shares[peer]
+		if !seen {
+			share.mtu = peer.MTU()
+			b.peerOrder = append(b.peerOrder, peer)
+		}
+		if b.sizes[i] > share.mtu {
+			share.count += m.tooBig(b, b.bufs[i][tunOffset:tunOffset+b.sizes[i]], peer, nh, policy, share.mtu)
+		} else {
+			b.peers[i], b.headers[i] = peer, nh
+			share.count++
+		}
+		b.shares[peer] = share
+	}
+}
+
+// tooBig takes a packet larger than mtu, the largest its peer's session carries, and reports how many fragments it queued for the peer
+// a steered packet is taken as the packet it carries, against mtu less the header steering put on it
+// IPv6, and IPv4 with DF, are answered from the packet's own destination with packet too big or fragmentation needed
+// written into the tun, whichever side of it the source sits, under the bucket answerRefused draws from
+// the token goes first, as in answerTooBig, which spares a flood the answers it would build and drop
+// IPv4 without DF is cut into fragments as a router cuts it
+func (m *Mesh) tooBig(b *outboundBatch, raw []byte, peer *Peer, nextHeader byte, policy *srv6.Policy, mtu int) int {
+	overhead := policy.Overhead()
+	inner := raw[overhead:]
+	mtu -= overhead
+	var answer []byte
+	var ok bool
+	switch {
+	case inner[0]>>4 == 6:
+		if !m.takeICMPToken() {
+			return 0
+		}
+		answer, ok = srv6.PacketTooBig(inner, netip.AddrFrom16([16]byte(inner[24:40])), mtu)
+	// DF, RFC 791 section 3.1
+	case inner[6]&0x40 != 0:
+		if !m.takeICMPToken() {
+			return 0
+		}
+		answer, ok = packet.FragmentationNeeded(inner, netip.AddrFrom4([4]byte(inner[16:20])), mtu)
+	default:
+		return m.cut(b, inner, peer, nextHeader, policy, mtu)
+	}
+	if ok {
+		m.DeliverInboundBatch([][]byte{answer})
+	}
+	return 0
+}
+
+// cut queues for peer the fragments of an IPv4 packet without DF, each under the header steering put on the packet, if any
+// they wait in the read's own storage, counted in the peer's share for its reservation to hold them
+func (m *Mesh) cut(b *outboundBatch, inner []byte, peer *Peer, nextHeader byte, policy *srv6.Policy, mtu int) int {
+	start := len(b.fragmentBytes)
+	var ok bool
+	if b.fragmentBytes, ok = packet.AppendFragments(b.fragmentBytes, inner, mtu); !ok {
+		return 0
+	}
+	count := 0
+	for rest := b.fragmentBytes[start:]; len(rest) != 0; count++ {
+		fragment, _ := packet.Payload(rest)
+		rest = rest[len(fragment):]
+		if policy != nil {
+			var err error
+			if fragment, err = srv6.Encapsulate(fragment, policy.Source, policy.Path); err != nil {
+				m.segmentsUnsteered.Add(1)
+				m.reportSegmentDrop("a fragment of a packet a policy claimed could not be encapsulated", "policy", policy, "err", err)
+				return count
+			}
+		}
+		b.fragments = append(b.fragments, outboundFragment{peer: peer, header: nextHeader, raw: fragment})
+	}
+	return count
 }
 
 // TUNReadsTruncated is how many reads off the tun lost the tail of a GSO frame
@@ -387,8 +476,11 @@ func (m *Mesh) dispatchOutbound(b *outboundBatch) {
 	m.outboundDispatchMu.Lock()
 	defer m.outboundDispatchMu.Unlock()
 	for _, peer := range b.peerOrder {
-		if batch := peer.reserveBatchNow(b.counts[peer]); batch != nil {
-			b.batches[peer] = batch
+		// a peer whose packets of the read were all answered or refused takes no place
+		if count := b.shares[peer].count; count != 0 {
+			if batch := peer.reserveBatchNow(count); batch != nil {
+				b.batches[peer] = batch
+			}
 		}
 	}
 	// Submission never blocks: outboundFree is sized so that every batch in
@@ -405,6 +497,13 @@ func (m *Mesh) outboundWorker() {
 			// this read was dropped before the tickets were handed out.
 			if peer := b.peers[i]; peer != nil && b.batches[peer] != nil {
 				b.batches[peer].append(b.bufs[i][tunOffset:tunOffset+b.sizes[i]], b.headers[i])
+			}
+		}
+		// fragments go out after the read's other packets, where a later packet of the same read may overtake a cut one
+		// only IPv4 without DF is cut, and IP promises its datagrams no order
+		for _, fragment := range b.fragments {
+			if batch := b.batches[fragment.peer]; batch != nil {
+				batch.append(fragment.raw, fragment.header)
 			}
 		}
 		for _, peer := range b.peerOrder {
@@ -430,10 +529,13 @@ func (b *outboundBatch) reset() {
 		b.sizes[i] = 0
 	}
 	b.n = 0
-	clear(b.counts)
+	clear(b.shares)
 	clear(b.batches)
 	clear(b.peerOrder)
 	b.peerOrder = b.peerOrder[:0]
+	clear(b.fragments)
+	b.fragments = b.fragments[:0]
+	b.fragmentBytes = b.fragmentBytes[:0]
 }
 
 // addrsOf extracts both the source and destination address from a raw IP

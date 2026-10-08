@@ -12,6 +12,8 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 
@@ -23,6 +25,12 @@ import (
 var (
 	tunAddress = netip.MustParseAddr("10.66.0.1")
 	tunPeer    = netip.MustParseAddr("10.66.0.2")
+)
+
+// the IPv6 address the tests below give the tun, in a prefix the kernel then routes out of it, and the one they send to
+var (
+	tunAddress6 = netip.MustParsePrefix("fd66::1/64")
+	tunPeer6    = netip.MustParseAddr("fd66::2")
 )
 
 // a steered packet carries its segment list inside the tunnel, so a read off the tun grows by the list in its own buffer
@@ -47,7 +55,9 @@ func TestTUNSteersAReadAsLargeAsTheDevice(t *testing.T) {
 	t.Cleanup(m.Close)
 	m.SetSteering(steering)
 	sent := &recordingPeer{}
-	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(exit, 128), sent.peer("exit"))
+	first := sent.peer("exit")
+	first.SetMTU(largest)
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(exit, 128), first)
 	assignPeer(t, m.Name, tunAddress, tunPeer)
 
 	// a UDP datagram filling the device's MTU, under a 20 byte IPv4 and an 8 byte UDP header
@@ -98,7 +108,9 @@ func TestTUNTakesAnMTUSetAfterOpening(t *testing.T) {
 		}
 
 		sent := &recordingPeer{}
-		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(tunPeer, 32), sent.peer("peer"))
+		peer := sent.peer("peer")
+		peer.SetMTU(jumbo)
+		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(tunPeer, 32), peer)
 		assignPeer(t, m.Name, tunAddress, tunPeer)
 		payload := bytes.Repeat([]byte("eight kib"), 1024)[:8<<10]
 		sendUDP(t, tunPeer, payload)
@@ -177,5 +189,97 @@ func sendUDP(t *testing.T, to netip.Addr, payload []byte) {
 	defer conn.Close()
 	if _, err := conn.Write(payload); err != nil {
 		t.Fatalf("send %d bytes to %s: %v", len(payload), to, err)
+	}
+}
+
+// assignIPv6 gives link name the address of prefix, and the kernel routes the prefix out of the link
+// a tun answers no neighbor and its address skips duplicate address detection, which leaves it usable at once
+func assignIPv6(t *testing.T, name string, prefix netip.Prefix) {
+	t.Helper()
+	link, err := net.InterfaceByName(name)
+	if err != nil {
+		t.Fatalf("look up %s: %v", name, err)
+	}
+	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open a socket to address %s with: %v", name, err)
+	}
+	defer unix.Close(fd)
+	// struct in6_ifreq of include/uapi/linux/ipv6.h
+	request := struct {
+		address [16]byte
+		bits    uint32
+		index   int32
+	}{prefix.Addr().As16(), uint32(prefix.Bits()), int32(link.Index)}
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.SIOCSIFADDR, uintptr(unsafe.Pointer(&request))); errno != 0 {
+		t.Fatalf("give %s the address %s: %v", name, prefix, errno)
+	}
+}
+
+// a packet past what its session carries teaches the kernel that sent it the session's MTU
+// IPv4 with DF through fragmentation needed and IPv6 through packet too big, each written into the tun from the address the packet went to
+// and a connected socket under a device that let the packet through reads the session's MTU back as its path MTU
+func TestTUNPacketTooBigTeachesTheKernel(t *testing.T) {
+	const session = 1300
+	for _, family := range []struct {
+		name                         string
+		domain, level, option        int
+		discover, discoverDo, header int
+		peer                         netip.Addr
+		assign                       func(t *testing.T, name string)
+		address                      func(peer netip.Addr) unix.Sockaddr
+	}{
+		{"IPv4", unix.AF_INET, unix.IPPROTO_IP, unix.IP_MTU, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DO, 20 + 8, tunPeer,
+			func(t *testing.T, name string) { assignPeer(t, name, tunAddress, tunPeer) },
+			func(peer netip.Addr) unix.Sockaddr { return &unix.SockaddrInet4{Port: 9, Addr: peer.As4()} }},
+		{"IPv6", unix.AF_INET6, unix.IPPROTO_IPV6, unix.IPV6_MTU, unix.IPV6_MTU_DISCOVER, unix.IPV6_PMTUDISC_DO, 40 + 8, tunPeer6,
+			func(t *testing.T, name string) { assignIPv6(t, name, tunAddress6) },
+			func(peer netip.Addr) unix.Sockaddr { return &unix.SockaddrInet6{Port: 9, Addr: peer.As16()} }},
+	} {
+		t.Run(family.name, func(t *testing.T) {
+			enterEmptyNamespace(t)
+			m, err := NewNamed(DefaultMTU, DefaultMTU, "ptbtest0")
+			if err != nil {
+				t.Fatalf("open the mesh: %v", err)
+			}
+			t.Cleanup(m.Close)
+			sent := &recordingPeer{}
+			peer := sent.peer("peer")
+			peer.SetMTU(session)
+			m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(family.peer, family.peer.BitLen()), peer)
+			family.assign(t, m.Name)
+
+			fd, err := unix.Socket(family.domain, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+			if err != nil {
+				t.Fatalf("open a socket: %v", err)
+			}
+			t.Cleanup(func() { _ = unix.Close(fd) })
+			if err := unix.SetsockoptInt(fd, family.level, family.discover, family.discoverDo); err != nil {
+				t.Fatalf("set DF on every datagram: %v", err)
+			}
+			if err := unix.Connect(fd, family.address(family.peer)); err != nil {
+				t.Fatalf("connect to %s: %v", family.peer, err)
+			}
+			pathMTU := func() int {
+				mtu, err := unix.GetsockoptInt(fd, family.level, family.option)
+				if err != nil {
+					t.Fatalf("read the path MTU: %v", err)
+				}
+				return mtu
+			}
+			if got := pathMTU(); got != DefaultMTU {
+				t.Fatalf("the path MTU reads %d before anything was sent, want the device's %d", got, DefaultMTU)
+			}
+			if _, err := unix.Write(fd, make([]byte, DefaultMTU-family.header)); err != nil {
+				t.Fatalf("send a %d byte packet: %v", DefaultMTU, err)
+			}
+			got := pathMTU()
+			for deadline := time.Now().Add(deliveryTimeout); got != session && time.Now().Before(deadline); got = pathMTU() {
+				time.Sleep(deliveryPoll)
+			}
+			if got != session {
+				t.Fatalf("the path MTU reads %d after a %d byte packet met a %d byte session, want the session's", got, DefaultMTU, session)
+			}
+		})
 	}
 }
