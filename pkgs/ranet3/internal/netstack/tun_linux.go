@@ -56,9 +56,13 @@ func bringTUNUp(name string) error {
 	return unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr)
 }
 
+// tunQueues is how many queues a mesh asking for wanted lanes opens, up to the most one tun takes
+func tunQueues(wanted int) int { return min(wanted, maxTUNQueues) }
+
 // createTUNQueues opens the lanes of name
 // and sets the device's gso_max_segs to the read batch
 func createTUNQueues(name string, mtu, queueCount int) ([]tun.Device, string, error) {
+	queueCount = tunQueues(queueCount)
 	// IFF_TUN_EXCL has the kernel refuse a device of the default name that exists
 	// where a queue opened under that name would join it, another instance's or not
 	var exclusive uint16
