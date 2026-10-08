@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-10-06
+updated: 2026-10-08
 order: 110
 ---
 
@@ -17,6 +17,13 @@ On Linux it reads back only routes whose table, `rt_proto` and output interface
 all match its own, so a delete list can never contain another writer's route,
 and `RTM_DELROUTE` carries `rtm_protocol` as well, so the kernel refuses too. It
 never touches another table, another device, or any policy rule.
+
+systemd-networkd removes every policy rule it did not ask for whenever it
+configures a link, on resume, on a `.network` change and on its own restart. The
+reconciler's route monitor also listens for rule notifications, and a deleted
+rule carrying its protocol wakes it, so the pass after the 250 millisecond
+settle puts the rule back. A rule another writer adds or deletes for itself
+wakes nothing.
 
 Installing is where a router daemon usually takes over from its neighbors, and
 this one does not. It asks for the route exclusively, and a key something else

@@ -65,6 +65,15 @@ the caller already reads as uid 0.
   is read without stopping the daemon's goroutines, so polling it leaves the
   data path running.
 - `debug buildinfo` prints this binary's own go build information.
+- `debug netmon` is the host's network as the node's watch last read it: for
+  each family the default route, its interface and gateway, and the global
+  unicast addresses of the interfaces that are up, the mesh's own device left
+  out, then the last change the watch acted on and what moved in it. A platform
+  without a watch says so.
+- `debug probe <peer>` and `debug probe --all` ask the sessions of one peer, or
+  every session, to send a liveness check now, as each does after a network
+  change, and name the sessions asked. It is an action, so it takes the root
+  class, and it is recorded as a `control.verb` like the other verbs.
 - `debug events [-f] [--kind K]... [--peer P] [--since 5m] [--for 30s]` prints
   the events the daemon has recorded and exits, or with `-f` goes on printing
   the ones after them until `--for` has passed. `--kind`, given up to 16 times,
@@ -133,6 +142,7 @@ its connections to the reads.
 | `babel.route.selected`, `.retracted` | a prefix's next hop changed, every time rather than once a second as logged |
 | `kernel.pass`                        | a reconciler pass that took a reload, changed, skipped anew or failed       |
 | `egress.pass`                        | a translator pass that rewrote its rules, moved its prefixes or failed      |
+| `network.changed`                    | the host's default or addresses moved, so every session was probed          |
 | `transport.underlay.bound`           | the underlay socket moved onto another interface                            |
 | `transport.endpoint.unpinned`        | sends to a peer left the address its datagram arrived on, which was gone    |
 | `transport.endpoint.unsegmented`     | sends to a peer stopped segmenting, since its path refused a segment        |
