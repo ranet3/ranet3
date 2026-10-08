@@ -439,7 +439,9 @@ func (p *netlinkPlatform) keysByLength(address netip.Addr) bool { return address
 // a tun without IPv4 loses every IPv4 route through it, another writer's among them
 func promoteSecondaries(conn netlinkConn, index uint32) error {
 	conf := putAttrU32(nil, ipv4DevconfPromoteSecondaries, 1)
-	inet := putAttr(nil, unix.AF_INET, putAttr(nil, unix.IFLA_INET_CONF, conf))
+	// kernels that validate the devconf attributes against a policy parse IFLA_INET_CONF strictly
+	// and refuse it with EINVAL unless it carries NLA_F_NESTED
+	inet := putAttr(nil, unix.AF_INET, putAttr(nil, unix.IFLA_INET_CONF|unix.NLA_F_NESTED, conf))
 	body := make([]byte, unix.SizeofIfInfomsg)
 	binary.NativeEndian.PutUint32(body[4:], index)
 	body = putAttr(body, unix.IFLA_AF_SPEC, inet)
