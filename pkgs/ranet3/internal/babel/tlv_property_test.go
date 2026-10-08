@@ -161,6 +161,9 @@ func (s said) heard(got []RawTLV, prefixes *PrefixDecoder) error {
 		if !bytes.Equal(got[0].Body, v.opaque[:]) {
 			return fmt.Errorf("arrived as %x, where the request carried %x", got[0].Body, v.opaque)
 		}
+		if nonce, err := DecodeAck(got[0].Body); err != nil || nonce != binary.BigEndian.Uint16(v.opaque[:]) {
+			return fmt.Errorf("decoded as nonce %d, %v, where the request carried %x", nonce, err, v.opaque)
+		}
 	}
 	return nil
 }
@@ -508,6 +511,8 @@ func decodeEvery(payload []byte) {
 			_, _ = prefixes.Decode(tlv.Body)
 		case TLVAckReq:
 			_, _ = DecodeAckReq(tlv.Body)
+		case TLVAck:
+			_, _ = DecodeAck(tlv.Body)
 		case TLVRouteRequest:
 			_, _ = DecodeRouteRequest(tlv.Body)
 		case TLVSeqnoRequest:
@@ -570,5 +575,74 @@ func TestPacketParserNeverPanicsOnArbitraryBytes(t *testing.T) {
 			decodeEvery(carried)
 		}
 		decodeEvery(payload)
+	})
+}
+
+// probeSizes draws the size of a probe as an inner IPv6 packet, from smallestProbe to largestProbe
+// half of them pad past a run of PadN TLVs of the longest body by no octet, one or two
+// a single octet past the run is one no PadN fills alone
+func probeSizes() hegel.Generator[int] {
+	return hegel.Composite(func(tc hegel.TestCase) int {
+		if hegel.Draw(tc, hegel.Booleans()) {
+			return hegel.Draw(tc, pbt.Spanning(smallestProbe, largestProbe))
+		}
+		// a probe with no padding at all, and the octets one PadN of a 255 octet body takes
+		const bare, longest = smallestProbe - 2, 2 + 255
+		runs := hegel.Draw(tc, hegel.Integers(1, (largestProbe-bare)/longest-1))
+		return bare + runs*longest + hegel.Draw(tc, hegel.Integers(0, 2))
+	})
+}
+
+// a probe is one Ack Request padded with PadN alone to exactly the size it was asked for as an inner IPv6 packet
+// the path is asked to carry that size
+// a probe an octet off measures another path MTU than the one it reports
+// a neighbor answers it with the nonce it reads out of it
+// this package and BIRD both skip a PadN by its length octet
+func TestProbeIsOneAckRequestPaddedToItsSize(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		size, nonce := hegel.Draw(ht, probeSizes()), hegel.Draw(ht, uint16s())
+		from, to := hegel.Draw(ht, linkLocals()), hegel.Draw(ht, linkLocals())
+		raw := buildPacket(from, to, EncodePacket(probeTLVs(nonce, size)))
+		if len(raw) != size {
+			ht.Fatalf("a probe of %d bytes came out %d", size, len(raw))
+		}
+		src, payload, err := parsePacket(raw, to)
+		if err != nil || src != from {
+			ht.Fatalf("a probe of %d bytes from %v parsed as from %v: %v", size, from, src, err)
+		}
+		body := payload[headerLen:]
+		if length := int(binary.BigEndian.Uint16(payload[2:4])); length != len(body) {
+			ht.Fatalf("the header counts %d octets of body where %d follow it", length, len(body))
+		}
+		// framed as RFC 8966 section 4.3 has a neighbor read it, two octets of type and length and then the body the length counts
+		var requests [][]byte
+		for len(body) > 0 {
+			if len(body) < 2 || 2+int(body[1]) > len(body) {
+				ht.Fatalf("a TLV runs past the end of the probe, %d octets before it", len(body))
+			}
+			kind, value := TLVType(body[0]), body[2:2+int(body[1])]
+			switch {
+			case kind == TLVAckReq:
+				requests = append(requests, value)
+			case kind != TLVPadN:
+				ht.Fatalf("a probe of %d bytes carries a TLV of type %d", size, kind)
+			case slices.ContainsFunc(value, func(b byte) bool { return b != 0 }):
+				ht.Fatalf("a PadN carries %x, where RFC 8966 section 4.6.2 has it zero", value)
+			}
+			body = body[2+len(value):]
+		}
+		if len(requests) != 1 {
+			ht.Fatalf("a probe of %d bytes carries %d Ack Requests", size, len(requests))
+		}
+		got, err := DecodeAckReq(requests[0])
+		if err != nil || got != nonce {
+			ht.Fatalf("the probe carrying nonce %d decoded as %d, %v", nonce, got, err)
+		}
+		// RFC 8966 section 4.6.3 sends the reserved field as zero
+		// it never names an interval of zero
+		request := requests[0]
+		if len(request) != 6 || request[0] != 0 || request[1] != 0 || binary.BigEndian.Uint16(request[4:6]) == 0 {
+			ht.Fatalf("the Ack Request is %x", request)
+		}
 	})
 }

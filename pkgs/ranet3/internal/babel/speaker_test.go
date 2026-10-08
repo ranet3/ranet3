@@ -712,7 +712,8 @@ func TestUnscheduledHelloDoesNotFlapANeighbor(t *testing.T) {
 	lapsed := now.Add(deadTimeout(neighbor.helloInterval) + time.Second)
 	s.mu.Lock()
 	s.sweepExpiredLocked(lapsed)
-	s.emitLocked(s.handlePacketLocked(neighbor, unscheduled, lapsed))
+	actions, _ := s.handlePacketLocked(neighbor, unscheduled, lapsed)
+	s.emitLocked(actions)
 	alive := neighbor.alive
 	s.mu.Unlock()
 	if alive {

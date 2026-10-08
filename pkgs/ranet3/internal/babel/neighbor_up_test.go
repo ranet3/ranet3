@@ -216,7 +216,8 @@ func TestNeighborComingUpIsSentAHelloAndAskedForItsWholeTable(t *testing.T) {
 	later := time.Now().Add(deadTimeout(neighbor.helloInterval) + time.Second)
 	speaker.mu.Lock()
 	speaker.sweepExpiredLocked(later)
-	send := speaker.emitLocked(speaker.handlePacketLocked(neighbor, hello(4, 100), later))
+	actions, _ := speaker.handlePacketLocked(neighbor, hello(4, 100), later)
+	send := speaker.emitLocked(actions)
 	speaker.mu.Unlock()
 	send()
 	if recorded("babel.neighbor.down") != 1 {

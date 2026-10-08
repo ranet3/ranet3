@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -45,6 +46,13 @@ type Runtime struct {
 	// Events records each neighbor coming up or going down, the request sent to one that came up and each change of a selected next hop
 	// nil records nothing
 	Events *events.Bus
+	// ProbeAcked hears every Ack the speaker receives, with the session it came through and the nonce it carries
+	// whoever calls Speaker.Probe matches each to its own probes
+	// it runs on the session's receive path once the speaker's lock is released
+	// two sessions may report at once
+	// it may call the speaker and must not block
+	// nil hears nothing
+	ProbeAcked func(peer *netstack.Peer, nonce uint16)
 }
 
 const maxInterval = 65535 * 10 * time.Millisecond
@@ -133,7 +141,8 @@ func (c Config) Validate() error {
 }
 
 // resolve fills in what the speaker was not given: a random router id and a
-// random link-local address, and a packet size every session carries.
+// random link-local address, a packet size every session carries, and a
+// ProbeAcked that hears nothing.
 func (r Runtime) resolve() (Runtime, error) {
 	if r.RouterID == ([8]byte{}) {
 		rand.Read(r.RouterID[:])
@@ -143,6 +152,9 @@ func (r Runtime) resolve() (Runtime, error) {
 	}
 	if r.PacketSize == 0 {
 		r.PacketSize = defaultPacketSize
+	}
+	if r.ProbeAcked == nil {
+		r.ProbeAcked = func(*netstack.Peer, uint16) {}
 	}
 	if !r.LinkLocalAddr.Is6() || !r.LinkLocalAddr.IsLinkLocalUnicast() || r.LinkLocalAddr.Zone() != "" {
 		return r, fmt.Errorf("babel: local address must be an unzoned IPv6 link-local address")
