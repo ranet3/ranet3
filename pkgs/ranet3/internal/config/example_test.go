@@ -93,7 +93,7 @@ func TestShippedExamplesParse(t *testing.T) {
 
 // an example writes an option beside the value the node runs without it
 // a default changed where the code sets it and not where the example says it leaves every operator who copied the line running another node
-// the speaker's two intervals and its cost, the reconcile interval, the capture grace and the replay window are the ones documented
+// link.mtu, the speaker's two intervals and its cost, the reconcile interval, the capture grace and the replay window are the ones documented
 func TestExamplesDocumentTheDefaultsTheNodeRuns(t *testing.T) {
 	for name := range examples {
 		if uncommentable[name] {
@@ -109,6 +109,7 @@ func TestExamplesDocumentTheDefaultsTheNodeRuns(t *testing.T) {
 			}
 			table, unwritten := cfg.Cap.Table, kernel.Table{}.Normalized()
 			for what, pair := range map[string][2]any{
+				"link.mtu":                {cfg.Link.SessionMTU(), Link{}.SessionMTU()},
 				"cap.babel":               {cfg.Babel().Effective(), babel.Config{}.Effective()},
 				"cap.table reconcile":     {table.Reconcile, unwritten.Reconcile},
 				"cap.table capture_grace": {table.CaptureGrace, unwritten.CaptureGrace},

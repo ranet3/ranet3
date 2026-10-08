@@ -432,6 +432,9 @@ func nodes() hegel.Generator[Config] {
 				Port:      hegel.Draw(tc, edges[uint16](1, math.MaxUint16)),
 				Endpoints: hegel.Draw(tc, hegel.Lists(endpoint).MinSize(1).MaxSize(3)),
 				Listen:    hegel.Draw(tc, hegel.Booleans()),
+				// from the least IPv6 requires to the most one ESP-in-UDP datagram carries over IPv4
+				// a steering list drawn beside it can take the least of these out of bounds, which Validate refuses
+				MTU: hegel.Draw(tc, unset(edges[uint16](1280, 65470))),
 				Underlay: transport.Underlay{
 					Mark: hegel.Draw(tc, unset(edges[uint32](1, math.MaxUint32))),
 					Bind: hegel.Draw(tc, hegel.Booleans()),
@@ -593,6 +596,72 @@ func TestValidatedRouteSpeakerAndSegmentsReadBackFromTheirFile(t *testing.T) {
 		if err := injected.Validate(); err == nil {
 			ht.Fatalf("Validate took %s, which no file holds", what)
 		}
+	})
+}
+
+// mtuNode is a node that loads, with link.mtu written as mtu
+// and with a cap.segment steering one source through segments waypoints when segments is above zero
+func mtuNode(mtu uint16, segments int) Config {
+	c := Config{
+		Node: Node{Org: "example", Name: "laptop"},
+		Auth: Auth{Key: "key.pem", Trust: "trust.json"},
+		Link: Link{Port: 13000, Endpoints: []Endpoint{{Serial: "0", Family: "ip4"}}, MTU: mtu},
+		Dial: Dial{All: true},
+	}
+	if segments == 0 {
+		return c
+	}
+	via := make([]schema.Addr, segments)
+	for i := range via {
+		via[i] = schema.AddrFrom(netip.AddrFrom16([16]byte{0x3f, 0xff, 0, 1, 15: byte(i + 1)}))
+	}
+	c.Cap.Segment = &srv6.Segments{
+		Source: schema.MustAddr("3fff:1:69c:8c0::1"),
+		Steer:  []srv6.Steer{{From: schema.MustPrefix("3fff:a::1/128"), Via: via}},
+	}
+	return c
+}
+
+// link.mtu is taken exactly from 1280 plus the header the longest steering list puts on a packet
+// up to 65470, the most one ESP-in-UDP datagram carries over IPv4
+// a refusal names the field, and an mtu that is taken reads back from its file through every encoder
+// every list length meets the values either side of both of its bounds before anything is drawn
+func TestLinkMTUIsTakenExactlyWithinItsBounds(t *testing.T) {
+	// an outer IPv6 header, the fixed part of the segment routing header and 16 bytes a segment, RFC 8754
+	floor := func(segments int) int {
+		if segments == 0 {
+			return 1280
+		}
+		return 1280 + 40 + 8 + 16*segments
+	}
+	check := func(tb testing.TB, mtu uint16, segments int) {
+		tb.Helper()
+		c := mtuNode(mtu, segments)
+		inForce := int(mtu)
+		if mtu == 0 {
+			inForce = 1400
+		}
+		within := floor(segments) <= inForce && inForce <= 65470
+		err := c.Validate()
+		switch {
+		case within && err != nil:
+			tb.Fatalf("link.mtu %d with a list of %d segments was refused: %v", mtu, segments, err)
+		case !within && err == nil:
+			tb.Fatalf("link.mtu %d with a list of %d segments was taken, outside %d to 65470", mtu, segments, floor(segments))
+		case err != nil && !strings.Contains(err.Error(), "link.mtu"):
+			tb.Fatalf("the refusal of link.mtu %d with a list of %d segments reads %q, which does not name link.mtu", mtu, segments, err)
+		case err == nil:
+			sameAfterEachEncoder(tb, c, defaulted(c))
+		}
+	}
+	for segments := range srv6.MaxSegments + 1 {
+		for _, mtu := range []int{0, floor(segments) - 1, floor(segments), 65470, 65471, math.MaxUint16} {
+			check(t, uint16(mtu), segments)
+		}
+	}
+	pbt.Check(t, func(ht *hegel.T) {
+		segments := hegel.Draw(ht, pbt.Spanning(0, srv6.MaxSegments))
+		check(ht, hegel.Draw(ht, pbt.Spanning[uint16](0, math.MaxUint16)), segments)
 	})
 }
 

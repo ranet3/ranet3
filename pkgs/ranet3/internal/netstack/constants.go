@@ -6,7 +6,9 @@ package netstack
 
 import "time"
 
-const DefaultMTU = 1400 // leaves room for outer IP/UDP/ESP overhead under a 1500-byte link MTU
+// DefaultMTU is link.mtu where the file leaves it out, the largest inner packet a session carries
+// a 1500 byte path carries it in one ESP-in-UDP datagram over IPv4 and over IPv6
+const DefaultMTU = 1400
 
 const (
 	// outboundPacketBufferSize is the least bytes an outbound read buffer holds past tunOffset

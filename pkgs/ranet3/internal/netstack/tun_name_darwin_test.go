@@ -33,7 +33,7 @@ func TestTUNNameIsRefusedOnlyWhereDarwinCannotCreateIt(t *testing.T) {
 			if !arm.refused && os.Geteuid() == 0 && os.Getenv("RANET3_DARWIN_NETTEST") != "1" {
 				t.Skip("set RANET3_DARWIN_NETTEST=1 to let a run as root create a utun")
 			}
-			m, err := NewNamed(0, arm.name)
+			m, err := NewNamed(0, 0, arm.name)
 			if err == nil {
 				t.Logf("link.tun %q opened %s", arm.name, m.Name)
 				m.Close()

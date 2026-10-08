@@ -194,11 +194,12 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	// alternative is a large packet arriving that cannot be encapsulated and
 	// going out unsteered, which is a silent hole in the steering rather than
 	// a smaller MSS.
-	mtu, err := steeredMTU(steering)
+	largest := cfg.Link.SessionMTU()
+	mtu, err := steeredMTU(largest, steering)
 	if err != nil {
 		return nil, err
 	}
-	mesh, err := netstack.NewNamed(mtu, cfg.Link.TUN)
+	mesh, err := netstack.NewNamed(mtu, largest, cfg.Link.TUN)
 	if err != nil {
 		return nil, err
 	}
@@ -212,13 +213,16 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	return newClient(cfg, privateKey, reg, mesh, nil, bus)
 }
 
-// steeredMTU is the device MTU once the largest configured segment list has
-// been taken off it, and zero for a node that steers nothing, which leaves the
-// device's own default. The arithmetic and the refusal are the capability's
-// own, and config.Validate makes the same call with the same device, so a file
-// the loader took is a file this will start on.
-func steeredMTU(steering *srv6.SteerTable) (int, error) {
-	return steering.CheckMTU(netstack.DefaultMTU)
+// steeredMTU is the device MTU for sessions carrying packets of up to largest bytes
+// the longest configured segment list comes off it
+// a node that steers nothing runs the device at largest
+// the arithmetic and the refusal are the capability's own
+// config.Validate makes the same call with link.mtu, so a file the loader took is a file this starts on
+func steeredMTU(largest int, steering *srv6.SteerTable) (int, error) {
+	if steering.Overhead() == 0 {
+		return largest, nil
+	}
+	return steering.CheckMTU(largest)
 }
 
 // newClient is New with the loading done, so a test can stand up a client

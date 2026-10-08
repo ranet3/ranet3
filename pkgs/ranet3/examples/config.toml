@@ -46,6 +46,13 @@ endpoints = [{ serial = "0", family = "ip4" }]
 # any other name there when it starts.
 # tun = "ranet0"
 
+# The largest packet a session carries inside ESP. The device runs at this
+# less the longest cap.segment steer list below, since a steered packet carries
+# its segment list inside the tunnel. Omitted it is 1400, which a 1500 byte
+# path carries over IPv4 and IPv6 alike. A value under 1280 plus that list, or
+# past 65470, the most one ESP-in-UDP datagram carries over IPv4, is refused.
+# mtu = 1400
+
 # Keep the one UDP socket carrying IKE and ESP out of the reach of the routes
 # the mesh installs. One block for both platforms, because it is one idea: a
 # node holding an address an exit announces ends up with a route out of its own

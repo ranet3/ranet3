@@ -93,7 +93,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	mesh, err := netstack.NewNamed(0, "")
+	mesh, err := netstack.NewNamed(0, 0, "")
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -21,7 +21,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
-	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -234,18 +233,11 @@ func (c *Client) segmentTables(old, next *config.Config) (*srv6.LocalTable, *srv
 	if err != nil {
 		return nil, nil, err
 	}
-	tunMTU := func(steering *srv6.SteerTable) (int, error) {
-		mtu, err := steeredMTU(steering)
-		if mtu == 0 {
-			mtu = netstack.DefaultMTU
-		}
-		return mtu, err
-	}
-	running, err := tunMTU(c.Mesh.Steering())
+	running, err := steeredMTU(old.Link.SessionMTU(), c.Mesh.Steering())
 	if err != nil {
 		return nil, nil, err
 	}
-	needed, err := tunMTU(steering)
+	needed, err := steeredMTU(next.Link.SessionMTU(), steering)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -342,6 +334,9 @@ func reloadable(old, next *config.Config) error {
 		return fmt.Errorf("config: link.port changed, restart to apply")
 	case old.Link.TUN != next.Link.TUN:
 		return fmt.Errorf("config: link.tun changed, restart to apply")
+	case old.Link.SessionMTU() != next.Link.SessionMTU():
+		// NewNamed sized the tun and its read buffers for the link.mtu the node started on
+		return fmt.Errorf("config: link.mtu changed, restart to apply")
 	case !slices.Equal(sortedEndpoints(old.Link.Endpoints), sortedEndpoints(next.Link.Endpoints)):
 		// The listener answers to one identity per local endpoint and builds
 		// that set once, and each endpoint runs its own dialers. Compared as a
