@@ -326,10 +326,11 @@ func (m *Mesh) outboundReader(dev tun.Device) {
 }
 
 // classify picks the peer of every packet of a read and holds each packet to the largest its peer's session carries
-// a packet past that is answered or cut into fragments rather than sent
+// a packet past that is answered or cut into fragments rather than sent, and a SYN within it has its MSS clamped to it
 func (m *Mesh) classify(b *outboundBatch) {
 	for i := range b.n {
-		raw := b.bufs[i][tunOffset : tunOffset+b.sizes[i]]
+		read := b.sizes[i]
+		raw := b.bufs[i][tunOffset : tunOffset+read]
 		src, dst, nh, ok := addrsOf(raw)
 		if !ok {
 			continue
@@ -337,7 +338,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 		// Steering happens before the route lookup, because a steered
 		// packet is routed by the segment it is going to rather than by
 		// the address it was addressed to.
-		size, policy, action := m.steer(b.bufs[i], b.sizes[i], src, dst)
+		size, policy, action := m.steer(b.bufs[i], read, src, dst)
 		if action == steerDrop {
 			continue
 		}
@@ -371,6 +372,9 @@ func (m *Mesh) classify(b *outboundBatch) {
 		if b.sizes[i] > share.mtu {
 			share.count += m.tooBig(b, b.bufs[i][tunOffset:tunOffset+b.sizes[i]], peer, nh, policy, share.mtu)
 		} else {
+			// a steered SYN sits behind the header steering put on it, which the session carries as well
+			overhead := b.sizes[i] - read
+			ClampMSS(b.bufs[i][tunOffset+overhead:tunOffset+b.sizes[i]], share.mtu-overhead)
 			b.peers[i], b.headers[i] = peer, nh
 			share.count++
 		}

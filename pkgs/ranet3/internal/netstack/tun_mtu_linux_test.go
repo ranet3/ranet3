@@ -283,3 +283,54 @@ func TestTUNPacketTooBigTeachesTheKernel(t *testing.T) {
 		})
 	}
 }
+
+// a SYN leaving through the tun has its MSS lowered to what the session to its peer carries, less the 60 bytes of IPv6 and TCP headers
+// where the kernel offered what its 1400 byte device carries
+func TestTUNClampsTheMSSOfASYN(t *testing.T) {
+	const session = 1300
+	enterEmptyNamespace(t)
+	m, err := NewNamed(DefaultMTU, DefaultMTU, "msstest0")
+	if err != nil {
+		t.Fatalf("open the mesh: %v", err)
+	}
+	t.Cleanup(m.Close)
+	sent := &recordingPeer{}
+	peer := sent.peer("peer")
+	peer.SetMTU(session)
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(tunPeer6, 128), peer)
+	assignIPv6(t, m.Name, tunAddress6)
+
+	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_STREAM|unix.SOCK_NONBLOCK|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open a socket: %v", err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fd) })
+	if err := unix.Connect(fd, &unix.SockaddrInet6{Port: 9, Addr: tunPeer6.As16()}); err != unix.EINPROGRESS {
+		t.Fatalf("connect to %s: %v", tunPeer6, err)
+	}
+	waitUntil(t, "the SYN to reach the peer", func() bool { return len(sent.packets()) > 0 })
+	if got, want := mssOf(t, sent.packets()[0]), session-40-20; got != want {
+		t.Fatalf("the SYN carries an MSS of %d, want the %d a %d byte session carries", got, want, session)
+	}
+}
+
+// mssOf is the MSS option of the IPv6 TCP SYN raw
+func mssOf(t *testing.T, raw []byte) int {
+	t.Helper()
+	if len(raw) < 40+20 || raw[6] != 6 || raw[40+13]&0x02 == 0 {
+		t.Fatalf("the peer was sent %x, which is no IPv6 TCP SYN", raw)
+	}
+	options := raw[40+20 : 40+int(raw[40+12]>>4)*4]
+	for i := 0; i+1 < len(options) && options[i] != 0; {
+		if options[i] == 1 {
+			i++
+			continue
+		}
+		if options[i] == 2 && options[i+1] == 4 {
+			return int(binary.BigEndian.Uint16(options[i+2:]))
+		}
+		i += max(2, int(options[i+1]))
+	}
+	t.Fatalf("the SYN carries the options %x and no MSS among them", options)
+	return 0
+}
