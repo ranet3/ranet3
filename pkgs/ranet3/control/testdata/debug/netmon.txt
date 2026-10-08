@@ -1,0 +1,10 @@
+IPv4 default    en7 via 10.0.0.1
+IPv4 addresses  10.0.0.20
+IPv6 default    none
+IPv6 addresses  2001:db8:7::20
+Changed         3 minutes ago, at 2026-10-08 09:14:02 UTC
+IPv4 default    now en7 via 10.0.0.1, was en0 via 192.168.1.1
+IPv4 added      10.0.0.20
+IPv4 removed    192.168.1.20
+IPv6 added      2001:db8:7::20
+IPv6 removed    2001:db8:1::20

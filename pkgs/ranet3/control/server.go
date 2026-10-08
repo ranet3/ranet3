@@ -245,38 +245,58 @@ func scrape(mux *http.ServeMux, path string, src Source) {
 // from needing one.
 func act(mux *http.ServeMux, path string, sink Sink, run func(context.Context, Sink, Request) (Result, error)) {
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", "POST")
-			http.Error(w, "this is a write, so it takes a POST", http.StatusMethodNotAllowed)
+		if !writing(w, r) {
 			return
 		}
 		if sink == nil {
 			http.Error(w, "this node serves the reads only, so there is nothing here to ask", http.StatusNotImplemented)
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxRequest))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+		if request, ok := readRequest(w, r); ok {
+			result, err := run(r.Context(), sink, request)
+			answerResult(w, result, err)
 		}
-		var request Request
-		// An empty body is the zero request rather than a decode failure, so
-		// reload, which reads no field, is asked with nothing at all.
-		if len(body) > 0 {
-			if err := json.Unmarshal(body, &request); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-		}
-		result, err := run(r.Context(), sink, request)
-		if err != nil {
-			// The caller named something this node does not run, which is a
-			// request to correct rather than a failure on this side.
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		writeJSON(w, result)
 	})
+}
+
+// writing lets POST through and refuses every other method, the counterpart of reading
+func writing(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodPost {
+		return true
+	}
+	w.Header().Set("Allow", "POST")
+	http.Error(w, "this is a write, so it takes a POST", http.StatusMethodNotAllowed)
+	return false
+}
+
+// readRequest decodes the body of a write, and answers the caller itself where it cannot
+func readRequest(w http.ResponseWriter, r *http.Request) (Request, bool) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequest))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return Request{}, false
+	}
+	var request Request
+	// An empty body is the zero request rather than a decode failure, so
+	// reload, which reads no field, is asked with nothing at all.
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return Request{}, false
+		}
+	}
+	return request, true
+}
+
+// answerResult writes what a write came to
+func answerResult(w http.ResponseWriter, result Result, err error) {
+	if err != nil {
+		// The caller named something this node does not run, which is a
+		// request to correct rather than a failure on this side.
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, result)
 }
 
 // Serve runs the control surface on listener until it is closed. It returns

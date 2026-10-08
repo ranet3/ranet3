@@ -1,0 +1,5 @@
+IPv4 default    none
+IPv4 addresses  none
+IPv6 default    none
+IPv6 addresses  2001:db8:7::20
+Changed         not since the watch started

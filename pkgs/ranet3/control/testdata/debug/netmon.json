@@ -1,0 +1,54 @@
+{
+  "watching": true,
+  "families": [
+    {
+      "family": "ipv4",
+      "default": {
+        "interface": "en7",
+        "gateway": "10.0.0.1"
+      },
+      "addresses": [
+        "10.0.0.20"
+      ]
+    },
+    {
+      "family": "ipv6",
+      "default": {},
+      "addresses": [
+        "2001:db8:7::20"
+      ]
+    }
+  ],
+  "last_change": {
+    "at": "2026-10-08T09:14:02Z",
+    "ago": "3m4s",
+    "families": [
+      {
+        "family": "ipv4",
+        "default_was": {
+          "interface": "en0",
+          "gateway": "192.168.1.1"
+        },
+        "default": {
+          "interface": "en7",
+          "gateway": "10.0.0.1"
+        },
+        "added": [
+          "10.0.0.20"
+        ],
+        "removed": [
+          "192.168.1.20"
+        ]
+      },
+      {
+        "family": "ipv6",
+        "added": [
+          "2001:db8:7::20"
+        ],
+        "removed": [
+          "2001:db8:1::20"
+        ]
+      }
+    ]
+  }
+}

@@ -19,15 +19,17 @@ import (
 // networkChangeBudget bounds how long one change takes to reach the sessions, the dialers and the bus
 const networkChangeBudget = 5 * time.Second
 
-// fakeNetwork is a watch whose changes a test sends
+// fakeNetwork is a watch whose changes a test sends and whose reading it sets
 type fakeNetwork struct {
 	changes chan kernel.NetworkChange
+	current kernel.NetworkState
+	last    kernel.NetworkChange
 }
 
 func (f *fakeNetwork) Changes() <-chan kernel.NetworkChange { return f.changes }
 
 func (f *fakeNetwork) State() (kernel.NetworkState, kernel.NetworkChange) {
-	return kernel.NetworkState{}, kernel.NetworkChange{}
+	return f.current, f.last
 }
 
 func (f *fakeNetwork) Close() error { return nil }
