@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the VM tests, the root-only tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-07
+updated: 2026-10-08
 order: 20
 ---
 
@@ -46,13 +46,14 @@ in files ending in `_property_test.go`: `esp`, `ike`, `transport`, `sadr`,
 `srv6`, `internal/babel`, `internal/packet`, `schema`, `internal/config`,
 `internal/kernel` and `control`. They run with the rest of `go test`, under
 hegel-go through `internal/pbt`, whose `Check` gives every property the same
-terms: 200 cases, no example database, and a derandomized engine. hegel v0.9.17
-still seeds the labels of nested generators per process, so two runs need not
-draw the same sample, and a boundary the code branches on is drawn outright,
-with `pbt.Spanning` or by name, rather than left to the sample. A failing
-property prints the smallest input it found. hegel is a test dependency only:
-`internal/notices` refuses a non-test file that imports it, so it never reaches
-the binary or its notices.
+terms: 200 cases, or 10 under `go test -short`, where hegel v0.9.19 replaces the
+count `Check` sets, no example database, and a derandomized engine. hegel
+v0.9.19 still seeds the labels of nested generators per process, so two runs
+need not draw the same sample, and a boundary the code branches on is drawn
+outright, with `pbt.Spanning` or by name, rather than left to the sample. A
+failing property prints the smallest input it found. hegel is a test dependency
+only: `internal/notices` refuses a non-test file that imports it, so it never
+reaches the binary or its notices.
 
 Protocol-level interoperability is covered by the NixOS VM tests in
 `checks/integration`. Except `integration-reload`, each boots separate client
