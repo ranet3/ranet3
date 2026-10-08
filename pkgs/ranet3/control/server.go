@@ -174,7 +174,7 @@ func Handler(src Source) http.Handler {
 	act(mux, PathEnable, sink, func(ctx context.Context, s Sink, r Request) (Result, error) {
 		return s.SetSubsystem(ctx, r.Subsystem, true)
 	})
-	act(mux, PathRedial, sink, func(ctx context.Context, s Sink, r Request) (Result, error) { return s.Redial(ctx, r.Peer) })
+	act(mux, PathRedial, sink, func(ctx context.Context, s Sink, r Request) (Result, error) { return s.Redial(ctx, r.Peer, r.All) })
 	act(mux, PathRekey, sink, func(ctx context.Context, s Sink, r Request) (Result, error) { return s.Rekey(ctx, r.Peer, r.All) })
 	act(mux, PathReload, sink, func(ctx context.Context, s Sink, r Request) (Result, error) { return s.Reload(ctx) })
 	mux.Handle(PathDebug, newDebugServer(src))

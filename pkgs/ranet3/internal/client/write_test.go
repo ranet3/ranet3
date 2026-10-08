@@ -5,6 +5,7 @@ package client
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -182,7 +183,7 @@ func TestRedialDropsSessionsAndWakesDialers(t *testing.T) {
 	other := &dialer{cancel: func() {}, wake: make(chan struct{}, 1)}
 	c.dialers["example/elsewhere/1@0"] = other
 
-	result, err := c.Redial(context.Background(), "gateway")
+	result, err := c.Redial(context.Background(), "gateway", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +209,7 @@ func TestRedialDropsSessionsAndWakesDialers(t *testing.T) {
 		t.Errorf("redial answered %q", result.Detail)
 	}
 
-	if _, err := c.Redial(context.Background(), "nobody"); err == nil {
+	if _, err := c.Redial(context.Background(), "nobody", false); err == nil {
 		t.Error("redialing a peer this node neither dials nor holds was accepted")
 	}
 }
@@ -220,12 +221,64 @@ func TestRedialDropsResponderOnlySession(t *testing.T) {
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
 	c.sessions.adoptPreferred("example/inbound/1@0", &ike.Session{}, true, nil)
-	result, err := c.Redial(context.Background(), "example/inbound")
+	result, err := c.Redial(context.Background(), "example/inbound", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(result.Detail, "1 session") || !strings.Contains(result.Detail, "0 dialer") {
 		t.Errorf("redial answered %q, want one session and no dialer", result.Detail)
+	}
+}
+
+// every peer drops every session this node holds and wakes every dialer, as a peer does that one peer's
+// a peer and every peer at once, or neither, is refused, and so is every peer on a node holding nothing
+func TestRedialAllDropsEverySessionAndWakesEveryDialer(t *testing.T) {
+	c := writable(t)
+	var closedMu sync.Mutex
+	closed := 0
+	c.sessions.close = func(*ike.Session) {
+		closedMu.Lock()
+		defer closedMu.Unlock()
+		closed++
+	}
+	c.sessions.active = func(*ike.Session) bool { return true }
+	c.sessions.adoptPreferred("example/gateway/1@0", &ike.Session{}, true, nil)
+	c.sessions.adoptPreferred("example/inbound/1@0", &ike.Session{}, true, nil)
+	dialers := []*dialer{{cancel: func() {}, wake: make(chan struct{}, 1)}, {cancel: func() {}, wake: make(chan struct{}, 1)}}
+	c.dialers["example/gateway/1@0"] = dialers[0]
+	c.dialers["example/elsewhere/1@0"] = dialers[1]
+
+	for _, refused := range []struct {
+		peer string
+		all  bool
+	}{{"gateway", true}, {"", false}} {
+		if _, err := c.Redial(context.Background(), refused.peer, refused.all); err == nil {
+			t.Errorf("a redial of peer %q with every peer %v was accepted", refused.peer, refused.all)
+		}
+	}
+	result, err := c.Redial(context.Background(), "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedMu.Lock()
+	if closed != 2 {
+		t.Errorf("redial --all closed %d sessions, want both", closed)
+	}
+	closedMu.Unlock()
+	for i, dialer := range dialers {
+		select {
+		case <-dialer.wake:
+		default:
+			t.Errorf("dialer %d was not woken", i)
+		}
+	}
+	if want := []string{"example/elsewhere/1@0", "example/gateway/1@0", "example/inbound/1@0"}; !slices.Equal(result.Acted, want) {
+		t.Errorf("redial --all acted on %v, want %v", result.Acted, want)
+	}
+
+	bare := writable(t)
+	if _, err := bare.Redial(context.Background(), "", true); err == nil {
+		t.Error("redial --all on a node that neither dials nor holds a session was accepted")
 	}
 }
 

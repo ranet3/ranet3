@@ -120,7 +120,7 @@ func TestVerbIsTakenByEveryNameOfWhatItActedOn(t *testing.T) {
 		verb, peer string
 		all        bool
 	}
-	asks := []ask{{verb: "rekey", all: true}}
+	asks := []ask{{verb: "rekey", all: true}, {verb: "redial", all: true}}
 	for _, name := range names {
 		asks = append(asks, ask{verb: "redial", peer: name}, ask{verb: "rekey", peer: name})
 	}
@@ -137,7 +137,7 @@ func TestVerbIsTakenByEveryNameOfWhatItActedOn(t *testing.T) {
 		var result control.Result
 		var err error
 		if ask.verb == "redial" {
-			result, err = c.Redial(context.Background(), ask.peer)
+			result, err = c.Redial(context.Background(), ask.peer, ask.all)
 		} else {
 			result, err = c.Rekey(context.Background(), ask.peer, ask.all)
 		}

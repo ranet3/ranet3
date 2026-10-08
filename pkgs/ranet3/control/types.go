@@ -191,11 +191,12 @@ type Sink interface {
 	// node that joins the mesh, and re-enabling on one would undo a decision
 	// made minutes earlier.
 	SetSubsystem(ctx context.Context, name Subsystem, on bool) (Result, error)
-	// Redial drops the sessions this node holds for one peer and sets its
-	// dialers going again at once rather than after the reconnect delay. It is
-	// the answer to a peer that holds a session this node no longer has, on
-	// the side that can act.
-	Redial(ctx context.Context, peer string) (Result, error)
+	// Redial drops the sessions this node holds for one peer, or every
+	// session, and sets the matching dialers going again at once rather than
+	// after the reconnect delay. It is the answer to a peer that holds a
+	// session this node no longer has, on the side that can act, and with
+	// every peer the answer to a network change nothing on this host saw.
+	Redial(ctx context.Context, peer string, all bool) (Result, error)
 	// Rekey asks one peer's sessions, or every session, to replace their Child
 	// SA. The exchange runs on its own and the new SPIs appear under
 	// [Client.Sessions]; the answer says how many were asked.

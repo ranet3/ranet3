@@ -303,7 +303,7 @@ func TestVerbIsRecordedWithItsCaller(t *testing.T) {
 	bus := events.New()
 	go control.Serve(listener, &Client{events: bus, dialers: make(map[string]*dialer)})
 
-	if _, err := control.Dial(socket).Redial("nobody"); err == nil {
+	if _, err := control.Dial(socket).Redial("nobody", false); err == nil {
 		t.Fatal("a redial of a peer this node does not know succeeded")
 	}
 	if _, err := control.Dial(socket).Enable(control.SubsystemReconciler); err == nil {

@@ -66,18 +66,26 @@ func (r *reader) subsystemCommand(use, short, long string, on bool) *cobra.Comma
 // peer in that state was seen to carry a dead session for sixteen minutes and
 // came back only when its own daemon was reloaded by hand.
 func (r *reader) redialCommand() *cobra.Command {
+	var all bool
 	cmd := &cobra.Command{
-		Use:   "redial <peer>",
+		Use:   "redial [peer]",
 		Short: "Reconnect to a peer now",
 		Long: `This drops the sessions held for the peer and sets its dialers going at
-once, instead of after the reconnect delay.`,
-		Args:              cobra.ExactArgs(1),
+once, instead of after the reconnect delay. Pass --all to do this for every
+peer, which helps after a network change the node did not see, such as a
+captive portal that left every address and route in place.`,
+		Args:              peerOrAll(&all),
 		ValidArgsFunction: r.completePeers,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			result, err := control.Dial(r.socket).Redial(args[0])
+			peer := ""
+			if !all {
+				peer = args[0]
+			}
+			result, err := control.Dial(r.socket).Redial(peer, all)
 			return r.report(cmd, result, err)
 		},
 	}
+	cmd.Flags().BoolVar(&all, "all", false, "Redial every peer")
 	r.flags(cmd)
 	return cmd
 }
@@ -91,15 +99,7 @@ func (r *reader) rekeyCommand() *cobra.Command {
 		Long: `Each session replaces its child SA without waiting for its own schedule.
 Name a peer to rekey its sessions, or pass --all to rekey every session
 this node holds.`,
-		// The peer and --all are exclusive, and the daemon says so as well:
-		// this is the local half, so a command line that names neither is
-		// answered without a round trip.
-		Args: func(cmd *cobra.Command, args []string) error {
-			if all {
-				return noArguments(cmd, args)
-			}
-			return cobra.ExactArgs(1)(cmd, args)
-		},
+		Args:              peerOrAll(&all),
 		ValidArgsFunction: r.completePeers,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			peer := ""
@@ -113,6 +113,19 @@ this node holds.`,
 	cmd.Flags().BoolVar(&all, "all", false, "Rekey every session")
 	r.flags(cmd)
 	return cmd
+}
+
+// peerOrAll takes one peer, or none under --all.
+// The peer and --all are exclusive, and the daemon says so as well:
+// this is the local half, so a command line that names neither is
+// answered without a round trip.
+func peerOrAll(all *bool) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if *all {
+			return noArguments(cmd, args)
+		}
+		return cobra.ExactArgs(1)(cmd, args)
+	}
 }
 
 // reloadCommand is SIGHUP over the socket, so a supervisor is not the only way
