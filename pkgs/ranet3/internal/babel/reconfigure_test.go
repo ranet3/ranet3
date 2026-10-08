@@ -35,7 +35,7 @@ func upWire(t *testing.T, dest netip.Prefix) *heldWire {
 	w.deliver()
 	w.a.flushUpdates()
 	w.deliver()
-	if peer, ok := w.b.mesh.Routes.Lookup(dest.Addr(), dest.Addr()); !ok || peer != w.peerAForB {
+	if peer, ok := w.b.mesh.Routes.Lookup(dest.Addr(), dest.Addr()); !ok || peer != w.peerAForB.Peer {
 		t.Fatalf("b did not learn a's prefix, so this proves nothing: %v", w.b.mesh.Routes.Debug())
 	}
 	return w
@@ -80,7 +80,7 @@ func TestReloadedCapBabelReachesTheNeighborAtOnce(t *testing.T) {
 
 	next := reloadedConfig()
 	w.a.SetConfig(next)
-	if len(w.toB) == 0 {
+	if len(w.peerBForA.sent(t)) == 0 {
 		t.Fatal("the change sent the neighbor nothing")
 	}
 	w.deliver()
@@ -117,7 +117,7 @@ func TestLongerHelloIntervalIsAnnouncedBeforeItIsInForce(t *testing.T) {
 	after := time.Now()
 
 	want := uint16(longer.HelloInterval() / (10 * time.Millisecond))
-	if got := sentHellos(t, *packets); len(got) != 1 || got[0] != want {
+	if got := sentHellos(t, packets.sent()); len(got) != 1 || got[0] != want {
 		t.Fatalf("the change sent hellos announcing %v, want one announcing %d", got, want)
 	}
 	speaker.mu.Lock()
@@ -141,14 +141,12 @@ func TestRunningSpeakerTakesShorterIntervalsAtOnce(t *testing.T) {
 	speaker.Originate(netip.MustParsePrefix("fd00:e::/64"))
 	var mu sync.Mutex
 	var packets [][]byte
-	peer := netstack.NewPeer("peer", plainEncrypt, func(raw []byte) error {
+	peer := newTestPeer(t, "peer", func(raw []byte) {
 		mu.Lock()
 		defer mu.Unlock()
 		packets = append(packets, append([]byte(nil), raw...))
-		return nil
 	})
-	defer peer.Close()
-	speaker.AddPeer(peer)
+	speaker.AddPeer(peer.Peer)
 	sent := func() [][]byte {
 		mu.Lock()
 		defer mu.Unlock()
@@ -204,11 +202,11 @@ func TestReloadedCostReselectsEveryPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	toB := new([][]byte)
-	b := netstack.NewPeer("b", plainEncrypt, func(raw []byte) error { *toB = append(*toB, append([]byte(nil), raw...)); return nil })
-	c := netstack.NewPeer("c", plainEncrypt, func([]byte) error { return nil })
-	speaker.AddPeer(b)
-	speaker.AddPeer(c)
+	var toB [][]byte
+	b := newTestPeer(t, "b", func(raw []byte) { toB = append(toB, append([]byte(nil), raw...)) })
+	c := newTestPeer(t, "c", nil)
+	speaker.AddPeer(b.Peer)
+	speaker.AddPeer(c.Peer)
 
 	dest := netip.MustParsePrefix("fd00:c::/64")
 	key := routeKey{dest: dest}
@@ -222,13 +220,14 @@ func TestReloadedCostReselectsEveryPrefix(t *testing.T) {
 	speaker.routes.update(far, key, advertisement{routerID: [8]byte{1}, seqno: 1, metric: 10}, time.Minute, now)
 	speaker.routes.update(near, key, advertisement{routerID: [8]byte{2}, seqno: 1, metric: 10}, time.Minute, now)
 	speaker.mu.Unlock()
-	if peer, ok := mesh.Routes.Lookup(dest.Addr(), dest.Addr()); !ok || peer != b {
+	if peer, ok := mesh.Routes.Lookup(dest.Addr(), dest.Addr()); !ok || peer != b.Peer {
 		t.Fatalf("the prefix is not through b while round trips cost nothing, so this proves nothing: %v", mesh.Routes.Debug())
 	}
-	*toB = nil
+	b.settle(t)
+	toB = nil
 
 	speaker.SetConfig(Config{Cost: CostOptions{RTT: RTTOptions{Weight: &heavy}}})
-	if peer, ok := mesh.Routes.Lookup(dest.Addr(), dest.Addr()); !ok || peer != c {
+	if peer, ok := mesh.Routes.Lookup(dest.Addr(), dest.Addr()); !ok || peer != c.Peer {
 		t.Errorf("the prefix is forwarded as %v once b's round trip costs %d, want through c", mesh.Routes.Debug(), heavy)
 	}
 	want := DefaultCostParams()
@@ -240,7 +239,8 @@ func TestReloadedCostReselectsEveryPrefix(t *testing.T) {
 	}
 	var metrics []uint16
 	var decoder PrefixDecoder
-	for _, raw := range *toB {
+	b.settle(t)
+	for _, raw := range toB {
 		_, payload, err := parsePacket(raw, multicastGroup)
 		if err != nil {
 			t.Fatal(err)
@@ -278,8 +278,8 @@ func TestEqualCapBabelSendsNothing(t *testing.T) {
 		t.Fatal("the spelled out config is another speaker, so this proves nothing")
 	}
 	speaker.SetConfig(spelled)
-	if len(*packets) != 0 {
-		t.Errorf("an equal config sent %d packets", len(*packets))
+	if sent := packets.sent(); len(sent) != 0 {
+		t.Errorf("an equal config sent %d packets", len(sent))
 	}
 	speaker.mu.Lock()
 	defer speaker.mu.Unlock()
@@ -318,8 +318,7 @@ func TestLostPacketReportsReadTheHelloIntervalAChangeWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	speaker.Originate(netip.MustParsePrefix("fd00:d::/64"))
-	lossy := netstack.NewPeer("lossy", plainEncrypt, func([]byte) error { return errors.New("babel: a transport that loses every packet") })
-	defer lossy.Close()
+	lossy := netstack.NewPeerReserved("lossy", plainSealer, func([][]byte) error { return errors.New("babel: a transport that loses every packet") }, nil)
 	speaker.AddPeer(lossy)
 	done := make(chan struct{})
 	go func() {
@@ -332,6 +331,8 @@ func TestLostPacketReportsReadTheHelloIntervalAChangeWrites(t *testing.T) {
 		speaker.SetConfig(Config{Hello: dur(time.Duration(1+i%2) * time.Second)})
 	}
 	<-done
+	// the sender has reported every packet it lost once Close returns
+	lossy.Close()
 	speaker.lostMu.Lock()
 	defer speaker.lostMu.Unlock()
 	if speaker.lostWoke.IsZero() {

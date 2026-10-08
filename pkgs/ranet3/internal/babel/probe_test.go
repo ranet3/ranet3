@@ -34,18 +34,19 @@ func TestProbeLeavesAsOnePacketOfItsSize(t *testing.T) {
 	// the bounds, and both sides of the inner packet a babel packet of defaultPacketSize makes
 	for _, size := range []int{smallestProbe, srv6.MinimumIPv6MTU - 1, srv6.MinimumIPv6MTU, srv6.MinimumIPv6MTU + 1, 9000, math.MaxUint16} {
 		nonce := uint16(size)
-		*packets = nil
+		packets.reset()
 		if err := speaker.Probe(neighbor.peer, size, nonce); err != nil {
 			t.Fatalf("a probe of %d bytes: %v", size, err)
 		}
+		sent := packets.sent()
 		var sizes []int
-		for _, packet := range *packets {
+		for _, packet := range sent {
 			sizes = append(sizes, len(packet))
 		}
 		if !slices.Equal(sizes, []int{size}) {
 			t.Fatalf("a probe of %d bytes left as packets of %v bytes", size, sizes)
 		}
-		packet := (*packets)[0]
+		packet := sent[0]
 		if counted := ipv6HeaderLen + int(binary.BigEndian.Uint16(packet[4:6])); counted != size {
 			t.Fatalf("a probe of %d bytes counts %d in its IPv6 header", size, counted)
 		}
@@ -67,14 +68,14 @@ func TestProbeLeavesAsOnePacketOfItsSize(t *testing.T) {
 // one past the 2^16-1 octets RFC 8966 section 4 allows a babel packet with its lower-layer headers is refused too
 func TestProbeRefusesASizeOutsideItsBounds(t *testing.T) {
 	speaker, neighbor, packets := captureSpeaker(t, Config{})
-	*packets = nil
+	packets.reset()
 	for _, size := range []int{smallestProbe - 1, math.MaxUint16 + 1} {
 		if err := speaker.Probe(neighbor.peer, size, 1); err == nil {
 			t.Errorf("a probe of %d bytes was taken", size)
 		}
 	}
-	if len(*packets) != 0 {
-		t.Errorf("refused probes sent %d packets", len(*packets))
+	if sent := packets.sent(); len(sent) != 0 {
+		t.Errorf("refused probes sent %d packets", len(sent))
 	}
 }
 
@@ -83,14 +84,14 @@ func TestProbeRefusesASizeOutsideItsBounds(t *testing.T) {
 // Receive ignores both
 func TestProbeGoesOnlyThroughTheRegisteredSession(t *testing.T) {
 	speaker, neighbor, packets := captureSpeaker(t, Config{})
-	*packets = nil
+	packets.reset()
 	for _, peer := range []*netstack.Peer{{ID: neighbor.peer.ID}, {ID: "unknown"}} {
 		if err := speaker.Probe(peer, srv6.MinimumIPv6MTU, 1); err == nil {
 			t.Errorf("a probe through a session %s the speaker does not hold was taken", peer.ID)
 		}
 	}
-	if len(*packets) != 0 {
-		t.Errorf("a probe through a session the speaker does not hold sent %d packets", len(*packets))
+	if sent := packets.sent(); len(sent) != 0 {
+		t.Errorf("a probe through a session the speaker does not hold sent %d packets", len(sent))
 	}
 }
 
@@ -119,7 +120,7 @@ func TestEveryAckIsReportedWithItsSession(t *testing.T) {
 	speaker, neighbor, _ := captureSpeaker(t, Config{}, Runtime{ProbeAcked: func(peer *netstack.Peer, nonce uint16) {
 		heard = append(heard, probeAck{peer, nonce})
 	}})
-	other := netstack.NewPeer("other", plainEncrypt, func([]byte) error { return nil })
+	other := newTestPeer(t, "other", nil).Peer
 	speaker.AddPeer(other)
 	acks := func(nonces ...uint16) []byte {
 		var tlvs []RawTLV

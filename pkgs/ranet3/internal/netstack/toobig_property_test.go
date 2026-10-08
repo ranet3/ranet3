@@ -113,7 +113,7 @@ func TestSegmentsPastTheirNextSessionAreAnsweredOrCut(t *testing.T) {
 		for i := range path {
 			path[i] = netip.AddrFrom16([16]byte{0x3f, 0xff, 0, 2, 15: byte(i + 1)})
 		}
-		session, next := sessionOf(mtu)
+		session, next := sessionOf(tb, mtu)
 		m, sender := waypointOf(tb, path[0], session)
 		overhead := srv6.Overhead(1+segments) + shape.size()
 		inner := udpPacket(tooBigSource[family], tooBigDestination[family], mtu+excess-overhead, df)
@@ -125,7 +125,7 @@ func TestSegmentsPastTheirNextSessionAreAnsweredOrCut(t *testing.T) {
 		if left := m.applySegments([][]byte{outer}, DefaultMTU); len(left) != 0 {
 			tb.Fatalf("a forwarded segment reached the tun as %d packets", len(left))
 		}
-		sent, answers, counters := next.packets(), sender.packets(), m.SegmentCounters()
+		sent, answers, counters := next.packets(tb), sender.packets(tb), m.SegmentCounters()
 		// a session seals each packet under the next header naming its family, which its receiver holds the packet to
 		for _, header := range next.nextHeaders() {
 			if header != esp.NextHeaderIPv6 {

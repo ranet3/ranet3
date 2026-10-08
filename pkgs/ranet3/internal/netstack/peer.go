@@ -21,7 +21,6 @@ import (
 // Peer separates parallel packet encryption from ordered, batched transport.
 type Peer struct {
 	ID              string
-	encryptFn       func(raw []byte, nextHeader byte) ([]byte, error)
 	reserveFn       func(count int) (BatchSealer, error)
 	transmitBatchFn func(sealed [][]byte) error
 	// mtu is the largest inner packet the session carries, DefaultMTU until whoever builds the peer sets it
@@ -62,16 +61,12 @@ type Peer struct {
 	// order discardQueued gives batches back in, which nothing else can see.
 	noteDiscarded func(ticket uint64)
 
-	// Reserved peers hand completed crypto batches to one sender. dataBudget
+	// A peer hands completed crypto batches to one sender. dataBudget
 	// bounds the bytes this peer holds from their reservation through
 	// encryption, the wait behind an earlier ticket and the transport syscall.
 	//
-	// controlBudget is the same bound for babel, kept separate on purpose. The
-	// data budget is entirely consumed by a bulk transfer, so sharing it
-	// dropped 98 of every 100 control packets under load, measured. Three lost
-	// hellos withdraw every route through the peer and the transfer then has
-	// nowhere to go. Control traffic is small and rare enough that a budget of
-	// its own costs a few hundred kilobytes.
+	// controlBudget is the same bound for babel, kept separate so a bulk
+	// transfer cannot starve control traffic.
 	// queueMu makes closing the queue and inserting into it one decision.
 	// The sender's stop path drains what it holds and returns, so a batch
 	// that lands in the queue after that drain is read by nobody: never
@@ -91,12 +86,6 @@ type Peer struct {
 	// so a batch reuses only storage grown for at most twice its size
 	// but for storage a share holding more bytes than peerDataBudget grew in the last pool, since its size is the budget alone
 	sealedPool []sync.Pool
-
-	// Compatibility peers allocate their sequence number during encryption,
-	// so their complete encrypt/send operation remains synchronously ordered.
-	sendMu   sync.Mutex
-	sendCond *sync.Cond
-	nextSend uint64
 }
 
 // BatchSealer consumes a sequence range previously reserved from one outbound
@@ -106,51 +95,25 @@ type Peer struct {
 // Output must not alias raw, whose TUN buffers are recycled after encryption.
 type BatchSealer func(raw [][]byte, nextHeaders []byte, reuse [][]byte) ([][]byte, error)
 
-func NewPeer(id string, encryptFn func(raw []byte, nextHeader byte) ([]byte, error), transmitFn func(sealed []byte) error) *Peer {
-	return NewPeerBatched(id, encryptFn, func(sealed [][]byte) error {
-		for _, packet := range sealed {
-			if err := transmitFn(packet); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-// NewPeerBatched constructs a compatibility peer for an encryptor that cannot
-// reserve sequence ranges. Its complete encrypt-and-send operation is ordered,
-// so it is safe but intentionally cannot encrypt multiple batches in parallel.
-func NewPeerBatched(id string, encryptFn func(raw []byte, nextHeader byte) ([]byte, error), transmitBatchFn func(sealed [][]byte) error) *Peer {
-	return newPeer(id, encryptFn, nil, transmitBatchFn, nil)
-}
-
 // NewPeerReserved constructs a peer whose expensive encryption can run in
 // parallel. reserveFn is called in packet-intake order and must return a sealer
 // owning count consecutive sequence numbers from the current outbound SA.
 // transmitBatchFn must finish using every packet before returning.
 // events records the peer's changes of state under its ID, nil recording nothing
 func NewPeerReserved(id string, reserveFn func(count int) (BatchSealer, error), transmitBatchFn func(sealed [][]byte) error, events func(kind, peer string, attrs ...slog.Attr)) *Peer {
-	return newPeer(id, nil, reserveFn, transmitBatchFn, events)
-}
-
-func newPeer(id string, encryptFn func(raw []byte, nextHeader byte) ([]byte, error), reserveFn func(count int) (BatchSealer, error), transmitBatchFn func(sealed [][]byte) error, events func(kind, peer string, attrs ...slog.Attr)) *Peer {
-	p := &Peer{ID: id, encryptFn: encryptFn, reserveFn: reserveFn, transmitBatchFn: transmitBatchFn,
+	p := &Peer{ID: id, reserveFn: reserveFn, transmitBatchFn: transmitBatchFn,
 		events: events, started: time.Now()}
 	p.mtu.Store(DefaultMTU)
 	p.sendErrReported.Store(-int64(sendErrReportInterval))
-	if reserveFn == nil {
-		p.sendCond = sync.NewCond(&p.sendMu)
-	} else {
-		p.dataBudget.limit = peerDataBudget
-		p.controlBudget.limit = controlQueueSize
-		// every batch with a ticket holds at least leastPacketBytes of the data budget or one packet of the control one
-		// so the queue holds them all and enqueue never waits
-		p.completed = make(chan *peerBatch, peerDataBudget/leastPacketBytes+controlQueueSize)
-		p.sealedPool = make([]sync.Pool, bits.Len(peerDataBudget)+1)
-		p.stop = make(chan struct{})
-		p.senderDone = make(chan struct{})
-		go p.senderLoop()
-	}
+	p.dataBudget.limit = peerDataBudget
+	p.controlBudget.limit = controlQueueSize
+	// every batch with a ticket holds at least leastPacketBytes of the data budget or one packet of the control one
+	// so the queue holds them all and enqueue never waits
+	p.completed = make(chan *peerBatch, peerDataBudget/leastPacketBytes+controlQueueSize)
+	p.sealedPool = make([]sync.Pool, bits.Len(peerDataBudget)+1)
+	p.stop = make(chan struct{})
+	p.senderDone = make(chan struct{})
+	go p.senderLoop()
 	return p
 }
 
@@ -164,12 +127,8 @@ func (p *Peer) MTU() int { return int(p.mtu.Load()) }
 // TakeSent reports whether the sender handed the transport a data packet since the last call
 func (p *Peer) TakeSent() bool { return p.sent.Swap(false) }
 
-// Close stops the reserved peer's ordered sender. Compatibility peers do not
-// own a goroutine, so closing them is a no-op.
+// Close stops the peer's ordered sender
 func (p *Peer) Close() {
-	if p == nil || p.stop == nil {
-		return
-	}
 	p.closeOnce.Do(func() { close(p.stop) })
 	grace := p.closeGrace
 	if grace <= 0 {
@@ -239,16 +198,14 @@ func (p *Place) Send() error { return p.batch.enqueue() }
 func (p *Place) OnFailure(f func(error)) { p.batch.onFailure = f }
 
 type peerBatch struct {
-	peer      *Peer
-	ticket    uint64
-	reserved  bool
-	sealer    BatchSealer
-	sealed    [][]byte
-	storage   *[][]byte
-	raw       [][]byte
-	headers   []byte
-	encrypted bool
-	err       error
+	peer    *Peer
+	ticket  uint64
+	sealer  BatchSealer
+	sealed  [][]byte
+	storage *[][]byte
+	raw     [][]byte
+	headers []byte
+	err     error
 	// counted says this batch's packets have already reached p.dropped, so
 	// whoever discards it last leaves the counter alone. Only reserve failure
 	// counts early, because that is where the packet count is still known, and
@@ -256,7 +213,6 @@ type peerBatch struct {
 	// batch that failed to seal, say) as counted too, and lose those
 	// packets from the counter entirely.
 	counted bool
-	done    chan error
 	// onFailure is the caller's completion signal, set through Place. failed
 	// keeps it to one call: a batch reaches exactly one terminal state, but
 	// several sites decide it.
@@ -266,7 +222,7 @@ type peerBatch struct {
 	// keyed by the control budget's one packet, every babel place would take storage a path MTU probe grew
 	size int
 	// held is the part of its peer's budget this batch holds, bytes of the data budget or packets of the control one
-	// zero once it is given back, or for a peer with no budget
+	// zero once it is given back
 	held int
 	// control says which budget the place came from, so it goes back where it
 	// was taken from.
@@ -319,10 +275,6 @@ func (p *Peer) reserveBatchNow(count, bytes int) *peerBatch {
 // reserveNow takes a batch of count packets and size if it fits, and otherwise reports the packets dropped
 // a data batch holds its size of the data budget and a control place its packets of the control one
 func (p *Peer) reserveNow(count, size int, control bool) *peerBatch {
-	// a compatibility peer sends in its caller and holds no budget
-	if p.completed == nil {
-		return p.reserveTicket(count, size, 0, control)
-	}
 	budget, n := &p.dataBudget, size
 	if control {
 		budget, n = &p.controlBudget, count
@@ -338,7 +290,7 @@ func (p *Peer) reserveNow(count, size int, control bool) *peerBatch {
 		p.dropped.Add(uint64(count))
 		return nil
 	}
-	return p.reserveTicket(count, size, n, control)
+	return p.reserveTicket(count, size, control)
 }
 
 // Dropped counts the packets this peer did not transmit on purpose: its
@@ -361,15 +313,17 @@ func (p *Peer) DelayDropped() uint64 { return p.delayDropped.Load() }
 func (p *Peer) SendFailed() uint64 { return p.sendFailed.Load() }
 
 // reserveTicket takes the peer's next ticket and its sequence range for count packets
-// for a batch of size that holds held of a budget
-func (p *Peer) reserveTicket(count, size, held int, control bool) *peerBatch {
+// for a batch of size, which holds size of the data budget or count places of the control one
+func (p *Peer) reserveTicket(count, size int, control bool) *peerBatch {
+	held := size
+	if control {
+		held = count
+	}
 	p.reserveMu.Lock()
 	ticket := p.reserved
 	p.reserved++
-	b := &peerBatch{peer: p, ticket: ticket, reserved: p.reserveFn != nil, size: size, held: held, control: control}
-	if p.reserveFn != nil {
-		b.sealer, b.err = p.reserveFn(count)
-	}
+	b := &peerBatch{peer: p, ticket: ticket, size: size, held: held, control: control}
+	b.sealer, b.err = p.reserveFn(count)
 	p.reserveMu.Unlock()
 	b.admitted = time.Since(p.started)
 	if b.err != nil {
@@ -386,45 +340,29 @@ func (p *Peer) reserveTicket(count, size, held int, control bool) *peerBatch {
 }
 
 // append retains a view of plaintext owned by the surrounding TUN batch.
-// enqueue performs reserved batch encryption in that same worker before the
-// TUN buffers are recycled.
+// enqueue seals the batch in that same worker before the TUN buffers are
+// recycled.
 func (b *peerBatch) append(raw []byte, nextHeader byte) {
 	b.raw = append(b.raw, raw)
 	b.headers = append(b.headers, nextHeader)
 }
 
 func (b *peerBatch) encrypt() {
-	if b.encrypted || b.err != nil {
+	if b.err != nil {
 		return
 	}
-	b.encrypted = true
-	if b.reserved {
-		b.storage, _ = b.peer.storagePool(b.size).Get().(*[][]byte)
-		if b.storage == nil {
-			b.storage = new([][]byte)
-		}
-		b.sealed, b.err = b.sealer(b.raw, b.headers, *b.storage)
-		return
+	b.storage, _ = b.peer.storagePool(b.size).Get().(*[][]byte)
+	if b.storage == nil {
+		b.storage = new([][]byte)
 	}
-	for i, raw := range b.raw {
-		sealed, err := b.peer.encryptFn(raw, b.headers[i])
-		if err != nil {
-			b.err = err
-			continue
-		}
-		b.sealed = append(b.sealed, sealed)
-	}
+	b.sealed, b.err = b.sealer(b.raw, b.headers, *b.storage)
 }
 
-// enqueue hands a completed reserved batch to the dedicated ordered sender and
-// returns as soon as the bounded queue accepts it. That keeps crypto workers
-// available while an earlier batch is in sendmmsg. Compatibility peers retain
-// their synchronous ordered path.
+// enqueue seals the batch, hands it to the peer's ordered sender and returns as
+// soon as the bounded queue accepts it, so a crypto worker never waits while an
+// earlier batch is in sendmmsg.
 func (b *peerBatch) enqueue() error {
 	p := b.peer
-	if p.completed == nil {
-		return b.transmit()
-	}
 	b.encrypt()
 	p.queueMu.Lock()
 	if p.queueClosed {
@@ -476,69 +414,6 @@ func (b *peerBatch) fail(err error) {
 	b.onFailure(err)
 }
 
-// transmit is the synchronous form used by control traffic and tests. Routed
-// data uses enqueue so workers never wait for the transport syscall.
-func (b *peerBatch) transmit() error {
-	p := b.peer
-	if p.completed != nil {
-		b.done = make(chan error, 1)
-		if err := b.enqueue(); err != nil {
-			return err
-		}
-		// Waited for on the answer alone. Every batch that carries done is
-		// answered exactly once: the sender answers what it transmits, and
-		// discardQueued answers what it gives back, and those are the only two
-		// readers of the queue. Racing that against p.stop made a batch the
-		// transport had already taken report "closed" whenever the close won
-		// the pick, which is about half the time once both are ready.
-		return <-b.done
-	}
-
-	p.sendMu.Lock()
-	for b.ticket != p.nextSend {
-		p.sendCond.Wait()
-	}
-	defer func() {
-		p.nextSend++
-		p.sendCond.Broadcast()
-		p.sendMu.Unlock()
-	}()
-
-	return b.send()
-}
-
-func (b *peerBatch) send() error {
-	p := b.peer
-	if !b.reserved {
-		b.encrypt()
-	}
-	var sendErr error
-	if len(b.sealed) != 0 {
-		sendErr = p.transmitBatchFn(b.sealed)
-		if sendErr != nil && b.err == nil {
-			b.err = sendErr
-		}
-	}
-	// A compatibility peer has no sender goroutine, so this is the only place
-	// its packets can be counted, and without it Dropped was structurally zero
-	// on an exported constructor. Counted in two parts because they mean
-	// different things, and by difference rather than by batch so a batch that
-	// sealed some of its packets and lost the rest says so.
-	if !b.counted {
-		if missing := len(b.raw) - len(b.sealed); missing > 0 {
-			p.dropped.Add(uint64(missing))
-		}
-		if sendErr != nil {
-			p.sendFailed.Add(uint64(len(b.sealed)))
-		}
-		b.counted = true
-	}
-	if b.err != nil {
-		b.fail(b.err)
-	}
-	return b.err
-}
-
 // discardQueued gives back every batch the sender still holds, in ticket
 // order so a caller watching the counter sees what it expects, and drains
 // whatever else is already in the queue behind them.
@@ -560,10 +435,7 @@ func (p *Peer) discardQueued(pending map[uint64]*peerBatch) {
 				if p.noteDiscarded != nil {
 					p.noteDiscarded(ticket)
 				}
-				err := b.abandon()
-				if b.done != nil {
-					b.done <- err
-				}
+				b.abandon()
 			}
 			return
 		}
@@ -623,14 +495,12 @@ func (p *Peer) senderLoop() {
 				// Everything queued behind the stop is given back rather than
 				// left where it is: each of these holds part of a budget
 				// and a place in the order, and its packets have been counted
-				// by nothing. A caller waiting on one is told, or transmit
-				// never returns.
+				// by nothing.
 				p.discardQueued(pending)
 				return
 			}
 		}
-		// Small packets such as TCP ACKs arrive as individual TUN reads. Merge
-		// completed work without waiting for another packet or changing order.
+		// small packets such as TCP ACKs arrive one TUN read each, so the sender takes every batch already queued before it transmits
 	drain:
 		for range cap(p.completed) {
 			select {
@@ -694,9 +564,7 @@ func (p *Peer) senderLoop() {
 			if b.err != nil {
 				b.fail(b.err)
 			}
-			if b.done != nil {
-				b.done <- b.err
-			} else if b.err != nil {
+			if b.err != nil {
 				p.noteSendError(b.err)
 			}
 		}

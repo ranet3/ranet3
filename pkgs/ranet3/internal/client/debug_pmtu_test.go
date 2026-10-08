@@ -162,7 +162,7 @@ func TestPMTUViewNamesASessionItDoesNotSearch(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = mux.Close() })
 	d := newPathDriver(mux, nil, events.New(), &probeTotals{}, noSteering, driverProbeTimeout, confirmInterval)
-	d.peer, d.endpoint = netstack.NewPeer("example/peer/0@0", nil, nil), mux.Endpoint()
+	d.peer, d.endpoint = sinkPeer(t, "example/peer/0@0"), mux.Endpoint()
 	d.start(1400, math.MaxInt)
 	c := pmtuClient(d, 1400)
 	s := c.DebugPMTU("").Sessions[0]

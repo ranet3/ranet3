@@ -58,7 +58,7 @@ func TestTUNSteersAReadAsLargeAsTheDevice(t *testing.T) {
 	t.Cleanup(m.Close)
 	m.SetSteering(steering)
 	sent := &recordingPeer{}
-	first := sent.peer("exit")
+	first := sent.peer(t, "exit")
 	first.SetMTU(largest)
 	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(exit, 128), first)
 	assignPeer(t, m.Name, tunAddress, tunPeer)
@@ -66,8 +66,8 @@ func TestTUNSteersAReadAsLargeAsTheDevice(t *testing.T) {
 	// a UDP datagram filling the device's MTU, under a 20 byte IPv4 and an 8 byte UDP header
 	payload := bytes.Repeat([]byte("jumbo"), device)[:device-20-8]
 	sendUDP(t, tunPeer, payload)
-	waitUntil(t, "the steered packet to reach the peer of its first segment", func() bool { return len(sent.packets()) > 0 })
-	packet := sent.packets()[0]
+	waitUntil(t, "the steered packet to reach the peer of its first segment", func() bool { return len(sent.packets(t)) > 0 })
+	packet := sent.packets(t)[0]
 	if len(packet) != largest {
 		t.Fatalf("the peer of the first segment was sent %d bytes, want the %d of a steered read as large as the device", len(packet), largest)
 	}
@@ -111,14 +111,14 @@ func TestTUNTakesAnMTUSetAfterOpening(t *testing.T) {
 		}
 
 		sent := &recordingPeer{}
-		peer := sent.peer("peer")
+		peer := sent.peer(t, "peer")
 		peer.SetMTU(jumbo)
 		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(tunPeer, 32), peer)
 		assignPeer(t, m.Name, tunAddress, tunPeer)
 		payload := bytes.Repeat([]byte("eight kib"), 1024)[:8<<10]
 		sendUDP(t, tunPeer, payload)
-		waitUntil(t, "the datagram to reach the peer", func() bool { return len(sent.packets()) > 0 })
-		packet := sent.packets()[0]
+		waitUntil(t, "the datagram to reach the peer", func() bool { return len(sent.packets(t)) > 0 })
+		packet := sent.packets(t)[0]
 		if len(packet) != 20+8+len(payload) || !bytes.Equal(packet[20+8:], payload) {
 			t.Fatalf("the peer was sent %d bytes, want the %d byte datagram whole", len(packet), 20+8+len(payload))
 		}
@@ -343,7 +343,7 @@ func TestTUNPacketTooBigTeachesTheKernel(t *testing.T) {
 			}
 			t.Cleanup(m.Close)
 			sent := &recordingPeer{}
-			peer := sent.peer("peer")
+			peer := sent.peer(t, "peer")
 			peer.SetMTU(session)
 			m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(family.peer, family.peer.BitLen()), peer)
 			family.assign(t, m.Name)
@@ -395,17 +395,20 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 			transit.SetSegments(segments)
 			// a session hands what it carries to the mesh at its far end, as the peer decrypting it does
 			session := func(id string, far *Mesh, mtu int) *Peer {
-				peer := NewPeer(id, func(raw []byte, _ byte) ([]byte, error) { return bytes.Clone(raw), nil }, func(sealed []byte) error {
-					far.DeliverInbound(sealed, mtu)
+				peer := NewPeerReserved(id, func(int) (BatchSealer, error) { return cloning, nil }, func(sealed [][]byte) error {
+					for _, raw := range sealed {
+						far.DeliverInbound(raw, mtu)
+					}
 					return nil
-				})
+				}, nil)
+				t.Cleanup(peer.Close)
 				peer.SetMTU(mtu)
 				return peer
 			}
 			headend.Routes.Set(netip.Prefix{}, netip.PrefixFrom(waypoint, 128), session("waypoint", transit, headendSession))
 			transit.Routes.Set(netip.Prefix{}, netip.PrefixFrom(family.local, family.local.BitLen()), session("headend", headend, headendSession))
 			exited := &recordingPeer{}
-			toExit := exited.peer("exit")
+			toExit := exited.peer(t, "exit")
 			toExit.SetMTU(waypointSession)
 			transit.Routes.Set(netip.Prefix{}, netip.PrefixFrom(exit, 128), toExit)
 
@@ -426,8 +429,8 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 			if _, err := unix.Write(fd, payload); err != nil {
 				t.Fatalf("send a %d byte packet: %v", learned, err)
 			}
-			waitUntil(t, "the datagram the sender sent at its new path MTU to reach the exit", func() bool { return len(exited.packets()) > 0 })
-			sent := exited.packets()
+			waitUntil(t, "the datagram the sender sent at its new path MTU to reach the exit", func() bool { return len(exited.packets(t)) > 0 })
+			sent := exited.packets(t)
 			if len(sent) != 1 || len(sent[0]) != waypointSession {
 				t.Fatalf("the exit was sent %d packets, the first of %d bytes, want the one %d byte segment the sender's second datagram became", len(sent), len(sent[0]), waypointSession)
 			}
@@ -452,7 +455,7 @@ func TestTUNClampsTheMSSOfASYN(t *testing.T) {
 	}
 	t.Cleanup(m.Close)
 	sent := &recordingPeer{}
-	peer := sent.peer("peer")
+	peer := sent.peer(t, "peer")
 	peer.SetMTU(session)
 	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(tunPeer6, 128), peer)
 	assignIPv6(t, m.Name, tunAddress6)
@@ -465,8 +468,8 @@ func TestTUNClampsTheMSSOfASYN(t *testing.T) {
 	if err := unix.Connect(fd, &unix.SockaddrInet6{Port: 9, Addr: tunPeer6.As16()}); err != unix.EINPROGRESS {
 		t.Fatalf("connect to %s: %v", tunPeer6, err)
 	}
-	waitUntil(t, "the SYN to reach the peer", func() bool { return len(sent.packets()) > 0 })
-	if got, want := mssOf(t, sent.packets()[0]), session-40-20; got != want {
+	waitUntil(t, "the SYN to reach the peer", func() bool { return len(sent.packets(t)) > 0 })
+	if got, want := mssOf(t, sent.packets(t)[0]), session-40-20; got != want {
 		t.Fatalf("the SYN carries an MSS of %d, want the %d a %d byte session carries", got, want, session)
 	}
 }

@@ -62,7 +62,7 @@ func TestRouteDumpReportsSelectionAndHolds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer := netstack.NewPeer("example/gateway@0", nil, nil)
+	peer := &netstack.Peer{ID: "example/gateway@0"}
 	handle := speaker.AddPeer(peer)
 	defer handle.Close()
 	neighbor := speaker.neighbors[peer.ID]
@@ -95,7 +95,7 @@ func TestNeighborStatsCarryBothDirections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer := netstack.NewPeer("example/gateway@0", nil, nil)
+	peer := &netstack.Peer{ID: "example/gateway@0"}
 	handle := speaker.AddPeer(peer)
 	defer handle.Close()
 

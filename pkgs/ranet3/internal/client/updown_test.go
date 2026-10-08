@@ -134,8 +134,7 @@ func (h *heldSessions) adopt(t testing.TB, c *Client, path string) *ike.Session 
 	t.Helper()
 	sess := &ike.Session{}
 	release, adopted := c.sessions.adoptPreferred(path, sess, true, func() func() {
-		peer := netstack.NewPeer(path, func(raw []byte, _ byte) ([]byte, error) { return raw, nil }, func([]byte) error { return nil })
-		return c.speaker.AddPeer(peer).Close
+		return c.speaker.AddPeer(sinkPeer(t, path)).Close
 	})
 	if !adopted {
 		t.Fatalf("%s was not adopted", path)

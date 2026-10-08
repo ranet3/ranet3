@@ -15,7 +15,7 @@ import (
 
 func TestRouteTableExpiryAndRecovery(t *testing.T) {
 	now := time.Now()
-	n := &neighborState{peer: netstack.NewPeer("peer", nil, nil)}
+	n := &neighborState{peer: &netstack.Peer{ID: "peer"}}
 	makeNeighborReachable(n)
 	key := routeKey{dest: netip.MustParsePrefix("10.0.0.0/24")}
 	var selected routeSelection
@@ -58,7 +58,7 @@ func TestRouteTableExpiryAndRecovery(t *testing.T) {
 
 func TestRouteTableNeighborExpiryDeletesEmptyEntry(t *testing.T) {
 	rt := newRouteTable(func(routeKey, routeSelection) {})
-	n := &neighborState{peer: netstack.NewPeer("peer", nil, nil)}
+	n := &neighborState{peer: &netstack.Peer{ID: "peer"}}
 	key := routeKey{dest: netip.MustParsePrefix("10.0.0.0/24")}
 	rt.update(n, key, advertisement{routerID: [8]byte{1}, seqno: 1, metric: 1}, time.Minute, time.Now())
 	rt.expireNeighbor(n, time.Now())
@@ -72,7 +72,7 @@ func TestInfiniteLinkCostNeverBecomesReachable(t *testing.T) {
 		t.Fatalf("infinity + 1 = %d, want infinity", got)
 	}
 	rt := newRouteTable(func(routeKey, routeSelection) { t.Fatal("installed route without live Hello/IHU") })
-	n := &neighborState{peer: netstack.NewPeer("peer", nil, nil)}
+	n := &neighborState{peer: &netstack.Peer{ID: "peer"}}
 	key := routeKey{dest: netip.MustParsePrefix("10.0.0.0/24")}
 	rt.update(n, key, advertisement{routerID: [8]byte{1}, seqno: 1, metric: 1}, time.Minute, time.Now())
 }
@@ -84,7 +84,7 @@ func TestInfiniteLinkCostNeverBecomesReachable(t *testing.T) {
 // under RFC 9616 costing is most IHUs.
 func TestSelectedMetricChangeIsAdvertisedRatherThanReinstalled(t *testing.T) {
 	now := time.Now()
-	n := &neighborState{peer: netstack.NewPeer("peer", nil, nil)}
+	n := &neighborState{peer: &netstack.Peer{ID: "peer"}}
 	makeNeighborReachable(n)
 	installs := 0
 	var got routeSelection
@@ -144,7 +144,7 @@ func TestUnfeasibleUpdateIsNeverSelected(t *testing.T) {
 	now := time.Now()
 	origin := [8]byte{1}
 	key := routeKey{dest: netip.MustParsePrefix("10.0.0.0/24")}
-	n := &neighborState{peer: netstack.NewPeer("peer", nil, nil)}
+	n := &neighborState{peer: &netstack.Peer{ID: "peer"}}
 	makeNeighborReachable(n)
 	rt := newRouteTable(func(routeKey, routeSelection) {})
 	rt.observe(key, advertisement{routerID: origin, seqno: 1, metric: 40}, "peer", now)
@@ -178,7 +178,7 @@ func TestSelectionRechecksFeasibility(t *testing.T) {
 	now := time.Now()
 	origin := [8]byte{1}
 	key := routeKey{dest: netip.MustParsePrefix("10.0.0.0/24")}
-	n := &neighborState{peer: netstack.NewPeer("peer", nil, nil)}
+	n := &neighborState{peer: &netstack.Peer{ID: "peer"}}
 	makeNeighborReachable(n)
 	rt := newRouteTable(func(routeKey, routeSelection) {})
 	rt.update(n, key, advertisement{routerID: origin, seqno: 1, metric: 39}, time.Minute, now)
@@ -199,8 +199,8 @@ func TestSelectionRechecksFeasibility(t *testing.T) {
 func TestHysteresisIgnoresFlappingChallenger(t *testing.T) {
 	now := time.Now()
 	key := routeKey{dest: netip.MustParsePrefix("10.0.0.0/24")}
-	steady := &neighborState{peer: netstack.NewPeer("steady", nil, nil)}
-	flappy := &neighborState{peer: netstack.NewPeer("flappy", nil, nil)}
+	steady := &neighborState{peer: &netstack.Peer{ID: "steady"}}
+	flappy := &neighborState{peer: &netstack.Peer{ID: "flappy"}}
 	makeNeighborReachable(steady)
 	makeNeighborReachable(flappy)
 	rt := newRouteTable(func(routeKey, routeSelection) {})
@@ -231,7 +231,7 @@ func TestHysteresisIgnoresFlappingChallenger(t *testing.T) {
 // and a packet bouncing until its hop limit is spent.
 func TestRetractionHoldsThePrefixForItsOwnInterval(t *testing.T) {
 	now := time.Now()
-	n := &neighborState{peer: netstack.NewPeer("peer", nil, nil)}
+	n := &neighborState{peer: &netstack.Peer{ID: "peer"}}
 	makeNeighborReachable(n)
 	key := routeKey{dest: netip.MustParsePrefix("10.0.0.0/24")}
 	rt := newRouteTable(func(routeKey, routeSelection) {})
@@ -261,7 +261,7 @@ func TestRetractionHoldsThePrefixForItsOwnInterval(t *testing.T) {
 // the prefix falls through to a covering route almost at once.
 func TestRepeatedRetractionsNeitherExtendNorCutTheHold(t *testing.T) {
 	now := time.Now()
-	n := &neighborState{peer: netstack.NewPeer("peer", nil, nil)}
+	n := &neighborState{peer: &netstack.Peer{ID: "peer"}}
 	makeNeighborReachable(n)
 	key := routeKey{dest: netip.MustParsePrefix("10.0.0.0/24")}
 	const hold = time.Minute
@@ -295,7 +295,7 @@ func TestRepeatedRetractionsNeitherExtendNorCutTheHold(t *testing.T) {
 // replaces would have.
 func TestWildcardRetractionHoldsEveryPrefixItTakes(t *testing.T) {
 	now := time.Now()
-	n := &neighborState{peer: netstack.NewPeer("peer", nil, nil)}
+	n := &neighborState{peer: &netstack.Peer{ID: "peer"}}
 	makeNeighborReachable(n)
 	rt := newRouteTable(func(routeKey, routeSelection) {})
 	const hold = time.Minute
@@ -327,8 +327,8 @@ func TestWildcardRetractionHoldsEveryPrefixItTakes(t *testing.T) {
 func TestRetractionDoesNotPoisonSmoothedMetric(t *testing.T) {
 	rt := newRouteTable(func(routeKey, routeSelection) {})
 	rt.tau = time.Minute
-	good := &neighborState{peer: netstack.NewPeer("good", nil, nil)}
-	backup := &neighborState{peer: netstack.NewPeer("backup", nil, nil)}
+	good := &neighborState{peer: &netstack.Peer{ID: "good"}}
+	backup := &neighborState{peer: &netstack.Peer{ID: "backup"}}
 	makeNeighborReachable(good)
 	makeNeighborReachable(backup)
 	key := routeKey{dest: netip.MustParsePrefix("fd00:1::/64")}
@@ -365,7 +365,7 @@ func TestRetractionDoesNotPoisonSmoothedMetric(t *testing.T) {
 // so the ceiling has to be ours rather than theirs.
 func TestRouteTableRefusesMorePrefixesThanItsLimit(t *testing.T) {
 	rt := newRouteTable(func(routeKey, routeSelection) {})
-	peer := &neighborState{peer: netstack.NewPeer("flood", nil, nil)}
+	peer := &neighborState{peer: &netstack.Peer{ID: "flood"}}
 	makeNeighborReachable(peer)
 	now := time.Now()
 	adv := advertisement{routerID: [8]byte{1}, seqno: 1, metric: 64}

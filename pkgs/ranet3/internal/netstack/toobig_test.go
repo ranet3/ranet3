@@ -86,7 +86,7 @@ func readOff(tb testing.TB, raw []byte, steering *srv6.SteerTable, mtu int) (*ou
 		outboundBufferSize: tunOffset + len(raw) + steering.Overhead()}
 	m.startSegmentReports()
 	m.SetSteering(steering)
-	peer := (&recordingPeer{}).peer("peer")
+	peer := (&recordingPeer{}).peer(tb, "peer")
 	peer.SetMTU(mtu)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
@@ -214,7 +214,7 @@ func waypointOf(tb testing.TB, after netip.Addr, session *Peer) (*Mesh, *recordi
 	m.SetSegments(table)
 	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(after, 128), session)
 	sender := &recordingPeer{}
-	back := sender.peer("sender")
+	back := sender.peer(tb, "sender")
 	for _, source := range tooBigSource {
 		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(source, source.BitLen()), back)
 	}
@@ -222,9 +222,9 @@ func waypointOf(tb testing.TB, after netip.Addr, session *Peer) (*Mesh, *recordi
 }
 
 // sessionOf is a peer carrying mtu byte packets, and what it was sent
-func sessionOf(mtu int) (*Peer, *recordingPeer) {
+func sessionOf(tb testing.TB, mtu int) (*Peer, *recordingPeer) {
 	sent := &recordingPeer{}
-	peer := sent.peer("next")
+	peer := sent.peer(tb, "next")
 	peer.SetMTU(mtu)
 	return peer, sent
 }
@@ -279,7 +279,7 @@ func (s headerShape) around(outer []byte) []byte {
 func TestSegmentsPastTheirNextSessionAreAnsweredAtABoundedRate(t *testing.T) {
 	const flood = 64
 	after := segAddr("3fff:1:69c:98d6::1")
-	session, next := sessionOf(srv6.MinimumIPv6MTU + srv6.Overhead(2))
+	session, next := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
 	m, sender := waypointOf(t, after, session)
 	batch := make([][]byte, flood)
 	for i := range batch {
@@ -289,7 +289,7 @@ func TestSegmentsPastTheirNextSessionAreAnsweredAtABoundedRate(t *testing.T) {
 	if left := m.applySegments(batch, DefaultMTU); len(left) != 0 {
 		t.Fatalf("%d segments reached the tun", len(left))
 	}
-	answers := sender.packets()
+	answers := sender.packets(t)
 	if len(answers) == 0 || len(answers) > icmpBurst {
 		t.Errorf("%d segments past their next session were answered %d times, want at least one and at most the burst of %d", flood, len(answers), icmpBurst)
 	}
@@ -298,7 +298,7 @@ func TestSegmentsPastTheirNextSessionAreAnsweredAtABoundedRate(t *testing.T) {
 			t.Errorf("answer %d goes to %s, want the source of the packet the segment carries", i, to)
 		}
 	}
-	if sent := next.packets(); len(sent) != 0 {
+	if sent := next.packets(t); len(sent) != 0 {
 		t.Errorf("%d of %d segments past their next session went on to it", len(sent), flood)
 	}
 	if counters := m.SegmentCounters(); counters.Dropped != flood || counters.Answered != uint64(len(answers)) || counters.Forwarded != 0 {
@@ -335,7 +335,7 @@ func TestTooBigAnswerCountsOnlyOnceQueued(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			session, _ := sessionOf(srv6.MinimumIPv6MTU + srv6.Overhead(2))
+			session, _ := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
 			m, _ := waypointOf(t, after, session)
 			test.back(t, m)
 			m.applySegments([][]byte{steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)}, DefaultMTU)
@@ -373,7 +373,7 @@ func TestSegmentPastItsNextSessionIsAnsweredOnlyAboutThePacketItsHeaderNames(t *
 		}
 	}
 	for _, c := range cases {
-		session, sent := sessionOf(srv6.MinimumIPv6MTU + srv6.Overhead(2))
+		session, sent := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
 		m, sender := waypointOf(t, after, session)
 		var outer []byte
 		if c.whole {
@@ -391,7 +391,7 @@ func TestSegmentPastItsNextSessionIsAnsweredOnlyAboutThePacketItsHeaderNames(t *
 		if left := m.applySegments([][]byte{slices.Clip(outer)}, DefaultMTU); len(left) != 0 {
 			t.Fatalf("%d segments reached the tun", len(left))
 		}
-		if answers, forwarded := sender.packets(), sent.packets(); len(answers) != 0 || len(forwarded) != 0 {
+		if answers, forwarded := sender.packets(t), sent.packets(t); len(answers) != 0 || len(forwarded) != 0 {
 			t.Errorf("a segment naming %d in front of %d bytes starting %x past its next session was answered %d times and went on as %d packets", c.next, len(c.behind), c.behind[:8], len(answers), len(forwarded))
 		}
 		if counters := m.SegmentCounters(); counters.Dropped != 1 || counters.Answered != 0 {
@@ -460,7 +460,7 @@ func TestPeerAnsweredForEveryPacketIsAskedForNoPlace(t *testing.T) {
 		if got := places(); !slices.Equal(got, []int{1}) {
 			t.Errorf("the peer was asked for places %v, want one for the one segment it carries", got)
 		}
-		if answers := sender.packets(); len(answers) != 1 {
+		if answers := sender.packets(t); len(answers) != 1 {
 			t.Errorf("the segment past its next session was answered %d times, want once", len(answers))
 		}
 	})
@@ -508,7 +508,7 @@ func TestFragmentsForAPeerThatRefusesItsReservationAreDropped(t *testing.T) {
 func TestBatchCutsEveryReadIntoTheStorageOfItsFirst(t *testing.T) {
 	const reads = 100
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), outboundBufferSize: tunOffset + outboundPacketBufferSize}
-	peer := (&recordingPeer{}).peer("peer")
+	peer := (&recordingPeer{}).peer(t, "peer")
 	peer.SetMTU(srv6.MinimumIPv6MTU)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
 	b := m.newOutboundBatch(1)
@@ -538,7 +538,7 @@ func TestPacketsPastTheirSessionAreAnsweredAtABoundedRate(t *testing.T) {
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{}),
 		outboundBufferSize: tunOffset + DefaultMTU}
 	m.startSegmentReports()
-	peer := (&recordingPeer{}).peer("peer")
+	peer := (&recordingPeer{}).peer(t, "peer")
 	peer.SetMTU(srv6.MinimumIPv6MTU)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)

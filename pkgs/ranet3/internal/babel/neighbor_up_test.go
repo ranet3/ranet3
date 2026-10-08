@@ -17,6 +17,8 @@ import (
 type tester interface {
 	Helper()
 	Fatal(args ...any)
+	Fatalf(format string, args ...any)
+	Cleanup(func())
 }
 
 // packets deliver hands over before it takes the exchange for endless
@@ -24,10 +26,10 @@ const deliveryBudget = 1 << 10
 
 // heldWire holds each packet until deliver, so a reply never goes out from inside the delivery that caused it
 type heldWire struct {
-	t                    tester
-	a, b                 *Speaker
-	peerBForA, peerAForB *netstack.Peer
-	toA, toB             [][]byte
+	t    tester
+	a, b *Speaker
+	// peerBForA holds what a sends b, and peerAForB what b sends a
+	peerBForA, peerAForB *testPeer
 }
 
 func newHeldWire(t tester, packetSize int) *heldWire {
@@ -41,46 +43,53 @@ func newHeldWire(t tester, packetSize int) *heldWire {
 	if w.b, err = New(cfg, Routes{}, Runtime{PacketSize: packetSize}, &netstack.Mesh{Routes: netstack.NewRouteTable()}); err != nil {
 		t.Fatal(err)
 	}
-	hold := func(queue *[][]byte) func([]byte) error {
-		return func(raw []byte) error {
-			*queue = append(*queue, slices.Clone(raw))
-			return nil
-		}
-	}
-	w.peerBForA = netstack.NewPeer("b", plainEncrypt, hold(&w.toB))
-	w.peerAForB = netstack.NewPeer("a", plainEncrypt, hold(&w.toA))
+	w.peerBForA = newHeldPeer(t, "b", nil)
+	w.peerAForB = newHeldPeer(t, "a", nil)
 	return w
 }
 
-func (w *heldWire) joinA() { w.a.AddPeer(w.peerBForA) }
+func (w *heldWire) joinA() { w.a.AddPeer(w.peerBForA.Peer) }
 
-func (w *heldWire) joinB() { w.b.AddPeer(w.peerAForB) }
+func (w *heldWire) joinB() { w.b.AddPeer(w.peerAForB.Peer) }
+
+// close closes both peers, for a property case, whose tester cleans up only when the whole property ends
+func (w *heldWire) close() {
+	w.peerBForA.Close()
+	w.peerAForB.Close()
+}
+
+// settle returns once both peers have queued every packet reserved on them before the call
+func (w *heldWire) settle() {
+	w.t.Helper()
+	w.peerBForA.settle(w.t)
+	w.peerAForB.settle(w.t)
+}
 
 func (w *heldWire) deliver() {
 	w.t.Helper()
-	delivered := 0
-	for len(w.toA) > 0 || len(w.toB) > 0 {
+	for delivered := 0; ; {
 		if delivered >= deliveryBudget {
 			w.t.Fatal("the speakers were still answering each other past the delivery budget")
 		}
-		if len(w.toB) > 0 {
-			raw := w.toB[0]
-			w.toB = w.toB[1:]
-			w.b.Receive(w.peerAForB, raw)
+		w.settle()
+		toB, toA := w.peerBForA.take(), w.peerAForB.take()
+		if toB == nil && toA == nil {
+			return
+		}
+		if toB != nil {
+			w.b.Receive(w.peerAForB.Peer, toB)
 			delivered++
 		}
-		if len(w.toA) > 0 {
-			raw := w.toA[0]
-			w.toA = w.toA[1:]
-			w.a.Receive(w.peerBForA, raw)
+		if toA != nil {
+			w.a.Receive(w.peerBForA.Peer, toA)
 			delivered++
 		}
 	}
 }
 
-func (w *heldWire) helloFromA() { w.b.Receive(w.peerAForB, helloPacket(w.a, "b")) }
+func (w *heldWire) helloFromA() { w.b.Receive(w.peerAForB.Peer, helloPacket(w.a, "b")) }
 
-func (w *heldWire) helloFromB() { w.a.Receive(w.peerBForA, helloPacket(w.b, "a")) }
+func (w *heldWire) helloFromB() { w.a.Receive(w.peerBForA.Peer, helloPacket(w.b, "a")) }
 
 func helloPacket(from *Speaker, neighbor string) []byte {
 	from.mu.Lock()
@@ -105,7 +114,7 @@ func TestNodeThatMissedAStartupIsToldTheNeighborsRoutesAtItsFirstHello(t *testin
 	w.joinA()
 	w.helloFromB()
 	w.deliver()
-	if peer, ok := w.a.mesh.Routes.Lookup(dest.Addr(), dest.Addr()); !ok || peer != w.peerBForA {
+	if peer, ok := w.a.mesh.Routes.Lookup(dest.Addr(), dest.Addr()); !ok || peer != w.peerBForA.Peer {
 		t.Errorf("a did not learn the neighbor's route from its first hello, and holds %v", w.a.mesh.Routes.Debug())
 	}
 }
@@ -138,7 +147,7 @@ func TestNeighborComingUpIsSentAHelloAndAskedForItsWholeTable(t *testing.T) {
 	}
 	sent := func() (greetings []greeting, requests []RouteRequest) {
 		t.Helper()
-		for _, raw := range *packets {
+		for _, raw := range packets.sent() {
 			to, _ := netip.AddrFromSlice(raw[24:40])
 			from, payload, err := parsePacket(raw, neighbor.addr)
 			if err != nil || from != speaker.linkLocal {
@@ -234,7 +243,7 @@ func TestRequestLeavesWithTheRepliesToTheHelloThatBroughtTheNeighborUp(t *testin
 		EncodeRouteRequest(RouteRequest{AE: AEWildcard}),
 	}))
 	var answers [][]TLVType
-	for _, raw := range *packets {
+	for _, raw := range packets.sent() {
 		tlvs, err := DecodePacket(raw[ipv6HeaderLen+udpHeaderLen:])
 		if err != nil {
 			t.Fatal(err)

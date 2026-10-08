@@ -102,11 +102,12 @@ func TestDumpPacketsFitTheIPv6MinimumMTU(t *testing.T) {
 		)
 	}
 	speaker.SetOriginated(routes)
-	*packets = nil
+	packets.reset()
 	speaker.flushUpdates()
 
 	carried := make(map[OriginatedRoute]bool)
-	for _, raw := range *packets {
+	dump := packets.sent()
+	for _, raw := range dump {
 		if len(raw) > srv6.MinimumIPv6MTU {
 			t.Fatalf("a packet of the dump is %d bytes, past the %d every session carries", len(raw), srv6.MinimumIPv6MTU)
 		}
@@ -128,6 +129,6 @@ func TestDumpPacketsFitTheIPv6MinimumMTU(t *testing.T) {
 		}
 	}
 	if len(carried) != len(routes) {
-		t.Fatalf("the dump carried %d of the %d prefixes in %d packets", len(carried), len(routes), len(*packets))
+		t.Fatalf("the dump carried %d of the %d prefixes in %d packets", len(carried), len(routes), len(dump))
 	}
 }

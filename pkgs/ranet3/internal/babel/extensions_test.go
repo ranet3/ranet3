@@ -52,12 +52,13 @@ func TestIPv4ViaIPv6RequestsAndAnnouncements(t *testing.T) {
 			EncodeRouteRequest(RouteRequest{AE: ae, Prefix: prefix}),
 			EncodeSeqnoRequest(SeqnoRequest{AE: ae, Prefix: prefix, RouterID: s.routerID, Seqno: 1, HopCount: 64}),
 		} {
-			*packets = nil
+			packets.reset()
 			s.handlePacket(neighbor, EncodePacket([]RawTLV{request}))
-			if len(*packets) != 1 {
-				t.Fatalf("AE %d request produced %d replies", ae, len(*packets))
+			sent := packets.sent()
+			if len(sent) != 1 {
+				t.Fatalf("AE %d request produced %d replies", ae, len(sent))
 			}
-			tlvs, err := DecodePacket((*packets)[0][48:])
+			tlvs, err := DecodePacket(sent[0][48:])
 			if err != nil {
 				t.Fatal(err)
 			}

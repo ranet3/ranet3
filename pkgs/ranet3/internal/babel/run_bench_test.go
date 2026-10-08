@@ -31,7 +31,7 @@ func fillRouteTable(tb testing.TB, neighbors, prefixes int) *Speaker {
 	now := time.Now()
 	var states []*neighborState
 	for i := range neighbors {
-		handle := s.AddPeer(netstack.NewPeer(fmt.Sprintf("peer%d", i), nil, nil))
+		handle := s.AddPeer(&netstack.Peer{ID: fmt.Sprintf("peer%d", i)})
 		n := handle.state
 		n.alive, n.lastHelloTime, n.helloInterval = true, now, 4*time.Second
 		n.haveReportedCost, n.reportedCost, n.ihuExpiry = true, 96, now.Add(time.Minute)
@@ -100,6 +100,11 @@ func BenchmarkRunLoopPass(b *testing.B) {
 // rollback is per packet, so the undos have to be split across the packets
 // that carry them, and the split walks the list rather than rescanning it for
 // each packet. See takeUndos.
+//
+// Every iteration starts from new peers, whose control budgets are empty, and
+// from no neighbor owing anything. At maxRouteKeys a peer's control budget
+// refuses the dump's packets past controlQueueSize, as it does in production,
+// and their prefixes are rolled back into what the neighbor is owed.
 func BenchmarkEmitDump(b *testing.B) {
 	for _, prefixes := range []int{1000, maxRouteKeys} {
 		b.Run(fmt.Sprintf("prefixes=%d", prefixes), func(b *testing.B) {
@@ -107,13 +112,26 @@ func BenchmarkEmitDump(b *testing.B) {
 			// fillRouteTable's peers carry no transport, because nothing else
 			// here sends. These do, so the reservation and the split across
 			// packets are measured rather than skipped.
-			s.mu.Lock()
-			for _, n := range s.neighbors {
-				n.peer = netstack.NewPeer(n.peer.ID,
-					plainEncrypt,
-					func([]byte) error { return nil })
+			var peers []*testPeer
+			fresh := func() {
+				// a peer settles before it closes, so closing gives back no place
+				for _, p := range peers {
+					p.settle(b)
+					p.Close()
+				}
+				peers = peers[:0]
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				for _, n := range s.neighbors {
+					p := newTestPeer(b, n.peer.ID, nil)
+					peers = append(peers, p)
+					n.peer = p.Peer
+					clear(n.owed)
+				}
+				s.retryAt = time.Time{}
 			}
-			s.mu.Unlock()
+			fresh()
+			var refused, iterations uint64
 			b.ResetTimer()
 			for b.Loop() {
 				now := time.Now()
@@ -121,7 +139,16 @@ func BenchmarkEmitDump(b *testing.B) {
 				send := s.emitLocked(s.updateActions(now))
 				s.mu.Unlock()
 				send()
+
+				b.StopTimer()
+				for _, p := range peers {
+					refused += p.Dropped()
+				}
+				iterations++
+				fresh()
+				b.StartTimer()
 			}
+			b.ReportMetric(float64(refused)/float64(iterations), "refused/op")
 		})
 	}
 }

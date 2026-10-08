@@ -1126,7 +1126,7 @@ func TestSkippedRoutesAreNotCountedAndDoNotFailPass(t *testing.T) {
 // retracted it.
 func TestRetractedPrefixIsHeldInKernelTable(t *testing.T) {
 	r, table, kernel := harness(t, Table{})
-	peer := netstack.NewPeer("peer", nil, nil)
+	peer := &netstack.Peer{ID: "peer"}
 	covering := prefix("2001:db8::/32")
 	retracted := prefix("2001:db8:1::/48")
 	table.Set(netip.Prefix{}, covering, peer)
@@ -1209,7 +1209,7 @@ func TestWhereComesFromThePlatform(t *testing.T) {
 // box is a requirement of this tool, not a nicety.
 func TestPrefixesTheMeshCannotCarryAreNotInstalled(t *testing.T) {
 	r, table, kernel := harness(t, Table{})
-	peer := netstack.NewPeer("peer", nil, nil)
+	peer := &netstack.Peer{ID: "peer"}
 	refused := []netip.Prefix{
 		prefix("ff00::/8"),
 		prefix("ff02::1/128"),

@@ -4,6 +4,7 @@
 package netstack
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/bits"
@@ -20,10 +21,20 @@ func passThrough(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
 	return append(out[:0], raw...), nil
 }
 
+// cloning seals each packet as a copy of its own
+// for a peer whose plaintext is recycled before its sender transmits
+func cloning(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
+	out = out[:0]
+	for _, packet := range raw {
+		out = append(out, bytes.Clone(packet))
+	}
+	return out, nil
+}
+
 // waitForBudget waits until both budgets of p hold nothing
-func waitForBudget(t *testing.T, p *Peer) {
-	t.Helper()
-	waitUntil(t, "the peer to give back both of its budgets", func() bool {
+func waitForBudget(tb testing.TB, p *Peer) {
+	tb.Helper()
+	waitUntil(tb, "the peer to give back both of its budgets", func() bool {
 		return p.dataBudget.used.Load() == 0 && p.controlBudget.used.Load() == 0
 	})
 }
@@ -219,20 +230,20 @@ func TestBudgetComesBackOnEveryPath(t *testing.T) {
 	}
 	sealing := func(int) (BatchSealer, error) { return passThrough, nil }
 	sent := func([][]byte) error { return nil }
-	transmitThree := func(t *testing.T, p *Peer) {
+	sendThree := func(t *testing.T, p *Peer) {
 		b := filled(p, 3)
 		if b == nil {
 			t.Fatal("an empty budget refused the batch")
 		}
-		_ = b.transmit()
+		_ = b.enqueue()
 	}
 	for _, test := range []path{
-		{name: "sent", reserve: sealing, send: sent, drive: transmitThree},
-		{name: "lost in the transport", reserve: sealing, send: func([][]byte) error { return sendErr }, drive: transmitThree, failed: 3},
+		{name: "sent", reserve: sealing, send: sent, drive: sendThree},
+		{name: "lost in the transport", reserve: sealing, send: func([][]byte) error { return sendErr }, drive: sendThree, failed: 3},
 		{name: "sealed nothing", reserve: func(int) (BatchSealer, error) {
 			return func([][]byte, []byte, [][]byte) ([][]byte, error) { return nil, sealErr }, nil
-		}, send: sent, drive: transmitThree, dropped: 3},
-		{name: "refused a sequence range", reserve: func(int) (BatchSealer, error) { return nil, saErr }, send: sent, drive: transmitThree, dropped: 3},
+		}, send: sent, drive: sendThree, dropped: 3},
+		{name: "refused a sequence range", reserve: func(int) (BatchSealer, error) { return nil, saErr }, send: sent, drive: sendThree, dropped: 3},
 		{name: "closed before the batch was queued", reserve: sealing, send: sent, dropped: 3, drive: func(t *testing.T, p *Peer) {
 			b := filled(p, 3)
 			p.Close()

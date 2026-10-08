@@ -89,7 +89,7 @@ func TestMetricsNameTheNeighborsThatSendBabelPacketsInFragments(t *testing.T) {
 	}
 	peers := make(map[string]*netstack.Peer)
 	for _, id := range []string{"cutting", "whole"} {
-		peers[id] = netstack.NewPeer(id, func(raw []byte, _ byte) ([]byte, error) { return raw, nil }, func([]byte) error { return nil })
+		peers[id] = sinkPeer(t, id)
 		handle := speaker.AddPeer(peers[id])
 		t.Cleanup(handle.Close)
 	}
