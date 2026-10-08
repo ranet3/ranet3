@@ -7,7 +7,10 @@ package netstack
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"log/slog"
+	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -164,6 +167,89 @@ func TestCloseWaitsForInboundWriters(t *testing.T) {
 	case <-closed:
 	case <-time.After(deliveryTimeout):
 		t.Fatal("Close did not return once the write it waited for had finished")
+	}
+}
+
+// closingDevice accepts writes until its Close and refuses every one after it, as a closed descriptor does
+// late counts the writes that began after the test saw Mesh.Close return
+type closingDevice struct {
+	recordingDevice
+	mu         sync.Mutex
+	closed     bool
+	accepted   int
+	meshClosed atomic.Bool
+	late       atomic.Int64
+}
+
+func (d *closingDevice) Write(bufs [][]byte, _ int) (int, error) {
+	if d.meshClosed.Load() {
+		d.late.Add(1)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return 0, os.ErrClosed
+	}
+	d.accepted++
+	return len(bufs), nil
+}
+
+func (d *closingDevice) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.closed = true
+	return nil
+}
+
+func (d *closingDevice) written() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.accepted
+}
+
+// deliveries from many sessions keep coming while the mesh closes
+// every one of them returns and so does Close
+// with one queue a delivery still running writes only into the closed device
+// with several the writers are gone once Close returns, and nothing writes to the device after it
+func TestDeliveriesRacingCloseAllReturn(t *testing.T) {
+	const sessions, deliveries = 8, 4000
+	for _, lanes := range []int{1, 4} {
+		t.Run(fmt.Sprintf("%d lanes", lanes), func(t *testing.T) {
+			dev := &closingDevice{}
+			devs := make([]tun.Device, lanes)
+			for i := range devs {
+				devs[i] = dev
+			}
+			m := &Mesh{devs: devs, closed: make(chan struct{})}
+			m.startInboundWriters()
+			var delivering sync.WaitGroup
+			for session := range sessions {
+				delivering.Go(func() {
+					for i := range deliveries {
+						m.DeliverInboundBatch([][]byte{ipv6TCPPacket(uint16(40000+session), uint16(i), 1)}, DefaultMTU)
+					}
+				})
+			}
+			waitUntil(t, "a delivery to reach the device before Close", func() bool { return dev.written() > 0 })
+
+			closed := make(chan struct{})
+			go func() { m.Close(); dev.meshClosed.Store(true); close(closed) }()
+			select {
+			case <-closed:
+			case <-time.After(deliveryTimeout):
+				t.Fatal("Close did not return while deliveries were running")
+			}
+			returned := make(chan struct{})
+			go func() { delivering.Wait(); close(returned) }()
+			select {
+			case <-returned:
+			case <-time.After(deliveryTimeout):
+				t.Fatal("a delivery never returned after the mesh closed")
+			}
+			if late := dev.late.Load(); lanes > 1 && late != 0 {
+				t.Errorf("%d writes reached the device after Close returned", late)
+			}
+		})
 	}
 }
 
