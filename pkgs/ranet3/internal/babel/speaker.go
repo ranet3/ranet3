@@ -30,7 +30,8 @@
 //     before it expires.
 //   - 4: a packet is not made as large as the link's MTU allows. It stays
 //     within the IPv6 minimum MTU with its IPv6 and UDP headers, which every
-//     session carries whatever its path. See defaultPacketSize.
+//     session carries whatever its path. See defaultPacketSize. A path MTU
+//     probe is the one packet past it, see Speaker.Probe.
 //   - Appendix A.3: the smoothed metric follows an increase immediately and
 //     only damps improvements, so that a selected route which has genuinely
 //     gone bad is left at once. See routeInfo.smooth.
@@ -150,6 +151,7 @@ type Speaker struct {
 	packetSize    int
 	noTransit     bool
 	events        *events.Bus
+	probeAcked    func(peer *netstack.Peer, nonce uint16)
 
 	mesh *netstack.Mesh
 
@@ -253,7 +255,7 @@ func New(cfg Config, routes Routes, rt Runtime, mesh *netstack.Mesh) (*Speaker, 
 	}
 	s := &Speaker{
 		routerID: rt.RouterID, linkLocal: rt.LinkLocalAddr, packetSize: rt.PacketSize,
-		noTransit: !routes.Transits(), events: rt.Events,
+		noTransit: !routes.Transits(), events: rt.Events, probeAcked: rt.ProbeAcked,
 		mesh: mesh,
 
 		neighbors:      make(map[string]*neighborState),
@@ -380,11 +382,41 @@ func (s *Speaker) Receive(peer *netstack.Peer, raw []byte) bool {
 		return true // never deliver a retired session's control traffic to TUN
 	}
 	n.addr = src
-	send := s.emitLocked(s.handlePacketLocked(n, payload, time.Now()))
+	actions, acked := s.handlePacketLocked(n, payload, time.Now())
+	send := s.emitLocked(actions)
 	s.wakeForPacketLocked()
 	s.mu.Unlock()
 	send()
+	for _, nonce := range acked {
+		s.probeAcked(peer, nonce)
+	}
 	return true
+}
+
+// Probe sends the neighbor registered for peer one Ack Request carrying nonce, padded with PadN to size octets
+// size counts the whole inner IPv6 packet with its IPv6 and UDP headers, from smallestProbe to largestProbe
+// RFC 8966 section 4 has the caller keep it within the link's MTU
+// the probe leaves through peer like the speaker's other packets, crossing the path the session's data takes
+// the speaker keeps no record of it
+// Runtime.ProbeAcked hears its Ack, possibly before Probe returns
+// Probe refuses any peer but the session registered under its ID
+// Receive ignores the others too
+func (s *Speaker) Probe(peer *netstack.Peer, size int, nonce uint16) error {
+	if size < smallestProbe || size > largestProbe {
+		return fmt.Errorf("babel: a probe of %d bytes is outside %d to %d", size, smallestProbe, largestProbe)
+	}
+	s.mu.Lock()
+	n := s.neighbors[peer.ID]
+	if n == nil || n.peer != peer {
+		s.mu.Unlock()
+		return fmt.Errorf("babel: peer %s is not a session this speaker holds", peer.ID)
+	}
+	place := s.reserveTo(n, n.destination(), probeTLVs(nonce, size))
+	s.mu.Unlock()
+	if place == nil {
+		return fmt.Errorf("babel: peer %s refused a probe", peer.ID)
+	}
+	return place.Send()
 }
 
 // Originate prefers this directly attached prefix over any reflected route,

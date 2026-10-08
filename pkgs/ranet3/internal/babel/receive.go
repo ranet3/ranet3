@@ -21,17 +21,23 @@ func (s *Speaker) handlePacket(n *neighborState, raw []byte) {
 		s.mu.Unlock()
 		return
 	}
-	send := s.emitLocked(s.handlePacketLocked(n, raw, time.Now()))
+	actions, acked := s.handlePacketLocked(n, raw, time.Now())
+	send := s.emitLocked(actions)
 	s.wakeForPacketLocked()
 	s.mu.Unlock()
 	send()
+	for _, nonce := range acked {
+		s.probeAcked(n.peer, nonce)
+	}
 }
 
-func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time) []sendAction {
+// handlePacketLocked returns what the packet is answered with and the nonce of every Ack it carries
+// the caller reports the nonces once s.mu is released
+func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time) (actions []sendAction, acked []uint16) {
 	tlvs, err := DecodePacket(raw)
 	if err != nil {
 		slog.Warn("babel bad packet", "err", err)
-		return nil
+		return nil, nil
 	}
 	// Reset per packet: the sequence number this node originates rises at most
 	// once for the whole of it, however many requests it carries.
@@ -49,7 +55,6 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 		}
 	}
 
-	var actions []sendAction
 	var prefixDec PrefixDecoder
 	var routerID [8]byte
 	var haveRouterID bool
@@ -256,6 +261,11 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 				actions = append(actions, sendAction{neighbor: n, dest: n.addr, priority: priorityRequest, tlvs: []RawTLV{EncodeAck(nonce)}})
 			}
 
+		case TLVAck:
+			if nonce, err := DecodeAck(t.Body); err == nil {
+				acked = append(acked, nonce)
+			}
+
 		case TLVRouteRequest:
 			if request, err := DecodeRouteRequest(t.Body); err == nil {
 				actions = append(actions, s.routeReply(n, request, now)...)
@@ -283,7 +293,7 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 	}
 	// Requests are a direct consequence of what this packet said, so they leave
 	// with its replies. Triggered updates are aggregated by Run instead.
-	return append(actions, s.starvedActions(now)...)
+	return append(actions, s.starvedActions(now)...), acked
 }
 
 // routeReply implements RFC 8966 section 3.8.1.1: a wildcard request gets a

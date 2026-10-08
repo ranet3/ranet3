@@ -7,7 +7,9 @@ package babel
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"net"
+	"time"
 )
 
 // RouterID TLV, RFC 8966 section 4.6.7: Reserved(2) + 8-byte Router-Id.
@@ -81,10 +83,9 @@ func DecodeNextHop(body []byte) (addr net.IP, ae uint8, ignore bool, err error) 
 	return addr, ae, false, nil
 }
 
-// AckReq / Ack, RFC 8966 sections 4.6.3 and 4.6.4, used for reliable signaling of
-// e.g. link-down Updates. We answer AckReq (being unresponsive would make
-// us a badly behaved peer) but don't originate AckReq ourselves in this
-// minimal speaker.
+// AckReq and Ack, RFC 8966 sections 4.6.3 and 4.6.4
+// this node answers every AckReq
+// it sends one only as a path MTU probe, see Speaker.Probe
 func EncodeAckReq(nonce uint16, interval uint16) RawTLV {
 	body := make([]byte, 6)
 	binary.BigEndian.PutUint16(body[2:4], nonce)
@@ -106,4 +107,43 @@ func EncodeAck(nonce uint16) RawTLV {
 	body := make([]byte, 2)
 	binary.BigEndian.PutUint16(body, nonce)
 	return RawTLV{Type: TLVAck, Body: body}
+}
+
+// DecodeAck returns the Opaque an Ack echoes, the nonce of the request it answers
+func DecodeAck(body []byte) (nonce uint16, err error) {
+	if len(body) < 2 {
+		return 0, fmt.Errorf("babel: short Ack TLV")
+	}
+	if _, err := decodeOptionalSubTLVs(body[2:]); err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint16(body), nil
+}
+
+// smallestProbe and largestProbe bound a probe as an inner IPv6 packet, its IPv6 and UDP headers included
+// the smallest holds the babel header, the eight octets of its Ack Request and the two of one empty PadN
+// the largest is the 2^16-1 octets RFC 8966 section 4 allows a babel packet with its lower-layer headers
+const (
+	smallestProbe = ipv6HeaderLen + udpHeaderLen + headerLen + 8 + 2
+	largestProbe  = math.MaxUint16
+)
+
+// probeTLVs is an Ack Request carrying nonce, padded with PadN alone to make the inner IPv6 packet it travels in size octets long
+// size runs from smallestProbe to largestProbe
+func probeTLVs(nonce uint16, size int) []RawTLV {
+	request := EncodeAckReq(nonce, uint16(probeInterval/(10*time.Millisecond)))
+	tlvs := []RawTLV{request}
+	// each TLV takes two octets of type and length ahead of its body, RFC 8966 section 4.3
+	padding := size - ipv6HeaderLen - udpHeaderLen - headerLen - 2 - len(request.Body)
+	zeros := make([]byte, math.MaxUint8)
+	for padding > 0 {
+		body := min(padding-2, math.MaxUint8)
+		// a single octet left after this PadN is one no PadN fills
+		if padding-2-body == 1 {
+			body--
+		}
+		tlvs = append(tlvs, RawTLV{Type: TLVPadN, Body: zeros[:body]})
+		padding -= 2 + body
+	}
+	return tlvs
 }

@@ -126,6 +126,7 @@ func TestUnknownMandatoryExtensionsAreRejected(t *testing.T) {
 			return err
 		}},
 		{"AckReq", EncodeAckReq(1, 100), false, func(b []byte) error { _, err := DecodeAckReq(b); return err }},
+		{"Ack", EncodeAck(1), false, func(b []byte) error { _, err := DecodeAck(b); return err }},
 		{"RouteRequest", EncodeRouteRequest(RouteRequest{AE: AEIPv6, Prefix: prefix}), false, func(b []byte) error { _, err := DecodeRouteRequest(b); return err }},
 		{"WildcardRequest", EncodeRouteRequest(RouteRequest{AE: AEWildcard}), false, func(b []byte) error { _, err := DecodeRouteRequest(b); return err }},
 		{"SeqnoRequest", EncodeSeqnoRequest(SeqnoRequest{AE: AEIPv6, Prefix: prefix}), false, func(b []byte) error { _, err := DecodeSeqnoRequest(b); return err }},
