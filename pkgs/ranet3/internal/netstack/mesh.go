@@ -60,9 +60,6 @@ type Mesh struct {
 	inboundWriters     []chan inboundWriteBatch
 	closed             chan struct{}
 	closeOnce          sync.Once
-	deliveryMu         sync.Mutex
-	deliveryWG         sync.WaitGroup
-	closing            bool
 	outboundReaderWG   sync.WaitGroup
 	outboundWorkerWG   sync.WaitGroup
 	writerWG           sync.WaitGroup
@@ -564,14 +561,6 @@ func (m *Mesh) DeliverInboundBatch(raw [][]byte, mtu int) {
 	if len(raw) == 0 || len(m.devs) == 0 {
 		return
 	}
-	m.deliveryMu.Lock()
-	if m.closing {
-		m.deliveryMu.Unlock()
-		return
-	}
-	m.deliveryWG.Add(1)
-	m.deliveryMu.Unlock()
-	defer m.deliveryWG.Done()
 	// A packet addressed to one of this node's own segments is acted on here
 	// rather than written to the tun, where it would arrive as an
 	// undeliverable packet addressed to an address of ours.
@@ -601,6 +590,7 @@ func (m *Mesh) DeliverInboundBatch(raw [][]byte, mtu int) {
 		// Deferring the required headroom copy to the writer keeps it off the
 		// ordered ESP commit path and lets the writer merge adjacent entries
 		// into a larger GRO batch.
+		// an entry left in a lane after Close holds views of the session's own storage and nothing to give back
 		batch := inboundWriteBatch{packets: packets}
 		select {
 		case m.inboundWriters[lane] <- batch:
@@ -624,10 +614,6 @@ func (m *Mesh) startInboundWriters() {
 				select {
 				case first = <-queue:
 				case <-m.closed:
-					// Deliveries that began before Close may still choose the
-					// buffered send arm after closed becomes readable. Wait for
-					// those sends before abandoning their plaintext references.
-					m.deliveryWG.Wait()
 					return
 				}
 
@@ -745,12 +731,12 @@ func hashBytes(raw []byte) uint64 {
 	return h
 }
 
+// a session's delivery may run during or after Close, and touches only what outlives the mesh
+// the route table and the peers it forwards segments and answers through, a closed descriptor, which refuses the write,
+// and a lane nobody reads any more, where it leaves its entry or gives way to the closed mesh
 func (m *Mesh) Close() {
 	m.closeOnce.Do(func() {
-		m.deliveryMu.Lock()
-		m.closing = true
 		close(m.closed)
-		m.deliveryMu.Unlock()
 		for _, dev := range m.devs {
 			_ = dev.Close()
 		}
@@ -759,7 +745,6 @@ func (m *Mesh) Close() {
 			close(m.outboundJobs)
 		}
 		m.outboundWorkerWG.Wait()
-		m.deliveryWG.Wait()
 		m.writerWG.Wait()
 	})
 }
