@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-07
+updated: 2026-10-08
 order: 30
 ---
 
@@ -115,6 +115,7 @@ its connections to the reads.
 | ------------------------------------ | --------------------------------------------------------------------------- |
 | `daemon.started`, `daemon.stopping`  | the node is up, and its shutdown has begun                                  |
 | `daemon.reload`                      | the file and trust document were read again, with what applied or the error |
+| `responder.changed`                  | a reload turned `link.listen` on or off, with the answered sessions closed  |
 | `control.verb`                       | a verb over the socket, once under each session or dialer it acted on       |
 | `dial.attempt`, `dial.failed`        | a dialer sent a handshake, or ended short of a session                      |
 | `dial.woken`                         | a dialer was set going before its delay, as `redial` does                   |
@@ -128,6 +129,7 @@ its connections to the reads.
 | `ike.probe`                          | asked to prove its path, a session started a check or resent its request    |
 | `babel.neighbor.up`, `.down`         | a neighbor's hellos started arriving, or stopped or its session ended       |
 | `babel.request.sent`                 | this node asked a neighbor that came up for its whole table                 |
+| `babel.config.applied`               | the speaker took a reloaded `cap.babel`, with its intervals and cost        |
 | `babel.route.selected`, `.retracted` | a prefix's next hop changed, every time rather than once a second as logged |
 | `kernel.pass`                        | a reconciler pass that took a reload, changed, skipped anew or failed       |
 | `egress.pass`                        | a translator pass that rewrote its rules, moved its prefixes or failed      |
@@ -139,11 +141,14 @@ its connections to the reads.
 
 A `daemon.reload` names in `applied` the capabilities the reload changed in
 place, and carries none when it changed only the trust document or the peers
-dialed. A `kernel.pass` names what woke the reconciler in `trigger`, and the
-pass a reload causes reads `trigger=reload` and is recorded whether or not it
-moved anything. A reconciler stopped with `disable` runs no pass when it takes a
-reload, and the pass that installs the block once it is enabled again reads
-`trigger=enable`.
+dialed. A `babel.config.applied` carries the `hello` and `update` intervals, the
+`quality` and the `rx` and `rtt_weight`, `rtt_min` and `rtt_max` cost the
+speaker now runs, and a `responder.changed` carries `listen` and, in `closed`,
+how many sessions this node had answered and closed with a Delete. A
+`kernel.pass` names what woke the reconciler in `trigger`, and the pass a reload
+causes reads `trigger=reload` and is recorded whether or not it moved anything.
+A reconciler stopped with `disable` runs no pass when it takes a reload, and the
+pass that installs the block once it is enabled again reads `trigger=enable`.
 
 A `control.verb` carries the caller's uid and pid, and in its `peer` attribute
 the peer as the verb named it, when it named one. The event's peer is the path
