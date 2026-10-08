@@ -187,7 +187,7 @@ func (c *Client) Redial(ctx context.Context, peer string) (result control.Result
 	if peer == "" {
 		return control.Result{}, errors.New("control: redial takes the peer to redial")
 	}
-	dialers := c.matchingDialers(peer)
+	dialers := c.matchingDialers(peer, false)
 	dropped := c.sessions.closeMatching(peer)
 	if len(dialers) == 0 && len(dropped) == 0 {
 		return control.Result{}, fmt.Errorf("control: this node neither dials nor holds a session with %q, so there is nothing to redial", peer)
@@ -201,13 +201,13 @@ func (c *Client) Redial(ctx context.Context, peer string) (result control.Result
 			len(dropped), len(dialers))}, nil
 }
 
-// matchingDialers names the running peer loops for one peer.
-func (c *Client) matchingDialers(peer string) []string {
+// matchingDialers names the running peer loops for one peer, or every one
+func (c *Client) matchingDialers(peer string, all bool) []string {
 	c.dialersMu.Lock()
 	defer c.dialersMu.Unlock()
 	var out []string
 	for path := range c.dialers {
-		if matchesPeer(path, peer) {
+		if all || matchesPeer(path, peer) {
 			out = append(out, path)
 		}
 	}
@@ -239,7 +239,7 @@ func (c *Client) Rekey(ctx context.Context, peer string, all bool) (result contr
 	if all == (peer != "") {
 		return control.Result{}, errors.New("control: rekey takes either a peer or every session, not both and not neither")
 	}
-	asked := c.sessions.rekeyMatching(peer, all)
+	asked := c.sessions.matching(peer, all, c.sessions.startRekey)
 	if len(asked) == 0 {
 		if all {
 			return control.Result{}, errors.New("control: this node holds no session, so there is nothing to rekey")
