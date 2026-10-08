@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-10-06
+updated: 2026-10-08
 order: 80
 ---
 
@@ -102,10 +102,10 @@ fleet then has to firewall.
 
 ## Acting on a running node
 
-Five subcommands change what a node is doing right now: `disable` and `enable` a
-subsystem, which is `reconciler`, `steering` or `responder`; `redial <peer>`;
-`rekey <peer>` or `rekey --all`; and `reload`, which does what SIGHUP does so a
-supervisor is not the only way to ask.
+Five subcommands change what a node is doing right now. `disable` and `enable`
+stop and start a subsystem, which is `reconciler`, `steering` or `responder`.
+`redial` and `rekey` take a peer or `--all`. `reload` does what SIGHUP does, so
+a supervisor is not the only way to ask.
 
 None of them changes the configuration. A node's configuration is its file, and
 that stays its only entry point. What these act on is operational state the file
@@ -136,6 +136,9 @@ this node already holds alone. `redial` is for a peer that dials this node and
 cannot be dialed back, which does not retry on its own and has been seen to
 carry a dead session for sixteen minutes. It drops what this node holds for that
 peer and sets its dialers going at once rather than after the reconnect delay.
+`redial --all` does the same for every session and every dialer, for a network
+change the node's watch cannot see, such as a captive portal that changes no
+address or route. Both refuse a peer together with `--all`, and neither.
 
 This is still not the daemon and client split tailscale has: there is no login
 flow here, identity being a static key and a registry entry that nix and sops

@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What the route reconciler can do on Linux and on macOS, and how sessions follow a host that moves."
 created: 2026-09-21
-updated: 2026-10-07
+updated: 2026-10-08
 order: 100
 ---
 
@@ -94,6 +94,20 @@ holds while its liveness check retransmits on the usual schedule, and ends once
 the check has gone unanswered through its whole budget of 62 seconds. Its dialer
 then dials again. The first send that fails is logged as a warning, and the
 failures after it at debug until a send goes out again.
+
+A node also watches the host's network, so it does not wait for a liveness
+deadline to find a moved path. On linux it follows the link, address and route
+notifications of rtnetlink, keeping only defaults in `main`, and on darwin the
+routing socket. 250 milliseconds after a notification it reads, for each family,
+the host's own default route, its interface and gateway, and the global unicast
+addresses of the interfaces that are up. The mesh's own device is left out of
+both, so the reconciler's writes to its table and to the tun never count. When
+the reading differs from the last one acted on, every session sends a liveness
+check at once, every dialer that is waiting out its reconnect delay dials again,
+and a `network.changed` event records what moved. A dialer that finds its
+session healthy stands down as it does after any wake. A change the host shows
+nowhere, such as a captive portal that lets nothing through, needs
+`ranet3 redial --all` instead.
 
 On linux a batch of ESP for one peer goes out as segmented messages where it
 can. A path too narrow for the segments refuses such a message, and its
