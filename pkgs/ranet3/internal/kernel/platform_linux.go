@@ -84,7 +84,7 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("kernel: promote secondary addresses on %s: %w", rt.Interface, err)
 	}
-	monitor, err := newRouteMonitor(uint32(t.ID))
+	monitor, err := newRouteMonitor(uint32(t.ID), t.Proto)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -496,20 +496,24 @@ func (p *netlinkPlatform) setMaster(master uint32) error {
 // tables the reconciler does not own, which stops another daemon's
 // route churn from waking it. Its own writes still wake it once; the settle
 // window in Run absorbs the burst and the following pass finds nothing to do.
+// it wakes as well on a deleted rule carrying proto
+// systemd-networkd removes every rule it did not ask for when it configures a link
 type routeMonitor struct {
 	file   *os.File
 	table  uint32
+	proto  uint8
 	signal chan struct{}
 	done   chan struct{}
 }
 
-func newRouteMonitor(table uint32) (*routeMonitor, error) {
+func newRouteMonitor(table uint32, proto uint8) (*routeMonitor, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK,
 		unix.SOCK_RAW|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, unix.NETLINK_ROUTE)
 	if err != nil {
 		return nil, fmt.Errorf("kernel: open route monitor socket: %w", err)
 	}
-	groups := uint32(unix.RTMGRP_IPV4_ROUTE | unix.RTMGRP_IPV6_ROUTE)
+	// the IPv6 rule group has no RTMGRP_ name, its bit is its group number less one
+	groups := uint32(unix.RTMGRP_IPV4_ROUTE | unix.RTMGRP_IPV6_ROUTE | unix.RTMGRP_IPV4_RULE | 1<<(unix.RTNLGRP_IPV6_RULE-1))
 	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Groups: groups}); err != nil {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("kernel: join route notification groups: %w", err)
@@ -522,6 +526,7 @@ func newRouteMonitor(table uint32) (*routeMonitor, error) {
 	monitor := &routeMonitor{
 		file:   os.NewFile(uintptr(fd), "rtnetlink-monitor"),
 		table:  table,
+		proto:  proto,
 		signal: make(chan struct{}, 1),
 		done:   make(chan struct{}),
 	}
@@ -556,15 +561,37 @@ func (m *routeMonitor) run() {
 			continue
 		}
 		for _, message := range messages {
-			if message.Kind != unix.RTM_NEWROUTE && message.Kind != unix.RTM_DELROUTE {
-				continue
-			}
-			if notificationTable(message) == m.table {
+			if m.wakesOn(message) {
 				m.wake()
 				break
 			}
 		}
 	}
+}
+
+// wakesOn reports whether one notification touches what the reconciler owns
+// a rule is woken on only when it goes, since the pass that follows puts it back
+func (m *routeMonitor) wakesOn(message nlMessage) bool {
+	switch message.Kind {
+	case unix.RTM_NEWROUTE, unix.RTM_DELROUTE:
+		return notificationTable(message) == m.table
+	case unix.RTM_DELRULE:
+		return ruleProtocol(message) == m.proto
+	}
+	return false
+}
+
+// ruleProtocol is the FRA_PROTOCOL one rule notification carries, 0 where it carries none
+func ruleProtocol(message nlMessage) uint8 {
+	if len(message.Data) < sizeofFibRuleHdr {
+		return 0
+	}
+	for attr, value := range message.attributes(sizeofFibRuleHdr) {
+		if attr == unix.FRA_PROTOCOL && len(value) == 1 {
+			return value[0]
+		}
+	}
+	return 0
 }
 
 // wake never blocks: a reader that misses one coalesced signal sees the change
