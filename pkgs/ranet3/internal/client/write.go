@@ -244,19 +244,29 @@ func (c *Client) wakeDialers(paths []string) {
 // Rekey asks one peer's sessions, or every session, to replace their Child SA.
 func (c *Client) Rekey(ctx context.Context, peer string, all bool) (result control.Result, err error) {
 	defer func() { c.noteVerb(ctx, "rekey", peer, result.Acted, err, slog.Bool("all", all)) }()
-	if all == (peer != "") {
-		return control.Result{}, errors.New("control: rekey takes either a peer or every session, not both and not neither")
-	}
-	asked := c.sessions.matching(peer, all, c.sessions.startRekey)
-	if len(asked) == 0 {
-		if all {
-			return control.Result{}, errors.New("control: this node holds no session, so there is nothing to rekey")
-		}
-		return control.Result{}, fmt.Errorf("control: this node holds no session with %q, so there is nothing to rekey", peer)
+	asked, err := c.askSessions("rekey", peer, all, c.sessions.startRekey)
+	if err != nil {
+		return control.Result{}, err
 	}
 	log.Printf("control: %d session(s) asked to replace their child SA", len(asked))
 	return control.Result{Acted: asked,
 		Detail: fmt.Sprintf("Asked %d session(s) to replace their child SA and the new SPIs appear under sessions as each lands", len(asked))}, nil
+}
+
+// askSessions runs act on one peer's sessions, or every session, for the verb named
+// it refuses an ask naming both a peer and every session or neither, and one that meets no session
+func (c *Client) askSessions(verb, peer string, all bool, act func(liveSessionView)) ([]string, error) {
+	if all == (peer != "") {
+		return nil, fmt.Errorf("control: %s takes either a peer or every session, not both and not neither", verb)
+	}
+	asked := c.sessions.matching(peer, all, act)
+	if len(asked) == 0 {
+		if all {
+			return nil, fmt.Errorf("control: this node holds no session, so there is nothing to %s", verb)
+		}
+		return nil, fmt.Errorf("control: this node holds no session with %q, so there is nothing to %s", peer, verb)
+	}
+	return asked, nil
 }
 
 // Reload re-reads the configuration file and the trust document it names, as

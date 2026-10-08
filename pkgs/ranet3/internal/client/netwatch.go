@@ -58,8 +58,8 @@ func changeAttrs(change kernel.NetworkChange) []slog.Attr {
 	for _, family := range change.Families() {
 		name := string(family.Family)
 		if family.DefaultMoved() {
-			attrs = append(attrs, slog.String(name+"_default", defaultText(family.DefaultAfter)),
-				slog.String(name+"_default_was", defaultText(family.DefaultBefore)))
+			attrs = append(attrs, slog.String(name+"_default", netmonDefault(family.DefaultAfter).String()),
+				slog.String(name+"_default_was", netmonDefault(family.DefaultBefore).String()))
 		}
 		if len(family.Added) > 0 {
 			attrs = append(attrs, slog.String(name+"_added", joinAddrs(family.Added)))
@@ -69,17 +69,6 @@ func changeAttrs(change kernel.NetworkChange) []slog.Attr {
 		}
 	}
 	return attrs
-}
-
-// defaultText names a default by its interface and gateway, none where the family has no default
-func defaultText(route kernel.DefaultRoute) string {
-	switch {
-	case route.Interface == "":
-		return "none"
-	case !route.Gateway.IsValid():
-		return route.Interface
-	}
-	return route.Interface + " via " + route.Gateway.String()
 }
 
 func joinAddrs(addresses []netip.Addr) string {
