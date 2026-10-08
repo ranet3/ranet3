@@ -46,9 +46,9 @@ version = 'v0.0.0-20261006164505-2631ce99a06f'
 hash = 'sha256-dZxsmcQuRyC5K0zKkuvYAjPfNxnettsuGHg6ztfT/5o='
 
 [mod.'gvisor.dev/gvisor']
-version = 'v0.0.0-20260815055033-7d8fb7f28de4'
-hash = 'sha256-qNul+ILbeffSiOxFoVeNtayahFZVp+/W2YIJf53Hfc8='
+version = 'v0.0.0-20261007065226-e1bc74024391'
+hash = 'sha256-cijpt2hcQ09Jy0tICdJWSLGaU8LjEK2M9RwD8riEh+w='
 
 [mod.'hegel.dev/go/hegel']
-version = 'v0.9.17'
-hash = 'sha256-qrWgXcUb1G+vdpXYzzv4RHgnG9Yh2DUArxW5C95HlkA='
+version = 'v0.9.19'
+hash = 'sha256-PSxDGCgJoHtIn6C7T05QEIpFS9Od+78LoHsL+pyRMAM='

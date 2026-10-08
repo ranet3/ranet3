@@ -29,12 +29,13 @@ import (
 // The example database is off. A run writes nothing into the tree and replays
 // nothing an earlier run left behind, so the result depends on the code alone.
 // The run is derandomized, though not to the point of repeating itself: hegel
-// v0.9.17 hashes the labels of nested generators with a seed each process
+// v0.9.19 hashes the labels of nested generators with a seed each process
 // picks for itself, so a property built from them draws a different sample in
 // each run. A failure is still printed shrunk, with what reproduces it. A
 // boundary the code branches on is drawn outright, through Spanning or by
 // name, rather than left to the sample. Each property gets 200 cases, twice
-// the engine's default.
+// the engine's default, except under go test -short, where hegel v0.9.19
+// replaces the count with 10.
 func Check(t *testing.T, fn func(*hegel.T)) {
 	t.Helper()
 	hegel.Test(t, fn,

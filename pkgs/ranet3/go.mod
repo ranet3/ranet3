@@ -14,7 +14,7 @@ require (
 	golang.org/x/net v0.59.0
 	golang.org/x/sys v0.48.0
 	golang.zx2c4.com/wireguard v0.0.0-20261006164505-2631ce99a06f
-	hegel.dev/go/hegel v0.9.17
+	hegel.dev/go/hegel v0.9.19
 )
 
 require (
@@ -22,5 +22,5 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
-	gvisor.dev/gvisor v0.0.0-20260815055033-7d8fb7f28de4 // indirect
+	gvisor.dev/gvisor v0.0.0-20261007065226-e1bc74024391 // indirect
 )

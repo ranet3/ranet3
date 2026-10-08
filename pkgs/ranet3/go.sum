@@ -29,7 +29,7 @@ golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2/go.mod h1:deeaetjYA+D
 golang.zx2c4.com/wireguard v0.0.0-20261006164505-2631ce99a06f h1:gJI6OVshWW0mvGyTVmW8mJoaw2OM69wVCeZkwpX+Jdc=
 golang.zx2c4.com/wireguard v0.0.0-20261006164505-2631ce99a06f/go.mod h1:rpwXGsirqLqN2L0JDJQlwOboGHmptD5ZD6T2VmcqhTw=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
-gvisor.dev/gvisor v0.0.0-20260815055033-7d8fb7f28de4 h1:LW5p5O3WcDFDdctq38E5jI9j1B1y10M/jUhE+yDmS44=
-gvisor.dev/gvisor v0.0.0-20260815055033-7d8fb7f28de4/go.mod h1:8aLQqUBHDH8fY5y60lzmwDpMMbQCcT3EBfoSwhfaGCY=
-hegel.dev/go/hegel v0.9.17 h1:OfsguZiGeDO/h4WFws4cvKbHow4cI7DeTid7nHaBqbI=
-hegel.dev/go/hegel v0.9.17/go.mod h1:2EqxjBkkM6Rw3lL1tNo2t64b5ojqACFwrWWUYcZuZiw=
+gvisor.dev/gvisor v0.0.0-20261007065226-e1bc74024391 h1:JW1JRLX79ioFLNlBCbDgEbII5H9z11VG628wXA3+Nig=
+gvisor.dev/gvisor v0.0.0-20261007065226-e1bc74024391/go.mod h1:8EvmWpn201Ba5N80rb+0662hAULFFrp9ZZFGcgBJ+oY=
+hegel.dev/go/hegel v0.9.19 h1:Itrk0bv2Pq6e4H4qR7X5S3drk13Chtk90ZWmNQKH8Rc=
+hegel.dev/go/hegel v0.9.19/go.mod h1:2EqxjBkkM6Rw3lL1tNo2t64b5ojqACFwrWWUYcZuZiw=
