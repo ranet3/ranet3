@@ -214,6 +214,44 @@ func TestBudgetHoldsItsLimitUnderConcurrentReservers(t *testing.T) {
 	}
 }
 
+// a budget with room for every reserver at once refuses none of them, however they race
+// a reserver whose swap loses to another reserver, or to the sender giving bytes back, loads the count again
+// rather than dropping a read with room to spare
+// the reservers take the charges of shares on each side of both edges of the charge
+func TestBudgetNeverRefusesRoomThatIsThere(t *testing.T) {
+	const reservers, takes = 16, 2000
+	shares := []struct{ count, bytes int }{
+		{1, 1}, {4, 4*leastPacketBytes - 1}, {4, 4 * leastPacketBytes}, {transmitBatchSize, peerDataBudget / 2}, {1, peerDataBudget}, {transmitBatchSize, peerDataBudget + 1},
+	}
+	var budget peerBudget
+	charges := make([]int, reservers)
+	for r := range charges {
+		share := shares[r%len(shares)]
+		charges[r] = dataCharge(share.count, share.bytes)
+		budget.limit += int64(charges[r])
+	}
+	var refused atomic.Int64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for _, n := range charges {
+		wg.Go(func() {
+			<-start
+			for range takes {
+				if !budget.take(n) {
+					refused.Add(1)
+					continue
+				}
+				budget.used.Add(-int64(n))
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	if got := refused.Load(); got != 0 {
+		t.Errorf("%d of %d takes were refused by a budget with room for every reserver", got, reservers*takes)
+	}
+}
+
 // every packet a budget gives out comes back once the transmit that carried it returns
 // whether the transport took it or lost it, whether it sealed or not, and whether the peer closed before or after the batch was queued
 // a packet that never comes back is room the peer has lost for good
