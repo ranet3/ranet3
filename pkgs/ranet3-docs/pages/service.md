@@ -4,7 +4,7 @@
 title: "Running it as a service"
 description: "Running ranet3 from the NixOS and nix-darwin modules."
 created: 2026-09-22
-updated: 2026-10-07
+updated: 2026-10-08
 order: 40
 ---
 
@@ -48,7 +48,11 @@ the trust document are named by path rather than carried inline. A config file
 that must stay out of the store entirely is named by `configFile` instead.
 `systemctl reload ranet3` runs `ranet3 reload`, which reconciles against a
 rewritten trust document without dropping an SA and fails when the daemon
-refuses what it read. A restart drops every one.
+refuses what it read. A restart drops every one. An `extraArgs` that moves the
+control socket with `--control` moves `ranet3 reload` with it, to the last
+`--control` given, as the daemon reads them. One that turns the socket off with
+`--control ""` leaves a reload nothing to ask, and the module refuses it at
+evaluation while a change to the config file still reloads the unit.
 
 ## What a switch does
 

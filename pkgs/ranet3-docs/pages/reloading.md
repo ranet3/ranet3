@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-07
+updated: 2026-10-08
 order: 70
 ---
 
@@ -37,17 +37,17 @@ reconciler checks the block as it would at startup, takes it, and runs a pass at
 once. That pass moves every route to the new metric and preferred source,
 deletes the rules the block no longer names and installs the new ones, and takes
 off the tun each address it added that the block no longer assigns. An address
-another writer put on the tun stays, named or not. On linux one kind of change
-still costs routes. A tun whose only IPv4 address takes another prefix length,
-or is replaced within its subnet while `promote_secondaries` is off, has no IPv4
-address for a moment, and linux then drops every IPv4 route through it. The pass
-puts the reconciler's own routes back, and another writer's stay gone. From then
-on the periodic sweep runs every `reconcile`, and an announced default outlives
-the last live session by `capture_grace`. A reconciler stopped with
-`ranet3 disable reconciler` takes the block as well and installs it once it is
-started again. So a running exit takes a new priority rule, a renumbered tun or
-another metric without dropping a session or withdrawing the mesh table from the
-rest of the fleet.
+another writer put on the tun stays, named or not. The tun keeps an IPv4 address
+throughout, since linux drops every IPv4 route through a device left with none,
+another writer's included. A new prefix length of an IPv4 address goes on before
+the old one comes off, and the reconciler turns `promote_secondaries` on for the
+tun when it starts, which lets a new address within the old one's subnet take
+its place instead of leaving with it. From then on the periodic sweep runs every
+`reconcile`, and an announced default outlives the last live session by
+`capture_grace`. A reconciler stopped with `ranet3 disable reconciler` takes the
+block as well and installs it once it is started again. So a running exit takes
+a new priority rule, a renumbered tun or another metric without dropping a
+session or withdrawing the mesh table from the rest of the fleet.
 
 A change to `cap.table.id`, `cap.table.proto` or `cap.table.vrf` is refused by
 name, and so is writing the block where there was none or taking it out. The
