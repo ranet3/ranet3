@@ -137,10 +137,9 @@ type starveRetry struct {
 // Packet transmission always happens after unlocking: a slow peer cannot
 // prevent a route retraction, and in-memory transports may re-enter Receive.
 type Speaker struct {
-	// The capability as resolved at construction: the intervals and the cost
-	// with their defaults filled in, the runtime the caller supplied, and
-	// whether this node relays what it learns. Every one of them is read-only
-	// for the life of the speaker, so a change to any of them is a restart.
+	// the intervals and the cost as resolved, defaults filled in, which SetConfig replaces under s.mu
+	// hello is also written under lostMu, which noteLost reads it under
+	// the runtime and whether this node relays are read-only for the life of the speaker
 	hello, update time.Duration
 	cost          CostParams
 	routerID      [8]byte
@@ -250,7 +249,6 @@ func New(cfg Config, routes Routes, rt Runtime, mesh *netstack.Mesh) (*Speaker, 
 		return nil, err
 	}
 	s := &Speaker{
-		hello: cfg.HelloInterval(), update: cfg.UpdateInterval(), cost: cfg.CostEffective(),
 		routerID: rt.RouterID, linkLocal: rt.LinkLocalAddr, packetSize: rt.PacketSize,
 		noTransit: !routes.Transits(), events: rt.Events,
 		mesh: mesh,
@@ -266,15 +264,58 @@ func New(cfg Config, routes Routes, rt Runtime, mesh *netstack.Mesh) (*Speaker, 
 		changed:        make(chan struct{}, 1),
 	}
 	s.routes = newRouteTable(s.installRoute)
-	s.routes.cost = s.cost
 	s.routes.forget = func(key routeKey) { s.mesh.Routes.Remove(key.source, key.dest) }
+	s.applyEffective(cfg.Effective())
+	s.SetRoutes(routes)
+	return s, nil
+}
+
+// applyEffective installs the intervals and the cost and what selection derives from them
+func (s *Speaker) applyEffective(effective Effective) {
+	s.lostMu.Lock()
+	s.hello = effective.Hello
+	s.lostMu.Unlock()
+	s.update, s.cost = effective.Update, effective.Cost
+	s.routes.cost = s.cost
 	// RFC 8966 Appendix A.3 recommends a hysteresis time constant of a small
 	// multiple of the Hello interval. One link's base cost is the scale at
 	// which a metric change is worth a triggered update rather than a wait for
 	// the next periodic dump.
 	s.routes.tau, s.routes.trigger = 3*s.hello, s.cost.RxCost
-	s.SetRoutes(routes)
-	return s, nil
+}
+
+// SetConfig applies a reloaded cap.babel, which config.Load has validated
+// a config the speaker already runs changes nothing and sends nothing
+// otherwise every neighbor is sent a Hello with its IHU and the whole table at once
+// so a longer Hello or IHU interval is announced before it is in force, RFC 8966 sections 3.4.1 and 3.4.2
+// and a longer update interval reaches a neighbor before the route expiry it last derived runs out, Appendix B
+// the sequence number and every neighbor's Hello history are kept, and selection reruns on the new cost, sections 3.4.3 and 3.6
+func (s *Speaker) SetConfig(cfg Config) {
+	effective := cfg.Effective()
+	now := time.Now()
+	s.mu.Lock()
+	if effective == (Effective{Hello: s.hello, Update: s.update, Cost: s.cost}) {
+		s.mu.Unlock()
+		return
+	}
+	s.applyEffective(effective)
+	s.sweepExpiredLocked(now)
+	actions := make([]sendAction, 0, 2*len(s.neighbors))
+	for _, n := range s.neighbors {
+		actions = append(actions, s.helloAction(n, now))
+	}
+	actions = append(actions, s.updateActions(now)...)
+	s.updatePending = false
+	s.nextHello, s.nextUpdate = now.Add(s.hello), now.Add(s.update)
+	send := s.emitLocked(actions)
+	s.wakeForPacketLocked()
+	s.events.Emit("babel.config.applied", "",
+		slog.Duration("hello", s.hello), slog.Duration("update", s.update),
+		slog.String("quality", s.cost.Quality.String()), slog.Int("rx", int(s.cost.RxCost)),
+		slog.Int("rtt_weight", int(s.cost.RTT.Weight)),
+		slog.Duration("rtt_min", s.cost.RTT.Min.Duration()), slog.Duration("rtt_max", s.cost.RTT.Max.Duration()))
+	s.mu.Unlock()
+	send()
 }
 
 func (s *Speaker) AddPeer(peer *netstack.Peer) *PeerHandle {
@@ -547,8 +588,8 @@ func (s *Speaker) noteSendRetryLocked(now time.Time) {
 }
 
 // sendRetryInterval is how long a pass waits before trying again what it could
-// not send. Read from cfg, which New settles and nothing writes afterward, so
-// the sender goroutine may ask too.
+// not send. hello is written under both s.mu and lostMu, so the sender
+// goroutine may ask too, holding lostMu.
 func (s *Speaker) sendRetryInterval() time.Duration {
 	return max(s.hello/4, time.Millisecond)
 }
