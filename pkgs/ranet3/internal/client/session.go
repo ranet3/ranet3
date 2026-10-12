@@ -101,13 +101,10 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 	// into an SPI nobody answers until its own liveness check expires, which
 	// is up to seventy seconds. closeAll does this for every session at
 	// shutdown, for exactly the reason its doc gives, and this is the same
-	// thing for one peer. Shutdown is not this case, because closeAll has
-	// already swept by the time c.ctx is canceled.
-	defer func() {
-		if dialerWasDropped(ctx, c.ctx) {
-			closeSession(sess)
-		}
-	}()
+	// thing for one peer. A session closeAll swept is not this case, though
+	// the sweep stops its dialer while the node runs, because the sweep took
+	// it out of the set first.
+	defer c.tellDropped(ctx, sessionName, sess)
 
 	var plain [][]byte
 	emit := func(results []inboundDecrypted) {
@@ -160,6 +157,14 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 	// with the role and the SPIs its established event carried, so a reader pairs the two across a replacement
 	c.events.Emit("ike.session.ended", sessionName, append(established, slog.String("err", ended.Error()))...)
 	return ended
+}
+
+// tellDropped tells the peer a session whose dialer was dropped while the node runs is gone
+// only a session the set still holds is told, so one the sweep or a replacement closed is told once
+func (c *Client) tellDropped(ctx context.Context, path string, sess *ike.Session) {
+	if dialerWasDropped(ctx, c.ctx) && c.sessions.take(path, sess) {
+		c.sessions.close(sess)
+	}
 }
 
 // sessionSet keeps at most one live SA per peer. In a full mesh every node
@@ -534,11 +539,14 @@ func matchesPeer(path, peer string) bool {
 // the set so nothing can be adopted behind the sweep. Each is closed in
 // parallel, so one unreachable peer costs deleteGrace rather than deleteGrace
 // per peer.
-func (s *sessionSet) closeAll() {
+// it reports the paths it closed, sorted
+func (s *sessionSet) closeAll() []string {
 	s.mu.Lock()
 	s.shut = true
+	paths := make([]string, 0, len(s.live))
 	sessions := make([]*ike.Session, 0, len(s.live))
-	for _, live := range s.live {
+	for path, live := range s.live {
+		paths = append(paths, path)
 		sessions = append(sessions, live.session)
 	}
 	s.mu.Unlock()
@@ -553,4 +561,18 @@ func (s *sessionSet) closeAll() {
 	s.mu.Lock()
 	clear(s.live)
 	s.mu.Unlock()
+	slices.Sort(paths)
+	return paths
+}
+
+// take drops path from the set where sess still holds it, and reports whether it did
+// a session the set no longer holds for path, swept by closeAll or replaced, is left alone
+func (s *sessionSet) take(path string, sess *ike.Session) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if live := s.live[path]; live != nil && live.session == sess {
+		delete(s.live, path)
+		return true
+	}
+	return false
 }

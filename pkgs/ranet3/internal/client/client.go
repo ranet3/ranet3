@@ -72,6 +72,8 @@ type Client struct {
 	peers   sync.WaitGroup
 	// responder is the running acceptPeers, nil while link.listen is off, guarded by dialersMu so it is started and stopped against stopped as dialers are
 	responder *responderRun
+	// speakerRun is the running speaker, nil while it is stopped, guarded by dialersMu as responder is
+	speakerRun *speakerRun
 
 	// regReadAt is when the registry now installed was read, in unix
 	// nanoseconds, so a diagnostic can tell a registry that reloaded from one
@@ -289,7 +291,7 @@ func (c *Client) Run(ctx context.Context) error {
 	// has no loop left to carry the Delete.
 	stop := context.AfterFunc(ctx, func() {
 		c.stopDialers()
-		c.sessions.closeAll()
+		c.leave()
 		c.cancel()
 	})
 	defer stop()
@@ -300,16 +302,70 @@ func (c *Client) Run(ctx context.Context) error {
 	if c.network != nil {
 		c.peers.Go(func() { c.followNetwork(c.ctx) })
 	}
-	c.syncPeers()
-	c.syncResponder()
-	err := c.speaker.Run(c.ctx)
-	// Canceled before the hub closes, so a dialer reads the session ending as
+	c.syncMesh()
+	<-c.ctx.Done()
+	// Done before the hub closes, so a dialer reads the session ending as
 	// this node stopping. See stopping.
-	c.cancel()
 	_ = c.hub.Close()
 	c.stopDialers()
 	c.peers.Wait()
-	return err
+	return c.ctx.Err()
+}
+
+// leave takes this node off the mesh once a flag that refuses every start is
+// set, which stopDialers is for the shutdown. Every peer is told its session
+// is gone while the loops that carry the Deletes still run, and only then do
+// the loops stop, each waited for.
+// it reports the paths of the sessions it closed
+func (c *Client) leave() []string {
+	closed := c.sessions.closeAll()
+	c.syncMesh()
+	return closed
+}
+
+// syncMesh brings the dialers, the responder and the speaker to what the node's
+// place on the mesh asks for, which is everything the file names while it is on
+// it and nothing once it is not, and waits for each loop it stopped to end.
+func (c *Client) syncMesh() {
+	for _, stopped := range c.syncPeers() {
+		<-stopped.done
+	}
+	c.syncResponder()
+	c.syncSpeaker()
+}
+
+// onMeshLocked reports whether this node dials, answers and speaks Babel, which
+// it does until the shutdown starts. c.dialersMu is held.
+func (c *Client) onMeshLocked() bool { return !c.stopped && c.ctx.Err() == nil }
+
+// speakerRun is one run of the speaker, with the cancel that ends it and done closed once it has
+type speakerRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// syncSpeaker runs the speaker while the node is on the mesh and stops it once it is not, waiting for it to return
+// nothing starts it again behind the flag that stopped it, so two runs of the one speaker never overlap
+func (c *Client) syncSpeaker() {
+	c.dialersMu.Lock()
+	run, want := c.speakerRun, c.onMeshLocked()
+	if want && run == nil {
+		ctx, cancel := context.WithCancel(c.ctx)
+		started := &speakerRun{cancel: cancel, done: make(chan struct{})}
+		c.speakerRun = started
+		c.peers.Go(func() {
+			defer close(started.done)
+			_ = c.speaker.Run(ctx)
+		})
+	}
+	if want || run == nil {
+		c.dialersMu.Unlock()
+		return
+	}
+	c.speakerRun = nil
+	c.dialersMu.Unlock()
+	run.cancel()
+	<-run.done
 }
 
 // Close is idempotent and can interrupt Run.
@@ -383,9 +439,13 @@ func (c *Client) LiveSessions() int {
 // while the loop is dialing rather than waiting is not lost and does not block
 // the caller. One place is enough: two asks that land before the loop comes
 // round are one attempt either way.
+//
+// done is closed once the loop has returned, session and all. A sweep that
+// stops the loop waits on it.
 type dialer struct {
 	cancel context.CancelFunc
 	wake   chan struct{}
+	done   chan struct{}
 }
 
 // stopDialers refuses any further dialer before the wait below begins. It is
