@@ -16,6 +16,8 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/control"
 )
 
 // ourRecord is the record this tool would have written on the uplink.
@@ -685,4 +687,104 @@ func TestSecondProcessReclaimsNothing(t *testing.T) {
 	if err != nil || len(kept) != 1 {
 		t.Errorf("a second process overwrote the record: %v (%v)", kept, err)
 	}
+}
+
+// launchd starts the daemon as root in the group its job names
+// /var/run hands down its own group, daemon, instead
+// root may give a directory a group of any number, which leaves the run's own groups out of it
+func TestDarwinRecordAsRootMakesItsDirectoryInTheEffectiveGroup(t *testing.T) {
+	if os.Getenv("RANET3_DARWIN_NETTEST") != "1" {
+		t.Skip("set RANET3_DARWIN_NETTEST=1 and run as root to give a directory a group of any number")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("run as root to give a directory a group of any number")
+	}
+	parent := shortDir(t)
+	foreign := os.Getegid() + 1
+	if err := os.Chown(parent, -1, foreign); err != nil {
+		t.Fatal(err)
+	}
+	recordUnderForeignGroup(t, parent, foreign)
+}
+
+// a second group of the run's user stands in for the group /var/run is in
+func TestRecordMakesItsDirectoryInTheEffectiveGroup(t *testing.T) {
+	parent := shortDir(t)
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := -1
+	for _, gid := range groups {
+		if gid != os.Getegid() && os.Chown(parent, -1, gid) == nil {
+			foreign = gid
+			break
+		}
+	}
+	if foreign < 0 {
+		t.Skip("this user can give a directory no group besides its effective one")
+	}
+	recordUnderForeignGroup(t, parent, foreign)
+}
+
+// recordUnderForeignGroup makes the record's directory in parent, a directory in group foreign that hands its group down
+// once through the lock a start takes and once through the record it writes
+// and binds the control socket beside the record the lock made
+// in the order a node with link.underlay.bind starts in
+// each directory made, and the socket, take the effective group
+func recordUnderForeignGroup(t *testing.T, parent string, foreign int) {
+	t.Helper()
+	// the premise, without which every check below passes whatever the record does
+	probe := filepath.Join(parent, "probe")
+	if err := os.Mkdir(probe, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if gid := groupOf(t, probe); gid != foreign {
+		t.Fatalf("a directory made in %s is in group %d, not the directory's %d, which leaves the record nothing to correct", parent, gid, foreign)
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(parent, "locked")
+	lock, err := lockState(filepath.Join(locked, "underlay.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lock.Close() })
+	written := filepath.Join(parent, "written")
+	if err := saveUnderlayState(filepath.Join(written, "underlay.json"), []writtenDefault{ourRecord()}); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(locked, "control.sock")
+	listener, err := control.Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	for _, path := range []string{locked, written, socket} {
+		if gid := groupOf(t, path); gid != os.Getegid() {
+			t.Errorf("%s is in group %d, want the effective %d rather than %d from the directory it was made in", path, gid, os.Getegid(), foreign)
+		}
+	}
+}
+
+// shortDir is a new directory whose path leaves room below it for a control socket
+func shortDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "rs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// groupOf is the group path itself is in
+func groupOf(t *testing.T, path string) int {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return int(info.Sys().(*syscall.Stat_t).Gid)
 }
