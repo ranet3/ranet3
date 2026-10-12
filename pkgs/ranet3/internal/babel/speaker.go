@@ -187,7 +187,7 @@ type Speaker struct {
 	// nextHello and nextUpdate are the run loop's own timers, and sleepUntil
 	// is the deadline it is currently waiting on. They are loop state kept on
 	// the Speaker rather than in Run so the receive path can tell whether an
-	// arriving packet moved a deadline earlier than the one already set; all
+	// arriving packet moved a deadline earlier than the one already set. All
 	// three are touched only under s.mu.
 	nextHello  time.Time
 	nextUpdate time.Time
@@ -198,13 +198,13 @@ type Speaker struct {
 	// is a hello interval or longer, so without this the two suppression
 	// tables are swept a hello interval late and their per-neighbor budgets
 	// are held that long by entries that suppress nothing. Only ever moved
-	// earlier between sweeps; sweepRequestsLocked rebuilds it exactly.
+	// earlier between sweeps. sweepRequestsLocked rebuilds it exactly.
 	nextRequestSweep time.Time
 	// passes counts what wakeForPacketLocked exists to keep down: one pass is
 	// a reselection of the whole route table. Kept because the decision is
-	// otherwise unobservable from outside -- a test can watch the wake
+	// otherwise unobservable from outside (a test can watch the wake
 	// channel, but nothing else can tell whether Run actually recorded the
-	// deadline it slept on -- and one increment per pass costs nothing.
+	// deadline it slept on), and one increment per pass costs nothing.
 	passes uint64
 	// retryAt is when a pass that could not send everything it built tries
 	// again. See noteSendRetryLocked.
@@ -213,7 +213,7 @@ type Speaker struct {
 	// route table keeps its own: deadlineLocked runs on the receive path now,
 	// and maxStarveRetries is four thousand, so walking the map there would
 	// hand a neighbor a walk of it per packet. Only ever moved earlier between
-	// passes, so it can be early -- one pass that finds nothing due -- and
+	// passes, so it can be early (one pass that finds nothing due) and
 	// never late. retryStarvedLocked rebuilds it exactly.
 	nextStarveRetry time.Time
 }
@@ -527,7 +527,7 @@ func (s *Speaker) wake() {
 // as the link carries them. Deciding instead costs the 230 ns of
 // deadlineLocked, and the Hello and IHU a packet refreshes move their own
 // deadlines later, never earlier, which is the case this leaves asleep. Both
-// figures are floors, taken on an idle machine; see BenchmarkRunLoopPass.
+// figures are floors, taken on an idle machine. See BenchmarkRunLoopPass.
 //
 // It does not make an arriving packet free. Every Hello and IHU calls
 // routes.recomputeNeighbor on the receive path, which reselects every prefix
@@ -616,7 +616,7 @@ func (s *Speaker) deadlineLocked() time.Time {
 		// together while RTT samples keep arriving. A neighbor that stops
 		// sending Timestamp sub-TLVs, or whose clock steps so
 		// validTimestampGap refuses every sample, keeps refreshing ihuExpiry
-		// and leaves this one where it was; without a term of its own the
+		// and leaves this one where it was. Without a term of its own the
 		// sweep that drops the stale measurement waits for whatever pass comes
 		// next, and the advertised rxcost keeps moving to a measurement that
 		// has already expired.
@@ -697,7 +697,7 @@ func (s *Speaker) Run(ctx context.Context) error {
 // for it, and the info line carries how many it stands for.
 //
 // Kept at or below a second so an operator watching a flapping mesh still sees
-// it move; TestSelectionChangesAreNotOneLogLineEach holds that bound.
+// it move. TestSelectionChangesAreNotOneLogLineEach holds that bound.
 const routeLogInterval = time.Second
 
 // installRoute publishes one selection to the forwarding table. Called only

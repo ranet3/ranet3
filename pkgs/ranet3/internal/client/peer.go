@@ -21,7 +21,7 @@ import (
 )
 
 // reconnectDelay is how long a dialer waits between attempts. A test that has
-// to see the loop come round again overrides it; zero means the default.
+// to see the loop come round again overrides it, and zero means the default.
 func (c *Client) reconnectDelay() time.Duration {
 	if c.dialRetry > 0 {
 		return c.dialRetry
@@ -177,7 +177,7 @@ func resolveEndpoint(ctx context.Context, node registry.Node, serial, family str
 // connectPeer runs one IKE session against a peer end to end: handshake,
 // ESP setup, mesh/babel registration, and servicing the connection until
 // it dies (network failure, peer restart, DPD timeout). Returning means
-// the connection is gone; runPeer decides whether/when to retry.
+// the connection is gone, and runPeer decides whether/when to retry.
 func (c *Client) connectPeer(ctx context.Context, local config.Endpoint, p config.Peer, name string) (err error) {
 	// recorded under the dialer's path until the endpoint resolves and under the session's path after, as the dialing log line is
 	path := peerPath(p, local)

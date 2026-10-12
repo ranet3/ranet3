@@ -31,7 +31,7 @@ type netlinkConn interface {
 }
 
 // netlinkPlatform is the rtnetlink half of the reconciler. Nothing here
-// decides what the kernel should hold; it only encodes the decision and
+// decides what the kernel should hold. It only encodes the decision and
 // enforces the ownership marker on the way back in, so a route without the
 // reconciler's protocol, table and interface never reaches the diff.
 type netlinkPlatform struct {
@@ -382,7 +382,7 @@ func (p *netlinkPlatform) decodeAddr(message nlMessage) (netip.Prefix, bool) {
 			address, _ = addressFromBytes(value)
 		}
 	}
-	// IFA_LOCAL is the address on this end; IFA_ADDRESS is the peer's on a
+	// IFA_LOCAL is the address on this end, while IFA_ADDRESS is the peer's on a
 	// point-to-point link, and the same value everywhere else.
 	if !local.IsValid() {
 		local = address
@@ -408,7 +408,7 @@ func (p *netlinkPlatform) addrMessage(prefix netip.Prefix) []byte {
 	binary.NativeEndian.PutUint32(body[4:], p.index)
 	raw := addressBytes(prefix.Addr())
 	// with no peer address the two attributes carry the same value, which is
-	// what "ip addr add" sends; IPv4 reads IFA_LOCAL and IPv6 IFA_ADDRESS.
+	// what "ip addr add" sends. IPv4 reads IFA_LOCAL and IPv6 IFA_ADDRESS.
 	body = putAttr(body, unix.IFA_LOCAL, raw)
 	body = putAttr(body, unix.IFA_ADDRESS, raw)
 	return body
@@ -496,7 +496,7 @@ func (p *netlinkPlatform) setMaster(master uint32) error {
 // routeMonitor turns unsolicited route notifications into one coalesced
 // wake-up. It parses just enough of each message to drop notifications for
 // tables the reconciler does not own, which stops another daemon's
-// route churn from waking it. Its own writes still wake it once; the settle
+// route churn from waking it. Its own writes still wake it once, but the settle
 // window in Run absorbs the burst and the following pass finds nothing to do.
 // it wakes as well on a deleted rule carrying proto
 // systemd-networkd removes every rule it did not ask for when it configures a link
@@ -551,7 +551,7 @@ func (m *routeMonitor) run() {
 			}
 			// ENOBUFS means notifications were dropped, which is exactly when
 			// a reconcile is most needed. Anything else is unexpected and
-			// would spin, so it is reported and the monitor stops; the
+			// would spin, so it is reported and the monitor stops. The
 			// periodic sweep in Run remains as the backstop.
 			m.wake()
 			if errors.Is(err, unix.ENOBUFS) {
@@ -664,7 +664,7 @@ func (p *netlinkPlatform) foreignWriters(ownVRF bool) ([]string, error) {
 // protocolLabel names a routing protocol the way iproute2 prints it, from the
 // rt_protos registry, and falls back to the bare number for one nothing has
 // claimed. The one a fleet node meets in table 200 is bird, during a
-// migration; the kernel's own entries appear there only when some other VRF is
+// migration. The kernel's own entries appear there only when some other VRF is
 // bound to that table.
 func protocolLabel(protocol uint8) string {
 	var name string

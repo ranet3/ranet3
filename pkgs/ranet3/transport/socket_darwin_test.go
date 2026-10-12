@@ -159,7 +159,7 @@ func TestUnderlayRebindsWithoutReplacingTheSocket(t *testing.T) {
 }
 
 // A laptop that boots with no network has no default route to bind to. That is
-// an ordinary morning rather than a failure, so the hub opens; what it must
+// an ordinary morning rather than a failure, so the hub opens, but what it must
 // not do is report the underlay as being where the configuration says, because
 // the reconciler reads that before it hands the machine's traffic to the mesh.
 func TestUnderlayStaysUnboundUntilTheHostHasADefaultRoute(t *testing.T) {
@@ -247,7 +247,7 @@ func TestSocketMarkIsRefusedOnDarwin(t *testing.T) {
 func TestBoundReachProbeAnswersForBothFamilies(t *testing.T) {
 	index, _ := twoInterfaces(t)
 	for _, probe := range offLinkProbes {
-		// Whether the host can reach them is the host's business; what is
+		// Whether the host can reach them is the host's business. What is
 		// asserted is that asking does not panic and does not come back with
 		// something that is not a routing answer.
 		err := reachesWhenBound(index, probe)

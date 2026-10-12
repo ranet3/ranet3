@@ -19,7 +19,7 @@ import (
 //
 // It is read here rather than in each package that needs it, so that transit
 // and the egress capability answer the question the same way. Forwarding
-// exports it; internal/egress withholds an advertisement over the same fact
+// exports it, and internal/egress withholds an advertisement over the same fact
 // this warns about.
 func forwardingEnabled() (v4, v6 bool) {
 	return sysctlIsOne("/proc/sys/net/ipv4/ip_forward"),

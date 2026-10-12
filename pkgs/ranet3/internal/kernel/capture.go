@@ -37,7 +37,7 @@ const DefaultCaptureGrace = 10 * time.Second
 //     its family. The scoped lookup falls back to a longest-prefix match on
 //     the unspecified address and requires the answer to be on the bound
 //     interface, so a route as small as 0.0.0.0/24 out of the tun takes the
-//     fallback away. 0.0.0.0/24 with 192.0.2.0/24 strands; 64.0.0.0/2 with
+//     fallback away. 0.0.0.0/24 with 192.0.2.0/24 strands, but 64.0.0.0/2 with
 //     192.0.2.0/24 does not.
 //
 // The second arm makes this a property of the set rather than of one
@@ -62,8 +62,8 @@ func unspecifiedOf(address netip.Addr) netip.Addr {
 
 // CaptureRoutes is the routing the underlay depends on before the mesh may be
 // handed this machine's own traffic. On darwin that is a default scoped to the
-// interface the underlay socket is bound to, see UnderlayDefaults there;
-// nothing implements it on linux, where a marked socket needs no route of its
+// interface the underlay socket is bound to (see UnderlayDefaults there).
+// Nothing implements it on linux, where a marked socket needs no route of its
 // own.
 //
 // Ready both repairs and reports, per family. The reconciler calls it once a
@@ -107,7 +107,7 @@ const MinCaptureGrace = time.Second
 // every packet this machine sends leaves through the tun. That is the feature.
 // It is also the failure: a node whose mesh has gone has no network at all,
 // rather than the mesh being down and the uplink still working, and on a
-// laptop the mesh goes for ordinary reasons -- wifi to ethernet, a dock, sleep
+// laptop the mesh goes for ordinary reasons: wifi to ethernet, a dock, sleep
 // and wake, a VPN started underneath. Nothing recovers from that on its own,
 // because reaching the peers needs the network the default just took.
 //
@@ -115,9 +115,9 @@ const MinCaptureGrace = time.Second
 // fallback:
 //
 //   - nothing capturing is installed until one session has been live, so a
-//     node that comes up next to a stale announcement never takes it;
+//     node that comes up next to a stale announcement never takes it.
 //   - it is withdrawn once no session has been live for the grace, so a node
-//     that loses the mesh falls back to its own uplink;
+//     that loses the mesh falls back to its own uplink.
 //   - it is restored on the first live session, so the recovery needs nobody
 //     to run a command.
 //

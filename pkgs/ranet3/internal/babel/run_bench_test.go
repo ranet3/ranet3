@@ -60,8 +60,8 @@ func fillRouteTable(tb testing.TB, neighbors, prefixes int) *Speaker {
 // rate the timers ask for one, and not at the rate a neighbor can send.
 //
 // The figures quoted at wakeForPacketLocked were taken on an otherwise idle
-// Apple M2 Max. A machine doing anything else multiplies them -- measured at
-// six times with the cores saturated -- which makes the argument stronger
+// Apple M2 Max. A machine doing anything else multiplies them (measured at
+// six times with the cores saturated), which makes the argument stronger
 // rather than weaker, so they are a floor and not an estimate.
 func BenchmarkRunLoopPass(b *testing.B) {
 	for _, prefixes := range []int{1000, maxRouteKeys} {

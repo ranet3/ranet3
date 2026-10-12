@@ -97,7 +97,7 @@ func TestDarwinScopedRouteSelection(t *testing.T) {
 	// of ours, is stable across a dump so a pass does not churn it, and comes
 	// back out again.
 	t.Run("source-specific route through the reconciler", func(t *testing.T) {
-		// Scoped is how the kernel keys it, and a dump fills it in; a route
+		// Scoped is how the kernel keys it, and a dump fills it in, but a route
 		// built by hand has to say so, or the withdrawal below goes unscoped
 		// and removes nothing.
 		announced := Route{Destination: remote, Source: local.Masked(), Scoped: true}

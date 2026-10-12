@@ -43,18 +43,18 @@ type trieNode[V comparable] struct {
 	// its mapped 128-bit representation, with lengths from 96 through 128.
 	address   [16]byte
 	prefixLen uint8
-	byteIndex uint8 // cached branch position; fits in the node's padding
+	byteIndex uint8 // cached branch position (fits in the node's padding)
 	bitShift  uint8
 	srcs      []srcEntry[V]
 	// byLen is srcs as one map per distinct source prefix length, longest
 	// first, and anySrc is the entry whose source matches everything. Both are
 	// derived from srcs, which stays the record. A walk of srcs was linear in
-	// a number a neighbor chooses -- babel holds one entry per source and
+	// a number a neighbor chooses (babel holds one entry per source and
 	// destination pair, up to maxSourcesPerNeighbor of them from one neighbor,
 	// and nothing makes the destinations distinct, so one short prefix can
-	// carry the lot -- and that walk is inline on every TUN reader. This makes
+	// carry the lot), and that walk is inline on every TUN reader. This makes
 	// it one masked map lookup per distinct length, which the address width
-	// bounds at 129 per destination node however many entries there are; a
+	// bounds at 129 per destination node however many entries there are. A
 	// packet pays that at every node on its path, not once.
 	//
 	// Measured per lookup on one node with every entry on one destination and
@@ -92,8 +92,8 @@ type srcIndex[V comparable] struct {
 // indexThreshold is how many sources one length has to carry, on average,
 // before maps beat scanning them. A map probe is about twice what
 // Prefix.Contains costs, so an index over lengths that carry one prefix each
-// is slower than the ordered scan it replaces -- measured at 471 ns against
-// about 1.2 us for 128 sources at 128 distinct lengths -- and it is the edit
+// is slower than the ordered scan it replaces (measured at 471 ns against
+// about 1.2 us for 128 sources at 128 distinct lengths), and it is the edit
 // path that pays to build it.
 const indexThreshold = 4
 
@@ -229,7 +229,7 @@ func (n *trieNode[V]) matches(hi, lo uint64) bool {
 	return highDiff == 0 && (binary.BigEndian.Uint64(n.address[8:])^lo)>>(128-n.prefixLen) == 0
 }
 
-// edit returns a new path; published nodes and source slices are never mutated.
+// edit returns a new path. Published nodes and source slices are never mutated.
 func edit[V comparable](n *trieNode[V], address [16]byte, prefixLen uint8, change func([]srcEntry[V]) []srcEntry[V]) *trieNode[V] {
 	if n == nil {
 		srcs := change(nil)
@@ -431,7 +431,7 @@ func (t *Table[V]) Lookup(src, dst netip.Addr) (V, bool) {
 }
 
 // All captures a consistent snapshot at the call. The caller may modify the
-// table while iterating; those modifications do not change the snapshot.
+// table while iterating, but those modifications do not change the snapshot.
 func (t *Table[V]) All() iter.Seq[Route[V]] {
 	snapshot := t.roots.Load()
 	return func(yield func(Route[V]) bool) {

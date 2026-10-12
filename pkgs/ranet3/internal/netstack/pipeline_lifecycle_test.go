@@ -354,7 +354,7 @@ func (d *failingReadDevice) Read(bufs [][]byte, sizes []int, offset int) (int, e
 // A read error that is not closure used to end the queue's reader with no log,
 // no metric and no restart. On linux the kernel keeps steering its share of
 // flows to that queue, so a share of the mesh black-holes for the life of the
-// process with nothing saying so; on darwin there is one queue, so all
+// process with nothing saying so. On darwin there is one queue, so all
 // outbound forwarding stops. The reader still stops, because nothing here can
 // repair the device, but it says so and gives its batch back.
 func TestTunReadFailureIsReportedAndGivesTheBatchBack(t *testing.T) {
@@ -390,9 +390,9 @@ func TestTunReadFailureIsReportedAndGivesTheBatchBack(t *testing.T) {
 }
 
 // Close has to return whether or not the sender does. A send already inside
-// the socket is not interrupted by closing the logical Mux -- that checks its
+// the socket is not interrupted by closing the logical Mux (that checks its
 // done channel on entry and then loops on the hub's bind, which only Hub.Close
-// closes and which sets no write deadline -- so an unbounded wait here makes
+// closes and which sets no write deadline), so an unbounded wait here makes
 // one session's teardown wait on a socket nobody is going to unblock, and the
 // client's peer group never drains behind it.
 func TestClosingAPeerDoesNotWaitOnTheTransportForever(t *testing.T) {

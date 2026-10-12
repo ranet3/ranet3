@@ -65,7 +65,7 @@ func RenderStatus(w io.Writer, s Status) {
 	}
 	// Only where something is off. Every other row above answers a question a
 	// healthy node has an answer to, and this one would read "none" on all of
-	// them; it is here so that a node running less than its file says carries
+	// them. It is here so that a node running less than its file says carries
 	// the difference where somebody will see it.
 	if len(s.Disabled) > 0 {
 		rows = append(rows, []string{"Disabled", disabledLine(s.Disabled)})

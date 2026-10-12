@@ -57,7 +57,7 @@ func Load(path string) (Registry, error) {
 	if err := decoder.Decode(&r); err != nil {
 		return nil, fmt.Errorf("registry: parse %s: %w", path, err)
 	}
-	// DisallowUnknownFields catches a stray field inside the document; this
+	// DisallowUnknownFields catches a stray field inside the document, while this
 	// catches a second document after it, which a partial write or a bad
 	// concatenation leaves behind and which Decode would otherwise ignore
 	// entirely. Token rather than More: More answers "is there another element
@@ -78,7 +78,7 @@ func (r Registry) Validate() error {
 	// node "a" with a different public key, would otherwise both validate and
 	// leave the order of the array to decide which key authenticates that
 	// peer, which is the trust-root lookup. Splitting an organization across
-	// blocks stays supported; only a name collision within one does not.
+	// blocks stays supported, but only a name collision within one does not.
 	nodes := make(map[string]map[string]struct{}, len(r))
 	for _, organization := range r {
 		if organization.Organization == "" {
@@ -177,10 +177,10 @@ func (n Node) FindEndpoint(serial string) (Endpoint, bool) {
 }
 
 // ResolveRemote resolves an endpoint's address for dialing, mirroring
-// ranet's src/address.rs `remote`: a literal IP is used directly; a
+// ranet's src/address.rs `remote`: a literal IP is used directly. A
 // hostname is resolved via DNS and filtered to the endpoint's declared
-// address family; if that fails, ranet falls back to the address family's
-// wildcard, which isn't a dialable address — callers must treat a failure
+// address family. If that fails, ranet falls back to the address family's
+// wildcard, which isn't a dialable address. Callers must treat a failure
 // here as "endpoint not currently reachable", not retry with a wildcard.
 //
 // The context makes shutdown prompt: a hostname whose resolver is

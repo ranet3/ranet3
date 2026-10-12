@@ -22,7 +22,7 @@ import (
 // has no marks, no rules and one forwarding table, and answers by binding the
 // socket to the interface the host's own default route leaves by, which scopes
 // its route lookups to that interface. On that platform the interface also has
-// to carry a default of its own scoped to it, which internal/kernel writes; see
+// to carry a default of its own scoped to it, which internal/kernel writes. See
 // UnderlayDefaults there for the measurement and for the ownership rules that
 // keep it off the host's own default.
 //

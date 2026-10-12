@@ -35,7 +35,7 @@ endpoints = [{ serial = "0", family = "ip4" }]
 # Answer peers that dial this node, rather than only dialing. Off by default: a
 # leaf has no address to be dialed at, and an open listener is the one surface
 # an unauthenticated peer can reach. Any node in the trust document may then
-# dial us; dial.to below says who we dial, not who we answer.
+# dial us (dial.to below says who we dial, not who we answer).
 # listen = true
 
 # The device the mesh runs on. linux attaches to it when it exists and creates
@@ -58,7 +58,7 @@ endpoints = [{ serial = "0", family = "ip4" }]
 # node holding an address an exit announces ends up with a route out of its own
 # tun covering the peers it reaches that tun through, and an underlay following
 # it is a tunnel running inside itself. Set one of the two on any node that
-# takes an exit-announced default; each is refused by name on the platform that
+# takes an exit-announced default. Each is refused by name on the platform that
 # has no meaning for it.
 #
 # mark is SO_MARK on the socket, linux only. The reconciler writes the matching
@@ -95,7 +95,7 @@ to = [{ name = "gateway", serial = "0" }]
 # Either a bare prefix or a prefix and the source it is reachable from. The
 # second spelling is how an exit announces a default out of its own transit
 # prefix. An exit node adds { prefix = "::/0", from = "2001:db8:1::/48" } to
-# the list beside its own address; an ordinary node announces its own address
+# the list beside its own address, while an ordinary node announces its own address
 # and nothing else, as this file does.
 announce = ["10.66.0.5/32"]
 

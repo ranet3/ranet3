@@ -21,8 +21,8 @@ const (
 	updateFlagRouterID = 0x40
 )
 
-// Update is RFC 8966 §4.6.9. We always encode with Omitted=0 (no prefix
-// compression) — that's fully spec-compliant, compression is a size
+// Update is RFC 8966 section 4.6.9. We always encode with Omitted=0 (no prefix
+// compression). That's fully spec-compliant, compression is a size
 // optimization a receiver must support but a sender need not use. We do
 // decode compressed prefixes from peers (e.g. BIRD announcing several
 // prefixes in one packet), via PrefixDecoder.
@@ -39,9 +39,9 @@ type Update struct {
 	HasRouterID bool
 
 	// Ignore is set when this Update carries a sub-TLV with the mandatory
-	// bit set (type 128-255, RFC 8966 §4.4) that we don't recognize at
+	// bit set (type 128-255, RFC 8966 section 4.4) that we don't recognize at
 	// all (i.e. anything other than Source Prefix, or a malformed Source
-	// Prefix). The whole TLV must be ignored per spec — but the
+	// Prefix). The whole TLV must be ignored per spec, but the
 	// compression state above must still be updated from it, which is why
 	// this is a flag on a fully-decoded Update rather than a decode error.
 	Ignore bool
@@ -99,7 +99,7 @@ type prefixState struct {
 	have bool
 }
 
-// PrefixDecoder holds the per-packet compression state RFC 8966 §4.6.9
+// PrefixDecoder holds the per-packet compression state RFC 8966 section 4.6.9
 // requires: each Update's Omitted bytes refer to the previous prefix *of
 // the same address family sent within this packet*. Create one per
 // incoming packet, not one per neighbor.
@@ -217,7 +217,7 @@ func (d *PrefixDecoder) Decode(body []byte) (Update, error) {
 		if sp, ok := decodeSourcePrefix(ae, s.Body); ok {
 			u.SourcePrefix = sp
 		} else {
-			u.Ignore = true // present but malformed — RFC 8966 §4.4 treats this the same as unrecognized
+			u.Ignore = true // present but malformed (RFC 8966 section 4.4 treats this the same as unrecognized)
 		}
 	}
 	return u, nil
@@ -242,7 +242,7 @@ func decodeSourcePrefix(ae uint8, body []byte) (netip.Prefix, bool) {
 	}
 	plen := int(body[0])
 	if plen == 0 {
-		return netip.Prefix{}, false // "This MUST NOT be 0" — treat a violation as malformed
+		return netip.Prefix{}, false // "This MUST NOT be 0": treat a violation as malformed
 	}
 	n := prefixByteLen(plen)
 	if len(body)-1 < n {

@@ -45,15 +45,15 @@ func encryptedRoundTripWithin(mux *transport.Mux, ctx *ikeContext, req []byte, a
 
 // sendRecv sends req and waits for a correlated response, retransmitting on
 // timeout. accept is consulted for every response matching req's SPI and
-// Message ID: of an unauthenticated error notification, RFC 7815 §2.1 says an
+// Message ID: of an unauthenticated error notification, RFC 7815 section 2.1 says an
 // implementation "can simply ignore" it and keep retransmitting until timeout,
 // which this does, since an IKE_SA_INIT response (and the outer,
 // pre-decryption layer of an IKE_AUTH response) carries no integrity
-// protection of its own -- anyone able to
+// protection of its own: anyone able to
 // spoof the initiator's SPI, visible in the plaintext request, can inject a
 // forged error notify to abort an in-progress handshake otherwise. accept
 // lets each exchange decide what counts as a real response worth stopping
-// for; a nil accept treats any correlated response as final.
+// for. A nil accept treats any correlated response as final.
 func sendRecv(mux *transport.Mux, req []byte, accept func([]byte) bool) ([]byte, error) {
 	return sendRecvWithin(mux, req, maxRetransmits, accept)
 }
@@ -92,7 +92,7 @@ func sendRecvWithin(mux *transport.Mux, req []byte, attempts int, accept func([]
 				// treating a possibly-forged message as authoritative.
 				continue
 			}
-			// Not our response (e.g. an unrelated request); ignore and keep waiting.
+			// Not our response (e.g. an unrelated request). Ignore and keep waiting.
 		}
 	}
 	return nil, fmt.Errorf("ike: no response after %d attempts", attempts)
@@ -108,7 +108,7 @@ func validResponseHeader(request, response *Header, rawLen int) bool {
 	if request.SPIResponder == 0 {
 		// IKE_SA_INIT error responses such as COOKIE and
 		// INVALID_KE_PAYLOAD carry a zero responder SPI (RFC 7296
-		// §2.6.1). The exchange-specific accept callback validates the
+		// section 2.6.1). The exchange-specific accept callback validates the
 		// payload before treating such an unauthenticated response as useful.
 		return request.ExchangeType == IKE_SA_INIT
 	}

@@ -45,7 +45,7 @@ func TestRouteTableExpiryAndRecovery(t *testing.T) {
 		t.Fatal("fresh IHU did not restore retained candidate")
 	}
 	// RFC 8966 section 3.5.3: the first expiry retracts the route to infinity
-	// and holds the prefix; only the second one flushes it.
+	// and holds the prefix. Only the second one flushes it.
 	rt.sweepExpired(now.Add(time.Minute))
 	if selected.neighbor != nil || len(rt.entries) != 1 || calls != 4 {
 		t.Fatalf("expired Update left selection=%+v entries=%d callbacks=%d", selected, len(rt.entries), calls)
@@ -257,7 +257,7 @@ func TestRetractionHoldsThePrefixForItsOwnInterval(t *testing.T) {
 // The hold runs once, for the interval of the update it replaces. A neighbor
 // choosing either end of that chooses how long this node answers with an error
 // for the prefix: repeat the retraction and it never expires, and the entry
-// holds a maxRouteKeys slot with it; carry an interval of one centisecond and
+// holds a maxRouteKeys slot with it. Carry an interval of one centisecond and
 // the prefix falls through to a covering route almost at once.
 func TestRepeatedRetractionsNeitherExtendNorCutTheHold(t *testing.T) {
 	now := time.Now()
@@ -387,8 +387,8 @@ func TestRouteTableRefusesMorePrefixesThanItsLimit(t *testing.T) {
 // The fast path in smooth has to be the same number as the arithmetic it
 // skips, not merely close to it: ms(R) decides which route is selected, so a
 // disagreement anywhere changes routing. Driven over the shapes a selection
-// pass produces -- a first sample, a decay with no elapsed time, an
-// improvement, a degradation, and a zero tau -- against the arithmetic written
+// pass produces (a first sample, a decay with no elapsed time, an
+// improvement, a degradation, and a zero tau) against the arithmetic written
 // out in full.
 func TestSmoothTakesTheShortcutOnlyWhereItAgrees(t *testing.T) {
 	reference := func(r routeInfo, cost uint16, now time.Time, tau time.Duration) float64 {

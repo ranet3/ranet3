@@ -27,7 +27,7 @@ import (
 //
 //   - clean: every socket reaches off the link.
 //   - a default out of the tun, unscoped: an unbound socket follows it, which
-//     is the feature; a bound socket reports ENETUNREACH, which is the
+//     is the feature, while a bound socket reports ENETUNREACH, which is the
 //     underlay gone. The scoped lookup still finds the most specific route,
 //     and where that route leaves another interface it falls back only to a
 //     route already on the bound one.

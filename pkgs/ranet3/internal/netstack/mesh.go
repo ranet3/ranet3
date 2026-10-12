@@ -6,11 +6,11 @@
 // packets the kernel routes to it are forwarded to whichever peer's Child SA
 // can reach the destination (see RouteTable), and inbound packets decrypted
 // from any peer are written back to the device as if they'd arrived over any
-// other interface. It knows nothing about ESP or IKE directly — peers are
+// other interface. It knows nothing about ESP or IKE directly: peers are
 // just a send function plus routes, so this package is testable without real
 // crypto.
 //
-// This package never touches the device's address or route configuration —
+// This package never touches the device's address or route configuration:
 // creating it, bringing it up and, on linux, setting its gso_max_segs is all it does. Assigning an address,
 // and adding kernel routes to the TUN are the operator's responsibility.
 // The embedded Babel speaker exchanges control traffic only inside ESP.
@@ -48,7 +48,7 @@ var (
 type Mesh struct {
 	Routes *RouteTable
 	// Name is the TUN device's real interface name (e.g. "utun6" for "utun"), as
-	// reported by the kernel — needed by whoever configures its address
+	// reported by the kernel, needed by whoever configures its address
 	// and routes, since the kernel doesn't always honor the requested
 	// name exactly.
 	Name string
@@ -535,7 +535,7 @@ func (b *outboundBatch) reset() {
 }
 
 // addrsOf extracts both the source and destination address from a raw IP
-// packet — the route table needs both to support source-specific (SADR)
+// packet. The route table needs both to support source-specific (SADR)
 // routes, not just the destination.
 func addrsOf(raw []byte) (src, dst netip.Addr, nextHeader byte, ok bool) {
 	src, dst, version := packet.Addrs(raw)

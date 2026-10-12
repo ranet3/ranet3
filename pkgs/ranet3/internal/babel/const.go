@@ -12,7 +12,7 @@ const (
 	headerLen = 4 // Magic(1) Version(1) BodyLength(2)
 )
 
-// TLV types, RFC 8966 §4.6.
+// TLV types, RFC 8966 section 4.6.
 type TLVType uint8
 
 const (
@@ -29,11 +29,11 @@ const (
 	TLVSeqnoRequest TLVType = 10
 )
 
-// Sub-TLV types shared by Hello/IHU (and, per RFC 8966, any TLV), §4.4.
+// Sub-TLV types shared by Hello/IHU (and, per RFC 8966, any TLV), section 4.4.
 const (
 	SubTLVPad1 uint8 = 0
 	SubTLVPadN uint8 = 1
-	// SubTLVTimestamp carries the RTT extension's timestamps, RFC 9616 §6
+	// SubTLVTimestamp carries the RTT extension's timestamps, RFC 9616 section 6
 	// ("Delay-Based Metric Extension for the Babel Routing Protocol").
 	// Confirmed against both the RFC text and BIRD's actual wire encoding,
 	// which agree: 3, not the more mnemonic-seeming 4 this was initially
@@ -41,7 +41,7 @@ const (
 	SubTLVTimestamp uint8 = 3
 )
 
-// Address Encodings, RFC 8966 §4.1.4.
+// Address Encodings, RFC 8966 section 4.1.4.
 const (
 	AEWildcard      uint8 = 0
 	AEIPv4          uint8 = 1
@@ -50,5 +50,5 @@ const (
 	AEIPv4ViaIPv6   uint8 = 4 // RFC 9229: IPv4 prefix with an IPv6 next hop
 )
 
-// Special metric value meaning "unreachable" / route retraction, RFC 8966 §4.6.9.
+// Special metric value meaning "unreachable" / route retraction, RFC 8966 section 4.6.9.
 const MetricInfinity uint16 = 0xffff

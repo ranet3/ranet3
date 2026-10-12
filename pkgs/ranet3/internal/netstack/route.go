@@ -37,7 +37,7 @@ var Unreachable = &Peer{ID: "unreachable"}
 
 // IsUnreachable reports whether a peer from Snapshot or Lookup is the hold a
 // retracted prefix leaves behind rather than somewhere to send. Comparing
-// against the sentinel directly works too; this names the question.
+// against the sentinel directly works too, but this names the question.
 func IsUnreachable(p *Peer) bool { return p == Unreachable }
 
 // Changed carries one coalesced notification per batch of forwarding table

@@ -460,7 +460,7 @@ func TestTransportFailureIsCountedApartFromARefusal(t *testing.T) {
 
 // A peer whose Child SA the other end deleted fails every reservation from
 // then on, so a line per failed batch is a line per TUN batch for as long as
-// that lasts. The count is exact; only the saying of it is bounded.
+// that lasts. The count is exact: only the saying of it is bounded.
 func TestTransportFailureIsSaidRarely(t *testing.T) {
 	var lines atomic.Int64
 	previous := slog.Default()

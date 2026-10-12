@@ -174,7 +174,7 @@ func nextDueRekey(schedules []*rekeySchedule, running *rekeySchedule) *rekeySche
 // Run is the sole post-handshake IKE receiver. It dispatches authenticated
 // peer requests and correlated local responses while also driving DPD.
 // dpdInterval is how long a session goes without an authenticated message
-// before it probes. A test that has to reach the probe overrides it; zero
+// before it probes. A test that has to reach the probe overrides it, and zero
 // means the default.
 func (s *Session) dpdInterval() time.Duration {
 	if s.dpdEvery > 0 {
@@ -299,7 +299,7 @@ func (s *Session) Run(ctx context.Context) error {
 			}
 		}
 		// The retirement sweep at the top of the loop has a deadline of its
-		// own. It used to be reached by the poll below; now it has to be one
+		// own. It used to be reached by the poll below, but now it has to be one
 		// of the things the loop actually waits for.
 		if retire, ok := s.nextRetirement(); ok && retire.Before(deadline) {
 			deadline = retire
@@ -341,7 +341,7 @@ func (s *Session) Run(ctx context.Context) error {
 				pending.result <- requestResult{err: err}
 			}
 			return err
-		// These two are handled at the top of the loop; the cases exist so it
+		// These two are handled at the top of the loop. The cases exist so it
 		// wakes for them rather than sleeping until the next deadline. Putting
 		// the value back cannot block: both channels hold one element, this is
 		// their only reader, and each has a single producer that cannot have
@@ -375,10 +375,10 @@ func (s *Session) Run(ctx context.Context) error {
 				s.mux.Close()
 				return fmt.Errorf("ike: peer unresponsive after %d attempts", pending.sent)
 			}
-			// RFC 7296 §2.1 requires retaining and retransmitting the
+			// RFC 7296 section 2.1 requires retaining and retransmitting the
 			// bitwise-identical request until a response arrives or the IKE SA
 			// is declared failed. Other authenticated traffic can keep an
-			// ordinary exchange alive; a silent peer must still time out.
+			// ordinary exchange alive, but a silent peer must still time out.
 			// A send that failed locally is a transmission that did not
 			// happen, not a peer that has gone. RFC 7296 section 2.4: "an
 			// endpoint MUST NOT conclude that the other endpoint has failed
@@ -499,7 +499,7 @@ func (s *Session) startRequest(req *localRequest) (*pendingRequest, error) {
 	context.localMIDMu.Lock()
 	defer context.localMIDMu.Unlock()
 	// Leave the final 32-bit value unused so incrementing the next local ID
-	// can never wrap. RFC 7296 §2.2 requires rekeying or closing first.
+	// can never wrap. RFC 7296 section 2.2 requires rekeying or closing first.
 	if context.nextLocalMID == maxMessageID {
 		return nil, errMessageIDExhausted
 	}
@@ -565,7 +565,7 @@ func pendingRetransmitsExhausted(pending *pendingRequest, peerAlive bool) bool {
 	// do with RFC 4303 section 2.6 dummy packets alone, would otherwise pin it
 	// until the sequence space ran out. RFC 7296 section 2.1 leaves the policy
 	// open, "until it either receives a corresponding response or deems the
-	// IKE SA to have failed"; this is where it is deemed to have failed.
+	// IKE SA to have failed". This is where it is deemed to have failed.
 	return pending.sent >= maxRetransmitsWhileBusy
 }
 
@@ -577,7 +577,7 @@ func retransmitDelay(first time.Duration, attempt int) time.Duration {
 }
 
 // dispatch returns true only when raw is a fresh authenticated message. Run
-// uses that result as evidence of peer liveness; authenticated replays may
+// uses that result as evidence of peer liveness. Authenticated replays may
 // receive a cached response, but must not refresh DPD or migrate the endpoint.
 func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pendingRequest) bool {
 	hdr, err := decodeHeader(raw)
@@ -624,7 +624,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		}
 		// We cannot represent the next expected ID after this request. Close
 		// before accepting it instead of wrapping the replay window to zero
-		// (RFC 7296 §2.2).
+		// (RFC 7296 section 2.2).
 		if nextPeerMID == maxMessageID {
 			s.mux.Close()
 			return true
@@ -632,7 +632,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		// Authentication and a fresh Message ID prove this request came from
 		// the live peer rather than being a replay. Only now may it update the
 		// endpoint used for future IKE and ESP traffic after NAT port rebinding
-		// (RFC 7296 §2.4 and §2.23).
+		// (RFC 7296 sections 2.4 and 2.23).
 		if s.mux.AdoptEndpoint(source) {
 			s.emit("ike.endpoint.moved", slog.String("endpoint", source.String()))
 		}
@@ -645,7 +645,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		} else if response, responseErr := s.responseNotify(ctx, hdr.MessageID, hdr.ExchangeType, N_INVALID_SYNTAX); responseErr == nil {
 			_ = s.mux.SendIKETo(response, source)
 		}
-		// RFC 7296 §2.21.3 makes authenticated INVALID_SYNTAX fatal to the
+		// RFC 7296 section 2.21.3 makes authenticated INVALID_SYNTAX fatal to the
 		// IKE SA. Responses never generate a further error response.
 		s.mux.Close()
 		return true

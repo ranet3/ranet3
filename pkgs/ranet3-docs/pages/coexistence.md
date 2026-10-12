@@ -105,7 +105,7 @@ never takes a device another tunnel is using.
 
 `cap.egress` writes into the packet filter, where the same three rules hold. It
 creates an nftables table named after this tool, one per address family, holding
-one nat postrouting chain; that name is the whole of its ownership claim, as
+one nat postrouting chain. That name is the whole of its ownership claim, as
 `rt_proto` is the reconciler's. It writes only inside those tables, reads back
 only rules it wrote, replaces the chain's contents in one transaction rather
 than editing it rule by rule, so no packet is ever evaluated against half a

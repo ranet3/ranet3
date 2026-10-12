@@ -144,7 +144,7 @@ into the test result.
 `nix build .#profile.namespace --no-link -L` runs the namespace harness below
 inside one six-core VM and captures a system-wide kernel profile. This keeps the
 veth topology used by host measurements and avoids the virtual switch between
-integration-test VMs; the guest's CPU and clock still affect results.
+integration-test VMs. The guest's CPU and clock still affect results.
 
 For measurements without VM overhead, use the namespace harness:
 
@@ -163,14 +163,14 @@ binary identity, CPU affinity, iperf3 JSON, CPU profiles, socket drops, and
 key-free XFRM counters in a new output directory. All processes and interfaces
 are removed when the namespaces exit.
 
-`--cores` sets GOMAXPROCS; `--affinity` restricts the client to actual CPUs. Use
+`--cores` sets GOMAXPROCS. `--affinity` restricts the client to actual CPUs. Use
 `--cores 1 --affinity 0` for a pinned single-core comparison. Keep flow ports,
 stream counts, affinity, MTU, and replay windows identical between versions.
 `--replay-window` sets it for every instance in the run, on both sides, and
 defaults to 4096 rather than strongSwan's own 32 so replay drops are
 distinguishable from processing limits. `--protocol udp --rate 10` offers an
 aggregate 10 Gbit/s per direction with UDP GSO/GRO and 4 MiB iperf socket
-buffers; inspect received throughput and loss, not just the offered rate. The
+buffers. Inspect received throughput and loss, not just the offered rate. The
 `.#ranet3` development shell uses the `iperf3-benchmark` package, which changes
 [iperf 3.21's GRO receive call](https://github.com/esnet/iperf/blob/3.21/src/net.c#L521-L595)
 to block instead of busy-polling. With the upstream receive loop, eight
@@ -188,7 +188,7 @@ nix develop .#ranet3 -c go test ./esp -run '^$' -bench 'BenchmarkESP' \
 
 These include ESP framing, AEAD, sequence reservation or replay commits, and
 reusable batch buffers. Decryption also includes copying the input ciphertext
-into reusable buffers. They exclude UDP, TUN, and the client queues; cipher
+into reusable buffers. They exclude UDP, TUN, and the client queues. Cipher
 throughput cannot establish full-duplex tunnel throughput. Namespace
 measurements share CPU resources with the Linux gateway and traffic generators
 and do not establish performance on a physical NIC.
@@ -202,11 +202,11 @@ go test ./sadr ./internal/babel -run '^$' \
 ```
 
 Compare runs on the same idle host. Lookup throughput, route-update cost, and
-full-tunnel TCP bandwidth measure different work; VM throughput also includes
+full-tunnel TCP bandwidth measure different work. VM throughput also includes
 the gateway's kernel IPsec and virtual networking overhead.
 
 Immutable snapshots favor packet lookups over route-write latency. Each changed
-route allocates the copied trie path; this costs more than an in-place update,
+route allocates the copied trie path. This costs more than an in-place update,
 but readers never contend with other readers or wait for a route writer.
 
 The VM console, systemd, strongSwan, BIRD, ranet3, and iperf3 output is streamed

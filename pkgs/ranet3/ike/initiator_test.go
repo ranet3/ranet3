@@ -565,7 +565,7 @@ func TestSessionHandlesPeerIKERekey(t *testing.T) {
 	go func() { runDone <- s.Run(context.Background()) }()
 
 	// The proposal offers ranet's preferred Curve25519 first, while the KE
-	// payload uses another supported offered group. RFC 7296 §1.3 requires
+	// payload uses another supported offered group. RFC 7296 section 1.3 requires
 	// the responder to select the group actually used by KE.
 	dh, err := GenerateDH(DH_ECP_256)
 	if err != nil {
@@ -1020,7 +1020,7 @@ func encodeTestMessage(t *testing.T, hdr Header, payloads []RawPayload) []byte {
 }
 
 // withNonESPMarker prepends the 4-byte zero marker transport.Mux uses to
-// demux IKE from ESP traffic (RFC 3948) -- without it, a reply sent by the
+// demux IKE from ESP traffic (RFC 3948). Without it, a reply sent by the
 // mock peer below would be classified as ESP and never reach RecvIKEUntil.
 func withNonESPMarker(b []byte) []byte {
 	return append([]byte{0, 0, 0, 0}, b...)
@@ -1348,10 +1348,10 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 	}
 }
 
-// TestSendRecvIgnoresUnauthenticatedErrorNotify verifies the RFC 7815 §2.1
+// TestSendRecvIgnoresUnauthenticatedErrorNotify verifies the RFC 7815 section 2.1
 // fix directly: a bare, unauthenticated error notify (no SA payload, as an
 // on-path attacker could forge given only the initiator's SPI, sent in the
-// clear in the request) must not abort the exchange -- sendRecv must keep
+// clear in the request) must not abort the exchange: sendRecv must keep
 // waiting and accept the real response that follows.
 func TestSendRecvIgnoresUnauthenticatedErrorNotify(t *testing.T) {
 	peer := listenPeer(t)
@@ -1390,7 +1390,7 @@ func TestSendRecvIgnoresUnauthenticatedErrorNotify(t *testing.T) {
 	_ = n
 
 	// Forged/unauthenticated error response: correlates by SPI+MessageID
-	// but carries only a Notify, no SA -- accept() must reject this.
+	// but carries only a Notify, no SA, so accept() must reject this.
 	bogus := withNonESPMarker(encodeTestMessage(t, Header{SPIInitiator: spiI, SPIResponder: 0xdead, ExchangeType: IKE_SA_INIT, Flags: FlagResponse, MessageID: 0},
 		[]RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NO_PROPOSAL_CHOSEN})}}))
 	if _, err := peer.WriteToUDP(bogus, clientAddr); err != nil {

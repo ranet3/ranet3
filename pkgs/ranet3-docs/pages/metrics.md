@@ -16,16 +16,16 @@ neighbor, routes selected and originated, established sessions per path, packets
 each peer chose not to send, and inbound ESP packet and drop counters.
 
 It also reports the three subsystems that have no exporter anywhere, because on
-a fleet node they were the kernel's: the route reconciler, which replaced BIRD's
-kernel protocols, as routes installed and skipped, when its last pass finished
-and whether that pass failed; segment routing, which replaced `seg6local`, as
-what this node did for peers (forwarded, delivered, dropped, answered) and what
-it did with its own traffic (steered, and dropped with a reason); and the
-`cap.egress`, as rules installed, connections translated, other translation
-found at the same hook, and the two prefix counts whose difference says this
-node is withholding an advertisement it cannot stand behind. A node with the
-reconciler or the capability off writes none of its series rather than zeroes
-that read as a subsystem installing nothing.
+a fleet node they were the kernel's. The route reconciler, which replaced BIRD's
+kernel protocols, is reported as routes installed and skipped, when its last
+pass finished and whether that pass failed. Segment routing, which replaced
+`seg6local`, is reported as what this node did for peers (forwarded, delivered,
+dropped, answered) and what it did with its own traffic (steered, and dropped
+with a reason). The `cap.egress` is reported as rules installed, connections
+translated, other translation found at the same hook, and the two prefix counts
+whose difference says this node is withholding an advertisement it cannot stand
+behind. A node with the reconciler or the capability off writes none of its
+series rather than zeroes that read as a subsystem installing nothing.
 
 `ranet3_tun_reads_truncated_total` counts reads off the TUN device that lost the
 tail of a GSO frame, because the frame split into more packets than one read

@@ -508,7 +508,7 @@ func TestDroppingOneContextKeepsAnSPIAnotherStillUses(t *testing.T) {
 // The replacement is current from the moment the exchange completes, so the
 // rekey has taken effect whatever the Delete of the old SA then does. RFC 7296
 // section 2.8 has the initiator delete the replaced SA, and a peer that
-// deletes it first is the same outcome; reporting the failure would cost a
+// deletes it first is the same outcome. Reporting the failure would cost a
 // backoff and a second rekey this end does not need.
 func TestDeleteOfAReplacedIKESAIsBestEffort(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)

@@ -36,7 +36,7 @@ const (
 	// nfnetlinkV0 is NFNETLINK_V0, the only version there is.
 	nfnetlinkV0 = 0
 	// natSrcPriority is NF_IP_PRI_NAT_SRC, where source translation runs.
-	// Chains of several writers coexist there; see Conflicts.
+	// Chains of several writers coexist there. See Conflicts.
 	natSrcPriority = 100
 	// chainAccept is NF_ACCEPT, the only policy a nat base chain may carry
 	// here: this package translates and never decides whether a packet lives.
@@ -775,7 +775,7 @@ func (c *nftConn) next() uint32 {
 }
 
 // appendMessage writes one netlink message, header and body, padded as the
-// kernel expects. The header fields are native endian; everything inside an
+// kernel expects. The header fields are native endian, but everything inside an
 // NFTA attribute is not.
 func (c *nftConn) appendMessage(buf []byte, kind, flags uint16, seq uint32, body []byte) []byte {
 	length := unix.SizeofNlMsghdr + len(body)

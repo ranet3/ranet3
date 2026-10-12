@@ -18,7 +18,7 @@ import (
 )
 
 // nlConn is one rtnetlink socket used for synchronous request and reply. The
-// reconcile loop is its only caller, so it needs no locking; notifications
+// reconcile loop is its only caller, so it needs no locking. Notifications
 // arrive on a separate socket precisely so an unsolicited message can never be
 // mistaken for a reply.
 type nlConn struct {

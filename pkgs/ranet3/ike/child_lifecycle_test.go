@@ -286,7 +286,7 @@ func TestChildNotFoundRecoveryCreatesNewChild(t *testing.T) {
 	}
 }
 
-// requestMu orders callers queueing work for Run; it does not order Run
+// requestMu orders callers queueing work for Run, but it does not order Run
 // itself, which allocates Message IDs on its own goroutine. A session closed
 // the instant it is established runs both at once, as adopt's
 // replace path produces on a simultaneous open.

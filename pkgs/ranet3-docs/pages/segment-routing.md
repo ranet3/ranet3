@@ -25,7 +25,7 @@ is acted on before it reaches the tun. `srv6` implements
 and the same code runs on every platform.
 
 `cap.segment.local` names the addresses this node answers for. `End` moves a
-packet to its next segment and sends it on; `End.DT46` strips the outer header
+packet to its next segment and sends it on. `End.DT46` strips the outer header
 and hands what was inside to the stack. The spelling is the one
 `ip route ... encap seg6local action` takes, so a fleet's own SIDs move across
 unchanged. The AS10779 fleet writes `End` at `<base>6::2` and `End.DT46` at

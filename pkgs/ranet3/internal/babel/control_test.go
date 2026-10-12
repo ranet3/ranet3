@@ -124,8 +124,8 @@ func forwards(mesh *netstack.Mesh, dest netip.Prefix) bool {
 // RFC 8966 section 4.6.9: the next hop for an Update "is taken from the last
 // preceding Next Hop TLV with a matching address family ... if no such TLV
 // exists, it is taken from the network-layer source address of this packet if
-// it belongs to the same address family as the prefix being announced;
-// otherwise, this Update MUST be ignored." Every babel packet here is IPv6, so
+// it belongs to the same address family as the prefix being announced", and
+// "otherwise, this Update MUST be ignored." Every babel packet here is IPv6, so
 // an AE 1 prefix has neither unless the packet says so, and installing one
 // anyway points a route at an address this node was never given.
 func TestIPv4UpdateWithNoNextHopIsIgnored(t *testing.T) {
@@ -181,13 +181,13 @@ func TestIPv4UpdateWithNoNextHopIsIgnored(t *testing.T) {
 }
 
 // RFC 8966 section 4.6.6 on the IHU's Interval: "An upper bound, expressed in
-// centiseconds, on the time after which the sending node will send a new IHU;
-// this MUST NOT be 0." The hold is computed from it, so honoring a zero puts
+// centiseconds, on the time after which the sending node will send a new IHU", and
+// "this MUST NOT be 0." The hold is computed from it, so honoring a zero puts
 // the expiry at the moment it arrived, takes the link cost to infinity and
 // unselects every route through this neighbor in the same call. One eight-byte
 // TLV then retracts everything the neighbor carries, and the retraction goes
 // on to the rest of the mesh. PrefixDecoder refuses the identical rule on the
-// Update TLV; this is the other half of it.
+// Update TLV. This is the other half of it.
 func TestZeroIHUIntervalIsIgnoredRatherThanHonored(t *testing.T) {
 	dest := netip.MustParsePrefix("10.5.0.0/16")
 	src := netip.MustParseAddr("192.0.2.1")

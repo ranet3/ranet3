@@ -23,7 +23,7 @@ import (
 // already describes is running right now, which session this node holds for a
 // peer, and when the next Child SA is negotiated. Every one of those is
 // reversible, bounded and already in the file's gift, so the socket's mode
-// stays the whole authorization story; see the control package doc for the
+// stays the whole authorization story. See the control package doc for the
 // line a fifth verb would have to stay inside.
 //
 // The state lives here and nowhere else. A restart starts everything the file
@@ -50,7 +50,7 @@ func startedSubsystems() map[control.Subsystem]bool {
 func (c *Client) SetReconcilerEnable(set func(bool)) { c.reconcilerEnable.Store(&set) }
 
 // SetConfigPath records where this node's configuration was read from, so the
-// reload verb re-reads the file SIGHUP re-reads. The daemon sets it; a client a
+// reload verb re-reads the file SIGHUP re-reads. The daemon sets it. A client a
 // test built by hand has none and reloads through ReloadFrom with its own path.
 func (c *Client) SetConfigPath(path string) { c.configPath.Store(&path) }
 

@@ -16,7 +16,7 @@ import (
 // The ownership filter stands between this reconciler and another
 // daemon's routes, and on linux it is a pure function over a dump message.
 // darwin's equivalent has been tested against a synthetic RIB since the backend
-// landed; this is the same test for the platform the fleet actually runs, where
+// landed. This is the same test for the platform the fleet actually runs, where
 // the only other coverage needs root and /dev/net/tun and so never runs in the
 // nix sandbox.
 func TestLinuxDumpKeepsOnlyRoutesItOwns(t *testing.T) {

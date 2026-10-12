@@ -17,7 +17,7 @@ address/port pairs in the `NAT_DETECTION_*_IP` notifications, and moves
 subsequent traffic to port 4500 when NAT is detected. In contrast:
 
 - Each ranet node listens on its registry-assigned UDP port. The local and
-  remote ports are independent and need not have the same value; NAT may rewrite
+  remote ports are independent and need not have the same value. NAT may rewrite
   either one again.
 - IKE and ESP always share that one UDP path. Every IKE packet, including
   `IKE_SA_INIT`, has the four-byte Non-ESP Marker, while an ESP packet starts
@@ -95,7 +95,7 @@ behavior between
 and
 [RFC 7296 section 2.18](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.18)
 when the PRF changes, while allowing fresh DH keys and a different encryption
-algorithm. Peer Child-SA rekeys can use X25519, P-256, or P-384 for PFS; locally
+algorithm. Peer Child-SA rekeys can use X25519, P-256, or P-384 for PFS. Locally
 initiated Child rekeys derive keys from the IKE SA without an additional DH
 exchange.
 

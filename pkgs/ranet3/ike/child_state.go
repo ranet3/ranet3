@@ -19,7 +19,7 @@ func (s *Session) SetChildHandler(fn func(ChildSA) error) {
 }
 
 // SetChildRetireHandler removes inbound ESP keys. Replaced SAs are removed
-// after the overlap period; an active SA deleted without replacement is
+// after the overlap period, while an active SA deleted without replacement is
 // removed immediately.
 func (s *Session) SetChildRetireHandler(fn func(uint32) error) {
 	s.handlerMu.Lock()
@@ -83,7 +83,7 @@ func (s *Session) replaceChild(child ChildSA) error {
 }
 
 // retirementDeadline bounds how long a replaced Child SA waits for the peer's
-// Delete. RFC 7296 section 2.8 expects one promptly; a peer that never sends it
+// Delete. RFC 7296 section 2.8 expects one promptly. A peer that never sends it
 // would otherwise lock out every later rekey for the life of the session, which
 // it can do deliberately by rekeying once and going quiet.
 const retirementDeadline = 30 * time.Second
@@ -108,7 +108,7 @@ func (s *Session) retireChild(remoteSPI uint32) error {
 		// Already retired, which is how the peer's own Delete for this SA
 		// crossing ours looks from here: deleteChildren cleared it before
 		// our exchange came back. RFC 7296 section 1.4.1 describes the
-		// crossing; there is nothing left to do and nothing wrong.
+		// crossing. There is nothing left to do and nothing wrong.
 		return nil
 	}
 	if retiring.RemoteSPI != remoteSPI {
@@ -166,7 +166,7 @@ func (s *Session) expireRetiredChildren(now time.Time) error {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
 	// A replaced SA whose Delete never arrived. Retiring it on the timer is
-	// what keeps a peer from locking out every later rekey by going quiet;
+	// what keeps a peer from locking out every later rekey by going quiet, and
 	// its inbound keys then drain like any other replaced SA.
 	if s.retiring.LocalSPI != 0 && !now.Before(s.retiringBy) {
 		slog.Warn("ike retiring a replaced Child SA the peer never deleted",
@@ -203,7 +203,7 @@ func (s *Session) forgetChild(child ChildSA) error {
 
 // deleteChildren closes every locally known Child SA designated by the peer's
 // inbound SPIs and returns our paired inbound SPIs for the Delete response
-// (RFC 7296 §1.4.1). Unknown SPIs are ignored.
+// (RFC 7296 section 1.4.1). Unknown SPIs are ignored.
 func (s *Session) deleteChildren(remoteSPIs []uint32) ([]uint32, error) {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()

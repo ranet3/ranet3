@@ -113,7 +113,7 @@ var (
 	// ordinary case on a mesh where most traffic is not steered.
 	ErrNotSegmentRouted = errors.New("srv6: packet carries no segment routing header")
 	// ErrExhausted is an End reached with no segment left to move to. RFC 8986
-	// section 4.1 S03 hands the packet to whatever the next header names; this
+	// section 4.1 S03 hands the packet to whatever the next header names, but this
 	// drops it, as linux does by passing IP6_FH_F_SKIP_RH and then finding no
 	// header left to act on, because a waypoint SID is not an address this
 	// node terminates traffic on.

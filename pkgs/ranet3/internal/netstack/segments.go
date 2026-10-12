@@ -15,7 +15,7 @@ import (
 )
 
 // This file is where segment routing meets the dataplane. The decision itself
-// is in package srv6, which takes bytes and returns bytes; here is the part
+// is in package srv6, which takes bytes and returns bytes. Here is the part
 // that knows about peers, about the tun and about backpressure.
 //
 // It sits on the inbound path rather than on the kernel's forwarding table
@@ -282,7 +282,7 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment) {
 		}
 		batch := peer.reserveBatchNow(count)
 		if batch == nil {
-			// The peer counts its own share of this; the segment counter says
+			// The peer counts its own share of this, and the segment counter says
 			// how much of it was somebody else's traffic.
 			m.segmentsDropped.Add(uint64(count))
 			continue
@@ -447,7 +447,7 @@ func (m *Mesh) takeICMPToken() bool {
 
 // reportSegmentDrop writes at most one line per interval, whatever the reason,
 // so a peer sending a stream of refused headers costs a counter rather than a
-// log. The counter is the record; the line is there to say what kind.
+// log. The counter is the record, while the line is there to say what kind.
 func (m *Mesh) reportSegmentDrop(message string, args ...any) {
 	if m.segmentsStarted.IsZero() {
 		// time.Since of a zero time saturates, so an unstarted counter set

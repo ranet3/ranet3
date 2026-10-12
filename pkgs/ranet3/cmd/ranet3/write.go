@@ -18,8 +18,8 @@ import (
 //
 // None of them changes the node's configuration, which keeps its two entry
 // points, the file and SIGHUP. What each acts on is operational state the file
-// already decides, so the socket's mode stays the whole authorization story;
-// the control package doc holds the argument and the line a fifth verb would
+// already decides, so the socket's mode stays the whole authorization story.
+// The control package doc holds the argument and the line a fifth verb would
 // have to stay inside.
 
 // writeCommands is the four verbs, which the root adds after the reads so the

@@ -187,7 +187,7 @@ with args.client.open("rb") as binary:
 )
 processes = []
 # Every instance serves pprof and metrics. The client answers on its own
-# loopback; the peer answers over a management veth kept off the data path, so
+# loopback. The peer answers over a management veth kept off the data path, so
 # no scrape shares the link under measurement.
 client_pprof, client_metrics = "127.0.0.1:6060", "127.0.0.1:9669"
 peer_pprof, peer_metrics = "10.201.0.2:6061", "10.201.0.2:9670"

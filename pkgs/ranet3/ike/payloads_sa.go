@@ -9,7 +9,7 @@ import (
 	"fmt"
 )
 
-// Transform is one Transform substructure of a Proposal, RFC 7296 §3.3.2.
+// Transform is one Transform substructure of a Proposal, RFC 7296 section 3.3.2.
 type Transform struct {
 	Type                  TransformType
 	ID                    uint16
@@ -79,7 +79,7 @@ func decodeTransform(b []byte) (Transform, bool, []byte, error) {
 		if length > len(attrs) {
 			return Transform{}, false, nil, fmt.Errorf("ike: invalid transform attribute length %d", valueLength)
 		}
-		// RFC 7296 §3.3.5 defines Key Length in TV format. Every TLV
+		// RFC 7296 section 3.3.5 defines Key Length in TV format. Every TLV
 		// attribute is therefore unsupported by this implementation, but it
 		// invalidates only this transform, not the surrounding proposal.
 		t.UnsupportedAttributes = true
@@ -88,7 +88,7 @@ func decodeTransform(b []byte) (Transform, bool, []byte, error) {
 	return t, more, b[tlen:], nil
 }
 
-// Proposal is one Proposal substructure of an SA payload, RFC 7296 §3.3.1.
+// Proposal is one Proposal substructure of an SA payload, RFC 7296 section 3.3.1.
 type Proposal struct {
 	Number     uint8
 	Protocol   ProtocolID

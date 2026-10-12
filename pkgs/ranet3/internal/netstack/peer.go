@@ -39,7 +39,7 @@ type Peer struct {
 	// refused on purpose: one says the link or the socket is failing and the
 	// other says this node is out of room, and an operator reading the second
 	// needs it not to move for the first. The sender merges several batches
-	// into one call, so an error covers every packet in it -- how many of them
+	// into one call, so an error covers every packet in it. How many of them
 	// actually left is not knowable from here.
 	sendFailed atomic.Uint64
 	// sendErrReported is nanoseconds since started, read through time.Since so
@@ -51,7 +51,7 @@ type Peer struct {
 	// peer stays in that state. Dropped is the exact count.
 	sendErrReported atomic.Int64
 	started         time.Time
-	// closeGrace overrides defaultCloseGrace; zero means the default.
+	// closeGrace overrides defaultCloseGrace, and zero means the default.
 	closeGrace time.Duration
 	// noteDiscarded is nil in production. A test replaces it to observe the
 	// order discardQueued gives batches back in, which nothing else can see.
@@ -96,7 +96,7 @@ type Peer struct {
 // BatchSealer consumes a sequence range previously reserved from one outbound
 // SA. It returns packet slices backed by one packed allocation so the transport
 // can hand them to UDP GSO without another copy. reuse is a previous result
-// whose transport has finished; the sealer may overwrite it or replace it.
+// whose transport has finished. The sealer may overwrite it or replace it.
 // Output must not alias raw, whose TUN buffers are recycled after encryption.
 type BatchSealer func(raw [][]byte, nextHeaders []byte, reuse [][]byte) ([][]byte, error)
 
@@ -243,8 +243,8 @@ type peerBatch struct {
 	// counted says this batch's packets have already reached p.dropped, so
 	// whoever discards it last leaves the counter alone. Only reserve failure
 	// counts early, because that is where the packet count is still known, and
-	// an implicit test on err would read every other reason err is set -- a
-	// batch that failed to seal, say -- as counted too, and lose those
+	// an implicit test on err would read every other reason err is set (a
+	// batch that failed to seal, say) as counted too, and lose those
 	// packets from the counter entirely.
 	counted bool
 	done    chan error
@@ -432,7 +432,7 @@ func (b *peerBatch) enqueue() error {
 // reserve a sequence range was counted there instead, and the two overlap in
 // the ordinary teardown window: a peer that deleted its Child SA cannot hand
 // out a sequence range, and Close follows on the same path. Anything else that
-// leaves a batch unsendable -- a seal that failed on the way here -- is
+// leaves a batch unsendable (a seal that failed on the way here) is
 // counted once, here, which is the same thing the caller is told.
 func (b *peerBatch) abandon() error {
 	if !b.counted {

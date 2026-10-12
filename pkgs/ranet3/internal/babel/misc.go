@@ -10,7 +10,7 @@ import (
 	"net"
 )
 
-// RouterID TLV, RFC 8966 §4.6.7: Reserved(2) + 8-byte Router-Id.
+// RouterID TLV, RFC 8966 section 4.6.7: Reserved(2) + 8-byte Router-Id.
 func EncodeRouterID(id [8]byte) RawTLV {
 	body := make([]byte, 10)
 	copy(body[2:], id[:])
@@ -36,7 +36,7 @@ func DecodeRouterID(body []byte) (id [8]byte, ignore bool, err error) {
 	return id, false, nil
 }
 
-// NextHop TLV, RFC 8966 §4.6.8.
+// NextHop TLV, RFC 8966 section 4.6.8.
 func EncodeNextHop(addr net.IP) RawTLV {
 	ae, a := encodeAddress(addr)
 	body := make([]byte, 2+len(a))
@@ -81,7 +81,7 @@ func DecodeNextHop(body []byte) (addr net.IP, ae uint8, ignore bool, err error) 
 	return addr, ae, false, nil
 }
 
-// AckReq / Ack, RFC 8966 §4.6.3/§4.6.4 — used for reliable signaling of
+// AckReq / Ack, RFC 8966 sections 4.6.3 and 4.6.4, used for reliable signaling of
 // e.g. link-down Updates. We answer AckReq (being unresponsive would make
 // us a badly behaved peer) but don't originate AckReq ourselves in this
 // minimal speaker.

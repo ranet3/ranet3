@@ -241,7 +241,7 @@ func (t *SteerTable) Overhead() int {
 // CheckMTU is the MTU a device of this size runs at once the longest segment
 // list has been taken off it, and zero for a table that steers nothing, which
 // leaves the device's own default. Taking the list off the MTU is ordinary
-// tunnel behavior; the alternative is a packet arriving that cannot be
+// tunnel behavior. The alternative is a packet arriving that cannot be
 // encapsulated and going out unsteered, a hole in the steering rather than a
 // smaller MSS.
 //

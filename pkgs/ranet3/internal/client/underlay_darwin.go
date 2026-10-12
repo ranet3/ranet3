@@ -29,7 +29,7 @@ var underlayStatePath = filepath.Join(filepath.Dir(control.DefaultSocket), "unde
 // the interface the host's default route leaves by, and writing that
 // interface a default of its own scoped to it, because a bound socket still
 // reads the shared forwarding table. Only the route socket can answer either
-// question, so internal/kernel does both; this package wires the two together
+// question, so internal/kernel does both. This package wires the two together
 // and speaks neither.
 //
 // mesh is this node's own tun, which the lookup must never answer with: once

@@ -13,7 +13,7 @@ mesh. One action covers both features a customer asks for: an exit node
 advertises `0.0.0.0/0` and `::/0`, a subnet router advertises the prefixes
 behind it, and each ends at the same operation. A packet arrives on the TUN, its
 source is translated to an address the far side can answer, and the host
-forwards it by its ordinary routes. linux only for now; the capability is
+forwards it by its ordinary routes. linux only for now: the capability is
 refused by name where there is no packet filter to write into, because a node
 that accepted the configuration and translated nothing would advertise itself
 and then drop every flow that took it.
@@ -25,7 +25,7 @@ it to the mesh table. Without that rule the outbound half works and looks right,
 the translation counter moves, and every reply leaves by the physical uplink
 instead, which presents as an exit that answers nothing rather than as a rule
 that is missing. Measured on two nodes on one switch: with the `from` rule alone
-the counter reported the flow and the ping lost every packet; adding the `to`
+the counter reported the flow and the ping lost every packet. Adding the `to`
 rule made it 4 of 4.
 
 Both interfaces are matched, never one. A packet that arrives on the TUN and

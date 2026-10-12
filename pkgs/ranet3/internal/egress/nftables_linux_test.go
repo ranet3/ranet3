@@ -61,7 +61,7 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			Rule{Family: FamilyIPv4, Direction: In, Interface: "ranet0",
 				From: netip.MustParsePrefix("198.51.100.0/24"), Source: netip.MustParseAddr("10.88.0.2")},
 			// The leading pair is the local-origin test an inbound rule
-			// carries; see TestInboundRuleExcludesThisNodesOwnTraffic.
+			// carries. See TestInboundRuleExcludesThisNodesOwnTraffic.
 			[]string{"meta", "cmp", "meta", "cmp", "meta", "cmp", "payload", "bitwise", "cmp", "counter", "immediate", "nat"},
 		},
 		{

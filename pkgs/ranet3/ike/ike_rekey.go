@@ -89,7 +89,7 @@ func (s *Session) RekeyIKE() (err error) {
 		if attempt != 0 || !supportedIKEGroup(retryGroup) {
 			return fmt.Errorf("ike: IKE SA rekey rejected: requested unsupported DH group %d", retryGroup)
 		}
-		// RFC 7296 §1.3 permits the responder to select another offered DH
+		// RFC 7296 section 1.3 permits the responder to select another offered DH
 		// group with INVALID_KE_PAYLOAD. Retry as a new CREATE_CHILD_SA
 		// exchange, using the requested group in both SA and KE processing.
 		group = retryGroup
@@ -190,7 +190,7 @@ func (s *Session) RekeyIKE() (err error) {
 			// Only if nothing else is routed by it, the rule the three sites
 			// around removeRetainedContext and releaseDisplacedLocked already
 			// follow. handleIKERekey refuses a peer that names this SPI back,
-			// so the two contexts should never share one; the guard is here
+			// so the two contexts should never share one, but the guard is here
 			// because being wrong about that unregisters the SA the session is
 			// now current on and leaves the control channel deaf while ESP
 			// keeps flowing, and because the peer chooses when to try.
@@ -230,9 +230,9 @@ func (s *Session) RekeyIKE() (err error) {
 	// The replacement is current from here, so the rekey has taken effect
 	// whatever this exchange does. A peer whose own Delete for the old SA
 	// arrives first retires it under us, and Run then fails this exchange with
-	// "the IKE SA carrying this exchange was replaced" -- reporting that as a
+	// "the IKE SA carrying this exchange was replaced": reporting that as a
 	// failed rekey costs a backoff and a second rekey that is not needed. The
-	// Delete is best effort; RFC 7296 section 2.8 has the initiator of the
+	// Delete is best effort. RFC 7296 section 2.8 has the initiator of the
 	// rekey delete the old SA, and the peer doing it first is the same
 	// outcome.
 	if _, err := s.requestOnLocked(old, INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}); err != nil {
@@ -248,7 +248,7 @@ func (s *Session) RekeyIKE() (err error) {
 }
 
 // handleIKERekey accepts a peer-initiated IKE SA rekey. Its response remains
-// protected by ctx; the newly-derived context becomes current for subsequent
+// protected by ctx. The newly-derived context becomes current for subsequent
 // exchanges while ctx stays available until the peer deletes it.
 func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPayload) ([]byte, error) {
 	s.stateMu.RLock()
@@ -288,7 +288,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
 	}
 	// The rest of RFC 7296 section 2.10 needs the PRF, which the proposal
-	// below settles; see the second check after suiteFromProposal.
+	// below settles (see the second check after suiteFromProposal).
 	props, err := DecodeSA(sa.Body)
 	if err != nil || len(props) == 0 {
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
@@ -323,7 +323,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 			return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
 		}
 		data := invalidKENotifyData(preferredGroup)
-		// RFC 7296 §1.3 requires INVALID_KE_PAYLOAD, carrying the
+		// RFC 7296 section 1.3 requires INVALID_KE_PAYLOAD, carrying the
 		// preferred group, when a proposal is acceptable but its KE payload
 		// uses a different group.
 		return s.responseNotifyData(ctx, msgID, CREATE_CHILD_SA, N_INVALID_KE_PAYLOAD, data)
@@ -339,7 +339,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	// the owner is this same mux, and the Delete that retires the replaced SA
 	// then unregisters an SPI another slot is still reached by, leaving the
 	// control channel deaf while ESP keeps flowing. RFC 7296 section 2.6 has
-	// the initiator choose its SPI; a conforming peer never picks one of these.
+	// the initiator choose its SPI. A conforming peer never picks one of these.
 	//
 	// An in-flight local rekey's SPI is refused for the same reason and is the
 	// easier one to hit, because this end published it in its own request
@@ -414,7 +414,7 @@ func (s *Session) fillIKERekeyNonce(nonce []byte) error {
 }
 
 // compareIKENonces compares complete nonce octet strings as specified by RFC
-// 7296 section 2.8.2; leading zero octets remain significant.
+// 7296 section 2.8.2. Leading zero octets remain significant.
 func compareIKENonces(a, b []byte) int {
 	return bytes.Compare(a, b)
 }
@@ -459,7 +459,7 @@ func ikeGroupPreference(group uint16) int {
 }
 
 // Keep the PRF across rekeys: strongSwan uses the old PRF for both SKEYSEED
-// and expansion, while RFC 7296 §2.18 specifies the new PRF for expansion.
+// and expansion, while RFC 7296 section 2.18 specifies the new PRF for expansion.
 // Negotiating the same PRF interoperates without changing either derivation.
 func ikeRekeyProposal(spi []byte, prfID uint16) Proposal {
 	p := ikeProposal()
@@ -475,7 +475,7 @@ func ikeRekeyProposal(spi []byte, prfID uint16) Proposal {
 }
 
 func selectIKERekeyProposal(proposal Proposal, keGroup, prfID uint16) ([]Transform, SASuite, uint16, bool) {
-	// RFC 7296 §3.3.6 makes an entire proposal unacceptable when it contains
+	// RFC 7296 section 3.3.6 makes an entire proposal unacceptable when it contains
 	// an unknown Transform Type. Unknown attributes are marked on individual
 	// transforms by DecodeSA and skipped by exact matching below, allowing
 	// another transform of the same type to be selected.

@@ -159,9 +159,9 @@ func TestWildcardUpdateRequiresInfiniteMetric(t *testing.T) {
 
 // TestUpdateWithSourcePrefix guards real-world SADR interop (e.g. BIRD's
 // "ipv6 sadr" tables, RFC 9079): a well-formed
-// Source Prefix sub-TLV (type 128, mandatory bit set per RFC 8966 §4.4)
+// Source Prefix sub-TLV (type 128, mandatory bit set per RFC 8966 section 4.4)
 // must be parsed into Update.SourcePrefix, not treated as an ordinary
-// destination-only route or blanket-ignored — Speaker decides relevance
+// destination-only route or blanket-ignored. Speaker decides relevance
 // by checking whether SourcePrefix covers its own source address (see
 // TestSpeakerSADR). It must still update prefix-compression state
 // regardless, since RFC 8966 requires the parser state to advance even
@@ -194,8 +194,8 @@ func TestUpdateWithSourcePrefix(t *testing.T) {
 		t.Fatalf("prefix = %v, want 10.99.2.5", got.Prefix)
 	}
 
-	// Compression state must still have advanced, per RFC 8966 §4.4/§4.5
-	// — a following compressed Update referencing its prefix bytes must
+	// Compression state must still have advanced, per RFC 8966 sections 4.4 and 4.5:
+	// a following compressed Update referencing its prefix bytes must
 	// decode correctly.
 	compressed := []byte{AEIPv4, 0, 32, 3, 0, 0, 0, 0, 0, 0, 9}
 	got2, err := dec.Decode(compressed)

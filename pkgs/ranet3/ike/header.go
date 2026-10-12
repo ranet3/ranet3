@@ -9,7 +9,7 @@ import (
 	"fmt"
 )
 
-// HeaderLen is the fixed size of the IKE header, RFC 7296 §3.1.
+// HeaderLen is the fixed size of the IKE header, RFC 7296 section 3.1.
 const HeaderLen = 28
 
 // Header is the fixed IKEv2 message header.
@@ -22,7 +22,7 @@ type Header struct {
 	ExchangeType ExchangeType
 	Flags        uint8
 	MessageID    uint32
-	Length       uint32 // total message length including header; filled on encode
+	Length       uint32 // total message length including header, filled on encode
 }
 
 func (h *Header) IsResponse() bool  { return h.Flags&FlagResponse != 0 }

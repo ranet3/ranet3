@@ -52,7 +52,7 @@
 // [RFC 7815]: https://www.rfc-editor.org/rfc/rfc7815
 package ike
 
-// Exchange types, RFC 7296 §3.1.
+// Exchange types, RFC 7296 section 3.1.
 type ExchangeType uint8
 
 const (
@@ -62,14 +62,14 @@ const (
 	INFORMATIONAL   ExchangeType = 37
 )
 
-// IKE header flags, RFC 7296 §3.1.
+// IKE header flags, RFC 7296 section 3.1.
 const (
 	FlagInitiator uint8 = 1 << 3
 	FlagVersion   uint8 = 1 << 4
 	FlagResponse  uint8 = 1 << 5
 )
 
-// Payload types, RFC 7296 §3.2.
+// Payload types, RFC 7296 section 3.2.
 type PayloadType uint8
 
 const (
@@ -92,7 +92,7 @@ const (
 	PayloadEAP     PayloadType = 48
 )
 
-// Protocol IDs, RFC 7296 §3.3.1.
+// Protocol IDs, RFC 7296 section 3.3.1.
 type ProtocolID uint8
 
 const (
@@ -101,7 +101,7 @@ const (
 	ProtoESP ProtocolID = 3
 )
 
-// Transform types, RFC 7296 §3.3.2.
+// Transform types, RFC 7296 section 3.3.2.
 type TransformType uint8
 
 const (
@@ -112,7 +112,7 @@ const (
 	TransESN   TransformType = 5
 )
 
-// Transform IDs we actually use — modern only. RFC 8247 / IANA IKEv2 registry.
+// Transform IDs we actually use (modern only). RFC 8247 / IANA IKEv2 registry.
 const (
 	// Encryption (Transform Type 1)
 	ENCR_AES_GCM_16        uint16 = 20 // AEAD, 16-byte ICV, key length via attribute
@@ -137,12 +137,12 @@ const (
 	ESN_YES uint16 = 1
 )
 
-// Transform attribute types, RFC 7296 §3.3.5.
+// Transform attribute types, RFC 7296 section 3.3.5.
 const (
 	AttrKeyLength uint16 = 14 // TV format, value in bits
 )
 
-// Notify message types we care about, RFC 7296 §3.10.1.
+// Notify message types we care about, RFC 7296 section 3.10.1.
 type NotifyType uint16
 
 const (
@@ -162,16 +162,16 @@ const (
 	N_SET_WINDOW_SIZE              NotifyType = 16385
 	N_COOKIE                       NotifyType = 16390
 
-	// N_SIGNATURE_HASH_ALGORITHMS, RFC 7427 §4: without this in IKE_SA_INIT,
+	// N_SIGNATURE_HASH_ALGORITHMS, RFC 7427 section 4: without this in IKE_SA_INIT,
 	// strongSwan assumes the peer only understands the classic RSA/ECDSA
 	// AUTH methods and signs its own IKE_AUTH with those instead of RFC 7427
-	// Digital Signature — which fails outright for an Ed25519 key (charon's
+	// Digital Signature, which fails outright for an Ed25519 key (charon's
 	// sign_classic() only handles KEY_RSA/KEY_ECDSA).
 	N_SIGNATURE_HASH_ALGORITHMS NotifyType = 16431
 )
 
 // Hash algorithm IDs for the SIGNATURE_HASH_ALGORITHMS notify data (RFC 7427
-// §3). HashIdentity is RFC 8420's addition for signature algorithms that hash
+// section 3). HashIdentity is RFC 8420's addition for signature algorithms that hash
 // the message themselves, which is how EdDSA is advertised.
 const (
 	HashSHA2_256 uint16 = 2
@@ -179,12 +179,12 @@ const (
 	HashIdentity uint16 = 5
 )
 
-// Authentication methods, RFC 7296 §3.8, extended by RFC 7427.
+// Authentication methods, RFC 7296 section 3.8, extended by RFC 7427.
 const (
 	AuthDigitalSignature uint8 = 14 // RFC 7427 "Digital Signature"
 )
 
-// ID types, RFC 7296 §3.5.
+// ID types, RFC 7296 section 3.5.
 const (
 	ID_DER_ASN1_DN uint8 = 9
 )

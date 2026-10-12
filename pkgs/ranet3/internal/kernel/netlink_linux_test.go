@@ -152,7 +152,7 @@ func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
 		t.Errorf("the census dump carried %d routes, want the %d in this table", len(recorder.replies), len(want)+1)
 	}
 
-	// A notification for this table has to reach the monitor; the reconcile
+	// A notification for this table has to reach the monitor, because the reconcile
 	// loop has nothing else to tell it that somebody edited the table.
 	drain(plat.Notify())
 	if err := plat.AddRoute(Route{Destination: prefix("192.0.2.0/24")}); err != nil {

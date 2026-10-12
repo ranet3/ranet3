@@ -53,7 +53,7 @@ func (f *fakeDefaults) Default(family netip.Addr) (int, netip.Addr, error) {
 
 // namedDevices is the interface list these tests decide, so the two indexes
 // below name the same devices on every machine the suite runs on. Only the
-// naming half of Host is reachable from here; everything else goes through the
+// naming half of Host is reachable from here. Everything else goes through the
 // fake socket and the recorded table.
 type namedDevices struct{ Host }
 
@@ -279,7 +279,7 @@ func TestUnderlayDefaultsLeavesARouteItNoLongerRecognizes(t *testing.T) {
 
 // The route is written as soon as the socket is bound, and written once. Only
 // writing it when the mesh looked like it was capturing left every set that
-// slipped past that condition with nothing to fall back on; always writing it
+// slipped past that condition with nothing to fall back on. Always writing it
 // removes the class. Writing it repeatedly would be the other defect, so the
 // second and third bindings have to be silent.
 func TestUnderlayDefaultsWritesOnceWhenTheSocketBinds(t *testing.T) {
@@ -509,7 +509,7 @@ func TestUnderlayDefaultsRefusesToWithdrawOnAnUnreadableDump(t *testing.T) {
 
 // An add that answers EEXIST is success and not ownership. macOS writes a
 // scoped default itself for every interface but the primary, and a crashed
-// instance of this process leaves one behind; recording either as ours would
+// instance of this process leaves one behind. Recording either as ours would
 // make the next release delete a route this process did not write.
 func TestUnderlayDefaultsDoesNotOwnARouteThatWasAlreadyThere(t *testing.T) {
 	links := &fakeDefaults{v4: hostDefault{index: uplinkIndex, gateway: addr("192.168.0.1")}}
@@ -676,7 +676,7 @@ func TestCloseLeavesTheRouteWhileACaptureIsStillInstalled(t *testing.T) {
 // Prepare covers what it can and moves the socket either way. An interface
 // whose family the host reaches another way, or reaches through a link with no
 // next hop to name, is still where this node's own traffic goes, so the socket
-// belongs there; refusing the move would leave it bound to an interface that
+// belongs there. Refusing the move would leave it bound to an interface that
 // may be gone. What must not happen is a capture installing over it, and Ready
 // answers that, per family.
 //

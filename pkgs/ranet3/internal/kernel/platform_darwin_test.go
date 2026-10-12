@@ -870,7 +870,7 @@ func TestDarwinDeleteSelectsScopeOfRouteItWithdraws(t *testing.T) {
 
 // A route the kernel refuses is neither installed nor an error. Reported as
 // installed it would make the reconcile line say the opposite of what the
-// kernel holds, for as long as the other writer keeps the key; reported as a
+// kernel holds, for as long as the other writer keeps the key. Reported as a
 // failure it would put every pass into backoff over something no retry frees.
 func TestDarwinReportsOccupiedRouteAsSkipped(t *testing.T) {
 	plat, sock := testPlatform(t, Table{}, Runtime{})

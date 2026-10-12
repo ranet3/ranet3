@@ -93,7 +93,7 @@ That is an invariant rather than a sequence, on both edges.
 
 It is reconciled rather than remembered. The kernel drops this route on its own,
 clearing `IFF_UP` purges it and bringing the interface back up does not restore
-it, so every pass reads the table back and writes what is missing; a record
+it, so every pass reads the table back and writes what is missing. A record
 saying it was written says nothing about whether it is there. The record is the
 claim to delete it and nothing else.
 
@@ -118,13 +118,13 @@ and `RTF_IFSCOPE`, only when the recorded interface name still resolves to the
 recorded index, and only when that interface also carries the host's own
 unscoped default. The last clause separates our route from the system's, because
 macOS writes a scoped default for every interface except the one holding the
-unscoped default; `TestNoOtherProgramScopesADefaultToThePrimaryInterface`
+unscoped default. `TestNoOtherProgramScopesADefaultToThePrimaryInterface`
 asserts that on whatever machine the suite runs on rather than taking it on
 trust. A record failing any clause is kept where nothing in the process can
 delete it, so the clauses are not undone by the next ordinary withdrawal, and
 the next start weighs them again. The file is locked before it is read, so a
 second daemon starting beside a running one reclaims nothing and overwrites
-nothing; a state file that is missing, truncated or not JSON is reported and
+nothing. A state file that is missing, truncated or not JSON is reported and
 treated as empty, because a node that will not start is worse than a route left
 behind.
 
@@ -184,7 +184,7 @@ single table that platform has, scoping the ones that would otherwise capture
 the machine, and can assign the configured addresses. See the `cap.table` block
 in [the configuration](../configuration.md). It is off unless enabled.
 
-Babel only exchanges control packets inside authenticated ESP tunnels; a local
+Babel only exchanges control packets inside authenticated ESP tunnels. A local
 routing daemon cannot peer with the embedded speaker over the TUN. Learned
 routes select the outgoing ESP peer after the kernel has routed a packet to the
 TUN.
@@ -228,10 +228,10 @@ this version. An older ranet3 sends no early Hello and BIRD 3 sends its table at
 its next Hello, so the dialer waits up to one hello interval.
 
 Packet lookups read an immutable SADR trie snapshot without locking. Route
-changes copy the affected path and publish it atomically; diagnostics iterate
+changes copy the affected path and publish it atomically. Diagnostics iterate
 the same snapshot. ESP batches similarly capture an immutable set of installed
 SAs, retaining keys for work already in flight during a rekey. One-core receive
-processing runs inline; multicore receive workers authenticate concurrently and
+processing runs inline. Multicore receive workers authenticate concurrently and
 commit replay state in intake order before delivering TUN batches. Linux UDP
 receive reads a full 128-message vector and returns excess GRO segments before
 reusing its buffers. Replay checks and nonce storage are amortized across ESP

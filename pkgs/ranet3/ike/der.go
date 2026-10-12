@@ -6,7 +6,7 @@ package ike
 
 import "fmt"
 
-// Minimal hand-rolled DER encoder — just enough to build the RDNSequence
+// Minimal hand-rolled DER encoder: just enough to build the RDNSequence
 // identity strongSwan expects (raw-pubkey "asn1dn:#hex" identities) and the
 // RFC 7427 AlgorithmIdentifier for Ed25519. Not a general ASN.1 library.
 
@@ -69,7 +69,7 @@ func EncodeIdentityDN(organization, commonName, serialNumber string) []byte {
 }
 
 // Ed25519AlgorithmIdentifier is the DER SEQUENCE{OID} used both as the
-// RFC 7427 signature AlgorithmIdentifier and inside a SubjectPublicKeyInfo;
+// RFC 7427 signature AlgorithmIdentifier and inside a SubjectPublicKeyInfo.
 // EdDSA (RFC 8410) carries no parameters.
 func Ed25519AlgorithmIdentifier() []byte {
 	return derSequence(OIDEd25519)
@@ -113,7 +113,7 @@ func derElement(b []byte) (tag byte, content, rest []byte, err error) {
 		// a non-minimal length on a 32 bit build and as truncated content on a
 		// 64 bit one. With the accumulator unsigned that test no longer sees
 		// it at all, so this one keeps int(value) from going negative and the
-		// slice below from panicking. Verified on a 386 build; see
+		// slice below from panicking. Verified on a 386 build. See
 		// TestDERLengthBeyondTheBufferIsRefusedNotSliced.
 		if value > uint64(len(b)) {
 			return 0, nil, nil, fmt.Errorf("ike: truncated DER content")

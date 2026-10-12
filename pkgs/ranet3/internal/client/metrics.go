@@ -195,8 +195,8 @@ func unixOrZero(at time.Time) int64 {
 
 // renderReceiveCounters writes the three the hub keeps. They are separate
 // series on purpose: a rising dropped means this node is behind on receive,
-// which is the only signal there is for that; a rising refused means somebody
-// is sending it datagrams it has nowhere to put; and keepalives are the RFC
+// which is the only signal there is for that. A rising refused means somebody
+// is sending it datagrams it has nowhere to put. Keepalives are the RFC
 // 3948 section 2.3 datagrams a NATed peer sends to hold its mapping open,
 // which are expected rather than unwanted. Anyone who can reach the port can
 // raise any of them, so none is a fault by itself, and mixing them would make

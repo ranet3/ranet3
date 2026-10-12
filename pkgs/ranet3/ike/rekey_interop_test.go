@@ -339,7 +339,7 @@ func TestChaChaChildRekeyResponseEchoesNoKeyLength(t *testing.T) {
 
 // The Child path's half of the same rule. A local failure installing the
 // replacement is not the peer's fault and not a reason to lose the IKE SA that
-// carried the exchange; RFC 7296 section 1.3.1 is explicit that "A failed
+// carried the exchange. RFC 7296 section 1.3.1 is explicit that "A failed
 // attempt to create a Child SA SHOULD NOT tear down the IKE SA". Returning an
 // error instead sends Run down the teardown path.
 func TestLocalFailureAnsweringAChildRekeyIsTemporary(t *testing.T) {

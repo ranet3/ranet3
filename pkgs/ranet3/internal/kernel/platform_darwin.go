@@ -17,7 +17,7 @@ import (
 )
 
 // routePlatform is the PF_ROUTE half of the reconciler on darwin. Nothing here
-// decides what the kernel should hold; it only encodes the decision and
+// decides what the kernel should hold. It only encodes the decision and
 // enforces the ownership rule on the way back in.
 //
 // # Ownership
@@ -40,8 +40,8 @@ import (
 // # What the darwin FIB cannot hold
 //
 // There is no source-address-dependent lookup. A source prefix covering one of
-// this interface's own addresses is installed as an interface-scoped route,
-// see scopeRoute; any other source prefix is reported once and skipped,
+// this interface's own addresses is installed as an interface-scoped route
+// (see scopeRoute). Any other source prefix is reported once and skipped,
 // because flattening it would turn an exit's "::/0 from <prefix>" into a plain
 // default route out of the tun. An announced default is scoped for a different
 // reason, that it would otherwise capture the ESP underlay, and the two share
@@ -57,7 +57,7 @@ type routePlatform struct {
 	index int
 
 	// host is the machine this writes to and reads back, the running kernel
-	// unless the caller named another; see Host.
+	// unless the caller named another. See Host.
 	host    Host
 	sock    rtSocket
 	watcher Watcher
@@ -93,7 +93,7 @@ type routePlatform struct {
 	ours map[occupiedKey]bool
 
 	// addrs replaces the interface dump when set. The write side already goes
-	// through the rtSocket seam; without the read side a test cannot reach the
+	// through the rtSocket seam, but without the read side a test cannot reach the
 	// scoped install at all, because sourceIsOurs would ask the host about an
 	// interface index that names nothing.
 	addrs func() ([]netip.Prefix, error)
@@ -330,7 +330,7 @@ type occupiedKey struct {
 // a delete list.
 func (p *routePlatform) decodeRoute(message route.Message) (Route, bool) {
 	rm, ok := message.(*route.RouteMessage)
-	// NET_RT_DUMP reports every entry as an RTM_GET; anything else came from
+	// NET_RT_DUMP reports every entry as an RTM_GET. Anything else came from
 	// somewhere this function was not meant to read.
 	if !ok || rm.Type != unix.RTM_GET || rm.Index != p.index {
 		return Route{}, false
@@ -396,7 +396,7 @@ func (p *routePlatform) decodeRoute(message route.Message) (Route, bool) {
 	if !scoped {
 		// The kernel keys a scoped route separately from the unscoped route to
 		// the same destination, so both can exist at once. Only the scoped one
-		// carries a source; reporting the source on both would collapse them
+		// carries a source. Reporting the source on both would collapse them
 		// into one entry in the diff and leave the unscoped route, which for
 		// "::/0" is the whole machine's default, installed forever.
 		source = netip.Prefix{}
@@ -456,7 +456,7 @@ func (p *routePlatform) sourceIsOurs(source netip.Prefix) (bool, error) {
 // scoped route is invisible to an ordinary lookup and visible to a socket
 // bound to an address on this interface.
 //
-// RTF_HOST is not set either, even for a full-length prefix; the netmask says
+// RTF_HOST is not set either, even for a full-length prefix, because the netmask says
 // the same thing. With RTF_HOST the kernel resolves the output interface
 // through ifa_ifwithdstaddr, which on a box carrying several point-to-point
 // utuns can answer with somebody else's device.
@@ -516,7 +516,7 @@ func (p *routePlatform) AddRoute(r Route) error {
 			// second scoped route for the same destination has nowhere to go.
 			// That covers a second source prefix and an announced default
 			// competing with a source-specific route to the same destination.
-			// Skipping says so once; installing would collide, and recording
+			// Skipping says so once. Installing would collide, and recording
 			// it would make the two take turns being reported as installed.
 			//
 			// Which one is held is not an accident of arrival:
@@ -770,7 +770,7 @@ func interfaceAddrs(index int, rib []byte) ([]netip.Prefix, error) {
 }
 
 // AddAddr puts one configured address on the device. Which ioctl that is, and
-// which control socket carries it, is the host's business; see
+// which control socket carries it, is the host's business. See
 // runningKernel.Assign.
 func (p *routePlatform) AddAddr(prefix netip.Prefix) error {
 	return p.host.Assign(true, p.rt.Interface, prefix)

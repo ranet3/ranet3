@@ -43,7 +43,7 @@ func (id Identity) encodeID() []byte {
 }
 
 // identityFromID parses an ID payload body into the name it asserts. The name
-// only selects which key must verify AUTH; AUTH itself signs the bytes as
+// only selects which key must verify AUTH. AUTH itself signs the bytes as
 // received, so two encodings of one name are the same peer and neither can be
 // accepted without that peer's key.
 func identityFromID(body []byte) (Identity, error) {
@@ -158,7 +158,7 @@ type Accepted struct {
 }
 
 // Responder accepts IKE SAs that peers initiate to us on a shared hub. One
-// Responder serves every peer; there is no per-peer state until IDi is
+// Responder serves every peer. There is no per-peer state until IDi is
 // authenticated, because until then there is no peer, only a datagram.
 type Responder struct {
 	cfg   ResponderConfig
@@ -181,7 +181,7 @@ type Responder struct {
 	// previousSecret is the secret one rotation back, and previousValid says
 	// whether there has been a rotation at all. A cookie is issued and echoed
 	// a round trip apart, so rotating without keeping the old one refuses
-	// every cookie in flight at that moment; the initiator accepts one COOKIE
+	// every cookie in flight at that moment. The initiator accepts one COOKIE
 	// per dial, so it then retransmits a cookie that can never be accepted
 	// until its whole budget runs out. One generation back is all it takes,
 	// because a cookie older than that is older than cookieLifetime.
@@ -254,7 +254,7 @@ func (r *Responder) Serve(ctx context.Context, onSession func(*Session, Accepted
 
 // handshake runs IKE_SA_INIT and IKE_AUTH from the responder side for one
 // initiator. Every failure before the mux exists is answered statelessly or
-// silently; every failure after it closes the mux, so nothing survives a
+// silently. Every failure after it closes the mux, so nothing survives a
 // rejected exchange.
 func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed) (_ *Session, _ Accepted, err error) {
 	timeout := r.cfg.HandshakeTimeout
@@ -303,7 +303,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	}
 
 	// The cap comes before the Diffie-Hellman, not after it. Everything above
-	// is answered from the datagram alone; everything below costs a key
+	// is answered from the datagram alone. Everything below costs a key
 	// exchange and a key derivation, measured at 72 microseconds and 5 KiB a
 	// packet, which is a core saturated at fourteen thousand packets a second
 	// by anyone who can reach this port. Counting the slot here also gives
@@ -449,7 +449,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 // buildSAInitResponse mirrors the initiator's IKE_SA_INIT, including the
 // deliberately wrong NAT_DETECTION_SOURCE_IP. ranet3's transport accepts
 // UDP-encapsulated ESP only, so the initiator has to conclude that we are
-// behind a NAT; hashing a random address guarantees the mismatch that makes
+// behind a NAT: hashing a random address guarantees the mismatch that makes
 // it, exactly as strongSwan's own force_encap does (ike_natd.c).
 //
 // Both notifies have to be present. strongSwan enables NAT traversal only
@@ -508,7 +508,7 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 		return Accepted{}, fmt.Errorf("ike: malformed IKE_AUTH request: %w", err)
 	}
 	// Only an authenticated message may move where replies go (RFC 7296
-	// section 2.23); decryption above is that proof.
+	// section 2.23). Decryption above is that proof.
 	s.mux.AdoptEndpoint(source)
 
 	if unsupported, found := firstUnsupportedCritical(inner); found {
@@ -810,7 +810,7 @@ func (s *Session) selectResponderChild(request *Message, ni, nr []byte) (respond
 // send, and the initiator verifies against the IDr it receives, so answering
 // in our own encoding leaves the signature over the same bytes either way.
 //
-// A request without IDr is answered under our only identity; with more than
+// A request without IDr is answered under our only identity. With more than
 // one configured there is nothing to guess from, so it is rejected.
 func (r *Responder) localIdentity(idr *RawPayload) (Identity, error) {
 	if idr == nil {
@@ -873,7 +873,7 @@ func (r *Responder) leaveHalfOpen(source netip.Addr) {
 // cookieRequired implements RFC 7296 section 2.6. With neither the global
 // count nor this address's share of it under pressure it does nothing. Under
 // either, a request without a currently valid cookie is answered with one and
-// reports true so the caller stops without allocating; the initiator retries
+// reports true so the caller stops without allocating. The initiator retries
 // with the cookie echoed as its first payload.
 func (r *Responder) cookieRequired(request *Message, ni []byte, spiI uint64, endpoint transport.Endpoint) (bool, error) {
 	source := endpoint.AddrPort().Addr()
@@ -887,7 +887,7 @@ func (r *Responder) cookieRequired(request *Message, ni []byte, spiI uint64, end
 	pressure := r.halfOpen >= cookieThreshold ||
 		r.halfOpenBySource[source] >= halfOpenPerSourceWithoutCookie
 	// Rotated on the age of the secret rather than on pressure. The two agree
-	// while a burst lasts longer than a lifetime; asking for pressure as well
+	// while a burst lasts longer than a lifetime, but asking for pressure as well
 	// left a node that takes IKE_SA_INITs without ever reaching pressure
 	// holding the secret it started with. A node nothing dials at all still
 	// does, since this is the only site that rotates, and there the secret has

@@ -300,7 +300,7 @@ func (e *invalidKEError) Error() string {
 
 // Select an offered encryption suite and optional DH group. Unknown transform
 // types reject the proposal, while unsupported alternatives of a known type
-// are skipped (RFC 7296 §3.3.6).
+// are skipped (RFC 7296 section 3.3.6).
 func selectChildRequestProposal(body []byte, expected *ChildSA, keGroup uint16) (childProposalSelection, error) {
 	props, err := DecodeSA(body)
 	if err != nil {
@@ -339,7 +339,7 @@ func selectChildRequestProposal(body []byte, expected *ChildSA, keGroup uint16) 
 				// See decodeChildProposal: NONE alongside an AEAD cipher says
 				// what omitting the transform says, and anything else is a
 				// transform this implementation has no key for. RFC 7296
-				// §3.3.6 makes that one transform unacceptable rather than the
+				// section 3.3.6 makes that one transform unacceptable rather than the
 				// proposal it sits in, so an offer naming an integrity
 				// algorithm alongside NONE is still answered.
 				offeredInteg = true

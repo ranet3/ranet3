@@ -41,7 +41,7 @@ link:
   # mtu: 1400
   # Keep the one socket carrying IKE and ESP out of the reach of the routes the
   # mesh installs. mark is SO_MARK plus a rule under cap.table.rules, linux
-  # only, and a mark no rule there selects on is refused; bind is IP_BOUND_IF on
+  # only, and a mark no rule there selects on is refused, while bind is IP_BOUND_IF on
   # the interface the host's own default leaves by plus a default scoped to that
   # interface, darwin only, and it also makes an announced default install plain
   # rather than scoped. Each is refused by name on the platform that has no

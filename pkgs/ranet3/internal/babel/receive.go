@@ -12,7 +12,7 @@ import (
 
 // handlePacket takes one Babel payload the way Receive does, without the outer
 // IPv6 and UDP headers. Nothing in production calls it, because Receive is the
-// entry the transport reaches; it is here for the protocol tests that supply a
+// entry the transport reaches. It is here for the protocol tests that supply a
 // bare payload, and it takes the same lock and the same wake decision so that
 // what those tests drive is the path the transport drives.
 func (s *Speaker) handlePacket(n *neighborState, raw []byte) {
@@ -133,7 +133,7 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 				// RFC 8966 section 4.6.6 on the same field the hold is
 				// computed from: "An upper bound, expressed in centiseconds,
 				// on the time after which the sending node will send a new
-				// IHU; this MUST NOT be 0." Honoring a zero puts ihuExpiry at
+				// IHU", and "this MUST NOT be 0." Honoring a zero puts ihuExpiry at
 				// now, which takes the link cost to infinity and unselects
 				// every route through this neighbor in this same call, so one
 				// eight-byte TLV retracts everything it carries. PrefixDecoder
@@ -143,7 +143,7 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 			n.reportedCost, n.haveReportedCost = ihu.RxCost, true
 			n.ihuExpiry = now.Add(deadTimeout(time.Duration(ihu.Interval) * 10 * time.Millisecond))
 			// A new Hello can overtake the reply to an older one. RFC 9616
-			// bounds timestamp ages; it does not require the latest local Hello.
+			// bounds timestamp ages. It does not require the latest local Hello.
 			if ihu.HasTS && haveHelloTS &&
 				validTimestampGap(microDelta(recvTS, ihu.OriginTS)) && validTimestampGap(microDelta(helloTxTS, ihu.ReceiveTS)) {
 				rtt := microDelta(recvTS, ihu.OriginTS) - microDelta(helloTxTS, ihu.ReceiveTS)
@@ -204,7 +204,7 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 			// preceding Next Hop TLV with a matching address family ... if no
 			// such TLV exists, it is taken from the network-layer source
 			// address of this packet if it belongs to the same address family
-			// as the prefix being announced; otherwise, this Update MUST be
+			// as the prefix being announced", and "otherwise, this Update MUST be
 			// ignored." Every packet here is IPv6, so a plain AE 1 prefix has
 			// neither. RFC 9229's AE 4 is the spelling that does, and the one
 			// this node sends.
@@ -282,7 +282,7 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 		s.routes.recomputeNeighbor(n, now)
 	}
 	// Requests are a direct consequence of what this packet said, so they leave
-	// with its replies; triggered updates are aggregated by Run instead.
+	// with its replies. Triggered updates are aggregated by Run instead.
 	return append(actions, s.starvedActions(now)...)
 }
 
@@ -352,7 +352,7 @@ func (s *Speaker) seqnoReply(n *neighborState, request SeqnoRequest, now time.Ti
 	}
 	if entry := s.routes.entries[key]; entry != nil {
 		// Split horizon keeps us from answering the neighbor we learned the
-		// route from; forwarding the request onwards is the useful reply.
+		// route from. Forwarding the request onwards is the useful reply.
 		if sel := entry.selected; sel.neighbor != nil && sel.neighbor != n &&
 			(sel.routerID != request.RouterID || !seqnoGT(request.Seqno, sel.seqno)) {
 			advertised, spent := s.advertiseTo(n, key, true, now)

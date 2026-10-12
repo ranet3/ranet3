@@ -145,7 +145,7 @@ func BenchmarkRouteChangeOnOneDestination(b *testing.B) {
 // Filling one destination through the public API, the way
 // routeTable.selectRoute does it, one route at a time, under the babel speaker
 // lock. The per-edit benchmark above measures one Set against a table that is
-// already full; this measures the n of them it takes to get there, which is
+// already full. This measures the n of them it takes to get there, which is
 // the number a neighbor actually drives and the one that was quadratic in map
 // operations until the index stopped being rebuilt on every edit.
 func BenchmarkFillOneDestination(b *testing.B) {
@@ -179,7 +179,7 @@ func BenchmarkFillOneDestination(b *testing.B) {
 // source cost at each one. Both the depth and the sources are chosen by a
 // neighbor, so this is the product rather than either figure alone, and it is
 // inline on the TUN reader. The per-node figures beside byLen are for one
-// node; this is the cost of one packet.
+// node, while this is the cost of one packet.
 // assertIndexed refuses a fixture that has drifted below the index threshold.
 // Both of the shapes here are named for what the index costs or saves, and a
 // fixture whose sources collapse under the mask measures the scan instead

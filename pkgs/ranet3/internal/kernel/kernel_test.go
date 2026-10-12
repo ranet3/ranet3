@@ -468,7 +468,7 @@ func TestReconcileNeverTouchesForeignRoutes(t *testing.T) {
 	}
 }
 
-// A pass that fails halfway leaves the kernel short of a route; the next pass
+// A pass that fails halfway leaves the kernel short of a route. The next pass
 // recomputes the difference from a fresh dump and installs it.
 func TestReconcileRepairsAfterFailedApply(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{})
@@ -867,7 +867,7 @@ func TestApplyAddressesOnlyRemovesWhatItAdded(t *testing.T) {
 	}
 	// Named exactly as it was assigned. Both kernels match a delete on the
 	// address, so naming another length would take the same entry away and
-	// nothing here would notice; linux refuses one, which is a withdrawal that
+	// nothing here would notice, and linux refuses one, which is a withdrawal that
 	// silently leaves the address behind.
 	if !slices.Equal(fake.deleted, []netip.Prefix{ours}) {
 		t.Errorf("withdrawal asked to delete %v, want only %s", fake.deleted, ours)
@@ -1120,7 +1120,7 @@ func TestSkippedRoutesAreNotCountedAndDoNotFailPass(t *testing.T) {
 
 // RFC 8966 section 3.5.4 holds a retracted prefix until it is flushed, so a
 // packet for it does not follow a shorter prefix instead. The mesh's own table
-// does that; the kernel table this mirrors into has to as well, or longest
+// does that. The kernel table this mirrors into has to as well, or longest
 // prefix match falls through to the covering route for the whole window, which
 // on a node holding a default is straight back out to the neighbor that just
 // retracted it.

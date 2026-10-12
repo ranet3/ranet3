@@ -1627,7 +1627,7 @@ func fillUnclaimedQueue(t *testing.T, hub *transport.Hub) uint64 {
 // a label value and no others, and a record carrying anything else is refused
 // whole rather than in part: one tab or non-breaking space pasted into an
 // organization or common name would take every series on this node out of
-// monitoring, with nothing in its own log. Go's %q writes \t and  .
+// monitoring, with nothing in its own log. Go's %q writes \t and \u00a0.
 func TestMetricsLabelsUseOnlyTheEscapesTheFormatDefines(t *testing.T) {
 	for name, test := range map[string]struct{ in, want string }{
 		"plain":                 {"example/gateway/0@0", "example/gateway/0@0"},
@@ -1635,8 +1635,8 @@ func TestMetricsLabelsUseOnlyTheEscapesTheFormatDefines(t *testing.T) {
 		"quote":                 {`a"b`, `a\"b`},
 		"newline":               {"a\nb", `a\nb`},
 		"tab":                   {"a\tb", "a\tb"},
-		"non-breaking space":    {"a b", "a b"},
-		"printable non-ascii":   {"orgé", "orgé"},
+		"non-breaking space":    {"a\u00a0b", "a\u00a0b"},
+		"printable non-ascii":   {"org\u00e9", "org\u00e9"},
 		"carriage return alone": {"a\rb", "a\rb"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1977,8 +1977,8 @@ func TestValidatePeersReportsAnEndpointWithNoAddress(t *testing.T) {
 }
 
 // A node taken out of the registry while its dialer is running stops being
-// dialed. The check before the loop covers a node that was already gone;
-// this one covers the reload that removes it afterward, and without it the
+// dialed. The check before the loop covers a node that was already gone.
+// This one covers the reload that removes it afterward, and without it the
 // dialer logs the same lookup failure every reconnect delay for the life of
 // the process while Reload's "so nothing will dial it" is not true.
 func TestDialerGivesUpOnANodeAReloadRemoved(t *testing.T) {

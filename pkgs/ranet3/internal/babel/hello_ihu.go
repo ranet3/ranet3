@@ -10,12 +10,12 @@ import (
 	"net"
 )
 
-// Hello is RFC 8966 §4.6.5. We always send what the RFC calls a
-// "Multicast Hello" (Unicast flag clear) — a slight misnomer, since it's
+// Hello is RFC 8966 section 4.6.5. We always send what the RFC calls a
+// "Multicast Hello" (Unicast flag clear), a slight misnomer, since it's
 // delivered as one packet per neighbor over each point-to-point ESP
 // tunnel, not literally multicast on the wire. The classification matters
 // because implementations (e.g. BIRD) track Multicast- and Unicast-Hello
-// sequence numbers/loss-history in separate buckets per RFC 8966 §3.2.4;
+// sequence numbers/loss-history in separate buckets per RFC 8966 section 3.2.4, and
 // setting the Unicast flag while actually delivering to the standard
 // multicast destination address (which our peers, like BIRD, listen on
 // regardless) puts us in the wrong bucket and the Hello is never counted.
@@ -23,14 +23,14 @@ type Hello struct {
 	Seqno    uint16
 	Interval uint16 // centiseconds
 	Unicast  bool
-	TxTS     uint32 // RFC 9616 §6.1 Transmit Timestamp (microseconds, arbitrary origin); 0 if omitted
+	TxTS     uint32 // RFC 9616 section 6.1 Transmit Timestamp (microseconds, arbitrary origin), 0 if omitted
 	HasTS    bool
 }
 
 func EncodeHello(h Hello) RawTLV {
 	body := make([]byte, 6)
-	// Flags left at 0: this is a "Multicast Hello" per RFC 8966 §3.2.4's
-	// classification (see the Hello doc comment above) — the Unicast flag
+	// Flags left at 0: this is a "Multicast Hello" per RFC 8966 section 3.2.4's
+	// classification (see the Hello doc comment above). The Unicast flag
 	// is deliberately never set by Speaker's multicast Hello loop.
 	if h.Unicast {
 		binary.BigEndian.PutUint16(body[0:2], 0x8000)
@@ -65,7 +65,7 @@ func DecodeHello(body []byte) (Hello, error) {
 	return h, nil
 }
 
-// IHU ("I Heard You") is RFC 8966 §4.6.6. AE=Wildcard omits the address
+// IHU ("I Heard You") is RFC 8966 section 4.6.6. AE=Wildcard omits the address
 // entirely, which that section permits as an optimization: the AE "MAY be 0 if
 // the TLV is sent to a unicast address, if the association is over a
 // point-to-point link, or when bidirectional reachability is ascertained by
@@ -74,10 +74,10 @@ func DecodeHello(body []byte) (Hello, error) {
 type IHU struct {
 	RxCost   uint16
 	Interval uint16 // centiseconds
-	// OriginTS/ReceiveTS are RFC 9616 §6.2: a copy of the Transmit
+	// OriginTS/ReceiveTS are RFC 9616 section 6.2: a copy of the Transmit
 	// Timestamp from the last timestamped Hello we received from this
-	// neighbor, and our own clock's reading at the moment we received it
-	// — NOT "now" (the time we're sending this IHU). The asymmetry is the
+	// neighbor, and our own clock's reading at the moment we received it,
+	// NOT "now" (the time we're sending this IHU). The asymmetry is the
 	// whole point: it lets the original sender subtract our processing
 	// delay out of its RTT estimate.
 	OriginTS  uint32
