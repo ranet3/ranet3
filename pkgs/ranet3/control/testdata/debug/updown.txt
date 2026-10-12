@@ -1,0 +1,3 @@
+State    down since 2026-10-12 21:04:05 UTC, 3 minutes ago, until ranet3 up
+Flag     /var/lib/ranet3/down, present
+Changed  to down by a request, 3 minutes ago, at 2026-10-12 21:04:05 UTC

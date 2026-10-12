@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -43,19 +45,36 @@ type loopbackNode struct {
 	events     *events.Bus
 }
 
-// freeUDPPort asks the kernel for a port and gives it straight back, which is
-// the only way to name one in a config before the hub binds it.
+// freeUDPPort asks the kernel for a port and gives it straight back, the only way to name one in a config before the hub binds it
+// it binds as the hub does, udp4 and then udp6 on the wildcard
+// it asks again while udp6 refuses the port udp4 was handed
+// a socket on any of the host's own addresses keeps the hub off that port for as long as the socket lives
 func freeUDPPort(t *testing.T) uint16 {
 	t.Helper()
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatal(err)
+	for range portAttempts {
+		v4, err := net.ListenUDP("udp4", &net.UDPAddr{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := v4.LocalAddr().(*net.UDPAddr).Port
+		v6, err := net.ListenUDP("udp6", &net.UDPAddr{Port: port})
+		switch {
+		case err == nil:
+			err = v6.Close()
+		case errors.Is(err, syscall.EAFNOSUPPORT) || errors.Is(err, syscall.EPROTONOSUPPORT):
+			// the hub binds udp4 alone on a host without IPv6
+			err = nil
+		}
+		if closeErr := v4.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		if err == nil {
+			return uint16(port)
+		}
+		t.Logf("udp6 refused port %d, which udp4 was handed: %v", port, err)
 	}
-	port := uint16(conn.LocalAddr().(*net.UDPAddr).Port)
-	if err := conn.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return port
+	t.Fatalf("%d ports in a row that udp4 was handed were refused on udp6", portAttempts)
+	return 0
 }
 
 const (
@@ -69,7 +88,7 @@ const (
 // a port is chosen by binding zero, reading it back and giving it up, and anything else on the machine can take it in between
 // on a loaded machine several tests do this at once, and the wait makes a run of losses unlikely rather than merely improbable
 // without it a busy machine lost every attempt in the same handful of microseconds
-func retryPort(t *testing.T, what string, try func() error) {
+func retryPort(t testing.TB, what string, try func() error) {
 	t.Helper()
 	for attempt := range portAttempts {
 		err := try()
@@ -237,10 +256,6 @@ func TestTwoNodesConvergeOverLoopback(t *testing.T) {
 	// And the route each announces reaches the other, which means the session
 	// is carrying ESP, babel is running inside it and the forwarding table was
 	// written.
-	reaches := func(from, to *loopbackNode) bool {
-		peer, ok := from.client.Mesh.Routes.Lookup(netip.Addr{}, to.prefix.Addr().Next())
-		return ok && peer != nil
-	}
 	waitFor(t, convergeBudget, "each node forwarding to the other's prefix", func() bool {
 		return reaches(alpha, bravo) && reaches(bravo, alpha)
 	})
@@ -258,6 +273,12 @@ func TestTwoNodesConvergeOverLoopback(t *testing.T) {
 	})
 
 	stop()
+}
+
+// reaches is whether from forwards to an address in to's prefix through the mesh
+func reaches(from, to *loopbackNode) bool {
+	peer, ok := from.client.Mesh.Routes.Lookup(netip.Addr{}, to.prefix.Addr().Next())
+	return ok && peer != nil
 }
 
 // preferenceOf reads the preference bit of the one session a node is holding.
@@ -316,7 +337,7 @@ func run(t *testing.T, nodes ...*loopbackNode) (context.Context, func()) {
 // waiting longer.
 const convergeBudget = 60 * time.Second
 
-func waitFor(t *testing.T, limit time.Duration, what string, done func() bool) {
+func waitFor(t testing.TB, limit time.Duration, what string, done func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(limit)
 	for !done() {

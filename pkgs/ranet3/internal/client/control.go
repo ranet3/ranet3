@@ -22,7 +22,7 @@ import (
 // reads live state under whatever lock owns it and returns a value, so a slow
 // reader on the socket never holds the dataplane's lock.
 //
-// Nothing here writes. The verbs that do are in write.go, and none of them
+// Nothing here writes. The verbs that do are in write.go and updown.go, and none of them
 // touches the configuration either: its entry points stay the file and SIGHUP,
 // which is why the socket carries no authorization beyond its mode.
 
@@ -118,6 +118,7 @@ func (c *Client) Status() control.Status {
 		Steering:        c.Mesh.Steering().Entries(),
 		SegmentCounters: segmentCounters(c.Mesh.SegmentCounters()),
 		Disabled:        c.disabledSubsystems(),
+		Down:            c.downStatus(),
 	}
 }
 

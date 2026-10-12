@@ -70,7 +70,15 @@ func RenderStatus(w io.Writer, s Status) {
 	if len(s.Disabled) > 0 {
 		rows = append(rows, []string{"Disabled", disabledLine(s.Disabled)})
 	}
+	// under the name, since every count below reads zero on a node off the mesh
+	if s.Down != nil {
+		rows = slices.Insert(rows, 1, []string{"Down", downLine(*s.Down)})
+	}
 	pairs(w, rows)
+}
+
+func downLine(d Down) string {
+	return "since " + d.Since.UTC().Format(time.DateTime) + " UTC, " + sinceText(time.Duration(d.For)) + " ago, until ranet3 up"
 }
 
 // role is the three settings that decide what this node is on a fleet, said as

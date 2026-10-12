@@ -1,0 +1,14 @@
+{
+  "down": {
+    "since": "2026-10-12T21:04:05Z",
+    "for": "3m4s"
+  },
+  "flag": "/var/lib/ranet3/down",
+  "flagged": true,
+  "last": {
+    "down": true,
+    "cause": "request",
+    "at": "2026-10-12T21:04:05Z",
+    "ago": "3m4s"
+  }
+}

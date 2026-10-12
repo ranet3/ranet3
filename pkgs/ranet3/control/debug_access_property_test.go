@@ -59,3 +59,42 @@ func TestDebugAccessFollowsTheRule(t *testing.T) {
 		}
 	})
 }
+
+// accessSink takes every verb under the --debug-access it names
+type accessSink struct {
+	writingSource
+	access DebugAccess
+}
+
+func (s *accessSink) DebugAccess() DebugAccess { return s.access }
+
+// every verb reaches the node for whoever reached the socket, down and up as redial does
+// under every --debug-access mode, for any caller and for a connection that names none
+// the classes are the debug paths' own, and the socket's mode is a verb's whole authorization
+func TestVerbsAnswerWhoeverReachedTheSocket(t *testing.T) {
+	bodies := map[string]string{
+		PathDisable: `{"subsystem":"steering"}`, PathEnable: `{"subsystem":"steering"}`,
+		PathRedial: `{"all":true}`, PathRekey: `{"all":true}`,
+		PathReload: "", PathDown: "", PathUp: "",
+	}
+	pbt.Check(t, func(ht *hegel.T) {
+		uid := hegel.Draw(ht, pbt.Spanning[uint32](0, math.MaxUint32))
+		for _, path := range slices.Sorted(maps.Keys(bodies)) {
+			for _, access := range DebugAccesses {
+				for _, known := range []bool{false, true} {
+					request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(bodies[path]))
+					if known {
+						request = request.WithContext(withCaller(request.Context(), Caller{UID: uid}))
+					}
+					sink := &accessSink{access: access}
+					answer := httptest.NewRecorder()
+					Handler(sink).ServeHTTP(answer, request)
+					if answer.Code != http.StatusOK || sink.verb == "" {
+						ht.Fatalf("%s under %s for uid %d (known %v) answered %d %q and reached the node as %q",
+							path, access, uid, known, answer.Code, answer.Body, sink.verb)
+					}
+				}
+			}
+		}
+	})
+}
