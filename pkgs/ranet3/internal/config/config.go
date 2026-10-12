@@ -550,16 +550,11 @@ func (c *Config) Validate() error {
 	// package that refused and the block an operator can find in their own
 	// file, and wrapping it in a second "config:" would say neither twice.
 	for _, capability := range []interface{ Validate() error }{
-		c.Routes(), c.Babel(), c.Crypto(),
+		c.Routes(), c.Babel(), c.Crypto(), c.Segments(),
 	} {
 		if err := capability.Validate(); err != nil {
 			return err
 		}
-	}
-	// cap.segment is asked alone here
-	// its longest steering list is checked against link.mtu with the checks spanning two blocks
-	if err := c.Segments().Validate(0); err != nil {
-		return err
 	}
 	// Table and Egress are asked only where the block was written, because
 	// neither has a zero value worth checking: an absent table writes no

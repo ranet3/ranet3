@@ -27,6 +27,21 @@ func TestSegmentCountersDoNotDrift(t *testing.T) {
 	_ = control.SegmentCounters(counters)
 }
 
+// loadable is a node complete enough to load carrying segment
+// a check Validate makes once every capability has passed its own needs the rest of the file to pass as well
+func loadable(segment *srv6.Segments) *config.Config {
+	return &config.Config{
+		Node: config.Node{Org: "example", Name: "node"},
+		Auth: config.Auth{Key: "key.pem", Trust: "trust.json"},
+		Link: config.Link{
+			Port:      13000,
+			Listen:    true,
+			Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}},
+		},
+		Cap: config.Caps{Segment: segment},
+	}
+}
+
 // A SID this node also carries as an address would swallow every ordinary
 // packet to that address: the inbound seam acts on the destination before the
 // tun sees it, and a packet with no routing header is then refused rather than
@@ -35,23 +50,10 @@ func TestSegmentCountersDoNotDrift(t *testing.T) {
 // The check spans cap.segment and cap.table, so it lives where the file is
 // read rather than in either capability.
 func TestLocalSegmentOnOneOfThisNodesAddressesIsRefused(t *testing.T) {
-	cfg := &config.Config{
-		// A node complete enough to load, since the check under test is the
-		// one Validate makes after every capability has passed its own.
-		Node: config.Node{Org: "example", Name: "node"},
-		Auth: config.Auth{Key: "key.pem", Trust: "trust.json"},
-		Link: config.Link{
-			Port:      13000,
-			Listen:    true,
-			Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}},
-		},
-		Cap: config.Caps{
-			Table: &kernel.Table{Addresses: []schema.Prefix{schema.MustPrefix("3fff:1:69c:8c6::1/128")}},
-			Segment: &srv6.Segments{Local: []srv6.Segment{
-				{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEndDT46},
-			}},
-		},
-	}
+	cfg := loadable(&srv6.Segments{Local: []srv6.Segment{
+		{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEndDT46},
+	}})
+	cfg.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{schema.MustPrefix("3fff:1:69c:8c6::1/128")}}
 	if err := cfg.Validate(); err == nil {
 		t.Error("a segment on one of this node's own addresses was accepted")
 	}
@@ -73,19 +75,20 @@ func TestLocalSegmentOnOneOfThisNodesAddressesIsRefused(t *testing.T) {
 // A host address written with a prefix length is refused rather than masked,
 // as the rule list refuses the same typo. Masking steers a whole prefix where
 // one address was meant and says nothing about it.
+// both go through the file's whole validation, which also holds the list to link.mtu
 func TestSteerSelectorWithHostBitsIsRefused(t *testing.T) {
-	segments := srv6.Segments{
+	cfg := loadable(&srv6.Segments{
 		Source: schema.MustAddr("3fff:1:69c:8c0::1"),
 		Steer: []srv6.Steer{{
 			From: schema.MustPrefix("3fff:a::198:18:104:117/64"),
 			Via:  []schema.Addr{schema.MustAddr("3fff:1:69c:98d6::1")},
 		}},
-	}
-	if err := segments.Validate(netstack.DefaultMTU); err == nil {
+	})
+	if err := cfg.Validate(); err == nil {
 		t.Error("a selector with bits below its prefix length was accepted")
 	}
-	segments.Steer[0].From = schema.MustPrefix("3fff:a::198:18:104:117/128")
-	if err := segments.Validate(netstack.DefaultMTU); err != nil {
+	cfg.Cap.Segment.Steer[0].From = schema.MustPrefix("3fff:a::198:18:104:117/128")
+	if err := cfg.Validate(); err != nil {
 		t.Errorf("a host selector was refused: %v", err)
 	}
 }
