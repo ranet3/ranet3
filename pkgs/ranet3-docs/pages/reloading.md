@@ -111,6 +111,12 @@ whether or not it moved anything. A reconciler stopped with
 that installs it once the reconciler is started again is recorded with
 `trigger=enable`.
 
+A node `ranet3 down` took off the mesh applies a reload and stays down. Its
+dialers, its responder and its speaker start at `ranet3 up` as the new file
+describes them, the dialer of a peer the reload added included, and the
+reconciler takes a changed `cap.table` as a stopped one does and installs it at
+`ranet3 up`.
+
 Everything else is refused rather than applied, because a reload cannot reach
 it. Identity, port, TUN device and local endpoints each change what peers have
 already authenticated or what the dataplane is attached to. So does the private

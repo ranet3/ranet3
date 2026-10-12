@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What the route reconciler can do on Linux and on macOS, and how sessions follow a host that moves."
 created: 2026-09-21
-updated: 2026-10-08
+updated: 2026-10-13
 order: 100
 ---
 
@@ -63,7 +63,9 @@ refused there for the same reason, since there is nothing for a mark to select
 and nothing to select it with. `link.underlay.bind` is the local spelling, and
 with it set the socket's lookups are scoped to the underlay interface, that
 interface is given a default of its own, and an announced default is installed
-plain, without which a node cannot use a mesh exit. A source-specific route and
+plain, without which a node cannot use a mesh exit. The underlay interface keeps
+its own default while the node is down, since the transport's socket stays open
+and only traffic scoped to that interface takes it. A source-specific route and
 a retracted one stay scoped either way: interface scope is the only thing on
 this platform that expresses a source at all, and an unscoped hold at a default
 answers the whole machine's traffic with an error.

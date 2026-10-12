@@ -120,28 +120,33 @@ fleet then has to firewall.
 
 ## Acting on a running node
 
-Five subcommands change what a node is doing right now. `disable` and `enable`
+Seven subcommands change what a node is doing right now. `disable` and `enable`
 stop and start a subsystem, which is `reconciler`, `steering` or `responder`.
 `redial` and `rekey` take a peer or `--all`. `reload` does what SIGHUP does, so
-a supervisor is not the only way to ask.
+a supervisor is not the only way to ask. `down` takes the node off the mesh and
+`up` puts it back, as [taking a node off the mesh](#taking-a-node-off-the-mesh)
+describes.
 
 None of them changes the configuration. A node's configuration is its file, and
 that stays its only entry point. What these act on is operational state the file
 already decides: `cap.table`, `cap.segment`'s steering, `link.listen`, the peers
-list and the file itself. Whoever may edit that file could already ask for every
-one of them, by editing and restarting if not by editing and sending SIGHUP, so
-the socket's mode grants nothing the file's permissions did not, and a verb that
-reached past what the file can express would break that and is refused on those
-grounds. The subsystem names are a closed set for the same reason. The two
-halves are told apart by method rather than by path: a read answers GET and
-nothing else, and a verb answers POST alone.
+list and the file itself. `down` asks for no more than a file without peers,
+`link.listen`, `cap.table` or `cap.egress` would. Whoever may edit that file
+could already ask for every one of them, by editing and restarting if not by
+editing and sending SIGHUP, so the socket's mode grants nothing the file's
+permissions did not, and a verb that reached past what the file can express
+would break that and is refused on those grounds. The subsystem names are a
+closed set for the same reason. The two halves are told apart by method rather
+than by path: a read answers GET and nothing else, and a verb answers POST
+alone.
 
-The state lives in the process. A restart starts everything the file names, and
-a reload leaves a stopped subsystem stopped, because the trust document is
-rewritten every time any node joins the mesh and a reload that started one again
-would undo a decision an operator took minutes earlier on a schedule nobody
-chose. A node running less than its file says reports it on the `Disabled` line
-of `ranet3 status`, which is the only place that difference shows.
+The state lives in the process, apart from the flag `down` leaves. A restart
+starts every subsystem the file names, and a reload leaves a stopped subsystem
+stopped, because the trust document is rewritten every time any node joins the
+mesh and a reload that started one again would undo a decision an operator took
+minutes earlier on a schedule nobody chose. A node running less than its file
+says reports it on the `Disabled` line of `ranet3 status`, which is the only
+place that difference shows.
 
 `disable reconciler` withdraws every route, address and rule the reconciler
 installed, as `birdc disable` did to a kernel protocol, rather than freezing a
@@ -157,6 +162,75 @@ peer and sets its dialers going at once rather than after the reconnect delay.
 `redial --all` does the same for every session and every dialer, for a network
 change the node's watch cannot see, such as a captive portal that changes no
 address or route. Both refuse a peer together with `--all`, and neither.
+
+## Taking a node off the mesh
+
+`ranet3 down` takes a node off the mesh and leaves its daemon running. Every
+dialer stops and no new one starts, the responder stops answering IKE where
+`link.listen` is on, every session is closed with an IKE Delete, and the Babel
+speaker stops. Where `cap.table` is set, the reconciler withdraws the routes,
+rules and tun addresses it installed, and on an exit node the translator
+withdraws its tables and its advertisement. The daemon, the tun, the control
+socket, the metrics and the debug views stay, and the node still answers every
+read. A ranet3 peer drops its routes through the node when the Delete arrives,
+rather than when the Babel neighbor would have timed out.
+
+`down` writes the flag `down` in the daemon's state directory before it acts,
+holding the moment the node went down, and a daemon that starts with the flag
+there comes up down: its tun, control socket and metrics open, and nothing else
+of the mesh starts. A node taken off the mesh to be worked on stays off through
+the restarts and reboots the work brings, which makes `down` the one verb whose
+state outlives the process. `--state-dir` names the directory, `/var/lib/ranet3`
+on linux and `/var/db/ranet3` on darwin by default, and the daemon makes it at
+mode 0700 when it is missing. The flag is written beside its final name, synced
+and renamed into place, and the directory is synced after it, so a crash leaves
+the flag as it was or as asked.
+
+`ranet3 up` removes the flag before it acts, then puts back the addresses, rules
+and routes as the reconciler does at start, and starts every dialer, the
+responder and the speaker. A subsystem somebody disabled stays disabled. A
+`down` on a node that is down and an `up` on one that is up succeed and say so.
+While the node is down, `redial`, `rekey` and `enable` are refused with an error
+saying it is down. A reload applies the file and the trust document and leaves
+the node down, and a peer the reload adds is dialed after `up`.
+
+```
+$ ranet3 down
+This node is off the mesh with 2 session(s) closed, and it stays off through a restart until ranet3 up
+  example/bravo/0@0
+  example/charlie/0@0
+
+$ ranet3 status
+Node        example/gateway
+Down        since 2026-10-12 21:04:05 UTC, 3 minutes ago, until ranet3 up
+Version     v0.1.0
+Uptime      26h0m0s
+Port        13000
+Endpoints   0/ip4 1/ip6
+TUN         ranet3 MTU 1400 queues 4
+Role        initiator, responder, transit
+Forwarding  IPv4 on IPv6 on
+Registry    /etc/ranet3/registry.json, 12 nodes in 1 organizations
+Kernel      table 100, 0 installed, last pass 3 minutes ago
+Egress      off, this node carries no traffic for others
+Dialers     0 running
+Sessions    0
+Neighbors   0, 0 alive
+Routes      0 prefixes, 0 selected, 1 originated
+Originate   2001:db8:a::/48
+Segments    off
+Steering    off
+ESP         0 in, 0 dropped, 0 refused
+
+$ ranet3 up
+This node is back on the mesh
+```
+
+`ranet3 status` carries the `Down` line under the node's name for as long as the
+node is down, and `ranet3 debug updown` adds where the flag is, whether it is
+there, and the last move between up and down with its cause. Each move is
+recorded as a `node.down` or `node.up` event, as
+[debugging](development/debug.md#events) describes.
 
 This is still not the daemon and client split tailscale has: there is no login
 flow here, identity being a static key and a registry entry that nix and sops

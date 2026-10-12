@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-08
+updated: 2026-10-13
 order: 30
 ---
 
@@ -74,6 +74,10 @@ the caller already reads as uid 0.
   every session, to send a liveness check now, as each does after a network
   change, and name the sessions asked. It is an action, so it takes the root
   class, and it is recorded as a `control.verb` like the other verbs.
+- `debug updown` is whether the node is on the mesh and since when, the flag
+  that keeps it off through a restart and whether the flag is there, and the
+  last move between up and down with its cause, a request or the flag at start.
+  Where the flag and the node disagree, it says what a restart would do.
 - `debug events [-f] [--kind K]... [--peer P] [--since 5m] [--for 30s]` prints
   the events the daemon has recorded and exits, or with `-f` goes on printing
   the ones after them until `--for` has passed. `--kind`, given up to 16 times,
@@ -124,6 +128,7 @@ its connections to the reads.
 | ------------------------------------ | --------------------------------------------------------------------------- |
 | `daemon.started`, `daemon.stopping`  | the node is up, and its shutdown has begun                                  |
 | `daemon.reload`                      | the file and trust document were read again, with what applied or the error |
+| `node.down`, `node.up`               | the node went off the mesh or came back, by a request or from its flag      |
 | `responder.changed`                  | a reload turned `link.listen` on or off, with the answered sessions closed  |
 | `control.verb`                       | a verb over the socket, once under each session or dialer it acted on       |
 | `dial.attempt`, `dial.failed`        | a dialer sent a handshake, or ended short of a session                      |
@@ -159,6 +164,12 @@ how many sessions this node had answered and closed with a Delete. A
 causes reads `trigger=reload` and is recorded whether or not it moved anything.
 A reconciler stopped with `disable` runs no pass when it takes a reload, and the
 pass that installs the block once it is enabled again reads `trigger=enable`.
+The same holds for a reconciler `ranet3 down` stopped, until `ranet3 up`.
+
+A `node.down` carries its `cause`, `request` for `ranet3 down` and `flag` for a
+daemon that found the flag when it started, and in `since` the moment the flag
+holds. One a request caused carries in `closed` how many sessions it closed with
+a Delete, and a `node.up` carries `cause=request`.
 
 A `control.verb` carries the caller's uid and pid, and in its `peer` attribute
 the peer as the verb named it, when it named one. The event's peer is the path
