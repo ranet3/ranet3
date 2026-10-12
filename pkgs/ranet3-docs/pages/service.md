@@ -4,7 +4,7 @@
 title: "Running it as a service"
 description: "Running ranet3 from the NixOS and nix-darwin modules."
 created: 2026-09-22
-updated: 2026-10-08
+updated: 2026-10-13
 order: 40
 ---
 
@@ -94,26 +94,35 @@ expected plist, and it has never been loaded on a Mac. No check covers it:
 verifying it in CI would mean taking nix-darwin as an input of this flake, which
 nothing else here needs.
 
-The daemon makes `/var/run/ranet3` in the job's group. One an earlier version
-made is in `daemon`, the group of `/var/run`, which keeps the control socket out
-of the job group's reach until the directory is removed with the job stopped:
+The daemon makes `/var/run/ranet3` in the job's group, whether the control
+socket or the record `link.underlay.bind` keeps there makes it first. One an
+earlier version made is in `daemon`, the group of `/var/run`, which keeps the
+control socket out of the job group's reach until the directory takes the job's
+group, `admin` unless `networking.ranet3.group` names another, with the job
+stopped:
 
 ```sh
 sudo launchctl bootout system/org.nixos.ranet3
-sudo rm -r /var/run/ranet3
+sudo chgrp admin /var/run/ranet3
 sudo launchctl bootstrap system /Library/LaunchDaemons/org.nixos.ranet3.plist
 ```
+
+A reboot does it as well, since macOS clears `/var/run` as it starts and the
+daemon makes the directory afresh. Removing the directory instead takes
+`underlay.json` with it, and a scoped default the record still holds, one a
+start refused to withdraw, then stays on its interface for good.
 
 launchd has no reload path, so the job names the store path of the config file,
 and any change to `settings` restarts the daemon.
 
-nix-darwin loads its launchd jobs before a secrets tool has installed the key.
-Where the module renders the config file from `settings`, the job waits up to 60
-seconds for `auth.key` to exist before it starts the daemon, so the daemon does
-not exit once and come back about 10 seconds later through `KeepAlive`. When the
-60 seconds are up, the daemon starts anyway and fails with its own message in
-the log. A `configFile` set by hand names no key the module can read, so the job
-does not wait for one.
+nix-darwin loads its launchd jobs before a secrets tool has installed the key
+and the trust document. Where the module renders the config file from
+`settings`, the job waits up to 60 seconds in all for `auth.key` and
+`auth.trust` to exist before it starts the daemon, so the daemon does not exit
+once and come back about 10 seconds later through `KeepAlive`. When the 60
+seconds are up, the daemon starts anyway and fails with its own message in the
+log. A `configFile` set by hand names no file the module can read, and the job
+then waits for none.
 
 `openFirewall` lets the binary through the application firewall when the
 configuration is activated. Every build is a store path of its own, and

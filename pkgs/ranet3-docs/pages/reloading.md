@@ -4,16 +4,16 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-08
+updated: 2026-10-13
 order: 70
 ---
 
 `SIGHUP` re-reads the config file and the registry and reconciles rather than
 restarting. It applies the registry itself, the peers dialed, the prefixes
-originated, `cap.babel`, `cap.segment`, `link.listen` and `cap.table`, so a node
-joining or leaving the mesh costs one dialer instead of dropping every SA this
-node is carrying. ranet's own `ExecReload` works the same way, and it matters
-because the registry is rewritten every time any node joins.
+originated, `cap.babel`, `cap.segment`, `link.listen`, `link.mtu` and
+`cap.table`, so a node joining or leaving the mesh costs one dialer instead of
+dropping every SA this node is carrying. ranet's own `ExecReload` works the same
+way, and it matters because the registry is rewritten every time any node joins.
 
 A reload also decides which sessions stay. The registry is the trust root a
 handshake is checked against, so a node taken out of it stops being carried:
@@ -71,11 +71,23 @@ out as its default for instance, changes nothing and sends nothing.
 
 A reload builds the tables a changed `cap.segment` describes, as a startup does,
 and installs them: the segments this node answers for and its steering. A packet
-already in flight is acted on under the table it met. The tun's MTU is set once,
-when the tun is made, from the longest segment list the steering carries, so a
-reload whose steering needs another MTU is refused by name and a restart applies
-it. A steering stopped with `ranet3 disable steering` stays stopped with the new
-table installed.
+already in flight is acted on under the table it met. The tun runs at `link.mtu`
+less the header the longest steer list puts in front of a packet, and a reload
+whose steering has a longer or a shorter longest list moves the tun with it. A
+table whose longest list is longer than the one in force goes in once the tun
+has moved, and any other goes in before the tun moves, which keeps the tun's MTU
+plus the steering header in force within the larger of the old and the new
+`link.mtu` throughout. A steering stopped with `ranet3 disable steering` stays
+stopped with the new table installed.
+
+A changed `link.mtu` moves the tun the same way. The buffers the tun is read
+into are sized once, at startup, for the larger of the `link.mtu` the node
+started with and 2048 bytes. A reload to a `link.mtu` they cannot hold is
+refused, naming both sizes, and a restart applies it, even where a longer steer
+list in the same file leaves the tun where it was. A session already running
+takes the new `link.mtu` at once, as every session made after the reload does.
+On a platform other than linux and darwin the tun takes its MTU only when it is
+opened, and a reload that changes `link.mtu` or moves the tun is refused there.
 
 Turning `link.listen` on starts the responder. Turning it off stops it
 answering, closes every session this node answered with a Delete, as a shutdown
@@ -87,16 +99,17 @@ it. A responder stopped with `ranet3 disable responder` stays stopped across a
 reload.
 
 A reload is recorded as a `daemon.reload` event whose `applied` lists the blocks
-it changed among `cap.babel`, `cap.route`, `cap.segment`, `cap.table` and
-`link.listen`, comma separated: `applied=cap.table` for one that changed the
-table, and none for one that changed only the trust document or the peers
-dialed. The speaker records a `babel.config.applied` with the intervals and the
-cost it took, and turning `link.listen` on or off records a `responder.changed`
-whose `closed` counts the answered sessions it closed. The reconciler's pass
-after it is a `kernel.pass` with `trigger=reload`, recorded whether or not it
-moved anything. A reconciler stopped with `ranet3 disable reconciler` runs no
-pass when it takes the block, and the pass that installs it once the reconciler
-is started again is recorded with `trigger=enable`.
+it changed among `cap.babel`, `cap.route`, `cap.segment`, `cap.table`,
+`link.listen` and `link.mtu`, comma separated: `applied=cap.table` for one that
+changed the table, and none for one that changed only the trust document or the
+peers dialed. The speaker records a `babel.config.applied` with the intervals
+and the cost it took, and turning `link.listen` on or off records a
+`responder.changed` whose `closed` counts the answered sessions it closed. The
+reconciler's pass after it is a `kernel.pass` with `trigger=reload`, recorded
+whether or not it moved anything. A reconciler stopped with
+`ranet3 disable reconciler` runs no pass when it takes the block, and the pass
+that installs it once the reconciler is started again is recorded with
+`trigger=enable`.
 
 Everything else is refused rather than applied, because a reload cannot reach
 it. Identity, port, TUN device and local endpoints each change what peers have
@@ -120,4 +133,5 @@ instance. The rekey and replay settings are captured by a session when it is
 created, so applying them to new sessions alone would leave the node running two
 policies at once. A restart is the honest way to change any of them, and a
 refused reload changes nothing: not the registry, the dialers, the
-announcements, the speaker, the segment tables, the responder or the table.
+announcements, the speaker, the segment tables, the tun, the responder or the
+table.
