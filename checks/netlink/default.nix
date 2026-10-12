@@ -114,6 +114,16 @@ testers.runNixOSTest {
     assert "SKIP" not in out, f"the locked path test skipped itself under root:\n{out}"
     assert "--- PASS" in out, f"the locked path test did not run:\n{out}"
 
+    # two nodes taken down and put back up against linux itself
+    # every goroutine of a node opens sockets and tuns, so the whole process runs in a namespace of its own
+    out = machine.succeed(
+        "unshare -n ${netlinkTests}/bin/client-tests -test.v -test.run '^TestNode(GoingDown|RestartedWhileDown)' 2>&1"
+    )
+    print(out)
+    assert "SKIP" not in out, f"the down and up round trips skipped themselves under root:\n{out}"
+    ran = out.count("--- PASS")
+    assert ran >= 2, f"only {ran} down and up round trips ran:\n{out}"
+
     # Nothing the tests wrote may outlive them: they run against the host's own
     # kernel here rather than against a fake, so a rule, a VRF or a table left
     # behind is a leak this check is the only thing positioned to see.
