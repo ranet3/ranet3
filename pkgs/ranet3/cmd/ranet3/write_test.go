@@ -51,6 +51,10 @@ func (s *writingStub) Rekey(_ context.Context, peer string, all bool) (control.R
 
 func (s *writingStub) Reload(context.Context) (control.Result, error) { return s.record("reload") }
 
+func (s *writingStub) Down(context.Context) (control.Result, error) { return s.record("down") }
+
+func (s *writingStub) Up(context.Context) (control.Result, error) { return s.record("up") }
+
 // Sessions names a peer the peers list does not. The completion unions the
 // two, and a peer that only dials this node has no entry in the peers list and
 // is the peer a redial is for, so spelling both halves the same way would let

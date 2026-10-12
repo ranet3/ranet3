@@ -71,8 +71,8 @@ func (c *Client) Sessions() ([]Session, error) { return read[[]Session](c, PathS
 
 func (c *Client) Peers() ([]Peer, error) { return read[[]Peer](c, PathPeers) }
 
-// Disable and Enable stop and start one subsystem. Redial, Rekey and Reload
-// are the other three verbs, written out for the same reason the reads are.
+// Disable and Enable stop and start one subsystem. Redial, Rekey, Reload, Down
+// and Up are the other verbs, written out for the same reason the reads are.
 func (c *Client) Disable(subsystem Subsystem) (Result, error) {
 	return c.call(PathDisable, Request{Subsystem: subsystem})
 }
@@ -90,6 +90,10 @@ func (c *Client) Rekey(peer string, all bool) (Result, error) {
 }
 
 func (c *Client) Reload() (Result, error) { return c.call(PathReload, Request{}) }
+
+func (c *Client) Down() (Result, error) { return c.call(PathDown, Request{}) }
+
+func (c *Client) Up() (Result, error) { return c.call(PathUp, Request{}) }
 
 // Metrics is the Prometheus text this node would serve on a metrics listener,
 // read over the socket instead so a scrape costs no bound port. It comes back

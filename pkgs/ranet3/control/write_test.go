@@ -47,6 +47,16 @@ func (s *writingSource) Reload(context.Context) (Result, error) {
 	return s.answer("/etc/ranet3/config.toml")
 }
 
+func (s *writingSource) Down(context.Context) (Result, error) {
+	s.verb = "down"
+	return s.answer("example/gateway/1@0")
+}
+
+func (s *writingSource) Up(context.Context) (Result, error) {
+	s.verb = "up"
+	return s.answer("example/gateway/1@0")
+}
+
 func (s *writingSource) answer(acted string) (Result, error) {
 	if s.refuse != nil {
 		return Result{}, s.refuse
@@ -111,6 +121,16 @@ func TestHandlerRoutesEveryVerb(t *testing.T) {
 				t.Errorf("reload reached %+v", s)
 			}
 		}},
+		"down": {path: PathDown, body: "", check: func(t *testing.T, s *writingSource) {
+			if s.verb != "down" {
+				t.Errorf("down reached %+v", s)
+			}
+		}},
+		"up": {path: PathUp, body: "", check: func(t *testing.T, s *writingSource) {
+			if s.verb != "up" {
+				t.Errorf("up reached %+v", s)
+			}
+		}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sink := &writingSource{}
@@ -166,7 +186,7 @@ func TestMethodSeparatesReadsFromWrites(t *testing.T) {
 func TestReadOnlySourceRefusesEveryVerb(t *testing.T) {
 	server := httptest.NewServer(Handler(fakeSource{}))
 	defer server.Close()
-	for _, path := range []string{PathDisable, PathEnable, PathRedial, PathRekey, PathReload} {
+	for _, path := range []string{PathDisable, PathEnable, PathRedial, PathRekey, PathReload, PathDown, PathUp} {
 		response := post(t, server.URL+path, "{}")
 		if response.StatusCode != http.StatusNotImplemented {
 			t.Errorf("%s answered %s on a read-only source, want 501", path, response.Status)
@@ -243,6 +263,18 @@ func TestClientRoundTripsEveryVerb(t *testing.T) {
 	}
 	if sink.verb != "reload" || result.Detail == "" {
 		t.Errorf("reload arrived as %+v answering %+v", sink, result)
+	}
+	if _, err := client.Down(); err != nil {
+		t.Fatal(err)
+	}
+	if sink.verb != "down" {
+		t.Errorf("down arrived as %+v", sink)
+	}
+	if _, err := client.Up(); err != nil {
+		t.Fatal(err)
+	}
+	if sink.verb != "up" {
+		t.Errorf("up arrived as %+v", sink)
 	}
 }
 

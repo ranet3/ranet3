@@ -74,6 +74,14 @@ type Client struct {
 	responder *responderRun
 	// speakerRun is the running speaker, nil while it is stopped, guarded by dialersMu as responder is
 	speakerRun *speakerRun
+	// stateDir is where the down flag lives, set before the socket or Run can read it
+	// a client nobody gave one refuses down and up
+	stateDir string
+	// downSince is when the node went off the mesh, nil while it is on it
+	// down and up move it under reloadMu, and nothing of the mesh starts while it is set
+	downSince atomic.Pointer[time.Time]
+	// lastMove is the last move between up and down, nil before the first
+	lastMove atomic.Pointer[control.UpDownChange]
 
 	// regReadAt is when the registry now installed was read, in unix
 	// nanoseconds, so a diagnostic can tell a registry that reloaded from one
@@ -104,6 +112,8 @@ type Client struct {
 	reconcilerEnable atomic.Pointer[func(bool)]
 	// reconcilerTable hands the route reconciler a reloaded cap.table, supplied as reconcilerEnable is
 	reconcilerTable atomic.Pointer[func(kernel.Table, []netip.Prefix) error]
+	// egressEnable stops and starts the egress translator, supplied as reconcilerEnable is and nil on a node with no cap.egress
+	egressEnable atomic.Pointer[func(bool)]
 	// configPath is where the daemon read this node's configuration, so the
 	// reload verb re-reads the same file SIGHUP does. Empty on a client a test
 	// built by hand, where the verb says so rather than guessing at a path.
@@ -312,10 +322,7 @@ func (c *Client) Run(ctx context.Context) error {
 	return c.ctx.Err()
 }
 
-// leave takes this node off the mesh once a flag that refuses every start is
-// set, which stopDialers is for the shutdown. Every peer is told its session
-// is gone while the loops that carry the Deletes still run, and only then do
-// the loops stop, each waited for.
+// leave closes every session, then stops the loops and waits for them
 // it reports the paths of the sessions it closed
 func (c *Client) leave() []string {
 	closed := c.sessions.closeAll()
@@ -323,9 +330,9 @@ func (c *Client) leave() []string {
 	return closed
 }
 
-// syncMesh brings the dialers, the responder and the speaker to what the node's
-// place on the mesh asks for, which is everything the file names while it is on
-// it and nothing once it is not, and waits for each loop it stopped to end.
+// syncMesh brings the dialers, the responder and the speaker to what the node's place on the mesh asks for
+// that is everything the file names while the node is on it and nothing once it is off
+// it waits for each loop it stops to end
 func (c *Client) syncMesh() {
 	for _, stopped := range c.syncPeers() {
 		<-stopped.done
@@ -334,9 +341,11 @@ func (c *Client) syncMesh() {
 	c.syncSpeaker()
 }
 
-// onMeshLocked reports whether this node dials, answers and speaks Babel, which
-// it does until the shutdown starts. c.dialersMu is held.
-func (c *Client) onMeshLocked() bool { return !c.stopped && c.ctx.Err() == nil }
+// onMeshLocked reports whether this node dials, answers and speaks Babel
+// it does until the shutdown starts or somebody takes it down, and c.dialersMu is held
+func (c *Client) onMeshLocked() bool {
+	return !c.stopped && c.downSince.Load() == nil && c.ctx.Err() == nil
+}
 
 // speakerRun is one run of the speaker, with the cancel that ends it and done closed once it has
 type speakerRun struct {
@@ -464,8 +473,9 @@ func (c *Client) stopDialers() {
 // Delete still has a loop to carry it, and every dialer whose session ends in
 // that window would otherwise say "reconnecting in 10s" at the one moment none
 // of them will.
+// down sweeps the same way before it cancels the dialers, so it counts as well
 func (c *Client) stopping() bool {
 	c.dialersMu.Lock()
 	defer c.dialersMu.Unlock()
-	return c.stopped
+	return c.stopped || c.downSince.Load() != nil
 }

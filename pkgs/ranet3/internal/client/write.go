@@ -15,8 +15,9 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 )
 
-// This file is the runtime's side of the control socket's write path: the four
-// verbs of control.Sink and the operational state they own.
+// This file is the runtime's side of the control socket's write path: the
+// verbs of control.Sink and the operational state they own, down and up
+// apart, which updown.go holds.
 //
 // None of them touches the configuration, which keeps its two entry points,
 // the file and SIGHUP. What they act on is whether a subsystem the file
@@ -24,7 +25,7 @@ import (
 // peer, and when the next Child SA is negotiated. Every one of those is
 // reversible, bounded and already in the file's gift, so the socket's mode
 // stays the whole authorization story. See the control package doc for the
-// line a fifth verb would have to stay inside.
+// line a new verb would have to stay inside.
 //
 // The state lives here and nowhere else. A restart starts everything the file
 // names, and a reload leaves it alone: the trust document is rewritten every
@@ -47,7 +48,15 @@ func startedSubsystems() map[control.Subsystem]bool {
 // the same reason: the command builds the reconciler because it owns the
 // kernel, and this owns the mesh. Without it the verb refuses by name, which
 // is the honest answer for a node configuring its routes externally.
-func (c *Client) SetReconcilerEnable(set func(bool)) { c.reconcilerEnable.Store(&set) }
+// a node that starts down hands the reconciler its stop here, before its first pass
+func (c *Client) SetReconcilerEnable(set func(bool)) {
+	c.runningMu.Lock()
+	defer c.runningMu.Unlock()
+	c.reconcilerEnable.Store(&set)
+	if c.downSince.Load() != nil {
+		set(false)
+	}
+}
 
 // SetConfigPath records where this node's configuration was read from, so the
 // reload verb re-reads the file SIGHUP re-reads. The daemon sets it. A client a
@@ -94,6 +103,12 @@ func (c *Client) SetSubsystem(ctx context.Context, name control.Subsystem, on bo
 	}
 	c.runningMu.Lock()
 	defer c.runningMu.Unlock()
+	// read under the lock down applies its stop under, so an enable and a down cannot cross
+	if on {
+		if err := c.refuseWhileDown("enable"); err != nil {
+			return control.Result{}, err
+		}
+	}
 	if c.running[name] == on {
 		return control.Result{Acted: []string{string(name)},
 			Detail: fmt.Sprintf("The %s was already %s", name, startedStopped(on))}, nil
@@ -188,6 +203,9 @@ func (c *Client) Redial(ctx context.Context, peer string, all bool) (result cont
 	if all == (peer != "") {
 		return control.Result{}, errors.New("control: redial takes either a peer or every peer, not both and not neither")
 	}
+	if err := c.refuseWhileDown("redial"); err != nil {
+		return control.Result{}, err
+	}
 	dialers := c.matchingDialers(peer, all)
 	dropped := c.sessions.closeMatching(peer, all)
 	if len(dialers) == 0 && len(dropped) == 0 {
@@ -258,6 +276,9 @@ func (c *Client) Rekey(ctx context.Context, peer string, all bool) (result contr
 func (c *Client) askSessions(verb, peer string, all bool, act func(liveSessionView)) ([]string, error) {
 	if all == (peer != "") {
 		return nil, fmt.Errorf("control: %s takes either a peer or every session, not both and not neither", verb)
+	}
+	if err := c.refuseWhileDown(verb); err != nil {
+		return nil, err
 	}
 	asked := c.sessions.matching(peer, all, act)
 	if len(asked) == 0 {

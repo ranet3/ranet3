@@ -565,6 +565,13 @@ func (s *sessionSet) closeAll() []string {
 	return paths
 }
 
+// open lets sessions into the set again after closeAll shut it, which up does before it starts anything that adopts one
+func (s *sessionSet) open() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.shut = false
+}
+
 // take drops path from the set where sess still holds it, and reports whether it did
 // a session the set no longer holds for path, swept by closeAll or replaced, is left alone
 func (s *sessionSet) take(path string, sess *ike.Session) bool {

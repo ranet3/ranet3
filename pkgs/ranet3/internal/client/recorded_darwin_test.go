@@ -346,6 +346,11 @@ func (w *recordedWriter) apply(rm *route.RouteMessage) error {
 	defer w.k.mu.Unlock()
 	add := rm.Type == unix.RTM_ADD
 	w.k.sent = append(w.k.sent, recordedWrite{add: add, recordedRoute: entry})
+	// a delete finds its route by destination and scope alone, as the kernel finds it
+	// TestDarwinPlatformOnRealKernel watches a real utun lose a reject route to a delete carrying no RTF_REJECT
+	if !add && !w.k.held[entry] {
+		entry.reject = !entry.reject
+	}
 	switch {
 	case add && w.k.held[entry]:
 		return unix.EEXIST

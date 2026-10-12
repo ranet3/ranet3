@@ -17,7 +17,7 @@
 // such program and takes no privileged path of its own. The Render functions
 // write the same values as the text the subcommands print.
 //
-// A Source that also implements [Sink] serves the four operational verbs as
+// A Source that also implements [Sink] serves the operational verbs as
 // well, and one that does not serves the reads alone and refuses every write
 // by name rather than by a missing route.
 //
@@ -32,9 +32,14 @@
 // The reads carry the mesh's topology and this node's counters and change
 // nothing at all. The writes in [Sink] stop and start a subsystem, drop the
 // sessions this node holds for one peer so its dialer opens them again,
-// replace a Child SA, and re-read the configuration file. None of them holds
-// state of its own past the process, and none of them touches the
-// configuration: the file stays its only entry point.
+// replace a Child SA, re-read the configuration file, and take the node off
+// the mesh and put it back. None of them touches the configuration: the file
+// stays its only entry point. Down is the one verb whose state outlives the
+// process, as a flag in the daemon's state directory, because a node taken off
+// the mesh to be worked on has to stay off through the restarts and reboots
+// the work brings. The flag asks for nothing more than a file without peers,
+// link.listen, cap.table or cap.egress would, and none of the other verbs
+// holds state of its own past the process.
 //
 // A node's configuration comes from its file, so the socket's mode is the
 // whole authorization story for the reads and the verbs, and every verb here
@@ -101,6 +106,8 @@ const (
 	PathRedial  = "/v0/redial"
 	PathRekey   = "/v0/rekey"
 	PathReload  = "/v0/reload"
+	PathDown    = "/v0/down"
+	PathUp      = "/v0/up"
 )
 
 // Source is everything the control surface reads. The runtime implements it.
@@ -204,6 +211,14 @@ type Sink interface {
 	// Reload re-reads the configuration file and the trust document it names,
 	// as SIGHUP does, so a supervisor is not the only way to ask.
 	Reload(ctx context.Context) (Result, error)
+	// Down takes the node off the mesh and keeps its daemon, tun and socket
+	// every dialer, the responder and Babel stop, every session is closed with a Delete
+	// and the routes, rules, addresses and egress tables the node installed are withdrawn
+	// the flag it writes first keeps the node down through a restart until Up
+	Down(ctx context.Context) (Result, error)
+	// Up removes the flag and puts the node back on the mesh as a start would
+	// a subsystem somebody disabled stays disabled
+	Up(ctx context.Context) (Result, error)
 }
 
 // Duration is a time.Duration that reads as "4s" in JSON rather than as a
@@ -278,6 +293,14 @@ type Status struct {
 	// is the field that keeps a disable from being invisible to whoever comes
 	// after.
 	Disabled []Subsystem `json:"disabled,omitempty"`
+	// Down is present while somebody has taken this node off the mesh
+	Down *Down `json:"down,omitempty"`
+}
+
+// Down is a node off the mesh, since when its flag says and for how long
+type Down struct {
+	Since time.Time `json:"since"`
+	For   Duration  `json:"for"`
 }
 
 // SegmentCounters is this node's segment routing, counted since startup.

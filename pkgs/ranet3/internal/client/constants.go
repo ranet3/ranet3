@@ -23,3 +23,14 @@ const (
 	// the point is to tell the peer, not to be sure it heard
 	deleteGrace = 2 * time.Second
 )
+
+const (
+	// downFlag is the file in the state directory whose presence keeps the node off the mesh
+	downFlag = "down"
+	// flagTemp is the suffix of the file the flag is written whole in before it is renamed into place
+	flagTemp = ".tmp"
+	// flagMode keeps the flag to the daemon's own user, which writes it and alone reads it
+	flagMode = 0o600
+	// stateDirMode is the state directory's mode where the daemon makes it, for the same reason
+	stateDirMode = 0o700
+)
