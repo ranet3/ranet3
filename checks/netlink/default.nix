@@ -26,12 +26,14 @@ let
       go test -c -o netlink-tests ./internal/kernel/
       go test -c -o egress-tests ./internal/egress/
       go test -c -o netstack-tests ./internal/netstack/
+      go test -c -o client-tests ./internal/client/
       go test -c -o transport-tests ./transport/
     '';
     installPhase = ''
       install -Dm755 netlink-tests "$out/bin/netlink-tests"
       install -Dm755 egress-tests "$out/bin/egress-tests"
       install -Dm755 netstack-tests "$out/bin/netstack-tests"
+      install -Dm755 client-tests "$out/bin/client-tests"
       install -Dm755 transport-tests "$out/bin/transport-tests"
     '';
   });
@@ -87,14 +89,21 @@ testers.runNixOSTest {
     # the tun round trips create a device, attach to one and read its gso limit back
     # refuse a mesh under the default name where a device of that name is there
     # and open several lanes as one device
-    # the three tests, five ways to a device, four ways to meet the default and two lane names count fourteen passes
     out = machine.succeed(
         "${netlinkTests}/bin/netstack-tests -test.v -test.run 'TestTUN' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the tun round trips skipped themselves under root:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 14, f"only {ran} tun round trips ran:\n{out}"
+    assert ran >= 28, f"only {ran} tun round trips ran:\n{out}"
+
+    out = machine.succeed(
+        "${netlinkTests}/bin/client-tests -test.v -test.run 'TestTUN' 2>&1"
+    )
+    print(out)
+    assert "SKIP" not in out, f"the client's tun round trips skipped themselves under root:\n{out}"
+    ran = out.count("--- PASS")
+    assert ran >= 5, f"only {ran} of the client's tun round trips ran:\n{out}"
 
     # the segmentation stop against linux itself
     # a veth pair to a second namespace behind a route whose path mtu is locked below the segment size

@@ -93,14 +93,21 @@ func retryPort(t *testing.T, what string, try func() error) {
 // failure somewhere in this package and none.
 func newLoopbackMesh(t *testing.T) (alpha, bravo *loopbackNode) {
 	t.Helper()
+	return newLoopbackMeshOn(t, netstack.NewRoutesOnly())
+}
+
+// newLoopbackMeshOn is newLoopbackMesh with bravo on mesh, which bravo's client closes with itself
+// an attempt that fails leaves mesh open for the next
+func newLoopbackMeshOn(t *testing.T, mesh *netstack.Mesh) (alpha, bravo *loopbackNode) {
+	t.Helper()
 	retryPort(t, "bind", func() (err error) {
-		alpha, bravo, err = tryLoopbackMesh(t)
+		alpha, bravo, err = tryLoopbackMesh(t, mesh)
 		return err
 	})
 	return alpha, bravo
 }
 
-func tryLoopbackMesh(t *testing.T) (_, _ *loopbackNode, err error) {
+func tryLoopbackMesh(t *testing.T, bravoMesh *netstack.Mesh) (_, _ *loopbackNode, err error) {
 	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -153,12 +160,13 @@ func tryLoopbackMesh(t *testing.T) (_, _ *loopbackNode, err error) {
 		t.Fatal(err)
 	}
 
+	meshes := []*netstack.Mesh{netstack.NewRoutesOnly(), bravoMesh}
 	for i, node := range nodes {
 		peer := nodes[1-i]
 		node.configPath = filepath.Join(dir, node.name+".yaml")
 		node.cfg = writeLoopbackConfig(t, node, peer, keyPath, registryPath, []string{node.prefix.String()})
 		node.events = events.New()
-		client, err := newClient(node.cfg, private, reg, netstack.NewRoutesOnly(), nil, node.events)
+		client, err := newClient(node.cfg, private, reg, meshes[i], nil, node.events)
 		if err != nil {
 			for _, built := range nodes[:i] {
 				built.client.Close()
@@ -464,5 +472,34 @@ func TestShutdownTellsPeerBeforeGoing(t *testing.T) {
 			t.Fatal("the peer kept a session it was told to drop")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// each end of a session hands its peer the link.mtu its own node names
+// the reader holds every packet for that peer to it
+// and the inbound clamp lowers the MSS of a SYN from that peer to what it carries
+// the ends name two values other than the default a peer starts at
+func TestSessionsCarryTheLinkMTUOfTheirOwnNode(t *testing.T) {
+	alpha, bravo := newLoopbackMesh(t)
+	ends := []struct {
+		node, peer *loopbackNode
+		mtu        uint16
+	}{{alpha, bravo, 1300}, {bravo, alpha, 2000}}
+	for _, end := range ends {
+		cfg := *end.node.client.config()
+		cfg.Link.MTU = end.mtu
+		end.node.client.cfg.Store(&cfg)
+	}
+	run(t, alpha, bravo)
+	for _, end := range ends {
+		var peer *netstack.Peer
+		waitFor(t, convergeBudget, end.node.name+" forwarding to "+end.peer.name+"'s prefix", func() bool {
+			found, ok := end.node.client.Mesh.Routes.Lookup(netip.Addr{}, end.peer.prefix.Addr().Next())
+			peer = found
+			return ok && found != nil
+		})
+		if got := peer.MTU(); got != int(end.mtu) {
+			t.Errorf("%s's session to %s carries %d byte packets, want its link.mtu of %d", end.node.name, end.peer.name, got, end.mtu)
+		}
 	}
 }
