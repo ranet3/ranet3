@@ -99,6 +99,8 @@ func TestVerbsReachTheDaemonAsTyped(t *testing.T) {
 		"rekey one":  {args: []string{"rekey", "example/gateway"}, want: "rekey example/gateway"},
 		"rekey all":  {args: []string{"rekey", "--all"}, want: "rekey --all"},
 		"reload":     {args: []string{"reload"}, want: "reload"},
+		"down":       {args: []string{"down"}, want: "down"},
+		"up":         {args: []string{"up"}, want: "up"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out, err := execute(t, append(test.args, "--control", socket)...)
@@ -195,7 +197,8 @@ func TestArgumentsAndFlagValuesAreCompleted(t *testing.T) {
 		"the same peers under rekey": {command: "rekey", want: "example/inbound"},
 		// the usage of --log-level no longer lists the levels
 		// so completion is where the command line names them
-		"a log level": {command: "daemon", flag: "--log-level", want: "debug\ninfo\nwarn\nerror\n"},
+		"a log level":       {command: "daemon", flag: "--log-level", want: "debug\ninfo\nwarn\nerror\n"},
+		"a state directory": {command: "daemon", flag: "--state-dir", want: "ShellCompDirectiveFilterDirs"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			words := []string{cobra.ShellCompRequestCmd, test.command, "--control", socket}
@@ -220,7 +223,7 @@ func TestBareInvocationListsTheVerbs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the bare binary failed: %v", err)
 	}
-	for _, want := range []string{"disable", "enable", "redial", "rekey", "reload"} {
+	for _, want := range []string{"disable", "enable", "redial", "rekey", "reload", "down", "up"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the usage reads %q, want it to name %q", out, want)
 		}

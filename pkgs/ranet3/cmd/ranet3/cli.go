@@ -22,7 +22,7 @@ import (
 // one file, and because the wire types and the renderer are then shared with
 // the daemon by the compiler rather than by hand.
 //
-// The commands here read. The four that act on a node are in write.go, and
+// The commands here read. The verbs that act on a node are in write.go, and
 // none of them changes its configuration: the configuration's entry points
 // stay its file and SIGHUP, so the socket needs no authorization story to
 // replace the one the file's permissions already are.

@@ -83,7 +83,7 @@ func TestDaemonRefusesWhatItCannotActOn(t *testing.T) {
 	if err != nil {
 		t.Errorf("asking for help failed: %v", err)
 	}
-	for _, want := range []string{"--config", "--log-level", "--metrics"} {
+	for _, want := range []string{"--config", "--log-level", "--metrics", "--state-dir"} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("the usage does not name %s: %q", want, usage)
 		}
