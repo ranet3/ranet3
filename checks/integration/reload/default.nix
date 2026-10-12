@@ -216,5 +216,25 @@ testers.runNixOSTest {
       state = status("--control ${movedSocket}")
       assert announced(state) == ["fd00:2::/64"], state["originate"]
       assert state["registry"]["nodes"] == 2, state["registry"]
+
+      # down leaves its flag in the unit's state directory, which root alone reads
+      # and a restart comes up down from it, down since the same moment
+      machine.succeed("ranet3 down --control ${movedSocket}")
+      since = status("--control ${movedSocket}")["down"]["since"]
+      mode = machine.succeed("stat --format %a /var/lib/ranet3").strip()
+      assert mode == "700", f"the state directory is mode {mode}"
+      machine.succeed("test -f /var/lib/ranet3/down")
+      machine.succeed("systemctl restart ranet3.service")
+      machine.wait_until_succeeds("ranet3 status --control ${movedSocket}", timeout=timeout)
+      state = status("--control ${movedSocket}")
+      assert state.get("down", {}).get("since") == since, state.get("down")
+
+      # up takes the flag away, and the node stays up through the next restart
+      machine.succeed("ranet3 up --control ${movedSocket}")
+      machine.fail("test -e /var/lib/ranet3/down")
+      machine.succeed("systemctl restart ranet3.service")
+      machine.wait_until_succeeds("ranet3 status --control ${movedSocket}", timeout=timeout)
+      state = status("--control ${movedSocket}")
+      assert "down" not in state, state["down"]
     '';
 }
