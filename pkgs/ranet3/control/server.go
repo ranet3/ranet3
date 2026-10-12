@@ -53,7 +53,7 @@ func Listen(path string) (net.Listener, error) {
 	if len(path) > MaxSocketPath {
 		return nil, fmt.Errorf("control: socket path is %d bytes, over the %d a unix socket holds: %s", len(path), MaxSocketPath, path)
 	}
-	if err := makeParent(filepath.Dir(path)); err != nil {
+	if err := MakeDirectory(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
 	lock, err := takeOwnership(path)
@@ -87,21 +87,23 @@ func Listen(path string) (net.Listener, error) {
 	return &ownedListener{Listener: socket, lock: lock}, nil
 }
 
-// makeParent creates the socket's directory at a mode the daemon's group can
-// traverse. Mkdir takes the process umask off the mode it is given, so a
-// unit with a restrictive one would otherwise leave a directory nobody but the
-// daemon can enter and a socket inside it that says it is group readable. A
-// directory that already exists is left exactly as it is.
+// MakeDirectory creates dir at a mode the daemon's group can traverse. Mkdir
+// takes the process umask off the mode it is given, so a unit with a
+// restrictive one would otherwise leave a directory nobody but the daemon can
+// enter and a socket inside it that says it is group readable. A directory
+// that already exists is left exactly as it is.
 //
 // each missing directory above it is made the same way
 // BSD hands a new directory the group of the one above it rather than the process's
 // a directory starts with no access and takes the daemon's group before its mode lets that group in
-func makeParent(dir string) error {
+// the control socket and the darwin underlay record share a directory
+// and whichever of the two comes first makes it here
+func MakeDirectory(dir string) error {
 	if _, err := os.Stat(dir); err == nil {
 		return nil
 	}
 	if parent := filepath.Dir(dir); parent != dir {
-		if err := makeParent(parent); err != nil {
+		if err := MakeDirectory(parent); err != nil {
 			return err
 		}
 	}

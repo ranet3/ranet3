@@ -16,6 +16,8 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/control"
 )
 
 // The ownership record outlives the process that made it.
@@ -32,11 +34,10 @@ import (
 // this tree already uses for state that says which process owns what, and
 // which a `RuntimeDirectory=` unit clears on a clean boot.
 
-// stateMode and stateDirMode match the control socket's lock, which is the
-// other thing in that directory saying what this process owns.
+// stateMode matches the control socket's lock, which is the other thing in
+// that directory saying what this process owns.
 const (
-	stateMode    = 0o600
-	stateDirMode = 0o750
+	stateMode = 0o600
 	// maxStateRecords bounds a file nothing else prunes. Two is the working
 	// number, one per family; anything approaching this is a node that has
 	// crashed on many different interfaces without ever reclaiming, and
@@ -65,11 +66,15 @@ func (l *stateLock) Close() error {
 
 // lockState takes that claim, or reports that somebody else holds it. An empty
 // path locks nothing, which is the in-memory mode a test uses.
+//
+// it runs before the control socket is bound
+// and makes the directory the control package makes for that socket
+// which takes the daemon's group rather than the one /var/run hands down
 func lockState(path string) (*stateLock, error) {
 	if path == "" {
 		return nil, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), stateDirMode); err != nil {
+	if err := control.MakeDirectory(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("kernel: make the runtime directory for %s: %w", path, err)
 	}
 	file, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, stateMode)
@@ -176,7 +181,7 @@ func saveUnderlayState(path string, held []writtenDefault) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), stateDirMode); err != nil {
+	if err := control.MakeDirectory(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("kernel: make the runtime directory for %s: %w", path, err)
 	}
 	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
