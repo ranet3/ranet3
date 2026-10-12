@@ -5,7 +5,7 @@
 title: "Getting started"
 description: "Building the binary, the binary cache, and running a node by hand."
 created: 2026-08-17
-updated: 2026-10-06
+updated: 2026-10-13
 order: 20
 ---
 
@@ -49,8 +49,8 @@ ip route add 10.66.0.0/16 dev ranet3
 `daemon` is the node. Every other subcommand speaks to a running one over its
 control socket, so `ranet3 status` and its siblings work alongside a
 deployment's own `ranet3 daemon` with no second binary and no second unit. Most
-of them ask a question, while `disable`, `enable`, `redial`, `rekey` and
-`reload` act on one. See [Control socket](control-socket.md).
+of them ask a question, while `disable`, `enable`, `redial`, `rekey`, `reload`,
+`down` and `up` act on one. See [Control socket](control-socket.md).
 `ranet3 completion
 bash|zsh|fish` writes the shell's completion script,
 generated from the command tree so a command added without one is completed

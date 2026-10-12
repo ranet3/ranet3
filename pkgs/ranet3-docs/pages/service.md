@@ -54,6 +54,13 @@ control socket with `--control` moves `ranet3 reload` with it, to the last
 `--control ""` leaves a reload nothing to ask, and the module refuses it at
 evaluation while a change to the config file still reloads the unit.
 
+The unit's `StateDirectory` is `/var/lib/ranet3`, at mode 0700, and the module
+passes it to the daemon with `--state-dir`. It holds the flag `ranet3 down`
+writes, which keeps a node taken off the mesh off it through
+`systemctl restart ranet3` and a reboot until `ranet3 up`, as
+[taking a node off the mesh](control-socket.md#taking-a-node-off-the-mesh)
+describes.
+
 ## What a switch does
 
 The unit starts the daemon with `/etc/ranet3/config.toml`, which the module
@@ -111,6 +118,10 @@ A reboot does it as well, since macOS clears `/var/run` as it starts and the
 daemon makes the directory afresh. Removing the directory instead takes
 `underlay.json` with it, and a scoped default the record still holds, one a
 start refused to withdraw, then stays on its interface for good.
+
+The daemon keeps the flag `ranet3 down` writes in `/var/db/ranet3`, its default
+state directory on darwin, and makes the directory at mode 0700 the first time,
+which leaves the job no `--state-dir` to pass.
 
 launchd has no reload path, so the job names the store path of the config file,
 and any change to `settings` restarts the daemon.
