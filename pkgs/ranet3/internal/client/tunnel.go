@@ -71,9 +71,8 @@ func fatalReserveError(err error) bool {
 
 // dialerWasDropped reports whether a session is ending because the dialer that
 // opened it was canceled while the node keeps running, which a reload that
-// drops a peer does. Shutdown is not this case: closeAll has already told every
-// peer by the time the node's own context is canceled, and the sweep exists so
-// that no peer is told twice.
+// drops a peer does, and the sweep as well once closeAll has told every peer.
+// tellDropped tells those two apart by whether the set still holds the session.
 func dialerWasDropped(dial, node context.Context) bool {
 	return dial.Err() != nil && node.Err() == nil
 }

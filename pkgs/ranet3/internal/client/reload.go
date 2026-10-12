@@ -42,7 +42,10 @@ func peerPath(peer config.Peer, local config.Endpoint) string {
 // It runs once at startup and again on every reload, so a node joining or
 // leaving the mesh costs one dialer rather than a restart, which would drop
 // every SA on this node.
-func (c *Client) syncPeers() {
+//
+// Off the mesh it stops every dialer and starts none. It reports the dialers
+// it stopped, which a reload leaves to end on their own and a sweep waits for.
+func (c *Client) syncPeers() (stopped []*dialer) {
 	c.dialersMu.Lock()
 	defer c.dialersMu.Unlock()
 	// Read inside the lock. Two calls can be in flight, since Run makes one at
@@ -53,8 +56,13 @@ func (c *Client) syncPeers() {
 	cfg := c.config()
 	peers := effectivePeers(cfg, c.registry())
 	wanted := make(map[string]struct{}, len(cfg.Link.Endpoints)*len(peers))
-	if c.stopped || c.ctx.Err() != nil {
-		return
+	if !c.onMeshLocked() {
+		for path, running := range c.dialers {
+			running.cancel()
+			delete(c.dialers, path)
+			stopped = append(stopped, running)
+		}
+		return stopped
 	}
 	for _, local := range cfg.Link.Endpoints {
 		for _, peer := range peers {
@@ -64,9 +72,10 @@ func (c *Client) syncPeers() {
 				continue
 			}
 			ctx, cancel := context.WithCancel(c.ctx)
-			running := &dialer{cancel: cancel, wake: make(chan struct{}, 1)}
+			running := &dialer{cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{})}
 			c.dialers[path] = running
 			c.peers.Go(func() {
+				defer close(running.done)
 				defer cancel()
 				// A dialer that gives up on its own, because the trust
 				// document does not name the node yet, has to leave the map or
@@ -85,7 +94,9 @@ func (c *Client) syncPeers() {
 		log.Printf("peer %s: no longer configured", path)
 		running.cancel()
 		delete(c.dialers, path)
+		stopped = append(stopped, running)
 	}
+	return stopped
 }
 
 // ReloadFrom re-reads the configuration and the trust document at path and
@@ -292,12 +303,13 @@ type responderRun struct {
 
 // syncResponder starts the responder where link.listen is on and none runs, and stops the running one where it is off
 // it reads the configuration under dialersMu, as syncPeers does, so a start in Run and a stop in a reload cannot cross
-// and starts nothing once stopDialers has run, so c.peers.Go never races the wait in Run
+// and off the mesh it stops the responder and starts none, so c.peers.Go never races the wait in Run
 // it reports how many answered sessions the stop closed
 func (c *Client) syncResponder() int {
 	c.dialersMu.Lock()
-	listen, run := c.config().Link.Listen, c.responder
-	if listen && run == nil && !c.stopped && c.ctx.Err() == nil {
+	run := c.responder
+	listen := c.config().Link.Listen && c.onMeshLocked()
+	if listen && run == nil {
 		ctx, cancel := context.WithCancel(c.ctx)
 		started := &responderRun{cancel: cancel, done: make(chan struct{})}
 		c.responder = started
