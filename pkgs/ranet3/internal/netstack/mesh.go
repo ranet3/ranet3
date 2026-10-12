@@ -100,10 +100,8 @@ type outboundBatch struct {
 	shares    map[*Peer]outboundShare
 	batches   map[*Peer]*peerBatch
 	peerOrder []*Peer
-	// fragments are the packets of the read cut to fit their peers' sessions, which the worker sends after the rest of the read
-	// fragmentBytes holds them and keeps its storage from read to read
-	fragments     []outboundFragment
-	fragmentBytes []byte
+	// cut holds the fragments of the read's packets too large for their peers' sessions
+	cut fragmentList
 }
 
 // outboundShare is one peer's part of a read
@@ -113,11 +111,52 @@ type outboundShare struct {
 	mtu   int
 }
 
-// outboundFragment is one fragment a read cut for a peer, with the next header its ESP trailer names
+// outboundFragment is one fragment cut for a peer, with the next header its ESP trailer names
 type outboundFragment struct {
 	peer   *Peer
 	header byte
 	raw    []byte
+}
+
+// fragmentList is the fragments cut from the packets of one batch
+// bytes holds them, and an outbound batch keeps its storage from read to read
+type fragmentList struct {
+	fragments []outboundFragment
+	bytes     []byte
+}
+
+// add cuts inner, an IPv4 packet without DF, into the fragments RFC 791 makes of it, and queues them for peer under nextHeader
+// header is the outer IPv6 header and routing header steering put in front of the packet, empty for a packet not steered
+// each fragment goes behind its own copy of header, whose payload length then counts that fragment
+// each fits mtu with its header
+// it reports how many fragments it queued, none for a packet that cannot be cut
+func (l *fragmentList) add(peer *Peer, nextHeader byte, header, inner []byte, mtu int) int {
+	start := len(l.bytes)
+	var ok bool
+	if l.bytes, ok = packet.AppendFragments(l.bytes, header, inner, mtu-len(header)); !ok {
+		return 0
+	}
+	count := 0
+	for rest := l.bytes[start:]; len(rest) != 0; count++ {
+		fragment, _ := packet.Payload(rest[len(header):])
+		piece := rest[:len(header)+len(fragment)]
+		rest = rest[len(piece):]
+		if len(header) != 0 {
+			// RFC 8200 section 3, the payload length counts everything after the 40 byte fixed header
+			binary.BigEndian.PutUint16(piece[4:], uint16(len(piece)-40))
+		}
+		l.fragments = append(l.fragments, outboundFragment{peer: peer, header: nextHeader, raw: piece})
+	}
+	return count
+}
+
+// appendTo hands every fragment to its peer's batch, and leaves out those of a peer with none
+func (l *fragmentList) appendTo(batches map[*Peer]*peerBatch) {
+	for _, fragment := range l.fragments {
+		if batch := batches[fragment.peer]; batch != nil {
+			batch.append(fragment.raw, fragment.header)
+		}
+	}
 }
 
 type inboundWriteBatch struct {
@@ -338,7 +377,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 		// Steering happens before the route lookup, because a steered
 		// packet is routed by the segment it is going to rather than by
 		// the address it was addressed to.
-		size, policy, action := m.steer(b.bufs[i], read, src, dst)
+		size, action := m.steer(b.bufs[i], read, src, dst)
 		if action == steerDrop {
 			continue
 		}
@@ -369,11 +408,11 @@ func (m *Mesh) classify(b *outboundBatch) {
 			share.mtu = peer.MTU()
 			b.peerOrder = append(b.peerOrder, peer)
 		}
+		// a steered packet sits behind the header steering put on it, which the session carries as well
+		overhead := b.sizes[i] - read
 		if b.sizes[i] > share.mtu {
-			share.count += m.tooBig(b, b.bufs[i][tunOffset:tunOffset+b.sizes[i]], peer, nh, policy, share.mtu)
+			share.count += m.tooBig(b, b.bufs[i][tunOffset:tunOffset+b.sizes[i]], overhead, peer, nh, share.mtu)
 		} else {
-			// a steered SYN sits behind the header steering put on it, which the session carries as well
-			overhead := b.sizes[i] - read
 			ClampMSS(b.bufs[i][tunOffset+overhead:tunOffset+b.sizes[i]], share.mtu-overhead)
 			b.peers[i], b.headers[i] = peer, nh
 			share.count++
@@ -383,61 +422,18 @@ func (m *Mesh) classify(b *outboundBatch) {
 }
 
 // tooBig takes a packet larger than mtu, the largest its peer's session carries, and reports how many fragments it queued for the peer
-// a steered packet is taken as the packet it carries, against mtu less the header steering put on it
-// IPv6, and IPv4 with DF, are answered from the packet's own destination with packet too big or fragmentation needed
-// written into the tun, whichever side of it the source sits, under the bucket answerRefused draws from
-// the token goes first, as in answerTooBig, which spares a flood the answers it would build and drop
-// IPv4 without DF is cut into fragments as a router cuts it
-func (m *Mesh) tooBig(b *outboundBatch, raw []byte, peer *Peer, nextHeader byte, policy *srv6.Policy, mtu int) int {
-	overhead := policy.Overhead()
-	inner := raw[overhead:]
-	mtu -= overhead
-	var answer []byte
-	var ok bool
-	switch {
-	case inner[0]>>4 == 6:
-		if !m.takeICMPToken() {
-			return 0
-		}
-		answer, ok = srv6.PacketTooBig(inner, netip.AddrFrom16([16]byte(inner[24:40])), mtu)
-	// DF, RFC 791 section 3.1
-	case inner[6]&0x40 != 0:
-		if !m.takeICMPToken() {
-			return 0
-		}
-		answer, ok = packet.FragmentationNeeded(inner, netip.AddrFrom4([4]byte(inner[16:20])), mtu)
-	default:
-		return m.cut(b, inner, peer, nextHeader, policy, mtu)
+// overhead is the header steering put in front of the packet
+// the packet behind it is held to mtu less that header
+// an answer goes into the tun, whichever side of it the source sits
+func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, nextHeader byte, mtu int) int {
+	answer, cut := m.answerTooBig(raw[overhead:], mtu-overhead)
+	if cut {
+		return b.cut.add(peer, nextHeader, raw[:overhead], raw[overhead:], mtu)
 	}
-	if ok {
+	if answer != nil {
 		m.DeliverInboundBatch([][]byte{answer})
 	}
 	return 0
-}
-
-// cut queues for peer the fragments of an IPv4 packet without DF, each under the header steering put on the packet, if any
-// they wait in the read's own storage, counted in the peer's share for its reservation to hold them
-func (m *Mesh) cut(b *outboundBatch, inner []byte, peer *Peer, nextHeader byte, policy *srv6.Policy, mtu int) int {
-	start := len(b.fragmentBytes)
-	var ok bool
-	if b.fragmentBytes, ok = packet.AppendFragments(b.fragmentBytes, inner, mtu); !ok {
-		return 0
-	}
-	count := 0
-	for rest := b.fragmentBytes[start:]; len(rest) != 0; count++ {
-		fragment, _ := packet.Payload(rest)
-		rest = rest[len(fragment):]
-		if policy != nil {
-			var err error
-			if fragment, err = srv6.Encapsulate(fragment, policy.Source, policy.Path); err != nil {
-				m.segmentsUnsteered.Add(1)
-				m.reportSegmentDrop("a fragment of a packet a policy claimed could not be encapsulated", "policy", policy, "err", err)
-				return count
-			}
-		}
-		b.fragments = append(b.fragments, outboundFragment{peer: peer, header: nextHeader, raw: fragment})
-	}
-	return count
 }
 
 // TUNReadsTruncated is how many reads off the tun lost the tail of a GSO frame
@@ -505,11 +501,7 @@ func (m *Mesh) outboundWorker() {
 		}
 		// fragments go out after the read's other packets, where a later packet of the same read may overtake a cut one
 		// only IPv4 without DF is cut, and IP promises its datagrams no order
-		for _, fragment := range b.fragments {
-			if batch := b.batches[fragment.peer]; batch != nil {
-				batch.append(fragment.raw, fragment.header)
-			}
-		}
+		b.cut.appendTo(b.batches)
 		for _, peer := range b.peerOrder {
 			batch := b.batches[peer]
 			if batch == nil {
@@ -537,9 +529,9 @@ func (b *outboundBatch) reset() {
 	clear(b.batches)
 	clear(b.peerOrder)
 	b.peerOrder = b.peerOrder[:0]
-	clear(b.fragments)
-	b.fragments = b.fragments[:0]
-	b.fragmentBytes = b.fragmentBytes[:0]
+	clear(b.cut.fragments)
+	b.cut.fragments = b.cut.fragments[:0]
+	b.cut.bytes = b.cut.bytes[:0]
 }
 
 // addrsOf extracts both the source and destination address from a raw IP

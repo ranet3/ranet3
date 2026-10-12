@@ -29,13 +29,14 @@ const (
 )
 
 // AppendFragments appends to dst the fragments RFC 791 section 3.2 cuts an IPv4 packet into for a link of mtu bytes, one after another
+// each behind a copy of outer, the header of a tunnel carrying them, empty for none and counted in no fragment's mtu
 // the first carries the packet's own header and every later one the options whose copied flag is set, with NOPs where the others stood
 // every header is then as long as the packet's, every fragment at most mtu bytes, and the data of all but the last a multiple of 8 bytes
 // the last keeps the packet's more fragments flag, which lets a fragment cut again reassemble where it came from
 // a packet that fits comes back as itself with its header checksum recomputed
 // it reports false for anything but one whole IPv4 packet, for DF, for an option list that does not describe itself,
 // for data past the largest datagram, and for an mtu with no room for 8 bytes of data past the header
-func AppendFragments(dst, packet []byte, mtu int) ([]byte, bool) {
+func AppendFragments(dst, outer, packet []byte, mtu int) ([]byte, bool) {
 	if Version(packet) != 4 {
 		return dst, false
 	}
@@ -53,7 +54,7 @@ func AppendFragments(dst, packet []byte, mtu int) ([]byte, bool) {
 		return dst, false
 	}
 	count := max(1, (len(data)+chunk-1)/chunk)
-	dst = slices.Grow(dst, len(packet)+(count-1)*headerLen)
+	dst = slices.Grow(dst, len(packet)+(count-1)*headerLen+count*len(outer))
 	header := packet[:headerLen]
 	for i := range count {
 		start, end := i*chunk, min((i+1)*chunk, len(data))
@@ -61,6 +62,7 @@ func AppendFragments(dst, packet []byte, mtu int) ([]byte, bool) {
 		if i < count-1 {
 			flags |= moreFragments
 		}
+		dst = append(dst, outer...)
 		at := len(dst)
 		dst = append(dst, header...)
 		dst = append(dst, data[start:end]...)
