@@ -92,7 +92,7 @@ is not 2xx.`,
 func completeRaw(_ *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 	paths := append([]string{
 		control.PathStatus, control.PathNeighbors, control.PathRoutes, control.PathSessions, control.PathPeers, control.PathMetrics,
-		control.PathDisable, control.PathEnable, control.PathRedial, control.PathRekey, control.PathReload,
+		control.PathDisable, control.PathEnable, control.PathRedial, control.PathRekey, control.PathReload, control.PathDown, control.PathUp,
 	}, slices.Sorted(control.DebugPaths())...)
 	var offered []string
 	switch {

@@ -66,6 +66,7 @@ type options struct {
 	pprofAddr          string
 	metricsAddr        string
 	controlPath        string
+	stateDir           string
 	contentionProfiles bool
 	level              slog.Level
 	debugAccess        control.DebugAccess
@@ -88,6 +89,11 @@ routing table when the config file asks for it. The config file is TOML,
 YAML or JSON, told apart by its extension: .toml, .yaml, .yml or .json.
 Most other commands reach the node through its control socket.
 
+The --state-dir flag names the directory for what outlives the process,
+which is the flag ranet3 down leaves until ranet3 up. A node that starts
+with the flag there stays off the mesh. The daemon makes the directory
+with mode 0700 when it is missing.
+
 The --debug-access flag decides who may use the debug paths that serve
 profiles, logs and captures. The value root admits uid 0 and the user
 the daemon runs as, group admits everyone who can open the socket, and
@@ -108,6 +114,9 @@ pprof is served, at a high cost in overhead.`,
 			if err := o.debugAccess.UnmarshalText([]byte(debugAccess)); err != nil {
 				return fmt.Errorf("invalid --debug-access %q: %w", debugAccess, err)
 			}
+			if o.stateDir == "" {
+				return errors.New(`invalid --state-dir "": ranet3 down needs a directory to keep its flag in`)
+			}
 			if code := run(o); code != 0 {
 				return exitCode(code)
 			}
@@ -120,8 +129,10 @@ pprof is served, at a high cost in overhead.`,
 	f.BoolVar(&o.contentionProfiles, "contention-profiles", false, "Record lock contention profiles")
 	f.StringVar(&o.metricsAddr, "metrics", "", "Serve Prometheus metrics on this address")
 	f.StringVar(&o.controlPath, "control", control.DefaultSocket, "Control socket to serve or empty for none")
+	f.StringVar(&o.stateDir, "state-dir", defaultStateDir, "Directory for state that outlives the process")
 	f.StringVar(&logLevel, "log-level", defaultLogLevel, "Minimum log level")
 	f.StringVar(&debugAccess, "debug-access", string(control.DebugRoot), "Who may use the debug commands")
+	cmd.MarkFlagDirname("state-dir")
 	cmd.RegisterFlagCompletionFunc("log-level", cobra.FixedCompletions(logLevelNames(), cobra.ShellCompDirectiveNoFileComp))
 	cmd.RegisterFlagCompletionFunc("debug-access", cobra.FixedCompletions(control.DebugAccessNames(), cobra.ShellCompDirectiveNoFileComp))
 	return cmd
@@ -189,6 +200,10 @@ func runDaemon(opts options) int {
 	// socket and SIGHUP ask for the same thing rather than the socket guessing
 	// at a default path.
 	node.SetConfigPath(*configPath)
+	// read before either switch is handed over and before the socket serves, so neither sees a node starting down as up
+	if err := node.SetStateDir(opts.stateDir); err != nil {
+		return refuseToStart(err)
+	}
 
 	// A separate listener from pprof: a fleet node wants metrics scraped
 	// without exposing a profiler, and a profiling run wants the profiler
@@ -258,6 +273,8 @@ func runDaemon(opts options) int {
 		if err != nil {
 			return refuseToStart(err)
 		}
+		// handed over before the first pass, so a node starting down installs nothing
+		node.SetReconcilerEnable(routes.SetEnabled)
 		reconciler.Go(func() {
 			// This error is the withdrawal failing as often as it is the
 			// reconcile: routes left behind in the kernel after shutdown are
@@ -273,7 +290,6 @@ func runDaemon(opts options) int {
 		log.Printf("tun device %s ready with %d queues, reconciling its routes into %s",
 			mesh.Name, mesh.QueueCount(), routes.Where())
 		node.SetKernelStatus(func() control.KernelStatus { return kernelStatus(routes) })
-		node.SetReconcilerEnable(routes.SetEnabled)
 		node.SetReconcilerTable(routes.SetTable)
 	} else {
 		log.Printf("tun device %s ready with %d queues, configure its addresses and kernel routes externally",
@@ -302,6 +318,8 @@ func runDaemon(opts options) int {
 		}
 		node.SetEgressAnnounce(translator.Announce)
 		node.SetEgressStatus(func() control.EgressStatus { return egressStatus(translator) })
+		// handed over before the first pass, as the reconciler's is
+		node.SetEgressEnable(translator.SetEnabled)
 		reconciler.Go(func() {
 			// As with the reconciler, this error is the withdrawal failing as
 			// often as the pass: a translation rule left in the host's packet

@@ -19,10 +19,10 @@ import (
 // None of them changes the node's configuration, which keeps its two entry
 // points, the file and SIGHUP. What each acts on is operational state the file
 // already decides, so the socket's mode stays the whole authorization story.
-// The control package doc holds the argument and the line a fifth verb would
+// The control package doc holds the argument and the line another verb would
 // have to stay inside.
 
-// writeCommands is the four verbs, which the root adds after the reads so the
+// writeCommands is every verb, which the root adds after the reads so the
 // usage lists what a node answers before what it does.
 func (r *reader) writeCommands() []*cobra.Command {
 	return []*cobra.Command{
@@ -34,7 +34,37 @@ command for a subsystem it does not run.`, true),
 		r.redialCommand(),
 		r.rekeyCommand(),
 		r.reloadCommand(),
+		r.meshCommand("down", "Take this node off the mesh", `The node closes every session with an IKE Delete and stops dialing,
+answering and speaking Babel, and it withdraws the routes, rules,
+addresses and egress tables it installed. The daemon, its tun, the
+control socket and the metrics stay. A flag in the state directory keeps
+the node down through a restart or a reboot until ranet3 up.`, false),
+		r.meshCommand("up", "Put this node back on the mesh", `This removes the flag ranet3 down left and starts what a start would:
+the addresses, rules and routes, then Babel, the responder and every
+dialer. A subsystem somebody disabled stays disabled.`, true),
 	}
+}
+
+// meshCommand builds down and up, which differ only in the place on the mesh they ask for
+func (r *reader) meshCommand(use, short, long string, on bool) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:               use,
+		Short:             short,
+		Long:              long,
+		Args:              noArguments,
+		ValidArgsFunction: cobra.NoFileCompletions,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client := control.Dial(r.socket)
+			ask := client.Down
+			if on {
+				ask = client.Up
+			}
+			result, err := ask()
+			return r.report(cmd, result, err)
+		},
+	}
+	r.flags(cmd)
+	return cmd
 }
 
 // subsystemCommand builds disable and enable, which differ only in the state
