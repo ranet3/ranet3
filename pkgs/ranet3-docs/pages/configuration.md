@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-10-06
+updated: 2026-10-13
 order: 30
 ---
 
@@ -65,6 +65,7 @@ port = 13000
 endpoints = [{ serial = "0", family = "ip4" }]
 # listen = true                     # answer peers that dial this node
 # tun = "ranet0"                    # this device rather than ranet3, see below
+# mtu = 1400                        # the largest packet a session carries, see below
 # [link.underlay]                   # keep the underlay out of the mesh's own routing
 # mark = 0x726c                     # SO_MARK plus a rule under cap.table.rules, linux only
 # bind = true                       # IP_BOUND_IF plus a scoped default, darwin only
@@ -100,6 +101,40 @@ darwin's utun control creates nothing but `utun`, its next free unit, and
 file itself loads on either platform, as with `link.underlay`. The name the
 device was given, `utun6` for instance, is the one ranet3 logs at startup,
 reports in `ranet3 status` and hands the route reconciler.
+
+`link.mtu` is the largest packet a session carries inside ESP, 1400 bytes when
+it is left out, which a 1500 byte path carries over IPv4 and IPv6 alike. The tun
+runs at `link.mtu` less the header the longest steer list in `cap.segment` puts
+in front of a packet, 40 bytes of outer IPv6 header, 8 of routing header and 16
+for each segment, because a steered packet carries that header inside the
+tunnel. A value that leaves the tun under the 1280 bytes IPv6 requires of every
+link, or one past 65470, the most one ESP-in-UDP datagram carries over IPv4, is
+refused when the file loads. The buffers the tun is read into are sized at
+startup for `link.mtu`, and at least 2048 bytes, which bounds how far a reload
+can raise it, as [reloading](reloading.md) describes.
+
+A packet larger than its session carries is not sent as it is. One read off the
+tun is answered with Packet Too Big when it is IPv6 and with fragmentation
+needed when it is IPv4 with DF set, naming what the session carries less the
+steering header the packet would take. The answer is written into the tun from
+the address the packet was going to, and the host that sent the packet records
+that smaller path MTU for the destination. An IPv4 packet without DF is cut into
+fragments that fit, as RFC 791 has a router do, and its destination puts it back
+together. A node moving a steered packet on to its next segment answers or cuts
+the packet it carries the same way when the session to that segment carries less
+than the segment, as [segment routing](segment-routing.md) describes. Every
+answer comes out of one budget per node, 8 at once and then one each 250
+milliseconds, shared with the Time Exceeded and Parameter Problem a refused
+segment gets, and a packet past it is dropped without one.
+
+A TCP SYN or SYN-ACK read off the tun has its MSS option lowered to what its
+session carries, less 40 bytes of headers under IPv4 and 60 under IPv6, and less
+the steering header when a policy steers it. One arriving through a session has
+its MSS lowered the same way to what that session carries back. The clamp only
+ever lowers an MSS and updates the checksum with it, and a host behind either
+end then learns an MSS that fits the sessions of both ends. A SYN with no MSS
+option, a fragment, IPv6 with an extension header before TCP and an option list
+that does not describe itself pass untouched.
 
 The capabilities, each documented in full in the example:
 

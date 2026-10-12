@@ -3,9 +3,9 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: MIT AND CC-BY-4.0
 title: "Deliberate protocol deviations"
-description: "Where ranet3 departs from the IKEv2, ESP and Babel specifications on purpose."
+description: "Where ranet3 departs from the IKEv2, ESP, Babel and ICMP specifications on purpose."
 created: 2026-08-23
-updated: 2026-10-07
+updated: 2026-10-13
 order: 20
 ---
 
@@ -98,3 +98,20 @@ when the PRF changes, while allowing fresh DH keys and a different encryption
 algorithm. Peer Child-SA rekeys can use X25519, P-256, or P-384 for PFS; locally
 initiated Child rekeys derive keys from the IKE SA without an additional DH
 exchange.
+
+A packet larger than its session carries is answered from the address it was
+going to rather than from one of this node's own.
+[RFC 4443 section 2.2](https://www.rfc-editor.org/rfc/rfc4443.html#section-2.2)
+has a node answer a packet addressed elsewhere from a unicast address of its
+own, and
+[RFC 1812 section 4.3.2.4](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.3.2.4)
+has a router answer from an address of the interface the answer leaves by. The
+headend writes its Packet Too Big or fragmentation needed into the tun, where a
+leaf often holds no address of the packet's family to answer from, and a
+waypoint is a hop inside the tunnel that the sender never addressed. The
+sender's stack matches an ICMP error to what it concerns by the packet the error
+quotes, and linux takes the smaller path MTU to the destination from such an
+answer, which the `internal/netstack` root tests hold for both families at the
+headend and behind a waypoint. The Time Exceeded and Parameter Problem a refused
+segment gets come from the segment's destination too, which is one of this
+node's own segments and within the RFC.

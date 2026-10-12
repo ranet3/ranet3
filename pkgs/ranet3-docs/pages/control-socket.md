@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-10-08
+updated: 2026-10-13
 order: 80
 ---
 
@@ -25,14 +25,19 @@ client holding every place is refused at once rather than left waiting, and a
 shutdown is not held up behind it.
 
 The socket takes the daemon's group on every platform, and so does each
-directory the daemon makes on the way to it, at mode 0750. linux gives a new
-file the group of the process that makes it, outside a setgid directory, while
-darwin gives it the group of the directory it is made in, which under `/var/run`
-is `daemon`. The daemon sets the group itself, before the mode lets that group
-in. A directory that is already there is left as it is, and one an earlier
-version made keeps its group until it is removed, which on darwin leaves the
-socket out of its group's reach. Stop the daemon, remove the directory and start
-the daemon again, which makes it afresh.
+directory the daemon makes on the way to it, at mode 0750. On darwin the record
+`link.underlay.bind` keeps in `/var/run/ranet3` shares the default socket's
+directory, and whichever of the two the daemon reaches first makes it that way.
+linux gives a new file the group of the process that makes it, outside a setgid
+directory, while darwin gives it the group of the directory it is made in, which
+under `/var/run` is `daemon`. The daemon sets the group itself, before the mode
+lets that group in. A directory that is already there is left as it is, and one
+an earlier version made keeps the group `/var/run` gave it, which on darwin
+leaves the socket out of its group's reach. Stop the daemon, give the directory
+the daemon's group with `chgrp` and start the daemon again, or reboot, which
+clears `/var/run` for the daemon to make the directory afresh. Removing the
+directory instead takes with it the record of the routes `link.underlay.bind`
+wrote, which is the daemon's only claim to withdraw them.
 [Running it as a service](service.md#nix-darwin) gives the commands for the
 nix-darwin job. Under the nixos module systemd makes `/run/ranet3` in the unit's
 group and removes it when the unit stops, so an earlier version's directory

@@ -36,6 +36,9 @@ link:
   # required for a full mesh, where every node both dials and answers.
   # listen: true
   # tun: ranet0
+  # The largest packet a session carries inside ESP, 1400 when omitted. The
+  # device runs at this less the longest cap.segment steer list.
+  # mtu: 1400
   # Keep the one socket carrying IKE and ESP out of the reach of the routes the
   # mesh installs. mark is SO_MARK plus a rule under cap.table.rules, linux
   # only, and a mark no rule there selects on is refused; bind is IP_BOUND_IF on

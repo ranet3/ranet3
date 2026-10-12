@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the VM tests, the root-only tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-08
+updated: 2026-10-13
 order: 20
 ---
 
@@ -16,27 +16,38 @@ everything else from the root of the repository.
 go test ./... -race
 ```
 
-The unit tests need no privileges, with five exceptions: `internal/kernel` has
-tests that write to a real routing table, `internal/egress` one that writes into
-a real packet filter, `internal/netstack` four that create and attach to a real
-TUN on linux, read its `gso_max_segs` back, open several lanes as one device,
-refuse a mesh under the default name where a device of that name exists and warn
-at a new mesh's first cut read, `transport` one that sends through a veth pair
-to a peer in a second namespace, behind a route with a locked path MTU, and
-`control` one on darwin that gives a directory a group of any number. On linux
-the first four unshare a network namespace, refuse to continue unless it is
-empty, and skip unless run as root. On darwin the `internal/kernel` tests
-against the real routing socket and the `internal/netstack` arms that create a
-utun run as root only with `RANET3_DARWIN_NETTEST=1` set, because that machine
-is on a live mesh. The `control` one takes the same variable, as every darwin
-test that runs as root does.
+The unit tests need no privileges, except for the ones below. On linux
+`internal/kernel` has tests that write to a real routing table,
+`internal/egress` one that writes into a real packet filter, and `transport` one
+that sends through a veth pair to a peer in a second namespace, behind a route
+with a locked path MTU. `internal/netstack` has tests whose names start with
+`TestTUN` that create and attach to a real TUN: they read its `gso_max_segs`
+back, open several lanes as one device and no more than the kernel attaches,
+refuse a mesh under the default name where a device of that name exists, warn at
+a new mesh's first cut read, move the MTU of an open device, steer a read as
+large as the device, clamp the MSS of a SYN, and answer a packet larger than its
+session, at the headend and at a waypoint, until the kernel that sent it holds
+the smaller path MTU. `internal/client` has tests under the same prefix that run
+a node on a real TUN: a SYN arriving through a session between two nodes on
+loopback reaches the tun with its MSS lowered, a reload moves the tun's MTU, and
+`New` opens read buffers that hold a steered packet of `link.mtu`. Each of these
+unshares a network namespace, refuses to continue unless it is empty, and skips
+unless run as root.
 
-That `control` test holds the control socket and the directories the daemon
-makes for it to the daemon's group where their directory hands down another, as
-darwin's `/var/run` does. Its unprivileged twin does the same on linux and
-darwin with a second group of the running user, which a setgid directory hands
-down on linux, and skips where the user belongs to no second group it can give a
-directory, as in the linux nix sandbox and under `unshare -rn`.
+On darwin the `internal/kernel` tests against the real routing socket and the
+`internal/netstack` arms that create a utun run as root only with
+`RANET3_DARWIN_NETTEST=1` set, because that machine is on a live mesh. A
+`control` test and an `internal/kernel` one that give a directory a group of any
+number take the same variable, as every darwin test that runs as root does. The
+`control` test holds the control socket and the directories the daemon makes for
+it to the daemon's group where their directory hands down another, as darwin's
+`/var/run` does, and the `internal/kernel` one holds the directory the underlay
+record shares with the control socket to the same group, whichever of the two
+makes it. Each has an unprivileged twin that does the same with a second group
+of the running user and skips where the user belongs to no second group it can
+give a directory. The `control` twin runs on linux as well, where a setgid
+directory hands its group down, and skips in the linux nix sandbox and under
+`unshare -rn`.
 
 `internal/kernel` names the machine it reads and writes, `kernel.Host`, so the
 darwin backend can be driven without either. `internal/client`'s
@@ -46,23 +57,24 @@ writes the default its bound socket depends on, and the reconciler holds an
 announced default out of the kernel until a session is live, all asserted on the
 routes that arrive rather than on the calls that made them. It needs no
 privilege, and the one thing it leaves with the running kernel is `IP_BOUND_IF`
-on the transport's own UDP socket. The `netlink` VM check runs the four binaries
-as root against a real kernel, which is the only place the `nf_tables` encoding
-is checked against something other than the decoder it was written beside.
+on the transport's own UDP socket. The `netlink` VM check runs the linux ones
+above as root against a real kernel, which is the only place the `nf_tables`
+encoding is checked against something other than the decoder it was written
+beside.
 
 The packages that read bytes a peer or a file chooses also carry property tests,
 in files ending in `_property_test.go`: `esp`, `ike`, `transport`, `sadr`,
-`srv6`, `internal/babel`, `internal/packet`, `schema`, `internal/config`,
-`internal/kernel` and `control`. They run with the rest of `go test`, under
-hegel-go through `internal/pbt`, whose `Check` gives every property the same
-terms: 200 cases, or 10 under `go test -short`, where hegel v0.9.19 replaces the
-count `Check` sets, no example database, and a derandomized engine. hegel
-v0.9.19 still seeds the labels of nested generators per process, so two runs
-need not draw the same sample, and a boundary the code branches on is drawn
-outright, with `pbt.Spanning` or by name, rather than left to the sample. A
-failing property prints the smallest input it found. hegel is a test dependency
-only: `internal/notices` refuses a non-test file that imports it, so it never
-reaches the binary or its notices.
+`srv6`, `internal/babel`, `internal/packet`, `internal/netstack`, `schema`,
+`internal/config`, `internal/client`, `internal/kernel` and `control`. They run
+with the rest of `go test`, under hegel-go through `internal/pbt`, whose `Check`
+gives every property the same terms: 200 cases, or 10 under `go test -short`,
+where hegel v0.9.19 replaces the count `Check` sets, no example database, and a
+derandomized engine. hegel v0.9.19 still seeds the labels of nested generators
+per process, so two runs need not draw the same sample, and a boundary the code
+branches on is drawn outright, with `pbt.Spanning` or by name, rather than left
+to the sample. A failing property prints the smallest input it found. hegel is a
+test dependency only: `internal/notices` refuses a non-test file that imports
+it, so it never reaches the binary or its notices.
 
 Protocol-level interoperability is covered by the NixOS VM tests in
 `checks/integration`. Except `integration-reload`, each boots separate client
