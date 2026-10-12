@@ -594,6 +594,43 @@ func TestReloadRefusesALinkMTUPastTheReadBuffersAndChangesNothing(t *testing.T) 
 	}
 }
 
+// a link.mtu past the read buffers is refused where the steering added with it keeps the device at its MTU
+// link.mtu 2000 with nothing steered runs the device at 2000
+// link.mtu 2064 under one segment runs it at 2000 as well
+// a steered read of 2000 bytes would then grow to 2064 bytes in a buffer of 2048
+func TestReloadRefusesALinkMTUPastTheReadBuffersWhereTheDeviceStays(t *testing.T) {
+	c, path, _, _ := reloadOf(t, func(old *config.Config) { old.Link.MTU = 2000 })
+	segmentsOf(t, c)
+	old, steered := c.config(), c.Mesh.Steering()
+	next := *old
+	next.Link.MTU = 2064
+	next.Cap.Segment = steering("3fff:1:69c:98d6::1")
+	_, nextSteering, err := next.Segments().Tables()
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := steeredMTU(next.Link.SessionMTU(), nextSteering)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device != 2000 {
+		t.Fatalf("the next configuration runs the device at %d bytes, want the 2000 it runs at now", device)
+	}
+	writeConfig(t, path, &next)
+	err = c.ReloadFrom(path)
+	if err == nil {
+		t.Fatal("a link.mtu of 2064 past read buffers of 2048 bytes was applied")
+	}
+	for _, want := range []string{"2064", "2048", "restart to apply"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal reads %q, which does not say %s", err, want)
+		}
+	}
+	if c.config() != old || c.Mesh.Steering() != steered {
+		t.Error("the refused reload stored its configuration or installed its steering")
+	}
+}
+
 // longDialRetry keeps a dialer whose session went from dialing again within convergeBudget, so only a wake brings it back
 const longDialRetry = 10 * time.Minute
 
