@@ -118,13 +118,15 @@ func reassemble(tb testing.TB, fragments [][]byte, original, later []byte, mtu i
 }
 
 // fragmentsOf splits what AppendFragments wrote after start into its fragments, by the total length each one carries
-func fragmentsOf(tb testing.TB, out []byte, start int) [][]byte {
+// each comes behind a copy of outer as it was given
+func fragmentsOf(tb testing.TB, out []byte, start int, outer []byte) [][]byte {
 	tb.Helper()
 	var fragments [][]byte
 	for rest := out[start:]; len(rest) != 0; {
-		if len(rest) < ipv4HeaderLen {
-			tb.Fatalf("%d bytes trail the last fragment", len(rest))
+		if len(rest) < len(outer)+ipv4HeaderLen || !bytes.Equal(rest[:len(outer)], outer) {
+			tb.Fatalf("%d bytes trail the last fragment without the %d byte header each one comes behind", len(rest), len(outer))
 		}
+		rest = rest[len(outer):]
 		length := int(binary.BigEndian.Uint16(rest[2:4]))
 		if length < ipv4HeaderLen || length > len(rest) {
 			tb.Fatalf("a fragment claims %d bytes with %d left", length, len(rest))
@@ -161,23 +163,23 @@ func (o *optionList) pad() {
 	}
 }
 
-// for any IPv4 packet without DF, fragment or not, with any option list and any mtu from 68 up
-// the fragments each fit the mtu, carry offsets in 8 byte units with the copied options in every one, check their header sums
+// for any IPv4 packet without DF, fragment or not, with any option list and any mtu from 68 up, and any tunnel header or none
+// the fragments each fit the mtu behind that header, carry offsets in 8 byte units with the copied options in every one, check their header sums
 // and reassemble to the packet
 // exact multiples of the data a fragment carries, and one byte either side, are tried before anything is drawn
 func TestFragmentsReassembleToThePacket(t *testing.T) {
-	check := func(tb testing.TB, options optionList, field, seed uint16, data, mtu int) {
+	check := func(tb testing.TB, options optionList, field, seed uint16, data, mtu int, outer []byte) {
 		tb.Helper()
 		original := ipv4Packet(options.written, field, seed, data)
 		prefix := []byte("kept")
-		out, ok := AppendFragments(prefix, original, mtu)
+		out, ok := AppendFragments(prefix, outer, original, mtu)
 		if !ok {
 			tb.Fatalf("a %d byte packet with the flags %#04x was refused at an mtu of %d", len(original), field, mtu)
 		}
 		if !bytes.Equal(out[:len(prefix)], []byte("kept")) {
 			tb.Fatal("the fragments were not appended after what dst held")
 		}
-		fragments := fragmentsOf(tb, out, len(prefix))
+		fragments := fragmentsOf(tb, out, len(prefix), outer)
 		if got := reassemble(tb, fragments, original, options.later, mtu); !bytes.Equal(got, original) {
 			tb.Fatalf("%d fragments reassemble to %d bytes that differ from the %d byte packet", len(fragments), len(got), len(original))
 		}
@@ -186,12 +188,14 @@ func TestFragmentsReassembleToThePacket(t *testing.T) {
 	mixed.add(0x83, []byte{4, 192, 0, 2, 1}, true)
 	mixed.add(7, []byte{4, 0, 0, 0, 0}, false)
 	mixed.pad()
-	for _, options := range []optionList{{}, mixed} {
-		for mtu := 68; mtu < 68+fragmentUnit; mtu++ {
-			chunk := (mtu - ipv4HeaderLen - len(options.written)) &^ (fragmentUnit - 1)
-			for _, data := range []int{0, 1, chunk - 1, chunk, chunk + 1, 3*chunk - 1, 3 * chunk, 3*chunk + 1} {
-				check(t, options, 0, 0, data, mtu)
-				check(t, options, moreFragments|5, 0x1234, data, mtu)
+	for _, outer := range [][]byte{nil, []byte("a tunnel header")} {
+		for _, options := range []optionList{{}, mixed} {
+			for mtu := 68; mtu < 68+fragmentUnit; mtu++ {
+				chunk := (mtu - ipv4HeaderLen - len(options.written)) &^ (fragmentUnit - 1)
+				for _, data := range []int{0, 1, chunk - 1, chunk, chunk + 1, 3*chunk - 1, 3 * chunk, 3*chunk + 1} {
+					check(t, options, 0, 0, data, mtu, outer)
+					check(t, options, moreFragments|5, 0x1234, data, mtu, outer)
+				}
 			}
 		}
 	}
@@ -225,11 +229,11 @@ func TestFragmentsReassembleToThePacket(t *testing.T) {
 		}
 		seed := hegel.Draw(ht, hegel.Integers[uint16](0, 0xffff))
 		mtu := hegel.Draw(ht, pbt.Spanning(68, max(68, headerLen+data+fragmentUnit)))
-		check(ht, options, field, seed, data, mtu)
+		check(ht, options, field, seed, data, mtu, hegel.Draw(ht, hegel.Binary(0, maxIPv4HeaderLen)))
 	})
 }
 
-// what RFC 791 section 3.2 cannot cut, or a reassembly could not put back, is refused and dst comes back as it was
+// what RFC 791 section 3.2 cannot cut, or a reassembly could not put back, is refused and dst comes back as it was, with no tunnel header on it
 func TestFragmentsAreRefusedForWhatCannotBeCut(t *testing.T) {
 	for _, refused := range []struct {
 		name string
@@ -246,7 +250,7 @@ func TestFragmentsAreRefusedForWhatCannotBeCut(t *testing.T) {
 		{"a packet longer than its total length", append(ipv4Packet(nil, 0, 0, 2000), 0), 1280},
 	} {
 		t.Run(refused.name, func(t *testing.T) {
-			out, ok := AppendFragments([]byte("kept"), refused.raw, refused.mtu)
+			out, ok := AppendFragments([]byte("kept"), []byte("a tunnel header"), refused.raw, refused.mtu)
 			if ok || string(out) != "kept" {
 				t.Errorf("AppendFragments took it, reporting %t with %d bytes after dst", ok, len(out)-len("kept"))
 			}

@@ -152,6 +152,344 @@ func checkAnswer(tb testing.TB, answer, offending []byte, mtu int) {
 	}
 }
 
+// checkFragments holds the packets a session of mtu bytes was sent in place of inner, an IPv4 packet too large for it
+// each fits mtu and goes behind header, empty or an IPv6 header whose payload length then counts what follows it
+// each is an IPv4 packet from inner's source to its destination under inner's identification, its header summing as its receiver checks it
+// and in order they carry inner's data, each at the offset its header names, with MF on all but the last, RFC 791 section 3.1
+func checkFragments(tb testing.TB, sent [][]byte, header, inner []byte, mtu int) {
+	tb.Helper()
+	if len(sent) < 2 {
+		tb.Fatalf("a %d byte packet past a %d byte session was sent as %d packets, want its fragments", len(inner), mtu, len(sent))
+	}
+	data, at := inner[20:], 0
+	for i, raw := range sent {
+		if len(raw) > mtu || len(raw) < len(header)+20 {
+			tb.Fatalf("fragment %d is %d bytes behind a %d byte header, against a %d byte session", i, len(raw), len(header), mtu)
+		}
+		want := bytes.Clone(header)
+		if len(header) != 0 {
+			binary.BigEndian.PutUint16(want[4:], uint16(len(raw)-40))
+		}
+		if !bytes.Equal(raw[:len(header)], want) {
+			tb.Fatalf("fragment %d goes behind %x, want %x", i, raw[:len(header)], want)
+		}
+		cut := raw[len(header):]
+		if !bytes.Equal(cut[12:20], inner[12:20]) || int(binary.BigEndian.Uint16(cut[2:4])) != len(cut) {
+			tb.Fatalf("fragment %d is a %d byte packet from %x claiming %d bytes", i, len(cut), cut[12:20], binary.BigEndian.Uint16(cut[2:4]))
+		}
+		if sum := packet.Sum(0, cut[:20]); sum != 0xffff || !bytes.Equal(cut[4:6], inner[4:6]) {
+			tb.Fatalf("fragment %d carries the identification %x under a header summing to %#04x, want the packet's %x under one summing to 0xffff", i, cut[4:6], sum, inner[4:6])
+		}
+		// the offset counts 8 byte units, and MF is the flag below DF
+		field, more := binary.BigEndian.Uint16(cut[6:8]), i < len(sent)-1
+		if int(field&0x1fff)*8 != at || (field&0x2000 != 0) != more {
+			tb.Fatalf("fragment %d holds the flags and offset %#04x, want offset %d with MF %t", i, field, at, more)
+		}
+		if end := at + len(cut) - 20; end > len(data) || !bytes.Equal(cut[20:], data[at:end]) {
+			tb.Fatalf("fragment %d carries %d bytes at offset %d that are not the packet's", i, len(cut)-20, at)
+		}
+		at += len(cut) - 20
+	}
+	if at != len(data) {
+		tb.Fatalf("%d fragments carry %d bytes of data, want the packet's %d", len(sent), at, len(data))
+	}
+}
+
+// the segments a waypoint test sends a packet through, this node's End first, from the address the packet was steered from
+var (
+	thisWaypoint = segAddr("3fff:1:69c:8c6::2")
+	steeredFrom  = segAddr("3fff:1:69c:8c0::1")
+)
+
+// waypointOf is a mesh acting on thisWaypoint, which sends what goes on to after through session
+// sender records what goes back to the sources the packets above come from
+func waypointOf(tb testing.TB, after netip.Addr, session *Peer) (*Mesh, *recordingPeer) {
+	tb.Helper()
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(thisWaypoint), Behavior: srv6.BehaviorEnd}})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	m := &Mesh{Routes: NewRouteTable()}
+	m.startSegmentReports()
+	m.SetSegments(table)
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(after, 128), session)
+	sender := &recordingPeer{}
+	back := sender.peer("sender")
+	for _, source := range tooBigSource {
+		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(source, source.BitLen()), back)
+	}
+	return m, sender
+}
+
+// sessionOf is a peer carrying mtu byte packets, and what it was sent
+func sessionOf(mtu int) (*Peer, *recordingPeer) {
+	sent := &recordingPeer{}
+	peer := sent.peer("next")
+	peer.SetMTU(mtu)
+	return peer, sent
+}
+
+// steeredThrough is inner as the node at steeredFrom steers it through path, which starts at thisWaypoint
+func steeredThrough(tb testing.TB, inner []byte, path ...netip.Addr) []byte {
+	tb.Helper()
+	outer, err := srv6.Encapsulate(inner, steeredFrom, append([]netip.Addr{thisWaypoint}, path...))
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return outer
+}
+
+// headerShape describes the headers a segment carries around its routing header beside the segment list
+// front names the extension headers in front of the routing header in order, RFC 8200 section 4.1
+// and tlv is the bytes of TLVs after the segment list, a multiple of 8, RFC 8754 section 2.1
+type headerShape struct {
+	front []byte
+	tlv   int
+}
+
+// the extension headers RFC 8200 section 4.1 allows in front of a routing header
+const (
+	hopByHop           = 0
+	destinationOptions = 60
+)
+
+// size is the bytes the shape puts into a segment
+func (s headerShape) size() int { return 8*len(s.front) + s.tlv }
+
+// around is outer, whose routing header follows its fixed header, with the shape's headers put in and its payload length counting them
+// each header in front is 8 bytes holding one PadN option, RFC 8200 section 4.2, and each TLV is a PadN of 2 bytes, RFC 8754 section 2.1.1.2
+func (s headerShape) around(outer []byte) []byte {
+	routing := 8 + 8*int(outer[41])
+	var front []byte
+	next := outer[6]
+	for _, kind := range slices.Backward(s.front) {
+		front = append([]byte{next, 0, 1, 4, 0, 0, 0, 0}, front...)
+		next = kind
+	}
+	out := slices.Concat(outer[:40], front, outer[40:40+routing], bytes.Repeat([]byte{4, 2, 0, 0}, s.tlv/4), outer[40+routing:])
+	out[6] = next
+	out[40+len(front)+1] += byte(s.tlv / 8)
+	binary.BigEndian.PutUint16(out[4:], uint16(len(out)-40))
+	return out
+}
+
+// a waypoint answers the segments too large for the session to their next segment under the bucket answerRefused draws from
+// a flood of them, carrying IPv6 and IPv4 with DF in turn, gets the burst answered and no more
+// and each answer goes to the source of the packet the segment carries rather than to the node that steered it
+func TestSegmentsPastTheirNextSessionAreAnsweredAtABoundedRate(t *testing.T) {
+	const flood = 64
+	after := segAddr("3fff:1:69c:98d6::1")
+	session, next := sessionOf(srv6.MinimumIPv6MTU + srv6.Overhead(2))
+	m, sender := waypointOf(t, after, session)
+	batch := make([][]byte, flood)
+	for i := range batch {
+		family := []int{4, 6}[i%2]
+		batch[i] = steeredThrough(t, udpPacket(tooBigSource[family], tooBigDestination[family], DefaultMTU, true), after)
+	}
+	if left := m.applySegments(batch); len(left) != 0 {
+		t.Fatalf("%d segments reached the tun", len(left))
+	}
+	answers := sender.packets()
+	if len(answers) == 0 || len(answers) > icmpBurst {
+		t.Errorf("%d segments past their next session were answered %d times, want at least one and at most the burst of %d", flood, len(answers), icmpBurst)
+	}
+	for i, answer := range answers {
+		if _, to, _ := packet.Addrs(answer); to != tooBigSource[4] && to != tooBigSource[6] {
+			t.Errorf("answer %d goes to %s, want the source of the packet the segment carries", i, to)
+		}
+	}
+	if sent := next.packets(); len(sent) != 0 {
+		t.Errorf("%d of %d segments past their next session went on to it", len(sent), flood)
+	}
+	if counters := m.SegmentCounters(); counters.Dropped != flood || counters.Answered != uint64(len(answers)) || counters.Forwarded != 0 {
+		t.Errorf("the waypoint counted %+v for %d segments it answered %d of", counters, flood, len(answers))
+	}
+}
+
+// a segment too large for its next session is answered only about the IP packet its routing header names
+// a whole packet behind a header naming none, a transport, hop-by-hop or the other family is dropped with no answer
+// since nothing says those bytes are a packet with a source to tell
+// and so is a tail that is no whole IP packet behind a header naming either family or hop-by-hop
+// shorter than an IPv4 or an IPv6 header, or claiming a length it does not have, where reading it as a packet runs past its end
+func TestSegmentPastItsNextSessionIsAnsweredOnlyAboutThePacketItsHeaderNames(t *testing.T) {
+	after := segAddr("3fff:1:69c:98d6::1")
+	// next is the routing header's next header, RFC 8754 section 2, and behind what follows the routing header
+	// a segment steered with a whole packet carries it, and any other is steered with an IPv6 one of which only behind is left
+	type carried struct {
+		next   byte
+		behind []byte
+		whole  bool
+	}
+	whole := map[int][]byte{4: udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, true), 6: udpPacket(tooBigSource[6], tooBigDestination[6], DefaultMTU, false)}
+	cases := []carried{{59, whole[6], true}, {17, whole[6], true}, {hopByHop, whole[6], true}, {4, whole[6], true}, {59, whole[4], true}, {hopByHop, whole[4], true}, {41, whole[4], true}}
+	// each tail starts as its family's header does, the IPv4 ones with DF
+	short4, short6 := whole[4][:16], whole[6][:32]
+	claims4, claims6 := bytes.Clone(whole[4][:24]), bytes.Clone(whole[6][:48])
+	binary.BigEndian.PutUint16(claims4[2:], 40)
+	binary.BigEndian.PutUint16(claims6[4:], 100)
+	for _, next := range []byte{hopByHop, 4, 41} {
+		for _, tail := range [][]byte{short4, claims4, short6, claims6} {
+			cases = append(cases, carried{next, tail, false})
+		}
+	}
+	for _, c := range cases {
+		session, sent := sessionOf(srv6.MinimumIPv6MTU + srv6.Overhead(2))
+		m, sender := waypointOf(t, after, session)
+		var outer []byte
+		if c.whole {
+			outer = steeredThrough(t, c.behind, after)
+		} else {
+			// the routing header grows by TLVs of padding until only the tail follows it, which keeps the segment past its session
+			outer = steeredThrough(t, whole[6], after)
+			list := 40 + 8 + 16*2
+			copy(outer[list:], bytes.Repeat([]byte{4, 2, 0, 0}, (len(outer)-len(c.behind)-list)/4))
+			outer[41] = byte((len(outer) - len(c.behind) - 48) / 8)
+			copy(outer[len(outer)-len(c.behind):], c.behind)
+		}
+		outer[40] = c.next
+		// no room past its end, so a read past the tail fails rather than finds spare capacity
+		if left := m.applySegments([][]byte{slices.Clip(outer)}); len(left) != 0 {
+			t.Fatalf("%d segments reached the tun", len(left))
+		}
+		if answers, forwarded := sender.packets(), sent.packets(); len(answers) != 0 || len(forwarded) != 0 {
+			t.Errorf("a segment naming %d in front of %d bytes starting %x past its next session was answered %d times and went on as %d packets", c.next, len(c.behind), c.behind[:8], len(answers), len(forwarded))
+		}
+		if counters := m.SegmentCounters(); counters.Dropped != 1 || counters.Answered != 0 {
+			t.Errorf("a segment naming %d in front of %d bytes starting %x counted %+v, want it dropped and nothing answered", c.next, len(c.behind), c.behind[:8], counters)
+		}
+	}
+}
+
+// reservingPeer is a peer whose sealer hands back every packet as itself
+// it reports the places each reservation of its session asked for
+func reservingPeer(t *testing.T) (*Peer, func() []int) {
+	var mu sync.Mutex
+	var places []int
+	peer := NewPeerReserved("peer", func(count int) (BatchSealer, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		places = append(places, count)
+		return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
+			out = out[:0]
+			for _, plain := range raw {
+				out = append(out, bytes.Clone(plain))
+			}
+			return out, nil
+		}, nil
+	}, func([][]byte) error { return nil }, nil)
+	t.Cleanup(peer.Close)
+	return peer, func() []int {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(places)
+	}
+}
+
+// a peer every packet of a batch was answered for rather than sent to is asked for no place in its session
+// a place for nothing still takes a ticket and a slot of the sender's queue, which has room only for places holding a packet
+// a read off the tun and a batch of forwarded segments each go to the peer next with one packet that fits, and ask for one place
+func TestPeerAnsweredForEveryPacketIsAskedForNoPlace(t *testing.T) {
+	source, destination := tooBigSource[6], tooBigDestination[6]
+	t.Run("read off the tun", func(t *testing.T) {
+		peer, places := reservingPeer(t)
+		peer.SetMTU(srv6.MinimumIPv6MTU)
+		dev := &scriptedDevice{recordingDevice: recordingDevice{writes: make(chan recordedWrite, 1)}, reads: make(chan scriptedRead, 2), closed: make(chan struct{})}
+		m := &Mesh{Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{}),
+			outboundBufferSize: tunOffset + outboundPacketBufferSize}
+		m.startSegmentReports()
+		m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
+		m.startOutboundPipeline()
+		t.Cleanup(m.Close)
+		dev.reads <- scriptedRead{packets: [][]byte{udpPacket(source, destination, DefaultMTU, false)}}
+		dev.reads <- scriptedRead{packets: [][]byte{udpPacket(source, destination, 100, false)}}
+		waitUntil(t, "the packet within its session to take a place", func() bool { return slices.Contains(places(), 1) })
+		if got := places(); !slices.Equal(got, []int{1}) {
+			t.Errorf("the peer was asked for places %v, want one for the one packet it carries", got)
+		}
+		if answered := len(dev.writes); answered != 1 {
+			t.Errorf("the packet past its session was answered %d times, want once", answered)
+		}
+	})
+	t.Run("forwarded segments", func(t *testing.T) {
+		after := segAddr("3fff:1:69c:98d6::1")
+		peer, places := reservingPeer(t)
+		peer.SetMTU(srv6.MinimumIPv6MTU + srv6.Overhead(2))
+		m, sender := waypointOf(t, after, peer)
+		m.applySegments([][]byte{steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)})
+		m.applySegments([][]byte{steeredThrough(t, udpPacket(source, destination, 100, false), after)})
+		if got := places(); !slices.Equal(got, []int{1}) {
+			t.Errorf("the peer was asked for places %v, want one for the one segment it carries", got)
+		}
+		if answers := sender.packets(); len(answers) != 1 {
+			t.Errorf("the segment past its next session was answered %d times, want once", len(answers))
+		}
+	})
+}
+
+// a peer that refuses its reservation, as a closed or a full one does, is handed none of the fragments cut for it
+// they are dropped and counted by the peer, and by the waypoint for a segment it would have forwarded
+// a read off the tun and a forwarded segment each cut one IPv4 packet without DF into two fragments for such a peer
+func TestFragmentsForAPeerThatRefusesItsReservationAreDropped(t *testing.T) {
+	source, destination := tooBigSource[4], tooBigDestination[4]
+	t.Run("read off the tun", func(t *testing.T) {
+		peer, _ := reservingPeer(t)
+		peer.SetMTU(srv6.MinimumIPv6MTU)
+		peer.Close()
+		dev := &scriptedDevice{recordingDevice: recordingDevice{writes: make(chan recordedWrite, 1)}, reads: make(chan scriptedRead, 1), closed: make(chan struct{})}
+		m := &Mesh{Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{}),
+			outboundBufferSize: tunOffset + outboundPacketBufferSize}
+		m.startSegmentReports()
+		m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+		m.startOutboundPipeline()
+		t.Cleanup(m.Close)
+		dev.reads <- scriptedRead{packets: [][]byte{udpPacket(source, destination, 2000, false)}}
+		waitUntil(t, "the peer to drop the two fragments it had no place for", func() bool { return peer.Dropped() == 2 })
+		// closing waits for the worker that hands the read's fragments to the batches its peers hold
+		m.Close()
+	})
+	t.Run("forwarded segment", func(t *testing.T) {
+		after := segAddr("3fff:1:69c:98d6::1")
+		peer, _ := reservingPeer(t)
+		peer.SetMTU(srv6.MinimumIPv6MTU + srv6.Overhead(2))
+		peer.Close()
+		m, _ := waypointOf(t, after, peer)
+		m.applySegments([][]byte{steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)})
+		if counters := m.SegmentCounters(); counters.Dropped != 2 || counters.Forwarded != 0 {
+			t.Errorf("the waypoint counted %+v, want the segment's two fragments dropped", counters)
+		}
+		if dropped := peer.Dropped(); dropped != 2 {
+			t.Errorf("the session dropped %d packets, want the two fragments it had no place for", dropped)
+		}
+	})
+}
+
+// a batch reset for its next read keeps none of the fragments its last read cut, and cuts the next read's into the same storage
+// a batch cutting a packet every read then holds as much storage after a hundred reads as after the first
+func TestBatchCutsEveryReadIntoTheStorageOfItsFirst(t *testing.T) {
+	const reads = 100
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), outboundBufferSize: tunOffset + outboundPacketBufferSize}
+	peer := (&recordingPeer{}).peer("peer")
+	peer.SetMTU(srv6.MinimumIPv6MTU)
+	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	b := m.newOutboundBatch(1)
+	cut := udpPacket(tooBigSource[4], tooBigDestination[4], 2000, false)
+	held := 0
+	for read := range reads {
+		b.sizes[0] = copy(b.bufs[0][tunOffset:], cut)
+		b.n = 1
+		m.classify(b)
+		if len(b.cut.fragments) != 2 {
+			t.Fatalf("read %d holds %d fragments, want the two its one packet was cut into", read, len(b.cut.fragments))
+		}
+		if read == 0 {
+			held = cap(b.cut.bytes)
+		} else if cap(b.cut.bytes) != held {
+			t.Fatalf("read %d holds %d bytes of fragments, want the %d the first read held", read, cap(b.cut.bytes), held)
+		}
+		b.reset()
+	}
+}
+
 // answers are packets a peer's packets made this node send, and the bucket answerRefused draws from bounds them too
 // a read full of packets past their session, IPv6 and IPv4 with DF in turn, gets the burst answered and no more, and nothing reaches the peer
 func TestPacketsPastTheirSessionAreAnsweredAtABoundedRate(t *testing.T) {
