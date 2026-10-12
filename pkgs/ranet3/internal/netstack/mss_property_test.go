@@ -8,6 +8,7 @@ package netstack
 import (
 	"bytes"
 	"encoding/binary"
+	"slices"
 	"testing"
 
 	"hegel.dev/go/hegel"
@@ -30,6 +31,10 @@ func clamped(raw []byte, limit int) []byte {
 			return raw
 		}
 	} else if raw[6] != tcpProtocol {
+		return raw
+	}
+	// a segment shorter than the least TCP header holds no flags to read
+	if len(raw) < offset+tcpHeaderLen {
 		return raw
 	}
 	header := int(raw[offset+12]>>4) * 4
@@ -80,12 +85,81 @@ var tcpOptions = []func(ht *hegel.T, limit int) []byte{
 	},
 }
 
+// withIPv4Options is the IPv4 packet raw with words 4 byte words of NOP options after its fixed header
+// its header length, total length and header checksum written again for them
+func withIPv4Options(raw []byte, words int) []byte {
+	out := append(append(bytes.Clone(raw[:20]), bytes.Repeat([]byte{1}, 4*words)...), raw[20:]...)
+	out[0] = 4<<4 | byte(5+words)
+	binary.BigEndian.PutUint16(out[2:], uint16(len(out)))
+	binary.BigEndian.PutUint16(out[10:], 0)
+	binary.BigEndian.PutUint16(out[10:], ^uint16(packet.Sum(0, out[:20+4*words])))
+	return out
+}
+
+// cutTo is the IP packet raw cut to its first size bytes, its length fields written again for what is left
+func cutTo(raw []byte, size int) []byte {
+	out := bytes.Clone(raw[:size])
+	if out[0]>>4 == 6 {
+		binary.BigEndian.PutUint16(out[4:], uint16(size-40))
+		return out
+	}
+	binary.BigEndian.PutUint16(out[2:], uint16(size))
+	binary.BigEndian.PutUint16(out[10:], 0)
+	binary.BigEndian.PutUint16(out[10:], ^uint16(packet.Sum(0, out[:20])))
+	return out
+}
+
 // for any IPv4 or IPv6 TCP segment with any option list, an MSS anywhere in it, NOPs, SACK permitted, window scale,
 // timestamps, the end of the list and a list cut short, and with any flags
 // a SYN or SYN-ACK whose MSS is past the session's limit leaves with that MSS at the limit, a checksum a fresh computation agrees with
 // and every other byte as it was, while anything else leaves byte for byte as it came
 // the limit is the session's MTU less 40 under IPv4 and 60 under IPv6
+// each family first meets the shapes the clamp tells apart, before anything is drawn
+// an MSS below the limit, at it and above it, a segment cut short of its flags, a data offset past the segment
+// an option of length one ahead of the MSS, an option's kind ending the list, and under IPv4 options in front of TCP and fragments
 func TestClampMSSLowersOnlyTheMSSOfASYN(t *testing.T) {
+	check := func(tb testing.TB, raw []byte, mtu, limit int) {
+		tb.Helper()
+		want := clamped(raw, limit)
+		// a packet with no room past its end, so a read past it fails rather than finds spare capacity
+		got := slices.Clip(bytes.Clone(raw))
+		ClampMSS(got, mtu)
+		if !bytes.Equal(got, want) {
+			tb.Fatalf("a %d byte IPv%d packet left as %x, want %x", len(raw), raw[0]>>4, got, want)
+		}
+	}
+	for _, family := range []int{4, 6} {
+		mtu, header, limit := DefaultMTU, 20, DefaultMTU-ipv4Segment
+		if family == 6 {
+			header, limit = 40, DefaultMTU-ipv6Segment
+		}
+		mss := func(value int) []byte { return binary.BigEndian.AppendUint16([]byte{optionMSS, mssLen}, uint16(value)) }
+		syn := func(field uint16, options []byte, offset byte) []byte {
+			return tcpPacket(family, field, false, synFlag, options, offset, 0)
+		}
+		above := mss(limit + 1)
+		shapes := [][]byte{
+			syn(0, mss(limit-1), 0),
+			syn(0, mss(limit), 0),
+			syn(0, above, 0),
+			cutTo(syn(0, above, 0), header+tcpFlags),
+			syn(0, above, 15),
+			syn(0, append([]byte{3, 1}, append(above, optionEnd, optionEnd)...), 0),
+			syn(0, append(above, optionNOP, optionNOP, optionNOP, 8), 0),
+		}
+		if family == 4 {
+			// MF at offset 0 is the first fragment, RFC 791 section 3.1, and an offset of 1 a later one
+			shapes = append(shapes,
+				withIPv4Options(syn(0, above, 0), 1),
+				withIPv4Options(syn(0, above, 0), 10),
+				syn(0x2000, above, 0),
+				syn(1, above, 0),
+			)
+		}
+		for _, raw := range shapes {
+			check(t, raw, mtu, limit)
+		}
+	}
 	pbt.Check(t, func(ht *hegel.T) {
 		family := 4
 		if hegel.Draw(ht, hegel.Booleans()) {
@@ -175,11 +249,9 @@ func TestClampMSSLowersOnlyTheMSSOfASYN(t *testing.T) {
 				raw[6] = 17
 			}
 		}
-		want := clamped(raw, limit)
-		got := bytes.Clone(raw)
-		ClampMSS(got, mtu)
-		if !bytes.Equal(got, want) {
-			ht.Fatalf("a %d byte IPv%d packet with flags %#02x and options %x left as %x, want %x", len(raw), family, flags, options, got, want)
+		if family == 4 {
+			raw = withIPv4Options(raw, hegel.Draw(ht, pbt.Spanning(0, 10)))
 		}
+		check(ht, raw, mtu, limit)
 	})
 }
