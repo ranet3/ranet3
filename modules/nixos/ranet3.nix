@@ -106,6 +106,8 @@ in
             configPath
             "--log-level"
             cfg.logLevel
+            "--state-dir"
+            "/var/lib/ranet3"
           ]
           ++ cfg.extraArgs
         );
@@ -133,6 +135,8 @@ in
         # linux resolves to /run, so this is the directory it is bound in
         RuntimeDirectory = "ranet3";
         RuntimeDirectoryMode = "0750";
+        StateDirectory = "ranet3";
+        StateDirectoryMode = "0700";
         Group = cfg.group;
         AmbientCapabilities = capabilities;
         CapabilityBoundingSet = capabilities;
