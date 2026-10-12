@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Linux's mmsghdr ends with a uint32 length; Go adds the same alignment
+// Linux's mmsghdr ends with a uint32 length. Go adds the same alignment
 // padding as C on each supported architecture.
 type udpMmsg struct {
 	header unix.Msghdr

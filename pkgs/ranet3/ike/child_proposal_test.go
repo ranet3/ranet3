@@ -174,7 +174,7 @@ func TestIntegNoneIsTakenAndEchoedOnEveryProposal(t *testing.T) {
 	}
 }
 
-// The Child SA selector draws the same line as the IKE one: RFC 7296 §3.3.6
+// The Child SA selector draws the same line as the IKE one: RFC 7296 section 3.3.6
 // makes an integrity algorithm this end has no key for one unacceptable
 // transform, and "other transforms with the same Transform Type are processed
 // as usual", so an offer naming one alongside NONE still has an answer.

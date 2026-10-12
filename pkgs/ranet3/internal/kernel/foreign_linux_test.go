@@ -96,7 +96,7 @@ func TestForeignWritersReportsOnlyOurOwnTable(t *testing.T) {
 
 // linkReply builds one RTM_NEWLINK of a given kind whose IFLA_INFO_DATA opens
 // with a 32-bit attribute 1, nested the way EnsureVRF writes a VRF and the
-// kernel reports it back. For a VRF that attribute is IFLA_VRF_TABLE; for
+// kernel reports it back. For a VRF that attribute is IFLA_VRF_TABLE. For
 // vxlan the same number and width carry the VNI.
 func linkReply(kind string, value uint32) nlMessage {
 	info := putAttrString(nil, unix.IFLA_INFO_KIND, kind)

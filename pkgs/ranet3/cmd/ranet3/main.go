@@ -8,7 +8,7 @@
 // file carries a cap.table block, which turns the route reconciler on.
 //
 // `ranet3 daemon` is the node. Every other subcommand reads a running
-// one's control socket; see cli.go.
+// one's control socket. See cli.go.
 package main
 
 import (
@@ -211,7 +211,7 @@ func runDaemon(opts options) int {
 	// second channel registered after it cancels. Shutdown closes every
 	// session with a grace period, withdraws the installed routes and waits
 	// for every dialer, and while that is slow an operator pressing Ctrl-C
-	// again has nothing to press; the second signal answers that.
+	// again has nothing to press. The second signal answers that.
 	//
 	// Registering the second channel only after the first signal leaves a
 	// window in which a signal reaches nobody: NotifyContext has stopped
@@ -253,7 +253,7 @@ func runDaemon(opts options) int {
 	var reconciler sync.WaitGroup
 	if table := cfg.Cap.Table; table != nil {
 		// The half the file could not say is the node's own to answer, so the
-		// node answers it; see client.KernelRuntime.
+		// node answers it (see client.KernelRuntime).
 		routes, err := kernel.New(*table, node.KernelRuntime(), mesh.Routes)
 		if err != nil {
 			return refuseToStart(err)
@@ -331,7 +331,7 @@ func runDaemon(opts options) int {
 
 	// The reconciler has to finish withdrawing while the TUN still exists,
 	// and client.Run destroys it as soon as its own context is done. So the
-	// mesh runs on a context canceled only once the reconciler has returned;
+	// mesh runs on a context canceled only once the reconciler has returned, but
 	// the signal context still stops both, just in that order.
 	meshCtx, stopMesh := context.WithCancel(context.Background())
 	defer stopMesh()
@@ -345,7 +345,7 @@ func runDaemon(opts options) int {
 		stopMesh()
 	}()
 
-	// SIGUSR1 dumps the current mesh route table to the log — the fastest
+	// SIGUSR1 dumps the current mesh route table to the log, the fastest
 	// way to see what babel has actually installed without wiring up a
 	// separate debug endpoint. Route installs/retractions and neighbor
 	// up/down transitions are also logged as they happen.
@@ -420,7 +420,7 @@ func serveControl(opts options, node *client.Client, failed *atomic.Bool) (net.L
 
 // watchSignals starts the shutdown on the first signal and gives up on the
 // second. Both come off one channel in order, which keeps a signal from
-// reaching nobody; see the registration above.
+// reaching nobody. See the registration above.
 func watchSignals(signals <-chan os.Signal, cancel context.CancelFunc, force func()) {
 	<-signals
 	cancel()

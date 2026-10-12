@@ -162,7 +162,7 @@ func TestSourcesAreGroupedByLengthNotByEntry(t *testing.T) {
 }
 
 // The index is built only where it pays. Many sources at one length is the
-// shape a neighbor can force and the one the maps exist for; the same number
+// shape a neighbor can force and the one the maps exist for, while the same number
 // spread one to a length is slower indexed than scanned, and the edit path
 // would pay to build it either way.
 func TestSourceIndexIsBuiltOnlyWhereItPays(t *testing.T) {
@@ -194,7 +194,7 @@ func TestSourceIndexIsBuiltOnlyWhereItPays(t *testing.T) {
 		t.Errorf("sixty-four sources at sixty-four lengths built %d groups, which costs more to build and to read than the scan", len(node.index()))
 	}
 	// And the answer is the same either way, which the linear model
-	// test covers across every shape; this is the pair that motivated it.
+	// test covers across every shape. This is the pair that motivated it.
 	spread.Set(netip.Prefix{}, dst, 999)
 	if got, ok := spread.Lookup(addr("fd7f:ffff::1"), addr("fd00::1")); !ok || got != 999 {
 		t.Errorf("the unindexed node answered %v, %v, want the match-all entry", got, ok)

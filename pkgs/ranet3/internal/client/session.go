@@ -28,7 +28,7 @@ import (
 // same decision, and this is where the peer exists.
 //
 // It returns errSessionEstablished when another session already holds the
-// path, which is not a failure. name appears in logs; sessionName identifies
+// path, which is not a failure. name appears in logs, while sessionName identifies
 // this peer to the mesh and to babel, so it must be stable and unique per
 // peer. initiator and responder are this SA's own roles, the end that opened
 // it and the end that answered.
@@ -168,14 +168,14 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 //
 // Newest wins is not enough to settle it. Both ends have to choose the same
 // survivor, or each keeps the SA the other just closed and neither carries
-// traffic until dead peer detection notices; and the end whose SA loses has to
+// traffic until dead peer detection notices, and the end whose SA loses has to
 // know not to dial straight back in, or the two take turns evicting each other
 // for as long as the process runs. strongSwan's unique=replace resolves the
 // far end by sending a Delete, which this does too, but it also needs a rule
 // that does not depend on arrival order.
 //
 // preferred is that rule. Both nodes compare the same two identity strings and
-// so agree on which of them should be the initiator; the SA opened in that
+// so agree on which of them should be the initiator. The SA opened in that
 // direction is the one both keep, whichever order the two handshakes finish
 // in. Only when the two sessions are equally preferred, which is a genuine
 // reconnect rather than a collision, does the newer one win.
@@ -207,7 +207,7 @@ type liveSession struct {
 	// peer is the identity the far end authenticated as, kept so a reload can
 	// ask whether the registry still names it. The registry is the trust root
 	// this node checks a handshake against, so a node taken out of it has to
-	// stop being carried; without this, revoking a node left every tunnel it
+	// stop being carried. Without this, revoking a node left every tunnel it
 	// already held up until each of the other nodes restarted.
 	peer ike.Identity
 	// budget is the session's peer in the mesh, whose MTU a reload of link.mtu sets

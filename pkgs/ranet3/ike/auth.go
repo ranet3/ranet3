@@ -23,7 +23,7 @@ func BuildAuth(priv ed25519.PrivateKey, signedOctets []byte) []byte {
 }
 
 // VerifyAuth checks an RFC 7427 Digital Signature AUTH payload from an
-// Ed25519 peer. Only Ed25519 is supported — anything else is rejected,
+// Ed25519 peer. Only Ed25519 is supported. Anything else is rejected,
 // since that's the only method ranet's strongSwan deployments use.
 func VerifyAuth(pub ed25519.PublicKey, signedOctets, authBody []byte) error {
 	if len(authBody) < 5 {

@@ -40,7 +40,7 @@ type Host interface {
 	// encoding on this side.
 	Addresses(index int) ([]netip.Prefix, error)
 	// Lookup asks where one destination of one family goes. An exact mask asks
-	// for that key alone rather than for a longest-prefix match; see
+	// for that key alone rather than for a longest-prefix match. See
 	// Links.Default for why the difference decides the answer here.
 	Lookup(destination, mask netip.Addr) (RouteAnswer, error)
 	// InterfaceIndex resolves a device name, and InterfaceName the reverse. A
@@ -48,7 +48,7 @@ type Host interface {
 	InterfaceIndex(name string) (int, error)
 	InterfaceName(index int) (string, error)
 	// Watch reports changes to the routing of one interface, or of every
-	// interface when index is zero, minus the one skip names; quiet drops this
+	// interface when index is zero, minus the one skip names, and quiet drops this
 	// process's own writes. The caller closes it.
 	Watch(index, skip int, quiet bool) (Watcher, error)
 	// Assign puts prefix on device, or takes it off again.

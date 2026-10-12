@@ -168,7 +168,7 @@ func TestCapturesTheMachineCoversEverySpellingOfADefault(t *testing.T) {
 			t.Errorf("%s reads as carrying this machine's own traffic", destination)
 		}
 	}
-	// 128.0.0.0/1 is half the space, so the first arm holds it; what it must
+	// 128.0.0.0/1 is half the space, so the first arm holds it. What it must
 	// not be is held for the second reason.
 	if prefix("128.0.0.0/1").Contains(netip.IPv4Unspecified()) {
 		t.Error("128.0.0.0/1 contains the zero address")

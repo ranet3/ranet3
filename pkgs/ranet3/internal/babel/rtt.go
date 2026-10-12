@@ -11,7 +11,7 @@ import (
 )
 
 // nowMicros is a 32-bit microsecond clock for RFC 9616 Timestamp sub-TLVs
-// (§6: "expressed in units of one microsecond ... wrap around every 4295
+// (section 6: "expressed in units of one microsecond ... wrap around every 4295
 // seconds"). We only ever difference two nearby samples of our own clock
 // (see microDelta), never compare across nodes' clocks directly, so that
 // ~71-minute wraparound is harmless as long as no single measurement spans
@@ -82,7 +82,7 @@ type CostParams struct {
 	// Quality is carried in from cap.babel's own quality rather than written
 	// inside the cost block, because the estimator is a property of the link
 	// and the rest of this struct is a property of the mapping. Config.Validate
-	// and the speaker resolve it; nothing reads it out of a file.
+	// and the speaker resolve it. Nothing reads it out of a file.
 	Quality LinkQuality
 }
 

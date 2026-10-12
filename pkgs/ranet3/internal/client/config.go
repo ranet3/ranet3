@@ -70,7 +70,7 @@ func validateLocalConfig(cfg *config.Config, privateKey ed25519.PrivateKey, reg 
 // refuseEgressAdvertisedUnconditionally rejects a prefix cap.egress offers to
 // carry that cap.route announces as well. The capability withholds a prefix
 // whose translation rule is not installed, so that this node stops attracting
-// traffic it would have to drop; an unconditional announcement of the same
+// traffic it would have to drop. An unconditional announcement of the same
 // prefix takes that back and leaves the withholding reporting as working while
 // changing nothing on the wire.
 //

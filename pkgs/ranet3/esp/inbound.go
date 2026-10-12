@@ -77,7 +77,7 @@ func (in *InboundSA) decrypt(pkt []byte, inPlace bool, nonce []byte) ([]byte, er
 
 // AuthenticateBatchInPlace appends one result per packet in receive order.
 // Results and ciphertext storage belong to the caller and may be reused only
-// after their consumer finishes. Errors are recorded per packet; invalid input
+// after their consumer finishes. Errors are recorded per packet. Invalid input
 // never advances replay state or prevents other packets from authenticating.
 func (in *InboundSA) AuthenticateBatchInPlace(packets [][]byte, results []AuthenticatedPacket) []AuthenticatedPacket {
 	start := len(results)

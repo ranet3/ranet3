@@ -142,7 +142,7 @@ testers.runNixOSTest {
             xfrmConfig.InterfaceId = 1;
           };
           networks = {
-            # The test network module already defines 40-eth1; extend it to
+            # The test network module already defines 40-eth1. Extend it to
             # create swan0 with eth1 as its underlying device.
             "40-eth1".networkConfig.Xfrm = "swan0";
             "40-swan0" = {

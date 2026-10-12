@@ -278,7 +278,7 @@ func TestHelloLossReachesTheCostSelectionUses(t *testing.T) {
 
 // A link that comes back is judged on the Hellos it has sent since, not on the
 // ones it missed while it was down. See forgetLink for why the receive path
-// cannot notice on its own; without it the link returns costing sixteen times
+// cannot notice on its own. Without it the link returns costing sixteen times
 // nominal.
 func TestLinkThatComesBackIsNotCostedByItsOutage(t *testing.T) {
 	const interval = time.Second

@@ -65,7 +65,7 @@ const (
 	ChainName = "postrouting"
 	// DefaultSweep is the periodic pass a capability that names none takes.
 	DefaultSweep = 30 * time.Second
-	// minRetryInterval is the first delay after a failed pass; it doubles up
+	// minRetryInterval is the first delay after a failed pass, and it doubles up
 	// to the sweep interval, as in internal/kernel.
 	minRetryInterval = time.Second
 )
@@ -86,7 +86,7 @@ var ErrUnsupported = errors.New("egress: source translation is unsupported on th
 
 // Egress is the cap.egress capability: this node carries other nodes' traffic
 // out of the mesh, the one action behind an exit node and a subnet router.
-// Writing the block turns it on; there is no enable field to forget.
+// Writing the block turns it on. There is no enable field to forget.
 type Egress struct {
 	// Advertise names the prefixes this node offers to carry: 0.0.0.0/0 and
 	// ::/0 for an exit node, the prefixes behind it for a subnet router. It
@@ -119,7 +119,7 @@ type Egress struct {
 // write.
 type Runtime struct {
 	// Interface is the mesh device, named as the kernel named it. A packet
-	// arriving on it and leaving by another link is translated; one arriving
+	// arriving on it and leaving by another link is translated, while one arriving
 	// on it and leaving by it again is mesh transit and is left alone.
 	Interface string
 	// MeshAddresses are the addresses this node carries on the mesh, which
@@ -128,7 +128,7 @@ type Runtime struct {
 	MeshAddresses []netip.Addr
 	// Forwarding reports whether the host forwards, per family. It is supplied
 	// rather than read here so that the node has one answer to the question
-	// and not two; internal/client owns the reading.
+	// and not two: internal/client owns the reading.
 	Forwarding func() (v4, v6 bool)
 	// Announce publishes the prefixes this node may advertise right now. It is
 	// called once per pass whose answer differs from the last, and with an
@@ -412,7 +412,7 @@ type Translator struct {
 
 // New validates the capability against the platform and opens whatever the
 // backend needs, so a deployment that cannot have it fails at startup rather
-// than on the first packet. It installs nothing; Run does that.
+// than on the first packet. It installs nothing. Run does that.
 func New(cfg Egress, rt Runtime) (*Translator, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err

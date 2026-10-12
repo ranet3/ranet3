@@ -25,7 +25,7 @@ import (
 //
 // It answers one index for both families. A host whose IPv4 and IPv6 defaults
 // leave by different interfaces would have one of its two sockets on the wrong
-// one; that is a configuration nothing here produces and no laptop has, and
+// one. That is a configuration nothing here produces and no laptop has, and
 // splitting the answer is the fix if one ever appears.
 type Links struct {
 	watcher Watcher
@@ -157,7 +157,7 @@ func lookupSocket() (int, error) {
 // routeRequest is the request itself, separated from what is read off the
 // answer so that a test can look at the gateway the kernel named rather than
 // guess which address it was. An invalid mask sends no RTAX_NETMASK, which is
-// the longest-prefix question; a valid one asks for that exact key, because
+// the longest-prefix question, while a valid one asks for that exact key, because
 // XNU turns an RTM_GET carrying a netmask into a lookup of that key alone.
 // Links.Default asks that way, since the mesh's own routes cover the key it
 // is after and a match would answer with those.

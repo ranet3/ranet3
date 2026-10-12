@@ -29,7 +29,7 @@ type advertisement struct {
 
 // routeInfo is one route table entry, RFC 8966 section 3.2.6, indexed by
 // (routeKey, neighbor). rxMetric is the metric the neighbor advertised, the
-// one the feasibility condition compares; the link cost is added only when
+// one the feasibility condition compares. The link cost is added only when
 // computing this route's own metric.
 type routeInfo struct {
 	routerID  [8]byte
@@ -100,7 +100,7 @@ type routeTable struct {
 	originsBy     map[originShare]int
 	sourcesByPeer map[string]int
 	// dirty collects keys whose advertisement changed, for the triggered
-	// updates of RFC 8966 section 3.7.2; starved collects seqno requests.
+	// updates of RFC 8966 section 3.7.2, and starved collects seqno requests.
 	// Both are drained by the Speaker, which owns all transmission.
 	dirty   map[routeKey]struct{}
 	starved []starveRequest
@@ -215,7 +215,7 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 	for n, route := range entry.routes {
 		if !now.Before(route.expiresAt) {
 			// Section 3.5.3: a route expires to infinity first, which holds the
-			// prefix (section 3.5.4); the next expiry flushes it.
+			// prefix (section 3.5.4), and the next expiry flushes it.
 			if route.rxMetric == MetricInfinity {
 				delete(entry.routes, n)
 				continue
@@ -308,7 +308,7 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 
 // significant decides whether a selection change earns a triggered update,
 // RFC 8966 section 3.7.2. A different next hop, origin or sequence number does,
-// as does any move to or from unreachable; a metric fluctuation does not. An
+// as does any move to or from unreachable, but a metric fluctuation does not. An
 // improvement is deliberately left to the periodic dump: advertising a smaller
 // metric lowers this node's feasibility distance, which can make routes it
 // already holds unselectable.
@@ -336,7 +336,7 @@ func (r *routeInfo) advertised() advertisement {
 
 // cost is M(c, m) of RFC 8966 section 3.5.2 with the recommended additive
 // metric. The link cost is clamped to one so that M stays strictly monotonic
-// even when a neighbor reports an rxcost of zero; without M(c, m) > m,
+// even when a neighbor reports an rxcost of zero. Without M(c, m) > m,
 // persistent routing loops are possible.
 func (r *routeInfo) cost(n *neighborState, now time.Time, cost CostParams) uint16 {
 	return saturatingAdd(max(1, n.linkCost(now, cost)), r.rxMetric)
@@ -361,7 +361,7 @@ func (r *routeInfo) smooth(cost uint16, now time.Time, tau time.Duration) {
 	// it at cost: with (smoothed - cost) <= 0 the damped value cannot exceed
 	// cost whatever the decay works out to. Taking it here is the same number
 	// without math.Exp, which selectRoute would otherwise run once per route
-	// per pass -- and a converged mesh reports the same cost every time, so
+	// per pass, and a converged mesh reports the same cost every time, so
 	// that is the steady state rather than a corner.
 	case r.smoothedAt.IsZero() || tau <= 0 || float64(cost) >= r.smoothed:
 		r.smoothed = float64(cost)

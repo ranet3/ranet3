@@ -17,7 +17,7 @@ import (
 
 // This is the only test here that speaks to a real kernel. Everything else in
 // the package is checked against a fake, which can only ever agree with the
-// encoder it was written beside; what nf_tables accepts, and what it hands
+// encoder it was written beside. What nf_tables accepts, and what it hands
 // back afterward, is the half a fake cannot answer for.
 //
 // It refuses to run anywhere but inside a network namespace it created itself

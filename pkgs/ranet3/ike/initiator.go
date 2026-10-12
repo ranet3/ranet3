@@ -41,7 +41,7 @@ type PeerConfig struct {
 	LocalAddr  net.IP // "" => wildcard
 	LocalPort  int    // 0 => ephemeral
 	RemoteAddr net.IP
-	RemotePort int // ranet registry endpoint port (often non-standard, e.g. 13000); the only port ever used, IKE and ESP alike
+	RemotePort int // ranet registry endpoint port (often non-standard, e.g. 13000), the only port ever used, IKE and ESP alike
 	Hub        *transport.Hub
 
 	ChildRekeyInterval time.Duration
@@ -157,7 +157,7 @@ type Session struct {
 	// against a window of seconds. A wall clock that steps further than that,
 	// which a laptop waking, an NTP correction at boot or a VM resuming all
 	// do, would otherwise flip every session on the node at once: forward, all
-	// of them read dead and tear down together; backward, all of them read
+	// of them read dead and tear down together. Backward, all of them read
 	// alive until the clock catches up.
 	lastActive atomic.Int64
 	// lastPeerChildRekey is when the last peer-initiated Child SA rekey was
@@ -173,7 +173,7 @@ type Session struct {
 	rekeyRetryInitial  time.Duration
 	rekeyRetryMax      time.Duration
 	rekeyJitterSource  func(time.Duration) (time.Duration, error)
-	// dpdEvery overrides defaultDPDInterval; zero means the default.
+	// dpdEvery overrides defaultDPDInterval, and zero means the default.
 	dpdEvery time.Duration
 	// retransmitAfter overrides requestTimeout for Run's requests, and zero means the default
 	retransmitAfter time.Duration
@@ -192,7 +192,7 @@ func (s *Session) emit(kind string, attrs ...slog.Attr) {
 type ikeRekey struct {
 	old *ikeContext
 	// spiI is the SPI this end drew for the SA it is creating. It goes out in
-	// the request, so a peer that answers with a rekey of its own has seen it;
+	// the request, so a peer that answers with a rekey of its own has seen it:
 	// handleIKERekey refuses it for the reason given there.
 	spiI              uint64
 	nonce             []byte
@@ -509,7 +509,7 @@ func espRekeyProposal(spi []byte, old ChildSA) Proposal {
 	// Both sides are canonicalized before they are compared. espProposal
 	// spells ChaCha20-Poly1305 with no Key Length attribute, which RFC 7296
 	// section 3.3.5 requires of a fixed-length-key transform, while the
-	// installed SA records the 256 bits the key has; comparing those raw
+	// installed SA records the 256 bits the key has. Comparing those raw
 	// matches nothing and leaves an offer of ESN alone, which section 3.3.6
 	// has every responder refuse for "missing a mandatory Transform Type".
 	want, err := canonicalChildCipher(old)
@@ -535,15 +535,15 @@ func espRekeyProposal(spi []byte, old ChildSA) Proposal {
 // and returns an established Session with one Child SA. It implements
 // exactly RFC 7815's minimal-initiator surface plus what ranet's
 // strongSwan deployments require: raw Ed25519 signature auth and
-// unconditional UDP encapsulation on that one explicit port — every IKE
-// message, from IKE_SA_INIT onward, carries the non-ESP marker; there is
+// unconditional UDP encapsulation on that one explicit port. Every IKE
+// message, from IKE_SA_INIT onward, carries the non-ESP marker. There is
 // no NAT-T floating to a separate port, certificates, EAP, or MOBIKE.
 func Initiate(cfg PeerConfig) (*Session, error) {
 	return InitiateContext(context.Background(), cfg)
 }
 
 // InitiateContext cancels only the handshake's mux. It does not close a shared
-// hub or bind the established session's lifetime to ctx; Session.Run owns that.
+// hub or bind the established session's lifetime to ctx. Session.Run owns that.
 func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -587,7 +587,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	// Two unauthenticated responses can send us round again. The responder may
 	// reject our preferred DH group with N(INVALID_KE_PAYLOAD, desired-group),
 	// and under load it may answer N(COOKIE) instead of allocating state
-	// (RFC 7296 §2.6). Each is allowed once, so the loop is bounded whatever
+	// (RFC 7296 section 2.6). Each is allowed once, so the loop is bounded whatever
 	// the far end does.
 	var (
 		cookie        []byte
@@ -626,10 +626,10 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 			{Type: PayloadNonce, Body: EncodeNonce(ni)},
 			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: hashAlgos})},
 		}
-		// NAT_DETECTION_SOURCE_IP, RFC 7296 §2.23. Without this notify,
+		// NAT_DETECTION_SOURCE_IP, RFC 7296 section 2.23. Without this notify,
 		// the responder has nothing to compare against for our side and
 		// apparently doesn't treat the connection as NAT'd even with
-		// encap=yes configured — confirmed by inspecting the resulting
+		// encap=yes configured, confirmed by inspecting the resulting
 		// kernel XFRM state (`ip xfrm state`), which had no `encap` info
 		// attached at all, causing every inbound ESP packet to be
 		// silently dropped at the kernel's encap_type check
@@ -639,7 +639,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		// is set: rather than using its real local address (which would
 		// only force NAT-T if it happens to mismatch what the responder
 		// observes), it hashes a random IPv4 address with port 0,
-		// guaranteeing a mismatch so NAT is always assumed — do the same
+		// guaranteeing a mismatch so NAT is always assumed. Do the same
 		// here rather than relying on whatever this socket's wildcard
 		// bind address happens to be.
 		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NAT_DETECTION_SOURCE_IP, Data: srcHash})})
@@ -647,7 +647,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NAT_DETECTION_DESTINATION_IP, Data: dstHash})})
 
 		if cookie != nil {
-			// RFC 7296 §2.6: "include the COOKIE notification containing the
+			// RFC 7296 section 2.6: "include the COOKIE notification containing the
 			// received data as the first payload, and all other payloads
 			// unchanged".
 			payloads = append([]RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_COOKIE, Data: cookie})}}, payloads...)
@@ -657,7 +657,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		req = m.Encode()
 
 		// A bare notify-only response is only worth stopping for when it's
-		// N_INVALID_KE_PAYLOAD on the first attempt -- the one legitimate
+		// N_INVALID_KE_PAYLOAD on the first attempt, the one legitimate
 		// signal that lets us make progress by switching Diffie-Hellman
 		// group. Anything else unauthenticated (see sendRecv's doc comment)
 		// is rejected here, which makes sendRecv keep retransmitting/
@@ -862,7 +862,7 @@ func (s *Session) completeIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni
 		return err
 	}
 
-	// RFC 7296 §2.21.2 says a valid responder AUTH establishes the IKE SA
+	// RFC 7296 section 2.21.2 says a valid responder AUTH establishes the IKE SA
 	// even when the Child SA creation bundled into IKE_AUTH fails, and leaves
 	// deleting it to the initiator's policy. ranet cannot use an IKE SA
 	// without that Child SA, so close the authenticated SA with a normal
@@ -994,7 +994,7 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	}
 
 	// Only after verifying AUTH may Child-SA failures be authoritative. Per
-	// RFC 7296 §2.21.2, the IKE SA is now authenticated independently of the
+	// RFC 7296 section 2.21.2, the IKE SA is now authenticated independently of the
 	// success or failure of the Child SA negotiation below.
 	if saRecv == nil {
 		if n := respMsg.find(PayloadN); n != nil {
@@ -1033,9 +1033,9 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 
 // usefulInitNotify finds the one unauthenticated IKE_SA_INIT notify worth
 // acting on. Only two let the exchange make progress, each once: N(COOKIE)
-// asks us to prove return routability (RFC 7296 §2.6) and
+// asks us to prove return routability (RFC 7296 section 2.6) and
 // N(INVALID_KE_PAYLOAD) names a Diffie-Hellman group the responder will take
-// (§1.2). Everything else unauthenticated is ignored, so sendRecv keeps
+// (section 1.2). Everything else unauthenticated is ignored, so sendRecv keeps
 // waiting for the real response rather than letting anyone who can spoof our
 // SPI abort the handshake.
 func usefulInitNotify(m *Message, cookieUsed, groupUsed bool) (Notify, bool) {

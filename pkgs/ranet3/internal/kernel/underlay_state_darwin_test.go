@@ -372,7 +372,7 @@ func (w *watchingSocket) WriteRoute(message *route.RouteMessage) error {
 
 // The record is on disk before the route is in the kernel, never after. A
 // process dying between the two leaves a record for a route that does not
-// exist, which the next start's readback discards; the other order leaves a
+// exist, which the next start's readback discards. The other order leaves a
 // route on the interface the whole machine shares with no record, and rule one
 // says nothing may ever remove that.
 func TestRecordIsOnDiskBeforeTheRouteReachesTheKernel(t *testing.T) {

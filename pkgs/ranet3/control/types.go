@@ -39,8 +39,8 @@
 // A node's configuration comes from its file, so the socket's mode is the
 // whole authorization story for the reads and the verbs, and every verb here
 // stays inside it. Each one
-// acts on something the file already decides -- cap.table, cap.segment's
-// steering, link.listen, the peers list, and the file itself -- so whoever
+// acts on something the file already decides (cap.table, cap.segment's
+// steering, link.listen, the peers list, and the file itself), so whoever
 // may edit the file could already ask for it, by editing and restarting if
 // not by editing and sending SIGHUP. The socket grants nothing the file's
 // permissions did not.
@@ -53,7 +53,7 @@
 //
 // The two halves are told apart by method rather than by path. A read answers
 // GET and HEAD and nothing else, so a caller that reaches a write path with a
-// GET is refused rather than acted on; a write answers POST alone, because a
+// GET is refused rather than acted on. A write answers POST alone, because a
 // second rekey is a second exchange rather than the same one repeated.
 //
 // # Debug paths
@@ -86,7 +86,7 @@ import (
 
 // Paths the handler serves, named so the client and the server cannot drift.
 // The reads in the first group answer a GET and the verbs in the second a
-// POST; see the package doc for why the method rather than the prefix
+// POST. See the package doc for why the method rather than the prefix
 // separates them.
 const (
 	PathStatus    = "/v0/status"
@@ -199,7 +199,7 @@ type Sink interface {
 	Redial(ctx context.Context, peer string, all bool) (Result, error)
 	// Rekey asks one peer's sessions, or every session, to replace their Child
 	// SA. The exchange runs on its own and the new SPIs appear under
-	// [Client.Sessions]; the answer says how many were asked.
+	// [Client.Sessions]. The answer says how many were asked.
 	Rekey(ctx context.Context, peer string, all bool) (Result, error)
 	// Reload re-reads the configuration file and the trust document it names,
 	// as SIGHUP does, so a supervisor is not the only way to ask.
@@ -476,7 +476,7 @@ type Session struct {
 }
 
 // Peer is one node this one dials, with its dialer's state. A responder-only
-// session does not appear here, because nothing local is dialing it; it
+// session does not appear here, because nothing local is dialing it. It
 // appears under Sessions like any other.
 type Peer struct {
 	Path         string `json:"path"`

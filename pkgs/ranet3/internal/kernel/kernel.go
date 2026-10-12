@@ -13,7 +13,7 @@
 // On linux, every route this package installs lives in the table cap.table names,
 // carries its rt_proto and points out of the mesh device. Those three
 // together are the ownership marker. darwin has neither tables nor rt_proto,
-// so ownership there is the interface and the shape of the route; see
+// so ownership there is the interface and the shape of the route. See
 // platform_darwin.go. The reconciler reads back only routes matching
 // all three, deletes only routes it read back that way, and stamps
 // rtm_protocol on every RTM_DELROUTE so the kernel itself refuses to remove a
@@ -34,7 +34,7 @@
 // routes the mesh wanted.
 //
 // Addresses and VRF enslavement are narrower still. Only an address this
-// reconciler added itself, in this process lifetime, is ever removed again;
+// reconciler added itself, in this process lifetime, is ever removed again, while
 // an address that was already on the link belongs to whoever put it there.
 // The link is enslaved only when it has no master at all, so the reconciler
 // never takes the device away from systemd-networkd or anything else
@@ -107,7 +107,7 @@ var errRouteSkipped = errors.New("kernel: route was not installed")
 // routes externally writes no cap.table and gets no reconciler. Every field is checked by Validate, which the loader calls, and
 // again by New and by SetTable on a reload.
 type Table struct {
-	// ID is the routing table the reconciler owns; the fleet uses 200, the
+	// ID is the routing table the reconciler owns. The fleet uses 200, the
 	// table its policy rules and its End.DT46 look up. Zero uses DefaultTable.
 	ID schema.TableID `yaml:"id,omitempty" json:"id,omitempty" toml:"id,omitempty"`
 	// Proto is the rt_proto stamped on every installed route, and the marker
@@ -122,7 +122,7 @@ type Table struct {
 	// first keeps the prefix and the other loses it quietly.
 	Metric uint32 `yaml:"metric,omitempty" json:"metric,omitempty" toml:"metric,omitempty"`
 	// PrefSrc4 is RTA_PREFSRC on every installed IPv4 route, the attribute
-	// BIRD sets from krt_prefsrc. IPv6 routes carry no preferred source;
+	// BIRD sets from krt_prefsrc. IPv6 routes carry no preferred source, but
 	// source-specific IPv6 routes carry RTA_SRC instead.
 	PrefSrc4 schema.Addr `yaml:"prefsrc4,omitempty" json:"prefsrc4,omitzero" toml:"prefsrc4,omitempty"`
 	// Addresses are assigned to the device when absent and removed again at
@@ -181,7 +181,7 @@ type Runtime struct {
 	Interface string
 	// Underlay names the addresses this node's own transport has to keep
 	// reaching. The darwin backend asks once per pass and scopes a route that
-	// covers one, see coversAny there; linux reads it never, and keeps the
+	// covers one (see coversAny there). linux reads it never, and keeps the
 	// underlay out with a socket mark instead. Nil decides scope on the
 	// destination alone.
 	Underlay func() []netip.Addr
@@ -218,7 +218,7 @@ type Runtime struct {
 	// Host is the machine this reconciler reads and writes, nil for the one
 	// this process is running on, as a daemon passes. A test hands
 	// in a recorded routing table so the path from a configuration file to a
-	// route on the wire can be run without a kernel; see Host. Only the darwin
+	// route on the wire can be run without a kernel (see Host). Only the darwin
 	// backend reads it.
 	Host Host
 	// Events records every pass that changed the kernel, skipped a route it had not skipped before, followed a reload or failed
@@ -248,7 +248,7 @@ func (t Table) creates() bool { return t.VRF != nil && t.VRF.Create }
 // transit prefix, and assigning it would try to put "::/0" on the device on
 // every pass and fail on every one. The test is the address rather than the
 // prefix length, because a prefix length says nothing about whether an address
-// can be assigned; Validate refuses every other zero-length spelling.
+// can be assigned. Validate refuses every other zero-length spelling.
 func (t Table) Assigned(announced []netip.Prefix) []netip.Prefix {
 	var out []netip.Prefix
 	seen := make(map[netip.Prefix]bool)
@@ -430,7 +430,7 @@ type auditor interface {
 }
 
 // ruler is implemented by a platform that has a policy routing engine. linux
-// has FIB rules and 2^32 tables; darwin has one FIB and neither; a mobile
+// has FIB rules and 2^32 tables. darwin has one FIB and neither. A mobile
 // tunnel provider is handed a list of routes to include and exclude and never
 // sees a table at all. A platform without one does not implement this, and New
 // refuses a configuration that asks for rules there by name rather than
@@ -573,7 +573,7 @@ func (f Family) MarshalYAML() (any, error) { return string(f), nil }
 // expandRules resolves each configured rule's address family, so that
 // everything below this point names exactly one. A rule that names neither a
 // destination nor a source selects on a mark alone, which belongs to no
-// family, so it says which one it is for; "both" is written once and installed
+// family, so it says which one it is for: "both" is written once and installed
 // twice.
 //
 // Everything the reconciler itself judges is left to Rule.validate, so the one
@@ -811,7 +811,7 @@ type Reconciler struct {
 
 	// enabled is whether this reconciler is writing to the kernel at all, and
 	// wake carries a change of it to the loop. Both are touched from outside
-	// the reconcile goroutine; withdrawn is the loop's own record of having
+	// the reconcile goroutine, while withdrawn is the loop's own record of having
 	// acted on a stop, and belongs to that goroutine like every field above.
 	enabled   atomic.Bool
 	wake      chan struct{}
@@ -870,7 +870,7 @@ func (r *Reconciler) Stats() Stats {
 // New checks the capability, fills in its defaults, resolves it against the
 // runtime the caller supplies and opens the netlink sockets, so a
 // misconfigured or unsupported deployment fails at startup rather than on the
-// first route. It installs nothing; Run does that.
+// first route. It installs nothing. Run does that.
 func New(t Table, rt Runtime, src RouteSource) (*Reconciler, error) {
 	if rt.Interface == "" {
 		return nil, errors.New("kernel: interface is required")
@@ -880,7 +880,7 @@ func New(t Table, rt Runtime, src RouteSource) (*Reconciler, error) {
 	}
 	// Checked as written and canonicalized afterward, so a refusal names the
 	// field an operator can find in their own file rather than the one
-	// canonicalization left behind. The loader has already run this; a caller
+	// canonicalization left behind. The loader has already run this, but a caller
 	// that built the capability by hand has not.
 	if err := t.Validate(); err != nil {
 		return nil, err
@@ -938,7 +938,7 @@ func resolveAddresses(t Table, announced []netip.Prefix) ([]netip.Prefix, error)
 //
 // Both lists here are read as sets. applyRules diffs what the kernel holds
 // against the rules by value, and the kernel orders them by the priority each
-// one carries rather than by the order they arrived in; the addresses are
+// one carries rather than by the order they arrived in. The addresses are
 // assigned to one device. So "family = both" and the same rule written once
 // per family describe one reconciler, as do two files listing the same
 // addresses in different orders.
@@ -1852,7 +1852,7 @@ func comparePrefixes(a, b netip.Prefix) int {
 // Ordering carries policy here rather than only presentation. darwin holds one
 // source per destination, so where two source-specific routes reach the same
 // destination the one this list offers first is the one installed and the
-// other is skipped; ordering by address instead would hand that decision to
+// other is skipped. Ordering by address instead would hand that decision to
 // whichever exit happened to be numbered lower. Nothing on linux depends on
 // it, where both routes are installed and the FIB does the matching.
 func compareSourceSpecificity(a, b netip.Prefix) int {

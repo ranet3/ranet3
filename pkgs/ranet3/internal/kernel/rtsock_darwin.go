@@ -32,7 +32,7 @@ type rtSocket interface {
 
 // stampedSocket is rtSocket over a RouteWriter: it numbers each message and
 // encodes it, and what is left underneath is a write of bytes. The reconcile
-// loop is the only caller of one of these, so seq needs no lock;
+// loop is the only caller of one of these, so seq needs no lock, and
 // notifications arrive on the monitor's separate socket precisely so an
 // unsolicited message can never be mistaken for a reply.
 type stampedSocket struct {
@@ -265,7 +265,7 @@ func ioctlRequest(fd int, request uintptr, argument []byte) error {
 // routeMonitor turns unsolicited routing messages into one coalesced wake-up.
 // It parses just enough of each message to drop the ones for other interfaces,
 // which stops the rest of the box's route churn from waking the
-// reconciler. Its own writes still wake it once; the settle window in Run
+// reconciler. Its own writes still wake it once, but the settle window in Run
 // absorbs the burst and the following pass finds nothing to do.
 type routeMonitor struct {
 	file *os.File
@@ -279,7 +279,7 @@ type routeMonitor struct {
 	skip  int
 	// quiet drops this process's own writes, successful ones included. The
 	// reconciler wants them, because its own install landing is a change it
-	// should converge on; a watcher for the host's routing does not, because
+	// should converge on, but a watcher for the host's routing does not, because
 	// every route the mesh installs would wake it.
 	quiet bool
 	// self is this process, which stamps every route message it writes. XNU
@@ -340,7 +340,7 @@ func (m *routeMonitor) run() {
 				return
 			}
 			// anything else is unexpected and would spin, so it is reported
-			// and the monitor stops; the periodic sweep in Run remains as the
+			// and the monitor stops. The periodic sweep in Run remains as the
 			// backstop.
 			m.wake()
 			slog.Warn("kernel route monitor stopped, falling back to the periodic sweep", "err", err)

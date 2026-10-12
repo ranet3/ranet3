@@ -107,7 +107,7 @@ type Hub struct {
 	// session on this hub, and anyone who can reach the port can fill a
 	// queue: at line rate a line per datagram is a synchronous write to
 	// stderr per packet, on the goroutine that receives for all of them.
-	// An operator reads the counter; the log line only has to point at it.
+	// An operator reads the counter, and the log line only has to point at it.
 	dropped atomic.Uint64
 	// refused counts datagrams this node read and did not deliver because
 	// nothing here wanted them: too short to carry an SPI, zero length, naming
@@ -199,7 +199,7 @@ type packetBind interface {
 	Close() error
 }
 
-// A receiver owns its buffers; their views remain valid until its next call.
+// A receiver owns its buffers. Their views remain valid until its next call.
 // receiveFunc fills the vectors and reports how many datagrams it produced
 // and how many it read and could not use, which the hub counts so an operator
 // can tell a receive path that is discarding from one that is idle.
@@ -222,7 +222,7 @@ type espDatagramBatch struct {
 // NewHub binds the one UDP socket every session shares, on localAddr's port
 // and on all local IPv4 and IPv6 interfaces. underlay says how that socket is
 // kept out of the reach of the routes the mesh installs, and rt carries what
-// the caller had to resolve to answer it; see Underlay for why both platforms
+// the caller had to resolve to answer it. See Underlay for why both platforms
 // need one and why they need different things.
 func NewHub(localAddr string, underlay Underlay, rt Runtime) (*Hub, error) {
 	laddr, err := net.ResolveUDPAddr("udp", localAddr)
@@ -351,7 +351,7 @@ func (h *Hub) SendIKETo(b []byte, endpoint Endpoint) error {
 // Done is closed when the hub's socket is gone, so an accept loop can stop.
 func (h *Hub) Done() <-chan struct{} { return h.done }
 
-// LocalAddr returns the hub's wildcard local address; only its port is useful.
+// LocalAddr returns the hub's wildcard local address, but only its port is useful.
 func (h *Hub) LocalAddr() net.Addr { return &net.UDPAddr{Port: int(h.port)} }
 
 // Close closes the socket and every mux using it.
@@ -441,7 +441,7 @@ func (h *Hub) receiveLoop(fn receiveFunc) {
 					ikeDatagrams = append(ikeDatagrams, pendingIKE{mux: m, index: i})
 				} else if tables.listen != nil && eps[i] != nil {
 					// An SA no Mux owns yet. Only a listening hub keeps
-					// these; otherwise they stay dropped as before.
+					// these. Otherwise they stay dropped as before.
 					unclaimed = append(unclaimed, i)
 				} else {
 					unwanted++
@@ -557,7 +557,7 @@ type Mux struct {
 }
 
 // hasRoomForESP is consulted before packReceivedBatch copies a batch onto the
-// heap. dispatchESP still decides; this only keeps the copy from happening for
+// heap. dispatchESP still decides, while this only keeps the copy from happening for
 // a batch that is about to be dropped anyway.
 func (m *Mux) hasRoomForESP(bytes int) bool {
 	return len(m.espCh) < cap(m.espCh) && m.espQueued.Load()+int64(bytes) <= espQueueBytes

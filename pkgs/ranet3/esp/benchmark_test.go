@@ -24,7 +24,7 @@ func benchmarkESPSuites(b *testing.B, run func(*testing.B, ChildSA, int)) {
 	} {
 		for _, size := range []int{64, 1400} {
 			b.Run(fmt.Sprintf("%s/bytes=%d", suite.name, size), func(b *testing.B) {
-				// Fixed synthetic keys; these packets never leave the benchmark.
+				// Fixed synthetic keys. These packets never leave the benchmark.
 				key := make([]byte, int(suite.bits)/8+4)
 				for i := range key {
 					key[i] = byte(i)
@@ -94,11 +94,11 @@ type espBenchmarkDecryptBatch struct {
 
 // BenchmarkESPDecrypt measures in-place authentication and ordered replay
 // commits on one shared SA with the default replay window enabled. One core
-// runs inline; multiple cores authenticate bounded batches in parallel.
+// runs inline, while multiple cores authenticate bounded batches in parallel.
 //
 // A round contains 8192 distinct, pre-encrypted packets. Only after all workers
 // and commits finish is the replay window reset to reuse this synthetic stream.
-// Copying ciphertext into reusable receive buffers is timed; fixture encryption,
+// Copying ciphertext into reusable receive buffers is timed. Fixture encryption,
 // key setup, UDP/TUN I/O, routing, and the client's queues are not measured.
 func BenchmarkESPDecrypt(b *testing.B) {
 	benchmarkESPSuites(b, func(b *testing.B, child ChildSA, size int) {

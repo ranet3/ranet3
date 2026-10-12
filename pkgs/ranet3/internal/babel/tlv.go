@@ -50,7 +50,7 @@ func EncodePacket(tlvs []RawTLV) []byte {
 	body := make([]byte, 0, 128)
 	for _, t := range tlvs {
 		if t.Type == TLVPad1 {
-			// Pad1 is the one TLV with no Length field, RFC 8966 §4.6.1 —
+			// Pad1 is the one TLV with no Length field, RFC 8966 section 4.6.1:
 			// it's a single 0x00 byte, not Type+Length+Body.
 			body = append(body, byte(TLVPad1))
 			continue
@@ -67,7 +67,7 @@ func EncodePacket(tlvs []RawTLV) []byte {
 }
 
 // DecodePacket validates the header and splits the body into TLVs.
-// Pad1/PadN are dropped (they carry no information); everything else is
+// Pad1/PadN are dropped (they carry no information). Everything else is
 // returned as-is for the caller to interpret.
 func DecodePacket(b []byte) ([]RawTLV, error) {
 	if len(b) < headerLen {
@@ -148,7 +148,7 @@ func findSubTLV(subs []SubTLV, t uint8) ([]byte, bool) {
 	return nil, false
 }
 
-// --- full-length address encoding (Hello has none; IHU/NextHop use this) ---
+// --- full-length address encoding (Hello has none, but IHU/NextHop use this) ---
 
 func encodeAddress(addr net.IP) (ae uint8, body []byte) {
 	if v4 := addr.To4(); v4 != nil {

@@ -22,7 +22,7 @@ type RouteRequest struct {
 
 func EncodeRouteRequest(r RouteRequest) RawTLV {
 	if r.AE == AEWildcard || !r.Prefix.IsValid() {
-		// A wildcard request must never carry a source prefix, RFC 9079 §7.3.
+		// A wildcard request must never carry a source prefix, RFC 9079 section 7.3.
 		return RawTLV{Type: TLVRouteRequest, Body: []byte{AEWildcard, 0}}
 	}
 	p := r.Prefix.Masked()
@@ -51,7 +51,7 @@ func decodeRequestPrefix(ae uint8, plen int, raw []byte) (prefix, source netip.P
 			return netip.Prefix{}, netip.Prefix{}, fmt.Errorf("babel: wildcard request has nonzero prefix length")
 		}
 		// A wildcard request carrying a source prefix must be ignored, RFC 9079
-		// section 5.2; the sub-TLV is mandatory, so an error is exactly that.
+		// section 5.2. The sub-TLV is mandatory, so an error is exactly that.
 		_, err := decodeRequestSubTLVs(ae, raw)
 		return netip.Prefix{}, netip.Prefix{}, err
 	}

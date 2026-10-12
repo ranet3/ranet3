@@ -156,7 +156,7 @@ func TestUDPReceiveSkipsTruncatedMessagesAndPreservesGROTail(t *testing.T) {
 	}
 	// The two the kernel truncated went nowhere, and an operator tells that
 	// from an idle socket only by the hub's counter. Each carries one datagram
-	// here; a coalesced one carries as many as it was cut into, which is the
+	// here, while a coalesced one carries as many as it was cut into, which is the
 	// unit the third arm and the help text both use.
 	if refused != 2 {
 		t.Errorf("the receiver reported %d refused, want the two truncated messages", refused)

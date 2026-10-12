@@ -54,7 +54,7 @@ var (
 	capturingPrefix = netip.MustParsePrefix("::/0")
 	ordinaryPrefix  = netip.MustParsePrefix("2001:db8:2::/64")
 	// witnessPrefix is announced beside a route the daemon should hold back,
-	// so that its arrival says a pass has run over both; see daemon.heldBack.
+	// so that its arrival says a pass has run over both (see daemon.heldBack).
 	witnessPrefix = netip.MustParsePrefix("2001:db8:3::/64")
 	// announcedAddress is the prefix this node originates, which
 	// assign_announced puts on the mesh device.
@@ -124,7 +124,7 @@ func startDaemon(t *testing.T, bind bool, host *recordedKernel) *daemon {
 // itself. The last step is the one under test: main does exactly this and
 // nothing more.
 //
-// Only the port it could not take comes back as an error; anything else is
+// Only the port it could not take comes back as an error. Anything else is
 // this test being wrong about the tree and ends it.
 func tryDaemon(t *testing.T, cfg *config.Config, host *recordedKernel) (*daemon, error) {
 	t.Helper()
@@ -346,7 +346,7 @@ func TestCaptureIsHeldBackForAFamilyTheUnderlayCannotFallBackOn(t *testing.T) {
 	// The IPv4 half is covered, so a capturing route of that family installs.
 	// It arrives scoped, because it also covers this node's own peer endpoint,
 	// the separate question TestPrefixCoveringAPeerEndpointIsScopedEvenWithABoundSocket
-	// asks; this one measures only that it arrives.
+	// asks. This one measures only that it arrives.
 	v4capture := netip.MustParsePrefix("0.0.0.0/0")
 	d.announce(v4capture)
 	waitForKernel(t, "the IPv4 default reaches the kernel", func() bool {

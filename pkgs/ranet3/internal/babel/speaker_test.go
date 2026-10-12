@@ -24,7 +24,7 @@ import (
 )
 
 // wireSpeakerPair connects two Speakers via a plain in-memory relay (no
-// ESP/crypto — that's validated separately) that threads peer identity
+// ESP/crypto, since that's validated separately) that threads peer identity
 // correctly: each side's netstack.Peer represents "the other side" from
 // its own point of view, exactly as in the real client where each peer
 // object corresponds to one ESP session. Non-Babel traffic (Receive
@@ -46,7 +46,7 @@ func wireSpeakerPair(t *testing.T, cfg Config) (meshA, meshB *netstack.Mesh, spe
 		t.Fatal(err)
 	}
 
-	// Crypto and transport are tested separately; this pair only exercises
+	// Crypto and transport are tested separately. This pair only exercises
 	// Babel and mesh delivery.
 	var peerAForB, peerBForA *netstack.Peer
 	// a sender per direction, so a reply sent inside a delivery does not wait on the peer that is delivering it
@@ -88,7 +88,7 @@ func TestSpeakerLearnsRouteAndRTT(t *testing.T) {
 	speakerB.Originate(extra)
 
 	// extra is an ordinary (any-source) route, so the source address
-	// passed to Lookup is irrelevant — any placeholder works.
+	// passed to Lookup is irrelevant. Any placeholder works.
 	dummySrc := netip.MustParseAddr("192.0.2.1")
 
 	ctx := t.Context()
@@ -155,7 +155,7 @@ func TestSpeakerIgnoresEchoedOwnPrefix(t *testing.T) {
 }
 
 // sourceSpecificUpdateTLV hand-builds an Update TLV with a trailing Source
-// Prefix sub-TLV (RFC 9079 section 5.1) — EncodeUpdate
+// Prefix sub-TLV (RFC 9079 section 5.1). EncodeUpdate
 // doesn't support this (we never originate source-specific routes), so
 // tests exercising receive-side handling build the bytes directly, same
 // as tlv_test.go's TestUpdateWithSourcePrefix.
@@ -870,8 +870,8 @@ func TestDefaultsMatchFleetTheyReplace(t *testing.T) {
 // The route table's hysteresis and its trigger threshold are configuration,
 // not constants, and both are wired up once in New. With tau at zero the
 // smoothed metric of RFC 8966 Appendix A.3 follows the instantaneous one
-// exactly, so a flapping challenger takes the route on its first good sample;
-// with the trigger at zero every metric fluctuation earns a triggered update.
+// exactly, so a flapping challenger takes the route on its first good sample.
+// With the trigger at zero every metric fluctuation earns a triggered update.
 func TestRouteTableTakesHysteresisFromConfig(t *testing.T) {
 	rx, max := uint16(77), dur(time.Second)
 	cfg := Config{Hello: dur(3 * time.Second), Cost: CostOptions{Rx: &rx, RTT: RTTOptions{Max: &max}}}
@@ -1200,7 +1200,7 @@ func TestPartlyRefusedDumpOwesOnlyWhatItLost(t *testing.T) {
 // A place is taken for every packet of a pass before any is sent, so a pass
 // that fills the peer's budget drops whatever it reached last. The periodic
 // dump is both the largest action and the one that can wait for the next
-// interval; a seqno request cannot, because allowAsk and rememberStarved have
+// interval, but a seqno request cannot, because allowAsk and rememberStarved have
 // already recorded it as asked and nothing rolls that back, so a dropped
 // request is a prefix that stops being asked about at all.
 func TestDumpDoesNotStarveRequestsDecidedWithIt(t *testing.T) {
@@ -1975,7 +1975,7 @@ func TestCongestedPeerDoesNotReopenTheWakePerPacket(t *testing.T) {
 // The two request suppression tables expire on a two second window, which is
 // shorter than every other deadline the run loop has. Nothing on the receive
 // path sweeps them any more, so without a deadline of their own the budgets
-// they hold -- maxPendingSeqnoPerNeighbor of them per neighbor -- stay held by
+// they hold (maxPendingSeqnoPerNeighbor of them per neighbor) stay held by
 // entries that suppress nothing for as long as a hello interval, which
 // Validate allows to be minutes.
 func TestSuppressionWindowIsADeadlineOfItsOwn(t *testing.T) {
@@ -2394,7 +2394,7 @@ func TestRefusedDumpIsStillOwed(t *testing.T) {
 // refuses leaves that neighbor owing every key it carried, and the retry
 // rebuilds those. Recording a speaker-wide pending dump alongside it makes
 // pendingWorkLocked true for as long as that one peer stays stuck, so every
-// packet from every other neighbor wakes a full sweep -- and takes the
+// packet from every other neighbor wakes a full sweep, and takes the
 // updateActions branch, so each of those wakes rebuilds and resends the whole
 // dump to the healthy neighbors as well.
 func TestCongestedPeerDoesNotReopenTheWakeThroughARefusedDump(t *testing.T) {
@@ -2461,7 +2461,7 @@ func TestCongestedPeerDoesNotReopenTheWakeThroughARefusedDump(t *testing.T) {
 // The floor under the send retry, at the shortest hello interval Validate
 // accepts. A pass that could not send its Hello has until deadTimeout, three
 // and a half intervals, before the remote withdraws every route through this
-// node; the retry has to fit several attempts inside that. A fifty millisecond
+// node. The retry has to fit several attempts inside that. A fifty millisecond
 // floor, the value this replaced, puts the first attempt after the remote
 // has already given up.
 func TestSendRetryFitsInsideTheDeadTimeout(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 )
 
 // genericPayloadHeaderLen is the size of the Next Payload / Critical+Reserved
-// / Payload Length fields shared by every payload, RFC 7296 §3.2.
+// / Payload Length fields shared by every payload, RFC 7296 section 3.2.
 const genericPayloadHeaderLen = 4
 
 // RawPayload is an undecoded IKE payload: a type tag plus its body bytes
@@ -31,12 +31,12 @@ type Message struct {
 	// skHeaderOffset is the byte offset (from the start of the decoded
 	// message) of the SK payload's generic header, set only when the last
 	// decoded payload is PayloadSK. It lets DecryptMessage reconstruct the exact
-	// AAD (RFC 5282 §5.1: header + cleartext payloads + SK generic header)
+	// AAD (RFC 5282 section 5.1: header + cleartext payloads + SK generic header)
 	// without re-encoding anything.
 	skHeaderOffset int
 }
 
-// RFC 7296 §2.5 forbids setting the Critical bit on every payload carried in
+// RFC 7296 section 2.5 forbids setting the Critical bit on every payload carried in
 // an IKE response, whether or not this implementation recognizes its type.
 func validateResponseCriticalFlags(payloads []RawPayload) error {
 	for _, payload := range payloads {
@@ -70,7 +70,7 @@ func (m *Message) encode(reserveTrailer int) []byte {
 }
 
 // encodePayloadChain serializes a list of payloads with Next Payload
-// pointers chained in order; shared by Message.encode and the SK payload's
+// pointers chained in order, shared by Message.encode and the SK payload's
 // inner-plaintext construction (sk.go).
 func encodePayloadChain(payloads []RawPayload) []byte {
 	return encodePayloadChainBefore(payloads, PayloadNone)
@@ -128,7 +128,7 @@ func decodePayloadChain(first PayloadType, b []byte) ([]RawPayload, error) {
 }
 
 // DecodeMessage parses an IKE header and walks its payload chain. It does
-// not decrypt SK payloads — the SK payload, if present, is returned as a
+// not decrypt SK payloads: the SK payload, if present, is returned as a
 // single RawPayload{Type: PayloadSK} whose Body is the encrypted blob
 // (IV || ciphertext || ICV), for the caller to decrypt and re-parse.
 func DecodeMessage(b []byte) (*Message, error) {
@@ -165,7 +165,7 @@ func DecodeMessage(b []byte) (*Message, error) {
 		m.Payloads = append(m.Payloads, p)
 		rest = rest[plLen:]
 		// The SK payload's declared length only covers its own header +
-		// ciphertext; everything else in the message is encrypted inside it,
+		// ciphertext. Everything else in the message is encrypted inside it,
 		// so there is no further chain to walk in the outer message.
 		if p.Type == PayloadSK {
 			if len(rest) != 0 {

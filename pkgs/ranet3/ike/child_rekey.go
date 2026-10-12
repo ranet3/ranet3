@@ -63,7 +63,7 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 		return fmt.Errorf("ike: invalid CHILD_SA_NOT_FOUND response")
 	}
 	// The peer no longer has this SA, so no Delete exchange is possible.
-	// RFC 7296 §2.25 recommends silently removing our stale half and creating
+	// RFC 7296 section 2.25 recommends silently removing our stale half and creating
 	// a new Child SA from scratch.
 	if err := s.forgetChild(old); err != nil {
 		return fmt.Errorf("ike: forget missing peer Child SA: %w", err)
@@ -101,7 +101,7 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 		oldLocalSPI = make([]byte, 4)
 		binary.BigEndian.PutUint32(oldLocalSPI, old.LocalSPI)
 		// REKEY_SA identifies the old SA by the SPI this exchange's
-		// initiator expects in inbound ESP packets (RFC 7296 §1.3.3).
+		// initiator expects in inbound ESP packets (RFC 7296 section 1.3.3).
 		inner = append([]RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Protocol: ProtoESP, SPI: oldLocalSPI, Type: N_REKEY_SA})}}, inner...)
 	}
 	// Refused here rather than after the exchange. The peer installs the
@@ -123,7 +123,7 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 	// not success has to tell the peer, or each attempt leaves one more
 	// behind. The Delete names the SPI this end chose, because section 1.4.1
 	// lists "the SPIs (as they would be expected in the headers of inbound
-	// packets) of the SAs to be deleted" and those are the sender's own;
+	// packets) of the SAs to be deleted" and those are the sender's own:
 	// deleteChildren matches an arriving Delete against RemoteSPI to the same
 	// rule. That SPI was drawn before the request went out, so even a response
 	// this end cannot parse at all is one it can still withdraw from.
@@ -206,7 +206,7 @@ func decodeChildNegotiationResponse(response []RawPayload, prfID uint16) (childE
 	}
 	// An error response can consist solely of a Notify payload. Interpret the
 	// authenticated error before requiring the SA, Nr, TSi, and TSr payloads
-	// that RFC 7296 §§1.3.1 and 1.3.3 specify for a successful response.
+	// that RFC 7296 sections 1.3.1 and 1.3.3 specify for a successful response.
 	for _, notify := range payloads.notifies {
 		if notify.Type < 16384 {
 			return childExchangePayloads{}, &childNegotiationRejectedError{notify: notify}
@@ -244,8 +244,8 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	child := s.currentChild()
 	if rekey.Type != N_REKEY_SA && (child.LocalSPI != 0 || child.RemoteSPI != 0) {
 		// Without REKEY_SA this requests a new Child SA. Reject it as an
-		// additional SA only while this single-SA profile already has one;
-		// after state loss, RFC 7296 §2.25 expects creation from scratch.
+		// additional SA only while this single-SA profile already has one.
+		// After state loss, RFC 7296 section 2.25 expects creation from scratch.
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_ADDITIONAL_SAS)
 	}
 	payloads, err := decodeChildExchangePayloads(inner, ctx.suite.PRFID)
@@ -261,7 +261,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 			return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
 		}
 		if child.LocalSPI == 0 || binary.BigEndian.Uint32(rekey.SPI) != child.RemoteSPI {
-			// RFC 7296 §2.25 requires CHILD_SA_NOT_FOUND to identify the
+			// RFC 7296 section 2.25 requires CHILD_SA_NOT_FOUND to identify the
 			// nonexistent SA by copying the Protocol ID and SPI from REKEY_SA.
 			return s.responseNotifySA(ctx, msgID, CREATE_CHILD_SA, N_CHILD_SA_NOT_FOUND, rekey.Protocol, rekey.SPI)
 		}
@@ -333,7 +333,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	}
 	responseEncr := encr
 	if responseEncr.ID == ENCR_CHACHA20_POLY1305 {
-		// RFC 7296 §3.3.6 returns selected attributes unchanged; the fixed-key
+		// RFC 7296 section 3.3.6 returns selected attributes unchanged. The fixed-key
 		// ChaCha20-Poly1305 transform was offered without Key Length.
 		responseEncr.KeyLengthBits = 0
 	}

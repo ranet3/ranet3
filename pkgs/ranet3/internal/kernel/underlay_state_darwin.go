@@ -39,7 +39,7 @@ import (
 const (
 	stateMode = 0o600
 	// maxStateRecords bounds a file nothing else prunes. Two is the working
-	// number, one per family; anything approaching this is a node that has
+	// number, one per family. Anything approaching this is a node that has
 	// crashed on many different interfaces without ever reclaiming, and
 	// refusing to grow past it costs one leaked route rather than a file that
 	// grows without end.
@@ -231,9 +231,9 @@ func (u *UnderlayDefaults) persist() {
 // and a record failing any of them is kept and reported rather than acted on:
 //
 //   - the kernel still holds a route at the recorded destination carrying
-//     RTF_IFSCOPE, the recorded interface index and the recorded next hop;
+//     RTF_IFSCOPE, the recorded interface index and the recorded next hop.
 //   - the recorded interface name still resolves to the recorded index, so an
-//     index reused across a reboot names no route of ours;
+//     index reused across a reboot names no route of ours.
 //   - that same interface also carries the host's own unscoped default.
 //
 // The third separates our route from macOS's. macOS writes a scoped

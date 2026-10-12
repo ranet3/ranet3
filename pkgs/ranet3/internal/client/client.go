@@ -63,7 +63,7 @@ type Client struct {
 	// sessions uses, so a reload can start and stop them individually.
 	dialersMu sync.Mutex
 	dialers   map[string]*dialer
-	// dialRetry overrides defaultReconnectDelay; zero means the default.
+	// dialRetry overrides defaultReconnectDelay, and zero means the default.
 	dialRetry time.Duration
 	// stopped closes the door on new dialers. Run sets it under dialersMu
 	// before waiting, so a reload arriving at the same moment cannot add to
@@ -338,7 +338,7 @@ func (c *Client) CaptureRoutes() kernel.CaptureRoutes { return c.capture }
 //
 // It is assembled here rather than in the command because five of the seven
 // are this client's own and the other two are the settings it opened them
-// under. The command builds the reconciler from it; see kernel.Runtime for
+// under. The command builds the reconciler from it. See kernel.Runtime for
 // what each field decides.
 func (c *Client) KernelRuntime() kernel.Runtime {
 	cfg := c.config()

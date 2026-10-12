@@ -11,7 +11,7 @@ import (
 
 // EncryptMessage builds a full IKEv2 message wire image whose payloads
 // (after any cleartext ones, of which our profile has none post-IKE_SA_INIT)
-// are carried inside a single SK payload, per RFC 7296 §3.14 / RFC 5282.
+// are carried inside a single SK payload, per RFC 7296 section 3.14 / RFC 5282.
 //
 // key is SK_ei or SK_er (encryption key || salt) depending on direction.
 func EncryptMessage(suite SASuite, key []byte, hdr Header, cleartext, inner []RawPayload) ([]byte, error) {
@@ -104,7 +104,7 @@ func DecryptMessage(suite SASuite, key []byte, raw []byte, m *Message) ([]RawPay
 // decryptMessagePlaintext returns only after the SK payload's AEAD tag has
 // authenticated. Keeping plaintext parsing separate lets post-handshake
 // request handling distinguish unauthenticated packets from authenticated
-// INVALID_SYNTAX errors as required by RFC 7296 §2.21.3.
+// INVALID_SYNTAX errors as required by RFC 7296 section 2.21.3.
 func decryptMessagePlaintext(suite SASuite, key []byte, raw []byte, m *Message) (PayloadType, []byte, error) {
 	sk := m.find(PayloadSK)
 	if sk == nil {

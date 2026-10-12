@@ -420,7 +420,7 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 
 // The control loop used to poll its own request queue ten times a second. With
 // the poll gone, a local exchange has to be picked up because the loop selects
-// on the queue, not because a timer happened to fire; if that regressed, this
+// on the queue, not because a timer happened to fire. If that regressed, this
 // would wait out the DPD interval instead.
 func TestLocalRequestIsPickedUpWithoutPolling(t *testing.T) {
 	h := newResponderHarness(t, nil)
@@ -651,7 +651,7 @@ func TestResponderTakesSlotBeforeKeyExchange(t *testing.T) {
 // firstTestNotify reads the single notify out of a stateless answer.
 // statelessAnswer sends one request and returns the answer, retrying the send.
 // These are datagrams on a loopback socket shared with every other test in the
-// package, and one of them can be dropped; the answers reached this way are
+// package, and one of them can be dropped. The answers reached this way are
 // stateless or retransmission-safe, so a repeat draws another. Without it a
 // loaded machine turns them into false reds, which the VM arm of the flake
 // check has done twice.
@@ -1497,7 +1497,7 @@ func TestResponderChecksTheNonceAgainstTheNegotiatedPRF(t *testing.T) {
 // IKE_AUTH header and contents this end cannot decrypt. Acting on one would
 // end a handshake this end has already paid a key exchange for, which is the
 // cheapest way to stop every session a node opens. Nothing unauthenticated
-// changes state (RFC 7296 section 2.21, RFC 7815 section 2.1); the deadline is
+// changes state (RFC 7296 section 2.21, RFC 7815 section 2.1). The deadline is
 // what ends the wait.
 func TestUndecryptableDatagramDoesNotEndTheHandshake(t *testing.T) {
 	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
@@ -1559,7 +1559,7 @@ func TestUndecryptableDatagramDoesNotEndTheHandshake(t *testing.T) {
 }
 
 // Anyone who can reach the port can make a handshake fail, so the line has to
-// be rare; but at debug it was invisible at the default level, and an operator
+// be rare, but at debug it was invisible at the default level, and an operator
 // looking at "that peer cannot connect" had nothing on this side to read. Both
 // halves matter: the first failure from a source is said at warn, and the ones
 // behind it drop to debug rather than being repeated.

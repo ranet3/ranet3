@@ -57,14 +57,14 @@ type OutboundSA struct {
 	salt   []byte
 	spi    uint32
 
-	seq     atomic.Uint64 // next sequence number to use; 0 is never sent (RFC 4303 §2.2)
+	seq     atomic.Uint64 // next sequence number to use, and 0 is never sent (RFC 4303 section 2.2)
 	onRekey func()
 }
 
 // ErrSequenceExhausted is returned once a non-ESN SA has no sequence numbers
-// left. RFC 4303 section 3.3.3 requires the refusal -- "the sender MUST NOT
+// left. RFC 4303 section 3.3.3 requires the refusal ("the sender MUST NOT
 // send a packet on an SA if doing so would cause the sequence number to
-// cycle" -- but it says nothing about the IKE SA, and RFC 7296
+// cycle"), but it says nothing about the IKE SA, and RFC 7296
 // section 1.3.1 does: "A failed attempt to create a Child SA SHOULD NOT tear
 // down the IKE SA." It is a sentinel so a caller can tell the one refusal a
 // replacement fixes from a real transport failure.
@@ -87,7 +87,7 @@ type SequenceRange struct {
 func (o *OutboundSA) SetRekeyCallback(fn func()) { o.onRekey = fn }
 
 // InboundSA decrypts packets sent to this client's SPI. Authentication checks
-// the replay window before AEAD work; committing checks it again atomically
+// the replay window before AEAD work. Committing checks it again atomically
 // with advancing the window. AEAD always runs outside the replay mutex.
 type InboundSA struct {
 	aead   cipher.AEAD
@@ -118,7 +118,7 @@ type InboundOption func(*InboundSA)
 // MaxReplayWindow is the widest anti-replay window this implementation will
 // build. The circular index arithmetic adds a window to a position, so a
 // window above half the sequence space would overflow the 32-bit counter it
-// is computed in. Config refuses anything above this too; the cap is here as
+// is computed in. Config refuses anything above this too. The cap is here as
 // well because this option is exported and takes any uint32.
 const MaxReplayWindow uint32 = 1 << 20
 
@@ -160,7 +160,7 @@ func NewInbound(child ChildSA, options ...InboundOption) (*InboundSA, error) {
 
 // Seal wraps one tunnel-mode IP packet (nextHeader identifies its version,
 // NextHeaderIPv4/IPv6) into a full ESP packet ready for UDP encapsulation.
-// It is the single-packet convenience path; the data plane reserves ranges so
+// It is the single-packet convenience path. The data plane reserves ranges so
 // whole TUN batches can encrypt concurrently without allocating their ESP
 // sequence numbers in scheduler-dependent order.
 func (o *OutboundSA) Seal(innerIPPacket []byte, nextHeader byte) ([]byte, error) {
@@ -175,7 +175,7 @@ func (o *OutboundSA) Seal(innerIPPacket []byte, nextHeader byte) ([]byte, error)
 }
 
 // ReserveSequenceRange atomically reserves count consecutive ESP sequence
-// numbers. Reserving is cheap and may be serialized with packet intake; the
+// numbers. Reserving is cheap and may be serialized with packet intake, while the
 // returned range performs the expensive AEAD operations later and in parallel
 // with other ranges.
 func (o *OutboundSA) ReserveSequenceRange(count int) (*SequenceRange, error) {
@@ -231,7 +231,7 @@ func (o *OutboundSA) reserveSequenceNumbers(count int) (uint64, uint64, error) {
 }
 
 // Seal consumes the next sequence number in this range and encrypts one
-// tunnel-mode packet. A SequenceRange is deliberately single-worker; parallel
+// tunnel-mode packet. A SequenceRange is deliberately single-worker. Parallel
 // callers should reserve separate ranges from the OutboundSA.
 func (r *SequenceRange) Seal(innerIPPacket []byte, nextHeader byte) ([]byte, error) {
 	if r == nil || r.sa == nil || r.next > r.end {

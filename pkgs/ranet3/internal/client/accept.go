@@ -91,7 +91,7 @@ func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 
 // lookupPeerKey resolves an authenticated identity to the key that must verify
 // its AUTH. The registry is the trust root, exactly as it is for ranet's own
-// reconcile, so any node in it may dial us; the config's peers list says who
+// reconcile, so any node in it may dial us. The config's peers list says who
 // we dial, not who we answer.
 //
 // The serial number has to name one of that node's registered endpoints. It

@@ -43,7 +43,7 @@ import (
 // it, so it costs nothing when nothing needs it, and it is idempotent. Writing
 // it only when the mesh looks like it is capturing meant a set that slipped
 // past the condition took the machine off the network with nothing to fall
-// back on; that whole class is gone once the route is simply always there.
+// back on. That whole class is gone once the route is simply always there.
 //
 // # Ownership, which is deliberately narrower than the tun's
 //
@@ -53,13 +53,13 @@ import (
 // physical interface the whole machine shares, so nothing here is ever adopted
 // by shape:
 //
-//   - only a default this tool recorded writing is a candidate for deletion;
+//   - only a default this tool recorded writing is a candidate for deletion.
 //   - a delete is sent only after reading the kernel back and finding a route
 //     that still carries RTF_IFSCOPE, the recorded interface and the recorded
 //     next hop, and scopedDefaultMessage refuses to encode a delete that is
-//     not interface-scoped at all;
+//     not interface-scoped at all.
 //   - an add that answers EEXIST is success and not ownership, so a route
-//     macOS wrote for a secondary interface is used and never withdrawn;
+//     macOS wrote for a secondary interface is used and never withdrawn.
 //   - the record outlives the process, in the runtime directory, so an
 //     instance killed while holding one is cleaned up by the next rather than
 //     leaking. reclaim states the three conditions a restart applies, and a
@@ -78,7 +78,7 @@ type UnderlayDefaults struct {
 	mu   sync.Mutex
 	sock rtSocket
 	// host is the machine this writes to and reads back, the running kernel
-	// unless the caller named another; see Host.
+	// unless the caller named another. See Host.
 	host Host
 	// closed is set by Close. Every entry point refuses afterward rather than
 	// dereferencing a socket that is gone.
@@ -101,7 +101,7 @@ type UnderlayDefaults struct {
 	// from written on purpose: every condition reclaim applies would be worth
 	// nothing if the record then joined the set an ordinary withdrawal deletes
 	// from on the shape check alone. Nothing here is ever deleted by this
-	// process; the next start weighs the conditions again.
+	// process. The next start weighs the conditions again.
 	refused map[writtenDefault]bool
 	// statePath is where both sets are written so they survive this process,
 	// and state is the lock saying this process owns that file.
@@ -160,7 +160,7 @@ var errUnderlayClosed = errors.New("kernel: the underlay defaults are closed")
 // host is the machine it writes to and reads back, nil for the one this
 // process is running on.
 //
-// statePath is where that record lives; empty keeps it in memory for this
+// statePath is where that record lives, and empty keeps it in memory for this
 // process only. The file is locked before it is read, so a second daemon
 // starting beside a running one reclaims nothing and overwrites nothing: it
 // finds the lock held, says so, and carries on with no record of its own. A
@@ -342,7 +342,7 @@ func (u *UnderlayDefaults) Refused() []writtenDefault {
 // next hop the host's own default of that family currently uses.
 //
 // It reads the table back rather than trusting the record. The record says
-// what this process wrote and is the whole of its claim to delete anything; it
+// what this process wrote and is the whole of its claim to delete anything. It
 // is not evidence that the kernel still holds it, and the kernel drops this
 // route on an interface going down.
 //
@@ -411,7 +411,7 @@ func (u *UnderlayDefaults) ensure() error {
 		}
 		// Recorded before the route is written, never after. A process dying
 		// between the two then leaves a record for a route that does not
-		// exist, which reclaim discards on the readback; the other order
+		// exist, which reclaim discards on the readback. The other order
 		// leaves a route with no record, which nothing may ever remove.
 		u.written[want] = true
 		u.persist()

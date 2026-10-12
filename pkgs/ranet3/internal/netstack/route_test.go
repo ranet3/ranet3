@@ -64,7 +64,7 @@ func TestRouteTableDestSpecificityBeatsSourceSpecificity(t *testing.T) {
 	narrow := NewPeer("narrow", nil, nil)
 
 	// A source-specific route to a *less specific* destination must not
-	// beat an any-source route to a *more specific* destination — the
+	// beat an any-source route to a *more specific* destination: the
 	// destination match is resolved first, per
 	// RFC 9079.
 	rt.Set(mustPrefix("2001:db8:1::/48"), mustPrefix("2001:db8::/32"), broad)
@@ -205,7 +205,7 @@ func TestRouteTableTrieRealBranching(t *testing.T) {
 	root := NewPeer("root", nil, nil)     // 10.0.0.0/8
 	mid := NewPeer("mid", nil, nil)       // 10.64.0.0/10
 	narrow := NewPeer("narrow", nil, nil) // 10.64.5.0/24
-	other := NewPeer("other", nil, nil)   // 10.128.0.0/9 -- diverges from mid/narrow high up
+	other := NewPeer("other", nil, nil)   // 10.128.0.0/9 (diverges from mid/narrow high up)
 
 	rt.Set(netip.Prefix{}, mustPrefix("10.0.0.0/8"), root)
 	rt.Set(netip.Prefix{}, mustPrefix("10.64.0.0/10"), mid)
@@ -216,7 +216,7 @@ func TestRouteTableTrieRealBranching(t *testing.T) {
 		addr string
 		want *Peer
 	}{
-		{"10.64.5.7", narrow}, // matches all four ancestors; most specific wins
+		{"10.64.5.7", narrow}, // matches all four ancestors (most specific wins)
 		{"10.64.9.1", mid},    // inside mid, outside narrow
 		{"10.200.0.1", other}, // inside other, outside mid/narrow
 		{"10.1.2.3", root},    // only the broadest covers it
@@ -235,7 +235,7 @@ func TestRouteTableTrieRealBranching(t *testing.T) {
 // TestRouteTableTrieCompactionPreservesSiblings removes one of two
 // routes that fork from a shared synthetic branch node (neither 10.0.0.0/9
 // nor 10.128.0.0/9 has an ancestor/descendant relationship with the
-// other -- inserting both forces the trie to create a branch node with
+// other: inserting both forces the trie to create a branch node with
 // no route of its own, just to fork them apart) and verifies the
 // remaining sibling still resolves correctly afterward, i.e. compact's
 // splice-and-recurse-upward compaction doesn't corrupt anything besides
@@ -258,7 +258,7 @@ func TestRouteTableTrieCompactionPreservesSiblings(t *testing.T) {
 	}
 
 	// The now-pointless branch node forking these two apart should have
-	// been compacted away entirely -- Debug should show exactly b's route.
+	// been compacted away entirely. Debug should show exactly b's route.
 	debug := rt.Debug()
 	if len(debug) != 1 {
 		t.Fatalf("expected exactly one remaining route after compaction, got %v", debug)

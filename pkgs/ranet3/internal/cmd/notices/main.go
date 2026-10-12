@@ -80,7 +80,7 @@ type module struct{ path, version string }
 // out of the binary rather than asked of the source tree. `go list -deps`
 // reports no module for a package when the build is vendored, which a nix
 // build's is, so asking the source gives an empty answer there and a correct
-// one here; the binary answers the same way everywhere. It is also the more
+// one here. The binary answers the same way everywhere. It is also the more
 // honest question, since the obligation attaches to what is distributed.
 func linkedModules() ([]module, error) {
 	binary := filepath.Join(os.TempDir(), "ranet3-notices-subject")

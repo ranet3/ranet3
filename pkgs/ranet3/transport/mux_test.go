@@ -33,7 +33,7 @@ const (
 )
 
 // listenPeer opens a plain UDP socket standing in for "the peer" at the
-// far end of a Mux, on the given loopback address (v4 or v6) — used to
+// far end of a Mux, on the given loopback address (v4 or v6), used to
 // verify what a Mux actually puts on the wire without needing a second
 // Mux/full IKE session.
 func listenPeer(t *testing.T, network, addr string) *net.UDPConn {
@@ -339,13 +339,13 @@ func testRecvESPBatch(t *testing.T, network, addr string) {
 	}
 	clientAddr := m.LocalAddr().(*net.UDPAddr)
 	// LocalAddr() on this Mux is wildcard-bound ("::" or "0.0.0.0"), which
-	// isn't a valid destination — send to the actual loopback address the
+	// isn't a valid destination. Send to the actual loopback address the
 	// test is using instead, at the port Dial picked.
 	dst := &net.UDPAddr{IP: net.ParseIP(addr), Port: clientAddr.Port}
 
 	// Sent back-to-back with no synchronization, so receiveLoop's batch read
 	// has a real chance to pick up more than one of these in a single
-	// call — this is the actual code path under test.
+	// call. This is the actual code path under test.
 	const n = 200
 	for i := range n {
 		pkt := []byte{0xaa, 0xbb, 0xcc, 0xdd, byte(i), byte(i >> 8), 0, 1}
@@ -377,7 +377,7 @@ func TestRecvESPBatchIPv6(t *testing.T) {
 
 // TestRecvESPAndIKEDemux confirms the receive-side demux (marker present
 // -> IKE, absent -> ESP) still works correctly regardless of whether the
-// sender used a batched or unbatched write — it's a plain UDP receiver on
+// sender used a batched or unbatched write. It's a plain UDP receiver on
 // this end either way, unaffected by how the peer chose to send.
 func TestRecvESPAndIKEDemux(t *testing.T) {
 	server, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
@@ -388,7 +388,7 @@ func TestRecvESPAndIKEDemux(t *testing.T) {
 	serverAddr := server.LocalAddr().(*net.UDPAddr)
 
 	// Dial always binds all interfaces regardless of what's passed here
-	// (see Dial's doc comment) -- LocalAddr()'s IP is unspecified, only its
+	// (see Dial's doc comment). LocalAddr()'s IP is unspecified: only its
 	// port is meaningful, so the destination below is built from the
 	// known loopback address plus that port, not from LocalAddr() directly.
 	m, err := Dial(":0", serverAddr.IP, serverAddr.Port)
@@ -837,7 +837,7 @@ func TestZeroSPIIsRefusedOnBothProtocols(t *testing.T) {
 
 // A full receive queue is the only signal that this node is behind on receive
 // rather than losing packets on the wire, and anyone who can reach the port can
-// fill one. An operator reads the count; the log line is rate limited
+// fill one. An operator reads the count, and the log line is rate limited
 // because one receive loop serves every session on the hub and a line per
 // datagram is a synchronous write to stderr per packet.
 func TestFullReceiveQueueIsCountedAndReportedOnce(t *testing.T) {

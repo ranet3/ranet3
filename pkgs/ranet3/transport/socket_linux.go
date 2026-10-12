@@ -118,7 +118,7 @@ const (
 // names an interface to bind it to, which this platform never asks for.
 func openPacketBind(port uint16, underlay Underlay, index int, routed bool, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	// The port selected by the IPv4 bind may already be occupied on IPv6.
-	// Retry ephemeral allocation; an explicitly requested port still fails.
+	// Retry ephemeral allocation, but an explicitly requested port still fails.
 	var err error
 	for range ephemeralPortRetries {
 		var bind packetBind
@@ -194,7 +194,7 @@ func listenPacketBind(port uint16, fwmark uint32, events func(string, ...slog.At
 }
 
 // receiver reads a full recvmmsg vector even when UDP_GRO is enabled. Each
-// message may contain many datagrams; excess segments are returned on later
+// message may contain many datagrams. Excess segments are returned on later
 // calls before any receive storage is reused. ESP does not need source-address
 // objects: only IKE packets retain a reply endpoint.
 func (s *udpSocket) receiver() receiveFunc {
@@ -233,7 +233,7 @@ func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) rece
 				// and the third arm below already uses: one GRO
 				// buffer is up to forty of them, so counting the message would
 				// undercount by that much. A zero-length datagram is refused
-				// too -- it arrived and goes nowhere, and leaving it out is
+				// too: it arrived and goes nowhere, and leaving it out is
 				// the "a flood reads as silence" case on the one platform this
 				// is deployed on.
 				if m.Flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 || m.N == 0 {

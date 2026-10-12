@@ -103,8 +103,8 @@ func TestProactivePacketCountRekey(t *testing.T) {
 	}
 }
 
-// Refusing to send is right -- RFC 4303 section 3.3.3 forbids reusing a
-// sequence number -- but the refusal has to be recognizable, because the
+// Refusing to send is right (RFC 4303 section 3.3.3 forbids reusing a
+// sequence number), but the refusal has to be recognizable, because the
 // caller's answer is to replace the SA rather than to tear the session down.
 func TestExhaustionIsReportedAsItsOwnError(t *testing.T) {
 	out, err := NewOutbound(testChild(t))
@@ -521,7 +521,7 @@ func TestAuthenticatedPacketCommitRejectsReplay(t *testing.T) {
 // of order, as observed in practice under highly parallel real-world
 // traffic (e.g. iperf3 -P 8 sharing one SA's sequence space across
 // multiple flows/CPU cores), must still be accepted as long as they're
-// within the replay window — and exact duplicates, even far apart across a large
+// within the replay window, and exact duplicates, even far apart across a large
 // window advance, must still be rejected.
 func TestReplayWindowWideReordering(t *testing.T) {
 	const window = 4096
@@ -576,7 +576,7 @@ func TestReplayWindowZeroDisablesChecking(t *testing.T) {
 // Seal: many goroutines sealing concurrently must never collide on a
 // sequence number/IV, and the receiver must decrypt every one of them
 // (Open, run sequentially here, doesn't care what order Seal calls
-// completed in — only that all resulting sequence numbers are distinct
+// completed in, only that all resulting sequence numbers are distinct
 // and within the replay window relative to each other).
 func TestSealConcurrentUniqueSeq(t *testing.T) {
 	child := testChild(t)
@@ -627,7 +627,7 @@ func TestSealConcurrentUniqueSeq(t *testing.T) {
 }
 
 // TestOpenConcurrent seals a batch of distinct packets up front (as a
-// single-threaded sender would), then opens all of them concurrently —
+// single-threaded sender would), then opens all of them concurrently,
 // exercising Open's locked-check/unlocked-decrypt/locked-recheck-commit
 // split under the race detector. Every packet must decrypt successfully
 // exactly once.

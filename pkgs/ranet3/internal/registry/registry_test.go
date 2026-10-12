@@ -35,7 +35,7 @@ func TestLoadRegistry(t *testing.T) {
 		t.Fatalf("parse example public key: %v", err)
 	}
 
-	// A node with address: null — no known address yet. ResolveRemote
+	// A node with address: null (no known address yet). ResolveRemote
 	// must fail gracefully, not panic.
 	noAddr, ok := org.FindNode("no-address-yet")
 	if !ok {
@@ -69,7 +69,7 @@ func TestLoadRegistry(t *testing.T) {
 		t.Fatal("expected ResolveRemote to fail for an empty-string address")
 	}
 
-	// A hostname address; just confirm the field parsed correctly — DNS
+	// A hostname address: just confirm the field parsed correctly. DNS
 	// resolution success/failure is environment-dependent and not what
 	// this parser test should assert on.
 	gw, ok := org.FindNode("gateway")
@@ -88,7 +88,7 @@ func TestLoadRegistry(t *testing.T) {
 	}
 
 	// Non-sequential serial numbers (e.g. "4"/"6" instead of "0"/"1") are
-	// used by some real deployments — confirm lookup isn't assuming 0/1.
+	// used by some real deployments: confirm lookup isn't assuming 0/1.
 	nonSeq, ok := org.FindNode("non-sequential-serials")
 	if !ok {
 		t.Fatal("node \"non-sequential-serials\" not found")

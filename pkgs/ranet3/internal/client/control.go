@@ -299,7 +299,7 @@ func (c *Client) Peers() []control.Peer {
 	cfg := c.config()
 	peers := effectivePeers(cfg, c.registry())
 	// A peer past the configured list was derived from the registry by
-	// dial.all; effectivePeers keeps the configured ones first.
+	// dial.all, since effectivePeers keeps the configured ones first.
 	configured := len(cfg.Dial.To)
 	live := c.sessions.snapshot()
 	out := make([]control.Peer, 0, len(peers)*len(cfg.Link.Endpoints))

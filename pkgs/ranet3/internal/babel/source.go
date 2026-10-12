@@ -49,14 +49,14 @@ const sourceGCTime = 3 * time.Minute
 // new router id, which a node that lost its sequence number state does.
 //
 // The numbers sit far above what a legitimate prefix or a restarting neighbor
-// produces and far below what a flood needs; see maxOriginsPerPrefixPerNeighbor
+// produces and far below what a flood needs. See maxOriginsPerPrefixPerNeighbor
 // for why the first version of them was too small.
 const (
 	maxSources          = 1 << 16
 	maxOriginsPerPrefix = 1 << 10
 	// maxOriginsPerPrefixPerNeighbor is one neighbor's share of one prefix's
 	// budget, and maxSourcesPerNeighbor is its share of the whole table. The
-	// first stops one neighbor denying another the same prefix; the second
+	// first stops one neighbor denying another the same prefix, and the second
 	// stops one neighbor spending the global budget and denying every other
 	// neighbor every prefix.
 	//
@@ -173,7 +173,7 @@ func (rt *routeTable) requestSeqno(key routeKey, adv advertisement) uint16 {
 //
 // Keeping a referenced entry instead made an unreachable prefix permanent. A
 // neighbor whose path genuinely worsens advertises a metric this node has
-// already bettered, so the route is unfeasible and unselectable; the node asks
+// already bettered, so the route is unfeasible and unselectable. The node asks
 // the origin for a new sequence number, and if every request and reply is lost
 // it stops asking. The neighbor keeps refreshing the unfeasible route, so the
 // distance stays referenced, so it is never collected, so the route stays

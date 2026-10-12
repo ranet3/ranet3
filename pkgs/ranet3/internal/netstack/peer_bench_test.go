@@ -37,13 +37,13 @@ func benchPeer(b *testing.B) *Peer {
 // allocation under one lock, the allocations ReportAllocs counts, the handoff
 // to the ordered sender, and its reorder map.
 //
-// enqueue is the data path and does not wait for the send; transmit is the
+// enqueue is the data path and does not wait for the send, while transmit is the
 // control path, measured separately below, and does.
 func benchmarkPeerEnqueue(b *testing.B, workers, batch int) {
 	peer := benchPeer(b)
 	payload := make([]byte, 1400)
 	// Deliberately no SetBytes. append stores the slice header and the stand-in
-	// sealer never reads it, so no payload byte is touched; reporting MB/s over
+	// sealer never reads it, so no payload byte is touched. Reporting MB/s over
 	// them prints a figure four orders of magnitude above what the pipeline
 	// really moves. ns/packet below is the honest axis.
 	b.ReportAllocs()
@@ -104,7 +104,7 @@ func BenchmarkPeerTransmitSerial(b *testing.B) {
 
 // The copy-and-release step every inbound packet takes. A sync.Pool holds an
 // any, which a slice header does not fit in, so pooling slices allocates once
-// per packet released; pooling the array pointer does not.
+// per packet released, but pooling the array pointer does not.
 func BenchmarkInboundCopyAndRelease(b *testing.B) {
 	for _, size := range []int{64, 1400} {
 		b.Run(fmt.Sprint(size), func(b *testing.B) {

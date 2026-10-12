@@ -536,7 +536,7 @@ func TestSourceTableGarbageCollection(t *testing.T) {
 
 // A wildcard route request answers with the whole table, and on a transit node
 // that table is the whole mesh. RFC 8966 section 3.8.1.1 says such a dump
-// SHOULD be rate-limited; without a limit one packet of four-byte requests
+// SHOULD be rate-limited. Without a limit one packet of four-byte requests
 // draws one full dump each, which is an amplifier pointed at whoever the
 // requests claim to come from and a long walk under the protocol lock.
 func TestWildcardRouteRequestDumpsAtMostOncePerInterval(t *testing.T) {
@@ -1268,7 +1268,7 @@ func TestSourceChargeFollowsWhoeverKeepsItAlive(t *testing.T) {
 	}
 }
 
-// The per-prefix share stops one neighbor denying another the same prefix; it
+// The per-prefix share stops one neighbor denying another the same prefix, but it
 // does not stop one neighbor spending the whole table across many prefixes and
 // denying every other neighbor every prefix. maxSourcesPerNeighbor bounds
 // that, and refusing an origin refuses a route, because selectRoute rechecks
@@ -1329,7 +1329,7 @@ func TestSourceTableHasGlobalCeilingToo(t *testing.T) {
 }
 
 // The per-neighbor share keeps one neighbor from turning RFC 8966 section
-// 3.8.1.2 forwarding off for every other; the global cap keeps the table
+// 3.8.1.2 forwarding off for every other, and the global cap keeps the table
 // bounded when many neighbors each stay inside their share. Its index
 // carries a router id the sender writes into the packet, so nothing else
 // bounds it.

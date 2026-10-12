@@ -20,7 +20,7 @@ import (
 )
 
 // Each socket batch captures one immutable SA set. Rekeys publish replacements
-// without holding a lock through crypto. In-flight batches retain the old keys;
+// without holding a lock through crypto. In-flight batches retain the old keys, while
 // new batches see only the SAs that are still installed.
 type tunnelSAs struct {
 	outbound    *esp.OutboundSA
@@ -43,7 +43,7 @@ type tunnel struct {
 
 // rekeyAskInterval is the floor between two attempts to replace the Child SA.
 // The one-at-a-time guard alone does not bound the rate: a rekey that fails
-// without an exchange -- no Child SA to rekey, or one already running -- comes
+// without an exchange (no Child SA to rekey, or one already running) comes
 // back at once, and both callers ask per batch, which on a routed tun is per
 // packet. It is well under the two round trips ProactiveRekeySequence leaves
 // room for, so a genuine retry still lands inside the margin.

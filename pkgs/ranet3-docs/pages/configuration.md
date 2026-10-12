@@ -156,5 +156,5 @@ announcement, live in `schema` and carry both decoders, so a field parses the
 same way whichever extension the file has.
 
 **Your trust document and private key are sensitive.** They identify and
-authenticate a real node in a real mesh. Never commit real copies of either;
+authenticate a real node in a real mesh. Never commit real copies of either:
 only synthetic fixtures belong in version control (see `.gitignore`).

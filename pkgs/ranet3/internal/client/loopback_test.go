@@ -373,7 +373,7 @@ func TestStoppedResponderRefusesLiveHandshakes(t *testing.T) {
 
 	// Alpha keeps dialing and bravo keeps refusing, so neither end settles.
 	// Time rather than an event, because what is asserted is that nothing
-	// happens; the delay above bounds how many attempts that covers.
+	// happens. The delay above bounds how many attempts that covers.
 	time.Sleep(3 * time.Second)
 	if held := len(bravo.client.sessions.paths()); held != 0 {
 		t.Errorf("a stopped responder is holding %d sessions", held)
@@ -444,7 +444,7 @@ func TestShutdownSaysNothingAboutReconnecting(t *testing.T) {
 // IKE_AUTH and the initiator confirms a message later, so an initiator that
 // goes between the two has nothing to send a Delete on. That is the exchange's
 // own shape, not this sweep's, and the peer clears it on liveness. Driving the
-// sweep makes this deterministic; the redial that follows a resolved
+// sweep makes this deterministic. The redial that follows a resolved
 // simultaneous open is otherwise in flight whenever the machine is slow.
 func TestShutdownTellsPeerBeforeGoing(t *testing.T) {
 	alpha, bravo := newLoopbackMesh(t)

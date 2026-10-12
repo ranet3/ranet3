@@ -54,7 +54,7 @@ func GenerateDH(group uint16) (*DHKeyPair, error) {
 
 // PublicBytes returns the KE payload public value: raw u-coordinate for
 // X25519, or bare X||Y (no SEC1 0x04 prefix) for the NIST curves, per
-// RFC 5903 §7.
+// RFC 5903 section 7.
 func (kp *DHKeyPair) PublicBytes() []byte {
 	b := kp.priv.PublicKey().Bytes()
 	if kp.Group == DH_CURVE25519 {
@@ -76,7 +76,7 @@ func (kp *DHKeyPair) SharedSecret(peerPublic []byte) ([]byte, error) {
 	return kp.priv.ECDH(pub)
 }
 
-// --- PRF / PRF+ , RFC 7296 §2.13 ---
+// --- PRF / PRF+ , RFC 7296 section 2.13 ---
 
 func prfHashFunc(prfID uint16) (func() hash.Hash, error) {
 	switch prfID {
@@ -111,7 +111,7 @@ func prf(prfID uint16, key, data []byte) []byte {
 	return m.Sum(nil)
 }
 
-// prfPlus implements prf+(K,S), RFC 7296 §2.13.
+// prfPlus implements prf+(K,S), RFC 7296 section 2.13.
 func prfPlus(prfID uint16, key, seed []byte, length int) []byte {
 	var out, t []byte
 	for counter := byte(1); len(out) < length; counter++ {
@@ -167,7 +167,7 @@ func newAEAD(encrID uint16, key []byte) (cipher.AEAD, error) {
 	}
 }
 
-// --- IKE SA key derivation, RFC 7296 §2.14, RFC 5282 §2 (AEAD variant) ---
+// --- IKE SA key derivation, RFC 7296 section 2.14, RFC 5282 section 2 (AEAD variant) ---
 
 type SASuite struct {
 	EncrID      uint16
@@ -239,13 +239,13 @@ func putUint64(b []byte, v uint64) {
 }
 
 // ChildSAKeymat expands SK_d into the ESP keying material for a Child SA
-// with no PFS: KEYMAT = prf+(SK_d, Ni | Nr), RFC 7296 §2.17. The returned
+// with no PFS: KEYMAT = prf+(SK_d, Ni | Nr), RFC 7296 section 2.17. The returned
 // slice holds, in order, the initiator's key||salt then the responder's.
 func ChildSAKeymat(prfID uint16, skD, ni, nr []byte, encrID uint16, encrKeyBits uint16) (initiatorKey, responderKey []byte, err error) {
 	return childSAKeymat(prfID, skD, nil, ni, nr, encrID, encrKeyBits)
 }
 
-// With PFS the fresh DH secret precedes both nonces (RFC 7296 §2.17).
+// With PFS the fresh DH secret precedes both nonces (RFC 7296 section 2.17).
 func childSAKeymat(prfID uint16, skD, sharedSecret, ni, nr []byte, encrID uint16, encrKeyBits uint16) (initiatorKey, responderKey []byte, err error) {
 	ap, err := aeadParams(encrID, encrKeyBits)
 	if err != nil {

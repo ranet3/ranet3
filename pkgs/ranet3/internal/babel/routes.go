@@ -94,7 +94,7 @@ func (r Routes) Validate() error {
 		case entry.Prefix.Addr().Is4():
 			// Nothing consumes an IPv4 source-specific route. BIRD's
 			// babel_read_source_prefix drops the whole Update unless the
-			// channel is NET_IP6_SADR, and it has no IPv4 SADR channel; the
+			// channel is NET_IP6_SADR, and it has no IPv4 SADR channel. The
 			// Linux IPv4 FIB has no source-address-dependent lookup either, so
 			// internal/kernel refuses to install one. Announcing it would be a
 			// prefix that reaches nobody.

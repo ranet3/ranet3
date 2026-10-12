@@ -11,7 +11,7 @@
 // and dial and nothing else.
 //
 // A capability block is defined by the package that implements it, carries its
-// own serialization tags and validates itself; see [babel.Routes],
+// own serialization tags and validates itself. See [babel.Routes],
 // [babel.Config], [kernel.Table], [srv6.Segments] and [ike.Crypto]. Nothing
 // here mirrors those definitions, so a field added to a capability reaches the
 // file, the control plane's wire form and the subsystem at once. What is left
@@ -101,7 +101,7 @@ type Link struct {
 	// address>" rule sends it to the mesh table, and an exit-announced default
 	// there routes the underlay into the tun carrying it.
 	//
-	// One block for both platforms because it is one idea, spelled two ways;
+	// One block for both platforms because it is one idea, spelled two ways:
 	// the type in transport says which field each of them reads, and
 	// each is refused by name on the platform that has no meaning for it. That
 	// refusal is at startup rather than at load, as cap.table's rules and VRF
@@ -142,11 +142,11 @@ type Dial struct {
 }
 
 type Peer struct {
-	// Org defaults to this node's own, which is almost always what is wanted;
-	// only a cross-organization peer names its own.
+	// Org defaults to this node's own, which is almost always what is wanted.
+	// Only a cross-organization peer names its own.
 	Org  string `yaml:"org,omitempty" json:"org,omitempty" toml:"org,omitempty"`
 	Name string `yaml:"name" json:"name" toml:"name"`
-	// Serial selects one of the peer's endpoints; empty takes the first of a
+	// Serial selects one of the peer's endpoints. Empty takes the first of a
 	// matching address family.
 	Serial string `yaml:"serial,omitempty" json:"serial,omitempty" toml:"serial,omitempty"`
 }
@@ -356,7 +356,7 @@ func decodeYAML(body []byte, c *Config) error {
 	if err := decoder.Decode(c); err != nil {
 		return err
 	}
-	// KnownFields catches a stray key inside the document; this catches a
+	// KnownFields catches a stray key inside the document, while this catches a
 	// second document after it. A file assembled by concatenation, or half
 	// pasted below a stray "---", otherwise starts on the first half alone and
 	// validates cleanly, so a node comes up with the listener off or the wrong

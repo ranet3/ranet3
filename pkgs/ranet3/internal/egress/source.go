@@ -20,7 +20,7 @@ import (
 // out of the mesh that is the address of the link the packet leaves by, and on
 // the way into the mesh it is this node's own mesh address, which is unique per
 // node and routable within the mesh. Leaving the field out asks for the same
-// thing; the flag is kept so that a capability read from a file and written
+// thing. The flag is kept so that a capability read from a file and written
 // back out reads as it was written.
 //
 // An address written out is used unchanged in both directions. That is the

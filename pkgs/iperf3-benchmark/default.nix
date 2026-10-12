@@ -7,7 +7,7 @@
 # iperf 3.21's GRO receive uses MSG_DONTWAIT inside a worker loop that never
 # waits for readiness. Eight bidirectional streams can therefore occupy all
 # CPUs even on an idle link, starving a tunnel on the same machine. Match the
-# ordinary UDP receiver's blocking behavior; pthread cancellation still stops
+# ordinary UDP receiver's blocking behavior, and pthread cancellation still stops
 # each worker when the test ends.
 iperf3.overrideAttrs (prev: {
   postPatch = (prev.postPatch or "") + ''

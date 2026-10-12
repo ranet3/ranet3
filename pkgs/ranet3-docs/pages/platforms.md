@@ -60,7 +60,7 @@ default and a source-specific route are installed scoped to the tun, so no
 unbound socket can select either, which keeps the machine from being captured
 and the ESP underlay out of the tunnel carrying it. `link.underlay.mark` is
 refused there for the same reason, since there is nothing for a mark to select
-and nothing to select it with; `link.underlay.bind` is the local spelling, and
+and nothing to select it with. `link.underlay.bind` is the local spelling, and
 with it set the socket's lookups are scoped to the underlay interface, that
 interface is given a default of its own, and an announced default is installed
 plain, without which a node cannot use a mesh exit. A source-specific route and
@@ -75,7 +75,7 @@ all. The underlay stays out of the tunnel because the platform keeps it out,
 `VpnService.protect` on one side and the provider's own socket handling on the
 other, so a mark is unnecessary there as well. What the reconciler computes, the
 set of prefixes the mesh reaches and the source prefix each one is for, maps
-onto those lists directly; what it will not have is a table to put them in.
+onto those lists directly. What it will not have is a table to put them in.
 
 A node keeps its sessions when its own addresses change, as a laptop's do when
 it moves from wifi to a dock or a DHCP lease renews, and when its peer's do.

@@ -180,7 +180,7 @@ var offLinkProbes = []netip.Addr{
 // So an unscoped default out of the tun, the thing binding the socket is meant
 // to make safe, takes the underlay with it unless the underlay's own interface
 // carries a default of its own scoped to it. internal/kernel writes that route
-// when the mesh is about to capture; routed says it did.
+// when the mesh is about to capture, and routed says it did.
 //
 // Either way an unreachable socket is reported rather than refused: the node
 // stops holding a capturing route once its sessions die, so the state is
@@ -264,7 +264,7 @@ func (b *darwinBind) Send(packets [][]byte, endpoint Endpoint) error {
 
 // receiver reads one datagram per call. The buffer is the receiver's own and
 // its view stays valid until the next call, which is the contract every
-// backend holds; the hub copies anything it keeps.
+// backend holds. The hub copies anything it keeps.
 func (s *darwinSocket) receiver() receiveFunc {
 	buf := make([]byte, readBufferSize)
 	return func(bufs [][]byte, sizes []int, endpoints []Endpoint) (int, int, error) {
@@ -275,7 +275,7 @@ func (s *darwinSocket) receiver() receiveFunc {
 		bufs[0], sizes[0] = buf[:n], n
 		endpoints[0] = &darwinEndpoint{addr: netip.AddrPortFrom(from.Addr().Unmap(), from.Port())}
 		// Every datagram is handed straight through, so this bind refuses
-		// none of its own; the hub counts the ones nothing wanted.
+		// none of its own. The hub counts the ones nothing wanted.
 		return 1, 0, nil
 	}
 }
@@ -290,10 +290,10 @@ const (
 // openPacketBind takes the one socket this node's IKE and ESP share. index
 // binds it to that interface, and zero leaves it following the forwarding
 // table as every other socket on the machine does. routed says the caller has
-// already written that interface's own routing; see reportBoundReach.
+// already written that interface's own routing. See reportBoundReach.
 func openPacketBind(port uint16, underlay Underlay, index int, routed bool, _ func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	// The port selected by the IPv4 bind may already be occupied on IPv6.
-	// Retry ephemeral allocation; an explicitly requested port still fails.
+	// Retry ephemeral allocation, but an explicitly requested port still fails.
 	var err error
 	for range ephemeralPortRetries {
 		var bind packetBind

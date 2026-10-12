@@ -32,7 +32,7 @@ func (w countingWriter) Write(b []byte) (int, error) { w.n.Add(1); return len(b)
 // on the goroutine that also hands babel its packets and under the log mutex
 // every other component shares, which is how a flood of small datagrams
 // withdraws this node's routes from the mesh rather than merely wasting its
-// time. The count has to stay exact; only the saying of it is bounded.
+// time. The count has to stay exact: only the saying of it is bounded.
 func TestRefusedESPPacketsAreCountedExactlyAndSaidRarely(t *testing.T) {
 	var lines atomic.Int64
 	previous := slog.Default()

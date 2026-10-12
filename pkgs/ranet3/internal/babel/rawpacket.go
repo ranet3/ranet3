@@ -17,7 +17,7 @@ const (
 	nextHeaderUDP = 17
 	ipv6HeaderLen = 40
 	udpHeaderLen  = 8
-	babelHopLimit = 1 // link-local multicast must not be forwarded, RFC 8966 §4
+	babelHopLimit = 1 // link-local multicast must not be forwarded, RFC 8966 section 4
 )
 
 // buildPacket wraps a Babel payload in a minimal IPv6+UDP packet.
@@ -42,7 +42,7 @@ func buildPacket(src, dst netip.Addr, payload []byte) []byte {
 }
 
 // isBabelPacket keeps ordinary IP traffic off the control parser without
-// allocations, checksum work, or a protocol-state lock. It is only a filter;
+// allocations, checksum work, or a protocol-state lock. It is only a filter:
 // parsePacket performs full validation before any control state is changed.
 func isBabelPacket(raw []byte) bool {
 	return len(raw) >= ipv6HeaderLen+udpHeaderLen && raw[0]>>4 == 6 &&
@@ -100,8 +100,8 @@ func parsePacket(raw []byte, localAddr netip.Addr) (src netip.Addr, payload []by
 	return srcAddr, udp[udpHeaderLen:udpLen], nil
 }
 
-// udpChecksum computes the IPv6 pseudo-header UDP checksum, RFC 8200 §8.1
-// — mandatory for UDP over IPv6, unlike IPv4 where zero means "unused".
+// udpChecksum computes the IPv6 pseudo-header UDP checksum, RFC 8200 section 8.1,
+// mandatory for UDP over IPv6, unlike IPv4 where zero means "unused".
 func udpChecksum(src, dst netip.Addr, udp []byte) uint16 {
 	var sum uint32
 	add := func(b []byte) {

@@ -125,7 +125,7 @@ func (s *Speaker) emitLocked(actions []sendAction) func() {
 	// Ordered by what a pass can afford to lose, least first. Sorting on the
 	// destination instead put the Hello behind every request of the pass,
 	// because a Hello is multicast too and coalesce had merged it into the
-	// dump; a Hello is the one packet here that nothing else can stand in
+	// dump. A Hello is the one packet here that nothing else can stand in
 	// for. See sendPriority.
 	merged := coalesce(actions)
 	slices.SortStableFunc(merged, func(a, b sendAction) int {
@@ -340,7 +340,7 @@ func (s *Speaker) reserveBatchesTo(action sendAction) ([]reservedPacket, []tlvUn
 	}
 	for i := 0; i < len(tlvs); {
 		end := i + 1
-		// Router-Id parser state is packet-local; keep each ID with its Update.
+		// Router-Id parser state is packet-local. Keep each ID with its Update.
 		if tlvs[i].Type == TLVRouterID && end < len(tlvs) && tlvs[end].Type == TLVUpdate {
 			end++
 		}
@@ -693,7 +693,7 @@ func (s *Speaker) seqnoRequestTo(n *neighborState, key routeKey, routerID [8]byt
 	// Charged to this node's own bucket under the same cap as a forwarded
 	// request. The router-id half of the index still comes from a neighbor's
 	// packet, so "this node's own requests come from its own route table" was
-	// only half true; refusing to record one costs the suppression that stops
+	// only half true. Refusing to record one costs the suppression that stops
 	// it being relayed twice, not the request itself, which still goes out.
 	s.allowSeqnoRequest(sourceKey{route: key, routerID: routerID}, seqno, "", now)
 	return sendAction{neighbor: n, dest: n.destination(), priority: priorityRequest, tlvs: []RawTLV{EncodeSeqnoRequest(SeqnoRequest{
@@ -743,7 +743,7 @@ func aeFor(p netip.Prefix) uint8 {
 // It is bounded by maxStarveRetries and by maxStarveRetriesPerNeighbor. The
 // index carries a router id a neighbor writes into a packet, so a neighbor
 // that alternates a feasible update with an unfeasible one on an origin this
-// node has not recorded starves a new entry every packet; each lives through
+// node has not recorded starves a new entry every packet. Each lives through
 // four retries, and retryStarvedLocked
 // walks the whole map on every wake of the run loop, under the lock that also
 // carries hellos and retractions.
