@@ -408,6 +408,13 @@ type Translator struct {
 	warned []string
 	// trigger names what woke the run goroutine for the pass it runs, and belongs to that goroutine
 	trigger string
+	// enabled is whether this translator writes to the host at all, and wake
+	// carries a change of it to the run goroutine. Both are touched from
+	// outside that goroutine, and withdrawn is its own record of having acted
+	// on a stop, as kernel.Reconciler keeps one.
+	enabled   atomic.Bool
+	wake      chan struct{}
+	withdrawn bool
 }
 
 // New validates the capability against the platform and opens whatever the
@@ -432,7 +439,30 @@ func New(cfg Egress, rt Runtime) (*Translator, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Translator{cfg: cfg, rt: rt, be: be}, nil
+	return newTranslator(cfg, rt, be), nil
+}
+
+// newTranslator is a translator over a backend that is already open, writing to the host until SetEnabled stops it
+func newTranslator(cfg Egress, rt Runtime, be backend) *Translator {
+	t := &Translator{cfg: cfg, rt: rt, be: be, wake: make(chan struct{}, 1)}
+	t.enabled.Store(true)
+	return t
+}
+
+// SetEnabled stops or starts this translator while it runs, which a node
+// taken off the mesh asks for. Stopping retracts the advertisement and then
+// withdraws the tables, in the order Run's own exit takes, and starting puts
+// them back on the next pass.
+//
+// The work runs on the run goroutine, which owns every field it touches. This
+// records the request and wakes it, so a caller returns before the host has
+// caught up and reads Stats to see that it has.
+func (t *Translator) SetEnabled(on bool) {
+	t.enabled.Store(on)
+	select {
+	case t.wake <- struct{}{}:
+	default:
+	}
 }
 
 // ReturnSources is the address the In direction translates to under each family the capability advertises, an auto source picked among mesh
@@ -550,14 +580,34 @@ func (t *Translator) Run(ctx context.Context) error {
 	backoff := time.Duration(0)
 	t.trigger = "start"
 	for ctx.Err() == nil {
-		if err := t.reconcile(); err != nil {
-			backoff = min(max(2*backoff, minRetryInterval), t.cfg.sweep())
-			slog.Warn("egress pass failed, retrying", "err", err, "retry_in", backoff)
-			stopTimer(retry)
-			retry.Reset(backoff)
-		} else if backoff != 0 {
-			backoff = 0
-			stopTimer(retry)
+		if !t.enabled.Load() {
+			// once per stop rather than once per wake, and a withdrawal that
+			// failed is retried on the backoff a failed pass takes
+			if !t.withdrawn {
+				stopTimer(retry)
+				if err := t.stop(); err != nil {
+					backoff = min(max(2*backoff, minRetryInterval), t.cfg.sweep())
+					slog.Warn("egress could not withdraw its tables, retrying", "err", err, "retry_in", backoff)
+					retry.Reset(backoff)
+				} else {
+					t.withdrawn, backoff = true, 0
+				}
+			}
+		} else {
+			// the record of a stop lasts until the next pass, whatever woke it
+			if t.withdrawn {
+				t.withdrawn = false
+				slog.Info("egress translator started again", "where", t.Where())
+			}
+			if err := t.reconcile(); err != nil {
+				backoff = min(max(2*backoff, minRetryInterval), t.cfg.sweep())
+				slog.Warn("egress pass failed, retrying", "err", err, "retry_in", backoff)
+				stopTimer(retry)
+				retry.Reset(backoff)
+			} else if backoff != 0 {
+				backoff = 0
+				stopTimer(retry)
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -565,6 +615,12 @@ func (t *Translator) Run(ctx context.Context) error {
 			t.trigger = "sweep"
 		case <-retry.C:
 			t.trigger = "retry"
+		case <-t.wake:
+			// SetEnabled wakes the loop whichever way it went
+			t.trigger = "disable"
+			if t.enabled.Load() {
+				t.trigger = "enable"
+			}
 		}
 	}
 	// The advertisement goes before the rules do. A peer that keeps selecting
@@ -764,6 +820,25 @@ func (t *Translator) reportConflicts(conflicts []string) {
 			"detail", "the first chain to translate a connection keeps it, so a flow this node meant to translate may leave under that writer's address instead")
 	}
 	t.warned = slices.Clone(conflicts)
+}
+
+// stop retracts the advertisement and withdraws the tables, in the order Run's
+// exit takes, and records the pass. The pass reads zero installed, so a
+// diagnostic does not go on reporting the rules of the last pass that ran.
+func (t *Translator) stop() error {
+	started := time.Now()
+	t.publish(nil)
+	err := t.withdraw()
+	stats := Stats{At: time.Now()}
+	attrs := []slog.Attr{slog.String("trigger", t.trigger), slog.Duration("took", time.Since(started)),
+		slog.Int("installed", 0), slog.Int("announced", 0)}
+	if err != nil {
+		stats.Err = err.Error()
+		attrs = append(attrs, slog.String("err", stats.Err))
+	}
+	t.stats.Store(&stats)
+	t.rt.Events.Emit("egress.pass", "", attrs...)
+	return err
 }
 
 // withdraw removes the tables this translator owns. It is best effort by
