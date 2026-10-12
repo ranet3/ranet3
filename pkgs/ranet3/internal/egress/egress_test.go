@@ -32,6 +32,8 @@ type fakeBackend struct {
 	// failApply makes a host that will not take the rules, which is the
 	// condition an exit has to refuse to advertise over.
 	failApply bool
+	// failWithdraw makes a host that will not let the tables go, which a stop tries again rather than records as done
+	failWithdraw bool
 	// flows is added to each rule's counter on every readback, so a test can
 	// tell a rule the pass rewrote from one it left alone.
 	flows uint64
@@ -78,6 +80,9 @@ func (f *fakeBackend) Conflicts() ([]string, error) {
 func (f *fakeBackend) Withdraw() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failWithdraw {
+		return errors.New("no")
+	}
 	f.withdrawn++
 	f.held = nil
 	return nil
@@ -107,7 +112,7 @@ func translator(t *testing.T, cfg Egress, rt Runtime, be backend) *Translator {
 	if rt.Interface == "" {
 		rt.Interface = "ranet0"
 	}
-	return &Translator{cfg: cfg, rt: rt, be: be}
+	return newTranslator(cfg, rt, be)
 }
 
 func prefixes(t *testing.T, raw ...string) []schema.Prefix {

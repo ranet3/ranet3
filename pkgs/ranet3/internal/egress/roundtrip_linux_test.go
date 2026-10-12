@@ -47,7 +47,7 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	t.Cleanup(func() { _ = be.Close() })
 	requireEmptyRuleset(t, be)
 
-	tr := &Translator{cfg: cfg, rt: rt, be: be}
+	tr := newTranslator(cfg, rt, be)
 	desired := tr.desired()
 	if len(desired) != 5 {
 		t.Fatalf("the configuration asks for %d rules, want two out and three in", len(desired))
