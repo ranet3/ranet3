@@ -34,7 +34,18 @@ var errorTypes = []byte{3, 4, 5, 11, 12}
 // from a source that names one host
 // it is one destination unreachable, fragmentation needed, from that source to the packet's, sent with DF at precedence 6
 // carrying the mtu as its next-hop MTU and the packet's header and 8 bytes of its data, both its sums checking as a receiver checks them
+// every ICMP type is tried first in a packet every other rule lets an error answer, which meets each error type in every run
 func TestFragmentationNeededAnswersOnlyWhatAnErrorMayAnswer(t *testing.T) {
+	oneHost := netip.AddrFrom4([4]byte{198, 51, 100, 1})
+	for kind := range 256 {
+		raw := ipv4Packet(nil, dontFragment, 0, quotedData)
+		raw[9], raw[ipv4HeaderLen] = icmpProtocol, byte(kind)
+		binary.BigEndian.PutUint16(raw[10:], 0)
+		binary.BigEndian.PutUint16(raw[10:], ^headerSum(raw[:ipv4HeaderLen]))
+		if _, ok := FragmentationNeeded(raw, oneHost, maxDatagram); ok == (bytes.IndexByte(errorTypes, byte(kind)) >= 0) {
+			t.Errorf("an ICMP message of type %d was answered %t", kind, ok)
+		}
+	}
 	pbt.Check(t, func(ht *hegel.T) {
 		// half the cases break one rule at most, which puts each rule against packets every other rule lets through
 		alone := hegel.Draw(ht, hegel.Booleans())
