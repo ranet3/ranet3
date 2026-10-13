@@ -671,7 +671,8 @@ func TestFallbackRefusedForSizeKeepsTheKernelsChoice(t *testing.T) {
 	}
 }
 
-// the report reaches what sends through a mux, which reads it to narrow its session
+// the report reaches what sends through a mux bare, and the datagrams within the path go in every send of a batch longer than one
+// the first send's datagrams are all past the path, so a mux that stopped at its report would send nothing
 func TestMuxHandsThePathReportOn(t *testing.T) {
 	kernel := newFakeKernel()
 	kernel.hold("192.0.2.10", 2)
@@ -681,10 +682,22 @@ func TestMuxHandsThePathReportOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = mux.SendESPBatch(numbered(8, 1400))
-	report, ok := errors.AsType[*PathMTUError](err)
+	sizes := make([]int, espSendBatch+8)
+	var within []uint32
+	for i := range sizes {
+		sizes[i] = 1400
+		if i >= espSendBatch && i%2 == 0 {
+			sizes[i] = 600
+			within = append(within, uint32(i))
+		}
+	}
+	err = mux.SendESPBatch(sized(sizes...))
+	report, ok := err.(*PathMTUError)
 	if want := (PathMTUError{Endpoint: netip.MustParseAddrPort("198.51.100.5:4500"), MTU: 1280}); !ok || *report != want {
-		t.Errorf("the mux answered %v, want the report %v", err, &want)
+		t.Errorf("the mux answered %v, want the bare report %v", err, &want)
+	}
+	if got := numbers(kernel.datagrams()); !slices.Equal(got, within) {
+		t.Errorf("the datagrams went out as %v, want those within the path once in order, %v", got, within)
 	}
 }
 
