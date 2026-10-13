@@ -743,6 +743,11 @@ func (m *Mux) SendESP(b []byte) error { return m.SendESPBatch([][]byte{b}) }
 // UDP GSO without another packing copy. Bind may append into spare capacity
 // while coalescing, so callers transfer exclusive ownership of that capacity
 // for the duration of the send, just as for the packet contents themselves.
+//
+// A bare PathMTUError refused only the datagrams past the path, so the sends
+// after one still go. The batch then answers the bare report of the narrowest
+// path, which holds for every send of it, and any other error stops the batch
+// and is answered wrapped, after the report where one came first.
 func (m *Mux) SendESPBatch(bufs [][]byte) error {
 	if len(bufs) == 0 {
 		return nil
@@ -754,12 +759,26 @@ func (m *Mux) SendESPBatch(bufs [][]byte) error {
 	}
 
 	endpoint := m.currentEndpoint()
+	var report *PathMTUError
 	for len(bufs) != 0 {
 		n := min(len(bufs), espSendBatch)
-		if err := m.hub.bind.Send(bufs[:n], endpoint); err != nil {
-			return fmt.Errorf("transport: send ESP batch: %w", err)
-		}
+		err := m.hub.bind.Send(bufs[:n], endpoint)
 		bufs = bufs[n:]
+		if err == nil {
+			continue
+		}
+		next, ok := err.(*PathMTUError)
+		switch {
+		case !ok && report != nil:
+			return fmt.Errorf("transport: send ESP batch: %w, then %w", report, err)
+		case !ok:
+			return fmt.Errorf("transport: send ESP batch: %w", err)
+		case report == nil || next.MTU < report.MTU:
+			report = next
+		}
+	}
+	if report != nil {
+		return report
 	}
 	return nil
 }

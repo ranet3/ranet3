@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"runtime"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -962,6 +964,95 @@ type closedBind struct{}
 func (closedBind) ParseEndpoint(string) (Endpoint, error) { return nil, errors.New("no bind") }
 func (closedBind) Send([][]byte, Endpoint) error          { return errors.New("no bind") }
 func (closedBind) Close() error                           { return nil }
+
+// fixedEndpoint is one peer address and nothing else, for a bind that sends nowhere
+type fixedEndpoint struct{ addr netip.AddrPort }
+
+func (*fixedEndpoint) transportEndpoint()                    {}
+func (e *fixedEndpoint) String() string                      { return e.addr.String() }
+func (e *fixedEndpoint) AddrPort() netip.AddrPort            { return e.addr }
+func (e *fixedEndpoint) sameDestination(other Endpoint) bool { return other == Endpoint(e) }
+func (e *fixedEndpoint) withoutSource() Endpoint             { return e }
+
+// answeringBind answers each send in turn with the next of its answers and records how many datagrams each carried
+type answeringBind struct {
+	answers []error
+	sends   []int
+}
+
+func (*answeringBind) ParseEndpoint(string) (Endpoint, error) { return nil, errors.New("no bind") }
+func (*answeringBind) Close() error                           { return nil }
+
+func (b *answeringBind) Send(packets [][]byte, _ Endpoint) error {
+	answer := b.answers[len(b.sends)]
+	b.sends = append(b.sends, len(packets))
+	return answer
+}
+
+// a batch past one send carries on past a bare path report, which refused only the datagrams past its path
+// and answers the bare report of the narrowest path, so a caller can tell the datagrams that went by their length
+// any other error stops the batch and is answered wrapped, after a report where one came first
+// a report the bind itself answered wrapped is such another error, since the send that answered it lost more
+func TestMuxCarriesOnPastAPathReport(t *testing.T) {
+	to := netip.MustParseAddrPort("198.51.100.5:4500")
+	wide, narrow := &PathMTUError{Endpoint: to, MTU: 1400}, &PathMTUError{Endpoint: to, MTU: 1280}
+	unreachable := errors.New("network is unreachable")
+	for _, test := range []struct {
+		name    string
+		answers []error
+		// sends is how many sends the batch made before it answered
+		sends int
+		// report is the bare report the batch answers, nil where it answers otherwise
+		report *PathMTUError
+		// wraps lists the errors an answer that is no bare report wraps
+		wraps []error
+	}{
+		{"every send went", []error{nil, nil, nil}, 3, nil, nil},
+		{"reports in the first and last sends", []error{wide, nil, narrow}, 3, narrow, nil},
+		{"the narrower report first", []error{narrow, wide, nil}, 3, narrow, nil},
+		{"another failure after a report", []error{wide, unreachable, nil}, 2, nil, []error{wide, unreachable}},
+		{"another failure first", []error{unreachable, nil, nil}, 1, nil, []error{unreachable}},
+		{"a report the bind wrapped", []error{fmt.Errorf("%w, then %w", narrow, unreachable), nil, nil}, 1, nil, []error{narrow, unreachable}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bind := &answeringBind{answers: test.answers}
+			hub := &Hub{bind: bind, muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now()}
+			hub.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}})
+			mux, err := hub.newMux(&fixedEndpoint{addr: to}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch := make([][]byte, 2*espSendBatch+1)
+			for i := range batch {
+				batch[i] = []byte{byte(i)}
+			}
+			err = mux.SendESPBatch(batch)
+			if want := []int{espSendBatch, espSendBatch, 1}[:test.sends]; !slices.Equal(bind.sends, want) {
+				t.Errorf("the batch went in sends of %v datagrams, want %v", bind.sends, want)
+			}
+			report, bare := err.(*PathMTUError)
+			switch {
+			case test.report == nil && test.wraps == nil:
+				if err != nil {
+					t.Errorf("the batch answered %v, want nothing", err)
+				}
+			case test.report != nil:
+				if !bare || report != test.report {
+					t.Errorf("the batch answered %v, want the bare report %v", err, test.report)
+				}
+			default:
+				if err == nil || bare {
+					t.Errorf("the batch answered %v, want an error wrapping %v", err, test.wraps)
+				}
+				for _, cause := range test.wraps {
+					if !errors.Is(err, cause) {
+						t.Errorf("the batch answered %v, which does not wrap %v", err, cause)
+					}
+				}
+			}
+		})
+	}
+}
 
 // A node with responder enabled keeps a queue for IKE messages from peers that
 // have not dialed it, and anyone who can reach the port fills it. Overflowing

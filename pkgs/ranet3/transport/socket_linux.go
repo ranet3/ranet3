@@ -460,11 +460,7 @@ func (b *udpBind) sendWithin(socket *udpSocket, batch *udpSendBatch, packets [][
 		return fmt.Errorf("transport: read the path MTU to %s after %w: %w", ep, refused, err)
 	}
 	report := &PathMTUError{Endpoint: ep.AddrPort(), MTU: mtu}
-	// each datagram goes out after an IP header without options and a UDP header
-	largest := mtu - 20 - 8
-	if socket.ipv6 {
-		largest = mtu - 40 - 8
-	}
+	largest := report.Largest()
 	for first := 0; first < len(packets); {
 		if len(packets[first]) > largest {
 			first++

@@ -44,7 +44,8 @@ type Peer struct {
 	// other says this node is out of room, and an operator reading the second
 	// needs it not to move for the first. The sender merges several batches
 	// into one call, so an error covers every packet in it. How many of them
-	// actually left is not knowable from here.
+	// actually left is not knowable from here, but for a bare path report,
+	// which refused only the packets past the path it names.
 	sendFailed atomic.Uint64
 	// sendErrReported is nanoseconds since started, read through time.Since so
 	// it comes off the monotonic clock, and primed one interval in the past so
@@ -658,14 +659,25 @@ func (p *Peer) senderLoop() {
 			next++
 		}
 		var sendErr error
+		// report is a bare path report, which refused only the packets past the path and sent the rest
+		var report *transport.PathMTUError
 		if len(packets) != 0 {
 			if sendErr = p.transmitBatchFn(packets); sendErr != nil {
+				report, _ = sendErr.(*transport.PathMTUError)
 				p.narrow(sendErr)
 			}
 		}
 		for _, b := range ready {
+			lost := len(b.raw) - b.shed
 			if b.err == nil {
 				b.err = sendErr
+				if report != nil {
+					// a batch whose every packet went has not failed, so its caller undoes nothing
+					// a packet that went ahead of the refusal on a path that narrowed meanwhile counts as refused
+					if lost = b.past(report.Largest()); lost == 0 {
+						b.err = nil
+					}
+				}
 			}
 			// A batch that sealed nothing never reached the transport at all,
 			// so its packets are gone and this peer refused them. One that
@@ -675,7 +687,7 @@ func (p *Peer) senderLoop() {
 				if len(b.sealed) == 0 {
 					p.dropped.Add(uint64(len(b.raw)))
 				} else {
-					p.sendFailed.Add(uint64(len(b.raw) - b.shed))
+					p.sendFailed.Add(uint64(lost))
 				}
 				b.counted = true
 			}
@@ -694,6 +706,17 @@ func (p *Peer) senderLoop() {
 		clear(ready)
 		packets, ready = packets[:0], ready[:0]
 	}
+}
+
+// past counts the batch's packets the transmit carried that are longer than largest
+func (b *peerBatch) past(largest int) int {
+	n := 0
+	for _, packet := range b.sealed[b.shed:] {
+		if len(packet) > largest {
+			n++
+		}
+	}
+	return n
 }
 
 // shedHead runs the delay control on a batch the sender has just taken in ticket order
