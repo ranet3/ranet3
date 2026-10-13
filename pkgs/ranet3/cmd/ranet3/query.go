@@ -35,9 +35,9 @@ func (r *reader) queryCommands() []*cobra.Command {
 //
 // It names the peer this node reaches the prefix through rather than the node
 // that originates it. Babel carries a router id and no name, and this tree
-// gives each speaker a random one, so the origin is nameable only where it is
-// a neighbor. The router id is printed as it arrives, which at least tells two
-// origins apart and survives a peer's restart being visible as a change.
+// gives each speaker a random one, which it keeps in its state directory, so
+// the origin is nameable only where it is a neighbor. The router id is printed
+// as it arrives, which at least tells two origins apart.
 func (r *reader) whoisCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "whois <address>",

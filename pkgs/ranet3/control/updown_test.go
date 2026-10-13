@@ -40,12 +40,16 @@ func TestStatusOfANodeOffTheMeshRendersAsTheGoldenFile(t *testing.T) {
 	goldenJSON(t, "status-down.json", downStatus().Down)
 }
 
+// babelState is the state file of the fixtures' state directory
+const babelState = "/var/lib/ranet3/babel.json"
+
 // upDownFixture is the debug view of the gateway an operator took off the mesh
 func upDownFixture() UpDownInfo {
 	return UpDownInfo{
 		Down: &Down{Since: wentDown, For: Duration(downFor)},
 		Flag: "/var/lib/ranet3/down", Flagged: true,
-		Last: &UpDownChange{Down: true, Cause: CauseRequest, At: wentDown, Ago: Duration(downFor)},
+		Last:  &UpDownChange{Down: true, Cause: CauseRequest, At: wentDown, Ago: Duration(downFor)},
+		Babel: BabelOrigin{RouterID: "7201020304050607", Seqno: 300, File: babelState, Limit: new(uint16(523))},
 	}
 }
 
@@ -56,22 +60,29 @@ func TestUpDownRendersAsTheGoldenFiles(t *testing.T) {
 	golden(t, "updown.txt", []byte(out.String()))
 	goldenJSON(t, "updown.json", info)
 
-	// restarted an hour later, and down again from the flag rather than from a request
+	// restarted an hour later past the limit the file held, and down again from the flag rather than from a request
 	info.Down = &Down{Since: wentDown, For: Duration(time.Hour + time.Minute)}
 	info.Last = &UpDownChange{Down: true, Cause: CauseFlag, At: wentDown.Add(time.Hour), Ago: Duration(time.Minute)}
+	info.Babel = BabelOrigin{RouterID: "7201020304050607", Seqno: 524, File: babelState, Limit: new(uint16(780))}
 	out.Reset()
 	RenderUpDown(&out, info)
 	golden(t, "updown-restarted.txt", []byte(out.String()))
 
-	// put back by a request, the flag gone with it
-	info = UpDownInfo{Flag: "/var/lib/ranet3/down", Last: &UpDownChange{Cause: CauseRequest, At: wentDown, Ago: Duration(downFor)}}
+	// put back by a request, the flag gone with it, and the run after the up a seqno further on
+	info = UpDownInfo{
+		Flag:  "/var/lib/ranet3/down",
+		Last:  &UpDownChange{Cause: CauseRequest, At: wentDown, Ago: Duration(downFor)},
+		Babel: BabelOrigin{RouterID: "7201020304050607", Seqno: 525, File: babelState, Limit: new(uint16(780))},
+	}
 	out.Reset()
 	RenderUpDown(&out, info)
 	golden(t, "updown-up.txt", []byte(out.String()))
 }
 
 // a flag and a state that disagree say what a restart would do, and a daemon without a state directory says it keeps none
+// so do a router id the state file does not hold and a seqno past the limit it holds, in the order of RFC 8966 section 3.2.1
 func TestUpDownSaysWhatARestartWouldDo(t *testing.T) {
+	const id = "7201020304050607"
 	for name, test := range map[string]struct {
 		info UpDownInfo
 		want string
@@ -80,6 +91,26 @@ func TestUpDownSaysWhatARestartWouldDo(t *testing.T) {
 		"up beside a flag":      {UpDownInfo{Flag: "/var/lib/ranet3/down", Flagged: true}, "a restart would start this node down"},
 		"no state directory":    {UpDownInfo{}, "keeps no state directory"},
 		"never moved":           {UpDownInfo{Flag: "/var/lib/ranet3/down"}, "not since the daemon started"},
+		"a router id without a state directory": {
+			UpDownInfo{Babel: BabelOrigin{RouterID: id, Seqno: 1}},
+			id + ", which a restart does not keep, as this daemon keeps no state directory",
+		},
+		"a router id the file does not hold": {
+			UpDownInfo{Flag: "/var/lib/ranet3/down", Babel: BabelOrigin{RouterID: id, Seqno: 1, File: babelState}},
+			id + ", which a restart does not keep, as " + babelState + " does not hold it",
+		},
+		"a seqno past the limit": {
+			UpDownInfo{Flag: "/var/lib/ranet3/down", Babel: BabelOrigin{RouterID: id, Seqno: 268, File: babelState, Limit: new(uint16(267))}},
+			"268, past 267, the limit the file holds, and a restart could reuse a seqno this node has sent",
+		},
+		"a seqno past the limit across the wrap": {
+			UpDownInfo{Flag: "/var/lib/ranet3/down", Babel: BabelOrigin{RouterID: id, Seqno: 3, File: babelState, Limit: new(uint16(65530))}},
+			"3, past 65530, the limit the file holds",
+		},
+		"a limit ahead across the wrap": {
+			UpDownInfo{Flag: "/var/lib/ranet3/down", Babel: BabelOrigin{RouterID: id, Seqno: 65530, File: babelState, Limit: new(uint16(250))}},
+			"65530, and a restart starts past 250, the limit the file holds",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var out strings.Builder

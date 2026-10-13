@@ -5,10 +5,12 @@ package control
 
 import (
 	"io"
+	"strconv"
 	"time"
 )
 
 // PathDebugUpDown is whether the node is on the mesh, the flag that keeps it off and its last move between the two
+// with the Babel router id and seqno kept beside the flag
 const PathDebugUpDown = PathDebug + "updown"
 
 func init() {
@@ -30,6 +32,20 @@ type UpDownInfo struct {
 	Flagged bool `json:"flagged"`
 	// Last is absent before the first move
 	Last *UpDownChange `json:"last,omitempty"`
+	// Babel is the router id and seqno of the node's own routes, and what of them a restart keeps
+	Babel BabelOrigin `json:"babel"`
+}
+
+// BabelOrigin is the router id and seqno the node's own routes carry, and the state file a restart starts them from
+type BabelOrigin struct {
+	// RouterID is 16 hex digits
+	RouterID string `json:"router_id"`
+	Seqno    uint16 `json:"seqno"`
+	// File is absent where the daemon keeps no state directory
+	File string `json:"file,omitempty"`
+	// Limit is the seqno limit the file holds for this node and router id, read when the view was asked for
+	// it is absent where the file holds none for them, and a restart then starts under another router id
+	Limit *uint16 `json:"limit,omitempty"`
 }
 
 // the causes of a move between up and down
@@ -52,7 +68,7 @@ type UpDownChange struct {
 // UpDown reads whether the node is on the mesh and what last moved it
 func (c *Client) UpDown() (UpDownInfo, error) { return read[UpDownInfo](c, PathDebugUpDown) }
 
-// RenderUpDown writes the state, the flag and the last move
+// RenderUpDown writes the state, the flag, the last move and the Babel router id and seqno
 func RenderUpDown(w io.Writer, info UpDownInfo) {
 	state := "up"
 	if info.Down != nil {
@@ -62,7 +78,35 @@ func RenderUpDown(w io.Writer, info UpDownInfo) {
 	if info.Last != nil {
 		changed = changeLine(*info.Last)
 	}
-	pairs(w, [][]string{{"State", state}, {"Flag", flagLine(info)}, {"Changed", changed}})
+	pairs(w, [][]string{
+		{"State", state}, {"Flag", flagLine(info)}, {"Changed", changed},
+		{"Router ID", routerIDLine(info.Babel)}, {"Seqno", seqnoLine(info.Babel)},
+	})
+}
+
+// routerIDLine names the router id and whether a restart keeps it
+func routerIDLine(origin BabelOrigin) string {
+	switch {
+	case origin.File == "":
+		return origin.RouterID + ", which a restart does not keep, as this daemon keeps no state directory"
+	case origin.Limit == nil:
+		return origin.RouterID + ", which a restart does not keep, as " + origin.File + " does not hold it"
+	}
+	return origin.RouterID + ", kept in " + origin.File
+}
+
+// seqnoLine names the seqno and the limit a restart starts past
+// a seqno past that limit, in the order of RFC 8966 section 3.2.1, as a failed save leaves one, could be sent again after a restart
+func seqnoLine(origin BabelOrigin) string {
+	seqno := strconv.Itoa(int(origin.Seqno))
+	if origin.Limit == nil {
+		return seqno
+	}
+	limit := strconv.Itoa(int(*origin.Limit))
+	if int16(origin.Seqno-*origin.Limit) > 0 {
+		return seqno + ", past " + limit + ", the limit the file holds, and a restart could reuse a seqno this node has sent"
+	}
+	return seqno + ", and a restart starts past " + limit + ", the limit the file holds"
 }
 
 // flagLine names the flag and whether it is there, and says what a restart does where the flag and the state disagree

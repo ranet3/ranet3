@@ -10,5 +10,11 @@
     "cause": "request",
     "at": "2026-10-12T21:04:05Z",
     "ago": "3m4s"
+  },
+  "babel": {
+    "router_id": "7201020304050607",
+    "seqno": 300,
+    "file": "/var/lib/ranet3/babel.json",
+    "limit": 523
   }
 }

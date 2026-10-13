@@ -1,3 +1,5 @@
-State    up
-Flag     /var/lib/ranet3/down, absent
-Changed  to up by a request, 3 minutes ago, at 2026-10-12 21:04:05 UTC
+State      up
+Flag       /var/lib/ranet3/down, absent
+Changed    to up by a request, 3 minutes ago, at 2026-10-12 21:04:05 UTC
+Router ID  7201020304050607, kept in /var/lib/ranet3/babel.json
+Seqno      525, and a restart starts past 780, the limit the file holds

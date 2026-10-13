@@ -4,6 +4,7 @@
 package client
 
 import (
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"time"
@@ -12,8 +13,9 @@ import (
 )
 
 // DebugUpDown reads whether the node is on the mesh, its flag as the directory holds it now, and the last move between the two
+// with the Babel router id and seqno, and the limit their file holds now
 func (c *Client) DebugUpDown() control.UpDownInfo {
-	info := control.UpDownInfo{Down: c.downStatus()}
+	info := control.UpDownInfo{Down: c.downStatus(), Babel: c.babelOrigin()}
 	if c.stateDir != "" {
 		info.Flag = filepath.Join(c.stateDir, downFlag)
 		_, err := os.Stat(info.Flag)
@@ -25,4 +27,19 @@ func (c *Client) DebugUpDown() control.UpDownInfo {
 		info.Last = &move
 	}
 	return info
+}
+
+// babelOrigin is the router id and seqno of the node's own routes, with the limit the state file holds for them
+// a file that is missing, cannot be read, or holds another node or router id holds no limit for them, and a restart would not keep the router id
+func (c *Client) babelOrigin() control.BabelOrigin {
+	origin, seqno := c.speaker.Origin()
+	view := control.BabelOrigin{RouterID: hex.EncodeToString(origin.RouterID[:]), Seqno: seqno}
+	if c.stateDir == "" {
+		return view
+	}
+	view.File = filepath.Join(c.stateDir, babelStateFile)
+	if state, found, err := readBabelState(c.stateDir); err == nil && found && state.node == c.config().Node && state.origin.RouterID == origin.RouterID {
+		view.Limit = &state.origin.Limit
+	}
+	return view
 }
