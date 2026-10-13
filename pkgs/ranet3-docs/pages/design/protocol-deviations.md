@@ -115,3 +115,23 @@ answer, which the `internal/netstack` root tests hold for both families at the
 headend and behind a waypoint. The Time Exceeded and Parameter Problem a refused
 segment gets come from the segment's destination too, which is one of this
 node's own segments and within the RFC.
+
+A node's own Babel seqno rises at every start of its speaker, which
+[RFC 8966 section 3.2.2](https://www.rfc-editor.org/rfc/rfc8966.html#section-3.2.2)
+asks a node not to do unprompted, since a higher seqno leaves other nodes fewer
+feasible routes to fall back on. A process keeps the router id the node had
+before, from the file [the state directory](../service.md#the-state-directory)
+holds, and starts one past the seqno limit there, which is ahead of every seqno
+the node has sent unless a write of the limit failed or the node starts from an
+older copy of its state directory. The speaker that `ranet3 up` starts again
+sends one past the seqno of the run before it. A node still holding the old
+routes, with the feasibility distance it recorded for them, finds the new ones
+newer and takes them at once. A seqno that did not move would leave them
+unfeasible there until seqno requests raised it, or for the 3 minutes the source
+entry lives after its last update. babeld resumes one past the seqno its own
+state file holds as well. The limit runs 256 ahead of the seqno in use, so a
+start moves the seqno on by at most 257, and the order of
+[section 3.2.1](https://www.rfc-editor.org/rfc/rfc8966.html#section-3.2.1)
+compares two seqnos less than 32768 apart. That leaves room for 127 starts in a
+row, inside the time a node keeps a feasibility distance, before one recorded
+before the first could read as newer than the seqno after the last.

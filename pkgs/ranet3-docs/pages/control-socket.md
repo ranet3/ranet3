@@ -232,6 +232,12 @@ there, and the last move between up and down with its cause. Each move is
 recorded as a `node.down` or `node.up` event, as
 [debugging](development/debug.md#events) describes.
 
+The state directory also holds `babel.json`, the node's Babel router id and a
+seqno limit, which a restart starts from, as
+[running it as a service](service.md#the-state-directory) describes. A `down`
+and an `up` keep the router id, and the speaker the `up` starts sends a seqno
+past every one it sent before the `down`.
+
 This is still not the daemon and client split tailscale has: there is no login
 flow here, identity being a static key and a registry entry that nix and sops
 put in place before the process starts.

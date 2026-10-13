@@ -54,12 +54,53 @@ control socket with `--control` moves `ranet3 reload` with it, to the last
 `--control ""` leaves a reload nothing to ask, and the module refuses it at
 evaluation while a change to the config file still reloads the unit.
 
+## The state directory
+
 The unit's `StateDirectory` is `/var/lib/ranet3`, at mode 0700, and the module
 passes it to the daemon with `--state-dir`. It holds the flag `ranet3 down`
 writes, which keeps a node taken off the mesh off it through
 `systemctl restart ranet3` and a reboot until `ranet3 up`, as
 [taking a node off the mesh](control-socket.md#taking-a-node-off-the-mesh)
 describes.
+
+It also holds `babel.json`, which keeps the node's Babel router id through
+restarts, crashes and reboots. A restarted node is then the speaker it was to
+the rest of the mesh, and its routes carry a seqno past every one it sent
+before, which makes them feasible at once wherever its old routes are still
+held. The file names the node it belongs to beside the router id and a seqno
+limit, at mode 0600:
+
+```json
+{
+  "node": { "org": "example", "name": "gateway" },
+  "router_id": "7201020304050607",
+  "seqno_limit": 523
+}
+```
+
+The limit stays ahead of every seqno the node has sent. Before the speaker uses
+a seqno past it, it writes a limit 256 further on, whole, beside the file's
+name, synced and renamed into place, with the directory synced after it, and a
+start resumes one past the limit the file holds. A crash at any point of a write
+leaves the old limit or the new one, and either is ahead of every seqno sent. A
+file that is missing, names another node, as a disk image or a backup taken from
+another node can, or cannot be read costs the router id and nothing else: the
+node starts under a new one at seqno 1, and its first write replaces the file.
+The start's `babel.seqno.raised` event says why the router id is new, and the
+log gives the reason too where the file names another node or cannot be read.
+
+A write that fails is logged and recorded as a `babel.state.unsaved` event, and
+the node still raises its seqno when a neighbor asks for a newer one. A crash
+before a later write succeeds can then resume at a seqno the node has sent, and
+a node holding its routes at a newer one finds the new routes unfeasible until
+seqno requests raise the node's seqno past it, or the source entry there
+expires, 3 minutes after its last update. A start from an older copy of the
+node's own state directory, such as a snapshot rollback or a backup restore, can
+likewise resume at seqnos the node has already sent, and its routes are then
+unfeasible for up to 3 minutes wherever a far node holds a newer source entry.
+Removing `babel.json` before such a start costs the router id alone, as a
+missing file does. `ranet3 debug updown` shows the router id, the seqno and the
+limit the file holds, as [debugging](development/debug.md#commands) describes.
 
 ## What a switch does
 
@@ -119,9 +160,9 @@ daemon makes the directory afresh. Removing the directory instead takes
 `underlay.json` with it, and a scoped default the record still holds, one a
 start refused to withdraw, then stays on its interface for good.
 
-The daemon keeps the flag `ranet3 down` writes in `/var/db/ranet3`, its default
-state directory on darwin, and makes the directory at mode 0700 the first time,
-which leaves the job no `--state-dir` to pass.
+The daemon keeps the flag `ranet3 down` writes and `babel.json` in
+`/var/db/ranet3`, its default state directory on darwin, and makes the directory
+at mode 0700 the first time, which leaves the job no `--state-dir` to pass.
 
 launchd has no reload path, so the job names the store path of the config file,
 and any change to `settings` restarts the daemon.
