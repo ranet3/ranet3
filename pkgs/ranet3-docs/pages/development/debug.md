@@ -77,7 +77,12 @@ the caller already reads as uid 0.
 - `debug updown` is whether the node is on the mesh and since when, the flag
   that keeps it off through a restart and whether the flag is there, and the
   last move between up and down with its cause, a request or the flag at start.
-  Where the flag and the node disagree, it says what a restart would do.
+  Where the flag and the node disagree, it says what a restart would do. It also
+  shows the node's Babel router id and seqno, with the state file a restart
+  starts them from and the seqno limit the file holds, read when the view is
+  asked for. A router id the file does not hold is one a restart would not keep,
+  and a seqno past the limit, as a failed save leaves one, is one a restart
+  could send again.
 - `debug events [-f] [--kind K]... [--peer P] [--since 5m] [--for 30s]` prints
   the events the daemon has recorded and exits, or with `-f` goes on printing
   the ones after them until `--for` has passed. `--kind`, given up to 16 times,
@@ -145,6 +150,9 @@ its connections to the reads.
 | `babel.request.sent`                 | this node asked a neighbor that came up for its whole table                 |
 | `babel.config.applied`               | the speaker took a reloaded `cap.babel`, with its intervals and cost        |
 | `babel.route.selected`, `.retracted` | a prefix's next hop changed, every time rather than once a second as logged |
+| `babel.seqno.requested`              | a seqno request naming this node's own router id arrived                    |
+| `babel.seqno.raised`                 | this node's own seqno rose, at a start of the speaker or for a request      |
+| `babel.state.unsaved`, `.unreadable` | a seqno limit could not be saved, or the state file not read at start       |
 | `kernel.pass`                        | a reconciler pass that took a reload, changed, skipped anew or failed       |
 | `egress.pass`                        | a translator pass that rewrote its rules, moved its prefixes or failed      |
 | `network.changed`                    | the host's default or addresses moved, so every session was probed          |
@@ -180,6 +188,22 @@ once without a peer.
 A `babel.request.sent` is recorded when the node decides to send the request,
 and a send queue with no room can still refuse it, which
 `ranet3_peer_send_dropped_total` counts.
+
+A `babel.seqno.requested` names the neighbor that sent the request as its peer
+and carries the `route` asked about, the seqno it `asked` for, the node's own
+`seqno` when it arrived and whether it `raised` that seqno. A request raises it
+only where it asks past the seqno of a prefix this node originates, and at most
+once per packet. A `babel.seqno.raised` carries its `cause`, `start` or
+`request`, the seqno it went `from` and `to`, and the seqno `limit` the speaker
+last saved, which a restart starts past. The raise a process makes as it starts
+carries the `router_id` as well, and `drawn` where that router id is a new one,
+saying why: `no state file`, `the state file names example/alpha` for a file
+another node wrote, or `the state file is unreadable`. The run of the speaker
+after `ranet3 up` makes a raise with `cause=start` of its own. A
+`babel.state.unsaved` carries the `limit` the speaker could not save, the
+`seqno` in use and the `err`, and the seqno rises all the same. A
+`babel.state.unreadable` carries the state `file` and the `err`, and the node
+starts under a new router id from seqno 1.
 
 A `transport.endpoint` event carries the peer's `endpoint` and the `errno` the
 kernel refused the send with. An `unpinned` one is recorded once for an
