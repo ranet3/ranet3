@@ -640,7 +640,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 
 	// A hello, an IHU and one route, so every per-neighbor line below reads
 	// something other than the zero it would read with the counting deleted.
-	speaker.Receive(peer, babelPacket(t,
+	speaker.Receive(peer, babelPacket(
 		babel.EncodeHello(babel.Hello{Seqno: 1, Interval: 1000}),
 		babel.EncodeIHU(babel.IHU{RxCost: 96, Interval: 1000}),
 		babel.EncodeRouterID([8]byte{1}),
@@ -1534,46 +1534,9 @@ func TestDialerGivesUpOnAPeerItCannotReach(t *testing.T) {
 // link-local source, the multicast group, and the UDP checksum IPv6 makes
 // mandatory. The framing lives in internal/babel and is not exported, so a
 // test outside that package builds it here.
-func babelPacket(t *testing.T, tlvs ...babel.RawTLV) []byte {
-	t.Helper()
-	src := netip.MustParseAddr("fe80::2")
-	dst := netip.MustParseAddr("ff02::1:6")
-	payload := babel.EncodePacket(tlvs)
-	raw := make([]byte, 40+8+len(payload))
-	raw[0] = 0x60
-	binary.BigEndian.PutUint16(raw[4:6], uint16(8+len(payload)))
-	raw[6], raw[7] = 17, 1
-	copy(raw[8:24], src.AsSlice())
-	copy(raw[24:40], dst.AsSlice())
-	udp := raw[40:]
-	binary.BigEndian.PutUint16(udp[0:2], babel.Port)
-	binary.BigEndian.PutUint16(udp[2:4], babel.Port)
-	binary.BigEndian.PutUint16(udp[4:6], uint16(len(udp)))
-	copy(udp[8:], payload)
-
-	var sum uint32
-	add := func(b []byte) {
-		for i := 0; i+1 < len(b); i += 2 {
-			sum += uint32(binary.BigEndian.Uint16(b[i : i+2]))
-		}
-		if len(b)%2 == 1 {
-			sum += uint32(b[len(b)-1]) << 8
-		}
-	}
-	add(raw[8:40])
-	var meta [8]byte
-	binary.BigEndian.PutUint32(meta[0:4], uint32(len(udp)))
-	meta[7] = 17
-	add(meta[:])
-	add(udp)
-	for sum>>16 != 0 {
-		sum = sum&0xffff + sum>>16
-	}
-	if checksum := ^uint16(sum); checksum == 0 {
-		binary.BigEndian.PutUint16(udp[6:8], 0xffff)
-	} else {
-		binary.BigEndian.PutUint16(udp[6:8], checksum)
-	}
+func babelPacket(tlvs ...babel.RawTLV) []byte {
+	raw := udpPacket(netip.MustParseAddr("fe80::2"), babelGroup, babel.Port, babel.Port, babel.EncodePacket(tlvs))
+	raw[7] = 1 // link-local multicast is never forwarded, RFC 8966 section 4
 	return raw
 }
 
