@@ -293,6 +293,11 @@ func foreignRoutes(t *testing.T, index int) map[string]bool {
 		if !ok || rm.Index == index || len(rm.Addrs) <= unix.RTAX_NETMASK {
 			continue
 		}
+		// RTF_WASCLONED marks a copy the kernel made of another route and RTF_LLINFO a neighbor entry
+		// the kernel adds and expires both by itself, and sends no routing message when one goes
+		if rm.Flags&(unix.RTF_WASCLONED|unix.RTF_LLINFO) != 0 {
+			continue
+		}
 		destination, _ := addressFromRouteAddr(rm.Addrs[unix.RTAX_DST])
 		mask, _ := addressFromRouteAddr(rm.Addrs[unix.RTAX_NETMASK])
 		out[fmt.Sprintf("index %d %s mask %s", rm.Index, destination, mask)] = true
