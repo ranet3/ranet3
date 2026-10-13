@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/internal/babel"
 )
 
 // Metrics replaces what prometheus-bird-exporter reported while Babel lived in
@@ -20,45 +22,46 @@ import (
 // Everything here is read from live state at scrape time rather than sampled
 // on a timer, so a scrape reflects the instant it happened.
 func (c *Client) Metrics(w io.Writer) {
-	babel := c.speaker.Stats()
+	stats := c.speaker.Stats()
 	sessions := c.sessions.paths()
 
 	fmt.Fprint(w, "# HELP ranet3_babel_neighbor_up Whether a babel neighbor is alive.\n")
 	fmt.Fprint(w, "# TYPE ranet3_babel_neighbor_up gauge\n")
-	for _, neighbor := range babel.Neighbors {
+	for _, neighbor := range stats.Neighbors {
 		fmt.Fprintf(w, "ranet3_babel_neighbor_up{peer=\"%s\"} %d\n", label(neighbor.Peer), boolValue(neighbor.Alive))
 	}
 	fmt.Fprint(w, "# HELP ranet3_babel_neighbor_cost Link cost to a babel neighbor, where 65535 is infinity.\n")
 	fmt.Fprint(w, "# TYPE ranet3_babel_neighbor_cost gauge\n")
-	for _, neighbor := range babel.Neighbors {
+	for _, neighbor := range stats.Neighbors {
 		fmt.Fprintf(w, "ranet3_babel_neighbor_cost{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Cost)
 	}
 	fmt.Fprint(w, "# HELP ranet3_babel_routes_received Routes learned from one neighbor, selected or not.\n")
 	fmt.Fprint(w, "# TYPE ranet3_babel_routes_received gauge\n")
-	for _, neighbor := range babel.Neighbors {
+	for _, neighbor := range stats.Neighbors {
 		fmt.Fprintf(w, "ranet3_babel_routes_received{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Routes)
 	}
 	fmt.Fprint(w, "# HELP ranet3_peer_send_dropped_total Packets a peer did not send: no room in its budget, the peer closing, its outbound SA unable to give out a sequence range, or the delay through its queue staying above the target.\n")
 	fmt.Fprint(w, "# TYPE ranet3_peer_send_dropped_total counter\n")
-	for _, neighbor := range babel.Neighbors {
+	for _, neighbor := range stats.Neighbors {
 		fmt.Fprintf(w, "ranet3_peer_send_dropped_total{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Dropped)
 	}
 	fmt.Fprint(w, "# HELP ranet3_peer_send_delay_dropped_total Packets of ranet3_peer_send_dropped_total a peer dropped from the head of its queue because the delay through it stayed above the target.\n")
 	fmt.Fprint(w, "# TYPE ranet3_peer_send_delay_dropped_total counter\n")
-	for _, neighbor := range babel.Neighbors {
+	for _, neighbor := range stats.Neighbors {
 		fmt.Fprintf(w, "ranet3_peer_send_delay_dropped_total{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.DelayDropped)
 	}
 	fmt.Fprint(w, "# HELP ranet3_peer_send_failed_total Packets a peer sealed and the transport then lost.\n")
 	fmt.Fprint(w, "# TYPE ranet3_peer_send_failed_total counter\n")
-	for _, neighbor := range babel.Neighbors {
+	for _, neighbor := range stats.Neighbors {
 		fmt.Fprintf(w, "ranet3_peer_send_failed_total{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.SendFailed)
 	}
+	renderReassembly(w, stats.Neighbors)
 	fmt.Fprint(w, "# HELP ranet3_babel_routes_selected Routes currently installed in the forwarding table.\n")
 	fmt.Fprint(w, "# TYPE ranet3_babel_routes_selected gauge\n")
-	fmt.Fprintf(w, "ranet3_babel_routes_selected %d\n", babel.Selected)
+	fmt.Fprintf(w, "ranet3_babel_routes_selected %d\n", stats.Selected)
 	fmt.Fprint(w, "# HELP ranet3_babel_routes_originated Prefixes this node announces itself.\n")
 	fmt.Fprint(w, "# TYPE ranet3_babel_routes_originated gauge\n")
-	fmt.Fprintf(w, "ranet3_babel_routes_originated %d\n", babel.Originated)
+	fmt.Fprintf(w, "ranet3_babel_routes_originated %d\n", stats.Originated)
 
 	fmt.Fprint(w, "# HELP ranet3_session_up Whether an IKE session is established for one path.\n")
 	fmt.Fprint(w, "# TYPE ranet3_session_up gauge\n")
@@ -89,6 +92,31 @@ func (c *Client) Metrics(w io.Writer) {
 	c.renderSegmentCounters(w)
 	c.renderKernel(w)
 	c.renderEgress(w)
+}
+
+// renderReassembly writes what became of the Babel packets each neighbor's session sent in fragments
+// a neighbor whose session sent none has no samples, so the series name exactly the neighbors whose stacks cut their packets
+func renderReassembly(w io.Writer, neighbors []babel.NeighborStat) {
+	fragmenting := slices.DeleteFunc(slices.Clone(neighbors), func(neighbor babel.NeighborStat) bool {
+		return neighbor.Fragments == babel.FragmentStats{}
+	})
+	fmt.Fprint(w, "# HELP ranet3_babel_reassembled_total Babel packets a neighbor's session sent in fragments that this node put back together and read.\n")
+	fmt.Fprint(w, "# TYPE ranet3_babel_reassembled_total counter\n")
+	for _, neighbor := range fragmenting {
+		fmt.Fprintf(w, "ranet3_babel_reassembled_total{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Fragments.Read)
+	}
+	fmt.Fprint(w, "# HELP ranet3_babel_reassembled_largest_bytes The largest of them, a whole IPv6 packet with its headers.\n")
+	fmt.Fprint(w, "# TYPE ranet3_babel_reassembled_largest_bytes gauge\n")
+	for _, neighbor := range fragmenting {
+		fmt.Fprintf(w, "ranet3_babel_reassembled_largest_bytes{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.Fragments.Largest)
+	}
+	fmt.Fprint(w, "# HELP ranet3_babel_reassembly_dropped_total Babel packets a neighbor's session sent in fragments that this node dropped rather than read, by reason: a fragment overlapping another, a first fragment without the UDP header, a malformed fragment, a datagram still incomplete after its time, one that gave its place or its storage to another of the same neighbor, or one refused while the neighbor's other datagrams, all younger than 1 second, held every place or the storage it needed.\n")
+	fmt.Fprint(w, "# TYPE ranet3_babel_reassembly_dropped_total counter\n")
+	for _, neighbor := range fragmenting {
+		for i, reason := range babel.FragmentDrops {
+			fmt.Fprintf(w, "ranet3_babel_reassembly_dropped_total{peer=\"%s\",reason=\"%s\"} %d\n", label(neighbor.Peer), reason, neighbor.Fragments.Dropped[i])
+		}
+	}
 }
 
 // renderEgress writes the exit node and subnet router capability. A node that
