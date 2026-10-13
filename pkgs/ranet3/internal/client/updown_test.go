@@ -362,8 +362,8 @@ func TestDownThatCannotWriteItsFlagChangesNothing(t *testing.T) {
 	if on, _ := reconciler.calls(); c.Status().Down != nil || len(on) != 0 {
 		t.Errorf("a refused down left the status %+v and told the reconciler %v", c.Status().Down, on)
 	}
-	if entries, err := os.ReadDir(c.stateDir); err != nil || len(entries) != 1 || entries[0].Name() != downFlag || !entries[0].IsDir() {
-		t.Errorf("a refused down left %v in the state directory (err %v), want the directory in the flag's place alone", entries, err)
+	if entries, err := os.ReadDir(c.stateDir); err != nil || len(entries) != 2 || entries[0].Name() != babelStateFile || entries[1].Name() != downFlag || !entries[1].IsDir() {
+		t.Errorf("a refused down left %v in the state directory (err %v), want the Babel state and the directory in the flag's place alone", entries, err)
 	}
 }
 
