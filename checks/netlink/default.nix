@@ -105,10 +105,10 @@ testers.runNixOSTest {
     ran = out.count("--- PASS")
     assert ran >= 9, f"only {ran} of the client's tun round trips ran:\n{out}"
 
-    # the segmentation stop against linux itself
-    # a veth pair to a second namespace behind a route whose path mtu is locked below the segment size
+    # every datagram sent with DF and the path mtu a refused one reports, against linux itself
+    # a veth pair to a second namespace behind routes whose path mtu is locked below the datagram size
     out = machine.succeed(
-        "${netlinkTests}/bin/transport-tests -test.v -test.run 'TestKernelRefusesSegmentsALockedPathCannotCarry' 2>&1"
+        "${netlinkTests}/bin/transport-tests -test.v -test.run 'TestKernelRefusesWhatALockedPathCannotCarry' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the locked path test skipped itself under root:\n{out}"

@@ -7,9 +7,11 @@ package transport
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,11 +42,15 @@ var roamingFamilies = map[bool]roamingFamily{
 
 var roamingLinks = []int{2, 3}
 
-// only the largest exceeds a 1280 path once segmented
-// it comes first, since SampledFrom leans toward its first element
-var roamingSizes = []int{1400, 64, 1200}
+// 1400 exceeds a 1280 path of either family and 1240 an IPv6 one, and none exceeds a wider path
+// the largest comes first, since SampledFrom leans toward its first element
+var roamingSizes = []int{1400, 64, 1200, 1240}
 
 var roamingMTUs = []int{1280, defaultPathMTU, 9000}
+
+// roamingSegmentRefusals are how a route answers a segmented message whatever its size, zero for a route that carries it
+// EIO is a route through an IPsec policy
+var roamingSegmentRefusals = []unix.Errno{0, unix.EIO, unix.EINVAL}
 
 // roamingWaits are whole minutes, so a wait lands a minute either side of a stop's lapse or on it
 var roamingWaits = []time.Duration{time.Minute, unsegmentedFor - time.Minute, unsegmentedFor}
@@ -121,6 +127,15 @@ func (m *roamingMachine) RuleCarry(tc hegel.TestCase) {
 	m.kernel.mu.Unlock()
 }
 
+// RuleRoute has the route to a peer refuse segmented messages whatever their size, or carry them again
+func (m *roamingMachine) RuleRoute(tc hegel.TestCase) {
+	peer := netip.MustParseAddrPort(hegel.Draw(tc, hegel.SampledFrom(m.family.peers)))
+	refusal := hegel.Draw(tc, hegel.SampledFrom(roamingSegmentRefusals))
+	m.kernel.mu.Lock()
+	m.kernel.unsegmentable[peer.Addr()] = refusal
+	m.kernel.mu.Unlock()
+}
+
 // RuleAdopt hands a mux a datagram's endpoint, which can only arrive on an address the host holds
 // the accepted mux gets its last endpoint back half the time, as from a peer whose request arrives on an address the host holds again
 func (m *roamingMachine) RuleAdopt(tc hegel.TestCase) {
@@ -161,9 +176,18 @@ func (m *roamingMachine) RuleAdopt(tc hegel.TestCase) {
 }
 
 // RuleSend sends one IKE message, or a batch of runs that do not adjoin one another, through either mux
+// a run's size is one of roamingSizes, or the largest the path to the mux carries, a byte under it or a byte over it
 // a batch through the pinned accepted mux loses the pin's address once a drawn number of messages went to the kernel, if it has that many
 func (m *roamingMachine) RuleSend(tc hegel.TestCase) {
 	dialedMux := hegel.Draw(tc, hegel.Booleans())
+	mux, to, until := m.accepted, m.dest, &m.acceptedUntil
+	if dialedMux {
+		mux, to, until = m.dialed, m.dialedTo, &m.dialedUntil
+	}
+	m.kernel.mu.Lock()
+	largest := m.kernel.mtu(to.Addr()) - m.family.header
+	m.kernel.mu.Unlock()
+	sizes := append(slices.Clone(roamingSizes), largest-1, largest, largest+1)
 	ike := hegel.Draw(tc, hegel.WeightedBooleans(1.0/4))
 	first := m.next
 	runs := []roamingRun{{0, 1, 0}}
@@ -172,7 +196,9 @@ func (m *roamingMachine) RuleSend(tc hegel.TestCase) {
 	if !ike {
 		runs = nil
 		for range hegel.Draw(tc, pbt.Spanning(1, 4)) {
-			length, size := hegel.Draw(tc, pbt.Spanning(1, 20)), hegel.Draw(tc, hegel.SampledFrom(roamingSizes))
+			// a run fits the one segmented message a send may carry it in, of 65507 bytes at most
+			size := hegel.Draw(tc, hegel.SampledFrom(sizes))
+			length := hegel.Draw(tc, pbt.Spanning(1, min(20, 65507/size)))
 			runs = append(runs, roamingRun{len(packets), len(packets) + length, size})
 			packets = append(packets, numbered(length, size)...)
 		}
@@ -184,10 +210,6 @@ func (m *roamingMachine) RuleSend(tc hegel.TestCase) {
 	count := runs[len(runs)-1].end
 	m.next += uint32(count)
 
-	mux, to, until := m.accepted, m.dest, &m.acceptedUntil
-	if dialedMux {
-		mux, to, until = m.dialed, m.dialedTo, &m.dialedUntil
-	}
 	pinned := !dialedMux && m.pinned
 	sentBefore, recordedBefore := len(m.kernel.datagrams()), len(m.events.recorded())
 	m.kernel.mu.Lock()
@@ -200,6 +222,7 @@ func (m *roamingMachine) RuleSend(tc hegel.TestCase) {
 	if armed {
 		m.kernel.releasing, m.kernel.releaseAfter = m.pin, after
 	}
+	mtu, segmentRefusal := m.kernel.mtu(to.Addr()), m.kernel.unsegmentable[to.Addr()]
 	m.kernel.mu.Unlock()
 
 	var err error
@@ -209,47 +232,66 @@ func (m *roamingMachine) RuleSend(tc hegel.TestCase) {
 		err = mux.SendESPBatch(packets)
 	}
 
-	// the first kept datagrams leave as the endpoint is
+	// the runs within the path, counted among the datagrams that fit, which are all that leave
+	var carried []roamingRun
+	var carriedNumbers []uint32
+	oversize := false
+	for _, run := range runs {
+		if run.size+m.family.header > mtu {
+			oversize = true
+			continue
+		}
+		start := len(carriedNumbers)
+		for i := run.start; i < run.end; i++ {
+			carriedNumbers = append(carriedNumbers, first+uint32(i))
+		}
+		carried = append(carried, roamingRun{start, len(carriedNumbers), run.size})
+	}
+	fit := len(carriedNumbers)
+
+	// the first kept datagrams that fit leave as the endpoint is
 	// and the rest from the kernel's choice once linux refuses the pin
 	m.kernel.mu.Lock()
-	kept := count
+	released := armed && !m.kernel.releasing.IsValid()
+	kept := fit
 	if pinned && refusal != 0 {
 		kept = 0
-	} else if armed && !m.kernel.releasing.IsValid() {
+	} else if released {
 		kept = m.kernel.releasedAt - sentBefore
 	}
 	m.kernel.releasing = netip.Addr{}
-	fellBack := pinned && kept < count
+	fellBack := pinned && (refusal != 0 || released)
 	if fellBack {
 		refusal = m.kernel.pinRefusal(to.Addr(), m.pin, m.pinIndex)
 	}
 	chosen, reachableAfter := m.kernel.choose(m.ipv4)
-	mtu := m.kernel.mtu(to.Addr())
 	m.kernel.mu.Unlock()
-	wantSent := count
+	wantSent := fit
+	lost := (!pinned && !reachable) || (fellBack && !reachableAfter)
 	if !pinned && !reachable {
 		wantSent = 0
 	} else if fellBack && !reachableAfter {
 		wantSent = kept
 	}
 
-	var want []string
+	var stops, unpinned []string
 	var segmented []bool
 	stopped := *until != 0 && m.clock < *until
-	// walk follows datagrams from to upto of each run
+	// walk follows the datagrams that fit from to upto of each run within the path
 	// a run a refused pin cut short went one datagram to a message and stopped nothing
 	// and its rest goes on from where it was cut
+	// a refusal for size stops nothing, so a run past the path leaves no trace here
 	walk := func(from, upto int) {
-		for _, run := range runs {
+		for _, run := range carried {
 			start, end := max(run.start, from), min(run.end, upto)
 			if start >= end {
 				continue
 			}
 			together := !stopped && end == run.end && end-start > 1
-			if together && run.size+m.family.header > mtu {
+			if together && segmentRefusal != 0 {
 				stopped, together = true, false
 				*until = m.clock + unsegmentedFor
-				want = append(want, fmt.Sprintf("transport.endpoint.unsegmented endpoint=%s errno=%s", to, unix.ErrnoName(m.kernel.gsoErrno)))
+				stops = append(stops, fmt.Sprintf("transport.endpoint.unsegmented endpoint=%s errno=%s", to, unix.ErrnoName(segmentRefusal)))
 			}
 			for range end - start {
 				segmented = append(segmented, together)
@@ -258,18 +300,31 @@ func (m *roamingMachine) RuleSend(tc hegel.TestCase) {
 	}
 	walk(0, min(kept, wantSent))
 	if fellBack && reachableAfter {
-		walk(kept, count)
-		want = append(want, fmt.Sprintf("transport.endpoint.unpinned endpoint=%s errno=%s", to, unix.ErrnoName(refusal)))
+		walk(kept, fit)
+		unpinned = append(unpinned, fmt.Sprintf("transport.endpoint.unpinned endpoint=%s errno=%s", to, unix.ErrnoName(refusal)))
 		m.pinned = false
 	}
 
-	if (err == nil) != (wantSent == count) {
-		tc.Errorf("a send of %d datagrams, %d of which the model has go out, answered %v", count, wantSent, err)
+	// a send that lost what fits answers why, which a report may come with
+	// one that lost nothing answers the report of its path alone where a datagram did not fit, and nothing otherwise
+	switch report, reported := errors.AsType[*PathMTUError](err); {
+	case lost:
+		if !errors.Is(err, unix.ENETUNREACH) {
+			tc.Errorf("a send that lost what fits after its first %d datagrams answered %v, want ENETUNREACH", wantSent, err)
+			return
+		}
+	case oversize:
+		if !reported || *report != (PathMTUError{Endpoint: to, MTU: mtu}) || errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EMSGSIZE) {
+			tc.Errorf("a send with datagrams past its %d byte path to %s answered %v, want the path's report alone", mtu, to, err)
+			return
+		}
+	case err != nil:
+		tc.Errorf("a send of %d datagrams within its path answered %v", count, err)
 		return
 	}
 	sent := m.kernel.datagrams()[sentBefore:]
 	if len(sent) != wantSent {
-		tc.Errorf("%d datagrams went out of a send of %d, the model says %d", len(sent), count, wantSent)
+		tc.Errorf("%d datagrams went out of a send of %d, %d of which fit, the model says %d", len(sent), count, fit, wantSent)
 		return
 	}
 	for i, datagram := range sent {
@@ -277,8 +332,8 @@ func (m *roamingMachine) RuleSend(tc hegel.TestCase) {
 		if ike {
 			number = number[nonESPMarkerLen:]
 		}
-		if got := binary.BigEndian.Uint32(number); got != first+uint32(i) {
-			tc.Errorf("datagram %d of the send carried number %d, want %d", i, got, first+uint32(i))
+		if got := binary.BigEndian.Uint32(number); got != carriedNumbers[i] {
+			tc.Errorf("datagram %d of the send carried number %d, want %d", i, got, carriedNumbers[i])
 		}
 		if datagram.to != to {
 			tc.Errorf("a datagram went to %s, the model says %s", datagram.to, to)
@@ -294,8 +349,19 @@ func (m *roamingMachine) RuleSend(tc hegel.TestCase) {
 			tc.Errorf("datagram %d of runs %v went segmented %v, the model says %v", i, runs, datagram.segmented, segmented[i])
 		}
 	}
-	if got := m.events.recorded()[recordedBefore:]; !slices.Equal(got, want) {
-		tc.Errorf("the send recorded %q, the model %q", got, want)
+	// a fallback records itself once it sent what it could before a datagram past the path
+	// whether the pin went before that datagram or among the runs after it, which the model does not follow, sets its place among the stops
+	// so the stops and the fallback are each held to the model in their own order
+	var gotStops, gotUnpinned []string
+	for _, line := range m.events.recorded()[recordedBefore:] {
+		if strings.HasPrefix(line, "transport.endpoint.unpinned ") {
+			gotUnpinned = append(gotUnpinned, line)
+		} else {
+			gotStops = append(gotStops, line)
+		}
+	}
+	if !slices.Equal(gotStops, stops) || !slices.Equal(gotUnpinned, unpinned) {
+		tc.Errorf("the send recorded stops %q and fallbacks %q, the model %q and %q", gotStops, gotUnpinned, stops, unpinned)
 	}
 }
 
@@ -307,15 +373,15 @@ func (m *roamingMachine) InvariantDialedLeavesTheSourceToTheKernel(tc hegel.Test
 }
 
 // both muxes send where they last moved, a dialed one from the kernel's choice and an accepted one pinned until refused
-// each stops segmenting for as long as linux keeps a path MTU once its path refuses segments, and nothing is lost while a source exists
+// a datagram past its path never goes out and the send reports the path, while every datagram within it goes out once
+// each stops segmenting for unsegmentedFor once a route refuses segments and passes them one to a message, and nothing is lost while a source exists
 // a pin refused partway through a batch leaves the rest of it to the kernel's choice
-// and every datagram goes out once
 func TestRoamingSendsAgreeWithTheModel(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		ipv4 := hegel.Draw(ht, hegel.Booleans())
 		family := roamingFamilies[ipv4]
 		kernel := newFakeKernel()
-		kernel.gsoErrno = hegel.Draw(ht, hegel.SampledFrom([]unix.Errno{unix.EINVAL, unix.EMSGSIZE, unix.EIO}))
+		kernel.gsoErrno = hegel.Draw(ht, hegel.SampledFrom([]unix.Errno{unix.EMSGSIZE, unix.EINVAL}))
 		// the pin, and the other addresses of its family on another link
 		// where a send that loses the pin goes on from
 		kernel.hold(family.local[0], roamingLinks[0])
@@ -323,7 +389,9 @@ func TestRoamingSendsAgreeWithTheModel(t *testing.T) {
 			kernel.hold(local, roamingLinks[1])
 		}
 		for _, peer := range family.peers {
-			kernel.pathMTU[netip.MustParseAddrPort(peer).Addr()] = hegel.Draw(ht, hegel.SampledFrom(roamingMTUs))
+			address := netip.MustParseAddrPort(peer).Addr()
+			kernel.pathMTU[address] = hegel.Draw(ht, hegel.SampledFrom(roamingMTUs))
+			kernel.unsegmentable[address] = hegel.Draw(ht, hegel.SampledFrom(roamingSegmentRefusals))
 		}
 		events := &eventLog{}
 		hub := kernelHub(kernel, events)

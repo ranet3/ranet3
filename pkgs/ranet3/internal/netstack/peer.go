@@ -14,6 +14,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // Peer separates parallel packet encryption from ordered, batched transport.
@@ -23,6 +26,7 @@ type Peer struct {
 	reserveFn       func(count int) (BatchSealer, error)
 	transmitBatchFn func(sealed [][]byte) error
 	// mtu is the largest inner packet the session carries, DefaultMTU until whoever builds the peer sets it
+	// a path report the transmit answers lowers it
 	mtu atomic.Int64
 
 	reserveMu sync.Mutex
@@ -154,6 +158,27 @@ func (p *Peer) SetMTU(mtu int) { p.mtu.Store(int64(mtu)) }
 // MTU is the largest inner packet the peer's session carries
 // the mesh answers a packet past it, or cuts it into fragments, rather than send it
 func (p *Peer) MTU() int { return int(p.mtu.Load()) }
+
+// narrow lowers the largest inner packet the peer's session carries to what a path report says its path carries
+// a report never raises it, and an error that is no report leaves it as it is
+func (p *Peer) narrow(err error) {
+	report, ok := errors.AsType[*transport.PathMTUError](err)
+	if !ok {
+		return
+	}
+	// the outer IP header of the path's family
+	header := 40
+	if report.Endpoint.Addr().Is4() {
+		header = 20
+	}
+	mtu := int64(esp.Inner(report.MTU, header))
+	for {
+		current := p.mtu.Load()
+		if mtu >= current || p.mtu.CompareAndSwap(current, mtu) {
+			return
+		}
+	}
+}
 
 // Close stops the reserved peer's ordered sender. Compatibility peers do not
 // own a goroutine, so closing them is a no-op.
@@ -634,7 +659,9 @@ func (p *Peer) senderLoop() {
 		}
 		var sendErr error
 		if len(packets) != 0 {
-			sendErr = p.transmitBatchFn(packets)
+			if sendErr = p.transmitBatchFn(packets); sendErr != nil {
+				p.narrow(sendErr)
+			}
 		}
 		for _, b := range ready {
 			if b.err == nil {

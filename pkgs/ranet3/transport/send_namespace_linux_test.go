@@ -4,36 +4,57 @@
 package transport
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net"
 	"net/netip"
 	"os"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"golang.org/x/net/ipv4"
 	"golang.org/x/sys/unix"
 )
 
 // vethInfoPeer is VETH_INFO_PEER of linux/veth.h, which describes the other end of a new pair
 const vethInfoPeer = 1
 
-// lockedPathMTU is the path MTU to the far end, which path MTU discovery cannot change
-// 1400-byte segments exceed it
-// while single datagrams of that size cross it in fragments
+// lockedPathMTU is the path MTU to the far end along each route the test locks, which path MTU discovery cannot change
+// datagrams of 1400 bytes exceed it alone or as segments, and the veth under it carries 1500
 const lockedPathMTU = 1280
 
-// linux refuses a segmented send whose segments exceed a locked path MTU
-// with EMSGSIZE, or with EINVAL on older kernels
-// the bind then sends the batch one datagram to a message
-// every datagram reaches the peer, and segmentation stops for that peer once
+// testMark is the mark of the bind whose datagrams a rule routes by it
+const testMark = 0x2a
+
+// the tables a rule routes into, by the send's mark, its pinned source or its pinned interface
+// each holds a route to the far end locked at lockedPathMTU, and each number is its rule's priority too, ahead of the main table's
+const (
+	markTable   = 100
+	sourceTable = 101
+	deviceTable = 102
+)
+
+// sentinel numbers the datagram sent after a batch, which the far end reads after every datagram of the batch that arrived
+const sentinel = math.MaxUint32
+
+// linux refuses a datagram past a locked path MTU, segmented or alone, as the bind sets DF on every datagram
+// the send reports the route's path MTU, sends the datagrams within it, and cuts none into fragments
+// segmentation stays on, since a refusal for size says nothing of segments
+// a kernel from 6.14 on refuses the segments with EMSGSIZE, and the send resends none of them one to a message
+// an older one answers EINVAL, and the resend's first single datagram meets the EMSGSIZE
+// a rule picks each locked route by the send's mark, its pinned source or its pinned interface, while the main table's route carries 1500
+// so the report carries the locked path MTU only where its read names each of them as the send does
 // the peer listens at the far end of a veth pair, in a network namespace of its own
-func TestKernelRefusesSegmentsALockedPathCannotCarry(t *testing.T) {
+func TestKernelRefusesWhatALockedPathCannotCarry(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("building a veth pair needs root on linux")
 	}
@@ -52,9 +73,7 @@ func TestKernelRefusesSegmentsALockedPathCannotCarry(t *testing.T) {
 	if far.err != nil {
 		t.Fatal(far.err)
 	}
-	for _, listener := range far.listeners {
-		t.Cleanup(func() { _ = listener.Close() })
-	}
+	t.Cleanup(far.close)
 	link, err := net.InterfaceByName("near")
 	if err != nil {
 		t.Fatalf("look up the near end: %v", err)
@@ -64,79 +83,253 @@ func TestKernelRefusesSegmentsALockedPathCannotCarry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer netlink.close()
-	if err := netlink.configure(link.Index, nearAddresses); err != nil {
+	if err := netlink.configure(link.Index, slices.Concat(nearAddresses, steeredSources)); err != nil {
 		t.Fatalf("configure the near end: %v", err)
 	}
-	for _, address := range farAddresses {
-		if err := netlink.lockPathMTU(link.Index, address.Addr(), lockedPathMTU); err != nil {
-			t.Fatalf("lock the path MTU to %s: %v", address.Addr(), err)
+	for i, address := range farAddresses {
+		source := steeredSources[i].Addr()
+		for _, rule := range []struct {
+			table      uint32
+			sourceBits int
+			match      []byte
+		}{
+			{markTable, 0, slices.Concat(attribute(unix.FRA_FWMARK, word(testMark)), attribute(unix.FRA_FWMASK, word(^uint32(0))))},
+			{sourceTable, source.BitLen(), attribute(unix.FRA_SRC, source.AsSlice())},
+			{deviceTable, 0, attribute(unix.FRA_OIFNAME, cString("near"))},
+		} {
+			if err := netlink.steer(addressFamily(address.Addr()), rule.table, rule.sourceBits, rule.match); err != nil {
+				t.Fatalf("route by a rule into table %d: %v", rule.table, err)
+			}
+			if err := netlink.lockPathMTU(link.Index, address.Addr(), lockedPathMTU, rule.table); err != nil {
+				t.Fatalf("lock the path MTU to %s in table %d: %v", address.Addr(), rule.table, err)
+			}
 		}
 	}
 
 	events := &eventLog{}
-	bind, _, _, err := listenPacketBind(0, 0, events.record)
+	marked, markedLogs := listenHanded(t, testMark, events)
+	plain, plainLogs := listenHanded(t, 0, events)
+	for i, address := range farAddresses {
+		listener := far.listeners[i]
+		to := net.UDPAddrFromAddrPort(netip.AddrPortFrom(address.Addr(), uint16(listener.LocalAddr().(*net.UDPAddr).Port)))
+		ipv6 := !address.Addr().Is4()
+		header := 20 + 8
+		if ipv6 {
+			header = 40 + 8
+		}
+		for _, way := range []struct {
+			name string
+			bind *udpBind
+			log  *handedConn
+			ep   *udpEndpoint
+		}{
+			{"the bind's mark", marked, markedLogs[i], &udpEndpoint{addr: to}},
+			{"its pinned source", plain, plainLogs[i], pinnedEndpoint(to, steeredSources[i].Addr().AsSlice(), 0, ipv6)},
+			{"its pinned interface", plain, plainLogs[i], pinnedEndpoint(to, nearAddresses[i].Addr().AsSlice(), link.Index, ipv6)},
+		} {
+			pinned := way.ep.control != nil
+			for _, segmented := range []bool{true, false} {
+				// eight datagrams past the path in one message with the first of four within it, the rest of those and a short one in the next
+				sizes := []int{1400, 1400, 1400, 1400, 1400, 1400, 1400, 1400, 600, 600, 600, 600, 64}
+				if !segmented {
+					sizes = []int{1400}
+				}
+				way.log.handed = nil
+				err := way.bind.Send(sized(sizes...), way.ep)
+				report, ok := err.(*PathMTUError)
+				if !ok || *report != (PathMTUError{Endpoint: way.ep.AddrPort(), MTU: lockedPathMTU}) {
+					t.Errorf("a send routed by %s to %s answered %v, want the report of its %d byte path alone", way.name, way.ep, err, lockedPathMTU)
+				}
+				var want []triedMessage
+				if segmented {
+					refusal := unix.EMSGSIZE
+					if len(way.log.handed) > 0 && way.log.handed[0].errno == unix.EINVAL {
+						refusal = unix.EINVAL
+					}
+					want = append(want, triedMessage{pinned: pinned, segment: 1400, size: 8*1400 + 600, errno: refusal})
+					if refusal == unix.EINVAL {
+						want = append(want, triedMessage{pinned: pinned, size: 1400, errno: unix.EMSGSIZE})
+					}
+					want = append(want, triedMessage{pinned: pinned, segment: 600, size: 4*600 + 64})
+					t.Logf("linux refused the segments routed by %s to %s with %s", way.name, way.ep, unix.ErrnoName(refusal))
+				} else {
+					want = append(want, triedMessage{pinned: pinned, size: 1400, errno: unix.EMSGSIZE})
+				}
+				if !slices.Equal(way.log.handed, want) {
+					t.Errorf("a send routed by %s to %s handed linux %+v, want %+v", way.name, way.ep, way.log.handed, want)
+				}
+
+				if err := way.bind.Send([][]byte{binary.BigEndian.AppendUint32(nil, sentinel)}, way.ep); err != nil {
+					t.Fatalf("the datagram after the batch failed: %v", err)
+				}
+				var within []arrival
+				for number, size := range sizes {
+					if size+header <= lockedPathMTU {
+						within = append(within, arrival{uint32(number), size})
+					}
+				}
+				if got := arrivals(t, listener); !slices.Equal(got, within) {
+					t.Errorf("a send routed by %s to %s reached the far end as %v, want the datagrams within the path whole, %v", way.name, way.ep, got, within)
+				}
+			}
+			if way.ep.unsegmentedUntil.Load() != 0 {
+				t.Errorf("sends routed by %s to %s stopped segmenting", way.name, way.ep)
+			}
+		}
+	}
+	if got := events.recorded(); len(got) != 0 {
+		t.Errorf("refusals for size recorded %q, want nothing", got)
+	}
+	ipv4, ipv6, err := far.reassembled()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = bind.Close() })
-	var seen []string
-	for i, address := range farAddresses {
-		listener := far.listeners[i]
-		ep := dialed(netip.AddrPortFrom(address.Addr(), uint16(listener.LocalAddr().(*net.UDPAddr).Port)).String())
-		for range 2 {
-			if err := bind.Send(numbered(8, 1400), ep); err != nil {
-				t.Fatalf("a batch whose single datagrams the path carries failed: %v", err)
-			}
-			if got := readNumbered(t, listener, 8); !slices.Equal(got, sequence(8)) {
-				t.Fatalf("%s received %v, want each datagram once", address.Addr(), got)
-			}
-		}
-		got := events.recorded()
-		if len(got) != len(seen)+1 {
-			t.Fatalf("two batches to %s recorded %q, want one stop", ep, got[len(seen):])
-		}
-		errno, ok := strings.CutPrefix(got[len(seen)], fmt.Sprintf("transport.endpoint.unsegmented endpoint=%s errno=", ep))
-		if !ok || (errno != "EMSGSIZE" && errno != "EINVAL") {
-			t.Fatalf("the batch to %s recorded %q, want segmentation stopped for a segment the path refused", ep, got[len(seen)])
-		}
-		t.Logf("linux refused the segments to %s with %s", address.Addr(), errno)
-		seen = got
+	if ipv4 != 0 || ipv6 != 0 {
+		t.Errorf("the far end put %d IPv4 and %d IPv6 datagrams back together from fragments, want none", ipv4, ipv6)
 	}
 }
 
 // the near end's addresses, then the far end's, one of each family on the same prefixes
+// the near end also holds steeredSources, which a rule routes by
 var (
-	nearAddresses = []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24"), netip.MustParsePrefix("2001:db8::1/64")}
-	farAddresses  = []netip.Prefix{netip.MustParsePrefix("192.0.2.2/24"), netip.MustParsePrefix("2001:db8::2/64")}
+	nearAddresses  = []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24"), netip.MustParsePrefix("2001:db8::1/64")}
+	steeredSources = []netip.Prefix{netip.MustParsePrefix("192.0.2.3/24"), netip.MustParsePrefix("2001:db8::3/64")}
+	farAddresses   = []netip.Prefix{netip.MustParsePrefix("192.0.2.2/24"), netip.MustParsePrefix("2001:db8::2/64")}
 )
 
-// readNumbered reads count datagrams from listener and returns the numbers they carry in ascending order
-func readNumbered(t *testing.T, listener *net.UDPConn, count int) []uint32 {
+// handedConn stands between a socket and linux and logs each message it hands over, with the errno linux refused it with
+type handedConn struct {
+	conn   udpBatchConn
+	handed []triedMessage
+}
+
+// WriteBatch logs the messages sendmmsg took, and the first of them when it answers an error, the only one an error is about
+// a message refused after others went ends a short count instead, and the next call hands it over again
+func (c *handedConn) WriteBatch(messages []ipv4.Message, flags int) (int, error) {
+	n, err := c.conn.WriteBatch(messages, flags)
+	for i := range max(n, 0) {
+		c.handed = append(c.handed, handedMessage(&messages[i], 0))
+	}
+	if err != nil {
+		errno, _ := errors.AsType[unix.Errno](err)
+		c.handed = append(c.handed, handedMessage(&messages[0], errno))
+	}
+	return n, err
+}
+
+func handedMessage(m *ipv4.Message, errno unix.Errno) triedMessage {
+	_, _, pinned, segment := parseSendControl(m.OOB)
+	return triedMessage{pinned: pinned, segment: segment, size: len(m.Buffers[0]), errno: errno}
+}
+
+// listenHanded opens a bind with mark whose sockets hand their messages over through a log of each, in the order of farAddresses
+func listenHanded(t *testing.T, mark uint32, events *eventLog) (*udpBind, []*handedConn) {
+	t.Helper()
+	opened, _, _, err := listenPacketBind(0, mark, events.record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = opened.Close() })
+	bind := opened.(*udpBind)
+	var logs []*handedConn
+	for _, socket := range []*udpSocket{bind.v4, bind.v6} {
+		log := &handedConn{conn: socket.pc}
+		socket.pc = log
+		logs = append(logs, log)
+	}
+	return bind, logs
+}
+
+// arrival is a datagram as the far end read it, the number it carries and its size
+type arrival struct {
+	number uint32
+	size   int
+}
+
+// arrivals reads listener until the sentinel arrives and returns what arrived before it in the order of the numbers carried
+func arrivals(t *testing.T, listener *net.UDPConn) []arrival {
 	t.Helper()
 	if err := listener.SetReadDeadline(time.Now().Add(arrivalBudget)); err != nil {
 		t.Fatal(err)
 	}
-	numbers := make([]uint32, 0, count)
+	var got []arrival
 	buf := make([]byte, 2048)
-	for range count {
+	for {
 		n, err := listener.Read(buf)
 		if err != nil {
-			t.Fatalf("%d of %d datagrams arrived: %v", len(numbers), count, err)
+			t.Fatalf("%d datagrams arrived and then not the sentinel: %v", len(got), err)
 		}
-		if n != 1400 {
-			t.Fatalf("a datagram arrived as %d bytes, want 1400", n)
+		number := binary.BigEndian.Uint32(buf)
+		if number == sentinel {
+			slices.SortFunc(got, func(a, b arrival) int { return cmp.Compare(a.number, b.number) })
+			return got
 		}
-		numbers = append(numbers, binary.BigEndian.Uint32(buf))
+		got = append(got, arrival{number, n})
 	}
-	slices.Sort(numbers)
-	return numbers
 }
 
 // farEnd is the peer's half of the veth pair, listening in a network namespace of its own
 type farEnd struct {
 	// listeners hold one socket of each family, in the order of farAddresses
 	listeners []*net.UDPConn
-	err       error
+	// snmp and snmp6 are the namespace's IP counters of each family, opened from within it
+	snmp, snmp6 *os.File
+	err         error
+}
+
+func (f farEnd) close() {
+	for _, listener := range f.listeners {
+		_ = listener.Close()
+	}
+	for _, counters := range []*os.File{f.snmp, f.snmp6} {
+		if counters != nil {
+			_ = counters.Close()
+		}
+	}
+}
+
+// reassembled reads how many datagrams of each family the far end put back together from fragments
+// /proc/net/snmp gives each protocol a line of names and then a line of values, and /proc/net/snmp6 each counter a line
+func (f farEnd) reassembled() (ipv4, ipv6 uint64, err error) {
+	var read [2]string
+	for i, counters := range []*os.File{f.snmp, f.snmp6} {
+		if _, err := counters.Seek(0, io.SeekStart); err != nil {
+			return 0, 0, err
+		}
+		text, err := io.ReadAll(counters)
+		if err != nil {
+			return 0, 0, err
+		}
+		read[i] = string(text)
+	}
+	found := 0
+	lines := strings.Split(read[0], "\n")
+	for i := 0; i+1 < len(lines); i++ {
+		names, ok := strings.CutPrefix(lines[i], "Ip: ")
+		if !ok {
+			continue
+		}
+		values := strings.Fields(strings.TrimPrefix(lines[i+1], "Ip: "))
+		if at := slices.Index(strings.Fields(names), "ReasmOKs"); at >= 0 && at < len(values) {
+			if ipv4, err = strconv.ParseUint(values[at], 10, 64); err != nil {
+				return 0, 0, err
+			}
+			found++
+		}
+		break
+	}
+	for line := range strings.Lines(read[1]) {
+		if fields := strings.Fields(line); len(fields) == 2 && fields[0] == "Ip6ReasmOKs" {
+			if ipv6, err = strconv.ParseUint(fields[1], 10, 64); err != nil {
+				return 0, 0, err
+			}
+			found++
+		}
+	}
+	if found != 2 {
+		return 0, 0, errors.New("the far end's counters name no reassembled datagrams of one family")
+	}
+	return ipv4, ipv6, nil
 }
 
 // openFarEnd makes the veth pair in a network namespace of its own and hands the near end to the namespace near names
@@ -169,12 +362,18 @@ func openFarEnd(near int) farEnd {
 	for _, network := range []string{"udp4", "udp6"} {
 		listener, err := net.ListenUDP(network, &net.UDPAddr{})
 		if err != nil {
-			for _, open := range end.listeners {
-				_ = open.Close()
-			}
+			end.close()
 			return farEnd{err: fmt.Errorf("listen on the far end: %w", err)}
 		}
 		end.listeners = append(end.listeners, listener)
+	}
+	// a counter file keeps to the namespace of the thread that opened it, this one
+	if end.snmp, err = os.Open("/proc/thread-self/net/snmp"); err == nil {
+		end.snmp6, err = os.Open("/proc/thread-self/net/snmp6")
+	}
+	if err != nil {
+		end.close()
+		return farEnd{err: fmt.Errorf("open the far end's counters: %w", err)}
 	}
 	return end
 }
@@ -276,17 +475,24 @@ func (n routeNetlink) configure(index int, addresses []netip.Prefix) error {
 	return n.request(unix.RTM_NEWLINK, 0, linkMessage(index, unix.IFF_UP))
 }
 
-// lockPathMTU routes to an address over link index with a path MTU that path MTU discovery cannot change
-func (n routeNetlink) lockPathMTU(index int, to netip.Addr, mtu int) error {
+// lockPathMTU routes to an address over link index in table with a path MTU that path MTU discovery cannot change
+func (n routeNetlink) lockPathMTU(index int, to netip.Addr, mtu int, table uint32) error {
 	scope := byte(unix.RT_SCOPE_UNIVERSE)
 	if to.Is4() {
 		scope = unix.RT_SCOPE_LINK
 	}
-	header := []byte{addressFamily(to), byte(to.BitLen()), 0, 0, unix.RT_TABLE_MAIN, unix.RTPROT_BOOT, scope, unix.RTN_UNICAST, 0, 0, 0, 0}
+	header := []byte{addressFamily(to), byte(to.BitLen()), 0, 0, byte(table), unix.RTPROT_BOOT, scope, unix.RTN_UNICAST, 0, 0, 0, 0}
 	metrics := slices.Concat(attribute(unix.RTAX_MTU, word(uint32(mtu))), attribute(unix.RTAX_LOCK, word(1<<unix.RTAX_MTU)))
 	body := slices.Concat(header, attribute(unix.RTA_DST, to.AsSlice()), attribute(unix.RTA_OIF, word(uint32(index))),
 		attribute(unix.RTA_METRICS, metrics))
 	return n.request(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, body)
+}
+
+// steer adds a rule of family, at table's number as its priority, that looks up in table what match and a source prefix of sourceBits select
+func (n routeNetlink) steer(family byte, table uint32, sourceBits int, match []byte) error {
+	header := []byte{family, 0, byte(sourceBits), 0, byte(table), 0, 0, unix.FR_ACT_TO_TBL, 0, 0, 0, 0}
+	body := slices.Concat(header, attribute(unix.FRA_PRIORITY, word(table)), attribute(unix.FRA_TABLE, word(table)), match)
+	return n.request(unix.RTM_NEWRULE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, body)
 }
 
 // linkMessage is an ifinfomsg for link index that sets flags and changes nothing else
