@@ -83,6 +83,9 @@ type neighborState struct {
 	// than left to expire, which matters most for split horizon: the neighbor
 	// we now route through must stop routing back.
 	advertised map[routeKey]struct{}
+
+	// reassembly is this session's Babel packets that arrive in fragments, see receiveFragment
+	reassembly reassembly
 }
 
 // destination is the neighbor's link-local address once it has spoken, and the
