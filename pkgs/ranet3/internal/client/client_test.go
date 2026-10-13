@@ -737,7 +737,7 @@ func TestSimultaneousOpenConvergesOnSameSession(t *testing.T) {
 			if which == dialedByB {
 				initiator, responder = b, a
 			}
-			set.adopt("path", sessions[which], initiator, responder, responder, nil)
+			set.adopt("path", sessions[which], initiator, responder, responder, nil, nil)
 		}
 		for name, sess := range sessions {
 			if live := set.live["path"]; live != nil && live.session == sess {
@@ -1382,7 +1382,7 @@ func TestReloadSkipsPeerRegistryNoLongerNames(t *testing.T) {
 	c.sessions.active = func(*ike.Session) bool { return true }
 	third := &ike.Session{}
 	thirdID := ike.Identity{Organization: "example", CommonName: "third", SerialNumber: "1"}
-	if _, ok := c.sessions.adopt("example/third/1@1", third, thirdID, thirdID, thirdID, nil); !ok {
+	if _, ok := c.sessions.adopt("example/third/1@1", third, thirdID, thirdID, thirdID, nil, nil); !ok {
 		t.Fatal("the session for the node about to be dropped was not adopted")
 	}
 	c.syncPeers()
@@ -1696,7 +1696,7 @@ func TestReloadClosesASessionTheRegistryNoLongerNames(t *testing.T) {
 		sess *ike.Session
 		peer ike.Identity
 	}{{"example/keeper/0@0", keeper, stays}, {"example/gone/0@0", gone, goes}} {
-		if _, ok := set.adopt(adopted.path, adopted.sess, adopted.peer, adopted.peer, adopted.peer, nil); !ok {
+		if _, ok := set.adopt(adopted.path, adopted.sess, adopted.peer, adopted.peer, adopted.peer, nil, nil); !ok {
 			t.Fatalf("%s was not adopted", adopted.path)
 		}
 	}

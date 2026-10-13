@@ -162,6 +162,8 @@ func (c *Client) ReloadFrom(path string) (err error) {
 
 	c.storeRegistry(reg)
 	c.cfg.Store(cfg)
+	// every live session carries the new link.mtu at once, as each session made from here on does
+	c.sessions.setMTU(cfg.Link.SessionMTU())
 	// The trust document decides who may connect, so it decides who may stay.
 	// A node taken out of it keeps every tunnel it already holds until
 	// somebody says otherwise, and this is the only moment anybody does.
