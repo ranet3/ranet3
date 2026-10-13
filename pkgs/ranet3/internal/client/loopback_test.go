@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -559,4 +560,60 @@ func TestReloadHandsALiveSessionTheNewLinkMTU(t *testing.T) {
 	if got := peer.MTU(); got != netstack.DefaultMTU {
 		t.Errorf("bravo's session to alpha carries %d byte packets after the reload, want the new link.mtu of %d", got, netstack.DefaultMTU)
 	}
+}
+
+// a session whose handshake ends while a reload runs takes the link.mtu that reload stores
+// the test holds bravo's session set, so bravo's first session waits in adopt with its handshake done
+// it then stores the default link.mtu as a reload does, while the session is outside the set the reload sweeps, and lets go
+// a session that read link.mtu before adopt keeps 1300 for its life
+func TestSessionAdoptedDuringAReloadTakesTheStoredLinkMTU(t *testing.T) {
+	const started = 1300
+	alpha, bravo := newLoopbackMesh(t)
+	// bravo answers and never dials, so its first session is the one alpha dials
+	quiet := *bravo.cfg
+	quiet.Dial.To = nil
+	quiet.Link.MTU = started
+	bravo.client.cfg.Store(&quiet)
+	set := bravo.client.sessions
+	set.mu.Lock()
+	held := true
+	defer func() {
+		if held {
+			set.mu.Unlock()
+		}
+	}()
+	run(t, alpha, bravo)
+	waitFor(t, convergeBudget, "bravo's first session waiting for its session set in adopt", waitingInAdopt)
+	if len(set.live) != 0 {
+		t.Fatalf("bravo holds %d sessions while its first waits in adopt, want none for a sweep to reach", len(set.live))
+	}
+	next := quiet
+	next.Link.MTU = 0
+	bravo.client.cfg.Store(&next)
+	set.mu.Unlock()
+	held = false
+	var peer *netstack.Peer
+	waitFor(t, convergeBudget, "bravo forwarding to alpha's prefix", func() bool {
+		found, ok := bravo.client.Mesh.Routes.Lookup(netip.Addr{}, alpha.prefix.Addr().Next())
+		peer = found
+		return ok && found != nil
+	})
+	if got := peer.MTU(); got != netstack.DefaultMTU {
+		t.Errorf("the session adopted during the reload carries %d byte packets, want the stored link.mtu of %d", got, netstack.DefaultMTU)
+	}
+}
+
+// stackDumpSize is the bytes waitingInAdopt reads every goroutine's stack into, room for two running nodes many times over
+const stackDumpSize = 4 << 20
+
+// waitingInAdopt reports whether a goroutine waits for a session set's lock inside adoptFor
+func waitingInAdopt() bool {
+	stacks := make([]byte, stackDumpSize)
+	n := runtime.Stack(stacks, true)
+	for goroutine := range strings.SplitSeq(string(stacks[:n]), "\n\n") {
+		if strings.Contains(goroutine, "sync.(*Mutex).Lock") && strings.Contains(goroutine, "(*sessionSet).adoptFor") {
+			return true
+		}
+	}
+	return false
 }
