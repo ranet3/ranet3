@@ -61,9 +61,11 @@ const (
 	// neighbor every prefix.
 	//
 	// Both are far above what a restart produces, which the first version of
-	// this bound got wrong. A node draws a new router id every time
-	// it starts, so every restart is a new origin for every prefix it
-	// announces, charged to whichever neighbor this node reaches it through.
+	// this bound got wrong. A ranet3 node without a usable state file, BIRD
+	// with randomize router id set and babeld with a random id and no state
+	// file draw a new router id every time they start, which makes each of
+	// their restarts a new origin for every prefix they announce, charged to
+	// whichever neighbor this node reaches it through.
 	// At eight, nine restarts inside sourceGCTime made the prefix unfeasible,
 	// and since selectRoute rechecks feasibility for stored routes that
 	// dropped the route already selected: the prefix was held unreachable,

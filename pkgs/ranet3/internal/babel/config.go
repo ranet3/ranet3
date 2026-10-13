@@ -44,6 +44,7 @@ type Runtime struct {
 	// header included.
 	PacketSize int
 	// Events records each neighbor coming up or going down, the request sent to one that came up and each change of a selected next hop
+	// and each seqno request naming this node, each raise of its own seqno and each limit it could not save
 	// nil records nothing
 	Events *events.Bus
 	// ProbeAcked hears every Ack the speaker receives, with the session it came through and the nonce it carries

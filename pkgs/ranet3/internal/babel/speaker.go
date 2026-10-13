@@ -14,6 +14,10 @@
 //
 // Deliberate deviations, in RFC 8966 section order:
 //
+//   - 3.2.2: the node's own seqno also rises at every start of the speaker,
+//     and a new process starts past the limit SetOrigin was handed, so the
+//     routes of a restarted node are newer than any a far node still holds.
+//     See seqnoLimitAhead.
 //   - 3.7.2: a triggered update or retraction is sent once, not repeated and
 //     not acknowledged. Each link is one ESP tunnel with in-order delivery
 //     rather than lossy multicast, and the periodic dump plus the retraction
@@ -144,6 +148,7 @@ type Speaker struct {
 	// the intervals and the cost as resolved, defaults filled in, which SetConfig replaces under s.mu
 	// hello is also written under lostMu, which noteLost reads it under
 	// the runtime and whether this node relays are read-only for the life of the speaker
+	// except routerID, which SetOrigin sets once under s.mu before Run
 	hello, update time.Duration
 	cost          CostParams
 	routerID      [8]byte
@@ -173,6 +178,12 @@ type Speaker struct {
 	// starveBy is how much of that each neighbor is holding.
 	starveBy    map[string]int
 	originSeqno uint16
+	// seqnoLimit is the limit last saved, see raiseSeqnoLocked
+	seqnoLimit uint16
+	// persist saves the next limit before originSeqno passes seqnoLimit
+	persist func(Origin) error
+	// ran marks a speaker whose Run has started, see startRunLocked
+	ran bool
 	// raisedSeqno bounds originSeqno to one raise per received packet.
 	raisedSeqno   bool
 	updatePending bool
@@ -668,6 +679,7 @@ func (s *Speaker) Run(ctx context.Context) error {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	s.mu.Lock()
+	s.startRunLocked()
 	s.nextHello, s.nextUpdate = time.Now(), time.Now()
 	s.mu.Unlock()
 	for {
@@ -739,10 +751,7 @@ const routeLogInterval = time.Second
 // with s.mu held, after route selection, so the log line and the forwarding
 // entry see the same immutable selection.
 func (s *Speaker) installRoute(key routeKey, sel routeSelection) {
-	desc := key.dest.String()
-	if key.source.IsValid() {
-		desc = fmt.Sprintf("%s from %s", key.dest, key.source)
-	}
+	desc := describeRoute(key)
 	peer := ""
 	if sel.neighbor != nil {
 		peer = sel.neighbor.peer.ID
@@ -770,6 +779,14 @@ func (s *Speaker) installRoute(key routeKey, sel routeSelection) {
 	} else {
 		slog.Info("babel route retracted", "route", desc, "changes_since_last", changes)
 	}
+}
+
+// describeRoute names a route key as the logs and the events do, a destination and any source prefix
+func describeRoute(key routeKey) string {
+	if key.source.IsValid() {
+		return fmt.Sprintf("%s from %s", key.dest, key.source)
+	}
+	return key.dest.String()
 }
 
 func (s *Speaker) sweepExpiredLocked(now time.Time) {
