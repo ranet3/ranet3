@@ -55,57 +55,7 @@ const sentinel = math.MaxUint32
 // so the report carries the locked path MTU only where its read names each of them as the send does
 // the peer listens at the far end of a veth pair, in a network namespace of its own
 func TestKernelRefusesWhatALockedPathCannotCarry(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("building a veth pair needs root on linux")
-	}
-	runtime.LockOSThread()
-	if err := unshareEmptyNamespace(); err != nil {
-		t.Fatal(err)
-	}
-	near, err := unix.Open("/proc/thread-self/ns/net", unix.O_RDONLY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		t.Fatalf("open this namespace: %v", err)
-	}
-	opened := make(chan farEnd, 1)
-	go func() { opened <- openFarEnd(near) }()
-	far := <-opened
-	_ = unix.Close(near)
-	if far.err != nil {
-		t.Fatal(far.err)
-	}
-	t.Cleanup(far.close)
-	link, err := net.InterfaceByName("near")
-	if err != nil {
-		t.Fatalf("look up the near end: %v", err)
-	}
-	netlink, err := openRouteNetlink()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer netlink.close()
-	if err := netlink.configure(link.Index, slices.Concat(nearAddresses, steeredSources)); err != nil {
-		t.Fatalf("configure the near end: %v", err)
-	}
-	for i, address := range farAddresses {
-		source := steeredSources[i].Addr()
-		for _, rule := range []struct {
-			table      uint32
-			sourceBits int
-			match      []byte
-		}{
-			{markTable, 0, slices.Concat(attribute(unix.FRA_FWMARK, word(testMark)), attribute(unix.FRA_FWMASK, word(^uint32(0))))},
-			{sourceTable, source.BitLen(), attribute(unix.FRA_SRC, source.AsSlice())},
-			{deviceTable, 0, attribute(unix.FRA_OIFNAME, cString("near"))},
-		} {
-			if err := netlink.steer(addressFamily(address.Addr()), rule.table, rule.sourceBits, rule.match); err != nil {
-				t.Fatalf("route by a rule into table %d: %v", rule.table, err)
-			}
-			if err := netlink.lockPathMTU(link.Index, address.Addr(), lockedPathMTU, rule.table); err != nil {
-				t.Fatalf("lock the path MTU to %s in table %d: %v", address.Addr(), rule.table, err)
-			}
-		}
-	}
-
+	far, link := lockedFarEnd(t)
 	events := &eventLog{}
 	marked, markedLogs := listenHanded(t, testMark, events)
 	plain, plainLogs := listenHanded(t, 0, events)
@@ -184,6 +134,230 @@ func TestKernelRefusesWhatALockedPathCannotCarry(t *testing.T) {
 	if ipv4 != 0 || ipv6 != 0 {
 		t.Errorf("the far end put %d IPv4 and %d IPv6 datagrams back together from fragments, want none", ipv4, ipv6)
 	}
+}
+
+// a mux under the floor lets its family's socket fragment, and linux then sends a datagram past a locked path in fragments, which the far end puts back together
+// a segment past the path is refused under DONT and WANT as under DO
+// the segments go again one datagram to a message, each in fragments
+// the other family still refuses a datagram past its path and reports the path, and so does the family once the mux stops
+// IPv4 fragments first and IPv6 next, each through its own option
+// the mux under the floor sends to an endpoint of its own in the family
+// the sends go to the far end's listener
+// the listener's endpoint still segments
+func TestKernelFragmentsPastALockedPathOnlyWhileTheFamilyAsks(t *testing.T) {
+	far, _ := lockedFarEnd(t)
+	events := &eventLog{}
+	bind, logs := listenHanded(t, testMark, events)
+	var eps, unders []*udpEndpoint
+	for i, address := range farAddresses {
+		port := far.listeners[i].LocalAddr().(*net.UDPAddr).Port
+		eps = append(eps, &udpEndpoint{addr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(address.Addr(), uint16(port)))})
+		unders = append(unders, &udpEndpoint{addr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(address.Addr(), 4500))})
+	}
+	// sent hands sizes to the bind toward the far address of family and reads back what arrived
+	sent := func(family int, sizes ...int) ([]arrival, error) {
+		t.Helper()
+		err := bind.Send(sized(sizes...), eps[family])
+		if err := bind.Send([][]byte{binary.BigEndian.AppendUint32(nil, sentinel)}, eps[family]); err != nil {
+			t.Fatalf("the datagram after the batch to %s failed: %v", eps[family], err)
+		}
+		return arrivals(t, far.listeners[family]), err
+	}
+	// refused sends one datagram past the path toward family, which only its report answers
+	refused := func(family int, when string) {
+		t.Helper()
+		got, err := sent(family, 1400)
+		if report, ok := err.(*PathMTUError); !ok || *report != (PathMTUError{Endpoint: eps[family], MTU: lockedPathMTU}) || len(got) != 0 {
+			t.Errorf("%s, a datagram past the path to %s answered %v and reached the far end as %v, want its report alone", when, eps[family], err, got)
+		}
+	}
+	eight := []int{1400, 1400, 1400, 1400, 1400, 1400, 1400, 1400}
+	var whole []arrival
+	for number := range eight {
+		whole = append(whole, arrival{uint32(number), 1400})
+	}
+	var unsegmented []string
+	for family, ep := range eps {
+		if err := bind.fragment(unders[family], true); err != nil {
+			t.Fatalf("let the socket of the family of %s fragment: %v", ep, err)
+		}
+		if got, err := sent(family, 1400); err != nil || !slices.Equal(got, whole[:1]) {
+			t.Errorf("a datagram past the path to %s, whose family fragments, answered %v and reached the far end as %v, want it whole", ep, err, got)
+		}
+		logs[family].handed = nil
+		if got, err := sent(family, eight...); err != nil || !slices.Equal(got, whole) {
+			t.Errorf("eight segments past the path to %s, whose family fragments, answered %v and reached the far end as %v, want all of them whole", ep, err, got)
+		}
+		refusal := unix.EMSGSIZE
+		if len(logs[family].handed) > 0 && logs[family].handed[0].errno == unix.EINVAL {
+			refusal = unix.EINVAL
+		}
+		want := []triedMessage{{segment: 1400, size: 8 * 1400, errno: refusal}}
+		for range eight {
+			want = append(want, triedMessage{size: 1400})
+		}
+		// the sentinel goes one datagram to a message too
+		want = append(want, triedMessage{size: 4})
+		if !slices.Equal(logs[family].handed, want) {
+			t.Errorf("the segments past the path to %s, whose family fragments, were handed to linux as %+v, want %+v", ep, logs[family].handed, want)
+		}
+		unsegmented = append(unsegmented, fmt.Sprintf("transport.endpoint.unsegmented endpoint=%s errno=%s", ep, unix.ErrnoName(refusal)))
+		refused(1-family, fmt.Sprintf("while the family of %s fragments", ep))
+		if err := bind.fragment(unders[family], false); err != nil {
+			t.Fatalf("stop the socket of the family of %s fragmenting: %v", ep, err)
+		}
+		refused(family, "once the family stopped fragmenting")
+	}
+	ipv4, ipv6, err := far.reassembled()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ipv4 != 9 || ipv6 != 9 {
+		t.Errorf("the far end put %d IPv4 and %d IPv6 datagrams back together from fragments, want the 9 of each family sent while it fragmented", ipv4, ipv6)
+	}
+	if got := events.recorded(); !slices.Equal(got, unsegmented) {
+		t.Errorf("the bind recorded %q, want %q", got, unsegmented)
+	}
+}
+
+// a mux under the floor lets the IPv4 socket fragment
+// linux then sends without DF a datagram its route carries whole
+// a router ahead of a narrower hop that answers nothing fragments such a datagram rather than drop it
+// the socket sets DF on it again once the family stops fragmenting
+// the route over loopback carries 65536 bytes and locks nothing
+// WANT would set DF on the datagram there
+// a raw socket reads the datagram's IP header as it arrives, in a network namespace of the test's own
+func TestKernelSendsWithoutDFWhatTheRouteCarriesWhileIPv4Fragments(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("a network namespace and a raw socket need root on linux")
+	}
+	runtime.LockOSThread()
+	if err := unshareEmptyNamespace(); err != nil {
+		t.Fatal(err)
+	}
+	netlink, err := openRouteNetlink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer netlink.close()
+	loopback, err := net.InterfaceByName("lo")
+	if err != nil {
+		t.Fatalf("look up loopback: %v", err)
+	}
+	if err := netlink.request(unix.RTM_NEWLINK, 0, linkMessage(loopback.Index, unix.IFF_UP)); err != nil {
+		t.Fatalf("bring loopback up: %v", err)
+	}
+	raw, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_UDP)
+	if err != nil {
+		t.Fatalf("open a raw socket: %v", err)
+	}
+	t.Cleanup(func() { _ = unix.Close(raw) })
+	budget := unix.NsecToTimeval(arrivalBudget.Nanoseconds())
+	if err := unix.SetsockoptTimeval(raw, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &budget); err != nil {
+		t.Fatal(err)
+	}
+	sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sink.Close() })
+	to := sink.LocalAddr().(*net.UDPAddr)
+	ep := &udpEndpoint{addr: to}
+	bind, _ := listenHanded(t, 0, &eventLog{})
+	// flags sends the floor's datagram to the sink
+	// it returns the flags and fragment offset of the datagram's IP header as it arrived
+	flags := func(when string) uint16 {
+		t.Helper()
+		if err := bind.Send([][]byte{make([]byte, floorDatagram)}, ep); err != nil {
+			t.Fatalf("%s, the floor's datagram answered %v", when, err)
+		}
+		packet := make([]byte, 65536)
+		for {
+			n, _, err := unix.Recvfrom(raw, packet, 0)
+			if err != nil {
+				t.Fatalf("%s, the floor's datagram never arrived: %v", when, err)
+			}
+			header := int(packet[0]&0x0f) * 4
+			if n == header+8+floorDatagram && int(binary.BigEndian.Uint16(packet[header+2:])) == to.Port {
+				return binary.BigEndian.Uint16(packet[6:])
+			}
+		}
+	}
+	// dontFragment is DF among the flags, with no more fragments and a fragment offset of zero
+	const dontFragment = 0x4000
+	if got := flags("before the family fragments"); got != dontFragment {
+		t.Errorf("before the family fragments, the floor's datagram arrived with flags and offset %#04x, want DF alone", got)
+	}
+	if err := bind.fragment(ep, true); err != nil {
+		t.Fatalf("let the IPv4 socket fragment: %v", err)
+	}
+	if got := flags("while the family fragments"); got != 0 {
+		t.Errorf("while the family fragments, the floor's datagram arrived with flags and offset %#04x, want it whole without DF", got)
+	}
+	if err := bind.fragment(ep, false); err != nil {
+		t.Fatalf("stop the IPv4 socket fragmenting: %v", err)
+	}
+	if got := flags("once the family stopped fragmenting"); got != dontFragment {
+		t.Errorf("once the family stopped fragmenting, the floor's datagram arrived with flags and offset %#04x, want DF alone", got)
+	}
+}
+
+// lockedFarEnd opens the far end in a network namespace of its own and gives the test's thread one of its own, joined by a veth pair
+// it routes each far address by the send's mark, its pinned source and its pinned interface into a table whose route locks the path at lockedPathMTU
+// and it returns the far end and the test's end of the pair
+func lockedFarEnd(t *testing.T) (farEnd, *net.Interface) {
+	t.Helper()
+	if os.Getuid() != 0 {
+		t.Skip("building a veth pair needs root on linux")
+	}
+	runtime.LockOSThread()
+	if err := unshareEmptyNamespace(); err != nil {
+		t.Fatal(err)
+	}
+	near, err := unix.Open("/proc/thread-self/ns/net", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open this namespace: %v", err)
+	}
+	opened := make(chan farEnd, 1)
+	go func() { opened <- openFarEnd(near) }()
+	far := <-opened
+	_ = unix.Close(near)
+	if far.err != nil {
+		t.Fatal(far.err)
+	}
+	t.Cleanup(far.close)
+	link, err := net.InterfaceByName("near")
+	if err != nil {
+		t.Fatalf("look up the near end: %v", err)
+	}
+	netlink, err := openRouteNetlink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer netlink.close()
+	if err := netlink.configure(link.Index, slices.Concat(nearAddresses, steeredSources)); err != nil {
+		t.Fatalf("configure the near end: %v", err)
+	}
+	for i, address := range farAddresses {
+		source := steeredSources[i].Addr()
+		for _, rule := range []struct {
+			table      uint32
+			sourceBits int
+			match      []byte
+		}{
+			{markTable, 0, slices.Concat(attribute(unix.FRA_FWMARK, word(testMark)), attribute(unix.FRA_FWMASK, word(^uint32(0))))},
+			{sourceTable, source.BitLen(), attribute(unix.FRA_SRC, source.AsSlice())},
+			{deviceTable, 0, attribute(unix.FRA_OIFNAME, cString("near"))},
+		} {
+			if err := netlink.steer(addressFamily(address.Addr()), rule.table, rule.sourceBits, rule.match); err != nil {
+				t.Fatalf("route by a rule into table %d: %v", rule.table, err)
+			}
+			if err := netlink.lockPathMTU(link.Index, address.Addr(), lockedPathMTU, rule.table); err != nil {
+				t.Fatalf("lock the path MTU to %s in table %d: %v", address.Addr(), rule.table, err)
+			}
+		}
+	}
+	return far, link
 }
 
 // the near end's addresses, then the far end's, one of each family on the same prefixes

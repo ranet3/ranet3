@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -335,50 +336,60 @@ func enterEmptyNamespace(t *testing.T) {
 		t.Skip("creating a tun needs root on linux")
 	}
 	runtime.LockOSThread()
-	before := namespaceOf(t)
-	if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
-		t.Fatalf("unshare a network namespace: %v", err)
-	}
-	if namespaceOf(t) == before {
-		t.Fatal("refusing to continue: the network namespace did not change")
-	}
-	rib, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_UNSPEC)
-	if err != nil {
-		t.Fatalf("dump the routes of the new namespace: %v", err)
-	}
-	messages, err := syscall.ParseNetlinkMessage(rib)
-	if err != nil {
-		t.Fatalf("parse the route dump: %v", err)
-	}
-	for _, message := range messages {
-		if message.Header.Type == syscall.RTM_NEWROUTE {
-			t.Fatal("refusing to continue: this network namespace already holds routes")
-		}
-	}
-	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		t.Fatalf("open a socket to bring the loopback up with: %v", err)
-	}
-	defer unix.Close(fd)
-	ifr, err := unix.NewIfreq("lo")
-	if err != nil {
-		t.Fatalf("build an ifreq for the loopback: %v", err)
-	}
-	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
-		t.Fatalf("read the flags of the loopback: %v", err)
-	}
-	ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
-	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
-		t.Fatalf("bring the loopback up: %v", err)
+	if err := enterEmptyNetwork(); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// namespaceOf is the inode of the calling thread's network namespace
-func namespaceOf(t *testing.T) uint64 {
-	t.Helper()
-	var st unix.Stat_t
-	if err := unix.Stat("/proc/thread-self/ns/net", &st); err != nil {
-		t.Fatalf("stat this thread's network namespace: %v", err)
+// enterEmptyNetwork moves the calling thread, which its caller locked, into a new network namespace and brings its loopback up
+// and refuses to go on unless the namespace changed and holds no route
+func enterEmptyNetwork() error {
+	var before, after unix.Stat_t
+	if err := unix.Stat("/proc/thread-self/ns/net", &before); err != nil {
+		return fmt.Errorf("stat this thread's network namespace: %w", err)
 	}
-	return st.Ino
+	if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
+		return fmt.Errorf("unshare a network namespace: %w", err)
+	}
+	if err := unix.Stat("/proc/thread-self/ns/net", &after); err != nil {
+		return fmt.Errorf("stat this thread's network namespace: %w", err)
+	}
+	if after.Ino == before.Ino {
+		return errors.New("refusing to continue: the network namespace did not change")
+	}
+	rib, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_UNSPEC)
+	if err != nil {
+		return fmt.Errorf("dump the routes of the new namespace: %w", err)
+	}
+	messages, err := syscall.ParseNetlinkMessage(rib)
+	if err != nil {
+		return fmt.Errorf("parse the route dump: %w", err)
+	}
+	for _, message := range messages {
+		if message.Header.Type == syscall.RTM_NEWROUTE {
+			return errors.New("refusing to continue: this network namespace already holds routes")
+		}
+	}
+	return bringUp("lo")
+}
+
+// bringUp sets the up flag of the link name, as netstack does for a tun it opens
+func bringUp(name string) error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open a socket to bring %s up: %w", name, err)
+	}
+	defer unix.Close(fd)
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		return err
+	}
+	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("read the flags of %s: %w", name, err)
+	}
+	ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
+	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("bring %s up: %w", name, err)
+	}
+	return nil
 }

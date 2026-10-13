@@ -92,10 +92,10 @@ func (r *pathRig) waitBudget(t *testing.T, want int) {
 	waitFor(t, pathWait, fmt.Sprintf("the session's budget to reach %d", want), func() bool { return r.driver.peer.MTU() == want })
 }
 
-// recorded is each pmtu event the search recorded, as the budget it moved from, the one it moved to and why, or the floor it entered or left
-func (r *pathRig) recorded() []string {
+// searchRecord is each pmtu event a node recorded, as the budget it moved from, the one it moved to and why, or the floor it entered or left
+func searchRecord(bus *events.Bus) []string {
 	var out []string
-	for _, event := range r.bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return strings.HasPrefix(kind, "pmtu.") }, 0) {
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return strings.HasPrefix(kind, "pmtu.") }, 0) {
 		if event.Kind == "pmtu.floor" {
 			out = append(out, "under the floor "+event.Attrs["under"])
 			continue
@@ -117,7 +117,7 @@ func TestSweepHandsTheSearchTheNewLinkMTU(t *testing.T) {
 	r.waitBudget(t, 1300)
 	r.driver.relink(8918)
 	r.waitBudget(t, carries)
-	got := r.recorded()
+	got := searchRecord(r.bus)
 	want := []string{"1400 to 1402 by probe", "1402 to 1300 by link.mtu", "1300 to 1302 by link.mtu"}
 	if len(got) < len(want) || !slices.Equal(got[:len(want)], want) {
 		t.Fatalf("the search recorded %q, want it to open with %q", got, want)
@@ -175,7 +175,7 @@ func reportLowersOnlyItsPath(t *testing.T, loopback netip.Addr) {
 		"1400 to 1402 by probe", fmt.Sprintf("1402 to %d by refusal", refused), fmt.Sprintf("%d to 1400 by endpoint change", refused), "1400 to 1402 by probe",
 		"under the floor true", "1402 to 1280 by floor", "under the floor false", "1280 to 1282 by probe",
 	}
-	got := r.recorded()
+	got := searchRecord(r.bus)
 	if len(got) < len(want) || !slices.Equal(got[:len(want)], want) {
 		t.Fatalf("the search recorded %q, want it to open with %q", got, want)
 	}
@@ -224,7 +224,7 @@ func TestTransmitHandsARefusalToTheSearch(t *testing.T) {
 	want := esp.Inner(report.MTU, 20)
 	r.waitBudget(t, want)
 	moved := fmt.Sprintf("%d to %d by refusal", link, want)
-	waitFor(t, pathWait, fmt.Sprintf("the search to record %q", moved), func() bool { return slices.Contains(r.recorded(), moved) })
+	waitFor(t, pathWait, fmt.Sprintf("the search to record %q", moved), func() bool { return slices.Contains(searchRecord(r.bus), moved) })
 }
 
 // a session whose route cannot carry the floor when it starts lets its family's sends fragment
@@ -238,7 +238,7 @@ func TestSessionStartingUnderTheFloorFragmentsAtOnce(t *testing.T) {
 	}
 	waitFor(t, pathWait, "the session under the floor to let its family's sends fragment", func() bool { return !r.mux.DontFragment() })
 	want := []string{"under the floor true"}
-	waitFor(t, pathWait, fmt.Sprintf("the search to record %q", want), func() bool { return slices.Equal(r.recorded(), want) })
+	waitFor(t, pathWait, fmt.Sprintf("the search to record %q", want), func() bool { return slices.Equal(searchRecord(r.bus), want) })
 	if sent := r.probes.Load(); sent != 0 {
 		t.Errorf("a search under the floor sent %d probes", sent)
 	}
