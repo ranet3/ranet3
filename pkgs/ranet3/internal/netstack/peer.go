@@ -15,7 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -26,8 +25,9 @@ type Peer struct {
 	reserveFn       func(count int) (BatchSealer, error)
 	transmitBatchFn func(sealed [][]byte) error
 	// mtu is the largest inner packet the session carries, DefaultMTU until whoever builds the peer sets it
-	// a path report the transmit answers lowers it
 	mtu atomic.Int64
+	// sent is set once the sender hands the transport a data packet, and TakeSent clears it
+	sent atomic.Bool
 
 	reserveMu sync.Mutex
 	reserved  uint64
@@ -160,26 +160,8 @@ func (p *Peer) SetMTU(mtu int) { p.mtu.Store(int64(mtu)) }
 // the mesh answers a packet past it, or cuts it into fragments, rather than send it
 func (p *Peer) MTU() int { return int(p.mtu.Load()) }
 
-// narrow lowers the largest inner packet the peer's session carries to what a path report says its path carries
-// a report never raises it, and an error that is no report leaves it as it is
-func (p *Peer) narrow(err error) {
-	report, ok := errors.AsType[*transport.PathMTUError](err)
-	if !ok {
-		return
-	}
-	// the outer IP header of the path's family
-	header := 40
-	if report.Endpoint.Addr().Is4() {
-		header = 20
-	}
-	mtu := int64(esp.Inner(report.MTU, header))
-	for {
-		current := p.mtu.Load()
-		if mtu >= current || p.mtu.CompareAndSwap(current, mtu) {
-			return
-		}
-	}
-}
+// TakeSent reports whether the sender handed the transport a data packet since the last call
+func (p *Peer) TakeSent() bool { return p.sent.Swap(false) }
 
 // Close stops the reserved peer's ordered sender. Compatibility peers do not
 // own a goroutine, so closing them is a no-op.
@@ -647,6 +629,7 @@ func (p *Peer) senderLoop() {
 			}
 		}
 		now := time.Since(p.started)
+		data := false
 		for len(packets) < transmitBatchSize {
 			b := pending[next]
 			if b == nil {
@@ -656,6 +639,7 @@ func (p *Peer) senderLoop() {
 			ready = append(ready, b)
 			p.shedHead(b, now)
 			packets = append(packets, b.sealed[b.shed:]...)
+			data = data || (!b.control && len(b.sealed) > b.shed)
 			next++
 		}
 		var sendErr error
@@ -664,8 +648,10 @@ func (p *Peer) senderLoop() {
 		if len(packets) != 0 {
 			if sendErr = p.transmitBatchFn(packets); sendErr != nil {
 				report, _ = sendErr.(*transport.PathMTUError)
-				p.narrow(sendErr)
 			}
+		}
+		if data && !p.sent.Load() {
+			p.sent.Store(true)
 		}
 		for _, b := range ready {
 			lost := len(b.raw) - b.shed

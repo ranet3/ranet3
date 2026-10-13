@@ -25,6 +25,21 @@ const (
 )
 
 const (
+	// defaultProbeTimeout is how long a probe of a session's path MTU waits for its Ack before it counts as lost, unless a test shortens it
+	// FRR answered an Ack Request within 4.8 seconds where it was measured, babeld within 1.5 and BIRD and ranet3 at once
+	// RFC 8899 section 5.1.1 asks at least 1 second and recommends more than 15, which a search through a dozen sizes would wait minutes on
+	defaultProbeTimeout = 6 * time.Second
+	// maxProbes is how many probes of one size go unanswered in a row before the path counts as losing the size, RFC 8899's MAX_PROBES
+	maxProbes = 3
+	// confirmInterval is how often a confirmed search probes its budget while data flows
+	// a black hole that opens on the path loses the session's largest packets for this long and three probe timeouts at most
+	confirmInterval = 30 * time.Second
+	// raiseInterval is how long a confirmed search keeps its budget before it reads the route again and searches up
+	// RFC 8899's PMTU_RAISE_TIMER, and as long as linux keeps a path MTU it learned
+	raiseInterval = 10 * time.Minute
+)
+
+const (
 	// downFlag is the file in the state directory whose presence keeps the node off the mesh
 	downFlag = "down"
 	// babelStateFile is the file in the state directory holding the Babel router id and seqno limit a start takes, with the node they belong to

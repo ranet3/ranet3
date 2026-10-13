@@ -65,6 +65,8 @@ type Client struct {
 	dialers   map[string]*dialer
 	// dialRetry overrides defaultReconnectDelay, and zero means the default.
 	dialRetry time.Duration
+	// probeTimeout overrides defaultProbeTimeout and confirmEvery confirmInterval, and zero means the default
+	probeTimeout, confirmEvery time.Duration
 	// stopped closes the door on new dialers. Run sets it under dialersMu
 	// before waiting, so a reload arriving at the same moment cannot add to
 	// the WaitGroup after the wait has begun, which panics.
@@ -263,7 +265,8 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.R
 	}()
 	// Two capabilities configure the speaker: cap.babel is the protocol's own
 	// timers and cost, and cap.route the prefixes this node puts into the mesh.
-	speaker, err := babel.New(cfg.Babel(), cfg.Routes(), babel.Runtime{Events: bus}, mesh)
+	sessions := newSessionSet()
+	speaker, err := babel.New(cfg.Babel(), cfg.Routes(), babel.Runtime{Events: bus, ProbeAcked: sessions.probeAcked}, mesh)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +279,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.R
 		Mesh: mesh, privateKey: privateKey,
 		speaker: speaker, hub: hub, closeUnderlay: closeUnderlay, capture: capture,
 		host:     host,
-		sessions: newSessionSet(),
+		sessions: sessions,
 		workers:  max(1, runtime.GOMAXPROCS(0)),
 		ctx:      ctx, cancel: cancel,
 		dialers: make(map[string]*dialer),

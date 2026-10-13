@@ -24,13 +24,25 @@ import (
 
 const defaultPathMTU = 1500
 
-// fakeKernel answers sendmmsg as linux does from the addresses, interfaces and path MTUs it holds, for a socket set to IP_PMTUDISC_DO
+// floorDatagram is the UDP payload of an ESP packet sealing the floor of 1280 bytes
+// a session under the floor sends such datagrams in fragments
+// ESP puts 8 bytes of header and 8 of IV ahead of the packet
+// 2 bytes of padding, the pad length and the next header follow it
+// 16 bytes of ICV end it
+const floorDatagram = 1316
+
+// fakeKernel answers sendmmsg as linux does from the addresses, interfaces and path MTUs it holds
+// a socket runs IP_PMTUDISC_DO, or the mode discovery names while its family fragments
 type fakeKernel struct {
 	mu sync.Mutex
 	// local maps each address the host holds to its interface
 	local   map[netip.Addr]int
 	links   map[int]bool
 	pathMTU map[netip.Addr]int
+	// fragmenting holds the families whose socket fragments a datagram past the path MTU, true for IPv4
+	fragmenting map[bool]bool
+	// switches records each mode the bind set a socket's discovery to, by the mode's name
+	switches []string
 	// gsoErrno is how this kernel refuses a segment past the path MTU, EMSGSIZE from 6.14 on and EINVAL before
 	gsoErrno unix.Errno
 	// unsegmentable refuses every segmented message within the path to a destination with its errno, EIO for a route through an IPsec policy
@@ -59,7 +71,9 @@ type sentDatagram struct {
 	to                netip.AddrPort
 	from              netip.Addr
 	pinned, segmented bool
-	payload           []byte
+	// fragmented is a datagram past the path that its fragmenting socket cut into fragments
+	fragmented bool
+	payload    []byte
 }
 
 type triedMessage struct {
@@ -72,8 +86,32 @@ type triedMessage struct {
 }
 
 func newFakeKernel() *fakeKernel {
-	return &fakeKernel{local: map[netip.Addr]int{}, links: map[int]bool{}, pathMTU: map[netip.Addr]int{},
+	return &fakeKernel{local: map[netip.Addr]int{}, links: map[int]bool{}, pathMTU: map[netip.Addr]int{}, fragmenting: map[bool]bool{},
 		unsegmentable: map[netip.Addr]unix.Errno{}, gsoErrno: unix.EMSGSIZE}
+}
+
+// discoveryModes names the path MTU discovery modes, whose numbers the two families share
+var discoveryModes = map[int]string{unix.IP_PMTUDISC_DONT: "DONT", unix.IP_PMTUDISC_WANT: "WANT", unix.IP_PMTUDISC_DO: "DO"}
+
+// discover answers the bind's switch of a socket's discovery mode
+// it records the mode discovery names for the socket's family, which setDiscovery sets on linux
+func (k *fakeKernel) discover(socket *udpSocket, fragment bool) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.fragmenting[!socket.ipv6] = fragment
+	family := "IPv4"
+	if socket.ipv6 {
+		family = "IPv6"
+	}
+	_, _, mode := discovery(socket.ipv6, fragment)
+	k.switches = append(k.switches, family+" "+discoveryModes[mode])
+	return nil
+}
+
+func (k *fakeKernel) switched() []string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return slices.Clone(k.switches)
 }
 
 func (k *fakeKernel) hold(address string, index int) {
@@ -165,12 +203,13 @@ func (k *fakeKernel) deliver(m *ipv4.Message) unix.Errno {
 		from, _ = k.choose(to.Addr().Is4())
 	}
 	payload := m.Buffers[0]
+	fragmented := segment == 0 && headerFor(to.Addr())+len(payload) > k.mtu(to.Addr())
 	if segment == 0 {
 		segment = max(len(payload), 1)
 	}
 	for offset := 0; offset < len(payload) || offset == 0; offset += segment {
 		end := min(offset+segment, len(payload))
-		k.sent = append(k.sent, sentDatagram{to: to, from: from, pinned: pinned, segmented: tried.segment > 0,
+		k.sent = append(k.sent, sentDatagram{to: to, from: from, pinned: pinned, segmented: tried.segment > 0, fragmented: fragmented,
 			payload: slices.Clone(payload[offset:end])})
 		if end == len(payload) {
 			break
@@ -191,22 +230,29 @@ func (k *fakeKernel) route(to, source netip.Addr, index int, pinned bool, segmen
 	} else if _, ok := k.choose(to.Is4()); !ok {
 		return unix.ENETUNREACH
 	}
-	header := 20 + 8
-	if !to.Is4() {
-		header = 40 + 8
-	}
+	header := headerFor(to)
 	if segment == 0 {
 		// DO refuses a datagram past the path MTU rather than fragment it
-		if header+size > k.mtu(to) {
+		// the mode of a fragmenting family fragments it
+		if header+size > k.mtu(to) && !k.fragmenting[to.Is4()] {
 			return unix.EMSGSIZE
 		}
 		return 0
 	}
 	// udp_send_skb refuses a gso_size whose packets exceed the path's fragment size, then a route that cannot segment
+	// the fragment size is the path MTU under DONT and WANT as under DO
 	if header+segment > k.mtu(to) {
 		return k.gsoErrno
 	}
 	return k.unsegmentable[to]
+}
+
+// headerFor is the outer IP and UDP header a datagram to an address of to's family carries
+func headerFor(to netip.Addr) int {
+	if to.Is4() {
+		return 20 + 8
+	}
+	return 40 + 8
 }
 
 // routeMTU answers the bind's read of the path MTU to ep from the path MTUs the kernel holds
@@ -318,7 +364,8 @@ func kernelBind(kernel *fakeKernel, events *eventLog) *udpBind {
 		s.send.New = func() any { return newUDPSendBatch() }
 		return s
 	}
-	return &udpBind{v4: socket(false), v6: socket(true), events: events.record, started: time.Now(), pathMTU: kernel.routeMTU}
+	return &udpBind{v4: socket(false), v6: socket(true), events: events.record, started: time.Now(), pathMTU: kernel.routeMTU,
+		discover: kernel.discover}
 }
 
 func kernelHub(kernel *fakeKernel, events *eventLog) *Hub {
@@ -594,14 +641,11 @@ func TestRefusedDatagramReportsItsPathAndTheRestStillGo(t *testing.T) {
 			kernel.gsoErrno = test.gsoErrno
 			kernel.pathMTU[ep.AddrPort().Addr()] = pathMTU
 			events := &eventLog{}
-			header := 20 + 8
-			if !ep.AddrPort().Addr().Is4() {
-				header = 40 + 8
-			}
+			header := headerFor(ep.AddrPort().Addr())
 
 			err := kernelBind(kernel, events).Send(sized(sizes...), ep)
 			report, ok := err.(*PathMTUError)
-			if !ok || *report != (PathMTUError{Endpoint: ep.AddrPort(), MTU: pathMTU}) {
+			if !ok || *report != (PathMTUError{Endpoint: ep, MTU: pathMTU}) {
 				t.Fatalf("the send answered %v, want the report of a %d byte path to %s alone", err, pathMTU, ep)
 			}
 			var within []uint32
@@ -693,11 +737,156 @@ func TestMuxHandsThePathReportOn(t *testing.T) {
 	}
 	err = mux.SendESPBatch(sized(sizes...))
 	report, ok := err.(*PathMTUError)
-	if want := (PathMTUError{Endpoint: netip.MustParseAddrPort("198.51.100.5:4500"), MTU: 1280}); !ok || *report != want {
+	if want := (PathMTUError{Endpoint: mux.Endpoint(), MTU: 1280}); !ok || *report != want {
 		t.Errorf("the mux answered %v, want the bare report %v", err, &want)
 	}
 	if got := numbers(kernel.datagrams()); !slices.Equal(got, within) {
 		t.Errorf("the datagrams went out as %v, want those within the path once in order, %v", got, within)
+	}
+}
+
+// a mux fragmenting for a path under the IPv6 minimum MTU takes its family's socket off DO
+// the last of the family to stop switches it back to DO
+// IPv4 fragments at DONT and IPv6 at WANT
+// every mux of the family then sends a datagram past its path in fragments and reads that its sends leave without DF, while the other family keeps refusing one
+// a mux that moved hands its share to the new endpoint's family, and one that closes gives it back and takes none after
+func TestFragmentingTakesTheFamilyOffDoAndBack(t *testing.T) {
+	kernel := newFakeKernel()
+	kernel.hold("192.0.2.10", 2)
+	kernel.hold("2001:db8::10", 2)
+	for _, address := range []string{"198.51.100.5", "198.51.100.6", "2001:db8:7::5", "2001:db8:7::6"} {
+		kernel.pathMTU[netip.MustParseAddr(address)] = 1280
+	}
+	hub := kernelHub(kernel, &eventLog{})
+	var muxes []*Mux
+	for _, address := range []string{"198.51.100.5:4500", "198.51.100.6:4500", "[2001:db8:7::5]:4500"} {
+		to := netip.MustParseAddrPort(address)
+		mux, err := hub.NewMux(net.IP(to.Addr().AsSlice()), int(to.Port()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		muxes = append(muxes, mux)
+	}
+	first, second := muxes[0], muxes[1]
+	fragment := func(mux *Mux, on bool) func() error { return func() error { return mux.Fragment(on) } }
+	for _, step := range []struct {
+		name string
+		act  []func() error
+		// switches is every switch of a socket's mode so far
+		switches []string
+		// dontFragment holds each mux's reading, and a datagram past its path is refused where it is true and fragmented where it is not
+		dontFragment [3]bool
+	}{
+		{"nothing fragments", nil, nil, [3]bool{true, true, true}},
+		{"an IPv4 mux fragments", []func() error{fragment(first, true)}, []string{"IPv4 DONT"}, [3]bool{false, false, true}},
+		{"it asks again and another IPv4 mux asks", []func() error{fragment(first, true), fragment(second, true)}, []string{"IPv4 DONT"}, [3]bool{false, false, true}},
+		{"the first stops while the other still fragments", []func() error{fragment(first, false)}, []string{"IPv4 DONT"}, [3]bool{false, false, true}},
+		{"the last IPv4 mux stops, twice", []func() error{fragment(second, false), fragment(second, false)}, []string{"IPv4 DONT", "IPv4 DO"}, [3]bool{true, true, true}},
+		{"a fragmenting mux moves to IPv6 and asks again", []func() error{fragment(first, true), func() error {
+			first.AdoptEndpoint(dialed("[2001:db8:7::6]:4500"))
+			return nil
+		}, fragment(first, true)}, []string{"IPv4 DONT", "IPv4 DO", "IPv4 DONT", "IPv4 DO", "IPv6 WANT"}, [3]bool{false, true, false}},
+		{"the moved mux closes", []func() error{first.Close}, []string{"IPv4 DONT", "IPv4 DO", "IPv4 DONT", "IPv4 DO", "IPv6 WANT", "IPv6 DO"}, [3]bool{true, true, true}},
+		{"the closed mux asks again", []func() error{fragment(first, true)}, []string{"IPv4 DONT", "IPv4 DO", "IPv4 DONT", "IPv4 DO", "IPv6 WANT", "IPv6 DO"}, [3]bool{true, true, true}},
+	} {
+		for _, act := range step.act {
+			if err := act(); err != nil {
+				t.Fatalf("%s: %v", step.name, err)
+			}
+		}
+		if got := kernel.switched(); !slices.Equal(got, step.switches) {
+			t.Errorf("%s: the sockets switched %q, want %q", step.name, got, step.switches)
+		}
+		for i, mux := range muxes {
+			if got := mux.DontFragment(); got != step.dontFragment[i] {
+				t.Errorf("%s: mux %d to %s reads that its sends leave with DF %v, want %v", step.name, i, mux.Endpoint(), got, step.dontFragment[i])
+			}
+			if mux.IsClosed() {
+				continue
+			}
+			before := len(kernel.datagrams())
+			err := mux.SendESPBatch([][]byte{make([]byte, 1400)})
+			_, report := err.(*PathMTUError)
+			sent := kernel.datagrams()[before:]
+			switch {
+			case step.dontFragment[i] && !report:
+				t.Errorf("%s: a datagram past the path to %s answered %v, want its report", step.name, mux.Endpoint(), err)
+			case !step.dontFragment[i] && (err != nil || len(sent) != 1 || !sent[0].fragmented):
+				t.Errorf("%s: a datagram past the path to %s answered %v and went as %+v, want it fragmented", step.name, mux.Endpoint(), err, sent)
+			}
+		}
+	}
+}
+
+// a segment past the path is refused under DONT as under DO
+// the segments then go one datagram to a message, which DONT fragments
+// the send goes to an endpoint of the family whose own mux does not fragment
+// that endpoint still segments
+func TestFragmentingFamilyResendsRefusedSegmentsAlone(t *testing.T) {
+	kernel := newFakeKernel()
+	kernel.hold("192.0.2.10", 2)
+	kernel.pathMTU[netip.MustParseAddr("198.51.100.5")] = 1280
+	events := &eventLog{}
+	bind := kernelBind(kernel, events)
+	ep := dialed("198.51.100.5:4500")
+	if err := bind.fragment(dialed("198.51.100.6:4500"), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := bind.Send(numbered(8, 1400), ep); err != nil {
+		t.Fatalf("a segmented send past the path of a fragmenting family answered %v", err)
+	}
+	sent := kernel.datagrams()
+	if got := numbers(sent); !slices.Equal(got, sequence(8)) {
+		t.Fatalf("the datagrams went out as %v, want all 8 in order", got)
+	}
+	for _, datagram := range sent {
+		if datagram.segmented || !datagram.fragmented {
+			t.Errorf("a datagram went out segmented %v and fragmented %v, want one to a message in fragments", datagram.segmented, datagram.fragmented)
+		}
+	}
+	want := fmt.Sprintf("transport.endpoint.unsegmented endpoint=%s errno=EMSGSIZE", ep)
+	if got := events.recorded(); !slices.Equal(got, []string{want}) {
+		t.Errorf("the bind recorded %q, want %q", got, want)
+	}
+}
+
+// an endpoint whose mux lets its sends fragment sends one datagram to a message, in either family
+// linux numbers a message's segments up from one IPv4 ID
+// the next message may start one ID on
+// a router fragmenting both would put fragments of two datagrams under one ID
+// another endpoint of the family keeps segmenting
+// the endpoint segments again once its mux stops
+func TestFragmentingEndpointSendsOneDatagramToAMessage(t *testing.T) {
+	kernel := newFakeKernel()
+	kernel.hold("192.0.2.10", 2)
+	kernel.hold("2001:db8::10", 2)
+	bind := kernelBind(kernel, &eventLog{})
+	// messages sends twenty datagrams of the floor to ep and counts the messages that carried them
+	messages := func(ep *udpEndpoint) int {
+		t.Helper()
+		before := len(kernel.messages())
+		if err := bind.Send(numbered(20, floorDatagram), ep); err != nil {
+			t.Fatalf("a send to %s answered %v", ep, err)
+		}
+		return len(kernel.messages()) - before
+	}
+	for _, peers := range [][2]string{{"198.51.100.5:4500", "198.51.100.6:4500"}, {"[2001:db8:7::5]:4500", "[2001:db8:7::6]:4500"}} {
+		under, other := dialed(peers[0]), dialed(peers[1])
+		if err := bind.fragment(under, true); err != nil {
+			t.Fatal(err)
+		}
+		if got := messages(under); got != 20 {
+			t.Errorf("twenty datagrams to %s, whose mux fragments, went in %d messages, want one to a message", under, got)
+		}
+		if got := messages(other); got != 1 {
+			t.Errorf("twenty datagrams to %s, of the family that fragments, went in %d messages, want one segmented message", other, got)
+		}
+		if err := bind.fragment(under, false); err != nil {
+			t.Fatal(err)
+		}
+		if got := messages(under); got != 1 {
+			t.Errorf("twenty datagrams to %s, whose mux stopped fragmenting, went in %d messages, want one segmented message", under, got)
+		}
 	}
 }
 

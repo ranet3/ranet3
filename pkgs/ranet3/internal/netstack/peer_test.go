@@ -6,61 +6,25 @@ package netstack
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
-// a transmit the transport answers with a path report lowers the session's budget to what the reported path carries, before the next transmit
-// a report of a wider path leaves the budget where it is, and so does an error that is no report
-// the report comes wrapped, as a mux answers one a later failure followed, so the batch fails and its failure says the sender read the answer
-func TestPathReportNarrowsThePeerAndNeverWidensIt(t *testing.T) {
-	ipv4 := netip.MustParseAddrPort("198.51.100.1:4500")
-	ipv6 := netip.MustParseAddrPort("[2001:db8::1]:4500")
-	for _, test := range []struct {
-		name   string
-		budget int
-		err    error
-		want   int
-	}{
-		{"IPv4 path", DefaultMTU, &transport.PathMTUError{Endpoint: ipv4, MTU: 1280}, esp.Inner(1280, 20)},
-		{"IPv6 path", DefaultMTU, &transport.PathMTUError{Endpoint: ipv6, MTU: 1280}, esp.Inner(1280, 40)},
-		{"path then a later failure", DefaultMTU,
-			fmt.Errorf("%w, then %w", &transport.PathMTUError{Endpoint: ipv4, MTU: 1280}, errors.New("no route")), esp.Inner(1280, 20)},
-		{"path wider than the budget", DefaultMTU, &transport.PathMTUError{Endpoint: ipv4, MTU: 9000}, DefaultMTU},
-		{"path wider than a budget already lowered", 1000, &transport.PathMTUError{Endpoint: ipv6, MTU: 1280}, 1000},
-		{"failure that reports no path", DefaultMTU, errors.New("no route"), DefaultMTU},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error {
-				return fmt.Errorf("transport: send ESP batch: %w", test.err)
-			}, nil)
-			t.Cleanup(peer.Close)
-			peer.SetMTU(test.budget)
-			place, err := peer.ReserveRawOrDrop([]byte("packet"), 41)
-			if err != nil {
-				t.Fatal(err)
-			}
-			// the sender runs a batch's failure after it read the transmit's answer
-			failed := make(chan error, 1)
-			place.OnFailure(func(err error) { failed <- err })
-			if err := place.Send(); err != nil {
-				t.Fatal(err)
-			}
-			select {
-			case <-failed:
-			case <-time.After(deliveryTimeout):
-				t.Fatalf("waited %s for the transmit to fail", deliveryTimeout)
-			}
-			if got := peer.MTU(); got != test.want {
-				t.Errorf("the session carries %d byte packets after the transmit answered %v, want %d", got, test.err, test.want)
-			}
-		})
+// endpointTo is the endpoint a mux dialing address sends to, which a path report names
+func endpointTo(t *testing.T, address string) transport.Endpoint {
+	t.Helper()
+	to := netip.MustParseAddrPort(address)
+	mux, err := transport.Dial(":0", net.IP(to.Addr().AsSlice()), int(to.Port()))
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = mux.Close() })
+	return mux.Endpoint()
 }
 
 // a bare path report refused only the packets past the path, so only the batches holding one fail and only those packets count as lost
@@ -68,7 +32,7 @@ func TestPathReportNarrowsThePeerAndNeverWidensIt(t *testing.T) {
 // the batches meet in one transmit, held behind an earlier one, so each is judged by its own packets
 // a report wrapped with a later failure, or any other error, fails every batch of the transmit as before
 func TestPathReportFailsOnlyWhatItRefused(t *testing.T) {
-	report := &transport.PathMTUError{Endpoint: netip.MustParseAddrPort("198.51.100.1:4500"), MTU: 1280}
+	report := &transport.PathMTUError{Endpoint: endpointTo(t, "198.51.100.1:4500"), MTU: 1280}
 	// 1252 bytes fit the report's path under IPv4 and UDP headers, 1253 do not
 	const fits, past = 1252, 1253
 	for _, test := range []struct {
@@ -143,5 +107,31 @@ func TestPathReportFailsOnlyWhatItRefused(t *testing.T) {
 				t.Errorf("the peer counted %d packets lost in the transport, want %d", got, test.lost)
 			}
 		})
+	}
+}
+
+// the sender marks the peer once it hands the transport a data packet, which tells a search of the path that data flows
+// a control packet alone leaves the mark off, and TakeSent takes it away
+func TestSenderMarksTheDataItHandsTheTransport(t *testing.T) {
+	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error { return nil }, nil)
+	t.Cleanup(peer.Close)
+	if err := sendOrDrop(peer, []byte("control"), 41); err != nil {
+		t.Fatal(err)
+	}
+	waitForBudget(t, peer)
+	if peer.TakeSent() {
+		t.Error("a control packet marked the peer as carrying data")
+	}
+	data := peer.reserveBatchNow(1)
+	data.append([]byte("data"), 0)
+	if err := data.enqueue(); err != nil {
+		t.Fatal(err)
+	}
+	waitForBudget(t, peer)
+	if !peer.TakeSent() {
+		t.Error("a data packet the transport took left the peer unmarked")
+	}
+	if peer.TakeSent() {
+		t.Error("the mark outlived the call that took it")
 	}
 }

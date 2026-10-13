@@ -53,3 +53,67 @@ func routeMTU(ep *udpEndpoint, mark uint32) (int, error) {
 	}
 	return mtu, readErr
 }
+
+var _ pathBind = (*udpBind)(nil)
+
+func (b *udpBind) readPathMTU(ep Endpoint) (int, error) { return b.pathMTU(ep.(*udpEndpoint)) }
+
+// fragment takes the socket of ep's family off DO as the first mux asks
+// it puts the socket back on DO as the last mux stops
+// off DO the socket fragments a datagram past the path MTU
+// it still refuses a segment past the path MTU
+// ep's own sends go one datagram to a message while its mux fragments
+func (b *udpBind) fragment(ep Endpoint, on bool) error {
+	endpoint := ep.(*udpEndpoint)
+	socket := b.socket(endpoint)
+	if socket == nil {
+		return unix.EAFNOSUPPORT
+	}
+	b.fragmentMu.Lock()
+	defer b.fragmentMu.Unlock()
+	was := socket.fragmenting.Load()
+	count := was - 1
+	if on {
+		count = was + 1
+	}
+	if (count > 0) != (was > 0) {
+		if err := b.discover(socket, count > 0); err != nil {
+			return err
+		}
+	}
+	socket.fragmenting.Store(count)
+	endpoint.fragmenting.Store(on)
+	return nil
+}
+
+func (b *udpBind) dontFragment(ep Endpoint) bool {
+	socket := b.socket(ep.(*udpEndpoint))
+	return socket != nil && socket.fragmenting.Load() == 0
+}
+
+// discovery is the option and mode that refuse a datagram of the family past its path MTU
+// or the mode that fragments it while the family fragments
+// IPv4 then sends without DF
+// a router ahead of a narrower hop can then fragment what the route lets through
+// that hop answers nothing
+// IPv6 sends what the route lets through whole in either mode, since no router fragments IPv6
+func discovery(ipv6, fragment bool) (level, option, mode int) {
+	switch {
+	case ipv6 && fragment:
+		return unix.IPPROTO_IPV6, unix.IPV6_MTU_DISCOVER, unix.IPV6_PMTUDISC_WANT
+	case ipv6:
+		return unix.IPPROTO_IPV6, unix.IPV6_MTU_DISCOVER, unix.IPV6_PMTUDISC_DO
+	case fragment:
+		return unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DONT
+	}
+	return unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DO
+}
+
+func setDiscovery(socket *udpSocket, fragment bool) error {
+	level, option, mode := discovery(socket.ipv6, fragment)
+	var setErr error
+	if err := socket.raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), level, option, mode) }); err != nil {
+		return err
+	}
+	return setErr
+}

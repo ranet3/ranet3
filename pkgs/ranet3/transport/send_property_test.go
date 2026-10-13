@@ -314,7 +314,7 @@ func (m *roamingMachine) RuleSend(tc hegel.TestCase) {
 			return
 		}
 	case oversize:
-		if !reported || *report != (PathMTUError{Endpoint: to, MTU: mtu}) || errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EMSGSIZE) {
+		if !reported || *report != (PathMTUError{Endpoint: mux.Endpoint(), MTU: mtu}) || errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EMSGSIZE) {
 			tc.Errorf("a send with datagrams past its %d byte path to %s answered %v, want the path's report alone", mtu, to, err)
 			return
 		}
