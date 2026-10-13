@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: MIT AND CC-BY-4.0
 title: "Deliberate protocol deviations"
-description: "Where ranet3 departs from the IKEv2, ESP, Babel and ICMP specifications on purpose."
+description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6 and ICMP specifications on purpose."
 created: 2026-08-23
 updated: 2026-10-13
 order: 20
@@ -135,3 +135,77 @@ start moves the seqno on by at most 257, and the order of
 compares two seqnos less than 32768 apart. That leaves room for 127 starts in a
 row, inside the time a node keeps a feasibility distance, before one recorded
 before the first could read as newer than the seqno after the last.
+
+A Babel packet a neighbor's stack cut into fragments is put back together before
+the speaker reads it. Some speakers send packets of 1422 to 1443 UDP octets,
+which their own stacks fragment at 1368 or 1384, and BIRD and babeld read Babel
+through a kernel socket that reassembles them. ranet3 reads the inner packets of
+each session itself, so it reassembles, as
+[RFC 8200 section 4.5](https://www.rfc-editor.org/rfc/rfc8200.html#section-4.5)
+describes, the fragments sent to its speaker: an IPv6 packet whose next header
+is Fragment, from a link-local address, to `ff02::1:6` or to the speaker's own
+link-local address. Such a fragment is the speaker's whether its packet
+completes or not, and never reaches the tun. Any other fragment, ordinary
+traffic to an address of the mesh among them, goes to the tun as it arrived, and
+the kernel reassembles it for its socket. The packet put back together goes
+through the checks an unfragmented one does, and on to the neighbor of the
+session its fragments came through.
+
+The reassembly departs from RFC 8200 in five places, each toward dropping:
+
+- A datagram waits 16 seconds after its first fragment rather than 60. The
+  fragments of one packet leave the neighbor together over one session, and a
+  packet still missing one after an update interval, 16 seconds at the defaults
+  BIRD and babeld share, is repeated by the neighbor's next periodic update long
+  before the routes it carried expire.
+- No ICMP error is sent, neither the Time Exceeded for a datagram that ran out
+  of time nor the Parameter Problem for a fragment with more to come whose
+  length is not a multiple of 8 octets or one past the largest packet.
+  [RFC 4443 section 2.4](https://www.rfc-editor.org/rfc/rfc4443.html#section-2.4)
+  forbids most errors about a packet sent to a multicast group, where nearly
+  every Babel packet goes, and the speaker sends none for the few sent to it
+  alone.
+- A packet may be 65535 octets with its IPv6 header, the largest
+  [RFC 8966 section 4](https://www.rfc-editor.org/rfc/rfc8966.html#section-4)
+  allows, where RFC 8200 allows a payload that long after the header. A fragment
+  that runs past it drops its datagram.
+- The first fragment must begin with a UDP header to the Babel port, which is
+  the whole header chain [RFC 7112](https://www.rfc-editor.org/rfc/rfc7112.html)
+  asks for in a packet that carries no extension header but its Fragment header.
+  A first fragment without it drops its datagram.
+- A fragment wrong in itself drops its whole datagram rather than only itself:
+  one that carries nothing, one with more to come that is not a multiple of 8
+  octets, one past the largest packet, one past the end the last fragment set,
+  and a last one ending before octets another brought.
+
+A fragment overlapping octets another brought drops its datagram and every
+fragment of it still to come, as
+[RFC 5722](https://www.rfc-editor.org/rfc/rfc5722.html) asks, unless every octet
+it carries is already held with the same value. Such a copy goes alone, which
+RFC 8200 allows for an exact duplicate, and the same holds for one spanning two
+fragments. A datagram read or dropped stays for the rest of its 16 seconds
+unless a newer one takes its place, so a fragment of it arriving late goes with
+it and a copy is not read twice. An atomic fragment, at offset 0 with no more to
+come, is read at once as the packet it carries, as
+[RFC 6946 section 4](https://www.rfc-editor.org/rfc/rfc6946.html#section-4)
+asks.
+
+Each neighbor holds at most 16 datagrams, under way, read or dropped, and 256
+KiB of storage for the ones under way, four packets of the largest size. A
+datagram not read keeps its place, and one under way its storage, for at least 1
+second after its first fragment. The fragments of one packet cross a session
+back to back, and a session of 1 Mbit/s carries even the largest Babel packet
+within that second. Once the 16 places are taken, a new datagram takes the place
+of the oldest one read, or dropped and past that second, and failing that of the
+oldest one under way past it, which it drops. It reuses the bookkeeping of the
+datagram it replaces. The storage a datagram grows into comes from the oldest
+others under way past that second. A fragment that finds no place, or a datagram
+no storage, is refused. Each place then goes to at most one datagram not read
+each second, and a datagram allocates under 128 KiB of storage in all. A
+neighbor flooding fragments of datagrams that never complete has the node
+allocate under 2 MiB of storage a second and hold under 280 KiB, its bookkeeping
+included, and it evicts and refuses only datagrams of its own. A datagram that
+completes allocates under four times the octets its fragments carry. The state
+belongs to the session's neighbor, so a session that ends takes its datagrams
+along. [The metrics](../metrics.md) count each neighbor's packets read from
+fragments, the largest of them, and the datagrams dropped and why.

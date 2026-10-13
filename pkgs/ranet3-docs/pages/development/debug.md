@@ -147,6 +147,7 @@ its connections to the reads.
 | `ike.send.failed`, `.recovered`      | a session's sends to its peer began to fail, and one went out again         |
 | `ike.probe`                          | asked to prove its path, a session started a check or resent its request    |
 | `babel.neighbor.up`, `.down`         | a neighbor's hellos started arriving, or stopped or its session ended       |
+| `babel.neighbor.fragmented`          | a neighbor's first Babel packet in fragments was read whole, with its size  |
 | `babel.request.sent`                 | this node asked a neighbor that came up for its whole table                 |
 | `babel.config.applied`               | the speaker took a reloaded `cap.babel`, with its intervals and cost        |
 | `babel.route.selected`, `.retracted` | a prefix's next hop changed, every time rather than once a second as logged |
@@ -188,6 +189,13 @@ once without a peer.
 A `babel.request.sent` is recorded when the node decides to send the request,
 and a send queue with no room can still refuse it, which
 `ranet3_peer_send_dropped_total` counts.
+
+A `babel.neighbor.fragmented` is recorded once for each session, when the
+speaker first reads a Babel packet its neighbor's stack cut into fragments, and
+carries in `size` that packet's length once whole, its IPv6 header included.
+`ranet3_babel_reassembled_total` counts every such packet and
+`ranet3_babel_reassembly_dropped_total` the datagrams dropped and why, as
+[the metrics](../metrics.md) describe.
 
 A `babel.seqno.requested` names the neighbor that sent the request as its peer
 and carries the `route` asked about, the seqno it `asked` for, the node's own
