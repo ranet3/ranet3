@@ -113,10 +113,7 @@ func TestKernelRefusesWhatALockedPathCannotCarry(t *testing.T) {
 		listener := far.listeners[i]
 		to := net.UDPAddrFromAddrPort(netip.AddrPortFrom(address.Addr(), uint16(listener.LocalAddr().(*net.UDPAddr).Port)))
 		ipv6 := !address.Addr().Is4()
-		header := 20 + 8
-		if ipv6 {
-			header = 40 + 8
-		}
+		header := headerFor(address.Addr())
 		for _, way := range []struct {
 			name string
 			bind *udpBind
@@ -137,7 +134,7 @@ func TestKernelRefusesWhatALockedPathCannotCarry(t *testing.T) {
 				way.log.handed = nil
 				err := way.bind.Send(sized(sizes...), way.ep)
 				report, ok := err.(*PathMTUError)
-				if !ok || *report != (PathMTUError{Endpoint: way.ep.AddrPort(), MTU: lockedPathMTU}) {
+				if !ok || *report != (PathMTUError{Endpoint: way.ep, MTU: lockedPathMTU}) {
 					t.Errorf("a send routed by %s to %s answered %v, want the report of its %d byte path alone", way.name, way.ep, err, lockedPathMTU)
 				}
 				var want []triedMessage

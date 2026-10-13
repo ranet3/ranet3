@@ -34,6 +34,8 @@ type udpEndpoint struct {
 	unpinned atomic.Bool
 	// unsegmentedUntil is when sends segment again, on the bind's clock in nanoseconds, and zero while they never stopped
 	unsegmentedUntil atomic.Int64
+	// fragmenting is set while a mux lets sends to this endpoint fragment past the path MTU
+	fragmenting atomic.Bool
 }
 
 func pinnedEndpoint(addr *net.UDPAddr, source net.IP, index int, ipv6Socket bool) *udpEndpoint {
@@ -83,6 +85,10 @@ type udpSocket struct {
 	pc   udpBatchConn
 	ipv6 bool
 	send sync.Pool
+	// fragmenting counts the muxes letting this socket's sends fragment
+	// it is stored under its bind's fragmentMu and loaded by a send without the lock
+	// the socket runs DO while it is zero and the mode discovery names for fragmenting while it is not
+	fragmenting atomic.Int32
 }
 
 type udpBind struct {
@@ -92,6 +98,11 @@ type udpBind struct {
 	started time.Time
 	// pathMTU reads the path MTU of the route a send to an endpoint takes, which a test answers in place of linux
 	pathMTU func(*udpEndpoint) (int, error)
+	// fragmentMu serializes each socket's count of the muxes letting its sends fragment
+	fragmentMu sync.Mutex
+	// discover sets a socket's path MTU discovery to fragment or back to DO
+	// a test answers it in place of linux
+	discover func(socket *udpSocket, fragment bool) error
 }
 
 func (b *udpBind) ParseEndpoint(s string) (Endpoint, error) {
@@ -138,13 +149,11 @@ func openPacketBind(port uint16, underlay Underlay, index int, routed bool, even
 }
 
 func listenPacketBind(port uint16, fwmark uint32, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
-	b := &udpBind{events: events, started: time.Now(), pathMTU: func(ep *udpEndpoint) (int, error) { return routeMTU(ep, fwmark) }}
+	b := &udpBind{events: events, started: time.Now(), pathMTU: func(ep *udpEndpoint) (int, error) { return routeMTU(ep, fwmark) },
+		discover: setDiscovery}
 	var receivers []receiveFunc
 	for i, network := range []string{"udp4", "udp6"} {
-		level, discover, mode := unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DO
-		if i == 1 {
-			level, discover, mode = unix.IPPROTO_IPV6, unix.IPV6_MTU_DISCOVER, unix.IPV6_PMTUDISC_DO
-		}
+		level, discover, mode := discovery(i == 1, false)
 		var setErr error
 		lc := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
 			if err := raw.Control(func(fd uintptr) {
@@ -419,10 +428,7 @@ func (b *udpSendBatch) prepare(packets [][]byte, to *net.UDPAddr, control []byte
 // a datagram linux refuses as larger than its path ends the send in a PathMTUError, once the datagrams the path carries went
 func (b *udpBind) Send(packets [][]byte, endpoint Endpoint) error {
 	ep := endpoint.(*udpEndpoint)
-	socket := b.v4
-	if ep.addr.IP.To4() == nil {
-		socket = b.v6
-	}
+	socket := b.socket(ep)
 	if socket == nil {
 		return unix.EAFNOSUPPORT
 	}
@@ -433,6 +439,14 @@ func (b *udpBind) Send(packets [][]byte, endpoint Endpoint) error {
 		return err
 	}
 	return b.sendWithin(socket, batch, packets[sent:], ep, err)
+}
+
+// socket is the socket of ep's family, nil where the host took none
+func (b *udpBind) socket(ep *udpEndpoint) *udpSocket {
+	if ep.addr.IP.To4() == nil {
+		return b.v6
+	}
+	return b.v4
 }
 
 // sendFrom sends packets to ep from its pin, and from the kernel's choice of source once linux refuses the pin as gone
@@ -459,7 +473,7 @@ func (b *udpBind) sendWithin(socket *udpSocket, batch *udpSendBatch, packets [][
 	if err != nil {
 		return fmt.Errorf("transport: read the path MTU to %s after %w: %w", ep, refused, err)
 	}
-	report := &PathMTUError{Endpoint: ep.AddrPort(), MTU: mtu}
+	report := &PathMTUError{Endpoint: ep, MTU: mtu}
 	largest := report.Largest()
 	for first := 0; first < len(packets); {
 		if len(packets[first]) > largest {
@@ -485,16 +499,20 @@ func unpinnable(err error) bool {
 }
 
 // sendWithSegmentFallback segments packets to ep unless sends to ep have stopped segmenting
+// it never segments them while ep's mux lets them fragment
+// linux numbers a message's segments up from one IPv4 ID
+// the next message may start one ID on
+// a router fragmenting both would put fragments of two datagrams under one ID
 // when linux refuses a message of several datagrams with an errno segments can cause and they then pass one to a message
 // ep stops segmenting for unsegmentedFor
 func (b *udpBind) sendWithSegmentFallback(socket *udpSocket, batch *udpSendBatch, packets [][]byte, ep *udpEndpoint, control []byte) (int, error) {
 	done := 0
 	for {
 		until := ep.unsegmentedUntil.Load()
-		segment := until == 0 || int64(time.Since(b.started)) >= until
+		segment := !ep.fragmenting.Load() && (until == 0 || int64(time.Since(b.started)) >= until)
 		sent, refused, err := socket.write(batch, packets[done:], ep.addr, control, segment)
 		done += sent
-		if err == nil || refused < 2 || !segmentRefusal(err) {
+		if err == nil || refused < 2 || !segmentRefusal(err, socket.fragmenting.Load() > 0) {
 			return done, err
 		}
 		plain, _, plainErr := socket.write(batch, packets[done:done+refused], ep.addr, control, false)
@@ -511,8 +529,10 @@ func (b *udpBind) sendWithSegmentFallback(socket *udpSocket, batch *udpSendBatch
 // segmentRefusal reports whether err is linux refusing a message for its segments, which a resend one datagram to a message tells apart
 // EIO is a route through an IPsec policy, which passes single datagrams
 // EINVAL is also a kernel before 6.14 refusing a segment past the path MTU, whose single datagrams meet the EMSGSIZE a later kernel answers at once
-func segmentRefusal(err error) bool {
-	return errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EIO)
+// EMSGSIZE is one too while the socket fragments
+// either mode that fragments refuses a segment past the path MTU and fragments a single datagram
+func segmentRefusal(err error, fragments bool) bool {
+	return errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EIO) || (fragments && errors.Is(err, unix.EMSGSIZE))
 }
 
 // write stops at the first refused message and reports the datagrams sent before it and those it carried

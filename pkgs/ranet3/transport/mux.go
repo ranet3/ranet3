@@ -42,6 +42,7 @@
 package transport
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -554,6 +555,9 @@ type Mux struct {
 	doneErr       atomic.Value
 	closed        atomic.Bool
 	ownHub        bool
+	// fragmented is the endpoint Fragment let the host fragment sends to, nil while it lets none
+	fragmentMu sync.Mutex
+	fragmented Endpoint
 }
 
 // hasRoomForESP is consulted before packReceivedBatch copies a batch onto the
@@ -932,6 +936,10 @@ func (m *Mux) Close() error {
 	delete(m.hub.muxes, m)
 	m.hub.mu.Unlock()
 	m.closeDone(fmt.Errorf("transport: closed"))
+	// a family fragmenting for this mux alone sends with DF again
+	if err := m.Fragment(false); err != nil && !errors.Is(err, errors.ErrUnsupported) {
+		slog.Warn("transport could not stop fragmenting sends for a closed mux", "endpoint", m.currentEndpoint().String(), "err", err)
+	}
 	if m.ownHub {
 		return m.hub.Close()
 	}

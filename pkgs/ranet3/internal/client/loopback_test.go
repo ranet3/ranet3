@@ -497,10 +497,10 @@ func TestShutdownTellsPeerBeforeGoing(t *testing.T) {
 	}
 }
 
-// each end of a session hands its peer the link.mtu its own node names
+// each end of a session searches its path up to the link.mtu its own node names, which a loopback path carries
 // the reader holds every packet for that peer to it
 // and the inbound clamp lowers the MSS of a SYN from that peer to what it carries
-// the ends name two values other than the default a peer starts at
+// the ends name a value under the default a session starts at and one the search reaches only by probes
 func TestSessionsCarryTheLinkMTUOfTheirOwnNode(t *testing.T) {
 	alpha, bravo := newLoopbackMesh(t)
 	ends := []struct {
@@ -520,13 +520,13 @@ func TestSessionsCarryTheLinkMTUOfTheirOwnNode(t *testing.T) {
 			peer = found
 			return ok && found != nil
 		})
-		if got := peer.MTU(); got != int(end.mtu) {
-			t.Errorf("%s's session to %s carries %d byte packets, want its link.mtu of %d", end.node.name, end.peer.name, got, end.mtu)
-		}
+		waitFor(t, convergeBudget, fmt.Sprintf("%s's session to %s to carry its link.mtu of %d", end.node.name, end.peer.name, end.mtu), func() bool {
+			return peer.MTU() == int(end.mtu)
+		})
 	}
 }
 
-// a reload hands every session a node holds the new link.mtu at once, as a session made after it gets
+// a reload hands every session a node holds the new link.mtu, as a session made after it gets, and the search carries it there over a loopback path
 // bravo starts at link.mtu 1300 with nothing steered and holds the one session alpha dials
 // a reload to the default link.mtu with a two segment list through alpha's prefix applies
 // a session kept at 1300 would answer a steered IPv6 packet past 1220 bytes with a packet too big naming 1220
@@ -557,9 +557,9 @@ func TestReloadHandsALiveSessionTheNewLinkMTU(t *testing.T) {
 	if err := bravo.client.ReloadFrom(bravo.configPath); err != nil {
 		t.Fatalf("a reload to the default link.mtu with a two segment list was refused: %v", err)
 	}
-	if got := peer.MTU(); got != netstack.DefaultMTU {
-		t.Errorf("bravo's session to alpha carries %d byte packets after the reload, want the new link.mtu of %d", got, netstack.DefaultMTU)
-	}
+	waitFor(t, convergeBudget, fmt.Sprintf("bravo's session to alpha to carry the new link.mtu of %d", netstack.DefaultMTU), func() bool {
+		return peer.MTU() == netstack.DefaultMTU
+	})
 }
 
 // a session whose handshake ends while a reload runs takes the link.mtu that reload stores

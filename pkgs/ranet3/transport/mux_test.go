@@ -994,7 +994,7 @@ func (b *answeringBind) Send(packets [][]byte, _ Endpoint) error {
 // any other error stops the batch and is answered wrapped, after a report where one came first
 // a report the bind itself answered wrapped is such another error, since the send that answered it lost more
 func TestMuxCarriesOnPastAPathReport(t *testing.T) {
-	to := netip.MustParseAddrPort("198.51.100.5:4500")
+	to := &fixedEndpoint{addr: netip.MustParseAddrPort("198.51.100.5:4500")}
 	wide, narrow := &PathMTUError{Endpoint: to, MTU: 1400}, &PathMTUError{Endpoint: to, MTU: 1280}
 	unreachable := errors.New("network is unreachable")
 	for _, test := range []struct {
@@ -1018,7 +1018,7 @@ func TestMuxCarriesOnPastAPathReport(t *testing.T) {
 			bind := &answeringBind{answers: test.answers}
 			hub := &Hub{bind: bind, muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now()}
 			hub.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}})
-			mux, err := hub.newMux(&fixedEndpoint{addr: to}, true)
+			mux, err := hub.newMux(to, true)
 			if err != nil {
 				t.Fatal(err)
 			}

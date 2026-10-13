@@ -5,6 +5,7 @@
 package client
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -65,6 +66,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 	}
 	sess.SetChildHandler(tunnel.install)
 	sess.SetChildRetireHandler(tunnel.retire)
+	pmtu := newPathDriver(sess.Mux(), c.speaker.Probe, c.events, cmp.Or(c.probeTimeout, defaultProbeTimeout), cmp.Or(c.confirmEvery, confirmInterval))
 	peer := netstack.NewPeerReserved(sessionName, func(count int) (netstack.BatchSealer, error) {
 		sealer, err := tunnel.reserve(count)
 		// Closing the mux here turns the first babel hello after a refusal,
@@ -75,7 +77,8 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 			_ = sess.Mux().Close()
 		}
 		return sealer, err
-	}, sess.Mux().SendESPBatch, c.events.Emit)
+	}, pmtu.transmit, c.events.Emit)
+	pmtu.peer = peer
 	// The mux is closed before the peer's sender is waited for, not after.
 	// Peer.Close waits with no deadline for a sender that may be inside
 	// SendESPBatch on this very mux, and the defer at the top of this function
@@ -85,9 +88,10 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 		_ = sess.Mux().Close()
 		peer.Close()
 	}()
-	release, adopted := c.sessions.adopt(sessionName, sess, initiator, responder, remote, peer, func() func() {
+	route := pmtu.open()
+	release, adopted := c.sessions.adopt(sessionName, sess, initiator, responder, remote, pmtu, func() func() {
 		// under the set's lock, so a reload's sweep of the set either finds this session or stored the link.mtu read here
-		peer.SetMTU(c.config().Link.SessionMTU())
+		pmtu.start(c.config().Link.SessionMTU(), route)
 		return c.speaker.AddPeer(peer).Close
 	})
 	defer release()
@@ -138,16 +142,12 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 		c.Mesh.DeliverInboundBatch(plain, mtu)
 		clear(plain)
 	}
-	type sessionResult struct {
-		component string
-		err       error
-	}
 	results := make(chan sessionResult, 2)
 	go func() { results <- sessionResult{"IKE control", sess.Run(ctx)} }()
 	go func() {
 		results <- sessionResult{"ESP receive", receiveESP(sess.Mux(), c.workers, tunnel.decryptBatch, emit)}
 	}()
-	first := <-results
+	first := pmtu.serve(results)
 	_ = sess.Mux().Close()
 	<-results
 	ended := fmt.Errorf("%s session ended: %w", first.component, first.err)
@@ -157,6 +157,12 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 	// with the role and the SPIs its established event carried, so a reader pairs the two across a replacement
 	c.events.Emit("ike.session.ended", sessionName, append(established, slog.String("err", ended.Error()))...)
 	return ended
+}
+
+// sessionResult is how one of a session's two halves ended, IKE's control loop or ESP's receive
+type sessionResult struct {
+	component string
+	err       error
 }
 
 // tellDropped tells the peer a session whose dialer was dropped while the node runs is gone
@@ -215,8 +221,8 @@ type liveSession struct {
 	// stop being carried. Without this, revoking a node left every tunnel it
 	// already held up until each of the other nodes restarted.
 	peer ike.Identity
-	// budget is the session's peer in the mesh, whose MTU a reload of link.mtu sets
-	budget *netstack.Peer
+	// pmtu is the search of the session's path MTU, which sets the MTU of its peer in the mesh
+	pmtu *pathDriver
 }
 
 func newSessionSet() *sessionSet {
@@ -247,12 +253,16 @@ func sessionPath(remote, local ike.Identity) string {
 
 // ikeEvent is the ike Recorder, which records under the session's path
 // a change before any peer authenticated has no path
+// an endpoint change restarts the search of the session's path MTU on the new path
 func (c *Client) ikeEvent(local, remote ike.Identity, kind string, attrs ...slog.Attr) {
 	path := ""
 	if remote != (ike.Identity{}) {
 		path = sessionPath(remote, local)
 	}
 	c.events.Emit(kind, path, attrs...)
+	if kind == "ike.endpoint.moved" {
+		c.sessions.moved(path)
+	}
 }
 
 // adopt makes sess the live session for one path unless an equally named
@@ -279,8 +289,8 @@ func (c *Client) ikeEvent(local, remote ike.Identity, kind string, attrs ...slog
 // end that opened it and the end that answered. Naming them that way keeps a
 // dialer and a responder from deriving opposite answers for one SA,
 // which is invisible from either end alone.
-func (s *sessionSet) adopt(path string, sess *ike.Session, initiator, responder, remote ike.Identity, budget *netstack.Peer, attach func() func()) (func(), bool) {
-	return s.adoptFor(path, sess, preferInitiator(initiator, responder), remote, budget, attach)
+func (s *sessionSet) adopt(path string, sess *ike.Session, initiator, responder, remote ike.Identity, pmtu *pathDriver, attach func() func()) (func(), bool) {
+	return s.adoptFor(path, sess, preferInitiator(initiator, responder), remote, pmtu, attach)
 }
 
 // adoptPreferred is adopt with the rule already applied and no peer identity,
@@ -290,7 +300,7 @@ func (s *sessionSet) adoptPreferred(path string, sess *ike.Session, preferred bo
 	return s.adoptFor(path, sess, preferred, ike.Identity{}, nil, attach)
 }
 
-func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, remote ike.Identity, budget *netstack.Peer, attach func() func()) (func(), bool) {
+func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, remote ike.Identity, pmtu *pathDriver, attach func() func()) (func(), bool) {
 	s.mu.Lock()
 	if s.shut {
 		s.mu.Unlock()
@@ -318,7 +328,7 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, re
 	if attach != nil {
 		detach = attach()
 	}
-	s.live[path] = &liveSession{session: sess, preferred: preferred, peer: remote, budget: budget}
+	s.live[path] = &liveSession{session: sess, preferred: preferred, peer: remote, pmtu: pmtu}
 	s.mu.Unlock()
 	if previous != nil && previous.session != sess {
 		log.Printf("peer %s: replacing the previous session", path)
@@ -359,6 +369,7 @@ type liveSessionView struct {
 	session   *ike.Session
 	preferred bool
 	peer      ike.Identity
+	pmtu      *pathDriver
 }
 
 // snapshot copies the live set. The sessions themselves are pointers, so a
@@ -369,7 +380,7 @@ func (s *sessionSet) snapshot() []liveSessionView {
 	defer s.mu.Unlock()
 	out := make([]liveSessionView, 0, len(s.live))
 	for path, live := range s.live {
-		out = append(out, liveSessionView{path: path, session: live.session, preferred: live.preferred, peer: live.peer})
+		out = append(out, liveSessionView{path: path, session: live.session, preferred: live.preferred, peer: live.peer, pmtu: live.pmtu})
 	}
 	return out
 }
@@ -386,17 +397,35 @@ func (s *sessionSet) holds(path string) bool {
 	return live != nil && s.active(live.session)
 }
 
-// setMTU sets the MTU of every live session's peer in the mesh to mtu, the link.mtu a reload stored
-func (s *sessionSet) setMTU(mtu int) {
+// relink hands every live session's search the link.mtu a reload stored
+func (s *sessionSet) relink(link int) {
 	if s == nil {
 		return // a Client built by hand in a test carries no sessions
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, live := range s.live {
-		if live.budget != nil {
-			live.budget.SetMTU(mtu)
+		if live.pmtu != nil {
+			live.pmtu.relink(link)
 		}
+	}
+}
+
+// probeAcked is the speaker's Runtime.ProbeAcked, which hands an Ack to the search of the session it came through
+func (s *sessionSet) probeAcked(peer *netstack.Peer, nonce uint16) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if live := s.live[peer.ID]; live != nil && live.pmtu.peer == peer {
+		live.pmtu.ack(nonce)
+	}
+}
+
+// moved tells the search of the session at path that IKE moved the session to another endpoint
+func (s *sessionSet) moved(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if live := s.live[path]; live != nil {
+		live.pmtu.move()
 	}
 }
 
@@ -511,9 +540,14 @@ func (s *sessionSet) startRekey(live liveSessionView) {
 	}()
 }
 
-// startProbe asks one session to prove its path now
+// startProbe asks one session to prove its path now, and its search to confirm the budget
 // a probe never blocks, so the answer comes before any of the liveness checks it starts
-func (s *sessionSet) startProbe(live liveSessionView) { s.probe(live.session) }
+func (s *sessionSet) startProbe(live liveSessionView) {
+	s.probe(live.session)
+	if live.pmtu != nil {
+		live.pmtu.confirmNow()
+	}
+}
 
 // matchesPeer reports whether a dialer or session path names the peer somebody
 // asked about. A path is "org/name/serial@local", and the argument is compared

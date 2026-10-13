@@ -6,17 +6,23 @@
 package transport
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
+	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -636,5 +642,393 @@ func TestPartialRebindLeavesBothFamiliesWhereTheyWere(t *testing.T) {
 	}
 	if hub.UnderlayReady() {
 		t.Error("a hub that could not complete a move reports its underlay ready")
+	}
+}
+
+// dontFragmentSet reads back whether the kernel sets DF on the socket's datagrams
+func dontFragmentSet(t *testing.T, socket *darwinSocket) bool {
+	t.Helper()
+	level, option := dontFragmentOption(socket.ipv6)
+	var value int
+	var readErr error
+	if err := socket.raw.Control(func(fd uintptr) { value, readErr = unix.GetsockoptInt(int(fd), level, option) }); err != nil {
+		t.Fatal(err)
+	}
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	return value != 0
+}
+
+// openMuxes opens a hub and a mux to each of addresses at port 4500
+func openMuxes(t *testing.T, addresses ...string) (*Hub, []*Mux) {
+	t.Helper()
+	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hub.Close() })
+	var muxes []*Mux
+	for _, address := range addresses {
+		mux, err := hub.NewMux(net.ParseIP(address), 4500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		muxes = append(muxes, mux)
+	}
+	return hub, muxes
+}
+
+// both sockets set DF on every datagram from the open
+// a mux letting its IPv4 sends fragment clears it on the IPv4 socket until the last such mux stops, and every IPv4 mux reads that it sends without DF meanwhile
+// an IPv6 mux fragments its own datagrams alone, the IPv6 socket keeping DF and only that mux reading that it sends without it
+func TestSocketsSendWithDontFragment(t *testing.T) {
+	hub, muxes := openMuxes(t, "127.0.0.1", "127.0.0.2", "::1", "::2")
+	bind := hub.bind.(*darwinBind)
+	v4, v4b, v6, v6b := muxes[0], muxes[1], muxes[2], muxes[3]
+	for _, step := range []struct {
+		name string
+		act  func() error
+		// sockets is whether the IPv4 and the IPv6 socket set DF
+		sockets [2]bool
+		// muxes holds each mux's reading of its own sends
+		muxes [4]bool
+	}{
+		{"nothing fragments", func() error { return nil }, [2]bool{true, true}, [4]bool{true, true, true, true}},
+		{"an IPv4 mux fragments", func() error { return v4.Fragment(true) }, [2]bool{false, true}, [4]bool{false, false, true, true}},
+		{"another IPv4 mux fragments", func() error { return v4b.Fragment(true) }, [2]bool{false, true}, [4]bool{false, false, true, true}},
+		{"the first IPv4 mux stops", func() error { return v4.Fragment(false) }, [2]bool{false, true}, [4]bool{false, false, true, true}},
+		{"the last IPv4 mux stops", func() error { return v4b.Fragment(false) }, [2]bool{true, true}, [4]bool{true, true, true, true}},
+		{"an IPv6 mux fragments", func() error { return v6.Fragment(true) }, [2]bool{true, true}, [4]bool{true, true, false, true}},
+		{"it closes", v6.Close, [2]bool{true, true}, [4]bool{true, true, true, true}},
+	} {
+		if err := step.act(); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		if got := [2]bool{dontFragmentSet(t, bind.v4), dontFragmentSet(t, bind.v6)}; got != step.sockets {
+			t.Errorf("%s: the IPv4 and IPv6 sockets set DF %v, want %v", step.name, got, step.sockets)
+		}
+		if got := [4]bool{v4.DontFragment(), v4b.DontFragment(), v6.DontFragment(), v6b.DontFragment()}; got != step.muxes {
+			t.Errorf("%s: the muxes read that they send with DF %v, want %v", step.name, got, step.muxes)
+		}
+	}
+}
+
+// the path MTU of an unbound socket is the MTU of the interface the route to the peer leaves by
+func TestPathMTUIsTheRoutedInterfaceMTU(t *testing.T) {
+	_, muxes := openMuxes(t, "127.0.0.1", "::1")
+	loopback, err := net.InterfaceByName("lo0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mux := range muxes {
+		if got, err := mux.PathMTU(); err != nil || got != loopback.MTU {
+			t.Errorf("the path MTU to %s reads %d, %v, want lo0's %d", mux.Endpoint(), got, err, loopback.MTU)
+		}
+	}
+}
+
+// the path MTU of a bound socket is the MTU of the interface it is bound to
+// the interface the host routes the peer through plays no part
+// the hub binds a live interface other than lo0, as the binding tests open theirs
+// the peer is 127.0.0.1, which the host routes through lo0
+func TestPathMTUOfABoundSocketIsTheBoundInterfaceMTU(t *testing.T) {
+	loopbackIndex, index := twoInterfaces(t)
+	loopback, err := net.InterfaceByIndex(loopbackIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := net.InterfaceByIndex(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.MTU == loopback.MTU {
+		t.Skipf("%s carries the MTU of %s, %d, so a read of either looks the same", link.Name, loopback.Name, link.MTU)
+	}
+	hub, err := NewHub(":0", Underlay{Bind: true}, Runtime{Links: newFakeLinks(index)})
+	if err != nil {
+		t.Fatalf("open a bound hub: %v", err)
+	}
+	t.Cleanup(func() { _ = hub.Close() })
+	mux, err := hub.NewMux(net.ParseIP("127.0.0.1"), 4500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := mux.PathMTU(); err != nil || got != link.MTU {
+		t.Errorf("the path MTU to %s from a hub bound to %s reads %d, %v, want %s's %d rather than the %d of %s",
+			mux.Endpoint(), link.Name, got, err, link.Name, link.MTU, loopback.MTU, loopback.Name)
+	}
+}
+
+const (
+	// fethNear and fethFar are the feth pair a test makes, numbered past any a host keeps
+	fethNear = "feth7700"
+	fethFar  = "feth7701"
+	// fethMTU is the near feth's MTU, the largest IP packet a send through it carries
+	fethMTU = 1400
+	// dadWait bounds the wait for the near feth's IPv6 address to finish duplicate address detection
+	dadWait = 5 * time.Second
+	// dadPoll is how often the wait looks
+	dadPoll = 50 * time.Millisecond
+)
+
+// requireFeth skips a test that makes interfaces unless the run is root and asks for it
+func requireFeth(t *testing.T) {
+	t.Helper()
+	if os.Getenv("RANET3_DARWIN_NETTEST") != "1" {
+		t.Skip("set RANET3_DARWIN_NETTEST=1 and run as root to make a feth pair")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("RANET3_DARWIN_NETTEST=1 but this process is not root, and a feth pair needs root")
+	}
+}
+
+func hostCommand(t *testing.T, args ...string) {
+	t.Helper()
+	if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+		t.Fatalf("%s: %v: %s", strings.Join(args, " "), err, out)
+	}
+}
+
+// fethPath makes a feth pair whose near end carries fethMTU and an address of each family
+// it points two neighbors of each family at the far end, where a datagram to one leaves through the near end and reaches no host
+func fethPath(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{fethNear, fethFar} {
+		hostCommand(t, "ifconfig", name, "create")
+		t.Cleanup(func() { _ = exec.Command("ifconfig", name, "destroy").Run() })
+	}
+	hostCommand(t, "ifconfig", fethNear, "peer", fethFar)
+	hostCommand(t, "ifconfig", fethNear, "mtu", strconv.Itoa(fethMTU))
+	hostCommand(t, "ifconfig", fethNear, "inet", "192.0.2.1/24", "up")
+	hostCommand(t, "ifconfig", fethNear, "inet6", "2001:db8:f::1", "prefixlen", "64")
+	hostCommand(t, "ifconfig", fethFar, "up")
+	far, err := net.InterfaceByName(fethFar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, neighbor := range []string{"192.0.2.9", "192.0.2.10"} {
+		hostCommand(t, "arp", "-s", neighbor, far.HardwareAddr.String())
+	}
+	for _, neighbor := range []string{"2001:db8:f::9", "2001:db8:f::10"} {
+		hostCommand(t, "ndp", "-s", neighbor, far.HardwareAddr.String())
+	}
+	for deadline := time.Now().Add(dadWait); ; time.Sleep(dadPoll) {
+		out, err := exec.Command("ifconfig", fethNear).CombinedOutput()
+		if err != nil {
+			t.Fatalf("ifconfig %s: %v: %s", fethNear, err, out)
+		}
+		if !strings.Contains(string(out), "tentative") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the IPv6 address on %s stayed tentative for %s: %s", fethNear, dadWait, out)
+		}
+	}
+}
+
+// farFrames reads the frames that cross to the far feth through a bpf device attached to it
+type farFrames struct {
+	fd     int
+	buffer []byte
+}
+
+// bpfBuffer is the bpf buffer a test asks for, which holds every frame of a send
+const bpfBuffer = 1 << 16
+
+// watchFar attaches a bpf device to the far feth, which sees every frame the near feth hands across
+// a read returns the frames that arrived so far and never waits for more
+func watchFar(t *testing.T) *farFrames {
+	t.Helper()
+	fd := -1
+	for i := 0; fd < 0; i++ {
+		opened, err := unix.Open(fmt.Sprintf("/dev/bpf%d", i), unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+		switch {
+		case err == nil:
+			fd = opened
+		case !errors.Is(err, unix.EBUSY):
+			t.Fatalf("open a bpf device: %v", err)
+		}
+	}
+	t.Cleanup(func() { _ = unix.Close(fd) })
+	// the buffer is sized before the device attaches, which fixes it
+	if err := unix.IoctlSetPointerInt(fd, unix.BIOCSBLEN, bpfBuffer); err != nil {
+		t.Fatalf("size the bpf buffer: %v", err)
+	}
+	// struct ifreq is the interface's name and a union of 16 bytes
+	request := make([]byte, unix.IFNAMSIZ+16)
+	copy(request, fethFar)
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), unix.BIOCSETIF, uintptr(unsafe.Pointer(&request[0]))); errno != 0 {
+		t.Fatalf("attach bpf to %s: %v", fethFar, errno)
+	}
+	if err := unix.IoctlSetPointerInt(fd, unix.BIOCIMMEDIATE, 1); err != nil {
+		t.Fatalf("hand each frame over as it arrives: %v", err)
+	}
+	size, err := unix.IoctlGetInt(fd, unix.BIOCGBLEN)
+	if err != nil {
+		t.Fatalf("read the bpf buffer's size: %v", err)
+	}
+	return &farFrames{fd: fd, buffer: make([]byte, size)}
+}
+
+// crossed reads the far feth for whole UDP datagrams of size bytes from port to 4500
+// it reads until want of them crossed or budget passed
+// it reports how many crossed
+func (f *farFrames) crossed(t *testing.T, port, size, want int, budget time.Duration) int {
+	t.Helper()
+	got := 0
+	for deadline := time.Now().Add(budget); got < want && time.Now().Before(deadline); {
+		n, err := unix.Read(f.fd, f.buffer)
+		if errors.Is(err, unix.EAGAIN) {
+			time.Sleep(pollInterval)
+			continue
+		}
+		if err != nil {
+			t.Fatalf("read the frames that crossed to %s: %v", fethFar, err)
+		}
+		// each frame follows its bpf_hdr and the next header starts on a word
+		for frames := f.buffer[:n]; len(frames) >= unix.SizeofBpfHdr; {
+			captured := int(binary.NativeEndian.Uint32(frames[unsafe.Offsetof(unix.BpfHdr{}.Caplen):]))
+			header := int(binary.NativeEndian.Uint16(frames[unsafe.Offsetof(unix.BpfHdr{}.Hdrlen):]))
+			if header+captured > len(frames) {
+				break
+			}
+			if udpPayload(frames[header:header+captured], port) == size {
+				got++
+			}
+			frames = frames[min(len(frames), (header+captured+unix.BPF_ALIGNMENT-1)&^(unix.BPF_ALIGNMENT-1)):]
+		}
+	}
+	return got
+}
+
+// the wait for each far neighbor's path to carry a datagram
+const (
+	// pathWait bounds the wait for one neighbor
+	// darwin has lost the first IPv6 datagrams to the far feth for several seconds after fethPath returned
+	pathWait = 30 * time.Second
+	// pathResend is how long the wait looks for a datagram before it sends another
+	pathResend = 250 * time.Millisecond
+)
+
+// carried sends a datagram through each mux, again every pathResend, until one crosses to the far feth
+// each mux's datagram has a size of its own from 64 bytes
+// crossed tells datagrams apart by size alone
+// no step sends a datagram of those sizes
+// a send that fails counts as one that never crossed
+// it fails the test when a mux's path carries nothing within pathWait
+func (f *farFrames) carried(t *testing.T, port int, muxes []*Mux) {
+	t.Helper()
+	for i, mux := range muxes {
+		probe := make([]byte, 64+i)
+		start := time.Now()
+		for tries := 1; ; tries++ {
+			err := mux.SendESPBatch([][]byte{probe})
+			if f.crossed(t, port, len(probe), 1, pathResend) > 0 {
+				t.Logf("a datagram to %s crossed to %s at try %d, %s after the first", mux.Endpoint(), fethFar, tries, time.Since(start).Round(time.Millisecond))
+				break
+			}
+			if time.Since(start) >= pathWait {
+				t.Fatalf("none of %d datagrams to %s crossed to %s within %s, the last send answering %v", tries, mux.Endpoint(), fethFar, pathWait, err)
+			}
+		}
+	}
+}
+
+// the ethertypes of IPv4 and IPv6
+const (
+	etherIPv4 = 0x0800
+	etherIPv6 = 0x86dd
+)
+
+// udpPayload is the payload size of the whole UDP datagram from port to 4500 that an ethernet frame carries
+// it is -1 for any other frame, a fragment among them
+func udpPayload(frame []byte, port int) int {
+	if len(frame) < 14 {
+		return -1
+	}
+	packet := frame[14:]
+	var udp []byte
+	switch binary.BigEndian.Uint16(frame[12:]) {
+	case etherIPv4:
+		// a fragment sets more fragments or an offset, the bits below DF
+		if len(packet) < 20 || packet[9] != unix.IPPROTO_UDP || binary.BigEndian.Uint16(packet[6:])&0x3fff != 0 {
+			return -1
+		}
+		udp = packet[min(len(packet), int(packet[0]&0x0f)*4):]
+	case etherIPv6:
+		// a fragment carries a fragment header ahead of UDP
+		if len(packet) < 40 || packet[6] != unix.IPPROTO_UDP {
+			return -1
+		}
+		udp = packet[40:]
+	default:
+		return -1
+	}
+	if len(udp) < 8 || int(binary.BigEndian.Uint16(udp)) != port || binary.BigEndian.Uint16(udp[2:]) != 4500 {
+		return -1
+	}
+	return int(binary.BigEndian.Uint16(udp[4:])) - 8
+}
+
+// through a feth whose MTU is 1400, both families refuse a datagram past it, and the send reports the interface's MTU once the datagrams within it went
+// a mux letting its sends fragment sends the longer datagram in fragments
+// an IPv4 mux fragments the whole IPv4 socket, another IPv4 mux sending it in fragments too, and an IPv6 mux fragments its own datagrams alone
+// every send carries the longer datagram between two that fill the feth under the family's headers
+// both of those cross to the far feth, the one after a refused datagram too
+// the steps begin once a datagram to each far neighbor crossed
+func TestDarwinRefusesWhatTheInterfaceCannotCarry(t *testing.T) {
+	requireFeth(t)
+	fethPath(t)
+	hub, muxes := openMuxes(t, "192.0.2.9", "192.0.2.10", "2001:db8:f::9", "2001:db8:f::10")
+	port := hub.LocalAddr().(*net.UDPAddr).Port
+	far := watchFar(t)
+	far.carried(t, port, muxes)
+	v4, v6 := muxes[0], muxes[2]
+	for _, mux := range muxes {
+		if got, err := mux.PathMTU(); err != nil || got != fethMTU {
+			t.Fatalf("the path MTU to %s reads %d, %v, want the feth's %d", mux.Endpoint(), got, err, fethMTU)
+		}
+	}
+	// 1500 bytes of UDP payload fit the feth under neither family's headers
+	long := make([]byte, 1500)
+	for _, step := range []struct {
+		name string
+		act  func() error
+		// refused is which muxes have the long datagram refused and reported rather than sent in fragments
+		refused [4]bool
+	}{
+		{"nothing fragments", func() error { return nil }, [4]bool{true, true, true, true}},
+		{"an IPv4 mux fragments", func() error { return v4.Fragment(true) }, [4]bool{false, false, true, true}},
+		{"it stops and an IPv6 mux fragments", func() error {
+			return errors.Join(v4.Fragment(false), v6.Fragment(true))
+		}, [4]bool{true, true, false, true}},
+		{"that stops too", func() error { return v6.Fragment(false) }, [4]bool{true, true, true, true}},
+	} {
+		if err := step.act(); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		for i, mux := range muxes {
+			// the largest datagram the feth carries under the outer IP and UDP headers
+			largest := fethMTU - 40 - 8
+			if mux.Endpoint().AddrPort().Addr().Is4() {
+				largest = fethMTU - 20 - 8
+			}
+			filling := make([]byte, largest)
+			err := mux.SendESPBatch([][]byte{filling, long, filling})
+			report, ok := err.(*PathMTUError)
+			switch {
+			case step.refused[i] && (!ok || *report != (PathMTUError{Endpoint: mux.Endpoint(), MTU: fethMTU})):
+				t.Errorf("%s: the send to %s answered %v, want the report of its %d byte interface alone", step.name, mux.Endpoint(), err, fethMTU)
+			case !step.refused[i] && err != nil:
+				t.Errorf("%s: the send to %s answered %v, want every datagram sent", step.name, mux.Endpoint(), err)
+			}
+			if got := mux.DontFragment(); got != step.refused[i] {
+				t.Errorf("%s: the mux to %s reads that it sends with DF %v, want %v", step.name, mux.Endpoint(), got, step.refused[i])
+			}
+			if got := far.crossed(t, port, largest, 2, arrivalBudget); got != 2 {
+				t.Errorf("%s: %d of the send's two datagrams of %d bytes to %s crossed to the far feth, want both", step.name, got, largest, mux.Endpoint())
+			}
+		}
 	}
 }
