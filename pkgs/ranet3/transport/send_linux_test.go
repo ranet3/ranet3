@@ -24,15 +24,19 @@ import (
 
 const defaultPathMTU = 1500
 
-// fakeKernel answers sendmmsg as linux does from the addresses, interfaces and path MTUs it holds
+// fakeKernel answers sendmmsg as linux does from the addresses, interfaces and path MTUs it holds, for a socket set to IP_PMTUDISC_DO
 type fakeKernel struct {
 	mu sync.Mutex
 	// local maps each address the host holds to its interface
 	local   map[netip.Addr]int
 	links   map[int]bool
 	pathMTU map[netip.Addr]int
-	// gsoErrno is EINVAL or EMSGSIZE by kernel version, or EIO from a device that cannot segment
+	// gsoErrno is how this kernel refuses a segment past the path MTU, EMSGSIZE from 6.14 on and EINVAL before
 	gsoErrno unix.Errno
+	// unsegmentable refuses every segmented message within the path to a destination with its errno, EIO for a route through an IPsec policy
+	unsegmentable map[netip.Addr]unix.Errno
+	// reads counts the path MTUs the bind read
+	reads int
 	// pinnedErrno refuses every pinned message where it is set
 	pinnedErrno unix.Errno
 	// once refuses the next message where it is set, as a route rewritten between two sends does
@@ -62,11 +66,14 @@ type triedMessage struct {
 	to      netip.AddrPort
 	pinned  bool
 	segment int
-	errno   unix.Errno
+	// size is the bytes the message carried, every segment of it together
+	size  int
+	errno unix.Errno
 }
 
 func newFakeKernel() *fakeKernel {
-	return &fakeKernel{local: map[netip.Addr]int{}, links: map[int]bool{}, pathMTU: map[netip.Addr]int{}, gsoErrno: unix.EINVAL}
+	return &fakeKernel{local: map[netip.Addr]int{}, links: map[int]bool{}, pathMTU: map[netip.Addr]int{},
+		unsegmentable: map[netip.Addr]unix.Errno{}, gsoErrno: unix.EMSGSIZE}
 }
 
 func (k *fakeKernel) hold(address string, index int) {
@@ -143,8 +150,8 @@ func (k *fakeKernel) deliver(m *ipv4.Message) unix.Errno {
 	to := m.Addr.(*net.UDPAddr).AddrPort()
 	to = netip.AddrPortFrom(to.Addr().Unmap(), to.Port())
 	source, index, pinned, segment := parseSendControl(m.OOB)
-	tried := triedMessage{to: to, pinned: pinned, segment: segment}
-	errno := k.route(to.Addr(), source, index, pinned, segment)
+	tried := triedMessage{to: to, pinned: pinned, segment: segment, size: len(m.Buffers[0])}
+	errno := k.route(to.Addr(), source, index, pinned, segment, len(m.Buffers[0]))
 	if k.once != 0 {
 		errno, k.once = k.once, 0
 	}
@@ -172,7 +179,8 @@ func (k *fakeKernel) deliver(m *ipv4.Message) unix.Errno {
 	return 0
 }
 
-func (k *fakeKernel) route(to, source netip.Addr, index int, pinned bool, segment int) unix.Errno {
+// route refuses a message of size bytes, segmented into segment bytes where that is not zero, as linux does after it found a source
+func (k *fakeKernel) route(to, source netip.Addr, index int, pinned bool, segment, size int) unix.Errno {
 	if pinned {
 		if k.pinnedErrno != 0 {
 			return k.pinnedErrno
@@ -183,17 +191,40 @@ func (k *fakeKernel) route(to, source netip.Addr, index int, pinned bool, segmen
 	} else if _, ok := k.choose(to.Is4()); !ok {
 		return unix.ENETUNREACH
 	}
-	if segment > 0 {
-		header := 20 + 8
-		if !to.Is4() {
-			header = 40 + 8
+	header := 20 + 8
+	if !to.Is4() {
+		header = 40 + 8
+	}
+	if segment == 0 {
+		// DO refuses a datagram past the path MTU rather than fragment it
+		if header+size > k.mtu(to) {
+			return unix.EMSGSIZE
 		}
-		// udp_send_skb refuses a gso_size whose packets exceed the path's fragment size
-		if header+segment > k.mtu(to) {
-			return k.gsoErrno
+		return 0
+	}
+	// udp_send_skb refuses a gso_size whose packets exceed the path's fragment size, then a route that cannot segment
+	if header+segment > k.mtu(to) {
+		return k.gsoErrno
+	}
+	return k.unsegmentable[to]
+}
+
+// routeMTU answers the bind's read of the path MTU to ep from the path MTUs the kernel holds
+// a read for a send that carries a pin binds the pin's interface and address first, which linux refuses once either is gone
+func (k *fakeKernel) routeMTU(ep *udpEndpoint) (int, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.reads++
+	if ep.pin() != nil {
+		source, _ := netip.AddrFromSlice(ep.source)
+		if ep.index != 0 && !k.links[ep.index] {
+			return 0, unix.ENODEV
+		}
+		if _, ok := k.local[source.Unmap()]; !ok {
+			return 0, unix.EADDRNOTAVAIL
 		}
 	}
-	return 0
+	return k.mtu(ep.AddrPort().Addr()), nil
 }
 
 // pinRefusal is how linux refuses a send pinned to source at interface index, and zero where the pin works
@@ -287,7 +318,7 @@ func kernelBind(kernel *fakeKernel, events *eventLog) *udpBind {
 		s.send.New = func() any { return newUDPSendBatch() }
 		return s
 	}
-	return &udpBind{v4: socket(false), v6: socket(true), events: events.record, started: time.Now()}
+	return &udpBind{v4: socket(false), v6: socket(true), events: events.record, started: time.Now(), pathMTU: kernel.routeMTU}
 }
 
 func kernelHub(kernel *fakeKernel, events *eventLog) *Hub {
@@ -308,13 +339,22 @@ func dialed(peer string) *udpEndpoint {
 	return &udpEndpoint{addr: net.UDPAddrFromAddrPort(netip.MustParseAddrPort(peer))}
 }
 
-// numbered cuts numbered packets from one allocation, so a send may segment them
-func numbered(count, size int) [][]byte {
-	storage := make([]byte, count*size)
-	packets := make([][]byte, count)
-	for i := range packets {
-		packets[i] = storage[i*size : (i+1)*size]
+// numbered cuts count numbered packets of size from one allocation, so a send may segment them
+func numbered(count, size int) [][]byte { return sized(slices.Repeat([]int{size}, count)...) }
+
+// sized cuts packets of sizes from one allocation, each numbered by its place, so a send may segment neighbors
+func sized(sizes ...int) [][]byte {
+	total := 0
+	for _, size := range sizes {
+		total += size
+	}
+	storage := make([]byte, total)
+	packets := make([][]byte, len(sizes))
+	offset := 0
+	for i, size := range sizes {
+		packets[i] = storage[offset : offset+size]
 		binary.BigEndian.PutUint32(packets[i], uint32(i))
+		offset += size
 	}
 	return packets
 }
@@ -459,70 +499,192 @@ func TestSendKeepsItsSourceWhereFallingBackDoesNotHelp(t *testing.T) {
 	})
 }
 
+// a route that refuses segments and passes single datagrams, as one through an IPsec policy does, stops segmentation to its endpoint alone
 // a pinned endpoint keeps its source, although EINVAL is also how linux refuses a source that is gone
 func TestSegmentationStopsOnlyForTheEndpointThatRefusedIt(t *testing.T) {
 	for _, test := range []struct {
-		errno  unix.Errno
-		narrow *udpEndpoint
+		errno    unix.Errno
+		refusing *udpEndpoint
 	}{
 		{unix.EINVAL, dialed("198.51.100.1:4500")},
-		{unix.EMSGSIZE, dialed("198.51.100.1:4500")},
 		{unix.EIO, dialed("198.51.100.1:4500")},
 		{unix.EINVAL, arrivedFrom("198.51.100.1:4500", "192.0.2.10", 2)},
 	} {
-		narrow := test.narrow
-		t.Run(fmt.Sprintf("%s pinned %v", unix.ErrnoName(test.errno), narrow.control != nil), func(t *testing.T) {
+		refusing := test.refusing
+		t.Run(fmt.Sprintf("%s pinned %v", unix.ErrnoName(test.errno), refusing.control != nil), func(t *testing.T) {
 			kernel := newFakeKernel()
 			kernel.hold("192.0.2.10", 2)
-			kernel.gsoErrno = test.errno
-			kernel.pathMTU[netip.MustParseAddr("198.51.100.1")] = 1280
+			kernel.unsegmentable[netip.MustParseAddr("198.51.100.1")] = test.errno
 			events := &eventLog{}
 			bind := kernelBind(kernel, events)
-			wide := dialed("198.51.100.2:4500")
+			other := dialed("198.51.100.2:4500")
 
-			if err := bind.Send(numbered(8, 1400), narrow); err != nil {
-				t.Fatalf("a batch the path carries one at a time failed: %v", err)
+			if err := bind.Send(numbered(8, 1400), refusing); err != nil {
+				t.Fatalf("a batch the route carries one datagram at a time failed: %v", err)
 			}
 			sent := kernel.datagrams()
 			if got := numbers(sent); !slices.Equal(got, sequence(8)) {
 				t.Fatalf("the datagrams went out as %v, want each once in order", got)
 			}
 			for _, datagram := range sent {
-				if datagram.pinned != (narrow.control != nil) {
+				if datagram.pinned != (refusing.control != nil) {
 					t.Fatalf("a datagram went out pinned %v from an endpoint whose source was never refused", datagram.pinned)
 				}
 			}
-			if narrow.unsegmentedUntil.Load() == 0 {
-				t.Fatal("the endpoint whose path refused a segment still segments")
+			if refusing.unsegmentedUntil.Load() == 0 {
+				t.Fatal("the endpoint whose route refused segments still segments")
 			}
-			if narrow.unpinned.Load() {
-				t.Fatal("a refused segment cost the endpoint its source")
+			if refusing.unpinned.Load() {
+				t.Fatal("refused segments cost the endpoint its source")
 			}
 			tried := len(kernel.messages())
-			if err := bind.Send(numbered(8, 1400), narrow); err != nil {
+			if err := bind.Send(numbered(8, 1400), refusing); err != nil {
 				t.Fatal(err)
 			}
 			for _, message := range kernel.messages()[tried:] {
 				if message.segment != 0 {
-					t.Fatalf("a later send to the narrow path segmented again: %+v", message)
+					t.Fatalf("a later send over the refusing route segmented again: %+v", message)
 				}
 			}
 
 			tried = len(kernel.messages())
-			if err := bind.Send(numbered(8, 1400), wide); err != nil {
+			if err := bind.Send(numbered(8, 1400), other); err != nil {
 				t.Fatal(err)
 			}
 			if later := kernel.messages()[tried:]; len(later) != 1 || later[0].segment != 1400 || later[0].errno != 0 {
 				t.Errorf("the send to another endpoint was handed over as %+v, want one segmented message", later)
 			}
-			if wide.unsegmentedUntil.Load() != 0 {
+			if other.unsegmentedUntil.Load() != 0 {
 				t.Error("another endpoint stopped segmenting")
 			}
-			want := fmt.Sprintf("transport.endpoint.unsegmented endpoint=%s errno=%s", narrow, unix.ErrnoName(test.errno))
+			want := fmt.Sprintf("transport.endpoint.unsegmented endpoint=%s errno=%s", refusing, unix.ErrnoName(test.errno))
 			if got := events.recorded(); !slices.Equal(got, []string{want}) {
 				t.Errorf("the bind recorded %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// a datagram larger than its path is refused, segmented or alone, and the send reads the path MTU and reports it
+// the datagrams of the batch the path carries go after it, those past it do not, and nothing stops segmenting
+// a kernel from 6.14 on refuses the segments with EMSGSIZE and the send resends none of them one to a message
+// an older one answers EINVAL, and the resend's first single datagram meets the EMSGSIZE
+// 1240 bytes fit an IPv4 path of 1280 and not an IPv6 one
+// 1252 bytes fill an IPv4 path of 1280 and 1253 go past it
+// 1232 bytes fill an IPv6 one and 1233 go past it
+// a run of datagrams that fill the path goes in one message after the report, as a shorter run does
+func TestRefusedDatagramReportsItsPathAndTheRestStillGo(t *testing.T) {
+	const pathMTU = 1280
+	sizes := []int{64, 1400, 1400, 1400, 600, 600, 1240, 1240, 64, 1400, 64, 1252, 1252, 1253, 64, 1232, 1232, 1233, 64}
+	for _, test := range []struct {
+		gsoErrno unix.Errno
+		ep       *udpEndpoint
+	}{
+		{unix.EMSGSIZE, dialed("198.51.100.1:4500")},
+		{unix.EINVAL, dialed("198.51.100.1:4500")},
+		{unix.EMSGSIZE, arrivedFrom("198.51.100.1:4500", "192.0.2.10", 2)},
+		{unix.EMSGSIZE, dialed("[2001:db8:7::1]:4500")},
+		{unix.EINVAL, arrivedFrom("[2001:db8:7::1]:4500", "2001:db8::10", 2)},
+	} {
+		ep := test.ep
+		t.Run(fmt.Sprintf("%s to %s pinned %v", unix.ErrnoName(test.gsoErrno), ep, ep.control != nil), func(t *testing.T) {
+			kernel := newFakeKernel()
+			kernel.hold("192.0.2.10", 2)
+			kernel.hold("2001:db8::10", 2)
+			kernel.gsoErrno = test.gsoErrno
+			kernel.pathMTU[ep.AddrPort().Addr()] = pathMTU
+			events := &eventLog{}
+			header := 20 + 8
+			if !ep.AddrPort().Addr().Is4() {
+				header = 40 + 8
+			}
+
+			err := kernelBind(kernel, events).Send(sized(sizes...), ep)
+			report, ok := err.(*PathMTUError)
+			if !ok || *report != (PathMTUError{Endpoint: ep.AddrPort(), MTU: pathMTU}) {
+				t.Fatalf("the send answered %v, want the report of a %d byte path to %s alone", err, pathMTU, ep)
+			}
+			var within []uint32
+			for i, size := range sizes {
+				if size+header <= pathMTU {
+					within = append(within, uint32(i))
+				}
+			}
+			sent := kernel.datagrams()
+			if got := numbers(sent); !slices.Equal(got, within) {
+				t.Fatalf("the datagrams went out as %v, want those within the path once in order, %v", got, within)
+			}
+			for _, datagram := range sent {
+				if datagram.pinned != (ep.control != nil) {
+					t.Errorf("a datagram went out pinned %v from an endpoint whose source was never refused", datagram.pinned)
+				}
+				if (len(datagram.payload) == 600 || len(datagram.payload)+header == pathMTU) && !datagram.segmented {
+					t.Error("a run within the path went one datagram to a message after the report")
+				}
+			}
+			resent := 0
+			for _, message := range kernel.messages() {
+				if message.segment == 0 && message.size+header > pathMTU {
+					resent++
+				}
+			}
+			wantResent := 0
+			if test.gsoErrno == unix.EINVAL {
+				wantResent = 1
+			}
+			if resent != wantResent {
+				t.Errorf("%d datagrams past the path were handed over one to a message, want %d", resent, wantResent)
+			}
+			if kernel.reads != 1 {
+				t.Errorf("the send read the path MTU %d times, want once", kernel.reads)
+			}
+			if ep.unsegmentedUntil.Load() != 0 || ep.unpinned.Load() || len(events.recorded()) != 0 {
+				t.Errorf("a refusal for size changed the endpoint, unsegmented until %d, unpinned %v, recorded %q",
+					ep.unsegmentedUntil.Load(), ep.unpinned.Load(), events.recorded())
+			}
+		})
+	}
+}
+
+// a session a peer opened loses its arrival address while its path narrows
+// the kernel's choice of source is refused for size, which means linux routed the datagram from it, so the send keeps that choice
+// the path MTU is then read for the route that choice takes, as no route from the gone address can be read
+func TestFallbackRefusedForSizeKeepsTheKernelsChoice(t *testing.T) {
+	kernel := newFakeKernel()
+	kernel.hold("192.0.2.10", 2)
+	kernel.pathMTU[netip.MustParseAddr("198.51.100.7")] = 1280
+	events := &eventLog{}
+	ep := arrivedFrom("198.51.100.7:4500", "192.0.2.99", 2)
+	err := kernelBind(kernel, events).Send(numbered(8, 1400), ep)
+	if report, ok := err.(*PathMTUError); !ok || report.MTU != 1280 {
+		t.Fatalf("the send answered %v, want the report of a 1280 byte path", err)
+	}
+	if len(kernel.datagrams()) != 0 {
+		t.Errorf("%d datagrams past the path went out", len(kernel.datagrams()))
+	}
+	if !ep.unpinned.Load() {
+		t.Error("the endpoint still names the source that refused it")
+	}
+	want := fmt.Sprintf("transport.endpoint.unpinned endpoint=%s errno=ENETUNREACH", ep)
+	if got := events.recorded(); !slices.Equal(got, []string{want}) {
+		t.Errorf("the bind recorded %q, want %q", got, want)
+	}
+}
+
+// the report reaches what sends through a mux, which reads it to narrow its session
+func TestMuxHandsThePathReportOn(t *testing.T) {
+	kernel := newFakeKernel()
+	kernel.hold("192.0.2.10", 2)
+	kernel.pathMTU[netip.MustParseAddr("198.51.100.5")] = 1280
+	hub := kernelHub(kernel, &eventLog{})
+	mux, err := hub.NewMux(net.ParseIP("198.51.100.5"), 4500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = mux.SendESPBatch(numbered(8, 1400))
+	report, ok := errors.AsType[*PathMTUError](err)
+	if want := (PathMTUError{Endpoint: netip.MustParseAddrPort("198.51.100.5:4500"), MTU: 1280}); !ok || *report != want {
+		t.Errorf("the mux answered %v, want the report %v", err, &want)
 	}
 }
 
@@ -555,7 +717,7 @@ func TestSegmentationIsNotBlamedForWhatPlainSendsMeetAsWell(t *testing.T) {
 	}
 }
 
-// a session a peer opened loses its arrival address on a path too narrow for its segments
+// a session a peer opened loses its arrival address on a route that refuses segments
 // the kernel's choice then carries the batch one datagram to a message, whether segmentation stopped before or stops now
 func TestFallbackFromAGoneSourceKeepsToTheSegmentationStop(t *testing.T) {
 	for _, stoppedFirst := range []bool{false, true} {
@@ -563,7 +725,7 @@ func TestFallbackFromAGoneSourceKeepsToTheSegmentationStop(t *testing.T) {
 			kernel := newFakeKernel()
 			kernel.hold("192.0.2.10", 2)
 			kernel.hold("192.0.2.20", 3)
-			kernel.pathMTU[netip.MustParseAddr("198.51.100.7")] = 1280
+			kernel.unsegmentable[netip.MustParseAddr("198.51.100.7")] = unix.EIO
 			events := &eventLog{}
 			bind := kernelBind(kernel, events)
 			ep := arrivedFrom("198.51.100.7:4500", "192.0.2.20", 3)
@@ -575,7 +737,7 @@ func TestFallbackFromAGoneSourceKeepsToTheSegmentationStop(t *testing.T) {
 			kernel.release("192.0.2.20")
 			before := len(kernel.datagrams())
 			if err := bind.Send(numbered(8, 1400), ep); err != nil {
-				t.Fatalf("a batch with another source and single datagrams that fit failed: %v", err)
+				t.Fatalf("a batch with another source and single datagrams the route passes failed: %v", err)
 			}
 			sent := kernel.datagrams()[before:]
 			if got := numbers(sent); !slices.Equal(got, sequence(8)) {
@@ -588,7 +750,7 @@ func TestFallbackFromAGoneSourceKeepsToTheSegmentationStop(t *testing.T) {
 				}
 			}
 			want := []string{
-				fmt.Sprintf("transport.endpoint.unsegmented endpoint=%s errno=EINVAL", ep),
+				fmt.Sprintf("transport.endpoint.unsegmented endpoint=%s errno=EIO", ep),
 				fmt.Sprintf("transport.endpoint.unpinned endpoint=%s errno=ENETUNREACH", ep),
 			}
 			if got := events.recorded(); !slices.Equal(got, want) {
@@ -627,21 +789,21 @@ func TestRefusedSingleDatagramLeavesSegmentationOn(t *testing.T) {
 	kernel.hold("192.0.2.10", 2)
 	events := &eventLog{}
 	ep := dialed("198.51.100.1:4500")
-	kernel.once = unix.EMSGSIZE
-	if err := kernelBind(kernel, events).Send([][]byte{{0, 0, 0, 0}}, ep); !errors.Is(err, unix.EMSGSIZE) {
-		t.Fatalf("the send answered %v, want the EMSGSIZE the kernel gave", err)
+	kernel.once = unix.EIO
+	if err := kernelBind(kernel, events).Send([][]byte{{0, 0, 0, 0}}, ep); !errors.Is(err, unix.EIO) {
+		t.Fatalf("the send answered %v, want the EIO the kernel gave", err)
 	}
 	if ep.unsegmentedUntil.Load() != 0 || len(events.recorded()) != 0 {
 		t.Errorf("a refused datagram that carried no segments stopped segmentation, recorded %q", events.recorded())
 	}
 }
 
-// a stop lapses when linux would forget the path MTU it learned, and a path still narrow then stops it again
-func TestSegmentationResumesOnceThePathMTUExpires(t *testing.T) {
+// a stop lapses after unsegmentedFor, and a route that refuses segments again then stops them again
+func TestSegmentationResumesOnceItsStopLapses(t *testing.T) {
 	kernel := newFakeKernel()
 	kernel.hold("192.0.2.10", 2)
-	narrow := netip.MustParseAddr("198.51.100.1")
-	kernel.pathMTU[narrow] = 1280
+	refusing := netip.MustParseAddr("198.51.100.1")
+	kernel.unsegmentable[refusing] = unix.EIO
 	events := &eventLog{}
 	bind := kernelBind(kernel, events)
 	ep := dialed("198.51.100.1:4500")
@@ -654,29 +816,29 @@ func TestSegmentationResumesOnceThePathMTUExpires(t *testing.T) {
 		return slices.ContainsFunc(kernel.messages()[tried:], func(m triedMessage) bool { return m.segment != 0 })
 	}
 	if !segmented() {
-		t.Fatal("the first send to a narrow path offered no segments")
+		t.Fatal("the first send over a route that refuses segments offered none")
 	}
 	bind.started = bind.started.Add(-unsegmentedFor + time.Second)
 	if segmented() {
-		t.Error("a send offered segments again before the path MTU expired")
+		t.Error("a send offered segments again before the stop lapsed")
 	}
 	kernel.mu.Lock()
-	delete(kernel.pathMTU, narrow)
+	delete(kernel.unsegmentable, refusing)
 	kernel.mu.Unlock()
 	bind.started = bind.started.Add(-time.Second)
 	if !segmented() {
-		t.Error("a send to a path that widened offered no segments once the path MTU expired")
+		t.Error("a send over a route that takes segments again offered none once the stop lapsed")
 	}
 	kernel.mu.Lock()
-	kernel.pathMTU[narrow] = 1280
+	kernel.unsegmentable[refusing] = unix.EIO
 	kernel.mu.Unlock()
 	if !segmented() {
-		t.Error("a send to a path that narrowed again offered no segments")
+		t.Error("a send over a route that refuses segments again offered none")
 	}
 	if segmented() {
-		t.Error("a path that narrowed again was not stopped again")
+		t.Error("a route that refuses segments again was not stopped again")
 	}
-	want := fmt.Sprintf("transport.endpoint.unsegmented endpoint=%s errno=EINVAL", ep)
+	want := fmt.Sprintf("transport.endpoint.unsegmented endpoint=%s errno=EIO", ep)
 	if got := events.recorded(); !slices.Equal(got, []string{want, want}) {
 		t.Errorf("two stops recorded %q, want each once", got)
 	}
@@ -758,7 +920,7 @@ func TestDialedMuxFollowsUnpinnedAndAcceptedMuxPinned(t *testing.T) {
 func TestUnchangedAdoptionKeepsWhatSendsLearned(t *testing.T) {
 	kernel := newFakeKernel()
 	kernel.hold("192.0.2.10", 2)
-	kernel.pathMTU[netip.MustParseAddr("198.51.100.5")] = 1280
+	kernel.unsegmentable[netip.MustParseAddr("198.51.100.5")] = unix.EIO
 	hub := kernelHub(kernel, &eventLog{})
 	out, err := hub.NewMux(net.ParseIP("198.51.100.5"), 4500)
 	if err != nil {
@@ -832,11 +994,11 @@ func TestSendsUnpinnedAtOnceRecordItOnce(t *testing.T) {
 	}
 }
 
-// two sends that meet a narrow path at once both go out one datagram to a message and record the stop once
+// two sends that meet a route refusing segments at once both go out one datagram to a message and record the stop once
 func TestSendsUnsegmentedAtOnceRecordItOnce(t *testing.T) {
 	kernel := newFakeKernel()
 	kernel.hold("192.0.2.10", 2)
-	kernel.pathMTU[netip.MustParseAddr("198.51.100.1")] = 1280
+	kernel.unsegmentable[netip.MustParseAddr("198.51.100.1")] = unix.EIO
 	events := &eventLog{}
 	bind := kernelBind(kernel, events)
 	ep := dialed("198.51.100.1:4500")
@@ -848,7 +1010,7 @@ func TestSendsUnsegmentedAtOnceRecordItOnce(t *testing.T) {
 	if got := len(kernel.datagrams()); got != 16 {
 		t.Errorf("%d datagrams went out of two sends of 8", got)
 	}
-	want := fmt.Sprintf("transport.endpoint.unsegmented endpoint=%s errno=EINVAL", ep)
+	want := fmt.Sprintf("transport.endpoint.unsegmented endpoint=%s errno=EIO", ep)
 	if got := events.recorded(); !slices.Equal(got, []string{want}) {
 		t.Errorf("two sends that stopped segmenting at once recorded %q, want %q once", got, want)
 	}

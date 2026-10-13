@@ -27,6 +27,9 @@ import (
 type udpEndpoint struct {
 	addr    *net.UDPAddr
 	control []byte // immutable reply source address and interface
+	// source and index are the address and interface control names, which a route lookup for a pinned send names too
+	source net.IP
+	index  int
 	// unpinned records a fallback that worked and is never cleared
 	unpinned atomic.Bool
 	// unsegmentedUntil is when sends segment again, on the bind's clock in nanoseconds, and zero while they never stopped
@@ -34,7 +37,7 @@ type udpEndpoint struct {
 }
 
 func pinnedEndpoint(addr *net.UDPAddr, source net.IP, index int, ipv6Socket bool) *udpEndpoint {
-	ep := &udpEndpoint{addr: addr}
+	ep := &udpEndpoint{addr: addr, source: source, index: index}
 	if ipv6Socket {
 		ep.control = (&ipv6.ControlMessage{Src: source, IfIndex: index}).Marshal()
 	} else {
@@ -87,6 +90,8 @@ type udpBind struct {
 	events func(kind string, attrs ...slog.Attr)
 	// started is the clock unsegmentedUntil counts from, which a test moves back
 	started time.Time
+	// pathMTU reads the path MTU of the route a send to an endpoint takes, which a test answers in place of linux
+	pathMTU func(*udpEndpoint) (int, error)
 }
 
 func (b *udpBind) ParseEndpoint(s string) (Endpoint, error) {
@@ -133,10 +138,14 @@ func openPacketBind(port uint16, underlay Underlay, index int, routed bool, even
 }
 
 func listenPacketBind(port uint16, fwmark uint32, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
-	b := &udpBind{events: events, started: time.Now()}
+	b := &udpBind{events: events, started: time.Now(), pathMTU: func(ep *udpEndpoint) (int, error) { return routeMTU(ep, fwmark) }}
 	var receivers []receiveFunc
 	for i, network := range []string{"udp4", "udp6"} {
-		var markErr error
+		level, discover, mode := unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DO
+		if i == 1 {
+			level, discover, mode = unix.IPPROTO_IPV6, unix.IPV6_MTU_DISCOVER, unix.IPV6_PMTUDISC_DO
+		}
+		var setErr error
 		lc := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
 			if err := raw.Control(func(fd uintptr) {
 				for _, option := range []int{unix.SO_RCVBUF, unix.SO_SNDBUF, unix.SO_RCVBUFFORCE, unix.SO_SNDBUFFORCE} {
@@ -149,12 +158,16 @@ func listenPacketBind(port uint16, fwmark uint32, events func(string, ...slog.At
 					// table that would route them into our own tun, so a
 					// silent failure here is an underlay that disappears into
 					// the overlay carrying it.
-					markErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(fwmark))
+					setErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(fwmark))
+				}
+				if setErr == nil {
+					// DF on every datagram, and linux refusing one past its route's path MTU rather than fragmenting it, which Send reports
+					setErr = unix.SetsockoptInt(int(fd), level, discover, mode)
 				}
 			}); err != nil {
 				return err
 			}
-			return markErr
+			return setErr
 		}}
 		pc, err := lc.ListenPacket(context.Background(), network, fmt.Sprintf(":%d", port))
 		if err != nil {
@@ -403,6 +416,7 @@ func (b *udpSendBatch) prepare(packets [][]byte, to *net.UDPAddr, control []byte
 }
 
 // Send resends from the kernel's choice of source when a pinned one is refused as gone, and keeps that choice once it worked
+// a datagram linux refuses as larger than its path ends the send in a PathMTUError, once the datagrams the path carries went
 func (b *udpBind) Send(packets [][]byte, endpoint Endpoint) error {
 	ep := endpoint.(*udpEndpoint)
 	socket := b.v4
@@ -414,18 +428,58 @@ func (b *udpBind) Send(packets [][]byte, endpoint Endpoint) error {
 	}
 	batch := socket.send.Get().(*udpSendBatch)
 	defer socket.send.Put(batch)
+	sent, err := b.sendFrom(socket, batch, packets, ep)
+	if err == nil || !errors.Is(err, unix.EMSGSIZE) {
+		return err
+	}
+	return b.sendWithin(socket, batch, packets[sent:], ep, err)
+}
+
+// sendFrom sends packets to ep from its pin, and from the kernel's choice of source once linux refuses the pin as gone
+// it reports how many went before an error
+func (b *udpBind) sendFrom(socket *udpSocket, batch *udpSendBatch, packets [][]byte, ep *udpEndpoint) (int, error) {
 	control := ep.pin()
-	sent, err := b.sendWithSegmentFallback(socket, batch, packets, ep, control)
-	if err == nil || control == nil || !unpinnable(err) {
-		return err
+	sent, refused := b.sendWithSegmentFallback(socket, batch, packets, ep, control)
+	if refused == nil || control == nil || !unpinnable(refused) {
+		return sent, refused
 	}
-	if _, err := b.sendWithSegmentFallback(socket, batch, packets[sent:], ep, nil); err != nil {
-		return err
+	more, err := b.sendWithSegmentFallback(socket, batch, packets[sent:], ep, nil)
+	// linux refuses a datagram as too large only once it has routed it from the source it chose
+	if (err == nil || errors.Is(err, unix.EMSGSIZE)) && ep.unpinned.CompareAndSwap(false, true) {
+		b.fellBack(ep, "transport.endpoint.unpinned", "transport stopped sending to an endpoint from the address its datagram arrived on", refused)
 	}
-	if ep.unpinned.CompareAndSwap(false, true) {
-		b.fellBack(ep, "transport.endpoint.unpinned", "transport stopped sending to an endpoint from the address its datagram arrived on", err)
+	return sent + more, err
+}
+
+// sendWithin sends the datagrams of packets the path to ep carries and drops the rest
+// after linux refused the first of them with refused for its size
+// it reads the path MTU the refusal was measured against from the route and reports it in a PathMTUError
+func (b *udpBind) sendWithin(socket *udpSocket, batch *udpSendBatch, packets [][]byte, ep *udpEndpoint, refused error) error {
+	mtu, err := b.pathMTU(ep)
+	if err != nil {
+		return fmt.Errorf("transport: read the path MTU to %s after %w: %w", ep, refused, err)
 	}
-	return nil
+	report := &PathMTUError{Endpoint: ep.AddrPort(), MTU: mtu}
+	// each datagram goes out after an IP header without options and a UDP header
+	largest := mtu - 20 - 8
+	if socket.ipv6 {
+		largest = mtu - 40 - 8
+	}
+	for first := 0; first < len(packets); {
+		if len(packets[first]) > largest {
+			first++
+			continue
+		}
+		end := first + 1
+		for end < len(packets) && len(packets[end]) <= largest {
+			end++
+		}
+		if _, err := b.sendFrom(socket, batch, packets[first:end], ep); err != nil {
+			return fmt.Errorf("%w, then %w", report, err)
+		}
+		first = end
+	}
+	return report
 }
 
 // unpinnable reports whether err is linux refusing a source address or interface the host no longer has
@@ -436,7 +490,7 @@ func unpinnable(err error) bool {
 
 // sendWithSegmentFallback segments packets to ep unless sends to ep have stopped segmenting
 // when linux refuses a message of several datagrams with an errno segments can cause and they then pass one to a message
-// ep stops segmenting until linux forgets the path MTU it learned
+// ep stops segmenting for unsegmentedFor
 func (b *udpBind) sendWithSegmentFallback(socket *udpSocket, batch *udpSendBatch, packets [][]byte, ep *udpEndpoint, control []byte) (int, error) {
 	done := 0
 	for {
@@ -458,10 +512,11 @@ func (b *udpBind) sendWithSegmentFallback(socket *udpSocket, batch *udpSendBatch
 	}
 }
 
-// segmentRefusal reports whether err is linux refusing a message for its segments
-// EMSGSIZE or EINVAL by kernel version for segments the path is too narrow for, EIO for a device or route that cannot segment
+// segmentRefusal reports whether err is linux refusing a message for its segments, which a resend one datagram to a message tells apart
+// EIO is a route through an IPsec policy, which passes single datagrams
+// EINVAL is also a kernel before 6.14 refusing a segment past the path MTU, whose single datagrams meet the EMSGSIZE a later kernel answers at once
 func segmentRefusal(err error) bool {
-	return errors.Is(err, unix.EMSGSIZE) || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EIO)
+	return errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EIO)
 }
 
 // write stops at the first refused message and reports the datagrams sent before it and those it carried
