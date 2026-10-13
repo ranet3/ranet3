@@ -431,7 +431,7 @@ func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, ne
 		return b.cut.add(peer, nextHeader, raw[:overhead], raw[overhead:], mtu)
 	}
 	if answer != nil {
-		m.DeliverInboundBatch([][]byte{answer})
+		m.DeliverInboundBatch([][]byte{answer}, 0)
 	}
 	return 0
 }
@@ -551,8 +551,9 @@ func addrsOf(raw []byte) (src, dst netip.Addr, nextHeader byte, ok bool) {
 
 // DeliverInbound injects an already-decapsulated tunnel-mode IP packet into
 // the TUN device, as if it had arrived on the wire.
-func (m *Mesh) DeliverInbound(raw []byte) {
-	m.DeliverInboundBatch([][]byte{raw})
+// mtu is the largest packet the session it came through carries, as DeliverInboundBatch takes it
+func (m *Mesh) DeliverInbound(raw []byte, mtu int) {
+	m.DeliverInboundBatch([][]byte{raw}, mtu)
 }
 
 // DeliverInboundBatch injects a group of already-decapsulated tunnel-mode IP
@@ -561,7 +562,9 @@ func (m *Mesh) DeliverInbound(raw []byte) {
 // kernel process unrelated streams in parallel. Buffers are copied to leave
 // the headroom and tail capacity required by the TUN backend's virtio/GRO
 // implementation.
-func (m *Mesh) DeliverInboundBatch(raw [][]byte) {
+// mtu is the largest packet the session they came through carries, zero for packets of no session
+// a SYN that an End.DT46 of this node takes out of its outer header has its MSS clamped to it
+func (m *Mesh) DeliverInboundBatch(raw [][]byte, mtu int) {
 	// A mesh with no device only exists in a test, where nothing should reach
 	// here: babel's own traffic is intercepted before delivery.
 	if len(raw) == 0 || len(m.devs) == 0 {
@@ -578,7 +581,7 @@ func (m *Mesh) DeliverInboundBatch(raw [][]byte) {
 	// A packet addressed to one of this node's own segments is acted on here
 	// rather than written to the tun, where it would arrive as an
 	// undeliverable packet addressed to an address of ours.
-	raw = m.applySegments(raw)
+	raw = m.applySegments(raw, mtu)
 	if len(raw) == 0 {
 		return
 	}

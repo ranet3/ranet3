@@ -137,7 +137,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 			c.noteInboundDropped(name, dropped, lastError)
 		}
 		c.countInbound(len(results) - dropped)
-		c.Mesh.DeliverInboundBatch(plain)
+		c.Mesh.DeliverInboundBatch(plain, mtu)
 		clear(plain)
 	}
 	type sessionResult struct {

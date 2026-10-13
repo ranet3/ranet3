@@ -146,7 +146,9 @@ func (m *Mesh) SegmentCounters() SegmentCounters {
 // them pays a map lookup per IPv6 packet and nothing else until a segment of
 // its own actually arrives: the replacement slice is built only from the first
 // packet that is ours, and a batch with none is returned untouched.
-func (m *Mesh) applySegments(raw [][]byte) [][]byte {
+// mtu is the largest packet the session the batch came through carries
+// a SYN an End.DT46 delivers has its MSS clamped to it here, since the session's clamp saw only the outer header
+func (m *Mesh) applySegments(raw [][]byte, mtu int) [][]byte {
 	table := m.segmentTable.Load()
 	if table == nil {
 		return raw
@@ -170,6 +172,7 @@ func (m *Mesh) applySegments(raw [][]byte) [][]byte {
 		case srv6.ActionDeliver:
 			take(i)
 			m.segmentsDelivered.Add(1)
+			ClampMSS(result.Inner, mtu)
 			deliver = append(deliver, result.Inner)
 		case srv6.ActionForward:
 			take(i)

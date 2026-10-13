@@ -31,8 +31,14 @@ const (
 // mtu less 40 under IPv4 and less 60 under IPv6, with the checksum updated as RFC 1624 updates it
 // a fragment, IPv6 with an extension header before TCP and an option list that does not describe itself pass as they came
 // and so does a SYN with no MSS option, which RFC 9293 section 3.7.1 reads as 536 or 1220, within any session
-// packet is one whole IP packet, and mtu at least the 1280 bytes IPv6 asks of every link less a steering header
+// so does every packet when mtu leaves no room past those headers, as an mtu of zero for no session does
+// which keeps the clamp from ever raising an MSS
+// and so do bytes too short for the headers they name, as what an End.DT46 takes out of a segment can be
 func ClampMSS(packet []byte, mtu int) {
+	// bytes short of the least IPv4 and TCP headers hold no SYN, and any more hold the protocol fields read next
+	if len(packet) < ipv4Segment {
+		return
+	}
 	var offset, limit int
 	switch packet[0] >> 4 {
 	case 4:
@@ -48,7 +54,7 @@ func ClampMSS(packet []byte, mtu int) {
 	default:
 		return
 	}
-	if len(packet) < offset+tcpHeaderLen || packet[offset+tcpFlags]&synFlag == 0 {
+	if limit <= 0 || len(packet) < offset+tcpHeaderLen || packet[offset+tcpFlags]&synFlag == 0 {
 		return
 	}
 	// the bytes past a fragment's header are TCP's only in the first, and need not hold its whole header there

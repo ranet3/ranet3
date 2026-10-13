@@ -155,7 +155,7 @@ func (f *meshFabric) deliver() {
 		f.held = f.held[1:]
 		f.sentMu.Unlock()
 		if !packet.speaker.Receive(packet.peer, packet.raw) {
-			packet.mesh.DeliverInbound(packet.raw)
+			packet.mesh.DeliverInbound(packet.raw, packet.peer.MTU())
 		}
 	}
 }

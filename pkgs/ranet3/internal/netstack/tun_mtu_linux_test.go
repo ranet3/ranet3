@@ -396,7 +396,7 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 			// a session hands what it carries to the mesh at its far end, as the peer decrypting it does
 			session := func(id string, far *Mesh, mtu int) *Peer {
 				peer := NewPeer(id, func(raw []byte, _ byte) ([]byte, error) { return bytes.Clone(raw), nil }, func(sealed []byte) error {
-					far.DeliverInbound(sealed)
+					far.DeliverInbound(sealed, mtu)
 					return nil
 				})
 				peer.SetMTU(mtu)

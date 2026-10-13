@@ -53,7 +53,7 @@ func wireSpeakerPair(t *testing.T, cfg Config) (meshA, meshB *netstack.Mesh, spe
 	peerBForA = netstack.NewPeerReserved("b", plainSealer, func(sealed [][]byte) error {
 		for _, raw := range sealed {
 			if !speakerB.Receive(peerAForB, raw) {
-				meshB.DeliverInbound(raw)
+				meshB.DeliverInbound(raw, peerAForB.MTU())
 			}
 		}
 		return nil
@@ -61,7 +61,7 @@ func wireSpeakerPair(t *testing.T, cfg Config) (meshA, meshB *netstack.Mesh, spe
 	peerAForB = netstack.NewPeerReserved("a", plainSealer, func(sealed [][]byte) error {
 		for _, raw := range sealed {
 			if !speakerA.Receive(peerBForA, raw) {
-				meshA.DeliverInbound(raw)
+				meshA.DeliverInbound(raw, peerBForA.MTU())
 			}
 		}
 		return nil

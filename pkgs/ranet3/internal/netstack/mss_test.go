@@ -6,9 +6,14 @@ package netstack
 import (
 	"bytes"
 	"encoding/binary"
+	"net/netip"
 	"testing"
 
+	"golang.zx2c4.com/wireguard/tun"
+
 	"ranet3.com/pkgs/ranet3/internal/packet"
+	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 // tcpPacket is one whole IP packet carrying a TCP header with flags, options and a payload of payload bytes, its checksum valid
@@ -98,6 +103,53 @@ func TestReaderClampsTheMSSOfASYNToItsSession(t *testing.T) {
 			}
 			if got, want := binary.BigEndian.Uint16(inner[offset+tcpChecksum:]), tcpSum(inner, offset); got != want {
 				t.Errorf("an IPv%d SYN under %d segments carries the checksum %#04x, want %#04x", family, segments, got, want)
+			}
+		}
+	}
+}
+
+// a SYN or SYN-ACK that an End.DT46 of this node takes out of its outer header reaches the tun with its MSS lowered to what the session it came through carries
+// less the IP and TCP headers, its checksum updated with it
+// the session's own clamp sees only the outer IPv6 packet, which would let the MSS the headend left for its own sessions reach the far end
+// and a delivery for no session, as the headend's own answers are, leaves the MSS as it came
+func TestExitClampsTheMSSOfASYNToTheSessionItArrivedThrough(t *testing.T) {
+	const session, offered = 1300, 8800
+	exit := segAddr("3fff:1:69c:8c6::1")
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(exit), Behavior: srv6.BehaviorEndDT46}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range []int{4, 6} {
+		header := 20
+		if family == 6 {
+			header = 40
+		}
+		// ACK is the flag at 0x10, RFC 9293 section 3.1
+		for _, flags := range []byte{synFlag, synFlag | 0x10} {
+			for _, mtu := range []int{session, 0} {
+				inner := tcpPacket(family, 0, false, flags, binary.BigEndian.AppendUint16([]byte{optionMSS, mssLen}, offered), 0, 0)
+				outer, err := srv6.Encapsulate(inner, segAddr("3fff:1:69c:98d0::1"), []netip.Addr{exit})
+				if err != nil {
+					t.Fatal(err)
+				}
+				dev := &recordingDevice{writes: make(chan recordedWrite, 1)}
+				m := &Mesh{Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{})}
+				m.SetSegments(table)
+				m.DeliverInboundBatch([][]byte{outer}, mtu)
+				want := bytes.Clone(inner)
+				if mtu != 0 {
+					binary.BigEndian.PutUint16(want[header+tcpHeaderLen+2:], uint16(mtu-header-tcpHeaderLen))
+					binary.BigEndian.PutUint16(want[header+tcpChecksum:], tcpSum(want, header))
+				}
+				// one device is written to before the delivery returns
+				select {
+				case write := <-dev.writes:
+					if len(write.packets) != 1 || !bytes.Equal(write.packets[0], want) {
+						t.Errorf("an IPv%d packet flagged %#02x offering %d through a %d byte session reached the tun as %x, want %x", family, flags, offered, mtu, write.packets, want)
+					}
+				default:
+					t.Errorf("an IPv%d packet flagged %#02x steered to the exit never reached the tun", family, flags)
+				}
 			}
 		}
 	}
