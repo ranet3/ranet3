@@ -103,7 +103,7 @@ testers.runNixOSTest {
     print(out)
     assert "SKIP" not in out, f"the client's tun round trips skipped themselves under root:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 5, f"only {ran} of the client's tun round trips ran:\n{out}"
+    assert ran >= 9, f"only {ran} of the client's tun round trips ran:\n{out}"
 
     # the segmentation stop against linux itself
     # a veth pair to a second namespace behind a route whose path mtu is locked below the segment size

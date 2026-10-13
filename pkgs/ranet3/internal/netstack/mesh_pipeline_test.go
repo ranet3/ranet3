@@ -270,7 +270,7 @@ func TestDeliverInboundBatchLeavesCapacityForGRO(t *testing.T) {
 	}
 
 	want := [][]byte{{1, 2, 3}, {4, 5, 6, 7}}
-	m.DeliverInboundBatch(want)
+	m.DeliverInboundBatch(want, DefaultMTU)
 
 	select {
 	case got := <-dev.writes:
@@ -331,7 +331,7 @@ func TestDeliverInboundBatchUsesFlowAffineQueues(t *testing.T) {
 			want[lane] = append(want[lane], packet)
 		}
 	}
-	m.DeliverInboundBatch(packets)
+	m.DeliverInboundBatch(packets, DefaultMTU)
 
 	active := 0
 	for lane, expected := range want {

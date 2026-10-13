@@ -22,8 +22,12 @@ import (
 // a SYN, flagged as either end sends it, in a TCP packet that is no fragment and has TCP right after the IP header
 // whose data offset fits the packet and whose options each carry a length that fits until the end of the list
 // gets every four byte MSS option before that end lowered to limit where it is above it, and its checksum computed afresh
-// and every other packet comes back as it was
+// and every other packet comes back as it was, as every packet does under a limit that is not positive, which no MSS can be lowered to
+// and as bytes short of the least IPv4 and TCP headers do, which hold no SYN
 func clamped(raw []byte, limit int) []byte {
+	if limit <= 0 || len(raw) < ipv4Segment {
+		return raw
+	}
 	offset := 40
 	if raw[0]>>4 == 4 {
 		offset = int(raw[0]&0x0f) * 4
@@ -117,6 +121,8 @@ func cutTo(raw []byte, size int) []byte {
 // each family first meets the shapes the clamp tells apart, before anything is drawn
 // an MSS below the limit, at it and above it, a segment cut short of its flags, a data offset past the segment
 // an option of length one ahead of the MSS, an option's kind ending the list, and under IPv4 options in front of TCP and fragments
+// then each shape again under an mtu leaving no room past the headers, which leaves it as it came rather than raise its MSS, and one leaving a byte
+// and last every cut of a SYN short of its end, down to no bytes at all, each of which leaves as it came
 func TestClampMSSLowersOnlyTheMSSOfASYN(t *testing.T) {
 	check := func(tb testing.TB, raw []byte, mtu, limit int) {
 		tb.Helper()
@@ -158,6 +164,18 @@ func TestClampMSSLowersOnlyTheMSSOfASYN(t *testing.T) {
 		}
 		for _, raw := range shapes {
 			check(t, raw, mtu, limit)
+		}
+		// an mtu with no room past the headers, zero for no session among them, and one with a byte of room
+		segment := mtu - limit
+		for _, room := range []int{-segment, -1, 0, 1} {
+			for _, raw := range shapes {
+				check(t, raw, segment+room, room)
+			}
+		}
+		// what an exit takes out of a segment can stop anywhere past its first byte, and the empty cut is tried too
+		whole := syn(0, above, 0)
+		for size := range len(whole) {
+			check(t, whole[:size], mtu, limit)
 		}
 	}
 	pbt.Check(t, func(ht *hegel.T) {

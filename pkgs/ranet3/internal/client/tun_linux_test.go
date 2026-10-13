@@ -25,6 +25,8 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
+	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 // captureWait is how long a read of the capture waits for a packet before the SYN is sent again
@@ -38,6 +40,8 @@ const synPort = 443
 // bravo's link.mtu of 1300 bytes leaves an MSS of 1260 under IPv4 and 1240 under IPv6
 // alpha hands each SYN straight to its session
 // which leaves bravo's inbound path the only one that can have lowered it
+// a steered SYN reaches bravo inside an outer IPv6 header to an End.DT46 SID of bravo's, which the session's own clamp passes over
+// and its MSS is lowered to the same once bravo takes it out of that header
 // a capture on bravo's tun reads the SYN as the kernel receives it
 // with every byte but the MSS and the checksum as alpha sent it
 func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
@@ -50,8 +54,16 @@ func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 	t.Cleanup(mesh.Close)
 	capture := captureInbound(t, mesh.Name)
 	alpha, bravo := newLoopbackMeshOn(t, mesh)
+	exit := netip.MustParseAddr("fd00:b::d7")
 	cfg := *bravo.client.config()
 	cfg.Link.MTU = session
+	cfg.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{{SID: schema.AddrFrom(exit), Behavior: srv6.BehaviorEndDT46}}}
+	segments, _, err := cfg.Segments().Tables()
+	if err != nil {
+		t.Fatalf("build bravo's segment table: %v", err)
+	}
+	// as New installs the table of cap.segment
+	mesh.SetSegments(segments)
 	bravo.client.cfg.Store(&cfg)
 	run(t, alpha, bravo)
 	var peer *netstack.Peer
@@ -60,20 +72,35 @@ func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 		peer = found
 		return ok && found != nil
 	})
-	for _, family := range []struct {
+	headend := alpha.prefix.Addr().Next()
+	for _, arm := range []struct {
+		name                string
 		source, destination netip.Addr
 		nextHeader          byte
 		mss                 uint16
+		steered             bool
 	}{
-		{netip.MustParseAddr("10.66.0.2"), netip.MustParseAddr("10.66.0.1"), esp.NextHeaderIPv4, session - 40},
-		{alpha.prefix.Addr().Next(), bravo.prefix.Addr().Next(), esp.NextHeaderIPv6, session - 60},
+		{"IPv4", netip.MustParseAddr("10.66.0.2"), netip.MustParseAddr("10.66.0.1"), esp.NextHeaderIPv4, session - 40, false},
+		{"IPv6", headend, bravo.prefix.Addr().Next(), esp.NextHeaderIPv6, session - 60, false},
+		{"IPv4 steered to an End.DT46 SID", netip.MustParseAddr("10.66.0.2"), netip.MustParseAddr("10.66.0.11"), esp.NextHeaderIPv4, session - 40, true},
+		{"IPv6 steered to an End.DT46 SID", headend, netip.MustParseAddr("fd00:b::11"), esp.NextHeaderIPv6, session - 60, true},
 	} {
-		syn := synTo(family.source, family.destination, 1460)
-		got := sendUntilCaptured(t, peer, syn, family.nextHeader, capture)
-		if want := withMSS(syn, family.mss); !bytes.Equal(got, want) {
-			t.Errorf("a SYN from %s with an MSS of 1460 reached bravo's tun with an MSS of %d, want %d, as %x where %x was wanted",
-				family.source, binary.BigEndian.Uint16(got[tcpOffset(got)+22:]), family.mss, got, want)
-		}
+		t.Run(arm.name, func(t *testing.T) {
+			syn := synTo(arm.source, arm.destination, 1460)
+			send, nextHeader := syn, arm.nextHeader
+			if arm.steered {
+				outer, err := srv6.Encapsulate(syn, headend, []netip.Addr{exit})
+				if err != nil {
+					t.Fatalf("encapsulate the SYN toward %s: %v", exit, err)
+				}
+				send, nextHeader = outer, esp.NextHeaderIPv6
+			}
+			got := sendUntilCaptured(t, peer, send, nextHeader, capture, arm.destination)
+			if want := withMSS(syn, arm.mss); !bytes.Equal(got, want) {
+				t.Errorf("a SYN from %s with an MSS of 1460 reached bravo's tun with an MSS of %d, want %d, as %x where %x was wanted",
+					arm.source, binary.BigEndian.Uint16(got[tcpOffset(got)+22:]), arm.mss, got, want)
+			}
+		})
 	}
 }
 
@@ -150,13 +177,14 @@ func startOnTUN(t *testing.T, change func(*config.Config)) (*Client, string) {
 	return c, path
 }
 
-// sendUntilCaptured hands syn to peer until the capture reads a SYN to synPort, and returns that SYN
+// sendUntilCaptured hands raw to peer until the capture reads a SYN to synPort of destination, and returns that SYN
 // it sends again after each captureWait the capture reads nothing in
-func sendUntilCaptured(t *testing.T, peer *netstack.Peer, syn []byte, nextHeader byte, capture int) []byte {
+// the destination tells this caller's SYN from a copy an earlier one sent again
+func sendUntilCaptured(t *testing.T, peer *netstack.Peer, raw []byte, nextHeader byte, capture int, destination netip.Addr) []byte {
 	t.Helper()
 	buf := make([]byte, 1<<16)
 	for deadline := time.Now().Add(convergeBudget); time.Now().Before(deadline); {
-		place, err := peer.ReserveRawOrDrop(bytes.Clone(syn), nextHeader)
+		place, err := peer.ReserveRawOrDrop(bytes.Clone(raw), nextHeader)
 		if err != nil {
 			t.Fatalf("hand the SYN to the session: %v", err)
 		}
@@ -174,19 +202,25 @@ func sendUntilCaptured(t *testing.T, peer *netstack.Peer, syn []byte, nextHeader
 			if err != nil {
 				t.Fatalf("read the capture: %v", err)
 			}
-			if raw := buf[:n]; isSYNTo(raw, synPort) {
-				return bytes.Clone(raw)
+			if got := buf[:n]; isSYNTo(got, destination, synPort) {
+				return bytes.Clone(got)
 			}
 		}
 	}
-	t.Fatalf("no SYN reached the tun within %s", convergeBudget)
+	t.Fatalf("no SYN to %s reached the tun within %s", destination, convergeBudget)
 	return nil
 }
 
-// isSYNTo reports whether raw is an IP packet carrying a TCP SYN to port
-func isSYNTo(raw []byte, port uint16) bool {
+// isSYNTo reports whether raw is an IP packet to destination carrying a TCP SYN to port
+func isSYNTo(raw []byte, destination netip.Addr, port uint16) bool {
 	offset := tcpOffset(raw)
-	return offset != 0 && len(raw) >= offset+20 && binary.BigEndian.Uint16(raw[offset+2:]) == port && raw[offset+13]&0x02 != 0
+	if offset == 0 || len(raw) < offset+20 || binary.BigEndian.Uint16(raw[offset+2:]) != port || raw[offset+13]&0x02 == 0 {
+		return false
+	}
+	if raw[0]>>4 == 4 {
+		return netip.AddrFrom4([4]byte(raw[16:20])) == destination
+	}
+	return netip.AddrFrom16([16]byte(raw[24:40])) == destination
 }
 
 // tcpOffset is where TCP starts in the IPv4 or IPv6 packet raw, zero for a packet that carries no TCP right after its header

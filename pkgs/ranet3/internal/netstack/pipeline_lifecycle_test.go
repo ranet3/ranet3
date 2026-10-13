@@ -206,7 +206,7 @@ func TestCloseWaitsForInboundWriters(t *testing.T) {
 	// two lanes, so the writers run, both on the one device so either lane is held
 	m := &Mesh{devs: []tun.Device{dev, dev}, closed: make(chan struct{})}
 	m.startInboundWriters()
-	m.DeliverInboundBatch([][]byte{ipv6TCPPacket(40000, 5201, 1)})
+	m.DeliverInboundBatch([][]byte{ipv6TCPPacket(40000, 5201, 1)}, DefaultMTU)
 	select {
 	case <-dev.entered:
 	case <-time.After(deliveryTimeout):
@@ -237,7 +237,7 @@ func TestSingleQueueInboundSplitsLargeBatches(t *testing.T) {
 	for i := range packets {
 		packets[i] = []byte{byte(i)}
 	}
-	m.DeliverInboundBatch(packets)
+	m.DeliverInboundBatch(packets, DefaultMTU)
 	if len(dev.writes) != 2 {
 		t.Fatalf("got %d TUN writes, want two bounded batches", len(dev.writes))
 	}

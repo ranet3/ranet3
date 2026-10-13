@@ -286,7 +286,7 @@ func TestSegmentsPastTheirNextSessionAreAnsweredAtABoundedRate(t *testing.T) {
 		family := []int{4, 6}[i%2]
 		batch[i] = steeredThrough(t, udpPacket(tooBigSource[family], tooBigDestination[family], DefaultMTU, true), after)
 	}
-	if left := m.applySegments(batch); len(left) != 0 {
+	if left := m.applySegments(batch, DefaultMTU); len(left) != 0 {
 		t.Fatalf("%d segments reached the tun", len(left))
 	}
 	answers := sender.packets()
@@ -348,7 +348,7 @@ func TestSegmentPastItsNextSessionIsAnsweredOnlyAboutThePacketItsHeaderNames(t *
 		}
 		outer[40] = c.next
 		// no room past its end, so a read past the tail fails rather than finds spare capacity
-		if left := m.applySegments([][]byte{slices.Clip(outer)}); len(left) != 0 {
+		if left := m.applySegments([][]byte{slices.Clip(outer)}, DefaultMTU); len(left) != 0 {
 			t.Fatalf("%d segments reached the tun", len(left))
 		}
 		if answers, forwarded := sender.packets(), sent.packets(); len(answers) != 0 || len(forwarded) != 0 {
@@ -415,8 +415,8 @@ func TestPeerAnsweredForEveryPacketIsAskedForNoPlace(t *testing.T) {
 		peer, places := reservingPeer(t)
 		peer.SetMTU(srv6.MinimumIPv6MTU + srv6.Overhead(2))
 		m, sender := waypointOf(t, after, peer)
-		m.applySegments([][]byte{steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)})
-		m.applySegments([][]byte{steeredThrough(t, udpPacket(source, destination, 100, false), after)})
+		m.applySegments([][]byte{steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)}, DefaultMTU)
+		m.applySegments([][]byte{steeredThrough(t, udpPacket(source, destination, 100, false), after)}, DefaultMTU)
 		if got := places(); !slices.Equal(got, []int{1}) {
 			t.Errorf("the peer was asked for places %v, want one for the one segment it carries", got)
 		}
@@ -453,7 +453,7 @@ func TestFragmentsForAPeerThatRefusesItsReservationAreDropped(t *testing.T) {
 		peer.SetMTU(srv6.MinimumIPv6MTU + srv6.Overhead(2))
 		peer.Close()
 		m, _ := waypointOf(t, after, peer)
-		m.applySegments([][]byte{steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)})
+		m.applySegments([][]byte{steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)}, DefaultMTU)
 		if counters := m.SegmentCounters(); counters.Dropped != 2 || counters.Forwarded != 0 {
 			t.Errorf("the waypoint counted %+v, want the segment's two fragments dropped", counters)
 		}

@@ -76,7 +76,7 @@ func (r *recordingPeer) nextHeaders() []byte {
 func TestBatchWithoutSegmentsIsUntouched(t *testing.T) {
 	mesh := &Mesh{Routes: NewRouteTable()}
 	batch := [][]byte{plainV6(segAddr("2001:db8::1"), segAddr("2001:db8::2"), "one")}
-	got := mesh.applySegments(batch)
+	got := mesh.applySegments(batch, DefaultMTU)
 	if &got[0] != &batch[0] || len(got) != len(batch) {
 		t.Fatal("a batch with no segments configured was rebuilt")
 	}
@@ -103,7 +103,7 @@ func TestExitDeliversWhatWasInside(t *testing.T) {
 	}
 	passer := plainV6(segAddr("2001:db8::1"), segAddr("2001:db8::2"), "not ours")
 
-	got := mesh.applySegments([][]byte{passer, outer})
+	got := mesh.applySegments([][]byte{passer, outer}, DefaultMTU)
 	if len(got) != 2 {
 		t.Fatalf("the batch came back with %d packets", len(got))
 	}
@@ -139,7 +139,7 @@ func TestWaypointForwardsInsteadOfDelivering(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := mesh.applySegments([][]byte{outer})
+	got := mesh.applySegments([][]byte{outer}, DefaultMTU)
 	if len(got) != 0 {
 		t.Fatalf("a forwarded packet was also delivered to the tun: %v", got)
 	}
@@ -168,7 +168,7 @@ func TestSegmentsThatCannotBeActedOnAreDropped(t *testing.T) {
 	// Addressed to our waypoint with no routing header.
 	mesh := &Mesh{Routes: NewRouteTable()}
 	mesh.SetSegments(table)
-	if got := mesh.applySegments([][]byte{plainV6(segAddr("2001:db8::1"), waypoint, "payload")}); len(got) != 0 {
+	if got := mesh.applySegments([][]byte{plainV6(segAddr("2001:db8::1"), waypoint, "payload")}, DefaultMTU); len(got) != 0 {
 		t.Fatalf("a refused segment reached the tun: %v", got)
 	}
 	if counters := mesh.SegmentCounters(); counters.Dropped != 1 {
@@ -185,7 +185,7 @@ func TestSegmentsThatCannotBeActedOnAreDropped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := unrouted.applySegments([][]byte{outer}); len(got) != 0 {
+	if got := unrouted.applySegments([][]byte{outer}, DefaultMTU); len(got) != 0 {
 		t.Fatalf("a segment with nowhere to go reached the tun: %v", got)
 	}
 	if counters := unrouted.SegmentCounters(); counters.Dropped != 1 || counters.Forwarded != 0 {
@@ -214,7 +214,7 @@ func TestPacketsBeforeAndAfterASegmentKeepTheirOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := mesh.applySegments([][]byte{first, second, outer, last})
+	got := mesh.applySegments([][]byte{first, second, outer, last}, DefaultMTU)
 	if len(got) != 4 {
 		t.Fatalf("the batch came back with %d packets", len(got))
 	}
@@ -338,7 +338,7 @@ func TestWaypointBatchTakesOnePlacePerPeer(t *testing.T) {
 		}
 		batch = append(batch, outer)
 	}
-	if left := m.applySegments(batch); len(left) != 0 {
+	if left := m.applySegments(batch, DefaultMTU); len(left) != 0 {
 		t.Fatalf("%d waypointed packets reached the tun", len(left))
 	}
 	if got := batches.Load(); got != 1 {
@@ -390,7 +390,7 @@ func TestRefusedPacketsAreAnsweredAtABoundedRate(t *testing.T) {
 		outer[ipv6HeaderOffsetSegmentsLeft] = 9 // past the last entry
 		batch = append(batch, outer)
 	}
-	m.applySegments(batch)
+	m.applySegments(batch, DefaultMTU)
 
 	counters := m.SegmentCounters()
 	if counters.Dropped != flood {
@@ -435,7 +435,7 @@ func TestTwoSegmentsOfThisNodeInOneListAreBothActedOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := mesh.applySegments([][]byte{outer})
+	got := mesh.applySegments([][]byte{outer}, DefaultMTU)
 	if len(got) != 1 || !bytes.Equal(got[0], inner) {
 		t.Fatalf("the exit on this node did not deliver the inner packet: %v", got)
 	}

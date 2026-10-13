@@ -126,7 +126,7 @@ func main() {
 				continue
 			}
 			if !speaker.Receive(peer, plain) {
-				mesh.DeliverInbound(plain)
+				mesh.DeliverInbound(plain, peer.MTU())
 			}
 		}
 	}()
