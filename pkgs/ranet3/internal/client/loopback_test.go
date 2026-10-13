@@ -503,3 +503,39 @@ func TestSessionsCarryTheLinkMTUOfTheirOwnNode(t *testing.T) {
 		}
 	}
 }
+
+// a reload hands every session a node holds the new link.mtu at once, as a session made after it gets
+// bravo starts at link.mtu 1300 with nothing steered and holds the one session alpha dials
+// a reload to the default link.mtu with a two segment list through alpha's prefix applies
+// a session kept at 1300 would answer a steered IPv6 packet past 1220 bytes with a packet too big naming 1220
+// and RFC 8201 section 4 keeps its sender's path MTU at 1280 or more, past what the session carries
+func TestReloadHandsALiveSessionTheNewLinkMTU(t *testing.T) {
+	const started = 1300
+	alpha, bravo := newLoopbackMesh(t)
+	// bravo answers and never dials, so the one session is the one alpha dials and no resolution replaces it
+	quiet := *bravo.cfg
+	quiet.Dial.To = nil
+	quiet.Link.MTU = started
+	bravo.client.cfg.Store(&quiet)
+	run(t, alpha, bravo)
+	var peer *netstack.Peer
+	waitFor(t, convergeBudget, "bravo forwarding to alpha's prefix", func() bool {
+		found, ok := bravo.client.Mesh.Routes.Lookup(netip.Addr{}, alpha.prefix.Addr().Next())
+		peer = found
+		return ok && found != nil
+	})
+	if got := peer.MTU(); got != started {
+		t.Fatalf("bravo's session to alpha carries %d byte packets before the reload, want its link.mtu of %d", got, started)
+	}
+	next := quiet
+	next.Link.MTU = 0
+	first := alpha.prefix.Addr().Next()
+	next.Cap.Segment = steering(first.String(), first.Next().String())
+	writeConfig(t, bravo.configPath, &next)
+	if err := bravo.client.ReloadFrom(bravo.configPath); err != nil {
+		t.Fatalf("a reload to the default link.mtu with a two segment list was refused: %v", err)
+	}
+	if got := peer.MTU(); got != netstack.DefaultMTU {
+		t.Errorf("bravo's session to alpha carries %d byte packets after the reload, want the new link.mtu of %d", got, netstack.DefaultMTU)
+	}
+}

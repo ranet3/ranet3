@@ -76,7 +76,6 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 		}
 		return sealer, err
 	}, sess.Mux().SendESPBatch, c.events.Emit)
-	peer.SetMTU(c.config().Link.SessionMTU())
 	// The mux is closed before the peer's sender is waited for, not after.
 	// Peer.Close waits with no deadline for a sender that may be inside
 	// SendESPBatch on this very mux, and the defer at the top of this function
@@ -86,7 +85,9 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 		_ = sess.Mux().Close()
 		peer.Close()
 	}()
-	release, adopted := c.sessions.adopt(sessionName, sess, initiator, responder, remote, func() func() {
+	release, adopted := c.sessions.adopt(sessionName, sess, initiator, responder, remote, peer, func() func() {
+		// under the set's lock, so a reload's sweep of the set either finds this session or stored the link.mtu read here
+		peer.SetMTU(c.config().Link.SessionMTU())
 		return c.speaker.AddPeer(peer).Close
 	})
 	defer release()
@@ -209,6 +210,8 @@ type liveSession struct {
 	// stop being carried; without this, revoking a node left every tunnel it
 	// already held up until each of the other nodes restarted.
 	peer ike.Identity
+	// budget is the session's peer in the mesh, whose MTU a reload of link.mtu sets
+	budget *netstack.Peer
 }
 
 func newSessionSet() *sessionSet {
@@ -271,18 +274,18 @@ func (c *Client) ikeEvent(local, remote ike.Identity, kind string, attrs ...slog
 // end that opened it and the end that answered. Naming them that way keeps a
 // dialer and a responder from deriving opposite answers for one SA,
 // which is invisible from either end alone.
-func (s *sessionSet) adopt(path string, sess *ike.Session, initiator, responder, remote ike.Identity, attach func() func()) (func(), bool) {
-	return s.adoptFor(path, sess, preferInitiator(initiator, responder), remote, attach)
+func (s *sessionSet) adopt(path string, sess *ike.Session, initiator, responder, remote ike.Identity, budget *netstack.Peer, attach func() func()) (func(), bool) {
+	return s.adoptFor(path, sess, preferInitiator(initiator, responder), remote, budget, attach)
 }
 
 // adoptPreferred is adopt with the rule already applied and no peer identity,
 // for a test that drives the resolution without two identities to derive it
 // from.
 func (s *sessionSet) adoptPreferred(path string, sess *ike.Session, preferred bool, attach func() func()) (func(), bool) {
-	return s.adoptFor(path, sess, preferred, ike.Identity{}, attach)
+	return s.adoptFor(path, sess, preferred, ike.Identity{}, nil, attach)
 }
 
-func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, remote ike.Identity, attach func() func()) (func(), bool) {
+func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, remote ike.Identity, budget *netstack.Peer, attach func() func()) (func(), bool) {
 	s.mu.Lock()
 	if s.shut {
 		s.mu.Unlock()
@@ -310,7 +313,7 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, re
 	if attach != nil {
 		detach = attach()
 	}
-	s.live[path] = &liveSession{session: sess, preferred: preferred, peer: remote}
+	s.live[path] = &liveSession{session: sess, preferred: preferred, peer: remote, budget: budget}
 	s.mu.Unlock()
 	if previous != nil && previous.session != sess {
 		log.Printf("peer %s: replacing the previous session", path)
@@ -376,6 +379,20 @@ func (s *sessionSet) holds(path string) bool {
 	defer s.mu.Unlock()
 	live := s.live[path]
 	return live != nil && s.active(live.session)
+}
+
+// setMTU sets the MTU of every live session's peer in the mesh to mtu, the link.mtu a reload stored
+func (s *sessionSet) setMTU(mtu int) {
+	if s == nil {
+		return // a Client built by hand in a test carries no sessions
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, live := range s.live {
+		if live.budget != nil {
+			live.budget.SetMTU(mtu)
+		}
+	}
 }
 
 // liveCount is how many paths a session that has recently proved its peer is
