@@ -52,6 +52,14 @@ func TestRawPacketRejectsInvalidEnvelope(t *testing.T) {
 		"destination":    func(packet []byte) { copy(packet[24:40], netip.MustParseAddr("ff02::1").AsSlice()) },
 		"payload length": func(packet []byte) { packet[5]++ },
 		"checksum":       func(packet []byte) { packet[46] ^= 0xff },
+
+		// with a checksum that holds, the address rule alone refuses the next two
+		"mesh source, checksum valid": func(packet []byte) {
+			copy(packet, buildPacket(netip.MustParseAddr("fd00::1"), multicastGroup, EncodePacket(nil)))
+		},
+		"another link-local destination, checksum valid": func(packet []byte) {
+			copy(packet, buildPacket(src, netip.MustParseAddr("fe80::9"), EncodePacket(nil)))
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			packet := buildPacket(src, multicastGroup, EncodePacket(nil))

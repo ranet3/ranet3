@@ -14,10 +14,12 @@ import (
 // ESP tunnel. Only learned routes are installed in the TUN forwarding table.
 
 const (
-	nextHeaderUDP = 17
-	ipv6HeaderLen = 40
-	udpHeaderLen  = 8
-	babelHopLimit = 1 // link-local multicast must not be forwarded, RFC 8966 section 4
+	nextHeaderUDP      = 17
+	nextHeaderFragment = 44
+	ipv6HeaderLen      = 40
+	udpHeaderLen       = 8
+	fragmentHeaderLen  = 8
+	babelHopLimit      = 1 // link-local multicast must not be forwarded, RFC 8966 section 4
 )
 
 // buildPacket wraps a Babel payload in a minimal IPv6+UDP packet.
@@ -44,9 +46,21 @@ func buildPacket(src, dst netip.Addr, payload []byte) []byte {
 // isBabelPacket keeps ordinary IP traffic off the control parser without
 // allocations, checksum work, or a protocol-state lock. It is only a filter:
 // parsePacket performs full validation before any control state is changed.
-func isBabelPacket(raw []byte) bool {
-	return len(raw) >= ipv6HeaderLen+udpHeaderLen && raw[0]>>4 == 6 &&
-		raw[6] == nextHeaderUDP && binary.BigEndian.Uint16(raw[42:44]) == Port
+// fragment is a packet whose next header is a Fragment header, for receiveFragment to sort further
+// telling one apart costs every packet that is not UDP a single comparison
+func isBabelPacket(raw []byte) (babel, fragment bool) {
+	if len(raw) < ipv6HeaderLen+max(udpHeaderLen, fragmentHeaderLen) || raw[0]>>4 != 6 {
+		return false, false
+	}
+	if raw[6] != nextHeaderUDP {
+		return false, raw[6] == nextHeaderFragment
+	}
+	return binary.BigEndian.Uint16(raw[42:44]) == Port, false
+}
+
+// forSpeaker is whether a packet from src to dst is the speaker's, from a link-local address to the Babel group or to local, its own address
+func forSpeaker(src, dst, local netip.Addr) bool {
+	return src.IsLinkLocalUnicast() && (dst == multicastGroup || dst == local)
 }
 
 // parsePacket extracts the Babel payload and source address from a raw
@@ -65,16 +79,9 @@ func parsePacket(raw []byte, localAddr netip.Addr) (src netip.Addr, payload []by
 	if payloadLen < udpHeaderLen || ipv6HeaderLen+payloadLen != len(raw) {
 		return netip.Addr{}, nil, fmt.Errorf("babel: invalid IPv6 payload length")
 	}
-	srcAddr, ok := netip.AddrFromSlice(raw[8:24])
-	if !ok {
-		return netip.Addr{}, nil, fmt.Errorf("babel: bad source address")
-	}
-	if !srcAddr.Is6() || !srcAddr.IsLinkLocalUnicast() {
-		return netip.Addr{}, nil, fmt.Errorf("babel: source is not IPv6 link-local")
-	}
-	dstAddr, ok := netip.AddrFromSlice(raw[24:40])
-	if !ok || (dstAddr != multicastGroup && dstAddr != localAddr) {
-		return netip.Addr{}, nil, fmt.Errorf("babel: packet is not addressed to this speaker")
+	srcAddr, dstAddr := netip.AddrFrom16([16]byte(raw[8:24])), netip.AddrFrom16([16]byte(raw[24:40]))
+	if !forSpeaker(srcAddr, dstAddr, localAddr) {
+		return netip.Addr{}, nil, fmt.Errorf("babel: packet is not from a link-local address to this speaker")
 	}
 	udp := raw[ipv6HeaderLen:]
 	if binary.BigEndian.Uint16(udp[0:2]) != Port {

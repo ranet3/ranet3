@@ -378,19 +378,27 @@ func (s *Speaker) removePeer(n *neighborState) {
 
 // Receive consumes Babel packets from the exact registered ESP session.
 // Everything else is returned to the caller for normal IP delivery.
+// a fragment sent to this speaker is consumed too, whether it completes a packet or not, see receiveFragment
 func (s *Speaker) Receive(peer *netstack.Peer, raw []byte) bool {
-	if !isBabelPacket(raw) {
-		return false
+	babel, fragment := isBabelPacket(raw)
+	if !babel {
+		return fragment && s.receiveFragment(peer, raw)
 	}
 	src, payload, err := parsePacket(raw, s.linkLocal)
 	if err != nil {
 		return false
 	}
+	s.receive(peer, src, payload)
+	return true
+}
+
+// receive hands the payload of one Babel packet from src to the neighbor registered for peer
+func (s *Speaker) receive(peer *netstack.Peer, src netip.Addr, payload []byte) {
 	s.mu.Lock()
 	n := s.neighbors[peer.ID]
 	if n == nil || n.peer != peer {
 		s.mu.Unlock()
-		return true // never deliver a retired session's control traffic to TUN
+		return // never deliver a retired session's control traffic to TUN
 	}
 	n.addr = src
 	actions, acked := s.handlePacketLocked(n, payload, time.Now())
@@ -401,7 +409,6 @@ func (s *Speaker) Receive(peer *netstack.Peer, raw []byte) bool {
 	for _, nonce := range acked {
 		s.probeAcked(peer, nonce)
 	}
-	return true
 }
 
 // Probe sends the neighbor registered for peer one Ack Request carrying nonce, padded with PadN to size octets
@@ -813,6 +820,7 @@ func (s *Speaker) sweepExpiredLocked(now time.Time) {
 		if n.haveRTT && !now.Before(n.rttExpiry) {
 			n.haveRTT = false
 		}
+		n.reassembly.expire(now)
 	}
 	// Selection reruns for every prefix, which covers both the link costs that
 	// have just gone infinite and the routes that have expired. The routes of
@@ -925,6 +933,8 @@ type NeighborStat struct {
 	// sealed them, which is the link failing rather than this node running
 	// out of room.
 	SendFailed uint64
+	// Fragments counts what became of the Babel packets this neighbor's session sent in fragments
+	Fragments FragmentStats
 }
 
 // Stats is a consistent snapshot of the speaker for a metrics endpoint. It
@@ -985,6 +995,7 @@ func (s *Speaker) Stats() Stats {
 			Dropped:          neighbor.peer.Dropped(),
 			DelayDropped:     delayDropped,
 			SendFailed:       neighbor.peer.SendFailed(),
+			Fragments:        neighbor.reassembly.stats,
 		})
 	}
 	sort.Slice(stats.Neighbors, func(i, j int) bool { return stats.Neighbors[i].Peer < stats.Neighbors[j].Peer })
