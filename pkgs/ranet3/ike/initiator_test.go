@@ -1417,7 +1417,7 @@ func TestSendRecvIgnoresUnauthenticatedErrorNotify(t *testing.T) {
 			t.Fatal("sendRecv returned the bogus notify-only response instead of the real one")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("sendRecv did not return in time -- likely blocked waiting past the accepted response")
+		t.Fatal("sendRecv did not return in time, likely blocked waiting past the accepted response")
 	}
 }
 

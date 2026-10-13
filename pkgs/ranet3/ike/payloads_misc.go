@@ -11,7 +11,7 @@ import (
 	"slices"
 )
 
-// --- Key Exchange payload, RFC 7296 section 3.4 ---
+// Key Exchange payload, RFC 7296 section 3.4
 
 func EncodeKE(group uint16, pub []byte) []byte {
 	b := make([]byte, 4+len(pub))
@@ -27,12 +27,12 @@ func DecodeKE(body []byte) (group uint16, pub []byte, err error) {
 	return binary.BigEndian.Uint16(body[0:2]), body[4:], nil
 }
 
-// --- Nonce payload, RFC 7296 section 3.9 ---
+// Nonce payload, RFC 7296 section 3.9
 
 func EncodeNonce(n []byte) []byte    { return n }
 func DecodeNonce(body []byte) []byte { return body }
 
-// --- Notify payload, RFC 7296 section 3.10 ---
+// Notify payload, RFC 7296 section 3.10
 
 type Notify struct {
 	Protocol ProtocolID // 0 if not protocol-specific
@@ -67,7 +67,7 @@ func DecodeNotify(body []byte) (Notify, error) {
 	}, nil
 }
 
-// --- Delete payload, RFC 7296 section 3.11 ---
+// Delete payload, RFC 7296 section 3.11
 
 type Delete struct {
 	Protocol ProtocolID
@@ -122,7 +122,7 @@ func DecodeDelete(body []byte) (Delete, error) {
 	return d, nil
 }
 
-// --- Identification payload, RFC 7296 section 3.5 ---
+// Identification payload, RFC 7296 section 3.5
 
 func EncodeID(idType uint8, data []byte) []byte {
 	b := make([]byte, 4+len(data))
@@ -138,7 +138,7 @@ func DecodeID(body []byte) (idType uint8, data []byte, err error) {
 	return body[0], body[4:], nil
 }
 
-// --- Traffic Selector payload, RFC 7296 section 3.13 ---
+// Traffic Selector payload, RFC 7296 section 3.13
 
 const (
 	TS_IPV4_ADDR_RANGE uint8 = 7

@@ -96,7 +96,7 @@ func DecodePacket(b []byte) ([]RawTLV, error) {
 	return out, nil
 }
 
-// --- sub-TLVs (trailing content of Hello/IHU/Update TLVs) ---
+// sub-TLVs (trailing content of Hello, IHU and Update TLVs)
 
 type SubTLV struct {
 	Type uint8
@@ -148,7 +148,7 @@ func findSubTLV(subs []SubTLV, t uint8) ([]byte, bool) {
 	return nil, false
 }
 
-// --- full-length address encoding (Hello has none, but IHU/NextHop use this) ---
+// full-length address encoding (Hello has none, but IHU and NextHop use this)
 
 func encodeAddress(addr net.IP) (ae uint8, body []byte) {
 	if v4 := addr.To4(); v4 != nil {

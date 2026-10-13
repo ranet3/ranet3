@@ -17,7 +17,7 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-// --- Diffie-Hellman ---
+// Diffie-Hellman
 
 // DHKeyPair wraps a crypto/ecdh key pair for one of the modern groups we
 // offer: Curve25519 (31) or NIST P-256/P-384 (19/20).
@@ -76,7 +76,7 @@ func (kp *DHKeyPair) SharedSecret(peerPublic []byte) ([]byte, error) {
 	return kp.priv.ECDH(pub)
 }
 
-// --- PRF / PRF+ , RFC 7296 section 2.13 ---
+// PRF and PRF+, RFC 7296 section 2.13
 
 func prfHashFunc(prfID uint16) (func() hash.Hash, error) {
 	switch prfID {
@@ -125,7 +125,7 @@ func prfPlus(prfID uint16, key, seed []byte, length int) []byte {
 	return out[:length]
 }
 
-// --- AEAD suite parameters, RFC 5282 / RFC 7634 ---
+// AEAD suite parameters, RFC 5282 and RFC 7634
 
 type AEADParams struct {
 	KeyLen  int // encryption key length, bytes (excludes salt)
@@ -167,7 +167,7 @@ func newAEAD(encrID uint16, key []byte) (cipher.AEAD, error) {
 	}
 }
 
-// --- IKE SA key derivation, RFC 7296 section 2.14, RFC 5282 section 2 (AEAD variant) ---
+// IKE SA key derivation, RFC 7296 section 2.14, RFC 5282 section 2 (AEAD variant)
 
 type SASuite struct {
 	EncrID      uint16
