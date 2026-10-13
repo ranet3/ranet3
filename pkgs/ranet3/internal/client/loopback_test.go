@@ -129,6 +129,29 @@ func newLoopbackMeshOn(t *testing.T, mesh *netstack.Mesh) (alpha, bravo *loopbac
 
 func tryLoopbackMesh(t *testing.T, bravoMesh *netstack.Mesh) (_, _ *loopbackNode, err error) {
 	t.Helper()
+	nodes, private, reg := writeMesh(t, [2]uint16{freeUDPPort(t), freeUDPPort(t)}, [2]string{"127.0.0.1", "127.0.0.1"})
+	meshes := []*netstack.Mesh{netstack.NewRoutesOnly(), bravoMesh}
+	for i, node := range nodes {
+		client, err := newClient(node.cfg, private, reg, meshes[i], nil, node.events)
+		if err != nil {
+			for _, built := range nodes[:i] {
+				built.client.Close()
+			}
+			return nil, nil, fmt.Errorf("%s: %w", node.name, err)
+		}
+		node.client = client
+	}
+	return nodes[0], nodes[1], nil
+}
+
+// writeMesh makes the organization key of a two node mesh, alpha and bravo, and the files their clients read
+// each node takes its port from ports
+// it has one endpoint in the registry, at its address in addresses and its port
+// it writes the registry and the key to a directory of the test's own
+// it then writes and loads each node's config, which dials the other node
+// it returns the nodes without their clients, and the organization's private key and registry a client is built from
+func writeMesh(t *testing.T, ports [2]uint16, addresses [2]string) ([]*loopbackNode, ed25519.PrivateKey, registry.Registry) {
+	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -145,16 +168,15 @@ func tryLoopbackMesh(t *testing.T, bravoMesh *netstack.Mesh) (_, _ *loopbackNode
 	// same organization key, same common name, same port.
 	mesh := meshCounter.Add(1)
 	nodes := []*loopbackNode{
-		{name: fmt.Sprintf("alpha-%d", mesh), port: freeUDPPort(t), prefix: netip.MustParsePrefix("fd00:a::/64")},
-		{name: fmt.Sprintf("bravo-%d", mesh), port: freeUDPPort(t), prefix: netip.MustParsePrefix("fd00:b::/64")},
+		{name: fmt.Sprintf("alpha-%d", mesh), port: ports[0], prefix: netip.MustParsePrefix("fd00:a::/64")},
+		{name: fmt.Sprintf("bravo-%d", mesh), port: ports[1], prefix: netip.MustParsePrefix("fd00:b::/64")},
 	}
-	loopback := "127.0.0.1"
 	org := registry.Organization{PublicKey: publicPEM, Organization: "example"}
-	for _, node := range nodes {
+	for i, node := range nodes {
 		org.Nodes = append(org.Nodes, registry.Node{
 			CommonName: node.name,
 			Endpoints: []registry.Endpoint{{
-				SerialNumber: "0", AddressFamily: "ip4", Address: &loopback, Port: node.port,
+				SerialNumber: "0", AddressFamily: "ip4", Address: &addresses[i], Port: node.port,
 			}},
 		})
 	}
@@ -180,22 +202,13 @@ func tryLoopbackMesh(t *testing.T, bravoMesh *netstack.Mesh) (_, _ *loopbackNode
 		t.Fatal(err)
 	}
 
-	meshes := []*netstack.Mesh{netstack.NewRoutesOnly(), bravoMesh}
 	for i, node := range nodes {
 		peer := nodes[1-i]
 		node.configPath = filepath.Join(dir, node.name+".yaml")
 		node.cfg = writeLoopbackConfig(t, node, peer, keyPath, registryPath, []string{node.prefix.String()})
 		node.events = events.New()
-		client, err := newClient(node.cfg, private, reg, meshes[i], nil, node.events)
-		if err != nil {
-			for _, built := range nodes[:i] {
-				built.client.Close()
-			}
-			return nil, nil, fmt.Errorf("%s: %w", node.name, err)
-		}
-		node.client = client
 	}
-	return nodes[0], nodes[1], nil
+	return nodes, private, reg
 }
 
 // writeLoopbackConfig writes one node's config file and loads it back, so the

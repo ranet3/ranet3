@@ -33,7 +33,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/registry"
 )
 
-// The tests in this file are the only ones in this package that write into a kernel, two nodes on real tuns
+// the tests in this file write into a kernel, two nodes on real tuns
 // a node opens its sockets, its tun and its netlink from whatever thread a goroutine runs on, and no one thread can be moved into a namespace for it
 // they run instead as root in a network namespace the whole process started in and that held nothing, which unshare -rn starts
 // they skip anywhere without root and refuse to start in a namespace that holds anything
@@ -102,27 +102,6 @@ func claimNamespace() (string, error) {
 		return "", fmt.Errorf("refusing to start: this network namespace holds %d routes, so it was not made for this process, and unshare -rn makes one that was", len(routes))
 	}
 	return "", bringUp("lo")
-}
-
-// bringUp sets the up flag of the link name, as netstack does for a tun it opens
-func bringUp(name string) error {
-	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		return fmt.Errorf("open a socket to bring %s up: %w", name, err)
-	}
-	defer unix.Close(fd)
-	ifr, err := unix.NewIfreq(name)
-	if err != nil {
-		return err
-	}
-	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
-		return fmt.Errorf("read the flags of %s: %w", name, err)
-	}
-	ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
-	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
-		return fmt.Errorf("bring %s up: %w", name, err)
-	}
-	return nil
 }
 
 // kernelRoute is one route a dump of the namespace reads back

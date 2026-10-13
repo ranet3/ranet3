@@ -97,32 +97,40 @@ testers.runNixOSTest {
     ran = out.count("--- PASS")
     assert ran >= 28, f"only {ran} tun round trips ran:\n{out}"
 
+    # the client's tun round trips
+    # among them a TCP stream through a black hole a session's search finds
+    # a veth pair to a second namespace whose far end drops what it cannot take and answers nothing
     out = machine.succeed(
         "${netlinkTests}/bin/client-tests -test.v -test.run 'TestTUN' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the client's tun round trips skipped themselves under root:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 9, f"only {ran} of the client's tun round trips ran:\n{out}"
+    assert ran >= 10, f"only {ran} of the client's tun round trips ran:\n{out}"
 
     # every datagram sent with DF and the path mtu a refused one reports, against linux itself
+    # and a family's socket fragmenting past the path only while a session of the family asks
     # a veth pair to a second namespace behind routes whose path mtu is locked below the datagram size
+    # and an IPv4 datagram its route carries leaving without DF while the family fragments, read off loopback
     out = machine.succeed(
-        "${netlinkTests}/bin/transport-tests -test.v -test.run 'TestKernelRefusesWhatALockedPathCannotCarry' 2>&1"
+        "${netlinkTests}/bin/transport-tests -test.v -test.run 'TestKernel(RefusesWhatALockedPathCannotCarry|FragmentsPastALockedPathOnlyWhileTheFamilyAsks|SendsWithoutDFWhatTheRouteCarriesWhileIPv4Fragments)' 2>&1"
     )
     print(out)
-    assert "SKIP" not in out, f"the locked path test skipped itself under root:\n{out}"
-    assert "--- PASS" in out, f"the locked path test did not run:\n{out}"
+    assert "SKIP" not in out, f"the kernel send tests skipped themselves under root:\n{out}"
+    ran = out.count("--- PASS")
+    assert ran >= 3, f"only {ran} of the kernel send tests ran:\n{out}"
 
     # two nodes taken down and put back up against linux itself
+    # a session moved under the floor handing its fragmenting to the new endpoint's family
+    # the refusal of a session's own data past a narrower loopback lowering its budget
     # every goroutine of a node opens sockets and tuns, so the whole process runs in a namespace of its own
     out = machine.succeed(
-        "unshare -n ${netlinkTests}/bin/client-tests -test.v -test.run '^TestNode(GoingDown|RestartedWhileDown)' 2>&1"
+        "unshare -n ${netlinkTests}/bin/client-tests -test.v -test.run '^TestNode(GoingDown|RestartedWhileDown)|^TestSession(MovedUnderTheFloorHandsItsFragmentingOver|LowersItsBudgetAtTheRefusalOfItsOwnData)' 2>&1"
     )
     print(out)
-    assert "SKIP" not in out, f"the down and up round trips skipped themselves under root:\n{out}"
+    assert "SKIP" not in out, f"the client's round trips in a namespace of their own skipped themselves under root:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 2, f"only {ran} down and up round trips ran:\n{out}"
+    assert ran >= 4, f"only {ran} of the client's round trips in a namespace of their own ran:\n{out}"
 
     # Nothing the tests wrote may outlive them: they run against the host's own
     # kernel here rather than against a fake, so a rule, a VRF or a table left
