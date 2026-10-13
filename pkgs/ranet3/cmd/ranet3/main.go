@@ -89,10 +89,11 @@ routing table when the config file asks for it. The config file is TOML,
 YAML or JSON, told apart by its extension: .toml, .yaml, .yml or .json.
 Most other commands reach the node through its control socket.
 
-The --state-dir flag names the directory for what outlives the process,
-which is the flag ranet3 down leaves until ranet3 up. A node that starts
-with the flag there stays off the mesh. The daemon makes the directory
-with mode 0700 when it is missing.
+The --state-dir flag names the directory for what outlives the process:
+the flag ranet3 down leaves until ranet3 up, and the Babel router id and
+seqno limit a restart starts from. A node that starts with the flag
+there stays off the mesh. The daemon makes the directory with mode 0700
+when it is missing.
 
 The --debug-access flag decides who may use the debug paths that serve
 profiles, logs and captures. The value root admits uid 0 and the user

@@ -306,9 +306,10 @@ func RenderRoutes(w io.Writer, routes []Route) {
 // covering prefix so a reader sees what it would fall back to.
 //
 // It names the peer rather than the originating node, because Babel carries a
-// router id and no name, and the id is random per process. The next hop is the
-// origin only where the origin is a neighbor, so the column is called via and
-// the router id is printed as it arrives.
+// router id and no name, and the id is a random one each node draws, which a
+// ranet3 node keeps in its state directory. The next hop is the origin only
+// where the origin is a neighbor, so the column is called via and the router
+// id is printed as it arrives.
 func RenderWhois(w io.Writer, address netip.Addr, covering []Route) {
 	if len(covering) == 0 {
 		fmt.Fprintf(w, "%s is in no prefix this mesh carries\n", address)

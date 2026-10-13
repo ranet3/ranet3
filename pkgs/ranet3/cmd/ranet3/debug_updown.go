@@ -16,9 +16,10 @@ func (r *reader) upDownCommand() *cobra.Command {
 		Use:   "updown",
 		Short: "Show whether the node is on the mesh",
 		Long: `The output covers whether the node is up or down and since when, the
-flag in the state directory that keeps it down through a restart, and the
-last move between up and down with its cause, a request or the flag at
-start.`,
+flag in the state directory that keeps it down through a restart, the last
+move between up and down with its cause, a request or the flag at start,
+and the node's Babel router id and seqno with the file beside the flag that
+a restart starts them from and the seqno limit it holds.`,
 		Args:              noArguments,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) error {

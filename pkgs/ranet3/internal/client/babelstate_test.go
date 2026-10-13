@@ -117,6 +117,40 @@ func TestCopiedStateDirectoryGivesEachNodeItsOwnRouterID(t *testing.T) {
 	}
 }
 
+// the updown view shows the router id and seqno the speaker advertises, with the file and the limit it holds for them
+// the limit is the file's as the view reads it, which a file changed since the last save shows
+// a file holding another router id or another node's name holds no limit for them, and a node without a state directory names no file
+func TestUpDownViewShowsTheLimitTheFileHoldsForThisRouterID(t *testing.T) {
+	dir := t.TempDir()
+	c, _ := stateNode(t, "alpha", dir)
+	origin, seqno := c.speaker.Origin()
+	view := c.DebugUpDown().Babel
+	if view.RouterID != hex.EncodeToString(origin.RouterID[:]) || view.Seqno != seqno || view.File != filepath.Join(dir, babelStateFile) || view.Limit == nil || *view.Limit != origin.Limit {
+		t.Errorf("the view shows %+v, want router id %x at seqno %d with the limit %d in the file", view, origin.RouterID, seqno, origin.Limit)
+	}
+	changed := babelState{node: config.Node{Org: "example", Name: "alpha"}, origin: babel.Origin{RouterID: origin.RouterID, Limit: origin.Limit + 1000}}
+	if err := writeBabelState(dir, changed); err != nil {
+		t.Fatal(err)
+	}
+	if view := c.DebugUpDown().Babel; view.Limit == nil || *view.Limit != changed.origin.Limit {
+		t.Errorf("with the file changed to hold the limit %d the view shows %+v", changed.origin.Limit, view)
+	}
+	for name, state := range map[string]babelState{
+		"another router id": {node: config.Node{Org: "example", Name: "alpha"}, origin: babel.Origin{RouterID: [8]byte{0x72, 1, 2, 3, 4, 5, 6, 7}, Limit: origin.Limit}},
+		"another node":      {node: config.Node{Org: "example", Name: "bravo"}, origin: origin},
+	} {
+		if err := writeBabelState(dir, state); err != nil {
+			t.Fatal(err)
+		}
+		if view := c.DebugUpDown().Babel; view.Limit != nil {
+			t.Errorf("with a file holding %s the view shows the limit %d", name, *view.Limit)
+		}
+	}
+	if view := writable(t).DebugUpDown().Babel; view.RouterID == "" || view.File != "" || view.Limit != nil {
+		t.Errorf("a node without a state directory shows %+v, want its router id alone", view)
+	}
+}
+
 // a save whose directory will not sync is a save that failed, since a crash could still lose the limit it wrote
 // the speaker records it, keeps the limit it had and starts all the same
 // a directory the daemon's user can write and not read refuses the sync, which root reads whatever its mode
