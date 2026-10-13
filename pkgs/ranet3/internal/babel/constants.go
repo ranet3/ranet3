@@ -15,3 +15,12 @@ const defaultPacketSize = srv6.MinimumIPv6MTU - ipv6HeaderLen - udpHeaderLen
 // a receiver answers before it elapses, RFC 8966 section 4.6.3
 // the caller of Speaker.Probe counts a probe lost on a timer of its own
 const probeInterval = maxInterval
+
+// seqnoLimitAhead is how far past the seqno in use the saved limit runs
+// a start resumes one past the limit
+// the seqno then moves on by at most this many and one
+// RFC 8966 section 3.2.1 orders two seqnos less than 32768 apart, room for 127 such starts
+// a feasibility distance a far node kept from before them still reads as older than the seqno after them
+// each raise past the limit waits on a write and a directory sync under s.mu
+// one write covers this many raises
+const seqnoLimitAhead = 256

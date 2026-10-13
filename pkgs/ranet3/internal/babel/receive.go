@@ -342,21 +342,10 @@ func (s *Speaker) routeReply(n *neighborState, request RouteRequest, now time.Ti
 // it one hop along a route toward the origin.
 func (s *Speaker) seqnoReply(n *neighborState, request SeqnoRequest, now time.Time) []sendAction {
 	key := routeKey{source: request.SourcePrefix, dest: request.Prefix}
+	if request.RouterID == s.routerID {
+		s.seqnoRequestedLocked(n, key, request.Seqno)
+	}
 	if _, local := s.originate[key]; local {
-		// At most one increment per request, and at most one per packet: a
-		// peer chooses how many requests to put in one, and eighty fit. RFC
-		// 8966 section 3.2.2 asks a node not to raise its own sequence number
-		// spontaneously, and every raise re-dirties everything this node
-		// originates.
-		if request.RouterID == s.routerID && seqnoGT(request.Seqno, s.originSeqno) && !s.raisedSeqno {
-			s.raisedSeqno = true
-			s.originSeqno++
-			// Everything we originate carries the new sequence number, so the
-			// whole set is due a triggered update, not just this prefix.
-			for origin := range s.originate {
-				s.routes.dirty[origin] = struct{}{}
-			}
-		}
 		advertised, spent := s.advertiseTo(n, key, true, now)
 		return sendTLVs(n, key, advertised, spent)
 	}

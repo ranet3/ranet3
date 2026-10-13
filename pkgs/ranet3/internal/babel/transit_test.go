@@ -1205,13 +1205,15 @@ func TestStarvationBookkeepingIsBounded(t *testing.T) {
 	}
 }
 
-// A node draws a new router id every time it starts, so every restart is a new
-// origin for every prefix it announces, charged to whichever neighbor this
-// node reaches it through. A cap that refuses an origin refuses a route, and
-// selectRoute rechecks feasibility for stored routes, so a cap below the
-// restart rate does not merely stop this node learning something new: it drops
-// the route it already had and holds the prefix unreachable until the source
-// table collects, three minutes after the churn stops.
+// A ranet3 node without a usable state file, BIRD with randomize router id set
+// and babeld with a random id and no state file draw a new router id every
+// time they start, which makes each of their restarts a new origin for every
+// prefix they announce, charged to whichever neighbor this node reaches it
+// through. A cap that refuses an origin refuses a route, and selectRoute
+// rechecks feasibility for stored routes, so a cap below the restart rate does
+// not merely stop this node learning something new: it drops the route it
+// already had and holds the prefix unreachable until the source table
+// collects, three minutes after the churn stops.
 func TestRestartChurnDoesNotBlackholePrefix(t *testing.T) {
 	// b learns the prefix through a and has c to advertise it to, which is
 	// what records the distance: split horizon makes the dump back to a a
