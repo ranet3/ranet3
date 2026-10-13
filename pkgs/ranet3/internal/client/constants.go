@@ -27,10 +27,12 @@ const (
 const (
 	// downFlag is the file in the state directory whose presence keeps the node off the mesh
 	downFlag = "down"
-	// flagTemp is the suffix of the file the flag is written whole in before it is renamed into place
-	flagTemp = ".tmp"
-	// flagMode keeps the flag to the daemon's own user, which writes it and alone reads it
-	flagMode = 0o600
+	// babelStateFile is the file in the state directory holding the Babel router id and seqno limit a start takes, with the node they belong to
+	babelStateFile = "babel.json"
+	// stateTemp is the suffix of the file a state file is written whole in before it is renamed into place
+	stateTemp = ".tmp"
+	// stateFileMode keeps a state file to the daemon's own user, which writes it and alone reads it
+	stateFileMode = 0o600
 	// stateDirMode is the state directory's mode where the daemon makes it, for the same reason
 	stateDirMode = 0o700
 )

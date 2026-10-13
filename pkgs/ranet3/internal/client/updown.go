@@ -28,6 +28,7 @@ var errNoStateDir = errors.New("control: this daemon keeps no state directory, s
 
 // SetStateDir names the directory the down flag lives in and reads the flag, making the directory where it is missing
 // a node whose flag is there comes up down, its tun, socket and metrics open and nothing else of the mesh started
+// it then starts the speaker from the Babel state kept beside the flag, see startBabel
 // it runs before Run and before the socket serves a verb
 // the move it records for a flag therefore comes before any verb's
 func (c *Client) SetStateDir(dir string) error {
@@ -44,6 +45,7 @@ func (c *Client) SetStateDir(dir string) error {
 		c.noteMove(true, control.CauseFlag, since, 0)
 		log.Printf("this node is down since %s, as %s says, and ranet3 up puts it back on the mesh", stamp(since), filepath.Join(dir, downFlag))
 	}
+	c.startBabel(dir)
 	return nil
 }
 
@@ -152,25 +154,35 @@ func (c *Client) noteMove(down bool, cause string, since time.Time, closed int) 
 // syncStateDir makes the flag's last write or removal survive a crash, warning where the directory will not sync
 // every later read already finds the flag as the verb left it, so the verb stands either way
 func (c *Client) syncStateDir() {
-	dir, err := os.Open(c.stateDir)
-	if err == nil {
-		err = errors.Join(dir.Sync(), dir.Close())
-	}
-	if err != nil {
+	if err := syncDir(c.stateDir); err != nil {
 		slog.Warn("the state directory did not sync, so a crash before its next write may undo the last down or up", "dir", c.stateDir, "err", err)
 	}
 }
 
-// writeDownFlag puts the flag in dir holding since, whole or not at all
-// it is written and synced beside the flag and renamed over it, so a crash leaves the flag as it was or as asked
-func writeDownFlag(dir string, since time.Time) error {
-	path := filepath.Join(dir, downFlag)
-	temp := path + flagTemp
-	file, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, flagMode)
+// syncDir makes the last rename or removal in dir survive a crash
+func syncDir(dir string) error {
+	file, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	_, err = file.WriteString(since.Format(time.RFC3339Nano) + "\n")
+	return errors.Join(file.Sync(), file.Close())
+}
+
+// writeDownFlag puts the flag in dir holding since, whole or not at all
+func writeDownFlag(dir string, since time.Time) error {
+	return replaceFile(dir, downFlag, []byte(since.Format(time.RFC3339Nano)+"\n"))
+}
+
+// replaceFile puts body in dir under name, whole or not at all
+// it is written and synced beside the name and renamed over it, so a crash leaves the file as it was or as asked
+func replaceFile(dir, name string, body []byte) error {
+	path := filepath.Join(dir, name)
+	temp := path + stateTemp
+	file, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, stateFileMode)
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(body)
 	if err == nil {
 		err = file.Sync()
 	}
