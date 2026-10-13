@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-10-06
+updated: 2026-10-13
 order: 90
 ---
 
@@ -72,6 +72,27 @@ peer's sender running, or a transport that stopped taking packets for longer
 than the budget lasts. `ranet3_peer_send_failed_total` stays apart from all of
 these: those packets were sealed and the transport lost them, which is the link
 failing rather than this node choosing.
+
+`ranet3_babel_reassembled_total` counts, per neighbor, the Babel packets its
+session sent in fragments that this node put back together and read, and
+`ranet3_babel_reassembled_largest_bytes` is the largest of them, a whole IPv6
+packet with its headers. `ranet3_babel_reassembly_dropped_total` counts the
+datagrams dropped instead, by `reason`: `overlap` for a fragment overlapping
+another, `header` for a first fragment without the UDP header, `malformed` for a
+fragment wrong in itself or a whole packet the speaker refuses, `timeout` for a
+datagram still incomplete 16 seconds after its first fragment, `evicted` for one
+at least 1 second old that gave its place or its storage to another datagram of
+the same neighbor, and `refused` for one that found no storage, or each fragment
+that found no place, while the neighbor's other datagrams, all younger than 1
+second, held them. A neighbor flooding fragments of datagrams that never
+complete has the node hold under 280 KiB and allocate under 2 MiB a second, and
+evicts and refuses only datagrams of its own. A neighbor that sent no fragment
+has none of the three, so the series name exactly the neighbors whose stacks cut
+their packets. [The protocol deviations](design/protocol-deviations.md) say
+which fragments the speaker takes and the bounds it holds each neighbor to. The
+first packet a session sent in fragments is recorded as a
+`babel.neighbor.fragmented` event as well, which
+[the debug tree](development/debug.md) shows.
 
 Everything is read from live state at scrape time, so a scrape reflects the
 instant it happened rather than a sampled snapshot. What a counter cannot carry,
