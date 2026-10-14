@@ -228,8 +228,8 @@ type forwardedSegment struct {
 //
 // It reserves each peer's whole share of the batch at once, as dispatchOutbound
 // does for a tun read, so the share takes one ticket and one sequence range
-// and is sealed in one call, against as many packets of the peer's budget as
-// it carries.
+// and is sealed in one call, against the bytes of the peer's budget it
+// carries.
 //
 // The budget is the peer's ordinary one rather than the control budget babel
 // runs on, because this is somebody else's traffic: a segment list pointed at
@@ -267,24 +267,25 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment) {
 			order = append(order, peer)
 		}
 		if len(segment.raw) > share.mtu {
-			share.count += m.segmentTooBig(&cut, segment, peer, nextHeader, share.mtu)
+			count, bytes := m.segmentTooBig(&cut, segment, peer, nextHeader, share.mtu)
+			share.count += count
+			share.bytes += bytes
 		} else {
 			share.count++
+			share.bytes += len(segment.raw)
 			segment.peer, segment.nextHeader = peer, nextHeader
 		}
 		counts[peer] = share
 	}
 	batches := make(map[*Peer]*peerBatch, len(order))
 	for _, peer := range order {
-		count := counts[peer].count
-		if count == 0 {
+		share := counts[peer]
+		if share.count == 0 {
 			continue
 		}
-		batch := peer.reserveBatchNow(count)
+		batch := peer.reserveBatchNow(share.count, share.bytes)
 		if batch == nil {
-			// The peer counts its own share of this, and the segment counter says
-			// how much of it was somebody else's traffic.
-			m.segmentsDropped.Add(uint64(count))
+			m.segmentsDropped.Add(uint64(share.count))
 			continue
 		}
 		batches[peer] = batch
@@ -342,15 +343,15 @@ func (m *Mesh) answerRefused(offending []byte, reason error) {
 
 // segmentTooBig takes a forwarded segment larger than mtu, the largest the session to its next segment carries
 // the packet it carries is held to mtu less the headers in front of it, which each fragment keeps
-// it reports how many fragments it queued in cut, and an answer goes back through the mesh
-func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer *Peer, nextHeader byte, mtu int) int {
+// it reports how many fragments it queued in cut and their bytes, and an answer goes back through the mesh
+func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer *Peer, nextHeader byte, mtu int) (int, int) {
 	var answer []byte
 	if offset, ok := carriedPacket(segment.raw); ok {
 		inner := segment.raw[offset:]
 		var fragment bool
 		if answer, fragment = m.answerTooBig(inner, mtu-offset); fragment {
-			if count := cut.add(peer, nextHeader, segment.raw[:offset], inner, mtu); count != 0 {
-				return count
+			if count, bytes := cut.add(peer, nextHeader, segment.raw[:offset], inner, mtu); count != 0 {
+				return count, bytes
 			}
 		}
 	}
@@ -359,7 +360,7 @@ func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer 
 	if answer != nil {
 		m.sendBack(answer)
 	}
-	return 0
+	return 0, 0
 }
 
 // carriedPacket is the offset of the IP packet behind the routing header of raw, which runs to its end
@@ -415,7 +416,7 @@ func (m *Mesh) sendBack(answer []byte) {
 	if !ok || peer == nil {
 		return
 	}
-	batch := peer.reserveBatchNow(1)
+	batch := peer.reserveBatchNow(1, len(answer))
 	if batch == nil {
 		return
 	}

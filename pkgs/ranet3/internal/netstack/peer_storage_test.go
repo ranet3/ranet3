@@ -42,7 +42,7 @@ func TestReservedPeerKeepsCiphertextUntilSendCompletes(t *testing.T) {
 				return sendErr
 			}, nil)
 			t.Cleanup(func() { once.Do(func() { close(release) }); p.Close() })
-			first := p.reserveBatch(1)
+			first := p.reserveBatch(1, 1)
 			first.append([]byte{1}, 0)
 			first.done = make(chan error, 1)
 			if err := first.enqueue(); err != nil {
@@ -56,7 +56,7 @@ func TestReservedPeerKeepsCiphertextUntilSendCompletes(t *testing.T) {
 			if first.storage == nil {
 				t.Fatal("ciphertext recycled while transport still owns it")
 			}
-			second := p.reserveBatch(1)
+			second := p.reserveBatch(1, 1)
 			second.append([]byte{2}, 0)
 			second.done = make(chan error, 1)
 			if err := second.enqueue(); err != nil {
@@ -211,10 +211,10 @@ func TestControlTrafficHasItsOwnBudget(t *testing.T) {
 
 	// The dataplane takes everything it is allowed, which is how a bulk
 	// transfer through a backpressured socket looks from here.
-	if peer.reserveBatchNow(peerDataBudget) == nil {
+	if peer.reserveBatchNow(1, peerDataBudget) == nil {
 		t.Fatal("the dataplane was refused its own budget")
 	}
-	if peer.reserveBatchNow(1) != nil {
+	if peer.reserveBatchNow(1, 1) != nil {
 		t.Fatal("the dataplane took more than its budget, so this proves nothing")
 	}
 
@@ -245,7 +245,7 @@ func TestClosedPeerRefusesAndCountsEverything(t *testing.T) {
 			place.Send()
 			t.Fatal("a closed peer took a control packet")
 		}
-		if peer.reserveBatchNow(1) != nil {
+		if peer.reserveBatchNow(1, 1) != nil {
 			t.Fatal("a closed peer took a data batch")
 		}
 	}
@@ -265,12 +265,12 @@ func TestBatchReservedBeforeCloseIsRefusedAndCounted(t *testing.T) {
 		func(int) (BatchSealer, error) { return passThrough, nil },
 		func([][]byte) error { t.Error("a closed peer transmitted"); return nil }, nil)
 
-	// Reserved while the peer is open, so each holds a ticket and its packets
+	// Reserved while the peer is open, so each holds a ticket and its bytes
 	// of the budget, all of it between them.
-	sizes := []int{1, 5, peerDataBudget - 6}
+	const size, packets = 1400, peerDataBudget / 1400
 	var batches []*peerBatch
-	for i, size := range sizes {
-		b := filled(peer, size)
+	for i, count := range []int{1, 5, packets - 6} {
+		b := filledSized(peer, count, size)
 		if b == nil {
 			t.Fatalf("the peer refused reservation %d while it was open", i)
 		}
@@ -283,12 +283,12 @@ func TestBatchReservedBeforeCloseIsRefusedAndCounted(t *testing.T) {
 			t.Fatalf("batch %d was accepted by a closed peer and will never be transmitted", i)
 		}
 	}
-	if got := peer.Dropped(); got != peerDataBudget {
-		t.Errorf("the peer counted %d of the %d packets it will never send", got, peerDataBudget)
+	if got := peer.Dropped(); got != packets {
+		t.Errorf("the peer counted %d of the %d packets it will never send", got, packets)
 	}
-	// and gave back every packet of the budget they held
+	// and gave back every byte of the budget they held
 	if got := peer.dataBudget.used.Load(); got != 0 {
-		t.Errorf("a closed peer kept %d packets of its budget", got)
+		t.Errorf("a closed peer kept %d bytes of its budget", got)
 	}
 }
 
@@ -303,7 +303,7 @@ func TestReservationFailureIsCountedOnce(t *testing.T) {
 		func(int) (BatchSealer, error) { return nil, refused },
 		func([][]byte) error { return nil }, nil)
 
-	b := peer.reserveBatchNow(1)
+	b := peer.reserveBatchNow(1, 1)
 	if b == nil {
 		t.Fatal("the peer refused a reservation while it was open")
 	}
@@ -333,7 +333,7 @@ func TestSealFailureOnAClosedPeerIsStillCounted(t *testing.T) {
 		},
 		func([][]byte) error { t.Error("a closed peer transmitted"); return nil }, nil)
 
-	b := peer.reserveBatchNow(2)
+	b := peer.reserveBatchNow(2, 2)
 	if b == nil {
 		t.Fatal("the peer refused a reservation while it was open")
 	}
@@ -363,7 +363,7 @@ func TestBatchesStrandedInTheSenderAreCounted(t *testing.T) {
 
 	var discarded []uint64
 	peer.noteDiscarded = func(ticket uint64) { discarded = append(discarded, ticket) }
-	first, second, third := peer.reserveBatchNow(3), peer.reserveBatchNow(5), peer.reserveBatchNow(7)
+	first, second, third := peer.reserveBatchNow(3, 3), peer.reserveBatchNow(5, 5), peer.reserveBatchNow(7, 7)
 	if first == nil || second == nil || third == nil {
 		t.Fatal("the peer refused a reservation while it was open")
 	}
@@ -414,7 +414,7 @@ func TestSealFailureOnAnOpenPeerIsCounted(t *testing.T) {
 		func([][]byte) error { t.Error("a batch that sealed nothing reached the transport"); return nil }, nil)
 	defer peer.Close()
 
-	b := peer.reserveBatchNow(4)
+	b := peer.reserveBatchNow(4, 4)
 	if b == nil {
 		t.Fatal("the peer refused a reservation while it was open")
 	}
@@ -440,7 +440,7 @@ func TestTransportFailureIsCountedApartFromARefusal(t *testing.T) {
 		func([][]byte) error { return sending }, nil)
 	defer peer.Close()
 
-	b := peer.reserveBatchNow(3)
+	b := peer.reserveBatchNow(3, 3)
 	if b == nil {
 		t.Fatal("the peer refused a reservation while it was open")
 	}
@@ -478,7 +478,7 @@ func TestTransportFailureIsSaidRarely(t *testing.T) {
 	// to send.
 	const batches = 200
 	for sent := 0; sent < batches; {
-		b := peer.reserveBatchNow(1)
+		b := peer.reserveBatchNow(1, 1)
 		if b == nil {
 			time.Sleep(time.Millisecond)
 			continue
@@ -533,7 +533,7 @@ func TestNoBatchIsLostBetweenTheStopCheckAndTheQueue(t *testing.T) {
 			wg.Go(func() {
 				<-start
 				for range packets {
-					b := peer.reserveBatchNow(1)
+					b := peer.reserveBatchNow(1, 1)
 					if b == nil {
 						continue // the budget was full, which is counted where it happens
 					}
@@ -562,7 +562,7 @@ func TestNoBatchIsLostBetweenTheStopCheckAndTheQueue(t *testing.T) {
 		// And every packet of the budgets came back, or the next session on
 		// this peer has less room for good.
 		if got := peer.dataBudget.used.Load() + peer.controlBudget.used.Load(); got != 0 {
-			t.Fatalf("%d packets of the budgets were not given back", got)
+			t.Fatalf("%d of the budgets were not given back", got)
 		}
 	}
 }
@@ -585,7 +585,7 @@ func TestCompatibilityPeerCountsWhatItLoses(t *testing.T) {
 		},
 		func(sealed [][]byte) error { return nil })
 
-	b := peer.reserveBatchNow(3)
+	b := peer.reserveBatchNow(3, 3)
 	if b == nil {
 		t.Fatal("the peer refused a reservation while it was open")
 	}
@@ -619,7 +619,7 @@ func TestTransmitPrefersTheAnswerOverTheStopSignal(t *testing.T) {
 				return nil
 			}, nil)
 
-		b := peer.reserveBatchNow(1)
+		b := peer.reserveBatchNow(1, 1)
 		if b == nil {
 			t.Fatal("the peer refused a reservation while it was open")
 		}

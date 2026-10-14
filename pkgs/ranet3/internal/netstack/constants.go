@@ -56,13 +56,16 @@ const tunOffset = 16
 // the counter keeps the exact count, and the line only has to point at it
 const truncatedReadInterval = 30 * time.Second
 
-// peerDataBudget is the packets one peer may hold from their reservation until the transmit that carried them returns
-// 5.7 MB of 1400-byte packets, which last 4.7 milliseconds at 9.7 Gbit/s and 15 milliseconds at 3 Gbit/s
-// their sealed storage stays under twice that, about 12 MB, since a batch reuses only storage grown by at most twice its packets
-// below about 9.2 Gbit/s they last longer than codelTarget, so there the delay control rather than the budget bounds the queue
+// peerDataBudget is the bytes one peer may hold from their reservation until the transmit that carried them returns
+// a full budget drains in about codelTarget at 9.7 Gbit/s, the most one peer was measured to carry, so a peer that drains slower is bounded by the delay control and a faster one by the budget
 // both see only the delay after the tun read, and a backlog in the tun's own ring is out of their reach
 // one sender drains each peer, so the budget does not grow with the cores
-const peerDataBudget = 4096
+const peerDataBudget = 4096 * 1400
+
+// leastPacketBytes is the least a data packet holds of its peer's budget, however few bytes it carries
+// so the budget holds at most peerDataBudget / leastPacketBytes batches, which the sender's queue is sized for
+// and as many packets, but for one share charged the whole budget and admitted alone, whose fragments can number more
+const leastPacketBytes = 1400
 
 // codelTarget is the delay a peer's sender holds its queue to, and codelInterval how long the delay may stay above it before the sender starts dropping
 // both are the defaults RFC 8289 gives and the kernel's CoDel uses
@@ -77,17 +80,15 @@ const (
 const transmitBatchSize = 128
 
 // controlQueueSize is how many control packets one peer may have in flight.
-// It has to hold a whole periodic dump, which is one packet per forty plain
-// prefixes or thirty-four source-specific ones, or the dump is truncated and
-// the rest waits for the next interval. Two hundred and fifty-six covers about
-// ten thousand plain prefixes and costs under a megabyte per peer at the link
-// MTU, counting the packet and the sealer's copy of it.
+// It has to hold a whole periodic dump, which is one packet per thirty-eight
+// plain prefixes or thirty-one source-specific ones, or the dump is truncated
+// and the rest waits for the next interval.
 //
-// That is below maxRouteKeys, so a table at its own limit still truncates, and
-// because the dump walks maps each one carries a different subset: a prefix
-// missed four dumps running expires at the neighbor. A table that large needs
-// the dump to resume where the last one stopped rather than resample, which is
-// not what this does.
+// A full queue carries fewer prefixes than maxRouteKeys, so a table at its own
+// limit still truncates, and because the dump walks maps each one carries a
+// different subset: a prefix missed four dumps running expires at the
+// neighbor. A table that large needs a dump that resumes where the last one
+// stopped, and this one samples afresh each time.
 const controlQueueSize = 256
 
 // defaultCloseGrace bounds how long Close waits for the ordered sender.

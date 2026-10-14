@@ -16,11 +16,12 @@ import (
 // feeding every other peer. This is the unthrottled producer the ordering
 // tests and the benchmarks need, which is why it lives here rather than beside
 // them.
-func (p *Peer) reserveBatch(count int) *peerBatch {
+func (p *Peer) reserveBatch(count, bytes int) *peerBatch {
+	charge := dataCharge(count, bytes)
 	if p.completed == nil {
-		return p.reserveTicket(count, 0, false)
+		return p.reserveTicket(count, charge, 0, false)
 	}
-	for !p.dataBudget.take(count) {
+	for !p.dataBudget.take(charge) {
 		select {
 		case <-p.stop:
 			return &peerBatch{peer: p, reserved: true, err: fmt.Errorf("netstack: peer %s closed", p.ID)}
@@ -28,16 +29,22 @@ func (p *Peer) reserveBatch(count int) *peerBatch {
 			runtime.Gosched()
 		}
 	}
-	return p.reserveTicket(count, count, false)
+	return p.reserveTicket(count, charge, charge, false)
 }
 
-// filled reserves count packets of the data budget without waiting and appends that many
+// filled reserves count one-byte packets of the data budget without waiting and appends that many
 // nil when the budget has no room for them
 func filled(p *Peer, count int) *peerBatch {
-	b := p.reserveBatchNow(count)
+	return filledSized(p, count, 1)
+}
+
+// filledSized reserves count packets of size bytes each of the data budget without waiting and appends that many
+// nil when the budget has no room for them
+func filledSized(p *Peer, count, size int) *peerBatch {
+	b := p.reserveBatchNow(count, count*size)
 	if b != nil {
 		for range count {
-			b.append([]byte{1}, 0)
+			b.append(make([]byte, size), 0)
 		}
 	}
 	return b
