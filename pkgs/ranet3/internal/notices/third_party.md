@@ -449,7 +449,7 @@ limitations under the License.
 
 ## golang.org/x/crypto
 
-golang.org/x/crypto v0.57.0, from `LICENSE`.
+golang.org/x/crypto v0.58.0, from `LICENSE`.
 
 ```
 Copyright 2009 The Go Authors.
@@ -483,7 +483,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## golang.org/x/net
 
-golang.org/x/net v0.59.0, from `LICENSE`.
+golang.org/x/net v0.61.0, from `LICENSE`.
 
 ```
 Copyright 2009 The Go Authors.
@@ -517,7 +517,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## golang.org/x/sys
 
-golang.org/x/sys v0.48.0, from `LICENSE`.
+golang.org/x/sys v0.49.0, from `LICENSE`.
 
 ```
 Copyright 2009 The Go Authors.
