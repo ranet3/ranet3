@@ -7,7 +7,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ranet3</title>
     <meta name="description"
-      content="Mesh network with userspace IPsec, latency-aware Babel and segment routing">
+      content="High performance policy routed IPsec mesh SD-WAN with userspace ESP, IKEv2, an embedded Babel speaker and SRv6 steering.">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://ranet3.com/">
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -17,12 +17,12 @@
     <meta property="og:site_name" content="ranet3">
     <meta property="og:title" content="ranet3">
     <meta property="og:description"
-      content="Mesh network with userspace IPsec, latency-aware Babel and segment routing">
+      content="High performance policy routed IPsec mesh SD-WAN with userspace ESP, IKEv2, an embedded Babel speaker and SRv6 steering.">
     <meta property="og:url" content="https://ranet3.com/">
     <meta name="twitter:card" content="summary">
     <meta name="twitter:title" content="ranet3">
     <meta name="twitter:description"
-      content="Mesh network with userspace IPsec, latency-aware Babel and segment routing">
+      content="High performance policy routed IPsec mesh SD-WAN with userspace ESP, IKEv2, an embedded Babel speaker and SRv6 steering.">
     <meta name="go-import"
       content="ranet3.com git https://github.com/ranet3/ranet3">
     <meta name="go-source"
@@ -34,7 +34,7 @@
       "name": "ranet3",
       "url": "https://ranet3.com/",
       "codeRepository": "https://github.com/ranet3/ranet3",
-      "description": "Mesh network with userspace IPsec, latency-aware Babel and segment routing"
+      "description": "High performance policy routed IPsec mesh SD-WAN with userspace ESP, IKEv2, an embedded Babel speaker and SRv6 steering."
     }
     </script>
     <style>
@@ -44,9 +44,6 @@
       color-scheme: dark;
       -webkit-text-size-adjust: 100%;
       text-size-adjust: 100%;
-      -webkit-user-select: none;
-      user-select: none;
-      cursor: default;
     }
     body {
       margin: 0;
@@ -56,36 +53,131 @@
       place-items: center;
       padding: 16px;
       box-sizing: border-box;
-    }
-    h1 {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      margin: -1px;
-      padding: 0;
-      overflow: hidden;
-      clip-path: inset(50%);
-      white-space: nowrap;
-    }
-    pre {
-      margin: 0;
       font-family: ui-monospace,monospace;
-      font-size: min(16px,calc((100vw - 32px) / 27),calc((100vh - 32px) / 25));
-      font-size: min(16px,calc((100vw - 32px) / 27),calc((100svh - 32px) / 25));
-      line-height: 1;
     }
-    pre .d {
+    main {
+      --f: min(16px,calc((100vw - 64px) / 68),calc((100vh - 32px) / 33));
+      --f: min(16px,calc((100vw - 64px) / 68),calc((100svh - 32px) / 33));
+      font-size: var(--f);
+      line-height: 1.45;
+      display: grid;
+      grid-template-columns: auto minmax(0,52ch);
+      grid-template-areas: "logo head" "logo body";
+      grid-template-rows: auto auto;
+      align-content: center;
+      column-gap: 4em;
+    }
+    .logo {
+      grid-area: logo;
+      align-self: center;
+      margin: 0;
+      font: inherit;
+      font-size: 1.3em;
+      line-height: 1;
+      -webkit-user-select: none;
+      user-select: none;
+      cursor: default;
+    }
+    .logo .d {
       color: #8D929A;
     }
-    pre .a {
+    .logo .a {
       color: #88C0D0;
+    }
+    header {
+      grid-area: head;
+      align-self: end;
+    }
+    .copy {
+      grid-area: body;
+      align-self: start;
+    }
+    h1 {
+      margin: 0;
+      font-size: 2.4em;
+      line-height: 1.1;
+      font-weight: 700;
+    }
+    p,
+    dl {
+      margin: 0;
+    }
+    .lede {
+      margin-top: .4em;
+      font-size: 1.25em;
+      color: #88C0D0;
+      text-wrap: balance;
+    }
+    dl {
+      margin-top: 1.4em;
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      column-gap: 2ch;
+      row-gap: .55em;
+    }
+    dt {
+      color: #8D929A;
+    }
+    dd {
+      margin: 0;
+      text-wrap: pretty;
+    }
+    .nw {
+      white-space: nowrap;
+    }
+    a {
+      color: #88C0D0;
+      text-decoration: underline;
+      text-decoration-color: #88C0D066;
+      text-underline-offset: .2em;
+    }
+    a:hover,
+    a:focus-visible {
+      text-decoration-color: currentColor;
+    }
+    .ref,
+    .ref a {
+      color: #8D929A;
+      text-decoration-color: #8D929A66;
+    }
+    @media (max-aspect-ratio: 1/1) {
+      main {
+        --f: min(16px,calc((100vw - 32px) / 25),calc((100vh - 32px) / 40));
+        --f: min(16px,calc((100vw - 32px) / 25),calc((100svh - 32px) / 40));
+        grid-template-columns: auto minmax(0,1fr);
+        grid-template-areas: "logo head" "body body";
+        column-gap: 1.2em;
+        max-width: 52ch;
+      }
+      .logo {
+        font-size: .19em;
+      }
+      header {
+        align-self: center;
+      }
+      .copy {
+        margin-top: 1.2em;
+      }
+      .lede {
+        font-size: 1.1em;
+      }
+    }
+    @media (min-aspect-ratio: 1/1) and (max-height: 540px) {
+      main {
+        --f: min(15px,calc((100vw - 48px) / 64),calc((100vh - 32px) / 28));
+        --f: min(15px,calc((100vw - 48px) / 64),calc((100svh - 32px) / 28));
+        grid-template-columns: auto minmax(0,64ch);
+        column-gap: 3em;
+      }
+      .logo {
+        font-size: .8em;
+      }
     }
     </style>
   </head>
   <body>
     <main>
-      <h1>ranet3</h1>
-      <pre role="img"
+      <pre class="logo" role="img"
         aria-label="The ranet3 logo, a core node inside two broken orbits, each carrying a peer">
               <span class="d">..::----::..</span>
           <span class="d">.:-++++++++++++++-:.</span>
@@ -112,6 +204,31 @@
           <span class="d">.:-++++++++++++++-:.</span>
               <span class="d">..::----::..</span>
 </pre>
+      <header>
+        <h1>ranet3</h1>
+        <p
+          class="lede">High performance <span class="nw">policy routed</span> IPsec mesh <span class="nw">SD-WAN</span></p>
+      </header>
+      <div class="copy">
+        <dl>
+          <dt>Transport</dt>
+          <dd>Userspace ESP <span class="ref">(<a href="https://www.rfc-editor.org/info/rfc4303/">RFC&nbsp;4303</a>)</span> in tunnel mode over UDP <span class="ref">(<a href="https://www.rfc-editor.org/info/rfc3948/">RFC&nbsp;3948</a>)</span></dd>
+          <dt>Handshake</dt>
+          <dd>IKEv2 <span class="ref">(<a href="https://www.rfc-editor.org/info/rfc7296/">RFC&nbsp;7296</a>)</span> with hybrid ML-KEM <span class="ref">(<a href="https://csrc.nist.gov/pubs/fips/203/final">FIPS&nbsp;203</a>)</span> key exchange <span class="ref">(<a href="https://www.rfc-editor.org/info/rfc9370/">RFC&nbsp;9370</a>)</span></dd>
+          <dt>Routing</dt>
+          <dd>Embedded Babel speaker <span class="ref">(<a href="https://www.rfc-editor.org/info/rfc8966/">RFC&nbsp;8966</a>)</span> with RTT metrics <span class="ref">(<a href="https://www.rfc-editor.org/info/rfc9616/">RFC&nbsp;9616</a>)</span> and source specific routes <span class="ref">(<a href="https://www.rfc-editor.org/info/rfc9079/">RFC&nbsp;9079</a>)</span></dd>
+          <dt>Steering</dt>
+          <dd>SRv6 <span class="ref">(<a href="https://www.rfc-editor.org/info/rfc8986/">RFC&nbsp;8986</a>)</span> by source/destination prefix</dd>
+          <dt>Source</dt>
+          <dd><a href="https://github.com/ranet3/ranet3">github:ranet3/ranet3</a></dd>
+          <dt>License</dt>
+          <dd><a href="https://github.com/ranet3/ranet3/blob/master/licenses/FSL-1.1-ALv2.txt">FSL-1.1-ALv2</a> / <a href="https://www.apache.org/licenses/LICENSE-2.0">Apache-2.0</a></dd>
+          <dt>Email</dt>
+          <dd><a href="mailto:mesh@ranet3.com">mesh@ranet3.com</a></dd>
+          <dt>Powering</dt>
+          <dd><a href="https://bgp.tools/as/10779">AS10779</a> / <a href="https://bgp.tools/as/18932">AS18932</a></dd>
+        </dl>
+      </div>
     </main>
   </body>
 </html>
