@@ -34,6 +34,7 @@ buildGoApplication (
           ./cmd
           ./control
           ./esp
+          ./identity
           ./ike
           ./internal
           ./sadr
