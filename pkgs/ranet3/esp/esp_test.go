@@ -597,7 +597,7 @@ func TestSealConcurrentUniqueSeq(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range n {
 		wg.Go(func() {
-			pkt, err := out.Seal([]byte(fmt.Sprintf("packet-%d", i)), NextHeaderIPv4)
+			pkt, err := out.Seal(fmt.Appendf(nil, "packet-%d", i), NextHeaderIPv4)
 			if err != nil {
 				t.Errorf("Seal: %v", err)
 				return
@@ -648,7 +648,7 @@ func TestOpenConcurrent(t *testing.T) {
 	const n = 200
 	pkts := make([][]byte, n)
 	for i := range pkts {
-		pkt, err := out.Seal([]byte(fmt.Sprintf("packet-%d", i)), NextHeaderIPv4)
+		pkt, err := out.Seal(fmt.Appendf(nil, "packet-%d", i), NextHeaderIPv4)
 		if err != nil {
 			t.Fatal(err)
 		}

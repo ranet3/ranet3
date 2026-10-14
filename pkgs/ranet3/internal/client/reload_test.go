@@ -650,17 +650,18 @@ type listenNode struct {
 // writeListenConfig writes node's config file with link.listen at listen and loads it back
 func writeListenConfig(t *testing.T, node *listenNode, listen bool) *config.Config {
 	t.Helper()
-	body := fmt.Sprintf("node:\n  org: example\n  name: %s\nauth:\n  key: %s\n  trust: %s\n"+
+	var body strings.Builder
+	fmt.Fprintf(&body, "node:\n  org: example\n  name: %s\nauth:\n  key: %s\n  trust: %s\n"+
 		"link:\n  port: %d\n  endpoints:\n    - serial: \"0\"\n      family: ip4\n  listen: %t\n"+
 		"cap:\n  babel:\n    hello: 200ms\n    update: 400ms\n",
 		node.name, node.keyPath, node.trustPath, node.port, listen)
 	if len(node.dials) > 0 {
-		body += "dial:\n  to:\n"
+		body.WriteString("dial:\n  to:\n")
 		for _, peer := range node.dials {
-			body += fmt.Sprintf("    - name: %s\n      serial: \"0\"\n", peer.name)
+			fmt.Fprintf(&body, "    - name: %s\n      serial: \"0\"\n", peer.name)
 		}
 	}
-	if err := os.WriteFile(node.configPath, []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(node.configPath, []byte(body.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load(node.configPath)

@@ -378,8 +378,7 @@ func TestDrainNotesAnOpenRunAtAFullBatch(t *testing.T) {
 func TestFifthStreamIsRefusedAndReadsStillAnswer(t *testing.T) {
 	src := newStreamSource(16)
 	client := serveStream(t, src, func(*http.Server) {})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	for range maxStreams {
 		response, err := client.Raw(ctx, http.MethodGet, pathProbeStream, nil)
 		if err != nil {

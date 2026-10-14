@@ -5,6 +5,7 @@ package client
 
 import (
 	"log/slog"
+	"slices"
 	"strconv"
 	"time"
 
@@ -71,12 +72,7 @@ func (a attribute) heldBy(attrs []slog.Attr) bool {
 		if attrs[i].Key != a.key {
 			continue
 		}
-		for _, spelled := range a.values {
-			if attrs[i].Value.Equal(spelled) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(a.values, attrs[i].Value.Equal)
 	}
 	return false
 }

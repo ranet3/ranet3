@@ -253,8 +253,7 @@ func keyMaterialRoom(typ reflect.Type, seen map[reflect.Type]bool) string {
 		}
 		return keyMaterialRoom(typ.Elem(), seen)
 	case reflect.Struct:
-		for i := range typ.NumField() {
-			field := typ.Field(i)
+		for field := range typ.Fields() {
 			if !field.IsExported() {
 				continue
 			}
