@@ -566,11 +566,8 @@ func (m *routeMonitor) run() {
 			m.wake() // a notification we could not parse still means something changed
 			continue
 		}
-		for _, message := range messages {
-			if m.wakesOn(message) {
-				m.wake()
-				break
-			}
+		if slices.ContainsFunc(messages, m.wakesOn) {
+			m.wake()
 		}
 	}
 }

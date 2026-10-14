@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -536,15 +537,16 @@ func TestStateRefusesMoreRecordsThanItWrites(t *testing.T) {
 		t.Error("the save wrote more records than it bounds")
 	}
 	// Written by something else, so the load has to refuse it too.
-	raw := "["
+	var raw strings.Builder
+	raw.WriteString("[")
 	for i := range maxStateRecords + 1 {
 		if i > 0 {
-			raw += ","
+			raw.WriteString(",")
 		}
-		raw += `{"destination":"0.0.0.0/0","index":16,"interface":"en0","gateway":"192.168.0.1"}`
+		raw.WriteString(`{"destination":"0.0.0.0/0","index":16,"interface":"en0","gateway":"192.168.0.1"}`)
 	}
-	raw += "]"
-	if err := os.WriteFile(state, []byte(raw), 0o600); err != nil {
+	raw.WriteString("]")
+	if err := os.WriteFile(state, []byte(raw.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	records, err := loadUnderlayState(state)

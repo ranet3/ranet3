@@ -215,7 +215,8 @@ func writeMesh(t *testing.T, ports [2]uint16, addresses [2]string) ([]*loopbackN
 // running client and the file a reload reads can never drift apart.
 func writeLoopbackConfig(t *testing.T, node, peer *loopbackNode, keyPath, registryPath string, originate []string) *config.Config {
 	t.Helper()
-	body := fmt.Sprintf(`node:
+	var body strings.Builder
+	fmt.Fprintf(&body, `node:
   org: example
   name: %s
 auth:
@@ -241,9 +242,9 @@ cap:
     announce:
 `, node.name, keyPath, registryPath, node.port, peer.name)
 	for _, prefix := range originate {
-		body += fmt.Sprintf("      - %q\n", prefix)
+		fmt.Fprintf(&body, "      - %q\n", prefix)
 	}
-	if err := os.WriteFile(node.configPath, []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(node.configPath, []byte(body.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load(node.configPath)

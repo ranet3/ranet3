@@ -1067,11 +1067,12 @@ func TestZeroRekeyIntervalDisablesIt(t *testing.T) {
 func TestBareScalarKeyIsNotAWrittenZero(t *testing.T) {
 	for _, path := range pointerScalars(reflect.TypeFor[Config](), "") {
 		t.Run(path, func(t *testing.T) {
-			body := nodeYAML
+			var body strings.Builder
+			body.WriteString(nodeYAML)
 			for depth, key := range strings.Split(path, ".") {
-				body += strings.Repeat("  ", depth) + key + ":\n"
+				body.WriteString(strings.Repeat("  ", depth) + key + ":\n")
 			}
-			cfg, err := loadYAML(t, body)
+			cfg, err := loadYAML(t, body.String())
 			if err != nil {
 				// Refused is an answer an operator can see. Silently taking
 				// the zero is the one that is not.

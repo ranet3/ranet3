@@ -253,7 +253,7 @@ func decodeTOML(body []byte, c *Config) error {
 	if _, err := toml.Decode(string(body), &written); err != nil {
 		return err
 	}
-	return exactKeys(written, reflect.TypeOf(*c), "")
+	return exactKeys(written, reflect.TypeFor[Config](), "")
 }
 
 // exactKeys refuses a key whose spelling differs from the field's tag in case
