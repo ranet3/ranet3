@@ -620,12 +620,13 @@ func TestSessionAdoptedDuringAReloadTakesTheStoredLinkMTU(t *testing.T) {
 // stackDumpSize is the bytes waitingInAdopt reads every goroutine's stack into, room for two running nodes many times over
 const stackDumpSize = 4 << 20
 
-// waitingInAdopt reports whether a goroutine waits for a session set's lock inside adoptFor
+// waitingInAdopt reports whether a session a node answered waits for its session set's lock inside adoptFor
+// a dialed session of the other node passes through adoptFor too, and it holds no lock a test holds
 func waitingInAdopt() bool {
 	stacks := make([]byte, stackDumpSize)
 	n := runtime.Stack(stacks, true)
 	for goroutine := range strings.SplitSeq(string(stacks[:n]), "\n\n") {
-		if strings.Contains(goroutine, "sync.(*Mutex).Lock") && strings.Contains(goroutine, "(*sessionSet).adoptFor") {
+		if strings.Contains(goroutine, "sync.(*Mutex).Lock") && strings.Contains(goroutine, "(*sessionSet).adoptFor") && strings.Contains(goroutine, "(*Client).acceptPeers") {
 			return true
 		}
 	}

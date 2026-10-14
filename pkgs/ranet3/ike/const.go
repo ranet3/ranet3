@@ -28,9 +28,9 @@
 //     expires. [Session.SetChildHandler] and [Session.SetChildRetireHandler]
 //     are where a rekey hands the caller the replacement keys and takes the
 //     old SPI back, so the caller's dataplane swaps without dropping a packet.
-//   - Answering. [NewResponder] takes a [ResponderConfig] whose Lookup
-//     resolves an initiator's asserted identity to the key that has to verify
-//     it, and [Responder.Serve] calls back with a [Session] and an [Accepted]
+//   - Answering. [NewResponder] takes a [ResponderConfig] whose [Trust]
+//     gives the key that has to verify an initiator's asserted identity,
+//     and [Responder.Serve] calls back with a [Session] and an [Accepted]
 //     for each peer that authenticates. One responder serves every peer. Each
 //     IKE_SA_INIT it accepts holds a half-open slot, a mux and the keys it
 //     derived until IKE_AUTH completes or the handshake timeout passes. The

@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,15 +50,25 @@ const answerBudget = 30 * time.Second
 // and a machine too slow to show it in time lets the test pass rather than fail
 const quietPeriod = 300 * time.Millisecond
 
+type trustFunc func(identity.Identity) (ed25519.PublicKey, error)
+
+func (f trustFunc) Key(id identity.Identity) (ed25519.PublicKey, error) { return f(id) }
+
+// errUntrusted is the refusal of a trust that admits nobody a test asks about
+var errUntrusted = errors.New("not in the trust")
+
+var trustsNobody = trustFunc(func(identity.Identity) (ed25519.PublicKey, error) { return nil, errUntrusted })
+
 // newResponderHarness answers as testorg/server:1
-func newResponderHarness(t *testing.T, lookup func(identity.Identity) (ed25519.PublicKey, bool), events ...Recorder) *responderHarness {
+func newResponderHarness(t *testing.T, trust Trust, events ...Recorder) *responderHarness {
 	t.Helper()
-	return newResponderHarnessAs(t, []identity.Identity{identity.MustParse("testorg/server:1")}, lookup, events...)
+	return newResponderHarnessAs(t, []identity.Identity{identity.MustParse("testorg/server:1")}, trust, events...)
 }
 
 // newResponderHarnessAs answers as each endpoint in local
 // events, where a test passes one, is the responder's Recorder
-func newResponderHarnessAs(t *testing.T, local []identity.Identity, lookup func(identity.Identity) (ed25519.PublicKey, bool), events ...Recorder) *responderHarness {
+// a nil trust admits testorg/client:2 alone, under the harness's key
+func newResponderHarnessAs(t *testing.T, local []identity.Identity, trust Trust, events ...Recorder) *responderHarness {
 	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -74,16 +85,19 @@ func newResponderHarnessAs(t *testing.T, local []identity.Identity, lookup func(
 	}
 	t.Cleanup(func() { initiatorHub.Close() })
 
-	if lookup == nil {
-		lookup = func(id identity.Identity) (ed25519.PublicKey, bool) {
-			return public, id == identity.MustParse("testorg/client:2")
-		}
+	if trust == nil {
+		trust = trustFunc(func(id identity.Identity) (ed25519.PublicKey, error) {
+			if id != identity.MustParse("testorg/client:2") {
+				return nil, errUntrusted
+			}
+			return public, nil
+		})
 	}
 	cfg := ResponderConfig{
 		Hub:              responderHub,
 		Local:            local,
 		LocalPrivateKey:  private,
-		Lookup:           lookup,
+		Trust:            trust,
 		HandshakeTimeout: 10 * time.Second,
 	}
 	if len(events) == 1 {
@@ -235,7 +249,7 @@ func TestResponderAnswersAsTheEndpointDialed(t *testing.T) {
 }
 
 func TestResponderRejectsUnknownIdentity(t *testing.T) {
-	h := newResponderHarness(t, func(identity.Identity) (ed25519.PublicKey, bool) { return nil, false })
+	h := newResponderHarness(t, trustsNobody)
 	session, err := h.dial(t)
 	if err == nil {
 		session.Mux().Close()
@@ -253,11 +267,36 @@ func TestResponderRejectsWrongKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newResponderHarness(t, func(identity.Identity) (ed25519.PublicKey, bool) { return other, true })
+	h := newResponderHarness(t, trustFunc(func(identity.Identity) (ed25519.PublicKey, error) { return other, nil }))
 	session, err := h.dial(t)
 	if err == nil {
 		session.Mux().Close()
 		t.Fatal("handshake succeeded with an AUTH the responder could not verify")
+	}
+}
+
+// an IDi naming the responder's own node at another serial is refused with AUTHENTICATION_FAILED before the trust is asked
+// the trust here admits anyone under the key both ends hold, as an organization's shared key does for each of its nodes
+func TestResponderRefusesItsOwnNode(t *testing.T) {
+	var key atomic.Pointer[ed25519.PublicKey]
+	h := newResponderHarness(t, trustFunc(func(identity.Identity) (ed25519.PublicKey, error) { return *key.Load(), nil }))
+	key.Store(&h.public)
+	cfg := h.peerConfig()
+	cfg.Local = identity.MustParse("testorg/server:2")
+	ctx, cancel := context.WithTimeout(context.Background(), answerBudget)
+	defer cancel()
+	session, err := InitiateContext(ctx, cfg)
+	if err == nil {
+		session.Mux().Close()
+		t.Fatal("the responder admitted a peer claiming its own node")
+	}
+	if want := fmt.Sprintf("notify type %d", N_AUTHENTICATION_FAILED); !strings.Contains(err.Error(), want) {
+		t.Fatalf("the initiator was refused with %q, want %q", err, want)
+	}
+	select {
+	case <-h.sessions:
+		t.Fatal("the responder produced a session for a peer claiming its own node")
+	case <-time.After(quietPeriod):
 	}
 }
 
@@ -1617,8 +1656,7 @@ func TestHandshakeFailureRecordIsBounded(t *testing.T) {
 func TestFirstHandshakeFailureOfANodesLifeIsSaid(t *testing.T) {
 	responder, err := NewResponder(ResponderConfig{
 		Hub: listenHub(t), LocalPrivateKey: make(ed25519.PrivateKey, ed25519.PrivateKeySize),
-		Local:  []identity.Identity{identity.MustParse("example/node:0")},
-		Lookup: func(identity.Identity) (ed25519.PublicKey, bool) { return nil, false },
+		Local: []identity.Identity{identity.MustParse("example/node:0")}, Trust: trustsNobody,
 	})
 	if err != nil {
 		t.Fatal(err)

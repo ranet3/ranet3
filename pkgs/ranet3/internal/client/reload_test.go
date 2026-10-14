@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/netip"
 	"os"
@@ -826,6 +827,75 @@ func writeListenPath(t *testing.T, node *listenNode, listen bool) string {
 	t.Helper()
 	writeListenConfig(t, node, listen)
 	return node.configPath
+}
+
+// droppedFrom indexes the trust document node read with peer's node taken out, as a reload that dropped peer stores it
+func droppedFrom(t *testing.T, node, peer *listenNode) *registry.Index {
+	t.Helper()
+	document := readRegistry(t, node.trustPath)
+	for i := range document {
+		document[i].Nodes = slices.DeleteFunc(document[i].Nodes, func(listed registry.Node) bool { return listed.CommonName == peer.name })
+	}
+	return trust(t, document)
+}
+
+// a responder asks the trust document in force on each handshake, so one a reload stored refuses the next handshake of a node it dropped
+func TestResponderAnswersEachHandshakeUnderTheStoredDocument(t *testing.T) {
+	a, h := &listenNode{name: "a"}, &listenNode{name: "h", listen: true}
+	a.dials = []*listenNode{h}
+	listenMesh(t, a, h)
+	runListen(t, a, h)
+	// a redial before a adopts its session finds none to close, and the wake waits until that session ends
+	waitFor(t, convergeBudget, "a's first session with h held at both ends", func() bool { return held(h, a) != nil && held(a, h) != nil })
+	h.client.storeIndex(droppedFrom(t, h, a))
+	if _, err := a.client.Redial(t.Context(), h.name, false); err != nil {
+		t.Fatal(err)
+	}
+	refusal := fmt.Sprintf("notify type %d", ike.N_AUTHENTICATION_FAILED)
+	refused := func() bool {
+		return slices.ContainsFunc(sessionEvents(a, h, "dial.failed"), func(failed control.Event) bool { return strings.Contains(failed.Attrs["err"], refusal) })
+	}
+	waitFor(t, convergeBudget, "a's next handshake with h to be answered", func() bool {
+		return refused() || len(sessionEvents(a, h, "ike.session.established")) > 1
+	})
+	if !refused() {
+		t.Error("h admitted a handshake from a node the document it stored had dropped")
+	}
+}
+
+// a handshake that asked the trust before a reload and is adopted after that reload's sweep answers to the document the reload stored
+func TestSessionAdoptedAfterAReloadsSweepAnswersToTheStoredDocument(t *testing.T) {
+	a, h := &listenNode{name: "a"}, &listenNode{name: "h", listen: true}
+	a.dials = []*listenNode{h}
+	listenMesh(t, a, h)
+	a.client.dialRetry = longDialRetry
+	set := h.client.sessions
+	set.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			set.mu.Unlock()
+		}
+	}()
+	runListen(t, a, h)
+	waitFor(t, convergeBudget, "h's first answered session waiting for its session set in adopt", waitingInAdopt)
+	if len(set.live) != 0 {
+		t.Fatalf("h holds %d sessions while its first waits in adopt, want none for a sweep to reach", len(set.live))
+	}
+	h.client.storeIndex(droppedFrom(t, h, a))
+	set.mu.Unlock()
+	locked = false
+	waitFor(t, convergeBudget, "h to adopt or refuse the session", func() bool {
+		return len(sessionEvents(h, a, "ike.session.established")) > 0 || len(sessionEvents(a, h, "ike.session.ended")) > 0
+	})
+	if held(h, a) != nil {
+		t.Error("h holds a session from a node the document it stored had dropped")
+	}
+	want := map[string]string{"reason": "handshake", "peer": "example/" + a.name + ":0",
+		"endpoint": netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), a.port).String(), "err": "registry: example/" + a.name + " is not in the trust document"}
+	if got := sessionEvents(h, a, "ike.session.revoked"); len(got) != 1 || !maps.Equal(got[0].Attrs, want) {
+		t.Errorf("h recorded %v, want one revocation with %v", got, want)
+	}
 }
 
 // reloads turning the responder off and on while the node shuts down start nothing behind the wait in Run
