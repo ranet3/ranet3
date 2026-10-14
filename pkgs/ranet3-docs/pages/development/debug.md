@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-13
+updated: 2026-10-14
 order: 30
 ---
 
@@ -70,10 +70,27 @@ the caller already reads as uid 0.
   unicast addresses of the interfaces that are up, the mesh's own device left
   out, then the last change the watch acted on and what moved in it. A platform
   without a watch says so.
+- `debug pmtu [peer]` is the path MTU of every session, or of one peer's: first
+  `link.mtu`, the steering header and the tun's MTU, with the answers sent to
+  packets past a session's budget and the SYNs whose MSS was clamped, both for
+  the node as a whole. Then for each session its endpoint and whether its
+  datagrams leave with DF, the state of its search, which is `confirming`,
+  `searching up`, `searching down`, `confirmed`, `under the floor`, or
+  `not searched` where datagrams leave without DF, its budget and the MSS it
+  clamps to, the route's MTU when last read and the target it sets, the probe
+  out and how the last one ended, its probes sent, acked and lost, the sends the
+  host refused as too large for the path, and the budget's last change with its
+  reason. A probe whose target the search moves while it is out counts as sent
+  and as neither acked nor lost, here and in `ranet3_pmtu_probes_total`, whether
+  a refusal, the route read lower after a network change or `debug probe`, a
+  change of `link.mtu` or a move to another endpoint moves it, and one answered
+  after its wait ran out counts as both, so the three need not add up. The peer
+  completes from the sessions the daemon names.
 - `debug probe <peer>` and `debug probe --all` ask the sessions of one peer, or
-  every session, to send a liveness check now, as each does after a network
-  change, and name the sessions asked. It is an action, so it takes the root
-  class, and it is recorded as a `control.verb` like the other verbs.
+  every session, to send a liveness check now and to probe their path MTU
+  budget, as each does after a network change, and name the sessions asked. It
+  is an action, so it takes the root class, and it is recorded as a
+  `control.verb` like the other verbs.
 - `debug updown` is whether the node is on the mesh and since when, the flag
   that keeps it off through a restart and whether the flag is there, and the
   last move between up and down with its cause, a request or the flag at start.
@@ -159,7 +176,10 @@ its connections to the reads.
 | `network.changed`                    | the host's default or addresses moved, so every session was probed          |
 | `transport.underlay.bound`           | the underlay socket moved onto another interface                            |
 | `transport.endpoint.unpinned`        | sends to a peer left the address its datagram arrived on, which was gone    |
-| `transport.endpoint.unsegmented`     | sends to a peer stopped segmenting, since its path refused a segment        |
+| `transport.endpoint.unsegmented`     | sends to a peer stopped segmenting, since its route refused a segment       |
+| `pmtu.changed`                       | a session's path MTU budget moved, with the size before and the reason      |
+| `pmtu.floor`                         | a session's path went under 1280 bytes in one datagram, or came back        |
+| `pmtu.steering`                      | a session fell under what a steered 1280-byte packet needs, or rose back    |
 | `netstack.codel.dropping`            | a peer's sender began dropping for a queue delay above its target           |
 | `netstack.codel.drained`             | that peer's queue emptied, or its delay fell back below the target          |
 
@@ -197,6 +217,19 @@ carries in `size` that packet's length once whole, its IPv6 header included.
 `ranet3_babel_reassembly_dropped_total` the datagrams dropped and why, as
 [the metrics](../metrics.md) describe.
 
+A `pmtu.changed` carries the session's `endpoint`, its `budget` and the
+`budget_was` before it, and in `reason` what moved it: `probe` for an answered
+or lost probe, `route` for the route read again, `refusal` for a send the host
+refused as too large, `endpoint change` for a session that moved, `floor` for a
+path under 1280 bytes and `link.mtu` for a reload. The first budget a session
+starts at records none. A `pmtu.floor` carries the `endpoint` and `under`, true
+when the session's datagrams began to leave in fragments and false when they
+stopped. `debug pmtu` shows the last change of the session running now, and none
+of a session it replaced on the same path. A `pmtu.steering` carries the
+session's `budget`, in `need` what a 1280-byte packet behind the longest segment
+list takes, and `under`, true when the budget fell under that and false when it
+rose back, as [segment routing](../segment-routing.md) describes.
+
 A `babel.seqno.requested` names the neighbor that sent the request as its peer
 and carries the `route` asked about, the seqno it `asked` for, the node's own
 `seqno` when it arrived and whether it `raised` that seqno. A request raises it
@@ -216,10 +249,12 @@ starts under a new router id from seqno 1.
 A `transport.endpoint` event carries the peer's `endpoint` and the `errno` the
 kernel refused the send with. An `unpinned` one is recorded once for an
 endpoint, and an `unsegmented` one each time segmentation stops, which for a
-path that stays narrow is at most once every 10 minutes. An `ike.send.failed`
-carries the error of the first send that failed, and its `ike.send.recovered`
-how many failed before one went out. A reply to a retransmitted request counts
-toward neither, since a replay can come from any address.
+route that keeps refusing segments is at most once every 10 minutes. A send
+refused only for its size records none, since it lowers that session's budget
+instead. An `ike.send.failed` carries the error of the first send that failed,
+and its `ike.send.recovered` how many failed before one went out. A reply to a
+retransmitted request counts toward neither, since a replay can come from any
+address.
 
 A `netstack.codel` event carries the `sojourn` of the batch that changed the
 state, how long that batch had waited since it was reserved, and the `target`. A

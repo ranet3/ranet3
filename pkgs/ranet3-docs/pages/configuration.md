@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-10-13
+updated: 2026-10-14
 order: 30
 ---
 
@@ -112,6 +112,34 @@ link, or one past 65470, the most one ESP-in-UDP datagram carries over IPv4, is
 refused when the file loads. The buffers the tun is read into are sized at
 startup for `link.mtu`, and at least 2048 bytes, which bounds how far a reload
 can raise it, as [reloading](reloading.md) describes.
+
+On linux and darwin `link.mtu` is the most a session carries, and each session
+searches the path to its peer's endpoint for its budget, the largest packet it
+carries, as the datagram path MTU discovery of
+[RFC 8899](https://www.rfc-editor.org/rfc/rfc8899.html) does. Every datagram
+leaves with DF set, so a hop too narrow for one drops it rather than cutting it,
+and [the platforms](platforms.md) say how each sets it and what a platform that
+cannot does instead. The target is the lesser of `link.mtu` and what the host's
+route to the endpoint carries. A session starts at the lesser of its target and
+1400 and probes that size with a Babel Ack Request padded with PadN to it, which
+the peer's speaker answers with an Ack. Each answered probe moves the budget up
+to its size, and the search probes halfway between the largest size the path
+carried and the least it lost until the two meet. A size is lost once 3 probes
+of it in a row went unanswered for 6 seconds each, which is under the 15 seconds
+RFC 8899 recommends, since a search through a dozen sizes would wait minutes on
+that, and past the 4.8 seconds FRR took to answer an Ack Request where it was
+measured. A settled session probes its budget again every 30 seconds while it
+carries data, and when a confirmation is lost it drops to 1280 at once and
+searches the sizes under the one it lost. Every 10 minutes it reads the route
+again and searches up, which finds a path that widened. A send the host refuses
+as larger than the path carries reports the route's MTU, which lowers the budget
+at once and never raises it. A session that moves to another endpoint searches
+the new path from the start, and a network change or `ranet3 debug probe` has
+every session probe its budget at once. The budget stays between 1280 and
+`link.mtu`, and [`ranet3 debug pmtu`](development/debug.md) shows each session's
+search. A path too narrow to carry 1280 bytes in one datagram puts its session
+under the floor, where the host fragments the session's datagrams, with the
+limits [the design's limits](design/limits.md) give.
 
 A packet larger than its session carries is not sent as it is. One read off the
 tun is answered with Packet Too Big when it is IPv6 and with fragmentation

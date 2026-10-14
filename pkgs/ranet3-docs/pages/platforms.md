@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What the route reconciler can do on Linux and on macOS, and how sessions follow a host that moves."
 created: 2026-09-21
-updated: 2026-10-13
+updated: 2026-10-14
 order: 100
 ---
 
@@ -111,12 +111,28 @@ session healthy stands down as it does after any wake. A change the host shows
 nowhere, such as a captive portal that lets nothing through, needs
 `ranet3 redial --all` instead.
 
-On linux a batch of ESP for one peer goes out as segmented messages where it
-can. A path too narrow for the segments refuses such a message, and its
-datagrams go again one to a message. That peer is then sent single datagrams for
-10 minutes, the time linux keeps a path MTU it learned, and every other peer
-keeps segmenting. Only a refusal that segments can cause, and that single
-datagrams then pass, stops segmentation.
+Every session searches its path for the largest packet it carries, as
+[the configuration](configuration.md) describes, and the platforms differ in
+what the host tells it. On linux every datagram leaves with `IP_PMTUDISC_DO` or
+`IPV6_PMTUDISC_DO`, and the host refuses one past the path MTU its route holds,
+a smaller one learned from an ICMP answer included. The session then reads that
+MTU and lowers its budget to it, and the datagrams within it still go. A batch
+of ESP for one peer goes out as segmented messages where it can. A segmented
+message refused for a reason single datagrams avoid, a route through an IPsec
+policy, a kernel before 6.14 refusing segments past the path MTU or a socket
+fragmenting for a session under the floor, has its datagrams go again one to a
+message. That peer is then sent single datagrams for 10 minutes, the time linux
+keeps a path MTU it learned, and every other peer keeps segmenting.
+
+On darwin every datagram leaves with `IP_DONTFRAG` or `IPV6_DONTFRAG`, and the
+host refuses one past the MTU of the interface its route leaves by rather than
+past a path MTU it learned, so the route a session's search starts from is the
+interface's MTU and a narrower hop beyond it is found by the probes alone. A
+session on a path under the floor fragments on either platform as
+[the design's limits](design/limits.md) describe. On any other platform
+datagrams leave without DF, nothing is searched and every session carries
+`link.mtu`, which leaves a narrower path to the host's and the routers'
+fragmenting.
 
 The control surface is platform-neutral by construction. `control` holds the
 types and the handler and speaks no transport of its own, so the unix socket is

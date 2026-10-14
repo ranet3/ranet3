@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-13
+updated: 2026-10-14
 order: 70
 ---
 
@@ -84,10 +84,13 @@ A changed `link.mtu` moves the tun the same way. The buffers the tun is read
 into are sized once, at startup, for the larger of the `link.mtu` the node
 started with and 2048 bytes. A reload to a `link.mtu` they cannot hold is
 refused, naming both sizes, and a restart applies it, even where a longer steer
-list in the same file leaves the tun where it was. A session already running
-takes the new `link.mtu` at once, as every session made after the reload does.
-On a platform other than linux and darwin the tun takes its MTU only when it is
-opened, and a reload that changes `link.mtu` or moves the tun is refused there.
+list in the same file leaves the tun where it was. A running session whose
+budget is past a lower `link.mtu` drops to it at once, and one whose search has
+settled searches up toward a higher one, probing each size before its budget
+moves there. A session made after the reload searches within the new `link.mtu`
+from its start, and one under the floor stays there. On a platform other than
+linux and darwin the tun takes its MTU only when it is opened, and a reload that
+changes `link.mtu` or moves the tun is refused there.
 
 Turning `link.listen` on starts the responder. Turning it off stops it
 answering, closes every session this node answered with a Delete, as a shutdown

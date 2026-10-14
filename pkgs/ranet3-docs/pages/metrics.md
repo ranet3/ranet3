@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-10-13
+updated: 2026-10-14
 order: 90
 ---
 
@@ -29,19 +29,20 @@ series rather than zeroes that read as a subsystem installing nothing.
 
 `ranet3_tun_reads_truncated_total` counts reads off the TUN device that lost the
 tail of a GSO frame, because the frame split into more packets than one read
-holds. ranet3 sets the device's `gso_max_segs` to that read batch, 128 packets,
-whenever it creates the device or attaches to one, which has the kernel split a
-larger frame before it reaches the TUN and keeps the counter at zero. A kernel
-that refuses the setting leaves a warning in the log at startup, and a sender
-with a small MSS then cuts reads short. Each such read loses the rest of its
-frame, which TCP sends again, and the reader goes on. A warning carries their
-count since the previous warning, at most once every 30 seconds.
+holds. Only linux hands the TUN GSO frames, so the counter stays at zero
+elsewhere. There ranet3 sets the device's `gso_max_segs` to that read batch, 128
+packets, whenever it creates the device or attaches to one, which has the kernel
+split a larger frame before it reaches the TUN and keeps the counter at zero. A
+kernel that refuses the setting leaves a warning in the log at startup, and a
+sender with a small MSS then cuts reads short. Each such read loses the rest of
+its frame, which TCP sends again, and the reader goes on. A warning carries
+their count since the previous warning, at most once every 30 seconds.
 
 `ranet3_peer_send_dropped_total` counts, per peer, every packet this node chose
-not to send. A peer holds at most 4096 packets from the read that brought them
-to the transmit that carries them, which lasts about 5 milliseconds at 10 Gbit/s
-and 15 milliseconds at 3 Gbit/s of 1400-byte packets. A read that does not fit
-is dropped whole rather than waited for, so a peer whose transport falls behind
+not to send. A peer holds packets from the read that brought them to the
+transmit that carries them within a budget of its own, which
+[the design's limits](design/limits.md) give. A read that does not fit is
+dropped whole rather than waited for, so a peer whose transport falls behind
 never holds up another. The counter also takes the packets of a peer that was
 closing, of reservations its outbound SA refused and of batches that failed to
 seal, and the packets the delay control drops.
@@ -72,6 +73,19 @@ peer's sender running, or a transport that stopped taking packets for longer
 than the budget lasts. `ranet3_peer_send_failed_total` stays apart from all of
 these: those packets were sealed and the transport lost them, which is the link
 failing rather than this node choosing.
+
+`ranet3_packet_too_big_sent_total` counts the answers this node sent to packets
+larger than their session carries, Packet Too Big over IPv6 and fragmentation
+needed over IPv4 with DF, read off the tun or carried to a waypoint, and
+`ranet3_mss_clamped_total` the TCP SYNs whose MSS it lowered to what their
+session carries. Both count for the node as a whole. `ranet3_pmtu_probes_total`
+counts the probes of the sessions' path MTU that left, by `result`: `acked`, or
+`lost` when no Ack came within the time a probe waits, and
+[debugging](development/debug.md) says which probes count in neither. Lost
+probes climbing on a node whose sessions have settled say a path loses its
+session's largest packets now and then, and
+[`ranet3 debug pmtu`](development/debug.md) names the session and shows its
+search, as [the configuration](configuration.md) describes it.
 
 `ranet3_babel_reassembled_total` counts, per neighbor, the Babel packets its
 session sent in fragments that this node put back together and read, and
