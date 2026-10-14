@@ -66,7 +66,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 	}
 	sess.SetChildHandler(tunnel.install)
 	sess.SetChildRetireHandler(tunnel.retire)
-	pmtu := newPathDriver(sess.Mux(), c.speaker.Probe, c.events, cmp.Or(c.probeTimeout, defaultProbeTimeout), cmp.Or(c.confirmEvery, confirmInterval))
+	pmtu := newPathDriver(sess.Mux(), c.speaker.Probe, c.events, &c.probes, c.Mesh.Steering, cmp.Or(c.probeTimeout, defaultProbeTimeout), cmp.Or(c.confirmEvery, confirmInterval))
 	peer := netstack.NewPeerReserved(sessionName, func(count int) (netstack.BatchSealer, error) {
 		sealer, err := tunnel.reserve(count)
 		// Closing the mux here turns the first babel hello after a refusal,
@@ -131,7 +131,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 			}
 			if deliver && !c.speaker.Receive(peer, inner) {
 				// a SYN from the peer has its MSS lowered to what this session carries back to it
-				netstack.ClampMSS(inner, mtu)
+				c.Mesh.ClampMSS(inner, mtu)
 				plain = append(plain, inner)
 			}
 		}

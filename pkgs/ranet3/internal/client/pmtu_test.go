@@ -22,6 +22,8 @@ import (
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/srv6"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -39,9 +41,15 @@ type pathRig struct {
 	driver *pathDriver
 	mux    *transport.Mux
 	bus    *events.Bus
-	// probes counts the probes the search sent
+	totals probeTotals
+	// probes counts the probes the search handed the speaker
 	probes atomic.Int32
+	// steering is the node's steering table, nil for a node that steers nothing
+	steering atomic.Pointer[srv6.SteerTable]
 }
+
+// noSteering is the steering table of a node that steers nothing
+func noSteering() *srv6.SteerTable { return nil }
 
 func loopbackHub(t *testing.T) *transport.Hub {
 	t.Helper()
@@ -58,20 +66,43 @@ func loopbackHub(t *testing.T) *transport.Hub {
 // it is math.MaxInt for a route wider than link.mtu
 func newPathRig(t *testing.T, hub *transport.Hub, to string, link, route, carries int) *pathRig {
 	t.Helper()
+	r := probingRig(t, hub, to, driverProbeTimeout, carrying(carries))
+	r.serve(t, link, route)
+	return r
+}
+
+// carrying is the probe of a path that carries probes of up to carries bytes
+func carrying(carries int) func(r *pathRig, size int, nonce uint16) error {
+	return func(r *pathRig, size int, nonce uint16) error {
+		if size <= carries {
+			r.driver.ack(nonce)
+		}
+		return nil
+	}
+}
+
+// probingRig is a search for a session to the endpoint at to, whose probes probe sends and wait timeout for their Ack
+// it starts once serve is called
+func probingRig(t *testing.T, hub *transport.Hub, to string, timeout time.Duration, probe func(r *pathRig, size int, nonce uint16) error) *pathRig {
+	t.Helper()
 	address := netip.MustParseAddrPort(to)
 	mux, err := hub.NewMux(net.IP(address.Addr().AsSlice()), int(address.Port()))
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = mux.Close() })
 	r := &pathRig{mux: mux, bus: events.New()}
 	r.driver = newPathDriver(mux, func(_ *netstack.Peer, size int, nonce uint16) error {
 		r.probes.Add(1)
-		if size <= carries {
-			r.driver.ack(nonce)
-		}
-		return nil
-	}, r.bus, driverProbeTimeout, confirmInterval)
+		return probe(r, size, nonce)
+	}, r.bus, &r.totals, r.steering.Load, timeout, confirmInterval)
 	r.driver.peer = netstack.NewPeer("example/peer/0@0", nil, nil)
+	return r
+}
+
+// serve starts the rig's search at link.mtu link with the route the start reads, and serves it until the test ends
+func (r *pathRig) serve(t *testing.T, link, route int) {
+	t.Helper()
 	r.driver.open()
 	r.driver.start(link, route)
 	results, served := make(chan sessionResult), make(chan struct{})
@@ -82,14 +113,22 @@ func newPathRig(t *testing.T, hub *transport.Hub, to string, link, route, carrie
 	t.Cleanup(func() {
 		results <- sessionResult{}
 		<-served
-		_ = mux.Close()
 	})
-	return r
 }
 
 func (r *pathRig) waitBudget(t *testing.T, want int) {
 	t.Helper()
 	waitFor(t, pathWait, fmt.Sprintf("the session's budget to reach %d", want), func() bool { return r.driver.peer.MTU() == want })
+}
+
+// waitSettled waits for the search to settle, which a budget's move by a refusal or a probe comes before
+func (r *pathRig) waitSettled(t *testing.T) {
+	t.Helper()
+	waitFor(t, pathWait, "the search to settle", func() bool {
+		r.driver.mu.Lock()
+		defer r.driver.mu.Unlock()
+		return r.driver.search.phase == confirmed
+	})
 }
 
 // searchRecord is each pmtu event a node recorded, as the budget it moved from, the one it moved to and why, or the floor it entered or left
@@ -152,13 +191,7 @@ func reportLowersOnlyItsPath(t *testing.T, loopback netip.Addr) {
 	refused := esp.Inner(1400, header)
 	r.driver.reports <- &transport.PathMTUError{Endpoint: left, MTU: 1400}
 	r.waitBudget(t, refused)
-	other, err := hub.NewMux(net.IP(loopback.AsSlice()), 4501)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = other.Close() })
-	r.mux.AdoptEndpoint(other.Endpoint())
-	r.driver.move()
+	r.moveTo(t, hub, 4501)
 	r.waitBudget(t, 1402)
 	// a report of 1360 for the path left changes nothing
 	// one of 1300 for the path the session holds puts it under the floor in either family
@@ -181,18 +214,276 @@ func reportLowersOnlyItsPath(t *testing.T, loopback netip.Addr) {
 	}
 }
 
+// a session of a node that steers records once when its budget falls under what a 1280-byte packet behind the longest segment list needs
+// with its budget and that need, and once more when its budget rises back to it
+// a further fall while under records nothing
+func TestSessionRecordsFallingUnderASteeredPacket(t *testing.T) {
+	steering := steerTable(t, 1)
+	need := steering.LeastMTU()
+	const link = 1402
+	narrow, narrower := esp.Inner(1380, 20), esp.Inner(1360, 20)
+	if narrower >= narrow || narrow >= need || need >= netstack.DefaultMTU {
+		t.Fatalf("budgets of %d and %d against a need of %d prove nothing", narrow, narrower, need)
+	}
+	hub := loopbackHub(t)
+	r := newPathRig(t, hub, "127.0.0.1:4500", link, math.MaxInt, math.MaxInt)
+	r.steering.Store(steering)
+	r.waitBudget(t, link)
+	r.driver.reports <- &transport.PathMTUError{Endpoint: r.mux.Endpoint(), MTU: 1380}
+	r.waitBudget(t, narrow)
+	// the warning waits for the search to confirm the narrower budget, and a second refusal meanwhile would be the budget it names
+	r.waitSettled(t)
+	r.driver.reports <- &transport.PathMTUError{Endpoint: r.mux.Endpoint(), MTU: 1360}
+	r.waitBudget(t, narrower)
+	r.moveTo(t, hub, 4501)
+	// the move's start is not yet carried, so the rise waits for its probe
+	r.waitBudget(t, link)
+	r.waitSettled(t)
+	want := []string{
+		fmt.Sprintf("%s under true at %d of %d", r.driver.peer.ID, narrow, need),
+		fmt.Sprintf("%s under false at %d of %d", r.driver.peer.ID, link, need),
+	}
+	if got := steeringRecord(r.bus); !slices.Equal(got, want) {
+		t.Errorf("the session recorded %q, want %q", got, want)
+	}
+}
+
+// steeringRecord is each pmtu.steering event a node recorded, as the session, whether it is under, its budget and the need
+func steeringRecord(bus *events.Bus) []string {
+	var out []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "pmtu.steering" }, 0) {
+		out = append(out, fmt.Sprintf("%s under %s at %s of %s", event.Peer, event.Attrs["under"], event.Attrs["budget"], event.Attrs["need"]))
+	}
+	return out
+}
+
+// a session of a node whose longest segment list needs more than a search starts at warns only where its search settles under the need
+// on a path that carries the need it records nothing, on its way up from its start or after an endpoint move starts it again
+// on a path that never carries it, it records the one fall, at the budget it settles on
+func TestSessionWarnsOnlyWhenItsSearchSettlesUnderASteeredPacket(t *testing.T) {
+	steering := steerTable(t, 5)
+	need := steering.LeastMTU()
+	const link, wide, narrow = 1500, 1500, 1402
+	if need <= netstack.DefaultMTU || need > wide || need <= narrow {
+		t.Fatalf("a need of %d against a start of %d and paths of %d and %d proves nothing", need, netstack.DefaultMTU, wide, narrow)
+	}
+
+	t.Run("a path carrying the need", func(t *testing.T) {
+		hub := loopbackHub(t)
+		r := steeredRig(t, hub, steering, link, wide)
+		r.waitBudget(t, wide)
+		r.waitSettled(t)
+		if got := steeringRecord(r.bus); len(got) != 0 {
+			t.Errorf("a session that climbed to %d from its start recorded %q, want nothing", wide, got)
+		}
+		r.moveTo(t, hub, 4501)
+		r.waitRecord(t, fmt.Sprintf("%d to %d by %s", wide, netstack.DefaultMTU, movedByEndpoint))
+		r.waitBudget(t, wide)
+		if got := steeringRecord(r.bus); len(got) != 0 {
+			t.Errorf("a session that climbed to %d again after a move recorded %q, want nothing", wide, got)
+		}
+	})
+
+	t.Run("a path short of the need", func(t *testing.T) {
+		r := steeredRig(t, loopbackHub(t), steering, link, narrow)
+		r.waitBudget(t, narrow)
+		r.waitSettled(t)
+		want := []string{fmt.Sprintf("%s under true at %d of %d", r.driver.peer.ID, narrow, need)}
+		if got := steeringRecord(r.bus); !slices.Equal(got, want) {
+			t.Errorf("a session that settled at %d recorded %q, want %q", narrow, got, want)
+		}
+	})
+}
+
+// a session whose path loses its start warns at the floor its search falls to, before the search climbs to what the path carries
+// a move to another path as narrow starts the search again past the need, and records nothing while that start is unconfirmed
+func TestNarrowSessionWarnsAtTheFloorAndNotOnAMove(t *testing.T) {
+	steering := steerTable(t, 1)
+	need := steering.LeastMTU()
+	// the top of its class, where the search settles
+	const link, carries = 1500, 1298
+	if carries >= need || need >= netstack.DefaultMTU {
+		t.Fatalf("a path of %d against a need of %d and a start of %d proves nothing", carries, need, netstack.DefaultMTU)
+	}
+	hub := loopbackHub(t)
+	r := steeredRig(t, hub, steering, link, carries)
+	r.waitBudget(t, carries)
+	r.waitSettled(t)
+	want := []string{fmt.Sprintf("%s under true at %d of %d", r.driver.peer.ID, floor, need)}
+	if got := steeringRecord(r.bus); !slices.Equal(got, want) {
+		t.Fatalf("a session that lost its start and settled at %d recorded %q, want %q", carries, got, want)
+	}
+	r.moveTo(t, hub, 4501)
+	r.waitRecord(t, fmt.Sprintf("%d to %d by %s", carries, netstack.DefaultMTU, movedByEndpoint))
+	r.waitBudget(t, carries)
+	r.waitSettled(t)
+	if got := steeringRecord(r.bus); !slices.Equal(got, want) {
+		t.Errorf("a session that moved to a path of %d recorded %q, want only %q", carries, got, want)
+	}
+}
+
+// while another session of the family fragments under the floor, a held search warns at the budget it stands on, which its sends then carry
+// at its start and after a move starts it again
+// once the family sends with DF, the search climbs and records the rise past the need
+func TestHeldSearchWarnsAtTheBudgetItCarries(t *testing.T) {
+	steering := steerTable(t, 5)
+	need := steering.LeastMTU()
+	// the search's first probe past its start, halfway to link.mtu by class
+	const link, risen = 1500, 1454
+	if need <= netstack.DefaultMTU || need > risen {
+		t.Fatalf("a need of %d against a start of %d and a rise to %d proves nothing", need, netstack.DefaultMTU, risen)
+	}
+	held := func(id string) []string {
+		return []string{fmt.Sprintf("%s under true at %d of %d", id, netstack.DefaultMTU, need)}
+	}
+	climbed := func(id string) []string {
+		return append(held(id), fmt.Sprintf("%s under false at %d of %d", id, risen, need))
+	}
+
+	t.Run("at its start", func(t *testing.T) {
+		hub := loopbackHub(t)
+		under := fragmentingMux(t, hub)
+		r := steeredRig(t, hub, steering, link, math.MaxInt)
+		r.waitSteering(t, held(r.driver.peer.ID))
+		if err := under.Fragment(false); err != nil {
+			t.Fatal(err)
+		}
+		r.waitBudget(t, link)
+		r.waitSettled(t)
+		if got, want := steeringRecord(r.bus), climbed(r.driver.peer.ID); !slices.Equal(got, want) {
+			t.Errorf("a session that climbed once its family sent with DF recorded %q, want %q", got, want)
+		}
+	})
+
+	t.Run("after a move", func(t *testing.T) {
+		hub := loopbackHub(t)
+		r := steeredRig(t, hub, steering, link, math.MaxInt)
+		r.waitBudget(t, link)
+		r.waitSettled(t)
+		under := fragmentingMux(t, hub)
+		r.moveTo(t, hub, 4501)
+		r.waitSteering(t, held(r.driver.peer.ID))
+		if err := under.Fragment(false); err != nil {
+			t.Fatal(err)
+		}
+		r.waitBudget(t, link)
+		r.waitSettled(t)
+		if got, want := steeringRecord(r.bus), climbed(r.driver.peer.ID); !slices.Equal(got, want) {
+			t.Errorf("a moved session that climbed once its family sent with DF recorded %q, want %q", got, want)
+		}
+	})
+}
+
+// steerTable is a node's steering table whose one list holds segments segments
+func steerTable(t *testing.T, segments int) *srv6.SteerTable {
+	t.Helper()
+	via := make([]schema.Addr, segments)
+	for i := range via {
+		via[i] = schema.MustAddr(fmt.Sprintf("3fff:1:69c:98d6::%d", i+1))
+	}
+	table, err := srv6.NewSteerTable([]srv6.Steer{{To: schema.MustPrefix("3fff:1::/48"), Via: via}}, schema.MustAddr("3fff:1:69c:8c0::1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return table
+}
+
+// steeredRig is a search at link.mtu link of a node steering by steering, on a path that carries probes of up to carries bytes
+// the table is in place before the search starts, so the warning sees its first budget
+func steeredRig(t *testing.T, hub *transport.Hub, steering *srv6.SteerTable, link, carries int) *pathRig {
+	t.Helper()
+	r := probingRig(t, hub, "127.0.0.1:4500", driverProbeTimeout, carrying(carries))
+	r.steering.Store(steering)
+	r.serve(t, link, math.MaxInt)
+	return r
+}
+
+// fragmentingMux is a session of hub's IPv4 family under the floor, which holds the family's other searches
+func fragmentingMux(t *testing.T, hub *transport.Hub) *transport.Mux {
+	t.Helper()
+	mux, err := hub.NewMux(net.IPv4(127, 0, 0, 1), 4502)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mux.Close() })
+	if err := mux.Fragment(true); err != nil {
+		t.Fatal(err)
+	}
+	return mux
+}
+
+// moveTo moves the rig's session to port on its endpoint's address, as IKE does after a NAT rebinding
+func (r *pathRig) moveTo(t *testing.T, hub *transport.Hub, port int) {
+	t.Helper()
+	other, err := hub.NewMux(net.IP(r.mux.Endpoint().AddrPort().Addr().AsSlice()), port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+	r.mux.AdoptEndpoint(other.Endpoint())
+	r.driver.move()
+}
+
+func (r *pathRig) waitRecord(t *testing.T, line string) {
+	t.Helper()
+	waitFor(t, pathWait, fmt.Sprintf("the search to record %q", line), func() bool { return slices.Contains(searchRecord(r.bus), line) })
+}
+
+func (r *pathRig) waitSteering(t *testing.T, want []string) {
+	t.Helper()
+	waitFor(t, pathWait, fmt.Sprintf("the session to record %q", want), func() bool { return slices.Equal(steeringRecord(r.bus), want) })
+}
+
+// steeringReloadWait is how long a session has to warn once a reload left it too narrow for a steered packet
+// well under confirmInterval, so no settled search's own timer can have woken it meanwhile
+const steeringReloadWait = 5 * time.Second
+
+// a reload that only lengthens the steering list past a live session's budget has the session warn as the reload applies
+// without waiting for its search's next event
+// bravo's session to alpha is held at what a 1380 byte path carries by a refusal, and a one segment list needs more
+func TestSteeringReloadWarnsASessionItLeavesTooNarrow(t *testing.T) {
+	alpha, bravo := newLoopbackMesh(t)
+	// bravo answers and never dials, so its one session is the one alpha dials
+	quiet := *bravo.cfg
+	quiet.Dial.To = nil
+	bravo.client.cfg.Store(&quiet)
+	run(t, alpha, bravo)
+	var d *pathDriver
+	waitFor(t, convergeBudget, "bravo's session to alpha to carry link.mtu", func() bool {
+		for _, live := range bravo.client.sessions.snapshot() {
+			if live.pmtu != nil && live.pmtu.peer.MTU() == netstack.DefaultMTU {
+				d = live.pmtu
+				return true
+			}
+		}
+		return false
+	})
+	narrow := esp.Inner(1380, 20)
+	d.reports <- &transport.PathMTUError{Endpoint: d.mux.Endpoint(), MTU: 1380}
+	waitFor(t, convergeBudget, fmt.Sprintf("the refusal to hold the session at %d", narrow), func() bool { return d.peer.MTU() == narrow })
+	warned := func() bool {
+		return len(bravo.client.events.Recorded(func(kind, _ string, attrs []slog.Attr) bool {
+			return kind == "pmtu.steering" && slices.ContainsFunc(attrs, func(a slog.Attr) bool { return a.Key == "under" && a.Value.Bool() })
+		}, 0)) != 0
+	}
+	if warned() {
+		t.Fatal("the session warned before the steering list was reloaded")
+	}
+	next := quiet
+	first := alpha.prefix.Addr().Next()
+	next.Cap.Segment = steering(first.String())
+	writeConfig(t, bravo.configPath, &next)
+	if err := bravo.client.ReloadFrom(bravo.configPath); err != nil {
+		t.Fatalf("a reload adding a one segment list was refused: %v", err)
+	}
+	waitFor(t, steeringReloadWait, "the session to warn that it carries less than a steered packet needs", warned)
+}
+
 // while a session of a family fragments its sends under the floor, the searches of the family's other sessions send no probe, which would measure nothing
 // and lose no size meanwhile, and a held search goes on from where it stood once the family sends with DF again
 func TestFragmentingFamilyHoldsItsOtherSearches(t *testing.T) {
 	hub := loopbackHub(t)
-	under, err := hub.NewMux(net.IPv4(127, 0, 0, 1), 4502)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = under.Close() })
-	if err := under.Fragment(true); err != nil {
-		t.Fatal(err)
-	}
+	under := fragmentingMux(t, hub)
 	r := newPathRig(t, hub, "127.0.0.1:4500", 1402, math.MaxInt, math.MaxInt)
 	time.Sleep(heldFor)
 	if sent := r.probes.Load(); sent != 0 {
@@ -223,8 +514,7 @@ func TestTransmitHandsARefusalToTheSearch(t *testing.T) {
 	}
 	want := esp.Inner(report.MTU, 20)
 	r.waitBudget(t, want)
-	moved := fmt.Sprintf("%d to %d by refusal", link, want)
-	waitFor(t, pathWait, fmt.Sprintf("the search to record %q", moved), func() bool { return slices.Contains(searchRecord(r.bus), moved) })
+	r.waitRecord(t, fmt.Sprintf("%d to %d by refusal", link, want))
 }
 
 // a session whose route cannot carry the floor when it starts lets its family's sends fragment
@@ -254,7 +544,7 @@ func TestSessionSetHandsMovesAndAcksToTheirSearch(t *testing.T) {
 	c := &Client{events: events.New(), sessions: newSessionSet()}
 	var searches []*pathDriver
 	for _, path := range []string{sessionPath(remote, local), sessionPath(other, local)} {
-		search := newPathDriver(nil, nil, c.events, driverProbeTimeout, confirmInterval)
+		search := newPathDriver(nil, nil, c.events, &c.probes, noSteering, driverProbeTimeout, confirmInterval)
 		search.peer = netstack.NewPeer(path, nil, nil)
 		c.sessions.live[path] = &liveSession{pmtu: search}
 		searches = append(searches, search)

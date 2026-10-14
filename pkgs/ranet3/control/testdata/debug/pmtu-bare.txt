@@ -1,0 +1,5 @@
+Link MTU     8918 B
+Steering     none
+Device MTU   unknown, the device did not answer
+Too big      4 answers sent to packets past their session's budget
+MSS clamped  1 SYN

@@ -1,0 +1,99 @@
+{
+  "link_mtu": 8918,
+  "steering": 56,
+  "device_mtu": 8862,
+  "packet_too_big_sent": 4,
+  "mss_clamped": 1,
+  "sessions": [
+    {
+      "peer": "example/bravo/2@alpha",
+      "endpoint": "198.51.100.7:4500",
+      "state": "confirmed",
+      "dont_fragment": true,
+      "budget": 1450,
+      "mss_ipv4": 1410,
+      "mss_ipv6": 1390,
+      "route": 8938,
+      "target": 8918,
+      "last": {
+        "size": 1454,
+        "acked": false,
+        "ago": "3m0s"
+      },
+      "sent": 21,
+      "acked": 12,
+      "lost": 9,
+      "refusals": 0,
+      "changed": {
+        "from": 1442,
+        "to": 1450,
+        "reason": "probe",
+        "ago": "3m0s"
+      }
+    },
+    {
+      "peer": "example/charlie/3@alpha",
+      "endpoint": "[2001:db8::3]:4500",
+      "state": "searching up",
+      "dont_fragment": true,
+      "budget": 1400,
+      "mss_ipv4": 1360,
+      "mss_ipv6": 1340,
+      "route": 8878,
+      "target": 8878,
+      "probe": {
+        "size": 5138,
+        "attempts": 2,
+        "max_attempts": 3
+      },
+      "last": {
+        "size": 1400,
+        "acked": true,
+        "ago": "7s"
+      },
+      "sent": 2,
+      "acked": 1,
+      "lost": 0,
+      "refusals": 0
+    },
+    {
+      "peer": "example/delta/4@alpha",
+      "endpoint": "203.0.113.4:4500",
+      "state": "under the floor",
+      "dont_fragment": false,
+      "budget": 1280,
+      "mss_ipv4": 1240,
+      "mss_ipv6": 1220,
+      "route": 1182,
+      "target": 1182,
+      "last": {
+        "size": 1280,
+        "acked": false,
+        "ago": "40s"
+      },
+      "sent": 6,
+      "acked": 2,
+      "lost": 4,
+      "refusals": 1,
+      "changed": {
+        "from": 1400,
+        "to": 1280,
+        "reason": "floor",
+        "ago": "1m0s"
+      }
+    },
+    {
+      "peer": "example/echo/5@alpha",
+      "endpoint": "192.0.2.5:4500",
+      "state": "not searched",
+      "dont_fragment": false,
+      "budget": 8918,
+      "mss_ipv4": 8878,
+      "mss_ipv6": 8858,
+      "sent": 0,
+      "acked": 0,
+      "lost": 0,
+      "refusals": 0
+    }
+  ]
+}

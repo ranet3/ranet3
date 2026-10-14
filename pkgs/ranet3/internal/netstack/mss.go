@@ -28,53 +28,64 @@ const (
 )
 
 // ClampMSS lowers the MSS option of a TCP SYN or SYN-ACK in packet to what a session carrying mtu byte packets takes
-// mtu less 40 under IPv4 and less 60 under IPv6, with the checksum updated as RFC 1624 updates it
-// a fragment, IPv6 with an extension header before TCP and an option list that does not describe itself pass as they came
-// and so does a SYN with no MSS option, which RFC 9293 section 3.7.1 reads as 536 or 1220, within any session
-// so does every packet when mtu leaves no room past those headers, as an mtu of zero for no session does
-// which keeps the clamp from ever raising an MSS
-// and so do bytes too short for the headers they name, as what an End.DT46 takes out of a segment can be
-func ClampMSS(packet []byte, mtu int) {
+// it never raises an MSS
+func (m *Mesh) ClampMSS(packet []byte, mtu int) {
+	if clampMSS(packet, mtu) {
+		m.mssClamped.Add(1)
+	}
+}
+
+// MSSClamped is how many SYNs had their MSS lowered to a session's budget
+func (m *Mesh) MSSClamped() uint64 { return m.mssClamped.Load() }
+
+// MSSLimits is the MSS a SYN through a session carrying mtu byte packets leaves with at most, under IPv4 and under IPv6
+func MSSLimits(mtu int) (ipv4, ipv6 int) { return mtu - ipv4Segment, mtu - ipv6Segment }
+
+// clampMSS updates the checksum as RFC 1624 does
+// a SYN without an MSS option passes, which RFC 9293 section 3.7.1 reads as 536 or 1220, within any session
+// an mtu leaving no room past the headers passes every packet, which keeps the clamp from raising an MSS
+func clampMSS(packet []byte, mtu int) bool {
 	// bytes short of the least IPv4 and TCP headers hold no SYN, and any more hold the protocol fields read next
 	if len(packet) < ipv4Segment {
-		return
+		return false
 	}
 	var offset, limit int
 	switch packet[0] >> 4 {
 	case 4:
 		if packet[9] != tcpProtocol {
-			return
+			return false
 		}
 		offset, limit = int(packet[0]&0x0f)*4, mtu-ipv4Segment
 	case 6:
 		if packet[6] != tcpProtocol {
-			return
+			return false
 		}
 		offset, limit = 40, mtu-ipv6Segment
 	default:
-		return
+		return false
 	}
 	if limit <= 0 || len(packet) < offset+tcpHeaderLen || packet[offset+tcpFlags]&synFlag == 0 {
-		return
+		return false
 	}
 	// the bytes past a fragment's header are TCP's only in the first, and need not hold its whole header there
 	if packet[0]>>4 == 4 && binary.BigEndian.Uint16(packet[6:8])&0x3fff != 0 {
-		return
+		return false
 	}
-	clampSYN(packet[offset:], limit)
+	return clampSYN(packet[offset:], limit)
 }
 
 // clampSYN lowers to limit every MSS option past it in the TCP header segment starts with
 // once the whole option list has shown it describes itself
-func clampSYN(segment []byte, limit int) {
+func clampSYN(segment []byte, limit int) bool {
 	end := int(segment[12]>>4) * 4
 	if end < tcpHeaderLen || end > len(segment) || !describesItself(segment[tcpHeaderLen:end]) {
-		return
+		return false
 	}
+	lowered := false
 	for i := tcpHeaderLen; i < end; {
 		switch segment[i] {
 		case optionEnd:
-			return
+			return lowered
 		case optionNOP:
 			i++
 			continue
@@ -85,10 +96,12 @@ func clampSYN(segment []byte, limit int) {
 				checksum := binary.BigEndian.Uint16(segment[tcpChecksum:])
 				binary.BigEndian.PutUint16(segment[tcpChecksum:], adjusted(checksum, from, uint16(limit), i%2 == 1))
 				binary.BigEndian.PutUint16(segment[i+2:], uint16(limit))
+				lowered = true
 			}
 		}
 		i += length
 	}
+	return lowered
 }
 
 // describesItself reports whether every option of a TCP option list but the two of one byte carries a length that fits the list

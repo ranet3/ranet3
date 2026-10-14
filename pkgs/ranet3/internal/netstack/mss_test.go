@@ -108,6 +108,28 @@ func TestReaderClampsTheMSSOfASYNToItsSession(t *testing.T) {
 	}
 }
 
+// a read off the tun counts each SYN whose MSS it lowers, and none whose MSS already fits the session
+func TestReaderCountsTheSYNsItClamps(t *testing.T) {
+	const session = 1300
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), outboundBufferSize: tunOffset + session}
+	m.startSegmentReports()
+	peer := (&recordingPeer{}).peer("peer")
+	peer.SetMTU(session)
+	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
+	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	b := m.newOutboundBatch(4)
+	for _, family := range []int{4, 6} {
+		for _, mss := range []uint16{1460, 536} {
+			b.sizes[b.n] = copy(b.bufs[b.n][tunOffset:], tcpPacket(family, 0, false, synFlag, binary.BigEndian.AppendUint16([]byte{optionMSS, mssLen}, mss), 0, 0))
+			b.n++
+		}
+	}
+	m.classify(b)
+	if got := m.MSSClamped(); got != 2 {
+		t.Errorf("a read of four SYNs, two offering more than a %d byte session takes, counted %d clamps, want 2", session, got)
+	}
+}
+
 // a SYN or SYN-ACK that an End.DT46 of this node takes out of its outer header reaches the tun with its MSS lowered to what the session it came through carries
 // less the IP and TCP headers, its checksum updated with it
 // the session's own clamp sees only the outer IPv6 packet, which would let the MSS the headend left for its own sessions reach the far end
@@ -136,10 +158,14 @@ func TestExitClampsTheMSSOfASYNToTheSessionItArrivedThrough(t *testing.T) {
 				m := &Mesh{Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{})}
 				m.SetSegments(table)
 				m.DeliverInboundBatch([][]byte{outer}, mtu)
-				want := bytes.Clone(inner)
+				want, clamps := bytes.Clone(inner), uint64(0)
 				if mtu != 0 {
 					binary.BigEndian.PutUint16(want[header+tcpHeaderLen+2:], uint16(mtu-header-tcpHeaderLen))
 					binary.BigEndian.PutUint16(want[header+tcpChecksum:], tcpSum(want, header))
+					clamps = 1
+				}
+				if got := m.MSSClamped(); got != clamps {
+					t.Errorf("an IPv%d packet flagged %#02x through a %d byte session counted %d clamps, want %d", family, flags, mtu, got, clamps)
 				}
 				// one device is written to before the delivery returns
 				select {

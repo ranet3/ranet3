@@ -141,11 +141,6 @@ func (m *Mesh) SegmentCounters() SegmentCounters {
 // applySegments takes the packets addressed to this node's own segments out of
 // an inbound batch, acts on each, and returns what is left to be written to
 // the tun.
-//
-// A node with no segments configured returns immediately, and one that has
-// them pays a map lookup per IPv6 packet and nothing else until a segment of
-// its own actually arrives: the replacement slice is built only from the first
-// packet that is ours, and a batch with none is returned untouched.
 // mtu is the largest packet the session the batch came through carries
 // a SYN an End.DT46 delivers has its MSS clamped to it here, since the session's clamp saw only the outer header
 func (m *Mesh) applySegments(raw [][]byte, mtu int) [][]byte {
@@ -154,8 +149,6 @@ func (m *Mesh) applySegments(raw [][]byte, mtu int) [][]byte {
 		return raw
 	}
 	var deliver [][]byte
-	// take copies the packets already passed over, the first time one of this
-	// node's own segments turns up in the batch.
 	take := func(i int) {
 		if deliver == nil {
 			deliver = append(make([][]byte, 0, len(raw)), raw[:i]...)
@@ -172,7 +165,7 @@ func (m *Mesh) applySegments(raw [][]byte, mtu int) [][]byte {
 		case srv6.ActionDeliver:
 			take(i)
 			m.segmentsDelivered.Add(1)
-			ClampMSS(result.Inner, mtu)
+			m.ClampMSS(result.Inner, mtu)
 			deliver = append(deliver, result.Inner)
 		case srv6.ActionForward:
 			take(i)
@@ -357,8 +350,8 @@ func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer 
 	}
 	m.segmentsDropped.Add(1)
 	m.reportSegmentDrop("a forwarded segment is larger than the session to its next segment carries", "segment", segment.next, "mtu", mtu)
-	if answer != nil {
-		m.sendBack(answer)
+	if answer != nil && m.sendBack(answer) {
+		m.tooBigAnswered.Add(1)
 	}
 	return 0, 0
 }
@@ -406,26 +399,30 @@ func (m *Mesh) answerTooBig(inner []byte, mtu int) (answer []byte, cut bool) {
 	return answer, false
 }
 
+// TooBigAnswered is how many answers with packet too big or fragmentation needed to packets past their session's budget this node sent
+func (m *Mesh) TooBigAnswered() uint64 { return m.tooBigAnswered.Load() }
+
 // sendBack sends an ICMP error to the source of the packet it answers, through the peer its own addresses route to
-func (m *Mesh) sendBack(answer []byte) {
+func (m *Mesh) sendBack(answer []byte) bool {
 	source, destination, nextHeader, ok := addrsOf(answer)
 	if !ok {
-		return
+		return false
 	}
 	peer, ok := m.Routes.Lookup(source, destination)
 	if !ok || peer == nil {
-		return
+		return false
 	}
 	batch := peer.reserveBatchNow(1, len(answer))
 	if batch == nil {
-		return
+		return false
 	}
 	batch.append(answer, nextHeader)
 	if err := batch.enqueue(); err != nil {
 		m.reportSegmentDrop("the transport lost an icmp error", "err", err)
-		return
+		return false
 	}
 	m.segmentsAnswered.Add(1)
+	return true
 }
 
 // takeICMPToken reports whether this node may answer one more refused packet.

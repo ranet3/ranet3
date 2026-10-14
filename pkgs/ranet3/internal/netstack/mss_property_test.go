@@ -18,7 +18,7 @@ import (
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
-// clamped returns raw as ClampMSS has to leave it, read the way RFC 9293 sections 3.1 and 3.7.1 read a segment
+// clamped returns raw as clampMSS has to leave it, read the way RFC 9293 sections 3.1 and 3.7.1 read a segment
 // a SYN, flagged as either end sends it, in a TCP packet that is no fragment and has TCP right after the IP header
 // whose data offset fits the packet and whose options each carry a length that fits until the end of the list
 // gets every four byte MSS option before that end lowered to limit where it is above it, and its checksum computed afresh
@@ -129,9 +129,13 @@ func TestClampMSSLowersOnlyTheMSSOfASYN(t *testing.T) {
 		want := clamped(raw, limit)
 		// a packet with no room past its end, so a read past it fails rather than finds spare capacity
 		got := slices.Clip(bytes.Clone(raw))
-		ClampMSS(got, mtu)
+		lowered := clampMSS(got, mtu)
 		if !bytes.Equal(got, want) {
 			tb.Fatalf("a %d byte IPv%d packet left as %x, want %x", len(raw), raw[0]>>4, got, want)
+		}
+		// the count of clamps counts exactly the packets the clamp changed
+		if changed := !bytes.Equal(got, raw); lowered != changed {
+			tb.Fatalf("a %d byte IPv%d packet the clamp changed %v was reported lowered %v", len(raw), raw[0]>>4, changed, lowered)
 		}
 	}
 	for _, family := range []int{4, 6} {

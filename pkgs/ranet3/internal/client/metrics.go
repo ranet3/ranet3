@@ -15,9 +15,8 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/babel"
 )
 
-// Metrics replaces what prometheus-bird-exporter reported while Babel lived in
-// BIRD. It is the Prometheus text exposition format, written by hand rather
-// than through a client library so the dependency list stays short.
+// Metrics writes the Prometheus text exposition format, by hand rather than
+// through a client library so the dependency list stays short.
 //
 // Everything here is read from live state at scrape time rather than sampled
 // on a timer, so a scrape reflects the instant it happened.
@@ -75,8 +74,7 @@ func (c *Client) Metrics(w io.Writer) {
 	// Authenticated and validated, which is not the same as delivered: the
 	// count includes babel control packets the speaker consumed, RFC 4303
 	// section 2.6 dummy packets that carry nothing, and packets a closing mesh
-	// discards. A dashboard already references the name, so the help text
-	// carries the qualification instead.
+	// discards.
 	fmt.Fprint(w, "# HELP ranet3_esp_inbound_packets_total ESP packets that authenticated and passed validation, including babel control traffic and dummy packets.\n")
 	fmt.Fprint(w, "# TYPE ranet3_esp_inbound_packets_total counter\n")
 	fmt.Fprintf(w, "ranet3_esp_inbound_packets_total %d\n", c.inboundPackets.Load())
@@ -88,6 +86,7 @@ func (c *Client) Metrics(w io.Writer) {
 	fmt.Fprint(w, "# TYPE ranet3_tun_reads_truncated_total counter\n")
 	fmt.Fprintf(w, "ranet3_tun_reads_truncated_total %d\n", c.Mesh.TUNReadsTruncated())
 
+	c.renderPathMTU(w)
 	c.renderReceiveCounters(w)
 	c.renderSegmentCounters(w)
 	c.renderKernel(w)
@@ -117,6 +116,20 @@ func renderReassembly(w io.Writer, neighbors []babel.NeighborStat) {
 			fmt.Fprintf(w, "ranet3_babel_reassembly_dropped_total{peer=\"%s\",reason=\"%s\"} %d\n", label(neighbor.Peer), reason, neighbor.Fragments.Dropped[i])
 		}
 	}
+}
+
+// renderPathMTU writes what the node did to packets past a session's budget and how the sessions' probes of their path MTU ended
+func (c *Client) renderPathMTU(w io.Writer) {
+	fmt.Fprint(w, "# HELP ranet3_packet_too_big_sent_total Answers to packets past the budget of the session they were for: packet too big over IPv6 and fragmentation needed over IPv4 with DF.\n")
+	fmt.Fprint(w, "# TYPE ranet3_packet_too_big_sent_total counter\n")
+	fmt.Fprintf(w, "ranet3_packet_too_big_sent_total %d\n", c.Mesh.TooBigAnswered())
+	fmt.Fprint(w, "# HELP ranet3_mss_clamped_total TCP SYNs whose MSS this node lowered to what their session carries.\n")
+	fmt.Fprint(w, "# TYPE ranet3_mss_clamped_total counter\n")
+	fmt.Fprintf(w, "ranet3_mss_clamped_total %d\n", c.Mesh.MSSClamped())
+	fmt.Fprint(w, "# HELP ranet3_pmtu_probes_total Probes of the sessions' path MTU that left, by result: acked, or lost when no Ack came within the probe timeout.\n")
+	fmt.Fprint(w, "# TYPE ranet3_pmtu_probes_total counter\n")
+	fmt.Fprintf(w, "ranet3_pmtu_probes_total{result=\"acked\"} %d\n", c.probes.acked.Load())
+	fmt.Fprintf(w, "ranet3_pmtu_probes_total{result=\"lost\"} %d\n", c.probes.lost.Load())
 }
 
 // renderEgress writes the exit node and subnet router capability. A node that
