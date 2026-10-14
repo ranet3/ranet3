@@ -200,6 +200,9 @@ func TestResponderCompletesHandshakeWithInitiator(t *testing.T) {
 	if accepted.Local != identity.MustParse("testorg/server:1") {
 		t.Fatalf("local identity = %s", accepted.Local)
 	}
+	if !accepted.Key.Equal(h.public) {
+		t.Fatalf("the responder reports %x as the key that verified the initiator, want the trust's %x", accepted.Key, h.public)
+	}
 	// Each side's outbound key must be the other's inbound key, or the first
 	// ESP packet decrypts to nothing on a tunnel both ends believe is up.
 	if !bytes.Equal(initiator.Child.OutboundKey, responder.Child.InboundKey) {

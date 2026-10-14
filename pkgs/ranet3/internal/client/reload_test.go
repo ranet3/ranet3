@@ -4,10 +4,9 @@
 package client
 
 import (
+	"cmp"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -638,6 +637,8 @@ const longDialRetry = 10 * time.Minute
 
 // listenNode is one node of a mesh whose nodes answer and dial as each says
 type listenNode struct {
+	// org is example where a test names none
+	org        string
 	name       string
 	port       uint16
 	listen     bool
@@ -653,14 +654,14 @@ type listenNode struct {
 func writeListenConfig(t *testing.T, node *listenNode, listen bool) *config.Config {
 	t.Helper()
 	var body strings.Builder
-	fmt.Fprintf(&body, "node:\n  org: example\n  name: %s\nauth:\n  key: %s\n  trust: %s\n"+
+	fmt.Fprintf(&body, "node:\n  org: %s\n  name: %s\nauth:\n  key: %s\n  trust: %s\n"+
 		"link:\n  port: %d\n  endpoints:\n    - serial: \"0\"\n      family: ip4\n  listen: %t\n"+
 		"cap:\n  babel:\n    hello: 200ms\n    update: 400ms\n",
-		node.name, node.keyPath, node.trustPath, node.port, listen)
+		node.org, node.name, node.keyPath, node.trustPath, node.port, listen)
 	if len(node.dials) > 0 {
 		body.WriteString("dial:\n  to:\n")
 		for _, peer := range node.dials {
-			fmt.Fprintf(&body, "    - name: %s\n      serial: \"0\"\n", peer.name)
+			fmt.Fprintf(&body, "    - org: %s\n      name: %s\n      serial: \"0\"\n", peer.org, peer.name)
 		}
 	}
 	if err := os.WriteFile(node.configPath, []byte(body.String()), 0o600); err != nil {
@@ -673,7 +674,7 @@ func writeListenConfig(t *testing.T, node *listenNode, listen bool) *config.Conf
 	return cfg
 }
 
-// listenMesh builds a client for each node on 127.0.0.1 under one organization key, with names unique to this mesh
+// listenMesh builds a client for each node on 127.0.0.1 under one key for each organization, with names unique to this mesh
 func listenMesh(t *testing.T, nodes ...*listenNode) {
 	t.Helper()
 	retryPort(t, "bind", func() error { return tryListenMesh(t, nodes) })
@@ -681,32 +682,38 @@ func listenMesh(t *testing.T, nodes ...*listenNode) {
 
 func tryListenMesh(t *testing.T, nodes []*listenNode) error {
 	t.Helper()
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	der, err := x509.MarshalPKIXPublicKey(public)
-	if err != nil {
-		t.Fatal(err)
-	}
 	mesh := meshCounter.Add(1)
 	loopback := "127.0.0.1"
-	org := registry.Organization{PublicKey: string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), Organization: "example"}
+	var document registry.Registry
+	keys := make(map[string]ed25519.PrivateKey)
 	for _, node := range nodes {
+		node.org = cmp.Or(node.org, "example")
 		node.name = fmt.Sprintf("%s-%d", strings.SplitN(node.name, "-", 2)[0], mesh)
 		node.port = freeUDPPort(t)
-		org.Nodes = append(org.Nodes, registry.Node{CommonName: node.name, Endpoints: []registry.Endpoint{{
+		block := slices.IndexFunc(document, func(org registry.Organization) bool { return org.Organization == node.org })
+		if block < 0 {
+			public, private, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			keys[node.org] = private
+			document = append(document, registry.Organization{PublicKey: keyPEM(public), Organization: node.org})
+			block = len(document) - 1
+		}
+		document[block].Nodes = append(document[block].Nodes, registry.Node{CommonName: node.name, Endpoints: []registry.Endpoint{{
 			SerialNumber: "0", AddressFamily: "ip4", Address: &loopback, Port: node.port,
 		}}})
 	}
 	dir := t.TempDir()
-	trustPath, keyPath := filepath.Join(dir, "registry.json"), filepath.Join(dir, "key.pem")
-	writeRegistry(t, trustPath, registry.Registry{org})
-	writeKey(t, keyPath, private)
+	trustPath := filepath.Join(dir, "registry.json")
+	writeRegistry(t, trustPath, document)
+	for org, private := range keys {
+		writeKey(t, filepath.Join(dir, org+".pem"), private)
+	}
 	for i, node := range nodes {
-		node.configPath, node.keyPath, node.trustPath = filepath.Join(dir, node.name+".yaml"), keyPath, trustPath
+		node.configPath, node.keyPath, node.trustPath = filepath.Join(dir, node.name+".yaml"), filepath.Join(dir, node.org+".pem"), trustPath
 		node.events = events.New()
-		client, err := newClient(writeListenConfig(t, node, node.listen), private, trust(t, registry.Registry{org}), netstack.NewRoutesOnly(), nil, node.events)
+		client, err := newClient(writeListenConfig(t, node, node.listen), keys[node.org], trust(t, document), netstack.NewRoutesOnly(), nil, node.events)
 		if err != nil {
 			for _, built := range nodes[:i] {
 				built.client.Close()
@@ -731,7 +738,7 @@ func runListen(t *testing.T, nodes ...*listenNode) func() {
 }
 
 // pathTo is the name of the session or dialer from node to peer
-func pathTo(peer *listenNode) string { return "example/" + peer.name + ":0@0" }
+func pathTo(peer *listenNode) string { return peer.org + "/" + peer.name + ":0@0" }
 
 // sessionEvents is every event of kind node recorded for the session with peer
 func sessionEvents(node, peer *listenNode, kind string) []control.Event {
@@ -846,7 +853,7 @@ func TestResponderAnswersEachHandshakeUnderTheStoredDocument(t *testing.T) {
 	listenMesh(t, a, h)
 	runListen(t, a, h)
 	// a redial before a adopts its session finds none to close, and the wake waits until that session ends
-	waitFor(t, convergeBudget, "a's first session with h held at both ends", func() bool { return held(h, a) != nil && held(a, h) != nil })
+	heldAtBothEnds(t, a, h)
 	h.client.storeIndex(droppedFrom(t, h, a))
 	if _, err := a.client.Redial(t.Context(), h.name, false); err != nil {
 		t.Fatal(err)
@@ -860,6 +867,40 @@ func TestResponderAnswersEachHandshakeUnderTheStoredDocument(t *testing.T) {
 	})
 	if !refused() {
 		t.Error("h admitted a handshake from a node the document it stored had dropped")
+	}
+}
+
+// heldAtBothEnds waits until node and peer each hold their session with the other, and fails at once on a session either end refused
+func heldAtBothEnds(t *testing.T, node, peer *listenNode) {
+	t.Helper()
+	waitFor(t, convergeBudget, fmt.Sprintf("the session of %s and %s held at both ends", node.name, peer.name), func() bool {
+		for _, end := range [][2]*listenNode{{node, peer}, {peer, node}} {
+			if refused := sessionEvents(end[0], end[1], "ike.session.revoked"); len(refused) > 0 {
+				t.Fatalf("%s refused its session with %s: %s", end[0].name, end[1].name, refused[0].Attrs["err"])
+			}
+		}
+		return held(node, peer) != nil && held(peer, node) != nil
+	})
+}
+
+// h answers a and dials d, nodes of another organization under another key, and each session holds the key that verified its peer
+// so both come up, and a reload that keeps every key keeps both
+func TestSessionsWithAnotherOrganizationSurviveAReloadKeepingEveryKey(t *testing.T) {
+	a, h, d := &listenNode{org: "alpha", name: "a"}, &listenNode{org: "bravo", name: "h", listen: true}, &listenNode{org: "alpha", name: "d", listen: true}
+	a.dials, h.dials = []*listenNode{h}, []*listenNode{d}
+	listenMesh(t, a, h, d)
+	runListen(t, a, h, d)
+	heldAtBothEnds(t, a, h)
+	heldAtBothEnds(t, h, d)
+	answered, dialed := held(h, a), held(h, d)
+	if err := h.client.ReloadFrom(h.configPath); err != nil {
+		t.Fatalf("a reload keeping every key was refused: %v", err)
+	}
+	if held(h, a) != answered || held(h, d) != dialed {
+		t.Error("a reload keeping every key closed a session with another organization")
+	}
+	if got := recorded(h.events, "ike.session.revoked"); len(got) != 0 {
+		t.Errorf("a reload keeping every key revoked %v", got)
 	}
 }
 

@@ -131,9 +131,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	c.storeIndex(x)
 	c.cfg.Store(cfg)
 	// the trust document decides who may connect, so it decides who may stay
-	for _, path := range c.sessions.revoke() {
-		log.Printf("reload: %s is no longer in the trust document, session closed", path)
-	}
+	c.sessions.revoke()
 	c.republish(cfg)
 	c.syncPeers()
 	c.speaker.SetConfig(cfg.Babel())
