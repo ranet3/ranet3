@@ -26,16 +26,16 @@ version = 'v3.0.5'
 hash = 'sha256-ygho+GU5kE7vPMx+dZYyNfCaeMjNxj66XmrcVf3afFE='
 
 [mod.'golang.org/x/crypto']
-version = 'v0.57.0'
-hash = 'sha256-3/hkB+mZVBKnoxUaJv7DOzvxaL+8uQ7V6ofW4JiHhz4='
+version = 'v0.58.0'
+hash = 'sha256-33ioL7suoYfgBIEQDAeqy+lwhbCgy885BkcXavowffo='
 
 [mod.'golang.org/x/net']
-version = 'v0.59.0'
-hash = 'sha256-EGnbU9mIAvXqx4vEIWJDt+lZgs/YsUngAFJwmFSc5Tc='
+version = 'v0.61.0'
+hash = 'sha256-yCy7Bik5cvIVfX7G08rVYhkVDuro3sPk3iicVz4j/kA='
 
 [mod.'golang.org/x/sys']
-version = 'v0.48.0'
-hash = 'sha256-u+LwI76YIeg1asQKZItD2mnL4Yvx8veLhBuL8wv60Ls='
+version = 'v0.49.0'
+hash = 'sha256-/1S3yy3in72ygZT1CKymvOzJZqCMYiGSqZDfvSyB3LI='
 
 [mod.'golang.zx2c4.com/wintun']
 version = 'v0.0.0-20230126152724-0fa3db229ce2'
@@ -50,5 +50,5 @@ version = 'v0.0.0-20261007065226-e1bc74024391'
 hash = 'sha256-cijpt2hcQ09Jy0tICdJWSLGaU8LjEK2M9RwD8riEh+w='
 
 [mod.'hegel.dev/go/hegel']
-version = 'v0.9.19'
-hash = 'sha256-PSxDGCgJoHtIn6C7T05QEIpFS9Od+78LoHsL+pyRMAM='
+version = 'v0.9.23'
+hash = 'sha256-/QKVdjR5UcjWVdAPbvbtaThQYMUAObJ2Vm9lBUEK1ao='
