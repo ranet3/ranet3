@@ -80,6 +80,8 @@ type Mesh struct {
 	// truncatedAtWarning is tunReadsTruncated as the last warning reported it
 	truncatedNextWarning atomic.Int64
 	truncatedAtWarning   atomic.Uint64
+	// mssClamped counts the SYNs ClampMSS lowered, and tooBigAnswered the answers to packets past their session's budget it sent
+	mssClamped, tooBigAnswered atomic.Uint64
 
 	// segmentCounters is the segment routing state, in its own struct so that
 	// everything this file does not touch stays in segments.go with the code
@@ -409,7 +411,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 			share.count += count
 			share.bytes += bytes
 		} else {
-			ClampMSS(b.bufs[i][tunOffset+overhead:tunOffset+b.sizes[i]], share.mtu-overhead)
+			m.ClampMSS(b.bufs[i][tunOffset+overhead:tunOffset+b.sizes[i]], share.mtu-overhead)
 			b.peers[i], b.headers[i] = peer, nh
 			share.count++
 			share.bytes += b.sizes[i]
@@ -429,6 +431,7 @@ func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, ne
 	}
 	if answer != nil {
 		m.DeliverInboundBatch([][]byte{answer}, 0)
+		m.tooBigAnswered.Add(1)
 	}
 	return 0, 0
 }

@@ -173,8 +173,6 @@ func (c *Client) ReloadFrom(path string) (err error) {
 
 	c.storeRegistry(reg)
 	c.cfg.Store(cfg)
-	// every live session's search takes the new link.mtu, as each session made from here on does
-	c.sessions.relink(cfg.Link.SessionMTU())
 	// The trust document decides who may connect, so it decides who may stay.
 	// A node taken out of it keeps every tunnel it already holds until
 	// somebody says otherwise, and this is the only moment anybody does.
@@ -191,15 +189,20 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if tun.tables {
 		c.Mesh.SetSegments(tun.segments)
 	}
+	var tunErr error
 	switch {
 	case tun.to != tun.from:
-		// SetMTU fails only for a device that is gone, by when everything else here has applied
-		if err := c.Mesh.SetMTU(tun.to, tun.steering); err != nil {
-			return err
-		}
+		tunErr = c.Mesh.SetMTU(tun.to, tun.steering)
 	case tun.tables:
 		// the device keeps its MTU, so swapping the table is the whole change
 		c.Mesh.SetSteering(tun.steering)
+	}
+	// every live session's search takes the new link.mtu, as each session made from here on does
+	// after the steering table, which the nudge has each search read
+	c.sessions.relink(cfg.Link.SessionMTU())
+	// SetMTU fails only for a device that is gone, by when everything else here has applied
+	if tunErr != nil {
+		return tunErr
 	}
 	nodes := 0
 	for _, organization := range reg {

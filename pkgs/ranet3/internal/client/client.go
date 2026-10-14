@@ -131,6 +131,7 @@ type Client struct {
 
 	inboundPackets atomic.Uint64
 	inboundDropped atomic.Uint64
+	probes         probeTotals
 	// dropReported is nanoseconds since started, read through time.Since so it
 	// comes off the monotonic clock, and primed one interval in the past so
 	// the first refused batch is still said out loud. See noteInboundDropped.

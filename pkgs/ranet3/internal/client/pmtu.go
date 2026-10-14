@@ -8,6 +8,7 @@ import (
 	"log"
 	"log/slog"
 	"math"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -84,7 +85,13 @@ type pathSearch struct {
 	flowed bool
 	// timeout is how long an attempt waits for its Ack, and interval how often a settled search confirms its budget
 	timeout, interval time.Duration
+	tally             probeTally
+	// last is the last attempt an Ack answered or whose wait ran out
+	last probeOutcome
 }
+
+// probeTally counts a search's attempts that left, those an Ack answered and those whose wait ran out
+type probeTally struct{ sent, acked, lost uint64 }
 
 // pathProbe is the probe a search has out
 type pathProbe struct {
@@ -95,6 +102,15 @@ type pathProbe struct {
 	attempts int
 	// until is when its last attempt counts as lost
 	until time.Time
+	// out says its last attempt left
+	out bool
+}
+
+// probeOutcome is how one attempt ended
+type probeOutcome struct {
+	size  int
+	acked bool
+	at    time.Time
 }
 
 // newPathSearch starts the search of a session's path
@@ -149,7 +165,16 @@ func (s *pathSearch) attempt(now time.Time) {
 	s.nonce++
 	s.probe.attempts++
 	s.probe.until = now.Add(s.timeout)
+	s.probe.out = false
 	s.send = true
+}
+
+// expired counts an attempt whose wait ran out as lost, where it left
+func (s *pathSearch) expired(now time.Time) {
+	if s.probe.out {
+		s.tally.lost++
+		s.last = probeOutcome{size: s.probe.size, at: now}
+	}
 }
 
 // unsent takes back an attempt that never left, which goes again a probe timeout later
@@ -169,6 +194,8 @@ func (s *pathSearch) acked(nonce uint16, now time.Time) {
 	}
 	size := s.probe.size
 	s.probe = pathProbe{}
+	s.tally.acked++
+	s.last = probeOutcome{size: size, acked: true, at: now}
 	if s.phase == confirmed {
 		return
 	}
@@ -225,8 +252,10 @@ func (s *pathSearch) timer(now time.Time, flowed bool, route func() int) {
 	switch {
 	case s.probe.size != 0 && now.Before(s.probe.until):
 	case s.probe.size != 0 && s.probe.attempts < maxProbes:
+		s.expired(now)
 		s.attempt(now)
 	case s.probe.size != 0:
+		s.expired(now)
 		s.lostProbe(now)
 	case (s.phase == confirmed || s.phase == underFloor) && !now.Before(s.raise):
 		s.raised(route(), now)
@@ -346,11 +375,22 @@ type pathDriver struct {
 	peer   *netstack.Peer
 	probe  func(peer *netstack.Peer, size int, nonce uint16) error
 	events *events.Bus
+	totals *probeTotals
+	// steering is the node's steering table, whose longest segment list a steered 1280-byte packet carries
+	steering func() *srv6.SteerTable
 	// searching is false where the mux sends without DF, and the budget is then link.mtu
 	searching bool
-	search    pathSearch
+	// mu guards search, endpoint, refusals and changed, which the session's goroutine writes and the debug view reads
+	mu     sync.Mutex
+	search pathSearch
 	// endpoint is the endpoint the search measures, and a report for another one is about a path the session left
 	endpoint transport.Endpoint
+	// refusals counts the path reports of sends the host refused on the way to endpoint
+	refusals uint64
+	// changed is the session's last budget change, zero before the first
+	changed budgetChange
+	// steeredShort says the budget is under what a steered 1280-byte packet needs
+	steeredShort bool
 	// timeout and interval are the search's, how long a probe waits for its Ack and how often a settled search confirms its budget
 	timeout, interval time.Duration
 	acks              chan uint16
@@ -362,13 +402,25 @@ type pathDriver struct {
 	moved, reconfirm atomic.Bool
 }
 
+// budgetChange is one move of a session's budget
+type budgetChange struct {
+	from, to int
+	why      string
+	at       time.Time
+}
+
+// probeTotals counts the probe attempts of every session, acked and lost
+type probeTotals struct{ acked, lost atomic.Uint64 }
+
 // newPathDriver is the driver of the search for the session on mux
 // the caller sets its peer before open
 // probe sends a probe through the session
+// totals counts its attempts with every other session's
+// steering reads the node's steering table
 // timeout is how long one waits for its Ack
 // interval is how often a settled search confirms its budget
-func newPathDriver(mux *transport.Mux, probe func(peer *netstack.Peer, size int, nonce uint16) error, bus *events.Bus, timeout, interval time.Duration) *pathDriver {
-	return &pathDriver{mux: mux, probe: probe, events: bus, timeout: timeout, interval: interval,
+func newPathDriver(mux *transport.Mux, probe func(peer *netstack.Peer, size int, nonce uint16) error, bus *events.Bus, totals *probeTotals, steering func() *srv6.SteerTable, timeout, interval time.Duration) *pathDriver {
+	return &pathDriver{mux: mux, probe: probe, events: bus, totals: totals, steering: steering, timeout: timeout, interval: interval,
 		acks: make(chan uint16, maxProbes), reports: make(chan *transport.PathMTUError, 1), nudges: make(chan struct{}, 1)}
 }
 
@@ -427,10 +479,12 @@ func (d *pathDriver) serve(results <-chan sessionResult) sessionResult {
 		return <-results
 	}
 	now := time.Now()
+	d.mu.Lock()
 	timer := time.NewTimer(d.search.deadline().Sub(now))
 	defer timer.Stop()
 	// the start carries the session's first budget, which no event reports
 	d.apply(pathSearch{phase: confirming, budget: d.search.budget}, now, timer)
+	d.mu.Unlock()
 	for {
 		var event func(now time.Time)
 		select {
@@ -441,6 +495,7 @@ func (d *pathDriver) serve(results <-chan sessionResult) sessionResult {
 		case report := <-d.reports:
 			event = func(now time.Time) {
 				if report.Endpoint == d.endpoint {
+					d.refusals++
 					d.search.lowered(d.inner(report.MTU, nil), movedByRefusal, now)
 				}
 			}
@@ -449,9 +504,11 @@ func (d *pathDriver) serve(results <-chan sessionResult) sessionResult {
 		case <-timer.C:
 			event = func(now time.Time) { d.search.timer(now, d.peer.TakeSent(), d.reread) }
 		}
+		d.mu.Lock()
 		before, now := d.search, time.Now()
 		event(now)
 		d.apply(before, now, timer)
+		d.mu.Unlock()
 	}
 }
 
@@ -489,14 +546,34 @@ func (d *pathDriver) apply(before pathSearch, now time.Time, timer *time.Timer) 
 		d.peer.SetMTU(s.budget)
 		d.events.Emit("pmtu.changed", d.peer.ID, slog.String("endpoint", d.endpoint.String()),
 			slog.Int("budget", s.budget), slog.Int("budget_was", before.budget), slog.String("reason", s.why))
+		d.changed = budgetChange{from: before.budget, to: s.budget, why: s.why, at: now}
+	}
+	// a node that steers nothing needs the floor, which no budget falls under
+	// a search confirming or climbing has not found what its path carries, so a fall waits while it confirms or climbs and a rise while it confirms
+	// a family sending without DF holds its searches, and the budget a held search stands on is then what it carries
+	need := d.steering().LeastMTU()
+	settled := s.phase != confirming && s.phase != searchingUp || !d.mux.DontFragment()
+	if short := s.budget < need; short != d.steeredShort && (settled || !short && s.phase != confirming) {
+		d.steeredShort = !d.steeredShort
+		if d.steeredShort {
+			slog.Warn("a session's budget fell under what a steered 1280-byte packet needs", "peer", d.peer.ID, "budget", s.budget, "need", need)
+		} else {
+			slog.Info("a session's budget rose back to what a steered 1280-byte packet needs", "peer", d.peer.ID, "budget", s.budget, "need", need)
+		}
+		d.events.Emit("pmtu.steering", d.peer.ID, slog.Int("budget", s.budget), slog.Int("need", need), slog.Bool("under", d.steeredShort))
 	}
 	if s.send {
 		s.send = false
 		// a probe a fragmenting family carries measures nothing, and it waits for the family to send with DF again
 		if !d.mux.DontFragment() || d.probe(d.peer, s.probe.size, s.nonce) != nil {
 			s.unsent(now)
+		} else {
+			s.probe.out = true
+			s.tally.sent++
 		}
 	}
+	d.totals.acked.Add(s.tally.acked - before.tally.acked)
+	d.totals.lost.Add(s.tally.lost - before.tally.lost)
 	timer.Reset(s.deadline().Sub(now))
 }
 

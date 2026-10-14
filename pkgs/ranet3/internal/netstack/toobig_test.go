@@ -304,6 +304,46 @@ func TestSegmentsPastTheirNextSessionAreAnsweredAtABoundedRate(t *testing.T) {
 	if counters := m.SegmentCounters(); counters.Dropped != flood || counters.Answered != uint64(len(answers)) || counters.Forwarded != 0 {
 		t.Errorf("the waypoint counted %+v for %d segments it answered %d of", counters, flood, len(answers))
 	}
+	if got := m.TooBigAnswered(); got != uint64(len(answers)) {
+		t.Errorf("the waypoint counted %d answers sent, want the %d its sources were sent", got, len(answers))
+	}
+}
+
+// an answer to a segment past its next session counts as sent once the session back to the source of the packet it carries has queued it
+// a waypoint with no route back, or whose session back has a full budget or has closed, builds an answer that goes nowhere and counts none
+func TestTooBigAnswerCountsOnlyOnceQueued(t *testing.T) {
+	after := segAddr("3fff:1:69c:98d6::1")
+	source, destination := tooBigSource[6], tooBigDestination[6]
+	for _, test := range []struct {
+		name string
+		back func(t *testing.T, m *Mesh)
+	}{
+		{"no route back", func(t *testing.T, m *Mesh) {
+			m.Routes.Remove(netip.Prefix{}, netip.PrefixFrom(source, 128))
+		}},
+		{"a session back with a full budget", func(t *testing.T, m *Mesh) {
+			back, _ := reservingPeer(t)
+			if back.reserveBatchNow(1, peerDataBudget) == nil {
+				t.Fatal("an empty budget refused a read of all of it")
+			}
+			m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(source, 128), back)
+		}},
+		{"a session back that closed", func(t *testing.T, m *Mesh) {
+			back, _ := reservingPeer(t)
+			back.Close()
+			m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(source, 128), back)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			session, _ := sessionOf(srv6.MinimumIPv6MTU + srv6.Overhead(2))
+			m, _ := waypointOf(t, after, session)
+			test.back(t, m)
+			m.applySegments([][]byte{steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)}, DefaultMTU)
+			if got, counters := m.TooBigAnswered(), m.SegmentCounters(); got != 0 || counters.Answered != 0 || counters.Dropped != 1 {
+				t.Errorf("the waypoint counted %d answers sent and %+v for a segment whose answer had nowhere to go", got, counters)
+			}
+		})
+	}
 }
 
 // a segment too large for its next session is answered only about the IP packet its routing header names
@@ -509,8 +549,12 @@ func TestPacketsPastTheirSessionAreAnsweredAtABoundedRate(t *testing.T) {
 	}
 	b.n = flood
 	m.classify(b)
-	if answered := len(dev.writes); answered == 0 || answered > icmpBurst {
+	answered := len(dev.writes)
+	if answered == 0 || answered > icmpBurst {
 		t.Errorf("%d packets past their session were answered %d times, want at least one and at most the burst of %d", flood, answered, icmpBurst)
+	}
+	if got := m.TooBigAnswered(); got != uint64(answered) {
+		t.Errorf("the mesh counted %d answers, want the %d it wrote into the tun", got, answered)
 	}
 	if count := b.shares[peer].count; count != 0 {
 		t.Errorf("%d of %d packets past their session went to the peer", count, flood)

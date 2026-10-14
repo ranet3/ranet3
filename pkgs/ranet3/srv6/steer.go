@@ -256,13 +256,15 @@ func (t *SteerTable) CheckMTU(device int) (int, error) {
 	if overhead == 0 {
 		return 0, nil
 	}
-	mtu := device - overhead
-	if mtu < MinimumIPv6MTU {
+	if device < t.LeastMTU() {
 		return 0, fmt.Errorf("srv6: cap.segment steer: the longest segment list takes %d bytes, leaving a %d byte device under the %d byte minimum IPv6 requires",
-			overhead, mtu, MinimumIPv6MTU)
+			overhead, device-overhead, MinimumIPv6MTU)
 	}
-	return mtu, nil
+	return device - overhead, nil
 }
+
+// LeastMTU is the least MTU that carries a packet of the minimum IPv6 requires behind the longest segment list
+func (t *SteerTable) LeastMTU() int { return MinimumIPv6MTU + t.Overhead() }
 
 // Entries is the table as it was configured, for a diagnostic to print.
 func (t *SteerTable) Entries() []string {

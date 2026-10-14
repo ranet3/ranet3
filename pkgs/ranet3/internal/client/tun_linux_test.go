@@ -45,6 +45,7 @@ const synPort = 443
 // and its MSS is lowered to the same once bravo takes it out of that header
 // a capture on bravo's tun reads the SYN as the kernel receives it
 // with every byte but the MSS and the checksum as alpha sent it
+// and bravo counts the clamp, at the session for a SYN it carries bare and at the End.DT46 for a steered one
 func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 	const session = 1300
 	enterEmptyNamespace(t)
@@ -96,10 +97,14 @@ func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 				}
 				send, nextHeader = outer, esp.NextHeaderIPv6
 			}
+			clamped := mesh.MSSClamped()
 			got := sendUntilCaptured(t, peer, send, nextHeader, capture, arm.destination)
 			if want := withMSS(syn, arm.mss); !bytes.Equal(got, want) {
 				t.Errorf("a SYN from %s with an MSS of 1460 reached bravo's tun with an MSS of %d, want %d, as %x where %x was wanted",
 					arm.source, binary.BigEndian.Uint16(got[tcpOffset(got)+22:]), arm.mss, got, want)
+			}
+			if mesh.MSSClamped() == clamped {
+				t.Errorf("bravo lowered the MSS of a SYN from %s and counted no clamp", arm.source)
 			}
 		})
 	}
