@@ -22,7 +22,10 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
+
+	"ranet3.com/pkgs/ranet3/identity"
 )
 
 type Registry []Organization
@@ -114,6 +117,100 @@ func (r Registry) Validate() error {
 	}
 	return nil
 }
+
+// Index is a registry keyed by identity, every key parsed once
+// it is never changed after New, so any number of handshakes read it at once
+type Index struct {
+	nodes         map[identity.Identity]indexedNode
+	order         []identity.Identity
+	organizations int
+	underlay      []netip.Addr
+}
+
+// indexedNode keeps the key of the block that lists the node, since two blocks of one organization may hold different keys
+type indexedNode struct {
+	key     ed25519.PublicKey
+	targets []Target
+}
+
+// Target is one endpoint of a node, with the identity the node answers to there
+type Target struct {
+	ID identity.Identity
+	Endpoint
+}
+
+// New indexes a document Validate accepts
+func New(document Registry) (*Index, error) {
+	if err := document.Validate(); err != nil {
+		return nil, err
+	}
+	x := &Index{nodes: make(map[identity.Identity]indexedNode), organizations: len(document)}
+	for _, organization := range document {
+		key, err := organization.ParsePublicKey()
+		if err != nil {
+			return nil, err
+		}
+		for _, node := range organization.Nodes {
+			id, err := identity.From(organization.Organization, node.CommonName, "")
+			if err != nil {
+				return nil, err
+			}
+			indexed := indexedNode{key: key}
+			for _, endpoint := range node.Endpoints {
+				at, err := id.At(endpoint.SerialNumber)
+				if err != nil {
+					return nil, err
+				}
+				indexed.targets = append(indexed.targets, Target{ID: at, Endpoint: endpoint})
+				if !endpoint.Dialable() {
+					continue
+				}
+				if address, err := netip.ParseAddr(*endpoint.Address); err == nil {
+					x.underlay = append(x.underlay, address)
+				}
+			}
+			x.nodes[id] = indexed
+			x.order = append(x.order, id)
+		}
+	}
+	return x, nil
+}
+
+// Key is the key that must verify the AUTH of a peer asserting id, or why id may not join
+// a node's identity asks about the node alone, and an endpoint's asks that the node lists that endpoint too
+func (x *Index) Key(id identity.Identity) (ed25519.PublicKey, error) {
+	node, ok := x.nodes[id.Node()]
+	if !ok {
+		return nil, fmt.Errorf("registry: %s is not in the trust document", id.Node())
+	}
+	if id != id.Node() && !slices.ContainsFunc(node.targets, func(target Target) bool { return target.ID == id }) {
+		return nil, fmt.Errorf("registry: %s lists no endpoint %s", id.Node(), id)
+	}
+	return node.key, nil
+}
+
+// Targets is every endpoint of id's node in file order, or the one id names, and nothing the document does not list
+func (x *Index) Targets(id identity.Identity) []Target {
+	node := x.nodes[id.Node()]
+	if id == id.Node() {
+		return node.targets
+	}
+	for _, target := range node.targets {
+		if target.ID == id {
+			return []Target{target}
+		}
+	}
+	return nil
+}
+
+// Nodes is every node the document lists, in file order
+func (x *Index) Nodes() []identity.Identity { return x.order }
+
+// Underlay is the address of every endpoint a dialer would take whose address is a literal
+func (x *Index) Underlay() []netip.Addr { return x.underlay }
+
+// Size is how many organization blocks and nodes the document holds
+func (x *Index) Size() (organizations, nodes int) { return x.organizations, len(x.order) }
 
 // ParsePublicKey parses the organization's shared Ed25519 SubjectPublicKeyInfo PEM.
 func (o Organization) ParsePublicKey() (ed25519.PublicKey, error) {
