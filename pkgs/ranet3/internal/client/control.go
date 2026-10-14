@@ -49,6 +49,7 @@ func Forwarding() (v4, v6 bool) { return forwardingEnabled() }
 
 func (c *Client) Status() control.Status {
 	cfg := c.config()
+	ids, _ := configIdentities(cfg)
 	organizations, nodes := c.index().Size()
 	stats := c.speaker.Stats()
 	alive := 0
@@ -69,8 +70,7 @@ func (c *Client) Status() control.Status {
 	}
 	return control.Status{
 		Version:      version.String(),
-		Organization: cfg.Node.Org,
-		CommonName:   cfg.Node.Name,
+		Node:         ids.node.String(),
 		Port:         cfg.Link.Port,
 		Endpoints:    endpoints,
 		TUN:          c.Mesh.Name,

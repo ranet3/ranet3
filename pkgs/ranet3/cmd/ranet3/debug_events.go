@@ -33,7 +33,7 @@ func (r *reader) eventsCommand() *cobra.Command {
 prints the recorded events and exits. With --follow it goes on printing
 new events until --for has passed. A kind also selects the events under
 it, so babel selects every Babel event, and --kind may be repeated. A
-peer is named by its path, by org/name or by name.`,
+peer is named by its path, by org/name:serial, by org/name or by name.`,
 		Args:              noArguments,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -99,8 +99,8 @@ func (r *reader) waitCommand() *cobra.Command {
 		Long: `This prints the first event of the kind and how long after the wait
 began it happened, then exits 0. It exits 1 when none came within
 --timeout and 2 when it could not watch for one. Repeat --attr to
-require several attributes. A peer is named by its path, by org/name or
-by name.`,
+require several attributes. A peer is named by its path, by
+org/name:serial, by org/name or by name.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if err := cobra.ExactArgs(1)(cmd, args); err != nil {
 				return unwatched(cmd, err)

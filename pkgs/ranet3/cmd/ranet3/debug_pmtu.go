@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -43,7 +44,7 @@ last budget change. Name a peer to show its sessions alone.`,
 	}
 }
 
-// completeSessions offers the sessions the daemon searches the path of
+// completeSessions offers the peers of the sessions the daemon searches the path of
 // it asks for completionTimeout at most and offers nothing when the daemon does not answer
 func (r *reader) completeSessions(_ *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 	if len(args) > 0 {
@@ -61,5 +62,7 @@ func (r *reader) completeSessions(_ *cobra.Command, args []string, toComplete st
 			out = append(out, session.Peer)
 		}
 	}
-	return out, cobra.ShellCompDirectiveNoFileComp
+	// a node is offered once, though it holds a session per pair of endpoints
+	slices.Sort(out)
+	return slices.Compact(out), cobra.ShellCompDirectiveNoFileComp
 }

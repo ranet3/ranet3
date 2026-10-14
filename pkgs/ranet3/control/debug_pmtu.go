@@ -53,7 +53,9 @@ const (
 
 // PMTUSession is one session's search of the path to its endpoint
 type PMTUSession struct {
-	// Peer is the session's path, which its pmtu events name as their peer
+	// Path is the session's path, which its pmtu events name as their peer
+	Path string `json:"path"`
+	// Peer is the canonical form of the node the session is with
 	Peer     string `json:"peer"`
 	Endpoint string `json:"endpoint"`
 	State    string `json:"state"`
@@ -119,7 +121,7 @@ func servePMTU(d *debugServer, w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// PMTU reads the node's part and the sessions of one peer, named by its path, org/name or name, or of every peer where peer is empty
+// PMTU reads the node's part and the sessions of one peer, named by its path, org/name:serial, org/name or name, or of every peer where peer is empty
 // ctx bounds the exchange beside the client's own timeout
 func (c *Client) PMTU(ctx context.Context, peer string) (PMTUInfo, error) {
 	path := PathDebugPMTU
@@ -166,7 +168,8 @@ func sessionPairs(s PMTUSession) [][]string {
 		sends = "without DF"
 	}
 	rows := [][]string{
-		{"Session", s.Peer},
+		{"Session", s.Path},
+		{"Peer", s.Peer},
 		{"Endpoint", s.Endpoint + ", sent " + sends},
 		{"State", s.State},
 		{"Budget", fmt.Sprintf("%d B, clamping the MSS to %d over IPv4 and %d over IPv6", s.Budget, s.MSSv4, s.MSSv6)},

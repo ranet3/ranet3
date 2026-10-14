@@ -49,8 +49,8 @@ func TestPMTUViewShowsTheSearchAndItsLastChange(t *testing.T) {
 		t.Fatalf("the view reads link.mtu %d with %d sessions, want %d with the rig's one", info.LinkMTU, len(info.Sessions), link)
 	}
 	s := info.Sessions[0]
-	if s.Peer != r.driver.peer.ID || s.Budget != carries || s.Target != link || s.Route != 0 || s.Probe != nil {
-		t.Errorf("the view reads %+v, want the peer %s at a budget of %d under a target of %d, an unread route and no probe out",
+	if s.Path != r.driver.peer.ID || s.Budget != carries || s.Target != link || s.Route != 0 || s.Probe != nil {
+		t.Errorf("the view reads %+v, want the path %s at a budget of %d under a target of %d, an unread route and no probe out",
 			s, r.driver.peer.ID, carries, link)
 	}
 	if ipv4, ipv6 := netstack.MSSLimits(carries); s.MSSv4 != ipv4 || s.MSSv6 != ipv6 {
@@ -65,8 +65,8 @@ func TestPMTUViewShowsTheSearchAndItsLastChange(t *testing.T) {
 	}
 	var last control.Event
 	for _, event := range r.bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "pmtu.changed" }, 0) {
-		if event.Peer != s.Peer {
-			t.Errorf("the search recorded %+v under %q, want the session's name %s", event.Attrs, event.Peer, s.Peer)
+		if event.Peer != s.Path {
+			t.Errorf("the search recorded %+v under %q, want the session's path %s", event.Attrs, event.Peer, s.Path)
 		}
 		last = event
 	}
@@ -199,7 +199,7 @@ func TestPMTUViewShowsTheSessionsOfThePeerNamed(t *testing.T) {
 	for _, peer := range []string{"example/bravo:2@1", "example/bravo:2", "example/bravo", "bravo"} {
 		var shown []string
 		for _, s := range c.DebugPMTU(peer).Sessions {
-			shown = append(shown, s.Peer)
+			shown = append(shown, s.Path)
 		}
 		if !slices.Equal(shown, []string{"example/bravo:2@1"}) {
 			t.Errorf("the peer %s shows the sessions %q, want example/bravo:2@1 alone", peer, shown)

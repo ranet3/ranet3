@@ -22,7 +22,7 @@ import (
 type stubSource struct{}
 
 func (stubSource) Status() control.Status {
-	return control.Status{Organization: "example", CommonName: "laptop", Port: 13000, FullMesh: true, Version: "1.2.3"}
+	return control.Status{Node: "example/laptop", Port: 13000, FullMesh: true, Version: "1.2.3"}
 }
 
 func (stubSource) Neighbors() []control.Neighbor {
@@ -180,7 +180,7 @@ func TestJSONPrintsTheWireForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status --json failed: %v", err)
 	}
-	for _, want := range []string{`"common_name": "laptop"`, `"full_mesh": true`} {
+	for _, want := range []string{`"node": "example/laptop"`, `"full_mesh": true`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status --json printed %q, want it to carry %q", out, want)
 		}

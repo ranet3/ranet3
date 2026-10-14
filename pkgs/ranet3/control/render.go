@@ -39,11 +39,10 @@ func pairs(w io.Writer, rows [][]string) {
 	out.Flush()
 }
 
-// RenderStatus writes the node's own summary as aligned name and value pairs,
-// which reads better than a one-row table for a record with this many fields.
+// RenderStatus writes the node's own summary as aligned name and value pairs
 func RenderStatus(w io.Writer, s Status) {
 	rows := [][]string{
-		{"Node", s.Organization + "/" + s.CommonName},
+		{"Node", s.Node},
 		{"Version", s.Version},
 		{"Uptime", shortDuration(time.Duration(s.Uptime))},
 		{"Port", fmt.Sprint(s.Port)},
@@ -63,10 +62,7 @@ func RenderStatus(w io.Writer, s Status) {
 		{"Steering", steeringLine(s)},
 		{"ESP", fmt.Sprintf("%d in, %d dropped, %d refused", s.ESP.InboundPackets, s.ESP.InboundDropped, s.ESP.ReceiveRefused)},
 	}
-	// Only where something is off. Every other row above answers a question a
-	// healthy node has an answer to, and this one would read "none" on all of
-	// them. It is here so that a node running less than its file says carries
-	// the difference where somebody will see it.
+	// only on a node running less than its file says, since it would read none on every other
 	if len(s.Disabled) > 0 {
 		rows = append(rows, []string{"Disabled", disabledLine(s.Disabled)})
 	}

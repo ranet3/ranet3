@@ -38,7 +38,7 @@ type EventQuery struct {
 	// Kinds keeps an event of one of them or under one, so babel keeps babel.neighbor.up
 	// none keeps every kind
 	Kinds []string
-	// Peer keeps an event about one peer, named by its path, org/name or name
+	// Peer keeps an event about one peer, named by its path, org/name:serial, org/name or name
 	Peer string
 	// Attrs keeps an event carrying every attribute named, each rendering as the text given
 	Attrs map[string]string

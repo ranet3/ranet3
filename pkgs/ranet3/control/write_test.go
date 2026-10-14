@@ -304,13 +304,12 @@ func TestMetricsAreServedAsTheExpositionFormat(t *testing.T) {
 // less than its file says and nothing else on the status says so.
 func TestStatusNamesStoppedSubsystems(t *testing.T) {
 	var out strings.Builder
-	RenderStatus(&out, Status{Organization: "example", CommonName: "laptop"})
+	RenderStatus(&out, Status{Node: "example/laptop"})
 	if strings.Contains(out.String(), "Disabled") {
 		t.Errorf("a node with everything running reports %q", out.String())
 	}
 	out.Reset()
-	RenderStatus(&out, Status{Organization: "example", CommonName: "laptop",
-		Disabled: []Subsystem{SubsystemReconciler, SubsystemSteering}})
+	RenderStatus(&out, Status{Node: "example/laptop", Disabled: []Subsystem{SubsystemReconciler, SubsystemSteering}})
 	for _, want := range []string{"Disabled", "reconciler, steering", "restart"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("status printed %q, want it to carry %q", out.String(), want)
