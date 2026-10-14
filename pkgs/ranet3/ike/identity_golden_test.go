@@ -150,9 +150,12 @@ func checkResponderPayloads(t *testing.T, x payloadExchange) {
 		Hub:             hub,
 		Local:           append(x.otherLocal, x.responder),
 		LocalPrivateKey: goldenResponderKey,
-		Lookup: func(id identity.Identity) (ed25519.PublicKey, bool) {
-			return goldenInitiatorKey.Public().(ed25519.PublicKey), id == x.initiator
-		},
+		Trust: trustFunc(func(id identity.Identity) (ed25519.PublicKey, error) {
+			if id != x.initiator {
+				return nil, errUntrusted
+			}
+			return goldenInitiatorKey.Public().(ed25519.PublicKey), nil
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)

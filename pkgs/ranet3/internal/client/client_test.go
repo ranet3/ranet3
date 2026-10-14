@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"net/http/httptest"
 	"net/netip"
@@ -138,6 +139,23 @@ func trust(t testing.TB, document registry.Registry) *registry.Index {
 		t.Fatal(err)
 	}
 	return x
+}
+
+type trustFunc func(identity.Identity) (ed25519.PublicKey, error)
+
+func (f trustFunc) Key(id identity.Identity) (ed25519.PublicKey, error) { return f(id) }
+
+// admitting is a trust that admits, under no key, what it names and the node of each, and every endpoint of a node it names
+// as a trust document does, it refuses an endpoint of a node it names only through another endpoint
+func admitting(named ...identity.Identity) trustFunc {
+	return func(id identity.Identity) (ed25519.PublicKey, error) {
+		for _, admitted := range named {
+			if id == admitted || id == admitted.Node() || admitted == id.Node() {
+				return nil, nil
+			}
+		}
+		return nil, fmt.Errorf("%s is not admitted", id)
+	}
 }
 
 func identitiesOf(t testing.TB, cfg *config.Config) identities {
@@ -803,6 +821,7 @@ func TestSimultaneousOpenConvergesOnSameSession(t *testing.T) {
 		set := newSessionSet()
 		set.close = func(*ike.Session) {}
 		set.active = alive
+		set.trust = admitting(remote)
 		sessions := map[string]*ike.Session{dialedByA: {}, dialedByB: {}}
 		for _, which := range order {
 			set.adopt("path", sessions[which], local, remote, (which == dialedByA) == (local == a), nil, nil)
@@ -1457,6 +1476,8 @@ func TestReloadSkipsPeerRegistryNoLongerNames(t *testing.T) {
 	// leaves the tunnel it already holds carrying traffic until every other
 	// node restarts.
 	c.sessions = newSessionSet()
+	c.sessions.trust = liveTrust{c}
+	c.sessions.endpoint = func(*ike.Session) string { return "198.51.100.7:4500" }
 	var revoked []*ike.Session
 	c.sessions.close = func(sess *ike.Session) { revoked = append(revoked, sess) }
 	c.sessions.active = func(*ike.Session) bool { return true }
@@ -1727,19 +1748,18 @@ func TestMetricsLabelsUseOnlyTheEscapesTheFormatDefines(t *testing.T) {
 	}
 }
 
-// A handshake is checked against the registry, so the registry decides who
-// may stay. A node taken out of it kept every tunnel it already held,
-// because the handshake check only refuses the next one and nothing revisited
-// the sessions already running. A reload is the only moment this node learns
-// that a node is gone.
+// the sweep closes every session whose peer's node the trust in force no longer admits, since the handshake check refuses only the next session
 func TestReloadClosesASessionTheRegistryNoLongerNames(t *testing.T) {
 	set := newSessionSet()
 	var closed []*ike.Session
 	set.close = func(sess *ike.Session) { closed = append(closed, sess) }
 	set.active = func(*ike.Session) bool { return true }
 
+	set.events = events.New()
+	set.endpoint = func(*ike.Session) string { return "198.51.100.7:4500" }
 	stays, goes := identity.MustParse("example/keeper:0"), identity.MustParse("example/gone:0")
 	local := identity.MustParse("example/local:0")
+	set.trust = admitting(stays, goes)
 	keeper, gone := &ike.Session{}, &ike.Session{}
 	for _, adopted := range []struct {
 		path string
@@ -1758,9 +1778,9 @@ func TestReloadClosesASessionTheRegistryNoLongerNames(t *testing.T) {
 	set.live["example/anonymous:0@0"] = &liveSession{session: anonymous}
 	set.mu.Unlock()
 
-	// Trusted by name rather than "anything but goes", so the anonymous entry
-	// is untrusted too and only the guard above keeps it.
-	revoked := set.revoke(func(peer identity.Identity) bool { return peer == stays })
+	// trusted by name rather than as anything but goes, so the anonymous entry is untrusted too and only the guard above keeps it
+	set.trust = admitting(stays)
+	revoked := set.revoke()
 	if len(revoked) != 1 || revoked[0] != "example/gone:0@0" {
 		t.Fatalf("the sweep closed %v, want only the path the registry dropped", revoked)
 	}
@@ -1775,6 +1795,10 @@ func TestReloadClosesASessionTheRegistryNoLongerNames(t *testing.T) {
 	}
 	if _, held := set.live["example/anonymous:0@0"]; !held {
 		t.Error("the sweep took a session whose handshake had not named a peer yet")
+	}
+	want := map[string]string{"reason": "reload", "peer": "example/gone:0", "endpoint": "198.51.100.7:4500", "err": "example/gone is not admitted"}
+	if got := recorded(set.events, "ike.session.revoked"); len(got) != 1 || got[0].Peer != "example/gone:0@0" || !maps.Equal(got[0].Attrs, want) {
+		t.Errorf("the sweep recorded %v, want one revocation of example/gone:0@0 with %v", got, want)
 	}
 }
 
@@ -1882,35 +1906,28 @@ func (b *syncBuffer) lines(phrase string) []string {
 	return found
 }
 
-// The registry is the trust root a handshake is checked against, so a node
-// taken out of it stops being carried. A serial number is not part of that
-// question: it selects which endpoint a dial uses, and renumbering one is a
-// registry edit. Asking for it closes a live session whose peer has done
-// nothing to lose it, and the registry is rewritten whenever any node joins.
+// a serial is no part of whether a peer may stay, since it selects which endpoint a dial uses and renumbering one is a registry edit
 func TestRenumberedSerialDoesNotRevokeASession(t *testing.T) {
-	cfg, privateKey, reg := runtimeFixture(t)
-	c := &Client{privateKey: privateKey}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, reg))
+	set := newSessionSet()
+	set.close = func(*ike.Session) {}
+	set.endpoint = func(*ike.Session) string { return "198.51.100.7:4500" }
 	peer := identity.MustParse("example/gateway:1")
-	if !c.stillTrusted(peer) {
-		t.Fatal("a peer the registry names outright is not trusted, so this proves nothing")
+	set.trust = admitting(peer)
+	if _, ok := set.adopt("example/gateway:1@0", &ike.Session{}, identity.MustParse("example/local:0"), peer, false, nil, nil); !ok {
+		t.Fatal("a session the trust admits was not adopted, so this proves nothing")
 	}
 
-	renumbered := registry.Registry{{Organization: reg[0].Organization, PublicKey: reg[0].PublicKey,
-		Nodes: []registry.Node{reg[0].Nodes[0], {CommonName: "gateway",
-			Endpoints: []registry.Endpoint{{SerialNumber: "2", AddressFamily: "ip4", Port: 13000}}}}}}
-	c.storeIndex(trust(t, renumbered))
-	if !c.stillTrusted(peer) {
-		t.Error("renumbering an endpoint closed the session the peer holds")
+	set.trust = admitting(identity.MustParse("example/gateway:2"))
+	if _, err := set.trust.Key(peer); err == nil {
+		t.Fatal("the renumbered trust admits the endpoint it renumbered, so this proves nothing")
 	}
-	if _, ok := c.lookupPeerKey(peer); ok {
-		t.Error("a handshake asserting an endpoint the registry no longer names was accepted")
+	if revoked := set.revoke(); len(revoked) != 0 {
+		t.Errorf("renumbering an endpoint closed %v", revoked)
 	}
 
-	c.storeIndex(trust(t, registry.Registry{}))
-	if c.stillTrusted(peer) {
-		t.Error("a node the registry no longer names is still carried")
+	set.trust = admitting()
+	if revoked := set.revoke(); !slices.Equal(revoked, []string{"example/gateway:1@0"}) {
+		t.Errorf("a trust that no longer admits the node closed %v", revoked)
 	}
 }
 

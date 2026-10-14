@@ -5,7 +5,6 @@ package ike
 
 import (
 	"context"
-	"crypto/ed25519"
 	"log/slog"
 	"slices"
 	"strings"
@@ -95,10 +94,10 @@ func TestSessionsRecordTheirRekeys(t *testing.T) {
 // a handshake the responder refuses is recorded where it is said, with no session to name
 func TestResponderRecordsARefusedHandshake(t *testing.T) {
 	answered := &recorder{}
-	h := newResponderHarness(t, func(identity.Identity) (ed25519.PublicKey, bool) { return nil, false }, answered.record)
+	h := newResponderHarness(t, trustsNobody, answered.record)
 	if session, err := h.dial(t); err == nil {
 		session.Mux().Close()
-		t.Fatal("a peer the lookup refuses was let in")
+		t.Fatal("a peer the trust refuses was let in")
 	}
 	for deadline := time.Now().Add(answerBudget); !slices.Contains(answered.recorded(), "ike.handshake.failed >"); {
 		if time.Now().After(deadline) {

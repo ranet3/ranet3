@@ -178,33 +178,33 @@ type sessionSet struct {
 	rekey  func(*ike.Session) error
 	// probe is (*ike.Session).Probe in production, replaced the same way
 	probe func(*ike.Session)
+	// endpoint is the address a session's mux sends to in production, replaced the same way
+	endpoint func(*ike.Session) string
 
-	// events records each resolution between two sessions for one path
+	// events records each resolution between two sessions for one path, and each session the trust refuses
 	events *events.Bus
+
+	// trust is the trust in force, which adopt and revoke ask under mu, so a session adopted after a reload's sweep answers to the document that reload stored
+	trust ike.Trust
 }
 
 type liveSession struct {
 	session   *ike.Session
 	preferred bool
-	// peer is the identity the far end authenticated as, kept so a reload can
-	// ask whether the registry still names it. The registry is the trust root
-	// this node checks a handshake against, so a node taken out of it has to
-	// stop being carried. Without this, revoking a node left every tunnel it
-	// already held up until each of the other nodes restarted.
-	peer identity.Identity
-	// local is the endpoint this node authenticated as
-	local identity.Identity
+	// the endpoints the two ends authenticated as, and revoke asks the trust about peer's node
+	peer, local identity.Identity
 	// pmtu is the search of the session's path MTU, which sets the MTU of its peer in the mesh
 	pmtu *pathDriver
 }
 
 func newSessionSet() *sessionSet {
 	return &sessionSet{
-		live:   make(map[string]*liveSession),
-		close:  closeSession,
-		active: (*ike.Session).Active,
-		rekey:  (*ike.Session).RekeyChildProactively,
-		probe:  (*ike.Session).Probe,
+		live:     make(map[string]*liveSession),
+		close:    closeSession,
+		active:   (*ike.Session).Active,
+		rekey:    (*ike.Session).RekeyChildProactively,
+		probe:    (*ike.Session).Probe,
+		endpoint: func(sess *ike.Session) string { return sess.Mux().Endpoint().String() },
 	}
 }
 
@@ -253,6 +253,13 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, lo
 		// Told rather than dropped: this handshake finished after the node
 		// started going, and its peer would otherwise carry the session until
 		// its own dead peer detection expires, which is over a minute.
+		s.close(sess)
+		return func() {}, false
+	}
+	if err := s.refuses(remote); err != nil {
+		s.mu.Unlock()
+		log.Printf("peer %s: %v, closing the session", path, err)
+		s.revoked(path, "handshake", sess, remote, err)
 		s.close(sess)
 		return func() {}, false
 	}
@@ -393,34 +400,51 @@ func (s *sessionSet) liveCount() int {
 	return count
 }
 
-// revoke closes every live session whose peer the registry no longer
-// authenticates, and reports which paths went. A reload is the only moment
-// this node learns that a node has been taken out of the mesh, and until it
-// acts on it the tunnels that node already holds keep carrying traffic: the
-// handshake check alone only refuses the next one.
-func (s *sessionSet) revoke(trusted func(identity.Identity) bool) []string {
+// refuses is why the trust in force no longer admits remote's node, asked under mu, or nil for a session that named no peer
+// it asks about the node alone, since a serial selects which endpoint a dial uses and renumbering one is a registry edit rather than a revocation
+func (s *sessionSet) refuses(remote identity.Identity) error {
+	if remote.IsZero() {
+		return nil
+	}
+	_, err := s.trust.Key(remote.Node())
+	return err
+}
+
+// revoke closes every live session whose peer's node the trust in force no longer admits, and reports which paths went
+// a reload is the only moment this node learns a node left the mesh, and the handshake check alone refuses only the next session
+func (s *sessionSet) revoke() []string {
 	if s == nil {
 		return nil // a Client built by hand in a test carries no sessions
 	}
+	type refused struct {
+		path string
+		live *liveSession
+		err  error
+	}
 	s.mu.Lock()
-	var paths []string
-	var sessions []*ike.Session
+	var gone []refused
 	for path, live := range s.live {
-		if live.peer.IsZero() || trusted(live.peer) {
-			continue
+		if err := s.refuses(live.peer); err != nil {
+			gone = append(gone, refused{path, live, err})
+			delete(s.live, path)
 		}
-		paths = append(paths, path)
-		sessions = append(sessions, live.session)
-		delete(s.live, path)
 	}
 	s.mu.Unlock()
+	paths := make([]string, 0, len(gone))
 	var closing sync.WaitGroup
-	for _, sess := range sessions {
-		closing.Go(func() { s.close(sess) })
+	for _, session := range gone {
+		paths = append(paths, session.path)
+		s.revoked(session.path, "reload", session.live.session, session.live.peer, session.err)
+		closing.Go(func() { s.close(session.live.session) })
 	}
 	closing.Wait()
 	slices.Sort(paths)
 	return paths
+}
+
+func (s *sessionSet) revoked(path, reason string, sess *ike.Session, peer identity.Identity, err error) {
+	s.events.Emit("ike.session.revoked", path, slog.String("reason", reason), slog.String("peer", peer.String()),
+		slog.String("endpoint", s.endpoint(sess)), slog.String("err", err.Error()))
 }
 
 // closeMatching closes every live session naming one peer, or every live

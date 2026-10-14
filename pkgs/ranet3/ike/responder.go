@@ -47,6 +47,14 @@ func identityFromID(body []byte) (identity.Identity, error) {
 	return identity.FromDN(data)
 }
 
+// Trust decides who may join the mesh and which key authenticates them
+type Trust interface {
+	// Key is the key that must verify the AUTH of a peer asserting id, or why id may not join
+	// an id naming a node without an endpoint asks about the node alone
+	// several handshakes call it at once, and one call reads one version of the trust
+	Key(id identity.Identity) (ed25519.PublicKey, error)
+}
+
 // ResponderConfig carries what answering an unsolicited peer needs, against
 // PeerConfig, which describes one peer this node dials. A responder does not know who
 // is calling until IDi arrives, so the peer's key and the local endpoint
@@ -58,9 +66,8 @@ type ResponderConfig struct {
 	Local           []identity.Identity
 	LocalPrivateKey ed25519.PrivateKey
 
-	// Lookup resolves an initiator's asserted endpoint to the key that must verify its AUTH, and false rejects the exchange
-	// several handshakes call it at once
-	Lookup func(identity.Identity) (ed25519.PublicKey, bool)
+	// Trust gives the key that must verify an initiator's AUTH, asked after an IDi naming our own node is refused
+	Trust Trust
 
 	// HandshakeTimeout bounds one exchange from the first datagram to an
 	// established SA. Zero uses handshakeTimeout.
@@ -132,8 +139,8 @@ func NewResponder(cfg ResponderConfig) (*Responder, error) {
 	if len(cfg.Local) == 0 {
 		return nil, fmt.Errorf("ike: responder needs at least one local identity")
 	}
-	if cfg.Lookup == nil {
-		return nil, fmt.Errorf("ike: responder needs a peer lookup")
+	if cfg.Trust == nil {
+		return nil, fmt.Errorf("ike: responder needs a trust")
 	}
 	r := &Responder{cfg: cfg, local: make(map[identity.Identity][]byte, len(cfg.Local)), started: time.Now(),
 		failureReported: make(map[netip.Addr]time.Duration, handshakeFailureSources),
@@ -433,9 +440,13 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	if err != nil {
 		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
 	}
-	peerKey, known := r.cfg.Lookup(peerID)
-	if !known {
-		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, fmt.Errorf("ike: no registry entry for %s", peerID))
+	// with a key its organization shares, another node of it could otherwise claim our name
+	if slices.ContainsFunc(r.cfg.Local, func(local identity.Identity) bool { return local.Node() == peerID.Node() }) {
+		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, fmt.Errorf("ike: IDi names our own node %s", peerID.Node()))
+	}
+	peerKey, err := r.cfg.Trust.Key(peerID)
+	if err != nil {
+		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
 	}
 	macedIDForI := prf(ctx.suite.PRFID, ctx.skpi, idiPayload.Body)
 	if err := VerifyAuth(peerKey, concat(realMessage1, nr, macedIDForI), authPayload.Body); err != nil {

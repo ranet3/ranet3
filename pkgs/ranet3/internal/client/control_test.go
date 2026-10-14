@@ -151,6 +151,7 @@ func TestPeersMatchSessionsByNodeAndLocalEndpoint(t *testing.T) {
 		return out
 	}
 	c := &Client{sessions: newSessionSet()}
+	c.sessions.trust = liveTrust{c}
 	c.storeIndex(trust(t, registry.Registry{{Organization: "example", Nodes: []registry.Node{
 		{CommonName: "local", Endpoints: endpoints("0", "1")},
 		{CommonName: "gateway", Endpoints: endpoints("1", "2")},

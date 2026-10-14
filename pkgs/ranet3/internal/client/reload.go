@@ -74,20 +74,8 @@ func (c *Client) syncPeers() (stopped []*dialer) {
 	return stopped
 }
 
-// ReloadFrom re-reads the configuration and the trust document at path and
-// applies what can be applied without dropping the tunnels this node is
-// carrying: the document itself, the peers we dial, the prefixes we announce,
-// cap.babel, cap.segment, link.listen, link.mtu and cap.table. ranet reconciles the same
-// way rather than restarting, and it matters here because the document is
-// rewritten every time any node joins the mesh.
-//
-// Everything a reload cannot reach is refused rather than applied, because
-// each such change alters what peers have already authenticated or what the
-// dataplane is attached to, so a restart is the honest way to change them and
-// a half-applied reload would be worse than none.
-//
-// SIGHUP calls this, and so does the control socket's reload verb through
-// Reload, which supplies the path the daemon was started with.
+// ReloadFrom applies the configuration at path and the trust document it names without dropping the tunnels this node carries
+// it refuses a change to what peers already authenticated or what the dataplane is attached to, rather than apply half of a reload
 func (c *Client) ReloadFrom(path string) (err error) {
 	c.reloadMu.Lock()
 	defer c.reloadMu.Unlock()
@@ -131,14 +119,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 			return err
 		}
 	}
-	// A peer the trust document cannot support is reported and skipped rather
-	// than refused. The two drift, so one entry left behind by a decommissioned
-	// node would otherwise freeze every later reload on this node: the document
-	// every other peer needs would never be applied, over a peer that is
-	// unreachable whatever happens here. The dialer already gives up on a node
-	// the document does not name and is started again by the next reload.
-	// Both halves are advisory here, but appending one to the other would
-	// write into whichever backing array had the room.
+	// a peer the trust document cannot support is skipped rather than refused, or one stale entry would block every later reload
 	peers := effectivePeers(ids, cfg.Dial.All, x)
 	refuse, skip := validatePeers(peers, x, families)
 	for _, problems := range [][]error{refuse, skip} {
@@ -149,10 +130,8 @@ func (c *Client) ReloadFrom(path string) (err error) {
 
 	c.storeIndex(x)
 	c.cfg.Store(cfg)
-	// The trust document decides who may connect, so it decides who may stay.
-	// A node taken out of it keeps every tunnel it already holds until
-	// somebody says otherwise, and this is the only moment anybody does.
-	for _, path := range c.sessions.revoke(c.stillTrusted) {
+	// the trust document decides who may connect, so it decides who may stay
+	for _, path := range c.sessions.revoke() {
 		log.Printf("reload: %s is no longer in the trust document, session closed", path)
 	}
 	c.republish(cfg)
