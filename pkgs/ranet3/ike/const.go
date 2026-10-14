@@ -189,10 +189,6 @@ const (
 	ID_DER_ASN1_DN uint8 = 9
 )
 
-// ASN.1 OID for Ed25519 (RFC 8410), used both as the RFC 7427 signature
-// AlgorithmIdentifier and inside the SubjectPublicKeyInfo strongSwan expects.
-var OIDEd25519 = []byte{0x06, 0x03, 0x2b, 0x65, 0x70} // OID 1.3.101.112
-
 const NonESPMarkerLen = 4
 
 const (

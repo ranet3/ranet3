@@ -65,7 +65,7 @@ func (*netmonSource) DebugNetmon() NetmonInfo { return netmonFixture() }
 
 func (s *netmonSource) DebugProbe(_ context.Context, peer string, all bool) (Result, error) {
 	s.peer, s.all = peer, all
-	return Result{Acted: []string{"example/gateway/1@0"}, Detail: "Asked 1 session(s) to prove their path now"}, nil
+	return Result{Acted: []string{"example/gateway:1@0"}, Detail: "Asked 1 session(s) to prove their path now"}, nil
 }
 
 // the netmon view is a snapshot without key material, so a caller the root class refuses still reads it
@@ -94,7 +94,7 @@ func TestProbeIsARootActionThatTakesAPost(t *testing.T) {
 	}
 	answer := post(t, root.URL+PathDebugProbe, `{"peer":"example/gateway"}`)
 	body, _ := io.ReadAll(answer.Body)
-	if answer.StatusCode != http.StatusOK || source.peer != "example/gateway" || source.all || !strings.Contains(string(body), "example/gateway/1@0") {
+	if answer.StatusCode != http.StatusOK || source.peer != "example/gateway" || source.all || !strings.Contains(string(body), "example/gateway:1@0") {
 		t.Errorf("a probe of one peer was answered %s %q and reached the source as %+v", answer.Status, body, source)
 	}
 	if answer := post(t, root.URL+PathDebugProbe, `{"all":true}`); answer.StatusCode != http.StatusOK || !source.all {

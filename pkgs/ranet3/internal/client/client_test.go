@@ -29,6 +29,7 @@ import (
 
 	yaml "go.yaml.in/yaml/v3"
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
@@ -114,21 +115,83 @@ func runtimeFixture(t *testing.T) (*config.Config, ed25519.PrivateKey, registry.
 	return cfg, privateKey, reg
 }
 
+// unusedKeyPEM is a key no test signs with, for a block that names nodes no handshake reaches
+var unusedKeyPEM = func() string {
+	der, err := x509.MarshalPKIXPublicKey(ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public())
+	if err != nil {
+		panic(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+}()
+
+// trust indexes a document a test wrote, a block without a key given unusedKeyPEM, since the index parses every key
+func trust(t testing.TB, document registry.Registry) *registry.Index {
+	t.Helper()
+	document = slices.Clone(document)
+	for i := range document {
+		if document[i].PublicKey == "" {
+			document[i].PublicKey = unusedKeyPEM
+		}
+	}
+	x, err := registry.New(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return x
+}
+
+func identitiesOf(t testing.TB, cfg *config.Config) identities {
+	t.Helper()
+	ids, err := configIdentities(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}
+
+func dialTo(t testing.TB, cfg *config.Config, peer config.Peer) dial {
+	t.Helper()
+	named := *cfg
+	named.Dial = config.Dial{To: []config.Peer{peer}}
+	return dials(&named, identitiesOf(t, &named), nil)[0]
+}
+
 func TestValidateRuntimeConfig(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
-	if err := validateRuntimeConfig(cfg, privateKey, reg); err != nil {
+	if err := validateRuntimeConfig(cfg, privateKey, trust(t, reg)); err != nil {
 		t.Fatal(err)
 	}
 	_, wrongKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := validateRuntimeConfig(cfg, wrongKey, reg); err == nil {
+	if err := validateRuntimeConfig(cfg, wrongKey, trust(t, reg)); err == nil {
 		t.Fatal("accepted a private key from another organization")
 	}
 	cfg.Dial.To[0].Serial = "missing"
-	if err := validateRuntimeConfig(cfg, privateKey, reg); err == nil {
+	if err := validateRuntimeConfig(cfg, privateKey, trust(t, reg)); err == nil {
 		t.Fatal("accepted a peer endpoint missing from the registry")
+	}
+}
+
+func TestEachLocalEndpointMatchesTheTrustDocumentsEndpointOfItsSerial(t *testing.T) {
+	cfg, privateKey, reg := runtimeFixture(t)
+	reg[0].Nodes[0].Endpoints = append(reg[0].Nodes[0].Endpoints, registry.Endpoint{SerialNumber: "1", AddressFamily: "ip6", Port: 13000})
+	x := trust(t, reg)
+	for _, tc := range []struct {
+		name     string
+		second   config.Endpoint
+		accepted bool
+	}{
+		{"listed", config.Endpoint{Serial: "1", Family: "ip6"}, true},
+		{"unlisted serial", config.Endpoint{Serial: "2", Family: "ip6"}, false},
+		{"other family", config.Endpoint{Serial: "1", Family: "ip4"}, false},
+	} {
+		named := *cfg
+		named.Link.Endpoints = []config.Endpoint{cfg.Link.Endpoints[0], tc.second}
+		if _, _, err := validateLocalConfig(&named, privateKey, x); (err == nil) != tc.accepted {
+			t.Errorf("%s: link.endpoints %v answered %v", tc.name, named.Link.Endpoints, err)
+		}
 	}
 }
 
@@ -145,20 +208,20 @@ func TestStartupSkipsAPeerNoLocalFamilyCanDial(t *testing.T) {
 		Endpoints:  []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip6", Port: 13000}},
 	})
 	cfg.Dial.To = append(cfg.Dial.To, config.Peer{Org: "example", Name: "v6only"})
-	if err := validateRuntimeConfig(cfg, privateKey, reg); err != nil {
+	if err := validateRuntimeConfig(cfg, privateKey, trust(t, reg)); err != nil {
 		t.Fatalf("a v6-only peer stopped a v4-only node from starting: %v", err)
 	}
 
 	// The same peer named by a serial is somebody writing the wrong thing
 	// down rather than the shape of the registry, and still refuses.
 	cfg.Dial.To[len(cfg.Dial.To)-1].Serial = "0"
-	if err := validateRuntimeConfig(cfg, privateKey, reg); err == nil {
+	if err := validateRuntimeConfig(cfg, privateKey, trust(t, reg)); err == nil {
 		t.Error("a peer endpoint named by serial in a family this node has not is accepted")
 	}
 
 	// And a node the registry has never heard of still refuses.
 	cfg.Dial.To[len(cfg.Dial.To)-1] = config.Peer{Org: "example", Name: "absent"}
-	if err := validateRuntimeConfig(cfg, privateKey, reg); err == nil {
+	if err := validateRuntimeConfig(cfg, privateKey, trust(t, reg)); err == nil {
 		t.Error("a peer the registry does not name is accepted")
 	}
 }
@@ -180,7 +243,8 @@ func TestFullMeshDialsEveryNodeTheRegistryNames(t *testing.T) {
 		Nodes: []registry.Node{{CommonName: "far", Endpoints: []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip4", Port: 13000}}}},
 	})
 
-	if got := effectivePeers(cfg, reg); len(got) != 1 || got[0].Name != "gateway" {
+	ids, x := identitiesOf(t, cfg), trust(t, reg)
+	if got := effectivePeers(ids, cfg.Dial.All, x); len(got) != 1 || got[0].Node() != identity.MustParse("example/gateway") {
 		t.Fatalf("without full_mesh the peers list is not honored: %v", got)
 	}
 
@@ -188,22 +252,22 @@ func TestFullMeshDialsEveryNodeTheRegistryNames(t *testing.T) {
 	// serial_number that a generated entry cannot. Generating a second one for
 	// the same node would dial both of its endpoints.
 	cfg.Dial.All = true
-	got := effectivePeers(cfg, reg)
+	got := effectivePeers(ids, cfg.Dial.All, x)
 	var names []string
 	for _, peer := range got {
-		names = append(names, peer.Org+"/"+peer.Name)
+		names = append(names, peer.Node().String())
 	}
 	want := []string{"example/gateway", "example/other", "elsewhere/far"}
 	if !slices.Equal(names, want) {
 		t.Errorf("full_mesh dials %v, want %v", names, want)
 	}
-	if got[0].Serial != "1" {
-		t.Errorf("the configured entry lost its pinned serial, got %q", got[0].Serial)
+	if got[0] != identity.MustParse("example/gateway:1") {
+		t.Errorf("the configured entry lost its pinned serial, got %s", got[0])
 	}
 	// Every organization, not only this node's own: the registry is the trust
 	// root for the whole community and ranet dials all of it.
 	for _, peer := range got {
-		if peer.Org == cfg.Node.Org && peer.Name == cfg.Node.Name {
+		if peer.Node() == ids.node {
 			t.Error("dial.all dialed this node itself")
 		}
 	}
@@ -301,7 +365,7 @@ func TestValidateESPTunnelPayload(t *testing.T) {
 func TestSyncPeersStartsAndStopsDialers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer)}
+	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet()}
 	c.cfg.Store(&config.Config{
 		Node: config.Node{Org: "example", Name: "node"},
 		Link: config.Link{Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
@@ -321,13 +385,13 @@ func TestSyncPeersStartsAndStopsDialers(t *testing.T) {
 		{CommonName: "a", Endpoints: []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip4", Address: &unreachable, Port: 13000}}},
 		{CommonName: "b", Endpoints: []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip4", Address: &unreachable, Port: 13000}}},
 	}}}
-	c.reg.Store(&reg)
+	c.storeIndex(trust(t, reg))
 
 	c.syncPeers()
 	if got := dialerCount(c); got != 2 {
 		t.Fatalf("started %d dialers, want 2", got)
 	}
-	if !hasDialer(c, "example/a/@0") {
+	if !hasDialer(c, "example/a@0") {
 		t.Fatal("no dialer for the first peer")
 	}
 
@@ -341,10 +405,10 @@ func TestSyncPeersStartsAndStopsDialers(t *testing.T) {
 	if got := dialerCount(c); got != 1 {
 		t.Fatalf("after removing a peer there are %d dialers, want 1", got)
 	}
-	if !hasDialer(c, "example/a/@0") {
+	if !hasDialer(c, "example/a@0") {
 		t.Fatal("the surviving peer's dialer was replaced or removed")
 	}
-	if hasDialer(c, "example/b/@0") {
+	if hasDialer(c, "example/b@0") {
 		t.Fatal("the removed peer's dialer is still tracked")
 	}
 	cancel()
@@ -505,7 +569,7 @@ func TestReloadRefusesARotatedPrivateKey(t *testing.T) {
 	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey,
 		speaker: speaker, dialers: make(map[string]*dialer)}
 	c.cfg.Store(cfg)
-	c.reg.Store(&reg)
+	c.storeIndex(trust(t, reg))
 	defer func() { cancel(); c.peers.Wait() }()
 
 	if err := c.ReloadFrom(configPath); err != nil {
@@ -557,7 +621,7 @@ func reloadFixture(t *testing.T) (*Client, string) {
 		speaker: speaker, dialers: make(map[string]*dialer),
 	}
 	c.cfg.Store(cfg)
-	c.reg.Store(&reg)
+	c.storeIndex(trust(t, reg))
 	t.Cleanup(func() { cancel(); c.peers.Wait() })
 	return c, filepath.Join(dir, "config.yaml")
 }
@@ -630,7 +694,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	}
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
-	release, adopted := c.sessions.adoptPreferred("example/gateway/1@0", &ike.Session{}, true, nil)
+	release, adopted := c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, true, nil)
 	if !adopted {
 		t.Fatal("the session was not adopted, so the per-path lines would be empty")
 	}
@@ -666,7 +730,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 		"ranet3_sessions 1",
 		"ranet3_esp_inbound_packets_total 7",
 		"ranet3_esp_inbound_dropped_total 2",
-		`ranet3_session_up{path="example/gateway/1@0"} 1`,
+		`ranet3_session_up{path="example/gateway:1@0"} 1`,
 		fmt.Sprintf(`ranet3_babel_neighbor_up{peer="gateway"} %d`, boolValue(stats.Neighbors[0].Alive)),
 		fmt.Sprintf(`ranet3_babel_routes_received{peer="gateway"} %d`, stats.Neighbors[0].Routes),
 		// A neighbor that has said nothing costs infinity, and the peer above
@@ -705,13 +769,23 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	}
 }
 
+// a node of an earlier release orders the raw names joined with /, where the text form puts ysun/butte:0 after ysun/butte2:0
+// and comparing the parts one by one, or joined with a byte below -, puts ysun/gw:0 before ysun/gw-2:0
+func TestCrossingSessionsKeepTheOrderOfTheRawNames(t *testing.T) {
+	for _, pair := range [][2]string{{"ysun/butte:0", "ysun/butte2:0"}, {"ysun/gw-2:0", "ysun/gw:0"}} {
+		first, second := identity.MustParse(pair[0]), identity.MustParse(pair[1])
+		if !preferInitiator(first, second) || preferInitiator(second, first) {
+			t.Errorf("%s is preferred as the initiator over %s, so a node of an earlier release keeps the other session", pair[1], pair[0])
+		}
+	}
+}
+
 // Two nodes that dial each other at once land both sessions on the same path
 // name at both ends. They have to pick the same survivor whichever order the
 // two handshakes finish in locally, or each keeps the SA the other tore down
 // and nothing crosses until dead peer detection notices.
 func TestSimultaneousOpenConvergesOnSameSession(t *testing.T) {
-	a := ike.Identity{Organization: "example", CommonName: "alpha", SerialNumber: "1"}
-	b := ike.Identity{Organization: "example", CommonName: "bravo", SerialNumber: "1"}
+	a, b := identity.MustParse("example/alpha:1"), identity.MustParse("example/bravo:1")
 	if preferInitiator(a, b) == preferInitiator(b, a) {
 		t.Fatal("both ends think the same one should dial, so there is no tie-break at all")
 	}
@@ -725,19 +799,13 @@ func TestSimultaneousOpenConvergesOnSameSession(t *testing.T) {
 	// alive records what this node believes about each session. The two ends read
 	// their own clocks, so they are not obliged to agree, and the rule has to
 	// converge anyway.
-	resolve := func(local, remote ike.Identity, order []string, alive func(*ike.Session) bool) string {
+	resolve := func(local, remote identity.Identity, order []string, alive func(*ike.Session) bool) string {
 		set := newSessionSet()
 		set.close = func(*ike.Session) {}
 		set.active = alive
 		sessions := map[string]*ike.Session{dialedByA: {}, dialedByB: {}}
 		for _, which := range order {
-			// The roles of the SA itself, not this node's point of view: who
-			// opened it and who answered. Both ends pass the same pair.
-			initiator, responder := a, b
-			if which == dialedByB {
-				initiator, responder = b, a
-			}
-			set.adopt("path", sessions[which], initiator, responder, responder, nil, nil)
+			set.adopt("path", sessions[which], local, remote, (which == dialedByA) == (local == a), nil, nil)
 		}
 		for name, sess := range sessions {
 			if live := set.live["path"]; live != nil && live.session == sess {
@@ -888,7 +956,7 @@ func TestSessionSetKeepsActivePreferredSession(t *testing.T) {
 func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer)}
+	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet()}
 	// A serial number sends runPeer through the pre-checks, which fail against
 	// an empty registry and return rather than looping.
 	c.cfg.Store(&config.Config{
@@ -896,8 +964,7 @@ func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
 		Link: config.Link{Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
 		Dial: config.Dial{To: []config.Peer{{Org: "example", Name: "a", Serial: "1"}}},
 	})
-	empty := registry.Registry{}
-	c.reg.Store(&empty)
+	c.storeIndex(trust(t, registry.Registry{}))
 
 	c.syncPeers()
 	c.peers.Wait()
@@ -918,7 +985,7 @@ func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
 			{SerialNumber: "1", AddressFamily: "ip4", Address: &loopback, Port: 13000},
 		},
 	}}}}
-	c.reg.Store(&named)
+	c.storeIndex(trust(t, named))
 	c.syncPeers()
 	if started := dialerCount(c); started != 1 {
 		t.Errorf("a reload started %d dialers for a peer that had given up, want 1", started)
@@ -934,7 +1001,7 @@ func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
 func TestSyncPeersNoticesChangedSerialNumber(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer)}
+	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet()}
 	base := func(serial string) *config.Config {
 		return &config.Config{
 			Node: config.Node{Org: "example", Name: "node"},
@@ -958,15 +1025,15 @@ func TestSyncPeersNoticesChangedSerialNumber(t *testing.T) {
 			},
 		}},
 	}}
-	c.reg.Store(&reg)
+	c.storeIndex(trust(t, reg))
 	c.cfg.Store(base("1"))
 	c.syncPeers()
 
 	c.cfg.Store(base("2"))
 	c.syncPeers()
 	c.dialersMu.Lock()
-	_, old := c.dialers["example/a/1@0"]
-	_, updated := c.dialers["example/a/2@0"]
+	_, old := c.dialers["example/a:1@0"]
+	_, updated := c.dialers["example/a:2@0"]
 	c.dialersMu.Unlock()
 	if old {
 		t.Error("the dialer for the old endpoint serial is still running")
@@ -1020,7 +1087,7 @@ func TestReloadAppliesRegistryPeersAndOriginations(t *testing.T) {
 		sessions: newSessionSet(),
 	}
 	c.cfg.Store(cfg)
-	c.reg.Store(&reg)
+	c.storeIndex(trust(t, reg))
 	c.syncPeers()
 	defer func() { cancel(); c.peers.Wait() }()
 
@@ -1051,7 +1118,7 @@ func TestReloadAppliesRegistryPeersAndOriginations(t *testing.T) {
 	if got := len(c.config().Dial.To); got != 2 {
 		t.Errorf("the reloaded config has %d peers, want 2", got)
 	}
-	if _, _, ok := c.registry().FindNode("example", "third"); !ok {
+	if _, err := c.index().Key(identity.MustParse("example/third")); err != nil {
 		t.Error("the reloaded registry does not have the node that just joined")
 	}
 	// And the announcements reached the speaker, rather than only the copy of
@@ -1077,6 +1144,19 @@ func writeRegistry(t *testing.T, path string, reg registry.Registry) {
 	if err := os.WriteFile(path, body, 0600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func readRegistry(t *testing.T, path string) registry.Registry {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg registry.Registry
+	if err := json.Unmarshal(body, &reg); err != nil {
+		t.Fatal(err)
+	}
+	return reg
 }
 
 func writeConfig(t *testing.T, path string, cfg *config.Config) {
@@ -1371,7 +1451,7 @@ func TestReloadSkipsPeerRegistryNoLongerNames(t *testing.T) {
 		speaker: speaker, dialers: make(map[string]*dialer),
 	}
 	c.cfg.Store(cfg)
-	c.reg.Store(&joined)
+	c.storeIndex(trust(t, joined))
 	// A live session for the node the rewrite below drops. The registry is the
 	// trust root, so a reload has to close it: refusing the next handshake
 	// leaves the tunnel it already holds carrying traffic until every other
@@ -1381,8 +1461,8 @@ func TestReloadSkipsPeerRegistryNoLongerNames(t *testing.T) {
 	c.sessions.close = func(sess *ike.Session) { revoked = append(revoked, sess) }
 	c.sessions.active = func(*ike.Session) bool { return true }
 	third := &ike.Session{}
-	thirdID := ike.Identity{Organization: "example", CommonName: "third", SerialNumber: "1"}
-	if _, ok := c.sessions.adopt("example/third/1@1", third, thirdID, thirdID, thirdID, nil, nil); !ok {
+	thirdID := identity.MustParse("example/third:1")
+	if _, ok := c.sessions.adopt("example/third:1@1", third, identity.MustParse("example/local:1"), thirdID, false, nil, nil); !ok {
 		t.Fatal("the session for the node about to be dropped was not adopted")
 	}
 	c.syncPeers()
@@ -1402,16 +1482,16 @@ func TestReloadSkipsPeerRegistryNoLongerNames(t *testing.T) {
 	if err := c.ReloadFrom(configPath); err != nil {
 		t.Fatalf("one stale peer refused the whole reload: %v", err)
 	}
-	if _, _, ok := c.registry().FindNode("example", "fourth"); !ok {
+	if _, err := c.index().Key(identity.MustParse("example/fourth")); err != nil {
 		t.Error("the node that joined in the same rewrite never reached this node")
 	}
-	if _, _, ok := c.registry().FindNode("example", "third"); ok {
+	if _, err := c.index().Key(thirdID.Node()); err == nil {
 		t.Error("the decommissioned node is still in the registry this node holds")
 	}
 	if len(revoked) != 1 || revoked[0] != third {
 		t.Errorf("the reload closed %d sessions, want the one whose node it dropped", len(revoked))
 	}
-	if _, held := c.sessions.live["example/third/1@1"]; held {
+	if _, held := c.sessions.live["example/third:1@1"]; held {
 		t.Error("the decommissioned node's session is still live, so it still carries traffic")
 	}
 }
@@ -1468,19 +1548,17 @@ func TestDialerStandsDownForSessionPeerOpened(t *testing.T) {
 	defer cancel()
 	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: events.New()}
 	c.cfg.Store(cfg)
-	c.reg.Store(&reg)
+	c.storeIndex(trust(t, reg))
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
 
-	local := cfg.Link.Endpoints[0]
-	peer := cfg.Dial.To[0]
-	name := "example/gateway/1@0"
+	name := "example/gateway:1@0"
 	if _, adopted := c.sessions.adoptPreferred(name, &ike.Session{}, false, nil); !adopted {
 		t.Fatal("the session the peer opened was not adopted")
 	}
 
 	start := time.Now()
-	err = c.connectPeer(ctx, local, peer, name)
+	err = c.connectPeer(ctx, dialTo(t, cfg, cfg.Dial.To[0]))
 	if !errors.Is(err, errSessionEstablished) {
 		t.Fatalf("the dialer reported %v, want the stand-down", err)
 	}
@@ -1503,7 +1581,6 @@ func TestDialerGivesUpOnAPeerItCannotReach(t *testing.T) {
 	defer cancel()
 	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, sessions: newSessionSet()}
 	c.cfg.Store(cfg)
-	c.reg.Store(&reg)
 
 	// "wrong family" is a node that exists and simply cannot be reached from
 	// this local endpoint, which on a dual-stack node with single-stack peers
@@ -1512,6 +1589,7 @@ func TestDialerGivesUpOnAPeerItCannotReach(t *testing.T) {
 		CommonName: "v6only",
 		Endpoints:  []registry.Endpoint{{SerialNumber: "1", AddressFamily: "ip6", Port: 13000}},
 	})
+	c.storeIndex(trust(t, reg))
 	for name, peer := range map[string]config.Peer{
 		"pinned to a serial":  {Org: "example", Name: "gone", Serial: "1"},
 		"pinned to none":      {Org: "example", Name: "gone"},
@@ -1520,7 +1598,8 @@ func TestDialerGivesUpOnAPeerItCannotReach(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			done := make(chan struct{})
-			go func() { defer close(done); c.runPeer(ctx, cfg.Link.Endpoints[0], peer, nil) }()
+			d := dialTo(t, cfg, peer)
+			go func() { defer close(done); c.runPeer(ctx, d, nil) }()
 			select {
 			case <-done:
 			case <-time.After(2 * time.Second):
@@ -1602,7 +1681,7 @@ func fillUnclaimedQueue(t *testing.T, hub *transport.Hub) uint64 {
 // monitoring, with nothing in its own log. Go's %q writes \t and \u00a0.
 func TestMetricsLabelsUseOnlyTheEscapesTheFormatDefines(t *testing.T) {
 	for name, test := range map[string]struct{ in, want string }{
-		"plain":                 {"example/gateway/0@0", "example/gateway/0@0"},
+		"plain":                 {"example/gateway:0@0", "example/gateway:0@0"},
 		"backslash":             {`a\b`, `a\\b`},
 		"quote":                 {`a"b`, `a\"b`},
 		"newline":               {"a\nb", `a\nb`},
@@ -1633,12 +1712,12 @@ func TestMetricsLabelsUseOnlyTheEscapesTheFormatDefines(t *testing.T) {
 	// a peer chooses, and with no sessions its line is never rendered.
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
-	if _, adopted := c.sessions.adoptPreferred("example/gate\tway/0@0", &ike.Session{}, true, nil); !adopted {
+	if _, adopted := c.sessions.adoptPreferred("example/gate\tway:0@0", &ike.Session{}, true, nil); !adopted {
 		t.Fatal("the session was not adopted, so the path line would be empty")
 	}
 	var out bytes.Buffer
 	c.Metrics(&out)
-	for _, want := range []string{"{peer=\"gate\tway\"}", "{path=\"example/gate\tway/0@0\"}"} {
+	for _, want := range []string{"{peer=\"gate\tway\"}", "{path=\"example/gate\tway:0@0\"}"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the rendered line does not carry %q:\n%s", want, out.String())
 		}
@@ -1659,15 +1738,15 @@ func TestReloadClosesASessionTheRegistryNoLongerNames(t *testing.T) {
 	set.close = func(sess *ike.Session) { closed = append(closed, sess) }
 	set.active = func(*ike.Session) bool { return true }
 
-	stays := ike.Identity{Organization: "example", CommonName: "keeper", SerialNumber: "0"}
-	goes := ike.Identity{Organization: "example", CommonName: "gone", SerialNumber: "0"}
+	stays, goes := identity.MustParse("example/keeper:0"), identity.MustParse("example/gone:0")
+	local := identity.MustParse("example/local:0")
 	keeper, gone := &ike.Session{}, &ike.Session{}
 	for _, adopted := range []struct {
 		path string
 		sess *ike.Session
-		peer ike.Identity
-	}{{"example/keeper/0@0", keeper, stays}, {"example/gone/0@0", gone, goes}} {
-		if _, ok := set.adopt(adopted.path, adopted.sess, adopted.peer, adopted.peer, adopted.peer, nil, nil); !ok {
+		peer identity.Identity
+	}{{"example/keeper:0@0", keeper, stays}, {"example/gone:0@0", gone, goes}} {
+		if _, ok := set.adopt(adopted.path, adopted.sess, local, adopted.peer, false, nil, nil); !ok {
 			t.Fatalf("%s was not adopted", adopted.path)
 		}
 	}
@@ -1676,25 +1755,25 @@ func TestReloadClosesASessionTheRegistryNoLongerNames(t *testing.T) {
 	// anything, and closing it would drop a tunnel still coming up.
 	anonymous := &ike.Session{}
 	set.mu.Lock()
-	set.live["example/anonymous/0@0"] = &liveSession{session: anonymous}
+	set.live["example/anonymous:0@0"] = &liveSession{session: anonymous}
 	set.mu.Unlock()
 
 	// Trusted by name rather than "anything but goes", so the anonymous entry
 	// is untrusted too and only the guard above keeps it.
-	revoked := set.revoke(func(peer ike.Identity) bool { return peer == stays })
-	if len(revoked) != 1 || revoked[0] != "example/gone/0@0" {
+	revoked := set.revoke(func(peer identity.Identity) bool { return peer == stays })
+	if len(revoked) != 1 || revoked[0] != "example/gone:0@0" {
 		t.Fatalf("the sweep closed %v, want only the path the registry dropped", revoked)
 	}
 	if len(closed) != 1 || closed[0] != gone {
 		t.Errorf("the sweep told %d sessions, and not the one that went", len(closed))
 	}
-	if _, held := set.live["example/gone/0@0"]; held {
+	if _, held := set.live["example/gone:0@0"]; held {
 		t.Error("the revoked session is still live, so it still carries traffic")
 	}
-	if _, held := set.live["example/keeper/0@0"]; !held {
+	if _, held := set.live["example/keeper:0@0"]; !held {
 		t.Error("the sweep took a session the registry still names")
 	}
-	if _, held := set.live["example/anonymous/0@0"]; !held {
+	if _, held := set.live["example/anonymous:0@0"]; !held {
 		t.Error("the sweep took a session whose handshake had not named a peer yet")
 	}
 }
@@ -1745,7 +1824,7 @@ func TestDialerRepeatingOneFailureSaysItOnce(t *testing.T) {
 	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey,
 		dialers: make(map[string]*dialer), dialRetry: time.Millisecond}
 	c.cfg.Store(cfg)
-	c.storeRegistry(reg)
+	c.storeIndex(trust(t, reg))
 
 	written := &syncBuffer{}
 	previous := log.Writer()
@@ -1753,7 +1832,8 @@ func TestDialerRepeatingOneFailureSaysItOnce(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(previous) })
 
 	done := make(chan struct{})
-	go func() { c.runPeer(ctx, cfg.Link.Endpoints[0], cfg.Dial.To[0], nil); close(done) }()
+	d := dialTo(t, cfg, cfg.Dial.To[0])
+	go func() { c.runPeer(ctx, d, nil); close(done) }()
 	deadline := time.Now().Add(2 * time.Second)
 	for written.count("reconnecting in") == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
@@ -1811,8 +1891,8 @@ func TestRenumberedSerialDoesNotRevokeASession(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	c := &Client{privateKey: privateKey}
 	c.cfg.Store(cfg)
-	c.storeRegistry(reg)
-	peer := ike.Identity{Organization: "example", CommonName: "gateway", SerialNumber: "1"}
+	c.storeIndex(trust(t, reg))
+	peer := identity.MustParse("example/gateway:1")
 	if !c.stillTrusted(peer) {
 		t.Fatal("a peer the registry names outright is not trusted, so this proves nothing")
 	}
@@ -1820,7 +1900,7 @@ func TestRenumberedSerialDoesNotRevokeASession(t *testing.T) {
 	renumbered := registry.Registry{{Organization: reg[0].Organization, PublicKey: reg[0].PublicKey,
 		Nodes: []registry.Node{reg[0].Nodes[0], {CommonName: "gateway",
 			Endpoints: []registry.Endpoint{{SerialNumber: "2", AddressFamily: "ip4", Port: 13000}}}}}}
-	c.storeRegistry(renumbered)
+	c.storeIndex(trust(t, renumbered))
 	if !c.stillTrusted(peer) {
 		t.Error("renumbering an endpoint closed the session the peer holds")
 	}
@@ -1828,7 +1908,7 @@ func TestRenumberedSerialDoesNotRevokeASession(t *testing.T) {
 		t.Error("a handshake asserting an endpoint the registry no longer names was accepted")
 	}
 
-	c.storeRegistry(registry.Registry{})
+	c.storeIndex(trust(t, registry.Registry{}))
 	if c.stillTrusted(peer) {
 		t.Error("a node the registry no longer names is still carried")
 	}
@@ -1846,7 +1926,7 @@ func TestDialerGivesUpOnAPeerWithNoAddress(t *testing.T) {
 	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey,
 		dialers: make(map[string]*dialer), dialRetry: time.Millisecond}
 	c.cfg.Store(cfg)
-	c.reg.Store(&reg)
+	c.storeIndex(trust(t, reg))
 
 	// The registry names the node and the address family matches this local
 	// endpoint. Only the address is absent.
@@ -1856,7 +1936,8 @@ func TestDialerGivesUpOnAPeerWithNoAddress(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			done := make(chan struct{})
-			go func() { c.runPeer(ctx, cfg.Link.Endpoints[0], peer, nil); close(done) }()
+			d := dialTo(t, cfg, peer)
+			go func() { c.runPeer(ctx, d, nil); close(done) }()
 			select {
 			case <-done:
 			case <-time.After(2 * time.Second):
@@ -1871,13 +1952,13 @@ func TestDialerGivesUpOnAPeerWithNoAddress(t *testing.T) {
 // of them.
 func TestResolveEndpointAnswersWithTheAddress(t *testing.T) {
 	address := "192.0.2.7"
-	node := registry.Node{CommonName: "gateway", Endpoints: []registry.Endpoint{
-		{SerialNumber: "0", AddressFamily: "ip6"},
+	x := trust(t, registry.Registry{{Organization: "example", Nodes: []registry.Node{{CommonName: "gateway", Endpoints: []registry.Endpoint{
+		{SerialNumber: "0", AddressFamily: "ip6", Port: 13000},
 		{SerialNumber: "1", AddressFamily: "ip4", Address: &address, Port: 13000},
-	}}
-	for name, serial := range map[string]string{"pinned to a serial": "1", "unpinned": ""} {
+	}}}}})
+	for name, peer := range map[string]string{"pinned to a serial": "example/gateway:1", "unpinned": "example/gateway"} {
 		t.Run(name, func(t *testing.T) {
-			endpoint, resolved, err := resolveEndpoint(context.Background(), node, serial, "ip4")
+			endpoint, resolved, err := resolveEndpoint(context.Background(), x, identity.MustParse(peer), "ip4")
 			if err != nil {
 				t.Fatalf("resolving an endpoint carrying a literal: %v", err)
 			}
@@ -1901,20 +1982,20 @@ func TestUnderlayHoldsTheEndpointsADialerWouldTake(t *testing.T) {
 	reg := registry.Registry{{Organization: "example", Nodes: []registry.Node{{
 		CommonName: "gateway",
 		Endpoints: []registry.Endpoint{
-			{SerialNumber: "0", AddressFamily: "ip4", Address: &literal},
-			{SerialNumber: "1", AddressFamily: "ip4", Address: &name},
-			{SerialNumber: "2", AddressFamily: "ip4", Address: &empty},
-			{SerialNumber: "3", AddressFamily: "ip4"},
+			{SerialNumber: "0", AddressFamily: "ip4", Address: &literal, Port: 13000},
+			{SerialNumber: "1", AddressFamily: "ip4", Address: &name, Port: 13000},
+			{SerialNumber: "2", AddressFamily: "ip4", Address: &empty, Port: 13000},
+			{SerialNumber: "3", AddressFamily: "ip4", Port: 13000},
 			// Parses, and no dialer will take it, so the transport never has
 			// to reach it either. The set and the dialers ask one question.
-			{SerialNumber: "4", AddressFamily: "ip4", Address: &wrongFamily},
+			{SerialNumber: "4", AddressFamily: "ip4", Address: &wrongFamily, Port: 13000},
 		},
 	}}}}
 	c := &Client{}
 	if got := c.Underlay(); len(got) != 0 {
 		t.Errorf("a client with no registry answered %v, and the reconciler asks before one is stored", got)
 	}
-	c.storeRegistry(reg)
+	c.storeIndex(trust(t, reg))
 	got := c.Underlay()
 	if len(got) != 1 || got[0].String() != literal {
 		t.Errorf("the underlay set is %v, want just %s: a name needs a resolver and the rest cannot be dialed", got, literal)
@@ -1933,7 +2014,7 @@ func TestValidatePeersReportsAnEndpointWithNoAddress(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			named := *cfg
 			named.Dial.To = peers
-			refuse, skip := validatePeers(&named, reg, families)
+			refuse, skip := validatePeers(identitiesOf(t, &named).peers, trust(t, reg), families)
 			if len(refuse) != 0 {
 				t.Errorf("a peer the registry describes but cannot reach stopped the startup: %v", refuse)
 			}
@@ -1959,12 +2040,8 @@ func TestDialerGivesUpOnANodeAReloadRemoved(t *testing.T) {
 	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey,
 		dialers: make(map[string]*dialer), dialRetry: time.Millisecond}
 	c.cfg.Store(cfg)
-	c.reg.Store(&reg)
 
-	local, named := cfg.Link.Endpoints[0], cfg.Dial.To[0]
-	if _, _, ok := reg.FindNode(named.Org, named.Name); !ok {
-		t.Fatal("the fixture's own peer is not in its registry, so this proves nothing")
-	}
+	d := dialTo(t, cfg, cfg.Dial.To[0])
 	// A name the dialer takes and the resolver refuses, so the loop comes
 	// round again without the dial reaching the transport this fixture has no
 	// hub for. RFC 6761 reserves .invalid for exactly this. An endpoint the
@@ -1972,8 +2049,12 @@ func TestDialerGivesUpOnANodeAReloadRemoved(t *testing.T) {
 	// the case above this one.
 	unresolvable := "gateway.invalid"
 	reg[0].Nodes[1].Endpoints[0].Address = &unresolvable
+	c.storeIndex(trust(t, reg))
+	if _, err := c.index().Key(d.peer.Node()); err != nil {
+		t.Fatal("the fixture's own peer is not in its registry, so this proves nothing")
+	}
 	done := make(chan struct{})
-	go func() { c.runPeer(ctx, local, named, nil); close(done) }()
+	go func() { c.runPeer(ctx, d, nil); close(done) }()
 
 	// Still dialing while the registry names it.
 	select {
@@ -1983,8 +2064,7 @@ func TestDialerGivesUpOnANodeAReloadRemoved(t *testing.T) {
 	}
 
 	// The reload takes the node out, and the next pass of the loop notices.
-	empty := registry.Registry{}
-	c.reg.Store(&empty)
+	c.storeIndex(trust(t, registry.Registry{}))
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):

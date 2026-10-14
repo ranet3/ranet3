@@ -12,8 +12,9 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"log"
 
-	"ranet3.com/pkgs/ranet3/ike"
+	"ranet3.com/pkgs/ranet3/identity"
 )
 
 func main() {
@@ -21,6 +22,13 @@ func main() {
 	cn := flag.String("cn", "", "common name")
 	serial := flag.String("serial", "", "serial number")
 	flag.Parse()
-	dn := ike.EncodeIdentityDN(*org, *cn, *serial)
+	id, err := identity.From(*org, *cn, *serial)
+	if err != nil {
+		log.Fatal(err)
+	}
+	dn, err := id.DN()
+	if err != nil {
+		log.Fatal(err)
+	}
 	fmt.Printf("asn1dn:#%s\n", hex.EncodeToString(dn))
 }

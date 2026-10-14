@@ -188,10 +188,7 @@ func (r *reader) report(cmd *cobra.Command, result control.Result, err error) er
 	return emit(w, r.asJSON, result, func() { control.RenderResult(w, result) })
 }
 
-// completePeers offers the peers this node dials and the peers it holds a
-// session with, which between them cover everything redial and rekey act on.
-// A daemon that cannot be reached offers nothing rather than an error: a
-// completion that wrote one would put it in the middle of a command line.
+// completePeers offers the peers this node dials or holds a session with, and nothing when the daemon cannot be reached, since an error would land in the command line
 func (r *reader) completePeers(_ *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 	if len(args) > 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -200,11 +197,10 @@ func (r *reader) completePeers(_ *cobra.Command, args []string, toComplete strin
 	named := make(map[string]struct{})
 	if peers, err := client.Peers(); err == nil {
 		for _, peer := range peers {
-			named[peer.Organization+"/"+peer.CommonName] = struct{}{}
+			named[peer.Peer] = struct{}{}
 		}
 	}
-	// The sessions as well, because a peer that only dials this node has no
-	// entry in the peers list and is exactly the peer a redial is for.
+	// a peer that only dials this node has a session and no peers entry
 	if sessions, err := client.Sessions(); err == nil {
 		for _, session := range sessions {
 			if session.Peer != "" {

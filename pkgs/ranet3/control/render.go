@@ -409,24 +409,13 @@ func RenderSessions(w io.Writer, sessions []Session) {
 	table(w, []string{"Path", "Peer", "Remote", "End", "State", "SPI in/out", "Age", "Idle"}, rows)
 }
 
-// RenderPeers writes what this node dials and whether it got there, which is
-// the question a peers list in a config file cannot answer on its own.
+// RenderPeers writes what this node dials and whether a session holds each
 func RenderPeers(w io.Writer, peers []Peer) {
 	rows := make([][]string, 0, len(peers))
 	for _, p := range peers {
-		serial := p.SerialNumber
-		if serial == "" {
-			serial = "any"
-		}
-		rows = append(rows, []string{
-			p.Path,
-			p.Organization + "/" + p.CommonName,
-			serial,
-			source(p.Generated),
-			upDown(p.Connected),
-		})
+		rows = append(rows, []string{p.Path, p.Peer, source(p.Generated), upDown(p.Connected)})
 	}
-	table(w, []string{"Path", "Peer", "Serial", "From", "State"}, rows)
+	table(w, []string{"Path", "Peer", "From", "State"}, rows)
 }
 
 func upDown(up bool) string {

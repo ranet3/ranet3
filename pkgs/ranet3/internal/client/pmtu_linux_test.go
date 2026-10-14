@@ -192,11 +192,12 @@ func newHoleMesh(t *testing.T, far *namespaceThread) (alpha, bravo *loopbackNode
 	t.Cleanup(bravoMesh.Close)
 	farLink = holePair(t, far, alphaMesh.Name, bravoMesh.Name)
 
-	if alpha.client, err = newClient(alpha.cfg, private, reg, alphaMesh, nil, alpha.events); err != nil {
+	x := trust(t, reg)
+	if alpha.client, err = newClient(alpha.cfg, private, x, alphaMesh, nil, alpha.events); err != nil {
 		t.Fatalf("build alpha: %v", err)
 	}
 	if err := far.do(func() (err error) {
-		bravo.client, err = newClient(bravo.cfg, private, reg, bravoMesh, nil, bravo.events)
+		bravo.client, err = newClient(bravo.cfg, private, x, bravoMesh, nil, bravo.events)
 		return err
 	}); err != nil {
 		alpha.client.Close()

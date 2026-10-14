@@ -566,7 +566,7 @@ func TestIKEAuthChildOfferNamingAGroupIsAnsweredWithTheGroup(t *testing.T) {
 	// two stand-ins for the IKE_SA_INIT messages the AUTH payloads sign
 	message1, message2 := []byte("the IKE_SA_INIT request"), []byte("the IKE_SA_INIT response")
 	ni, nr := bytes.Repeat([]byte{6}, 32), bytes.Repeat([]byte{7}, 32)
-	idi := Identity{Organization: "testorg", CommonName: "client", SerialNumber: "2"}.encodeID()
+	idi := idBody("testorg/client:2")
 	child := espProposal([]byte{0, 0, 0, 9})
 	child.Transforms = append(child.Transforms, Transform{Type: TransDH, ID: DH_ECP_256})
 	header := Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}

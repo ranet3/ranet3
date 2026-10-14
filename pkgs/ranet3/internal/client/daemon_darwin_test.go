@@ -173,7 +173,7 @@ func (d *daemon) announce(prefix netip.Prefix) {
 // that opens the capture gate.
 func (d *daemon) live(t *testing.T) {
 	t.Helper()
-	if _, adopted := d.node.sessions.adoptPreferred("example/gateway/1@0", &ike.Session{}, true, nil); !adopted {
+	if _, adopted := d.node.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, true, nil); !adopted {
 		t.Fatal("the session was not adopted")
 	}
 	d.announce(ordinaryPrefix)

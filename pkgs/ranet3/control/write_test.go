@@ -49,12 +49,12 @@ func (s *writingSource) Reload(context.Context) (Result, error) {
 
 func (s *writingSource) Down(context.Context) (Result, error) {
 	s.verb = "down"
-	return s.answer("example/gateway/1@0")
+	return s.answer("example/gateway:1@0")
 }
 
 func (s *writingSource) Up(context.Context) (Result, error) {
 	s.verb = "up"
-	return s.answer("example/gateway/1@0")
+	return s.answer("example/gateway:1@0")
 }
 
 func (s *writingSource) answer(acted string) (Result, error) {

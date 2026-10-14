@@ -12,12 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
 type payloadExchange struct {
-	initiator, responder                   Identity
+	initiator, responder                   identity.Identity
 	idi, idr, initiatorAuth, responderAuth string
+	otherLocal                             []identity.Identity
+	requestIDr                             string
 }
 
 var (
@@ -38,11 +41,11 @@ func goldenContext(responder bool) *ikeContext {
 
 // each end sends the IDi, IDr and AUTH bytes ranet and strongSwan verify, and takes the other end's
 func TestIdentityAndAuthPayloadsKeepTheirBytes(t *testing.T) {
-	client := Identity{Organization: "testorg", CommonName: "client", SerialNumber: "2"}
+	client := identity.MustParse("testorg/client:2")
 	for name, x := range map[string]payloadExchange{
 		"the strongSwan check's names": {
 			initiator:     client,
-			responder:     Identity{Organization: "testorg", CommonName: "server", SerialNumber: "1"},
+			responder:     identity.MustParse("testorg/server:1"),
 			idi:           "09000000302f3110300e060355040a0c07746573746f7267310f300d06035504030c06636c69656e74310a30080603550405130132",
 			idr:           "09000000302f3110300e060355040a0c07746573746f7267310f300d06035504030c06736572766572310a30080603550405130131",
 			initiatorAuth: "0e00000007300506032b6570414fe458e1f05bcd413a5f8d44612a1ce4bc89e8ca64e1aa27ae262e88deebd288e862bf1447095e4640f06cb1848fbe19be0f382129705cd45c402423c3c106",
@@ -50,12 +53,23 @@ func TestIdentityAndAuthPayloadsKeepTheirBytes(t *testing.T) {
 		},
 		"a non-ASCII organization with a 130 octet common name": {
 			initiator: client,
-			responder: Identity{Organization: "r\xc3\xa9seau", CommonName: strings.Repeat("node", 32) + "-1", SerialNumber: "13001"},
+			responder: identity.MustParse("r%C3%A9seau/" + strings.Repeat("node", 32) + "-1:13001"),
 			idi:       "09000000302f3110300e060355040a0c07746573746f7267310f300d06035504030c06636c69656e74310a30080603550405130132",
 			idr: "090000003081b23110300e060355040a0c0772c3a97365617531818d30818a06035504030c8182" +
 				strings.Repeat("6e6f6465", 32) + "2d31310e300c060355040513053133303031",
 			initiatorAuth: "0e00000007300506032b6570414fe458e1f05bcd413a5f8d44612a1ce4bc89e8ca64e1aa27ae262e88deebd288e862bf1447095e4640f06cb1848fbe19be0f382129705cd45c402423c3c106",
 			responderAuth: "0e00000007300506032b65702d26b1c575218e3bbdec04977abc1c39bf2cf44a7a23e528ac134a09c79ce0896c4a7318a76cd37e38ba59845dbe1b75216408beeeb4bdbb5b26719d2fb4020b",
+		},
+		// strongSwan writes O and CN as PrintableString when the value allows it
+		"IDr in PrintableString naming one of two local endpoints": {
+			initiator:     client,
+			responder:     identity.MustParse("testorg/server:1"),
+			otherLocal:    []identity.Identity{identity.MustParse("testorg/server:2")},
+			requestIDr:    "09000000302f3110300e060355040a1307746573746f7267310f300d06035504031306736572766572310a30080603550405130131",
+			idi:           "09000000302f3110300e060355040a0c07746573746f7267310f300d06035504030c06636c69656e74310a30080603550405130132",
+			idr:           "09000000302f3110300e060355040a0c07746573746f7267310f300d06035504030c06736572766572310a30080603550405130131",
+			initiatorAuth: "0e00000007300506032b6570414fe458e1f05bcd413a5f8d44612a1ce4bc89e8ca64e1aa27ae262e88deebd288e862bf1447095e4640f06cb1848fbe19be0f382129705cd45c402423c3c106",
+			responderAuth: "0e00000007300506032b65705388c14fc14cb7690686c75cb527eb6ff751f2fc31ae65d8353c5c8e1019a480ddf7c691fa8b9c72de293739a8d87694a41fab2b4a4e3db094544454be14640b",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -77,14 +91,10 @@ func checkInitiatorPayloads(t *testing.T, x payloadExchange) {
 	ctx := goldenContext(false)
 	s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1)}
 	cfg := PeerConfig{
-		Organization:       x.initiator.Organization,
-		LocalCommonName:    x.initiator.CommonName,
-		LocalSerial:        x.initiator.SerialNumber,
-		LocalPrivateKey:    goldenInitiatorKey,
-		RemoteOrganization: x.responder.Organization,
-		RemoteCommonName:   x.responder.CommonName,
-		RemoteSerial:       x.responder.SerialNumber,
-		RemotePublicKey:    goldenResponderKey.Public().(ed25519.PublicKey),
+		Local:           x.initiator,
+		LocalPrivateKey: goldenInitiatorKey,
+		Remote:          x.responder,
+		RemotePublicKey: goldenResponderKey.Public().(ed25519.PublicKey),
 	}
 	sent := make(chan []RawPayload, 1)
 	peerLoop(t, peer, func() {
@@ -138,9 +148,9 @@ func checkResponderPayloads(t *testing.T, x payloadExchange) {
 	hub, initiatorHub := listenHub(t), listenHub(t)
 	r, err := NewResponder(ResponderConfig{
 		Hub:             hub,
-		Local:           []Identity{x.responder},
+		Local:           append(x.otherLocal, x.responder),
 		LocalPrivateKey: goldenResponderKey,
-		Lookup: func(id Identity) (ed25519.PublicKey, bool) {
+		Lookup: func(id identity.Identity) (ed25519.PublicKey, bool) {
 			return goldenInitiatorKey.Public().(ed25519.PublicKey), id == x.initiator
 		},
 	})
@@ -157,6 +167,10 @@ func checkResponderPayloads(t *testing.T, x payloadExchange) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { peer.Close() })
+	requestIDr := x.idr
+	if x.requestIDr != "" {
+		requestIDr = x.requestIDr
+	}
 	ctx := goldenContext(true)
 	s := &Session{mux: mux, current: ctx}
 	if err := mux.RegisterIKE(ctx.spiI); err != nil {
@@ -168,7 +182,7 @@ func checkResponderPayloads(t *testing.T, x payloadExchange) {
 	request, err := EncryptMessage(goldenSuite, ctx.skei, Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR,
 		ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}, nil, []RawPayload{
 		{Type: PayloadIDi, Body: goldenBytes(x.idi)},
-		{Type: PayloadIDr, Body: goldenBytes(x.idr)},
+		{Type: PayloadIDr, Body: goldenBytes(requestIDr)},
 		{Type: PayloadAUTH, Body: goldenBytes(x.initiatorAuth)},
 		{Type: PayloadSA, Body: EncodeSA([]Proposal{espProposal([]byte{0, 0, 0, 9})})},
 		{Type: PayloadTSi, Body: fullRangeSelectors()},

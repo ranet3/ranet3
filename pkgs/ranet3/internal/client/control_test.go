@@ -5,14 +5,18 @@ package client
 
 import (
 	"net/netip"
+	"slices"
 	"testing"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -134,5 +138,42 @@ func TestAnnouncementTakesTheEgressPrefixesFromTheTranslator(t *testing.T) {
 	routes := c.announced(cfg)
 	if len(routes) != 2 || routes[1].Destination != exit {
 		t.Errorf("announced %v, want cap.route's list and the exit's own prefix", routes)
+	}
+}
+
+// a dial.all peer is dialed at its node and held at the endpoint that answered, so its row is connected through the session's node and local endpoint
+func TestPeersMatchSessionsByNodeAndLocalEndpoint(t *testing.T) {
+	endpoints := func(serials ...string) []registry.Endpoint {
+		var out []registry.Endpoint
+		for i, serial := range serials {
+			out = append(out, registry.Endpoint{SerialNumber: serial, AddressFamily: []string{"ip4", "ip6"}[i], Port: 13000})
+		}
+		return out
+	}
+	c := &Client{sessions: newSessionSet()}
+	c.storeIndex(trust(t, registry.Registry{{Organization: "example", Nodes: []registry.Node{
+		{CommonName: "local", Endpoints: endpoints("0", "1")},
+		{CommonName: "gateway", Endpoints: endpoints("1", "2")},
+		{CommonName: "other", Endpoints: endpoints("0", "3")},
+	}}}))
+	c.cfg.Store(&config.Config{
+		Node: config.Node{Org: "example", Name: "local"},
+		Link: config.Link{Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}, {Serial: "1", Family: "ip6"}}},
+		Dial: config.Dial{To: []config.Peer{{Org: "example", Name: "gateway", Serial: "1"}}, All: true},
+	})
+	for _, held := range []struct{ remote, local string }{{"example/gateway:1", "example/local:0"}, {"example/other:3", "example/local:1"}} {
+		remote, local := identity.MustParse(held.remote), identity.MustParse(held.local)
+		if _, adopted := c.sessions.adopt(identity.Path(remote, local), &ike.Session{}, local, remote, true, nil, nil); !adopted {
+			t.Fatalf("the session with %s was not adopted", held.remote)
+		}
+	}
+	want := []control.Peer{
+		{Path: "example/gateway:1@0", Peer: "example/gateway:1", Connected: true},
+		{Path: "example/gateway:1@1", Peer: "example/gateway:1"},
+		{Path: "example/other@0", Peer: "example/other", Generated: true},
+		{Path: "example/other@1", Peer: "example/other", Connected: true, Generated: true},
+	}
+	if got := c.Peers(); !slices.Equal(got, want) {
+		t.Errorf("peers %+v, want %+v", got, want)
 	}
 }

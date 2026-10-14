@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -35,7 +36,7 @@ func (c *Client) DebugPMTU(peer string) control.PMTUInfo {
 	}
 	now := time.Now()
 	for _, live := range c.sessions.snapshot() {
-		if live.pmtu == nil || peer != "" && !matchesPeer(live.path, peer) {
+		if live.pmtu == nil || peer != "" && !identity.Names(live.path, peer) {
 			continue
 		}
 		info.Sessions = append(info.Sessions, live.pmtu.view(now))

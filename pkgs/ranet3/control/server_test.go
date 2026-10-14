@@ -35,11 +35,11 @@ func (fakeSource) Routes() []Route {
 }
 
 func (fakeSource) Sessions() []Session {
-	return []Session{{Path: "example/gateway/0@0", Peer: "example/gateway", Active: true}}
+	return []Session{{Path: "example/gateway:0@0", Peer: "example/gateway", Active: true}}
 }
 
 func (fakeSource) Peers() []Peer {
-	return []Peer{{Path: "example/gateway/@0", Organization: "example", CommonName: "gateway", Generated: true}}
+	return []Peer{{Path: "example/gateway@0", Peer: "example/gateway", Generated: true}}
 }
 
 func (fakeSource) Metrics(w io.Writer) {
@@ -55,7 +55,7 @@ func TestHandlerServesEveryReadAsJSON(t *testing.T) {
 		PathStatus:    `"common_name":"node"`,
 		PathNeighbors: `"peer":"example/gateway@0"`,
 		PathRoutes:    `"destination":"2001:db8::/32"`,
-		PathSessions:  `"path":"example/gateway/0@0"`,
+		PathSessions:  `"path":"example/gateway:0@0"`,
 		PathPeers:     `"generated":true`,
 	} {
 		t.Run(path, func(t *testing.T) {

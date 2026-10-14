@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/events"
 )
 
@@ -40,7 +41,7 @@ func selects(query control.EventQuery) events.Match {
 		wanted = append(wanted, attribute{key: key, values: spellings(text)})
 	}
 	return func(kind, peer string, attrs []slog.Attr) bool {
-		if query.Peer != "" && !matchesPeer(peer, query.Peer) {
+		if query.Peer != "" && !identity.Names(peer, query.Peer) {
 			return false
 		}
 		for _, want := range wanted {

@@ -14,57 +14,81 @@ import (
 	"slices"
 	"strings"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 )
 
-// validateRuntimeConfig refuses a configuration the trust document does not
-// support. It is the startup check: nothing is running and nobody is relying
-// on this node yet, so a peer that cannot be resolved is a mistake worth
-// stopping for. A peer the document names but this node cannot dial is not
-// such a mistake and is logged instead, see validatePeers. A reload checks the
-// two halves separately, see Reload.
-func validateRuntimeConfig(cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.Registry) error {
-	families, err := validateLocalConfig(cfg, privateKey, reg)
+// validateRuntimeConfig is the startup check, which refuses a configuration the trust document does not support and logs a peer it only cannot dial
+func validateRuntimeConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.Index) error {
+	ids, families, err := validateLocalConfig(cfg, privateKey, x)
 	if err != nil {
 		return err
 	}
 	if err := refuseEgressAdvertisedUnconditionally(cfg); err != nil {
 		return err
 	}
-	refuse, skip := validatePeers(cfg, reg, families)
+	refuse, skip := validatePeers(effectivePeers(ids, cfg.Dial.All, x), x, families)
 	for _, problem := range skip {
 		log.Printf("%v, so nothing will dial it", problem)
 	}
 	return errors.Join(refuse...)
 }
 
-// validateLocalConfig checks what this node says about itself, and reports the
-// address families its own endpoints cover. Every one of these is fatal on a
-// reload too: a node the trust document no longer names, or whose key no
-// longer matches its organization, is not a node that should carry on with a
-// new one.
-func validateLocalConfig(cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.Registry) (map[string]struct{}, error) {
-	organization, localNode, ok := reg.FindNode(cfg.Node.Org, cfg.Node.Name)
-	if !ok {
-		return nil, fmt.Errorf("config: node %q not found in organization %q", cfg.Node.Name, cfg.Node.Org)
-	}
-	publicKey, err := organization.ParsePublicKey()
+// validateLocalConfig checks what this node says about itself, and reports its identities and the address families its own endpoints cover
+// each refusal is fatal on a reload too, since a node the trust document no longer names, or whose key no longer matches, should not carry on with a new one
+func validateLocalConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.Index) (identities, map[string]struct{}, error) {
+	ids, err := configIdentities(cfg)
 	if err != nil {
-		return nil, err
+		return identities{}, nil, err
+	}
+	publicKey, err := x.Key(ids.node)
+	if err != nil {
+		return identities{}, nil, fmt.Errorf("config: node: %w", err)
 	}
 	if !bytes.Equal(privateKey.Public().(ed25519.PublicKey), publicKey) {
-		return nil, fmt.Errorf("config: auth.key does not match organization %q", cfg.Node.Org)
+		return identities{}, nil, fmt.Errorf("config: auth.key does not match the key the trust document holds for %s", ids.node)
 	}
 	localFamilies := make(map[string]struct{}, len(cfg.Link.Endpoints))
-	for _, endpoint := range cfg.Link.Endpoints {
-		registered, ok := localNode.FindEndpoint(endpoint.Serial)
-		if !ok || registered.AddressFamily != endpoint.Family {
-			return nil, fmt.Errorf("config: link.endpoints %q/%s does not match the trust document", endpoint.Serial, endpoint.Family)
+	for i, endpoint := range cfg.Link.Endpoints {
+		registered := x.Targets(ids.endpoints[i])
+		if len(registered) == 0 || registered[0].AddressFamily != endpoint.Family {
+			return identities{}, nil, fmt.Errorf("config: link.endpoints %q/%s does not match the trust document", endpoint.Serial, endpoint.Family)
 		}
 		localFamilies[endpoint.Family] = struct{}{}
 	}
-	return localFamilies, nil
+	return ids, localFamilies, nil
+}
+
+// identities lists endpoints in link.endpoints order and peers in dial.to order
+type identities struct {
+	node      identity.Identity
+	endpoints []identity.Identity
+	peers     []identity.Identity
+}
+
+// configIdentities draws no error for a config that loaded, since config.Validate refuses an empty organization, name or endpoint serial
+func configIdentities(cfg *config.Config) (identities, error) {
+	node, err := identity.From(cfg.Node.Org, cfg.Node.Name, "")
+	if err != nil {
+		return identities{}, err
+	}
+	ids := identities{node: node}
+	for _, endpoint := range cfg.Link.Endpoints {
+		id, err := node.At(endpoint.Serial)
+		if err != nil {
+			return identities{}, err
+		}
+		ids.endpoints = append(ids.endpoints, id)
+	}
+	for _, peer := range cfg.Dial.To {
+		id, err := identity.From(peer.Org, peer.Name, peer.Serial)
+		if err != nil {
+			return identities{}, err
+		}
+		ids.peers = append(ids.peers, id)
+	}
+	return ids, nil
 }
 
 // refuseEgressAdvertisedUnconditionally rejects a prefix cap.egress offers to
@@ -117,75 +141,72 @@ func MeshAddresses(cfg *config.Config) []netip.Addr {
 	return out
 }
 
-// effectivePeers is who this node dials: the configured list, or every node
-// the trust document names when dial.all is set, which is the N-to-N
-// reconciliation ranet does, with the configured entries kept ahead of the
-// generated ones. This node itself is never in it. Registry order is kept, so
-// the same pair of files produces the same order on every start.
-func effectivePeers(cfg *config.Config, reg registry.Registry) []config.Peer {
-	if !cfg.Dial.All {
-		return cfg.Dial.To
+// effectivePeers is who this node dials: the configured list, or when all is set that list followed by every other node the trust document names, the N-to-N reconciliation ranet does
+// this node is never in it, and the document's order is kept, so one pair of files gives one order on every start
+func effectivePeers(ids identities, all bool, x *registry.Index) []identity.Identity {
+	if !all {
+		return ids.peers
 	}
-	named := make(map[string]struct{}, len(cfg.Dial.To))
-	for _, peer := range cfg.Dial.To {
-		named[peer.Org+"\x00"+peer.Name] = struct{}{}
-	}
-	peers := slices.Clone(cfg.Dial.To)
-	for _, org := range reg {
-		for _, node := range org.Nodes {
-			if org.Organization == cfg.Node.Org && node.CommonName == cfg.Node.Name {
-				continue
-			}
-			// An explicit entry wins for its node: it can pin a serial, and a
-			// generated one names none, so generating a second entry for the
-			// same node would dial both endpoints.
-			if _, ok := named[org.Organization+"\x00"+node.CommonName]; ok {
-				continue
-			}
-			peers = append(peers, config.Peer{Org: org.Organization, Name: node.CommonName})
+	peers := slices.Clone(ids.peers)
+	for _, node := range x.Nodes() {
+		// an explicit entry wins for its node, since it can pin a serial and a generated one would dial every endpoint
+		if node == ids.node || slices.ContainsFunc(ids.peers, func(peer identity.Identity) bool { return peer.Node() == node }) {
+			continue
 		}
+		peers = append(peers, node)
 	}
 	return peers
 }
 
-// validatePeers reports one error per peer the trust document cannot support,
-// split into what a startup refuses and what it only logs. They are returned
-// rather than raised because a reload treats both as advisory, see Reload.
-//
-// The split matters for a single-stack node. A community document holds nodes
-// reachable over one address family only, so a v4-only host finds peers it can
-// never dial however correct its own configuration is, and refusing to start
-// over them leaves that host with no way to run at all. runPeer already ends
-// the dialer for exactly this case. A peer the document does not name, or one
-// whose named endpoint is missing or of the wrong family, stays fatal: each of
-// those is somebody having written the wrong thing down.
-func validatePeers(cfg *config.Config, reg registry.Registry, localFamilies map[string]struct{}) (refuse, skip []error) {
-	for _, peer := range effectivePeers(cfg, reg) {
-		_, node, ok := reg.FindNode(peer.Org, peer.Name)
-		if !ok {
-			refuse = append(refuse, fmt.Errorf("config: peer node %q not found in organization %q", peer.Name, peer.Org))
+type dial struct {
+	// path names the dialer, and is the path of the session it opens where the peer is an endpoint
+	path    string
+	local   config.Endpoint
+	localID identity.Identity
+	// peer is a node, or the one endpoint of it dial.to pins
+	peer identity.Identity
+	// generated marks a peer dial.all took from the trust document
+	generated bool
+}
+
+func dials(cfg *config.Config, ids identities, x *registry.Index) []dial {
+	peers := effectivePeers(ids, cfg.Dial.All, x)
+	out := make([]dial, 0, len(cfg.Link.Endpoints)*len(peers))
+	for i, local := range cfg.Link.Endpoints {
+		for j, peer := range peers {
+			out = append(out, dial{path: identity.Path(peer, ids.endpoints[i]), local: local, localID: ids.endpoints[i],
+				peer: peer, generated: j >= len(ids.peers)})
+		}
+	}
+	return out
+}
+
+// validatePeers splits the peers the trust document cannot support into what a startup refuses and what it only logs, and a reload logs both
+// a node with no endpoint in a local family is only logged, or a v4-only host could never start against a document holding v6-only nodes
+func validatePeers(peers []identity.Identity, x *registry.Index, localFamilies map[string]struct{}) (refuse, skip []error) {
+	for _, peer := range peers {
+		if _, err := x.Key(peer.Node()); err != nil {
+			refuse = append(refuse, fmt.Errorf("config: peer node %s not found", peer.Node()))
 			continue
 		}
-		if peer.Serial != "" {
-			endpoint, ok := node.FindEndpoint(peer.Serial)
-			if !ok {
-				refuse = append(refuse, fmt.Errorf("config: peer %s/%s endpoint %q not found", peer.Org, peer.Name, peer.Serial))
+		targets := x.Targets(peer)
+		if peer != peer.Node() {
+			if len(targets) == 0 {
+				refuse = append(refuse, fmt.Errorf("config: peer endpoint %s not found", peer))
 				continue
 			}
-			if _, ok := localFamilies[endpoint.AddressFamily]; !ok {
-				refuse = append(refuse, fmt.Errorf("config: peer endpoint %s/%s/%s has no matching local address family", peer.Org, peer.Name, peer.Serial))
+			if _, ok := localFamilies[targets[0].AddressFamily]; !ok {
+				refuse = append(refuse, fmt.Errorf("config: peer endpoint %s has no matching local address family", peer))
 				continue
 			}
-			if !endpoint.Dialable() {
-				skip = append(skip, fmt.Errorf("config: peer endpoint %s/%s/%s carries no address", peer.Org, peer.Name, peer.Serial))
+			if !targets[0].Dialable() {
+				skip = append(skip, fmt.Errorf("config: peer endpoint %s carries no address", peer))
 			}
 			continue
 		}
-		// Dialable is part of the question, not a refinement of it: an
-		// endpoint the dialer will not take is reported here, once, rather
-		// than by the dialer on every attempt.
+		// an endpoint the dialer will not take is reported here once rather than on every attempt
 		compatible, reachable := false, false
-		for _, endpoint := range node.Endpoints {
+		for _, endpoint := range targets {
 			if _, ok := localFamilies[endpoint.AddressFamily]; !ok {
 				continue
 			}
@@ -197,9 +218,9 @@ func validatePeers(cfg *config.Config, reg registry.Registry, localFamilies map[
 		}
 		switch {
 		case !compatible:
-			skip = append(skip, fmt.Errorf("config: peer %s/%s has no endpoint matching a local address family", peer.Org, peer.Name))
+			skip = append(skip, fmt.Errorf("config: peer %s has no endpoint matching a local address family", peer))
 		case !reachable:
-			skip = append(skip, fmt.Errorf("config: peer %s/%s has no endpoint carrying an address", peer.Org, peer.Name))
+			skip = append(skip, fmt.Errorf("config: peer %s has no endpoint carrying an address", peer))
 		}
 	}
 	return refuse, skip

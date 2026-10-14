@@ -138,7 +138,7 @@ func (k *recordedKernel) meshHeld() []recordedRoute {
 // the fallback serves the transport's socket, which a down keeps open, and up puts the routes and the address back
 func TestDownTakesTheMeshDeviceBareAndKeepsTheUnderlayFallback(t *testing.T) {
 	d := startDownable(t, recordedHost(t), t.TempDir())
-	holdSessions(d.node).adopt(t, d.node, "example/gateway/1@0")
+	holdSessions(d.node).adopt(t, d.node, "example/gateway:1@0")
 	d.announce(ordinaryPrefix)
 	waitForKernel(t, "the ordinary prefix and the announced address are on the mesh device", d.dressed)
 	fallback := d.host.scopedDefaults()

@@ -15,8 +15,8 @@ import (
 	"strconv"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
-	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 )
 
@@ -29,51 +29,32 @@ func (c *Client) reconnectDelay() time.Duration {
 	return defaultReconnectDelay
 }
 
-// runPeer maintains one peer connection for the client's lifetime,
-// reconnecting on any failure (network blip, peer restart, etc.) rather
-// than requiring a manual restart.
-//
-// wake cuts the reconnect delay short, which the redial verb sends after it
-// has dropped whatever session this node held for the peer.
-func (c *Client) runPeer(ctx context.Context, local config.Endpoint, p config.Peer, wake <-chan struct{}) {
-	reg := c.registry()
-	name := fmt.Sprintf("%s/%s@%s", p.Org, p.Name, local.Serial)
-	// A node the registry does not name is not dialed at all. The check runs
-	// whether or not the peer pins a serial number: without it a peer that
-	// pins none enters the retry loop and logs the same lookup failure every
-	// reconnect delay for the life of the process, which a decommissioned
-	// entry left in peers: does.
-	_, node, ok := reg.FindNode(p.Org, p.Name)
-	if !ok {
-		log.Printf("peer %s: node not found", name)
+// runPeer dials d again whenever its session ends, at once when wake fires and otherwise after the reconnect delay
+func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
+	x := c.index()
+	if _, err := x.Key(d.peer.Node()); err != nil {
+		log.Printf("peer %s: node not found", d.path)
 		return
 	}
-	// And a node with no endpoint in this local endpoint's address family is
-	// not dialable from it, whether or not the peer pins a serial number.
-	// syncPeers starts one dialer per (local endpoint, peer) pair while the
-	// startup check only asks whether some endpoint of the node matches some
-	// local family, so a dual-stack node with single-stack peers is the
-	// ordinary configuration: without this the v4 dialer for a v6-only peer
-	// logs the same resolution failure every reconnect delay for the life of
-	// the process.
-	if p.Serial != "" {
-		ep, ok := node.FindEndpoint(p.Serial)
-		if !ok {
-			log.Printf("peer %s: endpoint serial %q not found", name, p.Serial)
+	// a dual-stack node runs a dialer per local endpoint, and a peer without an endpoint of this one's family is ordinary
+	targets := x.Targets(d.peer)
+	if d.peer != d.peer.Node() {
+		if len(targets) == 0 {
+			log.Printf("peer %s: endpoint %s not found", d.path, d.peer)
 			return
 		}
-		if ep.AddressFamily != local.Family {
-			log.Printf("peer %s: endpoint serial %q is %s, not %s", name, p.Serial, ep.AddressFamily, local.Family)
+		if targets[0].AddressFamily != d.local.Family {
+			log.Printf("peer %s: endpoint %s is %s, not %s", d.path, d.peer, targets[0].AddressFamily, d.local.Family)
 			return
 		}
-		if !ep.Dialable() {
-			log.Printf("peer %s: endpoint serial %q carries no address", name, p.Serial)
+		if !targets[0].Dialable() {
+			log.Printf("peer %s: endpoint %s carries no address", d.path, d.peer)
 			return
 		}
-	} else if !slices.ContainsFunc(node.Endpoints, func(ep registry.Endpoint) bool {
-		return ep.AddressFamily == local.Family && ep.Dialable()
+	} else if !slices.ContainsFunc(targets, func(target registry.Target) bool {
+		return target.AddressFamily == d.local.Family && target.Dialable()
 	}) {
-		slog.Debug("peer has no endpoint carrying an address in this address family", "peer", name, "family", local.Family)
+		slog.Debug("peer has no endpoint carrying an address in this address family", "peer", d.path, "family", d.local.Family)
 		return
 	}
 	var failure repeatedFailure
@@ -81,37 +62,29 @@ func (c *Client) runPeer(ctx context.Context, local config.Endpoint, p config.Pe
 		if ctx.Err() != nil {
 			return
 		}
-		// Re-checked every pass, not only before the loop: a node removed from
-		// the registry while this dialer is running hits exactly the case the
-		// check above exists to prevent, and logs the same lookup failure
-		// every reconnect delay for the life of the process. Leaving the loop
-		// also makes Reload's "so nothing will dial it" true, which it was not
-		// while syncPeers kept the dialer alive. forgetDialer drops the map
-		// entry, so the next reload starts a new one if the node comes back.
-		if _, _, ok := c.registry().FindNode(p.Org, p.Name); !ok {
-			log.Printf("peer %s: no longer in the registry, giving up", name)
+		// a reload may remove the node while this dialer runs
+		if _, err := c.index().Key(d.peer.Node()); err != nil {
+			log.Printf("peer %s: no longer in the registry, giving up", d.path)
 			return
 		}
-		err := c.connectPeer(ctx, local, p, name)
+		err := c.connectPeer(ctx, d)
 		if ctx.Err() != nil || c.stopping() {
 			return
 		}
 		switch {
 		case err == nil:
 		case errors.Is(err, errSessionEstablished):
-			// Not a failure and not worth a log line every reconnect delay.
-			// The loop keeps running so this dialer takes over the moment the
-			// peer's session ends.
+			// not a failure, and this dialer takes over once the peer's session ends
 		case failure.alreadySaid(err):
-			slog.Debug("peer dial failed again", "peer", name, "err", err)
+			slog.Debug("peer dial failed again", "peer", d.path, "err", err)
 		default:
-			log.Printf("peer %s: %v, reconnecting in %s", name, err, c.reconnectDelay())
+			log.Printf("peer %s: %v, reconnecting in %s", d.path, err, c.reconnectDelay())
 		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-wake:
-			c.events.Emit("dial.woken", peerPath(p, local))
+			c.events.Emit("dial.woken", d.path)
 		case <-time.After(c.reconnectDelay()):
 		}
 	}
@@ -142,45 +115,37 @@ func (f *repeatedFailure) alreadySaid(err error) bool {
 	return true
 }
 
-// resolveEndpoint picks which of a node's endpoints to dial and the address it
-// resolved to: the config-specified serial if given, otherwise the first one
-// whose address actually resolves (a node commonly has endpoints for address
-// families or links that aren't currently usable, e.g. address: null). The
-// address is returned rather than looked up again by the caller, because a
-// name costs a resolver round trip and an unpinned dial made two of them.
-func resolveEndpoint(ctx context.Context, node registry.Node, serial, family string) (registry.Endpoint, net.IP, error) {
-	if serial != "" {
-		ep, ok := node.FindEndpoint(serial)
-		if !ok {
-			return registry.Endpoint{}, nil, fmt.Errorf("no endpoint with serial %q", serial)
+// resolveEndpoint returns the address it resolved with the endpoint, since resolving a name again costs a resolver round trip
+func resolveEndpoint(ctx context.Context, x *registry.Index, peer identity.Identity, family string) (registry.Target, net.IP, error) {
+	targets := x.Targets(peer)
+	if peer != peer.Node() {
+		if len(targets) == 0 {
+			return registry.Target{}, nil, fmt.Errorf("no endpoint %s", peer)
 		}
-		if ep.AddressFamily != family {
-			return registry.Endpoint{}, nil, fmt.Errorf("endpoint %q is %s, want %s", serial, ep.AddressFamily, family)
+		if targets[0].AddressFamily != family {
+			return registry.Target{}, nil, fmt.Errorf("endpoint %s is %s, want %s", peer, targets[0].AddressFamily, family)
 		}
-		address, err := ep.ResolveRemote(ctx)
+		address, err := targets[0].ResolveRemote(ctx)
 		if err != nil {
-			return registry.Endpoint{}, nil, err
+			return registry.Target{}, nil, err
 		}
-		return ep, address, nil
+		return targets[0], address, nil
 	}
-	for _, ep := range node.Endpoints {
-		if ep.AddressFamily != family || !ep.Dialable() {
+	for _, target := range targets {
+		if target.AddressFamily != family || !target.Dialable() {
 			continue
 		}
-		if address, err := ep.ResolveRemote(ctx); err == nil {
-			return ep, address, nil
+		if address, err := target.ResolveRemote(ctx); err == nil {
+			return target, address, nil
 		}
 	}
-	return registry.Endpoint{}, nil, fmt.Errorf("no endpoint currently resolves to an address")
+	return registry.Target{}, nil, fmt.Errorf("no endpoint currently resolves to an address")
 }
 
-// connectPeer runs one IKE session against a peer end to end: handshake,
-// ESP setup, mesh/babel registration, and servicing the connection until
-// it dies (network failure, peer restart, DPD timeout). Returning means
-// the connection is gone, and runPeer decides whether/when to retry.
-func (c *Client) connectPeer(ctx context.Context, local config.Endpoint, p config.Peer, name string) (err error) {
-	// recorded under the dialer's path until the endpoint resolves and under the session's path after, as the dialing log line is
-	path := peerPath(p, local)
+// connectPeer dials d once and serves the session until it ends
+func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
+	// events go under the dialer's path until the endpoint resolves and under the session's after
+	path := d.path
 	established := false
 	defer func() {
 		// a dial that ended short of a session, which another session holding the path and a node going down are not
@@ -188,42 +153,29 @@ func (c *Client) connectPeer(ctx context.Context, local config.Endpoint, p confi
 			c.events.Emit("dial.failed", path, slog.String("err", err.Error()))
 		}
 	}()
-	cfg, reg := c.config(), c.registry()
+	cfg, x := c.config(), c.index()
 	crypto := cfg.Crypto()
-	org, node, ok := reg.FindNode(p.Org, p.Name)
-	if !ok {
-		return fmt.Errorf("node %q not found in organization %q", p.Name, p.Org)
-	}
-	ep, remoteIP, err := resolveEndpoint(ctx, node, p.Serial, local.Family)
+	ep, remoteIP, err := resolveEndpoint(ctx, x, d.peer, d.local.Family)
 	if err != nil {
 		return err
 	}
-	remotePub, err := org.ParsePublicKey()
+	remotePub, err := x.Key(ep.ID)
 	if err != nil {
 		return err
 	}
-	localIdentity := ike.Identity{Organization: cfg.Node.Org, CommonName: cfg.Node.Name, SerialNumber: local.Serial}
-	remoteIdentity := ike.Identity{Organization: p.Org, CommonName: node.CommonName, SerialNumber: ep.SerialNumber}
-	sessionName := sessionPath(remoteIdentity, localIdentity)
+	sessionName := identity.Path(ep.ID, d.localID)
 	path = sessionName
 	if c.sessions.holds(sessionName) {
-		// The peer already reached us over this same pair of endpoints. Dialing
-		// anyway opens a second SA that one end or the other has to resolve
-		// away, and doing that on every reconnect delay is how two nodes spend
-		// a full mesh replacing each other's sessions.
+		// a second SA over this pair of endpoints would only be resolved away
 		return errSessionEstablished
 	}
 	log.Printf("peer %s: dialing %s:%d", sessionName, remoteIP, ep.Port)
 	c.events.Emit("dial.attempt", sessionName, slog.String("remote", net.JoinHostPort(remoteIP.String(), strconv.Itoa(int(ep.Port)))))
 
 	ikeCfg := ike.PeerConfig{
-		Organization:       cfg.Node.Org,
-		LocalCommonName:    cfg.Node.Name,
-		LocalSerial:        local.Serial,
+		Local:              d.localID,
 		LocalPrivateKey:    c.privateKey,
-		RemoteCommonName:   node.CommonName,
-		RemoteOrganization: p.Org,
-		RemoteSerial:       ep.SerialNumber,
+		Remote:             ep.ID,
 		RemotePublicKey:    remotePub,
 		RemoteAddr:         remoteIP,
 		RemotePort:         int(ep.Port),
@@ -241,7 +193,7 @@ func (c *Client) connectPeer(ctx context.Context, local config.Endpoint, p confi
 		return fmt.Errorf("handshake: %w", err)
 	}
 	established = true
-	return c.serveSession(ctx, sess, name, sessionName, localIdentity, remoteIdentity, remoteIdentity)
+	return c.serveSession(ctx, sess, d.localID, ep.ID, true)
 }
 
 // errSessionEstablished means this peer is already reachable over a session

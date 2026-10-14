@@ -11,33 +11,25 @@ import (
 	"log"
 	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
-// serveSession runs one established IKE SA until it ends, whichever side
-// opened it: ESP keying, mesh and Babel registration, inbound delivery and the
-// IKE control loop. Only the handshake differs between dialing and answering,
-// which is also why the resolution against a competing session happens here
-// rather than in each caller: the babel registration has to go in under the
-// same decision, and this is where the peer exists.
-//
-// It returns errSessionEstablished when another session already holds the
-// path, which is not a failure. name appears in logs, while sessionName identifies
-// this peer to the mesh and to babel, so it must be stable and unique per
-// peer. initiator and responder are this SA's own roles, the end that opened
-// it and the end that answered.
-func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sessionName string, initiator, responder, remote ike.Identity) error {
+// serveSession runs one established IKE SA until it ends, whichever end opened it, and dialed says this node did
+// the resolution against a competing session happens here, since the babel registration goes in under the same decision
+// it returns errSessionEstablished when another session already holds the path, which is not a failure
+func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, remote identity.Identity, dialed bool) error {
 	defer sess.Mux().Close()
-	log.Printf("peer %s: connected (SPI %08x/%08x)", name, sess.Child.LocalSPI, sess.Child.RemoteSPI)
+	sessionName := identity.Path(remote, local)
+	log.Printf("peer %s: connected (SPI %08x/%08x)", sessionName, sess.Child.LocalSPI, sess.Child.RemoteSPI)
 	role := "responder"
-	if remote == responder {
+	if dialed {
 		role = "initiator"
 	}
 	// read before adopt publishes the session, after which a rekey may write sess.Child
@@ -46,19 +38,11 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 
 	tunnel := &tunnel{replayWindow: c.config().Crypto().ReplayWindow(), started: time.Now()}
 	tunnel.askedAt.Store(-int64(rekeyAskInterval))
-	// requestRekey owns the goroutine and the one-at-a-time guard, so this
-	// runs on its own and may block.
-	//
-	// A rekey that fails is reported and left alone. RFC 7296 section 1.3.1:
-	// "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA:
-	// there is no reason to lose the work done to set up the IKE SA." Every
-	// notify below 16384 arrives here as an error, TEMPORARY_FAILURE and
-	// NO_ADDITIONAL_SAS included, and both are ordinary: two ends recreating a
-	// deleted Child SA at once produce exactly the second. The schedule
-	// retries, and the session keeps carrying what it has.
+	// requestRekey owns the goroutine and the one-at-a-time guard, and this may block
+	// a failed rekey leaves the IKE SA up, as RFC 7296 section 1.3.1 asks, and the schedule retries
 	tunnel.rekey = func() {
 		if err := sess.RekeyChildProactively(); err != nil && !sess.Mux().IsClosed() {
-			log.Printf("peer %s: proactive Child SA rekey: %v", name, err)
+			log.Printf("peer %s: proactive Child SA rekey: %v", sessionName, err)
 		}
 	}
 	if err := tunnel.install(sess.Child); err != nil {
@@ -69,27 +53,20 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 	pmtu := newPathDriver(sess.Mux(), c.speaker.Probe, c.events, &c.probes, c.Mesh.Steering, cmp.Or(c.probeTimeout, defaultProbeTimeout), cmp.Or(c.confirmEvery, confirmInterval))
 	peer := netstack.NewPeer(sessionName, func(count int) (netstack.BatchSealer, error) {
 		sealer, err := tunnel.reserve(count)
-		// Closing the mux here turns the first babel hello after a refusal,
-		// four seconds later, into a full session teardown that withdraws
-		// every route through this peer. See fatalReserveError for the two
-		// refusals that do not deserve that.
+		// closing the mux withdraws every route through this peer, which fatalReserveError keeps to the refusals that deserve it
 		if fatalReserveError(err) {
 			_ = sess.Mux().Close()
 		}
 		return sealer, err
 	}, pmtu.transmit, c.events.Emit)
 	pmtu.peer = peer
-	// The mux is closed before the peer's sender is waited for, not after.
-	// Peer.Close waits with no deadline for a sender that may be inside
-	// SendESPBatch on this very mux, and the defer at the top of this function
-	// runs last, so on that ordering a send that would not return held the
-	// whole shutdown. Mux.Close is written to be called twice.
+	// the mux closes before Peer.Close, which waits with no deadline for a sender that may be inside SendESPBatch on it
 	defer func() {
 		_ = sess.Mux().Close()
 		peer.Close()
 	}()
 	route := pmtu.open()
-	release, adopted := c.sessions.adopt(sessionName, sess, initiator, responder, remote, pmtu, func() func() {
+	release, adopted := c.sessions.adopt(sessionName, sess, local, remote, dialed, pmtu, func() func() {
 		// under the set's lock, so a reload's sweep of the set either finds this session or stored the link.mtu read here
 		pmtu.start(c.config().Link.SessionMTU(), route)
 		return c.speaker.AddPeer(peer).Close
@@ -100,14 +77,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 	}
 	// recorded once the session holds its path, so one that lost the path is recorded only as resolved
 	c.events.Emit("ike.session.established", sessionName, established...)
-	// A dialer that a reload dropped cancels this context while the node keeps
-	// running, and this end then stops: the peer carries on sending ESP
-	// into an SPI nobody answers until its own liveness check expires, which
-	// is up to seventy seconds. closeAll does this for every session at
-	// shutdown, for exactly the reason its doc gives, and this is the same
-	// thing for one peer. A session closeAll swept is not this case, though
-	// the sweep stops its dialer while the node runs, because the sweep took
-	// it out of the set first.
+	// without a Delete the peer sends into a dead SPI until its liveness check expires, up to seventy seconds
 	defer c.tellDropped(ctx, sessionName, sess)
 
 	var plain [][]byte
@@ -136,7 +106,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 			}
 		}
 		if dropped > 0 {
-			c.noteInboundDropped(name, dropped, lastError)
+			c.noteInboundDropped(sessionName, dropped, lastError)
 		}
 		c.countInbound(len(results) - dropped)
 		c.Mesh.DeliverInboundBatch(plain, mtu)
@@ -185,11 +155,12 @@ func (c *Client) tellDropped(ctx context.Context, path string, sess *ike.Session
 // far end by sending a Delete, which this does too, but it also needs a rule
 // that does not depend on arrival order.
 //
-// preferred is that rule. Both nodes compare the same two identity strings and
-// so agree on which of them should be the initiator. The SA opened in that
-// direction is the one both keep, whichever order the two handshakes finish
-// in. Only when the two sessions are equally preferred, which is a genuine
-// reconnect rather than a collision, does the newer one win.
+// preferred is that rule. Both nodes compare the same two names with
+// identity.Compare and so agree on which of them should be the initiator. The
+// SA opened in that direction is the one both keep, whichever order the two
+// handshakes finish in. Only when the two sessions are equally preferred,
+// which is a genuine reconnect rather than a collision, does the newer one
+// win.
 type sessionSet struct {
 	mu   sync.Mutex
 	live map[string]*liveSession
@@ -220,7 +191,9 @@ type liveSession struct {
 	// this node checks a handshake against, so a node taken out of it has to
 	// stop being carried. Without this, revoking a node left every tunnel it
 	// already held up until each of the other nodes restarted.
-	peer ike.Identity
+	peer identity.Identity
+	// local is the endpoint this node authenticated as
+	local identity.Identity
 	// pmtu is the search of the session's path MTU, which sets the MTU of its peer in the mesh
 	pmtu *pathDriver
 }
@@ -235,29 +208,19 @@ func newSessionSet() *sessionSet {
 	}
 }
 
-// preferInitiator reports whether, of the two nodes, the first is the end that
-// should be the initiator. Both ends compute it from the same pair of names
-// and reach the same answer, so the choice agrees.
-func preferInitiator(initiator, responder ike.Identity) bool {
-	return identityOrder(initiator) < identityOrder(responder)
-}
-
-func identityOrder(id ike.Identity) string {
-	return id.Organization + "/" + id.CommonName + "/" + id.SerialNumber
-}
-
-// sessionPath names one session by its two ends, the same name whichever end dialed
-func sessionPath(remote, local ike.Identity) string {
-	return fmt.Sprintf("%s/%s/%s@%s", remote.Organization, remote.CommonName, remote.SerialNumber, local.SerialNumber)
+// preferInitiator reports whether, of the two nodes, the first should be the initiator
+// both ends compute it from the same pair of names, so the choice agrees
+func preferInitiator(initiator, responder identity.Identity) bool {
+	return identity.Compare(initiator, responder) < 0
 }
 
 // ikeEvent is the ike Recorder, which records under the session's path
 // a change before any peer authenticated has no path
 // an endpoint change restarts the search of the session's path MTU on the new path
-func (c *Client) ikeEvent(local, remote ike.Identity, kind string, attrs ...slog.Attr) {
+func (c *Client) ikeEvent(local, remote identity.Identity, kind string, attrs ...slog.Attr) {
 	path := ""
-	if remote != (ike.Identity{}) {
-		path = sessionPath(remote, local)
+	if !remote.IsZero() {
+		path = identity.Path(remote, local)
 	}
 	c.events.Emit(kind, path, attrs...)
 	if kind == "ike.endpoint.moved" {
@@ -265,42 +228,25 @@ func (c *Client) ikeEvent(local, remote ike.Identity, kind string, attrs ...slog
 	}
 }
 
-// adopt makes sess the live session for one path unless an equally named
-// session both ends prefer already holds it. The name is the remote and local
-// endpoint pair, not just the peer, so a node reaching one peer over both
-// address families keeps both sessions while a duplicate of either resolves
-// against its twin.
-//
-// The rule reads only the two sessions' preference, which both ends compute
-// from the same pair of names and so always agree on. Nothing local enters it.
-// Gating it on whether the incumbent still looks alive made the outcome depend
-// on a clock the two ends are not obliged to agree about: each would keep the
-// session the other closed, both SAs would die, both ends would redial, and
-// every route through that peer would be withdrawn on each flap. A stale
-// incumbent is handled where it belongs instead, in holds, which lets
-// this node's own dialer take over rather than wait behind a dead session.
-//
-// It reports whether the session was adopted. A caller told false has lost and
-// must stop: its mux is already closed. The returned release drops the entry
-// again, and only if it is still ours, so a session that has already been
-// replaced cannot evict its replacement.
-//
-// The two identities are this SA's roles, not this node's point of view: the
-// end that opened it and the end that answered. Naming them that way keeps a
-// dialer and a responder from deriving opposite answers for one SA,
-// which is invisible from either end alone.
-func (s *sessionSet) adopt(path string, sess *ike.Session, initiator, responder, remote ike.Identity, pmtu *pathDriver, attach func() func()) (func(), bool) {
-	return s.adoptFor(path, sess, preferInitiator(initiator, responder), remote, pmtu, attach)
+// adopt makes sess the live session for path unless a session both ends prefer already holds it, and reports whether it did
+// the rule reads only the SA's two roles, which dialed tells apart and both ends compute alike, and never whether the incumbent looks alive
+// a caller told false has lost and its mux is closed, and the release it gets drops the entry only while the entry is still sess
+func (s *sessionSet) adopt(path string, sess *ike.Session, local, remote identity.Identity, dialed bool, pmtu *pathDriver, attach func() func()) (func(), bool) {
+	initiator, responder := remote, local
+	if dialed {
+		initiator, responder = local, remote
+	}
+	return s.adoptFor(path, sess, preferInitiator(initiator, responder), local, remote, pmtu, attach)
 }
 
 // adoptPreferred is adopt with the rule already applied and no peer identity,
 // for a test that drives the resolution without two identities to derive it
 // from.
 func (s *sessionSet) adoptPreferred(path string, sess *ike.Session, preferred bool, attach func() func()) (func(), bool) {
-	return s.adoptFor(path, sess, preferred, ike.Identity{}, nil, attach)
+	return s.adoptFor(path, sess, preferred, identity.Identity{}, identity.Identity{}, nil, attach)
 }
 
-func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, remote ike.Identity, pmtu *pathDriver, attach func() func()) (func(), bool) {
+func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, local, remote identity.Identity, pmtu *pathDriver, attach func() func()) (func(), bool) {
 	s.mu.Lock()
 	if s.shut {
 		s.mu.Unlock()
@@ -328,7 +274,7 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, re
 	if attach != nil {
 		detach = attach()
 	}
-	s.live[path] = &liveSession{session: sess, preferred: preferred, peer: remote, pmtu: pmtu}
+	s.live[path] = &liveSession{session: sess, preferred: preferred, peer: remote, local: local, pmtu: pmtu}
 	s.mu.Unlock()
 	if previous != nil && previous.session != sess {
 		log.Printf("peer %s: replacing the previous session", path)
@@ -365,11 +311,11 @@ func closeSession(sess *ike.Session) {
 // liveSessionView is one entry of the set, copied out so that a caller reads
 // it without holding the lock every handshake and every teardown needs.
 type liveSessionView struct {
-	path      string
-	session   *ike.Session
-	preferred bool
-	peer      ike.Identity
-	pmtu      *pathDriver
+	path        string
+	session     *ike.Session
+	preferred   bool
+	peer, local identity.Identity
+	pmtu        *pathDriver
 }
 
 // snapshot copies the live set. The sessions themselves are pointers, so a
@@ -380,7 +326,7 @@ func (s *sessionSet) snapshot() []liveSessionView {
 	defer s.mu.Unlock()
 	out := make([]liveSessionView, 0, len(s.live))
 	for path, live := range s.live {
-		out = append(out, liveSessionView{path: path, session: live.session, preferred: live.preferred, peer: live.peer, pmtu: live.pmtu})
+		out = append(out, liveSessionView{path: path, session: live.session, preferred: live.preferred, peer: live.peer, local: live.local, pmtu: live.pmtu})
 	}
 	return out
 }
@@ -452,7 +398,7 @@ func (s *sessionSet) liveCount() int {
 // this node learns that a node has been taken out of the mesh, and until it
 // acts on it the tunnels that node already holds keep carrying traffic: the
 // handshake check alone only refuses the next one.
-func (s *sessionSet) revoke(trusted func(ike.Identity) bool) []string {
+func (s *sessionSet) revoke(trusted func(identity.Identity) bool) []string {
 	if s == nil {
 		return nil // a Client built by hand in a test carries no sessions
 	}
@@ -460,7 +406,7 @@ func (s *sessionSet) revoke(trusted func(ike.Identity) bool) []string {
 	var paths []string
 	var sessions []*ike.Session
 	for path, live := range s.live {
-		if live.peer == (ike.Identity{}) || trusted(live.peer) {
+		if live.peer.IsZero() || trusted(live.peer) {
 			continue
 		}
 		paths = append(paths, path)
@@ -493,7 +439,7 @@ func (s *sessionSet) closeMatching(peer string, all bool) []string {
 	var paths []string
 	var sessions []*ike.Session
 	for path, live := range s.live {
-		if !all && !matchesPeer(path, peer) {
+		if !all && !identity.Names(path, peer) {
 			continue
 		}
 		paths = append(paths, path)
@@ -517,7 +463,7 @@ func (s *sessionSet) matching(peer string, all bool, act func(liveSessionView)) 
 	}
 	var paths []string
 	for _, live := range s.snapshot() {
-		if all || matchesPeer(live.path, peer) {
+		if all || identity.Names(live.path, peer) {
 			paths = append(paths, live.path)
 			act(live)
 		}
@@ -547,26 +493,6 @@ func (s *sessionSet) startProbe(live liveSessionView) {
 	if live.pmtu != nil {
 		live.pmtu.confirmNow()
 	}
-}
-
-// matchesPeer reports whether a dialer or session path names the peer somebody
-// asked about. A path is "org/name/serial@local", and the argument is compared
-// against the whole of it, against "org/name" and against the name alone, so a
-// fleet with one organization is named the short way and two nodes sharing a
-// name across organizations are still told apart.
-func matchesPeer(path, peer string) bool {
-	if path == peer {
-		return true
-	}
-	organization, rest, ok := strings.Cut(path, "/")
-	if !ok {
-		return false
-	}
-	name, _, ok := strings.Cut(rest, "/")
-	if !ok {
-		return false
-	}
-	return peer == name || peer == path[:len(organization)+len("/")+len(name)]
 }
 
 // closeAll tells every live peer the session is ending and drops it, and shuts

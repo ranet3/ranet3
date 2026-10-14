@@ -21,44 +21,30 @@ import (
 	"sync"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
-// Identity is one ASN1_DN name, the only identity type this profile uses.
-// ranet asserts the name and checks it against the organization's single
-// Ed25519 key, so the name selects which key verifies AUTH and nothing more.
-type Identity struct {
-	Organization string
-	CommonName   string
-	SerialNumber string
+// encodeID is the IDi or IDr payload body naming the endpoint id
+func encodeID(id identity.Identity) ([]byte, error) {
+	dn, err := id.DN()
+	if err != nil {
+		return nil, err
+	}
+	return EncodeID(ID_DER_ASN1_DN, dn), nil
 }
 
-func (id Identity) String() string {
-	return fmt.Sprintf("O=%s, CN=%s, serialNumber=%s", id.Organization, id.CommonName, id.SerialNumber)
-}
-
-// encodeID is the IDi or IDr payload body carrying this identity.
-func (id Identity) encodeID() []byte {
-	return EncodeID(ID_DER_ASN1_DN, EncodeIdentityDN(id.Organization, id.CommonName, id.SerialNumber))
-}
-
-// identityFromID parses an ID payload body into the name it asserts. The name
-// only selects which key must verify AUTH. AUTH itself signs the bytes as
-// received, so two encodings of one name are the same peer and neither can be
-// accepted without that peer's key.
-func identityFromID(body []byte) (Identity, error) {
+// identityFromID reads the endpoint an ID payload body asserts
+// the name only selects which key must verify AUTH, and AUTH signs the bytes as received, so two encodings of one name are one peer and neither is accepted without its key
+func identityFromID(body []byte) (identity.Identity, error) {
 	idType, data, err := DecodeID(body)
 	if err != nil {
-		return Identity{}, err
+		return identity.Identity{}, err
 	}
 	if idType != ID_DER_ASN1_DN {
-		return Identity{}, fmt.Errorf("ike: identity type %d is not ASN1_DN", idType)
+		return identity.Identity{}, fmt.Errorf("ike: identity type %d is not ASN1_DN", idType)
 	}
-	organization, commonName, serialNumber, err := DecodeIdentityDN(data)
-	if err != nil {
-		return Identity{}, err
-	}
-	return Identity{Organization: organization, CommonName: commonName, SerialNumber: serialNumber}, nil
+	return identity.FromDN(data)
 }
 
 // ResponderConfig carries what answering an unsolicited peer needs, against
@@ -68,15 +54,13 @@ func identityFromID(body []byte) (Identity, error) {
 type ResponderConfig struct {
 	Hub *transport.Hub
 
-	// Local holds every identity we answer to, one per configured endpoint
-	// serial number. The initiator's IDr selects which one signs AUTH.
-	Local           []Identity
+	// Local holds every endpoint we answer as, and the initiator's IDr selects which one signs AUTH
+	Local           []identity.Identity
 	LocalPrivateKey ed25519.PrivateKey
 
-	// Lookup resolves an initiator's asserted identity to the key that must
-	// verify its AUTH. Returning false rejects the exchange. It is called
-	// from several handshakes at once and must be safe for that.
-	Lookup func(Identity) (ed25519.PublicKey, bool)
+	// Lookup resolves an initiator's asserted endpoint to the key that must verify its AUTH, and false rejects the exchange
+	// several handshakes call it at once
+	Lookup func(identity.Identity) (ed25519.PublicKey, bool)
 
 	// HandshakeTimeout bounds one exchange from the first datagram to an
 	// established SA. Zero uses handshakeTimeout.
@@ -99,16 +83,17 @@ type ResponderConfig struct {
 // path through the mesh the same way a dialed session does, rather than just
 // naming the peer.
 type Accepted struct {
-	Peer  Identity
-	Local Identity
+	Peer  identity.Identity
+	Local identity.Identity
 }
 
 // Responder accepts IKE SAs that peers initiate to us on a shared hub. One
 // Responder serves every peer. There is no per-peer state until IDi is
 // authenticated, because until then there is no peer, only a datagram.
 type Responder struct {
-	cfg   ResponderConfig
-	local map[Identity]struct{}
+	cfg ResponderConfig
+	// local is the IDr body of each endpoint we answer as
+	local map[identity.Identity][]byte
 
 	// started is the monotonic base for the failure record below.
 	started time.Time
@@ -150,13 +135,17 @@ func NewResponder(cfg ResponderConfig) (*Responder, error) {
 	if cfg.Lookup == nil {
 		return nil, fmt.Errorf("ike: responder needs a peer lookup")
 	}
-	r := &Responder{cfg: cfg, local: make(map[Identity]struct{}, len(cfg.Local)), started: time.Now(),
+	r := &Responder{cfg: cfg, local: make(map[identity.Identity][]byte, len(cfg.Local)), started: time.Now(),
 		failureReported: make(map[netip.Addr]time.Duration, handshakeFailureSources),
 		// One floor in the past, so the first failure of this node's life is
 		// said rather than spaced against a zero that means "never said".
 		failureSaid: -handshakeFloor}
 	for _, id := range cfg.Local {
-		r.local[id] = struct{}{}
+		body, err := encodeID(id)
+		if err != nil {
+			return nil, err
+		}
+		r.local[id] = body
 	}
 	if _, err := rand.Read(r.cookieSecret[:]); err != nil {
 		return nil, err
@@ -460,7 +449,7 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	if err != nil {
 		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
 	}
-	idrBody := localID.encodeID()
+	idrBody := r.local[localID]
 	macedIDForR := prf(ctx.suite.PRFID, ctx.skpr, idrBody)
 	authBody := BuildAuth(r.cfg.LocalPrivateKey, concat(realMessage2, ni, macedIDForR))
 
@@ -590,7 +579,7 @@ func (r *Responder) noteHandshakeFailure(endpoint transport.Endpoint, err error)
 	slog.Warn("ike responder handshake failed", "peer", endpoint, "err", err)
 	// recorded where it is said, so a source that fails over and over costs the record what it costs the log
 	if r.cfg.Events != nil {
-		r.cfg.Events(Identity{}, Identity{}, "ike.handshake.failed", slog.String("from", endpoint.String()), slog.String("err", err.Error()))
+		r.cfg.Events(identity.Identity{}, identity.Identity{}, "ike.handshake.failed", slog.String("from", endpoint.String()), slog.String("err", err.Error()))
 	}
 }
 
@@ -708,26 +697,21 @@ func (s *Session) selectResponderChild(request *Message, ni, nr []byte) (respond
 	}, nil
 }
 
-// localIdentity resolves the IDr the initiator asked for, by name rather than
-// by its bytes, and returns our own encoding of it. Our AUTH signs the IDr we
-// send, and the initiator verifies against the IDr it receives, so answering
-// in our own encoding leaves the signature over the same bytes either way.
-//
-// A request without IDr is answered under our only identity. With more than
-// one configured there is nothing to guess from, so it is rejected.
-func (r *Responder) localIdentity(idr *RawPayload) (Identity, error) {
+// localIdentity resolves the IDr the initiator asked for by name rather than by its bytes
+// our AUTH signs the IDr we send, in our own encoding, and the initiator verifies against the IDr it receives, so the signature covers the same bytes either way
+func (r *Responder) localIdentity(idr *RawPayload) (identity.Identity, error) {
 	if idr == nil {
 		if len(r.cfg.Local) != 1 {
-			return Identity{}, fmt.Errorf("ike: IKE_AUTH request omits IDr and %d local identities are configured", len(r.cfg.Local))
+			return identity.Identity{}, fmt.Errorf("ike: IKE_AUTH request omits IDr and %d local identities are configured", len(r.cfg.Local))
 		}
 		return r.cfg.Local[0], nil
 	}
 	id, err := identityFromID(idr.Body)
 	if err != nil {
-		return Identity{}, err
+		return identity.Identity{}, err
 	}
 	if _, ok := r.local[id]; !ok {
-		return Identity{}, fmt.Errorf("ike: IKE_AUTH request names %s, which we do not answer to", id)
+		return identity.Identity{}, fmt.Errorf("ike: IKE_AUTH request names %s, which we do not answer to", id)
 	}
 	return id, nil
 }

@@ -6,7 +6,7 @@
   "mss_clamped": 1,
   "sessions": [
     {
-      "peer": "example/bravo/2@alpha",
+      "peer": "example/bravo:2@alpha",
       "endpoint": "198.51.100.7:4500",
       "state": "confirmed",
       "dont_fragment": true,
@@ -32,7 +32,7 @@
       }
     },
     {
-      "peer": "example/charlie/3@alpha",
+      "peer": "example/charlie:3@alpha",
       "endpoint": "[2001:db8::3]:4500",
       "state": "searching up",
       "dont_fragment": true,
@@ -57,7 +57,7 @@
       "refusals": 0
     },
     {
-      "peer": "example/delta/4@alpha",
+      "peer": "example/delta:4@alpha",
       "endpoint": "203.0.113.4:4500",
       "state": "under the floor",
       "dont_fragment": false,
@@ -83,7 +83,7 @@
       }
     },
     {
-      "peer": "example/echo/5@alpha",
+      "peer": "example/echo:5@alpha",
       "endpoint": "192.0.2.5:4500",
       "state": "not searched",
       "dont_fragment": false,

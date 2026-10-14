@@ -132,7 +132,7 @@ func tryLoopbackMesh(t *testing.T, bravoMesh *netstack.Mesh) (_, _ *loopbackNode
 	nodes, private, reg := writeMesh(t, [2]uint16{freeUDPPort(t), freeUDPPort(t)}, [2]string{"127.0.0.1", "127.0.0.1"})
 	meshes := []*netstack.Mesh{netstack.NewRoutesOnly(), bravoMesh}
 	for i, node := range nodes {
-		client, err := newClient(node.cfg, private, reg, meshes[i], nil, node.events)
+		client, err := newClient(node.cfg, private, trust(t, reg), meshes[i], nil, node.events)
 		if err != nil {
 			for _, built := range nodes[:i] {
 				built.client.Close()

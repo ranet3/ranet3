@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/identity"
 )
 
 // This file is the runtime's side of the control socket's write path: the
@@ -233,12 +234,20 @@ func (c *Client) matchingDialers(peer string, all bool) []string {
 	defer c.dialersMu.Unlock()
 	var out []string
 	for path := range c.dialers {
-		if all || matchesPeer(path, peer) {
+		if all || identity.Names(path, peer) || servesEndpoint(path, peer) {
 			out = append(out, path)
 		}
 	}
 	slices.Sort(out)
 	return out
+}
+
+// servesEndpoint reports whether the dialer at path dials the node of the endpoint peer names, from the local endpoint after peer's @ where it names one
+func servesEndpoint(path, peer string) bool {
+	node, local, _ := strings.Cut(path, "@")
+	text, peerLocal, pinned := strings.Cut(peer, "@")
+	id, err := identity.Parse(text)
+	return err == nil && id.Node().String() == node && (!pinned || peerLocal == local)
 }
 
 // wakeDialers cuts the reconnect delay short on the loops named, skipping any

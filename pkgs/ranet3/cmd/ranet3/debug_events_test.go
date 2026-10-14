@@ -36,7 +36,7 @@ const (
 func TestDebugEventsPrintsTheRecorderAndFollows(t *testing.T) {
 	socket := serveStub(t)
 	out, err := execute(t, "debug", "events", "--control", socket)
-	if err != nil || !strings.Contains(out, "dial.attempt example/gateway/0@0") || strings.Contains(out, "ike.session") {
+	if err != nil || !strings.Contains(out, "dial.attempt example/gateway:0@0") || strings.Contains(out, "ike.session") {
 		t.Errorf("debug events printed %q, %v", out, err)
 	}
 	out, err = execute(t, "debug", "events", "-f", "--for", followLong.String(), "--json", "--control", socket)
@@ -63,7 +63,7 @@ func TestDebugEventsPrintsTheRecorderAndFollows(t *testing.T) {
 func TestDebugWaitEndsWithTheEventOrTheTimeout(t *testing.T) {
 	socket := serveStub(t)
 	out, err := execute(t, "debug", "wait", "ike.session.established", "--attr", "role=initiator", "--timeout", waitLong.String(), "--control", socket)
-	if err != nil || !strings.Contains(out, "ike.session.established example/gateway/0@0") || !strings.Contains(out, "After ") {
+	if err != nil || !strings.Contains(out, "ike.session.established example/gateway:0@0") || !strings.Contains(out, "After ") {
 		t.Errorf("a wait for an event that came printed %q and ended with %v", out, err)
 	}
 	// the recorder's dial is older than the wait, so only --past reaches it
@@ -87,7 +87,7 @@ type droppingSource struct{ stubSource }
 
 func (droppingSource) DebugFollow(control.EventQuery) ([]control.Event, control.Subscription) {
 	live := make(chan control.Delivery, 1)
-	live <- control.Delivery{Event: control.Event{Seq: 9, At: time.Now(), Kind: "ike.session.established", Peer: "example/gateway/0@0"}, Dropped: 3}
+	live <- control.Delivery{Event: control.Event{Seq: 9, At: time.Now(), Kind: "ike.session.established", Peer: "example/gateway:0@0"}, Dropped: 3}
 	return nil, scripted{live}
 }
 
@@ -153,14 +153,14 @@ type steppedSource struct{ stubSource }
 
 func (steppedSource) DebugFollow(control.EventQuery) ([]control.Event, control.Subscription) {
 	live := make(chan control.Delivery, 1)
-	live <- control.Delivery{Event: control.Event{Seq: 9, At: time.Now().Add(-clockStep), Kind: "ike.session.established", Peer: "example/gateway/0@0"}}
+	live <- control.Delivery{Event: control.Event{Seq: 9, At: time.Now().Add(-clockStep), Kind: "ike.session.established", Peer: "example/gateway:0@0"}}
 	return nil, scripted{live}
 }
 
 // an event that came after the wait subscribed is taken whatever its stamp, and never reads as before the wait began
 func TestDebugWaitTakesALiveEventWhateverItsStamp(t *testing.T) {
 	out, err := execute(t, "debug", "wait", "ike.session.established", "--timeout", waitLong.String(), "--control", serve(t, steppedSource{}))
-	if err != nil || !strings.Contains(out, "ike.session.established example/gateway/0@0") || !strings.Contains(out, "After 0 milliseconds") {
+	if err != nil || !strings.Contains(out, "ike.session.established example/gateway:0@0") || !strings.Contains(out, "After 0 milliseconds") {
 		t.Errorf("a wait for an event stamped before it began printed %q and ended with %v", out, err)
 	}
 }

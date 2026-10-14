@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/events"
 )
@@ -25,7 +26,7 @@ const windowGap = 200 * time.Millisecond
 func TestQuerySelectsKindsPeersAndAttributes(t *testing.T) {
 	stamp := time.Date(2026, 10, 6, 4, 0, 0, 500, time.FixedZone("CEST", 2*60*60))
 	bus := events.New()
-	bus.Emit("babel.neighbor.up", "example/gateway/1@0", slog.String("route", "fd00:9::/64"), slog.String("route", "fd00:1::/64"), slog.Int("metric", 96),
+	bus.Emit("babel.neighbor.up", "example/gateway:1@0", slog.String("route", "fd00:9::/64"), slog.String("route", "fd00:1::/64"), slog.Int("metric", 96),
 		slog.Bool("all", false), slog.Duration("took", 1200*time.Microsecond), slog.Float64("loss", 0.5),
 		slog.Any("uid", uint32(1000)), slog.Time("at", stamp), slog.Time("unnamed", stamp.In(time.FixedZone("", 5*60*60+30*60))),
 		slog.Float64("lost", math.NaN()), slog.Float64("zero", math.Copysign(0, -1)))
@@ -85,8 +86,8 @@ func kindsOf(recorded []control.Event) []string {
 // the daemon applies a query to the recorder and to every event after it, so the view answers with what was asked alone
 func TestEventsViewKeepsToItsQuery(t *testing.T) {
 	c := &Client{events: events.New()}
-	c.events.Emit("babel.route.selected", "example/relay/0@0")
-	c.events.Emit("dial.attempt", "example/gateway/0@0")
+	c.events.Emit("babel.route.selected", "example/relay:0@0")
+	c.events.Emit("dial.attempt", "example/gateway:0@0")
 	dials := control.EventQuery{Kinds: []string{"dial"}}
 	if got := kindsOf(c.DebugEvents(dials)); !slices.Equal(got, []string{"dial.attempt"}) {
 		t.Errorf("the recorder answered a query for dials with %q", got)
@@ -99,8 +100,8 @@ func TestEventsViewKeepsToItsQuery(t *testing.T) {
 	if got := kindsOf(backlog); !slices.Equal(got, []string{"dial.attempt"}) {
 		t.Errorf("a follow of dials began with %q", got)
 	}
-	c.events.Emit("babel.route.selected", "example/relay/0@0")
-	c.events.Emit("dial.failed", "example/gateway/0@0")
+	c.events.Emit("babel.route.selected", "example/relay:0@0")
+	c.events.Emit("dial.failed", "example/gateway:0@0")
 	select {
 	case delivery := <-sub.C():
 		if delivery.Event.Kind != "dial.failed" {
@@ -115,7 +116,7 @@ func TestEventsViewKeepsToItsQuery(t *testing.T) {
 // it is recorded once under the path of each session or dialer it acted on and nowhere else
 // it carries the name it was given as its attribute peer, and no such attribute when it was given none
 func TestVerbIsTakenByEveryNameOfWhatItActedOn(t *testing.T) {
-	names := []string{"gateway", "example/gateway", "example/gateway/1@0", "other/gateway"}
+	names := []string{"gateway", "example/gateway", "example/gateway:1@0", "other/gateway"}
 	type ask struct {
 		verb, peer string
 		all        bool
@@ -130,7 +131,7 @@ func TestVerbIsTakenByEveryNameOfWhatItActedOn(t *testing.T) {
 		c.sessions.close = func(*ike.Session) {}
 		c.sessions.active = func(*ike.Session) bool { return true }
 		c.sessions.rekey = func(*ike.Session) error { return nil }
-		for _, path := range []string{"example/gateway/1@0", "example/gateway/2@0", "other/gateway/1@0"} {
+		for _, path := range []string{"example/gateway:1@0", "example/gateway:2@0", "other/gateway:1@0"} {
 			c.sessions.adoptPreferred(path, &ike.Session{}, true, nil)
 			c.dialers[path] = &dialer{cancel: func() {}, wake: make(chan struct{}, 1)}
 		}
@@ -156,7 +157,7 @@ func TestVerbIsTakenByEveryNameOfWhatItActedOn(t *testing.T) {
 		for _, name := range names {
 			want := 0
 			for _, path := range result.Acted {
-				if matchesPeer(path, name) {
+				if identity.Names(path, name) {
 					want++
 				}
 			}
@@ -170,9 +171,9 @@ func TestVerbIsTakenByEveryNameOfWhatItActedOn(t *testing.T) {
 // a window keeps the recorded events that recent, in the recorder and at the start of a follow
 func TestEventsViewKeepsToItsWindow(t *testing.T) {
 	c := &Client{events: events.New()}
-	c.events.Emit("dial.attempt", "example/gateway/0@0")
+	c.events.Emit("dial.attempt", "example/gateway:0@0")
 	time.Sleep(2 * windowGap)
-	c.events.Emit("dial.failed", "example/gateway/0@0")
+	c.events.Emit("dial.failed", "example/gateway:0@0")
 	recent := control.EventQuery{Since: windowGap}
 	if got := kindsOf(c.DebugEvents(recent)); !slices.Equal(got, []string{"dial.failed"}) {
 		t.Errorf("the recorder answered a window with %q", got)
@@ -196,7 +197,7 @@ func TestFollowMatchAllocatesNothing(t *testing.T) {
 	c := &Client{events: events.New()}
 	stamp := time.Date(2026, 10, 6, 4, 0, 0, 0, time.UTC)
 	emit := func() {
-		c.events.Emit("babel.a-thing-with-a-long-name.a-change-with-a-long-name", "an-organization-with-a-long-name/a-gateway-with-a-long-name/0@0",
+		c.events.Emit("babel.a-thing-with-a-long-name.a-change-with-a-long-name", "an-organization-with-a-long-name/a-gateway-with-a-long-name:0@0",
 			slog.String("route", "fd00:1::/64"), slog.Int("metric", 96), slog.Float64("loss", 0.5), slog.Time("at", stamp))
 	}
 	// more than a ring holds, so the emits below overwrite rather than grow it

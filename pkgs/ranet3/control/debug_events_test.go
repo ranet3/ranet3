@@ -22,10 +22,10 @@ import (
 func eventFixture() []Event {
 	at := time.Date(2026, 10, 4, 12, 20, 1, 123456789, time.UTC)
 	return []Event{
-		{Seq: 41, At: at, Mono: Duration(62345 * time.Millisecond), Kind: "dial.attempt", Peer: "example/gateway/0@0",
+		{Seq: 41, At: at, Mono: Duration(62345 * time.Millisecond), Kind: "dial.attempt", Peer: "example/gateway:0@0",
 			Attrs: map[string]string{"remote": "192.0.2.7:13000"}},
 		{Seq: 42, At: at.Add(38 * time.Millisecond), Mono: Duration(62383 * time.Millisecond), Kind: "ike.session.established",
-			Peer: "example/gateway/0@0", Attrs: map[string]string{"role": "initiator", "spi_in": "c0ffee01", "spi_out": "0badf00d"}},
+			Peer: "example/gateway:0@0", Attrs: map[string]string{"role": "initiator", "spi_in": "c0ffee01", "spi_out": "0badf00d"}},
 		{Seq: 43, At: at.Add(time.Second).In(time.FixedZone("", 2*60*60)), Mono: Duration(63345 * time.Millisecond), Kind: "kernel.pass",
 			Attrs: map[string]string{"trigger": "mesh", "took": "1.2ms", "err": "list routes: netlink is busy", "empty": ""}},
 		{At: at.Add(1500 * time.Millisecond), Kind: "stream.live"},

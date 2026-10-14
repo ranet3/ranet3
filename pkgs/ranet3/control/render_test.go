@@ -31,7 +31,7 @@ func TestRenderersKeepTheirColumns(t *testing.T) {
 		},
 		"peers": {
 			render: func(b *strings.Builder) { RenderPeers(b, nil) },
-			want:   []string{"Path", "Peer", "Serial", "From", "State"},
+			want:   []string{"Path", "Peer", "From", "State"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

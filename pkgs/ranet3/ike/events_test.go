@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/identity"
 )
 
 // recordPoll is how often a test looks again for an event it waits on
@@ -23,8 +25,8 @@ type recorder struct {
 	lines []string
 }
 
-func (r *recorder) record(local, remote Identity, kind string, attrs ...slog.Attr) {
-	line := []string{kind, local.CommonName + ">" + remote.CommonName}
+func (r *recorder) record(local, remote identity.Identity, kind string, attrs ...slog.Attr) {
+	line := []string{kind, local.String() + ">" + remote.String()}
 	for _, attr := range attrs {
 		if attr.Key != "err" && attr.Key != "from" {
 			line = append(line, attr.String())
@@ -78,13 +80,13 @@ func TestSessionsRecordTheirRekeys(t *testing.T) {
 		t.Fatal("a rekey over a closed session succeeded")
 	}
 	if got, want := dialed.recorded(), []string{
-		"ike.rekey.started client>server sa=child", "ike.rekey.completed client>server sa=child",
-		"ike.rekey.started client>server sa=child", "ike.rekey.failed client>server sa=child",
+		"ike.rekey.started testorg/client:2>testorg/server:1 sa=child", "ike.rekey.completed testorg/client:2>testorg/server:1 sa=child",
+		"ike.rekey.started testorg/client:2>testorg/server:1 sa=child", "ike.rekey.failed testorg/client:2>testorg/server:1 sa=child",
 	}; !slices.Equal(got, want) {
 		t.Errorf("the dialed session recorded %q, want %q", got, want)
 	}
 	if got, want := answered.recorded(), []string{
-		"ike.rekey.started server>client sa=ike", "ike.rekey.completed server>client sa=ike",
+		"ike.rekey.started testorg/server:1>testorg/client:2 sa=ike", "ike.rekey.completed testorg/server:1>testorg/client:2 sa=ike",
 	}; !slices.Equal(got, want) {
 		t.Errorf("the answered session recorded %q, want %q", got, want)
 	}
@@ -93,7 +95,7 @@ func TestSessionsRecordTheirRekeys(t *testing.T) {
 // a handshake the responder refuses is recorded where it is said, with no session to name
 func TestResponderRecordsARefusedHandshake(t *testing.T) {
 	answered := &recorder{}
-	h := newResponderHarness(t, func(Identity) (ed25519.PublicKey, bool) { return nil, false }, answered.record)
+	h := newResponderHarness(t, func(identity.Identity) (ed25519.PublicKey, bool) { return nil, false }, answered.record)
 	if session, err := h.dial(t); err == nil {
 		session.Mux().Close()
 		t.Fatal("a peer the lookup refuses was let in")
