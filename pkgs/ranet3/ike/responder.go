@@ -92,6 +92,8 @@ type ResponderConfig struct {
 type Accepted struct {
 	Peer  identity.Identity
 	Local identity.Identity
+	// Key verified the peer's AUTH
+	Key ed25519.PublicKey
 }
 
 // Responder accepts IKE SAs that peers initiate to us on a shared hub. One
@@ -517,7 +519,7 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	if err := s.mux.SendIKE(response); err != nil {
 		return Accepted{}, err
 	}
-	return Accepted{Peer: peerID, Local: localID}, nil
+	return Accepted{Peer: peerID, Local: localID, Key: peerKey}, nil
 }
 
 // authRequest is the first IKE_AUTH request that decrypted under this

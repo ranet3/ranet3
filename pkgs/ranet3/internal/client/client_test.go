@@ -117,13 +117,16 @@ func runtimeFixture(t *testing.T) (*config.Config, ed25519.PrivateKey, registry.
 }
 
 // unusedKeyPEM is a key no test signs with, for a block that names nodes no handshake reaches
-var unusedKeyPEM = func() string {
-	der, err := x509.MarshalPKIXPublicKey(ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public())
+var unusedKeyPEM = keyPEM(seeded(0))
+
+// keyPEM is the PEM SubjectPublicKeyInfo a trust document holds key as
+func keyPEM(key ed25519.PublicKey) string {
+	der, err := x509.MarshalPKIXPublicKey(key)
 	if err != nil {
 		panic(err)
 	}
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
-}()
+}
 
 // trust indexes a document a test wrote, a block without a key given unusedKeyPEM, since the index parses every key
 func trust(t testing.TB, document registry.Registry) *registry.Index {
@@ -145,17 +148,25 @@ type trustFunc func(identity.Identity) (ed25519.PublicKey, error)
 
 func (f trustFunc) Key(id identity.Identity) (ed25519.PublicKey, error) { return f(id) }
 
-// admitting is a trust that admits, under no key, what it names and the node of each, and every endpoint of a node it names
+// admitting is admittingUnder no key
+func admitting(named ...identity.Identity) trustFunc { return admittingUnder(nil, named...) }
+
+// admittingUnder is a trust that admits, under key, what it names and the node of each, and every endpoint of a node it names
 // as a trust document does, it refuses an endpoint of a node it names only through another endpoint
-func admitting(named ...identity.Identity) trustFunc {
+func admittingUnder(key ed25519.PublicKey, named ...identity.Identity) trustFunc {
 	return func(id identity.Identity) (ed25519.PublicKey, error) {
 		for _, admitted := range named {
 			if id == admitted || id == admitted.Node() || admitted == id.Node() {
-				return nil, nil
+				return key, nil
 			}
 		}
 		return nil, fmt.Errorf("%s is not admitted", id)
 	}
+}
+
+// seeded is the public half of the Ed25519 key whose seed repeats b
+func seeded(b byte) ed25519.PublicKey {
+	return ed25519.NewKeyFromSeed(bytes.Repeat([]byte{b}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
 }
 
 func identitiesOf(t testing.TB, cfg *config.Config) identities {
@@ -824,7 +835,7 @@ func TestSimultaneousOpenConvergesOnSameSession(t *testing.T) {
 		set.trust = admitting(remote)
 		sessions := map[string]*ike.Session{dialedByA: {}, dialedByB: {}}
 		for _, which := range order {
-			set.adopt("path", sessions[which], local, remote, (which == dialedByA) == (local == a), nil, nil)
+			set.adopt("path", sessions[which], local, remote, nil, (which == dialedByA) == (local == a), nil, nil)
 		}
 		for name, sess := range sessions {
 			if live := set.live["path"]; live != nil && live.session == sess {
@@ -1483,7 +1494,7 @@ func TestReloadSkipsPeerRegistryNoLongerNames(t *testing.T) {
 	c.sessions.active = func(*ike.Session) bool { return true }
 	third := &ike.Session{}
 	thirdID := identity.MustParse("example/third:1")
-	if _, ok := c.sessions.adopt("example/third:1@1", third, identity.MustParse("example/local:1"), thirdID, false, nil, nil); !ok {
+	if _, ok := c.sessions.adopt("example/third:1@1", third, identity.MustParse("example/local:1"), thirdID, privateKey.Public().(ed25519.PublicKey), false, nil, nil); !ok {
 		t.Fatal("the session for the node about to be dropped was not adopted")
 	}
 	c.syncPeers()
@@ -1766,7 +1777,7 @@ func TestReloadClosesASessionTheRegistryNoLongerNames(t *testing.T) {
 		sess *ike.Session
 		peer identity.Identity
 	}{{"example/keeper:0@0", keeper, stays}, {"example/gone:0@0", gone, goes}} {
-		if _, ok := set.adopt(adopted.path, adopted.sess, local, adopted.peer, false, nil, nil); !ok {
+		if _, ok := set.adopt(adopted.path, adopted.sess, local, adopted.peer, nil, false, nil, nil); !ok {
 			t.Fatalf("%s was not adopted", adopted.path)
 		}
 	}
@@ -1780,10 +1791,7 @@ func TestReloadClosesASessionTheRegistryNoLongerNames(t *testing.T) {
 
 	// trusted by name rather than as anything but goes, so the anonymous entry is untrusted too and only the guard above keeps it
 	set.trust = admitting(stays)
-	revoked := set.revoke()
-	if len(revoked) != 1 || revoked[0] != "example/gone:0@0" {
-		t.Fatalf("the sweep closed %v, want only the path the registry dropped", revoked)
-	}
+	set.revoke()
 	if len(closed) != 1 || closed[0] != gone {
 		t.Errorf("the sweep told %d sessions, and not the one that went", len(closed))
 	}
@@ -1911,23 +1919,115 @@ func TestRenumberedSerialDoesNotRevokeASession(t *testing.T) {
 	set := newSessionSet()
 	set.close = func(*ike.Session) {}
 	set.endpoint = func(*ike.Session) string { return "198.51.100.7:4500" }
-	peer := identity.MustParse("example/gateway:1")
-	set.trust = admitting(peer)
-	if _, ok := set.adopt("example/gateway:1@0", &ike.Session{}, identity.MustParse("example/local:0"), peer, false, nil, nil); !ok {
+	peer, key := identity.MustParse("example/gateway:1"), seeded(1)
+	set.trust = admittingUnder(key, peer)
+	if _, ok := set.adopt("example/gateway:1@0", &ike.Session{}, identity.MustParse("example/local:0"), peer, key, false, nil, nil); !ok {
 		t.Fatal("a session the trust admits was not adopted, so this proves nothing")
 	}
 
-	set.trust = admitting(identity.MustParse("example/gateway:2"))
+	set.trust = admittingUnder(key, identity.MustParse("example/gateway:2"))
 	if _, err := set.trust.Key(peer); err == nil {
 		t.Fatal("the renumbered trust admits the endpoint it renumbered, so this proves nothing")
 	}
-	if revoked := set.revoke(); len(revoked) != 0 {
-		t.Errorf("renumbering an endpoint closed %v", revoked)
+	set.revoke()
+	if _, held := set.live["example/gateway:1@0"]; !held {
+		t.Error("renumbering an endpoint closed the session")
 	}
 
 	set.trust = admitting()
-	if revoked := set.revoke(); !slices.Equal(revoked, []string{"example/gateway:1@0"}) {
-		t.Errorf("a trust that no longer admits the node closed %v", revoked)
+	set.revoke()
+	if _, held := set.live["example/gateway:1@0"]; held {
+		t.Error("a trust that no longer admits the node kept the session")
+	}
+}
+
+// the sweep closes a session whose peer's node the trust in force gives another key than the one that verified it, whichever end dialed
+// and the revocation it records says the key changed, where one of a node the trust no longer holds says the node is gone
+func TestReloadClosesASessionWhosePeerTookAnotherKey(t *testing.T) {
+	set, closed := revokingSet()
+	gateway, old := identity.MustParse("example/gateway:1"), seeded(1)
+	set.trust = admittingUnder(old, gateway)
+	for _, held := range []struct {
+		local  string
+		dialed bool
+	}{{"example/local:0", true}, {"example/local:1", false}} {
+		local := identity.MustParse(held.local)
+		if _, ok := set.adopt(identity.Path(gateway, local), &ike.Session{}, local, gateway, old, held.dialed, nil, nil); !ok {
+			t.Fatalf("the session at %s was not adopted, so this proves nothing", local)
+		}
+	}
+
+	set.trust = admittingUnder(seeded(2), gateway)
+	set.revoke()
+	if len(set.live) != 0 || len(closed.all()) != 2 {
+		t.Errorf("the sweep told %d sessions and left %d live, want both of the peer whose key changed closed", len(closed.all()), len(set.live))
+	}
+	revocations(t, set.events, map[string]string{"reason": "reload", "peer": "example/gateway:1", "endpoint": "198.51.100.7:4500",
+		"err": "the trust document holds another key for example/gateway"}, "example/gateway:1@0", "example/gateway:1@1")
+}
+
+// a session verified under a key the trust in force no longer gives its peer's node is refused when adopted, whichever end dialed
+// that is a handshake that asked the trust before a reload and reached adopt after its sweep, and it is recorded as the sweep records one
+func TestSessionVerifiedUnderAReplacedKeyIsRefused(t *testing.T) {
+	set, closed := revokingSet()
+	gateway, local, rotated := identity.MustParse("example/gateway:1"), identity.MustParse("example/local:0"), seeded(2)
+	set.trust = admittingUnder(rotated, gateway)
+	for _, dialed := range []bool{true, false} {
+		if _, ok := set.adopt(identity.Path(gateway, local), &ike.Session{}, local, gateway, seeded(1), dialed, nil, nil); ok {
+			t.Errorf("a session verified under the key the trust replaced was adopted, dialed %t", dialed)
+		}
+	}
+	if len(set.live) != 0 || len(closed.all()) != 2 {
+		t.Errorf("adopt told %d sessions and left %d live, want both refused", len(closed.all()), len(set.live))
+	}
+	revocations(t, set.events, map[string]string{"reason": "handshake", "peer": "example/gateway:1", "endpoint": "198.51.100.7:4500",
+		"err": "the trust document holds another key for example/gateway"}, "example/gateway:1@0", "example/gateway:1@0")
+	if _, ok := set.adopt(identity.Path(gateway, local), &ike.Session{}, local, gateway, rotated, true, nil, nil); !ok {
+		t.Error("a session verified under the key the trust gives was refused")
+	}
+}
+
+// revokingSet is a session set that keeps the sessions it closes, with an events bus and every session at one endpoint
+func revokingSet() (*sessionSet, *closedSessions) {
+	set := newSessionSet()
+	closed := &closedSessions{}
+	set.close = closed.close
+	set.events = events.New()
+	set.endpoint = func(*ike.Session) string { return "198.51.100.7:4500" }
+	return set, closed
+}
+
+// closedSessions is every session a set closed, in the order it closed them
+type closedSessions struct {
+	mu       sync.Mutex
+	sessions []*ike.Session
+}
+
+func (c *closedSessions) close(sess *ike.Session) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sessions = append(c.sessions, sess)
+}
+
+func (c *closedSessions) all() []*ike.Session {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.sessions)
+}
+
+// revocations checks that bus recorded an ike.session.revoked with the attributes want at each of paths, which are sorted
+func revocations(t *testing.T, bus *events.Bus, want map[string]string, paths ...string) {
+	t.Helper()
+	var at []string
+	for _, event := range recorded(bus, "ike.session.revoked") {
+		at = append(at, event.Peer)
+		if !maps.Equal(event.Attrs, want) {
+			t.Errorf("%s was recorded as revoked with %v, want %v", event.Peer, event.Attrs, want)
+		}
+	}
+	slices.Sort(at)
+	if !slices.Equal(at, paths) {
+		t.Errorf("revocations were recorded at %q, want %q", at, paths)
 	}
 }
 

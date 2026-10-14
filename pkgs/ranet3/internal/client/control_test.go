@@ -164,7 +164,11 @@ func TestPeersMatchSessionsByNodeAndLocalEndpoint(t *testing.T) {
 	})
 	for _, held := range []struct{ remote, local string }{{"example/gateway:1", "example/local:0"}, {"example/other:3", "example/local:1"}} {
 		remote, local := identity.MustParse(held.remote), identity.MustParse(held.local)
-		if _, adopted := c.sessions.adopt(identity.Path(remote, local), &ike.Session{}, local, remote, true, nil, nil); !adopted {
+		key, err := c.index().Key(remote)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, adopted := c.sessions.adopt(identity.Path(remote, local), &ike.Session{}, local, remote, key, true, nil, nil); !adopted {
 			t.Fatalf("the session with %s was not adopted", held.remote)
 		}
 	}

@@ -7,6 +7,7 @@ package client
 import (
 	"cmp"
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"log"
 	"log/slog"
@@ -22,9 +23,10 @@ import (
 )
 
 // serveSession runs one established IKE SA until it ends, whichever end opened it, and dialed says this node did
+// key is the key that verified remote's AUTH
 // the resolution against a competing session happens here, since the babel registration goes in under the same decision
 // it returns errSessionEstablished when another session already holds the path, which is not a failure
-func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, remote identity.Identity, dialed bool) error {
+func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, remote identity.Identity, key ed25519.PublicKey, dialed bool) error {
 	defer sess.Mux().Close()
 	sessionName := identity.Path(remote, local)
 	log.Printf("peer %s: connected (SPI %08x/%08x)", sessionName, sess.Child.LocalSPI, sess.Child.RemoteSPI)
@@ -66,7 +68,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 		peer.Close()
 	}()
 	route := pmtu.open()
-	release, adopted := c.sessions.adopt(sessionName, sess, local, remote, dialed, pmtu, func() func() {
+	release, adopted := c.sessions.adopt(sessionName, sess, local, remote, key, dialed, pmtu, func() func() {
 		// under the set's lock, so a reload's sweep of the set either finds this session or stored the link.mtu read here
 		pmtu.start(c.config().Link.SessionMTU(), route)
 		return c.speaker.AddPeer(peer).Close
@@ -193,6 +195,8 @@ type liveSession struct {
 	preferred bool
 	// the endpoints the two ends authenticated as, and revoke asks the trust about peer's node
 	peer, local identity.Identity
+	// key verified peer's AUTH, and the session stays only while the trust gives peer's node that key
+	key ed25519.PublicKey
 	// pmtu is the search of the session's path MTU, which sets the MTU of its peer in the mesh
 	pmtu *pathDriver
 }
@@ -231,22 +235,22 @@ func (c *Client) ikeEvent(local, remote identity.Identity, kind string, attrs ..
 // adopt makes sess the live session for path unless a session both ends prefer already holds it, and reports whether it did
 // the rule reads only the SA's two roles, which dialed tells apart and both ends compute alike, and never whether the incumbent looks alive
 // a caller told false has lost and its mux is closed, and the release it gets drops the entry only while the entry is still sess
-func (s *sessionSet) adopt(path string, sess *ike.Session, local, remote identity.Identity, dialed bool, pmtu *pathDriver, attach func() func()) (func(), bool) {
+func (s *sessionSet) adopt(path string, sess *ike.Session, local, remote identity.Identity, key ed25519.PublicKey, dialed bool, pmtu *pathDriver, attach func() func()) (func(), bool) {
 	initiator, responder := remote, local
 	if dialed {
 		initiator, responder = local, remote
 	}
-	return s.adoptFor(path, sess, preferInitiator(initiator, responder), local, remote, pmtu, attach)
+	return s.adoptFor(path, sess, preferInitiator(initiator, responder), local, remote, key, pmtu, attach)
 }
 
 // adoptPreferred is adopt with the rule already applied and no peer identity,
 // for a test that drives the resolution without two identities to derive it
 // from.
 func (s *sessionSet) adoptPreferred(path string, sess *ike.Session, preferred bool, attach func() func()) (func(), bool) {
-	return s.adoptFor(path, sess, preferred, identity.Identity{}, identity.Identity{}, nil, attach)
+	return s.adoptFor(path, sess, preferred, identity.Identity{}, identity.Identity{}, nil, nil, attach)
 }
 
-func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, local, remote identity.Identity, pmtu *pathDriver, attach func() func()) (func(), bool) {
+func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, local, remote identity.Identity, key ed25519.PublicKey, pmtu *pathDriver, attach func() func()) (func(), bool) {
 	s.mu.Lock()
 	if s.shut {
 		s.mu.Unlock()
@@ -256,9 +260,8 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, lo
 		s.close(sess)
 		return func() {}, false
 	}
-	if err := s.refuses(remote); err != nil {
+	if err := s.refuses(remote, key); err != nil {
 		s.mu.Unlock()
-		log.Printf("peer %s: %v, closing the session", path, err)
 		s.revoked(path, "handshake", sess, remote, err)
 		s.close(sess)
 		return func() {}, false
@@ -281,7 +284,7 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, lo
 	if attach != nil {
 		detach = attach()
 	}
-	s.live[path] = &liveSession{session: sess, preferred: preferred, peer: remote, local: local, pmtu: pmtu}
+	s.live[path] = &liveSession{session: sess, preferred: preferred, peer: remote, local: local, key: key, pmtu: pmtu}
 	s.mu.Unlock()
 	if previous != nil && previous.session != sess {
 		log.Printf("peer %s: replacing the previous session", path)
@@ -400,21 +403,27 @@ func (s *sessionSet) liveCount() int {
 	return count
 }
 
-// refuses is why the trust in force no longer admits remote's node, asked under mu, or nil for a session that named no peer
+// refuses is why the trust in force no longer admits remote's node under key, the key that verified it, asked under mu, or nil for a session that named no peer
 // it asks about the node alone, since a serial selects which endpoint a dial uses and renumbering one is a registry edit rather than a revocation
-func (s *sessionSet) refuses(remote identity.Identity) error {
+func (s *sessionSet) refuses(remote identity.Identity, key ed25519.PublicKey) error {
 	if remote.IsZero() {
 		return nil
 	}
-	_, err := s.trust.Key(remote.Node())
-	return err
+	trusted, err := s.trust.Key(remote.Node())
+	if err != nil {
+		return err
+	}
+	if !trusted.Equal(key) {
+		return fmt.Errorf("the trust document holds another key for %s", remote.Node())
+	}
+	return nil
 }
 
-// revoke closes every live session whose peer's node the trust in force no longer admits, and reports which paths went
-// a reload is the only moment this node learns a node left the mesh, and the handshake check alone refuses only the next session
-func (s *sessionSet) revoke() []string {
+// revoke closes every live session whose peer's node the trust in force no longer admits under the key that verified it
+// a reload is the only moment this node learns a node left the mesh or took another key, and the handshake check alone refuses only the next session
+func (s *sessionSet) revoke() {
 	if s == nil {
-		return nil // a Client built by hand in a test carries no sessions
+		return // a Client built by hand in a test carries no sessions
 	}
 	type refused struct {
 		path string
@@ -424,25 +433,22 @@ func (s *sessionSet) revoke() []string {
 	s.mu.Lock()
 	var gone []refused
 	for path, live := range s.live {
-		if err := s.refuses(live.peer); err != nil {
+		if err := s.refuses(live.peer, live.key); err != nil {
 			gone = append(gone, refused{path, live, err})
 			delete(s.live, path)
 		}
 	}
 	s.mu.Unlock()
-	paths := make([]string, 0, len(gone))
 	var closing sync.WaitGroup
 	for _, session := range gone {
-		paths = append(paths, session.path)
 		s.revoked(session.path, "reload", session.live.session, session.live.peer, session.err)
 		closing.Go(func() { s.close(session.live.session) })
 	}
 	closing.Wait()
-	slices.Sort(paths)
-	return paths
 }
 
 func (s *sessionSet) revoked(path, reason string, sess *ike.Session, peer identity.Identity, err error) {
+	log.Printf("peer %s: %v, closing the session", path, err)
 	s.events.Emit("ike.session.revoked", path, slog.String("reason", reason), slog.String("peer", peer.String()),
 		slog.String("endpoint", s.endpoint(sess)), slog.String("err", err.Error()))
 }

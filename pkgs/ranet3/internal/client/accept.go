@@ -51,7 +51,7 @@ func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 			return
 		}
 		serving.Go(func() {
-			err := c.serveSession(ctx, sess, accepted.Local, accepted.Peer, false)
+			err := c.serveSession(ctx, sess, accepted.Local, accepted.Peer, accepted.Key, false)
 			// serveSession ends a session its ctx ended with a Delete, as it does for a dialer a reload dropped
 			if errors.Is(err, context.Canceled) && c.ctx.Err() == nil {
 				closed.Add(1)
