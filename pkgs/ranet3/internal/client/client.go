@@ -31,14 +31,12 @@ import (
 type Client struct {
 	Mesh *netstack.Mesh
 
-	// cfg and reg are replaced wholesale by a reload, never mutated, so every
-	// reader sees one consistent pair even while one is being installed.
-	cfg        atomic.Pointer[config.Config]
-	reg        atomic.Pointer[registry.Registry]
-	underlay   atomic.Pointer[[]netip.Addr]
-	privateKey ed25519.PrivateKey
-	speaker    *babel.Speaker
-	hub        *transport.Hub
+	// cfg and registryIndex are replaced wholesale by a reload, never mutated, so a reader never sees one half written
+	cfg           atomic.Pointer[config.Config]
+	registryIndex atomic.Pointer[registry.Index]
+	privateKey    ed25519.PrivateKey
+	speaker       *babel.Speaker
+	hub           *transport.Hub
 	// closeUnderlay releases whatever the transport's underlay setting had to
 	// open, which on darwin is the route socket the binding follows. Nil on a
 	// Client built by hand in a test.
@@ -139,16 +137,11 @@ type Client struct {
 	started      time.Time
 }
 
-func (c *Client) config() *config.Config      { return c.cfg.Load() }
-func (c *Client) registry() registry.Registry { return *c.reg.Load() }
+func (c *Client) config() *config.Config { return c.cfg.Load() }
+func (c *Client) index() *registry.Index { return c.registryIndex.Load() }
 
-// storeRegistry installs a registry and the underlay set derived from it.
-// Nothing reads both, so the two need no common pointer: a reconciler asking
-// between the stores gets the previous addresses and asks again next pass.
-func (c *Client) storeRegistry(reg registry.Registry) {
-	addresses := underlayAddrs(reg)
-	c.reg.Store(&reg)
-	c.underlay.Store(&addresses)
+func (c *Client) storeIndex(x *registry.Index) {
+	c.registryIndex.Store(x)
 	c.regReadAt.Store(time.Now().UnixNano())
 }
 
@@ -157,29 +150,10 @@ func (c *Client) storeRegistry(reg registry.Registry) {
 // not installed where the transport would then follow it into its own tunnel.
 // A hostname endpoint is not in it, because resolving one is a network call.
 func (c *Client) Underlay() []netip.Addr {
-	if addresses := c.underlay.Load(); addresses != nil {
-		return *addresses
+	if x := c.index(); x != nil {
+		return x.Underlay()
 	}
 	return nil
-}
-
-// underlayAddrs takes the literals out of every endpoint a dialer would accept,
-// so the set and the dialers agree on what this node may have to reach.
-func underlayAddrs(reg registry.Registry) []netip.Addr {
-	var out []netip.Addr
-	for _, organization := range reg {
-		for _, node := range organization.Nodes {
-			for _, endpoint := range node.Endpoints {
-				if !endpoint.Dialable() {
-					continue
-				}
-				if address, err := netip.ParseAddr(*endpoint.Address); err == nil {
-					out = append(out, address)
-				}
-			}
-		}
-	}
-	return out
 }
 
 // New builds the node from its configuration, recording what it does on bus
@@ -188,11 +162,11 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	if err != nil {
 		return nil, err
 	}
-	reg, err := registry.Load(cfg.Auth.Trust)
+	x, err := registry.Load(cfg.Auth.Trust)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateRuntimeConfig(cfg, privateKey, reg); err != nil {
+	if err := validateRuntimeConfig(cfg, privateKey, x); err != nil {
 		return nil, err
 	}
 	warnUnforwardableTransit(cfg)
@@ -225,7 +199,7 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 			mesh.Close()
 		}
 	}()
-	return newClient(cfg, privateKey, reg, mesh, nil, bus)
+	return newClient(cfg, privateKey, x, mesh, nil, bus)
 }
 
 // steeredMTU is the device MTU for sessions carrying packets of up to largest bytes
@@ -244,7 +218,7 @@ func steeredMTU(largest int, steering *srv6.SteerTable) (int, error) {
 // around a mesh it built itself rather than a privileged TUN. host is the
 // machine the underlay reads and writes, nil for the one this process is
 // running on, as New passes and as a deployment gets.
-func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.Registry, mesh *netstack.Mesh, host kernel.Host, bus *events.Bus) (_ *Client, err error) {
+func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.Index, mesh *netstack.Mesh, host kernel.Host, bus *events.Bus) (_ *Client, err error) {
 	underlay, capture, closeUnderlay, err := underlayRuntime(cfg.Link.Underlay, mesh.Name, host)
 	if err != nil {
 		return nil, err
@@ -292,7 +266,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, reg registry.R
 	c.sessions.events = bus
 	c.dropReported.Store(-int64(espDropReportInterval))
 	c.cfg.Store(cfg)
-	c.storeRegistry(reg)
+	c.storeIndex(x)
 	return c, nil
 }
 

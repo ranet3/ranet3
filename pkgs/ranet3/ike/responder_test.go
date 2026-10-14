@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -48,8 +49,15 @@ const answerBudget = 30 * time.Second
 // and a machine too slow to show it in time lets the test pass rather than fail
 const quietPeriod = 300 * time.Millisecond
 
+// newResponderHarness answers as testorg/server:1
+func newResponderHarness(t *testing.T, lookup func(identity.Identity) (ed25519.PublicKey, bool), events ...Recorder) *responderHarness {
+	t.Helper()
+	return newResponderHarnessAs(t, []identity.Identity{identity.MustParse("testorg/server:1")}, lookup, events...)
+}
+
+// newResponderHarnessAs answers as each endpoint in local
 // events, where a test passes one, is the responder's Recorder
-func newResponderHarness(t *testing.T, lookup func(Identity) (ed25519.PublicKey, bool), events ...Recorder) *responderHarness {
+func newResponderHarnessAs(t *testing.T, local []identity.Identity, lookup func(identity.Identity) (ed25519.PublicKey, bool), events ...Recorder) *responderHarness {
 	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -66,15 +74,14 @@ func newResponderHarness(t *testing.T, lookup func(Identity) (ed25519.PublicKey,
 	}
 	t.Cleanup(func() { initiatorHub.Close() })
 
-	local := Identity{Organization: "testorg", CommonName: "server", SerialNumber: "1"}
 	if lookup == nil {
-		lookup = func(id Identity) (ed25519.PublicKey, bool) {
-			return public, id == Identity{Organization: "testorg", CommonName: "client", SerialNumber: "2"}
+		lookup = func(id identity.Identity) (ed25519.PublicKey, bool) {
+			return public, id == identity.MustParse("testorg/client:2")
 		}
 	}
 	cfg := ResponderConfig{
 		Hub:              responderHub,
-		Local:            []Identity{local},
+		Local:            local,
 		LocalPrivateKey:  private,
 		Lookup:           lookup,
 		HandshakeTimeout: 10 * time.Second,
@@ -129,24 +136,29 @@ func TestInitiateIsInitiateContextWithNoDeadline(t *testing.T) {
 	defer session.Mux().Close()
 	responder := <-h.sessions
 	defer responder.Mux().Close()
-	if accepted := <-h.identities; accepted.Peer.CommonName != "client" {
-		t.Fatalf("the responder accepted %q", accepted.Peer.CommonName)
+	if accepted := <-h.identities; accepted.Peer != identity.MustParse("testorg/client:2") {
+		t.Fatalf("the responder accepted %s", accepted.Peer)
 	}
 }
 
 func (h *responderHarness) peerConfig() PeerConfig {
 	return PeerConfig{
-		Organization:     "testorg",
-		LocalCommonName:  "client",
-		LocalSerial:      "2",
-		LocalPrivateKey:  h.private,
-		RemoteCommonName: "server",
-		RemoteSerial:     "1",
-		RemotePublicKey:  h.public,
-		RemoteAddr:       net.ParseIP("127.0.0.1"),
-		RemotePort:       h.remotePort,
-		Hub:              h.initiator,
+		Local:           identity.MustParse("testorg/client:2"),
+		LocalPrivateKey: h.private,
+		Remote:          identity.MustParse("testorg/server:1"),
+		RemotePublicKey: h.public,
+		RemoteAddr:      net.ParseIP("127.0.0.1"),
+		RemotePort:      h.remotePort,
+		Hub:             h.initiator,
 	}
+}
+
+func idBody(text string) []byte {
+	body, err := encodeID(identity.MustParse(text))
+	if err != nil {
+		panic(err)
+	}
+	return body
 }
 
 // Two ranet3 nodes could never reach each other before the responder
@@ -168,10 +180,10 @@ func TestResponderCompletesHandshakeWithInitiator(t *testing.T) {
 	defer responder.Mux().Close()
 
 	accepted := <-h.identities
-	if accepted.Peer != (Identity{Organization: "testorg", CommonName: "client", SerialNumber: "2"}) {
+	if accepted.Peer != identity.MustParse("testorg/client:2") {
 		t.Fatalf("authenticated identity = %s", accepted.Peer)
 	}
-	if accepted.Local != (Identity{Organization: "testorg", CommonName: "server", SerialNumber: "1"}) {
+	if accepted.Local != identity.MustParse("testorg/server:1") {
 		t.Fatalf("local identity = %s", accepted.Local)
 	}
 	// Each side's outbound key must be the other's inbound key, or the first
@@ -202,8 +214,28 @@ func TestResponderCompletesHandshakeWithInitiator(t *testing.T) {
 	}
 }
 
+// the initiator refuses an IDr other than the endpoint it dialed, so the responder answers as the one asked for
+func TestResponderAnswersAsTheEndpointDialed(t *testing.T) {
+	second := identity.MustParse("testorg/server:2")
+	h := newResponderHarnessAs(t, []identity.Identity{identity.MustParse("testorg/server:1"), second}, nil)
+	cfg := h.peerConfig()
+	cfg.Remote = second
+	ctx, cancel := context.WithTimeout(context.Background(), answerBudget)
+	defer cancel()
+	initiator, err := InitiateContext(ctx, cfg)
+	if err != nil {
+		t.Fatalf("initiate to %s: %v", second, err)
+	}
+	defer initiator.Mux().Close()
+	responder := <-h.sessions
+	defer responder.Mux().Close()
+	if accepted := <-h.identities; accepted.Local != second {
+		t.Errorf("the responder answered as %s, want %s", accepted.Local, second)
+	}
+}
+
 func TestResponderRejectsUnknownIdentity(t *testing.T) {
-	h := newResponderHarness(t, func(Identity) (ed25519.PublicKey, bool) { return nil, false })
+	h := newResponderHarness(t, func(identity.Identity) (ed25519.PublicKey, bool) { return nil, false })
 	session, err := h.dial(t)
 	if err == nil {
 		session.Mux().Close()
@@ -221,7 +253,7 @@ func TestResponderRejectsWrongKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newResponderHarness(t, func(Identity) (ed25519.PublicKey, bool) { return other, true })
+	h := newResponderHarness(t, func(identity.Identity) (ed25519.PublicKey, bool) { return other, true })
 	session, err := h.dial(t)
 	if err == nil {
 		session.Mux().Close()
@@ -245,7 +277,7 @@ func TestInitiatorRefusesResponderItCannotAuthenticate(t *testing.T) {
 		"a public key the responder does not sign with": {
 			func(cfg *PeerConfig) { cfg.RemotePublicKey = other }, "AUTH signature verification failed"},
 		"a common name the responder does not hold": {
-			func(cfg *PeerConfig) { cfg.RemoteCommonName = "elsewhere" }, fmt.Sprintf("notify type %d", N_AUTHENTICATION_FAILED)},
+			func(cfg *PeerConfig) { cfg.Remote = identity.MustParse("testorg/elsewhere:1") }, fmt.Sprintf("notify type %d", N_AUTHENTICATION_FAILED)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newResponderHarness(t, nil)
@@ -262,71 +294,6 @@ func TestInitiatorRefusesResponderItCannotAuthenticate(t *testing.T) {
 				t.Fatalf("the initiator refused with %q, which does not name %q", err, test.want)
 			}
 		})
-	}
-}
-
-func TestIdentityRoundTripsThroughItsEncoding(t *testing.T) {
-	for _, id := range []Identity{
-		{Organization: "testorg", CommonName: "server", SerialNumber: "1"},
-		{Organization: "", CommonName: "", SerialNumber: ""},
-		{Organization: "an organization long enough to need a two octet DER length, padded out to be sure", CommonName: "node", SerialNumber: "42"},
-	} {
-		decoded, err := identityFromID(id.encodeID())
-		if err != nil {
-			t.Fatalf("%s: %v", id, err)
-		}
-		if decoded != id {
-			t.Fatalf("round trip produced %s, want %s", decoded, id)
-		}
-	}
-}
-
-func TestIdentityAcceptsEitherDERStringType(t *testing.T) {
-	id := Identity{Organization: "testorg", CommonName: "server", SerialNumber: "1"}
-	body := id.encodeID()
-	// strongSwan picks the ASN.1 string type from the characters in the value
-	// rather than per attribute, so it puts a printable organization in a
-	// PrintableString where ranet writes a UTF8String. The two name one peer.
-	printable := bytes.Replace(body, []byte{0x0c, 0x07, 't', 'e', 's', 't', 'o', 'r', 'g'}, []byte{0x13, 0x07, 't', 'e', 's', 't', 'o', 'r', 'g'}, 1)
-	if bytes.Equal(printable, body) {
-		t.Fatal("test did not alter the encoding")
-	}
-	decoded, err := identityFromID(printable)
-	if err != nil {
-		t.Fatalf("a PrintableString organization was rejected: %v", err)
-	}
-	if decoded != id {
-		t.Fatalf("decoded %s, want %s", decoded, id)
-	}
-}
-
-func TestIdentityRejectsAttributesThisProfileDoesNotUse(t *testing.T) {
-	// An RDNSequence carrying a country or an extra common name names a peer
-	// this profile cannot reason about, so it is refused rather than reduced
-	// to the attributes it happens to recognize.
-	extra := derSequence(
-		derSet(derSequence(oidOrganizationName, derUTF8String("testorg"))),
-		derSet(derSequence(oidCommonName, derUTF8String("server"))),
-		derSet(derSequence(oidSerialNumber, derPrintableString("1"))),
-		derSet(derSequence([]byte{0x06, 0x03, 0x55, 0x04, 0x06}, derPrintableString("FR"))),
-	)
-	if _, err := identityFromID(EncodeID(ID_DER_ASN1_DN, extra)); err == nil {
-		t.Fatal("an identity with a fourth attribute was accepted")
-	}
-}
-
-func TestIdentityAcceptsAttributesInAnyOrder(t *testing.T) {
-	reordered := derSequence(
-		derSet(derSequence(oidCommonName, derUTF8String("server"))),
-		derSet(derSequence(oidSerialNumber, derPrintableString("1"))),
-		derSet(derSequence(oidOrganizationName, derUTF8String("testorg"))),
-	)
-	decoded, err := identityFromID(EncodeID(ID_DER_ASN1_DN, reordered))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decoded != (Identity{Organization: "testorg", CommonName: "server", SerialNumber: "1"}) {
-		t.Fatalf("decoded %s", decoded)
 	}
 }
 
@@ -480,8 +447,8 @@ func TestInitiatorAnswersCookieChallenge(t *testing.T) {
 	t.Cleanup(func() { session.Mux().Close() })
 	select {
 	case accepted := <-h.identities:
-		if accepted.Peer.CommonName != "client" {
-			t.Fatalf("the responder accepted %q", accepted.Peer.CommonName)
+		if accepted.Peer != identity.MustParse("testorg/client:2") {
+			t.Fatalf("the responder accepted %s", accepted.Peer)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the responder never reported the accepted session")
@@ -734,16 +701,13 @@ func TestResponderRefusesIdentityItDoesNotAnswerTo(t *testing.T) {
 	// Everything is as the working dial except the name asked for, which this
 	// responder is not configured with.
 	session, err := InitiateContext(ctx, PeerConfig{
-		Organization:     "testorg",
-		LocalCommonName:  "client",
-		LocalSerial:      "2",
-		LocalPrivateKey:  h.private,
-		RemoteCommonName: "someone-else",
-		RemoteSerial:     "1",
-		RemotePublicKey:  h.public,
-		RemoteAddr:       net.ParseIP("127.0.0.1"),
-		RemotePort:       h.remotePort,
-		Hub:              h.initiator,
+		Local:           identity.MustParse("testorg/client:2"),
+		LocalPrivateKey: h.private,
+		Remote:          identity.MustParse("testorg/someone-else:1"),
+		RemotePublicKey: h.public,
+		RemoteAddr:      net.ParseIP("127.0.0.1"),
+		RemotePort:      h.remotePort,
+		Hub:             h.initiator,
 	})
 	if err == nil {
 		session.Mux().Close()
@@ -1653,8 +1617,8 @@ func TestHandshakeFailureRecordIsBounded(t *testing.T) {
 func TestFirstHandshakeFailureOfANodesLifeIsSaid(t *testing.T) {
 	responder, err := NewResponder(ResponderConfig{
 		Hub: listenHub(t), LocalPrivateKey: make(ed25519.PrivateKey, ed25519.PrivateKeySize),
-		Local:  []Identity{{Organization: "example", CommonName: "node", SerialNumber: "0"}},
-		Lookup: func(Identity) (ed25519.PublicKey, bool) { return nil, false },
+		Local:  []identity.Identity{identity.MustParse("example/node:0")},
+		Lookup: func(identity.Identity) (ed25519.PublicKey, bool) { return nil, false },
 	})
 	if err != nil {
 		t.Fatal(err)

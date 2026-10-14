@@ -135,7 +135,7 @@ func (r *upDownRig) open() error {
 	if err != nil {
 		r.ht.Fatalf("%v", err)
 	}
-	r.client, err = newClient(cfg, r.key, r.reg, netstack.NewRoutesOnly(), nil, events.New())
+	r.client, err = newClient(cfg, r.key, trust(r.ht.T, r.reg), netstack.NewRoutesOnly(), nil, events.New())
 	return err
 }
 
@@ -317,7 +317,7 @@ func (r *upDownRig) make(move int, model upDownModel, done []string) upDownModel
 	case moveSession:
 		if !model.down {
 			r.landed++
-			r.sessions.adopt(r.ht, c, fmt.Sprintf("example/held-%d/0@0", r.landed))
+			r.sessions.adopt(r.ht, c, fmt.Sprintf("example/held-%d:0@0", r.landed))
 			model.sessions++
 		}
 	}

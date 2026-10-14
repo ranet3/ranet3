@@ -502,10 +502,9 @@ type Session struct {
 // session does not appear here, because nothing local is dialing it. It
 // appears under Sessions like any other.
 type Peer struct {
-	Path         string `json:"path"`
-	Organization string `json:"organization"`
-	CommonName   string `json:"common_name"`
-	SerialNumber string `json:"serial_number,omitempty"`
+	Path string `json:"path"`
+	// Peer is the canonical form of the node, or of the one endpoint of it the config pins
+	Peer string `json:"peer"`
 	// Connected is whether a session holds this path, from either direction.
 	Connected bool `json:"connected"`
 	// Generated marks a peer that full_mesh derived from the registry rather

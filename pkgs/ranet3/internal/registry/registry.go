@@ -49,7 +49,8 @@ type Endpoint struct {
 	Port          uint16  `json:"port"`
 }
 
-func Load(path string) (Registry, error) {
+// Load reads the document at path and indexes it
+func Load(path string) (*Index, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("registry: read %s: %w", path, err)
@@ -71,23 +72,17 @@ func Load(path string) (Registry, error) {
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("registry: parse %s: trailing data after the registry", path)
 	}
-	return r, r.Validate()
+	return New(r)
 }
 
 func (r Registry) Validate() error {
-	// FindNode takes the first match and walks every block whose organization
-	// name matches, so a common name has to be unique across all of them and
-	// not merely within one block. Two blocks named alike, each carrying a
-	// node "a" with a different public key, would otherwise both validate and
-	// leave the order of the array to decide which key authenticates that
-	// peer, which is the trust-root lookup. Splitting an organization across
-	// blocks stays supported, but only a name collision within one does not.
+	// a common name is unique across every block of its organization, or two blocks with different keys would leave the order of the array to decide which key authenticates the node
 	nodes := make(map[string]map[string]struct{}, len(r))
 	for _, organization := range r {
 		if organization.Organization == "" {
 			return fmt.Errorf("registry: organization name is required")
 		}
-		if _, err := organization.ParsePublicKey(); err != nil {
+		if _, err := organization.publicKey(); err != nil {
 			return err
 		}
 		named := nodes[organization.Organization]
@@ -146,7 +141,7 @@ func New(document Registry) (*Index, error) {
 	}
 	x := &Index{nodes: make(map[identity.Identity]indexedNode), organizations: len(document)}
 	for _, organization := range document {
-		key, err := organization.ParsePublicKey()
+		key, err := organization.publicKey()
 		if err != nil {
 			return nil, err
 		}
@@ -212,8 +207,8 @@ func (x *Index) Underlay() []netip.Addr { return x.underlay }
 // Size is how many organization blocks and nodes the document holds
 func (x *Index) Size() (organizations, nodes int) { return x.organizations, len(x.order) }
 
-// ParsePublicKey parses the organization's shared Ed25519 SubjectPublicKeyInfo PEM.
-func (o Organization) ParsePublicKey() (ed25519.PublicKey, error) {
+// publicKey parses the block's Ed25519 SubjectPublicKeyInfo PEM
+func (o Organization) publicKey() (ed25519.PublicKey, error) {
 	blk, _ := pem.Decode([]byte(o.PublicKey))
 	if blk == nil {
 		return nil, fmt.Errorf("registry: organization %q: no PEM block in public_key", o.Organization)
@@ -227,50 +222,6 @@ func (o Organization) ParsePublicKey() (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("registry: organization %q: public key is not Ed25519", o.Organization)
 	}
 	return ed, nil
-}
-
-// FindOrganization returns the named organization, if present.
-func (r Registry) FindOrganization(name string) (Organization, bool) {
-	for _, o := range r {
-		if o.Organization == name {
-			return o, true
-		}
-	}
-	return Organization{}, false
-}
-
-// FindNode scans every matching organization block and returns the first
-// matching node. Organization names are not required to be unique.
-func (r Registry) FindNode(organization, commonName string) (Organization, Node, bool) {
-	for _, candidate := range r {
-		if candidate.Organization != organization {
-			continue
-		}
-		if node, ok := candidate.FindNode(commonName); ok {
-			return candidate, node, true
-		}
-	}
-	return Organization{}, Node{}, false
-}
-
-// FindNode returns the named node within organization, if present.
-func (o Organization) FindNode(commonName string) (Node, bool) {
-	for _, n := range o.Nodes {
-		if n.CommonName == commonName {
-			return n, true
-		}
-	}
-	return Node{}, false
-}
-
-// FindEndpoint returns the endpoint with the given serial number, if present.
-func (n Node) FindEndpoint(serial string) (Endpoint, bool) {
-	for _, e := range n.Endpoints {
-		if e.SerialNumber == serial {
-			return e, true
-		}
-	}
-	return Endpoint{}, false
 }
 
 // ResolveRemote resolves an endpoint's address for dialing, mirroring

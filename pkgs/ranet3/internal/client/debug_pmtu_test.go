@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -162,7 +163,7 @@ func TestPMTUViewNamesASessionItDoesNotSearch(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = mux.Close() })
 	d := newPathDriver(mux, nil, events.New(), &probeTotals{}, noSteering, driverProbeTimeout, confirmInterval)
-	d.peer, d.endpoint = sinkPeer(t, "example/peer/0@0"), mux.Endpoint()
+	d.peer, d.endpoint = sinkPeer(t, "example/peer:0@0"), mux.Endpoint()
 	d.start(1400, math.MaxInt)
 	c := pmtuClient(d, 1400)
 	s := c.DebugPMTU("").Sessions[0]
@@ -178,6 +179,31 @@ func TestPMTUViewNamesASessionItDoesNotSearch(t *testing.T) {
 	d.move()
 	if got, want := c.DebugPMTU("").Sessions[0].Endpoint, mux.Endpoint().String(); got != want {
 		t.Errorf("a session sending to %s reads as sending to %s", want, got)
+	}
+}
+
+// a peer named by the session's path, its endpoint, its node or its name shows that session alone, and none of a node whose name starts with its own
+func TestPMTUViewShowsTheSessionsOfThePeerNamed(t *testing.T) {
+	mux, err := loopbackHub(t).NewMux(net.IPv4(127, 0, 0, 1), 4500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mux.Close() })
+	session := func(path string) *pathDriver {
+		d := newPathDriver(mux, nil, events.New(), &probeTotals{}, noSteering, driverProbeTimeout, confirmInterval)
+		d.peer = sinkPeer(t, path)
+		return d
+	}
+	c := pmtuClient(session("example/bravo:2@1"), 1400)
+	c.sessions.live["example/bravo2:3@1"] = &liveSession{pmtu: session("example/bravo2:3@1")}
+	for _, peer := range []string{"example/bravo:2@1", "example/bravo:2", "example/bravo", "bravo"} {
+		var shown []string
+		for _, s := range c.DebugPMTU(peer).Sessions {
+			shown = append(shown, s.Peer)
+		}
+		if !slices.Equal(shown, []string{"example/bravo:2@1"}) {
+			t.Errorf("the peer %s shows the sessions %q, want example/bravo:2@1 alone", peer, shown)
+		}
 	}
 }
 

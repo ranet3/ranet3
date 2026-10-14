@@ -25,11 +25,11 @@ func TestSweepWaitsForEveryDialerItStops(t *testing.T) {
 	defer cancel()
 	c := &Client{ctx: ctx, cancel: cancel, sessions: newSessionSet(), dialers: make(map[string]*dialer)}
 	c.cfg.Store(&config.Config{})
-	c.reg.Store(&registry.Registry{})
+	c.storeIndex(trust(t, registry.Registry{}))
 	release := make(chan struct{})
 	dialing, stop := context.WithCancel(ctx)
 	slow := &dialer{cancel: stop, wake: make(chan struct{}, 1), done: make(chan struct{})}
-	c.dialers["example/slow/0@0"] = slow
+	c.dialers["example/slow:0@0"] = slow
 	c.peers.Go(func() {
 		defer close(slow.done)
 		<-dialing.Done()
@@ -81,22 +81,22 @@ func TestSweptSessionIsNotToldAgain(t *testing.T) {
 		return len(told)
 	}
 	dropped, swept := &ike.Session{}, &ike.Session{}
-	c.sessions.adoptPreferred("example/dropped/0@0", dropped, true, nil)
-	c.sessions.adoptPreferred("example/swept/0@0", swept, true, nil)
+	c.sessions.adoptPreferred("example/dropped:0@0", dropped, true, nil)
+	c.sessions.adoptPreferred("example/swept:0@0", swept, true, nil)
 	dial, stop := context.WithCancel(ctx)
 	stop()
 
-	c.tellDropped(dial, "example/dropped/0@0", dropped)
+	c.tellDropped(dial, "example/dropped:0@0", dropped)
 	if got := toldCount(); got != 1 {
 		t.Fatalf("the peer of a dropped dialer was told %d times, want once", got)
 	}
-	if got := c.sessions.paths(); slices.Contains(got, "example/dropped/0@0") {
+	if got := c.sessions.paths(); slices.Contains(got, "example/dropped:0@0") {
 		t.Errorf("the set still holds the session it told the peer about: %v", got)
 	}
-	if closed := c.sessions.closeAll(); !slices.Equal(closed, []string{"example/swept/0@0"}) {
+	if closed := c.sessions.closeAll(); !slices.Equal(closed, []string{"example/swept:0@0"}) {
 		t.Errorf("the sweep closed %v, want the one session still held", closed)
 	}
-	c.tellDropped(dial, "example/swept/0@0", swept)
+	c.tellDropped(dial, "example/swept:0@0", swept)
 	mu.Lock()
 	defer mu.Unlock()
 	if !slices.Equal(told, []*ike.Session{dropped, swept}) {

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
@@ -96,7 +97,7 @@ func probingRig(t *testing.T, hub *transport.Hub, to string, timeout time.Durati
 		r.probes.Add(1)
 		return probe(r, size, nonce)
 	}, r.bus, &r.totals, r.steering.Load, timeout, confirmInterval)
-	r.driver.peer = sinkPeer(t, "example/peer/0@0")
+	r.driver.peer = sinkPeer(t, "example/peer:0@0")
 	return r
 }
 
@@ -543,12 +544,12 @@ func TestSessionStartingUnderTheFloorFragmentsAtOnce(t *testing.T) {
 // an Ack reaches the search of the session it came through, and one through a peer that held the path before reaches none
 // a change of the host's network, which probes every session as an operator's probe does, asks every search to confirm its budget
 func TestSessionSetHandsMovesAndAcksToTheirSearch(t *testing.T) {
-	local := ike.Identity{Organization: "example", CommonName: "alpha", SerialNumber: "1"}
-	remote := ike.Identity{Organization: "example", CommonName: "bravo", SerialNumber: "2"}
-	other := ike.Identity{Organization: "example", CommonName: "charlie", SerialNumber: "3"}
+	local := identity.MustParse("example/alpha:1")
+	remote := identity.MustParse("example/bravo:2")
+	other := identity.MustParse("example/charlie:3")
 	c := &Client{events: events.New(), sessions: newSessionSet()}
 	var searches []*pathDriver
-	for _, path := range []string{sessionPath(remote, local), sessionPath(other, local)} {
+	for _, path := range []string{identity.Path(remote, local), identity.Path(other, local)} {
 		search := newPathDriver(nil, nil, c.events, &c.probes, noSteering, driverProbeTimeout, confirmInterval)
 		search.peer = sinkPeer(t, path)
 		c.sessions.live[path] = &liveSession{pmtu: search}

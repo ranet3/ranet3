@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 )
 
@@ -109,16 +110,13 @@ func main() {
 	flag.Parse()
 
 	cfg := ike.PeerConfig{
-		Organization:     "testorg",
-		LocalCommonName:  "client",
-		LocalSerial:      "2",
-		LocalPrivateKey:  loadPriv(*privPath),
-		RemoteCommonName: "server",
-		RemoteSerial:     "1",
-		RemotePublicKey:  loadPub(*pubPath),
-		LocalAddr:        net.ParseIP(*localAddr),
-		RemoteAddr:       net.ParseIP(*remoteAddr),
-		RemotePort:       *remotePort,
+		Local:           identity.MustParse("testorg/client:2"),
+		LocalPrivateKey: loadPriv(*privPath),
+		Remote:          identity.MustParse("testorg/server:1"),
+		RemotePublicKey: loadPub(*pubPath),
+		LocalAddr:       net.ParseIP(*localAddr),
+		RemoteAddr:      net.ParseIP(*remoteAddr),
+		RemotePort:      *remotePort,
 	}
 
 	sess, err := ike.Initiate(cfg)

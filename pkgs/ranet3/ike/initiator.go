@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -27,16 +28,11 @@ import (
 // encapsulation. The package doc lists the transforms this offers, which are
 // the only ones it proposes or accepts.
 type PeerConfig struct {
-	Organization string
-
-	LocalCommonName string
-	LocalSerial     string
+	Local           identity.Identity
 	LocalPrivateKey ed25519.PrivateKey
 
-	RemoteCommonName   string
-	RemoteOrganization string // empty defaults to Organization
-	RemoteSerial       string
-	RemotePublicKey    ed25519.PublicKey
+	Remote          identity.Identity
+	RemotePublicKey ed25519.PublicKey
 
 	LocalAddr  net.IP // "" => wildcard
 	LocalPort  int    // 0 => ephemeral
@@ -58,16 +54,7 @@ type PeerConfig struct {
 
 // Recorder takes one state change of a session, with the session's two ends
 // both ends are zero where no peer has authenticated yet
-type Recorder func(local, remote Identity, kind string, attrs ...slog.Attr)
-
-// identities are the two ends a configuration authenticates, the remote organization defaulted
-func (c PeerConfig) identities() (local, remote Identity) {
-	remote = Identity{Organization: c.RemoteOrganization, CommonName: c.RemoteCommonName, SerialNumber: c.RemoteSerial}
-	if remote.Organization == "" {
-		remote.Organization = c.Organization
-	}
-	return Identity{Organization: c.Organization, CommonName: c.LocalCommonName, SerialNumber: c.LocalSerial}, remote
-}
+type Recorder func(local, remote identity.Identity, kind string, attrs ...slog.Attr)
 
 // ChildSA is the negotiated ESP keying material and parameters handed to
 // the esp package after a successful handshake.
@@ -180,7 +167,7 @@ type Session struct {
 
 	// events is the configuration's Recorder, set with the two ends before the session is handed out
 	events        Recorder
-	local, remote Identity
+	local, remote identity.Identity
 }
 
 func (s *Session) emit(kind string, attrs ...slog.Attr) {
@@ -609,22 +596,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 			{Type: PayloadNonce, Body: EncodeNonce(ni)},
 			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: hashAlgos})},
 		}
-		// NAT_DETECTION_SOURCE_IP, RFC 7296 section 2.23. Without this notify,
-		// the responder has nothing to compare against for our side and
-		// apparently doesn't treat the connection as NAT'd even with
-		// encap=yes configured, confirmed by inspecting the resulting
-		// kernel XFRM state (`ip xfrm state`), which had no `encap` info
-		// attached at all, causing every inbound ESP packet to be
-		// silently dropped at the kernel's encap_type check
-		// (net/xfrm/xfrm_input.c) before authentication is even
-		// attempted. strongSwan's own initiator (ike_natd.c,
-		// build_natd_payload) handles this identically when force_encap
-		// is set: rather than using its real local address (which would
-		// only force NAT-T if it happens to mismatch what the responder
-		// observes), it hashes a random IPv4 address with port 0,
-		// guaranteeing a mismatch so NAT is always assumed. Do the same
-		// here rather than relying on whatever this socket's wildcard
-		// bind address happens to be.
+		// RFC 7296 section 2.23 NAT detection hashes a random source, as strongSwan's force_encap does, so the responder always encapsulates ESP in UDP
 		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NAT_DETECTION_SOURCE_IP, Data: srcHash})})
 		dstHash := natDetectionHash(spiI, 0, cfg.RemoteAddr, uint16(cfg.RemotePort))
 		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NAT_DETECTION_DESTINATION_IP, Data: dstHash})})
@@ -735,7 +707,6 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		return nil, err
 	}
 
-	localID, remoteID := cfg.identities()
 	sess := &Session{
 		started:          time.Now(),
 		childRetireDelay: childRetireDelay,
@@ -745,7 +716,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 			spiI: spiI, spiR: spiR, nextLocalMID: 2},
 		requests: make(chan *localRequest, 1),
 		probes:   make(chan struct{}, 1),
-		events:   cfg.Events, local: localID, remote: remoteID,
+		events:   cfg.Events, local: cfg.Local, remote: cfg.Remote,
 	}
 	if err := sess.completeIKEAuth(cfg, req, respRaw, ni, nr); err != nil {
 		mux.Close()
@@ -893,9 +864,14 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	spiBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(spiBuf, mySPI)
 
-	local, remote := cfg.identities()
-	idiBody := EncodeID(ID_DER_ASN1_DN, EncodeIdentityDN(local.Organization, local.CommonName, local.SerialNumber))
-	idrBody := EncodeID(ID_DER_ASN1_DN, EncodeIdentityDN(remote.Organization, remote.CommonName, remote.SerialNumber))
+	idiBody, err := encodeID(cfg.Local)
+	if err != nil {
+		return false, err
+	}
+	idrBody, err := encodeID(cfg.Remote)
+	if err != nil {
+		return false, err
+	}
 
 	macedIDForI := prf(s.current.suite.PRFID, s.current.skpi, idiBody)
 	signedOctets := concat(realMessage1, nr, macedIDForI)
@@ -957,7 +933,7 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	if err != nil {
 		return false, err
 	}
-	if got != remote {
+	if got != cfg.Remote {
 		return false, fmt.Errorf("ike: responder identity %s does not match configured IDr", got)
 	}
 

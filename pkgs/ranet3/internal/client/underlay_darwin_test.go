@@ -35,7 +35,7 @@ func TestLiveSessionsCountsNothingWhileTheUnderlayIsNotBound(t *testing.T) {
 	t.Cleanup(func() { _ = hub.Close() })
 	c := &Client{hub: hub, sessions: newSessionSet()}
 	c.sessions.active = func(*ike.Session) bool { return true }
-	if _, adopted := c.sessions.adoptPreferred("example/gateway/0@0", &ike.Session{}, true, nil); !adopted {
+	if _, adopted := c.sessions.adoptPreferred("example/gateway:0@0", &ike.Session{}, true, nil); !adopted {
 		t.Fatal("the session was not adopted")
 	}
 	if got := c.LiveSessions(); got != 0 {

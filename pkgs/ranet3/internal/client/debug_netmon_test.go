@@ -60,8 +60,8 @@ func TestProbeAsksTheSessionsItNames(t *testing.T) {
 	var probed []*ike.Session
 	c.sessions.probe = func(sess *ike.Session) { probed = append(probed, sess) }
 	gateway, inbound := &ike.Session{}, &ike.Session{}
-	c.sessions.adoptPreferred("example/gateway/1@0", gateway, true, nil)
-	c.sessions.adoptPreferred("example/inbound/1@0", inbound, true, nil)
+	c.sessions.adoptPreferred("example/gateway:1@0", gateway, true, nil)
+	c.sessions.adoptPreferred("example/inbound:1@0", inbound, true, nil)
 
 	for _, refused := range []struct {
 		peer string
@@ -78,11 +78,11 @@ func TestProbeAsksTheSessionsItNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(probed, []*ike.Session{gateway}) || !slices.Equal(result.Acted, []string{"example/gateway/1@0"}) {
+	if !slices.Equal(probed, []*ike.Session{gateway}) || !slices.Equal(result.Acted, []string{"example/gateway:1@0"}) {
 		t.Errorf("a probe of gateway reached %d sessions and reports %v", len(probed), result.Acted)
 	}
 	verbs := recorded(c.events, "control.verb")
-	if last := verbs[len(verbs)-1]; last.Peer != "example/gateway/1@0" || last.Attrs["verb"] != "probe" {
+	if last := verbs[len(verbs)-1]; last.Peer != "example/gateway:1@0" || last.Attrs["verb"] != "probe" {
 		t.Errorf("the probe was recorded as %+v", last)
 	}
 

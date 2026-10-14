@@ -60,7 +60,7 @@ func (s *writingStub) Up(context.Context) (control.Result, error) { return s.rec
 // is the peer a redial is for, so spelling both halves the same way would let
 // either be deleted unseen.
 func (*writingStub) Sessions() []control.Session {
-	return []control.Session{{Path: "example/inbound/0@0", Peer: "example/inbound", Active: true}}
+	return []control.Session{{Path: "example/inbound:0@0", Peer: "example/inbound", Active: true}}
 }
 
 func (s *writingStub) record(call string) (control.Result, error) {

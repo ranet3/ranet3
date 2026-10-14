@@ -25,37 +25,13 @@ import (
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
-// peerPath names one dialer, and is the same name the session it establishes is
-// adopted under, so a reload can reason about both with one key.
-// The serial number is part of the name because it selects which of the peer's
-// endpoints we dial. Leaving it out made a reload that repointed a peer look
-// like no change at all, and report success while the old dialer kept using
-// the value it captured at startup.
-func peerPath(peer config.Peer, local config.Endpoint) string {
-	return fmt.Sprintf("%s/%s/%s@%s", peer.Org, peer.Name, peer.Serial, local.Serial)
-}
-
-// syncPeers starts a dialer for every (local endpoint, peer) pair the current
-// configuration names and stops the ones it no longer does. Stopping one
-// cancels its context, which ends the session it holds.
-//
-// It runs once at startup and again on every reload, so a node joining or
-// leaving the mesh costs one dialer rather than a restart, which would drop
-// every SA on this node.
-//
-// Off the mesh it stops every dialer and starts none. It reports the dialers
-// it stopped, which a reload leaves to end on their own and a sweep waits for.
+// syncPeers starts a dialer for every pair dials names and stops the rest, and off the mesh stops every one
+// it reports the dialers it stopped, which a reload leaves to end on their own and a sweep waits for
 func (c *Client) syncPeers() (stopped []*dialer) {
 	c.dialersMu.Lock()
 	defer c.dialersMu.Unlock()
-	// Read inside the lock. Two calls can be in flight, since Run makes one at
-	// startup and every SIGHUP makes another, and a set computed before the
-	// lock is a set that may already be stale when it is installed: the later
-	// caller would then cancel every dialer the earlier one started and
-	// nothing would run again to correct it.
+	// read under the lock, since Run and every SIGHUP may call this at once and a set read before it may be stale when installed
 	cfg := c.config()
-	peers := effectivePeers(cfg, c.registry())
-	wanted := make(map[string]struct{}, len(cfg.Link.Endpoints)*len(peers))
 	if !c.onMeshLocked() {
 		for path, running := range c.dialers {
 			running.cancel()
@@ -64,28 +40,27 @@ func (c *Client) syncPeers() (stopped []*dialer) {
 		}
 		return stopped
 	}
-	for _, local := range cfg.Link.Endpoints {
-		for _, peer := range peers {
-			path := peerPath(peer, local)
-			wanted[path] = struct{}{}
-			if _, running := c.dialers[path]; running {
-				continue
-			}
-			ctx, cancel := context.WithCancel(c.ctx)
-			running := &dialer{cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{})}
-			c.dialers[path] = running
-			c.peers.Go(func() {
-				defer close(running.done)
-				defer cancel()
-				// A dialer that gives up on its own, because the trust
-				// document does not name the node yet, has to leave the map or
-				// the entry says "running" forever and every later reload
-				// skips it. The document is rewritten whenever any node joins,
-				// so a peer briefly absent from it is ordinary.
-				defer c.forgetDialer(path, running)
-				c.runPeer(ctx, local, peer, running.wake)
-			})
+	ids, err := configIdentities(cfg)
+	if err != nil {
+		log.Printf("peers: %v", err)
+		return nil
+	}
+	wanted := make(map[string]struct{})
+	for _, d := range dials(cfg, ids, c.index()) {
+		wanted[d.path] = struct{}{}
+		if _, running := c.dialers[d.path]; running {
+			continue
 		}
+		ctx, cancel := context.WithCancel(c.ctx)
+		running := &dialer{cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{})}
+		c.dialers[d.path] = running
+		c.peers.Go(func() {
+			defer close(running.done)
+			defer cancel()
+			// a dialer that gives up on its own leaves the map, or every later reload would skip it
+			defer c.forgetDialer(d.path, running)
+			c.runPeer(ctx, d, running.wake)
+		})
 	}
 	for path, running := range c.dialers {
 		if _, keep := wanted[path]; keep {
@@ -131,14 +106,14 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if err != nil {
 		return err
 	}
-	reg, err := registry.Load(cfg.Auth.Trust)
+	x, err := registry.Load(cfg.Auth.Trust)
 	if err != nil {
 		return err
 	}
 	if err := c.sameIdentityKey(cfg.Auth.Key); err != nil {
 		return err
 	}
-	families, err := validateLocalConfig(cfg, c.privateKey, reg)
+	ids, families, err := validateLocalConfig(cfg, c.privateKey, x)
 	if err != nil {
 		return err
 	}
@@ -164,14 +139,15 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	// the document does not name and is started again by the next reload.
 	// Both halves are advisory here, but appending one to the other would
 	// write into whichever backing array had the room.
-	refuse, skip := validatePeers(cfg, reg, families)
+	peers := effectivePeers(ids, cfg.Dial.All, x)
+	refuse, skip := validatePeers(peers, x, families)
 	for _, problems := range [][]error{refuse, skip} {
 		for _, problem := range problems {
 			log.Printf("reload: %v, so nothing will dial it", problem)
 		}
 	}
 
-	c.storeRegistry(reg)
+	c.storeIndex(x)
 	c.cfg.Store(cfg)
 	// The trust document decides who may connect, so it decides who may stay.
 	// A node taken out of it keeps every tunnel it already holds until
@@ -204,12 +180,9 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if tunErr != nil {
 		return tunErr
 	}
-	nodes := 0
-	for _, organization := range reg {
-		nodes += len(organization.Nodes)
-	}
+	_, nodes := x.Size()
 	applied = changedCapabilities(old, cfg)
-	log.Printf("reloaded %s: %d peers, %d nodes in the trust document", path, len(effectivePeers(cfg, reg)), nodes)
+	log.Printf("reloaded %s: %d peers, %d nodes in the trust document", path, len(peers), nodes)
 	return nil
 }
 

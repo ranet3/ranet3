@@ -89,7 +89,7 @@ func flagOf(c *Client) string { return filepath.Join(c.stateDir, downFlag) }
 func downable(t *testing.T, dir string) (*Client, *switchRecord, *switchRecord) {
 	t.Helper()
 	c := writable(t)
-	c.cfg.Store(&config.Config{})
+	c.cfg.Store(&config.Config{Node: config.Node{Org: "example", Name: "node"}})
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx, c.cancel, c.events = ctx, cancel, events.New()
 	t.Cleanup(func() { cancel(); c.peers.Wait() })
@@ -150,14 +150,14 @@ func (h *heldSessions) adopt(t testing.TB, c *Client, path string) *ike.Session 
 func TestFlagIsWrittenBeforeDownActsAndRemovedBeforeUpActs(t *testing.T) {
 	c, reconciler, translator := downable(t, t.TempDir())
 	sessions := holdSessions(c)
-	gateway := sessions.adopt(t, c, "example/gateway/1@0")
+	gateway := sessions.adopt(t, c, "example/gateway:1@0")
 	c.syncSpeaker()
 
 	result, err := c.Down(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(result.Acted, []string{"example/gateway/1@0"}) {
+	if !slices.Equal(result.Acted, []string{"example/gateway:1@0"}) {
 		t.Errorf("down reports %v, want the one session it closed", result.Acted)
 	}
 	for name, record := range map[string]*switchRecord{"reconciler": reconciler, "translator": translator} {
@@ -201,7 +201,7 @@ func TestFlagIsWrittenBeforeDownActsAndRemovedBeforeUpActs(t *testing.T) {
 		t.Error("up left the flag in place, so a restart would take the node down again")
 	}
 	// a session landing once the node is back is held, as the sweep's shut set would have refused it
-	sessions.adopt(t, c, "example/gateway/1@0")
+	sessions.adopt(t, c, "example/gateway:1@0")
 }
 
 // a down while down and an up while up succeed and say so, moving nothing
@@ -381,8 +381,8 @@ func TestClientWithoutAStateDirectoryRefusesDownAndUp(t *testing.T) {
 func TestDownAndUpRenderAsTheGoldenFiles(t *testing.T) {
 	c, _, _ := downable(t, t.TempDir())
 	sessions := holdSessions(c)
-	sessions.adopt(t, c, "example/bravo/0@0")
-	sessions.adopt(t, c, "example/charlie/0@0")
+	sessions.adopt(t, c, "example/bravo:0@0")
+	sessions.adopt(t, c, "example/charlie:0@0")
 	render := func(name string, verb func(context.Context) (control.Result, error)) {
 		t.Helper()
 		result, err := verb(context.Background())

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -1027,7 +1028,7 @@ func withNonESPMarker(b []byte) []byte {
 }
 
 func TestIKEAuthAuthenticatesBeforeChildFailure(t *testing.T) {
-	testIKEAuthAuthenticatesBeforeChildFailure(t, "")
+	testIKEAuthAuthenticatesBeforeChildFailure(t, "ranet-test")
 }
 
 func TestIKEAuthAcrossOrganizations(t *testing.T) {
@@ -1053,14 +1054,10 @@ func testIKEAuthAuthenticatesBeforeChildFailure(t *testing.T, remoteOrganization
 		t.Fatal(err)
 	}
 	cfg := PeerConfig{
-		Organization:       "ranet-test",
-		RemoteOrganization: remoteOrganization,
-		LocalCommonName:    "initiator",
-		LocalSerial:        "1",
-		LocalPrivateKey:    localPrivate,
-		RemoteCommonName:   "responder",
-		RemoteSerial:       "2",
-		RemotePublicKey:    remotePublic,
+		Local:           identity.MustParse("ranet-test/initiator:1"),
+		LocalPrivateKey: localPrivate,
+		Remote:          identity.MustParse(remoteOrganization + "/responder:2"),
+		RemotePublicKey: remotePublic,
 	}
 
 	const spiI = 0x0102030405060708
@@ -1104,11 +1101,7 @@ func testIKEAuthAuthenticatesBeforeChildFailure(t *testing.T, remoteOrganization
 				return fmt.Errorf("decrypt IKE_AUTH request: %w", err)
 			}
 
-			serverOrganization := cfg.Organization
-			if remoteOrganization != "" {
-				serverOrganization = remoteOrganization
-			}
-			idr := EncodeID(ID_DER_ASN1_DN, EncodeIdentityDN(serverOrganization, cfg.RemoteCommonName, cfg.RemoteSerial))
+			idr := idBody(remoteOrganization + "/responder:2")
 			macedID := prf(suite.PRFID, s.current.skpr, idr)
 			auth := BuildAuth(remotePrivate, concat(realMessage2, ni, macedID))
 			response, err := EncryptMessage(suite, s.current.sker, Header{
@@ -1247,9 +1240,8 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := PeerConfig{
-				Organization: "ranet-test", LocalCommonName: "initiator", LocalSerial: "1",
-				LocalPrivateKey: localPrivate, RemoteCommonName: "responder", RemoteSerial: "2",
-				RemotePublicKey: remotePublic,
+				Local: identity.MustParse("ranet-test/initiator:1"), LocalPrivateKey: localPrivate,
+				Remote: identity.MustParse("ranet-test/responder:2"), RemotePublicKey: remotePublic,
 			}
 			const spiI, spiR = 0x0102030405060708, 0x1112131415161718
 			suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
@@ -1309,11 +1301,11 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					commonName := cfg.RemoteCommonName
+					commonName := "responder"
 					if test.idr != "" {
 						commonName = test.idr
 					}
-					idr := EncodeID(ID_DER_ASN1_DN, EncodeIdentityDN(cfg.Organization, commonName, cfg.RemoteSerial))
+					idr := idBody("ranet-test/" + commonName + ":2")
 					auth := BuildAuth(remotePrivate, concat(realMessage2, ni, prf(suite.PRFID, s.current.skpr, idr)))
 					payloads := []RawPayload{{Type: PayloadIDr, Body: idr}, {Type: PayloadAUTH, Body: auth}}
 					for _, p := range []RawPayload{{Type: PayloadSA, Body: test.sa}, {Type: PayloadTSi, Body: test.tsi}, {Type: PayloadTSr, Body: test.tsr}} {

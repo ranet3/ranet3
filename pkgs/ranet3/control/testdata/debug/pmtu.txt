@@ -4,7 +4,7 @@ Device MTU   8862 B
 Too big      4 answers sent to packets past their session's budget
 MSS clamped  1 SYN
 
-Session   example/bravo/2@alpha
+Session   example/bravo:2@alpha
 Endpoint  198.51.100.7:4500, sent with DF
 State     confirmed
 Budget    1450 B, clamping the MSS to 1410 over IPv4 and 1390 over IPv6
@@ -14,7 +14,7 @@ Probes    21 sent, 12 acked, 9 lost
 Refusals  0
 Changed   from 1442 to 1450 B by probe, 3 minutes ago
 
-Session   example/charlie/3@alpha
+Session   example/charlie:3@alpha
 Endpoint  [2001:db8::3]:4500, sent with DF
 State     searching up
 Budget    1400 B, clamping the MSS to 1360 over IPv4 and 1340 over IPv6
@@ -24,7 +24,7 @@ Probes    2 sent, 1 acked, 0 lost
 Refusals  0
 Changed   no change recorded
 
-Session   example/delta/4@alpha
+Session   example/delta:4@alpha
 Endpoint  203.0.113.4:4500, sent without DF
 State     under the floor
 Budget    1280 B, clamping the MSS to 1240 over IPv4 and 1220 over IPv6
@@ -34,7 +34,7 @@ Probes    6 sent, 2 acked, 4 lost
 Refusals  1
 Changed   from 1400 to 1280 B by floor, 1 minute ago
 
-Session   example/echo/5@alpha
+Session   example/echo:5@alpha
 Endpoint  192.0.2.5:4500, sent without DF
 State     not searched
 Budget    8918 B, clamping the MSS to 8878 over IPv4 and 8858 over IPv6

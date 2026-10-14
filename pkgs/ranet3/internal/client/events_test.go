@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/registry"
@@ -51,7 +52,7 @@ func TestLoopbackRecordsDialSessionAndNeighborInOrder(t *testing.T) {
 	}
 	_, stop := run(t, alpha, bravo)
 
-	dialed := fmt.Sprintf("example/%s/0@0", bravo.name)
+	dialed := fmt.Sprintf("example/%s:0@0", bravo.name)
 	waitFor(t, convergeBudget, "alpha's neighbor to come up", func() bool {
 		return len(recorded(alpha.events, "babel.neighbor.up")) > 0
 	})
@@ -67,7 +68,7 @@ func TestLoopbackRecordsDialSessionAndNeighborInOrder(t *testing.T) {
 		t.Errorf("alpha recorded %q under %s", order, dialed)
 	}
 	answered := recorded(bravo.events, "ike.session.established")
-	if len(answered) == 0 || answered[0].Peer != fmt.Sprintf("example/%s/0@0", alpha.name) || answered[0].Attrs["role"] != "responder" {
+	if len(answered) == 0 || answered[0].Peer != fmt.Sprintf("example/%s:0@0", alpha.name) || answered[0].Attrs["role"] != "responder" {
 		t.Errorf("bravo recorded its session as %+v", answered)
 	}
 	// alpha dialed, and receives on the SPI its own SA holds as local
@@ -86,7 +87,7 @@ func TestLoopbackRecordsDialSessionAndNeighborInOrder(t *testing.T) {
 			t.Fatalf("%s could not rekey its session: %v", end.node.name, err)
 		}
 		rekeyed := end.node.events.Recorded(func(kind, peer string, _ []slog.Attr) bool {
-			return kind == "ike.rekey.completed" && matchesPeer(peer, end.other.name)
+			return kind == "ike.rekey.completed" && identity.Names(peer, end.other.name)
 		}, 0)
 		if len(rekeyed) != 1 {
 			t.Errorf("%s recorded %d rekeys under %s", end.node.name, len(rekeyed), end.other.name)
@@ -116,7 +117,7 @@ func TestResolutionIsRecorded(t *testing.T) {
 	set := newSessionSet()
 	set.events = events.New()
 	set.close = func(*ike.Session) {}
-	const path = "example/gateway/1@0"
+	const path = "example/gateway:1@0"
 	set.adoptPreferred(path, &ike.Session{}, true, nil)
 	if _, adopted := set.adoptPreferred(path, &ike.Session{}, false, nil); adopted {
 		t.Fatal("a session neither end prefers took the path from one both prefer")
@@ -150,7 +151,7 @@ func TestLosingSessionIsNeverRecordedEstablished(t *testing.T) {
 			closeSession(sess)
 		}
 	}
-	if _, adopted := alpha.client.sessions.adoptPreferred(fmt.Sprintf("example/%s/0@0", bravo.name), held, true, nil); !adopted {
+	if _, adopted := alpha.client.sessions.adoptPreferred(fmt.Sprintf("example/%s:0@0", bravo.name), held, true, nil); !adopted {
 		t.Fatal("the held session was not adopted")
 	}
 	run(t, alpha, bravo)
@@ -183,10 +184,11 @@ func TestCanceledDialIsNoFailure(t *testing.T) {
 	bus := events.New()
 	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: bus}
 	c.cfg.Store(cfg)
-	c.storeRegistry(reg)
+	c.storeIndex(trust(t, reg))
 
 	done := make(chan error, 1)
-	go func() { done <- c.connectPeer(ctx, cfg.Link.Endpoints[0], cfg.Dial.To[0], "example/gateway/1@0") }()
+	d := dialTo(t, cfg, cfg.Dial.To[0])
+	go func() { done <- c.connectPeer(ctx, d) }()
 	waitFor(t, convergeBudget, "the handshake to start", func() bool { return len(recorded(bus, "dial.attempt")) == 1 })
 	cancel()
 	if err := <-done; err == nil {
@@ -234,12 +236,11 @@ func TestFailedDialIsRecordedUnderTheSessionPath(t *testing.T) {
 	alpha.client.cfg.Store(&unpinned)
 	alpha.client.dialRetry = redialAfter
 	// bravo no longer trusts alpha, so alpha's handshake fails after its endpoint resolved
-	trusted := bravo.client.registry()[0]
-	trusted.Nodes = slices.DeleteFunc(slices.Clone(trusted.Nodes), func(node registry.Node) bool { return node.CommonName == alpha.name })
-	bravo.client.storeRegistry(registry.Registry{trusted})
+	bravo.client.storeIndex(trust(t, registry.Registry{{Organization: "example", Nodes: []registry.Node{{CommonName: bravo.name,
+		Endpoints: []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip4", Port: bravo.port}}}}}}))
 	run(t, alpha, bravo)
 	waitFor(t, convergeBudget, "alpha's dial to fail", func() bool { return len(recorded(alpha.events, "dial.failed")) > 0 })
-	session := fmt.Sprintf("example/%s/0@0", bravo.name)
+	session := fmt.Sprintf("example/%s:0@0", bravo.name)
 	for _, kind := range []string{"dial.attempt", "dial.failed"} {
 		for _, event := range recorded(alpha.events, kind) {
 			if event.Peer != session {
@@ -267,18 +268,19 @@ func TestDialerRecordsFailuresAndWakes(t *testing.T) {
 	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey,
 		dialers: make(map[string]*dialer), dialRetry: time.Hour, events: bus}
 	c.cfg.Store(cfg)
-	c.storeRegistry(reg)
+	c.storeIndex(trust(t, reg))
 
 	wake := make(chan struct{}, 1)
 	done := make(chan struct{})
-	go func() { c.runPeer(ctx, cfg.Link.Endpoints[0], cfg.Dial.To[0], wake); close(done) }()
+	d := dialTo(t, cfg, cfg.Dial.To[0])
+	go func() { c.runPeer(ctx, d, wake); close(done) }()
 	waitFor(t, convergeBudget, "the first dial to fail", func() bool { return len(recorded(bus, "dial.failed")) == 1 })
 	wake <- struct{}{}
 	waitFor(t, convergeBudget, "the woken dialer to fail again", func() bool { return len(recorded(bus, "dial.failed")) == 2 })
 	cancel()
 	<-done
 
-	path := peerPath(cfg.Dial.To[0], cfg.Link.Endpoints[0])
+	path := d.path
 	woken := recorded(bus, "dial.woken")
 	failed := recorded(bus, "dial.failed")
 	if len(woken) != 1 || woken[0].Peer != path || failed[0].Peer != path || !strings.Contains(failed[0].Attrs["err"], "gateway.invalid") {

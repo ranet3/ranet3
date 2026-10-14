@@ -34,11 +34,11 @@ func (stubSource) Routes() []control.Route {
 }
 
 func (stubSource) Sessions() []control.Session {
-	return []control.Session{{Path: "example/gateway/0@0", Peer: "example/gateway", Active: true}}
+	return []control.Session{{Path: "example/gateway:0@0", Peer: "example/gateway", Active: true}}
 }
 
 func (stubSource) Peers() []control.Peer {
-	return []control.Peer{{Path: "example/gateway/@0", Organization: "example", CommonName: "gateway", Connected: true}}
+	return []control.Peer{{Path: "example/gateway@0", Peer: "example/gateway", Connected: true}}
 }
 
 func (stubSource) Metrics(w io.Writer) {
@@ -69,7 +69,7 @@ func stubbed(query control.EventQuery, events ...control.Event) []control.Event 
 
 // the recorder holds a dial dialAge old
 func (stubSource) DebugEvents(query control.EventQuery) []control.Event {
-	return stubbed(query, control.Event{Seq: 1, At: time.Now().Add(-dialAge), Kind: "dial.attempt", Peer: "example/gateway/0@0"})
+	return stubbed(query, control.Event{Seq: 1, At: time.Now().Add(-dialAge), Kind: "dial.attempt", Peer: "example/gateway:0@0"})
 }
 
 // sessionAfter is how long after a follow begins the stub's session comes up
@@ -85,7 +85,7 @@ func (s stubSource) DebugFollow(query control.EventQuery) ([]control.Event, cont
 	go func() {
 		time.Sleep(sessionAfter)
 		for _, event := range stubbed(query, control.Event{Seq: 2, At: time.Now(), Kind: "ike.session.established",
-			Peer: "example/gateway/0@0", Attrs: map[string]string{"role": "initiator"}}) {
+			Peer: "example/gateway:0@0", Attrs: map[string]string{"role": "initiator"}}) {
 			live <- control.Delivery{Event: event}
 		}
 	}()
@@ -157,7 +157,7 @@ func TestCommandsReadTheirOwnSubsystem(t *testing.T) {
 		"status":    "example/laptop",
 		"neighbors": "example/gateway@0",
 		"routes":    "198.18.104.117/32",
-		"sessions":  "example/gateway/0@0",
+		"sessions":  "example/gateway:0@0",
 		"peers":     "gateway",
 	} {
 		t.Run(name, func(t *testing.T) {

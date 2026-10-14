@@ -6,10 +6,13 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/identity"
 )
 
 // TestLoadRegistry exercises the real-world edge cases a production ranet
@@ -19,32 +22,20 @@ import (
 // (distinct from null), hostnames, literal IPv4/IPv6 addresses, and
 // non-sequential serial numbers.
 func TestLoadRegistry(t *testing.T) {
-	reg, err := Load("testdata/registry.json")
+	x, err := Load("testdata/registry.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reg) == 0 {
-		t.Fatal("no organizations parsed")
+	if organizations, nodes := x.Size(); organizations != 2 || nodes != 5 {
+		t.Fatalf("loaded %d organizations and %d nodes, want 2 and 5", organizations, nodes)
 	}
-
-	org, ok := reg.FindOrganization("example")
-	if !ok {
-		t.Fatal("organization \"example\" not found")
-	}
-	if _, err := org.ParsePublicKey(); err != nil {
-		t.Fatalf("parse example public key: %v", err)
+	if _, err := x.Key(identity.MustParse("example/no-address-yet")); err != nil {
+		t.Fatalf("example's key: %v", err)
 	}
 
 	// A node with address: null (no known address yet). ResolveRemote
 	// must fail gracefully, not panic.
-	noAddr, ok := org.FindNode("no-address-yet")
-	if !ok {
-		t.Fatal("node \"no-address-yet\" not found")
-	}
-	ep, ok := noAddr.FindEndpoint("0")
-	if !ok {
-		t.Fatal("endpoint serial 0 not found")
-	}
+	ep := onlyTarget(t, x, "example/no-address-yet:0")
 	if ep.Address != nil {
 		t.Fatalf("expected nil address, got %v", *ep.Address)
 	}
@@ -54,14 +45,7 @@ func TestLoadRegistry(t *testing.T) {
 
 	// address: "" (empty string, distinct from null) must also fail
 	// gracefully rather than being treated as a valid target.
-	emptyAddr, ok := org.FindNode("empty-address")
-	if !ok {
-		t.Fatal("node \"empty-address\" not found")
-	}
-	ep, ok = emptyAddr.FindEndpoint("0")
-	if !ok {
-		t.Fatal("endpoint serial 0 not found")
-	}
+	ep = onlyTarget(t, x, "example/empty-address:0")
 	if ep.Address == nil || *ep.Address != "" {
 		t.Fatalf("expected empty-string address, got %v", ep.Address)
 	}
@@ -72,14 +56,7 @@ func TestLoadRegistry(t *testing.T) {
 	// A hostname address: just confirm the field parsed correctly. DNS
 	// resolution success/failure is environment-dependent and not what
 	// this parser test should assert on.
-	gw, ok := org.FindNode("gateway")
-	if !ok {
-		t.Fatal("node \"gateway\" not found")
-	}
-	ep, ok = gw.FindEndpoint("0")
-	if !ok {
-		t.Fatal("endpoint serial 0 not found")
-	}
+	ep = onlyTarget(t, x, "example/gateway:0")
 	if ep.Address == nil || *ep.Address != "gateway.example.invalid" {
 		t.Fatalf("unexpected address: %v", ep.Address)
 	}
@@ -89,31 +66,11 @@ func TestLoadRegistry(t *testing.T) {
 
 	// Non-sequential serial numbers (e.g. "4"/"6" instead of "0"/"1") are
 	// used by some real deployments: confirm lookup isn't assuming 0/1.
-	nonSeq, ok := org.FindNode("non-sequential-serials")
-	if !ok {
-		t.Fatal("node \"non-sequential-serials\" not found")
-	}
-	if _, ok := nonSeq.FindEndpoint("4"); !ok {
-		t.Fatal("endpoint serial 4 not found")
-	}
-	if _, ok := nonSeq.FindEndpoint("6"); !ok {
-		t.Fatal("endpoint serial 6 not found")
-	}
+	onlyTarget(t, x, "example/non-sequential-serials:4")
+	onlyTarget(t, x, "example/non-sequential-serials:6")
 
 	// A literal (non-hostname) address should resolve directly without DNS.
-	other, ok := reg.FindOrganization("other-org")
-	if !ok {
-		t.Fatal("organization \"other-org\" not found")
-	}
-	lit, ok := other.FindNode("literal-address")
-	if !ok {
-		t.Fatal("node \"literal-address\" not found")
-	}
-	ep, ok = lit.FindEndpoint("0")
-	if !ok {
-		t.Fatal("endpoint serial 0 not found")
-	}
-	ip, err := ep.ResolveRemote(t.Context())
+	ip, err := onlyTarget(t, x, "other-org/literal-address:0").ResolveRemote(t.Context())
 	if err != nil {
 		t.Fatalf("ResolveRemote: %v", err)
 	}
@@ -122,23 +79,45 @@ func TestLoadRegistry(t *testing.T) {
 	}
 }
 
-func TestFindNodeContinuesAcrossDuplicateOrganizations(t *testing.T) {
-	reg, err := Load("testdata/registry.json")
+func onlyTarget(t *testing.T, x *Index, endpoint string) Endpoint {
+	t.Helper()
+	targets := x.Targets(identity.MustParse(endpoint))
+	if len(targets) != 1 {
+		t.Fatalf("%s has targets %+v, want one", endpoint, targets)
+	}
+	return targets[0].Endpoint
+}
+
+func fixture(t *testing.T) Registry {
+	t.Helper()
+	b, err := os.ReadFile("testdata/registry.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := reg[0]
+	var document Registry
+	if err := json.Unmarshal(b, &document); err != nil {
+		t.Fatal(err)
+	}
+	return document
+}
+
+func TestKeyComesFromTheBlockListingTheNode(t *testing.T) {
+	document := fixture(t)
+	first := document[0]
 	left, right := first, first
 	left.Nodes = first.Nodes[:2]
 	right.Nodes = first.Nodes[2:]
-	right.PublicKey = reg[1].PublicKey
-	duplicate := Registry{left, right}
-	if err := duplicate.Validate(); err != nil {
+	right.PublicKey = document[1].PublicKey
+	x, err := New(Registry{left, right})
+	if err != nil {
 		t.Fatal(err)
 	}
-	organization, node, ok := duplicate.FindNode(first.Organization, first.Nodes[3].CommonName)
-	if !ok || node.CommonName != first.Nodes[3].CommonName || organization.PublicKey != right.PublicKey {
-		t.Fatalf("FindNode did not continue to the second organization block: %+v, %+v, %v", organization, node, ok)
+	want, err := right.publicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := x.Key(identity.MustParse(first.Organization + "/" + first.Nodes[3].CommonName)); err != nil || !got.Equal(want) {
+		t.Fatalf("the node listed in the second block of its organization has key %x, %v, want that block's %x", got, err, want)
 	}
 }
 
@@ -205,15 +184,9 @@ func TestResolverNetworkFollowsTheDeclaredFamily(t *testing.T) {
 	}
 }
 
-// FindNode takes the first match within a block, so a common name that appears
-// twice in one block leaves the second node unreachable and says nothing about
-// it. An organization split across several blocks is a supported shape, each
-// with its own key, which is why the check is per block.
+// a common name listed twice names one node with two entries, and an organization split across several blocks, each with its own key, is a supported shape
 func TestValidateRefusesADuplicateNodeInOneBlock(t *testing.T) {
-	reg, err := Load("testdata/registry.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	reg := fixture(t)
 	first := reg[0]
 	first.Nodes = append(append([]Node(nil), first.Nodes...), first.Nodes[0])
 	if err := (Registry{first}).Validate(); err == nil {
@@ -226,10 +199,7 @@ func TestValidateRefusesADuplicateNodeInOneBlock(t *testing.T) {
 	if err := (Registry{left, right}).Validate(); err != nil {
 		t.Errorf("an organization split across two blocks was refused: %v", err)
 	}
-	// What the split may not carry is the same name twice. FindNode walks
-	// every block of a matching organization and takes the first hit, and it
-	// is the trust-root lookup, so two blocks naming one node under different
-	// keys leave the order of the array deciding who authenticates.
+	// two blocks naming one node under different keys would leave the order of the array deciding who authenticates
 	left, right = reg[0], reg[0]
 	left.Nodes, right.Nodes = reg[0].Nodes[:1], reg[0].Nodes[:1]
 	right.PublicKey = reg[1].PublicKey

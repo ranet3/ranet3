@@ -20,6 +20,7 @@ import (
 
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
@@ -322,18 +323,16 @@ func TestNonceRoundTrips(t *testing.T) {
 	})
 }
 
-// drawName draws one string of an identity, with the lengths where a DER
+// drawName draws one part of an endpoint's name, with the lengths where a DER
 // length moves from one octet to the long form and from one length octet to
-// two among the edges.
+// two among the edges
 func drawName(tc hegel.TestCase) string {
-	return string(drawBytes(tc, 300, 127, 128, 255, 256))
+	size := hegel.Draw(tc, withEdges(hegel.Integers(1, 300), 1, 127, 128, 255, 256, 300))
+	return string(hegel.Draw(tc, hegel.Binary(size, size)))
 }
 
-// An ID payload reads back as its type and data, and an identity this end
-// asserts reads back as the same name through the RDNSequence inside it, at
-// any length its three strings take. The name selects which key verifies
-// AUTH.
-func TestIdentityRoundTrips(t *testing.T) {
+// an ID payload reads back as its type and data
+func TestIDPayloadRoundTrips(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		idType := drawOctet(ht, ID_DER_ASN1_DN)
 		data := drawBody(ht)
@@ -343,16 +342,6 @@ func TestIdentityRoundTrips(t *testing.T) {
 		}
 		if gotType != idType || !bytes.Equal(gotData, data) {
 			ht.Fatalf("DecodeID read type %d with %x back as type %d with %x", idType, data, gotType, gotData)
-		}
-
-		organization, commonName, serialNumber := drawName(ht), drawName(ht), drawName(ht)
-		want := Identity{Organization: organization, CommonName: commonName, SerialNumber: serialNumber}
-		got, err := identityFromID(want.encodeID())
-		if err != nil {
-			ht.Fatalf("identityFromID refused %q: %v", want, err)
-		}
-		if got != want {
-			ht.Fatalf("identityFromID read %q back as %q", want, got)
 		}
 	})
 }
@@ -581,8 +570,13 @@ func encodingOf(tc hegel.TestCase, kind string) []byte {
 		group := hegel.Draw(tc, withEdges(hegel.Integers[uint16](0, math.MaxUint16), 0, math.MaxUint16))
 		b = EncodeKE(group, drawBytes(tc, 96, 32, 64))
 	case "identity":
-		organization, commonName, serialNumber := drawName(tc), drawName(tc), drawName(tc)
-		b = Identity{Organization: organization, CommonName: commonName, SerialNumber: serialNumber}.encodeID()
+		id, err := identity.From(drawName(tc), drawName(tc), drawName(tc))
+		if err == nil {
+			b, err = encodeID(id)
+		}
+		if err != nil {
+			panic(err)
+		}
 	case "misstated AUTH algorithm length":
 		// either side of the AlgorithmIdentifier's own length, and the bytes
 		// after the length octet and one past them
@@ -710,8 +704,6 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 			{"DecodeNonce", nil, func(b []byte) string { _ = DecodeNonce(b); return "" }},
 			{"DecodeID", []string{"identity"}, func(b []byte) string { _, _, _ = DecodeID(b); return "" }},
 			{"identityFromID", []string{"identity"}, func(b []byte) string { _, _ = identityFromID(b); return "" }},
-			{"DecodeIdentityDN", []string{"identity"}, func(b []byte) string { _, _, _, _ = DecodeIdentityDN(b); return "" }},
-			{"derAttribute", []string{"identity"}, func(b []byte) string { _, _, _ = derAttribute(b); return "" }},
 			{"VerifyAuth", []string{"AUTH", "misstated AUTH algorithm length"}, func(b []byte) string {
 				_ = VerifyAuth(public, nil, b)
 				return ""

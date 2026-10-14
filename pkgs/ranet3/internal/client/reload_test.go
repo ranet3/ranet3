@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
@@ -243,7 +244,7 @@ func TestOverlappingReloadsLeaveTheReconcilerOnTheStoredTable(t *testing.T) {
 // joinedAndAnnounced is a reload that would change the trust document, the peers dialed and the announcements, as well as whatever the case changes
 func joinedAndAnnounced(t *testing.T, c *Client, next *config.Config) {
 	t.Helper()
-	grown := slices.Clone(c.registry())
+	grown := readRegistry(t, c.config().Auth.Trust)
 	grown[0].Nodes = append(slices.Clone(grown[0].Nodes), registry.Node{
 		CommonName: "third",
 		Endpoints:  []registry.Endpoint{{SerialNumber: "1", AddressFamily: "ip4", Port: 13000}},
@@ -259,7 +260,7 @@ func changedNothing(t *testing.T, c *Client, old *config.Config, bus *events.Bus
 	if c.config() != old {
 		t.Error("the refused reload stored its configuration")
 	}
-	if _, _, ok := c.registry().FindNode("example", "third"); ok {
+	if _, err := c.index().Key(identity.MustParse("example/third")); err == nil {
 		t.Error("the refused reload stored its trust document")
 	}
 	if got := dialerCount(c); got != 0 {
@@ -704,7 +705,7 @@ func tryListenMesh(t *testing.T, nodes []*listenNode) error {
 	for i, node := range nodes {
 		node.configPath, node.keyPath, node.trustPath = filepath.Join(dir, node.name+".yaml"), keyPath, trustPath
 		node.events = events.New()
-		client, err := newClient(writeListenConfig(t, node, node.listen), private, registry.Registry{org}, netstack.NewRoutesOnly(), nil, node.events)
+		client, err := newClient(writeListenConfig(t, node, node.listen), private, trust(t, registry.Registry{org}), netstack.NewRoutesOnly(), nil, node.events)
 		if err != nil {
 			for _, built := range nodes[:i] {
 				built.client.Close()
@@ -729,7 +730,7 @@ func runListen(t *testing.T, nodes ...*listenNode) func() {
 }
 
 // pathTo is the name of the session or dialer from node to peer
-func pathTo(peer *listenNode) string { return "example/" + peer.name + "/0@0" }
+func pathTo(peer *listenNode) string { return "example/" + peer.name + ":0@0" }
 
 // sessionEvents is every event of kind node recorded for the session with peer
 func sessionEvents(node, peer *listenNode, kind string) []control.Event {

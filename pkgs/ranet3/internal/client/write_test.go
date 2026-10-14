@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
@@ -49,8 +50,8 @@ func writable(t *testing.T) *Client {
 		dialers:  make(map[string]*dialer),
 		running:  startedSubsystems(),
 	}
-	c.cfg.Store(&config.Config{Link: config.Link{Listen: true}})
-	c.reg.Store(&registry.Registry{})
+	c.cfg.Store(&config.Config{Node: config.Node{Org: "example", Name: "node"}, Link: config.Link{Listen: true}})
+	c.storeIndex(trust(t, registry.Registry{}))
 	c.SetReconcilerEnable(func(bool) {})
 	return c
 }
@@ -147,7 +148,7 @@ func TestStoppedResponderKeepsTheSessionsItHolds(t *testing.T) {
 	}
 	c.sessions.close = func(*ike.Session) { t.Error("stopping the responder closed a live session") }
 	c.sessions.active = func(*ike.Session) bool { return true }
-	c.sessions.adoptPreferred("example/gateway/1@0", &ike.Session{}, true, nil)
+	c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, true, nil)
 
 	if _, err := c.SetSubsystem(context.Background(), control.SubsystemResponder, false); err != nil {
 		t.Fatal(err)
@@ -155,7 +156,7 @@ func TestStoppedResponderKeepsTheSessionsItHolds(t *testing.T) {
 	if c.subsystemRunning(control.SubsystemResponder) {
 		t.Error("a stopped responder still serves what it answers")
 	}
-	if !c.sessions.holds("example/gateway/1@0") {
+	if !c.sessions.holds("example/gateway:1@0") {
 		t.Error("stopping the responder dropped a session this node already held")
 	}
 }
@@ -175,13 +176,13 @@ func TestRedialDropsSessionsAndWakesDialers(t *testing.T) {
 	}
 	c.sessions.active = func(*ike.Session) bool { return true }
 	held := &ike.Session{}
-	if _, adopted := c.sessions.adoptPreferred("example/gateway/1@0", held, true, nil); !adopted {
+	if _, adopted := c.sessions.adoptPreferred("example/gateway:1@0", held, true, nil); !adopted {
 		t.Fatal("the fixture session was not adopted")
 	}
 	woken := &dialer{cancel: func() {}, wake: make(chan struct{}, 1)}
-	c.dialers["example/gateway/1@0"] = woken
+	c.dialers["example/gateway:1@0"] = woken
 	other := &dialer{cancel: func() {}, wake: make(chan struct{}, 1)}
-	c.dialers["example/elsewhere/1@0"] = other
+	c.dialers["example/elsewhere:1@0"] = other
 
 	result, err := c.Redial(context.Background(), "gateway", false)
 	if err != nil {
@@ -192,7 +193,7 @@ func TestRedialDropsSessionsAndWakesDialers(t *testing.T) {
 		t.Errorf("redial closed %d sessions, want the one held for the peer", len(closed))
 	}
 	closedMu.Unlock()
-	if c.sessions.holds("example/gateway/1@0") {
+	if c.sessions.holds("example/gateway:1@0") {
 		t.Error("the session is still in the set, so the woken dialer stands down behind it")
 	}
 	select {
@@ -214,13 +215,59 @@ func TestRedialDropsSessionsAndWakesDialers(t *testing.T) {
 	}
 }
 
+func TestRedialAtAnEndpointWakesTheDialersOfItsNode(t *testing.T) {
+	dialers := []string{"example/gateway@0", "example/gateway@1", "example/gateway:2@0"}
+	for _, tc := range []struct {
+		name, peer string
+		held       bool
+		woken      []string
+	}{
+		{"endpoint", "example/gateway:1", true, []string{"example/gateway@0", "example/gateway@1"}},
+		{"endpoint with nothing held", "example/gateway:1", false, []string{"example/gateway@0", "example/gateway@1"}},
+		{"session path", "example/gateway:1@0", true, []string{"example/gateway@0"}},
+		{"unknown local endpoint", "example/gateway:1@9", true, nil},
+		{"malformed endpoint", "example/gateway:1:x", true, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := writable(t)
+			c.sessions.close = func(*ike.Session) {}
+			c.sessions.active = func(*ike.Session) bool { return true }
+			if tc.held {
+				c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, true, nil)
+			}
+			for _, path := range dialers {
+				c.dialers[path] = &dialer{cancel: func() {}, wake: make(chan struct{}, 1)}
+			}
+			_, err := c.Redial(context.Background(), tc.peer, false)
+			if tc.woken == nil {
+				if err == nil {
+					t.Errorf("redial %s was accepted", tc.peer)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			var woken []string
+			for _, path := range dialers {
+				select {
+				case <-c.dialers[path].wake:
+					woken = append(woken, path)
+				default:
+				}
+			}
+			if !slices.Equal(woken, tc.woken) {
+				t.Errorf("redial %s woke %q, want %q", tc.peer, woken, tc.woken)
+			}
+		})
+	}
+}
+
 // A peer this node only answers has no dialer, and dropping its session is
 // still the useful half: the peer opens a new one.
 func TestRedialDropsResponderOnlySession(t *testing.T) {
 	c := writable(t)
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
-	c.sessions.adoptPreferred("example/inbound/1@0", &ike.Session{}, true, nil)
+	c.sessions.adoptPreferred("example/inbound:1@0", &ike.Session{}, true, nil)
 	result, err := c.Redial(context.Background(), "example/inbound", false)
 	if err != nil {
 		t.Fatal(err)
@@ -242,11 +289,11 @@ func TestRedialAllDropsEverySessionAndWakesEveryDialer(t *testing.T) {
 		closed++
 	}
 	c.sessions.active = func(*ike.Session) bool { return true }
-	c.sessions.adoptPreferred("example/gateway/1@0", &ike.Session{}, true, nil)
-	c.sessions.adoptPreferred("example/inbound/1@0", &ike.Session{}, true, nil)
+	c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, true, nil)
+	c.sessions.adoptPreferred("example/inbound:1@0", &ike.Session{}, true, nil)
 	dialers := []*dialer{{cancel: func() {}, wake: make(chan struct{}, 1)}, {cancel: func() {}, wake: make(chan struct{}, 1)}}
-	c.dialers["example/gateway/1@0"] = dialers[0]
-	c.dialers["example/elsewhere/1@0"] = dialers[1]
+	c.dialers["example/gateway:1@0"] = dialers[0]
+	c.dialers["example/elsewhere:1@0"] = dialers[1]
 
 	for _, refused := range []struct {
 		peer string
@@ -272,7 +319,7 @@ func TestRedialAllDropsEverySessionAndWakesEveryDialer(t *testing.T) {
 			t.Errorf("dialer %d was not woken", i)
 		}
 	}
-	if want := []string{"example/elsewhere/1@0", "example/gateway/1@0", "example/inbound/1@0"}; !slices.Equal(result.Acted, want) {
+	if want := []string{"example/elsewhere:1@0", "example/gateway:1@0", "example/inbound:1@0"}; !slices.Equal(result.Acted, want) {
 		t.Errorf("redial --all acted on %v, want %v", result.Acted, want)
 	}
 
@@ -294,25 +341,25 @@ func TestDialerWakesBeforeItsReconnectDelay(t *testing.T) {
 	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey,
 		dialers: make(map[string]*dialer), dialRetry: time.Hour}
 	c.cfg.Store(cfg)
-	c.reg.Store(&reg)
 
 	// A name the dialer takes and the resolver refuses, so each pass is one
 	// attempt and then the wait this test is about. RFC 6761 reserves
 	// .invalid for it.
 	unresolvable := "gateway.invalid"
 	reg[0].Nodes[1].Endpoints[0].Address = &unresolvable
+	c.storeIndex(trust(t, reg))
 	wake := make(chan struct{}, 1)
 	done := make(chan struct{})
+	d := dialTo(t, cfg, cfg.Dial.To[0])
 	go func() {
-		c.runPeer(ctx, cfg.Link.Endpoints[0], cfg.Dial.To[0], wake)
+		c.runPeer(ctx, d, wake)
 		close(done)
 	}()
 
 	// Taking the node out of the registry ends the loop on its next pass, so
 	// whether the loop came round is observable without a counter.
 	time.Sleep(100 * time.Millisecond)
-	empty := registry.Registry{}
-	c.reg.Store(&empty)
+	c.storeIndex(trust(t, registry.Registry{}))
 	select {
 	case <-done:
 		t.Fatal("the dialer came round with no wake, so this measures nothing about one")
@@ -339,14 +386,14 @@ func TestRekeyAsksTheSessionsItNames(t *testing.T) {
 		return nil
 	}
 	gateway, elsewhere := &ike.Session{}, &ike.Session{}
-	c.sessions.adoptPreferred("example/gateway/1@0", gateway, true, nil)
-	c.sessions.adoptPreferred("example/elsewhere/1@0", elsewhere, true, nil)
+	c.sessions.adoptPreferred("example/gateway:1@0", gateway, true, nil)
+	c.sessions.adoptPreferred("example/elsewhere:1@0", elsewhere, true, nil)
 
 	result, err := c.Rekey(context.Background(), "gateway", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Acted) != 1 || result.Acted[0] != "example/gateway/1@0" {
+	if len(result.Acted) != 1 || result.Acted[0] != "example/gateway:1@0" {
 		t.Errorf("rekey acted on %v, want the one peer", result.Acted)
 	}
 	select {
@@ -401,18 +448,18 @@ func TestReloadUsesThePathTheDaemonWasStartedWith(t *testing.T) {
 // A peer is named by the whole path, by organization and name, or by the name
 // alone, and two nodes sharing a name across organizations stay apart.
 func TestPeerMatchingTakesEveryShapeOfTheName(t *testing.T) {
-	const path = "example/gateway/1@0"
+	const path = "example/gateway:1@0"
 	for name, want := range map[string]bool{
 		"gateway":             true,
 		"example/gateway":     true,
-		"example/gateway/1@0": true,
+		"example/gateway:1@0": true,
 		"other/gateway":       false,
 		"gate":                false,
 		"example":             false,
 		"":                    false,
 	} {
-		if got := matchesPeer(path, name); got != want {
-			t.Errorf("matchesPeer(%q, %q) = %v, want %v", path, name, got, want)
+		if got := identity.Names(path, name); got != want {
+			t.Errorf("identity.Names(%q, %q) = %v, want %v", path, name, got, want)
 		}
 	}
 }

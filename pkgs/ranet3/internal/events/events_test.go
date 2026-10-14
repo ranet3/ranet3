@@ -84,7 +84,7 @@ func TestFullSubscriberCountsDropsWhileEmitReturns(t *testing.T) {
 	slowest := time.Duration(0)
 	for range queueSize + 100 {
 		start := time.Now()
-		bus.Emit("babel.route.selected", "example/gateway/0@0")
+		bus.Emit("babel.route.selected", "example/gateway:0@0")
 		slowest = max(slowest, time.Since(start))
 	}
 	if slowest > emitBound {
@@ -93,7 +93,7 @@ func TestFullSubscriberCountsDropsWhileEmitReturns(t *testing.T) {
 	first, _ := next(t, sub)
 	bus.Emit("kernel.pass", "")
 	for range 7 {
-		bus.Emit("babel.route.selected", "example/gateway/0@0")
+		bus.Emit("babel.route.selected", "example/gateway:0@0")
 	}
 	sub.Close()
 	deliveries := []control.Delivery{first}
@@ -148,7 +148,7 @@ func TestFloodKeepsAnotherSubsystemsHistory(t *testing.T) {
 	bus := New()
 	bus.Emit("kernel.pass", "", slog.String("trigger", "mesh"))
 	for range 5 * ringSize {
-		bus.Emit("babel.route.selected", "example/gateway/0@0")
+		bus.Emit("babel.route.selected", "example/gateway:0@0")
 	}
 	recorded := bus.Recorded(everything, 0)
 	if len(recorded) != ringSize+1 || recorded[0].Kind != "kernel.pass" {
@@ -169,7 +169,7 @@ func TestRecordedHonorsTheWindow(t *testing.T) {
 	for _, event := range []struct {
 		after time.Duration
 		peer  string
-	}{{time.Second, "example/relay/0@0"}, {time.Minute, "example/gateway/0@0"}, {10 * time.Minute, "example/gateway/0@0"}} {
+	}{{time.Second, "example/relay:0@0"}, {time.Minute, "example/gateway:0@0"}, {10 * time.Minute, "example/gateway:0@0"}} {
 		clock = bus.started.Add(event.after)
 		bus.Emit("dial.attempt", event.peer, slog.Duration("after", event.after))
 	}
@@ -179,7 +179,7 @@ func TestRecordedHonorsTheWindow(t *testing.T) {
 	if all := bus.Recorded(everything, 0); len(all) != 3 {
 		t.Errorf("no window holds %d events of 3", len(all))
 	}
-	if matched := bus.Recorded(func(_, peer string, _ []slog.Attr) bool { return peer != "example/relay/0@0" }, 0); len(matched) != 2 {
+	if matched := bus.Recorded(func(_, peer string, _ []slog.Attr) bool { return peer != "example/relay:0@0" }, 0); len(matched) != 2 {
 		t.Errorf("a match leaving one event out took %d", len(matched))
 	}
 }
@@ -238,7 +238,7 @@ func TestSlowReaderHoldsUpNoEmitter(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			bus := New()
-			bus.Emit("babel.route.selected", "example/gateway/0@0")
+			bus.Emit("babel.route.selected", "example/gateway:0@0")
 			selecting, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 			var calls atomic.Int32
 			go func() {
@@ -258,7 +258,7 @@ func TestSlowReaderHoldsUpNoEmitter(t *testing.T) {
 			}
 			emitted := make(chan struct{})
 			go func() {
-				bus.Emit("babel.route.selected", "example/gateway/0@0")
+				bus.Emit("babel.route.selected", "example/gateway:0@0")
 				bus.Emit("kernel.pass", "")
 				close(emitted)
 			}()
@@ -278,7 +278,7 @@ func TestSlowReaderHoldsUpNoEmitter(t *testing.T) {
 func TestEmitAllocatesOnlyItsAttributes(t *testing.T) {
 	bus := New()
 	emit := func() {
-		bus.Emit("babel.route.selected", "example/gateway/0@0", slog.String("route", "fd00:1::/64"), slog.Int("metric", 96))
+		bus.Emit("babel.route.selected", "example/gateway:0@0", slog.String("route", "fd00:1::/64"), slog.Int("metric", 96))
 	}
 	// a full ring overwrites rather than grows
 	for range ringSize {
@@ -490,5 +490,5 @@ func TestCloseEndsSubscriptions(t *testing.T) {
 // a node built without a bus emits into nothing
 func TestNilBusRecordsNothing(t *testing.T) {
 	var bus *Bus
-	bus.Emit("dial.attempt", "example/gateway/0@0", slog.String("remote", "192.0.2.1:13000"))
+	bus.Emit("dial.attempt", "example/gateway:0@0", slog.String("remote", "192.0.2.1:13000"))
 }
