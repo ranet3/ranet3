@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6 and ICMP specifications on purpose."
 created: 2026-08-23
-updated: 2026-10-13
+updated: 2026-10-14
 order: 20
 ---
 
@@ -135,6 +135,17 @@ start moves the seqno on by at most 257, and the order of
 compares two seqnos less than 32768 apart. That leaves room for 127 starts in a
 row, inside the time a node keeps a feasibility distance, before one recorded
 before the first could read as newer than the seqno after the last.
+
+The speaker makes its packets at most 1232 octets of UDP payload, which with the
+IPv6 and UDP headers is the 1280 octets IPv6 asks of any link, where
+[RFC 8966 section 4](https://www.rfc-editor.org/rfc/rfc8966.html#section-4) has
+a speaker make them as large as the link's MTU allows. The link is a session
+whose budget its search moves, and a packet sized to the budget it had when it
+was built could meet a smaller one, while every session carries 1280 whatever
+its path. A full table then goes in more packets, about 38 prefixes to a packet,
+or 31 with a source prefix. The one Babel packet past 1232 is the probe the
+search sends, an Ack Request padded with PadN to the size it measures, which any
+speaker answers with its Ack and otherwise ignores.
 
 A Babel packet a neighbor's stack cut into fragments is put back together before
 the speaker reads it. Some speakers send packets of 1422 to 1443 UDP octets,

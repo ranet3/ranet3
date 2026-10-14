@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-07
+updated: 2026-10-14
 order: 10
 ---
 
@@ -198,14 +198,44 @@ keeps inner flows on a stable lane. When more than one execution context is
 available, an existing named TUN must therefore be created with
 `IFF_MULTI_QUEUE` (for a systemd-networkd `.netdev`, set `MultiQueue=yes` in its
 `[Tun]` section). Single-core processes can also attach to a legacy single-queue
-TUN. TUN readers hand bounded batches to shared encryption workers, and sequence
-reservation and queue submission preserve packet order across workers. Each peer
-admits a read's packets against a budget of its own, 4096 packets, without
-waiting: a read that does not fit is dropped and counted, so a peer whose
-transport stalls costs the others nothing. Its sender bounds the delay through
-that queue with CoDel, dropping one packet at the head once the delay has stayed
-above 5 milliseconds for 100 milliseconds. The readers wait only for the read
-batches every peer shares.
+TUN. ranet3 sets that device's `gso_max_segs` to the 128 packets one read holds,
+so the kernel splits a larger GSO frame before a read would cut it. TUN readers
+hand bounded batches to shared encryption workers, and sequence reservation and
+queue submission preserve packet order across workers. Each peer admits a read's
+packets against a budget of its own, 5,734,400 bytes with each packet counted as
+at least 1400, without waiting: a read that does not fit is dropped and counted,
+so a peer whose transport stalls costs the others nothing. The budget lasts
+about 5 milliseconds at 10 Gbit/s and 15 milliseconds at 3 Gbit/s, and holds at
+most 4096 packets. A read larger than the whole budget is taken only when the
+peer holds nothing else, and above a `link.mtu` of about 40 KB such a read, cut
+into fragments for a narrow session, can carry more than 4096. Its sender bounds
+the delay through that queue with CoDel, dropping one packet at the head once
+the delay has stayed above 5 milliseconds for 100 milliseconds. The readers wait
+only for the read batches every peer shares.
+
+ranet3 does not let its own datagrams fragment, outside one case. Each session
+searches its path for the largest packet it carries, between 1280 and
+`link.mtu`, and a larger packet is answered with Packet Too Big or fragmentation
+needed, or cut when it is IPv4 without DF, as
+[the configuration](../configuration.md) describes. A path that cannot carry
+1280 bytes, the least IPv6 asks of any link, in one datagram is under the floor:
+an IPv4 path under 1344 bytes or an IPv6 one under 1364. A session on such a
+path holds its budget at 1280 and lets the host fragment its datagrams. On linux
+the socket of its family leaves DF while any session of the family is under the
+floor, IPv4 sending without DF, `IP_PMTUDISC_DONT`, and IPv6 with
+`IPV6_PMTUDISC_WANT`, and every other session of that family holds its search
+meanwhile, since a probe without DF measures nothing. darwin does the same for
+IPv4, since `IP_DONTFRAG` holds for a whole socket, and lets that session's own
+IPv6 datagrams fragment alone. A session under the floor sends one datagram per
+message rather than segmenting. Three limits follow. IPv6 is fragmented only
+where it is sent, so an IPv6 path under 1364 bytes whose narrow hop sends no
+Packet Too Big stays a black hole. Every 10 minutes the session confirms the
+floor with DF again, so behind such a hop it can lose its largest datagrams for
+up to 18 seconds every 600. And under sustained loss of fragments the receiver's
+4 MB of reassembly memory fills with datagrams that never complete, and it then
+reassembles nothing until they expire, in both families. A steered IPv6 packet
+of 1280 bytes through a narrow session is lost too, as
+[segment routing](../segment-routing.md) describes.
 
 The Babel control state and forwarding publication share one mutex. Selection
 runs over feasible routes only, against the source table this fork added, since

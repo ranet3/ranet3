@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-10-13
+updated: 2026-10-14
 order: 60
 ---
 
@@ -41,24 +41,25 @@ node has just produced.
 
 Every steered packet carries its segment list inside the tunnel, and the device
 runs at `link.mtu` less the header the longest configured list puts in front of
-a packet, which leaves that header room in every session. A reload moves the
-device with the steering, as [reloading](reloading.md) describes, and a list
-long enough to take it under the 1280 byte minimum IPv6 requires is refused
-rather than installed. Steering happens before the route lookup, because a
-steered packet is routed by the segment it is going to rather than by the
-address it was addressed to. The outer header takes its traffic class, flow
-label and hop limit from the packet it carries, as `__seg6_do_srh_encap` does,
-so a steered path costs the packet one hop per waypoint and a packet that
-arrives with nothing left to spend is answered with an ICMP Time Exceeded rather
-than dropped in silence. A packet a policy claims and this node does not send is
-dropped rather than put out by the route the policy exists to override, because
-a policy here selects an exit and that route puts the packet out of another node
-under a source it does not announce, which is a wrong path rather than a
-degraded one. There are two ways to lose one and `status` counts them apart: too
-large to encapsulate, which every other reason being refused when the
-configuration is read leaves as the only one, and no route to the first segment,
-which is the mesh rather than the configuration. Neither is counted against the
-segments this node answers for, since neither is anything a peer did.
+a packet, which leaves that header room in a session that carries `link.mtu`. A
+reload moves the device with the steering, as [reloading](reloading.md)
+describes, and a list long enough to take it under the 1280 byte minimum IPv6
+requires is refused rather than installed. Steering happens before the route
+lookup, because a steered packet is routed by the segment it is going to rather
+than by the address it was addressed to. The outer header takes its traffic
+class, flow label and hop limit from the packet it carries, as
+`__seg6_do_srh_encap` does, so a steered path costs the packet one hop per
+waypoint and a packet that arrives with nothing left to spend is answered with
+an ICMP Time Exceeded rather than dropped in silence. A packet a policy claims
+and this node does not send is dropped rather than put out by the route the
+policy exists to override, because a policy here selects an exit and that route
+puts the packet out of another node under a source it does not announce, which
+is a wrong path rather than a degraded one. There are two ways to lose one and
+`status` counts them apart: too large to encapsulate, which every other reason
+being refused when the configuration is read leaves as the only one, and no
+route to the first segment, which is the mesh rather than the configuration.
+Neither is counted against the segments this node answers for, since neither is
+anything a peer did.
 
 A waypoint sends a segment on through the session to its next segment, and when
 the segment is larger than that session carries, the waypoint answers or cuts
@@ -74,6 +75,22 @@ segment that would be answered once the budget the answers share with Time
 Exceeded and Parameter Problem is spent are dropped without an answer. `status`
 counts a segment answered or dropped this way among the dropped, each answer
 among the answered, and each fragment of a cut segment among the forwarded.
+
+No node fragments the outer packet of a steered packet: what does not fit the
+session it leaves by is answered or cut as above, and the answer names what the
+session carries less 48 bytes and 16 for each segment. A session carrying less
+than 1344 bytes, for one segment, has the answer to an IPv6 packet name less
+than 1280, which its source never takes below 1280, as
+[RFC 8201 section 4](https://www.rfc-editor.org/rfc/rfc8201.html#section-4) has
+it, so the source goes on sending packets of 1280 bytes that the session cannot
+carry steered, and each is lost. A session's budget, which `ranet3 debug pmtu`
+shows, falls under 1344 on an IPv4 path under 1408 bytes or an IPv6 one under
+1428, the 1400 byte paths of many overlays among them. IPv6 load steered through
+a headend or a waypoint whose session to the next segment runs on such a path is
+carried poorly, and steering should keep to wider paths. A node that steers logs
+a warning and records a `pmtu.steering` event when a session's budget falls
+under what a 1280-byte packet behind its longest segment list needs, naming the
+session, its budget and that need, and logs again when the budget rises back.
 
 A header this tree writes is one the kernel acts on, which the `segments` VM
 check holds: the client steers through a SID the gateway answers for with

@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the VM tests, the root-only tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-13
+updated: 2026-10-14
 order: 20
 ---
 
@@ -18,36 +18,41 @@ go test ./... -race
 
 The unit tests need no privileges, except for the ones below. On linux
 `internal/kernel` has tests that write to a real routing table,
-`internal/egress` one that writes into a real packet filter, and `transport` one
-that sends through a veth pair to a peer in a second namespace, behind a route
-with a locked path MTU. `internal/netstack` has tests whose names start with
-`TestTUN` that create and attach to a real TUN: they read its `gso_max_segs`
-back, open several lanes as one device and no more than the kernel attaches,
-refuse a mesh under the default name where a device of that name exists, warn at
-a new mesh's first cut read, move the MTU of an open device, steer a read as
-large as the device, clamp the MSS of a SYN, and answer a packet larger than its
-session, at the headend and at a waypoint, until the kernel that sent it holds
-the smaller path MTU. `internal/client` has tests under the same prefix that run
-a node on a real TUN: a SYN arriving through a session between two nodes on
-loopback reaches the tun with its MSS lowered, a reload moves the tun's MTU, and
-`New` opens read buffers that hold a steered packet of `link.mtu`. Each of these
-unshares a network namespace, refuses to continue unless it is empty, and skips
-unless run as root.
+`internal/egress` one that writes into a real packet filter, and `transport` two
+that send through a veth pair to a peer in a second namespace, behind a route
+with a locked path MTU: the kernel refuses what the path cannot carry, segmented
+or single, and reports the path MTU, and it fragments past the path only while
+the family asks. A third reads off loopback that IPv4 leaves without DF while it
+fragments. `internal/netstack` has tests whose names start with `TestTUN` that
+create and attach to a real TUN: they read its `gso_max_segs` back, open several
+lanes as one device and no more than the kernel attaches, refuse a mesh under
+the default name where a device of that name exists, warn at a new mesh's first
+cut read, move the MTU of an open device, steer a read as large as the device,
+clamp the MSS of a SYN, and answer a packet larger than its session, at the
+headend and at a waypoint, until the kernel that sent it holds the smaller path
+MTU. `internal/client` has tests under the same prefix that run a node on a real
+TUN: a SYN arriving through a session between two nodes on loopback reaches the
+tun with its MSS lowered, a reload moves the tun's MTU, `New` opens read buffers
+that hold a steered packet of `link.mtu`, and a TCP stream keeps flowing through
+a session whose path drops IPv4 packets past 1400 bytes, and later past 1360,
+and answers nothing, as the search finds each. Each of these unshares a network
+namespace, refuses to continue unless it is empty, and skips unless run as root.
 
-On darwin the `internal/kernel` tests against the real routing socket and the
-`internal/netstack` arms that create a utun run as root only with
-`RANET3_DARWIN_NETTEST=1` set, because that machine is on a live mesh. A
-`control` test and an `internal/kernel` one that give a directory a group of any
-number take the same variable, as every darwin test that runs as root does. The
-`control` test holds the control socket and the directories the daemon makes for
-it to the daemon's group where their directory hands down another, as darwin's
-`/var/run` does, and the `internal/kernel` one holds the directory the underlay
-record shares with the control socket to the same group, whichever of the two
-makes it. Each has an unprivileged twin that does the same with a second group
-of the running user and skips where the user belongs to no second group it can
-give a directory. The `control` twin runs on linux as well, where a setgid
-directory hands its group down, and skips in the linux nix sandbox and under
-`unshare -rn`.
+On darwin the `internal/kernel` tests against the real routing socket, the
+`internal/netstack` arms that create a utun and the `transport` one that sends
+through a feth pair whose MTU is 1400, refused past it and fragmented while a
+session asks, run as root only with `RANET3_DARWIN_NETTEST=1` set, because that
+machine is on a live mesh. A `control` test and an `internal/kernel` one that
+give a directory a group of any number take the same variable, as every darwin
+test that runs as root does. The `control` test holds the control socket and the
+directories the daemon makes for it to the daemon's group where their directory
+hands down another, as darwin's `/var/run` does, and the `internal/kernel` one
+holds the directory the underlay record shares with the control socket to the
+same group, whichever of the two makes it. Each has an unprivileged twin that
+does the same with a second group of the running user and skips where the user
+belongs to no second group it can give a directory. The `control` twin runs on
+linux as well, where a setgid directory hands its group down, and skips in the
+linux nix sandbox and under `unshare -rn`.
 
 `internal/kernel` names the machine it reads and writes, `kernel.Host`, so the
 darwin backend can be driven without either. `internal/client`'s
