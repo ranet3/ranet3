@@ -23,7 +23,7 @@ import (
 type fakeSource struct{}
 
 func (fakeSource) Status() Status {
-	return Status{Organization: "example", CommonName: "node", Port: 13000}
+	return Status{Node: "example/node", Port: 13000}
 }
 
 func (fakeSource) Neighbors() []Neighbor {
@@ -52,7 +52,7 @@ func TestHandlerServesEveryReadAsJSON(t *testing.T) {
 	server := httptest.NewServer(Handler(fakeSource{}))
 	defer server.Close()
 	for path, want := range map[string]string{
-		PathStatus:    `"common_name":"node"`,
+		PathStatus:    `"node":"example/node"`,
 		PathNeighbors: `"peer":"example/gateway@0"`,
 		PathRoutes:    `"destination":"2001:db8::/32"`,
 		PathSessions:  `"path":"example/gateway:0@0"`,
@@ -208,7 +208,7 @@ func TestClientRoundTripsEveryRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CommonName != "node" || status.Port != 13000 {
+	if status.Node != "example/node" || status.Port != 13000 {
 		t.Errorf("status decoded as %+v", status)
 	}
 	neighbors, err := client.Neighbors()

@@ -39,9 +39,11 @@ func (c *Client) DebugPMTU(peer string) control.PMTUInfo {
 		if live.pmtu == nil || peer != "" && !identity.Names(live.path, peer) {
 			continue
 		}
-		info.Sessions = append(info.Sessions, live.pmtu.view(now))
+		view := live.pmtu.view(now)
+		view.Peer = live.peer.Node().String()
+		info.Sessions = append(info.Sessions, view)
 	}
-	slices.SortFunc(info.Sessions, func(a, b control.PMTUSession) int { return cmp.Compare(a.Peer, b.Peer) })
+	slices.SortFunc(info.Sessions, func(a, b control.PMTUSession) int { return cmp.Compare(a.Path, b.Path) })
 	return info
 }
 
@@ -49,7 +51,7 @@ func (c *Client) DebugPMTU(peer string) control.PMTUInfo {
 func (d *pathDriver) view(now time.Time) control.PMTUSession {
 	budget := d.peer.MTU()
 	ipv4, ipv6 := netstack.MSSLimits(budget)
-	view := control.PMTUSession{Peer: d.peer.ID, State: control.PMTUNotSearched, Budget: budget, MSSv4: ipv4, MSSv6: ipv6}
+	view := control.PMTUSession{Path: d.peer.ID, State: control.PMTUNotSearched, Budget: budget, MSSv4: ipv4, MSSv6: ipv6}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	view.DontFragment = d.mux.DontFragment()

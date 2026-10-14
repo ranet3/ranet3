@@ -20,7 +20,7 @@ var wentDown = time.Date(2026, 10, 12, 21, 4, 5, 0, time.UTC)
 // downStatus is a gateway taken off the mesh, its counts at zero and its reconciler withdrawn on the pass the down asked for
 func downStatus() Status {
 	return Status{
-		Version: "v0.1.0", Organization: "example", CommonName: "gateway",
+		Version: "v0.1.0", Node: "example/gateway",
 		Port: 13000, Endpoints: []string{"0/ip4", "1/ip6"},
 		TUN: "ranet3", MTU: 1400, Queues: 4,
 		Uptime:    Duration(26 * time.Hour),

@@ -18,28 +18,28 @@ func pmtuFixture() PMTUInfo {
 		LinkMTU: 8918, Steering: 56, DeviceMTU: 8862, TooBigSent: 4, MSSClamped: 1,
 		Sessions: []PMTUSession{
 			{
-				Peer: "example/bravo:2@alpha", Endpoint: "198.51.100.7:4500", State: PMTUConfirmed, DontFragment: true,
+				Path: "example/bravo:2@alpha", Peer: "example/bravo", Endpoint: "198.51.100.7:4500", State: PMTUConfirmed, DontFragment: true,
 				Budget: 1450, MSSv4: 1410, MSSv6: 1390, Route: 8938, Target: 8918,
 				Last: &PMTUOutcome{Size: 1454, Ago: Duration(3 * time.Minute)},
 				Sent: 21, Acked: 12, Lost: 9,
 				Changed: &PMTUChange{From: 1442, To: 1450, Reason: "probe", Ago: Duration(3 * time.Minute)},
 			},
 			{
-				Peer: "example/charlie:3@alpha", Endpoint: "[2001:db8::3]:4500", State: PMTUSearchingUp, DontFragment: true,
+				Path: "example/charlie:3@alpha", Peer: "example/charlie", Endpoint: "[2001:db8::3]:4500", State: PMTUSearchingUp, DontFragment: true,
 				Budget: 1400, MSSv4: 1360, MSSv6: 1340, Route: 8878, Target: 8878,
 				Probe: &PMTUProbe{Size: 5138, Attempts: 2, MaxAttempts: 3},
 				Last:  &PMTUOutcome{Size: 1400, Acked: true, Ago: Duration(7 * time.Second)},
 				Sent:  2, Acked: 1,
 			},
 			{
-				Peer: "example/delta:4@alpha", Endpoint: "203.0.113.4:4500", State: PMTUUnderFloor,
+				Path: "example/delta:4@alpha", Peer: "example/delta", Endpoint: "203.0.113.4:4500", State: PMTUUnderFloor,
 				Budget: 1280, MSSv4: 1240, MSSv6: 1220, Route: 1182, Target: 1182,
 				Sent: 6, Acked: 2, Lost: 4, Refusals: 1,
 				Last:    &PMTUOutcome{Size: 1280, Ago: Duration(40 * time.Second)},
 				Changed: &PMTUChange{From: 1400, To: 1280, Reason: "floor", Ago: Duration(time.Minute)},
 			},
 			{
-				Peer: "example/echo:5@alpha", Endpoint: "192.0.2.5:4500", State: PMTUNotSearched,
+				Path: "example/echo:5@alpha", Peer: "example/echo", Endpoint: "192.0.2.5:4500", State: PMTUNotSearched,
 				Budget: 8918, MSSv4: 8878, MSSv6: 8858,
 			},
 		},

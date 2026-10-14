@@ -246,10 +246,10 @@ func (d Duration) String() string { return time.Duration(d).String() }
 // Status is the node as a whole: who it is, what it is attached to, and the
 // counts that say whether the mesh around it is healthy.
 type Status struct {
-	Version      string `json:"version"`
-	Organization string `json:"organization"`
-	CommonName   string `json:"common_name"`
-	Port         uint16 `json:"port"`
+	Version string `json:"version"`
+	// Node is the canonical form of this node
+	Node string `json:"node"`
+	Port uint16 `json:"port"`
 	// Endpoints is this node's own local endpoints, "<serial>/<family>".
 	Endpoints []string  `json:"endpoints"`
 	TUN       string    `json:"tun"`

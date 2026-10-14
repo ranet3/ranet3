@@ -21,7 +21,7 @@ type meshStub struct{ stubSource }
 
 func (meshStub) Status() control.Status {
 	return control.Status{
-		Organization: "example", CommonName: "laptop", Version: "1.2.3",
+		Node: "example/laptop", Version: "1.2.3",
 		Originate: []control.Originated{
 			{Prefix: netip.MustParsePrefix("198.18.104.117/32")},
 			{Prefix: netip.MustParsePrefix("2001:db8:1::5/128")},
@@ -112,7 +112,7 @@ func TestBugreportCarriesEverySubsystem(t *testing.T) {
 		t.Fatalf("bugreport is not json: %v in %q", err, out)
 	}
 	switch {
-	case report.Status == nil || report.Status.CommonName != "laptop":
+	case report.Status == nil || report.Status.Node != "example/laptop":
 		t.Errorf("the report carries no status: %+v", report.Status)
 	case len(report.Neighbors) == 0:
 		t.Error("the report carries no neighbors")
