@@ -54,7 +54,7 @@ func benchmarkPeerEnqueue(b *testing.B, workers, batch int) {
 	for range workers {
 		group.Go(func() {
 			for range each {
-				pb := peer.reserveBatch(batch)
+				pb := peer.reserveBatch(batch, batch*len(payload))
 				for range batch {
 					pb.append(payload, 4)
 				}
@@ -94,7 +94,7 @@ func BenchmarkPeerTransmitSerial(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		pb := peer.reserveBatch(1)
+		pb := peer.reserveBatch(1, len(payload))
 		pb.append(payload, 4)
 		if err := pb.transmit(); err != nil {
 			b.Fatal(err)

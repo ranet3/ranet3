@@ -108,8 +108,8 @@ func TestOutboundWorkersEncryptOneQueueInParallelAndTransmitInOrder(t *testing.T
 			sizes:     []int{1},
 			peers:     []*Peer{peer},
 			headers:   []byte{0},
-			shares:    map[*Peer]outboundShare{peer: {count: 1}},
-			batches:   map[*Peer]*peerBatch{peer: peer.reserveBatch(1)},
+			shares:    map[*Peer]outboundShare{peer: {count: 1, bytes: 1}},
+			batches:   map[*Peer]*peerBatch{peer: peer.reserveBatch(1, 1)},
 			peerOrder: []*Peer{peer},
 		}
 		m.outboundJobs <- b
@@ -167,7 +167,7 @@ func TestReservedPeerWorkersDoNotWaitForOrderedSender(t *testing.T) {
 		peer.Close()
 	})
 
-	first := peer.reserveBatch(1)
+	first := peer.reserveBatch(1, 1)
 	first.append([]byte{1}, 0)
 	if err := first.enqueue(); err != nil {
 		t.Fatal(err)
@@ -178,7 +178,7 @@ func TestReservedPeerWorkersDoNotWaitForOrderedSender(t *testing.T) {
 		t.Fatal("ordered sender did not start the first batch")
 	}
 
-	second := peer.reserveBatch(1)
+	second := peer.reserveBatch(1, 1)
 	second.append([]byte{2}, 0)
 	enqueued := make(chan error, 1)
 	go func() { enqueued <- second.enqueue() }()
@@ -255,7 +255,7 @@ func TestReservedSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
 		}
 	}
 	if got := p.dataBudget.used.Load(); got != 0 {
-		t.Fatalf("merged transmission kept %d packets of the budget", got)
+		t.Fatalf("merged transmission kept %d bytes of the budget", got)
 	}
 }
 

@@ -123,7 +123,7 @@ func TestOutboundDispatchKeepsMixedPeerReservationsTogether(t *testing.T) {
 	dispatch := func(peers []*Peer) {
 		batch := &outboundBatch{
 			n: 2, bufs: [][]byte{framed(1), framed(2)}, sizes: []int{1, 1}, headers: []byte{0, 0}, peers: peers,
-			peerOrder: append([]*Peer(nil), peers...), shares: map[*Peer]outboundShare{a: {count: 1}, b: {count: 1}}, batches: make(map[*Peer]*peerBatch),
+			peerOrder: append([]*Peer(nil), peers...), shares: map[*Peer]outboundShare{a: {count: 1, bytes: 1}, b: {count: 1, bytes: 1}}, batches: make(map[*Peer]*peerBatch),
 		}
 		m.outboundReaderWG.Go(func() { m.dispatchOutbound(batch) })
 	}
@@ -157,14 +157,14 @@ func TestMeshCloseDrainsQueuedTickets(t *testing.T) {
 	// Keep the sender waiting on its first ticket, with the whole budget
 	// spoken for, so the dispatch below reserves nothing and Close still has a
 	// peer that will never finish.
-	peer.reserveBatch(peerDataBudget)
+	peer.reserveBatch(1, peerDataBudget)
 	m := &Mesh{closed: make(chan struct{}), outboundJobs: make(chan *outboundBatch, 4), outboundFree: make(chan *outboundBatch, 4)}
 	m.outboundWorkerWG.Add(1)
 	go m.outboundWorker()
 	m.outboundReaderWG.Go(func() {
 		m.dispatchOutbound(&outboundBatch{
 			n: 1, bufs: [][]byte{framed(1)}, sizes: []int{1}, headers: []byte{0}, peers: []*Peer{peer},
-			peerOrder: []*Peer{peer}, shares: map[*Peer]outboundShare{peer: {count: 1}}, batches: make(map[*Peer]*peerBatch),
+			peerOrder: []*Peer{peer}, shares: map[*Peer]outboundShare{peer: {count: 1, bytes: 1}}, batches: make(map[*Peer]*peerBatch),
 		})
 	})
 	done := make(chan struct{})
@@ -282,8 +282,9 @@ func TestCongestedPeerDoesNotStallOthers(t *testing.T) {
 		return nil
 	}, nil)
 
-	const perRead = 64
-	const reads = peerDataBudget/perRead + 4
+	// each read stands for packets of size bytes, though it carries one byte of each
+	const perRead, size = 64, 1400
+	const reads = peerDataBudget/(perRead*size) + 4
 	m := &Mesh{closed: make(chan struct{}), outboundJobs: make(chan *outboundBatch, 4), outboundFree: make(chan *outboundBatch, reads)}
 	m.outboundWorkerWG.Add(2)
 	go m.outboundWorker()
@@ -301,7 +302,7 @@ func TestCongestedPeerDoesNotStallOthers(t *testing.T) {
 	go func() {
 		defer close(dispatched)
 		for range reads {
-			b := &outboundBatch{shares: map[*Peer]outboundShare{stuck: {count: perRead}, healthy: {count: perRead}},
+			b := &outboundBatch{shares: map[*Peer]outboundShare{stuck: {count: perRead, bytes: perRead * size}, healthy: {count: perRead, bytes: perRead * size}},
 				batches: make(map[*Peer]*peerBatch), peerOrder: []*Peer{stuck, healthy}}
 			for i := range 2 * perRead {
 				b.bufs = append(b.bufs, framed(byte(i)))
@@ -322,8 +323,8 @@ func TestCongestedPeerDoesNotStallOthers(t *testing.T) {
 	if got := returned.Load(); got != 0 {
 		t.Fatalf("the stuck transport returned %d times, so this proves nothing", got)
 	}
-	if got := stuck.Dropped(); got != reads*perRead-peerDataBudget {
-		t.Errorf("the congested peer counted %d dropped packets, want the %d its budget had no room for", got, reads*perRead-peerDataBudget)
+	if got := stuck.Dropped(); got != reads*perRead-peerDataBudget/size {
+		t.Errorf("the congested peer counted %d dropped packets, want the %d its budget had no room for", got, reads*perRead-peerDataBudget/size)
 	}
 	if got := healthy.Dropped(); got != 0 {
 		t.Errorf("the peer that was not congested counted %d dropped packets, want 0", got)

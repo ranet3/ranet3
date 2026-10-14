@@ -105,9 +105,10 @@ type outboundBatch struct {
 }
 
 // outboundShare is one peer's part of a read
-// count is the packets and fragments the read sends it, and mtu the largest packet its session carries, loaded once a read
+// count is the packets and fragments the read sends it, bytes what they come to, and mtu the largest packet its session carries, loaded once a read
 type outboundShare struct {
 	count int
+	bytes int
 	mtu   int
 }
 
@@ -129,12 +130,12 @@ type fragmentList struct {
 // header is the outer IPv6 header and routing header steering put in front of the packet, empty for a packet not steered
 // each fragment goes behind its own copy of header, whose payload length then counts that fragment
 // each fits mtu with its header
-// it reports how many fragments it queued, none for a packet that cannot be cut
-func (l *fragmentList) add(peer *Peer, nextHeader byte, header, inner []byte, mtu int) int {
+// it reports how many fragments it queued and their bytes, none for a packet that cannot be cut
+func (l *fragmentList) add(peer *Peer, nextHeader byte, header, inner []byte, mtu int) (int, int) {
 	start := len(l.bytes)
 	var ok bool
 	if l.bytes, ok = packet.AppendFragments(l.bytes, header, inner, mtu-len(header)); !ok {
-		return 0
+		return 0, 0
 	}
 	count := 0
 	for rest := l.bytes[start:]; len(rest) != 0; count++ {
@@ -147,7 +148,7 @@ func (l *fragmentList) add(peer *Peer, nextHeader byte, header, inner []byte, mt
 		}
 		l.fragments = append(l.fragments, outboundFragment{peer: peer, header: nextHeader, raw: piece})
 	}
-	return count
+	return count, len(l.bytes) - start
 }
 
 // appendTo hands every fragment to its peer's batch, and leaves out those of a peer with none
@@ -390,13 +391,6 @@ func (m *Mesh) classify(b *outboundBatch) {
 		}
 		peer, ok := m.Routes.Lookup(src, dst)
 		if !ok {
-			// A steered packet whose first segment the mesh cannot reach
-			// is gone at this point, so it is counted here: without this
-			// the steered counter climbs while the traffic disappears. It
-			// is counted apart from Dropped, which holds the packets this
-			// node refused to act on for a peer: an operator who
-			// configures steering and no local segment would otherwise
-			// see the loss on a line reporting a table they do not have.
 			if steered {
 				m.segmentsUnrouted.Add(1)
 				m.reportSegmentDrop("no route to the first segment of a steered packet", "segment", dst)
@@ -411,21 +405,24 @@ func (m *Mesh) classify(b *outboundBatch) {
 		// a steered packet sits behind the header steering put on it, which the session carries as well
 		overhead := b.sizes[i] - read
 		if b.sizes[i] > share.mtu {
-			share.count += m.tooBig(b, b.bufs[i][tunOffset:tunOffset+b.sizes[i]], overhead, peer, nh, share.mtu)
+			count, bytes := m.tooBig(b, b.bufs[i][tunOffset:tunOffset+b.sizes[i]], overhead, peer, nh, share.mtu)
+			share.count += count
+			share.bytes += bytes
 		} else {
 			ClampMSS(b.bufs[i][tunOffset+overhead:tunOffset+b.sizes[i]], share.mtu-overhead)
 			b.peers[i], b.headers[i] = peer, nh
 			share.count++
+			share.bytes += b.sizes[i]
 		}
 		b.shares[peer] = share
 	}
 }
 
-// tooBig takes a packet larger than mtu, the largest its peer's session carries, and reports how many fragments it queued for the peer
+// tooBig takes a packet larger than mtu, the largest its peer's session carries, and reports how many fragments it queued for the peer and their bytes
 // overhead is the header steering put in front of the packet
 // the packet behind it is held to mtu less that header
 // an answer goes into the tun, whichever side of it the source sits
-func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, nextHeader byte, mtu int) int {
+func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, nextHeader byte, mtu int) (int, int) {
 	answer, cut := m.answerTooBig(raw[overhead:], mtu-overhead)
 	if cut {
 		return b.cut.add(peer, nextHeader, raw[:overhead], raw[overhead:], mtu)
@@ -433,7 +430,7 @@ func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, ne
 	if answer != nil {
 		m.DeliverInboundBatch([][]byte{answer}, 0)
 	}
-	return 0
+	return 0, 0
 }
 
 // TUNReadsTruncated is how many reads off the tun lost the tail of a GSO frame
@@ -477,8 +474,8 @@ func (m *Mesh) dispatchOutbound(b *outboundBatch) {
 	defer m.outboundDispatchMu.Unlock()
 	for _, peer := range b.peerOrder {
 		// a peer whose packets of the read were all answered or refused takes no place
-		if count := b.shares[peer].count; count != 0 {
-			if batch := peer.reserveBatchNow(count); batch != nil {
+		if share := b.shares[peer]; share.count != 0 {
+			if batch := peer.reserveBatchNow(share.count, share.bytes); batch != nil {
 				b.batches[peer] = batch
 			}
 		}

@@ -155,7 +155,11 @@ func stand(t *testing.T, h *holdingTransport, first, behind func()) {
 // aged reserves a batch of the packets given, as if it had been reserved age ago
 func aged(t *testing.T, p *Peer, age time.Duration, packets ...string) *peerBatch {
 	t.Helper()
-	b := p.reserveBatchNow(len(packets))
+	bytes := 0
+	for _, packet := range packets {
+		bytes += len(packet)
+	}
+	b := p.reserveBatchNow(len(packets), bytes)
 	if b == nil {
 		t.Fatalf("the budget refused a batch of %d packets", len(packets))
 	}
@@ -231,10 +235,15 @@ func TestSenderDropsTheHeadOfAStandingQueue(t *testing.T) {
 			}
 
 			// a read the budget has no room for is dropped too, under no reason of the delay's
-			if peer.reserveBatchNow(peerDataBudget+1) != nil {
-				t.Fatal("the budget admitted more packets than it holds")
+			full := peer.reserveBatchNow(1, peerDataBudget)
+			if full == nil {
+				t.Fatal("an empty budget refused a read of all of it")
 			}
-			if peer.Dropped() != 1+peerDataBudget+1 || peer.DelayDropped() != 1 {
+			if peer.reserveBatchNow(1, 1) != nil {
+				t.Fatal("a full budget admitted one more byte")
+			}
+			queue(t, full)
+			if peer.Dropped() != 1+1 || peer.DelayDropped() != 1 {
 				t.Errorf("a refused read left %d drops, %d of them for the delay", peer.Dropped(), peer.DelayDropped())
 			}
 		})
@@ -422,7 +431,7 @@ func TestBatchIsStampedWhenReserved(t *testing.T) {
 	defer peer.Close()
 	// the sender reads started only once a batch reaches it, after this
 	peer.started = peer.started.Add(-time.Hour)
-	b := peer.reserveBatchNow(1)
+	b := peer.reserveBatchNow(1, 1)
 	if age := time.Since(peer.started) - b.admitted; age < 0 || age >= deliveryTimeout {
 		t.Errorf("a batch just reserved reads %s old", age)
 	}

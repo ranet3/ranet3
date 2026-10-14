@@ -79,7 +79,7 @@ func TestPathReportFailsOnlyWhatItRefused(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			data := peer.reserveBatchNow(4)
+			data := peer.reserveBatchNow(4, fits+past+past+64)
 			for _, size := range []int{fits, past, past, 64} {
 				data.append(make([]byte, size), 0)
 			}
@@ -122,7 +122,7 @@ func TestSenderMarksTheDataItHandsTheTransport(t *testing.T) {
 	if peer.TakeSent() {
 		t.Error("a control packet marked the peer as carrying data")
 	}
-	data := peer.reserveBatchNow(1)
+	data := peer.reserveBatchNow(1, len("data"))
 	data.append([]byte("data"), 0)
 	if err := data.enqueue(); err != nil {
 		t.Fatal(err)
