@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -21,9 +22,7 @@ func fillRouteTable(tb testing.TB, neighbors, prefixes int) *Speaker {
 	// The table is built through the real acquisition path, which says every
 	// selection out loud. Without this the measurement is interleaved with
 	// sixteen thousand log lines.
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	tb.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(tb, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	s, err := New(Config{}, Routes{}, Runtime{}, &netstack.Mesh{Routes: netstack.NewRouteTable()})
 	if err != nil {
 		tb.Fatal(err)

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/transport"
 )
@@ -35,9 +36,7 @@ func (w countingWriter) Write(b []byte) (int, error) { w.n.Add(1); return len(b)
 // time. The count has to stay exact: only the saying of it is bounded.
 func TestRefusedESPPacketsAreCountedExactlyAndSaidRarely(t *testing.T) {
 	var lines atomic.Int64
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(countingWriter{&lines}, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(countingWriter{&lines}, nil)))
 
 	c := &Client{started: time.Now()}
 	c.dropReported.Store(-int64(espDropReportInterval))

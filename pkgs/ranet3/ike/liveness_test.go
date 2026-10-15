@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -926,9 +927,7 @@ func TestRunLoopWakesForRetainedIKESA(t *testing.T) {
 func captureLevels(t *testing.T) *[]slog.Level {
 	t.Helper()
 	levels := new([]slog.Level)
-	previous := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	slog.SetDefault(slog.New(&levelRecorder{levels: levels}))
+	logtest.SetDefault(t, slog.New(&levelRecorder{levels: levels}))
 	return levels
 }
 

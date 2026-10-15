@@ -17,6 +17,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/client"
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
 
 // The first signal starts the shutdown and the second gives up on it. An
@@ -147,9 +148,7 @@ func TestStartupRefusalsAvoidTheStandardLogger(t *testing.T) {
 // See refuseToStart.
 func TestStartupRefusalsSurviveAProductionLogLevel(t *testing.T) {
 	var written strings.Builder
-	previous := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	slog.SetDefault(slog.New(slog.NewTextHandler(&written, &slog.HandlerOptions{Level: slog.LevelError})))
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&written, &slog.HandlerOptions{Level: slog.LevelError})))
 
 	if code := refuseToStart(errors.New("config: read /nonexistent.yaml")); code == 0 {
 		t.Error("a refusal reported success")
