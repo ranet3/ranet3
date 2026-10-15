@@ -67,7 +67,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, name, sess
 	sess.SetChildHandler(tunnel.install)
 	sess.SetChildRetireHandler(tunnel.retire)
 	pmtu := newPathDriver(sess.Mux(), c.speaker.Probe, c.events, &c.probes, c.Mesh.Steering, cmp.Or(c.probeTimeout, defaultProbeTimeout), cmp.Or(c.confirmEvery, confirmInterval))
-	peer := netstack.NewPeerReserved(sessionName, func(count int) (netstack.BatchSealer, error) {
+	peer := netstack.NewPeer(sessionName, func(count int) (netstack.BatchSealer, error) {
 		sealer, err := tunnel.reserve(count)
 		// Closing the mux here turns the first babel hello after a refusal,
 		// four seconds later, into a full session teardown that withdraws

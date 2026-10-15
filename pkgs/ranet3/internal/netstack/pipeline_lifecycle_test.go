@@ -24,7 +24,7 @@ func TestOnFailureReportsAPacketLostAfterItWasQueued(t *testing.T) {
 		"the transport works": false,
 	} {
 		t.Run(name, func(t *testing.T) {
-			peer := NewPeerReserved("peer",
+			peer := NewPeer("peer",
 				func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error {
 					if fails {
 						return errors.New("sendto: network is unreachable")
@@ -61,7 +61,7 @@ func TestOnFailureReportsAPacketLostAfterItWasQueued(t *testing.T) {
 // A peer that closes before its sender takes the batch loses it too, and the
 // caller has to hear about that the same way.
 func TestOnFailureReportsWhatAClosedPeerDropped(t *testing.T) {
-	peer := NewPeerReserved("peer",
+	peer := NewPeer("peer",
 		func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error { return nil }, nil)
 	place, err := peer.ReserveRawOrDrop([]byte("packet"), 41)
 	if err != nil {
@@ -102,11 +102,11 @@ func TestOutboundDispatchKeepsMixedPeerReservationsTogether(t *testing.T) {
 		}
 		return nil
 	}
-	a := NewPeerReserved("a", func(int) (BatchSealer, error) {
+	a := NewPeer("a", func(int) (BatchSealer, error) {
 		firstOnce.Do(func() { close(firstReserved); <-releaseFirst })
 		return sealer, nil
 	}, send, nil)
-	b := NewPeerReserved("b", func(int) (BatchSealer, error) {
+	b := NewPeer("b", func(int) (BatchSealer, error) {
 		secondReserved <- struct{}{}
 		return sealer, nil
 	}, send, nil)
@@ -150,7 +150,7 @@ func TestOutboundDispatchKeepsMixedPeerReservationsTogether(t *testing.T) {
 // good. Close therefore has to drain the queue rather than abandon it, and has
 // to return while a peer is still open and still behind.
 func TestMeshCloseDrainsQueuedTickets(t *testing.T) {
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) {
+	peer := NewPeer("peer", func(int) (BatchSealer, error) {
 		return func(raw [][]byte, _ []byte, _ [][]byte) ([][]byte, error) { return [][]byte{bytes.Clone(raw[0])}, nil }, nil
 	}, func([][]byte) error { return nil }, nil)
 	defer peer.Close()
@@ -271,13 +271,13 @@ func TestCongestedPeerDoesNotStallOthers(t *testing.T) {
 	reserve := func(int) (BatchSealer, error) { return sealer, nil }
 	release := make(chan struct{})
 	var returned atomic.Int64
-	stuck := NewPeerReserved("stuck", reserve, func([][]byte) error {
+	stuck := NewPeer("stuck", reserve, func([][]byte) error {
 		<-release
 		returned.Add(1)
 		return nil
 	}, nil)
 	var transmitted atomic.Int64
-	healthy := NewPeerReserved("healthy", reserve, func(packets [][]byte) error {
+	healthy := NewPeer("healthy", reserve, func(packets [][]byte) error {
 		transmitted.Add(int64(len(packets)))
 		return nil
 	}, nil)
@@ -399,7 +399,7 @@ func TestTunReadFailureIsReportedAndGivesTheBatchBack(t *testing.T) {
 func TestClosingAPeerDoesNotWaitOnTheTransportForever(t *testing.T) {
 	stuck, entered := make(chan struct{}), make(chan struct{})
 	defer close(stuck)
-	p := NewPeerReserved("stuck",
+	p := NewPeer("stuck",
 		func(int) (BatchSealer, error) { return passThrough, nil },
 		func([][]byte) error { close(entered); <-stuck; return nil }, nil)
 	p.closeGrace = 100 * time.Millisecond

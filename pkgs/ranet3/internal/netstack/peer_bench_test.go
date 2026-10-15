@@ -24,7 +24,7 @@ func benchSealer(raw [][]byte, _ []byte, storage [][]byte) ([][]byte, error) {
 
 func benchPeer(b *testing.B) *Peer {
 	b.Helper()
-	peer := NewPeerReserved("bench",
+	peer := NewPeer("bench",
 		func(int) (BatchSealer, error) { return benchSealer, nil },
 		func([][]byte) error { return nil }, nil)
 	b.Cleanup(peer.Close)
@@ -37,7 +37,7 @@ func benchPeer(b *testing.B) *Peer {
 // allocation under one lock, the allocations ReportAllocs counts, the handoff
 // to the ordered sender, and its reorder map.
 //
-// enqueue does not wait for the send, which BenchmarkPeerTransmitSerial waits for.
+// enqueue does not wait for the send, which BenchmarkPeerSenderRoundTrip waits for.
 func benchmarkPeerEnqueue(b *testing.B, workers, batch int) {
 	peer := benchPeer(b)
 	payload := make([]byte, 1400)
@@ -86,9 +86,9 @@ func BenchmarkPeerEnqueueParallelBatched(b *testing.B) {
 
 // One packet, with the caller waiting for the ordered sender to hand it to the
 // transport, which is the round trip of one batch through the sender.
-func BenchmarkPeerTransmitSerial(b *testing.B) {
+func BenchmarkPeerSenderRoundTrip(b *testing.B) {
 	carried := make(chan struct{}, 1)
-	peer := NewPeerReserved("bench",
+	peer := NewPeer("bench",
 		func(int) (BatchSealer, error) { return benchSealer, nil },
 		func([][]byte) error { carried <- struct{}{}; return nil }, nil)
 	b.Cleanup(peer.Close)

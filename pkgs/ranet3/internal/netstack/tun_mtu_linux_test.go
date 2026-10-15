@@ -395,7 +395,7 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 			transit.SetSegments(segments)
 			// a session hands what it carries to the mesh at its far end, as the peer decrypting it does
 			session := func(id string, far *Mesh, mtu int) *Peer {
-				peer := NewPeerReserved(id, func(int) (BatchSealer, error) { return cloning, nil }, func(sealed [][]byte) error {
+				peer := NewPeer(id, func(int) (BatchSealer, error) { return cloning, nil }, func(sealed [][]byte) error {
 					for _, raw := range sealed {
 						far.DeliverInbound(raw, mtu)
 					}

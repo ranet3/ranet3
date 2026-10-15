@@ -49,7 +49,7 @@ func TestPathReportFailsOnlyWhatItRefused(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			entered, release := make(chan struct{}), make(chan struct{})
 			var calls, carried atomic.Int32
-			peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func(sealed [][]byte) error {
+			peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func(sealed [][]byte) error {
 				if calls.Add(1) == 1 {
 					close(entered)
 					<-release
@@ -113,7 +113,7 @@ func TestPathReportFailsOnlyWhatItRefused(t *testing.T) {
 // the sender marks the peer once it hands the transport a data packet, which tells a search of the path that data flows
 // a control packet alone leaves the mark off, and TakeSent takes it away
 func TestSenderMarksTheDataItHandsTheTransport(t *testing.T) {
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error { return nil }, nil)
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error { return nil }, nil)
 	t.Cleanup(peer.Close)
 	if err := sendOrDrop(peer, []byte("control"), 41); err != nil {
 		t.Fatal(err)

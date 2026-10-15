@@ -89,7 +89,7 @@ type testPeer struct {
 
 func newTestPeer(t tester, id string, deliver func(raw []byte)) *testPeer {
 	p := &testPeer{settled: make(chan struct{}, 1)}
-	p.Peer = netstack.NewPeerReserved(id, plainSealer, func(sealed [][]byte) error {
+	p.Peer = netstack.NewPeer(id, plainSealer, func(sealed [][]byte) error {
 		for _, raw := range sealed {
 			switch {
 			case len(raw) == 0:
@@ -590,7 +590,7 @@ func TestStalledNeighborDoesNotHoldOthers(t *testing.T) {
 		t.Fatal(err)
 	}
 	block := make(chan struct{})
-	stalled := netstack.NewPeerReserved("stalled", plainSealer, func([][]byte) error {
+	stalled := netstack.NewPeer("stalled", plainSealer, func([][]byte) error {
 		<-block
 		return nil
 	}, nil)
@@ -598,7 +598,7 @@ func TestStalledNeighborDoesNotHoldOthers(t *testing.T) {
 	// sender goroutine sitting inside it.
 	defer func() { close(block); stalled.Close() }()
 	healthy := make(chan struct{}, 64)
-	moving := netstack.NewPeerReserved("moving", plainSealer, func(sealed [][]byte) error {
+	moving := netstack.NewPeer("moving", plainSealer, func(sealed [][]byte) error {
 		for range sealed {
 			select {
 			case healthy <- struct{}{}:
@@ -711,7 +711,7 @@ func TestDroppedRetractionIsSentAgain(t *testing.T) {
 	var blocking atomic.Bool
 	blocking.Store(true)
 	var delivered atomic.Int64
-	peer := netstack.NewPeerReserved("peer", plainSealer, func(sealed [][]byte) error {
+	peer := netstack.NewPeer("peer", plainSealer, func(sealed [][]byte) error {
 		if blocking.Load() {
 			<-block
 		}
@@ -835,7 +835,7 @@ func TestEmittersCannotInvertWhatTheyDecided(t *testing.T) {
 		t.Fatal(err)
 	}
 	metrics := make(chan uint16, 4)
-	peer := netstack.NewPeerReserved("peer",
+	peer := netstack.NewPeer("peer",
 		plainSealer,
 		func(sealed [][]byte) error {
 			for _, raw := range sealed {
@@ -1065,7 +1065,7 @@ func TestDroppedDumpDoesNotRefundTheRateLimit(t *testing.T) {
 	// transport has to be released before Close, which waits for the sender
 	// goroutine sitting inside it.
 	blocked := make(chan struct{})
-	stuck := netstack.NewPeerReserved("peer",
+	stuck := netstack.NewPeer("peer",
 		plainSealer,
 		func([][]byte) error { <-blocked; return nil }, nil)
 	defer func() { close(blocked); stuck.Close() }()
@@ -1126,7 +1126,7 @@ func TestRetractionLostInTheTransportIsAdvertisedAgain(t *testing.T) {
 	}
 
 	// The peer takes the packet and then loses it in the syscall.
-	failing := netstack.NewPeerReserved("failing",
+	failing := netstack.NewPeer("failing",
 		plainSealer,
 		func([][]byte) error { return errors.New("sendto: network is unreachable") }, nil)
 	defer failing.Close()
@@ -1153,7 +1153,7 @@ func TestRetractionLostInTheTransportIsAdvertisedAgain(t *testing.T) {
 }
 
 // addPeer registers a peer with the speaker and closes both halves with the
-// test. NewPeerReserved starts a sender goroutine and AddPeer returns the
+// test. NewPeer starts a sender goroutine and AddPeer returns the
 // handle that removes the neighbor, so taking .state off the call and
 // discarding the rest parks one sender per call for the life of the binary.
 func addPeer(t *testing.T, s *Speaker, peer *netstack.Peer) *neighborState {
@@ -1166,7 +1166,7 @@ func addPeer(t *testing.T, s *Speaker, peer *netstack.Peer) *neighborState {
 // refusingPeer fails every reservation, the way a peer whose Child SA the
 // other end deleted does.
 func refusingPeer(id string) *netstack.Peer {
-	return netstack.NewPeerReserved(id,
+	return netstack.NewPeer(id,
 		func(int) (netstack.BatchSealer, error) { return nil, errors.New("no child sa") },
 		func([][]byte) error { return nil }, nil)
 }
@@ -1215,7 +1215,7 @@ func TestLostPacketsDoNotWakeTheLoopPerPacket(t *testing.T) {
 	// wake is spaced by is a second rather than a millisecond.
 	speaker, neighbor, _ := captureSpeaker(t, Config{Hello: dur(4 * time.Second)}, Runtime{PacketSize: 63})
 	makeNeighborReachable(neighbor)
-	losing := netstack.NewPeerReserved("losing",
+	losing := netstack.NewPeer("losing",
 		plainSealer,
 		func([][]byte) error { return errors.New("sendto: network is unreachable") }, nil)
 	defer losing.Close()
@@ -1258,7 +1258,7 @@ func TestLostPacketsDoNotWakeTheLoopPerPacket(t *testing.T) {
 // case where the earlier packets are on their way.
 func partialPeer(id string, accept int) *netstack.Peer {
 	taken := 0
-	return netstack.NewPeerReserved(id,
+	return netstack.NewPeer(id,
 		func(int) (netstack.BatchSealer, error) {
 			taken++
 			if taken > accept {
@@ -1316,7 +1316,7 @@ func TestDumpDoesNotStarveRequestsDecidedWithIt(t *testing.T) {
 	blocked := make(chan struct{})
 	var release sync.Once
 	unblock := func() { release.Do(func() { close(blocked) }) }
-	peer := netstack.NewPeerReserved("peer",
+	peer := netstack.NewPeer("peer",
 		plainSealer,
 		func(sealed [][]byte) error {
 			<-blocked
@@ -1383,7 +1383,7 @@ func TestRetractionForUnadvertisedPrefixCostsNothing(t *testing.T) {
 	makeNeighborReachable(neighbor)
 	blocked := make(chan struct{})
 	var release sync.Once
-	stuck := netstack.NewPeerReserved("peer",
+	stuck := netstack.NewPeer("peer",
 		plainSealer,
 		func([][]byte) error { <-blocked; return nil }, nil)
 	defer func() { release.Do(func() { close(blocked) }); stuck.Close() }()
@@ -1435,7 +1435,7 @@ func TestHelloSurvivesPassThatFillsTheBudget(t *testing.T) {
 	blocked := make(chan struct{})
 	var release sync.Once
 	unblock := func() { release.Do(func() { close(blocked) }) }
-	peer := netstack.NewPeerReserved("peer",
+	peer := netstack.NewPeer("peer",
 		plainSealer,
 		func(sealed [][]byte) error {
 			<-blocked
@@ -1513,7 +1513,7 @@ func TestDroppedTriggeredUpdateIsStillOwed(t *testing.T) {
 	makeNeighborReachable(neighbor)
 	blocked := make(chan struct{})
 	var release sync.Once
-	stuck := netstack.NewPeerReserved("peer",
+	stuck := netstack.NewPeer("peer",
 		plainSealer,
 		func([][]byte) error { <-blocked; return nil }, nil)
 	defer func() { release.Do(func() { close(blocked) }); stuck.Close() }()
@@ -1556,7 +1556,7 @@ func TestOneJammedNeighborDoesNotRepeatTheUpdateToTheRest(t *testing.T) {
 	makeNeighborReachable(jammed)
 	blocked := make(chan struct{})
 	var release sync.Once
-	stuck := netstack.NewPeerReserved("stuck",
+	stuck := netstack.NewPeer("stuck",
 		plainSealer,
 		func([][]byte) error { <-blocked; return nil }, nil)
 	defer func() { release.Do(func() { close(blocked) }); stuck.Close() }()
@@ -1611,7 +1611,7 @@ func TestOneJammedNeighborDoesNotRepeatTheUpdateToTheRest(t *testing.T) {
 func TestDroppedHelloIsSentAgainOnTheNextWake(t *testing.T) {
 	speaker, neighbor, _ := captureSpeaker(t, Config{})
 	makeNeighborReachable(neighbor)
-	closed := netstack.NewPeerReserved("closed",
+	closed := netstack.NewPeer("closed",
 		plainSealer,
 		func([][]byte) error { return nil }, nil)
 	closed.Close()
@@ -2440,7 +2440,7 @@ func TestRefusedDumpIsStillOwed(t *testing.T) {
 	speaker.Originate(netip.MustParsePrefix("fd00:2::/64"))
 
 	refuse := true
-	stuck := addPeer(t, speaker, netstack.NewPeerReserved("stuck",
+	stuck := addPeer(t, speaker, netstack.NewPeer("stuck",
 		func(int) (netstack.BatchSealer, error) {
 			if refuse {
 				return nil, errors.New("no child sa")

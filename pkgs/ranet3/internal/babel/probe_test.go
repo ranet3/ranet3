@@ -102,7 +102,7 @@ func TestRefusedProbeIsAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	// a closed session refuses every place
-	closed := netstack.NewPeerReserved("closed", plainSealer, func([][]byte) error { return nil }, nil)
+	closed := netstack.NewPeer("closed", plainSealer, func([][]byte) error { return nil }, nil)
 	closed.Close()
 	speaker.AddPeer(closed)
 	if err := speaker.Probe(closed, srv6.MinimumIPv6MTU, 1); err == nil {

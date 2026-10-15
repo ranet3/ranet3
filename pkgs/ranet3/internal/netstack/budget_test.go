@@ -44,7 +44,7 @@ func waitForBudget(tb testing.TB, p *Peer) {
 // and one that does not fit is refused whole and counted in packets, without taking a ticket or a sequence range
 func TestDataBudgetAdmitsByBytes(t *testing.T) {
 	var asked atomic.Int64
-	peer := NewPeerReserved("peer", func(count int) (BatchSealer, error) {
+	peer := NewPeer("peer", func(count int) (BatchSealer, error) {
 		asked.Add(int64(count))
 		return passThrough, nil
 	}, func([][]byte) error { return nil }, nil)
@@ -87,7 +87,7 @@ func TestDataBudgetAdmitsByBytes(t *testing.T) {
 // a share larger than the whole data budget, as a full read at the largest link.mtu comes to, is admitted into an empty budget and holds all of it
 // and refused while anything else is held
 func TestShareLargerThanTheBudgetIsAdmittedOnlyAlone(t *testing.T) {
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error { return nil }, nil)
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error { return nil }, nil)
 	defer peer.Close()
 	const largest = transmitBatchSize * 65470
 	small := filled(peer, 1)
@@ -112,7 +112,7 @@ func TestShareLargerThanTheBudgetIsAdmittedOnlyAlone(t *testing.T) {
 func TestReservationHoldsTheBytesItSends(t *testing.T) {
 	const mtu = 3000
 	handed, release := make(chan int, 1), make(chan struct{})
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return passThrough, nil },
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil },
 		func(sealed [][]byte) error { handed <- sealedBytes(sealed); <-release; return nil }, nil)
 	defer peer.Close()
 	defer close(release)
@@ -292,7 +292,7 @@ func TestBudgetComesBackOnEveryPath(t *testing.T) {
 				// the transport holds the batch past the grace Close waits for
 				send = func([][]byte) error { close(entered); <-release; return nil }
 			}
-			p := NewPeerReserved("peer", test.reserve, send, nil)
+			p := NewPeer("peer", test.reserve, send, nil)
 			defer p.Close()
 			test.drive(t, p)
 			if test.graceful {
@@ -325,7 +325,7 @@ func TestQueueHoldsEverythingTheBudgetsAdmit(t *testing.T) {
 	var lose atomic.Bool
 	lose.Store(true)
 	var transmitted atomic.Int64
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func(sealed [][]byte) error {
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func(sealed [][]byte) error {
 		if lose.Load() {
 			return errors.New("sendto: network is unreachable")
 		}
@@ -485,7 +485,7 @@ func TestSmallBatchIsNeverHandedStorageALargeOneGrew(t *testing.T) {
 	over := 0
 	for _, grower := range shapes {
 		for _, taker := range shapes {
-			p := NewPeerReserved("peer", func(int) (BatchSealer, error) { return sealer, nil }, func([][]byte) error { return nil }, nil)
+			p := NewPeer("peer", func(int) (BatchSealer, error) { return sealer, nil }, func([][]byte) error { return nil }, nil)
 			for range passes {
 				seal(p, grower)
 				if pinned, size := seal(p, taker); pinned > limit(size) {

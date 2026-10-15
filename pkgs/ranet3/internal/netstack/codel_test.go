@@ -198,7 +198,7 @@ func TestSenderDropsTheHeadOfAStandingQueue(t *testing.T) {
 		t.Run(map[bool]string{false: "the transport takes the rest", true: "the transport loses the rest"}[transportFails], func(t *testing.T) {
 			h := newHoldingTransport(transportFails)
 			bus := events.New()
-			peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit)
+			peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit)
 			defer peer.Close()
 			defer h.letGo()
 
@@ -254,7 +254,7 @@ func TestSenderDropsTheHeadOfAStandingQueue(t *testing.T) {
 // so the delay control never drops one, however long the data queue they wait in has stood
 func TestSenderNeverDropsAControlPacketForTheDelay(t *testing.T) {
 	h := newHoldingTransport(false)
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, nil)
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, nil)
 	defer peer.Close()
 	defer h.letGo()
 	// control queues one control packet a second old
@@ -293,7 +293,7 @@ func TestSenderNeverDropsAControlPacketForTheDelay(t *testing.T) {
 func TestSenderForgetsTheDelayOnceItsQueueEmpties(t *testing.T) {
 	h := newHoldingTransport(false)
 	bus := events.New()
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit)
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit)
 	defer peer.Close()
 	defer h.letGo()
 
@@ -332,7 +332,7 @@ func TestSenderForgetsTheDelayOnceItsQueueEmpties(t *testing.T) {
 // and drops the head of the batch once it arrives, since the next drop of the state has come due
 func TestSenderKeepsTheDelayWhileADataBatchIsStillReserved(t *testing.T) {
 	h := newHoldingTransport(false)
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, nil)
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, nil)
 	defer peer.Close()
 	defer h.letGo()
 
@@ -367,7 +367,7 @@ func TestLoneLateBatchesLoseNothing(t *testing.T) {
 	h := newHoldingTransport(false)
 	h.letGo()
 	bus := events.New()
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit)
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit)
 	defer peer.Close()
 	const lone = 3
 	for i := range lone {
@@ -388,7 +388,7 @@ func TestDelayControlLeavesABatchThatSealedNothing(t *testing.T) {
 	// failure is the error the next reservation meets, nil for none
 	var failure error
 	h := newHoldingTransport(false)
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) {
+	peer := NewPeer("peer", func(int) (BatchSealer, error) {
 		switch failure {
 		case refused:
 			return nil, refused
@@ -426,7 +426,7 @@ func TestDelayControlLeavesABatchThatSealedNothing(t *testing.T) {
 // the delay the control reads is from the reservation, not from the peer's start
 // or every batch of a peer that has run past the target would read as late and an idle queue would be dropped from
 func TestBatchIsStampedWhenReserved(t *testing.T) {
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) { return passThrough, nil },
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil },
 		func([][]byte) error { return nil }, nil)
 	defer peer.Close()
 	// the sender reads started only once a batch reaches it, after this
