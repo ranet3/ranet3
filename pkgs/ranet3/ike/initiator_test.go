@@ -1174,9 +1174,114 @@ func testIKEAuthAuthenticatesBeforeChildFailure(t *testing.T, remoteOrganization
 		}()
 	}()
 
-	err = s.completeIKEAuth(cfg, realMessage1, realMessage2, ni, nr)
+	_, err = s.completeIKEAuth(cfg, realMessage1, realMessage2, ni, nr)
 	if err == nil || err.Error() != "ike: Child SA rejected: notify type 14" {
 		t.Fatalf("completeIKEAuth error = %v, want authenticated Child SA rejection", err)
+	}
+	if err := <-peerDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// the responder holds an authenticated SA until told, so a Delete whose mux closes before its answer arrives goes out once more
+func TestAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	hub, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { hub.Close() })
+	mux, err := hub.NewMux(peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.Close()
+
+	_, localPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remotePublic, remotePrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := PeerConfig{
+		Local:           identity.MustParse("ranet-test/initiator:1"),
+		LocalPrivateKey: localPrivate,
+		Remote:          identity.MustParse("ranet-test/responder:2"),
+		RemotePublicKey: remotePublic,
+	}
+	const spiI = 0x0102030405060708
+	const spiR = 0x1112131415161718
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	s := &Session{
+		mux: mux,
+		current: &ikeContext{
+			suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2,
+			skei: make([]byte, 20), sker: make([]byte, 20),
+			skD: make([]byte, 32), skpi: make([]byte, 32), skpr: make([]byte, 32),
+		},
+		requests: make(chan *localRequest, 1),
+	}
+	realMessage1 := []byte("test IKE_SA_INIT request")
+	realMessage2 := []byte("test IKE_SA_INIT response")
+	ni := make([]byte, 32)
+	nr := make([]byte, 32)
+
+	buf := make([]byte, 4096)
+	readDelete := func() error {
+		for {
+			n, _, err := peer.ReadFromUDP(buf)
+			if err != nil {
+				return err
+			}
+			if n <= 4 {
+				continue
+			}
+			m, err := DecodeMessage(buf[4:n])
+			if err == nil && m.Header.ExchangeType == INFORMATIONAL && m.Header.MessageID == 2 {
+				return nil
+			}
+		}
+	}
+	peerDone := make(chan error, 1)
+	go func() {
+		peerDone <- func() error {
+			peer.SetReadDeadline(time.Now().Add(answerBudget))
+			_, clientAddr, err := peer.ReadFromUDP(buf)
+			if err != nil {
+				return fmt.Errorf("read IKE_AUTH request: %w", err)
+			}
+			idr := idBody("ranet-test/responder:2")
+			auth := BuildAuth(remotePrivate, concat(realMessage2, ni, prf(suite.PRFID, s.current.skpr, idr)))
+			response, err := EncryptMessage(suite, s.current.sker, Header{
+				SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH, Flags: FlagResponse, MessageID: 1,
+			}, nil, []RawPayload{
+				{Type: PayloadIDr, Body: idr},
+				{Type: PayloadAUTH, Body: auth},
+				{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NO_PROPOSAL_CHOSEN})},
+			})
+			if err != nil {
+				return fmt.Errorf("encrypt IKE_AUTH response: %w", err)
+			}
+			if _, err := peer.WriteToUDP(withNonESPMarker(response), clientAddr); err != nil {
+				return fmt.Errorf("write IKE_AUTH response: %w", err)
+			}
+			if err := readDelete(); err != nil {
+				return fmt.Errorf("read IKE Delete request: %w", err)
+			}
+			// the Delete goes unanswered and its mux closes while it waits
+			mux.Close()
+			if err := readDelete(); err != nil {
+				return fmt.Errorf("read IKE Delete request after the mux closed: %w", err)
+			}
+			return nil
+		}()
+	}()
+
+	if _, err := s.completeIKEAuth(cfg, realMessage1, realMessage2, ni, nr); err == nil {
+		t.Fatal("completeIKEAuth took an authenticated Child SA rejection")
 	}
 	if err := <-peerDone; err != nil {
 		t.Fatal(err)
@@ -1326,7 +1431,7 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 				}()
 			}()
 
-			err = s.completeIKEAuth(cfg, []byte("test IKE_SA_INIT request"), realMessage2, ni, nr)
+			_, err = s.completeIKEAuth(cfg, []byte("test IKE_SA_INIT request"), realMessage2, ni, nr)
 			if err == nil {
 				t.Fatal("the initiator took an IKE_AUTH answer it should have refused")
 			}

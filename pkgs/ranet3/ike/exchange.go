@@ -13,7 +13,8 @@ import (
 
 // encryptedRoundTrip ignores unauthenticated packets even if their public
 // header matches the outstanding exchange (RFC 7296 section 2.21). Once the
-// tag verifies, syntax errors are returned to the caller rather than retried.
+// tag verifies, syntax errors are returned to the caller rather than retried,
+// with the response that carried them, so a nil response means none decrypted.
 func encryptedRoundTrip(mux *transport.Mux, ctx *ikeContext, req []byte) (*Message, []RawPayload, error) {
 	return encryptedRoundTripWithin(mux, ctx, req, maxRetransmits)
 }
