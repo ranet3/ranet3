@@ -460,7 +460,12 @@ func TestSteeringReloadWarnsASessionItLeavesTooNarrow(t *testing.T) {
 	})
 	narrow := esp.Inner(1380, 20)
 	d.reports <- &transport.PathMTUError{Endpoint: d.mux.Endpoint(), MTU: 1380}
-	waitFor(t, convergeBudget, fmt.Sprintf("the refusal to hold the session at %d", narrow), func() bool { return d.peer.MTU() == narrow })
+	// the warning holds a fall until the search confirms the budget
+	waitFor(t, convergeBudget, fmt.Sprintf("the search to settle at the %d the refusal left", narrow), func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.search.phase == confirmed && d.search.budget == narrow
+	})
 	warned := func() bool {
 		return len(bravo.client.events.Recorded(func(kind, _ string, attrs []slog.Attr) bool {
 			return kind == "pmtu.steering" && slices.ContainsFunc(attrs, func(a slog.Attr) bool { return a.Key == "under" && a.Value.Bool() })
