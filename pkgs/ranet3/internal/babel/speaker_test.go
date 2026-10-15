@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -1713,9 +1714,7 @@ func TestRepeatedWildcardRetractionsCostNothing(t *testing.T) {
 // one fixed in the hub's receive loop one level out.
 func TestSelectionChangesAreNotOneLogLineEach(t *testing.T) {
 	var lines atomic.Int64
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(countingWriter{&lines}, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(countingWriter{&lines}, nil)))
 
 	speaker, neighbor, _ := captureSpeaker(t, Config{})
 	makeNeighborReachable(neighbor)

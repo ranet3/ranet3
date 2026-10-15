@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -500,9 +501,7 @@ func TestReconcileRepairsAfterFailedApply(t *testing.T) {
 func captureKernelLogs(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.New(slog.NewJSONHandler(&logs, nil)))
 	return &logs
 }
 
@@ -1962,9 +1961,7 @@ func TestRetryDoublesItsDelayUpToTheSweep(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			delays := &retryDelays{}
-			previous := slog.Default()
-			slog.SetDefault(slog.New(delays))
-			t.Cleanup(func() { slog.SetDefault(previous) })
+			logtest.SetDefault(t, slog.New(delays))
 			reconciler, table, fake := harness(t, Table{Reconcile: schema.Duration(sweep)})
 			route := Route{Destination: prefix("10.0.0.0/8")}
 			table.Set(netip.Prefix{}, route.Destination, nil)

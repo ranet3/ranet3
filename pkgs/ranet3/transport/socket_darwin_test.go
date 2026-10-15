@@ -25,6 +25,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
 
 // fakeLinks stands in for the host's own routing. Every test here drives the
@@ -301,9 +303,7 @@ func (l *lockedLog) Reset() {
 func captureBoundReachLogs(t *testing.T) *lockedLog {
 	t.Helper()
 	logs := &lockedLog{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(logs, nil)))
 	return logs
 }
 

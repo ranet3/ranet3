@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
 
 // probe views stand in for a read view, a root view and a view no source serves
@@ -136,9 +137,7 @@ func TestDebugRefusesAnotherUserTheRootClass(t *testing.T) {
 	}
 
 	logged := &lockedBuffer{}
-	previous := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	slog.SetDefault(slog.New(slog.NewTextHandler(logged, nil)))
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(logged, nil)))
 	group := injected(t, debugSource{access: DebugGroup}, Caller{UID: 4242, PID: 77})
 	if status, body := get(t, group.Client(), group.URL+pathProbeRoot); status != http.StatusOK {
 		t.Fatalf("--debug-access group refused uid 4242 a root path with %d %q", status, body)

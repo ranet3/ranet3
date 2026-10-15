@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"golang.zx2c4.com/wireguard/tun"
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
 
 // Both halves of Place.OnFailure: a packet the transport loses is reported,
@@ -383,9 +384,7 @@ func (d *failingReadDevice) Read(bufs [][]byte, sizes []int, offset int) (int, e
 // repair the device, but it says so and gives its batch back.
 func TestTunReadFailureIsReportedAndGivesTheBatchBack(t *testing.T) {
 	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
 
 	dev := &failingReadDevice{fail: 3}
 	m := &Mesh{Name: "test0", devs: []tun.Device{dev}, closed: make(chan struct{}),

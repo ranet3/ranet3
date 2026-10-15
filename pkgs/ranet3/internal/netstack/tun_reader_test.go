@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"golang.zx2c4.com/wireguard/tun"
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
 
 // scriptedRead is one answer of a scriptedDevice to Read
@@ -154,9 +155,7 @@ func TestReaderRoutesEveryPacketOfOneRead(t *testing.T) {
 func warnedReads(t *testing.T) func() []uint64 {
 	t.Helper()
 	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
 	return func() []uint64 {
 		var counts []uint64
 		for _, match := range regexp.MustCompile(`reads=(\d+)`).FindAllStringSubmatch(logs.String(), -1) {

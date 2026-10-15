@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
 
 // arrivalBudget is how long a test waits for a datagram it expects
@@ -876,9 +878,7 @@ func TestFullReceiveQueueIsCountedAndReportedOnce(t *testing.T) {
 func captureTransportLogs(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
 	return &logs
 }
 

@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
 
 func TestPeerKeepsCiphertextUntilSendCompletes(t *testing.T) {
@@ -492,9 +494,7 @@ func TestTransportFailureIsCountedApartFromARefusal(t *testing.T) {
 // that lasts. The count is exact: only the saying of it is bounded.
 func TestTransportFailureIsSaidRarely(t *testing.T) {
 	var lines atomic.Int64
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(countingWriter{&lines}, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(countingWriter{&lines}, nil)))
 
 	sending := errors.New("no route to host")
 	peer := NewPeer("peer",

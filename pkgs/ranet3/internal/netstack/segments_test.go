@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -483,10 +484,8 @@ func TestDropReportsSurviveACounterSetThatWasNeverStarted(t *testing.T) {
 // countRecords points the default logger at a counter for the test's duration.
 func countRecords(t *testing.T) *int {
 	t.Helper()
-	previous := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(previous) })
 	counter := new(int)
-	slog.SetDefault(slog.New(countingHandler{n: counter}))
+	logtest.SetDefault(t, slog.New(countingHandler{n: counter}))
 	return counter
 }
 

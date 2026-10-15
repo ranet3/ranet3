@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -1579,9 +1580,7 @@ func TestFailedInboundHandshakeIsSaidOncePerSource(t *testing.T) {
 	other := observedEndpointFrom(t, hub, 0x33, net.IPv6loopback)
 
 	var levels []slog.Level
-	previous := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	slog.SetDefault(slog.New(&levelRecorder{levels: &levels}))
+	logtest.SetDefault(t, slog.New(&levelRecorder{levels: &levels}))
 	r := newFailureRecorder()
 	// the event goes with the warn line, so a source failing over and over costs the recorder what it costs the log
 	failures := &recorder{}
