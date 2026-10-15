@@ -108,6 +108,10 @@ func TestSweptSessionIsNotToldAgain(t *testing.T) {
 // it returns once every session has unwound, so no Babel neighbor is left, and the peer was told
 func TestShutdownSweepStopsEveryLoopBeforeTheContextGoes(t *testing.T) {
 	alpha, bravo := newLoopbackMesh(t)
+	// bravo answers and never dials, so the one session alpha sweeps is the one it dialed and no resolution replaces it meanwhile
+	quiet := *bravo.cfg
+	quiet.Dial.To = nil
+	bravo.client.cfg.Store(&quiet)
 	run(t, alpha, bravo)
 	waitFor(t, convergeBudget, "both ends established", func() bool {
 		return len(alpha.client.sessions.paths()) == 1 && len(bravo.client.sessions.paths()) == 1
