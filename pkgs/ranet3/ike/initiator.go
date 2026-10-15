@@ -220,16 +220,6 @@ func (s *Session) nextPeerMessageID(ctx *ikeContext) uint32 {
 	return ctx.nextPeerMID
 }
 
-// retainedContextDeadline bounds how long a replaced or redundant IKE SA is
-// held for the peer's Delete. RFC 7296 section 2.8.2 makes that Delete a
-// SHOULD, and handleIKERekey answers every peer-initiated rekey with
-// TEMPORARY_FAILURE while either is set, so a peer that rekeys once and never
-// sends the Delete would refuse every later rekey for the life of the session,
-// which retirementDeadline already stops for a Child SA. It sits above
-// the 62 second retransmission budget of one exchange, so a Delete still in
-// flight is not answered by a session that has already forgotten the SA.
-const retainedContextDeadline = 2 * time.Minute
-
 // retainOldLocked keeps the SA a rekey replaced reachable for the peer's
 // Delete. It must be called with stateMu held. Whatever it displaces is
 // released rather than dropped: a context held nowhere is one
@@ -429,16 +419,8 @@ func validRekeyTiming(interval, margin, jitter time.Duration) bool {
 // atomic store rather than a clock read per packet.
 func (s *Session) NoteTraffic() { s.trafficSeen.Store(true) }
 
-const (
-	requestTimeout = 2 * time.Second
-	maxRetransmits = 5
-	// maxRetransmitsWhileBusy bounds an exchange the peer keeps alive without
-	// answering. The backoff is clamped at requestTimeout<<(maxRetransmits-1),
-	// which is thirty-two seconds, so twenty sends is about nine minutes.
-	maxRetransmitsWhileBusy = 20
-	// RFC 7296 section 2.6 bounds a cookie to 1..64 octets.
-	maxCookieLength = 64
-)
+// RFC 7296 section 2.6 bounds a cookie to 1..64 octets.
+const maxCookieLength = 64
 
 func randUint64Nonzero() uint64 {
 	for {
@@ -613,7 +595,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 			// The nonce stays fixed for the whole exchange. A cookie is a
 			// keyed hash of it together with our SPI and address, so a retry
 			// that regenerated it would be handed a fresh challenge forever.
-			ni = make([]byte, 32)
+			ni = make([]byte, nonceLen)
 			rand.Read(ni)
 		}
 
@@ -755,7 +737,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	localID, remoteID := cfg.identities()
 	sess := &Session{
 		started:          time.Now(),
-		childRetireDelay: 5 * time.Second,
+		childRetireDelay: childRetireDelay,
 		mux:              mux,
 		current: &ikeContext{suite: suite,
 			skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr,
@@ -777,8 +759,8 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		return nil, err
 	}
 	if cfg.RekeyRetryInitial == 0 && cfg.RekeyRetryMax == 0 {
-		cfg.RekeyRetryInitial = 5 * time.Second
-		cfg.RekeyRetryMax = 5 * time.Minute
+		cfg.RekeyRetryInitial = DefaultRetryFirst
+		cfg.RekeyRetryMax = DefaultRetryMax
 	}
 	if err := sess.SetRekeyRetry(cfg.RekeyRetryInitial, cfg.RekeyRetryMax); err != nil {
 		mux.Close()
@@ -872,17 +854,6 @@ func (s *Session) completeIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni
 	}
 	return err
 }
-
-// teardownRetransmits bounds the Delete that closes an IKE SA this end
-// authenticated and cannot use. RFC 7296 section 2.21.2 leaves the IKE SA
-// created when only the Child SA bundled into IKE_AUTH fails and says the
-// initiator "MAY, of course, for reasons of policy later delete such an IKE
-// SA", which is this fork's policy: it has no use for an IKE SA without that
-// Child SA. Nothing here depends on the answer, and the ordinary reason for
-// silence is that the responder discarded the SA first, which it does in
-// exactly this case. Spending the full budget delayed the dial's failure by
-// sixty-two seconds for a result the response had already named.
-const teardownRetransmits = 2
 
 func (s *Session) deleteAuthenticatedIKE() error {
 	ctx := s.current
@@ -1081,7 +1052,7 @@ func usefulInitNotify(m *Message, cookieUsed, groupUsed bool) (Notify, bool) {
 // in that window could keep different sessions.
 func (s *Session) Active() bool {
 	last := s.lastActive.Load()
-	return last != 0 && time.Since(s.started)-time.Duration(last-1) < 2*s.dpdInterval()
+	return last != 0 && time.Since(s.started)-time.Duration(last-1) < activeDPDIntervals*s.dpdInterval()
 }
 
 // noteActive records that the peer has just proved it is still there.
@@ -1113,30 +1084,11 @@ func (s *Session) ChildSPIs() (local, remote uint32) {
 	return s.Child.LocalSPI, s.Child.RemoteSPI
 }
 
-// minPeerChildRekeyInterval is the shortest gap between accepted
-// peer-initiated Child SA rekeys. Each one retains the SA it replaces for the
-// retirement delay, and installing a replacement copies the retained set, so a
-// peer rekeying as fast as it can drives that set to its own rate times the
-// delay and makes every install proportional to it. A legitimate rekey is
-// minutes apart: the packet-count trigger fires once per sequence space and
-// the scheduled one once per interval.
-const minPeerChildRekeyInterval = time.Second
-
 // allowPeerChildRekey reports whether to take on another peer-initiated Child
 // SA rekey, and records it when it does.
 func (s *Session) allowPeerChildRekey() bool {
 	return allowPeerRekey(&s.lastPeerChildRekey, s.started, minPeerChildRekeyInterval)
 }
-
-// minPeerIKERekeyInterval is the shortest gap between accepted peer-initiated
-// IKE SA rekeys. One costs more than a Child rekey, not less: a key exchange,
-// a shared secret, a full key derivation and a registration in the hub's SPI
-// map, 78 us measured, on the goroutine that also runs this session's dead
-// peer detection, its scheduled rekeys and its Delete handling. The request
-// and the Delete that lets the peer ask again are 282 bytes between them, so
-// without this a peer buys the whole of that goroutine for about 33 Mbit/s.
-// A legitimate IKE rekey is an interval apart, and that is minutes.
-const minPeerIKERekeyInterval = time.Second
 
 // allowPeerIKERekey is allowPeerChildRekey for the IKE SA.
 func (s *Session) allowPeerIKERekey() bool {

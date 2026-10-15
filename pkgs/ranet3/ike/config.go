@@ -45,19 +45,6 @@ type Retry struct {
 	Max   *schema.Duration `yaml:"max,omitempty" json:"max,omitempty" toml:"max,omitempty"`
 }
 
-// The defaults every accessor below fills in. They are the values a node runs
-// with when cap.crypto is absent entirely.
-const (
-	DefaultReplayWindow = 4096
-	DefaultChildRekey   = time.Hour
-	DefaultIKERekey     = 3 * time.Hour
-	DefaultRekeyMargin  = 5 * time.Minute
-	DefaultRekeyJitter  = time.Minute
-	DefaultRetryFirst   = 5 * time.Second
-	DefaultRetryMax     = 5 * time.Minute
-	maxReplayWindow     = 1 << 20
-)
-
 func (c Crypto) ReplayWindow() uint32 {
 	if c.Replay == nil {
 		return DefaultReplayWindow

@@ -81,7 +81,7 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 	}
 	spi := make([]byte, 4)
 	binary.BigEndian.PutUint32(spi, localSPI)
-	nonce := make([]byte, 32)
+	nonce := make([]byte, nonceLen)
 	if _, err := rand.Read(nonce); err != nil {
 		return fmt.Errorf("ike: generate Child SA rekey nonce: %w", err)
 	}
@@ -319,7 +319,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 			return fail(err)
 		}
 	}
-	nr := make([]byte, 32)
+	nr := make([]byte, nonceLen)
 	if _, err := rand.Read(nr); err != nil {
 		return fail(err)
 	}

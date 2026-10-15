@@ -30,7 +30,7 @@ func (s *Session) RekeyIKE() (err error) {
 		spiI = randUint64Nonzero()
 	}
 	group := uint16(DH_CURVE25519)
-	ni := make([]byte, 32)
+	ni := make([]byte, nonceLen)
 	if err := s.fillIKERekeyNonce(ni); err != nil {
 		return fmt.Errorf("ike: generate IKE SA rekey nonce: %w", err)
 	}
@@ -366,7 +366,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	if err != nil {
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
 	}
-	nr := make([]byte, 32)
+	nr := make([]byte, nonceLen)
 	if err := s.fillIKERekeyNonce(nr); err != nil {
 		slog.Warn("ike cannot answer a peer IKE rekey", "err", err)
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)

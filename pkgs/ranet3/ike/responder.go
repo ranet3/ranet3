@@ -94,60 +94,6 @@ type ResponderConfig struct {
 	Events Recorder
 }
 
-const (
-	// handshakeTimeout bounds the whole exchange. An initiator that opens an
-	// SA and then goes quiet costs one mux and one SPI registration until it
-	// expires, so this is the lifetime of the cheapest thing an unauthenticated
-	// peer can make us allocate.
-	handshakeTimeout = 30 * time.Second
-
-	// cookieThreshold is the number of concurrent half-open SAs at which
-	// IKE_SA_INIT starts being answered with a COOKIE instead of state (RFC
-	// 7296 section 2.6). It is not the only thing that demands one: see
-	// halfOpenPerSourceWithoutCookie, which reaches the same answer for one
-	// address on an idle node. Below both, cookies cost a round trip for no
-	// benefit on a mesh whose peers are all known.
-	cookieThreshold = 32
-
-	// halfOpenLimit caps what a flood can allocate even with a valid cookie.
-	// A cookie proves return routability, not good behavior.
-	halfOpenLimit = 256
-
-	// halfOpenPerSource bounds how much of that one address may hold. Without it the
-	// cap is first come from a single address: an initiator that sends
-	// IKE_SA_INIT and never IKE_AUTH holds a slot for the whole
-	// handshakeTimeout, so eight and a half packets a second park every slot
-	// forever, and from then on every legitimate peer answers its cookie
-	// correctly and is refused anyway. That partition costs one real address
-	// and about seventeen packets a second.
-	//
-	// The unit is the address alone. Keyed by the whole endpoint it bounds a
-	// UDP flow instead, and sixteen source ports from one address take all 256
-	// slots again, which was measured end to end before this was fixed. Both
-	// backends unmap, so a v4-mapped source and a plain v4 source are one key,
-	// and linux's zone for a link-local source drops out with the port.
-	//
-	// A refusal is silent because RFC 7296 section 2.21.1 does not give
-	// IKE_SA_INIT a notify for it, and inventing one is worse than the retry.
-	// The bound is well above what one peer produces: it opens one exchange
-	// per endpoint pair and a retransmission that arrives before the response
-	// is registered starts another, so the ceiling is the retransmission
-	// budget rather than the number of SAs. A NAT with more than sixteen mesh
-	// nodes behind one address restarting at once is the case it costs.
-	halfOpenPerSource = 16
-
-	// halfOpenPerSourceWithoutCookie is how many of one address's share it may
-	// take before it has to prove return routability, whatever the global
-	// pressure is. One is too few: a peer with two local endpoints dials the
-	// same address twice, and a retransmission that arrives before the
-	// response is registered starts another exchange, so a small number keeps
-	// the ordinary cases free of a round trip while a spoofer can burn only
-	// that many of a victim's slots.
-	halfOpenPerSourceWithoutCookie = 2
-
-	cookieLifetime = 2 * time.Minute
-)
-
 // Accepted names both ends of an SA a peer opened to us. The local identity
 // is the endpoint the initiator addressed in IDr, so the pair identifies one
 // path through the mesh the same way a dialed session does, rather than just
@@ -177,7 +123,7 @@ type Responder struct {
 	halfOpen int
 	// halfOpenBySource is how many of those one address is holding.
 	halfOpenBySource map[netip.Addr]int
-	cookieSecret     [32]byte
+	cookieSecret     [cookieSecretLen]byte
 	// previousSecret is the secret one rotation back, and previousValid says
 	// whether there has been a rotation at all. A cookie is issued and echoed
 	// a round trip apart, so rotating without keeping the old one refuses
@@ -185,7 +131,7 @@ type Responder struct {
 	// per dial, so it then retransmits a cookie that can never be accepted
 	// until its whole budget runs out. One generation back is all it takes,
 	// because a cookie older than that is older than cookieLifetime.
-	previousSecret [32]byte
+	previousSecret [cookieSecretLen]byte
 	previousValid  bool
 	cookieVersion  uint8
 	cookieRotated  time.Time
@@ -285,31 +231,20 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	if !validNonce(ni) {
 		return nil, Accepted{}, fmt.Errorf("ike: initiator nonce length %d is outside 16..256", len(ni))
 	}
-	// RFC 7296 section 2.5: a critical payload we do not implement has to be
-	// refused by type rather than ignored, because the peer marked it as
-	// changing what the message means.
+	// RFC 7296 section 2.5 refuses a critical payload this end does not implement by its type
 	if unsupported, found := firstUnsupportedCritical(request.Payloads); found {
 		r.sendStatelessNotify(datagram, spiI, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupported)})
 		return nil, Accepted{}, fmt.Errorf("ike: IKE_SA_INIT request marks payload type %d critical", unsupported)
 	}
 
-	// RFC 7296 section 2.6: under load, prove the initiator can receive at the
-	// address it claims before allocating anything for it. The cookie is a
-	// keyed hash of its nonce, address and SPI, so we still keep no state.
+	// RFC 7296 section 2.6 has an initiator under load prove it receives at its address before anything is allocated for it
 	if required, err := r.cookieRequired(request, ni, spiI, datagram.Endpoint); err != nil {
 		return nil, Accepted{}, err
 	} else if required {
 		return nil, Accepted{}, fmt.Errorf("ike: cookie challenge sent")
 	}
 
-	// The cap comes before the Diffie-Hellman, not after it. Everything above
-	// is answered from the datagram alone. Everything below costs a key
-	// exchange and a key derivation, measured at 72 microseconds and 5 KiB a
-	// packet, which is a core saturated at fourteen thousand packets a second
-	// by anyone who can reach this port. Counting the slot here also gives
-	// cookieThreshold something real to read: a handshake still in its key
-	// exchange is exactly the pressure the challenge of RFC 7296 section 2.6
-	// exists to answer.
+	// the slot is taken before the key exchange, the first cost an unauthenticated datagram imposes, and is the pressure cookieThreshold reads
 	source := datagram.Endpoint.AddrPort().Addr()
 	if !r.enterHalfOpen(source) {
 		return nil, Accepted{}, fmt.Errorf("ike: too many half-open SAs")
@@ -321,15 +256,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		return nil, Accepted{}, err
 	}
 	if !supportsIdentity {
-		// NO_PROPOSAL_CHOSEN rather than AUTHENTICATION_FAILED: RFC 7296
-		// section 3.10.1 defines the latter as "sent in the response to an
-		// IKE_AUTH message", and an authentication method this responder
-		// cannot use falls under the former, "any case where the
-		// offered proposals (including but not limited to SA payload values,
-		// USE_TRANSPORT_MODE notify, IPCOMP_SUPPORTED notify) are not
-		// acceptable for the responder". Section
-		// 2.21.1 makes either end the exchange, so the peer behaves the same
-		// way and the registry is the tiebreak.
+		// RFC 7296 section 3.10.1 sends AUTHENTICATION_FAILED only in answer to IKE_AUTH, and an unusable method is a proposal that is not acceptable
 		r.sendStatelessNotify(datagram, spiI, N_NO_PROPOSAL_CHOSEN, nil)
 		return nil, Accepted{}, fmt.Errorf("ike: initiator did not advertise Ed25519 Identity hash support")
 	}
@@ -348,11 +275,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		return nil, Accepted{}, err
 	}
 
-	// The rest of RFC 7296 section 2.10 needs the PRF, which the proposal has
-	// just settled: a nonce "MUST be at least half the key size of the
-	// negotiated pseudorandom function". This is the one surface an
-	// unauthenticated peer reaches first, so leaving it on the length check
-	// alone left it as the one place a short nonce was taken.
+	// RFC 7296 section 2.10: a nonce "MUST be at least half the key size of the negotiated pseudorandom function", known once the proposal is chosen
 	if !validNonceFor(ni, suite.PRFID) {
 		r.sendStatelessNotify(datagram, spiI, N_NO_PROPOSAL_CHOSEN, nil)
 		return nil, Accepted{}, fmt.Errorf("ike: initiator nonce length %d is short for the negotiated PRF", len(ni))
@@ -366,7 +289,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	if err != nil {
 		return nil, Accepted{}, err
 	}
-	nr := make([]byte, 32)
+	nr := make([]byte, nonceLen)
 	if _, err := rand.Read(nr); err != nil {
 		return nil, Accepted{}, err
 	}
@@ -410,7 +333,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 
 	session := &Session{
 		started:          time.Now(),
-		childRetireDelay: 5 * time.Second,
+		childRetireDelay: childRetireDelay,
 		mux:              mux,
 		current: &ikeContext{
 			suite: suite,
@@ -436,7 +359,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	}
 	retryInitial, retryMax := r.cfg.RekeyRetryInitial, r.cfg.RekeyRetryMax
 	if retryInitial == 0 && retryMax == 0 {
-		retryInitial, retryMax = 5*time.Second, 5*time.Minute
+		retryInitial, retryMax = DefaultRetryFirst, DefaultRetryMax
 	}
 	if err := session.SetRekeyRetry(retryInitial, retryMax); err != nil {
 		return nil, Accepted{}, err
@@ -663,22 +586,6 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse []byte, deadlin
 	}
 }
 
-// Anyone who can reach the port can make an inbound handshake fail, so the
-// line has to be rare and the record of who has had one bounded. At debug it
-// was invisible at the default level, and an operator looking at "that peer
-// cannot connect" had nothing on this side to read.
-//
-// The shape comes from the live mesh: 20 community peers dial in, draw
-// INVALID_KE_PAYLOAD and never act on it, at 30 to 90 second intervals each.
-// One timer for the whole responder let whichever of them landed in the window
-// hide every other peer's first failure, and a short one per source turned
-// them into a line a second.
-const (
-	handshakeFailureInterval = 10 * time.Minute
-	handshakeFailureSources  = 256
-	handshakeFloor           = time.Second
-)
-
 func (r *Responder) noteHandshakeFailure(endpoint transport.Endpoint, err error) {
 	if !r.failureIsDue(endpoint) {
 		slog.Debug("ike responder handshake failed", "peer", endpoint, "err", err)
@@ -878,22 +785,12 @@ func (r *Responder) leaveHalfOpen(source netip.Addr) {
 func (r *Responder) cookieRequired(request *Message, ni []byte, spiI uint64, endpoint transport.Endpoint) (bool, error) {
 	source := endpoint.AddrPort().Addr()
 	r.mu.Lock()
-	// Under pressure globally, or past what one address may hold without
-	// having proved it can receive. The second stops a spoofer spending a
-	// named peer's whole share while the node is idle: with the
-	// global threshold alone, floor(cookieThreshold/halfOpenPerSource)
-	// addresses can be locked out by an off-path source, for sixteen packets
-	// every thirty seconds each, and the victim is then refused in silence.
+	// the share one address may hold without a cookie stops an off-path spoofer spending a named peer's whole share while the node is idle
 	pressure := r.halfOpen >= cookieThreshold ||
 		r.halfOpenBySource[source] >= halfOpenPerSourceWithoutCookie
-	// Rotated on the age of the secret rather than on pressure. The two agree
-	// while a burst lasts longer than a lifetime, but asking for pressure as well
-	// left a node that takes IKE_SA_INITs without ever reaching pressure
-	// holding the secret it started with. A node nothing dials at all still
-	// does, since this is the only site that rotates, and there the secret has
-	// never been used.
+	// the secret rotates on its age alone, so a node that takes IKE_SA_INITs without reaching pressure still rotates it
 	if time.Since(r.cookieRotated) > cookieLifetime {
-		var next [32]byte
+		var next [cookieSecretLen]byte
 		if _, err := rand.Read(next[:]); err != nil {
 			r.mu.Unlock()
 			return false, err
@@ -939,7 +836,7 @@ func (r *Responder) cookieRequired(request *Message, ni []byte, spiI uint64, end
 // cookieValue is the version octet followed by a keyed hash over everything
 // that identifies this attempt, so the cookie is bound to the nonce, the SPI
 // and the address it was sent to and cannot be replayed for another.
-func cookieValue(secret [32]byte, version uint8, ni []byte, spiI uint64, endpoint transport.Endpoint) []byte {
+func cookieValue(secret [cookieSecretLen]byte, version uint8, ni []byte, spiI uint64, endpoint transport.Endpoint) []byte {
 	mac := hmac.New(sha256.New, secret[:])
 	mac.Write(ni)
 	var spi [8]byte

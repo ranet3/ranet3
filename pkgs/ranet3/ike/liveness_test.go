@@ -133,6 +133,17 @@ func TestRequestRetransmitDelayIsExponential(t *testing.T) {
 	}
 }
 
+// a Delete the peer retransmits until an unanswered exchange gives up still finds the replaced IKE SA it names
+func TestRetainedIKESAOutlastsAnUnansweredExchange(t *testing.T) {
+	var budget time.Duration
+	for attempt := range maxRetransmits {
+		budget += retransmitDelay(requestTimeout, attempt+1)
+	}
+	if retainedContextDeadline <= budget {
+		t.Errorf("a replaced IKE SA is kept %s, within the %s an unanswered exchange retransmits for", retainedContextDeadline, budget)
+	}
+}
+
 func TestPostHandshakeRetransmitsRequireLivePeerToContinue(t *testing.T) {
 	ordinary := &pendingRequest{attempts: maxRetransmits}
 	if pendingRetransmitsExhausted(ordinary, true) {
