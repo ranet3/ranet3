@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -38,6 +39,10 @@ func TestCryptoDefaultsAreTheOnesDocumented(t *testing.T) {
 		if got := (Crypto{Replay: &configured}).ReplayWindow(); got != want {
 			t.Errorf("configured replay window = %d, want %d", got, want)
 		}
+	}
+	atCap := esp.MaxReplayWindow
+	if err := (Crypto{Replay: &atCap}).Validate(); err != nil {
+		t.Errorf("a replay window at the cap was refused: %v", err)
 	}
 }
 
@@ -91,7 +96,7 @@ func TestCryptoRefusesTimingsASessionCannotRun(t *testing.T) {
 		value := schema.Duration(d)
 		return &value
 	}
-	oversized := uint32(1<<20 + 1)
+	oversized := esp.MaxReplayWindow + 1
 	for name, crypto := range map[string]Crypto{
 		"a replay window past the cap": {Replay: &oversized},
 		"a negative child rekey":       {Rekey: Rekey{Child: interval(-time.Second)}},
