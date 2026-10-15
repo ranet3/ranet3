@@ -200,6 +200,7 @@
     .cue {
       align-self: center;
       width: 100%;
+      margin-inline: auto;
       max-width: 92ch;
       display: grid;
       grid-template-columns: auto minmax(0,1fr) auto;
@@ -238,15 +239,15 @@
     .bench {
       max-width: 92ch;
       margin: 0 auto;
-      padding: 3em 16px 5em;
+      padding: 3em 16px;
       font-size: 15px;
       line-height: 1.5;
     }
+    .bench:last-child {
+      padding-bottom: 5em;
+    }
     .bench h2 {
       font-size: 1.5em;
-    }
-    .bench + .bench {
-      padding-top: 0;
     }
     .bench h3 {
       margin-top: 3em;
@@ -443,6 +444,63 @@
       row-gap: .4em;
       color: var(--fg2);
     }
+    .bench .call {
+      margin-top: 1.2em;
+      padding: .8em 1.2em;
+      border-left: 3px solid var(--acc);
+      background: var(--tint);
+      color: var(--fg);
+    }
+    .dg {
+      margin: 1.4em 0 0;
+    }
+    .dg svg {
+      display: block;
+      overflow: visible;
+    }
+    .dg line {
+      stroke-width: 2;
+    }
+    .dg .p {
+      stroke: var(--acc);
+    }
+    .dg .o {
+      stroke: var(--bar);
+      stroke-dasharray: 5 5;
+    }
+    .dg circle {
+      fill: var(--bg);
+      stroke: var(--acc);
+      stroke-width: 2;
+    }
+    .dg circle.q {
+      stroke: var(--bar);
+    }
+    .dg text {
+      fill: var(--fg2);
+    }
+    .dg text.a {
+      fill: var(--acc);
+    }
+    .dg text.m {
+      font-size: .85em;
+      fill: var(--mute);
+    }
+    .dg figcaption {
+      column-gap: 3ch;
+      margin: 1em 0 0;
+      color: var(--fg2);
+    }
+    .sw {
+      display: inline-block;
+      width: 3ch;
+      margin-right: 1ch;
+      vertical-align: middle;
+      border-top: 2px solid var(--acc);
+    }
+    .sw.o {
+      border-top: 2px dashed var(--bar);
+    }
     @media (max-aspect-ratio: 1/1) {
       .card {
         --f: min(16px,calc(100cqw / 25),calc(100cqh / 40));
@@ -596,8 +654,75 @@
           </div>
         </div>
         <a class="cue"
-          href="#benchmarks"><span class="cl">Benchmarks</span><span class="cd">Measured on 2026-10-15</span><span class="ca" aria-hidden="true"></span></a>
+          href="#why"><span class="cl">Why ranet3</span><span class="cd">Protocols and routing</span><span class="ca" aria-hidden="true"></span></a>
       </div>
+      <section class="bench" id="why" aria-labelledby="why-h">
+        <h2 id="why-h">Why ranet3</h2>
+        <h3>Standard protocols</h3>
+        <p>Peers only need standard IKEv2, ESP, Babel and SRv6.</p>
+        <p class="note">Interoperability is checked against:</p>
+        <dl class="setup">
+          <dt>strongSwan</dt>
+          <dd>IKEv2 and ESP sessions with Ed25519 keys</dd>
+          <dt>BIRD</dt>
+          <dd>Babel routes with RTT metrics, matched route for route</dd>
+          <dt>Linux</dt>
+          <dd>Kernel seg6local acts on the SRv6 headers ranet3 writes</dd>
+        </dl>
+        <p
+          class="note">Any other router or switch that supports IKEv2 with Ed25519 keys, Babel and SRv6 should interoperate as well.</p>
+        <p
+          class="call">Common mesh VPN and SD-WAN tools (Tailscale, NetBird, ZeroTier, Nebula, etc.) admit only nodes that run their own agent, and ranet3 runs beside them on the same host.</p>
+        <h3>Latency routing</h3>
+        <p>Babel measures the round trip of every link and routes through a relay whenever the direct link is slower.</p>
+        <figure class="dg">
+          <svg width="100%" height="176" role="img"
+            aria-label="Nodes A and C linked directly at 265 ms and through relay B at 40 ms per hop, with traffic taking the relay">
+            <line class="o" x1="10%" y1="132" x2="90%" y2="132" />
+            <line class="p" x1="10%" y1="132" x2="50%" y2="34" />
+            <line class="p" x1="50%" y1="34" x2="90%" y2="132" />
+            <circle cx="10%" cy="132" r="6" />
+            <circle cx="50%" cy="34" r="6" />
+            <circle cx="90%" cy="132" r="6" />
+            <text x="10%" y="160" text-anchor="middle">A</text>
+            <text x="50%" y="16" text-anchor="middle">B</text>
+            <text x="90%" y="160" text-anchor="middle">C</text>
+            <text class="a" x="27%" y="80" text-anchor="end">40 ms</text>
+            <text class="a" x="73%" y="80">40 ms</text>
+            <text class="m" x="50%" y="156" text-anchor="middle">265 ms</text>
+          </svg>
+          <figcaption><span><span class="sw"></span>Chosen path through B, 80 ms</span><span><span class="sw o"></span>Direct link, 265 ms</span></figcaption>
+        </figure>
+        <p
+          class="note">RTT is measured continuously, and packet loss and outages count against a link. Traffic always takes the fastest path, moving back to the direct link once it is faster again.</p>
+        <h3>Segment routing</h3>
+        <p>A policy on source and destination prefix sends traffic through chosen waypoints and out at a chosen exit. Segment routing is implemented in userspace and works even on macOS, whose XNU kernel has no support for it.</p>
+        <figure class="dg">
+          <svg width="100%" height="146" role="img"
+            aria-label="Steered traffic leaves the laptop through a waypoint and an exit, while unsteered traffic takes the default route">
+            <line class="o" x1="8%" y1="104" x2="92%" y2="104" />
+            <line class="p" x1="8%" y1="104" x2="38%" y2="46" />
+            <line class="p" x1="38%" y1="46" x2="68%" y2="46" />
+            <line class="p" x1="68%" y1="46" x2="92%" y2="104" />
+            <circle cx="8%" cy="104" r="6" />
+            <circle cx="38%" cy="46" r="6" />
+            <circle cx="68%" cy="46" r="6" />
+            <circle class="q" cx="92%" cy="104" r="6" />
+            <text x="38%" y="14" text-anchor="middle">Waypoint</text>
+            <text class="m" x="38%" y="31" text-anchor="middle">End</text>
+            <text x="68%" y="14" text-anchor="middle">Exit</text>
+            <text class="m" x="68%" y="31" text-anchor="middle">End.DT46</text>
+            <text x="8%" y="132" text-anchor="middle">Laptop</text>
+            <text x="92%" y="132" text-anchor="middle">Internet</text>
+            <text class="m" x="50%" y="128"
+              text-anchor="middle">Default route</text>
+          </svg>
+        </figure>
+        <p
+          class="note">Waypoints can come in any order the user specifies and may repeat, e.g. A->B->C->B->D with D as the exit.</p>
+      </section>
+      <a class="cue"
+        href="#benchmarks"><span class="cl">Benchmarks</span><span class="cd">Measured on 2026-10-15</span><span class="ca" aria-hidden="true"></span></a>
       <section class="bench" id="benchmarks" aria-labelledby="bench-h">
         <h2 id="bench-h">Benchmarks</h2>
         <div class="scroll">
@@ -693,9 +818,9 @@
           </table>
         </div>
         <p
-          class="note">Each range is ranet3's result divided by the other dataplane's across the 6 tests below</p>
+          class="note">Each range is ranet3's result divided by the other dataplane's across the 6 tests below.</p>
         <h3>Kernel and userspace</h3>
-        <p>Userspace dataplanes copy every packet into their own process and are usually expected to be slower than kernel ones</p>
+        <p>Userspace dataplanes copy every packet into their own process and are usually expected to be slower than kernel ones.</p>
         <div class="scroll">
           <table class="reftab">
             <thead>
@@ -736,9 +861,9 @@
           </table>
         </div>
         <p class="note">* Plain TCP without tunnel</p>
-        <p class="note">Kernel WireGuard stays at 5.1 to 5.4 Gbit/s one way</p>
+        <p class="note">Kernel WireGuard stays at 5.1 to 5.4 Gbit/s one way.</p>
         <p
-          class="note">Kernel IPsec stays at 4.0 to 4.7 Gbit/s because its single flow lands on 1 NIC receive queue</p>
+          class="note">Kernel IPsec stays at 4.0 to 4.7 Gbit/s because its single flow lands on 1 NIC receive queue.</p>
         <h3>Full results</h3>
         <figure class="bt">
           <figcaption><b>Throughput, saturated</b><span class="u">Gbit/s received</span><span class="dir">Higher is better</span></figcaption>
@@ -882,7 +1007,7 @@
             </table>
           </div>
           <p
-            class="note">In the "both" rows kernel IPsec carried only 4.67 and 4.14 of the 6 Gbit/s offered</p>
+            class="note">In the "both" rows kernel IPsec carried only 4.67 and 4.14 of the 6 Gbit/s offered.</p>
         </figure>
         <figure class="bt">
           <figcaption><b>Latency under saturation</b><span class="u">RTT p99, ms</span><span class="dir">Lower is better</span></figcaption>
@@ -959,6 +1084,8 @@
           </div>
         </figure>
       </section>
+      <a class="cue"
+        href="#setup"><span class="cl">Setup</span><span class="cd">Hardware, software and method</span><span class="ca" aria-hidden="true"></span></a>
       <section class="bench" id="setup" aria-labelledby="setup-h">
         <h2 id="setup-h">Setup</h2>
         <h3>Hardware</h3>
