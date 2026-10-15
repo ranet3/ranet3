@@ -4,72 +4,126 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-15
+updated: 2026-10-16
 order: 30
 ---
 
-`ranet3 debug` is a command tree for looking inside a running node. It speaks to
-the daemon over the control socket, under paths starting with `/v0/debug/`, and
-it is not a stable interface: a debug path, a field of its answer, an event kind
-and a command may each change or go in any revision. A client and a daemon built
-from the same revision agree, and nothing wider is promised.
-`ranet3 debug --help` lists its commands.
+`ranet3 debug` is a command tree for looking inside a running node. Most of its
+commands speak to the daemon over the control socket, under paths starting with
+`/v0/debug/`. `debug buildinfo` reads the binary it runs in, and `debug socket`
+sends a request to any path.
 
-Every command prints text, or the wire form with `--json`, and every command
-that could run for long is bounded by a flag, `--for` or `--timeout`, so a
-script can call one without having to interrupt it. Every argument and flag
-completes in the shells `ranet3 completion` writes for, and in nushell through
-carapace's cobra bridge.
+The tree is not a stable interface. A debug path, a field of its answer, an
+event kind and a command may each change or go in any revision. A client and a
+daemon built from the same revision agree, and nothing wider is promised.
+`ranet3 debug --help` lists its commands, and [command line](../cli.md) lists
+every command, this tree included.
+
+Every command but `debug socket` prints text, or the wire form with `--json`.
+`debug socket` prints the answer's body as it arrives. Every command that could
+run for long is bounded by a flag, `--for` or `--timeout`, so a script can call
+one without having to interrupt it. Arguments and flags that name a peer, an
+event kind, a path or the socket complete in bash, zsh and fish, the shells
+`ranet3 completion` writes for.
 
 ## Who may call it
 
-The socket's mode decides who can connect at all, and it is enough for the reads
+The socket's mode decides who can connect at all. That is enough for the reads
 and the verbs outside this tree, because each of those acts on something the
-node's own file already decides. A profile, a packet capture or a log level is
-nothing the file can express, so the debug paths are authorized by who is
-calling instead. The daemon asks the kernel for the credentials of every
-connection it accepts, `SO_PEERCRED` on linux and `LOCAL_PEERCRED` on darwin,
-and every debug path has a class:
+node's own file already decides. A debug path can show or do what the file never
+decides, so debug paths are authorized by who is calling instead.
+
+The daemon asks the kernel for the credentials of every connection it accepts,
+`SO_PEERCRED` on Linux and `LOCAL_PEERCRED` on macOS. Every debug path has a
+class:
 
 - **read**: snapshots that carry no key material, and the event stream. Open to
   everyone who can open the socket, as `ranet3 status` is.
-- **root**: profiles, goroutine dumps, logs, packet capture, the trust document
-  and every debug action. Open to uid 0 and to the user the daemon runs as. Each
-  such call is logged at info with the caller's uid and pid.
+- **root**: every debug action. `debug probe` is the only one. Open to uid 0 and
+  to the user the daemon runs as. Each such call is logged at info with the
+  caller's uid and pid.
+
+The daemon serves 6 debug paths:
+
+| Path                | Class | Commands                     |
+| ------------------- | ----- | ---------------------------- |
+| `/v0/debug/events`  | read  | `debug events`, `debug wait` |
+| `/v0/debug/netmon`  | read  | `debug netmon`               |
+| `/v0/debug/pmtu`    | read  | `debug pmtu`                 |
+| `/v0/debug/probe`   | root  | `debug probe`                |
+| `/v0/debug/runtime` | read  | `debug runtime`              |
+| `/v0/debug/updown`  | read  | `debug updown`               |
+
+Profiles are not a debug path. The daemon's `--pprof` serves them on an address
+of its own, and no class covers that address.
 
 The daemon's `--debug-access` sets how far the root class reaches. `root` is the
 default. `group` opens the root class to everyone who can open the socket, and
 `off` refuses every debug path, the read class included. The modules carry no
 option of their own for it: `extraArgs` passes the flag. A connection whose
-caller the kernel does not name, which is every platform but linux and darwin,
+caller the kernel does not name, which is every platform but Linux and macOS,
 reaches the read class alone under `root` and `group`, and nothing under `off`.
 
-A refusal answers 403 with the rule and the caller's uid, and a path whose view
-the daemon does not serve answers 501 naming the view. On a NixOS host the unit
-runs the daemon as root, so the root class means `sudo`. In an `unshare -rn` lab
-the caller already reads as uid 0.
+A debug request the daemon does not answer with 200 gets one of these statuses:
+
+| Status | When                                                                                                                         |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| 400    | an events query or an action body that does not parse, or an action the node refuses, such as `debug probe` while it is down |
+| 403    | the class refuses the caller, and the answer names the rule and the caller's uid or the missing credentials                  |
+| 404    | no debug path has that name, except under `off`, which answers 403                                                           |
+| 405    | a read sent with a method other than GET or HEAD, or an action sent with one other than POST                                 |
+| 501    | the server behind the socket does not implement the view, and the answer names it. The `ranet3` daemon implements every view |
+| 503    | the daemon already holds 4 streams                                                                                           |
+
+On a NixOS host the unit runs the daemon as root, so the root class means
+`sudo`. In an `unshare -rn` lab the caller already reads as uid 0.
 
 ## Commands
 
-- `debug socket [METHOD] PATH [BODY|-]` sends one request as written and prints
-  the answer's body as it arrives, with the status line on stderr, and exits 1
-  on anything but a 2xx. The method is GET, or POST where a body follows the
-  path, and `-` reads the body from stdin. `--timeout`, 10 seconds by default,
-  bounds the whole exchange, a stream included. It reaches a path no command
-  covers yet, or a daemon of another revision.
-- `debug runtime` is the daemon's process: its version and revision, the go
+Every command in the tree takes these 2 flags:
+
+| Flag        | Default                        | What it sets                        |
+| ----------- | ------------------------------ | ----------------------------------- |
+| `--control` | `/var/run/ranet3/control.sock` | the control socket to ask           |
+| `--json`    | off                            | print the wire form instead of text |
+
+These commands take flags of their own:
+
+| Command        | Flag             | Default              | What it sets                                                  |
+| -------------- | ---------------- | -------------------- | ------------------------------------------------------------- |
+| `debug socket` | `--timeout`      | 10 seconds           | how long the whole exchange may take, a stream included       |
+| `debug probe`  | `--all`          | off                  | probe every session instead of one peer's                     |
+| `debug events` | `-f`, `--follow` | off                  | print later events as they come                               |
+| `debug events` | `--for`          | 30 seconds           | how long `-f` follows                                         |
+| `debug events` | `--kind`         | every kind           | a kind, or the part of one before a dot, given up to 16 times |
+| `debug events` | `--peer`         | every peer           | one peer, named as `redial` names one                         |
+| `debug events` | `--since`        | every recorded event | how recent a recorded event must be                           |
+| `debug wait`   | `--attr`         | none                 | a `key=value` the event must carry, given up to 16 times      |
+| `debug wait`   | `--past`         | 0                    | how recent a recorded event may be and still end the wait     |
+| `debug wait`   | `--peer`         | every peer           | one peer, named as `redial` names one                         |
+| `debug wait`   | `--timeout`      | 10 seconds           | how long to wait                                              |
+
+- `debug socket [METHOD] PATH [BODY|-]` sends 1 request as written and prints
+  the answer's body as it arrives, with the status line on standard error, and
+  exits 1 on anything but a 2xx. The method is GET, or POST where a body follows
+  the path, and `-` reads the body from standard input. `--timeout`, 10 seconds
+  by default, bounds the whole exchange, a stream included. It reaches a path no
+  command covers yet, or a daemon of another revision. Its completion offers
+  GET, HEAD and POST, then every control and debug path.
+- `debug runtime` is the daemon's process: its version and revision, the Go
   version, GOMAXPROCS and the CPUs, goroutines, the OS threads the runtime has
   started, open descriptors against `RLIMIT_NOFILE`, the heap and the collector,
   uptime, and the resolver a lookup can reach. `cgo` there means a lookup may go
   to the C library, which holds an OS thread for as long as it takes. The view
   is read without stopping the daemon's goroutines, so polling it leaves the
-  data path running.
-- `debug buildinfo` prints this binary's own go build information.
+  data path running. It also shows the memory taken from the system, the total
+  pause of the collector, and whether the build's tree had uncommitted changes.
+- `debug buildinfo` prints this binary's own Go build information.
 - `debug netmon` is the host's network as the node's watch last read it: for
   each family the default route, its interface and gateway, and the global
   unicast addresses of the interfaces that are up, the mesh's own device left
   out, then the last change the watch acted on and what moved in it. A platform
-  without a watch says so.
+  without a watch says so. Linux and macOS have a watch.
 - `debug pmtu [peer]` is the path MTU of every session, or of one peer's: first
   `link.mtu`, the steering header and the tun's MTU, with the answers sent to
   packets past a session's budget and the SYNs whose MSS was clamped, both for
@@ -80,18 +134,24 @@ the caller already reads as uid 0.
   budget and the MSS it clamps to, the route's MTU when last read and the target
   it sets, the probe out and how the last one ended, its probes sent, acked and
   lost, the sends the host refused as too large for the path, and the budget's
-  last change with its reason. A probe whose target the search moves while it is
-  out counts as sent and as neither acked nor lost, here and in
-  `ranet3_pmtu_probes_total`, whether a refusal, the route read lower after a
-  network change or `debug probe`, a change of `link.mtu` or a move to another
-  endpoint moves it, and one answered after its wait ran out counts as both, so
-  the three need not add up. The peer is named as `redial` names one, and
-  completes to the nodes of the sessions the daemon holds.
+  last change with its reason. A session that is `not searched` shows its path,
+  peer, endpoint, state and budget, and no probes. Its budget follows
+  `link.mtu`, and it records no change. A probe whose target the search moves
+  while it is out counts as sent, and as neither acked nor lost. A refusal, the
+  route read lower after a network change or `debug probe`, a change of
+  `link.mtu` and a move to another endpoint can each move the target. A probe
+  answered after its wait ran out counts as both acked and lost, so the 3 counts
+  need not add up. `ranet3_pmtu_probes_total` counts acked and lost probes the
+  same way and has no series for probes sent. The peer is named as `rekey` names
+  one, and completes to the nodes of the sessions the daemon holds. The command
+  fails for a peer the node holds no session with.
 - `debug probe <peer>` and `debug probe --all` ask the sessions of one peer, or
   every session, to send a liveness check now and to probe their path MTU
   budget, as each does after a network change, and name the sessions asked. It
   is an action, so it takes the root class, and it is recorded as a
-  `control.verb` like the other verbs.
+  `control.verb` like the other verbs. It completes to the peers the node dials
+  and the nodes it holds a session with. The daemon refuses it while the node is
+  down, and when no session matches.
 - `debug updown` is whether the node is on the mesh and since when, the flag
   that keeps it off through a restart and whether the flag is there, and the
   last move between up and down with its cause, a request or the flag at start.
@@ -105,7 +165,8 @@ the caller already reads as uid 0.
   the events the daemon has recorded and exits, or with `-f` goes on printing
   the ones after them until `--for` has passed. `--kind`, given up to 16 times,
   takes a kind or any part of one that ends at a dot, so `babel` takes every
-  babel event, and `--peer` names a peer the way `redial` does.
+  Babel event, and `--peer` names a peer the way `redial` does. Without `-f` the
+  exchange is bounded at 10 seconds, and `--for` is ignored.
 - `debug wait <kind> [--peer P] [--attr k=v]... [--past 2s] [--timeout 10s]`
   waits for one event of that kind carrying every attribute named, up to 16,
   each with the value the event prints for it, prints the event and how long
@@ -120,7 +181,10 @@ the caller already reads as uid 0.
   later events of its subsystem have come, and the wait does not see one evicted
   before it subscribed. A recorded event is judged by its stamp on the daemon's
   clock, and one that comes after the wait subscribed is taken whatever its
-  stamp, so a clock stepped back during the wait hides nothing.
+  stamp, so a clock stepped back during the wait hides nothing. With `--json` it
+  prints 1 object with the `event` and `after`, the time from the start of the
+  wait to the event. `after` is negative for an event recorded before the wait
+  began.
 
 ## Events
 
@@ -144,10 +208,10 @@ reader. The socket buffers what a reader has not taken, so one that stopped
 reading keeps its place until that buffer is full, at once under a flood of
 events and after up to about an hour of heartbeats on a quiet daemon. A stream
 whose daemon is stopping ends with a `stream.closed` line saying so. A daemon
-holds 4 streams at once and refuses a fifth with 503, which leaves the rest of
-its connections to the reads.
+holds 4 streams at once and refuses a 5th with 503, which leaves the rest of its
+connections to the reads.
 
-| kind                                 | when                                                                        |
+| Kind                                 | When                                                                        |
 | ------------------------------------ | --------------------------------------------------------------------------- |
 | `daemon.started`, `daemon.stopping`  | the node is up, and its shutdown has begun                                  |
 | `daemon.reload`                      | the file and trust document were read again, with what applied or the error |
@@ -158,14 +222,14 @@ its connections to the reads.
 | `dial.woken`                         | a dialer was set going before its delay, as `redial` does                   |
 | `ike.handshake.failed`               | the responder refused a handshake, as often as it logs one                  |
 | `ike.session.established`, `.ended`  | a session started serving, and stopped                                      |
-| `ike.session.resolved`               | two sessions for one path were resolved to one                              |
+| `ike.session.resolved`               | 2 sessions for 1 path were resolved to 1                                    |
 | `ike.session.revoked`                | the trust in force refused a session's peer and closed it with a Delete     |
 | `ike.rekey.started`, `.completed`    | a rekey this end started, of the Child SA or of the IKE SA                  |
 | `ike.rekey.failed`                   | the same rekey failing, with its error                                      |
 | `ike.endpoint.moved`                 | a session moved to where its peer's latest fresh request came from          |
 | `ike.send.failed`, `.recovered`      | a session's sends to its peer began to fail, and one went out again         |
 | `ike.probe`                          | asked to prove its path, a session started a check or resent its request    |
-| `babel.neighbor.up`, `.down`         | a neighbor's hellos started arriving, or stopped or its session ended       |
+| `babel.neighbor.up`, `.down`         | a neighbor's Hellos started arriving, or stopped or its session ended       |
 | `babel.neighbor.fragmented`          | a neighbor's first Babel packet in fragments was read whole, with its size  |
 | `babel.request.sent`                 | this node asked a neighbor that came up for its whole table                 |
 | `babel.config.applied`               | the speaker took a reloaded `cap.babel`, with its intervals and cost        |
@@ -184,6 +248,69 @@ its connections to the reads.
 | `pmtu.steering`                      | a session fell under what a steered 1280-byte packet needs, or rose back    |
 | `netstack.codel.dropping`            | a peer's sender began dropping for a queue delay above its target           |
 | `netstack.codel.drained`             | that peer's queue emptied, or its delay fell back below the target          |
+
+`egress.pass`, `transport.endpoint.unpinned` and
+`transport.endpoint.unsegmented` are recorded on Linux alone.
+`transport.underlay.bound` is recorded on macOS alone, because only macOS binds
+the underlay socket to an interface.
+
+Each kind carries these attributes:
+
+| Kind                                          | Attributes                                                                                                                                  |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `daemon.started`                              | `version`, `config`                                                                                                                         |
+| `daemon.stopping`                             | none                                                                                                                                        |
+| `daemon.reload`                               | `path`, `applied`, `err`                                                                                                                    |
+| `node.down`                                   | `cause`, `since`, `closed`                                                                                                                  |
+| `node.up`                                     | `cause`                                                                                                                                     |
+| `responder.changed`                           | `listen`, `closed`                                                                                                                          |
+| `control.verb`                                | `verb`, `peer`, `uid`, `pid`, `err`, and `all` or `subsystem` for a verb that takes one                                                     |
+| `dial.attempt`                                | `remote`                                                                                                                                    |
+| `dial.failed`                                 | `err`                                                                                                                                       |
+| `dial.woken`                                  | none                                                                                                                                        |
+| `ike.handshake.failed`                        | `from`, `err`                                                                                                                               |
+| `ike.session.established`                     | `role`, `spi_in`, `spi_out`                                                                                                                 |
+| `ike.session.ended`                           | `role`, `spi_in`, `spi_out`, `err`                                                                                                          |
+| `ike.session.resolved`                        | `kept`                                                                                                                                      |
+| `ike.session.revoked`                         | `reason`, `peer`, `endpoint`, `err`                                                                                                         |
+| `ike.rekey.started`, `.completed`             | `sa`, which is `child` or `ike`                                                                                                             |
+| `ike.rekey.failed`                            | `sa`, `err`                                                                                                                                 |
+| `ike.endpoint.moved`                          | `endpoint`                                                                                                                                  |
+| `ike.send.failed`                             | `err`                                                                                                                                       |
+| `ike.send.recovered`                          | `failed`                                                                                                                                    |
+| `ike.probe`                                   | `action`, `message_id`                                                                                                                      |
+| `babel.neighbor.up`, `.down`                  | none                                                                                                                                        |
+| `babel.neighbor.fragmented`                   | `size`                                                                                                                                      |
+| `babel.request.sent`                          | none                                                                                                                                        |
+| `babel.config.applied`                        | `hello`, `update`, `quality`, `rx`, `rtt_weight`, `rtt_min`, `rtt_max`                                                                      |
+| `babel.route.selected`                        | `route`, `metric`                                                                                                                           |
+| `babel.route.retracted`                       | `route`                                                                                                                                     |
+| `babel.seqno.requested`                       | `route`, `asked`, `seqno`, `raised`                                                                                                         |
+| `babel.seqno.raised`                          | `cause`, `from`, `to`, `limit` where a state file is kept, and `router_id` at the process's start, with `drawn` where that router id is new |
+| `babel.state.unsaved`                         | `limit`, `seqno`, `err`                                                                                                                     |
+| `babel.state.unreadable`                      | `file`, `err`                                                                                                                               |
+| `kernel.pass`                                 | `trigger`, `took`, `added`, `removed`, `skipped`, `installed`, `err`                                                                        |
+| `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                          |
+| `network.changed`                             | `ipv4_default`, `ipv4_default_was`, `ipv4_added`, `ipv4_removed`, the same 4 for `ipv6`, `probed`, `woken`                                  |
+| `transport.underlay.bound`                    | `interface_index`                                                                                                                           |
+| `transport.endpoint.unpinned`, `.unsegmented` | `endpoint`, `errno`                                                                                                                         |
+| `pmtu.changed`                                | `endpoint`, `budget`, `budget_was`, `reason`                                                                                                |
+| `pmtu.floor`                                  | `endpoint`, `under`                                                                                                                         |
+| `pmtu.steering`                               | `budget`, `need`, `under`                                                                                                                   |
+| `netstack.codel.dropping`, `.drained`         | `sojourn`, `target`                                                                                                                         |
+
+`err` appears on `daemon.reload`, `control.verb`, `kernel.pass` and
+`egress.pass` only when the step failed. The `trigger` of a `kernel.pass` is
+`start`, `sweep`, `retry`, `grace`, `disable`, `enable`, `reload`, `mesh` or
+`kernel`. The `trigger` of an `egress.pass` is `start`, `sweep`, `retry`,
+`disable` or `enable`.
+
+A change of the host's network also wakes every dialer. A `network.changed`
+names only what moved. `ipv4_default` and `ipv4_default_was` hold the new IPv4
+default and the one before it. `ipv4_added` and `ipv4_removed` hold the IPv4
+addresses that came and went. The `ipv6` attributes do the same for IPv6.
+`probed` counts the sessions asked to probe, and `woken` counts the dialers
+woken.
 
 A `daemon.reload` names in `applied` the capabilities the reload changed in
 place, and carries none when it changed only the trust document or the peers
@@ -237,23 +364,23 @@ and carries the `route` asked about, the seqno it `asked` for, the node's own
 `seqno` when it arrived and whether it `raised` that seqno. A request raises it
 only where it asks past the seqno of a prefix this node originates, and at most
 once per packet. A `babel.seqno.raised` carries its `cause`, `start` or
-`request`, the seqno it went `from` and `to`, and the seqno `limit` the speaker
-last saved, which a restart starts past. The raise a process makes as it starts
-carries the `router_id` as well, and `drawn` where that router id is a new one,
-saying why: `no state file`, `the state file names example/alpha` for a file
-another node wrote, or `the state file is unreadable`. The run of the speaker
-after `ranet3 up` makes a raise with `cause=start` of its own. A
-`babel.state.unsaved` carries the `limit` the speaker could not save, the
-`seqno` in use and the `err`, and the seqno rises all the same. A
-`babel.state.unreadable` carries the state `file` and the `err`, and the node
-starts under a new router id from seqno 1.
+`request`, the seqno it went `from` and `to`, and where a state file is kept the
+seqno `limit` the speaker last saved, which a restart starts past. The raise a
+process makes as it starts carries the `router_id` as well, and `drawn` where
+that router id is a new one, saying why: `no state file`,
+`the state file names example/alpha` for a file another node wrote, or
+`the state file is unreadable`. The run of the speaker after `ranet3 up` makes a
+raise with `cause=start` of its own. A `babel.state.unsaved` carries the `limit`
+the speaker could not save, the `seqno` in use and the `err`, and the seqno
+rises all the same. A `babel.state.unreadable` carries the state `file` and the
+`err`, and the node starts under a new router id from seqno 1.
 
 An `ike.session.revoked` is recorded under the session's path before the session
 closes, so it comes before that session's `ike.session.ended`. Its `reason` is
 `handshake` where a handshake finished under a trust that no longer admits its
 peer, or `reload` where a reload's sweep closed a live session. It carries the
 `peer`, the endpoint the peer authenticated as, such as `example/gateway:1`, the
-`endpoint` address the session sends to, such as `198.51.100.7:4500`, and the
+`endpoint` address the session sends to, such as `198.51.100.7:13000`, and the
 trust's refusal as `err`, such as
 `the trust document holds another key for example/gateway` when the
 organization's key changed.
@@ -271,17 +398,18 @@ address.
 A `netstack.codel` event carries the `sojourn` of the batch that changed the
 state, how long that batch had waited since it was reserved, and the `target`. A
 `drained` recorded because the queue emptied carries a `sojourn` of 0. The
-sender drops one packet at a time on its own schedule and records no event per
+sender drops 1 packet at a time on its own schedule and records no event per
 packet, so `ranet3_peer_send_delay_dropped_total` is where the drops are
 counted.
 
 ## Adding a view
 
-A view is three new files, and no file of the tree needs an edit for it:
+A view is 3 new files, and no file of the tree needs an edit for it:
 
 - `control/debug_<view>.go` holds the wire types, the interface the daemon
   implements, the path registered from `init` with its class, the text renderer
-  and the client method. `debugRead` registers a snapshot.
+  and the client method. `debugRead` registers a snapshot. `registerDebug`
+  registers a view that takes a query or acts, as `pmtu` and `probe` do.
 - `internal/client/debug_<view>.go` implements that interface on the daemon's
   side.
 - `cmd/ranet3/debug_<view>.go` appends the command to `debugCommands` from
