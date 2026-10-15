@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-14
+updated: 2026-10-15
 order: 30
 ---
 
@@ -73,19 +73,20 @@ the caller already reads as uid 0.
 - `debug pmtu [peer]` is the path MTU of every session, or of one peer's: first
   `link.mtu`, the steering header and the tun's MTU, with the answers sent to
   packets past a session's budget and the SYNs whose MSS was clamped, both for
-  the node as a whole. Then for each session its endpoint and whether its
-  datagrams leave with DF, the state of its search, which is `confirming`,
-  `searching up`, `searching down`, `confirmed`, `under the floor`, or
-  `not searched` where datagrams leave without DF, its budget and the MSS it
-  clamps to, the route's MTU when last read and the target it sets, the probe
-  out and how the last one ended, its probes sent, acked and lost, the sends the
-  host refused as too large for the path, and the budget's last change with its
-  reason. A probe whose target the search moves while it is out counts as sent
-  and as neither acked nor lost, here and in `ranet3_pmtu_probes_total`, whether
-  a refusal, the route read lower after a network change or `debug probe`, a
-  change of `link.mtu` or a move to another endpoint moves it, and one answered
-  after its wait ran out counts as both, so the three need not add up. The peer
-  completes from the sessions the daemon names.
+  the node as a whole. Then for each session its path, the peer node it is with,
+  its endpoint and whether its datagrams leave with DF, the state of its search,
+  which is `confirming`, `searching up`, `searching down`, `confirmed`,
+  `under the floor`, or `not searched` where datagrams leave without DF, its
+  budget and the MSS it clamps to, the route's MTU when last read and the target
+  it sets, the probe out and how the last one ended, its probes sent, acked and
+  lost, the sends the host refused as too large for the path, and the budget's
+  last change with its reason. A probe whose target the search moves while it is
+  out counts as sent and as neither acked nor lost, here and in
+  `ranet3_pmtu_probes_total`, whether a refusal, the route read lower after a
+  network change or `debug probe`, a change of `link.mtu` or a move to another
+  endpoint moves it, and one answered after its wait ran out counts as both, so
+  the three need not add up. The peer is named as `redial` names one, and
+  completes to the nodes of the sessions the daemon holds.
 - `debug probe <peer>` and `debug probe --all` ask the sessions of one peer, or
   every session, to send a liveness check now and to probe their path MTU
   budget, as each does after a network change, and name the sessions asked. It
@@ -158,6 +159,7 @@ its connections to the reads.
 | `ike.handshake.failed`               | the responder refused a handshake, as often as it logs one                  |
 | `ike.session.established`, `.ended`  | a session started serving, and stopped                                      |
 | `ike.session.resolved`               | two sessions for one path were resolved to one                              |
+| `ike.session.revoked`                | the trust in force refused a session's peer and closed it with a Delete     |
 | `ike.rekey.started`, `.completed`    | a rekey this end started, of the Child SA or of the IKE SA                  |
 | `ike.rekey.failed`                   | the same rekey failing, with its error                                      |
 | `ike.endpoint.moved`                 | a session moved to where its peer's latest fresh request came from          |
@@ -245,6 +247,16 @@ after `ranet3 up` makes a raise with `cause=start` of its own. A
 `seqno` in use and the `err`, and the seqno rises all the same. A
 `babel.state.unreadable` carries the state `file` and the `err`, and the node
 starts under a new router id from seqno 1.
+
+An `ike.session.revoked` is recorded under the session's path before the session
+closes, so it comes before that session's `ike.session.ended`. Its `reason` is
+`handshake` where a handshake finished under a trust that no longer admits its
+peer, or `reload` where a reload's sweep closed a live session. It carries the
+`peer`, the endpoint the peer authenticated as, such as `example/gateway:1`, the
+`endpoint` address the session sends to, such as `198.51.100.7:4500`, and the
+trust's refusal as `err`, such as
+`the trust document holds another key for example/gateway` when the
+organization's key changed.
 
 A `transport.endpoint` event carries the peer's `endpoint` and the `errno` the
 kernel refused the send with. An `unpinned` one is recorded once for an

@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-10-14
+updated: 2026-10-15
 order: 30
 ---
 
@@ -52,9 +52,7 @@ There is no `enabled` field to forget. A default deployment writes `node`,
 `auth`, `link` and `dial` and stops:
 
 ```toml
-[node]
-org = "example"
-name = "my-laptop"
+node = "example/my-laptop"
 
 [auth]
 key = "/etc/ranet3/key.pem"     # this node's own PKCS8 PEM Ed25519 key
@@ -72,19 +70,33 @@ endpoints = [{ serial = "0", family = "ip4" }]
 
 [dial]
 # all = true                        # dial every node the trust document names
-to = [{ name = "gateway", serial = "0" }]
+to = ["example/gateway:0"]
 
 [cap.route]
 announce = ["10.66.0.5/32", { prefix = "::/0", from = "2001:db8:1::/48" }]
 # transit = false                   # stop relaying what this node learns
 ```
 
-Required: `node.org`, `node.name`, `auth.key`, `auth.trust`, `link.port`, at
-least one `link.endpoints` entry, and, unless `link.listen` or `dial.all` is
-set, at least one `dial.to` entry. Everything else has a default, and an absent
-capability is its own default: a node with no `cap.babel` runs the 4s and 16s
-intervals of RFC 8966 Appendix B, and a node with no `cap.route` announces
-nothing and still carries transit.
+Required: `node`, `auth.key`, `auth.trust`, `link.port`, at least one
+`link.endpoints` entry, and, unless `link.listen` or `dial.all` is set, at least
+one `dial.to` entry. Everything else has a default, and an absent capability is
+its own default: a node with no `cap.babel` runs the 4s and 16s intervals of RFC
+8966 Appendix B, and a node with no `cap.route` announces nothing and still
+carries transit.
+
+`node` names this node as `organization/name`, the organization and common name
+the trust document holds it under, and its endpoints are the `link.endpoints`
+entries, so `node` written as an endpoint is refused. A `dial.to` entry names a
+peer the same way, or one endpoint of it as `organization/name:serial`, which
+dials that endpoint alone where a node takes the first of its endpoints in a
+matching address family. Every name is written in full: an organization has one
+level, and an entry without one, a table of `org` and `name` and an entry
+written twice are each refused. A byte outside letters, digits, `-`, `.`, `_`
+and `~` is written as `%` and two uppercase hex digits, so the organization
+`nick cao` is written `nick%20cao`, and that spelling is the only one taken. The
+control socket, the command line, the logs and the events name a node and its
+endpoints in the same form, and a session by its peer's endpoint, `@` and the
+serial of this node's own endpoint, such as `example/gateway:0@0`.
 
 `link.tun` names the device the mesh runs on. Left out, linux creates `ranet3`
 and darwin takes the next free `utun`. A queue opened under the name of a
