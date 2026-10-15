@@ -82,12 +82,6 @@ func (s *Session) replaceChild(child ChildSA) error {
 	return nil
 }
 
-// retirementDeadline bounds how long a replaced Child SA waits for the peer's
-// Delete. RFC 7296 section 2.8 expects one promptly. A peer that never sends it
-// would otherwise lock out every later rekey for the life of the session, which
-// it can do deliberately by rekeying once and going quiet.
-const retirementDeadline = 30 * time.Second
-
 func (s *Session) currentChild() ChildSA {
 	s.childMu.RLock()
 	defer s.childMu.RUnlock()

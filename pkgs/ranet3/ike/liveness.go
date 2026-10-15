@@ -18,10 +18,7 @@ import (
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
-const (
-	defaultDPDInterval = 10 * time.Second
-	maxMessageID       = ^uint32(0)
-)
+const maxMessageID = ^uint32(0)
 
 var errMessageIDExhausted = errors.New("ike: Message ID space exhausted")
 
@@ -203,8 +200,8 @@ func (s *Session) Run(ctx context.Context) error {
 	lastAuthenticated := time.Now()
 	s.noteActive()
 	if s.rekeyRetryInitial == 0 && s.rekeyRetryMax == 0 {
-		s.rekeyRetryInitial = 5 * time.Second
-		s.rekeyRetryMax = 5 * time.Minute
+		s.rekeyRetryInitial = DefaultRetryFirst
+		s.rekeyRetryMax = DefaultRetryMax
 	}
 	var pending *pendingRequest
 	var schedules []*rekeySchedule
@@ -298,9 +295,7 @@ func (s *Session) Run(ctx context.Context) error {
 				deadline = schedule.deadline
 			}
 		}
-		// The retirement sweep at the top of the loop has a deadline of its
-		// own. It used to be reached by the poll below, but now it has to be one
-		// of the things the loop actually waits for.
+		// the sweeps at the top of the loop run only when the loop wakes, so it waits for their deadlines too
 		if retire, ok := s.nextRetirement(); ok && retire.Before(deadline) {
 			deadline = retire
 		}
@@ -308,10 +303,7 @@ func (s *Session) Run(ctx context.Context) error {
 			deadline = expiry
 		}
 
-		// Everything this loop reacts to is selectable, so it sleeps until one
-		// of them happens rather than waking ten times a second to check. That
-		// matters on anything running on a battery: one idle session cost 10
-		// wakeups per second, and a laptop holds one per peer per family.
+		// everything this loop reacts to is selectable, so it sleeps until one of them happens rather than polling
 		if !timer.Stop() {
 			select {
 			case <-timer.C:
@@ -375,30 +367,13 @@ func (s *Session) Run(ctx context.Context) error {
 				s.mux.Close()
 				return fmt.Errorf("ike: peer unresponsive after %d attempts", pending.sent)
 			}
-			// RFC 7296 section 2.1 requires retaining and retransmitting the
-			// bitwise-identical request until a response arrives or the IKE SA
-			// is declared failed. Other authenticated traffic can keep an
-			// ordinary exchange alive, but a silent peer must still time out.
-			// A send that failed locally is a transmission that did not
-			// happen, not a peer that has gone. RFC 7296 section 2.4: "an
-			// endpoint MUST NOT conclude that the other endpoint has failed
-			// based on any routing information (e.g., ICMP messages) ... An
-			// endpoint MUST conclude that the other endpoint has failed only
-			// when repeated attempts to contact it have gone unanswered for a
-			// timeout period." The syscall returns ENETUNREACH while a route
-			// is being rewritten, which on a node running this reconciler and
-			// a routing daemon is an ordinary moment, and tearing the SA down
-			// for it takes every route through the peer with it. The attempt
-			// counter declares the peer dead, above.
+			// RFC 7296 section 2.1 retransmits the bitwise-identical request until it is answered or the IKE SA is declared failed
+			// section 2.4 forbids concluding failure from routing information, so a send that fails locally ends nothing and only the attempt count above does
 			s.sendPending(pending)
 			continue
 		}
-		// Re-read the traffic edge here rather than relying on the one at
-		// the top of the loop. ESP arrives without waking this select, so
-		// the timer fires exactly at the deadline with the flag still
-		// unconsumed, and a peer sending continuously would be probed every
-		// interval forever. RFC 7296 section 2.4 asks for a check only "if
-		// no cryptographically protected messages have been received".
+		// ESP arrives without waking this select, so the traffic edge is read again before a probe
+		// RFC 7296 section 2.4 asks for a check only "if no cryptographically protected messages have been received"
 		if s.trafficSeen.Swap(false) {
 			lastAuthenticated = time.Now()
 			s.noteActive()

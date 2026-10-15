@@ -81,7 +81,7 @@ func encodePayloadChain(payloads []RawPayload) []byte {
 // the message, RFC 7296 section 3.2. The payloads sent in the clear ahead of SK
 // are such a chain.
 func encodePayloadChainBefore(payloads []RawPayload, following PayloadType) []byte {
-	body := make([]byte, 0, 256)
+	body := make([]byte, 0, payloadChainCapacity)
 	for i, p := range payloads {
 		next := following
 		if i+1 < len(payloads) {
