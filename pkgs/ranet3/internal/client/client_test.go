@@ -109,9 +109,9 @@ func runtimeFixture(t *testing.T) (*config.Config, ed25519.PrivateKey, registry.
 		},
 	}}
 	cfg := &config.Config{
-		Node: config.Node{Org: "example", Name: "local"},
+		Node: identity.MustParse("example/local"),
 		Link: config.Link{Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
-		Dial: config.Dial{To: []config.Peer{{Org: "example", Name: "gateway", Serial: "1"}}},
+		Dial: config.Dial{To: []identity.Identity{identity.MustParse("example/gateway:1")}},
 	}
 	return cfg, privateKey, reg
 }
@@ -169,20 +169,11 @@ func seeded(b byte) ed25519.PublicKey {
 	return ed25519.NewKeyFromSeed(bytes.Repeat([]byte{b}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
 }
 
-func identitiesOf(t testing.TB, cfg *config.Config) identities {
-	t.Helper()
-	ids, err := configIdentities(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ids
-}
-
-func dialTo(t testing.TB, cfg *config.Config, peer config.Peer) dial {
+func dialTo(t testing.TB, cfg *config.Config, peer identity.Identity) dial {
 	t.Helper()
 	named := *cfg
-	named.Dial = config.Dial{To: []config.Peer{peer}}
-	return dials(&named, identitiesOf(t, &named), nil)[0]
+	named.Dial = config.Dial{To: []identity.Identity{peer}}
+	return dials(&named, nil)[0]
 }
 
 func TestValidateRuntimeConfig(t *testing.T) {
@@ -197,7 +188,7 @@ func TestValidateRuntimeConfig(t *testing.T) {
 	if err := validateRuntimeConfig(cfg, wrongKey, trust(t, reg)); err == nil {
 		t.Fatal("accepted a private key from another organization")
 	}
-	cfg.Dial.To[0].Serial = "missing"
+	cfg.Dial.To[0] = cfg.Dial.To[0].At("missing")
 	if err := validateRuntimeConfig(cfg, privateKey, trust(t, reg)); err == nil {
 		t.Fatal("accepted a peer endpoint missing from the registry")
 	}
@@ -218,7 +209,7 @@ func TestEachLocalEndpointMatchesTheTrustDocumentsEndpointOfItsSerial(t *testing
 	} {
 		named := *cfg
 		named.Link.Endpoints = []config.Endpoint{cfg.Link.Endpoints[0], tc.second}
-		if _, _, err := validateLocalConfig(&named, privateKey, x); (err == nil) != tc.accepted {
+		if _, err := validateLocalConfig(&named, privateKey, x); (err == nil) != tc.accepted {
 			t.Errorf("%s: link.endpoints %v answered %v", tc.name, named.Link.Endpoints, err)
 		}
 	}
@@ -236,20 +227,20 @@ func TestStartupSkipsAPeerNoLocalFamilyCanDial(t *testing.T) {
 		CommonName: "v6only",
 		Endpoints:  []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip6", Port: 13000}},
 	})
-	cfg.Dial.To = append(cfg.Dial.To, config.Peer{Org: "example", Name: "v6only"})
+	cfg.Dial.To = append(cfg.Dial.To, identity.MustParse("example/v6only"))
 	if err := validateRuntimeConfig(cfg, privateKey, trust(t, reg)); err != nil {
 		t.Fatalf("a v6-only peer stopped a v4-only node from starting: %v", err)
 	}
 
 	// The same peer named by a serial is somebody writing the wrong thing
 	// down rather than the shape of the registry, and still refuses.
-	cfg.Dial.To[len(cfg.Dial.To)-1].Serial = "0"
+	cfg.Dial.To[len(cfg.Dial.To)-1] = cfg.Dial.To[len(cfg.Dial.To)-1].At("0")
 	if err := validateRuntimeConfig(cfg, privateKey, trust(t, reg)); err == nil {
 		t.Error("a peer endpoint named by serial in a family this node has not is accepted")
 	}
 
 	// And a node the registry has never heard of still refuses.
-	cfg.Dial.To[len(cfg.Dial.To)-1] = config.Peer{Org: "example", Name: "absent"}
+	cfg.Dial.To[len(cfg.Dial.To)-1] = identity.MustParse("example/absent")
 	if err := validateRuntimeConfig(cfg, privateKey, trust(t, reg)); err == nil {
 		t.Error("a peer the registry does not name is accepted")
 	}
@@ -272,8 +263,8 @@ func TestFullMeshDialsEveryNodeTheRegistryNames(t *testing.T) {
 		Nodes: []registry.Node{{CommonName: "far", Endpoints: []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip4", Port: 13000}}}},
 	})
 
-	ids, x := identitiesOf(t, cfg), trust(t, reg)
-	if got := effectivePeers(ids, cfg.Dial.All, x); len(got) != 1 || got[0].Node() != identity.MustParse("example/gateway") {
+	x := trust(t, reg)
+	if got := effectivePeers(cfg, x); len(got) != 1 || got[0].Node() != identity.MustParse("example/gateway") {
 		t.Fatalf("without full_mesh the peers list is not honored: %v", got)
 	}
 
@@ -281,7 +272,7 @@ func TestFullMeshDialsEveryNodeTheRegistryNames(t *testing.T) {
 	// serial_number that a generated entry cannot. Generating a second one for
 	// the same node would dial both of its endpoints.
 	cfg.Dial.All = true
-	got := effectivePeers(ids, cfg.Dial.All, x)
+	got := effectivePeers(cfg, x)
 	var names []string
 	for _, peer := range got {
 		names = append(names, peer.Node().String())
@@ -296,7 +287,7 @@ func TestFullMeshDialsEveryNodeTheRegistryNames(t *testing.T) {
 	// Every organization, not only this node's own: the registry is the trust
 	// root for the whole community and ranet dials all of it.
 	for _, peer := range got {
-		if peer.Node() == ids.node {
+		if peer.Node() == cfg.Node {
 			t.Error("dial.all dialed this node itself")
 		}
 	}
@@ -308,7 +299,7 @@ func TestFullMeshDialsEveryNodeTheRegistryNames(t *testing.T) {
 // dataplane, and a file that reads differently on every load refuses all of
 // them.
 func TestReloadSurvivesRereadingOneFile(t *testing.T) {
-	const body = `{"node":{"org":"example","name":"laptop"},
+	const body = `{"node":"example/laptop",
 		"auth":{"key":"k","trust":"r"},
 		"dial":{"all":true},
 		"link":{"port":13000,"endpoints":[
@@ -396,11 +387,11 @@ func TestSyncPeersStartsAndStopsDialers(t *testing.T) {
 	defer cancel()
 	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet()}
 	c.cfg.Store(&config.Config{
-		Node: config.Node{Org: "example", Name: "node"},
+		Node: identity.MustParse("example/node"),
 		Link: config.Link{Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
-		Dial: config.Dial{To: []config.Peer{
-			{Org: "example", Name: "a"},
-			{Org: "example", Name: "b"},
+		Dial: config.Dial{To: []identity.Identity{
+			identity.MustParse("example/a"),
+			identity.MustParse("example/b"),
 		}},
 	})
 	// Both nodes are in the registry carrying an address, so each dialer stays
@@ -426,9 +417,9 @@ func TestSyncPeersStartsAndStopsDialers(t *testing.T) {
 
 	// Dropping one peer stops exactly that dialer and leaves the other alone.
 	c.cfg.Store(&config.Config{
-		Node: config.Node{Org: "example", Name: "node"},
+		Node: identity.MustParse("example/node"),
 		Link: config.Link{Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
-		Dial: config.Dial{To: []config.Peer{{Org: "example", Name: "a"}}},
+		Dial: config.Dial{To: []identity.Identity{identity.MustParse("example/a")}},
 	})
 	c.syncPeers()
 	if got := dialerCount(c); got != 1 {
@@ -467,7 +458,7 @@ func durationOf(d time.Duration) *schema.Duration {
 
 func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 	base := &config.Config{
-		Node: config.Node{Org: "example", Name: "node"},
+		Node: identity.MustParse("example/node"),
 		Link: config.Link{Port: 13000, Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
 	}
 	window := uint32(8192)
@@ -476,7 +467,7 @@ func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 	// report a reload that changed nothing, or leave the node running two
 	// policies at the same time.
 	for name, change := range map[string]func(*config.Config){
-		"node":     func(c *config.Config) { c.Node.Name = "other" },
+		"node":     func(c *config.Config) { c.Node = identity.MustParse("example/other") },
 		"underlay": func(c *config.Config) { c.Link.Underlay.Mark = 0x726c },
 		"port":     func(c *config.Config) { c.Link.Port = 14000 },
 		"tun":      func(c *config.Config) { c.Link.TUN = "ranet9" },
@@ -521,7 +512,7 @@ func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 		})
 	}
 	unchanged := *base
-	unchanged.Dial.To = []config.Peer{{Org: "example", Name: "a"}}
+	unchanged.Dial.To = []identity.Identity{identity.MustParse("example/a")}
 	if err := reloadable(base, &unchanged); err != nil {
 		t.Fatalf("adding a peer was refused: %v", err)
 	}
@@ -535,7 +526,7 @@ func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 // up.
 // a reload that writes them out applies no cap.babel, and a changed interval does
 func TestReloadTakesABabelDefaultWrittenOut(t *testing.T) {
-	omitted := &config.Config{Node: config.Node{Org: "example", Name: "node"}, Link: config.Link{Port: 13000}}
+	omitted := &config.Config{Node: identity.MustParse("example/node"), Link: config.Link{Port: 13000}}
 	written := *omitted
 	written.Cap.Babel = &babel.Config{
 		Hello:  schema.Duration(4 * time.Second),
@@ -578,7 +569,7 @@ func TestReloadRefusesARotatedPrivateKey(t *testing.T) {
 	keyPath := filepath.Join(dir, "key.pem")
 	writeKey(t, keyPath, privateKey)
 	configPath := filepath.Join(dir, "config.json")
-	body := fmt.Sprintf(`{"node":{"org":"example","name":"laptop"},
+	body := fmt.Sprintf(`{"node":"example/laptop",
 		"auth":{"key":%q,"trust":%q},
 		"dial":{"all":true},
 		"link":{"port":13000,"endpoints":[{"serial":"1","family":"ip4"}]}}`, keyPath, registryPath)
@@ -990,9 +981,9 @@ func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
 	// A serial number sends runPeer through the pre-checks, which fail against
 	// an empty registry and return rather than looping.
 	c.cfg.Store(&config.Config{
-		Node: config.Node{Org: "example", Name: "node"},
+		Node: identity.MustParse("example/node"),
 		Link: config.Link{Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
-		Dial: config.Dial{To: []config.Peer{{Org: "example", Name: "a", Serial: "1"}}},
+		Dial: config.Dial{To: []identity.Identity{identity.MustParse("example/a:1")}},
 	})
 	c.storeIndex(trust(t, registry.Registry{}))
 
@@ -1034,9 +1025,9 @@ func TestSyncPeersNoticesChangedSerialNumber(t *testing.T) {
 	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet()}
 	base := func(serial string) *config.Config {
 		return &config.Config{
-			Node: config.Node{Org: "example", Name: "node"},
+			Node: identity.MustParse("example/node"),
 			Link: config.Link{Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
-			Dial: config.Dial{To: []config.Peer{{Org: "example", Name: "a", Serial: serial}}},
+			Dial: config.Dial{To: []identity.Identity{identity.MustParse("example/a:" + serial)}},
 		}
 	}
 	// Both endpoints carry an address, so each dialer stays in its retry loop
@@ -1125,7 +1116,7 @@ func TestReloadAppliesRegistryPeersAndOriginations(t *testing.T) {
 	// the shape of a registry rewrite together with a config edit.
 	next := *cfg
 	next.Dial.To = append(slices.Clone(cfg.Dial.To),
-		config.Peer{Org: "example", Name: "third", Serial: "1"})
+		identity.MustParse("example/third:1"))
 	// A source-specific announcement among them, the spelling an exit uses,
 	// which reaches the speaker the same way the plain ones do.
 	next.Cap.Route = &babel.Routes{Announce: []schema.Announce{
@@ -1218,7 +1209,7 @@ func writeKey(t *testing.T, path string, key ed25519.PrivateKey) {
 // already uses, would have been enough to make every later SIGHUP fail.
 func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 	base := &config.Config{
-		Node: config.Node{Org: "example", Name: "node"},
+		Node: identity.MustParse("example/node"),
 		Link: config.Link{Port: 13000, Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
 		// The reconciler is on in both, since the presence of the block is
 		// what turns it on and adding one is a change by itself.
@@ -1461,7 +1452,7 @@ func TestReloadSkipsPeerRegistryNoLongerNames(t *testing.T) {
 	writeKey(t, cfg.Auth.Key, privateKey)
 	// Two peers to start with, so the reload below can be seen to keep one.
 	cfg.Dial.To = append(slices.Clone(cfg.Dial.To),
-		config.Peer{Org: "example", Name: "third", Serial: "1"})
+		identity.MustParse("example/third:1"))
 	joined := slices.Clone(reg)
 	joined[0].Nodes = append(slices.Clone(reg[0].Nodes), registry.Node{
 		CommonName: "third",
@@ -1622,11 +1613,11 @@ func TestDialerGivesUpOnAPeerItCannotReach(t *testing.T) {
 		Endpoints:  []registry.Endpoint{{SerialNumber: "1", AddressFamily: "ip6", Port: 13000}},
 	})
 	c.storeIndex(trust(t, reg))
-	for name, peer := range map[string]config.Peer{
-		"pinned to a serial":  {Org: "example", Name: "gone", Serial: "1"},
-		"pinned to none":      {Org: "example", Name: "gone"},
-		"wrong family":        {Org: "example", Name: "v6only"},
-		"wrong family pinned": {Org: "example", Name: "v6only", Serial: "1"},
+	for name, peer := range map[string]identity.Identity{
+		"pinned to a serial":  identity.MustParse("example/gone:1"),
+		"pinned to none":      identity.MustParse("example/gone"),
+		"wrong family":        identity.MustParse("example/v6only"),
+		"wrong family pinned": identity.MustParse("example/v6only:1"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			done := make(chan struct{})
@@ -2047,9 +2038,9 @@ func TestDialerGivesUpOnAPeerWithNoAddress(t *testing.T) {
 
 	// The registry names the node and the address family matches this local
 	// endpoint. Only the address is absent.
-	for name, peer := range map[string]config.Peer{
+	for name, peer := range map[string]identity.Identity{
 		"pinned to a serial": cfg.Dial.To[0],
-		"unpinned":           {Org: "example", Name: "gateway"},
+		"unpinned":           identity.MustParse("example/gateway"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			done := make(chan struct{})
@@ -2124,14 +2115,14 @@ func TestUnderlayHoldsTheEndpointsADialerWouldTake(t *testing.T) {
 func TestValidatePeersReportsAnEndpointWithNoAddress(t *testing.T) {
 	cfg, _, reg := runtimeFixture(t)
 	families := map[string]struct{}{"ip4": {}}
-	for name, peers := range map[string][]config.Peer{
+	for name, peers := range map[string][]identity.Identity{
 		"pinned to a serial": cfg.Dial.To,
-		"unpinned":           {{Org: "example", Name: "gateway"}},
+		"unpinned":           {identity.MustParse("example/gateway")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			named := *cfg
 			named.Dial.To = peers
-			refuse, skip := validatePeers(identitiesOf(t, &named).peers, trust(t, reg), families)
+			refuse, skip := validatePeers(named.Dial.To, trust(t, reg), families)
 			if len(refuse) != 0 {
 				t.Errorf("a peer the registry describes but cannot reach stopped the startup: %v", refuse)
 			}

@@ -629,7 +629,7 @@ protocol babel {
         peer_conf.write_text(
             json.dumps(
                 {
-                    "node": {"org": "testorg", "name": "server"},
+                    "node": "testorg/server",
                     "auth": {
                         "key": str(args.fixtures / "org-key.pem"),
                         "trust": str(registry),
@@ -688,7 +688,7 @@ protocol babel {
     client_conf.write_text(
         json.dumps(
             {
-                "node": {"org": "testorg", "name": "client"},
+                "node": "testorg/client",
                 "auth": {
                     "key": str(args.fixtures / "org-key.pem"),
                     "trust": str(registry),
@@ -698,7 +698,7 @@ protocol babel {
                     "endpoints": [{"serial": "2", "family": "ip4"}],
                     "tun": "ranet0",
                 },
-                "dial": {"to": [{"name": "server", "serial": "1"}]},
+                "dial": {"to": ["testorg/server:1"]},
                 "cap": {
                     "route": {"announce": ["fd00:88::2/128"]},
                     "babel": {"hello": "500ms", "update": "1s"},

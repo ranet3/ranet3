@@ -50,7 +50,7 @@ func writable(t *testing.T) *Client {
 		dialers:  make(map[string]*dialer),
 		running:  startedSubsystems(),
 	}
-	c.cfg.Store(&config.Config{Node: config.Node{Org: "example", Name: "node"}, Link: config.Link{Listen: true}})
+	c.cfg.Store(&config.Config{Node: identity.MustParse("example/node"), Link: config.Link{Listen: true}})
 	c.storeIndex(trust(t, registry.Registry{}))
 	c.SetReconcilerEnable(func(bool) {})
 	return c

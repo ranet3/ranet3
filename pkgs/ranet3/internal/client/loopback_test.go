@@ -216,9 +216,7 @@ func writeMesh(t *testing.T, ports [2]uint16, addresses [2]string) ([]*loopbackN
 func writeLoopbackConfig(t *testing.T, node, peer *loopbackNode, keyPath, registryPath string, originate []string) *config.Config {
 	t.Helper()
 	var body strings.Builder
-	fmt.Fprintf(&body, `node:
-  org: example
-  name: %s
+	fmt.Fprintf(&body, `node: example/%s
 auth:
   key: %s
   trust: %s
@@ -232,8 +230,7 @@ link:
   listen: true
 dial:
   to:
-    - name: %s
-      serial: "0"
+    - example/%s:0
 cap:
   babel:
     hello: 200ms
@@ -457,7 +454,7 @@ func TestShutdownSaysNothingAboutReconnecting(t *testing.T) {
 	// bravo stays up, loses the node it was dialing and says it will retry,
 	// which is the correct thing for a node whose peer went away: counting its
 	// line as well failed this test in about one run in thirty.
-	dialingBravo := fmt.Sprintf("peer %s/%s", alpha.cfg.Node.Org, bravo.name)
+	dialingBravo := "peer " + bravo.cfg.Node.String()
 	var got []string
 	for _, line := range written.lines("reconnecting in") {
 		if strings.Contains(line, dialingBravo) {

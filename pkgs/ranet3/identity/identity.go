@@ -8,6 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"go.yaml.in/yaml/v3"
+
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // Identity is the name a node, or one of its endpoints, authenticates as
@@ -71,11 +75,41 @@ func (id Identity) String() string {
 	return text
 }
 
+// MarshalText writes the canonical form, which the zero Identity has none of
+func (id Identity) MarshalText() ([]byte, error) {
+	if id.IsZero() {
+		return nil, errors.New("identity: the zero identity names nobody, so it has no text")
+	}
+	return []byte(id.String()), nil
+}
+
+// UnmarshalText reads the canonical form as Parse does
+func (id *Identity) UnmarshalText(text []byte) error {
+	parsed, err := Parse(string(text))
+	if err != nil {
+		return err
+	}
+	*id = parsed
+	return nil
+}
+
+func (id *Identity) UnmarshalYAML(value *yaml.Node) error {
+	return schema.Scalar(value, "an identity such as example/gateway or example/gateway:0", id)
+}
+
 // Node is the node id names, which is id itself for a node
 func (id Identity) Node() Identity { return Identity{id.organization, id.name, ""} }
 
-// At names the endpoint serial of id's node
-func (id Identity) At(serial string) (Identity, error) { return From(id.organization, id.name, serial) }
+// NodeParts is the raw organization and name of id's node, for a format that stores them apart
+func (id Identity) NodeParts() (organization, name string) { return id.organization, id.name }
+
+// At names the endpoint serial of id's node, and the zero Identity at any serial is the zero Identity
+func (id Identity) At(serial string) Identity {
+	if id.IsZero() {
+		return Identity{}
+	}
+	return Identity{id.organization, id.name, serial}
+}
 
 // IsZero reports whether id names nobody
 func (id Identity) IsZero() bool { return id == Identity{} }

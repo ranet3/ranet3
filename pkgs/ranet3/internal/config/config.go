@@ -38,6 +38,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/egress"
@@ -49,18 +50,21 @@ import (
 )
 
 type Config struct {
-	Node Node `yaml:"node" json:"node" toml:"node"`
-	Auth Auth `yaml:"auth" json:"auth" toml:"auth"`
-	Link Link `yaml:"link" json:"link" toml:"link"`
-	Dial Dial `yaml:"dial,omitempty" json:"dial,omitzero" toml:"dial,omitempty"`
-	Cap  Caps `yaml:"cap,omitempty" json:"cap,omitzero" toml:"cap,omitempty"`
+	// Node is who this is, a node the document auth.trust names, since every peer checks the identity against that document
+	Node identity.Identity `yaml:"node" json:"node" toml:"node"`
+	Auth Auth              `yaml:"auth" json:"auth" toml:"auth"`
+	Link Link              `yaml:"link" json:"link" toml:"link"`
+	Dial Dial              `yaml:"dial,omitempty" json:"dial,omitzero" toml:"dial,omitempty"`
+	Cap  Caps              `yaml:"cap,omitempty" json:"cap,omitzero" toml:"cap,omitempty"`
 }
 
-// Node is who this is. Both halves have to match an entry in the document
-// auth.trust names, since every peer checks the identity against that document.
-type Node struct {
-	Org  string `yaml:"org" json:"org" toml:"org"`
-	Name string `yaml:"name" json:"name" toml:"name"`
+// LocalEndpoints is the identity of each link.endpoints entry, in order
+func (c *Config) LocalEndpoints() []identity.Identity {
+	out := make([]identity.Identity, 0, len(c.Link.Endpoints))
+	for _, endpoint := range c.Link.Endpoints {
+		out = append(out, c.Node.At(endpoint.Serial))
+	}
+	return out
 }
 
 // Auth is the key this node signs with and the document naming who it talks to.
@@ -137,18 +141,10 @@ type Dial struct {
 	// exits reaches those exits and nothing behind them. To still applies,
 	// and an entry there wins for its node, which is the only way to pin a
 	// serial since a generated peer names none.
-	All bool   `yaml:"all,omitempty" json:"all,omitempty" toml:"all,omitempty"`
-	To  []Peer `yaml:"to,omitempty" json:"to,omitempty" toml:"to,omitempty"`
-}
-
-type Peer struct {
-	// Org defaults to this node's own, which is almost always what is wanted.
-	// Only a cross-organization peer names its own.
-	Org  string `yaml:"org,omitempty" json:"org,omitempty" toml:"org,omitempty"`
-	Name string `yaml:"name" json:"name" toml:"name"`
-	// Serial selects one of the peer's endpoints. Empty takes the first of a
-	// matching address family.
-	Serial string `yaml:"serial,omitempty" json:"serial,omitempty" toml:"serial,omitempty"`
+	All bool `yaml:"all,omitempty" json:"all,omitempty" toml:"all,omitempty"`
+	// To is each peer this node dials, a node or the one endpoint of it to dial
+	// a node takes the first of its endpoints in a matching address family
+	To []identity.Identity `yaml:"to,omitempty" json:"to,omitempty" toml:"to,omitempty"`
 }
 
 // Caps is everything this node does. Every member is a pointer and every one
@@ -230,7 +226,6 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
-	c.setDefaults()
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
@@ -449,9 +444,15 @@ func fillBlocks(node *yaml.Node, target reflect.Value) error {
 			}
 		}
 	case target.Kind() == reflect.Slice && node.Kind == yaml.SequenceNode:
-		for i := 0; i < len(node.Content) && i < target.Len(); i++ {
-			if err := fillBlocks(node.Content[i], target.Index(i)); err != nil {
-				return err
+		for i, item := range node.Content {
+			// yaml.v3 drops a null item from the list, where encoding/json reads it as the zero identity Validate refuses
+			if target.Type().Elem() == reflect.TypeFor[identity.Identity]() && schema.Followed(item).ShortTag() == "!!null" {
+				return fmt.Errorf("line %d: a dial.to entry names nobody", item.Line)
+			}
+			if i < target.Len() {
+				if err := fillBlocks(item, target.Index(i)); err != nil {
+					return err
+				}
 			}
 		}
 	default:
@@ -525,14 +526,6 @@ func emptyDocument(node *yaml.Node) bool {
 	}
 	child := node.Content[0]
 	return child.Kind == yaml.ScalarNode && child.Tag == "!!null"
-}
-
-func (c *Config) setDefaults() {
-	for i := range c.Dial.To {
-		if c.Dial.To[i].Org == "" {
-			c.Dial.To[i].Org = c.Node.Org
-		}
-	}
 }
 
 // Validate checks what this node says about itself, then asks each capability
@@ -612,10 +605,10 @@ func notText(value reflect.Value, path string) (string, string, bool) {
 
 func (c *Config) validateNode() error {
 	switch {
-	case c.Node.Org == "":
-		return errors.New("config: node.org is required")
-	case c.Node.Name == "":
-		return errors.New("config: node.name is required")
+	case c.Node.IsZero():
+		return errors.New("config: node is required")
+	case c.Node.Node() != c.Node:
+		return fmt.Errorf("config: node %s names an endpoint rather than the node, whose endpoints link.endpoints lists", c.Node)
 	case c.Link.Port == 0:
 		return errors.New("config: link.port is required")
 	case c.Link.Port == 500:
@@ -650,16 +643,15 @@ func (c *Config) validateNode() error {
 		}
 		serials[endpoint.Serial] = struct{}{}
 	}
-	peers := make(map[string]struct{}, len(c.Dial.To))
+	peers := make(map[identity.Identity]struct{}, len(c.Dial.To))
 	for _, peer := range c.Dial.To {
-		if peer.Org == "" || peer.Name == "" {
-			return errors.New("config: dial.to entries require org and name")
+		if peer.IsZero() {
+			return errors.New("config: a dial.to entry names nobody")
 		}
-		key := peer.Org + "\x00" + peer.Name + "\x00" + peer.Serial
-		if _, exists := peers[key]; exists {
-			return fmt.Errorf("config: duplicate dial.to entry %s/%s endpoint %q", peer.Org, peer.Name, peer.Serial)
+		if _, exists := peers[peer]; exists {
+			return fmt.Errorf("config: duplicate dial.to entry %s", peer)
 		}
-		peers[key] = struct{}{}
+		peers[peer] = struct{}{}
 	}
 	return nil
 }

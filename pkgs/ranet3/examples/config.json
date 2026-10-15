@@ -1,5 +1,5 @@
 {
-  "node": { "org": "example", "name": "my-laptop" },
+  "node": "example/my-laptop",
   "auth": {
     "key": "/etc/ranet3/key.pem",
     "trust": "/etc/ranet3/trust.json"
@@ -9,7 +9,7 @@
     "endpoints": [{ "serial": "0", "family": "ip4" }]
   },
   "dial": {
-    "to": [{ "name": "gateway", "serial": "0" }]
+    "to": ["example/gateway:0"]
   },
   "cap": {
     "route": { "announce": ["10.66.0.5/32"] },

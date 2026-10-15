@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/events"
@@ -26,7 +27,7 @@ func stateNode(t *testing.T, name, dir string) (*Client, *events.Bus) {
 		t.Fatal(err)
 	}
 	c.speaker, c.events = speaker, bus
-	c.cfg.Store(&config.Config{Node: config.Node{Org: "example", Name: name}})
+	c.cfg.Store(&config.Config{Node: identity.MustParse("example/" + name)})
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx, c.cancel = ctx, cancel
 	t.Cleanup(func() { cancel(); c.peers.Wait() })
@@ -112,8 +113,25 @@ func TestCopiedStateDirectoryGivesEachNodeItsOwnRouterID(t *testing.T) {
 		t.Errorf("bravo's start says the router id was drawn because %q", got)
 	}
 	state, found, err := readBabelState(bravoDir)
-	if err != nil || !found || state.node != (config.Node{Org: "example", Name: "bravo"}) || state.origin != bravoOrigin {
+	if err != nil || !found || state.node != identity.MustParse("example/bravo") || state.origin != bravoOrigin {
 		t.Errorf("bravo's state file holds %+v (found %v, err %v), want bravo's own %+v", state, found, err, bravoOrigin)
+	}
+}
+
+// the node keeps the router id a state file an older release wrote names, and starts past its limit
+func TestStateFileOfAnOlderReleaseKeepsItsRouterID(t *testing.T) {
+	dir := t.TempDir()
+	const old = `{"node":{"org":"example","name":"alpha"},"router_id":"7201020304050607","seqno_limit":300}`
+	if err := os.WriteFile(filepath.Join(dir, babelStateFile), []byte(old+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, bus := stateNode(t, "alpha", dir)
+	origin, seqno := c.speaker.Origin()
+	if hex.EncodeToString(origin.RouterID[:]) != "7201020304050607" || seqno != 301 {
+		t.Errorf("a node whose state file an older release wrote advertises %x at seqno %d, want 7201020304050607 at 301", origin.RouterID, seqno)
+	}
+	if got := startRaise(t, bus)["drawn"]; got != "" {
+		t.Errorf("the start says the router id was drawn because %q", got)
 	}
 }
 
@@ -128,7 +146,7 @@ func TestUpDownViewShowsTheLimitTheFileHoldsForThisRouterID(t *testing.T) {
 	if view.RouterID != hex.EncodeToString(origin.RouterID[:]) || view.Seqno != seqno || view.File != filepath.Join(dir, babelStateFile) || view.Limit == nil || *view.Limit != origin.Limit {
 		t.Errorf("the view shows %+v, want router id %x at seqno %d with the limit %d in the file", view, origin.RouterID, seqno, origin.Limit)
 	}
-	changed := babelState{node: config.Node{Org: "example", Name: "alpha"}, origin: babel.Origin{RouterID: origin.RouterID, Limit: origin.Limit + 1000}}
+	changed := babelState{node: identity.MustParse("example/alpha"), origin: babel.Origin{RouterID: origin.RouterID, Limit: origin.Limit + 1000}}
 	if err := writeBabelState(dir, changed); err != nil {
 		t.Fatal(err)
 	}
@@ -136,8 +154,8 @@ func TestUpDownViewShowsTheLimitTheFileHoldsForThisRouterID(t *testing.T) {
 		t.Errorf("with the file changed to hold the limit %d the view shows %+v", changed.origin.Limit, view)
 	}
 	for name, state := range map[string]babelState{
-		"another router id": {node: config.Node{Org: "example", Name: "alpha"}, origin: babel.Origin{RouterID: [8]byte{0x72, 1, 2, 3, 4, 5, 6, 7}, Limit: origin.Limit}},
-		"another node":      {node: config.Node{Org: "example", Name: "bravo"}, origin: origin},
+		"another router id": {node: identity.MustParse("example/alpha"), origin: babel.Origin{RouterID: [8]byte{0x72, 1, 2, 3, 4, 5, 6, 7}, Limit: origin.Limit}},
+		"another node":      {node: identity.MustParse("example/bravo"), origin: origin},
 	} {
 		if err := writeBabelState(dir, state); err != nil {
 			t.Fatal(err)
@@ -183,6 +201,9 @@ func TestUnreadableStateFileStartsUnderANewRouterID(t *testing.T) {
 		"a limit that is no number": `{` + node + `,` + id + `,"seqno_limit":"many"}`,
 		"no limit":                  `{` + node + `,` + id + `}`,
 		"no node":                   `{` + id + `,"seqno_limit":300}`,
+		"a null node":               `{"node":null,` + id + `,"seqno_limit":300}`,
+		"a node with a serial":      `{"node":{"org":"example","name":"alpha","serial":"0"},` + id + `,"seqno_limit":300}`,
+		"a node written as text":    `{"node":"example/alpha",` + id + `,"seqno_limit":300}`,
 		"a key of no state file":    `{` + node + `,` + id + `,"seqno_limit":300,"seqno":290}`,
 		"a second object":           `{` + node + `,` + id + `,"seqno_limit":300}{}`,
 		"a short router id":         `{` + node + `,"router_id":"72010203","seqno_limit":300}`,

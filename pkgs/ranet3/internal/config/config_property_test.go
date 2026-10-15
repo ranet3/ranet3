@@ -23,6 +23,7 @@ import (
 	"go.yaml.in/yaml/v3"
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/egress"
@@ -414,19 +415,23 @@ func nodes() hegel.Generator[Config] {
 	endpoint := hegel.Composite(func(tc hegel.TestCase) Endpoint {
 		return Endpoint{Serial: hegel.Draw(tc, names()), Family: hegel.Draw(tc, hegel.SampledFrom([]string{"ip4", "ip6"}))}
 	})
-	peer := hegel.Composite(func(tc hegel.TestCase) Peer {
-		peer := Peer{Name: hegel.Draw(tc, names())}
-		if hegel.Draw(tc, hegel.Booleans()) {
-			peer.Org = hegel.Draw(tc, names())
+	// a name written in a file is escaped where its text form needs it, so any name a file can hold is a name an identity holds
+	named := func(tc hegel.TestCase, serial string) identity.Identity {
+		id, err := identity.From(hegel.Draw(tc, names()), hegel.Draw(tc, names()), serial)
+		if err != nil {
+			panic(err)
 		}
+		return id
+	}
+	peer := hegel.Composite(func(tc hegel.TestCase) identity.Identity {
 		if hegel.Draw(tc, hegel.Booleans()) {
-			peer.Serial = hegel.Draw(tc, names())
+			return named(tc, hegel.Draw(tc, names()))
 		}
-		return peer
+		return named(tc, "")
 	})
 	return hegel.Composite(func(tc hegel.TestCase) Config {
 		c := Config{
-			Node: Node{Org: hegel.Draw(tc, names()), Name: hegel.Draw(tc, names())},
+			Node: named(tc, ""),
 			Auth: Auth{Key: hegel.Draw(tc, paths()), Trust: hegel.Draw(tc, paths())},
 			Link: Link{
 				Port:      hegel.Draw(tc, edges[uint16](1, math.MaxUint16)),
@@ -489,21 +494,6 @@ func configurations() hegel.Generator[Config] {
 	})
 }
 
-// defaulted is the configuration Load hands the daemon for c, by the one
-// default the documentation gives: a dial.to entry naming no org takes the
-// node's own. It is written out here rather than taken from setDefaults, so a
-// default that rewrote a field the file wrote is a difference this sees,
-// rather than a change made to both sides of the comparison.
-func defaulted(c Config) Config {
-	c.Dial.To = slices.Clone(c.Dial.To)
-	for i := range c.Dial.To {
-		if c.Dial.To[i].Org == "" {
-			c.Dial.To[i].Org = c.Node.Org
-		}
-	}
-	return c
-}
-
 // A configuration with any subset of its capability blocks, each written with
 // values an operator could write, reaches the daemon unchanged whichever of
 // the three encoders carried it. A field an encoder drops or rewrites is a
@@ -511,19 +501,14 @@ func defaulted(c Config) Config {
 // missing turns a capability off.
 //
 // Only what Validate takes is held, and it is held through the loader rather
-// than a decoder, so the defaults and the checks run as they do for a file. A
-// configuration the package accepts and then refuses once rendered is a
-// failure: it is a node its own file will not start. What the loader has to
-// hand back is the drawn configuration with the documented default filled in
-// by defaulted rather than by the loader's own setDefaults, so a default that
-// rewrote a peer org the file wrote, and changed who the node dials, fails
-// here.
+// than a decoder, so the checks run as they do for a file. A configuration
+// the package accepts and then refuses once rendered is a failure: it is a
+// node its own file will not start.
 func TestGeneratedConfigurationSurvivesEachEncoder(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		drawn := hegel.Draw(ht, configurations())
-		want := defaulted(drawn)
-		ht.Assume(want.Validate() == nil)
-		sameAfterEachEncoder(ht, drawn, want)
+		ht.Assume(drawn.Validate() == nil)
+		sameAfterEachEncoder(ht, drawn)
 	})
 }
 
@@ -539,9 +524,8 @@ func TestValidatedEgressSourceReadsBackFromItsFile(t *testing.T) {
 		drawn.Dial.All = true
 		exit := hegel.Draw(ht, exits())
 		drawn.Cap.Egress = &exit
-		want := defaulted(drawn)
-		ht.Assume(want.Validate() == nil)
-		sameAfterEachEncoder(ht, drawn, want)
+		ht.Assume(drawn.Validate() == nil)
+		sameAfterEachEncoder(ht, drawn)
 	})
 }
 
@@ -560,16 +544,15 @@ func TestValidatedRouteSpeakerAndSegmentsReadBackFromTheirFile(t *testing.T) {
 		drawn.Dial.All = true
 		route, speaker, segment := hegel.Draw(ht, routes()), hegel.Draw(ht, speakers()), hegel.Draw(ht, segments())
 		drawn.Cap = Caps{Route: &route, Babel: &speaker, Segment: &segment}
-		want := defaulted(drawn)
-		ht.Assume(want.Validate() == nil)
+		ht.Assume(drawn.Validate() == nil)
 		if !hegel.Draw(ht, hegel.WeightedBooleans(0.25)) {
-			sameAfterEachEncoder(ht, drawn, want)
+			sameAfterEachEncoder(ht, drawn)
 			return
 		}
 
 		// one value no file holds, added to a configuration Validate took
 		// without it, in a copy of the block it goes in
-		injected, what := want, ""
+		injected, what := drawn, ""
 		switch hegel.Draw(ht, hegel.Integers(0, 3)) {
 		case 0:
 			added := route
@@ -603,7 +586,7 @@ func TestValidatedRouteSpeakerAndSegmentsReadBackFromTheirFile(t *testing.T) {
 // and with a cap.segment steering one source through segments waypoints when segments is above zero
 func mtuNode(mtu uint16, segments int) Config {
 	c := Config{
-		Node: Node{Org: "example", Name: "laptop"},
+		Node: identity.MustParse("example/laptop"),
 		Auth: Auth{Key: "key.pem", Trust: "trust.json"},
 		Link: Link{Port: 13000, Endpoints: []Endpoint{{Serial: "0", Family: "ip4"}}, MTU: mtu},
 		Dial: Dial{All: true},
@@ -651,7 +634,7 @@ func TestLinkMTUIsTakenExactlyWithinItsBounds(t *testing.T) {
 		case err != nil && !strings.Contains(err.Error(), "link.mtu"):
 			tb.Fatalf("the refusal of link.mtu %d with a list of %d segments reads %q, which does not name link.mtu", mtu, segments, err)
 		case err == nil:
-			sameAfterEachEncoder(tb, c, defaulted(c))
+			sameAfterEachEncoder(tb, c)
 		}
 	}
 	for segments := range srv6.MaxSegments + 1 {

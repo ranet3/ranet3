@@ -40,7 +40,7 @@ in
       default = { };
       example = lib.literalExpression ''
         {
-          node = { org = "example"; name = "gateway"; };
+          node = "example/gateway";
           auth = {
             key = "/var/lib/ranet3/key.pem";
             trust = "/var/lib/ranet3/trust.json";

@@ -319,9 +319,7 @@ func newKernelMesh(t *testing.T) (alpha, bravo *kernelNode) {
 // writeKernelConfig writes the file of node, which dials peer and reconciles into its own table on its own tun
 func writeKernelConfig(t *testing.T, node, peer *kernelNode, keyPath, registryPath string) {
 	t.Helper()
-	body := fmt.Sprintf(`node:
-  org: example
-  name: %s
+	body := fmt.Sprintf(`node: example/%s
 auth:
   key: %s
   trust: %s
@@ -334,8 +332,7 @@ link:
   listen: true
 dial:
   to:
-    - name: %s
-      serial: "0"
+    - example/%s:0
 cap:
   babel:
     hello: %s

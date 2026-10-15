@@ -14,11 +14,8 @@
 # item, possibly indented. Enable one by removing only "# ", keeping the
 # remaining indentation, and enable its parent keys together with it.
 
-# Who this node is. Both halves have to match an entry in the document
-# auth.trust names.
-node:
-  org: example
-  name: my-laptop
+# Who this node is, organization/name, a node the document auth.trust names.
+node: example/my-laptop
 
 # This node's own key, a PKCS8 PEM Ed25519 file, and the document saying who
 # may join, which is a ranet registry.json today.
@@ -50,12 +47,11 @@ link:
   #   mark: 0x726c
   #   bind: true
 
-# Who this node dials. An entry's org defaults to node.org above.
+# Who this node dials, each as organization/name or organization/name:serial.
 dial:
   # all: true
   to:
-    - name: gateway
-      serial: "0"
+    - example/gateway:0
 
 # Everything this node does. A block written here turns that capability on.
 cap:

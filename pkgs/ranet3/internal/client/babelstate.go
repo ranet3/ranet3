@@ -15,8 +15,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/babel"
-	"ranet3.com/pkgs/ranet3/internal/config"
 )
 
 // This file is the Babel state kept beside the down flag, which spares the mesh a new speaker at every restart.
@@ -27,15 +27,21 @@ import (
 
 // babelState holds the file's contents
 type babelState struct {
-	node   config.Node
+	node   identity.Identity
 	origin babel.Origin
 }
 
 // babelStateBody is the file's JSON, every field required
 type babelStateBody struct {
-	Node     *config.Node `json:"node"`
-	RouterID string       `json:"router_id"`
-	Limit    *uint16      `json:"seqno_limit"`
+	Node     *babelStateNode `json:"node"`
+	RouterID string          `json:"router_id"`
+	Limit    *uint16         `json:"seqno_limit"`
+}
+
+// babelStateNode is node as the file holds it, the raw organization and name, which every release reads
+type babelStateNode struct {
+	Org  string `json:"org"`
+	Name string `json:"name"`
 }
 
 // startBabel hands the speaker the router id and seqno limit the file in dir holds, and the save of each new limit
@@ -52,7 +58,7 @@ func (c *Client) startBabel(dir string) {
 	case !found:
 		c.speaker.SetOrigin(babel.Origin{}, save, "no state file")
 	case state.node != node:
-		names := state.node.Org + "/" + state.node.Name
+		names := state.node.String()
 		slog.Warn("babel state file names another node, so this node starts under a new router id", "path", path, "names", names)
 		c.speaker.SetOrigin(babel.Origin{}, save, "the state file names "+names)
 	default:
@@ -90,6 +96,10 @@ func parseBabelState(body []byte) (babelState, error) {
 	if file.Node == nil || file.Limit == nil {
 		return babelState{}, errors.New("node or seqno_limit is missing")
 	}
+	node, err := identity.From(file.Node.Org, file.Node.Name, "")
+	if err != nil {
+		return babelState{}, err
+	}
 	raw, err := hex.DecodeString(file.RouterID)
 	if err != nil || len(raw) != 8 {
 		return babelState{}, fmt.Errorf("router_id %q is not 16 hex digits", file.RouterID)
@@ -99,13 +109,14 @@ func parseBabelState(body []byte) (babelState, error) {
 	if id == [8]byte{} || id == [8]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff} {
 		return babelState{}, fmt.Errorf("router_id %s is all zeros or all ones", file.RouterID)
 	}
-	return babelState{node: *file.Node, origin: babel.Origin{RouterID: id, Limit: *file.Limit}}, nil
+	return babelState{node: node, origin: babel.Origin{RouterID: id, Limit: *file.Limit}}, nil
 }
 
 // writeBabelState puts state in dir whole and syncs the directory, and once it returns a crash finds the limit it holds
 // a directory that will not sync fails the save, since the limit could still be lost
 func writeBabelState(dir string, state babelState) error {
-	body, err := json.Marshal(babelStateBody{Node: &state.node, RouterID: hex.EncodeToString(state.origin.RouterID[:]), Limit: &state.origin.Limit})
+	organization, name := state.node.NodeParts()
+	body, err := json.Marshal(babelStateBody{Node: &babelStateNode{organization, name}, RouterID: hex.EncodeToString(state.origin.RouterID[:]), Limit: &state.origin.Limit})
 	if err != nil {
 		return err
 	}

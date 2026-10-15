@@ -40,13 +40,8 @@ func (c *Client) syncPeers() (stopped []*dialer) {
 		}
 		return stopped
 	}
-	ids, err := configIdentities(cfg)
-	if err != nil {
-		log.Printf("peers: %v", err)
-		return nil
-	}
 	wanted := make(map[string]struct{})
-	for _, d := range dials(cfg, ids, c.index()) {
+	for _, d := range dials(cfg, c.index()) {
 		wanted[d.path] = struct{}{}
 		if _, running := c.dialers[d.path]; running {
 			continue
@@ -101,7 +96,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if err := c.sameIdentityKey(cfg.Auth.Key); err != nil {
 		return err
 	}
-	ids, families, err := validateLocalConfig(cfg, c.privateKey, x)
+	families, err := validateLocalConfig(cfg, c.privateKey, x)
 	if err != nil {
 		return err
 	}
@@ -120,7 +115,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 		}
 	}
 	// a peer the trust document cannot support is skipped rather than refused, or one stale entry would block every later reload
-	peers := effectivePeers(ids, cfg.Dial.All, x)
+	peers := effectivePeers(cfg, x)
 	refuse, skip := validatePeers(peers, x, families)
 	for _, problems := range [][]error{refuse, skip} {
 		for _, problem := range problems {

@@ -12,6 +12,7 @@ import (
 
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
@@ -26,7 +27,7 @@ func TestDeviceStartsAtLinkMTULessTheLongestSteeringList(t *testing.T) {
 	check := func(tb testing.TB, mtu uint16, segments int) {
 		tb.Helper()
 		cfg := &config.Config{
-			Node: config.Node{Org: "example", Name: "node"},
+			Node: identity.MustParse("example/node"),
 			Auth: config.Auth{Key: "key.pem", Trust: "trust.json"},
 			Link: config.Link{Port: 13000, Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}, MTU: mtu},
 			Dial: config.Dial{All: true},

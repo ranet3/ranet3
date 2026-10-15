@@ -45,7 +45,7 @@ func TestLoopbackRecordsDialSessionAndNeighborInOrder(t *testing.T) {
 	bravo.client.cfg.Store(&quiet)
 	unpinned := *alpha.cfg
 	unpinned.Dial.To = slices.Clone(alpha.cfg.Dial.To)
-	unpinned.Dial.To[0].Serial = ""
+	unpinned.Dial.To[0] = unpinned.Dial.To[0].Node()
 	alpha.client.cfg.Store(&unpinned)
 	if alpha.client.sessions.events != alpha.events || alpha.client.KernelRuntime().Events != alpha.events {
 		t.Error("the session set or the reconciler records somewhere other than the node's bus")
@@ -232,7 +232,7 @@ func TestFailedDialIsRecordedUnderTheSessionPath(t *testing.T) {
 	bravo.client.cfg.Store(&quiet)
 	unpinned := *alpha.cfg
 	unpinned.Dial.To = slices.Clone(alpha.cfg.Dial.To)
-	unpinned.Dial.To[0].Serial = ""
+	unpinned.Dial.To[0] = unpinned.Dial.To[0].Node()
 	alpha.client.cfg.Store(&unpinned)
 	alpha.client.dialRetry = redialAfter
 	// bravo no longer trusts alpha, so alpha's handshake fails after its endpoint resolved

@@ -250,7 +250,7 @@ func joinedAndAnnounced(t *testing.T, c *Client, next *config.Config) {
 		Endpoints:  []registry.Endpoint{{SerialNumber: "1", AddressFamily: "ip4", Port: 13000}},
 	})
 	writeRegistry(t, next.Auth.Trust, grown)
-	next.Dial.To = append(slices.Clone(next.Dial.To), config.Peer{Org: "example", Name: "third", Serial: "1"})
+	next.Dial.To = append(slices.Clone(next.Dial.To), identity.MustParse("example/third:1"))
 	next.Cap.Route = &babel.Routes{Announce: announce("fd00:9::/64")}
 }
 
@@ -654,14 +654,14 @@ type listenNode struct {
 func writeListenConfig(t *testing.T, node *listenNode, listen bool) *config.Config {
 	t.Helper()
 	var body strings.Builder
-	fmt.Fprintf(&body, "node:\n  org: %s\n  name: %s\nauth:\n  key: %s\n  trust: %s\n"+
+	fmt.Fprintf(&body, "node: %s/%s\nauth:\n  key: %s\n  trust: %s\n"+
 		"link:\n  port: %d\n  endpoints:\n    - serial: \"0\"\n      family: ip4\n  listen: %t\n"+
 		"cap:\n  babel:\n    hello: 200ms\n    update: 400ms\n",
 		node.org, node.name, node.keyPath, node.trustPath, node.port, listen)
 	if len(node.dials) > 0 {
 		body.WriteString("dial:\n  to:\n")
 		for _, peer := range node.dials {
-			fmt.Fprintf(&body, "    - org: %s\n      name: %s\n      serial: \"0\"\n", peer.org, peer.name)
+			fmt.Fprintf(&body, "    - %s/%s:0\n", peer.org, peer.name)
 		}
 	}
 	if err := os.WriteFile(node.configPath, []byte(body.String()), 0o600); err != nil {
