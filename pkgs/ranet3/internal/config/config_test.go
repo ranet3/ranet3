@@ -22,6 +22,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/egress"
@@ -36,9 +37,7 @@ import (
 // what the node forgot to say.
 const (
 	nodeYAML = `
-node:
-  org: example
-  name: laptop
+node: example/laptop
 auth:
   key: key.pem
   trust: trust.json
@@ -49,12 +48,10 @@ link:
       family: ip4
 dial:
   to:
-    - name: gateway
+    - example/gateway
 `
 	nodeTOML = `
-[node]
-org = "example"
-name = "laptop"
+node = "example/laptop"
 [auth]
 key = "key.pem"
 trust = "trust.json"
@@ -62,7 +59,7 @@ trust = "trust.json"
 port = 13000
 endpoints = [{ serial = "0", family = "ip4" }]
 [dial]
-to = [{ name = "gateway" }]
+to = ["example/gateway"]
 `
 )
 
@@ -370,28 +367,30 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 // What the node itself has to say, and what it may not say twice.
 func TestNodeFactsAreRefusedWhenTheyCannotBeActedOn(t *testing.T) {
 	for name, body := range map[string]string{
-		// The peer names an org of its own, so the peer check cannot answer
-		// for this one: without that the defaults copy the node's empty org
-		// into the peer entry and the case passes with node.org unchecked.
-		"no org": strings.Replace(strings.Replace(nodeYAML, "  org: example\n", "", 1),
-			"    - name: gateway\n", "    - { org: example, name: gateway }\n", 1),
-		"no name":  strings.Replace(nodeYAML, "  name: laptop\n", "", 1),
-		"no port":  strings.Replace(nodeYAML, "  port: 13000\n", "", 1),
-		"no key":   strings.Replace(nodeYAML, "  key: key.pem\n", "", 1),
-		"no trust": strings.Replace(nodeYAML, "  trust: trust.json\n", "", 1),
+		"no node":                  strings.Replace(nodeYAML, "node: example/laptop\n", "", 1),
+		"a node with no org":       strings.Replace(nodeYAML, "node: example/laptop", "node: laptop", 1),
+		"a node of two org levels": strings.Replace(nodeYAML, "node: example/laptop", "node: example/lab/laptop", 1),
+		// the endpoints are link.endpoints, and a node written as one of them would be a second place to name them
+		"an endpoint as the node": strings.Replace(nodeYAML, "node: example/laptop", "node: example/laptop:0", 1),
+		"no port":                 strings.Replace(nodeYAML, "  port: 13000\n", "", 1),
+		"no key":                  strings.Replace(nodeYAML, "  key: key.pem\n", "", 1),
+		"no trust":                strings.Replace(nodeYAML, "  trust: trust.json\n", "", 1),
 		// Every IKE datagram here carries the non-ESP marker, and RFC 7296
 		// section 2.23 forbids UDP encapsulation on port 500, so a node naming
 		// it is one no conformant peer can talk to.
-		"port 500":     strings.Replace(nodeYAML, "port: 13000", "port: 500", 1),
-		"no endpoints": strings.Replace(nodeYAML, "  endpoints:\n    - serial: \"0\"\n      family: ip4\n", "  endpoints: []\n", 1),
-		"no peer name": strings.Replace(nodeYAML, "    - name: gateway\n", "    - org: example\n", 1),
+		"port 500":                  strings.Replace(nodeYAML, "port: 13000", "port: 500", 1),
+		"no endpoints":              strings.Replace(nodeYAML, "  endpoints:\n    - serial: \"0\"\n      family: ip4\n", "  endpoints: []\n", 1),
+		"a peer with no org":        strings.Replace(nodeYAML, "    - example/gateway\n", "    - gateway\n", 1),
+		"a peer as a table":         strings.Replace(nodeYAML, "    - example/gateway\n", "    - { org: example, name: gateway }\n", 1),
+		"a peer as a selector":      strings.Replace(nodeYAML, "    - example/gateway\n", "    - tag:router\n", 1),
+		"a duplicate endpoint peer": strings.Replace(nodeYAML, "    - example/gateway\n", "    - example/gateway:1\n    - example/gateway:1\n", 1),
 		"a duplicate endpoint": strings.Replace(nodeYAML, "    - serial: \"0\"\n      family: ip4\n",
 			"    - serial: \"0\"\n      family: ip4\n    - serial: \"0\"\n      family: ip4\n", 1),
-		"a duplicate peer":                   strings.Replace(nodeYAML, "    - name: gateway\n", "    - name: gateway\n    - name: gateway\n", 1),
+		"a duplicate peer":                   strings.Replace(nodeYAML, "    - example/gateway\n", "    - example/gateway\n    - example/gateway\n", 1),
 		"an endpoint family that is neither": strings.Replace(nodeYAML, "family: ip4", "family: ipv4", 1),
 		// A listener needs no peers, and a node with neither does nothing at
 		// all.
-		"nothing to dial and nothing listening": strings.Replace(nodeYAML, "dial:\n  to:\n    - name: gateway\n", "", 1),
+		"nothing to dial and nothing listening": strings.Replace(nodeYAML, "dial:\n  to:\n    - example/gateway\n", "", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadYAML(t, body); err == nil {
@@ -400,7 +399,7 @@ func TestNodeFactsAreRefusedWhenTheyCannotBeActedOn(t *testing.T) {
 		})
 	}
 	// The two that make a node with no peers legitimate.
-	alone := strings.Replace(nodeYAML, "dial:\n  to:\n    - name: gateway\n", "", 1)
+	alone := strings.Replace(nodeYAML, "dial:\n  to:\n    - example/gateway\n", "", 1)
 	for name, body := range map[string]string{
 		"a listener": strings.Replace(alone, "  port: 13000\n", "  port: 13000\n  listen: true\n", 1),
 		"dial.all":   alone + "dial:\n  all: true\n",
@@ -410,6 +409,47 @@ func TestNodeFactsAreRefusedWhenTheyCannotBeActedOn(t *testing.T) {
 				t.Errorf("a node that answers or dials everybody was refused: %v", err)
 			}
 		})
+	}
+}
+
+// node and each dial.to entry are written as their text under either decoder, and dial.to takes a node and an endpoint of another
+func TestNodeAndPeersReadAsIdentities(t *testing.T) {
+	want := []identity.Identity{identity.MustParse("example/gateway"), identity.MustParse("other/relay:1")}
+	for name, body := range map[string]string{
+		".yaml": strings.Replace(nodeYAML, "    - example/gateway\n", "    - example/gateway\n    - other/relay:1\n", 1),
+		".toml": strings.Replace(nodeTOML, `to = ["example/gateway"]`, `to = ["example/gateway", "other/relay:1"]`, 1),
+	} {
+		cfg, err := load(t, name, body)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if cfg.Node != identity.MustParse("example/laptop") || !slices.Equal(cfg.Dial.To, want) {
+			t.Errorf("%s read node %s and dial.to %v, want example/laptop and %v", name, cfg.Node, cfg.Dial.To, want)
+		}
+	}
+}
+
+// a null dial.to entry names nobody, where yaml.v3 would drop it from the list and encoding/json reads it as the zero identity
+// a null after a named peer is refused as one before it is
+func TestDialToRefusesAnEntryThatNamesNobody(t *testing.T) {
+	const asJSON = `{"node":"example/laptop","auth":{"key":"key.pem","trust":"trust.json"},` +
+		`"link":{"port":13000,"endpoints":[{"serial":"0","family":"ip4"}]},"dial":{"to":[null,"other/relay"]}}`
+	for name, file := range map[string]struct{ extension, body string }{
+		"yaml, null first":        {".yaml", strings.Replace(nodeYAML, "    - example/gateway\n", "    - ~\n    - other/relay\n", 1)},
+		"yaml, null after a peer": {".yaml", strings.Replace(nodeYAML, "    - example/gateway\n", "    - other/relay\n    - ~\n", 1)},
+		"json, null first":        {".json", asJSON},
+		"json, null after a peer": {".json", strings.Replace(asJSON, `[null,"other/relay"]`, `["other/relay",null]`, 1)},
+	} {
+		if _, err := load(t, file.extension, file.body); err == nil || !strings.Contains(err.Error(), "a dial.to entry names nobody") {
+			t.Errorf("%s: a file whose dial.to holds a null entry was answered with %v", name, err)
+		}
+	}
+	var cfg Config
+	if err := json.Unmarshal([]byte(asJSON), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "a dial.to entry names nobody") {
+		t.Errorf("a null dial.to entry read by encoding/json was answered with %v", err)
 	}
 }
 
@@ -654,8 +694,8 @@ func TestRefusalsNameTheBlockTheOperatorWrote(t *testing.T) {
 // the number is also found through an anchor and its alias, and under a key written as an alias or as !!binary, which the decoder reads through
 // a merge key is refused whatever it merges, since the walk does not follow it and toml and json cannot spell it
 func TestIntegerFieldRefusesANumberThatIsNotWhole(t *testing.T) {
-	const asJSON = `{"node":{"org":"example","name":"laptop"},"auth":{"key":"key.pem","trust":"trust.json"},` +
-		`"link":{"port":%s,"endpoints":[{"serial":"0","family":"ip4"}]},"dial":{"to":[{"name":"gateway"}]}}`
+	const asJSON = `{"node":"example/laptop","auth":{"key":"key.pem","trust":"trust.json"},` +
+		`"link":{"port":%s,"endpoints":[{"serial":"0","family":"ip4"}]},"dial":{"to":["example/gateway"]}}`
 	type row struct{ extension, body, field string }
 	// refuses wants the file refused with an error reading "line N: " and then text, N being the line field is written on
 	refuses := func(t *testing.T, test row, text string) {
@@ -679,10 +719,10 @@ func TestIntegerFieldRefusesANumberThatIsNotWhole(t *testing.T) {
 				".yaml", nodeYAML + "cap:\n  table:\n    rules:\n      - to: 10.0.0.0/8\n        table: 200\n        priority: " + written + "\n", "priority:"},
 			// the anchor sits on a field that takes any text, and the alias carries the number into one that takes a whole one
 			"a port read through an alias": {
-				".yaml", strings.NewReplacer("name: laptop", "name: &n "+written, "port: 13000", "port: *n").Replace(nodeYAML), "&n"},
+				".yaml", strings.NewReplacer("key: key.pem", "key: &n "+written, "port: 13000", "port: *n").Replace(nodeYAML), "&n"},
 			// the anchor holds the word port, which is the key the number is written under
 			"a port under a key written as an alias": {
-				".yaml", strings.NewReplacer("name: laptop", "name: &k port", "port: 13000", "*k : "+written).Replace(nodeYAML), "*k"},
+				".yaml", strings.NewReplacer("key: key.pem", "key: &k port", "port: 13000", "*k : "+written).Replace(nodeYAML), "*k"},
 			// cG9ydA== is the word port in base64, which the decoder reads a !!binary key as
 			"a port under a key written as !!binary": {
 				".yaml", strings.Replace(nodeYAML, "port: 13000", "!!binary cG9ydA==: "+written, 1), "!!binary"},
@@ -845,11 +885,9 @@ func TestBlockPresenceAgreesAcrossDecoders(t *testing.T) {
 // taken and rendered into a file that does not load or loads as another node.
 func TestValidateRefusesAStringThatIsNotText(t *testing.T) {
 	for path, change := range map[string]func(*Config){
-		"node.name":             func(c *Config) { c.Node.Name = "lap\xfftop" },
 		"auth.key":              func(c *Config) { c.Auth.Key = "key\xfe.pem" },
 		"link.tun":              func(c *Config) { c.Link.TUN = "ranet\xff" },
 		"link.endpoints.serial": func(c *Config) { c.Link.Endpoints[0].Serial = "\xc3" },
-		"dial.to.name":          func(c *Config) { c.Dial.To[0].Name = "gate\xffway" },
 		"cap.table.vrf.name":    func(c *Config) { c.Cap.Table.VRF.Name = "mesh\xff" },
 	} {
 		t.Run(path, func(t *testing.T) {
@@ -1153,7 +1191,7 @@ func fullConfig() Config {
 	margin, jitter := schema.Duration(3*time.Minute), schema.Duration(30*time.Second)
 	retryFirst, retryMax := schema.Duration(7*time.Second), schema.Duration(11*time.Minute)
 	return Config{
-		Node: Node{Org: "example", Name: "laptop"},
+		Node: identity.MustParse("example/laptop"),
 		Auth: Auth{Key: "key.pem", Trust: "trust.json"},
 		Link: Link{
 			Port:      13000,
@@ -1163,7 +1201,7 @@ func fullConfig() Config {
 			MTU:       8918,
 			Underlay:  transport.Underlay{Mark: 0x726c, Bind: true},
 		},
-		Dial: Dial{All: true, To: []Peer{{Org: "example", Name: "gateway", Serial: "1"}}},
+		Dial: Dial{All: true, To: []identity.Identity{identity.MustParse("example/gateway:1")}},
 		Cap: Caps{
 			Route: &babel.Routes{
 				Announce: []schema.Announce{
@@ -1275,7 +1313,7 @@ func TestEveryWrittenFieldSurvivesEachEncoder(t *testing.T) {
 		t.Fatalf("fullConfig leaves %d field(s) at zero, so no encoder below is asked to carry them: %s",
 			len(missing), strings.Join(missing, ", "))
 	}
-	sameAfterEachEncoder(t, want, want)
+	sameAfterEachEncoder(t, want)
 }
 
 // difference names the first field at which got parts from want, in the path
@@ -1324,12 +1362,10 @@ func shown(value reflect.Value, verb string) string {
 
 // sameAfterEachEncoder renders drawn under each file encoder, loads each
 // rendering the way the daemon loads its file and fails at the first one that
-// reads back anything but want, naming the setting it changed. want is drawn
-// with the documented default filled in by defaulted. The json rendering is
-// read by the control plane's own decoder as well, which fills in no default
-// and so has to read back drawn, since the file and the wire form are one
-// schema.
-func sameAfterEachEncoder(tb testing.TB, drawn, want Config) {
+// reads back anything but drawn, naming the setting it changed. The json
+// rendering is read by the control plane's own decoder as well, since the file
+// and the wire form are one schema.
+func sameAfterEachEncoder(tb testing.TB, drawn Config) {
 	tb.Helper()
 	for _, encoder := range encoders {
 		body, err := encoder.render(&drawn)
@@ -1340,15 +1376,8 @@ func sameAfterEachEncoder(tb testing.TB, drawn, want Config) {
 		if err != nil {
 			tb.Fatalf("%s refused the configuration it rendered:\n%s\n%v", encoder.extension, body, err)
 		}
-		// a peer org the file wrote reads back as written, whatever the
-		// default does for one the file left out
-		for i, peer := range drawn.Dial.To {
-			if peer.Org != "" && i < len(got.Dial.To) && got.Dial.To[i].Org != peer.Org {
-				tb.Fatalf("%s read dial.to[%d] org %q as %q, from\n%s", encoder.extension, i, peer.Org, got.Dial.To[i].Org, body)
-			}
-		}
-		if !reflect.DeepEqual(*got, want) {
-			tb.Fatalf("%s read back %s, from\n%s", encoder.extension, difference(reflect.ValueOf(want), reflect.ValueOf(*got), ""), body)
+		if !reflect.DeepEqual(*got, drawn) {
+			tb.Fatalf("%s read back %s, from\n%s", encoder.extension, difference(reflect.ValueOf(drawn), reflect.ValueOf(*got), ""), body)
 		}
 		if encoder.extension != ".json" {
 			continue
@@ -1425,6 +1454,9 @@ func unwritten(value reflect.Value, path string) []string {
 // reports a difference no block it was probing had caused.
 func oneEndpoint() Link { return Link{Endpoints: []Endpoint{{Serial: "0", Family: "ip4"}}} }
 
+// laptop is the node a probe of another block names, since the zero identity has no text to render
+var laptop = identity.MustParse("example/laptop")
+
 // spellsItself reports a type writing itself as one value rather than as the
 // fields behind it, by either of the two marshalers this tree's encoders
 // consult.
@@ -1467,9 +1499,9 @@ func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 		"cap.crypto rekey retry": ike.Rekey{Retry: ike.Retry{First: &retryFirst}},
 		"cap.babel cost":         babel.Config{Cost: babel.CostOptions{Rx: &rx}},
 		"cap.babel cost rtt":     babel.CostOptions{RTT: babel.RTTOptions{Min: &rttMin}},
-		"dial":                   Config{Link: oneEndpoint(), Dial: Dial{All: true}},
-		"cap":                    Config{Link: oneEndpoint(), Cap: Caps{Crypto: &ike.Crypto{Replay: &replay}}},
-		"link underlay": Config{Link: Link{
+		"dial":                   Config{Node: laptop, Link: oneEndpoint(), Dial: Dial{All: true}},
+		"cap":                    Config{Node: laptop, Link: oneEndpoint(), Cap: Caps{Crypto: &ike.Crypto{Replay: &replay}}},
+		"link underlay": Config{Node: laptop, Link: Link{
 			Endpoints: oneEndpoint().Endpoints,
 			Underlay:  transport.Underlay{Mark: 0x726c},
 		}},
@@ -1537,7 +1569,7 @@ func TestUnwrittenBlockLeavesNoKey(t *testing.T) {
 		"cap.crypto rekey": {ike.Rekey{}, []string{"retry"}},
 		"cap.babel cost":   {babel.CostOptions{}, []string{"rtt"}},
 		"link":             {oneEndpoint(), []string{"underlay"}},
-		"config":           {Config{Link: oneEndpoint()}, []string{"dial", "cap", "underlay"}},
+		"config":           {Config{Node: laptop, Link: oneEndpoint()}, []string{"dial", "cap", "underlay"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, encoder := range encoders {

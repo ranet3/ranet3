@@ -49,7 +49,6 @@ func Forwarding() (v4, v6 bool) { return forwardingEnabled() }
 
 func (c *Client) Status() control.Status {
 	cfg := c.config()
-	ids, _ := configIdentities(cfg)
 	organizations, nodes := c.index().Size()
 	stats := c.speaker.Stats()
 	alive := 0
@@ -70,7 +69,7 @@ func (c *Client) Status() control.Status {
 	}
 	return control.Status{
 		Version:      version.String(),
-		Node:         ids.node.String(),
+		Node:         cfg.Node.String(),
 		Port:         cfg.Link.Port,
 		Endpoints:    endpoints,
 		TUN:          c.Mesh.Name,
@@ -283,11 +282,7 @@ func (c *Client) Sessions() []control.Session {
 
 func (c *Client) Peers() []control.Peer {
 	cfg := c.config()
-	ids, err := configIdentities(cfg)
-	if err != nil {
-		return nil
-	}
-	live, wanted := c.sessions.snapshot(), dials(cfg, ids, c.index())
+	live, wanted := c.sessions.snapshot(), dials(cfg, c.index())
 	out := make([]control.Peer, 0, len(wanted))
 	for _, d := range wanted {
 		out = append(out, control.Peer{Path: d.path, Peer: d.peer.String(), Connected: connected(live, d), Generated: d.generated})

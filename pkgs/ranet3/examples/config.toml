@@ -14,10 +14,10 @@
 # one by removing the "# " and nothing else, together with the headers above
 # it.
 
-[node]
-# Both halves have to match an entry in the document auth.trust names.
-org = "example"
-name = "my-laptop"
+# Who this node is, organization/name, a node the document auth.trust names. A
+# byte outside letters, digits, "-", ".", "_" and "~" is written as % and two
+# uppercase hex digits, a space in a name as %20.
+node = "example/my-laptop"
 
 [auth]
 # This node's own key, a PKCS8 PEM Ed25519 file, and the document saying who
@@ -84,10 +84,11 @@ endpoints = [{ serial = "0", family = "ip4" }]
 # which is the only way to pin a serial.
 # all = true
 
-# One or more existing mesh nodes to dial. Each local endpoint only dials
-# remote endpoints of the same address family. org defaults to node.org, and
-# serial picks one endpoint of a node that has several.
-to = [{ name = "gateway", serial = "0" }]
+# One or more existing mesh nodes to dial, each written in full as
+# organization/name, or as organization/name:serial to dial one endpoint of a
+# node that has several. Each local endpoint only dials remote endpoints of the
+# same address family.
+to = ["example/gateway:0"]
 
 # What this node puts into the mesh. A node that announces nothing consumes
 # routes and originates none.

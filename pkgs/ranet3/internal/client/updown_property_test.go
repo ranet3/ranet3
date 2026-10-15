@@ -21,6 +21,7 @@ import (
 	"hegel.dev/go/hegel"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
@@ -116,12 +117,12 @@ func newUpDownRig(ht *hegel.T) *upDownRig {
 	writeRegistry(t, trustPath, r.reg)
 	for i, count := range r.peerCounts {
 		cfg := &config.Config{
-			Node: config.Node{Org: "example", Name: local},
+			Node: identity.MustParse("example/" + local),
 			Auth: config.Auth{Key: keyPath, Trust: trustPath},
 			Link: config.Link{Port: ports[0], Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}, Listen: true},
 		}
 		for _, peer := range names[1 : 1+count] {
-			cfg.Dial.To = append(cfg.Dial.To, config.Peer{Org: "example", Name: peer, Serial: "0"})
+			cfg.Dial.To = append(cfg.Dial.To, identity.MustParse("example/"+peer+":0"))
 		}
 		r.files[i] = filepath.Join(dir, fmt.Sprintf("config-%d.yaml", i))
 		writeConfig(t, r.files[i], cfg)

@@ -214,9 +214,7 @@ func startUTUN(t *testing.T, stateDir string) *utunNode {
 	dir := t.TempDir()
 	keyPath, trustPath, path := filepath.Join(dir, "key.pem"), filepath.Join(dir, "registry.json"), filepath.Join(dir, "config.yaml")
 	port := freeUDPPort(t)
-	body := fmt.Sprintf(`node:
-  org: example
-  name: laptop
+	body := fmt.Sprintf(`node: example/laptop
 auth:
   key: %s
   trust: %s

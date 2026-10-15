@@ -21,13 +21,9 @@ import (
 func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 	cfg := c.config()
 	crypto := cfg.Crypto()
-	ids, err := configIdentities(cfg)
-	if err != nil {
-		return 0, err
-	}
 	responder, err := ike.NewResponder(ike.ResponderConfig{
 		Hub:                c.hub,
-		Local:              ids.endpoints,
+		Local:              cfg.LocalEndpoints(),
 		LocalPrivateKey:    c.privateKey,
 		Trust:              liveTrust{c},
 		ChildRekeyInterval: crypto.ChildInterval(),

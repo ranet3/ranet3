@@ -507,9 +507,7 @@ func loadDaemonConfig(t *testing.T, bind bool) *config.Config {
 	if bind {
 		underlay = "  underlay:\n    bind: true\n"
 	}
-	body := fmt.Sprintf(`node:
-  org: example
-  name: laptop
+	body := fmt.Sprintf(`node: example/laptop
 auth:
   key: %s
   trust: %s
@@ -520,8 +518,7 @@ link:
       family: ip4
 %sdial:
   to:
-    - name: gateway
-      serial: "1"
+    - example/gateway:1
 cap:
   route:
     announce:

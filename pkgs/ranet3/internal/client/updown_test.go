@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/events"
@@ -89,7 +90,7 @@ func flagOf(c *Client) string { return filepath.Join(c.stateDir, downFlag) }
 func downable(t *testing.T, dir string) (*Client, *switchRecord, *switchRecord) {
 	t.Helper()
 	c := writable(t)
-	c.cfg.Store(&config.Config{Node: config.Node{Org: "example", Name: "node"}})
+	c.cfg.Store(&config.Config{Node: identity.MustParse("example/node")})
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx, c.cancel, c.events = ctx, cancel, events.New()
 	t.Cleanup(func() { cancel(); c.peers.Wait() })
@@ -533,7 +534,7 @@ func TestDownSaysNothingAboutReconnecting(t *testing.T) {
 		t.Fatal(err)
 	}
 	// bravo loses its peer and says it will retry, as it should, so only the lines naming the peer of alpha count
-	dialingBravo := fmt.Sprintf("peer %s/%s", alpha.cfg.Node.Org, bravo.name)
+	dialingBravo := "peer " + bravo.cfg.Node.String()
 	for _, line := range written.lines("reconnecting in") {
 		if strings.Contains(line, dialingBravo) {
 			t.Errorf("the down wrote %q", line)

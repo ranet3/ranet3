@@ -42,10 +42,7 @@ let
     );
 
   settings = {
-    node = {
-      org = organization;
-      name = "machine";
-    };
+    node = "${organization}/machine";
     auth = {
       key = "/etc/ranet3/key.pem";
       trust = "${trust [ (member "1" "machine") ]}";

@@ -65,12 +65,19 @@ func TestIdentityRoundTripsThroughItsCanonicalForm(t *testing.T) {
 			ht.Fatalf("Parse(%q) = %#v, %v, want %#v", text, got, err, id)
 		}
 		serial := drawPart(ht, 0)
-		at, err := id.At(serial)
-		if err != nil || at.Node() != id.Node() {
-			ht.Fatalf("%#v at %q is %#v, %v, whose node is not %#v", id, serial, at, err, id.Node())
+		if at := id.At(serial); at.Node() != id.Node() {
+			ht.Fatalf("%#v at %q is %#v, whose node is not %#v", id, serial, at, id.Node())
+		}
+		var read Identity
+		if written, err := id.MarshalText(); err != nil || read.UnmarshalText(written) != nil || read != id {
+			ht.Fatalf("%#v is written %q, %v, and read back as %#v", id, written, err, read)
 		}
 		if (id.Node() == id) != (id.serial == "") {
 			ht.Fatalf("%#v reads as a node %v", id, id.Node() == id)
+		}
+		organization, name := id.NodeParts()
+		if node, err := From(organization, name, ""); err != nil || node != id.Node() {
+			ht.Fatalf("%#v has the node parts %q and %q, which name %#v, %v", id, organization, name, node, err)
 		}
 	})
 }

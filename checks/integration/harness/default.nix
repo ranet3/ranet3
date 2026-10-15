@@ -432,10 +432,7 @@ testers.runNixOSTest {
             "127.0.0.1:6060"
           ];
           settings = {
-            node = {
-              org = "testorg";
-              name = "client";
-            };
+            node = "testorg/client";
             auth = {
               key = "/etc/ranet3/key.pem";
               trust = "/etc/ranet3/registry.json";
@@ -452,12 +449,7 @@ testers.runNixOSTest {
               listen = pkgs.lib.mkIf responder true;
             };
             dial = pkgs.lib.mkIf (!responder) {
-              to = [
-                {
-                  name = "server";
-                  serial = "1";
-                }
-              ];
+              to = [ "testorg/server:1" ];
             };
             cap = {
               route.announce = [

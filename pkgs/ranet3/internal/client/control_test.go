@@ -35,7 +35,7 @@ func TestSegmentCountersDoNotDrift(t *testing.T) {
 // a check Validate makes once every capability has passed its own needs the rest of the file to pass as well
 func loadable(segment *srv6.Segments) *config.Config {
 	return &config.Config{
-		Node: config.Node{Org: "example", Name: "node"},
+		Node: identity.MustParse("example/node"),
 		Auth: config.Auth{Key: "key.pem", Trust: "trust.json"},
 		Link: config.Link{
 			Port:      13000,
@@ -158,9 +158,9 @@ func TestPeersMatchSessionsByNodeAndLocalEndpoint(t *testing.T) {
 		{CommonName: "other", Endpoints: endpoints("0", "3")},
 	}}}))
 	c.cfg.Store(&config.Config{
-		Node: config.Node{Org: "example", Name: "local"},
+		Node: identity.MustParse("example/local"),
 		Link: config.Link{Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}, {Serial: "1", Family: "ip6"}}},
-		Dial: config.Dial{To: []config.Peer{{Org: "example", Name: "gateway", Serial: "1"}}, All: true},
+		Dial: config.Dial{To: []identity.Identity{identity.MustParse("example/gateway:1")}, All: true},
 	})
 	for _, held := range []struct{ remote, local string }{{"example/gateway:1", "example/local:0"}, {"example/other:3", "example/local:1"}} {
 		remote, local := identity.MustParse(held.remote), identity.MustParse(held.local)

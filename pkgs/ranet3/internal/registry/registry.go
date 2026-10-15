@@ -152,11 +152,7 @@ func New(document Registry) (*Index, error) {
 			}
 			indexed := indexedNode{key: key}
 			for _, endpoint := range node.Endpoints {
-				at, err := id.At(endpoint.SerialNumber)
-				if err != nil {
-					return nil, err
-				}
-				indexed.targets = append(indexed.targets, Target{ID: at, Endpoint: endpoint})
+				indexed.targets = append(indexed.targets, Target{ID: id.At(endpoint.SerialNumber), Endpoint: endpoint})
 				if !endpoint.Dialable() {
 					continue
 				}
