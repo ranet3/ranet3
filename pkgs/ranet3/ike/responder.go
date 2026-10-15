@@ -357,11 +357,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	if err := session.SetRekeyIntervals(r.cfg.ChildRekeyInterval, r.cfg.IKERekeyInterval); err != nil {
 		return nil, Accepted{}, err
 	}
-	retryInitial, retryMax := r.cfg.RekeyRetryInitial, r.cfg.RekeyRetryMax
-	if retryInitial == 0 && retryMax == 0 {
-		retryInitial, retryMax = DefaultRetryFirst, DefaultRetryMax
-	}
-	if err := session.SetRekeyRetry(retryInitial, retryMax); err != nil {
+	if err := session.SetRekeyRetry(r.cfg.RekeyRetryInitial, r.cfg.RekeyRetryMax); err != nil {
 		return nil, Accepted{}, err
 	}
 	session.events, session.local, session.remote = r.cfg.Events, accepted.Local, accepted.Peer
