@@ -77,6 +77,10 @@ func sendRecvWithin(mux *transport.Mux, req []byte, attempts int, accept func([]
 		for time.Now().Before(deadline) {
 			raw, err := mux.RecvIKEUntil(deadline)
 			if err != nil {
+				// a closed mux still sends, so its exchange ends here instead of retransmitting
+				if mux.IsClosed() {
+					return nil, err
+				}
 				break // timeout, retransmit
 			}
 			h, err := decodeHeader(raw)
