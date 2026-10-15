@@ -381,6 +381,10 @@
     .even {
       color: var(--mute);
     }
+    .reftab thead th:first-child {
+      padding-left: 0;
+      text-align: left;
+    }
     tr.us > * {
       font-weight: 700;
       color: var(--acc);
@@ -504,6 +508,30 @@
       .score th,
       .score td {
         padding-right: 1ch;
+      }
+      .arms th,
+      .arms td {
+        padding-right: 1.5ch;
+      }
+      .bt table {
+        font-size: .85em;
+        white-space: normal;
+      }
+      .bt th,
+      .bt td {
+        min-width: 0;
+        padding-inline: .6ch;
+      }
+      .bt tbody th {
+        padding-left: 0;
+      }
+      .setup {
+        grid-template-columns: max-content 1fr;
+      }
+    }
+    @media (max-width: 340px) {
+      .cd {
+        display: none;
       }
     }
     </style>
@@ -672,21 +700,21 @@
           <table class="reftab">
             <thead>
               <tr>
-                <th scope="col"></th>
-                <th scope="col">One way<small>1 stream, Gbit/s</small></th>
-                <th scope="col">Both ways<small>1 stream, Gbit/s</small></th>
+                <th scope="col"><small>1 stream, Gbit/s</small></th>
+                <th scope="col">One way</th>
+                <th scope="col">Both ways</th>
                 <th scope="col">Share of line<small>one way</small></th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <th scope="row">Line limit (10 GbE)</th>
+                <th scope="row">Line limit <span class="nw">(10 GbE)</span></th>
                 <td>8.84</td>
                 <td>18.76<sup>*</sup></td>
                 <td>100%</td>
               </tr>
               <tr>
-                <th scope="row">Kernel, best of 2</th>
+                <th scope="row">Kernel, <span class="nw">best of 2</span></th>
                 <td>5.35</td>
                 <td>7.46</td>
                 <td>61%</td>
@@ -727,7 +755,7 @@
               </thead>
               <tbody>
                 <tr>
-                  <th scope="row">1 stream, out</th>
+                  <th scope="row"><span class="nw">1 stream,</span> out</th>
                   <td
                     class="us best">8.39<span class="b" style="--w:100%"></span></td>
                   <td>6.77<span class="b" style="--w:80.7%"></span></td>
@@ -735,7 +763,7 @@
                   <td>4.67<span class="b" style="--w:55.7%"></span></td>
                 </tr>
                 <tr>
-                  <th scope="row">1 stream, in</th>
+                  <th scope="row"><span class="nw">1 stream,</span> in</th>
                   <td
                     class="us best">8.37<span class="b" style="--w:100%"></span></td>
                   <td>6.95<span class="b" style="--w:83%"></span></td>
@@ -743,7 +771,7 @@
                   <td>4.44<span class="b" style="--w:53%"></span></td>
                 </tr>
                 <tr>
-                  <th scope="row">1 stream, both</th>
+                  <th scope="row"><span class="nw">1 stream,</span> both</th>
                   <td
                     class="us best">14.87<span class="b" style="--w:100%"></span></td>
                   <td>10.78<span class="b" style="--w:72.5%"></span></td>
@@ -753,7 +781,7 @@
               </tbody>
               <tbody>
                 <tr>
-                  <th scope="row">8 streams, out</th>
+                  <th scope="row"><span class="nw">8 streams,</span> out</th>
                   <td
                     class="us best">8.52<span class="b" style="--w:100%"></span></td>
                   <td>6.06<span class="b" style="--w:71.1%"></span></td>
@@ -761,7 +789,7 @@
                   <td>3.97<span class="b" style="--w:46.6%"></span></td>
                 </tr>
                 <tr>
-                  <th scope="row">8 streams, in</th>
+                  <th scope="row"><span class="nw">8 streams,</span> in</th>
                   <td
                     class="us best">8.48<span class="b" style="--w:100%"></span></td>
                   <td>6.72<span class="b" style="--w:79.2%"></span></td>
@@ -769,7 +797,7 @@
                   <td>4.06<span class="b" style="--w:47.9%"></span></td>
                 </tr>
                 <tr>
-                  <th scope="row">8 streams, both</th>
+                  <th scope="row"><span class="nw">8 streams,</span> both</th>
                   <td
                     class="us best">15.79<span class="b" style="--w:100%"></span></td>
                   <td>10.33<span class="b" style="--w:65.4%"></span></td>
@@ -795,7 +823,7 @@
               </thead>
               <tbody>
                 <tr>
-                  <th scope="row">1 stream, out</th>
+                  <th scope="row"><span class="nw">1 stream,</span> out</th>
                   <td
                     class="us">0.909<span class="b" style="--w:60.2%"></span></td>
                   <td>1.079<span class="b" style="--w:71.4%"></span></td>
@@ -804,7 +832,7 @@
                     class="best">0.672<span class="b" style="--w:44.5%"></span></td>
                 </tr>
                 <tr>
-                  <th scope="row">1 stream, in</th>
+                  <th scope="row"><span class="nw">1 stream,</span> in</th>
                   <td
                     class="us">0.925<span class="b" style="--w:60.7%"></span></td>
                   <td>1.092<span class="b" style="--w:71.6%"></span></td>
@@ -813,7 +841,7 @@
                     class="best">0.664<span class="b" style="--w:43.5%"></span></td>
                 </tr>
                 <tr>
-                  <th scope="row">1 stream, both</th>
+                  <th scope="row"><span class="nw">1 stream,</span> both</th>
                   <td
                     class="us">0.898<span class="b" style="--w:59.7%"></span></td>
                   <td>0.996<span class="b" style="--w:66.2%"></span></td>
@@ -824,7 +852,7 @@
               </tbody>
               <tbody>
                 <tr>
-                  <th scope="row">8 streams, out</th>
+                  <th scope="row"><span class="nw">8 streams,</span> out</th>
                   <td
                     class="us">0.996<span class="b" style="--w:57.2%"></span></td>
                   <td>1.213<span class="b" style="--w:69.7%"></span></td>
@@ -833,7 +861,7 @@
                     class="best">0.845<span class="b" style="--w:48.6%"></span></td>
                 </tr>
                 <tr>
-                  <th scope="row">8 streams, in</th>
+                  <th scope="row"><span class="nw">8 streams,</span> in</th>
                   <td
                     class="us">0.990<span class="b" style="--w:56.6%"></span></td>
                   <td>1.182<span class="b" style="--w:67.6%"></span></td>
@@ -842,7 +870,7 @@
                     class="best">0.866<span class="b" style="--w:49.5%"></span></td>
                 </tr>
                 <tr>
-                  <th scope="row">8 streams, both</th>
+                  <th scope="row"><span class="nw">8 streams,</span> both</th>
                   <td
                     class="us">0.948<span class="b" style="--w:63.2%"></span></td>
                   <td>1.087<span class="b" style="--w:72.5%"></span></td>
@@ -871,7 +899,7 @@
               </thead>
               <tbody>
                 <tr>
-                  <th scope="row">1 stream, out</th>
+                  <th scope="row"><span class="nw">1 stream,</span> out</th>
                   <td
                     class="us">2.01<span class="b" style="--w:95.7%"></span></td>
                   <td>2.10<span class="b" style="--w:100%"></span></td>
@@ -880,7 +908,7 @@
                     class="best">1.04<span class="b" style="--w:49.5%"></span></td>
                 </tr>
                 <tr>
-                  <th scope="row">1 stream, in</th>
+                  <th scope="row"><span class="nw">1 stream,</span> in</th>
                   <td
                     class="us">1.91<span class="b" style="--w:87.6%"></span></td>
                   <td>2.18<span class="b" style="--w:100%"></span></td>
@@ -889,7 +917,7 @@
                   <td>1.23<span class="b" style="--w:56.4%"></span></td>
                 </tr>
                 <tr>
-                  <th scope="row">1 stream, both</th>
+                  <th scope="row"><span class="nw">1 stream,</span> both</th>
                   <td
                     class="us">3.17<span class="b" style="--w:100%"></span></td>
                   <td>3.15<span class="b" style="--w:99.4%"></span></td>
@@ -900,7 +928,7 @@
               </tbody>
               <tbody>
                 <tr>
-                  <th scope="row">8 streams, out</th>
+                  <th scope="row"><span class="nw">8 streams,</span> out</th>
                   <td
                     class="us">2.77<span class="b" style="--w:16.9%"></span></td>
                   <td>16.40<span class="b" style="--w:100%"></span></td>
@@ -909,7 +937,7 @@
                   <td>1.53<span class="b" style="--w:9.3%"></span></td>
                 </tr>
                 <tr>
-                  <th scope="row">8 streams, in</th>
+                  <th scope="row"><span class="nw">8 streams,</span> in</th>
                   <td
                     class="us">2.86<span class="b" style="--w:56.2%"></span></td>
                   <td>5.09<span class="b" style="--w:100%"></span></td>
@@ -918,7 +946,7 @@
                   <td>1.50<span class="b" style="--w:29.5%"></span></td>
                 </tr>
                 <tr>
-                  <th scope="row">8 streams, both</th>
+                  <th scope="row"><span class="nw">8 streams,</span> both</th>
                   <td
                     class="us">4.96<span class="b" style="--w:64.5%"></span></td>
                   <td>7.69<span class="b" style="--w:100%"></span></td>
