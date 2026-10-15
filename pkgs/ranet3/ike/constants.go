@@ -26,6 +26,8 @@ const (
 	maxRetransmitsWhileBusy = 20
 	// the responder discards an IKE SA whose bundled Child SA failed, so its silence to the Delete closing one says nothing
 	teardownRetransmits = 2
+	// a responder that answered IKE_AUTH holds the SA until told, so a canceled initiator gives the answer one request's timeout
+	canceledAuthWait = requestTimeout
 
 	defaultDPDInterval = 10 * time.Second
 	// one interval of silence draws a probe, and the second leaves the probe time to be answered
