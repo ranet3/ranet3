@@ -4,15 +4,15 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-10-14
+updated: 2026-10-16
 order: 60
 ---
 
-The fleet's SRv6 is `ip route ... encap seg6local`, which is a linux facility
-and only a linux facility: darwin has no segment routing, and a
-`NEPacketTunnelProvider` or a `VpnService` is handed a tun and a list of routes
-and never sees a forwarding table. Waiting for each platform's kernel would mean
-segment routing on one of the four.
+Kernel SRv6 is `ip route ... encap seg6` and `encap seg6local`, which only Linux
+has. macOS has no segment routing. A `NEPacketTunnelProvider` on iOS or a
+`VpnService` on Android is handed a tun and a list of routes and never sees a
+forwarding table. Waiting for each platform's kernel would mean segment routing
+on 1 of the 4.
 
 It does not have to be the kernel's, because this process is already the
 dataplane. A packet leaving a node is read off the tun here, routed here and
@@ -24,79 +24,154 @@ is acted on before it reaches the tun. `srv6` implements
 [RFC 8986](https://www.rfc-editor.org/rfc/rfc8986)'s H.Encaps, End and End.DT46,
 and the same code runs on every platform.
 
+[The configuration reference](configuration-reference.md) lists every key under
+`cap.segment`.
+
+## Local segments
+
 `cap.segment.local` names the addresses this node answers for. `End` moves a
 packet to its next segment and sends it on. `End.DT46` strips the outer header
-and hands what was inside to the stack. The spelling is the one
-`ip route ... encap seg6local action` takes, so a fleet's own SIDs move across
-unchanged. The AS10779 fleet writes `End` at `<base>6::2` and `End.DT46` at
-`<base>6::1`, with `<base>6::3` a second `End.DT46` into the egress VRF.
+and writes the inner packet, IPv4 or IPv6, to the tun. It takes no table. The
+spelling is the one `ip route ... encap seg6local action` takes, so a fleet's
+own SIDs move across unchanged.
 
-`cap.segment.steer` is which of this node's own packets go through a segment
-list. It is keyed by source and destination prefix together, the pair the
-forwarding table is keyed by, because that is the selector a steering tool on
-such a fleet uses: the traffic sourced from this node's announced address,
-through the waypoints and out at a chosen exit. An entry naming neither a source
-nor a destination is refused, since it would claim the encapsulated packets this
-node has just produced.
+Other nodes reach a SID through the mesh, so this node announces a prefix
+covering it under `cap.route`. A SID may not be an address `cap.table` assigns
+to the tun, `assign_announced` included. The daemon refuses that at load,
+because every packet to that address would be taken as a segment.
 
-Every steered packet carries its segment list inside the tunnel, and the device
-runs at `link.mtu` less the header the longest configured list puts in front of
-a packet, which leaves that header room in a session that carries `link.mtu`. A
-reload moves the device with the steering, as [reloading](reloading.md)
-describes, and a list long enough to take it under the 1280 byte minimum IPv6
-requires is refused rather than installed. Steering happens before the route
-lookup, because a steered packet is routed by the segment it is going to rather
-than by the address it was addressed to. The outer header takes its traffic
-class, flow label and hop limit from the packet it carries, as
-`__seg6_do_srh_encap` does, so a steered path costs the packet one hop per
-waypoint and a packet that arrives with nothing left to spend is answered with
-an ICMP Time Exceeded rather than dropped in silence. A packet a policy claims
-and this node does not send is dropped rather than put out by the route the
-policy exists to override, because a policy here selects an exit and that route
-puts the packet out of another node under a source it does not announce, which
-is a wrong path rather than a degraded one. There are two ways to lose one and
-`status` counts them apart: too large to encapsulate, which every other reason
-being refused when the configuration is read leaves as the only one, and no
-route to the first segment, which is the mesh rather than the configuration.
-Neither is counted against the segments this node answers for, since neither is
-anything a peer did.
+A node parses a packet only when its destination is one of its SIDs. It accepts
+a reduced header, which leaves out the segment the destination address already
+carries, and ignores TLVs after the segment list. It walks hop-by-hop and
+destination options headers to reach the routing header. It refuses a fragment
+header and a list of more than 16 segments.
 
-A waypoint sends a segment on through the session to its next segment, and when
-the segment is larger than that session carries, the waypoint answers or cuts
-the packet the segment carries, as the headend does with a packet read off its
-tun. An IPv6 packet is answered with Packet Too Big and an IPv4 one with DF set
-with fragmentation needed, naming what the session carries less the headers in
-front of the packet, and the answer goes from the packet's destination back
-through the mesh to its source. An IPv4 packet without DF is cut into fragments
-that fit, each sent on behind its own copy of the outer header and the routing
-header. A segment whose routing header names something other than the packet
-behind it, an IPv4 packet whose options do not describe themselves, and a
-segment that would be answered once the budget the answers share with Time
-Exceeded and Parameter Problem is spent are dropped without an answer. `status`
-counts a segment answered or dropped this way among the dropped, each answer
-among the answered, and each fragment of a cut segment among the forwarded.
+An `End` reached with no segments left drops the packet without an answer. So
+does an `End.DT46` reached with segments still left. When a list names several
+SIDs of one node in a row, the node acts on all of them in one pass. A TCP SYN
+or SYN-ACK that `End.DT46` delivers has its MSS clamped, as
+[path MTU](path-mtu.md) describes.
 
-No node fragments the outer packet of a steered packet: what does not fit the
-session it leaves by is answered or cut as above, and the answer names what the
-session carries less 48 bytes and 16 for each segment. A session carrying less
-than 1344 bytes, for one segment, has the answer to an IPv6 packet name less
-than 1280, which its source never takes below 1280, as
-[RFC 8201 section 4](https://www.rfc-editor.org/rfc/rfc8201.html#section-4) has
-it, so the source goes on sending packets of 1280 bytes that the session cannot
-carry steered, and each is lost. A session's budget, which `ranet3 debug pmtu`
-shows, falls under 1344 on an IPv4 path under 1408 bytes or an IPv6 one under
-1428, the 1400 byte paths of many overlays among them. IPv6 load steered through
-a headend or a waypoint whose session to the next segment runs on such a path is
-carried poorly, and steering should keep to wider paths. A node that steers logs
-a warning and records a `pmtu.steering` event when a session's budget falls
-under what a 1280-byte packet behind its longest segment list needs, naming the
-session, its budget and that need, and logs again when the budget rises back.
+## Steering
 
-A header this tree writes is one the kernel acts on, which the `segments` VM
-check holds: the client steers through a SID the gateway answers for with
-`seg6local`, `tcpdump` parses the header as `RT6 (len=2, type=4, segleft=0)`,
-and removing the SID leaves the encapsulated packet arriving with nothing coming
-out of it. The other direction, a header the kernel writes and this tree acts
-on, is held by the unit tests in `srv6` against a reconstruction of what
-`__seg6_do_srh_encap` produces, and by no VM arm: no arm configures
-`cap.segment.local`, so `End` and `End.DT46` have no end-to-end coverage.
+`cap.segment.steer` is which packets read off the tun go through a segment list.
+That covers this node's own traffic and any traffic the host forwards into the
+mesh. An entry matches on source and destination prefix together, the same pair
+the forwarding table uses. A typical entry steers traffic from this node's
+announced address through waypoints and out at a chosen exit.
+
+An entry naming neither `from` nor `to` is refused, because it would steer every
+packet this node sends. A `from` or `to` of length 0 is refused too. An entry
+whose prefixes are IPv4 steers IPv4 traffic, which travels inside an IPv6 outer
+header like any other.
+
+`ranet3 disable steering` sends every packet by the route table, as a node with
+no steer entry does. `ranet3 enable steering` turns the entries back on. Both
+are refused on a node that configures no steer entry.
+
+Every steered packet carries its segment list inside the tunnel. The tun runs at
+`link.mtu` less the header of the longest list, as
+[path MTU](path-mtu.md#the-link-mtu) describes. A reload moves the tun with the
+steering, as [reloading](reloading.md) describes. Steering happens before the
+route lookup, because a steered packet is routed by its next segment.
+
+For an IPv6 packet, the outer header copies the traffic class, flow label and
+hop limit of the packet it carries, as `__seg6_do_srh_encap` does. For an IPv4
+packet, the outer hop limit is 64 and the traffic class and flow label are 0.
+Each waypoint decrements the outer hop limit. The inner packet keeps its own hop
+limit. A waypoint that would take the outer hop limit to 0 answers the outer
+source with ICMP Time Exceeded, within the ICMP rate limit below.
+
+A packet a policy claims and this node cannot send is dropped. The ordinary
+route would put it out of another exit under a source that exit does not
+announce, which is a wrong path, not a degraded one. `status` and the scrape
+count the 2 reasons apart: too large to encapsulate, and no route to the first
+segment. Neither counts against the segments this node answers for, because
+neither is anything a peer did.
+
+## Waypoints and packet size
+
+A waypoint sends a steered packet on through the session to its next segment.
+When the steered packet is larger than that session carries, the waypoint
+answers or cuts the inner packet. The headend (the node that steered the packet)
+does the same with a packet read off its tun. An IPv6 packet gets Packet Too
+Big, and an IPv4 packet with DF set gets fragmentation needed. The answer names
+what the session carries less the headers in front of the packet. It goes from
+the packet's destination back through the mesh to its source. An IPv4 packet
+without DF is cut into fragments that fit, each sent on behind its own copy of
+the outer header and the routing header.
+
+These are dropped without an answer:
+
+- a segment whose routing header names something other than the packet behind it
+- an IPv4 packet whose options do not parse
+- a packet no ICMP error may answer: an ICMP error, or a packet from the
+  unspecified address, from a multicast address or to a multicast group
+- an IPv4 fragment other than the first, an IPv4 packet to `255.255.255.255`, or
+  an IPv4 packet from `0.0.0.0/8`, a loopback address or `240.0.0.0/4`
+- an IPv4 packet without DF that cannot be cut, because its data runs past 65535
+  bytes or the session leaves no room for 8 bytes of data behind its header
+- a packet whose answer has no route back to its source
+- a packet that would be answered past the ICMP rate limit
+
+The ICMP rate limit allows a burst of 8 answers, then 1 every 250 milliseconds.
+Time Exceeded, Parameter Problem, Packet Too Big and fragmentation needed all
+count against it. `status` counts a segment answered or dropped this way among
+the dropped, each answer among the answered, and each fragment of a cut segment
+among the forwarded. The log reports a dropped segment at most once every 30
+seconds.
+
+No node fragments the outer packet of a steered packet. What does not fit the
+session it leaves by is answered or cut as above. The answer names what the
+session carries less 48 bytes and 16 for each segment.
+
+With 1 segment and a session that carries less than 1344 bytes, the Packet Too
+Big for an IPv6 packet names less than 1280 bytes. The source never goes below
+1280 bytes
+([RFC 8201 section 4](https://www.rfc-editor.org/rfc/rfc8201.html#section-4)).
+It keeps sending 1280 byte packets, and each one steered there is lost.
+
+A session's budget, which `ranet3 debug pmtu` shows, falls under 1344 bytes on
+an IPv4 path under 1408 bytes or an IPv6 one under 1428, the 1400 byte paths of
+many overlays among them. IPv6 load steered through a headend or a waypoint
+whose session to the next segment runs on such a path is carried poorly, and
+steering should keep to wider paths.
+
+A node that steers logs a warning when a session's budget falls under what a
+1280 byte packet behind its longest segment list needs. It logs at info when the
+budget rises back. Both log lines name the session, its budget and that need.
+Each change also records a `pmtu.steering` event with `budget`, `need` and
+`under`.
+
+## Watching it
+
+`status` prints a Segments line and a Steering line. Each says `off` on a node
+that configures none. The Segments line lists the local SIDs, then the node's
+forwarded, delivered and dropped counts, and the answered count once it is above
+0. The Steering line lists the entries with the steered count, and the count for
+each reason a steered packet was lost once it is above 0.
+
+| Metric                               | Meaning                                                         |
+| ------------------------------------ | --------------------------------------------------------------- |
+| `ranet3_segments_forwarded_total`    | packets an `End` sent on to their next segment                  |
+| `ranet3_segments_delivered_total`    | packets an `End.DT46` delivered                                 |
+| `ranet3_segments_dropped_total`      | packets to a local SID this node would not act on               |
+| `ranet3_segments_answered_total`     | ICMP errors sent for refused packets                            |
+| `ranet3_steered_total`               | packets a steering entry encapsulated                           |
+| `ranet3_steer_dropped_total{reason}` | steered packets not sent, `reason` is `too_large` or `no_route` |
+
+## Interoperation with the Linux kernel
+
+The `segments` VM check runs both directions against the Linux kernel. The
+client steers through a SID the gateway answers for with `seg6local`. The
+gateway's capture shows the packet addressed to the SID and the inner packet
+after the kernel removed the header. Removing the SID leaves the encapsulated
+packet arriving with nothing coming out of it.
+
+In the other direction, the gateway's kernel encapsulates with
+`encap seg6 mode encap segs` toward a SID the client answers for with
+`End.DT46`. The check requires the client's delivered count to rise and its
+dropped count to stay where it was. No VM arm configures `End`. Unit tests in
+`srv6` check that an encapsulation copies the traffic class, flow label and hop
+limit as `__seg6_do_srh_encap` does. They also check that `End` forwards the
+reduced header `encap.red` writes.
