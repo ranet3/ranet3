@@ -54,6 +54,45 @@ func TestInitiateCancellationLeavesSharedHubOpen(t *testing.T) {
 	}
 }
 
+// an exchange whose mux closes ends at once and sends nothing more, since a closed mux still reaches the shared socket
+func TestClosedMuxEndsTheExchangeWithoutRetransmitting(t *testing.T) {
+	peer := listenPeer(t)
+	address := peer.LocalAddr().(*net.UDPAddr)
+	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+	mux, err := hub.NewMux(address.IP, address.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := encodeTestMessage(t, Header{SPIInitiator: 123, ExchangeType: IKE_SA_INIT, Flags: FlagInitiator}, nil)
+	done := make(chan error, 1)
+	go func() {
+		_, err := sendRecv(mux, request, nil)
+		done <- err
+	}()
+	buf := make([]byte, 4096)
+	peer.SetReadDeadline(time.Now().Add(answerBudget))
+	if _, _, err := peer.ReadFromUDP(buf); err != nil {
+		t.Fatal(err)
+	}
+	mux.Close()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("an exchange whose mux closed reported a response")
+		}
+	case <-time.After(answerBudget):
+		t.Fatal("the exchange kept waiting after its mux closed")
+	}
+	peer.SetReadDeadline(time.Now().Add(quietPeriod))
+	if _, _, err := peer.ReadFromUDP(buf); err == nil {
+		t.Error("the exchange retransmitted its request after its mux closed")
+	}
+}
+
 func TestFullRangeSelectorSemantics(t *testing.T) {
 	narrow := FullRangeV4()
 	narrow.EndPort = 80
