@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -47,7 +48,7 @@ type Retry struct {
 
 func (c Crypto) ReplayWindow() uint32 {
 	if c.Replay == nil {
-		return DefaultReplayWindow
+		return esp.DefaultReplayWindow
 	}
 	return *c.Replay
 }
@@ -69,8 +70,8 @@ func interval(configured *schema.Duration, fallback time.Duration) time.Duration
 // Validate refuses timings a session could not run, naming the field as the
 // operator wrote it.
 func (c Crypto) Validate() error {
-	if c.Replay != nil && *c.Replay > maxReplayWindow {
-		return fmt.Errorf("ike: cap.crypto replay must not exceed %d", uint32(maxReplayWindow))
+	if c.Replay != nil && *c.Replay > esp.MaxReplayWindow {
+		return fmt.Errorf("ike: cap.crypto replay must not exceed %d", esp.MaxReplayWindow)
 	}
 	for _, named := range []struct {
 		name     string

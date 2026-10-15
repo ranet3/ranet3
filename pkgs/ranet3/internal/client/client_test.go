@@ -1132,7 +1132,7 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 	params := base.Babel().CostEffective()
 	defaults := babel.CostOptions{Rx: &params.RxCost, RTT: babel.RTTOptions{
 		Weight: &params.RTT.Weight, Min: &params.RTT.Min, Max: &params.RTT.Max}}
-	replay := uint32(ike.DefaultReplayWindow)
+	replay := esp.DefaultReplayWindow
 
 	// Every block the reconciler is configured with once at startup, with each
 	// defaulted field written out as the value already running. These are the

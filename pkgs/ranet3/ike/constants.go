@@ -5,16 +5,14 @@ package ike
 
 import "time"
 
-// the values every Crypto accessor fills in, which a node runs with when cap.crypto is absent
+// the rekey timings the Crypto accessors fill in, which a node runs with when cap.crypto is absent
 const (
-	DefaultReplayWindow = 4096
-	DefaultChildRekey   = time.Hour
-	DefaultIKERekey     = 3 * time.Hour
-	DefaultRekeyMargin  = 5 * time.Minute
-	DefaultRekeyJitter  = time.Minute
-	DefaultRetryFirst   = 5 * time.Second
-	DefaultRetryMax     = 5 * time.Minute
-	maxReplayWindow     = 1 << 20
+	DefaultChildRekey  = time.Hour
+	DefaultIKERekey    = 3 * time.Hour
+	DefaultRekeyMargin = 5 * time.Minute
+	DefaultRekeyJitter = time.Minute
+	DefaultRetryFirst  = 5 * time.Second
+	DefaultRetryMax    = 5 * time.Minute
 )
 
 const (

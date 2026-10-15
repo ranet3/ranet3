@@ -21,6 +21,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"go.yaml.in/yaml/v3"
 
+	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/egress"
@@ -768,7 +769,7 @@ func TestCapabilityIsOnBecauseItsBlockIsThere(t *testing.T) {
 	if cfg.Babel().HelloInterval() != 4*time.Second {
 		t.Errorf("a node with no cap.babel runs a %s hello interval", cfg.Babel().HelloInterval())
 	}
-	if cfg.Crypto().ReplayWindow() != ike.DefaultReplayWindow {
+	if cfg.Crypto().ReplayWindow() != esp.DefaultReplayWindow {
 		t.Errorf("a node with no cap.crypto runs a %d packet replay window", cfg.Crypto().ReplayWindow())
 	}
 	// An empty block is still the capability turned on.
@@ -1098,9 +1099,9 @@ func TestBareScalarKeyIsNotAWrittenZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a bare replay key was refused: %v", err)
 	}
-	if got := cfg.Crypto().ReplayWindow(); got != ike.DefaultReplayWindow {
+	if got := cfg.Crypto().ReplayWindow(); got != esp.DefaultReplayWindow {
 		t.Errorf("a bare replay key runs a %d packet window, want %d: zero is anti-replay off",
-			got, ike.DefaultReplayWindow)
+			got, esp.DefaultReplayWindow)
 	}
 	cfg, err = loadYAML(t, nodeYAML+"cap:\n  route:\n    transit:\n")
 	if err != nil {
