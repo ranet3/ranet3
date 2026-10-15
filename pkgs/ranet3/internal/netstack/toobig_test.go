@@ -405,7 +405,7 @@ func TestSegmentPastItsNextSessionIsAnsweredOnlyAboutThePacketItsHeaderNames(t *
 func reservingPeer(t *testing.T) (*Peer, func() []int) {
 	var mu sync.Mutex
 	var places []int
-	peer := NewPeerReserved("peer", func(count int) (BatchSealer, error) {
+	peer := NewPeer("peer", func(count int) (BatchSealer, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		places = append(places, count)
@@ -568,7 +568,7 @@ func TestReaderSendsTheFragmentsItCutToThePeer(t *testing.T) {
 	var mu sync.Mutex
 	var sealed [][]byte
 	reserved := 0
-	peer := NewPeerReserved("peer", func(count int) (BatchSealer, error) {
+	peer := NewPeer("peer", func(count int) (BatchSealer, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		reserved += count

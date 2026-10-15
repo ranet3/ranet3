@@ -95,12 +95,12 @@ type Peer struct {
 // Output must not alias raw, whose TUN buffers are recycled after encryption.
 type BatchSealer func(raw [][]byte, nextHeaders []byte, reuse [][]byte) ([][]byte, error)
 
-// NewPeerReserved constructs a peer whose expensive encryption can run in
+// NewPeer constructs a peer whose expensive encryption can run in
 // parallel. reserveFn is called in packet-intake order and must return a sealer
 // owning count consecutive sequence numbers from the current outbound SA.
 // transmitBatchFn must finish using every packet before returning.
 // events records the peer's changes of state under its ID, nil recording nothing
-func NewPeerReserved(id string, reserveFn func(count int) (BatchSealer, error), transmitBatchFn func(sealed [][]byte) error, events func(kind, peer string, attrs ...slog.Attr)) *Peer {
+func NewPeer(id string, reserveFn func(count int) (BatchSealer, error), transmitBatchFn func(sealed [][]byte) error, events func(kind, peer string, attrs ...slog.Attr)) *Peer {
 	p := &Peer{ID: id, reserveFn: reserveFn, transmitBatchFn: transmitBatchFn,
 		events: events, started: time.Now()}
 	p.mtu.Store(DefaultMTU)

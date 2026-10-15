@@ -571,12 +571,12 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	speaker.Originate(netip.MustParsePrefix("10.66.0.5/32"))
 	// A neighbor and a session, or every per-peer and per-path line below is
 	// a loop over nothing and only the scalars are ever written.
-	// A reserved peer whose transport never returns, so its drop counter is
+	// A peer whose transport never returns, so its drop counter is
 	// something other than zero: a per-neighbor line asserted at zero cannot
 	// tell the count from no counting at all.
 	blocked := make(chan struct{})
 	var drain sync.Once
-	peer := netstack.NewPeerReserved("gateway",
+	peer := netstack.NewPeer("gateway",
 		func(int) (netstack.BatchSealer, error) {
 			return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
 				return append(out[:0], raw...), nil
@@ -1542,7 +1542,7 @@ func babelPacket(tlvs ...babel.RawTLV) []byte {
 
 // sinkPeer is a session whose transport takes every packet and carries none, closed when the test ends
 func sinkPeer(tb testing.TB, id string) *netstack.Peer {
-	peer := netstack.NewPeerReserved(id, func(int) (netstack.BatchSealer, error) {
+	peer := netstack.NewPeer(id, func(int) (netstack.BatchSealer, error) {
 		return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) { return append(out[:0], raw...), nil }, nil
 	}, func([][]byte) error { return nil }, nil)
 	tb.Cleanup(peer.Close)

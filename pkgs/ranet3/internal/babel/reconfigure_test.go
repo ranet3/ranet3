@@ -318,7 +318,7 @@ func TestLostPacketReportsReadTheHelloIntervalAChangeWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	speaker.Originate(netip.MustParsePrefix("fd00:d::/64"))
-	lossy := netstack.NewPeerReserved("lossy", plainSealer, func([][]byte) error { return errors.New("babel: a transport that loses every packet") }, nil)
+	lossy := netstack.NewPeer("lossy", plainSealer, func([][]byte) error { return errors.New("babel: a transport that loses every packet") }, nil)
 	speaker.AddPeer(lossy)
 	done := make(chan struct{})
 	go func() {

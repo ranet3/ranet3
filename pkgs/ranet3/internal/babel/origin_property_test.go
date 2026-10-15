@@ -149,7 +149,7 @@ func (r *originRig) start() {
 	if r.asker != nil {
 		r.asker.Close()
 	}
-	r.asker = netstack.NewPeerReserved("asker", plainSealer, func([][]byte) error { return nil }, nil)
+	r.asker = netstack.NewPeer("asker", plainSealer, func([][]byte) error { return nil }, nil)
 	speaker.AddPeer(r.asker)
 	if !r.survives(func() { speaker.SetOrigin(from, r.disk.save, "") }) {
 		return

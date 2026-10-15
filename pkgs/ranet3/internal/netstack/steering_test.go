@@ -178,7 +178,7 @@ func TestStoppedSteeringPassesTheClaimedPacket(t *testing.T) {
 // packet went to rather than only that it left.
 func sealingPeer(t *testing.T, id string, seen chan []byte) *Peer {
 	t.Helper()
-	peer := NewPeerReserved(id, func(int) (BatchSealer, error) {
+	peer := NewPeer(id, func(int) (BatchSealer, error) {
 		return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
 			seen <- append([]byte(nil), raw[0]...)
 			return out[:0], nil

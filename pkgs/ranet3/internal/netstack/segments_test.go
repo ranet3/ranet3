@@ -45,7 +45,7 @@ type recordingPeer struct {
 }
 
 func (r *recordingPeer) peer(tb testing.TB, id string) *Peer {
-	r.sender = NewPeerReserved(id, func(int) (BatchSealer, error) { return r.seal, nil },
+	r.sender = NewPeer(id, func(int) (BatchSealer, error) { return r.seal, nil },
 		func(sealed [][]byte) error {
 			r.mu.Lock()
 			defer r.mu.Unlock()
@@ -319,7 +319,7 @@ func TestWaypointBatchTakesOnePlacePerPeer(t *testing.T) {
 	// The peer is asked to reserve for a number of packets, and seals once per
 	// reserved batch, so the two together say how the batch was split.
 	var batches, reserved, forwarded atomic.Int64
-	peer := NewPeerReserved("next", func(n int) (BatchSealer, error) {
+	peer := NewPeer("next", func(n int) (BatchSealer, error) {
 		reserved.Add(int64(n))
 		return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
 			batches.Add(1)

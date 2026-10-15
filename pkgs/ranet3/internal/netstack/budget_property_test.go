@@ -324,7 +324,7 @@ func (m *budgetMachine) InvariantPeerAgreesWithModel(tc hegel.TestCase) {
 func TestBudgetAgreesWithItsModel(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		v := newValve()
-		m := &budgetMachine{valve: v, peer: NewPeerReserved("peer",
+		m := &budgetMachine{valve: v, peer: NewPeer("peer",
 			func(int) (BatchSealer, error) { return passThrough, nil }, v.transmit, nil)}
 		// reads of one size and count taken up front, up to one more than the budget holds of the smallest full ones
 		// so a case reaches its edge in a few steps, by bytes or by packets

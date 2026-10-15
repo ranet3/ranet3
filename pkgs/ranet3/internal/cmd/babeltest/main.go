@@ -98,7 +98,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	peer := netstack.NewPeerReserved("bird", func(count int) (netstack.BatchSealer, error) {
+	peer := netstack.NewPeer("bird", func(count int) (netstack.BatchSealer, error) {
 		sequenceRange, err := out.ReserveSequenceRange(count)
 		if err != nil {
 			return nil, err

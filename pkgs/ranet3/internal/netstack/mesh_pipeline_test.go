@@ -63,7 +63,7 @@ func TestOutboundWorkersEncryptOneQueueInParallelAndTransmitInOrder(t *testing.T
 	releaseFirst := make(chan struct{})
 	transmitted := make(chan byte, 2)
 	nextSequence := byte(1)
-	peer := NewPeerReserved("peer", func(count int) (BatchSealer, error) {
+	peer := NewPeer("peer", func(count int) (BatchSealer, error) {
 		first := nextSequence
 		nextSequence += byte(count)
 		next := first
@@ -119,7 +119,7 @@ func TestOutboundWorkersEncryptOneQueueInParallelAndTransmitInOrder(t *testing.T
 		select {
 		case <-started:
 		case <-time.After(time.Second):
-			t.Fatal("reserved batches did not encrypt concurrently")
+			t.Fatal("batches did not encrypt concurrently")
 		}
 	}
 	select {
@@ -142,13 +142,13 @@ func TestOutboundWorkersEncryptOneQueueInParallelAndTransmitInOrder(t *testing.T
 	}
 }
 
-func TestReservedPeerWorkersDoNotWaitForOrderedSender(t *testing.T) {
+func TestPeerWorkersDoNotWaitForOrderedSender(t *testing.T) {
 	startedSend := make(chan struct{})
 	releaseSend := make(chan struct{})
 	var releaseOnce sync.Once
 	transmitted := make(chan byte, 2)
 	nextSequence := byte(1)
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) {
+	peer := NewPeer("peer", func(int) (BatchSealer, error) {
 		sequence := nextSequence
 		nextSequence++
 		return func([][]byte, []byte, [][]byte) ([][]byte, error) { return [][]byte{{sequence}}, nil }, nil
@@ -204,7 +204,7 @@ func TestReservedPeerWorkersDoNotWaitForOrderedSender(t *testing.T) {
 	}
 }
 
-func TestReservedSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
+func TestSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
 	sendErr := errors.New("send failed")
 	cryptoErr := errors.New("crypto failed")
 	transmitted := make(chan []byte, 1)
@@ -415,7 +415,7 @@ func TestOutboundReaderLeavesRoomForPlatformFrameHeader(t *testing.T) {
 		reads:           make(chan []byte, 1),
 	}
 	routed := make(chan []byte, 1)
-	peer := NewPeerReserved("peer", func(int) (BatchSealer, error) {
+	peer := NewPeer("peer", func(int) (BatchSealer, error) {
 		return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
 			routed <- append([]byte(nil), raw[0]...)
 			return out[:0], nil
