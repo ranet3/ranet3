@@ -3,6 +3,7 @@
 {
   lib,
   stdenvNoCC,
+  minify,
 }:
 
 stdenvNoCC.mkDerivation {
@@ -18,9 +19,19 @@ stdenvNoCC.mkDerivation {
       ];
     };
 
+  nativeBuildInputs = [ minify ];
+
+  buildPhase = ''
+    runHook preBuild
+    mkdir dist
+    minify --html-keep-document-tags --html-keep-quotes -o dist/index.html index.html
+    minify -o dist/favicon.svg favicon.svg
+    runHook postBuild
+  '';
+
   installPhase = ''
     runHook preInstall
-    install -Dm644 -t "$out" index.html favicon.svg
+    install -Dm644 -t "$out" dist/index.html dist/favicon.svg
     runHook postInstall
   '';
 
