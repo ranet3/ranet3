@@ -396,9 +396,10 @@ func (s *Session) SetRekeyTiming(margin, jitter time.Duration) error {
 }
 
 // SetRekeyRetry configures the capped exponential backoff after a scheduled
-// rekey failure. It must be called before Run.
+// rekey failure, and zero for both leaves Run to take the defaults. It must be
+// called before Run.
 func (s *Session) SetRekeyRetry(initial, max time.Duration) error {
-	if initial <= 0 || max <= 0 {
+	if (initial != 0 || max != 0) && (initial <= 0 || max <= 0) {
 		return fmt.Errorf("ike: rekey retry delays must be positive")
 	}
 	if initial > max {
@@ -757,10 +758,6 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	if err := sess.SetRekeyIntervals(cfg.ChildRekeyInterval, cfg.IKERekeyInterval); err != nil {
 		mux.Close()
 		return nil, err
-	}
-	if cfg.RekeyRetryInitial == 0 && cfg.RekeyRetryMax == 0 {
-		cfg.RekeyRetryInitial = DefaultRetryFirst
-		cfg.RekeyRetryMax = DefaultRetryMax
 	}
 	if err := sess.SetRekeyRetry(cfg.RekeyRetryInitial, cfg.RekeyRetryMax); err != nil {
 		mux.Close()

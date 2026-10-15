@@ -778,10 +778,16 @@ func TestSetRekeyRetry(t *testing.T) {
 	if s.rekeyRetryInitial != 5*time.Second || s.rekeyRetryMax != time.Minute {
 		t.Fatalf("retry delays = %s, %s", s.rekeyRetryInitial, s.rekeyRetryMax)
 	}
-	for _, delays := range [][2]time.Duration{{0, time.Second}, {time.Second, 0}, {time.Minute, time.Second}} {
+	for _, delays := range [][2]time.Duration{{0, time.Second}, {time.Second, 0}, {-time.Second, time.Second}, {time.Minute, time.Second}} {
 		if err := s.SetRekeyRetry(delays[0], delays[1]); err == nil {
 			t.Fatalf("SetRekeyRetry(%s, %s) succeeded", delays[0], delays[1])
 		}
+	}
+	if err := s.SetRekeyRetry(0, 0); err != nil {
+		t.Fatalf("SetRekeyRetry(0, 0) refused: %v", err)
+	}
+	if s.rekeyRetryInitial != 0 || s.rekeyRetryMax != 0 {
+		t.Errorf("after SetRekeyRetry(0, 0) the retry delays are %s, %s, want both zero", s.rekeyRetryInitial, s.rekeyRetryMax)
 	}
 }
 
@@ -1286,5 +1292,35 @@ func TestProbesLeaveAnUnansweredExchangeToItsSchedule(t *testing.T) {
 		}
 	case <-time.After(answerBudget):
 		t.Fatal("probes kept an exchange the peer never answers alive")
+	}
+}
+
+// sessions dialed and answered with no rekey retry configured back off from DefaultRetryFirst to DefaultRetryMax once they run
+func TestSessionsWithNoRetryConfiguredBackOffByTheDefaults(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	initiator, err := h.dial(t)
+	if err != nil {
+		t.Fatalf("initiate: %v", err)
+	}
+	defer initiator.Mux().Close()
+	var responder *Session
+	select {
+	case responder = <-h.sessions:
+	case <-time.After(answerBudget):
+		t.Fatal("the responder produced no session")
+	}
+	defer responder.Mux().Close()
+	for name, s := range map[string]*Session{"initiator": initiator, "responder": responder} {
+		s.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return 0, nil }
+		done := runSession(t, s)
+		s.Mux().Close()
+		select {
+		case <-done:
+		case <-time.After(answerBudget):
+			t.Fatalf("the %s's control loop did not return", name)
+		}
+		if first, last := s.rekeyRetryDelay(1), s.rekeyRetryDelay(64); first != DefaultRetryFirst || last != DefaultRetryMax {
+			t.Errorf("the %s backs off from %s to %s, want %s to %s", name, first, last, DefaultRetryFirst, DefaultRetryMax)
+		}
 	}
 }
