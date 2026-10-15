@@ -4,31 +4,78 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-15
+updated: 2026-10-16
 order: 70
 ---
 
-`SIGHUP` re-reads the config file and the registry and reconciles rather than
-restarting. It applies the registry itself, the peers dialed, the prefixes
-originated, `cap.babel`, `cap.segment`, `link.listen`, `link.mtu` and
-`cap.table`, so a node joining or leaving the mesh costs one dialer instead of
-dropping every SA this node is carrying. ranet's own `ExecReload` works the same
-way, and it matters because the registry is rewritten every time any node joins.
+`SIGHUP` re-reads the config file and the trust document and reconciles instead
+of restarting. A reload applies the trust document, the peers dialed, the
+prefixes originated, `cap.babel`, `cap.segment`, `link.listen`, `link.mtu` and
+most of `cap.table`. A node joining or leaving the mesh then costs 1 dialer, and
+every other session this node carries stays up. This matters because the trust
+document is rewritten every time any node joins.
 
-A reload also decides which sessions stay. The registry is the trust root a
-handshake is checked against, so a node taken out of it stops being carried, and
-so does one whose organization now holds another key: every session whose
-authenticated peer the new registry no longer names, or names under a key other
-than the one that verified the session, is closed with a Delete. The log line
-`peer <path>: <reason>, closing the session` and an `ike.session.revoked` event
-say which and why. A registry read mid-write fails to parse rather than arriving
-empty, so the sweep never runs against half a file.
+## Asking for a reload
 
-A handshake that read the old registry and finishes after the sweep is checked
-against the new one as its session is installed, and refused the same way, so a
-revoked peer cannot slip in between the sweep and the end of its handshake. The
-responder answers every handshake under the registry in force when it arrives,
-and an initiator naming this node itself is refused whatever the registry says.
+`ranet3 reload` asks for the same reload over the
+[control socket](control-socket.md). Both re-read the file the daemon was
+started with. When the daemon refuses the reload, `ranet3 reload` prints the
+refusal and exits 1. After `SIGHUP`, the refusal goes to the log, on a line
+starting `reload:`, and to the `err` of the `daemon.reload` event. On NixOS,
+`systemctl reload ranet3` runs `ranet3 reload`, as
+[running it as a service](service.md) describes.
+
+## What a reload does with each key
+
+The table lists every key of the configuration file. The
+[configuration reference](configuration-reference.md) gives each key's default.
+A key marked "refused when its effective value changes" can be written out as
+its default, or reordered, without a restart. A refused reload changes nothing,
+as [what a reload refuses](#what-a-reload-refuses) describes.
+
+| Key                                                                  | Reload                                   | Notes                                                                                                                                        |
+| -------------------------------------------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node`                                                               | refused                                  |                                                                                                                                              |
+| `auth.key`                                                           | refused when the key changes             | A new path to a file holding the same key is applied.                                                                                        |
+| `auth.trust`                                                         | applied                                  | The path and the document. The new document is checked as [checks against the trust document](#checks-against-the-trust-document) describes. |
+| `link.port`                                                          | refused                                  |                                                                                                                                              |
+| `link.endpoints`                                                     | refused                                  | Compared as a set, so a new order is no change.                                                                                              |
+| `link.listen`                                                        | applied                                  |                                                                                                                                              |
+| `link.tun`                                                           | refused                                  | Compared as written. Writing the default name where the file left it out is a change.                                                        |
+| `link.mtu`                                                           | applied                                  | Refused when the tun cannot move. An omitted `mtu` and `1400` are the same.                                                                  |
+| `link.underlay.mark`, `link.underlay.bind`                           | refused                                  |                                                                                                                                              |
+| `dial.all`, `dial.to`                                                | applied                                  |                                                                                                                                              |
+| `cap.route.announce`                                                 | applied                                  | Refused when it moves the address `cap.egress.return` translates to.                                                                         |
+| `cap.route.transit`                                                  | refused when its effective value changes | An omitted `transit` and `true` are the same.                                                                                                |
+| `cap.babel` and every key under it                                   | applied                                  |                                                                                                                                              |
+| `cap.table`, written or removed                                      | refused                                  |                                                                                                                                              |
+| `cap.table.id`, `cap.table.proto`                                    | refused when its effective value changes |                                                                                                                                              |
+| `cap.table.vrf.name`, `cap.table.vrf.create`                         | refused                                  |                                                                                                                                              |
+| `cap.table.metric`, `cap.table.reconcile`, `cap.table.capture_grace` | applied                                  |                                                                                                                                              |
+| `cap.table.addresses`, `cap.table.assign_announced`                  | applied                                  | Refused when it moves the address `cap.egress.return` translates to.                                                                         |
+| `cap.table.prefsrc4`, `cap.table.rules`                              | applied                                  | Refused on macOS, as at startup.                                                                                                             |
+| `cap.segment` and every key under it                                 | applied                                  | Refused when the tun cannot move.                                                                                                            |
+| `cap.crypto` and every key under it                                  | refused when its effective value changes |                                                                                                                                              |
+| `cap.egress`, written, removed, or any key under it                  | refused when its effective value changes | A new order of `advertise`, `sweep` written as its default and `"auto"` written out for `source4` or `source6` are no change.                |
+
+## Sessions the trust document no longer admits
+
+A reload also decides which sessions stay. It closes with a Delete every session
+whose authenticated peer the new trust document no longer names, or names under
+another key than the one that verified the session. A node taken out of the
+document stops being carried, and so does one whose organization now holds
+another key.
+
+The log line `peer <path>: <reason>, closing the session` and an
+`ike.session.revoked` event say which and why. A trust document read mid-write
+fails to parse and refuses the reload, so the sweep never runs against half a
+file.
+
+A handshake that began under the old document is checked against the new one
+when its session is installed. A revoked peer cannot slip in between the sweep
+and the end of its handshake. The responder checks each handshake against the
+document in force when it arrives. It refuses an initiator that names this node
+itself, whatever the document says.
 
 A session this node dialed also ends when its dialer does, and taking the peer
 out of `dial.to` stops that dialer. One the peer opened against this node
@@ -37,58 +84,72 @@ survives, because nothing was dialing it, unless the same reload turns
 
 Revocation tests whether the organization still names the node and still gives
 it the key the session was verified under, not which endpoint the peer asserted.
-Renumbering a serial is a registry edit rather than a revocation, and a node
-whose own endpoints were renumbered has done nothing to lose the session it is
-carrying.
+Renumbering a peer's serial is an edit, not a revocation, and the peer keeps the
+session it is carrying. Renumbering this node's own endpoints refuses the
+reload, as
+[checks against the trust document](#checks-against-the-trust-document)
+describes.
 
-A reload hands a changed `cap.table` to the running reconciler, which takes a
-new `metric`, `prefsrc4`, `addresses`, `assign_announced` with the `cap.route`
+## `cap.table`
+
+A reload hands a changed `cap.table` to the running reconciler. It takes a new
+`metric`, `prefsrc4`, `addresses`, `assign_announced` with the `cap.route`
 announcements it expands into, `rules`, `reconcile` and `capture_grace`. The
-reconciler checks the block as it would at startup, takes it, and runs a pass at
-once. That pass moves every route to the new metric and preferred source,
-deletes the rules the block no longer names and installs the new ones, and takes
+reconciler checks the block as it would at startup and runs a pass at once. From
+then on the periodic pass runs every `reconcile`, and an announced default
+outlives the last live session by `capture_grace`.
+
+That first pass moves every route to the new metric and preferred source. It
+deletes the rules the block no longer names and installs the new ones. It takes
 off the tun each address it added that the block no longer assigns. An address
-another writer put on the tun stays, named or not. The tun keeps an IPv4 address
-throughout, since linux drops every IPv4 route through a device left with none,
-another writer's included. A new prefix length of an IPv4 address goes on before
-the old one comes off, and the reconciler turns `promote_secondaries` on for the
-tun when it starts, which lets a new address within the old one's subnet take
-its place instead of leaving with it. From then on the periodic sweep runs every
-`reconcile`, and an announced default outlives the last live session by
-`capture_grace`. A reconciler stopped with `ranet3 disable reconciler` takes the
-block as well and installs it once it is started again. So a running exit takes
-a new priority rule, a renumbered tun or another metric without dropping a
-session or withdrawing the mesh table from the rest of the fleet.
+another writer put on the tun stays, named or not.
+
+The tun keeps an IPv4 address throughout, because Linux drops every IPv4 route
+through a device left with none, another writer's included. A new prefix length
+of an IPv4 address goes on before the old one comes off. The reconciler turns on
+`promote_secondaries` for the tun when it starts, so a new address within the
+old one's subnet takes its place instead of leaving with it.
+
+A reconciler stopped with `ranet3 disable reconciler` takes the block as well,
+and installs it once it is started again. A running exit takes a new priority
+rule, a renumbered tun or another metric without dropping a session or
+withdrawing the mesh table from the rest of the fleet. [Routing](routing.md)
+describes the reconciler.
 
 A change to `cap.table.id`, `cap.table.proto` or `cap.table.vrf` is refused by
 name, and so is writing the block where there was none or taking it out. The
 reconciler reads and writes its routes and rules in the table and under the
 protocol it started with, and its tun is bound to the VRF, so a restart applies
 them. A reload asking for something the platform does not have is refused as a
-startup is, rules or `prefsrc4` on darwin for instance.
+startup is, such as rules or `prefsrc4` on macOS.
+
+## `cap.babel`
 
 A reload hands a changed `cap.babel` to the running speaker, every field of it:
 `hello`, `update`, `quality` and `cost`. The speaker keeps its sequence number
 and the Hello history of every neighbor, computes each link cost again and
 reruns route selection under the new cost. It then sends every neighbor a Hello
 with its IHU and its whole table at once, and runs its timers on the new
-intervals from there. RFC 8966 lets a node lengthen its Hello and IHU intervals
-only just before a Hello that says so, sections 3.4.1 and 3.4.2, and a neighbor
-expires a route at 3.5 times the update interval it last heard, Appendix B, so
-the new intervals reach every neighbor before the old ones run out. A
-`cap.babel` that describes the speaker already running, an omitted field written
-out as its default for instance, changes nothing and sends nothing.
+intervals from there. RFC 8966 sections 3.4.1 and 3.4.2 let a node lengthen its
+Hello and IHU intervals only when it sends a Hello announcing them at once. A
+neighbor expires a route at 3.5 times the last update interval it heard (RFC
+8966 Appendix B). Sending everything at once lets every neighbor learn the new
+intervals before the old ones run out. A `cap.babel` that describes the speaker
+already running, an omitted field written out as its default for instance,
+changes nothing and sends nothing.
+
+## `cap.segment` and `link.mtu`
 
 A reload builds the tables a changed `cap.segment` describes, as a startup does,
 and installs them: the segments this node answers for and its steering. A packet
 already in flight is acted on under the table it met. The tun runs at `link.mtu`
 less the header the longest steer list puts in front of a packet, and a reload
 whose steering has a longer or a shorter longest list moves the tun with it. A
-table whose longest list is longer than the one in force goes in once the tun
-has moved, and any other goes in before the tun moves, which keeps the tun's MTU
-plus the steering header in force within the larger of the old and the new
-`link.mtu` throughout. A steering stopped with `ranet3 disable steering` stays
-stopped with the new table installed.
+table whose longest list is longer than the one in force goes in after the tun
+moves. Any other table goes in before the tun moves. Either way, the tun's MTU
+plus the steering header in force stays within the larger of the old and the new
+`link.mtu`. A steering stopped with `ranet3 disable steering` stays stopped with
+the new table installed.
 
 A changed `link.mtu` moves the tun the same way. The buffers the tun is read
 into are sized once, at startup, for the larger of the `link.mtu` the node
@@ -98,31 +159,44 @@ list in the same file leaves the tun where it was. A running session whose
 budget is past a lower `link.mtu` drops to it at once, and one whose search has
 settled searches up toward a higher one, probing each size before its budget
 moves there. A session made after the reload searches within the new `link.mtu`
-from its start, and one under the floor stays there. On a platform other than
-linux and darwin the tun takes its MTU only when it is opened, and a reload that
-changes `link.mtu` or moves the tun is refused there.
+from its start, and one under the floor stays there. A session whose sends leave
+without DF is not searched, and it takes the new `link.mtu` at once, lower or
+higher. On a platform other than Linux and macOS the tun takes its MTU only when
+it is opened, and a reload that changes `link.mtu` or moves the tun is refused
+there. [Path MTU](path-mtu.md) describes the search.
+
+## `link.listen`
 
 Turning `link.listen` on starts the responder. Turning it off stops it
 answering, closes every session this node answered with a Delete, as a shutdown
 does, and wakes every dialer, so a peer this node also dials comes back at once
 rather than after the reconnect delay. The sessions this node dialed stay. The
-hub drops the handshakes it had queued for the responder and queues none while
-it is off, so a responder started again later answers only what arrives after
-it. A responder stopped with `ranet3 disable responder` stays stopped across a
-reload.
+daemon drops the handshakes it had queued for the responder and queues none
+while it is off, so a responder started again later answers only what arrives
+after it. A responder stopped with `ranet3 disable responder` stays stopped
+across a reload.
 
-A reload is recorded as a `daemon.reload` event whose `applied` lists the blocks
-it changed among `cap.babel`, `cap.route`, `cap.segment`, `cap.table`,
-`link.listen` and `link.mtu`, comma separated: `applied=cap.table` for one that
-changed the table, and none for one that changed only the trust document or the
-peers dialed. The speaker records a `babel.config.applied` with the intervals
-and the cost it took, and turning `link.listen` on or off records a
-`responder.changed` whose `closed` counts the answered sessions it closed. The
+## Events
+
+A reload is recorded as a `daemon.reload` event that names the file in `path`.
+Its `applied` lists the blocks the reload changed among `cap.babel`,
+`cap.route`, `cap.segment`, `cap.table`, `link.listen` and `link.mtu`, comma
+separated, such as `applied=cap.table` for one that changed the table. A reload
+that changed only the trust document or the peers dialed carries no `applied`. A
+refused reload carries `err` instead. `cap.route` is listed whenever the block
+differs as written, so writing out `transit = true` where the file left it out
+lists it too.
+
+The speaker records a `babel.config.applied` with the intervals and the cost it
+took. Turning `link.listen` on or off records a `responder.changed` with
+`listen`, and its `closed` counts the answered sessions it closed. The
 reconciler's pass after it is a `kernel.pass` with `trigger=reload`, recorded
 whether or not it moved anything. A reconciler stopped with
 `ranet3 disable reconciler` runs no pass when it takes the block, and the pass
 that installs it once the reconciler is started again is recorded with
 `trigger=enable`.
+
+## A node that is down
 
 A node `ranet3 down` took off the mesh applies a reload and stays down. Its
 dialers, its responder and its speaker start at `ranet3 up` as the new file
@@ -130,27 +204,74 @@ describes them, the dialer of a peer the reload added included, and the
 reconciler takes a changed `cap.table` as a stopped one does and installs it at
 `ranet3 up`.
 
+## What a reload refuses
+
 Everything else is refused rather than applied, because a reload cannot reach
-it. Identity, port, TUN device and local endpoints each change what peers have
-already authenticated or what the dataplane is attached to. So does the private
-key. It is read once at startup and the responder holds its own copy, so a
-reload re-reads the file only to compare: a rotation is refused by name whether
-it moved the path or rewrote the file in place, rather than reported as applied
-while the node keeps signing with the key it started on. `cap.egress` is read
-once at startup as well: the capability owns the tables it created under the
-families the old block named, and a new one applied here would leave the host
-holding rules from a configuration nothing is running. With `return` set it also
-picked then, for each family it advertises with no `source4` or `source6`
-written, the source among this node's mesh addresses, the host prefixes
-`cap.route` announces and `cap.table` assigns. A reload whose addresses would
-pick another source is refused, naming the blocks, and one that leaves none or
-more than one to pick from is refused as a startup would be. A reload that moves
-only addresses the pick does not consider is applied: any of them under a
-written source, one of a family the node does not advertise, a link-local one,
-or one assigned under a prefix shorter than a host prefix, `10.66.0.7/24` for
-instance. The rekey and replay settings are captured by a session when it is
-created, so applying them to new sessions alone would leave the node running two
-policies at once. A restart is the honest way to change any of them, and a
-refused reload changes nothing: not the registry, the dialers, the
-announcements, the speaker, the segment tables, the tun, the responder or the
-table.
+it. Identity, port, tun, local endpoints and `link.underlay` each change what
+peers have already authenticated or what the dataplane is attached to. So does
+`cap.route.transit`, which the speaker reads as it builds each packet and keeps
+for its life.
+
+So does the private key. It is read once at startup, and the responder holds its
+own copy. A reload reads the key file only to compare it. A new key is refused
+by name, whether the path moved or the file was rewritten in place. The node
+keeps signing with the key it started with until a restart.
+
+`cap.egress` is read once at startup as well. The capability owns the tables it
+created under the families the old block named. A new block applied here would
+leave the host holding rules from a configuration nothing is running.
+
+With `cap.egress.return` set, the daemon also picks a return source at startup
+for each advertised family that has no `source4` or `source6`. It picks among
+this node's mesh addresses, the host prefixes `cap.route` announces and those
+`cap.table` assigns. A reload whose addresses would pick another source is
+refused, naming the blocks. One that leaves none or more than 1 to pick from is
+refused as a startup would be. That refusal names the key `egress.source4` or
+`egress.source6`, which the file writes as `cap.egress.source4` or
+`cap.egress.source6`. A reload that moves only addresses the pick does not
+consider is applied: any of them under a written source, one of a family the
+node does not advertise, a link-local one, or one assigned under a prefix
+shorter than a host prefix, `10.66.0.7/24` for instance.
+
+The rekey and replay settings are captured by a session when it is created.
+Applying them to new sessions alone would run 2 policies at once, so a change to
+them needs a restart.
+
+A refused reload leaves the trust document, the dialers, the announcements, the
+speaker, the segment tables, the tun, the responder and the table as they were.
+The only exception is a tun that refuses its new MTU after the rest has applied,
+which happens only to a device on its way out.
+
+### Checks on the file
+
+A reload loads the file as a startup does. A file that fails to parse or names
+an unknown key is refused whole. The checks across blocks run again:
+
+- a `link.underlay.mark` needs a `cap.table` rule that selects it, where
+  `cap.table` is written
+- the longest `cap.segment` steer list must leave the tun at 1280 bytes or more
+- a `cap.segment.local` SID must not be an address `cap.table` assigns to the
+  tun
+
+A reload does not repeat the startup check that refuses a `cap.route`
+announcement equal to a `cap.egress.advertise` prefix. A reload that adds such
+an announcement is applied, and the prefix is then announced whether or not its
+translation rule is installed.
+
+### Checks against the trust document
+
+A reload is refused when the new trust document:
+
+- does not name this node
+- holds a key for this node's organization other than the one `auth.key` holds
+- does not list one of this node's `link.endpoints`, or lists it in another
+  family
+
+### Peers the trust document cannot support
+
+A reload logs a peer the new trust document cannot support and does not dial it.
+The log line reads `reload: <reason>, so nothing will dial it`. At startup, some
+of the same peers refuse the start: a `dial.to` node the document does not name,
+a pinned endpoint it does not list, and a pinned endpoint in a family this node
+has no endpoint in. The [trust document](trust.md) page describes the document
+itself.
