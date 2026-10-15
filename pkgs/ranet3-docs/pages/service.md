@@ -4,7 +4,7 @@
 title: "Running it as a service"
 description: "Running ranet3 from the NixOS and nix-darwin modules."
 created: 2026-09-22
-updated: 2026-10-13
+updated: 2026-10-15
 order: 40
 ---
 
@@ -20,10 +20,7 @@ file from `networking.ranet3.settings`, and gives the control socket a
     enable = true;
     group = "ranet3";
     settings = {
-      node = {
-        org = "example";
-        name = "gateway";
-      };
+      node = "example/gateway";
       auth = {
         key = "/var/lib/ranet3/key.pem";
         trust = "/var/lib/ranet3/trust.json";

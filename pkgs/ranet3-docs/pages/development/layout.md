@@ -4,7 +4,7 @@
 title: Repository layout
 description: Where everything lives in the repository.
 created: 2026-10-03
-updated: 2026-10-03
+updated: 2026-10-15
 order: 10
 ---
 
@@ -27,9 +27,9 @@ pkgs/iperf3-benchmark/  the iperf3 build the benchmarks use
 ```
 
 The go module is one module with one dependency set. Its packages at the top of
-`pkgs/ranet3` are the ones another program can import: `control`, `esp`, `ike`,
-`sadr`, `schema`, `srv6` and `transport`. Everything under `internal/` is this
-program's own. Go commands run from `pkgs/ranet3`.
+`pkgs/ranet3` are the ones another program can import: `control`, `esp`,
+`identity`, `ike`, `sadr`, `schema`, `srv6` and `transport`. Everything under
+`internal/` is this program's own. Go commands run from `pkgs/ranet3`.
 
 Every directory under `pkgs/` with a `default.nix` is a package of the flake,
 named after the directory, so `pkgs/ranet3` builds as

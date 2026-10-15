@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-14
+updated: 2026-10-15
 order: 70
 ---
 
@@ -16,20 +16,30 @@ dropping every SA this node is carrying. ranet's own `ExecReload` works the same
 way, and it matters because the registry is rewritten every time any node joins.
 
 A reload also decides which sessions stay. The registry is the trust root a
-handshake is checked against, so a node taken out of it stops being carried:
-every session whose authenticated peer the new registry no longer names is
-closed, and the line naming it says so. A registry read mid-write fails to parse
-rather than arriving empty, so the sweep never runs against half a file.
+handshake is checked against, so a node taken out of it stops being carried, and
+so does one whose organization now holds another key: every session whose
+authenticated peer the new registry no longer names, or names under a key other
+than the one that verified the session, is closed with a Delete. The log line
+`peer <path>: <reason>, closing the session` and an `ike.session.revoked` event
+say which and why. A registry read mid-write fails to parse rather than arriving
+empty, so the sweep never runs against half a file.
+
+A handshake that read the old registry and finishes after the sweep is checked
+against the new one as its session is installed, and refused the same way, so a
+revoked peer cannot slip in between the sweep and the end of its handshake. The
+responder answers every handshake under the registry in force when it arrives,
+and an initiator naming this node itself is refused whatever the registry says.
 
 A session this node dialed also ends when its dialer does, and taking the peer
 out of `dial.to` stops that dialer. One the peer opened against this node
 survives, because nothing was dialing it, unless the same reload turns
 `link.listen` off.
 
-Revocation tests whether the organization still names the node and its key still
-parses, not which endpoint the peer asserted. Renumbering a serial is a registry
-edit rather than a revocation, and a node whose own endpoints were renumbered
-has done nothing to lose the session it is carrying.
+Revocation tests whether the organization still names the node and still gives
+it the key the session was verified under, not which endpoint the peer asserted.
+Renumbering a serial is a registry edit rather than a revocation, and a node
+whose own endpoints were renumbered has done nothing to lose the session it is
+carrying.
 
 A reload hands a changed `cap.table` to the running reconciler, which takes a
 new `metric`, `prefsrc4`, `addresses`, `assign_announced` with the `cap.route`

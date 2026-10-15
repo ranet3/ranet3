@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-10-13
+updated: 2026-10-15
 order: 80
 ---
 
@@ -83,13 +83,13 @@ Steering    from 3fff:a::198:18:104:117/128 via 3fff:1:69c:98d6::1 (12 steered, 
 ESP         41822931 in, 0 dropped, 14 refused
 
 $ ranet3 neighbors
-Peer               State  Cost  Rx cost  RTT      Routes  Expires  Dropped  Failed
-example/gateway@0  up     116   96       27.2ms   15      11.3s    0        0
-example/relay@1    up     194   96       176.7ms  130     9.8s     0        0
+Peer                 State  Cost  Rx cost  RTT      Routes  Expires  Dropped  Failed
+example/gateway:0@0  up     116   96       27.2ms   15      11.3s    0        0
+example/relay:2@1    up     194   96       176.7ms  130     9.8s     0        0
 
 $ ranet3 routes
-Destination  From         Via                Metric  Router ID         Seqno  Paths
-::/0         3fff:a::/36  example/gateway@0  212     0a1b2c3d4e5f6071  42     7
+Destination  From         Via                  Metric  Router ID         Seqno  Paths
+::/0         3fff:a::/36  example/gateway:0@0  212     0a1b2c3d4e5f6071  42     7
 ```
 
 `neighbors` answers `birdc show babel neighbors`, with the neighbor's own
@@ -100,6 +100,25 @@ table rather than the forwarding table, so a prefix every neighbor has retracted
 is still a row, which is the case an operator is looking for. `sessions` answers
 `swanctl --list-sas`. `peers` lists who this node dials, from the config file or
 from the trust document under `dial.all`, and whether it got there.
+
+A node is named `organization/name` and one of its endpoints
+`organization/name:serial`, as [the configuration](configuration.md) writes
+them, and `status` shows this node's own name that way. A session is named by
+its peer's endpoint, `@` and the serial of this node's endpoint, such as
+`example/gateway:0@0`, the same whichever end dialed. `peers` shows a peer by
+the endpoint `dial.to` pins, or by its node, and the dialer of a node with no
+endpoint pinned is named by the node, `example/gateway@0`, while its session is
+named by the endpoint that answered. `rekey`, `debug probe` and `debug pmtu`
+take a session by its name, its peer's endpoint, that endpoint's node, or the
+node's name alone, which takes that name in every organization. A dialer's name
+takes no session but the one it names whole, so the sessions of a dialer with no
+endpoint pinned are taken by its node. `redial` takes the same names and a
+dialer by its name, and an endpoint or a session also sets going the dialer of
+its node that has no endpoint pinned. `debug events --peer` takes the same names
+as `rekey` and a dialer's name, which takes a dial's events until its endpoint
+resolves. A name matches whole, so `example/isere` takes no session of
+`example/isere2`, and a name with a serial and no organization, such as
+`isere:1`, names nothing. Completion offers the names the daemon holds.
 
 Four more answer questions rather than printing one subsystem. `whois <address>`
 is a longest prefix match over that route table: it says which prefix covers an
@@ -197,8 +216,8 @@ the node down, and a peer the reload adds is dialed after `up`.
 ```
 $ ranet3 down
 This node is off the mesh with 2 session(s) closed, and it stays off through a restart until ranet3 up
-  example/bravo/0@0
-  example/charlie/0@0
+  example/bravo:0@0
+  example/charlie:0@0
 
 $ ranet3 status
 Node        example/gateway
