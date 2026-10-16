@@ -627,6 +627,76 @@ func deletedESP(t *testing.T, request *localRequest) []uint32 {
 	return spis
 }
 
+// RFC 7296 section 1.4.1 has a node answer a Delete that crosses its own for the same SA without a Delete payload for it, and section 2.25.1 asks the same of a Child SA it is trying to close
+// this end deletes a replaced SA after the rekey that replaced it and at the deadline, and a peer's Delete for it while either is out is answered empty, the SA retired on this end's own answer
+func TestDeleteCrossingThisEndsOwnIsAnsweredWithoutTheSA(t *testing.T) {
+	old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
+	for _, tc := range []struct {
+		name   string
+		delete func(*testing.T, *Session, func(*localRequest)) error
+	}{
+		{"after the rekey", func(t *testing.T, s *Session, respond func(*localRequest)) error {
+			return driveChildRekey(t, s, old, respond)
+		}},
+		{"at the deadline", func(t *testing.T, s *Session, respond func(*localRequest)) error {
+			s.childMu.Lock()
+			s.Child, s.retiring, s.retiringBy = ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}, old, time.Now()
+			s.childMu.Unlock()
+			child, ok := s.overdueRetiring(time.Now())
+			if !ok {
+				t.Fatal("the replaced SA was not handed back at its deadline")
+			}
+			done := make(chan struct{})
+			go func() { defer close(done); s.deleteOverdueChild(child) }()
+			respond(<-s.requests)
+			<-done
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newRekeyableSession(t, old)
+			s.current.skei, s.current.sker = make([]byte, 20), make([]byte, 20)
+			if err := tc.delete(t, s, func(own *localRequest) {
+				if spis := deletedESP(t, own); !slices.Equal(spis, []uint32{old.LocalSPI}) {
+					t.Fatalf("this end's Delete names %08x, want the replaced %08x", spis, old.LocalSPI)
+				}
+				if inner := crossingDelete(t, s, old.RemoteSPI); len(inner) != 0 {
+					t.Errorf("the peer's crossing Delete was answered with %v, want no Delete payload", inner)
+				}
+				if s.retiringChild().LocalSPI != old.LocalSPI {
+					t.Error("the peer's crossing Delete retired the SA before this end's own Delete was answered")
+				}
+				own.result <- requestResult{}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if s.retiringChild().LocalSPI != 0 {
+				t.Error("the replaced SA is still latched after this end's Delete was answered")
+			}
+		})
+	}
+}
+
+func crossingDelete(t *testing.T, s *Session, remoteSPI uint32) []RawPayload {
+	t.Helper()
+	ctx := s.currentContext()
+	response, err := s.handleRequest(ctx, &Header{ExchangeType: INFORMATIONAL, MessageID: 0}, []RawPayload{
+		{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{binary.BigEndian.AppendUint32(nil, remoteSPI)}})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := DecodeMessage(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := DecryptMessage(ctx.suite, ctx.localEncryptionKey(), response, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inner
+}
+
 // The exchange completed, so RFC 7296 section 2.8 has the responder holding a
 // Child SA whatever this end then makes of the answer. RekeyChild retries on a
 // capped backoff, so a rekey this end refuses after the response has to tell
@@ -774,14 +844,11 @@ func TestRekeyOnTheWireOffersOneCipher(t *testing.T) {
 	}
 }
 
-// Both ends may decide to close one Child SA at once, and RFC 7296 section
-// 1.4.1 describes the crossing: "If a node receives a delete request for SAs
-// for which it has already issued a delete request, it MUST delete the
-// outgoing SAs while processing the request and the incoming SAs while
-// processing the response." The peer's Delete arriving first clears the
-// retiring entry through deleteChildren, so this end's own exchange comes back
-// to nothing left to retire. Reporting that as an error fails the rekey that
-// had already succeeded, and the caller then retries a replacement it has.
+// Both ends may decide to close one Child SA at once. The peer's Delete can
+// arrive before this end's is out, and deleteChildren then answers it and
+// clears the retiring entry, so this end's own exchange comes back to nothing
+// left to retire. Reporting that as an error fails the rekey that had already
+// succeeded, and the caller then retries a replacement it has.
 func TestRetiringAChildTwiceIsNotAFailure(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	retiring := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 7, RemoteSPI: 8}
@@ -793,7 +860,7 @@ func TestRetiringAChildTwiceIsNotAFailure(t *testing.T) {
 		t.Fatalf("the first retirement failed: %v", err)
 	}
 	if err := s.retireChild(retiring.RemoteSPI); err != nil {
-		t.Errorf("retiring an SA the peer's crossing Delete already took reported %v", err)
+		t.Errorf("retiring an SA the peer's Delete already took reported %v", err)
 	}
 	// A remote SPI that was never retiring is still an error: the idempotence
 	// is about the crossing, not about accepting any SPI at all.
