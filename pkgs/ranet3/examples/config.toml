@@ -157,9 +157,9 @@ update = "16s"
 # the tun instead, which reaches the same two ends.
 #
 # A rule naming an address takes that address's family. One selecting on a mark
-# alone says which family it is for, and "both" installs it once per family,
-# which keeping the underlay out of the mesh table needs. table takes a number
-# or one of main, local and default.
+# or on iif, the device a packet arrived on, says which family it is for, and
+# "both" installs it once per family, which keeping the underlay out of the
+# mesh table needs. table takes a number or one of main, local and default.
 # [[cap.table.rules]]
 # fwmark = 0x726c
 # table = "main"

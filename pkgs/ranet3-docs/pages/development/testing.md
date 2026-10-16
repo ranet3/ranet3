@@ -102,23 +102,23 @@ The packages that read bytes a peer or a file chooses also carry property tests,
 in files ending in `_property_test.go`: `esp`, `ike`, `identity`, `transport`,
 `sadr`, `srv6`, `internal/babel`, `internal/packet`, `internal/netstack`,
 `schema`, `internal/config`, `internal/registry`, `internal/client`,
-`internal/kernel` and `control`. They run with the rest of `go test`, under
-hegel-go through `internal/pbt`, whose `Check` gives every property the same
-terms: 200 cases, or 10 under `go test -short`, where hegel replaces the count
-`Check` sets, no example database, and a derandomized engine. hegel seeds the
-labels of nested generators per process, so two runs need not draw the same
-sample, and a boundary the code branches on is drawn outright, with
-`pbt.Spanning` or by name, rather than left to the sample. A failing property
-prints the smallest input it found. hegel is a test dependency only:
+`internal/kernel`, `internal/egress` and `control`. They run with the rest of
+`go test`, under hegel-go through `internal/pbt`, whose `Check` gives every
+property the same terms: 200 cases, or 10 under `go test -short`, where hegel
+replaces the count `Check` sets, no example database, and a derandomized engine.
+hegel seeds the labels of nested generators per process, so two runs need not
+draw the same sample, and a boundary the code branches on is drawn outright,
+with `pbt.Spanning` or by name, rather than left to the sample. A failing
+property prints the smallest input it found. hegel is a test dependency only:
 `internal/notices` fails when a non-test file outside `internal/pbt` imports it,
 or when a non-test file imports `internal/pbt`, so it never reaches the binary
 or its notices.
 
 Property tests build on Linux and macOS alone. `internal/pbt` and every property
-test carry a build constraint that names them. The `transport` property and the
-`internal/kernel` netlink property build on Linux alone. The `go-lint` check
-vets the tree for FreeBSD, which fails on a property test without the
-constraint.
+test carry a build constraint that names them. The `transport` property, the
+`internal/kernel` netlink and rule message properties and the `internal/egress`
+nftables property build on Linux alone. The `go-lint` check vets the tree for
+FreeBSD, which fails on a property test without the constraint.
 
 ## Nix checks
 
