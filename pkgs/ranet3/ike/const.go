@@ -185,8 +185,15 @@ const (
 )
 
 // ID types, RFC 7296 section 3.5.
+type IDType uint8
+
 const (
-	ID_DER_ASN1_DN uint8 = 9
+	ID_IPV4_ADDR   IDType = 1
+	ID_FQDN        IDType = 2
+	ID_RFC822_ADDR IDType = 3
+	ID_IPV6_ADDR   IDType = 5
+	ID_DER_ASN1_DN IDType = 9
+	ID_KEY_ID      IDType = 11
 )
 
 const NonESPMarkerLen = 4

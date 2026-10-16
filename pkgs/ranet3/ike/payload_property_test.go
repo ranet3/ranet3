@@ -331,17 +331,34 @@ func drawName(tc hegel.TestCase) string {
 	return string(hegel.Draw(tc, hegel.Binary(size, size)))
 }
 
-// an ID payload reads back as its type and data
+// an ID payload reads back as its type and data whatever its RESERVED octets hold, which EncodeID writes as zero
+// RFC 7296 section 3.5 has RESERVED "MUST be sent as zero" and "MUST be ignored on receipt"
+// an address of any length but its type's is refused, and the lengths either side of it are drawn outright
 func TestIDPayloadRoundTrips(t *testing.T) {
+	widths := map[IDType]int{ID_IPV4_ADDR: 4, ID_IPV6_ADDR: 16}
 	pbt.Check(t, func(ht *hegel.T) {
-		idType := drawOctet(ht, ID_DER_ASN1_DN)
+		idType := drawOctet(ht, ID_IPV4_ADDR, ID_FQDN, ID_RFC822_ADDR, ID_IPV6_ADDR, ID_DER_ASN1_DN, ID_KEY_ID)
+		width, address := widths[idType]
 		data := drawBody(ht)
-		gotType, gotData, err := DecodeID(EncodeID(idType, data))
-		if err != nil {
-			ht.Fatalf("DecodeID refused type %d with %x: %v", idType, data, err)
+		if address {
+			size := hegel.Draw(ht, withEdges(hegel.Integers(0, 32), 0, width-1, width, width+1))
+			data = hegel.Draw(ht, hegel.Binary(size, size))
 		}
-		if gotType != idType || !bytes.Equal(gotData, data) {
-			ht.Fatalf("DecodeID read type %d with %x back as type %d with %x", idType, data, gotType, gotData)
+		body := EncodeID(idType, data)
+		if !bytes.Equal(body[1:4], []byte{0, 0, 0}) {
+			ht.Fatalf("EncodeID wrote RESERVED as %x", body[1:4])
+		}
+		copy(body[1:4], hegel.Draw(ht, withEdges(hegel.Binary(3, 3), []byte{0xff, 0xff, 0xff}, []byte{0, 0, 1})))
+		gotType, gotData, err := DecodeID(body)
+		switch {
+		case address && len(data) != width:
+			if err == nil {
+				ht.Fatalf("DecodeID took %d octets as the address of an ID of type %d", len(data), idType)
+			}
+		case err != nil:
+			ht.Fatalf("DecodeID refused type %d with %x under RESERVED %x: %v", idType, data, body[1:4], err)
+		case gotType != idType || !bytes.Equal(gotData, data):
+			ht.Fatalf("DecodeID read type %d with %x under RESERVED %x back as type %d with %x", idType, data, body[1:4], gotType, gotData)
 		}
 	})
 }
