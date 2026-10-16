@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/transport"
@@ -100,6 +101,29 @@ func TestMetricsRendersWhatTheHubRefused(t *testing.T) {
 			t.Errorf("the scrape does not carry %q:\n%s", want, out.String())
 		}
 	}
+}
+
+// the scrape counts the sockets connected to one busy peer each, and those a send or a read failed on and handed back to the shared socket
+// a change of the network closes the socket and counts no fallback
+func TestMetricsCountTheSocketsConnectedToOnePeer(t *testing.T) {
+	bus := events.New()
+	hub := recordingHub(t, bus)
+	busyPeer(t, hub, bus)
+	c := &Client{sessions: newSessionSet(), hub: hub}
+	scrape := func(want ...string) {
+		t.Helper()
+		var out strings.Builder
+		c.renderPairSockets(&out)
+		for _, line := range want {
+			if !strings.Contains(out.String(), line+"\n") {
+				t.Errorf("the scrape does not carry %q:\n%s", line, out.String())
+			}
+		}
+	}
+	scrape("# TYPE ranet3_transport_pair_sockets gauge", "ranet3_transport_pair_sockets 1",
+		"# TYPE ranet3_transport_pair_fallbacks_total counter", "ranet3_transport_pair_fallbacks_total 0")
+	hub.NetworkChanged()
+	scrape("ranet3_transport_pair_sockets 0", "# TYPE ranet3_transport_pair_fallbacks_total counter", "ranet3_transport_pair_fallbacks_total 0")
 }
 
 // The segment routing half and the reconciler are the two subsystems that

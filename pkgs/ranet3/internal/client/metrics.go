@@ -88,6 +88,7 @@ func (c *Client) Metrics(w io.Writer) {
 
 	c.renderPathMTU(w)
 	c.renderReceiveCounters(w)
+	c.renderPairSockets(w)
 	c.renderSegmentCounters(w)
 	c.renderKernel(w)
 	c.renderEgress(w)
@@ -277,6 +278,27 @@ func (c *Client) hubKeepalives() uint64 {
 		return 0
 	}
 	return c.hub.Keepalives()
+}
+
+// renderPairSockets writes the sockets the hub holds connected to one busy peer each, under the prefix of their transport.pair events
+// a fallback leaves its peer's sends on the shared socket, which carries them, until the next sweep
+func (c *Client) renderPairSockets(w io.Writer) {
+	sockets, fallbacks := c.hubPairs()
+	fmt.Fprint(w, "# HELP ranet3_transport_pair_sockets Sockets open or opening that are connected to one busy peer each.\n")
+	fmt.Fprint(w, "# TYPE ranet3_transport_pair_sockets gauge\n")
+	fmt.Fprintf(w, "ranet3_transport_pair_sockets %d\n", sockets)
+
+	fmt.Fprint(w, "# HELP ranet3_transport_pair_fallbacks_total Sockets connected to one peer that a send or a read failed on, whose pairs went back to the shared socket.\n")
+	fmt.Fprint(w, "# TYPE ranet3_transport_pair_fallbacks_total counter\n")
+	fmt.Fprintf(w, "ranet3_transport_pair_fallbacks_total %d\n", fallbacks)
+}
+
+// hubPairs is zero before the hub exists, as hubDropped is
+func (c *Client) hubPairs() (sockets int, fallbacks uint64) {
+	if c.hub == nil {
+		return 0, 0
+	}
+	return c.hub.PairSockets(), c.hub.PairFallbacks()
 }
 
 // MetricsHandler serves Metrics, for mounting next to the pprof endpoint.
