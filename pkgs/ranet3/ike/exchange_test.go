@@ -140,7 +140,7 @@ func TestSendRecvReportsTheBudgetItSpent(t *testing.T) {
 	// One attempt, so the test costs one requestTimeout rather than the full
 	// budget, and the peer never answers.
 	start := time.Now()
-	_, err = sendRecvWithin(mux, request, 1, nil)
+	_, err = sendRecvWithin(mux, request, 1, nil, nil)
 	if err == nil {
 		t.Fatal("an unanswered exchange reported success")
 	}
@@ -184,7 +184,7 @@ func TestSendRecvSendsAnUnansweredRequestAgain(t *testing.T) {
 		}
 	})
 
-	raw, err := sendRecvWithin(mux, request, 2, nil)
+	raw, err := sendRecvWithin(mux, request, 2, nil, nil)
 	if err != nil {
 		t.Fatalf("a request whose first copy went unanswered failed: %v", err)
 	}

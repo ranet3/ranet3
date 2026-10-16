@@ -535,23 +535,11 @@ func TestReplacedChildSAThePeerNeverDeletesIsDeletedAtTheDeadline(t *testing.T) 
 
 // a session left to its own loop sends that Delete once, at the deadline and not before
 func TestRunDeletesTheReplacedChildSAAtItsDeadline(t *testing.T) {
-	peer := listenPeer(t)
-	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mux.Close()
-	const spiI, spiR = 0x0102030405060708, 0x1112131415161718
-	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	peer, s := closingAfterAuth(t)
 	replaced := ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}
-	s := &Session{mux: mux, requests: make(chan *localRequest, 1),
-		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2, skei: make([]byte, 20), sker: make([]byte, 20)},
-		Child:   ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}, retiring: replaced}
-	if err := mux.RegisterIKE(spiI); err != nil {
-		t.Fatal(err)
-	}
-	if err := mux.RegisterESP(replaced.LocalSPI); err != nil {
+	s.requests = make(chan *localRequest, 1)
+	s.Child, s.retiring = ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}, replaced
+	if err := s.mux.RegisterESP(replaced.LocalSPI); err != nil {
 		t.Fatal(err)
 	}
 	const wait = 300 * time.Millisecond
@@ -565,46 +553,23 @@ func TestRunDeletesTheReplacedChildSAAtItsDeadline(t *testing.T) {
 		<-runDone
 	}()
 
-	buf := make([]byte, 2048)
-	if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
-		t.Fatal(err)
-	}
-	n, addr, err := peer.ReadFromUDP(buf)
-	if err != nil {
-		t.Fatalf("no Delete reached the peer: %v", err)
-	}
+	deleting := peer.read(t)
 	if early := time.Until(due); early > 0 {
 		t.Errorf("the Delete went out %s before the deadline", early)
 	}
-	raw := append([]byte(nil), buf[4:n]...)
-	message, err := DecodeMessage(raw)
-	if err != nil {
-		t.Fatal(err)
+	if spis := deletedESP(t, &localRequest{inner: deleting.inner}); deleting.Header.ExchangeType != INFORMATIONAL || !slices.Equal(spis, []uint32{replaced.LocalSPI}) {
+		t.Fatalf("the peer got exchange %d deleting %08x, want an INFORMATIONAL deleting %08x", deleting.Header.ExchangeType, spis, replaced.LocalSPI)
 	}
-	inner, err := DecryptMessage(suite, s.current.skei, raw, message)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if spis := deletedESP(t, &localRequest{inner: inner}); message.Header.ExchangeType != INFORMATIONAL || !slices.Equal(spis, []uint32{replaced.LocalSPI}) {
-		t.Fatalf("the peer got exchange %d deleting %08x, want an INFORMATIONAL deleting %08x", message.Header.ExchangeType, spis, replaced.LocalSPI)
-	}
-	response, err := EncryptMessage(suite, s.current.sker, Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: INFORMATIONAL,
-		Flags: FlagResponse, MessageID: message.Header.MessageID}, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := peer.WriteToUDP(withNonESPMarker(response), addr); err != nil {
-		t.Fatal(err)
-	}
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: deleting.Header.MessageID}, nil)
 	for deadline := time.Now().Add(answerBudget); s.retiringChild().LocalSPI != 0; time.Sleep(recordPoll) {
 		if time.Now().After(deadline) {
 			t.Fatal("the answered Delete left the replaced SA latched")
 		}
 	}
-	if err := peer.SetReadDeadline(time.Now().Add(quietPeriod)); err != nil {
+	if err := peer.conn.SetReadDeadline(time.Now().Add(quietPeriod)); err != nil {
 		t.Fatal(err)
 	}
-	if n, _, err := peer.ReadFromUDP(buf); err == nil {
+	if n, _, err := peer.conn.ReadFromUDP(make([]byte, 2048)); err == nil {
 		t.Errorf("the peer got %d more bytes after the answered Delete, want nothing", n)
 	}
 }

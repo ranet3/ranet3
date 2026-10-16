@@ -1,0 +1,435 @@
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: FSL-1.1-ALv2
+
+package ike
+
+import (
+	"bytes"
+	"net"
+	"slices"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"ranet3.com/pkgs/ranet3/transport"
+)
+
+// an initiator whose own Delete is out answers the responder's Delete crossing it as usual and stops waiting for its own answer
+// the responder refuses the Child SA and deletes the IKE SA, and its answer to the initiator's Delete is held back, so only the crossing Delete settles the initiator's exchange
+func TestInitiatorAnswersTheResponderDeleteCrossingItsOwn(t *testing.T) {
+	refused := &recorder{}
+	h := childRefusedHarness(t, refused.record)
+	var answer atomic.Pointer[[]byte]
+	port := relay(t, h.remotePort, func(fromInitiator bool, header *Header, raw []byte) bool {
+		if header == nil || header.ExchangeType != INFORMATIONAL || !header.IsResponse() {
+			return true
+		}
+		if fromInitiator {
+			kept := slices.Clone(raw)
+			answer.Store(&kept)
+			return true
+		}
+		return false
+	})
+	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	held, _ := dialRefusedChild(t, h, mux)
+	if header, _, _ := responderMessage(t, mux, held); header.ExchangeType != IKE_AUTH || !header.IsResponse() {
+		t.Fatalf("the responder first sent exchange %d response %v, want its IKE_AUTH answer", header.ExchangeType, header.IsResponse())
+	}
+
+	held.nextLocalMID = 2
+	initiator := &Session{mux: mux, current: held}
+	started := time.Now()
+	if err := initiator.deleteAuthenticatedIKE(); err != nil {
+		t.Fatalf("the initiator's Delete ended with %v, want the responder's crossing Delete to settle it", err)
+	}
+	if took := time.Since(started); took >= requestTimeout {
+		t.Errorf("the initiator waited %s for its own answer, the time of a retransmission", took)
+	}
+	for deadline := time.Now().Add(answerBudget); answer.Load() == nil; time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatal("the initiator never answered the responder's Delete")
+		}
+	}
+	raw := *answer.Load()
+	message, err := DecodeMessage(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := DecryptMessage(held.suite, held.skei, raw, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Header.MessageID != 0 || len(inner) != 0 {
+		t.Errorf("the initiator answered at Message ID %d with %v, want an empty answer at the responder's first Message ID", message.Header.MessageID, inner)
+	}
+	awaitHandshakeEnd(t, h, refused, held.spiI)
+}
+
+// a request that does not close the IKE SA is answered and leaves the initiator waiting for its own answer
+func TestInitiatorClosingAfterAuthAnswersOtherRequestsAndWaitsOn(t *testing.T) {
+	peer, initiator := closingAfterAuth(t)
+	done := make(chan error, 1)
+	go func() { done <- initiator.deleteAuthenticatedIKE() }()
+	own := peer.read(t)
+	if own.Header.MessageID != 2 || own.Header.IsResponse() {
+		t.Fatalf("the initiator sent Message ID %d response %v, want its Delete at 2", own.Header.MessageID, own.Header.IsResponse())
+	}
+
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: 0}, nil)
+	if answer := peer.answer(t); answer.Header.MessageID != 0 || len(answer.inner) != 0 {
+		t.Fatalf("the liveness check drew Message ID %d carrying %v, want an empty answer at 0", answer.Header.MessageID, answer.inner)
+	}
+	waitsOn(t, done)
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: 2}, nil)
+	settled(t, done)
+}
+
+// closingPeer stands in for a responder past IKE_AUTH, on the IKE SA the initiator holds
+type closingPeer struct {
+	conn *net.UDPConn
+	held *ikeContext
+	to   *net.UDPAddr
+}
+
+type closingMessage struct {
+	*Message
+	inner []RawPayload
+	raw   []byte
+}
+
+func closingAfterAuth(t *testing.T) (*closingPeer, *Session) {
+	t.Helper()
+	return closingAfterAuthThrough(t, nil)
+}
+
+// pass, where set, sees what goes between the two ends as relay's does
+func closingAfterAuthThrough(t *testing.T, pass func(fromInitiator bool, header *Header, raw []byte) bool) (*closingPeer, *Session) {
+	t.Helper()
+	conn := listenPeer(t)
+	addr := conn.LocalAddr().(*net.UDPAddr)
+	port := addr.Port
+	if pass != nil {
+		port = relay(t, addr.Port, pass)
+	}
+	mux, err := transport.Dial("127.0.0.1:0", addr.IP, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	held := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256},
+		spiI: 0x0102030405060708, spiR: 0x1112131415161718, nextLocalMID: 2, skei: make([]byte, 20), sker: make([]byte, 20)}
+	if err := mux.RegisterIKE(held.spiI); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetDeadline(time.Now().Add(answerBudget)); err != nil {
+		t.Fatal(err)
+	}
+	return &closingPeer{conn: conn, held: held}, &Session{mux: mux, current: held}
+}
+
+func (p *closingPeer) read(t *testing.T) closingMessage {
+	t.Helper()
+	buf := make([]byte, 2048)
+	n, from, err := p.conn.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("the initiator sent nothing: %v", err)
+	}
+	p.to = from
+	raw := slices.Clone(buf[4:n])
+	message, err := DecodeMessage(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := DecryptMessage(p.held.suite, p.held.skei, raw, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return closingMessage{message, inner, raw}
+}
+
+// answer passes over the initiator's own request, which it retransmits while it waits
+func (p *closingPeer) answer(t *testing.T) closingMessage {
+	t.Helper()
+	for {
+		if message := p.read(t); message.Header.IsResponse() {
+			return message
+		}
+	}
+}
+
+func (p *closingPeer) send(t *testing.T, header Header, inner []RawPayload) []byte {
+	t.Helper()
+	header.SPIInitiator, header.SPIResponder = p.held.spiI, p.held.spiR
+	raw, err := EncryptMessage(p.held.suite, p.held.sker, header, nil, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.write(t, raw)
+	return raw
+}
+
+func (p *closingPeer) write(t *testing.T, raw []byte) {
+	t.Helper()
+	if _, err := p.conn.WriteToUDP(withNonESPMarker(raw), p.to); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// unanswered has the initiator send no answer for quietPeriod, the retransmissions of its own request aside
+func (p *closingPeer) unanswered(t *testing.T) {
+	t.Helper()
+	if err := p.conn.SetReadDeadline(time.Now().Add(quietPeriod)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2048)
+	for {
+		n, _, err := p.conn.ReadFromUDP(buf)
+		if err != nil {
+			break
+		}
+		if header, err := decodeHeader(buf[4:n]); err != nil || header.IsResponse() {
+			t.Fatalf("the initiator sent %x, want no answer", buf[4:n])
+		}
+	}
+	if err := p.conn.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// a request answered once and retransmitted, its answer lost on the way, draws that answer again bitwise and nothing else, so the next request is answered at the next Message ID and the initiator waits on
+func TestInitiatorClosingAfterAuthAnswersARetransmittedRequestWithItsAnswer(t *testing.T) {
+	var lost atomic.Pointer[[]byte]
+	peer, initiator := closingAfterAuthThrough(t, func(fromInitiator bool, header *Header, raw []byte) bool {
+		if !fromInitiator || header == nil || !header.IsResponse() || lost.Load() != nil {
+			return true
+		}
+		kept := slices.Clone(raw)
+		lost.Store(&kept)
+		return false
+	})
+	done := make(chan error, 1)
+	go func() { done <- initiator.deleteAuthenticatedIKE() }()
+	own := peer.read(t)
+	if own.Header.MessageID != 2 || own.Header.IsResponse() {
+		t.Fatalf("the initiator sent Message ID %d response %v, want its Delete at 2", own.Header.MessageID, own.Header.IsResponse())
+	}
+
+	request := peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: 0}, nil)
+	for deadline := time.Now().Add(answerBudget); lost.Load() == nil; time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatal("the initiator never answered the liveness check")
+		}
+	}
+	peer.write(t, request)
+	if again := peer.answer(t); !bytes.Equal(again.raw, *lost.Load()) {
+		t.Fatalf("the retransmitted liveness check drew %x, want the lost answer %x", again.raw, *lost.Load())
+	}
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: 1}, nil)
+	if next := peer.answer(t); next.Header.MessageID != 1 || len(next.inner) != 0 {
+		t.Fatalf("the next liveness check drew Message ID %d carrying %v, want an empty answer at 1", next.Header.MessageID, next.inner)
+	}
+	waitsOn(t, done)
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
+	settled(t, done)
+}
+
+// RFC 7296 section 2.25.1: "If a peer receives a request to close a Child SA that does not exist, it SHOULD reply without a Delete payload."
+// a Delete of a Child SA closes no IKE SA: the initiator answers it without a Delete payload, since the IKE SA it is closing carries no Child SA, and goes on waiting for its own answer
+func TestInitiatorClosingAfterAuthAnswersAChildSADeleteAndWaitsOn(t *testing.T) {
+	peer, initiator := closingAfterAuth(t)
+	done := make(chan error, 1)
+	go func() { done <- initiator.deleteAuthenticatedIKE() }()
+	own := peer.read(t)
+
+	child := RawPayload{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{{0x50, 0x60, 0x70, 0x80}}})}
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: 0}, []RawPayload{child})
+	if answer := peer.answer(t); answer.Header.ExchangeType != INFORMATIONAL || answer.Header.MessageID != 0 || len(answer.inner) != 0 {
+		t.Fatalf("the Child SA's Delete drew exchange %d Message ID %d carrying %v, want an empty answer at 0", answer.Header.ExchangeType, answer.Header.MessageID, answer.inner)
+	}
+	waitsOn(t, done)
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
+	settled(t, done)
+}
+
+// a Delete at the next Message ID that does not authenticate is no request: the initiator neither answers it nor stops waiting for its own answer, and the peer's next request is still answered at that Message ID
+func TestInitiatorClosingAfterAuthIgnoresARequestThatDoesNotAuthenticate(t *testing.T) {
+	peer, initiator := closingAfterAuth(t)
+	done := make(chan error, 1)
+	go func() { done <- initiator.deleteAuthenticatedIKE() }()
+	own := peer.read(t)
+
+	header := Header{SPIInitiator: peer.held.spiI, SPIResponder: peer.held.spiR, ExchangeType: INFORMATIONAL}
+	forged, err := EncryptMessage(peer.held.suite, peer.held.sker, header, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged[len(forged)-1] ^= 1
+	peer.write(t, forged)
+	peer.unanswered(t)
+	waitsOn(t, done)
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: 0}, nil)
+	if answer := peer.answer(t); answer.Header.MessageID != 0 || len(answer.inner) != 0 {
+		t.Fatalf("the liveness check after the forgery drew Message ID %d carrying %v, want an empty answer at 0", answer.Header.MessageID, answer.inner)
+	}
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
+	settled(t, done)
+}
+
+// an authenticated Delete of the IKE SA outside the window, at a Message ID answered before the last or at one ahead of the next, is neither answered nor acted on, and the answer kept for a retransmission stays the last one sent
+func TestInitiatorClosingAfterAuthIgnoresADeleteOutsideTheWindow(t *testing.T) {
+	peer, initiator := closingAfterAuth(t)
+	done := make(chan error, 1)
+	go func() { done <- initiator.deleteAuthenticatedIKE() }()
+	own := peer.read(t)
+
+	var request []byte
+	var kept closingMessage
+	for mid := range uint32(2) {
+		request = peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: mid}, nil)
+		if kept = peer.answer(t); kept.Header.MessageID != mid {
+			t.Fatalf("the liveness check at Message ID %d drew an answer at %d", mid, kept.Header.MessageID)
+		}
+	}
+	for _, mid := range []uint32{0, 5} {
+		peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: mid}, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+		peer.unanswered(t)
+		waitsOn(t, done)
+	}
+	peer.write(t, request)
+	if again := peer.answer(t); !bytes.Equal(again.raw, kept.raw) {
+		t.Fatalf("the retransmitted liveness check at Message ID 1 drew %x, want its answer %x again", again.raw, kept.raw)
+	}
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
+	settled(t, done)
+}
+
+// unsupportedCritical is a payload of a type no IKEv2 document assigns, its critical flag set
+var unsupportedCritical = RawPayload{Type: PayloadType(250), Critical: true, Body: []byte{1}}
+
+// a request that authenticates and does not decode is answered INVALID_SYNTAX at its Message ID, which ends the IKE SA at both ends, so the initiator stops waiting for its own answer
+func TestInitiatorClosingAfterAuthEndsAtARequestThatDoesNotDecode(t *testing.T) {
+	peer, initiator := closingAfterAuth(t)
+	done := make(chan error, 1)
+	go func() { done <- initiator.deleteAuthenticatedIKE() }()
+	peer.read(t)
+
+	// a Notify whose stated length is shorter than its own header, then no padding
+	header := Header{SPIInitiator: peer.held.spiI, SPIResponder: peer.held.spiR, ExchangeType: INFORMATIONAL}
+	malformed, err := encryptMessagePlaintextIV(peer.held.suite, peer.held.sker, header, nil, PayloadN, []byte{0, 0, 0, 3, 0}, make([]byte, 8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer.write(t, malformed)
+	if answer := peer.answer(t); answer.Header.ExchangeType != INFORMATIONAL || answer.Header.MessageID != 0 || !notified(answer.inner, N_INVALID_SYNTAX, nil) {
+		t.Fatalf("the malformed request drew exchange %d Message ID %d carrying %v, want INVALID_SYNTAX at 0", answer.Header.ExchangeType, answer.Header.MessageID, answer.inner)
+	}
+	settled(t, done)
+}
+
+// an exchange the wait does not take draws the answer Run gives it, INVALID_SYNTAX, which ends the IKE SA
+func TestInitiatorClosingAfterAuthAnswersAnExchangeItDoesNotTakeAsRunDoes(t *testing.T) {
+	peer, initiator := closingAfterAuth(t)
+	done := make(chan error, 1)
+	go func() { done <- initiator.deleteAuthenticatedIKE() }()
+	peer.read(t)
+
+	header := Header{ExchangeType: IKE_AUTH, MessageID: 0}
+	peer.send(t, header, nil)
+	answer := peer.answer(t)
+	if answer.Header.ExchangeType != IKE_AUTH || answer.Header.MessageID != 0 || !notified(answer.inner, N_INVALID_SYNTAX, nil) {
+		t.Fatalf("the IKE_AUTH request drew exchange %d Message ID %d carrying %v, want INVALID_SYNTAX at 0", answer.Header.ExchangeType, answer.Header.MessageID, answer.inner)
+	}
+	if run := runAnswer(t, header, nil); !answeredAlike(run, answer.inner) {
+		t.Errorf("Run answers the IKE_AUTH request with %v, the wait with %v", run, answer.inner)
+	}
+	settled(t, done)
+}
+
+// a request carrying a critical payload this end does not support is rejected as Run rejects it, with UNSUPPORTED_CRITICAL_PAYLOAD naming the type, and is not acted on, so the Delete inside it leaves the initiator waiting
+// the rejection is the answer kept for its Message ID, and the next request is answered at the next
+func TestInitiatorClosingAfterAuthRejectsAnUnsupportedCriticalPayloadAsRunDoes(t *testing.T) {
+	peer, initiator := closingAfterAuth(t)
+	done := make(chan error, 1)
+	go func() { done <- initiator.deleteAuthenticatedIKE() }()
+	own := peer.read(t)
+
+	header := Header{ExchangeType: INFORMATIONAL, MessageID: 0}
+	inner := []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}, unsupportedCritical}
+	request := peer.send(t, header, inner)
+	answer := peer.answer(t)
+	if answer.Header.MessageID != 0 || !notified(answer.inner, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupportedCritical.Type)}) {
+		t.Fatalf("the request drew Message ID %d carrying %v, want UNSUPPORTED_CRITICAL_PAYLOAD for type %d at 0", answer.Header.MessageID, answer.inner, unsupportedCritical.Type)
+	}
+	if run := runAnswer(t, header, inner); !answeredAlike(run, answer.inner) {
+		t.Errorf("Run answers the request with %v, the wait with %v", run, answer.inner)
+	}
+	peer.write(t, request)
+	if again := peer.answer(t); !bytes.Equal(again.raw, answer.raw) {
+		t.Errorf("the retransmitted request drew %x, want the rejection %x again", again.raw, answer.raw)
+	}
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: 1}, nil)
+	if next := peer.answer(t); next.Header.MessageID != 1 || len(next.inner) != 0 {
+		t.Fatalf("the next liveness check drew Message ID %d carrying %v, want an empty answer at 1", next.Header.MessageID, next.inner)
+	}
+	waitsOn(t, done)
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
+	settled(t, done)
+}
+
+func notified(inner []RawPayload, notifyType NotifyType, data []byte) bool {
+	if len(inner) != 1 || inner[0].Type != PayloadN {
+		return false
+	}
+	notify, err := DecodeNotify(inner[0].Body)
+	return err == nil && notify.Type == notifyType && bytes.Equal(notify.Data, data)
+}
+
+func answeredAlike(a, b []RawPayload) bool {
+	return slices.EqualFunc(a, b, func(x, y RawPayload) bool {
+		return x.Type == y.Type && x.Critical == y.Critical && bytes.Equal(x.Body, y.Body)
+	})
+}
+
+// runAnswer is Run's answer to the request on the IKE SA closingAfterAuth holds, decrypted
+func runAnswer(t *testing.T, header Header, inner []RawPayload) []RawPayload {
+	t.Helper()
+	_, s := closingAfterAuth(t)
+	header.SPIInitiator, header.SPIResponder = s.current.spiI, s.current.spiR
+	raw, _ := s.handleRequest(s.current, &header, inner)
+	message, err := DecodeMessage(raw)
+	if err != nil {
+		t.Fatalf("Run's answer does not decode: %v", err)
+	}
+	answer, err := DecryptMessage(s.current.suite, s.current.skei, raw, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return answer
+}
+
+func waitsOn(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		t.Fatalf("the initiator stopped waiting for its own answer: %v", err)
+	case <-time.After(quietPeriod):
+	}
+}
+
+// settled has the initiator stop waiting with nothing to report, its IKE SA gone
+func settled(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("the initiator's Delete ended with %v", err)
+		}
+	case <-time.After(answerBudget):
+		t.Fatal("the initiator went on waiting for its own answer")
+	}
+}
