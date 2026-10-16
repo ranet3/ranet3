@@ -922,7 +922,11 @@ func (s *Session) informAfterAuth(inner []RawPayload) error {
 	if err != nil {
 		return fmt.Errorf("ike: build INFORMATIONAL request: %w", err)
 	}
-	response, responseInner, err := encryptedRoundTripWithin(s.mux, ctx, request, teardownRetransmits)
+	response, responseInner, err := encryptedRoundTripWithin(s.mux, ctx, request, teardownRetransmits, func(raw []byte) bool { return s.answerAfterAuth(ctx, raw) })
+	// RFC 7296 section 2.25.2: "If a peer receives a request to close an IKE SA that it is currently trying to close, it SHOULD reply as usual, and forget about its own close request."
+	if errors.Is(err, errOvertaken) {
+		return nil
+	}
 	if response == nil && s.mux.IsClosed() {
 		// the responder holds its SA until told, and a closed mux still sends, so the request goes out once more whether or not it left before
 		// RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
@@ -941,6 +945,73 @@ func (s *Session) informAfterAuth(inner []RawPayload) error {
 		return fmt.Errorf("ike: INFORMATIONAL response after IKE_AUTH is not empty")
 	}
 	return nil
+}
+
+func (s *Session) answerAfterAuth(ctx *ikeContext, raw []byte) bool {
+	hdr, err := decodeHeader(raw)
+	if err != nil || hdr.IsInitiator() != ctx.responder || hdr.SPIInitiator != ctx.spiI || hdr.SPIResponder != ctx.spiR {
+		return false
+	}
+	message, err := DecodeMessage(raw)
+	if err != nil {
+		return false
+	}
+	first, plain, err := decryptMessagePlaintext(ctx.suite, ctx.peerEncryptionKey(), raw, message)
+	if err != nil || s.answerAgain(ctx, hdr) || hdr.MessageID != ctx.nextPeerMID {
+		return false
+	}
+	response, ends, err := s.answerInWait(ctx, hdr, first, plain)
+	if err != nil {
+		return false
+	}
+	ctx.lastPeerResponseID, ctx.lastPeerResponse = hdr.MessageID, response
+	ctx.nextPeerMID++
+	_ = s.mux.SendIKE(response)
+	return ends
+}
+
+// the IKE SA going carries no Child SA, so every INFORMATIONAL request is answered empty
+// RFC 7296 section 2.25.1: "If a peer receives a request to close a Child SA that does not exist, it SHOULD reply without a Delete payload."
+func (s *Session) answerInWait(ctx *ikeContext, hdr *Header, first PayloadType, plain []byte) ([]byte, bool, error) {
+	inner, err := decodeMessagePlaintext(first, plain)
+	if err != nil {
+		// RFC 7296 section 2.21.3: "After the IKE SA is authenticated, all requests having errors MUST result in a response notifying the other end of the error."
+		// section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
+		response, err := s.responseNotify(ctx, hdr.MessageID, hdr.ExchangeType, N_INVALID_SYNTAX)
+		return response, true, err
+	}
+	if response, rejected, err := s.rejectUnsupportedCritical(ctx, hdr, inner); rejected {
+		return response, false, err
+	}
+	switch hdr.ExchangeType {
+	case INFORMATIONAL:
+		response, err := s.response(ctx, hdr.MessageID, INFORMATIONAL, nil)
+		return response, deletesIKE(inner), err
+	case CREATE_CHILD_SA:
+		return nil, false, errors.New("ike: a CREATE_CHILD_SA request goes unanswered while the IKE SA closes")
+	}
+	// as Run answers an exchange it does not take, which ends the IKE SA
+	response, err := s.responseNotify(ctx, hdr.MessageID, hdr.ExchangeType, N_INVALID_SYNTAX)
+	return response, true, err
+}
+
+func deletesIKE(payloads []RawPayload) bool {
+	return slices.ContainsFunc(payloads, func(payload RawPayload) bool {
+		if payload.Type != PayloadD {
+			return false
+		}
+		deleted, err := DecodeDelete(payload.Body)
+		return err == nil && deleted.Protocol == ProtoIKE
+	})
+}
+
+// RFC 7296 section 2.1: "The responder MUST never retransmit a response unless it receives a retransmission of the request. In that event, the responder MUST ignore the retransmitted request except insofar as it causes a retransmission of the response."
+func (s *Session) answerAgain(ctx *ikeContext, hdr *Header) bool {
+	if ctx.lastPeerResponse == nil || hdr.MessageID != ctx.lastPeerResponseID || hdr.MessageID+1 != ctx.nextPeerMID {
+		return false
+	}
+	_ = s.mux.SendIKE(ctx.lastPeerResponse)
+	return true
 }
 
 // doIKEAuth reports true once it accepts the responder's AUTH and IDr, and returns an *authRefusal for a decrypted answer it refuses before then, other than one carrying the responder's own error notify

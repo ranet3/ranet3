@@ -869,10 +869,8 @@ func (s *Session) contextForHeader(hdr *Header) *ikeContext {
 }
 
 func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, inner []RawPayload) ([]byte, error) {
-	for _, payload := range inner {
-		if payload.Critical && !supportedPayloadType(payload.Type) {
-			return s.responseNotifyData(ctx, hdr.MessageID, hdr.ExchangeType, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(payload.Type)})
-		}
+	if response, rejected, err := s.rejectUnsupportedCritical(ctx, hdr, inner); rejected {
+		return response, err
 	}
 	if hdr.ExchangeType == INFORMATIONAL {
 		// RFC 7296 section 2.21.2: "In an IKE_AUTH exchange, or in the INFORMATIONAL exchange immediately following it (in case an error happened when processing a response to IKE_AUTH), the UNSUPPORTED_CRITICAL_PAYLOAD, INVALID_SYNTAX, and AUTHENTICATION_FAILED notifications are the only ones to cause the IKE SA to be deleted or not created, without a Delete payload."
@@ -975,6 +973,17 @@ func supportedPayloadType(payloadType PayloadType) bool {
 	default:
 		return false
 	}
+}
+
+// RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected and the response to the IKE request containing that payload MUST include a Notify payload UNSUPPORTED_CRITICAL_PAYLOAD, indicating an unsupported critical payload was included. In that Notify payload, the Notification Data contains the one-octet payload type."
+func (s *Session) rejectUnsupportedCritical(ctx *ikeContext, hdr *Header, inner []RawPayload) ([]byte, bool, error) {
+	for _, payload := range inner {
+		if payload.Critical && !supportedPayloadType(payload.Type) {
+			response, err := s.responseNotifyData(ctx, hdr.MessageID, hdr.ExchangeType, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(payload.Type)})
+			return response, true, err
+		}
+	}
+	return nil, false, nil
 }
 
 func (s *Session) response(ctx *ikeContext, msgID uint32, exchange ExchangeType, inner []RawPayload) ([]byte, error) {

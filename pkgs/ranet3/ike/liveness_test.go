@@ -961,22 +961,10 @@ func TestDeleteEndingAnIKESAHasTheTeardownBudget(t *testing.T) {
 func TestRunEndingReturnsWhyItDeletedTheIKESA(t *testing.T) {
 	why := errors.New("the reason to delete")
 	for _, peerDoes := range []string{"answers", "crosses", "stays silent"} {
-		crossed := peerDoes == "crosses"
 		t.Run(peerDoes, func(t *testing.T) {
-			peer := listenPeer(t)
-			peerAddr := peer.LocalAddr().(*net.UDPAddr)
-			mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
-			if err != nil {
-				t.Fatal(err)
-			}
-			const spiI, spiR = 0x0102030405060708, 0x1112131415161718
-			suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
-			held := &ikeContext{suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2, skei: make([]byte, 20), sker: make([]byte, 20)}
+			peer, s := closingAfterAuth(t)
 			events := &recorder{}
-			s := &Session{mux: mux, current: held, requests: make(chan *localRequest, 1), events: events.record}
-			if err := mux.RegisterIKE(spiI); err != nil {
-				t.Fatal(err)
-			}
+			s.requests, s.events = make(chan *localRequest, 1), events.record
 			const due = 100 * time.Millisecond
 			s.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return 0, nil }
 			if err := s.SetRekeyIntervals(0, time.Hour); err != nil {
@@ -992,57 +980,25 @@ func TestRunEndingReturnsWhyItDeletedTheIKESA(t *testing.T) {
 			finished := make(chan struct{})
 			go func() { defer close(finished); ended = s.run(context.Background(), why) }()
 			t.Cleanup(func() {
-				mux.Close()
+				s.mux.Close()
 				<-finished
 			})
 
-			buf := make([]byte, 2048)
-			if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
-				t.Fatal(err)
+			own := peer.read(t)
+			if own.Header.ExchangeType != INFORMATIONAL || own.Header.IsResponse() || len(own.inner) != 1 || own.inner[0].Type != PayloadD {
+				t.Fatalf("the peer got exchange %d response %v carrying %v, want a Delete request", own.Header.ExchangeType, own.Header.IsResponse(), own.inner)
 			}
-			n, addr, err := peer.ReadFromUDP(buf)
-			if err != nil {
-				t.Fatalf("no Delete reached the peer: %v", err)
-			}
-			raw := append([]byte(nil), buf[4:n]...)
-			message, err := DecodeMessage(raw)
-			if err != nil {
-				t.Fatal(err)
-			}
-			inner, err := DecryptMessage(suite, held.skei, raw, message)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if message.Header.ExchangeType != INFORMATIONAL || message.Header.IsResponse() || len(inner) != 1 || inner[0].Type != PayloadD {
-				t.Fatalf("the peer got exchange %d response %v carrying %v, want a Delete request", message.Header.ExchangeType, message.Header.IsResponse(), inner)
-			}
-			if deleted, err := DecodeDelete(inner[0].Body); err != nil || deleted.Protocol != ProtoIKE {
+			if deleted, err := DecodeDelete(own.inner[0].Body); err != nil || deleted.Protocol != ProtoIKE {
 				t.Fatalf("the request deletes %+v (%v), want the IKE SA", deleted, err)
 			}
 			time.Sleep(3 * due)
-			header := Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: message.Header.MessageID}
-			var payloads []RawPayload
-			if crossed {
-				header.Flags, header.MessageID = 0, 0
-				payloads = []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}
-			}
-			reply, err := EncryptMessage(suite, held.sker, header, nil, payloads)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if peerDoes != "stays silent" {
-				if _, err := peer.WriteToUDP(withNonESPMarker(reply), addr); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if crossed {
-				n, _, err := peer.ReadFromUDP(buf)
-				if err != nil {
-					t.Fatalf("the peer's crossing Delete went unanswered: %v", err)
-				}
-				answer, err := DecodeMessage(buf[4:n])
-				if err != nil || !answer.Header.IsResponse() || answer.Header.MessageID != 0 {
-					t.Errorf("the peer's crossing Delete drew %+v (%v), want the answer at Message ID 0", answer, err)
+			switch peerDoes {
+			case "answers":
+				peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
+			case "crosses":
+				peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: 0}, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+				if answer := peer.answer(t); answer.Header.MessageID != 0 {
+					t.Errorf("the peer's crossing Delete drew an answer at Message ID %d, want 0", answer.Header.MessageID)
 				}
 			}
 			select {
