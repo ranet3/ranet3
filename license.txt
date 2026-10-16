@@ -11,13 +11,21 @@ https://github.com/NickCao/ranet-lite, copyright 2026 Nick Cao, and of ranet,
 https://github.com/NickCao/ranet, copyright 2021 SCP-2000, both licensed under
 the MIT License. The portions derived from them remain under the MIT License.
 
+pkgs/wireguard holds a copy of wireguard-go, https://git.zx2c4.com/wireguard-go,
+with changes from tailscale's fork of it,
+https://github.com/tailscale/wireguard-go. The copied files are licensed under
+the MIT License, and each names its copyright holders in its header or in
+pkgs/wireguard/REUSE.toml.
+
 The documentation under pkgs/ranet3-docs is licensed under the Creative
 Commons Attribution 4.0 International License (CC-BY-4.0).
 
 Every file names its license and its copyright holders in
 SPDX-License-Identifier and SPDX-FileCopyrightText lines at its top, or in a
-REUSE.toml in its own directory or one above it when it cannot carry a
-comment. The full texts are in licenses/:
+REUSE.toml in its own directory or one above it. A REUSE.toml names a file that
+cannot carry a comment, and in pkgs/wireguard also a copied file that came
+without a header, which stays as it was written. The full texts are in
+licenses/:
 
     licenses/FSL-1.1-ALv2.txt
     licenses/MIT.txt

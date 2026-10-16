@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 Yifei Sun
+# SPDX-License-Identifier: FSL-1.1-ALv2
+
+# the holders of the copied files that carry no header, by where each file comes from
+version = 1
+
+# files that upstream has, without a header there either
+[[annotations]]
+path = ["LICENSE", "conn/bind_std_test.go", "go.mod", "go.sum", "tun/errors.go"]
+SPDX-FileCopyrightText = "2017-2025 WireGuard LLC"
+SPDX-License-Identifier = "MIT"
+
+# files that only tailscale's commits added
+[[annotations]]
+path = [
+  "tun/checksum_amd64.go",
+  "tun/checksum_amd64_test.go",
+  "tun/checksum_generated_amd64.go",
+  "tun/checksum_generated_amd64.s",
+  "tun/checksum_generic_test.go",
+  "tun/generate_amd64.go",
+  "tun/offload_test.go",
+]
+SPDX-FileCopyrightText = "Tailscale Inc & AUTHORS"
+SPDX-License-Identifier = "MIT"
+
+# files that hold code from both: upstream's checksum.go rewritten by tailscale, upstream's
+# and tailscale's checksum tests, and tailscale's files holding code moved out of upstream's
+[[annotations]]
+path = [
+  "tun/checksum.go",
+  "tun/checksum_generic.go",
+  "tun/checksum_test.go",
+  "tun/offload.go",
+]
+SPDX-FileCopyrightText = ["2017-2025 WireGuard LLC", "Tailscale Inc & AUTHORS"]
+SPDX-License-Identifier = "MIT"
