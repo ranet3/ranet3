@@ -6,10 +6,12 @@ package ike
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -458,49 +460,171 @@ func TestPeerChildRekeysAreRateLimited(t *testing.T) {
 // A peer owes a Delete for the Child SA a rekey replaced, and is free not to
 // send one. While the replaced SA is still latched, every rekey in both
 // directions is refused, so a peer that rekeys once and goes quiet would lock
-// the session out of rekeying for its whole life. It is retired on the timer
-// instead, and its inbound keys drain like any other replaced SA.
-func TestReplacedChildSAThePeerNeverDeletesIsRetiredAnyway(t *testing.T) {
+// the session out of rekeying for its whole life. At the deadline this end
+// deletes it under RFC 7296 section 2.4, the answer of a peer that no longer
+// has it carries no Delete payload, and its inbound keys then drain like any
+// other replaced SA's.
+func TestReplacedChildSAThePeerNeverDeletesIsDeletedAtTheDeadline(t *testing.T) {
 	mine, _ := lifecycleMuxes(t)
-	s := &Session{mux: mine}
-	const replaced, current = uint32(0x11111111), uint32(0x22222222)
+	s := &Session{mux: mine, requests: make(chan *localRequest)}
+	replaced := ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}
 	retired := make(chan uint32, 4)
 	s.SetChildRetireHandler(func(spi uint32) error { retired <- spi; return nil })
-	if err := mine.RegisterESP(replaced); err != nil {
+	if err := mine.RegisterESP(replaced.LocalSPI); err != nil {
 		t.Fatal(err)
 	}
 	s.childMu.Lock()
-	s.Child = ChildSA{LocalSPI: current}
-	s.retiring = ChildSA{LocalSPI: replaced}
+	s.Child = ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}
+	s.retiring = replaced
 	s.retiringBy = time.Now().Add(retirementDeadline)
 	s.childMu.Unlock()
 
-	// Held for as long as the peer's Delete could still arrive.
-	if err := s.expireRetiredChildren(time.Now().Add(retirementDeadline - time.Second)); err != nil {
-		t.Fatal(err)
+	if _, ok := s.overdueRetiring(time.Now().Add(retirementDeadline - time.Second)); ok {
+		t.Fatal("the replaced SA was given up while the peer's Delete could still arrive")
 	}
-	if s.retiringChild().LocalSPI != replaced {
-		t.Fatal("the replaced SA was dropped while the peer's Delete could still arrive")
-	}
-	when, ok := s.nextRetirement()
-	if !ok || when.IsZero() {
+	if when, ok := s.nextRetirement(); !ok || when.IsZero() {
 		t.Fatal("nothing wakes the control loop to give up on a Delete that is not coming")
 	}
-
-	if err := s.expireRetiredChildren(time.Now().Add(retirementDeadline)); err != nil {
-		t.Fatal(err)
+	child, ok := s.overdueRetiring(time.Now().Add(retirementDeadline))
+	if !ok || child.LocalSPI != replaced.LocalSPI || child.RemoteSPI != replaced.RemoteSPI {
+		t.Fatalf("at the deadline the replaced SA handed back is %+v, %v, want %+v", child, ok, replaced)
 	}
+	if _, ok := s.overdueRetiring(time.Now().Add(retirementDeadline)); ok {
+		t.Error("the replaced SA was handed back a second time, so a second Delete for it would follow the first")
+	}
+	if _, ok := s.nextRetirement(); ok {
+		t.Error("the control loop still wakes for an SA whose Delete is out, which spins it until the answer")
+	}
+
+	done := make(chan struct{})
+	go func() { defer close(done); s.deleteOverdueChild(child) }()
+	var request *localRequest
+	select {
+	case request = <-s.requests:
+	case <-time.After(answerBudget):
+		t.Fatal("no Delete went out for the replaced SA")
+	}
+	if spis := deletedESP(t, request); request.exchange != INFORMATIONAL || !slices.Equal(spis, []uint32{replaced.LocalSPI}) {
+		t.Fatalf("the exchange is %d deleting %08x, want an INFORMATIONAL deleting %08x, the SPI this end receives on", request.exchange, spis, replaced.LocalSPI)
+	}
+	if s.retiringChild().LocalSPI != replaced.LocalSPI {
+		t.Error("the replaced SA was retired before its Delete was answered")
+	}
+	request.result <- requestResult{}
+	<-done
 	if s.retiringChild().LocalSPI != 0 {
-		t.Error("the replaced SA is still latched, so every later rekey is refused")
+		t.Error("the replaced SA is still latched after the answer, so every later rekey is refused")
 	}
 	select {
 	case spi := <-retired:
-		if spi != replaced {
-			t.Errorf("retired SPI %08x, want the replaced %08x", spi, replaced)
+		if spi != replaced.LocalSPI {
+			t.Errorf("retired SPI %08x, want the replaced %08x", spi, replaced.LocalSPI)
 		}
 	default:
 		t.Error("the replaced SA's inbound keys were never dropped")
 	}
+
+	// the mark goes with the SA, so the SA a later rekey replaces is handed back at its own deadline
+	s.childMu.Lock()
+	s.retiring, s.retiringBy = ChildSA{LocalSPI: 0x55555555, RemoteSPI: 0x66666666}, time.Now()
+	s.childMu.Unlock()
+	if _, ok := s.overdueRetiring(time.Now()); !ok {
+		t.Error("the SA a later rekey replaced was never handed back, so no Delete would go out for it")
+	}
+}
+
+// a session left to its own loop sends that Delete once, at the deadline and not before
+func TestRunDeletesTheReplacedChildSAAtItsDeadline(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.Close()
+	const spiI, spiR = 0x0102030405060708, 0x1112131415161718
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	replaced := ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}
+	s := &Session{mux: mux, requests: make(chan *localRequest, 1),
+		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2, skei: make([]byte, 20), sker: make([]byte, 20)},
+		Child:   ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}, retiring: replaced}
+	if err := mux.RegisterIKE(spiI); err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.RegisterESP(replaced.LocalSPI); err != nil {
+		t.Fatal(err)
+	}
+	const wait = 300 * time.Millisecond
+	due := time.Now().Add(wait)
+	s.retiringBy = due
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() { runDone <- s.Run(ctx) }()
+	defer func() {
+		cancel()
+		<-runDone
+	}()
+
+	buf := make([]byte, 2048)
+	if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+		t.Fatal(err)
+	}
+	n, addr, err := peer.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("no Delete reached the peer: %v", err)
+	}
+	if early := time.Until(due); early > 0 {
+		t.Errorf("the Delete went out %s before the deadline", early)
+	}
+	raw := append([]byte(nil), buf[4:n]...)
+	message, err := DecodeMessage(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := DecryptMessage(suite, s.current.skei, raw, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spis := deletedESP(t, &localRequest{inner: inner}); message.Header.ExchangeType != INFORMATIONAL || !slices.Equal(spis, []uint32{replaced.LocalSPI}) {
+		t.Fatalf("the peer got exchange %d deleting %08x, want an INFORMATIONAL deleting %08x", message.Header.ExchangeType, spis, replaced.LocalSPI)
+	}
+	response, err := EncryptMessage(suite, s.current.sker, Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: INFORMATIONAL,
+		Flags: FlagResponse, MessageID: message.Header.MessageID}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.WriteToUDP(withNonESPMarker(response), addr); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(answerBudget); s.retiringChild().LocalSPI != 0; time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatal("the answered Delete left the replaced SA latched")
+		}
+	}
+	if err := peer.SetReadDeadline(time.Now().Add(quietPeriod)); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, err := peer.ReadFromUDP(buf); err == nil {
+		t.Errorf("the peer got %d more bytes after the answered Delete, want nothing", n)
+	}
+}
+
+func deletedESP(t *testing.T, request *localRequest) []uint32 {
+	t.Helper()
+	var spis []uint32
+	for _, payload := range request.inner {
+		if payload.Type != PayloadD {
+			continue
+		}
+		deleted, err := DecodeDelete(payload.Body)
+		if err != nil || deleted.Protocol != ProtoESP {
+			t.Fatalf("the request carries Delete %+v (%v), want ESP", deleted, err)
+		}
+		for _, spi := range deleted.SPIs {
+			spis = append(spis, binary.BigEndian.Uint32(spi))
+		}
+	}
+	return spis
 }
 
 // The exchange completed, so RFC 7296 section 2.8 has the responder holding a

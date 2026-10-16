@@ -122,6 +122,8 @@ type Session struct {
 	probes chan struct{}
 	// childRekeyEnded holds at most the one end of a Child SA rekey Run has not looked at, since Run settles every one on the Child SA schedule and one running at the Child SA's lifetime decides whether the IKE SA closes
 	childRekeyEnded chan struct{}
+	// childFailed holds at most the one dataplane failure Run has not looked at, and one is enough to close the IKE SA
+	childFailed chan error
 	// sendFailures counts failed IKE sends since the last that went out, and only Run's goroutine touches it
 	sendFailures int
 
@@ -133,7 +135,8 @@ type Session struct {
 	// retiringEnds is where the replaced SA's lifetime ends, which its drain does not pass
 	retiringEnds time.Time
 	// retiringBy bounds how long the replaced SA waits for the peer's Delete.
-	retiringBy time.Time
+	retiringBy       time.Time
+	retiringDeleting bool
 	// Run expires replaced inbound SAs after an overlap period, allowing
 	// queued and reordered ESP to finish after the Delete acknowledgment.
 	retired          []childRetirement
@@ -756,6 +759,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		requests:        make(chan *localRequest, 1),
 		probes:          make(chan struct{}, 1),
 		childRekeyEnded: make(chan struct{}, 1),
+		childFailed:     make(chan error, 1),
 		events:          cfg.Events, local: cfg.Local, remote: cfg.Remote,
 	}
 	// from IKE_AUTH on the responder may hold the SA, so a cancel no longer closes the mux under the answer
