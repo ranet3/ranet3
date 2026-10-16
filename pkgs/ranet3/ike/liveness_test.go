@@ -745,6 +745,45 @@ func TestInformationalDeletesEveryDesignatedChildSA(t *testing.T) {
 	}
 }
 
+// RFC 7296 section 2.21.2: "In an IKE_AUTH exchange, or in the INFORMATIONAL exchange immediately following it (in case an error happened when processing a response to IKE_AUTH), the UNSUPPORTED_CRITICAL_PAYLOAD, INVALID_SYNTAX, and AUTHENTICATION_FAILED notifications are the only ones to cause the IKE SA to be deleted or not created, without a Delete payload."
+// a responder's session therefore ends on one at its initiator's Message ID 2 on the SA IKE_AUTH made, and keeps the SA on one anywhere else
+func TestAuthenticationFailureEndsOnlyTheSAWhoseIKEAuthItFollows(t *testing.T) {
+	notify := func(kind NotifyType, data ...byte) []RawPayload {
+		return []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: kind, Data: data})}}
+	}
+	for name, test := range map[string]struct {
+		answeredAuth bool
+		messageID    uint32
+		inner        []RawPayload
+		ends         bool
+	}{
+		"AUTHENTICATION_FAILED right after IKE_AUTH":        {true, 2, notify(N_AUTHENTICATION_FAILED), true},
+		"INVALID_SYNTAX right after IKE_AUTH":               {true, 2, notify(N_INVALID_SYNTAX), true},
+		"UNSUPPORTED_CRITICAL_PAYLOAD right after IKE_AUTH": {true, 2, notify(N_UNSUPPORTED_CRITICAL_PAYLOAD, byte(PayloadD)), true},
+		"AUTHENTICATION_FAILED in a later exchange":         {true, 3, notify(N_AUTHENTICATION_FAILED), false},
+		"AUTHENTICATION_FAILED on an SA a rekey made":       {false, 2, notify(N_AUTHENTICATION_FAILED), false},
+		"another error right after IKE_AUTH":                {true, 2, notify(N_NO_PROPOSAL_CHOSEN), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ikeCtx := testContext()
+			ikeCtx.responder, ikeCtx.answeredAuth = true, test.answeredAuth
+			s := &Session{current: ikeCtx}
+			response, err := s.handleRequest(ikeCtx, &Header{ExchangeType: INFORMATIONAL, MessageID: test.messageID}, test.inner)
+			if ended := err != nil; ended != test.ends {
+				t.Errorf("the session ended %v (%v), want %v", ended, err, test.ends)
+			}
+			message, err := DecodeMessage(response)
+			if err != nil {
+				t.Fatalf("the request drew no answer: %v", err)
+			}
+			inner, err := DecryptMessage(ikeCtx.suite, ikeCtx.sker, response, message)
+			if err != nil || len(inner) != 0 || message.Header.MessageID != test.messageID {
+				t.Errorf("the answer is %v at Message ID %d (%v), want an empty one at %d", inner, message.Header.MessageID, err, test.messageID)
+			}
+		})
+	}
+}
+
 func TestInitialResponseHeaderValidation(t *testing.T) {
 	req := &Header{SPIInitiator: 1, SPIResponder: 0, ExchangeType: IKE_SA_INIT, Flags: FlagInitiator, MessageID: 0}
 	valid := &Header{SPIInitiator: 1, SPIResponder: 2, MajorVersion: 2, ExchangeType: IKE_SA_INIT, Flags: FlagResponse, MessageID: 0, Length: HeaderLen}

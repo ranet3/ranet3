@@ -680,6 +680,16 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, inner []RawPayload
 		}
 	}
 	if hdr.ExchangeType == INFORMATIONAL {
+		// RFC 7296 section 2.21.2: "In an IKE_AUTH exchange, or in the INFORMATIONAL exchange immediately following it (in case an error happened when processing a response to IKE_AUTH), the UNSUPPORTED_CRITICAL_PAYLOAD, INVALID_SYNTAX, and AUTHENTICATION_FAILED notifications are the only ones to cause the IKE SA to be deleted or not created, without a Delete payload."
+		if ctx.answeredAuth && hdr.MessageID == 2 {
+			if notify, ok := authFailure(inner); ok {
+				response, err := s.response(ctx, hdr.MessageID, INFORMATIONAL, nil)
+				if err != nil {
+					return nil, err
+				}
+				return response, fmt.Errorf("ike: peer ended the IKE SA with notify type %d", notify)
+			}
+		}
 		var deletes []Delete
 		for _, p := range inner {
 			if p.Type != PayloadD {
@@ -744,6 +754,23 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, inner []RawPayload
 		return nil, err
 	}
 	return response, fmt.Errorf("ike: unsupported exchange type %d", hdr.ExchangeType)
+}
+
+func authFailure(payloads []RawPayload) (NotifyType, bool) {
+	for _, payload := range payloads {
+		if payload.Type != PayloadN {
+			continue
+		}
+		notify, err := DecodeNotify(payload.Body)
+		if err != nil {
+			continue
+		}
+		switch notify.Type {
+		case N_UNSUPPORTED_CRITICAL_PAYLOAD, N_INVALID_SYNTAX, N_AUTHENTICATION_FAILED:
+			return notify.Type, true
+		}
+	}
+	return 0, false
 }
 
 func supportedPayloadType(payloadType PayloadType) bool {
