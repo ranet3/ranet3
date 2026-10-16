@@ -145,9 +145,8 @@ func (c *Client) ReloadFrom(path string) (err error) {
 		// the device keeps its MTU, so swapping the table is the whole change
 		c.Mesh.SetSteering(tun.steering)
 	}
-	// every live session's search takes the new link.mtu, as each session made from here on does
-	// after the steering table, which the nudge has each search read
-	c.sessions.relink(cfg.Link.SessionMTU())
+	// every live session's search takes the new link.mtu and the steering table in force, as each session made from here on does
+	c.sessions.relink(cfg.Link.SessionMTU(), tun.tables, tun.steering)
 	// SetMTU fails only for a device that is gone, by when everything else here has applied
 	if tunErr != nil {
 		return tunErr

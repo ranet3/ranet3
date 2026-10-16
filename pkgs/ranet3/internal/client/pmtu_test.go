@@ -21,6 +21,7 @@ import (
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
+	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -45,12 +46,9 @@ type pathRig struct {
 	totals probeTotals
 	// probes counts the probes the search handed the speaker
 	probes atomic.Int32
-	// steering is the node's steering table, nil for a node that steers nothing
-	steering atomic.Pointer[srv6.SteerTable]
+	// steering is the steering table the search starts with, nil for a node that steers nothing
+	steering *srv6.SteerTable
 }
-
-// noSteering is the steering table of a node that steers nothing
-func noSteering() *srv6.SteerTable { return nil }
 
 func loopbackHub(t *testing.T) *transport.Hub {
 	t.Helper()
@@ -96,7 +94,7 @@ func probingRig(t *testing.T, hub *transport.Hub, to string, timeout time.Durati
 	r.driver = newPathDriver(mux, func(_ *netstack.Peer, size int, nonce uint16) error {
 		r.probes.Add(1)
 		return probe(r, size, nonce)
-	}, r.bus, &r.totals, r.steering.Load, timeout, confirmInterval)
+	}, r.bus, &r.totals, timeout, confirmInterval)
 	r.driver.peer = sinkPeer(t, "example/peer:0@0")
 	return r
 }
@@ -105,7 +103,7 @@ func probingRig(t *testing.T, hub *transport.Hub, to string, timeout time.Durati
 func (r *pathRig) serve(t *testing.T, link, route int) {
 	t.Helper()
 	r.driver.open()
-	r.driver.start(link, route)
+	r.driver.start(link, r.steering, route)
 	results, served := make(chan sessionResult), make(chan struct{})
 	go func() {
 		r.driver.serve(results)
@@ -153,9 +151,9 @@ func TestSweepHandsTheSearchTheNewLinkMTU(t *testing.T) {
 	r := newPathRig(t, loopbackHub(t), "127.0.0.1:4500", 1402, math.MaxInt, carries)
 	// the start of 1400 confirmed, which is 1402 in the same class
 	r.waitBudget(t, 1402)
-	r.driver.relink(1300)
+	r.driver.relink(1300, nil)
 	r.waitBudget(t, 1300)
-	r.driver.relink(8918)
+	r.driver.relink(8918, nil)
 	r.waitBudget(t, carries)
 	got := searchRecord(r.bus)
 	want := []string{"1400 to 1402 by probe", "1402 to 1300 by link.mtu", "1300 to 1302 by link.mtu"}
@@ -227,8 +225,7 @@ func TestSessionRecordsFallingUnderASteeredPacket(t *testing.T) {
 		t.Fatalf("budgets of %d and %d against a need of %d prove nothing", narrow, narrower, need)
 	}
 	hub := loopbackHub(t)
-	r := newPathRig(t, hub, "127.0.0.1:4500", link, math.MaxInt, math.MaxInt)
-	r.steering.Store(steering)
+	r := steeredRig(t, hub, steering, link, math.MaxInt)
 	r.waitBudget(t, link)
 	r.driver.reports <- &transport.PathMTUError{Endpoint: r.mux.Endpoint(), MTU: 1380}
 	r.waitBudget(t, narrow)
@@ -394,7 +391,7 @@ func steerTable(t *testing.T, segments int) *srv6.SteerTable {
 func steeredRig(t *testing.T, hub *transport.Hub, steering *srv6.SteerTable, link, carries int) *pathRig {
 	t.Helper()
 	r := probingRig(t, hub, "127.0.0.1:4500", driverProbeTimeout, carrying(carries))
-	r.steering.Store(steering)
+	r.steering = steering
 	r.serve(t, link, math.MaxInt)
 	return r
 }
@@ -485,6 +482,134 @@ func TestSteeringReloadWarnsASessionItLeavesTooNarrow(t *testing.T) {
 	waitFor(t, steeringReloadWait, "the session to warn that it carries less than a steered packet needs", warned)
 }
 
+// a reload's sweep hands each live search the steering table the reload installed, and the session checks its budget against that table
+// whatever table the client's mesh holds, so the mesh may swap its table before or after the sweep
+// a session settled where a one segment list does not fit warns when handed that list, and stops when handed none
+// a sweep of a reload that installed no steering hands the table the set holds, whatever the reload passed beside it
+func TestSweepHandsTheSearchTheSteeringTable(t *testing.T) {
+	steering := steerTable(t, 1)
+	need := steering.LeastMTU()
+	// the top of its class, where the search settles
+	const link, carries = 1500, 1298
+	if carries >= need || carries < srv6.MinimumIPv6MTU {
+		t.Fatalf("a path of %d against a need of %d proves nothing", carries, need)
+	}
+	c := &Client{events: events.New(), sessions: newSessionSet(), Mesh: netstack.NewRoutesOnly()}
+	r := steeredRig(t, loopbackHub(t), nil, link, carries)
+	r.waitBudget(t, carries)
+	r.waitSettled(t)
+	c.sessions.live[r.driver.peer.ID] = &liveSession{pmtu: r.driver}
+	under := []string{fmt.Sprintf("%s under true at %d of %d", r.driver.peer.ID, carries, need)}
+	c.sessions.relink(link, true, steering)
+	r.waitSteering(t, under)
+	c.Mesh.SetSteering(steering)
+	c.sessions.relink(link, true, nil)
+	recovered := append(under, fmt.Sprintf("%s under false at %d of %d", r.driver.peer.ID, carries, srv6.MinimumIPv6MTU))
+	r.waitSteering(t, recovered)
+	c.sessions.relink(link, false, steering)
+	waitFor(t, pathWait, "the search to take the sweep", func() bool { return r.driver.link.Load() == nil })
+	// the search takes the sweep and applies it under one hold of mu
+	r.driver.mu.Lock()
+	held := r.driver.steering
+	r.driver.mu.Unlock()
+	if got := steeringRecord(r.bus); held != nil || !slices.Equal(got, recovered) {
+		t.Errorf("a sweep of a reload that installed no steering left the session on a table of %d bytes recording %q, want none recording %q", held.Overhead(), got, recovered)
+	}
+}
+
+// a session that starts after a reload's sweep checks its budget against the steering table the sweep handed, whatever table the client's mesh holds
+// bravo's sessions carry the default link.mtu, short of what a five segment list needs
+func TestSessionStartingAfterASweepTakesTheSteeringTableItHanded(t *testing.T) {
+	steering := steerTable(t, 5)
+	need := steering.LeastMTU()
+	if need <= netstack.DefaultMTU {
+		t.Fatalf("a need of %d that the default link.mtu of %d carries proves nothing", need, netstack.DefaultMTU)
+	}
+	alpha, bravo := newLoopbackMesh(t)
+	bravo.client.sessions.relink(bravo.cfg.Link.SessionMTU(), true, steering)
+	run(t, alpha, bravo)
+	waitFor(t, convergeBudget, fmt.Sprintf("bravo's session to warn that it carries less than the %d a steered packet needs", need), func() bool {
+		return warnedUnder(bravo.events, need)
+	})
+}
+
+// warnedUnder is whether a session recorded a budget under need, the least MTU a steered packet needs
+func warnedUnder(bus *events.Bus, need int) bool {
+	return len(bus.Recorded(func(kind, _ string, attrs []slog.Attr) bool {
+		return kind == "pmtu.steering" && slices.ContainsFunc(attrs, func(a slog.Attr) bool { return a.Key == "under" && a.Value.Bool() }) &&
+			slices.ContainsFunc(attrs, func(a slog.Attr) bool { return a.Key == "need" && a.Value.Int64() == int64(need) })
+	}, 0)) != 0
+}
+
+// steeredFromStart is a running loopback mesh whose bravo steers by steering from its start, as New builds bravo's mesh from cap.segment
+// bravo answers and never dials, so its one session is the one alpha dials
+func steeredFromStart(t *testing.T, steering *srv6.SteerTable) *loopbackNode {
+	t.Helper()
+	mesh := netstack.NewRoutesOnly()
+	mesh.SetSteering(steering)
+	alpha, bravo := newLoopbackMeshOn(t, mesh)
+	quiet := *bravo.cfg
+	quiet.Dial.To = nil
+	bravo.client.cfg.Store(&quiet)
+	run(t, alpha, bravo)
+	return bravo
+}
+
+// a session of a node whose steering list at its start needs more than the session carries warns with no reload
+// bravo's sessions carry the default link.mtu, short of what a five segment list needs
+func TestSessionOfANodeSteeringFromItsStartWarns(t *testing.T) {
+	steering := steerTable(t, 5)
+	need := steering.LeastMTU()
+	if need <= netstack.DefaultMTU {
+		t.Fatalf("a need of %d that the default link.mtu of %d carries proves nothing", need, netstack.DefaultMTU)
+	}
+	bravo := steeredFromStart(t, steering)
+	waitFor(t, convergeBudget, fmt.Sprintf("bravo's session to warn that it carries less than the %d a steered packet needs", need), func() bool {
+		return warnedUnder(bravo.events, need)
+	})
+}
+
+// a reload that changes neither cap.segment nor link.mtu leaves each live session on the steering table it holds
+// so a session too narrow for that table keeps its warning
+func TestReloadKeepingTheSteeringLeavesASessionWarned(t *testing.T) {
+	steering := steerTable(t, 5)
+	need := steering.LeastMTU()
+	if need <= netstack.DefaultMTU {
+		t.Fatalf("a need of %d that the default link.mtu of %d carries proves nothing", need, netstack.DefaultMTU)
+	}
+	bravo := steeredFromStart(t, steering)
+	var d *pathDriver
+	waitFor(t, convergeBudget, fmt.Sprintf("bravo's session to warn that it carries less than the %d a steered packet needs", need), func() bool {
+		if !warnedUnder(bravo.events, need) {
+			return false
+		}
+		for _, live := range bravo.client.sessions.snapshot() {
+			if live.pmtu != nil {
+				d = live.pmtu
+				return true
+			}
+		}
+		return false
+	})
+	next := *bravo.client.config()
+	next.Cap.Babel = &babel.Config{Hello: schema.Duration(2 * time.Second)}
+	writeConfig(t, bravo.configPath, &next)
+	if err := bravo.client.ReloadFrom(bravo.configPath); err != nil {
+		t.Fatalf("a reload of cap.babel alone was refused: %v", err)
+	}
+	waitFor(t, pathWait, "the search to take the sweep", func() bool { return d.link.Load() == nil })
+	// the search takes the sweep and applies it under one hold of mu
+	d.mu.Lock()
+	held := d.steering.LeastMTU()
+	d.mu.Unlock()
+	cleared := len(bravo.events.Recorded(func(kind, _ string, attrs []slog.Attr) bool {
+		return kind == "pmtu.steering" && slices.ContainsFunc(attrs, func(a slog.Attr) bool { return a.Key == "under" && !a.Value.Bool() })
+	}, 0)) != 0
+	if held != need || cleared {
+		t.Errorf("a reload of cap.babel alone left the session on a table needing %d, its warning cleared %t, want %d and false", held, cleared, need)
+	}
+}
+
 // while a session of a family fragments its sends under the floor, the searches of the family's other sessions send no probe, which would measure nothing
 // and lose no size meanwhile, and a held search goes on from where it stood once the family sends with DF again
 func TestFragmentingFamilyHoldsItsOtherSearches(t *testing.T) {
@@ -550,7 +675,7 @@ func TestSessionSetHandsMovesAndAcksToTheirSearch(t *testing.T) {
 	c := &Client{events: events.New(), sessions: newSessionSet()}
 	var searches []*pathDriver
 	for _, path := range []string{identity.Path(remote, local), identity.Path(other, local)} {
-		search := newPathDriver(nil, nil, c.events, &c.probes, noSteering, driverProbeTimeout, confirmInterval)
+		search := newPathDriver(nil, nil, c.events, &c.probes, driverProbeTimeout, confirmInterval)
 		search.peer = sinkPeer(t, path)
 		c.sessions.live[path] = &liveSession{pmtu: search}
 		searches = append(searches, search)

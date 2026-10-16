@@ -20,6 +20,7 @@ import (
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 // serveSession runs one established IKE SA until it ends, whichever end opened it, and dialed says this node did
@@ -52,7 +53,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 	}
 	sess.SetChildHandler(tunnel.install)
 	sess.SetChildRetireHandler(tunnel.retire)
-	pmtu := newPathDriver(sess.Mux(), c.speaker.Probe, c.events, &c.probes, c.Mesh.Steering, cmp.Or(c.probeTimeout, defaultProbeTimeout), cmp.Or(c.confirmEvery, confirmInterval))
+	pmtu := newPathDriver(sess.Mux(), c.speaker.Probe, c.events, &c.probes, cmp.Or(c.probeTimeout, defaultProbeTimeout), cmp.Or(c.confirmEvery, confirmInterval))
 	peer := netstack.NewPeer(sessionName, func(count int) (netstack.BatchSealer, error) {
 		sealer, err := tunnel.reserve(count)
 		// closing the mux withdraws every route through this peer, which fatalReserveError keeps to the refusals that deserve it
@@ -69,8 +70,8 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 	}()
 	route := pmtu.open()
 	release, adopted := c.sessions.adopt(sessionName, sess, local, remote, key, dialed, pmtu, func() func() {
-		// under the set's lock, so a reload's sweep of the set either finds this session or stored the link.mtu read here
-		pmtu.start(c.config().Link.SessionMTU(), route)
+		// under the set's lock, so a reload's sweep of the set either finds this session or stored the link.mtu and the steering table read here
+		pmtu.start(c.config().Link.SessionMTU(), c.sessions.steering, route)
 		return c.speaker.AddPeer(peer).Close
 	})
 	defer release()
@@ -188,6 +189,9 @@ type sessionSet struct {
 
 	// trust is the trust in force, which adopt and revoke ask under mu, so a session adopted after a reload's sweep answers to the document that reload stored
 	trust ike.Trust
+	// steering is the steering table a session checks its budget against, which a session takes at its start and relink hands every live one, under mu
+	// so whether the mesh swaps its table before or after the sweep, every session ends on the table the sweep handed
+	steering *srv6.SteerTable
 }
 
 type liveSession struct {
@@ -353,16 +357,20 @@ func (s *sessionSet) holds(path string) bool {
 	return live != nil && s.active(live.session)
 }
 
-// relink hands every live session's search the link.mtu a reload stored
-func (s *sessionSet) relink(link int) {
+// relink hands every live session's search the link.mtu a reload stored and the steering table in force after the reload
+// installed says the reload installed steering in place of the table the set holds, which stays otherwise
+func (s *sessionSet) relink(link int, installed bool, steering *srv6.SteerTable) {
 	if s == nil {
 		return // a Client built by hand in a test carries no sessions
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if installed {
+		s.steering = steering
+	}
 	for _, live := range s.live {
 		if live.pmtu != nil {
-			live.pmtu.relink(link)
+			live.pmtu.relink(link, s.steering)
 		}
 	}
 }
