@@ -1235,6 +1235,13 @@ func observedEndpoint(t *testing.T, hub *transport.Hub, spi uint64) transport.En
 // 127.0.0.2 is assigned on linux and not on darwin.
 func observedEndpointFrom(t *testing.T, hub *transport.Hub, spi uint64, source net.IP) transport.Endpoint {
 	t.Helper()
+	endpoint, _ := observedPeerFrom(t, hub, spi, source)
+	return endpoint
+}
+
+// observedPeerFrom is observedEndpointFrom with the socket behind the endpoint, which reads what the hub sends there
+func observedPeerFrom(t *testing.T, hub *transport.Hub, spi uint64, source net.IP) (transport.Endpoint, *net.UDPConn) {
+	t.Helper()
 	mux, err := hub.NewMux(source, 4500)
 	if err != nil {
 		t.Fatal(err)
@@ -1257,7 +1264,7 @@ func observedEndpointFrom(t *testing.T, hub *transport.Hub, spi uint64, source n
 	if err != nil {
 		t.Fatal(err)
 	}
-	return endpoint
+	return endpoint, peer
 }
 
 // Under pressure a request without a currently valid cookie must be answered
@@ -1301,7 +1308,7 @@ func TestResponderRefusesCookieItDidNotIssue(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer hub.Close()
-	endpoint := observedEndpoint(t, hub, 0x2222)
+	endpoint, peer := observedPeerFrom(t, hub, 0x2222, net.IPv4(127, 0, 0, 1))
 	elsewhere := observedEndpoint(t, hub, 0x3333)
 
 	r := &Responder{halfOpen: cookieThreshold}
@@ -1312,6 +1319,10 @@ func TestResponderRefusesCookieItDidNotIssue(t *testing.T) {
 	r.cookieRotated = time.Now()
 	nonce := bytes.Repeat([]byte{7}, 32)
 	valid := cookieValue(r.cookieSecret, r.cookieVersion, nonce, 1, endpoint)
+	// RFC 7296 section 2.6: "The data associated with this notification MUST be between 1 and 64 octets in length (inclusive), and its generation is described later in this section."
+	if len(valid) < 1 || len(valid) > 64 {
+		t.Fatalf("the responder issues a cookie of %d octets", len(valid))
+	}
 
 	withCookie := func(data []byte) *Message {
 		return &Message{Payloads: []RawPayload{
@@ -1330,6 +1341,9 @@ func TestResponderRefusesCookieItDidNotIssue(t *testing.T) {
 	if !accepted(t, withCookie(valid), nonce, 1, endpoint) {
 		t.Fatal("the responder refused a cookie it had just issued")
 	}
+	// RFC 7296 section 2.6: "When one party receives an IKE_SA_INIT request containing a cookie whose contents do not match the value expected, that party MUST ignore the cookie and process the message as if no cookie had been included"
+	// under pressure that is an answer with the cookie a request without one draws
+	buf := make([]byte, 2048)
 	for name, forged := range map[string][]byte{
 		"empty":            {},
 		"version only":     valid[:1],
@@ -1341,7 +1355,21 @@ func TestResponderRefusesCookieItDidNotIssue(t *testing.T) {
 			if accepted(t, withCookie(forged), nonce, 1, endpoint) {
 				t.Error("the responder took a cookie it never issued, which is worse than issuing none")
 			}
+			_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+			n, _, err := peer.ReadFromUDP(buf)
+			if err != nil || n <= 4 {
+				t.Fatalf("the cookie it never issued drew no answer: %d bytes, %v", n, err)
+			}
+			if notify := firstTestNotify(t, buf[4:n]); notify.Type != N_COOKIE || !bytes.Equal(notify.Data, valid) {
+				t.Errorf("the cookie it never issued drew notify %d carrying %x, want the cookie a request without one draws, %x", notify.Type, notify.Data, valid)
+			}
 		})
+	}
+	// an idle responder ignores it the same way, and goes on with the request
+	quiet := &Responder{}
+	quiet.cfg.Hub = hub
+	if required, err := quiet.cookieRequired(withCookie(valid[:1]), nonce, 1, endpoint); err != nil || required {
+		t.Errorf("an idle responder held back a request carrying a cookie it never issued (%v)", err)
 	}
 
 	// Bound to the attempt, so a cookie is useless for another nonce, another
@@ -1357,6 +1385,94 @@ func TestResponderRefusesCookieItDidNotIssue(t *testing.T) {
 				t.Error("a cookie issued for one attempt was accepted for another")
 			}
 		})
+	}
+}
+
+// RFC 7296 section 2.6.1: "Implementations SHOULD support this shorter exchange, but MUST NOT fail if other implementations do not support this shorter exchange."
+// section 2.6.1 on a responder that does not: "For instance, if the responder includes the KEi payloads in cookie calculation, it will reject the request by sending a new cookie."
+// under pressure the cookie a request draws is taken back in the request repeated and in the retry an INVALID_KE_PAYLOAD asks for, whose KE payload is in another group
+func TestResponderTakesItsCookieInTheRetryWithAnotherGroup(t *testing.T) {
+	hub, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+	endpoint, peer := observedPeerFrom(t, hub, 0x4444, net.IPv4(127, 0, 0, 1))
+
+	r := &Responder{halfOpen: cookieThreshold}
+	r.cfg.Hub = hub
+	nonce := bytes.Repeat([]byte{7}, 32)
+	groups := []uint16{DH_ECP_256, DH_CURVE25519}
+	ke := map[uint16][]byte{}
+	for _, group := range groups {
+		dh, err := GenerateDH(group)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ke[group] = EncodeKE(group, dh.PublicBytes())
+	}
+	request := func(ahead []RawPayload, group uint16) *Message {
+		return &Message{
+			Header: Header{SPIInitiator: 1, ExchangeType: IKE_SA_INIT, Flags: FlagInitiator},
+			Payloads: slices.Concat(ahead, []RawPayload{
+				{Type: PayloadSA, Body: EncodeSA([]Proposal{ikeProposal()})},
+				{Type: PayloadKE, Body: ke[group]},
+				{Type: PayloadNonce, Body: EncodeNonce(nonce)},
+			}),
+		}
+	}
+	required, err := r.cookieRequired(request(nil, groups[0]), nonce, 1, endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !required {
+		t.Fatal("a request under pressure was carried forward with no cookie at all")
+	}
+	buf := make([]byte, 2048)
+	_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+	n, _, err := peer.ReadFromUDP(buf)
+	if err != nil || n <= 4 {
+		t.Fatalf("the request without a cookie drew no answer: %d bytes, %v", n, err)
+	}
+	cookie := firstTestNotify(t, buf[4:n])
+	if cookie.Type != N_COOKIE {
+		t.Fatalf("the request without a cookie drew notify %d, want COOKIE", cookie.Type)
+	}
+	echoed := []RawPayload{{Type: PayloadN, Body: EncodeNotify(cookie)}}
+	for _, group := range groups {
+		required, err := r.cookieRequired(request(echoed, group), nonce, 1, endpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if required {
+			t.Errorf("the cookie drew a new one in a request with its KE payload in group %d", group)
+		}
+	}
+}
+
+// RFC 7296 section 2.6: "Each endpoint chooses one of the two SPIs and MUST choose them so as to be unique identifiers of an IKE SA."
+// two IKE_SA_INIT exchanges at one responder are answered with two nonzero responder SPIs that differ
+func TestResponderGivesEachIKESAItsOwnSPI(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	var spis []uint64
+	for range 2 {
+		request, spiI := buildTestSAInit(t)
+		mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { mux.Close() })
+		if err := mux.RegisterIKE(spiI); err != nil {
+			t.Fatal(err)
+		}
+		header, err := decodeHeader(statelessAnswer(t, mux, request, "an IKE_SA_INIT drew no answer"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		spis = append(spis, header.SPIResponder)
+	}
+	if spis[0] == 0 || spis[1] == 0 || spis[0] == spis[1] {
+		t.Errorf("the responder answered two IKE SAs with SPIs %016x and %016x", spis[0], spis[1])
 	}
 }
 

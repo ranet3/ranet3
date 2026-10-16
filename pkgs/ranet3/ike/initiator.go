@@ -601,20 +601,16 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		ni      []byte
 	)
 
-	// Two unauthenticated responses can send us round again. The responder may
-	// reject our preferred DH group with N(INVALID_KE_PAYLOAD, desired-group),
-	// and under load it may answer N(COOKIE) instead of allocating state
-	// (RFC 7296 section 2.6). Each is allowed once, so the loop is bounded whatever
-	// the far end does.
+	// RFC 7296 section 2.6.1: "if the responder includes the KEi payloads in cookie calculation, it will reject the request by sending a new cookie."
+	// section 2.6.1: "Implementations SHOULD support this shorter exchange, but MUST NOT fail if other implementations do not support this shorter exchange."
+	// the loop takes one group change and one cookie for each group it tries, so it ends whatever the far end sends
 	var (
-		cookie        []byte
-		cookieRetried bool
-		groupRetried  bool
+		cookie         []byte
+		cookieForGroup bool
+		groupRetried   bool
 	)
-	// Hashed once, outside the loop. RFC 7296 section 2.6 requires a cookie
-	// retry to carry "all other payloads unchanged", and a responder that
-	// folds the request into its cookie rejects a retry that moved this,
-	// handing out a fresh challenge every time.
+	// hashed once, since a responder that folds the request into its cookie
+	// refuses a retry whose hash moved and hands out a new cookie every time
 	var fakeAddr [4]byte
 	rand.Read(fakeAddr[:])
 	srcHash := natDetectionHash(spiI, 0, net.IP(fakeAddr[:]), 0)
@@ -643,29 +639,21 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 			{Type: PayloadNonce, Body: EncodeNonce(ni)},
 			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: hashAlgos})},
 		}
-		// RFC 7296 section 2.23 NAT detection hashes a random source, as strongSwan's force_encap does, so the responder always encapsulates ESP in UDP
+		// RFC 7296 section 2.23: "The recipient of either the NAT_DETECTION_SOURCE_IP or NAT_DETECTION_DESTINATION_IP notification MAY compare the supplied value to a SHA-1 hash of the SPIs, source or recipient IP address, and port (respectively), and if they don't match, it SHOULD enable NAT traversal."
+		// the source hash is of a random address, as strongSwan's force_encap makes it, and the responder then always encapsulates ESP in UDP
 		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NAT_DETECTION_SOURCE_IP, Data: srcHash})})
 		dstHash := natDetectionHash(spiI, 0, cfg.RemoteAddr, uint16(cfg.RemotePort))
 		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NAT_DETECTION_DESTINATION_IP, Data: dstHash})})
 
 		if cookie != nil {
-			// RFC 7296 section 2.6: "include the COOKIE notification containing the
-			// received data as the first payload, and all other payloads
-			// unchanged".
+			// RFC 7296 section 2.6: "If the IKE_SA_INIT response includes the COOKIE notification, the initiator MUST then retry the IKE_SA_INIT request, and include the COOKIE notification containing the received data as the first payload, and all other payloads unchanged."
 			payloads = append([]RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_COOKIE, Data: cookie})}}, payloads...)
 		}
 
 		m := &Message{Header: hdr, Payloads: payloads}
 		req = m.Encode()
 
-		// A bare notify-only response is only worth stopping for when it's
-		// N_INVALID_KE_PAYLOAD on the first attempt, the one legitimate
-		// signal that lets us make progress by switching Diffie-Hellman
-		// group. Anything else unauthenticated (see sendRecv's doc comment)
-		// is rejected here, which makes sendRecv keep retransmitting/
-		// waiting for the real response instead of surfacing a possibly
-		// forged error.
-		haveCookie, haveGroup := cookieRetried, groupRetried
+		haveCookie, haveGroup := cookieForGroup, groupRetried
 		respRaw, err = sendRecv(mux, req, func(raw []byte) bool {
 			m, err := DecodeMessage(raw)
 			if err != nil {
@@ -693,11 +681,9 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		notify, _ := usefulInitNotify(resp, haveCookie, haveGroup)
 		switch notify.Type {
 		case N_COOKIE:
-			// Everything else about the request stays as it was, so dh and ni
-			// are deliberately not regenerated here.
-			cookie, cookieRetried = notify.Data, true
+			cookie, cookieForGroup = notify.Data, true
 		case N_INVALID_KE_PAYLOAD:
-			group, groupRetried, dh = binary.BigEndian.Uint16(notify.Data[:2]), true, nil
+			group, groupRetried, cookieForGroup, dh = binary.BigEndian.Uint16(notify.Data[:2]), true, false, nil
 		}
 	}
 	if err := validateResponseCriticalFlags(resp.Payloads); err != nil {
@@ -1164,12 +1150,10 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 }
 
 // usefulInitNotify finds the one unauthenticated IKE_SA_INIT notify worth
-// acting on. Only two let the exchange make progress, each once: N(COOKIE)
-// asks us to prove return routability (RFC 7296 section 2.6) and
-// N(INVALID_KE_PAYLOAD) names a Diffie-Hellman group the responder will take
-// (section 1.2). Everything else unauthenticated is ignored, so sendRecv keeps
-// waiting for the real response rather than letting anyone who can spoof our
-// SPI abort the handshake.
+// acting on. Only two let the exchange make progress: N(COOKIE), once for each
+// group tried, and N(INVALID_KE_PAYLOAD), once. Everything else
+// unauthenticated is ignored, so sendRecv keeps waiting for the real response
+// rather than letting anyone who can spoof our SPI abort the handshake.
 func usefulInitNotify(m *Message, cookieUsed, groupUsed bool) (Notify, bool) {
 	for _, payload := range m.Payloads {
 		if payload.Type != PayloadN {
