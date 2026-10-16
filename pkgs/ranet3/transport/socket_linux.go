@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -98,11 +99,18 @@ type udpBind struct {
 	started time.Time
 	// pathMTU reads the path MTU of the route a send to an endpoint takes, which a test answers in place of linux
 	pathMTU func(*udpEndpoint) (int, error)
-	// fragmentMu serializes each socket's count of the muxes letting its sends fragment
+	// fragmentMu serializes each socket's count of the muxes letting its sends fragment, and pairs
 	fragmentMu sync.Mutex
+	// pairs holds the open sockets connected to one peer, each in its family's path MTU discovery mode
+	pairs map[*udpPair]struct{}
 	// discover sets a socket's path MTU discovery to fragment or back to DO
 	// a test answers it in place of linux
 	discover func(socket *udpSocket, fragment bool) error
+	// cookie reads the cookie of a socket's network namespace, which a test answers in place of linux
+	cookie func(syscall.RawConn) (uint64, error)
+	// port and mark are the listener's, which a socket connected to one peer takes too
+	port uint16
+	mark uint32
 }
 
 func (b *udpBind) ParseEndpoint(s string) (Endpoint, error) {
@@ -150,34 +158,10 @@ func openPacketBind(port uint16, underlay Underlay, index int, routed bool, even
 
 func listenPacketBind(port uint16, fwmark uint32, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	b := &udpBind{events: events, started: time.Now(), pathMTU: func(ep *udpEndpoint) (int, error) { return routeMTU(ep, fwmark) },
-		discover: setDiscovery}
+		discover: setDiscovery, cookie: namespaceCookie, mark: fwmark, pairs: make(map[*udpPair]struct{})}
 	var receivers []receiveFunc
 	for i, network := range []string{"udp4", "udp6"} {
-		level, discover, mode := discovery(i == 1, false)
-		var setErr error
-		lc := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
-			if err := raw.Control(func(fd uintptr) {
-				for _, option := range []int{unix.SO_RCVBUF, unix.SO_SNDBUF, unix.SO_RCVBUFFORCE, unix.SO_SNDBUFFORCE} {
-					_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, option, socketBufferSize)
-				}
-				_ = unix.SetsockoptInt(int(fd), unix.IPPROTO_UDP, unix.UDP_GRO, 1)
-				if fwmark != 0 {
-					// Reported rather than ignored like the tuning above. The
-					// mark exists to keep this socket's datagrams out of a
-					// table that would route them into our own tun, so a
-					// silent failure here is an underlay that disappears into
-					// the overlay carrying it.
-					setErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(fwmark))
-				}
-				if setErr == nil {
-					// DF on every datagram, and linux refusing one past its route's path MTU rather than fragmenting it, which Send reports
-					setErr = unix.SetsockoptInt(int(fd), level, discover, mode)
-				}
-			}); err != nil {
-				return err
-			}
-			return setErr
-		}}
+		lc := net.ListenConfig{Control: socketControl(i == 1, fwmark, socketBufferSize, false)}
 		pc, err := lc.ListenPacket(context.Background(), network, fmt.Sprintf(":%d", port))
 		if err != nil {
 			if errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EPROTONOSUPPORT) {
@@ -186,47 +170,274 @@ func listenPacketBind(port uint16, fwmark uint32, events func(string, ...slog.At
 			_ = b.Close()
 			return nil, nil, 0, err
 		}
-		socket := &udpSocket{conn: pc.(*net.UDPConn), ipv6: i == 1}
-		socket.send.New = func() any { return newUDPSendBatch() }
+		socket, err := newUDPSocket(pc.(*net.UDPConn), i == 1)
+		if err == nil {
+			// set only once bound, so a second process binding the port without it is still refused
+			// while a socket connected to one peer may bind the port on one address
+			var shareErr error
+			if err = socket.raw.Control(func(fd uintptr) {
+				shareErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+			}); err == nil {
+				err = shareErr
+			}
+		}
+		if err != nil {
+			_ = pc.Close()
+			_ = b.Close()
+			return nil, nil, 0, err
+		}
 		if socket.ipv6 {
-			p := ipv6.NewPacketConn(pc)
-			socket.pc, b.v6 = p, socket
-			err = p.SetControlMessage(ipv6.FlagDst|ipv6.FlagInterface, true)
+			b.v6 = socket
 		} else {
-			p := ipv4.NewPacketConn(pc)
-			socket.pc, b.v4 = p, socket
-			err = p.SetControlMessage(ipv4.FlagDst|ipv4.FlagInterface, true)
-		}
-		if err != nil {
-			_ = b.Close()
-			return nil, nil, 0, err
-		}
-		socket.raw, err = socket.conn.SyscallConn()
-		if err != nil {
-			_ = b.Close()
-			return nil, nil, 0, err
+			b.v4 = socket
 		}
 		port = uint16(pc.LocalAddr().(*net.UDPAddr).Port)
-		receivers = append(receivers, socket.receiver())
+		receivers = append(receivers, socket.receiver(espSendBatch))
 	}
 	if len(receivers) == 0 {
 		return nil, nil, 0, unix.EAFNOSUPPORT
 	}
+	b.port = port
 	return b, receivers, port, nil
+}
+
+// socketControl sets the buffers, UDP_GRO, the underlay's mark and DF on a socket before it binds
+// and SO_REUSEPORT where it binds the listener's port on one address
+func socketControl(ipv6 bool, fwmark uint32, buffer int, reusePort bool) func(string, string, syscall.RawConn) error {
+	level, discover, mode := discovery(ipv6, false)
+	return func(_, _ string, raw syscall.RawConn) error {
+		var optionErr error
+		if err := raw.Control(func(fd uintptr) {
+			for _, option := range []int{unix.SO_RCVBUF, unix.SO_SNDBUF, unix.SO_RCVBUFFORCE, unix.SO_SNDBUFFORCE} {
+				_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, option, buffer)
+			}
+			_ = unix.SetsockoptInt(int(fd), unix.IPPROTO_UDP, unix.UDP_GRO, 1)
+			if reusePort {
+				optionErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+			}
+			if fwmark != 0 && optionErr == nil {
+				// Reported rather than ignored like the tuning above. The
+				// mark exists to keep this socket's datagrams out of a
+				// table that would route them into our own tun, so a
+				// silent failure here is an underlay that disappears into
+				// the overlay carrying it.
+				optionErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(fwmark))
+			}
+			if optionErr == nil {
+				// DF on every datagram, and linux refusing one past its route's path MTU rather than fragmenting it, which Send reports
+				optionErr = unix.SetsockoptInt(int(fd), level, discover, mode)
+			}
+		}); err != nil {
+			return err
+		}
+		return optionErr
+	}
+}
+
+// newUDPSocket readies conn for batched reads and writes, with the control messages a reply endpoint is built from
+func newUDPSocket(conn *net.UDPConn, v6 bool) (*udpSocket, error) {
+	socket := &udpSocket{conn: conn, ipv6: v6}
+	socket.send.New = func() any { return newUDPSendBatch() }
+	var err error
+	if v6 {
+		p := ipv6.NewPacketConn(conn)
+		socket.pc, err = p, p.SetControlMessage(ipv6.FlagDst|ipv6.FlagInterface, true)
+	} else {
+		p := ipv4.NewPacketConn(conn)
+		socket.pc, err = p, p.SetControlMessage(ipv4.FlagDst|ipv4.FlagInterface, true)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if socket.raw, err = conn.SyscallConn(); err != nil {
+		return nil, err
+	}
+	return socket, nil
+}
+
+// icmpErrnos are the errors linux hands a connected UDP socket for an ICMP error, read by its next send or receive
+// udp_err passes icmp_err_convert's fatal entries, EMSGSIZE for a fragmentation needed and EPROTO for a parameter problem
+// udpv6_err passes icmpv6_err_convert's fatal entries and EMSGSIZE for a packet too big
+var icmpErrnos = []unix.Errno{unix.EACCES, unix.ECONNREFUSED, unix.EHOSTDOWN, unix.EHOSTUNREACH, unix.EMSGSIZE, unix.ENETUNREACH, unix.ENONET, unix.ENOPROTOOPT, unix.EPROTO}
+
+// pairOf leaves the local address and the interface to the route where sends to the endpoint do, and otherwise takes both from the pin
+func (b *udpBind) pairOf(endpoint Endpoint) pairKey {
+	ep := endpoint.(*udpEndpoint)
+	remote, _ := netip.AddrFromSlice(ep.addr.IP)
+	k := pairKey{remote: netip.AddrPortFrom(remote.Unmap().WithZone(ep.addr.Zone), uint16(ep.addr.Port))}
+	if source, ok := netip.AddrFromSlice(ep.source); ok && !ep.unpinned.Load() {
+		k.local, k.index = source.Unmap(), ep.index
+	}
+	return k
+}
+
+// connectPair binds the hub's port on one address, which keeps the socket out of any reuseport group the listener is in
+// and once connected the kernel prefers it to the wildcard listener for its peer's datagrams to that address
+// a pinned pair leaves by its pin's interface as the shared socket's replies do, and a link-local source binds only on it
+// a socket outside the listener's network namespace is refused before it binds
+func (b *udpBind) connectPair(k pairKey) (pairSocket, receiveFunc, error) {
+	network, listener := "udp4", b.v4
+	if k.remote.Addr().Is6() {
+		network, listener = "udp6", b.v6
+	}
+	if listener == nil {
+		return nil, nil, unix.EAFNOSUPPORT
+	}
+	local := k.local
+	if !local.IsValid() {
+		var err error
+		if local, err = b.routeSource(network, k.remote); err != nil {
+			return nil, nil, err
+		}
+	}
+	zoned := k.index != 0 && local.Is6() && local.IsLinkLocalUnicast()
+	if zoned {
+		local = local.WithZone(strconv.Itoa(k.index))
+	}
+	control := socketControl(network == "udp6", b.mark, pairBuffer, true)
+	dialer := net.Dialer{LocalAddr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(local, b.port)), Control: func(network, address string, raw syscall.RawConn) error {
+		if err := sameNamespace(b.cookie, raw, listener.raw); err != nil {
+			return err
+		}
+		if err := control(network, address, raw); err != nil || k.index == 0 || zoned {
+			return err
+		}
+		return leaveBy(raw, network == "udp6", k.index)
+	}}
+	conn, err := dialer.Dial(network, k.remote.String())
+	if err != nil {
+		return nil, nil, err
+	}
+	socket, err := newUDPSocket(conn.(*net.UDPConn), network == "udp6")
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+	pair := &udpPair{socket: socket, bind: b, address: local}
+	if err := b.join(pair, listener); err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+	return pair, retryICMP(socket.receiver(pairReadMessages)), nil
+}
+
+// errOtherNamespace refuses a socket that is not in its listener's network namespace
+var errOtherNamespace = errors.New("transport: the socket is in another network namespace than its listener")
+
+// sameNamespace refuses raw's socket unless it is in the network namespace of listener's
+// a socket takes the namespace of the thread that makes it, and a connect runs on whatever thread its goroutine has
+// so in a process whose threads sit in several namespaces a socket made in another would bind, route and send there
+// SO_NETNS_COOKIE names a socket's namespace from linux 5.14, and an older kernel goes without the check
+func sameNamespace(cookie func(syscall.RawConn) (uint64, error), raw, listener syscall.RawConn) error {
+	var cookies [2]uint64
+	for i, socket := range []syscall.RawConn{raw, listener} {
+		var getErr error
+		cookies[i], getErr = cookie(socket)
+		if errors.Is(getErr, unix.ENOPROTOOPT) {
+			return nil
+		}
+		if getErr != nil {
+			return getErr
+		}
+	}
+	if cookies[0] != cookies[1] {
+		return errOtherNamespace
+	}
+	return nil
+}
+
+func namespaceCookie(raw syscall.RawConn) (uint64, error) {
+	var cookie uint64
+	var getErr error
+	if err := raw.Control(func(fd uintptr) {
+		cookie, getErr = unix.GetsockoptUint64(int(fd), unix.SOL_SOCKET, unix.SO_NETNS_COOKIE)
+	}); err != nil {
+		return 0, err
+	}
+	return cookie, getErr
+}
+
+// leaveBy holds a socket's sends to interface index as a pin's control message holds the shared socket's replies
+// IPv4 binds the socket to it with SO_BINDTOIFINDEX, which holds the route to that interface as ipi_ifindex does
+// linux takes SO_BINDTOIFINDEX from 5.1, and from a process without CAP_NET_RAW from 5.7, so an older kernel leaves such a pair on the shared socket
+// IPv6 names it with IPV6_UNICAST_IF, in network byte order, which beside a bound source prefers it only among the routes of the lowest metric, as ipi6_ifindex does
+func leaveBy(raw syscall.RawConn, ipv6 bool, index int) error {
+	level, option, value := unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX, index
+	if ipv6 {
+		var order [4]byte
+		binary.BigEndian.PutUint32(order[:], uint32(index))
+		level, option, value = unix.IPPROTO_IPV6, unix.IPV6_UNICAST_IF, int(int32(binary.NativeEndian.Uint32(order[:])))
+	}
+	var setErr error
+	if err := raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), level, option, value) }); err != nil {
+		return err
+	}
+	return setErr
+}
+
+// join puts p in the path MTU discovery mode of its family's listener, which fragment then moves it with
+func (b *udpBind) join(p *udpPair, listener *udpSocket) error {
+	b.fragmentMu.Lock()
+	defer b.fragmentMu.Unlock()
+	if listener.fragmenting.Load() > 0 {
+		if err := b.discover(p.socket, true); err != nil {
+			return err
+		}
+	}
+	b.pairs[p] = struct{}{}
+	return nil
+}
+
+// routeSource is the source the route to remote picks under the underlay's mark, read off a socket connected there and closed
+func (b *udpBind) routeSource(network string, remote netip.AddrPort) (netip.Addr, error) {
+	dialer := net.Dialer{Control: socketControl(network == "udp6", b.mark, pairBuffer, false)}
+	conn, err := dialer.Dial(network, remote.String())
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap(), nil
+}
+
+// udpPair is a socket connected to one peer, which segments by the record the bind keeps of that peer's path
+// its sends carry no control message, which would cost the socket the cached route that keeps its transmit queue
+type udpPair struct {
+	socket  *udpSocket
+	bind    *udpBind
+	address netip.Addr
+}
+
+// transmit keeps the pair through a refusal of its segments, which stops the endpoint's segments here and on the shared socket alike
+func (p *udpPair) transmit(packets [][]byte, endpoint Endpoint) (int, bool, error) {
+	batch := p.socket.send.Get().(*udpSendBatch)
+	defer p.socket.send.Put(batch)
+	ep := endpoint.(*udpEndpoint)
+	return pastICMP(func(packets [][]byte) (int, error) {
+		return p.bind.sendWithSegmentFallback(p.socket, batch, packets, ep, nil, nil)
+	}, packets)
+}
+
+func (p *udpPair) local() netip.Addr { return p.address }
+
+func (p *udpPair) Close() error {
+	p.bind.fragmentMu.Lock()
+	delete(p.bind.pairs, p)
+	p.bind.fragmentMu.Unlock()
+	return p.socket.conn.Close()
 }
 
 // receiver reads a full recvmmsg vector even when UDP_GRO is enabled. Each
 // message may contain many datagrams. Excess segments are returned on later
 // calls before any receive storage is reused. ESP does not need source-address
 // objects: only IKE packets retain a reply endpoint.
-func (s *udpSocket) receiver() receiveFunc {
-	messages := receiveVector()
+func (s *udpSocket) receiver(vector int) receiveFunc {
+	messages := receiveVector(vector)
 	return s.walk(messages, newUDPReader(s.raw, messages).read)
 }
 
-// receiveVector is the storage a socket receives into for its lifetime
-func receiveVector() []ipv4.Message {
-	messages := make([]ipv4.Message, espSendBatch)
+// receiveVector is the storage of vector messages a socket receives into for its lifetime
+func receiveVector(vector int) []ipv4.Message {
+	messages := make([]ipv4.Message, vector)
 	for i := range messages {
 		messages[i].Buffers = [][]byte{make([]byte, readBufferSize)}
 		messages[i].OOB = make([]byte, controlMessageSize)
@@ -242,10 +453,11 @@ func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) rece
 		if index == count {
 			var err error
 			count, err = read()
+			index, offset, segment = 0, 0, 0
 			if err != nil {
+				count = 0
 				return 0, 0, err
 			}
-			index, offset, segment = 0, 0, 0
 		}
 		n := 0
 		for index < count && n < len(bufs) {
@@ -392,7 +604,8 @@ func appendUDPSegment(control []byte, size int) []byte {
 // prepare coalesces adjacent ciphertext from SealBatch without copying it.
 // Nonadjacent packets stay separate: using spare capacity for packing could
 // overwrite another packet that has not been sent yet.
-func (b *udpSendBatch) prepare(packets [][]byte, to *net.UDPAddr, control []byte, segment bool) int {
+// a nil to sends to the peer a connected socket holds
+func (b *udpSendBatch) prepare(packets [][]byte, to net.Addr, control []byte, segment bool) int {
 	n := 0
 	for first := 0; first < len(packets); {
 		payload := packets[first]
@@ -453,11 +666,11 @@ func (b *udpBind) socket(ep *udpEndpoint) *udpSocket {
 // it reports how many went before an error
 func (b *udpBind) sendFrom(socket *udpSocket, batch *udpSendBatch, packets [][]byte, ep *udpEndpoint) (int, error) {
 	control := ep.pin()
-	sent, refused := b.sendWithSegmentFallback(socket, batch, packets, ep, control)
+	sent, refused := b.sendWithSegmentFallback(socket, batch, packets, ep, ep.addr, control)
 	if refused == nil || control == nil || !unpinnable(refused) {
 		return sent, refused
 	}
-	more, err := b.sendWithSegmentFallback(socket, batch, packets[sent:], ep, nil)
+	more, err := b.sendWithSegmentFallback(socket, batch, packets[sent:], ep, ep.addr, nil)
 	// linux refuses a datagram as too large only once it has routed it from the source it chose
 	if (err == nil || errors.Is(err, unix.EMSGSIZE)) && ep.unpinned.CompareAndSwap(false, true) {
 		b.fellBack(ep, "transport.endpoint.unpinned", "transport stopped sending to an endpoint from the address its datagram arrived on", refused)
@@ -505,17 +718,23 @@ func unpinnable(err error) bool {
 // a router fragmenting both would put fragments of two datagrams under one ID
 // when linux refuses a message of several datagrams with an errno segments can cause and they then pass one to a message
 // ep stops segmenting for unsegmentedFor
-func (b *udpBind) sendWithSegmentFallback(socket *udpSocket, batch *udpSendBatch, packets [][]byte, ep *udpEndpoint, control []byte) (int, error) {
-	done := 0
+// a socket connected to one peer runs its family's mode, which the family's listener counts
+// an ICMP error leaves its errno pending on a connected socket, which fails the next send alone
+// so a message refused with EMSGSIZE goes once more as it was before its segments count as refused
+func (b *udpBind) sendWithSegmentFallback(socket *udpSocket, batch *udpSendBatch, packets [][]byte, ep *udpEndpoint, to net.Addr, control []byte) (int, error) {
+	done, again := 0, -1
 	for {
-		until := ep.unsegmentedUntil.Load()
-		segment := !ep.fragmenting.Load() && (until == 0 || int64(time.Since(b.started)) >= until)
-		sent, refused, err := socket.write(batch, packets[done:], ep.addr, control, segment)
+		until, segment := b.segmenting(ep)
+		sent, refused, err := socket.write(batch, packets[done:], to, control, segment)
 		done += sent
-		if err == nil || refused < 2 || !segmentRefusal(err, socket.fragmenting.Load() > 0) {
+		if err == nil || refused < 2 || !segmentRefusal(err, b.socket(ep).fragmenting.Load() > 0) {
 			return done, err
 		}
-		plain, _, plainErr := socket.write(batch, packets[done:done+refused], ep.addr, control, false)
+		if errors.Is(err, unix.EMSGSIZE) && again != done {
+			again = done
+			continue
+		}
+		plain, _, plainErr := socket.write(batch, packets[done:done+refused], to, control, false)
 		done += plain
 		if plainErr != nil {
 			return done, plainErr
@@ -526,7 +745,13 @@ func (b *udpBind) sendWithSegmentFallback(socket *udpSocket, batch *udpSendBatch
 	}
 }
 
-// segmentRefusal reports whether err is linux refusing a message for its segments, which a resend one datagram to a message tells apart
+// segmenting reports whether sends to ep segment now, and the stop it read
+func (b *udpBind) segmenting(ep *udpEndpoint) (int64, bool) {
+	until := ep.unsegmentedUntil.Load()
+	return until, !ep.fragmenting.Load() && (until == 0 || int64(time.Since(b.started)) >= until)
+}
+
+// segmentRefusal reports whether err can be linux refusing a message for its segments, which a resend one datagram to a message tells apart
 // EIO is a route through an IPsec policy, which passes single datagrams
 // EINVAL is also a kernel before 6.14 refusing a segment past the path MTU, whose single datagrams meet the EMSGSIZE a later kernel answers at once
 // EMSGSIZE is one too while the socket fragments
@@ -536,7 +761,7 @@ func segmentRefusal(err error, fragments bool) bool {
 }
 
 // write stops at the first refused message and reports the datagrams sent before it and those it carried
-func (s *udpSocket) write(batch *udpSendBatch, packets [][]byte, to *net.UDPAddr, control []byte, segment bool) (sent, refused int, err error) {
+func (s *udpSocket) write(batch *udpSendBatch, packets [][]byte, to net.Addr, control []byte, segment bool) (sent, refused int, err error) {
 	for sent < len(packets) {
 		n := batch.prepare(packets[sent:min(len(packets), sent+espSendBatch)], to, control, segment)
 		var written int

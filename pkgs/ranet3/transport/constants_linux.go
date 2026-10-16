@@ -19,4 +19,7 @@ const (
 	// gsoMaxSegments is the most datagrams one UDP_SEGMENT message carries
 	// linux took 64 until 6.9 raised UDP_MAX_SEGMENTS to 128, and an older kernel refuses more
 	gsoMaxSegments = 64
+	// pairReadMessages is how many messages one read of a socket connected to one peer takes, each of readBufferSize
+	// with UDP_GRO a message holds up to 64 datagrams of one flow, and pairCap sockets hold their vectors at once
+	pairReadMessages = 4
 )

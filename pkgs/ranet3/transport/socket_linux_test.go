@@ -29,7 +29,7 @@ func (s scriptedUDP) WriteBatch(messages []ipv4.Message, _ int) (int, error) {
 
 // scriptedReceiver hands out what read leaves in the socket's receive vector, in place of a recvmmsg
 func scriptedReceiver(socket *udpSocket, read func([]ipv4.Message) (int, error)) receiveFunc {
-	messages := receiveVector()
+	messages := receiveVector(espSendBatch)
 	return socket.walk(messages, func() (int, error) { return read(messages) })
 }
 

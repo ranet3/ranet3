@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
 
-// Package transport shares one UDP socket between IKE control messages and
+// Package transport shares one UDP port between IKE control messages and
 // UDP-encapsulated ESP packets. IKE packets carry a four-byte non-ESP marker,
 // ESP packets are bare and begin with their nonzero inbound SPI. That rule is
 // RFC 3948 section 2.2, and it carries IKE and its own ESP traffic across a
@@ -10,8 +10,10 @@
 //
 // # What a caller uses
 //
-// [NewHub] binds the port and owns the socket. Each peer then gets a [Mux]
-// from [Hub.NewMux] or [Hub.NewMuxTo], which is that peer's logical channel:
+// [NewHub] binds the port and owns its sockets, one per family that every peer
+// shares and, on linux and darwin, one connected to each busy peer. Each peer
+// then gets a [Mux] from [Hub.NewMux] or [Hub.NewMuxTo], which is that peer's
+// logical channel:
 // the caller registers the inbound SPIs it has negotiated with
 // [Mux.RegisterIKE] and [Mux.RegisterESP], and from then on [Mux.SendIKE] and
 // [Mux.RecvIKE] carry control messages while [Mux.SendESP], [Mux.RecvESP] and
@@ -25,9 +27,9 @@
 // IKE has authenticated the move, so this package never decides on its own
 // that a peer's address changed.
 //
-// # Keeping the socket out of its own tunnel
+// # Keeping the sockets out of their own tunnel
 //
-// [Underlay] and [Runtime] are the one setting that keeps this socket off the
+// [Underlay] and [Runtime] are the one setting that keeps these sockets off the
 // routes a mesh running over it installs, a mark on linux and an interface
 // binding on darwin. [Underlay] is a plain value a config file or a control
 // plane can produce whole, and [Runtime] carries what the caller has to
@@ -86,6 +88,8 @@ const (
 type Hub struct {
 	bind packetBind
 	port uint16
+	// pairs is nil where the bind cannot connect a socket to one peer
+	pairs *pairTable
 
 	// underlay is the configuration the socket was opened under, and boundTo
 	// the interface index it currently carries, zero for none. Both are read
@@ -263,7 +267,11 @@ func NewHub(localAddr string, underlay Underlay, rt Runtime) (*Hub, error) {
 	h.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}})
 	h.reported.Store(-int64(dropReportInterval))
 	for _, fn := range fns {
-		go h.receiveLoop(fn)
+		go h.receiveLoop(fn, h.readFailed)
+	}
+	if connector, ok := bind.(pairConnector); ok {
+		h.pairs = &pairTable{connector: connector, events: rt.Events, pairs: make(map[pairKey]*pair)}
+		go h.sweepPairsEvery()
 	}
 	// Started only where the binding has to follow something, so a hub that
 	// binds nothing carries no goroutine and no link source.
@@ -364,6 +372,7 @@ func (h *Hub) fail(cause error) (bindErr error) {
 	h.closeOnce.Do(func() {
 		h.closed.Store(true)
 		bindErr = h.bind.Close()
+		h.dropPairs(pairHubClose)
 		close(h.done)
 		h.mu.Lock()
 		muxes := make([]*Mux, 0, len(h.muxes))
@@ -381,7 +390,17 @@ func (h *Hub) fail(cause error) (bindErr error) {
 	return bindErr
 }
 
-func (h *Hub) receiveLoop(fn receiveFunc) {
+// readFailed fails the hub on a read error from the socket every session shares
+func (h *Hub) readFailed(err error) {
+	if h.closed.Load() {
+		h.fail(fmt.Errorf("transport: closed"))
+	} else {
+		h.fail(fmt.Errorf("transport: read: %w", err))
+	}
+}
+
+// receiveLoop demultiplexes what fn reads until it fails, and then hands failed the error
+func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 	batch := espSendBatch
 	bufs, sizes, eps := make([][]byte, batch), make([]int, batch), make([]Endpoint, batch)
 	// demultiplexing records where each datagram goes and copies nothing
@@ -399,11 +418,7 @@ func (h *Hub) receiveLoop(fn receiveFunc) {
 			h.refused.Add(uint64(refused))
 		}
 		if err != nil {
-			if h.closed.Load() {
-				h.fail(fmt.Errorf("transport: closed"))
-			} else {
-				h.fail(fmt.Errorf("transport: read: %w", err))
-			}
+			failed(err)
 			return
 		}
 		clear(espBatches)
@@ -509,6 +524,9 @@ func (h *Hub) receiveLoop(fn receiveFunc) {
 			for _, packet := range packets {
 				total += len(packet)
 			}
+			if p := m.pair.Load(); p != nil {
+				h.carry(p, total)
+			}
 			// Tested before packReceivedBatch copies, so a flood is refused
 			// without allocating for it.
 			if !m.hasRoomForESP(total) || !m.dispatchESP(packReceivedBatch(packets), total) {
@@ -558,6 +576,8 @@ type Mux struct {
 	// fragmented is the endpoint Fragment let the host fragment sends to, nil while it lets none
 	fragmentMu sync.Mutex
 	fragmented Endpoint
+	// pair is the address pair m last sent on, which counts what m receives too
+	pair atomic.Pointer[pair]
 }
 
 // hasRoomForESP is consulted before packReceivedBatch copies a batch onto the
@@ -699,7 +719,9 @@ func (m *Mux) UnregisterESP(spi uint32) {
 }
 
 func (m *Mux) SendIKE(b []byte) error {
-	return m.SendIKETo(b, m.currentEndpoint())
+	out := make([]byte, nonESPMarkerLen+len(b))
+	copy(out[nonESPMarkerLen:], b)
+	return m.send([][]byte{out}, m.currentEndpoint())
 }
 
 func (m *Mux) currentEndpoint() Endpoint {
@@ -766,7 +788,7 @@ func (m *Mux) SendESPBatch(bufs [][]byte) error {
 	var report *PathMTUError
 	for len(bufs) != 0 {
 		n := min(len(bufs), espSendBatch)
-		err := m.hub.bind.Send(bufs[:n], endpoint)
+		err := m.send(bufs[:n], endpoint)
 		bufs = bufs[n:]
 		if err == nil {
 			continue
@@ -785,6 +807,30 @@ func (m *Mux) SendESPBatch(bufs [][]byte) error {
 		return report
 	}
 	return nil
+}
+
+// send writes bufs to endpoint, on its pair's socket once the pair has one
+// what that socket did not send leaves the shared socket under every rule a send there follows
+// and a socket that no longer carries the pair is dropped
+func (m *Mux) send(bufs [][]byte, endpoint Endpoint) error {
+	if p := m.pairFor(endpoint); p != nil {
+		n := 0
+		for _, b := range bufs {
+			n += len(b)
+		}
+		m.hub.carry(p, n)
+		if socket := p.socket.Load(); socket != nil {
+			sent, kept, err := (*socket).transmit(bufs, endpoint)
+			if err == nil {
+				return nil
+			}
+			if !kept {
+				m.hub.dropPair(p, socket, err)
+			}
+			bufs = bufs[sent:]
+		}
+	}
+	return m.hub.bind.Send(bufs, endpoint)
 }
 
 func (m *Mux) RecvIKE() ([]byte, error) {
@@ -935,6 +981,7 @@ func (m *Mux) Close() error {
 	m.hub.tables.Store(&next)
 	delete(m.hub.muxes, m)
 	m.hub.mu.Unlock()
+	m.leavePair()
 	m.closeDone(fmt.Errorf("transport: closed"))
 	// a family fragmenting for this mux alone sends with DF again
 	if err := m.Fragment(false); err != nil && !errors.Is(err, errors.ErrUnsupported) {

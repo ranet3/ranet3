@@ -38,4 +38,16 @@ const (
 	// linkSettle is how long a hub waits for a burst of routing changes to end before it moves its socket
 	// a link coming up is several messages, and answering the first costs a rebind the last would redo
 	linkSettle = 250 * time.Millisecond
+	// pairThreshold is how many bytes an address pair carries within one pairIdle, sent and received together, before it gets a socket of its own
+	// which leaves handshakes, hellos and liveness on the shared socket
+	pairThreshold = 1 << 20
+	// pairCap is the most sockets connected to one peer each that a hub holds at once
+	// each costs a descriptor, a goroutine and its receive buffers
+	pairCap = 256
+	// pairIdle is how often the pairs are swept, which closes a socket that carried nothing since the sweep before
+	// and starts every count toward a socket over, so only a pair busy within one sweep opens one
+	pairIdle = 30 * time.Second
+	// pairBuffer is the bytes asked for as the send and receive buffer of a socket connected to one peer
+	// a smaller one slows a peer's upload over Wi-Fi
+	pairBuffer = 4 << 20
 )

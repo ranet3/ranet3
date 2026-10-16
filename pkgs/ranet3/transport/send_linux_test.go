@@ -7,12 +7,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/netip"
 	"os"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -51,7 +49,7 @@ type fakeKernel struct {
 	reads int
 	// pinnedErrno refuses every pinned message where it is set
 	pinnedErrno unix.Errno
-	// once refuses the next message where it is set, as a route rewritten between two sends does
+	// once refuses the next message where it is set, as a route rewritten between two sends does, or an ICMP error pending on a connected socket
 	once  unix.Errno
 	sent  []sentDatagram
 	tried []triedMessage
@@ -337,27 +335,6 @@ func atOnce(kernel *fakeKernel, send func()) {
 	sends.Wait()
 }
 
-type eventLog struct {
-	mu    sync.Mutex
-	lines []string
-}
-
-func (l *eventLog) record(kind string, attrs ...slog.Attr) {
-	line := []string{kind}
-	for _, attr := range attrs {
-		line = append(line, attr.String())
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.lines = append(l.lines, strings.Join(line, " "))
-}
-
-func (l *eventLog) recorded() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return slices.Clone(l.lines)
-}
-
 func kernelBind(kernel *fakeKernel, events *eventLog) *udpBind {
 	socket := func(ipv6 bool) *udpSocket {
 		s := &udpSocket{pc: kernelConn{kernel}, ipv6: ipv6}
@@ -384,26 +361,6 @@ func arrivedFrom(peer, local string, index int) *udpEndpoint {
 
 func dialed(peer string) *udpEndpoint {
 	return &udpEndpoint{addr: net.UDPAddrFromAddrPort(netip.MustParseAddrPort(peer))}
-}
-
-// numbered cuts count numbered packets of size from one allocation, so a send may segment them
-func numbered(count, size int) [][]byte { return sized(slices.Repeat([]int{size}, count)...) }
-
-// sized cuts packets of sizes from one allocation, each numbered by its place, so a send may segment neighbors
-func sized(sizes ...int) [][]byte {
-	total := 0
-	for _, size := range sizes {
-		total += size
-	}
-	storage := make([]byte, total)
-	packets := make([][]byte, len(sizes))
-	offset := 0
-	for i, size := range sizes {
-		packets[i] = storage[offset : offset+size]
-		binary.BigEndian.PutUint32(packets[i], uint32(i))
-		offset += size
-	}
-	return packets
 }
 
 func numbers(sent []sentDatagram) []uint32 {

@@ -7,8 +7,32 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 )
+
+// eventLog keeps each event a hub or a bind records as its kind and attributes on one line
+type eventLog struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *eventLog) record(kind string, attrs ...slog.Attr) {
+	line := []string{kind}
+	for _, attr := range attrs {
+		line = append(line, attr.String())
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, strings.Join(line, " "))
+}
+
+func (l *eventLog) recorded() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.lines)
+}
 
 // movingBind is a socket that can be moved between interfaces and carries nothing
 type movingBind struct{}

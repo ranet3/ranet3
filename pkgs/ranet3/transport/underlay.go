@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// Underlay is how this node keeps the one UDP socket carrying IKE and ESP out
-// of the reach of the routes the mesh installs.
+// Underlay is how this node keeps the UDP sockets carrying IKE and ESP out of
+// the reach of the routes the mesh installs.
 //
 // It is one idea with two spellings, which is why it is one block rather than
 // a setting per platform. A node that holds an address an exit announces ends
@@ -35,7 +35,7 @@ import (
 // rather than accepted and ignored: a configuration written to keep the
 // underlay out that quietly does nothing is the failure this exists to stop.
 type Underlay struct {
-	// Mark is SO_MARK on the socket, linux only, and zero for none. Pick a
+	// Mark is SO_MARK on every socket, linux only, and zero for none. Pick a
 	// mark nothing else on the host uses, and install the matching rule, such
 	// as { fwmark = 0x726c, table = "main", priority = 40, family = "both" },
 	// under cap.table.rules: this package writes none itself.
@@ -65,7 +65,8 @@ type Runtime struct {
 	// interface can reach anything off it. Nil leaves that to the operator,
 	// and the probe after each binding says so.
 	Routes UnderlayRoutes
-	// Events records each move of the socket onto another interface, and on linux each fallback a send to a peer took
+	// Events records each move of the socket onto another interface, on linux each fallback a send to a peer took
+	// and each socket connected to one peer that opens or closes
 	// nil records nothing
 	Events func(kind string, attrs ...slog.Attr)
 }
@@ -264,6 +265,8 @@ func (h *Hub) bindUnderlayTo(index int, routed bool) error {
 	h.mu.Lock()
 	h.boundTo = index
 	h.mu.Unlock()
+	// a socket connected to one peer reopens bound where the listener now is
+	h.dropPairs(pairUnderlayClose)
 	slog.Info("transport bound the underlay socket", "interface_index", index)
 	if h.events != nil {
 		h.events("transport.underlay.bound", slog.Int("interface_index", index))
