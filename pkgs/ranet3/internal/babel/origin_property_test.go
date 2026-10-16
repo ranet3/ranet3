@@ -16,6 +16,7 @@ import (
 
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
@@ -150,7 +151,7 @@ func (r *originRig) start() {
 		r.asker.Close()
 	}
 	r.asker = netstack.NewPeer("asker", plainSealer, func([][]byte) error { return nil }, nil)
-	speaker.AddPeer(r.asker)
+	speaker.AddPeer(r.asker, identity.Identity{})
 	if !r.survives(func() { speaker.SetOrigin(from, r.disk.save, "") }) {
 		return
 	}

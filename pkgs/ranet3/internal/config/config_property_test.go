@@ -175,6 +175,36 @@ func transits() hegel.Generator[babel.Transit] {
 // left at its default.
 func speakers() hegel.Generator[babel.Config] {
 	intervals := unset(between(10*time.Millisecond, 65535*10*time.Millisecond))
+	// now and then a node key is a bare name or an endpoint, which Validate refuses
+	nodeKeys := hegel.Composite(func(tc hegel.TestCase) string {
+		if hegel.Draw(tc, hegel.WeightedBooleans(0.05)) {
+			return hegel.Draw(tc, names())
+		}
+		serial := ""
+		if hegel.Draw(tc, hegel.WeightedBooleans(0.05)) {
+			serial = hegel.Draw(tc, names())
+		}
+		id, err := identity.From(hegel.Draw(tc, names()), hegel.Draw(tc, names()), serial)
+		if err != nil {
+			panic(err)
+		}
+		return id.String()
+	})
+	// an empty map is written as no map, which reads back as nil
+	// now and then an amount is infinity, which Validate refuses, and drawn as an edge it would refuse most maps
+	amount := hegel.Composite(func(tc hegel.TestCase) uint16 {
+		if hegel.Draw(tc, hegel.WeightedBooleans(0.05)) {
+			return babel.MetricInfinity
+		}
+		return hegel.Draw(tc, edges[uint16](0, babel.MetricInfinity-1))
+	})
+	amounts := func(tc hegel.TestCase, keys hegel.Generator[string]) map[string]uint16 {
+		drawn := hegel.Draw(tc, hegel.Maps(keys, amount).MaxSize(3))
+		if len(drawn) == 0 {
+			return nil
+		}
+		return drawn
+	}
 	return hegel.Composite(func(tc hegel.TestCase) babel.Config {
 		return babel.Config{
 			Hello:   hegel.Draw(tc, intervals),
@@ -186,6 +216,11 @@ func speakers() hegel.Generator[babel.Config] {
 					Weight: hegel.Draw(tc, hegel.Optional(edges[uint16](0, 4096))),
 					Min:    hegel.Draw(tc, hegel.Optional(between(0, time.Second))),
 					Max:    hegel.Draw(tc, hegel.Optional(between(time.Second, 5*time.Second))),
+				},
+				Extra: babel.ExtraCost{
+					Foreign: hegel.Draw(tc, edges[uint16](0, babel.MetricInfinity-1)),
+					Org:     amounts(tc, names()),
+					Node:    amounts(tc, nodeKeys),
 				},
 			},
 		}
@@ -489,6 +524,10 @@ func configurations() hegel.Generator[Config] {
 			Crypto:  block(tc, blocks, cryptos()),
 			Egress:  block(tc, blocks, exits()),
 		}
+		// now and then cost.extra charges the node itself, which Validate refuses
+		if c.Cap.Babel != nil && hegel.Draw(tc, hegel.WeightedBooleans(0.05)) {
+			c.Cap.Babel.Cost.Extra.Node = map[string]uint16{c.Node.String(): hegel.Draw(tc, edges[uint16](0, math.MaxUint16))}
+		}
 		// a mark needs a rule reading it wherever this file writes rules, so a
 		// marked node with a table carries the rule its refusal spells out
 		if mark := c.Link.Underlay.Mark; mark != 0 && c.Cap.Table != nil && !c.Cap.Table.ReadsMark(mark) {
@@ -542,7 +581,7 @@ func TestValidatedEgressSourceReadsBackFromItsFile(t *testing.T) {
 // their own Validate takes and, a quarter of the time, with one value added
 // that no file can write: an announcement whose prefix or source has no
 // spelling, a link quality other than etx and none, which is written as etx,
-// or a steering selector that is set and is not a prefix. A configuration
+// a cost.extra organization that is not UTF-8, or a steering selector that is set and is not a prefix. A configuration
 // carrying none of them reads back unchanged. One carrying one of them has to
 // be refused, and since the configuration without it was taken, the refusal
 // is the value's own. Most cases still reach the round trip rather than every
@@ -562,7 +601,7 @@ func TestValidatedRouteSpeakerAndSegmentsReadBackFromTheirFile(t *testing.T) {
 		// one value no file holds, added to a configuration Validate took
 		// without it, in a copy of the block it goes in
 		injected, what := drawn, ""
-		switch hegel.Draw(ht, hegel.Integers(0, 3)) {
+		switch hegel.Draw(ht, hegel.Integers(0, 4)) {
 		case 0:
 			added := route
 			added.Announce = append(slices.Clone(route.Announce), schema.Announce{Prefix: hegel.Draw(ht, notPrefixes())})
@@ -575,6 +614,14 @@ func TestValidatedRouteSpeakerAndSegmentsReadBackFromTheirFile(t *testing.T) {
 			added := speaker
 			added.Quality = babel.LinkQuality(hegel.Draw(ht, hegel.Integers[uint8](2, math.MaxUint8)))
 			injected.Cap.Babel, what = &added, fmt.Sprintf("link quality %d", added.Quality)
+		case 3:
+			added := speaker
+			added.Cost.Extra.Org = maps.Clone(speaker.Cost.Extra.Org)
+			if added.Cost.Extra.Org == nil {
+				added.Cost.Extra.Org = make(map[string]uint16)
+			}
+			added.Cost.Extra.Org[hegel.Draw(ht, names())+"\xff"] = hegel.Draw(ht, edges[uint16](0, babel.MetricInfinity-1))
+			injected.Cap.Babel, what = &added, "a cost.extra organization that is not UTF-8"
 		default:
 			entry := hegel.Draw(ht, steering(segment.Source.IsValid()))
 			if !entry.From.IsValid() {
@@ -751,6 +798,7 @@ func TestEveryScalarRefusesAListOrAMappingWrittenInItsPlace(t *testing.T) {
 
 // schemaField is a field or a block a file writes, by the yaml keys that lead to it
 // a key ending in [] holds a list, and the field is the one in its first entry
+// a map field is followed by its value under the key mapEntry
 // scalar is the type of a field that reads itself from text, and nil for any other
 type schemaField struct {
 	path             []string
@@ -773,20 +821,28 @@ func schemaFields(ty reflect.Type, path []string, found *[]schemaField) {
 		if under.Kind() == reflect.Slice {
 			under, key = under.Elem(), key+"[]"
 		}
-		here := append(slices.Clone(path), key)
-		this := schemaField{path: here}
-		switch {
-		case reflect.PointerTo(under).Implements(reflect.TypeFor[encoding.TextUnmarshaler]()):
-			this.scalar = under
-		case under.Kind() >= reflect.Int && under.Kind() <= reflect.Uint64:
-			this.integer = true
-		case under.Kind() == reflect.Bool:
-			this.boolean = true
-		}
-		*found = append(*found, this)
-		if this.scalar == nil && under.Kind() == reflect.Struct {
-			schemaFields(under, here, found)
-		}
+		schemaValue(under, append(slices.Clone(path), key), found)
+	}
+}
+
+const mapEntry = "entry"
+
+func schemaValue(under reflect.Type, path []string, found *[]schemaField) {
+	this := schemaField{path: path}
+	switch {
+	case reflect.PointerTo(under).Implements(reflect.TypeFor[encoding.TextUnmarshaler]()):
+		this.scalar = under
+	case under.Kind() >= reflect.Int && under.Kind() <= reflect.Uint64:
+		this.integer = true
+	case under.Kind() == reflect.Bool:
+		this.boolean = true
+	}
+	*found = append(*found, this)
+	switch {
+	case this.scalar == nil && under.Kind() == reflect.Struct:
+		schemaFields(under, path, found)
+	case under.Kind() == reflect.Map && under.Key().Kind() == reflect.String:
+		schemaValue(under.Elem(), append(slices.Clone(path), mapEntry), found)
 	}
 }
 
@@ -832,10 +888,14 @@ func (f schemaField) readInteger(c Config) uint64 {
 		for value.Kind() == reflect.Pointer && !value.IsNil() {
 			value = value.Elem()
 		}
-		if value.Kind() != reflect.Struct {
+		switch value.Kind() {
+		case reflect.Struct:
+			value = fieldByKey(value, key)
+		case reflect.Map:
+			value = value.MapIndex(reflect.ValueOf(key).Convert(value.Type().Key()))
+		default:
 			return 0
 		}
-		value = fieldByKey(value, key)
 		if list && value.Len() > 0 {
 			value = value.Index(0)
 		}

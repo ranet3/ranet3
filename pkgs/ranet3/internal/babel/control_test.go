@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -25,7 +26,7 @@ func routePacket(prefix netip.Prefix, routerID byte, metric, interval uint16) []
 
 func addReachablePeer(t *testing.T, s *Speaker, id string, cost uint16) *netstack.Peer {
 	p := newTestPeer(t, id, nil).Peer
-	s.AddPeer(p)
+	s.AddPeer(p, identity.Identity{})
 	s.Receive(p, buildPacket(netip.MustParseAddr("fe80::2"), multicastGroup, EncodePacket([]RawTLV{
 		EncodeHello(Hello{Seqno: 1, Interval: 1000}), EncodeIHU(IHU{RxCost: cost, Interval: 1000}),
 	})))

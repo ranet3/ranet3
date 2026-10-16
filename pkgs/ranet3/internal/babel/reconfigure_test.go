@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
@@ -146,7 +147,7 @@ func TestRunningSpeakerTakesShorterIntervalsAtOnce(t *testing.T) {
 		defer mu.Unlock()
 		packets = append(packets, append([]byte(nil), raw...))
 	})
-	speaker.AddPeer(peer.Peer)
+	speaker.AddPeer(peer.Peer, identity.Identity{})
 	sent := func() [][]byte {
 		mu.Lock()
 		defer mu.Unlock()
@@ -205,8 +206,8 @@ func TestReloadedCostReselectsEveryPrefix(t *testing.T) {
 	var toB [][]byte
 	b := newTestPeer(t, "b", func(raw []byte) { toB = append(toB, append([]byte(nil), raw...)) })
 	c := newTestPeer(t, "c", nil)
-	speaker.AddPeer(b.Peer)
-	speaker.AddPeer(c.Peer)
+	speaker.AddPeer(b.Peer, identity.Identity{})
+	speaker.AddPeer(c.Peer, identity.Identity{})
 
 	dest := netip.MustParsePrefix("fd00:c::/64")
 	key := routeKey{dest: dest}
@@ -319,7 +320,7 @@ func TestLostPacketReportsReadTheHelloIntervalAChangeWrites(t *testing.T) {
 	}
 	speaker.Originate(netip.MustParsePrefix("fd00:d::/64"))
 	lossy := netstack.NewPeer("lossy", plainSealer, func([][]byte) error { return errors.New("babel: a transport that loses every packet") }, nil)
-	speaker.AddPeer(lossy)
+	speaker.AddPeer(lossy, identity.Identity{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

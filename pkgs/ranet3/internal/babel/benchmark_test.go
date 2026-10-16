@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -18,7 +19,7 @@ func BenchmarkReceiveData(b *testing.B) {
 		b.Fatal(err)
 	}
 	peer := &netstack.Peer{ID: "peer"}
-	s.AddPeer(peer)
+	s.AddPeer(peer, identity.Identity{})
 	for _, protocol := range []byte{6, 17} {
 		name := "TCP"
 		if protocol == 17 {

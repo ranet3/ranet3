@@ -662,7 +662,9 @@ type listenNode struct {
 	// announce is the prefix the node puts into the mesh, none where it is invalid
 	announce netip.Prefix
 	// transit writes cap.transit enable = true, where the node otherwise leaves the block out
-	transit    bool
+	transit bool
+	// foreign writes cap.babel cost.extra foreign, where the node otherwise charges nobody
+	foreign    uint16
 	client     *Client
 	events     *events.Bus
 	configPath string
@@ -678,6 +680,9 @@ func writeListenConfig(t *testing.T, node *listenNode, listen bool) *config.Conf
 		"link:\n  port: %d\n  endpoints:\n    - serial: \"0\"\n      family: ip4\n  listen: %t\n"+
 		"cap:\n  babel:\n    hello: 200ms\n    update: 400ms\n",
 		node.org, node.name, node.keyPath, node.trustPath, node.port, listen)
+	if node.foreign != 0 {
+		fmt.Fprintf(&body, "    cost:\n      extra:\n        foreign: %d\n", node.foreign)
+	}
 	if node.transit {
 		body.WriteString("  transit:\n    enable: true\n")
 	}

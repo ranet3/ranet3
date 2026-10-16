@@ -19,7 +19,7 @@ func TestRenderersKeepTheirColumns(t *testing.T) {
 	}{
 		"neighbors": {
 			render: func(b *strings.Builder) { RenderNeighbors(b, nil) },
-			want:   []string{"Peer", "State", "Cost", "Rx cost", "RTT", "Routes", "Expires", "Dropped", "Failed"},
+			want:   []string{"Peer", "State", "Cost", "Extra", "Rx cost", "RTT", "Routes", "Expires", "Dropped", "Failed"},
 		},
 		"routes": {
 			render: func(b *strings.Builder) { RenderRoutes(b, nil) },
@@ -70,6 +70,20 @@ func TestNeighborsSpellInfinityAndAbsence(t *testing.T) {
 			t.Errorf("a measured neighbor printed as %q, want it to carry %q", out.String(), want)
 		}
 	}
+}
+
+// The extra stands beside the cost that holds it, so an operator reads what the link costs apart from what the node charges
+func TestNeighborsShowTheExtraApartFromTheCost(t *testing.T) {
+	cost := uint16(1120)
+	rtt := Duration(27200 * time.Microsecond)
+	neighbors := []Neighbor{
+		{Peer: "example/gateway:0@0", Alive: true, Cost: 1140, Extra: 1024, ReportedCost: &cost, RTT: &rtt, Routes: 3, Expires: Duration(14 * time.Second)},
+		{Peer: "ysun/lagern:0@0", Alive: true, Cost: 116, ReportedCost: &cost, Routes: 1, Expires: Duration(13 * time.Second)},
+	}
+	var out strings.Builder
+	RenderNeighbors(&out, neighbors)
+	golden(t, "neighbors.txt", []byte(out.String()))
+	goldenJSON(t, "neighbors.json", neighbors)
 }
 
 // A prefix this node originates and one held unreachable are the two rows an

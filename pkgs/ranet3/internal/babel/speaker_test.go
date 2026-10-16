@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -62,8 +63,8 @@ func wireSpeakerPair(t *testing.T, cfg Config) (meshA, meshB *netstack.Mesh, spe
 			meshA.DeliverInbound(raw, peerBForA.MTU())
 		}
 	})
-	speakerA.AddPeer(peerBForA.Peer)
-	speakerB.AddPeer(peerAForB.Peer)
+	speakerA.AddPeer(peerBForA.Peer, identity.Identity{})
+	speakerB.AddPeer(peerAForB.Peer, identity.Identity{})
 	return meshA, meshB, speakerA, speakerB
 }
 
@@ -375,7 +376,7 @@ func TestPeerHandleRemovesExactNeighborAndRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	peer := &netstack.Peer{ID: "peer"}
-	handle := speaker.AddPeer(peer)
+	handle := speaker.AddPeer(peer, identity.Identity{})
 	n := speaker.neighbors[peer.ID]
 	dest := netip.MustParsePrefix("10.88.0.0/16")
 	key := routeKey{dest: dest}
@@ -392,7 +393,7 @@ func TestPeerHandleRemovesExactNeighborAndRoutes(t *testing.T) {
 	}
 
 	newPeer := &netstack.Peer{ID: "peer"}
-	newHandle := speaker.AddPeer(newPeer)
+	newHandle := speaker.AddPeer(newPeer, identity.Identity{})
 	defer newHandle.Close()
 	handle.Close()
 	if speaker.neighbors[peer.ID] == nil {
@@ -407,7 +408,7 @@ func TestWildcardUpdateRetractsEveryRouteFromNeighbor(t *testing.T) {
 		t.Fatal(err)
 	}
 	peer := &netstack.Peer{ID: "peer"}
-	handle := speaker.AddPeer(peer)
+	handle := speaker.AddPeer(peer, identity.Identity{})
 	defer handle.Close()
 	neighbor := speaker.neighbors[peer.ID]
 	makeNeighborReachable(neighbor)
@@ -434,7 +435,7 @@ func TestAcknowledgmentUsesUnicastDestination(t *testing.T) {
 	}
 	var sent []byte
 	peer := newTestPeer(t, "peer", func(raw []byte) { sent = append([]byte(nil), raw...) })
-	handle := speaker.AddPeer(peer.Peer)
+	handle := speaker.AddPeer(peer.Peer, identity.Identity{})
 	defer handle.Close()
 	neighbor := speaker.neighbors[peer.ID]
 	destination := netip.MustParseAddr("fe80::2")
@@ -467,7 +468,7 @@ func captureSpeaker(t *testing.T, cfg Config, runtime ...Runtime) (*Speaker, *ne
 		t.Fatal(err)
 	}
 	c := &capture{t: t, peer: newHeldPeer(t, "peer", nil)}
-	speaker.AddPeer(c.peer.Peer)
+	speaker.AddPeer(c.peer.Peer, identity.Identity{})
 	neighbor := speaker.neighbors[c.peer.ID]
 	neighbor.addr = netip.MustParseAddr("fe80::2")
 	return speaker, neighbor, c
@@ -609,8 +610,8 @@ func TestStalledNeighborDoesNotHoldOthers(t *testing.T) {
 		return nil
 	}, nil)
 	defer moving.Close()
-	speaker.AddPeer(stalled)
-	speaker.AddPeer(moving)
+	speaker.AddPeer(stalled, identity.Identity{})
+	speaker.AddPeer(moving, identity.Identity{})
 
 	// Something to say to both of them, and enough rounds to fill the stalled
 	// peer's queue several times over.
@@ -720,7 +721,7 @@ func TestDroppedRetractionIsSentAgain(t *testing.T) {
 		return nil
 	}, nil)
 	defer func() { unblock(); peer.Close() }()
-	defer speaker.AddPeer(peer).Close()
+	defer speaker.AddPeer(peer, identity.Identity{}).Close()
 
 	dest := netip.MustParsePrefix("fd00:a::/64")
 	key := routeKey{dest: dest}
@@ -859,7 +860,7 @@ func TestEmittersCannotInvertWhatTheyDecided(t *testing.T) {
 			return nil
 		}, nil)
 	defer peer.Close()
-	handle := speaker.AddPeer(peer)
+	handle := speaker.AddPeer(peer, identity.Identity{})
 	defer handle.Close()
 	neighbor := speaker.neighbors[peer.ID]
 	neighbor.addr = netip.MustParseAddr("fe80::2")
@@ -1159,7 +1160,7 @@ func TestRetractionLostInTheTransportIsAdvertisedAgain(t *testing.T) {
 // discarding the rest parks one sender per call for the life of the binary.
 func addPeer(t *testing.T, s *Speaker, peer *netstack.Peer) *neighborState {
 	t.Helper()
-	handle := s.AddPeer(peer)
+	handle := s.AddPeer(peer, identity.Identity{})
 	t.Cleanup(func() { handle.Close(); peer.Close() })
 	return handle.state
 }
@@ -1335,7 +1336,7 @@ func TestDumpDoesNotStarveRequestsDecidedWithIt(t *testing.T) {
 			return nil
 		}, nil)
 	defer func() { unblock(); peer.Close() }()
-	handle := speaker.AddPeer(peer)
+	handle := speaker.AddPeer(peer, identity.Identity{})
 	defer handle.Close()
 	neighbor := speaker.neighbors[peer.ID]
 	neighbor.addr = netip.MustParseAddr("fe80::2")
@@ -1454,7 +1455,7 @@ func TestHelloSurvivesPassThatFillsTheBudget(t *testing.T) {
 			return nil
 		}, nil)
 	defer func() { unblock(); peer.Close() }()
-	handle := speaker.AddPeer(peer)
+	handle := speaker.AddPeer(peer, identity.Identity{})
 	defer handle.Close()
 	neighbor := speaker.neighbors[peer.ID]
 	neighbor.addr = netip.MustParseAddr("fe80::2")
@@ -1574,7 +1575,7 @@ func TestOneJammedNeighborDoesNotRepeatTheUpdateToTheRest(t *testing.T) {
 
 	var healthy atomic.Int64
 	peer := newTestPeer(t, "healthy", func([]byte) { healthy.Add(1) })
-	handle := speaker.AddPeer(peer.Peer)
+	handle := speaker.AddPeer(peer.Peer, identity.Identity{})
 	defer handle.Close()
 	makeNeighborReachable(speaker.neighbors[peer.ID])
 

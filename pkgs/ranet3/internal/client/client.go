@@ -239,7 +239,8 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 		}
 	}()
 	sessions := newSessionSet()
-	speaker, err := babel.New(cfg.Babel(), cfg.Routes(), babel.Runtime{Events: bus, ProbeAcked: sessions.probeAcked, NoTransit: !cfg.Transits()}, mesh)
+	organization, _ := cfg.Node.NodeParts()
+	speaker, err := babel.New(cfg.Babel(), cfg.Routes(), babel.Runtime{Events: bus, ProbeAcked: sessions.probeAcked, NoTransit: !cfg.Transits(), Organization: organization}, mesh)
 	if err != nil {
 		return nil, err
 	}

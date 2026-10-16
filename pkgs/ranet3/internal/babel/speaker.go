@@ -52,6 +52,7 @@ import (
 	"sync"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
@@ -147,12 +148,14 @@ type starveRetry struct {
 // receive path takes. The one Send under it is ReserveRawOrDrop's own, for a
 // place whose sequence range the SA refused, which carries nothing to seal.
 type Speaker struct {
-	// the intervals and the cost as resolved, defaults filled in, which SetConfig replaces under s.mu
+	// the intervals, the cost and its extra as resolved, defaults filled in, which SetConfig replaces under s.mu
 	// hello is also written under lostMu, which noteLost reads it under
 	// the runtime and whether this node relays are read-only for the life of the speaker
 	// except routerID, which SetOrigin sets once under s.mu before Run
 	hello, update time.Duration
 	cost          CostParams
+	extra         ExtraCost
+	organization  string
 	routerID      [8]byte
 	linkLocal     netip.Addr
 	packetSize    int
@@ -266,6 +269,7 @@ func New(cfg Config, routes Routes, rt Runtime, mesh *netstack.Mesh) (*Speaker, 
 	s := &Speaker{
 		routerID: rt.RouterID, linkLocal: rt.LinkLocalAddr, packetSize: rt.PacketSize,
 		noTransit: rt.NoTransit, events: rt.Events, probeAcked: rt.ProbeAcked,
+		extra: cfg.Cost.Extra, organization: rt.Organization,
 		mesh: mesh,
 
 		neighbors:      make(map[string]*neighborState),
@@ -309,11 +313,15 @@ func (s *Speaker) SetConfig(cfg Config) {
 	effective := cfg.Effective()
 	now := time.Now()
 	s.mu.Lock()
-	if effective == (Effective{Hello: s.hello, Update: s.update, Cost: s.cost}) {
+	if effective == (Effective{Hello: s.hello, Update: s.update, Cost: s.cost}) && cfg.Cost.Extra.Equal(s.extra) {
 		s.mu.Unlock()
 		return
 	}
 	s.applyEffective(effective)
+	s.extra = cfg.Cost.Extra
+	for _, n := range s.neighbors {
+		s.chargeLocked(n)
+	}
 	s.sweepExpiredLocked(now)
 	actions := make([]sendAction, 0, 2*len(s.neighbors))
 	for _, n := range s.neighbors {
@@ -333,7 +341,8 @@ func (s *Speaker) SetConfig(cfg Config) {
 	send()
 }
 
-func (s *Speaker) AddPeer(peer *netstack.Peer) *PeerHandle {
+// AddPeer registers the session peer as a neighbor, remote being the identity its IKE_AUTH proved, which selects its cap.babel cost.extra
+func (s *Speaker) AddPeer(peer *netstack.Peer, remote identity.Identity) *PeerHandle {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old := s.neighbors[peer.ID]; old != nil {
@@ -343,12 +352,22 @@ func (s *Speaker) AddPeer(peer *netstack.Peer) *PeerHandle {
 		}
 		s.routes.expireNeighbor(old, time.Now())
 	}
-	n := &neighborState{peer: peer,
+	n := &neighborState{peer: peer, identity: remote,
 		advertised: make(map[routeKey]struct{}), owed: make(map[routeKey]struct{})}
+	s.chargeLocked(n)
 	s.neighbors[peer.ID] = n
 	s.updatePending = true
 	s.wake()
 	return &PeerHandle{speaker: s, state: n}
+}
+
+func (s *Speaker) chargeLocked(n *neighborState) {
+	extra := s.extra.For(s.organization, n.identity)
+	if extra == n.extra {
+		return
+	}
+	s.events.Emit("babel.neighbor.extra", n.peer.ID, slog.Int("from", int(n.extra)), slog.Int("extra", int(extra)))
+	n.extra = extra
 }
 
 func (s *Speaker) removePeer(n *neighborState) {
@@ -907,7 +926,9 @@ type NeighborStat struct {
 	// the address BIRD prints in its first column.
 	Addr  netip.Addr
 	Alive bool
+	// Cost includes Extra, the amount cap.babel cost.extra charges this neighbor, which this node's IHU adds to its rxcost too
 	Cost  uint16
+	Extra uint16
 	// ReportedCost is the rxcost the neighbor last sent back in an IHU, and
 	// HaveReportedCost is false until one has arrived. Cost is this node's
 	// view of the link and this is the neighbor's, so a link that carries in
@@ -985,6 +1006,7 @@ func (s *Speaker) Stats() Stats {
 			Addr:             neighbor.addr,
 			Alive:            neighbor.isAlive(now),
 			Cost:             neighbor.linkCost(now, s.cost),
+			Extra:            neighbor.extra,
 			ReportedCost:     neighbor.reportedCost,
 			HaveReportedCost: neighbor.haveReportedCost,
 			RTT:              neighbor.measuredRTT,

@@ -668,7 +668,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 		},
 		func([][]byte) error { <-blocked; return nil }, nil)
 	defer func() { drain.Do(func() { close(blocked) }); peer.Close() }()
-	handle := speaker.AddPeer(peer)
+	handle := speaker.AddPeer(peer, identity.Identity{})
 	defer handle.Close()
 	for {
 		place, err := peer.ReserveRawOrDrop([]byte("bulk"), 41)
@@ -1728,7 +1728,7 @@ func TestMetricsLabelsUseOnlyTheEscapesTheFormatDefines(t *testing.T) {
 		t.Fatal(err)
 	}
 	peer := &netstack.Peer{ID: "gate\tway"}
-	handle := speaker.AddPeer(peer)
+	handle := speaker.AddPeer(peer, identity.Identity{})
 	defer handle.Close()
 	c := &Client{speaker: speaker, sessions: newSessionSet(), Mesh: mesh}
 	// A live session too: the path label is the other value built from a name

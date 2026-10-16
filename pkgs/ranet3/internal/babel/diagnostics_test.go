@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -63,7 +64,7 @@ func TestRouteDumpReportsSelectionAndHolds(t *testing.T) {
 		t.Fatal(err)
 	}
 	peer := &netstack.Peer{ID: "example/gateway@0"}
-	handle := speaker.AddPeer(peer)
+	handle := speaker.AddPeer(peer, identity.Identity{})
 	defer handle.Close()
 	neighbor := speaker.neighbors[peer.ID]
 	makeNeighborReachable(neighbor)
@@ -96,7 +97,7 @@ func TestNeighborStatsCarryBothDirections(t *testing.T) {
 		t.Fatal(err)
 	}
 	peer := &netstack.Peer{ID: "example/gateway@0"}
-	handle := speaker.AddPeer(peer)
+	handle := speaker.AddPeer(peer, identity.Identity{})
 	defer handle.Close()
 
 	fresh := speaker.Stats()

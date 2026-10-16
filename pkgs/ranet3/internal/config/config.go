@@ -329,6 +329,10 @@ func exactKeysIn(written any, field reflect.Type, path string) error {
 	if field.Kind() == reflect.Pointer {
 		field = field.Elem()
 	}
+	// the decoder leaves a map empty, with no error and nothing undecoded, for a value that is not a table
+	if _, table := written.(map[string]any); field.Kind() == reflect.Map && !table {
+		return fmt.Errorf("%q takes a table", strings.TrimSuffix(path, "."))
+	}
 	switch value := written.(type) {
 	case map[string]any:
 		if field.Kind() != reflect.Struct {
@@ -492,6 +496,12 @@ func fillBlocks(node *yaml.Node, target reflect.Value) error {
 				}
 			}
 		}
+	case target.Kind() == reflect.Map && node.Kind == yaml.MappingNode:
+		for i := 1; i < len(node.Content); i += 2 {
+			if err := wholeNumber(schema.Followed(node.Content[i]), target.Type().Elem()); err != nil {
+				return err
+			}
+		}
 	case target.Kind() == reflect.Slice && node.Kind == yaml.SequenceNode:
 		for i, item := range node.Content {
 			// yaml.v3 drops a null item from the list, where encoding/json reads it as the zero identity Validate refuses
@@ -644,6 +654,12 @@ func notText(value reflect.Value, path string) (string, string, bool) {
 				return found, written, true
 			}
 		}
+	case reflect.Map:
+		for _, key := range value.MapKeys() {
+			if found, written, ok := notText(key, path); ok {
+				return found, written, true
+			}
+		}
 	case reflect.Struct:
 		for i := range value.NumField() {
 			field := value.Type().Field(i)
@@ -714,6 +730,10 @@ func (c *Config) validateNode() error {
 // validateAcrossCapabilities is the part no capability can check alone,
 // because each half is in a different block.
 func (c *Config) validateAcrossCapabilities() error {
+	// this node is never its own neighbor, so an amount for it charges nobody
+	if slices.Contains(c.Babel().Cost.Extra.Nodes(), c.Node) {
+		return fmt.Errorf("config: cap.babel cost.extra node %s is this node", c.Node)
+	}
 	// nothing here creates the egress device, so no segment delivers to egress and an exit serves only what it advertises
 	if c.Cap.Egress != nil {
 		if err := c.Cap.Egress.Serves(false); err != nil {

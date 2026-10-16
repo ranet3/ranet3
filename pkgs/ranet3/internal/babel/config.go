@@ -28,8 +28,9 @@ type Config struct {
 	Quality LinkQuality `yaml:"quality,omitempty" json:"quality,omitempty" toml:"quality,omitempty"`
 	// Cost is the link cost, named after the BIRD babel interface options it
 	// mirrors: a fixed rx cost plus up to rtt.weight scaled linearly between
-	// rtt.min and rtt.max. Each of the four keeps the speaker's default on its
-	// own, so writing one of them leaves the other three alone.
+	// rtt.min and rtt.max, and the extra block's amount for each neighbor. Each
+	// of the four numbers keeps the speaker's default on its own, so writing one
+	// of them leaves the other three alone.
 	Cost CostOptions `yaml:"cost,omitempty" json:"cost,omitzero" toml:"cost,omitempty"`
 }
 
@@ -57,6 +58,8 @@ type Runtime struct {
 	// NoTransit advertises only what this node originates, where cap.transit is off
 	// it is read while a packet is built, so it is fixed for the speaker's life
 	NoTransit bool
+	// Organization is this node's own, which cap.babel cost.extra foreign charges every other one against
+	Organization string
 }
 
 const maxInterval = 65535 * 10 * time.Millisecond
@@ -141,7 +144,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf("babel: cap.babel cost rx %d plus rtt weight %d must be between 1 and %d",
 			cost.RxCost, cost.RTT.Weight, MetricInfinity-1)
 	}
-	return nil
+	return c.Cost.Extra.Validate()
 }
 
 // resolve fills in what the speaker was not given: a random router id and a

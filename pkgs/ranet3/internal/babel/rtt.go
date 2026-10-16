@@ -37,6 +37,8 @@ func microDelta(b, a uint32) time.Duration {
 type CostOptions struct {
 	Rx  *uint16    `yaml:"rx,omitempty" json:"rx,omitempty" toml:"rx,omitempty"`
 	RTT RTTOptions `yaml:"rtt,omitempty" json:"rtt,omitzero" toml:"rtt,omitempty"`
+	// Extra is kept out of Params, since it prices each neighbor apart rather than every link alike
+	Extra ExtraCost `yaml:"extra,omitempty" json:"extra,omitzero" toml:"extra,omitempty"`
 }
 
 // RTTOptions is the round-trip half of the block, as a file writes it.

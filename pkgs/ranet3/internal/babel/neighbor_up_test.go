@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
@@ -48,9 +49,9 @@ func newHeldWire(t tester, packetSize int) *heldWire {
 	return w
 }
 
-func (w *heldWire) joinA() { w.a.AddPeer(w.peerBForA.Peer) }
+func (w *heldWire) joinA() { w.a.AddPeer(w.peerBForA.Peer, identity.Identity{}) }
 
-func (w *heldWire) joinB() { w.b.AddPeer(w.peerAForB.Peer) }
+func (w *heldWire) joinB() { w.b.AddPeer(w.peerAForB.Peer, identity.Identity{}) }
 
 // close closes both peers, for a property case, whose tester cleans up only when the whole property ends
 func (w *heldWire) close() {

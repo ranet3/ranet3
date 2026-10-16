@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -54,7 +55,31 @@ func validateLocalConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x *r
 		}
 		localFamilies[endpoint.Family] = struct{}{}
 	}
+	if err := validateExtraCost(cfg, x); err != nil {
+		return nil, err
+	}
 	return localFamilies, nil
+}
+
+// validateExtraCost refuses an organization or node cap.babel cost.extra names and the trust document does not, since a misspelled name would charge nobody
+func validateExtraCost(cfg *config.Config, x *registry.Index) error {
+	extra := cfg.Babel().Cost.Extra
+	known := make(map[string]struct{})
+	for _, node := range x.Nodes() {
+		organization, _ := node.NodeParts()
+		known[organization] = struct{}{}
+	}
+	for _, organization := range slices.Sorted(maps.Keys(extra.Org)) {
+		if _, ok := known[organization]; !ok {
+			return fmt.Errorf("config: cap.babel cost.extra org %q is not an organization of the trust document", organization)
+		}
+	}
+	for _, node := range extra.Nodes() {
+		if _, err := x.Key(node); err != nil {
+			return fmt.Errorf("config: cap.babel cost.extra node %s is not a node of the trust document", node)
+		}
+	}
+	return nil
 }
 
 // refuseEgressAdvertisedUnconditionally rejects a prefix cap.egress offers to

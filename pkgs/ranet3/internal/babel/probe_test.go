@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -104,7 +105,7 @@ func TestRefusedProbeIsAnError(t *testing.T) {
 	// a closed session refuses every place
 	closed := netstack.NewPeer("closed", plainSealer, func([][]byte) error { return nil }, nil)
 	closed.Close()
-	speaker.AddPeer(closed)
+	speaker.AddPeer(closed, identity.Identity{})
 	if err := speaker.Probe(closed, srv6.MinimumIPv6MTU, 1); err == nil {
 		t.Error("a probe the session refused was taken")
 	}
@@ -121,7 +122,7 @@ func TestEveryAckIsReportedWithItsSession(t *testing.T) {
 		heard = append(heard, probeAck{peer, nonce})
 	}})
 	other := newTestPeer(t, "other", nil).Peer
-	speaker.AddPeer(other)
+	speaker.AddPeer(other, identity.Identity{})
 	acks := func(nonces ...uint16) []byte {
 		var tlvs []RawTLV
 		for _, nonce := range nonces {

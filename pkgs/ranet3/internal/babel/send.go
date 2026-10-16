@@ -383,7 +383,8 @@ func (s *Speaker) helloAction(n *neighborState, now time.Time) sendAction {
 	// keeps selecting routes through a direction that is dead. A neighbor never
 	// heard from is a different thing and keeps the nominal cost, so a new
 	// adjacency forms in one exchange rather than two.
-	rxcost := s.cost.rxCost(&n.multicastHistory)
+	// the extra goes in the rxcost too, so the neighbor's link cost toward this node carries it, scaled by the neighbor's own reception
+	rxcost := addExtra(s.cost.rxCost(&n.multicastHistory), n.extra)
 	if n.heard && !n.isAlive(now) {
 		rxcost = MetricInfinity
 	}

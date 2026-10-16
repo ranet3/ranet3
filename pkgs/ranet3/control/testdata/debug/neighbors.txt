@@ -1,0 +1,3 @@
+Peer                 State  Cost  Extra  Rx cost  RTT     Routes  Expires  Dropped  Failed
+example/gateway:0@0  up     1140  1024   1120     27.2ms  3       14s      0        0
+ysun/lagern:0@0      up     116   0      1120     -       1       13s      0        0
