@@ -248,35 +248,37 @@ func TestSteeredPacketIsRoutedByItsFirstSegment(t *testing.T) {
 	mesh := &Mesh{Routes: NewRouteTable()}
 	mesh.SetSteering(table)
 
-	buf := make([]byte, tunOffset+2048)
 	inner := plainV6(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), "payload")
-	copy(buf[tunOffset:], inner)
-
-	size, action := mesh.steer(buf, len(inner), segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"))
-	if action != steerSent {
+	policy := mesh.steerPolicy(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"))
+	if policy == nil {
+		t.Fatal("a packet the policy names was not claimed")
+	}
+	steered, ok := mesh.steer(nil, inner, policy)
+	if !ok {
 		t.Fatal("a packet the policy names was not steered")
 	}
-	if size != len(inner)+srv6.Overhead(1) {
-		t.Fatalf("the steered packet is %d bytes, want %d", size, len(inner)+srv6.Overhead(1))
+	if len(steered) != len(inner)+srv6.Overhead(1) {
+		t.Fatalf("the steered packet is %d bytes, want %d", len(steered), len(inner)+srv6.Overhead(1))
 	}
-	if got := netip.AddrFrom16([16]byte(buf[tunOffset+24 : tunOffset+40])); got != exit {
+	if got := netip.AddrFrom16([16]byte(steered[24:40])); got != exit {
 		t.Errorf("the steered packet is addressed to %s, want the first segment %s", got, exit)
 	}
 	if counters := mesh.SegmentCounters(); counters.Steered != 1 || counters.Unsteered != 0 {
 		t.Errorf("steering counted %+v", counters)
 	}
 
-	// A packet from another address is left exactly as it was.
-	other := len(inner)
-	if size, action := mesh.steer(buf, other, segAddr("3fff:a::18"), segAddr("2001:4860:4860::8888")); action != steerPass || size != other {
-		t.Errorf("a packet no policy names was steered, size %d", size)
+	// A packet from another address is claimed by no policy.
+	if policy := mesh.steerPolicy(segAddr("3fff:a::18"), segAddr("2001:4860:4860::8888")); policy != nil {
+		t.Errorf("a packet no policy names was claimed by %v", policy)
 	}
 }
 
-// A packet a policy claims and cannot encapsulate goes out as it was rather
-// than being dropped, which is the more conservative of the two failures, and
-// the counter says it happened.
-func TestPacketThatCannotBeSteeredGoesOutUnchanged(t *testing.T) {
+// A packet a policy claims and cannot encapsulate is dropped rather than sent
+// as it was, and the counter says it happened: the policy selects an exit, so
+// the route this packet would otherwise take puts it out of a different node
+// under a source that node does not announce. A packet whose encapsulation
+// would carry more than an IPv6 payload length counts is one srv6 refuses.
+func TestPacketThatCannotBeSteeredIsDropped(t *testing.T) {
 	table, err := srv6.NewSteerTable([]srv6.Steer{{
 		From: schema.PrefixFrom(segPrefix("3fff:a::17/128")),
 		Via:  []schema.Addr{schema.MustAddr("3fff:1:69c:98d6::1")},
@@ -287,18 +289,15 @@ func TestPacketThatCannotBeSteeredGoesOutUnchanged(t *testing.T) {
 	mesh := &Mesh{Routes: NewRouteTable()}
 	mesh.SetSteering(table)
 
-	inner := plainV6(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), "payload")
-	// A buffer with no room for the header at all.
-	buf := make([]byte, tunOffset+len(inner))
-	copy(buf[tunOffset:], inner)
-	size, action := mesh.steer(buf, len(inner), segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"))
-	// Dropped rather than sent as it was: the policy selects an exit, so the
-	// route this packet would otherwise take puts it out of a different node
-	// under a source that node does not announce.
-	if action != steerDrop || size != len(inner) {
-		t.Fatalf("a packet that could not be encapsulated reported action=%d size=%d", action, size)
+	// RFC 8200 section 3, the payload length is 16 bits and counts the 8 + 16 bytes of the routing header too
+	inner := plainV6(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), string(make([]byte, 0xffff-8-16-40+1)))
+	original := bytes.Clone(inner)
+	side := make([]byte, 3, 64)
+	steered, ok := mesh.steer(side, inner, mesh.steerPolicy(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888")))
+	if ok || len(steered) != len(side) || cap(steered) != cap(side) {
+		t.Fatalf("a packet that could not be encapsulated reported %v with %d bytes in its side buffer", ok, len(steered))
 	}
-	if !bytes.Equal(buf[tunOffset:], inner) {
+	if !bytes.Equal(inner, original) {
 		t.Error("a packet that could not be steered was changed anyway")
 	}
 	if counters := mesh.SegmentCounters(); counters.Unsteered != 1 || counters.Steered != 0 {

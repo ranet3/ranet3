@@ -143,25 +143,17 @@ func TestStoppedSteeringPassesTheClaimedPacket(t *testing.T) {
 	m := &Mesh{Routes: NewRouteTable()}
 	m.SetSteering(table)
 	source, destination := segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888")
-	// offer hands steer a buffer of its own each time, since it encapsulates
-	// in place and a second call would otherwise read the first one's work.
-	offer := func() (int, steerAction) {
-		packet := plainV6(source, destination, "payload")
-		buf := make([]byte, tunOffset+outboundPacketBufferSize)
-		copy(buf[tunOffset:], packet)
-		return m.steer(buf, len(packet), source, destination)
-	}
 
-	if _, action := offer(); action != steerSent {
-		t.Fatalf("the fixture policy did not claim the packet, so this proves nothing: %v", action)
+	policy := m.steerPolicy(source, destination)
+	if policy == nil {
+		t.Fatal("the fixture policy did not claim the packet, so this proves nothing")
+	}
+	if _, ok := m.steer(nil, plainV6(source, destination, "payload"), policy); !ok {
+		t.Fatal("the fixture policy could not encapsulate the packet, so this proves nothing")
 	}
 	m.SetSteeringEnabled(false)
-	size, action := offer()
-	if action != steerPass {
-		t.Errorf("a stopped steering acted on the packet: %v", action)
-	}
-	if want := len(plainV6(source, destination, "payload")); size != want {
-		t.Errorf("a passed packet is %d bytes, want the %d it arrived as", size, want)
+	if policy := m.steerPolicy(source, destination); policy != nil {
+		t.Errorf("a stopped steering claimed the packet for %v", policy)
 	}
 	if got := m.SegmentCounters().Steered; got != 1 {
 		t.Errorf("%d encapsulations counted, want only the one before the stop", got)
@@ -170,8 +162,8 @@ func TestStoppedSteeringPassesTheClaimedPacket(t *testing.T) {
 		t.Error("stopping unloaded the table, so nothing can report which policies were stopped")
 	}
 	m.SetSteeringEnabled(true)
-	if _, action := offer(); action != steerSent {
-		t.Errorf("steering started again did not act on the packet: %v", action)
+	if m.steerPolicy(source, destination) == nil {
+		t.Error("steering started again did not claim the packet")
 	}
 }
 
@@ -186,4 +178,49 @@ func sealingPeer(t *testing.T, id string, seen chan []byte) *Peer {
 	}, func([][]byte) error { return nil }, nil)
 	t.Cleanup(peer.Close)
 	return peer
+}
+
+// Each packet of a batch is steered into a side buffer the batch keeps from
+// read to read, so a read that steers its packets allocates no more than
+// encapsulating them does.
+func TestSteeredReadAllocatesNoMoreThanItsEncapsulation(t *testing.T) {
+	steering := steerBothFrom(t, 2)
+	packets := [][]byte{
+		udpPacket(tooBigSource[4], tooBigDestination[4], 1400, false),
+		udpPacket(tooBigSource[6], tooBigDestination[6], 1400, false),
+	}
+	policies := []*srv6.Policy{
+		steering.Lookup(tooBigSource[4], tooBigDestination[4]),
+		steering.Lookup(tooBigSource[6], tooBigDestination[6]),
+	}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), outboundBufferSize: tunOffset + 1400}
+	m.startSegmentReports()
+	m.SetSteering(steering)
+	peer := (&recordingPeer{}).peer(t, "peer")
+	peer.SetMTU(0xffff)
+	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
+	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	b := m.newOutboundBatch(len(packets))
+	for i, packet := range packets {
+		b.sizes[i] = copy(b.bufs[i][tunOffset:], packet)
+	}
+	read := func() {
+		b.n = len(packets)
+		m.classify(b)
+		b.reset()
+	}
+	read()
+	if got := m.SegmentCounters().Steered; got != uint64(len(packets)) {
+		t.Fatalf("%d of the read's %d packets were steered, so this proves nothing", got, len(packets))
+	}
+
+	outs := make([][]byte, len(packets))
+	encapsulate := func() {
+		for i, packet := range packets {
+			outs[i], _ = srv6.AppendEncapsulated(outs[i][:0], packet, policies[i].Source, policies[i].Path)
+		}
+	}
+	if got, want := testing.AllocsPerRun(100, read), testing.AllocsPerRun(100, encapsulate); got > want {
+		t.Errorf("a read steering %d packets allocated %.0f times, want at most the %.0f of encapsulating them", len(packets), got, want)
+	}
 }

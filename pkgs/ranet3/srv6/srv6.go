@@ -19,10 +19,11 @@
 //
 // Three entry points, one per direction a packet takes.
 //
-//   - Sending. [Encapsulate] puts an outer IPv6 header and a routing header in
-//     front of an inner packet, and [EncapsulateInPlace] does it in a buffer
-//     the caller already owns. [Overhead] sizes the result beforehand and
-//     [CheckPath] refuses a path before anything is built from it.
+//   - Sending. [AppendEncapsulated] appends an inner packet behind an outer
+//     IPv6 header and a routing header to a buffer the caller owns, and
+//     [Encapsulate] returns the same bytes in a buffer of their own.
+//     [Overhead] sizes the result beforehand and [CheckPath] refuses a path
+//     before anything is built from it.
 //   - Receiving, for a segment this node answers for. [NewLocalTable] takes
 //     the [Segment] list and [LocalTable.Handle] returns a [Result] saying
 //     whether to pass the packet on untouched, forward it to the [Result.Next]
@@ -189,14 +190,29 @@ func (h Header) Active() (netip.Addr, bool) {
 // decrement, or already forwarded into the tun by the kernel, where it
 // already was. Decrementing again would charge it twice for one hop.
 func Encapsulate(inner []byte, source netip.Addr, path []netip.Addr) ([]byte, error) {
-	overhead, err := checkEncapsulation(inner, source, path)
-	if err != nil {
-		return nil, err
+	return AppendEncapsulated(nil, inner, source, path)
+}
+
+// AppendEncapsulated appends to dst the packet Encapsulate returns, copying inner once
+// a refusal returns dst as it was
+func AppendEncapsulated(dst, inner []byte, source netip.Addr, path []netip.Addr) ([]byte, error) {
+	if err := CheckPath(source, path); err != nil {
+		return dst, err
 	}
-	out := make([]byte, overhead+len(inner))
-	copy(out[overhead:], inner)
-	writeOuter(out[:overhead], inner, source, path)
-	return out, nil
+	if _, err := innerNextHeader(inner); err != nil {
+		return dst, err
+	}
+	// The outer payload length is 16 bits and counts the routing header as
+	// well, so a packet that would overflow it is refused rather than sent
+	// with a length that has wrapped.
+	if payload := srhFixedLen + addrLen*len(path) + len(inner); payload > 0xffff {
+		return dst, fmt.Errorf("srv6: %d bytes behind %d segments is more than an IPv6 payload length can carry", len(inner), len(path))
+	}
+	overhead, start := Overhead(len(path)), len(dst)
+	dst = slices.Grow(dst, overhead+len(inner))[:start+overhead+len(inner)]
+	copy(dst[start+overhead:], inner)
+	writeOuter(dst[start:start+overhead], dst[start+overhead:], source, path)
+	return dst, nil
 }
 
 // Overhead is the bytes an encapsulation puts in front of a packet for a path
@@ -204,33 +220,6 @@ func Encapsulate(inner []byte, source netip.Addr, path []netip.Addr) ([]byte, er
 // being handed packets that still fit once the header is there.
 func Overhead(segments int) int {
 	return ipv6HeaderLen + srhFixedLen + addrLen*segments
-}
-
-// EncapsulateInPlace is Encapsulate for a dataplane that already owns the
-// buffer. The packet at buf[offset:offset+size] is moved along to make room
-// and the outer header is written in front of it, so an encapsulation costs a
-// copy of the packet rather than an allocation per packet.
-//
-// It returns the new size, with the encapsulated packet at buf[offset:] as
-// before. A buffer too short to hold the result is refused rather than
-// truncated. The tun's MTU keeps that from happening, so a packet reaching
-// here anyway belongs to a deployment that has the MTU wrong.
-func EncapsulateInPlace(buf []byte, offset, size int, source netip.Addr, path []netip.Addr) (int, error) {
-	if offset < 0 || size < 0 || offset+size > len(buf) {
-		return 0, fmt.Errorf("srv6: a packet at %d+%d is not inside a %d byte buffer", offset, size, len(buf))
-	}
-	inner := buf[offset : offset+size]
-	overhead, err := checkEncapsulation(inner, source, path)
-	if err != nil {
-		return 0, err
-	}
-	if offset+overhead+size > len(buf) {
-		return 0, fmt.Errorf("srv6: encapsulating %d bytes needs %d more and the buffer has %d",
-			size, overhead, len(buf)-offset-size)
-	}
-	copy(buf[offset+overhead:], inner)
-	writeOuter(buf[offset:offset+overhead], buf[offset+overhead:offset+overhead+size], source, path)
-	return overhead + size, nil
 }
 
 // CheckPath refuses a segment list and a tunnel source this node will not
@@ -254,26 +243,6 @@ func CheckPath(source netip.Addr, path []netip.Addr) error {
 	return nil
 }
 
-// checkEncapsulation refuses what this node will not encapsulate and returns
-// the bytes the header will take. Both entry points run it, so the two cannot
-// come to disagree about what is acceptable.
-func checkEncapsulation(inner []byte, source netip.Addr, path []netip.Addr) (int, error) {
-	if err := CheckPath(source, path); err != nil {
-		return 0, err
-	}
-	if _, err := innerNextHeader(inner); err != nil {
-		return 0, err
-	}
-	// The outer payload length is 16 bits and counts the routing header as
-	// well, so a packet that would overflow it is refused rather than sent
-	// with a length that has wrapped.
-	payload := srhFixedLen + addrLen*len(path) + len(inner)
-	if payload > 0xffff {
-		return 0, fmt.Errorf("srv6: %d bytes behind %d segments is more than an IPv6 payload length can carry", len(inner), len(path))
-	}
-	return Overhead(len(path)), nil
-}
-
 // Usable reports whether an address can be a segment or a tunnel source. A
 // zone is local to one host and never reaches the wire, a v4-mapped address
 // cannot appear in an IPv6 destination, and neither the unspecified address
@@ -287,9 +256,9 @@ func Usable(address netip.Addr) bool {
 // has already checked everything, so it cannot fail and never reports.
 //
 // Every byte of the header is assigned rather than left as it was found:
-// EncapsulateInPlace hands this the bytes the packet it is encapsulating used
-// to occupy, so anything skipped here would go on the wire as a fragment of
-// the inner header.
+// AppendEncapsulated hands this the bytes an earlier packet left in a buffer
+// its caller keeps, so anything skipped here would go on the wire as a
+// fragment of that packet.
 func writeOuter(out, inner []byte, source netip.Addr, path []netip.Addr) {
 	innerNext, _ := innerNextHeader(inner)
 	// __seg6_do_srh_encap copies the traffic class, the flow label and the hop

@@ -104,7 +104,7 @@ func TestMeshCloseDrainsQueuedTickets(t *testing.T) {
 	go m.outboundWorker()
 	m.outboundReaderWG.Go(func() {
 		m.dispatchOutbound(&outboundBatch{
-			n: 1, bufs: [][]byte{framed(1)}, sizes: []int{1}, headers: []byte{0}, peers: []*Peer{peer},
+			n: 1, packets: [][]byte{{1}}, headers: []byte{0}, peers: []*Peer{peer},
 			peerOrder: []*Peer{peer}, shares: map[*Peer]outboundShare{peer: {count: 1, bytes: 1}}, batches: make(map[*Peer]*peerBatch),
 		})
 	})
@@ -329,12 +329,11 @@ func TestCongestedPeerDoesNotStallOthers(t *testing.T) {
 			b := &outboundBatch{shares: map[*Peer]outboundShare{stuck: {count: perRead, bytes: perRead * size}, healthy: {count: perRead, bytes: perRead * size}},
 				batches: make(map[*Peer]*peerBatch), peerOrder: []*Peer{stuck, healthy}}
 			for i := range 2 * perRead {
-				b.bufs = append(b.bufs, framed(byte(i)))
-				b.sizes = append(b.sizes, 1)
+				b.packets = append(b.packets, []byte{byte(i)})
 				b.headers = append(b.headers, 0)
 				b.peers = append(b.peers, []*Peer{stuck, healthy}[i%2])
 			}
-			b.n = len(b.bufs)
+			b.n = len(b.packets)
 			m.dispatchOutbound(b)
 		}
 	}()
