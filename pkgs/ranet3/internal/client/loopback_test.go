@@ -384,10 +384,12 @@ func TestReloadAnnouncesNewPrefixToPeer(t *testing.T) {
 	})
 }
 
+// refusedRounds is how many of alpha's sessions a stopped responder ends before it starts again
+const refusedRounds = 3
+
 // A stopped responder refuses the handshakes it answers, and starting it again
-// lets the next one through. No other test executes acceptPeers, so a gate
-// checked anywhere but there passes every unit test and leaves a node still
-// answering every dial an operator told it to stop answering.
+// lets the next one through. Every loopback test runs acceptPeers, and this
+// test is the only one that reaches its check for a stopped responder.
 func TestStoppedResponderRefusesLiveHandshakes(t *testing.T) {
 	alpha, bravo := newLoopbackMesh(t)
 	// Bravo answers and never dials, so the only session that can exist is the
@@ -396,23 +398,22 @@ func TestStoppedResponderRefusesLiveHandshakes(t *testing.T) {
 	quiet := *bravo.cfg
 	quiet.Dial.To = nil
 	bravo.client.cfg.Store(&quiet)
-	// Short enough that alpha comes round several times inside the budget
-	// below, since each refused handshake sends it back to the delay.
+	// each refused handshake sends alpha back to this delay
 	alpha.client.dialRetry = 200 * time.Millisecond
 	if _, err := bravo.client.SetSubsystem(context.Background(), control.SubsystemResponder, false); err != nil {
 		t.Fatal(err)
 	}
 	run(t, alpha, bravo)
 
-	// Alpha keeps dialing and bravo keeps refusing, so neither end settles.
-	// Time rather than an event, because what is asserted is that nothing
-	// happens. The delay above bounds how many attempts that covers.
-	time.Sleep(3 * time.Second)
+	// bravo finishes each handshake and then deletes it, so alpha holds each session until the Delete arrives
+	waitFor(t, convergeBudget, fmt.Sprintf("alpha to lose %d sessions to a stopped responder", refusedRounds), func() bool {
+		return len(recorded(alpha.events, "ike.session.ended")) >= refusedRounds
+	})
+	if got := recorded(bravo.events, "ike.session.established"); len(got) != 0 {
+		t.Errorf("a stopped responder recorded %d sessions", len(got))
+	}
 	if held := len(bravo.client.sessions.paths()); held != 0 {
 		t.Errorf("a stopped responder is holding %d sessions", held)
-	}
-	if held := len(alpha.client.sessions.paths()); held != 0 {
-		t.Errorf("the dialer settled on %d sessions against a stopped responder", held)
 	}
 
 	if _, err := bravo.client.SetSubsystem(context.Background(), control.SubsystemResponder, true); err != nil {
