@@ -4,7 +4,6 @@
 package netstack
 
 import (
-	"fmt"
 	"runtime"
 	"sync"
 	"testing"
@@ -102,25 +101,5 @@ func BenchmarkPeerSenderRoundTrip(b *testing.B) {
 			b.Fatal(err)
 		}
 		<-carried
-	}
-}
-
-// The copy-and-release step every inbound packet takes. A sync.Pool holds an
-// any, which a slice header does not fit in, so pooling slices allocates once
-// per packet released, but pooling the array pointer does not.
-func BenchmarkInboundCopyAndRelease(b *testing.B) {
-	for _, size := range []int{64, 1400} {
-		b.Run(fmt.Sprint(size), func(b *testing.B) {
-			raw := make([][]byte, 128)
-			backing := make([]byte, len(raw)*size)
-			for i := range raw {
-				raw[i] = backing[i*size : (i+1)*size]
-			}
-			b.ReportAllocs()
-			b.ResetTimer()
-			for b.Loop() {
-				releaseInboundPackets(copyInboundPackets(raw))
-			}
-		})
 	}
 }

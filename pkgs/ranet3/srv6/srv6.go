@@ -449,7 +449,9 @@ func End(raw []byte) (netip.Addr, error) {
 // decap_and_validate accepts it the same way.
 //
 // It returns a slice of raw rather than a copy, because the caller is the
-// dataplane and the buffer is already its own. The two-table half of the RFC's
+// dataplane and the buffer is already its own. The slice is raw's tail, behind
+// at least the 40 bytes of the fixed header, which a caller holding raw may
+// write the packet's next framing into. The two-table half of the RFC's
 // End.DT46, choosing a lookup table per family, is the caller's: this package
 // takes bytes and returns bytes.
 func Decap(raw []byte) (inner []byte, family uint8, err error) {

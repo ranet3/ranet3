@@ -122,35 +122,38 @@ func (m *Mesh) SegmentCounters() SegmentCounters {
 	}
 }
 
-// applySegments takes the packets addressed to this node's own segments out of
-// an inbound batch, acts on each, and returns what is left to be written to
-// the tun.
+// applySegments takes the frames whose packets are addressed to this node's
+// own segments out of an inbound batch, acts on each, and returns the frames
+// left to be written to the tun.
+// a packet an exit takes out of its outer header leaves in the tail of its own frame, the end of the header it lost being its headroom
 // mtu is the largest packet the session the batch came through carries
 // a SYN an End.DT46 delivers has its MSS clamped to it here, since the session's clamp saw only the outer header
-func (m *Mesh) applySegments(raw [][]byte, mtu int) [][]byte {
+func (m *Mesh) applySegments(frames [][]byte, mtu int) [][]byte {
 	table := m.segmentTable.Load()
 	if table == nil {
-		return raw
+		return frames
 	}
 	var deliver [][]byte
 	take := func(i int) {
 		if deliver == nil {
-			deliver = append(make([][]byte, 0, len(raw)), raw[:i]...)
+			deliver = append(make([][]byte, 0, len(frames)), frames[:i]...)
 		}
 	}
 	var forward []forwardedSegment
-	for i, packet := range raw {
+	for i, frame := range frames {
+		packet := frame[TUNHeadroom:]
 		result := actLocally(table, packet)
 		switch result.Action {
 		case srv6.ActionPass:
 			if deliver != nil {
-				deliver = append(deliver, packet)
+				deliver = append(deliver, frame)
 			}
 		case srv6.ActionDeliver:
 			take(i)
 			m.segmentsDelivered.Add(1)
 			m.ClampMSS(result.Inner, mtu)
-			deliver = append(deliver, result.Inner)
+			// Decap hands back the tail of the packet it was given, behind at least the fixed header
+			deliver = append(deliver, frame[len(frame)-TUNHeadroom-len(result.Inner):])
 		case srv6.ActionForward:
 			take(i)
 			forward = append(forward, forwardedSegment{raw: packet, next: result.Next})
@@ -162,7 +165,7 @@ func (m *Mesh) applySegments(raw [][]byte, mtu int) [][]byte {
 	}
 	m.forwardSegments(forward)
 	if deliver == nil {
-		return raw
+		return frames
 	}
 	return deliver
 }

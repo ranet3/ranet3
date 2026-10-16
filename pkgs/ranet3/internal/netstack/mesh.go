@@ -34,17 +34,6 @@ import (
 	"ranet3.com/pkgs/wireguard/tun"
 )
 
-var (
-	// Pooled as a pointer to the array rather than as a slice. A sync.Pool
-	// takes an any, and a slice header does not fit in one, so putting a slice
-	// back boxes it: one heap allocation for every inbound packet released, on
-	// the path every inbound packet takes. The array pointer fits, so the same
-	// release allocates nothing. Measured over 128 packets per release by
-	// BenchmarkInboundCopyAndRelease: 4226 ns and 129 allocations against 3472
-	// ns and 1 at 64 bytes, 8358 against 6561 at 1400.
-	inboundPacketPool = sync.Pool{New: func() any { return new([inboundPacketBufferSize]byte) }}
-)
-
 type Mesh struct {
 	Routes *RouteTable
 	// Name is the TUN device's real interface name (e.g. "utun6" for "utun"), as
@@ -168,7 +157,7 @@ func (l *fragmentList) appendTo(batches map[*Peer]*peerBatch) {
 }
 
 type inboundWriteBatch struct {
-	packets [][]byte
+	frames [][]byte
 }
 
 // NewRoutesOnly is a mesh with a forwarding table and no device, for a test
@@ -418,7 +407,7 @@ func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, ne
 		return b.cut.add(peer, nextHeader, raw[:overhead], raw[overhead:], mtu)
 	}
 	if answer != nil {
-		m.DeliverInboundBatch([][]byte{answer}, 0)
+		m.DeliverInbound(answer, 0)
 		m.tooBigAnswered.Add(1)
 	}
 	return 0, 0
@@ -533,55 +522,55 @@ func addrsOf(raw []byte) (src, dst netip.Addr, nextHeader byte, ok bool) {
 
 // DeliverInbound injects an already-decapsulated tunnel-mode IP packet into
 // the TUN device, as if it had arrived on the wire.
+// it copies raw into a frame of its own, raw staying the caller's
 // mtu is the largest packet the session it came through carries, as DeliverInboundBatch takes it
 func (m *Mesh) DeliverInbound(raw []byte, mtu int) {
-	m.DeliverInboundBatch([][]byte{raw}, mtu)
+	frame := make([]byte, TUNHeadroom+len(raw))
+	copy(frame[TUNHeadroom:], raw)
+	m.DeliverInboundBatch([][]byte{frame}, mtu)
 }
 
 // DeliverInboundBatch injects a group of already-decapsulated tunnel-mode IP
 // packets. On a multiqueue TUN, packets are assigned by their inner flow to a
 // persistent writer lane. That preserves each flow's packet order and lets the
-// kernel process unrelated streams in parallel. Buffers are copied to leave
-// the tunOffset bytes of headroom a write to the TUN needs.
+// kernel process unrelated streams in parallel.
+// each frame is TUNHeadroom bytes a write to the tun may overwrite, then the packet to the frame's end
+// the frames are the mesh's from the call until a lane has written them, and the tun is handed them as they are
 // mtu is the largest packet the session they came through carries, zero for packets of no session
 // a SYN that an End.DT46 of this node takes out of its outer header has its MSS clamped to it
-func (m *Mesh) DeliverInboundBatch(raw [][]byte, mtu int) {
+func (m *Mesh) DeliverInboundBatch(frames [][]byte, mtu int) {
 	// A mesh with no device only exists in a test, where nothing should reach
 	// here: babel's own traffic is intercepted before delivery.
-	if len(raw) == 0 || m.dev == nil {
+	if len(frames) == 0 || m.dev == nil {
 		return
 	}
 	// A packet addressed to one of this node's own segments is acted on here
 	// rather than written to the tun, where it would arrive as an
 	// undeliverable packet addressed to an address of ours.
-	raw = m.applySegments(raw, mtu)
-	if len(raw) == 0 {
+	frames = m.applySegments(frames, mtu)
+	if len(frames) == 0 {
 		return
 	}
 	if len(m.queues) == 1 {
-		for len(raw) != 0 {
-			n := min(len(raw), inboundWriteBatchSize)
-			m.writeInbound(0, copyInboundPackets(raw[:n]))
-			raw = raw[n:]
+		for len(frames) != 0 {
+			n := min(len(frames), inboundWriteBatchSize)
+			m.writeInbound(0, frames[:n])
+			frames = frames[n:]
 		}
 		return
 	}
 
 	groups := make([][][]byte, len(m.queues))
-	for _, packet := range raw {
-		lane := int(innerFlowHash(packet) % uint64(len(m.queues)))
-		groups[lane] = append(groups[lane], packet)
+	for _, frame := range frames {
+		lane := int(innerFlowHash(frame[TUNHeadroom:]) % uint64(len(m.queues)))
+		groups[lane] = append(groups[lane], frame)
 	}
-	for lane, packets := range groups {
-		if len(packets) == 0 {
+	for lane, group := range groups {
+		if len(group) == 0 {
 			continue
 		}
-		// The authenticated plaintext remains owned by this queue entry.
-		// Deferring the required headroom copy to the writer keeps it off the
-		// ordered ESP commit path and lets the writer merge adjacent entries
-		// into a larger GRO batch.
 		// an entry left in a lane after Close holds views of the session's own storage and nothing to give back
-		batch := inboundWriteBatch{packets: packets}
+		batch := inboundWriteBatch{frames: group}
 		select {
 		case m.inboundWriters[lane] <- batch:
 		case <-m.closed:
@@ -610,7 +599,7 @@ func (m *Mesh) startInboundWriters() {
 				pending = collectReadyInbound(first, queue, pending)
 				for offset := 0; offset < len(pending); offset += inboundWriteBatchSize {
 					end := min(offset+inboundWriteBatchSize, len(pending))
-					m.writeInbound(lane, copyInboundPackets(pending[offset:end]))
+					m.writeInbound(lane, pending[offset:end])
 				}
 				clear(pending)
 				pending = pending[:0]
@@ -623,11 +612,11 @@ func (m *Mesh) startInboundWriters() {
 // the idle-path latency unchanged while giving a busy writer a full batch for
 // the tun write's GRO pass, reducing the number of TUN write syscalls.
 func collectReadyInbound(first inboundWriteBatch, queue <-chan inboundWriteBatch, pending [][]byte) [][]byte {
-	pending = append(pending, first.packets...)
+	pending = append(pending, first.frames...)
 	for len(pending) < inboundWriteBatchSize {
 		select {
 		case batch := <-queue:
-			pending = append(pending, batch.packets...)
+			pending = append(pending, batch.frames...)
 		default:
 			return pending
 		}
@@ -635,42 +624,14 @@ func collectReadyInbound(first inboundWriteBatch, queue <-chan inboundWriteBatch
 	return pending
 }
 
-func copyInboundPackets(raw [][]byte) [][]byte {
-	bufs := make([][]byte, len(raw))
-	for i := range raw {
-		buf := inboundPacketPool.Get().(*[inboundPacketBufferSize]byte)[:]
-		if cap(buf) < tunOffset+len(raw[i]) {
-			buf = make([]byte, tunOffset+len(raw[i]))
-		} else {
-			buf = buf[:tunOffset+len(raw[i])]
-		}
-		bufs[i] = buf
-		copy(bufs[i][tunOffset:], raw[i])
-	}
-	return bufs
-}
-
-func releaseInboundPackets(bufs [][]byte) {
-	for _, buf := range bufs {
-		if cap(buf) == inboundPacketBufferSize {
-			// The capacity check keeps out a buffer this package did not
-			// hand out, and one grown past the pool's size. A buffer is
-			// re-sliced on every use for the header offset, and recovering
-			// the array from the full-capacity slice is exact.
-			inboundPacketPool.Put((*[inboundPacketBufferSize]byte)(buf[:inboundPacketBufferSize]))
-		}
-	}
-}
-
-func (m *Mesh) writeInbound(lane int, bufs [][]byte) {
-	if _, err := m.write(lane, bufs, tunOffset); err != nil {
+func (m *Mesh) writeInbound(lane int, frames [][]byte) {
+	if _, err := m.write(lane, frames, TUNHeadroom); err != nil {
 		select {
 		case <-m.closed:
 		default:
 			log.Printf("netstack: write to tun device queue %d: %v", lane, err)
 		}
 	}
-	releaseInboundPackets(bufs)
 }
 
 // innerFlowHash assigns both directions of an inner TCP/UDP flow to the same

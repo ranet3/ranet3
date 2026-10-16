@@ -109,7 +109,7 @@ testers.runNixOSTest {
     print(out)
     assert "SKIP" not in out, f"the tun round trips skipped themselves under root:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 28, f"only {ran} tun round trips ran:\n{out}"
+    assert ran >= 34, f"only {ran} tun round trips ran:\n{out}"
 
     # the client's tun round trips
     # among them a TCP stream through a black hole a session's search finds

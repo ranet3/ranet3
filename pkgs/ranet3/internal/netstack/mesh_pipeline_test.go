@@ -16,9 +16,12 @@ import (
 	"ranet3.com/pkgs/wireguard/tun"
 )
 
+// recordedWrite is one write into a recordingDevice, the packets it carried copied out
+// storage is where each buffer it was handed starts, the frame's own first byte
 type recordedWrite struct {
 	packets [][]byte
 	offset  int
+	storage []*byte
 }
 
 type recordingDevice struct {
@@ -34,9 +37,11 @@ func (d *recordingDevice) Write(bufs [][]byte, offset int) (int, error) {
 	w := recordedWrite{
 		packets: make([][]byte, len(bufs)),
 		offset:  offset,
+		storage: make([]*byte, len(bufs)),
 	}
 	for i := range bufs {
 		w.packets[i] = append([]byte(nil), bufs[i][offset:]...)
+		w.storage[i] = &bufs[i][0]
 	}
 	d.writes <- w
 	return len(bufs), nil
@@ -81,6 +86,35 @@ func layOut(slab []byte, reads []tun.ReadPacket, packets [][]byte) int {
 // fill makes packets the read b holds
 func fill(b *outboundBatch, packets ...[]byte) {
 	b.n = layOut(b.slab, b.reads, packets)
+}
+
+// espTrailer stands for the ESP trailer and ICV a datagram holds behind its packet, RFC 4303 section 2
+const espTrailer = 2 + 16
+
+// framed is packets as a session hands them to the mesh, one buffer holding them as their datagrams lie
+// each packet is TUNHeadroom bytes into its datagram, an ESP trailer and ICV between it and the next datagram
+// and its frame runs from the start of its datagram to its own end, with no room past it
+func framed(packets ...[]byte) [][]byte {
+	var datagrams []byte
+	for _, packet := range packets {
+		datagrams = append(append(append(datagrams, make([]byte, TUNHeadroom)...), packet...), bytes.Repeat([]byte{0xee}, espTrailer)...)
+	}
+	frames := make([][]byte, len(packets))
+	for i, start := 0, 0; i < len(packets); i++ {
+		end := start + TUNHeadroom + len(packets[i])
+		frames[i] = datagrams[start:end:end]
+		start = end + espTrailer
+	}
+	return frames
+}
+
+// unframed is the packet behind the headroom of each frame
+func unframed(frames [][]byte) [][]byte {
+	packets := make([][]byte, len(frames))
+	for i, frame := range frames {
+		packets[i] = frame[TUNHeadroom:]
+	}
+	return packets
 }
 
 func TestOutboundWorkersEncryptOneQueueInParallelAndTransmitInOrder(t *testing.T) {
@@ -284,9 +318,10 @@ func TestSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
 	}
 }
 
-// a write into the tun leaves tunOffset bytes in front of every packet it hands the device, on one lane as on several
-// darwin and the BSDs write their frame header there, and linux refuses an offset under its virtio-net header
-func TestInboundWritesLeaveTheHeadroomBeforeEveryPacket(t *testing.T) {
+// a write into the tun hands the device each frame it was given, its own storage with the packet TUNHeadroom bytes in, on one lane as on several
+// the frames lie in one buffer as a session's datagrams do
+// darwin and the BSDs write their frame header into the headroom, and linux refuses an offset under its virtio-net header
+func TestInboundWritesHandTheDeviceTheFramesThemselves(t *testing.T) {
 	for _, lanes := range []int{1, 2} {
 		t.Run(fmt.Sprintf("%d lanes", lanes), func(t *testing.T) {
 			dev := &recordingDevice{writes: make(chan recordedWrite, 1)}
@@ -300,11 +335,12 @@ func TestInboundWritesLeaveTheHeadroomBeforeEveryPacket(t *testing.T) {
 			t.Cleanup(m.Close)
 
 			want := [][]byte{ipv6TCPPacket(40000, 5201, 1), ipv6TCPPacket(40000, 5201, 2)}
-			m.DeliverInboundBatch(want, DefaultMTU)
+			frames := framed(want...)
+			m.DeliverInboundBatch(frames, DefaultMTU)
 			select {
 			case got := <-dev.writes:
-				if got.offset != tunOffset {
-					t.Fatalf("the write handed the device its packets %d bytes into their buffers, want %d", got.offset, tunOffset)
+				if got.offset != TUNHeadroom {
+					t.Fatalf("the write handed the device its packets %d bytes into their buffers, want %d", got.offset, TUNHeadroom)
 				}
 				if len(got.packets) != len(want) {
 					t.Fatalf("the write carried %d packets, want %d", len(got.packets), len(want))
@@ -312,6 +348,9 @@ func TestInboundWritesLeaveTheHeadroomBeforeEveryPacket(t *testing.T) {
 				for i := range want {
 					if !bytes.Equal(got.packets[i], want[i]) {
 						t.Errorf("packet %d reached the device as %x, want %x", i, got.packets[i], want[i])
+					}
+					if got.storage[i] != &frames[i][0] {
+						t.Errorf("packet %d reached the device in a buffer other than the frame it was delivered in", i)
 					}
 				}
 			case <-time.After(deliveryTimeout):
@@ -360,7 +399,7 @@ func TestDeliverInboundBatchUsesFlowAffineQueues(t *testing.T) {
 			want[lane] = append(want[lane], packet)
 		}
 	}
-	m.DeliverInboundBatch(packets, DefaultMTU)
+	m.DeliverInboundBatch(framed(packets...), DefaultMTU)
 
 	active := 0
 	for lane, expected := range want {
@@ -397,11 +436,11 @@ func TestDeliverInboundBatchUsesFlowAffineQueues(t *testing.T) {
 
 func TestCollectReadyInboundCoalescesQueuedDeliveries(t *testing.T) {
 	queue := make(chan inboundWriteBatch, 2)
-	queue <- inboundWriteBatch{packets: [][]byte{{2}, {3}}}
-	queue <- inboundWriteBatch{packets: [][]byte{{4}}}
+	queue <- inboundWriteBatch{frames: [][]byte{{2}, {3}}}
+	queue <- inboundWriteBatch{frames: [][]byte{{4}}}
 
 	got := collectReadyInbound(
-		inboundWriteBatch{packets: [][]byte{{1}}},
+		inboundWriteBatch{frames: [][]byte{{1}}},
 		queue,
 		make([][]byte, 0, inboundWriteBatchSize),
 	)

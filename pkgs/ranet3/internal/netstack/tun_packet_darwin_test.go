@@ -193,7 +193,7 @@ func TestTUNCarriesAUTUNReadWhole(t *testing.T) {
 	}
 }
 
-// a packet delivered inbound reaches a socket behind the utun whole
+// a frame delivered inbound reaches a socket behind the utun with its packet whole
 // the utun's write puts the four-byte address family header in the headroom before the packet, not over its first bytes
 // creating a utun needs root, which a run does here only with RANET3_DARWIN_NETTEST=1
 func TestTUNWritesAnInboundFrameIntoAUTUN(t *testing.T) {
@@ -208,7 +208,7 @@ func TestTUNWritesAnInboundFrameIntoAUTUN(t *testing.T) {
 	for _, size := range []int{20 + 8 + 1, utunJumbo} {
 		packet := udpPacket(utunPeer, utunLocal, size, false)
 		binary.BigEndian.PutUint16(packet[20+2:], uint16(port))
-		m.DeliverInboundBatch([][]byte{packet}, utunJumbo)
+		m.DeliverInboundBatch(framed(packet), utunJumbo)
 		if err := socket.SetReadDeadline(time.Now().Add(deliveryTimeout)); err != nil {
 			t.Fatal(err)
 		}
