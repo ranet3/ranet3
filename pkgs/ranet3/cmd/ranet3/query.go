@@ -102,7 +102,8 @@ command to see which ones the mesh offers and which one this node takes.`,
 	list := &cobra.Command{
 		Use:   "list",
 		Short: "List exit nodes and the one in use",
-		Long: `Each row is a default route that a node advertises. Its state is
+		Long: `Each row is a default route that a node advertises, or one of the two
+/1 halves of a family that one node advertises together. Its state is
 selected for the one this node takes, withdrawn for one that its node
 stopped advertising, and advertised by this node for this node's own.`,
 		Args: noArguments,

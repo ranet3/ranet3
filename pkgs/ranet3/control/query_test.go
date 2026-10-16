@@ -68,6 +68,44 @@ func TestDefaultsAreBothFamiliesAndNothingElse(t *testing.T) {
 	}
 }
 
+// A node advertising both /1 halves of a family is an exit for that family,
+// and the pair is listed. One half alone, two halves from two nodes, or one
+// half of each family is not an exit.
+func TestDefaultsListANodeAdvertisingBothHalves(t *testing.T) {
+	route := func(destination, router string) Route {
+		return Route{Destination: netip.MustParsePrefix(destination), Via: "example/" + router + "@0", RouterID: router, Metric: 96}
+	}
+	routes := []Route{
+		route("0.0.0.0/1", "aa"), route("128.0.0.0/1", "aa"),
+		route("::/1", "bb"), route("8000::/1", "cc"),
+		route("8000::/1", "bb"),
+		route("198.51.100.0/24", "aa"),
+		{Destination: netip.MustParsePrefix("::/1"), Originated: true},
+	}
+	var got []string
+	for _, r := range Defaults(routes) {
+		got = append(got, r.Destination.String()+" "+r.RouterID)
+	}
+	want := []string{"0.0.0.0/1 aa", "128.0.0.0/1 aa", "::/1 bb", "8000::/1 bb"}
+	if strings.Join(got, ", ") != strings.Join(want, ", ") {
+		t.Errorf("the exits are %v, want %v", got, want)
+	}
+	if got := Defaults([]Route{route("0.0.0.0/1", "aa"), route("128.0.0.0/1", "dd")}); len(got) != 0 {
+		t.Errorf("halves from two nodes made an exit: %+v", got)
+	}
+	if got := Defaults([]Route{route("0.0.0.0/1", "ee"), route("8000::/1", "ee")}); len(got) != 0 {
+		t.Errorf("one half of each family made an exit: %+v", got)
+	}
+
+	var out strings.Builder
+	RenderExitNodes(&out, Defaults(routes))
+	for _, want := range []string{"0.0.0.0/1", "128.0.0.0/1", "example/aa@0", "selected"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the exit list printed %q, want it to carry %q", out.String(), want)
+		}
+	}
+}
+
 // Only a host prefix is an address this node answers at. A range it carries
 // traffic for and a default an exit announces are neither, and announcing one
 // prefix twice is one address.

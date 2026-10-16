@@ -40,20 +40,55 @@ func Covering(routes []Route, address netip.Addr) []Route {
 }
 
 // Defaults is every route carrying a default, the advertisement that makes a
-// node an exit. Both families are included and the order the daemon gave is
-// kept, so two entries for one family read next to each other.
+// node an exit, and both /1 halves of a family where one node advertises the
+// pair, which covers the family as a default does. Both families are
+// included and the order the daemon gave is kept, so two entries for one
+// family read next to each other.
 //
 // The test is the prefix length against a zero address rather than the length
 // alone: a /0 is the only prefix that covers everything, and spelling it this
 // way refuses a prefix whose length happens to be zero for another reason.
 func Defaults(routes []Route) []Route {
+	type advertiser struct {
+		routerID   string
+		originated bool
+		from       netip.Prefix
+		v4         bool
+	}
+	whose := func(route Route) advertiser {
+		return advertiser{route.RouterID, route.Originated, route.From, route.Destination.Addr().Is4()}
+	}
+	halves := map[advertiser][2]bool{}
+	for _, route := range routes {
+		if upper, ok := half(route.Destination); ok {
+			held := halves[whose(route)]
+			held[boolIndex(upper)] = true
+			halves[whose(route)] = held
+		}
+	}
 	out := []Route{}
 	for _, route := range routes {
-		if route.Destination.Bits() == 0 && route.Destination.Addr().IsUnspecified() {
+		_, isHalf := half(route.Destination)
+		if route.Destination.Bits() == 0 && route.Destination.Addr().IsUnspecified() ||
+			isHalf && halves[whose(route)] == [2]bool{true, true} {
 			out = append(out, route)
 		}
 	}
 	return out
+}
+
+func half(destination netip.Prefix) (upper, ok bool) {
+	if destination.Bits() != 1 {
+		return false, false
+	}
+	return !destination.Addr().IsUnspecified(), true
+}
+
+func boolIndex(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // MeshAddresses is the addresses this node carries on the mesh, taken from
