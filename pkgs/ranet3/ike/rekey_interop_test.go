@@ -356,6 +356,10 @@ func TestChaChaChildRekeyResponseEchoesNoKeyLength(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the rekey was refused rather than answered: %v, %v", inner, err)
 	}
+	// RFC 7296 section 3.4: "If none of the proposals in that SA payload specifies a Diffie-Hellman group, the KE payload MUST NOT be present."
+	if payloads.ke != nil {
+		t.Error("the answer to a rekey offering no Diffie-Hellman group carries a KE payload")
+	}
 	selected, err := DecodeSA(payloads.sa.Body)
 	if err != nil || len(selected) != 1 {
 		t.Fatalf("response proposal = %v, %v", selected, err)

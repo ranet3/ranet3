@@ -497,6 +497,20 @@ func ikeProposal() Proposal {
 	}
 }
 
+// leadingGroup is p with the Diffie-Hellman transform naming group moved ahead of the other groups, which keep their order
+// RFC 7296 section 3.4 on the KE payload's group: "SHOULD match the Diffie-Hellman group in the first group in the first proposal, if such exists."
+// section 1.2: "The initiator MUST again propose its full set of acceptable cryptographic suites because the rejection message was unauthenticated and otherwise an active attacker could trick the endpoints into negotiating a weaker suite than a stronger one that they both prefer."
+func leadingGroup(p Proposal, group uint16) Proposal {
+	transforms := slices.Clone(p.Transforms)
+	first := slices.IndexFunc(transforms, func(t Transform) bool { return t.Type == TransDH })
+	if named := slices.Index(transforms, Transform{Type: TransDH, ID: group}); first >= 0 && named > first {
+		copy(transforms[first+1:named+1], transforms[first:named])
+		transforms[first] = Transform{Type: TransDH, ID: group}
+	}
+	p.Transforms = transforms
+	return p
+}
+
 func espProposal(spi []byte) Proposal {
 	return Proposal{
 		Number:   1,
@@ -634,7 +648,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		hashAlgos := make([]byte, 2)
 		binary.BigEndian.PutUint16(hashAlgos, HashIdentity)
 		payloads := []RawPayload{
-			{Type: PayloadSA, Body: EncodeSA([]Proposal{ikeProposal()})},
+			{Type: PayloadSA, Body: EncodeSA([]Proposal{leadingGroup(ikeProposal(), group)})},
 			{Type: PayloadKE, Body: EncodeKE(group, dh.PublicBytes())},
 			{Type: PayloadNonce, Body: EncodeNonce(ni)},
 			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: hashAlgos})},
