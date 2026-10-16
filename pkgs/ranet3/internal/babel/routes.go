@@ -10,29 +10,32 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// Routes is the cap.route capability: what this node puts into the mesh, and
-// whether it carries anybody else's traffic. It lives here rather than beside
-// the reconciler because an announcement is a babel origination first, and the
-// addresses cap.table assigns follow from it rather than the other way round.
+// Routes is the cap.route capability: what this node puts into the mesh. It
+// lives here rather than beside the reconciler because an announcement is a
+// babel origination first, and the addresses cap.table assigns follow from it
+// rather than the other way round.
 type Routes struct {
 	// Announce is every prefix this node claims to reach, each either bare or
 	// carrying the source prefix it is reachable from. The second spelling is
 	// how an exit announces a default from its own transit prefix.
 	Announce []schema.Announce `yaml:"announce,omitempty" json:"announce,omitempty" toml:"announce,omitempty"`
-	// Transit relays the routes this node learns, so it is offering to carry
-	// the mesh. It is on unless the file says otherwise, because a converted
-	// fleet needs the relaying and turning it off silently would break the
-	// mesh it is replacing. A leaf on a laptop or a cellular uplink writes
-	// "transit = false": measured on one, the community started forwarding
-	// third-party traffic through it within minutes.
-	//
-	// A pointer because absent and false differ here: absent is the default,
-	// which is on.
-	Transit *bool `yaml:"transit,omitempty" json:"transit,omitempty" toml:"transit,omitempty"`
 }
 
-// Transits is the setting in force, on for a node that left it out.
-func (r Routes) Transits() bool { return r.Transit == nil || *r.Transit }
+// Transit is the cap.transit capability: whether this node advertises the
+// routes it learns. A node that does is offering to carry other nodes'
+// packets, decrypted from one session and sealed again onto the next, so it is
+// a grant of their plaintext rather than a routing detail.
+type Transit struct {
+	// Enable is the setting, which a written block states
+	Enable *bool `yaml:"enable,omitempty" json:"enable,omitempty" toml:"enable,omitempty"`
+}
+
+func (t Transit) Validate() error {
+	if t.Enable == nil {
+		return fmt.Errorf("babel: cap.transit states no enable, write enable = true or false")
+	}
+	return nil
+}
 
 // Originated is the announcements as the speaker takes them.
 func (r Routes) Originated() []OriginatedRoute {

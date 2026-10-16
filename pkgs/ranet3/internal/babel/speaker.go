@@ -251,10 +251,7 @@ func (h *PeerHandle) Close() {
 }
 
 // New builds the speaker from the two capabilities that configure it and the
-// runtime the caller resolved. cap.route is taken here as well as by
-// SetRoutes, because whether this node relays is read while a packet is being
-// built and is therefore fixed for the speaker's life, while the
-// announcements are not.
+// runtime the caller resolved.
 func New(cfg Config, routes Routes, rt Runtime, mesh *netstack.Mesh) (*Speaker, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -268,7 +265,7 @@ func New(cfg Config, routes Routes, rt Runtime, mesh *netstack.Mesh) (*Speaker, 
 	}
 	s := &Speaker{
 		routerID: rt.RouterID, linkLocal: rt.LinkLocalAddr, packetSize: rt.PacketSize,
-		noTransit: !routes.Transits(), events: rt.Events, probeAcked: rt.ProbeAcked,
+		noTransit: rt.NoTransit, events: rt.Events, probeAcked: rt.ProbeAcked,
 		mesh: mesh,
 
 		neighbors:      make(map[string]*neighborState),

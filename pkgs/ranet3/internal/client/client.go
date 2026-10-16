@@ -238,10 +238,8 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 			_ = hub.Close()
 		}
 	}()
-	// Two capabilities configure the speaker: cap.babel is the protocol's own
-	// timers and cost, and cap.route the prefixes this node puts into the mesh.
 	sessions := newSessionSet()
-	speaker, err := babel.New(cfg.Babel(), cfg.Routes(), babel.Runtime{Events: bus, ProbeAcked: sessions.probeAcked}, mesh)
+	speaker, err := babel.New(cfg.Babel(), cfg.Routes(), babel.Runtime{Events: bus, ProbeAcked: sessions.probeAcked, NoTransit: !cfg.Transits()}, mesh)
 	if err != nil {
 		return nil, err
 	}

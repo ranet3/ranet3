@@ -333,11 +333,8 @@ func reloadable(old, next *config.Config) error {
 		// and every capability beside this one is compared as the subsystem
 		// reads it rather than as the file spells it.
 		return fmt.Errorf("config: link.endpoints changed, restart to apply")
-	case old.Routes().Transits() != next.Routes().Transits():
-		// The announcements are the reloadable half of cap.route, and
-		// SetRoutes applies them. Whether this node relays is read while a
-		// packet is being built and is fixed for the speaker's life.
-		return fmt.Errorf("config: cap.route transit changed, restart to apply")
+	case old.Transits() != next.Transits():
+		return fmt.Errorf("config: cap.transit enable changed, restart to apply")
 	case moved != "":
 		return fmt.Errorf("config: cap.table %s, restart to apply", moved)
 	case !sameCrypto(old, next):

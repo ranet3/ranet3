@@ -148,10 +148,13 @@ type Dial struct {
 }
 
 // Caps is everything this node does. Every member is a pointer and every one
-// is absent by default: writing the block turns that capability on, so there is
-// no enabled field to forget and no block that parses and does nothing.
+// is absent by default. Writing a block turns its capability on, so there is no
+// enabled field to forget, except cap.transit, which states its value with
+// enable and is off when left out or written with enable = false.
 type Caps struct {
-	Route   *babel.Routes  `yaml:"route,omitempty" json:"route,omitempty" toml:"route,omitempty"`
+	Route *babel.Routes `yaml:"route,omitempty" json:"route,omitempty" toml:"route,omitempty"`
+	// Transit holds enable so that a file written for every node of a fleet says on each which way it goes
+	Transit *babel.Transit `yaml:"transit,omitempty" json:"transit,omitempty" toml:"transit,omitempty"`
 	Babel   *babel.Config  `yaml:"babel,omitempty" json:"babel,omitempty" toml:"babel,omitempty"`
 	Table   *kernel.Table  `yaml:"table,omitempty" json:"table,omitempty" toml:"table,omitempty"`
 	Segment *srv6.Segments `yaml:"segment,omitempty" json:"segment,omitempty" toml:"segment,omitempty"`
@@ -191,8 +194,13 @@ func (c *Config) Crypto() ike.Crypto {
 	return *c.Cap.Crypto
 }
 
+// Transits is whether this node relays the routes it learns
+func (c *Config) Transits() bool {
+	return c.Cap.Transit != nil && c.Cap.Transit.Enable != nil && *c.Cap.Transit.Enable
+}
+
 // Egress has no zero value worth returning: an absent block means this node
-// carries nobody else's traffic, and an empty capability is refused rather
+// carries no traffic out of the mesh, and an empty capability is refused rather
 // than taken as that. A caller asks for the pointer instead.
 func (c *Config) Egress() *egress.Egress { return c.Cap.Egress }
 
@@ -233,6 +241,16 @@ func Load(path string) (*Config, error) {
 }
 
 func decodeTOML(body []byte, c *Config) error {
+	var written map[string]any
+	if _, err := toml.Decode(string(body), &written); err != nil {
+		return err
+	}
+	capabilities, _ := written["cap"].(map[string]any)
+	if route, ok := capabilities["route"].(map[string]any); ok {
+		if _, ok := route["transit"]; ok {
+			return errRouteTransit
+		}
+	}
 	metadata, err := toml.Decode(string(body), c)
 	if err != nil {
 		return err
@@ -244,11 +262,39 @@ func decodeTOML(body []byte, c *Config) error {
 	if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
 		return fmt.Errorf("unknown field %q", undecoded[0].String())
 	}
-	var written map[string]any
-	if _, err := toml.Decode(string(body), &written); err != nil {
-		return err
-	}
 	return exactKeys(written, reflect.TypeFor[Config](), "")
+}
+
+// errRouteTransit refuses cap.route transit by the block that holds the setting, where the strict decode would only call the key unknown
+var errRouteTransit = errors.New("cap.route transit is refused, transit is the block cap.transit with enable = true or false")
+
+// routeTransitLine is the line a yaml document writes cap.route transit on, or 0 where it writes none or does not parse, which the strict decode then names
+// keys are read as the decoder reads them, through an alias and from a !!binary spelling
+func routeTransitLine(body []byte) int {
+	var document yaml.Node
+	if yaml.Unmarshal(body, &document) != nil || document.Kind != yaml.DocumentNode || len(document.Content) != 1 {
+		return 0
+	}
+	node, line := document.Content[0], 0
+	for _, want := range []string{"cap", "route", "transit"} {
+		node = schema.Followed(node)
+		if node.Kind != yaml.MappingNode {
+			return 0
+		}
+		var next *yaml.Node
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			var name string
+			if node.Content[i].Decode(&name) == nil && name == want {
+				next, line = node.Content[i+1], node.Content[i].Line
+				break
+			}
+		}
+		if next == nil {
+			return 0
+		}
+		node = next
+	}
+	return line
 }
 
 // exactKeys refuses a key whose spelling differs from the field's tag in case
@@ -346,6 +392,9 @@ func decodesItselfTOML(t reflect.Type) bool {
 }
 
 func decodeYAML(body []byte, c *Config) error {
+	if line := routeTransitLine(body); line != 0 {
+		return fmt.Errorf("line %d: %w", line, errRouteTransit)
+	}
 	decoder := yaml.NewDecoder(strings.NewReader(string(body)))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(c); err != nil {
@@ -549,10 +598,11 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
-	// Table and Egress are asked only where the block was written, because
-	// neither has a zero value worth checking: an absent table writes no
-	// routes and an absent egress carries nobody else's traffic, while an
-	// empty block of either is a mistake each refuses by name.
+	// Table, Egress and Transit are asked only where the block was written,
+	// because none has a zero value worth checking: an absent table writes no
+	// routes, an absent egress carries no traffic out of the mesh and an
+	// absent transit relays no route, while an empty block of any is a mistake
+	// each refuses by name.
 	if c.Cap.Table != nil {
 		if err := c.Cap.Table.Validate(); err != nil {
 			return err
@@ -560,6 +610,11 @@ func (c *Config) Validate() error {
 	}
 	if c.Cap.Egress != nil {
 		if err := c.Cap.Egress.Validate(); err != nil {
+			return err
+		}
+	}
+	if c.Cap.Transit != nil {
+		if err := c.Cap.Transit.Validate(); err != nil {
 			return err
 		}
 	}

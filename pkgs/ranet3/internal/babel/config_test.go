@@ -54,7 +54,7 @@ func TestQualityWrittenAsAListOrAMappingIsRefused(t *testing.T) {
 func TestAnnouncementCarryingASourceReachesThePeerWithIt(t *testing.T) {
 	dest, source := netip.MustParsePrefix("::/0"), netip.MustParsePrefix("2001:db8::/48")
 	announced := Routes{Announce: []schema.Announce{{Prefix: schema.PrefixFrom(dest), From: schema.PrefixFrom(source)}}}
-	fabric := newRoutedFabric(t, Config{}, announced, "a-b")
+	fabric := newRoutedFabric(t, Config{}, announced, false, "a-b")
 	fabric.flush("a", "b")
 	var sources []netip.Prefix
 	for _, update := range updatesFor(t, fabric.tlvs("a", "b"), dest) {

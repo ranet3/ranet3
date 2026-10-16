@@ -159,10 +159,14 @@ func announcements() hegel.Generator[schema.Announce] {
 // routes draws cap.route.
 func routes() hegel.Generator[babel.Routes] {
 	return hegel.Composite(func(tc hegel.TestCase) babel.Routes {
-		return babel.Routes{
-			Announce: hegel.Draw(tc, hegel.Lists(announcements()).MaxSize(4)),
-			Transit:  hegel.Draw(tc, hegel.Optional(hegel.Booleans())),
-		}
+		return babel.Routes{Announce: hegel.Draw(tc, hegel.Lists(announcements()).MaxSize(4))}
+	})
+}
+
+// transits draws cap.transit, now and then with no enable, which Validate refuses
+func transits() hegel.Generator[babel.Transit] {
+	return hegel.Composite(func(tc hegel.TestCase) babel.Transit {
+		return babel.Transit{Enable: hegel.Draw(tc, hegel.Optional(hegel.Booleans()))}
 	})
 }
 
@@ -478,6 +482,7 @@ func configurations() hegel.Generator[Config] {
 		blocks := hegel.Draw(tc, hegel.SampledFrom([]presence{eachOnItsOwn, noBlock, everyBlock}))
 		c.Cap = Caps{
 			Route:   block(tc, blocks, routes()),
+			Transit: block(tc, blocks, transits()),
 			Babel:   block(tc, blocks, speakers()),
 			Table:   block(tc, blocks, reconcilers()),
 			Segment: block(tc, blocks, segments()),
