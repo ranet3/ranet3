@@ -28,6 +28,7 @@ type localRequest struct {
 	context  *ikeContext
 	result   chan requestResult
 	dpd      bool
+	teardown bool
 }
 
 type requestResult struct {
@@ -176,8 +177,6 @@ func nextDueRekey(schedules []*rekeySchedule, running *rekeySchedule) *rekeySche
 	return nil
 }
 
-// Run is the sole post-handshake IKE receiver. It dispatches authenticated
-// peer requests and correlated local responses while also driving DPD.
 // dpdInterval is how long a session goes without an authenticated message
 // before it probes. A test that has to reach the probe overrides it, and zero
 // means the default.
@@ -195,7 +194,11 @@ func (s *Session) retransmitTimeout() time.Duration {
 	return requestTimeout
 }
 
-func (s *Session) Run(ctx context.Context) error {
+// Run is the sole post-handshake IKE receiver. It dispatches authenticated
+// peer requests and correlated local responses while also driving DPD.
+func (s *Session) Run(ctx context.Context) error { return s.run(ctx, nil) }
+
+func (s *Session) run(ctx context.Context, ending error) error {
 	var rekeys sync.WaitGroup
 	defer func() {
 		_ = s.mux.Close() // unblock pending exchanges before joining them
@@ -212,6 +215,7 @@ func (s *Session) Run(ctx context.Context) error {
 		s.rekeyRetryMax = DefaultRetryMax
 	}
 	var pending *pendingRequest
+	var ender *pendingRequest
 	var schedules []*rekeySchedule
 	childSchedule, err := s.newRekeySchedule("Child SA", s.childRekeyInterval, s.RekeyChild)
 	if err != nil {
@@ -239,6 +243,9 @@ func (s *Session) Run(ctx context.Context) error {
 		rekeys.Go(func() { rekeyResult <- rekeyScheduleResult{schedule, schedule.run()} })
 	}
 	startDueRekey := func() {
+		if ending != nil {
+			return
+		}
 		if schedule := nextDueRekey(schedules, running); schedule != nil {
 			startRekey(schedule)
 		}
@@ -284,6 +291,10 @@ func (s *Session) Run(ctx context.Context) error {
 	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
 	for {
+		if ender != nil && pending != ender {
+			s.mux.Close()
+			return ending
+		}
 		if err := s.expireRetiredChildren(time.Now()); err != nil {
 			return err
 		}
@@ -311,6 +322,15 @@ func (s *Session) Run(ctx context.Context) error {
 		if s.trafficSeen.Swap(false) {
 			lastAuthenticated = time.Now()
 			s.noteActive()
+		}
+		if ending != nil && running == nil && pending == nil && ender == nil {
+			started, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, inner: []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}},
+				result: make(chan requestResult, 1), teardown: true})
+			if err != nil {
+				s.mux.Close()
+				return fmt.Errorf("%w, and its Delete could not be sent: %v", ending, err)
+			}
+			pending, ender = started, started
 		}
 		if pending == nil {
 			select {
@@ -374,6 +394,9 @@ func (s *Session) Run(ctx context.Context) error {
 			if pending != nil {
 				pending.result <- requestResult{err: err}
 			}
+			if ending != nil {
+				return ending
+			}
 			return err
 		// These two are handled at the top of the loop. The cases exist so it
 		// wakes for them rather than sleeping until the next deadline. Putting
@@ -410,6 +433,9 @@ func (s *Session) Run(ctx context.Context) error {
 		if pending != nil && !time.Now().Before(pending.deadline) {
 			if pendingRetransmitsExhausted(pending, time.Since(lastAuthenticated) < s.dpdInterval()) {
 				s.mux.Close()
+				if pending == ender {
+					return ending
+				}
 				return fmt.Errorf("ike: peer unresponsive after %d attempts", pending.sent)
 			}
 			// RFC 7296 section 2.1 retransmits the bitwise-identical request until it is answered or the IKE SA is declared failed
@@ -570,6 +596,9 @@ func (s *Session) noteSend(err error) {
 }
 
 func pendingRetransmitsExhausted(pending *pendingRequest, peerAlive bool) bool {
+	if pending.teardown {
+		return pending.sent >= teardownRetransmits
+	}
 	if pending.attempts < maxRetransmits {
 		return false
 	}

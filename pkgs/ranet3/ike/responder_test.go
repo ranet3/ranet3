@@ -96,6 +96,11 @@ func newResponderHarnessAs(t *testing.T, local []identity.Identity, trust Trust,
 // newResponderHarnessIn is newResponderHarnessAs with each endpoint in its own family, on a hub listening in both
 func newResponderHarnessIn(t *testing.T, local map[identity.Identity]Family, trust Trust, events ...Recorder) *responderHarness {
 	t.Helper()
+	return newConfiguredResponderHarness(t, local, trust, func(*ResponderConfig) {}, events...)
+}
+
+func newConfiguredResponderHarness(t *testing.T, local map[identity.Identity]Family, trust Trust, configure func(*ResponderConfig), events ...Recorder) *responderHarness {
+	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -135,6 +140,7 @@ func newResponderHarnessIn(t *testing.T, local map[identity.Identity]Family, tru
 	if len(events) == 1 {
 		cfg.Events = events[0]
 	}
+	configure(&cfg)
 	responder, err := NewResponder(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -1704,10 +1710,9 @@ func TestCookieSurvivesRotationThatFollowsIt(t *testing.T) {
 // RFC 7296 section 2.21.2 leaves the IKE SA created when only the Child SA
 // bundled into IKE_AUTH fails, and says the initiator "MAY, of course, for
 // reasons of policy later delete such an IKE SA". This fork's policy is to
-// delete it, and this responder closes its mux with that response, so the
-// Delete is never answered. Retransmitting it to the end of the ordinary
-// budget delayed the dial's failure by sixty-two seconds for a result the
-// response had already named.
+// delete it, and a responder holding the SA answers that Delete at once, so
+// only a lost datagram leaves it unanswered. Retransmitting it to the end of
+// the ordinary budget then delays the dial's failure by sixty-two seconds.
 func TestTearingDownUnusableIKESADoesNotSpendTheWholeBudget(t *testing.T) {
 	if teardownRetransmits >= maxRetransmits {
 		t.Fatalf("the teardown budget is %d of %d attempts, so nothing is bounded", teardownRetransmits, maxRetransmits)
@@ -1724,6 +1729,304 @@ func TestTearingDownUnusableIKESADoesNotSpendTheWholeBudget(t *testing.T) {
 	// delays the next attempt rather than the failed one.
 	if budget > 10*time.Second {
 		t.Errorf("a Delete nobody answers costs %s, out of the %s an exchange that matters gets", budget, full)
+	}
+}
+
+// RFC 7296 section 1.2 leaves the IKE SA created when the Child SA in IKE_AUTH fails, so the responder answers with its AUTH and the Child SA's error
+// then it deletes the IKE SA in a request at its own first Message ID, which the answer ends
+// an IKE_AUTH retransmitted while that Delete is outstanding draws the answer it had
+func TestResponderDeletesTheIKESAWhoseChildSAItRefused(t *testing.T) {
+	refused := &recorder{}
+	h := childRefusedHarness(t, refused.record)
+	mux := childRefusedMux(t, h)
+	held, authRequest := dialRefusedChild(t, h, mux)
+
+	header, inner, answer := responderMessage(t, mux, held)
+	if header.ExchangeType != IKE_AUTH || !header.IsResponse() || findType(inner, PayloadAUTH) == nil || findType(inner, PayloadSA) != nil {
+		t.Fatalf("the responder first sent exchange %d response %v carrying %v, want its IKE_AUTH answer with AUTH and no Child SA",
+			header.ExchangeType, header.IsResponse(), inner)
+	}
+	header, inner, deleteRequest := responderMessage(t, mux, held)
+	wantIKEDelete(t, header, inner)
+	if err := mux.SendIKE(authRequest); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		header, _, again := responderMessage(t, mux, held)
+		if header.ExchangeType == IKE_AUTH {
+			if !bytes.Equal(again, answer) {
+				t.Error("a retransmitted IKE_AUTH drew an answer other than the one it had")
+			}
+			break
+		}
+		if !bytes.Equal(again, deleteRequest) {
+			t.Fatal("the responder sent something other than its Delete again while the retransmitted IKE_AUTH waited for its answer")
+		}
+	}
+	response, err := EncryptMessage(held.suite, held.skei, Header{SPIInitiator: held.spiI, SPIResponder: held.spiR,
+		ExchangeType: INFORMATIONAL, Flags: FlagResponse | FlagInitiator, MessageID: 0}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.SendIKE(response); err != nil {
+		t.Fatal(err)
+	}
+	awaitHandshakeEnd(t, h, refused, held.spiI)
+}
+
+// RFC 7296 section 2.25.2: "If a peer receives a request to close an IKE SA that it is currently trying to close, it SHOULD reply as usual, and forget about its own close request."
+// a ranet3 initiator deletes the IKE SA after the same refusal, so the two Deletes cross, and the initiator's is answered and ends the responder's
+func TestResponderAnswersTheDeleteCrossingItsOwn(t *testing.T) {
+	refused := &recorder{}
+	h := childRefusedHarness(t, refused.record)
+	mux := childRefusedMux(t, h)
+	held, _ := dialRefusedChild(t, h, mux)
+
+	if header, _, _ := responderMessage(t, mux, held); header.ExchangeType != IKE_AUTH || !header.IsResponse() {
+		t.Fatalf("the responder first sent exchange %d response %v, want its IKE_AUTH answer", header.ExchangeType, header.IsResponse())
+	}
+	header, inner, _ := responderMessage(t, mux, held)
+	wantIKEDelete(t, header, inner)
+	request, err := EncryptMessage(held.suite, held.skei, Header{SPIInitiator: held.spiI, SPIResponder: held.spiR,
+		ExchangeType: INFORMATIONAL, Flags: FlagInitiator, MessageID: 2}, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.SendIKE(request); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		header, inner, _ := responderMessage(t, mux, held)
+		if header.IsResponse() {
+			if header.ExchangeType != INFORMATIONAL || header.MessageID != 2 || len(inner) != 0 {
+				t.Errorf("the initiator's Delete was answered with exchange %d at Message ID %d carrying %v, want an empty INFORMATIONAL at 2",
+					header.ExchangeType, header.MessageID, inner)
+			}
+			break
+		}
+		// the responder's own Delete again, retransmitted before the initiator's reached it
+		wantIKEDelete(t, header, inner)
+	}
+	awaitHandshakeEnd(t, h, refused, held.spiI)
+}
+
+// a responder whose Delete goes unanswered sends it teardownRetransmits times and then lets the IKE SA go, well inside the ordinary budget
+func TestResponderGivesUpItsUnansweredDeleteAfterTheTeardownBudget(t *testing.T) {
+	refused := &recorder{}
+	h := childRefusedHarness(t, refused.record)
+	mux := childRefusedMux(t, h)
+	held, _ := dialRefusedChild(t, h, mux)
+
+	if header, _, _ := responderMessage(t, mux, held); header.ExchangeType != IKE_AUTH || !header.IsResponse() {
+		t.Fatalf("the responder first sent exchange %d response %v, want its IKE_AUTH answer", header.ExchangeType, header.IsResponse())
+	}
+	var first []byte
+	for range teardownRetransmits {
+		header, inner, raw := responderMessage(t, mux, held)
+		wantIKEDelete(t, header, inner)
+		if first == nil {
+			first = raw
+		} else if !bytes.Equal(raw, first) {
+			t.Error("the Delete was sent again changed")
+		}
+	}
+	awaitHandshakeEnd(t, h, refused, held.spiI)
+	if raw, err := mux.RecvIKEUntil(time.Now().Add(quietPeriod)); err == nil {
+		t.Errorf("the responder sent %d more bytes after it let the IKE SA go", len(raw))
+	}
+}
+
+// a responder that refuses IKE_AUTH itself creates no IKE SA, so a peer that never authenticated gets nothing after the refusal, a Delete least of all
+// it refuses an AUTH the trust's key does not verify, an IDi naming an endpoint of the other family, and an IDr naming none of its own
+func TestResponderRefusingIKEAuthSendsNoDelete(t *testing.T) {
+	_, other, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, refusal := range []struct {
+		name     string
+		key      func(*responderHarness) ed25519.PrivateKey
+		idi, idr string
+	}{
+		{"unverified", func(*responderHarness) ed25519.PrivateKey { return other }, "testorg/client:2", "testorg/server:1"},
+		{"other family", func(h *responderHarness) ed25519.PrivateKey { return h.private }, "testorg/client:3", "testorg/server:1"},
+		{"not ours", func(h *responderHarness) ed25519.PrivateKey { return h.private }, "testorg/client:2", "testorg/server:2"},
+	} {
+		t.Run(refusal.name, func(t *testing.T) {
+			refused := &recorder{}
+			h := childRefusedHarness(t, refused.record)
+			mux := childRefusedMux(t, h)
+			held, _ := dialSignedBy(t, h, mux, refusal.key(h), refusal.idi, refusal.idr)
+
+			header, inner, _ := responderMessage(t, mux, held)
+			if header.ExchangeType != IKE_AUTH || !header.IsResponse() || len(inner) != 1 || inner[0].Type != PayloadN {
+				t.Fatalf("the responder first sent exchange %d response %v carrying %v, want its IKE_AUTH refusal", header.ExchangeType, header.IsResponse(), inner)
+			}
+			if notify, err := DecodeNotify(inner[0].Body); err != nil || notify.Type != N_AUTHENTICATION_FAILED {
+				t.Fatalf("the responder refused IKE_AUTH with %+v (%v), want AUTHENTICATION_FAILED", notify, err)
+			}
+			if raw, err := mux.RecvIKEUntil(time.Now().Add(quietPeriod)); err == nil {
+				t.Errorf("the responder sent %d more bytes after refusing IKE_AUTH, want nothing", len(raw))
+			}
+			awaitHandshakeEnd(t, h, refused, held.spiI)
+		})
+	}
+}
+
+// childRefusedHarness answers testorg/client:2 with a handshake timeout of twice answerBudget, so a handshake that ends within answerBudget was not ended by its timeout
+func childRefusedHarness(t *testing.T, events Recorder) *responderHarness {
+	t.Helper()
+	return newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil,
+		func(cfg *ResponderConfig) { cfg.HandshakeTimeout = 2 * answerBudget }, events)
+}
+
+func childRefusedMux(t *testing.T, h *responderHarness) *transport.Mux {
+	t.Helper()
+	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	return mux
+}
+
+// dialRefusedChild signs IKE_AUTH as the trust expects, so the bundled Child SA is all the responder refuses
+func dialRefusedChild(t *testing.T, h *responderHarness, mux *transport.Mux) (*ikeContext, []byte) {
+	t.Helper()
+	return dialSignedBy(t, h, mux, h.private, "testorg/client:2", "testorg/server:1")
+}
+
+// the IKE_AUTH request names idi and idr, and its Child SA offer names a DH group, which a Child SA in IKE_AUTH cannot negotiate
+func dialSignedBy(t *testing.T, h *responderHarness, mux *transport.Mux, key ed25519.PrivateKey, idi, idr string) (*ikeContext, []byte) {
+	t.Helper()
+	spiI := randUint64Nonzero()
+	if err := mux.RegisterIKE(spiI); err != nil {
+		t.Fatal(err)
+	}
+	dh, err := GenerateDH(DH_CURVE25519)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ni := make([]byte, nonceLen)
+	rand.Read(ni)
+	message1 := (&Message{
+		Header: Header{SPIInitiator: spiI, ExchangeType: IKE_SA_INIT, Flags: FlagInitiator},
+		Payloads: []RawPayload{
+			{Type: PayloadSA, Body: EncodeSA([]Proposal{ikeProposal()})},
+			{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, dh.PublicBytes())},
+			{Type: PayloadNonce, Body: EncodeNonce(ni)},
+			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: binary.BigEndian.AppendUint16(nil, HashIdentity)})},
+		},
+	}).Encode()
+	message2 := statelessAnswer(t, mux, message1, "the responder did not answer IKE_SA_INIT")
+	answer, err := DecodeMessage(message2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sa, ke, nonce := answer.find(PayloadSA), answer.find(PayloadKE), answer.find(PayloadNonce)
+	if sa == nil || ke == nil || nonce == nil {
+		t.Fatalf("the responder answered IKE_SA_INIT with notify %d", firstTestNotify(t, message2).Type)
+	}
+	selected, err := DecodeSA(sa.Body)
+	if err != nil || len(selected) != 1 {
+		t.Fatalf("the IKE_SA_INIT answer selects %v: %v", selected, err)
+	}
+	suite, err := suiteFromProposal(selected[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, public, err := DecodeKE(ke.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := dh.SharedSecret(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nr, spiR := DecodeNonce(nonce.Body), answer.Header.SPIResponder
+	keys, err := DeriveIKEKeys(suite, shared, ni, nr, spiI, spiR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := &ikeContext{suite: suite, skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr, spiI: spiI, spiR: spiR}
+	idiBody := idBody(idi)
+	child := espProposal([]byte{0, 0, 0, 9})
+	child.Transforms = append(child.Transforms, Transform{Type: TransDH, ID: DH_ECP_256})
+	request, err := EncryptMessage(suite, held.skei, Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}, nil, []RawPayload{
+		{Type: PayloadIDi, Body: idiBody},
+		{Type: PayloadIDr, Body: idBody(idr)},
+		{Type: PayloadAUTH, Body: BuildAuth(key, concat(message1, nr, prf(suite.PRFID, held.skpi, idiBody)))},
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{child})},
+		{Type: PayloadTSi, Body: fullRangeSelectors()},
+		{Type: PayloadTSr, Body: fullRangeSelectors()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.SendIKE(request); err != nil {
+		t.Fatal(err)
+	}
+	return held, request
+}
+
+// responderMessage reads the next message the responder sends under the IKE SA held, past any repeat of its IKE_SA_INIT answer
+func responderMessage(t *testing.T, mux *transport.Mux, held *ikeContext) (Header, []RawPayload, []byte) {
+	t.Helper()
+	for {
+		raw, err := mux.RecvIKEUntil(time.Now().Add(answerBudget))
+		if err != nil {
+			t.Fatalf("the responder sent nothing more: %v", err)
+		}
+		message, err := DecodeMessage(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if message.Header.ExchangeType == IKE_SA_INIT {
+			continue
+		}
+		inner, err := DecryptMessage(held.suite, held.sker, raw, message)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return message.Header, inner, raw
+	}
+}
+
+func wantIKEDelete(t *testing.T, header Header, inner []RawPayload) {
+	t.Helper()
+	if header.ExchangeType != INFORMATIONAL || header.IsResponse() || header.IsInitiator() || header.MessageID != 0 {
+		t.Fatalf("the responder sent exchange %d response %v initiator %v at Message ID %d, want its own first request",
+			header.ExchangeType, header.IsResponse(), header.IsInitiator(), header.MessageID)
+	}
+	if len(inner) != 1 || inner[0].Type != PayloadD {
+		t.Fatalf("the request carries %v, want one Delete", inner)
+	}
+	if deleted, err := DecodeDelete(inner[0].Body); err != nil || deleted.Protocol != ProtoIKE {
+		t.Fatalf("the request deletes %+v (%v), want the IKE SA", deleted, err)
+	}
+}
+
+// awaitHandshakeEnd waits for the responder to record the failed handshake, which comes once its state for spiI has gone
+func awaitHandshakeEnd(t *testing.T, h *responderHarness, refused *recorder, spiI uint64) {
+	t.Helper()
+	for deadline := time.Now().Add(answerBudget); recordedKind(refused, "ike.handshake.failed") == 0; time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatal("the responder still held the IKE SA when the budget ran out")
+		}
+	}
+	h.responder.mu.Lock()
+	halfOpen := h.responder.halfOpen
+	h.responder.mu.Unlock()
+	if halfOpen != 0 {
+		t.Errorf("the responder holds %d half-open SAs after the handshake ended", halfOpen)
+	}
+	other, err := h.responder.cfg.Hub.NewMux(net.ParseIP("127.0.0.1"), 4500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if err := other.RegisterIKE(spiI); err != nil {
+		t.Errorf("the responder still routes the IKE SA's SPI: %v", err)
 	}
 }
 
