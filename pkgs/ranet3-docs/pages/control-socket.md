@@ -102,9 +102,9 @@ Steering    from 3fff:a::198:18:104:117/128 via 3fff:1:69c:98d6::1 (12 steered, 
 ESP         41822931 in, 0 dropped, 14 refused
 
 $ ranet3 neighbors
-Peer                 State  Cost  Rx cost  RTT      Routes  Expires  Dropped  Failed
-example/gateway:0@0  up     116   96       27.2ms   15      11.3s    0        0
-example/relay:2@1    up     194   96       176.7ms  130     9.8s     0        0
+Peer                 State  Cost  Extra  Rx cost  RTT      Routes  Expires  Dropped  Failed
+example/gateway:0@0  up     116   0      96       27.2ms   15      11.3s    0        0
+other/relay:2@1      up     1218  1024   96       176.7ms  130     9.8s     0        0
 
 $ ranet3 routes
 Destination  From         Via                  Metric  Router ID         Seqno  Paths
@@ -113,8 +113,9 @@ Destination  From         Via                  Metric  Router ID         Seqno  
 
 `neighbors` is the counterpart of `birdc show babel neighbors`. It shows the
 neighbor's reported Rx cost beside this node's cost, which tells a link that
-carries 1 way from one that carries neither. It also shows 2 dataplane counters
-BIRD lacks.
+carries 1 way from one that carries neither. Extra is the part of the cost
+`cap.babel.cost.extra` charges the neighbor, which this node's IHUs add to the
+receive cost they report as well. It also shows 2 dataplane counters BIRD lacks.
 
 `routes` is the counterpart of `birdc show route`. It reads the Babel route
 table, not the forwarding table, so a prefix every neighbor has retracted still
@@ -231,7 +232,7 @@ when empty, and every counter is always present. Other lists, such as
 | `originate`        | a list of `prefix` and `from`                                                                                                                                                                                                                                                                                                                                                    |
 | `segment_counters` | `forwarded`, `delivered`, `dropped`, `steered`, `unsteered`, `unrouted`, `answered`                                                                                                                                                                                                                                                                                              |
 | `down`             | `since`, `for`                                                                                                                                                                                                                                                                                                                                                                   |
-| neighbor           | `peer`, `address`, `alive`, `cost`, `reported_cost` (absent until an IHU arrives), `rtt` (absent until a timestamped IHU arrives), `routes`, `expires`, `dropped`, `send_failed`                                                                                                                                                                                                 |
+| neighbor           | `peer`, `address`, `alive`, `cost`, `extra`, `reported_cost` (absent until an IHU arrives), `rtt` (absent until a timestamped IHU arrives), `routes`, `expires`, `dropped`, `send_failed`                                                                                                                                                                                        |
 | route              | `destination`, `from`, `via` (absent for a prefix held unreachable), `metric`, `router_id`, `seqno`, `candidates`, `originated`                                                                                                                                                                                                                                                  |
 | session            | `path`, `peer` (the peer's node), `remote` (address and port), `preferred`, `active`, `local_spi`, `remote_spi`, `started_at`, `age`, `idle`                                                                                                                                                                                                                                     |
 | peer               | `path`, `peer`, `connected`, `generated` (taken from the trust document under `dial.all`)                                                                                                                                                                                                                                                                                        |

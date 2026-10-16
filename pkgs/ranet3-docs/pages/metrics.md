@@ -47,7 +47,7 @@ The `peer` label is the path of the peer's session, such as
 | Metric                                   | Type    | Labels           | Meaning                                                                                     | Written                                                         |
 | ---------------------------------------- | ------- | ---------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
 | `ranet3_babel_neighbor_up`               | gauge   | `peer`           | 1 while the Babel neighbor is alive, 0 otherwise                                            | per neighbor                                                    |
-| `ranet3_babel_neighbor_cost`             | gauge   | `peer`           | Link cost to the neighbor, 65535 for infinity                                               | per neighbor                                                    |
+| `ranet3_babel_neighbor_cost`             | gauge   | `peer`           | Link cost to the neighbor, `cap.babel.cost.extra` included, 65535 for infinity              | per neighbor                                                    |
 | `ranet3_babel_routes_received`           | gauge   | `peer`           | Routes learned from the neighbor, selected or not                                           | per neighbor                                                    |
 | `ranet3_peer_send_dropped_total`         | counter | `peer`           | Packets this node chose not to send to the peer                                             | per neighbor                                                    |
 | `ranet3_peer_send_delay_dropped_total`   | counter | `peer`           | The part of `ranet3_peer_send_dropped_total` dropped for the delay through the peer's queue | per neighbor                                                    |
@@ -84,6 +84,11 @@ The `peer` label is the path of the peer's session, such as
 | `ranet3_egress_conflicts`                | gauge   | none             | Other source translation at the same hook                                                   | with `cap.egress`                                               |
 | `ranet3_egress_pass_timestamp_seconds`   | gauge   | none             | Unix time the last pass finished, 0 before the first                                        | with `cap.egress`                                               |
 | `ranet3_egress_pass_failed`              | gauge   | none             | 1 when the last pass reported an error                                                      | with `cap.egress`                                               |
+
+`ranet3_babel_neighbor_cost` holds the amount `cap.babel.cost.extra` charges the
+neighbor, and no series reports that amount alone. It is configuration rather
+than a measurement, and the neighbor view shows it apart, in the Extra column of
+`ranet3 neighbors` and in the `extra` field of `/v0/neighbors`.
 
 ## Tun reads
 
