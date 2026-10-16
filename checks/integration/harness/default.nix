@@ -29,6 +29,10 @@
   # measured against a third machine rather than against this tree's own idea
   # of what it installed.
   egress ? false,
+  # fqdn names both ends by an FQDN in place of a DN, strongSwan by its own id
+  # and ranet3 by auth.aliases, so an ID of another type than a DN is checked
+  # against the implementation it has to interoperate with.
+  fqdn ? false,
 }:
 
 let
@@ -66,6 +70,8 @@ let
   behindV6 = "fd00:aa::1";
   exitV4 = "198.51.100.2";
   exitV6 = "fd00:aa::2";
+  gatewayFQDN = "server.testorg.example";
+  clientFQDN = "client.testorg.example";
   publicKey = builtins.readFile ../../fixtures/org-pub.pem;
 
   common = {
@@ -81,7 +87,7 @@ in
 testers.runNixOSTest {
   name =
     if responder then
-      "ranet3-responder"
+      "ranet3-responder${lib.optionalString fqdn "-fqdn"}"
     else if kernel then
       "ranet3-kernel"
     else if segments then
@@ -89,7 +95,7 @@ testers.runNixOSTest {
     else if egress then
       "ranet3-egress"
     else
-      "ranet3-integration";
+      "ranet3-integration${lib.optionalString fqdn "-fqdn"}";
 
   meta.platforms = lib.platforms.linux;
 
@@ -194,12 +200,12 @@ testers.runNixOSTest {
               local.main = {
                 auth = "pubkey";
                 pubkeys = [ "org-pub.pem" ];
-                id = "O=testorg, CN=server, serialNumber=1";
+                id = if fqdn then gatewayFQDN else "O=testorg, CN=server, serialNumber=1";
               };
               remote.main = {
                 auth = "pubkey";
                 pubkeys = [ "org-pub.pem" ];
-                id = "O=testorg, CN=client, serialNumber=2";
+                id = if fqdn then clientFQDN else "O=testorg, CN=client, serialNumber=2";
               };
               children.default = {
                 local_ts = [
@@ -436,6 +442,14 @@ testers.runNixOSTest {
             auth = {
               key = "/etc/ranet3/key.pem";
               trust = "/etc/ranet3/registry.json";
+            }
+            # the gateway names itself by the FQDN of its own id and this node
+            # by the FQDN of its remote id
+            // pkgs.lib.optionalAttrs fqdn {
+              aliases = {
+                remote.fqdn.${gatewayFQDN} = "testorg/server:1";
+                local."testorg/server".fqdn = clientFQDN;
+              };
             };
             link = {
               port = 14000;
@@ -558,6 +572,7 @@ testers.runNixOSTest {
         iperf_timeout = dt.timedelta(seconds=120)
 
         kernel_enabled = ${if kernel then "True" else "False"}
+        fqdn_enabled = ${if fqdn then "True" else "False"}
         kernel_table = "${toString kernelTable}"
         kernel_protocol = "${toString kernelProtocol}"
         client_tunnel_v4 = "${clientTunnelV4}"
@@ -567,6 +582,16 @@ testers.runNixOSTest {
             output = machine.succeed(f"journalctl -u {unit} -n 1 --show-cursor --no-pager")
             cursor = output.rsplit("-- cursor: ", 1)[1].strip()
             return f"journalctl -u {unit} --after-cursor='{cursor}' --no-pager"
+
+        def named_by_fqdn():
+            """strongSwan established the SA under the two FQDNs, and ranet3 resolved the gateway's to its endpoint."""
+            gateway.succeed(
+                "journalctl -u strongswan-swanctl.service --no-pager | grep -F 'established between'"
+                " | grep -F '[${gatewayFQDN}]...' | grep -F '[${clientFQDN}]'"
+            )
+            print(client.succeed(
+                "ranet3 debug wait ike.id.resolved --past 10m --attr type=fqdn --attr id=${gatewayFQDN} --attr sent=fqdn"
+            ))
 
         start_all()
 
@@ -820,6 +845,15 @@ testers.runNixOSTest {
 
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnelV4}", timeout=timeout)
+            if fqdn_enabled:
+                named_by_fqdn()
+                gateway.succeed(
+                    "journalctl -u strongswan-swanctl.service --no-pager | grep -F 'parsed IKE_AUTH request 1 [ IDi IDr '"
+                )
+                gateway.succeed(
+                    "journalctl -u strongswan-swanctl.service --no-pager | grep -F 'looking for peer configs matching'"
+                    " | grep -F '[${gatewayFQDN}]...'"
+                )
             peer_rekey = journal_after(gateway, "strongswan-swanctl.service")
             print(gateway.succeed("swanctl --rekey --child default"))
             gateway.wait_until_succeeds(f"{peer_rekey} | grep -E 'parsed CREATE_CHILD_SA response.*SA No KE TSi TSr'", timeout=timeout)
@@ -952,6 +986,8 @@ testers.runNixOSTest {
             client.wait_until_succeeds("journalctl -u ranet3.service --no-pager | grep -F ': connected (SPI'", timeout=timeout)
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnelV4}", timeout=timeout)
+            if fqdn_enabled:
+                named_by_fqdn()
 
             # The peer drives both rekeys. An answered session has to service them
             # exactly as a dialed one does, from the opposite role.
