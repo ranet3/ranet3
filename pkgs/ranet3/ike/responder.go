@@ -454,13 +454,14 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 		return Accepted{}, false, err
 	}
 	outer, source := got.outer, got.source
+	// RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
+	// only an authenticated request moves where this end sends, and the decryption above authenticated this one whether or not its payloads parse
+	s.mux.AdoptEndpoint(source)
 	inner, err := decodeMessagePlaintext(got.innerFirst, got.plaintext)
 	if err != nil {
-		return Accepted{}, false, fmt.Errorf("ike: malformed IKE_AUTH request: %w", err)
+		// RFC 7296 section 2.21.2: "request messages that contain an unsupported critical payload, or where the whole message is malformed (rather than just bad payload contents), MUST be rejected in their entirety, and MUST only lead to an UNSUPPORTED_CRITICAL_PAYLOAD or INVALID_SYNTAX Notification sent as a response."
+		return Accepted{}, false, s.rejectAuth(N_INVALID_SYNTAX, fmt.Errorf("ike: malformed IKE_AUTH request: %w", err))
 	}
-	// Only an authenticated message may move where replies go (RFC 7296
-	// section 2.23). Decryption above is that proof.
-	s.mux.AdoptEndpoint(source)
 
 	if unsupported, found := firstUnsupportedCritical(inner); found {
 		return Accepted{}, false, s.rejectAuth(N_UNSUPPORTED_CRITICAL_PAYLOAD,
@@ -515,20 +516,15 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	macedIDForR := prf(ctx.suite.PRFID, ctx.skpr, idrBody)
 	authBody := BuildAuth(r.cfg.LocalPrivateKey, concat(realMessage2, ni, macedIDForR))
 
-	// The IKE SA is authenticated from here (RFC 7296 section 2.21.2), so a Child
-	// SA failure is reported inside an encrypted response rather than by
-	// dropping the exchange.
+	// RFC 7296 section 2.21.2: "If authentication has succeeded in the IKE_AUTH exchange, the IKE SA is established"
+	// and: "Specifically, a responder may include all the payloads associated with authentication (IDr, CERT, and AUTH) while sending error notifications for the piggybacked exchanges (FAILED_CP_REQUIRED, NO_PROPOSAL_CHOSEN, and so on), and the initiator MUST NOT fail the authentication because of this."
 	child, err := s.selectResponderChild(request, ni, nr)
 	if err != nil {
 		notify := N_NO_PROPOSAL_CHOSEN
 		var data []byte
 		if wrongGroup, ok := errors.AsType[*invalidKEError](err); ok {
-			// RFC 7296 section 1.3 gives INVALID_KE_PAYLOAD "two octets of
-			// data associated with this notification: the accepted
-			// Diffie-Hellman group number in big endian order", and has the
-			// initiator retry in the group the responder gave. Without them
-			// the peer is told its group is wrong and not which one to use,
-			// so the retry is a guess. The other two sites carry them.
+			// RFC 7296 section 1.3: "There are two octets of data associated with this notification: the accepted Diffie-Hellman group number in big endian order."
+			// without them the peer learns its group is wrong and not which one to retry in
 			notify = N_INVALID_KE_PAYLOAD
 			data = invalidKENotifyData(wrongGroup.group)
 		}
@@ -674,8 +670,8 @@ func (r *Responder) failureIsDue(endpoint transport.Endpoint) bool {
 	return true
 }
 
-// rejectAuth answers a failed authentication inside the SK payload, which the
-// initiator can decrypt, and returns the underlying reason unchanged. The
+// rejectAuth answers a refused IKE_AUTH request inside the SK payload, which
+// the initiator can decrypt, and returns the underlying reason unchanged. The
 // notify is deliberately uninformative: which of identity, key or signature
 // failed is not the peer's business.
 func (s *Session) rejectAuth(notify NotifyType, cause error) error {
