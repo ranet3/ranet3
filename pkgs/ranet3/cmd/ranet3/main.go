@@ -466,8 +466,17 @@ func kernelStatus(routes *kernel.Reconciler) control.KernelStatus {
 		Skipped:   stats.Skipped,
 		Added:     stats.Added,
 		Removed:   stats.Removed,
+		Cover:     coverNames(stats.Cover),
 		Err:       stats.Err,
 	}
+}
+
+func coverNames(families []kernel.Family) []string {
+	var names []string
+	for _, family := range families {
+		names = append(names, string(family))
+	}
+	return names
 }
 
 // egressStatus is the egress capability as the control surface reports it. The

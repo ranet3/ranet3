@@ -163,6 +163,18 @@ func TestKernelLineNamesAVRFAndWhatItIsMissing(t *testing.T) {
 	}
 }
 
+// The kernel line names the families whose default went in as the zero-free
+// cover, since `ranet3 routes` shows the /0 and the kernel holds other routes
+// in its place.
+func TestKernelLineNamesTheCoveredFamilies(t *testing.T) {
+	status := KernelStatus{Enabled: true, Where: "interface utun6", Installed: 16, Cover: []string{"ipv4", "ipv6"}}
+	golden(t, "kernel-cover.txt", []byte(kernelLine(status)+"\n"))
+	goldenJSON(t, "kernel-cover.json", status)
+	if line := kernelLine(KernelStatus{Enabled: true, Where: "interface utun6"}); strings.Contains(line, "cover") {
+		t.Errorf("the kernel line reads %q with nothing covered, want no cover clause", line)
+	}
+}
+
 // The egress line leads with the prefixes being announced rather than with the
 // ones configured. The two differ exactly when the capability is not working,
 // since a prefix is announced only while its rule is installed and the kernel

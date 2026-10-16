@@ -358,7 +358,10 @@ type KernelStatus struct {
 	Skipped   int       `json:"skipped"`
 	Added     int       `json:"added"`
 	Removed   int       `json:"removed"`
-	Err       string    `json:"err,omitempty"`
+	// Cover names the families whose plain default the last pass left
+	// installed as its zero-free cover, on macOS under a bound underlay.
+	Cover []string `json:"cover,omitempty"`
+	Err   string   `json:"err,omitempty"`
 }
 
 // EgressStatus is the exit node and subnet router capability: what this node
