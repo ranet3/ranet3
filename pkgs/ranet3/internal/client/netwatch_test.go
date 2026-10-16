@@ -5,6 +5,8 @@ package client
 
 import (
 	"context"
+	"log/slog"
+	"net"
 	"net/netip"
 	"slices"
 	"sync"
@@ -14,10 +16,61 @@ import (
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // networkChangeBudget bounds how long one change takes to reach the sessions, the dialers and the bus
+// and how long a busy peer takes to get a socket connected to it
 const networkChangeBudget = 5 * time.Second
+
+// busyDatagrams of busyDatagram bytes carry a peer past the 1 MiB at which the transport connects a socket to it
+const (
+	busyDatagrams = 1000
+	busyDatagram  = 1200
+)
+
+// recordingHub is a hub on loopback whose events go to bus
+func recordingHub(t *testing.T, bus *events.Bus) *transport.Hub {
+	t.Helper()
+	hub, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{Events: func(kind string, attrs ...slog.Attr) {
+		bus.Emit(kind, "", attrs...)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hub.Close() })
+	return hub
+}
+
+// busyPeer is a mux of hub to a peer of its own on loopback, sent enough that the hub connects a socket to the peer
+// it waits until bus records that socket
+func busyPeer(t *testing.T, hub *transport.Hub, bus *events.Bus) *transport.Mux {
+	t.Helper()
+	peer, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = peer.Close() })
+	at := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := hub.NewMux(at.IP, at.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mux.Close() })
+	busy := make([][]byte, busyDatagrams)
+	for i := range busy {
+		busy[i] = make([]byte, busyDatagram)
+	}
+	if err := mux.SendESPBatch(busy); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(networkChangeBudget); len(recorded(bus, "transport.pair.connected")) == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d bytes to %s connected no socket to it", busyDatagrams*busyDatagram, at)
+		}
+	}
+	return mux
+}
 
 // fakeNetwork is a watch whose changes a test sends and whose reading it sets
 type fakeNetwork struct {
@@ -39,6 +92,7 @@ func (f *fakeNetwork) Close() error { return nil }
 func TestNetworkChangeProbesEverySessionAndWakesEveryDialer(t *testing.T) {
 	c := writable(t)
 	c.events = events.New()
+	c.hub = recordingHub(t, c.events)
 	var probedMu sync.Mutex
 	var probed []*ike.Session
 	c.sessions.probe = func(sess *ike.Session) {
@@ -103,5 +157,38 @@ func TestNetworkChangeProbesEverySessionAndWakesEveryDialer(t *testing.T) {
 	}
 	if _, ok := event.Attrs["ipv6_default"]; ok {
 		t.Errorf("a change to IPv4 alone recorded IPv6 as well: %v", event.Attrs)
+	}
+}
+
+// a change of the host's network closes every socket connected to one peer, which may keep a source the host lost
+// or one the route no longer picks
+func TestNetworkChangeClosesEverySocketConnectedToOnePeer(t *testing.T) {
+	c := writable(t)
+	c.events = events.New()
+	c.hub = recordingHub(t, c.events)
+	busyPeer(t, c.hub, c.events)
+	network := &fakeNetwork{changes: make(chan kernel.NetworkChange, 1)}
+	c.network = network
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { c.followNetwork(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	network.changes <- kernel.NetworkChange{
+		At:     time.Now(),
+		Before: kernel.NetworkState{IPv4: kernel.NetworkFamily{Default: kernel.DefaultRoute{Interface: "en0"}}},
+		After:  kernel.NetworkState{IPv4: kernel.NetworkFamily{Default: kernel.DefaultRoute{Interface: "en7"}}},
+	}
+	for deadline := time.Now().Add(networkChangeBudget); len(recorded(c.events, "network.changed")) == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the change was never recorded")
+		}
+	}
+	if open := c.hub.PairSockets(); open != 0 {
+		t.Fatalf("the hub holds %d sockets connected to one peer after the network changed, want none", open)
+	}
+	closed := recorded(c.events, "transport.pair.closed")
+	if len(closed) != 1 || closed[0].Attrs["reason"] != "network" {
+		t.Fatalf("the hub recorded %v closing, want the one socket closed for the network", closed)
 	}
 }

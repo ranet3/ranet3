@@ -34,6 +34,7 @@ func openNetwork(host kernel.Host, mesh string) (networkSource, error) {
 }
 
 // followNetwork acts on each change of the host's network until ctx ends
+// every socket connected to one peer closes, since it keeps a source the host may have lost or the route no longer picks
 // every session proves its path now and every dialer comes round at once
 // a dialer that finds its session healthy stands down as it does after any wake
 func (c *Client) followNetwork(ctx context.Context) {
@@ -42,6 +43,7 @@ func (c *Client) followNetwork(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case change := <-c.network.Changes():
+			c.hub.NetworkChanged()
 			probed := c.sessions.matching("", true, c.sessions.startProbe)
 			dialers := c.matchingDialers("", true)
 			c.wakeDialers(dialers)
