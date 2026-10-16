@@ -614,7 +614,7 @@ func TestSessionAdoptedDuringAReloadTakesTheStoredLinkMTU(t *testing.T) {
 	}
 }
 
-// stackDumpSize is the bytes waitingInAdopt reads every goroutine's stack into, room for two running nodes many times over
+// stackDumpSize is the bytes waitingInAdopt and dialerStandingDown read every goroutine's stack into, room for the running nodes of one test many times over
 const stackDumpSize = 4 << 20
 
 // waitingInAdopt reports whether a session a node answered waits for its session set's lock inside adoptFor
@@ -624,6 +624,19 @@ func waitingInAdopt() bool {
 	n := runtime.Stack(stacks, true)
 	for goroutine := range strings.SplitSeq(string(stacks[:n]), "\n\n") {
 		if strings.Contains(goroutine, "sync.(*Mutex).Lock") && strings.Contains(goroutine, "(*sessionSet).adoptFor") && strings.Contains(goroutine, "(*Client).acceptPeers") {
+			return true
+		}
+	}
+	return false
+}
+
+// dialerStandingDown reports whether a dialer waits for its wake or its reconnect delay with no dial in flight
+// a dialer serving its session waits inside connectPeer
+func dialerStandingDown() bool {
+	stacks := make([]byte, stackDumpSize)
+	n := runtime.Stack(stacks, true)
+	for goroutine := range strings.SplitSeq(string(stacks[:n]), "\n\n") {
+		if strings.Contains(goroutine, " [select") && strings.Contains(goroutine, "(*Client).runPeer") && !strings.Contains(goroutine, "(*Client).connectPeer") {
 			return true
 		}
 	}
