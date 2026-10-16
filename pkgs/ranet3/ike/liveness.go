@@ -261,6 +261,9 @@ func (s *Session) retransmitTimeout() time.Duration {
 func (s *Session) Run(ctx context.Context) error { return s.run(ctx, nil) }
 
 func (s *Session) run(ctx context.Context, ending error) error {
+	if ending != nil {
+		s.closing.Store(true)
+	}
 	var rekeys sync.WaitGroup
 	defer func() {
 		_ = s.mux.Close() // unblock pending exchanges before joining them
@@ -314,6 +317,7 @@ func (s *Session) run(ctx context.Context, ending error) error {
 	}
 	end := func(schedule *rekeySchedule, reason string, err error) {
 		ending = err
+		s.closing.Store(true)
 		slog.Warn("ike deleting the IKE SA", "sa", schedule.name, "reason", reason, "err", err)
 		s.emit("ike.sa.closed", slog.String("sa", schedule.sa), slog.String("reason", reason), slog.String("err", err.Error()))
 	}
@@ -1034,6 +1038,7 @@ func (s *Session) responseNotifySA(ctx *ikeContext, msgID uint32, exchange Excha
 // either way, so a peer that has already vanished costs only the exchange's
 // own retransmission budget, and the caller bounds that.
 func (s *Session) DeleteIKE() error {
+	s.closing.Store(true)
 	payloads := []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}
 	if s.serving.Load() {
 		_, err := s.request(INFORMATIONAL, payloads)

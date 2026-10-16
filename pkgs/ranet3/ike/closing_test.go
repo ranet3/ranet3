@@ -5,6 +5,9 @@ package ike
 
 import (
 	"bytes"
+	"context"
+	"encoding/binary"
+	"errors"
 	"net"
 	"slices"
 	"sync/atomic"
@@ -70,7 +73,7 @@ func TestInitiatorAnswersTheResponderDeleteCrossingItsOwn(t *testing.T) {
 	awaitHandshakeEnd(t, h, refused, held.spiI)
 }
 
-// a request that does not close the IKE SA is answered and leaves the initiator waiting for its own answer
+// a request that does not close the IKE SA is answered and leaves the initiator waiting for its own answer, a rekey of the IKE SA being answered with TEMPORARY_FAILURE
 func TestInitiatorClosingAfterAuthAnswersOtherRequestsAndWaitsOn(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
@@ -84,9 +87,108 @@ func TestInitiatorClosingAfterAuthAnswersOtherRequestsAndWaitsOn(t *testing.T) {
 	if answer := peer.answer(t); answer.Header.MessageID != 0 || len(answer.inner) != 0 {
 		t.Fatalf("the liveness check drew Message ID %d carrying %v, want an empty answer at 0", answer.Header.MessageID, answer.inner)
 	}
+	peer.send(t, Header{ExchangeType: CREATE_CHILD_SA, MessageID: 1}, ikeRekeyRequest(t))
+	if answer := peer.answer(t); answer.Header.ExchangeType != CREATE_CHILD_SA || answer.Header.MessageID != 1 || !notified(answer.inner, N_TEMPORARY_FAILURE, nil) {
+		t.Fatalf("the IKE SA rekey drew exchange %d Message ID %d carrying %v, want TEMPORARY_FAILURE at 1", answer.Header.ExchangeType, answer.Header.MessageID, answer.inner)
+	}
 	waitsOn(t, done)
 	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: 2}, nil)
-	settled(t, done)
+	settled(t, done, nil)
+}
+
+// a session whose own Delete of its IKE SA is out answers a rekey of that IKE SA, or of a Child SA under it, with TEMPORARY_FAILURE and goes on waiting for its answer
+func TestSessionClosingItsIKESARefusesRekeysOfIt(t *testing.T) {
+	why := errors.New("the reason to delete")
+	for _, closer := range []string{"run ending", "DeleteIKE"} {
+		t.Run(closer, func(t *testing.T) {
+			peer, s := closingAfterAuth(t)
+			s.requests = make(chan *localRequest, 1)
+			s.Child = ChildSA{LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
+			deleted, finished := make(chan error, 1), make(chan struct{})
+			go func() {
+				defer close(finished)
+				if closer == "run ending" {
+					deleted <- s.run(context.Background(), why)
+				} else {
+					_ = s.Run(context.Background())
+				}
+			}()
+			t.Cleanup(func() {
+				s.mux.Close()
+				<-finished
+			})
+			var want error
+			if closer == "run ending" {
+				want = why
+			} else {
+				for deadline := time.Now().Add(answerBudget); !s.serving.Load(); time.Sleep(recordPoll) {
+					if time.Now().After(deadline) {
+						t.Fatal("the session never started serving")
+					}
+				}
+				go func() { deleted <- s.DeleteIKE() }()
+			}
+			own := peer.read(t)
+			if own.Header.ExchangeType != INFORMATIONAL || own.Header.IsResponse() || !deletesIKE(own.inner) {
+				t.Fatalf("the session sent exchange %d response %v carrying %v, want its Delete of the IKE SA", own.Header.ExchangeType, own.Header.IsResponse(), own.inner)
+			}
+
+			for mid, rekey := range []struct {
+				sa    string
+				inner []RawPayload
+			}{{"IKE", ikeRekeyRequest(t)}, {"Child", childRekeyRequest(s.Child.RemoteSPI)}} {
+				peer.send(t, Header{ExchangeType: CREATE_CHILD_SA, MessageID: uint32(mid)}, rekey.inner)
+				if answer := peer.answer(t); answer.Header.ExchangeType != CREATE_CHILD_SA || answer.Header.MessageID != uint32(mid) || !notified(answer.inner, N_TEMPORARY_FAILURE, nil) {
+					t.Errorf("the %s SA rekey drew exchange %d Message ID %d carrying %v, want TEMPORARY_FAILURE at %d", rekey.sa, answer.Header.ExchangeType, answer.Header.MessageID, answer.inner, mid)
+				}
+			}
+			peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
+			settled(t, deleted, want)
+		})
+	}
+}
+
+// a rekey of the closing IKE SA that carries a critical payload this end does not support is rejected for that payload, not refused with TEMPORARY_FAILURE, and the initiator waits on
+func TestInitiatorClosingAfterAuthRejectsACriticalPayloadBeforeRefusingTheRekey(t *testing.T) {
+	peer, initiator := closingAfterAuth(t)
+	done := make(chan error, 1)
+	go func() { done <- initiator.deleteAuthenticatedIKE() }()
+	own := peer.read(t)
+
+	peer.send(t, Header{ExchangeType: CREATE_CHILD_SA, MessageID: 0}, append(ikeRekeyRequest(t), unsupportedCritical))
+	if answer := peer.answer(t); answer.Header.ExchangeType != CREATE_CHILD_SA || answer.Header.MessageID != 0 ||
+		!notified(answer.inner, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupportedCritical.Type)}) {
+		t.Fatalf("the rekey drew exchange %d Message ID %d carrying %v, want UNSUPPORTED_CRITICAL_PAYLOAD for type %d at 0", answer.Header.ExchangeType, answer.Header.MessageID, answer.inner, unsupportedCritical.Type)
+	}
+	waitsOn(t, done)
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
+	settled(t, done, nil)
+}
+
+func ikeRekeyRequest(t *testing.T) []RawPayload {
+	t.Helper()
+	dh, err := GenerateDH(DH_CURVE25519)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []RawPayload{
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{ikeRekeyProposal(binary.BigEndian.AppendUint64(nil, 0x2122232425262728), PRF_HMAC_SHA2_256)})},
+		{Type: PayloadNonce, Body: EncodeNonce(make([]byte, 32))},
+		{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, dh.PublicBytes())},
+	}
+}
+
+func childRekeyRequest(remoteSPI uint32) []RawPayload {
+	return []RawPayload{
+		{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_REKEY_SA, Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, remoteSPI)})},
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{{
+			Number: 1, Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, 0x90a0b0c0),
+			Transforms: []Transform{{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128}, {Type: TransESN, ID: ESN_NO}},
+		}})},
+		{Type: PayloadNonce, Body: EncodeNonce(make([]byte, 32))},
+		{Type: PayloadTSi, Body: fullRangeSelectors()},
+		{Type: PayloadTSr, Body: fullRangeSelectors()},
+	}
 }
 
 // closingPeer stands in for a responder past IKE_AUTH, on the IKE SA the initiator holds
@@ -235,7 +337,7 @@ func TestInitiatorClosingAfterAuthAnswersARetransmittedRequestWithItsAnswer(t *t
 	}
 	waitsOn(t, done)
 	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
-	settled(t, done)
+	settled(t, done, nil)
 }
 
 // RFC 7296 section 2.25.1: "If a peer receives a request to close a Child SA that does not exist, it SHOULD reply without a Delete payload."
@@ -253,7 +355,7 @@ func TestInitiatorClosingAfterAuthAnswersAChildSADeleteAndWaitsOn(t *testing.T) 
 	}
 	waitsOn(t, done)
 	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
-	settled(t, done)
+	settled(t, done, nil)
 }
 
 // a Delete at the next Message ID that does not authenticate is no request: the initiator neither answers it nor stops waiting for its own answer, and the peer's next request is still answered at that Message ID
@@ -277,7 +379,7 @@ func TestInitiatorClosingAfterAuthIgnoresARequestThatDoesNotAuthenticate(t *test
 		t.Fatalf("the liveness check after the forgery drew Message ID %d carrying %v, want an empty answer at 0", answer.Header.MessageID, answer.inner)
 	}
 	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
-	settled(t, done)
+	settled(t, done, nil)
 }
 
 // an authenticated Delete of the IKE SA outside the window, at a Message ID answered before the last or at one ahead of the next, is neither answered nor acted on, and the answer kept for a retransmission stays the last one sent
@@ -305,7 +407,7 @@ func TestInitiatorClosingAfterAuthIgnoresADeleteOutsideTheWindow(t *testing.T) {
 		t.Fatalf("the retransmitted liveness check at Message ID 1 drew %x, want its answer %x again", again.raw, kept.raw)
 	}
 	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
-	settled(t, done)
+	settled(t, done, nil)
 }
 
 // unsupportedCritical is a payload of a type no IKEv2 document assigns, its critical flag set
@@ -328,7 +430,7 @@ func TestInitiatorClosingAfterAuthEndsAtARequestThatDoesNotDecode(t *testing.T) 
 	if answer := peer.answer(t); answer.Header.ExchangeType != INFORMATIONAL || answer.Header.MessageID != 0 || !notified(answer.inner, N_INVALID_SYNTAX, nil) {
 		t.Fatalf("the malformed request drew exchange %d Message ID %d carrying %v, want INVALID_SYNTAX at 0", answer.Header.ExchangeType, answer.Header.MessageID, answer.inner)
 	}
-	settled(t, done)
+	settled(t, done, nil)
 }
 
 // an exchange the wait does not take draws the answer Run gives it, INVALID_SYNTAX, which ends the IKE SA
@@ -347,7 +449,7 @@ func TestInitiatorClosingAfterAuthAnswersAnExchangeItDoesNotTakeAsRunDoes(t *tes
 	if run := runAnswer(t, header, nil); !answeredAlike(run, answer.inner) {
 		t.Errorf("Run answers the IKE_AUTH request with %v, the wait with %v", run, answer.inner)
 	}
-	settled(t, done)
+	settled(t, done, nil)
 }
 
 // a request carrying a critical payload this end does not support is rejected as Run rejects it, with UNSUPPORTED_CRITICAL_PAYLOAD naming the type, and is not acted on, so the Delete inside it leaves the initiator waiting
@@ -378,7 +480,7 @@ func TestInitiatorClosingAfterAuthRejectsAnUnsupportedCriticalPayloadAsRunDoes(t
 	}
 	waitsOn(t, done)
 	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
-	settled(t, done)
+	settled(t, done, nil)
 }
 
 func notified(inner []RawPayload, notifyType NotifyType, data []byte) bool {
@@ -421,13 +523,13 @@ func waitsOn(t *testing.T, done <-chan error) {
 	}
 }
 
-// settled has the initiator stop waiting with nothing to report, its IKE SA gone
-func settled(t *testing.T, done <-chan error) {
+// settled has the initiator stop waiting and report want, its IKE SA gone
+func settled(t *testing.T, done <-chan error, want error) {
 	t.Helper()
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Errorf("the initiator's Delete ended with %v", err)
+		if !errors.Is(err, want) {
+			t.Errorf("the initiator's Delete ended with %v, want %v", err, want)
 		}
 	case <-time.After(answerBudget):
 		t.Fatal("the initiator went on waiting for its own answer")
