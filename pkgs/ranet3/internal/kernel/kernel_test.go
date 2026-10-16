@@ -1533,6 +1533,22 @@ func TestRuleValidationRefusesWhatReadsWrong(t *testing.T) {
 		"a mask with no mark": {Family: FamilyIPv4, FWMask: 0xffff, To: schema.MustPrefix("10.0.0.0/8"), Table: 200, Priority: 100},
 		"the local priority":  {Family: FamilyIPv4, To: schema.MustPrefix("10.0.0.0/8"), Table: 200},
 		"no table":            {Family: FamilyIPv4, To: schema.MustPrefix("10.0.0.0/8"), Priority: 100},
+		// each device name beside a mark, so the check for a rule selecting nothing does not answer for it
+		"a device name past IFNAMSIZ":          {Family: FamilyIPv4, FWMark: 0x726c, IIF: strings.Repeat("r", ifNameSize), Table: 254, Priority: 60},
+		"a device name of one dot":             {Family: FamilyIPv4, FWMark: 0x726c, IIF: ".", Table: 254, Priority: 60},
+		"a device name of two dots":            {Family: FamilyIPv4, FWMark: 0x726c, IIF: "..", Table: 254, Priority: 60},
+		"a device name with a slash":           {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0/e", Table: 254, Priority: 60},
+		"a device name with a colon":           {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0:e", Table: 254, Priority: 60},
+		"a device name with a NUL":             {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0\x00e", Table: 254, Priority: 60},
+		"a device name of a NUL":               {Family: FamilyIPv4, FWMark: 0x726c, IIF: "\x00", Table: 254, Priority: 60},
+		"a device name with a space":           {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0 e", Table: 254, Priority: 60},
+		"a device name with a tab":             {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0\te", Table: 254, Priority: 60},
+		"a device name with a newline":         {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0\ne", Table: 254, Priority: 60},
+		"a device name with a vertical tab":    {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0\ve", Table: 254, Priority: 60},
+		"a device name with a form feed":       {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0\fe", Table: 254, Priority: 60},
+		"a device name with a carriage return": {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0\re", Table: 254, Priority: 60},
+		// c3 a0 is U+00E0 in UTF-8, and the kernel's isspace counts its byte 0xa0
+		"a device name with a byte 0xa0": {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet\xc3\xa0", Table: 254, Priority: 60},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := rule.validate(); err == nil {
@@ -1544,6 +1560,13 @@ func TestRuleValidationRefusesWhatReadsWrong(t *testing.T) {
 		"an address rule": {Family: FamilyIPv6, From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150},
 		"a mark rule":     {Family: FamilyIPv4, FWMark: 0x726c, Table: 254, Priority: 40},
 		"a masked mark":   {Family: FamilyIPv6, FWMark: 0x726c, FWMask: 0xffff, Table: 254, Priority: 40},
+		// iif ranet0e lookup main, which an exit owns so that its egress traffic leaves by the uplink
+		"a device rule":            {Family: FamilyIPv4, IIF: "ranet0e", Table: 254, Priority: 60},
+		"the longest device name":  {Family: FamilyIPv6, IIF: strings.Repeat("r", ifNameSize-1), Table: 254, Priority: 60},
+		"a device beside a source": {Family: FamilyIPv6, IIF: "ranet0e", From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150},
+		// the kernel takes these, U+00E1 in UTF-8 and a dot that is not the whole name
+		"a device name with a byte 0xa1": {Family: FamilyIPv4, IIF: "ranet\xc3\xa1", Table: 254, Priority: 60},
+		"a device name with a dot":       {Family: FamilyIPv4, IIF: "ranet0.100", Table: 254, Priority: 60},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := rule.validate(); err != nil {
@@ -1582,6 +1605,33 @@ func TestFamilyBothInstallsOneRulePerFamily(t *testing.T) {
 		if !fake.rules[rule.canonical()] {
 			t.Errorf("the pass did not install %s, so that family still follows the mesh table", rule)
 		}
+	}
+}
+
+// A device belongs to no address family, so a rule selecting on one alone
+// names its family as a mark rule does. Two rules apart only in their device
+// are two rules, and they normalize to one order whichever way a file lists
+// them, or a reload between the two spellings reads as a change.
+func TestDeviceRuleNamesItsFamilyAndSortsOneWay(t *testing.T) {
+	bare := Rule{IIF: "ranet0e", Table: schema.TableMain, Priority: 60}
+	err := Table{Rules: []Rule{bare}}.Validate()
+	if err == nil || !strings.Contains(err.Error(), "has to name family") {
+		t.Fatalf("a device rule naming no family was refused with %v", err)
+	}
+	first, second := bare, bare
+	first.Family, second.Family = FamilyBoth, FamilyBoth
+	second.IIF = "ranet1e"
+	written := Table{Rules: []Rule{first, second}}
+	if err := written.Validate(); err != nil {
+		t.Fatalf("two rules apart in their device were refused: %v", err)
+	}
+	reversed := Table{Rules: []Rule{second, first}}
+	if got, want := reversed.Normalized().Rules, written.Normalized().Rules; !slices.Equal(got, want) {
+		t.Errorf("one rule set normalized to %v and to %v", want, got)
+	}
+	// every refusal and log line names a rule by String, and two rules apart only in their device read alike without it
+	if got := first.String(); !strings.Contains(got, "iif ranet0e") {
+		t.Errorf("the rule reads %q, which does not name its device", got)
 	}
 }
 
@@ -1682,12 +1732,10 @@ func TestWithdrawRemovesTheVRFItMadeByItsIndex(t *testing.T) {
 
 // A rule selects a packet by its mark the way the kernel's fib rule match
 // does, ((mark ^ fwmark) & fwmask) == 0 with an absent mask read as all ones,
-// so the bits of the rule's own mark outside its mask are never compared.
-// Every case below was measured in an unprivileged network namespace with ip
-// rule and ip route get: fwmark 0x726c/0xff0000 takes the marks whose third
-// byte is zero, the unmarked packet among them, and not 0x1726c. selectsMark
-// compared mark & fwmask against fwmark instead, which no mark satisfies for
-// that rule, so ReadsMark refused an underlay mark the kernel steers.
+// so the bits of the rule's own mark outside its mask are never compared:
+// fwmark 0x726c/0xff0000 takes the marks whose third byte is zero, the
+// unmarked packet among them, and not 0x1726c. A socket's own output arrives
+// on lo, so a rule naming any other input device reads no socket's mark.
 func TestRuleSelectsAMarkAsTheKernelCompares(t *testing.T) {
 	marks := []uint32{0x726c, 0x0, 0x1726c, 0x10000}
 	for _, one := range []struct {
@@ -1704,10 +1752,13 @@ func TestRuleSelectsAMarkAsTheKernelCompares(t *testing.T) {
 		{Rule{FWMark: 0x726c}, []bool{true, false, false, false}},
 		{Rule{FWMark: 0x726c, FWMask: 0xffffffff}, []bool{true, false, false, false}},
 		{Rule{FWMark: 0x10000, FWMask: 0xff0000}, []bool{false, false, true, true}},
+		{Rule{FWMark: 0x726c, IIF: "lo"}, []bool{true, false, false, false}},
+		{Rule{FWMark: 0x726c, IIF: "ranet0e"}, []bool{false, false, false, false}},
+		{Rule{FWMark: 0x726c, FWMask: 0xff0000, IIF: "eth0"}, []bool{false, false, false, false}},
 	} {
 		for i, mark := range marks {
 			if got := one.rule.selectsMark(mark); got != one.takes[i] {
-				t.Errorf("fwmark %#x/%#x on mark %#x: %v, and the kernel says %v", one.rule.FWMark, one.rule.FWMask, mark, got, one.takes[i])
+				t.Errorf("fwmark %#x/%#x iif %q on mark %#x: %v, and the kernel says %v", one.rule.FWMark, one.rule.FWMask, one.rule.IIF, mark, got, one.takes[i])
 			}
 		}
 	}

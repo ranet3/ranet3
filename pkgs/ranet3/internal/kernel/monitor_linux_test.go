@@ -61,24 +61,30 @@ func TestNetlinkRestoresADeletedRuleWithinASecond(t *testing.T) {
 	const device = "ranetrule0"
 	createTUN(t, device)
 
-	rule := Rule{To: schema.MustPrefix("198.18.104.0/24"), Table: DefaultTable, Priority: 100}
-	r, err := New(Table{Rules: []Rule{rule}}, Runtime{Interface: device}, netstack.NewRouteTable())
+	// an address rule, and the rule an exit owns for its egress device, on a device that does not exist yet
+	installed := []Rule{
+		{To: schema.MustPrefix("198.18.104.0/24"), Table: DefaultTable, Priority: 100, Family: FamilyIPv4},
+		{IIF: device + "e", Table: schema.TableMain, Priority: 60, Family: FamilyIPv6},
+	}
+	written := slices.Clone(installed)
+	written[0].Family = FamilyUnset
+	r, err := New(Table{Rules: written}, Runtime{Interface: device}, netstack.NewRouteTable())
 	if err != nil {
 		t.Fatalf("start the reconciler: %v", err)
 	}
 	plat := r.plat.(*netlinkPlatform)
-	installed := rule
-	installed.Family = FamilyIPv4
 	// read through a socket of the test's own, since the loop owns the platform's
-	held := func() bool {
-		replies, err := conn.execute(unix.RTM_GETRULE, unix.NLM_F_DUMP, make([]byte, sizeofFibRuleHdr))
-		if err != nil {
-			t.Fatalf("dump rules: %v", err)
+	holds := func(rule Rule) func() bool {
+		return func() bool {
+			replies, err := conn.execute(unix.RTM_GETRULE, unix.NLM_F_DUMP, make([]byte, sizeofFibRuleHdr))
+			if err != nil {
+				t.Fatalf("dump rules: %v", err)
+			}
+			return slices.ContainsFunc(replies, func(reply nlMessage) bool {
+				got, ok := plat.decodeRule(reply)
+				return ok && got == rule
+			})
 		}
-		return slices.ContainsFunc(replies, func(reply nlMessage) bool {
-			got, ok := plat.decodeRule(reply)
-			return ok && got == installed
-		})
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -89,14 +95,18 @@ func TestNetlinkRestoresADeletedRuleWithinASecond(t *testing.T) {
 			t.Errorf("the reconciler stopped with %v", err)
 		}
 	})
-	waitFor(t, held)
-
-	if _, err := conn.execute(unix.RTM_DELRULE, unix.NLM_F_ACK, plat.ruleMessage(installed)); err != nil {
-		t.Fatalf("delete the rule as networkd would: %v", err)
+	for _, rule := range installed {
+		waitFor(t, holds(rule))
 	}
-	deleted := time.Now()
-	waitFor(t, held)
-	if took := time.Since(deleted); took > ruleRestoreBudget {
-		t.Errorf("the deleted rule took %s to come back, want at most %s", took, ruleRestoreBudget)
+
+	for _, rule := range installed {
+		if _, err := conn.execute(unix.RTM_DELRULE, unix.NLM_F_ACK, plat.ruleMessage(rule)); err != nil {
+			t.Fatalf("delete %s as networkd would: %v", rule, err)
+		}
+		deleted := time.Now()
+		waitFor(t, holds(rule))
+		if took := time.Since(deleted); took > ruleRestoreBudget {
+			t.Errorf("the deleted rule %s took %s to come back, want at most %s", rule, took, ruleRestoreBudget)
+		}
 	}
 }

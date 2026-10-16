@@ -17,6 +17,8 @@ const (
 	// on the box survives when no notification announces it.
 	DefaultReconcileInterval = 30 * time.Second
 
+	// ifNameSize is the kernel's IFNAMSIZ, which counts a name's terminating NUL.
+	ifNameSize = 16
 	// minRetryInterval is the first delay after a failed pass, and it doubles
 	// up to the reconcile interval.
 	minRetryInterval = time.Second

@@ -505,8 +505,8 @@ type platform interface {
 // a mistaken rule a lookup in the wrong table rather than a black hole.
 type Rule struct {
 	// To is FRA_DST and From is FRA_SRC, each optional. A rule naming neither
-	// selects on a mark alone and has to name its Family, because a mark
-	// belongs to no address family.
+	// selects on a mark or a device and has to name its Family, because
+	// neither belongs to an address family.
 	To   schema.Prefix `yaml:"to,omitempty" json:"to,omitzero" toml:"to,omitempty"`
 	From schema.Prefix `yaml:"from,omitempty" json:"from,omitzero" toml:"from,omitempty"`
 	// FWMark and FWMask are FRA_FWMARK and FRA_FWMASK. A zero mark means the
@@ -516,6 +516,9 @@ type Rule struct {
 	// as it reads elsewhere.
 	FWMark uint32 `yaml:"fwmark,omitempty" json:"fwmark,omitempty" toml:"fwmark,omitempty"`
 	FWMask uint32 `yaml:"fwmask,omitempty" json:"fwmask,omitempty" toml:"fwmask,omitempty"`
+	// IIF is FRA_IIFNAME, the device a packet arrived on, empty for any. Like
+	// a mark it belongs to no address family.
+	IIF string `yaml:"iif,omitempty" json:"iif,omitempty" toml:"iif,omitempty"`
 	// Table is the table to look up, as a number or as one of the three names
 	// the kernel reserves: a rule pointing at main is ordinary, and keeps an
 	// underlay out of a mesh table.
@@ -572,7 +575,7 @@ func (f Family) MarshalYAML() (any, error) { return string(f), nil }
 
 // expandRules resolves each configured rule's address family, so that
 // everything below this point names exactly one. A rule that names neither a
-// destination nor a source selects on a mark alone, which belongs to no
+// destination nor a source selects on a mark or a device, which belong to no
 // family, so it says which one it is for: "both" is written once and installed
 // twice.
 //
@@ -606,7 +609,7 @@ func expandRules(rules []Rule) ([]Rule, error) {
 			rule.Family = FamilyIPv6
 			out = append(out, rule)
 		default:
-			return nil, fmt.Errorf("kernel: cap.table rules at priority %d selects on a mark alone, so it has to name family: ipv4, ipv6 or both", rule.Priority)
+			return nil, fmt.Errorf("kernel: cap.table rules at priority %d selects on no address, so it has to name family: ipv4, ipv6 or both", rule.Priority)
 		}
 	}
 	return out, nil
@@ -631,6 +634,9 @@ func (r Rule) String() string {
 			mark += fmt.Sprintf("/%#x", r.FWMask)
 		}
 		parts = append(parts, mark)
+	}
+	if r.IIF != "" {
+		parts = append(parts, "iif "+r.IIF)
 	}
 	if r.Family != FamilyUnset {
 		parts = append(parts, "family "+string(r.Family))
@@ -673,9 +679,11 @@ func (t Table) ReadsMark(mark uint32) bool {
 // written with a mark and no mask matches. The bits of the rule's mark outside
 // its mask are never compared: fwmark 0x726c/0xff0000 takes every mark whose
 // third byte is zero, unmarked packets among them. A rule selecting on no
-// mark does not count, since it reads none.
+// mark does not count, since it reads none, and neither does one naming an
+// input device other than lo, which is the only one a socket's own output
+// arrives on.
 func (r Rule) selectsMark(mark uint32) bool {
-	if r.FWMark == 0 {
+	if r.FWMark == 0 || (r.IIF != "" && r.IIF != "lo") {
 		return false
 	}
 	mask := r.FWMask
@@ -725,8 +733,14 @@ func (r Rule) validate() error {
 			return fmt.Errorf("kernel: cap.table rules %s: %s %s selects every address, which the kernel reports back as no selector at all", r, named.name, named.prefix)
 		}
 	}
-	if !r.To.IsValid() && !r.From.IsValid() && r.FWMark == 0 {
+	if !r.To.IsValid() && !r.From.IsValid() && r.FWMark == 0 && r.IIF == "" {
 		return fmt.Errorf("kernel: cap.table rules %s selects nothing, so it would match every packet", r)
+	}
+	if len(r.IIF) >= ifNameSize {
+		return fmt.Errorf("kernel: cap.table rules %s: iif %q is %d bytes, and a device name is at most %d", r, r.IIF, len(r.IIF), ifNameSize-1)
+	}
+	if r.IIF != "" && !deviceName(r.IIF) {
+		return fmt.Errorf("kernel: cap.table rules %s: iif %q is not a name a device can carry", r, r.IIF)
 	}
 	if r.FWMark == 0 && r.FWMask != 0 {
 		return fmt.Errorf("kernel: cap.table rules %s carries a mark mask and no mark", r)
@@ -738,6 +752,23 @@ func (r Rule) validate() error {
 		return fmt.Errorf("kernel: cap.table rules %s: table is required", r)
 	}
 	return nil
+}
+
+// deviceName is whether the kernel's dev_valid_name takes name, whose isspace
+// counts 0xa0 beside the six ASCII spaces. No device carries a name it refuses,
+// and the kernel reads FRA_IIFNAME only up to its first NUL, so a rule holding
+// either is installed as another rule than the one written.
+func deviceName(name string) bool {
+	if name == "." || name == ".." {
+		return false
+	}
+	for i := range len(name) {
+		switch name[i] {
+		case 0, '/', ':', '\t', '\n', '\v', '\f', '\r', ' ', 0xa0:
+			return false
+		}
+	}
+	return true
 }
 
 func familyOf(address netip.Addr) Family {
@@ -987,6 +1018,7 @@ func sortedRules(rules []Rule) []Rule {
 			cmp.Compare(a.Table, b.Table),
 			cmp.Compare(a.FWMark, b.FWMark),
 			cmp.Compare(a.FWMask, b.FWMask),
+			cmp.Compare(a.IIF, b.IIF),
 			schema.ComparePrefix(a.From, b.From),
 			schema.ComparePrefix(a.To, b.To),
 		)

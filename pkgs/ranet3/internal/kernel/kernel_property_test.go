@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,9 +53,15 @@ func masks() hegel.Generator[uint32] {
 	return hegel.OneOf(hegel.Integers[uint32](1, math.MaxUint32), hegel.Just(uint32(0)), hegel.Just(allOnes))
 }
 
+// devices draws an input device a rule selects on, the longest name a device
+// can carry among them.
+func devices() hegel.Generator[string] {
+	return hegel.SampledFrom([]string{"ranet0e", "lo", "eth0", strings.Repeat("r", 15)})
+}
+
 // writtenRules draws one rule in a shape a file writes: on addresses, which
-// give the rule its family, on a mark alone, which names its family, or on
-// both an address and a mark.
+// give the rule its family, on a mark or an input device, which names its
+// family, or on an address beside either.
 func writtenRules() hegel.Generator[Rule] {
 	return hegel.Composite(func(tc hegel.TestCase) Rule {
 		rule := Rule{
@@ -66,7 +73,10 @@ func writtenRules() hegel.Generator[Rule] {
 			rule.FWMark = hegel.Draw(tc, edges[uint32](1, math.MaxUint32))
 			rule.FWMask = hegel.Draw(tc, masks())
 		}
-		if marked && hegel.Draw(tc, hegel.Booleans()) {
+		if hegel.Draw(tc, hegel.Booleans()) {
+			rule.IIF = hegel.Draw(tc, devices())
+		}
+		if (marked || rule.IIF != "") && hegel.Draw(tc, hegel.Booleans()) {
 			rule.Family = hegel.Draw(tc, hegel.SampledFrom([]Family{FamilyIPv4, FamilyIPv6, FamilyBoth}))
 			return rule
 		}
@@ -99,6 +109,7 @@ func strayRules() hegel.Generator[Rule] {
 			From:     hegel.Draw(tc, prefixes),
 			FWMark:   hegel.Draw(tc, edges[uint32](0, math.MaxUint32)),
 			FWMask:   hegel.Draw(tc, masks()),
+			IIF:      hegel.Draw(tc, hegel.OneOf(hegel.Just(""), devices(), hegel.SampledFrom([]string{".", "..", "a/b", "a:b", "a b", "a\x00b", "a\xc2\xa0", strings.Repeat("r", 16)}))),
 			Table:    schema.TableID(hegel.Draw(tc, edges[uint32](0, math.MaxUint32))),
 			Priority: hegel.Draw(tc, edges[uint32](0, math.MaxUint32)),
 			Family:   hegel.Draw(tc, hegel.SampledFrom([]Family{FamilyUnset, FamilyIPv4, FamilyIPv6, FamilyBoth, "ipv7"})),
