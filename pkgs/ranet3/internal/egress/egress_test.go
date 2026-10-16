@@ -213,6 +213,92 @@ func TestReturnRuleForADefaultCarriesNoPrefixMatch(t *testing.T) {
 	}
 }
 
+// An exit serving only the traffic steered to its egress segment advertises
+// nothing and translates what arrives on the egress device in both families,
+// since End.DT46 delivers either. Nothing arriving on the mesh device is
+// translated, because no prefix offered to the mesh draws any here.
+func TestSIDOnlyExitTranslatesTheEgressDeviceInBothFamilies(t *testing.T) {
+	var announced [][]netip.Prefix
+	rt := Runtime{Egress: "ranet0e", Announce: func(p []netip.Prefix) { announced = append(announced, p) }}
+	be := &fakeBackend{}
+	tr := translator(t, Egress{}, rt, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"out via ranet0e not ranet0 ipv4 masquerade",
+		"out via ranet0e not ranet0 ipv6 masquerade",
+	}
+	if got := be.specs(); !slices.Equal(got, want) {
+		t.Errorf("installed %q, want %q", got, want)
+	}
+	if len(announced) != 1 || len(announced[0]) != 0 {
+		t.Errorf("published %v, want one empty announcement", announced)
+	}
+}
+
+// An exit that advertises and holds an egress segment keys one Out rule on each
+// device, under the same source, and a family it does not advertise is
+// translated off the egress device alone, with no return rule however return
+// is set.
+func TestExitKeysOneRuleOnEachDevice(t *testing.T) {
+	cfg := Egress{
+		Return:    true,
+		Advertise: prefixes(t, "198.51.100.0/24"),
+		Source4:   Source{Addr: netip.MustParseAddr("198.51.100.7")},
+	}
+	rt := Runtime{Egress: "ranet0e", MeshAddresses: []netip.Addr{netip.MustParseAddr("10.88.0.2")}}
+	be := &fakeBackend{}
+	tr := translator(t, cfg, rt, be)
+	for range 2 {
+		if err := tr.reconcile(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{
+		"out via ranet0 ipv4 source 198.51.100.7",
+		"out via ranet0e not ranet0 ipv4 source 198.51.100.7",
+		"in via ranet0 ipv4 from 198.51.100.0/24 source 198.51.100.7",
+		"out via ranet0e not ranet0 ipv6 masquerade",
+	}
+	if got := be.specs(); !slices.Equal(got, want) {
+		t.Errorf("installed %q, want %q", got, want)
+	}
+	if be.applied != 1 {
+		t.Errorf("wrote the ruleset %d times over two passes, want once", be.applied)
+	}
+	if got := tr.Announce(); !slices.Equal(got, plain(cfg.Advertise)) {
+		t.Errorf("announced %v, want %v", got, cfg.Advertise)
+	}
+}
+
+// An empty advertise list is an exit serving only steered traffic, which only
+// a node holding an egress device can be. Without one the capability would
+// translate nothing and offer nothing, and New refuses it before it opens
+// anything.
+func TestEmptyAdvertiseNeedsAnEgressDevice(t *testing.T) {
+	if err := (Egress{}).Validate(); err != nil {
+		t.Fatalf("a capability advertising nothing was refused on its own: %v", err)
+	}
+	if err := (Egress{}).Serves(true); err != nil {
+		t.Errorf("an exit with an egress segment was refused: %v", err)
+	}
+	if err := (Egress{}).Serves(false); err == nil || !strings.Contains(err.Error(), "advertise is empty") {
+		t.Errorf("an exit with nothing to carry was refused with %v", err)
+	}
+	_, err := New(Egress{}, Runtime{Interface: "ranet0", Forwarding: func() (bool, bool) { return true, true }})
+	if err == nil || !strings.Contains(err.Error(), "advertise is empty") {
+		t.Fatalf("New returned %v, want the refusal of a capability carrying nothing", err)
+	}
+	if errors.Is(err, ErrUnsupported) {
+		t.Error("the platform was consulted before the capability was judged")
+	}
+	_, err = New(Egress{}, Runtime{Interface: "ranet0", Egress: "ranet0", Forwarding: func() (bool, bool) { return true, true }})
+	if err == nil || !strings.Contains(err.Error(), "is the mesh device") {
+		t.Errorf("an egress device that is the mesh device was refused with %v", err)
+	}
+}
+
 // Each family is a table of its own, written and read back one at a time, so
 // the rules a pass asks for have to be grouped by family. A list ordered any
 // other way never compares equal to its own readback, and the ruleset is
@@ -397,9 +483,9 @@ func TestValidateRefusesWhatCannotBeTranslated(t *testing.T) {
 		want string
 	}{
 		{
-			"an exit that advertises nothing",
-			Egress{},
-			"advertise is empty",
+			"a return with nothing advertised",
+			Egress{Return: true},
+			"no prefix to translate from",
 		},
 		{
 			"a prefix with bits under its length",

@@ -69,12 +69,12 @@ type nftables struct {
 	families []uint8
 }
 
-func newBackend(cfg Egress, _ Runtime) (backend, error) {
+func newBackend(cfg Egress, rt Runtime) (backend, error) {
 	conn, err := dialNetfilter()
 	if err != nil {
 		return nil, err
 	}
-	be := &nftables{conn: conn, families: cfg.families()}
+	be := &nftables{conn: conn, families: cfg.translated(rt.Egress)}
 	// A table this tool left behind in a family the configuration no longer
 	// covers would go on translating under the old rules for as long as the
 	// node ran, and nothing else here would ever look at it: every dump below
@@ -433,13 +433,23 @@ func newRule(rule Rule) (nftRequest, error) {
 	if len(spec) >= udataCommentMax {
 		return nftRequest{}, fmt.Errorf("egress: rule %s does not fit in a %d byte comment, which is its identity on the host", spec, udataCommentMax)
 	}
-	if len(rule.Interface) >= ifNameSize {
-		// A name this long cannot be a device's, since the kernel caps one at
-		// IFNAMSIZ-1, and the comparison below would be against 16 bytes with
-		// no terminator, which no interface register can ever equal. The rule
-		// would install and then match nothing, or in the inbound direction
-		// everything.
-		return nftRequest{}, fmt.Errorf("egress: interface %q is %d bytes, and a device name is at most %d", rule.Interface, len(rule.Interface), ifNameSize-1)
+	for _, name := range []string{rule.Interface, rule.Egress} {
+		if len(name) >= ifNameSize {
+			// A name this long cannot be a device's, since the kernel caps one at
+			// IFNAMSIZ-1, and the comparison below would be against 16 bytes with
+			// no terminator, which no interface register can ever equal. The rule
+			// would install and then match nothing, or in the inbound direction
+			// everything.
+			return nftRequest{}, fmt.Errorf("egress: interface %q is %d bytes, and a device name is at most %d", name, len(name), ifNameSize-1)
+		}
+	}
+	if rule.Direction == In && rule.Egress != "" {
+		return nftRequest{}, fmt.Errorf("egress: rule %s keys an inbound rule on the egress device, and only an outbound one can be", spec)
+	}
+	// a steered packet routed back into the mesh keeps its source, so departure is still tested against the mesh device
+	arrival := rule.Interface
+	if rule.Egress != "" {
+		arrival = rule.Egress
 	}
 	inbound, outbound := unix.NFT_CMP_EQ, unix.NFT_CMP_NEQ
 	if rule.Direction == In {
@@ -461,7 +471,7 @@ func newRule(rule Rule) (nftRequest, error) {
 		// packet reads as interface zero either way.
 		expressions = append(expressions, metaCompareValue(unix.NFT_META_IIF, unix.NFT_CMP_NEQ, make([]byte, 4))...)
 	}
-	expressions = append(expressions, metaCompare(unix.NFT_META_IIFNAME, inbound, rule.Interface)...)
+	expressions = append(expressions, metaCompare(unix.NFT_META_IIFNAME, inbound, arrival)...)
 	expressions = append(expressions, metaCompare(unix.NFT_META_OIFNAME, outbound, rule.Interface)...)
 	if rule.From.IsValid() {
 		expressions = append(expressions, sourcePrefix(rule.From)...)

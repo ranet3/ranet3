@@ -659,6 +659,12 @@ func (c *Config) validateNode() error {
 // validateAcrossCapabilities is the part no capability can check alone,
 // because each half is in a different block.
 func (c *Config) validateAcrossCapabilities() error {
+	// nothing here creates the egress device, so no segment delivers to egress and an exit serves only what it advertises
+	if c.Cap.Egress != nil {
+		if err := c.Cap.Egress.Serves(false); err != nil {
+			return err
+		}
+	}
 	if err := c.validateUnderlayMark(); err != nil {
 		return err
 	}

@@ -37,6 +37,7 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	}
 	rt := Runtime{
 		Interface:     "ranet0",
+		Egress:        "ranet0e",
 		MeshAddresses: []netip.Addr{netip.MustParseAddr("10.88.0.2"), netip.MustParseAddr("2001:db8::2")},
 		Forwarding:    func() (bool, bool) { return true, true },
 	}
@@ -49,8 +50,8 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 
 	tr := newTranslator(cfg, rt, be)
 	desired := tr.desired()
-	if len(desired) != 5 {
-		t.Fatalf("the configuration asks for %d rules, want two out and three in", len(desired))
+	if len(desired) != 7 {
+		t.Fatalf("the configuration asks for %d rules, want two out of the mesh device, two out of the egress device and three in", len(desired))
 	}
 	if err := be.Apply(desired); err != nil {
 		t.Fatalf("install %d rules: %v", len(desired), err)
@@ -116,6 +117,27 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	if err := be.Withdraw(); err != nil {
 		t.Errorf("withdrawing an empty host failed: %v", err)
 	}
+
+	// an exit advertising nothing still owns a table in each family, for what arrives on its egress device
+	steered, err := newBackend(Egress{}, rt)
+	if err != nil {
+		t.Fatalf("open the nftables backend for an exit advertising nothing: %v", err)
+	}
+	t.Cleanup(func() { _ = steered.Close() })
+	only := newTranslator(Egress{}, rt, steered).desired()
+	if err := steered.Apply(only); err != nil {
+		t.Fatalf("install %d rules: %v", len(only), err)
+	}
+	if held, err = steered.Rules(); err != nil || !sameRules(held, only) {
+		t.Fatalf("the kernel holds %v (%v), want %v", held, err, only)
+	}
+	if tables, err := steered.(*nftables).ownTables(); err != nil || len(tables) != 2 {
+		t.Errorf("an exit advertising nothing holds tables in %v (%v), want both families", tables, err)
+	}
+	if err := steered.Withdraw(); err != nil {
+		t.Fatalf("withdraw: %v", err)
+	}
+	requireEmptyRuleset(t, steered)
 }
 
 // requireEmptyRuleset is the second guard, and the assertion after a

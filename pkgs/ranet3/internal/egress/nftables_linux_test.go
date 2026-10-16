@@ -57,6 +57,11 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			[]string{"meta", "cmp", "meta", "cmp", "counter", "immediate", "nat"},
 		},
 		{
+			"out of the egress device",
+			Rule{Family: FamilyIPv6, Direction: Out, Interface: "ranet0", Egress: "ranet0e"},
+			[]string{"meta", "cmp", "meta", "cmp", "counter", "masq"},
+		},
+		{
 			"into the mesh from one prefix",
 			Rule{Family: FamilyIPv4, Direction: In, Interface: "ranet0",
 				From: netip.MustParsePrefix("198.51.100.0/24"), Source: netip.MustParseAddr("10.88.0.2")},
