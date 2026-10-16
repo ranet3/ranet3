@@ -229,6 +229,7 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 	if old == nil {
 		return nil
 	}
+	s.deletingRetiring(old.RemoteSPI)
 	deleted, err := s.requestLocked(INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{oldLocalSPI}})}})
 	// The replacement is installed, so the old SA is finished whatever comes
 	// back. Retire it on every path out of here. A response that names no SPI

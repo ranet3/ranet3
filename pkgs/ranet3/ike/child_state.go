@@ -102,10 +102,7 @@ func (s *Session) retireChild(remoteSPI uint32) error {
 	defer s.childMu.Unlock()
 	retiring := s.retiring
 	if retiring.LocalSPI == 0 {
-		// Already retired, which is how the peer's own Delete for this SA
-		// crossing ours looks from here: deleteChildren cleared it before
-		// our exchange came back. RFC 7296 section 1.4.1 describes the
-		// crossing. There is nothing left to do and nothing wrong.
+		// the peer's Delete crossed this end's, and deleteChildren already cleared the SA
 		return nil
 	}
 	if retiring.RemoteSPI != remoteSPI {
@@ -116,6 +113,15 @@ func (s *Session) retireChild(remoteSPI uint32) error {
 	}
 	s.retiring, s.retiringDeleting = ChildSA{}, false
 	return nil
+}
+
+// set before this end's Delete for the replaced SA goes out, so a crossing Delete never finds it unmarked
+func (s *Session) deletingRetiring(remoteSPI uint32) {
+	s.childMu.Lock()
+	defer s.childMu.Unlock()
+	if s.retiring.LocalSPI != 0 && s.retiring.RemoteSPI == remoteSPI {
+		s.retiringDeleting = true
+	}
 }
 
 // the mark it sets keeps a second Delete for the same SA from following the first
@@ -282,7 +288,8 @@ func (s *Session) forgetChild(child ChildSA) error {
 
 // deleteChildren closes every locally known Child SA designated by the peer's
 // inbound SPIs and returns our paired inbound SPIs for the Delete response
-// (RFC 7296 section 1.4.1). Unknown SPIs are ignored.
+// (RFC 7296 section 1.4.1). Unknown SPIs are ignored, and so is a replaced SA
+// this end's own Delete is out for.
 func (s *Session) deleteChildren(remoteSPIs []uint32) ([]uint32, error) {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
@@ -293,6 +300,11 @@ func (s *Session) deleteChildren(remoteSPIs []uint32) ([]uint32, error) {
 		case s.Child.LocalSPI != 0 && s.Child.RemoteSPI == remoteSPI:
 			child = &s.Child
 		case s.retiring.LocalSPI != 0 && s.retiring.RemoteSPI == remoteSPI:
+			// RFC 7296 section 1.4.1: "If a node receives a delete request for SAs for which it has already issued a delete request, it MUST delete the outgoing SAs while processing the request and the incoming SAs while processing the response. In that case, the responses MUST NOT include Delete payloads for the deleted SAs, since that would result in duplicate deletion and could in theory delete the wrong SA."
+			// its outgoing half stopped carrying traffic when its replacement was installed, and its incoming half goes when this end's own Delete is answered
+			if s.retiringDeleting {
+				continue
+			}
 			child = &s.retiring
 		default:
 			continue
@@ -301,9 +313,6 @@ func (s *Session) deleteChildren(remoteSPIs []uint32) ([]uint32, error) {
 			return nil, err
 		}
 		localSPIs = append(localSPIs, child.LocalSPI)
-		if child == &s.retiring {
-			s.retiringDeleting = false
-		}
 		*child = ChildSA{}
 	}
 	return localSPIs, nil
