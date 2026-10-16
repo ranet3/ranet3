@@ -29,7 +29,13 @@ unless run as root.
   refuses what the path cannot carry, segmented or single, and reports the path
   MTU. They also check that it fragments past the path only while the family
   asks. A third checks on loopback that IPv4 leaves without DF while the socket
-  fragments.
+  fragments. 7 more, in `pair_namespace_linux_test.go`, check the sockets
+  connected to 1 peer. Such a socket gets its peer's datagrams while the
+  listener keeps the rest, connects only in its listener's namespace and stops
+  carrying a pair from an address the host lost. It follows its family's path
+  MTU discovery across a locked path, keeps its pair past a hop's report of a
+  smaller path, leaves by the interface its peer's datagram arrived on, and for
+  a dialed pair binds the source of the route the underlay mark selects.
 - `internal/netstack` has tests whose names start with `TestTUN` that create and
   attach to a real TUN device. They read its `gso_max_segs` back, open several
   queues as 1 device and no more than the kernel attaches, and refuse a mesh
@@ -73,7 +79,9 @@ set. The Mac that runs them may be on a live mesh.
 - `internal/netstack` has arms that create a utun.
 - `internal/client` has arms that put a node on a real utun.
 - `transport` has 1 that sends through a feth pair whose MTU is 1400. A datagram
-  past that MTU is refused, or fragmented while a session asks.
+  past that MTU is refused, or fragmented while a session asks. A second checks
+  that a socket connected to 1 peer from a hub bound to 1 feth binds that feth's
+  address, where the host's own route leaves by the other.
 - `control` has 1 that checks that the control socket and the directories the
   daemon makes for it get the daemon's group, under a parent directory that
   hands down another group, as `/var/run` does on macOS.
@@ -126,7 +134,8 @@ sets `HEGEL_LIBHEGEL_PATH` to the library in the vendored hegel module, and
 fails if a test wrote hegel's cache under the check's home directory anyway.
 
 Property tests build on Linux and macOS alone. `internal/pbt` and every property
-test carry a build constraint that names them. The `transport` property, the
+test carry a build constraint that names them. The `transport` properties of its
+sends and of the source a socket connected to 1 peer binds, the
 `internal/kernel` netlink and rule message properties and the `internal/egress`
 nftables property build on Linux alone. The `go-lint` check vets the tree for
 FreeBSD, which fails on a property test without the constraint.
@@ -171,7 +180,7 @@ then checks that no rule, link, xfrm state or policy, or nftables table of
 theirs is left on the host. The `internal/kernel` tests
 `TestNetworkWatchInNetworkNamespace` and
 `TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault` need root and run in
-no check.
+no check, and so do the 7 `transport` tests of the sockets connected to 1 peer.
 
 The `netlink` check and `integration-egress` are the only places where a real
 kernel takes the `nf_tables` encoding. Elsewhere the encoding meets only the
