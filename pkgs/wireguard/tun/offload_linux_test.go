@@ -841,6 +841,22 @@ func Test_udpPacketsCanCoalesce(t *testing.T) {
 	}
 }
 
+func Test_groToWrite_resetDropsPackets(t *testing.T) {
+	wi := newGROToWrite()
+	idx := wi.appendIov(make([]byte, 40))
+	wi.iovs[idx] = append(wi.iovs[idx], make([]byte, 100))
+	iov := wi.iovs[idx]
+	wi.reset()
+	for i, b := range iov[iovHeadPacketIdx:] {
+		if b != nil {
+			t.Errorf("iov element %d still references a written packet after reset", iovHeadPacketIdx+i)
+		}
+	}
+	if len(iov[iovVirtioNetHdrIdx]) != virtioNetHdrLen {
+		t.Errorf("reset dropped the virtio header buffer")
+	}
+}
+
 func Test_handleGRO_invalidItemCsumClearsVirtioNetHdr(t *testing.T) {
 	pkts := [][]byte{
 		flipTCP4Checksum(tcp4Packet(ip4PortA, ip4PortB, header.TCPFlagAck, 100, 1)),

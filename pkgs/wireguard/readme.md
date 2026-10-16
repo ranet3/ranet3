@@ -33,7 +33,8 @@ The copy is built in a clone of upstream in four steps:
    `LICENSE`, and `go.mod` and `go.sum` tidied to what is left. The trim drops
    `x/crypto` and `wintun` from `go.mod`. `gvisor` stays, for tests of `tun`.
 
-The first commit of this directory is the result of these steps.
+The first commit of this directory is the result of these steps. The changes
+made here since are the later commits that `git log` shows for this directory.
 
 ### The tailscale commits
 
