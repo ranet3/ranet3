@@ -130,7 +130,7 @@ func checkInitiatorPayloads(t *testing.T, x payloadExchange) {
 		}
 		_, _ = peer.WriteToUDP(withNonESPMarker(response), from)
 	})
-	_, authErr := s.completeIKEAuth(cfg, goldenMessage1, goldenMessage2, goldenNi, goldenNr)
+	authErr := s.completeIKEAuth(cfg, goldenMessage1, goldenMessage2, goldenNi, goldenNr)
 	inner := <-sent
 	if inner == nil {
 		t.Fatal("the initiator sent no IKE_AUTH request the responder could read")

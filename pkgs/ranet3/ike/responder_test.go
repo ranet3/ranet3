@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -163,7 +164,7 @@ func TestCanceledInitiatorDeletesTheSAItsResponderEstablished(t *testing.T) {
 	ctx, h := canceledHarness(t, func() bool { return true })
 	var answered, early atomic.Bool
 	cfg := h.peerConfig()
-	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header) bool {
+	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
 		switch {
 		case header == nil:
 		case !fromInitiator && header.ExchangeType == IKE_AUTH:
@@ -186,31 +187,93 @@ func TestCanceledInitiatorDeletesTheSAItsResponderEstablished(t *testing.T) {
 // lateAnswer is how long the responder takes over IKE_AUTH after the cancel, past the initiator's wait for it
 const lateAnswer = canceledAuthWait + 500*time.Millisecond
 
-// an answer that leaves the responder after canceledAuthWait finds the responder told all the same
-func TestCanceledInitiatorDeletesTheSAWhoseAnswerCameLate(t *testing.T) {
+// RFC 7296 section 2.3: "The window size is always one until the initial exchanges complete."
+// a canceled initiator whose IKE_AUTH goes unanswered for the whole wait therefore sends no request past it, before the late answer or after
+func TestCanceledInitiatorSendsNothingPastAnUnansweredIKEAuth(t *testing.T) {
 	ctx, h := canceledHarness(t, func() bool {
 		time.Sleep(lateAnswer)
 		return true
 	})
-
-	if _, err := InitiateContext(ctx, h.peerConfig()); !errors.Is(err, context.Canceled) {
-		t.Fatalf("the canceled handshake returned %v, want the cancel", err)
-	}
-	awaitPeerDelete(t, h)
-}
-
-// an answer lost on the path leaves the responder told all the same
-func TestCanceledInitiatorDeletesTheSAWhoseAnswerWasLost(t *testing.T) {
-	ctx, h := canceledHarness(t, func() bool { return true })
+	var past atomic.Int32
 	cfg := h.peerConfig()
-	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header) bool {
-		return fromInitiator || header == nil || header.ExchangeType != IKE_AUTH
+	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
+		if fromInitiator && header != nil && header.MessageID > 1 {
+			past.Add(1)
+		}
+		return true
 	})
 
 	if _, err := InitiateContext(ctx, cfg); !errors.Is(err, context.Canceled) {
 		t.Fatalf("the canceled handshake returned %v, want the cancel", err)
 	}
-	awaitPeerDelete(t, h)
+	select {
+	case held := <-h.sessions:
+		defer held.Mux().Close()
+		<-h.identities
+	case <-time.After(answerBudget):
+		t.Fatal("the responder never sent its late answer")
+	}
+	time.Sleep(quietPeriod)
+	if n := past.Load(); n != 0 {
+		t.Errorf("the canceled initiator sent %d requests past the IKE_AUTH it never had answered", n)
+	}
+}
+
+// cancelInAuthTimer cancels a dial this long after its IKE_AUTH request, so the request's first retransmission falls inside the wait
+const cancelInAuthTimer = requestTimeout / 2
+
+// RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
+// a cancel keeps the IKE_AUTH exchange for the wait, so with its answer withheld the request goes out again unchanged and nothing past it does
+func TestCanceledInitiatorRetransmitsItsIKEAuthUnchanged(t *testing.T) {
+	if canceledAuthWait+cancelInAuthTimer <= retransmitDelay(requestTimeout, 1) {
+		t.Fatalf("a wait of %s from a cancel %s into IKE_AUTH ends before its first retransmission at %s", canceledAuthWait, cancelInAuthTimer, retransmitDelay(requestTimeout, 1))
+	}
+	h := newResponderHarness(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var (
+		mu     sync.Mutex
+		copies [][]byte
+		past   int
+	)
+	cfg := h.peerConfig()
+	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, raw []byte) bool {
+		if header == nil {
+			return true
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case !fromInitiator:
+			return header.ExchangeType != IKE_AUTH
+		case header.MessageID > 1:
+			past++
+		case header.ExchangeType == IKE_AUTH:
+			if len(copies) == 0 {
+				time.AfterFunc(cancelInAuthTimer, cancel)
+			}
+			copies = append(copies, bytes.Clone(raw))
+		}
+		return true
+	})
+
+	if _, err := InitiateContext(ctx, cfg); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the canceled handshake returned %v, want the cancel", err)
+	}
+	time.Sleep(quietPeriod)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(copies) < 2 {
+		t.Fatalf("the canceled initiator sent its IKE_AUTH request %d times inside the wait, want it retransmitted", len(copies))
+	}
+	for i, again := range copies[1:] {
+		if !bytes.Equal(again, copies[0]) {
+			t.Errorf("IKE_AUTH copy %d differs from the request it retransmits", i+2)
+		}
+	}
+	if past != 0 {
+		t.Errorf("the canceled initiator sent %d requests past the IKE_AUTH it never had answered", past)
+	}
 }
 
 // a responder that refused IKE_AUTH in an answer that decrypted holds no SA, so its canceled initiator sends it no Delete
@@ -218,7 +281,7 @@ func TestCanceledInitiatorSendsNoDeleteToAResponderThatRefusedIt(t *testing.T) {
 	ctx, h := canceledHarness(t, func() bool { return false })
 	var informational atomic.Int32
 	cfg := h.peerConfig()
-	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header) bool {
+	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
 		if fromInitiator && header != nil && header.ExchangeType == INFORMATIONAL {
 			informational.Add(1)
 		}
@@ -323,7 +386,8 @@ func awaitPeerDelete(t *testing.T, h *responderHarness) {
 }
 
 // relay carries UDP between an initiator and the responder at responderPort, forwards what pass reports, and returns the port to dial
-func relay(t *testing.T, responderPort int, pass func(fromInitiator bool, header *Header) bool) int {
+// pass sees each datagram's IKE header, nil for none, and its message, which it clones to keep
+func relay(t *testing.T, responderPort int, pass func(fromInitiator bool, header *Header, raw []byte) bool) int {
 	t.Helper()
 	conn := listenPeer(t)
 	responder := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: responderPort}
@@ -349,7 +413,7 @@ func relay(t *testing.T, responderPort int, pass func(fromInitiator bool, header
 			if n > 4 {
 				header, _ = decodeHeader(buf[4:n])
 			}
-			if pass(fromInitiator, header) {
+			if pass(fromInitiator, header, buf[min(n, 4):n]) {
 				_, _ = conn.WriteToUDP(buf[:n], to)
 			}
 		}

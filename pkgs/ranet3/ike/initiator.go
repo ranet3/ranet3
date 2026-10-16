@@ -515,7 +515,7 @@ func Initiate(cfg PeerConfig) (*Session, error) {
 // InitiateContext cancels only the handshake's mux. It does not close a shared
 // hub or bind the established session's lifetime to ctx. Session.Run owns that.
 // A cancel once IKE_AUTH is under way waits canceledAuthWait for the answer
-// and then deletes the SA the responder may have established.
+// and deletes the SA an answer in that time established.
 func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -729,11 +729,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	}
 	stopWait := context.AfterFunc(ctx, func() { time.AfterFunc(canceledAuthWait, func() { _ = mux.Close() }) })
 	defer stopWait()
-	if progress, err := sess.completeIKEAuth(cfg, req, respRaw, ni, nr); err != nil {
-		if progress == authUnanswered && ctx.Err() != nil {
-			// this Delete leaves RFC 7296 section 2.3's window of one, since a responder whose answer never arrived may hold the SA until told
-			_ = sess.DeleteIKE()
-		}
+	if err := sess.completeIKEAuth(cfg, req, respRaw, ni, nr); err != nil {
 		mux.Close()
 		return nil, err
 	}
@@ -821,21 +817,10 @@ func suiteFromProposal(p Proposal) (SASuite, error) {
 	return SASuite{EncrID: encr.ID, EncrKeyBits: encr.KeyLengthBits, PRFID: prfT.ID, DHGroup: dhT.ID}, nil
 }
 
-// authProgress is how far IKE_AUTH got before it ended
-type authProgress int
-
-const (
-	// no answer decrypted, so the responder may hold an SA this end never learned of
-	authUnanswered authProgress = iota
-	authAnswered
-	// the responder's AUTH verified, which establishes the IKE SA whatever became of its Child SA
-	authAuthenticated
-)
-
-func (s *Session) completeIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr []byte) (authProgress, error) {
-	progress, err := s.doIKEAuth(cfg, realMessage1, realMessage2, ni, nr)
-	if err == nil || progress != authAuthenticated {
-		return progress, err
+func (s *Session) completeIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr []byte) error {
+	authenticated, err := s.doIKEAuth(cfg, realMessage1, realMessage2, ni, nr)
+	if err == nil || !authenticated {
+		return err
 	}
 
 	// RFC 7296 section 2.21.2 says a valid responder AUTH establishes the IKE SA
@@ -846,9 +831,9 @@ func (s *Session) completeIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni
 	if deleteErr := s.deleteAuthenticatedIKE(); deleteErr != nil {
 		// the responder holds the authenticated SA until told, and a mux closed under the answered Delete may have sent none
 		_ = s.DeleteIKE()
-		return progress, fmt.Errorf("%w; additionally failed to delete authenticated IKE SA: %v", err, deleteErr)
+		return fmt.Errorf("%w; additionally failed to delete authenticated IKE SA: %v", err, deleteErr)
 	}
-	return progress, err
+	return err
 }
 
 func (s *Session) deleteAuthenticatedIKE() error {
@@ -887,18 +872,18 @@ func (s *Session) deleteAuthenticatedIKE() error {
 	return nil
 }
 
-func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr []byte) (authProgress, error) {
+func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr []byte) (bool, error) {
 	mySPI := randUint32Nonzero()
 	spiBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(spiBuf, mySPI)
 
 	idiBody, err := encodeID(cfg.Local)
 	if err != nil {
-		return authUnanswered, err
+		return false, err
 	}
 	idrBody, err := encodeID(cfg.Remote)
 	if err != nil {
-		return authUnanswered, err
+		return false, err
 	}
 
 	macedIDForI := prf(s.current.suite.PRFID, s.current.skpi, idiBody)
@@ -917,21 +902,18 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	hdr := Header{SPIInitiator: s.current.spiI, SPIResponder: s.current.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
 	req, err := s.current.encrypt(s.current.skei, hdr, nil, inner)
 	if err != nil {
-		return authUnanswered, err
+		return false, err
 	}
 
 	resp, respInner, err := encryptedRoundTrip(s.mux, s.current, req)
-	if resp == nil {
-		return authUnanswered, err
-	}
 	if err != nil {
-		return authAnswered, err
+		return false, err
 	}
 	if err := validateResponseCriticalFlags(resp.Payloads); err != nil {
-		return authAnswered, err
+		return false, err
 	}
 	if err := validateResponseCriticalFlags(respInner); err != nil {
-		return authAnswered, err
+		return false, err
 	}
 	respMsg := &Message{Header: resp.Header, Payloads: respInner}
 
@@ -944,16 +926,16 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 		if n := respMsg.find(PayloadN); n != nil {
 			nt, err := DecodeNotify(n.Body)
 			if err != nil {
-				return authAnswered, err
+				return false, err
 			}
-			return authAnswered, fmt.Errorf("ike: IKE_AUTH rejected inside SK: notify type %d", nt.Type)
+			return false, fmt.Errorf("ike: IKE_AUTH rejected inside SK: notify type %d", nt.Type)
 		}
-		return authAnswered, fmt.Errorf("ike: incomplete IKE_AUTH response")
+		return false, fmt.Errorf("ike: incomplete IKE_AUTH response")
 	}
 	macedIDForR := prf(s.current.suite.PRFID, s.current.skpr, idrRecv.Body)
 	responderSigned := concat(realMessage2, ni, macedIDForR)
 	if err := VerifyAuth(cfg.RemotePublicKey, responderSigned, authRecv.Body); err != nil {
-		return authAnswered, err
+		return false, err
 	}
 	// Compare the name rather than the bytes: ranet writes O and CN as
 	// UTF8String while strongSwan picks the string type from the value, so
@@ -962,10 +944,10 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	// to check.
 	got, err := identityFromID(idrRecv.Body)
 	if err != nil {
-		return authAnswered, err
+		return false, err
 	}
 	if got != cfg.Remote {
-		return authAnswered, fmt.Errorf("ike: responder identity %s does not match configured IDr", got)
+		return false, fmt.Errorf("ike: responder identity %s does not match configured IDr", got)
 	}
 
 	// Only after verifying AUTH may Child-SA failures be authoritative. Per
@@ -975,35 +957,35 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 		if n := respMsg.find(PayloadN); n != nil {
 			nt, err := DecodeNotify(n.Body)
 			if err != nil {
-				return authAuthenticated, err
+				return true, err
 			}
-			return authAuthenticated, fmt.Errorf("ike: Child SA rejected: notify type %d", nt.Type)
+			return true, fmt.Errorf("ike: Child SA rejected: notify type %d", nt.Type)
 		}
 	}
 	if saRecv == nil || tsiRecv == nil || tsrRecv == nil {
-		return authAuthenticated, fmt.Errorf("ike: incomplete IKE_AUTH response")
+		return true, fmt.Errorf("ike: incomplete IKE_AUTH response")
 	}
 	if err := validateFullRangeSelectors(tsiRecv, tsrRecv); err != nil {
-		return authAuthenticated, err
+		return true, err
 	}
 
 	_, encr, remoteSPI, err := decodeChildProposal(saRecv.Body, nil)
 	if err != nil {
-		return authAuthenticated, fmt.Errorf("ike: bad child SA in IKE_AUTH response: %w", err)
+		return true, fmt.Errorf("ike: bad child SA in IKE_AUTH response: %w", err)
 	}
 
 	initKey, respKey, err := ChildSAKeymat(s.current.suite.PRFID, s.current.skD, ni, nr, encr.ID, encr.KeyLengthBits)
 	if err != nil {
-		return authAuthenticated, err
+		return true, err
 	}
 	if err := s.replaceChild(ChildSA{
 		EncrID: encr.ID, EncrKeyBits: encr.KeyLengthBits,
 		LocalSPI: mySPI, RemoteSPI: remoteSPI,
 		InboundKey: respKey, OutboundKey: initKey,
 	}); err != nil {
-		return authAuthenticated, err
+		return true, err
 	}
-	return authAuthenticated, nil
+	return true, nil
 }
 
 // usefulInitNotify finds the one unauthenticated IKE_SA_INIT notify worth
