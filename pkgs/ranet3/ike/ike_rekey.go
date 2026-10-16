@@ -58,7 +58,7 @@ func (s *Session) RekeyIKE() (err error) {
 			return fmt.Errorf("ike: generate IKE SA rekey DH key: %w", err)
 		}
 		response, err = s.requestLocked(CREATE_CHILD_SA, []RawPayload{
-			{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
+			{Type: PayloadSA, Body: EncodeSA([]Proposal{leadingGroup(proposal, group)})},
 			{Type: PayloadNonce, Body: EncodeNonce(ni)},
 			{Type: PayloadKE, Body: EncodeKE(group, dh.PublicBytes())},
 		})
@@ -90,9 +90,7 @@ func (s *Session) RekeyIKE() (err error) {
 		if attempt != 0 || !supportedIKEGroup(retryGroup) {
 			return fmt.Errorf("ike: IKE SA rekey rejected: requested unsupported DH group %d", retryGroup)
 		}
-		// RFC 7296 section 1.3 permits the responder to select another offered DH
-		// group with INVALID_KE_PAYLOAD. Retry as a new CREATE_CHILD_SA
-		// exchange, using the requested group in both SA and KE processing.
+		// RFC 7296 section 1.3: "In the case of such a rejection, the CREATE_CHILD_SA exchange fails, and the initiator will probably retry the exchange with a Diffie-Hellman proposal and KEi in the group that the responder gave in the INVALID_KE_PAYLOAD Notify payload."
 		group = retryGroup
 	}
 
@@ -119,9 +117,9 @@ func (s *Session) RekeyIKE() (err error) {
 		return fmt.Errorf("ike: incomplete IKE SA rekey response")
 	}
 	props, err := DecodeSA(sa.Body)
-	// The answer to this end's own rekey offer, which names three transform
-	// types, so section 2.7 has it carry three. suiteFromProposal checks the
-	// rest of the consistency section 3.3.6 requires.
+	// RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
+	// section 3.3.6: "The initiator of an exchange MUST check that the accepted offer is consistent with one of its proposals, and if not MUST terminate the exchange."
+	// this end's offer names three types, and suiteFromProposal and the loop below hold the answer to the rest
 	if err != nil || len(props) != 1 || props[0].Number != 1 || props[0].Protocol != ProtoIKE ||
 		len(props[0].SPI) != 8 || len(props[0].Transforms) != 3 {
 		return fmt.Errorf("ike: invalid IKE SA rekey proposal")
@@ -207,18 +205,9 @@ func (s *Session) RekeyIKE() (err error) {
 			}
 			return nil
 		}
-		// The redundant SA is the one the peer created, and RFC 7296 section
-		// 2.8.2 leaves it to its creator: "The new IKE SA containing the
-		// lowest nonce SHOULD be deleted by the node that created it." This
-		// end deleting it too put two Deletes on the wire at once. The peer's
-		// arrives first, because it was sent before ours could have reached
-		// it, and answering it retires the SA our own Delete is outstanding
-		// on, so that exchange fails with contextRetired and RekeyIKE returns
-		// before registering the winning SA: the peer holds the new SA as
-		// current, this end never does, and the session dies of unanswered
-		// liveness checks. It stays registered so the peer's Delete can be
-		// answered, and expireRetainedContexts gives up on a Delete that
-		// never comes.
+		// RFC 7296 section 2.8.2: "The new IKE SA containing the lowest nonce SHOULD be deleted by the node that created it, and the other surviving new IKE SA MUST inherit all the Child SAs."
+		// the peer created the redundant SA here, and a Delete of it from this end as well would cross the peer's, whose answer from this end retires the SA its own Delete runs on
+		// it stays registered for the peer's Delete to be answered, and expireRetainedContexts gives up on a Delete that never comes
 		slog.Info("ike simultaneous rekey selected local candidate")
 	}
 	if err := s.mux.RegisterIKE(spiI); err != nil {

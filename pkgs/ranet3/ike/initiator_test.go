@@ -448,6 +448,10 @@ func TestSessionRekeyIKE(t *testing.T) {
 			t.Errorf("bad IKE rekey KE or nonce: %d, %v", group, err)
 			return
 		}
+		// RFC 7296 section 3.4 on the KE payload's group: "SHOULD match the Diffie-Hellman group in the first group in the first proposal, if such exists."
+		if want := offeredIKESA(props[0].SPI, []byte{5}, []byte{31, 20, 19}); !bytes.Equal(sa.Body, want) {
+			t.Errorf("the rekey request offers\n%x\nwant\n%x", sa.Body, want)
+		}
 		invalidKEData := make([]byte, 2)
 		binary.BigEndian.PutUint16(invalidKEData, DH_ECP_256)
 		response, err := EncryptMessage(suite, old.sker, Header{SPIInitiator: oldSPIi, SPIResponder: oldSPIr, ExchangeType: CREATE_CHILD_SA, Flags: FlagResponse, MessageID: m.Header.MessageID}, nil, []RawPayload{
@@ -495,6 +499,10 @@ func TestSessionRekeyIKE(t *testing.T) {
 		if err != nil || group != DH_ECP_256 || len(nonce.Body) == 0 || binary.BigEndian.Uint64(props[0].SPI) == 0 {
 			t.Errorf("bad retried IKE rekey KE or nonce: %d, %v", group, err)
 			return
+		}
+		// the retry an INVALID_KE_PAYLOAD naming P-256 draws offers P-256 first and the other groups after it in their order
+		if want := offeredIKESA(props[0].SPI, []byte{5}, []byte{19, 31, 20}); !bytes.Equal(sa.Body, want) {
+			t.Errorf("the retried rekey request offers\n%x\nwant\n%x", sa.Body, want)
 		}
 		responderDH, err := GenerateDH(group)
 		if err != nil {
@@ -2339,4 +2347,129 @@ func TestInitiatorAnswersTheCookieThatFollowsAGroupChange(t *testing.T) {
 			t.Errorf("request %d answers its cookie with other payloads than request %d carried", i+1, i)
 		}
 	}
+}
+
+// RFC 7296 section 3.4 on the KE payload's group: "SHOULD match the Diffie-Hellman group in the first group in the first proposal, if such exists."
+// section 1.2: "The initiator MUST again propose its full set of acceptable cryptographic suites because the rejection message was unauthenticated and otherwise an active attacker could trick the endpoints into negotiating a weaker suite than a stronger one that they both prefer."
+// the retry an INVALID_KE_PAYLOAD naming P-256 draws offers P-256 first and the other groups after it in their order, the rest of the offer as before, octet for octet
+func TestInitiatorRetriesWithTheNamedGroupFirst(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	peerDone := make(chan struct{})
+	peerLoop(t, peer, func() {
+		defer close(peerDone)
+		buf := make([]byte, 4096)
+		_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+		var answered []byte
+		for i, want := range []struct {
+			group uint16
+			sa    []byte
+		}{
+			{DH_CURVE25519, offeredIKESA(nil, []byte{6, 5}, []byte{31, 20, 19})},
+			{DH_ECP_256, offeredIKESA(nil, []byte{6, 5}, []byte{19, 31, 20})},
+		} {
+			n, from, err := peer.ReadFromUDP(buf)
+			// a retransmission of the request already answered
+			for err == nil && n > 4 && bytes.Equal(buf[4:n], answered) {
+				n, from, err = peer.ReadFromUDP(buf)
+			}
+			if err != nil || n <= 4 {
+				t.Errorf("the initiator sent no IKE_SA_INIT with its KE payload in group %d: %d bytes, %v", want.group, n, err)
+				return
+			}
+			raw := slices.Clone(buf[4:n])
+			request, err := DecodeMessage(raw)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			sa, ke := request.find(PayloadSA), request.find(PayloadKE)
+			if sa == nil || ke == nil {
+				t.Errorf("the IKE_SA_INIT request carries %v", request.Payloads)
+				return
+			}
+			if group, _, err := DecodeKE(ke.Body); err != nil || group != want.group {
+				t.Errorf("request %d has its KE payload in group %d (%v), want %d", i+1, group, err, want.group)
+			}
+			if !bytes.Equal(sa.Body, want.sa) {
+				t.Errorf("request %d offers\n%x\nwant\n%x", i+1, sa.Body, want.sa)
+			}
+			if i == 0 {
+				answer := encodeTestMessage(t, Header{SPIInitiator: request.Header.SPIInitiator, ExchangeType: IKE_SA_INIT, Flags: FlagResponse},
+					[]RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INVALID_KE_PAYLOAD, Data: binary.BigEndian.AppendUint16(nil, DH_ECP_256)})}})
+				if _, err := peer.WriteToUDP(withNonESPMarker(answer), from); err != nil {
+					t.Error(err)
+					return
+				}
+				answered = raw
+			}
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dialed := make(chan error, 1)
+	go func() {
+		session, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port})
+		if err == nil {
+			session.Mux().Close()
+		}
+		dialed <- err
+	}()
+	<-peerDone
+	cancel()
+	select {
+	case <-dialed:
+	case <-time.After(answerBudget):
+		t.Fatal("the canceled dial did not end")
+	}
+}
+
+// RFC 7296 section 1.2: "Thus, the SA payloads in the IKE_AUTH exchange cannot contain Transform Type 4 (Diffie-Hellman group) with any value other than NONE. Implementations SHOULD omit the whole transform substructure instead of sending value NONE."
+// the Child SA offer of the IKE_AUTH request names no Diffie-Hellman transform
+func TestInitiatorOffersNoDiffieHellmanTransformInIKEAuth(t *testing.T) {
+	unchanged := func(_ ExchangeType, payloads []RawPayload) []RawPayload { return payloads }
+	asSent := func([]byte) {}
+	_, auth, _, err := dialPlayedResponder(t, unchanged, asSent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sa := findType(auth, PayloadSA)
+	if sa == nil {
+		t.Fatalf("the IKE_AUTH request carries %v", auth)
+	}
+	proposals, err := DecodeSA(sa.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, proposal := range proposals {
+		for _, transform := range proposal.Transforms {
+			if transform.Type == TransDH {
+				t.Errorf("proposal %d of the IKE_AUTH request names Diffie-Hellman group %d", proposal.Number, transform.ID)
+			}
+		}
+	}
+}
+
+// offeredIKESA is, octet by octet, the one proposal this end offers for an IKE SA: spi, its three ciphers, then the PRFs and the Diffie-Hellman groups named, in the order given
+func offeredIKESA(spi, prfs, groups []byte) []byte {
+	sa := append([]byte{0, 0, 0, 0, 1, 1, byte(len(spi)), byte(3 + len(prfs) + len(groups))}, spi...)
+	sa = append(sa,
+		3, 0, 0, 12, 1, 0, 0, 20, 0x80, 14, 1, 0, // ENCR_AES_GCM_16 with a 256-bit key
+		3, 0, 0, 12, 1, 0, 0, 20, 0x80, 14, 0, 128, // ENCR_AES_GCM_16 with a 128-bit key
+		3, 0, 0, 8, 1, 0, 0, 28, // ENCR_CHACHA20_POLY1305
+	)
+	for _, prf := range prfs {
+		sa = append(sa, 3, 0, 0, 8, 2, 0, 0, prf)
+	}
+	for i, group := range groups {
+		// the first octet of the last transform says none follows
+		more := byte(3)
+		if i == len(groups)-1 {
+			more = 0
+		}
+		sa = append(sa, more, 0, 0, 8, 4, 0, 0, group)
+	}
+	binary.BigEndian.PutUint16(sa[2:4], uint16(len(sa)))
+	return sa
 }

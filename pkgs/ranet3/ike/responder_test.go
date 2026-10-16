@@ -2100,9 +2100,13 @@ func initHalfOpen(t *testing.T, mux *transport.Mux, shape func([]RawPayload) []R
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, public, err := DecodeKE(ke.Body)
+	group, public, err := DecodeKE(ke.Body)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// section 3.4 on the KE payload: "This Diffie-Hellman Group Num MUST match a Diffie-Hellman group specified in a proposal in the SA payload that is sent in the same message"
+	if group != suite.DHGroup {
+		t.Errorf("the IKE_SA_INIT answer has its KE payload in group %d and selects group %d", group, suite.DHGroup)
 	}
 	shared, err := dh.SharedSecret(public)
 	if err != nil {
@@ -2777,6 +2781,41 @@ func TestResponderTakesPayloadsInAnyOrderAndAnswersInTheFiguresOrder(t *testing.
 	// the figure of section 1.2: "HDR, SK {IDr, [CERT,] AUTH, SAr2, TSi, TSr}"
 	if got, want := payloadTypes(answered), []PayloadType{PayloadIDr, PayloadAUTH, PayloadSA, PayloadTSi, PayloadTSr}; !slices.Equal(got, want) {
 		t.Errorf("the IKE_AUTH answer carries payload types %v, want %v", got, want)
+	}
+	carriedForward(t, h)
+}
+
+// RFC 7296 section 1.2: "Thus, the SA payloads in the IKE_AUTH exchange cannot contain Transform Type 4 (Diffie-Hellman group) with any value other than NONE. Implementations SHOULD omit the whole transform substructure instead of sending value NONE."
+// the Child SA the IKE_AUTH answer selects from an offer naming no Diffie-Hellman transform names none either
+func TestResponderSelectsNoDiffieHellmanTransformInIKEAuth(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	held, message1, nr := initHalfOpen(t, mux, nil)
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	request, err := EncryptMessage(held.suite, held.skei, header, nil, ikeAuthPayloads(h.private, held, message1, nr, espProposal([]byte{0, 0, 0, 9}), "testorg/client:2", "testorg/server:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.SendIKE(request); err != nil {
+		t.Fatal(err)
+	}
+	_, answered, _ := responderMessage(t, mux, held)
+	sa := findType(answered, PayloadSA)
+	if sa == nil {
+		t.Fatalf("the IKE_AUTH answer carries %v", answered)
+	}
+	selected, err := DecodeSA(sa.Body)
+	if err != nil || len(selected) != 1 {
+		t.Fatalf("the IKE_AUTH answer selects %v: %v", selected, err)
+	}
+	for _, transform := range selected[0].Transforms {
+		if transform.Type == TransDH {
+			t.Errorf("the IKE_AUTH answer names Diffie-Hellman group %d", transform.ID)
+		}
 	}
 	carriedForward(t, h)
 }
