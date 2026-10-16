@@ -100,6 +100,9 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if err != nil {
 		return err
 	}
+	if err := refuseEgressAdvertisedUnconditionally(cfg); err != nil {
+		return err
+	}
 	old := c.config()
 	if err := reloadable(old, cfg); err != nil {
 		return err
