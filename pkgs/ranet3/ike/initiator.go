@@ -72,7 +72,9 @@ type ikeContext struct {
 	spiI      uint64
 	spiR      uint64
 	responder bool // local endpoint is the responder for this IKE SA
-	sendIV    atomic.Uint64
+	// answeredAuth marks the SA whose IKE_AUTH this end answered, where the peer's request at Message ID 2 is the INFORMATIONAL exchange immediately following it
+	answeredAuth bool
+	sendIV       atomic.Uint64
 
 	// localMIDMu guards nextLocalMID across the whole allocate-send-consume
 	// step. Run allocates there on its own goroutine while a caller tearing
