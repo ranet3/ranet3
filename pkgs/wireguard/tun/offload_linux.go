@@ -138,6 +138,8 @@ func (w *groToWrite) appendIov(pkt []byte) int {
 func (w *groToWrite) reset() {
 	for i := range w.iovs {
 		clear(w.iovs[i][iovVirtioNetHdrIdx])
+		// drop the references to the written packets, which belong to the caller
+		clear(w.iovs[i][iovHeadPacketIdx:])
 		w.iovs[i] = w.iovs[i][:iovEmptyVectorLen] // keep virtio header alloc
 	}
 	w.iovs = w.iovs[:0]

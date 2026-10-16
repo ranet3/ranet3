@@ -64,6 +64,44 @@ type tunQueue struct {
 	toWrite     groToWrite
 	tcpGROTable *tcpGROTable
 	udpGROTable *udpGROTable
+
+	// writev state, so that a write hands rawConn.Write a func bound once
+	// in appendQueue rather than a closure that escapes to the heap
+	writevFn func(fd uintptr) bool
+	wvBufs   [][]byte
+	wvIovecs []unix.Iovec
+	wvN      int
+	wvErr    error
+}
+
+// writev writes q.wvBufs to fd with writev(2), from an iovec array kept
+// across writes, and reports the result in q.wvN and q.wvErr. It is called
+// by rawConn.Write with writeOpMu held.
+func (q *tunQueue) writev(fd uintptr) bool {
+	iovecs := q.wvIovecs[:0]
+	for _, b := range q.wvBufs {
+		var v unix.Iovec
+		v.SetLen(len(b))
+		if len(b) > 0 {
+			v.Base = &b[0]
+		}
+		iovecs = append(iovecs, v)
+	}
+	q.wvIovecs = iovecs
+	for {
+		r, _, errno := unix.Syscall(unix.SYS_WRITEV, fd, uintptr(unsafe.Pointer(unsafe.SliceData(iovecs))), uintptr(len(iovecs)))
+		if errno == unix.EINTR {
+			continue // quick retry on interrupt, EINTR is never returned with partial writes
+		}
+		q.wvN, q.wvErr = int(r), nil
+		if errno != 0 {
+			q.wvN, q.wvErr = 0, errno
+		}
+		// the iovecs point into the caller's buffers, which must not stay
+		// reachable from the queue once the write returns
+		clear(iovecs)
+		return errno != unix.EAGAIN // poller retry on "would block"
+	}
 }
 
 // appendQueue wraps file as a new queue of tun. It must be called before tun is
@@ -76,6 +114,7 @@ func appendQueue(tun *NativeTun, file *os.File) error {
 		udpGROTable: newUDPGROTable(),
 		toWrite:     newGROToWrite(),
 	}
+	q.writevFn = q.writev
 	var err error
 	q.rawConn, err = file.SyscallConn()
 	if err != nil {
@@ -433,17 +472,10 @@ func (q *tunQueue) write(bufs [][]byte, offset int) (int, error) {
 		return 0, err
 	}
 	for _, nb := range q.toWrite.iovs {
-		var werr error
-		var n int
-		err := q.rawConn.Write(func(fd uintptr) bool {
-			for {
-				n, werr = unix.Writev(int(fd), nb)
-				if errors.Is(werr, syscall.EINTR) {
-					continue // quick retry on interrupt, EINTR is never returned with partial writes
-				}
-				return !errors.Is(werr, syscall.EAGAIN) // poller retry on "would block"
-			}
-		})
+		q.wvBufs = nb
+		err := q.rawConn.Write(q.writevFn)
+		n, werr := q.wvN, q.wvErr
+		q.wvBufs = nil
 		// err is a poller error (e.g. fd closed before the syscall)
 		// werr is the Writev syscall error itself.
 		if err != nil {

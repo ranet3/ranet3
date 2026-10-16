@@ -8,6 +8,7 @@ package tun
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 )
 
 const testMTU = 1420
@@ -267,6 +269,89 @@ func TestCreateTUNFromFilesNonTUNClosesFile(t *testing.T) {
 	}
 	if _, err := f.Stat(); !errors.Is(err, os.ErrClosed) {
 		t.Errorf("file not closed by a failed CreateTUNFromFiles: err = %v", err)
+	}
+}
+
+func setLinkUp(tb testing.TB, name string) {
+	tb.Helper()
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		tb.Fatalf("socket: %v", err)
+	}
+	defer unix.Close(fd)
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		tb.Fatalf("NewIfreq: %v", err)
+	}
+	ifr.SetUint16(unix.IFF_UP)
+	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
+		tb.Fatalf("SIOCSIFFLAGS: %v", err)
+	}
+}
+
+func TestWriteAllocs(t *testing.T) {
+	requireNetAdmin(t)
+	dev, err := CreateTUN(testTUNName(t), testMTU)
+	if err != nil {
+		t.Fatalf("CreateTUN: %v", err)
+	}
+	t.Cleanup(func() { dev.Close() })
+	tun := dev.(*NativeTun)
+	if !tun.vnetHdr {
+		t.Skip("the tun has no virtio header, so writes take the plain path")
+	}
+	name, err := dev.Name()
+	if err != nil {
+		t.Fatalf("Name: %v", err)
+	}
+	// a tun that is down refuses writes with EIO
+	setLinkUp(t, name)
+
+	segments := make([][]byte, 46)
+	for i := range segments {
+		segments[i] = tcp4Packet(ip4PortA, ip4PortB, header.TCPFlagAck, 100, uint32(1+100*i))
+	}
+	acks := make([][]byte, 8)
+	for i := range acks {
+		acks[i] = tcp4Packet(ip4PortA, netip.AddrPortFrom(ip4PortB.Addr(), uint16(i+1)), header.TCPFlagAck, 0, 1)
+	}
+	tests := []struct {
+		name    string
+		packets [][]byte
+	}{
+		{"one packet", acks[:1]},
+		{"packets that do not coalesce", acks},
+		{"segments that coalesce into one frame", segments},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// GRO rewrites the packets it coalesces, so each write gets a fresh copy
+			bufs := make([][]byte, len(tt.packets))
+			for i, p := range tt.packets {
+				bufs[i] = make([]byte, len(p))
+			}
+			var werr error
+			allocs := testing.AllocsPerRun(100, func() {
+				for i, p := range tt.packets {
+					copy(bufs[i], p)
+				}
+				if _, err := dev.Write(bufs, offset); err != nil {
+					werr = err
+				}
+			})
+			if werr != nil {
+				t.Fatalf("Write: %v", werr)
+			}
+			if allocs != 0 {
+				t.Errorf("Write allocated %v times per call, want 0", allocs)
+			}
+			q := tun.queues[0]
+			for i, v := range q.wvIovecs[:cap(q.wvIovecs)] {
+				if v.Base != nil {
+					t.Errorf("iovec %d still points into a written packet", i)
+				}
+			}
+		})
 	}
 }
 
