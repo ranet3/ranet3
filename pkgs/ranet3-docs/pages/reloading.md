@@ -172,19 +172,18 @@ plus the steering header in force stays within the larger of the old and the new
 `link.mtu`. A steering stopped with `ranet3 disable steering` stays stopped with
 the new table installed.
 
-A changed `link.mtu` moves the tun the same way. The buffers the tun is read
-into are sized once, at startup, for the larger of the `link.mtu` the node
-started with and 2048 bytes. A reload to a `link.mtu` they cannot hold is
-refused, naming both sizes, and a restart applies it, even where a longer steer
-list in the same file leaves the tun where it was. A running session whose
-budget is past a lower `link.mtu` drops to it at once, and one whose search has
-settled searches up toward a higher one, probing each size before its budget
-moves there. A session made after the reload searches within the new `link.mtu`
-from its start, and one under the floor stays there. A session whose sends leave
-without DF is not searched, and it takes the new `link.mtu` at once, lower or
-higher. On a platform other than Linux and macOS the tun takes its MTU only when
-it is opened, and a reload that changes `link.mtu` or moves the tun is refused
-there. [Path MTU](path-mtu.md) describes the search.
+A changed `link.mtu` moves the tun the same way. A read off the tun takes a
+packet of up to 65535 bytes whatever `link.mtu` the node started with, so the
+tun moves to any MTU its kernel takes. A running session whose budget is past a
+lower `link.mtu` drops to it at once, and one whose search has settled searches
+up toward a higher one, probing each size before its budget moves there. A
+session made after the reload searches within the new `link.mtu` from its start,
+and one under the floor stays there. A session whose sends leave without DF is
+not searched, and it takes the new `link.mtu` at once, lower or higher. On a
+platform other than Linux and macOS the tun takes its MTU only when it is
+opened, and a reload that moves the tun is refused there. A reload whose
+`link.mtu` and steering leave the tun where it was is applied there as well.
+[Path MTU](path-mtu.md) describes the search.
 
 ## `link.listen`
 

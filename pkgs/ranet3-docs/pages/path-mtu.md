@@ -4,7 +4,7 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-10-16
+updated: 2026-10-17
 order: 65
 ---
 
@@ -22,16 +22,16 @@ The tun runs at `link.mtu` less the header of the longest `cap.segment.steer`
 list: 40 bytes of outer IPv6 header, 8 bytes of routing header and 16 bytes per
 segment. A steered packet carries that header inside the tunnel.
 
-| Limit        | Value                                                                  |
-| ------------ | ---------------------------------------------------------------------- |
-| Default      | 1400 bytes                                                             |
-| Minimum      | 1280 bytes for the tun, after the steering header (RFC 8200 section 5) |
-| Maximum      | 65470 bytes, the most 1 ESP-in-UDP datagram carries over IPv4          |
-| Read buffers | sized at startup for `link.mtu`, at least 2048 bytes                   |
+| Limit   | Value                                                                  |
+| ------- | ---------------------------------------------------------------------- |
+| Default | 1400 bytes                                                             |
+| Minimum | 1280 bytes for the tun, after the steering header (RFC 8200 section 5) |
+| Maximum | 65470 bytes, the most 1 ESP-in-UDP datagram carries over IPv4          |
 
-A value outside these limits is refused when the file loads. A reload can raise
-`link.mtu` only as far as the read buffers allow, as [reloading](reloading.md)
-describes.
+A value outside these limits is refused when the file loads. A read off the tun
+takes a packet of up to 65535 bytes whatever `link.mtu` the node started with,
+so on Linux and macOS a reload moves the tun to a new `link.mtu` in place, as
+[reloading](reloading.md) describes.
 
 ## The search
 
@@ -92,7 +92,9 @@ costs.
 
 On a platform that cannot set DF, sessions do not search. Each session carries
 `link.mtu`. The tun there takes its MTU only when it opens, so a reload that
-changes `link.mtu` is refused. A restart applies it.
+moves the tun is refused, and a restart applies it. A reload whose `link.mtu`
+and steering leave the tun where it was is applied, and each session takes the
+new `link.mtu` at once.
 
 ## Packets that do not fit
 
