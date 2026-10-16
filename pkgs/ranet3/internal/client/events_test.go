@@ -67,6 +67,10 @@ func TestLoopbackRecordsDialSessionAndNeighborInOrder(t *testing.T) {
 		at("ike.session.established") > at("babel.neighbor.up") {
 		t.Errorf("alpha recorded %q under %s", order, dialed)
 	}
+	// bravo records its session after the adopt that registered its Babel peer, so alpha's neighbor can come up first
+	waitFor(t, convergeBudget, "bravo to record the session it answered", func() bool {
+		return len(recorded(bravo.events, "ike.session.established")) > 0
+	})
 	answered := recorded(bravo.events, "ike.session.established")
 	if len(answered) == 0 || answered[0].Peer != fmt.Sprintf("example/%s:0@0", alpha.name) || answered[0].Attrs["role"] != "responder" {
 		t.Errorf("bravo recorded its session as %+v", answered)
