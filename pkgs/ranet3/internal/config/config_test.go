@@ -789,6 +789,26 @@ func TestTOMLRefusesAKeyThatDiffersOnlyInCase(t *testing.T) {
 	}
 }
 
+// The rule an exit owns for its egress device, written under the key the
+// configuration reference names, reaches the reconciler as that device. The
+// encoder round trip cannot pin the spelling, since it writes and reads by one
+// tag.
+func TestRuleInputDeviceLoadsUnderItsDocumentedKey(t *testing.T) {
+	for extension, body := range map[string]string{
+		".toml": nodeTOML + "[cap.table]\nrules = [{ iif = \"ranet0e\", table = \"main\", priority = 60, family = \"both\" }]\n",
+		".yaml": nodeYAML + "cap:\n  table:\n    rules: [{ iif: ranet0e, table: main, priority: 60, family: both }]\n",
+	} {
+		cfg, err := load(t, extension, body)
+		if err != nil {
+			t.Errorf("%s: the rule was refused: %v", extension, err)
+			continue
+		}
+		if rules := cfg.Cap.Table.Rules; len(rules) != 1 || rules[0].IIF != "ranet0e" {
+			t.Errorf("%s: the rules loaded as %v", extension, rules)
+		}
+	}
+}
+
 // A capability is on because its block is there. There is no enabled field to
 // forget, which is the failure the old one had: a node that configured the
 // reconciler and left it off came up with a working mesh, no rules and no
@@ -922,12 +942,15 @@ func TestUnderlayMarkNeedsTheRuleThatReadsIt(t *testing.T) {
 		},
 		// The mask compares the third byte alone, and this rule takes the
 		// marks whose third byte is 1, so the socket's 0x726c is not among
-		// them. The case used to write 0x726c under the same mask, which the
-		// kernel does match the socket's mark against, since it never compares
-		// the bits of a rule's mark outside its mask.
+		// them.
 		"a rule's mask selects another mark": {
 			asYAML: "cap:\n  table:\n    rules: [{ fwmark: 0x10000, fwmask: 0xff0000, table: main, priority: 40, family: both }]\n",
 			asTOML: "[cap.table]\nrules = [{ fwmark = 0x10000, fwmask = 0xff0000, table = \"main\", priority = 40, family = \"both\" }]\n",
+		},
+		// a socket's own output arrives on lo, so a rule on another input device never sees its mark
+		"a rule reads it only on an input device": {
+			asYAML: "cap:\n  table:\n    rules: [{ fwmark: 0x726c, iif: ranet0e, table: main, priority: 40, family: both }]\n",
+			asTOML: "[cap.table]\nrules = [{ fwmark = 0x726c, iif = \"ranet0e\", table = \"main\", priority = 40, family = \"both\" }]\n",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -957,10 +980,13 @@ func TestUnderlayMarkNeedsTheRuleThatReadsIt(t *testing.T) {
 	}
 	// So does a rule whose mark has bits outside its mask, when the bits it
 	// compares agree: the kernel takes every mark whose third byte is zero
-	// under 0x726c/0xff0000, the socket's included, and the refusal used to
-	// say no rule read it.
+	// under 0x726c/0xff0000, the socket's included.
 	if _, err := loadYAML(t, markedYAML+"cap:\n  table:\n    rules: [{ fwmark: 0x726c, fwmask: 0xff0000, table: main, priority: 40, family: both }]\n"); err != nil {
 		t.Errorf("a rule the kernel matches the mark against was refused: %v", err)
+	}
+	// And a rule naming lo, the device a socket's own output arrives on.
+	if _, err := loadTOML(t, markedTOML+"[cap.table]\nrules = [{ fwmark = 0x726c, iif = \"lo\", table = \"main\", priority = 40, family = \"both\" }]\n"); err != nil {
+		t.Errorf("a rule reading the mark on lo was refused: %v", err)
 	}
 	// A node that writes no cap.table writes no rules either, so the rule is
 	// installed by whatever configures its routes and this file cannot see it.
@@ -1238,6 +1264,7 @@ func fullConfig() Config {
 					From:     schema.MustPrefix("3fff:a::/32"),
 					FWMark:   0x726c,
 					FWMask:   0xffff,
+					IIF:      "ranet0e",
 					Table:    schema.TableMain,
 					Priority: 40,
 				}, {

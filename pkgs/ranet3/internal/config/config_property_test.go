@@ -209,8 +209,9 @@ func owned() hegel.Generator[schema.TableID] {
 
 // rules draws one cap.table rules entry in either shape a file writes: one
 // selecting on addresses, which take their family from the address, and one
-// selecting on a mark alone, which names its family. A mark rule now and then
-// carries a selector that is set and is not a prefix, which Validate refuses.
+// selecting on a mark or an input device alone, which names its family. Such
+// a rule now and then carries a selector that is set and is not a prefix,
+// which Validate refuses.
 func rules() hegel.Generator[kernel.Rule] {
 	return hegel.Composite(func(tc hegel.TestCase) kernel.Rule {
 		rule := kernel.Rule{
@@ -222,7 +223,10 @@ func rules() hegel.Generator[kernel.Rule] {
 			rule.FWMark = hegel.Draw(tc, edges[uint32](1, math.MaxUint32))
 			rule.FWMask = hegel.Draw(tc, edges[uint32](0, math.MaxUint32))
 		}
-		if marked && hegel.Draw(tc, hegel.Booleans()) {
+		if hegel.Draw(tc, hegel.Booleans()) {
+			rule.IIF = hegel.Draw(tc, names())
+		}
+		if (marked || rule.IIF != "") && hegel.Draw(tc, hegel.Booleans()) {
 			rule.Family = hegel.Draw(tc, hegel.SampledFrom([]kernel.Family{kernel.FamilyIPv4, kernel.FamilyIPv6, kernel.FamilyBoth}))
 			if hegel.Draw(tc, hegel.WeightedBooleans(0.1)) {
 				rule.To = hegel.Draw(tc, malformed())

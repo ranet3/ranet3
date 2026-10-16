@@ -701,6 +701,9 @@ func TestNetlinkRulesAndVRFInNetworkNamespace(t *testing.T) {
 		{Family: FamilyIPv6, From: schema.MustPrefix("3fff:1:69c::/48"), Table: DefaultTable, Priority: 150},
 		{Family: FamilyIPv4, FWMark: 0x726c, Table: 254, Priority: 40},
 		{Family: FamilyIPv6, FWMark: 0x726c, Table: 254, Priority: 40},
+		// one on a device that exists and one on a device that does not yet, which the kernel holds detached
+		{Family: FamilyIPv6, IIF: device, Table: 254, Priority: 60},
+		{Family: FamilyIPv4, IIF: device + "e", Table: 254, Priority: 60},
 	}
 	for _, rule := range want {
 		if err := plat.AddRule(rule); err != nil {

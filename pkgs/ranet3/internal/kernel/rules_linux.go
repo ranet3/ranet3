@@ -78,6 +78,9 @@ func (p *netlinkPlatform) ruleMessage(rule Rule) []byte {
 			body = putAttrU32(body, unix.FRA_FWMASK, rule.FWMask)
 		}
 	}
+	if rule.IIF != "" {
+		body = putAttrString(body, unix.FRA_IIFNAME, rule.IIF)
+	}
 	return body
 }
 
@@ -154,6 +157,8 @@ func (p *netlinkPlatform) decodeRule(message nlMessage) (Rule, bool) {
 			if address, ok := addressFromBytes(value); ok {
 				rule.From = schema.PrefixFrom(netip.PrefixFrom(address, int(srcLen)))
 			}
+		case unix.FRA_IIFNAME:
+			rule.IIF = unix.ByteSliceToString(value)
 		}
 	}
 	if !ours || rule.Table == 0 || rule.Priority == 0 {
