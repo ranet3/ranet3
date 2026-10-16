@@ -24,8 +24,6 @@ const (
 	// inboundPendingBatches is how many write batches a lane's pending list holds before it grows
 	// collectReadyInbound stops once one batch is pending, and the second leaves room for the entry that crossed it
 	inboundPendingBatches = 2
-	// inboundPacketBufferSize holds the largest IP packet behind tunOffset, so no delivered packet needs a buffer of its own
-	inboundPacketBufferSize = tunOffset + 65535
 	// outboundJobsPerWorker is the read batches queued for each crypto worker
 	// one waits while the worker encrypts another
 	outboundJobsPerWorker = 2
@@ -35,11 +33,12 @@ const (
 	utunName = "utun"
 )
 
-// tunOffset is the space in front of each packet a Device.Write is handed, the offset wireguard-go's own device writes at
+// TUNHeadroom is the space in front of each packet a Device.Write is handed, the offset wireguard-go's own device writes at
 // darwin and the BSDs write the four-byte address family header a tun frame carries into it and refuse an offset under four
 // linux refuses an offset under its ten-byte virtio-net header, which it sends from a buffer of its own
+// it is as many bytes as the ESP header and IV every suite puts in front of a packet, so a packet decrypted in place has it in its own datagram, as TestHeadroomIsTheFramingOfEverySuite holds
 // a read needs none, the device laying out the slab it reads into
-const tunOffset = 16
+const TUNHeadroom = 16
 
 // truncatedReadInterval is the least time between two warnings about tun reads cut short
 // the counter keeps the exact count, and the line only has to point at it

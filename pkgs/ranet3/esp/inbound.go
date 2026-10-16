@@ -15,6 +15,7 @@ var (
 	errUnauthenticated = errors.New("esp: packet was not authenticated")
 	errUncommitted     = errors.New("esp: packet replay check was not committed")
 	errCommitted       = errors.New("esp: packet was already committed")
+	errNoDatagram      = errors.New("esp: packet was decrypted out of its datagram")
 )
 
 // Authenticate validates the SPI and AEAD tag without advancing the replay
@@ -56,7 +57,11 @@ func (in *InboundSA) authenticate(pkt []byte, inPlace bool) (*AuthenticatedPacke
 	if err != nil {
 		return nil, err
 	}
-	return &AuthenticatedPacket{sa: in, seq: seq, plain: plain}, nil
+	result := &AuthenticatedPacket{sa: in, seq: seq, plain: plain}
+	if inPlace {
+		result.datagram = pkt
+	}
+	return result, nil
 }
 
 func (in *InboundSA) decrypt(pkt []byte, inPlace bool, nonce []byte) ([]byte, error) {
@@ -89,7 +94,7 @@ func (in *InboundSA) AuthenticateBatchInPlace(packets [][]byte, results []Authen
 		if err == nil {
 			err = in.window.check(seq)
 		}
-		batch[i] = AuthenticatedPacket{sa: in, seq: seq, Err: err}
+		batch[i] = AuthenticatedPacket{sa: in, seq: seq, datagram: pkt, Err: err}
 	}
 	in.mu.Unlock()
 	// cipher.AEAD's interface makes nonce storage escape. One buffer per batch
@@ -195,6 +200,25 @@ func (p *AuthenticatedPacket) Plaintext() ([]byte, byte, error) {
 		return nil, 0, p.Err
 	}
 	return p.plain, p.nextHeader, nil
+}
+
+// Frame is Plaintext with headroom bytes of its datagram in front of it, the tail of the ESP header and IV it was decrypted behind
+// a caller that owns the datagram may write into them, and the frame ends where the plaintext does
+// it refuses a headroom past the header and IV, and a packet decrypted out of its datagram, which has none
+func (p *AuthenticatedPacket) Frame(headroom int) ([]byte, byte, error) {
+	plain, nextHeader, err := p.Plaintext()
+	if err != nil {
+		return nil, 0, err
+	}
+	if p.datagram == nil {
+		return nil, 0, errNoDatagram
+	}
+	framing := headerLen + p.sa.params.IVLen
+	if headroom < 0 || headroom > framing {
+		return nil, 0, fmt.Errorf("esp: a headroom of %d bytes is past the %d of the ESP header and IV", headroom, framing)
+	}
+	end := framing + len(plain)
+	return p.datagram[framing-headroom : end : end], nextHeader, nil
 }
 
 // Commit checks and advances replay state for a single authenticated packet.

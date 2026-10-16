@@ -287,7 +287,8 @@ func TestParseNeverPanicsOnArbitraryBytes(t *testing.T) {
 // the first one active and on the outer header, and the inner packet follows
 // the routing header byte for byte. Each waypoint then moves it to the next
 // segment, writing that segment into the outer destination, until the exit
-// hands back the inner packet and its family. The outer header copies the
+// hands back the inner packet and its family, as the tail of the outer packet
+// rather than a copy of it. The outer header copies the
 // traffic class, the flow label and the hop limit of an IPv6 inner packet and
 // takes none of an IPv4 one's, its TOS and TTL included, so a walk stops with
 // ErrHopLimit exactly where the inner IPv6 budget runs out, and nowhere else.
@@ -352,6 +353,10 @@ func TestEncapsulationParsesBackToItsPath(t *testing.T) {
 		if err != nil || got != family || !bytes.Equal(delivered, inner) {
 			ht.Fatalf("the exit delivered %d bytes of family %d, %v, want the %d byte inner packet of family %d",
 				len(delivered), got, err, len(inner), family)
+		}
+		// the dataplane writes the delivered packet's tun framing into the outer header in front of it
+		if &delivered[len(delivered)-1] != &raw[len(raw)-1] {
+			ht.Fatal("the exit delivered the inner packet outside the tail of the outer one")
 		}
 	})
 }

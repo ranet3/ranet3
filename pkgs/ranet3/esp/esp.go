@@ -109,7 +109,9 @@ type AuthenticatedPacket struct {
 	committed  bool
 	nextHeader byte
 	plain      []byte
-	Err        error
+	// datagram is the packet decrypted in place, plain a view of it behind its ESP header and IV, nil for one decrypted into storage of its own
+	datagram []byte
+	Err      error
 }
 
 // InboundOption configures inbound ESP processing.

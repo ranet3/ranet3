@@ -79,21 +79,22 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 	// without a Delete the peer sends into a dead SPI until its liveness check expires, up to seventy seconds
 	defer c.tellDropped(ctx, sessionName, sess)
 
-	var plain [][]byte
+	var frames [][]byte
 	emit := func(results []inboundDecrypted) {
 		esp.CommitBatch(results)
-		plain = plain[:0]
+		frames = frames[:0]
 		mtu := peer.MTU()
 		var dropped int
 		var lastError error
 		for _, result := range results {
-			raw, nextHeader, err := result.Plaintext()
+			// each datagram is this session's alone once received, so the packet goes to the tun in the datagram it was decrypted in
+			frame, nextHeader, err := result.Frame(netstack.TUNHeadroom)
 			if err != nil {
 				dropped, lastError = dropped+1, err
 				continue
 			}
 			sess.NoteTraffic()
-			inner, deliver, err := validateESPTunnelPayload(raw, nextHeader)
+			inner, deliver, err := validateESPTunnelPayload(frame[netstack.TUNHeadroom:], nextHeader)
 			if err != nil {
 				dropped, lastError = dropped+1, err
 				continue
@@ -101,15 +102,16 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 			if deliver && !c.speaker.Receive(peer, inner) {
 				// a SYN from the peer has its MSS lowered to what this session carries back to it
 				c.Mesh.ClampMSS(inner, mtu)
-				plain = append(plain, inner)
+				end := netstack.TUNHeadroom + len(inner)
+				frames = append(frames, frame[:end:end])
 			}
 		}
 		if dropped > 0 {
 			c.noteInboundDropped(sessionName, dropped, lastError)
 		}
 		c.countInbound(len(results) - dropped)
-		c.Mesh.DeliverInboundBatch(plain, mtu)
-		clear(plain)
+		c.Mesh.DeliverInboundBatch(frames, mtu)
+		clear(frames)
 	}
 	results := make(chan sessionResult, 2)
 	go func() { results <- sessionResult{"IKE control", sess.Run(ctx)} }()
