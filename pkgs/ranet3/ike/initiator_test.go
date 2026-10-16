@@ -10,6 +10,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"slices"
@@ -1848,9 +1849,9 @@ func TestSessionRunUsesOldIKEContext(t *testing.T) {
 // can see our SPI can send them and what is acted on has to be narrower than
 // what arrives. A cookie is echoed in the retry, so taking one of any length
 // turns a single spoofed datagram into as many oversized ones as we
-// retransmit, aimed at whoever we are dialing. RFC 7296 section 2.6 bounds it
-// to 1..64 octets. A Diffie-Hellman group we cannot generate ends the dial
-// with no retry, so acting on one aborts the handshake for free.
+// retransmit, aimed at whoever we are dialing. A Diffie-Hellman group we
+// cannot generate ends the dial with no retry, so acting on one aborts the
+// handshake for free.
 func TestOnlyUsableUnauthenticatedInitNotifiesAreActedOn(t *testing.T) {
 	message := func(notify Notify) *Message {
 		return &Message{Payloads: []RawPayload{{Type: PayloadN, Body: EncodeNotify(notify)}}}
@@ -1860,14 +1861,15 @@ func TestOnlyUsableUnauthenticatedInitNotifiesAreActedOn(t *testing.T) {
 		binary.BigEndian.PutUint16(data, id)
 		return data
 	}
+	// RFC 7296 section 2.6: "The data associated with this notification MUST be between 1 and 64 octets in length (inclusive), and its generation is described later in this section."
 	for name, tc := range map[string]struct {
 		notify Notify
 		usable bool
 	}{
 		"a cookie of the smallest allowed length":   {Notify{Type: N_COOKIE, Data: bytes.Repeat([]byte{1}, 1)}, true},
-		"a cookie of the largest allowed length":    {Notify{Type: N_COOKIE, Data: bytes.Repeat([]byte{1}, maxCookieLength)}, true},
+		"a cookie of the largest allowed length":    {Notify{Type: N_COOKIE, Data: bytes.Repeat([]byte{1}, 64)}, true},
 		"an empty cookie":                           {Notify{Type: N_COOKIE, Data: nil}, false},
-		"a cookie one octet past the bound":         {Notify{Type: N_COOKIE, Data: bytes.Repeat([]byte{1}, maxCookieLength+1)}, false},
+		"a cookie one octet past the bound":         {Notify{Type: N_COOKIE, Data: bytes.Repeat([]byte{1}, 65)}, false},
 		"a cookie far past the bound":               {Notify{Type: N_COOKIE, Data: bytes.Repeat([]byte{1}, 4096)}, false},
 		"a group we offer":                          {Notify{Type: N_INVALID_KE_PAYLOAD, Data: group(DH_CURVE25519)}, true},
 		"a group we cannot generate":                {Notify{Type: N_INVALID_KE_PAYLOAD, Data: group(1)}, false},
@@ -1889,14 +1891,191 @@ func TestOnlyUsableUnauthenticatedInitNotifiesAreActedOn(t *testing.T) {
 		})
 	}
 
-	// Each is worth acting on once. A peer that keeps sending them would
-	// otherwise keep the exchange restarting instead of finishing.
+	// A cookie is worth acting on once for each group tried, and a group
+	// correction once. A peer that keeps sending them would otherwise keep the
+	// exchange restarting instead of finishing.
 	cookie := message(Notify{Type: N_COOKIE, Data: []byte{1}})
 	if _, ok := usefulInitNotify(cookie, true, false); ok {
-		t.Error("a second cookie was acted on, so the exchange can be restarted indefinitely")
+		t.Error("a second cookie in the same group was acted on, so the exchange can be restarted indefinitely")
 	}
 	wrongGroup := message(Notify{Type: N_INVALID_KE_PAYLOAD, Data: group(DH_CURVE25519)})
 	if _, ok := usefulInitNotify(wrongGroup, false, true); ok {
 		t.Error("a second group correction was acted on")
+	}
+}
+
+// RFC 7296 section 2.6: "Each endpoint chooses one of the two SPIs and MUST choose them so as to be unique identifiers of an IKE SA."
+// two dials send their IKE_SA_INIT under two nonzero initiator SPIs that differ
+func TestInitiatorGivesEachIKESAItsOwnSPI(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	ctx, cancel := context.WithCancel(context.Background())
+	var dials sync.WaitGroup
+	defer func() {
+		cancel()
+		dials.Wait()
+	}()
+	var spis []uint64
+	buf := make([]byte, 4096)
+	for range 2 {
+		dials.Go(func() { _, _ = InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port}) })
+		if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+			t.Fatal(err)
+		}
+		n, _, err := peer.ReadFromUDP(buf)
+		if err != nil || n <= 4 {
+			t.Fatalf("a dial sent no IKE_SA_INIT: %d bytes, %v", n, err)
+		}
+		header, err := decodeHeader(buf[4:n])
+		if err != nil {
+			t.Fatal(err)
+		}
+		spis = append(spis, header.SPIInitiator)
+	}
+	if spis[0] == 0 || spis[1] == 0 || spis[0] == spis[1] {
+		t.Errorf("the initiator opened two IKE SAs under SPIs %016x and %016x", spis[0], spis[1])
+	}
+}
+
+// RFC 7296 section 2.6.1: "if the responder includes the KEi payloads in cookie calculation, it will reject the request by sending a new cookie."
+// section 2.6.1: "Implementations SHOULD support this shorter exchange, but MUST NOT fail if other implementations do not support this shorter exchange."
+// the responder here binds each cookie to the KE group and takes P-256 alone, so the dial meets COOKIE, INVALID_KE_PAYLOAD and COOKIE again
+// past that a third cookie or a second group correction draws no new request, so the far end cannot keep the dial restarting
+func TestInitiatorAnswersTheCookieThatFollowsAGroupChange(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	cookieFor := func(group uint16) []byte { return fmt.Appendf(nil, "cookie bound to group %d", group) }
+
+	type request struct {
+		raw        []byte
+		spiI, spiR uint64
+		cookie     []byte
+		group      uint16
+		rest       []RawPayload
+	}
+	var seen []request
+	reached, peerDone := false, make(chan struct{})
+	peerLoop(t, peer, func() {
+		defer close(peerDone)
+		buf := make([]byte, 4096)
+		var from *net.UDPAddr
+		next := func() (request, error) {
+			n, addr, err := peer.ReadFromUDP(buf)
+			if err != nil {
+				return request{}, err
+			}
+			if n <= 4 {
+				return request{}, fmt.Errorf("short marked request: %d bytes", n)
+			}
+			from = addr
+			raw := append([]byte(nil), buf[4:n]...)
+			m, err := DecodeMessage(raw)
+			if err != nil {
+				return request{}, err
+			}
+			req := request{raw: raw, spiI: m.Header.SPIInitiator, spiR: m.Header.SPIResponder, rest: m.Payloads}
+			if len(m.Payloads) > 0 && m.Payloads[0].Type == PayloadN {
+				if notify, err := DecodeNotify(m.Payloads[0].Body); err == nil && notify.Type == N_COOKIE {
+					req.cookie, req.rest = notify.Data, m.Payloads[1:]
+				}
+			}
+			if ke := findType(req.rest, PayloadKE); ke != nil {
+				req.group, _, _ = DecodeKE(ke.Body)
+			}
+			return req, nil
+		}
+		answer := func(req request, notify Notify) {
+			response := encodeTestMessage(t, Header{SPIInitiator: req.spiI, ExchangeType: IKE_SA_INIT, Flags: FlagResponse}, []RawPayload{{Type: PayloadN, Body: EncodeNotify(notify)}})
+			if _, err := peer.WriteToUDP(withNonESPMarker(response), from); err != nil {
+				t.Errorf("answer the request: %v", err)
+			}
+		}
+
+		_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+		var target request
+		for !reached {
+			req, err := next()
+			if err != nil {
+				t.Errorf("the dial stopped after %d requests without answering the cookie its group change drew: %v", len(seen), err)
+				return
+			}
+			if len(seen) == 0 || !bytes.Equal(req.raw, seen[len(seen)-1].raw) {
+				seen = append(seen, req)
+			}
+			switch {
+			case !bytes.Equal(req.cookie, cookieFor(req.group)):
+				answer(req, Notify{Type: N_COOKIE, Data: cookieFor(req.group)})
+			case req.group != DH_ECP_256:
+				answer(req, Notify{Type: N_INVALID_KE_PAYLOAD, Data: binary.BigEndian.AppendUint16(nil, DH_ECP_256)})
+			default:
+				target, reached = req, true
+			}
+		}
+
+		answer(target, Notify{Type: N_COOKIE, Data: []byte("a third cookie")})
+		answer(target, Notify{Type: N_INVALID_KE_PAYLOAD, Data: binary.BigEndian.AppendUint16(nil, DH_ECP_384)})
+		_ = peer.SetReadDeadline(time.Now().Add(quietPeriod))
+		for {
+			again, err := next()
+			if err != nil {
+				return
+			}
+			if !bytes.Equal(again.raw, target.raw) {
+				t.Errorf("a third cookie or a second group correction was acted on, drawing a request with cookie %q in group %d", again.cookie, again.group)
+				return
+			}
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dialed := make(chan error, 1)
+	go func() {
+		_, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port})
+		dialed <- err
+	}()
+	<-peerDone
+	cancel()
+	select {
+	case err := <-dialed:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("the dial ended on %v before it was canceled", err)
+		}
+	case <-time.After(answerBudget):
+		t.Fatal("the canceled dial did not end")
+	}
+	if !reached {
+		return
+	}
+
+	want := []struct {
+		cookie []byte
+		group  uint16
+	}{
+		{nil, DH_CURVE25519},
+		{cookieFor(DH_CURVE25519), DH_CURVE25519},
+		{cookieFor(DH_CURVE25519), DH_ECP_256},
+		{cookieFor(DH_ECP_256), DH_ECP_256},
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("the dial sent %d requests up to the one carrying its second cookie, want %d", len(seen), len(want))
+	}
+	for i, w := range want {
+		if !bytes.Equal(seen[i].cookie, w.cookie) || seen[i].group != w.group {
+			t.Errorf("request %d carries cookie %q in group %d, want cookie %q in group %d", i+1, seen[i].cookie, seen[i].group, w.cookie, w.group)
+		}
+	}
+	// RFC 7296 section 3.1 on the initiator's SPI: "This value MUST NOT be zero."
+	// section 3.1 on the responder's SPI: "This value MUST be zero in the first message of an IKE initial exchange (including repeats of that message including a cookie)."
+	for i, req := range seen {
+		if req.spiI == 0 || req.spiI != seen[0].spiI || req.spiR != 0 {
+			t.Errorf("request %d carries SPIs %016x and %016x, want the first request's nonzero initiator SPI and a zero responder SPI", i+1, req.spiI, req.spiR)
+		}
+	}
+	// RFC 7296 section 2.6: "include the COOKIE notification containing the received data as the first payload, and all other payloads unchanged"
+	for _, i := range []int{1, 3} {
+		if !answeredAlike(seen[i].rest, seen[i-1].rest) {
+			t.Errorf("request %d answers its cookie with other payloads than request %d carried", i+1, i)
+		}
 	}
 }
