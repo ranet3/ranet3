@@ -475,7 +475,6 @@ func (q *tunQueue) write(bufs [][]byte, offset int) (int, error) {
 		q.wvBufs = nb
 		err := q.rawConn.Write(q.writevFn)
 		n, werr := q.wvN, q.wvErr
-		q.wvBufs = nil
 		// err is a poller error (e.g. fd closed before the syscall)
 		// werr is the Writev syscall error itself.
 		if err != nil {
