@@ -109,7 +109,8 @@ on every platform but macOS.
   mesh does not write. Write that rule under `cap.table.rules`, for example
   `{ fwmark = 0x726c, table = "main", priority = 40, family = "both" }`.
 - When `cap.table` is written and none of its rules selects `mark` and looks up
-  a table other than `id`, the file is refused at load.
+  a table other than `id`, the file is refused at load. A rule with an `iif`
+  other than `lo` does not count, since the socket's own packets arrive on `lo`.
 - `bind` sets `IP_BOUND_IF` and `IPV6_BOUND_IF`. The socket follows the default
   route's interface as it changes. The daemon gives that interface a default
   route scoped to it, with or without `cap.table`.
@@ -255,23 +256,29 @@ startup on other platforms. Each rule carries `proto` and is removed at
 shutdown. The reconciler installs the rules in order of `priority`, not in the
 order written. A rule only selects a table to look up.
 
-| Key        | Value                    | Default             | Meaning                            |
-| ---------- | ------------------------ | ------------------- | ---------------------------------- |
-| `to`       | prefix                   | none                | Destination the rule matches       |
-| `from`     | prefix                   | none                | Source the rule matches            |
-| `fwmark`   | integer                  | `0` (none)          | Packet mark the rule matches       |
-| `fwmask`   | integer                  | `0` (whole mark)    | Mask applied to the mark           |
-| `table`    | table                    | required            | Table to look up                   |
-| `priority` | integer                  | required            | Position of the rule               |
-| `family`   | `ipv4`, `ipv6` or `both` | from `to` or `from` | Address family of a mark-only rule |
+| Key        | Value                    | Default             | Meaning                                 |
+| ---------- | ------------------------ | ------------------- | --------------------------------------- |
+| `to`       | prefix                   | none                | Destination the rule matches            |
+| `from`     | prefix                   | none                | Source the rule matches                 |
+| `fwmark`   | integer                  | `0` (none)          | Packet mark the rule matches            |
+| `fwmask`   | integer                  | `0` (whole mark)    | Mask applied to the mark                |
+| `iif`      | device name              | none                | Device the packet arrived on            |
+| `table`    | table                    | required            | Table to look up                        |
+| `priority` | integer                  | required            | Position of the rule                    |
+| `family`   | `ipv4`, `ipv6` or `both` | from `to` or `from` | Address family of a rule with no prefix |
 
-- A rule must match on `to`, `from` or `fwmark`.
+- A rule must match on `to`, `from`, `fwmark` or `iif`.
 - A `to` or `from` prefix with bits set below its length, of length 0, or of the
   other family is refused.
 - `fwmask` without `fwmark` is refused.
+- `iif` longer than 15 bytes, `.`, `..`, or a name holding `/`, `:`, a NUL,
+  ASCII whitespace or the byte `0xa0` is refused. The kernel refuses such a name
+  for a device, and cuts a name at its first NUL.
+- `iif` may name a device that does not exist yet. The kernel holds the rule and
+  applies it once the device appears.
 - `priority = 0` is refused. It belongs to the `local` table.
-- `family` is required on a rule that matches a mark alone, and refused on a
-  rule with `to` or `from`. `both` installs the rule once per family.
+- `family` is required on a rule that has neither `to` nor `from`, and refused
+  on a rule with `to` or `from`. `both` installs the rule once per family.
 - 2 entries that install the same rule are refused.
 
 ## `cap.segment`
