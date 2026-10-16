@@ -125,6 +125,9 @@ func (c *Client) ReloadFrom(path string) (err error) {
 			log.Printf("reload: %v, so nothing will dial it", problem)
 		}
 	}
+	for _, problem := range validateAliases(cfg.Auth.Aliases, x) {
+		log.Printf("reload: %v, so no handshake can use it", problem)
+	}
 
 	c.storeIndex(x)
 	c.cfg.Store(cfg)
@@ -177,6 +180,13 @@ func (c *Client) retable(next *config.Config) error {
 // changedCapabilities names each capability a reload from old to next applied in place
 func changedCapabilities(old, next *config.Config) []string {
 	var out []string
+	// each table reaches the handshakes after the reload, and a session already up keeps the peer its handshake resolved
+	if !maps.Equal(old.Auth.Aliases.Local, next.Auth.Aliases.Local) {
+		out = append(out, "auth.aliases.local")
+	}
+	if !old.Auth.Aliases.Remote.Equal(next.Auth.Aliases.Remote) {
+		out = append(out, "auth.aliases.remote")
+	}
 	if old.Babel().Effective() != next.Babel().Effective() || !old.Babel().Cost.Extra.Equal(next.Babel().Cost.Extra) {
 		out = append(out, "cap.babel")
 	}

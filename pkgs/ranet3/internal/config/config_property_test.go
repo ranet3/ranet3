@@ -7,6 +7,7 @@ package config
 
 import (
 	"encoding"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 	"go.yaml.in/yaml/v3"
@@ -46,8 +48,11 @@ const nameCharacters = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUV
 // text draws a name of up to longest characters from nameCharacters, and now
 // and then one carrying a byte that is not UTF-8, which Validate refuses since
 // no file holds it as written.
-func text(longest int) hegel.Generator[string] {
-	characters := hegel.SampledFrom([]rune(nameCharacters))
+func text(longest int) hegel.Generator[string] { return textOf(nameCharacters, longest) }
+
+// textOf is text drawn from alphabet in place of nameCharacters
+func textOf(alphabet string, longest int) hegel.Generator[string] {
+	characters := hegel.SampledFrom([]rune(alphabet))
 	return hegel.Composite(func(tc hegel.TestCase) string {
 		name := string(hegel.Draw(tc, hegel.Lists(characters).MinSize(1).MaxSize(longest)))
 		if hegel.Draw(tc, hegel.WeightedBooleans(0.01)) {
@@ -63,6 +68,101 @@ func names() hegel.Generator[string] { return text(12) }
 
 // paths draws a file name, which is a name allowed to run longer.
 func paths() hegel.Generator[string] { return text(24) }
+
+// hostnames draws an FQDN as names draws a name, from the printable ASCII nameCharacters starts with, all an FQDN holds
+func hostnames() hegel.Generator[string] {
+	return textOf(strings.TrimRightFunc(nameCharacters, func(r rune) bool { return r > unicode.MaxASCII }), 12)
+}
+
+// identityAt draws a node of a drawn organization and name, or its endpoint serial where serial is set
+// a name written in a file is escaped where its text form needs it, so any name a file can hold is a name an identity holds
+func identityAt(tc hegel.TestCase, serial string) identity.Identity {
+	id, err := identity.From(hegel.Draw(tc, names()), hegel.Draw(tc, names()), serial)
+	if err != nil {
+		panic(err)
+	}
+	return id
+}
+
+// peers draws a peer as dial.to writes one, a node or one endpoint of it
+func peers() hegel.Generator[identity.Identity] {
+	return hegel.Composite(func(tc hegel.TestCase) identity.Identity {
+		if hegel.Draw(tc, hegel.Booleans()) {
+			return identityAt(tc, hegel.Draw(tc, names()))
+		}
+		return identityAt(tc, "")
+	})
+}
+
+// aliasKinds is each table of auth.aliases.remote, and each field of an auth.aliases.local entry
+var aliasKinds = []string{"ip", "fqdn", "email", "keyid"}
+
+// aliasIDs draws an ID as auth.aliases writes one of kind, an address of either family under ip, a name under fqdn, an address under email and octets in hex of either case under keyid
+func aliasIDs(kind string) hegel.Generator[string] {
+	return hegel.Composite(func(tc hegel.TestCase) string {
+		switch kind {
+		case "ip":
+			return hegel.Draw(tc, hegel.IPAddresses()).String()
+		case "fqdn":
+			return hegel.Draw(tc, hostnames())
+		case "email":
+			return hegel.Draw(tc, names()) + "@" + hegel.Draw(tc, names())
+		}
+		written := hex.EncodeToString(hegel.Draw(tc, hegel.Binary(1, 16)))
+		if hegel.Draw(tc, hegel.Booleans()) {
+			return strings.ToUpper(written)
+		}
+		return written
+	})
+}
+
+// localAlias is the entry of auth.aliases.local writing written as kind
+func localAlias(kind, written string) ike.LocalAlias {
+	switch kind {
+	case "ip":
+		return ike.LocalAlias{IP: written}
+	case "fqdn":
+		return ike.LocalAlias{FQDN: written}
+	case "email":
+		return ike.LocalAlias{Email: written}
+	}
+	return ike.LocalAlias{KeyID: written}
+}
+
+// aliasTables draws auth.aliases, up to three entries in each table of remote and in local, and no table where one draws no entry, which is how an empty one reads back
+// a remote keyid entry now and then spells the endpoint it names, which Validate takes as the one KEY_ID entry for an endpoint text
+func aliasTables() hegel.Generator[ike.Aliases] {
+	remote := func(tc hegel.TestCase, kind string) map[string]identity.Identity {
+		table := make(map[string]identity.Identity)
+		for range hegel.Draw(tc, hegel.Integers(0, 3)) {
+			table[hegel.Draw(tc, aliasIDs(kind))] = identityAt(tc, hegel.Draw(tc, names()))
+		}
+		if kind == "keyid" && hegel.Draw(tc, hegel.WeightedBooleans(0.1)) {
+			endpoint := identityAt(tc, hegel.Draw(tc, names()))
+			table[hex.EncodeToString([]byte(endpoint.String()))] = endpoint
+		}
+		if len(table) == 0 {
+			return nil
+		}
+		return table
+	}
+	return hegel.Composite(func(tc hegel.TestCase) ike.Aliases {
+		aliases := ike.Aliases{Remote: ike.RemoteAliases{
+			IP:    remote(tc, "ip"),
+			FQDN:  remote(tc, "fqdn"),
+			Email: remote(tc, "email"),
+			KeyID: remote(tc, "keyid"),
+		}}
+		for range hegel.Draw(tc, hegel.Integers(0, 3)) {
+			if aliases.Local == nil {
+				aliases.Local = make(map[string]ike.LocalAlias)
+			}
+			kind := hegel.Draw(tc, hegel.SampledFrom(aliasKinds))
+			aliases.Local[hegel.Draw(tc, peers()).String()] = localAlias(kind, hegel.Draw(tc, aliasIDs(kind)))
+		}
+		return aliases
+	})
+}
 
 // notPrefixes draws a prefix with no spelling: one nobody wrote, or one that
 // is set and is not a prefix, an address under a length past its family's
@@ -452,30 +552,16 @@ func block[T any](tc hegel.TestCase, blocks presence, capability hegel.Generator
 	return hegel.Draw(tc, hegel.Optional(capability))
 }
 
-// nodes draws what a configuration says about the node itself, every
-// capability block left out.
+// nodes draws what a configuration says about the node itself, auth.aliases
+// half the time and every capability block left out.
 func nodes() hegel.Generator[Config] {
 	endpoint := hegel.Composite(func(tc hegel.TestCase) Endpoint {
 		return Endpoint{Serial: hegel.Draw(tc, names()), Family: hegel.Draw(tc, hegel.SampledFrom([]string{"ip4", "ip6"}))}
 	})
-	// a name written in a file is escaped where its text form needs it, so any name a file can hold is a name an identity holds
-	named := func(tc hegel.TestCase, serial string) identity.Identity {
-		id, err := identity.From(hegel.Draw(tc, names()), hegel.Draw(tc, names()), serial)
-		if err != nil {
-			panic(err)
-		}
-		return id
-	}
-	peer := hegel.Composite(func(tc hegel.TestCase) identity.Identity {
-		if hegel.Draw(tc, hegel.Booleans()) {
-			return named(tc, hegel.Draw(tc, names()))
-		}
-		return named(tc, "")
-	})
 	return hegel.Composite(func(tc hegel.TestCase) Config {
 		c := Config{
-			Node: named(tc, ""),
-			Auth: Auth{Key: hegel.Draw(tc, paths()), Trust: hegel.Draw(tc, paths())},
+			Node: identityAt(tc, ""),
+			Auth: Auth{Key: hegel.Draw(tc, paths()), Trust: hegel.Draw(tc, paths()), Aliases: hegel.Draw(tc, unset(aliasTables()))},
 			Link: Link{
 				Port:      hegel.Draw(tc, edges[uint16](1, math.MaxUint16)),
 				Endpoints: hegel.Draw(tc, hegel.Lists(endpoint).MinSize(1).MaxSize(3)),
@@ -490,7 +576,7 @@ func nodes() hegel.Generator[Config] {
 			},
 			Dial: Dial{
 				All: hegel.Draw(tc, hegel.Booleans()),
-				To:  hegel.Draw(tc, hegel.Lists(peer).MaxSize(3)),
+				To:  hegel.Draw(tc, hegel.Lists(peers()).MaxSize(3)),
 			},
 		}
 		if hegel.Draw(tc, hegel.Booleans()) {
@@ -509,8 +595,9 @@ func nodes() hegel.Generator[Config] {
 // nothing to dial. The last is a value an ordinary branch of a helper draws
 // and the block's own validation refuses. For example, an egress source may
 // be one nothing can reply to, such as a loopback or multicast address, a
-// cap.table address may be the unspecified address, and a cap.segment
-// steering selector may be a v4-mapped prefix.
+// cap.table address may be the unspecified address, a cap.segment steering
+// selector may be a v4-mapped prefix, and an email address under auth.aliases
+// may end at its last @.
 func configurations() hegel.Generator[Config] {
 	return hegel.Composite(func(tc hegel.TestCase) Config {
 		c := hegel.Draw(tc, nodes())
@@ -574,6 +661,126 @@ func TestValidatedEgressSourceReadsBackFromItsFile(t *testing.T) {
 		drawn.Cap.Egress = &exit
 		ht.Assume(drawn.Validate() == nil)
 		sameAfterEachEncoder(ht, drawn)
+	})
+}
+
+// The same for auth.aliases, drawn on every node, mostly with entries Validate
+// takes and, a quarter of the time, with one entry added that no handshake
+// could use. That entry is an FQDN or an email address holding a terminator,
+// as a remote key or as the ID a local entry writes, an FQDN beyond ASCII, a
+// remote entry naming a node, or a local entry writing none or two of its four
+// fields. A configuration carrying none of them reads back unchanged. One
+// carrying one of them is refused by the table holding the entry, and since
+// the configuration without it was taken, the refusal is the entry's own. A
+// node drawn with two endpoints in a family and a local table is refused for
+// that, where the same node without the table is taken, as is the table on
+// the node keeping one endpoint of each family.
+func TestValidatedAliasesReadBackFromTheirFile(t *testing.T) {
+	// a terminator is any control character and the line and paragraph separators
+	terminators := hegel.OneOf(
+		hegel.SampledFrom([]rune{0, '\t', '\n', '\r', 0x1f, 0x7f, 0x80, 0x9f, 0x2028, 0x2029}),
+		hegel.Filter(hegel.Integers[rune](0, 0x9f), unicode.IsControl),
+	)
+	beyondASCII := hegel.SampledFrom([]rune(strings.TrimLeftFunc(nameCharacters, func(r rune) bool { return r <= unicode.MaxASCII })))
+	// insert puts r into written at a drawn place
+	insert := func(ht *hegel.T, written string, r rune) string {
+		at := hegel.Draw(ht, hegel.Integers(0, len(written)))
+		return written[:at] + string(r) + written[at:]
+	}
+	pbt.Check(t, func(ht *hegel.T) {
+		drawn := hegel.Draw(ht, nodes())
+		drawn.Dial.All = true
+		drawn.Auth.Aliases = hegel.Draw(ht, aliasTables())
+		// a node with two endpoints in a family presents no alias, and its tables are otherwise ones Validate takes
+		inFamily := map[string]int{}
+		for _, endpoint := range drawn.Link.Endpoints {
+			inFamily[endpoint.Family]++
+		}
+		for family, count := range inFamily {
+			if count < 2 || len(drawn.Auth.Aliases.Local) == 0 {
+				continue
+			}
+			bare := drawn
+			bare.Auth.Aliases.Local = nil
+			ht.Assume(bare.Validate() == nil)
+			single := drawn
+			single.Link.Endpoints = nil
+			for _, endpoint := range drawn.Link.Endpoints {
+				if !slices.ContainsFunc(single.Link.Endpoints, func(kept Endpoint) bool { return kept.Family == endpoint.Family }) {
+					single.Link.Endpoints = append(single.Link.Endpoints, endpoint)
+				}
+			}
+			ht.Assume(single.Validate() == nil)
+			want := fmt.Sprintf("auth.aliases.local is refused on a node whose link.endpoints holds %d endpoints of the %s family", count, family)
+			if err := drawn.Validate(); err == nil || !strings.Contains(err.Error(), want) {
+				ht.Fatalf("a node with %d endpoints in %s presenting %v was answered %v, want a refusal naming %q", count, family, drawn.Auth.Aliases.Local, err, want)
+			}
+			return
+		}
+		ht.Assume(drawn.Validate() == nil)
+		if !hegel.Draw(ht, hegel.WeightedBooleans(0.25)) {
+			sameAfterEachEncoder(ht, drawn)
+			return
+		}
+
+		// one entry no handshake could use, added to a configuration Validate took
+		// without it, in a copy of the table it goes in
+		injected, aliases := drawn, drawn.Auth.Aliases
+		addRemote := func(kind, written string, endpoint identity.Identity) string {
+			tables := map[string]*map[string]identity.Identity{
+				"ip": &aliases.Remote.IP, "fqdn": &aliases.Remote.FQDN, "email": &aliases.Remote.Email, "keyid": &aliases.Remote.KeyID,
+			}
+			added := maps.Clone(*tables[kind])
+			if added == nil {
+				added = make(map[string]identity.Identity)
+			}
+			added[written] = endpoint
+			*tables[kind] = added
+			return "auth.aliases.remote." + kind
+		}
+		addLocal := func(entry ike.LocalAlias) string {
+			added := maps.Clone(aliases.Local)
+			if added == nil {
+				added = make(map[string]ike.LocalAlias)
+			}
+			added[hegel.Draw(ht, peers()).String()] = entry
+			aliases.Local = added
+			return "auth.aliases.local"
+		}
+		endpoint := identityAt(ht, hegel.Draw(ht, names()))
+		var table, what string
+		switch hegel.Draw(ht, hegel.Integers(0, 5)) {
+		case 0:
+			kind := hegel.Draw(ht, hegel.SampledFrom([]string{"fqdn", "email"}))
+			table, what = addRemote(kind, insert(ht, hegel.Draw(ht, aliasIDs(kind)), hegel.Draw(ht, terminators)), endpoint), "a remote key holding a terminator"
+		case 1:
+			kind := hegel.Draw(ht, hegel.SampledFrom([]string{"fqdn", "email"}))
+			table, what = addLocal(localAlias(kind, insert(ht, hegel.Draw(ht, aliasIDs(kind)), hegel.Draw(ht, terminators)))), "a local ID holding a terminator"
+		case 2:
+			written := insert(ht, hegel.Draw(ht, hostnames()), hegel.Draw(ht, beyondASCII))
+			if hegel.Draw(ht, hegel.Booleans()) {
+				table, what = addRemote("fqdn", written, endpoint), "a remote FQDN beyond ASCII"
+			} else {
+				table, what = addLocal(localAlias("fqdn", written)), "a local FQDN beyond ASCII"
+			}
+		case 3:
+			kind := hegel.Draw(ht, hegel.SampledFrom(aliasKinds))
+			table, what = addRemote(kind, hegel.Draw(ht, aliasIDs(kind)), endpoint.Node()), "a remote entry naming a node"
+		case 4:
+			table, what = addLocal(ike.LocalAlias{}), "a local entry writing no ID"
+		default:
+			entry := localAlias(hegel.Draw(ht, hegel.SampledFrom(aliasKinds[:3])), "x")
+			entry.KeyID = hegel.Draw(ht, aliasIDs("keyid"))
+			table, what = addLocal(entry), "a local entry writing two IDs"
+		}
+		injected.Auth.Aliases = aliases
+		err := injected.Validate()
+		if err == nil {
+			ht.Fatalf("Validate took %s", what)
+		}
+		if !strings.Contains(err.Error(), table) {
+			ht.Fatalf("Validate refused %s with %q, which does not name %s", what, err, table)
+		}
 	})
 }
 

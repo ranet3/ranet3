@@ -1217,7 +1217,24 @@ func fullConfig() Config {
 	retryFirst, retryMax := schema.Duration(7*time.Second), schema.Duration(11*time.Minute)
 	return Config{
 		Node: identity.MustParse("example/laptop"),
-		Auth: Auth{Key: "key.pem", Trust: "trust.json"},
+		Auth: Auth{Key: "key.pem", Trust: "trust.json", Aliases: ike.Aliases{
+			Remote: ike.RemoteAliases{
+				IP: map[string]identity.Identity{
+					"192.0.2.10":   identity.MustParse("example/gateway:1"),
+					"2001:db8::10": identity.MustParse("example/gateway:2"),
+				},
+				FQDN:  map[string]identity.Identity{"gw.example.net": identity.MustParse("example/gateway:1")},
+				Email: map[string]identity.Identity{"ops@example.net": identity.MustParse("example/relay:1")},
+				KeyID: map[string]identity.Identity{"0a1b2c3d": identity.MustParse("other/relay:1")},
+			},
+			// an entry for each field one writes, under a node and under an endpoint
+			Local: map[string]ike.LocalAlias{
+				"example/gateway":   {FQDN: "laptop.example.net"},
+				"example/gateway:2": {IP: "2001:db8::5"},
+				"example/relay":     {Email: "laptop@example.net"},
+				"other/relay":       {KeyID: "6c6170746f70"},
+			},
+		}},
 		Link: Link{
 			Port:      13000,
 			Endpoints: []Endpoint{{Serial: "0", Family: "ip4"}},
@@ -1558,6 +1575,10 @@ func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 			Priority: 40,
 		}}},
 		"cap.table vrf": kernel.Table{VRF: &kernel.VRF{Name: "mesh"}},
+		"auth aliases":  Auth{Aliases: ike.Aliases{Local: map[string]ike.LocalAlias{"example/gateway": {Email: "laptop@example.net"}}}},
+		"auth aliases remote": ike.Aliases{Remote: ike.RemoteAliases{
+			KeyID: map[string]identity.Identity{"0a1b2c3d": identity.MustParse("example/gateway:1")},
+		}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, encoder := range encoders {
@@ -1600,7 +1621,11 @@ func TestUnwrittenBlockLeavesNoKey(t *testing.T) {
 		"cap.crypto rekey": {ike.Rekey{}, []string{"retry"}},
 		"cap.babel cost":   {babel.CostOptions{}, []string{"rtt"}},
 		"link":             {oneEndpoint(), []string{"underlay"}},
-		"config":           {Config{Node: laptop, Link: oneEndpoint()}, []string{"dial", "cap", "underlay"}},
+		"config":           {Config{Node: laptop, Link: oneEndpoint()}, []string{"dial", "cap", "underlay", "aliases"}},
+		// the tables inside auth.aliases are asked on their own as well, since auth drops the block whole
+		"auth":                {Auth{Key: "key.pem", Trust: "trust.json"}, []string{"aliases"}},
+		"auth aliases":        {ike.Aliases{}, []string{"remote", "local"}},
+		"auth aliases remote": {ike.RemoteAliases{}, []string{"ip", "fqdn", "email", "keyid"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, encoder := range encoders {

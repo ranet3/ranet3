@@ -664,7 +664,14 @@ type listenNode struct {
 	// transit writes cap.transit enable = true, where the node otherwise leaves the block out
 	transit bool
 	// foreign writes cap.babel cost.extra foreign, where the node otherwise charges nobody
-	foreign    uint16
+	foreign uint16
+	// presents is the FQDN auth.aliases.local gives each node this one dials or names in presentsTo, where it otherwise presents its DN
+	presents   string
+	presentsTo []*listenNode
+	// resolves is the node auth.aliases.remote names by each FQDN, which it names by its endpoint
+	resolves map[string]*listenNode
+	// dualStack gives the node an ip6 endpoint, serial 1 at ::1, beside its ip4 one
+	dualStack  bool
 	client     *Client
 	events     *events.Bus
 	configPath string
@@ -676,10 +683,14 @@ type listenNode struct {
 func writeListenConfig(t *testing.T, node *listenNode, listen bool) *config.Config {
 	t.Helper()
 	var body strings.Builder
-	fmt.Fprintf(&body, "node: %s/%s\nauth:\n  key: %s\n  trust: %s\n"+
-		"link:\n  port: %d\n  endpoints:\n    - serial: \"0\"\n      family: ip4\n  listen: %t\n"+
+	second := ""
+	if node.dualStack {
+		second = "    - serial: \"1\"\n      family: ip6\n"
+	}
+	fmt.Fprintf(&body, "node: %s/%s\nauth:\n  key: %s\n  trust: %s\n%s"+
+		"link:\n  port: %d\n  endpoints:\n    - serial: \"0\"\n      family: ip4\n%s  listen: %t\n"+
 		"cap:\n  babel:\n    hello: 200ms\n    update: 400ms\n",
-		node.org, node.name, node.keyPath, node.trustPath, node.port, listen)
+		node.org, node.name, node.keyPath, node.trustPath, listenAliases(node), node.port, second, listen)
 	if node.foreign != 0 {
 		fmt.Fprintf(&body, "    cost:\n      extra:\n        foreign: %d\n", node.foreign)
 	}
@@ -705,7 +716,28 @@ func writeListenConfig(t *testing.T, node *listenNode, listen bool) *config.Conf
 	return cfg
 }
 
-// listenMesh builds a client for each node on 127.0.0.1 under one key for each organization, with names unique to this mesh
+// listenAliases is the auth.aliases block of node's config file, nothing where it presents and resolves no FQDN
+func listenAliases(node *listenNode) string {
+	var block strings.Builder
+	if len(node.resolves) > 0 {
+		block.WriteString("    remote:\n      fqdn:\n")
+		for _, fqdn := range slices.Sorted(maps.Keys(node.resolves)) {
+			fmt.Fprintf(&block, "        %q: %s/%s:0\n", fqdn, node.resolves[fqdn].org, node.resolves[fqdn].name)
+		}
+	}
+	if peers := slices.Concat(node.dials, node.presentsTo); node.presents != "" && len(peers) > 0 {
+		block.WriteString("    local:\n")
+		for _, peer := range peers {
+			fmt.Fprintf(&block, "      %s/%s: { fqdn: %q }\n", peer.org, peer.name, node.presents)
+		}
+	}
+	if block.Len() == 0 {
+		return ""
+	}
+	return "  aliases:\n" + block.String()
+}
+
+// listenMesh builds a client for each node on 127.0.0.1, and on ::1 as well for a dual-stack one, under one key for each organization, with names unique to this mesh
 func listenMesh(t *testing.T, nodes ...*listenNode) {
 	t.Helper()
 	retryPort(t, "bind", func() error { return tryListenMesh(t, nodes) })
@@ -714,7 +746,7 @@ func listenMesh(t *testing.T, nodes ...*listenNode) {
 func tryListenMesh(t *testing.T, nodes []*listenNode) error {
 	t.Helper()
 	mesh := meshCounter.Add(1)
-	loopback := "127.0.0.1"
+	loopback, loopback6 := "127.0.0.1", "::1"
 	var document registry.Registry
 	keys := make(map[string]ed25519.PrivateKey)
 	for _, node := range nodes {
@@ -731,9 +763,11 @@ func tryListenMesh(t *testing.T, nodes []*listenNode) error {
 			document = append(document, registry.Organization{PublicKey: keyPEM(public), Organization: node.org})
 			block = len(document) - 1
 		}
-		document[block].Nodes = append(document[block].Nodes, registry.Node{CommonName: node.name, Endpoints: []registry.Endpoint{{
-			SerialNumber: "0", AddressFamily: "ip4", Address: &loopback, Port: node.port,
-		}}})
+		endpoints := []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip4", Address: &loopback, Port: node.port}}
+		if node.dualStack {
+			endpoints = append(endpoints, registry.Endpoint{SerialNumber: "1", AddressFamily: "ip6", Address: &loopback6, Port: node.port})
+		}
+		document[block].Nodes = append(document[block].Nodes, registry.Node{CommonName: node.name, Endpoints: endpoints})
 	}
 	dir := t.TempDir()
 	trustPath := filepath.Join(dir, "registry.json")

@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 )
@@ -33,7 +34,23 @@ func validateRuntimeConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x 
 	for _, problem := range skip {
 		log.Printf("%v, so nothing will dial it", problem)
 	}
+	refuse = append(refuse, validateAliases(cfg.Auth.Aliases, x)...)
 	return errors.Join(refuse...)
+}
+
+// an entry naming what the trust document lacks is a typo or a peer the document no longer holds
+func validateAliases(aliases ike.Aliases, x *registry.Index) []error {
+	var problems []error
+	for entry, named := range aliases.Entries() {
+		if _, err := x.Key(named.Node()); err != nil {
+			problems = append(problems, fmt.Errorf("config: %s names %s, a node the trust document does not name", entry, named))
+			continue
+		}
+		if named != named.Node() && len(x.Targets(named)) == 0 {
+			problems = append(problems, fmt.Errorf("config: %s names %s, an endpoint the trust document does not list", entry, named))
+		}
+	}
+	return problems
 }
 
 // validateLocalConfig checks what this node says about itself, and reports the address families its own endpoints cover

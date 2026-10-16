@@ -179,6 +179,7 @@ func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
 		RemotePublicKey:    remotePub,
 		RemoteAddr:         remoteIP,
 		RemotePort:         int(ep.Port),
+		Aliases:            cfg.Auth.Aliases,
 		Hub:                c.hub,
 		ChildRekeyInterval: crypto.ChildInterval(),
 		IKERekeyInterval:   crypto.IKEInterval(),

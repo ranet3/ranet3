@@ -22,6 +22,16 @@ node: example/my-laptop
 auth:
   key: /etc/ranet3/key.pem
   trust: /etc/ranet3/trust.json
+  # For a peer that is not ranet3, remote names the endpoint each ID other than
+  # a DN stands for, and local the ID this node presents to a peer in place of
+  # its DN.
+  # aliases:
+  #   remote:
+  #     ip: { "192.0.2.10": example/gateway:0 }
+  #     fqdn: { gw.example.net: example/gateway:0 }
+  #     email: { ops@example.net: example/gateway:0 }
+  #     keyid: { "0a1b2c3d": example/gateway:0 }
+  #   local: { example/gateway: { fqdn: laptop.example.net } }
 
 # The one socket carrying IKE and ESP, and the device the mesh runs on.
 link:

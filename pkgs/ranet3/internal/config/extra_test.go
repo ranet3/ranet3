@@ -32,7 +32,7 @@ func TestExtraCostReadsAlikeUnderEachDecoder(t *testing.T) {
 	}
 }
 
-// this node's own identity, an amount of infinity, a node key that is not a node, a number the decoder would change and a value that is not a table are refused
+// this node's own identity, an amount of infinity, a node key that is not a node, a number the decoder would change, a merge key and a value that is not a table are refused
 func TestExtraCostRefusals(t *testing.T) {
 	block := func(body string) string { return nodeYAML + "cap:\n  babel:\n    cost:\n      extra:\n" + body }
 	for name, file := range map[string]struct{ extension, body, names string }{
@@ -41,6 +41,7 @@ func TestExtraCostRefusals(t *testing.T) {
 		"an endpoint":        {".yaml", block("        node: {example/gateway:0: 300}\n"), "names an endpoint"},
 		"a float":            {".yaml", block("        org: {gravity: 2048.0}\n"), "written as a float"},
 		"a minus sign":       {".yaml", block("        org: {gravity: -0}\n"), "minus sign"},
+		"a merge key":        {".yaml", block("        org: {<<: {gravity: 2048}}\n"), "a merge key is refused"},
 		"too large":          {".toml", nodeTOML + "[cap.babel.cost.extra]\norg = { gravity = 70000 }\n", "out of range"},
 		"not a table":        {".toml", nodeTOML + "[cap.babel.cost.extra]\norg = true\n", "takes a table"},
 		"an unknown key":     {".toml", nodeTOML + "[cap.babel.cost.extra]\nforiegn = 1\n", "foriegn"},
