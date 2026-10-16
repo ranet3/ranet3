@@ -1308,11 +1308,8 @@ func TestAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.
 
 // An active attacker that answered IKE_SA_INIT itself holds SK_er, so the
 // checks the initiator makes on the IKE_AUTH answer are all that keep it from
-// installing a Child SA with that attacker. Each case answers a real IKE_AUTH
-// request from a scripted responder that signs correctly and gets one thing
-// wrong. completeIKEAuth, the half of InitiateContext that reads the answer,
-// has to refuse it and name the cause. Once AUTH has verified, the IKE SA is
-// authenticated, so the initiator also deletes it before returning.
+// installing a Child SA with that attacker.
+// RFC 7296 section 2.21.2: "If the error occurs on the initiator, the notification MAY be returned in a separate INFORMATIONAL exchange, usually with no other payloads."
 func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 	full := fullRangeSelectors()
 	narrowed := EncodeTS([]TrafficSelector{{Type: TS_IPV4_ADDR_RANGE, EndPort: 0xffff,
@@ -1323,28 +1320,58 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 	encryption := Transform{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128}
 	esn := Transform{Type: TransESN, ID: ESN_NO}
 	usable := child([]byte{0, 0, 0, 9}, encryption, esn)
+	deletion := RawPayload{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}
+	refusal := func(notify NotifyType, data ...byte) RawPayload {
+		return RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: notify, Data: data})}
+	}
 	for name, test := range map[string]struct {
-		idr           string // the common name the answer's IDr carries
-		sa, tsi, tsr  []byte // nil leaves the payload out
-		want          string
-		authenticated bool
+		idr          string       // the common name the answer's IDr carries
+		dn           []byte       // the answer's IDr carries this in place of a distinguished name
+		forged       bool         // another key than the responder's signs the answer's AUTH
+		alone        []RawPayload // the answer carries these and no IDr or AUTH
+		critical     PayloadType  // the answer ends in a payload of this type, marked critical
+		criticalSK   bool         // the answer's SK payload is marked critical
+		trailing     bool         // a byte past the answer's payload chain makes it malformed
+		sa, tsi, tsr []byte       // nil leaves the payload out
+		want         string
+		follow       RawPayload // the INFORMATIONAL request at Message ID 2 carries this, and none comes where its type is zero
 	}{
 		"an IDr naming another node": {idr: "elsewhere", sa: usable, tsi: full, tsr: full,
-			want: "does not match configured IDr"},
+			want: "does not match configured IDr", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"IDr holding no distinguished name": {dn: []byte{0x04, 0x00}, sa: usable, tsi: full, tsr: full,
+			want: "not a single RDNSequence", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"AUTH another key signed": {forged: true, sa: usable, tsi: full, tsr: full,
+			want: "AUTH signature verification failed", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"no IDr or AUTH beside a status notify": {alone: []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INITIAL_CONTACT})}},
+			want: "incomplete IKE_AUTH response", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"payload chain short of its plaintext": {trailing: true, sa: usable, tsi: full, tsr: full,
+			want: "trailing bytes", follow: refusal(N_INVALID_SYNTAX)},
+		"critical payload this end does not implement": {critical: PayloadCERTREQ, sa: usable, tsi: full, tsr: full,
+			want: "sets the critical flag", follow: refusal(N_UNSUPPORTED_CRITICAL_PAYLOAD, byte(PayloadCERTREQ))},
+		"critical payload this end implements": {critical: PayloadNonce, sa: usable, tsi: full, tsr: full,
+			want: "sets the critical flag", follow: refusal(N_INVALID_SYNTAX)},
+		"critical SK payload": {criticalSK: true, sa: usable, tsi: full, tsr: full,
+			want: "sets the critical flag", follow: refusal(N_INVALID_SYNTAX)},
+		"responder's own refusal": {alone: []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_AUTHENTICATION_FAILED})}},
+			want: fmt.Sprintf("notify type %d", N_AUTHENTICATION_FAILED)},
+		"responder's own refusal after a status notify": {alone: []RawPayload{
+			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INITIAL_CONTACT})},
+			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_AUTHENTICATION_FAILED})},
+		}, want: fmt.Sprintf("notify type %d", N_AUTHENTICATION_FAILED)},
 		"narrowed initiator selectors": {sa: usable, tsi: narrowed, tsr: full,
-			want: "unsupported initiator traffic selectors", authenticated: true},
+			want: "unsupported initiator traffic selectors", follow: deletion},
 		"narrowed responder selectors": {sa: usable, tsi: full, tsr: narrowed,
-			want: "unsupported responder traffic selectors", authenticated: true},
+			want: "unsupported responder traffic selectors", follow: deletion},
 		"no traffic selectors": {sa: usable,
-			want: "incomplete IKE_AUTH response", authenticated: true},
+			want: "incomplete IKE_AUTH response", follow: deletion},
 		"no Child SA": {tsi: full, tsr: full,
-			want: "incomplete IKE_AUTH response", authenticated: true},
+			want: "incomplete IKE_AUTH response", follow: deletion},
 		"a Child SA with a zero SPI": {sa: child([]byte{0, 0, 0, 0}, encryption, esn), tsi: full, tsr: full,
-			want: "zero SPI", authenticated: true},
+			want: "zero SPI", follow: deletion},
 		"two encryption transforms": {sa: child([]byte{0, 0, 0, 9}, encryption, encryption), tsi: full, tsr: full,
-			want: "duplicate encryption transforms", authenticated: true},
+			want: "duplicate encryption transforms", follow: deletion},
 		"a transform type the offer did not name": {sa: child([]byte{0, 0, 0, 9}, encryption, Transform{Type: TransInteg, ID: INTEG_NONE}),
-			tsi: full, tsr: full, want: "transform type 3", authenticated: true},
+			tsi: full, tsr: full, want: "transform type 3", follow: deletion},
 	} {
 		t.Run(name, func(t *testing.T) {
 			peer := listenPeer(t)
@@ -1380,39 +1407,61 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 			realMessage2 := []byte("test IKE_SA_INIT response")
 			ni, nr := make([]byte, 32), make([]byte, 32)
 
-			// receive reads requests until the one with this message ID and
-			// checks it decrypts under SK_ei, passing over retransmits of a
-			// request already answered, which the initiator sends when an
-			// answer takes longer than its timer, as on a loaded machine
 			buf := make([]byte, 4096)
-			receive := func(exchange ExchangeType, messageID uint32) (*net.UDPAddr, error) {
+			receive := func(exchange ExchangeType, messageID uint32, wait time.Duration) (*net.UDPAddr, []RawPayload, error) {
 				for {
-					_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+					_ = peer.SetReadDeadline(time.Now().Add(wait))
 					n, from, err := peer.ReadFromUDP(buf)
 					if err != nil || n <= 4 {
-						return nil, fmt.Errorf("read request %d: %d bytes, %v", messageID, n, err)
+						return nil, nil, fmt.Errorf("read request %d: %d bytes, %v", messageID, n, err)
 					}
 					raw := slices.Clone(buf[4:n])
 					request, err := DecodeMessage(raw)
 					if err != nil {
-						return nil, err
+						return nil, nil, err
 					}
+					// the initiator retransmits a request already answered when the answer takes longer than its timer, as on a loaded machine
 					if request.Header.MessageID < messageID {
 						continue
 					}
 					if request.Header.ExchangeType != exchange || request.Header.MessageID != messageID {
-						return nil, fmt.Errorf("request is exchange %d message %d, want %d and %d",
+						return nil, nil, fmt.Errorf("request is exchange %d message %d, want %d and %d",
 							request.Header.ExchangeType, request.Header.MessageID, exchange, messageID)
 					}
-					_, err = DecryptMessage(suite, s.current.skei, raw, request)
-					return from, err
+					inner, err := DecryptMessage(suite, s.current.skei, raw, request)
+					return from, inner, err
 				}
 			}
 			answer := func(to *net.UDPAddr, exchange ExchangeType, messageID uint32, payloads []RawPayload) error {
-				response, err := EncryptMessage(suite, s.current.sker, Header{SPIInitiator: spiI, SPIResponder: spiR,
-					ExchangeType: exchange, Flags: FlagResponse, MessageID: messageID}, nil, payloads)
+				header := Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: exchange, Flags: FlagResponse, MessageID: messageID}
+				first, plain := PayloadNone, encodePayloadChain(payloads)
+				if len(payloads) > 0 {
+					first = payloads[0].Type
+				}
+				if test.trailing && exchange == IKE_AUTH {
+					plain = append(plain, 0xff)
+				}
+				iv := make([]byte, 8)
+				rand.Read(iv)
+				plain = append(plain, 0)
+				response, err := encryptMessagePlaintextIV(suite, s.current.sker, header, nil, first, plain, iv)
 				if err != nil {
 					return err
+				}
+				if test.criticalSK && exchange == IKE_AUTH {
+					// the SK payload's generic header is associated data, so the answer is sealed again under the flag
+					params, err := aeadParams(suite.EncrID, suite.EncrKeyBits)
+					if err != nil {
+						return err
+					}
+					aead, err := newAEAD(suite.EncrID, s.current.sker[:params.KeyLen])
+					if err != nil {
+						return err
+					}
+					response[HeaderLen+1] |= 0x80
+					aad := response[:HeaderLen+genericPayloadHeaderLen]
+					nonce := append(slices.Clone(s.current.sker[params.KeyLen:]), iv...)
+					response = aead.Seal(slices.Clone(response[:len(aad)+len(iv)]), nonce, plain, aad)
 				}
 				_, err = peer.WriteToUDP(withNonESPMarker(response), to)
 				return err
@@ -1420,7 +1469,7 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 			peerDone := make(chan error, 1)
 			go func() {
 				peerDone <- func() error {
-					from, err := receive(IKE_AUTH, 1)
+					from, _, err := receive(IKE_AUTH, 1, answerBudget)
 					if err != nil {
 						return err
 					}
@@ -1428,22 +1477,39 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 					if test.idr != "" {
 						commonName = test.idr
 					}
+					signer := remotePrivate
+					if test.forged {
+						signer = localPrivate
+					}
 					idr := idBody("ranet-test/" + commonName + ":2")
-					auth := BuildAuth(remotePrivate, concat(realMessage2, ni, prf(suite.PRFID, s.current.skpr, idr)))
+					if test.dn != nil {
+						idr = EncodeID(ID_DER_ASN1_DN, test.dn)
+					}
+					auth := BuildAuth(signer, concat(realMessage2, ni, prf(suite.PRFID, s.current.skpr, idr)))
 					payloads := []RawPayload{{Type: PayloadIDr, Body: idr}, {Type: PayloadAUTH, Body: auth}}
+					if test.alone != nil {
+						payloads = test.alone
+					}
 					for _, p := range []RawPayload{{Type: PayloadSA, Body: test.sa}, {Type: PayloadTSi, Body: test.tsi}, {Type: PayloadTSr, Body: test.tsr}} {
 						if p.Body != nil {
 							payloads = append(payloads, p)
 						}
 					}
+					if test.critical != PayloadNone {
+						payloads = append(payloads, RawPayload{Type: test.critical, Critical: true, Body: []byte{0}})
+					}
 					if err := answer(from, IKE_AUTH, 1, payloads); err != nil {
 						return err
 					}
-					if !test.authenticated {
+					if test.follow.Type == 0 {
 						return nil
 					}
-					if from, err = receive(INFORMATIONAL, 2); err != nil {
-						return fmt.Errorf("IKE Delete: %w", err)
+					from, inner, err := receive(INFORMATIONAL, 2, answerBudget)
+					if err != nil {
+						return fmt.Errorf("the INFORMATIONAL request after IKE_AUTH: %w", err)
+					}
+					if len(inner) != 1 || inner[0].Type != test.follow.Type || !bytes.Equal(inner[0].Body, test.follow.Body) {
+						return fmt.Errorf("the INFORMATIONAL request after IKE_AUTH carries %v, want %v", inner, test.follow)
 					}
 					return answer(from, INFORMATIONAL, 2, nil)
 				}()
@@ -1453,11 +1519,16 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 			if err == nil {
 				t.Fatal("the initiator took an IKE_AUTH answer it should have refused")
 			}
-			if !strings.Contains(err.Error(), test.want) || strings.Contains(err.Error(), "failed to delete") {
+			if !strings.Contains(err.Error(), test.want) || strings.Contains(err.Error(), "additionally failed") {
 				t.Fatalf("the initiator refused with %q, want a refusal naming %q", err, test.want)
 			}
 			if err := <-peerDone; err != nil {
 				t.Fatal(err)
+			}
+			if test.follow.Type == 0 {
+				if _, inner, err := receive(INFORMATIONAL, 2, quietPeriod); err == nil {
+					t.Errorf("the initiator answered the responder's own refusal with %v", inner)
+				}
 			}
 		})
 	}
