@@ -27,6 +27,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 func main() {
@@ -54,12 +56,11 @@ func run() error {
 	fmt.Fprintf(&out, "\n## ranet3.com/pkgs/ranet3\n\nThis module's own license, from `license.txt`.\n\n```\n%s\n```\n",
 		strings.TrimRight(string(own), "\n"))
 	for _, m := range modules {
-		text, name, err := license(cache, m)
+		text, from, err := license(cache, m)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(&out, "\n## %s\n\n%s %s, from `%s`.\n\n```\n%s\n```\n",
-			m.path, m.path, m.version, name, strings.TrimRight(text, "\n"))
+		fmt.Fprintf(&out, "\n## %s\n\n%s.\n\n```\n%s\n```\n", m.path, from, strings.TrimRight(text, "\n"))
 	}
 	path := filepath.Join("internal", "notices", "third_party.md")
 	return os.WriteFile(path, []byte(out.String()), 0o644)
@@ -73,8 +74,9 @@ Every module linked into a ranet3 binary, with the license it is under, this one
 This file is generated. Run the formatter rather than editing it.
 `
 
-// module is one linked dependency.
-type module struct{ path, version string }
+// module is one linked dependency. dir is the directory go.mod replaces it
+// with, relative to this module's root, and empty for a module of the cache.
+type module struct{ path, version, dir string }
 
 // linkedModules is the modules the built binary actually contains, read back
 // out of the binary rather than asked of the source tree. `go list -deps`
@@ -92,7 +94,13 @@ func linkedModules() ([]module, error) {
 	if err != nil {
 		return nil, err
 	}
+	return modulesOf(listed)
+}
+
+// modulesOf is the modules `go version -m` lists for a binary.
+func modulesOf(listed string) ([]module, error) {
 	seen := map[module]bool{}
+	var last module
 	for line := range strings.SplitSeq(listed, "\n") {
 		// "\tdep\t<path>\t<version>\t<hash>", and a replaced module adds a
 		// "=>" line naming the replacement, and the replacement ships.
@@ -100,7 +108,15 @@ func linkedModules() ([]module, error) {
 		if len(fields) < 3 || (fields[0] != "dep" && fields[0] != "=>") {
 			continue
 		}
-		seen[module{fields[1], fields[2]}] = true
+		// A directory ships under the path it replaces, and has no version.
+		if fields[0] == "=>" && isDir(fields[1]) {
+			delete(seen, last)
+			last.dir = fields[1]
+			seen[last] = true
+			continue
+		}
+		last = module{path: fields[1], version: fields[2]}
+		seen[last] = true
 	}
 	if len(seen) == 0 {
 		return nil, fmt.Errorf("no modules reported by go version -m, which cannot be right")
@@ -120,18 +136,88 @@ func maps(set map[module]bool) func(func(module) bool) {
 	}
 }
 
-// license reads one module's license out of the module cache. A module whose
+// isDir is whether a replacement names a directory rather than a module, as
+// go.mod tells them apart.
+func isDir(replacement string) bool {
+	return strings.HasPrefix(replacement, "./") || strings.HasPrefix(replacement, "../") || filepath.IsAbs(replacement)
+}
+
+// license reads one module's license out of the module cache, or out of the
+// directory that replaces it, and says where it came from. A module whose
 // license this cannot find is an error rather than an omission, because the
 // point of the file is that nothing is missing from it.
-func license(cache string, m module) (text, name string, err error) {
+func license(cache string, m module) (text, from string, err error) {
+	if m.dir != "" {
+		return copied(m)
+	}
 	dir := filepath.Join(cache, escape(m.path)+"@"+m.version)
 	for _, candidate := range []string{"LICENSE", "LICENSE.txt", "LICENSE.md", "COPYING", "COPYING.txt"} {
 		body, err := os.ReadFile(filepath.Join(dir, candidate))
 		if err == nil {
-			return string(body), candidate, nil
+			return string(body), fmt.Sprintf("%s %s, from `%s`", m.path, m.version, candidate), nil
 		}
 	}
 	return "", "", fmt.Errorf("no license file in %s", dir)
+}
+
+// copied is the license of a module copied into the directory that replaces
+// it. Its LICENSE names no holder, so the holders are the ones its REUSE.toml
+// gives the files under the license it gives LICENSE.
+func copied(m module) (text, from string, err error) {
+	body, err := os.ReadFile(filepath.Join(m.dir, "LICENSE"))
+	if err != nil {
+		return "", "", fmt.Errorf("read the license of %s: %w", m.path, err)
+	}
+	var reuse struct {
+		Annotations []struct {
+			Path    any    `toml:"path"`
+			Holders any    `toml:"SPDX-FileCopyrightText"`
+			License string `toml:"SPDX-License-Identifier"`
+		} `toml:"annotations"`
+	}
+	if _, err := toml.DecodeFile(filepath.Join(m.dir, "REUSE.toml"), &reuse); err != nil {
+		return "", "", fmt.Errorf("read the holders of %s: %w", m.path, err)
+	}
+	var licensed string
+	for _, a := range reuse.Annotations {
+		if slices.Contains(values(a.Path), "LICENSE") {
+			licensed = a.License
+		}
+	}
+	var holders []string
+	for _, a := range reuse.Annotations {
+		for _, holder := range values(a.Holders) {
+			if a.License == licensed && !slices.Contains(holders, holder) {
+				holders = append(holders, holder)
+			}
+		}
+	}
+	if licensed == "" || len(holders) == 0 {
+		return "", "", fmt.Errorf("%s/REUSE.toml gives LICENSE no license, or names no holder under it", m.dir)
+	}
+	var out strings.Builder
+	for _, holder := range holders {
+		fmt.Fprintf(&out, "Copyright (c) %s\n", holder)
+	}
+	fmt.Fprintf(&out, "\n%s", body)
+	return out.String(), fmt.Sprintf("%s in `%s`, from `LICENSE` and the holders `REUSE.toml` names", m.path, m.dir), nil
+}
+
+// values is a REUSE.toml key that holds one string or an array of them.
+func values(value any) []string {
+	switch v := value.(type) {
+	case string:
+		return []string{v}
+	case []any:
+		var out []string
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // escape is the module cache's spelling of a path: an uppercase letter becomes

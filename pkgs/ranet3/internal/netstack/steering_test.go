@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.zx2c4.com/wireguard/tun"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -34,33 +33,18 @@ func TestOutboundSeamRoutesBySegmentRatherThanByDestination(t *testing.T) {
 	segmentPeer := sealingPeer(t, "segment", viaSegment)
 	destinationPeer := sealingPeer(t, "destination", viaDestination)
 
-	dev := &utunDevice{
-		recordingDevice: recordingDevice{writes: make(chan recordedWrite, 1), events: make(chan tun.Event)},
-		reads:           make(chan []byte, 1),
-	}
-	m := &Mesh{
-		Routes:             NewRouteTable(),
-		devs:               []tun.Device{dev},
-		closed:             make(chan struct{}),
-		outboundJobs:       make(chan *outboundBatch, 1),
-		outboundFree:       make(chan *outboundBatch, 1),
-		outboundBufferSize: tunOffset + outboundPacketBufferSize,
-	}
+	dev := &scriptedDevice{reads: make(chan scriptedRead, 1), closed: make(chan struct{})}
+	m := &Mesh{Routes: NewRouteTable(), closed: make(chan struct{})}
+	m.setDevice(dev)
 	m.SetSteering(table)
 	// The two halves of the mesh: the segment goes one way, the address the
 	// packet was written to goes the other.
 	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("3fff:1:69c:98d6::1/128"), segmentPeer)
 	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("2001:4860:4860::8888/128"), destinationPeer)
-	m.outboundFree <- m.newOutboundBatch(1)
 	m.startOutboundPipeline()
-	defer func() {
-		close(m.closed)
-		close(dev.reads)
-		close(m.outboundJobs)
-		m.outboundWorkerWG.Wait()
-	}()
+	t.Cleanup(m.Close)
 
-	dev.reads <- plainV6(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), "payload")
+	dev.reads <- scriptedRead{packets: [][]byte{plainV6(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), "payload")}}
 	select {
 	case sent := <-viaSegment:
 		if got := netip.AddrFrom16([16]byte(sent[24:40])); got != exit {
@@ -84,30 +68,15 @@ func TestSteeredPacketWithNoRouteIsCounted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dev := &utunDevice{
-		recordingDevice: recordingDevice{writes: make(chan recordedWrite, 1), events: make(chan tun.Event)},
-		reads:           make(chan []byte, 1),
-	}
-	m := &Mesh{
-		Routes:             NewRouteTable(),
-		devs:               []tun.Device{dev},
-		closed:             make(chan struct{}),
-		outboundJobs:       make(chan *outboundBatch, 1),
-		outboundFree:       make(chan *outboundBatch, 1),
-		outboundBufferSize: tunOffset + outboundPacketBufferSize,
-	}
+	dev := &scriptedDevice{reads: make(chan scriptedRead, 1), closed: make(chan struct{})}
+	m := &Mesh{Routes: NewRouteTable(), closed: make(chan struct{})}
+	m.setDevice(dev)
 	m.startSegmentReports()
 	m.SetSteering(table)
-	m.outboundFree <- m.newOutboundBatch(1)
 	m.startOutboundPipeline()
-	defer func() {
-		close(m.closed)
-		close(dev.reads)
-		close(m.outboundJobs)
-		m.outboundWorkerWG.Wait()
-	}()
+	t.Cleanup(m.Close)
 
-	dev.reads <- plainV6(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), "payload")
+	dev.reads <- scriptedRead{packets: [][]byte{plainV6(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), "payload")}}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		// Unrouted rather than Dropped: this is a packet of this node's own
@@ -193,17 +162,15 @@ func TestSteeredReadAllocatesNoMoreThanItsEncapsulation(t *testing.T) {
 		steering.Lookup(tooBigSource[4], tooBigDestination[4]),
 		steering.Lookup(tooBigSource[6], tooBigDestination[6]),
 	}
-	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), outboundBufferSize: tunOffset + 1400}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 	m.startSegmentReports()
 	m.SetSteering(steering)
 	peer := (&recordingPeer{}).peer(t, "peer")
 	peer.SetMTU(0xffff)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
-	b := m.newOutboundBatch(len(packets))
-	for i, packet := range packets {
-		b.sizes[i] = copy(b.bufs[i][tunOffset:], packet)
-	}
+	b := newOutboundBatch(len(packets))
+	fill(b, packets...)
 	read := func() {
 		b.n = len(packets)
 		m.classify(b)

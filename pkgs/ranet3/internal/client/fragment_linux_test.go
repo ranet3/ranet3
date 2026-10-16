@@ -24,7 +24,7 @@ import (
 // alpha hands each fragment straight to its session, and a capture on bravo's tun reads every packet the mesh writes into it
 func TestTUNTakesFragmentsOfOrdinaryTrafficAndNoneOfABabelPacket(t *testing.T) {
 	enterEmptyNamespace(t)
-	mesh, err := netstack.NewNamed(0, 0, "babelfrag0")
+	mesh, err := netstack.NewNamed(0, "babelfrag0")
 	if err != nil {
 		t.Fatalf("open bravo's mesh: %v", err)
 	}

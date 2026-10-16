@@ -46,6 +46,19 @@ runCommand "ranet3-tree"
     nixfmt --check $files
     taplo format --check atelier.toml REUSE.toml pkgs/ranet3/REUSE.toml pkgs/ranet3/examples/*.toml pkgs/ranet3/gomod2nix.toml pkgs/wireguard/REUSE.toml pkgs/wireguard/gomod2nix.toml
 
+    awk '
+      $1 == "require" && $2 == "(" { block = 1; next }
+      $1 == ")" { block = 0 }
+      block { $0 = "require " $0 }
+      $1 != "require" { next }
+      FILENAME == ARGV[1] { ranet3[$2] = $3; next }
+      $2 in ranet3 && ranet3[$2] != $3 {
+        printf "%s: %s requires %s and %s requires %s\n", $2, ARGV[1], ranet3[$2], FILENAME, $3
+        failed = 1
+      }
+      END { exit failed }
+    ' pkgs/ranet3/go.mod pkgs/wireguard/go.mod >&2
+
     # reuse looks for the license texts in LICENSES alone. The rename goes
     # through a second name because a case-insensitive build directory reads
     # licenses and LICENSES as one file, and mv may refuse a rename that

@@ -6,15 +6,14 @@
 package netstack
 
 import (
+	"fmt"
 	"net"
 	"os"
-	"strings"
 	"testing"
 )
 
-// a utun takes an MTU set after the mesh opened it, down and back up within the read buffers it opened with
+// a utun holds the MTU the mesh opened it at, and takes one set after the open, up or down, and back
 // each value read back from the kernel through the standard library
-// a mesh opened at the default refuses a move past its buffers and keeps its MTU
 // creating a utun needs root, which a run does here only with RANET3_DARWIN_NETTEST=1
 func TestTUNTakesAnMTUSetAfterOpening(t *testing.T) {
 	if os.Geteuid() != 0 || os.Getenv("RANET3_DARWIN_NETTEST") != "1" {
@@ -29,44 +28,27 @@ func TestTUNTakesAnMTUSetAfterOpening(t *testing.T) {
 		}
 		return link.MTU
 	}
-	t.Run("opened at 9000", func(t *testing.T) {
-		m, err := NewNamed(jumbo, jumbo, "")
-		if err != nil {
-			t.Fatalf("open the mesh: %v", err)
-		}
-		t.Cleanup(m.Close)
-		if got := held(t, m); got != jumbo {
-			t.Fatalf("the kernel holds %d for %s opened at %d", got, m.Name, jumbo)
-		}
-		for _, mtu := range []int{DefaultMTU, jumbo} {
-			if err := m.CheckMTU(mtu); err != nil {
-				t.Fatalf("a move to %d on a mesh opened at %d was refused: %v", mtu, jumbo, err)
+	for _, arm := range []struct{ opened, moved int }{{jumbo, DefaultMTU}, {DefaultMTU, jumbo}} {
+		t.Run(fmt.Sprintf("opened at %d", arm.opened), func(t *testing.T) {
+			m, err := NewNamed(arm.opened, "")
+			if err != nil {
+				t.Fatalf("open the mesh: %v", err)
 			}
-			if err := m.SetMTU(mtu, nil); err != nil {
-				t.Fatalf("set the mtu to %d: %v", mtu, err)
+			t.Cleanup(m.Close)
+			if got := held(t, m); got != arm.opened {
+				t.Fatalf("the kernel holds %d for %s opened at %d", got, m.Name, arm.opened)
 			}
-			if got := held(t, m); got != mtu {
-				t.Fatalf("the kernel holds %d for %s after it was set to %d", got, m.Name, mtu)
+			for _, mtu := range []int{arm.moved, arm.opened} {
+				if err := m.CheckMTU(); err != nil {
+					t.Fatalf("a move to %d on a mesh opened at %d was refused: %v", mtu, arm.opened, err)
+				}
+				if err := m.SetMTU(mtu, nil); err != nil {
+					t.Fatalf("set the mtu to %d: %v", mtu, err)
+				}
+				if got := held(t, m); got != mtu {
+					t.Fatalf("the kernel holds %d for %s after it was set to %d", got, m.Name, mtu)
+				}
 			}
-		}
-	})
-	t.Run("opened at the default", func(t *testing.T) {
-		m, err := NewNamed(0, 0, "")
-		if err != nil {
-			t.Fatalf("open the mesh: %v", err)
-		}
-		t.Cleanup(m.Close)
-		err = m.CheckMTU(jumbo)
-		if err == nil {
-			t.Fatalf("a move to %d on a mesh whose read buffers hold %d was taken", jumbo, outboundPacketBufferSize)
-		}
-		for _, want := range []string{"9000", "2048", "restart to apply"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("the refusal reads %q, which does not say %s", err, want)
-			}
-		}
-		if got := held(t, m); got != DefaultMTU {
-			t.Errorf("the kernel holds %d for %s, want the %d it opened at", got, m.Name, DefaultMTU)
-		}
-	})
+		})
+	}
 }

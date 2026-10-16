@@ -17,8 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"golang.zx2c4.com/wireguard/tun"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
+	"ranet3.com/pkgs/wireguard/conn"
+	"ranet3.com/pkgs/wireguard/tun"
 )
 
 // scriptedRead is one answer of a scriptedDevice to Read
@@ -27,7 +28,7 @@ type scriptedRead struct {
 	err     error
 }
 
-// scriptedDevice answers each Read with the next scripted answer
+// scriptedDevice answers each Read with the next scripted answer, laid out in the slab as a device lays out a read
 // and reports closure once the mesh closes it
 type scriptedDevice struct {
 	recordingDevice
@@ -35,13 +36,10 @@ type scriptedDevice struct {
 	closed chan struct{}
 }
 
-func (d *scriptedDevice) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
+func (d *scriptedDevice) Read(slab []byte, packets []tun.ReadPacket) (int, error) {
 	select {
 	case read := <-d.reads:
-		for i, packet := range read.packets {
-			sizes[i] = copy(bufs[i][offset:], packet)
-		}
-		return len(read.packets), read.err
+		return layOut(slab, packets, read.packets), read.err
 	case <-d.closed:
 		return 0, os.ErrClosed
 	}
@@ -70,16 +68,14 @@ func waitUntil(tb testing.TB, what string, cond func() bool) {
 	}
 }
 
-// a GSO frame of more segments than one read holds
-// comes back cut short with ErrTooManySegments
+// a GSO frame of more segments than one read holds comes back cut short with ErrTooManySegments
+// the n packets the read does hold are each whole and all go out
 // and a reader that stopped there would leave its queue's flows unread
 func TestReaderKeepsReadingPastACutGSOFrame(t *testing.T) {
 	dev := &scriptedDevice{reads: make(chan scriptedRead, 2), closed: make(chan struct{})}
 	sent := &recordingPeer{}
-	m := &Mesh{
-		Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{}),
-		outboundBufferSize: tunOffset + outboundPacketBufferSize,
-	}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+	m.setDevice(dev)
 	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("::/0"), sent.peer(t, "peer"))
 	m.startOutboundPipeline()
 	t.Cleanup(m.Close)
@@ -111,16 +107,55 @@ func TestReaderKeepsReadingPastACutGSOFrame(t *testing.T) {
 	}
 }
 
+// largestGSOFrame is the most a GSO frame the kernel hands a tun holds, GSO_LEGACY_MAX_SIZE, which a tun's tso_max_size stays at
+const largestGSOFrame = 65536
+
+// a GSO frame of any segment size the kernel hands a tun whose gso_max_segs is the read batch splits whole into one batch's slab
+// under the longest TCP header and under UDP, in either family, as large as the frame and its segment count allow
+// past a segment size of 2 KiB a frame splits into fewer segments, and the frames up to the largest stand for the rest
+func TestSlabHoldsTheLargestGSOFrame(t *testing.T) {
+	batch := conn.IdealBatchSize
+	b := newOutboundBatch(batch)
+	frame := make([]byte, largestGSOFrame)
+	for _, shape := range []struct {
+		name    string
+		options tun.GSOOptions
+	}{
+		{"IPv4 TCP", tun.GSOOptions{GSOType: tun.GSOTCPv4, CsumStart: 20, HdrLen: 20 + 60, CsumOffset: 16}},
+		{"IPv6 TCP", tun.GSOOptions{GSOType: tun.GSOTCPv6, CsumStart: 40, HdrLen: 40 + 60, CsumOffset: 16}},
+		{"IPv4 UDP", tun.GSOOptions{GSOType: tun.GSOUDPL4, CsumStart: 20, HdrLen: 20 + 8, CsumOffset: 6}},
+		{"IPv6 UDP", tun.GSOOptions{GSOType: tun.GSOUDPL4, CsumStart: 40, HdrLen: 40 + 8, CsumOffset: 6}},
+	} {
+		header := int(shape.options.HdrLen)
+		sizes := []int{4 << 10, 9000, 16 << 10, largestGSOFrame - header - 1}
+		for size := 1; size <= 2<<10; size++ {
+			sizes = append(sizes, size)
+		}
+		for _, size := range sizes {
+			payload := min(largestGSOFrame-header, batch*size)
+			in := frame[:header+payload]
+			in[0] = 4 << 4
+			if shape.options.CsumStart == 40 {
+				in[0] = 6 << 4
+			}
+			options := shape.options
+			options.GSOSize = uint16(size)
+			n, err := tun.GSOSplit(in, options, b.slab, b.reads, tun.ReadPacketSpacing)
+			if want := (payload + size - 1) / size; err != nil || n != want {
+				t.Fatalf("a %s frame of %d bytes in segments of %d split into %d of its %d segments: %v", shape.name, len(in), size, n, want, err)
+			}
+		}
+	}
+}
+
 // a linux read hands over every segment of a GSO frame at once
 // and a read off one queue can carry packets for several peers
 // so every packet of the read goes to its own peer, in the order the read held them
 func TestReaderRoutesEveryPacketOfOneRead(t *testing.T) {
 	dev := &scriptedDevice{reads: make(chan scriptedRead, 1), closed: make(chan struct{})}
 	a, b := &recordingPeer{}, &recordingPeer{}
-	m := &Mesh{
-		Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{}),
-		outboundBufferSize: tunOffset + outboundPacketBufferSize,
-	}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+	m.setDevice(dev)
 	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("fd00::a/128"), a.peer(t, "a"))
 	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("fd00::b/128"), b.peer(t, "b"))
 	m.startOutboundPipeline()

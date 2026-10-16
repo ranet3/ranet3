@@ -9,8 +9,6 @@ import (
 	"net/netip"
 	"testing"
 
-	"golang.zx2c4.com/wireguard/tun"
-
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -111,19 +109,20 @@ func TestReaderClampsTheMSSOfASYNToItsSession(t *testing.T) {
 // a read off the tun counts each SYN whose MSS it lowers, and none whose MSS already fits the session
 func TestReaderCountsTheSYNsItClamps(t *testing.T) {
 	const session = 1300
-	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), outboundBufferSize: tunOffset + session}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 	m.startSegmentReports()
 	peer := (&recordingPeer{}).peer(t, "peer")
 	peer.SetMTU(session)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
-	b := m.newOutboundBatch(4)
+	var syns [][]byte
 	for _, family := range []int{4, 6} {
 		for _, mss := range []uint16{1460, 536} {
-			b.sizes[b.n] = copy(b.bufs[b.n][tunOffset:], tcpPacket(family, 0, false, synFlag, binary.BigEndian.AppendUint16([]byte{optionMSS, mssLen}, mss), 0, 0))
-			b.n++
+			syns = append(syns, tcpPacket(family, 0, false, synFlag, binary.BigEndian.AppendUint16([]byte{optionMSS, mssLen}, mss), 0, 0))
 		}
 	}
+	b := newOutboundBatch(len(syns))
+	fill(b, syns...)
 	m.classify(b)
 	if got := m.MSSClamped(); got != 2 {
 		t.Errorf("a read of four SYNs, two offering more than a %d byte session takes, counted %d clamps, want 2", session, got)
@@ -155,7 +154,8 @@ func TestExitClampsTheMSSOfASYNToTheSessionItArrivedThrough(t *testing.T) {
 					t.Fatal(err)
 				}
 				dev := &recordingDevice{writes: make(chan recordedWrite, 1)}
-				m := &Mesh{Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{})}
+				m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+				m.setDevice(dev)
 				m.SetSegments(table)
 				m.DeliverInboundBatch([][]byte{outer}, mtu)
 				want, clamps := bytes.Clone(inner), uint64(0)

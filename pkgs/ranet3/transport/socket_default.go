@@ -10,7 +10,7 @@ import (
 	"log/slog"
 	"net/netip"
 
-	"golang.zx2c4.com/wireguard/conn"
+	"ranet3.com/pkgs/wireguard/conn"
 )
 
 type portableBind struct{ conn.Bind }
@@ -41,7 +41,7 @@ func (b *portableBind) ParseEndpoint(s string) (Endpoint, error) {
 }
 
 func (b *portableBind) Send(packets [][]byte, endpoint Endpoint) error {
-	return b.Bind.Send(packets, endpoint.(*portableEndpoint).Endpoint)
+	return b.Bind.Send(packets, endpoint.(*portableEndpoint).Endpoint, 0)
 }
 
 // This platform has neither facility, so Underlay.refuse turns down every
@@ -61,16 +61,14 @@ func openPacketBind(port uint16, underlay Underlay, index int, routed bool, _ fu
 	var receivers []receiveFunc
 	for _, fn := range fns {
 		size := b.BatchSize()
-		eps := make([]conn.Endpoint, size)
+		// the next read reuses the slab, and the hub copies what it keeps of a read before the next
+		slab := make([]byte, readBufferSize*size)
+		packets := make([]conn.ReceivedPacket, size)
 		receivers = append(receivers, func(bufs [][]byte, sizes []int, endpoints []Endpoint) (int, int, error) {
-			for i := range size {
-				if bufs[i] == nil {
-					bufs[i] = make([]byte, readBufferSize)
-				}
-			}
-			n, err := fn(bufs[:size], sizes[:size], eps)
+			n, err := fn(slab, packets)
 			for i := range n {
-				endpoints[i] = &portableEndpoint{eps[i]}
+				bufs[i], sizes[i] = packets[i].Bytes(slab), packets[i].Size
+				endpoints[i] = &portableEndpoint{packets[i].Endpoint}
 			}
 			// This bind hands every datagram it reads straight through, so
 			// there is nothing it refuses of its own.

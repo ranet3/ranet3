@@ -188,7 +188,7 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	if err != nil {
 		return nil, err
 	}
-	mesh, err := netstack.NewNamed(mtu, largest, cfg.Link.TUN)
+	mesh, err := netstack.NewNamed(mtu, cfg.Link.TUN)
 	if err != nil {
 		return nil, err
 	}

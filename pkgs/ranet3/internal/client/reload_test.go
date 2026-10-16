@@ -308,12 +308,37 @@ func TestReloadRefusesMovingTheTableByName(t *testing.T) {
 }
 
 // the reconciler is the last to refuse, so its refusal leaves everything a reload applies as it was
+// the refused reload raises link.mtu and lengthens the steering, which would move the tun and every live session's link, adds a segment and changes cap.babel and link.listen
+// the mesh has no device, so a move of the tun shows as the steering table it installs, a new one here
 func TestReloadTheReconcilerRefusesChangesNothing(t *testing.T) {
-	c, path, reconciler, bus := reloadOf(t, func(old *config.Config) { old.Cap.Table = &kernel.Table{} })
+	c, path, reconciler, bus := reloadOf(t, func(old *config.Config) {
+		old.Cap.Segment = steering("3fff:1:69c:98d6::1")
+		old.Cap.Table = &kernel.Table{}
+	})
+	segmentsOf(t, c)
+	speakerRecording(t, c, bus)
+	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { hub.Close() })
+	c.hub = hub
+	// a live session whose budget is link.mtu, which a reload hands the new link.mtu at once
+	c.sessions = newSessionSet()
+	search := newPathDriver(nil, nil, c.events, &c.probes, defaultProbeTimeout, confirmInterval)
+	search.peer = sinkPeer(t, "example/bravo:2@1")
+	search.peer.SetMTU(c.config().Link.SessionMTU())
+	c.sessions.live[search.peer.ID] = &liveSession{pmtu: search}
 	reconciler.refusal = errors.New("kernel: a refusal")
+	segments, steered, budget := c.Mesh.Segments(), c.Mesh.Steering(), search.peer.MTU()
 	old := c.config()
 	next := *old
+	next.Link.MTU = 9000
+	next.Cap.Segment = steering("3fff:1:69c:98d6::1", "3fff:1:69c:6c46::1")
+	next.Cap.Segment.Local = []srv6.Segment{{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEnd}}
+	next.Cap.Babel = &babel.Config{Hello: schema.Duration(2 * time.Second)}
 	next.Cap.Table = &kernel.Table{Metric: 32}
+	next.Link.Listen = true
 	joinedAndAnnounced(t, c, &next)
 	writeConfig(t, path, &next)
 	if err := c.ReloadFrom(path); !errors.Is(err, reconciler.refusal) {
@@ -323,6 +348,20 @@ func TestReloadTheReconcilerRefusesChangesNothing(t *testing.T) {
 		t.Errorf("the reconciler was asked %d times, want once", len(reconciler.tables))
 	}
 	changedNothing(t, c, old, bus)
+	if c.Mesh.Segments() != segments || c.Mesh.Steering() != steered {
+		t.Error("the refused reload moved the tun or installed segment tables")
+	}
+	if got := search.peer.MTU(); got != budget {
+		t.Errorf("the refused reload moved a live session's link from %d to %d", budget, got)
+	}
+	if got := recorded(bus, "babel.config.applied"); len(got) != 0 {
+		t.Errorf("the refused reload reached the speaker: %v", got)
+	}
+	c.dialersMu.Lock()
+	defer c.dialersMu.Unlock()
+	if c.responder != nil {
+		t.Error("the refused reload started the responder")
+	}
 }
 
 // a translator with return set resolved an auto source among the mesh addresses once, at startup
@@ -500,15 +539,15 @@ func TestReloadAppliesASteeringThatNeedsAnotherMTU(t *testing.T) {
 	}
 }
 
-// a link.mtu within the read buffers the mesh opened with applies in place
-func TestReloadAppliesALinkMTUWithinTheReadBuffers(t *testing.T) {
+// a link.mtu a reload moves applies in place
+func TestReloadAppliesALinkMTUInPlace(t *testing.T) {
 	c, path, _, bus := reloadOf(t, func(*config.Config) {})
 	c.Mesh = netstack.NewRoutesOnly()
 	next := *c.config()
 	next.Link.MTU = 2048
 	writeConfig(t, path, &next)
 	if err := c.ReloadFrom(path); err != nil {
-		t.Fatalf("a link.mtu of 2048 under buffers of 2048 bytes was refused: %v", err)
+		t.Fatalf("a link.mtu of 2048 was refused: %v", err)
 	}
 	if got := c.config().Link.SessionMTU(); got != 2048 {
 		t.Errorf("the node runs link.mtu %d, want 2048", got)
@@ -556,95 +595,6 @@ func TestReloadPlansTheTUNAtLinkMTULessTheLongestList(t *testing.T) {
 				t.Errorf("the plan moves the tun from %d to %d bytes, want %d to %d", plan.from, plan.to, move.from, move.to)
 			}
 		})
-	}
-}
-
-// the read buffers are sized once for the link.mtu the mesh opened with, so a link.mtu past them is refused before anything else applies
-// the refusal names both sizes and says a restart applies it
-func TestReloadRefusesALinkMTUPastTheReadBuffersAndChangesNothing(t *testing.T) {
-	c, path, reconciler, bus := reloadOf(t, func(old *config.Config) {
-		old.Cap.Segment = steering("3fff:1:69c:98d6::1")
-		old.Cap.Table = &kernel.Table{}
-	})
-	segmentsOf(t, c)
-	speakerRecording(t, c, bus)
-	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { hub.Close() })
-	c.hub = hub
-	segments, steered := c.Mesh.Segments(), c.Mesh.Steering()
-	old := c.config()
-	next := *old
-	next.Link.MTU = 9000
-	next.Cap.Segment = steering("3fff:1:69c:98d6::1", "3fff:1:69c:6c46::1")
-	next.Cap.Segment.Local = []srv6.Segment{{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEnd}}
-	next.Cap.Babel = &babel.Config{Hello: schema.Duration(2 * time.Second)}
-	next.Cap.Table = &kernel.Table{Metric: 32}
-	next.Link.Listen = true
-	joinedAndAnnounced(t, c, &next)
-	writeConfig(t, path, &next)
-	err = c.ReloadFrom(path)
-	if err == nil {
-		t.Fatal("a link.mtu past the read buffers the mesh opened with was applied")
-	}
-	for _, want := range []string{"9000", "2048", "restart to apply"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal reads %q, which does not say %s", err, want)
-		}
-	}
-	changedNothing(t, c, old, bus)
-	if c.Mesh.Segments() != segments || c.Mesh.Steering() != steered {
-		t.Error("the refused reload installed segment tables")
-	}
-	if got := recorded(bus, "babel.config.applied"); len(got) != 0 {
-		t.Errorf("the refused reload reached the speaker: %v", got)
-	}
-	if len(reconciler.tables) != 0 {
-		t.Errorf("the refused reload handed the reconciler %+v", reconciler.tables)
-	}
-	c.dialersMu.Lock()
-	defer c.dialersMu.Unlock()
-	if c.responder != nil {
-		t.Error("the refused reload started the responder")
-	}
-}
-
-// a link.mtu past the read buffers is refused where the steering added with it keeps the device at its MTU
-// link.mtu 2000 with nothing steered runs the device at 2000
-// link.mtu 2064 under one segment runs it at 2000 as well
-// a steered read of 2000 bytes would then grow to 2064 bytes in a buffer of 2048
-func TestReloadRefusesALinkMTUPastTheReadBuffersWhereTheDeviceStays(t *testing.T) {
-	c, path, _, _ := reloadOf(t, func(old *config.Config) { old.Link.MTU = 2000 })
-	segmentsOf(t, c)
-	old, steered := c.config(), c.Mesh.Steering()
-	next := *old
-	next.Link.MTU = 2064
-	next.Cap.Segment = steering("3fff:1:69c:98d6::1")
-	_, nextSteering, err := next.Segments().Tables()
-	if err != nil {
-		t.Fatal(err)
-	}
-	device, err := steeredMTU(next.Link.SessionMTU(), nextSteering)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if device != 2000 {
-		t.Fatalf("the next configuration runs the device at %d bytes, want the 2000 it runs at now", device)
-	}
-	writeConfig(t, path, &next)
-	err = c.ReloadFrom(path)
-	if err == nil {
-		t.Fatal("a link.mtu of 2064 past read buffers of 2048 bytes was applied")
-	}
-	for _, want := range []string{"2064", "2048", "restart to apply"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal reads %q, which does not say %s", err, want)
-		}
-	}
-	if c.config() != old || c.Mesh.Steering() != steered {
-		t.Error("the refused reload stored its configuration or installed its steering")
 	}
 }
 

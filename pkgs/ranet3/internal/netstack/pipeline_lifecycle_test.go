@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"golang.zx2c4.com/wireguard/tun"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
+	"ranet3.com/pkgs/wireguard/tun"
 )
 
 // Both halves of Place.OnFailure: a packet the transport loses is reported,
@@ -145,7 +145,8 @@ func (d *heldDevice) Write(bufs [][]byte, _ int) (int, error) {
 func TestCloseWaitsForInboundWriters(t *testing.T) {
 	dev := &heldDevice{entered: make(chan struct{}, 2), release: make(chan struct{})}
 	// two lanes, so the writers run, both on the one device so either lane is held
-	m := &Mesh{devs: []tun.Device{dev, dev}, closed: make(chan struct{})}
+	m := &Mesh{closed: make(chan struct{})}
+	m.setDevice(lanesOf(dev, dev))
 	m.startInboundWriters()
 	m.DeliverInboundBatch([][]byte{ipv6TCPPacket(40000, 5201, 1)}, DefaultMTU)
 	select {
@@ -221,7 +222,8 @@ func TestDeliveriesRacingCloseAllReturn(t *testing.T) {
 			for i := range devs {
 				devs[i] = dev
 			}
-			m := &Mesh{devs: devs, closed: make(chan struct{})}
+			m := &Mesh{closed: make(chan struct{})}
+			m.setDevice(lanesOf(devs...))
 			m.startInboundWriters()
 			var delivering sync.WaitGroup
 			for session := range sessions {
@@ -256,7 +258,8 @@ func TestDeliveriesRacingCloseAllReturn(t *testing.T) {
 
 func TestSingleQueueInboundSplitsLargeBatches(t *testing.T) {
 	dev := &recordingDevice{writes: make(chan recordedWrite, 2)}
-	m := &Mesh{devs: []tun.Device{dev}, closed: make(chan struct{})}
+	m := &Mesh{closed: make(chan struct{})}
+	m.setDevice(dev)
 	packets := make([][]byte, inboundWriteBatchSize+1)
 	for i := range packets {
 		packets[i] = []byte{byte(i)}
@@ -363,16 +366,11 @@ type failingReadDevice struct {
 	fail  int64
 }
 
-func (d *failingReadDevice) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
+func (d *failingReadDevice) Read(slab []byte, packets []tun.ReadPacket) (int, error) {
 	if d.reads.Add(1) == d.fail {
 		return 0, errors.New("read failed")
 	}
-	if len(bufs) == 0 {
-		return 0, nil
-	}
-	sizes[0] = 1
-	bufs[0][offset] = 0x60
-	return 1, nil
+	return layOut(slab, packets, [][]byte{{0x60}}), nil
 }
 
 // A read error that is not closure used to end the queue's reader with no log,
@@ -386,11 +384,11 @@ func TestTunReadFailureIsReportedAndGivesTheBatchBack(t *testing.T) {
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
 
 	dev := &failingReadDevice{fail: 3}
-	m := &Mesh{Name: "test0", devs: []tun.Device{dev}, closed: make(chan struct{}),
-		Routes: NewRouteTable(), outboundFree: make(chan *outboundBatch, 2),
-		outboundBufferSize: DefaultMTU + tunOffset}
+	m := &Mesh{Name: "test0", closed: make(chan struct{}),
+		Routes: NewRouteTable(), outboundFree: make(chan *outboundBatch, 2)}
+	m.setDevice(dev)
 	for range 2 {
-		m.outboundFree <- m.newOutboundBatch(4)
+		m.outboundFree <- newOutboundBatch(4)
 	}
 	m.outboundReaderWG.Add(1)
 	done := make(chan struct{})

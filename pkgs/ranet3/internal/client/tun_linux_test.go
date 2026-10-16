@@ -49,7 +49,7 @@ const synPort = 443
 func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 	const session = 1300
 	enterEmptyNamespace(t)
-	mesh, err := netstack.NewNamed(0, 0, "synclamp0")
+	mesh, err := netstack.NewNamed(0, "synclamp0")
 	if err != nil {
 		t.Fatalf("open bravo's mesh: %v", err)
 	}
@@ -142,25 +142,6 @@ func TestTUNFollowsAReloadOfLinkMTUOrTheSteering(t *testing.T) {
 				t.Errorf("the tun holds %d bytes after the reload, want %d", got, move.to)
 			}
 		})
-	}
-}
-
-// New opens every read buffer for link.mtu rather than for the device
-// the device runs at link.mtu less the longest steering list
-// 8936 bytes at link.mtu 9000 under one segment
-// and the mesh holds the 9000 bytes a steered read of 8936 grows to in its own buffer
-func TestTUNOpenedByNewHoldsASteeredReadOfLinkMTU(t *testing.T) {
-	const largest = 9000
-	enterEmptyNamespace(t)
-	c, _ := startOnTUN(t, func(cfg *config.Config) {
-		cfg.Link.MTU = largest
-		cfg.Cap.Segment = steering("3fff:1:69c:98d6::1")
-	})
-	if got, want := linkMTU(t, c.Mesh.Name), largest-(40+8+16); got != want {
-		t.Errorf("New opened the tun at %d bytes, want %d", got, want)
-	}
-	if err := c.Mesh.CheckMTU(largest); err != nil {
-		t.Errorf("the mesh New opened cannot hold a steered read of link.mtu: %v", err)
 	}
 }
 

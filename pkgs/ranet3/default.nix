@@ -5,6 +5,7 @@
   inputs,
   lib,
   buildGoApplication,
+  go,
 }:
 
 let
@@ -53,6 +54,8 @@ buildGoApplication (
       };
 
     modules = ./gomod2nix.toml;
+    pwd = ./.;
+    inherit go;
 
     subPackages = [ "cmd/ranet3" ];
 
