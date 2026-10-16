@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-16
+updated: 2026-10-17
 order: 20
 ---
 
@@ -114,6 +114,17 @@ property prints the smallest input it found. hegel is a test dependency only:
 or when a non-test file imports `internal/pbt`, so it never reaches the binary
 or its notices.
 
+hegel-go runs on a library of its own. With `HEGEL_LIBHEGEL_PATH` set it loads
+that file and no other. Otherwise it writes the copy it embeds into the user
+cache, `~/.cache/hegel-go` on Linux and `~/Library/Caches/hegel-go` on macOS,
+and loads it from there. Test binaries that start before a copy exists each
+write their own and rename it into place, and the macOS loader refuses a file
+replaced between its check and its open. The first `go test ./...` on a Mac
+after a hegel update can therefore fail in libhegel's load with "file inode
+changed", and the next run, which finds the copy, passes. The `go-test` check
+sets `HEGEL_LIBHEGEL_PATH` to the library in the vendored hegel module, and
+fails if a test wrote hegel's cache under the check's home directory anyway.
+
 Property tests build on Linux and macOS alone. `internal/pbt` and every property
 test carry a build constraint that names them. The `transport` property, the
 `internal/kernel` netlink and rule message properties and the `internal/egress`
@@ -138,7 +149,7 @@ have commands of their own.
 
 | Check           | Systems | CI runs it on                    | What it runs                                                                                                |
 | --------------- | ------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `go-test`       | all 3   | all 3                            | `go test -race ./...`                                                                                       |
+| `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote hegel's cache               |
 | `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, and `staticcheck ./...`                                   |
 | `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `nixfmt --check` on every Nix file, `taplo format --check` and `reuse lint` |
 | `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                |
