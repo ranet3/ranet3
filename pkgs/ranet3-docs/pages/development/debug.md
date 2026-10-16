@@ -239,6 +239,7 @@ connections to the reads.
 | `babel.seqno.raised`                  | this node's own seqno rose, at a start of the speaker or for a request      |
 | `babel.state.unsaved`, `.unreadable`  | a seqno limit could not be saved, or the state file not read at start       |
 | `kernel.pass`                         | a reconciler pass that took a reload, changed, skipped anew or failed       |
+| `kernel.cover`                        | a family's zero-free cover went into the kernel or came out, on macOS       |
 | `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed      |
 | `network.changed`                     | the host's default or addresses moved, so every session was probed          |
 | `transport.underlay.bound`            | the underlay socket moved onto another interface                            |
@@ -296,6 +297,7 @@ Each kind carries these attributes:
 | `babel.state.unsaved`                         | `limit`, `seqno`, `err`                                                                                                                     |
 | `babel.state.unreadable`                      | `file`, `err`                                                                                                                               |
 | `kernel.pass`                                 | `trigger`, `took`, `added`, `removed`, `skipped`, `installed`, `err`                                                                        |
+| `kernel.cover`                                | `family`, `installed`                                                                                                                       |
 | `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                          |
 | `network.changed`                             | `ipv4_default`, `ipv4_default_was`, `ipv4_added`, `ipv4_removed`, the same 4 for `ipv6`, `probed`, `woken`                                  |
 | `transport.underlay.bound`                    | `interface_index`                                                                                                                           |

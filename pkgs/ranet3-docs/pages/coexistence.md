@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-10-16
+updated: 2026-10-17
 order: 110
 ---
 
@@ -98,23 +98,22 @@ the utun.
   is set. Such a route has a prefix length of 0 or 1, or contains the family's
   unspecified address.
 
-With `bind` set, a default is still scoped when it covers an endpoint address
-the trust document lists. A default covers every address of its family. It
-therefore stays scoped whenever the trust document lists a literal address of
-that family. Every route outside the first 3 kinds is then installed unscoped,
-so the mesh is reachable from the Mac without every program binding first.
+With `bind` set, every route outside the first 3 kinds is installed unscoped, so
+the mesh is reachable from the Mac without every program binding first.
 
 Tailscale makes the same split on the same host. Its exit-node default is scoped
 to its utun, and its `100.64.0.0/10` is not.
 
-An unscoped `0.0.0.0/0` or `::/0` out of the utun collides with the host's own
-default. The reconciler skips that route and warns once. With `bind` set, a Mac
-takes a mesh exit through the halves instead: `0.0.0.0/1` with `128.0.0.0/1`,
-and `::/1` with `8000::/1`.
-
-A half that covers a listed endpoint address stays scoped, as
-[routing](routing.md#linux-and-macos) describes. [Exit nodes](exit-nodes.md)
-describes how an exit advertises the halves.
+An unscoped `0.0.0.0/0` or `::/0` out of the utun would collide with the host's
+own default. With `bind` set, the reconciler installs a plain default as its
+zero-free cover instead, 8 unscoped routes per family that hold every address
+but `0.0.0.0/8` and `::/8`. No member holds the zero address, so a socket bound
+to the host's interface keeps its fallback, and the members stay unscoped even
+over a listed endpoint address. `64:ff9b::/96` lies in `::/8` and stays on the
+host's own route. Until exit selection exists, a Mac with `bind` set takes
+whichever `/0` Babel selects. [Routing](routing.md#the-zero-free-cover-on-macos)
+describes the cover, and [exit nodes](exit-nodes.md#what-to-advertise) why an
+exit advertises the `/0` only.
 
 What a scoped route does not give you is automatic use of an exit-announced
 address. Invisibility to an ordinary lookup is the safety property, and it
@@ -131,7 +130,9 @@ BCP 38 filter, and nothing on the host shows why.
 An install that collides with a route another program holds is reported once and
 left alone. macOS has no route replace, and the collision does not resolve
 itself. The route stays in the diff, and every pass attempts the install again
-without another report.
+without another report. A collision at a member of the zero-free cover keeps
+that family's whole cover out, as
+[routing](routing.md#the-zero-free-cover-on-macos) describes.
 
 The `kernel routes reconciled` line leaves such a route out of `added`. `status`
 and the scrape count it as skipped, the scrape as
@@ -140,10 +141,29 @@ and the scrape count it as skipped, the scrape as
 
 ## The underlay default on macOS
 
-With `link.underlay.bind` set, ranet3 writes a default out of an interface it
-does not own, for each family the host has a default of. Each default is scoped
-to the physical interface the underlay socket is bound to. Their ownership rules
-are narrower than the utun's:
+With `link.underlay.bind` set, ranet3 can write a default out of an interface it
+does not own, scoped to the physical interface the underlay socket is bound to.
+A socket bound with `IP_BOUND_IF` falls back to a longest-prefix match on its
+family's zero address, so an unscoped route out of another interface that holds
+that address takes the fallback away. The default is written for a family only
+while such a route is in the table:
+
+- one the reconciler installs that is not a cover member, a real `0.0.0.0/1` or
+  a `0.0.0.0/24` out of the utun, or
+- another program's, out of an interface that is neither ranet3's utun nor the
+  underlay's, such as a full-tunnel VPN's `0.0.0.0/1`. Scoped, cloned,
+  link-layer and reject routes do not count, and neither does the host's own
+  default.
+
+The reconciler checks on every pass, and the transport before it moves the
+socket onto another interface. A route change anywhere on the host wakes a pass
+after a 250 millisecond settle, so another program's capture strands the socket
+for that settle and 1 pass at most. The first check that finds the last such
+route gone withdraws the default. With only the cover installed, nothing is
+written, and the host's own router selection (RFC 4861 section 6.3.6) stays in
+charge of its default. ranet3 never touches the other program's route.
+
+The ownership rules of this default are narrower than the utun's:
 
 - ranet3 deletes only a default it recorded writing.
 - Before a delete, it reads the kernel back and requires a route with the same

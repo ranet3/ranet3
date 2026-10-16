@@ -98,11 +98,11 @@ in the Linux Nix sandbox and under `unshare -rn`.
 macOS backend can be driven without either. `internal/client`'s
 `daemon_darwin_test.go` uses that to run a configuration file all the way to a
 daemon against a recorded routing table: the transport binds, the underlay
-writes the default its bound socket depends on, and the reconciler holds an
-announced default out of the kernel until a session is live, all asserted on the
-routes that arrive rather than on the calls that made them. It needs no
-privilege, and the one thing it leaves with the running kernel is `IP_BOUND_IF`
-on the transport's own UDP socket.
+writes the default its bound socket depends on only while a capture holds a zero
+address, and the reconciler holds an announced default out of the kernel until a
+session is live, all asserted on the routes that arrive rather than on the calls
+that made them. It needs no privilege, and the one thing it leaves with the
+running kernel is `IP_BOUND_IF` on the transport's own UDP socket.
 
 ## Property tests
 

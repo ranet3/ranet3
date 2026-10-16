@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-10-16
+updated: 2026-10-17
 order: 35
 ---
 
@@ -112,15 +112,21 @@ on every platform but macOS.
   a table other than `id`, the file is refused at load. A rule with an `iif`
   other than `lo` does not count, since the socket's own packets arrive on `lo`.
 - `bind` sets `IP_BOUND_IF` and `IPV6_BOUND_IF`. The socket follows the default
-  route's interface as it changes. The daemon gives that interface a default
-  route scoped to it, with or without `cap.table`.
-- With `bind`, the reconciler installs a route that carries this host's own
-  traffic, such as the `/1` halves an exit announces, without scoping it to the
-  tun. Other sockets can then use a mesh exit.
-- Even with `bind`, a route that covers an endpoint address listed in the trust
-  document stays scoped to the tun. The 2 halves of a family together cover
-  every address of it, so at least 1 of them stays scoped whenever the trust
-  document lists a literal address of that family.
+  route's interface as it changes.
+- With `bind`, the reconciler installs a plain `/0` that Babel selects as its
+  zero-free cover, 8 unscoped routes per family that hold every address but
+  `0.0.0.0/8` and `::/8`, so other sockets use the mesh exit. `64:ff9b::/96`
+  lies in `::/8` and stays on the host's own route. Until exit selection exists,
+  a Mac with `bind` set takes whichever `/0` Babel selects.
+- With `bind`, any other route that carries this host's own traffic is installed
+  unscoped too, except one that covers an endpoint address listed in the trust
+  document, which stays scoped to the tun.
+- With `bind`, the daemon writes a default scoped to the socket's interface only
+  for a family whose zero address an unscoped route out of another interface
+  holds: a real lower half, `0.0.0.0/1` or `::/1`, or a route like `0.0.0.0/24`
+  the mesh installs, or another program's, such as a full-tunnel VPN's. It
+  withdraws it once no such route is left. With only the cover installed it
+  writes nothing outside the tun.
 
 ## `dial`
 
@@ -437,10 +443,10 @@ needs.
 | `return`    | boolean           | `false`  | Also translate traffic from the advertised prefixes into the mesh |
 | `sweep`     | duration          | `"30s"`  | Interval of the periodic pass                                     |
 
-- An exit advertises `0.0.0.0/0` and `::/0`. An exit that serves macOS clients
-  advertises the halves instead, `0.0.0.0/1`, `128.0.0.0/1`, `::/1` and
-  `8000::/1`, because macOS cannot install a second unscoped `/0`. A subnet
-  router advertises the prefixes behind it.
+- An exit advertises `0.0.0.0/0` and `::/0` only, for Linux and macOS clients
+  alike. The `/1` halves would win over every `/0` exit by longest prefix, as
+  [exit nodes](exit-nodes.md#what-to-advertise) describes. A subnet router
+  advertises the prefixes behind it.
 - A prefix is announced only while its family's translation rule is installed
   and the host forwards that family.
 - An `advertise` prefix with bits set below its length, written as IPv4-mapped

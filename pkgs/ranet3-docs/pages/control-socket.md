@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-10-16
+updated: 2026-10-17
 order: 80
 ---
 
@@ -168,8 +168,9 @@ recorded events carry.
   gives each speaker a random router id.
 - `ip` prints this node's own mesh addresses, 1 per line, taken from the host
   prefixes it announces.
-- `exit list` prints the defaults the mesh advertises and which of them this
-  node would take. It tells a withdrawn default from one that carries traffic.
+- `exit list` prints the defaults the mesh advertises, with the 2 `/1` halves of
+  a family that 1 node advertises together, and which of them this node would
+  take. It tells a withdrawn default from one that carries traffic.
 - `bugreport` prints every subsystem in 1 JSON object. A read that did not
   answer leaves its own line in the report, so a node that is half up still
   produces one.
@@ -225,7 +226,7 @@ when empty, and every counter is always present. Other lists, such as
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | status             | `version`, `node`, `port`, `endpoints` (`serial/family`), `tun`, `mtu`, `queues`, `started_at`, `uptime`, `responder` (`link.listen` is on), `full_mesh` (`dial.all` is on), `no_transit` (`cap.transit` is off), `forwards_ipv4`, `forwards_ipv6`, `registry`, `kernel`, `egress`, `counts`, `esp`, `originate`, `segments`, `steering`, `segment_counters`, `disabled`, `down` |
 | `registry`         | `path`, `organizations`, `nodes`, `read_at`                                                                                                                                                                                                                                                                                                                                      |
-| `kernel`           | `enabled`, `where`, `table`, `protocol`, `metric`, `vrf`, `l3mdev_accept`, `pass_at`, `installed`, `skipped`, `added`, `removed`, `err`                                                                                                                                                                                                                                          |
+| `kernel`           | `enabled`, `where`, `table`, `protocol`, `metric`, `vrf`, `l3mdev_accept`, `pass_at`, `installed`, `skipped`, `added`, `removed`, `cover`, `err`                                                                                                                                                                                                                                 |
 | `egress`           | `enabled`, `where`, `source4`, `source6`, `return`, `advertise`, `announced`, `pass_at`, `installed`, `flows`, `bytes`, `conflicts`, `err`                                                                                                                                                                                                                                       |
 | `counts`           | `dialers`, `sessions`, `neighbors`, `neighbors_alive`, `prefixes`, `selected`, `originated`                                                                                                                                                                                                                                                                                      |
 | `esp`              | `inbound_packets`, `inbound_dropped`, `receive_dropped`, `receive_refused`, `keepalives`                                                                                                                                                                                                                                                                                         |

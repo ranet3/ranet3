@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-10-16
+updated: 2026-10-17
 order: 45
 ---
 
@@ -13,8 +13,9 @@ those decisions in its own table, keyed by source and destination prefix. The
 route reconciler copies the same decisions into a kernel routing table, so the
 host sends mesh traffic into the tun. Without `cap.table`, the reconciler does
 not run, and the host routes into the tun however it is configured to. On macOS,
-`link.underlay.bind` still writes a default for each family, scoped to the
-underlay's interface. [Sharing a host](coexistence.md) describes that route.
+`link.underlay.bind` still writes a default scoped to the underlay's interface
+for a family whose zero address another program's route takes.
+[Sharing a host](coexistence.md) describes that route.
 
 [The configuration reference](configuration-reference.md) lists every key under
 `cap.route`, `cap.babel` and `cap.table`.
@@ -222,41 +223,101 @@ utun. [Sharing a host](coexistence.md) describes the rules in full.
 
 ## Linux and macOS
 
-|                                                    | Linux                          | macOS                                                                                                                                |
-| -------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Table                                              | `cap.table.id`                 | the single forwarding table, `id` must stay 200                                                                                      |
-| Ownership                                          | the protocol `cap.table.proto` | the utun and the route's shape, `proto` must stay 155                                                                                |
-| Metric                                             | installed                      | not stored                                                                                                                           |
-| Hold                                               | `unreachable` route            | reject route scoped to the utun                                                                                                      |
-| Source-specific IPv6 route                         | installed with its source      | scoped to the utun, when the source covers an address on the utun                                                                    |
-| A route covering a listed literal endpoint address | installed                      | scoped to the utun, with or without `link.underlay.bind`                                                                             |
-| A `/0` default                                     | installed                      | scoped to the utun. With `link.underlay.bind`, scoped when it covers a listed endpoint address, otherwise tried unscoped and skipped |
-| The `/1` halves                                    | installed                      | scoped to the utun. With `link.underlay.bind`, scoped when it covers a listed endpoint address, otherwise unscoped                   |
-| VRF, rules, `prefsrc4`                             | supported                      | refused at startup                                                                                                                   |
-| `where` in the logs                                | `table 200 protocol 155`       | `interface utun6`, for example                                                                                                       |
+|                                                    | Linux                          | macOS                                                                                                              |
+| -------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| Table                                              | `cap.table.id`                 | the single forwarding table, `id` must stay 200                                                                    |
+| Ownership                                          | the protocol `cap.table.proto` | the utun and the route's shape, `proto` must stay 155                                                              |
+| Metric                                             | installed                      | not stored                                                                                                         |
+| Hold                                               | `unreachable` route            | reject route scoped to the utun                                                                                    |
+| Source-specific IPv6 route                         | installed with its source      | scoped to the utun, when the source covers an address on the utun                                                  |
+| A route covering a listed literal endpoint address | installed                      | scoped to the utun, with or without `link.underlay.bind`                                                           |
+| A `/0` default                                     | installed                      | scoped to the utun. With `link.underlay.bind`, installed as its zero-free cover, unscoped                          |
+| The `/1` halves                                    | installed                      | scoped to the utun. With `link.underlay.bind`, scoped when it covers a listed endpoint address, otherwise unscoped |
+| VRF, rules, `prefsrc4`                             | supported                      | refused at startup                                                                                                 |
+| `where` in the logs                                | `table 200 protocol 155`       | `interface utun6`, for example                                                                                     |
 
 On macOS a scoped route reaches only a socket bound to the utun. A listed
 endpoint address is a literal address of a node's endpoint in the trust
 document. An endpoint written as a hostname does not count.
 
-With `link.underlay.bind` set, the reconciler tries to install a default
-unscoped when no listed endpoint address lies in it. That route collides with
-the host's own default. macOS has no route replace, so the reconciler skips it
-and warns once. A Mac therefore takes a mesh exit only through the halves,
-`0.0.0.0/1` with `128.0.0.0/1` and `::/1` with `8000::/1`.
-
-A half that covers a listed endpoint address still stays scoped. Every IPv4
-address lies in 1 of the 2 IPv4 halves, and every global IPv6 address lies in
-`::/1`. Listed IPv4 endpoints in both IPv4 halves leave the Mac without an IPv4
-exit. Any listed global IPv6 endpoint leaves it without an IPv6 exit.
-
-With `link.underlay.bind` set, a capturing route also waits until the underlay's
-own interface has a default scoped to it for that family. While it waits, the
-reconciler logs
-`kernel is holding back a route that would carry this machine's own traffic`.
-
 iOS and Android have no reconciler. [Platforms](platforms.md) covers each
 platform in full.
+
+### The zero-free cover on macOS
+
+With `link.underlay.bind` set, a plain `/0` that Babel selects goes into the
+kernel as 8 routes per family that together hold every address but `0.0.0.0/8`
+and `::/8`:
+
+| Family | Members                                                                                                     |
+| ------ | ----------------------------------------------------------------------------------------------------------- |
+| IPv4   | `1.0.0.0/8`, `2.0.0.0/7`, `4.0.0.0/6`, `8.0.0.0/5`, `16.0.0.0/4`, `32.0.0.0/3`, `64.0.0.0/2`, `128.0.0.0/1` |
+| IPv6   | `100::/8`, `200::/7`, `400::/6`, `800::/5`, `1000::/4`, `2000::/3`, `4000::/2`, `8000::/1`                  |
+
+An unscoped `/0` out of the utun would collide with the host's own default, and
+macOS has no route replace. No member holds its family's zero address, so a
+socket bound with `IP_BOUND_IF`, ranet3's own underlay socket among them, falls
+back to the host's own default for every destination. The members are therefore
+unscoped even where a listed endpoint address lies in one, and nothing is
+written outside the utun. That was measured on a Mac with a bound socket
+connecting inside every member. The Mac had no unscoped IPv6 default, so the
+IPv6 half was measured against a stand-in default on a test utun.
+
+Only the kernel's table holds the cover. Babel's table, the updates it sends and
+`ranet3 exit list` keep the `/0`, so no route's prefix is replaced by a longer
+one inside the protocol (RFC 8966 Appendix C).
+
+A member is withheld while the kernel holds another route of the reconciler's,
+unscoped and in the same family, of length 1 up to the member's own, that
+contains it. The kernel then forwards every address outside the hole by the
+route Babel's longest match would, or by a member where that match is the `/0`.
+A route the kernel refuses or fails to install withholds nothing, and the
+members it would withhold are tried in its place. A route refused at a member's
+own key leaves that member refused too, which takes the family's cover out as
+described below.
+
+The hole, `0.0.0.0/8` and `::/8`, stays on the host's own route. `::/8` holds
+`64:ff9b::/96`, the NAT64 well-known prefix, so NAT64 traffic does not take the
+exit.
+
+The cover of a family goes in and out whole, with the `/0`. The capture gate
+judges the `/0`, so the cover waits for a live session and leaves when no
+session has been live for `capture_grace`. Its family also waits for the host's
+own default of that family, and while it waits the reconciler logs
+`kernel is holding back a route that would carry this machine's own traffic`.
+Each family's cover going in or out logs
+`kernel changed the cover a plain default is installed as` and records a
+`kernel.cover` event. The Kernel line of `ranet3 status` names the covered
+families.
+
+A member that another program's route at its key refuses, or that fails to
+install, takes its family's cover out whole, since part of a cover would split
+that family's traffic between the mesh and the other route. The family's members
+count as skipped, and the refusal logs
+`kernel is leaving a default's cover out, since another program holds a route at one of its members`
+once, with `held_by` naming that route. The family's traffic then takes the
+routes already in the host's table.
+
+A skipped count of 1 can also come from a mesh route at a member's own
+destination, such as a real `128.0.0.0/1` a node advertises. The reconciler
+withdraws the member before it installs that route. If the member is still in
+the kernel when the route is tried, as after a failed delete, macOS refuses the
+route against this node's own member, and each pass from then on counts it as
+skipped with no warning. The member leaves by the utun as the route would, and
+traffic is forwarded as Babel selects. The count clears once the route or the
+`/0` goes.
+
+Until exit selection exists, a Mac with `bind` set takes whichever `/0` Babel
+selects. A source-specific default, a hold and a real `/1` half that a node
+advertises are not covered. They are routes like any other.
+
+A route the reconciler installs unscoped that is not a member but holds a zero
+address, such as a real `0.0.0.0/1` or a `0.0.0.0/24`, needs a default scoped to
+the underlay's interface for that family before it is installed. The reconciler
+asks for it on every pass and asks again after a pass deletes such a route, so
+the scoped default is withdrawn in that same pass, once the route is out of the
+table. [Sharing a host](coexistence.md#the-underlay-default-on-macos) describes
+it.
 
 ## Watching it
 

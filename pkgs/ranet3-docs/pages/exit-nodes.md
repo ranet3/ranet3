@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-10-16
+updated: 2026-10-17
 order: 50
 ---
 
@@ -34,34 +34,24 @@ advertise = ["198.51.100.0/24"] # an exit node writes ["0.0.0.0/0", "::/0"]
 
 ## What to advertise
 
-An exit node advertises `0.0.0.0/0` and `::/0`. A subnet router advertises the
-prefixes behind it. The node originates each prefix it announces into Babel with
-no source prefix.
+An exit node advertises `0.0.0.0/0` and `::/0`, and only those, for Linux and
+macOS clients alike. A subnet router advertises the prefixes behind it. The node
+originates each prefix it announces into Babel with no source prefix.
 
-An exit that serves macOS clients advertises the halves instead:
+An exit does not advertise the `/1` halves in place of a `/0`. A half is longer
+than any `/0`, so wherever it is installed it wins over every `/0` exit by
+longest prefix, whatever the metric, and Babel no longer chooses among exits.
+The lower half, `0.0.0.0/1` or `::/1`, also contains its family's zero address,
+so a Mac with `link.underlay.bind` set installs it unscoped only beside a
+default the daemon writes scoped to the underlay's interface, the route the
+zero-free cover does without. A node that does advertise both halves of a family
+is still listed by `ranet3 exit list`, as an exit for that family.
 
-```toml
-[cap.egress]
-advertise = ["0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"]
-```
-
-On macOS an unscoped `/0` out of the tun collides with the host's own default.
-macOS has no route replace, so the reconciler skips that route and warns once.
-The reconciler never splits a `/0` into halves. A Mac takes a mesh exit only
-through the halves, and only with `link.underlay.bind` set. Linux clients
-install the halves as they install a `/0`, once a session has been live, as
-[routing](routing.md) describes.
-
-On the Mac, a half that covers a literal endpoint address the trust document
-lists stays scoped to the tun, where an unbound socket cannot select it. An
-endpoint written as a hostname does not count. Every IPv4 address lies in 1 of
-the 2 IPv4 halves, and every global IPv6 address lies in `::/1`. Listed IPv4
-endpoints in both IPv4 halves leave the Mac without an IPv4 exit. Any listed
-global IPv6 endpoint leaves it without an IPv6 exit. [Routing](routing.md) and
-[sharing a host](coexistence.md) describe the scoping.
-
-`ranet3 exit list` shows routes of length 0 only, so it does not list an exit
-that advertises the halves. `ranet3 routes` shows them.
+Until exit selection exists, a Mac with `link.underlay.bind` set takes whichever
+`/0` Babel selects, once a session has been live, and installs it as its
+zero-free cover, as [routing](routing.md#the-zero-free-cover-on-macos)
+describes. Babel, its updates and `ranet3 exit list` keep the `/0`. A Mac
+without `bind` scopes the `/0` to the tun, where no unbound socket selects it.
 
 `cap.route` may not announce a prefix `cap.egress` advertises. The daemon
 refuses that at startup and on every reload, because `cap.route` would announce
