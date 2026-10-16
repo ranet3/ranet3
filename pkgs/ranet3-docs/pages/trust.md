@@ -110,7 +110,9 @@ At startup and on every reload, a node checks itself against the document:
 On the wire, each side of a handshake names its endpoint as an X.501
 distinguished name of O, CN and serialNumber (`ID_DER_ASN1_DN`). The other side
 looks the name up in the document and verifies the signature with that node's
-key (RFC 7427 with Ed25519, RFC 8420).
+key (RFC 7427 with Ed25519, RFC 8420). An initiator that refuses the responder's
+name or signature says so with `AUTHENTICATION_FAILED` in the exchange that
+follows, and a ranet3 responder then ends the session it had opened.
 
 A reload reads the document again. It closes every session whose peer the new
 document drops or lists under a different key. [Reloading](reloading.md)

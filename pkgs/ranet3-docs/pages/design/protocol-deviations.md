@@ -16,13 +16,14 @@ lists. The table summarizes them, and the sections below give the details.
 | ---------------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------- |
 | RFC 7296 section 2.23              | IKE starts on UDP port 500 and moves to 4500 behind a NAT                    | IKE and ESP share `link.port` from the first message                    | 1 port per node, with no transition to track         |
 | RFC 7296 section 2.23              | NAT detection hashes the real source address and port                        | The source hash covers a random address, so it never matches            | The peer always encapsulates ESP in UDP              |
-| RFC 7296 section 2.23              | A host behind a NAT does not follow a peer's new address                     | Every session follows a fresh authenticated request                     | A session follows a peer that moved                  |
+| RFC 7296 section 2.23              | Follow any validated packet when not behind a NAT, and none behind one       | Every session follows a fresh authenticated request, and nothing else   | A session follows a peer that moved                  |
 | RFC 7296 section 2.25.1            | Complete both colliding Child SA rekeys and keep 1                           | The peer's rekey is answered `TEMPORARY_FAILURE`                        | 1 Child SA per session                               |
 | RFC 7296 section 2.8               | The responder may switch to the new SA once it sends its response            | It switches just before sending the response                            | The difference is the time to encrypt 1 message      |
 | RFC 7296 section 2.18              | An IKE SA rekey may choose a new PRF                                         | The PRF stays the same                                                  | strongSwan expands keys with the old PRF             |
 | RFC 7296 section 4                 | After `NO_ADDITIONAL_SAS`, delete the old SA and create a new one            | The old SA stays, and the rekey is retried                              | Not implemented                                      |
 | RFC 7296 section 4                 | Accept configured RSA certificates and shared keys                           | Ed25519 signatures only, against the trust document                     | Keys come from the trust document                    |
 | RFC 7296 section 2.9               | Refuse unacceptable traffic selectors with `TS_UNACCEPTABLE`, or narrow them | Only the full IPv4 and IPv6 ranges, anything else `NO_PROPOSAL_CHOSEN`  | Babel picks the peer for each packet                 |
+| RFC 7296 section 3.2               | Ignore the critical bit on a payload type the recipient understands          | A response that sets it on any payload is refused                       | A known gap                                          |
 | RFC 8247, RFC 8221                 | Support AES-CBC, MODP group 14, HMAC integrity and RSA signatures            | AEAD ciphers and elliptic curve groups only                             | Legacy transforms are left out                       |
 | RFC 4303 sections 2.6 and 2.7      | Be able to generate dummy packets                                            | None are generated, and no traffic flow confidentiality padding is sent | A known gap                                          |
 | RFC 3948 section 4                 | Send NAT keepalives                                                          | None are sent                                                           | Hellos and IKE liveness checks keep the mapping open |
@@ -82,11 +83,15 @@ ignored.
 ## Endpoint updates
 
 Every session moves the stored peer endpoint to the address and port of a fresh
-request whose integrity protection validates, as
+request whose integrity protection validates, and of nothing else.
 [RFC 7296 section 2.23](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.23)
-asks of a host that is not behind a NAT. The section asks a host behind a NAT
-not to. A node never learns whether it is behind one, because it does not
-compare the `NAT_DETECTION_DESTINATION_IP` it receives with its own address.
+asks a host that is not behind a NAT to follow "a packet whose integrity
+protection validates", which takes in IKE responses and ESP packets as well, and
+asks a host behind a NAT not to follow at all. ranet3 departs from both. A
+response or an ESP packet from a new address moves nothing, and a fresh request
+moves the endpoint whether or not the node is behind a NAT. A node never learns
+whether it is behind one, because it does not compare the
+`NAT_DETECTION_DESTINATION_IP` it receives with its own address.
 
 Behind a NAT, someone who captures a request and resends it from another address
 before the original arrives can move a session's sends to that address. The
@@ -170,6 +175,17 @@ Identities are compared by name rather than by their DER bytes. ranet3 writes
 `O` and `CN` as `UTF8String`, while strongSwan picks the string type from the
 value. The same name therefore reaches the wire in 2 encodings. AUTH signs the
 bytes as received either way, so the name only selects which key must verify it.
+
+## Critical payloads
+
+[RFC 7296 section 3.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-3.2)
+says the critical bit "MUST be ignored by the recipient if the recipient
+understands the payload type code". ranet3 holds the requests it receives to
+that, but refuses a response that sets the bit on any payload, a type it
+implements included. An initiator that refuses an `IKE_AUTH` response this way
+tells the responder in the `INFORMATIONAL` exchange that follows, with
+`INVALID_SYNTAX` for a payload type ranet3 implements and
+`UNSUPPORTED_CRITICAL_PAYLOAD` for one it does not.
 
 ## Algorithms
 
