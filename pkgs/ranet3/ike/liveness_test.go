@@ -76,12 +76,16 @@ func TestNextDueRekeyPreservesChildPriority(t *testing.T) {
 	}
 }
 
-func TestSupportedPayloadTypeRejectsUnknownCriticalType(t *testing.T) {
-	if supportedPayloadType(PayloadType(250)) {
-		t.Fatal("unknown payload type reported as supported")
-	}
-	if !supportedPayloadType(PayloadSA) {
-		t.Fatal("SA payload type reported as unsupported")
+// RFC 7296 section 3.2: "all implementations MUST understand all payload types defined in this document"
+// this end understands every payload type RFC 7296 defines, and no other
+func TestSupportedPayloadTypeNamesEveryTypeThisEndUnderstands(t *testing.T) {
+	understood := []PayloadType{PayloadSA, PayloadKE, PayloadIDi, PayloadIDr, PayloadCERT, PayloadCERTREQ, PayloadAUTH, PayloadNonce,
+		PayloadN, PayloadD, PayloadV, PayloadTSi, PayloadTSr, PayloadSK, PayloadCP, PayloadEAP}
+	for value := range 256 {
+		payloadType := PayloadType(value)
+		if got := supportedPayloadType(payloadType); got != slices.Contains(understood, payloadType) {
+			t.Errorf("payload type %d is understood %v", payloadType, got)
+		}
 	}
 }
 
@@ -794,7 +798,7 @@ func TestSessionAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
 		return taken, slices.Clone(buf[4:n])
 	}
 	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, MessageID: 0}
-	deletion := sealedAtVersion(t, 0x30, held.suite, held.sker, header, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+	deletion := sealedEdited(t, held.suite, held.sker, header, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}, atMajorVersion3)
 	taken, reply := answer(deletion)
 	if taken {
 		t.Fatal("the Delete at major version 3 was taken as a fresh authenticated request")
@@ -805,7 +809,7 @@ func TestSessionAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
 	// section 3.1 on the V bit: "Implementations of IKEv2 MUST clear this bit when sending and MUST ignore it in incoming messages."
 	header.Flags |= FlagVersion | 0xc7
 
-	taken, reply = answer(sealedAtVersion(t, 0x21, held.suite, held.sker, header, nil))
+	taken, reply = answer(sealedEdited(t, held.suite, held.sker, header, nil, atMinorVersion1))
 	// section 2.5: "If it receives a message with a major version that it supports, it MUST respond with that version number."
 	if reply[17] != 0x20 {
 		t.Errorf("the answer's version octet is %#x, want 2.0", reply[17])
@@ -821,6 +825,236 @@ func TestSessionAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
 	inner, err := DecryptMessage(held.suite, held.skei, reply, message)
 	if !taken || err != nil || message.Header.MessageID != 0 || len(inner) != 0 {
 		t.Errorf("the request at version 2.1 after it drew %v at Message ID %d (%v), want an empty answer at 0", inner, message.Header.MessageID, err)
+	}
+}
+
+// RFC 7296 section 3.2 on the critical bit: "MUST be ignored by the recipient if the recipient understands the payload type code."
+// section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected"
+// section 2.5: "If the critical flag is not set and the payload type is unsupported, that payload MUST be ignored."
+// section 2.5: "Payloads sent in IKE response messages MUST NOT have the critical flag set."
+// a request or response marking every payload critical, its SK payload, a Vendor ID and a Delete the exchange does not take among them, and adding one of a type nothing assigns unmarked, is taken as one marking none, and the answers mark nothing
+// one carrying a critical payload of a type nothing assigns is refused, in the clear ahead of SK as inside it
+// section 2.21.3 on errors in a response: "Because sending such error messages as an INFORMATIONAL exchange might lead to further errors that could cause loops, such errors SHOULD NOT be sent."
+// so the response refused draws nothing
+func TestSessionHeedsTheCriticalBitOnlyOnAnUnsupportedType(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.Close()
+	held := testContext()
+	held.skD = []byte("test child creation SK_d material")
+	s := &Session{mux: mux, current: held}
+	if err := mux.RegisterIKE(held.spiI); err != nil {
+		t.Fatal(err)
+	}
+
+	var pending *pendingRequest
+	deliver := func(raw []byte) bool {
+		t.Helper()
+		if _, err := peer.WriteToUDP(withNonESPMarker(raw), muxLoopback(mux)); err != nil {
+			t.Fatal(err)
+		}
+		got, source, err := mux.RecvIKEFromUntil(time.Now().Add(answerBudget))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.dispatch(got, source, &pending)
+	}
+	buf := make([]byte, 2048)
+	answer := func() (Header, []RawPayload) {
+		t.Helper()
+		if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+			t.Fatal(err)
+		}
+		n, _, err := peer.ReadFromUDP(buf)
+		if err != nil {
+			t.Fatalf("the request drew no answer: %v", err)
+		}
+		raw := slices.Clone(buf[4:n])
+		message, err := DecodeMessage(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inner, err := DecryptMessage(held.suite, held.skei, raw, message)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if raw[HeaderLen+1]&0x80 != 0 {
+			t.Error("the answer marks its SK payload critical")
+		}
+		for _, payload := range inner {
+			if payload.Critical {
+				t.Errorf("the answer marks payload type %d critical", payload.Type)
+			}
+		}
+		return message.Header, inner
+	}
+	marked := func(payloads ...RawPayload) []RawPayload {
+		for i := range payloads {
+			payloads[i].Critical = true
+		}
+		return append(payloads, RawPayload{Type: PayloadType(250), Body: []byte{1}})
+	}
+	vendor := RawPayload{Type: PayloadV, Body: []byte("a vendor this end does not know")}
+	deletion := RawPayload{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{{0, 0, 0, 9}}})}
+
+	// a Child SA asked for with no REKEY_SA, which this end creates while it holds none
+	create := marked(append(childRekeyRequest(0)[1:], vendor, deletion)...)
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: CREATE_CHILD_SA, MessageID: 0}
+	if !deliver(sealedEdited(t, held.suite, held.sker, header, create, criticalSK)) {
+		t.Fatal("the Child SA request marking every payload critical was not taken")
+	}
+	if got, inner := answer(); got.MessageID != 0 || len(inner) == 0 || inner[0].Type != PayloadSA {
+		t.Errorf("the Child SA request marking every payload critical drew %v at Message ID %d, want the Child SA at 0", inner, got.MessageID)
+	}
+
+	header = Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, MessageID: 1}
+	inTheClear, err := EncryptMessage(held.suite, held.sker, header, []RawPayload{unsupportedCritical}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliver(inTheClear)
+	if got, inner := answer(); got.MessageID != 1 || !notified(inner, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupportedCritical.Type)}) {
+		t.Errorf("the request with a critical payload in the clear drew %v at Message ID %d, want UNSUPPORTED_CRITICAL_PAYLOAD for type %d at 1", inner, got.MessageID, unsupportedCritical.Type)
+	}
+
+	for messageID, response := range []struct {
+		inner []RawPayload
+		taken bool
+	}{
+		{marked(RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INITIAL_CONTACT})}, vendor), true},
+		{[]RawPayload{unsupportedCritical}, false},
+	} {
+		result := make(chan requestResult, 1)
+		pending = &pendingRequest{localRequest: localRequest{exchange: INFORMATIONAL, result: result}, context: held, msgID: uint32(messageID)}
+		header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: uint32(messageID)}
+		deliver(sealedEdited(t, held.suite, held.sker, header, response.inner, criticalSK))
+		select {
+		case got := <-result:
+			if taken := got.err == nil && samePayloads(got.inner, response.inner); taken != response.taken {
+				t.Errorf("the response carrying %v was taken %v (%v), want %v", response.inner, taken, got.err, response.taken)
+			}
+		default:
+			t.Errorf("the response carrying %v settled nothing", response.inner)
+		}
+	}
+	_ = peer.SetReadDeadline(time.Now().Add(quietPeriod))
+	if n, _, err := peer.ReadFromUDP(buf); err == nil {
+		t.Errorf("the responses drew %d bytes", n)
+	}
+}
+
+// RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected and the response to the IKE request containing that payload MUST include a Notify payload UNSUPPORTED_CRITICAL_PAYLOAD, indicating an unsupported critical payload was included. In that Notify payload, the Notification Data contains the one-octet payload type."
+// a request for a Child SA carrying a critical payload of a type nothing assigns, inside SK or in the clear ahead of it, draws that notify naming the type and creates nothing
+func TestSessionRefusesACreateChildSAMarkingAnUnsupportedPayloadCritical(t *testing.T) {
+	for placement, request := range map[string]struct{ cleartext, inner []RawPayload }{
+		"inside SK":    {nil, append(childRekeyRequest(0)[1:], unsupportedCritical)},
+		"in the clear": {[]RawPayload{unsupportedCritical}, childRekeyRequest(0)[1:]},
+	} {
+		t.Run(placement, func(t *testing.T) {
+			peer := listenPeer(t)
+			peerAddr := peer.LocalAddr().(*net.UDPAddr)
+			mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mux.Close()
+			held := testContext()
+			held.skD = []byte("test child creation SK_d material")
+			s := &Session{mux: mux, current: held}
+			if err := mux.RegisterIKE(held.spiI); err != nil {
+				t.Fatal(err)
+			}
+			header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: CREATE_CHILD_SA, MessageID: 0}
+			raw, err := EncryptMessage(held.suite, held.sker, header, request.cleartext, request.inner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := peer.WriteToUDP(withNonESPMarker(raw), muxLoopback(mux)); err != nil {
+				t.Fatal(err)
+			}
+			got, source, err := mux.RecvIKEFromUntil(time.Now().Add(answerBudget))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var pending *pendingRequest
+			if !s.dispatch(got, source, &pending) {
+				t.Fatal("the request was not taken as a fresh authenticated request")
+			}
+			buf := make([]byte, 2048)
+			if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+				t.Fatal(err)
+			}
+			n, _, err := peer.ReadFromUDP(buf)
+			if err != nil {
+				t.Fatalf("the request drew no answer: %v", err)
+			}
+			answer, err := DecodeMessage(buf[4:n])
+			if err != nil {
+				t.Fatal(err)
+			}
+			inner, err := DecryptMessage(held.suite, held.skei, buf[4:n], answer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if answer.Header.ExchangeType != CREATE_CHILD_SA || answer.Header.MessageID != 0 || !notified(inner, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupportedCritical.Type)}) {
+				t.Errorf("the request drew exchange %d Message ID %d carrying %v, want UNSUPPORTED_CRITICAL_PAYLOAD for type %d at 0",
+					answer.Header.ExchangeType, answer.Header.MessageID, inner, unsupportedCritical.Type)
+			}
+			if child := s.currentChild(); child.LocalSPI != 0 || mux.IsClosed() {
+				t.Errorf("the refused request left Child SA %08x and the IKE SA closed %v, want no Child SA and the IKE SA open", child.LocalSPI, mux.IsClosed())
+			}
+		})
+	}
+}
+
+// RFC 7296 section 2.21.3 on errors in a response: "Because sending such error messages as an INFORMATIONAL exchange might lead to further errors that could cause loops, such errors SHOULD NOT be sent."
+// a response to the exchange under way that authenticates and whose payloads do not parse ends that exchange with an error and draws nothing
+func TestSessionSaysNothingOfAMalformedResponse(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.Close()
+	held := testContext()
+	s := &Session{mux: mux, current: held}
+	if err := mux.RegisterIKE(held.spiI); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan requestResult, 1)
+	pending := &pendingRequest{localRequest: localRequest{exchange: INFORMATIONAL, result: result}, context: held, msgID: 3}
+	// a Notify whose stated length is shorter than its own header, then no padding
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: 3}
+	malformed, err := encryptMessagePlaintextIV(held.suite, held.sker, header, nil, PayloadN, []byte{0, 0, 0, 3, 0}, make([]byte, 8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.WriteToUDP(withNonESPMarker(malformed), muxLoopback(mux)); err != nil {
+		t.Fatal(err)
+	}
+	raw, source, err := mux.RecvIKEFromUntil(time.Now().Add(answerBudget))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.dispatch(raw, source, &pending) {
+		t.Fatal("the malformed response was not taken as an authenticated message")
+	}
+	select {
+	case got := <-result:
+		if got.err == nil {
+			t.Errorf("the malformed response settled the exchange with %v", got.inner)
+		}
+	default:
+		t.Error("the malformed response settled nothing")
+	}
+	_ = peer.SetReadDeadline(time.Now().Add(quietPeriod))
+	if n, _, err := peer.ReadFromUDP(make([]byte, 2048)); err == nil {
+		t.Errorf("the malformed response drew %d bytes", n)
 	}
 }
 
@@ -969,7 +1203,7 @@ func TestInformationalDeletesEveryDesignatedChildSA(t *testing.T) {
 		binary.BigEndian.PutUint32(b, value)
 		return b
 	}
-	response, err := s.handleRequest(ikeCtx, &Header{ExchangeType: INFORMATIONAL, MessageID: 4}, []RawPayload{
+	response, err := s.handleRequest(ikeCtx, &Header{ExchangeType: INFORMATIONAL, MessageID: 4}, nil, []RawPayload{
 		{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{spi(current.RemoteSPI), spi(0xdeadbeef)}})},
 		{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{spi(retiring.RemoteSPI)}})},
 	})
@@ -1034,7 +1268,7 @@ func TestAuthenticationFailureEndsOnlyTheSAWhoseIKEAuthItFollows(t *testing.T) {
 			ikeCtx := testContext()
 			ikeCtx.responder, ikeCtx.answeredAuth = true, test.answeredAuth
 			s := &Session{current: ikeCtx}
-			response, err := s.handleRequest(ikeCtx, &Header{ExchangeType: INFORMATIONAL, MessageID: test.messageID}, test.inner)
+			response, err := s.handleRequest(ikeCtx, &Header{ExchangeType: INFORMATIONAL, MessageID: test.messageID}, nil, test.inner)
 			if ended := err != nil; ended != test.ends {
 				t.Errorf("the session ended %v (%v), want %v", ended, err, test.ends)
 			}

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -446,63 +447,116 @@ func TestInitiatorClosingAfterAuthAnswersAnExchangeItDoesNotTakeAsRunDoes(t *tes
 	if answer.Header.ExchangeType != IKE_AUTH || answer.Header.MessageID != 0 || !notified(answer.inner, N_INVALID_SYNTAX, nil) {
 		t.Fatalf("the IKE_AUTH request drew exchange %d Message ID %d carrying %v, want INVALID_SYNTAX at 0", answer.Header.ExchangeType, answer.Header.MessageID, answer.inner)
 	}
-	if run := runAnswer(t, header, nil); !answeredAlike(run, answer.inner) {
+	if run := runAnswer(t, header, nil, nil); !samePayloads(run, answer.inner) {
 		t.Errorf("Run answers the IKE_AUTH request with %v, the wait with %v", run, answer.inner)
 	}
 	settled(t, done, nil)
 }
 
-// a request carrying a critical payload this end does not support is rejected as Run rejects it, with UNSUPPORTED_CRITICAL_PAYLOAD naming the type, and is not acted on, so the Delete inside it leaves the initiator waiting
+// a request carrying a critical payload this end does not support, inside SK or in the clear ahead of it, is rejected as Run rejects it, with UNSUPPORTED_CRITICAL_PAYLOAD naming the type, and is not acted on, so the Delete inside it leaves the initiator waiting
 // the rejection is the answer kept for its Message ID, and the next request is answered at the next
 func TestInitiatorClosingAfterAuthRejectsAnUnsupportedCriticalPayloadAsRunDoes(t *testing.T) {
+	deletion := RawPayload{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}
+	for placement, request := range map[string]struct{ cleartext, inner []RawPayload }{
+		"inside SK":    {nil, []RawPayload{deletion, unsupportedCritical}},
+		"in the clear": {[]RawPayload{unsupportedCritical}, []RawPayload{deletion}},
+	} {
+		t.Run(placement, func(t *testing.T) {
+			peer, initiator := closingAfterAuth(t)
+			done := make(chan error, 1)
+			go func() { done <- initiator.deleteAuthenticatedIKE() }()
+			own := peer.read(t)
+
+			header := Header{SPIInitiator: peer.held.spiI, SPIResponder: peer.held.spiR, ExchangeType: INFORMATIONAL, MessageID: 0}
+			raw, err := EncryptMessage(peer.held.suite, peer.held.sker, header, request.cleartext, request.inner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			peer.write(t, raw)
+			answer := peer.answer(t)
+			if answer.Header.MessageID != 0 || !notified(answer.inner, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupportedCritical.Type)}) {
+				t.Fatalf("the request drew Message ID %d carrying %v, want UNSUPPORTED_CRITICAL_PAYLOAD for type %d at 0", answer.Header.MessageID, answer.inner, unsupportedCritical.Type)
+			}
+			if run := runAnswer(t, header, request.cleartext, request.inner); !samePayloads(run, answer.inner) {
+				t.Errorf("Run answers the request with %v, the wait with %v", run, answer.inner)
+			}
+			peer.write(t, raw)
+			if again := peer.answer(t); !bytes.Equal(again.raw, answer.raw) {
+				t.Errorf("the retransmitted request drew %x, want the rejection %x again", again.raw, answer.raw)
+			}
+			peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: 1}, nil)
+			if next := peer.answer(t); next.Header.MessageID != 1 || len(next.inner) != 0 {
+				t.Fatalf("the next liveness check drew Message ID %d carrying %v, want an empty answer at 1", next.Header.MessageID, next.inner)
+			}
+			waitsOn(t, done)
+			peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
+			settled(t, done, nil)
+		})
+	}
+}
+
+// RFC 7296 section 3.2 on the critical bit: "MUST be ignored by the recipient if the recipient understands the payload type code."
+// section 2.5: "If the critical flag is not set and the payload type is unsupported, that payload MUST be ignored."
+// a request marking every payload critical, its SK payload and a Vendor ID among them, and adding one of a type nothing assigns unmarked, is answered as Run answers it, and the answer to the initiator's own Delete, marked so and adding the same, settles the wait
+func TestInitiatorClosingAfterAuthIgnoresTheCriticalBitOnPayloadsItUnderstands(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
 	go func() { done <- initiator.deleteAuthenticatedIKE() }()
 	own := peer.read(t)
 
-	header := Header{ExchangeType: INFORMATIONAL, MessageID: 0}
-	inner := []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}, unsupportedCritical}
-	request := peer.send(t, header, inner)
-	answer := peer.answer(t)
-	if answer.Header.MessageID != 0 || !notified(answer.inner, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupportedCritical.Type)}) {
-		t.Fatalf("the request drew Message ID %d carrying %v, want UNSUPPORTED_CRITICAL_PAYLOAD for type %d at 0", answer.Header.MessageID, answer.inner, unsupportedCritical.Type)
+	header := Header{SPIInitiator: peer.held.spiI, SPIResponder: peer.held.spiR, ExchangeType: INFORMATIONAL, MessageID: 0}
+	inner := []RawPayload{
+		{Type: PayloadD, Critical: true, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{{0, 0, 0, 9}}})},
+		{Type: PayloadV, Critical: true, Body: []byte("a vendor this end does not know")},
+		{Type: PayloadType(250), Body: []byte{1}},
 	}
-	if run := runAnswer(t, header, inner); !answeredAlike(run, answer.inner) {
+	peer.write(t, sealedEdited(t, peer.held.suite, peer.held.sker, header, inner, criticalSK))
+	answer := peer.answer(t)
+	if answer.Header.MessageID != 0 || len(answer.inner) != 0 {
+		t.Fatalf("the request drew Message ID %d carrying %v, want an empty answer at 0", answer.Header.MessageID, answer.inner)
+	}
+	if run := runAnswer(t, header, nil, inner); !samePayloads(run, answer.inner) {
 		t.Errorf("Run answers the request with %v, the wait with %v", run, answer.inner)
 	}
-	peer.write(t, request)
-	if again := peer.answer(t); !bytes.Equal(again.raw, answer.raw) {
-		t.Errorf("the retransmitted request drew %x, want the rejection %x again", again.raw, answer.raw)
-	}
-	peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: 1}, nil)
-	if next := peer.answer(t); next.Header.MessageID != 1 || len(next.inner) != 0 {
-		t.Fatalf("the next liveness check drew Message ID %d carrying %v, want an empty answer at 1", next.Header.MessageID, next.inner)
-	}
 	waitsOn(t, done)
-	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
+	answered := Header{SPIInitiator: peer.held.spiI, SPIResponder: peer.held.spiR, ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}
+	peer.write(t, sealedEdited(t, peer.held.suite, peer.held.sker, answered, []RawPayload{{Type: PayloadType(250), Body: []byte{1}}}, criticalSK))
 	settled(t, done, nil)
 }
 
+// RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected"
+// an answer to the initiator's own Delete that carries a critical payload of a type nothing assigns ends the Delete with that refusal
+func TestInitiatorClosingAfterAuthRefusesAnAnswerMarkingAnUnsupportedPayloadCritical(t *testing.T) {
+	peer, initiator := closingAfterAuth(t)
+	done := make(chan error, 1)
+	go func() { done <- initiator.deleteAuthenticatedIKE() }()
+	own := peer.read(t)
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, []RawPayload{unsupportedCritical})
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "marks unsupported payload type 250 critical") {
+			t.Errorf("the initiator's Delete ended with %v, want the answer refused for payload type 250", err)
+		}
+	case <-time.After(answerBudget):
+		t.Fatal("the initiator went on waiting for its own answer")
+	}
+}
+
+// RFC 7296 section 2.5, which every answer is held to: "Payloads sent in IKE response messages MUST NOT have the critical flag set."
 func notified(inner []RawPayload, notifyType NotifyType, data []byte) bool {
-	if len(inner) != 1 || inner[0].Type != PayloadN {
+	if len(inner) != 1 || inner[0].Type != PayloadN || inner[0].Critical {
 		return false
 	}
 	notify, err := DecodeNotify(inner[0].Body)
 	return err == nil && notify.Type == notifyType && bytes.Equal(notify.Data, data)
 }
 
-func answeredAlike(a, b []RawPayload) bool {
-	return slices.EqualFunc(a, b, func(x, y RawPayload) bool {
-		return x.Type == y.Type && x.Critical == y.Critical && bytes.Equal(x.Body, y.Body)
-	})
-}
-
 // runAnswer is Run's answer to the request on the IKE SA closingAfterAuth holds, decrypted
-func runAnswer(t *testing.T, header Header, inner []RawPayload) []RawPayload {
+func runAnswer(t *testing.T, header Header, cleartext, inner []RawPayload) []RawPayload {
 	t.Helper()
 	_, s := closingAfterAuth(t)
 	header.SPIInitiator, header.SPIResponder = s.current.spiI, s.current.spiR
-	raw, _ := s.handleRequest(s.current, &header, inner)
+	raw, _ := s.handleRequest(s.current, &header, cleartext, inner)
 	message, err := DecodeMessage(raw)
 	if err != nil {
 		t.Fatalf("Run's answer does not decode: %v", err)

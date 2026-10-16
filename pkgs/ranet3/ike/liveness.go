@@ -822,19 +822,15 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		} else if response, responseErr := s.responseNotify(ctx, hdr.MessageID, hdr.ExchangeType, N_INVALID_SYNTAX); responseErr == nil {
 			_ = s.mux.SendIKETo(response, source)
 		}
-		// RFC 7296 section 2.21.3 makes authenticated INVALID_SYNTAX fatal to the
-		// IKE SA. Responses never generate a further error response.
+		// RFC 7296 section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
+		// section 2.21.3 on a response with errors: "Because sending such error messages as an INFORMATIONAL exchange might lead to further errors that could cause loops, such errors SHOULD NOT be sent."
+		// and: "If errors are seen that indicate that the peers do not have the same state, it might be good to delete the IKE SA to clean up state and start over."
 		s.mux.Close()
 		return true
 	}
 	if matching != nil {
-		if err := validateResponseCriticalFlags(outer.Payloads); err != nil {
-			matching.result <- requestResult{err: err}
-			*pending = nil
-			return true
-		}
-		if err := validateResponseCriticalFlags(inner); err != nil {
-			matching.result <- requestResult{err: err}
+		if unsupported, found := firstUnsupportedCritical(outer.Payloads, inner); found {
+			matching.result <- requestResult{err: fmt.Errorf("ike: response marks unsupported payload type %d critical", unsupported)}
 			*pending = nil
 			return true
 		}
@@ -842,7 +838,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		*pending = nil
 		return true
 	}
-	response, err := s.handleRequest(ctx, hdr, inner)
+	response, err := s.handleRequest(ctx, hdr, outer.Payloads, inner)
 	if err != nil {
 		if response != nil {
 			_ = s.mux.SendIKETo(response, source)
@@ -875,8 +871,8 @@ func (s *Session) contextForHeader(hdr *Header) *ikeContext {
 	return nil
 }
 
-func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, inner []RawPayload) ([]byte, error) {
-	if response, rejected, err := s.rejectUnsupportedCritical(ctx, hdr, inner); rejected {
+func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner []RawPayload) ([]byte, error) {
+	if response, rejected, err := s.rejectUnsupportedCritical(ctx, hdr, cleartext, inner); rejected {
 		return response, err
 	}
 	if hdr.ExchangeType == INFORMATIONAL {
@@ -975,24 +971,22 @@ func authFailure(payloads []RawPayload) (NotifyType, bool) {
 	return 0, false
 }
 
+// RFC 7296 section 3.2 on the critical bit: "MUST be ignored by the recipient if the recipient understands the payload type code."
+// section 3.2: "The reasoning behind not setting the critical bit for payloads defined in this document is that all implementations MUST understand all payload types defined in this document and therefore must ignore the critical bit's value."
+// section 4: "If the critical bit is set in an unsupported payload header, all implementations MUST reject the messages containing those payloads."
+// the types defined there run from SA to EAP, and this end skips the ones it does not act on: CERT, CERTREQ, V, CP and EAP
 func supportedPayloadType(payloadType PayloadType) bool {
-	switch payloadType {
-	case PayloadSA, PayloadKE, PayloadIDi, PayloadIDr, PayloadAUTH, PayloadNonce, PayloadN, PayloadD, PayloadTSi, PayloadTSr:
-		return true
-	default:
-		return false
-	}
+	return payloadType >= PayloadSA && payloadType <= PayloadEAP
 }
 
 // RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected and the response to the IKE request containing that payload MUST include a Notify payload UNSUPPORTED_CRITICAL_PAYLOAD, indicating an unsupported critical payload was included. In that Notify payload, the Notification Data contains the one-octet payload type."
-func (s *Session) rejectUnsupportedCritical(ctx *ikeContext, hdr *Header, inner []RawPayload) ([]byte, bool, error) {
-	for _, payload := range inner {
-		if payload.Critical && !supportedPayloadType(payload.Type) {
-			response, err := s.responseNotifyData(ctx, hdr.MessageID, hdr.ExchangeType, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(payload.Type)})
-			return response, true, err
-		}
+func (s *Session) rejectUnsupportedCritical(ctx *ikeContext, hdr *Header, cleartext, inner []RawPayload) ([]byte, bool, error) {
+	unsupported, found := firstUnsupportedCritical(cleartext, inner)
+	if !found {
+		return nil, false, nil
 	}
-	return nil, false, nil
+	response, err := s.responseNotifyData(ctx, hdr.MessageID, hdr.ExchangeType, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupported)})
+	return response, true, err
 }
 
 func (s *Session) response(ctx *ikeContext, msgID uint32, exchange ExchangeType, inner []RawPayload) ([]byte, error) {

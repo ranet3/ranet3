@@ -1008,10 +1008,9 @@ func firstTestNotify(t *testing.T, raw []byte) Notify {
 	return notify
 }
 
-// RFC 7296 section 2.5: a payload this profile does not implement, marked
-// critical, changes what the message means, so it has to be refused by type
-// rather than skipped. The answer is stateless and costs nothing, which is the
-// only reason it can be given before anything about the peer is known.
+// RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected and the response to the IKE request containing that payload MUST include a Notify payload UNSUPPORTED_CRITICAL_PAYLOAD, indicating an unsupported critical payload was included. In that Notify payload, the Notification Data contains the one-octet payload type."
+// The answer is stateless and costs nothing, which is the only reason it can
+// be given before anything about the peer is known.
 func TestResponderRefusesCriticalPayloadItDoesNotImplement(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
@@ -1026,16 +1025,16 @@ func TestResponderRefusesCriticalPayloadItDoesNotImplement(t *testing.T) {
 	if err := mux.RegisterIKE(spiI); err != nil {
 		t.Fatal(err)
 	}
-	// PayloadCERTREQ is a type this profile does not implement, and nothing
+	// SKF, which RFC 7383 defines and this end does not implement, and nothing
 	// else about the request is wrong.
-	critical := []RawPayload{{Type: PayloadCERTREQ, Critical: true, Body: []byte{0}}}
+	critical := []RawPayload{{Type: 53, Critical: true, Body: []byte{0}}}
 	reply := statelessAnswer(t, mux, encodeTestSAInit(t, spiI, ni, ikeProposal(), critical),
 		"a critical payload we do not implement drew no answer")
 	notify := firstTestNotify(t, reply)
 	if notify.Type != N_UNSUPPORTED_CRITICAL_PAYLOAD {
 		t.Fatalf("the responder answered notify %d, want UNSUPPORTED_CRITICAL_PAYLOAD", notify.Type)
 	}
-	if len(notify.Data) != 1 || PayloadType(notify.Data[0]) != PayloadCERTREQ {
+	if len(notify.Data) != 1 || notify.Data[0] != 53 {
 		t.Errorf("the notify named %v, want the payload type that was refused", notify.Data)
 	}
 	select {
@@ -2021,19 +2020,11 @@ func dialRefusedChild(t *testing.T, h *responderHarness, mux *transport.Mux) (*i
 // the IKE_AUTH request names idi and idr, and its Child SA offer names a DH group, which a Child SA in IKE_AUTH cannot negotiate
 func dialSignedBy(t *testing.T, h *responderHarness, mux *transport.Mux, key ed25519.PrivateKey, idi, idr string) (*ikeContext, []byte) {
 	t.Helper()
-	held, message1, nr := initHalfOpen(t, mux)
-	suite, spiI, spiR := held.suite, held.spiI, held.spiR
-	idiBody := idBody(idi)
+	held, message1, nr := initHalfOpen(t, mux, nil)
 	child := espProposal([]byte{0, 0, 0, 9})
 	child.Transforms = append(child.Transforms, Transform{Type: TransDH, ID: DH_ECP_256})
-	request, err := EncryptMessage(suite, held.skei, Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}, nil, []RawPayload{
-		{Type: PayloadIDi, Body: idiBody},
-		{Type: PayloadIDr, Body: idBody(idr)},
-		{Type: PayloadAUTH, Body: BuildAuth(key, concat(message1, nr, prf(suite.PRFID, held.skpi, idiBody)))},
-		{Type: PayloadSA, Body: EncodeSA([]Proposal{child})},
-		{Type: PayloadTSi, Body: fullRangeSelectors()},
-		{Type: PayloadTSr, Body: fullRangeSelectors()},
-	})
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	request, err := EncryptMessage(held.suite, held.skei, header, nil, ikeAuthPayloads(key, held, message1, nr, child, idi, idr))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2043,8 +2034,24 @@ func dialSignedBy(t *testing.T, h *responderHarness, mux *transport.Mux, key ed2
 	return held, request
 }
 
+// ikeAuthPayloads is the IKE_AUTH request of idi to idr under the half-open SA held, which message1 opened and nr answered, offering child and signed by key
+func ikeAuthPayloads(key ed25519.PrivateKey, held *ikeContext, message1, nr []byte, child Proposal, idi, idr string) []RawPayload {
+	idiBody := idBody(idi)
+	return []RawPayload{
+		{Type: PayloadIDi, Body: idiBody},
+		{Type: PayloadIDr, Body: idBody(idr)},
+		{Type: PayloadAUTH, Body: BuildAuth(key, concat(message1, nr, prf(held.suite.PRFID, held.skpi, idiBody)))},
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{child})},
+		{Type: PayloadTSi, Body: fullRangeSelectors()},
+		{Type: PayloadTSr, Body: fullRangeSelectors()},
+	}
+}
+
 // initHalfOpen runs IKE_SA_INIT on mux and returns the half-open SA the responder answered with, the request that opened it and the responder's nonce
-func initHalfOpen(t *testing.T, mux *transport.Mux) (*ikeContext, []byte, []byte) {
+// shape, when given, makes the request's payloads of the ones initHalfOpen would send
+// RFC 7296 section 2.5, which the answer is held to: "Payloads sent in IKE response messages MUST NOT have the critical flag set."
+// section 2.5 on the order: "implementations SHOULD send the payloads defined in this specification in the order shown in the figures in Sections 1 and 2"
+func initHalfOpen(t *testing.T, mux *transport.Mux, shape func([]RawPayload) []RawPayload) (*ikeContext, []byte, []byte) {
 	t.Helper()
 	spiI := randUint64Nonzero()
 	if err := mux.RegisterIKE(spiI); err != nil {
@@ -2056,15 +2063,16 @@ func initHalfOpen(t *testing.T, mux *transport.Mux) (*ikeContext, []byte, []byte
 	}
 	ni := make([]byte, nonceLen)
 	rand.Read(ni)
-	message1 := (&Message{
-		Header: Header{SPIInitiator: spiI, ExchangeType: IKE_SA_INIT, Flags: FlagInitiator},
-		Payloads: []RawPayload{
-			{Type: PayloadSA, Body: EncodeSA([]Proposal{ikeProposal()})},
-			{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, dh.PublicBytes())},
-			{Type: PayloadNonce, Body: EncodeNonce(ni)},
-			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: binary.BigEndian.AppendUint16(nil, HashIdentity)})},
-		},
-	}).Encode()
+	payloads := []RawPayload{
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{ikeProposal()})},
+		{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, dh.PublicBytes())},
+		{Type: PayloadNonce, Body: EncodeNonce(ni)},
+		{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: binary.BigEndian.AppendUint16(nil, HashIdentity)})},
+	}
+	if shape != nil {
+		payloads = shape(payloads)
+	}
+	message1 := (&Message{Header: Header{SPIInitiator: spiI, ExchangeType: IKE_SA_INIT, Flags: FlagInitiator}, Payloads: payloads}).Encode()
 	message2 := statelessAnswer(t, mux, message1, "the responder did not answer IKE_SA_INIT")
 	answer, err := DecodeMessage(message2)
 	if err != nil {
@@ -2073,6 +2081,16 @@ func initHalfOpen(t *testing.T, mux *transport.Mux) (*ikeContext, []byte, []byte
 	sa, ke, nonce := answer.find(PayloadSA), answer.find(PayloadKE), answer.find(PayloadNonce)
 	if sa == nil || ke == nil || nonce == nil {
 		t.Fatalf("the responder answered IKE_SA_INIT with notify %d", firstTestNotify(t, message2).Type)
+	}
+	for _, payload := range answer.Payloads {
+		if payload.Critical {
+			t.Errorf("the IKE_SA_INIT answer marks payload type %d critical", payload.Type)
+		}
+	}
+	// the figure of section 1.2: "HDR, SAr1, KEr, Nr, [CERTREQ]"
+	// the notifies follow Nr
+	if got, want := payloadTypes(answer.Payloads), []PayloadType{PayloadSA, PayloadKE, PayloadNonce, PayloadN, PayloadN, PayloadN}; !slices.Equal(got, want) {
+		t.Errorf("the IKE_SA_INIT answer carries payload types %v, want %v", got, want)
 	}
 	selected, err := DecodeSA(sa.Body)
 	if err != nil || len(selected) != 1 {
@@ -2305,7 +2323,7 @@ func TestUndecryptableDatagramDoesNotEndTheHandshake(t *testing.T) {
 func TestResponderAnswersAMalformedIKEAuthWithInvalidSyntax(t *testing.T) {
 	refused := &recorder{}
 	h := childRefusedHarness(t, refused.record)
-	held, _, _ := initHalfOpen(t, childRefusedMux(t, h))
+	held, _, _ := initHalfOpen(t, childRefusedMux(t, h), nil)
 	moved, err := listenHub(t).NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
 	if err != nil {
 		t.Fatal(err)
@@ -2341,7 +2359,7 @@ func TestResponderAnswersAnIDiItCannotReadWithAuthenticationFailed(t *testing.T)
 	refused := &recorder{}
 	h := childRefusedHarness(t, refused.record)
 	mux := childRefusedMux(t, h)
-	held, _, _ := initHalfOpen(t, mux)
+	held, _, _ := initHalfOpen(t, mux, nil)
 	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
 	request, err := EncryptMessage(held.suite, held.skei, header, nil, []RawPayload{
 		{Type: PayloadIDi, Body: EncodeID(ID_DER_ASN1_DN, []byte{0x04, 0x00})},
@@ -2614,9 +2632,9 @@ func TestResponderAnswersAHigherMajorVersionWhileItWaitsForIKEAuth(t *testing.T)
 	refused := &recorder{}
 	h := childRefusedHarness(t, refused.record)
 	mux := childRefusedMux(t, h)
-	held, _, _ := initHalfOpen(t, mux)
+	held, _, _ := initHalfOpen(t, mux, nil)
 	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
-	if err := mux.SendIKE(sealedAtVersion(t, 0x30, held.suite, held.skei, header, nil)); err != nil {
+	if err := mux.SendIKE(sealedEdited(t, held.suite, held.skei, header, nil, atMajorVersion3)); err != nil {
 		t.Fatal(err)
 	}
 	for {
@@ -2649,7 +2667,7 @@ func TestResponderAnswersAHigherMajorVersionWhileItWaitsForIKEAuth(t *testing.T)
 	// section 3.1 on the V bit: "Implementations of IKEv2 MUST clear this bit when sending and MUST ignore it in incoming messages."
 	header.Flags |= FlagVersion | 0xc7
 	// an IKE_AUTH carrying no IDi or AUTH, which the half-open SA refuses
-	if err := mux.SendIKE(sealedAtVersion(t, 0x21, held.suite, held.skei, header, nil)); err != nil {
+	if err := mux.SendIKE(sealedEdited(t, held.suite, held.skei, header, nil, atMinorVersion1)); err != nil {
 		t.Fatal(err)
 	}
 	answer, inner, raw := responderMessage(t, mux, held)
@@ -2665,6 +2683,134 @@ func TestResponderAnswersAHigherMajorVersionWhileItWaitsForIKEAuth(t *testing.T)
 		t.Errorf("the answer's flags are %#x, want the Response bit alone", raw[19])
 	}
 	awaitHandshakeEnd(t, h, refused, held.spiI)
+}
+
+// RFC 7296 section 3.2 on the critical bit: "MUST be ignored by the recipient if the recipient understands the payload type code."
+// section 2.5: "If the critical flag is not set and the payload type is unsupported, that payload MUST be ignored."
+// section 3.12: "Unfamiliar Vendor IDs MUST be ignored."
+// section 2.5: "Payloads sent in IKE response messages MUST NOT have the critical flag set."
+// an initiator marking every payload of both its requests critical, the SK payload and the CERTREQ, CP, EAP and Vendor ID this end skips among them, and adding one of a type nothing assigns unmarked, is answered and taken as one marking none, and the answers mark nothing
+func TestResponderIgnoresTheCriticalBitOnPayloadsItUnderstands(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	marked := func(payloads []RawPayload) []RawPayload {
+		payloads = append(payloads, RawPayload{Type: PayloadV, Body: []byte("a vendor this end does not know")})
+		for i := range payloads {
+			payloads[i].Critical = true
+		}
+		return append(payloads, RawPayload{Type: PayloadType(250), Body: []byte{1}})
+	}
+	held, message1, nr := initHalfOpen(t, mux, marked)
+	inner := marked(append(ikeAuthPayloads(h.private, held, message1, nr, espProposal([]byte{0, 0, 0, 9}), "testorg/client:2", "testorg/server:1"),
+		// an X.509 certificate request naming one authority by the hash of its key
+		RawPayload{Type: PayloadCERTREQ, Body: append([]byte{4}, make([]byte, 20)...)},
+		// a CFG_REQUEST for an IPv4 address
+		RawPayload{Type: PayloadCP, Body: []byte{1, 0, 0, 0, 0, 1, 0, 0}},
+		// an EAP Response carrying an Identity
+		RawPayload{Type: PayloadEAP, Body: []byte{2, 0, 0, 6, 1, 'c'}},
+	))
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	if err := mux.SendIKE(sealedEdited(t, held.suite, held.skei, header, inner, criticalSK)); err != nil {
+		t.Fatal(err)
+	}
+	answer, answered, raw := responderMessage(t, mux, held)
+	if answer.ExchangeType != IKE_AUTH || answer.MessageID != 1 || findType(answered, PayloadAUTH) == nil || findType(answered, PayloadSA) == nil {
+		t.Fatalf("the IKE_AUTH request marking every payload critical drew exchange %d at Message ID %d carrying %v, want the responder's AUTH and Child SA at 1",
+			answer.ExchangeType, answer.MessageID, answered)
+	}
+	if raw[HeaderLen+1]&0x80 != 0 {
+		t.Error("the IKE_AUTH answer marks its SK payload critical")
+	}
+	for _, payload := range answered {
+		if payload.Critical {
+			t.Errorf("the IKE_AUTH answer marks payload type %d critical", payload.Type)
+		}
+	}
+	carriedForward(t, h)
+}
+
+// carriedForward waits for the session the responder carries forward from the half-open SA and checks whose it is
+func carriedForward(t *testing.T, h *responderHarness) {
+	t.Helper()
+	select {
+	case session := <-h.sessions:
+		session.Mux().Close()
+		if accepted := <-h.identities; accepted.Peer != identity.MustParse("testorg/client:2") {
+			t.Errorf("the responder took the session for %s", accepted.Peer)
+		}
+	case <-time.After(answerBudget):
+		t.Fatal("the responder never carried the session forward")
+	}
+}
+
+// RFC 7296 section 2.5: "implementations MUST NOT reject as invalid a message with those payloads in any other order."
+// section 2.5: "implementations SHOULD send the payloads defined in this specification in the order shown in the figures in Sections 1 and 2"
+// an initiator sending the payloads of both its requests in reverse is answered and taken as one sending them in order, and the answers keep the order of the figures
+func TestResponderTakesPayloadsInAnyOrderAndAnswersInTheFiguresOrder(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	reversed := func(payloads []RawPayload) []RawPayload {
+		slices.Reverse(payloads)
+		return payloads
+	}
+	held, message1, nr := initHalfOpen(t, mux, reversed)
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	request, err := EncryptMessage(held.suite, held.skei, header, nil, reversed(ikeAuthPayloads(h.private, held, message1, nr, espProposal([]byte{0, 0, 0, 9}), "testorg/client:2", "testorg/server:1")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.SendIKE(request); err != nil {
+		t.Fatal(err)
+	}
+	answer, answered, _ := responderMessage(t, mux, held)
+	if answer.ExchangeType != IKE_AUTH || answer.MessageID != 1 || findType(answered, PayloadAUTH) == nil {
+		t.Fatalf("the IKE_AUTH request in reverse drew exchange %d at Message ID %d carrying %v, want the responder's AUTH at 1", answer.ExchangeType, answer.MessageID, answered)
+	}
+	// the figure of section 1.2: "HDR, SK {IDr, [CERT,] AUTH, SAr2, TSi, TSr}"
+	if got, want := payloadTypes(answered), []PayloadType{PayloadIDr, PayloadAUTH, PayloadSA, PayloadTSi, PayloadTSr}; !slices.Equal(got, want) {
+		t.Errorf("the IKE_AUTH answer carries payload types %v, want %v", got, want)
+	}
+	carriedForward(t, h)
+}
+
+// RFC 7296 section 2.21.2: "request messages that contain an unsupported critical payload, or where the whole message is malformed (rather than just bad payload contents), MUST be rejected in their entirety, and MUST only lead to an UNSUPPORTED_CRITICAL_PAYLOAD or INVALID_SYNTAX Notification sent as a response."
+// section 2.5: "In that Notify payload, the Notification Data contains the one-octet payload type."
+// an IKE_AUTH carrying a critical payload of a type nothing assigns, in the clear ahead of SK or inside it, draws UNSUPPORTED_CRITICAL_PAYLOAD naming the type at Message ID 1, and the half-open SA then goes
+func TestResponderRefusesAnIKEAuthMarkingAnUnsupportedPayloadCritical(t *testing.T) {
+	for placement, request := range map[string]struct{ cleartext, inner []RawPayload }{
+		"inside SK":    {nil, []RawPayload{unsupportedCritical}},
+		"in the clear": {[]RawPayload{unsupportedCritical}, nil},
+	} {
+		t.Run(placement, func(t *testing.T) {
+			refused := &recorder{}
+			h := childRefusedHarness(t, refused.record)
+			mux := childRefusedMux(t, h)
+			held, _, _ := initHalfOpen(t, mux, nil)
+			header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+			raw, err := EncryptMessage(held.suite, held.skei, header, request.cleartext, request.inner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := mux.SendIKE(raw); err != nil {
+				t.Fatal(err)
+			}
+			answer, inner, _ := responderMessage(t, mux, held)
+			if answer.ExchangeType != IKE_AUTH || !answer.IsResponse() || answer.MessageID != 1 ||
+				!notified(inner, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupportedCritical.Type)}) {
+				t.Fatalf("the IKE_AUTH drew exchange %d response %v at Message ID %d carrying %v, want UNSUPPORTED_CRITICAL_PAYLOAD for type %d at 1",
+					answer.ExchangeType, answer.IsResponse(), answer.MessageID, inner, unsupportedCritical.Type)
+			}
+			awaitHandshakeEnd(t, h, refused, held.spiI)
+		})
+	}
 }
 
 // Anyone who can reach the port can make a handshake fail, so the line has to

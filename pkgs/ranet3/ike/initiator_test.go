@@ -255,6 +255,11 @@ func TestSessionScheduledRekeyChild(t *testing.T) {
 			t.Errorf("incomplete rekey request")
 			return
 		}
+		// RFC 7296 section 2.5: "implementations SHOULD send the payloads defined in this specification in the order shown in the figures in Sections 1 and 2"
+		// the figure of section 1.3.3: "HDR, SK {N(REKEY_SA), SA, Ni, [KEi,] TSi, TSr}"
+		if got, want := payloadTypes(inner), []PayloadType{PayloadN, PayloadSA, PayloadNonce, PayloadTSi, PayloadTSr}; !slices.Equal(got, want) {
+			t.Errorf("the rekey request carries payload types %v, want %v", got, want)
+		}
 		notify, err := DecodeNotify(notifyPayload.Body)
 		if err != nil || notify.Type != N_REKEY_SA || notify.Protocol != ProtoESP || len(notify.SPI) != 4 || binary.BigEndian.Uint32(notify.SPI) != oldLocalSPI {
 			t.Errorf("bad REKEY_SA notify: %#v, %v", notify, err)
@@ -275,11 +280,13 @@ func TestSessionScheduledRekeyChild(t *testing.T) {
 		remoteSPI := make([]byte, 4)
 		binary.BigEndian.PutUint32(remoteSPI, newRemoteSPI)
 		nr := []byte("responder nonce for child rekey")
+		// section 2.5: "implementations MUST NOT reject as invalid a message with those payloads in any other order."
+		// so the answer has them in reverse
 		response, err := EncryptMessage(suite, s.current.sker, Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: CREATE_CHILD_SA, Flags: FlagResponse, MessageID: m.Header.MessageID}, nil, []RawPayload{
-			{Type: PayloadSA, Body: EncodeSA([]Proposal{{Number: 1, Protocol: ProtoESP, SPI: remoteSPI, Transforms: []Transform{{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128}, {Type: TransESN, ID: ESN_NO}}}})},
-			{Type: PayloadNonce, Body: EncodeNonce(nr)},
-			{Type: PayloadTSi, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
 			{Type: PayloadTSr, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
+			{Type: PayloadTSi, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
+			{Type: PayloadNonce, Body: EncodeNonce(nr)},
+			{Type: PayloadSA, Body: EncodeSA([]Proposal{{Number: 1, Protocol: ProtoESP, SPI: remoteSPI, Transforms: []Transform{{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128}, {Type: TransESN, ID: ESN_NO}}}})},
 		})
 		if err != nil {
 			t.Errorf("encrypt response: %v", err)
@@ -425,6 +432,11 @@ func TestSessionRekeyIKE(t *testing.T) {
 			t.Errorf("incomplete IKE rekey request")
 			return
 		}
+		// RFC 7296 section 2.5: "implementations SHOULD send the payloads defined in this specification in the order shown in the figures in Sections 1 and 2"
+		// the figure of section 1.3.2: "HDR, SK {SA, Ni, KEi}"
+		if got, want := payloadTypes(inner), []PayloadType{PayloadSA, PayloadNonce, PayloadKE}; !slices.Equal(got, want) {
+			t.Errorf("the rekey request carries payload types %v, want %v", got, want)
+		}
 		props, err := DecodeSA(sa.Body)
 		if err != nil || len(props) != 1 || props[0].Protocol != ProtoIKE || len(props[0].SPI) != 8 {
 			t.Errorf("bad IKE rekey proposal: %#v, %v", props, err)
@@ -471,6 +483,9 @@ func TestSessionRekeyIKE(t *testing.T) {
 			t.Errorf("incomplete retried IKE rekey request")
 			return
 		}
+		if got, want := payloadTypes(inner), []PayloadType{PayloadSA, PayloadNonce, PayloadKE}; !slices.Equal(got, want) {
+			t.Errorf("the retried rekey request carries payload types %v, want %v", got, want)
+		}
 		props, err = DecodeSA(sa.Body)
 		if err != nil || len(props) != 1 || props[0].Protocol != ProtoIKE || len(props[0].SPI) != 8 {
 			t.Errorf("bad retried IKE rekey proposal: %#v, %v", props, err)
@@ -489,10 +504,12 @@ func TestSessionRekeyIKE(t *testing.T) {
 		nr := []byte("responder nonce for IKE rekey")
 		spiR := make([]byte, 8)
 		binary.BigEndian.PutUint64(spiR, newSPIr)
+		// section 2.5: "implementations MUST NOT reject as invalid a message with those payloads in any other order."
+		// so the answer has them in reverse
 		response, err = EncryptMessage(suite, old.sker, Header{SPIInitiator: oldSPIi, SPIResponder: oldSPIr, ExchangeType: CREATE_CHILD_SA, Flags: FlagResponse, MessageID: m.Header.MessageID}, nil, []RawPayload{
-			{Type: PayloadSA, Body: EncodeSA([]Proposal{{Number: 1, Protocol: ProtoIKE, SPI: spiR, Transforms: []Transform{{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128}, {Type: TransPRF, ID: PRF_HMAC_SHA2_256}, {Type: TransDH, ID: group}}}})},
-			{Type: PayloadNonce, Body: EncodeNonce(nr)},
 			{Type: PayloadKE, Body: EncodeKE(group, responderDH.PublicBytes())},
+			{Type: PayloadNonce, Body: EncodeNonce(nr)},
+			{Type: PayloadSA, Body: EncodeSA([]Proposal{{Number: 1, Protocol: ProtoIKE, SPI: spiR, Transforms: []Transform{{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128}, {Type: TransPRF, ID: PRF_HMAC_SHA2_256}, {Type: TransDH, ID: group}}}})},
 		})
 		if err != nil {
 			t.Errorf("encrypt rekey response: %v", err)
@@ -586,8 +603,9 @@ func TestSessionHandlesPeerIKERekey(t *testing.T) {
 	go func() { runDone <- s.Run(context.Background()) }()
 
 	// The proposal offers ranet's preferred Curve25519 first, while the KE
-	// payload uses another supported offered group. RFC 7296 section 1.3 requires
-	// the responder to select the group actually used by KE.
+	// payload uses another supported offered group.
+	// RFC 7296 section 1.3: "If the responder selects a proposal using a different Diffie-Hellman group (other than NONE), the responder MUST reject the request and indicate its preferred Diffie-Hellman group in the INVALID_KE_PAYLOAD Notify payload."
+	// so the answer selects the group of the KE payload
 	dh, err := GenerateDH(DH_ECP_256)
 	if err != nil {
 		t.Fatal(err)
@@ -595,13 +613,15 @@ func TestSessionHandlesPeerIKERekey(t *testing.T) {
 	ni := []byte("peer nonce for IKE rekey")
 	spi := make([]byte, 8)
 	binary.BigEndian.PutUint64(spi, newSPIi)
+	// RFC 7296 section 2.5: "implementations MUST NOT reject as invalid a message with those payloads in any other order."
+	// so the request has them in reverse
 	request, err := EncryptMessage(suite, old.sker, Header{SPIInitiator: oldSPIi, SPIResponder: oldSPIr, ExchangeType: CREATE_CHILD_SA, MessageID: 0}, nil, []RawPayload{
+		{Type: PayloadKE, Body: EncodeKE(DH_ECP_256, dh.PublicBytes())},
+		{Type: PayloadNonce, Body: EncodeNonce(ni)},
 		{Type: PayloadSA, Body: EncodeSA([]Proposal{
 			{Number: 1, Protocol: ProtoIKE, SPI: spi, Transforms: []Transform{{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 256}, {Type: TransPRF, ID: PRF_HMAC_SHA2_384}, {Type: TransDH, ID: DH_ECP_256}}},
 			{Number: 2, Protocol: ProtoIKE, SPI: spi, Transforms: ikeProposal().Transforms},
 		})},
-		{Type: PayloadNonce, Body: EncodeNonce(ni)},
-		{Type: PayloadKE, Body: EncodeKE(DH_ECP_256, dh.PublicBytes())},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -631,6 +651,11 @@ func TestSessionHandlesPeerIKERekey(t *testing.T) {
 	sa, nonce, ke := findType(inner, PayloadSA), findType(inner, PayloadNonce), findType(inner, PayloadKE)
 	if sa == nil || nonce == nil || ke == nil || findType(inner, PayloadTSi) != nil || findType(inner, PayloadTSr) != nil {
 		t.Fatalf("invalid peer rekey response payloads: %#v", inner)
+	}
+	// section 2.5: "implementations SHOULD send the payloads defined in this specification in the order shown in the figures in Sections 1 and 2"
+	// the figure of section 1.3.2: "HDR, SK {SA, Nr, KEr}"
+	if got, want := payloadTypes(inner), []PayloadType{PayloadSA, PayloadNonce, PayloadKE}; !slices.Equal(got, want) {
+		t.Errorf("the rekey answer carries payload types %v, want %v", got, want)
 	}
 	props, err := DecodeSA(sa.Body)
 	if err != nil || len(props) != 1 || props[0].Number != 2 || props[0].Protocol != ProtoIKE || len(props[0].SPI) != 8 || len(props[0].Transforms) != 3 {
@@ -1355,7 +1380,6 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 		forged       bool         // another key than the responder's signs the answer's AUTH
 		alone        []RawPayload // the answer carries these and no IDr or AUTH
 		critical     PayloadType  // the answer ends in a payload of this type, marked critical
-		criticalSK   bool         // the answer's SK payload is marked critical
 		trailing     bool         // a byte past the answer's payload chain makes it malformed
 		sa, tsi, tsr []byte       // nil leaves the payload out
 		want         string
@@ -1403,12 +1427,9 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 			want: "incomplete IKE_AUTH response", follow: refusal(N_AUTHENTICATION_FAILED)},
 		"payload chain short of its plaintext": {trailing: true, sa: usable, tsi: full, tsr: full,
 			want: "trailing bytes", follow: refusal(N_INVALID_SYNTAX)},
-		"critical payload this end does not implement": {critical: PayloadCERTREQ, sa: usable, tsi: full, tsr: full,
-			want: "sets the critical flag", follow: refusal(N_UNSUPPORTED_CRITICAL_PAYLOAD, byte(PayloadCERTREQ))},
-		"critical payload this end implements": {critical: PayloadNonce, sa: usable, tsi: full, tsr: full,
-			want: "sets the critical flag", follow: refusal(N_INVALID_SYNTAX)},
-		"critical SK payload": {criticalSK: true, sa: usable, tsi: full, tsr: full,
-			want: "sets the critical flag", follow: refusal(N_INVALID_SYNTAX)},
+		// SKF, which RFC 7383 defines and this end does not implement
+		"critical payload this end does not implement": {critical: 53, sa: usable, tsi: full, tsr: full,
+			want: "marks unsupported payload type 53 critical", follow: refusal(N_UNSUPPORTED_CRITICAL_PAYLOAD, 53)},
 		"responder's own refusal": {alone: []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_AUTHENTICATION_FAILED})}},
 			want: fmt.Sprintf("notify type %d", N_AUTHENTICATION_FAILED)},
 		"responder's own refusal after a status notify": {alone: []RawPayload{
@@ -1506,21 +1527,6 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if test.criticalSK && exchange == IKE_AUTH {
-					// the SK payload's generic header is associated data, so the answer is sealed again under the flag
-					params, err := aeadParams(suite.EncrID, suite.EncrKeyBits)
-					if err != nil {
-						return err
-					}
-					aead, err := newAEAD(suite.EncrID, s.current.sker[:params.KeyLen])
-					if err != nil {
-						return err
-					}
-					response[HeaderLen+1] |= 0x80
-					aad := response[:HeaderLen+genericPayloadHeaderLen]
-					nonce := append(slices.Clone(s.current.sker[params.KeyLen:]), iv...)
-					response = aead.Seal(slices.Clone(response[:len(aad)+len(iv)]), nonce, plain, aad)
-				}
 				_, err = peer.WriteToUDP(withNonESPMarker(response), to)
 				return err
 			}
@@ -1589,6 +1595,249 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// RFC 7296 section 3.2 on the critical bit: "MUST be ignored by the recipient if the recipient understands the payload type code."
+// section 2.5: "If the critical flag is not set and the payload type is unsupported, that payload MUST be ignored."
+// section 3.12: "Unfamiliar Vendor IDs MUST be ignored."
+// a responder marking every payload of both its answers critical, the SK payload and the CERTREQ, CERT, CP and Vendor ID this end skips among them, and adding one of a type nothing assigns unmarked, is dialed as one marking none
+// section 3.2 on the sender: "MUST be set to zero for payload types defined in this document."
+func TestInitiatorIgnoresTheCriticalBitOnPayloadsItUnderstands(t *testing.T) {
+	vendor := RawPayload{Type: PayloadV, Body: []byte("a vendor this end does not know")}
+	marked := func(exchange ExchangeType, payloads []RawPayload) []RawPayload {
+		if exchange == IKE_SA_INIT {
+			// an X.509 certificate request naming one authority by the hash of its key
+			payloads = append(payloads, RawPayload{Type: PayloadCERTREQ, Body: append([]byte{4}, make([]byte, 20)...)}, vendor)
+		} else {
+			payloads = append(payloads,
+				RawPayload{Type: PayloadCERT, Body: append([]byte{4}, "a certificate this end does not read"...)},
+				// a CFG_REPLY with no attributes
+				RawPayload{Type: PayloadCP, Body: []byte{2, 0, 0, 0}},
+				vendor,
+			)
+		}
+		for i := range payloads {
+			payloads[i].Critical = true
+		}
+		return append(payloads, RawPayload{Type: PayloadType(250), Body: []byte{1}})
+	}
+	saInit, auth, authRaw, err := dialPlayedResponder(t, marked, criticalSK)
+	if err != nil {
+		t.Fatalf("the initiator refused answers marking every payload critical: %v", err)
+	}
+	for request, payloads := range map[string][]RawPayload{"IKE_SA_INIT": saInit.Payloads, "IKE_AUTH": auth} {
+		for _, payload := range payloads {
+			if payload.Critical {
+				t.Errorf("the %s request marks payload type %d critical", request, payload.Type)
+			}
+		}
+	}
+	if authRaw[HeaderLen+1]&0x80 != 0 {
+		t.Error("the IKE_AUTH request marks its SK payload critical")
+	}
+}
+
+// RFC 7296 section 2.5: "implementations MUST NOT reject as invalid a message with those payloads in any other order."
+// section 2.5: "implementations SHOULD send the payloads defined in this specification in the order shown in the figures in Sections 1 and 2"
+// a responder answering both requests with their payloads in reverse is dialed as one answering in order, and the requests keep the order of the figures
+func TestInitiatorTakesAnswersInAnyOrderAndAsksInTheFiguresOrder(t *testing.T) {
+	reversed := func(_ ExchangeType, payloads []RawPayload) []RawPayload {
+		slices.Reverse(payloads)
+		return payloads
+	}
+	asSent := func([]byte) {}
+	saInit, auth, _, err := dialPlayedResponder(t, reversed, asSent)
+	if err != nil {
+		t.Fatalf("the initiator refused answers with their payloads in reverse: %v", err)
+	}
+	// the figure of section 1.2: "HDR, SAi1, KEi, Ni"
+	// the notifies follow Ni
+	if got, want := payloadTypes(saInit.Payloads), []PayloadType{PayloadSA, PayloadKE, PayloadNonce, PayloadN, PayloadN, PayloadN}; !slices.Equal(got, want) {
+		t.Errorf("the IKE_SA_INIT request carries payload types %v, want %v", got, want)
+	}
+	// the figure of section 1.2: "HDR, SK {IDi, [CERT,] [CERTREQ,] [IDr,] AUTH, SAi2, TSi, TSr}"
+	if got, want := payloadTypes(auth), []PayloadType{PayloadIDi, PayloadIDr, PayloadAUTH, PayloadSA, PayloadTSi, PayloadTSr}; !slices.Equal(got, want) {
+		t.Errorf("the IKE_AUTH request carries payload types %v, want %v", got, want)
+	}
+}
+
+// dialPlayedResponder dials a responder the test plays, which answers IKE_SA_INIT and IKE_AUTH with the payloads shape makes of the ones it would send, sealing the IKE_AUTH answer after edit has changed its header and SK payload header
+// it returns the IKE_SA_INIT request, the IKE_AUTH request decrypted with its wire image, and how the dial ended
+func dialPlayedResponder(t *testing.T, shape func(exchange ExchangeType, payloads []RawPayload) []RawPayload, edit func(aad []byte)) (*Message, []RawPayload, []byte, error) {
+	t.Helper()
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	_, localPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remotePublic, remotePrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := PeerConfig{
+		Local: identity.MustParse("ranet-test/initiator:1"), LocalPrivateKey: localPrivate,
+		Remote: identity.MustParse("ranet-test/responder:2"), RemotePublicKey: remotePublic,
+		RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), answerBudget)
+	var dialErr error
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		session, err := InitiateContext(ctx, cfg)
+		if err == nil {
+			session.Mux().Close()
+		}
+		dialErr = err
+	}()
+	defer func() {
+		cancel()
+		<-finished
+	}()
+
+	buf := make([]byte, 4096)
+	if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+		t.Fatal(err)
+	}
+	// read passes over retransmissions of the request before the one of exchange
+	read := func(exchange ExchangeType) (*Message, []byte, *net.UDPAddr) {
+		t.Helper()
+		for {
+			n, from, err := peer.ReadFromUDP(buf)
+			if err != nil {
+				t.Fatalf("the initiator sent no request of exchange %d: %v", exchange, err)
+			}
+			raw := slices.Clone(buf[4:n])
+			message, err := DecodeMessage(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if message.Header.ExchangeType == exchange {
+				return message, raw, from
+			}
+		}
+	}
+
+	saInit, _, from := read(IKE_SA_INIT)
+	sa, ke, nonce := saInit.find(PayloadSA), saInit.find(PayloadKE), saInit.find(PayloadNonce)
+	if sa == nil || ke == nil || nonce == nil {
+		t.Fatalf("the IKE_SA_INIT request carries %v", saInit.Payloads)
+	}
+	group, public, err := DecodeKE(ke.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, suite, err := selectIKEProposal(sa.Body, group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dh, err := GenerateDH(suite.DHGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := dh.SharedSecret(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ni, nr := DecodeNonce(nonce.Body), make([]byte, 32)
+	rand.Read(nr)
+	spiI, spiR := saInit.Header.SPIInitiator, randUint64Nonzero()
+	message2 := (&Message{Header: Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_SA_INIT, Flags: FlagResponse}, Payloads: shape(IKE_SA_INIT, []RawPayload{
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
+		{Type: PayloadKE, Body: EncodeKE(suite.DHGroup, dh.PublicBytes())},
+		{Type: PayloadNonce, Body: EncodeNonce(nr)},
+		{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: binary.BigEndian.AppendUint16(nil, HashIdentity)})},
+	})}).Encode()
+	if _, err := peer.WriteToUDP(withNonESPMarker(message2), from); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := DeriveIKEKeys(suite, shared, ni, nr, spiI, spiR)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	auth, authRaw, from := read(IKE_AUTH)
+	inner, err := DecryptMessage(suite, keys.SKei, authRaw, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idr := idBody("ranet-test/responder:2")
+	child := Proposal{Number: 1, Protocol: ProtoESP, SPI: []byte{0, 0, 0, 9}, Transforms: []Transform{
+		{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128}, {Type: TransESN, ID: ESN_NO}}}
+	header := Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH, Flags: FlagResponse, MessageID: 1}
+	answer := sealedEdited(t, suite, keys.SKer, header, shape(IKE_AUTH, []RawPayload{
+		{Type: PayloadIDr, Body: idr},
+		{Type: PayloadAUTH, Body: BuildAuth(remotePrivate, concat(message2, ni, prf(suite.PRFID, keys.SKpr, idr)))},
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{child})},
+		{Type: PayloadTSi, Body: fullRangeSelectors()},
+		{Type: PayloadTSr, Body: fullRangeSelectors()},
+	}), edit)
+	if _, err := peer.WriteToUDP(withNonESPMarker(answer), from); err != nil {
+		t.Fatal(err)
+	}
+	<-finished
+	return saInit, inner, authRaw, dialErr
+}
+
+// RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected"
+// an IKE_SA_INIT answer that carries a critical payload of a type nothing assigns ends the dial with that refusal
+func TestInitiatorRefusesAnIKESAInitAnswerMarkingAnUnsupportedPayloadCritical(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	peerLoop(t, peer, func() {
+		buf := make([]byte, 4096)
+		_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+		n, from, err := peer.ReadFromUDP(buf)
+		if err != nil || n <= 4 {
+			t.Errorf("the initiator sent no IKE_SA_INIT: %d bytes, %v", n, err)
+			return
+		}
+		request, err := DecodeMessage(buf[4:n])
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		sa, ke := request.find(PayloadSA), request.find(PayloadKE)
+		if sa == nil || ke == nil {
+			t.Errorf("the IKE_SA_INIT request carries %v", request.Payloads)
+			return
+		}
+		group, _, err := DecodeKE(ke.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		proposal, suite, err := selectIKEProposal(sa.Body, group)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		dh, err := GenerateDH(suite.DHGroup)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		answer := encodeTestMessage(t, Header{SPIInitiator: request.Header.SPIInitiator, SPIResponder: randUint64Nonzero(), ExchangeType: IKE_SA_INIT, Flags: FlagResponse}, []RawPayload{
+			{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
+			{Type: PayloadKE, Body: EncodeKE(suite.DHGroup, dh.PublicBytes())},
+			{Type: PayloadNonce, Body: EncodeNonce(make([]byte, 32))},
+			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: binary.BigEndian.AppendUint16(nil, HashIdentity)})},
+			unsupportedCritical,
+		})
+		if _, err := peer.WriteToUDP(withNonESPMarker(answer), from); err != nil {
+			t.Error(err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), answerBudget)
+	defer cancel()
+	session, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port})
+	if err == nil {
+		session.Mux().Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "marks unsupported payload type 250 critical") {
+		t.Errorf("the dial ended with %v, want the answer refused for payload type 250", err)
 	}
 }
 
@@ -1902,6 +2151,18 @@ func TestOnlyUsableUnauthenticatedInitNotifiesAreActedOn(t *testing.T) {
 	if _, ok := usefulInitNotify(wrongGroup, false, true); ok {
 		t.Error("a second group correction was acted on")
 	}
+
+	// RFC 7296 section 3.2 on the critical bit: "MUST be ignored by the recipient if the recipient understands the payload type code."
+	// section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected"
+	marked := message(Notify{Type: N_COOKIE, Data: []byte{1}})
+	marked.Payloads[0].Critical = true
+	if _, ok := usefulInitNotify(marked, false, false); !ok {
+		t.Error("a cookie whose notify is marked critical was ignored")
+	}
+	marked.Payloads = append(marked.Payloads, unsupportedCritical)
+	if _, ok := usefulInitNotify(marked, false, false); ok {
+		t.Error("a cookie beside a critical payload of a type this end does not support was acted on")
+	}
 }
 
 // RFC 7296 section 2.6: "Each endpoint chooses one of the two SPIs and MUST choose them so as to be unique identifiers of an IKE SA."
@@ -2074,7 +2335,7 @@ func TestInitiatorAnswersTheCookieThatFollowsAGroupChange(t *testing.T) {
 	}
 	// RFC 7296 section 2.6: "include the COOKIE notification containing the received data as the first payload, and all other payloads unchanged"
 	for _, i := range []int{1, 3} {
-		if !answeredAlike(seen[i].rest, seen[i-1].rest) {
+		if !samePayloads(seen[i].rest, seen[i-1].rest) {
 			t.Errorf("request %d answers its cookie with other payloads than request %d carried", i+1, i)
 		}
 	}

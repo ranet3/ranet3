@@ -257,7 +257,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	if !validNonce(ni) {
 		return nil, Accepted{}, fmt.Errorf("ike: initiator nonce length %d is outside 16..256", len(ni))
 	}
-	// RFC 7296 section 2.5 refuses a critical payload this end does not implement by its type
+	// RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected and the response to the IKE request containing that payload MUST include a Notify payload UNSUPPORTED_CRITICAL_PAYLOAD, indicating an unsupported critical payload was included."
 	if unsupported, found := firstUnsupportedCritical(request.Payloads); found {
 		r.sendStatelessNotify(datagram, &header, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupported)})
 		return nil, Accepted{}, fmt.Errorf("ike: IKE_SA_INIT request marks payload type %d critical", unsupported)
@@ -466,55 +466,56 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	inner, err := decodeMessagePlaintext(got.innerFirst, got.plaintext)
 	if err != nil {
 		// RFC 7296 section 2.21.2: "request messages that contain an unsupported critical payload, or where the whole message is malformed (rather than just bad payload contents), MUST be rejected in their entirety, and MUST only lead to an UNSUPPORTED_CRITICAL_PAYLOAD or INVALID_SYNTAX Notification sent as a response."
-		return Accepted{}, false, s.rejectAuth(N_INVALID_SYNTAX, fmt.Errorf("ike: malformed IKE_AUTH request: %w", err))
+		return Accepted{}, false, s.rejectAuth(N_INVALID_SYNTAX, nil, fmt.Errorf("ike: malformed IKE_AUTH request: %w", err))
 	}
 
-	if unsupported, found := firstUnsupportedCritical(inner); found {
-		return Accepted{}, false, s.rejectAuth(N_UNSUPPORTED_CRITICAL_PAYLOAD,
+	// RFC 7296 section 2.5: "In that Notify payload, the Notification Data contains the one-octet payload type."
+	if unsupported, found := firstUnsupportedCritical(outer.Payloads, inner); found {
+		return Accepted{}, false, s.rejectAuth(N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupported)},
 			fmt.Errorf("ike: IKE_AUTH request marks payload type %d critical", unsupported))
 	}
 
 	request := &Message{Header: outer.Header, Payloads: inner}
 	idiPayload, authPayload := request.find(PayloadIDi), request.find(PayloadAUTH)
 	if idiPayload == nil || authPayload == nil {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, fmt.Errorf("ike: IKE_AUTH request has no IDi or AUTH"))
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: IKE_AUTH request has no IDi or AUTH"))
 	}
 	aliases := r.aliases()
 	peer, err := aliases.resolve(idiPayload.Body)
 	if err != nil {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, err)
 	}
 	peerID := peer.endpoint
 	// with a key its organization shares, another node of it could otherwise claim our name
 	for local := range r.cfg.Local {
 		if local.Node() == peerID.Node() {
-			return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, fmt.Errorf("ike: IDi names our own node %s", peerID.Node()))
+			return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: IDi names our own node %s", peerID.Node()))
 		}
 	}
 	peerKey, peerFamily, err := r.cfg.Trust.Key(peerID)
 	if err != nil {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, err)
 	}
 	macedIDForI := prf(ctx.suite.PRFID, ctx.skpi, idiPayload.Body)
 	if err := VerifyAuth(peerKey, concat(realMessage1, nr, macedIDForI), authPayload.Body); err != nil {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, err)
 	}
 	// RFC 7296 section 3.5 has the identity "used for policy lookup" and "to perform access control decisions"
 	// an IDi naming an endpoint of another family names one that did not dial, as an endpoint dials in its own family alone
 	// the endpoint's family is compared, never an address the ID holds
 	arrived := familyOf(source.AddrPort().Addr())
 	if peerFamily != arrived {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED,
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil,
 			fmt.Errorf("ike: IDi names %s, an endpoint of the %s family, and the request arrived in %s", peerID, peerFamily, arrived))
 	}
 
 	presented, err := aliases.presented(peerID)
 	if err != nil {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, err)
 	}
 	localID, idrBody, err := r.localIdentity(aliases, request.find(PayloadIDr), presented, arrived)
 	if err != nil {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, err)
 	}
 	if r.cfg.Events != nil {
 		r.cfg.Events(localID, peerID, "ike.id.resolved", peer.attrs(idrBody)...)
@@ -671,11 +672,11 @@ func (r *Responder) failureIsDue(endpoint transport.Endpoint) bool {
 }
 
 // rejectAuth answers a refused IKE_AUTH request inside the SK payload, which
-// the initiator can decrypt, and returns the underlying reason unchanged. The
-// notify is deliberately uninformative: which of identity, key or signature
-// failed is not the peer's business.
-func (s *Session) rejectAuth(notify NotifyType, cause error) error {
-	response, err := s.responseNotify(s.current, 1, IKE_AUTH, notify)
+// the initiator can decrypt, and returns the underlying reason unchanged. An
+// authentication failure is deliberately uninformative: which of identity, key
+// or signature failed is not the peer's business.
+func (s *Session) rejectAuth(notify NotifyType, data []byte, cause error) error {
+	response, err := s.responseNotifyData(s.current, 1, IKE_AUTH, notify, data)
 	if err == nil {
 		_ = s.mux.SendIKE(response)
 	}
@@ -840,13 +841,14 @@ func sameID(received, presented []byte) bool {
 	return err == nil && theirs == ours
 }
 
-// firstUnsupportedCritical reports the first payload this profile does not
-// implement whose critical bit is set. An unrecognized payload without the bit
-// is skipped, which the flag exists for.
-func firstUnsupportedCritical(payloads []RawPayload) (PayloadType, bool) {
-	for _, payload := range payloads {
-		if payload.Critical && !supportedPayloadType(payload.Type) {
-			return payload.Type, true
+// RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected"
+// and: "If the critical flag is not set and the payload type is unsupported, that payload MUST be ignored."
+func firstUnsupportedCritical(lists ...[]RawPayload) (PayloadType, bool) {
+	for _, payloads := range lists {
+		for _, payload := range payloads {
+			if payload.Critical && !supportedPayloadType(payload.Type) {
+				return payload.Type, true
+			}
 		}
 	}
 	return 0, false

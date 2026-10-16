@@ -72,21 +72,34 @@ func TestSelectChildRekeyProposalSkipsAttributedTransform(t *testing.T) {
 	}
 }
 
-func TestDecodeChildExchangePayloadsRejectsDuplicatesAndCriticalUnknowns(t *testing.T) {
-	base := []RawPayload{
+func TestDecodeChildExchangePayloadsRejectsDuplicates(t *testing.T) {
+	payloads := []RawPayload{
 		{Type: PayloadSA, Body: encodedChildProposal(Transform{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128})},
-		{Type: PayloadNonce, Body: []byte{1}},
-		{Type: PayloadTSi, Body: []byte{0, 0, 0, 0}},
-		{Type: PayloadTSr, Body: []byte{0, 0, 0, 0}},
+		{Type: PayloadNonce, Body: EncodeNonce(make([]byte, 32))},
+		{Type: PayloadTSi, Body: fullRangeSelectors()},
+		{Type: PayloadTSr, Body: fullRangeSelectors()},
 	}
-	for _, extra := range []RawPayload{
-		{Type: PayloadNonce, Body: []byte{2}},
-		{Type: PayloadType(250), Critical: true},
-	} {
-		payloads := append(append([]RawPayload(nil), base...), extra)
-		if _, err := decodeChildExchangePayloads(payloads, PRF_HMAC_SHA2_256); err == nil {
-			t.Fatalf("accepted invalid extra payload %+v", extra)
-		}
+	if _, err := decodeChildExchangePayloads(payloads, PRF_HMAC_SHA2_256); err != nil {
+		t.Fatalf("refused the exchange before it carried a second Nonce payload: %v", err)
+	}
+	payloads = append(payloads, RawPayload{Type: PayloadNonce, Body: EncodeNonce(make([]byte, 32))})
+	if _, err := decodeChildExchangePayloads(payloads, PRF_HMAC_SHA2_256); err == nil {
+		t.Fatal("accepted a second Nonce payload")
+	}
+}
+
+// RFC 7296 section 3.2 on the critical bit: "MUST be ignored by the recipient if the recipient understands the payload type code."
+// a Child SA exchange marking every payload critical, a Delete it does not take among them, decodes as one marking none
+func TestDecodeChildExchangePayloadsIgnoresTheCriticalBit(t *testing.T) {
+	payloads := []RawPayload{
+		{Type: PayloadSA, Critical: true, Body: encodedChildProposal(Transform{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128})},
+		{Type: PayloadNonce, Critical: true, Body: EncodeNonce(make([]byte, 32))},
+		{Type: PayloadTSi, Critical: true, Body: fullRangeSelectors()},
+		{Type: PayloadTSr, Critical: true, Body: fullRangeSelectors()},
+		{Type: PayloadD, Critical: true, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{{0, 0, 0, 9}}})},
+	}
+	if _, err := decodeChildExchangePayloads(payloads, PRF_HMAC_SHA2_256); err != nil {
+		t.Fatalf("refused a Child SA exchange marking every payload critical: %v", err)
 	}
 }
 

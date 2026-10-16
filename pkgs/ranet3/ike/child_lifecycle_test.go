@@ -645,7 +645,7 @@ func TestDeleteCrossingThisEndsOwnIsAnsweredWithoutTheSA(t *testing.T) {
 func crossingDelete(t *testing.T, s *Session, remoteSPI uint32) []RawPayload {
 	t.Helper()
 	ctx := s.currentContext()
-	response, err := s.handleRequest(ctx, &Header{ExchangeType: INFORMATIONAL, MessageID: 0}, []RawPayload{
+	response, err := s.handleRequest(ctx, &Header{ExchangeType: INFORMATIONAL, MessageID: 0}, nil, []RawPayload{
 		{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{binary.BigEndian.AppendUint32(nil, remoteSPI)}})},
 	})
 	if err != nil {

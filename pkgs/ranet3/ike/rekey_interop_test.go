@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,13 +32,15 @@ func TestPeerChildRekeyWithPFS(t *testing.T) {
 				ni := bytes.Repeat([]byte{4}, 32)
 				proposal := espProposal(binary.BigEndian.AppendUint32(nil, 32))
 				proposal.Transforms = append(proposal.Transforms, Transform{Type: TransDH, ID: group})
+				// RFC 7296 section 2.5: "implementations MUST NOT reject as invalid a message with those payloads in any other order."
+				// so the request has them in reverse
 				raw, err := s.handleChildRekey(ctx, 0, []RawPayload{
-					{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_REKEY_SA, Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, old.RemoteSPI)})},
-					{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
-					{Type: PayloadNonce, Body: ni},
-					{Type: PayloadKE, Body: EncodeKE(group, dh.PublicBytes())},
-					{Type: PayloadTSi, Body: fullRangeSelectors()},
 					{Type: PayloadTSr, Body: fullRangeSelectors()},
+					{Type: PayloadTSi, Body: fullRangeSelectors()},
+					{Type: PayloadKE, Body: EncodeKE(group, dh.PublicBytes())},
+					{Type: PayloadNonce, Body: ni},
+					{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
+					{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_REKEY_SA, Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, old.RemoteSPI)})},
 				})
 				if err != nil {
 					t.Fatal(err)
@@ -49,6 +52,11 @@ func TestPeerChildRekeyWithPFS(t *testing.T) {
 				inner, err := DecryptMessage(suite, ctx.localEncryptionKey(), raw, message)
 				if err != nil {
 					t.Fatal(err)
+				}
+				// section 2.5: "implementations SHOULD send the payloads defined in this specification in the order shown in the figures in Sections 1 and 2"
+				// the figure of section 1.3.3: "HDR, SK {SA, Nr, [KEr,] TSi, TSr}"
+				if got, want := payloadTypes(inner), []PayloadType{PayloadSA, PayloadNonce, PayloadKE, PayloadTSi, PayloadTSr}; !slices.Equal(got, want) {
+					t.Errorf("the rekey answer carries payload types %v, want %v", got, want)
 				}
 				payloads, err := decodeChildExchangePayloads(inner, PRF_HMAC_SHA2_256)
 				if err != nil || payloads.ke == nil {

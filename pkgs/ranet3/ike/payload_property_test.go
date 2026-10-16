@@ -69,14 +69,6 @@ func drawPayloads(tc hegel.TestCase, types hegel.Generator[PayloadType], most in
 	return payloads
 }
 
-// samePayloads compares two payload lists by what is on the wire, so an empty
-// body and a nil one are the same body.
-func samePayloads(a, b []RawPayload) bool {
-	return slices.EqualFunc(a, b, func(x, y RawPayload) bool {
-		return x.Type == y.Type && x.Critical == y.Critical && bytes.Equal(x.Body, y.Body)
-	})
-}
-
 // drawOctet draws any octet, zero and 0xff among the edges.
 func drawOctet[T ~uint8](tc hegel.TestCase, edges ...T) T {
 	return hegel.Draw(tc, withEdges(hegel.Integers[T](0, 255), append([]T{0, 255}, edges...)...))
