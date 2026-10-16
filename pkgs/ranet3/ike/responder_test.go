@@ -159,29 +159,64 @@ func TestInitiateIsInitiateContextWithNoDeadline(t *testing.T) {
 
 // a cancel that lands while the responder handles IKE_AUTH still lets the answer in and deletes the SA it established
 // the responder's session ends on that Delete instead of holding the SA until its liveness check expires
-// and the Delete follows the answer, inside the window of one RFC 7296 section 2.3 allows
+// the Delete follows the answer that completes the initial exchanges, and is an exchange that takes its own answer
 func TestCanceledInitiatorDeletesTheSAItsResponderEstablished(t *testing.T) {
 	ctx, h := canceledHarness(t, func() bool { return true })
-	var answered, early atomic.Bool
+	var answered, early, deleteAnswered atomic.Bool
 	cfg := h.peerConfig()
 	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
 		switch {
 		case header == nil:
 		case !fromInitiator && header.ExchangeType == IKE_AUTH:
 			answered.Store(true)
+		case !fromInitiator && header.ExchangeType == INFORMATIONAL && header.IsResponse():
+			deleteAnswered.Store(true)
 		case fromInitiator && header.ExchangeType == INFORMATIONAL && !answered.Load():
 			early.Store(true)
 		}
 		return true
 	})
+	ended := serveResponder(t, h)
+	refused := h.initiator.Refused()
 
 	if _, err := InitiateContext(ctx, cfg); !errors.Is(err, context.Canceled) {
 		t.Fatalf("the canceled handshake returned %v, want the cancel", err)
 	}
-	awaitPeerDelete(t, h)
+	select {
+	case <-ended:
+	case <-time.After(answerBudget):
+		t.Fatal("the responder still held the SA its canceled initiator asked for when the budget ran out")
+	}
+	time.Sleep(quietPeriod)
+	if !deleteAnswered.Load() {
+		t.Error("the responder's session ended without answering a Delete from its canceled initiator")
+	}
+	if n := h.initiator.Refused() - refused; n != 0 {
+		t.Errorf("%d datagrams reached the initiator's hub after its exchanges ended, which the Delete's answer does when nothing waits for it", n)
+	}
 	if early.Load() {
 		t.Error("the canceled initiator sent its Delete before the IKE_AUTH answer it had time to take")
 	}
+}
+
+func serveResponder(t *testing.T, h *responderHarness) <-chan struct{} {
+	t.Helper()
+	ended := make(chan struct{})
+	run, stop := context.WithCancel(context.Background())
+	go func() {
+		defer close(ended)
+		select {
+		case held := <-h.sessions:
+			<-h.identities
+			_ = held.Run(run)
+		case <-run.Done():
+		}
+	}()
+	t.Cleanup(func() {
+		stop()
+		<-ended
+	})
+	return ended
 }
 
 // lateAnswer is how long the responder takes over IKE_AUTH after the cancel, past the initiator's wait for it
@@ -340,49 +375,6 @@ func canceledHarness(t *testing.T, answer func() bool) (context.Context, *respon
 	}))
 	public.Store(&h.public)
 	return ctx, h
-}
-
-// awaitPeerDelete runs the session the responder established and fails the test unless its initiator's Delete ends it
-// Run reports any end as its closed mux, so the answer to the Delete, read at the initiator's hub, says why it ended
-func awaitPeerDelete(t *testing.T, h *responderHarness) {
-	t.Helper()
-	var held *Session
-	select {
-	case held = <-h.sessions:
-		<-h.identities
-	case <-time.After(answerBudget):
-		t.Fatal("the responder never established the SA its canceled initiator asked for")
-	}
-	initiator, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer initiator.Close()
-	sa := held.currentContext()
-	if err := initiator.RegisterIKE(sa.spiI); err != nil {
-		t.Fatal(err)
-	}
-
-	run, stop := context.WithTimeout(context.Background(), answerBudget)
-	defer stop()
-	_ = held.Run(run)
-	if run.Err() != nil {
-		t.Fatal("the responder still held the SA its canceled initiator asked for when the budget ran out")
-	}
-	for deadline := time.Now().Add(answerBudget); ; {
-		raw, err := initiator.RecvIKEUntil(deadline)
-		if err != nil {
-			t.Fatal("the responder's session ended without answering a Delete from its canceled initiator")
-		}
-		message, err := DecodeMessage(raw)
-		if err != nil || message.Header.ExchangeType != INFORMATIONAL || !message.Header.IsResponse() {
-			continue
-		}
-		// RFC 7296 section 1.4.1 answers a Delete of the IKE SA with an empty INFORMATIONAL
-		if inner, err := DecryptMessage(sa.suite, sa.localEncryptionKey(), raw, message); err == nil && len(inner) == 0 {
-			return
-		}
-	}
 }
 
 // relay carries UDP between an initiator and the responder at responderPort, forwards what pass reports, and returns the port to dial

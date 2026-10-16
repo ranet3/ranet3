@@ -1184,6 +1184,7 @@ func testIKEAuthAuthenticatesBeforeChildFailure(t *testing.T, remoteOrganization
 }
 
 // the responder holds an authenticated SA until told, so a Delete whose mux closes before its answer arrives goes out once more
+// RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
 func TestAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
@@ -1230,19 +1231,31 @@ func TestAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.
 	nr := make([]byte, 32)
 
 	buf := make([]byte, 4096)
-	readDelete := func() error {
+	readDelete := func() ([]byte, error) {
 		for {
 			n, _, err := peer.ReadFromUDP(buf)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if n <= 4 {
 				continue
 			}
-			m, err := DecodeMessage(buf[4:n])
-			if err == nil && m.Header.ExchangeType == INFORMATIONAL && m.Header.MessageID == 2 {
-				return nil
+			raw := bytes.Clone(buf[4:n])
+			m, err := DecodeMessage(raw)
+			if err != nil || m.Header.ExchangeType != INFORMATIONAL || m.Header.MessageID != 2 {
+				continue
 			}
+			inner, err := DecryptMessage(suite, s.current.skei, raw, m)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt the INFORMATIONAL request: %w", err)
+			}
+			if len(inner) != 1 || inner[0].Type != PayloadD {
+				return nil, fmt.Errorf("the INFORMATIONAL request carries %v, want one Delete", inner)
+			}
+			if d, err := DecodeDelete(inner[0].Body); err != nil || d.Protocol != ProtoIKE {
+				return nil, fmt.Errorf("the INFORMATIONAL request deletes %+v (%v), want the IKE SA", d, err)
+			}
+			return raw, nil
 		}
 	}
 	peerDone := make(chan error, 1)
@@ -1268,13 +1281,18 @@ func TestAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.
 			if _, err := peer.WriteToUDP(withNonESPMarker(response), clientAddr); err != nil {
 				return fmt.Errorf("write IKE_AUTH response: %w", err)
 			}
-			if err := readDelete(); err != nil {
+			first, err := readDelete()
+			if err != nil {
 				return fmt.Errorf("read IKE Delete request: %w", err)
 			}
 			// the Delete goes unanswered and its mux closes while it waits
 			mux.Close()
-			if err := readDelete(); err != nil {
+			again, err := readDelete()
+			if err != nil {
 				return fmt.Errorf("read IKE Delete request after the mux closed: %w", err)
+			}
+			if !bytes.Equal(again, first) {
+				return fmt.Errorf("the Delete sent after the mux closed is a new encryption, not the request it retransmits")
 			}
 			return nil
 		}()
