@@ -549,11 +549,14 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-## golang.zx2c4.com/wireguard
+## ranet3.com/pkgs/wireguard
 
-golang.zx2c4.com/wireguard v0.0.0-20261006164505-2631ce99a06f, from `LICENSE`.
+ranet3.com/pkgs/wireguard in `../wireguard`, from `LICENSE` and the holders `REUSE.toml` names.
 
 ```
+Copyright (c) 2017-2025 WireGuard LLC
+Copyright (c) Tailscale Inc & AUTHORS
+
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in
 the Software without restriction, including without limitation the rights to

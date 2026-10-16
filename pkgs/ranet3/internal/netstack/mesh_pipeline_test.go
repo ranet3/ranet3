@@ -7,19 +7,18 @@ package netstack
 import (
 	"bytes"
 	"errors"
-	"net/netip"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
 	"time"
 
-	"golang.zx2c4.com/wireguard/tun"
+	"ranet3.com/pkgs/wireguard/tun"
 )
 
 type recordedWrite struct {
-	packets  [][]byte
-	capacity []int
-	offset   int
+	packets [][]byte
+	offset  int
 }
 
 type recordingDevice struct {
@@ -28,18 +27,16 @@ type recordingDevice struct {
 }
 
 func (d *recordingDevice) File() *os.File { return nil }
-func (d *recordingDevice) Read([][]byte, []int, int) (int, error) {
+func (d *recordingDevice) Read([]byte, []tun.ReadPacket) (int, error) {
 	return 0, errors.New("not implemented")
 }
 func (d *recordingDevice) Write(bufs [][]byte, offset int) (int, error) {
 	w := recordedWrite{
-		packets:  make([][]byte, len(bufs)),
-		capacity: make([]int, len(bufs)),
-		offset:   offset,
+		packets: make([][]byte, len(bufs)),
+		offset:  offset,
 	}
 	for i := range bufs {
 		w.packets[i] = append([]byte(nil), bufs[i][offset:]...)
-		w.capacity[i] = cap(bufs[i])
 	}
 	d.writes <- w
 	return len(bufs), nil
@@ -49,6 +46,42 @@ func (d *recordingDevice) Name() (string, error)    { return "test0", nil }
 func (d *recordingDevice) Events() <-chan tun.Event { return d.events }
 func (d *recordingDevice) Close() error             { return nil }
 func (d *recordingDevice) BatchSize() int           { return 128 }
+
+// laneDevice is a multiqueue tun whose every lane is a device of its own, the first standing for the tun as a whole
+// a write to a flow goes to the lane of that index
+type laneDevice struct {
+	tun.Device
+	lanes []tun.Device
+}
+
+func lanesOf(lanes ...tun.Device) *laneDevice { return &laneDevice{Device: lanes[0], lanes: lanes} }
+
+func (d *laneDevice) Queues() []tun.Queue {
+	queues := make([]tun.Queue, len(d.lanes))
+	for i, lane := range d.lanes {
+		queues[i] = lane
+	}
+	return queues
+}
+
+func (d *laneDevice) WriteTo(flow int, bufs [][]byte, offset int) (int, error) {
+	return d.lanes[flow].Write(bufs, offset)
+}
+
+// layOut puts packets into slab as a read off the tun does, tun.ReadPacketSpacing before, between and after them, and says where in reads
+func layOut(slab []byte, reads []tun.ReadPacket, packets [][]byte) int {
+	offset := tun.ReadPacketSpacing
+	for i, packet := range packets {
+		reads[i] = tun.ReadPacket{Offset: offset, Size: copy(slab[offset:], packet)}
+		offset += len(packet) + tun.ReadPacketSpacing
+	}
+	return len(packets)
+}
+
+// fill makes packets the read b holds
+func fill(b *outboundBatch, packets ...[]byte) {
+	b.n = layOut(b.slab, b.reads, packets)
+}
 
 func TestOutboundWorkersEncryptOneQueueInParallelAndTransmitInOrder(t *testing.T) {
 	started := make(chan byte, 2)
@@ -251,37 +284,40 @@ func TestSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
 	}
 }
 
-func TestDeliverInboundBatchLeavesCapacityForGRO(t *testing.T) {
-	dev := &recordingDevice{
-		writes: make(chan recordedWrite, 1),
-		events: make(chan tun.Event),
-	}
-	m := &Mesh{
-		devs:   []tun.Device{dev},
-		closed: make(chan struct{}),
-	}
-
-	want := [][]byte{{1, 2, 3}, {4, 5, 6, 7}}
-	m.DeliverInboundBatch(want, DefaultMTU)
-
-	select {
-	case got := <-dev.writes:
-		if got.offset != tunOffset {
-			t.Fatalf("write offset = %d, want %d", got.offset, tunOffset)
-		}
-		if len(got.packets) != len(want) {
-			t.Fatalf("wrote %d packets, want %d", len(got.packets), len(want))
-		}
-		for i := range want {
-			if !bytes.Equal(got.packets[i], want[i]) {
-				t.Errorf("packet %d = %v, want %v", i, got.packets[i], want[i])
+// a write into the tun leaves tunOffset bytes in front of every packet it hands the device, on one lane as on several
+// darwin and the BSDs write their frame header there, and linux refuses an offset under its virtio-net header
+func TestInboundWritesLeaveTheHeadroomBeforeEveryPacket(t *testing.T) {
+	for _, lanes := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d lanes", lanes), func(t *testing.T) {
+			dev := &recordingDevice{writes: make(chan recordedWrite, 1)}
+			devices := make([]tun.Device, lanes)
+			for i := range devices {
+				devices[i] = dev
 			}
-			if got.capacity[i] < inboundPacketBufferSize {
-				t.Errorf("packet %d capacity = %d, want at least %d for GRO", i, got.capacity[i], inboundPacketBufferSize)
+			m := &Mesh{closed: make(chan struct{})}
+			m.setDevice(lanesOf(devices...))
+			m.startInboundWriters()
+			t.Cleanup(m.Close)
+
+			want := [][]byte{ipv6TCPPacket(40000, 5201, 1), ipv6TCPPacket(40000, 5201, 2)}
+			m.DeliverInboundBatch(want, DefaultMTU)
+			select {
+			case got := <-dev.writes:
+				if got.offset != tunOffset {
+					t.Fatalf("the write handed the device its packets %d bytes into their buffers, want %d", got.offset, tunOffset)
+				}
+				if len(got.packets) != len(want) {
+					t.Fatalf("the write carried %d packets, want %d", len(got.packets), len(want))
+				}
+				for i := range want {
+					if !bytes.Equal(got.packets[i], want[i]) {
+						t.Errorf("packet %d reached the device as %x, want %x", i, got.packets[i], want[i])
+					}
+				}
+			case <-time.After(deliveryTimeout):
+				t.Fatal("nothing was written into the tun")
 			}
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for inbound TUN write")
+		})
 	}
 }
 
@@ -309,7 +345,8 @@ func TestDeliverInboundBatchUsesFlowAffineQueues(t *testing.T) {
 		}
 		devices[i] = recorders[i]
 	}
-	m := &Mesh{devs: devices, closed: make(chan struct{})}
+	m := &Mesh{closed: make(chan struct{})}
+	m.setDevice(lanesOf(devices...))
 	m.startInboundWriters()
 	t.Cleanup(m.Close)
 
@@ -375,77 +412,5 @@ func TestCollectReadyInboundCoalescesQueuedDeliveries(t *testing.T) {
 		if len(packet) != 1 || packet[0] != byte(i+1) {
 			t.Fatalf("packet %d = %v, want [%d]", i, packet, i+1)
 		}
-	}
-}
-
-// utunDevice frames a read the way wireguard-go's darwin backend does: it
-// slices backwards from the offset to lay down the four-byte address family
-// header a utun frame carries, then reports the packet length without it.
-// Reading from a real utun needs root, but the arithmetic that panics does
-// not, and it runs before the first packet ever arrives.
-type utunDevice struct {
-	recordingDevice
-	reads chan []byte
-}
-
-func (d *utunDevice) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
-	packet, ok := <-d.reads
-	if !ok {
-		return 0, errors.New("closed")
-	}
-	frame := bufs[0][offset-4:]
-	frame[0], frame[1], frame[2], frame[3] = 0, 0, 0, 2 // AF_INET
-	copy(frame[4:], packet)
-	sizes[0] = len(packet)
-	return 1, nil
-}
-
-func TestOutboundReaderLeavesRoomForPlatformFrameHeader(t *testing.T) {
-	dev := &utunDevice{
-		recordingDevice: recordingDevice{writes: make(chan recordedWrite, 1), events: make(chan tun.Event)},
-		reads:           make(chan []byte, 1),
-	}
-	routed := make(chan []byte, 1)
-	peer := NewPeer("peer", func(int) (BatchSealer, error) {
-		return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
-			routed <- append([]byte(nil), raw[0]...)
-			return out[:0], nil
-		}, nil
-	}, func([][]byte) error { return nil }, nil)
-	defer peer.Close()
-
-	m := &Mesh{
-		Routes:             NewRouteTable(),
-		devs:               []tun.Device{dev},
-		closed:             make(chan struct{}),
-		outboundJobs:       make(chan *outboundBatch, 1),
-		outboundFree:       make(chan *outboundBatch, 1),
-		outboundBufferSize: tunOffset + outboundPacketBufferSize,
-	}
-	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("10.4.5.6/32"), peer)
-	m.outboundFree <- m.newOutboundBatch(1)
-	m.startOutboundPipeline()
-	defer func() {
-		close(m.closed)
-		close(dev.reads)
-		close(m.outboundJobs)
-		m.outboundWorkerWG.Wait()
-	}()
-
-	raw := make([]byte, 24)
-	raw[0] = 0x45
-	raw[3] = byte(len(raw))
-	copy(raw[12:16], mustAddr("10.1.2.3").AsSlice())
-	copy(raw[16:20], mustAddr("10.4.5.6").AsSlice())
-	copy(raw[20:], "tail")
-	dev.reads <- raw
-
-	select {
-	case got := <-routed:
-		if !bytes.Equal(got, raw) {
-			t.Fatalf("routed packet = %x, want %x", got, raw)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the reader never routed the packet")
 	}
 }

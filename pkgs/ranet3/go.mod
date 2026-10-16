@@ -13,14 +13,14 @@ require (
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.61.0
 	golang.org/x/sys v0.49.0
-	golang.zx2c4.com/wireguard v0.0.0-20261006164505-2631ce99a06f
 	hegel.dev/go/hegel v0.9.25
+	ranet3.com/pkgs/wireguard v0.0.0-00010101000000-000000000000
 )
 
 require (
 	github.com/ebitengine/purego v0.12.0-alpha.1.0.20261015130536-d456b1bb95e8 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
-	gvisor.dev/gvisor v0.0.0-20261008000517-3b87f090dbda // indirect
 )
+
+replace ranet3.com/pkgs/wireguard => ../wireguard

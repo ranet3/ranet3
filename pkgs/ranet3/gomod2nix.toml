@@ -37,18 +37,6 @@ hash = 'sha256-yCy7Bik5cvIVfX7G08rVYhkVDuro3sPk3iicVz4j/kA='
 version = 'v0.49.0'
 hash = 'sha256-/1S3yy3in72ygZT1CKymvOzJZqCMYiGSqZDfvSyB3LI='
 
-[mod.'golang.zx2c4.com/wintun']
-version = 'v0.0.0-20230126152724-0fa3db229ce2'
-hash = 'sha256-cjMLNjKnnupVROWmeASORVieAL9ieYdzX3cFzG8bCpo='
-
-[mod.'golang.zx2c4.com/wireguard']
-version = 'v0.0.0-20261006164505-2631ce99a06f'
-hash = 'sha256-dZxsmcQuRyC5K0zKkuvYAjPfNxnettsuGHg6ztfT/5o='
-
-[mod.'gvisor.dev/gvisor']
-version = 'v0.0.0-20261008000517-3b87f090dbda'
-hash = 'sha256-tLjf85zi68+eTIiTAs9FzMUtwy0JKfHXCqQupGtGzzA='
-
 [mod.'hegel.dev/go/hegel']
 version = 'v0.9.25'
 hash = 'sha256-1jfwR5ihjCivdLTHqoWZLPuswXrFd0J+ADGZS/QibhI='

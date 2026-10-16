@@ -28,10 +28,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.zx2c4.com/wireguard/tun"
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/srv6"
+	"ranet3.com/pkgs/wireguard/tun"
 )
 
 var (
@@ -53,16 +53,19 @@ type Mesh struct {
 	// name exactly.
 	Name string
 
-	devs               []tun.Device
-	outboundBufferSize int
-	outboundJobs       chan *outboundBatch
-	outboundFree       chan *outboundBatch
-	inboundWriters     []chan inboundWriteBatch
-	closed             chan struct{}
-	closeOnce          sync.Once
-	outboundReaderWG   sync.WaitGroup
-	outboundWorkerWG   sync.WaitGroup
-	writerWG           sync.WaitGroup
+	// dev is the tun, nil for a mesh with none, and each of its queues a lane
+	// a lane has a reader of its own, and write hands packets to the queue the lane names
+	dev              tun.Device
+	queues           []tun.Queue
+	write            func(lane int, bufs [][]byte, offset int) (int, error)
+	outboundJobs     chan *outboundBatch
+	outboundFree     chan *outboundBatch
+	inboundWriters   []chan inboundWriteBatch
+	closed           chan struct{}
+	closeOnce        sync.Once
+	outboundReaderWG sync.WaitGroup
+	outboundWorkerWG sync.WaitGroup
+	writerWG         sync.WaitGroup
 
 	// setMTU sets the MTU of the device named name, nil for a mesh with no device
 	// a field so a test can record when it runs against the steering table in force
@@ -90,11 +93,12 @@ type Mesh struct {
 // with another buffer set instead of tying one encryption worker to each TUN
 // queue (and to whatever flows the kernel happened to hash onto that queue).
 type outboundBatch struct {
-	n     int
-	bufs  [][]byte
-	sizes []int
-	// packets is the view each packet of the read that goes to peers leaves as, of its read buffer or, once steered, of its side buffer
-	// nothing writes a read buffer outside the packet it holds
+	n int
+	// slab holds the packets of one read where reads says the device put them
+	slab  []byte
+	reads []tun.ReadPacket
+	// packets is the view each packet of the read that goes to peers leaves as, of the slab or, once steered, of its side buffer
+	// nothing writes the slab outside the packets it holds
 	packets [][]byte
 	// steered is each packet's side buffer, kept from read to read
 	steered   [][]byte
@@ -172,24 +176,17 @@ type inboundWriteBatch struct {
 // TUN needs root on every platform, and babel intercepts its own traffic
 // before delivery, so a mesh that never carries a data packet does not need
 // one. Delivering one to it is a no-op.
-// CheckMTU takes what it takes on a mesh opened at DefaultMTU
 // SetMTU installs the steering and sets no MTU
 func NewRoutesOnly() *Mesh {
-	return &Mesh{Routes: NewRouteTable(), outboundBufferSize: tunOffset + outboundPacketBufferSize, closed: make(chan struct{})}
+	return &Mesh{Routes: NewRouteTable(), closed: make(chan struct{})}
 }
 
 // NewNamed attaches to or creates name through wireguard-go's TUN backend.
 // an empty name opens defaultTUNName, which is always created and never attached to
-// mtu is the device's MTU
-// largest is the largest packet a session carries, which the device's MTU stays within on a reload, steering only taking from it
-// every outbound read buffer holds the larger of the two
-// zero takes DefaultMTU for either
-func NewNamed(mtu, largest int, name string) (*Mesh, error) {
+// mtu is the device's MTU, zero taking DefaultMTU
+func NewNamed(mtu int, name string) (*Mesh, error) {
 	if mtu == 0 {
 		mtu = DefaultMTU
-	}
-	if largest == 0 {
-		largest = DefaultMTU
 	}
 	if name == "" {
 		name = defaultTUNName
@@ -200,7 +197,7 @@ func NewNamed(mtu, largest int, name string) (*Mesh, error) {
 		return nil, fmt.Errorf("netstack: create tun device: link.tun %q is a name darwin cannot create: its utun control makes %s, the next free unit, and %s followed by a unit number, and nothing else", name, utunName, utunName)
 	}
 	queueCount := max(1, runtime.GOMAXPROCS(0))
-	devs, actualName, err := createTUNQueues(name, mtu, queueCount)
+	dev, actualName, err := createTUNQueues(name, mtu, queueCount)
 	if err != nil {
 		// wireguard-go hands back the utun control's errno without the name it was asked for
 		if utunNamesOnly {
@@ -209,37 +206,39 @@ func NewNamed(mtu, largest int, name string) (*Mesh, error) {
 		return nil, fmt.Errorf("netstack: create tun device: %w", err)
 	}
 	if err := bringTUNUp(actualName); err != nil {
-		for _, dev := range devs {
-			_ = dev.Close()
-		}
+		_ = dev.Close()
 		return nil, fmt.Errorf("netstack: bring tun device up: %w", err)
 	}
 	m := &Mesh{
-		Routes:             NewRouteTable(),
-		Name:               actualName,
-		devs:               devs,
-		setMTU:             setTUNMTU,
-		outboundBufferSize: tunOffset + max(mtu, largest, outboundPacketBufferSize),
-		closed:             make(chan struct{}),
+		Routes: NewRouteTable(),
+		Name:   actualName,
+		setMTU: setTUNMTU,
+		closed: make(chan struct{}),
 	}
+	m.setDevice(dev)
 	m.startSegmentReports()
 	m.startInboundWriters()
 	m.startOutboundPipeline()
 	return m, nil
 }
 
+// setDevice makes dev the mesh's tun, each of its queues a lane
+func (m *Mesh) setDevice(dev tun.Device) {
+	m.dev, m.queues, m.write = dev, tun.QueuesOf(dev), tun.WriteToOf(dev)
+}
+
 // QueueCount reports the number of independent TUN I/O lanes.
-func (m *Mesh) QueueCount() int { return len(m.devs) }
+func (m *Mesh) QueueCount() int { return len(m.queues) }
 
 // MTU is the device's own, asked of the kernel each time
 // NewNamed sets it on a device it attaches to as on one it creates, and SetMTU on a reload
 // anything else on the host may change it after, which this reports as it finds it
 // zero means the device could not answer, which is a device on its way out
 func (m *Mesh) MTU() int {
-	if len(m.devs) == 0 {
+	if m.dev == nil {
 		return 0
 	}
-	mtu, err := m.devs[0].MTU()
+	mtu, err := m.dev.MTU()
 	if err != nil {
 		return 0
 	}
@@ -247,14 +246,9 @@ func (m *Mesh) MTU() int {
 }
 
 // CheckMTU refuses a move of the tun's MTU this mesh cannot take without a restart
-// largest is link.mtu after the move, the largest packet a session carries, which the device's MTU stays within
-// each outbound read buffer has to hold it, and NewNamed sized them once
-func (m *Mesh) CheckMTU(largest int) error {
+func (m *Mesh) CheckMTU() error {
 	if !tunMTUSettable {
 		return errors.New("netstack: this platform sets the tun mtu only when the mesh opens it, restart to apply")
-	}
-	if capacity := m.outboundBufferSize - tunOffset; largest > capacity {
-		return fmt.Errorf("netstack: a %d byte packet needs a tun read buffer of that size and this mesh opened its buffers at %d bytes, restart to apply", largest, capacity)
 	}
 	return nil
 }
@@ -263,7 +257,7 @@ func (m *Mesh) CheckMTU(largest int) error {
 // a longer list than the one in force goes in after the device comes down for it
 // a shorter one goes in before the device goes up
 // so no read off the tun, with the steering header in force on it, outgrows the larger of the two link MTUs at any moment
-// CheckMTU has to have taken the largest packet beside mtu
+// CheckMTU has to have taken the move
 func (m *Mesh) SetMTU(mtu int, steering *srv6.SteerTable) error {
 	set := func() error {
 		if m.setMTU == nil {
@@ -288,28 +282,24 @@ func (m *Mesh) SetMTU(mtu int, steering *srv6.SteerTable) error {
 func (m *Mesh) startOutboundPipeline() {
 	workers := max(1, runtime.GOMAXPROCS(0))
 	m.outboundJobs = make(chan *outboundBatch, outboundJobsPerWorker*workers)
-	batchSize := 1
-	for _, dev := range m.devs {
-		batchSize = max(batchSize, dev.BatchSize())
-	}
-	m.outboundFree = make(chan *outboundBatch, cap(m.outboundJobs)+len(m.devs))
+	m.outboundFree = make(chan *outboundBatch, cap(m.outboundJobs)+len(m.queues))
 	for range cap(m.outboundFree) {
-		m.outboundFree <- m.newOutboundBatch(batchSize)
+		m.outboundFree <- newOutboundBatch(m.dev.BatchSize())
 	}
 	for range workers {
 		m.outboundWorkerWG.Add(1)
 		go m.outboundWorker()
 	}
-	for _, dev := range m.devs {
+	for _, queue := range m.queues {
 		m.outboundReaderWG.Add(1)
-		go m.outboundReader(dev)
+		go m.outboundReader(queue)
 	}
 }
 
-func (m *Mesh) newOutboundBatch(size int) *outboundBatch {
-	b := &outboundBatch{
-		bufs:      make([][]byte, size),
-		sizes:     make([]int, size),
+func newOutboundBatch(size int) *outboundBatch {
+	return &outboundBatch{
+		slab:      make([]byte, outboundSlabSize),
+		reads:     make([]tun.ReadPacket, size),
 		packets:   make([][]byte, size),
 		steered:   make([][]byte, size),
 		peers:     make([]*Peer, size),
@@ -318,16 +308,12 @@ func (m *Mesh) newOutboundBatch(size int) *outboundBatch {
 		batches:   make(map[*Peer]*peerBatch),
 		peerOrder: make([]*Peer, 0, size),
 	}
-	for i := range b.bufs {
-		b.bufs[i] = make([]byte, m.outboundBufferSize)
-	}
-	return b
 }
 
 // outboundReader only reads and classifies packets. Reserving each peer's ESP
 // sequence range here fixes the order before independently scheduled workers
 // encrypt later batches, so the ordered sender can restore per-flow FIFO.
-func (m *Mesh) outboundReader(dev tun.Device) {
+func (m *Mesh) outboundReader(queue tun.Queue) {
 	defer m.outboundReaderWG.Done()
 	for {
 		var b *outboundBatch
@@ -336,18 +322,18 @@ func (m *Mesh) outboundReader(dev tun.Device) {
 		case <-m.closed:
 			return
 		}
-		n, err := dev.Read(b.bufs, b.sizes, tunOffset)
-		// ErrTooManySegments comes with n packets, one fewer than the batch holds
-		// only the rest of that one GSO frame is lost
+		n, err := queue.Read(b.slab, b.reads)
+		// ErrTooManySegments comes with the n packets of the GSO frame that fit, each whole
+		// only the rest of that one frame is lost
 		// the device stays readable
 		if err != nil && !errors.Is(err, tun.ErrTooManySegments) {
 			// Closure is the ordinary reason and says nothing. Anything else
 			// ends this queue's reader for the life of the process, and on
 			// linux the kernel keeps steering its share of flows to the queue
 			// it belongs to, so a share of the mesh black-holes with nothing
-			// in the log. The device's own error channel carries a netlink
-			// failure on linux and a route-socket overflow on darwin, neither
-			// of which is closure.
+			// in the log. The device's own error channel carries a
+			// route-socket failure on darwin and the BSDs, which is not
+			// closure.
 			select {
 			case <-m.closed:
 			default:
@@ -374,7 +360,8 @@ func (m *Mesh) outboundReader(dev tun.Device) {
 // a packet past that is answered or cut into fragments rather than sent, and a SYN within it has its MSS clamped to it
 func (m *Mesh) classify(b *outboundBatch) {
 	for i := range b.n {
-		raw := b.bufs[i][tunOffset : tunOffset+b.sizes[i]]
+		r := b.reads[i]
+		raw := b.slab[r.Offset : r.Offset+r.Size : r.Offset+r.Size]
 		src, dst, nh, ok := addrsOf(raw)
 		if !ok {
 			continue
@@ -555,14 +542,13 @@ func (m *Mesh) DeliverInbound(raw []byte, mtu int) {
 // packets. On a multiqueue TUN, packets are assigned by their inner flow to a
 // persistent writer lane. That preserves each flow's packet order and lets the
 // kernel process unrelated streams in parallel. Buffers are copied to leave
-// the headroom and tail capacity required by the TUN backend's virtio/GRO
-// implementation.
+// the tunOffset bytes of headroom a write to the TUN needs.
 // mtu is the largest packet the session they came through carries, zero for packets of no session
 // a SYN that an End.DT46 of this node takes out of its outer header has its MSS clamped to it
 func (m *Mesh) DeliverInboundBatch(raw [][]byte, mtu int) {
 	// A mesh with no device only exists in a test, where nothing should reach
 	// here: babel's own traffic is intercepted before delivery.
-	if len(raw) == 0 || len(m.devs) == 0 {
+	if len(raw) == 0 || m.dev == nil {
 		return
 	}
 	// A packet addressed to one of this node's own segments is acted on here
@@ -572,7 +558,7 @@ func (m *Mesh) DeliverInboundBatch(raw [][]byte, mtu int) {
 	if len(raw) == 0 {
 		return
 	}
-	if len(m.devs) == 1 {
+	if len(m.queues) == 1 {
 		for len(raw) != 0 {
 			n := min(len(raw), inboundWriteBatchSize)
 			m.writeInbound(0, copyInboundPackets(raw[:n]))
@@ -581,9 +567,9 @@ func (m *Mesh) DeliverInboundBatch(raw [][]byte, mtu int) {
 		return
 	}
 
-	groups := make([][][]byte, len(m.devs))
+	groups := make([][][]byte, len(m.queues))
 	for _, packet := range raw {
-		lane := int(innerFlowHash(packet) % uint64(len(m.devs)))
+		lane := int(innerFlowHash(packet) % uint64(len(m.queues)))
 		groups[lane] = append(groups[lane], packet)
 	}
 	for lane, packets := range groups {
@@ -604,11 +590,11 @@ func (m *Mesh) DeliverInboundBatch(raw [][]byte, mtu int) {
 }
 
 func (m *Mesh) startInboundWriters() {
-	if len(m.devs) <= 1 {
+	if len(m.queues) <= 1 {
 		return
 	}
-	m.inboundWriters = make([]chan inboundWriteBatch, len(m.devs))
-	for lane := range m.devs {
+	m.inboundWriters = make([]chan inboundWriteBatch, len(m.queues))
+	for lane := range m.queues {
 		queue := make(chan inboundWriteBatch, inboundWriteQueueSize)
 		m.inboundWriters[lane] = queue
 		m.writerWG.Go(func() {
@@ -635,7 +621,7 @@ func (m *Mesh) startInboundWriters() {
 
 // collectReadyInbound drains only work that is already available. This keeps
 // the idle-path latency unchanged while giving a busy writer a full batch for
-// NativeTun.Write's GRO pass, reducing the number of TUN write syscalls.
+// the tun write's GRO pass, reducing the number of TUN write syscalls.
 func collectReadyInbound(first inboundWriteBatch, queue <-chan inboundWriteBatch, pending [][]byte) [][]byte {
 	pending = append(pending, first.packets...)
 	for len(pending) < inboundWriteBatchSize {
@@ -677,7 +663,7 @@ func releaseInboundPackets(bufs [][]byte) {
 }
 
 func (m *Mesh) writeInbound(lane int, bufs [][]byte) {
-	if _, err := m.devs[lane].Write(bufs, tunOffset); err != nil {
+	if _, err := m.write(lane, bufs, tunOffset); err != nil {
 		select {
 		case <-m.closed:
 		default:
@@ -741,8 +727,8 @@ func hashBytes(raw []byte) uint64 {
 func (m *Mesh) Close() {
 	m.closeOnce.Do(func() {
 		close(m.closed)
-		for _, dev := range m.devs {
-			_ = dev.Close()
+		if m.dev != nil {
+			_ = m.dev.Close()
 		}
 		m.outboundReaderWG.Wait()
 		if m.outboundJobs != nil {

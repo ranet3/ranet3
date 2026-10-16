@@ -103,6 +103,13 @@ Then rewrite new imports of `golang.zx2c4.com/wireguard/` to
 keep, tidy `go.mod`, regenerate `gomod2nix.toml` with `nix fmt`, and update the
 hash in this file and the date in the `version` of `default.nix`.
 
+`go.mod` requires each module that `pkgs/ranet3/go.mod` also requires, such as
+`golang.org/x/net` and `golang.org/x/sys`, at the version ranet3 links into
+these packages, so that the tests here build what ranet3 ships. `checks/tree`
+fails when the two files require a module at different versions, and names both
+versions. A sync keeps the higher of upstream's version and this one, and a bump
+of such a module goes into both files in the same commit.
+
 ## Offering a fix
 
 A fix made here is exported relative to this directory, with the imports

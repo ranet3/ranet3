@@ -6,16 +6,20 @@
 package netstack
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net"
+	"net/netip"
 	"os"
 	"runtime"
 	"slices"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
+	"ranet3.com/pkgs/wireguard/tun"
 )
 
 // a GSO frame of more segments than one read holds comes back cut short
@@ -47,7 +51,7 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 				t.Logf("gso_max_segs %d before the mesh attached", gsoMaxSegs(t, path.device))
 			}
 
-			m, err := NewNamed(0, 0, path.asked)
+			m, err := NewNamed(0, path.asked)
 			if err != nil {
 				t.Fatalf("open the mesh on %q: %v", path.asked, err)
 			}
@@ -55,7 +59,7 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 			if m.Name != path.device {
 				t.Fatalf("the mesh opened %q as %s, want %s", path.asked, m.Name, path.device)
 			}
-			batch := m.devs[0].BatchSize()
+			batch := m.dev.BatchSize()
 			if batch < 2 {
 				t.Fatalf("the device reads %d packet at a time, so it takes no GSO frame and this proves nothing", batch)
 			}
@@ -72,7 +76,7 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 // so the first cut read of a mesh NewNamed opened warns at once rather than an interval later
 func TestTUNMeshWarnsAtItsFirstCutRead(t *testing.T) {
 	enterEmptyNamespace(t)
-	m, err := NewNamed(0, 0, "gsocap0")
+	m, err := NewNamed(0, "gsocap0")
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -91,7 +95,7 @@ func TestTUNMeshWarnsAtItsFirstCutRead(t *testing.T) {
 // and that open has to refuse the device too
 func TestTUNUnderTheDefaultNameIsNeverShared(t *testing.T) {
 	heldByAMesh := func(t *testing.T) {
-		first, err := NewNamed(0, 0, "")
+		first, err := NewNamed(0, "")
 		if err != nil {
 			t.Fatalf("open the first mesh: %v", err)
 		}
@@ -116,7 +120,7 @@ func TestTUNUnderTheDefaultNameIsNeverShared(t *testing.T) {
 			enterEmptyNamespace(t)
 			arm.setup(t)
 
-			m, err := NewNamed(0, 0, arm.asked)
+			m, err := NewNamed(0, arm.asked)
 			if err == nil {
 				m.Close()
 				t.Fatalf("a mesh asking for %q joined %s, which was there before it", arm.asked, m.Name)
@@ -140,17 +144,13 @@ func TestTUNLanesJoinTheDeviceTheFirstLaneMade(t *testing.T) {
 	for _, name := range []string{"ranet3", "gsocap%d"} {
 		t.Run(name, func(t *testing.T) {
 			enterEmptyNamespace(t)
-			devices, actualName, err := createTUNQueues(name, DefaultMTU, lanes)
+			device, actualName, err := createTUNQueues(name, DefaultMTU, lanes)
 			if err != nil {
 				t.Fatalf("open %d lanes of %q: %v", lanes, name, err)
 			}
-			t.Cleanup(func() {
-				for _, device := range devices {
-					_ = device.Close()
-				}
-			})
-			if len(devices) != lanes {
-				t.Fatalf("%q opened %d lanes, want %d", name, len(devices), lanes)
+			t.Cleanup(func() { _ = device.Close() })
+			if got := len(tun.QueuesOf(device)); got != lanes {
+				t.Fatalf("%q opened %d lanes, want %d", name, got, lanes)
 			}
 			links, err := net.Interfaces()
 			if err != nil {
@@ -184,18 +184,105 @@ func TestTUNQueuesStopAtTheMostOneTunTakes(t *testing.T) {
 func TestTUNOpensNoMoreLanesThanTheKernelAttaches(t *testing.T) {
 	const asked = 300
 	enterEmptyNamespace(t)
-	devices, actualName, err := createTUNQueues("lanes0", DefaultMTU, asked)
+	device, actualName, err := createTUNQueues("lanes0", DefaultMTU, asked)
 	if err != nil {
 		t.Fatalf("open %d lanes: %v", asked, err)
 	}
+	t.Cleanup(func() { _ = device.Close() })
+	if got := len(tun.QueuesOf(device)); got != 256 {
+		t.Errorf("%d lanes asked of %s opened %d, want the 256 one tun takes", asked, actualName, got)
+	}
+}
+
+// a process with CAP_NET_RAW can send a frame of one byte on the tun through AF_PACKET
+// the read hands it to classify, which drops it, and the lane goes on reading
+// the mesh has one lane, so the datagram after the frame is read by the reader that took the frame
+func TestTUNLaneOutlivesAOneByteFrame(t *testing.T) {
+	enterEmptyNamespace(t)
+	previous := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
+	m, err := NewNamed(DefaultMTU, "onebyte0")
+	if err != nil {
+		t.Fatalf("open the mesh: %v", err)
+	}
+	t.Cleanup(m.Close)
+	if lanes := m.QueueCount(); lanes != 1 {
+		t.Fatalf("the mesh opened %d lanes, want 1", lanes)
+	}
+	sent := &recordingPeer{}
+	peer := sent.peer(t, "peer")
+	peer.SetMTU(DefaultMTU)
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(tunPeer, 32), peer)
+	assignPeer(t, m.Name, tunAddress, tunPeer)
+
+	sendUDP(t, tunPeer, []byte("before"))
+	waitUntil(t, "the datagram before the frame to reach the peer", func() bool { return len(sent.packets(t)) > 0 })
+	link, err := net.InterfaceByName(m.Name)
+	if err != nil {
+		t.Fatalf("look up %s: %v", m.Name, err)
+	}
+	ipv4 := uint16(unix.ETH_P_IP)
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, int(ipv4<<8|ipv4>>8))
+	if err != nil {
+		t.Fatalf("open an AF_PACKET socket: %v", err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fd) })
+	if err := unix.Sendto(fd, []byte{0x45}, 0, &unix.SockaddrLinklayer{Protocol: ipv4<<8 | ipv4>>8, Ifindex: link.Index}); err != nil {
+		t.Fatalf("send a one byte frame on %s: %v", m.Name, err)
+	}
+	sendUDP(t, tunPeer, []byte("after"))
+	waitUntil(t, "the datagram after the frame to reach the peer", func() bool { return len(sent.packets(t)) > 1 })
+	if packets := sent.packets(t); len(packets) != 2 || !bytes.Equal(packets[1][20+8:], []byte("after")) {
+		t.Errorf("the peer was sent %q, want the two datagrams and not the frame", packets)
+	}
+}
+
+// listenerSettle is how long a route listener has to hear the link changes the kernel sends it
+const listenerSettle = 500 * time.Millisecond
+
+// ranet3 never reads the device's events, so a monitored device would queue link changes nothing takes
+// and its route listener would outlive Close
+// the mesh's MTU moves more times than the event channel's 5 slots hold
+func TestTUNDeviceQueuesNoLinkEventsAndLeavesNoListener(t *testing.T) {
+	const moves = 10
+	enterEmptyNamespace(t)
+	m, err := NewNamed(DefaultMTU, "events0")
+	if err != nil {
+		t.Fatalf("open the mesh: %v", err)
+	}
+	closed := false
 	t.Cleanup(func() {
-		for _, device := range devices {
-			_ = device.Close()
+		if !closed {
+			m.Close()
 		}
 	})
-	if len(devices) != 256 {
-		t.Errorf("%d lanes asked of %s opened %d, want the 256 one tun takes", asked, actualName, len(devices))
+	for i := range moves {
+		if err := m.SetMTU(DefaultMTU-1-i, nil); err != nil {
+			t.Fatalf("set the mtu of %s to %d: %v", m.Name, DefaultMTU-1-i, err)
+		}
 	}
+	// a listener hears a change only after the kernel sends it, so the channel is read once it had time to fill
+	time.Sleep(listenerSettle)
+	queued := len(m.dev.Events())
+	m.Close()
+	closed = true
+	if queued != 0 {
+		t.Errorf("the device queued %d link events with nothing reading them", queued)
+	}
+	deadline := time.Now().Add(deliveryTimeout)
+	for left := routeListeners(); left != 0; left = routeListeners() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d route listener goroutines outlived Close", left)
+		}
+		time.Sleep(deliveryPoll)
+	}
+}
+
+// routeListeners counts the goroutines running the device's route listener
+func routeListeners() int {
+	buf := make([]byte, 1<<22)
+	stacks := string(buf[:runtime.Stack(buf, true)])
+	return strings.Count(stacks, ".routineNetlinkListener(") + strings.Count(stacks, ".routineHackListener(")
 }
 
 // enterEmptyNamespace moves the test's thread into a network namespace of its own

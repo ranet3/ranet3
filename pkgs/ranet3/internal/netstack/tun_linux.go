@@ -12,10 +12,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
 
 	"golang.org/x/sys/unix"
-	"golang.zx2c4.com/wireguard/tun"
+	"ranet3.com/pkgs/wireguard/tun"
 )
 
 const cloneDevicePath = "/dev/net/tun"
@@ -24,7 +23,7 @@ const cloneDevicePath = "/dev/net/tun"
 const tunMTUSettable = true
 
 // setTUNMTU sets the MTU of the link name with SIOCSIFMTU
-// wireguard-go sets it only when it opens a queue and exports no setter
+// wireguard-go sets no MTU on a device made from descriptors and exports no setter
 func setTUNMTU(name string, mtu int) error {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -59,9 +58,10 @@ func bringTUNUp(name string) error {
 // tunQueues is how many queues a mesh asking for wanted lanes opens, up to the most one tun takes
 func tunQueues(wanted int) int { return min(wanted, maxTUNQueues) }
 
-// createTUNQueues opens the lanes of name
+// createTUNQueues opens the lanes of name as the queues of one device, whose MTU it sets to mtu
 // and sets the device's gso_max_segs to the read batch
-func createTUNQueues(name string, mtu, queueCount int) ([]tun.Device, string, error) {
+// the device is made from the descriptors alone, so nothing reads its events
+func createTUNQueues(name string, mtu, queueCount int) (tun.Device, string, error) {
 	queueCount = tunQueues(queueCount)
 	// IFF_TUN_EXCL has the kernel refuse a device of the default name that exists
 	// where a queue opened under that name would join it, another instance's or not
@@ -69,10 +69,10 @@ func createTUNQueues(name string, mtu, queueCount int) ([]tun.Device, string, er
 	if name == defaultTUNName {
 		exclusive = unix.IFF_TUN_EXCL
 	}
-	devices, actualName, err := openTUNQueues(name, mtu, queueCount, unix.IFF_MULTI_QUEUE, exclusive)
+	fds, actualName, err := openTUNQueues(name, queueCount, unix.IFF_MULTI_QUEUE, exclusive)
 	if err != nil && queueCount == 1 {
 		// a tun made without IFF_MULTI_QUEUE refuses a multiqueue attach
-		devices, actualName, err = openTUNQueues(name, mtu, 1, 0, exclusive)
+		fds, actualName, err = openTUNQueues(name, 1, 0, exclusive)
 	}
 	if exclusive != 0 && errors.Is(err, unix.EBUSY) {
 		return nil, "", fmt.Errorf("a device named %q already exists, and the default name is never attached to: a second instance on this host needs a link.tun of its own, as does a device made for this one", name)
@@ -80,12 +80,21 @@ func createTUNQueues(name string, mtu, queueCount int) ([]tun.Device, string, er
 	if err != nil {
 		return nil, "", err
 	}
-	// every queue of one device reads in batches of the same size
-	batch := devices[0].BatchSize()
+	// the device owns the descriptors from here, whether it is made or not
+	device, _, err := tun.CreateUnmonitoredTUNFromFDs(fds)
+	if err != nil {
+		return nil, "", fmt.Errorf("initialize tun %q: %w", actualName, err)
+	}
+	// the MTU is set on a device attached to as on one created, since the first keeps the MTU it had and the second takes the kernel's default
+	if err := setTUNMTU(actualName, mtu); err != nil {
+		_ = device.Close()
+		return nil, "", fmt.Errorf("initialize tun %q: set its mtu to %d: %w", actualName, mtu, err)
+	}
+	batch := device.BatchSize()
 	if err := setGSOMaxSegs(actualName, batch); err != nil {
 		slog.Warn("netstack could not set gso_max_segs on the tun", "interface", actualName, "segments", batch, "err", err)
 	}
-	return devices, actualName, nil
+	return device, actualName, nil
 }
 
 // setGSOMaxSegs sets how many segments the kernel puts in one GSO frame for the link name
@@ -128,13 +137,11 @@ func setGSOMaxSegs(name string, segments int) error {
 // openTUNQueues opens one file descriptor per lane of name
 // multiqueue is IFF_MULTI_QUEUE, or 0 for a tun made without that flag
 // exclusive is IFF_TUN_EXCL when the first lane has to create the device, or 0
-// Each descriptor is wrapped in its own wireguard-go Device, which gives every
-// data-plane worker independent read buffers, GRO tables, and I/O locks.
-func openTUNQueues(name string, mtu, queueCount int, multiqueue, exclusive uint16) ([]tun.Device, string, error) {
-	devices := make([]tun.Device, 0, queueCount)
-	closeDevices := func() {
-		for _, device := range devices {
-			_ = device.Close()
+func openTUNQueues(name string, queueCount int, multiqueue, exclusive uint16) ([]int, string, error) {
+	fds := make([]int, 0, queueCount)
+	closeFDs := func() {
+		for _, fd := range fds {
+			_ = unix.Close(fd)
 		}
 	}
 	// a tun made without IFF_MULTI_QUEUE refuses a multiqueue attach
@@ -148,7 +155,7 @@ func openTUNQueues(name string, mtu, queueCount int, multiqueue, exclusive uint1
 	for i := range queueCount {
 		fd, err := unix.Open(cloneDevicePath, unix.O_RDWR|unix.O_CLOEXEC, 0)
 		if err != nil {
-			closeDevices()
+			closeFDs()
 			return nil, "", fmt.Errorf("open %s for queue %d: %w", cloneDevicePath, i, err)
 		}
 
@@ -164,33 +171,13 @@ func openTUNQueues(name string, mtu, queueCount int, multiqueue, exclusive uint1
 		}
 		if err != nil {
 			_ = unix.Close(fd)
-			closeDevices()
+			closeFDs()
 			return nil, "", fmt.Errorf("%s %q queue %d: %w", attach, actualName, i, err)
 		}
 		if i == 0 {
 			actualName = ifr.Name()
 		}
-
-		var device tun.Device
-		if i == 0 {
-			if err := unix.SetNonblock(fd, true); err != nil {
-				_ = unix.Close(fd)
-				closeDevices()
-				return nil, "", fmt.Errorf("make tun %q nonblocking: %w", actualName, err)
-			}
-			file := os.NewFile(uintptr(fd), cloneDevicePath)
-			device, err = tun.CreateTUNFromFile(file, mtu)
-			if err != nil {
-				_ = file.Close()
-			}
-		} else {
-			device, _, err = tun.CreateUnmonitoredTUNFromFD(fd)
-		}
-		if err != nil {
-			closeDevices()
-			return nil, "", fmt.Errorf("initialize tun %q queue %d: %w", actualName, i, err)
-		}
-		devices = append(devices, device)
+		fds = append(fds, fd)
 	}
-	return devices, actualName, nil
+	return fds, actualName, nil
 }

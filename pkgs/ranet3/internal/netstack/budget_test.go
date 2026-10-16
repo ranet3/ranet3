@@ -117,17 +117,14 @@ func TestReservationHoldsTheBytesItSends(t *testing.T) {
 	defer peer.Close()
 	defer close(release)
 	peer.SetMTU(mtu)
-	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}),
-		outboundBufferSize: tunOffset + 4000, outboundJobs: make(chan *outboundBatch, 1)}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), outboundJobs: make(chan *outboundBatch, 1)}
 	m.startSegmentReports()
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
 
 	t.Run("read", func(t *testing.T) {
-		b := m.newOutboundBatch(2)
-		b.sizes[0] = copy(b.bufs[0][tunOffset:], udpPacket(tooBigSource[6], tooBigDestination[6], 2000, false))
-		b.sizes[1] = copy(b.bufs[1][tunOffset:], udpPacket(tooBigSource[4], tooBigDestination[4], 4000, false))
-		b.n = 2
+		b := newOutboundBatch(2)
+		fill(b, udpPacket(tooBigSource[6], tooBigDestination[6], 2000, false), udpPacket(tooBigSource[4], tooBigDestination[4], 4000, false))
 		m.classify(b)
 		m.dispatchOutbound(b)
 		<-m.outboundJobs

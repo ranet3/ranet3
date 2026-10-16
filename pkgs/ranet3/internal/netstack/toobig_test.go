@@ -11,8 +11,6 @@ import (
 	"sync"
 	"testing"
 
-	"golang.zx2c4.com/wireguard/tun"
-
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -82,17 +80,16 @@ func udpPacket(source, destination netip.Addr, size int, df bool) []byte {
 func readOff(tb testing.TB, raw []byte, steering *srv6.SteerTable, mtu int) (*outboundBatch, *Peer, [][]byte) {
 	tb.Helper()
 	dev := &recordingDevice{writes: make(chan recordedWrite, 1)}
-	m := &Mesh{Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{}),
-		outboundBufferSize: tunOffset + len(raw) + steering.Overhead()}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+	m.setDevice(dev)
 	m.startSegmentReports()
 	m.SetSteering(steering)
 	peer := (&recordingPeer{}).peer(tb, "peer")
 	peer.SetMTU(mtu)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
-	b := m.newOutboundBatch(1)
-	b.sizes[0] = copy(b.bufs[0][tunOffset:], raw)
-	b.n = 1
+	b := newOutboundBatch(1)
+	fill(b, raw)
 	m.classify(b)
 	select {
 	case write := <-dev.writes:
@@ -434,8 +431,8 @@ func TestPeerAnsweredForEveryPacketIsAskedForNoPlace(t *testing.T) {
 		peer, places := reservingPeer(t)
 		peer.SetMTU(srv6.MinimumIPv6MTU)
 		dev := &scriptedDevice{recordingDevice: recordingDevice{writes: make(chan recordedWrite, 1)}, reads: make(chan scriptedRead, 2), closed: make(chan struct{})}
-		m := &Mesh{Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{}),
-			outboundBufferSize: tunOffset + outboundPacketBufferSize}
+		m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+		m.setDevice(dev)
 		m.startSegmentReports()
 		m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 		m.startOutboundPipeline()
@@ -476,8 +473,8 @@ func TestFragmentsForAPeerThatRefusesItsReservationAreDropped(t *testing.T) {
 		peer.SetMTU(srv6.MinimumIPv6MTU)
 		peer.Close()
 		dev := &scriptedDevice{recordingDevice: recordingDevice{writes: make(chan recordedWrite, 1)}, reads: make(chan scriptedRead, 1), closed: make(chan struct{})}
-		m := &Mesh{Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{}),
-			outboundBufferSize: tunOffset + outboundPacketBufferSize}
+		m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+		m.setDevice(dev)
 		m.startSegmentReports()
 		m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
 		m.startOutboundPipeline()
@@ -507,16 +504,15 @@ func TestFragmentsForAPeerThatRefusesItsReservationAreDropped(t *testing.T) {
 // a batch cutting a packet every read then holds as much storage after a hundred reads as after the first
 func TestBatchCutsEveryReadIntoTheStorageOfItsFirst(t *testing.T) {
 	const reads = 100
-	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), outboundBufferSize: tunOffset + outboundPacketBufferSize}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 	peer := (&recordingPeer{}).peer(t, "peer")
 	peer.SetMTU(srv6.MinimumIPv6MTU)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
-	b := m.newOutboundBatch(1)
+	b := newOutboundBatch(1)
 	cut := udpPacket(tooBigSource[4], tooBigDestination[4], 2000, false)
 	held := 0
 	for read := range reads {
-		b.sizes[0] = copy(b.bufs[0][tunOffset:], cut)
-		b.n = 1
+		fill(b, cut)
 		m.classify(b)
 		if len(b.cut.fragments) != 2 {
 			t.Fatalf("read %d holds %d fragments, want the two its one packet was cut into", read, len(b.cut.fragments))
@@ -535,19 +531,20 @@ func TestBatchCutsEveryReadIntoTheStorageOfItsFirst(t *testing.T) {
 func TestPacketsPastTheirSessionAreAnsweredAtABoundedRate(t *testing.T) {
 	const flood = 64
 	dev := &recordingDevice{writes: make(chan recordedWrite, flood)}
-	m := &Mesh{Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{}),
-		outboundBufferSize: tunOffset + DefaultMTU}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+	m.setDevice(dev)
 	m.startSegmentReports()
 	peer := (&recordingPeer{}).peer(t, "peer")
 	peer.SetMTU(srv6.MinimumIPv6MTU)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
-	b := m.newOutboundBatch(flood)
-	for i := range flood {
+	b := newOutboundBatch(flood)
+	packets := make([][]byte, flood)
+	for i := range packets {
 		family := []int{4, 6}[i%2]
-		b.sizes[i] = copy(b.bufs[i][tunOffset:], udpPacket(tooBigSource[family], tooBigDestination[family], DefaultMTU, true))
+		packets[i] = udpPacket(tooBigSource[family], tooBigDestination[family], DefaultMTU, true)
 	}
-	b.n = flood
+	fill(b, packets...)
 	m.classify(b)
 	answered := len(dev.writes)
 	if answered == 0 || answered > icmpBurst {
@@ -587,8 +584,8 @@ func TestReaderSendsTheFragmentsItCutToThePeer(t *testing.T) {
 	}, nil)
 	t.Cleanup(peer.Close)
 	peer.SetMTU(srv6.MinimumIPv6MTU)
-	m := &Mesh{Name: "test0", Routes: NewRouteTable(), devs: []tun.Device{dev}, closed: make(chan struct{}),
-		outboundBufferSize: tunOffset + outboundPacketBufferSize}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+	m.setDevice(dev)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
 	m.startOutboundPipeline()
 	t.Cleanup(m.Close)

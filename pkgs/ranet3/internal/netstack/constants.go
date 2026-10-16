@@ -11,9 +11,10 @@ import "time"
 const DefaultMTU = 1400
 
 const (
-	// outboundPacketBufferSize is the least bytes an outbound read buffer holds past tunOffset
-	// a device MTU raised after the open, by a reload or by hand, still fits a read up to it
-	outboundPacketBufferSize = 2048
+	// outboundSlabSize is the bytes one read off the tun lays its packets out in, the slab wireguard-go's own device reads into
+	// it holds every segment of the largest GSO frame a tun whose gso_max_segs is the read batch hands over, ReadPacketSpacing around each, as TestSlabHoldsTheLargestGSOFrame computes
+	// so it holds a packet of 65535 bytes whatever the device's MTU
+	outboundSlabSize = 2 * 65535
 	// inboundWriteBatchSize is the most packets one tun write carries
 	// wireguard-go's tun write sizes its GRO tables for that many
 	inboundWriteBatchSize = 128
@@ -23,9 +24,7 @@ const (
 	// inboundPendingBatches is how many write batches a lane's pending list holds before it grows
 	// collectReadyInbound stops once one batch is pending, and the second leaves room for the entry that crossed it
 	inboundPendingBatches = 2
-	// inboundPacketBufferSize leaves enough tail capacity for the TUN
-	// backend to merge adjacent TCP packets into a single GSO frame before
-	// writing it. Exact-capacity packet buffers silently disable that GRO.
+	// inboundPacketBufferSize holds the largest IP packet behind tunOffset, so no delivered packet needs a buffer of its own
 	inboundPacketBufferSize = tunOffset + 65535
 	// outboundJobsPerWorker is the read batches queued for each crypto worker
 	// one waits while the worker encrypts another
@@ -36,20 +35,10 @@ const (
 	utunName = "utun"
 )
 
-// tunOffset is how much leading space every Device.Read and Device.Write
-// needs in each buffer, the same offset wireguard-go's own device code uses
-// (device.MessageTransportOffsetContent), and for the same reasons. A backend
-// slices backwards from it to reach its own framing: linux prepends a
-// virtio-net header (the tun package always requests IFF_VNET_HDR), darwin
-// prepends the four-byte address family header a utun frame carries. Offset 0
-// doesn't just lose performance, it fails outright, and on darwin it fails
-// before the first packet arrives: tun_darwin.go's Read evaluates
-// bufs[0][offset-4:] on entry, so offset 0 panics the reader goroutine and
-// takes the process down with it.
-//
-// The contract on the way back is that a read leaves packet i at
-// bufs[i][tunOffset : tunOffset+sizes[i]], which is where linux puts each
-// packet it splits out of one GRO'd read as well.
+// tunOffset is the space in front of each packet a Device.Write is handed, the offset wireguard-go's own device writes at
+// darwin and the BSDs write the four-byte address family header a tun frame carries into it and refuse an offset under four
+// linux refuses an offset under its ten-byte virtio-net header, which it sends from a buffer of its own
+// a read needs none, the device laying out the slab it reads into
 const tunOffset = 16
 
 // truncatedReadInterval is the least time between two warnings about tun reads cut short

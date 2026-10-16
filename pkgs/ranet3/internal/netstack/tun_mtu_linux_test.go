@@ -8,17 +8,16 @@ package netstack
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"slices"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
-	"golang.zx2c4.com/wireguard/tun"
 
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -36,9 +35,8 @@ var (
 	tunPeer6    = netip.MustParseAddr("fd66::2")
 )
 
-// a steered packet carries its segment list inside the tunnel, so a read off the tun grows by the list in its own buffer
-// the device runs at link.mtu less the list, and every read buffer holds link.mtu, so a read as large as the device is steered whole
-// past 2 KiB is where a buffer sized for the device alone would refuse it
+// a steered packet carries its segment list inside the tunnel, the list going in front of the read in a buffer of the packet's own
+// the device runs at link.mtu less the list, so a read as large as the device is steered whole into a packet of link.mtu
 func TestTUNSteersAReadAsLargeAsTheDevice(t *testing.T) {
 	enterEmptyNamespace(t)
 	const largest = 9000
@@ -51,7 +49,7 @@ func TestTUNSteersAReadAsLargeAsTheDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	device := largest - steering.Overhead()
-	m, err := NewNamed(device, largest, "mtutest0")
+	m, err := NewNamed(device, "mtutest0")
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -83,66 +81,79 @@ func TestTUNSteersAReadAsLargeAsTheDevice(t *testing.T) {
 	}
 }
 
-// a reload moves the tun's MTU down and back up within the read buffers the mesh opened with, read back from the kernel each time
-// a datagram as large as the raised MTU allows then crosses the tun whole to the peer its route names
-// a mesh opened at the default refuses a move past its buffers, which wireguard-go copies every read into
-func TestTUNTakesAnMTUSetAfterOpening(t *testing.T) {
+// the kernel holds the MTU a mesh opens its tun at, on a device it creates and on one it attaches to, whose MTU was the kernel's default before
+// and a reload moves it down and back up, read back from the kernel each time
+func TestTUNHoldsTheMTUItWasOpenedAt(t *testing.T) {
 	const jumbo = 9000
-	t.Run("opened at 9000", func(t *testing.T) {
-		enterEmptyNamespace(t)
-		m, err := NewNamed(jumbo, jumbo, "mtutest0")
-		if err != nil {
-			t.Fatalf("open the mesh: %v", err)
-		}
-		t.Cleanup(m.Close)
-		if got := linkMTU(t, m.Name); got != jumbo {
-			t.Fatalf("the kernel holds %d for %s opened at %d", got, m.Name, jumbo)
-		}
-		for _, mtu := range []int{DefaultMTU, jumbo} {
-			if err := m.CheckMTU(mtu); err != nil {
-				t.Fatalf("a move to %d on a mesh opened at %d was refused: %v", mtu, jumbo, err)
+	for _, arm := range []struct {
+		name  string
+		setup func(t *testing.T)
+	}{
+		{"created", func(*testing.T) {}},
+		{"attached", func(t *testing.T) { persistTUN(t, "mtutest0", unix.IFF_MULTI_QUEUE) }},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			enterEmptyNamespace(t)
+			arm.setup(t)
+			m, err := NewNamed(jumbo, "mtutest0")
+			if err != nil {
+				t.Fatalf("open the mesh: %v", err)
 			}
-			if err := m.SetMTU(mtu, nil); err != nil {
-				t.Fatalf("set the mtu to %d: %v", mtu, err)
+			t.Cleanup(m.Close)
+			if got := linkMTU(t, m.Name); got != jumbo || m.MTU() != jumbo {
+				t.Fatalf("the kernel holds %d for %s opened at %d, and the mesh reads %d", got, m.Name, jumbo, m.MTU())
 			}
-			if got := linkMTU(t, m.Name); got != mtu {
-				t.Fatalf("the kernel holds %d for %s after it was set to %d", got, m.Name, mtu)
+			for _, mtu := range []int{DefaultMTU, jumbo} {
+				if err := m.CheckMTU(); err != nil {
+					t.Fatalf("a move to %d on a mesh opened at %d was refused: %v", mtu, jumbo, err)
+				}
+				if err := m.SetMTU(mtu, nil); err != nil {
+					t.Fatalf("set the mtu to %d: %v", mtu, err)
+				}
+				if got := linkMTU(t, m.Name); got != mtu {
+					t.Fatalf("the kernel holds %d for %s after it was set to %d", got, m.Name, mtu)
+				}
 			}
-		}
+		})
+	}
+}
 
-		sent := &recordingPeer{}
-		peer := sent.peer(t, "peer")
-		peer.SetMTU(jumbo)
-		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(tunPeer, 32), peer)
-		assignPeer(t, m.Name, tunAddress, tunPeer)
-		payload := bytes.Repeat([]byte("eight kib"), 1024)[:8<<10]
+// a read off the tun takes a packet as large as the slab promises, whatever MTU the mesh opened its device at
+// a mesh opened at the default has its MTU raised to the most a tun takes after the open, as a reload raises it
+// and a datagram of 8 KiB and one filling that MTU each cross the tun whole to the peer its route names
+func TestTUNCarriesAReadAsLargeAsTheSlabHolds(t *testing.T) {
+	const largest = 65535
+	enterEmptyNamespace(t)
+	m, err := NewNamed(0, "mtutest0")
+	if err != nil {
+		t.Fatalf("open the mesh: %v", err)
+	}
+	t.Cleanup(m.Close)
+	if err := m.CheckMTU(); err != nil {
+		t.Fatalf("a move to %d on a mesh opened at the default was refused: %v", largest, err)
+	}
+	if err := m.SetMTU(largest, nil); err != nil {
+		t.Fatalf("set the mtu to %d: %v", largest, err)
+	}
+	if got := linkMTU(t, m.Name); got != largest {
+		t.Fatalf("the kernel holds %d for %s after it was set to %d", got, m.Name, largest)
+	}
+	sent := &recordingPeer{}
+	peer := sent.peer(t, "peer")
+	peer.SetMTU(largest)
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(tunPeer, 32), peer)
+	assignPeer(t, m.Name, tunAddress, tunPeer)
+	for i, size := range []int{8 << 10, largest - 20 - 8} {
+		payload := bytes.Repeat([]byte("whole"), size)[:size]
 		sendUDP(t, tunPeer, payload)
-		waitUntil(t, "the datagram to reach the peer", func() bool { return len(sent.packets(t)) > 0 })
-		packet := sent.packets(t)[0]
-		if len(packet) != 20+8+len(payload) || !bytes.Equal(packet[20+8:], payload) {
-			t.Fatalf("the peer was sent %d bytes, want the %d byte datagram whole", len(packet), 20+8+len(payload))
+		waitUntil(t, fmt.Sprintf("the %d byte datagram to reach the peer", size), func() bool { return len(sent.packets(t)) > i })
+		if packet := sent.packets(t)[i]; len(packet) != 20+8+size || !bytes.Equal(packet[20+8:], payload) {
+			t.Fatalf("the peer was sent %d bytes, want the %d byte datagram whole", len(packet), 20+8+size)
 		}
-	})
-	t.Run("opened at the default", func(t *testing.T) {
-		enterEmptyNamespace(t)
-		m, err := NewNamed(0, 0, "mtutest0")
-		if err != nil {
-			t.Fatalf("open the mesh: %v", err)
-		}
-		t.Cleanup(m.Close)
-		err = m.CheckMTU(jumbo)
-		if err == nil {
-			t.Fatalf("a move to %d on a mesh whose read buffers hold %d was taken", jumbo, outboundPacketBufferSize)
-		}
-		for _, want := range []string{"9000", "2048", "restart to apply"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("the refusal reads %q, which does not say %s", err, want)
-			}
-		}
-		if got := linkMTU(t, m.Name); got != DefaultMTU {
-			t.Errorf("the kernel holds %d for %s, want the %d it opened at", got, m.Name, DefaultMTU)
-		}
-	})
+	}
+	if cut := m.TUNReadsTruncated(); cut != 0 {
+		t.Errorf("%d reads were cut short", cut)
+	}
 }
 
 // linkMTU is the MTU the kernel holds for the link name
@@ -337,7 +348,7 @@ func TestTUNPacketTooBigTeachesTheKernel(t *testing.T) {
 	for _, family := range pathFamilies {
 		t.Run(family.name, func(t *testing.T) {
 			enterEmptyNamespace(t)
-			m, err := NewNamed(DefaultMTU, DefaultMTU, "ptbtest0")
+			m, err := NewNamed(DefaultMTU, "ptbtest0")
 			if err != nil {
 				t.Fatalf("open the mesh: %v", err)
 			}
@@ -378,7 +389,7 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 				t.Fatal(err)
 			}
 			device := headendSession - steering.Overhead()
-			headend, err := NewNamed(device, headendSession, "wpttest0")
+			headend, err := NewNamed(device, "wpttest0")
 			if err != nil {
 				t.Fatalf("open the mesh: %v", err)
 			}
@@ -390,7 +401,8 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			transit := &Mesh{Name: "transit0", Routes: NewRouteTable(), devs: []tun.Device{&recordingDevice{writes: make(chan recordedWrite, 1)}}, closed: make(chan struct{})}
+			transit := &Mesh{Name: "transit0", Routes: NewRouteTable(), closed: make(chan struct{})}
+			transit.setDevice(&recordingDevice{writes: make(chan recordedWrite, 1)})
 			transit.startSegmentReports()
 			transit.SetSegments(segments)
 			// a session hands what it carries to the mesh at its far end, as the peer decrypting it does
@@ -449,7 +461,7 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 func TestTUNClampsTheMSSOfASYN(t *testing.T) {
 	const session = 1300
 	enterEmptyNamespace(t)
-	m, err := NewNamed(DefaultMTU, DefaultMTU, "msstest0")
+	m, err := NewNamed(DefaultMTU, "msstest0")
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}

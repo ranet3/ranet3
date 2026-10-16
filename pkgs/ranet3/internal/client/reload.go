@@ -220,7 +220,7 @@ type tunPlan struct {
 }
 
 // planTUN builds what a reload from old to next changes on the tun, nothing where cap.segment and link.mtu stay
-// a move the running mesh cannot take is refused, past the read buffers NewNamed sized or on a platform that sets the MTU only at the open
+// a move of the device's MTU is refused on a platform that sets the MTU only at the open
 func (c *Client) planTUN(old, next *config.Config) (tunPlan, error) {
 	plan := tunPlan{tables: !sameSegments(old, next)}
 	if !plan.tables && old.Link.SessionMTU() == next.Link.SessionMTU() {
@@ -241,8 +241,8 @@ func (c *Client) planTUN(old, next *config.Config) (tunPlan, error) {
 	if plan.to, err = steeredMTU(next.Link.SessionMTU(), plan.steering); err != nil {
 		return tunPlan{}, err
 	}
-	if plan.to != plan.from || old.Link.SessionMTU() != next.Link.SessionMTU() {
-		if err := c.Mesh.CheckMTU(next.Link.SessionMTU()); err != nil {
+	if plan.to != plan.from {
+		if err := c.Mesh.CheckMTU(); err != nil {
 			return tunPlan{}, fmt.Errorf("config: tun mtu %d to %d: %w", plan.from, plan.to, err)
 		}
 	}

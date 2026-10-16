@@ -17,17 +17,13 @@ import (
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
-// readSpacing is the bytes a slab read leaves before, between and after the packets it holds
 // readMTU is the largest packet the reads below carry
-const (
-	readSpacing = 64
-	readMTU     = 9000
-)
+const readMTU = 9000
 
-// a read laid out as a slab holds it, readSpacing bytes between packets, leaves the classifier with every byte as it was read
+// a read laid out in the batch's slab, tun.ReadPacketSpacing bytes between packets, leaves the classifier with every byte as it was read
 // and each packet a policy claims leaves as the policy's outer header, from its source through its segments, in front of the packet as it was read
 // one packet no policy claims leaves as it was read
-// the segment counts either side of where the header passes readSpacing, one and two, are drawn outright
+// the segment counts either side of where the header passes the spacing, one and two, are drawn outright
 func TestSteeringLeavesTheReadAsItWasRead(t *testing.T) {
 	unclaimed := map[int]netip.Addr{4: segAddr("10.1.0.2"), 6: segAddr("3fff:a::2")}
 	pbt.Check(t, func(ht *hegel.T) {
@@ -55,7 +51,7 @@ func TestSteeringLeavesTheReadAsItWasRead(t *testing.T) {
 			}
 			packets[i] = udpPacket(source, tooBigDestination[family], hegel.Draw(ht, pbt.Spanning(least, readMTU)), false)
 		}
-		b, slab := slabRead(m, packets)
+		b, slab := slabRead(packets)
 		read := bytes.Clone(slab)
 
 		m.classify(b)
@@ -93,22 +89,11 @@ func TestSteeringLeavesTheReadAsItWasRead(t *testing.T) {
 	})
 }
 
-// slabRead is a read of packets as a slab holds them, readSpacing bytes before, between and after them, and the slab
-// each packet's read buffer runs on to the end of the slab, so a write past a packet lands in the spacing or the next packet
+// slabRead is a read of packets as a batch's slab holds them, tun.ReadPacketSpacing bytes before, between and after them, and the slab
 // the slab starts filled with one byte, so a write into the spacing shows
-func slabRead(m *Mesh, packets [][]byte) (*outboundBatch, []byte) {
-	size := readSpacing
-	for _, packet := range packets {
-		size += len(packet) + readSpacing
-	}
-	slab := bytes.Repeat([]byte{0xa5}, size)
-	b := m.newOutboundBatch(len(packets))
-	offset := readSpacing
-	for i, packet := range packets {
-		b.bufs[i] = slab[offset-tunOffset:]
-		b.sizes[i] = copy(slab[offset:], packet)
-		offset += len(packet) + readSpacing
-	}
-	b.n = len(packets)
-	return b, slab
+func slabRead(packets [][]byte) (*outboundBatch, []byte) {
+	b := newOutboundBatch(len(packets))
+	copy(b.slab, bytes.Repeat([]byte{0xa5}, len(b.slab)))
+	fill(b, packets...)
+	return b, b.slab
 }
