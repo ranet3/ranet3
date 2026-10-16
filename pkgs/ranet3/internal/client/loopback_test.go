@@ -525,14 +525,10 @@ func TestSessionsCarryTheLinkMTUOfTheirOwnNode(t *testing.T) {
 	}
 	run(t, alpha, bravo)
 	for _, end := range ends {
-		var peer *netstack.Peer
-		waitFor(t, convergeBudget, end.node.name+" forwarding to "+end.peer.name+"'s prefix", func() bool {
+		// looked up on every poll, since a simultaneous open replaces the first session and its peer with it
+		waitFor(t, convergeBudget, fmt.Sprintf("%s to forward to %s's prefix over a session carrying its link.mtu of %d", end.node.name, end.peer.name, end.mtu), func() bool {
 			found, ok := end.node.client.Mesh.Routes.Lookup(netip.Addr{}, end.peer.prefix.Addr().Next())
-			peer = found
-			return ok && found != nil
-		})
-		waitFor(t, convergeBudget, fmt.Sprintf("%s's session to %s to carry its link.mtu of %d", end.node.name, end.peer.name, end.mtu), func() bool {
-			return peer.MTU() == int(end.mtu)
+			return ok && found != nil && found.MTU() == int(end.mtu)
 		})
 	}
 }
