@@ -285,7 +285,9 @@ existing named tun must therefore be created with `IFF_MULTI_QUEUE` (for a
 systemd-networkd `.netdev`, set `MultiQueue=yes` in its `[Tun]` section). A
 process on 1 CPU can also attach to a single-queue tun. ranet3 sets that
 device's `gso_max_segs` to the 128 packets 1 read holds, so the kernel splits a
-larger GSO frame before a read would cut it.
+larger GSO frame before a read would cut it. 1 read lays its packets out in 1
+buffer of 131070 bytes, which holds the largest GSO frame the tun hands over and
+a packet of 65535 bytes, whatever `link.mtu` is.
 
 Tun readers hand bounded batches to shared encryption workers, and sequence
 reservation and queue submission preserve packet order across workers. Each peer
@@ -307,15 +309,19 @@ the same snapshot. ESP batches similarly capture an immutable set of installed
 SAs, retaining keys for work already in flight during a rekey. Receive
 processing on 1 core runs inline. Multicore receive workers authenticate
 concurrently and commit replay state in intake order before delivering tun
-batches. Linux UDP receive reads a full 128-message vector and returns excess
-GRO segments before reusing its buffers. Replay checks and nonce storage are
-amortized across ESP batches, and already-completed send/receive batches are
-combined without waiting for additional traffic. Encryption workers reuse packed
-ciphertext buffers only after the ordered sender finishes its UDP call,
-retaining separate storage for work in flight. Replaced inbound SAs remain
-usable for 5 seconds after their Delete acknowledgment, or until their lifetime
-ends if that comes first, so queued and reordered packets can drain during a
-rekey.
+batches. Each packet is decrypted in place and written to the tun from the
+datagram it arrived in, whose 16 bytes of ESP header and IV are the room a tun
+write takes in front of a packet. No packet is copied between decryption and the
+tun, and a packet an exit takes out of its outer header is written from the same
+datagram. Linux UDP receive reads a full vector, of 128 messages on a shared
+socket and 4 on a socket connected to 1 peer, and returns excess GRO segments
+before reusing its buffers. Replay checks and nonce storage are amortized across
+ESP batches, and already-completed send/receive batches are combined without
+waiting for additional traffic. Encryption workers reuse packed ciphertext
+buffers only after the ordered sender finishes its UDP call, retaining separate
+storage for work in flight. Replaced inbound SAs remain usable for 5 seconds
+after their Delete acknowledgment, or until their lifetime ends if that comes
+first, so queued and reordered packets can drain during a rekey.
 
 ## Paths under 1280 bytes
 

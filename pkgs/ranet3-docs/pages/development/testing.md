@@ -44,22 +44,33 @@ unless run as root.
   attach to a real TUN device. They read its `gso_max_segs` back, open several
   queues as 1 device and no more than the kernel attaches, and refuse a mesh
   under the default name where a device of that name exists. They warn at a new
-  mesh's first cut read, move the MTU of an open device, steer a read as large
-  as the device and clamp the MSS of a SYN. They answer a packet larger than its
-  session, at the headend and at a waypoint, until the kernel that sent it holds
-  the smaller path MTU.
+  mesh's first cut read, keep a lane reading past a frame of 1 byte, and check
+  that the device queues no link event and leaves no route listener running
+  after the mesh closes. They hold the MTU a device was created or attached at
+  and move it, carry a read of 65535 bytes through a device opened at the
+  default MTU, steer a read as large as the device and clamp the MSS of a SYN.
+  They answer a packet larger than its session, at the headend and at a
+  waypoint, until the kernel that sent it holds the smaller path MTU. Another
+  writes a TCP stream into a kernel socket as frames lying in 1 buffer, as a
+  session's datagrams do, and checks that the tun's GRO coalesces them and that
+  the socket reads back the bytes sent. 2 more check that a lane's write into
+  the tun allocates nothing and keeps no reference to the frames it wrote,
+  whether its packets go alone or coalesce.
 - `internal/client` has tests under the same prefix that run a node on a real
   TUN device:
   - A SYN arriving through a session between 2 nodes on loopback reaches the tun
     with its MSS lowered.
   - A reload moves the tun's MTU.
-  - `New` opens read buffers that hold a steered packet of `link.mtu`.
   - A TCP stream keeps flowing through a session whose path drops IPv4 packets
     past 1400 bytes, and later past 1360, without an answer, as the search finds
     each.
   - A Babel packet sent in fragments reaches the speaker whole, and the tun
     never sees it. A fragment of ordinary traffic on the same session reaches
     the tun as sent.
+- `internal/client` also has 1,
+  `TestTransitWarnsOnlyWhereTheHostCannotForwardIt`, that writes its namespace's
+  forwarding sysctls and checks that an enabled `cap.transit` warns only where
+  the host does not forward a family, naming the family.
 
 The `internal/client` tests `TestNodeGoingDownLeavesItsPeerAndItsKernelAtOnce`,
 `TestNodeRestartedWhileDownInstallsNothingUntilUp`,
@@ -80,7 +91,11 @@ On macOS the tests below run as root, and only with `RANET3_DARWIN_NETTEST=1`
 set. The Mac that runs them may be on a live mesh.
 
 - `internal/kernel` has tests against the real routing socket.
-- `internal/netstack` has arms that create a utun.
+- `internal/netstack` has arms that create a utun. 2 of its tests carry a packet
+  each way through a utun addressed in `198.18.0.0/15`: a datagram sent out of
+  it reaches a recording peer whole, and a frame delivered inbound reaches a
+  socket behind it. They take the address and its route off again and check that
+  no route on another interface changed.
 - `internal/client` has arms that put a node on a real utun.
 - `transport` has 1 that sends through a feth pair whose MTU is 1400. A datagram
   past that MTU is refused, or fragmented while a session asks. A second checks
@@ -168,14 +183,14 @@ nix build .#checks.x86_64-linux.netlink -L
 `nix flake check -L` builds every check of the host's system. The VM tests below
 have commands of their own.
 
-| Check           | Systems | CI runs it on                    | What it runs                                                                                                |
-| --------------- | ------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote hegel's cache               |
-| `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, and `staticcheck ./...`                                   |
-| `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `nixfmt --check` on every Nix file, `taplo format --check` and `reuse lint` |
-| `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                |
-| `netlink`       | Linux   | `x86_64-linux`                   | the Linux root tests listed below, as root in a VM                                                          |
-| `integration-*` | Linux   | `x86_64-linux`                   | the VM tests below                                                                                          |
+| Check           | Systems | CI runs it on                    | What it runs                                                                                                                                                                  |
+| --------------- | ------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote hegel's cache                                                                                 |
+| `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, and `staticcheck ./...`                                                                                                     |
+| `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions both `go.mod` files require, and `reuse lint` |
+| `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                                                                                  |
+| `netlink`       | Linux   | `x86_64-linux`                   | the Linux root tests listed below, as root in a VM                                                                                                                            |
+| `integration-*` | Linux   | `x86_64-linux`                   | the VM tests below                                                                                                                                                            |
 
 The 3 systems are `x86_64-linux`, `aarch64-linux` and `aarch64-darwin`. CI
 builds through atelier, and `atelier.toml` sets what it skips. The
@@ -186,10 +201,11 @@ systems, and never builds `legacyPackages.*.profile`.
 The `netlink` check runs these root tests: the `internal/kernel` tests whose
 names start with `TestNetlink`, the `internal/egress` round trip, the `TestTUN`
 tests of `internal/netstack` and `internal/client`, the 3 `transport` sends, and
-the 4 `internal/client` tests above under `unshare -n`, and every test of the
-`tun` and `conn` packages of `pkgs/wireguard`. It fails if any of them skips. It
-then checks that no rule, link, xfrm state or policy, or nftables table of
-theirs is left on the host. The `internal/kernel` tests
+the 4 `internal/client` tests above with
+`TestTransitWarnsOnlyWhereTheHostCannotForwardIt` under `unshare -n`, and every
+test of the `tun` and `conn` packages of `pkgs/wireguard`. It fails if any of
+them skips. It then checks that no rule, link, xfrm state or policy, or nftables
+table of theirs is left on the host. The `internal/kernel` tests
 `TestNetworkWatchInNetworkNamespace` and
 `TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault` need root and run in
 no check, and so do the 7 `transport` tests of the sockets connected to 1 peer
@@ -410,10 +426,10 @@ The commands above do not name these benchmarks. The `sadr` ones other than
 `BenchmarkFillOneDestination` still match the `-bench` pattern of the previous
 command.
 
-| Package             | Benchmarks                                                                                                                                                                                                                         | What they measure                                                                                                           |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `esp`               | `BenchmarkReplayCommitJumpDistances`                                                                                                                                                                                               | a replay window commit across growing jumps of the sequence number                                                          |
-| `sadr`              | `BenchmarkLookupBySourceCount`, `BenchmarkLookupByDistinctLengths`, `BenchmarkLookupDownADestinationChain`, `BenchmarkRouteChangeOnOneDestination`, `BenchmarkFillOneDestination`                                                  | lookups and edits with many sources on one destination, or spread over many prefix lengths                                  |
-| `internal/babel`    | `BenchmarkRunLoopPass`, `BenchmarkRunLoopDeadline`, `BenchmarkEmitDump`, `BenchmarkReceiveHello`, `BenchmarkCoalesceOneTarget`                                                                                                     | the speaker's run loop, a full table dump, a hello against a full table and send coalescing                                 |
-| `internal/netstack` | `BenchmarkPeerEnqueueSerialSinglePacket`, `BenchmarkPeerEnqueueSerialBatched`, `BenchmarkPeerEnqueueParallelSinglePacket`, `BenchmarkPeerEnqueueParallelBatched`, `BenchmarkPeerSenderRoundTrip`, `BenchmarkInboundCopyAndRelease` | a peer's send queue with 1 packet or batches of 128, the round trip through its sender, and the copy of each inbound packet |
-| `transport`         | `BenchmarkUDPReceiveVector`                                                                                                                                                                                                        | batched UDP receive through the real syscalls, on Linux                                                                     |
+| Package             | Benchmarks                                                                                                                                                                                       | What they measure                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `esp`               | `BenchmarkReplayCommitJumpDistances`                                                                                                                                                             | a replay window commit across growing jumps of the sequence number                          |
+| `sadr`              | `BenchmarkLookupBySourceCount`, `BenchmarkLookupByDistinctLengths`, `BenchmarkLookupDownADestinationChain`, `BenchmarkRouteChangeOnOneDestination`, `BenchmarkFillOneDestination`                | lookups and edits with many sources on one destination, or spread over many prefix lengths  |
+| `internal/babel`    | `BenchmarkRunLoopPass`, `BenchmarkRunLoopDeadline`, `BenchmarkEmitDump`, `BenchmarkReceiveHello`, `BenchmarkCoalesceOneTarget`                                                                   | the speaker's run loop, a full table dump, a hello against a full table and send coalescing |
+| `internal/netstack` | `BenchmarkPeerEnqueueSerialSinglePacket`, `BenchmarkPeerEnqueueSerialBatched`, `BenchmarkPeerEnqueueParallelSinglePacket`, `BenchmarkPeerEnqueueParallelBatched`, `BenchmarkPeerSenderRoundTrip` | a peer's send queue with 1 packet or batches of 128, and the round trip through its sender  |
+| `transport`         | `BenchmarkUDPReceiveVector`                                                                                                                                                                      | batched UDP receive through the real syscalls, on Linux                                     |

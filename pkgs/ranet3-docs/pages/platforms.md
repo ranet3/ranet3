@@ -178,8 +178,9 @@ On a platform other than Linux and macOS:
 - The node has no network watch, so a moved host waits for each session's own
   liveness check.
 - Every peer shares the 1 socket of its family, busy or not.
-- The tun takes its MTU only when it opens, so a change to `link.mtu` needs a
-  restart.
+- The tun takes its MTU only when it opens, so a change to `link.mtu` or to the
+  steering that moves the tun needs a restart. A reload applies one that leaves
+  the tun where it was.
 - The node assumes the host forwards both families.
 - The node reads no caller credentials, so the debug tree answers only on its
   read paths.
