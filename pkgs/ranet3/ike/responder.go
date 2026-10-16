@@ -361,7 +361,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		current: &ikeContext{
 			suite: suite,
 			skD:   keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr,
-			spiI: spiI, spiR: spiR, responder: true, answeredAuth: true,
+			spiI: spiI, spiR: spiR, responder: true, answeredAuth: true, established: time.Now(),
 			// RFC 7296 section 2.2: the initiator consumed Message IDs 0 and 1, so
 			// its next request is 2, while our own request counter starts at 0.
 			nextPeerMID: 2, nextLocalMID: 0,

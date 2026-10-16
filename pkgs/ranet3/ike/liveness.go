@@ -49,13 +49,57 @@ type pendingRequest struct {
 }
 
 type rekeySchedule struct {
-	name     string
-	interval time.Duration
-	run      func() error
-	timer    *time.Timer
-	deadline time.Time
-	due      bool
-	failures uint
+	name        string
+	sa          string
+	interval    time.Duration
+	run         func() error
+	established func() (time.Time, bool)
+	timer       *time.Timer
+	deadline    time.Time
+	due         bool
+	failures    uint
+	lastErr     error
+}
+
+// RFC 7296 section 2.8: "When the lifetime of a Security Association expires, the Security Association MUST NOT be used."
+func (r *rekeySchedule) lifetimeEnd() (time.Time, bool) {
+	established, ok := r.established()
+	return established.Add(r.interval), ok
+}
+
+func (r *rekeySchedule) outlived(now time.Time) bool {
+	end, ok := r.lifetimeEnd()
+	return ok && !now.Before(end)
+}
+
+func (s *Session) childEstablishedAt() (time.Time, bool) {
+	s.childMu.RLock()
+	defer s.childMu.RUnlock()
+	return s.childEstablished, s.Child.LocalSPI != 0
+}
+
+func (s *Session) ikeEstablishedAt() (time.Time, bool) { return s.currentContext().established, true }
+
+// an IKE SA past its lifetime is one this end is closing
+func (s *Session) ikeExpired(ctx *ikeContext) bool {
+	return s.ikeRekeyInterval > 0 && !time.Now().Before(ctx.established.Add(s.ikeRekeyInterval))
+}
+
+type temporaryStreak struct {
+	on    *ikeContext
+	since time.Time
+}
+
+func (t *temporaryStreak) outlasted(on *ikeContext, err error, now time.Time) bool {
+	rejected, ok := errors.AsType[*rejectedError](err)
+	if !ok || rejected.notify.Type != N_TEMPORARY_FAILURE {
+		return false
+	}
+	if t.on != on {
+		*t = temporaryStreak{on: on, since: now}
+		return false
+	}
+	return !now.Before(t.since.Add(temporaryFailureSpan))
 }
 
 type rekeyScheduleResult struct {
@@ -84,23 +128,37 @@ func randomRekeyJitter(max time.Duration) (time.Duration, error) {
 	return time.Duration(v.Int64()), nil
 }
 
-func (s *Session) rekeyDelay(interval time.Duration) (time.Duration, error) {
+// a scheduled rekey counts from its SA's establishment, so the margin is the time it has before the SA's lifetime however late Run starts or settles the last one
+func (s *Session) rekeyDue(interval time.Duration, established time.Time) (time.Time, error) {
 	source := s.rekeyJitterSource
 	if source == nil {
 		source = randomRekeyJitter
 	}
 	jitter, err := source(s.rekeyJitter)
 	if err != nil {
-		return 0, fmt.Errorf("ike: generate rekey jitter: %w", err)
+		return time.Time{}, fmt.Errorf("ike: generate rekey jitter: %w", err)
 	}
 	if jitter < 0 || jitter > s.rekeyJitter {
-		return 0, fmt.Errorf("ike: invalid rekey jitter %s", jitter)
+		return time.Time{}, fmt.Errorf("ike: invalid rekey jitter %s", jitter)
 	}
-	delay := interval - s.rekeyMargin - jitter
-	if delay <= 0 {
-		return 0, fmt.Errorf("ike: nonpositive rekey delay")
+	lead := interval - s.rekeyMargin - jitter
+	if lead <= 0 {
+		return time.Time{}, fmt.Errorf("ike: nonpositive rekey delay")
 	}
-	return delay, nil
+	return established.Add(lead), nil
+}
+
+// an SA not yet made counts from now
+func (s *Session) scheduledDelay(r *rekeySchedule) (time.Duration, error) {
+	established, ok := r.established()
+	if !ok {
+		established = time.Now()
+	}
+	due, err := s.rekeyDue(r.interval, established)
+	if err != nil {
+		return 0, err
+	}
+	return max(time.Until(due), 0), nil
 }
 
 // rekeyRetryDelay backs off exponentially and then spreads the result over the
@@ -131,22 +189,26 @@ func (s *Session) rekeyRetryDelay(failures uint) time.Duration {
 	return delay - jitter
 }
 
-func (s *Session) newRekeySchedule(name string, interval time.Duration, run func() error) (*rekeySchedule, error) {
+func (s *Session) newRekeySchedule(name, sa string, interval time.Duration, run func() error, established func() (time.Time, bool)) (*rekeySchedule, error) {
 	if interval <= 0 {
 		return nil, nil
 	}
-	delay, err := s.rekeyDelay(interval)
+	schedule := &rekeySchedule{name: name, sa: sa, interval: interval, run: run, established: established}
+	delay, err := s.scheduledDelay(schedule)
 	if err != nil {
 		return nil, err
 	}
-	return &rekeySchedule{name: name, interval: interval, run: run, timer: time.NewTimer(delay), deadline: time.Now().Add(delay)}, nil
+	schedule.timer, schedule.deadline = time.NewTimer(delay), time.Now().Add(delay)
+	return schedule, nil
 }
 
 // retryOnly is a schedule with no interval, which falls due only to retry a rekey that failed
-func retryOnly(name string, run func() error) *rekeySchedule {
+// an SA with no interval has no lifetime
+func retryOnly(name, sa string, run func() error) *rekeySchedule {
 	timer := time.NewTimer(0)
 	timer.Stop()
-	return &rekeySchedule{name: name, run: run, timer: timer}
+	return &rekeySchedule{name: name, sa: sa, run: run, timer: timer,
+		established: func() (time.Time, bool) { return time.Time{}, false }}
 }
 
 func (r *rekeySchedule) poll() {
@@ -217,17 +279,17 @@ func (s *Session) run(ctx context.Context, ending error) error {
 	var pending *pendingRequest
 	var ender *pendingRequest
 	var schedules []*rekeySchedule
-	childSchedule, err := s.newRekeySchedule("Child SA", s.childRekeyInterval, s.RekeyChild)
+	childSchedule, err := s.newRekeySchedule("Child SA", "child", s.childRekeyInterval, s.RekeyChild, s.childEstablishedAt)
 	if err != nil {
 		return err
 	}
 	// a failed Child SA exchange is retried on this schedule's delay whichever path started it, so with no interval the schedule is kept to do that alone
 	if childSchedule == nil {
-		childSchedule = retryOnly("Child SA", s.RekeyChild)
+		childSchedule = retryOnly("Child SA", "child", s.RekeyChild)
 	}
 	defer childSchedule.timer.Stop()
 	schedules = append(schedules, childSchedule)
-	ikeSchedule, err := s.newRekeySchedule("IKE SA", s.ikeRekeyInterval, s.RekeyIKE)
+	ikeSchedule, err := s.newRekeySchedule("IKE SA", "ike", s.ikeRekeyInterval, s.RekeyIKE, s.ikeEstablishedAt)
 	if err != nil {
 		return err
 	}
@@ -250,10 +312,28 @@ func (s *Session) run(ctx context.Context, ending error) error {
 			startRekey(schedule)
 		}
 	}
+	end := func(schedule *rekeySchedule, reason string, err error) {
+		ending = err
+		slog.Warn("ike deleting the IKE SA", "sa", schedule.name, "reason", reason, "err", err)
+		s.emit("ike.sa.closed", slog.String("sa", schedule.sa), slog.String("reason", reason), slog.String("err", err.Error()))
+	}
+	// RFC 7296 section 2.4: "In this case, an IKE endpoint SHOULD send a Delete payload indicating that it has closed the IKE SA unless the other endpoint is no longer responding."
+	fail := func(err error) {
+		if ending == nil {
+			end(childSchedule, "local failure", err)
+		}
+	}
 	// the time it returns is taken before the timer is reset, so the schedule's own retry never finds itself held
 	settle := func(schedule *rekeySchedule, err error) (time.Time, error) {
+		if ending != nil {
+			return time.Time{}, nil
+		}
 		if err != nil {
-			schedule.failures++
+			schedule.failures, schedule.lastErr = schedule.failures+1, err
+			if s.temporary.outlasted(s.currentContext(), err, time.Now()) {
+				end(schedule, "temporary failure", fmt.Errorf("ike: the peer answered TEMPORARY_FAILURE for %s: %w", temporaryFailureSpan, err))
+				return time.Time{}, nil
+			}
 			delay := s.rekeyRetryDelay(schedule.failures)
 			next := time.Now().Add(delay)
 			schedule.reset(delay)
@@ -261,11 +341,11 @@ func (s *Session) run(ctx context.Context, ending error) error {
 			return next, nil
 		}
 		slog.Info("ike rekey completed", "sa", schedule.name)
-		schedule.failures = 0
+		schedule.failures, schedule.lastErr, s.temporary = 0, nil, temporaryStreak{}
 		if schedule.interval == 0 {
 			return time.Time{}, nil
 		}
-		delay, err := s.rekeyDelay(schedule.interval)
+		delay, err := s.scheduledDelay(schedule)
 		if err != nil {
 			return time.Time{}, err
 		}
@@ -288,6 +368,17 @@ func (s *Session) run(ctx context.Context, ending error) error {
 		s.childRetry.settled(len(ended), next)
 		return nil
 	}
+	// RFC 7296 section 2.3: "An IKE endpoint MUST wait for a response to each of its messages before sending a subsequent message unless it has received a SET_WINDOW_SIZE Notify message from its peer informing it that the peer is prepared to maintain state for multiple outstanding messages in order to allow greater throughput."
+	// section 1.4.1: "To delete an SA, an INFORMATIONAL exchange with one or more Delete payloads is sent listing the SPIs (as they would be expected in the headers of inbound packets) of the SAs to be deleted." and "Similar to ESP and AH SAs, IKE SAs are also deleted by sending an INFORMATIONAL exchange."
+	// this end keeps one request outstanding whatever window the peer offers, so the Delete that closes an expired SA waits on the exchange outstanding at its lifetime
+	// until then an expired IKE SA carries that exchange, its answers to the peer and its Delete, and starts nothing else
+	expired := func() bool { return s.ikeExpired(s.currentContext()) }
+	livenessDue := func() time.Time {
+		if expired() {
+			return time.Now().Add(s.dpdInterval())
+		}
+		return lastAuthenticated.Add(s.dpdInterval())
+	}
 	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
 	for {
@@ -295,12 +386,15 @@ func (s *Session) run(ctx context.Context, ending error) error {
 			s.mux.Close()
 			return ending
 		}
+		if err := s.expireChild(time.Now()); err != nil {
+			fail(err)
+		}
 		if err := s.expireRetiredChildren(time.Now()); err != nil {
 			return err
 		}
 		s.expireRetainedContexts(time.Now())
 		if err := settleChildRekeys(); err != nil {
-			return err
+			fail(err)
 		}
 		select {
 		case result := <-rekeyResult:
@@ -311,12 +405,22 @@ func (s *Session) run(ctx context.Context, ending error) error {
 					return err
 				}
 			}
-			startDueRekey()
 			continue
 		default:
 		}
 		for _, schedule := range schedules {
 			schedule.poll()
+			// RFC 7296 section 2.8: "If an SA has expired or is about to expire and rekeying attempts using the mechanisms described here fail, an implementation MUST close the IKE SA and any associated Child SAs and then MAY start new ones."
+			// a rekey running at the lifetime may yet replace the SA, so its result decides, and with none running nothing can
+			// a Child SA rekey started outside the schedule, as a proactive one is, counts as the scheduled one does
+			rekeying := schedule == running || schedule == childSchedule && s.childRekeying.Load()
+			if ending == nil && !rekeying && schedule.outlived(time.Now()) {
+				err := fmt.Errorf("ike: the %s reached its lifetime of %s before a rekey replaced it", schedule.name, schedule.interval)
+				if schedule.lastErr != nil {
+					err = fmt.Errorf("%w: %w", err, schedule.lastErr)
+				}
+				end(schedule, "lifetime", err)
+			}
 		}
 		startDueRekey()
 		if s.trafficSeen.Swap(false) {
@@ -336,7 +440,11 @@ func (s *Session) run(ctx context.Context, ending error) error {
 			select {
 			case req := <-s.requests:
 				var err error
-				pending, err = s.startRequest(req)
+				if expired() {
+					err = errors.New("ike: the IKE SA is past its lifetime")
+				} else {
+					pending, err = s.startRequest(req)
+				}
 				if err != nil {
 					req.result <- requestResult{err: err}
 					if errors.Is(err, errMessageIDExhausted) {
@@ -348,13 +456,16 @@ func (s *Session) run(ctx context.Context, ending error) error {
 			}
 		}
 
-		deadline := lastAuthenticated.Add(s.dpdInterval())
+		deadline := livenessDue()
 		if pending != nil {
 			deadline = pending.deadline
 		}
 		for _, schedule := range schedules {
 			if !schedule.deadline.IsZero() && schedule.deadline.Before(deadline) {
 				deadline = schedule.deadline
+			}
+			if lifetime, ok := schedule.lifetimeEnd(); ok && time.Now().Before(lifetime) && lifetime.Before(deadline) {
+				deadline = lifetime
 			}
 		}
 		// the sweeps at the top of the loop run only when the loop wakes, so it waits for their deadlines too
@@ -409,10 +520,13 @@ func (s *Session) run(ctx context.Context, ending error) error {
 		case req := <-requests:
 			s.requests <- req
 			continue
-		// a Child SA rekey that ended is settled at the top of the loop
+		// a Child SA rekey that ended is settled at the top of the loop, where the close rule also reads whether one still runs
 		case <-s.childRekeyEnded:
 			continue
 		case <-s.probes:
+			if pending == nil && expired() {
+				continue
+			}
 			probed, err := s.probe(pending)
 			if err != nil {
 				s.mux.Close()
@@ -431,7 +545,8 @@ func (s *Session) run(ctx context.Context, ending error) error {
 			continue
 		}
 		if pending != nil && !time.Now().Before(pending.deadline) {
-			if pendingRetransmitsExhausted(pending, time.Since(lastAuthenticated) < s.dpdInterval()) {
+			// an exchange its IKE SA carries past its lifetime has a silent peer's budget whatever traffic the peer keeps up, and then the IKE SA is deemed failed as section 2.1 allows
+			if pendingRetransmitsExhausted(pending, time.Since(lastAuthenticated) < s.dpdInterval() && !s.ikeExpired(pending.context)) {
 				s.mux.Close()
 				if pending == ender {
 					return ending
@@ -449,7 +564,7 @@ func (s *Session) run(ctx context.Context, ending error) error {
 			lastAuthenticated = time.Now()
 			s.noteActive()
 		}
-		if pending == nil && !time.Now().Before(lastAuthenticated.Add(s.dpdInterval())) {
+		if pending == nil && !time.Now().Before(livenessDue()) {
 			started, err := s.startLiveness()
 			if err != nil {
 				s.mux.Close()
@@ -738,11 +853,11 @@ func (s *Session) contextForHeader(hdr *Header) *ikeContext {
 	if hdr.SPIInitiator == s.current.spiI && hdr.SPIResponder == s.current.spiR {
 		return s.current
 	}
-	if s.old != nil && hdr.SPIInitiator == s.old.spiI && hdr.SPIResponder == s.old.spiR {
-		return s.old
-	}
-	if s.collision != nil && hdr.SPIInitiator == s.collision.spiI && hdr.SPIResponder == s.collision.spiR {
-		return s.collision
+	// past its lifetime a retained IKE SA answers no request, and takes only the answer to this end's own Delete on it
+	for _, retained := range []*ikeContext{s.old, s.collision} {
+		if retained != nil && hdr.SPIInitiator == retained.spiI && hdr.SPIResponder == retained.spiR && (hdr.IsResponse() || !s.ikeExpired(retained)) {
+			return retained
+		}
 	}
 	return nil
 }

@@ -26,6 +26,8 @@ const (
 	maxRetransmitsWhileBusy = 20
 	// the end giving an IKE SA up fails or ends whatever the answer, and a peer that holds the SA answers at once, so the budget covers one lost datagram
 	teardownRetransmits = 2
+	// RFC 7296 section 2.25: "If a peer continues to receive TEMPORARY_FAILURE on the same IKE SA after several minutes, it SHOULD conclude that the state information is out of sync and close the IKE SA."
+	temporaryFailureSpan = 5 * time.Minute
 	// a responder that answered IKE_AUTH holds the SA until told, so a canceled initiator gives the answer one request's timeout
 	canceledAuthWait = requestTimeout
 

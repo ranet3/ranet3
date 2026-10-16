@@ -1,0 +1,104 @@
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: FSL-1.1-ALv2
+
+package ike
+
+import (
+	"errors"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// errRefused is the refusal of the dataplane or the random source a test breaks
+var errRefused = errors.New("refused by the test")
+
+// RFC 7296 section 2.4: "In this case, an IKE endpoint SHOULD send a Delete payload indicating that it has closed the IKE SA unless the other endpoint is no longer responding."
+// deletedOnFailure has the dialed session end on its local failure with a Delete for the IKE SA, which ends the responder's Run, and record the close for sa
+func deletedOnFailure(t *testing.T, pair *refusingPair, sa string) {
+	t.Helper()
+	err := pair.ended(t, "the session went on after its local failure")
+	if !errors.Is(err, errRefused) {
+		t.Errorf("the session ended with %v, want its local failure", err)
+	}
+	want := "ike.sa.closed testorg/client:2>testorg/server:1 sa=" + sa + " reason=local failure"
+	got := pair.dialed.recorded()
+	closes := slices.DeleteFunc(slices.Clone(got), func(line string) bool { return !strings.HasPrefix(line, "ike.sa.closed ") })
+	if !slices.Equal(closes, []string{want}) {
+		t.Errorf("the session recorded %q, want one close, %q", got, want)
+	}
+}
+
+// failingDraws draws no jitter for the first after draws, which the schedules Run sets up take, and refuses every later one
+func failingDraws(after int32) func(time.Duration) (time.Duration, error) {
+	var drawn atomic.Int32
+	return func(time.Duration) (time.Duration, error) {
+		if drawn.Add(1) > after {
+			return 0, errRefused
+		}
+		return 0, nil
+	}
+}
+
+// a Child SA whose keys the dataplane refuses to give up at its lifetime closes the IKE SA with a Delete
+// the Delete's answer is held, so the loop wakes for its retransmissions and finds the keys refused again, which records no second close
+func TestRefusedWithdrawalAtTheLifetimeDeletesTheIKESA(t *testing.T) {
+	const lifetime = time.Second
+	pair := dialRefusing(t, func(cfg *PeerConfig) {
+		cfg.ChildRekeyInterval, cfg.RekeyMargin = lifetime, lifetime-scheduleDue
+		cfg.RekeyRetryInitial, cfg.RekeyRetryMax = answerBudget, answerBudget
+		cfg.RemotePort = relay(t, cfg.RemotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
+			if !fromInitiator && header != nil && header.ExchangeType == INFORMATIONAL && header.IsResponse() {
+				time.Sleep(quietPeriod)
+			}
+			return true
+		})
+	}, func(initiator, responder *Session) {
+		refuseRekeys(initiator, responder)
+		initiator.SetChildRetireHandler(func(uint32) error { return errRefused })
+		initiator.retransmitAfter = quietPeriod / 3
+	})
+	deletedOnFailure(t, pair, "child")
+}
+
+// a replaced Child SA whose keys the dataplane refuses to give up at its own lifetime closes the IKE SA with a Delete
+// the Delete's answer is held, and the lifetime already past does not wake the loop meanwhile, so the dataplane is asked once
+func TestRefusedWithdrawalOfAReplacedChildSAIsAskedOnce(t *testing.T) {
+	const retiringSPI = 0x11111111
+	var asked atomic.Int32
+	pair := dialRefusing(t, func(cfg *PeerConfig) {
+		cfg.ChildRekeyInterval, cfg.RekeyMargin = time.Hour, time.Minute
+		cfg.RemotePort = relay(t, cfg.RemotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
+			if !fromInitiator && header != nil && header.ExchangeType == INFORMATIONAL && header.IsResponse() {
+				time.Sleep(quietPeriod)
+			}
+			return true
+		})
+	}, func(initiator, _ *Session) {
+		initiator.retiring, initiator.retiringEnds, initiator.retiringBy = ChildSA{LocalSPI: retiringSPI, RemoteSPI: 0x33333333}, time.Now().Add(scheduleDue), time.Now().Add(time.Hour)
+		initiator.SetChildRetireHandler(func(spi uint32) error {
+			if spi != retiringSPI {
+				return nil
+			}
+			asked.Add(1)
+			return errRefused
+		})
+	})
+	deletedOnFailure(t, pair, "child")
+	if got := asked.Load(); got != 1 {
+		t.Errorf("the dataplane was asked %d times to withdraw the replaced Child SA, want once", got)
+	}
+}
+
+// a random source that refuses the draw that times the next rekey after a Child SA rekey closes the IKE SA with a Delete
+func TestRefusedDrawAfterAChildSARekeyDeletesTheIKESA(t *testing.T) {
+	pair := dialRefusing(t, func(cfg *PeerConfig) { cfg.ChildRekeyInterval = time.Hour }, func(initiator, _ *Session) {
+		initiator.rekeyJitterSource = failingDraws(1)
+	})
+	if err := pair.initiator.RekeyChildProactively(); err != nil {
+		t.Fatalf("the Child SA rekey failed: %v", err)
+	}
+	deletedOnFailure(t, pair, "child")
+}

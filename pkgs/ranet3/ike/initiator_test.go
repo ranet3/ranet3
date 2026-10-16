@@ -73,13 +73,19 @@ func TestSessionScheduledRekeyFailureRetries(t *testing.T) {
 		mux: mux,
 		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2,
 			skei: make([]byte, 20), sker: make([]byte, 20), skD: []byte("test child rekey SK_d material")},
-		Child:    ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080},
-		requests: make(chan *localRequest, 1),
+		Child:            ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080},
+		childEstablished: time.Now(),
+		requests:         make(chan *localRequest, 1),
 	}
 	if err := mux.RegisterIKE(spiI); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetRekeyIntervals(time.Millisecond, 0); err != nil {
+	// the rekey is due a millisecond in and the Child SA lives an hour, so the retry falls inside its lifetime
+	s.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return 0, nil }
+	if err := s.SetRekeyIntervals(time.Hour, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRekeyTiming(time.Hour-time.Millisecond, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetRekeyRetry(10*time.Millisecond, time.Second); err != nil {
@@ -109,8 +115,18 @@ func TestSessionScheduledRekeyFailureRetries(t *testing.T) {
 			t.Errorf("write scheduled rekey response: %v", err)
 			return
 		}
-		if _, _, err := peer.ReadFromUDP(buf); err != nil {
+		n, _, err = peer.ReadFromUDP(buf)
+		if err != nil {
 			t.Errorf("read scheduled rekey retry: %v", err)
+			return
+		}
+		retry, err := DecodeMessage(buf[4:n])
+		if err != nil {
+			t.Errorf("decode scheduled rekey retry: %v", err)
+			return
+		}
+		if retry.Header.ExchangeType != CREATE_CHILD_SA || retry.Header.MessageID == m.Header.MessageID {
+			t.Errorf("after the refusal the session sent exchange %d at Message ID %d, want a new CREATE_CHILD_SA", retry.Header.ExchangeType, retry.Header.MessageID)
 			return
 		}
 		close(retried)
@@ -142,20 +158,21 @@ func TestRekeyDelay(t *testing.T) {
 		return max, nil
 	}
 
-	delay, err := s.rekeyDelay(time.Hour)
+	established := time.Now().Add(-time.Minute)
+	due, err := s.rekeyDue(time.Hour, established)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := 54 * time.Minute; delay != want {
-		t.Fatalf("rekey delay = %s, want %s", delay, want)
+	if want := established.Add(54 * time.Minute); !due.Equal(want) {
+		t.Fatalf("rekey due %s after its SA was established, want %s", due.Sub(established), want.Sub(established))
 	}
 	if len(limits) != 1 || limits[0] != time.Minute {
 		t.Fatalf("jitter limits = %v, want [%s]", limits, time.Minute)
 	}
 
 	s.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return time.Minute + time.Nanosecond, nil }
-	if _, err := s.rekeyDelay(time.Hour); err == nil {
-		t.Fatal("rekeyDelay succeeded with out-of-range jitter")
+	if _, err := s.rekeyDue(time.Hour, established); err == nil {
+		t.Fatal("rekeyDue succeeded with out-of-range jitter")
 	}
 }
 
@@ -178,17 +195,19 @@ func TestSessionScheduledRekeyChild(t *testing.T) {
 		mux: mux,
 		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2,
 			skei: make([]byte, 20), sker: make([]byte, 20), skD: []byte("test child rekey SK_d material")},
-		Child:    ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: oldLocalSPI, RemoteSPI: oldRemoteSPI},
-		requests: make(chan *localRequest, 1),
+		Child:            ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: oldLocalSPI, RemoteSPI: oldRemoteSPI},
+		childEstablished: time.Now(),
+		requests:         make(chan *localRequest, 1),
 	}
 	if err := mux.RegisterIKE(spiI); err != nil {
 		t.Fatal(err)
 	}
+	// the rekey falls due at once, long before the Child SA's lifetime
 	s.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return 0, nil }
-	if err := s.SetRekeyTiming(0, 0); err != nil {
+	if err := s.SetRekeyIntervals(time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetRekeyIntervals(25*time.Millisecond, 0); err != nil {
+	if err := s.SetRekeyTiming(time.Hour-25*time.Millisecond, 0); err != nil {
 		t.Fatal(err)
 	}
 	installed := make(chan ChildSA, 1)

@@ -478,7 +478,7 @@ testers.runNixOSTest {
               crypto.rekey = {
                 child = if profile then 0 else "5s";
                 ike = if profile then 0 else "15s";
-                margin = 0;
+                margin = "3s";
                 jitter = 0;
               };
               segment = pkgs.lib.mkIf segments {

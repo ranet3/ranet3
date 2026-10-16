@@ -6,10 +6,13 @@ package ike
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -82,6 +85,192 @@ func TestLosingLocalIKERekeyAcceptsDeleteResponse(t *testing.T) {
 	}
 	if err := other.RegisterIKE(22); err != nil {
 		t.Errorf("the redundant candidate kept its SPI registered: %v", err)
+	}
+}
+
+// RFC 7296 section 2.8: "the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
+// the candidate this end's rekey made and lost a collision with is deleted by this end, so it is kept past its lifetime for that Delete, and an answer held past the lifetime completes the rekey
+func TestLosingCandidateIsKeptPastItsLifetimeForItsDelete(t *testing.T) {
+	const lifetime, margin = 2 * time.Second, time.Second
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.Close()
+
+	const oldSPIi, oldSPIr, peerSPIi, loserSPIr = 0x0102030405060708, 0x1112131415161718, 0x2122232425262728, 0x3132333435363738
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	transforms := []Transform{{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128}, {Type: TransPRF, ID: PRF_HMAC_SHA2_256}, {Type: TransDH, ID: DH_CURVE25519}}
+	// the scheduled rekey falls due scheduleDue into the test, well inside the old SA's lifetime
+	old := &ikeContext{suite: suite, spiI: oldSPIi, spiR: oldSPIr, nextLocalMID: 2, established: time.Now().Add(scheduleDue - (lifetime - margin)),
+		skD: []byte("old IKE rekey SK_d material-------"), skei: make([]byte, 20), sker: make([]byte, 20)}
+	// the peer's answer carries the lowest of the four nonces, so the candidate this end's rekey makes loses
+	localNonce, peerNonce, answerNonce := bytes.Repeat([]byte{2}, 32), bytes.Repeat([]byte{3}, 32), bytes.Repeat([]byte{1}, 32)
+	events := &recorder{}
+	s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1), events: events.record,
+		ikeRekeyInterval: lifetime, rekeyMargin: margin,
+		ikeRekeyNonce: func(n []byte) error {
+			copy(n, localNonce)
+			return nil
+		}}
+	if err := mux.RegisterIKE(oldSPIi); err != nil {
+		t.Fatal(err)
+	}
+
+	peerLoop(t, peer, func() {
+		buf := make([]byte, 2048)
+		read := func(what string) (*Message, []byte, *net.UDPAddr, bool) {
+			if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+				t.Errorf("set a read deadline: %v", err)
+				return nil, nil, nil, false
+			}
+			n, addr, err := peer.ReadFromUDP(buf)
+			if err != nil {
+				t.Errorf("read %s: %v", what, err)
+				return nil, nil, nil, false
+			}
+			raw := append([]byte(nil), buf[4:n]...)
+			message, err := DecodeMessage(raw)
+			if err != nil {
+				t.Errorf("decode %s: %v", what, err)
+				return nil, nil, nil, false
+			}
+			return message, raw, addr, true
+		}
+		send := func(what string, raw []byte, err error, addr *net.UDPAddr) bool {
+			if err == nil {
+				_, err = peer.WriteToUDP(withNonESPMarker(raw), addr)
+			}
+			if err != nil {
+				t.Errorf("send %s: %v", what, err)
+			}
+			return err == nil
+		}
+
+		rekey, raw, addr, ok := read("the scheduled rekey")
+		if !ok {
+			return
+		}
+		inner, err := DecryptMessage(suite, old.skei, raw, rekey)
+		if err != nil || rekey.Header.ExchangeType != CREATE_CHILD_SA || findType(inner, PayloadSA) == nil || findType(inner, PayloadKE) == nil {
+			t.Errorf("the first request is %+v, %v, want the scheduled IKE SA rekey", rekey.Header, err)
+			return
+		}
+		props, err := DecodeSA(findType(inner, PayloadSA).Body)
+		if err != nil || len(props) != 1 {
+			t.Errorf("the rekey proposes %v, %v", props, err)
+			return
+		}
+		localSPIi := binary.BigEndian.Uint64(props[0].SPI)
+		_, localPublic, err := DecodeKE(findType(inner, PayloadKE).Body)
+		if err != nil {
+			t.Errorf("decode the rekey's KE: %v", err)
+			return
+		}
+
+		// the peer's own rekey crosses it, and this end answers it before it sees its own answered
+		peerDH, err := GenerateDH(DH_CURVE25519)
+		if err != nil {
+			t.Errorf("generate the peer's DH: %v", err)
+			return
+		}
+		spi := binary.BigEndian.AppendUint64(nil, peerSPIi)
+		raw, err = EncryptMessage(suite, old.sker, Header{SPIInitiator: oldSPIi, SPIResponder: oldSPIr, ExchangeType: CREATE_CHILD_SA, MessageID: 0}, nil, []RawPayload{
+			{Type: PayloadSA, Body: EncodeSA([]Proposal{{Number: 1, Protocol: ProtoIKE, SPI: spi, Transforms: transforms}})},
+			{Type: PayloadNonce, Body: EncodeNonce(peerNonce)},
+			{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, peerDH.PublicBytes())},
+		})
+		if !send("the peer's rekey", raw, err, addr) {
+			return
+		}
+		if answer, _, _, ok := read("the answer to the peer's rekey"); !ok || !answer.Header.IsResponse() || answer.Header.ExchangeType != CREATE_CHILD_SA {
+			t.Errorf("the peer's rekey was not answered first")
+			return
+		}
+
+		responderDH, err := GenerateDH(DH_CURVE25519)
+		if err != nil {
+			t.Errorf("generate the answer's DH: %v", err)
+			return
+		}
+		spi = binary.BigEndian.AppendUint64(nil, loserSPIr)
+		raw, err = EncryptMessage(suite, old.sker, Header{SPIInitiator: oldSPIi, SPIResponder: oldSPIr, ExchangeType: CREATE_CHILD_SA, Flags: FlagResponse, MessageID: rekey.Header.MessageID}, nil, []RawPayload{
+			{Type: PayloadSA, Body: EncodeSA([]Proposal{{Number: 1, Protocol: ProtoIKE, SPI: spi, Transforms: transforms}})},
+			{Type: PayloadNonce, Body: EncodeNonce(answerNonce)},
+			{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, responderDH.PublicBytes())},
+		})
+		if !send("the answer to the scheduled rekey", raw, err, addr) {
+			return
+		}
+		shared, err := responderDH.SharedSecret(localPublic)
+		if err != nil {
+			t.Errorf("derive the losing candidate's shared secret: %v", err)
+			return
+		}
+		loser, err := DeriveRekeyedIKEKeys(PRF_HMAC_SHA2_256, old.skD, suite, shared, localNonce, answerNonce, localSPIi, loserSPIr)
+		if err != nil {
+			t.Errorf("derive the losing candidate's keys: %v", err)
+			return
+		}
+
+		del, raw, addr, ok := read("the Delete of the losing candidate")
+		if !ok {
+			return
+		}
+		inner, err = DecryptMessage(suite, loser.SKei, raw, del)
+		if err != nil || del.Header.SPIInitiator != localSPIi || del.Header.SPIResponder != loserSPIr || findType(inner, PayloadD) == nil {
+			t.Errorf("the request after the collision is %+v, %v, want the Delete of the losing candidate", del.Header, err)
+			return
+		}
+		s.stateMu.RLock()
+		held := s.collision
+		s.stateMu.RUnlock()
+		if held == nil || held.spiI != localSPIi {
+			t.Errorf("the session holds %+v while its Delete is out, want the losing candidate", held)
+			return
+		}
+		// the retransmissions the hold draws are read and left unanswered
+		for until := held.established.Add(lifetime + answerLate); time.Now().Before(until); {
+			if err := peer.SetReadDeadline(until); err != nil {
+				t.Errorf("set a read deadline: %v", err)
+				return
+			}
+			if _, _, err := peer.ReadFromUDP(buf); err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Errorf("read a retransmission: %v", err)
+				return
+			}
+		}
+		raw, err = EncryptMessage(suite, loser.SKer, Header{SPIInitiator: localSPIi, SPIResponder: loserSPIr, ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: del.Header.MessageID}, nil, nil)
+		send("the answer to the Delete", raw, err, addr)
+	})
+
+	run, stop := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() { runDone <- s.Run(run) }()
+	defer func() {
+		stop()
+		<-runDone
+	}()
+	completed, failed := "ike.rekey.completed > sa=ike", "ike.rekey.failed > sa=ike"
+	for deadline := time.Now().Add(answerBudget); ; time.Sleep(recordPoll) {
+		got := events.recorded()
+		if slices.Contains(got, failed) {
+			t.Fatalf("the rekey failed with its losing candidate's Delete outstanding past the candidate's lifetime, the session recorded %q", got)
+		}
+		if slices.Contains(got, completed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the rekey never ended, the session recorded %q", got)
+		}
+	}
+	s.stateMu.RLock()
+	current, held := s.current, s.collision
+	s.stateMu.RUnlock()
+	if current.spiI != peerSPIi || held != nil {
+		t.Errorf("after the rekey the session is current on %016x and holds %+v, want the peer's candidate alone", current.spiI, held)
 	}
 }
 

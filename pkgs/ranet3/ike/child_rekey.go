@@ -92,6 +92,10 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 		default:
 		}
 	}()
+	// the rekeys running when a Child SA's keys leave at its lifetime decide whether a new SA takes its place, so none starts once they have left
+	if s.childWithdrawn() {
+		return errors.New("ike: the Child SA is past its lifetime")
+	}
 	// RFC 7296 section 2.25: "When a peer receives a TEMPORARY_FAILURE notification, it MUST NOT immediately retry the operation" and "it MUST wait so that the sender may complete whatever operation caused the temporary condition."
 	// an exchange after a failed one, on whichever path, waits out the retry delay Run gives the Child SA schedule for it, and an ask in the meantime is left to the schedule's retry
 	if s.childRetry.held(time.Now()) {
@@ -113,7 +117,7 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 		return fmt.Errorf("ike: no Child SA to rekey")
 	}
 	err = s.negotiateChild(&old)
-	var rejected *childNegotiationRejectedError
+	var rejected *rejectedError
 	if !errors.As(err, &rejected) || rejected.notify.Type != N_CHILD_SA_NOT_FOUND {
 		return err
 	}
@@ -199,7 +203,7 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 		// A rejection is the one answer that installs nothing at the peer, and
 		// rekeyChild reads it to recover from CHILD_SA_NOT_FOUND, so it passes
 		// through whole.
-		if _, ok := errors.AsType[*childNegotiationRejectedError](err); ok {
+		if _, ok := errors.AsType[*rejectedError](err); ok {
 			return err
 		}
 		return orphaned(err)
@@ -251,10 +255,13 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 	return nil
 }
 
-type childNegotiationRejectedError struct{ notify Notify }
+type rejectedError struct {
+	exchange string
+	notify   Notify
+}
 
-func (e *childNegotiationRejectedError) Error() string {
-	return fmt.Sprintf("ike: Child SA negotiation rejected: notify type %d", e.notify.Type)
+func (e *rejectedError) Error() string {
+	return fmt.Sprintf("ike: %s rejected: notify type %d", e.exchange, e.notify.Type)
 }
 
 func decodeChildNegotiationResponse(response []RawPayload, prfID uint16) (childExchangePayloads, error) {
@@ -267,7 +274,7 @@ func decodeChildNegotiationResponse(response []RawPayload, prfID uint16) (childE
 	// that RFC 7296 sections 1.3.1 and 1.3.3 specify for a successful response.
 	for _, notify := range payloads.notifies {
 		if notify.Type < 16384 {
-			return childExchangePayloads{}, &childNegotiationRejectedError{notify: notify}
+			return childExchangePayloads{}, &rejectedError{exchange: "Child SA negotiation", notify: notify}
 		}
 	}
 	if err := validateCompleteChildExchange(payloads, prfID); err != nil {
