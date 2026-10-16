@@ -1890,6 +1890,41 @@ func TestFailedInboundHandshakeIsSaidOncePerSource(t *testing.T) {
 	recordedAsWarned(2)
 }
 
+// RFC 7296 section 2.21.4: "If the message is marked as a response, the node ... MUST NOT respond."
+// the answer to a Delete whose exchange has ended reaches the responder this way, and it is no failed handshake
+func TestResponderDropsAResponseNoExchangeWaitsFor(t *testing.T) {
+	failures := &recorder{}
+	h := newResponderHarness(t, nil, failures.record)
+	peer := listenPeer(t)
+	to := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: h.remotePort}
+	header := Header{SPIInitiator: randUint64Nonzero(), SPIResponder: randUint64Nonzero(), ExchangeType: INFORMATIONAL,
+		Flags: FlagResponse | FlagInitiator, MessageID: 2}
+	send := func() {
+		t.Helper()
+		if _, err := peer.WriteToUDP(withNonESPMarker(encodeTestMessage(t, header, nil)), to); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	send()
+	_ = peer.SetReadDeadline(time.Now().Add(quietPeriod))
+	if _, _, err := peer.ReadFromUDP(make([]byte, 2048)); err == nil {
+		t.Error("the responder answered a response")
+	}
+	if n := recordedKind(failures, "ike.handshake.failed"); n != 0 {
+		t.Fatalf("a response no exchange waits for was recorded as %d failed handshakes", n)
+	}
+
+	// the same datagram marked as a request is a failed handshake, so the record would have shown the response as one
+	header.Flags = FlagInitiator
+	send()
+	for deadline := time.Now().Add(answerBudget); recordedKind(failures, "ike.handshake.failed") == 0; time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatal("a request no SA holds was not recorded as a failed handshake either")
+		}
+	}
+}
+
 // The record is bounded, because the sources in it are unauthenticated, and a
 // source arriving to a full one is spaced by the floor rather than silenced:
 // otherwise a host cycling addresses keeps every legitimate peer's first
