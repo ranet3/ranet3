@@ -90,9 +90,9 @@ var ErrUnsupported = errors.New("egress: source translation is unsupported on th
 type Egress struct {
 	// Advertise names the prefixes this node offers to carry: 0.0.0.0/0 and
 	// ::/0 for an exit node, the prefixes behind it for a subnet router. It
-	// decides which families are translated as well as which are announced,
-	// because a family this node does not offer to carry is one it has no
-	// reason to translate.
+	// decides which families the rules keyed on the mesh device cover as well
+	// as which are announced, because a family this node does not offer to
+	// carry is one it has no reason to translate out of the mesh.
 	Advertise []schema.Prefix `yaml:"advertise,omitempty" json:"advertise,omitempty" toml:"advertise,omitempty"`
 	// Source4 and Source6 are the address a translated packet leaves under,
 	// per family. See Source: "auto" is the address this node's own routes
@@ -122,6 +122,12 @@ type Runtime struct {
 	// arriving on it and leaving by another link is translated, while one arriving
 	// on it and leaving by it again is mesh transit and is left alone.
 	Interface string
+	// Egress is the egress device, named as the kernel named it: the second
+	// tun a local segment delivering to egress writes steered traffic into.
+	// A packet arriving on it and leaving by any link but the mesh device is
+	// translated, in both families, since End.DT46 delivers either. Empty
+	// where no segment delivers there.
+	Egress string
 	// MeshAddresses are the addresses this node carries on the mesh, which
 	// "auto" resolves to for the return direction. They have to be unique per
 	// node and routable within the mesh, which a mesh address already is.
@@ -148,9 +154,10 @@ type Runtime struct {
 // examples/config.toml documents, nor the order the prefixes were listed in is
 // a change, and neither costs a restart.
 //
-// The order is not meaningful: the list decides which families are translated
-// and which prefixes are announced, and both are sets. A rule is installed per
-// family rather than per entry, so nothing here is positional.
+// The order is not meaningful: the list decides which families the rules
+// keyed on the mesh device cover and which prefixes are announced, and both
+// are sets. A rule is installed per family rather than per entry, so nothing
+// here is positional.
 func (e Egress) Normalized() Egress {
 	if len(e.Advertise) == 0 {
 		e.Advertise = nil
@@ -166,10 +173,12 @@ func (e Egress) Normalized() Egress {
 
 // Validate refuses a capability that cannot mean anything, in the package that
 // knows what its fields mean. It runs at load, so a mistake costs a refusal to
-// start rather than an exit that advertises and drops.
+// start rather than an exit that advertises and drops. An empty advertise list
+// is an exit serving only the traffic steered to its egress segment, which
+// Serves judges, since whether a node has one is not in this block.
 func (e Egress) Validate() error {
-	if len(e.Advertise) == 0 {
-		return errors.New("egress: cap.egress advertise is empty, so this node would translate nothing and offer nothing: name the prefixes it carries, or 0.0.0.0/0 and ::/0 for an exit node")
+	if e.Return && len(e.Advertise) == 0 {
+		return errors.New("egress: cap.egress return is set and advertise is empty, so there is no prefix to translate from")
 	}
 	for _, entry := range e.Advertise {
 		prefix := entry.Prefix
@@ -243,9 +252,28 @@ func (e Egress) Validate() error {
 	return nil
 }
 
-// families is the address families this configuration covers, derived from the
-// prefixes it advertises. A family nothing is advertised for is one this node
-// has no reason to translate, so no table is created for it.
+// Serves refuses a capability that would translate nothing and offer nothing:
+// one advertising no prefix on a node with no segment delivering to egress,
+// which steered reports.
+func (e Egress) Serves(steered bool) error {
+	if len(e.Advertise) == 0 && !steered {
+		return errors.New("egress: cap.egress advertise is empty and no segment here delivers to egress, so this node would translate nothing and offer nothing: name the prefixes it carries, or 0.0.0.0/0 and ::/0 for an exit node")
+	}
+	return nil
+}
+
+// translated is the address families a translator of this capability covers:
+// those it advertises, and both beside an egress device.
+func (e Egress) translated(egress string) []uint8 {
+	if egress != "" {
+		return []uint8{FamilyIPv4, FamilyIPv6}
+	}
+	return e.families()
+}
+
+// families is the address families this configuration advertises, derived
+// from its prefixes. A family nothing is advertised for is one the mesh device
+// carries nothing out of here, so no rule keyed on it is created.
 func (e Egress) families() []uint8 {
 	var out []uint8
 	for _, prefix := range e.Advertise {
@@ -307,6 +335,10 @@ type Rule struct {
 	Direction Direction
 	// Interface is the mesh device the direction is relative to.
 	Interface string
+	// Egress keys an Out rule on the egress device in place of the mesh
+	// device: a packet arriving on it and leaving by any link but the mesh
+	// device is translated. Empty keys the rule on the mesh device.
+	Egress string
 	// Source is the address to translate to. An invalid address means the
 	// backend lets the host pick, which is nftables masquerade: the address of
 	// the link the packet is leaving by, chosen per packet.
@@ -325,7 +357,11 @@ func (r Rule) String() string {
 	if r.Source.IsValid() {
 		source = "source " + r.Source.String()
 	}
-	parts := []string{r.Direction.String(), "via", r.Interface, familyName(r.Family)}
+	parts := []string{r.Direction.String(), "via", r.Interface}
+	if r.Egress != "" {
+		parts = []string{r.Direction.String(), "via", r.Egress, "not", r.Interface}
+	}
+	parts = append(parts, familyName(r.Family))
 	if r.From.IsValid() {
 		parts = append(parts, "from", r.From.String())
 	}
@@ -424,8 +460,14 @@ func New(cfg Egress, rt Runtime) (*Translator, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	if err := cfg.Serves(rt.Egress != ""); err != nil {
+		return nil, err
+	}
 	if rt.Interface == "" {
 		return nil, errors.New("egress: the mesh interface is required")
+	}
+	if rt.Egress == rt.Interface {
+		return nil, fmt.Errorf("egress: the egress device %s is the mesh device, whose traffic out of the mesh its own rule translates", rt.Egress)
 	}
 	if rt.Forwarding == nil {
 		return nil, errors.New("egress: a forwarding reader is required")
@@ -569,7 +611,7 @@ func (t *Translator) Announce() []netip.Prefix {
 // Run returns the withdrawal error, never a reconcile error: a failed pass is
 // logged, costs the advertisement, and is retried.
 func (t *Translator) Run(ctx context.Context) error {
-	slog.Info("egress translator started", "interface", t.rt.Interface, "where", t.Where(),
+	slog.Info("egress translator started", "interface", t.rt.Interface, "egress", t.rt.Egress, "where", t.Where(),
 		"advertise", len(t.cfg.Advertise))
 	ticker := time.NewTicker(t.cfg.sweep())
 	defer ticker.Stop()
@@ -745,21 +787,27 @@ func sameRules(held []Installed, desired []Rule) bool {
 // one family at a time, and a list ordered any other way would never compare
 // equal to its own readback and would be rewritten on every pass forever.
 //
-// Within a family the Out rule comes first, because every deployment has one
-// and a chain reads top to bottom.
+// Within a family the Out rules come first, the one keyed on the mesh device
+// where the family is advertised and the one keyed on the egress device where
+// there is one, because a chain reads top to bottom.
 func (t *Translator) desired() []Rule {
 	var out []Rule
-	for _, family := range t.cfg.families() {
-		rule := Rule{Family: family, Direction: Out, Interface: t.rt.Interface}
-		if source := t.cfg.source(family); source.Addr.IsValid() {
-			rule.Source = source.Addr
+	for _, family := range t.cfg.translated(t.rt.Egress) {
+		rule := Rule{Family: family, Direction: Out, Interface: t.rt.Interface, Source: t.cfg.source(family).Addr}
+		if slices.Contains(t.cfg.families(), family) {
+			out = append(out, rule)
 		}
-		out = append(out, rule)
+		if t.rt.Egress != "" {
+			steered := rule
+			steered.Egress = t.rt.Egress
+			out = append(out, steered)
+		}
 		if !t.cfg.Return {
 			continue
 		}
 		// Resolved again rather than remembered, and its error dropped,
-		// because New refused every configuration that cannot answer it.
+		// because New refused every advertised family that cannot answer it
+		// and a family advertising nothing has no prefix to write a rule for.
 		source, err := returnSource(t.cfg, t.rt, family)
 		if err != nil || !source.IsValid() {
 			continue
