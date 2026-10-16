@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"slices"
 )
 
 // EncryptMessage builds a full IKEv2 message wire image whose payloads
@@ -148,5 +149,13 @@ func decodeMessagePlaintext(innerFirst PayloadType, plain []byte) ([]RawPayload,
 	}
 	inner := plain[:len(plain)-1-padLen]
 
-	return decodePayloadChain(innerFirst, inner)
+	payloads, err := decodePayloadChain(innerFirst, inner)
+	if err != nil {
+		return nil, err
+	}
+	// RFC 7296 section 3.1: "an Encrypted payload MUST NOT contain another Encrypted payload."
+	if slices.ContainsFunc(payloads, func(payload RawPayload) bool { return payload.Type == PayloadSK }) {
+		return nil, fmt.Errorf("ike: the SK payload carries another SK payload")
+	}
+	return payloads, nil
 }

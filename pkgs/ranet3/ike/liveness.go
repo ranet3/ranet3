@@ -761,7 +761,7 @@ func retransmitDelay(first time.Duration, attempt int) time.Duration {
 // receive a cached response, but must not refresh DPD or migrate the endpoint.
 func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pendingRequest) bool {
 	hdr, err := decodeHeader(raw)
-	if err != nil {
+	if err != nil || higherVersion(s.mux.SendIKETo, hdr, source) {
 		return false
 	}
 	if hdr.MajorVersion != 2 || hdr.Length != uint32(len(raw)) {
@@ -802,17 +802,14 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 			}
 			return false
 		}
-		// We cannot represent the next expected ID after this request. Close
-		// before accepting it instead of wrapping the replay window to zero
-		// (RFC 7296 section 2.2).
+		// RFC 7296 section 2.2: "In the unlikely event that Message IDs grow too large to fit in 32 bits, the IKE SA MUST be closed or rekeyed."
+		// a request at the last Message ID leaves no next one to expect, so the IKE SA closes rather than take it
 		if nextPeerMID == maxMessageID {
 			s.mux.Close()
 			return true
 		}
-		// Authentication and a fresh Message ID prove this request came from
-		// the live peer rather than being a replay. Only now may it update the
-		// endpoint used for future IKE and ESP traffic after NAT port rebinding
-		// (RFC 7296 sections 2.4 and 2.23).
+		// RFC 7296 section 2.23: "Also, dynamic address update should only be done in response to a new packet"
+		// and: "otherwise, an attacker can revert the addresses with old replayed packets."
 		if s.mux.AdoptEndpoint(source) {
 			s.emit("ike.endpoint.moved", slog.String("endpoint", source.String()))
 		}

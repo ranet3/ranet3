@@ -601,6 +601,229 @@ func TestAuthenticatedMalformedRequestGetsInvalidSyntax(t *testing.T) {
 	}
 }
 
+// RFC 7296 section 3.1: "An Encrypted payload MUST be the last payload in a packet and an Encrypted payload MUST NOT contain another Encrypted payload."
+// section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
+// a request whose SK carries an SK payload after a Delete of the Child SA draws INVALID_SYNTAX and ends the IKE SA, and the Delete is not acted on
+func TestSessionRefusesAnSKPayloadInsideAnotherWithInvalidSyntax(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.Close()
+	held := testContext()
+	s := &Session{mux: mux, current: held, Child: ChildSA{LocalSPI: 0x01020304, RemoteSPI: 0x50607080}}
+	if err := mux.RegisterIKE(held.spiI); err != nil {
+		t.Fatal(err)
+	}
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, MessageID: 0}
+	request, err := EncryptMessage(held.suite, held.sker, header, nil, []RawPayload{
+		{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{binary.BigEndian.AppendUint32(nil, 0x50607080)}})},
+		{Type: PayloadSK, Body: make([]byte, 24)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.WriteToUDP(withNonESPMarker(request), muxLoopback(mux)); err != nil {
+		t.Fatal(err)
+	}
+	raw, source, err := mux.RecvIKEFromUntil(time.Now().Add(answerBudget))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending *pendingRequest
+	if !s.dispatch(raw, source, &pending) {
+		t.Fatal("the request was not taken as a fresh authenticated request")
+	}
+	buf := make([]byte, 2048)
+	_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+	n, _, err := peer.ReadFromUDP(buf)
+	if err != nil || n <= 4 {
+		t.Fatalf("the request drew no answer: %d bytes, %v", n, err)
+	}
+	answer, err := DecodeMessage(buf[4:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := DecryptMessage(held.suite, held.skei, buf[4:n], answer)
+	if err != nil || answer.Header.MessageID != 0 || !notified(inner, N_INVALID_SYNTAX, nil) {
+		t.Errorf("the request drew %v at Message ID %d (%v), want INVALID_SYNTAX at 0", inner, answer.Header.MessageID, err)
+	}
+	if !mux.IsClosed() || s.Child.LocalSPI != 0x01020304 {
+		t.Errorf("the IKE SA is closed %v and the Child SA is %08x, want the IKE SA ended and the Child SA as it was", mux.IsClosed(), s.Child.LocalSPI)
+	}
+}
+
+// RFC 7296 section 2.21.4: "A peer receiving such an unprotected Notify payload MUST NOT respond and MUST NOT change the state of any existing SAs."
+// an INVALID_IKE_SPI in the clear under the IKE SA's SPIs, as the answer to the exchange under way and as a request, settles nothing and draws nothing
+func TestSessionTakesNothingFromANotifyInTheClear(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.Close()
+	held := testContext()
+	s := &Session{mux: mux, current: held}
+	if err := mux.RegisterIKE(held.spiI); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan requestResult, 1)
+	waiting := &pendingRequest{localRequest: localRequest{exchange: INFORMATIONAL, result: result}, context: held, msgID: 3}
+	pending := waiting
+	// INVALID_IKE_SPI, the notify a node sends in the clear about a message under SPIs it does not know
+	invalidSPI := []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: 4})}}
+	for _, flags := range []uint8{FlagResponse, 0} {
+		header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, Flags: flags, MessageID: 3}
+		if _, err := peer.WriteToUDP(withNonESPMarker(encodeTestMessage(t, header, invalidSPI)), muxLoopback(mux)); err != nil {
+			t.Fatal(err)
+		}
+		raw, source, err := mux.RecvIKEFromUntil(time.Now().Add(answerBudget))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.dispatch(raw, source, &pending) {
+			t.Errorf("the notify in the clear with flags %#x was taken as a fresh authenticated message", flags)
+		}
+	}
+	if pending != waiting || len(result) != 0 {
+		t.Error("a notify in the clear settled the exchange under way")
+	}
+	_ = peer.SetReadDeadline(time.Now().Add(quietPeriod))
+	if _, _, err := peer.ReadFromUDP(make([]byte, 2048)); err == nil {
+		t.Error("a notify in the clear drew an answer")
+	}
+}
+
+// RFC 7296 section 2.21.4: "A node receiving a suspicious message from an IP address (and port, if NAT traversal is used) with which it has an IKE SA SHOULD send an IKE Notify payload in an IKE INFORMATIONAL exchange over that SA."
+// section 2.21.4: "The recipient MUST NOT change the state of any SAs as a result"
+// an INFORMATIONAL request telling this end of INVALID_SPI for the SPI its Child SA sends with and of INVALID_IKE_SPI is answered empty, and the IKE SA and the Child SA stay
+func TestSessionChangesNothingForTheErrorNotifiesAPeerSends(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.Close()
+	held := testContext()
+	s := &Session{mux: mux, current: held, Child: ChildSA{LocalSPI: 0x01020304, RemoteSPI: 0x50607080}}
+	if err := mux.RegisterIKE(held.spiI); err != nil {
+		t.Fatal(err)
+	}
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, MessageID: 0}
+	request, err := EncryptMessage(held.suite, held.sker, header, nil, []RawPayload{
+		// INVALID_SPI, whose data section 1.5 gives as "the SPI of the invalid packet"
+		{Type: PayloadN, Body: EncodeNotify(Notify{Type: 11, Data: binary.BigEndian.AppendUint32(nil, 0x50607080)})},
+		// INVALID_IKE_SPI
+		{Type: PayloadN, Body: EncodeNotify(Notify{Type: 4})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.WriteToUDP(withNonESPMarker(request), muxLoopback(mux)); err != nil {
+		t.Fatal(err)
+	}
+	raw, source, err := mux.RecvIKEFromUntil(time.Now().Add(answerBudget))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending *pendingRequest
+	if !s.dispatch(raw, source, &pending) {
+		t.Fatal("the INFORMATIONAL request was not taken")
+	}
+	buf := make([]byte, 2048)
+	_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+	n, _, err := peer.ReadFromUDP(buf)
+	if err != nil || n <= 4 {
+		t.Fatalf("the INFORMATIONAL request drew no answer: %d bytes, %v", n, err)
+	}
+	answer, err := DecodeMessage(buf[4:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := DecryptMessage(held.suite, held.skei, buf[4:n], answer)
+	if err != nil || answer.Header.MessageID != 0 || !answer.Header.IsResponse() || len(inner) != 0 {
+		t.Errorf("the INFORMATIONAL request drew %v at Message ID %d (%v), want an empty answer at 0", inner, answer.Header.MessageID, err)
+	}
+	if mux.IsClosed() || s.Child.LocalSPI != 0x01020304 || s.Child.RemoteSPI != 0x50607080 {
+		t.Errorf("the IKE SA is closed %v and the Child SA is %08x and %08x after the notifies, want both as they were", mux.IsClosed(), s.Child.LocalSPI, s.Child.RemoteSPI)
+	}
+}
+
+// RFC 7296 section 2.5: "If an endpoint receives a message with a higher major version number, it MUST drop the message and SHOULD send an unauthenticated Notify message of type INVALID_MAJOR_VERSION containing the highest (closest) version number it supports."
+// section 3.1 on the minor version: "They MUST ignore the minor version number of received messages."
+// section 2.21.4: "If a response is sent, the response MUST be sent to the IP address and port from where it came with the same IKE SPIs and the Message ID copied."
+// a Delete of the IKE SA at major version 3 that authenticates, sent from an address other than the peer's, is answered so in the clear at that address and not acted on, so the request at version 2.1 with the V bit and every X bit set after it takes the same Message ID
+func TestSessionAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.Close()
+	held := testContext()
+	s := &Session{mux: mux, current: held}
+	if err := mux.RegisterIKE(held.spiI); err != nil {
+		t.Fatal(err)
+	}
+
+	var pending *pendingRequest
+	buf := make([]byte, 2048)
+	sender := listenPeer(t)
+	answer := func(request []byte) (bool, []byte) {
+		t.Helper()
+		if _, err := sender.WriteToUDP(withNonESPMarker(request), muxLoopback(mux)); err != nil {
+			t.Fatal(err)
+		}
+		raw, source, err := mux.RecvIKEFromUntil(time.Now().Add(answerBudget))
+		if err != nil {
+			t.Fatal(err)
+		}
+		taken := s.dispatch(raw, source, &pending)
+		if err := sender.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+			t.Fatal(err)
+		}
+		n, _, err := sender.ReadFromUDP(buf)
+		if err != nil {
+			t.Fatalf("the request drew no answer: %v", err)
+		}
+		return taken, slices.Clone(buf[4:n])
+	}
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, MessageID: 0}
+	deletion := sealedAtVersion(t, 0x30, held.suite, held.sker, header, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+	taken, reply := answer(deletion)
+	if taken {
+		t.Fatal("the Delete at major version 3 was taken as a fresh authenticated request")
+	}
+	wantMajorVersionRefusal(t, reply, header)
+	sender = peer
+	// section 3.1 on the X bits: "'X' bits MUST be cleared when sending and MUST be ignored on receipt."
+	// section 3.1 on the V bit: "Implementations of IKEv2 MUST clear this bit when sending and MUST ignore it in incoming messages."
+	header.Flags |= FlagVersion | 0xc7
+
+	taken, reply = answer(sealedAtVersion(t, 0x21, held.suite, held.sker, header, nil))
+	// section 2.5: "If it receives a message with a major version that it supports, it MUST respond with that version number."
+	if reply[17] != 0x20 {
+		t.Errorf("the answer's version octet is %#x, want 2.0", reply[17])
+	}
+	// section 3.1 on the I bit: "This bit MUST be set in messages sent by the original initiator of the IKE SA and MUST be cleared in messages sent by the original responder."
+	if reply[19] != FlagInitiator|FlagResponse {
+		t.Errorf("the answer's flags are %#x, want the Initiator and Response bits alone", reply[19])
+	}
+	message, err := DecodeMessage(reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := DecryptMessage(held.suite, held.skei, reply, message)
+	if !taken || err != nil || message.Header.MessageID != 0 || len(inner) != 0 {
+		t.Errorf("the request at version 2.1 after it drew %v at Message ID %d (%v), want an empty answer at 0", inner, message.Header.MessageID, err)
+	}
+}
+
 func TestChildRequestRejectionNotifications(t *testing.T) {
 	const unknownSPI = 0x10203040
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
@@ -837,6 +1060,20 @@ func TestInitialResponseHeaderValidation(t *testing.T) {
 	initialError.SPIResponder = 0
 	if !validResponseHeader(req, &initialError, HeaderLen) {
 		t.Fatal("valid initial error response rejected")
+	}
+	// RFC 7296 section 3.1 on the minor version: "They MUST ignore the minor version number of received messages."
+	// and on the V flag: "Implementations of IKEv2 MUST clear this bit when sending and MUST ignore it in incoming messages."
+	// and on the X bits: "'X' bits MUST be cleared when sending and MUST be ignored on receipt."
+	for name, ignored := range map[string]func(*Header){
+		"minor version 1": func(h *Header) { h.MinorVersion = 1 },
+		"V flag":          func(h *Header) { h.Flags |= FlagVersion },
+		"X bits":          func(h *Header) { h.Flags |= 0xc7 },
+	} {
+		got := *valid
+		ignored(&got)
+		if !validResponseHeader(req, &got, HeaderLen) {
+			t.Errorf("a response with the %s was rejected", name)
+		}
 	}
 	mutations := []func(*Header){
 		func(h *Header) { h.MajorVersion = 3 }, func(h *Header) { h.ExchangeType = IKE_AUTH },

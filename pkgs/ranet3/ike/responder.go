@@ -234,6 +234,9 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
 
+	if header, err := decodeHeader(datagram.Raw); err == nil && higherVersion(r.cfg.Hub.SendIKETo, header, datagram.Endpoint) {
+		return nil, Accepted{}, fmt.Errorf("ike: unclaimed request at major version %d", header.MajorVersion)
+	}
 	request, err := DecodeMessage(datagram.Raw)
 	if err != nil {
 		return nil, Accepted{}, fmt.Errorf("ike: decode IKE_SA_INIT request: %w", err)
@@ -256,11 +259,11 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	}
 	// RFC 7296 section 2.5 refuses a critical payload this end does not implement by its type
 	if unsupported, found := firstUnsupportedCritical(request.Payloads); found {
-		r.sendStatelessNotify(datagram, spiI, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupported)})
+		r.sendStatelessNotify(datagram, &header, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupported)})
 		return nil, Accepted{}, fmt.Errorf("ike: IKE_SA_INIT request marks payload type %d critical", unsupported)
 	}
 
-	// RFC 7296 section 2.6 has an initiator under load prove it receives at its address before anything is allocated for it
+	// RFC 7296 section 2.6: "These attacks can be made less effective if a responder uses minimal CPU and commits no state to an SA until it knows the initiator can receive packets at the address from which it claims to be sending them."
 	if required, err := r.cookieRequired(request, ni, spiI, datagram.Endpoint); err != nil {
 		return nil, Accepted{}, err
 	} else if required {
@@ -279,8 +282,10 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		return nil, Accepted{}, err
 	}
 	if !supportsIdentity {
-		// RFC 7296 section 3.10.1 sends AUTHENTICATION_FAILED only in answer to IKE_AUTH, and an unusable method is a proposal that is not acceptable
-		r.sendStatelessNotify(datagram, spiI, N_NO_PROPOSAL_CHOSEN, nil)
+		// RFC 7296 section 3.10.1 on AUTHENTICATION_FAILED: "Sent in the response to an IKE_AUTH message when, for some reason, the authentication failed."
+		// and on NO_PROPOSAL_CHOSEN: "This can be sent in any case where the offered proposals (including but not limited to SA payload values, USE_TRANSPORT_MODE notify, IPCOMP_SUPPORTED notify) are not acceptable for the responder."
+		// an initiator that advertises no hash this end signs under offers nothing it can accept
+		r.sendStatelessNotify(datagram, &header, N_NO_PROPOSAL_CHOSEN, nil)
 		return nil, Accepted{}, fmt.Errorf("ike: initiator did not advertise Ed25519 Identity hash support")
 	}
 
@@ -291,16 +296,17 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	proposal, suite, err := selectIKEProposal(saPayload.Body, peerGroup)
 	if err != nil {
 		if wrongGroup, ok := errors.AsType[*invalidKEError](err); ok {
-			r.sendStatelessNotify(datagram, spiI, N_INVALID_KE_PAYLOAD, invalidKENotifyData(wrongGroup.group))
+			// outside statelessErrors, as COOKIE is
+			_ = r.cfg.Hub.SendIKETo(statelessNotify(&header, N_INVALID_KE_PAYLOAD, invalidKENotifyData(wrongGroup.group)), datagram.Endpoint)
 			return nil, Accepted{}, err
 		}
-		r.sendStatelessNotify(datagram, spiI, N_NO_PROPOSAL_CHOSEN, nil)
+		r.sendStatelessNotify(datagram, &header, N_NO_PROPOSAL_CHOSEN, nil)
 		return nil, Accepted{}, err
 	}
 
 	// RFC 7296 section 2.10: a nonce "MUST be at least half the key size of the negotiated pseudorandom function", known once the proposal is chosen
 	if !validNonceFor(ni, suite.PRFID) {
-		r.sendStatelessNotify(datagram, spiI, N_NO_PROPOSAL_CHOSEN, nil)
+		r.sendStatelessNotify(datagram, &header, N_NO_PROPOSAL_CHOSEN, nil)
 		return nil, Accepted{}, fmt.Errorf("ike: initiator nonce length %d is short for the negotiated PRF", len(ni))
 	}
 
@@ -362,8 +368,8 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 			suite: suite,
 			skD:   keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr,
 			spiI: spiI, spiR: spiR, responder: true, answeredAuth: true, established: time.Now(),
-			// RFC 7296 section 2.2: the initiator consumed Message IDs 0 and 1, so
-			// its next request is 2, while our own request counter starts at 0.
+			// RFC 7296 section 2.2: "Thus, the first pair of IKE_AUTH messages will have an ID of 1, the second (when EAP is used) will be 2, and so on."
+			// with no EAP the initiator's next request is at 2, and this end has made no request of its own
 			nextPeerMID: 2, nextLocalMID: 0,
 		},
 		requests:        make(chan *localRequest, 1),
@@ -585,12 +591,8 @@ type authRequest struct {
 // awaitAuthRequest waits for the initiator's IKE_AUTH, answering a repeat of
 // the IKE_SA_INIT request with the identical response we already sent.
 //
-// The repeat has to match the retained request byte for byte. RFC 7296 section 2.1
-// says the SPI and the source address are not enough to recognize a
-// retransmission and that a responder matches on the whole packet, its hash or
-// the nonce, and here that requirement also keeps this from being a reflector:
-// a bare header naming a live SPIi, which anyone who opened one knows, would
-// otherwise draw the full response at whatever source address it claimed.
+// RFC 7296 section 2.1: "It is not sufficient to use the initiator's SPI and/or IP address to differentiate between these three cases because two different peers behind a single NAT could choose the same initiator SPI."
+// so a repeat is matched on the whole packet, which also keeps a bare header naming a live SPIi, which anyone who opened one knows, from drawing the response at whatever source it claims
 func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse []byte, deadline time.Time) (*authRequest, error) {
 	ctx := s.current
 	for {
@@ -599,6 +601,9 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse []byte, deadlin
 			return nil, fmt.Errorf("ike: waiting for IKE_AUTH: %w", err)
 		}
 		header, err := decodeHeader(raw)
+		if err == nil && higherVersion(s.mux.SendIKETo, header, source) {
+			continue
+		}
 		if err != nil || header.MajorVersion != 2 || header.Length != uint32(len(raw)) ||
 			header.SPIInitiator != ctx.spiI || header.IsResponse() || !header.IsInitiator() {
 			continue
@@ -615,13 +620,8 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse []byte, deadlin
 		if header.ExchangeType != IKE_AUTH || header.MessageID != 1 || header.SPIResponder != ctx.spiR {
 			continue
 		}
-		// Decoded and decrypted here rather than by the caller, so that a
-		// datagram carrying the right header and the wrong contents is one
-		// more thing to keep waiting past. Anyone who can see the responder
-		// SPI can send one, and acting on it would end a handshake this end
-		// has already paid for. It is the rule sendRecv follows for the rest
-		// of the session, RFC 7296 section 2.21 and RFC 7815 section 2.1:
-		// nothing unauthenticated changes state. The deadline ends the wait.
+		// a datagram with the right header that does not authenticate is one more to wait past, since anyone who sees the responder SPI can send one
+		// and acting on it would end a handshake this end has paid for
 		outer, err := DecodeMessage(raw)
 		if err != nil {
 			continue
@@ -881,11 +881,8 @@ func (r *Responder) leaveHalfOpen(source netip.Addr) {
 	r.mu.Unlock()
 }
 
-// cookieRequired implements RFC 7296 section 2.6. With neither the global
-// count nor this address's share of it under pressure it does nothing. Under
-// either, a request without a currently valid cookie is answered with one and
-// reports true so the caller stops without allocating. The initiator retries
-// with the cookie echoed as its first payload.
+// cookieRequired reports whether request, under pressure on the half-open count or on this address's share of it, was answered with a cookie, and the caller then stops without allocating
+// RFC 7296 section 2.6: "When a responder detects a large number of half-open IKE SAs, it SHOULD reply to IKE_SA_INIT requests with a response containing the COOKIE notification."
 func (r *Responder) cookieRequired(request *Message, ni []byte, spiI uint64, endpoint transport.Endpoint) (bool, error) {
 	source := endpoint.AddrPort().Addr()
 	r.mu.Lock()
@@ -929,11 +926,7 @@ func (r *Responder) cookieRequired(request *Message, ni []byte, spiI uint64, end
 			}
 		}
 	}
-	header := Header{SPIInitiator: spiI, ExchangeType: IKE_SA_INIT, Flags: FlagResponse, MessageID: 0}
-	message := &Message{Header: header, Payloads: []RawPayload{
-		{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_COOKIE, Data: expected})},
-	}}
-	_ = r.cfg.Hub.SendIKETo(message.Encode(), endpoint)
+	_ = r.cfg.Hub.SendIKETo(statelessNotify(&request.Header, N_COOKIE, expected), endpoint)
 	return true, nil
 }
 
@@ -950,14 +943,12 @@ func cookieValue(secret [cookieSecretLen]byte, version uint8, ni []byte, spiI ui
 	return append([]byte{version}, mac.Sum(nil)...)
 }
 
-// sendStatelessNotify answers an IKE_SA_INIT we will not carry forward. The
-// responder SPI is zero because no SA was created (RFC 7296 section 2.6).
-func (r *Responder) sendStatelessNotify(datagram transport.Unclaimed, spiI uint64, notify NotifyType, data []byte) {
-	header := Header{SPIInitiator: spiI, ExchangeType: IKE_SA_INIT, Flags: FlagResponse, MessageID: 0}
-	message := &Message{Header: header, Payloads: []RawPayload{
-		{Type: PayloadN, Body: EncodeNotify(Notify{Type: notify, Data: data})},
-	}}
-	_ = r.cfg.Hub.SendIKETo(message.Encode(), datagram.Endpoint)
+// sendStatelessNotify answers an IKE_SA_INIT request we will not carry
+// forward, whose zero responder SPI the answer keeps since no SA was created.
+func (r *Responder) sendStatelessNotify(datagram transport.Unclaimed, request *Header, notify NotifyType, data []byte) {
+	if statelessErrors.take() {
+		_ = r.cfg.Hub.SendIKETo(statelessNotify(request, notify, data), datagram.Endpoint)
+	}
 }
 
 // selectIKEProposal picks one transform of each type from the initiator's

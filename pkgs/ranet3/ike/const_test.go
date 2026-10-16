@@ -5,18 +5,16 @@ package ike
 
 import "testing"
 
-// Every other test in this package names these on both sides of the
-// comparison, so what reaches the wire, the number, is pinned by nothing at
-// all. Two of them were transposed here once: SET_WINDOW_SIZE carried COOKIE's
-// value, which is an interoperability failure no amount of testing against
-// ourselves can see. The values are the IANA IKEv2 Notify Message Types
-// registry, RFC 7296 section 3.10.1 and RFC 7427 section 4.
+// RFC 7296 section 3.10.1: "The table below lists the notification messages and their corresponding values."
+// RFC 7427 section 4: "When a Notify payload of type SIGNATURE_HASH_ALGORITHMS is sent, the Protocol ID field is set to 0, the SPI Size is set to 0, and the Notify Message Type is set to 16431."
+// every other test names these constants on both sides of a comparison, so this one alone holds the numbers that reach the wire
 func TestNotifyTypesAreRegistryValues(t *testing.T) {
 	for name, pair := range map[string]struct {
 		got  NotifyType
 		want uint16
 	}{
 		"UNSUPPORTED_CRITICAL_PAYLOAD": {N_UNSUPPORTED_CRITICAL_PAYLOAD, 1},
+		"INVALID_MAJOR_VERSION":        {N_INVALID_MAJOR_VERSION, 5},
 		"INVALID_SYNTAX":               {N_INVALID_SYNTAX, 7},
 		"NO_PROPOSAL_CHOSEN":           {N_NO_PROPOSAL_CHOSEN, 14},
 		"INVALID_KE_PAYLOAD":           {N_INVALID_KE_PAYLOAD, 17},
