@@ -82,6 +82,11 @@ out of `dial.to` stops that dialer. One the peer opened against this node
 survives, because nothing was dialing it, unless the same reload turns
 `link.listen` off.
 
+A dialer stopped while its `IKE_AUTH` request is unanswered waits up to 2
+seconds for the answer, and closes with a Delete the session that answer opened
+on the peer. When no answer comes in that time it sends nothing more, and the
+peer's session ends once its liveness check goes unanswered.
+
 Revocation tests whether the organization still names the node and still gives
 it the key the session was verified under, not which endpoint the peer asserted.
 Renumbering a peer's serial is an edit, not a revocation, and the peer keeps the
