@@ -34,6 +34,8 @@ type responderHarness struct {
 	private    ed25519.PrivateKey
 	sessions   chan *Session
 	identities chan Accepted
+	// aliases holds the table the responder's Aliases gives the next handshake, none until a test stores some
+	aliases *atomic.Pointer[Aliases]
 }
 
 // newResponderHarness runs a Responder on one hub and hands back everything
@@ -52,14 +54,26 @@ const answerBudget = 30 * time.Second
 // and a machine too slow to show it in time lets the test pass rather than fail
 const quietPeriod = 300 * time.Millisecond
 
-type trustFunc func(identity.Identity) (ed25519.PublicKey, error)
+type trustFunc func(identity.Identity) (ed25519.PublicKey, Family, error)
 
-func (f trustFunc) Key(id identity.Identity) (ed25519.PublicKey, error) { return f(id) }
+func (f trustFunc) Key(id identity.Identity) (ed25519.PublicKey, Family, error) { return f(id) }
 
 // errUntrusted is the refusal of a trust that admits nobody a test asks about
 var errUntrusted = errors.New("not in the trust")
 
-var trustsNobody = trustFunc(func(identity.Identity) (ed25519.PublicKey, error) { return nil, errUntrusted })
+var trustsNobody = trustFunc(func(identity.Identity) (ed25519.PublicKey, Family, error) { return nil, 0, errUntrusted })
+
+// trustIn admits under key each endpoint families holds, in its family
+// key is read on each question, which lets a test store it after the harness that makes it
+func trustIn(key *atomic.Pointer[ed25519.PublicKey], families map[identity.Identity]Family) trustFunc {
+	return func(id identity.Identity) (ed25519.PublicKey, Family, error) {
+		family, ok := families[id]
+		if !ok {
+			return nil, 0, errUntrusted
+		}
+		return *key.Load(), family, nil
+	}
+}
 
 // newResponderHarness answers as testorg/server:1
 func newResponderHarness(t *testing.T, trust Trust, events ...Recorder) *responderHarness {
@@ -67,10 +81,20 @@ func newResponderHarness(t *testing.T, trust Trust, events ...Recorder) *respond
 	return newResponderHarnessAs(t, []identity.Identity{identity.MustParse("testorg/server:1")}, trust, events...)
 }
 
-// newResponderHarnessAs answers as each endpoint in local
+// newResponderHarnessAs answers as each endpoint in local, all of them in IPv4
 // events, where a test passes one, is the responder's Recorder
-// a nil trust admits testorg/client:2 alone, under the harness's key
+// a nil trust admits testorg/client:2 in IPv4 and testorg/client:3 in IPv6, under the harness's key
 func newResponderHarnessAs(t *testing.T, local []identity.Identity, trust Trust, events ...Recorder) *responderHarness {
+	t.Helper()
+	families := make(map[identity.Identity]Family, len(local))
+	for _, id := range local {
+		families[id] = IPv4
+	}
+	return newResponderHarnessIn(t, families, trust, events...)
+}
+
+// newResponderHarnessIn is newResponderHarnessAs with each endpoint in its own family, on a hub listening in both
+func newResponderHarnessIn(t *testing.T, local map[identity.Identity]Family, trust Trust, events ...Recorder) *responderHarness {
 	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -88,19 +112,25 @@ func newResponderHarnessAs(t *testing.T, local []identity.Identity, trust Trust,
 	t.Cleanup(func() { initiatorHub.Close() })
 
 	if trust == nil {
-		trust = trustFunc(func(id identity.Identity) (ed25519.PublicKey, error) {
-			if id != identity.MustParse("testorg/client:2") {
-				return nil, errUntrusted
-			}
-			return public, nil
+		key := new(atomic.Pointer[ed25519.PublicKey])
+		key.Store(&public)
+		trust = trustIn(key, map[identity.Identity]Family{
+			identity.MustParse("testorg/client:2"): IPv4, identity.MustParse("testorg/client:3"): IPv6,
 		})
 	}
+	aliases := new(atomic.Pointer[Aliases])
 	cfg := ResponderConfig{
 		Hub:              responderHub,
 		Local:            local,
 		LocalPrivateKey:  private,
 		Trust:            trust,
 		HandshakeTimeout: 10 * time.Second,
+		Aliases: func() Aliases {
+			if stored := aliases.Load(); stored != nil {
+				return *stored
+			}
+			return Aliases{}
+		},
 	}
 	if len(events) == 1 {
 		cfg.Events = events[0]
@@ -117,6 +147,7 @@ func newResponderHarnessAs(t *testing.T, local []identity.Identity, trust Trust,
 		private:    private,
 		sessions:   make(chan *Session, 1),
 		identities: make(chan Accepted, 1),
+		aliases:    aliases,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -363,15 +394,15 @@ func canceledHarness(t *testing.T, answer func() bool) (context.Context, *respon
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	var public atomic.Pointer[ed25519.PublicKey]
-	h := newResponderHarness(t, trustFunc(func(id identity.Identity) (ed25519.PublicKey, error) {
+	h := newResponderHarness(t, trustFunc(func(id identity.Identity) (ed25519.PublicKey, Family, error) {
 		if id != identity.MustParse("testorg/client:2") {
-			return nil, errUntrusted
+			return nil, 0, errUntrusted
 		}
 		cancel()
 		if !answer() {
-			return nil, errUntrusted
+			return nil, 0, errUntrusted
 		}
-		return *public.Load(), nil
+		return *public.Load(), IPv4, nil
 	}))
 	public.Store(&h.public)
 	return ctx, h
@@ -528,7 +559,7 @@ func TestResponderRejectsWrongKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newResponderHarness(t, trustFunc(func(identity.Identity) (ed25519.PublicKey, error) { return other, nil }))
+	h := newResponderHarness(t, trustFunc(func(identity.Identity) (ed25519.PublicKey, Family, error) { return other, IPv4, nil }))
 	session, err := h.dial(t)
 	if err == nil {
 		session.Mux().Close()
@@ -540,7 +571,7 @@ func TestResponderRejectsWrongKey(t *testing.T) {
 // the trust here admits anyone under the key both ends hold, as an organization's shared key does for each of its nodes
 func TestResponderRefusesItsOwnNode(t *testing.T) {
 	var key atomic.Pointer[ed25519.PublicKey]
-	h := newResponderHarness(t, trustFunc(func(identity.Identity) (ed25519.PublicKey, error) { return *key.Load(), nil }))
+	h := newResponderHarness(t, trustFunc(func(identity.Identity) (ed25519.PublicKey, Family, error) { return *key.Load(), IPv4, nil }))
 	key.Store(&h.public)
 	cfg := h.peerConfig()
 	cfg.Local = identity.MustParse("testorg/server:2")
@@ -1962,7 +1993,7 @@ func TestHandshakeFailureRecordIsBounded(t *testing.T) {
 func TestFirstHandshakeFailureOfANodesLifeIsSaid(t *testing.T) {
 	responder, err := NewResponder(ResponderConfig{
 		Hub: listenHub(t), LocalPrivateKey: make(ed25519.PrivateKey, ed25519.PrivateKeySize),
-		Local: []identity.Identity{identity.MustParse("example/node:0")}, Trust: trustsNobody,
+		Local: map[identity.Identity]Family{identity.MustParse("example/node:0"): IPv4}, Trust: trustsNobody,
 	})
 	if err != nil {
 		t.Fatal(err)

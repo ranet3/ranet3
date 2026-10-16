@@ -25,7 +25,7 @@ import (
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
-// encodeID is the IDi or IDr payload body naming the endpoint id
+// encodeID is the IDi or IDr payload body naming the endpoint id by its DN
 func encodeID(id identity.Identity) ([]byte, error) {
 	dn, err := id.DN()
 	if err != nil {
@@ -34,25 +34,39 @@ func encodeID(id identity.Identity) ([]byte, error) {
 	return EncodeID(ID_DER_ASN1_DN, dn), nil
 }
 
-// identityFromID reads the endpoint an ID payload body asserts
-// the name only selects which key must verify AUTH, and AUTH signs the bytes as received, so two encodings of one name are one peer and neither is accepted without its key
-func identityFromID(body []byte) (identity.Identity, error) {
-	idType, data, err := DecodeID(body)
-	if err != nil {
-		return identity.Identity{}, err
+// Family is the address family an endpoint dials and is dialed in
+// an endpoint dials only endpoints of its own family
+type Family uint8
+
+const (
+	IPv4 Family = 4
+	IPv6 Family = 6
+)
+
+func (f Family) String() string {
+	switch f {
+	case IPv4:
+		return "IPv4"
+	case IPv6:
+		return "IPv6"
 	}
-	if idType != ID_DER_ASN1_DN {
-		return identity.Identity{}, fmt.Errorf("ike: identity type %d is not ASN1_DN", idType)
+	return "none"
+}
+
+// familyOf reads an IPv4-mapped address as IPv4, as a dual-stack socket reports an IPv4 peer
+func familyOf(address netip.Addr) Family {
+	if address.Unmap().Is4() {
+		return IPv4
 	}
-	return identity.FromDN(data)
+	return IPv6
 }
 
 // Trust decides who may join the mesh and which key authenticates them
 type Trust interface {
-	// Key is the key that must verify the AUTH of a peer asserting id, or why id may not join
-	// an id naming a node without an endpoint asks about the node alone
+	// Key is the key that must verify the AUTH of a peer asserting id and the family of its endpoint, or why id may not join
+	// an id naming a node without an endpoint asks about the node alone, which has no family
 	// several handshakes call it at once, and one call reads one version of the trust
-	Key(id identity.Identity) (ed25519.PublicKey, error)
+	Key(id identity.Identity) (ed25519.PublicKey, Family, error)
 }
 
 // ResponderConfig carries what answering an unsolicited peer needs, against
@@ -62,12 +76,16 @@ type Trust interface {
 type ResponderConfig struct {
 	Hub *transport.Hub
 
-	// Local holds every endpoint we answer as, and the initiator's IDr selects which one signs AUTH
-	Local           []identity.Identity
+	// Local is every endpoint we answer as, with its family
+	Local           map[identity.Identity]Family
 	LocalPrivateKey ed25519.PrivateKey
 
 	// Trust gives the key that must verify an initiator's AUTH, asked after an IDi naming our own node is refused
 	Trust Trust
+
+	// Aliases gives the auth.aliases in force, asked once for each handshake, which lets a reload reach the next one
+	// nil gives none
+	Aliases func() Aliases
 
 	// HandshakeTimeout bounds one exchange from the first datagram to an
 	// established SA. Zero uses handshakeTimeout.
@@ -86,9 +104,10 @@ type ResponderConfig struct {
 }
 
 // Accepted names both ends of an SA a peer opened to us. The local identity
-// is the endpoint the initiator addressed in IDr, so the pair identifies one
-// path through the mesh the same way a dialed session does, rather than just
-// naming the peer.
+// is the endpoint the initiator's IDr named. Where IDr is absent or an ID
+// auth.aliases.local presents, it is our one endpoint of the family the
+// request arrived in. The pair identifies one path through the mesh the same
+// way a dialed session does, rather than just naming the peer.
 type Accepted struct {
 	Peer  identity.Identity
 	Local identity.Identity
@@ -149,7 +168,10 @@ func NewResponder(cfg ResponderConfig) (*Responder, error) {
 		// One floor in the past, so the first failure of this node's life is
 		// said rather than spaced against a zero that means "never said".
 		failureSaid: -handshakeFloor}
-	for _, id := range cfg.Local {
+	for id, family := range cfg.Local {
+		if family != IPv4 && family != IPv6 {
+			return nil, fmt.Errorf("ike: responder endpoint %s needs a family", id)
+		}
 		body, err := encodeID(id)
 		if err != nil {
 			return nil, err
@@ -441,15 +463,19 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	if idiPayload == nil || authPayload == nil {
 		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, fmt.Errorf("ike: IKE_AUTH request has no IDi or AUTH"))
 	}
-	peerID, err := identityFromID(idiPayload.Body)
+	aliases := r.aliases()
+	peer, err := aliases.resolve(idiPayload.Body)
 	if err != nil {
 		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
 	}
+	peerID := peer.endpoint
 	// with a key its organization shares, another node of it could otherwise claim our name
-	if slices.ContainsFunc(r.cfg.Local, func(local identity.Identity) bool { return local.Node() == peerID.Node() }) {
-		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, fmt.Errorf("ike: IDi names our own node %s", peerID.Node()))
+	for local := range r.cfg.Local {
+		if local.Node() == peerID.Node() {
+			return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, fmt.Errorf("ike: IDi names our own node %s", peerID.Node()))
+		}
 	}
-	peerKey, err := r.cfg.Trust.Key(peerID)
+	peerKey, peerFamily, err := r.cfg.Trust.Key(peerID)
 	if err != nil {
 		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
 	}
@@ -457,15 +483,26 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	if err := VerifyAuth(peerKey, concat(realMessage1, nr, macedIDForI), authPayload.Body); err != nil {
 		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
 	}
+	// RFC 7296 section 3.5 has the identity "used for policy lookup" and "to perform access control decisions"
+	// an IDi naming an endpoint of another family names one that did not dial, as an endpoint dials in its own family alone
+	// the endpoint's family is compared, never an address the ID holds
+	arrived := familyOf(source.AddrPort().Addr())
+	if peerFamily != arrived {
+		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED,
+			fmt.Errorf("ike: IDi names %s, an endpoint of the %s family, and the request arrived in %s", peerID, peerFamily, arrived))
+	}
 
-	// The initiator names us in IDr. Answering under a name it did not ask
-	// for would let it verify a signature over the wrong identity, so an
-	// unknown IDr is a rejection rather than a substitution.
-	localID, err := r.localIdentity(request.find(PayloadIDr))
+	presented, err := aliases.presented(peerID)
 	if err != nil {
 		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
 	}
-	idrBody := r.local[localID]
+	localID, idrBody, err := r.localIdentity(aliases, request.find(PayloadIDr), presented, arrived)
+	if err != nil {
+		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
+	}
+	if r.cfg.Events != nil {
+		r.cfg.Events(localID, peerID, "ike.id.resolved", peer.attrs(idrBody)...)
+	}
 	macedIDForR := prf(ctx.suite.PRFID, ctx.skpr, idrBody)
 	authBody := BuildAuth(r.cfg.LocalPrivateKey, concat(realMessage2, ni, macedIDForR))
 
@@ -713,23 +750,84 @@ func (s *Session) selectResponderChild(request *Message, ni, nr []byte) (respond
 	}, nil
 }
 
-// localIdentity resolves the IDr the initiator asked for by name rather than by its bytes
-// our AUTH signs the IDr we send, in our own encoding, and the initiator verifies against the IDr it receives, so the signature covers the same bytes either way
-func (r *Responder) localIdentity(idr *RawPayload) (identity.Identity, error) {
+func (r *Responder) aliases() Aliases {
+	if r.cfg.Aliases == nil {
+		return Aliases{}
+	}
+	return r.cfg.Aliases()
+}
+
+// localIdentity is the endpoint we answer as and the IDr body we answer with
+// presented is the body auth.aliases.local gives toward the caller, or nil for the DN
+// RFC 7296 section 1.2 lets a responder "use some other IDr to finish the exchange", which this one never does
+// our AUTH signs the IDr we send, and the initiator verifies it over the IDr it receives
+// an IDr asked for is answered with its type and data in our own encoding, since RFC 7296 section 3.5 has RESERVED "MUST be sent as zero"
+func (r *Responder) localIdentity(aliases Aliases, idr *RawPayload, presented []byte, arrived Family) (identity.Identity, []byte, error) {
 	if idr == nil {
-		if len(r.cfg.Local) != 1 {
-			return identity.Identity{}, fmt.Errorf("ike: IKE_AUTH request omits IDr and %d local identities are configured", len(r.cfg.Local))
+		local, err := r.answering(arrived)
+		if err != nil {
+			return identity.Identity{}, nil, err
 		}
-		return r.cfg.Local[0], nil
+		if presented == nil {
+			presented = r.local[local]
+		}
+		return local, presented, nil
 	}
-	id, err := identityFromID(idr.Body)
+	idType, data, err := DecodeID(idr.Body)
 	if err != nil {
-		return identity.Identity{}, err
+		return identity.Identity{}, nil, err
 	}
-	if _, ok := r.local[id]; !ok {
-		return identity.Identity{}, fmt.Errorf("ike: IKE_AUTH request names %s, which we do not answer to", id)
+	asked, err := aliases.resolve(idr.Body)
+	switch {
+	case err == nil:
+		family, ours := r.cfg.Local[asked.endpoint]
+		switch {
+		case !ours:
+			return identity.Identity{}, nil, fmt.Errorf("ike: IKE_AUTH request names %s, which we do not answer as", asked.endpoint)
+		case family != arrived:
+			// the request did not reach it, as an endpoint is dialed in its own family alone
+			return identity.Identity{}, nil, fmt.Errorf("ike: IKE_AUTH request names our %s, an endpoint of the %s family, and arrived in %s", asked.endpoint, family, arrived)
+		case idType == ID_DER_ASN1_DN:
+			return asked.endpoint, r.local[asked.endpoint], nil
+		}
+		return asked.endpoint, EncodeID(idType, data), nil
+	case idType == ID_DER_ASN1_DN:
+		return identity.Identity{}, nil, err
+	case !aliases.presents(idr.Body):
+		return identity.Identity{}, nil, fmt.Errorf("ike: IKE_AUTH request names %s ID %q, which we do not answer to", idType, idText(idType, data))
 	}
-	return id, nil
+	local, err := r.answering(arrived)
+	return local, EncodeID(idType, data), err
+}
+
+// answering is the endpoint of the family the request arrived in, which answers a request whose IDr names none of ours
+// RFC 7296 section 1.2 has IDr name "to which of the responder's identities it wants to talk"
+// an alias names the node, and an endpoint is dialed in its own family alone
+// none or two in that family leave the endpoint it reached unknown, which is refused rather than guessed, our only endpoint included
+func (r *Responder) answering(arrived Family) (identity.Identity, error) {
+	var in []identity.Identity
+	for local, family := range r.cfg.Local {
+		if family == arrived {
+			in = append(in, local)
+		}
+	}
+	if len(in) != 1 {
+		return identity.Identity{}, fmt.Errorf("ike: IKE_AUTH request names none of our endpoints, and %d of our %d are of the %s family it arrived in", len(in), len(r.cfg.Local), arrived)
+	}
+	return in[0], nil
+}
+
+func sameID(received, presented []byte) bool {
+	idType, data, err := DecodeID(received)
+	if err != nil {
+		return false
+	}
+	theirs, err := matchKey(idType, data)
+	if err != nil {
+		return false
+	}
+	ours, err := matchKey(IDType(presented[0]), presented[4:])
+	return err == nil && theirs == ours
 }
 
 // firstUnsupportedCritical reports the first payload this profile does not

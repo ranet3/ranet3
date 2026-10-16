@@ -146,7 +146,11 @@ func trust(t testing.TB, document registry.Registry) *registry.Index {
 
 type trustFunc func(identity.Identity) (ed25519.PublicKey, error)
 
-func (f trustFunc) Key(id identity.Identity) (ed25519.PublicKey, error) { return f(id) }
+// Key gives no family, since the session set asks about a node alone
+func (f trustFunc) Key(id identity.Identity) (ed25519.PublicKey, ike.Family, error) {
+	key, err := f(id)
+	return key, 0, err
+}
 
 // admitting is admittingUnder no key
 func admitting(named ...identity.Identity) trustFunc { return admittingUnder(nil, named...) }
@@ -1918,7 +1922,7 @@ func TestRenumberedSerialDoesNotRevokeASession(t *testing.T) {
 	}
 
 	set.trust = admittingUnder(key, identity.MustParse("example/gateway:2"))
-	if _, err := set.trust.Key(peer); err == nil {
+	if _, _, err := set.trust.Key(peer); err == nil {
 		t.Fatal("the renumbered trust admits the endpoint it renumbered, so this proves nothing")
 	}
 	set.revoke()

@@ -417,7 +417,7 @@ func (s *sessionSet) refuses(remote identity.Identity, key ed25519.PublicKey) er
 	if remote.IsZero() {
 		return nil
 	}
-	trusted, err := s.trust.Key(remote.Node())
+	trusted, _, err := s.trust.Key(remote.Node())
 	if err != nil {
 		return err
 	}

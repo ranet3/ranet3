@@ -6,10 +6,11 @@
 // [RFC 7815] describes, negotiating a tunnel-mode Child SA that
 // [ranet3.com/pkgs/ranet3/esp] then carries. It offers one set of
 // transforms and no others: raw Ed25519 public key authentication ([RFC 7427]
-// Digital Signature with an ASN1_DN identity), a key exchange in X25519, P-384
-// or P-256, encryption in AES-GCM or ChaCha20-Poly1305, UDP encapsulation
-// forced on, and 0.0.0.0/0 with ::/0 as the traffic selectors. It
-// interoperates with a strongSwan responder configured the same way.
+// Digital Signature with an ASN1_DN identity, or an ID of another type
+// [Aliases] names an endpoint by), a key exchange in X25519, P-384 or P-256,
+// encryption in AES-GCM or ChaCha20-Poly1305, UDP encapsulation forced on, and
+// 0.0.0.0/0 with ::/0 as the traffic selectors. It interoperates with a
+// strongSwan responder configured the same way.
 //
 // Certificates, EAP, MOBIKE and the legacy transforms, CBC ciphers, MODP
 // groups and SHA-1 or MD5, are left out rather than unfinished, and a peer

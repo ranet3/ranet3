@@ -492,7 +492,7 @@ func withLength(b []byte) []byte {
 var encodingKinds = []string{
 	"message", "chain", "SA", "IKE offer", "ESP offer", "ESP answer", "short ESP SPI",
 	"misstated SPI Size", "misstated proposal length", "misstated transform length",
-	"TS", "full range selectors", "notify", "delete", "KE", "identity", "AUTH",
+	"TS", "full range selectors", "notify", "delete", "KE", "identity", "alias ID", "AUTH",
 	"misstated AUTH algorithm length",
 }
 
@@ -594,6 +594,16 @@ func encodingOf(tc hegel.TestCase, kind string) []byte {
 		if err != nil {
 			panic(err)
 		}
+	case "alias ID":
+		idType := hegel.Draw(tc, hegel.SampledFrom([]IDType{ID_IPV4_ADDR, ID_IPV6_ADDR, ID_FQDN, ID_RFC822_ADDR, ID_KEY_ID}))
+		data := drawBytes(tc, 64, 1)
+		switch idType {
+		case ID_IPV4_ADDR:
+			data = hegel.Draw(tc, hegel.Binary(4, 4))
+		case ID_IPV6_ADDR:
+			data = hegel.Draw(tc, hegel.Binary(16, 16))
+		}
+		b = EncodeID(idType, data)
 	case "misstated AUTH algorithm length":
 		// either side of the AlgorithmIdentifier's own length, and the bytes
 		// after the length octet and one past them
@@ -657,6 +667,14 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 	public := signer.Public().(ed25519.PublicKey)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128}
 	key := make([]byte, 16+4)
+	gateway := identity.MustParse("acme/gw:1")
+	aliases := Aliases{Remote: RemoteAliases{
+		IP:    map[string]identity.Identity{"192.0.2.10": gateway, "2001:db8::10": gateway},
+		FQDN:  map[string]identity.Identity{"gw.acme.example": gateway},
+		Email: map[string]identity.Identity{"ops@acme.example": gateway},
+		KeyID: map[string]identity.Identity{"0a1b2c3d": gateway},
+	}}
+	presented := EncodeID(ID_FQDN, []byte("laptop.example.net"))
 	pbt.Check(t, func(ht *hegel.T) {
 		arbitrary := drawBytes(ht, 4096, HeaderLen-1, HeaderLen, HeaderLen+genericPayloadHeaderLen)
 		first := drawOctet(ht, PayloadSK)
@@ -681,6 +699,7 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 		sa := []string{"SA", "IKE offer", "ESP offer", "ESP answer", "short ESP SPI",
 			"misstated SPI Size", "misstated proposal length", "misstated transform length"}
 		selectors := []string{"TS", "full range selectors"}
+		ids := []string{"identity", "alias ID"}
 		decoders := []struct {
 			name   string
 			reads  []string
@@ -719,8 +738,9 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 			{"DecodeDelete", []string{"delete"}, func(b []byte) string { _, _ = DecodeDelete(b); return "" }},
 			{"DecodeKE", []string{"KE"}, func(b []byte) string { _, _, _ = DecodeKE(b); return "" }},
 			{"DecodeNonce", nil, func(b []byte) string { _ = DecodeNonce(b); return "" }},
-			{"DecodeID", []string{"identity"}, func(b []byte) string { _, _, _ = DecodeID(b); return "" }},
-			{"identityFromID", []string{"identity"}, func(b []byte) string { _, _ = identityFromID(b); return "" }},
+			{"DecodeID", ids, func(b []byte) string { _, _, _ = DecodeID(b); return "" }},
+			{"resolve", ids, func(b []byte) string { _, _ = aliases.resolve(b); return "" }},
+			{"sameID", ids, func(b []byte) string { _ = sameID(b, presented); return "" }},
 			{"VerifyAuth", []string{"AUTH", "misstated AUTH algorithm length"}, func(b []byte) string {
 				_ = VerifyAuth(public, nil, b)
 				return ""

@@ -42,7 +42,7 @@ func (r *recorder) recorded() []string {
 	return slices.Clone(r.lines)
 }
 
-// both roles record the rekeys they start, with the session's two ends, the SA and how it came out
+// both roles record the ID each resolved and the rekeys they start, with the session's two ends, the SA and how it came out
 func TestSessionsRecordTheirRekeys(t *testing.T) {
 	answered, dialed := &recorder{}, &recorder{}
 	h := newResponderHarness(t, nil, answered.record)
@@ -79,12 +79,14 @@ func TestSessionsRecordTheirRekeys(t *testing.T) {
 		t.Fatal("a rekey over a closed session succeeded")
 	}
 	if got, want := dialed.recorded(), []string{
+		"ike.id.resolved testorg/client:2>testorg/server:1 type=dn sent=dn",
 		"ike.rekey.started testorg/client:2>testorg/server:1 sa=child", "ike.rekey.completed testorg/client:2>testorg/server:1 sa=child",
 		"ike.rekey.started testorg/client:2>testorg/server:1 sa=child", "ike.rekey.failed testorg/client:2>testorg/server:1 sa=child",
 	}; !slices.Equal(got, want) {
 		t.Errorf("the dialed session recorded %q, want %q", got, want)
 	}
 	if got, want := answered.recorded(), []string{
+		"ike.id.resolved testorg/server:1>testorg/client:2 type=dn sent=dn",
 		"ike.rekey.started testorg/server:1>testorg/client:2 sa=ike", "ike.rekey.completed testorg/server:1>testorg/client:2 sa=ike",
 	}; !slices.Equal(got, want) {
 		t.Errorf("the answered session recorded %q, want %q", got, want)

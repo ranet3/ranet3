@@ -24,8 +24,8 @@ import (
 )
 
 // PeerConfig describes one peer this node dials and everything establishing an
-// IKEv2 SA with it takes: raw Ed25519 pubkey auth (RFC 7427, ASN1_DN
-// identity), a 0.0.0.0/0::/0 tunnel-mode Child SA and forced UDP
+// IKEv2 SA with it takes, raw Ed25519 pubkey auth (RFC 7427) under the DN or
+// an ID Aliases gives, a 0.0.0.0/0::/0 tunnel-mode Child SA and forced UDP
 // encapsulation. The package doc lists the transforms this offers, which are
 // the only ones it proposes or accepts.
 type PeerConfig struct {
@@ -34,6 +34,10 @@ type PeerConfig struct {
 
 	Remote          identity.Identity
 	RemotePublicKey ed25519.PublicKey
+
+	// Aliases gives the ID this node sends as IDi and the one it asks for in IDr
+	// and the endpoint each ID the responder may send as IDr names, which has to be Remote
+	Aliases Aliases
 
 	LocalAddr  net.IP // "" => wildcard
 	LocalPort  int    // 0 => ephemeral
@@ -911,13 +915,33 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	spiBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(spiBuf, mySPI)
 
-	idiBody, err := encodeID(cfg.Local)
+	idiBody, err := cfg.Aliases.presented(cfg.Remote)
 	if err != nil {
 		return false, err
 	}
-	idrBody, err := encodeID(cfg.Remote)
+	if idiBody == nil {
+		if idiBody, err = encodeID(cfg.Local); err != nil {
+			return false, err
+		}
+	}
+	inner := []RawPayload{{Type: PayloadIDi, Body: idiBody}}
+	// RFC 7296 section 1.2: "The optional payload IDr enables the initiator to specify to which of the responder's identities it wants to talk."
+	// and "This is useful when the machine on which the responder is running is hosting multiple identities at the same IP address."
+	// an IDr naming the dialed endpoint is how a responder with several endpoints in one family knows which was dialed
+	// of several IDs naming it none is sent, since the responder may hold only one and refuses a wrong one
+	asking, err := cfg.Aliases.Remote.naming(cfg.Remote)
 	if err != nil {
 		return false, err
+	}
+	switch len(asking) {
+	case 0:
+		idrBody, err := encodeID(cfg.Remote)
+		if err != nil {
+			return false, err
+		}
+		inner = append(inner, RawPayload{Type: PayloadIDr, Body: idrBody})
+	case 1:
+		inner = append(inner, RawPayload{Type: PayloadIDr, Body: asking[0]})
 	}
 
 	macedIDForI := prf(s.current.suite.PRFID, s.current.skpi, idiBody)
@@ -925,14 +949,12 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	authBody := BuildAuth(cfg.LocalPrivateKey, signedOctets)
 
 	tsv4, tsv6 := FullRangeV4(), FullRangeV6()
-	inner := []RawPayload{
-		{Type: PayloadIDi, Body: idiBody},
-		{Type: PayloadIDr, Body: idrBody},
-		{Type: PayloadAUTH, Body: authBody},
-		{Type: PayloadSA, Body: EncodeSA([]Proposal{espProposal(spiBuf)})},
-		{Type: PayloadTSi, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
-		{Type: PayloadTSr, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
-	}
+	inner = append(inner,
+		RawPayload{Type: PayloadAUTH, Body: authBody},
+		RawPayload{Type: PayloadSA, Body: EncodeSA([]Proposal{espProposal(spiBuf)})},
+		RawPayload{Type: PayloadTSi, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
+		RawPayload{Type: PayloadTSr, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
+	)
 	hdr := Header{SPIInitiator: s.current.spiI, SPIResponder: s.current.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
 	req, err := s.current.encrypt(s.current.skei, hdr, nil, inner)
 	if err != nil {
@@ -981,18 +1003,15 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	if err := VerifyAuth(cfg.RemotePublicKey, responderSigned, authRecv.Body); err != nil {
 		return false, refuse(N_AUTHENTICATION_FAILED, nil, err)
 	}
-	// Compare the name rather than the bytes: ranet writes O and CN as
-	// UTF8String while strongSwan picks the string type from the value, so
-	// one identity legitimately reaches the wire in two encodings. AUTH above
-	// already signed the bytes as received, so the name is all that is left
-	// to check.
-	got, err := identityFromID(idrRecv.Body)
+	// AUTH above signed the bytes as received, and one endpoint reaches the wire in several encodings, a DN whose strings ranet and strongSwan type differently and each alias of it, which leaves the endpoint they name to check
+	responder, err := cfg.Aliases.resolve(idrRecv.Body)
 	if err != nil {
 		return false, refuse(N_AUTHENTICATION_FAILED, nil, err)
 	}
-	if got != cfg.Remote {
-		return false, refuse(N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: responder identity %s does not match configured IDr", got))
+	if responder.endpoint != cfg.Remote {
+		return false, refuse(N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: the responder's IDr names %s, and this node dialed %s", responder.endpoint, cfg.Remote))
 	}
+	s.emit("ike.id.resolved", responder.attrs(idiBody)...)
 
 	// RFC 7296 section 2.21.2: "a responder may include all the payloads associated with authentication (IDr, CERT, and AUTH) while sending error notifications for the piggybacked exchanges (FAILED_CP_REQUIRED, NO_PROPOSAL_CHOSEN, and so on), and the initiator MUST NOT fail the authentication because of this."
 	if saRecv == nil {
