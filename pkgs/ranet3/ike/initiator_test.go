@@ -1174,7 +1174,7 @@ func testIKEAuthAuthenticatesBeforeChildFailure(t *testing.T, remoteOrganization
 		}()
 	}()
 
-	_, err = s.completeIKEAuth(cfg, realMessage1, realMessage2, ni, nr)
+	err = s.completeIKEAuth(cfg, realMessage1, realMessage2, ni, nr)
 	if err == nil || err.Error() != "ike: Child SA rejected: notify type 14" {
 		t.Fatalf("completeIKEAuth error = %v, want authenticated Child SA rejection", err)
 	}
@@ -1280,7 +1280,7 @@ func TestAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.
 		}()
 	}()
 
-	if _, err := s.completeIKEAuth(cfg, realMessage1, realMessage2, ni, nr); err == nil {
+	if err := s.completeIKEAuth(cfg, realMessage1, realMessage2, ni, nr); err == nil {
 		t.Fatal("completeIKEAuth took an authenticated Child SA rejection")
 	}
 	if err := <-peerDone; err != nil {
@@ -1431,7 +1431,7 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 				}()
 			}()
 
-			_, err = s.completeIKEAuth(cfg, []byte("test IKE_SA_INIT request"), realMessage2, ni, nr)
+			err = s.completeIKEAuth(cfg, []byte("test IKE_SA_INIT request"), realMessage2, ni, nr)
 			if err == nil {
 				t.Fatal("the initiator took an IKE_AUTH answer it should have refused")
 			}
