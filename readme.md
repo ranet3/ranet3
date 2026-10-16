@@ -47,3 +47,10 @@ The codebase began as a fork of
 [NickCao/ranet-lite](https://github.com/NickCao/ranet-lite) and
 [NickCao/ranet](https://github.com/NickCao/ranet), and the portions derived
 from them remain under the [MIT](licenses/MIT.txt) license.
+
+[`pkgs/wireguard`](pkgs/wireguard) holds a copy of
+[wireguard-go](https://git.zx2c4.com/wireguard-go) with changes from
+[tailscale's fork](https://github.com/tailscale/wireguard-go) of it. The copied
+files are licensed under the [MIT](licenses/MIT.txt) license, and each names
+its copyright holders in its header or in
+[`pkgs/wireguard/REUSE.toml`](pkgs/wireguard/REUSE.toml).
