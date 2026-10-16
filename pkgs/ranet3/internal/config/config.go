@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -86,12 +87,15 @@ func Family(spelling string) ike.Family {
 	return 0
 }
 
-// Auth is the key this node signs with and the document naming who it talks to.
+// Auth is the key this node signs with, the document naming who it talks to
+// and the IDs other than a DN that name either end of a handshake.
 type Auth struct {
 	// Key is this node's own private key, a PKCS8 PEM Ed25519 file.
 	Key string `yaml:"key" json:"key" toml:"key"`
 	// Trust is the document naming who may join, a ranet registry.json today.
 	Trust string `yaml:"trust" json:"trust" toml:"trust"`
+	// Aliases is the ID each peer may present in place of its DN and the ID this node presents to one, see [ike.Aliases]
+	Aliases ike.Aliases `yaml:"aliases,omitempty" json:"aliases,omitzero" toml:"aliases,omitempty"`
 }
 
 // Link is the underlay: the port carrying IKE and ESP, and the device
@@ -354,10 +358,17 @@ func exactKeysIn(written any, field reflect.Type, path string) error {
 	}
 	switch value := written.(type) {
 	case map[string]any:
-		if field.Kind() != reflect.Struct {
-			return nil
+		switch field.Kind() {
+		case reflect.Struct:
+			return exactKeys(value, field, path)
+		case reflect.Map:
+			// each entry is walked as a block of its own, under the key as the decoder names one
+			for _, key := range slices.Sorted(maps.Keys(value)) {
+				if err := exactKeysIn(value[key], field.Elem(), path+toml.Key{key}.String()+"."); err != nil {
+					return err
+				}
+			}
 		}
-		return exactKeys(value, field, path)
 	case []map[string]any:
 		// An array of tables, which is how the decoder hands over
 		// [[cap.table.rules]].
@@ -474,9 +485,9 @@ func blocksWritten(body []byte, c *Config) error {
 // fillBlocks walks the document beside the value it decoded to and allocates
 // every block a written key left nil, at whatever depth: cap.table.vrf obeys
 // the same rule cap.table does. It descends by the yaml key rather than by
-// field order, and stops at a type that reads its own yaml, since such a type
-// spells a scalar and carries no block under it. It hands every other scalar
-// to wholeNumber.
+// field order, into every entry of a map as well, and stops at a type that
+// reads its own yaml, since such a type spells a scalar and carries no block
+// under it. It hands every other scalar to wholeNumber.
 func fillBlocks(node *yaml.Node, target reflect.Value) error {
 	node = schema.Followed(node)
 	if decodesItself(target.Type()) {
@@ -498,11 +509,8 @@ func fillBlocks(node *yaml.Node, target reflect.Value) error {
 	case target.Kind() == reflect.Struct && node.Kind == yaml.MappingNode:
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			key := node.Content[i]
-			// a merge key is refused rather than followed, as Announce refuses one
-			// following it would copy the decoder's precedence between a merged key and a written one
-			// and toml and json have no spelling for it
-			if key.Tag == "!!merge" {
-				return fmt.Errorf("line %d: a merge key is refused, since toml and json have no spelling for one", key.Line)
+			if err := refuseMerge(key); err != nil {
+				return err
 			}
 			// the key is read as the decoder reads it, through an alias and from a !!binary spelling
 			var name string
@@ -516,8 +524,13 @@ func fillBlocks(node *yaml.Node, target reflect.Value) error {
 			}
 		}
 	case target.Kind() == reflect.Map && node.Kind == yaml.MappingNode:
-		for i := 1; i < len(node.Content); i += 2 {
-			if err := wholeNumber(schema.Followed(node.Content[i]), target.Type().Elem()); err != nil {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if err := refuseMerge(node.Content[i]); err != nil {
+				return err
+			}
+			// an entry is walked at a value of its own type for what it refuses
+			// a merge key inside it or an amount not written as a whole number
+			if err := fillBlocks(node.Content[i+1], reflect.New(target.Type().Elem()).Elem()); err != nil {
 				return err
 			}
 		}
@@ -535,6 +548,16 @@ func fillBlocks(node *yaml.Node, target reflect.Value) error {
 		}
 	default:
 		return wholeNumber(node, target.Type())
+	}
+	return nil
+}
+
+// refuseMerge refuses a merge key rather than following it, as Announce refuses one
+// following it would copy the decoder's precedence between a merged key and a written one
+// and toml and json have no spelling for it
+func refuseMerge(key *yaml.Node) error {
+	if key.Tag == "!!merge" {
+		return fmt.Errorf("line %d: a merge key is refused, since toml and json have no spelling for one", key.Line)
 	}
 	return nil
 }
@@ -674,8 +697,14 @@ func notText(value reflect.Value, path string) (string, string, bool) {
 			}
 		}
 	case reflect.Map:
-		for _, key := range value.MapKeys() {
+		// in key order, which names the same entry every time a file holds two strings that are not text
+		keys := value.MapKeys()
+		slices.SortFunc(keys, func(a, b reflect.Value) int { return strings.Compare(a.String(), b.String()) })
+		for _, key := range keys {
 			if found, written, ok := notText(key, path); ok {
+				return found, written, true
+			}
+			if found, written, ok := notText(value.MapIndex(key), path+"."+strconv.Quote(key.String())); ok {
 				return found, written, true
 			}
 		}
@@ -743,7 +772,18 @@ func (c *Config) validateNode() error {
 		}
 		peers[peer] = struct{}{}
 	}
-	return nil
+	if len(c.Auth.Aliases.Local) > 0 {
+		inFamily := make(map[string]int, 2)
+		for _, endpoint := range c.Link.Endpoints {
+			inFamily[endpoint.Family]++
+		}
+		for _, family := range []string{"ip4", "ip6"} {
+			if inFamily[family] > 1 {
+				return fmt.Errorf("config: auth.aliases.local is refused on a node whose link.endpoints holds %d endpoints of the %s family, since a peer could not tell them apart by an alias", inFamily[family], family)
+			}
+		}
+	}
+	return c.Auth.Aliases.Validate(c.Node)
 }
 
 // validateAcrossCapabilities is the part no capability can check alone,

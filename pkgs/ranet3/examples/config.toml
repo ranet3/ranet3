@@ -25,6 +25,33 @@ node = "example/my-laptop"
 key = "/etc/ranet3/key.pem"
 trust = "/etc/ranet3/trust.json"
 
+# The IDs of RFC 7296 section 3.5 other than a DN, for a peer that is not
+# ranet3, such as strongSwan. A ranet3 peer names itself by its DN and needs
+# none of them. Under remote, a table for each type takes the ID a peer
+# presents, an address under ip, a name under fqdn, an address under email and
+# the octets in hex under keyid, and names the endpoint it stands for, whose key
+# in the trust document still has to verify the handshake. An FQDN and the
+# domain of an email address match in any case, and a KEY_ID spelling an
+# endpoint as organization/name:serial needs no entry. Dialing an endpoint
+# remote names by one ID, this node asks the peer for that ID, and for none
+# where remote names it by several. Under local, a peer, a node or one endpoint of it,
+# takes the one ID this node presents to it in place of its DN, and an
+# endpoint's entry wins over its node's. A node with two link.endpoints in one
+# family cannot have local, since a peer could not tell them apart. A reload
+# applies both to the handshakes after it, and a session already up keeps its
+# peer. Every endpoint and node named has to be in the trust document, and an
+# entry naming one it lacks stops a start and is logged by a reload.
+# [auth.aliases.remote.ip]
+# "192.0.2.10" = "example/gateway:0"
+# [auth.aliases.remote.fqdn]
+# "gw.example.net" = "example/gateway:0"
+# [auth.aliases.remote.email]
+# "ops@example.net" = "example/gateway:0"
+# [auth.aliases.remote.keyid]
+# "0a1b2c3d" = "example/gateway:0"
+# [auth.aliases.local]
+# "example/gateway" = { fqdn = "laptop.example.net" }
+
 [link]
 port = 13000
 # Each entry has to match an endpoint the trust document gives this node, since

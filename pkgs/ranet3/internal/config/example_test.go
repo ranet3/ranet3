@@ -36,7 +36,7 @@ var examples = map[string]struct {
 }{
 	"toml": {
 		path:      filepath.Join("..", "..", "examples", "config.toml"),
-		commented: regexp.MustCompile(`(?m)^# ((?:\[|\]|[a-z_][a-z0-9_]* = |  ).*)$`),
+		commented: regexp.MustCompile(`(?m)^# ((?:\[|\]|[a-z_][a-z0-9_]* = |"[^"]*" = |  ).*)$`),
 		enabled:   `${1}`,
 	},
 	"yaml": {
@@ -117,6 +117,31 @@ func TestExamplesDocumentTheDefaultsTheNodeRuns(t *testing.T) {
 			} {
 				if pair[0] != pair[1] {
 					t.Errorf("the example writes %s as %v and a node that leaves it out runs %v", what, pair[0], pair[1])
+				}
+			}
+		})
+	}
+}
+
+// every auth.aliases table an example documents holds its entry once enabled
+// a key toml has to quote is a line the pattern above has to take, or the table is enabled empty and its entry never loads
+func TestExamplesDocumentEveryAliasTable(t *testing.T) {
+	for name := range examples {
+		if uncommentable[name] {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg, err := load(t, "."+name, readExample(t, name, true))
+			if err != nil {
+				t.Fatalf("the example with its options on does not load: %v", err)
+			}
+			aliases := cfg.Auth.Aliases
+			for table, entries := range map[string]int{
+				"remote.ip": len(aliases.Remote.IP), "remote.fqdn": len(aliases.Remote.FQDN), "remote.email": len(aliases.Remote.Email),
+				"remote.keyid": len(aliases.Remote.KeyID), "local": len(aliases.Local),
+			} {
+				if entries == 0 {
+					t.Errorf("auth.aliases.%s holds no entry with the example's options on", table)
 				}
 			}
 		})

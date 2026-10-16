@@ -28,6 +28,7 @@ func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 		Local:              cfg.LocalFamilies(),
 		LocalPrivateKey:    c.privateKey,
 		Trust:              liveTrust{c},
+		Aliases:            func() ike.Aliases { return c.config().Auth.Aliases },
 		ChildRekeyInterval: crypto.ChildInterval(),
 		IKERekeyInterval:   crypto.IKEInterval(),
 		RekeyMargin:        crypto.Margin(),
