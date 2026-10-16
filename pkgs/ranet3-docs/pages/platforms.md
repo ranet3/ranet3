@@ -138,29 +138,32 @@ logs it once.
 
 `link.underlay.mark` is refused on macOS, because macOS has no rule to select a
 mark. `link.underlay.bind` is the macOS spelling. It binds the underlay socket
-to the interface the host's default route leaves by, and gives that interface a
-scoped default of its own where macOS has none. The socket follows the host's
-default to another interface 250 milliseconds after a change. It stays unbound
-until the host has a default route, and stays where it is while the host briefly
-has none. `/var/run/ranet3/underlay.json` records the scoped defaults it writes,
-and the next start withdraws the ones an earlier run recorded.
+to the interface the host's default route leaves by. The socket follows the
+host's default to another interface 250 milliseconds after a change. It stays
+unbound until the host has a default route, and stays where it is while the host
+briefly has none.
+
+With `link.underlay.bind` set, the reconciler installs a plain `/0` as its
+zero-free cover, 8 unscoped routes per family that leave `0.0.0.0/8` and `::/8`
+to the host's own default, as [routing](routing.md#the-zero-free-cover-on-macos)
+describes. A Mac with `bind` set takes a mesh exit through the cover.
+
+The daemon gives the socket's interface a default scoped to it only while an
+unscoped route out of another interface holds that family's zero address, such
+as a real `0.0.0.0/1` the mesh installs or another program's full-tunnel route.
+It withdraws it once no such route is left, and with only the cover installed it
+writes nothing outside the tun. `/var/run/ranet3/underlay.json` records the
+scoped defaults it writes, and the next start withdraws the ones an earlier run
+recorded.
 
 With `link.underlay.bind` set, a route that contains a literal endpoint address
-the trust document lists still stays scoped to the tun. Unscoped, it would carry
-this node's own ESP to that peer into the tunnel, however the socket is bound. A
-`/0` contains every address of its family. It stays scoped whenever the trust
-document lists a literal endpoint address of that family. Otherwise the
-reconciler tries it unscoped, where it collides with the host's own default and
-is skipped with 1 warning.
+the trust document lists still stays scoped to the tun, unless it is a member of
+the cover. Unscoped, it would carry an unbound socket's ESP to that peer into
+the tunnel.
 
-With `link.underlay.bind` set, the `/1` halves are installed unscoped unless a
-half contains a listed endpoint address. A Mac with `link.underlay.bind`
-therefore takes a mesh exit only through the halves, as
-[routing](routing.md#linux-and-macos) describes.
-
-The underlay interface keeps its own default while the node is down, since the
-transport's socket stays open and only traffic scoped to that interface takes
-it. A source-specific route and a retracted one stay scoped with or without
+`ranet3 down` takes a scoped default the daemon wrote away with the capture that
+needed it, and `ranet3 up` writes it again once a capture needs it. A
+source-specific route and a retracted one stay scoped with or without
 `link.underlay.bind`. Interface scope is the only way macOS expresses a source.
 An unscoped reject route at a default would answer the whole host's traffic with
 an error.

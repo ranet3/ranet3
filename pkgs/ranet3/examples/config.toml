@@ -67,10 +67,11 @@ endpoints = [{ serial = "0", family = "ip4" }]
 #
 # bind is IP_BOUND_IF and IPV6_BOUND_IF on the interface the host's own default
 # route leaves by, darwin only. It also gives that interface a default of its
-# own scoped to it, follows both when the machine moves between wifi, ethernet
-# and a dock, and tells the reconciler to install an announced default as a
-# real default rather than scoping it out of every socket's reach, without
-# which this machine cannot use a mesh exit at all.
+# own scoped to it while a route over a zero address leaves by another
+# interface, follows both when the machine moves between wifi, ethernet and a
+# dock, and tells the reconciler to install an announced default as a real
+# default rather than scoping it out of every socket's reach, without which
+# this machine cannot use a mesh exit at all.
 # [link.underlay]
 # mark = 0x726c
 # bind = true

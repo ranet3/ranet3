@@ -79,12 +79,12 @@ descriptor, so a laptop crossing from Wi-Fi to a dock keeps every SA. The
 binding scopes that socket's route lookups to that interface, which on macOS is
 the only way to make a real default out of the tun safe.
 
-With `bind` set, the reconciler installs the `/1` halves an exit announces
-unscoped. A half stays scoped to the tun when it covers a literal endpoint
-address the trust document lists. A `/0` stays scoped when the document lists a
-literal address of its family. Otherwise it collides with the host's own default
-and is skipped, as [routing](../routing.md#linux-and-macos) describes. Without
-`bind`, the reconciler scopes a `/0` and the `/1` halves to the tun, as
+With `bind` set, the reconciler installs a plain `/0` as its zero-free cover, 8
+unscoped routes per family that hold every address but `0.0.0.0/8` and `::/8`,
+as [routing](../routing.md#the-zero-free-cover-on-macos) describes. Any other
+route that carries the host's own traffic is installed unscoped too, unless it
+covers a literal endpoint address the trust document lists. Without `bind`, the
+reconciler scopes a `/0` and the `/1` halves to the tun, as
 [platforms](../platforms.md#macos) describes. No unbound socket selects a scoped
 route. A node without `bind` can hold an exit-announced address and still cannot
 send its traffic through the exit.
@@ -93,32 +93,51 @@ send its traffic through the exit.
 
 Binding is necessary but not sufficient on its own. `IP_BOUND_IF` does not take
 a socket out of the forwarding table: the scoped lookup still finds the most
-specific route, and where that route leaves another interface it falls back only
-to a route already on the bound one. So while the mesh holds `0.0.0.0/1` and
-`128.0.0.0/1` out of the tun, a bound socket answers `ENETUNREACH` unless the
-underlay's own interface carries a default scoped to it, the route
+specific route, and where that route leaves another interface it falls back to a
+longest-prefix match on the family's zero address, which must be on the bound
+one. So while an unscoped route out of another interface holds `0.0.0.0`, such
+as a real `0.0.0.0/1` out of the tun, a bound socket answers `ENETUNREACH`
+unless the underlay's own interface carries a default scoped to it, the route
 `route -n add -net 0.0.0.0/0 <next hop> -ifscope <interface>` writes. macOS
-writes exactly that for every interface but the primary one, which is why
-binding looks sufficient right up until the mesh takes the default away from the
-primary.
+writes exactly that for every interface but the primary one.
 
-ranet3 writes it, and it is the only route this tree puts out of an interface it
-does not own, so the rules around it are narrower than the tun's.
+The zero-free cover holds no zero address, so it leaves that fallback to the
+host's own default. Its members take every other address from the host's default
+by longest prefix.
 
-It is written whenever the socket is bound rather than only when the mesh looks
-like it is capturing. Writing it under a condition meant every set that slipped
-past the condition took the host off the network with nothing to fall back on,
-and 3 ordinary announcements are such a set. It duplicates the host's own
-default on the interface that already carries it, so it costs nothing when
-nothing needs it.
+ranet3 writes the scoped default, and it is the only route this tree puts out of
+an interface it does not own, so the rules around it are narrower than the
+tun's.
 
-On every pass that wants a capturing route, the reconciler asks the underlay
-which families it can fall back on. The underlay writes a missing scoped default
-before it answers. A capturing route whose family has no fallback is left out of
-the pass. It is not installed, and a copy already in the kernel is withdrawn,
-such as after the host's default moves to another interface. The check is per
-family, because a bound socket falls back only to the default of the
-destination's own family. A scoped IPv4 default does nothing for a `::/0` route.
+It is written for a family only while an unscoped route out of an interface
+other than the underlay's holds that family's zero address. That is a route the
+reconciler wants that is not a cover member, or another program's route out of
+an interface that is neither the tun nor the underlay's. Scoped, cloned,
+link-layer and reject routes do not count. With only the cover installed,
+nothing is written outside the tun, and the host's own router selection
+([RFC 4861](https://www.rfc-editor.org/rfc/rfc4861) section 6.3.6) stays in
+charge of its default.
+
+The reconciler asks the underlay on every pass, and the transport asks before it
+moves the socket onto another interface. The underlay reads the table, writes a
+missing scoped default before it answers and withdraws one no family needs any
+more. A pass that deletes a capturing route that is not a cover member asks a
+second time after the deletes, so the default it no longer needs goes in the
+same pass. Under `bind` the platform watcher wakes a pass on a route change
+anywhere on the host, so another program's capture strands a bound socket for
+the 250 millisecond settle and 1 pass at most. A Mac measured 240 milliseconds
+from another program's `0.0.0.0/1` to the scoped default and 264 milliseconds
+from its removal to the withdrawal. 40 changes of a host route in a burst cost
+it 1 pass.
+
+A route the reconciler would install unscoped over a zero address is left out of
+the pass while its family has no scoped default, and so is the cover of a family
+the host has no default of its own for. Neither is installed, and a copy already
+in the kernel is withdrawn, such as after the host's default moves to another
+interface. A route over no zero address, such as a real `128.0.0.0/1`, needs
+neither. The check is per family, because a bound socket falls back only to the
+default of the destination's own family. A scoped IPv4 default does nothing for
+a `::/1` route.
 
 It is reconciled rather than remembered. The kernel drops this route on its own,
 clearing `IFF_UP` purges it and bringing the interface back up does not restore
@@ -194,14 +213,13 @@ whose mesh has gone loses every network it has rather than only the mesh, and it
 cannot recover on its own, because reaching the peers needs the network the
 default just took.
 
-On macOS an unscoped `/0` out of the tun collides with the host's own default
-and is skipped, because macOS has no route replace. Nothing in the reconciler
-splits a `/0`. With `bind` set, a Mac takes a mesh exit only through the `/1`
-halves, `0.0.0.0/1` with `128.0.0.0/1` and `::/1` with `8000::/1`, which win the
-lookup outright. An exit serving Macs therefore advertises the halves under
-`cap.egress.advertise`, as [exit nodes](../exit-nodes.md#what-to-advertise)
-describes. A half that covers a literal endpoint address the trust document
-lists stays scoped, as above.
+On macOS an unscoped `/0` out of the tun would collide with the host's own
+default, because macOS has no route replace. With `bind` set, the reconciler
+installs it as the zero-free cover instead, and the hold judges the cover by its
+`/0`. The cover's members stay unscoped even over a literal endpoint address the
+trust document lists, because the transport's socket is bound to the underlay
+interface. An exit serving Macs advertises the `/0` only, as
+[exit nodes](../exit-nodes.md#what-to-advertise) describes.
 
 ## Source-specific routing
 

@@ -70,7 +70,7 @@ program's own. Go commands run from `pkgs/ranet3`.
 | `internal/config`        | reads the config file                                                                                                                  |
 | `internal/egress`        | source address translation for exit nodes and subnet routers                                                                           |
 | `internal/events`        | the event recorder behind `debug events`                                                                                               |
-| `internal/kernel`        | the route reconciler, the host network watch, and on macOS the scoped default route the bound underlay socket needs                    |
+| `internal/kernel`        | the route reconciler, the host network watch, and on macOS the scoped default route a bound underlay socket can need                   |
 | `internal/logtest`       | swaps the default logger for 1 test, imported by test files alone                                                                      |
 | `internal/netstack`      | moves packets between the tun and the sessions                                                                                         |
 | `internal/notices`       | the third-party notice the binary embeds and `ranet3 licenses` prints                                                                  |
