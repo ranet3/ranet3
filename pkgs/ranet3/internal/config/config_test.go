@@ -1243,6 +1243,10 @@ func fullConfig() Config {
 					Weight: &weight,
 					Min:    &rttMin,
 					Max:    &rttMax,
+				}, Extra: babel.ExtraCost{
+					Foreign: 1024,
+					Org:     map[string]uint16{"gravity": 2048, "example": 5},
+					Node:    map[string]uint16{"example/gateway": 300},
 				}},
 			},
 			Table: &kernel.Table{

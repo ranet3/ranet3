@@ -8,13 +8,17 @@ import (
 	"net/netip"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 // Each authenticated ESP tunnel is a point-to-point Babel link. Speaker.mu
 // protects this state, its registration, and all routes learned through it.
 type neighborState struct {
-	peer                 *netstack.Peer
+	peer *netstack.Peer
+	// identity is who the session's IKE_AUTH proved the peer to be, and extra the amount cap.babel cost.extra charges it
+	identity             identity.Identity
+	extra                uint16
 	addr                 netip.Addr
 	alive                bool
 	lastHelloTime        time.Time
@@ -135,14 +139,15 @@ func (n *neighborState) forgetLink() {
 // linkCost is C(A,B) of RFC 8966 section 3.4.3, the cost this node puts on the
 // link for its own metric computation. It is the rxcost the neighbor reports
 // plus this node's own round-trip penalty, which RFC 9616 section 4.2 feeds to
-// exactly that computation. The penalty is not in what this node advertises:
-// both ends measure the same round trip, so adding it at both would count it
-// twice, and BIRD does not add it there either.
+// exactly that computation, plus the neighbor's cost.extra amount. The penalty
+// is not in what this node advertises: both ends measure the same round trip,
+// so adding it at both would count it twice, and BIRD does not add it there
+// either.
 func (n *neighborState) linkCost(now time.Time, cost CostParams) uint16 {
 	if !n.isAlive(now) || !n.haveReportedCost || !now.Before(n.ihuExpiry) {
 		return MetricInfinity
 	}
-	return saturatingAdd(
+	return addExtra(saturatingAdd(
 		cost.linkQualityCost(&n.multicastHistory, n.reportedCost),
-		cost.RTTPenalty(n.measuredRTT, n.haveRTT))
+		cost.RTTPenalty(n.measuredRTT, n.haveRTT)), n.extra)
 }

@@ -108,7 +108,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	speaker.AddPeer(peer)
+	speaker.AddPeer(peer, identity.Identity{})
 	speaker.Originate(netip.MustParsePrefix(*originate))
 
 	go func() {

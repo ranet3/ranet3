@@ -72,7 +72,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 	release, adopted := c.sessions.adopt(sessionName, sess, local, remote, key, dialed, pmtu, func() func() {
 		// under the set's lock, so a reload's sweep of the set either finds this session or stored the link.mtu and the steering table read here
 		pmtu.start(c.config().Link.SessionMTU(), c.sessions.steering, route)
-		return c.speaker.AddPeer(peer).Close
+		return c.speaker.AddPeer(peer, remote).Close
 	})
 	defer release()
 	if !adopted {

@@ -204,6 +204,7 @@ func (c *Client) Neighbors() []control.Neighbor {
 			Address:    neighbor.Addr,
 			Alive:      neighbor.Alive,
 			Cost:       neighbor.Cost,
+			Extra:      neighbor.Extra,
 			Routes:     neighbor.Routes,
 			Expires:    control.Duration(neighbor.Expires),
 			Dropped:    neighbor.Dropped,

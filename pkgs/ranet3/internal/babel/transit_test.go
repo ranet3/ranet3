@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -105,8 +106,8 @@ func (f *meshFabric) connect(cfg Config, x, y string) {
 	xToY = link(x, y, speakerY, &yToX, f.meshes[y])
 	yToX = link(y, x, speakerX, &xToY, f.meshes[x])
 	f.links = append(f.links, xToY, yToX)
-	f.handles[x+"-"+y] = speakerX.AddPeer(xToY.peer.Peer)
-	f.handles[y+"-"+x] = speakerY.AddPeer(yToX.peer.Peer)
+	f.handles[x+"-"+y] = speakerX.AddPeer(xToY.peer.Peer, identity.Identity{})
+	f.handles[y+"-"+x] = speakerY.AddPeer(yToX.peer.Peer, identity.Identity{})
 	makeNeighborReachable(f.neighbor(x, y))
 	makeNeighborReachable(f.neighbor(y, x))
 }

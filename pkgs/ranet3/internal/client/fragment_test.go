@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
@@ -90,7 +91,7 @@ func TestMetricsNameTheNeighborsThatSendBabelPacketsInFragments(t *testing.T) {
 	peers := make(map[string]*netstack.Peer)
 	for _, id := range []string{"cutting", "whole"} {
 		peers[id] = sinkPeer(t, id)
-		handle := speaker.AddPeer(peers[id])
+		handle := speaker.AddPeer(peers[id], identity.Identity{})
 		t.Cleanup(handle.Close)
 	}
 	raw := babelFrom(netip.MustParseAddr("fe80::2"), 1443)

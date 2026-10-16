@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
@@ -30,7 +31,7 @@ func fillRouteTable(tb testing.TB, neighbors, prefixes int) *Speaker {
 	now := time.Now()
 	var states []*neighborState
 	for i := range neighbors {
-		handle := s.AddPeer(&netstack.Peer{ID: fmt.Sprintf("peer%d", i)})
+		handle := s.AddPeer(&netstack.Peer{ID: fmt.Sprintf("peer%d", i)}, identity.Identity{})
 		n := handle.state
 		n.alive, n.lastHelloTime, n.helloInterval = true, now, 4*time.Second
 		n.haveReportedCost, n.reportedCost, n.ihuExpiry = true, 96, now.Add(time.Minute)

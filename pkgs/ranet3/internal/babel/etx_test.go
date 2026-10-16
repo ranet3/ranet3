@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/identity"
 )
 
 // The receive half of RFC 8966 Appendix A.1, which decides what the vector
@@ -370,7 +372,7 @@ func TestIHUSaysWhatThisNodeHearsFromTheNeighbor(t *testing.T) {
 
 	fresh, _, _ := captureSpeaker(t, Config{Hello: dur(interval)})
 	b := newTestPeer(t, "b", nil)
-	handle := fresh.AddPeer(b.Peer)
+	handle := fresh.AddPeer(b.Peer, identity.Identity{})
 	defer handle.Close()
 	freshCost := func() uint16 {
 		fresh.mu.Lock()

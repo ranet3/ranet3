@@ -445,6 +445,8 @@ type Neighbor struct {
 	Alive   bool       `json:"alive"`
 	// Cost is this node's cost for the link, where 65535 is infinity.
 	Cost uint16 `json:"cost"`
+	// Extra is the part of Cost that cap.babel cost.extra charges this neighbor, which this node's IHUs add to their rxcost too
+	Extra uint16 `json:"extra"`
 	// ReportedCost is the cost the neighbor advertises back in its IHU, so a
 	// link that works in one direction only can be told from one that works in
 	// neither. It is absent until an IHU has arrived.

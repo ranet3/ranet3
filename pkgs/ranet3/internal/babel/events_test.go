@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
@@ -55,7 +56,7 @@ func TestSpeakerRecordsANeighborLeavingWithItsSession(t *testing.T) {
 	speaker, neighbor, _ := captureSpeaker(t, Config{}, Runtime{Events: bus})
 	hello := EncodePacket([]RawTLV{EncodeHello(Hello{Seqno: 1, Interval: 100})})
 	speaker.handlePacket(neighbor, hello)
-	handle := speaker.AddPeer(newTestPeer(t, neighbor.peer.ID, nil).Peer)
+	handle := speaker.AddPeer(newTestPeer(t, neighbor.peer.ID, nil).Peer, identity.Identity{})
 	replacement := speaker.neighbors[neighbor.peer.ID]
 	replacement.addr = neighbor.addr
 	speaker.handlePacket(replacement, hello)
@@ -85,13 +86,13 @@ func TestSpeakerRecordsOneDownPerNeighborLost(t *testing.T) {
 	}{
 		{"closed after the sweep", true, func(_ *Speaker, handle *PeerHandle) { handle.Close() }},
 		{"closed never heard", false, func(_ *Speaker, handle *PeerHandle) { handle.Close() }},
-		{"replaced after the sweep", true, func(speaker *Speaker, _ *PeerHandle) { speaker.AddPeer(newPeer()) }},
-		{"replaced never heard", false, func(speaker *Speaker, _ *PeerHandle) { speaker.AddPeer(newPeer()) }},
+		{"replaced after the sweep", true, func(speaker *Speaker, _ *PeerHandle) { speaker.AddPeer(newPeer(), identity.Identity{}) }},
+		{"replaced never heard", false, func(speaker *Speaker, _ *PeerHandle) { speaker.AddPeer(newPeer(), identity.Identity{}) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			bus := events.New()
 			speaker, _, _ := captureSpeaker(t, Config{}, Runtime{Events: bus})
-			handle := speaker.AddPeer(newPeer())
+			handle := speaker.AddPeer(newPeer(), identity.Identity{})
 			if test.swept {
 				neighbor := speaker.neighbors["other"]
 				neighbor.addr = netip.MustParseAddr("fe80::3")

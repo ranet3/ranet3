@@ -257,6 +257,7 @@ func RenderNeighbors(w io.Writer, neighbors []Neighbor) {
 			n.Peer,
 			upDown(n.Alive),
 			cost(n.Cost),
+			fmt.Sprint(n.Extra),
 			optionalCost(n.ReportedCost),
 			optionalDuration(n.RTT),
 			fmt.Sprint(n.Routes),
@@ -265,7 +266,7 @@ func RenderNeighbors(w io.Writer, neighbors []Neighbor) {
 			fmt.Sprint(n.SendFailed),
 		})
 	}
-	table(w, []string{"Peer", "State", "Cost", "Rx cost", "RTT", "Routes", "Expires", "Dropped", "Failed"}, rows)
+	table(w, []string{"Peer", "State", "Cost", "Extra", "Rx cost", "RTT", "Routes", "Expires", "Dropped", "Failed"}, rows)
 }
 
 // RenderRoutes writes the mesh route table, one line per prefix, which is the

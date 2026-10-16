@@ -177,7 +177,7 @@ func (c *Client) retable(next *config.Config) error {
 // changedCapabilities names each capability a reload from old to next applied in place
 func changedCapabilities(old, next *config.Config) []string {
 	var out []string
-	if old.Babel().Effective() != next.Babel().Effective() {
+	if old.Babel().Effective() != next.Babel().Effective() || !old.Babel().Cost.Extra.Equal(next.Babel().Cost.Extra) {
 		out = append(out, "cap.babel")
 	}
 	if !reflect.DeepEqual(old.Routes(), next.Routes()) {
