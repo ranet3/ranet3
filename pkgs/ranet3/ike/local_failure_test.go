@@ -102,3 +102,59 @@ func TestRefusedDrawAfterAChildSARekeyDeletesTheIKESA(t *testing.T) {
 	}
 	deletedOnFailure(t, pair, "child")
 }
+
+// a replaced Child SA the dataplane refuses to retire after this end's Delete for it at the deadline closes the IKE SA with a Delete
+func TestRefusedRetirementAfterTheOverdueDeleteDeletesTheIKESA(t *testing.T) {
+	pair := dialRefusing(t, func(*PeerConfig) {}, func(initiator, _ *Session) {
+		initiator.retiring, initiator.retiringBy = ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}, time.Now().Add(scheduleDue)
+		initiator.childRetireDelay = 0
+		initiator.SetChildRetireHandler(func(uint32) error { return errRefused })
+	})
+	deletedOnFailure(t, pair, "child")
+}
+
+// a failure handed to either end's session closes the IKE SA with a Delete, which ends the other end's Run
+func TestChildFailedDeletesTheIKESA(t *testing.T) {
+	t.Run("dialed", func(t *testing.T) {
+		pair := dialRefusing(t, func(*PeerConfig) {}, func(*Session, *Session) {})
+		pair.initiator.ChildFailed(errRefused)
+		deletedOnFailure(t, pair, "child")
+	})
+	t.Run("answered", func(t *testing.T) {
+		pair := dialRefusing(t, func(*PeerConfig) {}, func(*Session, *Session) {})
+		pair.responder.ChildFailed(errRefused)
+		select {
+		case err := <-pair.responderDone:
+			if !errors.Is(err, errRefused) {
+				t.Errorf("the answered session ended with %v, want its local failure", err)
+			}
+		case <-time.After(answerBudget):
+			t.Fatal("the answered session went on after its local failure")
+		}
+		select {
+		case <-pair.initiatorDone:
+		case <-time.After(answerBudget):
+			t.Fatal("the dialed session still holds the IKE SA, so no Delete for it reached it")
+		}
+	})
+}
+
+// a failure handed to a session that already holds one Run has not taken returns without waiting for Run, which takes the first
+func TestChildFailedNeverBlocks(t *testing.T) {
+	s := &Session{childFailed: make(chan error, 1)}
+	first := errors.New("the first failure")
+	s.ChildFailed(first)
+	returned := make(chan struct{})
+	go func() {
+		s.ChildFailed(errRefused)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(answerBudget):
+		t.Fatal("a second failure waited for Run to take the first")
+	}
+	if got := <-s.childFailed; got != first {
+		t.Errorf("Run takes %v, want the first failure", got)
+	}
+}

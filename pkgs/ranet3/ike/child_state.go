@@ -5,6 +5,7 @@
 package ike
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -77,8 +78,8 @@ func (s *Session) replaceChild(child ChildSA) error {
 		s.retiring, s.retiringEnds = old, oldEnds
 		// The peer owes a Delete for it, and a peer is free not to send one.
 		// Nothing else bounds this, and while it is set every rekey in both
-		// directions is refused, so it has a deadline of its own: the SA is
-		// retired on the ordinary timer if the Delete never comes.
+		// directions is refused, so it has a deadline of its own, past which
+		// this end deletes the SA itself.
 		s.retiringBy = time.Now().Add(retirementDeadline)
 	}
 	return nil
@@ -113,8 +114,41 @@ func (s *Session) retireChild(remoteSPI uint32) error {
 	if err := s.retireInboundLocked(retiring.LocalSPI, true); err != nil {
 		return err
 	}
-	s.retiring = ChildSA{}
+	s.retiring, s.retiringDeleting = ChildSA{}, false
 	return nil
+}
+
+// the mark it sets keeps a second Delete for the same SA from following the first
+func (s *Session) overdueRetiring(now time.Time) (ChildSA, bool) {
+	s.childMu.Lock()
+	defer s.childMu.Unlock()
+	if s.retiring.LocalSPI == 0 || s.retiringDeleting || now.Before(s.retiringBy) {
+		return ChildSA{}, false
+	}
+	s.retiringDeleting = true
+	return s.retiring, true
+}
+
+// RFC 7296 section 2.4: "If an IKE endpoint chooses to delete Child SAs, it MUST send Delete payloads to the other end notifying it of the deletion."
+// the SA is retired whatever comes back: a peer that no longer has it answers without a Delete payload (section 2.25.1), and one that does not answer leaves nothing to wait for
+func (s *Session) deleteOverdueChild(child ChildSA) {
+	slog.Warn("ike deleting a replaced Child SA the peer never deleted", "spi", child.LocalSPI, "after", retirementDeadline)
+	spi := binary.BigEndian.AppendUint32(nil, child.LocalSPI)
+	if _, err := s.request(INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{spi}})}}); err != nil {
+		slog.Warn("ike could not delete a replaced Child SA the peer never deleted", "spi", child.LocalSPI, "err", err)
+	}
+	if err := s.retireChild(child.RemoteSPI); err != nil {
+		slog.Warn("ike could not retire a replaced Child SA", "spi", child.LocalSPI, "err", err)
+		s.ChildFailed(err)
+	}
+}
+
+// ChildFailed tells the session that its Child SA's dataplane refused a change, which closes the IKE SA with a Delete for it, and never blocks
+func (s *Session) ChildFailed(err error) {
+	select {
+	case s.childFailed <- err:
+	default:
+	}
 }
 
 type childRetirement struct {
@@ -195,7 +229,8 @@ func (s *Session) retireInboundLocked(spi uint32, replaced bool) error {
 // nextRetirement is when the earliest replaced inbound SA may be dropped, so
 // the control loop can wait for it rather than poll for it. The SA waiting for
 // the peer's Delete counts too: nothing else would wake the loop to give up on
-// a Delete that is not coming.
+// a Delete that is not coming. Once this end's own Delete for it is out, the
+// answer wakes the loop, and its deadline would only wake it to do nothing.
 func (s *Session) nextRetirement() (time.Time, bool) {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
@@ -208,7 +243,7 @@ func (s *Session) nextRetirement() (time.Time, bool) {
 	if len(s.retired) > 0 {
 		sooner(s.retired[0].expiresAt)
 	}
-	if s.retiring.LocalSPI != 0 {
+	if s.retiring.LocalSPI != 0 && !s.retiringDeleting {
 		sooner(s.retiringBy)
 	}
 	if s.retiring.LocalSPI != 0 && s.childRekeyInterval > 0 && !slices.Contains(s.withdrawn, s.retiring.LocalSPI) && time.Now().Before(s.retiringEnds) {
@@ -220,17 +255,6 @@ func (s *Session) nextRetirement() (time.Time, bool) {
 func (s *Session) expireRetiredChildren(now time.Time) error {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
-	// A replaced SA whose Delete never arrived. Retiring it on the timer is
-	// what keeps a peer from locking out every later rekey by going quiet, and
-	// its inbound keys then drain like any other replaced SA.
-	if s.retiring.LocalSPI != 0 && !now.Before(s.retiringBy) {
-		slog.Warn("ike retiring a replaced Child SA the peer never deleted",
-			"spi", s.retiring.LocalSPI, "after", retirementDeadline)
-		if err := s.retireInboundLocked(s.retiring.LocalSPI, true); err != nil {
-			return fmt.Errorf("ike: retire an undeleted Child SA: %w", err)
-		}
-		s.retiring = ChildSA{}
-	}
 	for len(s.retired) > 0 && !now.Before(s.retired[0].expiresAt) {
 		if err := s.retireInboundLocked(s.retired[0].spi, false); err != nil {
 			return fmt.Errorf("ike: expire retired Child SA: %w", err)
@@ -277,6 +301,9 @@ func (s *Session) deleteChildren(remoteSPIs []uint32) ([]uint32, error) {
 			return nil, err
 		}
 		localSPIs = append(localSPIs, child.LocalSPI)
+		if child == &s.retiring {
+			s.retiringDeleting = false
+		}
 		*child = ChildSA{}
 	}
 	return localSPIs, nil

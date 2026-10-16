@@ -392,6 +392,9 @@ func (s *Session) run(ctx context.Context, ending error) error {
 		if err := s.expireRetiredChildren(time.Now()); err != nil {
 			return err
 		}
+		if child, ok := s.overdueRetiring(time.Now()); ok {
+			rekeys.Go(func() { s.deleteOverdueChild(child) })
+		}
 		s.expireRetainedContexts(time.Now())
 		if err := settleChildRekeys(); err != nil {
 			fail(err)
@@ -522,6 +525,9 @@ func (s *Session) run(ctx context.Context, ending error) error {
 			continue
 		// a Child SA rekey that ended is settled at the top of the loop, where the close rule also reads whether one still runs
 		case <-s.childRekeyEnded:
+			continue
+		case err := <-s.childFailed:
+			fail(err)
 			continue
 		case <-s.probes:
 			if pending == nil && expired() {

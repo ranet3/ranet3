@@ -369,6 +369,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		requests:        make(chan *localRequest, 1),
 		probes:          make(chan struct{}, 1),
 		childRekeyEnded: make(chan struct{}, 1),
+		childFailed:     make(chan error, 1),
 	}
 
 	accepted, created, err := session.completeResponderAuth(r, datagram.Raw, response, ni, nr, deadline)
