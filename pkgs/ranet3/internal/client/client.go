@@ -265,6 +265,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 	}
 	c.sessions.events = bus
 	c.sessions.trust = liveTrust{c}
+	c.sessions.steering = mesh.Steering()
 	c.dropReported.Store(-int64(espDropReportInterval))
 	c.cfg.Store(cfg)
 	c.storeIndex(x)

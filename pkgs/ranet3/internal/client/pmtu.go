@@ -376,8 +376,9 @@ type pathDriver struct {
 	probe  func(peer *netstack.Peer, size int, nonce uint16) error
 	events *events.Bus
 	totals *probeTotals
-	// steering is the node's steering table, whose longest segment list a steered 1280-byte packet carries
-	steering func() *srv6.SteerTable
+	// steering is the steering table in force at the session's start or the one a reload last handed it, whose longest segment list a steered 1280-byte packet carries
+	// the start sets it before serve runs, and serve replaces it under mu
+	steering *srv6.SteerTable
 	// searching is false where the mux sends without DF, and the budget is then link.mtu
 	searching bool
 	// mu guards search, endpoint, refusals and changed, which the session's goroutine writes and the debug view reads
@@ -396,10 +397,16 @@ type pathDriver struct {
 	acks              chan uint16
 	reports           chan *transport.PathMTUError
 	nudges            chan struct{}
-	// link is a link.mtu a reload stored that the search has not taken yet, zero for none
-	link atomic.Int64
+	// link holds the link.mtu and the steering table a reload handed the session that the search has not taken yet, nil for none
+	link atomic.Pointer[sessionLink]
 	// moved and reconfirm are an endpoint change and a confirmation the search has not taken yet
 	moved, reconfirm atomic.Bool
+}
+
+// sessionLink holds the link.mtu a reload stored and the steering table in force after it, which the reload hands each live session
+type sessionLink struct {
+	mtu      int
+	steering *srv6.SteerTable
 }
 
 // budgetChange is one move of a session's budget
@@ -416,11 +423,10 @@ type probeTotals struct{ acked, lost atomic.Uint64 }
 // the caller sets its peer before open
 // probe sends a probe through the session
 // totals counts its attempts with every other session's
-// steering reads the node's steering table
 // timeout is how long one waits for its Ack
 // interval is how often a settled search confirms its budget
-func newPathDriver(mux *transport.Mux, probe func(peer *netstack.Peer, size int, nonce uint16) error, bus *events.Bus, totals *probeTotals, steering func() *srv6.SteerTable, timeout, interval time.Duration) *pathDriver {
-	return &pathDriver{mux: mux, probe: probe, events: bus, totals: totals, steering: steering, timeout: timeout, interval: interval,
+func newPathDriver(mux *transport.Mux, probe func(peer *netstack.Peer, size int, nonce uint16) error, bus *events.Bus, totals *probeTotals, timeout, interval time.Duration) *pathDriver {
+	return &pathDriver{mux: mux, probe: probe, events: bus, totals: totals, timeout: timeout, interval: interval,
 		acks: make(chan uint16, maxProbes), reports: make(chan *transport.PathMTUError, 1), nudges: make(chan struct{}, 1)}
 }
 
@@ -462,9 +468,10 @@ func (d *pathDriver) open() int {
 	return d.inner(mtu, err)
 }
 
-// start sets the session's first budget from link and the route open read
-// it runs under the set's lock, so a reload's sweep either finds the session or stored the link.mtu it reads
-func (d *pathDriver) start(link, route int) {
+// start sets the session's first budget from link and the route open read, and steering, the table the budget is checked against
+// it runs under the set's lock, so a reload's sweep either finds the session or stored the link.mtu and the steering table it reads
+func (d *pathDriver) start(link int, steering *srv6.SteerTable, route int) {
+	d.steering = steering
 	if !d.searching {
 		d.peer.SetMTU(link)
 		return
@@ -514,8 +521,9 @@ func (d *pathDriver) serve(results <-chan sessionResult) sessionResult {
 
 // nudged takes what a reload, IKE or a confirmation asked for since the last nudge
 func (d *pathDriver) nudged(now time.Time) {
-	if link := d.link.Swap(0); link != 0 {
-		d.search.relinked(int(link), now)
+	if link := d.link.Swap(nil); link != nil {
+		d.steering = link.steering
+		d.search.relinked(link.mtu, now)
 	}
 	if d.moved.Swap(false) {
 		if ep := d.mux.Endpoint(); ep != d.endpoint {
@@ -551,7 +559,7 @@ func (d *pathDriver) apply(before pathSearch, now time.Time, timer *time.Timer) 
 	// a node that steers nothing needs the floor, which no budget falls under
 	// a search confirming or climbing has not found what its path carries, so a fall waits while it confirms or climbs and a rise while it confirms
 	// a family sending without DF holds its searches, and the budget a held search stands on is then what it carries
-	need := d.steering().LeastMTU()
+	need := d.steering.LeastMTU()
 	settled := s.phase != confirming && s.phase != searchingUp || !d.mux.DontFragment()
 	if short := s.budget < need; short != d.steeredShort && (settled || !short && s.phase != confirming) {
 		d.steeredShort = !d.steeredShort
@@ -585,13 +593,14 @@ func (d *pathDriver) ack(nonce uint16) {
 	}
 }
 
-// relink hands the session the link.mtu a reload stored, under the set's lock
-func (d *pathDriver) relink(link int) {
+// relink hands the session the link.mtu a reload stored and the steering table in force after it, under the set's lock
+// the nudge carries both, so the search takes them together whenever it runs
+func (d *pathDriver) relink(link int, steering *srv6.SteerTable) {
 	if !d.searching {
 		d.peer.SetMTU(link)
 		return
 	}
-	d.link.Store(int64(link))
+	d.link.Store(&sessionLink{mtu: link, steering: steering})
 	d.nudge()
 }
 

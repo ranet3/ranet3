@@ -162,9 +162,9 @@ func TestPMTUViewNamesASessionItDoesNotSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = mux.Close() })
-	d := newPathDriver(mux, nil, events.New(), &probeTotals{}, noSteering, driverProbeTimeout, confirmInterval)
+	d := newPathDriver(mux, nil, events.New(), &probeTotals{}, driverProbeTimeout, confirmInterval)
 	d.peer, d.endpoint = sinkPeer(t, "example/peer:0@0"), mux.Endpoint()
-	d.start(1400, math.MaxInt)
+	d.start(1400, nil, math.MaxInt)
 	c := pmtuClient(d, 1400)
 	s := c.DebugPMTU("").Sessions[0]
 	if s.State != control.PMTUNotSearched || s.Budget != 1400 || s.Sent != 0 || s.Probe != nil || s.Target != 0 {
@@ -190,7 +190,7 @@ func TestPMTUViewShowsTheSessionsOfThePeerNamed(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = mux.Close() })
 	session := func(path string) *pathDriver {
-		d := newPathDriver(mux, nil, events.New(), &probeTotals{}, noSteering, driverProbeTimeout, confirmInterval)
+		d := newPathDriver(mux, nil, events.New(), &probeTotals{}, driverProbeTimeout, confirmInterval)
 		d.peer = sinkPeer(t, path)
 		return d
 	}
