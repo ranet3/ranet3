@@ -70,6 +70,10 @@ type routePlatform struct {
 	// process reads as ordinary, gets deleted and is reinstalled correctly
 	// once, and a foreign scoped route is never adopted from its shape alone.
 	scoped map[netip.Prefix]netip.Prefix
+	// covering holds the cover members this process installed, which the
+	// FIB cannot tell from a route at the same destination. Kept the way
+	// scoped is: only successful installs, pruned by every dump.
+	covering map[netip.Prefix]bool
 
 	// warned holds the source-specific routes already reported and pending
 	// the ones reported under the current dump. Routes starts every reconcile
@@ -136,6 +140,7 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 	plat := &routePlatform{
 		table: t, rt: rt, index: index, host: host,
 		scoped:   make(map[netip.Prefix]netip.Prefix),
+		covering: make(map[netip.Prefix]bool),
 		warned:   make(map[Route]bool),
 		occupied: make(map[occupiedKey]bool),
 		refused:  make(map[occupiedKey]bool),
@@ -264,6 +269,7 @@ func (p *routePlatform) ownedRoutes(rib []byte) ([]Route, error) {
 	p.rotateWarnings()
 	var out []Route
 	stillScoped := make(map[netip.Prefix]bool, len(p.scoped))
+	stillCovering := make(map[netip.Prefix]bool, len(p.covering))
 	// Rebuilt rather than added to, so a route another program took over
 	// between two passes stops being claimed as ours and is reported as held
 	// the next time an install of it is refused.
@@ -277,6 +283,13 @@ func (p *routePlatform) ownedRoutes(rib []byte) ([]Route, error) {
 		p.ours[occupiedKey{destination: decoded.Destination, scoped: decoded.Scoped}] = true
 		if decoded.Scoped {
 			stillScoped[decoded.Destination] = true
+		} else {
+			stillCovering[decoded.Destination] = true
+		}
+	}
+	for destination := range p.covering {
+		if !stillCovering[destination] {
+			delete(p.covering, destination)
 		}
 	}
 	// p.scoped stands in for a source the FIB cannot hold, so it is a cache of
@@ -424,6 +437,7 @@ func (p *routePlatform) decodeRoute(message route.Message) (Route, bool) {
 		// leave the one it was asked for.
 		Scoped:      scoped,
 		Unreachable: rm.Flags&unix.RTF_REJECT != 0,
+		Cover:       !scoped && p.covering[prefix],
 	}, true
 }
 
@@ -559,9 +573,15 @@ func (p *routePlatform) AddRoute(r Route) error {
 		p.refused[key] = true
 		if !p.occupied[key] {
 			p.occupied[key] = true
-			slog.Warn("kernel is leaving a route that another program holds",
-				"destination", r.Destination, "interface", p.rt.Interface,
-				"detail", "darwin cannot replace a route, so this one was not installed")
+			if r.Cover {
+				slog.Warn("kernel is leaving a default's cover out, since another program holds a route at one of its members",
+					"destination", r.Destination, "held_by", p.holder(r.Destination), "interface", p.rt.Interface,
+					"detail", "darwin cannot replace a route, and part of a cover would split the family's traffic between the mesh and that route")
+			} else {
+				slog.Warn("kernel is leaving a route that another program holds",
+					"destination", r.Destination, "interface", p.rt.Interface,
+					"detail", "darwin cannot replace a route, so this one was not installed")
+			}
 		}
 		return errRouteSkipped
 	}
@@ -575,7 +595,32 @@ func (p *routePlatform) AddRoute(r Route) error {
 	if p.scopeRoute(r) {
 		p.scoped[r.Destination] = r.Source
 	}
+	if r.Cover {
+		p.covering[r.Destination] = true
+	}
 	return nil
+}
+
+// holder names the route another program holds at an unscoped key, which an
+// exact lookup of that key answers.
+func (p *routePlatform) holder(destination netip.Prefix) string {
+	mask, _ := prefixMask(destination)
+	held, err := p.host.Lookup(destination.Addr(), mask)
+	if errors.Is(err, ErrNoDefaultRoute) {
+		// ESRCH, the route gone between the refusal and the lookup
+		return "nothing any more"
+	}
+	if err != nil {
+		return "unknown: " + err.Error()
+	}
+	device, err := p.host.InterfaceName(held.Index)
+	if err != nil {
+		device = fmt.Sprintf("interface %d", held.Index)
+	}
+	if held.Gateway.IsValid() {
+		return fmt.Sprintf("%s via %s on %s", destination, held.Gateway, device)
+	}
+	return fmt.Sprintf("%s on %s", destination, device)
 }
 
 // scopeRoute decides whether a route is installed with RTF_IFSCOPE, which
@@ -585,31 +630,20 @@ func (p *routePlatform) AddRoute(r Route) error {
 // on the same machine: its exit-node default is scoped to its utun, its
 // 100.64/10 is not.
 func (p *routePlatform) scopeRoute(r Route) bool {
+	if r.Cover {
+		// no member holds a zero address, so a bound socket falls back past
+		// it whatever it covers (TestZMeasureTheZeroFreeCoverKeepsABoundSocket)
+		return false
+	}
 	if standsInForASource(r) || holdsAgainstTheFIB(r) {
 		return true
 	}
-	// A socket bound with IP_BOUND_IF looks up its routes scoped to the
-	// interface the host's own default leaves by, so once the transport has
-	// bound its own, a default out of the tun no longer takes the underlay
-	// carrying it. Keeping the underlay out is the only reason those two were
-	// scoped, and a scoped default is reached by nothing that did not name
-	// this interface, so leaving the scope on is a Mac that holds a mesh
-	// address and cannot use a mesh exit. See Config.BoundUnderlay, set from
-	// the same configuration that binds the socket, and
-	// TestDarwinBoundSocketNeedsAScopedDefault for the one thing the binding
-	// does not do by itself.
+	// With the underlay socket bound, a capture is not scoped: the
+	// reconciler installs a plain default as its cover, and any other route
+	// holding a zero address only once the underlay carries a default scoped
+	// to its own interface (see Reconciler.covered). coversAny stays for a
+	// route that is not a cover member.
 	if p.rt.BoundUnderlay {
-		// Not capturesTheMachine: a bound socket with a default scoped to its
-		// own interface is not stranded by one, and hiding it from every
-		// unbound socket leaves this Mac unable to use a mesh exit at all.
-		//
-		// coversAny stays either way. It is a different question: a prefix
-		// holding a peer's own endpoint, 2000::/3 or a provider aggregate,
-		// sends this node's ESP into the tunnel carrying it however the
-		// socket is bound, because the peer is reached through the tun rather
-		// than past it. Dropping this arm with the other one was a hole the
-		// gate does not cover, since such a prefix is neither half the space
-		// nor a route containing the family's zero address.
 		return coversAny(r.Destination, p.underlay)
 	}
 	return capturesTheMachine(r) || coversAny(r.Destination, p.underlay)
@@ -678,6 +712,8 @@ func (p *routePlatform) DelRoute(r Route) error {
 	// source, and the next pass would tear that route down and reinstall it.
 	if r.Scoped {
 		delete(p.scoped, r.Destination)
+	} else {
+		delete(p.covering, r.Destination)
 	}
 	withdrawn := occupiedKey{destination: r.Destination, scoped: r.Scoped}
 	delete(p.occupied, withdrawn)
@@ -804,6 +840,10 @@ func (p *routePlatform) where(Table) string { return "interface " + p.rt.Interfa
 
 // retable takes the metric a dump mirrors from the capability a reload installed
 func (p *routePlatform) retable(t Table) { p.table = t }
+
+// covers is a bound underlay: a plain default out of the tun unscoped meets
+// EEXIST beside the host's own, and scoped it carries nothing unbound.
+func (p *routePlatform) covers() bool { return p.rt.BoundUnderlay }
 
 // scopes is scopeRoute as the diff reads it.
 func (p *routePlatform) scopes(r Route) bool { return p.scopeRoute(r) }

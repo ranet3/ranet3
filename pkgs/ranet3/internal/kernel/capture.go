@@ -71,8 +71,13 @@ func unspecifiedOf(address netip.Addr) netip.Addr {
 // uncovered, so such a route is neither installed nor left behind: a capture
 // is never in the kernel while the family it captures has nothing to fall back
 // on, on either edge.
+//
+// HostDefaults reports, per family, whether the host holds a default of its
+// own, and writes nothing. It is all a plain default installed as its
+// zero-free cover needs.
 type CaptureRoutes interface {
 	Ready() (Covered, error)
+	HostDefaults() (Covered, error)
 }
 
 // Covered is which families the underlay can fall back on.

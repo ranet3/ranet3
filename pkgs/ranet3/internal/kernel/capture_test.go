@@ -313,12 +313,18 @@ type recordingCapture struct {
 	fake    *fakeKernel
 	at      []string
 	covered Covered
+	hosts   Covered
 	err     error
 }
 
 func (c *recordingCapture) Ready() (Covered, error) {
 	c.at = append(c.at, "asked with "+c.capturing())
 	return c.covered, c.err
+}
+
+func (c *recordingCapture) HostDefaults() (Covered, error) {
+	c.at = append(c.at, "host asked with "+c.capturing())
+	return c.hosts, c.err
 }
 
 // capturing describes whether the kernel currently holds a route that would
