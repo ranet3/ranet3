@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-16
+updated: 2026-10-17
 order: 10
 ---
 
@@ -309,14 +309,14 @@ describes. A path that cannot carry 1280 bytes in 1 datagram is under the floor.
 below 1344 bytes, and an IPv6 path below 1364 bytes. A session on such a path
 holds its budget at 1280 and lets the host fragment its datagrams.
 
-On Linux, while any session of a family is under the floor, that family's socket
-lets the host fragment its datagrams. The IPv4 socket sets `IP_PMTUDISC_DONT`
-and sends without DF. The IPv6 socket sets `IPV6_PMTUDISC_WANT`. Every other
-session of that family pauses its search meanwhile, because a probe the host may
-fragment measures nothing. macOS does the same for IPv4, because `IP_DONTFRAG`
-holds for a whole socket. For IPv6 it lets only that session's datagrams
-fragment. A session under the floor sends 1 datagram per message rather than
-segmenting.
+On Linux, while any session of a family is under the floor, that family's
+sockets let the host fragment their datagrams, the shared one and each one
+connected to 1 peer. The IPv4 sockets set `IP_PMTUDISC_DONT` and send without
+DF. The IPv6 sockets set `IPV6_PMTUDISC_WANT`. Every other session of that
+family pauses its search meanwhile, because a probe the host may fragment
+measures nothing. macOS does the same for IPv4, because `IP_DONTFRAG` holds for
+a whole socket. For IPv6 it lets only that session's datagrams fragment. A
+session under the floor sends 1 datagram per message rather than segmenting.
 
 Fragmenting has 3 limits. IPv6 is fragmented only where it is sent, so an IPv6
 path under 1364 bytes whose narrow hop sends no Packet Too Big stays a black
@@ -384,17 +384,23 @@ such restarts produce.
 
 ### Dataplane and sockets
 
-| Limit                                   | Value                  | Past it                                                                                                      |
-| --------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------ |
-| ESP receive queue of 1 session          | 8 MiB or 1,024 batches | A batch is dropped before decryption, and each of its datagrams is counted in `ranet3_receive_dropped_total` |
-| IKE receive queue of 1 session          | 16 datagrams           | A datagram is dropped and counted the same way                                                               |
-| IKE datagrams waiting for the responder | 64                     | A datagram is counted in `ranet3_receive_refused_total`, and its sender retransmits                          |
-| UDP socket buffers                      | 7 MiB each way         | Linux grants more than `net.core.rmem_max` or `net.core.wmem_max` only with `CAP_NET_ADMIN`                  |
-| Datagrams in 1 `UDP_SEGMENT` send       | 64                     | Linux before 6.9 refuses more                                                                                |
+| Limit                                   | Value                                      | Past it                                                                                                      |
+| --------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| ESP receive queue of 1 session          | 8 MiB or 1,024 batches                     | A batch is dropped before decryption, and each of its datagrams is counted in `ranet3_receive_dropped_total` |
+| IKE receive queue of 1 session          | 16 datagrams                               | A datagram is dropped and counted the same way                                                               |
+| IKE datagrams waiting for the responder | 64                                         | A datagram is counted in `ranet3_receive_refused_total`, and its sender retransmits                          |
+| UDP socket buffers                      | 7 MiB each way                             | Linux grants more than `net.core.rmem_max` or `net.core.wmem_max` only with `CAP_NET_ADMIN`                  |
+| Datagrams in 1 `UDP_SEGMENT` send       | 64                                         | Linux before 6.9 refuses more                                                                                |
+| Sockets connected to 1 peer each        | 256                                        | A busy peer past the cap stays on the shared socket                                                          |
+| Bytes before a peer gets such a socket  | 1 MiB within 30 seconds, sent and received | Less leaves the peer on the shared socket, and the count starts over every 30 seconds                        |
+| Socket buffers of such a socket         | 4 MiB each way                             | Linux grants more than `net.core.rmem_max` or `net.core.wmem_max` only with `CAP_NET_ADMIN`                  |
+| Read buffers of such a socket           | 4 messages of 64 KiB on Linux, 256 KiB     | 64 MiB at the cap. A read takes 4 messages at most, and the kernel holds the rest for the next               |
 
 [Platforms](../platforms.md) lists the tun queues and the socket differences
-between Linux and macOS. [Path MTU](../path-mtu.md#packets-that-do-not-fit)
-gives the ICMP rate limit all answers share.
+between Linux and macOS, and describes the
+[sockets connected to 1 peer](../platforms.md#sockets-connected-to-1-peer).
+[Path MTU](../path-mtu.md#packets-that-do-not-fit) gives the ICMP rate limit all
+answers share.
 
 ### Kernel routes
 

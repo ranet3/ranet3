@@ -4,7 +4,7 @@
 title: "Repository layout"
 description: "Where everything lives in the repository."
 created: 2026-10-03
-updated: 2026-10-16
+updated: 2026-10-17
 order: 10
 ---
 
@@ -58,7 +58,7 @@ program's own. Go commands run from `pkgs/ranet3`.
 | `sadr`                   | source address dependent routing tables                                                                                                |
 | `schema`                 | the scalar spellings a config file is written in                                                                                       |
 | `srv6`                   | SRv6 in userspace: the routing header (RFC 8754), H.Encaps, End and End.DT46 (RFC 8986)                                                |
-| `transport`              | 1 UDP socket for both IKE and ESP                                                                                                      |
+| `transport`              | the UDP sockets on 1 port for both IKE and ESP                                                                                         |
 | `examples`               | `config.toml`, `config.json` and `config.yaml`, which the `internal/config` tests parse                                                |
 | `internal/babel`         | the Babel speaker (RFC 8966)                                                                                                           |
 | `internal/client`        | the mesh runtime: peers, sessions, reload, path MTU, up and down, metrics and the daemon's side of the debug views                     |

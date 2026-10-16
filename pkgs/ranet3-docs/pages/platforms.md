@@ -2,9 +2,9 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: CC-BY-4.0
 title: "Platforms"
-description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, moving hosts and path MTU."
+description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-10-16
+updated: 2026-10-17
 order: 100
 ---
 
@@ -22,6 +22,7 @@ setting or skips a route instead.
 | Tun                                  | `ranet3`, or the device `link.tun` names                                  | `utun` for the next free unit, or `utunN`            |
 | Tun queues                           | 1 per CPU the Go runtime uses, up to 256                                  | 1                                                    |
 | Underlay sockets                     | 1 per family, batched with `recvmmsg`, `UDP_GRO` and `UDP_SEGMENT`        | 1 per family, 1 datagram per call                    |
+| Sockets connected to 1 peer          | 1 per busy address pair, up to 256, batched like the shared ones          | 1 per busy peer, up to 256, 1 datagram per call      |
 | Keeping the underlay out of the mesh | `link.underlay.mark` with a `cap.table.rules` entry                       | `link.underlay.bind`                                 |
 | Route ownership                      | the table `cap.table.id` and the protocol `cap.table.proto`               | the utun and the shape of the routes ranet3 installs |
 | `cap.table.rules`, `cap.table.vrf`   | supported                                                                 | refused                                              |
@@ -173,6 +174,7 @@ On a platform other than Linux and macOS:
 - `cap.egress` and both `link.underlay` settings are refused.
 - The node has no network watch, so a moved host waits for each session's own
   liveness check.
+- Every peer shares the 1 socket of its family, busy or not.
 - The tun takes its MTU only when it opens, so a change to `link.mtu` needs a
   restart.
 - The node assumes the host forwards both families.
@@ -214,6 +216,106 @@ finds its session healthy stands down as it does after any wake. A change the
 host shows nowhere, such as a captive portal that lets nothing through, needs
 `ranet3 redial --all` instead.
 
+## Sockets connected to 1 peer
+
+On Linux and macOS the transport listens on 1 UDP socket per family, bound to
+the wildcard address on `link.port`, and every peer starts on it. A busy peer
+then gets a socket of its own. The kernel keeps a socket's datagrams on 1
+transmit queue only while the socket is connected. A busy peer's ESP sent from
+the shared socket leaves over as many queues as its sender visits CPUs, arrives
+reordered, and makes the TCP inside it retransmit.
+
+The transport counts the bytes each address pair carries, sent and received
+together. A pair is this host's address and the peer's address and port. On
+Linux the address of a session a peer opened is the one the peer's request
+arrived on, and a session this node dialed leaves it to the route. macOS never
+names a source, so there every pair leaves it to the route. A pair that carries
+1 MiB within 1 sweep of 30 seconds gets a socket on `link.port`, the listener's
+port, bound to its address or to the one the route picks then, and connected to
+the peer. The peer sees the same address and port as before. The pair's sends
+leave on that socket. The kernel hands the socket the peer's datagrams to that
+address ahead of the listener, and a reader of its own takes them to the same
+sessions. Before Linux 5.4, once 2 such sockets share 1 address, the kernel
+hands each datagram to that address from a peer with a socket of its own to 1 of
+them by a hash, so a peer's datagrams can arrive on another peer's socket. Every
+reader takes them to the same sessions, so none is lost. A node holds at most
+256 such sockets. A pair past the cap stays on the shared socket.
+
+On Linux the socket of a session a peer opened also leaves by the interface the
+peer's request arrived on, as the shared socket's replies do. An IPv4 socket
+binds to that interface with `SO_BINDTOIFINDEX`, which Linux allows a process
+without `CAP_NET_RAW` from 5.7. On an older kernel the bind is refused, and such
+a session stays on the shared socket. An IPv6 socket names the interface with
+`IPV6_UNICAST_IF`, which like the reply's own choice prefers that interface only
+among the routes of the lowest metric. A link-local address binds on that
+interface alone. On macOS a link-local peer's socket binds on the interface the
+peer's zone names.
+
+A socket connected to 1 peer closes:
+
+- when it carried nothing for a whole sweep.
+- when the last session sending on it ends, or moves to another address.
+- when the host's network changes, as [moving hosts](#moving-hosts) describes. A
+  busy pair connects again at its next send, from the address its pair names
+  then.
+- on macOS, when the underlay socket moves onto another interface.
+- when a send or a read on it fails, other than for an ICMP error, as below, or
+  for a refusal of its segments, as [path MTU](#path-mtu) describes. Its
+  datagrams then leave the shared socket, and the pair waits for the next sweep
+  before it connects again.
+
+The kernel hands a connected socket the ICMP errors its datagrams draw, such as
+a port unreachable from a peer that restarted or a smaller path MTU from a hop
+on the way. The next read or send on the socket reports such an error, and none
+of them closes the socket. The read goes on reading, and the send goes again
+with its datagrams. A datagram past the path MTU is refused on that socket too.
+It then goes to the shared socket, whose refusal reports the path to the
+session's search, and the socket stays.
+
+A connected socket keeps the source address it bound. On Linux an IPv4 send from
+an address the host lost is refused, and the socket closes at once. An IPv6 send
+from such an address still leaves, so only the network change closes the socket.
+Naming the source on each IPv6 send instead would cost the socket the cached
+route that keeps its transmit queue.
+
+Each such socket follows the path MTU discovery mode of its family's shared
+socket. While a session of its family is under the floor, it lets the host
+fragment its datagrams as the shared socket does, as [path MTU](#path-mtu) below
+describes. A socket the host does not let change its mode closes as failed.
+
+On Linux each socket connected to 1 peer reads 4 messages of 64 KiB at once,
+which is 256 KiB of buffers per socket and 64 MiB at the cap, and asks the
+kernel for 4 MiB of socket buffer each way. Before Linux 6.13 the kernel matches
+each datagram to an address on the port against every socket bound to that
+address, up to 256, before it reaches the listener. From 6.13 a datagram from a
+peer with a socket of its own finds that socket at once, and the others still
+pass every socket bound to their address. On macOS each socket reads 1 datagram
+of 64 KiB at a time.
+
+Sharing the port takes `SO_REUSEPORT` on Linux. The listener binds without it
+and sets it once bound. A socket connected to 1 peer sets it before it binds 1
+address on the port. Linux lets a socket bind a port another socket holds only
+when both set `SO_REUSEPORT` and both belong to the same effective user ID. A
+second ranet3 on the port is refused, and so is any process that binds the port
+without `SO_REUSEPORT`. A process running as the daemon's own user, which is
+root under the [service](service.md), can still bind the port when it sets
+`SO_REUSEPORT` before its bind. On the wildcard address it takes a share of the
+datagrams the listener would get. On 1 of the host's addresses it takes every
+datagram to that address from a peer without a socket of its own.
+
+macOS needs no option on the listener. A socket connected to 1 peer sets
+`SO_REUSEADDR` and binds 1 address beside the wildcard listener, which macOS
+allows for a specific address. macOS refuses a bind to a port that a socket of
+another user holds, unless the process binding is root's. A process running as
+the daemon's own user, which is root under launchd, can still bind 1 of the
+host's addresses on the port with `SO_REUSEADDR`. It then takes every datagram
+to that address from a peer without a socket of its own. That holds with or
+without sockets connected to 1 peer. macOS reads a held socket's options at each
+later bind, and skips the user check for 2 binds of the wildcard address when
+the held socket has `SO_REUSEPORT`. A listener that set it after its bind would
+let a process of any user share the wildcard address, so ranet3 leaves it unset
+there.
+
 ## Path MTU
 
 On Linux and macOS each session searches its path for the largest packet it
@@ -232,7 +334,13 @@ route through an IPsec policy, on a kernel before 6.14 when a segment exceeds
 the path MTU, and on a socket that fragments for a session under the floor.
 ranet3 then sends those datagrams again, 1 per message. That peer gets single
 datagrams for 10 minutes, the time Linux keeps a path MTU it learned. Every
-other peer keeps segmenting.
+other peer keeps segmenting. On a socket that fragments, a message refused with
+`EMSGSIZE` is first sent once more segmented, because a socket connected to 1
+peer holds the `EMSGSIZE` of a Packet Too Big for its next send alone. Only a
+second refusal stops the segments. A
+[socket connected to 1 peer](#sockets-connected-to-1-peer) does the same and
+stays open. The stop holds for that peer on the shared socket and on its own
+alike.
 
 On macOS every datagram leaves with `IP_DONTFRAG` or `IPV6_DONTFRAG`. The host
 refuses one past the MTU of the interface its route leaves by, rather than past

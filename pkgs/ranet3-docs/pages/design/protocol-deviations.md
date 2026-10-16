@@ -26,6 +26,7 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 7296 section 3.2               | Ignore the critical bit on a payload type the recipient understands          | A response that sets it on any payload is refused                       | A known gap                                          |
 | RFC 8247, RFC 8221                 | Support AES-CBC, MODP group 14, HMAC integrity and RSA signatures            | AEAD ciphers and elliptic curve groups only                             | Legacy transforms are left out                       |
 | RFC 4303 sections 2.6 and 2.7      | Be able to generate dummy packets                                            | None are generated, and no traffic flow confidentiality padding is sent | A known gap                                          |
+| RFC 3948 section 2.1               | Send the IPv4 UDP checksum as zero                                           | Every IPv4 datagram carries a computed checksum                         | Linux refuses segmented sends without one            |
 | RFC 3948 section 4                 | Send NAT keepalives                                                          | None are sent                                                           | Hellos and IKE liveness checks keep the mapping open |
 | RFC 4443 section 2.2               | Answer from an address of the node's own                                     | Packet Too Big comes from the packet's destination                      | A leaf may hold no address of the packet's family    |
 | RFC 8966 section 3.2.2             | Raise the node's own seqno only when asked                                   | The seqno rises at every start                                          | Peers take a restarted node's routes at once         |
@@ -228,6 +229,19 @@ traffic flow confidentiality padding
 ([section 2.7](https://www.rfc-editor.org/rfc/rfc4303.html#section-2.7)), which
 the SA management protocol would have to negotiate. ranet3 treats the 2 as a
 known gap rather than a decision.
+
+## UDP checksums
+
+[RFC 3948 section 2.1](https://www.rfc-editor.org/rfc/rfc3948.html#section-2.1)
+says "the IPv4 UDP Checksum SHOULD be transmitted as a zero value". Every IPv4
+datagram the transport sends carries a computed one, from the shared socket and
+from the
+[sockets connected to 1 peer](../platforms.md#sockets-connected-to-1-peer)
+alike. On Linux a socket with `SO_NO_CHECK` gets `EINVAL` for every
+`UDP_SEGMENT` send, so zero checksums would cost every IPv4 batch its segments.
+macOS keeps the same checksum, for 1 behavior on both platforms. The same
+section says "receivers MUST NOT depend on the UDP checksum being a zero value",
+so nothing on the wire depends on a zero one.
 
 ## ICMP answers
 
