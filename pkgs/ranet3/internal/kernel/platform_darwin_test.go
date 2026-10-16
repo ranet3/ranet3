@@ -80,6 +80,7 @@ func testPlatform(t *testing.T, tbl Table, rt Runtime) (*routePlatform, *fakeRou
 		warned:   make(map[Route]bool),
 		pending:  make(map[Route]bool),
 		scoped:   make(map[netip.Prefix]netip.Prefix),
+		covering: make(map[netip.Prefix]bool),
 		occupied: make(map[occupiedKey]bool),
 		refused:  make(map[occupiedKey]bool),
 		ours:     make(map[occupiedKey]bool),
@@ -1457,43 +1458,67 @@ func TestDarwinRefusesSettingsItCannotHonor(t *testing.T) {
 	}
 }
 
-// With the transport's socket bound off the forwarding table, the reason an
-// announced default was scoped is gone, and scope is the one thing keeping a
-// Mac from using a mesh exit: a scoped default is reached by nothing that did
-// not name the tun. The route has to install plain, read back plain, and
-// converge, or every pass would tear it down and put it back.
-func TestDarwinInstallsAPlainDefaultOnceTheUnderlayIsBound(t *testing.T) {
-	for _, destination := range []string{"0.0.0.0/0", "::/0", "::/1"} {
-		t.Run(destination, func(t *testing.T) {
-			peer := addr("2001:db8:beef::1")
-			plat, sock := testPlatform(t, Table{}, Runtime{
-				BoundUnderlay: true,
-				Underlay:      func() []netip.Addr { return []netip.Addr{peer} },
-			})
-			announced := Route{Destination: prefix(destination)}
-			announced.Metric = routeMetric(plat.table.Metric, announced.Destination, false)
-			if err := plat.AddRoute(announced); err != nil {
-				t.Fatal(err)
-			}
-			written := sock.messages(t)
-			if len(written) != 1 {
-				t.Fatalf("install wrote %d messages, want 1", len(written))
-			}
-			if written[0].Flags&unix.RTF_IFSCOPE != 0 {
-				t.Fatalf("default %s was scoped although the underlay socket is bound, so no ordinary socket can use the exit", destination)
-			}
-			rib := dumpRIB(t, dumpEntry{
-				index: testIndex, flags: written[0].Flags,
-				dst: announced.Destination, gateway: ourGateway(),
-			})
-			actual, err := plat.ownedRoutes(rib)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if add, del := diffRoutes([]Route{announced}, actual, plat.scopes); len(add) != 0 || len(del) != 0 {
-				t.Fatalf("the plain default did not converge: add %v, delete %v", add, del)
-			}
-		})
+// With the underlay socket bound, a plain default goes in as its cover. Every
+// member installs unscoped although a peer's endpoint lies inside one, reads
+// back as a member, and converges. A real route at a member's destination
+// keeps the endpoint check, and an unscoped route there that this process did
+// not install as a member reads back as an ordinary route.
+func TestDarwinInstallsTheCoverUnscopedOnceTheUnderlayIsBound(t *testing.T) {
+	peer4, peer6 := addr("192.0.2.1"), addr("2001:db8:beef::1")
+	plat, sock := testPlatform(t, Table{}, Runtime{
+		BoundUnderlay: true,
+		Underlay:      func() []netip.Addr { return []netip.Addr{peer4, peer6} },
+	})
+	if !plat.covers() {
+		t.Fatal("a bound underlay does not ask for the cover")
+	}
+	if _, err := plat.Routes(); err != nil {
+		t.Fatal(err)
+	}
+	desired := coverDefaults([]Route{
+		{Destination: prefix("0.0.0.0/0")},
+		{Destination: prefix("::/0"), Metric: defaultIPv6Metric},
+	}, plat.scopes)
+	if len(desired) != 16 {
+		t.Fatalf("the cover is %d routes, want 16: %v", len(desired), desired)
+	}
+	var entries []dumpEntry
+	for _, member := range desired {
+		if err := plat.AddRoute(member); err != nil {
+			t.Fatal(err)
+		}
+		written := sock.messages(t)
+		last := written[len(written)-1]
+		if last.Flags&unix.RTF_IFSCOPE != 0 {
+			t.Errorf("cover member %s was scoped, so no ordinary socket reaches the exit through it", member.Destination)
+		}
+		entries = append(entries, dumpEntry{index: testIndex, flags: last.Flags, dst: member.Destination, gateway: ourGateway()})
+	}
+	actual, err := plat.ownedRoutes(dumpRIB(t, entries...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range actual {
+		if !r.Cover {
+			t.Errorf("%s read back as an ordinary route", r.Destination)
+		}
+	}
+	if add, del := diffRoutes(desired, actual, plat.scopes); len(add) != 0 || len(del) != 0 {
+		t.Fatalf("the cover did not converge: add %v, delete %v", add, del)
+	}
+
+	advertised := Route{Destination: prefix("2000::/3"), Metric: defaultIPv6Metric}
+	if !plat.scopeRoute(advertised) {
+		t.Error("a real 2000::/3 holding a peer's endpoint installs unscoped, so the ESP goes into the tun")
+	}
+
+	left, _ := testPlatform(t, Table{}, Runtime{BoundUnderlay: true})
+	inherited, err := left.ownedRoutes(dumpRIB(t, dumpEntry{index: testIndex, flags: unix.RTF_UP | unix.RTF_STATIC, dst: prefix("128.0.0.0/1"), gateway: ourGateway()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inherited) != 1 || inherited[0].Cover {
+		t.Errorf("a route this process did not install as a member read back as %v", inherited)
 	}
 }
 
@@ -1553,5 +1578,112 @@ func TestDarwinReadsItsAddressesOncePerPass(t *testing.T) {
 	}
 	if dumps != 2 {
 		t.Errorf("two passes over %d skipped routes read the addresses %d times, want 2", len(skipped), dumps)
+	}
+}
+
+// The pass that withholds a member for a real route at the member's own
+// destination deletes the member and installs the route with no dump between
+// them to forget the member. DelRoute forgets it itself, or the next dump
+// reads the route back as the member, and every pass after that deletes and
+// reinstalls it. A member that leaves the table some other way, deleted by
+// hand or flushed with its interface, is forgotten by the first dump without
+// it, for the same reason.
+func TestDarwinForgetsAMemberItWithdrew(t *testing.T) {
+	plat, _ := testPlatform(t, Table{}, Runtime{BoundUnderlay: true})
+	member := Route{Destination: prefix("128.0.0.0/1"), Cover: true}
+	if err := plat.AddRoute(member); err != nil {
+		t.Fatal(err)
+	}
+	if err := plat.DelRoute(member); err != nil {
+		t.Fatal(err)
+	}
+	ordinary := Route{Destination: member.Destination}
+	if err := plat.AddRoute(ordinary); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := plat.ownedRoutes(dumpRIB(t, dumpEntry{
+		index: testIndex, flags: unix.RTF_UP | unix.RTF_STATIC, dst: ordinary.Destination, gateway: ourGateway(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actual) != 1 || actual[0].Cover {
+		t.Fatalf("the route installed where a member was withdrawn reads back as %v", actual)
+	}
+	if add, del := diffRoutes([]Route{ordinary}, actual, plat.scopes); len(add) != 0 || len(del) != 0 {
+		t.Errorf("the route did not converge: add %v, delete %v", add, del)
+	}
+
+	gone := Route{Destination: prefix("64.0.0.0/2"), Cover: true}
+	if err := plat.AddRoute(gone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plat.ownedRoutes(dumpRIB(t)); err != nil {
+		t.Fatal(err)
+	}
+	other := Route{Destination: gone.Destination}
+	if err := plat.AddRoute(other); err != nil {
+		t.Fatal(err)
+	}
+	actual, err = plat.ownedRoutes(dumpRIB(t, dumpEntry{
+		index: testIndex, flags: unix.RTF_UP | unix.RTF_STATIC, dst: other.Destination, gateway: ourGateway(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actual) != 1 || actual[0].Cover {
+		t.Errorf("the route installed where a member left the table unasked reads back as %v", actual)
+	}
+}
+
+// holdingHost is a host where another program's route holds one key, which
+// an exact lookup of that key answers.
+type holdingHost struct {
+	runningKernel
+	key    netip.Prefix
+	answer RouteAnswer
+	device string
+}
+
+func (h holdingHost) Lookup(destination, mask netip.Addr) (RouteAnswer, error) {
+	if want, _ := prefixMask(h.key); destination != h.key.Addr() || mask != want {
+		return RouteAnswer{}, ErrNoDefaultRoute
+	}
+	return h.answer, nil
+}
+
+func (h holdingHost) InterfaceName(index int) (string, error) {
+	if index != h.answer.Index {
+		return "", errors.New("no such interface")
+	}
+	return h.device, nil
+}
+
+// A member another program holds is reported once, by the route that holds
+// it, so an operator learns which program keeps the family's cover out and
+// not only that one does.
+func TestDarwinNamesTheRouteThatKeepsAMemberOut(t *testing.T) {
+	logs := captureKernelLogs(t)
+	plat, sock := testPlatform(t, Table{}, Runtime{BoundUnderlay: true})
+	member := Route{Destination: prefix("128.0.0.0/1"), Cover: true}
+	plat.host = holdingHost{key: member.Destination, answer: RouteAnswer{Index: testIndex + 1, Gateway: addr("10.7.0.1")}, device: "utun4"}
+	sock.err = unix.EEXIST
+	for pass := range 2 {
+		if _, err := plat.ownedRoutes(dumpRIB(t)); err != nil {
+			t.Fatal(err)
+		}
+		if err := plat.AddRoute(member); !errors.Is(err, errRouteSkipped) {
+			t.Fatalf("pass %d: the refused member reported %v", pass, err)
+		}
+	}
+	record := logRecord(t, logs, "kernel is leaving a default's cover out, since another program holds a route at one of its members")
+	if record == nil {
+		t.Fatalf("the refusal said nothing: %q", logs.String())
+	}
+	if got, want := record["held_by"], "128.0.0.0/1 via 10.7.0.1 on utun4"; got != want {
+		t.Errorf("the refusal names %v as the holder, want %q", got, want)
+	}
+	if got := record["destination"]; got != member.Destination.String() {
+		t.Errorf("the refusal names %v as the member, want %s", got, member.Destination)
 	}
 }

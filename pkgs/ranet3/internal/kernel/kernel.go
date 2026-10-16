@@ -192,10 +192,10 @@ type Runtime struct {
 	// BoundUnderlay says the transport's own socket no longer consults the
 	// forwarding table, because it is bound to the interface the host's
 	// default route leaves by. The darwin backend then installs an announced
-	// default as a real default rather than scoping it out of every socket's
-	// reach, which is the difference between a node that can hold a mesh
-	// address and one that can use a mesh exit. Leaving it off keeps the
-	// scoping. Nothing reads it on linux, where a socket mark and a policy
+	// plain default as its zero-free cover rather than scoping it out of
+	// every socket's reach, which is the difference between a node that can
+	// hold a mesh address and one that can use a mesh exit. Leaving it off
+	// keeps the scoping. Nothing reads it on linux, where a socket mark and a policy
 	// rule do the same job and a default is installed unscoped either way.
 	// It is set from link.underlay, so it is handed here rather than written
 	// in cap.table: one setting decides both halves and they cannot disagree.
@@ -404,12 +404,19 @@ type Route struct {
 	// prefix follows a shorter one instead, which on a node holding a default
 	// is straight back out to the neighbor that just retracted it.
 	Unreachable bool
+	// Cover marks a member of a plain default's zero-free cover (see
+	// coverDefaults). It is never scoped, and a dump reads it back only for a
+	// member this process installed.
+	Cover bool
 }
 
 func (r Route) String() string {
 	kind := ""
 	if r.Unreachable {
 		kind = " unreachable"
+	}
+	if r.Cover {
+		kind = " cover"
 	}
 	if r.Source.IsValid() {
 		return fmt.Sprintf("%s from %s metric %d%s", r.Destination, r.Source, r.Metric, kind)
@@ -818,6 +825,9 @@ type Reconciler struct {
 	// installed, the only state whose grace needs a wake-up of its own.
 	uncovered Covered
 	capturing bool
+	// cover is the families the last pass left covered, so a change is
+	// reported once.
+	cover []Family
 
 	// rules and vrfs are the optional halves of the platform, nil where it has
 	// no policy engine or no VRFs. New and SetTable refuse a configuration that
@@ -876,8 +886,9 @@ type Reconciler struct {
 
 // Stats is one finished route pass. Installed counts the routes the kernel
 // holds for this reconciler once the pass has applied, and Skipped the ones it wanted
-// and did not get: one the platform cannot represent, or one whose key
-// another writer already holds. A prefix the mesh has and the kernel does not
+// and did not get: one the platform cannot represent, one whose key
+// another writer already holds, or a cover member left out with the rest of
+// its family. A prefix the mesh has and the kernel does not
 // is explained by Skipped or by Err and by nothing else.
 type Stats struct {
 	At        time.Time
@@ -886,7 +897,10 @@ type Stats struct {
 	Skipped   int
 	Added     int
 	Removed   int
-	Err       string
+	// Cover is the families whose plain default this pass left installed as
+	// its zero-free cover.
+	Cover []Family
+	Err   string
 }
 
 // Stats reports the last route pass, and the zero value before the first one
@@ -1573,17 +1587,59 @@ func (r *Reconciler) applyRoutes() error {
 	// already in the kernel exactly where it was when the host's default
 	// moved to another interface.
 	desired, coverErr := r.covered(desired)
-	add, del := diffRoutes(desired, actual, r.platformScopes())
-	var errs []error
-	if coverErr != nil {
-		errs = append(errs, coverErr)
-	}
-	added, removed, skipped := 0, 0, 0
 	// Whether this pass leaves the mesh carrying this machine's own traffic.
 	// The gate has already decided it: desired holds a capturing route only
 	// while the gate is open and its family is covered, so this needs no
 	// second opinion about either.
 	r.capturing = slices.ContainsFunc(desired, capturesTheMachine)
+	covering, scopes := r.covers(), r.platformScopes()
+	scoped := func(route Route) bool { return route.Scoped || scopes != nil && scopes(route) }
+	// A member is withheld only for a route the kernel holds once the pass has
+	// added, so a route refused last pass withholds nothing while it is tried
+	// again, and one that fails in this pass hands its members back.
+	unheld := map[Route]bool{}
+	for route := range r.refused {
+		if !route.Cover {
+			unheld[route] = true
+		}
+	}
+	unmet := func(route Route) bool { return scoped(route) || unheld[route] }
+	bare := desired
+	// After the gate and the readiness check, which judge the default whole:
+	// a member holds no zero address, so capturesTheMachine reads only a /1
+	// member as a capture and would pass the rest through a closed gate.
+	if covering {
+		desired = coverDefaults(bare, unmet)
+	}
+	wanted := map[Route]bool{}
+	for _, route := range desired {
+		if route.Cover {
+			wanted[route] = true
+		}
+	}
+	desiredCount := len(desired)
+	add, del := diffRoutes(desired, actual, scopes)
+	// A route refused last pass is tried first, and a route before the members
+	// it contains, its own key's included, so while a member or a route
+	// withholding one stays refused the rest of its family is left out rather
+	// than installed and withdrawn again every pass.
+	slices.SortStableFunc(add, func(a, b Route) int {
+		return cmp.Or(
+			cmp.Compare(boolOrder(!r.refused[a]), boolOrder(!r.refused[b])),
+			comparePrefixes(a.Destination, b.Destination),
+			cmp.Compare(boolOrder(a.Cover), boolOrder(b.Cover)),
+		)
+	})
+	broken := map[Family]bool{}
+	var errs []error
+	if coverErr != nil {
+		errs = append(errs, coverErr)
+	}
+	added, removed, skipped := 0, 0, 0
+	held := make(map[Route]bool, len(actual))
+	for _, route := range actual {
+		held[route] = true
+	}
 	// Withdraw before installing. An install refuses a key another writer
 	// already holds rather than taking it over, so a route of ours that
 	// changed only in an attribute the kernel does not key on, a preferred
@@ -1595,12 +1651,26 @@ func (r *Reconciler) applyRoutes() error {
 			errs = append(errs, fmt.Errorf("delete route %s: %w", route, err))
 		} else {
 			removed++
+			delete(held, route)
 		}
 	}
+	heldRoutes := func() []Route { return slices.Collect(maps.Keys(held)) }
 	var refused map[Route]bool
-	for _, route := range add {
-		if err := r.plat.AddRoute(route); err == nil {
+	for i := 0; i < len(add); i++ {
+		route := add[i]
+		if route.Cover && broken[familyOf(route.Destination.Addr())] {
+			skipped++
+			continue
+		}
+		if route.Cover && withheld(route.Destination, heldRoutes(), scoped) {
+			// a route refused last pass went in this one
+			desiredCount--
+			continue
+		}
+		err := r.plat.AddRoute(route)
+		if err == nil {
 			added++
+			held[route] = true
 		} else if errors.Is(err, errRouteSkipped) {
 			skipped++
 			if refused == nil {
@@ -1611,8 +1681,49 @@ func (r *Reconciler) applyRoutes() error {
 		} else {
 			errs = append(errs, fmt.Errorf("add route %s: %w", route, err))
 		}
+		if err != nil && route.Cover {
+			broken[familyOf(route.Destination.Addr())] = true
+		}
+		if err != nil && !route.Cover && covering {
+			// tried next, before the rest of the family, so a refusal at a
+			// member's own key refuses the member too
+			unheld[route] = true
+			var handed []Route
+			for _, member := range coverDefaults(bare, unmet) {
+				if member.Cover && !wanted[member] && !held[member] {
+					wanted[member] = true
+					handed = append(handed, member)
+				}
+			}
+			desiredCount += len(handed)
+			add = slices.Insert(add, i+1, handed...)
+		}
 	}
 	r.refused = refused
+	// A cover goes in whole or not at all: part of one would split its
+	// family's traffic between the mesh and whatever holds the rest. A member
+	// the kernel already held goes too once a route that withholds it is in.
+	ordinary := heldRoutes()
+	for _, route := range slices.SortedFunc(maps.Keys(held), compareRoutes) {
+		if !route.Cover {
+			continue
+		}
+		broke := broken[familyOf(route.Destination.Addr())]
+		if !broke && !(wanted[route] && withheld(route.Destination, ordinary, scoped)) {
+			continue
+		}
+		if err := r.plat.DelRoute(route); err != nil {
+			errs = append(errs, fmt.Errorf("delete route %s: %w", route, err))
+			continue
+		}
+		removed++
+		if broke {
+			skipped++
+		} else {
+			desiredCount--
+		}
+		delete(held, route)
+	}
 	// Reported only when something moved. A route the platform refuses stays
 	// in the diff on purpose, because the install is retried on every pass
 	// until it lands, so a node holding one permanently unrepresentable route
@@ -1626,54 +1737,88 @@ func (r *Reconciler) applyRoutes() error {
 	// the sum is exact and costs no second dump. reconcile publishes it, with
 	// the error of the whole pass rather than this step's.
 	r.routePass = Stats{
-		Desired:   len(desired),
+		Desired:   desiredCount,
 		Installed: len(actual) - removed + added,
 		Skipped:   skipped,
 		Added:     added,
 		Removed:   removed,
+		Cover:     coveredFamilies(slices.Collect(maps.Keys(held))),
 	}
+	r.reportCover(r.routePass.Cover)
 	return errors.Join(errs...)
+}
+
+func (r *Reconciler) reportCover(now []Family) {
+	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
+		was, is := slices.Contains(r.cover, family), slices.Contains(now, family)
+		if was == is {
+			continue
+		}
+		slog.Info("kernel changed the cover a plain default is installed as", "family", family, "installed", is)
+		r.rt.Events.Emit("kernel.cover", "", slog.String("family", string(family)), slog.Bool("installed", is))
+	}
+	r.cover = now
 }
 
 // covered drops every capturing route whose own family the underlay cannot
 // fall back on, and repairs that routing on the way.
 //
 // It runs once a pass and only where a capturing route is wanted, so a node
-// announcing ordinary prefixes never asks and never pays for the answer.
+// announcing ordinary prefixes never asks and never pays for the answer. A
+// plain default the platform installs as its cover needs only the host's own
+// default of its family, since no member holds a zero address.
 func (r *Reconciler) covered(desired []Route) ([]Route, error) {
 	if r.rt.Capture == nil || !slices.ContainsFunc(desired, capturesTheMachine) {
 		r.uncovered = Covered{V4: true, V6: true}
 		return desired, nil
 	}
-	covered, err := r.rt.Capture.Ready()
-	if err != nil {
-		err = fmt.Errorf("cover the underlay before capturing: %w", err)
+	covering := r.covers()
+	coverOnly := func(route Route) bool { return covering && plainDefault(route) }
+	needsUnderlay := func(route Route) bool { return capturesTheMachine(route) && !coverOnly(route) }
+	var underlay, host Covered
+	var errs []error
+	if slices.ContainsFunc(desired, needsUnderlay) {
+		var err error
+		if underlay, err = r.rt.Capture.Ready(); err != nil {
+			errs = append(errs, fmt.Errorf("cover the underlay before capturing: %w", err))
+		}
 	}
+	if slices.ContainsFunc(desired, coverOnly) {
+		var err error
+		if host, err = r.rt.Capture.HostDefaults(); err != nil {
+			errs = append(errs, fmt.Errorf("read the host's own defaults before covering: %w", err))
+		}
+	}
+	allowed := Covered{V4: true, V6: true}
 	out := desired[:0:0]
-	held := false
 	for _, route := range desired {
-		if capturesTheMachine(route) && !covered.Has(route.Destination.Addr()) {
+		address := route.Destination.Addr()
+		ready, detail := true, ""
+		switch {
+		case coverOnly(route):
+			ready, detail = host.Has(address), "the host has no default of its own for that family, so this node would lose every network it has there"
+		case needsUnderlay(route):
+			ready, detail = underlay.Has(address), "the underlay has no route of its own for that family, so this node would lose every network it has there"
+		}
+		if !ready {
 			// Left out of the pass rather than counted as skipped: skipped
 			// counts what the kernel would not take, and this is the
-			// reconciler refusing to ask. Installing it, or leaving one
-			// installed, takes this node off the network for that family with
-			// nothing to fall back on.
-			if r.uncovered.Has(route.Destination.Addr()) {
+			// reconciler refusing to ask.
+			if r.uncovered.Has(address) {
 				slog.Warn("kernel is holding back a route that would carry this machine's own traffic",
-					"destination", route.Destination,
-					"detail", "the underlay has no route of its own for that family, so this node would lose every network it has there")
+					"destination", route.Destination, "detail", detail)
 			}
-			held = true
+			if address.Is4() {
+				allowed.V4 = false
+			} else {
+				allowed.V6 = false
+			}
 			continue
 		}
 		out = append(out, route)
 	}
-	if !held {
-		r.uncovered = Covered{V4: true, V6: true}
-		return out, err
-	}
-	r.uncovered = covered
-	return out, err
+	r.uncovered = allowed
+	return out, errors.Join(errs...)
 }
 
 // desired projects one forwarding table snapshot onto the routes the kernel
@@ -2125,6 +2270,11 @@ func canonicalPrefix(prefix netip.Prefix) (netip.Prefix, bool) {
 // scoper is implemented by a platform whose kernel keys a route by interface
 // scope as well as by its destination, which is darwin alone.
 type scoper interface{ scopes(Route) bool }
+
+func (r *Reconciler) covers() bool {
+	p, ok := r.plat.(coverer)
+	return ok && p.covers()
+}
 
 func (r *Reconciler) platformScopes() func(Route) bool {
 	if p, ok := r.plat.(scoper); ok {

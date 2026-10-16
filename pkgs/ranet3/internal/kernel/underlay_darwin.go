@@ -258,6 +258,32 @@ func (u *UnderlayDefaults) Ready() (Covered, error) {
 	}, err
 }
 
+// HostDefaults reports which families the host has a default of its own for,
+// the fallback a bound socket keeps under a zero-free cover. It writes
+// nothing.
+func (u *UnderlayDefaults) HostDefaults() (Covered, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.closed {
+		return Covered{}, errUnderlayClosed
+	}
+	var covered Covered
+	var errs []error
+	for _, destination := range defaultPrefixes {
+		_, _, err := u.links.Default(destination.Addr())
+		switch {
+		case errors.Is(err, ErrNoDefaultRoute):
+		case err != nil:
+			errs = append(errs, err)
+		case destination.Addr().Is4():
+			covered.V4 = true
+		default:
+			covered.V6 = true
+		}
+	}
+	return covered, errors.Join(errs...)
+}
+
 // Close removes what this process wrote, unless a capture is still in the
 // kernel: the underlay's route outlives the routes that depend on it, always,
 // and a withdrawal that failed upstream must not be followed by this one. What
