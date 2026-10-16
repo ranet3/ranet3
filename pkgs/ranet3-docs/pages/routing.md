@@ -73,10 +73,11 @@ The node holds each prefix it originates as unreachable in its own table. A
 packet for an address inside the prefix that this node does not carry is
 dropped. It does not follow a covering route such as a default.
 
-`transit` defaults to `true`, and the node relays every route it selects to its
-other neighbors. With `transit = false` the node advertises only the prefixes it
-originates. It still learns and installs every route. A change to `transit`
-takes a restart, as [reloading](reloading.md) lists.
+With transit on, the node relays every route it selects to its other neighbors.
+With transit off, it advertises only the prefixes it originates, and still
+learns and installs every route. Transit is off unless
+[`cap.transit`](configuration-reference.md) writes `enable = true`, and a change
+to it takes a restart, as [reloading](reloading.md) lists.
 
 `cap.egress` adds the prefixes it is ready to carry, without a source prefix.
 [Exit nodes](exit-nodes.md) describes when it does.

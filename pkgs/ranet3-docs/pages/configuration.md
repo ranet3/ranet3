@@ -108,16 +108,17 @@ These keys are required:
 - at least 1 `dial.to` entry, unless `link.listen` or `dial.all` is set
 
 Every other key has a default. A left-out `cap.route`, `cap.babel` or
-`cap.crypto` runs its defaults. A left-out `cap.table`, `cap.segment` or
-`cap.egress` is off. A node with no `cap.babel` sends Hellos every 4 seconds and
-updates every 16 seconds (RFC 8966 Appendix B). A node with no `cap.route`
-announces nothing and still carries transit.
+`cap.crypto` runs its defaults. A left-out `cap.table`, `cap.segment`,
+`cap.egress` or [`cap.transit`](configuration-reference.md) is off. A node with
+no `cap.babel` sends Hellos every 4 seconds and updates every 16 seconds (RFC
+8966 Appendix B). A node with no `cap.route` announces nothing.
 
 ### Capabilities
 
 | Block         | What it turns on                                                              |
 | ------------- | ----------------------------------------------------------------------------- |
-| `cap.route`   | What this node announces, and whether it relays what it learns                |
+| `cap.route`   | What this node announces                                                      |
+| `cap.transit` | Whether this node relays the routes it learns, and so other nodes' traffic    |
 | `cap.babel`   | The speaker's timers, link quality estimator and costs                        |
 | `cap.table`   | The route reconciler: a routing table, addresses, a VRF and policy rules      |
 | `cap.segment` | Segment routing (RFC 8986): the SIDs this node answers for and what it steers |
