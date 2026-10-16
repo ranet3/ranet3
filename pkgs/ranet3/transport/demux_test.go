@@ -55,7 +55,7 @@ func TestReceiveLoopsReadTablesThatRegistrationsReplace(t *testing.T) {
 					bufs[i], sizes[i], endpoints[i] = datagram, len(datagram), nil
 				}
 				return len(datagrams), 0, nil
-			})
+			}, hub.readFailed)
 		})
 	}
 	var churn sync.WaitGroup

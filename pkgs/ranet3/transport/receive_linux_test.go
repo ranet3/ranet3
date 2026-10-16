@@ -53,7 +53,7 @@ func BenchmarkUDPReceiveVector(b *testing.B) {
 	}); err != nil || optionErr != nil {
 		b.Fatalf("disable receive GRO: %v %v", err, optionErr)
 	}
-	receive := socket.receiver()
+	receive := socket.receiver(espSendBatch)
 	sender, _, _, err := openPacketBind(0, Underlay{}, 0, false, nil)
 	if err != nil {
 		b.Fatal(err)

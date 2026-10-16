@@ -766,7 +766,7 @@ const (
 	fethFar  = "feth7701"
 	// fethMTU is the near feth's MTU, the largest IP packet a send through it carries
 	fethMTU = 1400
-	// dadWait bounds the wait for the near feth's IPv6 address to finish duplicate address detection
+	// dadWait bounds the wait for a feth's IPv6 addresses to finish duplicate address detection
 	dadWait = 5 * time.Second
 	// dadPoll is how often the wait looks
 	dadPoll = 50 * time.Millisecond
@@ -813,16 +813,22 @@ func fethPath(t *testing.T) {
 	for _, neighbor := range []string{"2001:db8:f::9", "2001:db8:f::10"} {
 		hostCommand(t, "ndp", "-s", neighbor, far.HardwareAddr.String())
 	}
+	waitDAD(t, fethNear)
+}
+
+// waitDAD waits until no IPv6 address of the interface name is tentative
+func waitDAD(t *testing.T, name string) {
+	t.Helper()
 	for deadline := time.Now().Add(dadWait); ; time.Sleep(dadPoll) {
-		out, err := exec.Command("ifconfig", fethNear).CombinedOutput()
+		out, err := exec.Command("ifconfig", name).CombinedOutput()
 		if err != nil {
-			t.Fatalf("ifconfig %s: %v: %s", fethNear, err, out)
+			t.Fatalf("ifconfig %s: %v: %s", name, err, out)
 		}
 		if !strings.Contains(string(out), "tentative") {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the IPv6 address on %s stayed tentative for %s: %s", fethNear, dadWait, out)
+			t.Fatalf("an IPv6 address on %s stayed tentative for %s: %s", name, dadWait, out)
 		}
 	}
 }

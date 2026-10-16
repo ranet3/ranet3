@@ -947,7 +947,7 @@ func TestWhatTheReceiverRefusedReachesTheCounter(t *testing.T) {
 				return 0, 3, nil
 			}
 			return 0, 0, errors.New("closed")
-		})
+		}, h.readFailed)
 	}()
 	<-done
 	if got := h.Refused(); got != 3 {

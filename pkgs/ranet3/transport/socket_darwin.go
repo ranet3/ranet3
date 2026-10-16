@@ -141,8 +141,17 @@ type darwinBind struct {
 	rebind sync.Mutex
 	bound  int
 	v4, v6 *darwinSocket
-	// fragmentMu serializes the IPv4 socket's count of muxes letting its sends fragment
+	// fragmentMu serializes the IPv4 socket's count of muxes letting its sends fragment, and pairs
 	fragmentMu sync.Mutex
+	// pairs holds the open sockets connected to one peer, each IPv4 one with its listener's IP_DONTFRAG
+	pairs map[*darwinPair]struct{}
+	// setDontFragment sets or clears a socket's DF, which a test answers in place of darwin
+	setDontFragment func(socket *darwinSocket, on bool) error
+	// port is the listener's, which a socket connected to one peer binds too
+	port uint16
+	// connecting holds one connect at a time
+	// XNU refuses to bind an address and port while another socket holds it unconnected
+	connecting sync.Mutex
 }
 
 func (b *darwinBind) ParseEndpoint(s string) (Endpoint, error) {
@@ -253,26 +262,121 @@ var boundReachProbe = reachesWhenBound
 // its own descriptor rather than using the live one, because connect on the
 // live socket would fix its destination.
 func reachesWhenBound(index int, target netip.Addr) error {
-	// Built in the branch rather than in an assignment the other branch
-	// overwrites: As4 panics on an IPv6 address, and a composite literal is
-	// evaluated whether or not its value survives.
-	family, level, option := unix.AF_INET, unix.IPPROTO_IP, unix.IP_BOUND_IF
-	var sa unix.Sockaddr
-	if target.Is4() {
-		sa = &unix.SockaddrInet4{Addr: target.As4(), Port: 9}
-	} else {
-		family, level, option = unix.AF_INET6, unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
-		sa = &unix.SockaddrInet6{Addr: target.As16(), Port: 9}
+	_, err := boundSource(index, netip.AddrPortFrom(target, 9))
+	return err
+}
+
+// boundSource resolves one route the way a socket bound to index would, and answers the source it picks
+// a link-local target's zone names the interface its route takes, and a link-local source comes back zoned by it
+func boundSource(index int, target netip.AddrPort) (netip.Addr, error) {
+	network, level, option := "udp4", unix.IPPROTO_IP, unix.IP_BOUND_IF
+	if target.Addr().Is6() {
+		network, level, option = "udp6", unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
 	}
-	fd, err := unix.Socket(family, unix.SOCK_DGRAM, 0)
+	dialer := net.Dialer{Control: func(_, _ string, raw syscall.RawConn) error {
+		var setErr error
+		if err := raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), level, option, index) }); err != nil {
+			return err
+		}
+		return setErr
+	}}
+	conn, err := dialer.Dial(network, target.String())
 	if err != nil {
-		return err
+		return netip.Addr{}, err
 	}
-	defer unix.Close(fd)
-	if err := unix.SetsockoptInt(fd, level, option, index); err != nil {
-		return err
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap(), nil
+}
+
+// icmpErrnos are the errors XNU hands a connected UDP socket for an ICMP error, read by its next send or receive
+// udp_ctlinput and udp6_ctlinput pass every errno of inetctlerrmap and inet6ctlerrmap to the socket's so_error
+var icmpErrnos = []unix.Errno{unix.ECONNREFUSED, unix.EHOSTDOWN, unix.EHOSTUNREACH, unix.EMSGSIZE, unix.ENETUNREACH, unix.ENOPROTOOPT}
+
+// pairOf leaves the local address to the route, since a darwin endpoint carries no source
+func (b *darwinBind) pairOf(endpoint Endpoint) pairKey {
+	return pairKey{remote: endpoint.(*darwinEndpoint).addr}
+}
+
+// connectPair binds the route's source on the hub's port beside the wildcard listener and connects to the peer
+// XNU looks a datagram up by its exact 4-tuple before any wildcard socket
+func (b *darwinBind) connectPair(k pairKey) (pairSocket, receiveFunc, error) {
+	b.connecting.Lock()
+	defer b.connecting.Unlock()
+	b.rebind.Lock()
+	index := b.bound
+	b.rebind.Unlock()
+	v6 := k.remote.Addr().Is6()
+	network := "udp4"
+	if v6 {
+		network = "udp6"
 	}
-	return unix.Connect(fd, sa)
+	local, err := boundSource(index, k.remote)
+	if err != nil {
+		return nil, nil, err
+	}
+	dialer := net.Dialer{LocalAddr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(local, b.port)), Control: socketControl(v6, index, pairBuffer, true)}
+	conn, err := dialer.Dial(network, k.remote.String())
+	if err != nil {
+		return nil, nil, err
+	}
+	socket := &darwinSocket{conn: conn.(*net.UDPConn), ipv6: v6}
+	pair := &darwinPair{socket: socket, bind: b, address: local}
+	if socket.raw, err = socket.conn.SyscallConn(); err == nil {
+		err = b.join(pair)
+	}
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+	return pair, retryICMP(socket.receiver()), nil
+}
+
+// join gives an IPv4 p its listener's IP_DONTFRAG, which fragment then moves it with
+func (b *darwinBind) join(p *darwinPair) error {
+	b.fragmentMu.Lock()
+	defer b.fragmentMu.Unlock()
+	if !p.socket.ipv6 && b.v4 != nil && b.v4.fragmenting.Load() > 0 {
+		if err := b.setDontFragment(p.socket, false); err != nil {
+			return err
+		}
+	}
+	b.pairs[p] = struct{}{}
+	return nil
+}
+
+// darwinPair is a socket connected to one peer
+type darwinPair struct {
+	socket  *darwinSocket
+	bind    *darwinBind
+	address netip.Addr
+}
+
+// transmit writes one packet a call to the peer the socket holds, as one darwin may fragment while ep's IPv6 sends fragment
+func (p *darwinPair) transmit(packets [][]byte, endpoint Endpoint) (int, bool, error) {
+	fragments := endpoint.(*darwinEndpoint).fragments.Load()
+	return pastICMP(func(packets [][]byte) (int, error) {
+		for i, packet := range packets {
+			var err error
+			if fragments {
+				_, _, err = p.socket.conn.WriteMsgUDP(packet, fragmentControl, nil)
+			} else {
+				_, err = p.socket.conn.Write(packet)
+			}
+			if err != nil {
+				return i, err
+			}
+		}
+		return len(packets), nil
+	}, packets)
+}
+
+func (p *darwinPair) local() netip.Addr { return p.address }
+
+func (p *darwinPair) Close() error {
+	p.bind.fragmentMu.Lock()
+	delete(p.bind.pairs, p)
+	p.bind.fragmentMu.Unlock()
+	return p.socket.conn.Close()
 }
 
 // Send writes one datagram at a time
@@ -397,6 +501,7 @@ func routedInterface(addr netip.AddrPort) (int, error) {
 
 // fragment clears DF on the IPv4 socket while any mux asks, since IP_DONTFRAG holds for a whole socket
 // an IPv6 endpoint clears it on its own datagrams alone
+// the IPv4 sockets connected to one peer move with the IPv4 socket, and one that cannot is closed, which hands its sends to the shared socket
 func (b *darwinBind) fragment(endpoint Endpoint, on bool) error {
 	ep := endpoint.(*darwinEndpoint)
 	if !ep.addr.Addr().Is4() {
@@ -414,8 +519,14 @@ func (b *darwinBind) fragment(endpoint Endpoint, on bool) error {
 		count = was + 1
 	}
 	if (count > 0) != (was > 0) {
-		if err := b.v4.setDontFragment(count == 0); err != nil {
+		if err := b.setDontFragment(b.v4, count == 0); err != nil {
 			return err
+		}
+		for pair := range b.pairs {
+			if !pair.socket.ipv6 && b.setDontFragment(pair.socket, count == 0) != nil {
+				delete(b.pairs, pair)
+				_ = pair.socket.conn.Close()
+			}
 		}
 	}
 	b.v4.fragmenting.Store(count)
@@ -483,37 +594,14 @@ func openPacketBind(port uint16, underlay Underlay, index int, routed bool, _ fu
 }
 
 func listenPacketBind(port uint16, index int) (packetBind, []receiveFunc, uint16, error) {
-	b := new(darwinBind)
+	b := &darwinBind{pairs: make(map[*darwinPair]struct{}), setDontFragment: (*darwinSocket).setDontFragment}
 	var receivers []receiveFunc
 	for i, network := range []string{"udp4", "udp6"} {
 		ipv6 := i == 1
-		var setErr error
-		lc := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
-			if err := raw.Control(func(fd uintptr) {
-				for _, option := range []int{unix.SO_RCVBUF, unix.SO_SNDBUF} {
-					// Tuning, so a kernel that clamps or refuses it costs
-					// throughput and nothing else.
-					_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, option, socketBufferSize)
-				}
-				// DF on every datagram, and darwin refusing one past its interface's MTU rather than fragmenting it, which Send reports
-				level, option := dontFragmentOption(ipv6)
-				if setErr = unix.SetsockoptInt(int(fd), level, option, 1); setErr != nil || index == 0 {
-					return
-				}
-				// Reported rather than ignored like the tuning above. This
-				// binding keeps the ESP underlay out of the tun carrying it,
-				// so a silent failure here is an underlay that disappears
-				// into the overlay.
-				level, option = unix.IPPROTO_IP, unix.IP_BOUND_IF
-				if ipv6 {
-					level, option = unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
-				}
-				setErr = unix.SetsockoptInt(int(fd), level, option, index)
-			}); err != nil {
-				return err
-			}
-			return setErr
-		}}
+		// the listener never sets SO_REUSEPORT, not even once bound as on linux
+		// in_pcbbind in bsd/netinet/in_pcb.c and in6_pcbbind in bsd/netinet6/in6_pcb.c (xnu f6217f8) read a held socket's options again at each later bind
+		// and skip the user check for a second bind of the wildcard address where the held socket has SO_REUSEPORT, which lets a process of any user share the port
+		lc := net.ListenConfig{Control: socketControl(ipv6, index, socketBufferSize, false)}
 		pc, err := lc.ListenPacket(context.Background(), network, fmt.Sprintf(":%d", port))
 		if err != nil {
 			if errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EPROTONOSUPPORT) {
@@ -544,5 +632,44 @@ func listenPacketBind(port uint16, index int) (packetBind, []receiveFunc, uint16
 	// A rollback reads it, and without it a half-finished first move would put
 	// the family that had already moved onto no interface at all.
 	b.bound = index
+	b.port = port
 	return b, receivers, port, nil
+}
+
+// socketControl sets the buffers, DF and the interface binding on a socket before it binds
+// and SO_REUSEADDR where it binds the listener's port on one address, which XNU then allows beside the wildcard listener
+func socketControl(ipv6 bool, index, buffer int, reuseAddr bool) func(string, string, syscall.RawConn) error {
+	return func(_, _ string, raw syscall.RawConn) error {
+		var optionErr error
+		if err := raw.Control(func(fd uintptr) {
+			for _, option := range []int{unix.SO_RCVBUF, unix.SO_SNDBUF} {
+				// Tuning, so a kernel that clamps or refuses it costs
+				// throughput and nothing else.
+				_ = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, option, buffer)
+			}
+			if reuseAddr {
+				optionErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+			}
+			if optionErr == nil {
+				// DF on every datagram, and darwin refusing one past its interface's MTU rather than fragmenting it, which Send reports
+				level, option := dontFragmentOption(ipv6)
+				optionErr = unix.SetsockoptInt(int(fd), level, option, 1)
+			}
+			if index == 0 || optionErr != nil {
+				return
+			}
+			// Reported rather than ignored like the tuning above. This
+			// binding keeps the ESP underlay out of the tun carrying it,
+			// so a silent failure here is an underlay that disappears
+			// into the overlay.
+			level, option := unix.IPPROTO_IP, unix.IP_BOUND_IF
+			if ipv6 {
+				level, option = unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
+			}
+			optionErr = unix.SetsockoptInt(int(fd), level, option, index)
+		}); err != nil {
+			return err
+		}
+		return optionErr
+	}
 }

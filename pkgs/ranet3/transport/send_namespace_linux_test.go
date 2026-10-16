@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
 )
 
@@ -34,6 +35,9 @@ const lockedPathMTU = 1280
 
 // testMark is the mark of the bind whose datagrams a rule routes by it
 const testMark = 0x2a
+
+// markRule is a rule's match of the datagrams testMark marks
+var markRule = slices.Concat(attribute(unix.FRA_FWMARK, word(testMark)), attribute(unix.FRA_FWMASK, word(^uint32(0))))
 
 // the tables a rule routes into, by the send's mark, its pinned source or its pinned interface
 // each holds a route to the far end locked at lockedPathMTU, and each number is its rule's priority too, ahead of the main table's
@@ -138,7 +142,8 @@ func TestKernelRefusesWhatALockedPathCannotCarry(t *testing.T) {
 
 // a mux under the floor lets its family's socket fragment, and linux then sends a datagram past a locked path in fragments, which the far end puts back together
 // a segment past the path is refused under DONT and WANT as under DO
-// the segments go again one datagram to a message, each in fragments
+// a message refused with EMSGSIZE goes once more as it was, and linux refuses it again
+// the segments then go one datagram to a message, each in fragments
 // the other family still refuses a datagram past its path and reports the path, and so does the family once the mux stops
 // IPv4 fragments first and IPv6 next, each through its own option
 // the mux under the floor sends to an endpoint of its own in the family
@@ -193,6 +198,9 @@ func TestKernelFragmentsPastALockedPathOnlyWhileTheFamilyAsks(t *testing.T) {
 			refusal = unix.EINVAL
 		}
 		want := []triedMessage{{segment: 1400, size: 8 * 1400, errno: refusal}}
+		if refusal == unix.EMSGSIZE {
+			want = append(want, want[0])
+		}
 		for range eight {
 			want = append(want, triedMessage{size: 1400})
 		}
@@ -307,37 +315,7 @@ func TestKernelSendsWithoutDFWhatTheRouteCarriesWhileIPv4Fragments(t *testing.T)
 // and it returns the far end and the test's end of the pair
 func lockedFarEnd(t *testing.T) (farEnd, *net.Interface) {
 	t.Helper()
-	if os.Getuid() != 0 {
-		t.Skip("building a veth pair needs root on linux")
-	}
-	runtime.LockOSThread()
-	if err := unshareEmptyNamespace(); err != nil {
-		t.Fatal(err)
-	}
-	near, err := unix.Open("/proc/thread-self/ns/net", unix.O_RDONLY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		t.Fatalf("open this namespace: %v", err)
-	}
-	opened := make(chan farEnd, 1)
-	go func() { opened <- openFarEnd(near) }()
-	far := <-opened
-	_ = unix.Close(near)
-	if far.err != nil {
-		t.Fatal(far.err)
-	}
-	t.Cleanup(far.close)
-	link, err := net.InterfaceByName("near")
-	if err != nil {
-		t.Fatalf("look up the near end: %v", err)
-	}
-	netlink, err := openRouteNetlink()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer netlink.close()
-	if err := netlink.configure(link.Index, slices.Concat(nearAddresses, steeredSources)); err != nil {
-		t.Fatalf("configure the near end: %v", err)
-	}
+	far, link, netlink := vethPair(t, 1, slices.Concat(nearAddresses, steeredSources))
 	for i, address := range farAddresses {
 		source := steeredSources[i].Addr()
 		for _, rule := range []struct {
@@ -345,7 +323,7 @@ func lockedFarEnd(t *testing.T) (farEnd, *net.Interface) {
 			sourceBits int
 			match      []byte
 		}{
-			{markTable, 0, slices.Concat(attribute(unix.FRA_FWMARK, word(testMark)), attribute(unix.FRA_FWMASK, word(^uint32(0))))},
+			{markTable, 0, markRule},
 			{sourceTable, source.BitLen(), attribute(unix.FRA_SRC, source.AsSlice())},
 			{deviceTable, 0, attribute(unix.FRA_OIFNAME, cString("near"))},
 		} {
@@ -358,6 +336,51 @@ func lockedFarEnd(t *testing.T) (farEnd, *net.Interface) {
 		}
 	}
 	return far, link
+}
+
+// vethPair moves the calling goroutine, locked to its thread for good, into a new and empty network namespace
+// and joins it by a veth pair to a far end with peers listeners of each family
+// it gives the near end addresses and answers the far end, the near end and a route netlink socket beside it
+func vethPair(t *testing.T, peers int, addresses []netip.Prefix) (farEnd, *net.Interface, routeNetlink) {
+	t.Helper()
+	return vethPairTo(t, peers, addresses, farAddresses)
+}
+
+// vethPairTo is vethPair with a far end that holds far
+func vethPairTo(t *testing.T, peers int, addresses, far []netip.Prefix) (farEnd, *net.Interface, routeNetlink) {
+	t.Helper()
+	if os.Getuid() != 0 {
+		t.Skip("building a veth pair needs root on linux")
+	}
+	runtime.LockOSThread()
+	if err := unshareEmptyNamespace(); err != nil {
+		t.Fatal(err)
+	}
+	near, err := unix.Open("/proc/thread-self/ns/net", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open this namespace: %v", err)
+	}
+	opened := make(chan farEnd, 1)
+	go func() { opened <- openFarEnd(near, peers, far) }()
+	end := <-opened
+	_ = unix.Close(near)
+	if end.err != nil {
+		t.Fatal(end.err)
+	}
+	t.Cleanup(end.close)
+	link, err := net.InterfaceByName("near")
+	if err != nil {
+		t.Fatalf("look up the near end: %v", err)
+	}
+	netlink, err := openRouteNetlink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(netlink.close)
+	if err := netlink.configure(link.Index, addresses); err != nil {
+		t.Fatalf("configure the near end: %v", err)
+	}
+	return end, link, netlink
 }
 
 // the near end's addresses, then the far end's, one of each family on the same prefixes
@@ -441,22 +464,79 @@ func arrivals(t *testing.T, listener *net.UDPConn) []arrival {
 
 // farEnd is the peer's half of the veth pair, listening in a network namespace of its own
 type farEnd struct {
-	// listeners hold one socket of each family, in the order of farAddresses
+	// listeners hold the peers of each family in turn, in the order of farAddresses
 	listeners []*net.UDPConn
 	// snmp and snmp6 are the namespace's IP counters of each family, opened from within it
 	snmp, snmp6 *os.File
-	err         error
+	// reporters are raw ICMP sockets of each family in turn, opened from within the namespace
+	reporters []*net.IPConn
+	err       error
 }
 
 func (f farEnd) close() {
 	for _, listener := range f.listeners {
 		_ = listener.Close()
 	}
+	for _, reporter := range f.reporters {
+		_ = reporter.Close()
+	}
 	for _, counters := range []*os.File{f.snmp, f.snmp6} {
 		if counters != nil {
 			_ = counters.Close()
 		}
 	}
+}
+
+// icmpFragmentationNeeded is RFC 792's code of a destination unreachable for a datagram that needed fragments and carried DF
+const icmpFragmentationNeeded = 4
+
+// reportPath sends local, from the far end, the ICMP error a hop sends about a datagram from local to remote past a path of mtu bytes
+// a fragmentation needed for IPv4 and a packet too big for IPv6, each quoting the datagram's IP and UDP headers
+// linux fills in the checksum of an ICMPv6 message a raw socket sends, and of no ICMP one
+func (f farEnd) reportPath(local, remote netip.AddrPort, mtu int) error {
+	udp := make([]byte, 8)
+	binary.BigEndian.PutUint16(udp[0:], local.Port())
+	binary.BigEndian.PutUint16(udp[2:], remote.Port())
+	binary.BigEndian.PutUint16(udp[4:], uint16(mtu))
+	to := &net.IPAddr{IP: local.Addr().AsSlice()}
+	if local.Addr().Is4() {
+		ip := make([]byte, 20)
+		ip[0], ip[8], ip[9] = 0x45, 64, unix.IPPROTO_UDP
+		binary.BigEndian.PutUint16(ip[2:], uint16(len(ip)+mtu))
+		binary.BigEndian.PutUint16(ip[6:], 0x4000)
+		copy(ip[12:], local.Addr().AsSlice())
+		copy(ip[16:], remote.Addr().AsSlice())
+		binary.BigEndian.PutUint16(ip[10:], internetChecksum(ip))
+		message := slices.Concat([]byte{byte(ipv4.ICMPTypeDestinationUnreachable), icmpFragmentationNeeded, 0, 0, 0, 0, 0, 0}, ip, udp)
+		binary.BigEndian.PutUint16(message[6:], uint16(mtu))
+		binary.BigEndian.PutUint16(message[2:], internetChecksum(message))
+		_, err := f.reporters[0].WriteTo(message, to)
+		return err
+	}
+	ip := make([]byte, 40)
+	ip[0], ip[6], ip[7] = 0x60, unix.IPPROTO_UDP, 64
+	binary.BigEndian.PutUint16(ip[4:], uint16(mtu))
+	copy(ip[8:], local.Addr().AsSlice())
+	copy(ip[24:], remote.Addr().AsSlice())
+	message := slices.Concat([]byte{byte(ipv6.ICMPTypePacketTooBig), 0, 0, 0, 0, 0, 0, 0}, ip, udp)
+	binary.BigEndian.PutUint32(message[4:], uint32(mtu))
+	_, err := f.reporters[1].WriteTo(message, to)
+	return err
+}
+
+// internetChecksum is the checksum of RFC 1071 over b
+func internetChecksum(b []byte) uint16 {
+	var sum uint32
+	for i := 0; i+1 < len(b); i += 2 {
+		sum += uint32(binary.BigEndian.Uint16(b[i:]))
+	}
+	if len(b)%2 == 1 {
+		sum += uint32(b[len(b)-1]) << 8
+	}
+	for sum>>16 != 0 {
+		sum = sum&0xffff + sum>>16
+	}
+	return ^uint16(sum)
 }
 
 // reassembled reads how many datagrams of each family the far end put back together from fragments
@@ -504,9 +584,10 @@ func (f farEnd) reassembled() (ipv4, ipv6 uint64, err error) {
 }
 
 // openFarEnd makes the veth pair in a network namespace of its own and hands the near end to the namespace near names
+// it gives the far end addresses and opens peers listeners of each family there
 // it locks its thread and never unlocks it, and the runtime retires the thread with the goroutine
 // nothing else runs in the namespace, which lives on in the listeners' sockets
-func openFarEnd(near int) farEnd {
+func openFarEnd(near, peers int, addresses []netip.Prefix) farEnd {
 	runtime.LockOSThread()
 	if err := unshareEmptyNamespace(); err != nil {
 		return farEnd{err: err}
@@ -526,17 +607,27 @@ func openFarEnd(near int) farEnd {
 	if err != nil {
 		return farEnd{err: fmt.Errorf("look up the far end: %w", err)}
 	}
-	if err := netlink.configure(link.Index, farAddresses); err != nil {
+	if err := netlink.configure(link.Index, addresses); err != nil {
 		return farEnd{err: fmt.Errorf("configure the far end: %w", err)}
 	}
 	var end farEnd
 	for _, network := range []string{"udp4", "udp6"} {
-		listener, err := net.ListenUDP(network, &net.UDPAddr{})
+		for range peers {
+			listener, err := net.ListenUDP(network, &net.UDPAddr{})
+			if err != nil {
+				end.close()
+				return farEnd{err: fmt.Errorf("listen on the far end: %w", err)}
+			}
+			end.listeners = append(end.listeners, listener)
+		}
+	}
+	for _, network := range []string{"ip4:icmp", "ip6:ipv6-icmp"} {
+		reporter, err := net.ListenIP(network, nil)
 		if err != nil {
 			end.close()
-			return farEnd{err: fmt.Errorf("listen on the far end: %w", err)}
+			return farEnd{err: fmt.Errorf("open a raw ICMP socket on the far end: %w", err)}
 		}
-		end.listeners = append(end.listeners, listener)
+		end.reporters = append(end.reporters, reporter)
 	}
 	// a counter file keeps to the namespace of the thread that opened it, this one
 	if end.snmp, err = os.Open("/proc/thread-self/net/snmp"); err == nil {
@@ -657,6 +748,44 @@ func (n routeNetlink) lockPathMTU(index int, to netip.Addr, mtu int, table uint3
 	body := slices.Concat(header, attribute(unix.RTA_DST, to.AsSlice()), attribute(unix.RTA_OIF, word(uint32(index))),
 		attribute(unix.RTA_METRICS, metrics))
 	return n.request(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, body)
+}
+
+// in6AddrGenModeNone is IN6_ADDR_GEN_MODE_NONE of linux/if_link.h, which gives a link no IPv6 address of its own
+const in6AddrGenModeNone = 1
+
+// dummyLink makes a link named name that drops whatever it sends, brings it up and answers its index
+// it takes no IPv6 link-local address, so it sends nothing of its own
+func (n routeNetlink) dummyLink(name string) (int, error) {
+	kind := attribute(unix.IFLA_INFO_KIND, cString("dummy"))
+	if err := n.request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL,
+		slices.Concat(linkMessage(0, 0), attribute(unix.IFLA_IFNAME, cString(name)), attribute(unix.IFLA_LINKINFO, kind))); err != nil {
+		return 0, fmt.Errorf("make %s: %w", name, err)
+	}
+	link, err := net.InterfaceByName(name)
+	if err != nil {
+		return 0, err
+	}
+	// set while the link is down, before linux gives it an address
+	quiet := attribute(unix.IFLA_AF_SPEC, attribute(unix.AF_INET6, attribute(unix.IFLA_INET6_ADDR_GEN_MODE, []byte{in6AddrGenModeNone})))
+	if err := n.request(unix.RTM_NEWLINK, 0, slices.Concat(linkMessage(link.Index, 0), quiet)); err != nil {
+		return 0, fmt.Errorf("keep %s from taking an IPv6 address: %w", name, err)
+	}
+	return link.Index, n.request(unix.RTM_NEWLINK, 0, linkMessage(link.Index, unix.IFF_UP))
+}
+
+// routeOver routes to a prefix over link index in table at metric, the family's default where it is zero
+// after any route to the prefix already there, as linux refuses a second IPv6 route of one prefix and metric only when asked for an exclusive one
+func (n routeNetlink) routeOver(index int, to netip.Prefix, metric, table uint32) error {
+	scope := byte(unix.RT_SCOPE_UNIVERSE)
+	if to.Addr().Is4() {
+		scope = unix.RT_SCOPE_LINK
+	}
+	header := []byte{addressFamily(to.Addr()), byte(to.Bits()), 0, 0, byte(table), unix.RTPROT_BOOT, scope, unix.RTN_UNICAST, 0, 0, 0, 0}
+	body := slices.Concat(header, attribute(unix.RTA_DST, to.Addr().AsSlice()), attribute(unix.RTA_OIF, word(uint32(index))))
+	if metric != 0 {
+		body = append(body, attribute(unix.RTA_PRIORITY, word(metric))...)
+	}
+	return n.request(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_APPEND, body)
 }
 
 // steer adds a rule of family, at table's number as its priority, that looks up in table what match and a source prefix of sourceBits select
