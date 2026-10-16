@@ -143,6 +143,13 @@ intervals before the old ones run out. A `cap.babel` that describes the speaker
 already running, an omitted field written out as its default for instance,
 changes nothing and sends nothing.
 
+A changed `cost.extra` takes the same path. The speaker charges every running
+neighbor the amount the new block selects for it, before selection reruns, so a
+route through a neighbor whose amount rose moves at once, and the Hello it sends
+carries the new receive cost in its IHU. A reload naming an organization with no
+node in the new trust document, or a node it does not hold, is refused by name,
+and so is one naming this node.
+
 ## `cap.segment` and `link.mtu`
 
 A reload builds the tables a changed `cap.segment` describes, as a startup does,
@@ -193,7 +200,8 @@ changed. `cap.transit` is never listed, since a reload that would change it is
 refused, and writing out the value in force changes nothing.
 
 The speaker records a `babel.config.applied` with the intervals and the cost it
-took. Turning `link.listen` on or off records a `responder.changed` with
+took, and a `babel.neighbor.extra` for each neighbor whose amount the reload
+changed. Turning `link.listen` on or off records a `responder.changed` with
 `listen`, and its `closed` counts the answered sessions it closed. The
 reconciler's pass after it is a `kernel.pass` with `trigger=reload`, recorded
 whether or not it moved anything. A reconciler stopped with

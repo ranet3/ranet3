@@ -45,11 +45,11 @@ carries on with the same router id, past every seqno the last run sent.
 
 ## Link cost
 
-A link's cost has 2 parts. The first is the receive cost the neighbor reports in
-its IHU, scaled by the share of the neighbor's last 16 Hellos this node received
-(ETX, RFC 8966 Appendix A.2.2). Each node computes the receive cost it reports
-the same way, as `cap.babel.cost.rx` (96 by default) scaled by its own
-reception.
+A link's cost has 2 parts, and a third where `cap.babel.cost.extra` names the
+neighbor. The first is the receive cost the neighbor reports in its IHU, scaled
+by the share of the neighbor's last 16 Hellos this node received (ETX, RFC 8966
+Appendix A.2.2). Each node computes the receive cost it reports the same way, as
+`cap.babel.cost.rx` (96 by default) scaled by its own reception.
 
 The second part is a round-trip penalty (RFC 9616). The penalty is 0 at or below
 `cap.babel.cost.rtt.min` (10 milliseconds). It is `cap.babel.cost.rtt.weight`
@@ -57,6 +57,36 @@ The second part is a round-trip penalty (RFC 9616). The penalty is 0 at or below
 between them. Each new sample moves the smoothed round trip 16.4 percent of the
 way toward it. This node adds the penalty to its own cost of the link and does
 not advertise it.
+
+A third part is the amount `cap.babel.cost.extra` charges the neighbor, chosen
+by the identity its session authenticated: by its node, by its organization, or
+for any organization other than this node's own
+([configuration reference](configuration-reference.md)). This node adds it last
+to its own cost of the link, and also to the receive cost in every IHU it sends
+that neighbor, so the neighbor's cost of the link back rises too. Each direction
+of the session pays it once, at the end that sends into it, and the neighbor
+needs no setting of its own: a BIRD neighbor takes the receive cost from the IHU
+as any Babel speaker does. `ranet3 neighbors` shows the amount in its Extra
+column, apart from the cost that holds it.
+
+On this node both sums stop at 65534, so the amount alone never makes a usable
+link unreachable here, and a cost that is already infinite stays infinite. The
+neighbor holds no such bound. One that scales by its reception, as ranet3 does
+with `cap.babel.quality` at its default `etx`, multiplies the receive cost it is
+sent by its own loss and takes a product past 65534 as infinite: a receive cost
+of 30000 becomes infinite at a neighbor that heard 7 of this node's last 16
+Hellos. At either end, a route's metric through the link is the link cost plus
+the metric advertised over it, and that sum stops at infinity too. A large
+amount can therefore leave a path with no finite metric, and so no fallback.
+
+The amount suits a deployment where some paths cost more than their round trip
+says. Another organization's nodes may price every hop at a fixed 96 while this
+node prices a hop by its round trip, so a path across their nodes undercuts a
+direct session. With `foreign = 1024`, the most the round-trip penalty can add,
+a direct session to a node of this organization wins over a path through another
+organization's node, which stays the fallback, since 1024 is far from either
+bound above. A node name is only as strong as its organization's key, since
+every holder of that key can claim any of its names.
 
 With `cap.babel.quality` set to `"none"`, reception does not scale the cost. A
 route's metric is the link cost, at least 1, plus the metric the neighbor
@@ -234,8 +264,9 @@ These commands show the routes. [Command line](cli.md) lists their flags.
 
 - `ranet3 routes` shows Babel's table, every prefix, including the ones held
   unreachable. It is not the kernel's table.
-- `ranet3 neighbors` shows each neighbor with its link cost, the cost it
-  reports, its round trip and the routes it offers.
+- `ranet3 neighbors` shows each neighbor with its link cost, the amount
+  `cap.babel.cost.extra` charges it, the cost it reports, its round trip and the
+  routes it offers.
 - `ranet3 whois <address>` shows the longest prefix covering an address first,
   then the shorter ones, each with the neighbor that is its next hop.
 - The Kernel line of `ranet3 status` shows where the reconciler writes, the
@@ -261,7 +292,7 @@ changed the kernel, met a newly refused route, failed or followed a reload.
 | Metric                                 | Meaning                                       |
 | -------------------------------------- | --------------------------------------------- |
 | `ranet3_babel_neighbor_up{peer}`       | whether a neighbor is alive                   |
-| `ranet3_babel_neighbor_cost{peer}`     | link cost to a neighbor, 65535 is infinity    |
+| `ranet3_babel_neighbor_cost{peer}`     | link cost with its extra, 65535 is infinity   |
 | `ranet3_babel_routes_received{peer}`   | routes learned from a neighbor                |
 | `ranet3_babel_routes_selected`         | routes in the forwarding table                |
 | `ranet3_babel_routes_originated`       | prefixes this node announces                  |
@@ -270,4 +301,6 @@ changed the kernel, met a newly refused route, failed or followed a reload.
 | `ranet3_kernel_pass_timestamp_seconds` | when the last pass finished                   |
 | `ranet3_kernel_pass_failed`            | whether the last pass reported an error       |
 
-[Metrics](metrics.md) describes the scrape.
+The neighbor cost includes the amount `cap.babel.cost.extra` charges, which no
+series reports alone. `ranet3 neighbors` shows it apart. [Metrics](metrics.md)
+describes the scrape.

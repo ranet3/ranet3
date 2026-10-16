@@ -71,6 +71,7 @@ cap:
     # cost:
     #   rx: 96
     #   rtt: { weight: 1024, min: 10ms, max: 1024ms }
+    #   extra: { foreign: 1024, org: { other: 2048 }, node: { "example/gateway": 300 } }   # added to a neighbor's cost, by node, else org, else foreign
   # table:
   #   id: 200
   #   proto: 155

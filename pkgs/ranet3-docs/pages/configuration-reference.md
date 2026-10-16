@@ -218,6 +218,43 @@ other 3 as they were.
   unreachable.
 - `rtt.min` is at least 0 and at most `rtt.max`.
 
+### `cap.babel.cost.extra`
+
+An amount this node adds to the cost of a neighbor, chosen by the identity the
+neighbor's session authenticated. [Routing](routing.md#link-cost) says where it
+goes. Left out, every neighbor pays nothing.
+
+```toml
+[cap.babel.cost.extra]
+foreign = 1024                    # any organization other than this node's own
+org = { gravity = 2048 }          # by organization
+node = { "ysun/lagern" = 300 }    # by organization/name
+```
+
+| Key       | Value                          | Default | Meaning                                          |
+| --------- | ------------------------------ | ------- | ------------------------------------------------ |
+| `foreign` | integer                        | `0`     | Amount for every organization but this node's    |
+| `org`     | table of organization: integer | none    | Amount for each organization named               |
+| `node`    | table of `org/name`: integer   | none    | Amount for each node named, any of its endpoints |
+
+- The most specific key wins: `node`, then `org`, then `foreign`, then nothing.
+  The amounts do not add up, so an organization listed under `org` pays its own
+  amount and not `foreign` as well.
+- Each amount is 0 to 65534.
+- Every organization named is an organization with a node in the trust document,
+  and every node named is a node in it, at startup and on each reload. One that
+  is not is refused by name, as in
+  `config: cap.babel cost.extra node ysun/lagern is not a node of the trust document`.
+  An organization is written as the trust document writes it. A node is
+  `organization/name`, with no serial. A node of this node's own organization
+  may be named. This node itself is refused.
+- A node key is only as strong as its organization's key. IKE proves the
+  organization a peer belongs to, and the name inside it is asserted: every
+  holder of that organization's key can claim any of its names, and so take the
+  amount set for another of them.
+- A reload applies a change, as [reloading](reloading.md) describes for
+  `cap.babel`.
+
 ## `cap.table`
 
 The route reconciler. Writing this block turns it on. It mirrors the routes

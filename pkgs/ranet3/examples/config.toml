@@ -128,6 +128,18 @@ update = "16s"
 # min = "10ms"
 # max = "1024ms"
 
+# An amount added to a neighbor's cost, chosen by the identity its session
+# proved: the one under node for its organization/name, else the one under org
+# for its organization, else foreign for any organization but this node's own.
+# The amounts do not add up. Each is 0 to 65534, and it goes on this node's
+# cost of the link and on the receive cost its IHUs report back. Every
+# organization named has to have a node in the trust document, and every node
+# named has to be in it.
+# [cap.babel.cost.extra]
+# foreign = 1024
+# org = { other = 2048 }
+# node = { "example/gateway" = 300 }
+
 # Mirror the routes babel learns into a routing table of its own, taking over
 # from BIRD's kernel protocols. Absent, this node touches no routes and the
 # addresses and routes of its device are yours to configure. The reconciler
