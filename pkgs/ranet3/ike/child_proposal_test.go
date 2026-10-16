@@ -583,8 +583,8 @@ func TestIKEAuthChildOfferNamingAGroupIsAnsweredWithTheGroup(t *testing.T) {
 	if err := peer.SendIKE(request); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.completeResponderAuth(h.responder, message1, message2, ni, nr, time.Now().Add(answerBudget)); err == nil {
-		t.Fatal("an IKE_AUTH Child SA offer naming a group was taken")
+	if _, created, err := s.completeResponderAuth(h.responder, message1, message2, ni, nr, time.Now().Add(answerBudget)); err == nil || !created {
+		t.Fatalf("an IKE_AUTH Child SA offer naming a group was answered with created %v and %v, want the IKE SA created and the Child SA refused", created, err)
 	}
 	raw, err := peer.RecvIKEUntil(time.Now().Add(answerBudget))
 	if err != nil {

@@ -371,8 +371,13 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		childRekeyEnded: make(chan struct{}, 1),
 	}
 
-	accepted, err := session.completeResponderAuth(r, datagram.Raw, response, ni, nr, deadline)
+	accepted, created, err := session.completeResponderAuth(r, datagram.Raw, response, ni, nr, deadline)
 	if err != nil {
+		if created {
+			// RFC 7296 section 1.2: "If creating the Child SA during the IKE_AUTH exchange fails for some reason, the IKE SA is still created as usual."
+			// an IKE SA carries nothing here without its Child SA, so the IKE SA goes with a Delete
+			_ = session.run(ctx, err)
+		}
 		return nil, Accepted{}, err
 	}
 	if err := session.SetRekeyTiming(r.cfg.RekeyMargin, r.cfg.RekeyJitter); err != nil {
@@ -439,67 +444,68 @@ func (r *Responder) buildSAInitResponse(spiI, spiR uint64, proposal Proposal, su
 // completeResponderAuth waits for IKE_AUTH, authenticates the initiator and
 // answers with our own AUTH and the selected Child SA. A duplicate
 // IKE_SA_INIT while waiting is answered with the identical response.
-func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2, ni, nr []byte, deadline time.Time) (Accepted, error) {
+// created, with an error, reports an answer carrying our AUTH and the Child SA's error, which leaves the IKE SA established
+func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2, ni, nr []byte, deadline time.Time) (_ Accepted, created bool, _ error) {
 	ctx := s.current
 	got, err := s.awaitAuthRequest(realMessage1, realMessage2, deadline)
 	if err != nil {
-		return Accepted{}, err
+		return Accepted{}, false, err
 	}
 	outer, source := got.outer, got.source
 	inner, err := decodeMessagePlaintext(got.innerFirst, got.plaintext)
 	if err != nil {
-		return Accepted{}, fmt.Errorf("ike: malformed IKE_AUTH request: %w", err)
+		return Accepted{}, false, fmt.Errorf("ike: malformed IKE_AUTH request: %w", err)
 	}
 	// Only an authenticated message may move where replies go (RFC 7296
 	// section 2.23). Decryption above is that proof.
 	s.mux.AdoptEndpoint(source)
 
 	if unsupported, found := firstUnsupportedCritical(inner); found {
-		return Accepted{}, s.rejectAuth(N_UNSUPPORTED_CRITICAL_PAYLOAD,
+		return Accepted{}, false, s.rejectAuth(N_UNSUPPORTED_CRITICAL_PAYLOAD,
 			fmt.Errorf("ike: IKE_AUTH request marks payload type %d critical", unsupported))
 	}
 
 	request := &Message{Header: outer.Header, Payloads: inner}
 	idiPayload, authPayload := request.find(PayloadIDi), request.find(PayloadAUTH)
 	if idiPayload == nil || authPayload == nil {
-		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, fmt.Errorf("ike: IKE_AUTH request has no IDi or AUTH"))
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, fmt.Errorf("ike: IKE_AUTH request has no IDi or AUTH"))
 	}
 	aliases := r.aliases()
 	peer, err := aliases.resolve(idiPayload.Body)
 	if err != nil {
-		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
 	}
 	peerID := peer.endpoint
 	// with a key its organization shares, another node of it could otherwise claim our name
 	for local := range r.cfg.Local {
 		if local.Node() == peerID.Node() {
-			return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, fmt.Errorf("ike: IDi names our own node %s", peerID.Node()))
+			return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, fmt.Errorf("ike: IDi names our own node %s", peerID.Node()))
 		}
 	}
 	peerKey, peerFamily, err := r.cfg.Trust.Key(peerID)
 	if err != nil {
-		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
 	}
 	macedIDForI := prf(ctx.suite.PRFID, ctx.skpi, idiPayload.Body)
 	if err := VerifyAuth(peerKey, concat(realMessage1, nr, macedIDForI), authPayload.Body); err != nil {
-		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
 	}
 	// RFC 7296 section 3.5 has the identity "used for policy lookup" and "to perform access control decisions"
 	// an IDi naming an endpoint of another family names one that did not dial, as an endpoint dials in its own family alone
 	// the endpoint's family is compared, never an address the ID holds
 	arrived := familyOf(source.AddrPort().Addr())
 	if peerFamily != arrived {
-		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED,
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED,
 			fmt.Errorf("ike: IDi names %s, an endpoint of the %s family, and the request arrived in %s", peerID, peerFamily, arrived))
 	}
 
 	presented, err := aliases.presented(peerID)
 	if err != nil {
-		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
 	}
 	localID, idrBody, err := r.localIdentity(aliases, request.find(PayloadIDr), presented, arrived)
 	if err != nil {
-		return Accepted{}, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
+		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, err)
 	}
 	if r.cfg.Events != nil {
 		r.cfg.Events(localID, peerID, "ike.id.resolved", peer.attrs(idrBody)...)
@@ -529,10 +535,15 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 			{Type: PayloadAUTH, Body: authBody},
 			{Type: PayloadN, Body: EncodeNotify(Notify{Type: notify, Data: data})},
 		})
-		if buildErr == nil {
-			_ = s.mux.SendIKE(response)
+		if buildErr != nil {
+			return Accepted{}, false, err
 		}
-		return Accepted{}, err
+		// retained before it is sent, since an IKE_AUTH retransmitted while the IKE SA's Delete is outstanding is answered from it
+		s.stateMu.Lock()
+		ctx.lastPeerResponseID, ctx.lastPeerResponse = 1, response
+		s.stateMu.Unlock()
+		_ = s.mux.SendIKE(response)
+		return Accepted{}, true, err
 	}
 
 	localSPI := make([]byte, 4)
@@ -546,10 +557,10 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 		{Type: PayloadTSr, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
 	})
 	if err != nil {
-		return Accepted{}, err
+		return Accepted{}, false, err
 	}
 	if err := s.replaceChild(child.sa); err != nil {
-		return Accepted{}, err
+		return Accepted{}, false, err
 	}
 	// Retain the response before sending it: Session.Run answers a
 	// retransmitted IKE_AUTH from here, and the initiator may retransmit
@@ -558,9 +569,9 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	ctx.lastPeerResponseID, ctx.lastPeerResponse = 1, response
 	s.stateMu.Unlock()
 	if err := s.mux.SendIKE(response); err != nil {
-		return Accepted{}, err
+		return Accepted{}, false, err
 	}
-	return Accepted{Peer: peerID, Local: localID, Key: peerKey}, nil
+	return Accepted{Peer: peerID, Local: localID, Key: peerKey}, true, nil
 }
 
 // authRequest is the first IKE_AUTH request that decrypted under this

@@ -892,6 +892,134 @@ func TestUnansweredExchangeStillEnds(t *testing.T) {
 	}
 }
 
+// the Delete ending an IKE SA ends after teardownRetransmits sends, whether or not the peer keeps other traffic coming
+func TestDeleteEndingAnIKESAHasTheTeardownBudget(t *testing.T) {
+	ender := &pendingRequest{localRequest: localRequest{teardown: true}}
+	for ender.sent < teardownRetransmits-1 {
+		ender.sent++
+		ender.attempts++
+	}
+	for _, alive := range []bool{false, true} {
+		if pendingRetransmitsExhausted(ender, alive) {
+			t.Fatalf("the Delete gave up after %d of its %d sends, peer alive %v", ender.sent, teardownRetransmits, alive)
+		}
+	}
+	ender.sent++
+	ender.attempts++
+	for _, alive := range []bool{false, true} {
+		if !pendingRetransmitsExhausted(ender, alive) {
+			t.Errorf("the Delete went on past its %d sends, peer alive %v", teardownRetransmits, alive)
+		}
+	}
+}
+
+// whichever way the IKE SA ends, its own Delete answered or unanswered or the peer's Delete crossing it, run returns why it was deleting
+// an IKE SA rekey that comes due while the Delete is out is not started
+func TestRunEndingReturnsWhyItDeletedTheIKESA(t *testing.T) {
+	why := errors.New("the reason to delete")
+	for _, peerDoes := range []string{"answers", "crosses", "stays silent"} {
+		crossed := peerDoes == "crosses"
+		t.Run(peerDoes, func(t *testing.T) {
+			peer := listenPeer(t)
+			peerAddr := peer.LocalAddr().(*net.UDPAddr)
+			mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const spiI, spiR = 0x0102030405060708, 0x1112131415161718
+			suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+			held := &ikeContext{suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2, skei: make([]byte, 20), sker: make([]byte, 20)}
+			events := &recorder{}
+			s := &Session{mux: mux, current: held, requests: make(chan *localRequest, 1), events: events.record}
+			if err := mux.RegisterIKE(spiI); err != nil {
+				t.Fatal(err)
+			}
+			const due = 100 * time.Millisecond
+			s.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return 0, nil }
+			if err := s.SetRekeyIntervals(0, time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.SetRekeyTiming(time.Hour-due, 0); err != nil {
+				t.Fatal(err)
+			}
+			if peerDoes == "stays silent" {
+				s.retransmitAfter = due
+			}
+			var ended error
+			finished := make(chan struct{})
+			go func() { defer close(finished); ended = s.run(context.Background(), why) }()
+			t.Cleanup(func() {
+				mux.Close()
+				<-finished
+			})
+
+			buf := make([]byte, 2048)
+			if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+				t.Fatal(err)
+			}
+			n, addr, err := peer.ReadFromUDP(buf)
+			if err != nil {
+				t.Fatalf("no Delete reached the peer: %v", err)
+			}
+			raw := append([]byte(nil), buf[4:n]...)
+			message, err := DecodeMessage(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inner, err := DecryptMessage(suite, held.skei, raw, message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if message.Header.ExchangeType != INFORMATIONAL || message.Header.IsResponse() || len(inner) != 1 || inner[0].Type != PayloadD {
+				t.Fatalf("the peer got exchange %d response %v carrying %v, want a Delete request", message.Header.ExchangeType, message.Header.IsResponse(), inner)
+			}
+			if deleted, err := DecodeDelete(inner[0].Body); err != nil || deleted.Protocol != ProtoIKE {
+				t.Fatalf("the request deletes %+v (%v), want the IKE SA", deleted, err)
+			}
+			time.Sleep(3 * due)
+			header := Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: message.Header.MessageID}
+			var payloads []RawPayload
+			if crossed {
+				header.Flags, header.MessageID = 0, 0
+				payloads = []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}
+			}
+			reply, err := EncryptMessage(suite, held.sker, header, nil, payloads)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if peerDoes != "stays silent" {
+				if _, err := peer.WriteToUDP(withNonESPMarker(reply), addr); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if crossed {
+				n, _, err := peer.ReadFromUDP(buf)
+				if err != nil {
+					t.Fatalf("the peer's crossing Delete went unanswered: %v", err)
+				}
+				answer, err := DecodeMessage(buf[4:n])
+				if err != nil || !answer.Header.IsResponse() || answer.Header.MessageID != 0 {
+					t.Errorf("the peer's crossing Delete drew %+v (%v), want the answer at Message ID 0", answer, err)
+				}
+			}
+			select {
+			case <-finished:
+			case <-time.After(answerBudget):
+				t.Fatal("run went on after the exchange that ends the IKE SA")
+			}
+			if !errors.Is(ended, why) {
+				t.Errorf("run returned %v, want why it was deleting, %v", ended, why)
+			}
+			for _, line := range events.recorded() {
+				if strings.HasPrefix(line, "ike.rekey.started") {
+					t.Errorf("run started a rekey while its Delete of the IKE SA was out: %q", events.recorded())
+					break
+				}
+			}
+		})
+	}
+}
+
 // The retirement sweep used to be reached by a hundred-millisecond poll that
 // this series removed, so the loop's own deadline is now the only thing that
 // brings it around. Everything else the loop waits for on an idle session is
