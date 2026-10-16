@@ -7,6 +7,7 @@ package ike
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"net"
 	"slices"
@@ -271,9 +272,9 @@ func atVersion(raw []byte, version uint8) []byte {
 	return out
 }
 
-// sealedAtVersion is inner sealed under key in a message whose header carries version
-// the header is associated data, so the message authenticates as the holder of key sent it only when sealed under the version it carries
-func sealedAtVersion(t *testing.T, version uint8, suite SASuite, key []byte, header Header, inner []RawPayload) []byte {
+// sealedEdited is inner sealed under key in a message whose header and SK payload header edit has changed
+// both are associated data, so the message authenticates as the holder of key sent it only when sealed after the edit
+func sealedEdited(t *testing.T, suite SASuite, key []byte, header Header, inner []RawPayload, edit func(aad []byte)) []byte {
 	t.Helper()
 	params, err := aeadParams(suite.EncrID, suite.EncrKeyBits)
 	if err != nil {
@@ -288,15 +289,22 @@ func sealedAtVersion(t *testing.T, version uint8, suite SASuite, key []byte, hea
 		first = inner[0].Type
 	}
 	plain, iv := append(encodePayloadChain(inner), 0), make([]byte, params.IVLen)
+	rand.Read(iv)
 	raw, err := encryptMessagePlaintextIV(suite, key, header, nil, first, plain, iv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw = atVersion(raw, version)
 	aad := raw[:HeaderLen+genericPayloadHeaderLen]
+	edit(aad)
 	nonce := append(slices.Clone(key[params.KeyLen:]), iv...)
 	return aead.Seal(slices.Clone(raw[:len(aad)+len(iv)]), nonce, plain, aad)
 }
+
+func atMajorVersion3(aad []byte) { aad[17] = 0x30 }
+
+func atMinorVersion1(aad []byte) { aad[17] = 0x21 }
+
+func criticalSK(aad []byte) { aad[HeaderLen+1] |= 0x80 }
 
 // wantMajorVersionRefusal checks raw is the answer to request at a higher major version
 // RFC 7296 section 1.5: "In the second and third cases, the message is always sent without cryptographic protection (outside of an IKE SA), and includes either an INVALID_IKE_SPI or an INVALID_MAJOR_VERSION notification (with no notification data)."

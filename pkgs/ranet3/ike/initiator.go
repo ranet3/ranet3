@@ -686,9 +686,9 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 			group, groupRetried, cookieForGroup, dh = binary.BigEndian.Uint16(notify.Data[:2]), true, false, nil
 		}
 	}
-	if err := validateResponseCriticalFlags(resp.Payloads); err != nil {
+	if unsupported, found := firstUnsupportedCritical(resp.Payloads); found {
 		mux.Close()
-		return nil, err
+		return nil, fmt.Errorf("ike: response marks unsupported payload type %d critical", unsupported)
 	}
 
 	spiR := resp.Header.SPIResponder
@@ -894,15 +894,6 @@ func refuse(notify NotifyType, data []byte, err error) error {
 	return &authRefusal{notify: Notify{Type: notify, Data: data}, err: err}
 }
 
-func refuseCritical(payloads []RawPayload, err error) error {
-	for _, payload := range payloads {
-		if payload.Critical && payload.Type != PayloadSK && !supportedPayloadType(payload.Type) {
-			return refuse(N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(payload.Type)}, err)
-		}
-	}
-	return refuse(N_INVALID_SYNTAX, nil, err)
-}
-
 func (s *Session) deleteAuthenticatedIKE() error {
 	return s.informAfterAuth([]RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
 }
@@ -927,13 +918,12 @@ func (s *Session) informAfterAuth(inner []RawPayload) error {
 	if err != nil {
 		return err
 	}
-	if err := validateResponseCriticalFlags(response.Payloads); err != nil {
-		return err
+	if unsupported, found := firstUnsupportedCritical(response.Payloads, responseInner); found {
+		return fmt.Errorf("ike: response marks unsupported payload type %d critical", unsupported)
 	}
-	if err := validateResponseCriticalFlags(responseInner); err != nil {
-		return err
-	}
-	if len(responseInner) != 0 {
+	// RFC 7296 section 1.4.1: "The response to a request that deletes the IKE SA is an empty INFORMATIONAL response."
+	// section 2.5: "If the critical flag is not set and the payload type is unsupported, that payload MUST be ignored."
+	if slices.ContainsFunc(responseInner, func(payload RawPayload) bool { return supportedPayloadType(payload.Type) }) {
 		return fmt.Errorf("ike: INFORMATIONAL response after IKE_AUTH is not empty")
 	}
 	return nil
@@ -952,7 +942,7 @@ func (s *Session) answerAfterAuth(ctx *ikeContext, raw []byte) bool {
 	if err != nil || s.answerAgain(ctx, hdr) || hdr.MessageID != ctx.nextPeerMID {
 		return false
 	}
-	response, ends, err := s.answerInWait(ctx, hdr, first, plain)
+	response, ends, err := s.answerInWait(ctx, hdr, message.Payloads, first, plain)
 	if err != nil {
 		return false
 	}
@@ -964,7 +954,7 @@ func (s *Session) answerAfterAuth(ctx *ikeContext, raw []byte) bool {
 
 // the IKE SA going carries no Child SA, so every INFORMATIONAL request is answered empty
 // RFC 7296 section 2.25.1: "If a peer receives a request to close a Child SA that does not exist, it SHOULD reply without a Delete payload."
-func (s *Session) answerInWait(ctx *ikeContext, hdr *Header, first PayloadType, plain []byte) ([]byte, bool, error) {
+func (s *Session) answerInWait(ctx *ikeContext, hdr *Header, cleartext []RawPayload, first PayloadType, plain []byte) ([]byte, bool, error) {
 	inner, err := decodeMessagePlaintext(first, plain)
 	if err != nil {
 		// RFC 7296 section 2.21.3: "After the IKE SA is authenticated, all requests having errors MUST result in a response notifying the other end of the error."
@@ -972,7 +962,7 @@ func (s *Session) answerInWait(ctx *ikeContext, hdr *Header, first PayloadType, 
 		response, err := s.responseNotify(ctx, hdr.MessageID, hdr.ExchangeType, N_INVALID_SYNTAX)
 		return response, true, err
 	}
-	if response, rejected, err := s.rejectUnsupportedCritical(ctx, hdr, inner); rejected {
+	if response, rejected, err := s.rejectUnsupportedCritical(ctx, hdr, cleartext, inner); rejected {
 		return response, false, err
 	}
 	switch hdr.ExchangeType {
@@ -1068,11 +1058,9 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	if err != nil {
 		return false, refuse(N_INVALID_SYNTAX, nil, err)
 	}
-	if err := validateResponseCriticalFlags(resp.Payloads); err != nil {
-		return false, refuseCritical(resp.Payloads, err)
-	}
-	if err := validateResponseCriticalFlags(respInner); err != nil {
-		return false, refuseCritical(respInner, err)
+	if unsupported, found := firstUnsupportedCritical(resp.Payloads, respInner); found {
+		return false, refuse(N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupported)},
+			fmt.Errorf("ike: IKE_AUTH response marks unsupported payload type %d critical", unsupported))
 	}
 	respMsg := &Message{Header: resp.Header, Payloads: respInner}
 
@@ -1155,6 +1143,10 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 // unauthenticated is ignored, so sendRecv keeps waiting for the real response
 // rather than letting anyone who can spoof our SPI abort the handshake.
 func usefulInitNotify(m *Message, cookieUsed, groupUsed bool) (Notify, bool) {
+	// RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected"
+	if _, found := firstUnsupportedCritical(m.Payloads); found {
+		return Notify{}, false
+	}
 	for _, payload := range m.Payloads {
 		if payload.Type != PayloadN {
 			continue

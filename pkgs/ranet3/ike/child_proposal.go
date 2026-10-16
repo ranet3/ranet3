@@ -108,10 +108,6 @@ func parseChildExchangePayloads(payloads []RawPayload) (childExchangePayloads, e
 			out.notifies = append(out.notifies, notify)
 		case PayloadKE:
 			err = setUnique(&out.ke, payload)
-		default:
-			if payload.Critical {
-				return childExchangePayloads{}, fmt.Errorf("ike: unsupported critical payload type %d", payload.Type)
-			}
 		}
 		if err != nil {
 			return childExchangePayloads{}, err
