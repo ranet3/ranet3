@@ -24,7 +24,7 @@ const (
 	maxRetransmits = 5
 	// maxRetransmitsWhileBusy bounds an exchange the peer keeps alive with other traffic and never answers
 	maxRetransmitsWhileBusy = 20
-	// the responder discards an IKE SA whose bundled Child SA failed, so its silence to the Delete closing one says nothing
+	// a dial that sends the INFORMATIONAL after IKE_AUTH fails whatever its answer, which only the responder's state depends on
 	teardownRetransmits = 2
 	// a responder that answered IKE_AUTH holds the SA until told, so a canceled initiator gives the answer one request's timeout
 	canceledAuthWait = requestTimeout
