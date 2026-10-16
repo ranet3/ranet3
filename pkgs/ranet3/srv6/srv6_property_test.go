@@ -356,24 +356,25 @@ func TestEncapsulationParsesBackToItsPath(t *testing.T) {
 	})
 }
 
-// EncapsulateInPlace writes the bytes Encapsulate returns, for the same packet,
-// source and path, at the offset it was given and nowhere else. The buffer
-// starts filled with a byte the expected header does not contain, so a header
-// byte left as it was found shows up as a difference, rather than going on
-// the wire as a stray fragment of whatever the buffer held. Both refuse the
-// same inputs, the in-place one also refuses a buffer too short for the
-// result, and a refusal leaves the buffer as it was.
-func TestEncapsulateInPlaceWritesWhatEncapsulateReturns(t *testing.T) {
+// AppendEncapsulated appends to a buffer holding bytes of its own, with room
+// past them that an earlier packet left filled, the bytes Encapsulate returns:
+// Overhead bytes of header and then the inner packet. The buffer is filled with
+// a byte the expected header does not contain, so a header byte left as it was
+// found shows up as a difference, rather than going on the wire as a stray
+// fragment of whatever the buffer held. A buffer with room for the result is
+// written in place, the bytes before it stay, and a refusal of what
+// Encapsulate refuses hands the buffer back as it was.
+func TestAppendEncapsulatedWritesWhatEncapsulateReturns(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		// mostly what both accept, and now and then what both refuse
 		inner := hegel.Draw(ht, mostly(innerPackets(), hegel.Binary(0, 64)))
 		source := hegel.Draw(ht, mostly(usableAddresses(), hegel.Generator[netip.Addr](hegel.IPAddresses())))
 		path := hegel.Draw(ht, mostly(usablePaths(), hegel.Lists(hegel.IPAddresses()).MaxSize(MaxSegments+1)))
-		offset := hegel.Draw(ht, pbt.Spanning(0, 64))
-		// the room past the packet, now and then too little for the header
-		room := Overhead(len(path)) + hegel.Draw(ht, pbt.Spanning(0, 64))
+		prefix := hegel.Draw(ht, pbt.Spanning(0, 64))
+		// the room past the buffer's bytes, now and then too little for the result
+		room := Overhead(len(path)) + len(inner) + hegel.Draw(ht, pbt.Spanning(0, 64))
 		if hegel.Draw(ht, hegel.WeightedBooleans(1.0/8)) {
-			room = hegel.Draw(ht, pbt.Spanning(0, Overhead(len(path))-1))
+			room = hegel.Draw(ht, pbt.Spanning(0, Overhead(len(path))+len(inner)-1))
 		}
 
 		want, wantErr := Encapsulate(inner, source, path)
@@ -385,25 +386,24 @@ func TestEncapsulateInPlaceWritesWhatEncapsulateReturns(t *testing.T) {
 				fill++
 			}
 		}
-		buf := bytes.Repeat([]byte{fill}, offset+len(inner)+room)
-		copy(buf[offset:], inner)
-		before := bytes.Clone(buf)
+		dst := bytes.Repeat([]byte{fill}, prefix+room)[:prefix]
 
-		n, err := EncapsulateInPlace(buf, offset, len(inner), source, path)
+		got, err := AppendEncapsulated(dst, inner, source, path)
 		switch {
-		case wantErr != nil || room < Overhead(len(path)):
-			if err == nil {
-				ht.Fatalf("EncapsulateInPlace wrote %d bytes into %d of room where Encapsulate answered %v", n, room, wantErr)
-			}
-			if !bytes.Equal(buf, before) {
-				ht.Fatalf("a refusal changed the buffer: %v", err)
+		case wantErr != nil:
+			if err == nil || len(got) != prefix || cap(got) != cap(dst) {
+				ht.Fatalf("AppendEncapsulated answered %d bytes and %v where Encapsulate refused with %v", len(got), err, wantErr)
 			}
 		case err != nil:
-			ht.Fatalf("EncapsulateInPlace refused what Encapsulate wrote, with %d bytes of room: %v", room, err)
-		case n != len(want) || !bytes.Equal(buf[offset:offset+n], want):
-			ht.Fatalf("EncapsulateInPlace wrote\n%x\nwhere Encapsulate returned\n%x", buf[offset:offset+n], want)
-		case bytes.Count(buf[:offset], []byte{fill}) != offset || bytes.Count(buf[offset+n:], []byte{fill}) != len(buf)-offset-n:
-			ht.Fatalf("EncapsulateInPlace wrote outside the %d bytes at %d", n, offset)
+			ht.Fatalf("AppendEncapsulated refused what Encapsulate wrote: %v", err)
+		case len(want) != Overhead(len(path))+len(inner) || !bytes.Equal(want[Overhead(len(path)):], inner):
+			ht.Fatalf("Encapsulate returned %d bytes that are not %d of header and the %d byte packet", len(want), Overhead(len(path)), len(inner))
+		case len(got) != prefix+len(want) || !bytes.Equal(got[prefix:], want):
+			ht.Fatalf("AppendEncapsulated wrote\n%x\nwhere Encapsulate returned\n%x", got[prefix:], want)
+		case bytes.Count(got[:prefix], []byte{fill}) != prefix:
+			ht.Fatal("AppendEncapsulated changed the bytes the buffer held before it")
+		case room >= len(want) && &got[:1][0] != &dst[:1][0]:
+			ht.Fatalf("AppendEncapsulated moved the result out of a buffer with %d bytes of room for its %d", room, len(want))
 		}
 	})
 }

@@ -90,9 +90,14 @@ type Mesh struct {
 // with another buffer set instead of tying one encryption worker to each TUN
 // queue (and to whatever flows the kernel happened to hash onto that queue).
 type outboundBatch struct {
-	n         int
-	bufs      [][]byte
-	sizes     []int
+	n     int
+	bufs  [][]byte
+	sizes []int
+	// packets is the view each packet of the read that goes to peers leaves as, of its read buffer or, once steered, of its side buffer
+	// nothing writes a read buffer outside the packet it holds
+	packets [][]byte
+	// steered is each packet's side buffer, kept from read to read
+	steered   [][]byte
 	peers     []*Peer
 	headers   []byte
 	shares    map[*Peer]outboundShare
@@ -176,7 +181,7 @@ func NewRoutesOnly() *Mesh {
 // NewNamed attaches to or creates name through wireguard-go's TUN backend.
 // an empty name opens defaultTUNName, which is always created and never attached to
 // mtu is the device's MTU
-// largest is the largest packet a session carries, which a steering header grows a read off the tun to in place
+// largest is the largest packet a session carries, which the device's MTU stays within on a reload, steering only taking from it
 // every outbound read buffer holds the larger of the two
 // zero takes DefaultMTU for either
 func NewNamed(mtu, largest int, name string) (*Mesh, error) {
@@ -242,7 +247,7 @@ func (m *Mesh) MTU() int {
 }
 
 // CheckMTU refuses a move of the tun's MTU this mesh cannot take without a restart
-// largest is link.mtu after the move, the largest packet a session carries, which a steering header grows a read off the tun to in place
+// largest is link.mtu after the move, the largest packet a session carries, which the device's MTU stays within
 // each outbound read buffer has to hold it, and NewNamed sized them once
 func (m *Mesh) CheckMTU(largest int) error {
 	if !tunMTUSettable {
@@ -305,6 +310,8 @@ func (m *Mesh) newOutboundBatch(size int) *outboundBatch {
 	b := &outboundBatch{
 		bufs:      make([][]byte, size),
 		sizes:     make([]int, size),
+		packets:   make([][]byte, size),
+		steered:   make([][]byte, size),
 		peers:     make([]*Peer, size),
 		headers:   make([]byte, size),
 		shares:    make(map[*Peer]outboundShare),
@@ -367,8 +374,7 @@ func (m *Mesh) outboundReader(dev tun.Device) {
 // a packet past that is answered or cut into fragments rather than sent, and a SYN within it has its MSS clamped to it
 func (m *Mesh) classify(b *outboundBatch) {
 	for i := range b.n {
-		read := b.sizes[i]
-		raw := b.bufs[i][tunOffset : tunOffset+read]
+		raw := b.bufs[i][tunOffset : tunOffset+b.sizes[i]]
 		src, dst, nh, ok := addrsOf(raw)
 		if !ok {
 			continue
@@ -376,20 +382,19 @@ func (m *Mesh) classify(b *outboundBatch) {
 		// Steering happens before the route lookup, because a steered
 		// packet is routed by the segment it is going to rather than by
 		// the address it was addressed to.
-		size, action := m.steer(b.bufs[i], read, src, dst)
-		if action == steerDrop {
-			continue
-		}
-		steered := action == steerSent
-		if steered {
-			b.sizes[i] = size
-			if src, dst, nh, ok = addrsOf(b.bufs[i][tunOffset : tunOffset+size]); !ok {
+		sent, policy := raw, m.steerPolicy(src, dst)
+		if policy != nil {
+			if b.steered[i], ok = m.steer(b.steered[i][:0], raw, policy); !ok {
+				continue
+			}
+			sent = b.steered[i]
+			if src, dst, nh, ok = addrsOf(sent); !ok {
 				continue
 			}
 		}
 		peer, ok := m.Routes.Lookup(src, dst)
 		if !ok {
-			if steered {
+			if policy != nil {
 				m.segmentsUnrouted.Add(1)
 				m.reportSegmentDrop("no route to the first segment of a steered packet", "segment", dst)
 			}
@@ -401,16 +406,16 @@ func (m *Mesh) classify(b *outboundBatch) {
 			b.peerOrder = append(b.peerOrder, peer)
 		}
 		// a steered packet sits behind the header steering put on it, which the session carries as well
-		overhead := b.sizes[i] - read
-		if b.sizes[i] > share.mtu {
-			count, bytes := m.tooBig(b, b.bufs[i][tunOffset:tunOffset+b.sizes[i]], overhead, peer, nh, share.mtu)
+		overhead := len(sent) - len(raw)
+		if len(sent) > share.mtu {
+			count, bytes := m.tooBig(b, sent, overhead, peer, nh, share.mtu)
 			share.count += count
 			share.bytes += bytes
 		} else {
-			m.ClampMSS(b.bufs[i][tunOffset+overhead:tunOffset+b.sizes[i]], share.mtu-overhead)
-			b.peers[i], b.headers[i] = peer, nh
+			m.ClampMSS(sent[overhead:], share.mtu-overhead)
+			b.packets[i], b.peers[i], b.headers[i] = sent, peer, nh
 			share.count++
-			share.bytes += b.sizes[i]
+			share.bytes += len(sent)
 		}
 		b.shares[peer] = share
 	}
@@ -487,7 +492,7 @@ func (m *Mesh) outboundWorker() {
 			// A peer with no batch had no room in its budget, so its share of
 			// this read was dropped before the tickets were handed out.
 			if peer := b.peers[i]; peer != nil && b.batches[peer] != nil {
-				b.batches[peer].append(b.bufs[i][tunOffset:tunOffset+b.sizes[i]], b.headers[i])
+				b.batches[peer].append(b.packets[i], b.headers[i])
 			}
 		}
 		// fragments go out after the read's other packets, where a later packet of the same read may overtake a cut one
@@ -513,7 +518,6 @@ func (m *Mesh) outboundWorker() {
 func (b *outboundBatch) reset() {
 	for i := 0; i < b.n; i++ {
 		b.peers[i] = nil
-		b.sizes[i] = 0
 	}
 	b.n = 0
 	clear(b.shares)

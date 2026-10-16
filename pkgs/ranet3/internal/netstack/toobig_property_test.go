@@ -34,7 +34,7 @@ func TestPacketsPastTheirSessionAreAnsweredOrCut(t *testing.T) {
 		b, peer, answers := readOff(tb, inner, steering, mtu)
 		share := b.shares[peer]
 		if excess <= 0 {
-			sent := b.bufs[0][tunOffset : tunOffset+b.sizes[0]]
+			sent := b.packets[0]
 			if b.peers[0] != peer || share.count != 1 || len(answers) != 0 || len(b.cut.fragments) != 0 {
 				tb.Fatalf("a %d byte packet within a %d byte session went to %v with %d answers and %d fragments", len(sent), mtu, b.peers[0], len(answers), len(b.cut.fragments))
 			}

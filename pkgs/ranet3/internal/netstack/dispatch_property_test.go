@@ -216,13 +216,12 @@ func TestReadersInterleavedAtAnyReservationAllDrain(t *testing.T) {
 						b.peerOrder = append(b.peerOrder, p)
 						b.shares[p] = outboundShare{count: step.count, bytes: step.bytes}
 						for range step.count {
-							b.bufs = append(b.bufs, framed(0))
-							b.sizes = append(b.sizes, 1)
+							b.packets = append(b.packets, []byte{0})
 							b.headers = append(b.headers, 0)
 							b.peers = append(b.peers, p)
 						}
 					}
-					b.n = len(b.bufs)
+					b.n = len(b.packets)
 					m.dispatchOutbound(b)
 					for _, p := range places {
 						if place, err := p.ReserveRawOrDrop([]byte{1}, 41); err == nil {

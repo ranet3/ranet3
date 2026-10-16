@@ -92,7 +92,7 @@ func TestReaderClampsTheMSSOfASYNToItsSession(t *testing.T) {
 			if b.peers[0] != peer {
 				t.Fatalf("an IPv%d SYN under %d segments did not go to its peer", family, segments)
 			}
-			inner := b.bufs[0][tunOffset+steering.Overhead() : tunOffset+b.sizes[0]]
+			inner := b.packets[0][steering.Overhead():]
 			offset := 20
 			if family == 6 {
 				offset = 40

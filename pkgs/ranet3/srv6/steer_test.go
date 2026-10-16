@@ -4,7 +4,6 @@
 package srv6
 
 import (
-	"bytes"
 	"net/netip"
 	"slices"
 	"testing"
@@ -164,60 +163,5 @@ func TestSteeringRefusesTwoEntriesWithOneSelector(t *testing.T) {
 				t.Error("two entries selecting the same packets were accepted")
 			}
 		})
-	}
-}
-
-// The in-place encapsulation has to produce the same bytes the allocating one
-// does, or a dataplane and a test would be exercising two different encoders.
-//
-// The inner packet carries a traffic class and a flow label, and the buffer
-// starts full of a byte neither encoder writes, because the two ways this can
-// go wrong are both invisible against a zeroed buffer and a zeroed header: the
-// allocating encoder gets its zeros from make, and the in-place one is handed
-// the bytes of the very packet it is moving out of the way.
-func TestInPlaceEncapsulationMatchesTheAllocatingOne(t *testing.T) {
-	source := addr("3fff:1:69c:8c0::1")
-	path := []netip.Addr{addr("3fff:1:69c:98d6::2"), addr("3fff:1:69c:29a6::1")}
-	inner := innerV6("payload")
-	inner[0], inner[1], inner[2], inner[3] = 0x6a, 0xbc, 0xde, 0xf0
-
-	want, err := Encapsulate(inner, source, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	const offset = 16
-	buf := bytes.Repeat([]byte{0xff}, offset+len(want)+64)
-	copy(buf[offset:], inner)
-	size, err := EncapsulateInPlace(buf, offset, len(inner), source, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if size != len(want) {
-		t.Fatalf("in place produced %d bytes, want %d", size, len(want))
-	}
-	if !bytes.Equal(buf[offset:offset+size], want) {
-		t.Error("the two encoders disagree")
-	}
-	if Overhead(len(path)) != len(want)-len(inner) {
-		t.Errorf("Overhead(%d) is %d, want %d", len(path), Overhead(len(path)), len(want)-len(inner))
-	}
-}
-
-// A buffer that cannot hold the result is refused rather than truncated. The
-// MTU keeps that from happening, so a packet arriving anyway means the
-// deployment has the MTU wrong, which is worth reporting rather than
-// corrupting.
-func TestInPlaceEncapsulationRefusesABufferTooShort(t *testing.T) {
-	source := addr("3fff:1:69c:8c0::1")
-	path := []netip.Addr{addr("3fff:1:69c:98d6::1")}
-	inner := innerV6("payload")
-	buf := make([]byte, 16+len(inner)+8)
-	copy(buf[16:], inner)
-	if _, err := EncapsulateInPlace(buf, 16, len(inner), source, path); err == nil {
-		t.Error("a buffer with no room was accepted")
-	}
-	if _, err := EncapsulateInPlace(buf, 16, len(buf), source, path); err == nil {
-		t.Error("a packet running past the end of its buffer was accepted")
 	}
 }

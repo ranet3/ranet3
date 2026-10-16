@@ -50,14 +50,6 @@ func (d *recordingDevice) Events() <-chan tun.Event { return d.events }
 func (d *recordingDevice) Close() error             { return nil }
 func (d *recordingDevice) BatchSize() int           { return 128 }
 
-// framed is a TUN read buffer holding one marker byte where a backend's Read
-// leaves the packet, past the headroom it slices its own framing out of.
-func framed(marker byte) []byte {
-	buf := make([]byte, tunOffset+1)
-	buf[tunOffset] = marker
-	return buf
-}
-
 func TestOutboundWorkersEncryptOneQueueInParallelAndTransmitInOrder(t *testing.T) {
 	started := make(chan byte, 2)
 	releaseFirst := make(chan struct{})
@@ -104,8 +96,7 @@ func TestOutboundWorkersEncryptOneQueueInParallelAndTransmitInOrder(t *testing.T
 	for marker := byte(1); marker <= 2; marker++ {
 		b := &outboundBatch{
 			n:         1,
-			bufs:      [][]byte{framed(marker)},
-			sizes:     []int{1},
+			packets:   [][]byte{{marker}},
 			peers:     []*Peer{peer},
 			headers:   []byte{0},
 			shares:    map[*Peer]outboundShare{peer: {count: 1, bytes: 1}},

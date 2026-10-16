@@ -47,52 +47,36 @@ func (m *Mesh) SetSteeringEnabled(on bool) { m.steerStopped.Store(!on) }
 // SteeringEnabled reports whether the policies are being acted on.
 func (m *Mesh) SteeringEnabled() bool { return !m.steerStopped.Load() }
 
-// steerAction tells the caller how to treat a packet steer has looked at.
-type steerAction uint8
-
-const (
-	// steerPass is a packet no policy claims, which is almost all of them on a
-	// node that steers at all, and every packet on one that does not.
-	steerPass steerAction = iota
-	// steerSent is a packet encapsulated in place, to be routed by the segment
-	// it now carries rather than by the address it was written to.
-	steerSent
-	// steerDrop is a packet a policy claimed and this node could not
-	// encapsulate.
-	steerDrop
-)
-
-// steer encapsulates one outbound packet when a policy claims it, in the
-// buffer the tun reader already owns.
-//
-// A packet no policy claims costs one trie lookup, which is the same lookup
-// the forwarding table is about to do anyway. One a policy claims and this
-// node cannot encapsulate is dropped rather than sent as it was: a steering
-// policy here selects an exit, so sending the packet by the metric instead
-// puts it out of a different node under a source address that node does not
-// announce, which is a wrong path rather than a degraded one. Every reason
-// the encapsulation can fail is refused when the configuration is read, so
-// what is left needs a packet larger than the device MTU this node set, and
-// that is a deployment to fix rather than to carry.
-func (m *Mesh) steer(buf []byte, size int, source, destination netip.Addr) (int, steerAction) {
+// steerPolicy is the policy that claims one outbound packet, nil for one no policy claims
+// a packet no policy claims costs one trie lookup, the same lookup the forwarding table is about to do anyway
+func (m *Mesh) steerPolicy(source, destination netip.Addr) *srv6.Policy {
 	table := m.steerTable.Load()
 	// The stop is read after the table, so a node that steers nothing pays the
 	// one load it already paid and the second is on the nodes that do steer.
 	if table == nil || m.steerStopped.Load() {
-		return size, steerPass
+		return nil
 	}
-	policy := table.Lookup(source, destination)
-	if policy == nil {
-		return size, steerPass
-	}
-	encapsulated, err := srv6.EncapsulateInPlace(buf, tunOffset, size, policy.Source, policy.Path)
+	return table.Lookup(source, destination)
+}
+
+// steer appends raw, encapsulated under policy, to dst, never touching raw
+// false is a packet the policy claimed and this node could not encapsulate, which is dropped rather than sent as it was
+//
+// A steering policy here selects an exit, so sending the packet by the metric
+// instead puts it out of a different node under a source address that node
+// does not announce, which is a wrong path rather than a degraded one. Every
+// reason the encapsulation can fail is refused when the configuration is
+// read, so what is left needs a packet larger than the device MTU this node
+// set, and that is a deployment to fix rather than to carry.
+func (m *Mesh) steer(dst, raw []byte, policy *srv6.Policy) ([]byte, bool) {
+	encapsulated, err := srv6.AppendEncapsulated(dst, raw, policy.Source, policy.Path)
 	if err != nil {
 		m.segmentsUnsteered.Add(1)
 		m.reportSegmentDrop("a packet a policy claimed could not be encapsulated", "policy", policy, "err", err)
-		return size, steerDrop
+		return dst, false
 	}
 	m.segmentsSteered.Add(1)
-	return encapsulated, steerSent
+	return encapsulated, true
 }
 
 // SetSegments installs the segments this node answers for, or nil for none.
