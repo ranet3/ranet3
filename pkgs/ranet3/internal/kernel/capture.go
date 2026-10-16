@@ -62,21 +62,21 @@ func unspecifiedOf(address netip.Addr) netip.Addr {
 
 // CaptureRoutes is the routing the underlay depends on before the mesh may be
 // handed this machine's own traffic. On darwin that is a default scoped to the
-// interface the underlay socket is bound to (see UnderlayDefaults there).
-// Nothing implements it on linux, where a marked socket needs no route of its
-// own.
+// interface the underlay socket is bound to, for each family that needs one as
+// UnderlayDefaults' needs decides. Nothing implements it on linux, where a
+// marked socket needs no route of its own.
 //
 // Ready both repairs and reports, per family. The reconciler calls it once a
-// pass and drops from that pass every capturing route whose own family is
-// uncovered, so such a route is neither installed nor left behind: a capture
-// is never in the kernel while the family it captures has nothing to fall back
+// pass, with the families of the routes it would install unscoped over a zero
+// address, and drops from that pass every such route whose own family is
+// uncovered: none is in the kernel while its family has nothing to fall back
 // on, on either edge.
 //
 // HostDefaults reports, per family, whether the host holds a default of its
 // own, and writes nothing. It is all a plain default installed as its
 // zero-free cover needs.
 type CaptureRoutes interface {
-	Ready() (Covered, error)
+	Ready(want Covered) (Covered, error)
 	HostDefaults() (Covered, error)
 }
 

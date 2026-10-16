@@ -188,6 +188,13 @@ func (p *routePlatform) open() error {
 		return err
 	}
 	p.sock = sock
+	if p.rt.BoundUnderlay {
+		// another program's route over a zero address, on any interface,
+		// takes the bound socket's fallback away until a pass writes the
+		// underlay's scoped default, so its change wakes one
+		p.watcher, err = p.host.Watch(0, 0, true)
+		return err
+	}
 	p.watcher, err = p.host.Watch(p.index, 0, false)
 	return err
 }

@@ -137,6 +137,7 @@ func TestDarwinScopedDefaultUnstrandsEverySetThatStranded(t *testing.T) {
 	if err != nil || !gateway.IsValid() {
 		t.Skipf("this host has no IPv4 default with a next hop: %v", err)
 	}
+	startWithNoScopedDefault(t, host)
 	target := netip.MustParseAddr("192.0.2.1")
 	if err := boundReach(host, target); err != nil {
 		t.Skipf("a bound socket cannot reach %s before anything is installed: %v", target, err)
@@ -166,7 +167,7 @@ func TestDarwinScopedDefaultUnstrandsEverySetThatStranded(t *testing.T) {
 	if err := underlay.Prepare(host); err != nil {
 		t.Fatal(err)
 	}
-	if covered, err := underlay.Ready(); err != nil || !covered.V4 {
+	if covered, err := underlay.Ready(Covered{V4: true}); err != nil || !covered.V4 {
 		t.Fatalf("the underlay reports itself uncovered: %+v %v", covered, err)
 	}
 

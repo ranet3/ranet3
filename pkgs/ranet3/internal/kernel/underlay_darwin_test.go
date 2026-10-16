@@ -67,14 +67,19 @@ func (namedDevices) InterfaceName(index int) (string, error) {
 	return "", errors.New("no such interface")
 }
 
+// bothFamilies is a reconciler wanting a route over each family's zero
+// address.
+var bothFamilies = Covered{V4: true, V6: true}
+
 // testUnderlay wires the owner onto a fake route socket and a routing table
 // the test writes, so every assertion is about the messages that reached the
-// kernel rather than about the bookkeeping beside them.
+// kernel rather than about the bookkeeping beside them. It starts as the last
+// Ready of a reconciler wanting both families leaves it, so a Prepare writes.
 func testUnderlay(t *testing.T, links defaultRoutes, rib func() []byte) (*UnderlayDefaults, *fakeRouteSocket) {
 	t.Helper()
 	sock := &fakeRouteSocket{t: t}
 	return &UnderlayDefaults{
-		sock: sock, links: links, host: namedDevices{},
+		sock: sock, links: links, host: namedDevices{}, want: bothFamilies,
 		written:      make(map[writtenDefault]bool),
 		refused:      make(map[writtenDefault]bool),
 		covered:      make(map[netip.Prefix]bool),
@@ -160,7 +165,7 @@ func TestUnderlayDefaultsNeverDeletesAnUnscopedDefault(t *testing.T) {
 		run  func() error
 	}{
 		{"prepare", func() error { return underlay.Prepare(uplinkIndex) }},
-		{"cover", func() error { _, err := underlay.Ready(); return err }},
+		{"cover", func() error { _, err := underlay.Ready(bothFamilies); return err }},
 		{"settle", func() error { return underlay.Settle(uplinkIndex) }},
 		{"the host's default moves to the dock", func() error {
 			links.v4 = hostDefault{index: dockIndex, gateway: addr("10.0.0.1")}
@@ -494,7 +499,7 @@ func TestUnderlayDefaultsRefusesToWithdrawOnAnUnreadableDump(t *testing.T) {
 	// The table stops reading back after the route is recorded, which is the
 	// state a withdrawal must refuse to act in.
 	underlay.dump = func() ([]byte, error) { return nil, errors.New("the kernel would not answer") }
-	if _, err := underlay.Ready(); err == nil {
+	if _, err := underlay.Ready(bothFamilies); err == nil {
 		t.Error("a pass over an unreadable dump reported the underlay covered")
 	}
 	if err := underlay.Close(); err == nil {
@@ -520,7 +525,7 @@ func TestUnderlayDefaultsDoesNotOwnARouteThatWasAlreadyThere(t *testing.T) {
 	if err := underlay.Prepare(uplinkIndex); err != nil {
 		t.Fatal(err)
 	}
-	if covered, err := underlay.Ready(); err != nil || !covered.V4 {
+	if covered, err := underlay.Ready(bothFamilies); err != nil || !covered.V4 {
 		t.Fatalf("an add that found the route already there was reported as a failure: %+v %v", covered, err)
 	}
 	if got := underlay.Written(); len(got) != 0 {
@@ -625,7 +630,7 @@ func TestUnderlayDefaultsRefusesEverythingAfterClose(t *testing.T) {
 	for name, call := range map[string]func() error{
 		"prepare": func() error { return underlay.Prepare(uplinkIndex) },
 		"settle":  func() error { return underlay.Settle(uplinkIndex) },
-		"ready":   func() error { _, err := underlay.Ready(); return err },
+		"ready":   func() error { _, err := underlay.Ready(bothFamilies); return err },
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := call(); !errors.Is(err, errUnderlayClosed) {
@@ -702,7 +707,7 @@ func TestPrepareMovesOntoAnInterfaceItCannotCover(t *testing.T) {
 				t.Errorf("it wrote %+v on an interface it cannot cover", got)
 			}
 			// And the separate question gets the honest answer.
-			covered, err := underlay.Ready()
+			covered, err := underlay.Ready(bothFamilies)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -732,7 +737,7 @@ func TestReadyRepairsTheUnderlayAndAnswersPerFamily(t *testing.T) {
 	// rather than an answer: "not covered" with no error reads as a host that
 	// reaches nothing, where this is a socket the transport has not bound yet
 	// and a reconciler that should say why it is holding a capture back.
-	switch covered, err := underlay.Ready(); {
+	switch covered, err := underlay.Ready(bothFamilies); {
 	case err == nil:
 		t.Error("an underlay on no interface answered rather than saying it is on none")
 	case covered.V4 || covered.V6:
@@ -745,7 +750,7 @@ func TestReadyRepairsTheUnderlayAndAnswersPerFamily(t *testing.T) {
 	}
 	held = append(held, ourScoped(uplinkIndex, addr("192.168.0.1")))
 	written := len(sent(t, sock))
-	covered, err := underlay.Ready()
+	covered, err := underlay.Ready(bothFamilies)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,7 +765,7 @@ func TestReadyRepairsTheUnderlayAndAnswersPerFamily(t *testing.T) {
 	// interface back up does not undo. The pass that finds it gone is this
 	// one, not a Prepare, because nothing has changed on the link.
 	held = nil
-	if covered, err = underlay.Ready(); err != nil {
+	if covered, err = underlay.Ready(bothFamilies); err != nil {
 		t.Fatal(err)
 	}
 	got := sent(t, sock)
@@ -769,5 +774,183 @@ func TestReadyRepairsTheUnderlayAndAnswersPerFamily(t *testing.T) {
 	}
 	if !covered.V4 {
 		t.Errorf("the family it had just repaired reports %+v", covered)
+	}
+}
+
+// A cover member holds no zero address, so with only the cover left in the
+// tun Close withdraws the scoped default like any other.
+func TestCloseWithdrawsTheRouteUnderOnlyTheCover(t *testing.T) {
+	const meshIndex = 77
+	links := &fakeDefaults{v4: hostDefault{index: uplinkIndex, gateway: addr("192.168.0.1")}}
+	held := []dumpEntry{{index: meshIndex, flags: unix.RTF_UP | unix.RTF_STATIC, dst: prefix("128.0.0.0/1"), gateway: &route.LinkAddr{Index: meshIndex}}}
+	var sock *fakeRouteSocket
+	underlay, opened := testUnderlay(t, links, func() []byte { return hostRIB(t, append(slices.Clone(held), kernelHolds(t, sock)...)...) })
+	sock = opened
+	underlay.mesh = meshIndex
+	if err := underlay.Prepare(uplinkIndex); err != nil {
+		t.Fatal(err)
+	}
+	if err := underlay.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if left := underlay.Written(); len(left) != 0 {
+		t.Errorf("Close kept %+v for a cover member, which holds no zero address", left)
+	}
+}
+
+// otherIndex is another program's interface, a full-tunnel VPN's utun.
+const otherIndex = 950
+
+func otherRoute(destination string, flags int) dumpEntry {
+	return dumpEntry{index: otherIndex, flags: unix.RTF_UP | unix.RTF_STATIC | flags,
+		dst: prefix(destination), gateway: &route.LinkAddr{Index: otherIndex}}
+}
+
+// demandless is an underlay no Ready has asked anything of yet, on a table
+// that reads back what it wrote beside the entries the test holds.
+func demandless(t *testing.T, held *[]dumpEntry) (*UnderlayDefaults, *fakeRouteSocket, *fakeDefaults) {
+	t.Helper()
+	links := &fakeDefaults{
+		v4: hostDefault{index: uplinkIndex, gateway: addr("192.168.0.1")},
+		v6: hostDefault{index: uplinkIndex, gateway: addr("fe80::1")},
+	}
+	var sock *fakeRouteSocket
+	underlay, opened := testUnderlay(t, links, func() []byte { return hostRIB(t, append(slices.Clone(*held), kernelHolds(t, sock)...)...) })
+	sock = opened
+	underlay.want = Covered{}
+	underlay.mesh = 77
+	return underlay, sock, links
+}
+
+// With nothing of the reconciler's needing it and no other program's route
+// over a zero address, a bind, a pass and a move write nothing.
+func TestUnderlayWritesNothingWhileNothingNeedsIt(t *testing.T) {
+	held := []dumpEntry{
+		// the cover out of the tun holds no zero address
+		{index: 77, flags: unix.RTF_UP | unix.RTF_STATIC, dst: prefix("128.0.0.0/1"), gateway: &route.LinkAddr{Index: 77}},
+		{index: 77, flags: unix.RTF_UP | unix.RTF_STATIC, dst: prefix("1.0.0.0/8"), gateway: &route.LinkAddr{Index: 77}},
+	}
+	underlay, sock, links := demandless(t, &held)
+	if err := underlay.Prepare(uplinkIndex); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := underlay.Ready(Covered{}); err != nil {
+		t.Fatal(err)
+	}
+	links.v4 = hostDefault{index: dockIndex, gateway: addr("10.0.0.1")}
+	if err := underlay.Prepare(dockIndex); err != nil {
+		t.Fatal(err)
+	}
+	if got := sent(t, sock); len(got) != 0 {
+		t.Errorf("an underlay nothing needed wrote %+v", got)
+	}
+}
+
+// Another program's unscoped route over a family's zero address needs the
+// scoped default of that family, and the pass after it goes withdraws it. A
+// route of another program's holding no zero address, one that forwards
+// nothing out of another interface, or one out of the interface the socket is
+// on, which a bound socket follows out of that interface, needs nothing.
+func TestUnderlayCoversAnotherProgramsCaptureAndReleasesIt(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		route dumpEntry
+		needs bool
+		v6    bool
+	}{
+		{"a lower half", otherRoute("0.0.0.0/1", 0), true, false},
+		{"an IPv6 lower half", otherRoute("::/1", 0), true, true},
+		{"a /24 over the zero address", otherRoute("0.0.0.0/24", 0), true, false},
+		{"a prefix holding no zero address", otherRoute("1.0.0.0/8", 0), false, false},
+		{"a scoped route", otherRoute("0.0.0.0/1", unix.RTF_IFSCOPE), false, false},
+		{"a reject route", otherRoute("::/96", unix.RTF_REJECT), false, true},
+		{"a cloned route", otherRoute("0.0.0.0/1", unix.RTF_WASCLONED), false, false},
+		{"a lower half out of the socket's own interface", dumpEntry{index: uplinkIndex,
+			flags: unix.RTF_UP | unix.RTF_GATEWAY | unix.RTF_STATIC,
+			dst:   prefix("0.0.0.0/1"), gateway: &route.Inet4Addr{IP: [4]byte{192, 168, 0, 1}}}, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			held := []dumpEntry{test.route}
+			underlay, sock, links := demandless(t, &held)
+			if err := underlay.Prepare(uplinkIndex); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := underlay.Ready(Covered{}); err != nil {
+				t.Fatal(err)
+			}
+			got := sent(t, sock)
+			if !test.needs {
+				if len(got) != 0 {
+					t.Errorf("it wrote %+v for a route that strands nothing", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0].kind != unix.RTM_ADD || !got[0].scoped || got[0].index != uplinkIndex || got[0].isV4 == test.v6 {
+				t.Fatalf("another program's capture drew %+v, want one scoped default of its family on the uplink", got)
+			}
+			// a move while it is needed writes on the interface moved to
+			links.v4 = hostDefault{index: dockIndex, gateway: addr("10.0.0.1")}
+			links.v6 = hostDefault{index: dockIndex, gateway: addr("fe80::2")}
+			if err := underlay.Prepare(dockIndex); err != nil {
+				t.Fatal(err)
+			}
+			if moved := sent(t, sock); len(moved) != 2 || moved[1].kind != unix.RTM_ADD || moved[1].index != dockIndex {
+				t.Errorf("a move while the default was needed sent %+v, want it written on the dock", moved[1:])
+			}
+			if err := underlay.Settle(dockIndex); err != nil {
+				t.Fatal(err)
+			}
+			held = nil
+			if _, err := underlay.Ready(Covered{}); err != nil {
+				t.Fatal(err)
+			}
+			if left := underlay.Written(); len(left) != 0 {
+				t.Errorf("the pass after the capture went left %+v written", left)
+			}
+		})
+	}
+}
+
+// A socket moving onto an interface while another program's route holds a
+// zero address finds the scoped default there before it moves, with no pass
+// in between.
+func TestPrepareCoversAnotherProgramsCaptureBeforeTheSocketMoves(t *testing.T) {
+	held := []dumpEntry{otherRoute("0.0.0.0/1", 0)}
+	underlay, sock, _ := demandless(t, &held)
+	if err := underlay.Prepare(uplinkIndex); err != nil {
+		t.Fatal(err)
+	}
+	if got := sent(t, sock); len(got) != 1 || got[0].kind != unix.RTM_ADD || !got[0].scoped || got[0].index != uplinkIndex {
+		t.Errorf("preparing the uplink beside another program's 0.0.0.0/1 sent %+v, want its scoped default", got)
+	}
+}
+
+// The ask ahead of the reconciler's delete still finds its capture in the
+// table, so the scoped default stays until an ask finds it gone.
+func TestUnderlayKeepsTheDefaultWhileTheTunHoldsAZeroAddress(t *testing.T) {
+	ours := dumpEntry{index: 77, flags: unix.RTF_UP | unix.RTF_STATIC, dst: prefix("0.0.0.0/24"), gateway: &route.LinkAddr{Index: 77}}
+	held := []dumpEntry{ours}
+	underlay, _, _ := demandless(t, &held)
+	if err := underlay.Prepare(uplinkIndex); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := underlay.Ready(Covered{V4: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(underlay.Written()) != 1 {
+		t.Fatalf("a capture of the reconciler's drew %+v", underlay.Written())
+	}
+	if _, err := underlay.Ready(Covered{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(underlay.Written()) != 1 {
+		t.Error("the scoped default went while the capture was still in the table")
+	}
+	held = nil
+	if _, err := underlay.Ready(Covered{}); err != nil {
+		t.Fatal(err)
+	}
+	if left := underlay.Written(); len(left) != 0 {
+		t.Errorf("the pass after the capture went left %+v written", left)
 	}
 }

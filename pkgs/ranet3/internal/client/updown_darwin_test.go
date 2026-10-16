@@ -20,6 +20,7 @@ import (
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
@@ -134,30 +135,39 @@ func (k *recordedKernel) meshHeld() []recordedRoute {
 	return out
 }
 
-// down on a darwin node takes its routes and its address off the mesh device and leaves the fallback of the uplink in place
-// the fallback serves the transport's socket, which a down keeps open, and up puts the routes and the address back
-func TestDownTakesTheMeshDeviceBareAndKeepsTheUnderlayFallback(t *testing.T) {
+// down on a darwin node takes its routes and its address off the mesh device, and with the capture gone the fallback of the uplink goes too
+// the fallback serves the transport's socket only while a route over :: is in the tun, and up puts the routes, the address and the fallback back
+func TestDownTakesTheMeshDeviceBareAndTheUnderlayFallbackWithIt(t *testing.T) {
 	d := startDownable(t, recordedHost(t), t.TempDir())
+	// the session counts as live, which a capture waits for
+	d.node.sessions.mu.Lock()
+	d.node.sessions.active = func(*ike.Session) bool { return true }
+	d.node.sessions.mu.Unlock()
 	holdSessions(d.node).adopt(t, d.node, "example/gateway:1@0")
 	d.announce(ordinaryPrefix)
+	d.announce(halfCapture)
 	waitForKernel(t, "the ordinary prefix and the announced address are on the mesh device", d.dressed)
+	waitForKernel(t, "the half capture draws the fallback", func() bool { return len(d.host.scopedDefaults()) != 0 })
 	fallback := d.host.scopedDefaults()
-	if len(fallback) == 0 {
-		t.Fatal("the underlay wrote no fallback, so this measures nothing")
-	}
 
 	if _, err := d.node.Down(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	d.waitBare(t)
-	if got := d.host.scopedDefaults(); !slices.Equal(got, fallback) {
-		t.Errorf("down left the fallback of the uplink as %+v, want %+v kept for the socket it serves", got, fallback)
+	if got := d.host.scopedDefaults(); len(got) != 0 {
+		t.Errorf("down left the fallback of the uplink as %+v with nothing in the tun needing it", got)
 	}
 
 	if _, err := d.node.Up(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	waitForKernel(t, "the ordinary prefix and the announced address are back on the mesh device", d.dressed)
+	// down closed the session, and the capture waits for a live one again
+	holdSessions(d.node).adopt(t, d.node, "example/gateway:1@0")
+	d.announce(halfCapture)
+	waitForKernel(t, "the fallback is back under the half capture", func() bool {
+		return slices.Equal(d.host.scopedDefaults(), fallback)
+	})
 }
 
 // a darwin node whose flag is there when it starts writes nothing to its mesh device, its reconciler stopped before its first pass

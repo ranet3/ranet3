@@ -315,9 +315,16 @@ type recordingCapture struct {
 	covered Covered
 	hosts   Covered
 	err     error
+	// wants records the families each Ready was asked to cover
+	wants []Covered
 }
 
-func (c *recordingCapture) Ready() (Covered, error) {
+func (c *recordingCapture) Ready(want Covered) (Covered, error) {
+	c.wants = append(c.wants, want)
+	if want == (Covered{}) {
+		c.at = append(c.at, "released with "+c.capturing())
+		return Covered{}, c.err
+	}
 	c.at = append(c.at, "asked with "+c.capturing())
 	return c.covered, c.err
 }
@@ -386,8 +393,8 @@ func TestReconcileInstallsNoCaptureOverAnUncoveredUnderlay(t *testing.T) {
 	}
 }
 
-// A node whose mesh never announces a default never asks about the underlay's
-// routing, so it never touches the interface it reaches its peers through.
+// A node whose mesh never announces a default asks the underlay for nothing
+// of its own, so the underlay writes only for another program's capture.
 func TestReconcileLeavesTheUnderlayAloneWithoutADefault(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
 	capture := &recordingCapture{fake: fake, covered: Covered{V4: true, V6: true}}
@@ -397,8 +404,96 @@ func TestReconcileLeavesTheUnderlayAloneWithoutADefault(t *testing.T) {
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if len(capture.at) != 0 {
-		t.Errorf("an ordinary mesh prefix asked about the underlay: %v", capture.at)
+	if want := []string{"released with no default installed"}; !slices.Equal(capture.at, want) {
+		t.Errorf("an ordinary mesh prefix asked the underlay as %v, want %v", capture.at, want)
+	}
+}
+
+// Once the last route over a zero address is out of the table, the same pass
+// tells the underlay that nothing of the reconciler's needs it, and not
+// before: the ask ahead of the delete still finds the route installed.
+func TestReconcileReleasesTheUnderlayOnceTheCaptureGoes(t *testing.T) {
+	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
+	capture := &recordingCapture{fake: fake, covered: Covered{V4: true, V6: true}}
+	reconciler.rt.Capture = capture
+	reconciler.now = func() time.Time { return start }
+	table.Set(netip.Prefix{}, prefix("::/0"), nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	table.Remove(netip.Prefix{}, prefix("::/0"))
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"asked with no default installed", "released with the default installed", "released with no default installed"}
+	if !slices.Equal(capture.at, want) {
+		t.Errorf("the underlay was asked as %v, want %v", capture.at, want)
+	}
+	asked := len(capture.at)
+	if err := reconciler.withdraw(); err != nil {
+		t.Fatal(err)
+	}
+	if got := capture.at[asked:]; !slices.Equal(got, []string{"released with no default installed"}) {
+		t.Errorf("the withdrawal told the underlay %q, want it released", got)
+	}
+}
+
+// A pass that takes one capture out and puts another of the same family in
+// keeps the family wanted through the ask after the delete, since the capture
+// it is about to install needs the underlay as much as the one it took out.
+func TestReconcileKeepsTheUnderlayThroughASwapOfCaptures(t *testing.T) {
+	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
+	capture := &recordingCapture{fake: fake, covered: Covered{V4: true, V6: true}}
+	reconciler.rt.Capture = capture
+	reconciler.now = func() time.Time { return start }
+	table.Set(netip.Prefix{}, prefix("0.0.0.0/1"), nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	table.Remove(netip.Prefix{}, prefix("0.0.0.0/1"))
+	table.Set(netip.Prefix{}, prefix("0.0.0.0/2"), nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if !fake.has(Route{Destination: prefix("0.0.0.0/2")}) || fake.has(Route{Destination: prefix("0.0.0.0/1")}) {
+		t.Fatalf("the pass did not swap the captures: %v", fake.snapshot())
+	}
+	if want := []Covered{{V4: true}, {V4: true}, {V4: true}}; !slices.Equal(capture.wants, want) {
+		t.Errorf("the underlay was asked to cover %v, want IPv4 on every ask", capture.wants)
+	}
+}
+
+// 128.0.0.0/1 and 8000::/1 hold no zero address and leave a bound socket its
+// fallback: alone they ask the underlay for nothing and go in with it
+// uncovered. The lower halves hold the zero addresses and ask for both
+// families.
+func TestUpperHalfAsksTheUnderlayForNothing(t *testing.T) {
+	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
+	capture := &recordingCapture{fake: fake}
+	reconciler.rt.Capture = capture
+	reconciler.now = func() time.Time { return start }
+	upper := []Route{{Destination: prefix("128.0.0.0/1")}, {Destination: prefix("8000::/1"), Metric: defaultIPv6Metric}}
+	lower := []Route{{Destination: prefix("0.0.0.0/1")}, {Destination: prefix("::/1"), Metric: defaultIPv6Metric}}
+	for _, halves := range [][]Route{upper, lower} {
+		for _, route := range halves {
+			table.Set(netip.Prefix{}, route.Destination, nil)
+		}
+		if err := reconciler.reconcile(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []Covered{{}, {V4: true, V6: true}}; !slices.Equal(capture.wants, want) {
+		t.Errorf("the underlay was asked to cover %v, want nothing for the upper halves alone and both families with the lower beside them", capture.wants)
+	}
+	for _, route := range upper {
+		if !fake.has(route) {
+			t.Errorf("%s was held back with the underlay uncovered: %v", route.Destination, fake.snapshot())
+		}
+	}
+	for _, route := range lower {
+		if fake.has(route) {
+			t.Errorf("%s went in with the underlay uncovered", route.Destination)
+		}
 	}
 }
 
