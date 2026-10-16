@@ -565,6 +565,8 @@ func TestResponderRefusesItsOwnNode(t *testing.T) {
 // real responder. A responder that signs with a key other than the one
 // configured for it fails on the signature. One asked under a name it does not
 // hold refuses to answer under it, and the initiator reports that refusal.
+// The first responder established its SA, and RFC 7296 section 2.21.2 has it told: "If the error occurs on the initiator, the notification MAY be returned in a separate INFORMATIONAL exchange, usually with no other payloads."
+// its session answers the AUTHENTICATION_FAILED that follows IKE_AUTH and ends
 func TestInitiatorRefusesResponderItCannotAuthenticate(t *testing.T) {
 	other, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -573,25 +575,35 @@ func TestInitiatorRefusesResponderItCannotAuthenticate(t *testing.T) {
 	for name, test := range map[string]struct {
 		change func(*PeerConfig)
 		want   string
+		told   bool // the responder established an SA, which its session ends on the initiator's refusal
 	}{
 		"a public key the responder does not sign with": {
-			func(cfg *PeerConfig) { cfg.RemotePublicKey = other }, "AUTH signature verification failed"},
+			func(cfg *PeerConfig) { cfg.RemotePublicKey = other }, "AUTH signature verification failed", true},
 		"a common name the responder does not hold": {
-			func(cfg *PeerConfig) { cfg.Remote = identity.MustParse("testorg/elsewhere:1") }, fmt.Sprintf("notify type %d", N_AUTHENTICATION_FAILED)},
+			func(cfg *PeerConfig) { cfg.Remote = identity.MustParse("testorg/elsewhere:1") }, fmt.Sprintf("notify type %d", N_AUTHENTICATION_FAILED), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newResponderHarness(t, nil)
+			ended := serveResponder(t, h)
 			cfg := h.peerConfig()
 			test.change(&cfg)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), answerBudget)
 			defer cancel()
 			session, err := InitiateContext(ctx, cfg)
 			if err == nil {
 				session.Mux().Close()
 				t.Fatal("the initiator completed a handshake it should have refused")
 			}
-			if !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("the initiator refused with %q, which does not name %q", err, test.want)
+			if !strings.Contains(err.Error(), test.want) || strings.Contains(err.Error(), "additionally failed") {
+				t.Fatalf("the initiator refused with %q, which does not name %q alone", err, test.want)
+			}
+			if !test.told {
+				return
+			}
+			select {
+			case <-ended:
+			case <-time.After(answerBudget):
+				t.Fatal("the responder still held the SA its initiator refused when the budget ran out")
 			}
 		})
 	}

@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -830,19 +831,46 @@ func suiteFromProposal(p Proposal) (SASuite, error) {
 
 func (s *Session) completeIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr []byte) error {
 	authenticated, err := s.doIKEAuth(cfg, realMessage1, realMessage2, ni, nr)
-	if err == nil || !authenticated {
+	if err == nil {
+		return nil
+	}
+	if authenticated {
+		// RFC 7296 section 2.21.2 on an IKE SA whose Child SA failed: "The initiator MAY, of course, for reasons of policy later delete such an IKE SA."
+		// an IKE SA carries nothing here without its Child SA
+		if deleteErr := s.deleteAuthenticatedIKE(); deleteErr != nil {
+			return fmt.Errorf("%w; additionally failed to delete authenticated IKE SA: %v", err, deleteErr)
+		}
 		return err
 	}
-
-	// RFC 7296 section 2.21.2 says a valid responder AUTH establishes the IKE SA
-	// even when the Child SA creation bundled into IKE_AUTH fails, and leaves
-	// deleting it to the initiator's policy. ranet cannot use an IKE SA
-	// without that Child SA, so close the authenticated SA with a normal
-	// encrypted IKE Delete before returning the Child negotiation error.
-	if deleteErr := s.deleteAuthenticatedIKE(); deleteErr != nil {
-		return fmt.Errorf("%w; additionally failed to delete authenticated IKE SA: %v", err, deleteErr)
+	if refusal, ok := errors.AsType[*authRefusal](err); ok {
+		// RFC 7296 section 2.21.2: "If the error occurs on the initiator, the notification MAY be returned in a separate INFORMATIONAL exchange, usually with no other payloads."
+		if informErr := s.informAfterAuth([]RawPayload{{Type: PayloadN, Body: EncodeNotify(refusal.notify)}}); informErr != nil {
+			return fmt.Errorf("%w; additionally failed to tell the responder: %v", err, informErr)
+		}
 	}
 	return err
+}
+
+// RFC 7296 section 2.21.2: "All errors that occur in an IKE_AUTH exchange, causing the authentication to fail for whatever reason (invalid shared secret, invalid ID, untrusted certificate issuer, revoked or expired certificate, etc.) SHOULD result in an AUTHENTICATION_FAILED notification."
+type authRefusal struct {
+	notify Notify
+	err    error
+}
+
+func (r *authRefusal) Error() string { return r.err.Error() }
+func (r *authRefusal) Unwrap() error { return r.err }
+
+func refuse(notify NotifyType, data []byte, err error) error {
+	return &authRefusal{notify: Notify{Type: notify, Data: data}, err: err}
+}
+
+func refuseCritical(payloads []RawPayload, err error) error {
+	for _, payload := range payloads {
+		if payload.Critical && payload.Type != PayloadSK && !supportedPayloadType(payload.Type) {
+			return refuse(N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(payload.Type)}, err)
+		}
+	}
+	return refuse(N_INVALID_SYNTAX, nil, err)
 }
 
 func (s *Session) deleteAuthenticatedIKE() error {
@@ -877,6 +905,7 @@ func (s *Session) informAfterAuth(inner []RawPayload) error {
 	return nil
 }
 
+// doIKEAuth reports true once it accepts the responder's AUTH and IDr, and returns an *authRefusal for a decrypted answer it refuses before then, other than one carrying the responder's own error notify
 func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr []byte) (bool, error) {
 	mySPI := randUint32Nonzero()
 	spiBuf := make([]byte, 4)
@@ -911,14 +940,17 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	}
 
 	resp, respInner, err := encryptedRoundTrip(s.mux, s.current, req)
-	if err != nil {
+	if resp == nil {
 		return false, err
+	}
+	if err != nil {
+		return false, refuse(N_INVALID_SYNTAX, nil, err)
 	}
 	if err := validateResponseCriticalFlags(resp.Payloads); err != nil {
-		return false, err
+		return false, refuseCritical(resp.Payloads, err)
 	}
 	if err := validateResponseCriticalFlags(respInner); err != nil {
-		return false, err
+		return false, refuseCritical(respInner, err)
 	}
 	respMsg := &Message{Header: resp.Header, Payloads: respInner}
 
@@ -928,19 +960,26 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	tsiRecv := respMsg.find(PayloadTSi)
 	tsrRecv := respMsg.find(PayloadTSr)
 	if idrRecv == nil || authRecv == nil {
-		if n := respMsg.find(PayloadN); n != nil {
-			nt, err := DecodeNotify(n.Body)
-			if err != nil {
-				return false, err
+		for _, payload := range respInner {
+			if payload.Type != PayloadN {
+				continue
 			}
-			return false, fmt.Errorf("ike: IKE_AUTH rejected inside SK: notify type %d", nt.Type)
+			notify, err := DecodeNotify(payload.Body)
+			if err != nil {
+				return false, refuse(N_INVALID_SYNTAX, nil, err)
+			}
+			// RFC 7296 section 3.10.1: "Types in the range 0 - 16383 are intended for reporting errors."
+			// an IKE_AUTH answered with one failed at the responder, which has nothing to be told
+			if notify.Type < 16384 {
+				return false, fmt.Errorf("ike: IKE_AUTH rejected inside SK: notify type %d", notify.Type)
+			}
 		}
-		return false, fmt.Errorf("ike: incomplete IKE_AUTH response")
+		return false, refuse(N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: incomplete IKE_AUTH response"))
 	}
 	macedIDForR := prf(s.current.suite.PRFID, s.current.skpr, idrRecv.Body)
 	responderSigned := concat(realMessage2, ni, macedIDForR)
 	if err := VerifyAuth(cfg.RemotePublicKey, responderSigned, authRecv.Body); err != nil {
-		return false, err
+		return false, refuse(N_AUTHENTICATION_FAILED, nil, err)
 	}
 	// Compare the name rather than the bytes: ranet writes O and CN as
 	// UTF8String while strongSwan picks the string type from the value, so
@@ -949,15 +988,13 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	// to check.
 	got, err := identityFromID(idrRecv.Body)
 	if err != nil {
-		return false, err
+		return false, refuse(N_AUTHENTICATION_FAILED, nil, err)
 	}
 	if got != cfg.Remote {
-		return false, fmt.Errorf("ike: responder identity %s does not match configured IDr", got)
+		return false, refuse(N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: responder identity %s does not match configured IDr", got))
 	}
 
-	// Only after verifying AUTH may Child-SA failures be authoritative. Per
-	// RFC 7296 section 2.21.2, the IKE SA is now authenticated independently of the
-	// success or failure of the Child SA negotiation below.
+	// RFC 7296 section 2.21.2: "a responder may include all the payloads associated with authentication (IDr, CERT, and AUTH) while sending error notifications for the piggybacked exchanges (FAILED_CP_REQUIRED, NO_PROPOSAL_CHOSEN, and so on), and the initiator MUST NOT fail the authentication because of this."
 	if saRecv == nil {
 		if n := respMsg.find(PayloadN); n != nil {
 			nt, err := DecodeNotify(n.Body)
