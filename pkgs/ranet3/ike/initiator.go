@@ -539,12 +539,10 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	stopCancel := context.AfterFunc(ctx, func() { _ = mux.Close() })
 	defer func() {
 		stopCancel()
-		if ctx.Err() != nil {
-			if session != nil {
-				_ = session.DeleteIKE()
-			}
+		// a cancel after the session is handed over is the caller's to answer, so only a handshake it cut short reports it
+		if session == nil && ctx.Err() != nil {
 			_ = mux.Close()
-			session, err = nil, ctx.Err()
+			err = ctx.Err()
 		}
 	}()
 
@@ -727,7 +725,9 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	if !stopCancel() {
 		return nil, ctx.Err()
 	}
-	stopWait := context.AfterFunc(ctx, func() { time.AfterFunc(canceledAuthWait, func() { _ = mux.Close() }) })
+	// a cancel from here on leaves every exchange under way canceledAuthWait to end, and the mux closes under the ones that have not
+	endWait := sync.OnceFunc(func() { time.AfterFunc(canceledAuthWait, func() { _ = mux.Close() }) })
+	stopWait := context.AfterFunc(ctx, endWait)
 	defer stopWait()
 	if err := sess.completeIKEAuth(cfg, req, respRaw, ni, nr); err != nil {
 		mux.Close()
@@ -744,6 +744,15 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	if err := sess.SetRekeyRetry(cfg.RekeyRetryInitial, cfg.RekeyRetryMax); err != nil {
 		mux.Close()
 		return nil, err
+	}
+	// stopped before ctx is read, so the wait never closes the mux of a session handed over
+	stopWait()
+	if ctx.Err() != nil {
+		// an answer that authenticated after the cancel left the responder an SA, deleted within the wait
+		endWait()
+		_ = sess.deleteAuthenticatedIKE()
+		mux.Close()
+		return nil, ctx.Err()
 	}
 	sess.noteEstablished()
 	return sess, nil
@@ -829,45 +838,39 @@ func (s *Session) completeIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni
 	// without that Child SA, so close the authenticated SA with a normal
 	// encrypted IKE Delete before returning the Child negotiation error.
 	if deleteErr := s.deleteAuthenticatedIKE(); deleteErr != nil {
-		// the responder holds the authenticated SA until told, and a mux closed under the answered Delete may have sent none
-		_ = s.DeleteIKE()
 		return fmt.Errorf("%w; additionally failed to delete authenticated IKE SA: %v", err, deleteErr)
 	}
 	return err
 }
 
 func (s *Session) deleteAuthenticatedIKE() error {
+	return s.informAfterAuth([]RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+}
+
+func (s *Session) informAfterAuth(inner []RawPayload) error {
 	ctx := s.current
-	flags := uint8(0)
-	if !ctx.responder {
-		flags = FlagInitiator
-	}
-	hdr := Header{
-		SPIInitiator: ctx.spiI,
-		SPIResponder: ctx.spiR,
-		ExchangeType: INFORMATIONAL,
-		Flags:        flags,
-		MessageID:    ctx.nextLocalMID,
-	}
-	req, err := ctx.encrypt(ctx.localEncryptionKey(), hdr, nil, []RawPayload{{
-		Type: PayloadD,
-		Body: EncodeDelete(Delete{Protocol: ProtoIKE}),
-	}})
+	header := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL, Flags: FlagInitiator, MessageID: ctx.nextLocalMID}
+	request, err := ctx.encrypt(ctx.localEncryptionKey(), header, nil, inner)
 	if err != nil {
-		return fmt.Errorf("ike: build IKE Delete: %w", err)
+		return fmt.Errorf("ike: build INFORMATIONAL request: %w", err)
 	}
-	resp, inner, err := encryptedRoundTripWithin(s.mux, ctx, req, teardownRetransmits)
+	response, responseInner, err := encryptedRoundTripWithin(s.mux, ctx, request, teardownRetransmits)
+	if response == nil && s.mux.IsClosed() {
+		// the responder holds its SA until told, and a closed mux still sends, so the request goes out once more whether or not it left before
+		// RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
+		_ = s.mux.SendIKE(request)
+	}
 	if err != nil {
 		return err
 	}
-	if err := validateResponseCriticalFlags(resp.Payloads); err != nil {
+	if err := validateResponseCriticalFlags(response.Payloads); err != nil {
 		return err
 	}
-	if err := validateResponseCriticalFlags(inner); err != nil {
+	if err := validateResponseCriticalFlags(responseInner); err != nil {
 		return err
 	}
-	if len(inner) != 0 {
-		return fmt.Errorf("ike: IKE Delete response is not empty")
+	if len(responseInner) != 0 {
+		return fmt.Errorf("ike: INFORMATIONAL response after IKE_AUTH is not empty")
 	}
 	return nil
 }
