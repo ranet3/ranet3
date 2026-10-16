@@ -9,12 +9,14 @@
 # binaries, run as root against a real kernel.
 # internal/netstack's tun round trips run here for the same reason
 # and so does transport's send through a path whose mtu is locked
+# and the tun and conn packages of pkgs/wireguard
 {
   lib,
   iproute2,
   nftables,
   ranet3,
   testers,
+  wireguard,
   writableTmpDirAsHomeHook,
 }:
 
@@ -35,6 +37,18 @@ let
       install -Dm755 netstack-tests "$out/bin/netstack-tests"
       install -Dm755 client-tests "$out/bin/client-tests"
       install -Dm755 transport-tests "$out/bin/transport-tests"
+    '';
+  });
+  wireguardTests = wireguard.overrideAttrs (prev: {
+    pname = "wireguard-root-tests";
+    nativeBuildInputs = prev.nativeBuildInputs ++ [ writableTmpDirAsHomeHook ];
+    buildPhase = ''
+      go test -c -o tun-tests ./tun/
+      go test -c -o conn-tests ./conn/
+    '';
+    installPhase = ''
+      install -Dm755 tun-tests "$out/bin/tun-tests"
+      install -Dm755 conn-tests "$out/bin/conn-tests"
     '';
   });
 in
@@ -133,6 +147,24 @@ testers.runNixOSTest {
     ran = out.count("--- PASS")
     assert ran >= 5, f"only {ran} of the client's round trips in a namespace of their own ran:\n{out}"
 
+    out = machine.succeed(
+        "${wireguardTests}/bin/tun-tests -test.v 2>&1"
+    )
+    print(out)
+    assert "SKIP" not in out, f"the wireguard tun tests skipped themselves under root:\n{out}"
+    ran = sum(1 for line in out.splitlines() if line.startswith("--- PASS"))
+    assert ran >= 27, f"only {ran} of the wireguard tun tests ran:\n{out}"
+    assert "--- PASS: TestWriteAllocs" in out, f"the write allocation test did not pass:\n{out}"
+
+    out = machine.succeed(
+        "${wireguardTests}/bin/conn-tests -test.v 2>&1"
+    )
+    print(out)
+    assert "SKIP" not in out, f"the wireguard conn tests skipped themselves under root:\n{out}"
+    ran = sum(1 for line in out.splitlines() if line.startswith("--- PASS"))
+    assert ran >= 8, f"only {ran} of the wireguard conn tests ran:\n{out}"
+    assert "--- PASS: TestStdNetBindSendRetryWithoutGSO" in out, f"the send retry without GSO did not pass:\n{out}"
+
     # Nothing the tests wrote may outlive them: they run against the host's own
     # kernel here rather than against a fake, so a rule, a VRF or a table left
     # behind is a leak this check is the only thing positioned to see.
@@ -140,6 +172,10 @@ testers.runNixOSTest {
     machine.fail("ip link show mesh")
     machine.fail("ip link show gsocap0")
     machine.fail("ip link show ranet3")
+    links = machine.succeed("ip -br link")
+    assert "wgt" not in links, f"a wireguard test tun outlived its test:\n{links}"
+    xfrm = machine.succeed("ip xfrm state; ip xfrm policy")
+    assert xfrm.strip() == "", f"an xfrm state or policy outlived the namespace it was written in:\n{xfrm}"
     tables = machine.succeed("nft list tables")
     assert "ranet3" not in tables, f"a table outlived the namespace it was written in:\n{tables}"
     # And nothing of the host's went with it: the tests write into a namespace

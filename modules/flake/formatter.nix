@@ -23,6 +23,10 @@
         ${lib.getExe pkgs.go} run ./internal/cmd/notices
         popd > /dev/null
 
+        pushd pkgs/wireguard > /dev/null
+        ${lib.getExe' pkgs.gomod2nix "gomod2nix"}
+        popd > /dev/null
+
         ${lib.getExe pkgs.taplo} format **/*.toml
 
         popd

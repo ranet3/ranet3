@@ -40,7 +40,7 @@ runCommand "ranet3-tree"
       exit 1
     fi
     nixfmt --check $files
-    taplo format --check atelier.toml REUSE.toml pkgs/ranet3/REUSE.toml pkgs/ranet3/examples/*.toml pkgs/ranet3/gomod2nix.toml
+    taplo format --check atelier.toml REUSE.toml pkgs/ranet3/REUSE.toml pkgs/ranet3/examples/*.toml pkgs/ranet3/gomod2nix.toml pkgs/wireguard/REUSE.toml pkgs/wireguard/gomod2nix.toml
 
     # reuse looks for the license texts in LICENSES alone. The rename goes
     # through a second name because a case-insensitive build directory reads

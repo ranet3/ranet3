@@ -100,7 +100,8 @@ git diff 2631ce99a06f27120d581611cf125d68bc6aa565 FETCH_HEAD -- tun conn rwcance
 
 Then rewrite new imports of `golang.zx2c4.com/wireguard/` to
 `ranet3.com/pkgs/wireguard/`, remove any new file that the trim above would not
-keep, tidy `go.mod`, and update the hash in this file.
+keep, tidy `go.mod`, regenerate `gomod2nix.toml` with `nix fmt`, and update the
+hash in this file and the date in the `version` of `default.nix`.
 
 ## Offering a fix
 
