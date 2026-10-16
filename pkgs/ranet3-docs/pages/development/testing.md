@@ -129,6 +129,7 @@ nix flake check -L
 nix build .#checks.x86_64-linux.go-test -L
 nix build .#checks.x86_64-linux.go-lint -L
 nix build .#checks.x86_64-linux.tree -L
+nix build .#checks.x86_64-linux.wireguard -L
 nix build .#checks.x86_64-linux.netlink -L
 ```
 
@@ -140,6 +141,7 @@ have commands of their own.
 | `go-test`       | all 3   | all 3                            | `go test -race ./...`                                                                                       |
 | `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, and `staticcheck ./...`                                   |
 | `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `nixfmt --check` on every Nix file, `taplo format --check` and `reuse lint` |
+| `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                |
 | `netlink`       | Linux   | `x86_64-linux`                   | the Linux root tests listed below, as root in a VM                                                          |
 | `integration-*` | Linux   | `x86_64-linux`                   | the VM tests below                                                                                          |
 
@@ -152,9 +154,11 @@ systems, and never builds `legacyPackages.*.profile`.
 The `netlink` check runs these root tests: the `internal/kernel` tests whose
 names start with `TestNetlink`, the `internal/egress` round trip, the `TestTUN`
 tests of `internal/netstack` and `internal/client`, the 3 `transport` sends, and
-the 4 `internal/client` tests above under `unshare -n`. It fails if any of them
-skips. It then checks that no rule, link or nftables table of theirs is left on
-the host. The `internal/kernel` tests `TestNetworkWatchInNetworkNamespace` and
+the 4 `internal/client` tests above under `unshare -n`, and every test of the
+`tun` and `conn` packages of `pkgs/wireguard`. It fails if any of them skips. It
+then checks that no rule, link, xfrm state or policy, or nftables table of
+theirs is left on the host. The `internal/kernel` tests
+`TestNetworkWatchInNetworkNamespace` and
 `TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault` need root and run in
 no check.
 
@@ -165,9 +169,10 @@ decoder written beside it.
 `nix fmt` rewrites the tree in place. It runs `deno fmt` on the Markdown, the
 example JSON and the site, then `nixfmt-tree`, then `go fmt`, `go vet`,
 `staticcheck`, `gomod2nix` and `go run ./internal/cmd/notices` in `pkgs/ranet3`,
-then `taplo format` on every TOML file. The notices command regenerates
-`internal/notices/third_party.md`. `TestEveryDirectRequirementIsNoticed` fails
-when a direct requirement in `go.mod` has no section there.
+then `gomod2nix` in `pkgs/wireguard`, then `taplo format` on every TOML file.
+The notices command regenerates `internal/notices/third_party.md`.
+`TestEveryDirectRequirementIsNoticed` fails when a direct requirement in
+`go.mod` has no section there.
 
 ## VM tests
 
