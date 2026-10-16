@@ -180,13 +180,16 @@ func (r *Responder) Serve(ctx context.Context, onSession func(*Session, Accepted
 		case <-r.cfg.Hub.Done():
 			return fmt.Errorf("ike: responder hub closed")
 		case datagram := <-unclaimed:
+			// RFC 7296 section 2.21.4: "If the message is marked as a response, the node ... MUST NOT respond."
+			if header, err := decodeHeader(datagram.Raw); err == nil && header.IsResponse() {
+				slog.Debug("ike responder dropped a response no exchange waits for", "peer", datagram.Endpoint,
+					"exchange", header.ExchangeType, "message_id", header.MessageID)
+				continue
+			}
 			running.Go(func() {
 				session, accepted, err := r.handshake(ctx, datagram)
 				if err != nil {
-					// Warn rather than debug: this is the whole responder side
-					// of "that peer cannot connect", and at the default level
-					// it said nothing at all. Anyone who can reach the port
-					// can drive it, so it is rate limited rather than free.
+					// warn rather than debug, since this is the whole responder side of a peer that cannot connect, and rate limited, since anyone who can reach the port can drive it
 					r.noteHandshakeFailure(datagram.Endpoint, err)
 					return
 				}
@@ -214,7 +217,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		return nil, Accepted{}, fmt.Errorf("ike: decode IKE_SA_INIT request: %w", err)
 	}
 	header := request.Header
-	if header.ExchangeType != IKE_SA_INIT || header.IsResponse() || !header.IsInitiator() ||
+	if header.ExchangeType != IKE_SA_INIT || !header.IsInitiator() ||
 		header.MessageID != 0 || header.SPIResponder != 0 || header.SPIInitiator == 0 ||
 		header.MajorVersion != 2 || header.Length != uint32(len(datagram.Raw)) {
 		return nil, Accepted{}, fmt.Errorf("ike: unclaimed datagram is not an IKE_SA_INIT request")
