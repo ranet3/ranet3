@@ -38,6 +38,7 @@ pkgs/ranet3/            the Go module, ranet3.com/pkgs/ranet3
 pkgs/ranet3-docs/       these pages
 pkgs/ranet3-site/       the ranet3.com page
 pkgs/iperf3-benchmark/  the iperf3 build the benchmarks use
+pkgs/wireguard/         wireguard-go's tun, conn and rwcancel, ranet3.com/pkgs/wireguard
 ```
 
 ## The Go module
@@ -84,6 +85,11 @@ for the Nix build, `version.txt` with the release version, a `license.txt` and a
 the `ranet3` dev shell. `default.nix` lists every top-level directory the build
 takes. A new top-level package has to be added to that list.
 
+`pkgs/wireguard` is a second Go module, `ranet3.com/pkgs/wireguard`, with a
+`go.mod`, `go.sum` and `gomod2nix.toml` of its own. It keeps upstream's style
+and license, and its `readme.md` says which upstream and tailscale commits it is
+built from and how it follows upstream.
+
 ## Docs and site
 
 `pkgs/ranet3-docs` holds these pages and what checks and builds them:
@@ -118,8 +124,10 @@ also a dev shell of the same name.
 | `legacyPackages.<system>.ranet3-docs`                               | these pages, checked                                                                                                                                                                        |
 | `legacyPackages.<system>.ranet3-site`                               | the ranet3.com page                                                                                                                                                                         |
 | `legacyPackages.<system>.iperf3-benchmark`                          | the iperf3 build the benchmarks use                                                                                                                                                         |
+| `legacyPackages.<system>.wireguard`                                 | the Go module in `pkgs/wireguard`, built without its tests                                                                                                                                  |
 | `legacyPackages.<system>.profile.integration`, `.profile.namespace` | the profiling runs [testing](testing.md) describes, which build only on Linux                                                                                                               |
 | `checks.<system>.go-test`, `.go-lint`, `.tree`                      | the Go tests, the linters, and the format and licenses of the tree, on every system                                                                                                         |
+| `checks.<system>.wireguard`                                         | the vet and the tests of `pkgs/wireguard`, on every system                                                                                                                                  |
 | `checks.<system>.netlink`, `.integration-*`                         | the VM tests, on Linux                                                                                                                                                                      |
 | `devShells.<system>.default`                                        | deno, git, nixfmt-tree and taplo                                                                                                                                                            |
 | `devShells.<system>.ranet3`                                         | the default shell, the build inputs of `ranet3`, go-tools, gomod2nix, gopls, pprof and Python, and on Linux BIRD, strongSwan, iproute2, iputils, ethtool, util-linux and `iperf3-benchmark` |
@@ -132,5 +140,7 @@ also a dev shell of the same name.
 ## Licenses
 
 Every file names its license in SPDX lines at its top, or in a `REUSE.toml` in
-its own directory or one above it when it cannot carry a comment. `license.txt`
-at the root says which license covers what.
+its own directory or one above it. A `REUSE.toml` names a file that cannot carry
+a comment, and in `pkgs/wireguard` also a copied file that came without a
+header, which stays as it was written. `license.txt` at the root says which
+license covers what.
