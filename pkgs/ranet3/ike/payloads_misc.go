@@ -124,18 +124,25 @@ func DecodeDelete(body []byte) (Delete, error) {
 
 // Identification payload, RFC 7296 section 3.5
 
-func EncodeID(idType uint8, data []byte) []byte {
+// EncodeID leaves RESERVED zero, which RFC 7296 section 3.5 says "MUST be sent as zero"
+func EncodeID(idType IDType, data []byte) []byte {
 	b := make([]byte, 4+len(data))
-	b[0] = idType
+	b[0] = byte(idType)
 	copy(b[4:], data)
 	return b
 }
 
-func DecodeID(body []byte) (idType uint8, data []byte, err error) {
+// DecodeID never reads RESERVED, which RFC 7296 section 3.5 says "MUST be ignored on receipt"
+// the section gives ID_IPV4_ADDR as "A single four (4) octet IPv4 address" and ID_IPV6_ADDR as "A single sixteen (16) octet IPv6 address", and any other length is refused
+func DecodeID(body []byte) (IDType, []byte, error) {
 	if len(body) < 4 {
 		return 0, nil, fmt.Errorf("ike: short ID payload")
 	}
-	return body[0], body[4:], nil
+	idType, data := IDType(body[0]), body[4:]
+	if (idType == ID_IPV4_ADDR && len(data) != 4) || (idType == ID_IPV6_ADDR && len(data) != 16) {
+		return 0, nil, fmt.Errorf("ike: ID type %d carries a %d octet address", idType, len(data))
+	}
+	return idType, data, nil
 }
 
 // Traffic Selector payload, RFC 7296 section 3.13
