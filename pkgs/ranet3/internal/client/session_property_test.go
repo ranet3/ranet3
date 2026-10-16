@@ -177,7 +177,7 @@ func TestRevokeKeepsExactlyTheSessionsTheTrustHoldsUnderTheirKey(t *testing.T) {
 				ht.Fatalf("%s was refused under a trust holding its key, so this proves nothing", s.path)
 			}
 		}
-		set.trust = indexOf(ht, after)
+		set.trust = indexTrust{indexOf(ht, after)}
 		set.revoke()
 		kept, refused := make(map[string]*ike.Session), make(map[string]drawnRefusal)
 		for _, s := range drawn {
@@ -197,7 +197,7 @@ func TestAdoptAdmitsExactlyTheHandshakesTheTrustHoldsUnderTheirKey(t *testing.T)
 	pbt.Check(t, func(ht *hegel.T) {
 		before, after := drawReload(ht)
 		set, closed := revokingSet()
-		set.trust = indexOf(ht, after)
+		set.trust = indexTrust{indexOf(ht, after)}
 		kept, refused := make(map[string]*ike.Session), make(map[string]drawnRefusal)
 		for _, s := range drawSessions(ht, before) {
 			_, admitted := set.adopt(s.path, s.session, s.local, s.peer, trustKeys[s.key], s.dialed, nil, nil)

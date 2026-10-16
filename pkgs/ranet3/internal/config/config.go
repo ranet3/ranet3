@@ -67,6 +67,25 @@ func (c *Config) LocalEndpoints() []identity.Identity {
 	return out
 }
 
+func (c *Config) LocalFamilies() map[identity.Identity]ike.Family {
+	out := make(map[identity.Identity]ike.Family, len(c.Link.Endpoints))
+	for _, endpoint := range c.Link.Endpoints {
+		out[c.Node.At(endpoint.Serial)] = Family(endpoint.Family)
+	}
+	return out
+}
+
+// Family reads a family as link.endpoints and the trust document's address_family spell it
+func Family(spelling string) ike.Family {
+	switch spelling {
+	case "ip4":
+		return ike.IPv4
+	case "ip6":
+		return ike.IPv6
+	}
+	return 0
+}
+
 // Auth is the key this node signs with and the document naming who it talks to.
 type Auth struct {
 	// Key is this node's own private key, a PKCS8 PEM Ed25519 file.

@@ -1310,6 +1310,7 @@ func TestAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.
 // checks the initiator makes on the IKE_AUTH answer are all that keep it from
 // installing a Child SA with that attacker.
 // RFC 7296 section 2.21.2: "If the error occurs on the initiator, the notification MAY be returned in a separate INFORMATIONAL exchange, usually with no other payloads."
+// RFC 7296 section 2.15 signs "RestOfRespIDPayload = IDType | RESERVED | RespIDData", and an IDr naming the endpoint dialed in other octets than the ones AUTH signed is refused
 func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 	full := fullRangeSelectors()
 	narrowed := EncodeTS([]TrafficSelector{{Type: TS_IPV4_ADDR_RANGE, EndPort: 0xffff,
@@ -1324,9 +1325,13 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 	refusal := func(notify NotifyType, data ...byte) RawPayload {
 		return RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: notify, Data: data})}
 	}
+	mapped := append(make([]byte, 10), 0xff, 0xff, 192, 0, 2, 10)
+	reserved := idBody("ranet-test/responder:2")
+	reserved[1] = 1
 	for name, test := range map[string]struct {
-		idr          string       // the common name the answer's IDr carries
-		dn           []byte       // the answer's IDr carries this in place of a distinguished name
+		idr          []byte       // the answer's IDr payload body, the responder's DN where nil
+		signed       []byte       // the IDr payload body the answer's AUTH signs, idr where nil
+		aliases      Aliases      // the initiator's auth.aliases
 		forged       bool         // another key than the responder's signs the answer's AUTH
 		alone        []RawPayload // the answer carries these and no IDr or AUTH
 		critical     PayloadType  // the answer ends in a payload of this type, marked critical
@@ -1336,10 +1341,42 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 		want         string
 		follow       RawPayload // the INFORMATIONAL request at Message ID 2 carries this, and none comes where its type is zero
 	}{
-		"an IDr naming another node": {idr: "elsewhere", sa: usable, tsi: full, tsr: full,
-			want: "does not match configured IDr", follow: refusal(N_AUTHENTICATION_FAILED)},
-		"IDr holding no distinguished name": {dn: []byte{0x04, 0x00}, sa: usable, tsi: full, tsr: full,
+		"an IDr naming another node": {idr: idBody("ranet-test/elsewhere:2"), sa: usable, tsi: full, tsr: full,
+			want: "names ranet-test/elsewhere:2, and this node dialed ranet-test/responder:2", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"IDr holding no distinguished name": {idr: EncodeID(ID_DER_ASN1_DN, []byte{0x04, 0x00}), sa: usable, tsi: full, tsr: full,
 			want: "not a single RDNSequence", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"an FQDN IDr no alias names": {idr: EncodeID(ID_FQDN, []byte("responder.ranet-test.example")), sa: usable, tsi: full, tsr: full,
+			want: `fqdn ID "responder.ranet-test.example" names no endpoint auth.aliases.remote lists`, follow: refusal(N_AUTHENTICATION_FAILED)},
+		"an IDr whose alias names another endpoint": {
+			aliases: Aliases{Remote: RemoteAliases{FQDN: map[string]identity.Identity{"responder.ranet-test.example": identity.MustParse("ranet-test/responder:3")}}},
+			idr:     EncodeID(ID_FQDN, []byte("responder.ranet-test.example")), sa: usable, tsi: full, tsr: full,
+			want: "names ranet-test/responder:3, and this node dialed ranet-test/responder:2", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"a KEY_ID IDr spelling another endpoint": {idr: EncodeID(ID_KEY_ID, []byte("ranet-test/responder:3")), sa: usable, tsi: full, tsr: full,
+			want: "names ranet-test/responder:3, and this node dialed ranet-test/responder:2", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"an email IDr whose local part differs in case from the alias": {
+			aliases: Aliases{Remote: RemoteAliases{Email: map[string]identity.Identity{"Responder@ranet-test.example": identity.MustParse("ranet-test/responder:2")}}},
+			idr:     EncodeID(ID_RFC822_ADDR, []byte("responder@ranet-test.example")), sa: usable, tsi: full, tsr: full,
+			want: "names no endpoint auth.aliases.remote lists", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"an IPv6 IDr mapping the IPv4 alias": {
+			aliases: Aliases{Remote: RemoteAliases{IP: map[string]identity.Identity{"192.0.2.10": identity.MustParse("ranet-test/responder:2")}}},
+			idr:     EncodeID(ID_IPV6_ADDR, mapped), sa: usable, tsi: full, tsr: full,
+			want: "names no endpoint auth.aliases.remote lists", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"an IPv4 IDr of five octets": {idr: EncodeID(ID_IPV4_ADDR, []byte{192, 0, 2, 10, 0}), sa: usable, tsi: full, tsr: full,
+			want: "carries a 5 octet address", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"an IPv6 IDr of four octets": {idr: EncodeID(ID_IPV6_ADDR, []byte{192, 0, 2, 10}), sa: usable, tsi: full, tsr: full,
+			want: "carries a 4 octet address", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"an FQDN IDr holding a terminator": {
+			aliases: Aliases{Remote: RemoteAliases{FQDN: map[string]identity.Identity{"responder.ranet-test.example": identity.MustParse("ranet-test/responder:2")}}},
+			idr:     EncodeID(ID_FQDN, []byte("responder.ranet-test.example\r")), sa: usable, tsi: full, tsr: full,
+			want: "holds the terminator", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"an IDr of a type no alias holds": {idr: EncodeID(10, []byte{0x30, 0x00}), sa: usable, tsi: full, tsr: full,
+			want: `10 ID "0\x00" names no endpoint, since it is of a type no alias holds`, follow: refusal(N_AUTHENTICATION_FAILED)},
+		"an FQDN IDr in another case than the one AUTH signed": {
+			aliases: Aliases{Remote: RemoteAliases{FQDN: map[string]identity.Identity{"responder.ranet-test.example": identity.MustParse("ranet-test/responder:2")}}},
+			idr:     EncodeID(ID_FQDN, []byte("RESPONDER.ranet-test.example")), signed: EncodeID(ID_FQDN, []byte("responder.ranet-test.example")),
+			sa: usable, tsi: full, tsr: full, want: "AUTH signature verification failed", follow: refusal(N_AUTHENTICATION_FAILED)},
+		"an IDr whose RESERVED octets changed after AUTH signed it": {idr: reserved, signed: idBody("ranet-test/responder:2"), sa: usable, tsi: full, tsr: full,
+			want: "AUTH signature verification failed", follow: refusal(N_AUTHENTICATION_FAILED)},
 		"AUTH another key signed": {forged: true, sa: usable, tsi: full, tsr: full,
 			want: "AUTH signature verification failed", follow: refusal(N_AUTHENTICATION_FAILED)},
 		"no IDr or AUTH beside a status notify": {alone: []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INITIAL_CONTACT})}},
@@ -1392,6 +1429,7 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 			cfg := PeerConfig{
 				Local: identity.MustParse("ranet-test/initiator:1"), LocalPrivateKey: localPrivate,
 				Remote: identity.MustParse("ranet-test/responder:2"), RemotePublicKey: remotePublic,
+				Aliases: test.aliases,
 			}
 			const spiI, spiR = 0x0102030405060708, 0x1112131415161718
 			suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
@@ -1473,19 +1511,19 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					commonName := "responder"
-					if test.idr != "" {
-						commonName = test.idr
-					}
 					signer := remotePrivate
 					if test.forged {
 						signer = localPrivate
 					}
-					idr := idBody("ranet-test/" + commonName + ":2")
-					if test.dn != nil {
-						idr = EncodeID(ID_DER_ASN1_DN, test.dn)
+					idr := idBody("ranet-test/responder:2")
+					if test.idr != nil {
+						idr = test.idr
 					}
-					auth := BuildAuth(signer, concat(realMessage2, ni, prf(suite.PRFID, s.current.skpr, idr)))
+					signed := idr
+					if test.signed != nil {
+						signed = test.signed
+					}
+					auth := BuildAuth(signer, concat(realMessage2, ni, prf(suite.PRFID, s.current.skpr, signed)))
 					payloads := []RawPayload{{Type: PayloadIDr, Body: idr}, {Type: PayloadAUTH, Body: auth}}
 					if test.alone != nil {
 						payloads = test.alone

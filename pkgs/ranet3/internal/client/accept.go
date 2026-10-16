@@ -14,6 +14,8 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
+	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/registry"
 )
 
 // acceptPeers answers peers that dial us until ctx ends or the hub's socket is gone
@@ -23,7 +25,7 @@ func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 	crypto := cfg.Crypto()
 	responder, err := ike.NewResponder(ike.ResponderConfig{
 		Hub:                c.hub,
-		Local:              cfg.LocalEndpoints(),
+		Local:              cfg.LocalFamilies(),
 		LocalPrivateKey:    c.privateKey,
 		Trust:              liveTrust{c},
 		ChildRekeyInterval: crypto.ChildInterval(),
@@ -69,4 +71,17 @@ func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 // any node in it may dial us, as in ranet's own reconcile, and the config's peers list says only who we dial
 type liveTrust struct{ c *Client }
 
-func (t liveTrust) Key(id identity.Identity) (ed25519.PublicKey, error) { return t.c.index().Key(id) }
+func (t liveTrust) Key(id identity.Identity) (ed25519.PublicKey, ike.Family, error) {
+	return indexTrust{t.c.index()}.Key(id)
+}
+
+// indexTrust is one version of the trust document
+type indexTrust struct{ x *registry.Index }
+
+func (t indexTrust) Key(id identity.Identity) (ed25519.PublicKey, ike.Family, error) {
+	key, err := t.x.Key(id)
+	if err != nil || id == id.Node() {
+		return key, 0, err
+	}
+	return key, config.Family(t.x.Targets(id)[0].AddressFamily), nil
+}
