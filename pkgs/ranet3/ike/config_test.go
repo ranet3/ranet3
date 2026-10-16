@@ -4,6 +4,7 @@
 package ike
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,28 @@ func TestConfiguredCryptoReachesEveryTimer(t *testing.T) {
 	}}
 	if err := disabled.Validate(); err != nil {
 		t.Errorf("a margin beside two disabled rekeys was refused: %v", err)
+	}
+}
+
+// a rekey due at the end of its SA's lifetime can never replace the SA, which closes there, so a zero margin is refused beside either lifetime, by name, and taken beside none
+func TestCryptoRefusesAZeroMarginBesideALifetime(t *testing.T) {
+	interval := func(d time.Duration) *schema.Duration {
+		value := schema.Duration(d)
+		return &value
+	}
+	for name, rekey := range map[string]Rekey{
+		"a child lifetime":      {Child: interval(5 * time.Second), IKE: interval(0), Margin: interval(0), Jitter: interval(0)},
+		"an ike lifetime":       {Child: interval(0), IKE: interval(15 * time.Second), Margin: interval(0), Jitter: interval(0)},
+		"the default lifetimes": {Margin: interval(0)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := (Crypto{Rekey: rekey}).Validate(); err == nil || !strings.Contains(err.Error(), "rekey margin must be positive") {
+				t.Errorf("a zero margin beside %s was answered %v, want it refused by name", name, err)
+			}
+		})
+	}
+	if err := (Crypto{Rekey: Rekey{Child: interval(0), IKE: interval(0), Margin: interval(0)}}).Validate(); err != nil {
+		t.Errorf("a zero margin beside two disabled rekeys was refused: %v", err)
 	}
 }
 

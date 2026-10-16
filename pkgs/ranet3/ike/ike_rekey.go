@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"time"
 )
 
 // RekeyIKE replaces the IKE SA while retaining the current Child SAs. Run
@@ -104,7 +105,7 @@ func (s *Session) RekeyIKE() (err error) {
 				return fmt.Errorf("ike: invalid IKE SA rekey notify: %w", err)
 			}
 			if n.Type < 16384 {
-				return fmt.Errorf("ike: IKE SA rekey rejected: notify type %d", n.Type)
+				return &rejectedError{exchange: "IKE SA rekey", notify: n}
 			}
 		case PayloadSA:
 			sa = &response[i]
@@ -160,7 +161,7 @@ func (s *Session) RekeyIKE() (err error) {
 	if err != nil {
 		return fmt.Errorf("ike: derive IKE SA rekey keys: %w", err)
 	}
-	newContext := &ikeContext{suite: suite, skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr, spiI: spiI, spiR: spiR}
+	newContext := &ikeContext{suite: suite, skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr, spiI: spiI, spiR: spiR, established: time.Now()}
 	s.stateMu.RLock()
 	collision := s.collision
 	localRekey := s.localRekey
@@ -177,6 +178,7 @@ func (s *Session) RekeyIKE() (err error) {
 			s.stateMu.Lock()
 			s.retainOldLocked(old)
 			s.current = collision
+			newContext.ownDelete = true
 			s.retainCollisionLocked(newContext)
 			s.stateMu.Unlock()
 			// The redundant SA goes whether or not the peer answers. Leaving
@@ -223,6 +225,7 @@ func (s *Session) RekeyIKE() (err error) {
 		return fmt.Errorf("ike: register rekeyed IKE SA: %w", err)
 	}
 	s.stateMu.Lock()
+	old.ownDelete = true
 	s.retainOldLocked(old)
 	s.current = newContext
 	s.stateMu.Unlock()
@@ -383,7 +386,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 		slog.Warn("ike cannot answer a peer IKE rekey", "err", err)
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 	}
-	newContext := &ikeContext{suite: suite, skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr, spiI: spiI, spiR: spiR, responder: true}
+	newContext := &ikeContext{suite: suite, skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr, spiI: spiI, spiR: spiR, responder: true, established: time.Now()}
 	s.stateMu.Lock()
 	local := s.localRekey
 	if local != nil && local.old == ctx {

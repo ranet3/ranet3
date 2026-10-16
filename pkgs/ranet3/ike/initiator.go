@@ -68,15 +68,18 @@ type ChildSA = esp.ChildSA
 // ikeContext contains the state bound to one IKE SA's SPI pair. During an IKE
 // SA rekey, Session keeps the replaced context until its transition completes.
 type ikeContext struct {
-	suite     SASuite
-	skD       []byte
-	skei      []byte
-	sker      []byte
-	skpi      []byte
-	skpr      []byte
-	spiI      uint64
-	spiR      uint64
-	responder bool // local endpoint is the responder for this IKE SA
+	suite       SASuite
+	skD         []byte
+	skei        []byte
+	sker        []byte
+	skpi        []byte
+	skpr        []byte
+	spiI        uint64
+	spiR        uint64
+	responder   bool // local endpoint is the responder for this IKE SA
+	established time.Time
+	// ownDelete marks a replaced IKE SA whose Delete this end sends, and stateMu guards it
+	ownDelete bool
 	// answeredAuth marks the SA whose IKE_AUTH this end answered, where the peer's request at Message ID 2 is the INFORMATIONAL exchange immediately following it
 	answeredAuth bool
 	sendIV       atomic.Uint64
@@ -117,14 +120,18 @@ type Session struct {
 	requests  chan *localRequest
 	// probes holds at most the one probe Run has not acted on
 	probes chan struct{}
-	// childRekeyEnded holds at most the one end of a Child SA rekey Run has not looked at, since Run settles every one on the Child SA schedule
+	// childRekeyEnded holds at most the one end of a Child SA rekey Run has not looked at, since Run settles every one on the Child SA schedule and one running at the Child SA's lifetime decides whether the IKE SA closes
 	childRekeyEnded chan struct{}
 	// sendFailures counts failed IKE sends since the last that went out, and only Run's goroutine touches it
 	sendFailures int
 
-	childMu  sync.RWMutex
-	Child    ChildSA
-	retiring ChildSA
+	childMu          sync.RWMutex
+	Child            ChildSA
+	childEstablished time.Time
+	withdrawn        []uint32
+	retiring         ChildSA
+	// retiringEnds is where the replaced SA's lifetime ends, which its drain does not pass
+	retiringEnds time.Time
 	// retiringBy bounds how long the replaced SA waits for the peer's Delete.
 	retiringBy time.Time
 	// Run expires replaced inbound SAs after an overlap period, allowing
@@ -170,6 +177,8 @@ type Session struct {
 	rekeyRetryInitial  time.Duration
 	rekeyRetryMax      time.Duration
 	rekeyJitterSource  func(time.Duration) (time.Duration, error)
+	// temporary is run's alone
+	temporary temporaryStreak
 	// dpdEvery overrides defaultDPDInterval, and zero means the default.
 	dpdEvery time.Duration
 	// retransmitAfter overrides requestTimeout for Run's requests, and zero means the default
@@ -217,22 +226,32 @@ func (s *Session) nextPeerMessageID(ctx *ikeContext) uint32 {
 	return ctx.nextPeerMID
 }
 
-// retainOldLocked keeps the SA a rekey replaced reachable for the peer's
-// Delete. It must be called with stateMu held. Whatever it displaces is
-// released rather than dropped: a context held nowhere is one
-// expireRetainedContexts can never reach, and its SPI stays in the hub's map
-// for the life of the session.
+// retainOldLocked keeps the SA a rekey replaced reachable for the Delete that
+// ends it, the peer's or this end's. It must be called with stateMu held.
+// Whatever it displaces is released rather than dropped: a context held
+// nowhere is one expireRetainedContexts can never reach, and its SPI stays in
+// the hub's map for the life of the session.
 func (s *Session) retainOldLocked(ctx *ikeContext) {
 	displaced := s.old
-	s.old, s.oldBy = ctx, time.Now().Add(retainedContextDeadline)
+	s.old, s.oldBy = ctx, s.retainedUntil(ctx, time.Now())
 	s.releaseDisplacedLocked(displaced)
+}
+
+// RFC 7296 section 2.8: "After the new equivalent IKE SA is created, the initiator deletes the old IKE SA, and the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
+// a retained IKE SA waits for the peer's Delete no longer than its lifetime, and one this end deletes is kept for that Delete
+func (s *Session) retainedUntil(ctx *ikeContext, now time.Time) time.Time {
+	by := now.Add(retainedContextDeadline)
+	if ends := ctx.established.Add(s.ikeRekeyInterval); s.ikeRekeyInterval > 0 && !ctx.ownDelete && ends.Before(by) {
+		return ends
+	}
+	return by
 }
 
 // retainCollisionLocked does the same for the candidate a simultaneous rekey
 // decided against. It must be called with stateMu held.
 func (s *Session) retainCollisionLocked(ctx *ikeContext) {
 	displaced := s.collision
-	s.collision, s.collisionBy = ctx, time.Now().Add(retainedContextDeadline)
+	s.collision, s.collisionBy = ctx, s.retainedUntil(ctx, time.Now())
 	s.releaseDisplacedLocked(displaced)
 }
 
@@ -271,9 +290,10 @@ func (s *Session) routedLocked(spi uint64) bool {
 	return false
 }
 
-// expireRetainedContexts drops a retained IKE SA whose Delete never arrived.
-// Its SPI leaves the mux with it, so a later datagram naming it is answered
-// the way any other unknown SA is.
+// expireRetainedContexts drops a retained IKE SA whose Delete never arrived,
+// and one the peer owes a Delete at its lifetime. Its SPI leaves the mux with
+// it, so a later datagram naming it is answered the way any other unknown SA
+// is.
 func (s *Session) expireRetainedContexts(now time.Time) {
 	s.stateMu.Lock()
 	var dropped []*ikeContext
@@ -287,7 +307,7 @@ func (s *Session) expireRetainedContexts(now time.Time) {
 		switch {
 		case held.ctx == nil:
 		case held.by.IsZero():
-			*held.by = now.Add(retainedContextDeadline)
+			*held.by = s.retainedUntil(held.ctx, now)
 		case !now.Before(*held.by):
 			dropped, *held.out = append(dropped, held.ctx), nil
 		}
@@ -297,6 +317,10 @@ func (s *Session) expireRetainedContexts(now time.Time) {
 	}
 	s.stateMu.Unlock()
 	for _, ctx := range dropped {
+		if s.ikeExpired(ctx) {
+			slog.Warn("ike dropping a replaced IKE SA at its lifetime", "spi", ctx.spiI, "lifetime", s.ikeRekeyInterval)
+			continue
+		}
 		slog.Warn("ike dropping an IKE SA the peer never deleted",
 			"spi", ctx.spiI, "after", retainedContextDeadline)
 	}
@@ -364,8 +388,9 @@ func (s *Session) contextRetired(ctx *ikeContext) bool {
 	return ctx != s.current && ctx != s.old && ctx != s.collision
 }
 
-// SetRekeyIntervals configures optional periodic Child and IKE SA rekeys.
-// Zero disables an interval. It must be called before Run.
+// SetRekeyIntervals sets the Child and IKE SA lifetimes, which each SA's
+// scheduled rekey runs ahead of. Zero disables both for that SA. It must be
+// called before Run.
 func (s *Session) SetRekeyIntervals(child, ike time.Duration) error {
 	if child < 0 || ike < 0 {
 		return fmt.Errorf("ike: rekey intervals must be nonnegative when set")
@@ -727,7 +752,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		mux:              mux,
 		current: &ikeContext{suite: suite,
 			skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr,
-			spiI: spiI, spiR: spiR, nextLocalMID: 2},
+			spiI: spiI, spiR: spiR, nextLocalMID: 2, established: time.Now()},
 		requests:        make(chan *localRequest, 1),
 		probes:          make(chan struct{}, 1),
 		childRekeyEnded: make(chan struct{}, 1),

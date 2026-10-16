@@ -397,6 +397,49 @@ func TestReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
 	}
 }
 
+// RFC 7296 section 2.3: "This Notify message MUST NOT be sent in a response" and "the invalid request MUST NOT be acknowledged."
+// a request at a Message ID ahead of the window is dropped unanswered and moves the window nowhere, so the request at its next Message ID is the one answered
+func TestRequestAheadOfTheWindowIsNotAcknowledged(t *testing.T) {
+	s, peer, _ := probedSession(t)
+	held := s.current
+	if err := s.mux.RegisterIKE(held.spiI); err != nil {
+		t.Fatal(err)
+	}
+	runSession(t, s)
+	request := func(id uint32) {
+		t.Helper()
+		raw, err := EncryptMessage(held.suite, held.sker, Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, MessageID: id}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := peer.WriteToUDP(withNonESPMarker(raw), muxLoopback(s.mux)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request(1)
+	buf := make([]byte, 2048)
+	if err := peer.SetReadDeadline(time.Now().Add(quietPeriod)); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, err := peer.ReadFromUDP(buf); err == nil {
+		t.Fatalf("a request ahead of the window drew %x, want no answer", buf[NonESPMarkerLen:n])
+	}
+	if next := s.nextPeerMessageID(held); next != 0 {
+		t.Errorf("a request ahead of the window moved it to Message ID %d", next)
+	}
+	request(0)
+	if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err := peer.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("the request at the window's next Message ID went unanswered: %v", err)
+	}
+	if header, err := decodeHeader(buf[NonESPMarkerLen:n]); err != nil || !header.IsResponse() || header.MessageID != 0 {
+		t.Errorf("the request at Message ID 0 drew %+v (%v), want its answer", header, err)
+	}
+}
+
 // a dialed session follows its peer to where a fresh request that passed its integrity check came from, RFC 7296 section 2.23,
 // and leaves by the kernel's choice of source rather than the address the request arrived on
 // linux holds all of 127.0.0.0/8 and chooses 127.0.0.1 to reach any of it, which tells the two apart
@@ -1458,6 +1501,61 @@ func TestProbesLeaveAnUnansweredExchangeToItsSchedule(t *testing.T) {
 		}
 	case <-time.After(answerBudget):
 		t.Fatal("probes kept an exchange the peer never answers alive")
+	}
+}
+
+// RFC 7296 section 2.3: "An IKE endpoint MUST wait for a response to each of its messages before sending a subsequent message unless it has received a SET_WINDOW_SIZE Notify message from its peer informing it that the peer is prepared to maintain state for multiple outstanding messages in order to allow greater throughput."
+// a request queued while a liveness check is out goes out only once the check is answered, at the next Message ID
+func TestLocalRequestWaitsForTheOutstandingExchange(t *testing.T) {
+	s, peer, _ := probedSession(t)
+	s.requests = make(chan *localRequest, 1)
+	held := s.current
+	if err := s.mux.RegisterIKE(held.spiI); err != nil {
+		t.Fatal(err)
+	}
+	runSession(t, s)
+	answer := func(raw []byte) {
+		t.Helper()
+		header, err := decodeHeader(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := EncryptMessage(held.suite, held.sker, Header{SPIInitiator: held.spiI, SPIResponder: held.spiR,
+			ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: header.MessageID}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := peer.WriteToUDP(withNonESPMarker(response), muxLoopback(s.mux)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Probe()
+	check := readRequest(t, s, peer)
+	requested := make(chan error, 1)
+	go func() {
+		_, err := s.request(INFORMATIONAL, nil)
+		requested <- err
+	}()
+	if err := peer.SetReadDeadline(time.Now().Add(quietPeriod)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2048)
+	if n, _, err := peer.ReadFromUDP(buf); err == nil {
+		t.Fatalf("the session sent %x while its liveness check was out, want nothing", buf[NonESPMarkerLen:n])
+	}
+	answer(check)
+	next := readRequest(t, s, peer)
+	if header, err := decodeHeader(next); err != nil || header.MessageID != 1 {
+		t.Fatalf("the queued request went out as %+v (%v), want Message ID 1", header, err)
+	}
+	answer(next)
+	select {
+	case err := <-requested:
+		if err != nil {
+			t.Errorf("the queued request ended with %v, want its answer", err)
+		}
+	case <-time.After(answerBudget):
+		t.Fatal("the queued request never ended")
 	}
 }
 

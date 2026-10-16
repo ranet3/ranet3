@@ -40,22 +40,26 @@ type tunnel struct {
 	// the first ask goes straight through. See requestRekey.
 	askedAt atomic.Int64
 	started time.Time
+	// replacing marks the outbound SA gone as asked for, and install clears it
+	replacing atomic.Bool
 	// askJitter draws the first ask's delay past the sequence mark below its bound, and nil draws it at random
 	askJitter func(bound time.Duration) time.Duration
 }
 
 // rekeyAskInterval is the floor between two attempts to replace the Child SA.
-// The one-at-a-time guard alone does not bound the rate: a rekey that fails
-// without an exchange (no Child SA to rekey, one already running, or one asked
-// for while a failed one waits out its retry delay) comes back at once, and
-// both callers ask per batch, which on a routed tun is per packet. The ike
-// session holds every exchange after a failed one to that delay, so the floor
-// bounds how often a batch asks and not when a failed rekey is retried.
+// The one-at-a-time guard alone does not bound the rate: a rekey asked for
+// while one already runs, or while a failed one waits out its retry delay,
+// comes back at once without an exchange, and an outbound SA past
+// ProactiveRekeySequence asks per batch, which on a routed tun is per packet.
+// The ike session holds every exchange after a failed one to that delay, so
+// the floor bounds how often a batch asks and not when a failed rekey is
+// retried.
 const rekeyAskInterval = 250 * time.Millisecond
 
 // errNoChildSA means the peer deleted the Child SA and kept the IKE SA, which
-// RFC 7296 section 1.4.1 allows. Sending resumes once a replacement is
-// negotiated, so it is not a reason to close anything.
+// RFC 7296 section 1.4.1 allows, or the Child SA reached its lifetime. Sending
+// resumes once a replacement is negotiated, and the session closes the IKE SA
+// when none can be, so it is not a reason to close anything here.
 var errNoChildSA = errors.New("peer has no active Child SA")
 
 // fatalReserveError reports whether a refusal from reserve is a reason to
@@ -81,23 +85,23 @@ func dialerWasDropped(dial, node context.Context) bool {
 	return dial.Err() != nil && node.Err() == nil
 }
 
-// requestRekey asks for a replacement Child SA, at most one attempt at a time.
-// Every batch that finds no outbound SA calls this, which on a routed tun is
-// once per packet.
-func (t *tunnel) requestRekey() {
+// requestRekey asks for a replacement Child SA, at most one attempt at a time,
+// and reports whether it started one.
+func (t *tunnel) requestRekey() bool {
 	if t.rekey == nil || !t.rekeying.CompareAndSwap(false, true) {
-		return
+		return false
 	}
 	now := int64(time.Since(t.started))
 	if previous := t.askedAt.Load(); now-previous < int64(rekeyAskInterval) ||
 		!t.askedAt.CompareAndSwap(previous, now) {
 		t.rekeying.Store(false)
-		return
+		return false
 	}
 	go func() {
 		defer t.rekeying.Store(false)
 		t.rekey()
 	}()
+	return true
 }
 
 // RFC 7296 section 2.8.1: "To reduce the probability of this happening, the timing of rekeying requests SHOULD be jittered (delayed by a random amount of time after the need for rekeying is noticed)."
@@ -145,6 +149,7 @@ func (t *tunnel) install(child esp.ChildSA) error {
 	}
 	inbound[child.LocalSPI] = in
 	t.sas.Store(&tunnelSAs{outbound: out, outboundSPI: child.LocalSPI, inbound: inbound})
+	t.replacing.Store(false)
 	return nil
 }
 
@@ -168,7 +173,10 @@ func (t *tunnel) retire(spi uint32) error {
 func (t *tunnel) reserve(count int) (netstack.BatchSealer, error) {
 	current := t.sas.Load()
 	if current == nil || current.outbound == nil {
-		t.requestRekey()
+		// an SA past its lifetime is replaced only by a rekey already running
+		if t.replacing.CompareAndSwap(false, true) && !t.requestRekey() {
+			t.replacing.Store(false)
+		}
 		return nil, errNoChildSA
 	}
 	r, err := current.outbound.ReserveSequenceRange(count)

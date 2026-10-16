@@ -261,6 +261,43 @@ func TestReplacementChildSARequestsDoNotPileUp(t *testing.T) {
 	}
 }
 
+// withdrawnWatch is how long a test sends batches into a tunnel whose outbound SA was withdrawn, long enough for asks a rekeyAskInterval apart to repeat
+// withdrawnBatches is how often it sends one
+const withdrawnWatch, withdrawnBatches = 4 * rekeyAskInterval, 10 * time.Millisecond
+
+// a Child SA whose keys are withdrawn, at its lifetime or by the peer's Delete, draws one ask for its replacement however many batches find it gone, and a replacement installed lets the next withdrawal ask again
+// the second SA goes right after the first one's ask, so the batches that find it gone inside rekeyAskInterval of that ask are held back and a later one makes its ask
+func TestWithdrawnChildSAAsksOnceForItsReplacement(t *testing.T) {
+	tunnel := &tunnel{started: time.Now()}
+	tunnel.askedAt.Store(-int64(rekeyAskInterval))
+	var asks atomic.Int32
+	tunnel.rekey = func() { asks.Add(1) }
+	withdraw := func(child esp.ChildSA) {
+		t.Helper()
+		if err := tunnel.install(child); err != nil {
+			t.Fatal(err)
+		}
+		if err := tunnel.retire(child.LocalSPI); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batch := func() {
+		t.Helper()
+		if _, err := tunnel.reserve(1); !errors.Is(err, errNoChildSA) {
+			t.Fatalf("reserve after the withdrawal = %v, want errNoChildSA", err)
+		}
+	}
+	withdraw(tunnelChild(1))
+	batch()
+	withdraw(tunnelChild(2))
+	for deadline := time.Now().Add(withdrawnWatch); time.Now().Before(deadline); time.Sleep(withdrawnBatches) {
+		batch()
+	}
+	if got := asks.Load(); got != 2 {
+		t.Fatalf("two withdrawals drew %d asks for a replacement, want one each", got)
+	}
+}
+
 // A spent sequence space ends the SA, not the session. RFC 4303 section 3.3.3
 // forbids reusing a sequence number, so refusing to send is right. RFC 7296
 // section 1.3.1 says what to do about it ("A failed attempt to create a

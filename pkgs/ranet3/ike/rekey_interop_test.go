@@ -221,11 +221,18 @@ func TestPeerRekeyDefersConflictingTransition(t *testing.T) {
 	}
 }
 
+// RFC 7296 section 2.8: "After the new equivalent IKE SA is created, the initiator deletes the old IKE SA, and the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
+// a Child SA exchange queued on an IKE SA that has since been replaced is refused before it takes a Message ID or goes out
 func TestQueuedChildRequestDoesNotUseRetiredIKE(t *testing.T) {
-	s := &Session{current: new(ikeContext)}
-	_, err := s.startRequest(&localRequest{exchange: CREATE_CHILD_SA, context: new(ikeContext)})
+	mux, _ := lifecycleMuxes(t)
+	replaced := testContext()
+	s := &Session{mux: mux, current: new(ikeContext)}
+	_, err := s.startRequest(&localRequest{exchange: CREATE_CHILD_SA, context: replaced})
 	if err == nil {
 		t.Fatal("started CREATE_CHILD_SA on a replaced IKE SA")
+	}
+	if replaced.nextLocalMID != 0 {
+		t.Errorf("the refused exchange took Message ID %d of the replaced IKE SA", replaced.nextLocalMID-1)
 	}
 }
 

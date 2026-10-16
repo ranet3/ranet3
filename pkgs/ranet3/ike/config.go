@@ -105,7 +105,14 @@ func (c Crypto) Validate() error {
 		name     string
 		interval time.Duration
 	}{{"child", c.ChildInterval()}, {"ike", c.IKEInterval()}} {
-		if interval := named.interval; interval != 0 && !(c.Margin() < interval && c.Jitter() < interval-c.Margin()) {
+		interval := named.interval
+		if interval == 0 {
+			continue
+		}
+		if c.Margin() == 0 {
+			return fmt.Errorf("ike: cap.crypto rekey margin must be positive beside rekey %s, since a rekey due at the end of the SA's lifetime can never replace it", named.name)
+		}
+		if !(c.Margin() < interval && c.Jitter() < interval-c.Margin()) {
 			return fmt.Errorf("ike: cap.crypto rekey margin plus jitter must be less than rekey %s", named.name)
 		}
 	}
