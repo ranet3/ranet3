@@ -14,17 +14,19 @@ to. [Limits by area](#limits-by-area) lists the bounds in tables.
 
 ## Transit
 
-**ranet3 carries transit.** The Babel speaker re-advertises the routes it
-selects. Loop freedom comes from the source table and the feasibility condition
-of
+**ranet3 carries transit where `cap.transit` allows it.** The Babel speaker
+re-advertises the routes it selects. Loop freedom comes from the source table
+and the feasibility condition of
 [RFC 8966 section 3.5.1](https://www.rfc-editor.org/rfc/rfc8966.html#section-3.5.1).
+A node that carries transit decrypts other nodes' packets from one session and
+encrypts them again onto the next, so it sees their plaintext.
 
 A node that advertises transit still has to forward it, which takes 2 things:
 
 - Forwarding is on for both families, `net.ipv4.ip_forward` and
   `net.ipv6.conf.all.forwarding` on Linux, `net.inet.ip.forwarding` and
-  `net.inet6.ip6.forwarding` on macOS. With transit on and either family off,
-  ranet3 logs a warning at startup.
+  `net.inet6.ip6.forwarding` on macOS. With `cap.transit.enable = true` and
+  either family off, ranet3 logs a warning at startup.
 - The learned routes reach a kernel table the node consults.
   [`cap.table`](../configuration-reference.md) installs them, or another program
   does.
@@ -36,20 +38,19 @@ translation rule is installed and the host forwards its family. It is retracted
 on the first pass that finds either untrue. A pass runs every 30 seconds unless
 `cap.egress.sweep` names another interval.
 
-A leaf should write `transit = false` under `cap.route`, which advertises only
-the prefixes this node announces and never relays one it learned. Transit is on
-by default, so a laptop that leaves it on carries other nodes' traffic. Refusing
-to advertise cannot close a loop, so this only narrows what the feasibility
-condition already bounds.
+With transit off, a node advertises only the prefixes it announces and never
+relays one it learned. Transit is off unless
+[`cap.transit`](../configuration-reference.md) writes `enable = true`, and a
+leaf leaves it out. Refusing to advertise cannot close a loop, so this only
+narrows what the feasibility condition already bounds.
 
 ## Who a node dials
 
 `dial.all` dials every other node the trust document names. Entries in `dial.to`
 still apply and win for their node, which is the only way to pin a `serial`. A
 node needs `dial.all` when its peers relay no learned routes, as a node with
-`transit = false` does. It then learns each prefix only from the node that
-originates it, so dialing a few exits reaches those exits and nothing behind
-them.
+transit off does. It then learns each prefix only from the node that originates
+it, so dialing a few exits reaches those exits and nothing behind them.
 
 ## The underlay socket
 

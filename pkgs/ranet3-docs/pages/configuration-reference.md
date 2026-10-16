@@ -25,9 +25,9 @@ the same names. A key not listed here is refused when the file loads.
   daemon there refuses to start on it.
 - **On reload**: a reload runs the checks of `node`, `auth.key` and
   `link.endpoints` against the trust document again, and refuses a file that
-  fails them. It refuses a key the platform lacks, as a startup does. It logs a
-  peer the trust document cannot support instead of refusing the file, and it
-  does not check `cap.egress.advertise` against `cap.route`.
+  fails them. It refuses a key the platform lacks, and a `cap.route` entry equal
+  to a `cap.egress.advertise` prefix, as a startup does. It logs a peer the
+  trust document cannot support instead of refusing the file.
 
 ## Spellings
 
@@ -145,12 +145,11 @@ on every platform but macOS.
 ## `cap.route`
 
 What this node puts into the mesh. Without this block, the node announces
-nothing and still carries transit.
+nothing.
 
-| Key        | Value   | Default | Meaning                                            |
-| ---------- | ------- | ------- | -------------------------------------------------- |
-| `announce` | list    | none    | The prefixes this node originates                  |
-| `transit`  | boolean | `true`  | Relay the routes this node learns to its neighbors |
+| Key        | Value | Default | Meaning                           |
+| ---------- | ----- | ------- | --------------------------------- |
+| `announce` | list  | none    | The prefixes this node originates |
 
 - An `announce` entry is a prefix, `"10.66.0.5/32"`, or a prefix and the source
   it serves, `{ prefix = "::/0", from = "2001:db8:1::/48" }`. An exit announces
@@ -159,8 +158,31 @@ nothing and still carries transit.
   `prefix`. A `from` of length 0 is refused.
 - A prefix of length 0 with host bits set, such as `"2001:db8::/0"`, is refused
   as a typo for a default.
-- `transit = false` stops this node from carrying other nodes' traffic. Set it
-  on a laptop or a node on a cellular uplink.
+- `transit` under `cap.route` is refused at load, with a message naming
+  `cap.transit`. That key meant transit on when left out, and a node that relied
+  on it carries no transit until it writes `cap.transit.enable = true`.
+
+## `cap.transit`
+
+Whether this node relays the routes it learns to its neighbors. A node that
+relays carries other nodes' traffic: it decrypts each of their packets from one
+session and encrypts it again onto the next.
+
+| Key      | Value   | Default  | Meaning                           |
+| -------- | ------- | -------- | --------------------------------- |
+| `enable` | boolean | required | Relay the routes this node learns |
+
+- Without this block, transit is off, as with `enable = false`, and the node
+  advertises only the prefixes it originates. `enable = true` is the only way to
+  turn transit on, whatever `link.listen` and the host's forwarding are.
+- A written block states `enable`. A block without it is refused at load.
+- The daemon reads `enable` at startup. A reload that would turn transit on or
+  off is refused with `config: cap.transit enable changed, restart to apply`. A
+  reload between a left-out block and `enable = false` changes nothing.
+- With `enable = true` and forwarding off for either family, the daemon logs a
+  warning at startup: peers that select this node would have their traffic
+  dropped. It reads forwarding from the settings [platforms](platforms.md)
+  lists.
 
 ## `cap.babel`
 
@@ -386,8 +408,9 @@ needs.
   and the host forwards that family.
 - An `advertise` prefix with bits set below its length, written as IPv4-mapped
   IPv6, or written twice is refused at load.
-- At startup, an `advertise` prefix that `cap.route` also announces is refused.
-  That announcement would go out whether or not the rule is installed.
+- At startup and on every reload, an `advertise` prefix that `cap.route` also
+  announces is refused. That announcement would go out whether or not the rule
+  is installed.
 - For traffic leaving the mesh, `auto` uses the address of the link the packet
   leaves by. The host's routes pick it for each packet.
 - For traffic entering the mesh, `auto` uses this node's mesh address. The

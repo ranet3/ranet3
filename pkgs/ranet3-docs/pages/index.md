@@ -45,13 +45,14 @@ Linux seg6local for SRv6.
 The top of the config file says what the node is: its name in `node`, its key
 and trust document in `auth`, its port, endpoints and tun in `link`, and its
 peers in `dial`. Everything else it does is a block under `cap`. `cap.table`,
-`cap.segment` and `cap.egress` are off until the file writes them. `cap.route`,
-`cap.babel` and `cap.crypto` run with their defaults when the file leaves them
-out.
+`cap.segment` and `cap.egress` are off until the file writes them, and
+`cap.transit` until it writes `enable = true`. `cap.route`, `cap.babel` and
+`cap.crypto` run with their defaults when the file leaves them out.
 
 | Block         | What it does                                                                                                         |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `cap.route`   | Names the prefixes this node announces, and whether it relays the routes it learns                                   |
+| `cap.route`   | Names the prefixes this node announces                                                                               |
+| `cap.transit` | Relays the routes this node learns, and so carries other nodes' traffic                                              |
 | `cap.babel`   | Sets the Babel timers, the link quality estimator and the link costs                                                 |
 | `cap.table`   | Runs the route reconciler, which installs routes, addresses, policy rules and a VRF in the kernel                    |
 | `cap.segment` | Steers traffic by source and destination prefix through SRv6 waypoints, and lists the segments this node answers for |

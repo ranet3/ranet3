@@ -46,7 +46,7 @@ as [what a reload refuses](#what-a-reload-refuses) describes.
 | `link.underlay.mark`, `link.underlay.bind`                           | refused                                  |                                                                                                                                              |
 | `dial.all`, `dial.to`                                                | applied                                  |                                                                                                                                              |
 | `cap.route.announce`                                                 | applied                                  | Refused when it moves the address `cap.egress.return` translates to.                                                                         |
-| `cap.route.transit`                                                  | refused when its effective value changes | An omitted `transit` and `true` are the same.                                                                                                |
+| `cap.transit`, written, removed, or `enable`                         | refused when its effective value changes | A left-out block and `enable = false` are the same.                                                                                          |
 | `cap.babel` and every key under it                                   | applied                                  |                                                                                                                                              |
 | `cap.table`, written or removed                                      | refused                                  |                                                                                                                                              |
 | `cap.table.id`, `cap.table.proto`                                    | refused when its effective value changes |                                                                                                                                              |
@@ -183,9 +183,9 @@ Its `applied` lists the blocks the reload changed among `cap.babel`,
 `cap.route`, `cap.segment`, `cap.table`, `link.listen` and `link.mtu`, comma
 separated, such as `applied=cap.table` for one that changed the table. A reload
 that changed only the trust document or the peers dialed carries no `applied`. A
-refused reload carries `err` instead. `cap.route` is listed whenever the block
-differs as written, so writing out `transit = true` where the file left it out
-lists it too.
+refused reload carries `err` instead. `cap.route` is listed when `announce`
+changed. `cap.transit` is never listed, since a reload that would change it is
+refused, and writing out the value in force changes nothing.
 
 The speaker records a `babel.config.applied` with the intervals and the cost it
 took. Turning `link.listen` on or off records a `responder.changed` with
@@ -209,8 +209,8 @@ reconciler takes a changed `cap.table` as a stopped one does and installs it at
 Everything else is refused rather than applied, because a reload cannot reach
 it. Identity, port, tun, local endpoints and `link.underlay` each change what
 peers have already authenticated or what the dataplane is attached to. So does
-`cap.route.transit`, which the speaker reads as it builds each packet and keeps
-for its life.
+turning [`cap.transit`](configuration-reference.md) on or off, since the speaker
+reads transit as it builds each packet and keeps it for its life.
 
 So does the private key. It is read once at startup, and the responder holds its
 own copy. A reload reads the key file only to compare it. A new key is refused
@@ -252,11 +252,8 @@ an unknown key is refused whole. The checks across blocks run again:
 - the longest `cap.segment` steer list must leave the tun at 1280 bytes or more
 - a `cap.segment.local` SID must not be an address `cap.table` assigns to the
   tun
-
-A reload does not repeat the startup check that refuses a `cap.route`
-announcement equal to a `cap.egress.advertise` prefix. A reload that adds such
-an announcement is applied, and the prefix is then announced whether or not its
-translation rule is installed.
+- a `cap.route` announcement must not equal a `cap.egress.advertise` prefix,
+  which it would announce whether or not the translation rule is installed
 
 ### Checks against the trust document
 

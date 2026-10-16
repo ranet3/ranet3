@@ -64,8 +64,12 @@ global IPv6 endpoint leaves it without an IPv6 exit. [Routing](routing.md) and
 that advertises the halves. `ranet3 routes` shows them.
 
 `cap.route` may not announce a prefix `cap.egress` advertises. The daemon
-refuses that at startup, because `cap.route` would announce the prefix whether
-or not its translation rule is installed. A reload does not repeat this check.
+refuses that at startup and on every reload, because `cap.route` would announce
+the prefix whether or not its translation rule is installed.
+
+`cap.egress` does not depend on `cap.transit`. An exit with transit off still
+advertises the prefixes it is ready to carry and translates the traffic for
+them.
 
 ## Translation
 
