@@ -112,6 +112,9 @@ func kernelLine(k KernelStatus) string {
 	if k.Skipped > 0 {
 		line += fmt.Sprintf(", %d skipped", k.Skipped)
 	}
+	if len(k.Cover) > 0 {
+		line += ", zero-free cover for " + strings.Join(k.Cover, " and ")
+	}
 	switch since := time.Since(k.PassAt); {
 	case k.PassAt.IsZero():
 		line += ", no pass yet"

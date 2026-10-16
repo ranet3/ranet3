@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "where": "interface utun6",
+  "installed": 16,
+  "skipped": 0,
+  "added": 0,
+  "removed": 0,
+  "cover": [
+    "ipv4",
+    "ipv6"
+  ]
+}
