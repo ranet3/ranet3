@@ -35,3 +35,9 @@ path = [
 ]
 SPDX-FileCopyrightText = ["2017-2025 WireGuard LLC", "Tailscale Inc & AUTHORS"]
 SPDX-License-Identifier = "MIT"
+
+# the build's own file, as in pkgs/ranet3
+[[annotations]]
+path = "gomod2nix.toml"
+SPDX-FileCopyrightText = "2026 Yifei Sun"
+SPDX-License-Identifier = "FSL-1.1-ALv2"

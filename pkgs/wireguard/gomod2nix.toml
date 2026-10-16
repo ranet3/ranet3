@@ -1,0 +1,22 @@
+schema = 3
+
+[mod]
+[mod.'github.com/google/btree']
+version = 'v1.1.2'
+hash = 'sha256-K7V2obq3pLM71Mg0vhhHtZ+gtaubwXPQx3xcIyZDCjM='
+
+[mod.'golang.org/x/net']
+version = 'v0.39.0'
+hash = 'sha256-IP29+yGphWKUT7wHTyzqA2rnRT4AJ7oWcT6NKLzkWcM='
+
+[mod.'golang.org/x/sys']
+version = 'v0.32.0'
+hash = 'sha256-c9RRnyKQy9Kl8hpbtcgkm1O5H7gOdk9Rv925F8fZS6E='
+
+[mod.'golang.org/x/time']
+version = 'v0.7.0'
+hash = 'sha256-o1ol/hTpfrc06KUXSepAgm4QUuWmH1S+vqg6kmFad64='
+
+[mod.'gvisor.dev/gvisor']
+version = 'v0.0.0-20250503011706-39ed1f5ac29c'
+hash = 'sha256-wctszMzW0gfB1bqoKBYN9ImAidsHNwgMhKCqLhteBpY='
