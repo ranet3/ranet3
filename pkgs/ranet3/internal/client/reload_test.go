@@ -638,11 +638,15 @@ const longDialRetry = 10 * time.Minute
 // listenNode is one node of a mesh whose nodes answer and dial as each says
 type listenNode struct {
 	// org is example where a test names none
-	org        string
-	name       string
-	port       uint16
-	listen     bool
-	dials      []*listenNode
+	org    string
+	name   string
+	port   uint16
+	listen bool
+	dials  []*listenNode
+	// announce is the prefix the node puts into the mesh, none where it is invalid
+	announce netip.Prefix
+	// transit writes cap.transit enable = true, where the node otherwise leaves the block out
+	transit    bool
 	client     *Client
 	events     *events.Bus
 	configPath string
@@ -658,6 +662,12 @@ func writeListenConfig(t *testing.T, node *listenNode, listen bool) *config.Conf
 		"link:\n  port: %d\n  endpoints:\n    - serial: \"0\"\n      family: ip4\n  listen: %t\n"+
 		"cap:\n  babel:\n    hello: 200ms\n    update: 400ms\n",
 		node.org, node.name, node.keyPath, node.trustPath, node.port, listen)
+	if node.transit {
+		body.WriteString("  transit:\n    enable: true\n")
+	}
+	if node.announce.IsValid() {
+		fmt.Fprintf(&body, "  route:\n    announce: [%q]\n", node.announce)
+	}
 	if len(node.dials) > 0 {
 		body.WriteString("dial:\n  to:\n")
 		for _, peer := range node.dials {

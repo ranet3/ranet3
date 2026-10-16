@@ -115,7 +115,8 @@ func TestBothDecodersReadOneNode(t *testing.T) {
 cap:
   route:
     announce: ["10.66.0.5/32", { prefix: "::/0", from: "2001:db8:1::/48" }]
-    transit: false
+  transit:
+    enable: false
   babel:
     hello: 4s
     quality: none
@@ -139,7 +140,8 @@ cap:
 	const capabilitiesTOML = `
 [cap.route]
 announce = ["10.66.0.5/32", { prefix = "::/0", from = "2001:db8:1::/48" }]
-transit = false
+[cap.transit]
+enable = false
 [cap.babel]
 hello = "4s"
 quality = "none"
@@ -174,11 +176,11 @@ rekey = { child = "1h", retry = { first = "5s", max = "5m" } }
 	}
 	// And the capabilities are actually there, so two empty structs cannot
 	// pass the comparison above.
-	if fromYAML.Cap.Route == nil || fromYAML.Cap.Babel == nil || fromYAML.Cap.Table == nil ||
+	if fromYAML.Cap.Route == nil || fromYAML.Cap.Transit == nil || fromYAML.Cap.Babel == nil || fromYAML.Cap.Table == nil ||
 		fromYAML.Cap.Segment == nil || fromYAML.Cap.Crypto == nil {
 		t.Fatalf("a capability was dropped: %+v", fromYAML.Cap)
 	}
-	if fromYAML.Routes().Transits() || fromYAML.Babel().Quality != babel.LinkQualityNone {
+	if fromYAML.Transits() || fromYAML.Babel().Quality != babel.LinkQualityNone {
 		t.Error("the capability values did not reach the struct")
 	}
 }
@@ -823,8 +825,8 @@ func TestCapabilityIsOnBecauseItsBlockIsThere(t *testing.T) {
 	}
 	// And the defaults an absent block stands for are the ones a subsystem
 	// documents, rather than a zero that means something else.
-	if !cfg.Routes().Transits() {
-		t.Error("a node with no cap.route refuses to carry the mesh")
+	if cfg.Transits() {
+		t.Error("a node with no cap.transit relays the routes it learns")
 	}
 	if cfg.Babel().HelloInterval() != 4*time.Second {
 		t.Errorf("a node with no cap.babel runs a %s hello interval", cfg.Babel().HelloInterval())
@@ -1121,10 +1123,11 @@ func TestZeroRekeyIntervalDisablesIt(t *testing.T) {
 // alone, and fillBlocks is where the two rules meet: it allocates the first
 // and must not touch the second. Every pointer-to-scalar field in this schema
 // spells an omitted field as nil and reads a written zero as written, so
-// filling one in turns a bare "replay:" into anti-replay disabled and a bare
-// "transit:" into a node that refuses to carry the mesh, in each case the
-// opposite of what leaving the key out means. Neither has a second spelling to
-// agree with either, because toml cannot write a key with no value at all.
+// filling one in turns a bare "replay:" into anti-replay disabled, the
+// opposite of what leaving the key out means, and a bare "enable:" under
+// cap.transit into transit off where the block is refused for stating nothing.
+// Neither has a second spelling to agree with either, because toml cannot
+// write a key with no value at all.
 //
 // The fields are found by reflection rather than listed, so one added later is
 // covered without anybody remembering to, and the two whose zero is a safety
@@ -1167,12 +1170,8 @@ func TestBareScalarKeyIsNotAWrittenZero(t *testing.T) {
 		t.Errorf("a bare replay key runs a %d packet window, want %d: zero is anti-replay off",
 			got, esp.DefaultReplayWindow)
 	}
-	cfg, err = loadYAML(t, nodeYAML+"cap:\n  route:\n    transit:\n")
-	if err != nil {
-		t.Fatalf("a bare transit key was refused: %v", err)
-	}
-	if !cfg.Routes().Transits() {
-		t.Error("a bare transit key stops this node carrying the mesh, the meaning of writing false")
+	if _, err := loadYAML(t, nodeYAML+"cap:\n  transit:\n    enable:\n"); err == nil || !strings.Contains(err.Error(), "cap.transit states no enable") {
+		t.Errorf("a bare enable key under cap.transit was answered with %v, want the block refused for stating nothing", err)
 	}
 }
 
@@ -1209,7 +1208,7 @@ func pointerScalars(ty reflect.Type, prefix string) []string {
 // every check Load makes, since the round trip below goes through the loader
 // rather than through a decoder alone.
 func fullConfig() Config {
-	transit := false
+	transits := false
 	rxcost, weight := uint16(96), uint16(1024)
 	rttMin, rttMax := schema.Duration(10*time.Millisecond), schema.Duration(1024*time.Millisecond)
 	replay := uint32(2048)
@@ -1234,8 +1233,8 @@ func fullConfig() Config {
 					{Prefix: schema.MustPrefix("10.66.0.5/32")},
 					{Prefix: schema.MustPrefix("::/0"), From: schema.MustPrefix("2001:db8:1::/48")},
 				},
-				Transit: &transit,
 			},
+			Transit: &babel.Transit{Enable: &transits},
 			Babel: &babel.Config{
 				Hello:   schema.Duration(4 * time.Second),
 				Update:  schema.Duration(16 * time.Second),
@@ -1425,9 +1424,10 @@ func sameAfterEachEncoder(tb testing.TB, drawn Config) {
 // net/netip value exports no field to look at in any case.
 //
 // A pointer to a scalar counts as written the moment it is not nil, because
-// that is the whole reason those fields are pointers: cap.route transit and
-// cap.crypto replay both take an explicit zero, which asks for something other
-// than the default an absent field takes.
+// that is the whole reason those fields are pointers: an explicit zero of
+// cap.crypto replay asks for something other than the default an absent field
+// takes, and one of cap.transit enable is valid where an absent field is
+// refused.
 func unwritten(value reflect.Value, path string) []string {
 	if value.Kind() == reflect.Pointer {
 		if value.IsNil() {

@@ -461,7 +461,7 @@ func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 		Node: identity.MustParse("example/node"),
 		Link: config.Link{Port: 13000, Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
 	}
-	window := uint32(8192)
+	window, on := uint32(8192), true
 	// Every refusal, not a sample of them. Each of these is read once at
 	// startup by something a reload cannot reach, so accepting one would
 	// report a reload that changed nothing, or leave the node running two
@@ -474,8 +474,8 @@ func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 		"endpoints": func(c *config.Config) {
 			c.Link.Endpoints = []config.Endpoint{{Serial: "1", Family: "ip6"}}
 		},
-		"cap.route": func(c *config.Config) { c.Cap.Route = &babel.Routes{Transit: new(bool)} },
-		"cap.table": func(c *config.Config) { c.Cap.Table = &kernel.Table{ID: 201} },
+		"cap.transit": func(c *config.Config) { c.Cap.Transit = &babel.Transit{Enable: &on} },
+		"cap.table":   func(c *config.Config) { c.Cap.Table = &kernel.Table{ID: 201} },
 		// a session takes the replay window and the rekey timers from the listener built at startup when it is accepted
 		// and from the file when it is dialed, and one field let through runs two policies at once
 		"cap.crypto replay": func(c *config.Config) {

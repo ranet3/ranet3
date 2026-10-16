@@ -218,10 +218,10 @@ func warnVRFWithoutL3mdev(cfg *config.Config) {
 // that from the far end, which leaves saying it at the end that knows.
 //
 // A warning rather than a refusal, because forwarding can be turned on after
-// this process starts and because cap.route transit is the setting that makes
-// the promise match the machine.
+// this process starts and because cap.transit is the setting that makes the
+// promise match the machine.
 func warnUnforwardableTransit(cfg *config.Config) {
-	if !cfg.Routes().Transits() {
+	if !cfg.Transits() {
 		return
 	}
 	v4, v6 := forwardingEnabled()
@@ -235,6 +235,6 @@ func warnUnforwardableTransit(cfg *config.Config) {
 	if !v6 {
 		off = append(off, "IPv6")
 	}
-	log.Printf("config: this node redistributes the routes it learns, so it is offering to carry the mesh, but %s forwarding is off: peers that select it will have their traffic dropped with nothing to tell them. Write transit = false under cap.route on a leaf, or turn forwarding on",
+	log.Printf("config: this node redistributes the routes it learns, so it is offering to carry the mesh, but %s forwarding is off: peers that select it will have their traffic dropped with nothing to tell them. Write enable = false under cap.transit, or turn forwarding on",
 		strings.Join(off, " and "))
 }

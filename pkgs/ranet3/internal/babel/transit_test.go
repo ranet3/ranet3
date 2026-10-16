@@ -30,9 +30,10 @@ type meshFabric struct {
 	sent     map[string][]RawTLV
 	// links in the order they were made, each direction apart, so a pass over them is the same in every run
 	links []*fabricLink
-	// routes is the cap.route capability every node in the fabric runs, which
-	// decides whether they relay each other's prefixes.
+	// routes is the cap.route capability every node in the fabric runs
 	routes Routes
+	// noTransit is cap.transit off on every node, a fabric of leaves
+	noTransit bool
 }
 
 // fabricLink is one direction of a link
@@ -45,20 +46,21 @@ type fabricLink struct {
 
 // newMeshFabric builds the topology described by links of the form "a-b".
 func newMeshFabric(t *testing.T, cfg Config, links ...string) *meshFabric {
-	return newRoutedFabric(t, cfg, Routes{}, links...)
+	return newRoutedFabric(t, cfg, Routes{}, false, links...)
 }
 
 // newRoutedFabric is newMeshFabric for a topology whose nodes carry a cap.route
-// of their own, which today is a leaf that does not relay.
-func newRoutedFabric(t *testing.T, cfg Config, routes Routes, links ...string) *meshFabric {
+// of their own, each relaying the others' prefixes unless noTransit is set
+func newRoutedFabric(t *testing.T, cfg Config, routes Routes, noTransit bool, links ...string) *meshFabric {
 	t.Helper()
 	f := &meshFabric{
-		t:        t,
-		routes:   routes,
-		speakers: make(map[string]*Speaker),
-		meshes:   make(map[string]*netstack.Mesh),
-		handles:  make(map[string]*PeerHandle),
-		sent:     make(map[string][]RawTLV),
+		t:         t,
+		routes:    routes,
+		noTransit: noTransit,
+		speakers:  make(map[string]*Speaker),
+		meshes:    make(map[string]*netstack.Mesh),
+		handles:   make(map[string]*PeerHandle),
+		sent:      make(map[string][]RawTLV),
 	}
 	for _, link := range links {
 		ends := strings.Split(link, "-")
@@ -79,7 +81,7 @@ func (f *meshFabric) node(cfg Config, name string) *Speaker {
 	var id [8]byte
 	copy(id[:], name)
 	mesh := &netstack.Mesh{Routes: netstack.NewRouteTable()}
-	s, err := New(cfg, f.routes, Runtime{RouterID: id}, mesh)
+	s, err := New(cfg, f.routes, Runtime{RouterID: id, NoTransit: f.noTransit}, mesh)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -1406,14 +1408,8 @@ func TestSpentRetryGivesItsNeighborTheShareBack(t *testing.T) {
 	}
 }
 
-// A leaf on a laptop uplink must not offer to carry the mesh. Redistribution
-// makes a converted fleet work and makes a leaf a transit router alike, and
-// the fleet's BIRD already draws that line with "export where proto =
-// dbabel0". Measured on a real leaf before this existed: 112 sessions, every
-// learned route advertised to every peer, and the community forwarding
-// third-party traffic through the laptop within minutes.
 func TestNoTransitAdvertisesOnlyWhatThisNodeOriginates(t *testing.T) {
-	fabric := newRoutedFabric(t, Config{}, Routes{Transit: new(bool)}, "a-b", "b-c")
+	fabric := newRoutedFabric(t, Config{}, Routes{}, true, "a-b", "b-c")
 	far := netip.MustParsePrefix("fd00:c::/64")
 	own := netip.MustParsePrefix("fd00:b::/64")
 	fabric.speakers["c"].Originate(far)

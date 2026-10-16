@@ -79,7 +79,7 @@ func (c *Client) Status() control.Status {
 		Uptime:       control.Duration(time.Since(c.started)),
 		Responder:    cfg.Link.Listen,
 		FullMesh:     cfg.Dial.All,
-		NoTransit:    !cfg.Routes().Transits(),
+		NoTransit:    !cfg.Transits(),
 		ForwardsIPv4: forwardsV4,
 		ForwardsIPv6: forwardsV6,
 		Registry: control.RegistryInfo{

@@ -54,6 +54,9 @@ type Runtime struct {
 	// it may call the speaker and must not block
 	// nil hears nothing
 	ProbeAcked func(peer *netstack.Peer, nonce uint16)
+	// NoTransit advertises only what this node originates, where cap.transit is off
+	// it is read while a packet is built, so it is fixed for the speaker's life
+	NoTransit bool
 }
 
 const maxInterval = 65535 * 10 * time.Millisecond

@@ -100,10 +100,12 @@ to = ["example/gateway:0"]
 # and nothing else, as this file does.
 announce = ["10.66.0.5/32"]
 
-# Relay the routes this node learns, so it offers to carry the mesh. On unless
-# written out. Turn it off on a leaf: a node that redistributes is offering
-# transit, and a laptop on a home or cellular uplink should not.
-# transit = false
+# Whether this node relays the routes it learns. A node that does carries other
+# nodes' packets in plaintext, each decrypted from one session and sealed again
+# onto the next. Off when left out, as a leaf wants it. A node that carries the
+# mesh writes enable = true.
+# [cap.transit]
+# enable = true
 
 # The babel speaker's own timers and costs. Omitted, each keeps the default
 # below, the value RFC 8966 Appendix B and BIRD use. The two written out here
