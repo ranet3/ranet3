@@ -553,6 +553,9 @@ func TestResponderRejectsUnknownIdentity(t *testing.T) {
 		session.Mux().Close()
 		t.Fatal("handshake succeeded against a responder that knows no peers")
 	}
+	if want := fmt.Sprintf("notify type %d", N_AUTHENTICATION_FAILED); !strings.Contains(err.Error(), want) {
+		t.Errorf("the initiator was refused with %q, want %q", err, want)
+	}
 	select {
 	case <-h.sessions:
 		t.Fatal("responder produced a session for an unknown identity")
@@ -570,6 +573,9 @@ func TestResponderRejectsWrongKey(t *testing.T) {
 	if err == nil {
 		session.Mux().Close()
 		t.Fatal("handshake succeeded with an AUTH the responder could not verify")
+	}
+	if want := fmt.Sprintf("notify type %d", N_AUTHENTICATION_FAILED); !strings.Contains(err.Error(), want) {
+		t.Errorf("the initiator was refused with %q, want %q", err, want)
 	}
 }
 
@@ -2015,6 +2021,31 @@ func dialRefusedChild(t *testing.T, h *responderHarness, mux *transport.Mux) (*i
 // the IKE_AUTH request names idi and idr, and its Child SA offer names a DH group, which a Child SA in IKE_AUTH cannot negotiate
 func dialSignedBy(t *testing.T, h *responderHarness, mux *transport.Mux, key ed25519.PrivateKey, idi, idr string) (*ikeContext, []byte) {
 	t.Helper()
+	held, message1, nr := initHalfOpen(t, mux)
+	suite, spiI, spiR := held.suite, held.spiI, held.spiR
+	idiBody := idBody(idi)
+	child := espProposal([]byte{0, 0, 0, 9})
+	child.Transforms = append(child.Transforms, Transform{Type: TransDH, ID: DH_ECP_256})
+	request, err := EncryptMessage(suite, held.skei, Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}, nil, []RawPayload{
+		{Type: PayloadIDi, Body: idiBody},
+		{Type: PayloadIDr, Body: idBody(idr)},
+		{Type: PayloadAUTH, Body: BuildAuth(key, concat(message1, nr, prf(suite.PRFID, held.skpi, idiBody)))},
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{child})},
+		{Type: PayloadTSi, Body: fullRangeSelectors()},
+		{Type: PayloadTSr, Body: fullRangeSelectors()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.SendIKE(request); err != nil {
+		t.Fatal(err)
+	}
+	return held, request
+}
+
+// initHalfOpen runs IKE_SA_INIT on mux and returns the half-open SA the responder answered with, the request that opened it and the responder's nonce
+func initHalfOpen(t *testing.T, mux *transport.Mux) (*ikeContext, []byte, []byte) {
+	t.Helper()
 	spiI := randUint64Nonzero()
 	if err := mux.RegisterIKE(spiI); err != nil {
 		t.Fatal(err)
@@ -2065,24 +2096,7 @@ func dialSignedBy(t *testing.T, h *responderHarness, mux *transport.Mux, key ed2
 		t.Fatal(err)
 	}
 	held := &ikeContext{suite: suite, skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr, spiI: spiI, spiR: spiR}
-	idiBody := idBody(idi)
-	child := espProposal([]byte{0, 0, 0, 9})
-	child.Transforms = append(child.Transforms, Transform{Type: TransDH, ID: DH_ECP_256})
-	request, err := EncryptMessage(suite, held.skei, Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}, nil, []RawPayload{
-		{Type: PayloadIDi, Body: idiBody},
-		{Type: PayloadIDr, Body: idBody(idr)},
-		{Type: PayloadAUTH, Body: BuildAuth(key, concat(message1, nr, prf(suite.PRFID, held.skpi, idiBody)))},
-		{Type: PayloadSA, Body: EncodeSA([]Proposal{child})},
-		{Type: PayloadTSi, Body: fullRangeSelectors()},
-		{Type: PayloadTSr, Body: fullRangeSelectors()},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := mux.SendIKE(request); err != nil {
-		t.Fatal(err)
-	}
-	return held, request
+	return held, message1, nr
 }
 
 // responderMessage reads the next message the responder sends under the IKE SA held, past any repeat of its IKE_SA_INIT answer
@@ -2282,6 +2296,69 @@ func TestUndecryptableDatagramDoesNotEndTheHandshake(t *testing.T) {
 	if !bytes.Equal(got.raw, good) {
 		t.Error("the request returned is not the one that authenticated")
 	}
+}
+
+// RFC 7296 section 2.21.2: "request messages that contain an unsupported critical payload, or where the whole message is malformed (rather than just bad payload contents), MUST be rejected in their entirety, and MUST only lead to an UNSUPPORTED_CRITICAL_PAYLOAD or INVALID_SYNTAX Notification sent as a response."
+// section 2.11: "MUST respond to the address and port from which the request was received."
+// an IKE_AUTH that decrypts, from another port than IKE_SA_INIT, with a payload chain that does not parse draws INVALID_SYNTAX at Message ID 1 there
+// the half-open SA then goes with nothing more sent
+func TestResponderAnswersAMalformedIKEAuthWithInvalidSyntax(t *testing.T) {
+	refused := &recorder{}
+	h := childRefusedHarness(t, refused.record)
+	held, _, _ := initHalfOpen(t, childRefusedMux(t, h))
+	moved, err := listenHub(t).NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { moved.Close() })
+	if err := moved.RegisterIKE(held.spiI); err != nil {
+		t.Fatal(err)
+	}
+
+	// a payload header whose stated length is shorter than the header itself, then no padding
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	malformed, err := encryptMessagePlaintextIV(held.suite, held.skei, header, nil, PayloadIDi, []byte{0, 0, 0, 3, 0}, make([]byte, 8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := moved.SendIKE(malformed); err != nil {
+		t.Fatal(err)
+	}
+	answer, inner, _ := responderMessage(t, moved, held)
+	if answer.ExchangeType != IKE_AUTH || !answer.IsResponse() || answer.MessageID != 1 || !notified(inner, N_INVALID_SYNTAX, nil) {
+		t.Fatalf("the malformed IKE_AUTH drew exchange %d response %v at Message ID %d carrying %v, want INVALID_SYNTAX at 1",
+			answer.ExchangeType, answer.IsResponse(), answer.MessageID, inner)
+	}
+	awaitHandshakeEnd(t, h, refused, held.spiI)
+	if raw, err := moved.RecvIKEUntil(time.Now().Add(quietPeriod)); err == nil {
+		t.Errorf("the responder sent %d more bytes after it let the half-open SA go", len(raw))
+	}
+}
+
+// RFC 7296 section 2.21.2: "All errors that occur in an IKE_AUTH exchange, causing the authentication to fail for whatever reason (invalid shared secret, invalid ID, untrusted certificate issuer, revoked or expired certificate, etc.) SHOULD result in an AUTHENTICATION_FAILED notification."
+// an IKE_AUTH whose IDi holds no distinguished name draws AUTHENTICATION_FAILED at Message ID 1, and the half-open SA then goes
+func TestResponderAnswersAnIDiItCannotReadWithAuthenticationFailed(t *testing.T) {
+	refused := &recorder{}
+	h := childRefusedHarness(t, refused.record)
+	mux := childRefusedMux(t, h)
+	held, _, _ := initHalfOpen(t, mux)
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	request, err := EncryptMessage(held.suite, held.skei, header, nil, []RawPayload{
+		{Type: PayloadIDi, Body: EncodeID(ID_DER_ASN1_DN, []byte{0x04, 0x00})},
+		{Type: PayloadAUTH, Body: BuildAuth(h.private, []byte("signed octets the responder never reaches"))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.SendIKE(request); err != nil {
+		t.Fatal(err)
+	}
+	answer, inner, _ := responderMessage(t, mux, held)
+	if answer.ExchangeType != IKE_AUTH || !answer.IsResponse() || answer.MessageID != 1 || !notified(inner, N_AUTHENTICATION_FAILED, nil) {
+		t.Fatalf("the IKE_AUTH drew exchange %d response %v at Message ID %d carrying %v, want AUTHENTICATION_FAILED at 1",
+			answer.ExchangeType, answer.IsResponse(), answer.MessageID, inner)
+	}
+	awaitHandshakeEnd(t, h, refused, held.spiI)
 }
 
 // Anyone who can reach the port can make a handshake fail, so the line has to
