@@ -443,6 +443,7 @@ func TestChildSAWithoutALifetimeKeepsItsKeys(t *testing.T) {
 }
 
 // an IKE SA past its lifetime starts nothing but its Delete: no liveness check, asked for or falling due, and not the rekey that comes too late to replace it
+// it is one this end is closing from its lifetime on, so it answers the peer's rekeys with TEMPORARY_FAILURE while its own rekey still holds and no close is decided
 // the initiator's rekey holds before its request until past the lifetime, so nothing is outstanding while the IKE SA is expired
 func TestIKESAPastItsLifetimeStartsNothingButItsDelete(t *testing.T) {
 	const lifetime = time.Second
@@ -465,7 +466,7 @@ func TestIKESAPastItsLifetimeStartsNothingButItsDelete(t *testing.T) {
 		})
 	}, func(initiator, _ *Session) {
 		established = initiator.current.established
-		held := established.Add(lifetime + answerLate)
+		held := established.Add(lifetime + 3*answerLate)
 		initiator.ikeRekeyNonce = func(nonce []byte) error {
 			time.Sleep(time.Until(held))
 			_, err := rand.Read(nonce)
@@ -476,6 +477,17 @@ func TestIKESAPastItsLifetimeStartsNothingButItsDelete(t *testing.T) {
 	})
 	time.Sleep(time.Until(established.Add(lifetime + answerLate/3)))
 	pair.initiator.Probe()
+	// an authenticated request puts the next liveness check off, so the peer's rekeys come after one would have fallen due and before the rekey stops holding
+	time.Sleep(time.Until(established.Add(lifetime + 2*answerLate)))
+	for _, rekey := range []struct {
+		sa  string
+		run func() error
+	}{{"Child SA", pair.responder.RekeyChild}, {"IKE SA", pair.responder.RekeyIKE}} {
+		err := rekey.run()
+		if rejected, ok := errors.AsType[*rejectedError](err); !ok || rejected.notify.Type != N_TEMPORARY_FAILURE {
+			t.Errorf("the peer's %s rekey past the IKE SA's lifetime ended with %v, want TEMPORARY_FAILURE", rekey.sa, err)
+		}
+	}
 	err := pair.ended(t, "the IKE SA went on past its lifetime")
 	if err == nil || !strings.Contains(err.Error(), "the IKE SA reached its lifetime") {
 		t.Errorf("the session ended with %v, want the IKE SA's lifetime", err)
@@ -527,77 +539,99 @@ func TestIKESADeleteAtAChildSALifetimeWaitsForTheIKESARekey(t *testing.T) {
 }
 
 // RFC 7296 section 2.3: "An IKE endpoint MUST be prepared to accept and process a request while it has a request outstanding in order to avoid a deadlock in this situation."
-// an IKE SA that reaches its lifetime with a liveness check out goes on retransmitting that check and answering the peer, and its Delete goes out once the check is answered, the one request it keeps outstanding
+// section 2.25.1: "If a peer receives a request to rekey a Child SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
+// section 2.25.2: "If a peer receives a request to rekey an IKE SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
+// an IKE SA closed at its own lifetime or a Child SA's with a liveness check out goes on retransmitting that check and answering the peer, refusing from the decision to close the rekeys the peer asks for, and its Delete goes out once the check is answered, the one request it keeps outstanding
 // the relay drops the responder's answers until answerLate past the lifetime, and with no margin the rekey falls due at the lifetime, which closes the IKE SA first
-func TestIKESADeleteAtItsLifetimeWaitsForTheOutstandingLivenessCheck(t *testing.T) {
+func TestIKESADeleteAtALifetimeWaitsForTheOutstandingLivenessCheck(t *testing.T) {
 	const lifetime = time.Second
 	type relayed struct {
 		header Header
 		raw    []byte
 		at     time.Time
 	}
-	var (
-		mu                       sync.Mutex
-		requests, answers        []relayed
-		established, answersFrom time.Time
-	)
-	pair := dialRefusing(t, func(cfg *PeerConfig) {
-		cfg.IKERekeyInterval = lifetime
-		cfg.RekeyRetryInitial, cfg.RekeyRetryMax = answerBudget, answerBudget
-		cfg.RemotePort = relay(t, cfg.RemotePort, func(fromInitiator bool, header *Header, raw []byte) bool {
-			if header == nil || header.ExchangeType != INFORMATIONAL {
-				return true
+	for _, sa := range []struct{ name, short string }{{"Child SA", "child"}, {"IKE SA", "ike"}} {
+		t.Run(sa.short, func(t *testing.T) {
+			var (
+				mu                       sync.Mutex
+				requests, answers        []relayed
+				established, answersFrom time.Time
+			)
+			pair := dialRefusing(t, func(cfg *PeerConfig) {
+				if sa.short == "child" {
+					cfg.ChildRekeyInterval = lifetime
+				} else {
+					cfg.IKERekeyInterval = lifetime
+				}
+				cfg.RekeyRetryInitial, cfg.RekeyRetryMax = answerBudget, answerBudget
+				cfg.RemotePort = relay(t, cfg.RemotePort, func(fromInitiator bool, header *Header, raw []byte) bool {
+					if header == nil || header.ExchangeType != INFORMATIONAL {
+						return true
+					}
+					mu.Lock()
+					defer mu.Unlock()
+					seen := relayed{*header, slices.Clone(raw), time.Now()}
+					switch {
+					case !fromInitiator:
+						return !header.IsResponse() || !seen.at.Before(answersFrom)
+					case header.IsResponse():
+						answers = append(answers, seen)
+					default:
+						requests = append(requests, seen)
+					}
+					return true
+				})
+			}, func(initiator, _ *Session) {
+				established = initiator.childEstablished
+				if sa.short == "ike" {
+					established = initiator.current.established
+				}
+				mu.Lock()
+				answersFrom = established.Add(lifetime + answerLate)
+				mu.Unlock()
+				initiator.dpdEvery, initiator.retransmitAfter = lifetime-rekeyStart, rekeyStart+answerLate/3
+			})
+			time.Sleep(time.Until(established.Add(lifetime + answerLate/3)))
+			for _, rekey := range []struct {
+				sa  string
+				run func() error
+			}{{"Child SA", pair.responder.RekeyChild}, {"IKE SA", pair.responder.RekeyIKE}} {
+				err := rekey.run()
+				if rejected, ok := errors.AsType[*rejectedError](err); !ok || rejected.notify.Type != N_TEMPORARY_FAILURE {
+					t.Errorf("the peer's %s rekey past the %s's lifetime ended with %v, want TEMPORARY_FAILURE", rekey.sa, sa.name, err)
+				}
+			}
+			pair.responder.Probe()
+			err := pair.ended(t, "the IKE SA went on past the lifetime")
+			if err == nil || !strings.Contains(err.Error(), "the "+sa.name+" reached its lifetime") {
+				t.Errorf("the session ended with %v, want the %s's lifetime", err, sa.name)
 			}
 			mu.Lock()
-			defer mu.Unlock()
-			seen := relayed{*header, slices.Clone(raw), time.Now()}
-			switch {
-			case !fromInitiator:
-				return !header.IsResponse() || !seen.at.Before(answersFrom)
-			case header.IsResponse():
-				answers = append(answers, seen)
-			default:
-				requests = append(requests, seen)
+			sent, answered := slices.Clone(requests), slices.Clone(answers)
+			mu.Unlock()
+			expiry := established.Add(lifetime)
+			if len(sent) == 0 {
+				t.Fatal("the initiator sent no INFORMATIONAL request")
 			}
-			return true
+			check := sent[0]
+			d := slices.IndexFunc(sent, func(request relayed) bool { return !bytes.Equal(request.raw, check.raw) })
+			if d < 0 {
+				t.Fatalf("the initiator sent its liveness check at Message ID %d %d times and nothing after it", check.header.MessageID, len(sent))
+			}
+			if !slices.ContainsFunc(sent[1:d], func(request relayed) bool { return request.at.After(expiry) }) {
+				t.Error("the liveness check out at the lifetime was not retransmitted past it")
+			}
+			if deleting := sent[d]; deleting.header.MessageID != check.header.MessageID+1 || deleting.at.Before(answersFrom) {
+				t.Errorf("the initiator sent its Delete at Message ID %d, %s past the lifetime, want it at %d once the check was answered, %s past", deleting.header.MessageID, deleting.at.Sub(expiry), check.header.MessageID+1, answerLate)
+			}
+			if !slices.ContainsFunc(answered, func(seen relayed) bool { return seen.at.After(expiry) && seen.at.Before(answersFrom) }) {
+				t.Errorf("the initiator answered %d requests, none past the lifetime while its check was out", len(answered))
+			}
+			ends := "testorg/client:2>testorg/server:1 sa=" + sa.short
+			if got := pair.dialed.recorded(); len(got) == 0 || slices.Contains(got, "ike.rekey.started "+ends) || got[len(got)-1] != "ike.sa.closed "+ends+" reason=lifetime" {
+				t.Errorf("the session recorded %q, want no rekey and the IKE SA closed at the %s's lifetime", got, sa.name)
+			}
 		})
-	}, func(initiator, _ *Session) {
-		established = initiator.current.established
-		mu.Lock()
-		answersFrom = established.Add(lifetime + answerLate)
-		mu.Unlock()
-		initiator.dpdEvery, initiator.retransmitAfter = lifetime-rekeyStart, rekeyStart+answerLate/3
-	})
-	time.Sleep(time.Until(established.Add(lifetime + answerLate/3)))
-	pair.responder.Probe()
-	err := pair.ended(t, "the IKE SA went on past its lifetime")
-	if err == nil || !strings.Contains(err.Error(), "the IKE SA reached its lifetime") {
-		t.Errorf("the session ended with %v, want the IKE SA's lifetime", err)
-	}
-	mu.Lock()
-	sent, answered := slices.Clone(requests), slices.Clone(answers)
-	mu.Unlock()
-	expiry := established.Add(lifetime)
-	if len(sent) == 0 {
-		t.Fatal("the initiator sent no INFORMATIONAL request")
-	}
-	check := sent[0]
-	d := slices.IndexFunc(sent, func(request relayed) bool { return !bytes.Equal(request.raw, check.raw) })
-	if d < 0 {
-		t.Fatalf("the initiator sent its liveness check at Message ID %d %d times and nothing after it", check.header.MessageID, len(sent))
-	}
-	if !slices.ContainsFunc(sent[1:d], func(request relayed) bool { return request.at.After(expiry) }) {
-		t.Error("the liveness check out at the lifetime was not retransmitted past it")
-	}
-	if deleting := sent[d]; deleting.header.MessageID != check.header.MessageID+1 || deleting.at.Before(answersFrom) {
-		t.Errorf("the initiator sent its Delete at Message ID %d, %s past the lifetime, want it at %d once the check was answered, %s past", deleting.header.MessageID, deleting.at.Sub(expiry), check.header.MessageID+1, answerLate)
-	}
-	if !slices.ContainsFunc(answered, func(seen relayed) bool { return seen.at.After(expiry) && seen.at.Before(answersFrom) }) {
-		t.Errorf("the initiator answered %d requests, none past the lifetime while its check was out", len(answered))
-	}
-	ends := "testorg/client:2>testorg/server:1 sa=ike"
-	if got := pair.dialed.recorded(); len(got) == 0 || slices.Contains(got, "ike.rekey.started "+ends) || got[len(got)-1] != "ike.sa.closed "+ends+" reason=lifetime" {
-		t.Errorf("the session recorded %q, want no rekey and the IKE SA closed at its lifetime", got)
 	}
 }
 

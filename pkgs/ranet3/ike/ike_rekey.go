@@ -257,7 +257,8 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	s.stateMu.RLock()
 	accept := ctx == s.current && (s.old == nil || s.localRekey != nil) && s.collision == nil
 	s.stateMu.RUnlock()
-	if !accept || s.childRekeying.Load() || s.retiringChild().LocalSPI != 0 {
+	// RFC 7296 section 2.25.2: "If a peer receives a request to rekey an IKE SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
+	if !accept || s.closing.Load() || s.childRekeying.Load() || s.retiringChild().LocalSPI != 0 || s.ikeExpired(ctx) {
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 	}
 	// Checked before the key exchange and the derivation, which is the work

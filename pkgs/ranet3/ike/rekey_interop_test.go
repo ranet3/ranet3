@@ -221,6 +221,22 @@ func TestPeerRekeyDefersConflictingTransition(t *testing.T) {
 	}
 }
 
+// while this end rekeys the IKE SA, a peer's Delete of a Child SA is answered as usual, with the Delete of the SA's other half
+func TestChildSADeleteDuringAnIKESARekeyIsAnsweredWithItsDelete(t *testing.T) {
+	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
+	s := newRekeyableSession(t, child)
+	s.current.skei, s.current.sker = make([]byte, 20), make([]byte, 20)
+	s.localRekey = &ikeRekey{old: s.current}
+	inner := crossingDelete(t, s, child.RemoteSPI)
+	if len(inner) != 1 || inner[0].Type != PayloadD {
+		t.Fatalf("the Child SA Delete was answered with %v, want a Delete payload", inner)
+	}
+	deleted, err := DecodeDelete(inner[0].Body)
+	if err != nil || deleted.Protocol != ProtoESP || len(deleted.SPIs) != 1 || binary.BigEndian.Uint32(deleted.SPIs[0]) != child.LocalSPI {
+		t.Errorf("the answer deletes %+v (%v), want ESP SPI %08x", deleted, err, child.LocalSPI)
+	}
+}
+
 // RFC 7296 section 2.8: "After the new equivalent IKE SA is created, the initiator deletes the old IKE SA, and the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 // a Child SA exchange queued on an IKE SA that has since been replaced is refused before it takes a Message ID or goes out
 func TestQueuedChildRequestDoesNotUseRetiredIKE(t *testing.T) {

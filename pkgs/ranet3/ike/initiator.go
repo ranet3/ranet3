@@ -152,6 +152,8 @@ type Session struct {
 	// drains it, so a local exchange started when this is false would wait out
 	// its caller's patience and send nothing.
 	serving atomic.Bool
+	// closing is set from the decision to close the IKE SA and never cleared, so each IKE SA current from then is one this end is trying to close
+	closing atomic.Bool
 	// started fixes the origin lastActive is measured from. It is written
 	// once, before the session is handed to anyone.
 	started time.Time
@@ -988,7 +990,10 @@ func (s *Session) answerInWait(ctx *ikeContext, hdr *Header, first PayloadType, 
 		response, err := s.response(ctx, hdr.MessageID, INFORMATIONAL, nil)
 		return response, deletesIKE(inner), err
 	case CREATE_CHILD_SA:
-		return nil, false, errors.New("ike: a CREATE_CHILD_SA request goes unanswered while the IKE SA closes")
+		// RFC 7296 section 2.25.2: "If a peer receives a request to rekey an IKE SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
+		// the IKE SA going takes no new Child SA either
+		response, err := s.responseNotify(ctx, hdr.MessageID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
+		return response, false, err
 	}
 	// as Run answers an exchange it does not take, which ends the IKE SA
 	response, err := s.responseNotify(ctx, hdr.MessageID, hdr.ExchangeType, N_INVALID_SYNTAX)

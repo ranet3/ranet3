@@ -289,7 +289,9 @@ func decodeChildNegotiationResponse(response []RawPayload, prfID uint16) (childE
 
 func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPayload) ([]byte, error) {
 	s.stateMu.RLock()
-	ikeBusy := ctx != s.current || s.localRekey != nil
+	// RFC 7296 section 1.4.1: "Deleting an IKE SA implicitly closes any remaining Child SAs negotiated under it."
+	// section 2.25.1: "If a peer receives a request to rekey a Child SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
+	ikeBusy := ctx != s.current || s.localRekey != nil || s.closing.Load() || s.ikeExpired(ctx)
 	s.stateMu.RUnlock()
 	if ikeBusy || s.retiringChild().LocalSPI != 0 {
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
