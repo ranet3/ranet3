@@ -378,6 +378,22 @@ func TestReloadRefusesMovingTheSourceCapEgressReturnsUnder(t *testing.T) {
 	}
 }
 
+// a reload making cap.route announce a prefix cap.egress advertises is refused, as a startup on that file is, and changes nothing
+func TestReloadRefusesAnnouncingAPrefixCapEgressAdvertises(t *testing.T) {
+	exit := &egress.Egress{Advertise: []schema.Prefix{schema.MustPrefix("198.51.100.0/24")}}
+	c, path, _, bus := reloadOf(t, func(old *config.Config) { old.Cap.Egress = exit })
+	old := c.config()
+	next := *old
+	joinedAndAnnounced(t, c, &next)
+	next.Cap.Route = &babel.Routes{Announce: announce("fd00:9::/64", "198.51.100.0/24")}
+	writeConfig(t, path, &next)
+	const naming = "cap.egress advertise 198.51.100.0/24 is announced by cap.route as well"
+	if err := c.ReloadFrom(path); err == nil || !strings.Contains(err.Error(), naming) {
+		t.Fatalf("the reload was answered with %v, want it to say %q", err, naming)
+	}
+	changedNothing(t, c, old, bus)
+}
+
 // speakerRecording gives c a speaker of its configuration that records on bus
 func speakerRecording(t *testing.T, c *Client, bus *events.Bus) {
 	t.Helper()
