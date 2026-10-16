@@ -60,6 +60,11 @@ const (
 	cookieLifetime                 = 2 * time.Minute
 	// RFC 2104 section 3 asks for a key at least as long as the HMAC-SHA-256 output
 	cookieSecretLen = 32
+	// the error notifies sent in the clear answer a fleet's redial after an outage, up to halfOpenLimit dials, and the rate refills them within internal/client's 10 second reconnect delay
+	statelessErrorBurst      = halfOpenLimit
+	statelessErrorsPerSecond = 32
+	// a flood of requests the limit holds back costs one line a minute
+	statelessHeldReport = time.Minute
 
 	// peers that never act on INVALID_KE_PAYLOAD redial every 30 to 90 seconds
 	handshakeFailureInterval = 10 * time.Minute

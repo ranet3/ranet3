@@ -2361,6 +2361,312 @@ func TestResponderAnswersAnIDiItCannotReadWithAuthenticationFailed(t *testing.T)
 	awaitHandshakeEnd(t, h, refused, held.spiI)
 }
 
+// RFC 7296 section 2.21.4: "A node needs to limit the rate at which it will send messages in response to unprotected messages."
+// with the one limit spent, the IKE_SA_INITs that draw an error notify in the clear that ends the exchange draw nothing: one at major version 3, one marking an unsupported payload critical and one offering only a cipher this end does not implement
+// section 2.6: "When a responder detects a large number of half-open IKE SAs, it SHOULD reply to IKE_SA_INIT requests with a response containing the COOKIE notification."
+// section 2.6.1: "There are two common reasons why the initiator may have to retry the IKE_SA_INIT exchange: the responder requests a cookie or wants a different Diffie-Hellman group than was included in the KEi payload."
+// the COOKIE that answers such a flood, the INVALID_KE_PAYLOAD that answers a KE in a group the offer leaves out and the answer that carries an IKE_SA_INIT forward are outside the limit
+func TestStatelessErrorAnswersShareOneLimit(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	spendStatelessErrors(t)
+	request := func(proposal Proposal, ahead []RawPayload) (*transport.Mux, []byte) {
+		t.Helper()
+		mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { mux.Close() })
+		spi := randUint64Nonzero()
+		if err := mux.RegisterIKE(spi); err != nil {
+			t.Fatal(err)
+		}
+		return mux, encodeTestSAInit(t, spi, bytes.Repeat([]byte{1}, 32), proposal, ahead)
+	}
+	withCipher := func(cipher, group uint16) Proposal {
+		return Proposal{Number: 1, Protocol: ProtoIKE, Transforms: []Transform{
+			{Type: TransEncr, ID: cipher, KeyLengthBits: 256},
+			{Type: TransPRF, ID: PRF_HMAC_SHA2_256},
+			{Type: TransDH, ID: group},
+		}}
+	}
+	for name, refused := range map[string]struct {
+		proposal Proposal
+		ahead    []RawPayload
+		version  uint8
+	}{
+		"at major version 3":                      {ikeProposal(), nil, 0x30},
+		"marking an unsupported payload critical": {ikeProposal(), []RawPayload{unsupportedCritical}, 0x20},
+		// ENCR_3DES, which this end does not implement
+		"offering only a cipher this end does not implement": {withCipher(3, DH_CURVE25519), nil, 0x20},
+	} {
+		mux, raw := request(refused.proposal, refused.ahead)
+		if err := mux.SendIKE(atVersion(raw, refused.version)); err != nil {
+			t.Fatal(err)
+		}
+		if reply, err := mux.RecvIKEUntil(time.Now().Add(quietPeriod)); err == nil {
+			t.Errorf("the IKE_SA_INIT %s drew notify %d with the limit spent", name, firstTestNotify(t, reply).Type)
+		}
+	}
+
+	h.responder.mu.Lock()
+	h.responder.halfOpen = cookieThreshold
+	h.responder.mu.Unlock()
+	mux, raw := request(ikeProposal(), nil)
+	if notify := firstTestNotify(t, statelessAnswer(t, mux, raw, "an IKE_SA_INIT under pressure drew no answer")); notify.Type != N_COOKIE {
+		t.Errorf("an IKE_SA_INIT under pressure drew notify %d with the limit spent, want COOKIE", notify.Type)
+	}
+	h.responder.mu.Lock()
+	h.responder.halfOpen = 0
+	h.responder.mu.Unlock()
+	// encodeTestSAInit writes its KE in X25519
+	mux, raw = request(withCipher(ENCR_AES_GCM_16, DH_ECP_256), nil)
+	if notify := firstTestNotify(t, statelessAnswer(t, mux, raw, "an IKE_SA_INIT with KE in a group its offer leaves out drew no answer")); notify.Type != N_INVALID_KE_PAYLOAD ||
+		!bytes.Equal(notify.Data, invalidKENotifyData(DH_ECP_256)) {
+		t.Errorf("an IKE_SA_INIT with KE in a group its offer leaves out drew notify %d naming %x with the limit spent, want INVALID_KE_PAYLOAD naming ECP_256", notify.Type, notify.Data)
+	}
+	mux, raw = request(ikeProposal(), nil)
+	if answer, err := DecodeMessage(statelessAnswer(t, mux, raw, "an IKE_SA_INIT drew no answer")); err != nil || answer.find(PayloadSA) == nil {
+		t.Errorf("an IKE_SA_INIT drew %+v (%v) with the limit spent, want the answer that carries it forward", answer, err)
+	}
+}
+
+// reconnectDelay is how long a dialer waits between attempts, internal/client's defaultReconnectDelay
+const reconnectDelay = 10 * time.Second
+
+// the limit holds a fleet's redial after an outage, as many dials as there are half-open slots, and refills before the next one
+func TestStatelessErrorLimitHoldsAFleetRedial(t *testing.T) {
+	if statelessErrorBurst < halfOpenLimit {
+		t.Errorf("the limit holds %d answers, fewer than the %d half-open SAs a redial can open", statelessErrorBurst, halfOpenLimit)
+	}
+	if refill := time.Duration(statelessErrorBurst * float64(time.Second) / statelessErrorsPerSecond); refill > reconnectDelay {
+		t.Errorf("the limit refills in %s, after the %s a dialer waits to redial", refill, reconnectDelay)
+	}
+}
+
+// spendStatelessErrors empties the one limit on error answers in the clear and stops its refill until the test ends
+func spendStatelessErrors(t *testing.T) {
+	t.Helper()
+	statelessErrors.mu.Lock()
+	perSecond := statelessErrors.perSecond
+	statelessErrors.tokens, statelessErrors.perSecond = 0, 0
+	statelessErrors.mu.Unlock()
+	t.Cleanup(func() {
+		statelessErrors.mu.Lock()
+		statelessErrors.tokens, statelessErrors.perSecond, statelessErrors.filled = statelessErrors.burst, perSecond, time.Now()
+		statelessErrors.mu.Unlock()
+	})
+}
+
+// a limit spent holds every answer back until it refills, one line an interval tells how many it held since the line before, and a refill stops at the burst
+func TestAnswerLimitHoldsAnswersBackAndSaysSoOnceAnInterval(t *testing.T) {
+	lines := recordLines(t)
+	held := func() []int64 {
+		var counts []int64
+		for _, count := range lines.said(slog.LevelWarn, "ike held back error answers to unprotected messages", "held") {
+			counts = append(counts, count.Int64())
+		}
+		return counts
+	}
+	limit := newAnswerLimit(2, 0)
+	for range 2 {
+		if !limit.take() {
+			t.Fatal("an answer within the burst was held back")
+		}
+	}
+	for range 5 {
+		if limit.take() {
+			t.Fatal("an answer went out with the burst spent and no refill")
+		}
+	}
+	if got := held(); !slices.Equal(got, []int64{1}) {
+		t.Fatalf("five answers held back wrote lines telling of %v, want one line, for the first", got)
+	}
+	// backdating the last line is the same as an interval passing, and does not make the test wait for it
+	limit.mu.Lock()
+	limit.said = limit.said.Add(-statelessHeldReport)
+	limit.mu.Unlock()
+	if limit.take() {
+		t.Fatal("an answer went out with the burst spent and no refill")
+	}
+	if got := held(); !slices.Equal(got, []int64{1, 5}) {
+		t.Errorf("the lines told of %v, want the next to tell of the four held since and this one", got)
+	}
+	limit.mu.Lock()
+	limit.perSecond, limit.filled = 1, limit.filled.Add(-time.Second)
+	limit.mu.Unlock()
+	if !limit.take() || limit.take() {
+		t.Error("a second of refill at one answer a second let other than one answer out")
+	}
+	idle := newAnswerLimit(2, 1)
+	idle.mu.Lock()
+	idle.filled = idle.filled.Add(-time.Hour)
+	idle.mu.Unlock()
+	taken := 0
+	for range 3 {
+		if idle.take() {
+			taken++
+		}
+	}
+	if taken != 2 {
+		t.Errorf("an hour of refill at one answer a second let %d of 3 answers out, want the burst of two", taken)
+	}
+}
+
+// lineRecorder keeps every line logged while it is the default, from any goroutine
+type lineRecorder struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+// recordLines makes a new lineRecorder the default until the test ends
+func recordLines(t *testing.T) *lineRecorder {
+	t.Helper()
+	lines := &lineRecorder{}
+	logtest.SetDefault(t, slog.New(lines))
+	return lines
+}
+
+// said is the value of the attribute key in each line logged at level with message, in the order they were logged
+func (l *lineRecorder) said(level slog.Level, message, key string) []slog.Value {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var values []slog.Value
+	for _, record := range l.records {
+		if record.Level != level || record.Message != message {
+			continue
+		}
+		var value slog.Value
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key == key {
+				value = attr.Value
+			}
+			return attr.Key != key
+		})
+		values = append(values, value)
+	}
+	return values
+}
+
+func (l *lineRecorder) Enabled(context.Context, slog.Level) bool { return true }
+func (l *lineRecorder) Handle(_ context.Context, r slog.Record) error {
+	l.mu.Lock()
+	l.records = append(l.records, r.Clone())
+	l.mu.Unlock()
+	return nil
+}
+func (l *lineRecorder) WithAttrs([]slog.Attr) slog.Handler { return l }
+func (l *lineRecorder) WithGroup(string) slog.Handler      { return l }
+
+// RFC 7296 section 2.5: "If an endpoint receives a message with a higher major version number, it MUST drop the message and SHOULD send an unauthenticated Notify message of type INVALID_MAJOR_VERSION containing the highest (closest) version number it supports."
+// an unclaimed request at major version 3 is answered so whatever its exchange
+// section 3.1 on the minor version: "They MUST ignore the minor version number of received messages."
+// section 3.1 on the X bits: "'X' bits MUST be cleared when sending and MUST be ignored on receipt."
+// section 3.1 on the V bit: "Implementations of IKEv2 MUST clear this bit when sending and MUST ignore it in incoming messages."
+// so an IKE_SA_INIT at version 2.1 with the V bit and every X bit set is answered as one at 2.0 is
+func TestResponderAnswersOnlyAHigherMajorVersionWithInvalidMajorVersion(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	// one mux for each SPI, so a late copy of one answer cannot be read as the next
+	muxFor := func(spi uint64) *transport.Mux {
+		mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { mux.Close() })
+		if err := mux.RegisterIKE(spi); err != nil {
+			t.Fatal(err)
+		}
+		return mux
+	}
+
+	saInit, _ := buildTestSAInit(t)
+	informational := encodeTestMessage(t, Header{SPIInitiator: randUint64Nonzero(), SPIResponder: randUint64Nonzero(), ExchangeType: INFORMATIONAL, MessageID: 7}, nil)
+	for _, request := range [][]byte{saInit, informational} {
+		header, err := decodeHeader(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reply := statelessAnswer(t, muxFor(header.SPIInitiator), atVersion(request, 0x30), "a request at major version 3 drew no answer")
+		wantMajorVersionRefusal(t, reply, *header)
+	}
+
+	minor, spiI := buildTestSAInit(t)
+	ignoring := atVersion(minor, 0x21)
+	ignoring[19] |= FlagVersion | 0xc7
+	reply := statelessAnswer(t, muxFor(spiI), ignoring, "an IKE_SA_INIT at version 2.1 drew no answer")
+	if answer, err := DecodeMessage(reply); err != nil || answer.find(PayloadSA) == nil {
+		t.Fatalf("an IKE_SA_INIT at version 2.1 drew notify %d, want the answer one at 2.0 draws", firstTestNotify(t, reply).Type)
+	}
+	// section 2.5: "If it receives a message with a major version that it supports, it MUST respond with that version number."
+	if reply[17] != 0x20 {
+		t.Errorf("the answer's version octet is %#x, want 2.0", reply[17])
+	}
+	// section 3.1 on the I bit: "This bit MUST be set in messages sent by the original initiator of the IKE SA and MUST be cleared in messages sent by the original responder."
+	if reply[19] != FlagResponse {
+		t.Errorf("the answer's flags are %#x, want the Response bit alone", reply[19])
+	}
+}
+
+// RFC 7296 section 2.5: "If an endpoint receives a message with a higher major version number, it MUST drop the message and SHOULD send an unauthenticated Notify message of type INVALID_MAJOR_VERSION containing the highest (closest) version number it supports."
+// section 3.1 on the minor version: "They MUST ignore the minor version number of received messages."
+// section 2.21.4: "If a response is sent, the response MUST be sent to the IP address and port from where it came with the same IKE SPIs and the Message ID copied."
+// an IKE_AUTH at major version 3 that authenticates under the half-open SA is answered so and not taken for the IKE_AUTH, and one in the clear from another address is answered at that address, so the half-open SA answers the one at version 2.1 with the V bit and every X bit set after them
+func TestResponderAnswersAHigherMajorVersionWhileItWaitsForIKEAuth(t *testing.T) {
+	refused := &recorder{}
+	h := childRefusedHarness(t, refused.record)
+	mux := childRefusedMux(t, h)
+	held, _, _ := initHalfOpen(t, mux)
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	if err := mux.SendIKE(sealedAtVersion(t, 0x30, held.suite, held.skei, header, nil)); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		reply, err := mux.RecvIKEUntil(time.Now().Add(answerBudget))
+		if err != nil {
+			t.Fatalf("the IKE_AUTH at major version 3 drew no answer: %v", err)
+		}
+		// a late copy of the IKE_SA_INIT answer, which initHalfOpen may have asked for twice
+		if repeat, err := decodeHeader(reply); err == nil && repeat.ExchangeType == IKE_SA_INIT {
+			continue
+		}
+		wantMajorVersionRefusal(t, reply, header)
+		break
+	}
+	elsewhere := listenPeer(t)
+	if _, err := elsewhere.WriteToUDP(withNonESPMarker(atVersion(encodeTestMessage(t, header, nil), 0x30)), &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: h.remotePort}); err != nil {
+		t.Fatal(err)
+	}
+	if err := elsewhere.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2048)
+	n, _, err := elsewhere.ReadFromUDP(buf)
+	if err != nil || n <= 4 {
+		t.Fatalf("the IKE_AUTH at major version 3 from another address drew no answer there: %d bytes, %v", n, err)
+	}
+	wantMajorVersionRefusal(t, slices.Clone(buf[4:n]), header)
+
+	// section 3.1 on the X bits: "'X' bits MUST be cleared when sending and MUST be ignored on receipt."
+	// section 3.1 on the V bit: "Implementations of IKEv2 MUST clear this bit when sending and MUST ignore it in incoming messages."
+	header.Flags |= FlagVersion | 0xc7
+	// an IKE_AUTH carrying no IDi or AUTH, which the half-open SA refuses
+	if err := mux.SendIKE(sealedAtVersion(t, 0x21, held.suite, held.skei, header, nil)); err != nil {
+		t.Fatal(err)
+	}
+	answer, inner, raw := responderMessage(t, mux, held)
+	if answer.ExchangeType != IKE_AUTH || answer.MessageID != 1 || !notified(inner, N_AUTHENTICATION_FAILED, nil) {
+		t.Fatalf("the IKE_AUTH at version 2.1 after it drew exchange %d at Message ID %d carrying %v, want AUTHENTICATION_FAILED at 1", answer.ExchangeType, answer.MessageID, inner)
+	}
+	// section 2.5: "If it receives a message with a major version that it supports, it MUST respond with that version number."
+	if raw[17] != 0x20 {
+		t.Errorf("the answer's version octet is %#x, want 2.0", raw[17])
+	}
+	// section 3.1 on the I bit: "This bit MUST be set in messages sent by the original initiator of the IKE SA and MUST be cleared in messages sent by the original responder."
+	if raw[19] != FlagResponse {
+		t.Errorf("the answer's flags are %#x, want the Response bit alone", raw[19])
+	}
+	awaitHandshakeEnd(t, h, refused, held.spiI)
+}
+
 // Anyone who can reach the port can make a handshake fail, so the line has to
 // be rare, but at debug it was invisible at the default level, and an operator
 // looking at "that peer cannot connect" had nothing on this side to read. Both
@@ -2461,6 +2767,12 @@ func TestResponderDropsAResponseNoExchangeWaitsFor(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("a request no SA holds was not recorded as a failed handshake either")
 		}
+	}
+	// section 2.21.4 on a message marked as a request: "MAY send a response."
+	// this end sends none, which also holds it to section 1.5 on the message a node sends about a packet no SA of its own takes: "This message is not part of an INFORMATIONAL exchange, and the receiving node MUST NOT respond to it because doing so could cause a message loop."
+	_ = peer.SetReadDeadline(time.Now().Add(quietPeriod))
+	if _, _, err := peer.ReadFromUDP(make([]byte, 2048)); err == nil {
+		t.Error("the responder answered a request no SA holds")
 	}
 }
 

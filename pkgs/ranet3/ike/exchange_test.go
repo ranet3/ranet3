@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -190,5 +191,133 @@ func TestSendRecvSendsAnUnansweredRequestAgain(t *testing.T) {
 	}
 	if !bytes.Equal(raw, answer) {
 		t.Errorf("returned %x, want the answer to the second copy %x", raw, answer)
+	}
+}
+
+// RFC 7296 section 2.5: "If an endpoint receives a message with a higher major version number, it MUST drop the message and SHOULD send an unauthenticated Notify message of type INVALID_MAJOR_VERSION containing the highest (closest) version number it supports."
+// section 2.21.4: "If a response is sent, the response MUST be sent to the IP address and port from where it came with the same IKE SPIs and the Message ID copied."
+// a request at major version 3 that reaches an exchange's wait from an address other than the peer's is answered so at that address and handed to nothing, and a response at it sent from there first is neither taken nor answered
+// section 3.1 on the minor version: "They MUST ignore the minor version number of received messages."
+// section 3.1 on the X bits: "'X' bits MUST be cleared when sending and MUST be ignored on receipt."
+// section 3.1 on the V bit: "Implementations of IKEv2 MUST clear this bit when sending and MUST ignore it in incoming messages."
+// so the request and the response after them, at version 2.1 with the V bit and every X bit set, are handed on and taken
+func TestExchangeAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.Close()
+	header := Header{SPIInitiator: randUint64Nonzero(), SPIResponder: randUint64Nonzero(),
+		ExchangeType: INFORMATIONAL, Flags: FlagInitiator, MessageID: 4}
+	request := encodeTestMessage(t, header, nil)
+	answered := header
+	answered.Flags = FlagResponse
+	answer := encodeTestMessage(t, answered, nil)
+	asked := Header{SPIInitiator: header.SPIInitiator, SPIResponder: header.SPIResponder, ExchangeType: INFORMATIONAL, MessageID: 0}
+	ignoring := func(h Header) []byte {
+		h.Flags |= FlagVersion | 0xc7
+		return atVersion(encodeTestMessage(t, h, nil), 0x21)
+	}
+	laterRequest, laterAnswer := ignoring(asked), ignoring(answered)
+	elsewhere := listenPeer(t)
+	peerLoop(t, peer, func() {
+		buf := make([]byte, 2048)
+		_ = peer.SetReadDeadline(time.Now().Add(answerBudget))
+		_, from, err := peer.ReadFromUDP(buf)
+		if err != nil {
+			t.Errorf("read the request: %v", err)
+			return
+		}
+		for _, raw := range [][]byte{atVersion(answer, 0x30), atVersion(encodeTestMessage(t, asked, nil), 0x30)} {
+			if _, err := elsewhere.WriteToUDP(withNonESPMarker(raw), from); err != nil {
+				t.Errorf("write: %v", err)
+				return
+			}
+		}
+		_ = elsewhere.SetReadDeadline(time.Now().Add(answerBudget))
+		n, _, err := elsewhere.ReadFromUDP(buf)
+		if err != nil {
+			t.Errorf("the request at major version 3 drew no answer at the address it came from: %v", err)
+			return
+		}
+		wantMajorVersionRefusal(t, slices.Clone(buf[4:n]), asked)
+		for _, raw := range [][]byte{laterRequest, laterAnswer} {
+			if _, err := peer.WriteToUDP(withNonESPMarker(raw), from); err != nil {
+				t.Errorf("write: %v", err)
+				return
+			}
+		}
+	})
+
+	var handed [][]byte
+	raw, err := sendRecvWithin(mux, request, maxRetransmits, nil, func(raw []byte) bool { handed = append(handed, slices.Clone(raw)); return false })
+	if err != nil {
+		t.Fatalf("the exchange failed: %v", err)
+	}
+	if !bytes.Equal(raw, laterAnswer) {
+		t.Errorf("the exchange took %x, want the answer at version 2.1 %x", raw, laterAnswer)
+	}
+	if len(handed) != 1 || !bytes.Equal(handed[0], laterRequest) {
+		t.Errorf("the exchange handed on %x, want the request at version 2.1 alone", handed)
+	}
+}
+
+// atVersion is raw with the version octet of its header replaced
+func atVersion(raw []byte, version uint8) []byte {
+	out := slices.Clone(raw)
+	out[17] = version
+	return out
+}
+
+// sealedAtVersion is inner sealed under key in a message whose header carries version
+// the header is associated data, so the message authenticates as the holder of key sent it only when sealed under the version it carries
+func sealedAtVersion(t *testing.T, version uint8, suite SASuite, key []byte, header Header, inner []RawPayload) []byte {
+	t.Helper()
+	params, err := aeadParams(suite.EncrID, suite.EncrKeyBits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aead, err := newAEAD(suite.EncrID, key[:params.KeyLen])
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := PayloadNone
+	if len(inner) > 0 {
+		first = inner[0].Type
+	}
+	plain, iv := append(encodePayloadChain(inner), 0), make([]byte, params.IVLen)
+	raw, err := encryptMessagePlaintextIV(suite, key, header, nil, first, plain, iv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = atVersion(raw, version)
+	aad := raw[:HeaderLen+genericPayloadHeaderLen]
+	nonce := append(slices.Clone(key[params.KeyLen:]), iv...)
+	return aead.Seal(slices.Clone(raw[:len(aad)+len(iv)]), nonce, plain, aad)
+}
+
+// wantMajorVersionRefusal checks raw is the answer to request at a higher major version
+// RFC 7296 section 1.5: "In the second and third cases, the message is always sent without cryptographic protection (outside of an IKE SA), and includes either an INVALID_IKE_SPI or an INVALID_MAJOR_VERSION notification (with no notification data)."
+// section 1.5: "The message is a response message, and thus it is sent to the IP address and port from whence it came with the same IKE SPIs and the Message ID and Exchange Type are copied from the request. The Response flag is set to 1, and the version flags are set in the normal fashion."
+func wantMajorVersionRefusal(t *testing.T, raw []byte, request Header) {
+	t.Helper()
+	answer, err := DecodeMessage(raw)
+	if err != nil {
+		t.Errorf("the answer does not decode: %v", err)
+		return
+	}
+	header := answer.Header
+	if raw[17] != 0x20 || header.Flags&^(FlagInitiator|FlagResponse) != 0 {
+		t.Errorf("the answer's version octet is %#x with flags %#x, want 2.0 with no flag but Initiator and Response", raw[17], header.Flags)
+	}
+	if header.SPIInitiator != request.SPIInitiator || header.SPIResponder != request.SPIResponder ||
+		header.ExchangeType != request.ExchangeType || header.MessageID != request.MessageID ||
+		!header.IsResponse() || header.IsInitiator() == request.IsInitiator() {
+		t.Errorf("the answer's header is %+v, want the SPIs, exchange and Message ID of %+v in a response from its other end", header, request)
+	}
+	if !notified(answer.Payloads, N_INVALID_MAJOR_VERSION, nil) {
+		t.Errorf("the answer carries %v, want INVALID_MAJOR_VERSION and nothing else", answer.Payloads)
 	}
 }

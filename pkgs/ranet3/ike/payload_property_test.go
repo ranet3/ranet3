@@ -46,14 +46,15 @@ func drawBody(tc hegel.TestCase) []byte {
 	return drawBytes(tc, 300, 255-genericPayloadHeaderLen, 256-genericPayloadHeaderLen)
 }
 
-// chainTypes are the payload types a chain can carry before its end. Zero
-// ends a chain, and SK has to be the last payload of a message.
+// chainTypes are the payload types a chain can carry before its end, and the
+// types SK can carry. Zero ends a chain, SK has to be the last payload of a
+// message, and SK carries no other SK.
 var chainTypes = withEdges(
 	hegel.Filter(hegel.Integers[PayloadType](1, 255), func(t PayloadType) bool { return t != PayloadSK }),
 	1, PayloadSK-1, PayloadSK+1, 255)
 
-// innerTypes are the payload types the chain inside SK can carry, where only
-// zero, which ends it, is out.
+// innerTypes are the payload types a chain read on its own can carry, where
+// only zero, which ends it, is out.
 var innerTypes = withEdges(hegel.Integers[PayloadType](1, 255), 1, PayloadSK, 255)
 
 // drawPayloads draws up to most payloads of the given types.
@@ -146,9 +147,9 @@ func TestMessageRoundTrips(t *testing.T) {
 	})
 }
 
-// The chain inside an SK payload reads back as written. Here any type but
-// zero may appear anywhere, SK among them, because nothing follows the chain
-// but the padding.
+// A payload chain reads back as written. Here any type but zero may appear
+// anywhere, SK among them, because nothing follows the chain but the padding,
+// and the chain alone does not know whether SK holds it.
 func TestPayloadChainRoundTrips(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		want := drawPayloads(ht, innerTypes, 6)
@@ -416,8 +417,8 @@ var skSuites = []skSuite{
 
 // An encrypted message reads back as what it was built from: the header, the
 // cleartext payloads ahead of SK, and, once SK decrypts under the same key,
-// the payloads inside it, for every suite, any key and IV, and any payloads.
-// Everything after IKE_SA_INIT travels this way.
+// the payloads inside it, for every suite, any key and IV, and any payloads SK
+// can carry. Everything after IKE_SA_INIT travels this way.
 func TestSKRoundTrips(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		drawn := hegel.Draw(ht, hegel.SampledFrom(skSuites))
@@ -430,7 +431,7 @@ func TestSKRoundTrips(t *testing.T) {
 		iv := hegel.Draw(ht, hegel.Binary(params.IVLen, params.IVLen))
 		header := drawHeader(ht)
 		cleartext := drawPayloads(ht, chainTypes, 2)
-		inner := drawPayloads(ht, innerTypes, 4)
+		inner := drawPayloads(ht, chainTypes, 4)
 
 		raw, err := encryptMessageIV(suite, key, header, cleartext, inner, iv)
 		if err != nil {
