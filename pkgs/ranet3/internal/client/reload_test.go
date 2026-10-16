@@ -765,7 +765,10 @@ func TestReloadTurningListenOffClosesAnsweredSessionsAndOnAnswersAgain(t *testin
 	a.client.dialRetry, hub.client.dialRetry = longDialRetry, longDialRetry
 	runListen(t, a, hub, d)
 	waitFor(t, convergeBudget, "hub's dialed session with d", func() bool { return held(hub, d) != nil })
-	waitFor(t, convergeBudget, "hub's answered session with a", func() bool { return held(hub, a) != nil })
+	// a session is recorded only once it holds its path
+	waitFor(t, convergeBudget, "hub to record its answered session with a", func() bool {
+		return len(sessionEvents(hub, a, "ike.session.established")) > 0
+	})
 	if got := sessionEvents(hub, a, "ike.session.established"); len(got) != 1 || got[0].Attrs["role"] != "responder" {
 		t.Fatalf("hub holds a by %v, want the one session it answered, so this proves nothing", got)
 	}
@@ -775,6 +778,8 @@ func TestReloadTurningListenOffClosesAnsweredSessionsAndOnAnswersAgain(t *testin
 	if err := hub.client.ReloadFrom(writeListenPath(t, hub, true)); err != nil {
 		t.Fatalf("dialing a as well was refused: %v", err)
 	}
+	// a dialer that first looks after listen went off finds no session and dials without the wake
+	waitFor(t, convergeBudget, "hub's dialer for a to stand down", dialerStandingDown)
 
 	if err := hub.client.ReloadFrom(writeListenPath(t, hub, false)); err != nil {
 		t.Fatalf("turning link.listen off was refused: %v", err)
