@@ -78,15 +78,20 @@ func TestTUNStreamKeepsFlowingThroughABlackHole(t *testing.T) {
 	alpha, bravo, farLink := newHoleMesh(t, far)
 	t.Cleanup(func() { t.Logf("alpha's search: %q", searchRecord(alpha.events)) })
 	run(t, alpha, bravo)
-	var peer *netstack.Peer
 	waitFor(t, convergeBudget, "alpha forwarding to bravo's prefix and bravo to alpha's", func() bool {
 		found, ok := alpha.client.Mesh.Routes.Lookup(netip.Addr{}, bravoHost.Addr())
-		peer = found
 		back, backOK := bravo.client.Mesh.Routes.Lookup(netip.Addr{}, alphaHost.Addr())
 		return ok && found != nil && backOK && back != nil
 	})
+	// looked up on every poll, since a simultaneous open replaces the first session and its peer with it
+	settledAt := func(mtu int) func() bool {
+		return func() bool {
+			found, ok := alpha.client.Mesh.Routes.Lookup(netip.Addr{}, bravoHost.Addr())
+			return ok && found != nil && found.MTU() == mtu
+		}
+	}
 	settled := esp.Inner(holeWire, 20)
-	waitFor(t, convergeBudget, fmt.Sprintf("alpha's session to bravo to settle at %d", settled), func() bool { return peer.MTU() == settled })
+	waitFor(t, convergeBudget, fmt.Sprintf("alpha's session to bravo to settle at %d", settled), settledAt(settled))
 
 	var listener net.Listener
 	if err := far.do(func() (err error) {
@@ -153,7 +158,7 @@ func TestTUNStreamKeepsFlowingThroughABlackHole(t *testing.T) {
 		t.Fatalf("narrow the hole: %v", err)
 	}
 	narrowed := esp.Inner(holeNarrowed, 20)
-	waitFor(t, streamWait, fmt.Sprintf("alpha's session to bravo to settle at %d under the stream", narrowed), func() bool { return peer.MTU() == narrowed })
+	waitFor(t, streamWait, fmt.Sprintf("alpha's session to bravo to settle at %d under the stream", narrowed), settledAt(narrowed))
 	flowing("the stream to carry another mebibyte through the narrowed hole")
 	close(stop)
 	if err := <-wrote; err != nil {
