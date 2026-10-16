@@ -67,6 +67,7 @@ func TestDarwinBoundSocketNeedsAScopedDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("the host's own traffic leaves by %s (index %d) via %s", device.Name, host, gateway)
+	startWithNoScopedDefault(t, host)
 
 	target := netip.MustParseAddr("192.0.2.1")
 	if err := boundReach(0, target); err != nil {
@@ -120,7 +121,7 @@ func TestDarwinBoundSocketNeedsAScopedDefault(t *testing.T) {
 	if err := underlay.Prepare(host); err != nil {
 		t.Fatal(err)
 	}
-	if covered, err := underlay.Ready(); err != nil || !covered.V4 {
+	if covered, err := underlay.Ready(Covered{V4: true}); err != nil || !covered.V4 {
 		t.Fatalf("cover the underlay: covered %+v, err %v", covered, err)
 	}
 	if err := underlay.Settle(host); err != nil {

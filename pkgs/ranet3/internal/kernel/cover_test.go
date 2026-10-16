@@ -610,14 +610,15 @@ func TestRefusedWithholdingRouteMovesNothingWhileRefused(t *testing.T) {
 	}
 }
 
-// A route that captures the machine and is not a cover member still needs the
-// underlay's own default, beside a cover that does not.
+// A route over the zero address still needs the underlay's own default,
+// beside a cover that does not.
 func TestCaptureBesideTheCoverStillAsksTheUnderlay(t *testing.T) {
 	reconciler, fake, set := coveringHarness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
 	capture := &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
 	reconciler.rt.Capture = capture
 	reconciler.now = func() time.Time { return start }
 	set(prefix("0.0.0.0/0"))
+	set(prefix("::/0"))
 	set(prefix("0.0.0.0/24"))
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
@@ -625,11 +626,12 @@ func TestCaptureBesideTheCoverStillAsksTheUnderlay(t *testing.T) {
 	if fake.has(Route{Destination: prefix("0.0.0.0/24")}) {
 		t.Error("a route holding the zero address installed with the underlay uncovered")
 	}
-	if members, _ := coverHeld(fake); members != 8 {
-		t.Errorf("the cover is %d members beside an uncovered capture, want 8", members)
+	if members, _ := coverHeld(fake); members != 16 {
+		t.Errorf("the cover is %d members beside an uncovered capture, want 16", members)
 	}
-	if !slices.ContainsFunc(capture.at, func(s string) bool { return strings.HasPrefix(s, "asked") }) {
-		t.Errorf("a capture that is not a cover never asked the underlay: %v", capture.at)
+	// the family of the capture alone, since the covers need nothing of it
+	if want := []Covered{{V4: true}}; !slices.Equal(capture.wants, want) {
+		t.Errorf("the underlay was asked to cover %v, want %v", capture.wants, want)
 	}
 }
 
@@ -660,6 +662,34 @@ func TestScopedRouteWithholdsNoMember(t *testing.T) {
 		}
 		if _, v6 := coverMembers(fake); v6 != 8 {
 			t.Errorf("pass %d holds %d IPv6 members beside a scoped 2000::/3 from a source, want 8: %v", pass, v6, fake.snapshot())
+		}
+	}
+}
+
+// A capture the platform scopes takes none of the machine's unscoped lookups,
+// so it asks the underlay for nothing and goes in with the underlay
+// uncovered: the hold Babel keeps at a retracted default, and a default from
+// a source.
+func TestScopedCaptureAsksTheUnderlayForNothing(t *testing.T) {
+	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
+	reconciler.plat = scopingCoveringKernel{fake}
+	capture := &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
+	reconciler.rt.Capture = capture
+	reconciler.now = func() time.Time { return start }
+	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), netstack.Unreachable)
+	table.Set(prefix("2001:db8:bb::/48"), prefix("::/0"), nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(capture.wants, func(want Covered) bool { return want != (Covered{}) }) {
+		t.Errorf("a scoped capture asked the underlay to cover %v", capture.wants)
+	}
+	for _, route := range []Route{
+		{Destination: prefix("0.0.0.0/0"), Unreachable: true, Metric: holdMetric},
+		{Destination: prefix("::/0"), Source: prefix("2001:db8:bb::/48"), Metric: defaultIPv6Metric},
+	} {
+		if !fake.has(route) {
+			t.Errorf("%+v was held back with the underlay uncovered: %v", route, fake.snapshot())
 		}
 	}
 }

@@ -322,9 +322,11 @@ func answering(t *testing.T, reaches map[bool]error) {
 //
 // Warning per family would warn on every single-stack uplink, which is an
 // ordinary host and not a fault, so the report is made only where neither
-// family can get off the link. And the two messages differ, because a scoped
-// default this tool wrote and did not help is a different thing to go looking
-// at than an interface whose routing nothing here writes.
+// family can get off the link. And the two messages differ, because an
+// interface whose routing this node manages, which may or may not hold a
+// default it wrote, is a different thing to go looking at than one whose
+// routing nothing here writes. The routed detail claims no write, since
+// routed says only that Runtime.Routes prepared the interface.
 func TestBoundReachIsReportedOnlyWhenNeitherFamilyWorks(t *testing.T) {
 	unreach := unix.ENETUNREACH
 	for name, test := range map[string]struct {
@@ -332,16 +334,19 @@ func TestBoundReachIsReportedOnlyWhenNeitherFamilyWorks(t *testing.T) {
 		index   int
 		routed  bool
 		want    string
+		detail  string
 	}{
 		"neither family reaches, and nothing wrote that interface's routing": {
 			reaches: map[bool]error{true: unreach, false: unreach},
 			index:   7,
 			want:    "cannot reach off",
+			detail:  "nothing here writes that interface's routing, so give it a default scoped to it, route -n add -net 0.0.0.0/0 <next hop> -ifscope <interface>",
 		},
-		"neither family reaches although the scoped default was written": {
+		"neither family reaches on an interface this node prepared": {
 			reaches: map[bool]error{true: unreach, false: unreach},
 			index:   7, routed: true,
-			want: "still cannot reach off",
+			want:   "still cannot reach off",
+			detail: "this node writes a default scoped to that interface only for a family whose zero address an unscoped route out of another interface holds or is about to hold, so see which route a lookup scoped to it finds, route -n get [-inet6] -ifscope <interface> <probe>",
 		},
 		"only IPv6 reaches, which is an ordinary IPv6-only uplink": {
 			reaches: map[bool]error{true: unreach},
@@ -373,6 +378,9 @@ func TestBoundReachIsReportedOnlyWhenNeitherFamilyWorks(t *testing.T) {
 			}
 			if test.want == "" {
 				return
+			}
+			if !strings.Contains(got, "detail="+strconv.Quote(test.detail)) {
+				t.Errorf("the report reads %s, want its detail to be %q", got, test.detail)
 			}
 			// Both probes named, since an operator reading this has to know
 			// which destinations were asked about.
@@ -450,10 +458,10 @@ func TestUnboundUnderlayReportsReady(t *testing.T) {
 	}
 }
 
-// recordingRoutes is the routing a bound socket depends on, which on darwin is
-// a default scoped to the interface it is bound to. It records the order of
-// every call against the interface the socket was on at the time, because the
-// order is the property under test.
+// recordingRoutes stands in for Runtime.Routes, which on darwin writes a
+// default scoped to the interface a socket is bound to while a family needs
+// one. It records the order of every call against the interface the socket
+// was on at the time, because the order is the property under test.
 type recordingRoutes struct {
 	hub *Hub
 	mu  sync.Mutex
@@ -484,7 +492,8 @@ func (r *recordingRoutes) calls() []string {
 // A move makes the interface the socket is going to usable before the socket
 // moves onto it, and clears the one it left only after. On this platform a
 // bound socket still reads the shared forwarding table, so a socket on an
-// interface whose scoped default has already gone reaches nothing at all.
+// interface whose scoped default has already gone reaches nothing at all
+// while a family needed that default.
 func TestUnderlayPreparesAnInterfaceBeforeBindingToIt(t *testing.T) {
 	first, second := twoInterfaces(t)
 	links := newFakeLinks(first)

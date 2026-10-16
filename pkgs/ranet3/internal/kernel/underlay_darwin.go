@@ -37,13 +37,18 @@ import (
 // directly, so the fallback is never consulted. Measured: with it in place,
 // every set that stranded a bound socket reaches again.
 //
-// # Written whenever the socket is bound, not only under a capture
+// # Written only while a family needs it
 //
-// It duplicates the host's own default on the interface that already carries
-// it, so it costs nothing when nothing needs it, and it is idempotent. Writing
-// it only when the mesh looks like it is capturing meant a set that slipped
-// past the condition took the machine off the network with nothing to fall
-// back on. That whole class is gone once the route is simply always there.
+// A family needs it while an unscoped route containing its zero address
+// leaves by an interface other than the underlay's: the reconciler's own
+// capture that is not a cover member, or another program's, such as a
+// full-tunnel VPN's 0.0.0.0/1. Ready, once a pass, and Prepare, before the
+// socket moves, read the table and write the default for each such family,
+// and the first ask that finds the last such route gone withdraws it. With
+// only the cover installed nothing is written, so the host's own router
+// selection (RFC 4861 section 6.3.6) stays in charge of its default. Another
+// program's change wakes a pass (see routePlatform.open), so its capture
+// strands the socket for the settle and one pass at most.
 //
 // # Ownership, which is deliberately narrower than the tun's
 //
@@ -120,6 +125,8 @@ type UnderlayDefaults struct {
 	// pass forever. Recording that the key is satisfied costs nothing and
 	// claims nothing.
 	covered map[netip.Prefix]bool
+	// want is the families the reconciler's last Ready asked for.
+	want Covered
 	// warned bounds a repeated report to one line per transition.
 	warned map[netip.Prefix]bool
 }
@@ -205,7 +212,9 @@ func NewUnderlayDefaults(host Host, links defaultRoutes, mesh int, statePath str
 }
 
 // Prepare makes an interface usable by a socket bound to it, and is called
-// before the socket moves onto it. It reconciles rather than remembering: the
+// before the socket moves onto it. It writes only for the families that need
+// a scoped default there (see needs), and otherwise records the interface
+// and writes nothing. It reconciles rather than remembering: the
 // kernel drops this route on its own, clearing IFF_UP purges it and bringing
 // the interface back up does not restore it, so a record saying it was written
 // says nothing about whether it is there.
@@ -216,7 +225,23 @@ func (u *UnderlayDefaults) Prepare(index int) error {
 		return errUnderlayClosed
 	}
 	u.on = index
-	return u.ensure()
+	messages, err := u.readTable("cover the underlay")
+	if err != nil {
+		return err
+	}
+	need := u.needs(messages)
+	if need == (Covered{}) {
+		return nil
+	}
+	return u.ensure(messages, need)
+}
+
+// needs is the families that need a scoped default on u.on: the ones the
+// reconciler last wanted, and the ones another program's route over a zero
+// address takes from a socket bound there.
+func (u *UnderlayDefaults) needs(messages []route.Message) Covered {
+	foreign := zeroRoutes(messages, func(index int) bool { return index != u.mesh && index != u.on })
+	return Covered{V4: u.want.V4 || foreign.V4, V6: u.want.V6 || foreign.V6}
 }
 
 // Settle removes what was written for any interface but the one the socket is
@@ -232,30 +257,90 @@ func (u *UnderlayDefaults) Settle(index int) error {
 	return u.remove(func(held writtenDefault) bool { return held.index != index })
 }
 
-// Ready repairs the underlay's own routing and reports, per family, what it
-// can fall back on. The reconciler drops from its pass every capturing route
-// whose own family is uncovered, so such a route is neither installed nor left
-// behind.
+// Ready brings the underlay's own routing to what this pass needs and
+// reports, per family, what it can fall back on. want is the families of the
+// routes the reconciler would install unscoped over a zero address. A family
+// also needs the scoped default while another program's route holds its zero
+// address, and one nothing needs is withdrawn, unless the tun still holds a
+// route over that zero address, which the reconciler deletes later in the
+// same pass.
 //
 // Per family because the fallback is: a socket bound with IP_BOUND_IF resolves
 // the unspecified address of the destination's own family. A host reaching
 // IPv4 through the bound interface and IPv6 through another is an ordinary
 // dual-stack laptop, and one answer for the machine let ::/0 install over an
 // IPv6 underlay with nothing behind it.
-func (u *UnderlayDefaults) Ready() (Covered, error) {
+func (u *UnderlayDefaults) Ready(want Covered) (Covered, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.closed {
 		return Covered{}, errUnderlayClosed
 	}
-	if u.on == 0 {
-		return Covered{}, errors.New("kernel: the underlay socket is on no interface")
+	messages, err := u.readTable("cover the underlay")
+	if err != nil {
+		return Covered{}, err
 	}
-	err := u.ensure()
+	u.want = want
+	need := u.needs(messages)
+	held := zeroRoutes(messages, func(index int) bool { return u.mesh != 0 && index == u.mesh })
+	var errs []error
+	if err := u.remove(func(written writtenDefault) bool {
+		family := written.destination.Addr()
+		return !need.Has(family) && !held.Has(family)
+	}); err != nil {
+		errs = append(errs, err)
+	}
+	if need == (Covered{}) {
+		return Covered{}, errors.Join(errs...)
+	}
+	if u.on == 0 {
+		return Covered{}, errors.Join(append(errs, errors.New("kernel: the underlay socket is on no interface"))...)
+	}
+	errs = append(errs, u.ensure(messages, need))
 	return Covered{
 		V4: u.covered[netip.PrefixFrom(netip.IPv4Unspecified(), 0)],
 		V6: u.covered[netip.PrefixFrom(netip.IPv6Unspecified(), 0)],
-	}, err
+	}, errors.Join(errs...)
+}
+
+// zeroRoutes reports, per family, whether an unscoped route out of an
+// interface that counts accepts holds the family's zero address, the route
+// that takes a bound socket's fallback away
+// (TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress). A default is the
+// host's own, and an entry forwardsNothing names carries nothing out of
+// another interface.
+func zeroRoutes(messages []route.Message, counts func(index int) bool) Covered {
+	const forwardsNothing = unix.RTF_WASCLONED | unix.RTF_LLINFO | unix.RTF_REJECT | unix.RTF_BLACKHOLE |
+		unix.RTF_MULTICAST | unix.RTF_BROADCAST | unix.RTF_LOCAL
+	var out Covered
+	for _, message := range messages {
+		rm, ok := message.(*route.RouteMessage)
+		if !ok || rm.Type != unix.RTM_GET || rm.Flags&unix.RTF_IFSCOPE != 0 || rm.Flags&forwardsNothing != 0 || !counts(rm.Index) {
+			continue
+		}
+		destination, ok := dumpedPrefix(rm)
+		if !ok || destination.Bits() == 0 || !destination.Contains(unspecifiedOf(destination.Addr())) {
+			continue
+		}
+		if destination.Addr().Is4() {
+			out.V4 = true
+		} else {
+			out.V6 = true
+		}
+	}
+	return out
+}
+
+func (u *UnderlayDefaults) readTable(step string) ([]route.Message, error) {
+	rib, err := u.dump()
+	if err != nil {
+		return nil, fmt.Errorf("kernel: read the table to %s: %w", step, err)
+	}
+	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
+	if err != nil {
+		return nil, fmt.Errorf("kernel: parse the table to %s: %w", step, err)
+	}
+	return messages, nil
 }
 
 // HostDefaults reports which families the host has a default of its own for,
@@ -315,32 +400,18 @@ func (u *UnderlayDefaults) Close() error {
 	return errors.Join(errs...)
 }
 
-// captureHeld reports whether the mesh interface still holds a route that
-// takes this machine's own traffic, which is the one thing that must outlive
-// the underlay's fallback.
+// captureHeld reports whether the mesh interface still holds a route over a
+// zero address, the one thing that must outlive the underlay's fallback. A
+// cover member holds none.
 func (u *UnderlayDefaults) captureHeld() (bool, error) {
 	if u.mesh == 0 {
 		return false, nil
 	}
-	rib, err := u.dump()
+	messages, err := u.readTable("withdraw the underlay route")
 	if err != nil {
-		return false, fmt.Errorf("kernel: read the table before withdrawing the underlay route: %w", err)
+		return false, err
 	}
-	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
-	if err != nil {
-		return false, fmt.Errorf("kernel: parse the table before withdrawing the underlay route: %w", err)
-	}
-	for _, message := range messages {
-		rm, ok := message.(*route.RouteMessage)
-		if !ok || rm.Type != unix.RTM_GET || rm.Index != u.mesh || rm.Flags&unix.RTF_IFSCOPE != 0 {
-			continue
-		}
-		destination, ok := dumpedPrefix(rm)
-		if ok && capturesTheMachine(Route{Destination: destination}) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return zeroRoutes(messages, func(index int) bool { return index == u.mesh }) != (Covered{}), nil
 }
 
 // Written reports the routes this process currently holds in the kernel, for
@@ -364,10 +435,11 @@ func (u *UnderlayDefaults) Refused() []writtenDefault {
 	return out
 }
 
-// ensure brings the kernel to one scoped default per family on u.on, under the
-// next hop the host's own default of that family currently uses.
+// ensure brings the kernel to one scoped default on u.on for each family need
+// names, under the next hop the host's own default of that family currently
+// uses.
 //
-// It reads the table back rather than trusting the record. The record says
+// It reads the table back, in messages, rather than trusting the record. The record says
 // what this process wrote and is the whole of its claim to delete anything. It
 // is not evidence that the kernel still holds it, and the kernel drops this
 // route on an interface going down.
@@ -375,21 +447,16 @@ func (u *UnderlayDefaults) Refused() []writtenDefault {
 // A family whose default leaves by another interface is skipped and said out
 // loud: a route scoped to the interface the socket is bound to, pointing at a
 // next hop that is not on it, would be a black hole rather than a fallback.
-func (u *UnderlayDefaults) ensure() error {
+func (u *UnderlayDefaults) ensure(messages []route.Message, need Covered) error {
 	clear(u.covered)
 	if u.on == 0 {
 		return nil
 	}
-	rib, err := u.dump()
-	if err != nil {
-		return fmt.Errorf("kernel: read the table before covering the underlay: %w", err)
-	}
-	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
-	if err != nil {
-		return fmt.Errorf("kernel: parse the table before covering the underlay: %w", err)
-	}
 	var errs []error
 	for _, destination := range defaultPrefixes {
+		if !need.Has(destination.Addr()) {
+			continue
+		}
 		index, gateway, err := u.links.Default(destination.Addr())
 		switch {
 		case errors.Is(err, ErrNoDefaultRoute):
@@ -460,7 +527,7 @@ func (u *UnderlayDefaults) ensure() error {
 		}
 		slog.Info("kernel wrote a default scoped to the underlay interface",
 			"destination", destination, "interface_index", want.index, "next_hop", want.gateway,
-			"detail", "a socket bound to that interface has no route without it once the mesh holds the address space")
+			"detail", "a socket bound to that interface has no route without it while another program's route over this family's zero address leaves by another interface, or while this node's own capture over it is about to install or is installed")
 	}
 	return errors.Join(errs...)
 }

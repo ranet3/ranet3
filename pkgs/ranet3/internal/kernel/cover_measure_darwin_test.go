@@ -178,8 +178,51 @@ func hostDefault6(t *testing.T, mesh int) int {
 	return index
 }
 
+// startWithNoScopedDefault skips unless the interface carries no scoped
+// default of either family, and removes any that is still there when the test
+// ends. Whatever is left then is this test's, whatever the code under test did,
+// so a failing or reverted binary leaves no route on the host.
+func startWithNoScopedDefault(t *testing.T, index int) {
+	t.Helper()
+	device, err := net.InterfaceByIndex(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, is4 := range []bool{true, false} {
+		if scopedDefaultOn(t, index, is4) {
+			t.Skipf("%s already carries a scoped default, so what this process writes cannot be told apart", device.Name)
+		}
+	}
+	t.Cleanup(func() {
+		for _, is4 := range []bool{true, false} {
+			gateway, ok := scopedDefaultGateway(t, index, is4)
+			if !ok {
+				continue
+			}
+			args := []string{"-n", "delete"}
+			if !is4 {
+				args = append(args, "-inet6")
+			}
+			args = append(args, "-ifscope", device.Name, "default")
+			if gateway != "" {
+				args = append(args, gateway)
+			}
+			out, err := exec.Command("route", args...).CombinedOutput()
+			t.Logf("removed the default scoped to %s left at the end (IPv4 %v): route %v: %v %s", device.Name, is4, args, err, out)
+		}
+	})
+}
+
 // scopedDefaultOn reports a default of one family scoped to that interface.
 func scopedDefaultOn(t *testing.T, index int, is4 bool) bool {
+	t.Helper()
+	_, ok := scopedDefaultGateway(t, index, is4)
+	return ok
+}
+
+// scopedDefaultGateway finds a default of one family scoped to that interface
+// and names its next hop the way route(8) takes it, empty for a link gateway.
+func scopedDefaultGateway(t *testing.T, index int, is4 bool) (string, bool) {
 	t.Helper()
 	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
 	if err != nil {
@@ -195,11 +238,27 @@ func scopedDefaultOn(t *testing.T, index int, is4 bool) bool {
 	}
 	for _, message := range messages {
 		rm, ok := message.(*route.RouteMessage)
-		if ok && rm.Type == unix.RTM_GET && rm.Flags&unix.RTF_IFSCOPE != 0 && rm.Index == index && isDefaultKey(rm, destination) {
-			return true
+		if !ok || rm.Type != unix.RTM_GET || rm.Flags&unix.RTF_IFSCOPE == 0 || rm.Index != index || !isDefaultKey(rm, destination) {
+			continue
 		}
+		if len(rm.Addrs) <= unix.RTAX_GATEWAY {
+			return "", true
+		}
+		switch gateway := rm.Addrs[unix.RTAX_GATEWAY].(type) {
+		case *route.Inet4Addr:
+			return netip.AddrFrom4(gateway.IP).String(), true
+		case *route.Inet6Addr:
+			addr := netip.AddrFrom16(gateway.IP)
+			if addr.IsLinkLocalUnicast() {
+				if device, err := net.InterfaceByIndex(index); err == nil {
+					addr = addr.WithZone(device.Name)
+				}
+			}
+			return addr.String(), true
+		}
+		return "", true
 	}
-	return false
+	return "", false
 }
 
 // arrivesUnbound sends one datagram from an unbound socket and reports whether
