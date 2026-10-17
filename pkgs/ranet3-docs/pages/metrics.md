@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-10-16
+updated: 2026-10-17
 order: 90
 ---
 
@@ -79,7 +79,7 @@ The `peer` label is the path of the peer's session, such as
 | `ranet3_steered_total`                   | counter | none             | This node's own packets a steering policy encapsulated                                                  | always                                                          |
 | `ranet3_steer_dropped_total`             | counter | `reason`         | Packets a steering policy claimed and this node did not send, `too_large` or `no_route`                 | always                                                          |
 | `ranet3_kernel_routes_installed`         | gauge   | none             | Routes the kernel holds for the reconciler as of its last pass                                          | with `cap.table`                                                |
-| `ranet3_kernel_routes_skipped`           | gauge   | none             | Selected routes the last pass did not install                                                           | with `cap.table`                                                |
+| `ranet3_kernel_routes_skipped`           | gauge   | none             | Routes the platform refused in the last pass, and cover members left out with their family              | with `cap.table`                                                |
 | `ranet3_kernel_pass_timestamp_seconds`   | gauge   | none             | Unix time the last pass finished, 0 before the first                                                    | with `cap.table`                                                |
 | `ranet3_kernel_pass_failed`              | gauge   | none             | 1 when the last pass reported an error                                                                  | with `cap.table`                                                |
 | `ranet3_egress_rules_installed`          | gauge   | none             | Source translation rules the host holds for this node as of the last pass                               | with `cap.egress`                                               |
