@@ -607,6 +607,91 @@ func TestReloadHandsALiveSessionTheNewLinkMTU(t *testing.T) {
 	})
 }
 
+// a reload whose cap.crypto ike prf leaves out the PRF of a live IKE SA ends that session with a Delete
+// and its dialer dials again at once
+// the session that replaces it runs the PRF the lists hold
+// RFC 7296 section 2.18: "Because the rekeying exchange belongs to the old IKE SA, it is the old IKE SA's PRF that is used to generate SKEYSEED."
+func TestReloadLeavingOutTheSessionPRFDialsAgainAtOnce(t *testing.T) {
+	alpha, bravo := newLoopbackMesh(t)
+	// bravo answers and never dials
+	// so every session is one alpha dials
+	quiet := *bravo.cfg
+	quiet.Dial.To = nil
+	bravo.client.cfg.Store(&quiet)
+	// a dial after the reconnect delay comes after this test gives up
+	// so only one the replacement starts at once passes
+	alpha.client.dialRetry = 2 * convergeBudget
+	run(t, alpha, bravo)
+	established := func() []control.Event { return recorded(alpha.events, "ike.session.established") }
+	waitFor(t, convergeBudget, "alpha's first session", func() bool { return len(established()) == 1 })
+	if got := established()[0].Attrs["ike"]; got != "aes256gcm/sha384/x25519" {
+		t.Fatalf("alpha's first session runs %s", got)
+	}
+	if held := alpha.client.Sessions(); len(held) != 1 || held[0].IKECipher != "aes256gcm" || held[0].IKEPRF != "sha384" ||
+		held[0].IKEKex != "x25519" || held[0].ESPCipher != "aes256gcm" {
+		t.Errorf("alpha's control socket reports its session as %+v", held)
+	}
+
+	next := *alpha.cfg
+	next.Cap.Crypto = &ike.Crypto{IKE: ike.IKESuites{PRF: []string{"sha256"}}}
+	writeConfig(t, alpha.configPath, &next)
+	if err := alpha.client.ReloadFrom(alpha.configPath); err != nil {
+		t.Fatalf("a reload changing ike prf was refused: %v", err)
+	}
+	if reloads := recorded(alpha.events, "daemon.reload"); len(reloads) != 1 || reloads[0].Attrs["applied"] != "cap.crypto.ike.prf" {
+		t.Errorf("the reload was recorded as %+v, want it to name the list it applied", reloads)
+	}
+	waitFor(t, convergeBudget, "alpha's session under the PRF the lists hold", func() bool {
+		return len(established()) == 2 && established()[1].Attrs["ike"] == "aes256gcm/sha256/x25519"
+	})
+	if unlisted := recorded(alpha.events, "ike.suite.unlisted"); len(unlisted) != 1 || unlisted[0].Attrs["action"] != "replace" {
+		t.Errorf("the replacement was recorded as %+v", unlisted)
+	}
+	if ended := recorded(alpha.events, "ike.session.ended"); len(ended) == 0 || !strings.Contains(ended[0].Attrs["err"], ike.ErrPRFUnlisted.Error()) {
+		t.Errorf("the replaced session ended as %+v", ended)
+	}
+	waitFor(t, convergeBudget, "alpha's control socket to report the new session", func() bool {
+		held := alpha.client.Sessions()
+		return len(held) == 1 && held[0].IKEPRF == "sha256"
+	})
+}
+
+// a reload at the answering end whose cap.crypto ike prf leaves out the PRF of its live IKE SA ends that session with a Delete
+// and that end's dialer standing down behind the session dials at once
+func TestReloadAtTheAnsweringEndDialsAgainAtOnce(t *testing.T) {
+	alpha, bravo := newLoopbackMesh(t)
+	// alpha starts answering and never dialing
+	// so its first session is one bravo dials
+	// and the one it dials once woken is the one the preference rule keeps
+	quiet := *alpha.cfg
+	quiet.Dial.To = nil
+	alpha.client.cfg.Store(&quiet)
+	// a dial after the reconnect delay comes after this test gives up
+	// so only a dialer woken at once passes
+	alpha.client.dialRetry = 2 * convergeBudget
+	bravo.client.dialRetry = 2 * convergeBudget
+	run(t, alpha, bravo)
+	established := func() []control.Event { return recorded(alpha.events, "ike.session.established") }
+	waitFor(t, convergeBudget, "the session bravo dials", func() bool { return len(established()) == 1 })
+	// the file alpha was written with dials bravo
+	// so the dialer it starts finds the path held and stands down
+	if err := alpha.client.ReloadFrom(alpha.configPath); err != nil {
+		t.Fatalf("a reload adding alpha's dialer was refused: %v", err)
+	}
+	waitFor(t, convergeBudget, "alpha's dialer standing down behind the session bravo dialed", dialerStandingDown)
+
+	next := *alpha.cfg
+	next.Cap.Crypto = &ike.Crypto{IKE: ike.IKESuites{PRF: []string{"sha256"}}}
+	writeConfig(t, alpha.configPath, &next)
+	if err := alpha.client.ReloadFrom(alpha.configPath); err != nil {
+		t.Fatalf("a reload changing ike prf was refused: %v", err)
+	}
+	waitFor(t, convergeBudget, "alpha dialing a session under the PRF the lists hold", func() bool {
+		sessions := established()
+		return len(sessions) == 2 && sessions[1].Attrs["role"] == "initiator" && sessions[1].Attrs["ike"] == "aes256gcm/sha256/x25519"
+	})
+}
+
 // a session whose handshake ends while a reload runs takes the link.mtu that reload stores
 // the test holds bravo's session set, so bravo's first session waits in adopt with its handshake done
 // it then stores the default link.mtu as a reload does, while the session is outside the set the reload sweeps, and lets go

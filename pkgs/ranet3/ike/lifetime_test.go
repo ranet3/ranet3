@@ -156,7 +156,7 @@ func TestRekeyOutstandingAtTheLifetime(t *testing.T) {
 					closed := func(line string) bool { return strings.HasPrefix(line, "ike.sa.closed ") }
 					switch answer {
 					case "succeeds":
-						for deadline := time.Now().Add(answerBudget); !slices.Contains(pair.dialed.recorded(), "ike.rekey.completed "+ends); time.Sleep(recordPoll) {
+						for deadline := time.Now().Add(answerBudget); !slices.Contains(pair.dialed.recorded(), "ike.rekey.completed "+ends+" suite="+defaultSuite[sa]); time.Sleep(recordPoll) {
 							select {
 							case err := <-pair.initiatorDone:
 								t.Fatalf("the session ended with %v, its rekey not completed, and recorded %q", err, pair.dialed.recorded())
@@ -530,7 +530,7 @@ func TestIKESADeleteAtAChildSALifetimeWaitsForTheIKESARekey(t *testing.T) {
 	got := pair.dialed.recorded()
 	closes := slices.DeleteFunc(slices.Clone(got), func(line string) bool { return !strings.HasPrefix(line, "ike.sa.closed ") })
 	closed := "ike.sa.closed " + ends + "child reason=lifetime"
-	completed := slices.Index(got, "ike.rekey.completed "+ends+"ike")
+	completed := slices.Index(got, "ike.rekey.completed "+ends+"ike suite="+defaultSuite["ike"])
 	if completed < 0 || !slices.Equal(closes, []string{closed}) || slices.Index(got, closed) > completed {
 		t.Errorf("the session recorded %q, want one close, at the Child SA's lifetime and so before the IKE SA's rekey completed", got)
 	}
@@ -731,13 +731,14 @@ func TestTemporaryFailureForTheSpanClosesTheIKESA(t *testing.T) {
 // a rekey that succeeds ends the streak, on whichever path, so the TEMPORARY_FAILUREs after it start a new one rather than close the IKE SA a span after the first
 func TestRekeySucceedingInsideTheSpanStartsTheStreakOver(t *testing.T) {
 	ends := "testorg/client:2>testorg/server:1 sa=child"
+	rekeyed := "ike.rekey.completed " + ends + " suite=" + defaultSuite["child"]
 	for _, tc := range []struct {
 		name string
 		// succeed has the first rekey succeed and returns once it has
 		succeed func(t *testing.T, pair *refusingPair)
 	}{
 		{"scheduled", func(t *testing.T, pair *refusingPair) {
-			for deadline := time.Now().Add(answerBudget); !slices.Contains(pair.dialed.recorded(), "ike.rekey.completed "+ends); time.Sleep(recordPoll) {
+			for deadline := time.Now().Add(answerBudget); !slices.Contains(pair.dialed.recorded(), rekeyed); time.Sleep(recordPoll) {
 				if time.Now().After(deadline) {
 					t.Fatalf("the first rekey did not complete, the session recorded %q", pair.dialed.recorded())
 				}
@@ -765,7 +766,7 @@ func TestRekeySucceedingInsideTheSpanStartsTheStreakOver(t *testing.T) {
 					t.Fatalf("the session closed the IKE SA on the streak a successful rekey had ended, it recorded %q", got)
 				}
 				failed := 0
-				for _, line := range got[slices.Index(got, "ike.rekey.completed "+ends):] {
+				for _, line := range got[slices.Index(got, rekeyed):] {
 					if line == "ike.rekey.failed "+ends {
 						failed++
 					}
@@ -837,12 +838,16 @@ func TestSpentSequenceSpaceClosesTheIKESAUnlessARekeyReplacesIt(t *testing.T) {
 				held := time.Now().Add(2 * quietPeriod)
 				switch tc.answer {
 				case "refused before":
-					// the responder expects another cipher, so it refuses every rekey with NO_PROPOSAL_CHOSEN
+					// the responder expects another cipher and its lists hold that one alone, so it refuses every rekey with NO_PROPOSAL_CHOSEN
+					cipher := "chacha20poly1305"
 					if responder.Child.EncrID == ENCR_AES_GCM_16 {
 						responder.Child.EncrID, responder.Child.EncrKeyBits = ENCR_CHACHA20_POLY1305, 256
 					} else {
 						responder.Child.EncrID, responder.Child.EncrKeyBits = ENCR_AES_GCM_16, 128
+						cipher = "aes128gcm"
 					}
+					only := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{cipher}}})
+					responder.suites = func() Suites { return only }
 				case "refused":
 					refuseInstalls(responder, held)
 				case "succeeds":
@@ -981,7 +986,7 @@ func TestSessionKeepsItsSAsAcrossTheirLifetimes(t *testing.T) {
 			got := pair.dialed.recorded()
 			completed := 0
 			for _, line := range got {
-				if line == "ike.rekey.completed "+ends {
+				if line == "ike.rekey.completed "+ends+" suite="+defaultSuite[sa] {
 					completed++
 				}
 			}

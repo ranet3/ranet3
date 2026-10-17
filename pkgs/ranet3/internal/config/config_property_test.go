@@ -457,9 +457,9 @@ func segments() hegel.Generator[srv6.Segments] {
 	})
 }
 
-// cryptos draws cap.crypto. A rekey interval is long enough to hold any
-// margin and jitter drawn beside it, and the first retry never passes the
-// last, whichever of each pair is left at its default.
+// cryptos draws cap.crypto, each list left out or a run of distinct names it takes in drawn order
+// a rekey interval holds any margin and jitter drawn beside it
+// and the first retry never passes the last, whichever of each pair is left at its default
 func cryptos() hegel.Generator[ike.Crypto] {
 	intervals := unset(between(30*time.Minute, 24*time.Hour))
 	return hegel.Composite(func(tc hegel.TestCase) ike.Crypto {
@@ -475,8 +475,208 @@ func cryptos() hegel.Generator[ike.Crypto] {
 					Max:   hegel.Draw(tc, hegel.Optional(between(time.Minute, time.Hour))),
 				},
 			},
+			IKE: ike.IKESuites{Cipher: suiteList(tc, cipherNames), PRF: suiteList(tc, prfNames), Kex: suiteList(tc, kexNames)},
+			ESP: ike.ESPSuites{Cipher: suiteList(tc, cipherNames)},
 		}
 	})
+}
+
+// the names each cap.crypto list takes, in the order a list left out holds them
+var (
+	cipherNames = []string{"aes256gcm", "aes128gcm", "chacha20poly1305"}
+	prfNames    = []string{"sha384", "sha256"}
+	kexNames    = []string{"x25519", "p384", "p256"}
+	// postQuantum are the key exchanges a kex entry joins after a classical one
+	postQuantum = []string{"mlkem512", "mlkem768", "mlkem1024"}
+)
+
+// suiteList draws a list left out or a run of distinct names from every in the order drawn
+func suiteList(tc hegel.TestCase, every []string) []string {
+	if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
+		return nil
+	}
+	return someOf(tc, every)
+}
+
+// someOf draws a run of distinct names from every in the order drawn
+func someOf(tc hegel.TestCase, every []string) []string {
+	remaining := slices.Clone(every)
+	out := make([]string, 0, len(every))
+	for range hegel.Draw(tc, pbt.Spanning(1, len(every))) {
+		at := hegel.Draw(tc, hegel.Integers(0, len(remaining)-1))
+		out = append(out, remaining[at])
+		remaining = slices.Delete(remaining, at, at+1)
+	}
+	return out
+}
+
+// cryptoList is one cap.crypto list, under block and key in a file and named field in a refusal
+type cryptoList struct {
+	block, key, field string
+	every             []string
+}
+
+var cryptoLists = []cryptoList{
+	{"ike", "cipher", "ike cipher", cipherNames},
+	{"ike", "prf", "ike prf", prfNames},
+	{"ike", "kex", "ike kex", kexNames},
+	{"esp", "cipher", "esp cipher", cipherNames},
+}
+
+// defects names each defect a list can be written with, the list empty, a name written twice, a name the list does not take or one it takes in capitals
+// kex can also join a key exchange after a classical one or lead an entry with an ML-KEM name
+func defects(list cryptoList) []string {
+	if list.key == "kex" {
+		return []string{"empty", "twice", "unknown", "capitals", "joined", "leading"}
+	}
+	return []string{"empty", "twice", "unknown", "capitals"}
+}
+
+// defective is a run of names list takes with the defect kind drawn into it, with the words its refusal carries
+func defective(tc hegel.TestCase, list cryptoList, kind string) ([]string, string) {
+	names := someOf(tc, list.every)
+	insert := func(entry string) []string {
+		at := hegel.Draw(tc, hegel.Integers(0, len(names)))
+		return slices.Insert(names, at, entry)
+	}
+	switch kind {
+	case "empty":
+		return []string{}, fmt.Sprintf("cap.crypto %s is empty", list.field)
+	case "twice":
+		at := hegel.Draw(tc, hegel.Integers(0, len(names)-1))
+		again := at + 1
+		// half the time a name stands between the two, which a check of the neighbor alone misses
+		if len(names) > 1 && hegel.Draw(tc, hegel.Booleans()) {
+			at = hegel.Draw(tc, hegel.Integers(0, len(names)-2))
+			again = hegel.Draw(tc, hegel.Integers(at+2, len(names)))
+		}
+		return slices.Insert(names, again, names[at]), fmt.Sprintf("cap.crypto %s names %s twice", list.field, names[at])
+	case "unknown":
+		var others []string
+		for _, name := range slices.Concat(cipherNames, prfNames, kexNames, postQuantum, []string{"", "aes192gcm", "AES256GCM", "sha512", "x448", "p521", " x25519"}) {
+			if !slices.Contains(list.every, name) && !(list.key == "kex" && slices.Contains(postQuantum, name)) && !slices.Contains(others, name) {
+				others = append(others, name)
+			}
+		}
+		name := hegel.Draw(tc, hegel.SampledFrom(others))
+		return insert(name), fmt.Sprintf("cap.crypto %s names %q, which is not one of", list.field, name)
+	case "capitals":
+		name := strings.ToUpper(hegel.Draw(tc, hegel.SampledFrom(list.every)))
+		return insert(name), fmt.Sprintf("cap.crypto %s names %q, which is not one of", list.field, name)
+	case "joined":
+		// a classical exchange joined after another is refused as an ML-KEM one is
+		joined := postQuantum
+		if hegel.Draw(tc, hegel.Booleans()) {
+			joined = kexNames
+		}
+		entry := hegel.Draw(tc, hegel.SampledFrom(kexNames)) + "+" + hegel.Draw(tc, hegel.SampledFrom(joined))
+		return insert(entry), fmt.Sprintf("cap.crypto ike kex entry %q joins key exchanges", entry)
+	default:
+		leading := hegel.Draw(tc, hegel.SampledFrom(postQuantum))
+		entry := leading
+		if hegel.Draw(tc, hegel.Booleans()) {
+			entry += "+" + hegel.Draw(tc, hegel.SampledFrom(kexNames))
+		}
+		return insert(entry), fmt.Sprintf("cap.crypto ike kex entry %q starts with %s, which runs only after a classical key exchange", entry, leading)
+	}
+}
+
+// cryptoFile is the test node with a cap.crypto block writing each of lists that is not nil under its key, in the format of extension
+func cryptoFile(extension string, lists [][]string) string {
+	type entry struct{ key, value string }
+	blocks := map[string][]entry{}
+	for i, list := range cryptoLists {
+		if lists[i] == nil {
+			continue
+		}
+		quoted := make([]string, len(lists[i]))
+		for j, name := range lists[i] {
+			quoted[j] = strconv.Quote(name)
+		}
+		blocks[list.block] = append(blocks[list.block], entry{list.key, "[" + strings.Join(quoted, ", ") + "]"})
+	}
+	if extension == ".toml" {
+		var b strings.Builder
+		b.WriteString(nodeTOML + "[cap.crypto]\n")
+		for _, block := range []string{"ike", "esp"} {
+			if len(blocks[block]) > 0 {
+				fmt.Fprintf(&b, "[cap.crypto.%s]\n", block)
+			}
+			for _, e := range blocks[block] {
+				fmt.Fprintf(&b, "%s = %s\n", e.key, e.value)
+			}
+		}
+		return b.String()
+	}
+	// a flow mapping of double quoted strings reads the same as yaml and as json
+	var objects []string
+	for _, block := range []string{"ike", "esp"} {
+		if len(blocks[block]) == 0 {
+			continue
+		}
+		var members []string
+		for _, e := range blocks[block] {
+			members = append(members, fmt.Sprintf("%q: %s", e.key, e.value))
+		}
+		objects = append(objects, fmt.Sprintf("%q: {%s}", block, strings.Join(members, ", ")))
+	}
+	crypto := "{" + strings.Join(objects, ", ") + "}"
+	if extension == ".yaml" {
+		return nodeYAML + "cap:\n  crypto: " + crypto + "\n"
+	}
+	return `{"node": "example/laptop", "auth": {"key": "key.pem", "trust": "trust.json"},
+"link": {"port": 13000, "endpoints": [{"serial": "0", "family": "ip4"}]}, "dial": {"to": ["example/gateway"]},
+"cap": {"crypto": ` + crypto + `}}`
+}
+
+// the four cap.crypto lists load as written, names and order, in each of the three formats, where each is left out or a run of distinct names it takes
+// one defect drawn into one list is refused, naming the list and the defect, for each list and each defect it can carry
+func TestCryptoListsLoadAsWrittenOrAreRefusedByName(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		written := make([][]string, len(cryptoLists))
+		for i, list := range cryptoLists {
+			written[i] = suiteList(ht, list.every)
+		}
+		extension := hegel.Draw(ht, hegel.SampledFrom([]string{".toml", ".yaml", ".json"}))
+		for at, list := range cryptoLists {
+			for _, kind := range defects(list) {
+				lists := slices.Clone(written)
+				var want string
+				lists[at], want = defective(ht, list, kind)
+				if _, err := load(ht, extension, cryptoFile(extension, lists)); err == nil || !strings.Contains(err.Error(), want) {
+					ht.Fatalf("a %s file was refused with %v, want %q", extension, err, want)
+				}
+			}
+		}
+		cfg, err := load(ht, extension, cryptoFile(extension, written))
+		if err != nil {
+			ht.Fatalf("a %s file writing %q was refused: %v", extension, written, err)
+		}
+		read := [][]string{cfg.Cap.Crypto.IKE.Cipher, cfg.Cap.Crypto.IKE.PRF, cfg.Cap.Crypto.IKE.Kex, cfg.Cap.Crypto.ESP.Cipher}
+		for i, list := range cryptoLists {
+			if !slices.Equal(read[i], written[i]) || (read[i] == nil) != (written[i] == nil) {
+				ht.Fatalf("a %s file writing %s %q read back %q", extension, list.field, written[i], read[i])
+			}
+		}
+	})
+}
+
+// each format reads a list written as [] as a list holding nothing
+// the loader refuses that list
+// a list left out reads as the default
+func TestEmptyCryptoListIsRefusedInEveryFormat(t *testing.T) {
+	for _, extension := range []string{".toml", ".yaml", ".json"} {
+		for i, list := range cryptoLists {
+			lists := make([][]string, len(cryptoLists))
+			lists[i] = []string{}
+			if _, err := load(t, extension, cryptoFile(extension, lists)); err == nil || !strings.Contains(err.Error(), "cap.crypto "+list.field+" is empty") {
+				t.Errorf("a %s file writing %s empty drew %v, want it refused as empty", extension, list.field, err)
+			}
+		}
+		if _, err := load(t, extension, cryptoFile(extension, make([][]string, len(cryptoLists)))); err != nil {
+			t.Errorf("a %s file leaving every list out was refused: %v", extension, err)
+		}
+	}
 }
 
 // sources draws an egress source of one family: absent, the word auto, an

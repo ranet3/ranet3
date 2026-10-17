@@ -641,20 +641,17 @@ func damage(tc hegel.TestCase, b []byte) []byte {
 	return b
 }
 
-// Every decoder this package runs on bytes a peer sent returns, with an error
-// or with a value, and none of them panics: the header, the message and its
-// payload chain, the chain inside SK, SA proposals and their transforms along
-// with the selection that reads them, traffic selectors, notify, delete, KE,
-// nonce, identity and AUTH. A panic on a datagram would take the node down
-// from anywhere on the network. Each case tries arbitrary bytes up to 4096
-// long, with the lengths either side of a whole header among their edges, and
-// an encoding of each of those payloads with a few bytes damaged. It tries both
-// again as a message with its length field set to its size, which hands the
-// payload walker chains its length check would refuse. It tries every way each
-// encoding can be cut short, and the encoding whole, since every length field
-// is a place where a datagram cut short can make a decoder read past the end.
-// Some encodings misstate one length field on purpose, at the values where a
-// bound check off by one would let it through.
+// every decoder this package runs on bytes a peer sent returns, with an error or with a value
+// and none of them panics
+// they are the header, the message and its payload chain, the chain inside SK, SA proposals and their transforms with the selections reading them, traffic selectors, notify, delete, KE, nonce, identity and AUTH
+// a panic on a datagram would take the node down from anywhere on the network
+// each case tries arbitrary bytes up to 4096 long, with the lengths either side of a whole header among their edges
+// and it tries an encoding of each payload with a few bytes damaged
+// it tries both again as a message with its length field set to its size
+// that hands the payload walker chains its length check would refuse
+// it tries every cut of each encoding and the encoding whole
+// every length field is a place where a datagram cut short can make a decoder read past the end
+// some encodings misstate one length field on purpose, at the values where a bound check off by one would let it through
 func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 	signer := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 	public := signer.Public().(ed25519.PublicKey)
@@ -671,8 +668,9 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		arbitrary := drawBytes(ht, 4096, HeaderLen-1, HeaderLen, HeaderLen+genericPayloadHeaderLen)
 		first := drawOctet(ht, PayloadSK)
-		// input is a byte string and the kind of encoding it was cut from,
-		// whose decoders it goes to, or no kind for every decoder
+		// input is a byte string and the kind of encoding it was cut from
+		// the kind picks the decoders it goes to
+		// no kind sends it to every decoder
 		type input struct {
 			bytes []byte
 			kind  string
@@ -687,7 +685,7 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 			}
 		}
 
-		// reads names the encodings whose cuts a decoder is given, and
+		// reads names the encodings whose cuts a decoder is given
 		// arbitrary and damaged bytes go to every decoder
 		sa := []string{"SA", "IKE offer", "ESP offer", "ESP answer", "short ESP SPI",
 			"misstated SPI Size", "misstated proposal length", "misstated transform length"}
@@ -719,10 +717,13 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 			{"DecodeSA", sa, func(b []byte) string { _, _ = DecodeSA(b); return "" }},
 			{"decodeProposal", sa, func(b []byte) string { _, _, _, _ = decodeProposal(b); return "" }},
 			{"decodeTransform", sa, func(b []byte) string { _, _, _, _ = decodeTransform(b); return "" }},
-			{"selectIKEProposal", sa, func(b []byte) string { _, _, _ = selectIKEProposal(b, DH_CURVE25519); return "" }},
-			{"decodeChildProposal", sa, func(b []byte) string { _, _, _, _ = decodeChildProposal(b, nil); return "" }},
+			{"selectIKEProposal", sa, func(b []byte) string { _, _, _ = selectIKEProposal(b, DH_CURVE25519, Suites{}); return "" }},
+			{"decodeChildProposal", sa, func(b []byte) string {
+				_, _, _, _ = decodeChildProposal(b, espProposal(nil).Transforms)
+				return ""
+			}},
 			{"selectChildRequestProposal", sa, func(b []byte) string {
-				_, _ = selectChildRequestProposal(b, nil, DH_CURVE25519)
+				_, _ = selectChildRequestProposal(b, Suites{}.espCiphers(), Suites{}.kexGroups(), DH_CURVE25519, groupOptional)
 				return ""
 			}},
 			{"DecodeTS", selectors, func(b []byte) string { _, _ = DecodeTS(b); return "" }},
@@ -740,19 +741,19 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 			}},
 		}
 
-		// the decoders run on a goroutine of their own, which marks each call
-		// before making it, and this one watches the mark
+		// the decoders run on a goroutine of their own
+		// it marks each call before making it
+		// and this goroutine watches the mark
 		var at atomic.Int64
 		at.Store(-1)
 		done := make(chan string, 1)
 		go func() {
 			for i, in := range inputs {
-				// a read past the end has to panic here rather than reach
-				// spare capacity behind a cut, an append or a truncation
+				// a read past the end has to panic here rather than reach spare capacity behind a cut, an append or a truncation
 				b := slices.Clip(in.bytes)
 				if in.kind == "message" && len(b) >= HeaderLen {
-					// a cut message that kept its length field would be
-					// refused unread, so the field follows the cut
+					// a cut message that kept its length field would be refused unread
+					// so the field follows the cut
 					binary.BigEndian.PutUint32(b[24:28], uint32(len(b)))
 				}
 				for d, decoder := range decoders {
@@ -782,12 +783,10 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 				if now := at.Load(); now != mark {
 					mark, since = now, time.Now()
 				} else if mark >= 0 && time.Since(since) > time.Second {
-					// a decoder still in one call a second later ends the
-					// run, the way go test's own timeout does, but naming the
-					// decoder and the input, since failing the case for hegel
-					// to shrink would leave one stuck goroutine running per
-					// case it tried, and a decoder that allocates as it loops
-					// would fill memory within seconds
+					// a decoder still in one call a second later ends the run, the way go test's own timeout does
+					// the panic names the decoder and the input
+					// failing the case for hegel to shrink would leave one stuck goroutine running per case it tried
+					// and a decoder that allocates as it loops would fill memory within seconds
 					in, decoder := inputs[mark/int64(len(decoders))], decoders[mark%int64(len(decoders))]
 					hung := fmt.Sprintf("%s: %s on %x did not return within a second", t.Name(), decoder.name, slices.Clip(in.bytes))
 					go func() { panic(hung) }()

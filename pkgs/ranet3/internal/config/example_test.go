@@ -93,7 +93,7 @@ func TestShippedExamplesParse(t *testing.T) {
 
 // an example writes an option beside the value the node runs without it
 // a default changed where the code sets it and not where the example says it leaves every operator who copied the line running another node
-// link.mtu, the speaker's two intervals and its cost, the reconcile interval, the capture grace and the replay window are the ones documented
+// link.mtu, the speaker's two intervals and its cost, the reconcile interval, the capture grace, the replay window and the four cap.crypto lists are the ones documented
 func TestExamplesDocumentTheDefaultsTheNodeRuns(t *testing.T) {
 	for name := range examples {
 		if uncommentable[name] {
@@ -104,8 +104,13 @@ func TestExamplesDocumentTheDefaultsTheNodeRuns(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the example with its options on does not load: %v", err)
 			}
-			if cfg.Cap.Table == nil || cfg.Cap.Crypto == nil {
-				t.Fatalf("the example documents no cap.table or no cap.crypto, so this measures nothing: %+v", cfg.Cap)
+			if cfg.Cap.Table == nil || cfg.Cap.Crypto == nil || cfg.Cap.Crypto.IKE.Cipher == nil || cfg.Cap.Crypto.IKE.PRF == nil ||
+				cfg.Cap.Crypto.IKE.Kex == nil || cfg.Cap.Crypto.ESP.Cipher == nil {
+				t.Fatalf("the example documents no cap.table, no cap.crypto or not its lists, so this measures nothing: %+v", cfg.Cap)
+			}
+			suites, err := cfg.Crypto().Suites()
+			if err != nil {
+				t.Fatal(err)
 			}
 			table, unwritten := cfg.Cap.Table, kernel.Table{}.Normalized()
 			for what, pair := range map[string][2]any{
@@ -114,6 +119,7 @@ func TestExamplesDocumentTheDefaultsTheNodeRuns(t *testing.T) {
 				"cap.table reconcile":     {table.Reconcile, unwritten.Reconcile},
 				"cap.table capture_grace": {table.CaptureGrace, unwritten.CaptureGrace},
 				"cap.crypto replay":       {cfg.Crypto().ReplayWindow(), ike.Crypto{}.ReplayWindow()},
+				"cap.crypto lists":        {strings.Join(ike.Suites{}.Changed(suites), " "), ""},
 			} {
 				if pair[0] != pair[1] {
 					t.Errorf("the example writes %s as %v and a node that leaves it out runs %v", what, pair[0], pair[1])

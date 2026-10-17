@@ -1202,11 +1202,10 @@ func pointerScalars(ty reflect.Type, prefix string) []string {
 	return out
 }
 
-// fullConfig writes every capability block and sets every field of every one
-// of them to a value of its own, so a field that arrives holding its
-// neighbor's value reads back wrong rather than equal. The values satisfy
-// every check Load makes, since the round trip below goes through the loader
-// rather than through a decoder alone.
+// fullConfig writes every capability block and sets every field of every one of them to a value of its own
+// a field that arrives holding its neighbor's value then reads back wrong rather than equal
+// the values satisfy every check Load makes
+// the round trip below goes through the loader rather than through a decoder alone
 func fullConfig() Config {
 	transits := false
 	rxcost, weight := uint16(96), uint16(1024)
@@ -1276,9 +1275,8 @@ func fullConfig() Config {
 				VRF:             &kernel.VRF{Name: "mesh", Create: true},
 				Reconcile:       schema.Duration(30 * time.Second),
 				CaptureGrace:    schema.Duration(10 * time.Second),
-				// More than one rule, because a rule naming an address is
-				// refused for also naming the family that address already
-				// says, so no one rule can carry every field the type has.
+				// a rule naming an address is refused for also naming the family the address says
+				// so no one rule carries every field
 				Rules: []kernel.Rule{{
 					To:       schema.MustPrefix("3fff:1:69c::/48"),
 					From:     schema.MustPrefix("3fff:a::/32"),
@@ -1331,11 +1329,19 @@ func fullConfig() Config {
 					Jitter: &jitter,
 					Retry:  ike.Retry{First: &retryFirst, Max: &retryMax},
 				},
+				// each list in an order of its own, the two cipher lists apart
+				// so one read into another's place reads back wrong
+				IKE: ike.IKESuites{
+					Cipher: []string{"chacha20poly1305", "aes128gcm"},
+					PRF:    []string{"sha256", "sha384"},
+					Kex:    []string{"p384", "x25519"},
+				},
+				ESP: ike.ESPSuites{Cipher: []string{"aes128gcm", "chacha20poly1305", "aes256gcm"}},
 			},
 			Egress: &egress.Egress{
 				Advertise: []schema.Prefix{schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0")},
-				// One of each spelling a source takes, so the address form and
-				// the word both cross every encoder in this one case.
+				// one of each spelling a source takes
+				// so the address form and the word both cross every encoder in this one case
 				Source4: egress.Source{Addr: netip.MustParseAddr("198.51.100.7")},
 				Source6: egress.Source{Auto: true},
 				Return:  true,
@@ -1528,15 +1534,11 @@ var encoders = []struct {
 	{".json", json.Marshal, json.Unmarshal},
 }
 
-// A block holding one written field and nothing else still reaches the
-// daemon. That shape finds what a full configuration hides: yaml.v3 decides
-// omitempty for a struct by asking for IsZero and otherwise walking the
-// exported fields, so a block whose one written field the walk cannot see is
-// dropped with the operator's value in it, while a fully populated block
-// always has some other field for the walk to find.
-//
-// Each case below is one nested block, rendered and read back at its own
-// type so no validation stands between the two.
+// a block holding one written field and nothing else still reaches the daemon
+// yaml.v3 decides omitempty for a struct by asking for IsZero and otherwise walking the exported fields
+// so a block whose one written field the walk cannot see is dropped with the operator's value in it
+// and a full configuration hides that
+// each case is one nested block, rendered and read back at its own type so no validation stands between the two
 func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 	rx := uint16(96)
 	rttMin := schema.Duration(10 * time.Millisecond)
@@ -1545,6 +1547,8 @@ func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 	for name, want := range map[string]any{
 		"cap.crypto rekey":       ike.Crypto{Rekey: ike.Rekey{Child: &child}},
 		"cap.crypto rekey retry": ike.Rekey{Retry: ike.Retry{First: &retryFirst}},
+		"cap.crypto ike":         ike.Crypto{IKE: ike.IKESuites{Kex: []string{"p256"}}},
+		"cap.crypto esp":         ike.Crypto{ESP: ike.ESPSuites{Cipher: []string{"aes128gcm"}}},
 		"cap.babel cost":         babel.Config{Cost: babel.CostOptions{Rx: &rx}},
 		"cap.babel cost rtt":     babel.CostOptions{RTT: babel.RTTOptions{Min: &rttMin}},
 		"dial":                   Config{Node: laptop, Link: oneEndpoint(), Dial: Dial{All: true}},
@@ -1598,22 +1602,21 @@ func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 	}
 }
 
-// A block nobody wrote leaves no key behind and reads back as the zero value
-// the capability documents. The two halves belong together: writing a block
-// turns that capability on, so a block rendered as an empty mapping writes down
-// a decision the file never made, and a block dropped on the way out that does
-// not read back zero loses the defaults it stood for.
-//
-// yaml decides this by walking a struct's exported fields and json by asking
-// for omitzero, so each is asked separately here. The toml encoder has no
-// third spelling and writes the empty table, which costs nothing as long as it
-// reads back zero, so it is asked for the round trip alone.
+// a block nobody wrote leaves no key behind and reads back as the zero value the capability documents
+// writing a block turns that capability on
+// so a block rendered as an empty mapping writes down a decision the file never made
+// and a block dropped on the way out that does not read back zero loses the defaults it stood for
+// yaml decides this by walking a struct's exported fields and json by asking for omitzero
+// so each is asked separately
+// the toml encoder writes the empty table
+// that costs nothing while it reads back zero
+// so it is asked for the round trip alone
 func TestUnwrittenBlockLeavesNoKey(t *testing.T) {
 	for name, probe := range map[string]struct {
 		value  any
 		absent []string
 	}{
-		"cap.crypto": {ike.Crypto{}, []string{"rekey", "retry"}},
+		"cap.crypto": {ike.Crypto{}, []string{"rekey", "retry", "ike", "esp"}},
 		"cap.babel":  {babel.Config{}, []string{"cost", "rtt"}},
 		"cap.table":  {kernel.Table{}, []string{"vrf", "rules"}},
 		// the blocks inside rekey and cost are asked on their own

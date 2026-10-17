@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/events"
@@ -139,6 +140,16 @@ type Client struct {
 
 func (c *Client) config() *config.Config { return c.cfg.Load() }
 func (c *Client) index() *registry.Index { return c.registryIndex.Load() }
+
+// suites is the cap.crypto lists in force
+// each exchange of every session reads them
+// so a reload reaches the next one
+func (c *Client) suites() ike.Suites {
+	// the configuration in force passed Validate
+	// and Validate resolves the lists
+	suites, _ := c.config().Crypto().Suites()
+	return suites
+}
 
 func (c *Client) storeIndex(x *registry.Index) {
 	c.registryIndex.Store(x)

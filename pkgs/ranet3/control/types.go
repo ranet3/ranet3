@@ -492,10 +492,16 @@ type Session struct {
 	Remote string `json:"remote,omitempty"`
 	// Preferred is whether this node is the end both sides agreed should be
 	// the initiator, which is the rule that settles a simultaneous dial.
-	Preferred bool      `json:"preferred"`
-	Active    bool      `json:"active"`
-	LocalSPI  uint32    `json:"local_spi"`
-	RemoteSPI uint32    `json:"remote_spi"`
+	Preferred bool   `json:"preferred"`
+	Active    bool   `json:"active"`
+	LocalSPI  uint32 `json:"local_spi"`
+	RemoteSPI uint32 `json:"remote_spi"`
+	// IKECipher, IKEPRF and IKEKex are the IKE SA's transforms by their cap.crypto names
+	IKECipher string `json:"ike_cipher,omitempty"`
+	IKEPRF    string `json:"ike_prf,omitempty"`
+	IKEKex    string `json:"ike_kex,omitempty"`
+	// ESPCipher is the Child SA's cipher by its cap.crypto name
+	ESPCipher string    `json:"esp_cipher,omitempty"`
 	StartedAt time.Time `json:"started_at"`
 	Age       Duration  `json:"age"`
 	// Idle is how long since the peer last proved it is still there, which is

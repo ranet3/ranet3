@@ -91,6 +91,9 @@ func (r *retryDraws) drawn() []time.Duration {
 // childRekeyLines counts what the dialed session recorded of kind for its Child SA
 func childRekeyLines(pair *refusingPair, kind string) int {
 	line := kind + " testorg/client:2>testorg/server:1 sa=child"
+	if kind == "ike.rekey.completed" {
+		line += " suite=" + defaultSuite["child"]
+	}
 	count := 0
 	for _, got := range pair.dialed.recorded() {
 		if got == line {
@@ -259,7 +262,7 @@ func TestChildSARekeySucceedingWhileTheScheduleWaitsDropsItsRun(t *testing.T) {
 	if err := pair.initiator.RekeyChildProactively(); err != nil {
 		t.Fatalf("the rekey asked for failed: %v", err)
 	}
-	rekeyedIKE := "ike.rekey.completed testorg/client:2>testorg/server:1 sa=ike"
+	rekeyedIKE := "ike.rekey.completed testorg/client:2>testorg/server:1 sa=ike suite=" + defaultSuite["ike"]
 	for deadline := time.Now().Add(answerBudget); !slices.Contains(pair.dialed.recorded(), rekeyedIKE); time.Sleep(recordPoll) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the IKE SA's rekey never completed, the session recorded %q", pair.dialed.recorded())

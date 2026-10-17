@@ -35,6 +35,7 @@ func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 		RekeyJitter:        crypto.Jitter(),
 		RekeyRetryInitial:  crypto.RetryFirst(),
 		RekeyRetryMax:      crypto.RetryMax(),
+		Suites:             c.suites,
 		Events:             c.ikeEvent,
 	})
 	if err != nil {
@@ -45,15 +46,21 @@ func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 	err = responder.Serve(ctx, func(sess *ike.Session, accepted ike.Accepted) {
 		// a handshake that finished after link.listen went off or the responder was stopped is told the SA is gone
 		if ctx.Err() != nil || !c.subsystemRunning(control.SubsystemResponder) {
-			// under serving, since the Delete waits out its own grace
+			// under serving
+			// the Delete waits out its own grace
 			serving.Go(func() { closeSession(sess) })
 			return
 		}
 		serving.Go(func() {
 			err := c.serveSession(ctx, sess, accepted.Local, accepted.Peer, accepted.Key, false)
-			// serveSession ends a session its ctx ended with a Delete, as it does for a dialer a reload dropped
+			// serveSession ends a session its ctx ended with a Delete
+			// it does the same for a dialer a reload dropped
 			if errors.Is(err, context.Canceled) && c.ctx.Err() == nil {
 				closed.Add(1)
+			}
+			// a dialer of this node's that stood down behind the session dials again at once under the lists in force
+			if errors.Is(err, ike.ErrPRFUnlisted) {
+				c.wakeDialers(c.matchingDialers(identity.Path(accepted.Peer, accepted.Local), false))
 			}
 			// losing to a session the other end also prefers is ordinary on a full mesh
 			if err != nil && !errors.Is(err, errSessionEstablished) && ctx.Err() == nil {

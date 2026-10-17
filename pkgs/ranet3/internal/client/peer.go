@@ -36,7 +36,8 @@ func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
 		log.Printf("peer %s: node not found", d.path)
 		return
 	}
-	// a dual-stack node runs a dialer per local endpoint, and a peer without an endpoint of this one's family is ordinary
+	// a dual-stack node runs a dialer per local endpoint
+	// so a peer without an endpoint of this one's family is ordinary
 	targets := x.Targets(d.peer)
 	if d.peer != d.peer.Node() {
 		if len(targets) == 0 {
@@ -74,7 +75,13 @@ func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
 		switch {
 		case err == nil:
 		case errors.Is(err, errSessionEstablished):
-			// not a failure, and this dialer takes over once the peer's session ends
+			// not a failure
+			// this dialer takes over once the peer's session ends
+		case errors.Is(err, ike.ErrPRFUnlisted):
+			// the session deleted its IKE SA for a new handshake under the lists in force
+			// and the new handshake goes out at once
+			log.Printf("peer %s: %v, dialing again now", d.path, err)
+			continue
 		case failure.alreadySaid(err):
 			slog.Debug("peer dial failed again", "peer", d.path, "err", err)
 		default:
@@ -148,7 +155,8 @@ func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
 	path := d.path
 	established := false
 	defer func() {
-		// a dial that ended short of a session, which another session holding the path and a node going down are not
+		// a dial that ended short of a session
+		// neither another session holding the path nor a node going down is one
 		if !established && err != nil && !errors.Is(err, errSessionEstablished) && ctx.Err() == nil {
 			c.events.Emit("dial.failed", path, slog.String("err", err.Error()))
 		}
@@ -187,6 +195,7 @@ func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
 		RekeyJitter:        crypto.Jitter(),
 		RekeyRetryInitial:  crypto.RetryFirst(),
 		RekeyRetryMax:      crypto.RetryMax(),
+		Suites:             c.suites,
 		Events:             c.ikeEvent,
 	}
 	sess, err := ike.InitiateContext(ctx, ikeCfg)

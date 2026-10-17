@@ -15,8 +15,8 @@ import (
 	"time"
 )
 
-// RekeyIKE replaces the IKE SA while retaining the current Child SAs. Run
-// must be active to service the serialized IKE requests.
+// RekeyIKE replaces the IKE SA while retaining the current Child SAs
+// Run must be serving the IKE requests it sends
 func (s *Session) RekeyIKE() (err error) {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
@@ -24,14 +24,23 @@ func (s *Session) RekeyIKE() (err error) {
 	defer func() { s.rekeyEnded("ike", err) }()
 
 	old := s.currentContext()
-	// Neither SPI of the SA being replaced, for the reason handleIKERekey
-	// gives about the peer's choice: the replaced SA stays routed by both
-	// until its Delete completes, and the Delete unregisters what it named.
+	// neither SPI of the SA being replaced
+	// it stays routed by both until its Delete completes
+	// and the Delete unregisters what it named
 	spiI := randUint64Nonzero()
 	for spiI == old.spiI || spiI == old.spiR {
 		spiI = randUint64Nonzero()
 	}
-	group := uint16(DH_CURVE25519)
+	lists := s.lists()
+	if !lists.holdsPRF(old.suite.PRFID) {
+		return fmt.Errorf("ike: IKE SA rekey: %w", ErrPRFUnlisted)
+	}
+	// RFC 7296 section 1.3: "The Diffie-Hellman group of the KEi MUST be an element of the group the initiator expects the responder to accept (additional Diffie-Hellman groups can be proposed)."
+	// the peer took the IKE SA's group in the exchange that made the SA
+	group := old.suite.DHGroup
+	if !slices.Contains(lists.kexGroups(), Transform{Type: TransDH, ID: group}) {
+		group = lists.kexGroups()[0].ID
+	}
 	ni := make([]byte, nonceLen)
 	if err := s.fillIKERekeyNonce(ni); err != nil {
 		return fmt.Errorf("ike: generate IKE SA rekey nonce: %w", err)
@@ -48,18 +57,19 @@ func (s *Session) RekeyIKE() (err error) {
 	}()
 	spi := make([]byte, 8)
 	binary.BigEndian.PutUint64(spi, spiI)
-	proposal := ikeRekeyProposal(spi, old.suite.PRFID)
 	var (
+		proposal Proposal
 		dh       *DHKeyPair
 		response []RawPayload
 	)
 	for attempt := range 2 {
+		proposal = lists.ikeRekeyProposal(spi, old.suite.PRFID, group)
 		dh, err = GenerateDH(group)
 		if err != nil {
 			return fmt.Errorf("ike: generate IKE SA rekey DH key: %w", err)
 		}
 		response, err = s.requestLocked(CREATE_CHILD_SA, []RawPayload{
-			{Type: PayloadSA, Body: EncodeSA([]Proposal{leadingGroup(proposal, group)})},
+			{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
 			{Type: PayloadNonce, Body: EncodeNonce(ni)},
 			{Type: PayloadKE, Body: EncodeKE(group, dh.PublicBytes())},
 		})
@@ -88,8 +98,8 @@ func (s *Session) RekeyIKE() (err error) {
 		if retryGroup == 0 {
 			break
 		}
-		if attempt != 0 || !supportedIKEGroup(retryGroup) {
-			return fmt.Errorf("ike: IKE SA rekey rejected: requested unsupported DH group %d", retryGroup)
+		if attempt != 0 || !slices.Contains(proposal.Transforms, Transform{Type: TransDH, ID: retryGroup}) {
+			return fmt.Errorf("ike: IKE SA rekey rejected: requested unoffered DH group %d", retryGroup)
 		}
 		// RFC 7296 section 1.3: "In the case of such a rejection, the CREATE_CHILD_SA exchange fails, and the initiator will probably retry the exchange with a Diffie-Hellman proposal and KEi in the group that the responder gave in the INVALID_KE_PAYLOAD Notify payload."
 		group = retryGroup
@@ -115,29 +125,23 @@ func (s *Session) RekeyIKE() (err error) {
 	props, err := DecodeSA(sa.Body)
 	// RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
 	// section 3.3.6: "The initiator of an exchange MUST check that the accepted offer is consistent with one of its proposals, and if not MUST terminate the exchange."
-	// this end's offer names three types, and suiteFromProposal and the loop below hold the answer to the rest
+	// this end's offer names three types, and suiteFromProposal holds the answer to the rest of the offer
 	if err != nil || len(props) != 1 || props[0].Number != 1 || props[0].Protocol != ProtoIKE ||
 		len(props[0].SPI) != 8 || len(props[0].Transforms) != 3 {
 		return fmt.Errorf("ike: invalid IKE SA rekey proposal")
 	}
 	selectedProposal := props[0]
 	selectedProposal.SPI = nil
-	suite, err := suiteFromProposal(selectedProposal)
+	suite, err := suiteFromProposal(selectedProposal, proposal.Transforms)
 	if err != nil {
 		return fmt.Errorf("ike: invalid IKE SA rekey transforms: %w", err)
 	}
 	if suite.DHGroup != group {
 		return fmt.Errorf("ike: IKE SA rekey chose DH group %d, want %d", suite.DHGroup, group)
 	}
-	// Checked here rather than with the other payloads, because half the rule
-	// is the key size of the PRF this proposal just settled.
+	// RFC 7296 section 2.10: "MUST be at least half the key size of the negotiated pseudorandom function (PRF)"
 	if !validNonceFor(nonce.Body, suite.PRFID) {
 		return fmt.Errorf("ike: IKE SA rekey nonce length %d is short for the negotiated PRF", len(nonce.Body))
-	}
-	for _, selected := range props[0].Transforms {
-		if !slices.Contains(proposal.Transforms, selected) {
-			return fmt.Errorf("ike: IKE SA rekey chose unsupported transform %d/%d", selected.Type, selected.ID)
-		}
 	}
 	spiR := binary.BigEndian.Uint64(props[0].SPI)
 	if spiR == 0 {
@@ -167,31 +171,25 @@ func (s *Session) RekeyIKE() (err error) {
 			if err := s.mux.RegisterIKE(spiI); err != nil {
 				return fmt.Errorf("ike: register redundant IKE SA: %w", err)
 			}
-			// Both the winner and the redundant context must remain visible
-			// to dispatch while the Delete exchange is outstanding.
+			// the winner and the redundant context both stay visible to dispatch while the Delete is outstanding
 			s.stateMu.Lock()
 			s.retainOldLocked(old)
 			s.current = collision
 			newContext.ownDelete = true
 			s.retainCollisionLocked(newContext)
 			s.stateMu.Unlock()
-			// The redundant SA goes whether or not the peer answers. Leaving
-			// it in s.collision refuses every later peer rekey, and the next
-			// local one takes this branch again with no peer nonce, so the
-			// failure would be permanent rather than one lost exchange.
+			// the redundant SA goes whether or not the peer answers
+			// one left in s.collision refuses every later peer rekey
+			// and the next local one takes this branch again with no peer nonce
+			// so the failure would last rather than cost one exchange
 			answer, deleteErr := s.requestOnLocked(newContext, INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
 			if deleteErr == nil {
 				if refused := refusal("INFORMATIONAL", answer); refused != nil {
 					slog.Info("ike redundant IKE SA was not deleted by this end", "spi", spiI, "err", refused)
 				}
 			}
-			// Only if nothing else is routed by it, the rule the three sites
-			// around removeRetainedContext and releaseDisplacedLocked already
-			// follow. handleIKERekey refuses a peer that names this SPI back,
-			// so the two contexts should never share one, but the guard is here
-			// because being wrong about that unregisters the SA the session is
-			// now current on and leaves the control channel deaf while ESP
-			// keeps flowing, and because the peer chooses when to try.
+			// released only while nothing else routes by it
+			// unregistering the SA the session is current on leaves the control channel deaf while ESP flows
 			s.stateMu.Lock()
 			if s.collision == newContext {
 				s.collision = nil
@@ -235,19 +233,15 @@ func (s *Session) RekeyIKE() (err error) {
 	return nil
 }
 
-// handleIKERekey accepts a peer-initiated IKE SA rekey. Its response remains
-// protected by ctx. The newly-derived context becomes current for subsequent
-// exchanges while ctx stays available until the peer deletes it.
+// handleIKERekey answers a peer's IKE SA rekey under ctx
+// the new context is current from the answer on
+// ctx stays until the peer deletes it
 func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPayload) ([]byte, error) {
 	s.stateMu.RLock()
 	accept := ctx == s.current && (s.old == nil || s.localRekey != nil) && s.collision == nil
 	s.stateMu.RUnlock()
 	// RFC 7296 section 2.25.2: "If a peer receives a request to rekey an IKE SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
 	if !accept || s.closing.Load() || s.childRekeying.Load() || s.retiringChild().LocalSPI != 0 || s.ikeExpired(ctx) {
-		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
-	}
-	// checked before the key exchange and the derivation, the work the peer is asking for, see minPeerIKERekeyInterval
-	if !s.allowPeerIKERekey() {
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 	}
 	malformed := func(err error) ([]byte, error) { return s.refuseRequest(ctx, msgID, CREATE_CHILD_SA, err) }
@@ -268,35 +262,33 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	if err != nil {
 		return malformed(err)
 	}
-	var (
-		selected         []Transform
-		suite            SASuite
-		selectedProposal Proposal
-		preferredGroup   uint16
-	)
-	for _, proposal := range props {
-		if proposal.Number == 0 || proposal.Protocol != ProtoIKE || len(proposal.SPI) != 8 || binary.BigEndian.Uint64(proposal.SPI) == 0 {
-			continue
-		}
-		candidate, candidateSuite, candidatePreferred, ok := selectIKERekeyProposal(proposal, group, ctx.suite.PRFID)
-		if ok {
-			selected = candidate
-			suite = candidateSuite
-			selectedProposal = proposal
-			break
-		}
-		if candidatePreferred != 0 && (preferredGroup == 0 || ikeGroupPreference(candidatePreferred) < ikeGroupPreference(preferredGroup)) {
-			preferredGroup = candidatePreferred
-		}
-	}
-	if selected == nil {
-		if preferredGroup == 0 {
-			return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
-		}
+	props = slices.DeleteFunc(props, func(proposal Proposal) bool {
+		// RFC 7296 section 2.18: "In other words, an initiator MUST NOT propose the value "NONE" for the Diffie-Hellman transform, and a responder MUST NOT accept such a proposal."
+		// a proposal that lists NONE among its Diffie-Hellman transforms proposes it, whatever else it lists
+		return proposal.Number == 0 || proposal.Protocol != ProtoIKE || len(proposal.SPI) != 8 || binary.BigEndian.Uint64(proposal.SPI) == 0 ||
+			slices.ContainsFunc(proposal.Transforms, func(transform Transform) bool { return transform.Type == TransDH && transform.ID == 0 })
+	})
+	lists := s.lists()
+	// RFC 7296 section 3.3.4: "The implementation MUST reject SA proposals that are not authorized by these IKE suite controls."
+	// a rekey keeps the PRF
+	// so no PRF is authorized once ike prf left out the one in use
+	chosen, retry, ok := chooseIKE(props, lists.ikeCiphers(), lists.rekeyPRFs(ctx.suite.PRFID), lists.rekeyGroups(ctx.suite.DHGroup, group), group)
+	if retry != 0 {
 		// RFC 7296 section 1.3: "If the responder selects a proposal using a different Diffie-Hellman group (other than NONE), the responder MUST reject the request and indicate its preferred Diffie-Hellman group in the INVALID_KE_PAYLOAD Notify payload."
-		return s.responseNotifyData(ctx, msgID, CREATE_CHILD_SA, N_INVALID_KE_PAYLOAD, invalidKENotifyData(preferredGroup))
+		return s.responseNotifyData(ctx, msgID, CREATE_CHILD_SA, N_INVALID_KE_PAYLOAD, invalidKENotifyData(retry))
 	}
-	spiI := binary.BigEndian.Uint64(selectedProposal.SPI)
+	if !ok {
+		// an offer refused over lists that left out a transform of this SA's suite replaces or rekeys the SA as a reload does
+		s.SuitesChanged()
+		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
+	}
+	suite := chosen.suite
+	// checked once the offer is settled and before the key exchange and the derivation, the work minPeerIKERekeyInterval limits
+	// so a rekey answered INVALID_KE_PAYLOAD leaves the limit to the retry it asks for
+	if !s.allowPeerIKERekey() {
+		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
+	}
+	spiI := binary.BigEndian.Uint64(chosen.offered.SPI)
 	// RFC 7296 section 2.6: "Each endpoint chooses one of the two SPIs and MUST choose them so as to be unique identifiers of an IKE SA."
 	// an SPI this session routes registers again on the same mux, and the Delete of the replaced SA would then unregister the SPI another SA is reached by
 	// the SPI of a local rekey in flight is refused alike, since this end's request published it, and the losing branch of RekeyIKE would unregister it under the winner
@@ -329,8 +321,8 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 	}
 	if err := s.mux.RegisterIKE(spiI); err != nil {
-		// The SPI map is shared by every mux on the hub, so a peer that holds
-		// two sessions with this node knows an SPI that is already taken.
+		// the SPI map is shared by every mux on the hub
+		// so a peer holding two sessions with this node can name an SPI already taken
 		slog.Warn("ike cannot answer a peer IKE rekey", "err", err)
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 	}
@@ -348,7 +340,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	s.stateMu.Unlock()
 	spi := make([]byte, 8)
 	binary.BigEndian.PutUint64(spi, spiR)
-	response := Proposal{Number: selectedProposal.Number, Protocol: ProtoIKE, SPI: spi, Transforms: selected}
+	response := Proposal{Number: chosen.offered.Number, Protocol: ProtoIKE, SPI: spi, Transforms: chosen.transforms}
 	return s.response(ctx, msgID, CREATE_CHILD_SA, []RawPayload{
 		{Type: PayloadSA, Body: EncodeSA([]Proposal{response})},
 		{Type: PayloadNonce, Body: EncodeNonce(nr)},
@@ -384,121 +376,4 @@ func lowestNonceBelongsToFirst(firstI, firstR, secondI, secondR []byte) bool {
 		}
 	}
 	return first
-}
-
-func supportedIKEGroup(group uint16) bool {
-	for _, transform := range ikeProposal().Transforms {
-		if transform.Type == TransDH && transform.ID == group {
-			return true
-		}
-	}
-	return false
-}
-
-func ikeGroupPreference(group uint16) int {
-	preference := 0
-	for _, transform := range ikeProposal().Transforms {
-		if transform.Type != TransDH {
-			continue
-		}
-		if transform.ID == group {
-			return preference
-		}
-		preference++
-	}
-	return preference
-}
-
-// Keep the PRF across rekeys: strongSwan uses the old PRF for both SKEYSEED
-// and expansion, while RFC 7296 section 2.18 specifies the new PRF for expansion.
-// Negotiating the same PRF interoperates without changing either derivation.
-func ikeRekeyProposal(spi []byte, prfID uint16) Proposal {
-	p := ikeProposal()
-	p.SPI = spi
-	transforms := p.Transforms[:0]
-	for _, transform := range p.Transforms {
-		if transform.Type != TransPRF || transform.ID == prfID {
-			transforms = append(transforms, transform)
-		}
-	}
-	p.Transforms = transforms
-	return p
-}
-
-func selectIKERekeyProposal(proposal Proposal, keGroup, prfID uint16) ([]Transform, SASuite, uint16, bool) {
-	// RFC 7296 section 3.3.6: "If the responder receives a proposal that contains a Transform Type it does not understand, or a proposal that is missing a mandatory Transform Type, it MUST consider this proposal unacceptable"
-	// and of a transform with a Transform Attribute it does not understand: "other transforms with the same Transform Type are processed as usual."
-	// DecodeSA marks such a transform, and the exact matching below passes over it
-	var integ *Transform
-	offeredInteg := false
-	for i := range proposal.Transforms {
-		transform := proposal.Transforms[i]
-		switch transform.Type {
-		case TransEncr, TransPRF:
-		case TransDH:
-			// RFC 7296 section 2.18: "In other words, an initiator MUST NOT propose the value "NONE" for the Diffie-Hellman transform, and a responder MUST NOT accept such a proposal."
-			// a proposal that lists NONE among its Diffie-Hellman transforms proposes it, whatever else it lists
-			if transform.ID == 0 {
-				return nil, SASuite{}, 0, false
-			}
-		case TransInteg:
-			// An AEAD cipher needs no integrity transform, and a peer naming
-			// NONE says the same thing as omitting it, the way
-			// selectIKEProposal already takes it on the initial exchange.
-			// Refusing it here would leave such a peer established and unable
-			// to rekey from its own side. An integrity algorithm this end has
-			// no key for is one unacceptable transform, not an unacceptable
-			// proposal: "other transforms with the same Transform Type are
-			// processed as usual".
-			offeredInteg = true
-			if integ == nil && transform.ID == INTEG_NONE && !transform.UnsupportedAttributes {
-				integ = &transform
-			}
-		default:
-			return nil, SASuite{}, 0, false
-		}
-	}
-	// The offer named integrity transforms and this end can take none of them,
-	// so there is no complete set of parameters to select.
-	if offeredInteg && integ == nil {
-		return nil, SASuite{}, 0, false
-	}
-	offered := ikeRekeyProposal(nil, prfID).Transforms
-	selected := make([]Transform, 0, 4)
-	for _, typ := range []TransformType{TransEncr, TransPRF} {
-		found := false
-		for _, want := range offered {
-			if want.Type != typ {
-				continue
-			}
-			for _, got := range proposal.Transforms {
-				if got == want {
-					selected = append(selected, got)
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-		if !found {
-			return nil, SASuite{}, 0, false
-		}
-	}
-	matchingDH, preferredDH, ok := selectDHTransform(proposal.Transforms, keGroup, false)
-	if !ok {
-		return nil, SASuite{}, preferredDH, false
-	}
-	selected = append(selected, matchingDH)
-	suite, err := suiteFromProposal(Proposal{Number: 1, Protocol: ProtoIKE, Transforms: selected})
-	if err != nil {
-		return nil, SASuite{}, 0, false
-	}
-	// RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
-	// so an integrity transform the peer offered is echoed, after the suite is derived from the three transforms that decide keys
-	if integ != nil {
-		selected = append(selected, *integ)
-	}
-	return selected, suite, preferredDH, true
 }

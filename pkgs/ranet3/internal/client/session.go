@@ -8,6 +8,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -23,10 +24,13 @@ import (
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
-// serveSession runs one established IKE SA until it ends, whichever end opened it, and dialed says this node did
+// serveSession runs one established IKE SA until it ends, whichever end opened it
+// dialed says this node did
 // key is the key that verified remote's AUTH
-// the resolution against a competing session happens here, since the babel registration goes in under the same decision
-// it returns errSessionEstablished when another session already holds the path, which is not a failure
+// the resolution against a competing session happens here
+// the babel registration goes in under the same decision
+// it returns errSessionEstablished when another session already holds the path
+// and that is not a failure
 func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, remote identity.Identity, key ed25519.PublicKey, dialed bool) error {
 	defer sess.Mux().Close()
 	sessionName := identity.Path(remote, local)
@@ -35,14 +39,19 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 	if dialed {
 		role = "initiator"
 	}
-	// read before adopt publishes the session, after which a rekey may write sess.Child
+	// read before adopt publishes the session
+	// after that a rekey may write sess.Child
+	suite := sess.Suite()
 	established := []slog.Attr{slog.String("role", role),
-		slog.String("spi_in", fmt.Sprintf("%08x", sess.Child.LocalSPI)), slog.String("spi_out", fmt.Sprintf("%08x", sess.Child.RemoteSPI))}
+		slog.String("spi_in", fmt.Sprintf("%08x", sess.Child.LocalSPI)), slog.String("spi_out", fmt.Sprintf("%08x", sess.Child.RemoteSPI)),
+		slog.String("ike", suite.IKE()), slog.String("esp", suite.ESP())}
 
 	tunnel := &tunnel{replayWindow: c.config().Crypto().ReplayWindow(), started: time.Now()}
 	tunnel.askedAt.Store(-int64(rekeyAskInterval))
-	// requestRekey owns the goroutine and the one-at-a-time guard, and this may block
-	// a failed rekey leaves the IKE SA up, as RFC 7296 section 1.3.1 asks, and the schedule retries
+	// requestRekey owns the goroutine and the one-at-a-time guard
+	// so this may block
+	// RFC 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA"
+	// a failed rekey leaves the IKE SA up and the schedule retries
 	tunnel.rekey = func() {
 		if err := sess.RekeyChildProactively(); err != nil && !sess.Mux().IsClosed() {
 			log.Printf("peer %s: proactive Child SA rekey: %v", sessionName, err)
@@ -59,14 +68,16 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 	pmtu := newPathDriver(sess.Mux(), c.speaker.Probe, c.events, &c.probes, cmp.Or(c.probeTimeout, defaultProbeTimeout), cmp.Or(c.confirmEvery, confirmInterval))
 	peer := netstack.NewPeer(sessionName, tunnel.reserve, pmtu.transmit, c.events.Emit)
 	pmtu.peer = peer
-	// the mux closes before Peer.Close, which waits with no deadline for a sender that may be inside SendESPBatch on it
+	// the mux closes before Peer.Close
+	// Peer.Close waits with no deadline for a sender that may be inside SendESPBatch on it
 	defer func() {
 		_ = sess.Mux().Close()
 		peer.Close()
 	}()
 	route := pmtu.open()
 	release, adopted := c.sessions.adopt(sessionName, sess, local, remote, key, dialed, pmtu, func() func() {
-		// under the set's lock, so a reload's sweep of the set either finds this session or stored the link.mtu and the steering table read here
+		// under the set's lock
+		// so a reload's sweep of the set either finds this session or stored the link.mtu and the steering table read here
 		pmtu.start(c.config().Link.SessionMTU(), c.sessions.steering, route)
 		return c.speaker.AddPeer(peer, remote).Close
 	})
@@ -74,9 +85,10 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 	if !adopted {
 		return errSessionEstablished
 	}
-	// recorded once the session holds its path, so one that lost the path is recorded only as resolved
+	// recorded once the session holds its path
+	// so one that lost the path is recorded only as resolved
 	c.events.Emit("ike.session.established", sessionName, established...)
-	// without a Delete the peer sends into a dead SPI until its liveness check expires, up to seventy seconds
+	// without a Delete the peer sends into a dead SPI until its own liveness check gives up
 	defer c.tellDropped(ctx, sessionName, sess)
 
 	var frames [][]byte
@@ -120,14 +132,24 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 	}()
 	first := pmtu.serve(results)
 	_ = sess.Mux().Close()
-	<-results
+	first = endOf(first, <-results)
 	ended := fmt.Errorf("%s session ended: %w", first.component, first.err)
 	if ctx.Err() != nil {
 		ended = ctx.Err()
 	}
-	// with the role and the SPIs its established event carried, so a reader pairs the two across a replacement
+	// with what its established event carried
+	// so a reader pairs the two across a replacement
 	c.events.Emit("ike.session.ended", sessionName, append(established, slog.String("err", ended.Error()))...)
 	return ended
+}
+
+// endOf picks which of its two halves' ends a session reports, first being the half that ended first
+// the IKE SA's replacement for a new handshake ended the session whichever half saw the mux close first
+func endOf(first, second sessionResult) sessionResult {
+	if errors.Is(second.err, ike.ErrPRFUnlisted) {
+		return second
+	}
+	return first
 }
 
 // sessionResult is how one of a session's two halves ended, IKE's control loop or ESP's receive
@@ -370,6 +392,19 @@ func (s *sessionSet) relink(link int, installed bool, steering *srv6.SteerTable)
 		if live.pmtu != nil {
 			live.pmtu.relink(link, s.steering)
 		}
+	}
+}
+
+// resuite has every live session check its SAs against the cap.crypto lists a reload stored
+// a session adopted after the sweep checks them when its Run starts
+func (s *sessionSet) resuite() {
+	if s == nil {
+		return // a Client built by hand in a test carries no sessions
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, live := range s.live {
+		live.session.SuitesChanged()
 	}
 }
 

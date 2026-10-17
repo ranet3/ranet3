@@ -36,6 +36,8 @@ type responderHarness struct {
 	identities chan Accepted
 	// aliases holds the table the responder's Aliases gives the next handshake, none until a test stores some
 	aliases *atomic.Pointer[Aliases]
+	// lists holds the cap.crypto lists the responder and each session it answers read
+	lists *atomic.Pointer[Suites]
 }
 
 // newResponderHarness runs a Responder on one hub and hands back everything
@@ -124,6 +126,8 @@ func newConfiguredResponderHarness(t *testing.T, local map[identity.Identity]Fam
 		})
 	}
 	aliases := new(atomic.Pointer[Aliases])
+	lists := new(atomic.Pointer[Suites])
+	lists.Store(&Suites{})
 	cfg := ResponderConfig{
 		Hub:              responderHub,
 		Local:            local,
@@ -136,6 +140,7 @@ func newConfiguredResponderHarness(t *testing.T, local map[identity.Identity]Fam
 			}
 			return Aliases{}
 		},
+		Suites: func() Suites { return *lists.Load() },
 	}
 	if len(events) == 1 {
 		cfg.Events = events[0]
@@ -154,14 +159,16 @@ func newConfiguredResponderHarness(t *testing.T, local map[identity.Identity]Fam
 		sessions:   make(chan *Session, 1),
 		identities: make(chan Accepted, 1),
 		aliases:    aliases,
+		lists:      lists,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	// Serve turns delivery on when its goroutine first runs, and the hub drops
-	// an unclaimed datagram until then. Several tests here send one request
-	// and wait for its answer without retransmitting, and on a loaded machine
-	// that goroutine can start after the request has arrived. Delivery is on
-	// before the harness is returned, and Serve's own call gets the same queue.
+	// Serve turns delivery on when its goroutine first runs
+	// and the hub drops an unclaimed datagram until then
+	// several tests here send one request and wait for its answer without retransmitting
+	// and on a loaded machine that goroutine can start after the request has arrived
+	// so delivery is on before the harness is returned
+	// and Serve's own call gets the same queue
 	responderHub.Listen()
 	go responder.Serve(ctx, func(s *Session, accepted Accepted) {
 		h.sessions <- s
@@ -664,7 +671,7 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 			Transform{Type: TransPRF, ID: PRF_HMAC_SHA2_384},
 			Transform{Type: TransDH, ID: DH_CURVE25519},
 		)
-		_, suite, err := selectIKEProposal(body, DH_CURVE25519)
+		_, suite, err := selectIKEProposal(body, DH_CURVE25519, Suites{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -678,7 +685,7 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 			Transform{Type: TransPRF, ID: PRF_HMAC_SHA2_256},
 			Transform{Type: TransDH, ID: DH_ECP_256},
 		)
-		_, _, err := selectIKEProposal(body, DH_CURVE25519)
+		_, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{})
 		var wrongGroup *invalidKEError
 		if !errors.As(err, &wrongGroup) || wrongGroup.group != DH_ECP_256 {
 			t.Fatalf("err = %v, want a request for group %d", err, DH_ECP_256)
@@ -691,14 +698,12 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 			Transform{Type: TransDH, ID: DH_CURVE25519},
 			Transform{Type: TransformType(9), ID: 1},
 		)
-		if _, _, err := selectIKEProposal(body, DH_CURVE25519); err == nil {
+		if _, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}); err == nil {
 			t.Fatal("an unknown transform type was accepted")
 		}
 	})
-	// RFC 7296 section 3.3.2's transform registry gives integrity algorithm 0
-	// the name NONE, and an AEAD cipher needs none, so a peer that spells it
-	// out alongside one says what omitting the transform says. strongSwan and
-	// libreswan both write it out.
+	// an AEAD cipher needs no integrity algorithm
+	// and strongSwan and libreswan both write out the NONE omitting it says
 	t.Run("takes an offer that spells out INTEG NONE and echoes it", func(t *testing.T) {
 		integ := Transform{Type: TransInteg, ID: INTEG_NONE}
 		body := offer(
@@ -707,12 +712,11 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 			integ,
 			Transform{Type: TransDH, ID: DH_CURVE25519},
 		)
-		selected, _, err := selectIKEProposal(body, DH_CURVE25519)
+		selected, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{})
 		if err != nil {
 			t.Fatalf("an offer naming INTEG NONE was refused: %v", err)
 		}
-		// "The accepted cryptographic suite MUST contain exactly one transform
-		// of each type included in the proposal", RFC 7296 section 2.7.
+		// RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
 		if !slices.Contains(selected.Transforms, integ) {
 			t.Errorf("the answer is %v, which drops a transform type the offer included", selected.Transforms)
 		}
@@ -724,7 +728,7 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 			Transform{Type: TransInteg, ID: 12},
 			Transform{Type: TransDH, ID: DH_CURVE25519},
 		)
-		if _, _, err := selectIKEProposal(body, DH_CURVE25519); err == nil {
+		if _, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}); err == nil {
 			t.Fatal("an integrity transform this implementation has no key for was accepted")
 		}
 	})
@@ -734,7 +738,7 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 			Transform{Type: TransPRF, ID: PRF_HMAC_SHA2_256},
 			Transform{Type: TransDH, ID: DH_CURVE25519},
 		)
-		if _, _, err := selectIKEProposal(body, DH_CURVE25519); err == nil {
+		if _, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}); err == nil {
 			t.Fatal("an offer with no shared cipher was accepted")
 		}
 	})
@@ -970,14 +974,14 @@ func TestResponderTakesSlotBeforeKeyExchange(t *testing.T) {
 	}
 }
 
-// firstTestNotify reads the single notify out of a stateless answer.
-// statelessAnswer sends one request and returns the answer, retrying the send.
-// These are datagrams on a loopback socket shared with every other test in the
-// package, and one of them can be dropped. The answers reached this way are
-// stateless or retransmission-safe, so a repeat draws another. Without it a
-// loaded machine turns them into false reds, which the VM arm of the flake
-// check has done twice.
-func statelessAnswer(t *testing.T, mux *transport.Mux, request []byte, why string) []byte {
+// statelessAnswer sends one request and returns the answer, retrying the send
+// these are datagrams on a loopback socket shared with every other test in the package
+// and one of them can be dropped
+// the answers reached this way are stateless or retransmission-safe
+// so a repeat draws another
+// without the retry a loaded machine turns them into false reds
+// and the VM arm of the flake check has done that twice
+func statelessAnswer(t testing.TB, mux *transport.Mux, request []byte, why string) []byte {
 	t.Helper()
 	for range 4 {
 		if err := mux.SendIKE(request); err != nil {
@@ -991,7 +995,8 @@ func statelessAnswer(t *testing.T, mux *transport.Mux, request []byte, why strin
 	return nil
 }
 
-func firstTestNotify(t *testing.T, raw []byte) Notify {
+// firstTestNotify reads the single notify out of a stateless answer
+func firstTestNotify(t testing.TB, raw []byte) Notify {
 	t.Helper()
 	message, err := DecodeMessage(raw)
 	if err != nil {
@@ -1085,11 +1090,10 @@ func buildTestSAInit(t *testing.T) ([]byte, uint64) {
 	return encodeTestSAInit(t, spiI, ni, ikeProposal(), nil), spiI
 }
 
-// encodeTestSAInit is buildTestSAInit with the parts a test may want to vary:
-// the SPI and nonce a cookie is bound to, which proposal is offered, and what
-// precedes the rest, which is where RFC 7296 section 2.6 puts an echoed
-// cookie.
-func encodeTestSAInit(t *testing.T, spiI uint64, ni []byte, proposal Proposal, ahead []RawPayload) []byte {
+// encodeTestSAInit is buildTestSAInit with the parts a test may want to vary
+// they are the SPI and nonce a cookie is bound to, the proposal offered and the payloads ahead of the rest
+// ahead holds an echoed cookie, which RFC 7296 section 2.6 includes "as the first payload"
+func encodeTestSAInit(t testing.TB, spiI uint64, ni []byte, proposal Proposal, ahead []RawPayload) []byte {
 	t.Helper()
 	dh, err := GenerateDH(DH_CURVE25519)
 	if err != nil {
@@ -2096,7 +2100,7 @@ func initHalfOpen(t *testing.T, mux *transport.Mux, shape func([]RawPayload) []R
 	if err != nil || len(selected) != 1 {
 		t.Fatalf("the IKE_SA_INIT answer selects %v: %v", selected, err)
 	}
-	suite, err := suiteFromProposal(selected[0])
+	suite, err := suiteFromProposal(selected[0], ikeProposal().Transforms)
 	if err != nil {
 		t.Fatal(err)
 	}

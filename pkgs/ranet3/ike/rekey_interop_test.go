@@ -109,10 +109,12 @@ func TestChildProposalDHSelection(t *testing.T) {
 		ke, want   uint16
 		retryGroup uint16
 	}{
-		{"match KE", []uint16{DH_CURVE25519, DH_ECP_256}, DH_ECP_256, DH_ECP_256, 0},
+		{"match KE", []uint16{DH_CURVE25519, DH_ECP_256}, DH_CURVE25519, DH_CURVE25519, 0},
+		{"KE after the first listed group", []uint16{DH_ECP_256, DH_CURVE25519}, DH_ECP_256, 0, DH_CURVE25519},
 		{"retry unsupported KE", []uint16{DH_ECP_256}, 14, 0, DH_ECP_256},
 		{"retry missing KE", []uint16{DH_ECP_256}, 0, 0, DH_ECP_256},
-		{"explicit NONE", []uint16{DH_ECP_256, 0}, 14, 0, 0},
+		{"explicit NONE without KE", []uint16{DH_ECP_256, 0}, 0, 0, 0},
+		{"explicit NONE beside an unsupported KE", []uint16{DH_ECP_256, 0}, 14, 0, DH_ECP_256},
 		{"no PFS", nil, 0, 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -120,7 +122,7 @@ func TestChildProposalDHSelection(t *testing.T) {
 			for _, group := range tc.groups {
 				proposal.Transforms = append(proposal.Transforms, Transform{Type: TransDH, ID: group})
 			}
-			selected, err := selectChildRequestProposal(EncodeSA([]Proposal{proposal}), nil, tc.ke)
+			selected, err := selectChildRequestProposal(EncodeSA([]Proposal{proposal}), Suites{}.espCiphers(), Suites{}.kexGroups(), tc.ke, groupOptional)
 			if tc.retryGroup != 0 {
 				var invalid *invalidKEError
 				if !errors.As(err, &invalid) || invalid.group != tc.retryGroup {
@@ -135,7 +137,7 @@ func TestChildProposalDHSelection(t *testing.T) {
 
 func TestIKERekeyProposalKeepsPRF(t *testing.T) {
 	for _, prf := range []uint16{PRF_HMAC_SHA2_256, PRF_HMAC_SHA2_384} {
-		proposal := ikeRekeyProposal(nil, prf)
+		proposal := Suites{}.ikeRekeyProposal(nil, prf, DH_CURVE25519)
 		var count int
 		for _, transform := range proposal.Transforms {
 			if transform.Type == TransPRF {
@@ -148,9 +150,10 @@ func TestIKERekeyProposalKeepsPRF(t *testing.T) {
 		if count != 1 {
 			t.Fatalf("offered %d PRFs, want 1", count)
 		}
-		_, suite, _, ok := selectIKERekeyProposal(ikeProposal(), DH_ECP_256, prf)
-		if !ok || suite.PRFID != prf {
-			t.Fatalf("selected PRF %d, want %d", suite.PRFID, prf)
+		lists := Suites{}
+		chosen, _, ok := chooseIKE([]Proposal{ikeProposal()}, lists.ikeCiphers(), lists.rekeyPRFs(prf), lists.kexGroups(), DH_CURVE25519)
+		if !ok || chosen.suite.PRFID != prf {
+			t.Fatalf("selected PRF %d, want %d", chosen.suite.PRFID, prf)
 		}
 	}
 }
@@ -183,7 +186,7 @@ func TestRekeyIKERefusesAPRFItsOfferLeftOut(t *testing.T) {
 	}}
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "unsupported transform 2/6") {
+		if err == nil || !strings.Contains(err.Error(), "unoffered transform 2/6") {
 			t.Errorf("RekeyIKE returned %v, want the answer's PRF refused by name", err)
 		}
 	case next := <-s.requests:

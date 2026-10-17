@@ -69,13 +69,20 @@ func (r *childRetry) settled(n int, until time.Time) {
 	r.until = until
 }
 
-// rekeyEnded records how a rekey this end started came out, sa naming which SA it replaced
+// rekeyEnded records how a rekey this end started came out
+// sa names the SA it replaced
+// the suite attribute names the replacement's transforms
 func (s *Session) rekeyEnded(sa string, err error) {
 	if err != nil {
 		s.emit("ike.rekey.failed", slog.String("sa", sa), slog.String("err", err.Error()))
 		return
 	}
-	s.emit("ike.rekey.completed", slog.String("sa", sa))
+	suite := s.Suite()
+	replacement := suite.ESP()
+	if sa == "ike" {
+		replacement = suite.IKE()
+	}
+	s.emit("ike.rekey.completed", slog.String("sa", sa), slog.String("suite", replacement))
 }
 
 func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
@@ -148,9 +155,10 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 		return fmt.Errorf("ike: generate Child SA rekey nonce: %w", err)
 	}
 	tsv4, tsv6 := FullRangeV4(), FullRangeV6()
-	offer := espProposal(spi)
+	lists := s.lists()
+	offer := lists.espProposal(spi)
 	if old != nil {
-		offer = espRekeyProposal(spi, *old)
+		offer = lists.espRekeyProposal(spi, *old)
 	}
 	inner := []RawPayload{
 		{Type: PayloadSA, Body: EncodeSA([]Proposal{offer})},
@@ -197,7 +205,7 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 		}
 		return orphaned(err)
 	}
-	_, encr, remoteSPI, err := decodeChildProposal(payloads.sa.Body, old)
+	_, encr, remoteSPI, err := decodeChildProposal(payloads.sa.Body, offer.Transforms)
 	if err != nil {
 		return orphaned(fmt.Errorf("ike: invalid Child SA response proposal: %w", err))
 	}
@@ -316,7 +324,9 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 			return malformed(err)
 		}
 	}
-	child := s.currentChild()
+	s.childMu.RLock()
+	child, childGroup := s.Child, s.childGroupLocked()
+	s.childMu.RUnlock()
 	if !rekeying && (child.LocalSPI != 0 || child.RemoteSPI != 0) {
 		// RFC 7296 section 2.25: "A peer that receives a CHILD_SA_NOT_FOUND notification SHOULD silently delete the Child SA (if it still exists) and send a request to create a new Child SA from scratch (if the Child SA does not yet exist)."
 		// so a request without REKEY_SA makes the one Child SA this end keeps while it has none, and is refused while it has one
@@ -331,22 +341,32 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 			// RFC 7296 section 2.25: "The SA that the initiator attempted to rekey is indicated by the SPI field in the Notify payload, which is copied from the SPI field in the REKEY_SA notification."
 			return s.responseNotifySA(ctx, msgID, CREATE_CHILD_SA, N_CHILD_SA_NOT_FOUND, rekey.Protocol, rekey.SPI)
 		}
-		// checked before the Diffie-Hellman and the keymat, the work the peer is asking this end to spend
-		if !s.allowPeerChildRekey() {
-			return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
-		}
 		expected = &child
 	}
 	if err := validateFullRangeSelectors(payloads.tsi, payloads.tsr); err != nil {
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
 	}
-	selected, err := selectChildRequestProposal(payloads.sa.Body, expected, group)
+	lists := s.lists()
+	ciphers, groups := lists.espCiphers(), lists.kexGroups()
+	if expected != nil {
+		// the answer keeps the cipher and the group of the Child SA it replaces where the offer and the lists hold them
+		ciphers, groups = lists.rekeyChoice(*expected), lists.rekeyGroups(childGroup, group)
+	}
+	selected, err := selectChildRequestProposal(payloads.sa.Body, ciphers, groups, group, groupOptional)
 	if err != nil {
 		if invalidKE, ok := errors.AsType[*invalidKEError](err); ok {
 			return s.responseNotifyData(ctx, msgID, CREATE_CHILD_SA, N_INVALID_KE_PAYLOAD,
 				invalidKENotifyData(invalidKE.group))
 		}
+		// an offer refused over lists that left out a transform of the Child SA's suite rekeys it as a reload does
+		s.SuitesChanged()
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
+	}
+	// checked once the offer is settled and before the key exchange and the keymat, the work minPeerChildRekeyInterval limits
+	// so a rekey answered INVALID_KE_PAYLOAD leaves the limit to the retry it asks for
+	// RFC 7296 section 1.3: "In the case of such a rejection, the CREATE_CHILD_SA exchange fails, and the initiator will probably retry the exchange with a Diffie-Hellman proposal and KEi in the group that the responder gave in the INVALID_KE_PAYLOAD Notify payload."
+	if expected != nil && !s.allowPeerChildRekey() {
+		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 	}
 	// RFC 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA: there is no reason to lose the work done to set up the IKE SA."
 	// an error returned from here would end the IKE SA, so a failure of this end's answers TEMPORARY_FAILURE
@@ -382,7 +402,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 		return fail(err)
 	}
 	replacement := ChildSA{EncrID: encr.ID, EncrKeyBits: encr.KeyLengthBits, LocalSPI: binary.BigEndian.Uint32(spi[:]), RemoteSPI: selected.remoteSPI, InboundKey: initKey, OutboundKey: respKey}
-	if err := s.replaceChild(replacement); err != nil {
+	if err := s.replaceKeyedChild(replacement, selected.dh.ID); err != nil {
 		return fail(err)
 	}
 	responseEncr := encr

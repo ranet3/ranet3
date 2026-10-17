@@ -32,14 +32,16 @@ func recorded(bus *events.Bus, kind string) []control.Event {
 }
 
 // a dialed peer's dial, its session and its babel neighbor are recorded in that order under one path
-// the dial names no serial, so the path is the session's from the endpoint it resolved
+// the dial names no serial
+// so the path is the session's from the endpoint it resolved
 // each end's rekey is recorded under the path naming the other end
 // the end that answered records its side of the session
 // a reload is recorded with its file
 // and the session's end is recorded when the node stops
 func TestLoopbackRecordsDialSessionAndNeighborInOrder(t *testing.T) {
 	alpha, bravo := newLoopbackMesh(t)
-	// bravo answers and never dials, so every session is the one alpha dials
+	// bravo answers and never dials
+	// so every session is the one alpha dials
 	quiet := *bravo.cfg
 	quiet.Dial.To = nil
 	bravo.client.cfg.Store(&quiet)
@@ -67,7 +69,8 @@ func TestLoopbackRecordsDialSessionAndNeighborInOrder(t *testing.T) {
 		at("ike.session.established") > at("babel.neighbor.up") {
 		t.Errorf("alpha recorded %q under %s", order, dialed)
 	}
-	// bravo records its session after the adopt that registered its Babel peer, so alpha's neighbor can come up first
+	// bravo records its session after the adopt that registered its Babel peer
+	// so alpha's neighbor can come up first
 	waitFor(t, convergeBudget, "bravo to record the session it answered", func() bool {
 		return len(recorded(bravo.events, "ike.session.established")) > 0
 	})
@@ -75,11 +78,15 @@ func TestLoopbackRecordsDialSessionAndNeighborInOrder(t *testing.T) {
 	if len(answered) == 0 || answered[0].Peer != fmt.Sprintf("example/%s:0@0", alpha.name) || answered[0].Attrs["role"] != "responder" {
 		t.Errorf("bravo recorded its session as %+v", answered)
 	}
-	// alpha dialed, and receives on the SPI its own SA holds as local
+	// alpha dialed
+	// it receives on the SPI its own SA holds as local
+	// both ends write no cap.crypto list
+	// so the session runs the first name of each
 	dialing := recorded(alpha.events, "ike.session.established")
 	if own := alpha.client.sessions.snapshot(); len(dialing) == 0 || len(own) != 1 || dialing[0].Peer != dialed || dialing[0].Attrs["role"] != "initiator" ||
 		dialing[0].Attrs["spi_in"] != fmt.Sprintf("%08x", own[0].session.Child.LocalSPI) ||
-		dialing[0].Attrs["spi_out"] != fmt.Sprintf("%08x", own[0].session.Child.RemoteSPI) {
+		dialing[0].Attrs["spi_out"] != fmt.Sprintf("%08x", own[0].session.Child.RemoteSPI) ||
+		dialing[0].Attrs["ike"] != "aes256gcm/sha384/x25519" || dialing[0].Attrs["esp"] != "aes256gcm" {
 		t.Errorf("alpha recorded the session it dialed as %+v", dialing)
 	}
 	for _, end := range []struct{ node, other *loopbackNode }{{alpha, bravo}, {bravo, alpha}} {
