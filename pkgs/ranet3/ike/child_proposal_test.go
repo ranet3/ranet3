@@ -113,6 +113,28 @@ func TestDecodeChildNegotiationResponseHandlesNotifyOnlyError(t *testing.T) {
 	}
 }
 
+// RFC 7296 section 3.10.1: "An implementation receiving a Notify payload with one of these types that it does not recognize in a response MUST assume that the corresponding request has failed entirely."
+// section 3.10.1: "Notify payloads with status types MAY be added to any message and MUST be ignored if not recognized."
+// a whole Child SA answer beside an error notify of a type nothing assigns is a rejection naming it, and beside a status notify of a type nothing assigns is taken
+func TestDecodeChildNegotiationResponseTakesAnErrorNotifyItDoesNotRecognizeAsARejection(t *testing.T) {
+	answer := func(notify RawPayload) []RawPayload {
+		return []RawPayload{
+			notify,
+			{Type: PayloadSA, Body: encodedChildProposal(Transform{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128})},
+			{Type: PayloadNonce, Body: EncodeNonce(make([]byte, 32))},
+			{Type: PayloadTSi, Body: fullRangeSelectors()},
+			{Type: PayloadTSr, Body: fullRangeSelectors()},
+		}
+	}
+	_, err := decodeChildNegotiationResponse(answer(unrecognizedError), PRF_HMAC_SHA2_256)
+	if rejected, ok := errors.AsType[*rejectedError](err); !ok || rejected.notify.Type != 8191 {
+		t.Errorf("the answer carrying error notify type 8191 decoded with %v, want a rejection naming it", err)
+	}
+	if _, err := decodeChildNegotiationResponse(answer(unrecognizedStatus), PRF_HMAC_SHA2_256); err != nil {
+		t.Errorf("the answer carrying status notify type 40000 was refused: %v", err)
+	}
+}
+
 func TestValidateFullRangeSelectors(t *testing.T) {
 	want := fullRangeSelectors()
 	if err := validateFullRangeSelectors(&RawPayload{Body: want}, &RawPayload{Body: want}); err != nil {
@@ -143,6 +165,13 @@ func TestNonceLengthFollowsTheNegotiatedPRF(t *testing.T) {
 	} {
 		if got := validNonceFor(make([]byte, test.length), test.prf); got != test.want {
 			t.Errorf("a %d byte nonce under PRF %d was accepted=%v, want %v", test.length, test.prf, got, test.want)
+		}
+	}
+	// RFC 7296 section 3.9: "The size of the Nonce Data MUST be between 16 and 256 octets, inclusive."
+	// validNonce holds it alone, so it holds under a PRF whose half key is shorter than 16 octets too
+	for length, want := range map[int]bool{15: false, 16: true, 256: true, 257: false} {
+		if got := validNonce(make([]byte, length)); got != want {
+			t.Errorf("a %d byte nonce was accepted=%v, want %v", length, got, want)
 		}
 	}
 }

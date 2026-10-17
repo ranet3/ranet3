@@ -162,15 +162,11 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 	if old != nil {
 		oldLocalSPI = make([]byte, 4)
 		binary.BigEndian.PutUint32(oldLocalSPI, old.LocalSPI)
-		// REKEY_SA identifies the old SA by the SPI this exchange's
-		// initiator expects in inbound ESP packets (RFC 7296 section 1.3.3).
+		// RFC 7296 section 1.3.3: "The SA being rekeyed is identified by the SPI field in the Notify payload"
+		// and of that SPI: "this is the SPI the exchange initiator would expect in inbound ESP or AH packets."
 		inner = append([]RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Protocol: ProtoESP, SPI: oldLocalSPI, Type: N_REKEY_SA})}}, inner...)
 	}
-	// Refused here rather than after the exchange. The peer installs the
-	// replacement and switches its outbound SPI the moment it answers, so
-	// proposing an SA this end cannot then install leaves the peer sending
-	// into an SPI that was never registered, and every scheduled retry does
-	// it again.
+	// the peer sends on the SA it makes as soon as it answers, so an SPI this end could not then install is refused before the request goes out
 	if err := s.canReplaceChild(localSPI); err != nil {
 		return err
 	}
@@ -179,30 +175,23 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 		return fmt.Errorf("ike: Child SA negotiation request: %w", err)
 	}
 
-	// The exchange completed, so RFC 7296 section 2.8 has the responder
-	// holding a Child SA whatever this end then makes of the answer, and
-	// RekeyChild retries on a capped backoff: every way out from here that is
-	// not success has to tell the peer, or each attempt leaves one more
-	// behind. The Delete names the SPI this end chose, because section 1.4.1
-	// lists "the SPIs (as they would be expected in the headers of inbound
-	// packets) of the SAs to be deleted" and those are the sender's own:
-	// deleteChildren matches an arriving Delete against RemoteSPI to the same
-	// rule. That SPI was drawn before the request went out, so even a response
-	// this end cannot parse at all is one it can still withdraw from.
+	// RFC 7296 section 2.8: "The responder to a CREATE_CHILD_SA MUST be prepared to accept messages on an SA before sending its response to the creation request, so there is no ambiguity for the initiator."
+	// so the peer holds a Child SA once it has answered, and every way out short of success deletes it, or each retry leaves one more behind
+	// section 1.4.1: "To delete an SA, an INFORMATIONAL exchange with one or more Delete payloads is sent listing the SPIs (as they would be expected in the headers of inbound packets) of the SAs to be deleted."
+	// that is the SPI this end drew before the request went out, so even an answer that does not parse can be withdrawn from
 	orphaned := func(cause error) error {
-		if _, delErr := s.requestLocked(INFORMATIONAL, []RawPayload{{Type: PayloadD,
-			Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{spi}})}}); delErr != nil {
-			slog.Warn("ike could not delete the Child SA a failed rekey left at the peer",
-				"spi", localSPI, "err", delErr)
+		answer, delErr := s.requestLocked(INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{spi}})}})
+		if delErr != nil {
+			slog.Warn("ike could not delete the Child SA a failed rekey left at the peer", "spi", localSPI, "err", delErr)
+		} else {
+			s.halfClosedBy(answer, localSPI)
 		}
 		return cause
 	}
 
 	payloads, err := decodeChildNegotiationResponse(response, context.suite.PRFID)
 	if err != nil {
-		// A rejection is the one answer that installs nothing at the peer, and
-		// rekeyChild reads it to recover from CHILD_SA_NOT_FOUND, so it passes
-		// through whole.
+		// a rejection is the one answer that installs nothing at the peer, and rekeyChild reads it to recover from CHILD_SA_NOT_FOUND
 		if _, ok := errors.AsType[*rejectedError](err); ok {
 			return err
 		}
@@ -231,19 +220,17 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 	}
 	s.deletingRetiring(old.RemoteSPI)
 	deleted, err := s.requestLocked(INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{oldLocalSPI}})}})
-	// The replacement is installed, so the old SA is finished whatever comes
-	// back. Retire it on every path out of here. A response that names no SPI
-	// at all is the case RFC 7296 section 1.4.1 requires of a peer whose own
-	// Delete for this SA crossed ours ("the responses MUST NOT include Delete
-	// payloads for the deleted SAs"), and a failed exchange leaves nobody to
-	// send one. Leaving s.retiring set locks out every later rekey in both
-	// directions for the life of the session, and the peer chooses when that
-	// happens, so the inbound keys drain on the retirement timer instead.
+	// RFC 7296 section 1.4.1 on a Delete that crosses the peer's own: "In that case, the responses MUST NOT include Delete payloads for the deleted SAs, since that would result in duplicate deletion and could in theory delete the wrong SA."
+	// the replacement is installed, so the old SA retires on every path out, an answer naming no SPI, a refusal and a failed exchange among them, since a replaced SA left retiring refuses every later rekey
 	if retireErr := s.retireChild(old.RemoteSPI); retireErr != nil && err == nil {
 		return retireErr
 	}
 	if err != nil {
 		return fmt.Errorf("ike: retire replaced Child SA: %w", err)
+	}
+	// the rekey took effect whatever the peer makes of the old SA
+	if s.halfClosedBy(deleted, old.LocalSPI) {
+		return nil
 	}
 	for _, p := range deleted {
 		if p.Type != PayloadD {
@@ -265,18 +252,14 @@ func (e *rejectedError) Error() string {
 	return fmt.Sprintf("ike: %s rejected: notify type %d", e.exchange, e.notify.Type)
 }
 
+// decodeChildNegotiationResponse reads an error notify in the answer before the payloads of an answer that succeeds
 func decodeChildNegotiationResponse(response []RawPayload, prfID uint16) (childExchangePayloads, error) {
+	if err := refusal("Child SA negotiation", response); err != nil {
+		return childExchangePayloads{}, err
+	}
 	payloads, err := parseChildExchangePayloads(response)
 	if err != nil {
 		return childExchangePayloads{}, fmt.Errorf("ike: invalid Child SA negotiation response: %w", err)
-	}
-	// An error response can consist solely of a Notify payload. Interpret the
-	// authenticated error before requiring the SA, Nr, TSi, and TSr payloads
-	// that RFC 7296 sections 1.3.1 and 1.3.3 specify for a successful response.
-	for _, notify := range payloads.notifies {
-		if notify.Type < 16384 {
-			return childExchangePayloads{}, &rejectedError{exchange: "Child SA negotiation", notify: notify}
-		}
 	}
 	if err := validateCompleteChildExchange(payloads, prfID); err != nil {
 		return childExchangePayloads{}, fmt.Errorf("ike: invalid Child SA negotiation response: %w", err)
@@ -296,45 +279,59 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	if ikeBusy || s.retiringChild().LocalSPI != 0 {
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 	}
+	malformed := func(err error) ([]byte, error) { return s.refuseRequest(ctx, msgID, CREATE_CHILD_SA, err) }
+	payloads, err := decodeChildExchangePayloads(inner, ctx.suite.PRFID)
+	if err != nil {
+		return malformed(err)
+	}
 	var rekey Notify
-	for _, payload := range inner {
-		if payload.Type != PayloadN {
-			continue
-		}
-		notify, err := DecodeNotify(payload.Body)
-		if err != nil {
-			return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
-		}
+	for _, notify := range payloads.notifies {
 		if notify.Type == N_REKEY_SA {
 			rekey = notify
 		}
 	}
+	rekeying := rekey.Type == N_REKEY_SA
+	// RFC 7296 section 3.10 on a notify's Protocol ID: "For notifications concerning Child SAs, this field MUST contain either (2) to indicate AH or (3) to indicate ESP."
+	// and on its SPI Size: "Length in octets of the SPI as defined by the IPsec protocol ID or zero if no SPI is applicable."
+	if rekeying && ((rekey.Protocol != ProtoESP && rekey.Protocol != ProtoAH) || len(rekey.SPI) != 4) {
+		return malformed(fmt.Errorf("ike: REKEY_SA names protocol %d by a %d octet SPI", rekey.Protocol, len(rekey.SPI)))
+	}
+	if _, err := decodeRequestSA(payloads.sa.Body); err != nil {
+		return malformed(err)
+	}
+	// RFC 7296 section 2.9: "Each TS payload contains one or more Traffic Selectors."
+	for _, selectors := range []*RawPayload{payloads.tsi, payloads.tsr} {
+		decoded, err := DecodeTS(selectors.Body)
+		if err == nil && len(decoded) == 0 {
+			err = errors.New("ike: TS payload carries no traffic selector")
+		}
+		if err != nil {
+			return malformed(err)
+		}
+	}
+	var group uint16
+	var peerPublic []byte
+	if payloads.ke != nil {
+		if group, peerPublic, err = decodeRequestKE(payloads.ke.Body); err != nil {
+			return malformed(err)
+		}
+	}
 	child := s.currentChild()
-	if rekey.Type != N_REKEY_SA && (child.LocalSPI != 0 || child.RemoteSPI != 0) {
-		// Without REKEY_SA this requests a new Child SA. Reject it as an
-		// additional SA only while this single-SA profile already has one.
-		// After state loss, RFC 7296 section 2.25 expects creation from scratch.
+	if !rekeying && (child.LocalSPI != 0 || child.RemoteSPI != 0) {
+		// RFC 7296 section 2.25: "A peer that receives a CHILD_SA_NOT_FOUND notification SHOULD silently delete the Child SA (if it still exists) and send a request to create a new Child SA from scratch (if the Child SA does not yet exist)."
+		// so a request without REKEY_SA makes the one Child SA this end keeps while it has none, and is refused while it has one
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_ADDITIONAL_SAS)
 	}
-	payloads, err := decodeChildExchangePayloads(inner, ctx.suite.PRFID)
-	if err != nil {
-		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
-	}
 	var expected *ChildSA
-	if rekey.Type == N_REKEY_SA {
+	if rekeying {
 		if s.childRekeying.Load() {
 			return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 		}
-		if rekey.Protocol != ProtoESP || len(rekey.SPI) != 4 {
-			return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
-		}
-		if child.LocalSPI == 0 || binary.BigEndian.Uint32(rekey.SPI) != child.RemoteSPI {
-			// RFC 7296 section 2.25 requires CHILD_SA_NOT_FOUND to identify the
-			// nonexistent SA by copying the Protocol ID and SPI from REKEY_SA.
+		if rekey.Protocol != ProtoESP || child.LocalSPI == 0 || binary.BigEndian.Uint32(rekey.SPI) != child.RemoteSPI {
+			// RFC 7296 section 2.25: "The SA that the initiator attempted to rekey is indicated by the SPI field in the Notify payload, which is copied from the SPI field in the REKEY_SA notification."
 			return s.responseNotifySA(ctx, msgID, CREATE_CHILD_SA, N_CHILD_SA_NOT_FOUND, rekey.Protocol, rekey.SPI)
 		}
-		// Checked before the Diffie-Hellman and the keymat, the work the
-		// peer is really asking us to spend.
+		// checked before the Diffie-Hellman and the keymat, the work the peer is asking this end to spend
 		if !s.allowPeerChildRekey() {
 			return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 		}
@@ -342,14 +339,6 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	}
 	if err := validateFullRangeSelectors(payloads.tsi, payloads.tsr); err != nil {
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
-	}
-	var group uint16
-	var peerPublic []byte
-	if payloads.ke != nil {
-		group, peerPublic, err = DecodeKE(payloads.ke.Body)
-		if err != nil || group == 0 {
-			return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
-		}
 	}
 	selected, err := selectChildRequestProposal(payloads.sa.Body, expected, group)
 	if err != nil {
@@ -359,11 +348,8 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 		}
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
 	}
-	// A local failure from here on answers TEMPORARY_FAILURE rather than
-	// returning an error, which Run turns into a teardown of the IKE SA. RFC
-	// 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT
-	// tear down the IKE SA: there is no reason to lose the work done to set up
-	// the IKE SA."
+	// RFC 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA: there is no reason to lose the work done to set up the IKE SA."
+	// an error returned from here would end the IKE SA, so a failure of this end's answers TEMPORARY_FAILURE
 	fail := func(err error) ([]byte, error) {
 		slog.Warn("ike cannot answer a peer Child SA rekey", "err", err)
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
@@ -376,7 +362,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 		}
 		sharedSecret, err = dh.SharedSecret(peerPublic)
 		if err != nil {
-			return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
+			return malformed(err)
 		}
 		localPublic = dh.PublicBytes()
 	}
@@ -401,12 +387,12 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	}
 	responseEncr := encr
 	if responseEncr.ID == ENCR_CHACHA20_POLY1305 {
-		// RFC 7296 section 3.3.6 returns selected attributes unchanged. The fixed-key
-		// ChaCha20-Poly1305 transform was offered without Key Length.
+		// RFC 7296 section 3.3.6: "Any attributes of a selected transform MUST be returned unmodified."
+		// and ChaCha20-Poly1305 is offered with no Key Length, which canonicalEncryptionTransform fills in
 		responseEncr.KeyLengthBits = 0
 	}
 	response := Proposal{Number: selected.proposal.Number, Protocol: ProtoESP, SPI: spi[:], Transforms: []Transform{responseEncr, {Type: TransESN, ID: ESN_NO}}}
-	// One transform of every type the offer carried, RFC 7296 section 2.7.
+	// RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
 	if selected.integ.Type != 0 {
 		response.Transforms = append(response.Transforms, selected.integ)
 	}
@@ -419,4 +405,23 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	}
 	responsePayloads = append(responsePayloads, RawPayload{Type: PayloadTSi, Body: payloads.tsi.Body}, RawPayload{Type: PayloadTSr, Body: payloads.tsr.Body})
 	return s.response(ctx, msgID, CREATE_CHILD_SA, responsePayloads)
+}
+
+// decodeRequestSA reads the SA payload of a peer's request
+// RFC 7296 section 2.7: "An SA payload consists of one or more proposals."
+func decodeRequestSA(body []byte) ([]Proposal, error) {
+	props, err := DecodeSA(body)
+	if err == nil && len(props) == 0 {
+		err = errors.New("ike: SA payload carries no proposal")
+	}
+	return props, err
+}
+
+// decodeRequestKE reads the KE payload of a peer's request, which names a group and carries a value in it
+func decodeRequestKE(body []byte) (uint16, []byte, error) {
+	group, public, err := DecodeKE(body)
+	if err == nil && (group == 0 || len(public) == 0) {
+		err = fmt.Errorf("ike: KE payload of group %d carries %d octets", group, len(public))
+	}
+	return group, public, err
 }

@@ -129,6 +129,8 @@ type Session struct {
 	childFailed chan error
 	// sendFailures counts failed IKE sends since the last that went out, and only Run's goroutine touches it
 	sendFailures int
+	// answeredInvalidSyntax is set once the peer answers a request on the current IKE SA with INVALID_SYNTAX, after which Run returns, and only Run's goroutine touches it
+	answeredInvalidSyntax bool
 
 	childMu          sync.RWMutex
 	Child            ChildSA
@@ -144,6 +146,8 @@ type Session struct {
 	// queued and reordered ESP to finish after the Delete acknowledgment.
 	retired          []childRetirement
 	childRetireDelay time.Duration
+	// halfClosed holds the inbound SPIs of the Child SAs whose Delete the peer refused, for the life of the session
+	halfClosed []uint32
 
 	handlerMu     sync.RWMutex
 	onChild       func(ChildSA) error
@@ -674,7 +678,11 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 				return false
 			}
 			if m.find(PayloadSA) != nil {
-				return true
+				// RFC 7296 section 2.21.1: "In an IKE_SA_INIT exchange, any error notification causes the exchange to fail."
+				// section 2.21.1: "Because all error notifications are completely unauthenticated, the recipient should continue trying for some time before giving up."
+				// a notify that does not decode may be one
+				_, failed, err := firstErrorNotify(m.Payloads)
+				return err == nil && !failed
 			}
 			_, ok := usefulInitNotify(m, haveCookie, haveGroup)
 			return ok
@@ -935,9 +943,13 @@ func (s *Session) informAfterAuth(inner []RawPayload) error {
 	if unsupported, found := firstUnsupportedCritical(response.Payloads, responseInner); found {
 		return fmt.Errorf("ike: response marks unsupported payload type %d critical", unsupported)
 	}
+	if err := refusal("INFORMATIONAL after IKE_AUTH", responseInner); err != nil {
+		return err
+	}
 	// RFC 7296 section 1.4.1: "The response to a request that deletes the IKE SA is an empty INFORMATIONAL response."
 	// section 2.5: "If the critical flag is not set and the payload type is unsupported, that payload MUST be ignored."
-	if slices.ContainsFunc(responseInner, func(payload RawPayload) bool { return supportedPayloadType(payload.Type) }) {
+	// section 3.10.1: "Notify payloads with status types MAY be added to any message and MUST be ignored if not recognized."
+	if slices.ContainsFunc(responseInner, func(payload RawPayload) bool { return payload.Type != PayloadN && supportedPayloadType(payload.Type) }) {
 		return fmt.Errorf("ike: INFORMATIONAL response after IKE_AUTH is not empty")
 	}
 	return nil
@@ -966,7 +978,7 @@ func (s *Session) answerAfterAuth(ctx *ikeContext, raw []byte) bool {
 	return ends
 }
 
-// the IKE SA going carries no Child SA, so every INFORMATIONAL request is answered empty
+// the IKE SA going carries no Child SA, so an INFORMATIONAL request whose Delete payloads decode is answered empty
 // RFC 7296 section 2.25.1: "If a peer receives a request to close a Child SA that does not exist, it SHOULD reply without a Delete payload."
 func (s *Session) answerInWait(ctx *ikeContext, hdr *Header, cleartext []RawPayload, first PayloadType, plain []byte) ([]byte, bool, error) {
 	inner, err := decodeMessagePlaintext(first, plain)
@@ -981,6 +993,16 @@ func (s *Session) answerInWait(ctx *ikeContext, hdr *Header, cleartext []RawPayl
 	}
 	switch hdr.ExchangeType {
 	case INFORMATIONAL:
+		for _, payload := range inner {
+			if payload.Type != PayloadD {
+				continue
+			}
+			if _, err := DecodeDelete(payload.Body); err != nil {
+				// as Run answers a Delete payload that does not decode, which ends the IKE SA
+				response, err := s.responseNotify(ctx, hdr.MessageID, INFORMATIONAL, N_INVALID_SYNTAX)
+				return response, true, err
+			}
+		}
 		response, err := s.response(ctx, hdr.MessageID, INFORMATIONAL, nil)
 		return response, deletesIKE(inner), err
 	case CREATE_CHILD_SA:
@@ -1013,7 +1035,7 @@ func (s *Session) answerAgain(ctx *ikeContext, hdr *Header) bool {
 	return true
 }
 
-// doIKEAuth reports true once it accepts the responder's AUTH and IDr, and returns an *authRefusal for a decrypted answer it refuses before then, other than one carrying the responder's own error notify
+// doIKEAuth reports true once it accepts the responder's AUTH and IDr in an answer carrying none of the notifies that leave the IKE SA uncreated, and returns an *authRefusal for a decrypted answer it refuses before then, other than one failed at the responder
 func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr []byte) (bool, error) {
 	mySPI := randUint32Nonzero()
 	spiBuf := make([]byte, 4)
@@ -1076,6 +1098,15 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 		return false, refuse(N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupported)},
 			fmt.Errorf("ike: IKE_AUTH response marks unsupported payload type %d critical", unsupported))
 	}
+	notify, failed, err := firstErrorNotify(respInner)
+	if err != nil {
+		return false, refuse(N_INVALID_SYNTAX, nil, err)
+	}
+	// RFC 7296 section 2.21.2: "In an IKE_AUTH exchange, or in the INFORMATIONAL exchange immediately following it (in case an error happened when processing a response to IKE_AUTH), the UNSUPPORTED_CRITICAL_PAYLOAD, INVALID_SYNTAX, and AUTHENTICATION_FAILED notifications are the only ones to cause the IKE SA to be deleted or not created, without a Delete payload."
+	// an answer carrying one failed at the responder, which has nothing to be told
+	if failure, found := authFailure(respInner); found {
+		return false, fmt.Errorf("ike: IKE_AUTH rejected inside SK: notify type %d", failure)
+	}
 	respMsg := &Message{Header: resp.Header, Payloads: respInner}
 
 	idrRecv := respMsg.find(PayloadIDr)
@@ -1084,19 +1115,9 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	tsiRecv := respMsg.find(PayloadTSi)
 	tsrRecv := respMsg.find(PayloadTSr)
 	if idrRecv == nil || authRecv == nil {
-		for _, payload := range respInner {
-			if payload.Type != PayloadN {
-				continue
-			}
-			notify, err := DecodeNotify(payload.Body)
-			if err != nil {
-				return false, refuse(N_INVALID_SYNTAX, nil, err)
-			}
-			// RFC 7296 section 3.10.1: "Types in the range 0 - 16383 are intended for reporting errors."
-			// an IKE_AUTH answered with one failed at the responder, which has nothing to be told
-			if notify.Type < 16384 {
-				return false, fmt.Errorf("ike: IKE_AUTH rejected inside SK: notify type %d", notify.Type)
-			}
+		// an answer carrying another error and no IDr or AUTH failed at the responder too
+		if failed {
+			return false, fmt.Errorf("ike: IKE_AUTH rejected inside SK: notify type %d", notify.Type)
 		}
 		return false, refuse(N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: incomplete IKE_AUTH response"))
 	}
@@ -1116,14 +1137,9 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	s.emit("ike.id.resolved", responder.attrs(idiBody)...)
 
 	// RFC 7296 section 2.21.2: "a responder may include all the payloads associated with authentication (IDr, CERT, and AUTH) while sending error notifications for the piggybacked exchanges (FAILED_CP_REQUIRED, NO_PROPOSAL_CHOSEN, and so on), and the initiator MUST NOT fail the authentication because of this."
-	if saRecv == nil {
-		if n := respMsg.find(PayloadN); n != nil {
-			nt, err := DecodeNotify(n.Body)
-			if err != nil {
-				return true, err
-			}
-			return true, fmt.Errorf("ike: Child SA rejected: notify type %d", nt.Type)
-		}
+	// section 3.10.1: "An implementation receiving a Notify payload with one of these types that it does not recognize in a response MUST assume that the corresponding request has failed entirely."
+	if failed {
+		return true, fmt.Errorf("ike: Child SA rejected: notify type %d", notify.Type)
 	}
 	if saRecv == nil || tsiRecv == nil || tsrRecv == nil {
 		return true, fmt.Errorf("ike: incomplete IKE_AUTH response")
@@ -1189,6 +1205,37 @@ func usefulInitNotify(m *Message, cookieUsed, groupUsed bool) (Notify, bool) {
 		}
 	}
 	return Notify{}, false
+}
+
+// firstErrorNotify returns the first notify of an error type in payloads, and fails on a notify that does not decode
+// RFC 7296 section 3.10.1: "Types in the range 0 - 16383 are intended for reporting errors."
+func firstErrorNotify(payloads []RawPayload) (Notify, bool, error) {
+	for _, payload := range payloads {
+		if payload.Type != PayloadN {
+			continue
+		}
+		notify, err := DecodeNotify(payload.Body)
+		if err != nil {
+			return Notify{}, false, err
+		}
+		if notify.Type < 16384 {
+			return notify, true, nil
+		}
+	}
+	return Notify{}, false, nil
+}
+
+// refusal is the failure an answer to this end's request reports, an error notify or a notify that does not decode, and nil for an answer that reports none
+// RFC 7296 section 3.10.1: "An implementation receiving a Notify payload with one of these types that it does not recognize in a response MUST assume that the corresponding request has failed entirely."
+func refusal(exchange string, answer []RawPayload) error {
+	notify, failed, err := firstErrorNotify(answer)
+	if err != nil {
+		return fmt.Errorf("ike: invalid %s response: %w", exchange, err)
+	}
+	if failed {
+		return &rejectedError{exchange: exchange, notify: notify}
+	}
+	return nil
 }
 
 // Active reports whether this session has recently proved the peer is still

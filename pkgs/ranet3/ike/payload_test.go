@@ -175,6 +175,33 @@ func TestReservedFieldsAreSentAsZeroAndIgnored(t *testing.T) {
 	}
 }
 
+// RFC 8420 appendix A.1 on id-Ed25519: "Parameters are absent."
+// and its "Binary encoding: 3005 0603 2B65 70", the one AlgorithmIdentifier an AUTH payload is verified under
+// an AUTH payload naming Ed448, Ed25519 with a NULL parameter, a cut identifier or none is refused, though its Ed25519 signature is good
+func TestVerifyAuthRefusesAnyOtherAlgorithmIdentifier(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed := []byte("octets the AUTH payload signs")
+	auth := func(algorithm []byte) []byte {
+		return slices.Concat([]byte{AuthDigitalSignature, 0, 0, 0, byte(len(algorithm))}, algorithm, ed25519.Sign(private, signed))
+	}
+	if err := VerifyAuth(public, signed, auth(Ed25519AlgorithmIdentifier())); err != nil {
+		t.Fatalf("the payload naming Ed25519 is refused: %v", err)
+	}
+	for name, algorithm := range map[string][]byte{
+		"Ed448":                         {0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x71},
+		"Ed25519 with a NULL parameter": {0x30, 0x07, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x05, 0x00},
+		"Ed25519 cut short":             {0x30, 0x05, 0x06, 0x03, 0x2b, 0x65},
+		"no AlgorithmIdentifier":        {},
+	} {
+		if err := VerifyAuth(public, signed, auth(algorithm)); err == nil {
+			t.Errorf("the payload naming %s is verified, want it refused", name)
+		}
+	}
+}
+
 func payloadTypes(payloads []RawPayload) []PayloadType {
 	types := make([]PayloadType, len(payloads))
 	for i, payload := range payloads {

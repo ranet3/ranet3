@@ -34,6 +34,8 @@ func TestPeerChildRekeyWithPFS(t *testing.T) {
 				proposal.Transforms = append(proposal.Transforms, Transform{Type: TransDH, ID: group})
 				// RFC 7296 section 2.5: "implementations MUST NOT reject as invalid a message with those payloads in any other order."
 				// so the request has them in reverse
+				// section 3.10.1: "Unrecognized error types in a request and status types in a request or response MUST be ignored, and they should be logged."
+				// so it carries one of each besides
 				raw, err := s.handleChildRekey(ctx, 0, []RawPayload{
 					{Type: PayloadTSr, Body: fullRangeSelectors()},
 					{Type: PayloadTSi, Body: fullRangeSelectors()},
@@ -41,6 +43,8 @@ func TestPeerChildRekeyWithPFS(t *testing.T) {
 					{Type: PayloadNonce, Body: ni},
 					{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
 					{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_REKEY_SA, Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, old.RemoteSPI)})},
+					unrecognizedError,
+					unrecognizedStatus,
 				})
 				if err != nil {
 					t.Fatal(err)
@@ -189,6 +193,141 @@ func TestRekeyIKERefusesAPRFItsOfferLeftOut(t *testing.T) {
 	if current, _ := s.contexts(); current != old {
 		t.Error("a refused rekey answer replaced the IKE SA")
 	}
+}
+
+// RFC 7296 section 2.18: "Therefore, implementations MUST perform a new Diffie-Hellman exchange when rekeying the IKE SA."
+// and: "This means that a successful exchange rekeying the IKE SA always includes the KEi/KEr payloads."
+// an answer to this end's IKE SA rekey that carries no KE payload is refused and leaves the SA it would have replaced current
+func TestRekeyIKERefusesAnAnswerWithoutAKeyExchange(t *testing.T) {
+	mux, _ := lifecycleMuxes(t)
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
+	s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1)}
+	done := make(chan error, 1)
+	go func() { done <- s.RekeyIKE() }()
+	request := <-s.requests
+	answer := Proposal{Number: 1, Protocol: ProtoIKE, SPI: binary.BigEndian.AppendUint64(nil, 22), Transforms: []Transform{
+		{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128},
+		{Type: TransPRF, ID: PRF_HMAC_SHA2_256},
+		{Type: TransDH, ID: DH_CURVE25519},
+	}}
+	request.result <- requestResult{inner: []RawPayload{
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{answer})},
+		{Type: PayloadNonce, Body: bytes.Repeat([]byte{1}, 32)},
+	}}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "incomplete IKE SA rekey response") {
+			t.Errorf("RekeyIKE returned %v, want the answer refused as incomplete", err)
+		}
+	case next := <-s.requests:
+		next.result <- requestResult{err: errors.New("nothing answers past the rekey")}
+		t.Fatalf("RekeyIKE installed the answer and asked for exchange %d next, then returned %v", next.exchange, <-done)
+	}
+	if current, _ := s.contexts(); current != old {
+		t.Error("a refused rekey answer replaced the IKE SA")
+	}
+}
+
+// RFC 7296 section 3.9: "Nonce values MUST NOT be reused."
+// section 2.6.1 gives the IKE_SA_INIT retry after INVALID_KE_PAYLOAD as "HDR(A,0), N(COOKIE), SAi1, KEi', Ni -->", the nonce of the attempt that failed
+// each IKE SA rekey draws its own nonce, and its retry in the group an INVALID_KE_PAYLOAD names sends the nonce of the attempt that failed, from which no key was derived
+func TestEachIKESARekeyDrawsItsOwnNonceAndItsRetryKeepsIt(t *testing.T) {
+	mux, _ := lifecycleMuxes(t)
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	s := &Session{mux: mux, current: &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)},
+		requests: make(chan *localRequest, 1)}
+	nonceOf := func(request *localRequest) []byte {
+		t.Helper()
+		nonce := findType(request.inner, PayloadNonce)
+		if nonce == nil {
+			t.Fatalf("the IKE SA rekey request carries %v and no nonce", payloadTypes(request.inner))
+		}
+		return DecodeNonce(nonce.Body)
+	}
+	var nonces [][]byte
+	for range 2 {
+		done := make(chan error, 1)
+		go func() { done <- s.RekeyIKE() }()
+		first := <-s.requests
+		nonce := nonceOf(first)
+		nonces = append(nonces, nonce)
+		first.result <- requestResult{inner: []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INVALID_KE_PAYLOAD, Data: invalidKENotifyData(DH_ECP_256)})}}}
+		retry := <-s.requests
+		if again := nonceOf(retry); !bytes.Equal(again, nonce) {
+			t.Errorf("the retry in the group INVALID_KE_PAYLOAD named sent nonce %x, want the failed attempt's %x", again, nonce)
+		}
+		retry.result <- requestResult{inner: []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NO_PROPOSAL_CHOSEN})}}}
+		if err := <-done; err == nil {
+			t.Fatal("RekeyIKE took an answer of NO_PROPOSAL_CHOSEN")
+		}
+	}
+	if bytes.Equal(nonces[0], nonces[1]) {
+		t.Errorf("two IKE SA rekeys sent the same nonce %x", nonces[0])
+	}
+}
+
+// RFC 7296 section 3.10.1: "An implementation receiving a Notify payload with one of these types that it does not recognize in a response MUST assume that the corresponding request has failed entirely."
+// section 3.10.1: "Notify payloads with status types MAY be added to any message and MUST be ignored if not recognized."
+// an answer to this end's IKE SA rekey carrying a whole SA beside an error notify of a type nothing assigns is a rejection that leaves the old SA current, and one carrying it beside a status notify of a type nothing assigns replaces the old SA
+func TestRekeyIKETakesAnErrorNotifyItDoesNotRecognizeAsARejection(t *testing.T) {
+	// answered starts a rekey and answers it with notify beside a whole SA
+	answered := func(t *testing.T, notify RawPayload) (*Session, *ikeContext, <-chan error) {
+		mux, _ := lifecycleMuxes(t)
+		suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+		old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
+		s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1)}
+		done := make(chan error, 1)
+		go func() { done <- s.RekeyIKE() }()
+		request := <-s.requests
+		dh, err := GenerateDH(DH_CURVE25519)
+		if err != nil {
+			t.Fatal(err)
+		}
+		answer := Proposal{Number: 1, Protocol: ProtoIKE, SPI: binary.BigEndian.AppendUint64(nil, 22), Transforms: []Transform{
+			{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128},
+			{Type: TransPRF, ID: PRF_HMAC_SHA2_256},
+			{Type: TransDH, ID: DH_CURVE25519},
+		}}
+		request.result <- requestResult{inner: []RawPayload{
+			notify,
+			{Type: PayloadSA, Body: EncodeSA([]Proposal{answer})},
+			{Type: PayloadNonce, Body: bytes.Repeat([]byte{1}, 32)},
+			{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, dh.PublicBytes())},
+		}}
+		return s, old, done
+	}
+	t.Run("error", func(t *testing.T) {
+		s, old, done := answered(t, unrecognizedError)
+		select {
+		case err := <-done:
+			if rejected, ok := errors.AsType[*rejectedError](err); !ok || rejected.notify.Type != 8191 {
+				t.Errorf("RekeyIKE returned %v, want a rejection naming notify type 8191", err)
+			}
+		case next := <-s.requests:
+			next.result <- requestResult{err: errors.New("nothing answers past the rekey")}
+			t.Fatalf("RekeyIKE installed the answer and asked for exchange %d next, then returned %v", next.exchange, <-done)
+		}
+		if current, _ := s.contexts(); current != old {
+			t.Error("a rejected rekey answer replaced the IKE SA")
+		}
+	})
+	t.Run("status", func(t *testing.T) {
+		s, old, done := answered(t, unrecognizedStatus)
+		select {
+		case err := <-done:
+			t.Fatalf("RekeyIKE returned %v without deleting the SA it replaced", err)
+		case next := <-s.requests:
+			// the Delete of the old IKE SA
+			next.result <- requestResult{}
+		}
+		if err := <-done; err != nil {
+			t.Errorf("RekeyIKE returned %v, want the answer taken", err)
+		}
+		if current, _ := s.contexts(); current == old {
+			t.Error("the rekey answer carrying a status notify left the old IKE SA current")
+		}
+	})
 }
 
 func TestPeerRekeyDefersConflictingTransition(t *testing.T) {
