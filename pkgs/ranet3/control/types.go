@@ -338,8 +338,8 @@ type RegistryInfo struct {
 // KernelStatus is the route reconciler: what it was configured to own, and
 // what its last pass did. Installed counts the routes the kernel holds for it,
 // and Skipped the ones the platform cannot represent or another writer already
-// holds, which is the number that explains a prefix the mesh has and the
-// kernel does not.
+// holds and the cover members left out with their family, which is the number
+// that explains a prefix the mesh has and the kernel does not.
 type KernelStatus struct {
 	Enabled  bool   `json:"enabled"`
 	Where    string `json:"where,omitempty"`
