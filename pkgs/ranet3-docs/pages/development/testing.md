@@ -208,6 +208,8 @@ negotiated ESP tunnel:
 ```sh
 nix build .#checks.x86_64-linux.integration-initiator -L
 nix build .#checks.x86_64-linux.integration-responder -L
+nix build .#checks.x86_64-linux.integration-initiator-fqdn -L
+nix build .#checks.x86_64-linux.integration-responder-fqdn -L
 nix build .#checks.x86_64-linux.integration-kernel -L
 nix build .#checks.x86_64-linux.integration-segments -L
 nix build .#checks.x86_64-linux.integration-egress -L
@@ -216,10 +218,16 @@ nix build .#checks.x86_64-linux.integration-egress -L
 `integration-responder` inverts the exchange: strongSwan dials and ranet3
 answers, and the check asserts that ranet3 never dials. After a restart of
 ranet3, strongSwan dials again and ranet3 answers without dialing.
-`integration-kernel` exercises the route reconciler against a real table. In
-every one of these checks the client runs ranet3 through the NixOS module, which
-writes its settings as the TOML a deployed node runs, and the check reads back
-the unit's runtime directory and group.
+`integration-initiator-fqdn` and `integration-responder-fqdn` run the same 2
+exchanges with each side named by an FQDN in place of a DN, strongSwan by its
+own `id` and ranet3 through `auth.aliases`. Each asserts that strongSwan
+established the SA between the 2 FQDNs and that ranet3 recorded an
+`ike.id.resolved` with `type=fqdn` for the gateway. The initiator variant also
+asserts that ranet3 asked for the gateway's FQDN in IDr. `integration-kernel`
+exercises the route reconciler against a real table. In every one of these
+checks the client runs ranet3 through the NixOS module, which writes its
+settings as the TOML a deployed node runs, and the check reads back the unit's
+runtime directory and group.
 
 `integration-egress` makes the client an exit node and boots a third machine
 behind it, holding prefixes the gateway can reach through the mesh and no other

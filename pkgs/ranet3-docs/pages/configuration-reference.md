@@ -27,7 +27,8 @@ the same names. A key not listed here is refused when the file loads.
   `link.endpoints` against the trust document again, and refuses a file that
   fails them. It refuses a key the platform lacks, and a `cap.route` entry equal
   to a `cap.egress.advertise` prefix, as a startup does. It logs a peer the
-  trust document cannot support instead of refusing the file.
+  trust document cannot support, and an `auth.aliases` entry naming what the
+  document lacks, instead of refusing the file.
 
 ## Spellings
 
@@ -61,10 +62,72 @@ the same names. A key not listed here is refused when the file loads.
 
 ## `auth`
 
-| Key     | Value | Default  | Meaning                                                 |
-| ------- | ----- | -------- | ------------------------------------------------------- |
-| `key`   | path  | required | This node's private key, a PKCS8 PEM Ed25519 file       |
-| `trust` | path  | required | The [trust document](trust.md), a ranet `registry.json` |
+| Key       | Value | Default  | Meaning                                                 |
+| --------- | ----- | -------- | ------------------------------------------------------- |
+| `key`     | path  | required | This node's private key, a PKCS8 PEM Ed25519 file       |
+| `trust`   | path  | required | The [trust document](trust.md), a ranet `registry.json` |
+| `aliases` | table | none     | IDs other than a DN, for a peer that is not ranet3      |
+
+### `auth.aliases`
+
+The IDs of RFC 7296 section 3.5 other than a DN, for a peer such as strongSwan
+that names itself, or expects this node to be named, by an address, a domain
+name, an email address or a key ID. A ranet3 peer names itself by its DN and
+needs no entry. [The trust document](trust.md#ids-on-the-wire) describes how a
+handshake reads an ID.
+
+```toml
+[auth.aliases.remote.fqdn]
+"gw.example.net" = "example/gateway:0"
+
+[auth.aliases.local]
+"example/gateway" = { fqdn = "laptop.example.net" }
+```
+
+| Key            | Value                        | Default | Meaning                                                            |
+| -------------- | ---------------------------- | ------- | ------------------------------------------------------------------ |
+| `remote.ip`    | table of address: name       | none    | The endpoint a peer presenting `ID_IPV4_ADDR` or `ID_IPV6_ADDR` is |
+| `remote.fqdn`  | table of domain name: name   | none    | The endpoint a peer presenting `ID_FQDN` is                        |
+| `remote.email` | table of email address: name | none    | The endpoint a peer presenting `ID_RFC822_ADDR` is                 |
+| `remote.keyid` | table of hex octets: name    | none    | The endpoint a peer presenting `ID_KEY_ID` is                      |
+| `local`        | table of name: ID            | none    | The ID this node presents to a peer in place of its DN             |
+
+- A `remote` value is an endpoint, `organization/name:serial`. The key that must
+  verify the peer is still that endpoint's key in the trust document.
+- An address under `ip` is an `ID_IPV4_ADDR` when it is IPv4 and an
+  `ID_IPV6_ADDR` otherwise, an IPv4-mapped address included. The 2 types never
+  match each other.
+- A domain name, and the domain of an email address, match in ASCII without
+  case. The part of an email address before its last `@`, an address and a key
+  ID match exactly. A domain name is ASCII, so an internationalized name is
+  written in its `xn--` form.
+- An `ID_KEY_ID` whose octets spell an endpoint as `organization/name:serial`
+  names that endpoint with no entry.
+- A `local` key is a peer as `dial.to` writes one, a node or an endpoint, and an
+  endpoint's entry wins over its node's. Its value writes exactly 1 of `ip`,
+  `fqdn`, `email` and `keyid`, spelled as the `remote` table of that type spells
+  a key. This node sends it as IDi when it dials that peer, and as IDr when that
+  peer dials it and sends no IDr.
+- Dialing an endpoint `remote` names by 1 ID, this node asks for that ID in IDr.
+  Where `remote` names it by several, it asks for none, and where by none, it
+  asks for the endpoint's DN.
+- At load, the file is refused for a key or value that does not parse, an empty
+  one, a control character or a line or paragraph separator in a domain name or
+  an email address, a character outside ASCII in a domain name, an email address
+  without a local part and a domain on either side of its last `@`, and 2 keys
+  of 1 table that name 1 ID, such as `gw.example.net` and `GW.example.net`.
+- At load, the file is also refused for a `remote` value naming a node, a
+  `remote.keyid` key spelling an endpoint other than its value, a `local` entry
+  writing none or several types, and a `local` `keyid` spelling an endpoint of
+  another node.
+- At load, `local` is refused on a node whose `link.endpoints` holds 2 entries
+  of 1 family, since a peer could not tell them apart by the ID they present.
+- At startup, every node and endpoint the tables name must be in the trust
+  document, and one it lacks refuses the start. A reload logs the entry instead,
+  as [reloading](reloading.md#peers-the-trust-document-cannot-support)
+  describes.
+- A reload applies both tables to the handshakes after it, and a session already
+  up keeps its peer.
 
 ## `link`
 
@@ -84,6 +147,14 @@ the same names. A key not listed here is refused when the file loads.
 - At startup and on every reload, each `endpoints` entry must match an endpoint
   the trust document gives this node, in the same family. A local endpoint dials
   only remote endpoints of its own family.
+- A responder takes a handshake in 1 family. It refuses a peer whose ID names an
+  endpoint the trust document lists in the other family than the one the request
+  arrived in, and an IDr naming one of this node's endpoints of the other
+  family. With no IDr, or one that names no endpoint and holds an ID
+  `auth.aliases.local` presents, it answers as the one `endpoints` entry of that
+  family, and refuses where there is none or more than 1. A node with 1 `ip4`
+  entry refuses a request that reaches it over IPv6, with or without an IDr.
+  [The trust document](trust.md#families) describes these refusals.
 - With `listen` off and `dial.all` off, `dial.to` needs at least 1 entry.
 - On Linux, `tun` attaches to an existing device of that name and creates it
   otherwise. The default `ranet3` is never attached to: the daemon refuses to
