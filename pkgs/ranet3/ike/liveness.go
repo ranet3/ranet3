@@ -141,6 +141,13 @@ func (s *Session) newRekeySchedule(name string, interval time.Duration, run func
 	return &rekeySchedule{name: name, interval: interval, run: run, timer: time.NewTimer(delay), deadline: time.Now().Add(delay)}, nil
 }
 
+// retryOnly is a schedule with no interval, which falls due only to retry a rekey that failed
+func retryOnly(name string, run func() error) *rekeySchedule {
+	timer := time.NewTimer(0)
+	timer.Stop()
+	return &rekeySchedule{name: name, run: run, timer: timer}
+}
+
 func (r *rekeySchedule) poll() {
 	select {
 	case <-r.timer.C:
@@ -153,6 +160,7 @@ func (r *rekeySchedule) poll() {
 func (r *rekeySchedule) reset(delay time.Duration) {
 	r.timer.Reset(delay)
 	r.deadline = time.Now().Add(delay)
+	r.due = false
 }
 
 func nextDueRekey(schedules []*rekeySchedule, running *rekeySchedule) *rekeySchedule {
@@ -209,10 +217,12 @@ func (s *Session) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if childSchedule != nil {
-		defer childSchedule.timer.Stop()
-		schedules = append(schedules, childSchedule)
+	// a failed Child SA exchange is retried on this schedule's delay whichever path started it, so with no interval the schedule is kept to do that alone
+	if childSchedule == nil {
+		childSchedule = retryOnly("Child SA", s.RekeyChild)
 	}
+	defer childSchedule.timer.Stop()
+	schedules = append(schedules, childSchedule)
 	ikeSchedule, err := s.newRekeySchedule("IKE SA", s.ikeRekeyInterval, s.RekeyIKE)
 	if err != nil {
 		return err
@@ -233,6 +243,44 @@ func (s *Session) Run(ctx context.Context) error {
 			startRekey(schedule)
 		}
 	}
+	// the time it returns is taken before the timer is reset, so the schedule's own retry never finds itself held
+	settle := func(schedule *rekeySchedule, err error) (time.Time, error) {
+		if err != nil {
+			schedule.failures++
+			delay := s.rekeyRetryDelay(schedule.failures)
+			next := time.Now().Add(delay)
+			schedule.reset(delay)
+			slog.Warn("ike rekey failed, retrying", "sa", schedule.name, "err", err, "retry_in", delay)
+			return next, nil
+		}
+		slog.Info("ike rekey completed", "sa", schedule.name)
+		schedule.failures = 0
+		if schedule.interval == 0 {
+			return time.Time{}, nil
+		}
+		delay, err := s.rekeyDelay(schedule.interval)
+		if err != nil {
+			return time.Time{}, err
+		}
+		schedule.reset(delay)
+		return time.Time{}, nil
+	}
+	// every Child SA exchange this end starts is settled on the Child SA schedule, whichever path started it
+	settleChildRekeys := func() error {
+		ended := s.childRetry.unsettled()
+		if len(ended) == 0 {
+			return nil
+		}
+		var next time.Time
+		for _, rekeyErr := range ended {
+			var err error
+			if next, err = settle(childSchedule, rekeyErr); err != nil {
+				return err
+			}
+		}
+		s.childRetry.settled(len(ended), next)
+		return nil
+	}
 	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
 	for {
@@ -240,26 +288,20 @@ func (s *Session) Run(ctx context.Context) error {
 			return err
 		}
 		s.expireRetainedContexts(time.Now())
+		if err := settleChildRekeys(); err != nil {
+			return err
+		}
 		select {
 		case result := <-rekeyResult:
-			if result.err != nil {
-				result.schedule.failures++
-				delay := s.rekeyRetryDelay(result.schedule.failures)
-				result.schedule.reset(delay)
-				slog.Warn("ike scheduled rekey failed, retrying", "sa", result.schedule.name, "err", result.err, "retry_in", delay)
-				running = nil
-				startDueRekey()
-				continue
-			}
-			slog.Info("ike scheduled rekey completed", "sa", result.schedule.name)
-			result.schedule.failures = 0
-			delay, err := s.rekeyDelay(result.schedule.interval)
-			if err != nil {
-				return err
-			}
-			result.schedule.reset(delay)
 			running = nil
+			// a Child SA rekey that ran an exchange left its outcome for settleChildRekeys, so its result here only ends the run, and a run that started none counts as nothing
+			if result.schedule != childSchedule {
+				if _, err := settle(result.schedule, result.err); err != nil {
+					return err
+				}
+			}
 			startDueRekey()
+			continue
 		default:
 		}
 		for _, schedule := range schedules {
@@ -343,6 +385,9 @@ func (s *Session) Run(ctx context.Context) error {
 			continue
 		case req := <-requests:
 			s.requests <- req
+			continue
+		// a Child SA rekey that ended is settled at the top of the loop
+		case <-s.childRekeyEnded:
 			continue
 		case <-s.probes:
 			probed, err := s.probe(pending)

@@ -366,8 +366,9 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 			// its next request is 2, while our own request counter starts at 0.
 			nextPeerMID: 2, nextLocalMID: 0,
 		},
-		requests: make(chan *localRequest, 1),
-		probes:   make(chan struct{}, 1),
+		requests:        make(chan *localRequest, 1),
+		probes:          make(chan struct{}, 1),
+		childRekeyEnded: make(chan struct{}, 1),
 	}
 
 	accepted, err := session.completeResponderAuth(r, datagram.Raw, response, ni, nr, deadline)

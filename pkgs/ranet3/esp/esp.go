@@ -207,12 +207,13 @@ func (o *OutboundSA) reserveSequenceNumbers(count int) (uint64, uint64, error) {
 	}
 	first := end - n + 1
 	// Asked on every reservation past the mark rather than once for the life
-	// of the SA. The margin above is sized for "a rekey has already failed",
-	// and a single-shot ask cannot retry one at all: the next driver would be
-	// the scheduled rekey, most of an hour away, while the space runs out in
-	// minutes. The callback carries its own one-at-a-time guard
-	// and its own floor between attempts, so this costs a compare past the
-	// mark and nothing before it.
+	// of the SA, so an ask the callback turns away, as its floor between
+	// attempts does one that comes too soon, is made again by the next
+	// reservation. The margin above is sized for "a rekey has already
+	// failed", which the session retries on its own delay whatever the asks
+	// in between. The callback carries its own one-at-a-time guard and its
+	// own floor between attempts, so this costs a compare past the mark and
+	// nothing before it.
 	//
 	// A reservation that is wholly past the end asks too. That SA will never
 	// carry another packet, so it is the moment a replacement matters most,

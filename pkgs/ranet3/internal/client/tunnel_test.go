@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -299,6 +300,79 @@ func TestSpentSequenceSpaceAsksForAReplacementAndKeepsTheSession(t *testing.T) {
 	}
 	if fatalReserveError(errNoChildSA) || fatalReserveError(nil) {
 		t.Error("a refusal a replacement fixes closes the mux")
+	}
+}
+
+// markDelay is the delay the jitter test draws for the first ask past the sequence mark, markWatch how long past it the test waits for that ask, and markBatches how often it sends a batch meanwhile
+const markDelay, markWatch, markBatches = 200 * time.Millisecond, 5 * time.Second, 10 * time.Millisecond
+
+// RFC 7296 section 2.8.1: "To reduce the probability of this happening, the timing of rekeying requests SHOULD be jittered (delayed by a random amount of time after the need for rekeying is noticed)."
+// the batches past the mark ask for no rekey until the delay drawn at the first of them has passed, and then ask as before, and a delay drawn at random stays below its bound
+func TestFirstAskPastTheSequenceMarkWaitsItsJitter(t *testing.T) {
+	tunnel := &tunnel{started: time.Now()}
+	tunnel.askedAt.Store(-int64(rekeyAskInterval))
+	var bounds []time.Duration
+	tunnel.askJitter = func(bound time.Duration) time.Duration {
+		bounds = append(bounds, bound)
+		return markDelay
+	}
+	asked := make(chan time.Time, 8)
+	tunnel.rekey = func() { asked <- time.Now() }
+	if err := tunnel.install(tunnelChild(1)); err != nil {
+		t.Fatal(err)
+	}
+	// three reservations of 2^30 and the rest up to the mark, each of which fits an int on a 32-bit build
+	for range 3 {
+		if _, err := tunnel.reserve(1 << 30); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marked := time.Now()
+	if _, err := tunnel.reserve(int(esp.ProactiveRekeySequence - 3<<30)); err != nil {
+		t.Fatal(err)
+	}
+	var first time.Time
+	for deadline := time.Now().Add(markDelay + markWatch); first.IsZero(); time.Sleep(markBatches) {
+		if time.Now().After(deadline) {
+			t.Fatal("the batches past the sequence mark never asked for a rekey")
+		}
+		if _, err := tunnel.reserve(1); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case first = <-asked:
+		default:
+		}
+	}
+	if early := marked.Add(markDelay); first.Before(early) {
+		t.Errorf("the first ask past the sequence mark came %s after it, want no sooner than the %s drawn", first.Sub(marked), markDelay)
+	}
+	if !slices.Equal(bounds, []time.Duration{proactiveRekeyJitter}) {
+		t.Errorf("the delay was drawn with the bounds %v, want once with %s", bounds, proactiveRekeyJitter)
+	}
+	tunnel.askJitter = nil
+	for range 1000 {
+		if delay := tunnel.askDelay(proactiveRekeyJitter); delay < 0 || delay >= proactiveRekeyJitter {
+			t.Fatalf("a delay drawn at random is %s, want it in [0, %s)", delay, proactiveRekeyJitter)
+		}
+	}
+}
+
+// highestSAPacketRate is above the packet rate esp measured one SA carrying at small packets, in packets a second
+// meshRoundTrip is a round trip between two nodes on opposite sides of the earth
+const (
+	highestSAPacketRate = 20_000_000
+	meshRoundTrip       = 300 * time.Millisecond
+)
+
+// the first ask's delay leaves the rest of the sequence margin to the exchange and its retries, and still parts two ends that reached the mark in the same round trip
+func TestProactiveRekeyJitterStaysFarInsideTheSequenceMargin(t *testing.T) {
+	lasts := time.Duration(0xffffffff-esp.ProactiveRekeySequence) * time.Second / highestSAPacketRate
+	if 10*proactiveRekeyJitter > lasts {
+		t.Errorf("the first ask waits up to %s, more than a tenth of the %s the sequence margin lasts at %d packets a second", proactiveRekeyJitter, lasts, highestSAPacketRate)
+	}
+	if proactiveRekeyJitter < 3*meshRoundTrip {
+		t.Errorf("the first ask waits up to %s, under three round trips of %s", proactiveRekeyJitter, meshRoundTrip)
 	}
 }
 

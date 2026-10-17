@@ -87,11 +87,10 @@ func TestProactivePacketCountRekey(t *testing.T) {
 	if got := called.Load(); got != 0 {
 		t.Fatalf("rekey callback called %d times before the mark, want none", got)
 	}
-	// And every reservation past it asks again. A single ask for the life of
-	// the SA is the one thing that cannot retry a rekey that failed, which is
-	// the case ProactiveRekeySequence's margin is sized for: the next driver
-	// would be the scheduled rekey, most of an hour away, while at the rates
-	// in that comment the space runs out in minutes. The rate is bounded by
+	// And every reservation past it asks again, so an ask the callback turns
+	// away is made again by the next one. A rekey that failed, the case
+	// ProactiveRekeySequence's margin is sized for, is retried by the session
+	// on its own delay whatever the asks in between. The rate is bounded by
 	// the callback, which carries the one-at-a-time guard and the floor.
 	for range 3 {
 		if _, err := out.Seal(nil, NextHeaderIPv4); err != nil {
