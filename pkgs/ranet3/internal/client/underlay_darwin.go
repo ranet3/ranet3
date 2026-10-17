@@ -26,11 +26,12 @@ var underlayStatePath = filepath.Join(filepath.Dir(control.DefaultSocket), "unde
 
 // underlayRuntime opens what the transport needs to keep its UDP sockets
 // out of the mesh's own routing. On darwin that means binding the sockets to
-// the interface the host's default route leaves by, and writing that
-// interface a default of its own scoped to it, because a bound socket still
-// reads the shared forwarding table. Only the route socket can answer either
-// question, so internal/kernel does both. This package wires the two together
-// and speaks neither.
+// the interface the host's default route leaves by, and, while an unscoped
+// route out of another interface holds a family's zero address or the
+// reconciler is about to install one, writing that interface a default of its
+// own scoped to it, because a bound socket still reads the shared forwarding
+// table. Only the route socket can answer either question, so internal/kernel
+// does both. This package wires the two together and speaks neither.
 //
 // mesh is this node's own tun, which the lookup must never answer with: once
 // the mesh holds a route covering the address space, an ordinary lookup for
