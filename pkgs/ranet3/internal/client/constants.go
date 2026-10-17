@@ -22,6 +22,9 @@ const (
 	// deleteGrace bounds how long a teardown waits for the peer to acknowledge the Delete
 	// the point is to tell the peer, not to be sure it heard
 	deleteGrace = 2 * time.Second
+	// proactiveRekeyJitter bounds the random delay of the first ask for a rekey past esp.ProactiveRekeySequence
+	// it is at most a tenth of the time the sequence margin lasts at the highest packet rate one SA carries, and at least three round trips of an exchange across the mesh
+	proactiveRekeyJitter = time.Second
 )
 
 const (

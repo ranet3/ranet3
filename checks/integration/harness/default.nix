@@ -916,7 +916,7 @@ testers.runNixOSTest {
                 # Verify both new IKE keys and subsequent ESP keys are usable.
                 # swanctl's exit status alone does not prove a rekey succeeded.
                 for sa in ["Child SA", "IKE SA"]:
-                    client.wait_until_succeeds(f"{local_rekeys} | grep -F 'ike scheduled rekey completed' | grep -F 'sa=\"{sa}\"'", timeout=timeout)
+                    client.wait_until_succeeds(f"{local_rekeys} | grep -F 'ike rekey completed' | grep -F 'sa=\"{sa}\"'", timeout=timeout)
                 client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
 
             # A graceful BIRD stop retracts routes, then fresh announcements restore

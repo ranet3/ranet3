@@ -117,6 +117,8 @@ type Session struct {
 	requests  chan *localRequest
 	// probes holds at most the one probe Run has not acted on
 	probes chan struct{}
+	// childRekeyEnded holds at most the one end of a Child SA rekey Run has not looked at, since Run settles every one on the Child SA schedule
+	childRekeyEnded chan struct{}
 	// sendFailures counts failed IKE sends since the last that went out, and only Run's goroutine touches it
 	sendFailures int
 
@@ -135,6 +137,7 @@ type Session struct {
 	onRetire      func(uint32) error
 	trafficSeen   atomic.Bool
 	childRekeying atomic.Bool
+	childRetry    childRetry
 	// serving is true while Run is draining the request queue. Nothing else
 	// drains it, so a local exchange started when this is false would wait out
 	// its caller's patience and send nothing.
@@ -389,8 +392,9 @@ func (s *Session) SetRekeyTiming(margin, jitter time.Duration) error {
 	return nil
 }
 
-// SetRekeyRetry configures the capped exponential backoff after a scheduled
-// rekey failure, and zero for both leaves Run to take the defaults. It must be
+// SetRekeyRetry configures the capped exponential backoff after a failed
+// rekey, which for the Child SA holds back the next exchange whichever path
+// asks for it, and zero for both leaves Run to take the defaults. It must be
 // called before Run.
 func (s *Session) SetRekeyRetry(initial, max time.Duration) error {
 	if (initial != 0 || max != 0) && (initial <= 0 || max <= 0) {
@@ -724,9 +728,10 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		current: &ikeContext{suite: suite,
 			skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr,
 			spiI: spiI, spiR: spiR, nextLocalMID: 2},
-		requests: make(chan *localRequest, 1),
-		probes:   make(chan struct{}, 1),
-		events:   cfg.Events, local: cfg.Local, remote: cfg.Remote,
+		requests:        make(chan *localRequest, 1),
+		probes:          make(chan struct{}, 1),
+		childRekeyEnded: make(chan struct{}, 1),
+		events:          cfg.Events, local: cfg.Local, remote: cfg.Remote,
 	}
 	// from IKE_AUTH on the responder may hold the SA, so a cancel no longer closes the mux under the answer
 	if !stopCancel() {

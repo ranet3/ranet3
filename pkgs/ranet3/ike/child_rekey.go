@@ -10,22 +10,63 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"sync"
+	"time"
 )
 
 // RekeyChild replaces the current Child SA without a new Diffie-Hellman
 // exchange. Run must be active to service the serialized IKE request.
 //
 // The old inbound Child SA remains installed until the INFORMATIONAL Delete
-// exchange acknowledges retirement.
+// exchange acknowledges retirement. After a failed Child SA rekey, on any
+// path, it refuses until the retry delay Run gives the schedule has passed.
 func (s *Session) RekeyChild() error {
 	return s.rekeyChild(false)
 }
 
 // RekeyChildProactively starts a packet-count-triggered Child-SA rekey. If a
 // Child-SA rekey is already running, that exchange already satisfies the
-// request and this method succeeds without starting a duplicate.
+// request and this method succeeds without starting a duplicate. After a
+// failed one, the retry Run schedules for it satisfies the request the same
+// way.
 func (s *Session) RekeyChildProactively() error {
 	return s.rekeyChild(true)
+}
+
+// childRetry carries how the Child SA exchanges this end starts came out, on whichever path, to Run, which settles each on the Child SA schedule
+// a failed one holds the next exchange of every path from its end until Run has settled it, and then until the retry delay Run gave the schedule has passed
+type childRetry struct {
+	mu sync.Mutex
+	// ended holds the outcomes Run has not settled, a nil error for a success
+	ended []error
+	until time.Time
+}
+
+func (r *childRetry) held(now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return now.Before(r.until) || slices.ContainsFunc(r.ended, func(err error) bool { return err != nil })
+}
+
+func (r *childRetry) end(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ended = append(r.ended, err)
+}
+
+// unsettled leaves the outcomes in place, so a failure among them holds until settled drops it
+func (r *childRetry) unsettled() []error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.ended)
+}
+
+func (r *childRetry) settled(n int, until time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ended = slices.Delete(r.ended, 0, n)
+	r.until = until
 }
 
 // rekeyEnded records how a rekey this end started came out, sa naming which SA it replaced
@@ -44,9 +85,26 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 		}
 		return fmt.Errorf("ike: Child SA rekey already in progress")
 	}
-	defer s.childRekeying.Store(false)
+	defer func() {
+		s.childRekeying.Store(false)
+		select {
+		case s.childRekeyEnded <- struct{}{}:
+		default:
+		}
+	}()
+	// RFC 7296 section 2.25: "When a peer receives a TEMPORARY_FAILURE notification, it MUST NOT immediately retry the operation" and "it MUST wait so that the sender may complete whatever operation caused the temporary condition."
+	// an exchange after a failed one, on whichever path, waits out the retry delay Run gives the Child SA schedule for it, and an ask in the meantime is left to the schedule's retry
+	if s.childRetry.held(time.Now()) {
+		if alreadyRunningIsSuccess {
+			return nil
+		}
+		return errors.New("ike: a Child SA rekey waits out the retry delay of the one that failed")
+	}
 	s.emit("ike.rekey.started", slog.String("sa", "child"))
-	defer func() { s.rekeyEnded("child", err) }()
+	defer func() {
+		s.childRetry.end(err)
+		s.rekeyEnded("child", err)
+	}()
 	old := s.currentChild()
 	if old.LocalSPI == 0 && old.RemoteSPI == 0 {
 		return s.negotiateChild(nil)

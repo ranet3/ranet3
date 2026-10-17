@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,14 +40,17 @@ type tunnel struct {
 	// the first ask goes straight through. See requestRekey.
 	askedAt atomic.Int64
 	started time.Time
+	// askJitter draws the first ask's delay past the sequence mark below its bound, and nil draws it at random
+	askJitter func(bound time.Duration) time.Duration
 }
 
 // rekeyAskInterval is the floor between two attempts to replace the Child SA.
 // The one-at-a-time guard alone does not bound the rate: a rekey that fails
-// without an exchange (no Child SA to rekey, or one already running) comes
-// back at once, and both callers ask per batch, which on a routed tun is per
-// packet. It is well under the two round trips ProactiveRekeySequence leaves
-// room for, so a genuine retry still lands inside the margin.
+// without an exchange (no Child SA to rekey, one already running, or one asked
+// for while a failed one waits out its retry delay) comes back at once, and
+// both callers ask per batch, which on a routed tun is per packet. The ike
+// session holds every exchange after a failed one to that delay, so the floor
+// bounds how often a batch asks and not when a failed rekey is retried.
 const rekeyAskInterval = 250 * time.Millisecond
 
 // errNoChildSA means the peer deleted the Child SA and kept the IKE SA, which
@@ -96,6 +100,30 @@ func (t *tunnel) requestRekey() {
 	}()
 }
 
+// RFC 7296 section 2.8.1: "To reduce the probability of this happening, the timing of rekeying requests SHOULD be jittered (delayed by a random amount of time after the need for rekeying is noticed)."
+func (t *tunnel) askPastTheMark() func() {
+	// nanoseconds since started plus one, so that zero reads as the mark not yet reached
+	var from atomic.Int64
+	return func() {
+		now := int64(time.Since(t.started))
+		at := from.Load()
+		if at == 0 {
+			from.CompareAndSwap(0, now+int64(t.askDelay(proactiveRekeyJitter))+1)
+			return
+		}
+		if now+1 >= at {
+			t.requestRekey()
+		}
+	}
+}
+
+func (t *tunnel) askDelay(bound time.Duration) time.Duration {
+	if t.askJitter != nil {
+		return t.askJitter(bound)
+	}
+	return rand.N(bound)
+}
+
 func (t *tunnel) install(child esp.ChildSA) error {
 	out, err := esp.NewOutbound(child)
 	if err != nil {
@@ -105,7 +133,7 @@ func (t *tunnel) install(child esp.ChildSA) error {
 	if err != nil {
 		return err
 	}
-	out.SetRekeyCallback(t.requestRekey)
+	out.SetRekeyCallback(t.askPastTheMark())
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	inbound := make(map[uint32]*esp.InboundSA)

@@ -40,7 +40,8 @@ type Rekey struct {
 	Retry  Retry            `yaml:"retry,omitempty" json:"retry,omitzero" toml:"retry,omitempty"`
 }
 
-// Retry is the capped exponential backoff after a scheduled rekey fails.
+// Retry is the capped exponential backoff after a rekey fails, which for the
+// Child SA holds back the next exchange whichever path asks for it.
 type Retry struct {
 	First *schema.Duration `yaml:"first,omitempty" json:"first,omitempty" toml:"first,omitempty"`
 	Max   *schema.Duration `yaml:"max,omitempty" json:"max,omitempty" toml:"max,omitempty"`
