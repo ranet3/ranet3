@@ -8,9 +8,11 @@
 // transforms and no others: raw Ed25519 public key authentication ([RFC 7427]
 // Digital Signature with an ASN1_DN identity, or an ID of another type
 // [Aliases] names an endpoint by), a key exchange in X25519, P-384 or P-256,
-// encryption in AES-GCM or ChaCha20-Poly1305, UDP encapsulation forced on, and
-// 0.0.0.0/0 with ::/0 as the traffic selectors. It interoperates with a
-// strongSwan responder configured the same way.
+// encryption in AES-GCM or ChaCha20-Poly1305, a PRF in HMAC-SHA2-384 or
+// HMAC-SHA2-256, UDP encapsulation forced on, and 0.0.0.0/0 with ::/0 as the
+// traffic selectors. [Suites] is the part of that set a session offers and
+// accepts, in the order it prefers. It interoperates with a strongSwan
+// responder configured the same way.
 //
 // Certificates, EAP, MOBIKE and the legacy transforms, CBC ciphers, MODP
 // groups and SHA-1 or MD5, are left out rather than unfinished, and a peer
@@ -38,11 +40,12 @@
 //     slots are bounded in total and for each source address, and under load,
 //     or once its address holds two of them, an IKE_SA_INIT is answered with a
 //     cookie before anything is held.
-//   - Timing. [Crypto] is the cap.crypto capability, carrying yaml, json and
-//     toml tags and the replay window alongside the rekey intervals, since a
-//     session captures all of them when it is set up. Its durations come from
-//     [ranet3.com/pkgs/ranet3/schema], and the Default constants below
-//     give the values an absent block runs with.
+//   - Timing and transforms. [Crypto] is the cap.crypto capability, carrying
+//     yaml, json and toml tags and the replay window alongside the rekey
+//     intervals, since a session captures all of them when it is set up, and
+//     the lists [Crypto.Suites] resolves, which a session reads at each
+//     exchange. Its durations come from [ranet3.com/pkgs/ranet3/schema], and
+//     the Default constants below give the values an absent block runs with.
 //
 // The message, payload and transform codecs are exported beside those, so a
 // caller can build or read one exchange without driving a session. [RFC 7296]

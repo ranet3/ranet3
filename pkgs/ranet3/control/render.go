@@ -390,8 +390,8 @@ func RenderAddresses(w io.Writer, addresses []netip.Addr) {
 	}
 }
 
-// RenderSessions writes the live IKE SAs, which `swanctl --list-sas` answered
-// while strongSwan carried them.
+// RenderSessions writes the live IKE SAs with the transforms each runs
+// `swanctl --list-sas` answered the same while strongSwan carried them
 func RenderSessions(w io.Writer, sessions []Session) {
 	rows := make([][]string, 0, len(sessions))
 	for _, s := range sessions {
@@ -402,11 +402,22 @@ func RenderSessions(w io.Writer, sessions []Session) {
 			end(s.Preferred),
 			upDown(s.Active),
 			fmt.Sprintf("%08x/%08x", s.LocalSPI, s.RemoteSPI),
+			suite(s.IKECipher, s.IKEPRF, s.IKEKex),
+			suite(s.ESPCipher),
 			shortDuration(time.Duration(s.Age)),
 			shortDuration(time.Duration(s.Idle)),
 		})
 	}
-	table(w, []string{"Path", "Peer", "Remote", "End", "State", "SPI in/out", "Age", "Idle"}, rows)
+	table(w, []string{"Path", "Peer", "Remote", "End", "State", "SPI in/out", "IKE", "ESP", "Age", "Idle"}, rows)
+}
+
+// suite joins an SA's transform names as cap.crypto spells them
+// a daemon that reported none gets a dash
+func suite(names ...string) string {
+	if slices.Contains(names, "") {
+		return "-"
+	}
+	return strings.Join(names, "/")
 }
 
 // RenderPeers writes what this node dials and whether a session holds each

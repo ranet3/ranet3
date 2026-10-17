@@ -18,6 +18,9 @@ import (
 // recordPoll is how often a test looks again for an event it waits on
 const recordPoll = 10 * time.Millisecond
 
+// defaultSuite is the suite a completed rekey names under the default lists, by the SA it replaced
+var defaultSuite = map[string]string{"child": "aes256gcm", "ike": "aes256gcm/sha384/x25519"}
+
 // recorder keeps what a Recorder was handed, one line per event
 type recorder struct {
 	mu    sync.Mutex
@@ -43,6 +46,7 @@ func (r *recorder) recorded() []string {
 }
 
 // both roles record the ID each resolved and the rekeys they start, with the session's two ends, the SA and how it came out
+// a completed rekey names the suite of the SA that replaced the old one, by the names of the lists
 func TestSessionsRecordTheirRekeys(t *testing.T) {
 	answered, dialed := &recorder{}, &recorder{}
 	h := newResponderHarness(t, nil, answered.record)
@@ -59,7 +63,8 @@ func TestSessionsRecordTheirRekeys(t *testing.T) {
 	go initiator.Run(ctx)
 	go responder.Run(ctx)
 
-	// a rekey asked for while another runs runs no exchange, so it records nothing
+	// a rekey asked for while another runs runs no exchange
+	// so it records nothing
 	initiator.childRekeying.Store(true)
 	if err := initiator.RekeyChild(); err == nil {
 		t.Error("a rekey asked for while another ran succeeded")
@@ -80,14 +85,14 @@ func TestSessionsRecordTheirRekeys(t *testing.T) {
 	}
 	if got, want := dialed.recorded(), []string{
 		"ike.id.resolved testorg/client:2>testorg/server:1 type=dn sent=dn",
-		"ike.rekey.started testorg/client:2>testorg/server:1 sa=child", "ike.rekey.completed testorg/client:2>testorg/server:1 sa=child",
+		"ike.rekey.started testorg/client:2>testorg/server:1 sa=child", "ike.rekey.completed testorg/client:2>testorg/server:1 sa=child suite=aes256gcm",
 		"ike.rekey.started testorg/client:2>testorg/server:1 sa=child", "ike.rekey.failed testorg/client:2>testorg/server:1 sa=child",
 	}; !slices.Equal(got, want) {
 		t.Errorf("the dialed session recorded %q, want %q", got, want)
 	}
 	if got, want := answered.recorded(), []string{
 		"ike.id.resolved testorg/server:1>testorg/client:2 type=dn sent=dn",
-		"ike.rekey.started testorg/server:1>testorg/client:2 sa=ike", "ike.rekey.completed testorg/server:1>testorg/client:2 sa=ike",
+		"ike.rekey.started testorg/server:1>testorg/client:2 sa=ike", "ike.rekey.completed testorg/server:1>testorg/client:2 sa=ike suite=aes256gcm/sha384/x25519",
 	}; !slices.Equal(got, want) {
 		t.Errorf("the answered session recorded %q, want %q", got, want)
 	}

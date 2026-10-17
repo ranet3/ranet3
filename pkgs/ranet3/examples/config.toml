@@ -269,6 +269,24 @@ update = "16s"
 # first = "5s"
 # max = "5m"
 
+# The transforms a session may use, each list most preferred first. A list left
+# out holds every name it takes, in the order written here, and an empty list
+# or a name written twice is refused. A peer whose lists share no transform of
+# one kind with these is answered with NO_PROPOSAL_CHOSEN. A kex entry joining
+# key exchanges with "+", such as "x25519+mlkem768", is refused until the
+# additional key exchanges of RFC 9370 are implemented. A reload applies the
+# lists to the next exchange, rekeys at once an SA whose cipher or group it
+# removed, and replaces through a new handshake an IKE SA whose PRF it removed,
+# since no rekey changes the PRF.
+# [cap.crypto.ike]
+# cipher = ["aes256gcm", "aes128gcm", "chacha20poly1305"]
+# prf = ["sha384", "sha256"]
+# kex = ["x25519", "p384", "p256"]
+
+# The ciphers a Child SA may use, most preferred first, under the same rules.
+# [cap.crypto.esp]
+# cipher = ["aes256gcm", "aes128gcm", "chacha20poly1305"]
+
 # Carry other nodes' traffic out of the mesh: an exit node advertises the
 # defaults, a subnet router the prefixes behind it, and both end at the same
 # source translation. linux only, refused by name elsewhere. A prefix here is

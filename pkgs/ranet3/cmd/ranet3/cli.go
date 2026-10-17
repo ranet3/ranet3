@@ -34,8 +34,9 @@ type reader struct {
 	asJSON bool
 }
 
-// newRoot builds the command tree. It takes no process state, so a test drives
-// the same tree main does with its own arguments and its own output.
+// newRoot builds the command tree
+// it takes no process state
+// so a test drives the same tree main does with its own arguments and its own output
 func newRoot() *cobra.Command {
 	r := &reader{}
 	root := &cobra.Command{
@@ -44,8 +45,8 @@ func newRoot() *cobra.Command {
 		Long: `The daemon command runs the node. Most other commands ask a running
 node a question or tell it to act, through its control socket.`,
 		Version: version.String(),
-		// main prints the one error and the usage is on --help, so neither is
-		// written twice.
+		// main prints the one error and the usage is on --help
+		// so neither is written twice
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -82,8 +83,9 @@ routing table of the kernel.`,
 				}
 				return emit(w, asJSON, routes, func() { control.RenderRoutes(w, routes) })
 			}),
-		r.command("sessions", "Show IKE sessions", `Each row is a live IKE SA with its SPIs, its age and how long since the
-peer last answered.`,
+		r.command("sessions", "Show IKE sessions", `Each row is a live IKE SA with its SPIs, the transforms of the IKE SA
+and of its Child SA by their cap.crypto names, its age and how long
+since the peer last answered.`,
 			func(c *control.Client, w io.Writer, asJSON bool) error {
 				sessions, err := c.Sessions()
 				if err != nil {

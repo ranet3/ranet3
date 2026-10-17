@@ -11,22 +11,23 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// Crypto is the cap.crypto capability, parsed straight out of the file: how
-// long a key lives and how far out of order a packet may arrive. It lives here
-// rather than beside the ESP code because every one of these values is handed
-// to a session this package builds, the replay window included: the window is
-// captured when the Child SA is set up, and the initiator and the responder
-// have to agree about it.
-//
-// Every field is a pointer, because an explicit zero and an absent field ask
-// for different things: zero disables a rekey, absent takes the default.
+// Crypto is the cap.crypto capability as the file writes it
+// it holds how long a key lives, how far out of order a packet may arrive and which transforms a session negotiates
+// every value reaches a session this package builds, the replay window included
+// both ends capture the window when the Child SA is set up
+// an explicit zero turns a rekey off and an absent timing takes the default
+// so each timing is a pointer
+// an empty list is refused and an absent one runs the defaults
+// so a list needs no pointer
 type Crypto struct {
-	// Replay is the ESP receive window in packets. Omitted uses 4096, which is
-	// wider than the interoperable minimum on purpose: a multicore sender
-	// reorders bursts by more than 32 before they reach userspace. An explicit
-	// 0 turns replay checking off.
-	Replay *uint32 `yaml:"replay,omitempty" json:"replay,omitempty" toml:"replay,omitempty"`
-	Rekey  Rekey   `yaml:"rekey,omitempty" json:"rekey,omitzero" toml:"rekey,omitempty"`
+	// Replay is the ESP receive window in packets, esp.DefaultReplayWindow when omitted
+	// an explicit 0 turns replay checking off
+	// the default is wider than the interoperable minimum
+	// a multicore sender reorders bursts by more than 32 before they reach userspace
+	Replay *uint32   `yaml:"replay,omitempty" json:"replay,omitempty" toml:"replay,omitempty"`
+	Rekey  Rekey     `yaml:"rekey,omitempty" json:"rekey,omitzero" toml:"rekey,omitempty"`
+	IKE    IKESuites `yaml:"ike,omitempty" json:"ike,omitzero" toml:"ike,omitempty"`
+	ESP    ESPSuites `yaml:"esp,omitempty" json:"esp,omitzero" toml:"esp,omitempty"`
 }
 
 // Rekey is when a key is replaced. A rekey runs before its interval expires:
@@ -68,8 +69,7 @@ func interval(configured *schema.Duration, fallback time.Duration) time.Duration
 	return configured.Duration()
 }
 
-// Validate refuses timings a session could not run, naming the field as the
-// operator wrote it.
+// Validate refuses timings and lists a session could not run, naming the field as the operator wrote it
 func (c Crypto) Validate() error {
 	if c.Replay != nil && *c.Replay > esp.MaxReplayWindow {
 		return fmt.Errorf("ike: cap.crypto replay must not exceed %d", esp.MaxReplayWindow)
@@ -99,8 +99,8 @@ func (c Crypto) Validate() error {
 	if c.RetryFirst() > c.RetryMax() {
 		return fmt.Errorf("ike: cap.crypto rekey retry first must not exceed retry max")
 	}
-	// A rekey runs at interval minus margin minus jitter, so both together
-	// have to leave something. A disabled interval has no schedule to fit in.
+	// a rekey runs at interval less margin less jitter
+	// a disabled interval runs none
 	for _, named := range []struct {
 		name     string
 		interval time.Duration
@@ -116,5 +116,6 @@ func (c Crypto) Validate() error {
 			return fmt.Errorf("ike: cap.crypto rekey margin plus jitter must be less than rekey %s", named.name)
 		}
 	}
-	return nil
+	_, err := c.Suites()
+	return err
 }

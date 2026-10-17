@@ -98,6 +98,11 @@ type ResponderConfig struct {
 	RekeyRetryInitial  time.Duration
 	RekeyRetryMax      time.Duration
 
+	// Suites gives the lists in force
+	// each handshake and each answered session read them at each exchange
+	// nil runs the zero Suites
+	Suites func() Suites
+
 	// Events records each answered session's state changes and the handshakes it refuses
 	// nil records nothing
 	Events Recorder
@@ -221,10 +226,10 @@ func (r *Responder) Serve(ctx context.Context, onSession func(*Session, Accepted
 	}
 }
 
-// handshake runs IKE_SA_INIT and IKE_AUTH from the responder side for one
-// initiator. Every failure before the mux exists is answered statelessly or
-// silently. Every failure after it closes the mux, so nothing survives a
-// rejected exchange.
+// handshake runs IKE_SA_INIT and IKE_AUTH from the responder side for one initiator
+// a failure before the mux exists is answered statelessly or not at all
+// one after it closes the mux
+// so nothing survives a rejected exchange
 func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed) (_ *Session, _ Accepted, err error) {
 	timeout := r.cfg.HandshakeTimeout
 	if timeout <= 0 {
@@ -270,7 +275,8 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		return nil, Accepted{}, fmt.Errorf("ike: cookie challenge sent")
 	}
 
-	// the slot is taken before the key exchange, the first cost an unauthenticated datagram imposes, and is the pressure cookieThreshold reads
+	// the slot is taken before the key exchange, the first cost an unauthenticated datagram imposes
+	// and it is the pressure cookieThreshold reads
 	source := datagram.Endpoint.AddrPort().Addr()
 	if !r.enterHalfOpen(source) {
 		return nil, Accepted{}, fmt.Errorf("ike: too many half-open SAs")
@@ -293,7 +299,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	if err != nil {
 		return nil, Accepted{}, fmt.Errorf("ike: decode KE: %w", err)
 	}
-	proposal, suite, err := selectIKEProposal(saPayload.Body, peerGroup)
+	proposal, suite, err := selectIKEProposal(saPayload.Body, peerGroup, current(r.cfg.Suites))
 	if err != nil {
 		if wrongGroup, ok := errors.AsType[*invalidKEError](err); ok {
 			// outside statelessErrors, as COOKIE is
@@ -328,8 +334,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		return nil, Accepted{}, err
 	}
 
-	// Per-SA state starts here. The half-open slot above bounds how many of
-	// these can exist at once.
+	// the half-open slot above bounds how many of these exist at once
 	mux, err := r.cfg.Hub.NewMuxTo(datagram.Endpoint)
 	if err != nil {
 		return nil, Accepted{}, err
@@ -341,8 +346,8 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	}()
 	stopCancel := context.AfterFunc(ctx, func() { _ = mux.Close() })
 	defer stopCancel()
-	// Register before the response goes out, so the initiator's IKE_AUTH
-	// cannot race the receive loop back into the unclaimed queue.
+	// registered before the response goes out
+	// so the initiator's IKE_AUTH cannot land in the unclaimed queue
 	if err := mux.RegisterIKE(spiI); err != nil {
 		return nil, Accepted{}, err
 	}
@@ -377,6 +382,8 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		childRekeyEnded: make(chan struct{}, 1),
 		childSpent:      make(chan struct{}, 1),
 		childFailed:     make(chan error, 1),
+		suites:          r.cfg.Suites,
+		rechecks:        make(chan struct{}, 1),
 	}
 
 	accepted, created, err := session.completeResponderAuth(r, datagram.Raw, response, ni, nr, deadline)
@@ -527,18 +534,11 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	// and: "Specifically, a responder may include all the payloads associated with authentication (IDr, CERT, and AUTH) while sending error notifications for the piggybacked exchanges (FAILED_CP_REQUIRED, NO_PROPOSAL_CHOSEN, and so on), and the initiator MUST NOT fail the authentication because of this."
 	child, err := s.selectResponderChild(request, ni, nr)
 	if err != nil {
-		notify := N_NO_PROPOSAL_CHOSEN
-		var data []byte
-		if wrongGroup, ok := errors.AsType[*invalidKEError](err); ok {
-			// RFC 7296 section 1.3: "There are two octets of data associated with this notification: the accepted Diffie-Hellman group number in big endian order."
-			// without them the peer learns its group is wrong and not which one to retry in
-			notify = N_INVALID_KE_PAYLOAD
-			data = invalidKENotifyData(wrongGroup.group)
-		}
+		// no KE payload follows in IKE_AUTH, so no INVALID_KE_PAYLOAD could be acted on
 		response, buildErr := s.response(ctx, 1, IKE_AUTH, []RawPayload{
 			{Type: PayloadIDr, Body: idrBody},
 			{Type: PayloadAUTH, Body: authBody},
-			{Type: PayloadN, Body: EncodeNotify(Notify{Type: notify, Data: data})},
+			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NO_PROPOSAL_CHOSEN})},
 		})
 		if buildErr != nil {
 			return Accepted{}, false, err
@@ -733,14 +733,11 @@ func (s *Session) selectResponderChild(request *Message, ni, nr []byte) (respond
 	if err := validateFullRangeSelectors(tsi, tsr); err != nil {
 		return responderChild{}, err
 	}
-	// No KE payload accompanies the Child SA in IKE_AUTH: its keys come from
-	// SK_d and the IKE_SA_INIT nonces (RFC 7296 section 2.17).
-	selection, err := selectChildRequestProposal(saPayload.Body, nil, 0)
+	// RFC 7296 section 1.2: "Thus, the SA payloads in the IKE_AUTH exchange cannot contain Transform Type 4 (Diffie-Hellman group) with any value other than NONE."
+	// so no group is taken here, and a proposal offering only groups is unacceptable
+	selection, err := selectChildRequestProposal(saPayload.Body, s.lists().espCiphers(), nil, 0, groupOptional)
 	if err != nil {
 		return responderChild{}, err
-	}
-	if selection.dh.ID != 0 {
-		return responderChild{}, fmt.Errorf("ike: Child SA in IKE_AUTH must not negotiate a DH group")
 	}
 	initiatorKey, responderKey, err := ChildSAKeymat(ctx.suite.PRFID, ctx.skD, ni, nr, selection.encryption.ID, selection.encryption.KeyLengthBits)
 	if err != nil {
@@ -750,8 +747,6 @@ func (s *Session) selectResponderChild(request *Message, ni, nr []byte) (respond
 		sa: ChildSA{
 			EncrID: selection.encryption.ID, EncrKeyBits: selection.encryption.KeyLengthBits,
 			LocalSPI: randUint32Nonzero(), RemoteSPI: selection.remoteSPI,
-			// The initiator encrypts with the initiator key, so that key
-			// arrives here, and our replies use the responder key.
 			InboundKey: initiatorKey, OutboundKey: responderKey,
 		},
 		number:     selection.proposal.Number,
@@ -953,30 +948,46 @@ func (r *Responder) sendStatelessNotify(datagram transport.Unclaimed, request *H
 	}
 }
 
-// selectIKEProposal picks one transform of each type from the initiator's
-// offer, preferring our own order so the strongest mutually supported
-// algorithm wins rather than whichever the peer listed first. A proposal that
-// is acceptable except for its DH group reports the group we want, which the
-// caller turns into INVALID_KE_PAYLOAD.
-//
-// RFC 7296 section 3.3.6 splits the two refusals: a Transform Type this end
-// cannot name makes the whole proposal unacceptable, because a type we cannot
-// name may change what the proposal means, while an unacceptable transform of
-// a known type makes only that transform unacceptable and "other transforms
-// with the same Transform Type are processed as usual". Either way the other
-// proposals in the same SA payload are still considered, and the child
-// selection in this package takes the same view.
-func selectIKEProposal(body []byte, keGroup uint16) (Proposal, SASuite, error) {
+// selectIKEProposal answers an IKE_SA_INIT offer from lists
+// a KE payload in another group than the one chosen draws INVALID_KE_PAYLOAD naming that group
+func selectIKEProposal(body []byte, keGroup uint16, lists Suites) (Proposal, SASuite, error) {
 	proposals, err := DecodeSA(body)
 	if err != nil {
 		return Proposal{}, SASuite{}, fmt.Errorf("ike: invalid IKE SA proposal: %w", err)
 	}
-	offered := ikeProposal().Transforms
-	var preferredGroup uint16
+	proposals = slices.DeleteFunc(proposals, func(proposal Proposal) bool {
+		return proposal.Number == 0 || proposal.Protocol != ProtoIKE || len(proposal.SPI) != 0
+	})
+	chosen, retry, ok := chooseIKE(proposals, lists.ikeCiphers(), lists.ikePRFs(), lists.kexGroups(), keGroup)
+	if retry != 0 {
+		return Proposal{}, SASuite{}, &invalidKEError{retry}
+	}
+	if !ok {
+		return Proposal{}, SASuite{}, fmt.Errorf("ike: no acceptable IKE SA proposal")
+	}
+	return Proposal{Number: chosen.offered.Number, Protocol: ProtoIKE, Transforms: chosen.transforms}, chosen.suite, nil
+}
+
+// ikeChoice is the answer to an IKE SA offer
+type ikeChoice struct {
+	// offered is the proposal it answers
+	offered Proposal
+	// transforms holds one of each type offered includes
+	transforms []Transform
+	suite      SASuite
+}
+
+// chooseIKE answers the proposals of an IKE SA offer from ciphers, prfs and groups, each in this end's order
+// chooseGroup picks the proposal and its group among those the lists meet in every other type
+// and in each other type the proposal takes the first of the list it holds
+// retry is the group to ask for in INVALID_KE_PAYLOAD
+// RFC 7296 section 3.3: "If there is more than one, they MUST be ordered from most preferred to least preferred."
+// RFC 7296 section 3.3.4: "The implementation MUST reject SA proposals that are not authorized by these IKE suite controls."
+// RFC 7296 section 3.3.6: "If the responder receives a proposal that contains a Transform Type it does not understand, or a proposal that is missing a mandatory Transform Type, it MUST consider this proposal unacceptable" and "other proposals in the same SA payload are processed as usual."
+func chooseIKE(proposals []Proposal, ciphers, prfs, groups []Transform, keGroup uint16) (ikeChoice, uint16, bool) {
+	var met []ikeChoice
+	var offers [][]Transform
 	for _, proposal := range proposals {
-		if proposal.Number == 0 || proposal.Protocol != ProtoIKE || len(proposal.SPI) != 0 {
-			continue
-		}
 		known := true
 		var integ *Transform
 		offeredInteg := false
@@ -985,16 +996,8 @@ func selectIKEProposal(body []byte, keGroup uint16) (Proposal, SASuite, error) {
 			switch transform.Type {
 			case TransEncr, TransPRF, TransDH:
 			case TransInteg:
-				// RFC 7296 section 3.3.2's transform registry gives integrity
-				// algorithm 0 the name NONE, and an AEAD cipher needs no
-				// integrity transform, so a peer spelling out NONE says the
-				// same thing as omitting it. Anything else is a transform this
-				// implementation has no key for, because every cipher it
-				// offers is combined mode, and section 3.3.6 makes that one
-				// transform unacceptable rather than the proposal it sits in.
-				// A peer offering an integrity algorithm alongside NONE, which
-				// is the shape an implementation that also has non-AEAD
-				// ciphers produces, therefore still gets an answer.
+				// RFC 7296 section 3.3: "Combined-mode ciphers include both integrity and encryption in a single encryption algorithm, and MUST either offer no integrity algorithm or a single integrity algorithm of "NONE", with no integrity algorithm being the RECOMMENDED method."
+				// RFC 7296 section 3.3.6: "if the responder receives a transform that it does not understand, or one that contains a Transform Attribute it does not understand, it MUST consider this transform unacceptable" and "other transforms with the same Transform Type are processed as usual."
 				offeredInteg = true
 				if integ == nil && transform.ID == INTEG_NONE && !transform.UnsupportedAttributes {
 					integ = &transform
@@ -1003,56 +1006,25 @@ func selectIKEProposal(body []byte, keGroup uint16) (Proposal, SASuite, error) {
 				known = false
 			}
 		}
-		if !known {
+		encr, haveEncr := choose(ciphers, proposal.Transforms)
+		prfT, havePRF := choose(prfs, proposal.Transforms)
+		if !known || offeredInteg && integ == nil || !haveEncr || !havePRF {
 			continue
 		}
-		// Every alternative of a type the offer did include was unacceptable,
-		// so there is no complete set of parameters to take out of this
-		// proposal. The rest of the SA payload is still considered.
-		if offeredInteg && integ == nil {
-			continue
-		}
-		// An offered transform carries no unsupported attributes, so struct
-		// equality already rejects one whose attributes we could not parse.
-		pick := func(want TransformType) (Transform, bool) {
-			for _, candidate := range offered {
-				if candidate.Type != want {
-					continue
-				}
-				if slices.Contains(proposal.Transforms, candidate) {
-					return candidate, true
-				}
-			}
-			return Transform{}, false
-		}
-		encr, haveEncr := pick(TransEncr)
-		prfT, havePRF := pick(TransPRF)
-		dhT, haveDH := pick(TransDH)
-		if !haveEncr || !havePRF || !haveDH {
-			continue
-		}
-		if dhT.ID != keGroup {
-			// The offer is acceptable but the initiator guessed the wrong
-			// group for its KE payload. Remember the first such group and
-			// keep looking for a proposal that needs no extra round trip.
-			if preferredGroup == 0 {
-				preferredGroup = dhT.ID
-			}
-			continue
-		}
-		// "The accepted cryptographic suite MUST contain exactly one transform
-		// of each type included in the proposal", RFC 7296 section 2.7, so an
-		// integrity transform the initiator offered is echoed back rather than
-		// dropped from the answer.
-		transforms := []Transform{encr, prfT, dhT}
+		// RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
+		transforms := []Transform{encr, prfT}
 		if integ != nil {
 			transforms = append(transforms, *integ)
 		}
-		selected := Proposal{Number: proposal.Number, Protocol: ProtoIKE, Transforms: transforms}
-		return selected, SASuite{EncrID: encr.ID, EncrKeyBits: encr.KeyLengthBits, PRFID: prfT.ID, DHGroup: dhT.ID}, nil
+		met = append(met, ikeChoice{offered: proposal, transforms: transforms, suite: SASuite{EncrID: encr.ID, EncrKeyBits: encr.KeyLengthBits, PRFID: prfT.ID}})
+		offers = append(offers, proposal.Transforms)
 	}
-	if preferredGroup != 0 {
-		return Proposal{}, SASuite{}, &invalidKEError{preferredGroup}
+	at, group, retry, ok := chooseGroup(offers, groups, keGroup, groupRequired)
+	if !ok {
+		return ikeChoice{}, retry, false
 	}
-	return Proposal{}, SASuite{}, fmt.Errorf("ike: no acceptable IKE SA proposal")
+	chosen := met[at]
+	chosen.transforms = slices.Insert(chosen.transforms, 2, group)
+	chosen.suite.DHGroup = group.ID
+	return chosen, 0, true
 }

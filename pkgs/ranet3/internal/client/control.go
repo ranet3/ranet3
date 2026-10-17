@@ -261,6 +261,7 @@ func (c *Client) Sessions() []control.Session {
 	for _, session := range live {
 		local, remote := session.session.ChildSPIs()
 		started := session.session.StartedAt()
+		suite := session.session.Suite()
 		entry := control.Session{
 			Path:      session.path,
 			Peer:      session.peer.Node().String(),
@@ -268,6 +269,10 @@ func (c *Client) Sessions() []control.Session {
 			Active:    session.session.Active(),
 			LocalSPI:  local,
 			RemoteSPI: remote,
+			IKECipher: suite.IKECipher,
+			IKEPRF:    suite.IKEPRF,
+			IKEKex:    suite.IKEKex,
+			ESPCipher: suite.ESPCipher,
 			StartedAt: started,
 			Age:       control.Duration(time.Since(started)),
 			Idle:      control.Duration(session.session.Idle()),

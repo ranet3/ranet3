@@ -157,54 +157,19 @@ func canonicalEncryptionTransform(t Transform) (Transform, error) {
 	return t, nil
 }
 
-// canonicalChildCipher rebuilds an installed Child SA's encryption transform
-// in the spelling that goes on the wire. ChildSA.EncrKeyBits holds the key
-// length the SA actually uses, which for ChaCha20-Poly1305 is the 256 bits
-// canonicalEncryptionTransform fills in rather than a Key Length attribute
-// RFC 7296 section 3.3.5 forbids on a fixed-length-key transform, so it is
-// dropped again before the transform is canonicalized.
-func canonicalChildCipher(child ChildSA) (Transform, error) {
-	bits := child.EncrKeyBits
-	if child.EncrID == ENCR_CHACHA20_POLY1305 {
-		bits = 0
-	}
-	return canonicalEncryptionTransform(Transform{Type: TransEncr, ID: child.EncrID, KeyLengthBits: bits})
-}
-
-// decodeChildProposal validates the selected, single ESP proposal shared by
-// IKE_AUTH and both CREATE_CHILD_SA directions.
-func decodeChildProposal(body []byte, expected *ChildSA) (Proposal, Transform, uint32, error) {
+// decodeChildProposal reads the one ESP proposal answering this end's offer of offered, in IKE_AUTH or in a CREATE_CHILD_SA it started
+// RFC 7296 section 3.3.6: "The initiator of an exchange MUST check that the accepted offer is consistent with one of its proposals, and if not MUST terminate the exchange."
+// RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
+// RFC 7296 section 1.2: "the SA payloads in the IKE_AUTH exchange cannot contain Transform Type 4 (Diffie-Hellman group) with any value other than NONE."
+// an offer names a cipher and ESN alone
+// so an answer naming any other type is refused
+// a DH group among them would key the SA from a key exchange this end never ran
+func decodeChildProposal(body []byte, offered []Transform) (Proposal, Transform, uint32, error) {
 	props, err := DecodeSA(body)
 	if err != nil || len(props) != 1 {
 		return Proposal{}, Transform{}, 0, fmt.Errorf("ike: invalid Child SA proposal")
 	}
 	p := props[0]
-	// Both callers are the initiator reading the answer to its own offer, and
-	// RFC 7296 section 3.3.6 has it "check that the accepted offer is
-	// consistent with one of its proposals, and if not MUST terminate the
-	// exchange". Section 2.7 says what the responder may return: "The
-	// responder MUST choose a single suite, which may be any subset of the SA
-	// proposal", and "exactly one transform of each type included in the
-	// proposal". A subset, so the answer's types are the offer's types, and
-	// espProposal names two of them.
-	//
-	// A type the offer never named is refused whatever its value. A DH
-	// transform is the one that costs something: the responder would mean
-	// perfect forward secrecy and derive KEYMAT over g^ir, section 2.17, while
-	// both callers here derive without it, and the Child SA that installs
-	// carries nothing either way. Section 1.2 forbids it outright on the
-	// IKE_AUTH path: "the SA payloads in the IKE_AUTH exchange cannot contain
-	// Transform Type 4 (Diffie-Hellman group) with any value other than NONE."
-	// An integrity transform is harmless to the suite, NONE or not, but
-	// nothing in 7296 or RFC 5282 lets a responder add a type to the answer,
-	// and no implementation is known to. The responder half of this package
-	// echoes only what it was offered, which is the rule read from the other
-	// side.
-	//
-	// Nothing here counts the transforms. The switch below refuses every type
-	// the offer did not name, the two flags refuse a repeat, and the check
-	// after the loop refuses an answer that leaves one out, which together
-	// hold the answer to one of each.
 	if p.Number != 1 || p.Protocol != ProtoESP || len(p.SPI) != 4 {
 		return Proposal{}, Transform{}, 0, fmt.Errorf("ike: invalid Child SA proposal shape")
 	}
@@ -214,12 +179,14 @@ func decodeChildProposal(body []byte, expected *ChildSA) (Proposal, Transform, u
 	}
 	var encryption Transform
 	var haveEncryption, haveESN bool
-	// One transform of each type, section 2.7, which the two flags below are.
 	for _, transform := range p.Transforms {
 		switch transform.Type {
 		case TransEncr:
 			if haveEncryption {
 				return Proposal{}, Transform{}, 0, fmt.Errorf("ike: Child SA proposal has duplicate encryption transforms")
+			}
+			if !slices.Contains(offered, transform) {
+				return Proposal{}, Transform{}, 0, fmt.Errorf("ike: Child SA proposal selected an unoffered transform")
 			}
 			encryption, err = canonicalEncryptionTransform(transform)
 			if err != nil {
@@ -237,27 +204,6 @@ func decodeChildProposal(body []byte, expected *ChildSA) (Proposal, Transform, u
 	}
 	if !haveEncryption || !haveESN {
 		return Proposal{}, Transform{}, 0, fmt.Errorf("ike: incomplete Child SA proposal")
-	}
-	if expected != nil {
-		want, err := canonicalChildCipher(*expected)
-		if err != nil || encryption.ID != want.ID || encryption.KeyLengthBits != want.KeyLengthBits {
-			return Proposal{}, Transform{}, 0, fmt.Errorf("ike: Child SA proposal changed encryption transform")
-		}
-	} else {
-		matched := false
-		for _, offered := range espProposal(nil).Transforms {
-			if offered.Type != TransEncr {
-				continue
-			}
-			canonical, err := canonicalEncryptionTransform(offered)
-			if err == nil && canonical.ID == encryption.ID && canonical.KeyLengthBits == encryption.KeyLengthBits {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return Proposal{}, Transform{}, 0, fmt.Errorf("ike: Child SA proposal selected an unoffered transform")
-		}
 	}
 	return p, encryption, remoteSPI, nil
 }
@@ -294,135 +240,61 @@ func (e *invalidKEError) Error() string {
 	return fmt.Sprintf("ike: peer must use DH group %d", e.group)
 }
 
-// Select an offered encryption suite and optional DH group. Unknown transform
-// types reject the proposal, while unsupported alternatives of a known type
-// are skipped (RFC 7296 section 3.3.6).
-func selectChildRequestProposal(body []byte, expected *ChildSA, keGroup uint16) (childProposalSelection, error) {
+// selectChildRequestProposal answers a Child SA offer from ciphers and groups, each in this end's order, as chooseIKE answers an IKE SA offer
+// rule tells chooseGroup whether the answer may go without a group
+func selectChildRequestProposal(body []byte, ciphers, groups []Transform, keGroup uint16, rule groupRule) (childProposalSelection, error) {
 	props, err := DecodeSA(body)
 	if err != nil {
 		return childProposalSelection{}, fmt.Errorf("ike: invalid Child SA proposal")
 	}
-	var want *Transform
-	if expected != nil {
-		canonical, err := canonicalChildCipher(*expected)
-		if err != nil {
-			return childProposalSelection{}, err
-		}
-		want = &canonical
-	}
-	var preferredDH uint16
+	var met []childProposalSelection
+	var offers [][]Transform
 	for _, p := range props {
+		// a proposal's SPI is the one the ESP packets this end sends the peer would carry
+		// RFC 3948 section 2.1: "The SPI field in the ESP header MUST NOT be a zero value."
 		if p.Number == 0 || p.Protocol != ProtoESP || len(p.SPI) != 4 || binary.BigEndian.Uint32(p.SPI) == 0 {
 			continue
 		}
-		var encryption, integ Transform
-		var haveEncryption, haveESN, haveInteg, offeredInteg, unacceptable bool
+		var integ Transform
+		var haveESN, haveInteg, offeredInteg, unacceptable bool
 		for _, transform := range p.Transforms {
 			switch transform.Type {
-			case TransEncr:
-				candidate, err := canonicalEncryptionTransform(transform)
-				if err == nil && !haveEncryption && childEncryptionAccepted(candidate, want) {
-					encryption = candidate
-					haveEncryption = true
-				}
+			case TransEncr, TransDH:
 			case TransESN:
 				if !haveESN && transform.ID == ESN_NO && transform.KeyLengthBits == 0 && !transform.UnsupportedAttributes {
 					haveESN = true
 				}
-			case TransDH:
-				// Selected below after checking encryption and ESN.
 			case TransInteg:
-				// See decodeChildProposal: NONE alongside an AEAD cipher says
-				// what omitting the transform says, and anything else is a
-				// transform this implementation has no key for. RFC 7296
-				// section 3.3.6 makes that one transform unacceptable rather than the
-				// proposal it sits in, so an offer naming an integrity
-				// algorithm alongside NONE is still answered.
+				// RFC 7296 section 3.3.6: "if the responder receives a transform that it does not understand, or one that contains a Transform Attribute it does not understand, it MUST consider this transform unacceptable" and "other transforms with the same Transform Type are processed as usual."
 				offeredInteg = true
 				if !haveInteg && transform.ID == INTEG_NONE && !transform.UnsupportedAttributes {
 					integ = transform
 					haveInteg = true
 				}
 			default:
+				// RFC 7296 section 3.3.6: "If the responder receives a proposal that contains a Transform Type it does not understand, or a proposal that is missing a mandatory Transform Type, it MUST consider this proposal unacceptable" and "other proposals in the same SA payload are processed as usual."
 				unacceptable = true
 			}
 		}
-		// An offer that named integrity transforms and none this end can take
-		// has no complete set of parameters in it, but the rest of the SA
-		// payload is still considered.
-		if offeredInteg && !haveInteg {
-			unacceptable = true
-		}
-		if !unacceptable && haveEncryption && haveESN {
-			dh, preferred, ok := selectDHTransform(p.Transforms, keGroup, true)
-			if ok {
-				return childProposalSelection{p, encryption, dh, integ, binary.BigEndian.Uint32(p.SPI)}, nil
-			}
-			if preferredDH == 0 {
-				preferredDH = preferred
-			}
-		}
-	}
-	if preferredDH != 0 {
-		return childProposalSelection{}, &invalidKEError{preferredDH}
-	}
-	return childProposalSelection{}, fmt.Errorf("ike: no acceptable Child SA proposal")
-}
-
-func childEncryptionAccepted(candidate Transform, expected *Transform) bool {
-	if expected != nil {
-		return candidate.ID == expected.ID && candidate.KeyLengthBits == expected.KeyLengthBits
-	}
-	for _, offered := range espProposal(nil).Transforms {
-		if offered.Type != TransEncr {
+		cipher, haveCipher := choose(ciphers, p.Transforms)
+		if unacceptable || offeredInteg && !haveInteg || !haveCipher || !haveESN {
 			continue
 		}
-		supported, err := canonicalEncryptionTransform(offered)
-		if err == nil && candidate.ID == supported.ID && candidate.KeyLengthBits == supported.KeyLengthBits {
-			return true
+		encryption, err := canonicalEncryptionTransform(cipher)
+		if err != nil {
+			return childProposalSelection{}, err
 		}
+		met = append(met, childProposalSelection{proposal: p, encryption: encryption, integ: integ, remoteSPI: binary.BigEndian.Uint32(p.SPI)})
+		offers = append(offers, p.Transforms)
 	}
-	return false
-}
-
-// Prefer an offered group matching KE. For Child SAs only, an omitted DH
-// transform or explicit NONE permits deriving keys without a fresh exchange.
-func selectDHTransform(transforms []Transform, keGroup uint16, optional bool) (Transform, uint16, bool) {
-	var haveDH, haveNone bool
-	for _, got := range transforms {
-		if got.Type == TransDH {
-			haveDH = true
-			haveNone = haveNone || got == (Transform{Type: TransDH})
-		}
+	at, dh, retry, ok := chooseGroup(offers, groups, keGroup, rule)
+	if retry != 0 {
+		return childProposalSelection{}, &invalidKEError{retry}
 	}
-	var preferredDH, matchingDH Transform
-	for _, want := range ikeProposal().Transforms {
-		if want.Type != TransDH {
-			continue
-		}
-		for _, got := range transforms {
-			if got != want {
-				continue
-			}
-			if preferredDH.Type == 0 {
-				preferredDH = got
-			}
-			if got.ID == keGroup {
-				matchingDH = got
-			}
-			break
-		}
+	if !ok {
+		return childProposalSelection{}, fmt.Errorf("ike: no acceptable Child SA proposal")
 	}
-	if matchingDH.Type != 0 {
-		return matchingDH, preferredDH.ID, true
-	}
-	if optional {
-		if !haveDH {
-			return Transform{}, 0, true
-		}
-		if haveNone {
-			return Transform{Type: TransDH}, 0, true
-		}
-	}
-	return Transform{}, preferredDH.ID, false
+	chosen := met[at]
+	chosen.dh = dh
+	return chosen, nil
 }

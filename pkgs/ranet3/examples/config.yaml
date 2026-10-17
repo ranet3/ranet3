@@ -108,6 +108,12 @@ cap:
   #     margin: 5m
   #     jitter: 1m
   #     retry: { first: 5s, max: 5m }
+  #   ike:
+  #     cipher: [aes256gcm, aes128gcm, chacha20poly1305]
+  #     prf: [sha384, sha256]
+  #     kex: [x25519, p384, p256]
+  #   esp:
+  #     cipher: [aes256gcm, aes128gcm, chacha20poly1305]
   # egress:
   #   advertise: ["198.51.100.0/24", "2001:db8:2::/48"]
   #   source4: auto

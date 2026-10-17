@@ -548,6 +548,55 @@ func TestReloadTakesABabelDefaultWrittenOut(t *testing.T) {
 	}
 }
 
+// a session whose IKE SA was replaced for a new handshake reports the replacement
+// whichever half saw the mux close first
+// a dialer dials again at once only on that report
+func TestSessionEndReportsTheReplacementOfItsIKESA(t *testing.T) {
+	closed := sessionResult{"ESP receive", errors.New("transport: closed")}
+	replaced := sessionResult{"IKE control", fmt.Errorf("%w, so the session deleted the IKE SA for a new handshake", ike.ErrPRFUnlisted)}
+	for _, ends := range [][2]sessionResult{{closed, replaced}, {replaced, closed}} {
+		if got := endOf(ends[0], ends[1]); got != replaced {
+			t.Errorf("a session whose %s half ended first reported the %s half's %v", ends[0].component, got.component, got.err)
+		}
+	}
+	other := sessionResult{"IKE control", errors.New("ike: peer unresponsive after 5 attempts")}
+	if got := endOf(other, closed); got != other {
+		t.Errorf("a session whose IKE half ended first reported the %s half's %v", got.component, got.err)
+	}
+}
+
+// a reload applies the cap.crypto lists in place and names each list it changed by its key
+// writing out the lists a node runs without them changes nothing
+// and a timer changed beside a list still needs a restart
+func TestReloadAppliesTheCryptoListsInPlace(t *testing.T) {
+	omitted := &config.Config{Node: identity.MustParse("example/node"), Link: config.Link{Port: 13000}}
+	written := *omitted
+	written.Cap.Crypto = &ike.Crypto{
+		IKE: ike.IKESuites{Cipher: []string{"aes256gcm", "aes128gcm", "chacha20poly1305"}, PRF: []string{"sha384", "sha256"}, Kex: []string{"x25519", "p384", "p256"}},
+		ESP: ike.ESPSuites{Cipher: []string{"aes256gcm", "aes128gcm", "chacha20poly1305"}},
+	}
+	if err := reloadable(omitted, &written); err != nil {
+		t.Errorf("writing out the lists already running was refused: %v", err)
+	}
+	if got := changedCapabilities(omitted, &written); len(got) != 0 {
+		t.Errorf("writing out the lists already running applied %v", got)
+	}
+	narrowed := *omitted
+	narrowed.Cap.Crypto = &ike.Crypto{IKE: ike.IKESuites{Kex: []string{"p256"}}, ESP: ike.ESPSuites{Cipher: []string{"chacha20poly1305"}}}
+	if err := reloadable(omitted, &narrowed); err != nil {
+		t.Errorf("narrowing the lists was refused: %v", err)
+	}
+	if got, want := changedCapabilities(omitted, &narrowed), []string{"cap.crypto.ike.kex", "cap.crypto.esp.cipher"}; !slices.Equal(got, want) {
+		t.Errorf("narrowing kex and esp cipher applied %v, want %v", got, want)
+	}
+	window := uint32(8192)
+	retimed := narrowed
+	retimed.Cap.Crypto = &ike.Crypto{Replay: &window, IKE: narrowed.Cap.Crypto.IKE, ESP: narrowed.Cap.Crypto.ESP}
+	if err := reloadable(omitted, &retimed); err == nil || !strings.Contains(err.Error(), "cap.crypto rekey or replay changed") {
+		t.Errorf("a replay window changed beside the lists drew %v, want the restart it needs", err)
+	}
+}
+
 // The key is read once, in New, and the responder captured it when Run built
 // it. A rotation is staged by writing the new key where the old one was, so
 // comparing the configured path would report a reload that changed nothing

@@ -253,7 +253,7 @@ func TestLosingCandidateIsKeptPastItsLifetimeForItsDelete(t *testing.T) {
 		stop()
 		<-runDone
 	}()
-	completed, failed := "ike.rekey.completed > sa=ike", "ike.rekey.failed > sa=ike"
+	completed, failed := "ike.rekey.completed > sa=ike suite=aes128gcm/sha256/x25519", "ike.rekey.failed > sa=ike"
 	for deadline := time.Now().Add(answerBudget); ; time.Sleep(recordPoll) {
 		got := events.recorded()
 		if slices.Contains(got, failed) {

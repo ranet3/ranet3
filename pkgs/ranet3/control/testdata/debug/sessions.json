@@ -1,0 +1,30 @@
+[
+  {
+    "path": "example/gateway:0@0",
+    "peer": "example/gateway",
+    "remote": "192.0.2.7:13000",
+    "preferred": true,
+    "active": true,
+    "local_spi": 3237998081,
+    "remote_spi": 195948557,
+    "ike_cipher": "aes256gcm",
+    "ike_prf": "sha384",
+    "ike_kex": "x25519",
+    "esp_cipher": "aes128gcm",
+    "started_at": "2026-10-04T12:20:01Z",
+    "age": "1h30m0s",
+    "idle": "1.2s"
+  },
+  {
+    "path": "example/exit:1@0",
+    "peer": "example/exit",
+    "remote": "[2001:db8::1]:13000",
+    "preferred": false,
+    "active": false,
+    "local_spi": 1,
+    "remote_spi": 2,
+    "started_at": "2026-10-04T13:50:01Z",
+    "age": "1s",
+    "idle": "1s"
+  }
+]

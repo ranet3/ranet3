@@ -69,8 +69,12 @@ func (c *Client) syncPeers() (stopped []*dialer) {
 	return stopped
 }
 
-// ReloadFrom applies the configuration at path and the trust document it names without dropping the tunnels this node carries
-// it refuses a change to what peers already authenticated or what the dataplane is attached to, rather than apply half of a reload
+// ReloadFrom applies the configuration at path and the trust document it names, keeping every tunnel this node carries that the two still admit
+// a tunnel goes where the trust document no longer admits its peer
+// one also goes where cap.crypto ike prf no longer holds its IKE SA's PRF
+// and a new handshake replaces that one
+// it refuses a change to what peers already authenticated or what the dataplane is attached to
+// so no reload applies by half
 func (c *Client) ReloadFrom(path string) (err error) {
 	c.reloadMu.Lock()
 	defer c.reloadMu.Unlock()
@@ -111,13 +115,15 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if err != nil {
 		return err
 	}
-	// the last refusal, since the reconciler takes a table it accepts at once
+	// the last refusal
+	// the reconciler takes a table it accepts at once
 	if !sameTable(old, cfg) {
 		if err := c.retable(cfg); err != nil {
 			return err
 		}
 	}
-	// a peer the trust document cannot support is skipped rather than refused, or one stale entry would block every later reload
+	// a peer the trust document cannot support is skipped rather than refused
+	// or one stale entry would block every later reload
 	peers := effectivePeers(cfg, x)
 	refuse, skip := validatePeers(peers, x, families)
 	for _, problems := range [][]error{refuse, skip} {
@@ -131,8 +137,12 @@ func (c *Client) ReloadFrom(path string) (err error) {
 
 	c.storeIndex(x)
 	c.cfg.Store(cfg)
-	// the trust document decides who may connect, so it decides who may stay
+	// the trust document decides who may connect
+	// so it decides who may stay
 	c.sessions.revoke()
+	// every exchange from here reads the cap.crypto lists just stored
+	// and every live session checks the SAs it holds against them
+	c.sessions.resuite()
 	c.republish(cfg)
 	c.syncPeers()
 	c.speaker.SetConfig(cfg.Babel())
@@ -148,12 +158,15 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	case tun.to != tun.from:
 		tunErr = c.Mesh.SetMTU(tun.to, tun.steering)
 	case tun.tables:
-		// the device keeps its MTU, so swapping the table is the whole change
+		// the device keeps its MTU
+		// so swapping the table is the whole change
 		c.Mesh.SetSteering(tun.steering)
 	}
-	// every live session's search takes the new link.mtu and the steering table in force, as each session made from here on does
+	// every live session's search takes the new link.mtu and the steering table in force
+	// each session made from here on takes them too
 	c.sessions.relink(cfg.Link.SessionMTU(), tun.tables, tun.steering)
-	// SetMTU fails only for a device that is gone, by when everything else here has applied
+	// SetMTU fails only for a device that is gone
+	// and by then everything else here has applied
 	if tunErr != nil {
 		return tunErr
 	}
@@ -190,6 +203,11 @@ func changedCapabilities(old, next *config.Config) []string {
 	if old.Babel().Effective() != next.Babel().Effective() || !old.Babel().Cost.Extra.Equal(next.Babel().Cost.Extra) {
 		out = append(out, "cap.babel")
 	}
+	// both configurations passed Validate
+	// and Validate resolves the lists
+	was, _ := old.Crypto().Suites()
+	is, _ := next.Crypto().Suites()
+	out = append(out, was.Changed(is)...)
 	if !reflect.DeepEqual(old.Routes(), next.Routes()) {
 		out = append(out, "cap.route")
 	}
@@ -319,47 +337,44 @@ func (c *Client) sameIdentityKey(path string) error {
 	return nil
 }
 
-// reloadable reports why a change cannot be applied in place, or nil. The
-// capability is the unit: a block this node reads once at startup is compared
-// whole, rather than field by field, so a capability that grows a field does
-// not grow a check here as well.
+// reloadable reports why a change cannot be applied in place, or nil
+// a block this node reads once at startup is compared whole
+// so a capability that grows a field grows no check here
+// cap.crypto is the one block split
+// its lists reload
+// the timers and the window a session captures at its start do not
 func reloadable(old, next *config.Config) error {
 	switch moved := tableMoved(old.Cap.Table, next.Cap.Table); {
 	case old.Node != next.Node:
 		return fmt.Errorf("config: node changed, restart to apply")
 	case old.Link.Underlay != next.Link.Underlay:
-		// Both spellings are applied to the one socket when it is opened, so a
-		// change here would be read back from the file and reach nothing. The
-		// interface a bound socket sits on does follow the host's own routing,
-		// but which interface that is was never written in this file.
+		// both spellings apply to the listener when it opens
+		// and a socket connected to one peer takes them from the listener
+		// so a change here would reach nothing
+		// the interface a bound socket sits on follows the host's own routing
+		// and this file never wrote that routing
 		return fmt.Errorf("config: link.underlay changed, restart to apply")
 	case old.Link.Port != next.Link.Port:
 		return fmt.Errorf("config: link.port changed, restart to apply")
 	case old.Link.TUN != next.Link.TUN:
 		return fmt.Errorf("config: link.tun changed, restart to apply")
 	case !slices.Equal(sortedEndpoints(old.Link.Endpoints), sortedEndpoints(next.Link.Endpoints)):
-		// The listener answers to one identity per local endpoint and builds
-		// that set once, and each endpoint runs its own dialers. Compared as a
-		// set, since every reader of the list builds one: an identity set, a
-		// family set, and one dialer per endpoint and peer. Comparing them in
-		// the order they were written refuses a reload over two lines swapped,
-		// and every capability beside this one is compared as the subsystem
-		// reads it rather than as the file spells it.
+		// the listener answers to one identity per local endpoint and builds that set once
+		// each endpoint runs its own dialers
+		// every reader of the list builds a set from it
+		// so two lines swapped are no change
 		return fmt.Errorf("config: link.endpoints changed, restart to apply")
 	case old.Transits() != next.Transits():
 		return fmt.Errorf("config: cap.transit enable changed, restart to apply")
 	case moved != "":
 		return fmt.Errorf("config: cap.table %s, restart to apply", moved)
 	case !sameCrypto(old, next):
-		// Accepted sessions take these from the listener built at startup, so
-		// applying them to newly dialed sessions alone would leave the node
-		// running two different policies at once.
-		return fmt.Errorf("config: cap.crypto changed, restart to apply")
+		// accepted sessions take the timers and the window from the listener built at startup
+		// so a change dialed sessions alone took would run two policies at once
+		return fmt.Errorf("config: cap.crypto rekey or replay changed, restart to apply")
 	case !sameEgress(old, next):
-		// The translator is built once in main and owns the tables it created
-		// under the families the old block named, so a new one applied here
-		// would leave the host holding rules from a configuration nothing is
-		// running any more.
+		// the translator is built once in main and owns the tables it made under the families the old block named
+		// a new block applied here would leave the host holding rules from a configuration nothing runs any more
 		return fmt.Errorf("config: cap.egress changed, restart to apply")
 	}
 	return sameReturnSources(old, next)
@@ -402,9 +417,11 @@ func sameEgress(old, next *config.Config) bool {
 	return reflect.DeepEqual(normalize(old.Egress()), normalize(next.Egress()))
 }
 
-// sameCrypto compares the timers and the window a session captures when it is
-// created, rather than the block as written: an omitted interval and one
-// spelled out as its own default describe the same session.
+// sameCrypto compares the timers and the window a session captures when it is created
+// as a session reads them
+// so an omitted interval and one spelled out as its own default are no change
+// the lists reload in place
+// so it leaves them out
 func sameCrypto(old, next *config.Config) bool {
 	a, b := old.Crypto(), next.Crypto()
 	return a.ChildInterval() == b.ChildInterval() &&

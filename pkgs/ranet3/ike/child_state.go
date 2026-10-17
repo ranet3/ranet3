@@ -72,7 +72,11 @@ func (s *Session) halfClosedBy(answer []RawPayload, spi uint32) bool {
 	return true
 }
 
-func (s *Session) replaceChild(child ChildSA) error {
+func (s *Session) replaceChild(child ChildSA) error { return s.replaceKeyedChild(child, 0) }
+
+// replaceKeyedChild installs child keyed by a key exchange in group
+// a zero group is a Child SA SK_d alone keyed
+func (s *Session) replaceKeyedChild(child ChildSA, group uint16) error {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
 	if err := s.canReplaceChildLocked(child.LocalSPI); err != nil {
@@ -92,6 +96,7 @@ func (s *Session) replaceChild(child ChildSA) error {
 	}
 	old, oldEnds := s.Child, s.childEstablished.Add(s.childRekeyInterval)
 	s.Child, s.childEstablished = child, time.Now()
+	s.childGroup = childPFS{spi: child.LocalSPI, group: group}
 	if old.LocalSPI != 0 {
 		s.retiring, s.retiringEnds = old, oldEnds
 		// The peer owes a Delete for it, and a peer is free not to send one.

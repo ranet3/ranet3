@@ -10,8 +10,9 @@ import (
 	"time"
 )
 
-// The column set is the promise the subcommands make, so a rename is a change
-// an operator's scripts see and belongs in a diff that says so.
+// the column set is the promise the subcommands make
+// so a rename is a change an operator's scripts see
+// and it belongs in a diff that says so
 func TestRenderersKeepTheirColumns(t *testing.T) {
 	for name, test := range map[string]struct {
 		render func(*strings.Builder)
@@ -27,7 +28,7 @@ func TestRenderersKeepTheirColumns(t *testing.T) {
 		},
 		"sessions": {
 			render: func(b *strings.Builder) { RenderSessions(b, nil) },
-			want:   []string{"Path", "Peer", "Remote", "End", "State", "SPI in/out", "Age", "Idle"},
+			want:   []string{"Path", "Peer", "Remote", "End", "State", "SPI in/out", "IKE", "ESP", "Age", "Idle"},
 		},
 		"peers": {
 			render: func(b *strings.Builder) { RenderPeers(b, nil) },
@@ -45,6 +46,22 @@ func TestRenderersKeepTheirColumns(t *testing.T) {
 			}
 		})
 	}
+}
+
+// the session table names each SA's transforms by their cap.crypto names
+// a session the daemon reported no transforms for reads as a dash
+func TestSessionsRenderAsTheGoldenFiles(t *testing.T) {
+	sessions := []Session{
+		{Path: "example/gateway:0@0", Peer: "example/gateway", Remote: "192.0.2.7:13000", Preferred: true, Active: true,
+			LocalSPI: 0xc0ffee01, RemoteSPI: 0x0badf00d, IKECipher: "aes256gcm", IKEPRF: "sha384", IKEKex: "x25519", ESPCipher: "aes128gcm",
+			StartedAt: time.Date(2026, 10, 4, 12, 20, 1, 0, time.UTC), Age: Duration(90 * time.Minute), Idle: Duration(1200 * time.Millisecond)},
+		{Path: "example/exit:1@0", Peer: "example/exit", Remote: "[2001:db8::1]:13000", LocalSPI: 1, RemoteSPI: 2,
+			StartedAt: time.Date(2026, 10, 4, 13, 50, 1, 0, time.UTC), Age: Duration(time.Second), Idle: Duration(time.Second)},
+	}
+	var out strings.Builder
+	RenderSessions(&out, sessions)
+	golden(t, "sessions.txt", []byte(out.String()))
+	goldenJSON(t, "sessions.json", sessions)
 }
 
 // 65535 is infinity and a reader should not have to remember that. An absent

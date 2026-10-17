@@ -23,11 +23,9 @@ import (
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
-// PeerConfig describes one peer this node dials and everything establishing an
-// IKEv2 SA with it takes, raw Ed25519 pubkey auth (RFC 7427) under the DN or
-// an ID Aliases gives, a 0.0.0.0/0::/0 tunnel-mode Child SA and forced UDP
-// encapsulation. The package doc lists the transforms this offers, which are
-// the only ones it proposes or accepts.
+// PeerConfig is one peer this node dials and everything an IKEv2 SA with it takes
+// raw Ed25519 pubkey auth (RFC 7427) under the DN or an ID Aliases gives, a 0.0.0.0/0::/0 tunnel-mode Child SA and forced UDP encapsulation are fixed
+// Suites picks which of the transforms the package doc lists it proposes and accepts
 type PeerConfig struct {
 	Local           identity.Identity
 	LocalPrivateKey ed25519.PrivateKey
@@ -51,6 +49,11 @@ type PeerConfig struct {
 	RekeyJitter        time.Duration
 	RekeyRetryInitial  time.Duration
 	RekeyRetryMax      time.Duration
+
+	// Suites gives the lists in force
+	// the session reads them at each exchange
+	// nil runs the zero Suites
+	Suites func() Suites
 
 	// Events records the session's state changes
 	// nil records nothing
@@ -127,6 +130,10 @@ type Session struct {
 	spentSPI   atomic.Uint32
 	// childFailed holds at most the one dataplane failure Run has not looked at, and one is enough to close the IKE SA
 	childFailed chan error
+	// suites is the configuration's lists, nil for a session whose lists never change
+	suites func() Suites
+	// rechecks holds at most the one change of the lists Run has not checked the SAs against
+	rechecks chan struct{}
 	// sendFailures counts failed IKE sends since the last that went out, and only Run's goroutine touches it
 	sendFailures int
 	// answeredInvalidSyntax is set once the peer answers a request on the current IKE SA with INVALID_SYNTAX, after which Run returns, and only Run's goroutine touches it
@@ -135,8 +142,10 @@ type Session struct {
 	childMu          sync.RWMutex
 	Child            ChildSA
 	childEstablished time.Time
-	withdrawn        []uint32
-	retiring         ChildSA
+	// childGroup is the group of the key exchange whose secret keyed the Child SA holding its SPI
+	childGroup childPFS
+	withdrawn  []uint32
+	retiring   ChildSA
 	// retiringEnds is where the replaced SA's lifetime ends, which its drain does not pass
 	retiringEnds time.Time
 	// retiringBy bounds how long the replaced SA waits for the peer's Delete.
@@ -480,89 +489,6 @@ func randUint32Nonzero() uint32 {
 	}
 }
 
-// ikeProposal is the single modern-crypto-only IKE SA proposal we offer:
-// AES-256/128-GCM or ChaCha20-Poly1305, PRF-HMAC-SHA-384/256, and
-// Curve25519/P-384/P-256. No legacy transforms, no separate integrity
-// transform (all offered ciphers are AEAD).
-func ikeProposal() Proposal {
-	return Proposal{
-		Number:   1,
-		Protocol: ProtoIKE,
-		Transforms: []Transform{
-			{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 256},
-			{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128},
-			{Type: TransEncr, ID: ENCR_CHACHA20_POLY1305},
-			{Type: TransPRF, ID: PRF_HMAC_SHA2_384},
-			{Type: TransPRF, ID: PRF_HMAC_SHA2_256},
-			{Type: TransDH, ID: DH_CURVE25519},
-			{Type: TransDH, ID: DH_ECP_384},
-			{Type: TransDH, ID: DH_ECP_256},
-		},
-	}
-}
-
-// leadingGroup is p with the Diffie-Hellman transform naming group moved ahead of the other groups, which keep their order
-// RFC 7296 section 3.4 on the KE payload's group: "SHOULD match the Diffie-Hellman group in the first group in the first proposal, if such exists."
-// section 1.2: "The initiator MUST again propose its full set of acceptable cryptographic suites because the rejection message was unauthenticated and otherwise an active attacker could trick the endpoints into negotiating a weaker suite than a stronger one that they both prefer."
-func leadingGroup(p Proposal, group uint16) Proposal {
-	transforms := slices.Clone(p.Transforms)
-	first := slices.IndexFunc(transforms, func(t Transform) bool { return t.Type == TransDH })
-	if named := slices.Index(transforms, Transform{Type: TransDH, ID: group}); first >= 0 && named > first {
-		copy(transforms[first+1:named+1], transforms[first:named])
-		transforms[first] = Transform{Type: TransDH, ID: group}
-	}
-	p.Transforms = transforms
-	return p
-}
-
-func espProposal(spi []byte) Proposal {
-	return Proposal{
-		Number:   1,
-		Protocol: ProtoESP,
-		SPI:      spi,
-		Transforms: []Transform{
-			{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 256},
-			{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128},
-			{Type: TransEncr, ID: ENCR_CHACHA20_POLY1305},
-			{Type: TransESN, ID: ESN_NO},
-		},
-	}
-}
-
-// espRekeyProposal offers only the cipher the SA being replaced already uses.
-// decodeChildProposal holds a rekey answer to that cipher, so offering the
-// other two asks a question this end refuses the answer to: RFC 7296 section
-// 2.7 lets the responder take any of them, and a third party whose preference
-// order changed between the initial exchange and the rekey would be turned
-// down for answering within the offer. ikeRekeyProposal pins the PRF across a
-// rekey for the same kind of reason.
-func espRekeyProposal(spi []byte, old ChildSA) Proposal {
-	p := espProposal(spi)
-	// Both sides are canonicalized before they are compared. espProposal
-	// spells ChaCha20-Poly1305 with no Key Length attribute, which RFC 7296
-	// section 3.3.5 requires of a fixed-length-key transform, while the
-	// installed SA records the 256 bits the key has. Comparing those raw
-	// matches nothing and leaves an offer of ESN alone, which section 3.3.6
-	// has every responder refuse for "missing a mandatory Transform Type".
-	want, err := canonicalChildCipher(old)
-	if err != nil {
-		return p
-	}
-	keep := p.Transforms[:0]
-	for _, transform := range p.Transforms {
-		if transform.Type != TransEncr {
-			keep = append(keep, transform)
-			continue
-		}
-		canonical, err := canonicalEncryptionTransform(transform)
-		if err == nil && canonical.ID == want.ID && canonical.KeyLengthBits == want.KeyLengthBits {
-			keep = append(keep, transform)
-		}
-	}
-	p.Transforms = keep
-	return p
-}
-
 // Initiate runs IKE_SA_INIT then IKE_AUTH against cfg.RemoteAddr:RemotePort
 // and returns an established Session with one Child SA. It implements
 // exactly RFC 7815's minimal-initiator surface plus what ranet's
@@ -574,10 +500,10 @@ func Initiate(cfg PeerConfig) (*Session, error) {
 	return InitiateContext(context.Background(), cfg)
 }
 
-// InitiateContext cancels only the handshake's mux. It does not close a shared
-// hub or bind the established session's lifetime to ctx. Session.Run owns that.
-// A cancel once IKE_AUTH is under way waits canceledAuthWait for the answer
-// and deletes the SA an answer in that time established.
+// InitiateContext cancels only the handshake's mux
+// it neither closes a shared hub nor binds the established session's lifetime to ctx
+// Session.Run owns that lifetime
+// a cancel once IKE_AUTH is under way waits canceledAuthWait for the answer and deletes the SA an answer in that time established
 func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -601,7 +527,8 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	stopCancel := context.AfterFunc(ctx, func() { _ = mux.Close() })
 	defer func() {
 		stopCancel()
-		// a cancel after the session is handed over is the caller's to answer, so only a handshake it cut short reports it
+		// a cancel after the session is handed over is the caller's to answer
+		// so only a handshake it cut short reports it
 		if session == nil && ctx.Err() != nil {
 			_ = mux.Close()
 			err = ctx.Err()
@@ -609,7 +536,8 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	}()
 
 	spiI := randUint64Nonzero()
-	group := uint16(DH_CURVE25519)
+	lists := current(cfg.Suites)
+	group := lists.kexGroups()[0].ID
 
 	var (
 		req     []byte
@@ -617,6 +545,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		resp    *Message
 		dh      *DHKeyPair
 		ni      []byte
+		offer   Proposal
 	)
 
 	// RFC 7296 section 2.6.1: "if the responder includes the KEi payloads in cookie calculation, it will reject the request by sending a new cookie."
@@ -641,9 +570,8 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 			}
 		}
 		if ni == nil {
-			// The nonce stays fixed for the whole exchange. A cookie is a
-			// keyed hash of it together with our SPI and address, so a retry
-			// that regenerated it would be handed a fresh challenge forever.
+			// the nonce holds for the whole exchange
+			// a responder whose cookie hashes it would answer a retry under a new one with a fresh cookie every time
 			ni = make([]byte, nonceLen)
 			rand.Read(ni)
 		}
@@ -651,8 +579,9 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		hdr := Header{SPIInitiator: spiI, ExchangeType: IKE_SA_INIT, Flags: FlagInitiator, MessageID: 0}
 		hashAlgos := make([]byte, 2)
 		binary.BigEndian.PutUint16(hashAlgos, HashIdentity)
+		offer = lists.ikeProposal(group)
 		payloads := []RawPayload{
-			{Type: PayloadSA, Body: EncodeSA([]Proposal{leadingGroup(ikeProposal(), group)})},
+			{Type: PayloadSA, Body: EncodeSA([]Proposal{offer})},
 			{Type: PayloadKE, Body: EncodeKE(group, dh.PublicBytes())},
 			{Type: PayloadNonce, Body: EncodeNonce(ni)},
 			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: hashAlgos})},
@@ -672,6 +601,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		req = m.Encode()
 
 		haveCookie, haveGroup := cookieForGroup, groupRetried
+		refused := false
 		respRaw, err = sendRecv(mux, req, func(raw []byte) bool {
 			m, err := DecodeMessage(raw)
 			if err != nil {
@@ -684,11 +614,15 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 				_, failed, err := firstErrorNotify(m.Payloads)
 				return err == nil && !failed
 			}
-			_, ok := usefulInitNotify(m, haveCookie, haveGroup)
+			_, ok := usefulInitNotify(m, haveCookie, haveGroup, offer.Transforms)
+			refused = refused || carriesNotify(m, N_NO_PROPOSAL_CHOSEN)
 			return ok
 		})
 		if err != nil {
 			mux.Close()
+			if refused {
+				return nil, fmt.Errorf("%w, and the responder answered NO_PROPOSAL_CHOSEN", err)
+			}
 			return nil, err
 		}
 		resp, err = DecodeMessage(respRaw)
@@ -699,8 +633,9 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		if resp.find(PayloadSA) != nil {
 			break
 		}
-		// Only reachable for the notify accept() just validated.
-		notify, _ := usefulInitNotify(resp, haveCookie, haveGroup)
+		// sendRecv returns no notify-only answer the accept above refused
+		// so this finds the one it took
+		notify, _ := usefulInitNotify(resp, haveCookie, haveGroup, offer.Transforms)
 		switch notify.Type {
 		case N_COOKIE:
 			cookie, cookieForGroup = notify.Data, true
@@ -735,7 +670,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		mux.Close()
 		return nil, fmt.Errorf("ike: bad SA in IKE_SA_INIT response: %v", err)
 	}
-	suite, err := suiteFromProposal(props[0])
+	suite, err := suiteFromProposal(props[0], offer.Transforms)
 	if err != nil {
 		mux.Close()
 		return nil, err
@@ -774,13 +709,17 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		childRekeyEnded: make(chan struct{}, 1),
 		childSpent:      make(chan struct{}, 1),
 		childFailed:     make(chan error, 1),
+		suites:          cfg.Suites,
+		rechecks:        make(chan struct{}, 1),
 		events:          cfg.Events, local: cfg.Local, remote: cfg.Remote,
 	}
-	// from IKE_AUTH on the responder may hold the SA, so a cancel no longer closes the mux under the answer
+	// from IKE_AUTH on the responder may hold the SA
+	// so a cancel no longer closes the mux under the answer
 	if !stopCancel() {
 		return nil, ctx.Err()
 	}
-	// a cancel from here on leaves every exchange under way canceledAuthWait to end, and the mux closes under the ones that have not
+	// a cancel from here on leaves every exchange under way canceledAuthWait to end
+	// the mux closes under the ones that have not
 	endWait := sync.OnceFunc(func() { time.AfterFunc(canceledAuthWait, func() { _ = mux.Close() }) })
 	stopWait := context.AfterFunc(ctx, endWait)
 	defer stopWait()
@@ -800,7 +739,8 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		mux.Close()
 		return nil, err
 	}
-	// stopped before ctx is read, so the wait never closes the mux of a session handed over
+	// stopped before ctx is read
+	// so the wait never closes the mux of a session handed over
 	stopWait()
 	if ctx.Err() != nil {
 		// an answer that authenticated after the cancel left the responder an SA, deleted within the wait
@@ -838,23 +778,14 @@ func supportsSignatureHash(payloads []RawPayload, wanted uint16) (bool, error) {
 	return found, nil
 }
 
-func suiteFromProposal(p Proposal) (SASuite, error) {
-	// The answer to this end's own offer, which RFC 7296 section 2.7 makes a
-	// subset of it: "The responder MUST choose a single suite, which may be
-	// any subset of the SA proposal", with "exactly one transform of each type
-	// included in the proposal". ikeProposal names three types, so a
-	// conforming answer carries three, and section 3.3.6 has the initiator
-	// terminate an exchange whose answer is not consistent with what it
-	// proposed. See decodeChildProposal for why an unoffered type is refused
-	// even where it could not change the suite.
-	//
-	// As in decodeChildProposal, the count states the shape and the checks
-	// below enforce it: the type test, the duplicate test and the
-	// completeness test leave nothing for it to catch on its own.
+// suiteFromProposal reads the answer to an offer of offered
+// offered names three transform types
+// RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
+// RFC 7296 section 3.3.6: "The initiator of an exchange MUST check that the accepted offer is consistent with one of its proposals, and if not MUST terminate the exchange."
+func suiteFromProposal(p Proposal, offered []Transform) (SASuite, error) {
 	if p.Number != 1 || p.Protocol != ProtoIKE || len(p.SPI) != 0 || len(p.Transforms) != 3 {
 		return SASuite{}, fmt.Errorf("ike: invalid selected IKE proposal shape")
 	}
-	offered := ikeProposal().Transforms
 	selected := make(map[TransformType]Transform, 3)
 	for _, transform := range p.Transforms {
 		if transform.Type != TransEncr && transform.Type != TransPRF && transform.Type != TransDH {
@@ -874,10 +805,6 @@ func suiteFromProposal(p Proposal) (SASuite, error) {
 	if !encrOK || !prfOK || !dhOK {
 		return SASuite{}, fmt.Errorf("ike: incomplete selected IKE proposal")
 	}
-	// The key length is the transform's own: ChaCha20-Poly1305 carries no
-	// KEY_LENGTH attribute, which canonicalEncryptionTransform enforces, and
-	// aeadParams reads its fixed 32 bytes from the cipher rather than from
-	// here. Substituting 256 named a number the wire never carried.
 	return SASuite{EncrID: encr.ID, EncrKeyBits: encr.KeyLengthBits, PRFID: prfT.ID, DHGroup: dhT.ID}, nil
 }
 
@@ -1074,10 +1001,11 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	signedOctets := concat(realMessage1, nr, macedIDForI)
 	authBody := BuildAuth(cfg.LocalPrivateKey, signedOctets)
 
+	offer := s.lists().espProposal(spiBuf)
 	tsv4, tsv6 := FullRangeV4(), FullRangeV6()
 	inner = append(inner,
 		RawPayload{Type: PayloadAUTH, Body: authBody},
-		RawPayload{Type: PayloadSA, Body: EncodeSA([]Proposal{espProposal(spiBuf)})},
+		RawPayload{Type: PayloadSA, Body: EncodeSA([]Proposal{offer})},
 		RawPayload{Type: PayloadTSi, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
 		RawPayload{Type: PayloadTSr, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
 	)
@@ -1148,7 +1076,7 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 		return true, err
 	}
 
-	_, encr, remoteSPI, err := decodeChildProposal(saRecv.Body, nil)
+	_, encr, remoteSPI, err := decodeChildProposal(saRecv.Body, offer.Transforms)
 	if err != nil {
 		return true, fmt.Errorf("ike: bad child SA in IKE_AUTH response: %w", err)
 	}
@@ -1167,12 +1095,11 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	return true, nil
 }
 
-// usefulInitNotify finds the one unauthenticated IKE_SA_INIT notify worth
-// acting on. Only two let the exchange make progress: N(COOKIE), once for each
-// group tried, and N(INVALID_KE_PAYLOAD), once. Everything else
-// unauthenticated is ignored, so sendRecv keeps waiting for the real response
-// rather than letting anyone who can spoof our SPI abort the handshake.
-func usefulInitNotify(m *Message, cookieUsed, groupUsed bool) (Notify, bool) {
+// usefulInitNotify finds the one unauthenticated IKE_SA_INIT notify worth acting on
+// RFC 7296 section 2.6: "If the IKE_SA_INIT response includes the COOKIE notification, the initiator MUST then retry the IKE_SA_INIT request, and include the COOKIE notification containing the received data as the first payload, and all other payloads unchanged."
+// a COOKIE is echoed once for each group tried
+// an INVALID_KE_PAYLOAD names a group of offered to retry in, once
+func usefulInitNotify(m *Message, cookieUsed, groupUsed bool, offered []Transform) (Notify, bool) {
 	// RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected"
 	if _, found := firstUnsupportedCritical(m.Payloads); found {
 		return Notify{}, false
@@ -1187,24 +1114,34 @@ func usefulInitNotify(m *Message, cookieUsed, groupUsed bool) (Notify, bool) {
 		}
 		switch {
 		case notify.Type == N_COOKIE && !cookieUsed:
-			// RFC 7296 section 2.6: "The data associated with this
-			// notification MUST be between 1 and 64 octets in length". Echoing
-			// whatever arrives would let anyone who can see our SPI turn one
-			// spoofed datagram into five oversized ones aimed at our peer.
+			// RFC 7296 section 2.6: "The data associated with this notification MUST be between 1 and 64 octets in length"
+			// an echo of any length turns one spoofed datagram into a retry of that length at the peer for each retransmission
 			if len(notify.Data) == 0 || len(notify.Data) > maxCookieLength {
 				continue
 			}
 			return notify, true
 		case notify.Type == N_INVALID_KE_PAYLOAD && !groupUsed && len(notify.Data) >= 2:
-			// A group we cannot generate aborts the dial with no retry, so an
-			// unauthenticated notify naming one would end the handshake.
-			if !supportedIKEGroup(binary.BigEndian.Uint16(notify.Data[:2])) {
+			// a group the offer left out would end the dial
+			// and no unauthenticated notify may end it
+			if !slices.Contains(offered, Transform{Type: TransDH, ID: binary.BigEndian.Uint16(notify.Data[:2])}) {
 				continue
 			}
 			return notify, true
 		}
 	}
 	return Notify{}, false
+}
+
+func carriesNotify(m *Message, notifyType NotifyType) bool {
+	for _, payload := range m.Payloads {
+		if payload.Type != PayloadN {
+			continue
+		}
+		if notify, err := DecodeNotify(payload.Body); err == nil && notify.Type == notifyType {
+			return true
+		}
+	}
+	return false
 }
 
 // firstErrorNotify returns the first notify of an error type in payloads, and fails on a notify that does not decode

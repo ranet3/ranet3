@@ -610,11 +610,9 @@ func TestSessionHandlesPeerIKERekey(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() { runDone <- s.Run(context.Background()) }()
 
-	// The proposal offers ranet's preferred Curve25519 first, while the KE
-	// payload uses another supported offered group.
-	// RFC 7296 section 1.3: "If the responder selects a proposal using a different Diffie-Hellman group (other than NONE), the responder MUST reject the request and indicate its preferred Diffie-Hellman group in the INVALID_KE_PAYLOAD Notify payload."
-	// so the answer selects the group of the KE payload
-	dh, err := GenerateDH(DH_ECP_256)
+	// proposal 1 names a PRF other than the one the SA keeps
+	// so the answer is proposal 2 in the first group of the lists, the KE payload's
+	dh, err := GenerateDH(DH_CURVE25519)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +624,7 @@ func TestSessionHandlesPeerIKERekey(t *testing.T) {
 	// section 3.10.1: "Unrecognized error types in a request and status types in a request or response MUST be ignored, and they should be logged."
 	// so it carries one of each besides
 	request, err := EncryptMessage(suite, old.sker, Header{SPIInitiator: oldSPIi, SPIResponder: oldSPIr, ExchangeType: CREATE_CHILD_SA, MessageID: 0}, nil, []RawPayload{
-		{Type: PayloadKE, Body: EncodeKE(DH_ECP_256, dh.PublicBytes())},
+		{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, dh.PublicBytes())},
 		{Type: PayloadNonce, Body: EncodeNonce(ni)},
 		{Type: PayloadSA, Body: EncodeSA([]Proposal{
 			{Number: 1, Protocol: ProtoIKE, SPI: spi, Transforms: []Transform{{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 256}, {Type: TransPRF, ID: PRF_HMAC_SHA2_384}, {Type: TransDH, ID: DH_ECP_256}}},
@@ -677,12 +675,12 @@ func TestSessionHandlesPeerIKERekey(t *testing.T) {
 	selectedProposal := props[0]
 	selectedProposal.Number = 1
 	selectedProposal.SPI = nil
-	newSuite, err := suiteFromProposal(selectedProposal)
+	newSuite, err := suiteFromProposal(selectedProposal, ikeProposal().Transforms)
 	if err != nil {
 		t.Fatal(err)
 	}
 	group, public, err := DecodeKE(ke.Body)
-	if err != nil || group != DH_ECP_256 || newSPIr == 0 || len(nonce.Body) == 0 {
+	if err != nil || group != DH_CURVE25519 || newSPIr == 0 || len(nonce.Body) == 0 {
 		t.Fatalf("invalid peer rekey response KE: group=%d spi=%016x err=%v", group, newSPIr, err)
 	}
 	shared, err := dh.SharedSecret(public)
@@ -1363,9 +1361,8 @@ func TestAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.
 	}
 }
 
-// An active attacker that answered IKE_SA_INIT itself holds SK_er, so the
-// checks the initiator makes on the IKE_AUTH answer are all that keep it from
-// installing a Child SA with that attacker.
+// an active attacker that answered IKE_SA_INIT itself holds SK_er
+// so the checks the initiator makes on the IKE_AUTH answer are all that keep it from installing a Child SA with that attacker
 // RFC 7296 section 2.21.2: "If the error occurs on the initiator, the notification MAY be returned in a separate INFORMATIONAL exchange, usually with no other payloads."
 // RFC 7296 section 2.15 signs "RestOfRespIDPayload = IDType | RESERVED | RespIDData", and an IDr naming the endpoint dialed in other octets than the ones AUTH signed is refused
 func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
@@ -1395,8 +1392,9 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 		critical     PayloadType  // the answer ends in a payload of this type, marked critical
 		trailing     bool         // a byte past the answer's payload chain makes it malformed
 		sa, tsi, tsr []byte       // nil leaves the payload out
+		esp          []string     // the initiator's cap.crypto esp cipher, every cipher where nil
 		want         string
-		follow       RawPayload // the INFORMATIONAL request at Message ID 2 carries this, and none comes where its type is zero
+		follow       RawPayload // what the INFORMATIONAL request at Message ID 2 carries, with no request where its type is zero
 	}{
 		"an IDr naming another node": {idr: idBody("ranet-test/elsewhere:2"), sa: usable, tsi: full, tsr: full,
 			want: "names ranet-test/elsewhere:2, and this node dialed ranet-test/responder:2", follow: refusal(N_AUTHENTICATION_FAILED)},
@@ -1477,6 +1475,9 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 			want: "duplicate encryption transforms", follow: deletion},
 		"a transform type the offer did not name": {sa: child([]byte{0, 0, 0, 9}, encryption, Transform{Type: TransInteg, ID: INTEG_NONE}),
 			tsi: full, tsr: full, want: "transform type 3", follow: deletion},
+		// RFC 7296 section 3.3.6: "The initiator of an exchange MUST check that the accepted offer is consistent with one of its proposals, and if not MUST terminate the exchange."
+		"a cipher the initiator's lists left out": {esp: []string{"aes256gcm", "chacha20poly1305"}, sa: usable, tsi: full, tsr: full,
+			want: "unoffered transform", follow: deletion},
 	} {
 		t.Run(name, func(t *testing.T) {
 			peer := listenPeer(t)
@@ -1501,6 +1502,7 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 			}
 			const spiI, spiR = 0x0102030405060708, 0x1112131415161718
 			suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+			lists := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: test.esp}})
 			s := &Session{
 				mux: mux,
 				current: &ikeContext{
@@ -1509,6 +1511,7 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 					skD: make([]byte, 32), skpi: make([]byte, 32), skpr: make([]byte, 32),
 				},
 				requests: make(chan *localRequest, 1),
+				suites:   func() Suites { return lists },
 			}
 			realMessage2 := []byte("test IKE_SA_INIT response")
 			ni, nr := make([]byte, 32), make([]byte, 32)
@@ -1755,7 +1758,7 @@ func TestInitiatorPassesOverIKESAInitAnswersCarryingAnErrorNotify(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, suite, err := selectIKEProposal(sa.Body, group)
+	proposal, suite, err := selectIKEProposal(sa.Body, group, Suites{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1862,7 +1865,7 @@ func dialPlayedResponder(t *testing.T, shape func(exchange ExchangeType, payload
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, suite, err := selectIKEProposal(sa.Body, group)
+	proposal, suite, err := selectIKEProposal(sa.Body, group, Suites{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1942,7 +1945,7 @@ func TestInitiatorRefusesAnIKESAInitAnswerMarkingAnUnsupportedPayloadCritical(t 
 			t.Error(err)
 			return
 		}
-		proposal, suite, err := selectIKEProposal(sa.Body, group)
+		proposal, suite, err := selectIKEProposal(sa.Body, group, Suites{})
 		if err != nil {
 			t.Error(err)
 			return
@@ -2227,13 +2230,13 @@ func TestSessionRunUsesOldIKEContext(t *testing.T) {
 	}
 }
 
-// Both notifies here arrive before anything is authenticated, so anyone who
-// can see our SPI can send them and what is acted on has to be narrower than
-// what arrives. A cookie is echoed in the retry, so taking one of any length
-// turns a single spoofed datagram into as many oversized ones as we
-// retransmit, aimed at whoever we are dialing. A Diffie-Hellman group we
-// cannot generate ends the dial with no retry, so acting on one aborts the
-// handshake for free.
+// both notifies arrive before anything is authenticated
+// so anyone who can see this end's SPI can send them
+// a cookie is echoed in the retry
+// so taking one of any length turns one spoofed datagram into as many oversized ones as this end retransmits
+// RFC 7296 section 2.6: "The data associated with this notification MUST be between 1 and 64 octets in length (inclusive)"
+// a group this end did not offer ends the dial with no retry
+// so acting on one aborts the handshake for free
 func TestOnlyUsableUnauthenticatedInitNotifiesAreActedOn(t *testing.T) {
 	message := func(notify Notify) *Message {
 		return &Message{Payloads: []RawPayload{{Type: PayloadN, Body: EncodeNotify(notify)}}}
@@ -2260,7 +2263,7 @@ func TestOnlyUsableUnauthenticatedInitNotifiesAreActedOn(t *testing.T) {
 		"an authentication failure we cannot trust": {Notify{Type: N_AUTHENTICATION_FAILED}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, ok := usefulInitNotify(message(tc.notify), false, false)
+			got, ok := usefulInitNotify(message(tc.notify), false, false, ikeProposal().Transforms)
 			if ok && !tc.usable {
 				t.Fatal("acted on, so anyone who can see our SPI can steer this handshake")
 			}
@@ -2273,15 +2276,21 @@ func TestOnlyUsableUnauthenticatedInitNotifiesAreActedOn(t *testing.T) {
 		})
 	}
 
-	// A cookie is worth acting on once for each group tried, and a group
-	// correction once. A peer that keeps sending them would otherwise keep the
-	// exchange restarting instead of finishing.
+	// a group ike kex left out is one this end can generate and still ignores
+	// a retry in a group the offer left out ends the dial
+	p256Only := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"p256"}}}).ikeProposal(DH_ECP_256).Transforms
+	if _, ok := usefulInitNotify(message(Notify{Type: N_INVALID_KE_PAYLOAD, Data: group(DH_CURVE25519)}), false, false, p256Only); ok {
+		t.Error("a group the lists left out was acted on, so an unauthenticated notify ends the dial")
+	}
+
+	// a cookie is acted on once for each group tried and a group correction once
+	// or a peer sending them again keeps the exchange restarting instead of finishing
 	cookie := message(Notify{Type: N_COOKIE, Data: []byte{1}})
-	if _, ok := usefulInitNotify(cookie, true, false); ok {
+	if _, ok := usefulInitNotify(cookie, true, false, ikeProposal().Transforms); ok {
 		t.Error("a second cookie in the same group was acted on, so the exchange can be restarted indefinitely")
 	}
 	wrongGroup := message(Notify{Type: N_INVALID_KE_PAYLOAD, Data: group(DH_CURVE25519)})
-	if _, ok := usefulInitNotify(wrongGroup, false, true); ok {
+	if _, ok := usefulInitNotify(wrongGroup, false, true, ikeProposal().Transforms); ok {
 		t.Error("a second group correction was acted on")
 	}
 
@@ -2289,11 +2298,11 @@ func TestOnlyUsableUnauthenticatedInitNotifiesAreActedOn(t *testing.T) {
 	// section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected"
 	marked := message(Notify{Type: N_COOKIE, Data: []byte{1}})
 	marked.Payloads[0].Critical = true
-	if _, ok := usefulInitNotify(marked, false, false); !ok {
+	if _, ok := usefulInitNotify(marked, false, false, ikeProposal().Transforms); !ok {
 		t.Error("a cookie whose notify is marked critical was ignored")
 	}
 	marked.Payloads = append(marked.Payloads, unsupportedCritical)
-	if _, ok := usefulInitNotify(marked, false, false); ok {
+	if _, ok := usefulInitNotify(marked, false, false, ikeProposal().Transforms); ok {
 		t.Error("a cookie beside a critical payload of a type this end does not support was acted on")
 	}
 }
