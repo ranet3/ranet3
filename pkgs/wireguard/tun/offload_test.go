@@ -312,6 +312,26 @@ func TestGSOSplitMinimumGSOSize(t *testing.T) {
 	}
 }
 
+// TestGSOSplitShortPacketWithoutCsum verifies that a one-byte GSONone packet
+// that needs no checksum, too short to hold a checksum field at its zero
+// offset, is copied whole.
+func TestGSOSplitShortPacketWithoutCsum(t *testing.T) {
+	in := []byte{4 << 4}
+	slab := make([]byte, 1024)
+	packets := make([]ReadPacket, 1)
+	n, err := GSOSplit(in, GSOOptions{GSOType: GSONone}, slab, packets, ReadPacketSpacing)
+	if err != nil {
+		t.Fatalf("GSOSplit: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("n = %d, want 1", n)
+	}
+	got := slab[packets[0].Offset : packets[0].Offset+packets[0].Size]
+	if !slices.Equal(got, in) {
+		t.Fatalf("packet = %x, want %x", got, in)
+	}
+}
+
 func Fuzz_GSOSplit(f *testing.F) {
 	const segmentSize = 100
 

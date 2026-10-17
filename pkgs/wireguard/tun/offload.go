@@ -102,8 +102,11 @@ func GSOSplit(in []byte, options GSOOptions, slab []byte, packets []ReadPacket, 
 		return 0, ErrTooManySegments
 	}
 
+	// A checksum is written only for NeedsCsum or a GSO packet, which must
+	// then hold the checksum field's two bytes at cSumAt. A GSONone packet
+	// without NeedsCsum is copied as it is, however short.
 	cSumAt := int(options.CsumStart) + int(options.CsumOffset)
-	if cSumAt+1 >= len(in) {
+	if (options.NeedsCsum || options.GSOType != GSONone) && cSumAt+1 >= len(in) {
 		return 0, fmt.Errorf("end of checksum offset (%d) exceeds packet length (%d)", cSumAt+1, len(in))
 	}
 
