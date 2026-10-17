@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6 and ICMP specifications on purpose."
 created: 2026-08-23
-updated: 2026-10-16
+updated: 2026-10-17
 order: 20
 ---
 
@@ -24,6 +24,7 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 7296 section 4                 | Accept configured RSA certificates and shared keys                           | Ed25519 signatures only, against the trust document                     | Keys come from the trust document                    |
 | RFC 7296 section 2.9               | Refuse unacceptable traffic selectors with `TS_UNACCEPTABLE`, or narrow them | Only the full IPv4 and IPv6 ranges, anything else `NO_PROPOSAL_CHOSEN`  | Babel picks the peer for each packet                 |
 | RFC 7296 section 3.2               | Ignore the critical bit on a payload type the recipient understands          | A response that sets it on any payload is refused                       | A known gap                                          |
+| RFC 7296 section 2.21.2            | Answer a malformed request with `INVALID_SYNTAX`                             | A malformed `IKE_AUTH` request goes unanswered                          | A known gap                                          |
 | RFC 8247, RFC 8221                 | Support AES-CBC, MODP group 14, HMAC integrity and RSA signatures            | AEAD ciphers and elliptic curve groups only                             | Legacy transforms are left out                       |
 | RFC 4303 sections 2.6 and 2.7      | Be able to generate dummy packets                                            | None are generated, and no traffic flow confidentiality padding is sent | A known gap                                          |
 | RFC 3948 section 2.1               | Send the IPv4 UDP checksum as zero                                           | Every IPv4 datagram carries a computed checksum                         | Linux refuses segmented sends without one            |
@@ -172,10 +173,14 @@ responder and sends no CERT payload. Refusing additional Child SAs with
 A node answers handshakes as a responder only when `link.listen` is set. A full
 mesh needs every node to answer as well as dial.
 
-Identities are compared by name rather than by their DER bytes. ranet3 writes
-`O` and `CN` as `UTF8String`, while strongSwan picks the string type from the
-value. The same name therefore reaches the wire in 2 encodings. AUTH signs the
-bytes as received either way, so the name only selects which key must verify it.
+Identities are compared by the endpoint they name rather than by their bytes.
+ranet3 writes `O` and `CN` as `UTF8String`, while strongSwan picks the string
+type from the value. The same name therefore reaches the wire in 2 encodings,
+and an endpoint `auth.aliases` names by other IDs reaches it in more. AUTH signs
+the bytes as received either way, so the ID only selects which key must verify
+it. A responder asked in IDr for an ID other than a DN answers with the ID type
+and data it was asked for, in its own encoding with RESERVED zero. Asked for a
+DN, it answers with its own encoding of the DN.
 
 ## Critical payloads
 
@@ -187,6 +192,14 @@ implements included. An initiator that refuses an `IKE_AUTH` response this way
 tells the responder in the `INFORMATIONAL` exchange that follows, with
 `INVALID_SYNTAX` for a payload type ranet3 implements and
 `UNSUPPORTED_CRITICAL_PAYLOAD` for one it does not.
+
+[RFC 7296 section 2.21.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.21.2)
+says a request whose whole message is malformed "MUST only lead to an
+UNSUPPORTED_CRITICAL_PAYLOAD or INVALID_SYNTAX Notification sent as a response".
+A responder that decrypts an `IKE_AUTH` request whose payloads do not decode
+drops the handshake without answering, and the initiator hears nothing. An ID
+payload with bad contents, such as an address ID of the wrong length, leaves the
+message well formed, and is refused with `AUTHENTICATION_FAILED`.
 
 ## Algorithms
 

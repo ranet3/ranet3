@@ -4,7 +4,7 @@
 title: "Trust document and keys"
 description: "The document naming who may join the mesh, and the key files nodes authenticate with."
 created: 2026-10-16
-updated: 2026-10-16
+updated: 2026-10-17
 order: 38
 ---
 
@@ -106,18 +106,79 @@ At startup and on every reload, a node checks itself against the document:
 - The public half of `auth.key` must be the key the document holds for the node.
 - Each `link.endpoints` entry must be an endpoint the document lists for the
   node, in the same family.
-
-On the wire, each side of a handshake names its endpoint as an X.501
-distinguished name of O, CN and serialNumber (`ID_DER_ASN1_DN`). The other side
-looks the name up in the document and verifies the signature with that node's
-key (RFC 7427 with Ed25519, RFC 8420). An initiator that refuses the responder's
-name or signature says so with `AUTHENTICATION_FAILED` in the exchange that
-follows, and a ranet3 responder then ends the session it had opened.
+- Every node and endpoint `auth.aliases` names must be in the document. One it
+  lacks refuses the start, and a reload logs it instead.
 
 A reload reads the document again. It closes every session whose peer the new
 document drops or lists under a different key. [Reloading](reloading.md)
 describes the rest. `ranet3 status` shows how many organization blocks and nodes
 the document holds.
+
+### IDs on the wire
+
+On the wire, each side of a handshake names an endpoint in an ID payload. A
+ranet3 node names itself by an X.501 distinguished name of O, CN and
+serialNumber (`ID_DER_ASN1_DN`), unless `auth.aliases.local` gives it another ID
+toward that peer. The other side reads the endpoint the ID names, looks it up in
+the document and verifies the signature with that node's key (RFC 7427 with
+Ed25519, RFC 8420). The ID only selects the endpoint, and the key always comes
+from the document. An initiator that refuses the responder's ID or signature
+says so with `AUTHENTICATION_FAILED` in the exchange that follows, and a ranet3
+responder then ends the session it had opened.
+
+An ID names an endpoint when it is:
+
+- a DN of O, CN and serialNumber
+- an `ID_KEY_ID` whose octets spell the endpoint as `organization/name:serial`
+- an `ID_IPV4_ADDR`, `ID_IPV6_ADDR`, `ID_FQDN`, `ID_RFC822_ADDR` or `ID_KEY_ID`
+  that an entry of `auth.aliases.remote` matches, as the
+  [configuration reference](configuration-reference.md#authaliases) describes
+
+Any other ID is refused with `AUTHENTICATION_FAILED`: one no entry matches, an
+address ID whose length is not that of its family, and an ID of another type. So
+is an initiator whose ID names a node and no endpoint, such as a DN without
+serialNumber. An address ID is never compared with the address the packet came
+from.
+
+An initiator asks for the endpoint it dials in IDr: by its DN where
+`auth.aliases.remote` names it by no ID, by the 1 ID that names it, and not at
+all where several do, since it cannot know which one the responder holds. It
+accepts only an IDr that names the endpoint it dialed.
+
+A responder answers as an endpoint the initiator asked for, or refuses with
+`AUTHENTICATION_FAILED`. It never answers as another one.
+
+- An IDr that names an endpoint, by its DN, by a key ID spelling it or through
+  this node's own `auth.aliases.remote`, is answered as that endpoint when it is
+  one of this node's endpoints of the family the request arrived in, and refused
+  otherwise. This holds even where `auth.aliases.local` presents the same ID.
+- With no IDr, or one that names no endpoint and holds an ID
+  `auth.aliases.local` presents to some peer, the responder answers as its 1
+  endpoint of the family the request arrived in.
+- Any other IDr is refused.
+
+The responder sends back the ID asked for, a DN in its own encoding. With no IDr
+it sends the ID `auth.aliases.local` presents to the initiator, or else its DN.
+Each end records which ID named its peer in an `ike.id.resolved` event, as
+[debugging](development/debug.md#events) describes.
+
+### Families
+
+A local endpoint dials only remote endpoints of its own family, so a responder
+takes a handshake only where the families agree. Once the initiator's signature
+verifies, the responder refuses with `AUTHENTICATION_FAILED`:
+
+- an initiator whose ID names an endpoint the document lists in the other family
+  than the one the request arrived in
+- an IDr naming one of this node's endpoints of the other family
+- a request it would answer by family when this node's `link.endpoints` holds
+  none or more than 1 entry of that family
+
+A node with 1 IPv4 endpoint therefore refuses a request that reaches it over
+IPv6, with or without an IDr. A request from an IPv4-mapped address counts as
+IPv4. A node with 2 endpoints in 1 family still answers as either of them a peer
+that asks for it in IDr, as a ranet3 peer does unless its `auth.aliases.remote`
+names that endpoint by several IDs.
 
 ## Key files
 

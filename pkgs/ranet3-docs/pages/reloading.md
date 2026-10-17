@@ -4,16 +4,16 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-16
+updated: 2026-10-17
 order: 70
 ---
 
 `SIGHUP` re-reads the config file and the trust document and reconciles instead
-of restarting. A reload applies the trust document, the peers dialed, the
-prefixes originated, `cap.babel`, `cap.segment`, `link.listen`, `link.mtu` and
-most of `cap.table`. A node joining or leaving the mesh then costs 1 dialer, and
-every other session this node carries stays up. This matters because the trust
-document is rewritten every time any node joins.
+of restarting. A reload applies the trust document, the peers dialed,
+`auth.aliases`, the prefixes originated, `cap.babel`, `cap.segment`,
+`link.listen`, `link.mtu` and most of `cap.table`. A node joining or leaving the
+mesh then costs 1 dialer, and every other session this node carries stays up.
+This matters because the trust document is rewritten every time any node joins.
 
 ## Asking for a reload
 
@@ -38,6 +38,7 @@ as [what a reload refuses](#what-a-reload-refuses) describes.
 | `node`                                                               | refused                                  |                                                                                                                                              |
 | `auth.key`                                                           | refused when the key changes             | A new path to a file holding the same key is applied.                                                                                        |
 | `auth.trust`                                                         | applied                                  | The path and the document. The new document is checked as [checks against the trust document](#checks-against-the-trust-document) describes. |
+| `auth.aliases.remote`, `auth.aliases.local`                          | applied                                  | To the handshakes after the reload. A session already up keeps its peer. An empty table and none are the same.                               |
 | `link.port`                                                          | refused                                  |                                                                                                                                              |
 | `link.endpoints`                                                     | refused                                  | Compared as a set, so a new order is no change.                                                                                              |
 | `link.listen`                                                        | applied                                  |                                                                                                                                              |
@@ -74,8 +75,16 @@ file.
 A handshake that began under the old document is checked against the new one
 when its session is installed. A revoked peer cannot slip in between the sweep
 and the end of its handshake. The responder checks each handshake against the
-document in force when it arrives. It refuses an initiator that names this node
-itself, whatever the document says.
+document and the `auth.aliases` in force when it arrives. It refuses an
+initiator that names this node itself, whatever the document says. It also
+refuses one whose ID names a node and no endpoint, or an endpoint the document
+lists in the other family than the one the request arrived in, and a request
+whose IDr names an endpoint it does not answer as. A request arriving in a
+family where `link.endpoints` holds none or more than 1 entry is refused unless
+its IDr names one of them. [The trust document](trust.md#families) lists these
+refusals, each with `AUTHENTICATION_FAILED`. The families the document lists
+therefore decide which handshakes are taken. Once a reload moves a peer's
+endpoint to the other family, its next handshake in the old family is refused.
 
 A session this node dialed also ends when its dialer does, and taking the peer
 out of `dial.to` stops that dialer. One the peer opened against this node
@@ -191,13 +200,14 @@ across a reload.
 ## Events
 
 A reload is recorded as a `daemon.reload` event that names the file in `path`.
-Its `applied` lists the blocks the reload changed among `cap.babel`,
-`cap.route`, `cap.segment`, `cap.table`, `link.listen` and `link.mtu`, comma
-separated, such as `applied=cap.table` for one that changed the table. A reload
-that changed only the trust document or the peers dialed carries no `applied`. A
-refused reload carries `err` instead. `cap.route` is listed when `announce`
-changed. `cap.transit` is never listed, since a reload that would change it is
-refused, and writing out the value in force changes nothing.
+Its `applied` lists the blocks the reload changed among `auth.aliases.local`,
+`auth.aliases.remote`, `cap.babel`, `cap.route`, `cap.segment`, `cap.table`,
+`link.listen` and `link.mtu`, comma separated, such as `applied=cap.table` for
+one that changed the table. A reload that changed only the trust document or the
+peers dialed carries no `applied`. A refused reload carries `err` instead.
+`cap.route` is listed when `announce` changed. `cap.transit` is never listed,
+since a reload that would change it is refused, and writing out the value in
+force changes nothing.
 
 The speaker records a `babel.config.applied` with the intervals and the cost it
 took, and a `babel.neighbor.extra` for each neighbor whose amount the reload
@@ -267,6 +277,10 @@ an unknown key is refused whole. The checks across blocks run again:
   tun
 - a `cap.route` announcement must not equal a `cap.egress.advertise` prefix,
   which it would announce whether or not the translation rule is installed
+- `auth.aliases.local` needs at most 1 `link.endpoints` entry in each family,
+  and its `keyid` values must not spell an endpoint of another node, as
+  [the configuration reference](configuration-reference.md#authaliases) lists
+  with the other refusals of `auth.aliases`
 
 ### Checks against the trust document
 
@@ -285,3 +299,8 @@ of the same peers refuse the start: a `dial.to` node the document does not name,
 a pinned endpoint it does not list, and a pinned endpoint in a family this node
 has no endpoint in. The [trust document](trust.md) page describes the document
 itself.
+
+An `auth.aliases` entry naming a node the new document does not name, or an
+endpoint it does not list, is logged the same way and the reload applies. The
+line reads `reload: <reason>, so no handshake can use it`. At startup the same
+entry refuses the start.

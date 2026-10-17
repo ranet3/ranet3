@@ -221,6 +221,7 @@ connections to the reads.
 | `dial.attempt`, `dial.failed`         | a dialer sent a handshake, or ended short of a session                      |
 | `dial.woken`                          | a dialer was set going before its delay, as `redial` does                   |
 | `ike.handshake.failed`                | the responder refused a handshake, as often as it logs one                  |
+| `ike.id.resolved`                     | a handshake took the peer's ID as naming the endpoint it authenticated as   |
 | `ike.session.established`, `.ended`   | a session started serving, and stopped                                      |
 | `ike.session.resolved`                | 2 sessions for 1 path were resolved to 1                                    |
 | `ike.session.revoked`                 | the trust in force refused a session's peer and closed it with a Delete     |
@@ -275,6 +276,7 @@ Each kind carries these attributes:
 | `dial.failed`                                 | `err`                                                                                                                                       |
 | `dial.woken`                                  | none                                                                                                                                        |
 | `ike.handshake.failed`                        | `from`, `err`                                                                                                                               |
+| `ike.id.resolved`                             | `type`, `id`, `sent`                                                                                                                        |
 | `ike.session.established`                     | `role`, `spi_in`, `spi_out`                                                                                                                 |
 | `ike.session.ended`                           | `role`, `spi_in`, `spi_out`, `err`                                                                                                          |
 | `ike.session.resolved`                        | `kept`                                                                                                                                      |
@@ -397,6 +399,15 @@ raise with `cause=start` of its own. A `babel.state.unsaved` carries the `limit`
 the speaker could not save, the `seqno` in use and the `err`, and the seqno
 rises all the same. A `babel.state.unreadable` carries the state `file` and the
 `err`, and the node starts under a new router id from seqno 1.
+
+An `ike.id.resolved` is recorded by each end of a handshake under the session's
+path, once that end has verified the peer's AUTH and taken its ID, so it is
+recorded even where the Child SA is then refused. Its `type` is the type of the
+ID the peer sent: `dn`, `ipv4`, `ipv6`, `fqdn`, `email` or `keyid`. `id` holds
+that ID, an address, a name or a key ID in hex, and is left out for a DN. `sent`
+is the type of the ID this end sent. A strongSwan peer that `auth.aliases` names
+by an FQDN reads, for instance, `type=fqdn id=gw.example.net sent=fqdn`, as
+[the trust document](../trust.md#ids-on-the-wire) describes.
 
 An `ike.session.revoked` is recorded under the session's path before the session
 closes, so it comes before that session's `ike.session.ended`. Its `reason` is
