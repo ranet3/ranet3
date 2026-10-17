@@ -49,20 +49,15 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 		}
 	}
 	tunnel.spent = sess.ChildSequenceSpent
+	tunnel.failed = sess.ChildFailed
 	if err := tunnel.install(sess.Child); err != nil {
+		closeSession(sess)
 		return err
 	}
 	sess.SetChildHandler(tunnel.install)
 	sess.SetChildRetireHandler(tunnel.retire)
 	pmtu := newPathDriver(sess.Mux(), c.speaker.Probe, c.events, &c.probes, cmp.Or(c.probeTimeout, defaultProbeTimeout), cmp.Or(c.confirmEvery, confirmInterval))
-	peer := netstack.NewPeer(sessionName, func(count int) (netstack.BatchSealer, error) {
-		sealer, err := tunnel.reserve(count)
-		// closing the mux withdraws every route through this peer, which fatalReserveError keeps to the refusals that deserve it
-		if fatalReserveError(err) {
-			_ = sess.Mux().Close()
-		}
-		return sealer, err
-	}, pmtu.transmit, c.events.Emit)
+	peer := netstack.NewPeer(sessionName, tunnel.reserve, pmtu.transmit, c.events.Emit)
 	pmtu.peer = peer
 	// the mux closes before Peer.Close, which waits with no deadline for a sender that may be inside SendESPBatch on it
 	defer func() {

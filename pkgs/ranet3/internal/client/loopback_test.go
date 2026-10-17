@@ -510,6 +510,42 @@ func TestShutdownTellsPeerBeforeGoing(t *testing.T) {
 	}
 }
 
+// RFC 7296 section 2.4: "In this case, an IKE endpoint SHOULD send a Delete payload indicating that it has closed the IKE SA unless the other endpoint is no longer responding."
+// a first Child SA the tunnel refuses to install ends the session with a Delete for the IKE SA, which ends the peer's session
+// alpha dials as connectPeer does and serves a Child SA whose encryption no ESP SA takes, and neither node dials of its own
+func TestRefusedFirstChildSADeletesTheIKESA(t *testing.T) {
+	alpha, bravo := newLoopbackMesh(t)
+	for _, node := range []*loopbackNode{alpha, bravo} {
+		quiet := *node.cfg
+		quiet.Dial.To = nil
+		node.client.cfg.Store(&quiet)
+	}
+	ctx, _ := run(t, alpha, bravo)
+	x := alpha.client.index()
+	d := dials(alpha.cfg, x)[0]
+	ep, remoteIP, err := resolveEndpoint(ctx, x, d.peer, d.local.Family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remotePub, err := x.Key(ep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := ike.InitiateContext(ctx, ike.PeerConfig{Local: d.localID, LocalPrivateKey: alpha.client.privateKey, Remote: ep.ID, RemotePublicKey: remotePub,
+		RemoteAddr: remoteIP, RemotePort: int(ep.Port), Aliases: alpha.cfg.Auth.Aliases, Hub: alpha.client.hub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.Child.EncrID = 0
+	if err := alpha.client.serveSession(ctx, sess, d.localID, ep.ID, remotePub, true); err == nil {
+		t.Fatal("alpha served a session whose Child SA its tunnel could not install")
+	}
+	waitFor(t, refusedChildDeleteBudget, "alpha's Delete to end bravo's session", func() bool { return len(recorded(bravo.events, "ike.session.ended")) > 0 })
+}
+
+// refusedChildDeleteBudget is shorter than the idle time after which a session starts a liveness check, so only a Delete ends the peer's session within it
+const refusedChildDeleteBudget = 5 * time.Second
+
 // each end of a session searches its path up to the link.mtu its own node names, which a loopback path carries
 // the reader holds every packet for that peer to it
 // and the inbound clamp lowers the MSS of a SYN from that peer to what it carries
