@@ -292,8 +292,9 @@ families.
 
 A member that another program's route at its key refuses, or that fails to
 install, takes its family's cover out whole, since part of a cover would split
-that family's traffic between the mesh and the other route. The family's members
-count as skipped, and the refusal logs
+that family's traffic between the mesh and the other route. Each of the family's
+members that no route withholds counts as skipped, but for one that failed to
+install, which the pass reports as an error. The refusal logs
 `kernel is leaving a default's cover out, since another program holds a route at one of its members`
 once, with `held_by` naming that route. The family's traffic then takes the
 routes already in the host's table.
@@ -350,17 +351,17 @@ The 2 route lines share 1 limit of 1 line per second. Each carries
 `babel.route.retracted` record each change. `kernel.pass` records each pass that
 changed the kernel, met a newly refused route, failed or followed a reload.
 
-| Metric                                 | Meaning                                       |
-| -------------------------------------- | --------------------------------------------- |
-| `ranet3_babel_neighbor_up{peer}`       | whether a neighbor is alive                   |
-| `ranet3_babel_neighbor_cost{peer}`     | link cost with its extra, 65535 is infinity   |
-| `ranet3_babel_routes_received{peer}`   | routes learned from a neighbor                |
-| `ranet3_babel_routes_selected`         | routes in the forwarding table                |
-| `ranet3_babel_routes_originated`       | prefixes this node announces                  |
-| `ranet3_kernel_routes_installed`       | routes the kernel holds for the reconciler    |
-| `ranet3_kernel_routes_skipped`         | selected routes the last pass did not install |
-| `ranet3_kernel_pass_timestamp_seconds` | when the last pass finished                   |
-| `ranet3_kernel_pass_failed`            | whether the last pass reported an error       |
+| Metric                                 | Meaning                                                                                    |
+| -------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `ranet3_babel_neighbor_up{peer}`       | whether a neighbor is alive                                                                |
+| `ranet3_babel_neighbor_cost{peer}`     | link cost with its extra, 65535 is infinity                                                |
+| `ranet3_babel_routes_received{peer}`   | routes learned from a neighbor                                                             |
+| `ranet3_babel_routes_selected`         | routes in the forwarding table                                                             |
+| `ranet3_babel_routes_originated`       | prefixes this node announces                                                               |
+| `ranet3_kernel_routes_installed`       | routes the kernel holds for the reconciler                                                 |
+| `ranet3_kernel_routes_skipped`         | routes the platform refused in the last pass, and cover members left out with their family |
+| `ranet3_kernel_pass_timestamp_seconds` | when the last pass finished                                                                |
+| `ranet3_kernel_pass_failed`            | whether the last pass reported an error                                                    |
 
 The neighbor cost includes the amount `cap.babel.cost.extra` charges, which no
 series reports alone. `ranet3 neighbors` shows it apart. [Metrics](metrics.md)
