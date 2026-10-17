@@ -194,6 +194,38 @@ func (s *Session) expireChild(now time.Time) error {
 	return nil
 }
 
+// ChildSequenceSpent tells the session that the outbound SA of the Child SA whose inbound SPI is spi has no sequence number left, and never blocks
+// RFC 4303 section 3.3.3: "An attempt to transmit a packet that would result in sequence number overflow is an auditable event."
+// the log line carries its own time, and an SA without ESN has spent its sequence space when a packet needs number 2^32
+func (s *Session) ChildSequenceSpent(spi uint32) {
+	if s.spentSPI.Swap(spi) == spi {
+		return
+	}
+	var out uint32
+	s.childMu.RLock()
+	for _, child := range []ChildSA{s.Child, s.retiring} {
+		if child.LocalSPI == spi {
+			out = child.RemoteSPI
+		}
+	}
+	s.childMu.RUnlock()
+	slog.Warn("ike Child SA ran out of sequence numbers", "spi", fmt.Sprintf("%08x", out), "spi_in", fmt.Sprintf("%08x", spi),
+		"local", s.local.String(), "remote", s.remote.String(), "src", s.mux.LocalAddr().String(), "dst", s.mux.Endpoint().String(), "seq", uint64(1)<<32)
+	select {
+	case s.childSpent <- struct{}{}:
+	default:
+	}
+}
+
+// RFC 7296 section 2.8: "IKE, ESP, and AH Security Associations use secret keys that should be used only for a limited amount of time and to protect a limited amount of data." and "This limits the lifetime of the entire Security Association."
+// RFC 4303 section 3.3.3: "the sender MUST NOT send a packet on an SA if doing so would cause the sequence number to cycle."
+// a Child SA whose sequence space is spent has reached the limit on its data, which ends its lifetime as its interval does
+func (s *Session) currentChildSpent() bool {
+	s.childMu.RLock()
+	defer s.childMu.RUnlock()
+	return s.Child.LocalSPI != 0 && s.spentSPI.Load() == s.Child.LocalSPI
+}
+
 func (s *Session) childWithdrawn() bool {
 	s.childMu.RLock()
 	defer s.childMu.RUnlock()
