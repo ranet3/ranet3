@@ -1,22 +1,22 @@
 schema = 3
 
 [mod]
-[mod.'github.com/google/btree']
-version = 'v1.1.2'
-hash = 'sha256-K7V2obq3pLM71Mg0vhhHtZ+gtaubwXPQx3xcIyZDCjM='
+[mod.'golang.org/x/exp']
+version = 'v0.0.0-20261014143641-f0251eb4aa3e'
+hash = 'sha256-PLzyWDt9Ni7Qdd6uHw7avHSJxdSc+VEzf5JG9gFCywo='
 
 [mod.'golang.org/x/net']
-version = 'v0.39.0'
-hash = 'sha256-IP29+yGphWKUT7wHTyzqA2rnRT4AJ7oWcT6NKLzkWcM='
+version = 'v0.61.0'
+hash = 'sha256-yCy7Bik5cvIVfX7G08rVYhkVDuro3sPk3iicVz4j/kA='
 
 [mod.'golang.org/x/sys']
-version = 'v0.32.0'
-hash = 'sha256-c9RRnyKQy9Kl8hpbtcgkm1O5H7gOdk9Rv925F8fZS6E='
+version = 'v0.49.0'
+hash = 'sha256-/1S3yy3in72ygZT1CKymvOzJZqCMYiGSqZDfvSyB3LI='
 
 [mod.'golang.org/x/time']
-version = 'v0.7.0'
-hash = 'sha256-o1ol/hTpfrc06KUXSepAgm4QUuWmH1S+vqg6kmFad64='
+version = 'v0.16.0'
+hash = 'sha256-OvekWcaTHMs5n3Img4EmYaORRgSmybBS+tObSnPqftY='
 
 [mod.'gvisor.dev/gvisor']
-version = 'v0.0.0-20250503011706-39ed1f5ac29c'
-hash = 'sha256-wctszMzW0gfB1bqoKBYN9ImAidsHNwgMhKCqLhteBpY='
+version = 'v0.0.0-20261008000517-3b87f090dbda'
+hash = 'sha256-tLjf85zi68+eTIiTAs9FzMUtwy0JKfHXCqQupGtGzzA='
