@@ -4,6 +4,7 @@
 package ike
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"fmt"
 )
@@ -23,8 +24,7 @@ func BuildAuth(priv ed25519.PrivateKey, signedOctets []byte) []byte {
 }
 
 // VerifyAuth checks an RFC 7427 Digital Signature AUTH payload from an
-// Ed25519 peer. Only Ed25519 is supported. Anything else is rejected,
-// since that's the only method ranet's strongSwan deployments use.
+// Ed25519 peer.
 func VerifyAuth(pub ed25519.PublicKey, signedOctets, authBody []byte) error {
 	if len(authBody) < 5 {
 		return fmt.Errorf("ike: short AUTH payload")
@@ -38,7 +38,7 @@ func VerifyAuth(pub ed25519.PublicKey, signedOctets, authBody []byte) error {
 	}
 	algID := authBody[5 : 5+algLen]
 	want := Ed25519AlgorithmIdentifier()
-	if !bytesEqual(algID, want) {
+	if !bytes.Equal(algID, want) {
 		return fmt.Errorf("ike: unsupported signature algorithm in AUTH payload")
 	}
 	sig := authBody[5+algLen:]
@@ -46,16 +46,4 @@ func VerifyAuth(pub ed25519.PublicKey, signedOctets, authBody []byte) error {
 		return fmt.Errorf("ike: AUTH signature verification failed")
 	}
 	return nil
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

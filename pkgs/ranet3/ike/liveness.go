@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"slices"
 	"sync"
 	"time"
 
@@ -21,6 +22,8 @@ import (
 const maxMessageID = ^uint32(0)
 
 var errMessageIDExhausted = errors.New("ike: Message ID space exhausted")
+
+var errAnsweredInvalidSyntax = errors.New("ike: the peer answered INVALID_SYNTAX, which ends the IKE SA without a Delete")
 
 type localRequest struct {
 	exchange ExchangeType
@@ -510,6 +513,12 @@ func (s *Session) run(ctx context.Context, ending error) error {
 				// by DPD alone, it is the only proof there is.
 				s.noteActive()
 			}
+			if s.answeredInvalidSyntax {
+				if ending != nil {
+					return ending
+				}
+				return errAnsweredInvalidSyntax
+			}
 			continue
 		case <-s.mux.Done():
 			err := s.mux.Err()
@@ -561,7 +570,8 @@ func (s *Session) run(ctx context.Context, ending error) error {
 			continue
 		}
 		if pending != nil && !time.Now().Before(pending.deadline) {
-			// an exchange its IKE SA carries past its lifetime has a silent peer's budget whatever traffic the peer keeps up, and then the IKE SA is deemed failed as section 2.1 allows
+			// RFC 7296 section 2.1: "the initiator MUST retransmit a request until it either receives a corresponding response or deems the IKE SA to have failed."
+			// an exchange its IKE SA carries past its lifetime has a silent peer's budget whatever traffic the peer keeps up, and then the IKE SA is deemed failed
 			if pendingRetransmitsExhausted(pending, time.Since(lastAuthenticated) < s.dpdInterval() && !s.ikeExpired(pending.context)) {
 				s.mux.Close()
 				if pending == ender {
@@ -569,8 +579,9 @@ func (s *Session) run(ctx context.Context, ending error) error {
 				}
 				return fmt.Errorf("ike: peer unresponsive after %d attempts", pending.sent)
 			}
-			// RFC 7296 section 2.1 retransmits the bitwise-identical request until it is answered or the IKE SA is declared failed
-			// section 2.4 forbids concluding failure from routing information, so a send that fails locally ends nothing and only the attempt count above does
+			// RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
+			// section 2.4: "an endpoint MUST NOT conclude that the other endpoint has failed based on any routing information (e.g., ICMP messages)"
+			// so a send that fails locally ends nothing and only the attempt count above does
 			s.sendPending(pending)
 			continue
 		}
@@ -819,8 +830,12 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		if matching != nil {
 			matching.result <- requestResult{err: fmt.Errorf("ike: malformed authenticated response: %w", err)}
 			*pending = nil
-		} else if response, responseErr := s.responseNotify(ctx, hdr.MessageID, hdr.ExchangeType, N_INVALID_SYNTAX); responseErr == nil {
+		} else if response, _ := s.refuseRequest(ctx, hdr.MessageID, hdr.ExchangeType, err); response != nil {
 			_ = s.mux.SendIKETo(response, source)
+		}
+		// section 2.21.3's "the IKE SA is deleted" names the IKE SA the request came on, so a retained one ends alone, as when the peer answers INVALID_SYNTAX on it
+		if matching == nil && s.removeRetainedContext(ctx) {
+			return true
 		}
 		// RFC 7296 section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
 		// section 2.21.3 on a response with errors: "Because sending such error messages as an INFORMATIONAL exchange might lead to further errors that could cause loops, such errors SHOULD NOT be sent."
@@ -834,6 +849,21 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 			*pending = nil
 			return true
 		}
+		if _, found := findNotify(inner, N_INVALID_SYNTAX); found {
+			*pending = nil
+			s.endAtInvalidSyntax(ctx, matching, inner)
+			return true
+		}
+		// RFC 7296 section 2.4: "Receipt of a fresh cryptographically protected message on an IKE SA or any of its Child SAs ensures liveness of the IKE SA and all of its Child SAs."
+		// so a liveness check refused with any other error proves the peer is there and changes nothing, and the IKE SA a refused Delete ends is gone here all the same
+		// nothing reads the answers to these two requests of Run's own, so a refusal is told here
+		if matching.dpd || matching.teardown {
+			if refused := refusal("INFORMATIONAL", inner); refused != nil && matching.dpd {
+				slog.Warn("ike the peer refused a liveness check", "err", refused)
+			} else if refused != nil {
+				slog.Warn("ike the peer refused the Delete that ends the IKE SA", "err", refused)
+			}
+		}
 		matching.result <- requestResult{inner: inner}
 		*pending = nil
 		return true
@@ -842,6 +872,9 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	if err != nil {
 		if response != nil {
 			_ = s.mux.SendIKETo(response, source)
+		}
+		if _, refused := errors.AsType[invalidSyntaxSent](err); refused && s.removeRetainedContext(ctx) {
+			return true
 		}
 		s.mux.Close()
 		return true
@@ -893,11 +926,7 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner [
 			}
 			d, err := DecodeDelete(p.Body)
 			if err != nil {
-				response, responseErr := s.responseNotify(ctx, hdr.MessageID, INFORMATIONAL, N_INVALID_SYNTAX)
-				if responseErr != nil {
-					return nil, responseErr
-				}
-				return response, err
+				return s.refuseRequest(ctx, hdr.MessageID, INFORMATIONAL, err)
 			}
 			deletes = append(deletes, d)
 			if d.Protocol == ProtoIKE {
@@ -947,24 +976,54 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner [
 		}
 		return s.handleChildRekey(ctx, hdr.MessageID, inner)
 	}
-	response, err := s.responseNotify(ctx, hdr.MessageID, hdr.ExchangeType, N_INVALID_SYNTAX)
+	return s.refuseRequest(ctx, hdr.MessageID, hdr.ExchangeType, fmt.Errorf("ike: unsupported exchange type %d", hdr.ExchangeType))
+}
+
+// refuseRequest answers a request with INVALID_SYNTAX, and the error it returns, why, ends the IKE SA
+// RFC 7296 section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
+// section 3.10.1 on INVALID_SYNTAX: "To aid debugging, more detailed error information should be written to a console or log."
+func (s *Session) refuseRequest(ctx *ikeContext, msgID uint32, exchange ExchangeType, why error) ([]byte, error) {
+	response, err := s.responseNotify(ctx, msgID, exchange, N_INVALID_SYNTAX)
 	if err != nil {
 		return nil, err
 	}
-	return response, fmt.Errorf("ike: unsupported exchange type %d", hdr.ExchangeType)
+	slog.Warn("ike answered a request with INVALID_SYNTAX and ends the IKE SA", "exchange", exchange, "err", why)
+	return response, invalidSyntaxSent{why}
+}
+
+// invalidSyntaxSent is why refuseRequest answered INVALID_SYNTAX, which tells dispatch to end the IKE SA the request came on
+type invalidSyntaxSent struct{ error }
+
+func (e invalidSyntaxSent) Unwrap() error { return e.error }
+
+// endAtInvalidSyntax deletes ctx, whose peer answered this end's request with INVALID_SYNTAX, with no Delete: a retained IKE SA here, and the current one as Run returns
+// RFC 7296 section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
+// a retained IKE SA is one this end is deleting already, and its request reads the answer as any other refusal
+func (s *Session) endAtInvalidSyntax(ctx *ikeContext, request *pendingRequest, answer []RawPayload) {
+	slog.Warn("ike the peer answered INVALID_SYNTAX, which ends the IKE SA without a Delete", "exchange", request.exchange, "spi", ctx.spiI)
+	if s.removeRetainedContext(ctx) {
+		request.result <- requestResult{inner: answer}
+		return
+	}
+	request.result <- requestResult{err: errAnsweredInvalidSyntax}
+	// an IKE SA this end is closing has its end told already
+	if !s.closing.Load() {
+		s.emit("ike.sa.closed", slog.String("sa", "ike"), slog.String("reason", "invalid syntax"), slog.String("err", errAnsweredInvalidSyntax.Error()))
+	}
+	s.answeredInvalidSyntax = true
 }
 
 func authFailure(payloads []RawPayload) (NotifyType, bool) {
+	return findNotify(payloads, N_UNSUPPORTED_CRITICAL_PAYLOAD, N_INVALID_SYNTAX, N_AUTHENTICATION_FAILED)
+}
+
+// findNotify returns the type of the first notify in payloads that is one of types, passing over a notify that does not decode
+func findNotify(payloads []RawPayload, types ...NotifyType) (NotifyType, bool) {
 	for _, payload := range payloads {
 		if payload.Type != PayloadN {
 			continue
 		}
-		notify, err := DecodeNotify(payload.Body)
-		if err != nil {
-			continue
-		}
-		switch notify.Type {
-		case N_UNSUPPORTED_CRITICAL_PAYLOAD, N_INVALID_SYNTAX, N_AUTHENTICATION_FAILED:
+		if notify, err := DecodeNotify(payload.Body); err == nil && slices.Contains(types, notify.Type) {
 			return notify.Type, true
 		}
 	}
@@ -1028,25 +1087,24 @@ func (s *Session) responseNotifySA(ctx *ikeContext, msgID uint32, exchange Excha
 	return s.response(ctx, msgID, exchange, []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Protocol: protocol, SPI: spi, Type: notifyType})}})
 }
 
-// DeleteIKE tells the peer this IKE SA and every Child SA under it are gone,
-// which is the Delete of RFC 7296 section 1.4.1. Without it the far end keeps
-// its half, keeps sending ESP into an SPI we no longer accept, and only
-// notices when its own dead peer detection expires, which is over a minute.
-//
-// It is best effort by construction: the caller is tearing the session down
-// either way, so a peer that has already vanished costs only the exchange's
-// own retransmission budget, and the caller bounds that.
+// DeleteIKE ends the IKE SA with a Delete and returns the peer's refusal of it, after which the IKE SA is gone here all the same
+// RFC 7296 section 1.4.1: "Deleting an IKE SA implicitly closes any remaining Child SAs negotiated under it."
+// the caller bounds how long the exchange may take
 func (s *Session) DeleteIKE() error {
 	s.closing.Store(true)
 	payloads := []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}
 	if s.serving.Load() {
-		_, err := s.request(INFORMATIONAL, payloads)
-		return err
+		answer, err := s.request(INFORMATIONAL, payloads)
+		if err != nil {
+			return err
+		}
+		if err := refusal("INFORMATIONAL", answer); err != nil {
+			slog.Warn("ike the peer refused the Delete that ends the IKE SA", "err", err)
+			return err
+		}
+		return nil
 	}
-	// Nothing is draining the request queue, so the exchange has to go out
-	// directly. This is the common case for a session resolved away the moment
-	// it was established: it is closed before it is ever served, and routing
-	// the Delete through a loop that will never run would send nothing at all.
+	// before Run serves the session nothing drains the request queue, so a Delete sent through it would never go out
 	return s.sendUnansweredRequest(payloads)
 }
 

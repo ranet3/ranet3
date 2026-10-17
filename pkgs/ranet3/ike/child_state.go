@@ -51,7 +51,25 @@ func (s *Session) canReplaceChildLocked(localSPI uint32) error {
 			return fmt.Errorf("ike: Child SA SPI %08x is still draining", localSPI)
 		}
 	}
+	if slices.Contains(s.halfClosed, localSPI) {
+		return fmt.Errorf("ike: Child SA SPI %08x names a pair the peer refused to delete", localSPI)
+	}
 	return nil
+}
+
+// halfClosedBy reads the peer's answer to this end's Delete of the Child SA whose inbound SPI is spi, and reports whether the peer refused it
+// RFC 7296 section 1.4.1 on the pair the peer then holds: "A node MAY refuse to accept incoming data on half-closed connections but MUST NOT unilaterally close them and reuse the SPIs."
+// so this end keeps its SAs of the pair down, keeps spi from every later Child SA of the session, and does not ask again
+func (s *Session) halfClosedBy(answer []RawPayload, spi uint32) bool {
+	refused := refusal("INFORMATIONAL", answer)
+	if refused == nil {
+		return false
+	}
+	s.childMu.Lock()
+	s.halfClosed = append(s.halfClosed, spi)
+	s.childMu.Unlock()
+	slog.Warn("ike the peer refused to delete a Child SA, whose pair stays half closed", "spi", spi, "err", refused)
+	return true
 }
 
 func (s *Session) replaceChild(child ChildSA) error {
@@ -136,12 +154,15 @@ func (s *Session) overdueRetiring(now time.Time) (ChildSA, bool) {
 }
 
 // RFC 7296 section 2.4: "If an IKE endpoint chooses to delete Child SAs, it MUST send Delete payloads to the other end notifying it of the deletion."
-// the SA is retired whatever comes back: a peer that no longer has it answers without a Delete payload (section 2.25.1), and one that does not answer leaves nothing to wait for
+// section 2.25.1: "If a peer receives a request to close a Child SA that does not exist, it SHOULD reply without a Delete payload."
+// so the SA retires whatever comes back, and a peer that does not answer leaves nothing to wait for
 func (s *Session) deleteOverdueChild(child ChildSA) {
 	slog.Warn("ike deleting a replaced Child SA the peer never deleted", "spi", child.LocalSPI, "after", retirementDeadline)
 	spi := binary.BigEndian.AppendUint32(nil, child.LocalSPI)
-	if _, err := s.request(INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{spi}})}}); err != nil {
+	if answer, err := s.request(INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{spi}})}}); err != nil {
 		slog.Warn("ike could not delete a replaced Child SA the peer never deleted", "spi", child.LocalSPI, "err", err)
+	} else {
+		s.halfClosedBy(answer, child.LocalSPI)
 	}
 	if err := s.retireChild(child.RemoteSPI); err != nil {
 		slog.Warn("ike could not retire a replaced Child SA", "spi", child.LocalSPI, "err", err)

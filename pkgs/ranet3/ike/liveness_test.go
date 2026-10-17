@@ -659,6 +659,185 @@ func TestSessionRefusesAnSKPayloadInsideAnotherWithInvalidSyntax(t *testing.T) {
 	}
 }
 
+// RFC 7296 section 3.10.1 on INVALID_SYNTAX: "Indicates the IKE message that was received was invalid because some type, length, or value was out of range or because the request was rejected for policy reasons."
+// and: "To avoid leaking information to someone probing a node, this status MUST be sent in response to any error not covered by one of the other status types."
+// section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
+// section 1.3.2 gives an IKE SA rekey request as "HDR, SK {SA, Ni, KEi}", and section 1.3.3 a Child SA rekey request as "HDR, SK {N(REKEY_SA), SA, Ni, [KEi,] TSi, TSr}"
+// section 2.7: "An SA payload consists of one or more proposals."
+// section 2.9: "Each TS payload contains one or more Traffic Selectors."
+// section 3.9: "The size of the Nonce Data MUST be between 16 and 256 octets, inclusive."
+// section 2.18 on NONE for the Diffie-Hellman transform of an IKE SA rekey: "a responder MUST NOT accept such a proposal."
+// a CREATE_CHILD_SA request outside its figure, or with a payload that does not decode, an SA payload of no proposal or a TS payload of no selector, draws INVALID_SYNTAX and ends the IKE SA
+// one that parses and asks for what this end does not take draws the notify that says so, and the IKE SA and its Child SA stay
+func TestSessionAnswersAMalformedCreateChildSAWithInvalidSyntax(t *testing.T) {
+	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
+	with := func(base []RawPayload, more ...RawPayload) []RawPayload { return append(slices.Clone(base), more...) }
+	without := func(base []RawPayload, gone PayloadType) []RawPayload {
+		return slices.DeleteFunc(slices.Clone(base), func(payload RawPayload) bool { return payload.Type == gone })
+	}
+	// replaced has payload in place of the first payload of its type
+	replaced := func(base []RawPayload, payload RawPayload) []RawPayload {
+		out := slices.Clone(base)
+		out[slices.IndexFunc(out, func(held RawPayload) bool { return held.Type == payload.Type })] = payload
+		return out
+	}
+	rekeySA := func(protocol ProtocolID, spi []byte) RawPayload {
+		return RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_REKEY_SA, Protocol: protocol, SPI: spi})}
+	}
+	childSA := func(transforms ...Transform) RawPayload {
+		return RawPayload{Type: PayloadSA, Body: EncodeSA([]Proposal{{Number: 1, Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, 0x90a0b0c0), Transforms: transforms}})}
+	}
+	ke := func(group uint16, value []byte) RawPayload {
+		return RawPayload{Type: PayloadKE, Body: EncodeKE(group, value)}
+	}
+	dh, err := GenerateDH(DH_CURVE25519)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aes, noESN := Transform{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 128}, Transform{Type: TransESN, ID: ESN_NO}
+	rekey, ikeRekey := childRekeyRequest(child.RemoteSPI), ikeRekeyRequest(t)
+	// a Child SA rekey asking for a Curve25519 exchange, whose KE payload each row gives
+	pfs := replaced(rekey, childSA(aes, noESN, Transform{Type: TransDH, ID: DH_CURVE25519}))
+	undecodable := RawPayload{Type: PayloadN, Body: []byte{0, 0, 0}}
+	// an IKE SA rekey offer whose one PRF is not the one the IKE SA keeps
+	otherPRF := RawPayload{Type: PayloadSA, Body: EncodeSA([]Proposal{ikeRekeyProposal(binary.BigEndian.AppendUint64(nil, 0x2122232425262728), PRF_HMAC_SHA2_384)})}
+	// an IKE SA rekey offer whose one Diffie-Hellman transform is NONE
+	noneDH := ikeRekeyProposal(binary.BigEndian.AppendUint64(nil, 0x2122232425262728), PRF_HMAC_SHA2_256)
+	noneDH.Transforms = append(slices.DeleteFunc(noneDH.Transforms, func(transform Transform) bool { return transform.Type == TransDH }), Transform{Type: TransDH})
+	offersNoneDH := RawPayload{Type: PayloadSA, Body: EncodeSA([]Proposal{noneDH})}
+	// and one that lists NONE beside Curve25519, the group of ikeRekey's KE payload
+	noneBeside := noneDH
+	noneBeside.Transforms = append(slices.Clone(noneDH.Transforms), Transform{Type: TransDH, ID: DH_CURVE25519})
+	offersNoneBesideAGroup := RawPayload{Type: PayloadSA, Body: EncodeSA([]Proposal{noneBeside})}
+	answered := func(t *testing.T, s *Session, ctx *ikeContext, raw []byte, err error, want NotifyType) Notify {
+		t.Helper()
+		if ended := err != nil; ended != (want == N_INVALID_SYNTAX) {
+			t.Errorf("the IKE SA ended %v (%v), want %v", ended, err, want == N_INVALID_SYNTAX)
+		}
+		message, decodeErr := DecodeMessage(raw)
+		if decodeErr != nil {
+			t.Fatalf("the request drew no answer: %v", decodeErr)
+		}
+		inner, decryptErr := DecryptMessage(ctx.suite, ctx.skei, raw, message)
+		if decryptErr != nil || message.Header.ExchangeType != CREATE_CHILD_SA || message.Header.MessageID != 5 || len(inner) != 1 || inner[0].Type != PayloadN {
+			t.Fatalf("the request drew exchange %d at Message ID %d carrying %v (%v), want one notify at 5", message.Header.ExchangeType, message.Header.MessageID, inner, decryptErr)
+		}
+		notify, decodeErr := DecodeNotify(inner[0].Body)
+		if decodeErr != nil || notify.Type != want {
+			t.Errorf("the request drew notify type %d (%v), want %d", notify.Type, decodeErr, want)
+		}
+		if got := s.currentChild(); got.LocalSPI != child.LocalSPI || got.RemoteSPI != child.RemoteSPI || s.currentContext() != ctx {
+			t.Errorf("the Child SA is %08x and %08x and the IKE SA current %v, want both as they were", got.LocalSPI, got.RemoteSPI, s.currentContext() == ctx)
+		}
+		return notify
+	}
+	for name, test := range map[string]struct {
+		inner []RawPayload
+		want  NotifyType
+	}{
+		"Child SA rekey with a notify that does not decode":             {with(rekey, undecodable), N_INVALID_SYNTAX},
+		"Child SA rekey with two SA payloads":                           {with(rekey, rekey[1]), N_INVALID_SYNTAX},
+		"Child SA rekey with two nonces":                                {with(rekey, rekey[2]), N_INVALID_SYNTAX},
+		"Child SA rekey with two TSi payloads":                          {with(rekey, rekey[3]), N_INVALID_SYNTAX},
+		"Child SA rekey with two KE payloads":                           {with(pfs, ke(DH_CURVE25519, dh.PublicBytes()), ke(DH_CURVE25519, dh.PublicBytes())), N_INVALID_SYNTAX},
+		"Child SA rekey with no SA payload":                             {without(rekey, PayloadSA), N_INVALID_SYNTAX},
+		"Child SA rekey with no nonce":                                  {without(rekey, PayloadNonce), N_INVALID_SYNTAX},
+		"Child SA rekey with no TSr payload":                            {without(rekey, PayloadTSr), N_INVALID_SYNTAX},
+		"Child SA rekey with a nonce of 15 octets":                      {replaced(rekey, RawPayload{Type: PayloadNonce, Body: make([]byte, 15)}), N_INVALID_SYNTAX},
+		"Child SA rekey with a nonce of 257 octets":                     {replaced(rekey, RawPayload{Type: PayloadNonce, Body: make([]byte, 257)}), N_INVALID_SYNTAX},
+		"Child SA rekey whose REKEY_SA names the IKE SA":                {replaced(rekey, rekeySA(ProtoIKE, binary.BigEndian.AppendUint32(nil, child.RemoteSPI))), N_INVALID_SYNTAX},
+		"Child SA rekey whose REKEY_SA SPI is 8 octets":                 {replaced(rekey, rekeySA(ProtoESP, binary.BigEndian.AppendUint64(nil, uint64(child.RemoteSPI)<<32))), N_INVALID_SYNTAX},
+		"Child SA rekey whose SA payload does not decode":               {replaced(rekey, RawPayload{Type: PayloadSA, Body: []byte{0}}), N_INVALID_SYNTAX},
+		"Child SA rekey whose SA payload carries no proposal":           {replaced(rekey, RawPayload{Type: PayloadSA}), N_INVALID_SYNTAX},
+		"Child SA rekey whose TSi payload does not decode":              {replaced(rekey, RawPayload{Type: PayloadTSi, Body: []byte{1, 0, 0, 0}}), N_INVALID_SYNTAX},
+		"Child SA rekey whose TSr payload carries no selector":          {replaced(rekey, RawPayload{Type: PayloadTSr, Body: EncodeTS(nil)}), N_INVALID_SYNTAX},
+		"Child SA rekey whose KE payload does not decode":               {with(pfs, RawPayload{Type: PayloadKE, Body: []byte{0, 31}}), N_INVALID_SYNTAX},
+		"Child SA rekey with a KE payload in group 0":                   {with(pfs, ke(0, dh.PublicBytes())), N_INVALID_SYNTAX},
+		"Child SA rekey with a KE payload in group 14 carrying nothing": {with(pfs, ke(14, nil)), N_INVALID_SYNTAX},
+		"Child SA rekey with a Curve25519 value of 31 octets":           {with(pfs, ke(DH_CURVE25519, make([]byte, 31))), N_INVALID_SYNTAX},
+		"Child SA rekey offering a cipher this end does not implement":  {replaced(rekey, childSA(Transform{Type: TransEncr, ID: 3}, noESN)), N_NO_PROPOSAL_CHOSEN},
+		"Child SA rekey with selectors narrower than this end takes":    {replaced(rekey, RawPayload{Type: PayloadTSi, Body: narrowSelectors()}), N_NO_PROPOSAL_CHOSEN},
+		"Child SA rekey whose REKEY_SA names an AH SA":                  {replaced(rekey, rekeySA(ProtoAH, binary.BigEndian.AppendUint32(nil, child.RemoteSPI))), N_CHILD_SA_NOT_FOUND},
+		"IKE SA rekey with a notify that does not decode":               {with(ikeRekey, undecodable), N_INVALID_SYNTAX},
+		"IKE SA rekey with two SA payloads":                             {with(ikeRekey, ikeRekey[0]), N_INVALID_SYNTAX},
+		"IKE SA rekey with two nonces":                                  {with(ikeRekey, ikeRekey[1]), N_INVALID_SYNTAX},
+		"IKE SA rekey with two KE payloads":                             {with(ikeRekey, ikeRekey[2]), N_INVALID_SYNTAX},
+		"IKE SA rekey with a TSi payload":                               {with(ikeRekey, RawPayload{Type: PayloadTSi, Body: fullRangeSelectors()}), N_INVALID_SYNTAX},
+		"IKE SA rekey with a TSr payload":                               {with(ikeRekey, RawPayload{Type: PayloadTSr, Body: fullRangeSelectors()}), N_INVALID_SYNTAX},
+		"IKE SA rekey with no nonce":                                    {without(ikeRekey, PayloadNonce), N_INVALID_SYNTAX},
+		"IKE SA rekey with no KE payload":                               {without(ikeRekey, PayloadKE), N_INVALID_SYNTAX},
+		"IKE SA rekey with a nonce of 15 octets":                        {replaced(ikeRekey, RawPayload{Type: PayloadNonce, Body: make([]byte, 15)}), N_INVALID_SYNTAX},
+		"IKE SA rekey with a nonce of 257 octets":                       {replaced(ikeRekey, RawPayload{Type: PayloadNonce, Body: make([]byte, 257)}), N_INVALID_SYNTAX},
+		"IKE SA rekey whose KE payload does not decode":                 {replaced(ikeRekey, RawPayload{Type: PayloadKE, Body: []byte{0, 31}}), N_INVALID_SYNTAX},
+		"IKE SA rekey with a KE payload in group 0":                     {replaced(ikeRekey, ke(0, dh.PublicBytes())), N_INVALID_SYNTAX},
+		"IKE SA rekey with a KE payload in group 14 carrying nothing":   {replaced(ikeRekey, ke(14, nil)), N_INVALID_SYNTAX},
+		"IKE SA rekey with a Curve25519 value of 31 octets":             {replaced(ikeRekey, ke(DH_CURVE25519, make([]byte, 31))), N_INVALID_SYNTAX},
+		"IKE SA rekey offering a PRF this end does not keep":            {replaced(ikeRekey, otherPRF), N_NO_PROPOSAL_CHOSEN},
+		"IKE SA rekey offering NONE for Diffie-Hellman":                 {replaced(ikeRekey, offersNoneDH), N_NO_PROPOSAL_CHOSEN},
+		"IKE SA rekey offering NONE beside Curve25519":                  {replaced(ikeRekey, offersNoneBesideAGroup), N_NO_PROPOSAL_CHOSEN},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mux, _ := lifecycleMuxes(t)
+			ctx := testContext()
+			s := &Session{mux: mux, current: ctx, Child: child}
+			raw, err := s.handleRequest(ctx, &Header{ExchangeType: CREATE_CHILD_SA, MessageID: 5}, nil, test.inner)
+			notify := answered(t, s, ctx, raw, err, test.want)
+			// section 2.25: "The SA that the initiator attempted to rekey is indicated by the SPI field in the Notify payload, which is copied from the SPI field in the REKEY_SA notification."
+			if test.want == N_CHILD_SA_NOT_FOUND && (notify.Protocol != ProtoAH || !bytes.Equal(notify.SPI, binary.BigEndian.AppendUint32(nil, child.RemoteSPI))) {
+				t.Errorf("CHILD_SA_NOT_FOUND names protocol %d SPI %x, want the REKEY_SA's AH and %08x", notify.Protocol, notify.SPI, child.RemoteSPI)
+			}
+		})
+	}
+	// handleRequest takes an SA payload that does not decode or carries no proposal for a Child SA's, so the IKE SA rekey's own refusals are reached directly
+	for name, body := range map[string][]byte{"does not decode": {0}, "carries no proposal": nil} {
+		t.Run("IKE SA rekey whose SA payload "+name, func(t *testing.T) {
+			mux, _ := lifecycleMuxes(t)
+			ctx := testContext()
+			s := &Session{mux: mux, current: ctx, Child: child}
+			raw, err := s.handleIKERekey(ctx, 5, replaced(ikeRekey, RawPayload{Type: PayloadSA, Body: body}))
+			answered(t, s, ctx, raw, err, N_INVALID_SYNTAX)
+		})
+	}
+	// section 2.10's "half the key size of the negotiated pseudorandom function", under an IKE SA whose PRF is HMAC-SHA2-384 and an offer that keeps it
+	for _, size := range []int{16, 23} {
+		t.Run(fmt.Sprintf("IKE SA rekey under PRF_HMAC_SHA2_384 with a nonce of %d octets", size), func(t *testing.T) {
+			mux, _ := lifecycleMuxes(t)
+			ctx := testContext()
+			ctx.suite.PRFID = PRF_HMAC_SHA2_384
+			s := &Session{mux: mux, current: ctx, Child: child}
+			raw, err := s.handleRequest(ctx, &Header{ExchangeType: CREATE_CHILD_SA, MessageID: 5}, nil, replaced(replaced(ikeRekey, otherPRF), RawPayload{Type: PayloadNonce, Body: make([]byte, size)}))
+			answered(t, s, ctx, raw, err, N_INVALID_SYNTAX)
+		})
+	}
+}
+
+// section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
+// a running session answers a CREATE_CHILD_SA request carrying two nonces with INVALID_SYNTAX and ends, and sends nothing after
+func TestSessionEndsWithoutADeleteOnceItAnswersInvalidSyntax(t *testing.T) {
+	peer, s := closingAfterAuth(t)
+	peer.to = muxLoopback(s.mux)
+	done := runSession(t, s)
+	request := childRekeyRequest(0x50607080)
+	peer.send(t, Header{ExchangeType: CREATE_CHILD_SA, MessageID: 0}, append(request, request[2]))
+	if answer := peer.answer(t); answer.Header.ExchangeType != CREATE_CHILD_SA || answer.Header.MessageID != 0 || !notified(answer.inner, N_INVALID_SYNTAX, nil) {
+		t.Fatalf("the request drew exchange %d at Message ID %d carrying %v, want INVALID_SYNTAX at 0", answer.Header.ExchangeType, answer.Header.MessageID, answer.inner)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("the session ended with no error")
+		}
+	case <-time.After(answerBudget):
+		t.Fatal("the session went on after answering INVALID_SYNTAX")
+	}
+	if err := peer.conn.SetReadDeadline(time.Now().Add(quietPeriod)); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, err := peer.conn.ReadFromUDP(make([]byte, 2048)); err == nil {
+		t.Errorf("the session sent %d more bytes after INVALID_SYNTAX, want nothing", n)
+	}
+}
+
 // RFC 7296 section 2.21.4: "A peer receiving such an unprotected Notify payload MUST NOT respond and MUST NOT change the state of any existing SAs."
 // an INVALID_IKE_SPI in the clear under the IKE SA's SPIs, as the answer to the exchange under way and as a request, settles nothing and draws nothing
 func TestSessionTakesNothingFromANotifyInTheClear(t *testing.T) {
@@ -703,7 +882,8 @@ func TestSessionTakesNothingFromANotifyInTheClear(t *testing.T) {
 
 // RFC 7296 section 2.21.4: "A node receiving a suspicious message from an IP address (and port, if NAT traversal is used) with which it has an IKE SA SHOULD send an IKE Notify payload in an IKE INFORMATIONAL exchange over that SA."
 // section 2.21.4: "The recipient MUST NOT change the state of any SAs as a result"
-// an INFORMATIONAL request telling this end of INVALID_SPI for the SPI its Child SA sends with and of INVALID_IKE_SPI is answered empty, and the IKE SA and the Child SA stay
+// section 3.10.1: "Unrecognized error types in a request and status types in a request or response MUST be ignored, and they should be logged."
+// an INFORMATIONAL request telling this end of INVALID_SPI for the SPI its Child SA sends with and of INVALID_IKE_SPI, and carrying an error notify and a status notify of types nothing assigns, is answered empty, and the IKE SA and the Child SA stay
 func TestSessionChangesNothingForTheErrorNotifiesAPeerSends(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
@@ -723,6 +903,8 @@ func TestSessionChangesNothingForTheErrorNotifiesAPeerSends(t *testing.T) {
 		{Type: PayloadN, Body: EncodeNotify(Notify{Type: 11, Data: binary.BigEndian.AppendUint32(nil, 0x50607080)})},
 		// INVALID_IKE_SPI
 		{Type: PayloadN, Body: EncodeNotify(Notify{Type: 4})},
+		unrecognizedError,
+		unrecognizedStatus,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1763,26 +1945,9 @@ func probedSession(t *testing.T) (*Session, *net.UDPConn, *recorder) {
 // readRequest checks the session sent an empty INFORMATIONAL request
 func readRequest(t *testing.T, s *Session, peer *net.UDPConn) []byte {
 	t.Helper()
-	buf := make([]byte, 2048)
-	if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
-		t.Fatal(err)
-	}
-	n, _, err := peer.ReadFromUDP(buf)
-	if err != nil {
-		t.Fatalf("no request arrived within %s: %v", answerBudget, err)
-	}
-	raw := append([]byte(nil), buf[NonESPMarkerLen:n]...)
-	message, err := DecodeMessage(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inner, err := DecryptMessage(s.current.suite, s.current.skei, raw, message)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if message.Header.ExchangeType != INFORMATIONAL || message.Header.IsResponse() || len(inner) != 0 {
-		t.Fatalf("the session sent exchange %d response %v with %d payloads, want a liveness check",
-			message.Header.ExchangeType, message.Header.IsResponse(), len(inner))
+	raw, header, inner := readOwnRequest(t, s, peer)
+	if header.ExchangeType != INFORMATIONAL || len(inner) != 0 {
+		t.Fatalf("the session sent exchange %d with %d payloads, want a liveness check", header.ExchangeType, len(inner))
 	}
 	return raw
 }

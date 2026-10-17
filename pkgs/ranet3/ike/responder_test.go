@@ -2465,6 +2465,36 @@ func TestStatelessErrorLimitHoldsAFleetRedial(t *testing.T) {
 	}
 }
 
+// RFC 7296 section 3.9: "Nonce values MUST NOT be reused."
+// two IKE_SA_INIT requests are answered with different nonces
+func TestEachIKESAInitAnswerDrawsItsOwnNonce(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	var nonces [][]byte
+	for range 2 {
+		mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { mux.Close() })
+		spi := randUint64Nonzero()
+		if err := mux.RegisterIKE(spi); err != nil {
+			t.Fatal(err)
+		}
+		answer, err := DecodeMessage(statelessAnswer(t, mux, encodeTestSAInit(t, spi, bytes.Repeat([]byte{1}, 32), ikeProposal(), nil), "an IKE_SA_INIT drew no answer"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		nonce := answer.find(PayloadNonce)
+		if nonce == nil {
+			t.Fatalf("the IKE_SA_INIT drew %v and no nonce", payloadTypes(answer.Payloads))
+		}
+		nonces = append(nonces, DecodeNonce(nonce.Body))
+	}
+	if bytes.Equal(nonces[0], nonces[1]) {
+		t.Errorf("two IKE_SA_INIT requests were answered with the same nonce %x", nonces[0])
+	}
+}
+
 // spendStatelessErrors empties the one limit on error answers in the clear and stops its refill until the test ends
 func spendStatelessErrors(t *testing.T) {
 	t.Helper()
@@ -2733,6 +2763,35 @@ func TestResponderIgnoresTheCriticalBitOnPayloadsItUnderstands(t *testing.T) {
 		if payload.Critical {
 			t.Errorf("the IKE_AUTH answer marks payload type %d critical", payload.Type)
 		}
+	}
+	carriedForward(t, h)
+}
+
+// RFC 7296 section 3.10.1: "Unrecognized error types in a request and status types in a request or response MUST be ignored, and they should be logged."
+// an initiator adding an error notify and a status notify of types nothing assigns to both its requests is answered and taken as one adding none
+func TestResponderIgnoresNotifiesItDoesNotRecognize(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	added := func(payloads []RawPayload) []RawPayload {
+		return append(payloads, unrecognizedError, unrecognizedStatus)
+	}
+	held, message1, nr := initHalfOpen(t, mux, added)
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	request, err := EncryptMessage(held.suite, held.skei, header, nil, added(ikeAuthPayloads(h.private, held, message1, nr, espProposal([]byte{0, 0, 0, 9}), "testorg/client:2", "testorg/server:1")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.SendIKE(request); err != nil {
+		t.Fatal(err)
+	}
+	answer, answered, _ := responderMessage(t, mux, held)
+	if answer.ExchangeType != IKE_AUTH || answer.MessageID != 1 || findType(answered, PayloadAUTH) == nil || findType(answered, PayloadSA) == nil {
+		t.Fatalf("the IKE_AUTH request carrying the notifies drew exchange %d at Message ID %d carrying %v, want the responder's AUTH and Child SA at 1",
+			answer.ExchangeType, answer.MessageID, answered)
 	}
 	carriedForward(t, h)
 }

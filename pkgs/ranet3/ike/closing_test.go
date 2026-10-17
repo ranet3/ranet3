@@ -414,6 +414,12 @@ func TestInitiatorClosingAfterAuthIgnoresADeleteOutsideTheWindow(t *testing.T) {
 // unsupportedCritical is a payload of a type no IKEv2 document assigns, its critical flag set
 var unsupportedCritical = RawPayload{Type: PayloadType(250), Critical: true, Body: []byte{1}}
 
+// unrecognizedError and unrecognizedStatus are notifies of types no IKEv2 document assigns, the one an error type and the other a status type
+var (
+	unrecognizedError  = RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: 8191})}
+	unrecognizedStatus = RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: 40000})}
+)
+
 // a request that authenticates and does not decode is answered INVALID_SYNTAX at its Message ID, which ends the IKE SA at both ends, so the initiator stops waiting for its own answer
 func TestInitiatorClosingAfterAuthEndsAtARequestThatDoesNotDecode(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
@@ -449,6 +455,27 @@ func TestInitiatorClosingAfterAuthAnswersAnExchangeItDoesNotTakeAsRunDoes(t *tes
 	}
 	if run := runAnswer(t, header, nil, nil); !samePayloads(run, answer.inner) {
 		t.Errorf("Run answers the IKE_AUTH request with %v, the wait with %v", run, answer.inner)
+	}
+	settled(t, done, nil)
+}
+
+// RFC 7296 section 2.21.3: "After the IKE SA is authenticated, all requests having errors MUST result in a response notifying the other end of the error."
+// a Delete payload that does not decode draws the answer Run gives it, INVALID_SYNTAX, which ends the IKE SA, so the initiator stops waiting for its own answer
+func TestInitiatorClosingAfterAuthEndsAtADeleteThatDoesNotDecodeAsRunDoes(t *testing.T) {
+	peer, initiator := closingAfterAuth(t)
+	done := make(chan error, 1)
+	go func() { done <- initiator.deleteAuthenticatedIKE() }()
+	peer.read(t)
+
+	header := Header{ExchangeType: INFORMATIONAL, MessageID: 0}
+	inner := []RawPayload{{Type: PayloadD, Body: []byte{byte(ProtoESP)}}}
+	peer.send(t, header, inner)
+	answer := peer.answer(t)
+	if answer.Header.ExchangeType != INFORMATIONAL || answer.Header.MessageID != 0 || !notified(answer.inner, N_INVALID_SYNTAX, nil) {
+		t.Fatalf("the Delete that does not decode drew exchange %d Message ID %d carrying %v, want INVALID_SYNTAX at 0", answer.Header.ExchangeType, answer.Header.MessageID, answer.inner)
+	}
+	if run := runAnswer(t, header, nil, inner); !samePayloads(run, answer.inner) {
+		t.Errorf("Run answers the Delete with %v, the wait with %v", run, answer.inner)
 	}
 	settled(t, done, nil)
 }
@@ -539,6 +566,62 @@ func TestInitiatorClosingAfterAuthRefusesAnAnswerMarkingAnUnsupportedPayloadCrit
 		}
 	case <-time.After(answerBudget):
 		t.Fatal("the initiator went on waiting for its own answer")
+	}
+}
+
+// RFC 7296 section 3.10.1: "Unrecognized error types in a request and status types in a request or response MUST be ignored, and they should be logged."
+// a request carrying an error notify and a status notify of types nothing assigns is answered empty as Run answers it, and the answer to the initiator's own Delete carrying the status notify settles the wait
+func TestInitiatorClosingAfterAuthIgnoresNotifiesItDoesNotRecognize(t *testing.T) {
+	peer, initiator := closingAfterAuth(t)
+	done := make(chan error, 1)
+	go func() { done <- initiator.deleteAuthenticatedIKE() }()
+	own := peer.read(t)
+
+	header := Header{ExchangeType: INFORMATIONAL, MessageID: 0}
+	inner := []RawPayload{unrecognizedError, unrecognizedStatus}
+	peer.send(t, header, inner)
+	answer := peer.answer(t)
+	if answer.Header.MessageID != 0 || len(answer.inner) != 0 {
+		t.Fatalf("the request drew Message ID %d carrying %v, want an empty answer at 0", answer.Header.MessageID, answer.inner)
+	}
+	if run := runAnswer(t, header, nil, inner); !samePayloads(run, answer.inner) {
+		t.Errorf("Run answers the request with %v, the wait with %v", run, answer.inner)
+	}
+	waitsOn(t, done)
+	peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, []RawPayload{unrecognizedStatus})
+	settled(t, done, nil)
+}
+
+// RFC 7296 section 3.10.1: "An implementation receiving a Notify payload with one of these types that it does not recognize in a response MUST assume that the corresponding request has failed entirely."
+// an answer to the initiator's own Delete that carries an error notify of a type nothing assigns ends the Delete with a rejection naming it, and one carrying a notify that does not decode, which may be one, ends it refused
+func TestInitiatorClosingAfterAuthTakesAnErrorNotifyInItsAnswerAsTheDeleteFailing(t *testing.T) {
+	for name, test := range map[string]struct {
+		notify RawPayload
+		want   func(error) bool
+	}{
+		"an error notify": {unrecognizedError, func(err error) bool {
+			rejected, ok := errors.AsType[*rejectedError](err)
+			return ok && rejected.notify.Type == 8191
+		}},
+		"a notify that does not decode": {RawPayload{Type: PayloadN, Body: []byte{0}}, func(err error) bool {
+			return err != nil && strings.Contains(err.Error(), "short notify payload")
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			peer, initiator := closingAfterAuth(t)
+			done := make(chan error, 1)
+			go func() { done <- initiator.deleteAuthenticatedIKE() }()
+			own := peer.read(t)
+			peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, []RawPayload{test.notify})
+			select {
+			case err := <-done:
+				if !test.want(err) {
+					t.Errorf("the initiator's Delete ended with %v, want it failed on %s", err, name)
+				}
+			case <-time.After(answerBudget):
+				t.Fatal("the initiator went on waiting for its own answer")
+			}
+		})
 	}
 }
 

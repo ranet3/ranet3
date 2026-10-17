@@ -836,3 +836,63 @@ func TestRetiringAChildTwiceIsNotAFailure(t *testing.T) {
 		t.Error("retiring an SPI no SA is retiring under was accepted")
 	}
 }
+
+// RFC 7296 section 3.9: "Nonce values MUST NOT be reused."
+// a Child SA negotiation here carries no KE, so its keys come from SK_d and the two nonces alone, and two of them that this end starts on one IKE SA send different nonces
+func TestEachChildSANegotiationDrawsItsOwnNonce(t *testing.T) {
+	mux, _ := lifecycleMuxes(t)
+	s := &Session{mux: mux, current: &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}, skD: bytes.Repeat([]byte{1}, 32)},
+		requests: make(chan *localRequest, 1)}
+	var nonces [][]byte
+	for range 2 {
+		done := make(chan error, 1)
+		go func() { done <- s.negotiateChild(nil) }()
+		request := <-s.requests
+		nonce := findType(request.inner, PayloadNonce)
+		if nonce == nil {
+			request.result <- requestResult{err: errors.New("the request carries no nonce")}
+			<-done
+			t.Fatalf("the Child SA negotiation carries %v and no nonce", payloadTypes(request.inner))
+		}
+		nonces = append(nonces, DecodeNonce(nonce.Body))
+		request.result <- requestResult{inner: []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NO_PROPOSAL_CHOSEN})}}}
+		if err := <-done; err == nil {
+			t.Fatal("negotiateChild took an answer of NO_PROPOSAL_CHOSEN")
+		}
+	}
+	if bytes.Equal(nonces[0], nonces[1]) {
+		t.Errorf("two Child SA negotiations sent the same nonce %x", nonces[0])
+	}
+}
+
+// RFC 7296 section 3.9: "Nonce values MUST NOT be reused."
+// two Child SA rekeys this end answers, each on an IKE SA keyed alike, answer with different nonces
+func TestEachChildSAAnswerDrawsItsOwnNonce(t *testing.T) {
+	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
+	var nonces [][]byte
+	for range 2 {
+		mux, _ := lifecycleMuxes(t)
+		ctx := testContext()
+		s := &Session{mux: mux, current: ctx, Child: child}
+		raw, err := s.handleRequest(ctx, &Header{ExchangeType: CREATE_CHILD_SA, MessageID: 5}, nil, childRekeyRequest(child.RemoteSPI))
+		if err != nil {
+			t.Fatal(err)
+		}
+		message, err := DecodeMessage(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inner, err := DecryptMessage(ctx.suite, ctx.skei, raw, message)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nonce := findType(inner, PayloadNonce)
+		if nonce == nil {
+			t.Fatalf("the Child SA rekey drew %v and no nonce", payloadTypes(inner))
+		}
+		nonces = append(nonces, DecodeNonce(nonce.Body))
+	}
+	if bytes.Equal(nonces[0], nonces[1]) {
+		t.Errorf("two Child SA rekeys were answered with the same nonce %x", nonces[0])
+	}
+}
