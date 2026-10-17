@@ -300,7 +300,9 @@ func TestPairSocketThatCannotFollowItsFamilyCloses(t *testing.T) {
 		t.Fatal(err)
 	}
 	readFrom(t, peer, marker)
-	if p.socket.Load() != nil || pairsJoined(hub) != 0 || hub.PairFallbacks() != 1 {
+	// the marker left the shared socket only once a drop cleared p.socket, and the drop holds the table's lock until it counted the fallback
+	// so the count is read after holdsSocket waited on that lock
+	if holdsSocket(hub, p) || pairsJoined(hub) != 0 || hub.PairFallbacks() != 1 {
 		t.Fatalf("the pair's socket that could not follow its family is still open, or counted %d fallbacks, want 1", hub.PairFallbacks())
 	}
 }
