@@ -4,6 +4,7 @@
 package ike
 
 import (
+	"encoding/binary"
 	"errors"
 	"slices"
 	"strings"
@@ -157,4 +158,83 @@ func TestChildFailedNeverBlocks(t *testing.T) {
 	if got := <-s.childFailed; got != first {
 		t.Errorf("Run takes %v, want the first failure", got)
 	}
+}
+
+// a random source that refuses the draw that times the next rekey after an IKE SA rekey closes the IKE SA with a Delete
+func TestRefusedDrawAfterAnIKESARekeyDeletesTheIKESA(t *testing.T) {
+	pair := dialRefusing(t, func(cfg *PeerConfig) {
+		cfg.IKERekeyInterval, cfg.RekeyMargin = time.Hour, time.Hour-scheduleDue
+	}, func(initiator, _ *Session) {
+		initiator.rekeyJitterSource = failingDraws(1)
+	})
+	deletedOnFailure(t, pair, "ike")
+}
+
+// a drained Child SA the dataplane refuses to retire closes the IKE SA with a Delete, and is not asked again
+func TestRefusedRetirementOfADrainedChildSADeletesTheIKESA(t *testing.T) {
+	var asked atomic.Int32
+	pair := dialRefusing(t, func(*PeerConfig) {}, func(initiator, _ *Session) {
+		replaced := initiator.Child.LocalSPI
+		initiator.childRetireDelay = quietPeriod / 3
+		initiator.SetChildRetireHandler(func(spi uint32) error {
+			if spi != replaced {
+				return nil
+			}
+			asked.Add(1)
+			return errRefused
+		})
+	})
+	if err := pair.initiator.RekeyChild(); err != nil {
+		t.Fatalf("the Child SA rekey failed: %v", err)
+	}
+	deletedOnFailure(t, pair, "child")
+	if got := asked.Load(); got != 1 {
+		t.Errorf("the dataplane was asked %d times to retire the drained Child SA, want once", got)
+	}
+}
+
+// a Child SA the peer deletes and the dataplane refuses to close is left out of the answer, and the IKE SA's Delete follows it
+func TestRefusedCloseOfAChildSAThePeerDeletedDeletesTheIKESA(t *testing.T) {
+	pair := dialRefusing(t, func(*PeerConfig) {}, func(initiator, _ *Session) {
+		initiator.SetChildRetireHandler(func(uint32) error { return errRefused })
+	})
+	spi := binary.BigEndian.AppendUint32(nil, pair.initiator.currentChild().RemoteSPI)
+	answer, err := pair.responder.request(INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{spi}})}})
+	if err != nil {
+		t.Fatalf("the peer's Delete of the Child SA was not answered: %v", err)
+	}
+	if len(answer) != 0 {
+		t.Errorf("the answer carries %d payloads, want none for the Child SA the dataplane kept", len(answer))
+	}
+	deletedOnFailure(t, pair, "child")
+}
+
+// RFC 7296 section 1.4.1: "Normally, the response in the INFORMATIONAL exchange will contain Delete payloads for the paired SAs going in the other direction."
+// a peer's Delete naming a replaced Child SA and then the current one, which the dataplane refuses to close, is answered with a Delete payload for the replaced SA it closed
+func TestPeerDeleteAnswersTheChildSAClosedBeforeARefusal(t *testing.T) {
+	replaced := ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}
+	pair := dialRefusing(t, func(*PeerConfig) {}, func(initiator, _ *Session) {
+		initiator.retiring, initiator.retiringBy = replaced, time.Now().Add(time.Hour)
+		initiator.childRetireDelay = 0
+		current := initiator.Child.LocalSPI
+		initiator.SetChildRetireHandler(func(spi uint32) error {
+			if spi == current {
+				return errRefused
+			}
+			return nil
+		})
+	})
+	spis := [][]byte{binary.BigEndian.AppendUint32(nil, replaced.RemoteSPI), binary.BigEndian.AppendUint32(nil, pair.initiator.currentChild().RemoteSPI)}
+	answer, err := pair.responder.request(INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: spis})}})
+	if err != nil {
+		t.Fatalf("the peer's Delete of the two Child SAs was not answered: %v", err)
+	}
+	if len(answer) != 1 || answer[0].Type != PayloadD {
+		t.Fatalf("the answer carries %v, want one Delete payload", answer)
+	}
+	deleted, err := DecodeDelete(answer[0].Body)
+	if err != nil || deleted.Protocol != ProtoESP || len(deleted.SPIs) != 1 || binary.BigEndian.Uint32(deleted.SPIs[0]) != replaced.LocalSPI {
+		t.Errorf("the answer deletes %+v (%v), want the replaced Child SA %08x alone", deleted, err, replaced.LocalSPI)
+	}
+	deletedOnFailure(t, pair, "child")
 }

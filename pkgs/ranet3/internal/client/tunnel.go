@@ -37,6 +37,8 @@ type tunnel struct {
 	rekey        func()
 	// spent tells the session the outbound SA named by its inbound SPI has run out of sequence numbers
 	spent func(uint32)
+	// failed tells the session a reservation was refused for a reason that ends it
+	failed func(error)
 	// askedAt is nanoseconds since started, read through time.Since so it
 	// comes off the monotonic clock, and primed one interval in the past so
 	// the first ask goes straight through. See requestRekey.
@@ -64,9 +66,9 @@ const rekeyAskInterval = 250 * time.Millisecond
 // when none can be, so it is not a reason to close anything here.
 var errNoChildSA = errors.New("peer has no active Child SA")
 
-// fatalReserveError reports whether a refusal from reserve is a reason to
-// close the session's mux, which ends Run, drops the babel peer and withdraws
-// every route through it.
+// fatalReserveError reports whether a refusal from reserve is a reason to end
+// the session, which deletes the IKE SA, ends Run, drops the babel peer and
+// withdraws every route through it.
 //
 // Two refusals are not. A peer may delete the Child SA and keep the IKE SA
 // (RFC 7296 section 1.4.1), and a non-ESN SA may run out of sequence numbers,
@@ -191,6 +193,9 @@ func (t *tunnel) reserve(count int) (netstack.BatchSealer, error) {
 			if t.spent != nil {
 				t.spent(current.outboundSPI)
 			}
+		}
+		if fatalReserveError(err) && t.failed != nil {
+			t.failed(err)
 		}
 		return nil, err
 	}

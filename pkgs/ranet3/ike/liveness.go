@@ -394,7 +394,7 @@ func (s *Session) run(ctx context.Context, ending error) error {
 			fail(err)
 		}
 		if err := s.expireRetiredChildren(time.Now()); err != nil {
-			return err
+			fail(err)
 		}
 		if child, ok := s.overdueRetiring(time.Now()); ok {
 			rekeys.Go(func() { s.deleteOverdueChild(child) })
@@ -409,7 +409,7 @@ func (s *Session) run(ctx context.Context, ending error) error {
 			// a Child SA rekey that ran an exchange left its outcome for settleChildRekeys, so its result here only ends the run, and a run that started none counts as nothing
 			if result.schedule != childSchedule {
 				if _, err := settle(result.schedule, result.err); err != nil {
-					return err
+					end(result.schedule, "local failure", err)
 				}
 			}
 			continue
@@ -927,9 +927,11 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, inner []RawPayload
 			for i, spi := range d.SPIs {
 				remoteSPIs[i] = binary.BigEndian.Uint32(spi)
 			}
+			// RFC 7296 section 1.4.1: "Deleting an IKE SA implicitly closes any remaining Child SAs negotiated under it."
+			// a Child SA the dataplane refuses to close is left out of the answer, and the IKE SA's Delete that follows it closes every Child SA
 			localSPIs, err := s.deleteChildren(remoteSPIs)
 			if err != nil {
-				return nil, err
+				s.ChildFailed(fmt.Errorf("ike: close a Child SA the peer deleted: %w", err))
 			}
 			for _, localSPI := range localSPIs {
 				spi := make([]byte, 4)

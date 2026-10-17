@@ -293,11 +293,13 @@ func (s *Session) nextRetirement() (time.Time, bool) {
 func (s *Session) expireRetiredChildren(now time.Time) error {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
+	// one whose retirement is refused leaves the list too, or its deadline, already past, would wake the loop at once forever
 	for len(s.retired) > 0 && !now.Before(s.retired[0].expiresAt) {
-		if err := s.retireInboundLocked(s.retired[0].spi, false); err != nil {
+		spi := s.retired[0].spi
+		s.retired = s.retired[1:]
+		if err := s.retireInboundLocked(spi, false); err != nil {
 			return fmt.Errorf("ike: expire retired Child SA: %w", err)
 		}
-		s.retired = s.retired[1:]
 	}
 	return nil
 }
@@ -321,7 +323,8 @@ func (s *Session) forgetChild(child ChildSA) error {
 // deleteChildren closes every locally known Child SA designated by the peer's
 // inbound SPIs and returns our paired inbound SPIs for the Delete response
 // (RFC 7296 section 1.4.1). Unknown SPIs are ignored, and so is a replaced SA
-// this end's own Delete is out for.
+// this end's own Delete is out for. A refusal stops it, and it returns the
+// SPIs of the SAs it closed before that one with the refusal.
 func (s *Session) deleteChildren(remoteSPIs []uint32) ([]uint32, error) {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
@@ -342,7 +345,7 @@ func (s *Session) deleteChildren(remoteSPIs []uint32) ([]uint32, error) {
 			continue
 		}
 		if err := s.retireInboundLocked(child.LocalSPI, child == &s.retiring); err != nil {
-			return nil, err
+			return localSPIs, err
 		}
 		localSPIs = append(localSPIs, child.LocalSPI)
 		*child = ChildSA{}

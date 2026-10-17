@@ -362,6 +362,30 @@ func TestSpentSequenceSpaceTellsTheSession(t *testing.T) {
 	}
 }
 
+// a reservation refused for a reason that ends the session tells the session why, and one refused for a missing or spent SA does not
+func TestFatalReservationTellsTheSession(t *testing.T) {
+	tunnel := &tunnel{}
+	tunnel.rekey = func() {}
+	var failed []error
+	tunnel.failed = func(err error) { failed = append(failed, err) }
+	if _, err := tunnel.reserve(1); !errors.Is(err, errNoChildSA) {
+		t.Fatalf("reserve with no SA = %v, want errNoChildSA", err)
+	}
+	if err := tunnel.install(tunnelChild(1)); err != nil {
+		t.Fatal(err)
+	}
+	_, refused := tunnel.reserve(0)
+	if !fatalReserveError(refused) {
+		t.Fatalf("reserve of no packet = %v, want a refusal that ends the session", refused)
+	}
+	for range 4 {
+		_, _ = tunnel.reserve(1 << 30)
+	}
+	if len(failed) != 1 || failed[0] != refused {
+		t.Errorf("the session was told %v, want the one refusal that ends it, %v", failed, refused)
+	}
+}
+
 // markDelay is the delay the jitter test draws for the first ask past the sequence mark, markWatch how long past it the test waits for that ask, and markBatches how often it sends a batch meanwhile
 const markDelay, markWatch, markBatches = 200 * time.Millisecond, 5 * time.Second, 10 * time.Millisecond
 
