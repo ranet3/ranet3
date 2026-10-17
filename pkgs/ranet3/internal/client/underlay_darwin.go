@@ -24,8 +24,8 @@ import (
 // writes it.
 var underlayStatePath = filepath.Join(filepath.Dir(control.DefaultSocket), "underlay.json")
 
-// underlayRuntime opens what the transport needs to keep the one UDP socket
-// out of the mesh's own routing. On darwin that means binding the socket to
+// underlayRuntime opens what the transport needs to keep its UDP sockets
+// out of the mesh's own routing. On darwin that means binding the sockets to
 // the interface the host's default route leaves by, and writing that
 // interface a default of its own scoped to it, because a bound socket still
 // reads the shared forwarding table. Only the route socket can answer either

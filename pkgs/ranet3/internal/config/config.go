@@ -75,7 +75,7 @@ type Auth struct {
 	Trust string `yaml:"trust" json:"trust" toml:"trust"`
 }
 
-// Link is the underlay: the one socket carrying IKE and ESP, and the device
+// Link is the underlay: the port carrying IKE and ESP, and the device
 // the mesh is carried on.
 type Link struct {
 	Port      uint16     `yaml:"port" json:"port" toml:"port"`
@@ -97,12 +97,12 @@ type Link struct {
 	// the device runs at it less the longest cap.segment steer list, which a steered packet carries inside the tunnel
 	// zero takes netstack.DefaultMTU, see SessionMTU
 	MTU uint16 `yaml:"mtu,omitempty" json:"mtu,omitempty" toml:"mtu,omitempty"`
-	// Underlay keeps the one UDP socket carrying IKE and ESP out of the reach
+	// Underlay keeps the UDP sockets carrying IKE and ESP out of the reach
 	// of the routes the mesh installs, which lets an exit-announced default be
 	// a real default rather than one no ordinary socket can see.
 	// Needed on a node whose mesh address is the only global address of its
-	// family: the kernel then sources this socket from it, a "from <mesh
-	// address>" rule sends it to the mesh table, and an exit-announced default
+	// family: the kernel then sources these sockets from it, a "from <mesh
+	// address>" rule sends them to the mesh table, and an exit-announced default
 	// there routes the underlay into the tun carrying it.
 	//
 	// One block for both platforms because it is one idea, spelled two ways:
@@ -783,7 +783,7 @@ func (c *Config) validateSteeredMTU() error {
 
 // validateUnderlayMark refuses a mark nothing looks at. The two halves of the
 // setting are written in different blocks: link.underlay mark puts SO_MARK on
-// the one socket carrying IKE and ESP, and a cap.table rules entry selecting
+// every socket carrying IKE and ESP, and a cap.table rules entry selecting
 // that mark sends it to a table the mesh does not write. With only the first,
 // the marked socket follows the mesh table exactly as an unmarked one
 // would, and a default an exit announced there routes this node's own IKE into
