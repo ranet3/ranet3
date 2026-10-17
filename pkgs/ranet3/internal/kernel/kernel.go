@@ -1667,13 +1667,12 @@ func (r *Reconciler) applyRoutes() error {
 	var refused map[Route]bool
 	for i := 0; i < len(add); i++ {
 		route := add[i]
-		if route.Cover && broken[familyOf(route.Destination.Addr())] {
-			skipped++
+		if route.Cover && withheld(route.Destination, heldRoutes(), scoped) {
+			desiredCount--
 			continue
 		}
-		if route.Cover && withheld(route.Destination, heldRoutes(), scoped) {
-			// a route refused last pass went in this one
-			desiredCount--
+		if route.Cover && broken[familyOf(route.Destination.Addr())] {
+			skipped++
 			continue
 		}
 		err := r.plat.AddRoute(route)
@@ -1710,15 +1709,15 @@ func (r *Reconciler) applyRoutes() error {
 	}
 	r.refused = refused
 	// A cover goes in whole or not at all: part of one would split its
-	// family's traffic between the mesh and whatever holds the rest. A member
-	// the kernel already held goes too once a route that withholds it is in.
+	// family's traffic between the mesh and whatever holds the rest.
 	ordinary := heldRoutes()
 	for _, route := range slices.SortedFunc(maps.Keys(held), compareRoutes) {
 		if !route.Cover {
 			continue
 		}
 		broke := broken[familyOf(route.Destination.Addr())]
-		if !broke && !(wanted[route] && withheld(route.Destination, ordinary, scoped)) {
+		replaced := wanted[route] && withheld(route.Destination, ordinary, scoped)
+		if !broke && !replaced {
 			continue
 		}
 		if err := r.plat.DelRoute(route); err != nil {
@@ -1726,25 +1725,23 @@ func (r *Reconciler) applyRoutes() error {
 			continue
 		}
 		removed++
-		if broke {
-			skipped++
-		} else {
+		if replaced {
 			desiredCount--
+		} else {
+			skipped++
 		}
 		delete(held, route)
 	}
-	// Reported only when something moved. A route the platform refuses stays
-	// in the diff on purpose, because the install is retried on every pass
-	// until it lands, so a node holding one permanently unrepresentable route
-	// would otherwise log "added=0 removed=0" once per pass for its whole
-	// life.
+	// A route the platform refuses stays in the diff on purpose, because the
+	// install is retried on every pass until it lands, so a node holding one
+	// permanently unrepresentable route would otherwise log "added=0 removed=0"
+	// once per pass for its whole life.
 	if added > 0 || removed > 0 {
 		slog.Info("kernel routes reconciled", "added", added, "removed", removed)
 	}
 	// Installed is counted rather than re-listed: the kernel held len(actual)
-	// when the pass started and every add and delete below was confirmed, so
-	// the sum is exact and costs no second dump. reconcile publishes it, with
-	// the error of the whole pass rather than this step's.
+	// when the pass started and every add and delete above was confirmed, so
+	// the sum is exact and costs no second dump.
 	r.routePass = Stats{
 		Desired:   desiredCount,
 		Installed: len(actual) - removed + added,

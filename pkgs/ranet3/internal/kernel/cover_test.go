@@ -610,6 +610,118 @@ func TestRefusedWithholdingRouteMovesNothingWhileRefused(t *testing.T) {
 	}
 }
 
+// coverPass is one pass's table, the host's own defaults and the keys other
+// programs refuse.
+type coverPass struct {
+	routes []string
+	hosts  Covered
+	taken  []string
+}
+
+// A member a route the kernel holds after the pass withholds is not wanted,
+// so it counts neither as desired nor as skipped when a refusal at another
+// member takes its family out. The route went in this pass after a refusal
+// in the last, and the member is either one the pass would add or one an
+// earlier pass installed in that route's place.
+func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
+	v4 := []string{"0.0.0.0/1", "128.0.0.0/1", "64.0.0.0/2", "0.0.0.0/4", "16.0.0.0/4", "1.0.0.0/16", "198.51.100.0/24"}
+	v6 := []string{"8000::/1", "2000::/3", "4000::/2", "2001:db8::/32"}
+	without := func(routes []string, gone ...string) []string {
+		return slices.DeleteFunc(slices.Clone(routes), func(r string) bool { return slices.Contains(gone, r) })
+	}
+	for _, test := range []struct {
+		name    string
+		passes  []coverPass
+		skipped int
+	}{
+		{
+			"IPv6 member the pass would add",
+			[]coverPass{
+				{slices.Concat(v4, []string{"::/1"}, v6), Covered{}, []string{"8000::/1"}},
+				{slices.Concat([]string{"::/0"}, v4, v6), Covered{V6: true}, []string{"1.0.0.0/8", "100::/8"}},
+			},
+			5,
+		},
+		{
+			"IPv6 member the pass would add a pass later",
+			[]coverPass{
+				{slices.Concat(v4, []string{"::/1"}, without(v6, "8000::/1")), Covered{}, nil},
+				{slices.Concat(v4, []string{"::/1"}, v6), Covered{}, []string{"8000::/1"}},
+				{slices.Concat([]string{"::/0"}, v4, v6), Covered{V6: true}, []string{"100::/8"}},
+			},
+			5,
+		},
+		{
+			"IPv6 member beside a member refused with its route",
+			[]coverPass{
+				{slices.Concat([]string{"::/0", "0.0.0.0/1", "::/1"}, v6), Covered{V6: true}, []string{"2000::/3", "8000::/1"}},
+				{slices.Concat([]string{"::/0"}, v4, v6), Covered{V6: true}, []string{"8000::/1"}},
+			},
+			7,
+		},
+		{
+			"IPv4 member an earlier pass installed",
+			[]coverPass{
+				{[]string{"0.0.0.0/0", "0.0.0.0/4", "128.0.0.0/1"}, Covered{V4: true}, []string{"0.0.0.0/4"}},
+				{[]string{"0.0.0.0/0", "0.0.0.0/4"}, Covered{V4: true}, []string{"128.0.0.0/1"}},
+			},
+			4,
+		},
+		{
+			"IPv4 member the pass would add",
+			[]coverPass{
+				{slices.Concat(without(v4, "128.0.0.0/1"), []string{"::/1"}, v6), Covered{}, nil},
+				{slices.Concat(v4, []string{"::/1"}, v6), Covered{}, []string{"128.0.0.0/1"}},
+				{slices.Concat([]string{"0.0.0.0/0"}, without(v4, "0.0.0.0/1"), []string{"::/1"}, v6), Covered{V4: true}, []string{"32.0.0.0/3"}},
+			},
+			1,
+		},
+		{
+			"IPv4 member beside a refused route that hands one back",
+			[]coverPass{
+				{slices.Concat(without(v4, "16.0.0.0/4"), []string{"::/1"}, v6), Covered{}, []string{"64.0.0.0/2"}},
+				{slices.Concat([]string{"0.0.0.0/0"}, without(v4, "0.0.0.0/1"), []string{"::/1"}, v6), Covered{V4: true}, []string{"16.0.0.0/4"}},
+			},
+			3,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reconciler, kernel, table := keyHarness(t)
+			capture := reconciler.rt.Capture.(*recordingCapture)
+			var last []string
+			for pass, step := range test.passes {
+				for _, destination := range last {
+					table.Remove(netip.Prefix{}, prefix(destination))
+				}
+				for _, destination := range step.routes {
+					table.Set(netip.Prefix{}, prefix(destination), nil)
+				}
+				capture.hosts = step.hosts
+				kernel.taken = map[netip.Prefix]error{}
+				for _, destination := range step.taken {
+					kernel.taken[prefix(destination)] = errRouteSkipped
+				}
+				if err := reconciler.reconcile(); err != nil {
+					t.Fatalf("pass %d: %v", pass, err)
+				}
+				last = step.routes
+			}
+			pass := len(test.passes) - 1
+			if v4, v6 := coverMembers(kernel.fakeKernel); v4 != 0 || v6 != 0 {
+				t.Errorf("pass %d leaves %d IPv4 and %d IPv6 members, want none", pass, v4, v6)
+			}
+			stats := reconciler.Stats()
+			if stats.Skipped != test.skipped {
+				t.Errorf("pass %d reports %d skipped, want %d", pass, stats.Skipped, test.skipped)
+			}
+			if stats.Desired != stats.Installed+stats.Skipped {
+				t.Errorf("pass %d reports %d desired, %d installed and %d skipped, want desired to be the other two",
+					pass, stats.Desired, stats.Installed, stats.Skipped)
+			}
+		})
+	}
+}
+
 // A route over the zero address still needs the underlay's own default,
 // beside a cover that does not.
 func TestCaptureBesideTheCoverStillAsksTheUnderlay(t *testing.T) {
