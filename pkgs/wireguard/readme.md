@@ -120,8 +120,11 @@ git format-patch --relative=pkgs/wireguard <base>..<tip> -- pkgs/wireguard
 sed -i 's|"ranet3.com/pkgs/wireguard/|"golang.zx2c4.com/wireguard/|g' 0*.patch
 ```
 
-The scatter-gather write path is tailscale's (`07ca723`), not upstream's, so a
-fix to it goes to tailscale/wireguard-go, with the imports rewritten to
+Code that the tailscale commits above brought in and upstream does not have
+follows tailscale's `tailscale` branch rather than upstream: the scatter-gather
+write path (`07ca723`), the exported `GSOSplit` with the checks it makes before
+it splits a packet (`60eeedf`), and the reads into one slab (`24b5b69`). A fix
+to that code goes to tailscale/wireguard-go, with the imports rewritten to
 `github.com/tailscale/wireguard-go/` instead.
 
 The rename sorted the module's imports anew: they sort after `gvisor.dev` here
