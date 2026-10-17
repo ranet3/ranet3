@@ -122,6 +122,9 @@ type Session struct {
 	probes chan struct{}
 	// childRekeyEnded holds at most the one end of a Child SA rekey Run has not looked at, since Run settles every one on the Child SA schedule and one running at the Child SA's lifetime decides whether the IKE SA closes
 	childRekeyEnded chan struct{}
+	// childSpent holds at most the one spent sequence space Run has not looked at, and spentSPI names the Child SA it belongs to by its inbound SPI
+	childSpent chan struct{}
+	spentSPI   atomic.Uint32
 	// childFailed holds at most the one dataplane failure Run has not looked at, and one is enough to close the IKE SA
 	childFailed chan error
 	// sendFailures counts failed IKE sends since the last that went out, and only Run's goroutine touches it
@@ -761,6 +764,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		requests:        make(chan *localRequest, 1),
 		probes:          make(chan struct{}, 1),
 		childRekeyEnded: make(chan struct{}, 1),
+		childSpent:      make(chan struct{}, 1),
 		childFailed:     make(chan error, 1),
 		events:          cfg.Events, local: cfg.Local, remote: cfg.Remote,
 	}

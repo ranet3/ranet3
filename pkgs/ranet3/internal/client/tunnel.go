@@ -35,6 +35,8 @@ type tunnel struct {
 	replayWindow uint32
 	rekeying     atomic.Bool
 	rekey        func()
+	// spent tells the session the outbound SA named by its inbound SPI has run out of sequence numbers
+	spent func(uint32)
 	// askedAt is nanoseconds since started, read through time.Since so it
 	// comes off the monotonic clock, and primed one interval in the past so
 	// the first ask goes straight through. See requestRekey.
@@ -69,10 +71,12 @@ var errNoChildSA = errors.New("peer has no active Child SA")
 // Two refusals are not. A peer may delete the Child SA and keep the IKE SA
 // (RFC 7296 section 1.4.1), and a non-ESN SA may run out of sequence numbers,
 // which RFC 4303 section 3.3.3 makes a refusal to send rather than a failure
-// of anything else. Both leave the IKE SA intact with a replacement already
-// asked for, and section 1.3.1 is explicit about the answer: "A failed attempt
-// to create a Child SA SHOULD NOT tear down the IKE SA: there is no reason to
-// lose the work done to set up the IKE SA."
+// of anything else. Both leave the IKE SA to the session with a replacement
+// already asked for, and section 1.3.1 is explicit about the answer: "A failed
+// attempt to create a Child SA SHOULD NOT tear down the IKE SA: there is no
+// reason to lose the work done to set up the IKE SA." A spent SA no rekey
+// replaces is past its lifetime, and the session closes the IKE SA for it as
+// section 2.8 asks.
 func fatalReserveError(err error) bool {
 	return err != nil && !errors.Is(err, errNoChildSA) && !errors.Is(err, esp.ErrSequenceExhausted)
 }
@@ -184,6 +188,9 @@ func (t *tunnel) reserve(count int) (netstack.BatchSealer, error) {
 		// The SA that ran out is still installed, so nothing else will ask.
 		if errors.Is(err, esp.ErrSequenceExhausted) {
 			t.requestRekey()
+			if t.spent != nil {
+				t.spent(current.outboundSPI)
+			}
 		}
 		return nil, err
 	}

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
 
 // the responder's Run returns on the IKE SA's Delete, and otherwise only on a liveness check that outlasts the budget
@@ -809,6 +810,130 @@ func TestTemporaryFailureStreakSpansOneIKESA(t *testing.T) {
 	} {
 		if got := streak.outlasted(step.on, step.err, start.Add(step.at)); got != step.close {
 			t.Errorf("%v at %s on IKE SA %p closes %v, want %v", step.err, step.at, step.on, got, step.close)
+		}
+	}
+}
+
+// RFC 7296 section 2.8: "If an SA has expired or is about to expire and rekeying attempts using the mechanisms described here fail, an implementation MUST close the IKE SA and any associated Child SAs and then MAY start new ones."
+// a Child SA whose sequence space is spent has reached its limit on data, so the session deletes the IKE SA once no rekey can replace the SA, whatever its interval, and a rekey running then that replaces it keeps the session
+// the rekey was refused with NO_PROPOSAL_CHOSEN a quiet period before, which no TEMPORARY_FAILURE span counts and after which nothing is due for an hour, or runs as the space runs out with the responder holding its answer for two quiet periods
+func TestSpentSequenceSpaceClosesTheIKESAUnlessARekeyReplacesIt(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		interval time.Duration
+		answer   string
+	}{
+		{"refused before with a lifetime", time.Hour, "refused before"},
+		{"refused before with no lifetime", 0, "refused before"},
+		{"running and refused", time.Hour, "refused"},
+		{"running and replacing it", 0, "succeeds"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pair := dialRefusing(t, func(cfg *PeerConfig) {
+				cfg.ChildRekeyInterval = tc.interval
+				cfg.RekeyRetryInitial, cfg.RekeyRetryMax = time.Hour, time.Hour
+			}, func(initiator, responder *Session) {
+				initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
+				held := time.Now().Add(2 * quietPeriod)
+				switch tc.answer {
+				case "refused before":
+					// the responder expects another cipher, so it refuses every rekey with NO_PROPOSAL_CHOSEN
+					if responder.Child.EncrID == ENCR_AES_GCM_16 {
+						responder.Child.EncrID, responder.Child.EncrKeyBits = ENCR_CHACHA20_POLY1305, 256
+					} else {
+						responder.Child.EncrID, responder.Child.EncrKeyBits = ENCR_AES_GCM_16, 128
+					}
+				case "refused":
+					refuseInstalls(responder, held)
+				case "succeeds":
+					responder.SetChildHandler(func(ChildSA) error {
+						time.Sleep(time.Until(held))
+						return nil
+					})
+				}
+			})
+			spi := pair.initiator.currentChild().LocalSPI
+			rekeyed := make(chan error, 1)
+			if tc.answer == "refused before" {
+				err := pair.initiator.RekeyChildProactively()
+				if rejected, ok := errors.AsType[*rejectedError](err); !ok || rejected.notify.Type != N_NO_PROPOSAL_CHOSEN {
+					t.Fatalf("the rekey before the space ran out ended with %v, want NO_PROPOSAL_CHOSEN", err)
+				}
+				time.Sleep(quietPeriod)
+			} else {
+				// asked for as the space runs out, as internal/client asks
+				go func() { rekeyed <- pair.initiator.RekeyChildProactively() }()
+				for deadline := time.Now().Add(answerBudget); childRekeyLines(pair, "ike.rekey.started") == 0; time.Sleep(recordPoll) {
+					if time.Now().After(deadline) {
+						t.Fatal("the rekey asked for never started")
+					}
+				}
+			}
+			pair.initiator.ChildSequenceSpent(spi)
+			ends := "testorg/client:2>testorg/server:1 sa=child"
+			closed := "ike.sa.closed " + ends + " reason=sequence space"
+			if tc.answer != "refused before" {
+				select {
+				case err := <-pair.initiatorDone:
+					t.Fatalf("the session ended with %v while a rekey that may replace the spent SA ran", err)
+				case <-time.After(quietPeriod):
+				}
+			}
+			if tc.answer == "succeeds" {
+				if err := <-rekeyed; err != nil {
+					t.Fatalf("the rekey replacing the spent SA failed: %v", err)
+				}
+				time.Sleep(quietPeriod)
+				select {
+				case err := <-pair.initiatorDone:
+					t.Fatalf("the session ended after a rekey replaced its spent SA: %v", err)
+				default:
+				}
+				if got := pair.dialed.recorded(); slices.Contains(got, closed) {
+					t.Errorf("the session recorded %q, want no close after a rekey replaced its spent SA", got)
+				}
+				return
+			}
+			err := pair.ended(t, "the session went on with its Child SA's sequence space spent and no rekey replacing it")
+			if err == nil || !strings.Contains(err.Error(), "ran out of sequence numbers") {
+				t.Errorf("the session ended with %v, want its spent sequence space", err)
+			}
+			if got := pair.dialed.recorded(); !slices.Contains(got, "ike.rekey.failed "+ends) || got[len(got)-1] != closed {
+				t.Errorf("the session recorded %q, want its rekey failing and then %q", got, closed)
+			}
+		})
+	}
+}
+
+// RFC 4303 section 3.3.3 has an attempt to transmit past the sequence space "an auditable event"
+// each spent SA is logged once, with the time, the SPI of the outbound SA, both endpoints, the addresses its packets leave from and go to and the sequence number the refused packet needed, however often a send finds it spent
+func TestSpentSequenceSpaceIsLoggedOncePerSA(t *testing.T) {
+	var logged bytes.Buffer
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	mux, _ := lifecycleMuxes(t)
+	first, second := ChildSA{LocalSPI: 0x10203040, RemoteSPI: 0x50607080}, ChildSA{LocalSPI: 0x11213141, RemoteSPI: 0x51617181}
+	s := &Session{mux: mux, Child: first, childSpent: make(chan struct{}, 1),
+		local: identity.MustParse("testorg/client:2"), remote: identity.MustParse("testorg/server:1")}
+	for range 3 {
+		s.ChildSequenceSpent(first.LocalSPI)
+	}
+	s.Child = second
+	for range 3 {
+		s.ChildSequenceSpent(second.LocalSPI)
+	}
+	var lines []string
+	for line := range strings.Lines(logged.String()) {
+		if strings.Contains(line, `msg="ike Child SA ran out of sequence numbers"`) {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != 2 {
+		t.Fatalf("the two spent SAs were logged %d times, want once each: %q", len(lines), lines)
+	}
+	for i, child := range []ChildSA{first, second} {
+		want := fmt.Sprintf("spi=%08x spi_in=%08x local=testorg/client:2 remote=testorg/server:1 src=%s dst=%s seq=4294967296", child.RemoteSPI, child.LocalSPI, mux.LocalAddr(), mux.Endpoint())
+		if !strings.HasPrefix(lines[i], "time=") || !strings.Contains(lines[i], want) {
+			t.Errorf("spent SA %d was logged as %q, want its time and %q", i, lines[i], want)
 		}
 	}
 }

@@ -340,6 +340,28 @@ func TestSpentSequenceSpaceAsksForAReplacementAndKeepsTheSession(t *testing.T) {
 	}
 }
 
+// a batch refused for a spent sequence space tells the session which Child SA it was, so the session can close the IKE SA when no rekey replaces it, and keeps the mux open meanwhile
+func TestSpentSequenceSpaceTellsTheSession(t *testing.T) {
+	child := tunnelChild(1)
+	tunnel := &tunnel{}
+	tunnel.rekey = func() {}
+	var told []uint32
+	tunnel.spent = func(spi uint32) { told = append(told, spi) }
+	if err := tunnel.install(child); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	for range 4 {
+		_, err = tunnel.reserve(1 << 30)
+	}
+	if !errors.Is(err, esp.ErrSequenceExhausted) || fatalReserveError(err) {
+		t.Fatalf("reserve on a spent SA = %v, want ErrSequenceExhausted, which leaves the mux open", err)
+	}
+	if len(told) == 0 || slices.ContainsFunc(told, func(spi uint32) bool { return spi != child.LocalSPI }) {
+		t.Errorf("the spent sequence space told the session %08x, want the SA's inbound SPI %08x", told, child.LocalSPI)
+	}
+}
+
 // markDelay is the delay the jitter test draws for the first ask past the sequence mark, markWatch how long past it the test waits for that ask, and markBatches how often it sends a batch meanwhile
 const markDelay, markWatch, markBatches = 200 * time.Millisecond, 5 * time.Second, 10 * time.Millisecond
 

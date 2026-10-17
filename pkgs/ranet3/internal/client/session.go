@@ -48,6 +48,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 			log.Printf("peer %s: proactive Child SA rekey: %v", sessionName, err)
 		}
 	}
+	tunnel.spent = sess.ChildSequenceSpent
 	if err := tunnel.install(sess.Child); err != nil {
 		return err
 	}

@@ -421,12 +421,16 @@ func (s *Session) run(ctx context.Context, ending error) error {
 			// a rekey running at the lifetime may yet replace the SA, so its result decides, and with none running nothing can
 			// a Child SA rekey started outside the schedule, as a proactive one is, counts as the scheduled one does
 			rekeying := schedule == running || schedule == childSchedule && s.childRekeying.Load()
-			if ending == nil && !rekeying && schedule.outlived(time.Now()) {
-				err := fmt.Errorf("ike: the %s reached its lifetime of %s before a rekey replaced it", schedule.name, schedule.interval)
+			spent := schedule == childSchedule && s.currentChildSpent()
+			if ending == nil && !rekeying && (spent || schedule.outlived(time.Now())) {
+				reason, err := "lifetime", fmt.Errorf("ike: the %s reached its lifetime of %s before a rekey replaced it", schedule.name, schedule.interval)
+				if spent {
+					reason, err = "sequence space", errors.New("ike: the Child SA ran out of sequence numbers before a rekey replaced it")
+				}
 				if schedule.lastErr != nil {
 					err = fmt.Errorf("%w: %w", err, schedule.lastErr)
 				}
-				end(schedule, "lifetime", err)
+				end(schedule, reason, err)
 			}
 		}
 		startDueRekey()
@@ -529,6 +533,8 @@ func (s *Session) run(ctx context.Context, ending error) error {
 			continue
 		// a Child SA rekey that ended is settled at the top of the loop, where the close rule also reads whether one still runs
 		case <-s.childRekeyEnded:
+			continue
+		case <-s.childSpent:
 			continue
 		case err := <-s.childFailed:
 			fail(err)
