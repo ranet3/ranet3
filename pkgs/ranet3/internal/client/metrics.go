@@ -213,7 +213,7 @@ func (c *Client) renderKernel(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_kernel_routes_installed Routes the kernel holds for this reconciler as of its last pass.\n")
 	fmt.Fprint(w, "# TYPE ranet3_kernel_routes_installed gauge\n")
 	fmt.Fprintf(w, "ranet3_kernel_routes_installed %d\n", kernel.Installed)
-	fmt.Fprint(w, "# HELP ranet3_kernel_routes_skipped Routes the mesh selected that the last pass did not install: one the platform cannot represent, or one whose key another writer holds.\n")
+	fmt.Fprint(w, "# HELP ranet3_kernel_routes_skipped Routes the platform refused in the last pass, and cover members left out with their family.\n")
 	fmt.Fprint(w, "# TYPE ranet3_kernel_routes_skipped gauge\n")
 	fmt.Fprintf(w, "ranet3_kernel_routes_skipped %d\n", kernel.Skipped)
 	fmt.Fprint(w, "# HELP ranet3_kernel_pass_timestamp_seconds When the last pass finished, and zero before the first one has.\n")
