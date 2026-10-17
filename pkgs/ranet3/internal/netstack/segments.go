@@ -34,7 +34,7 @@ var errNotIP = errors.New("netstack: a forwarded segment is not an IP packet")
 // is swapped rather than the table mutated.
 func (m *Mesh) SetSteering(table *srv6.SteerTable) { m.steerTable.Store(table) }
 
-// Steering is the table currently installed, for a diagnostic to report.
+// Steering is the table currently installed.
 func (m *Mesh) Steering() *srv6.SteerTable { return m.steerTable.Load() }
 
 // SetSteeringEnabled stops or starts steering without taking the table away,

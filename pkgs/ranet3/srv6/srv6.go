@@ -27,8 +27,9 @@
 //   - Receiving, for a segment this node answers for. [NewLocalTable] takes
 //     the [Segment] list and [LocalTable.Handle] returns a [Result] saying
 //     whether to pass the packet on untouched, forward it to the [Result.Next]
-//     segment, deliver the [Result.Inner] packet, or drop it. [End] and
-//     [Decap] are those two behaviors on their own.
+//     segment, deliver the [Result.Inner] packet to the mesh or to the egress
+//     device, or drop it. [End] and [Decap] are End and End.DT46 on
+//     their own.
 //   - Choosing. [NewSteerTable] takes the [Steer] list and [SteerTable.Lookup]
 //     answers which [Policy], if any, one of this node's own packets takes.
 //
@@ -48,11 +49,11 @@
 //
 // # What it does not read
 //
-// A routing header is found only where it is the first extension header, which
-// is where H.Encaps puts it and where every encapsulation this package
-// produces has it. A packet that reached a local segment behind a hop-by-hop
-// or destination options header is refused rather than acted on, where
-// ipv6_find_hdr would have walked to it.
+// A routing header is found behind the hop-by-hop and destination options
+// headers RFC 8200 section 4.1 allows ahead of it, as ipv6_find_hdr walks to
+// it. A packet whose routing header lies behind a fragment header is refused
+// rather than reassembled, and so is one with more extension headers ahead of
+// it than this package walks.
 //
 // [RFC 8754]: https://www.rfc-editor.org/rfc/rfc8754
 // [RFC 8986]: https://www.rfc-editor.org/rfc/rfc8986
