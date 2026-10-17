@@ -21,10 +21,12 @@ import (
 // operator owns sends marked traffic to a table that is not the mesh's. darwin
 // has no marks, no rules and one forwarding table, and answers by binding the
 // socket to the interface the host's own default route leaves by, which scopes
-// its route lookups to that interface. On that platform the interface also has
-// to carry a default of its own scoped to it, which internal/kernel writes. See
-// UnderlayDefaults there for the measurement and for the ownership rules that
-// keep it off the host's own default.
+// its route lookups to that interface. On that platform the interface also
+// needs a default of its own scoped to it while an unscoped route out of
+// another interface holds its family's zero address, and internal/kernel
+// writes it then, and before the reconciler installs such a route of its own.
+// See UnderlayDefaults there for the measurement and for the ownership rules
+// that keep it off the host's own default.
 //
 // Either one makes a real default out of the tun safe, and an exit-node client
 // installs a real default. Without one the route has to go where no ordinary
@@ -47,10 +49,14 @@ type Underlay struct {
 	// left on the interface that is gone costs the machine every network it
 	// has rather than only the mesh.
 	//
-	// It is not enough on its own: that interface also needs a default route
-	// scoped to it, which macOS writes for every interface but the primary
-	// one. Runtime.Routes writes the missing one, and this socket is moved
-	// onto an interface only once that has happened.
+	// It is not always enough on its own: while an unscoped route out of
+	// another interface holds a family's zero address, or the reconciler is
+	// about to install one, that interface also needs a default route scoped
+	// to it, which macOS writes for every interface but the primary one.
+	// internal/kernel writes the missing one while a family needs it, through
+	// Runtime.Routes before this socket is bound to an interface and on each
+	// reconciler pass after. It writes nothing for a family that needs none,
+	// and the socket moves either way.
 	Bind bool `yaml:"bind,omitempty" json:"bind,omitempty" toml:"bind,omitempty"`
 }
 
@@ -73,8 +79,8 @@ type Runtime struct {
 
 // UnderlayRoutes is the seam onto the routing this socket depends on.
 // internal/kernel implements it on darwin, where a socket bound to an
-// interface still reads the shared forwarding table and therefore needs that
-// interface to carry a default of its own.
+// interface still reads the shared forwarding table and therefore can need
+// that interface to carry a default of its own.
 //
 // The two calls exist separately so a move leaves no window: Prepare makes the
 // interface usable, then the socket moves onto it, then Settle takes down what
@@ -124,8 +130,9 @@ func (u Underlay) refuse() error {
 // never saw.
 type interfaceBinder interface {
 	// bindInterface sets the socket's interface index, where zero unbinds.
-	// routed says the caller has written the routing a bound socket needs on
-	// that interface, which decides what an unreachable socket is reported as.
+	// routed says the caller had Runtime.Routes prepare that interface first,
+	// not that a default was written, which decides what an unreachable socket
+	// is reported as.
 	bindInterface(index int, routed bool) error
 }
 
@@ -238,9 +245,10 @@ func (h *Hub) BindUnderlay(index int) error {
 }
 
 // bindUnderlayTo is BindUnderlay with what the caller knows about the routing.
-// routed says this node writes the route a bound socket needs, which changes
-// the probe afterward from advice for an operator into a check that the
-// mechanism worked.
+// routed says the caller had Runtime.Routes prepare the interface first, which
+// writes a scoped default only for a family that needs one. It changes the
+// probe afterward from advice to add a default into a pointer at the routing
+// this node manages.
 func (h *Hub) bindUnderlayTo(index int, routed bool) error {
 	binder, ok := h.bind.(interfaceBinder)
 	if !ok {
