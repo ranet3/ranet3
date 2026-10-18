@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-10-17
+updated: 2026-10-18
 order: 45
 ---
 
@@ -272,9 +272,10 @@ unscoped and in the same family, of length 1 up to the member's own, that
 contains it. The kernel then forwards every address outside the hole by the
 route Babel's longest match would, or by a member where that match is the `/0`.
 A route the kernel refuses or fails to install withholds nothing, and the
-members it would withhold are tried in its place. A route refused at a member's
-own key leaves that member refused too, which takes the family's cover out as
-described below.
+members it would withhold are tried in its place, but for a route refused
+against this node's own member, described below. A route that another program's
+route refuses at a member's own key leaves that member refused too, which takes
+the family's cover out as described below.
 
 The hole, `0.0.0.0/8` and `::/8`, stays on the host's own route. `::/8` holds
 `64:ff9b::/96`, the NAT64 well-known prefix, so NAT64 traffic does not take the
@@ -299,14 +300,13 @@ install, which the pass reports as an error. The refusal logs
 once, with `held_by` naming that route. The family's traffic then takes the
 routes already in the host's table.
 
-A skipped count of 1 can also come from a mesh route at a member's own
-destination, such as a real `128.0.0.0/1` a node advertises. The reconciler
-withdraws the member before it installs that route. If the member is still in
-the kernel when the route is tried, as after a failed delete, macOS refuses the
-route against this node's own member, and each pass from then on counts it as
-skipped with no warning. The member leaves by the utun as the route would, and
-traffic is forwarded as Babel selects. The count clears once the route or the
-`/0` goes.
+A mesh route at a member's own destination, such as a real `128.0.0.0/1` a node
+advertises, takes that member's key. The reconciler deletes the member before it
+installs the route. When the delete fails, the pass reports it as an error, and
+macOS refuses the route against this node's own member, which counts as skipped.
+Each later pass deletes the member again and tries the route, so the error and
+the skipped count last until a delete succeeds. Meanwhile the member leaves by
+the utun as the route would, and traffic is forwarded as Babel selects.
 
 Until exit selection exists, a Mac with `bind` set takes whichever `/0` Babel
 selects. A source-specific default, a hold and a real `/1` half that a node
