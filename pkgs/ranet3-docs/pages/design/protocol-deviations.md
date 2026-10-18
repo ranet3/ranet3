@@ -27,10 +27,11 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 7296 section 2.8               | An SA past its lifetime is not used                                          | It finishes its exchange, answers the peer and sends its Delete         | Sections 2.1 and 2.3 keep 1 request until it ends    |
 | RFC 7296 section 1.3.1             | A failed Child SA does not tear down the IKE SA                              | When the Child SA in `IKE_AUTH` fails, both ends delete the IKE SA      | An IKE SA carries nothing without its Child SA       |
 | RFC 7296 section 2.4               | Send a Delete for an IKE SA closed while the peer still answers              | None when a Message ID space is spent or a message cannot be built      | A Delete needs a Message ID and the same encoding    |
+| RFC 7296 section 2.21.3            | Answer every request with errors on an authenticated IKE SA                  | A replaced IKE SA past its lifetime answers no request                  | Section 2.8: an SA past its lifetime is not used     |
 | RFC 7296 section 4                 | Accept configured RSA certificates and shared keys                           | Ed25519 signatures only, against the trust document                     | Keys come from the trust document                    |
 | RFC 7296 section 2.9               | Refuse unacceptable traffic selectors with `TS_UNACCEPTABLE`, or narrow them | Only the full IPv4 and IPv6 ranges, anything else `NO_PROPOSAL_CHOSEN`  | Babel picks the peer for each packet                 |
-| RFC 7296 section 3.2               | Ignore the critical bit on a payload type the recipient understands          | A response that sets it on any payload is refused                       | A known gap                                          |
-| RFC 7296 section 2.21.2            | Answer a malformed request with `INVALID_SYNTAX`                             | A malformed `IKE_AUTH` request goes unanswered                          | A known gap                                          |
+| RFC 7296 section 2.21.4            | Tell the peer of an error outside a request, such as ESP on an unknown SPI   | Such ESP is counted and dropped, and nothing is sent                    | A known gap                                          |
+| RFC 7296 section 2.21.4            | Answer a suspicious message from a peer's address over its IKE SA            | It is dropped, and nothing is sent over the SA                          | A spoofed address could make the node send           |
 | RFC 8247, RFC 8221                 | Support AES-CBC, MODP group 14, HMAC integrity and RSA signatures            | AEAD ciphers and elliptic curve groups only                             | Legacy transforms are left out                       |
 | RFC 4303 sections 2.6 and 2.7      | Be able to generate dummy packets                                            | None are generated, and no traffic flow confidentiality padding is sent | A known gap                                          |
 | RFC 4303 sections 3.3.3 and 4      | Log a sequence number overflow with the source address and IPv6 Flow ID      | The log names the local port, not the source address, and no Flow ID    | A wildcard socket, and no flow label is set          |
@@ -229,6 +230,16 @@ Child SA. An IKE SA carries nothing here without its Child SA, so keeping it
 would hold state on both ends with no traffic to protect, and the node that
 dialed dials again.
 
+Any error notify beside the responder's `AUTH` is such a refusal, a type ranet3
+does not know included, since
+[section 3.10.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-3.10.1)
+says a recipient of one it does not recognize "MUST assume that the
+corresponding request has failed entirely". The exceptions are
+`AUTHENTICATION_FAILED`, `INVALID_SYNTAX` and `UNSUPPORTED_CRITICAL_PAYLOAD`,
+which
+[section 2.21.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.21.2)
+lets leave the IKE SA uncreated without a Delete.
+
 [RFC 7296 section 2.4](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.4)
 asks an end that closes an IKE SA to send a Delete for it "unless the other
 endpoint is no longer responding". ranet3 does so wherever the peer may still
@@ -248,6 +259,18 @@ decode after its integrity check closes the IKE SA as
 [section 2.21.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.21.3)
 closes one after a malformed request, without a Delete, since the 2 ends'
 encodings disagree and a Delete's answer would come from the same encoder.
+
+[Section 2.21.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.21.3)
+says "After the IKE SA is authenticated, all requests having errors MUST result
+in a response notifying the other end of the error." ranet3 answers a request
+that does not parse with `INVALID_SYNTAX`, and an `INVALID_SYNTAX` sent or
+received ends the IKE SA it came on without a Delete, as the same section has
+both ends do. A replaced IKE SA past its lifetime answers no request, malformed
+or not. [Section 2.8](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8)
+says "When the lifetime of a Security Association expires, the Security
+Association MUST NOT be used", and an answer would go out under its keys. Past
+its lifetime such an IKE SA takes only the answer to this end's own Delete on
+it, as [Lifetimes](#lifetimes) describes.
 
 ## Authentication
 
@@ -278,24 +301,24 @@ it. A responder asked in IDr for an ID other than a DN answers with the ID type
 and data it was asked for, in its own encoding with RESERVED zero. Asked for a
 DN, it answers with its own encoding of the DN.
 
-## Critical payloads
+## Errors outside an exchange
 
-[RFC 7296 section 3.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-3.2)
-says the critical bit "MUST be ignored by the recipient if the recipient
-understands the payload type code". ranet3 holds the requests it receives to
-that, but refuses a response that sets the bit on any payload, a type it
-implements included. An initiator that refuses an `IKE_AUTH` response this way
-tells the responder in the `INFORMATIONAL` exchange that follows, with
-`INVALID_SYNTAX` for a payload type ranet3 implements and
-`UNSUPPORTED_CRITICAL_PAYLOAD` for one it does not.
+[RFC 7296 section 2.21.4](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.21.4)
+says "If an error occurs outside the context of an IKE request (e.g., the node
+is getting ESP messages on a nonexistent SPI), the node SHOULD initiate an
+INFORMATIONAL exchange with a Notify payload describing the problem." ranet3
+counts ESP on an SPI it does not hold in `ranet3_receive_refused_total`, drops
+it and tells the peer nothing. ranet3 treats this as a known gap.
 
-[RFC 7296 section 2.21.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.21.2)
-says a request whose whole message is malformed "MUST only lead to an
-UNSUPPORTED_CRITICAL_PAYLOAD or INVALID_SYNTAX Notification sent as a response".
-A responder that decrypts an `IKE_AUTH` request whose payloads do not decode
-drops the handshake without answering, and the initiator hears nothing. An ID
-payload with bad contents, such as an address ID of the wrong length, leaves the
-message well formed, and is refused with `AUTHENTICATION_FAILED`.
+The same section says "A node receiving a suspicious message from an IP address
+(and port, if NAT traversal is used) with which it has an IKE SA SHOULD send an
+IKE Notify payload in an IKE INFORMATIONAL exchange over that SA." ranet3 drops
+such a message and sends nothing over the SA. A node that answers every stray
+datagram from a peer's address can be made to send over that SA by anyone able
+to spoof the address, and liveness checks already find a dead SA. The section
+warns of the same for the liveness checks such a message prompts: "An
+implementation SHOULD limit the frequency of such tests to avoid being tricked
+into participating in a DoS attack."
 
 ## Algorithms
 
@@ -322,7 +345,9 @@ each row of the table.
 
 Every Child SA carries exactly 2 traffic selectors on each side, the full IPv4
 range and the full IPv6 range. ranet3 proposes those and accepts nothing else. A
-request with any other selectors is refused with `NO_PROPOSAL_CHOSEN`.
+request with any other selectors is refused with `NO_PROPOSAL_CHOSEN`. A
+`CREATE_CHILD_SA` request whose TS payload does not parse or holds no selector
+is malformed instead, and is answered `INVALID_SYNTAX`.
 [RFC 7296 section 2.9](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.9)
 has a responder narrow the selectors, or refuse with `TS_UNACCEPTABLE` when it
 accepts no part of them. ranet3 never narrows and never sends `TS_UNACCEPTABLE`.

@@ -359,6 +359,7 @@ can configure are in
 | ---------------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | Half-open SAs before a cookie                  | 32 in all, or 2 from 1 address                                                          | An `IKE_SA_INIT` without a valid cookie is answered with one (RFC 7296 section 2.6)       |
 | Half-open SAs                                  | 256 in all, 16 from 1 address                                                           | A further `IKE_SA_INIT` is dropped unanswered, and its sender retransmits                 |
+| Error answers sent in the clear                | 256 at once, then 32 a second, for the whole node                                       | A further one is not sent, and at most 1 line a minute counts those held back             |
 | Responder handshake                            | 30 seconds                                                                              | The handshake is abandoned                                                                |
 | Canceled dial's wait for its `IKE_AUTH` answer | 2 seconds                                                                               | The dial ends, and a peer whose answer is late keeps its session until liveness fails     |
 | Sends of a request                             | 5, waiting 2, 4, 8, 16 and 32 seconds after each                                        | The exchange fails after 62 seconds, and the session ends                                 |
@@ -376,6 +377,21 @@ can configure are in
 The second row holds even for a request with a valid cookie. More than 16 nodes
 behind 1 NAT that restart at once therefore wait for their retransmissions.
 
+The errors the third row limits are `INVALID_MAJOR_VERSION`,
+`UNSUPPORTED_CRITICAL_PAYLOAD` and `NO_PROPOSAL_CHOSEN`, sent in the clear to a
+request that no IKE SA protects, which end the exchange. A `COOKIE`, an
+`INVALID_KE_PAYLOAD` and an `IKE_SA_INIT` response that carries the handshake
+forward are outside the limit: an initiator goes on after each of them, so one
+source that spends the limit cannot stop another's dial. A `COOKIE` is the
+defense against a flood of `IKE_SA_INIT` requests that
+[RFC 7296 section 2.6](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.6)
+gives a responder. An `INVALID_KE_PAYLOAD` is 1 answer of 38 octets to a request
+of at least 102, and it gives its half-open slot back as it is sent, so neither
+cookies nor the half-open limit bound how many go out. An `IKE_SA_INIT` response
+holds its half-open slot until `IKE_AUTH`, and the half-open limits and cookies
+bound it. 256 answers every half-open slot at once, and 32 a second refills them
+within the reconnect delay.
+
 A request is sent up to 20 times while the peer's authenticated traffic has
 arrived within the last 10 seconds. The exchange holds the only outstanding
 request this end allows. Rekeys, Deletes and liveness checks wait until it ends.
@@ -387,6 +403,14 @@ lifetime, after 5 minutes of `TEMPORARY_FAILURE` or on a failure of its own, and
 of a responder that refused the Child SA in `IKE_AUTH`. That Delete waits for an
 exchange already out. A node closing a session, as at shutdown, waits 2 seconds
 for its Delete to be answered.
+
+An `INVALID_SYNTAX`, sent or received, ends the IKE SA it came on at once and
+without a Delete. On the session's current IKE SA the session ends, and the node
+that dialed it dials again. On a replaced or redundant IKE SA still kept for a
+Delete, that IKE SA alone ends, and the session goes on. A peer that answers
+this end's Delete of a Child SA with an error keeps its half of the pair. This
+end keeps its own half down, does not ask again, and gives that SPI to no later
+Child SA of the session.
 
 [The configuration reference](../configuration-reference.md#capcryptorekey) says
 what happens at an SA's lifetime. A Child SA's keys leave the dataplane at its
