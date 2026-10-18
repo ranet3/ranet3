@@ -17,6 +17,8 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 7296 section 2.23              | IKE starts on UDP port 500 and moves to 4500 behind a NAT                    | IKE and ESP share `link.port` from the first message                    | 1 port per node, with no transition to track         |
 | RFC 7296 section 2.23              | NAT detection hashes the real source address and port                        | The source hash covers a random address, so it never matches            | The peer always encapsulates ESP in UDP              |
 | RFC 7296 section 2.23              | Follow any validated packet when not behind a NAT, and none behind one       | Every session follows a fresh authenticated request, and nothing else   | A session follows a peer that moved                  |
+| RFC 7296 section 2.11              | Answer from the address and port the request reached                         | The kernel's choice once that address is gone or has no route           | No answer otherwise, see Answer addresses            |
+| RFC 7296 section 2.11              | Answer from the address and port the request reached                         | The kernel's choice on FreeBSD and OpenBSD                              | No source kept, see Answer addresses                 |
 | RFC 7296 section 2.25.1            | Complete both colliding Child SA rekeys and keep 1                           | The peer's rekey is answered `TEMPORARY_FAILURE`                        | 1 Child SA per session                               |
 | RFC 7296 section 2.8               | The responder may switch to the new SA once it sends its response            | It switches just before sending the response                            | The difference is the time to encrypt 1 message      |
 | RFC 7296 section 2.18              | An IKE SA rekey may choose a new PRF                                         | The PRF stays the same                                                  | strongSwan expands keys with the old PRF             |
@@ -105,6 +107,28 @@ before the original arrives can move a session's sends to that address. The
 peer's next fresh request moves them back. The peer sends one once it has heard
 nothing from this node for its liveness interval, 10 seconds on a ranet3 peer.
 In exchange a session follows a peer that moved, whichever end dialed.
+
+## Answer addresses
+
+[RFC 7296 section 2.11](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.11)
+says of a response "It MUST specify the address and port at which the request
+was received as the source address and port in the response." On Linux and macOS
+each answer names the address its request reached, and a session the peer opened
+sends everything else from that address too, as
+[moving hosts](../platforms.md#moving-hosts) describes. Once the host no longer
+holds the address, or holds it with no route from it to the peer, the kernel
+refuses a send from it, and the send goes again from the kernel's choice of
+source. The alternative is no answer at all.
+
+Where the address has no route, each answer still tries it first, so answers
+leave from it again as soon as a route returns. The session's own sends stay on
+the kernel's choice until a fresh request after a minute, which a peer sends
+once that traffic is lost. Where the session's ESP from the other address still
+reaches the peer, the peer has no cause to probe, and the session stays there
+until the peer's next request, such as a rekey.
+
+On FreeBSD and OpenBSD the socket keeps no source, so every answer leaves from
+the kernel's choice. Neither platform is supported beyond building.
 
 ## Rekeying
 
@@ -322,9 +346,10 @@ Flow ID, and [section 4](https://www.rfc-editor.org/rfc/rfc4303.html#section-4)
 adds the sequence number. ranet3 logs `ike Child SA ran out of sequence numbers`
 once for each such SA, with both SPIs, both identities, the peer's address and
 the sequence number, and the log line carries its own time. Its `src` names only
-the local port. The socket is bound to the wildcard address, and the source
-address of each datagram is the one the kernel picks for it, which the session
-never learns. No Flow ID is logged. ranet3 sets no flow label, so the label on
+the local port. The socket is bound to the wildcard address. A session this node
+dialed sends from the address the kernel picks for each datagram, which the
+session never learns, and the address a session the peer opened sends from is
+not logged. No Flow ID is logged. ranet3 sets no flow label, so the label on
 each outer IPv6 header is the kernel's.
 
 ## UDP checksums
