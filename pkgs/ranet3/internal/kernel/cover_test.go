@@ -574,8 +574,12 @@ func TestFailedWithholdingRouteHandsItsMembersBack(t *testing.T) {
 	if v4, _ := coverMembers(kernel.fakeKernel); v4 != 8 {
 		t.Errorf("the IPv4 cover is %d members beside the failed %s, want 8", v4, withholding)
 	}
-	if got := reconciler.Stats().Cover; !slices.Equal(got, []Family{FamilyIPv4}) {
-		t.Errorf("the pass reports the cover %v, want IPv4", got)
+	stats := reconciler.Stats()
+	if !slices.Equal(stats.Cover, []Family{FamilyIPv4}) {
+		t.Errorf("the pass reports the cover %v, want IPv4", stats.Cover)
+	}
+	if stats.Desired != 9 || stats.Installed != 8 {
+		t.Errorf("the pass reports %d desired and %d installed, want every member and the failed route against the members", stats.Desired, stats.Installed)
 	}
 	delete(kernel.flaky, withholding)
 	if err := reconciler.reconcile(); err != nil {
@@ -586,6 +590,32 @@ func TestFailedWithholdingRouteHandsItsMembersBack(t *testing.T) {
 	}
 	if v4, _ := coverMembers(kernel.fakeKernel); v4 != 7 {
 		t.Errorf("the IPv4 cover is %d members beside %s, want 7", v4, withholding)
+	}
+	if stats := reconciler.Stats(); stats.Desired != 8 || stats.Installed != 8 {
+		t.Errorf("the pass reports %d desired and %d installed, want 8 and 8", stats.Desired, stats.Installed)
+	}
+}
+
+// A refused route that goes in while the members it withholds are still to
+// be added leaves them out, and none of them counts as desired.
+func TestRefusedRouteThatGoesInCountsNoMemberItWithholds(t *testing.T) {
+	reconciler, kernel, table := keyHarness(t)
+	lower := prefix("0.0.0.0/1")
+	kernel.taken[lower] = errRouteSkipped
+	table.Set(netip.Prefix{}, lower, nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	delete(kernel.taken, lower)
+	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if v4, _ := coverMembers(kernel.fakeKernel); v4 != 1 || !kernel.has(Route{Destination: lower}) {
+		t.Errorf("once %s goes in the kernel holds %d IPv4 members, want the upper one alone: %v", lower, v4, kernel.snapshot())
+	}
+	if stats := reconciler.Stats(); stats.Desired != 2 || stats.Installed != 2 || stats.Skipped != 0 {
+		t.Errorf("the pass reports %d desired, %d installed and %d skipped, want 2, 2 and 0", stats.Desired, stats.Installed, stats.Skipped)
 	}
 }
 

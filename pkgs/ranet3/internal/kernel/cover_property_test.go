@@ -260,8 +260,9 @@ func unitSteps() hegel.Generator[unitStep] {
 // in, Skipped counts each refused route and each wanted member left out but
 // for one whose add or delete failed, which the pass reports as its error, a
 // pass over an unchanged table that only refuses adds and deletes nothing,
-// and the kernel refuses a route only at a key another program holds or at a
-// member whose delete failed in that pass.
+// the kernel refuses a route only at a key another program holds or at a
+// member whose delete failed in that pass, and a pass with no error desires
+// exactly what it installed and skipped.
 func TestCoverGoesInWholeOrNotAtAll(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		reconciler, kernel, table := keyHarness(t)
@@ -383,6 +384,10 @@ func TestCoverGoesInWholeOrNotAtAll(t *testing.T) {
 			}
 			if stats.Skipped != skipped {
 				ht.Fatalf("pass %d reports %d skipped, want %d\nstep %+v\nfailed %v", pass, stats.Skipped, skipped, step, kernel.failed)
+			}
+			if err == nil && stats.Desired != stats.Installed+stats.Skipped {
+				ht.Fatalf("pass %d reports %d desired, %d installed and %d skipped, want desired to be the other two\nstep %+v",
+					pass, stats.Desired, stats.Installed, stats.Skipped, step)
 			}
 			if nowAdds, nowDels := kernel.counts(); pass > 0 && step.equal(last) && onlyRefused && (nowAdds != adds || nowDels != dels) {
 				ht.Fatalf("pass %d over an unchanged table that only refuses added %d and deleted %d routes\nstep %+v",
