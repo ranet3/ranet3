@@ -122,7 +122,7 @@ func TestChildProposalDHSelection(t *testing.T) {
 			for _, group := range tc.groups {
 				proposal.Transforms = append(proposal.Transforms, Transform{Type: TransDH, ID: group})
 			}
-			selected, err := selectChildRequestProposal(EncodeSA([]Proposal{proposal}), Suites{}.espCiphers(), Suites{}.kexGroups(), tc.ke, groupOptional)
+			selected, err := selectChildRequestProposal(EncodeSA([]Proposal{proposal}), Suites{}.espCiphers(), Suites{}.kexEntries(), tc.ke, groupOptional)
 			if tc.retryGroup != 0 {
 				var invalid *invalidKEError
 				if !errors.As(err, &invalid) || invalid.group != tc.retryGroup {
@@ -137,21 +137,26 @@ func TestChildProposalDHSelection(t *testing.T) {
 
 func TestIKERekeyProposalKeepsPRF(t *testing.T) {
 	for _, prf := range []uint16{PRF_HMAC_SHA2_256, PRF_HMAC_SHA2_384} {
-		proposal := Suites{}.ikeRekeyProposal(nil, prf, DH_CURVE25519)
-		var count int
-		for _, transform := range proposal.Transforms {
-			if transform.Type == TransPRF {
-				count++
-				if transform.ID != prf {
-					t.Fatalf("offered PRF %d, want %d", transform.ID, prf)
+		offer := Suites{}.ikeRekeyProposals(nil, prf, DH_CURVE25519)
+		if len(offer) != len(Suites{}.rekeyable()) {
+			t.Fatalf("offered %d proposals, want one for each of %d kex entries", len(offer), len(Suites{}.rekeyable()))
+		}
+		for _, proposal := range offer {
+			var count int
+			for _, transform := range proposal.Transforms {
+				if transform.Type == TransPRF {
+					count++
+					if transform.ID != prf {
+						t.Fatalf("proposal %d offered PRF %d, want %d", proposal.Number, transform.ID, prf)
+					}
 				}
 			}
-		}
-		if count != 1 {
-			t.Fatalf("offered %d PRFs, want 1", count)
+			if count != 1 {
+				t.Fatalf("proposal %d offered %d PRFs, want 1", proposal.Number, count)
+			}
 		}
 		lists := Suites{}
-		chosen, _, ok := chooseIKE([]Proposal{ikeProposal()}, lists.ikeCiphers(), lists.rekeyPRFs(prf), lists.kexGroups(), DH_CURVE25519)
+		chosen, _, ok := chooseIKE([]Proposal{ikeProposal()}, lists.ikeCiphers(), lists.rekeyPRFs(prf), lists.rekeyable(), DH_CURVE25519)
 		if !ok || chosen.suite.PRFID != prf {
 			t.Fatalf("selected PRF %d, want %d", chosen.suite.PRFID, prf)
 		}

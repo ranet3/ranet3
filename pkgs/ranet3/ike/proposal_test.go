@@ -32,18 +32,18 @@ func TestSuiteFromProposalRequiresExactOfferSelection(t *testing.T) {
 		{Type: TransPRF, ID: PRF_HMAC_SHA2_256},
 		{Type: TransDH, ID: DH_CURVE25519},
 	}}
-	offered := ikeProposal().Transforms
-	if _, err := suiteFromProposal(valid, offered); err != nil {
+	offered := []Proposal{ikeProposal()}
+	if _, err := suiteFromProposal(valid, offered, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, extra := range []Transform{
 		{Type: TransInteg, ID: 12},
 		{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 192},
-		{Type: TransformType(9), ID: 1},
+		{Type: TransformType(15), ID: 1},
 	} {
 		invalid := valid
 		invalid.Transforms = append(append([]Transform(nil), valid.Transforms...), extra)
-		if _, err := suiteFromProposal(invalid, offered); err == nil {
+		if _, err := suiteFromProposal(invalid, offered, false); err == nil {
 			t.Fatalf("accepted invalid selected transform %+v", extra)
 		}
 	}
@@ -52,7 +52,7 @@ func TestSuiteFromProposalRequiresExactOfferSelection(t *testing.T) {
 	// so an answer naming one is inconsistent with it whatever its value
 	echoed := valid
 	echoed.Transforms = append(append([]Transform(nil), valid.Transforms...), Transform{Type: TransInteg, ID: INTEG_NONE})
-	if _, err := suiteFromProposal(echoed, offered); err == nil {
+	if _, err := suiteFromProposal(echoed, offered, false); err == nil {
 		t.Error("an answer naming a transform type this end never offered was accepted")
 	}
 }
@@ -96,14 +96,14 @@ func TestUnknownTransformAttributeMakesOnlyTransformUnacceptable(t *testing.T) {
 		t.Fatal("unknown attribute was silently discarded")
 	}
 	lists := Suites{}
-	chosen, _, ok := chooseIKE(decoded, lists.ikeCiphers(), lists.rekeyPRFs(PRF_HMAC_SHA2_256), lists.kexGroups(), DH_CURVE25519)
+	chosen, _, ok := chooseIKE(decoded, lists.ikeCiphers(), lists.rekeyPRFs(PRF_HMAC_SHA2_256), lists.rekeyable(), DH_CURVE25519)
 	if !ok || chosen.suite.EncrKeyBits != 128 || chosen.transforms[0].KeyLengthBits != 128 {
 		t.Fatalf("selection did not skip attributed transform: selected=%#v suite=%#v", chosen.transforms, chosen.suite)
 	}
 
 	selectedResponse := decoded[0]
 	selectedResponse.Transforms = []Transform{decoded[0].Transforms[0], decoded[0].Transforms[2], decoded[0].Transforms[3]}
-	if _, err := suiteFromProposal(selectedResponse, ikeProposal().Transforms); err == nil {
+	if _, err := suiteFromProposal(selectedResponse, []Proposal{ikeProposal()}, false); err == nil {
 		t.Fatal("initiator accepted selected transform with unknown attribute")
 	}
 }
@@ -116,11 +116,11 @@ func TestIKERekeyProposalRejectsUnexpectedTransformType(t *testing.T) {
 	}
 	lists := Suites{}
 	rekey := func(p Proposal) (ikeChoice, bool) {
-		chosen, _, ok := chooseIKE([]Proposal{p}, lists.ikeCiphers(), lists.rekeyPRFs(PRF_HMAC_SHA2_256), lists.kexGroups(), DH_CURVE25519)
+		chosen, _, ok := chooseIKE([]Proposal{p}, lists.ikeCiphers(), lists.rekeyPRFs(PRF_HMAC_SHA2_256), lists.rekeyable(), DH_CURVE25519)
 		return chosen, ok
 	}
 	unknown := Proposal{Number: 1, Protocol: ProtoIKE,
-		Transforms: append(slices.Clone(base), Transform{Type: TransformType(9), ID: 1})}
+		Transforms: append(slices.Clone(base), Transform{Type: TransformType(15), ID: 1})}
 	if _, ok := rekey(unknown); ok {
 		t.Fatal("accepted IKE rekey proposal with unexpected transform type")
 	}
@@ -166,7 +166,7 @@ func TestProposalOfAnotherProtocolIsUnacceptable(t *testing.T) {
 			{Number: 1, Protocol: ProtoAH, SPI: []byte{0, 0, 0, 9}, Transforms: []Transform{encrAES128, esnNone}},
 			{Number: 2, Protocol: ProtoESP, SPI: []byte{0, 0, 0, 9}, Transforms: []Transform{encrAES128, esnNone}},
 		})
-		selection, err := selectChildRequestProposal(body, Suites{}.espCiphers(), Suites{}.kexGroups(), 0, groupOptional)
+		selection, err := selectChildRequestProposal(body, Suites{}.espCiphers(), Suites{}.kexEntries(), 0, groupOptional)
 		if err != nil || selection.proposal.Number != 2 {
 			t.Errorf("an AH proposal ahead of an ESP one was answered with proposal %d, %v, want 2", selection.proposal.Number, err)
 		}
@@ -234,7 +234,7 @@ func TestUnusableIntegrityAlternativeDoesNotRefuseTheProposal(t *testing.T) {
 
 	lists := Suites{}
 	rekey := func(p Proposal) (ikeChoice, bool) {
-		chosen, _, ok := chooseIKE([]Proposal{p}, lists.ikeCiphers(), lists.rekeyPRFs(PRF_HMAC_SHA2_256), lists.kexGroups(), DH_CURVE25519)
+		chosen, _, ok := chooseIKE([]Proposal{p}, lists.ikeCiphers(), lists.rekeyPRFs(PRF_HMAC_SHA2_256), lists.rekeyable(), DH_CURVE25519)
 		return chosen, ok
 	}
 	rekeySelected, ok := rekey(Proposal{Number: 1, Protocol: ProtoIKE, Transforms: withBoth})

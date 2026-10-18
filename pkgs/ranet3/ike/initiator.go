@@ -538,7 +538,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 
 	spiI := randUint64Nonzero()
 	lists := current(cfg.Suites)
-	group := lists.kexGroups()[0].ID
+	group := lists.kexEntries()[0].group
 
 	var (
 		req     []byte
@@ -546,7 +546,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		resp    *Message
 		dh      *DHKeyPair
 		ni      []byte
-		offer   Proposal
+		offer   []Proposal
 	)
 
 	// RFC 7296 section 2.6.1: "if the responder includes the KEi payloads in cookie calculation, it will reject the request by sending a new cookie."
@@ -580,9 +580,9 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		hdr := Header{SPIInitiator: spiI, ExchangeType: IKE_SA_INIT, Flags: FlagInitiator, MessageID: 0}
 		hashAlgos := make([]byte, 2)
 		binary.BigEndian.PutUint16(hashAlgos, HashIdentity)
-		offer = lists.ikeProposal(group)
+		offer = lists.ikeProposals(group)
 		payloads := []RawPayload{
-			{Type: PayloadSA, Body: EncodeSA([]Proposal{offer})},
+			{Type: PayloadSA, Body: EncodeSA(offer)},
 			{Type: PayloadKE, Body: EncodeKE(group, dh.PublicBytes())},
 			{Type: PayloadNonce, Body: EncodeNonce(ni)},
 			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: hashAlgos})},
@@ -615,7 +615,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 				_, failed, err := firstErrorNotify(m.Payloads)
 				return err == nil && !failed
 			}
-			_, ok := usefulInitNotify(m, haveCookie, haveGroup, offer.Transforms)
+			_, ok := usefulInitNotify(m, haveCookie, haveGroup, transformsOf(offer))
 			refused = refused || carriesNotify(m, N_NO_PROPOSAL_CHOSEN)
 			return ok
 		})
@@ -636,7 +636,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		}
 		// sendRecv returns no notify-only answer the accept above refused
 		// so this finds the one it took
-		notify, _ := usefulInitNotify(resp, haveCookie, haveGroup, offer.Transforms)
+		notify, _ := usefulInitNotify(resp, haveCookie, haveGroup, transformsOf(offer))
 		switch notify.Type {
 		case N_COOKIE:
 			cookie, cookieForGroup = notify.Data, true
@@ -671,7 +671,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		mux.Close()
 		return nil, fmt.Errorf("ike: bad SA in IKE_SA_INIT response: %v", err)
 	}
-	suite, err := suiteFromProposal(props[0], offer.Transforms)
+	suite, err := suiteFromProposal(props[0], offer, false)
 	if err != nil {
 		mux.Close()
 		return nil, err
@@ -779,34 +779,54 @@ func supportsSignatureHash(payloads []RawPayload, wanted uint16) (bool, error) {
 	return found, nil
 }
 
-// suiteFromProposal reads the answer to an offer of offered
-// offered names three transform types
+// suiteFromProposal reads the answer to an offer of offered, which this end built, so each proposal holds one transform of each key exchange type it names
+// addke tells whether the exchange negotiated ADDKE Transform Types
+// RFC 7296 section 3.3.1: "When a proposal is accepted, the proposal number in the SA payload MUST match the number on the proposal sent that was accepted."
 // RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
 // RFC 7296 section 3.3.6: "The initiator of an exchange MUST check that the accepted offer is consistent with one of its proposals, and if not MUST terminate the exchange."
-func suiteFromProposal(p Proposal, offered []Transform) (SASuite, error) {
-	if p.Number != 1 || p.Protocol != ProtoIKE || len(p.SPI) != 0 || len(p.Transforms) != 3 {
+// RFC 9370 section 2.2.1: "If the IKE_INTERMEDIATE exchange is not negotiated, then the peers MUST treat any ADDKE Transform Types in the IKE_SA_INIT exchange messages as unknown transform types and skip the proposals they appear in."
+func suiteFromProposal(p Proposal, offered []Proposal, addke bool) (SASuite, error) {
+	at := slices.IndexFunc(offered, func(proposal Proposal) bool { return proposal.Number == p.Number })
+	if at < 0 || p.Protocol != ProtoIKE || len(p.SPI) != 0 {
 		return SASuite{}, fmt.Errorf("ike: invalid selected IKE proposal shape")
 	}
-	selected := make(map[TransformType]Transform, 3)
+	proposal := offered[at]
+	selected := make(map[TransformType]Transform, len(p.Transforms))
 	for _, transform := range p.Transforms {
-		if transform.Type != TransEncr && transform.Type != TransPRF && transform.Type != TransDH {
+		known := transform.Type == TransEncr || transform.Type == TransPRF || transform.Type == TransDH || additional(transform.Type) && addke
+		if !known {
 			return SASuite{}, fmt.Errorf("ike: unexpected selected transform type %d", transform.Type)
 		}
 		if _, duplicate := selected[transform.Type]; duplicate {
 			return SASuite{}, fmt.Errorf("ike: duplicate selected transform type %d", transform.Type)
 		}
-		if !slices.Contains(offered, transform) {
-			return SASuite{}, fmt.Errorf("ike: responder selected unoffered transform %d/%d", transform.Type, transform.ID)
+		if !slices.Contains(proposal.Transforms, transform) {
+			return SASuite{}, fmt.Errorf("ike: responder selected unoffered transform %d/%d in proposal %d", transform.Type, transform.ID, p.Number)
 		}
 		selected[transform.Type] = transform
 	}
-	encr, encrOK := selected[TransEncr]
-	prfT, prfOK := selected[TransPRF]
-	dhT, dhOK := selected[TransDH]
-	if !encrOK || !prfOK || !dhOK {
-		return SASuite{}, fmt.Errorf("ike: incomplete selected IKE proposal")
+	for _, transform := range proposal.Transforms {
+		if _, ok := selected[transform.Type]; !ok {
+			return SASuite{}, fmt.Errorf("ike: incomplete selected IKE proposal, without transform type %d", transform.Type)
+		}
 	}
-	return SASuite{EncrID: encr.ID, EncrKeyBits: encr.KeyLengthBits, PRFID: prfT.ID, DHGroup: dhT.ID}, nil
+	suite := SASuite{EncrID: selected[TransEncr].ID, EncrKeyBits: selected[TransEncr].KeyLengthBits, PRFID: selected[TransPRF].ID, DHGroup: selected[TransDH].ID}
+	added := 0
+	for t := TransADDKE1; t <= TransADDKE7; t++ {
+		if addition, ok := selected[t]; ok && addition.ID != 0 {
+			suite.Additions[added] = addition.ID
+			added++
+		}
+	}
+	return suite, nil
+}
+
+func transformsOf(proposals []Proposal) []Transform {
+	var transforms []Transform
+	for _, proposal := range proposals {
+		transforms = append(transforms, proposal.Transforms...)
+	}
+	return transforms
 }
 
 func (s *Session) completeIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr []byte) error {

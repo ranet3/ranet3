@@ -243,7 +243,7 @@ func TestPeerRekeyIsAnsweredByTheListsOrRefused(t *testing.T) {
 				transforms = append(transforms, esnNone)
 			}
 			if p.unknown {
-				transforms = append(transforms, Transform{Type: TransformType(9), ID: 1})
+				transforms = append(transforms, Transform{Type: TransformType(15), ID: 1})
 			}
 			proposals = append(proposals, Proposal{Transforms: transforms})
 		}
@@ -338,14 +338,20 @@ func TestOwnIKESARekeyOffersTheListsAndTakesOnlyWhatTheyOffer(t *testing.T) {
 			keGroup = group
 		}
 		// RFC 7296 section 3.4: "SHOULD match the Diffie-Hellman group in the first group in the first proposal, if such exists."
-		wantOffer := slices.Concat(ciphers, []string{prf}, ahead(groups, keGroup))
+		// one proposal for each group, numbered in that order
 		proposals, err := DecodeSA(sa.Body)
-		if err != nil || len(proposals) != 1 {
-			ht.Fatalf("the rekey offered %+v, %v", proposals, err)
+		if err != nil || len(proposals) != len(groups) {
+			ht.Fatalf("the rekey offered %+v, %v, want one proposal for each of %q", proposals, err, groups)
 		}
-		var gotOffer []string
-		for _, transform := range proposals[0].Transforms {
-			gotOffer = append(gotOffer, transformName(transform))
+		var gotOffer, wantOffer []string
+		for i, offered := range ahead(groups, keGroup) {
+			wantOffer = append(wantOffer, slices.Concat(ciphers, []string{prf, offered})...)
+			if proposals[i].Number != uint8(i+1) {
+				ht.Fatalf("proposal %d of the rekey offer is numbered %d", i+1, proposals[i].Number)
+			}
+			for _, transform := range proposals[i].Transforms {
+				gotOffer = append(gotOffer, transformName(transform))
+			}
 		}
 		if !slices.Equal(gotOffer, wantOffer) {
 			ht.Fatalf("lists %+v offered %q to rekey an SA in %s and %s, want %q", lists, gotOffer, prf, group, wantOffer)
@@ -397,6 +403,45 @@ func TestOwnIKESARekeyOffersTheListsAndTakesOnlyWhatTheyOffer(t *testing.T) {
 			ht.Fatalf("an answer the rekey took is %v, and the session runs the SA it replaced is %v", take, current == ctx)
 		}
 	})
+}
+
+// an IKE SA rekey of an SA whose group kex holds only in an entry with additional key exchanges sends its KE payload in the first entry a CREATE_CHILD_SA runs
+// and every proposal it offers is in that group
+// RFC 7296 section 3.4: "This Diffie-Hellman Group Num MUST match a Diffie-Hellman group specified in a proposal in the SA payload that is sent in the same message"
+func TestOwnIKESARekeyOfAGroupOnlyAJoinedEntryHoldsRunsTheFirstRekeyableGroup(t *testing.T) {
+	mux, _ := lifecycleMuxes(t)
+	lists := Suites{kex: []kexEntry{{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}, {group: DH_ECP_384}}}
+	ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519},
+		spiI: randUint64Nonzero(), spiR: randUint64Nonzero(), skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
+	s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return lists }}
+	done := make(chan error, 1)
+	go func() { done <- s.RekeyIKE() }()
+	var request *localRequest
+	select {
+	case request = <-s.requests:
+	case err := <-done:
+		t.Fatalf("the rekey ended with %v before its request", err)
+	case <-time.After(answerBudget):
+		t.Fatal("the rekey sent nothing")
+	}
+	sa, ke := findType(request.inner, PayloadSA), findType(request.inner, PayloadKE)
+	request.result <- requestResult{err: errors.New("nothing answers")}
+	<-done
+	if sa == nil || ke == nil {
+		t.Fatalf("the rekey request carried %v", request.inner)
+	}
+	if group, _, err := DecodeKE(ke.Body); err != nil || group != DH_ECP_384 {
+		t.Errorf("the KE payload is in group %d, %v, want %d", group, err, DH_ECP_384)
+	}
+	proposals, err := DecodeSA(sa.Body)
+	if err != nil || len(proposals) == 0 {
+		t.Fatalf("the rekey offered %+v, %v", proposals, err)
+	}
+	for _, proposal := range proposals {
+		if kex := kexOf(proposal); !slices.Equal(kex, []Transform{dhP384}) {
+			t.Errorf("proposal %d offers the key exchanges %+v, want p384 alone", proposal.Number, kex)
+		}
+	}
 }
 
 // an SA is unlisted once the lists leave out one of its transforms, a Child SA's group counting where a key exchange of its own keyed it
@@ -630,8 +675,8 @@ func TestInitiatorTakesOnlyAnAnswerItsListsOffer(t *testing.T) {
 		if !ok {
 			ht.Fatal("no IKE_SA_INIT request arrived")
 		}
-		offer := suites.ikeProposal(suites.kexGroups()[0].ID)
-		if sa := request.find(PayloadSA); sa == nil || !bytes.Equal(sa.Body, EncodeSA([]Proposal{offer})) {
+		offer := suites.ikeProposals(suites.kexEntries()[0].group)
+		if sa := request.find(PayloadSA); sa == nil || !bytes.Equal(sa.Body, EncodeSA(offer)) {
 			ht.Fatalf("the initiator offered %+v, want its lists", sa)
 		}
 		keGroup := transformOf(written(lists.IKE.Kex, everyKex)[0])
@@ -652,7 +697,8 @@ func TestInitiatorTakesOnlyAnAnswerItsListsOffer(t *testing.T) {
 			}
 			group, answerKE = keGroup, keGroup
 		}
-		take := slices.Contains(offer.Transforms, cipher) && slices.Contains(offer.Transforms, prf) && group == keGroup && answerKE == group
+		// the answer names proposal 1, the one in the KE payload's group
+		take := slices.Contains(offer[0].Transforms, cipher) && slices.Contains(offer[0].Transforms, prf) && group == keGroup && answerKE == group
 		dh, err := GenerateDH(answerKE.ID)
 		if err != nil {
 			ht.Fatal(err)
@@ -688,7 +734,7 @@ func TestInitiatorTakesOnlyAnAnswerItsListsOffer(t *testing.T) {
 			<-initiated
 		}
 		if took != take {
-			ht.Fatalf("an answer in %+v, %+v and %+v with its KE payload in %d to an offer of %+v with its KE payload in %d was taken %v, want %v", cipher, prf, group, answerKE.ID, offer.Transforms, keGroup.ID, took, take)
+			ht.Fatalf("an answer in %+v, %+v and %+v with its KE payload in %d to an offer of %+v with its KE payload in %d was taken %v, want %v", cipher, prf, group, answerKE.ID, offer, keGroup.ID, took, take)
 		}
 	})
 }

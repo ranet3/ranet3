@@ -88,7 +88,7 @@ func TestHandshakeRunsTheResponderFirstChoiceOrIsRefused(t *testing.T) {
 			if err := probe.RegisterIKE(spiI); err != nil {
 				ht.Fatal(err)
 			}
-			offer := encodeTestSAInit(ht, spiI, bytes.Repeat([]byte{1}, 32), initiatorLists.ikeProposal(initiatorLists.kexGroups()[0].ID), nil)
+			offer := encodeTestSAInitOffer(ht, spiI, bytes.Repeat([]byte{1}, 32), initiatorLists.ikeProposals(initiatorLists.kexEntries()[0].group), nil)
 			reply := statelessAnswer(ht, probe, offer, "an offer the lists do not meet drew no answer")
 			if got := firstTestNotify(ht, reply); got.Type != N_NO_PROPOSAL_CHOSEN {
 				ht.Fatalf("lists apart in a type of the IKE SA answered notify %d, want NO_PROPOSAL_CHOSEN", got.Type)

@@ -22,8 +22,24 @@ import (
 	"ranet3.com/pkgs/ranet3/identity"
 )
 
+// a peer's IKE_SA_INIT offer of every transform a node writing none of the cap.crypto lists takes, in one proposal with Curve25519 first
+func ikeProposal() Proposal { return combinedProposal(nil, Suites{}.ikePRFs()) }
+
+// a peer's offer replacing an IKE SA whose PRF is prfID, every cipher and group in one proposal
+func ikeRekeyProposal(spi []byte, prfID uint16) Proposal {
+	return combinedProposal(spi, Suites{}.rekeyPRFs(prfID))
+}
+
+func combinedProposal(spi []byte, prfs []Transform) Proposal {
+	var lists Suites
+	transforms := slices.Concat(lists.ikeCiphers(), prfs)
+	for _, entry := range lists.kexEntries() {
+		transforms = append(transforms, Transform{Type: TransDH, ID: entry.group})
+	}
+	return Proposal{Number: 1, Protocol: ProtoIKE, SPI: spi, Transforms: transforms}
+}
+
 // the offers of a node that writes none of the cap.crypto lists
-func ikeProposal() Proposal           { return Suites{}.ikeProposal(DH_CURVE25519) }
 func espProposal(spi []byte) Proposal { return Suites{}.espProposal(spi) }
 func espRekeyProposal(spi []byte, old ChildSA) Proposal {
 	return Suites{}.espRekeyProposal(spi, old)
@@ -51,17 +67,21 @@ func suitesOf(t testing.TB, c Crypto) Suites {
 	return suites
 }
 
-// a node that writes no list offers the bytes it offered before the lists existed
+// a node offers one IKE SA proposal for each kex entry, numbered from 1 in the order the list gives, each holding every cipher and PRF
+// a node that writes no list offers the entries in the order kexNames gives
 // a written list offers its names in the order written
 func TestListsResolveToOffersInTheirOrder(t *testing.T) {
 	spi := []byte{1, 2, 3, 4}
+	every := "0300000c01000014800e0100" + "0300000c01000014800e0080" + "030000080100001c" + "0300000802000006" + "0300000802000005"
+	written := "030000080100001c" + "0300000c01000014800e0080" + "0300000802000005"
 	for name, test := range map[string]struct {
 		crypto   Crypto
 		ike, esp string
 	}{
 		"every list left out": {
-			ike: "0000005001010008" + "0300000c01000014800e0100" + "0300000c01000014800e0080" + "030000080100001c" +
-				"0300000802000006" + "0300000802000005" + "030000080400001f" + "0300000804000014" + "0000000804000013",
+			ike: "0200004001010006" + every + "000000080400001f" +
+				"0200004002010006" + every + "0000000804000014" +
+				"0000004003010006" + every + "0000000804000013",
 			esp: "0000003401030404" + "01020304" + "0300000c01000014800e0100" + "0300000c01000014800e0080" + "030000080100001c" + "0000000805000000",
 		},
 		"every list written": {
@@ -69,13 +89,14 @@ func TestListsResolveToOffersInTheirOrder(t *testing.T) {
 				IKE: IKESuites{Cipher: []string{"chacha20poly1305", "aes128gcm"}, PRF: []string{"sha256"}, Kex: []string{"p256", "x25519"}},
 				ESP: ESPSuites{Cipher: []string{"aes128gcm"}},
 			},
-			ike: "0000003401010005" + "030000080100001c" + "0300000c01000014800e0080" + "0300000802000005" + "0300000804000013" + "000000080400001f",
+			ike: "0200002c01010004" + written + "0000000804000013" +
+				"0000002c02010004" + written + "000000080400001f",
 			esp: "0000002001030402" + "01020304" + "0300000c01000014800e0080" + "0000000805000000",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			suites := suitesOf(t, test.crypto)
-			if got := hex.EncodeToString(EncodeSA([]Proposal{suites.ikeProposal(suites.kexGroups()[0].ID)})); got != test.ike {
+			if got := hex.EncodeToString(EncodeSA(suites.ikeProposals(suites.kexEntries()[0].group))); got != test.ike {
 				t.Errorf("the IKE_SA_INIT offer is %s, want %s", got, test.ike)
 			}
 			if got := hex.EncodeToString(EncodeSA([]Proposal{suites.espProposal(spi)})); got != test.esp {
@@ -370,7 +391,7 @@ func TestPeerRekeyIsAnsweredInTheCipherItReplaces(t *testing.T) {
 		"an offer leaving the cipher out": {[]Transform{encrAES256, encrChaCha, esnNone}, Transform{Type: TransEncr, ID: ENCR_CHACHA20_POLY1305, KeyLengthBits: 256}},
 	} {
 		offer := EncodeSA([]Proposal{{Number: 1, Protocol: ProtoESP, SPI: []byte{0, 0, 0, 32}, Transforms: test.offer}})
-		selection, err := selectChildRequestProposal(offer, lists.rekeyChoice(old), lists.kexGroups(), 0, groupOptional)
+		selection, err := selectChildRequestProposal(offer, lists.rekeyChoice(old), lists.kexEntries(), 0, groupOptional)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -402,6 +423,50 @@ func TestChildSAKeyedInAGroupTheListsLeftOutIsUnlisted(t *testing.T) {
 	}
 }
 
+// an offer puts first the first proposal whose Transform Type 4 is the KE payload's group, and the rest keep the order of the lists
+// at the first offer, at the retry INVALID_KE_PAYLOAD asks for and at an IKE SA rekey alike
+// RFC 7296 section 3.3: "If there is more than one, they MUST be ordered from most preferred to least preferred."
+// RFC 7296 section 3.4: "SHOULD match the Diffie-Hellman group in the first group in the first proposal, if such exists."
+func TestOfferLeadsWithOneProposalInTheKEGroup(t *testing.T) {
+	joined := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}
+	x25519, p384, p256 := kexEntry{group: DH_CURVE25519}, kexEntry{group: DH_ECP_384}, kexEntry{group: DH_ECP_256}
+	spi := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	for name, test := range map[string]struct {
+		offer []Proposal
+		want  []kexEntry
+	}{
+		"the first offer, in the group of the first entry": {
+			Suites{kex: []kexEntry{joined, p384, x25519}}.ikeProposals(DH_CURVE25519), []kexEntry{joined, p384, x25519},
+		},
+		"the retry in the group of a later entry": {
+			Suites{kex: []kexEntry{p384, joined, p256, x25519}}.ikeProposals(DH_CURVE25519), []kexEntry{joined, p384, p256, x25519},
+		},
+		"an IKE SA rekey in the group of a later entry": {
+			Suites{kex: []kexEntry{p384, joined, p256, x25519}}.ikeRekeyProposals(spi, PRF_HMAC_SHA2_256, DH_CURVE25519), []kexEntry{x25519, p384, p256},
+		},
+	} {
+		var got []kexEntry
+		for i, proposal := range test.offer {
+			if proposal.Number != uint8(i+1) {
+				t.Errorf("%s: proposal %d is numbered %d", name, i+1, proposal.Number)
+			}
+			var entry kexEntry
+			for _, transform := range proposal.Transforms {
+				switch {
+				case transform.Type == TransDH:
+					entry.group = transform.ID
+				case additional(transform.Type):
+					entry.additions[transform.Type-TransADDKE1] = transform.ID
+				}
+			}
+			got = append(got, entry)
+		}
+		if !slices.Equal(got, test.want) {
+			t.Errorf("%s: offered %+v, want %+v", name, got, test.want)
+		}
+	}
+}
+
 // an initiator offers its lists in IKE_SA_INIT with the KE payload in the first kex group
 // and ends the handshake on an answer choosing a transform its lists left out
 // RFC 7296 section 3.3.6: "The initiator of an exchange MUST check that the accepted offer is consistent with one of its proposals, and if not MUST terminate the exchange."
@@ -422,7 +487,7 @@ func TestInitiatorRefusesAnIKESAInitAnswerOutsideItsLists(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		if sa := request.find(PayloadSA); sa == nil || !bytes.Equal(sa.Body, EncodeSA([]Proposal{lists.ikeProposal(DH_ECP_256)})) {
+		if sa := request.find(PayloadSA); sa == nil || !bytes.Equal(sa.Body, EncodeSA(lists.ikeProposals(DH_ECP_256))) {
 			t.Errorf("the initiator offered %+v, want its lists", sa)
 		}
 		if ke := request.find(PayloadKE); ke == nil {
@@ -541,8 +606,9 @@ func TestInitiatorRefusesARekeyAnswerOutsideItsLists(t *testing.T) {
 			t.Fatalf("the rekey request carried %v", request.inner)
 		}
 		proposals, err := DecodeSA(sa.Body)
-		if want := []Transform{encrAES256, encrChaCha, prfSHA256, dhP256, dhX25519}; err != nil || len(proposals) != 1 || !slices.Equal(proposals[0].Transforms, want) {
-			t.Errorf("the rekey offered %+v, %v, want %+v", proposals, err, want)
+		want := [][]Transform{{encrAES256, encrChaCha, prfSHA256, dhP256}, {encrAES256, encrChaCha, prfSHA256, dhX25519}}
+		if err != nil || len(proposals) != len(want) || !slices.Equal(proposals[0].Transforms, want[0]) || !slices.Equal(proposals[1].Transforms, want[1]) {
+			t.Errorf("the rekey offered %+v, %v, want a proposal of each of %+v", proposals, err, want)
 		}
 		if group, _, err := DecodeKE(ke.Body); err != nil || group != DH_ECP_256 {
 			t.Errorf("the KE payload is in group %d, %v, want the first kex group", group, err)

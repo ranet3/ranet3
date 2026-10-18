@@ -173,7 +173,7 @@ func ikeRekeyRequest(t *testing.T) []RawPayload {
 		t.Fatal(err)
 	}
 	return []RawPayload{
-		{Type: PayloadSA, Body: EncodeSA([]Proposal{Suites{}.ikeRekeyProposal(binary.BigEndian.AppendUint64(nil, 0x2122232425262728), PRF_HMAC_SHA2_256, DH_CURVE25519)})},
+		{Type: PayloadSA, Body: EncodeSA([]Proposal{ikeRekeyProposal(binary.BigEndian.AppendUint64(nil, 0x2122232425262728), PRF_HMAC_SHA2_256)})},
 		{Type: PayloadNonce, Body: EncodeNonce(make([]byte, 32))},
 		{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, dh.PublicBytes())},
 	}

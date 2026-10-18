@@ -347,12 +347,12 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
 	}
 	lists := s.lists()
-	ciphers, groups := lists.espCiphers(), lists.kexGroups()
+	ciphers, entries := lists.espCiphers(), lists.rekeyable()
 	if expected != nil {
 		// the answer keeps the cipher and the group of the Child SA it replaces where the offer and the lists hold them
-		ciphers, groups = lists.rekeyChoice(*expected), lists.rekeyGroups(childGroup, group)
+		ciphers, entries = lists.rekeyChoice(*expected), lists.rekeyEntries(kexEntry{group: childGroup}, group)
 	}
-	selected, err := selectChildRequestProposal(payloads.sa.Body, ciphers, groups, group, groupOptional)
+	selected, err := selectChildRequestProposal(payloads.sa.Body, ciphers, entries, group, groupOptional)
 	if err != nil {
 		if invalidKE, ok := errors.AsType[*invalidKEError](err); ok {
 			return s.responseNotifyData(ctx, msgID, CREATE_CHILD_SA, N_INVALID_KE_PAYLOAD,
@@ -419,6 +419,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	if selected.dh.Type != 0 {
 		response.Transforms = append(response.Transforms, selected.dh)
 	}
+	response.Transforms = append(response.Transforms, selected.additions...)
 	responsePayloads := []RawPayload{{Type: PayloadSA, Body: EncodeSA([]Proposal{response})}, {Type: PayloadNonce, Body: EncodeNonce(nr)}}
 	if localPublic != nil {
 		responsePayloads = append(responsePayloads, RawPayload{Type: PayloadKE, Body: EncodeKE(selected.dh.ID, localPublic)})
