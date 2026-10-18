@@ -64,6 +64,8 @@ const (
 	IKE_AUTH        ExchangeType = 35
 	CREATE_CHILD_SA ExchangeType = 36
 	INFORMATIONAL   ExchangeType = 37
+	// RFC 9242 section 3.2 of IKE_INTERMEDIATE: "its Exchange Type is 43."
+	IKE_INTERMEDIATE ExchangeType = 43
 )
 
 // IKE header flags, RFC 7296 section 3.1.
