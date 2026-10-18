@@ -33,6 +33,10 @@
   # and ranet3 by auth.aliases, so an ID of another type than a DN is checked
   # against the implementation it has to interoperate with.
   fqdn ? false,
+  # suites gives ranet3 the cap.crypto lists suiteLists names under it and strongSwan the proposals of swanProposals
+  # "meet" shares one suite between the two ends
+  # "apart" shares none
+  suites ? null,
 }:
 
 let
@@ -73,6 +77,32 @@ let
   gatewayFQDN = "server.testorg.example";
   clientFQDN = "client.testorg.example";
   publicKey = builtins.readFile ../../fixtures/org-pub.pem;
+  # strongSwan proposes the stronger of each pair first
+  # so a choice ranet3's lists did not narrow comes out as the stronger one
+  swanProposals = [ "aes256gcm16-aes128gcm16-prfsha384-prfsha256-ecp384-ecp256" ];
+  swanESPProposals = [ "aes256gcm16-aes128gcm16" ];
+  # meet leaves ranet3 aes128gcm, sha256 and p256 of what strongSwan proposes
+  # apart leaves it no IKE cipher strongSwan proposes
+  suiteLists = {
+    meet = {
+      ike = {
+        cipher = [
+          "chacha20poly1305"
+          "aes128gcm"
+        ];
+        prf = [ "sha256" ];
+        kex = [
+          "x25519"
+          "p256"
+        ];
+      };
+      esp.cipher = [
+        "chacha20poly1305"
+        "aes128gcm"
+      ];
+    };
+    apart.ike.cipher = [ "chacha20poly1305" ];
+  };
 
   common = {
     virtualisation.vlans = [ 1 ];
@@ -86,7 +116,9 @@ let
 in
 testers.runNixOSTest {
   name =
-    if responder then
+    if suites != null then
+      "ranet3-suites-${suites}${lib.optionalString responder "-responder"}"
+    else if responder then
       "ranet3-responder${lib.optionalString fqdn "-fqdn"}"
     else if kernel then
       "ranet3-kernel"
@@ -192,6 +224,7 @@ testers.runNixOSTest {
               remote_port = 14000;
               encap = true;
               mobike = false;
+              proposals = pkgs.lib.mkIf (suites != null) swanProposals;
               dpd_delay = "10s";
               keyingtries = 0;
               unique = "replace";
@@ -217,6 +250,7 @@ testers.runNixOSTest {
                   "::/0"
                 ];
                 mode = "tunnel";
+                esp_proposals = pkgs.lib.mkIf (suites != null) swanESPProposals;
                 dpd_action = "restart";
                 start_action = "none";
                 close_action = "none";
@@ -475,12 +509,15 @@ testers.runNixOSTest {
                 hello = "500ms";
                 update = "1s";
               };
-              crypto.rekey = {
-                child = if profile then 0 else "5s";
-                ike = if profile then 0 else "15s";
-                margin = "3s";
-                jitter = 0;
-              };
+              crypto = {
+                rekey = {
+                  child = if profile then 0 else "5s";
+                  ike = if profile then 0 else "15s";
+                  margin = "3s";
+                  jitter = 0;
+                };
+              }
+              // pkgs.lib.optionalAttrs (suites != null) suiteLists.${suites};
               segment = pkgs.lib.mkIf segments {
                 source = clientTunnel;
                 local = [
@@ -1025,10 +1062,92 @@ testers.runNixOSTest {
                 print(gateway.execute(command)[1])
             print(client.execute(f"ip -s link show {client_device}")[1])
       '';
+
+      # with responder strongSwan dials and ranet3 answers
+      # without it ranet3 dials
+      # the two ends share aes128gcm, sha256 and p256 alone
+      # and each reports that suite as the one its SAs run
+      suitesMeet = ''
+        import json
+
+        try:
+            gateway.wait_for_unit("systemd-networkd-wait-online.service")
+            gateway.wait_for_unit("strongswan-swanctl.service")
+            gateway.wait_for_unit("bird.service")
+            client.wait_for_unit("ranet3.service")
+
+            if ${if responder then "True" else "False"}:
+                gateway.succeed("swanctl --initiate --child default")
+            client.wait_until_succeeds("journalctl -u ranet3.service --no-pager | grep -F ': connected (SPI'", timeout=timeout)
+            client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
+
+            def both_ends_run_the_shared_suite():
+                sessions = json.loads(client.succeed("ranet3 sessions --json"))
+                print(json.dumps(sessions, indent=2))
+                running = [(s.get("ike_cipher"), s.get("ike_prf"), s.get("ike_kex"), s.get("esp_cipher")) for s in sessions]
+                assert running == [("aes128gcm", "sha256", "p256", "aes128gcm")], f"ranet3 runs {running}"
+                sas = gateway.succeed("swanctl --list-sas")
+                print(sas)
+                for want in ["AES_GCM_16-128/PRF_HMAC_SHA2_256/ECP_256", "ESP:AES_GCM_16-128"]:
+                    assert want in sas, f"strongSwan's SAs do not run {want}"
+
+            both_ends_run_the_shared_suite()
+
+            # strongSwan's rekeys offer its whole proposals
+            # and ranet3 answers them within its lists
+            for sa, done in [("--child default", "parsed CREATE_CHILD_SA response.*SA No TSi TSr"), ("--ike ranet", "IKE_SA ranet.* rekeyed between")]:
+                peer_rekey = journal_after(gateway, "strongswan-swanctl.service")
+                print(gateway.succeed(f"swanctl --rekey {sa}"))
+                gateway.wait_until_succeeds(f"{peer_rekey} | grep -E '{done}'", timeout=timeout)
+                client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
+
+            # ranet3's own rekeys keep the cipher and the PRF
+            # and offer its lists for the rest
+            for sa, suite in [("child", "aes128gcm"), ("ike", "aes128gcm/sha256/p256")]:
+                print(client.succeed(f"ranet3 debug wait ike.rekey.completed --attr sa={sa} --attr suite={suite} --timeout 60s"))
+            client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
+            both_ends_run_the_shared_suite()
+
+            client.fail("journalctl -u ranet3.service --no-pager | grep -F 'no matching inbound ESP SA'")
+            gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built'")
+        finally:
+            print(gateway.execute("swanctl --list-sas")[1])
+            print(client.execute("ranet3 sessions")[1])
+      '';
+
+      # the two ends share no IKE cipher
+      # so the end answering refuses with NO_PROPOSAL_CHOSEN whichever end dials
+      suitesApart = ''
+        # ranet3 waits out its retransmissions before it gives up on a refusal no key authenticates
+        refusal_timeout = dt.timedelta(seconds=120)
+        swan_log = "journalctl -u strongswan-swanctl.service --no-pager"
+
+        try:
+            gateway.wait_for_unit("systemd-networkd-wait-online.service")
+            gateway.wait_for_unit("strongswan-swanctl.service")
+            client.wait_for_unit("ranet3.service")
+
+            if ${if responder then "True" else "False"}:
+                gateway.execute("swanctl --initiate --child default --timeout 10")
+                gateway.wait_until_succeeds(f"{swan_log} | grep -F 'parsed IKE_SA_INIT response 0 [ N(NO_PROP) ]'", timeout=timeout)
+                client.succeed("ranet3 debug wait ike.handshake.failed --attr 'err=ike: no acceptable IKE SA proposal' --past 10m --timeout 30s")
+            else:
+                gateway.wait_until_succeeds(f"{swan_log} | grep -F 'generating IKE_SA_INIT response 0 [ N(NO_PROP) ]'", timeout=timeout)
+                client.wait_until_succeeds("journalctl -u ranet3.service --no-pager | grep -F 'the responder answered NO_PROPOSAL_CHOSEN'", timeout=refusal_timeout)
+
+            client.fail("journalctl -u ranet3.service --no-pager | grep -F ': connected (SPI'")
+            gateway.fail("swanctl --list-sas | grep -F ESTABLISHED")
+        finally:
+            print(gateway.execute("swanctl --list-sas")[1])
+      '';
     in
     preamble
     + (
-      if responder then
+      if suites == "meet" then
+        suitesMeet
+      else if suites == "apart" then
+        suitesApart
+      else if responder then
         responderScript
       else if segments then
         segmentRouted
