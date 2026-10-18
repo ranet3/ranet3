@@ -593,7 +593,10 @@ func (p *routePlatform) AddRoute(r Route) error {
 		return errRouteSkipped
 	}
 	installed := occupiedKey{destination: r.Destination, scoped: p.scopeRoute(r)}
+	// a key another program held when an earlier add of this pass was
+	// refused is this process's own now, so the next dump has to report it
 	delete(p.occupied, installed)
+	delete(p.refused, installed)
 	p.ours[installed] = true
 	// Recorded only after the write lands, and only for a route that actually
 	// carries the scope. An entry for a route that was never installed would

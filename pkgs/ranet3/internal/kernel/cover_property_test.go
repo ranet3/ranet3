@@ -183,28 +183,31 @@ func failKeys(routes []netip.Prefix) [2][]netip.Prefix {
 }
 
 // unitStep is one pass's table, the host's own defaults, the keys other
-// programs hold, each with the error an add there meets, and the keys where
-// only a route that is not a member fails.
+// programs hold, each with the error an add there meets, the keys where only
+// a route that is not a member fails, and the keys where a member's delete
+// fails.
 type unitStep struct {
-	routes       []netip.Prefix
-	hosts        Covered
-	taken, flaky map[netip.Prefix]error
+	routes              []netip.Prefix
+	hosts               Covered
+	taken, flaky, stuck map[netip.Prefix]error
 }
 
 func (s unitStep) equal(o unitStep) bool {
-	return slices.Equal(s.routes, o.routes) && s.hosts == o.hosts && maps.Equal(s.taken, o.taken) && maps.Equal(s.flaky, o.flaky)
+	return slices.Equal(s.routes, o.routes) && s.hosts == o.hosts &&
+		maps.Equal(s.taken, o.taken) && maps.Equal(s.flaky, o.flaky) && maps.Equal(s.stuck, o.stuck)
 }
 
 // onlyRefuses reports a step whose every failure is a refusal.
 func (s unitStep) onlyRefuses() bool {
-	return len(s.flaky) == 0 && !slices.ContainsFunc(slices.Collect(maps.Values(s.taken)), func(err error) bool { return !errors.Is(err, errRouteSkipped) })
+	return len(s.flaky) == 0 && len(s.stuck) == 0 &&
+		!slices.ContainsFunc(slices.Collect(maps.Values(s.taken)), func(err error) bool { return !errors.Is(err, errRouteSkipped) })
 }
 
 var errTransient = errors.New("no buffer space available")
 
 func unitSteps() hegel.Generator[unitStep] {
 	return hegel.Composite(func(tc hegel.TestCase) unitStep {
-		step := unitStep{taken: map[netip.Prefix]error{}, flaky: map[netip.Prefix]error{}}
+		step := unitStep{taken: map[netip.Prefix]error{}, flaky: map[netip.Prefix]error{}, stuck: map[netip.Prefix]error{}}
 		for _, zero := range []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")} {
 			if hegel.Draw(tc, pbt.Spanning(0, 4)) != 0 {
 				step.routes = append(step.routes, zero)
@@ -235,34 +238,57 @@ func unitSteps() hegel.Generator[unitStep] {
 				step.flaky[key] = errTransient
 			}
 		}
+		// mostly a member at a route's own key, where the route meets that
+		// member if its delete fails
+		atRoutes := slices.DeleteFunc(slices.Clone(keys[0]), func(m netip.Prefix) bool { return !slices.Contains(keys[1], m) })
+		for range hegel.Draw(tc, pbt.Spanning(0, 2)) {
+			pool := keys[0]
+			if len(atRoutes) > 0 && hegel.Draw(tc, pbt.Spanning(0, 3)) != 0 {
+				pool = atRoutes
+			}
+			step.stuck[pool[hegel.Draw(tc, pbt.Spanning(0, len(pool)-1))]] = errTransient
+		}
 		return step
 	})
 }
 
 // Over any sequence of passes that find members or the routes withholding
-// them refused or failed, each family's cover is every member coverDefaults
-// gives for the routes the kernel then holds, or none, and none only when a
-// member the pass tried failed. Stats.Cover names exactly the families with
-// members in, Skipped counts each refused route and each wanted member left
-// out but for one whose add failed, which the pass reports as its error, and
-// a pass over an unchanged table that only refuses adds and deletes nothing.
+// them refused or failed, or a member's delete failed, each family's cover is
+// every member coverDefaults gives for the routes the kernel then holds, or
+// none, and none only when a member the pass tried failed, beside each member
+// whose delete failed. Stats.Cover names exactly the families with members
+// in, Skipped counts each refused route and each wanted member left out but
+// for one whose add or delete failed, which the pass reports as its error, a
+// pass over an unchanged table that only refuses adds and deletes nothing,
+// and the kernel refuses a route only at a key another program holds or at a
+// member whose delete failed in that pass.
 func TestCoverGoesInWholeOrNotAtAll(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		reconciler, kernel, table := keyHarness(t)
 		capture := reconciler.rt.Capture.(*recordingCapture)
 		var last unitStep
 		for pass := range hegel.Draw(ht, pbt.Spanning(1, 5)) {
-			// the last step again, the last table with its keys free, or another
+			// the last step again, the last table with its keys free, another,
+			// or the last table with a route joining at a member's key while
+			// that member's delete fails
 			step := last
 			next := 2
 			if pass > 0 {
-				next = hegel.Draw(ht, pbt.Spanning(0, 2))
+				next = hegel.Draw(ht, pbt.Spanning(0, 3))
 			}
 			switch next {
-			case 1:
-				step.taken, step.flaky = map[netip.Prefix]error{}, map[netip.Prefix]error{}
+			case 1, 3:
+				step.taken, step.flaky, step.stuck = map[netip.Prefix]error{}, map[netip.Prefix]error{}, map[netip.Prefix]error{}
 			case 2:
 				step = hegel.Draw(ht, unitSteps())
+			}
+			if next == 3 {
+				members := slices.Concat(zeroFreeCover[true], zeroFreeCover[false])
+				key := members[hegel.Draw(ht, pbt.Spanning(0, len(members)-1))]
+				if !slices.Contains(step.routes, key) {
+					step.routes = append(slices.Clone(step.routes), key)
+				}
+				step.stuck[key] = errTransient
 			}
 			for _, r := range last.routes {
 				table.Remove(netip.Prefix{}, r)
@@ -270,11 +296,19 @@ func TestCoverGoesInWholeOrNotAtAll(t *testing.T) {
 			for _, r := range step.routes {
 				table.Set(netip.Prefix{}, r, nil)
 			}
-			capture.hosts, kernel.taken, kernel.flaky, kernel.failed = step.hosts, step.taken, step.flaky, nil
+			capture.hosts, kernel.taken, kernel.flaky, kernel.stuck = step.hosts, step.taken, step.flaky, step.stuck
+			kernel.failed, kernel.kept = nil, map[netip.Prefix]bool{}
 			adds, dels := kernel.counts()
 			onlyRefused := step.onlyRefuses()
-			if err := reconciler.reconcile(); err != nil && onlyRefused {
+			err := reconciler.reconcile()
+			if err != nil && onlyRefused {
 				ht.Fatalf("pass %d that only refuses failed: %v", pass, err)
+			}
+			for _, f := range kernel.failed {
+				if errors.Is(f.err, errRouteSkipped) && step.taken[f.route.Destination] == nil && !kernel.kept[f.route.Destination] {
+					ht.Fatalf("pass %d tried %s at a key it holds itself, with that key's delete working\nstep %+v\nkernel %v",
+						pass, f.route, step, kernel.snapshot())
+				}
 			}
 
 			base := []Route{}
@@ -319,11 +353,22 @@ func TestCoverGoesInWholeOrNotAtAll(t *testing.T) {
 					}
 				}
 				slices.SortFunc(got, comparePrefixes)
-				want := slices.SortedFunc(slices.Values(expected[family]), comparePrefixes)
+				want := slices.Clone(expected[family])
 				if broken[family] {
 					want = nil
 					skipped += len(expected[family]) - errored[family]
+					for _, m := range expected[family] {
+						if kernel.kept[m] {
+							skipped--
+						}
+					}
 				}
+				for m := range kernel.kept {
+					if familyOf(m.Addr()) == family && !slices.Contains(want, m) {
+						want = append(want, m)
+					}
+				}
+				slices.SortFunc(want, comparePrefixes)
 				if !slices.Equal(got, want) {
 					ht.Fatalf("pass %d holds the %s members %v, want %v\nstep %+v\nkernel %v\nfailed %v",
 						pass, family, got, want, step, kernel.snapshot(), kernel.failed)
