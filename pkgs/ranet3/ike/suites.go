@@ -510,10 +510,10 @@ func (s *Session) lists() Suites { return current(s.suites) }
 
 // SuitesChanged asks Run to check each SA against the lists in force
 // it never blocks
-// an SA holding a cipher or a group they left out is rekeyed after a delay drawn within the rekey jitter
+// an SA holding a cipher or a kex entry they left out is rekeyed after a delay drawn within the rekey jitter
 // and no later than the rekey its schedule already holds
 // a Child SA whose IKE SA they left out as well draws its delay once that IKE SA's rekey has ended, unless an earlier check already drew one
-// an IKE SA whose PRF they left out is deleted for a new handshake
+// an IKE SA whose PRF they left out is deleted for a new handshake, as is one that rekey finds no CREATE_CHILD_SA for
 func (s *Session) SuitesChanged() {
 	select {
 	case s.rechecks <- struct{}{}:
@@ -525,6 +525,11 @@ func (s *Session) SuitesChanged() {
 // no rekey changes the PRF
 // so the session deletes the SA and a new handshake under the lists in force replaces it
 var ErrPRFUnlisted = errors.New("ike: cap.crypto ike prf no longer holds the IKE SA's PRF, which no rekey changes")
+
+// ErrRekeyByHandshake ends a session whose IKE SA rekey has no CREATE_CHILD_SA to run
+// that is an SA whose entry has additional key exchanges, since this end runs no IKE_FOLLOWUP_KE and a rekey without them would drop them, and an SA whose lists hold no entry of one key exchange
+// so the session deletes the SA and a new handshake under the lists in force replaces it
+var ErrRekeyByHandshake = errors.New("ike: no CREATE_CHILD_SA can rekey the IKE SA under its key exchanges and the lists in force, so a new handshake replaces it")
 
 // Suite is the transforms a session's SAs use, each by the name cap.crypto lists it under
 type Suite struct {

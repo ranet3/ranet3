@@ -17,13 +17,20 @@ import (
 
 // RekeyIKE replaces the IKE SA while retaining the current Child SAs
 // Run must be serving the IKE requests it sends
+// for an SA no CREATE_CHILD_SA can rekey it sends nothing and returns ErrRekeyByHandshake, which Run answers with the SA's Delete
 func (s *Session) RekeyIKE() (err error) {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
+	// RFC 9370 section 2.2.4: "If the initiator includes any ADDKE Transform Types in the SA payload (along with Transform Type 4), and if the responder agrees to perform additional key exchanges, then the additional key exchanges are performed in a series of new IKE_FOLLOWUP_KE exchanges that follow the CREATE_CHILD_SA exchange."
+	// this end runs no IKE_FOLLOWUP_KE, and a rekey of an SA whose entry has additional key exchanges would drop them
+	// so that SA, and one whose lists hold no entry a CREATE_CHILD_SA runs, is left to Run to replace by a new handshake, and no rekey starts
+	old, lists := s.currentContext(), s.lists()
+	if !old.suite.entry().classical() || len(lists.rekeyable()) == 0 {
+		return fmt.Errorf("ike: IKE SA rekey: %w", ErrRekeyByHandshake)
+	}
 	s.emit("ike.rekey.started", slog.String("sa", "ike"))
 	defer func() { s.rekeyEnded("ike", err) }()
 
-	old := s.currentContext()
 	// neither SPI of the SA being replaced
 	// it stays routed by both until its Delete completes
 	// and the Delete unregisters what it named
@@ -31,14 +38,10 @@ func (s *Session) RekeyIKE() (err error) {
 	for spiI == old.spiI || spiI == old.spiR {
 		spiI = randUint64Nonzero()
 	}
-	lists := s.lists()
 	if !lists.holdsPRF(old.suite.PRFID) {
 		return fmt.Errorf("ike: IKE SA rekey: %w", ErrPRFUnlisted)
 	}
 	entries := lists.rekeyable()
-	if len(entries) == 0 {
-		return errors.New("ike: IKE SA rekey: cap.crypto ike kex holds no entry of one key exchange, which is all a rekey runs")
-	}
 	// RFC 7296 section 1.3: "The Diffie-Hellman group of the KEi MUST be an element of the group the initiator expects the responder to accept (additional Diffie-Hellman groups can be proposed)."
 	// the peer took the IKE SA's group in the exchange that made the SA
 	group := old.suite.DHGroup
@@ -261,6 +264,11 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	group, peerPublic, err := decodeRequestKE(payloads.ke.Body)
 	if err != nil {
 		return malformed(err)
+	}
+	// the replacement of an SA whose entry has additional key exchanges would run without them, since this end runs no IKE_FOLLOWUP_KE
+	// so a peer's rekey of one is refused
+	if !ctx.suite.entry().classical() {
+		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
 	}
 	props = slices.DeleteFunc(props, func(proposal Proposal) bool {
 		// RFC 7296 section 2.18: "In other words, an initiator MUST NOT propose the value "NONE" for the Diffie-Hellman transform, and a responder MUST NOT accept such a proposal."
