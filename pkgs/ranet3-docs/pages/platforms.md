@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-10-17
+updated: 2026-10-18
 order: 100
 ---
 
@@ -16,25 +16,25 @@ setting or skips a route instead.
 
 ## At a glance
 
-|                                      | Linux                                                                     | macOS                                                |
-| ------------------------------------ | ------------------------------------------------------------------------- | ---------------------------------------------------- |
-| Kernel                               | Linux 4.20 or later                                                       | no minimum checked                                   |
-| Tun                                  | `ranet3`, or the device `link.tun` names                                  | `utun` for the next free unit, or `utunN`            |
-| Tun queues                           | 1 per CPU the Go runtime uses, up to 256                                  | 1                                                    |
-| Underlay sockets                     | 1 per family, batched with `recvmmsg`, `UDP_GRO` and `UDP_SEGMENT`        | 1 per family, 1 datagram per call                    |
-| Sockets connected to 1 peer          | 1 per busy address pair, up to 256, batched like the shared ones          | 1 per busy peer, up to 256, 1 datagram per call      |
-| Keeping the underlay out of the mesh | `link.underlay.mark` with a `cap.table.rules` entry                       | `link.underlay.bind`                                 |
-| Route ownership                      | the table `cap.table.id` and the protocol `cap.table.proto`               | the utun and the shape of the routes ranet3 installs |
-| `cap.table.rules`, `cap.table.vrf`   | supported                                                                 | refused                                              |
-| `cap.table.prefsrc4`                 | supported                                                                 | refused                                              |
-| `cap.table.metric`                   | supported                                                                 | ignored                                              |
-| `cap.egress`                         | nftables                                                                  | refused                                              |
-| Network watch                        | rtnetlink                                                                 | routing socket                                       |
-| Don't fragment                       | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO`                                      | `IP_DONTFRAG`, `IPV6_DONTFRAG`                       |
-| Path MTU a search starts from        | the route's MTU, including a path MTU the host learned                    | the MTU of the interface the route leaves by         |
-| Forwarding read from                 | `/proc/sys/net/ipv4/ip_forward`, `/proc/sys/net/ipv6/conf/all/forwarding` | `net.inet.ip.forwarding`, `net.inet6.ip6.forwarding` |
-| Control socket caller                | `SO_PEERCRED`                                                             | `LOCAL_PEERCRED`, `LOCAL_PEERPID`                    |
-| Default state directory              | `/var/lib/ranet3`                                                         | `/var/db/ranet3`                                     |
+|                                      | Linux                                                                     | macOS                                                   |
+| ------------------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Kernel                               | Linux 4.20 or later                                                       | no minimum checked                                      |
+| Tun                                  | `ranet3`, or the device `link.tun` names                                  | `utun` for the next free unit, or `utunN`               |
+| Tun queues                           | 1 per CPU the Go runtime uses, up to 256                                  | 1                                                       |
+| Underlay sockets                     | 1 per family, batched with `recvmmsg`, `UDP_GRO` and `UDP_SEGMENT`        | 1 per family, 1 datagram per call                       |
+| Sockets connected to 1 peer          | 1 per busy address pair, up to 256, batched like the shared ones          | 1 per busy address pair, up to 256, 1 datagram per call |
+| Keeping the underlay out of the mesh | `link.underlay.mark` with a `cap.table.rules` entry                       | `link.underlay.bind`                                    |
+| Route ownership                      | the table `cap.table.id` and the protocol `cap.table.proto`               | the utun and the shape of the routes ranet3 installs    |
+| `cap.table.rules`, `cap.table.vrf`   | supported                                                                 | refused                                                 |
+| `cap.table.prefsrc4`                 | supported                                                                 | refused                                                 |
+| `cap.table.metric`                   | supported                                                                 | ignored                                                 |
+| `cap.egress`                         | nftables                                                                  | refused                                                 |
+| Network watch                        | rtnetlink                                                                 | routing socket                                          |
+| Don't fragment                       | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO`                                      | `IP_DONTFRAG`, `IPV6_DONTFRAG`                          |
+| Path MTU a search starts from        | the route's MTU, including a path MTU the host learned                    | the MTU of the interface the route leaves by            |
+| Forwarding read from                 | `/proc/sys/net/ipv4/ip_forward`, `/proc/sys/net/ipv6/conf/all/forwarding` | `net.inet.ip.forwarding`, `net.inet6.ip6.forwarding`    |
+| Control socket caller                | `SO_PEERCRED`                                                             | `LOCAL_PEERCRED`, `LOCAL_PEERPID`                       |
+| Default state directory              | `/var/lib/ranet3`                                                         | `/var/db/ranet3`                                        |
 
 The forwarding settings decide whether a node warns about transit it cannot
 carry, and whether `cap.egress` advertises its prefixes. The caller's
@@ -184,6 +184,8 @@ On a platform other than Linux and macOS:
 - The node reads no caller credentials, so the debug tree answers only on its
   read paths.
 - Datagrams leave without DF, as [path MTU](#path-mtu) below describes.
+- Answers leave from the kernel's choice of source, not the address the request
+  reached.
 
 ## Moving hosts
 
@@ -194,10 +196,22 @@ authenticated request came from, and answers a request from the address it
 arrived on. Beyond those answers, a session this node dialed leaves the source
 address to the kernel. Its sends leave from whatever address the host holds at
 the time. A session a peer opened sends from the address the peer's latest
-request arrived on. On Linux, once that address has gone and the kernel refuses
-a send from it, the session sends from the kernel's choice until a later request
-moves it to the address that one arrived on. macOS never names a source, so
-there the kernel always chooses.
+request arrived on, on Linux and macOS alike, and a request that reaches another
+of this host's addresses moves it there. Once that address has gone and the
+kernel refuses a send from it, the session sends from the kernel's choice until
+a later request moves it to the address that one arrived on. On other platforms
+the kernel always chooses.
+
+Where the host still holds the address but has no route from it to the peer, the
+session's traffic leaves from the kernel's choice too, until a fresh request
+after a minute, which a peer sends once that traffic is lost. A fresh request to
+the address within a minute of the fallback leaves the session there. The first
+one a minute or more after it moves the session back, and if the address still
+has no route, the session falls back again, at most once a minute. Where the
+session's traffic from the other address still reaches the peer, the session
+works, and it stays there until the peer's next request, such as a rekey. Each
+answer to a request that reaches the address is sent from the address itself
+first, so answers leave from it as soon as it routes again.
 
 A session that cannot send at all, because the host has no route to the peer,
 holds while its liveness check retransmits on the usual schedule, and ends once
@@ -230,19 +244,19 @@ reordered, and makes the TCP inside it retransmit.
 
 The transport counts the bytes each address pair carries, sent and received
 together. A pair is this host's address and the peer's address and port. On
-Linux the address of a session a peer opened is the one the peer's request
-arrived on, and a session this node dialed leaves it to the route. macOS never
-names a source, so there every pair leaves it to the route. A pair that carries
-1 MiB within 1 sweep of 30 seconds gets a socket on `link.port`, the listener's
-port, bound to its address or to the one the route picks then, and connected to
-the peer. The peer sees the same address and port as before. The pair's sends
-leave on that socket. The kernel hands the socket the peer's datagrams to that
-address ahead of the listener, and a reader of its own takes them to the same
-sessions. Before Linux 5.4, once 2 such sockets share 1 address, the kernel
-hands each datagram to that address from a peer with a socket of its own to 1 of
-them by a hash, so a peer's datagrams can arrive on another peer's socket. Every
-reader takes them to the same sessions, so none is lost. A node holds at most
-256 such sockets. A pair past the cap stays on the shared socket.
+Linux and macOS the address of a session a peer opened is the one the peer's
+request arrived on, and a session this node dialed, or one whose sends fell back
+from that address, leaves it to the route. A pair that carries 1 MiB within 1
+sweep of 30 seconds gets a socket on `link.port`, the listener's port, bound to
+its address or to the one the route picks then, and connected to the peer. The
+peer sees the same address and port as before. The pair's sends leave on that
+socket. The kernel hands the socket the peer's datagrams to that address ahead
+of the listener, and a reader of its own takes them to the same sessions. Before
+Linux 5.4, once 2 such sockets share 1 address, the kernel hands each datagram
+to that address from a peer with a socket of its own to 1 of them by a hash, so
+a peer's datagrams can arrive on another peer's socket. Every reader takes them
+to the same sessions, so none is lost. A node holds at most 256 such sockets. A
+pair past the cap stays on the shared socket.
 
 On Linux the socket of a session a peer opened also leaves by the interface the
 peer's request arrived on, as the shared socket's replies do. An IPv4 socket

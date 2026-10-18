@@ -229,7 +229,7 @@ connections to the reads.
 | `ike.rekey.failed`                    | the same rekey failing, with its error                                      |
 | `ike.sa.expired`                      | a Child SA reached its lifetime, and its keys left the dataplane            |
 | `ike.sa.closed`                       | a session decided to delete its IKE SA, and why                             |
-| `ike.endpoint.moved`                  | a session moved to where its peer's latest fresh request came from          |
+| `ike.endpoint.moved`                  | a session moved to the addresses of its peer's latest fresh request         |
 | `ike.send.failed`, `.recovered`       | a session's sends to its peer began to fail, and one went out again         |
 | `ike.probe`                           | asked to prove its path, a session started a check or resent its request    |
 | `babel.neighbor.up`, `.down`          | a neighbor's Hellos started arriving, or stopped or its session ended       |
@@ -246,7 +246,7 @@ connections to the reads.
 | `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed      |
 | `network.changed`                     | the host's default or addresses moved, so every session was probed          |
 | `transport.underlay.bound`            | the underlay socket moved onto another interface                            |
-| `transport.endpoint.unpinned`         | sends to a peer left the address its datagram arrived on, which was gone    |
+| `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable   |
 | `transport.endpoint.unsegmented`      | sends to a peer stopped segmenting, since its route refused a segment       |
 | `transport.pair.connected`, `.closed` | a busy peer got a socket connected to it, or that socket closed, with why   |
 | `pmtu.changed`                        | a session's path MTU budget moved, with the size before and the reason      |
@@ -255,12 +255,12 @@ connections to the reads.
 | `netstack.codel.dropping`             | a peer's sender began dropping for a queue delay above its target           |
 | `netstack.codel.drained`              | that peer's queue emptied, or its delay fell back below the target          |
 
-`egress.pass`, `transport.endpoint.unpinned` and
-`transport.endpoint.unsegmented` are recorded on Linux alone.
-`transport.underlay.bound` is recorded on macOS alone, because only macOS binds
-the underlay socket to an interface. `transport.pair.connected` and
-`transport.pair.closed` are recorded on Linux and macOS alone, the platforms
-that connect a socket to 1 busy peer, as
+`egress.pass` and `transport.endpoint.unsegmented` are recorded on Linux alone,
+and `transport.endpoint.unpinned` on Linux and macOS alone, the platforms that
+answer from the address a request reached. `transport.underlay.bound` is
+recorded on macOS alone, because only macOS binds the underlay socket to an
+interface. `transport.pair.connected` and `transport.pair.closed` are recorded
+on Linux and macOS alone, the platforms that connect a socket to 1 busy peer, as
 [platforms](../platforms.md#sockets-connected-to-1-peer) describes.
 
 Each kind carries these attributes:
@@ -433,13 +433,24 @@ trust's refusal as `err`, such as
 `the trust document holds another key for example/gateway` when the
 organization's key changed.
 
+An `ike.endpoint.moved` is recorded when a fresh request comes from another peer
+address or port, or, in a session the peer opened, reaches an address of this
+node the session's sends do not leave from. Its `endpoint` names the peer's
+address and port, so in the second case it can name the same one as before. A
+session that fell back from an address with no route to the peer moves back, and
+records one, only at the first fresh request a minute or more after the
+fallback.
+
 A `transport.endpoint` event carries the peer's `endpoint` and the `errno` the
 kernel refused the send with. An `unpinned` one is recorded once for an
-endpoint, and an `unsegmented` one each time segmentation stops, which for a
-route that keeps refusing segments is at most once every 10 minutes. A send
-refused only for its size records none, since it lowers that session's budget
-instead. On a socket that fragments, a segmented message refused with `EMSGSIZE`
-twice in a row records an `unsegmented` one with that `errno`, as
+endpoint. While a session's address has no route to the peer, that is at most
+once a minute for the session's own sends, and once more for each answer to a
+request that reaches the address, since every answer is sent to its request's
+own endpoint. An `unsegmented` one is recorded each time segmentation stops,
+which for a route that keeps refusing segments is at most once every 10 minutes.
+A send refused only for its size records none, since it lowers that session's
+budget instead. On a socket that fragments, a segmented message refused with
+`EMSGSIZE` twice in a row records an `unsegmented` one with that `errno`, as
 [platforms](../platforms.md#path-mtu) describes. An `ike.send.failed` carries
 the error of the first send that failed, and its `ike.send.recovered` how many
 failed before one went out. A reply to a retransmitted request counts toward

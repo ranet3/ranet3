@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-17
+updated: 2026-10-18
 order: 20
 ---
 
@@ -35,7 +35,11 @@ unless run as root.
   carrying a pair from an address the host lost. It follows its family's path
   MTU discovery across a locked path, keeps its pair past a hop's report of a
   smaller path, leaves by the interface its peer's datagram arrived on, and for
-  a dialed pair binds the source of the route the underlay mark selects.
+  a dialed pair binds the source of the route the underlay mark selects. 3 more,
+  in `unpin_namespace_linux_test.go`, check that an answer from an address with
+  no route to the peer leaves from the kernel's choice, and that the session
+  returns to its address once the host holds it again, or a minute after a
+  fallback for want of a route, once it routes again.
 - `internal/netstack` has tests whose names start with `TestTUN` that create and
   attach to a real TUN device. They read its `gso_max_segs` back, open several
   queues as 1 device and no more than the kernel attaches, and refuse a mesh
@@ -81,7 +85,14 @@ set. The Mac that runs them may be on a live mesh.
 - `transport` has 1 that sends through a feth pair whose MTU is 1400. A datagram
   past that MTU is refused, or fragmented while a session asks. A second checks
   that a socket connected to 1 peer from a hub bound to 1 feth binds that feth's
-  address, where the host's own route leaves by the other.
+  address, where the host's own route leaves by the other. 6 more check where
+  answers leave from. An answer leaves from the address its request reached, by
+  the interface holding that address, whose MTU the session's path MTU then
+  reads, and the datagrams of a send that fit still leave from it after one is
+  refused for its size. Once the address is gone or has no route to the peer,
+  sends leave from the kernel's choice and return to the address as
+  [moving hosts](../platforms.md#moving-hosts) describes. A send refused from
+  the address and again without it keeps the address.
 - `control` has 1 that checks that the control socket and the directories the
   daemon makes for it get the daemon's group, under a parent directory that
   hands down another group, as `/var/run` does on macOS.
@@ -137,8 +148,9 @@ Property tests build on Linux and macOS alone. `internal/pbt` and every property
 test carry a build constraint that names them. The `transport` properties of its
 sends and of the source a socket connected to 1 peer binds, the
 `internal/kernel` netlink and rule message properties and the `internal/egress`
-nftables property build on Linux alone. The `go-lint` check vets the tree for
-FreeBSD, which fails on a property test without the constraint.
+nftables property build on Linux alone, and the `transport` property of the
+address an answer leaves from builds on macOS alone. The `go-lint` check vets
+the tree for FreeBSD, which fails on a property test without the constraint.
 
 ## Nix checks
 
@@ -180,7 +192,8 @@ then checks that no rule, link, xfrm state or policy, or nftables table of
 theirs is left on the host. The `internal/kernel` tests
 `TestNetworkWatchInNetworkNamespace` and
 `TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault` need root and run in
-no check, and so do the 7 `transport` tests of the sockets connected to 1 peer.
+no check, and so do the 7 `transport` tests of the sockets connected to 1 peer
+and the 3 of a session's fallback from its address.
 
 The `netlink` check and `integration-egress` are the only places where a real
 kernel takes the `nf_tables` encoding. Elsewhere the encoding meets only the
