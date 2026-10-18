@@ -683,39 +683,35 @@ func (s *Session) rejectAuth(notify NotifyType, data []byte, cause error) error 
 	return cause
 }
 
-// responderChild is the Child SA selected from an IKE_AUTH request, kept
-// together with the transform that has to be echoed in the response.
+// responderChild is the Child SA selected from an IKE_AUTH request, with the transforms its answer echoes
 type responderChild struct {
 	sa         ChildSA
 	number     uint8
 	encryption Transform
 	dh         Transform
 	integ      Transform
+	additions  []Transform
 }
 
 func (c responderChild) proposal(spi []byte) Proposal {
 	encryption := c.encryption
 	if encryption.ID == ENCR_CHACHA20_POLY1305 {
-		// selectChildRequestProposal normalizes the key length so keymat has
-		// one, but RFC 7296 section 3.3.5 forbids the Key Length attribute on a
-		// fixed-key transform and section 3.3.6 requires the attributes of a selected
-		// transform to come back unchanged. The offer carried none, so neither
-		// may the answer. child_rekey.go does the same for CREATE_CHILD_SA.
+		// RFC 7296 section 3.3.5: "The Key Length attribute MUST NOT be used with transforms that use a fixed-length key."
+		// selectChildRequestProposal gives the transform a key length for keymat, which the answer leaves out as child_rekey.go does
 		encryption.KeyLengthBits = 0
 	}
 	transforms := []Transform{encryption, {Type: TransESN, ID: ESN_NO}}
-	// A proposal that spelled out DH NONE or INTEG NONE gets it back: section
-	// 2.7 wants one transform of every type the offer carried.
+	// RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
+	// so a DH NONE or INTEG NONE the offer spelled out goes back, as does the choice of each ADDKE type it holds
 	if c.dh.Type != 0 {
 		transforms = append(transforms, c.dh)
 	}
 	if c.integ.Type != 0 {
 		transforms = append(transforms, c.integ)
 	}
+	transforms = append(transforms, c.additions...)
 	return Proposal{
-		// RFC 7296 section 3.3.1: "the proposal number in the SA payload MUST match
-		// the number on the proposal sent that was accepted". A peer whose
-		// second proposal we took has to see that number back.
+		// RFC 7296 section 3.3.1: "When a proposal is accepted, the proposal number in the SA payload MUST match the number on the proposal sent that was accepted."
 		Number:     c.number,
 		Protocol:   ProtoESP,
 		SPI:        spi,
@@ -735,6 +731,8 @@ func (s *Session) selectResponderChild(request *Message, ni, nr []byte) (respond
 	}
 	// RFC 7296 section 1.2: "Thus, the SA payloads in the IKE_AUTH exchange cannot contain Transform Type 4 (Diffie-Hellman group) with any value other than NONE."
 	// so no group is taken here, and a proposal offering only groups is unacceptable
+	// RFC 9370 section 2.2.3: "After all IKE_INTERMEDIATE exchanges have completed, the initiator and the responder perform an IKE_AUTH exchange." and "This exchange is the standard IKE exchange, as described in [RFC7296], with the modification of AUTH payload calculation described in [RFC9242]."
+	// so an ADDKE type in its SA payloads is read as Transform Type 4 is: answered NONE, and a proposal holding one without NONE unacceptable
 	selection, err := selectChildRequestProposal(saPayload.Body, s.lists().espCiphers(), nil, 0, groupOptional)
 	if err != nil {
 		return responderChild{}, err
@@ -753,6 +751,7 @@ func (s *Session) selectResponderChild(request *Message, ni, nr []byte) (respond
 		encryption: selection.encryption,
 		dh:         selection.dh,
 		integ:      selection.integ,
+		additions:  selection.additions,
 	}, nil
 }
 
@@ -950,15 +949,18 @@ func (r *Responder) sendStatelessNotify(datagram transport.Unclaimed, request *H
 
 // selectIKEProposal answers an IKE_SA_INIT offer from lists
 // a KE payload in another group than the one chosen draws INVALID_KE_PAYLOAD naming that group
+// RFC 9370 section 2.2.1: "If the IKE_INTERMEDIATE exchange is not negotiated, then the peers MUST treat any ADDKE Transform Types in the IKE_SA_INIT exchange messages as unknown transform types and skip the proposals they appear in."
+// and this end negotiates none
 func selectIKEProposal(body []byte, keGroup uint16, lists Suites) (Proposal, SASuite, error) {
 	proposals, err := DecodeSA(body)
 	if err != nil {
 		return Proposal{}, SASuite{}, fmt.Errorf("ike: invalid IKE SA proposal: %w", err)
 	}
 	proposals = slices.DeleteFunc(proposals, func(proposal Proposal) bool {
-		return proposal.Number == 0 || proposal.Protocol != ProtoIKE || len(proposal.SPI) != 0
+		return proposal.Number == 0 || proposal.Protocol != ProtoIKE || len(proposal.SPI) != 0 ||
+			slices.ContainsFunc(proposal.Transforms, func(transform Transform) bool { return additional(transform.Type) })
 	})
-	chosen, retry, ok := chooseIKE(proposals, lists.ikeCiphers(), lists.ikePRFs(), lists.kexGroups(), keGroup)
+	chosen, retry, ok := chooseIKE(proposals, lists.ikeCiphers(), lists.ikePRFs(), lists.kexEntries(), keGroup)
 	if retry != 0 {
 		return Proposal{}, SASuite{}, &invalidKEError{retry}
 	}
@@ -977,14 +979,14 @@ type ikeChoice struct {
 	suite      SASuite
 }
 
-// chooseIKE answers the proposals of an IKE SA offer from ciphers, prfs and groups, each in this end's order
-// chooseGroup picks the proposal and its group among those the lists meet in every other type
+// chooseIKE answers the proposals of an IKE SA offer from ciphers, prfs and kex entries, each in this end's order
+// chooseKex picks the proposal and its key exchanges among those the lists meet in every other type
 // and in each other type the proposal takes the first of the list it holds
 // retry is the group to ask for in INVALID_KE_PAYLOAD
 // RFC 7296 section 3.3: "If there is more than one, they MUST be ordered from most preferred to least preferred."
 // RFC 7296 section 3.3.4: "The implementation MUST reject SA proposals that are not authorized by these IKE suite controls."
 // RFC 7296 section 3.3.6: "If the responder receives a proposal that contains a Transform Type it does not understand, or a proposal that is missing a mandatory Transform Type, it MUST consider this proposal unacceptable" and "other proposals in the same SA payload are processed as usual."
-func chooseIKE(proposals []Proposal, ciphers, prfs, groups []Transform, keGroup uint16) (ikeChoice, uint16, bool) {
+func chooseIKE(proposals []Proposal, ciphers, prfs []Transform, entries []kexEntry, keGroup uint16) (ikeChoice, uint16, bool) {
 	var met []ikeChoice
 	var offers [][]Transform
 	for _, proposal := range proposals {
@@ -993,9 +995,10 @@ func chooseIKE(proposals []Proposal, ciphers, prfs, groups []Transform, keGroup 
 		offeredInteg := false
 		for i := range proposal.Transforms {
 			transform := proposal.Transforms[i]
-			switch transform.Type {
-			case TransEncr, TransPRF, TransDH:
-			case TransInteg:
+			switch {
+			case transform.Type == TransEncr, transform.Type == TransPRF, transform.Type == TransDH:
+			case additional(transform.Type):
+			case transform.Type == TransInteg:
 				// RFC 7296 section 3.3: "Combined-mode ciphers include both integrity and encryption in a single encryption algorithm, and MUST either offer no integrity algorithm or a single integrity algorithm of "NONE", with no integrity algorithm being the RECOMMENDED method."
 				// RFC 7296 section 3.3.6: "if the responder receives a transform that it does not understand, or one that contains a Transform Attribute it does not understand, it MUST consider this transform unacceptable" and "other transforms with the same Transform Type are processed as usual."
 				offeredInteg = true
@@ -1019,12 +1022,13 @@ func chooseIKE(proposals []Proposal, ciphers, prfs, groups []Transform, keGroup 
 		met = append(met, ikeChoice{offered: proposal, transforms: transforms, suite: SASuite{EncrID: encr.ID, EncrKeyBits: encr.KeyLengthBits, PRFID: prfT.ID}})
 		offers = append(offers, proposal.Transforms)
 	}
-	at, group, retry, ok := chooseGroup(offers, groups, keGroup, groupRequired)
+	at, kex, retry, ok := chooseKex(offers, entries, keGroup, groupRequired)
 	if !ok {
 		return ikeChoice{}, retry, false
 	}
 	chosen := met[at]
-	chosen.transforms = slices.Insert(chosen.transforms, 2, group)
-	chosen.suite.DHGroup = group.ID
+	chosen.transforms = slices.Concat(chosen.transforms[:2], []Transform{kex.dh}, chosen.transforms[2:], kex.additions)
+	entry := kex.entry()
+	chosen.suite.DHGroup, chosen.suite.Additions = entry.group, entry.additions
 	return chosen, 0, true
 }

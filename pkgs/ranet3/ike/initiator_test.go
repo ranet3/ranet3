@@ -438,7 +438,7 @@ func TestSessionRekeyIKE(t *testing.T) {
 			t.Errorf("the rekey request carries payload types %v, want %v", got, want)
 		}
 		props, err := DecodeSA(sa.Body)
-		if err != nil || len(props) != 1 || props[0].Protocol != ProtoIKE || len(props[0].SPI) != 8 {
+		if err != nil || len(props) != 3 || props[0].Protocol != ProtoIKE || len(props[0].SPI) != 8 {
 			t.Errorf("bad IKE rekey proposal: %#v, %v", props, err)
 			return
 		}
@@ -491,7 +491,7 @@ func TestSessionRekeyIKE(t *testing.T) {
 			t.Errorf("the retried rekey request carries payload types %v, want %v", got, want)
 		}
 		props, err = DecodeSA(sa.Body)
-		if err != nil || len(props) != 1 || props[0].Protocol != ProtoIKE || len(props[0].SPI) != 8 {
+		if err != nil || len(props) != 3 || props[0].Protocol != ProtoIKE || len(props[0].SPI) != 8 {
 			t.Errorf("bad retried IKE rekey proposal: %#v, %v", props, err)
 			return
 		}
@@ -675,7 +675,7 @@ func TestSessionHandlesPeerIKERekey(t *testing.T) {
 	selectedProposal := props[0]
 	selectedProposal.Number = 1
 	selectedProposal.SPI = nil
-	newSuite, err := suiteFromProposal(selectedProposal, ikeProposal().Transforms)
+	newSuite, err := suiteFromProposal(selectedProposal, []Proposal{ikeProposal()}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -846,7 +846,7 @@ func TestSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 			return
 		}
 		localProps, err := DecodeSA(localSA.Body)
-		if err != nil || len(localProps) != 1 {
+		if err != nil || len(localProps) != 3 {
 			t.Errorf("invalid local rekey proposal: %v", err)
 			return
 		}
@@ -2278,7 +2278,7 @@ func TestOnlyUsableUnauthenticatedInitNotifiesAreActedOn(t *testing.T) {
 
 	// a group ike kex left out is one this end can generate and still ignores
 	// a retry in a group the offer left out ends the dial
-	p256Only := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"p256"}}}).ikeProposal(DH_ECP_256).Transforms
+	p256Only := transformsOf(suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"p256"}}}).ikeProposals(DH_ECP_256))
 	if _, ok := usefulInitNotify(message(Notify{Type: N_INVALID_KE_PAYLOAD, Data: group(DH_CURVE25519)}), false, false, p256Only); ok {
 		t.Error("a group the lists left out was acted on, so an unauthenticated notify ends the dial")
 	}
@@ -2645,25 +2645,29 @@ func TestInitiatorOffersNoDiffieHellmanTransformInIKEAuth(t *testing.T) {
 	}
 }
 
-// offeredIKESA is, octet by octet, the one proposal this end offers for an IKE SA: spi, its three ciphers, then the PRFs and the Diffie-Hellman groups named, in the order given
+// offeredIKESA is, octet by octet, the proposals this end offers for an IKE SA, one for each Diffie-Hellman group named in the order given
+// each holds spi, its three ciphers, the PRFs named in the order given and its group
 func offeredIKESA(spi, prfs, groups []byte) []byte {
-	sa := append([]byte{0, 0, 0, 0, 1, 1, byte(len(spi)), byte(3 + len(prfs) + len(groups))}, spi...)
-	sa = append(sa,
-		3, 0, 0, 12, 1, 0, 0, 20, 0x80, 14, 1, 0, // ENCR_AES_GCM_16 with a 256-bit key
-		3, 0, 0, 12, 1, 0, 0, 20, 0x80, 14, 0, 128, // ENCR_AES_GCM_16 with a 128-bit key
-		3, 0, 0, 8, 1, 0, 0, 28, // ENCR_CHACHA20_POLY1305
-	)
-	for _, prf := range prfs {
-		sa = append(sa, 3, 0, 0, 8, 2, 0, 0, prf)
-	}
+	var sa []byte
 	for i, group := range groups {
-		// the first octet of the last transform says none follows
-		more := byte(3)
+		// the first octet of a proposal says whether another follows, 2 for one more and 0 for none
+		more := byte(2)
 		if i == len(groups)-1 {
 			more = 0
 		}
-		sa = append(sa, more, 0, 0, 8, 4, 0, 0, group)
+		proposal := append([]byte{more, 0, 0, 0, byte(i + 1), 1, byte(len(spi)), byte(3 + len(prfs) + 1)}, spi...)
+		proposal = append(proposal,
+			3, 0, 0, 12, 1, 0, 0, 20, 0x80, 14, 1, 0, // ENCR_AES_GCM_16 with a 256-bit key
+			3, 0, 0, 12, 1, 0, 0, 20, 0x80, 14, 0, 128, // ENCR_AES_GCM_16 with a 128-bit key
+			3, 0, 0, 8, 1, 0, 0, 28, // ENCR_CHACHA20_POLY1305
+		)
+		for _, prf := range prfs {
+			proposal = append(proposal, 3, 0, 0, 8, 2, 0, 0, prf)
+		}
+		// the first octet of the last transform says none follows
+		proposal = append(proposal, 0, 0, 0, 8, 4, 0, 0, group)
+		binary.BigEndian.PutUint16(proposal[2:4], uint16(len(proposal)))
+		sa = append(sa, proposal...)
 	}
-	binary.BigEndian.PutUint16(sa[2:4], uint16(len(sa)))
 	return sa
 }

@@ -216,7 +216,10 @@ type childProposalSelection struct {
 	// when it carried none. RFC 7296 section 2.7 wants one transform of every
 	// type the offer included back in the answer, and the only one this
 	// implementation can take is NONE.
-	integ     Transform
+	integ Transform
+	// additions holds NONE for each ADDKE type the proposal holds, in type order
+	// a Child SA runs no additional key exchange of RFC 9370, since this end runs no IKE_FOLLOWUP_KE
+	additions []Transform
 	remoteSPI uint32
 }
 
@@ -240,9 +243,10 @@ func (e *invalidKEError) Error() string {
 	return fmt.Sprintf("ike: peer must use DH group %d", e.group)
 }
 
-// selectChildRequestProposal answers a Child SA offer from ciphers and groups, each in this end's order, as chooseIKE answers an IKE SA offer
-// rule tells chooseGroup whether the answer may go without a group
-func selectChildRequestProposal(body []byte, ciphers, groups []Transform, keGroup uint16, rule groupRule) (childProposalSelection, error) {
+// selectChildRequestProposal answers a Child SA offer from ciphers and kex entries, each in this end's order, as chooseIKE answers an IKE SA offer
+// rule tells chooseKex whether the answer may go without a group
+// entries are classical ones, so a proposal requiring an additional key exchange meets none and is skipped
+func selectChildRequestProposal(body []byte, ciphers []Transform, entries []kexEntry, keGroup uint16, rule groupRule) (childProposalSelection, error) {
 	props, err := DecodeSA(body)
 	if err != nil {
 		return childProposalSelection{}, fmt.Errorf("ike: invalid Child SA proposal")
@@ -258,13 +262,13 @@ func selectChildRequestProposal(body []byte, ciphers, groups []Transform, keGrou
 		var integ Transform
 		var haveESN, haveInteg, offeredInteg, unacceptable bool
 		for _, transform := range p.Transforms {
-			switch transform.Type {
-			case TransEncr, TransDH:
-			case TransESN:
+			switch {
+			case transform.Type == TransEncr, transform.Type == TransDH, additional(transform.Type):
+			case transform.Type == TransESN:
 				if !haveESN && transform.ID == ESN_NO && transform.KeyLengthBits == 0 && !transform.UnsupportedAttributes {
 					haveESN = true
 				}
-			case TransInteg:
+			case transform.Type == TransInteg:
 				// RFC 7296 section 3.3.6: "if the responder receives a transform that it does not understand, or one that contains a Transform Attribute it does not understand, it MUST consider this transform unacceptable" and "other transforms with the same Transform Type are processed as usual."
 				offeredInteg = true
 				if !haveInteg && transform.ID == INTEG_NONE && !transform.UnsupportedAttributes {
@@ -287,7 +291,7 @@ func selectChildRequestProposal(body []byte, ciphers, groups []Transform, keGrou
 		met = append(met, childProposalSelection{proposal: p, encryption: encryption, integ: integ, remoteSPI: binary.BigEndian.Uint32(p.SPI)})
 		offers = append(offers, p.Transforms)
 	}
-	at, dh, retry, ok := chooseGroup(offers, groups, keGroup, rule)
+	at, kex, retry, ok := chooseKex(offers, entries, keGroup, rule)
 	if retry != 0 {
 		return childProposalSelection{}, &invalidKEError{retry}
 	}
@@ -295,6 +299,6 @@ func selectChildRequestProposal(body []byte, ciphers, groups []Transform, keGrou
 		return childProposalSelection{}, fmt.Errorf("ike: no acceptable Child SA proposal")
 	}
 	chosen := met[at]
-	chosen.dh = dh
+	chosen.dh, chosen.additions = kex.dh, kex.additions
 	return chosen, nil
 }

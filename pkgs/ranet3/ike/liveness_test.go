@@ -700,9 +700,9 @@ func TestSessionAnswersAMalformedCreateChildSAWithInvalidSyntax(t *testing.T) {
 	pfs := replaced(rekey, childSA(aes, noESN, Transform{Type: TransDH, ID: DH_CURVE25519}))
 	undecodable := RawPayload{Type: PayloadN, Body: []byte{0, 0, 0}}
 	// an IKE SA rekey offer whose one PRF is not the one the IKE SA keeps
-	otherPRF := RawPayload{Type: PayloadSA, Body: EncodeSA([]Proposal{Suites{}.ikeRekeyProposal(binary.BigEndian.AppendUint64(nil, 0x2122232425262728), PRF_HMAC_SHA2_384, DH_CURVE25519)})}
+	otherPRF := RawPayload{Type: PayloadSA, Body: EncodeSA([]Proposal{ikeRekeyProposal(binary.BigEndian.AppendUint64(nil, 0x2122232425262728), PRF_HMAC_SHA2_384)})}
 	// an IKE SA rekey offer whose one Diffie-Hellman transform is NONE
-	noneDH := Suites{}.ikeRekeyProposal(binary.BigEndian.AppendUint64(nil, 0x2122232425262728), PRF_HMAC_SHA2_256, DH_CURVE25519)
+	noneDH := ikeRekeyProposal(binary.BigEndian.AppendUint64(nil, 0x2122232425262728), PRF_HMAC_SHA2_256)
 	noneDH.Transforms = append(slices.DeleteFunc(noneDH.Transforms, func(transform Transform) bool { return transform.Type == TransDH }), Transform{Type: TransDH})
 	offersNoneDH := RawPayload{Type: PayloadSA, Body: EncodeSA([]Proposal{noneDH})}
 	// and one that lists NONE beside Curve25519, the group of ikeRekey's KE payload

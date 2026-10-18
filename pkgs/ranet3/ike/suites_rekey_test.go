@@ -435,7 +435,7 @@ func TestIKESARekeyOffersTheGroupOfItsKEPayloadFirst(t *testing.T) {
 			t.Fatalf("the rekey request carried %v", request.inner)
 		}
 		proposals, err := DecodeSA(sa.Body)
-		if err != nil || len(proposals) != 1 {
+		if err != nil || len(proposals) == 0 {
 			t.Fatalf("the rekey offered %+v, %v", proposals, err)
 		}
 		group, _, err := DecodeKE(ke.Body)
@@ -443,9 +443,11 @@ func TestIKESARekeyOffersTheGroupOfItsKEPayloadFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 		var groups []Transform
-		for _, transform := range proposals[0].Transforms {
-			if transform.Type == TransDH {
-				groups = append(groups, transform)
+		for _, proposal := range proposals {
+			for _, transform := range proposal.Transforms {
+				if transform.Type == TransDH {
+					groups = append(groups, transform)
+				}
 			}
 		}
 		return group, groups
@@ -457,7 +459,12 @@ func TestIKESARekeyOffersTheGroupOfItsKEPayloadFirst(t *testing.T) {
 	request.result <- requestResult{inner: []RawPayload{
 		{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INVALID_KE_PAYLOAD, Data: binary.BigEndian.AppendUint16(nil, DH_CURVE25519)})},
 	}}
-	retry := <-s.requests
+	var retry *localRequest
+	select {
+	case retry = <-s.requests:
+	case err := <-done:
+		t.Fatalf("the rekey ended at INVALID_KE_PAYLOAD naming x25519 with %v, want a retry", err)
+	}
 	if group, groups := offered(retry); group != DH_CURVE25519 || !slices.Equal(groups, []Transform{dhX25519, dhP384, dhP256}) {
 		t.Errorf("the retry sent its KE payload in group %d under the groups %+v, want x25519 first", group, groups)
 	}

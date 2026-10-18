@@ -50,12 +50,33 @@ var (
 	postQuantumKex = []string{"mlkem512", "mlkem768", "mlkem1024"}
 )
 
-// Suites is the four cap.crypto lists as transforms, each most preferred first
+// Suites is the four cap.crypto lists as transforms and kex entries, each most preferred first
 // a nil list holds every name of its kind
 // so the zero Suites is a node that writes none of them
 type Suites struct {
-	ikeCipher, ikePRF, kex, espCipher []Transform
+	ikeCipher, ikePRF, espCipher []Transform
+	kex                          []kexEntry
 }
+
+// kexEntry is one entry of cap.crypto ike kex, the key exchange IKE_SA_INIT runs and the additional ones of RFC 9370 after it
+type kexEntry struct {
+	group uint16
+	// additions holds the method of each additional key exchange in the order they run, zero past the last
+	additions [addkeTypes]uint16
+}
+
+func (e kexEntry) classical() bool { return e.additions[0] == 0 }
+
+func (e kexEntry) added() []uint16 {
+	n := slices.Index(e.additions[:], 0)
+	if n < 0 {
+		n = len(e.additions)
+	}
+	return e.additions[:n]
+}
+
+// entry is the kex entry whose key exchanges made an SA of suite
+func (s SASuite) entry() kexEntry { return kexEntry{group: s.DHGroup, additions: s.Additions} }
 
 // Suites resolves the four lists, refusing a list no session could negotiate from by the field and the name an operator wrote
 func (c Crypto) Suites() (Suites, error) {
@@ -99,7 +120,7 @@ func resolve(field string, list []string, names []suiteName) ([]Transform, error
 
 // resolveKex reads a joined entry whole
 // so a name joined after a classical one is refused for the exchange it asks for
-func resolveKex(list []string) ([]Transform, error) {
+func resolveKex(list []string) ([]kexEntry, error) {
 	if list == nil {
 		return nil, nil
 	}
@@ -107,7 +128,7 @@ func resolveKex(list []string) ([]Transform, error) {
 		return nil, fmt.Errorf("ike: cap.crypto ike kex is empty, which leaves nothing to negotiate")
 	}
 	classical := namesOf(kexNames)
-	out := make([]Transform, 0, len(list))
+	out := make([]kexEntry, 0, len(list))
 	for i, entry := range list {
 		if slices.Contains(list[:i], entry) {
 			return nil, fmt.Errorf("ike: cap.crypto ike kex names %s twice", entry)
@@ -130,7 +151,7 @@ func resolveKex(list []string) ([]Transform, error) {
 		if len(parts) > 1 {
 			return nil, fmt.Errorf("ike: cap.crypto ike kex entry %q joins key exchanges, and the additional key exchanges of RFC 9370 are not implemented", entry)
 		}
-		out = append(out, kexNames[slices.Index(classical, entry)].transform)
+		out = append(out, kexEntry{group: kexNames[slices.Index(classical, entry)].transform.ID})
 	}
 	return out, nil
 }
@@ -149,8 +170,24 @@ func spelled(names []string) string {
 
 func (s Suites) ikeCiphers() []Transform { return listed(s.ikeCipher, cipherNames) }
 func (s Suites) ikePRFs() []Transform    { return listed(s.ikePRF, prfNames) }
-func (s Suites) kexGroups() []Transform  { return listed(s.kex, kexNames) }
 func (s Suites) espCiphers() []Transform { return listed(s.espCipher, cipherNames) }
+
+func (s Suites) kexEntries() []kexEntry {
+	if s.kex != nil {
+		return s.kex
+	}
+	all := make([]kexEntry, len(kexNames))
+	for i, named := range kexNames {
+		all[i] = kexEntry{group: named.transform.ID}
+	}
+	return all
+}
+
+// rekeyable is the kex entries a CREATE_CHILD_SA can run, those of one key exchange, since this end runs no IKE_FOLLOWUP_KE
+// RFC 9370 section 2.2.4: "If the initiator includes any ADDKE Transform Types in the SA payload (along with Transform Type 4), and if the responder agrees to perform additional key exchanges, then the additional key exchanges are performed in a series of new IKE_FOLLOWUP_KE exchanges that follow the CREATE_CHILD_SA exchange."
+func (s Suites) rekeyable() []kexEntry {
+	return slices.DeleteFunc(slices.Clone(s.kexEntries()), func(entry kexEntry) bool { return !entry.classical() })
+}
 
 func listed(list []Transform, names []suiteName) []Transform {
 	if list != nil {
@@ -167,15 +204,15 @@ func listed(list []Transform, names []suiteName) []Transform {
 func (s Suites) Changed(next Suites) []string {
 	var changed []string
 	for _, list := range []struct {
-		key     string
-		was, is []Transform
+		key  string
+		same bool
 	}{
-		{"cap.crypto.ike.cipher", s.ikeCiphers(), next.ikeCiphers()},
-		{"cap.crypto.ike.prf", s.ikePRFs(), next.ikePRFs()},
-		{"cap.crypto.ike.kex", s.kexGroups(), next.kexGroups()},
-		{"cap.crypto.esp.cipher", s.espCiphers(), next.espCiphers()},
+		{"cap.crypto.ike.cipher", slices.Equal(s.ikeCiphers(), next.ikeCiphers())},
+		{"cap.crypto.ike.prf", slices.Equal(s.ikePRFs(), next.ikePRFs())},
+		{"cap.crypto.ike.kex", slices.Equal(s.kexEntries(), next.kexEntries())},
+		{"cap.crypto.esp.cipher", slices.Equal(s.espCiphers(), next.espCiphers())},
 	} {
-		if !slices.Equal(list.was, list.is) {
+		if !list.same {
 			changed = append(changed, list.key)
 		}
 	}
@@ -189,23 +226,51 @@ func current(suites func() Suites) Suites {
 	return suites()
 }
 
-// ikeProposal is the IKE_SA_INIT offer with its KE payload in group, every listed transform in list order but group first
-// RFC 7296 section 3.4: "This Diffie-Hellman Group Num MUST match a Diffie-Hellman group specified in a proposal in the SA payload that is sent in the same message, and SHOULD match the Diffie-Hellman group in the first group in the first proposal, if such exists."
+// ikeProposals is the IKE_SA_INIT offer with its KE payload in group, one proposal for each kex entry
 // RFC 7296 section 1.2: "The initiator MUST again propose its full set of acceptable cryptographic suites because the rejection message was unauthenticated and otherwise an active attacker could trick the endpoints into negotiating a weaker suite than a stronger one that they both prefer."
-func (s Suites) ikeProposal(group uint16) Proposal {
-	return Proposal{Number: 1, Protocol: ProtoIKE, Transforms: slices.Concat(s.ikeCiphers(), s.ikePRFs(), s.leadingGroup(group))}
+func (s Suites) ikeProposals(group uint16) []Proposal {
+	return leadingGroup(s.entryProposals(s.kexEntries(), s.ikePRFs(), nil), group)
 }
 
-// ikeRekeyProposal is the offer of a rekey replacing an IKE SA whose PRF is prfID, with its KE payload in group
-func (s Suites) ikeRekeyProposal(spi []byte, prfID, group uint16) Proposal {
-	return Proposal{Number: 1, Protocol: ProtoIKE, SPI: spi,
-		Transforms: slices.Concat(s.ikeCiphers(), s.rekeyPRFs(prfID), s.leadingGroup(group))}
+// ikeRekeyProposals is the offer of a rekey replacing an IKE SA whose PRF is prfID, with its KE payload in group, one proposal for each entry a CREATE_CHILD_SA runs
+func (s Suites) ikeRekeyProposals(spi []byte, prfID, group uint16) []Proposal {
+	return leadingGroup(s.entryProposals(s.rekeyable(), s.rekeyPRFs(prfID), spi), group)
 }
 
-// leadingGroup is the kex groups with group first and the rest in list order, the order every IKE SA offer this end sends lists them in
+// entryProposals is a proposal for each of entries offering every listed cipher, prfs and the entry's key exchanges
+// RFC 9370 section 2.2.1: "When forming a proposal, the initiator adds transforms for the IKE_SA_INIT exchange using Transform Type 4." and "Additional key exchange methods are proposed using ADDKE Transform Types."
+func (s Suites) entryProposals(entries []kexEntry, prfs []Transform, spi []byte) []Proposal {
+	proposals := make([]Proposal, len(entries))
+	for i, entry := range entries {
+		transforms := slices.Concat(s.ikeCiphers(), prfs, []Transform{{Type: TransDH, ID: entry.group}})
+		for at, method := range entry.additions {
+			if method == 0 {
+				break
+			}
+			transforms = append(transforms, Transform{Type: TransADDKE1 + TransformType(at), ID: method})
+		}
+		proposals[i] = Proposal{Protocol: ProtoIKE, SPI: spi, Transforms: transforms}
+	}
+	return proposals
+}
+
+// leadingGroup is proposals with the first whose Transform Type 4 is group ahead of the rest, which keep their order, numbered as they are sent
 // RFC 7296 section 3.4 on the KE payload's group: "SHOULD match the Diffie-Hellman group in the first group in the first proposal, if such exists."
-func (s Suites) leadingGroup(group uint16) []Transform {
-	return promoted(s.kexGroups(), Transform{Type: TransDH, ID: group})
+// RFC 7296 section 3.3: "If there is more than one, they MUST be ordered from most preferred to least preferred."
+// the lists' order is the preference, so the one proposal the KE payload needs first is all that moves
+// RFC 7296 section 3.3.1: "When a proposal is made, the first proposal in an SA payload MUST be 1, and subsequent proposals MUST be one more than the previous proposal (indicating an OR of the two proposals)."
+func leadingGroup(proposals []Proposal, group uint16) []Proposal {
+	ordered := slices.Clone(proposals)
+	inGroup := func(proposal Proposal) bool {
+		return slices.Contains(proposal.Transforms, Transform{Type: TransDH, ID: group})
+	}
+	if at := slices.IndexFunc(ordered, inGroup); at > 0 {
+		ordered = slices.Concat(ordered[at:at+1], ordered[:at], ordered[at+1:])
+	}
+	for i := range ordered {
+		ordered[i].Number = uint8(i + 1)
+	}
+	return ordered
 }
 
 func (s Suites) espProposal(spi []byte) Proposal {
@@ -245,22 +310,22 @@ func (s Suites) rekeyChoice(old ChildSA) []Transform {
 	return promoted(s.espCiphers(), wireCipher(old))
 }
 
-// rekeyGroups is the order this end answers a peer's rekey in, for an SA keyed in group current
-// that group comes first while kex holds it and the KE payload is in it
-// so a rekey between ends whose lists order the groups differently keeps the group and asks for no other
+// rekeyEntries is the order this end answers a peer's rekey in, for an SA the key exchanges of current keyed
+// that entry comes first while kex holds it and the KE payload is in its group
+// so a rekey between ends whose lists order the entries differently keeps the entry and asks for no other
 // RFC 7296 section 2.8: "Note that, when rekeying, the new Child SA SHOULD NOT have different Traffic Selectors and algorithms than the old one."
-func (s Suites) rekeyGroups(current, keGroup uint16) []Transform {
-	if current != keGroup {
-		return s.kexGroups()
+func (s Suites) rekeyEntries(current kexEntry, keGroup uint16) []kexEntry {
+	if current.group != keGroup {
+		return s.rekeyable()
 	}
-	return promoted(s.kexGroups(), Transform{Type: TransDH, ID: current})
+	return promoted(s.rekeyable(), current)
 }
 
-func promoted(list []Transform, first Transform) []Transform {
+func promoted[T comparable](list []T, first T) []T {
 	if !slices.Contains(list, first) {
 		return list
 	}
-	return slices.Concat([]Transform{first}, slices.DeleteFunc(slices.Clone(list), func(t Transform) bool { return t == first }))
+	return slices.Concat([]T{first}, slices.DeleteFunc(slices.Clone(list), func(t T) bool { return t == first }))
 }
 
 // wireCipher is a Child SA's cipher as a proposal carries it
@@ -289,7 +354,7 @@ func choose(preferred, offered []Transform) (Transform, bool) {
 	return Transform{}, false
 }
 
-// groupRule tells chooseGroup whether an answer may go without a group
+// groupRule tells chooseKex whether an answer may go without a group
 type groupRule int
 
 const (
@@ -300,15 +365,36 @@ const (
 	groupOptional
 )
 
-// chooseGroup is the proposal of offers an offer is answered in, as its index, and the group it takes
+// kexChoice is the key exchange transforms an answer takes from the proposal it answers
+type kexChoice struct {
+	// dh is its Transform Type 4: a group, NONE where a Child SA's proposal offers it and runs none, or the zero Transform where the proposal offers no group
+	dh Transform
+	// additions holds one transform of each ADDKE type the proposal holds, in type order
+	additions []Transform
+}
+
+// entry is the key exchanges the choice runs
+func (c kexChoice) entry() kexEntry {
+	entry := kexEntry{group: c.dh.ID}
+	at := 0
+	for _, addition := range c.additions {
+		if addition.ID != 0 {
+			entry.additions[at] = addition.ID
+			at++
+		}
+	}
+	return entry
+}
+
+// chooseKex is the proposal of offers an offer is answered in, as its index, and the key exchanges it takes
 // offers are the transforms of each proposal the lists meet in every other type, in the offer's order
-// the group is the first of groups any of them holds, and the first of them holding it is answered
-// a KE payload in another group gets the group to ask for in INVALID_KE_PAYLOAD instead
-// a Child SA's proposal offering NONE or no group is answered without one ahead of every group while the KE payload is absent and behind every group while it is present
+// the entry is the first of entries any of them takes, and the first of them taking it is answered
+// a KE payload in another group than that entry's gets the group to ask for in INVALID_KE_PAYLOAD instead
+// a Child SA's proposal offering NONE or no group is answered without one ahead of every entry while the KE payload is absent and behind every entry while it is present
 // RFC 7296 section 1.3: "If the responder selects a proposal using a different Diffie-Hellman group (other than NONE), the responder MUST reject the request and indicate its preferred Diffie-Hellman group in the INVALID_KE_PAYLOAD Notify payload."
 // RFC 7296 section 3.3.6: "Responders MUST select a single complete set of parameters from the offers (or reject all offers if none are acceptable)."
-func chooseGroup(offers [][]Transform, groups []Transform, keGroup uint16, rule groupRule) (int, Transform, uint16, bool) {
-	withoutGroup := func() (int, Transform, bool) {
+func chooseKex(offers [][]Transform, entries []kexEntry, keGroup uint16, rule groupRule) (int, kexChoice, uint16, bool) {
+	withoutGroup := func() (int, kexChoice, bool) {
 		for i, transforms := range offers {
 			var offersGroup, offersNone bool
 			for _, transform := range transforms {
@@ -317,54 +403,102 @@ func chooseGroup(offers [][]Transform, groups []Transform, keGroup uint16, rule 
 					offersNone = offersNone || transform == (Transform{Type: TransDH})
 				}
 			}
-			if offersNone {
-				return i, Transform{Type: TransDH}, true
-			}
-			if !offersGroup {
-				return i, Transform{}, true
+			additions, ok := takeAdditions(transforms, nil)
+			switch {
+			case !ok:
+			case offersNone:
+				return i, kexChoice{dh: Transform{Type: TransDH}, additions: additions}, true
+			case !offersGroup:
+				return i, kexChoice{additions: additions}, true
 			}
 		}
-		return 0, Transform{}, false
+		return 0, kexChoice{}, false
 	}
 	if rule == groupOptional && keGroup == 0 {
-		if i, none, ok := withoutGroup(); ok {
-			return i, none, 0, true
+		if i, choice, ok := withoutGroup(); ok {
+			return i, choice, 0, true
 		}
 	}
-	for _, group := range groups {
+	for _, entry := range entries {
+		group := Transform{Type: TransDH, ID: entry.group}
 		for i, transforms := range offers {
 			if !slices.Contains(transforms, group) {
 				continue
 			}
-			if group.ID != keGroup {
-				return 0, Transform{}, group.ID, false
+			additions, ok := takeAdditions(transforms, entry.added())
+			if !ok {
+				continue
 			}
-			return i, group, 0, true
+			if entry.group != keGroup {
+				return 0, kexChoice{}, entry.group, false
+			}
+			return i, kexChoice{dh: group, additions: additions}, 0, true
 		}
 	}
 	if rule == groupOptional {
-		if i, none, ok := withoutGroup(); ok {
-			return i, none, 0, true
+		if i, choice, ok := withoutGroup(); ok {
+			return i, choice, 0, true
 		}
 	}
-	return 0, Transform{}, 0, false
+	return 0, kexChoice{}, 0, false
 }
 
-// holdsIKE reports whether the lists still hold every transform of an IKE SA's suite
+// takeAdditions is one transform of each ADDKE type transforms hold, in type order, carrying methods over those types in order and NONE in the rest
+// where methods could sit in more than one way the earlier types carry them
+// RFC 9370 section 2.2.1: "On the other hand, if the initiator includes any ADDKE Transform Type in the proposal, the responder MUST select one of the algorithms proposed using this type."
+// RFC 9370 section 2.2.1: "However, for the ADDKE Transform Types, the responder's choice MUST NOT contain duplicated algorithms (those with an identical Transform ID and attributes), except for the Transform ID of NONE."
+// a kex entry repeats no method, so no answer from one does
+// RFC 9370 section 2.2.1: "The responder MUST treat all of the omitted ADDKE transforms as if they were proposed with Transform ID NONE."
+func takeAdditions(transforms []Transform, methods []uint16) ([]Transform, bool) {
+	var types []TransformType
+	for _, transform := range transforms {
+		if additional(transform.Type) && !slices.Contains(types, transform.Type) {
+			types = append(types, transform.Type)
+		}
+	}
+	slices.Sort(types)
+	var take func(at int, left []uint16) ([]Transform, bool)
+	take = func(at int, left []uint16) ([]Transform, bool) {
+		if at == len(types) {
+			return nil, len(left) == 0
+		}
+		candidates := []uint16{0}
+		if len(left) > 0 {
+			candidates = []uint16{left[0], 0}
+		}
+		for _, method := range candidates {
+			chosen := Transform{Type: types[at], ID: method}
+			if !slices.Contains(transforms, chosen) {
+				continue
+			}
+			rest := left
+			if method != 0 {
+				rest = left[1:]
+			}
+			if tail, ok := take(at+1, rest); ok {
+				return append([]Transform{chosen}, tail...), true
+			}
+		}
+		return nil, false
+	}
+	return take(0, methods)
+}
+
+// holdsIKE reports whether the lists still hold every transform of an IKE SA's suite, the entry of all its key exchanges among them
 func (s Suites) holdsIKE(suite SASuite) bool {
 	return slices.Contains(s.ikeCiphers(), Transform{Type: TransEncr, ID: suite.EncrID, KeyLengthBits: suite.EncrKeyBits}) &&
 		s.holdsPRF(suite.PRFID) &&
-		slices.Contains(s.kexGroups(), Transform{Type: TransDH, ID: suite.DHGroup})
+		slices.Contains(s.kexEntries(), suite.entry())
 }
 
 func (s Suites) holdsPRF(prfID uint16) bool {
 	return slices.Contains(s.ikePRFs(), Transform{Type: TransPRF, ID: prfID})
 }
 
-// holdsChild reports whether the lists still hold a Child SA's cipher and, for keys a key exchange of its own made, its group
+// holdsChild reports whether the lists still hold a Child SA's cipher and, for keys a key exchange of its own made, the entry of that one exchange
 func (s Suites) holdsChild(child ChildSA, group uint16) bool {
 	return slices.Contains(s.espCiphers(), wireCipher(child)) &&
-		(group == 0 || slices.Contains(s.kexGroups(), Transform{Type: TransDH, ID: group}))
+		(group == 0 || slices.Contains(s.kexEntries(), kexEntry{group: group}))
 }
 
 type childPFS struct {
@@ -402,7 +536,7 @@ type Suite struct {
 	ESPKex string
 }
 
-// IKE is the IKE SA's cipher, PRF and group joined by /
+// IKE is the IKE SA's cipher, PRF and kex entry joined by /
 // it is empty for a session no handshake built
 func (s Suite) IKE() string {
 	if s.IKECipher == "" {
@@ -471,13 +605,22 @@ func transformName(t Transform) string {
 	return fmt.Sprintf("%d:%d", t.Type, t.ID)
 }
 
-// ikeSuite is an IKE SA's cipher, PRF and group by the names cap.crypto gives them
+// ikeSuite is an IKE SA's cipher, PRF and kex entry by the names cap.crypto gives them
 func ikeSuite(suite SASuite) Suite {
 	return Suite{
 		IKECipher: transformName(Transform{Type: TransEncr, ID: suite.EncrID, KeyLengthBits: suite.EncrKeyBits}),
 		IKEPRF:    transformName(Transform{Type: TransPRF, ID: suite.PRFID}),
-		IKEKex:    transformName(Transform{Type: TransDH, ID: suite.DHGroup}),
+		IKEKex:    kexName(suite.entry()),
 	}
+}
+
+// RFC 9370 section 2.2.1: "The allowed Transform IDs for these transform types are the same as the IDs for Transform Type 4, so they all share a single IANA registry for Transform IDs."
+func kexName(entry kexEntry) string {
+	names := []string{transformName(Transform{Type: TransDH, ID: entry.group})}
+	for _, method := range entry.added() {
+		names = append(names, transformName(Transform{Type: TransDH, ID: method}))
+	}
+	return strings.Join(names, "+")
 }
 
 // childSuite is a Child SA's cipher by its cap.crypto name, and the group of a key exchange of its own

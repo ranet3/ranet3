@@ -174,6 +174,8 @@ type SASuite struct {
 	EncrKeyBits uint16
 	PRFID       uint16
 	DHGroup     uint16
+	// Additions holds the method of each additional key exchange of RFC 9370 in the order they ran, zero past the last
+	Additions [addkeTypes]uint16
 }
 
 type IKEKeys struct {

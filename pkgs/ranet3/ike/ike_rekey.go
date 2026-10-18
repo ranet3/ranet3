@@ -35,11 +35,15 @@ func (s *Session) RekeyIKE() (err error) {
 	if !lists.holdsPRF(old.suite.PRFID) {
 		return fmt.Errorf("ike: IKE SA rekey: %w", ErrPRFUnlisted)
 	}
+	entries := lists.rekeyable()
+	if len(entries) == 0 {
+		return errors.New("ike: IKE SA rekey: cap.crypto ike kex holds no entry of one key exchange, which is all a rekey runs")
+	}
 	// RFC 7296 section 1.3: "The Diffie-Hellman group of the KEi MUST be an element of the group the initiator expects the responder to accept (additional Diffie-Hellman groups can be proposed)."
 	// the peer took the IKE SA's group in the exchange that made the SA
 	group := old.suite.DHGroup
-	if !slices.Contains(lists.kexGroups(), Transform{Type: TransDH, ID: group}) {
-		group = lists.kexGroups()[0].ID
+	if !slices.Contains(entries, kexEntry{group: group}) {
+		group = entries[0].group
 	}
 	ni := make([]byte, nonceLen)
 	if err := s.fillIKERekeyNonce(ni); err != nil {
@@ -58,18 +62,18 @@ func (s *Session) RekeyIKE() (err error) {
 	spi := make([]byte, 8)
 	binary.BigEndian.PutUint64(spi, spiI)
 	var (
-		proposal Proposal
+		offer    []Proposal
 		dh       *DHKeyPair
 		response []RawPayload
 	)
 	for attempt := range 2 {
-		proposal = lists.ikeRekeyProposal(spi, old.suite.PRFID, group)
+		offer = lists.ikeRekeyProposals(spi, old.suite.PRFID, group)
 		dh, err = GenerateDH(group)
 		if err != nil {
 			return fmt.Errorf("ike: generate IKE SA rekey DH key: %w", err)
 		}
 		response, err = s.requestLocked(CREATE_CHILD_SA, []RawPayload{
-			{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
+			{Type: PayloadSA, Body: EncodeSA(offer)},
 			{Type: PayloadNonce, Body: EncodeNonce(ni)},
 			{Type: PayloadKE, Body: EncodeKE(group, dh.PublicBytes())},
 		})
@@ -98,7 +102,7 @@ func (s *Session) RekeyIKE() (err error) {
 		if retryGroup == 0 {
 			break
 		}
-		if attempt != 0 || !slices.Contains(proposal.Transforms, Transform{Type: TransDH, ID: retryGroup}) {
+		if attempt != 0 || !slices.Contains(transformsOf(offer), Transform{Type: TransDH, ID: retryGroup}) {
 			return fmt.Errorf("ike: IKE SA rekey rejected: requested unoffered DH group %d", retryGroup)
 		}
 		// RFC 7296 section 1.3: "In the case of such a rejection, the CREATE_CHILD_SA exchange fails, and the initiator will probably retry the exchange with a Diffie-Hellman proposal and KEi in the group that the responder gave in the INVALID_KE_PAYLOAD Notify payload."
@@ -123,16 +127,14 @@ func (s *Session) RekeyIKE() (err error) {
 		return fmt.Errorf("ike: incomplete IKE SA rekey response")
 	}
 	props, err := DecodeSA(sa.Body)
-	// RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
-	// section 3.3.6: "The initiator of an exchange MUST check that the accepted offer is consistent with one of its proposals, and if not MUST terminate the exchange."
-	// this end's offer names three types, and suiteFromProposal holds the answer to the rest of the offer
-	if err != nil || len(props) != 1 || props[0].Number != 1 || props[0].Protocol != ProtoIKE ||
-		len(props[0].SPI) != 8 || len(props[0].Transforms) != 3 {
+	// RFC 7296 section 3.3.6: "The initiator of an exchange MUST check that the accepted offer is consistent with one of its proposals, and if not MUST terminate the exchange."
+	// suiteFromProposal holds the answer to the proposal of the offer it names
+	if err != nil || len(props) != 1 || props[0].Protocol != ProtoIKE || len(props[0].SPI) != 8 {
 		return fmt.Errorf("ike: invalid IKE SA rekey proposal")
 	}
 	selectedProposal := props[0]
 	selectedProposal.SPI = nil
-	suite, err := suiteFromProposal(selectedProposal, proposal.Transforms)
+	suite, err := suiteFromProposal(selectedProposal, offer, false)
 	if err != nil {
 		return fmt.Errorf("ike: invalid IKE SA rekey transforms: %w", err)
 	}
@@ -248,7 +250,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 		return malformed(err)
 	}
 	// RFC 7296 section 1.3.2 gives the request as "HDR, SK {SA, Ni, KEi}", and section 2.10: "Nonces used in IKEv2 MUST be randomly chosen, MUST be at least 128 bits in size, and MUST be at least half the key size of the negotiated pseudorandom function (PRF)."
-	// a rekey keeps the IKE SA's PRF, as ikeRekeyProposal offers it, so the nonce is held to that PRF before a proposal is chosen
+	// a rekey keeps the IKE SA's PRF, as ikeRekeyProposals offers it, so the nonce is held to that PRF before a proposal is chosen
 	if payloads.tsi != nil || payloads.tsr != nil || payloads.sa == nil || payloads.nonce == nil || payloads.ke == nil || !validNonceFor(payloads.nonce.Body, ctx.suite.PRFID) {
 		return malformed(errors.New("ike: IKE SA rekey request is not an SA, a nonce and a KE"))
 	}
@@ -270,7 +272,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	// RFC 7296 section 3.3.4: "The implementation MUST reject SA proposals that are not authorized by these IKE suite controls."
 	// a rekey keeps the PRF
 	// so no PRF is authorized once ike prf left out the one in use
-	chosen, retry, ok := chooseIKE(props, lists.ikeCiphers(), lists.rekeyPRFs(ctx.suite.PRFID), lists.rekeyGroups(ctx.suite.DHGroup, group), group)
+	chosen, retry, ok := chooseIKE(props, lists.ikeCiphers(), lists.rekeyPRFs(ctx.suite.PRFID), lists.rekeyEntries(ctx.suite.entry(), group), group)
 	if retry != 0 {
 		// RFC 7296 section 1.3: "If the responder selects a proposal using a different Diffie-Hellman group (other than NONE), the responder MUST reject the request and indicate its preferred Diffie-Hellman group in the INVALID_KE_PAYLOAD Notify payload."
 		return s.responseNotifyData(ctx, msgID, CREATE_CHILD_SA, N_INVALID_KE_PAYLOAD, invalidKENotifyData(retry))

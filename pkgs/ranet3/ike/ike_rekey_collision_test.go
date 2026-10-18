@@ -194,7 +194,7 @@ func (p *collisionPeer) collide() bool {
 		return false
 	}
 	props, err := DecodeSA(findType(inner, PayloadSA).Body)
-	if err != nil || len(props) != 1 {
+	if err != nil || len(props) != 3 {
 		t.Errorf("the rekey proposes %v, %v", props, err)
 		return false
 	}

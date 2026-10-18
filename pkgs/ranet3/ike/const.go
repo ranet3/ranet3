@@ -114,7 +114,16 @@ const (
 	TransInteg TransformType = 3
 	TransDH    TransformType = 4
 	TransESN   TransformType = 5
+	// RFC 9370 section 2.2.1: "seven new transform types are defined: Additional Key Exchange 1 (ADDKE1) with IANA-assigned value 6, Additional Key Exchange 2 (ADDKE2) (7), Additional Key Exchange 3 (ADDKE3) (8), Additional Key Exchange 4 (ADDKE4) (9), Additional Key Exchange 5 (ADDKE5) (10), Additional Key Exchange 6 (ADDKE6) (11), and Additional Key Exchange 7 (ADDKE7) (12)."
+	TransADDKE1 TransformType = 6
+	TransADDKE7 TransformType = 12
 )
+
+// addkeTypes is how many ADDKE Transform Types there are, and so how many additional key exchanges one IKE SA can run
+const addkeTypes = int(TransADDKE7-TransADDKE1) + 1
+
+// RFC 9370 section 2.2.1: "The allowed Transform IDs for these transform types are the same as the IDs for Transform Type 4, so they all share a single IANA registry for Transform IDs."
+func additional(t TransformType) bool { return t >= TransADDKE1 && t <= TransADDKE7 }
 
 // Transform IDs we actually use (modern only). RFC 8247 / IANA IKEv2 registry.
 const (
@@ -135,6 +144,10 @@ const (
 	DH_ECP_256    uint16 = 19
 	DH_ECP_384    uint16 = 20
 	DH_CURVE25519 uint16 = 31
+
+	// ML-KEM, which a Transform Type 4 ID names and an ADDKE type carries, draft-ietf-ipsecme-ikev2-mlkem-09 section 4 Table 2
+	ML_KEM_768  uint16 = 36
+	ML_KEM_1024 uint16 = 37
 
 	// ESN (Transform Type 5)
 	ESN_NO  uint16 = 0

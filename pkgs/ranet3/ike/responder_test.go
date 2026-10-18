@@ -696,7 +696,7 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 			Transform{Type: TransEncr, ID: ENCR_AES_GCM_16, KeyLengthBits: 256},
 			Transform{Type: TransPRF, ID: PRF_HMAC_SHA2_256},
 			Transform{Type: TransDH, ID: DH_CURVE25519},
-			Transform{Type: TransformType(9), ID: 1},
+			Transform{Type: TransformType(15), ID: 1},
 		)
 		if _, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}); err == nil {
 			t.Fatal("an unknown transform type was accepted")
@@ -1095,6 +1095,11 @@ func buildTestSAInit(t *testing.T) ([]byte, uint64) {
 // ahead holds an echoed cookie, which RFC 7296 section 2.6 includes "as the first payload"
 func encodeTestSAInit(t testing.TB, spiI uint64, ni []byte, proposal Proposal, ahead []RawPayload) []byte {
 	t.Helper()
+	return encodeTestSAInitOffer(t, spiI, ni, []Proposal{proposal}, ahead)
+}
+
+func encodeTestSAInitOffer(t testing.TB, spiI uint64, ni []byte, offer []Proposal, ahead []RawPayload) []byte {
+	t.Helper()
 	dh, err := GenerateDH(DH_CURVE25519)
 	if err != nil {
 		t.Fatal(err)
@@ -1102,7 +1107,7 @@ func encodeTestSAInit(t testing.TB, spiI uint64, ni []byte, proposal Proposal, a
 	hashAlgos := make([]byte, 2)
 	binary.BigEndian.PutUint16(hashAlgos, HashIdentity)
 	payloads := slices.Concat(ahead, []RawPayload{
-		{Type: PayloadSA, Body: EncodeSA([]Proposal{proposal})},
+		{Type: PayloadSA, Body: EncodeSA(offer)},
 		{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, dh.PublicBytes())},
 		{Type: PayloadNonce, Body: EncodeNonce(ni)},
 		{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: hashAlgos})},
@@ -2100,7 +2105,7 @@ func initHalfOpen(t *testing.T, mux *transport.Mux, shape func([]RawPayload) []R
 	if err != nil || len(selected) != 1 {
 		t.Fatalf("the IKE_SA_INIT answer selects %v: %v", selected, err)
 	}
-	suite, err := suiteFromProposal(selected[0], ikeProposal().Transforms)
+	suite, err := suiteFromProposal(selected[0], []Proposal{ikeProposal()}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

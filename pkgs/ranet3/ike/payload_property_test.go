@@ -159,13 +159,12 @@ func TestPayloadChainRoundTrips(t *testing.T) {
 	})
 }
 
-// drawTransform draws a transform of any type, ID and key length, a key
-// length of zero, which writes no attribute at all, among the edges. A
-// transform the encoder writes never carries an attribute it could not parse,
-// so UnsupportedAttributes stays false.
+// drawTransform draws a transform of any type, ID and key length
+// a key length of zero, which writes no attribute, the first and last ADDKE types, NONE and the ML-KEM IDs are among the edges
+// a transform the encoder writes carries no attribute it could not parse, so UnsupportedAttributes stays false
 func drawTransform(tc hegel.TestCase) Transform {
-	kind := drawOctet(tc, TransEncr, TransESN)
-	id := hegel.Draw(tc, withEdges(hegel.Integers[uint16](0, math.MaxUint16), 0, math.MaxUint16))
+	kind := drawOctet(tc, TransEncr, TransESN, TransADDKE1, TransADDKE7)
+	id := hegel.Draw(tc, withEdges(hegel.Integers[uint16](0, math.MaxUint16), 0, ML_KEM_768, ML_KEM_1024, math.MaxUint16))
 	bits := hegel.Draw(tc, withEdges(hegel.Integers[uint16](0, math.MaxUint16), 0, 128, 256, math.MaxUint16))
 	return Transform{Type: kind, ID: id, KeyLengthBits: bits}
 }
@@ -723,7 +722,7 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 				return ""
 			}},
 			{"selectChildRequestProposal", sa, func(b []byte) string {
-				_, _ = selectChildRequestProposal(b, Suites{}.espCiphers(), Suites{}.kexGroups(), DH_CURVE25519, groupOptional)
+				_, _ = selectChildRequestProposal(b, Suites{}.espCiphers(), Suites{}.kexEntries(), DH_CURVE25519, groupOptional)
 				return ""
 			}},
 			{"DecodeTS", selectors, func(b []byte) string { _, _ = DecodeTS(b); return "" }},
