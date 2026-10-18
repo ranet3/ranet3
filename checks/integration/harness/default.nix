@@ -160,6 +160,8 @@ testers.runNixOSTest {
             bird2
             iperf3
             iproute2
+            # drops the client's IKE for a while to show a rekey outlasts lost sends
+            nftables
             config.services.strongswan-swanctl.package
           ]
           # A capture is the only thing that tells a packet that never arrived
@@ -511,9 +513,11 @@ testers.runNixOSTest {
               };
               crypto = {
                 rekey = {
-                  child = if profile then 0 else "5s";
-                  ike = if profile then 0 else "15s";
-                  margin = "3s";
+                  # each rekey starts the margin before the lifetime stops its SA
+                  # and the margin outlasts a request and three resends, enough for three lost sends
+                  child = if profile then 0 else "20s";
+                  ike = if profile then 0 else "30s";
+                  margin = "18s";
                   jitter = 0;
                 };
               }
@@ -950,6 +954,27 @@ testers.runNixOSTest {
             assert "ranet3_tun_reads_truncated_total 0" in metrics.splitlines(), metrics
 
             if not profile:
+                # a rekey lost under load still replaces its SA before the lifetime: the gateway drops the client's IKE for 5 s while iperf runs
+                # IKE and ESP share UDP 13000, and the four zero octets after the UDP header, the non-ESP marker, pick out the IKE, so ESP passes
+                # the drop outlasts a rekey's first send, so a rekey starting in it lives on its resends, and only the margin decides whether the SA lives that long
+                lost = journal_after(client, "ranet3.service")
+                client.succeed("systemd-run --unit=iperf-under-ike-loss iperf3 --client ${gatewayTunnel} --parallel 8 --time 10")
+                gateway.succeed(
+                    "nft add table inet ike_loss",
+                    "nft add chain inet ike_loss input '{ type filter hook input priority 0; }'",
+                    "nft add rule inet ike_loss input udp dport 13000 @th,64,32 0 counter drop",
+                    "sleep 5",
+                )
+                dropped = gateway.succeed("nft list table inet ike_loss")
+                gateway.succeed("nft delete table inet ike_loss")
+                print(dropped)
+                # the drop outlasts the time between Child SA rekeys, so it took at least one of their sends
+                assert "counter packets 0 " not in dropped, dropped
+                client.wait_until_fails("systemctl is-active iperf-under-ike-loss.service", timeout=iperf_timeout)
+                client.wait_until_succeeds(f"{lost} | grep -F 'ike rekey completed' | grep -F 'sa=\"Child SA\"'", timeout=timeout)
+                client.fail(f"{lost} | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
+                client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
+
                 # Verify both new IKE keys and subsequent ESP keys are usable.
                 # swanctl's exit status alone does not prove a rekey succeeded.
                 for sa in ["Child SA", "IKE SA"]:
@@ -992,6 +1017,8 @@ testers.runNixOSTest {
 
             assert client.succeed("journalctl -u ranet3.service --no-pager | grep -c ': connected (SPI'").strip() == "1"
             client.fail("journalctl -u ranet3.service --no-pager | grep -F 'no matching inbound ESP SA'")
+            # an SA that reached its lifetime before a rekey replaced it drops what the peer still sends on it, and this names that cause
+            client.fail("journalctl -u ranet3.service --no-pager | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
             gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built'")
 
             # Closing an idle TUN read must stop promptly without SIGKILL.
@@ -1038,6 +1065,8 @@ testers.runNixOSTest {
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
 
             client.fail("journalctl -u ranet3.service --no-pager | grep -F 'no matching inbound ESP SA'")
+            # an SA that reached its lifetime before a rekey replaced it drops what the peer still sends on it, and this names that cause
+            client.fail("journalctl -u ranet3.service --no-pager | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
             gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built'")
 
             # Losing the answered SA has to be recoverable without ranet3 ever
@@ -1109,6 +1138,8 @@ testers.runNixOSTest {
             both_ends_run_the_shared_suite()
 
             client.fail("journalctl -u ranet3.service --no-pager | grep -F 'no matching inbound ESP SA'")
+            # an SA that reached its lifetime before a rekey replaced it drops what the peer still sends on it, and this names that cause
+            client.fail("journalctl -u ranet3.service --no-pager | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
             gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built'")
         finally:
             print(gateway.execute("swanctl --list-sas")[1])
