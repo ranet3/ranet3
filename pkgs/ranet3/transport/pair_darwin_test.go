@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os/exec"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -25,7 +26,7 @@ import (
 func TestConnectedSocketReceivesItsPeerWhileTheListenerKeepsTheRest(t *testing.T) {
 	for _, family := range []struct{ network, loopback string }{{"udp4", "127.0.0.1"}, {"udp6", "::1"}} {
 		t.Run(family.network, func(t *testing.T) {
-			listening, _, _, err := listenPacketBind(0, 0)
+			listening, _, _, err := listenPacketBind(0, 0, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -165,7 +166,7 @@ func hostRoute(t *testing.T, args ...string) {
 // the near feth carries a route to the peer scoped to it, which XNU's lookup bound to the near feth takes past the host's own
 // the host's own route to each peer leaves by the far feth from the far feth's address, which the test checks first
 func TestPairOfABoundHubTakesItsSourceFromTheBoundInterface(t *testing.T) {
-	requireFeth(t)
+	requireHostNet(t, "a feth pair")
 	fethPath(t)
 	near, err := net.InterfaceByName(fethNear)
 	if err != nil {
@@ -226,24 +227,7 @@ func TestPairOfABoundHubTakesItsSourceFromTheBoundInterface(t *testing.T) {
 
 // a pair to a link-local peer connects by the interface the peer's zone names, from that interface's link-local address
 func TestPairToALinkLocalPeerConnects(t *testing.T) {
-	loopback, err := net.InterfaceByName("lo0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addresses, err := loopback.Addrs()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var local netip.Addr
-	for _, address := range addresses {
-		if prefix, ok := address.(*net.IPNet); ok && prefix.IP.IsLinkLocalUnicast() && prefix.IP.To4() == nil {
-			local, _ = netip.AddrFromSlice(prefix.IP)
-			local = local.WithZone(loopback.Name)
-		}
-	}
-	if !local.IsValid() {
-		t.Skip("lo0 holds no link-local IPv6 address")
-	}
+	local, _ := loopbackLinkLocal(t)
 	peer, err := net.ListenUDP("udp6", net.UDPAddrFromAddrPort(netip.AddrPortFrom(local, 0)))
 	if err != nil {
 		t.Fatal(err)
@@ -429,5 +413,50 @@ func TestPairSocketSendsPastTheInterfaceWhileItsMuxFragments(t *testing.T) {
 			}
 			readFrom(t, peer, datagram)
 		})
+	}
+}
+
+// a pair to an endpoint pinned to the address its request reached binds that address, where the route to the peer picks the loopback's own
+// a link-local pin binds by the interface its request arrived on, and the pair's sends reach the peer from the pin as the shared socket's answers do
+func TestDarwinPairBindsThePinnedSource(t *testing.T) {
+	t.Run("link-local", func(t *testing.T) {
+		reached, index := loopbackLinkLocal(t)
+		pairBindsThePin(t, "udp6", "::1", reached.WithZone(""), index)
+	})
+	t.Run("host address", func(t *testing.T) { pairBindsThePin(t, "udp4", "127.0.0.1", hostAddress(t, false), 0) })
+}
+
+// pairBindsThePin opens the pair of an endpoint at a peer on loopback pinned to reached by interface index, and checks what it binds and sends from
+func pairBindsThePin(t *testing.T, network, loopback string, reached netip.Addr, index int) {
+	t.Helper()
+	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hub.Close() })
+	peer := listenPeer(t, network, loopback)
+	at := peer.LocalAddr().(*net.UDPAddr).AddrPort()
+	ep := pinnedEndpoint(netip.AddrPortFrom(at.Addr().Unmap(), at.Port()), reached, index)
+	mux, err := hub.NewMuxTo(ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := openNow(mux).socket.Load()
+	if socket == nil {
+		t.Fatalf("the pair to %s pinned to %s opened no socket", ep, reached)
+	}
+	want := reached
+	if index != 0 {
+		want = reached.WithZone(strconv.Itoa(index))
+	}
+	if got := (*socket).local(); got != want {
+		t.Fatalf("the pair to %s pinned to %s is bound to %s, want %s", ep, reached, got, want)
+	}
+	marker := []byte("from the pin")
+	if sent, kept, err := (*socket).transmit([][]byte{marker}, ep); sent != 1 || !kept || err != nil {
+		t.Fatalf("the pair's send answered %d sent, kept %v and %v", sent, kept, err)
+	}
+	if from := readFrom(t, peer, marker); from.Addr().WithZone("") != reached || from.Port() != hub.port {
+		t.Fatalf("the peer heard from %s, want %s", from, netip.AddrPortFrom(reached, hub.port))
 	}
 }

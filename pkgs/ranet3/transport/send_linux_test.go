@@ -391,6 +391,7 @@ func TestSendFromAGoneSourceFallsBackAndStaysOff(t *testing.T) {
 		"an interface that is gone":                {peer: "198.51.100.7:4500", arrival: "192.0.2.10", index: 9, want: "ENODEV"},
 		"an IPv6 interface that is gone":           {peer: "[2001:db8:7::7]:4500", arrival: "2001:db8::10", index: 9, want: "ENODEV"},
 		"an address linux will not send from":      {peer: "198.51.100.7:4500", arrival: "192.0.2.10", index: 2, pinnedErrno: unix.EADDRNOTAVAIL, want: "EADDRNOTAVAIL"},
+		"a source with no route to the peer":       {peer: "198.51.100.7:4500", arrival: "192.0.2.10", index: 2, pinnedErrno: unix.EHOSTUNREACH, want: "EHOSTUNREACH"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			kernel := newFakeKernel()
@@ -1048,20 +1049,28 @@ func TestDialedMuxFollowsUnpinnedAndAcceptedMuxPinned(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, step := range []struct {
-		name          string
-		endpoint      *udpEndpoint
-		moved         bool
-		to            string
-		from          string
-		unpinnedFirst bool
+		name     string
+		endpoint *udpEndpoint
+		moved    bool
+		to       string
+		from     string
+		// fellBack is the errno the current endpoint's pin falls back on before the adoption, none where zero
+		fellBack unix.Errno
+		// ended ends the current endpoint's unroutedHold before the adoption
+		ended bool
 	}{
 		{name: "the same peer arriving on the same address", endpoint: arrivedFrom("198.51.100.5:4500", "192.0.2.10", 2), to: "198.51.100.5:4500", from: "192.0.2.10"},
 		{name: "a new port behind the peer's NAT", endpoint: arrivedFrom("198.51.100.5:4600", "192.0.2.10", 2), moved: true, to: "198.51.100.5:4600", from: "192.0.2.10"},
 		{name: "the same peer arriving on another local address", endpoint: arrivedFrom("198.51.100.5:4600", "192.0.2.20", 3), moved: true, to: "198.51.100.5:4600", from: "192.0.2.20"},
-		{name: "a pin that fell back meeting the address it fell back from", endpoint: arrivedFrom("198.51.100.5:4600", "192.0.2.20", 3), moved: true, to: "198.51.100.5:4600", from: "192.0.2.20", unpinnedFirst: true},
+		{name: "a pin that fell back from a gone address meeting that address held again", endpoint: arrivedFrom("198.51.100.5:4600", "192.0.2.20", 3), moved: true, to: "198.51.100.5:4600", from: "192.0.2.20", fellBack: unix.ENETUNREACH},
+		{name: "a pin that fell back for want of a route meeting the same address", endpoint: arrivedFrom("198.51.100.5:4600", "192.0.2.20", 3), to: "198.51.100.5:4600", fellBack: unix.EHOSTUNREACH},
+		{name: "the same address after the hold", endpoint: arrivedFrom("198.51.100.5:4600", "192.0.2.20", 3), moved: true, to: "198.51.100.5:4600", from: "192.0.2.20", ended: true},
 	} {
-		if step.unpinnedFirst {
-			in.Endpoint().(*udpEndpoint).unpinned.Store(true)
+		if step.fellBack != 0 && !in.Endpoint().(*udpEndpoint).unpin(step.fellBack) {
+			t.Fatalf("%s: the endpoint had fallen back already", step.name)
+		}
+		if step.ended {
+			in.Endpoint().(*udpEndpoint).unroutedUntil.Store(new(time.Now()))
 		}
 		if moved := in.AdoptEndpoint(step.endpoint); moved != step.moved {
 			t.Errorf("%s: the adoption reported moved %v, want %v", step.name, moved, step.moved)
@@ -1069,8 +1078,13 @@ func TestDialedMuxFollowsUnpinnedAndAcceptedMuxPinned(t *testing.T) {
 		if err := in.SendIKE([]byte("request")); err != nil {
 			t.Fatal(err)
 		}
-		if got := last(); got.to != netip.MustParseAddrPort(step.to) || !got.pinned || got.from != netip.MustParseAddr(step.from) {
-			t.Errorf("%s: the mux sent to %s from %s pinned %v, want %s from %s", step.name, got.to, got.from, got.pinned, step.to, step.from)
+		// a session that stays where its pin fell back sends from the kernel's choice
+		pinned, from := step.from != "", netip.MustParseAddr("192.0.2.10")
+		if pinned {
+			from = netip.MustParseAddr(step.from)
+		}
+		if got := last(); got.to != netip.MustParseAddrPort(step.to) || got.pinned != pinned || got.from != from {
+			t.Errorf("%s: the mux sent to %s from %s pinned %v, want %s from %s pinned %v", step.name, got.to, got.from, got.pinned, step.to, from, pinned)
 		}
 	}
 }

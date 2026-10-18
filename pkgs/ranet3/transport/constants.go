@@ -50,4 +50,8 @@ const (
 	// pairBuffer is the bytes asked for as the send and receive buffer of a socket connected to one peer
 	// a smaller one slows a peer's upload over Wi-Fi
 	pairBuffer = 4 << 20
+	// unroutedHold is how long a session whose sends fell back from a pin with no route to the peer stays off it when a request reaches the pin again
+	// a laptop changing its primary service loses the session's ESP from the other address until the session returns
+	// and a pin that still has no route costs one fallback and one move each hold
+	unroutedHold = time.Minute
 )

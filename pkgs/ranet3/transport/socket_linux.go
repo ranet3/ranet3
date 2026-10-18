@@ -31,8 +31,7 @@ type udpEndpoint struct {
 	// source and index are the address and interface control names, which a route lookup for a pinned send names too
 	source net.IP
 	index  int
-	// unpinned records a fallback that worked and is never cleared
-	unpinned atomic.Bool
+	pinFallback
 	// unsegmentedUntil is when sends segment again, on the bind's clock in nanoseconds, and zero while they never stopped
 	unsegmentedUntil atomic.Int64
 	// fragmenting is set while a mux lets sends to this endpoint fragment past the path MTU
@@ -59,11 +58,11 @@ func (e *udpEndpoint) pin() []byte {
 func (*udpEndpoint) transportEndpoint() {}
 func (e *udpEndpoint) String() string   { return e.addr.String() }
 
-// sameDestination compares the pin as sends now carry it, so a fallen-back endpoint differs from a fresh one
+// sameDestination compares the pin each endpoint arrived with, which a fallback drops except for unroutedHold after the kernel refused the pin for want of a route
 func (e *udpEndpoint) sameDestination(other Endpoint) bool {
 	o, ok := other.(*udpEndpoint)
 	return ok && e.addr.IP.Equal(o.addr.IP) && e.addr.Port == o.addr.Port && e.addr.Zone == o.addr.Zone &&
-		bytes.Equal(e.pin(), o.pin())
+		bytes.Equal(e.arrival(e.control), o.arrival(o.control))
 }
 
 func (e *udpEndpoint) AddrPort() netip.AddrPort {
@@ -637,7 +636,7 @@ func (b *udpSendBatch) prepare(packets [][]byte, to net.Addr, control []byte, se
 	return n
 }
 
-// Send resends from the kernel's choice of source when a pinned one is refused as gone, and keeps that choice once it worked
+// Send resends from the kernel's choice of source when a pinned one is refused, gone or with no route to the peer, and keeps that choice once it worked
 // a datagram linux refuses as larger than its path ends the send in a PathMTUError, once the datagrams the path carries went
 func (b *udpBind) Send(packets [][]byte, endpoint Endpoint) error {
 	ep := endpoint.(*udpEndpoint)
@@ -662,7 +661,7 @@ func (b *udpBind) socket(ep *udpEndpoint) *udpSocket {
 	return b.v4
 }
 
-// sendFrom sends packets to ep from its pin, and from the kernel's choice of source once linux refuses the pin as gone
+// sendFrom sends packets to ep from its pin, and from the kernel's choice of source once linux refuses the pin
 // it reports how many went before an error
 func (b *udpBind) sendFrom(socket *udpSocket, batch *udpSendBatch, packets [][]byte, ep *udpEndpoint) (int, error) {
 	control := ep.pin()
@@ -672,8 +671,8 @@ func (b *udpBind) sendFrom(socket *udpSocket, batch *udpSendBatch, packets [][]b
 	}
 	more, err := b.sendWithSegmentFallback(socket, batch, packets[sent:], ep, ep.addr, nil)
 	// linux refuses a datagram as too large only once it has routed it from the source it chose
-	if (err == nil || errors.Is(err, unix.EMSGSIZE)) && ep.unpinned.CompareAndSwap(false, true) {
-		b.fellBack(ep, "transport.endpoint.unpinned", "transport stopped sending to an endpoint from the address its datagram arrived on", refused)
+	if (err == nil || errors.Is(err, unix.EMSGSIZE)) && ep.unpin(refused) {
+		unpinned(b.events, ep, refused)
 	}
 	return sent + more, err
 }
@@ -705,12 +704,6 @@ func (b *udpBind) sendWithin(socket *udpSocket, batch *udpSendBatch, packets [][
 	return report
 }
 
-// unpinnable reports whether err is linux refusing a source address or interface the host no longer has
-func unpinnable(err error) bool {
-	return errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EINVAL) ||
-		errors.Is(err, unix.ENODEV) || errors.Is(err, unix.EADDRNOTAVAIL)
-}
-
 // sendWithSegmentFallback segments packets to ep unless sends to ep have stopped segmenting
 // it never segments them while ep's mux lets them fragment
 // linux numbers a message's segments up from one IPv4 ID
@@ -740,7 +733,7 @@ func (b *udpBind) sendWithSegmentFallback(socket *udpSocket, batch *udpSendBatch
 			return done, plainErr
 		}
 		if ep.unsegmentedUntil.CompareAndSwap(until, int64(time.Since(b.started)+unsegmentedFor)) {
-			b.fellBack(ep, "transport.endpoint.unsegmented", "transport stopped segmenting sends to an endpoint", err)
+			fellBack(b.events, ep, "transport.endpoint.unsegmented", "transport stopped segmenting sends to an endpoint", err)
 		}
 	}
 }
@@ -787,14 +780,4 @@ func (s *udpSocket) write(batch *udpSendBatch, packets [][]byte, to net.Addr, co
 		}
 	}
 	return sent, 0, nil
-}
-
-// fellBack logs and records a fallback a send to ep took after linux refused it with err
-func (b *udpBind) fellBack(ep *udpEndpoint, kind, message string, err error) {
-	errno, _ := errors.AsType[unix.Errno](err)
-	attrs := []slog.Attr{slog.String("endpoint", ep.String()), slog.String("errno", unix.ErrnoName(errno))}
-	slog.LogAttrs(context.Background(), slog.LevelInfo, message, attrs...)
-	if b.events != nil {
-		b.events(kind, attrs...)
-	}
 }
