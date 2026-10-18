@@ -77,7 +77,7 @@ func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
 		case errors.Is(err, errSessionEstablished):
 			// not a failure
 			// this dialer takes over once the peer's session ends
-		case errors.Is(err, ike.ErrPRFUnlisted):
+		case replacedByHandshake(err):
 			// the session deleted its IKE SA for a new handshake under the lists in force
 			// and the new handshake goes out at once
 			log.Printf("peer %s: %v, dialing again now", d.path, err)

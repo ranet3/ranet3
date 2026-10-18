@@ -517,6 +517,14 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		select {
 		case result := <-rekeyResult:
 			running = nil
+			// an IKE SA no CREATE_CHILD_SA can rekey goes with one Delete for a new handshake
+			// while a replacement for a PRF the lists left out is under way, its Delete is that one
+			if errors.Is(result.err, ErrRekeyByHandshake) {
+				if ending == nil && !replacing {
+					end(result.schedule, "rekey by handshake", result.err)
+				}
+				continue
+			}
 			// a Child SA rekey that ran an exchange left its outcome for settleChildRekeys, so its result here only ends the run, and a run that started none counts as nothing
 			if result.schedule != childSchedule {
 				if _, err := settle(result.schedule, result.err); err != nil {
@@ -619,8 +627,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			}
 		}
 		timer.Reset(max(time.Until(deadline), 0))
-		// A local request is only accepted while no exchange is outstanding,
-		// which a nil channel expresses: IKEv2 permits one at a time.
+		// a nil channel takes no local request while an exchange is outstanding, the window of one above
 		var requests <-chan *localRequest
 		if pending == nil {
 			requests = s.requests
@@ -629,9 +636,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		case datagram := <-s.mux.IKE():
 			if s.dispatch(datagram.Raw, datagram.Endpoint, &pending) {
 				lastAuthenticated = time.Now()
-				// An answered exchange proves the peer is there just as ESP
-				// does, and on a link carrying nothing else, a session kept up
-				// by DPD alone, it is the only proof there is.
+				// an authenticated exchange proves the peer alive as ESP does, and on a link that carries nothing else it is the only proof
 				s.noteActive()
 			}
 			if s.answeredInvalidSyntax {
@@ -650,11 +655,8 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 				return ending
 			}
 			return err
-		// These two are handled at the top of the loop. The cases exist so it
-		// wakes for them rather than sleeping until the next deadline. Putting
-		// the value back cannot block: both channels hold one element, this is
-		// their only reader, and each has a single producer that cannot have
-		// another value in flight.
+		// the top of the loop takes these two, and the cases wake it for them
+		// putting a value back never blocks, since each channel holds one element, this loop is its one reader and its one producer has no other value in flight
 		case result := <-rekeyResult:
 			rekeyResult <- result
 			continue
@@ -692,9 +694,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			return fmt.Errorf("%w, so the session deleted the IKE SA for a new handshake", ErrPRFUnlisted)
 		case <-timer.C:
 		}
-		// An exchange whose IKE SA has gone can never be answered, and
-		// leaving it pending blocks every later local request for the life
-		// of the session, since IKEv2 permits one at a time.
+		// an exchange whose IKE SA has gone is never answered, and while it is pending no later local request starts
 		if pending != nil && s.contextRetired(pending.context) {
 			pending.result <- requestResult{err: fmt.Errorf("ike: the IKE SA carrying this exchange was replaced")}
 			pending = nil

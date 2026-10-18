@@ -553,10 +553,18 @@ func TestReloadTakesABabelDefaultWrittenOut(t *testing.T) {
 // a dialer dials again at once only on that report
 func TestSessionEndReportsTheReplacementOfItsIKESA(t *testing.T) {
 	closed := sessionResult{"ESP receive", errors.New("transport: closed")}
-	replaced := sessionResult{"IKE control", fmt.Errorf("%w, so the session deleted the IKE SA for a new handshake", ike.ErrPRFUnlisted)}
-	for _, ends := range [][2]sessionResult{{closed, replaced}, {replaced, closed}} {
-		if got := endOf(ends[0], ends[1]); got != replaced {
-			t.Errorf("a session whose %s half ended first reported the %s half's %v", ends[0].component, got.component, got.err)
+	for _, why := range []error{
+		fmt.Errorf("%w, so the session deleted the IKE SA for a new handshake", ike.ErrPRFUnlisted),
+		fmt.Errorf("ike: IKE SA rekey: %w", ike.ErrRekeyByHandshake),
+	} {
+		replaced := sessionResult{"IKE control", why}
+		for _, ends := range [][2]sessionResult{{closed, replaced}, {replaced, closed}} {
+			if got := endOf(ends[0], ends[1]); got != replaced {
+				t.Errorf("a session replaced as %v whose %s half ended first reported the %s half's %v", why, ends[0].component, got.component, got.err)
+			}
+		}
+		if !replacedByHandshake(why) {
+			t.Errorf("a session replaced as %v does not dial again at once", why)
 		}
 	}
 	other := sessionResult{"IKE control", errors.New("ike: peer unresponsive after 5 attempts")}
