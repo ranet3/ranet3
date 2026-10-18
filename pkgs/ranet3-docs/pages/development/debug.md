@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-17
+updated: 2026-10-18
 order: 30
 ---
 
@@ -227,6 +227,8 @@ connections to the reads.
 | `ike.session.revoked`                 | the trust in force refused a session's peer and closed it with a Delete     |
 | `ike.rekey.started`, `.completed`     | a rekey this end started, of the Child SA or of the IKE SA                  |
 | `ike.rekey.failed`                    | the same rekey failing, with its error                                      |
+| `ike.sa.expired`                      | a Child SA reached its lifetime, and its keys left the dataplane            |
+| `ike.sa.closed`                       | a session decided to delete its IKE SA, and why                             |
 | `ike.endpoint.moved`                  | a session moved to where its peer's latest fresh request came from          |
 | `ike.send.failed`, `.recovered`       | a session's sends to its peer began to fail, and one went out again         |
 | `ike.probe`                           | asked to prove its path, a session started a check or resent its request    |
@@ -283,6 +285,8 @@ Each kind carries these attributes:
 | `ike.session.revoked`                         | `reason`, `peer`, `endpoint`, `err`                                                                                                         |
 | `ike.rekey.started`, `.completed`             | `sa`, which is `child` or `ike`                                                                                                             |
 | `ike.rekey.failed`                            | `sa`, `err`                                                                                                                                 |
+| `ike.sa.expired`                              | `sa`, which is `child`, `spi_in`, `spi_out`                                                                                                 |
+| `ike.sa.closed`                               | `sa`, which is `child` or `ike`, `reason`, `err`                                                                                            |
 | `ike.endpoint.moved`                          | `endpoint`                                                                                                                                  |
 | `ike.send.failed`                             | `err`                                                                                                                                       |
 | `ike.send.recovered`                          | `failed`                                                                                                                                    |
@@ -316,6 +320,16 @@ Each kind carries these attributes:
 `start`, `sweep`, `retry`, `grace`, `disable`, `enable`, `reload`, `mesh` or
 `kernel`. The `trigger` of an `egress.pass` is `start`, `sweep`, `retry`,
 `disable` or `enable`.
+
+An `ike.sa.expired` is recorded for the current Child SA and for a replaced one
+still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an
+`ike.sa.closed` is `lifetime` when the SA named by `sa` reached its lifetime
+with no rekey replacing it, `sequence space` when the Child SA ran out of
+sequence numbers with none replacing it, `temporary failure` when the peer had
+answered this end's rekeys with `TEMPORARY_FAILURE` for 5 minutes, and
+`local failure` when this node failed on its own side, as when its dataplane
+refused a change to a Child SA. `err` says what ended it, and the
+`ike.session.ended` that follows carries it as well.
 
 A `transport.pair.connected` names in `local` the address the socket bound and
 in `remote` the peer it is connected to. The `reason` of a

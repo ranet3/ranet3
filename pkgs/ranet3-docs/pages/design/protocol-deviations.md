@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6 and ICMP specifications on purpose."
 created: 2026-08-23
-updated: 2026-10-17
+updated: 2026-10-18
 order: 20
 ---
 
@@ -21,12 +21,17 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 7296 section 2.8               | The responder may switch to the new SA once it sends its response            | It switches just before sending the response                            | The difference is the time to encrypt 1 message      |
 | RFC 7296 section 2.18              | An IKE SA rekey may choose a new PRF                                         | The PRF stays the same                                                  | strongSwan expands keys with the old PRF             |
 | RFC 7296 section 4                 | After `NO_ADDITIONAL_SAS`, delete the old SA and create a new one            | The old SA stays, and the rekey is retried                              | Not implemented                                      |
+| RFC 7296 section 2.25.2            | Answer as usual a rekey of an IKE SA this end is rekeying too                | Past the IKE SA's lifetime it is answered `TEMPORARY_FAILURE`           | Section 2.8: an SA past its lifetime is not used     |
+| RFC 7296 section 2.8               | An SA past its lifetime is not used                                          | It finishes its exchange, answers the peer and sends its Delete         | Sections 2.1 and 2.3 keep 1 request until it ends    |
+| RFC 7296 section 1.3.1             | A failed Child SA does not tear down the IKE SA                              | When the Child SA in `IKE_AUTH` fails, both ends delete the IKE SA      | An IKE SA carries nothing without its Child SA       |
+| RFC 7296 section 2.4               | Send a Delete for an IKE SA closed while the peer still answers              | None when a Message ID space is spent or a message cannot be built      | A Delete needs a Message ID and the same encoding    |
 | RFC 7296 section 4                 | Accept configured RSA certificates and shared keys                           | Ed25519 signatures only, against the trust document                     | Keys come from the trust document                    |
 | RFC 7296 section 2.9               | Refuse unacceptable traffic selectors with `TS_UNACCEPTABLE`, or narrow them | Only the full IPv4 and IPv6 ranges, anything else `NO_PROPOSAL_CHOSEN`  | Babel picks the peer for each packet                 |
 | RFC 7296 section 3.2               | Ignore the critical bit on a payload type the recipient understands          | A response that sets it on any payload is refused                       | A known gap                                          |
 | RFC 7296 section 2.21.2            | Answer a malformed request with `INVALID_SYNTAX`                             | A malformed `IKE_AUTH` request goes unanswered                          | A known gap                                          |
 | RFC 8247, RFC 8221                 | Support AES-CBC, MODP group 14, HMAC integrity and RSA signatures            | AEAD ciphers and elliptic curve groups only                             | Legacy transforms are left out                       |
 | RFC 4303 sections 2.6 and 2.7      | Be able to generate dummy packets                                            | None are generated, and no traffic flow confidentiality padding is sent | A known gap                                          |
+| RFC 4303 sections 3.3.3 and 4      | Log a sequence number overflow with the source address and IPv6 Flow ID      | The log names the local port, not the source address, and no Flow ID    | A wildcard socket, and no flow label is set          |
 | RFC 3948 section 2.1               | Send the IPv4 UDP checksum as zero                                           | Every IPv4 datagram carries a computed checksum                         | Linux refuses segmented sends without one            |
 | RFC 3948 section 4                 | Send NAT keepalives                                                          | None are sent                                                           | Hellos and IKE liveness checks keep the mapping open |
 | RFC 4443 section 2.2               | Answer from an address of the node's own                                     | Packet Too Big comes from the packet's destination                      | A leaf may hold no address of the packet's family    |
@@ -150,8 +155,75 @@ When a peer refuses a rekey with `NO_ADDITIONAL_SAS`,
 [RFC 7296 section 4](https://www.rfc-editor.org/rfc/rfc7296.html#section-4)
 requires that the node can delete the old SA and create a new one instead.
 ranet3 keeps the old SA and retries the rekey on its backoff, from 5 seconds up
-to 5 minutes at the defaults. Only `CHILD_SA_NOT_FOUND` makes it create a new
-Child SA from scratch.
+to 5 minutes at the defaults, until the SA's lifetime ends and the IKE SA is
+deleted with it. Only `CHILD_SA_NOT_FOUND` makes it create a new Child SA from
+scratch.
+
+[RFC 7296 section 2.25.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.25.2)
+asks an end that receives a rekey of an IKE SA it is rekeying itself to reply as
+usual. Past the IKE SA's lifetime, ranet3 answers every rekey on it with
+`TEMPORARY_FAILURE` instead, whatever it is running itself.
+[Section 2.8](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8) says that
+once its lifetime expires, an SA "MUST NOT be used", and a rekey answered on it
+would use its keys for the exchange and for the new SA's keys. Before the
+lifetime, such a rekey is answered as usual.
+
+## Lifetimes
+
+An SA past its lifetime is not used, as
+[RFC 7296 section 2.8](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8)
+asks, with 2 exceptions.
+
+An IKE SA past its lifetime still carries the exchange outstanding at its
+lifetime, its answers to the peer's requests and then its own Delete.
+[Section 2.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.1) has a
+request retransmitted until it is answered or the IKE SA is deemed failed, and
+[section 2.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.3) has an
+end wait for the answer to each request before it sends the next, so the Delete
+waits for the exchange already out. That exchange gets the 5 sends of a silent
+peer, about 62 seconds, whatever traffic the peer keeps up, and the IKE SA is
+then deemed failed. The peer's rekeys are answered `TEMPORARY_FAILURE`, and
+nothing else starts. A replaced IKE SA this end deletes carries that Delete,
+which section 2.8 makes the last request on the old SA, and takes its answer
+past the lifetime.
+
+An ESP batch that took a Child SA's keys before its lifetime finishes on them.
+The keys leave the dataplane at the lifetime, and the batch holds the set of SAs
+it started with, as every batch does across a rekey.
+
+## Closing SAs
+
+[RFC 7296 section 1.3.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-1.3.1)
+says "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA".
+ranet3 holds to that for a `CREATE_CHILD_SA` exchange. When the Child SA that
+`IKE_AUTH` carries fails, both ends delete the IKE SA. A responder that refuses
+it answers with its `AUTH` and the error, as
+[section 1.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-1.2) asks, and
+then sends a Delete for the IKE SA. An initiator that receives such an answer
+deletes the IKE SA too, and so does an end whose own dataplane refuses the first
+Child SA. An IKE SA carries nothing here without its Child SA, so keeping it
+would hold state on both ends with no traffic to protect, and the node that
+dialed dials again.
+
+[RFC 7296 section 2.4](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.4)
+asks an end that closes an IKE SA to send a Delete for it "unless the other
+endpoint is no longer responding". ranet3 does so wherever the peer may still
+answer, except in 3 cases where it closes without one:
+
+- This end's Message ID space is spent. A Delete is a request and needs one.
+- A request or a response cannot be built. A Delete is encrypted the same way,
+  so it could not be built either.
+- A request from the peer takes the last Message ID this end can count.
+  [Section 2.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.2) has the
+  peer rekey or close the IKE SA long before.
+
+Two closes come near these. The session settings applied after `IKE_AUTH` refuse
+only what the configuration's validation refuses, so a loaded configuration
+never reaches that close. An answer to this end's own request that does not
+decode after its integrity check closes the IKE SA as
+[section 2.21.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.21.3)
+closes one after a malformed request, without a Delete, since the 2 ends'
+encodings disagree and a Delete's answer would come from the same encoder.
 
 ## Authentication
 
@@ -242,6 +314,18 @@ traffic flow confidentiality padding
 ([section 2.7](https://www.rfc-editor.org/rfc/rfc4303.html#section-2.7)), which
 the SA management protocol would have to negotiate. ranet3 treats the 2 as a
 known gap rather than a decision.
+
+[RFC 4303 section 3.3.3](https://www.rfc-editor.org/rfc/rfc4303.html#section-3.3.3)
+asks that an attempt to send past the last sequence number be logged with the
+SPI, the date and time, the source and destination addresses and, for IPv6, the
+Flow ID, and [section 4](https://www.rfc-editor.org/rfc/rfc4303.html#section-4)
+adds the sequence number. ranet3 logs `ike Child SA ran out of sequence numbers`
+once for each such SA, with both SPIs, both identities, the peer's address and
+the sequence number, and the log line carries its own time. Its `src` names only
+the local port. The socket is bound to the wildcard address, and the source
+address of each datagram is the one the kernel picks for it, which the session
+never learns. No Flow ID is logged. ranet3 sets no flow label, so the label on
+each outer IPv6 header is the kernel's.
 
 ## UDP checksums
 
