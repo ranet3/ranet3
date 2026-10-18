@@ -250,17 +250,21 @@ update = "16s"
 # more than 32 before they reach userspace. 0 turns replay checking off.
 # replay = 4096
 
-# Rekeys run interval minus margin and an independently random 0 to jitter, so
-# margin plus jitter has to be shorter than every interval that is on. 0 for
-# child or ike turns that rekey off.
+# child and ike are each SA's lifetime, which starts when the SA is made. Its
+# rekey runs margin and an independently random 0 to jitter before the lifetime
+# ends, so margin plus jitter has to be shorter than every interval that is on,
+# and margin cannot be 0 beside one. An SA that reaches its lifetime with no
+# rekey replacing it closes the IKE SA with a Delete, and the session is dialed
+# again. 0 for child or ike turns that lifetime and its rekey off.
 # [cap.crypto.rekey]
 # child = "1h"
 # ike = "3h"
 # margin = "5m"
 # jitter = "1m"
 
-# A failed scheduled rekey is retried with capped exponential backoff. Both
-# have to be positive and first cannot exceed max.
+# A failed rekey is retried with capped exponential backoff, and for the Child
+# SA the backoff holds back every path that asks for one. Both have to be
+# positive and first cannot exceed max.
 # [cap.crypto.rekey.retry]
 # first = "5s"
 # max = "5m"

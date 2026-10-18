@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-10-17
+updated: 2026-10-18
 order: 80
 ---
 
@@ -276,10 +276,13 @@ when empty, and every counter is always present. Other lists, such as
 
 7 subcommands change what a node is doing right now. `disable` and `enable` stop
 and start a subsystem, which is `reconciler`, `steering` or `responder`.
-`redial` and `rekey` take a peer or `--all`. `reload` does what SIGHUP does, so
-a supervisor is not the only way to ask. `down` takes the node off the mesh and
-`up` puts it back, as [taking a node off the mesh](#taking-a-node-off-the-mesh)
-describes. `debug probe` acts as well, under the debug rules above.
+`redial` and `rekey` take a peer or `--all`. `rekey` asks each session to
+replace its Child SA. After a failed Child SA rekey, it leaves the replacement
+to the retry the session has scheduled, as `cap.crypto.rekey.retry` sets.
+`reload` does what SIGHUP does, so a supervisor is not the only way to ask.
+`down` takes the node off the mesh and `up` puts it back, as
+[taking a node off the mesh](#taking-a-node-off-the-mesh) describes.
+`debug probe` acts as well, under the debug rules above.
 
 None of them changes the configuration. A node's configuration is its file, and
 that stays its only entry point. What these act on is operational state the file

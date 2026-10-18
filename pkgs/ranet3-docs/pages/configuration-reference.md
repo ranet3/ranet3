@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-10-17
+updated: 2026-10-18
 order: 35
 ---
 
@@ -480,17 +480,34 @@ set up.
 
 | Key      | Value    | Default | Meaning                                                  |
 | -------- | -------- | ------- | -------------------------------------------------------- |
-| `child`  | duration | `"1h"`  | Child SA rekey interval. `0` turns it off                |
-| `ike`    | duration | `"3h"`  | IKE SA rekey interval. `0` turns it off                  |
-| `margin` | duration | `"5m"`  | Taken off every interval                                 |
-| `jitter` | duration | `"1m"`  | Up to this much more, at random, taken off each interval |
+| `child`  | duration | `"1h"`  | Child SA lifetime and rekey interval. `0` turns both off |
+| `ike`    | duration | `"3h"`  | IKE SA lifetime and rekey interval. `0` turns both off   |
+| `margin` | duration | `"5m"`  | How long before its SA's lifetime a rekey falls due      |
+| `jitter` | duration | `"1m"`  | Up to this much earlier, at random                       |
 
 - No value is negative.
+- `margin` is positive whenever `child` or `ike` is on, since a rekey due at the
+  end of its SA's lifetime could never replace it.
 - `margin` plus `jitter` is less than every interval that is on.
+
+An SA's lifetime starts when the SA is made, and its rekey counts from there, so
+`margin` is the time the rekey has before the lifetime ends however late the
+last rekey finished. At the end of its lifetime an SA is no longer used. A Child
+SA's keys leave the dataplane then, whatever exchange is under way. An SA that
+reaches its lifetime with no rekey replacing it, or a Child SA that runs out of
+sequence numbers with none replacing it, closes the IKE SA. The session logs
+`ike deleting the IKE SA` with the reason, records `ike.sa.closed`, sends a
+Delete for the IKE SA and ends, and the node that dialed it dials again. A rekey
+still under way at the lifetime decides by its result. A peer that answers this
+end's rekeys on 1 IKE SA with `TEMPORARY_FAILURE` for 5 minutes closes it the
+same way.
 
 ### `cap.crypto.rekey.retry`
 
-A scheduled rekey that fails is retried with capped exponential backoff.
+A rekey that fails is retried with capped exponential backoff. For the Child SA
+the backoff holds back the next rekey whichever path asks for it: the schedule,
+the ask as the sequence numbers near their end, the replacement of a Child SA
+the peer deleted, or `ranet3 rekey`. The retries stop at the SA's lifetime.
 
 | Key     | Value    | Default | Meaning       |
 | ------- | -------- | ------- | ------------- |

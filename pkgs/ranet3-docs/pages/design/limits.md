@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-17
+updated: 2026-10-18
 order: 10
 ---
 
@@ -313,8 +313,9 @@ amortized across ESP batches, and already-completed send/receive batches are
 combined without waiting for additional traffic. Encryption workers reuse packed
 ciphertext buffers only after the ordered sender finishes its UDP call,
 retaining separate storage for work in flight. Replaced inbound SAs remain
-usable for 5 seconds after their Delete acknowledgment so queued and reordered
-packets can drain during a rekey.
+usable for 5 seconds after their Delete acknowledgment, or until their lifetime
+ends if that comes first, so queued and reordered packets can drain during a
+rekey.
 
 ## Paths under 1280 bytes
 
@@ -365,9 +366,12 @@ can configure are in
 | Silence before a liveness check                | 10 seconds                                                                              | The session sends an `INFORMATIONAL` request, retransmitted on the schedule above         |
 | Live session                                   | 20 seconds since the peer's last authenticated IKE, 20 to 30 seconds since its last ESP | The session no longer counts as live                                                      |
 | Reconnect delay                                | 10 seconds                                                                              | A dialer whose session ended waits this long before it dials again                        |
+| Sends of the Delete that ends an IKE SA        | 2, waiting 2 and 4 seconds after each                                                   | The IKE SA is deemed failed after 6 seconds, and the session ends                         |
+| SA lifetime                                    | `cap.crypto.rekey.child` and `cap.crypto.rekey.ike`                                     | The SA is no longer used, and without a rekey replacing it the IKE SA is deleted          |
+| `TEMPORARY_FAILURE` answers on 1 IKE SA        | 5 minutes                                                                               | The IKE SA is deleted, and the session ends                                               |
 | Peer rekeys                                    | 1 per second for each kind of SA                                                        | A faster rekey is answered `TEMPORARY_FAILURE`                                            |
-| Replaced Child SA awaiting the peer's Delete   | up to 30 seconds                                                                        | Every Child SA rekey in either direction, and a peer's IKE SA rekey, is refused meanwhile |
-| Replaced IKE SA awaiting the peer's Delete     | up to 2 minutes                                                                         | A peer's IKE SA rekey is answered `TEMPORARY_FAILURE` meanwhile                           |
+| Replaced Child SA awaiting the peer's Delete   | up to 30 seconds, then this end deletes it                                              | Every Child SA rekey in either direction, and a peer's IKE SA rekey, is refused meanwhile |
+| Replaced IKE SA awaiting the peer's Delete     | up to 2 minutes, and no longer than its lifetime                                        | A peer's IKE SA rekey is answered `TEMPORARY_FAILURE` meanwhile                           |
 
 The second row holds even for a request with a valid cookie. More than 16 nodes
 behind 1 NAT that restart at once therefore wait for their retransmissions.
@@ -375,7 +379,23 @@ behind 1 NAT that restart at once therefore wait for their retransmissions.
 A request is sent up to 20 times while the peer's authenticated traffic has
 arrived within the last 10 seconds. The exchange holds the only outstanding
 request this end allows. Rekeys, Deletes and liveness checks wait until it ends.
-A liveness check itself never takes the longer schedule.
+A liveness check itself never takes the longer schedule, and neither does an
+exchange still outstanding when its IKE SA reaches its lifetime.
+
+The 2 sends of a Delete are those of a session that ends its IKE SA itself, at a
+lifetime, after 5 minutes of `TEMPORARY_FAILURE` or on a failure of its own, and
+of a responder that refused the Child SA in `IKE_AUTH`. That Delete waits for an
+exchange already out. A node closing a session, as at shutdown, waits 2 seconds
+for its Delete to be answered.
+
+[The configuration reference](../configuration-reference.md#capcryptorekey) says
+what happens at an SA's lifetime. A Child SA's keys leave the dataplane at its
+lifetime whatever exchange is under way, and a replaced one leaves then too if
+its drain would end later. An IKE SA past its lifetime starts nothing but its
+Delete. It still carries the exchange outstanding at its lifetime and answers
+the peer's requests, a rekey with `TEMPORARY_FAILURE`. A replaced IKE SA the
+peer owes a Delete is dropped at its lifetime, and one this end deletes is kept
+for that Delete.
 
 ### Babel
 
@@ -440,12 +460,18 @@ tun.
 | ------------------------------------ | ------------------------------------------ | ------------------------------------------------------- |
 | Sequence numbers                     | 32 bits, no extended sequence numbers      | An SA asks for a rekey 2^28 packets before they run out |
 | Last sequence number                 | `2^32 - 1`                                 | The SA refuses to send                                  |
-| Replaced inbound SA after its Delete | 5 seconds                                  | The SA is removed                                       |
-| Replaced inbound SA without a Delete | 30 seconds after the rekey, then 5 seconds | The SA is retired, drains, and is removed               |
+| Replaced inbound SA after its Delete | 5 seconds, and no longer than its lifetime | The SA is removed                                       |
+| Replaced inbound SA without a Delete | 30 seconds after the rekey, then 5 seconds | This end deletes the SA, which drains and is removed    |
 
 The scheduled rekey, hourly by default, comes long before the sequence numbers
 run out. The early request covers a link fast enough to use them up within 1
-rekey interval.
+rekey interval. The first ask past the mark waits a random 0 to 1 second, so 2
+ends that cross it together do not ask at once. Once the last sequence number is
+used, the SA refuses to send, and the session logs
+`ike Child SA ran out of sequence numbers` once for the SA, with both SPIs, both
+identities, the local socket address, the peer's address and the sequence number
+the refused packet needed. Unless a rekey replaces the SA, the IKE SA is then
+deleted as at the end of a lifetime.
 
 ### Configuration bounds
 
