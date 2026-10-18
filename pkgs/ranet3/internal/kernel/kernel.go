@@ -890,7 +890,8 @@ type Reconciler struct {
 // Stats is one finished route pass. Installed counts the routes the kernel
 // holds for this reconciler once the pass has applied, and Skipped the ones it wanted
 // and did not get: one the platform cannot represent, one whose key
-// another writer already holds, or a cover member left out with the rest of
+// another writer or a route of this reconciler's that has not left yet
+// holds, or a cover member left out with the rest of
 // its family. A prefix the mesh has and the kernel does not
 // is explained by Skipped or by Err and by nothing else.
 type Stats struct {
@@ -1596,18 +1597,25 @@ func (r *Reconciler) applyRoutes() error {
 	scoped := func(route Route) bool { return route.Scoped || scopes != nil && scopes(route) }
 	// A member is withheld only for a route the kernel holds once the pass has
 	// added, so a route refused last pass withholds nothing while it is tried
-	// again, and one that fails in this pass hands its members back.
+	// again, and one that fails in this pass hands its members back. The key
+	// of a refused route that a member of ours holds is this process's own,
+	// whoever refused the route first, so that member is withheld and leaves
+	// before the route is tried.
+	memberAt := func(destination netip.Prefix) bool {
+		return slices.ContainsFunc(actual, func(member Route) bool { return member.Cover && member.Destination == destination })
+	}
 	unheld := map[Route]bool{}
 	for route := range r.refused {
-		if !route.Cover {
+		if !memberAt(route.Destination) {
 			unheld[route] = true
 		}
 	}
 	unmet := func(route Route) bool { return scoped(route) || unheld[route] }
 	bare := desired
-	// After the gate and the readiness check, which judge the default whole:
-	// a member holds no zero address, so capturesTheMachine reads only a /1
-	// member as a capture and would pass the rest through a closed gate.
+	// After the capture grace check and the readiness check, which judge the
+	// default whole: a member holds no zero address, so capturesTheMachine
+	// reads only a /1 member as a capture and would pass the rest while that
+	// check holds captures back.
 	if covering {
 		desired = coverDefaults(bare, unmet)
 	}
@@ -1641,12 +1649,12 @@ func (r *Reconciler) applyRoutes() error {
 	for _, route := range actual {
 		held[route] = true
 	}
-	// Withdraw before installing. An install refuses a key another writer
-	// already holds rather than taking it over, so a route of ours that
-	// changed only in an attribute the kernel does not key on, a preferred
-	// source at an unchanged metric, has to leave before its replacement
-	// arrives. Both lists are this reconciler's own routes, so the gap is
-	// within one pass and touches nothing else.
+	// An install refuses a key another writer already holds rather than
+	// taking it over, so a route of ours that changed only in an attribute
+	// the kernel does not key on, a preferred source at an unchanged metric,
+	// has to leave before its replacement arrives. Both lists are this
+	// reconciler's own routes, so the gap is within one pass and touches
+	// nothing else.
 	for _, route := range del {
 		if err := r.plat.DelRoute(route); err != nil {
 			errs = append(errs, fmt.Errorf("delete route %s: %w", route, err))

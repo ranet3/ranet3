@@ -5,6 +5,7 @@ package kernel
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -397,12 +398,14 @@ func TestRefusedIPv6MemberLeavesNoPartialCover(t *testing.T) {
 // destination alone, as darwin keys an unscoped route, so an add at a key it
 // already holds is refused. Other programs hold some keys, so an add at one
 // of them in taken fails with that key's error whatever route it carries, and
-// an add at a key in flaky fails only for a route that is not a member. It
-// records each add that failed.
+// an add at a key in flaky fails only for a route that is not a member. A
+// delete of a member at a key in stuck fails. It records each add that failed
+// and the key of each member whose delete failed.
 type keyKernel struct {
 	*fakeKernel
-	taken, flaky map[netip.Prefix]error
-	failed       []failedAdd
+	taken, flaky, stuck map[netip.Prefix]error
+	failed              []failedAdd
+	kept                map[netip.Prefix]bool
 }
 
 type failedAdd struct {
@@ -427,14 +430,32 @@ func (k *keyKernel) AddRoute(r Route) error {
 	return k.fakeKernel.AddRoute(r)
 }
 
+func (k *keyKernel) DelRoute(r Route) error {
+	if err := k.stuck[r.Destination]; err != nil && r.Cover {
+		k.kept[r.Destination] = true
+		return err
+	}
+	return k.fakeKernel.DelRoute(r)
+}
+
 func keyHarness(t *testing.T) (*Reconciler, *keyKernel, *netstack.RouteTable) {
 	t.Helper()
 	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	kernel := &keyKernel{fakeKernel: fake, taken: map[netip.Prefix]error{}, flaky: map[netip.Prefix]error{}}
+	kernel := &keyKernel{fakeKernel: fake, taken: map[netip.Prefix]error{}, flaky: map[netip.Prefix]error{}, stuck: map[netip.Prefix]error{}, kept: map[netip.Prefix]bool{}}
 	reconciler.plat = kernel
 	reconciler.rt.Capture = &recordingCapture{fake: fake, covered: Covered{V4: true, V6: true}, hosts: Covered{V4: true, V6: true}}
 	reconciler.now = func() time.Time { return start }
 	return reconciler, kernel, table
+}
+
+// wantAllInstalled fails the test unless the last pass skipped nothing and
+// installed every route it desired.
+func wantAllInstalled(t *testing.T, reconciler *Reconciler, label string) {
+	t.Helper()
+	if stats := reconciler.Stats(); stats.Skipped != 0 || stats.Desired != stats.Installed {
+		t.Errorf("%s reports %d skipped, %d desired and %d installed, want none skipped and every desired route installed",
+			label, stats.Skipped, stats.Desired, stats.Installed)
+	}
 }
 
 // heldAt reports whether the fake holds a route at destination, and whether
@@ -565,6 +586,132 @@ func TestFailedWithholdingRouteHandsItsMembersBack(t *testing.T) {
 	}
 	if v4, _ := coverMembers(kernel.fakeKernel); v4 != 7 {
 		t.Errorf("the IPv4 cover is %d members beside %s, want 7", v4, withholding)
+	}
+}
+
+// A real route refused at the key of a member this process holds takes the
+// key on the next pass whose delete of the member works. Until then the
+// member stays, its family whole, and each pass reports the failed delete.
+func TestRealRouteTakesItsKeyOnceTheMembersDeleteWorks(t *testing.T) {
+	reconciler, kernel, table := keyHarness(t)
+	upper := prefix("128.0.0.0/1")
+	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	var member Route
+	for _, r := range kernel.snapshot() {
+		if r.Destination == upper {
+			member = r
+		}
+	}
+	if !member.Cover {
+		t.Fatalf("no member at %s: %v", upper, kernel.snapshot())
+	}
+	kernel.stuck[upper] = errors.New("no buffer space available")
+	table.Set(netip.Prefix{}, upper, nil)
+	for pass := range 2 {
+		if err := reconciler.reconcile(); err == nil {
+			t.Errorf("pass %d that could not delete %s reported success", pass, member)
+		}
+		if v4, _ := coverMembers(kernel.fakeKernel); v4 != 8 {
+			t.Errorf("pass %d leaves %d IPv4 members with the delete of %s failing, want 8", pass, v4, member)
+		}
+		if got := reconciler.Stats().Cover; !slices.Equal(got, []Family{FamilyIPv4}) {
+			t.Errorf("pass %d reports the cover %v, want IPv4", pass, got)
+		}
+	}
+	delete(kernel.stuck, upper)
+	adds, dels := kernel.counts()
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if nowAdds, nowDels := kernel.counts(); nowAdds-adds != 1 || nowDels-dels != 1 {
+		t.Errorf("the pass whose delete works added %d and deleted %d routes, want 1 and 1", nowAdds-adds, nowDels-dels)
+	}
+	if held, isMember := heldAt(kernel.fakeKernel, upper); !held || isMember {
+		t.Errorf("once the delete works the kernel holds %s %v as a member %v, want the real route", upper, held, isMember)
+	}
+	wantAllInstalled(t, reconciler, "the pass whose delete works")
+}
+
+// releasingKernel frees a taken key right after the first add there fails,
+// as another program withdrawing between two writes of one pass would.
+type releasingKernel struct {
+	*keyKernel
+}
+
+func (k *releasingKernel) AddRoute(r Route) error {
+	_, was := k.taken[r.Destination]
+	err := k.keyKernel.AddRoute(r)
+	if was {
+		delete(k.taken, r.Destination)
+	}
+	return err
+}
+
+// A real route refused while another program holds its key, which frees
+// before the member handed back goes in, takes the key from that member on
+// the next pass. TestDarwinRealRouteTakesItsKeyAfterARace holds the same on
+// darwin's own record of refused keys, which this fake does not keep.
+func TestRealRouteTakesItsKeyAfterARaceWithAnotherWriter(t *testing.T) {
+	reconciler, kernel, table := keyHarness(t)
+	upper := prefix("128.0.0.0/1")
+	kernel.taken[upper] = errRouteSkipped
+	reconciler.plat = &releasingKernel{kernel}
+	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
+	table.Set(netip.Prefix{}, upper, nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if held, member := heldAt(kernel.fakeKernel, upper); !held || !member {
+		t.Fatalf("the race leaves %s held %v as a member %v, want the member handed back", upper, held, member)
+	}
+	for pass := range 2 {
+		if err := reconciler.reconcile(); err != nil {
+			t.Fatal(err)
+		}
+		if held, member := heldAt(kernel.fakeKernel, upper); !held || member {
+			t.Errorf("pass %d after the race holds %s %v as a member %v, want the real route", pass, upper, held, member)
+		}
+		wantAllInstalled(t, reconciler, fmt.Sprintf("pass %d after the race", pass))
+	}
+}
+
+// A route refused against a route of this process that is not a member, an
+// old one at its key, takes no key from the members it would withhold. When
+// the old route leaves and another program takes the key at once, a member
+// still in stays rather than leaving to be handed back in the same pass.
+func TestRouteRefusedAgainstAnOldRouteOfOursKeepsItsMembers(t *testing.T) {
+	reconciler, kernel, table := keyHarness(t)
+	lower, inside := prefix("0.0.0.0/1"), prefix("64.0.0.0/2")
+	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	old := Route{Destination: lower, Metric: 7}
+	kernel.routes[old] = true
+	kernel.failDel[old] = errors.New("no buffer space available")
+	kernel.stuck[inside] = errors.New("no buffer space available")
+	table.Set(netip.Prefix{}, lower, nil)
+	if err := reconciler.reconcile(); err == nil {
+		t.Fatal("a pass that could not delete its old route reported success")
+	}
+	if held, member := heldAt(kernel.fakeKernel, inside); !held || !member {
+		t.Fatalf("the pass with %s refused leaves %s held %v as a member %v, want the member whose delete failed", lower, inside, held, member)
+	}
+	delete(kernel.failDel, old)
+	delete(kernel.stuck, inside)
+	kernel.taken[lower] = errRouteSkipped
+	_, dels := kernel.counts()
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if _, nowDels := kernel.counts(); nowDels-dels != 1 || kernel.has(old) {
+		t.Errorf("the pass that took %s out deleted %d routes, want that one alone: %v", old, nowDels-dels, kernel.snapshot())
+	}
+	if v4, _ := coverMembers(kernel.fakeKernel); v4 != 8 {
+		t.Errorf("the pass holds %d IPv4 members beside the refused %s, want 8", v4, lower)
 	}
 }
 
