@@ -11,7 +11,7 @@ systems = ["x86_64-linux", "aarch64-linux", "aarch64-darwin"]
 include = ["legacyPackages.*.**", "devShells.*.**", "checks.*.*", "formatter.*"]
 
 exclude = [
-  "checks.aarch64-linux.integration-initiator",      # runner does not have kvm
+  "checks.aarch64-linux.integration-initiator",              # runner does not have kvm
   "checks.aarch64-linux.integration-responder",
   "checks.aarch64-linux.integration-kernel",
   "checks.aarch64-linux.integration-segments",
@@ -19,6 +19,10 @@ exclude = [
   "checks.aarch64-linux.integration-reload",
   "checks.aarch64-linux.integration-initiator-fqdn",
   "checks.aarch64-linux.integration-responder-fqdn",
+  "checks.aarch64-linux.integration-suites-meet",
+  "checks.aarch64-linux.integration-suites-meet-responder",
+  "checks.aarch64-linux.integration-suites-apart",
+  "checks.aarch64-linux.integration-suites-apart-responder",
   "checks.aarch64-linux.netlink",
   # both linux arches put the same files in front of these, so the
   # x86_64-linux arm covers the aarch64 one exactly. go test stays on both,
