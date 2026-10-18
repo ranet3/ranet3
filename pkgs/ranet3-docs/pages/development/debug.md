@@ -326,10 +326,14 @@ still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an
 `ike.sa.closed` is `lifetime` when the SA named by `sa` reached its lifetime
 with no rekey replacing it, `sequence space` when the Child SA ran out of
 sequence numbers with none replacing it, `temporary failure` when the peer had
-answered this end's rekeys with `TEMPORARY_FAILURE` for 5 minutes, and
+answered this end's rekeys with `TEMPORARY_FAILURE` for 5 minutes,
+`invalid syntax` when the peer answered a request of this end's on the current
+IKE SA with `INVALID_SYNTAX`, which ends it without a Delete, and
 `local failure` when this node failed on its own side, as when its dataplane
 refused a change to a Child SA. `err` says what ended it, and the
-`ike.session.ended` that follows carries it as well.
+`ike.session.ended` that follows carries it as well. An `INVALID_SYNTAX` this
+end sends on the current IKE SA records no `ike.sa.closed`: the session logs a
+warning and ends with `ike.session.ended`.
 
 A `transport.pair.connected` names in `local` the address the socket bound and
 in `remote` the peer it is connected to. The `reason` of a
