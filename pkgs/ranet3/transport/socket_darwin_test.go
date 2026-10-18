@@ -6,6 +6,7 @@
 package transport
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -769,6 +770,37 @@ func TestPathMTUOfABoundSocketIsTheBoundInterfaceMTU(t *testing.T) {
 	}
 }
 
+// the path MTU of an endpoint pinned to a link-local address is the MTU of the interface the pin names, the one the request arrived on
+// lo0 holds fe80::1, and the pin names it on another live interface, as a link that shares the address would
+func TestPathMTUOfALinkLocalPinIsItsInterfaceMTU(t *testing.T) {
+	loopbackIndex, index := twoInterfaces(t)
+	loopback, err := net.InterfaceByIndex(loopbackIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := net.InterfaceByIndex(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.MTU == loopback.MTU {
+		t.Skipf("%s carries the MTU of %s, %d, so a read of either looks the same", link.Name, loopback.Name, link.MTU)
+	}
+	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hub.Close() })
+	pin := netip.MustParseAddr("fe80::1")
+	mux, err := hub.NewMuxTo(pinnedEndpoint(netip.MustParseAddrPort("[::1]:4500"), pin, index))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := mux.PathMTU(); err != nil || got != link.MTU {
+		t.Errorf("the path MTU of %s pinned to %s on %s reads %d, %v, want %s's %d rather than the %d of %s",
+			mux.Endpoint(), pin, link.Name, got, err, link.Name, link.MTU, loopback.MTU, loopback.Name)
+	}
+}
+
 const (
 	// fethNear and fethFar are the feth pair a test makes, numbered past any a host keeps
 	fethNear = "feth7700"
@@ -781,14 +813,14 @@ const (
 	dadPoll = 50 * time.Millisecond
 )
 
-// requireFeth skips a test that makes interfaces unless the run is root and asks for it
-func requireFeth(t *testing.T) {
+// requireHostNet skips a test that changes the host's interfaces to make what unless the run is root and asks for it
+func requireHostNet(t *testing.T, what string) {
 	t.Helper()
 	if os.Getenv("RANET3_DARWIN_NETTEST") != "1" {
-		t.Skip("set RANET3_DARWIN_NETTEST=1 and run as root to make a feth pair")
+		t.Skipf("set RANET3_DARWIN_NETTEST=1 and run as root to make %s", what)
 	}
 	if os.Geteuid() != 0 {
-		t.Skip("RANET3_DARWIN_NETTEST=1 but this process is not root, and a feth pair needs root")
+		t.Skipf("RANET3_DARWIN_NETTEST=1 but this process is not root, and %s needs root", what)
 	}
 }
 
@@ -886,10 +918,10 @@ func watchFar(t *testing.T) *farFrames {
 	return &farFrames{fd: fd, buffer: make([]byte, size)}
 }
 
-// crossed reads the far feth for whole UDP datagrams of size bytes from port to 4500
+// crossed reads the far feth for whole UDP datagrams of size bytes from port to 4500, from the address from where it is valid
 // it reads until want of them crossed or budget passed
 // it reports how many crossed
-func (f *farFrames) crossed(t *testing.T, port, size, want int, budget time.Duration) int {
+func (f *farFrames) crossed(t *testing.T, port, size, want int, from netip.Addr, budget time.Duration) int {
 	t.Helper()
 	got := 0
 	for deadline := time.Now().Add(budget); got < want && time.Now().Before(deadline); {
@@ -908,7 +940,7 @@ func (f *farFrames) crossed(t *testing.T, port, size, want int, budget time.Dura
 			if header+captured > len(frames) {
 				break
 			}
-			if udpPayload(frames[header:header+captured], port) == size {
+			if payload, source := udpDatagram(frames[header:header+captured], port); payload == size && (!from.IsValid() || source == from) {
 				got++
 			}
 			frames = frames[min(len(frames), (header+captured+unix.BPF_ALIGNMENT-1)&^(unix.BPF_ALIGNMENT-1)):]
@@ -926,27 +958,16 @@ const (
 	pathResend = 250 * time.Millisecond
 )
 
-// carried sends a datagram through each mux, again every pathResend, until one crosses to the far feth
+// carried sends a datagram through each mux until one crosses to the far feth, as leftFrom does from any source
 // each mux's datagram has a size of its own from 64 bytes
 // crossed tells datagrams apart by size alone
 // no step sends a datagram of those sizes
 // a send that fails counts as one that never crossed
-// it fails the test when a mux's path carries nothing within pathWait
 func (f *farFrames) carried(t *testing.T, port int, muxes []*Mux) {
 	t.Helper()
 	for i, mux := range muxes {
 		probe := make([]byte, 64+i)
-		start := time.Now()
-		for tries := 1; ; tries++ {
-			err := mux.SendESPBatch([][]byte{probe})
-			if f.crossed(t, port, len(probe), 1, pathResend) > 0 {
-				t.Logf("a datagram to %s crossed to %s at try %d, %s after the first", mux.Endpoint(), fethFar, tries, time.Since(start).Round(time.Millisecond))
-				break
-			}
-			if time.Since(start) >= pathWait {
-				t.Fatalf("none of %d datagrams to %s crossed to %s within %s, the last send answering %v", tries, mux.Endpoint(), fethFar, pathWait, err)
-			}
-		}
+		f.leftFrom(t, port, len(probe), netip.Addr{}, func() error { return mux.SendESPBatch([][]byte{probe}) })
 	}
 }
 
@@ -956,34 +977,37 @@ const (
 	etherIPv6 = 0x86dd
 )
 
-// udpPayload is the payload size of the whole UDP datagram from port to 4500 that an ethernet frame carries
-// it is -1 for any other frame, a fragment among them
-func udpPayload(frame []byte, port int) int {
+// udpDatagram is the payload size and the IP source of the whole UDP datagram from port to 4500 that an ethernet frame carries
+// the size is -1 for any other frame, a fragment among them
+func udpDatagram(frame []byte, port int) (int, netip.Addr) {
 	if len(frame) < 14 {
-		return -1
+		return -1, netip.Addr{}
 	}
 	packet := frame[14:]
 	var udp []byte
+	var source netip.Addr
 	switch binary.BigEndian.Uint16(frame[12:]) {
 	case etherIPv4:
 		// a fragment sets more fragments or an offset, the bits below DF
 		if len(packet) < 20 || packet[9] != unix.IPPROTO_UDP || binary.BigEndian.Uint16(packet[6:])&0x3fff != 0 {
-			return -1
+			return -1, netip.Addr{}
 		}
+		source = netip.AddrFrom4([4]byte(packet[12:16]))
 		udp = packet[min(len(packet), int(packet[0]&0x0f)*4):]
 	case etherIPv6:
 		// a fragment carries a fragment header ahead of UDP
 		if len(packet) < 40 || packet[6] != unix.IPPROTO_UDP {
-			return -1
+			return -1, netip.Addr{}
 		}
+		source = netip.AddrFrom16([16]byte(packet[8:24]))
 		udp = packet[40:]
 	default:
-		return -1
+		return -1, netip.Addr{}
 	}
 	if len(udp) < 8 || int(binary.BigEndian.Uint16(udp)) != port || binary.BigEndian.Uint16(udp[2:]) != 4500 {
-		return -1
+		return -1, netip.Addr{}
 	}
-	return int(binary.BigEndian.Uint16(udp[4:])) - 8
+	return int(binary.BigEndian.Uint16(udp[4:])) - 8, source
 }
 
 // through a feth whose MTU is 1400, both families refuse a datagram past it, and the send reports the interface's MTU once the datagrams within it went
@@ -993,7 +1017,7 @@ func udpPayload(frame []byte, port int) int {
 // both of those cross to the far feth, the one after a refused datagram too
 // the steps begin once a datagram to each far neighbor crossed
 func TestDarwinRefusesWhatTheInterfaceCannotCarry(t *testing.T) {
-	requireFeth(t)
+	requireHostNet(t, "a feth pair")
 	fethPath(t)
 	hub, muxes := openMuxes(t, "192.0.2.9", "192.0.2.10", "2001:db8:f::9", "2001:db8:f::10")
 	port := hub.LocalAddr().(*net.UDPAddr).Port
@@ -1041,9 +1065,734 @@ func TestDarwinRefusesWhatTheInterfaceCannotCarry(t *testing.T) {
 			if got := mux.DontFragment(); got != step.refused[i] {
 				t.Errorf("%s: the mux to %s reads that it sends with DF %v, want %v", step.name, mux.Endpoint(), got, step.refused[i])
 			}
-			if got := far.crossed(t, port, largest, 2, arrivalBudget); got != 2 {
+			if got := far.crossed(t, port, largest, 2, netip.Addr{}, arrivalBudget); got != 2 {
 				t.Errorf("%s: %d of the send's two datagrams of %d bytes to %s crossed to the far feth, want both", step.name, got, largest, mux.Endpoint())
 			}
 		}
+	}
+}
+
+// hostAddress is an address of the family ipv6 names on an interface of this host that is up and broadcasts
+func hostAddress(t *testing.T, ipv6 bool) netip.Addr {
+	t.Helper()
+	links, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range links {
+		if link.Flags&net.FlagUp == 0 || link.Flags&net.FlagBroadcast == 0 || link.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, err := link.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			prefix, ok := address.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if addr, ok := netip.AddrFromSlice(prefix.IP); ok {
+				if addr = addr.Unmap(); addr.Is6() == ipv6 && addr.IsGlobalUnicast() {
+					return addr
+				}
+			}
+		}
+	}
+	t.Skipf("this host holds no address of the family on an interface that is up, IPv6 %v", ipv6)
+	return netip.Addr{}
+}
+
+// loopbackLinkLocal is lo0's link-local IPv6 address, zoned by lo0
+func loopbackLinkLocal(t *testing.T) (netip.Addr, int) {
+	t.Helper()
+	loopback, err := net.InterfaceByName("lo0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addresses, err := loopback.Addrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, address := range addresses {
+		if prefix, ok := address.(*net.IPNet); ok && prefix.IP.IsLinkLocalUnicast() && prefix.IP.To4() == nil {
+			local, _ := netip.AddrFromSlice(prefix.IP)
+			return local.WithZone(loopback.Name), loopback.Index
+		}
+	}
+	t.Skip("lo0 holds no link-local IPv6 address")
+	return netip.Addr{}, 0
+}
+
+// receivedControl is the control message XNU hands a socket of the family ipv6 names with a datagram that reached dst on interface index
+func receivedControl(ipv6 bool, dst netip.Addr, index int) []byte {
+	level, kind, size := unix.IPPROTO_IP, unix.IP_RECVPKTINFO, unix.SizeofInet4Pktinfo
+	if ipv6 {
+		level, kind, size = unix.IPPROTO_IPV6, unix.IPV6_PKTINFO, unix.SizeofInet6Pktinfo
+	}
+	control := make([]byte, unix.CmsgSpace(size))
+	header := (*unix.Cmsghdr)(unsafe.Pointer(&control[0]))
+	header.Level, header.Type = int32(level), int32(kind)
+	header.SetLen(unix.CmsgLen(size))
+	data := unsafe.Pointer(&control[unix.CmsgLen(0)])
+	if ipv6 {
+		info := (*unix.Inet6Pktinfo)(data)
+		info.Addr, info.Ifindex = dst.As16(), uint32(index)
+	} else {
+		info := (*unix.Inet4Pktinfo)(data)
+		info.Addr, info.Ifindex = dst.As4(), uint32(index)
+	}
+	return control
+}
+
+// sentPin is the source address and interface a send's control message names, and whether it lets the datagram fragment
+func sentPin(control []byte) (source netip.Addr, index int, fragments bool, err error) {
+	messages, err := unix.ParseSocketControlMessage(control)
+	if err != nil {
+		return netip.Addr{}, 0, false, err
+	}
+	for _, m := range messages {
+		switch {
+		case m.Header.Level == unix.IPPROTO_IP && m.Header.Type == unix.IP_PKTINFO && len(m.Data) == unix.SizeofInet4Pktinfo:
+			info := (*unix.Inet4Pktinfo)(unsafe.Pointer(&m.Data[0]))
+			source, index = netip.AddrFrom4(info.Spec_dst), int(info.Ifindex)
+		case m.Header.Level == unix.IPPROTO_IPV6 && m.Header.Type == unix.IPV6_PKTINFO && len(m.Data) == unix.SizeofInet6Pktinfo:
+			info := (*unix.Inet6Pktinfo)(unsafe.Pointer(&m.Data[0]))
+			source, index = netip.AddrFrom16(info.Addr), int(info.Ifindex)
+		case m.Header.Level == unix.IPPROTO_IPV6 && m.Header.Type == unix.IPV6_DONTFRAG && len(m.Data) == 4:
+			fragments = binary.NativeEndian.Uint32(m.Data) == 0
+		default:
+			return netip.Addr{}, 0, false, fmt.Errorf("a send carries a control message of level %d and type %d", m.Header.Level, m.Header.Type)
+		}
+	}
+	return source, index, fragments, nil
+}
+
+// markedRequest is an IKE request under pairTestIKESPI behind the non-ESP marker, as a peer sends it to the hub's port
+func markedRequest() []byte {
+	request := make([]byte, 28)
+	binary.BigEndian.PutUint64(request, pairTestIKESPI)
+	return withMarker(request)
+}
+
+// replyLeavesFrom has a client at client connected to reached on the hub's port send a request, which the hub answers through the endpoint it arrived with
+// a connected socket takes datagrams from the address it connected to alone, so the answer reaches the client only from reached
+// darwin routes the answer to client by lo0, whose own address it takes for the source of a send that names none
+func replyLeavesFrom(t *testing.T, network string, client, reached netip.Addr) {
+	t.Helper()
+	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hub.Close() })
+	unclaimed := hub.Listen()
+	to := netip.AddrPortFrom(reached, hub.port)
+	conn, err := net.DialUDP(network, net.UDPAddrFromAddrPort(netip.AddrPortFrom(client, 0)), net.UDPAddrFromAddrPort(to))
+	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
+		t.Skipf("this sandbox will not let a socket at %s connect to %s: %v", client, to, err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := conn.Write(markedRequest()); err != nil {
+		t.Fatalf("a request from %s to %s: %v", client, to, err)
+	}
+	var first Unclaimed
+	select {
+	case first = <-unclaimed:
+	case <-time.After(arrivalBudget):
+		t.Fatalf("the request from %s to %s never reached the hub", client, to)
+	}
+	mux, err := hub.NewMuxTo(first.Endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := []byte("answer")
+	if err := mux.SendIKETo(answer, first.Endpoint); err != nil {
+		t.Fatalf("the answer to %s: %v", first.Endpoint, err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(arrivalBudget)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("the answer to a request that reached %s never arrived on a socket connected to it, so it left from another address: %v", to, err)
+	}
+	if got := buf[:n]; !bytes.Equal(got, withMarker(answer)) {
+		t.Fatalf("the client read %q, want the answer", got)
+	}
+}
+
+// an IPv4 answer leaves from the address its request reached, the host's own here, rather than the 127.0.0.1 the route to the client picks
+// RFC 7296 section 2.11: "It MUST specify the address and port at which the request was received as the source address and port in the response."
+func TestDarwinReplyLeavesFromTheAddressTheRequestReached(t *testing.T) {
+	replyLeavesFrom(t, "udp4", netip.MustParseAddr("127.0.0.1"), hostAddress(t, false))
+}
+
+// an IPv6 answer leaves from the address its request reached rather than the ::1 the route to the client picks
+// lo0's link-local address names lo0 in the answer's pin, and the host's own global address names no interface
+func TestDarwinReplyLeavesFromTheAddressTheRequestReachedOverIPv6(t *testing.T) {
+	loopback := netip.MustParseAddr("::1")
+	t.Run("link-local", func(t *testing.T) {
+		reached, _ := loopbackLinkLocal(t)
+		replyLeavesFrom(t, "udp6", loopback, reached)
+	})
+	t.Run("global", func(t *testing.T) { replyLeavesFrom(t, "udp6", loopback, hostAddress(t, true)) })
+}
+
+// a listener reads the address each datagram reached, and the endpoint of an IKE datagram is pinned to it
+// an ESP datagram gets no endpoint, which the hub reads for nothing
+func TestDarwinReceiverPinsIKEAlone(t *testing.T) {
+	for i, family := range []struct{ network, loopback string }{{"udp4", "127.0.0.1"}, {"udp6", "::1"}} {
+		t.Run(family.network, func(t *testing.T) {
+			opened, receivers, port, err := listenPacketBind(0, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = opened.Close() })
+			bind := opened.(*darwinBind)
+			if bind.v4 == nil || bind.v6 == nil {
+				t.Fatal("the bind opened one family alone")
+			}
+			socket := []*darwinSocket{bind.v4, bind.v6}[i]
+			if err := socket.conn.SetReadDeadline(time.Now().Add(arrivalBudget)); err != nil {
+				t.Fatal(err)
+			}
+			peer := listenPeer(t, family.network, family.loopback)
+			at := peer.LocalAddr().(*net.UDPAddr).AddrPort()
+			loopback := netip.MustParseAddr(family.loopback)
+			esp := binary.BigEndian.AppendUint32(nil, pairTestSPI)
+			ike := markedRequest()
+			for _, datagram := range [][]byte{esp, ike} {
+				if _, err := peer.WriteToUDPAddrPort(datagram, netip.AddrPortFrom(loopback, port)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bufs, sizes, endpoints := make([][]byte, 1), make([]int, 1), make([]Endpoint, 1)
+			for _, datagram := range [][]byte{esp, ike} {
+				endpoints[0] = &darwinEndpoint{}
+				if n, refused, err := receivers[i](bufs, sizes, endpoints); n != 1 || refused != 0 || err != nil {
+					t.Fatalf("a read answered %d datagrams, %d refused and %v", n, refused, err)
+				}
+				if got := bufs[0][:sizes[0]]; !bytes.Equal(got, datagram) {
+					t.Fatalf("the listener read %x, want %x", got, datagram)
+				}
+				if len(datagram) == len(esp) {
+					if endpoints[0] != nil {
+						t.Errorf("an ESP datagram came with the endpoint %v", endpoints[0])
+					}
+					continue
+				}
+				ep, ok := endpoints[0].(*darwinEndpoint)
+				if !ok || ep.pin() == nil || ep.source != loopback || ep.index != 0 || ep.AddrPort() != netip.AddrPortFrom(at.Addr().Unmap(), at.Port()) {
+					t.Errorf("an IKE datagram from %s to %s came with %#v, want one pinned to %s", at, loopback, endpoints[0], loopback)
+				}
+			}
+		})
+	}
+}
+
+// an IPv4 answer names the address its request reached in ipi_spec_dst and leaves ipi_ifindex 0, whatever interface the request arrived on
+// XNU takes a nonzero ipi_ifindex over ipi_spec_dst and IP_BOUND_IF, which would drop the source and move the answer off the bound underlay
+// an IPv6 answer names the interface for a link-local source alone, which needs its zone
+func TestDarwinPinKeepsTheBoundScope(t *testing.T) {
+	from := netip.MustParseAddrPort("198.51.100.1:4500")
+	for _, test := range []struct {
+		reached string
+		ipv6    bool
+		index   int
+	}{
+		{reached: "192.0.2.7"},
+		{reached: "2001:db8::7", ipv6: true},
+		{reached: "fe80::7", ipv6: true, index: 7},
+	} {
+		reached := netip.MustParseAddr(test.reached)
+		ep, err := (&darwinSocket{ipv6: test.ipv6}).replyEndpoint(from, receivedControl(test.ipv6, reached, 7), 0)
+		if err != nil {
+			t.Fatalf("a request that reached %s on interface 7: %v", reached, err)
+		}
+		source, index, fragments, err := sentPin(ep.sendControl())
+		if err != nil || source != reached || index != test.index || fragments {
+			t.Errorf("the answer to a request that reached %s on interface 7 names %s at interface %d, fragmenting %v, %v, want %s at interface %d",
+				reached, source, index, fragments, err, reached, test.index)
+		}
+	}
+}
+
+// an IKE datagram whose control message was cut short or names no destination gets no endpoint, since its answer could not name the address it reached
+func TestDarwinReceiverRefusesAnIKEDatagramWithoutItsDestination(t *testing.T) {
+	from := netip.MustParseAddrPort("198.51.100.1:4500")
+	for _, test := range []struct {
+		name    string
+		control []byte
+		flags   int
+	}{
+		{"a control message the kernel cut short", receivedControl(false, netip.MustParseAddr("192.0.2.7"), 0), unix.MSG_CTRUNC},
+		{"no control message", nil, 0},
+	} {
+		if ep, err := (&darwinSocket{}).replyEndpoint(from, test.control, test.flags); err == nil {
+			t.Errorf("%s gave the endpoint %v, want a refusal", test.name, ep)
+		}
+	}
+}
+
+// the receiver counts an IKE datagram whose control message the kernel cut short as refused and drops it, and hands on the ESP datagram after it
+// SO_TIMESTAMP cuts it in both families: ip_savecontrol and ip6_savecontrol_v4 queue the timestamp ahead of the packet info, which copyout_control then cuts and flags MSG_CTRUNC
+func TestDarwinReceiverDropsAnIKEDatagramWhoseControlMessageWasCut(t *testing.T) {
+	for i, family := range []struct {
+		network, loopback string
+	}{
+		{"udp4", "127.0.0.1"},
+		{"udp6", "::1"},
+	} {
+		t.Run(family.network, func(t *testing.T) {
+			opened, receivers, port, err := listenPacketBind(0, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = opened.Close() })
+			bind := opened.(*darwinBind)
+			socket := []*darwinSocket{bind.v4, bind.v6}[i]
+			if socket == nil {
+				t.Skipf("the bind opened no %s socket", family.network)
+			}
+			var setErr error
+			if err := socket.raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_TIMESTAMP, 1) }); err != nil || setErr != nil {
+				t.Fatalf("ask for a timestamp: %v, %v", err, setErr)
+			}
+			if err := socket.conn.SetReadDeadline(time.Now().Add(arrivalBudget)); err != nil {
+				t.Fatal(err)
+			}
+			peer := listenPeer(t, family.network, family.loopback)
+			esp := binary.BigEndian.AppendUint32(nil, pairTestSPI)
+			for _, datagram := range [][]byte{markedRequest(), esp} {
+				if _, err := peer.WriteToUDPAddrPort(datagram, netip.AddrPortFrom(netip.MustParseAddr(family.loopback), port)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bufs, sizes, endpoints := make([][]byte, 1), make([]int, 1), make([]Endpoint, 1)
+			if n, refused, err := receivers[i](bufs, sizes, endpoints); n != 0 || refused != 1 || err != nil {
+				t.Fatalf("the read of an IKE datagram whose control message was cut answered %d datagrams, %d refused and %v, want it refused", n, refused, err)
+			}
+			n, refused, err := receivers[i](bufs, sizes, endpoints)
+			if n != 1 || refused != 0 || err != nil || !bytes.Equal(bufs[0][:sizes[0]], esp) || endpoints[0] != nil {
+				t.Fatalf("the read after it answered %d datagrams, %d refused and %v, %x with %v, want the ESP datagram %x alone", n, refused, err, bufs[0][:sizes[0]], endpoints[0], esp)
+			}
+		})
+	}
+}
+
+// an answer pinned to an address the host lost goes from the kernel's choice of source, and every send to the endpoint does from then on
+// the path MTU of such an endpoint is that of the route
+// once the host holds the address again, a fresh request that reaches it moves the session back onto it
+// the hub records the fallback once, with the errno darwin refused the pin with
+// the test adds an address to lo0, has a request reach it and removes it before the answer
+func TestDarwinReplyFromAGoneSourceFallsBack(t *testing.T) {
+	requireHostNet(t, "an lo0 alias")
+	for _, family := range []struct {
+		network, loopback, alias string
+		add, remove              []string
+	}{
+		{"udp4", "127.0.0.1", "127.0.0.77", []string{"ifconfig", "lo0", "alias", "127.0.0.77", "up"}, []string{"ifconfig", "lo0", "-alias", "127.0.0.77"}},
+		{"udp6", "::1", "2001:db8:77::1", []string{"ifconfig", "lo0", "inet6", "2001:db8:77::1", "prefixlen", "128", "alias"}, []string{"ifconfig", "lo0", "inet6", "2001:db8:77::1", "-alias"}},
+	} {
+		t.Run(family.network, func(t *testing.T) {
+			events := &eventLog{}
+			hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = hub.Close() })
+			unclaimed := hub.Listen()
+			hostCommand(t, family.add...)
+			t.Cleanup(func() { _ = exec.Command(family.remove[0], family.remove[1:]...).Run() })
+			waitDAD(t, "lo0")
+			alias, loopback := netip.MustParseAddr(family.alias), netip.MustParseAddr(family.loopback)
+			client := listenPeer(t, family.network, family.loopback)
+			if _, err := client.WriteToUDPAddrPort(markedRequest(), netip.AddrPortFrom(alias, hub.port)); err != nil {
+				t.Fatal(err)
+			}
+			var first Unclaimed
+			select {
+			case first = <-unclaimed:
+			case <-time.After(arrivalBudget):
+				t.Fatalf("the request to %s never reached the hub", alias)
+			}
+			ep := first.Endpoint.(*darwinEndpoint)
+			if ep.pin() == nil || ep.source != alias {
+				t.Fatalf("the request to %s arrived with an endpoint pinned %v to %s", alias, ep.pin() != nil, ep.source)
+			}
+			hostCommand(t, family.remove...)
+			mux, err := hub.NewMuxTo(ep)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := mux.PathMTU(); err != nil {
+				t.Errorf("the path MTU to %s pinned to %s the host no longer holds: %v", ep, alias, err)
+			}
+			for i := range 2 {
+				answer := fmt.Appendf(nil, "answer %d", i)
+				if err := mux.SendIKETo(answer, ep); err != nil {
+					t.Fatalf("answer %d, pinned to %s the host no longer holds, was not sent from another address: %v", i, alias, err)
+				}
+				if from := readFrom(t, client, withMarker(answer)); from != netip.AddrPortFrom(loopback, hub.port) {
+					t.Errorf("answer %d arrived from %s, want the kernel's choice %s", i, from, netip.AddrPortFrom(loopback, hub.port))
+				}
+			}
+			if !ep.unpinned.Load() {
+				t.Error("the endpoint still names the gone source")
+			}
+			got := events.recorded()
+			t.Logf("the hub recorded %q", got)
+			if want := "transport.endpoint.unpinned endpoint=" + ep.String() + " errno="; len(got) != 1 || !strings.HasPrefix(got[0], want) {
+				t.Errorf("the hub recorded %q, want one line starting %q", got, want)
+			}
+			hostCommand(t, family.add...)
+			waitDAD(t, "lo0")
+			if _, err := client.WriteToUDPAddrPort(markedRequest(), netip.AddrPortFrom(alias, hub.port)); err != nil {
+				t.Fatal(err)
+			}
+			var again Unclaimed
+			select {
+			case again = <-unclaimed:
+			case <-time.After(arrivalBudget):
+				t.Fatalf("the request to %s, held again, never reached the hub", alias)
+			}
+			if !mux.AdoptEndpoint(again.Endpoint) {
+				t.Errorf("a fresh request to %s, which the host holds again, left the session on the kernel's choice", alias)
+			}
+			back := []byte("answer from the address held again")
+			if err := mux.SendIKE(back); err != nil {
+				t.Fatal(err)
+			}
+			if from := readFrom(t, client, withMarker(back)); from != netip.AddrPortFrom(alias, hub.port) {
+				t.Errorf("the answer after %s came back arrived from %s, want %s", alias, from, netip.AddrPortFrom(alias, hub.port))
+			}
+		})
+	}
+}
+
+// leftFrom sends with send, again every pathResend, until a datagram of size from port crosses to the far feth from source, or from anywhere for an invalid source
+// it fails the test when none does within pathWait
+func (f *farFrames) leftFrom(t *testing.T, port, size int, source netip.Addr, send func() error) {
+	t.Helper()
+	start := time.Now()
+	for tries := 1; ; tries++ {
+		err := send()
+		if f.crossed(t, port, size, 1, source, pathResend) > 0 {
+			t.Logf("a datagram of %d bytes crossed to %s at try %d, %s after the first", size, fethFar, tries, time.Since(start).Round(time.Millisecond))
+			return
+		}
+		if time.Since(start) >= pathWait {
+			t.Fatalf("none of %d datagrams of %d bytes crossed to %s from %s within %s, the last send answering %v", tries, size, fethFar, source, pathWait, err)
+		}
+	}
+}
+
+// pinPaths are the peers pinDetour routes, each off both feths' subnets
+// pin is the near feth's address, and farAddress the far feth's, which the host picks for a send to peer that names no source
+var pinPaths = []struct {
+	name, family            string
+	peer, pin, farAddress   netip.Addr
+	farGateway, nearGateway string
+	header                  int
+}{
+	{"IPv4", "-inet", netip.MustParseAddr("203.0.113.20"), netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.18.0.1"), "198.18.0.9", "192.0.2.9", 20},
+	{"IPv6", "-inet6", netip.MustParseAddr("2001:db8:20::20"), netip.MustParseAddr("2001:db8:f::1"), netip.MustParseAddr("2001:db8:e::1"), "2001:db8:e::9", "2001:db8:f::9", 40},
+}
+
+// pinDetour makes the feth pair, gives the far feth an address of each family and a gateway resolving to the near feth, and routes each of pinPaths' peers by the far feth
+// where scoped, it also routes each peer by the near feth in a route scoped to it, as a scoped default does for a utun or PPP service
+// the far feth's bpf device sees a datagram leaving either feth
+func pinDetour(t *testing.T, scoped bool) {
+	t.Helper()
+	fethPath(t)
+	near, err := net.InterfaceByName(fethNear)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostCommand(t, "ifconfig", fethFar, "inet", "198.18.0.1/24")
+	hostCommand(t, "ifconfig", fethFar, "inet6", "2001:db8:e::1", "prefixlen", "64")
+	waitDAD(t, fethFar)
+	hostCommand(t, "arp", "-s", "198.18.0.9", near.HardwareAddr.String())
+	hostCommand(t, "ndp", "-s", "2001:db8:e::9", near.HardwareAddr.String())
+	for _, path := range pinPaths {
+		peer := path.peer.String()
+		hostCommand(t, "route", "-n", "add", path.family, "-host", peer, path.farGateway)
+		t.Cleanup(func() { _ = exec.Command("route", "-n", "delete", path.family, "-host", peer).Run() })
+		if scoped {
+			hostCommand(t, "route", "-n", "add", path.family, "-host", peer, path.nearGateway, "-ifscope", fethNear)
+			t.Cleanup(func() {
+				_ = exec.Command("route", "-n", "delete", path.family, "-host", peer, "-ifscope", fethNear).Run()
+			})
+		}
+	}
+}
+
+// a pinned send leaves by the interface that holds its pin, the near feth of fethMTU, where the host routes the peer by the far feth, which carries 1500
+// so a pinned endpoint's path MTU and the report of a datagram refused for its size name the near feth's MTU
+// ip_output scopes the lookup of a send naming its source to the interface holding that source, which here holds a scoped route to the peer
+func TestDarwinPinnedPathMTUIsThePinsInterface(t *testing.T) {
+	requireHostNet(t, "a feth pair")
+	pinDetour(t, true)
+	for _, path := range pinPaths {
+		t.Run(path.name, func(t *testing.T) {
+			hub, err := NewHub(":0", Underlay{}, Runtime{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = hub.Close() })
+			ep := pinnedEndpoint(netip.AddrPortFrom(path.peer, 4500), path.pin, 0)
+			mux, err := hub.NewMuxTo(ep)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, err := mux.PathMTU(); err != nil || got != fethMTU {
+				t.Errorf("the path MTU of %s pinned to %s reads %d, %v, want the near feth's %d", ep, path.pin, got, err, fethMTU)
+			}
+			err = hub.bind.Send([][]byte{make([]byte, fethMTU-path.header-8+1)}, ep)
+			if report, ok := err.(*PathMTUError); !ok || *report != (PathMTUError{Endpoint: ep, MTU: fethMTU}) {
+				t.Errorf("a send to %s pinned to %s one byte past the near feth answered %v, want the report of its %d alone", ep, path.pin, err, fethMTU)
+			}
+		})
+	}
+}
+
+// a pinned answer whose pin's interface holds no route to the peer goes from the kernel's choice of source, by the route the host holds
+// the session's path MTU is then that route's interface's, the far feth's
+// a fresh request that reaches the same pin within unroutedHold is the same destination, so it moves nothing and the session's next send does not try the pin again
+// the hub records the fallback once, naming the EHOSTUNREACH darwin refuses such a send with
+func TestDarwinReplyWithNoRouteFromThePinFallsBack(t *testing.T) {
+	requireHostNet(t, "a feth pair")
+	pinDetour(t, false)
+	far, err := net.InterfaceByName(fethFar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := watchFar(t)
+	for _, path := range pinPaths {
+		t.Run(path.name, func(t *testing.T) {
+			events := &eventLog{}
+			hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = hub.Close() })
+			peer := netip.AddrPortFrom(path.peer, 4500)
+			ep := pinnedEndpoint(peer, path.pin, 0)
+			mux, err := hub.NewMuxTo(ep)
+			if err != nil {
+				t.Fatal(err)
+			}
+			answer := make([]byte, 100)
+			if err := hub.bind.Send([][]byte{answer}, ep); err != nil {
+				t.Fatalf("an answer to %s pinned to %s, whose interface holds no route there, was not sent from another address: %v", ep, path.pin, err)
+			}
+			if !ep.unpinned.Load() {
+				t.Error("the endpoint still names a pin its interface holds no route from")
+			}
+			frames.leftFrom(t, int(hub.port), len(answer), path.farAddress, func() error { return hub.bind.Send([][]byte{answer}, ep) })
+			if got, err := mux.PathMTU(); err != nil || got != far.MTU {
+				t.Errorf("the path MTU of %s, which fell back from %s, reads %d, %v, want the far feth's %d", ep, path.pin, got, err, far.MTU)
+			}
+			for i := range 3 {
+				if mux.AdoptEndpoint(pinnedEndpoint(peer, path.pin, 0)) {
+					t.Errorf("fresh request %d from %s to %s, which holds no route back, moved the session", i, peer, path.pin)
+				}
+				if err := mux.SendIKE([]byte("answer")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := fmt.Sprintf("transport.endpoint.unpinned endpoint=%s errno=EHOSTUNREACH", ep)
+			if got := events.recorded(); !slices.Equal(got, []string{want}) {
+				t.Errorf("the hub recorded %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// a session whose pin fell back for want of a route stays on the kernel's choice while unroutedHold lasts, through a fresh request to the pin once it routes again
+// after the hold, a fresh request to the pin moves the session back onto it, and its ESP leaves from the pin
+// the hub records the fallback once
+// the test deletes the pin's scoped route and adds it back, as configd withdraws and restores a service's scoped default while its address stays
+func TestDarwinSessionReturnsToAPinThatRoutesAgain(t *testing.T) {
+	requireHostNet(t, "a feth pair")
+	pinDetour(t, true)
+	frames := watchFar(t)
+	for i, path := range pinPaths {
+		t.Run(path.name, func(t *testing.T) {
+			events := &eventLog{}
+			hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = hub.Close() })
+			peer := netip.AddrPortFrom(path.peer, 4500)
+			ep := pinnedEndpoint(peer, path.pin, 0)
+			mux, err := hub.NewMuxTo(ep)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// each step's ESP has a size of its own, past the other family's
+			sentFrom := func(step int, source netip.Addr) {
+				t.Helper()
+				size := 200 + 300*i + step
+				frames.leftFrom(t, int(hub.port), size, source, func() error { return mux.SendESP(make([]byte, size)) })
+			}
+			sentFrom(0, path.pin)
+			hostCommand(t, "route", "-n", "delete", path.family, "-host", path.peer.String(), "-ifscope", fethNear)
+			sentFrom(1, path.farAddress)
+			if ep.unroutedUntil.Load() == nil {
+				t.Fatalf("premise: a send pinned to %s, whose scoped route is gone, did not fall back for want of a route", path.pin)
+			}
+			hostCommand(t, "route", "-n", "add", path.family, "-host", path.peer.String(), path.nearGateway, "-ifscope", fethNear)
+			if mux.AdoptEndpoint(pinnedEndpoint(peer, path.pin, 0)) {
+				t.Errorf("a fresh request to %s within the hold moved the session", path.pin)
+			}
+			sentFrom(2, path.farAddress)
+			ep.unroutedUntil.Store(new(time.Now()))
+			if !mux.AdoptEndpoint(pinnedEndpoint(peer, path.pin, 0)) {
+				t.Errorf("a fresh request to %s after the hold left the session on the kernel's choice", path.pin)
+			}
+			sentFrom(3, path.pin)
+			want := fmt.Sprintf("transport.endpoint.unpinned endpoint=%s errno=EHOSTUNREACH", ep)
+			if got := events.recorded(); !slices.Equal(got, []string{want}) {
+				t.Errorf("the hub recorded %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// a send whose pinned try and unpinned resend are both refused keeps the pin and records nothing, so a later send tries the pin again
+// a reject ARP entry for the pin's gateway, which stands for one whose ARP failed, has darwin refuse both with EHOSTUNREACH
+// once the gateway answers again, sends leave from the pin
+func TestDarwinSendRefusedWithAndWithoutThePinKeepsIt(t *testing.T) {
+	requireHostNet(t, "a feth pair")
+	pinDetour(t, true)
+	far, err := net.InterfaceByName(fethFar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := watchFar(t)
+	path := pinPaths[0]
+	hostCommand(t, "arp", "-d", path.nearGateway)
+	hostCommand(t, "arp", "-s", path.nearGateway, far.HardwareAddr.String(), "reject")
+	t.Cleanup(func() { _ = exec.Command("arp", "-d", path.nearGateway).Run() })
+	events := &eventLog{}
+	hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hub.Close() })
+	ep := pinnedEndpoint(netip.AddrPortFrom(path.peer, 4500), path.pin, 0)
+	err = hub.bind.Send([][]byte{make([]byte, 100)}, ep)
+	// a write that names no source is a sendto, and one carrying the pin a sendmsg
+	if call, ok := errors.AsType[*os.SyscallError](err); !ok || call.Syscall != "sendto" || !errors.Is(err, unix.EHOSTUNREACH) {
+		t.Fatalf("premise: a send pinned to %s, whose gateway rejects, answered %v, want the resend's EHOSTUNREACH", path.pin, err)
+	}
+	if ep.pin() == nil || ep.unroutedUntil.Load() != nil {
+		t.Errorf("a send refused with and without its pin %s dropped the pin, fallen back for want of a route %v", path.pin, ep.unroutedUntil.Load() != nil)
+	}
+	hostCommand(t, "arp", "-d", path.nearGateway)
+	hostCommand(t, "arp", "-s", path.nearGateway, far.HardwareAddr.String())
+	frames.leftFrom(t, int(hub.port), 101, path.pin, func() error { return hub.bind.Send([][]byte{make([]byte, 101)}, ep) })
+	if got := events.recorded(); len(got) != 0 {
+		t.Errorf("the hub recorded %q, want nothing", got)
+	}
+}
+
+// unpinnedSends is how many sends TestDarwinRefusedSendWithoutAPinIsTriedOnce counts, enough that a stray message of the process cannot double them
+const unpinnedSends = 16
+
+// messagesSent is the count of sends this process made, which sosend raises on every call before the protocol can refuse it
+func messagesSent(t *testing.T) int64 {
+	t.Helper()
+	var usage unix.Rusage
+	if err := unix.Getrusage(unix.RUSAGE_SELF, &usage); err != nil {
+		t.Fatalf("read this process's resource usage: %v", err)
+	}
+	return usage.Msgsnd
+}
+
+// a send to an endpoint with no pin that darwin refuses with an errno a pinned send falls back on is one call, and records nothing
+// udp_output and udp6_output refuse a datagram to port 0 with EADDRNOTAVAIL
+func TestDarwinRefusedSendWithoutAPinIsTriedOnce(t *testing.T) {
+	for _, loopback := range []string{"127.0.0.1", "::1"} {
+		events := &eventLog{}
+		hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = hub.Close() })
+		ep := &darwinEndpoint{addr: netip.AddrPortFrom(netip.MustParseAddr(loopback), 0)}
+		before := messagesSent(t)
+		for range unpinnedSends {
+			if err := hub.bind.Send([][]byte{make([]byte, 64)}, ep); !errors.Is(err, unix.EADDRNOTAVAIL) {
+				t.Fatalf("premise: a send to %s answered %v, want EADDRNOTAVAIL", ep, err)
+			}
+		}
+		sent := messagesSent(t) - before
+		if sent < unpinnedSends {
+			t.Fatalf("premise: %d sends to %s, each refused, counted %d calls, want one or more each", unpinnedSends, ep, sent)
+		}
+		if sent >= 2*unpinnedSends {
+			t.Errorf("%d sends to %s, each refused, made %d calls, want one each", unpinnedSends, ep, sent)
+		}
+		if got := events.recorded(); len(got) != 0 || ep.pin() != nil {
+			t.Errorf("sends to %s with no pin recorded %q, and it holds a pin %v", ep, got, ep.pin() != nil)
+		}
+	}
+}
+
+// after darwin refuses a pinned datagram for its size, the datagrams of the send that fit still leave from the pin
+// the pin is the near feth's address the host does not pick for the neighbor, so a datagram that names no source leaves from the other
+func TestDarwinDatagramsAfterASizeRefusalLeaveFromThePin(t *testing.T) {
+	requireHostNet(t, "a feth pair")
+	fethPath(t)
+	hostCommand(t, "ifconfig", fethNear, "inet", "192.0.2.5", "netmask", "255.255.255.255", "alias")
+	hostCommand(t, "ifconfig", fethNear, "inet6", "2001:db8:f::5", "prefixlen", "64", "alias")
+	waitDAD(t, fethNear)
+	frames := watchFar(t)
+	for _, family := range []struct {
+		name      string
+		neighbor  netip.Addr
+		addresses []netip.Addr
+		header    int
+	}{
+		{"IPv4", netip.MustParseAddr("192.0.2.9"), []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.5")}, 20},
+		{"IPv6", netip.MustParseAddr("2001:db8:f::9"), []netip.Addr{netip.MustParseAddr("2001:db8:f::1"), netip.MustParseAddr("2001:db8:f::5")}, 40},
+	} {
+		t.Run(family.name, func(t *testing.T) {
+			peer := netip.AddrPortFrom(family.neighbor, 4500)
+			conn, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(peer))
+			if err != nil {
+				t.Fatal(err)
+			}
+			chosen := conn.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap()
+			_ = conn.Close()
+			index := slices.Index(family.addresses, chosen)
+			if index < 0 {
+				t.Fatalf("the host sends to %s from %s, want one of %v", peer, chosen, family.addresses)
+			}
+			pin := family.addresses[1-index]
+			hub, err := NewHub(":0", Underlay{}, Runtime{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = hub.Close() })
+			ep := pinnedEndpoint(peer, pin, 0)
+			frames.leftFrom(t, int(hub.port), 64, pin, func() error { return hub.bind.Send([][]byte{make([]byte, 64)}, ep) })
+			largest := fethMTU - family.header - 8
+			filling := make([]byte, largest)
+			err = hub.bind.Send([][]byte{filling, make([]byte, 1500), filling}, ep)
+			if report, ok := err.(*PathMTUError); !ok || *report != (PathMTUError{Endpoint: ep, MTU: fethMTU}) {
+				t.Errorf("a send to %s pinned to %s answered %v, want the report of the near feth's %d alone", ep, pin, err, fethMTU)
+			}
+			if got := frames.crossed(t, int(hub.port), largest, 2, pin, arrivalBudget); got != 2 {
+				t.Errorf("%d of the send's two datagrams of %d bytes to %s left from the pin %s, want both, where the host picks %s", got, largest, peer, pin, chosen)
+			}
+		})
 	}
 }

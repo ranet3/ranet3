@@ -192,7 +192,8 @@ type Endpoint interface {
 	// AddrPort is the peer's address as this socket observed it, which NAT
 	// detection has to hash (RFC 7296 section 2.23).
 	AddrPort() netip.AddrPort
-	// sameDestination reports whether sends to other leave for the same address and port from the same source
+	// sameDestination reports whether other names the same address and port and arrived with the same pin
+	// an endpoint whose sends fell back from its pin counts as one without it, except for unroutedHold after a refusal for want of a route
 	sameDestination(other Endpoint) bool
 	// withoutSource is this endpoint with the source address and interface left to the kernel
 	withoutSource() Endpoint
@@ -730,7 +731,7 @@ func (m *Mux) currentEndpoint() Endpoint {
 	return m.endpoint
 }
 
-// AdoptEndpoint moves this mux to endpoint and reports whether that changed the address, port or source its sends leave with
+// AdoptEndpoint moves this mux to endpoint unless the two are the same destination, and reports whether it moved
 // IKE calls it only with the source of a fresh authenticated request, as RFC 7296 section 2.23 asks
 // a mux NewMux made takes the address and port alone and leaves the source to the kernel
 // so a session this node dialed sends from whatever address this host holds now
