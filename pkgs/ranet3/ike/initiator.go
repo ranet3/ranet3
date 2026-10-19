@@ -362,10 +362,11 @@ func (s *Session) nextRetainedExpiry() (time.Time, bool) {
 	return earliest, !earliest.IsZero()
 }
 
-// removeRetainedContext drops a retained SA the peer has deleted, and reports
-// whether its SPI may be unregistered: another context routed by the same SPI
-// would be made deaf by that, which is a session that keeps sending ESP into a
-// peer that answers nothing until its own liveness check expires.
+// removeRetainedContext drops ctx when the session retains it as a replaced or
+// redundant IKE SA, and reports whether it did. Its SPI stays registered while
+// another context is routed by it, since unregistering it would make that one
+// deaf, which is a session that keeps sending ESP into a peer that answers
+// nothing until its own liveness check expires.
 func (s *Session) removeRetainedContext(ctx *ikeContext) bool {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
