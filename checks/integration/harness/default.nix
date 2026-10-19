@@ -514,10 +514,10 @@ testers.runNixOSTest {
               crypto = {
                 rekey = {
                   # each rekey starts the margin before the lifetime stops its SA
-                  # and the margin outlasts a request and three resends, enough for three lost sends
-                  child = if profile then 0 else "20s";
-                  ike = if profile then 0 else "30s";
-                  margin = "18s";
+                  # and the margin covers a Delete of a replaced IKE SA on the teardown budget, then a rekey's three lost sends
+                  child = if profile then 0 else "24s";
+                  ike = if profile then 0 else "34s";
+                  margin = "22s";
                   jitter = 0;
                 };
               }
