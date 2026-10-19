@@ -251,3 +251,17 @@ device in both directions.
 The scrape counts the other chains as `ranet3_egress_conflicts`. The report
 covers nat postrouting chains in `ip` and `ip6` tables of the families it
 translates. It leaves out chains in `inet` tables.
+
+`cap.border` adds a third table under the same name, `inet ranet3`, holding 1
+filter chain at prerouting, priority `raw` (-300).
+[The border filter](border-filter.md) describes it. The same rules hold: it
+writes only inside its table, replaces the chain in 1 transaction, adopts a
+table an earlier instance left, and removes it at shutdown. Unlike the
+translator's tables it stays through `ranet3 down`. The conflict report above
+leaves its chain out, since it is in an `inet` table and translates nothing.
+Another base chain at the same hook, such as a firewall's own raw chain, runs
+beside it: both see every packet, and only a drop in either ends the hook. A
+firewall reload that flushes the whole ruleset deletes the table, and the filter
+puts it back on the pass the deletion wakes. A table or chain another writer
+changed in a way nf_tables will not undo in place is deleted and made again in 1
+transaction, any chain another writer put in the table with it.

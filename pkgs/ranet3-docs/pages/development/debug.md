@@ -43,7 +43,7 @@ class:
   to the user the daemon runs as. Each such call is logged at info with the
   caller's uid and pid.
 
-The daemon serves 6 debug paths:
+The daemon serves 7 debug paths:
 
 | Path                | Class | Commands                     |
 | ------------------- | ----- | ---------------------------- |
@@ -51,6 +51,7 @@ The daemon serves 6 debug paths:
 | `/v0/debug/netmon`  | read  | `debug netmon`               |
 | `/v0/debug/pmtu`    | read  | `debug pmtu`                 |
 | `/v0/debug/probe`   | root  | `debug probe`                |
+| `/v0/debug/rules`   | read  | `debug rules`                |
 | `/v0/debug/runtime` | read  | `debug runtime`              |
 | `/v0/debug/updown`  | read  | `debug updown`               |
 
@@ -124,6 +125,19 @@ These commands take flags of their own:
   unicast addresses of the interfaces that are up, the mesh's own device left
   out, then the last change the watch acted on and what moved in it. A platform
   without a watch says so. Linux and macOS have a watch.
+- `debug rules` is every policy rule the kernel holds, whoever wrote it, in a
+  table per family with its priority, its selectors, the table it reads or its
+  action, and its owner: `ranet3` for a rule carrying `cap.table.proto`,
+  `kernel` for the kernel's own, and the protocol number for anybody else's.
+  Then the rules `cap.table` asks for that the kernel does not hold, and on a
+  node with `cap.border` the border filter's chain: its table and hook, when its
+  last pass read it and whether it is ready, then each rule with the packets and
+  bytes each drop counted, any rule the chain does not hold yet, and any rule it
+  holds that the filter did not write, by its comment or as
+  `a rule with no comment`. The dump and the chain are each read now through a
+  socket of their own, so an operator who sends a test packet reads the counters
+  of that moment, and neither the reconciler's socket nor the filter's serves a
+  reader. A platform with no policy rules says so.
 - `debug pmtu [peer]` is the path MTU of every session, or of one peer's: first
   `link.mtu`, the steering header and the tun's MTU, with the answers sent to
   packets past a session's budget and the SYNs whose MSS was clamped, both for
@@ -247,6 +261,9 @@ connections to the reads.
 | `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed      |
 | `egress.ready`                        | the egress device's readiness or its SIDs moved, with `ipv4`, `ipv6`, `sid` |
 | `egress.device`                       | the egress device was created or withdrawn, with `name` and `action`        |
+| `border.pass`                         | a border filter pass that rewrote its chain or failed                       |
+| `border.ready`                        | the border filter's chain went ready or not ready, with `ready`             |
+| `border.dropped`                      | a pass read a drop counter that moved, at most once per pass                |
 | `network.changed`                     | the host's default or addresses moved, so every session was probed          |
 | `transport.underlay.bound`            | the underlay socket moved onto another interface                            |
 | `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable   |
@@ -260,7 +277,7 @@ connections to the reads.
 | `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets               |
 | `netstack.tun.failed`                 | the tun went away under the running node, which then stops                  |
 
-`egress.pass`, `egress.ready`, `egress.device` and
+`egress.pass`, `egress.ready`, `egress.device`, the 3 `border` kinds and
 `transport.endpoint.unsegmented` are recorded on Linux alone, and
 `transport.endpoint.unpinned` on Linux and macOS alone, the platforms that
 answer from the address a request reached. `transport.underlay.bound` is
@@ -315,6 +332,9 @@ Each kind carries these attributes:
 | `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                          |
 | `egress.ready`                                | `ipv4`, `ipv6`, `sid`                                                                                                                       |
 | `egress.device`                               | `name`, `action` (`created` or `withdrawn`)                                                                                                 |
+| `border.pass`                                 | `trigger`, `took`, `installed`, `err`                                                                                                       |
+| `border.ready`                                | `ready`                                                                                                                                     |
+| `border.dropped`                              | `overlay_source_ipv4`, `overlay_source_ipv6`, `routing_header`, `sid_destination`, each the packets since the pass before                   |
 | `network.changed`                             | `ipv4_default`, `ipv4_default_was`, `ipv4_added`, `ipv4_removed`, the same 4 for `ipv6`, `probed`, `woken`                                  |
 | `transport.underlay.bound`                    | `interface_index`                                                                                                                           |
 | `transport.endpoint.unpinned`, `.unsegmented` | `endpoint`, `errno`                                                                                                                         |
@@ -327,13 +347,16 @@ Each kind carries these attributes:
 | `netstack.tun.refused`                        | `interface`, `frames`, `err`                                                                                                                |
 | `netstack.tun.failed`                         | `interface`, `err`                                                                                                                          |
 
-`err` appears on `daemon.reload`, `control.verb`, `kernel.pass` and
-`egress.pass` only when the step failed. The `trigger` of a `kernel.pass` is
+`err` appears on `daemon.reload`, `control.verb`, `kernel.pass`, `egress.pass`
+and `border.pass` only when the step failed. The `trigger` of a `kernel.pass` is
 `start`, `sweep`, `retry`, `grace`, `disable`, `enable`, `reload`, `mesh` or
 `kernel`. The `trigger` of an `egress.pass` is `start`, `sweep`, `retry`,
-`disable`, `enable`, `deleted` when another writer deleted part of its tables,
-or `missed` when the daemon lost nf_tables notifications to an overflow or could
-not read one, whoever's tables they were about.
+`disable`, `enable`, `changed` when another writer added, changed or deleted
+part of its tables, or `missed` when the daemon lost nf_tables notifications to
+an overflow or could not read one, whoever's tables they were about. The
+`trigger` of a `border.pass` is `start`, `sweep`, `retry`, `reload`, `changed`
+when another writer added, changed or deleted part of its table, or `missed` as
+for an `egress.pass`.
 
 An `ike.sa.expired` is recorded for the current Child SA and for a replaced one
 still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an

@@ -25,8 +25,8 @@ let
   ]
   ++ lib.optional (generated && cfg.settings.link ? tun) cfg.settings.link.tun;
   # creating the tun, and the routes, rules and addresses cap.table owns.
-  # cap.egress additionally writes an nftables table of its own, which is why
-  # the set is not narrower than this
+  # cap.egress and cap.border additionally write nftables tables of their own,
+  # which is why the set is not narrower than this
   capabilities = [
     "CAP_NET_ADMIN"
   ]

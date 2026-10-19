@@ -5,51 +5,59 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6 and ICMP specifications on purpose."
 created: 2026-08-23
-updated: 2026-10-19
+updated: 2026-10-20
 order: 20
 ---
 
 ranet3 departs from the specifications it implements in the places this page
 lists. The table summarizes them, and the sections below give the details.
 
-| RFC and section                    | The RFC says                                                                 | ranet3                                                                  | Why                                                  |
-| ---------------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------- |
-| RFC 7296 section 2.23              | IKE starts on UDP port 500 and moves to 4500 behind a NAT                    | IKE and ESP share `link.port` from the first message                    | 1 port per node, with no transition to track         |
-| RFC 7296 section 2.23              | NAT detection hashes the real source address and port                        | The source hash covers a random address, so it never matches            | The peer always encapsulates ESP in UDP              |
-| RFC 7296 section 2.23              | Follow any validated packet when not behind a NAT, and none behind one       | Every session follows a fresh authenticated request, and nothing else   | A session follows a peer that moved                  |
-| RFC 7296 section 2.11              | Answer from the address and port the request reached                         | The kernel's choice once that address is gone or has no route           | No answer otherwise, see Answer addresses            |
-| RFC 7296 section 2.11              | Answer from the address and port the request reached                         | The kernel's choice on FreeBSD and OpenBSD                              | No source kept, see Answer addresses                 |
-| RFC 7296 section 2.25.1            | Complete both colliding Child SA rekeys and keep 1                           | The peer's rekey is answered `TEMPORARY_FAILURE`                        | 1 Child SA per session                               |
-| RFC 7296 section 2.8               | The responder may switch to the new SA once it sends its response            | It switches just before sending the response                            | The difference is the time to encrypt 1 message      |
-| RFC 7296 section 2.18              | An IKE SA rekey may choose a new PRF                                         | The PRF stays, and a reload that drops it replaces the IKE SA           | strongSwan expands keys with the old PRF             |
-| RFC 7296 section 4                 | After `NO_ADDITIONAL_SAS`, delete the old SA and create a new one            | The old SA stays, and the rekey is retried                              | Not implemented                                      |
-| RFC 7296 section 2.25.2            | Answer as usual a rekey of an IKE SA this end is rekeying too                | Past the IKE SA's lifetime it is answered `TEMPORARY_FAILURE`           | Section 2.8: an SA past its lifetime is not used     |
-| RFC 7296 section 2.8               | An SA past its lifetime is not used                                          | It finishes its exchange, answers the peer and sends its Delete         | Sections 2.1 and 2.3 keep 1 request until it ends    |
-| RFC 7296 section 2.8               | A rekeyed Child SA keeps the algorithms of the old one                       | A Child SA rekey may move to another listed cipher                      | Either end's lists left the old cipher out           |
-| RFC 7296 section 2.8               | A rekeyed Child SA keeps the algorithms of the old one                       | This end's own Child SA rekey runs no key exchange and drops a group    | No Child SA key exchange of its own, see Rekeying    |
-| RFC 7296 section 1.3.1             | A failed Child SA does not tear down the IKE SA                              | When the Child SA in `IKE_AUTH` fails, both ends delete the IKE SA      | An IKE SA carries nothing without its Child SA       |
-| RFC 7296 section 2.4               | Send a Delete for an IKE SA closed while the peer still answers              | None when a Message ID space is spent or a message cannot be built      | A Delete needs a Message ID and the same encoding    |
-| RFC 7296 section 2.21.3            | Answer every request with errors on an authenticated IKE SA                  | A replaced IKE SA past its lifetime answers no request                  | Section 2.8: an SA past its lifetime is not used     |
-| RFC 7296 section 4                 | Accept configured RSA certificates and shared keys                           | Ed25519 signatures only, against the trust document                     | Keys come from the trust document                    |
-| RFC 7296 section 2.9               | Refuse unacceptable traffic selectors with `TS_UNACCEPTABLE`, or narrow them | Only the full IPv4 and IPv6 ranges, anything else `NO_PROPOSAL_CHOSEN`  | Babel picks the peer for each packet                 |
-| RFC 7296 section 2.21.4            | Tell the peer of an error outside a request, such as ESP on an unknown SPI   | Such ESP is counted and dropped, and nothing is sent                    | A known gap                                          |
-| RFC 7296 section 2.21.4            | Answer a suspicious message from a peer's address over its IKE SA            | It is dropped, and nothing is sent over the SA                          | A spoofed address could make the node send           |
-| RFC 7296 section 3.3.4             | Let an administrator enter new Diffie-Hellman groups and their parameters    | No such interface                                                       | Elliptic curve groups only, fixed in code            |
-| RFC 7296 section 3.3.5             | Accept an offer of a longer key than the one configured                      | A key length the lists leave out is refused                             | Section 3.3.4's suite controls are a MUST            |
-| RFC 8247, RFC 8221                 | Support AES-CBC, MODP 14, `PRF_HMAC_SHA1`, HMAC integrity and RSA signatures | AEAD ciphers and elliptic curve groups only                             | Legacy transforms are left out                       |
-| RFC 4303 sections 2.6 and 2.7      | Be able to generate dummy packets                                            | None are generated, and no traffic flow confidentiality padding is sent | A known gap                                          |
-| RFC 4303 sections 3.3.3 and 4      | Log a sequence number overflow with the source address and IPv6 Flow ID      | The log names the local port, not the source address, and no Flow ID    | A wildcard socket, and no flow label is set          |
-| RFC 3948 section 2.1               | Send the IPv4 UDP checksum as zero                                           | Every IPv4 datagram carries a computed checksum                         | Linux refuses segmented sends without one            |
-| RFC 3948 section 4                 | Send NAT keepalives                                                          | None are sent                                                           | Hellos and IKE liveness checks keep the mapping open |
-| RFC 4443 section 2.2               | Answer from an address of the node's own                                     | Packet Too Big comes from the packet's destination                      | A leaf may hold no address of the packet's family    |
-| RFC 8966 section 3.2.2             | Raise the node's own seqno only when asked                                   | The seqno rises at every start                                          | Peers take a restarted node's routes at once         |
-| RFC 8966 section 3.7.2             | Try to reach every neighbor with a triggered update                          | It is sent once                                                         | Each link is 1 ESP tunnel that delivers in order     |
-| RFC 8966 sections 3.8.1.1, 3.8.1.2 | Answer a request when a selected route exists                                | Split horizon applies to replies                                        | The requester is the route's next hop                |
-| RFC 8966 section 3.8.1.2           | Forward a seqno request only while advertising the prefix                    | Forwarded whenever a route exists                                       | Starvation leaves nothing advertised                 |
-| RFC 8966 section 3.8.2.3           | Ask for a selected route shortly before it expires                           | No such request is sent                                                 | Not implemented                                      |
-| RFC 8966 section 4                 | Make packets as large as the link's MTU allows                               | At most 1232 octets of UDP payload                                      | Every session carries 1280 bytes                     |
-| RFC 8966 Appendix A.3              | Smooth the metric as an average                                              | An increase takes effect at once                                        | A route that went bad is left at once                |
-| RFC 8200 section 4.5               | Wait 60 seconds for fragments, and answer errors with ICMP                   | Wait 16 seconds, send no ICMP, drop more                                | Fragments of 1 packet cross 1 session together       |
+| RFC and section                    | The RFC says                                                                 | ranet3                                                                          | Why                                                           |
+| ---------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| RFC 7296 section 2.23              | IKE starts on UDP port 500 and moves to 4500 behind a NAT                    | IKE and ESP share `link.port` from the first message                            | 1 port per node, with no transition to track                  |
+| RFC 7296 section 2.23              | NAT detection hashes the real source address and port                        | The source hash covers a random address, so it never matches                    | The peer always encapsulates ESP in UDP                       |
+| RFC 7296 section 2.23              | Follow any validated packet when not behind a NAT, and none behind one       | Every session follows a fresh authenticated request, and nothing else           | A session follows a peer that moved                           |
+| RFC 7296 section 2.11              | Answer from the address and port the request reached                         | The kernel's choice once that address is gone or has no route                   | No answer otherwise, see Answer addresses                     |
+| RFC 7296 section 2.11              | Answer from the address and port the request reached                         | The kernel's choice on FreeBSD and OpenBSD                                      | No source kept, see Answer addresses                          |
+| RFC 7296 section 2.25.1            | Complete both colliding Child SA rekeys and keep 1                           | The peer's rekey is answered `TEMPORARY_FAILURE`                                | 1 Child SA per session                                        |
+| RFC 7296 section 2.8               | The responder may switch to the new SA once it sends its response            | It switches just before sending the response                                    | The difference is the time to encrypt 1 message               |
+| RFC 7296 section 2.18              | An IKE SA rekey may choose a new PRF                                         | The PRF stays, and a reload that drops it replaces the IKE SA                   | strongSwan expands keys with the old PRF                      |
+| RFC 7296 section 4                 | After `NO_ADDITIONAL_SAS`, delete the old SA and create a new one            | The old SA stays, and the rekey is retried                                      | Not implemented                                               |
+| RFC 7296 section 2.25.2            | Answer as usual a rekey of an IKE SA this end is rekeying too                | Past the IKE SA's lifetime it is answered `TEMPORARY_FAILURE`                   | Section 2.8: an SA past its lifetime is not used              |
+| RFC 7296 section 2.8               | An SA past its lifetime is not used                                          | It finishes its exchange, answers the peer and sends its Delete                 | Sections 2.1 and 2.3 keep 1 request until it ends             |
+| RFC 7296 section 2.8               | A rekeyed Child SA keeps the algorithms of the old one                       | A Child SA rekey may move to another listed cipher                              | Either end's lists left the old cipher out                    |
+| RFC 7296 section 2.8               | A rekeyed Child SA keeps the algorithms of the old one                       | This end's own Child SA rekey runs no key exchange and drops a group            | No Child SA key exchange of its own, see Rekeying             |
+| RFC 7296 section 1.3.1             | A failed Child SA does not tear down the IKE SA                              | When the Child SA in `IKE_AUTH` fails, both ends delete the IKE SA              | An IKE SA carries nothing without its Child SA                |
+| RFC 7296 section 2.4               | Send a Delete for an IKE SA closed while the peer still answers              | None when a Message ID space is spent or a message cannot be built              | A Delete needs a Message ID and the same encoding             |
+| RFC 7296 section 2.21.3            | Answer every request with errors on an authenticated IKE SA                  | A replaced IKE SA past its lifetime answers no request                          | Section 2.8: an SA past its lifetime is not used              |
+| RFC 7296 section 4                 | Accept configured RSA certificates and shared keys                           | Ed25519 signatures only, against the trust document                             | Keys come from the trust document                             |
+| RFC 7296 section 2.9               | Refuse unacceptable traffic selectors with `TS_UNACCEPTABLE`, or narrow them | Only the full IPv4 and IPv6 ranges, anything else `NO_PROPOSAL_CHOSEN`          | Babel picks the peer for each packet                          |
+| RFC 7296 section 2.21.4            | Tell the peer of an error outside a request, such as ESP on an unknown SPI   | Such ESP is counted and dropped, and nothing is sent                            | A known gap                                                   |
+| RFC 7296 section 2.21.4            | Answer a suspicious message from a peer's address over its IKE SA            | It is dropped, and nothing is sent over the SA                                  | A spoofed address could make the node send                    |
+| RFC 7296 section 3.3.4             | Let an administrator enter new Diffie-Hellman groups and their parameters    | No such interface                                                               | Elliptic curve groups only, fixed in code                     |
+| RFC 7296 section 3.3.5             | Accept an offer of a longer key than the one configured                      | A key length the lists leave out is refused                                     | Section 3.3.4's suite controls are a MUST                     |
+| RFC 8247, RFC 8221                 | Support AES-CBC, MODP 14, `PRF_HMAC_SHA1`, HMAC integrity and RSA signatures | AEAD ciphers and elliptic curve groups only                                     | Legacy transforms are left out                                |
+| RFC 4303 sections 2.6 and 2.7      | Be able to generate dummy packets                                            | None are generated, and no traffic flow confidentiality padding is sent         | A known gap                                                   |
+| RFC 4303 sections 3.3.3 and 4      | Log a sequence number overflow with the source address and IPv6 Flow ID      | The log names the local port, not the source address, and no Flow ID            | A wildcard socket, and no flow label is set                   |
+| RFC 3948 section 2.1               | Send the IPv4 UDP checksum as zero                                           | Every IPv4 datagram carries a computed checksum                                 | Linux refuses segmented sends without one                     |
+| RFC 3948 section 4                 | Send NAT keepalives                                                          | None are sent                                                                   | Hellos and IKE liveness checks keep the mapping open          |
+| RFC 4443 section 2.2               | Answer from an address of the node's own                                     | Packet Too Big comes from the packet's destination                              | A leaf may hold no address of the packet's family             |
+| RFC 4443 section 3.1               | Answer a packet refused for its source with Destination Unreachable, code 5  | The border filter drops a mesh source from outside the mesh with no answer      | The source is forged, so an answer would reach a bystander    |
+| RFC 4443 section 3.1               | Answer a packet refused for its source with Destination Unreachable, code 5  | A SID drops an outer source outside the overlay with no answer                  | An answer tells the sender which addresses are SIDs           |
+| RFC 4443 section 3.1               | Answer a packet refused for its source with Destination Unreachable, code 5  | An egress segment drops a source outside its allow list with no answer          | A source may be forged, so an answer could reach a bystander  |
+| RFC 4443 section 3.1               | Answer a packet a firewall refuses with Destination Unreachable, code 1      | The border filter drops a routing header from outside the mesh with no answer   | An answer tells the sender this node is the mesh's edge       |
+| RFC 4443 section 3.1               | Answer a packet a firewall refuses with Destination Unreachable, code 1      | The border filter drops a SID of this node from outside the mesh with no answer | An answer tells the sender which addresses are SIDs           |
+| RFC 8966 section 3.2.2             | Raise the node's own seqno only when asked                                   | The seqno rises at every start                                                  | Peers take a restarted node's routes at once                  |
+| RFC 8966 section 3.7.2             | Try to reach every neighbor with a triggered update                          | It is sent once                                                                 | Each link is 1 ESP tunnel that delivers in order              |
+| RFC 8966 sections 3.8.1.1, 3.8.1.2 | Answer a request when a selected route exists                                | Split horizon applies to replies                                                | The requester is the route's next hop                         |
+| RFC 8966 section 3.8.1.2           | Forward a seqno request only while advertising the prefix                    | Forwarded whenever a route exists                                               | Starvation leaves nothing advertised                          |
+| RFC 8966 section 3.8.2.3           | Ask for a selected route shortly before it expires                           | No such request is sent                                                         | Not implemented                                               |
+| RFC 8966 section 4                 | Make packets as large as the link's MTU allows                               | At most 1232 octets of UDP payload                                              | Every session carries 1280 bytes                              |
+| RFC 8966 Appendix A.3              | Smooth the metric as an average                                              | An increase takes effect at once                                                | A route that went bad is left at once                         |
+| RFC 8200 section 4.5               | Wait 60 seconds for fragments, and answer errors with ICMP                   | Wait 16 seconds, send no ICMP, drop more                                        | Fragments of 1 packet cross 1 session together                |
+| RFC 5095 section 4.2               | A firewall forwards by default every routing header but type 0               | The border filter drops a routing header of any type arriving from outside      | A first header of type 0 or 2 hides an SRH from nf_tables     |
+| RFC 8754 section 4.2               | A transit node forwards an SRH it is not the destination of                  | The border filter drops a routing header of any type arriving from outside      | The mesh is the SR domain and this node its edge, section 5.1 |
+| RFC 8754 section 7                 | Admit at ingress only the sources of the attached networks, as BCP 38 does   | The border filter denies the mesh's own space from outside and admits the rest  | The permit half needs first-hop source validation             |
 
 ## NAT traversal and ports
 
@@ -622,3 +630,138 @@ session's neighbor, so a session that ends takes its datagrams along.
 [The metrics](../metrics.md) count each neighbor's packets read from fragments,
 the largest of them, and the datagrams dropped and why. A datagram refused a
 place counts once for each of its fragments.
+
+## The border filter
+
+[RFC 8754 section 4.2](https://www.rfc-editor.org/rfc/rfc8754.html#section-4.2)
+says of a node that is not the destination of a packet with a segment routing
+header:
+
+> Any other transit node MUST NOT inspect the underneath routing header and MUST
+> forward the packet toward the DA according to its IPv6 routing table.
+
+[The border filter](../border-filter.md) drops every IPv6 packet carrying a
+routing header of any type that arrives on a link outside the mesh, whatever its
+destination and its segments. The mesh is the segment routing domain and a node
+with the filter is its edge, which
+[section 5.1](https://www.rfc-editor.org/rfc/rfc8754.html#section-5.1) asks to
+drop any packet entering the domain for a SID of the domain. Before typed SIDs a
+node cannot tell which destinations are SIDs, and a header naming another node's
+SID is the same forgery one hop later, so it drops the header whatever it names.
+A node that is a transit router for another segment routing domain between 2
+links outside the mesh loses that traffic. No deployment here is one.
+
+The filter drops routing headers of types 0 and 2 too, since nf_tables finds
+only the first routing header of a packet, and either would otherwise carry a
+segment routing header past it.
+[RFC 5095 section 3](https://www.rfc-editor.org/rfc/rfc5095.html#section-3) has
+a node that receives a type 0 header treat it as an unrecognised type:
+
+> If Segments Left is zero, the node must ignore the Routing header and proceed
+> to process the next header in the packet, whose type is identified by the Next
+> Header field in the Routing header.
+
+So a node goes on to the segment routing header behind a type 0 header with no
+segments left.
+[Section 4.2](https://www.rfc-editor.org/rfc/rfc5095.html#section-4.2) says that
+
+> Firewall policy intended to protect against packets containing RH0 MUST NOT
+> simply filter all traffic with a Routing Header
+
+and goes on:
+
+> In addition, the default configuration MUST permit forwarding of traffic using
+> a Routing Header other than 0.
+
+The filter is off until a file writes `cap.border`, and with it on, Mobile IPv6
+traffic carrying a type 2 header across 2 links outside the mesh is lost. No
+deployment here carries any. From Linux 7.1 the kernel's search for a routing
+header gives up at the 13th extension header, so the filter passes a routing
+header behind 12 others. A Linux host from 7.1 with `seg6_enabled` set acts on a
+segment routing header 13th in the chain and drops a packet whose routing header
+sits further back, and this node's own SIDs refuse it unless its outer source
+lies in the overlay. Before 7.1 neither search has a limit: the filter finds a
+routing header anywhere in the chain, and the host acts on one anywhere.
+
+The filter carries out section 5.1's first access list for this node's own SIDs.
+Every local SID carries out the second, refusing a packet whose outer source
+lies outside the IPv6 prefixes of `cap.border.overlay`, as
+[segment routing](../segment-routing.md#local-segments) describes, so a host
+beyond the mesh reaches no SID through a node with the filter. A node that
+forwards without `cap.border` is only warned at load, and passes a forged
+overlay source on to every SID.
+
+[Section 7](https://www.rfc-editor.org/rfc/rfc8754.html#section-7) says:
+
+> Additionally, ingress filtering of IPv6 source addresses as recommended in BCP
+> 38 [RFC2827] SHOULD be used.
+
+The filter [RFC 2827](https://www.rfc-editor.org/rfc/rfc2827.html#section-3)
+recommends admits an attached network's own prefixes and denies everything else:
+
+```text
+IF    packet's source address from within 204.69.207.0/24
+THEN  forward as appropriate
+
+IF    packet's source address is anything else
+THEN  deny packet
+```
+
+The border filter applies the other half. It drops a source inside
+`cap.border.overlay` arriving from outside the mesh, and passes every other
+source from every link outside it, since those links lead to the internet and no
+prefix list describes them. That keeps a forged mesh source out of the mesh, and
+it is not BCP 38's filter, so section 7 is met in part. The permit half, taking
+from each peer only the prefixes it holds, needs first-hop source validation,
+which this version does not have.
+
+## Drops with no answer
+
+[RFC 4443 section 3.1](https://www.rfc-editor.org/rfc/rfc4443.html#section-3.1)
+says:
+
+> A Destination Unreachable message SHOULD be generated by a router, or by the
+> IPv6 layer in the originating node, in response to a packet that cannot be
+> delivered to its destination address for reasons other than congestion.
+
+It gives each failure to deliver a code, among them:
+
+> If the reason for the failure to deliver is administrative prohibition (e.g.,
+> a "firewall filter"), the Code field is set to 1.
+
+> If the reason for the failure to deliver is that the packet with this source
+> address is not allowed due to ingress or egress filtering policies, the Code
+> field is set to 5.
+
+None of these drops answers, each for a reason that holds for every packet it
+drops:
+
+- For code 5, the border filter drops a source inside `cap.border.overlay`
+  arriving from outside the mesh. The source is forged, so an answer would go to
+  the host it names rather than the one that sent the packet.
+- For code 5, every SID refuses an outer source outside the overlay. Each packet
+  is addressed to a SID, so an answer would tell its sender which addresses are
+  SIDs.
+- For code 5, an egress segment refuses an outer or inner source outside its
+  allow list, or an inner source it cannot read. The SID has already refused an
+  outer source outside the overlay, so the outer source of each packet is an
+  overlay address. A host beyond the mesh can forge one through a node that
+  forwards without `cap.border`, and the segment cannot tell such a packet from
+  a mesh node's, so an answer could reach the mesh node the source names rather
+  than the host that sent the packet.
+- For code 1, the border filter drops a routing header arriving from outside the
+  mesh. An answer would tell its sender that this node is the edge of the mesh's
+  segment routing domain.
+- For code 1, the border filter drops one of this node's SIDs as the destination
+  of a packet arriving from outside the mesh. An answer would tell its sender
+  which addresses are SIDs.
+
+The same section says:
+
+> For security reasons, it is recommended that implementations SHOULD allow
+> sending of ICMP destination unreachable messages to be disabled, preferably on
+> a per-interface basis.
+
+Here these messages are always off.
+[The border filter](../border-filter.md#watching-it) counts each drop, and
+[segment routing](../segment-routing.md#watching-it) counts each refusal.

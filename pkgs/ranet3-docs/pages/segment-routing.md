@@ -40,6 +40,20 @@ covering it under `cap.route`. A SID may not be an address `cap.table` assigns
 to the tun, `assign_announced` included. The daemon refuses that at load,
 because every packet to that address would be taken as a segment.
 
+Every SID acts only on a packet whose outer source lies in the IPv6 prefixes of
+`cap.border.overlay`, the per-node list of RFC 8754 section 5.1. Any other
+counts as refused, before its header is read, and is never answered.
+[The border filter](border-filter.md) drops a source inside the overlay arriving
+from outside the mesh, so a host beyond the mesh reaches no SID through a node
+with the filter, whatever the SID delivers to. A node that forwards without
+`cap.border` is only warned at load, and passes a forged overlay source on to
+every SID. A steering node's `source` has to lie inside the overlay too, or
+every SID it steers through refuses its packets. The loader refuses a local
+segment without `cap.border`, and one beside an overlay holding no IPv6 prefix,
+which would refuse every packet. `cap.border` is Linux only, so a node on
+another platform holds no local segment. A reload that changes the overlay
+rebuilds the table of SIDs in place.
+
 A node parses a packet only when its destination is one of its SIDs. It accepts
 a reduced header, which leaves out the segment the destination address already
 carries, and ignores TLVs after the segment list. It walks hop-by-hop and
@@ -71,8 +85,9 @@ allow = ["10.99.0.0/24", "fd00:99::/64"]
 
 `allow` is required with `deliver = "egress"` and refused with anything else. A
 packet passes only when its outer source and its inner source both fall inside
-an entry of the list. Anything else counts as refused and is never answered,
-since an exit carrying any source would be an open proxy. The loader refuses:
+an entry of the list, past the overlay every SID admits. Anything else counts as
+refused and is never answered, since an exit carrying any source would be an
+open proxy. The loader refuses:
 
 - a list with no entry, or with no IPv6 entry, since every outer source is IPv6
 - an entry of length 0, which admits every address of its family
@@ -82,11 +97,24 @@ since an exit carrying any source would be an open proxy. The loader refuses:
 
 The order of the list does not matter, and a reload reordering it changes
 nothing. `deliver = "egress"` belongs to `End.DT46` alone, and an egress segment
-needs `cap.egress`, `cap.table` and a `link.tun` that names the egress device in
-14 bytes or fewer without a `%`. The node originates the SID's `/128` itself
-while the exit is ready, so `cap.route` does not announce it. The Segments line
-of `status` prints an egress segment as its SID, its behavior, `deliver egress`
-and its list.
+needs `cap.egress`, `cap.table`, `cap.border` with an `overlay` covering the
+list, and a `link.tun` that names the egress device in 14 bytes or fewer without
+a `%`. The node originates the SID's `/128` itself while the exit is ready, so
+`cap.route` does not announce it. The Segments line of `status` prints an egress
+segment as its SID, its behavior, `deliver egress` and its list.
+
+## At the border of the mesh
+
+The mesh is the segment routing domain, and a node with
+[the border filter](border-filter.md) is its edge, as RFC 8754 section 5.1 asks.
+A packet arriving on a link outside the mesh with a routing header of any type,
+or addressed to one of this node's own SIDs, is dropped there before the routing
+decision. One that arrives through the mesh tun passes, since the tun is inside
+the mesh. One addressed to another node's SID with no routing header passes too,
+and that node refuses it unless its outer source lies in the overlay, as
+[local segments](#local-segments) describe. A node that transits another segment
+routing domain between 2 links outside the mesh would lose that traffic, which
+[the deviations](design/protocol-deviations.md#the-border-filter) list.
 
 ## Steering
 
@@ -184,26 +212,27 @@ Each change also records a `pmtu.steering` event with `budget`, `need` and
 `status` prints a Segments line and a Steering line. Each says `off` on a node
 that configures none. The Segments line lists the local SIDs, then the node's
 forwarded, delivered and dropped counts, and each of the answered, egressed,
-refused, not ready and drained counts once it is above 0. The Steering line
-lists the entries with the steered count, and the count for each reason a
-steered packet was lost once it is above 0.
+refused, not ready and drained counts once it is above 0. Refused is a packet a
+SID refused for its source, counted among the dropped and never answered: an
+outer source outside the overlay at any SID, or at an egress segment one of the
+reasons below. The Steering line lists the entries with the steered count, and
+the count for each reason a steered packet was lost once it is above 0.
 
 An egress segment is an `End.DT46` whose inner packet leaves through the egress
 device, a second tun, rather than through the mesh tun. Its packets are counted
 4 ways. Egressed is a packet the egress device took. Refused is a packet whose
 outer or inner source is outside the segment's allow list, or whose inner source
-it cannot read, counted among the dropped and never answered. Not ready is a
-packet the allow list let through while no egress device was installed, whose
-device closed under the write, or whose family the translator had not reported
-ready. It is this node's own state and is not counted among the dropped. A write
-the egress device refuses for any other reason counts its packets among the
-dropped. Drained is a packet read off the egress device and thrown away. Every
-route into the overlay names the mesh tun, so each drained packet took a route
-into the wrong device. The kernel also sends packets of its own out of the
-device, its MLD reports for `ff02::2` each time the device's IPv6 comes up on a
-host forwarding IPv6. These go to IPv6 multicast addresses of interface-local or
-link-local scope, which no route sends to, so a packet to such an address is
-read and dropped without being counted.
+it cannot read. Not ready is a packet the allow list let through while no egress
+device was installed, whose device closed under the write, or whose family the
+translator had not reported ready. It is this node's own state and is not
+counted among the dropped. A write the egress device refuses for any other
+reason counts its packets among the dropped. Drained is a packet read off the
+egress device and thrown away. Every route into the overlay names the mesh tun,
+so each drained packet took a route into the wrong device. The kernel also sends
+packets of its own out of the device, its MLD reports for `ff02::2` each time
+the device's IPv6 comes up on a host forwarding IPv6. These go to IPv6 multicast
+addresses of interface-local or link-local scope, which no route sends to, so a
+packet to such an address is read and dropped without being counted.
 
 | Metric                               | Meaning                                                                                                                          |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
@@ -212,7 +241,7 @@ read and dropped without being counted.
 | `ranet3_segments_dropped_total`      | packets to a local SID this node would not act on, or the open egress device refused                                             |
 | `ranet3_segments_answered_total`     | ICMP errors sent for dropped packets                                                                                             |
 | `ranet3_segments_egressed_total`     | packets an egress segment handed to the egress device                                                                            |
-| `ranet3_segments_refused_total`      | packets an egress segment's allow list refused, or whose inner source it cannot read                                             |
+| `ranet3_segments_refused_total`      | packets a SID refused for their source, outside the overlay or an allow list                                                     |
 | `ranet3_segments_not_ready_total`    | packets an egress segment let through and no ready device took                                                                   |
 | `ranet3_segments_drained_total`      | packets read off the egress device and thrown away, leaving out the kernel's own to interface-local or link-local IPv6 multicast |
 | `ranet3_steered_total`               | packets a steering entry encapsulated                                                                                            |
