@@ -11,7 +11,8 @@ import (
 )
 
 // IKESuites is cap.crypto.ike, the IKE SA's transforms by name, each list most preferred first
-// a list left out holds every name of its kind in the order cipherNames, prfNames and kexNames give
+// a cipher or prf list left out holds every name of its kind in the order cipherNames and prfNames give
+// and a kex list left out holds the entries of defaultKex
 type IKESuites struct {
 	Cipher []string `yaml:"cipher,omitempty" json:"cipher,omitempty" toml:"cipher,omitempty"`
 	PRF    []string `yaml:"prf,omitempty" json:"prf,omitempty" toml:"prf,omitempty"`
@@ -54,7 +55,7 @@ var (
 )
 
 // Suites is the four cap.crypto lists as transforms and kex entries, each most preferred first
-// a nil list holds every name of its kind
+// a nil list holds every name of its kind, and a nil kex list the entries of defaultKex
 // so the zero Suites is a node that writes none of them
 type Suites struct {
 	ikeCipher, ikePRF, espCipher []Transform
@@ -190,15 +191,21 @@ func (s Suites) ikeCiphers() []Transform { return listed(s.ikeCipher, cipherName
 func (s Suites) ikePRFs() []Transform    { return listed(s.ikePRF, prfNames) }
 func (s Suites) espCiphers() []Transform { return listed(s.espCipher, cipherNames) }
 
+// defaultKex is the kex list a node that writes none runs, x25519+mlkem768 and then each classical key exchange alone
+// so a peer without ML-KEM meets a classical entry in a proposal after the first
+func defaultKex() []kexEntry {
+	all := []kexEntry{{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}}
+	for _, named := range kexNames {
+		all = append(all, kexEntry{group: named.transform.ID})
+	}
+	return all
+}
+
 func (s Suites) kexEntries() []kexEntry {
 	if s.kex != nil {
 		return s.kex
 	}
-	all := make([]kexEntry, len(kexNames))
-	for i, named := range kexNames {
-		all[i] = kexEntry{group: named.transform.ID}
-	}
-	return all
+	return defaultKex()
 }
 
 // rekeyable is the kex entries a rekey of an IKE SA the key exchanges of current made may run

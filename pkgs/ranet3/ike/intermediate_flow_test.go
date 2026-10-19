@@ -433,7 +433,12 @@ func TestResponderRunsAnExchangeForEachAdditionItAnswers(t *testing.T) {
 			methods: []uint16{ML_KEM_768, ML_KEM_1024}, suite: "aes256gcm/sha384/x25519+mlkem768+mlkem1024",
 		},
 		"RFC 9370 Appendix A.2 to the default lists": {
-			offer:  appendixA2,
+			offer:   appendixA2,
+			answer:  slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, 0)),
+			methods: []uint16{ML_KEM_768}, suite: "aes256gcm/sha384/x25519+mlkem768",
+		},
+		"RFC 9370 Appendix A.2 to the classical entries": {
+			entries: classicalLists.kex, offer: appendixA2,
 			answer: slices.Concat(modelBase, addkeOf(TransADDKE1, 0), addkeOf(TransADDKE1+1, 0)),
 			suite:  "aes256gcm/sha384/x25519",
 		},

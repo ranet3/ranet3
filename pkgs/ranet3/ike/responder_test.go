@@ -127,7 +127,8 @@ func newConfiguredResponderHarness(t *testing.T, local map[identity.Identity]Fam
 	}
 	aliases := new(atomic.Pointer[Aliases])
 	lists := new(atomic.Pointer[Suites])
-	lists.Store(&Suites{})
+	classical := classicalLists
+	lists.Store(&classical)
 	cfg := ResponderConfig{
 		Hub:              responderHub,
 		Local:            local,
@@ -457,6 +458,7 @@ func relay(t *testing.T, responderPort int, pass func(fromInitiator bool, header
 	return conn.LocalAddr().(*net.UDPAddr).Port
 }
 
+// peerConfig dials h's responder under classicalLists, as the harness's responder answers
 func (h *responderHarness) peerConfig() PeerConfig {
 	return PeerConfig{
 		Local:           identity.MustParse("testorg/client:2"),
@@ -466,6 +468,7 @@ func (h *responderHarness) peerConfig() PeerConfig {
 		RemoteAddr:      net.ParseIP("127.0.0.1"),
 		RemotePort:      h.remotePort,
 		Hub:             h.initiator,
+		Suites:          func() Suites { return classicalLists },
 	}
 }
 

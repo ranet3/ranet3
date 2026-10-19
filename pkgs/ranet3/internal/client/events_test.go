@@ -86,7 +86,7 @@ func TestLoopbackRecordsDialSessionAndNeighborInOrder(t *testing.T) {
 	if own := alpha.client.sessions.snapshot(); len(dialing) == 0 || len(own) != 1 || dialing[0].Peer != dialed || dialing[0].Attrs["role"] != "initiator" ||
 		dialing[0].Attrs["spi_in"] != fmt.Sprintf("%08x", own[0].session.Child.LocalSPI) ||
 		dialing[0].Attrs["spi_out"] != fmt.Sprintf("%08x", own[0].session.Child.RemoteSPI) ||
-		dialing[0].Attrs["ike"] != "aes256gcm/sha384/x25519" || dialing[0].Attrs["esp"] != "aes256gcm" {
+		dialing[0].Attrs["ike"] != "aes256gcm/sha384/x25519+mlkem768" || dialing[0].Attrs["esp"] != "aes256gcm" {
 		t.Errorf("alpha recorded the session it dialed as %+v", dialing)
 	}
 	for _, end := range []struct{ node, other *loopbackNode }{{alpha, bravo}, {bravo, alpha}} {

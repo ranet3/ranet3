@@ -402,7 +402,7 @@ func TestSessionRekeyIKE(t *testing.T) {
 	old := &ikeContext{suite: suite, spiI: oldSPIi, spiR: oldSPIr, authMID: 1, nextLocalMID: 2,
 		skD: []byte("old IKE rekey SK_d material-------"), skei: make([]byte, 20), sker: make([]byte, 20)}
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
-	s := &Session{mux: mux, current: old, Child: child, requests: make(chan *localRequest, 1)}
+	s := &Session{mux: mux, current: old, Child: child, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }}
 	if err := mux.RegisterIKE(oldSPIi); err != nil {
 		t.Fatal(err)
 	}
@@ -810,7 +810,7 @@ func TestSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 	for i := range peerNonce {
 		peerNonce[i] = 1
 	}
-	s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1), ikeRekeyNonce: func(n []byte) error {
+	s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }, ikeRekeyNonce: func(n []byte) error {
 		copy(n, localNonce)
 		return nil
 	}}
@@ -1681,8 +1681,8 @@ func TestInitiatorTakesAnswersInAnyOrderAndAsksInTheFiguresOrder(t *testing.T) {
 		t.Fatalf("the initiator refused answers with their payloads in reverse: %v", err)
 	}
 	// the figure of section 1.2: "HDR, SAi1, KEi, Ni"
-	// the notifies follow Ni
-	if got, want := payloadTypes(saInit.Payloads), []PayloadType{PayloadSA, PayloadKE, PayloadNonce, PayloadN, PayloadN, PayloadN, PayloadN}; !slices.Equal(got, want) {
+	// the notifies follow Ni, INTERMEDIATE_EXCHANGE_SUPPORTED among them for the default list's x25519+mlkem768
+	if got, want := payloadTypes(saInit.Payloads), []PayloadType{PayloadSA, PayloadKE, PayloadNonce, PayloadN, PayloadN, PayloadN, PayloadN, PayloadN}; !slices.Equal(got, want) {
 		t.Errorf("the IKE_SA_INIT request carries payload types %v, want %v", got, want)
 	}
 	// the figure of section 1.2: "HDR, SK {IDi, [CERT,] [CERTREQ,] [IDr,] AUTH, SAi2, TSi, TSr}"
@@ -2602,7 +2602,7 @@ func TestInitiatorRetriesWithTheNamedGroupFirst(t *testing.T) {
 	defer cancel()
 	dialed := make(chan error, 1)
 	go func() {
-		session, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port})
+		session, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port, Suites: func() Suites { return classicalLists }})
 		if err == nil {
 			session.Mux().Close()
 		}
