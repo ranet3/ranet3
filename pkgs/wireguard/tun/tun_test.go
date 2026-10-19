@@ -79,7 +79,7 @@ func TestQueuesOf(t *testing.T) {
 }
 
 func TestTUNConfig(t *testing.T) {
-	if c := defaultConfig(); c.queues != 1 {
+	if c := defaultConfig(); c.queues != 1 || c.unmonitored {
 		t.Fatalf("default tun config: %+v", c)
 	}
 }
@@ -87,7 +87,8 @@ func TestTUNConfig(t *testing.T) {
 func TestTUNOptions(t *testing.T) {
 	c := defaultConfig()
 	WithQueues(4).apply(&c)
-	if c.queues != 4 {
+	Unmonitored().apply(&c)
+	if c.queues != 4 || !c.unmonitored {
 		t.Fatalf("configured tun config: %+v", c)
 	}
 }

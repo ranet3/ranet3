@@ -140,7 +140,8 @@ func (f optionFunc) apply(config *config) {
 }
 
 type config struct {
-	queues int // Tun fd's in IFF_MULTI_QUEUE group to open.
+	queues      int  // Tun fd's in IFF_MULTI_QUEUE group to open.
+	unmonitored bool // No route socket and no listener reading it.
 }
 
 func defaultConfig() config {
@@ -165,6 +166,19 @@ func defaultConfig() config {
 func WithQueues(n int) Option {
 	return optionFunc(func(config *config) {
 		config.queues = n
+	})
+}
+
+// Unmonitored requests that the [Device] not watch its interface. It opens no
+// route socket and starts no goroutine to read one, so it sends no [Event]s,
+// and its Events channel is closed by [Device.Close]. A failure of that route
+// socket is then never returned by [Reader.Read].
+//
+// Only Darwin, FreeBSD and OpenBSD implement Unmonitored. On Linux, use
+// [CreateUnmonitoredTUNFromFDs].
+func Unmonitored() Option {
+	return optionFunc(func(config *config) {
+		config.unmonitored = true
 	})
 }
 
