@@ -162,7 +162,12 @@ func egressExit(tun string, table *kernel.Table, count int) Config {
 		Auth: Auth{Key: "key.pem", Trust: "trust.json"},
 		Link: Link{Port: 13000, Endpoints: []Endpoint{{Serial: "0", Family: "ip6"}}, TUN: tun},
 		Dial: Dial{All: true},
-		Cap:  Caps{Egress: &egress.Egress{}, Table: table, Segment: &srv6.Segments{Local: segments}},
+		Cap: Caps{
+			Egress:  &egress.Egress{},
+			Border:  &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20")}},
+			Table:   table,
+			Segment: &srv6.Segments{Local: segments},
+		},
 	}
 }
 

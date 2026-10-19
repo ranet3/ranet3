@@ -747,6 +747,39 @@ func exits() hegel.Generator[egress.Egress] {
 	})
 }
 
+// overlayPool is the prefixes a drawn cap.border overlay is taken from, each
+// a length the loader takes, together covering every entry of allowPool
+var overlayPool = []schema.Prefix{
+	schema.MustPrefix("3fff::/20"), schema.MustPrefix("2602:f590::/36"),
+	schema.MustPrefix("23.161.104.0/24"), schema.MustPrefix("10.0.0.0/8"), schema.MustPrefix("198.18.0.0/15"),
+}
+
+// borders draws cap.border from overlayPool, each entry once, and now and then
+// with one entry added that Validate refuses by name: an IPv4 prefix in the
+// mapped spelling, a zero length, a prefix shorter than its family's floor,
+// host bits below the length, or an entry written twice
+func borders() hegel.Generator[egress.Border] {
+	refused := hegel.SampledFrom([]schema.Prefix{
+		schema.MustPrefix("::ffff:198.18.0.0/111"), schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0"),
+		schema.MustPrefix("8.0.0.0/7"), schema.MustPrefix("2000::/11"), schema.MustPrefix("198.18.0.1/15"),
+	})
+	return hegel.Composite(func(tc hegel.TestCase) egress.Border {
+		var overlay []schema.Prefix
+		for _, prefix := range hegel.Draw(tc, hegel.Lists(hegel.SampledFrom(overlayPool)).MinSize(1).MaxSize(4)) {
+			if !slices.Contains(overlay, prefix) {
+				overlay = append(overlay, prefix)
+			}
+		}
+		switch {
+		case hegel.Draw(tc, hegel.WeightedBooleans(0.05)):
+			overlay = append(overlay, hegel.Draw(tc, refused))
+		case hegel.Draw(tc, hegel.WeightedBooleans(0.05)):
+			overlay = append(overlay, overlay[0])
+		}
+		return egress.Border{Overlay: overlay}
+	})
+}
+
 // presence decides which capability blocks a configuration writes: none of
 // them, every one, or each on its own, so the two ends of the range are drawn
 // as surely as anything between them.
@@ -829,6 +862,7 @@ func configurations() hegel.Generator[Config] {
 			Segment: block(tc, blocks, segments()),
 			Crypto:  block(tc, blocks, cryptos()),
 			Egress:  block(tc, blocks, exits()),
+			Border:  block(tc, blocks, borders()),
 		}
 		// now and then cost.extra charges the node itself, which Validate refuses
 		if c.Cap.Babel != nil && hegel.Draw(tc, hegel.WeightedBooleans(0.05)) {

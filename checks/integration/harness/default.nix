@@ -561,6 +561,16 @@ testers.runNixOSTest {
                   }
                 ];
               };
+              # an egress segment needs the border, whose overlay covers both
+              # tunnel prefixes and so the segment's allow list
+              border = pkgs.lib.mkIf egressSegment {
+                overlay = [
+                  "fd00:88::/32"
+                  "fd00:99::/32"
+                  "10.88.0.0/16"
+                  "10.99.0.0/16"
+                ];
+              };
               # an exit for an egress segment alone advertises nothing, so the
               # gateway reaches the far side through the segment or not at all
               egress = pkgs.lib.mkIf egress {

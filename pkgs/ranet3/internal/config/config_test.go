@@ -1359,6 +1359,8 @@ func fullConfig() Config {
 				Return:  true,
 				Sweep:   schema.Duration(45 * time.Second),
 			},
+			// covering the egress segment's allow list, which the loader asks of it
+			Border: &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("198.18.0.0/15")}},
 		},
 	}
 }
