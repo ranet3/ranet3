@@ -14,13 +14,6 @@ import (
 	"testing"
 )
 
-// the tests run ML-KEM-1024 beside ML-KEM-768, which a session runs alone until it implements the IKE fragmentation of RFC 7383
-func init() {
-	kemMethods = append(kemMethods, kemMethod{ML_KEM_1024,
-		func() (crypto.Decapsulator, error) { return mlkem.GenerateKey1024() },
-		func(key []byte) (crypto.Encapsulator, error) { return mlkem.NewEncapsulationKey1024(key) }})
-}
-
 // kemSizes is the initiator's KE data and the responder's of each method, as crypto/mlkem gives them
 var kemSizes = map[uint16][2]int{
 	ML_KEM_768:  {mlkem.EncapsulationKeySize768, mlkem.CiphertextSize768},

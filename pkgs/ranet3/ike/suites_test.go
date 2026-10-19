@@ -107,7 +107,7 @@ func TestListsResolveToOffersInTheirOrder(t *testing.T) {
 }
 
 // Validate refuses a list no session negotiates from, naming the field and what is wrong with it
-// an entry joins with + one ML-KEM method after a classical key exchange, and mlkem1024 waits for the fragmentation of RFC 7383
+// an entry joins with + one ML-KEM method after a classical key exchange
 // and an ML-KEM name runs only after a classical exchange
 func TestListsRefuseWhatNoSessionNegotiates(t *testing.T) {
 	for _, test := range []struct {
@@ -126,8 +126,6 @@ func TestListsRefuseWhatNoSessionNegotiates(t *testing.T) {
 		{Crypto{IKE: IKESuites{PRF: []string{"sha384", "sha512"}}}, `cap.crypto ike prf names "sha512", which is not one of sha384 and sha256`},
 		{Crypto{IKE: IKESuites{Kex: []string{"x448"}}}, `cap.crypto ike kex names "x448", which is not one of x25519, p384 and p256`},
 		{Crypto{ESP: ESPSuites{Cipher: []string{"sha256"}}}, `cap.crypto esp cipher names "sha256", which is not one of aes256gcm, aes128gcm and chacha20poly1305`},
-		{Crypto{IKE: IKESuites{Kex: []string{"x25519", "x25519+mlkem1024"}}},
-			`cap.crypto ike kex entry "x25519+mlkem1024" joins mlkem1024, whose IKE_INTERMEDIATE messages pass 1500 octets and need the IKE fragmentation of RFC 7383, which is not implemented`},
 		{Crypto{IKE: IKESuites{Kex: []string{"x25519+p256"}}},
 			`cap.crypto ike kex entry "x25519+p256" joins p256, and an entry joins only an ML-KEM method after its first, one of mlkem768 and mlkem1024`},
 		{Crypto{IKE: IKESuites{Kex: []string{"p384+mlkem768+mlkem768"}}},
@@ -161,6 +159,20 @@ func TestListsRefuseWhatNoSessionNegotiates(t *testing.T) {
 	joined := Crypto{IKE: IKESuites{Kex: []string{"p256+mlkem768", "x25519", "x25519+mlkem768", "p384+mlkem768"}}}
 	if err := joined.Validate(); err != nil {
 		t.Errorf("entries joining mlkem768 were refused: %v", err)
+	}
+}
+
+// an entry joining mlkem1024 resolves to its classical group and ML-KEM-1024 in the first additional key exchange
+func TestListsTakeEntriesJoiningMLKEM1024(t *testing.T) {
+	suites := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"p384+mlkem1024", "x25519+mlkem1024", "x25519+mlkem768", "p256"}}})
+	want := []kexEntry{
+		{group: DH_ECP_384, additions: [addkeTypes]uint16{ML_KEM_1024}},
+		{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024}},
+		{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}},
+		{group: DH_ECP_256},
+	}
+	if got := suites.kexEntries(); !slices.Equal(got, want) {
+		t.Errorf("the entries resolve to %+v, want %+v", got, want)
 	}
 }
 
