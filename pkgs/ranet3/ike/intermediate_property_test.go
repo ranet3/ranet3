@@ -11,7 +11,6 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/binary"
-	"hash"
 	"slices"
 	"testing"
 
@@ -109,24 +108,6 @@ func TestIntAuthChunkIsTheSameAtBothEnds(t *testing.T) {
 			ht.Fatalf("the chunk of %x is %x, want %x", raw, got, want)
 		}
 	})
-}
-
-// modelKeys is the SK_* of one generation by RFC 7296 section 2.13's prf+, written out with crypto/hmac
-// RFC 7296 section 2.13: "prf+ (K,S) = T1 | T2 | T3 | T4 | ..." where "T1 = prf (K, S | 0x01)" and "T2 = prf (K, T1 | S | 0x02)"
-func modelKeys(newHash func() hash.Hash, skeyseed, seed []byte, keyLen int) [5][]byte {
-	prf := func(key, data []byte) []byte {
-		mac := hmac.New(newHash, key)
-		mac.Write(data)
-		return mac.Sum(nil)
-	}
-	size := newHash().Size()
-	var stream, last []byte
-	for n := byte(1); len(stream) < 3*size+2*keyLen; n++ {
-		last = prf(skeyseed, concat(last, seed, []byte{n}))
-		stream = append(stream, last...)
-	}
-	take := func(n int) []byte { b := stream[:n]; stream = stream[n:]; return b }
-	return [5][]byte{take(size), take(keyLen), take(keyLen), take(size), take(size)}
 }
 
 // the keys of every generation of a setup equal the chain RFC 9370 and RFC 7296 give, computed with crypto/hmac

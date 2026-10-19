@@ -165,7 +165,7 @@ func TestOfferIsAnsweredInTheFirstListedGroupAnyProposalHolds(t *testing.T) {
 			for i, transforms := range test.proposals {
 				proposals = append(proposals, Proposal{Number: uint8(i + 1), Protocol: ProtoIKE, Transforms: with(transforms, prfSHA384)})
 			}
-			selected, suite, err := selectIKEProposal(EncodeSA(proposals), test.ke, Suites{})
+			selected, suite, err := selectIKEProposal(EncodeSA(proposals), test.ke, Suites{}, false)
 			if test.retry != 0 {
 				if wrong, ok := errors.AsType[*invalidKEError](err); !ok || wrong.group != test.retry {
 					t.Errorf("%s: answered %+v, %v, want INVALID_KE_PAYLOAD naming %d", test.name, selected, err, test.retry)
@@ -261,11 +261,11 @@ func TestIKEProposalWithAnSPIOfAnotherSizeIsUnacceptable(t *testing.T) {
 	transforms := []Transform{encrAES256, prfSHA384, dhX25519}
 	t.Run("at IKE_SA_INIT", func(t *testing.T) {
 		withSPI := Proposal{Number: 1, Protocol: ProtoIKE, SPI: bytes.Repeat([]byte{5}, 8), Transforms: transforms}
-		if selected, _, err := selectIKEProposal(EncodeSA([]Proposal{withSPI}), DH_CURVE25519, Suites{}); err == nil {
+		if selected, _, err := selectIKEProposal(EncodeSA([]Proposal{withSPI}), DH_CURVE25519, Suites{}, false); err == nil {
 			t.Errorf("a proposal with an SPI was answered %+v", selected)
 		}
 		plain := Proposal{Number: 2, Protocol: ProtoIKE, Transforms: transforms}
-		if selected, _, err := selectIKEProposal(EncodeSA([]Proposal{withSPI, plain}), DH_CURVE25519, Suites{}); err != nil || selected.Number != 2 {
+		if selected, _, err := selectIKEProposal(EncodeSA([]Proposal{withSPI, plain}), DH_CURVE25519, Suites{}, false); err != nil || selected.Number != 2 {
 			t.Errorf("a proposal with an SPI before one without was answered %+v, %v, want proposal 2", selected, err)
 		}
 	})

@@ -8,11 +8,12 @@
 // transforms and no others: raw Ed25519 public key authentication ([RFC 7427]
 // Digital Signature with an ASN1_DN identity, or an ID of another type
 // [Aliases] names an endpoint by), a key exchange in X25519, P-384 or P-256,
-// encryption in AES-GCM or ChaCha20-Poly1305, a PRF in HMAC-SHA2-384 or
-// HMAC-SHA2-256, UDP encapsulation forced on, and 0.0.0.0/0 with ::/0 as the
-// traffic selectors. [Suites] is the part of that set a session offers and
-// accepts, in the order it prefers. It interoperates with a strongSwan
-// responder configured the same way.
+// alone or followed by ML-KEM-768 in an IKE_INTERMEDIATE exchange of
+// [RFC 9370], encryption in AES-GCM or ChaCha20-Poly1305, a PRF in
+// HMAC-SHA2-384 or HMAC-SHA2-256, UDP encapsulation forced on, and 0.0.0.0/0
+// with ::/0 as the traffic selectors. [Suites] is the part of that set a
+// session offers and accepts, in the order it prefers. It interoperates with a
+// strongSwan responder configured the same way.
 //
 // Certificates, EAP, MOBIKE and the legacy transforms, CBC ciphers, MODP
 // groups and SHA-1 or MD5, are left out rather than unfinished, and a peer
@@ -49,11 +50,14 @@
 //
 // The message, payload and transform codecs are exported beside those, so a
 // caller can build or read one exchange without driving a session. [RFC 7296]
-// numbers every constant here, and each declaration names its section.
+// numbers the constants here, [RFC 9242], [RFC 9370] and the ML-KEM draft the
+// ones they add, and each declaration names its section.
 //
 // [RFC 7296]: https://www.rfc-editor.org/rfc/rfc7296
 // [RFC 7427]: https://www.rfc-editor.org/rfc/rfc7427
 // [RFC 7815]: https://www.rfc-editor.org/rfc/rfc7815
+// [RFC 9242]: https://www.rfc-editor.org/rfc/rfc9242
+// [RFC 9370]: https://www.rfc-editor.org/rfc/rfc9370
 package ike
 
 // Exchange types, RFC 7296 section 3.1.
@@ -188,6 +192,8 @@ const (
 	// Digital Signature, which fails outright for an Ed25519 key (charon's
 	// sign_classic() only handles KEY_RSA/KEY_ECDSA).
 	N_SIGNATURE_HASH_ALGORITHMS NotifyType = 16431
+	// RFC 9242 section 3.1: "The INTERMEDIATE_EXCHANGE_SUPPORTED is a Status Type IKEv2 notification with Notify Message Type 16438."
+	N_INTERMEDIATE_EXCHANGE_SUPPORTED NotifyType = 16438
 )
 
 // Hash algorithm IDs for the SIGNATURE_HASH_ALGORITHMS notify data (RFC 7427

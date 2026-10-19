@@ -1050,7 +1050,7 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner [
 	}
 	if hdr.ExchangeType == INFORMATIONAL {
 		// RFC 7296 section 2.21.2: "In an IKE_AUTH exchange, or in the INFORMATIONAL exchange immediately following it (in case an error happened when processing a response to IKE_AUTH), the UNSUPPORTED_CRITICAL_PAYLOAD, INVALID_SYNTAX, and AUTHENTICATION_FAILED notifications are the only ones to cause the IKE SA to be deleted or not created, without a Delete payload."
-		if ctx.answeredAuth && hdr.MessageID == 2 {
+		if ctx.answeredAuth && hdr.MessageID == ctx.authMID+1 {
 			if notify, ok := authFailure(inner); ok {
 				response, err := s.response(ctx, hdr.MessageID, INFORMATIONAL, nil)
 				if err != nil {

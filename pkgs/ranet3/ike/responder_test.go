@@ -671,7 +671,7 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 			Transform{Type: TransPRF, ID: PRF_HMAC_SHA2_384},
 			Transform{Type: TransDH, ID: DH_CURVE25519},
 		)
-		_, suite, err := selectIKEProposal(body, DH_CURVE25519, Suites{})
+		_, suite, err := selectIKEProposal(body, DH_CURVE25519, Suites{}, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -685,7 +685,7 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 			Transform{Type: TransPRF, ID: PRF_HMAC_SHA2_256},
 			Transform{Type: TransDH, ID: DH_ECP_256},
 		)
-		_, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{})
+		_, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}, false)
 		var wrongGroup *invalidKEError
 		if !errors.As(err, &wrongGroup) || wrongGroup.group != DH_ECP_256 {
 			t.Fatalf("err = %v, want a request for group %d", err, DH_ECP_256)
@@ -698,7 +698,7 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 			Transform{Type: TransDH, ID: DH_CURVE25519},
 			Transform{Type: TransformType(15), ID: 1},
 		)
-		if _, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}); err == nil {
+		if _, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}, false); err == nil {
 			t.Fatal("an unknown transform type was accepted")
 		}
 	})
@@ -712,7 +712,7 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 			integ,
 			Transform{Type: TransDH, ID: DH_CURVE25519},
 		)
-		selected, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{})
+		selected, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}, false)
 		if err != nil {
 			t.Fatalf("an offer naming INTEG NONE was refused: %v", err)
 		}
@@ -728,7 +728,7 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 			Transform{Type: TransInteg, ID: 12},
 			Transform{Type: TransDH, ID: DH_CURVE25519},
 		)
-		if _, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}); err == nil {
+		if _, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}, false); err == nil {
 			t.Fatal("an integrity transform this implementation has no key for was accepted")
 		}
 	})
@@ -738,7 +738,7 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 			Transform{Type: TransPRF, ID: PRF_HMAC_SHA2_256},
 			Transform{Type: TransDH, ID: DH_CURVE25519},
 		)
-		if _, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}); err == nil {
+		if _, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}, false); err == nil {
 			t.Fatal("an offer with no shared cipher was accepted")
 		}
 	})
@@ -2264,12 +2264,9 @@ func TestResponderChecksTheNonceAgainstTheNegotiatedPRF(t *testing.T) {
 	}
 }
 
-// Anyone who can see the responder SPI can send a datagram carrying the right
-// IKE_AUTH header and contents this end cannot decrypt. Acting on one would
-// end a handshake this end has already paid a key exchange for, which is the
-// cheapest way to stop every session a node opens. Nothing unauthenticated
-// changes state (RFC 7296 section 2.21, RFC 7815 section 2.1). The deadline is
-// what ends the wait.
+// a datagram with the right IKE_AUTH header and contents this end cannot decrypt, which anyone who sees the responder SPI can send, ends no handshake
+// acting on one would end a handshake this end paid a key exchange for, the cheapest way to stop every session a node opens
+// the deadline alone ends the wait
 func TestUndecryptableDatagramDoesNotEndTheHandshake(t *testing.T) {
 	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
 	if err != nil {
@@ -2307,8 +2304,7 @@ func TestUndecryptableDatagramDoesNotEndTheHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The same header, with the ciphertext replaced. It decodes and fails the
-	// AEAD, which is the arm under test.
+	// the same header with the ciphertext replaced decodes and fails the AEAD
 	bad := append([]byte(nil), good...)
 	for i := len(bad) - 16; i < len(bad); i++ {
 		bad[i] ^= 0xff
@@ -2320,7 +2316,7 @@ func TestUndecryptableDatagramDoesNotEndTheHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.awaitAuthRequest(nil, nil, time.Now().Add(10*time.Second))
+	got, _, err := s.awaitAuthRequest(nil, nil, nil, nil, time.Now().Add(10*time.Second))
 	if err != nil {
 		t.Fatalf("an undecryptable datagram ended the handshake: %v", err)
 	}

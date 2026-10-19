@@ -140,15 +140,15 @@ func decryptMessagePlaintext(suite SASuite, key []byte, raw []byte, m *Message) 
 }
 
 func decodeMessagePlaintext(innerFirst PayloadType, plain []byte) ([]RawPayload, error) {
-	if len(plain) == 0 {
-		return nil, fmt.Errorf("ike: empty SK plaintext")
+	inner, err := unpadded(plain)
+	if err != nil {
+		return nil, err
 	}
-	padLen := int(plain[len(plain)-1])
-	if padLen+1 > len(plain) {
-		return nil, fmt.Errorf("ike: invalid SK padding")
-	}
-	inner := plain[:len(plain)-1-padLen]
+	return decodeInnerPayloads(innerFirst, inner)
+}
 
+// decodeInnerPayloads reads the inner payloads of an SK plaintext that unpadded already took the Padding and Pad Length off
+func decodeInnerPayloads(innerFirst PayloadType, inner []byte) ([]RawPayload, error) {
 	payloads, err := decodePayloadChain(innerFirst, inner)
 	if err != nil {
 		return nil, err
@@ -158,4 +158,15 @@ func decodeMessagePlaintext(innerFirst PayloadType, plain []byte) ([]RawPayload,
 		return nil, fmt.Errorf("ike: the SK payload carries another SK payload")
 	}
 	return payloads, nil
+}
+
+func unpadded(plain []byte) ([]byte, error) {
+	if len(plain) == 0 {
+		return nil, fmt.Errorf("ike: empty SK plaintext")
+	}
+	padLen := int(plain[len(plain)-1])
+	if padLen+1 > len(plain) {
+		return nil, fmt.Errorf("ike: invalid SK padding")
+	}
+	return plain[:len(plain)-1-padLen], nil
 }
