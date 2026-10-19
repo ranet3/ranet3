@@ -123,8 +123,8 @@ func (test interfaceTest) holds(packet crossing) bool {
 // meant is which packets a rule translates by its definition: out of the mesh
 // what arrives on the mesh device and leaves by another, out of the egress
 // device what arrives on it and leaves by anything but the mesh device, and
-// into the mesh what arrives from elsewhere, not from this host, and leaves by
-// the mesh device. For a rule keyed on the egress device, arrival tested
+// into the mesh what arrives from elsewhere, not from this host and not from
+// the egress device, and leaves by the mesh device. For a rule keyed on the egress device, arrival tested
 // against the mesh device would translate the mesh's own traffic out of this
 // node, which an exit advertising nothing offers to nobody, and departure
 // tested against the egress device would translate a steered packet the main
@@ -136,7 +136,7 @@ func meant(rule Rule, packet crossing) bool {
 	case rule.Direction == Out:
 		return packet.arrival == rule.Interface && packet.departure != rule.Interface
 	default:
-		return packet.arrival != "" && packet.arrival != rule.Interface && packet.departure == rule.Interface
+		return packet.arrival != "" && packet.arrival != rule.Interface && packet.arrival != rule.Egress && packet.departure == rule.Interface
 	}
 }
 
@@ -153,8 +153,7 @@ func deviceNames() hegel.Generator[string] {
 // Every rule encodes to interface tests that take exactly the packets the rule
 // is meant for, evaluated over the mesh device, the egress device, a device
 // whose name starts like each, another link and this host itself. A rule is
-// refused exactly when a name is too long for a device or an inbound rule is
-// keyed on the egress device.
+// refused exactly when a name is too long for a device.
 func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		rule := Rule{
@@ -177,7 +176,7 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 		}
 
 		request, err := newRule(rule)
-		refused := len(rule.Interface) >= ifNameSize || len(rule.Egress) >= ifNameSize || (rule.Direction == In && rule.Egress != "")
+		refused := len(rule.Interface) >= ifNameSize || len(rule.Egress) >= ifNameSize
 		if refused != (err != nil) {
 			ht.Fatalf("%s encoded with %v, want refused %v", rule, err, refused)
 		}
