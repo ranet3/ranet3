@@ -230,7 +230,7 @@ func TestIKEAnswerRunsTheFirstEntryMetInTheEarliestTypes(t *testing.T) {
 			}
 		})
 	}
-	// this end negotiates no IKE_INTERMEDIATE, so IKE_SA_INIT skips the proposal holding an ADDKE type
+	// IKE_SA_INIT reads the ADDKE types of a request carrying INTERMEDIATE_EXCHANGE_SUPPORTED, and skips the proposal holding one in a request without
 	// RFC 9370 section 2.2.1: "If the IKE_INTERMEDIATE exchange is not negotiated, then the peers MUST treat any ADDKE Transform Types in the IKE_SA_INIT exchange messages as unknown transform types and skip the proposals they appear in."
 	t.Run("IKE_SA_INIT", func(t *testing.T) {
 		offer := []Proposal{proposal(DH_CURVE25519, offered{TransADDKE1, []uint16{ML_KEM_768}}), proposal(DH_CURVE25519)}
@@ -238,9 +238,15 @@ func TestIKEAnswerRunsTheFirstEntryMetInTheEarliestTypes(t *testing.T) {
 			offer[i].Number = uint8(i + 1)
 		}
 		lists := Suites{ikeCipher: []Transform{encrAES256}, ikePRF: []Transform{prfSHA256}, kex: []kexEntry{hybrid768, x25519}}
-		selected, suite, err := selectIKEProposal(EncodeSA(offer), DH_CURVE25519, lists)
-		if err != nil || selected.Number != 2 || suite.entry() != x25519 {
-			t.Errorf("answered proposal %d into %+v (%v), want proposal 2 into %+v", selected.Number, suite.entry(), err, x25519)
+		for _, test := range []struct {
+			intermediate bool
+			number       uint8
+			entry        kexEntry
+		}{{false, 2, x25519}, {true, 1, hybrid768}} {
+			selected, suite, err := selectIKEProposal(EncodeSA(offer), DH_CURVE25519, lists, test.intermediate)
+			if err != nil || selected.Number != test.number || suite.entry() != test.entry {
+				t.Errorf("with the notify %v answered proposal %d into %+v (%v), want proposal %d into %+v", test.intermediate, selected.Number, suite.entry(), err, test.number, test.entry)
+			}
 		}
 	})
 }

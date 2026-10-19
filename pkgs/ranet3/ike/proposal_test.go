@@ -156,7 +156,7 @@ func TestProposalOfAnotherProtocolIsUnacceptable(t *testing.T) {
 			{Number: 1, Protocol: ProtoESP, Transforms: ikeTransforms},
 			{Number: 2, Protocol: ProtoIKE, Transforms: ikeTransforms},
 		})
-		selected, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{})
+		selected, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}, false)
 		if err != nil || selected.Number != 2 {
 			t.Errorf("an ESP proposal ahead of an IKE one was answered with proposal %d, %v, want 2", selected.Number, err)
 		}
@@ -221,7 +221,7 @@ func TestUnusableIntegrityAlternativeDoesNotRefuseTheProposal(t *testing.T) {
 	withBoth := append(slices.Clone(base), unusable, none)
 
 	body := EncodeSA([]Proposal{{Number: 1, Protocol: ProtoIKE, Transforms: withBoth}})
-	selected, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{})
+	selected, _, err := selectIKEProposal(body, DH_CURVE25519, Suites{}, false)
 	if err != nil {
 		t.Fatalf("an offer naming an integrity algorithm alongside NONE was refused: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestUnusableIntegrityAlternativeDoesNotRefuseTheProposal(t *testing.T) {
 
 	// a proposal whose every alternative of one type is unacceptable holds no complete set of parameters
 	onlyUnusable := EncodeSA([]Proposal{{Number: 1, Protocol: ProtoIKE, Transforms: append(slices.Clone(base), unusable)}})
-	if _, _, err := selectIKEProposal(onlyUnusable, DH_CURVE25519, Suites{}); err == nil {
+	if _, _, err := selectIKEProposal(onlyUnusable, DH_CURVE25519, Suites{}, false); err == nil {
 		t.Error("an offer whose every integrity alternative is unusable was accepted")
 	}
 	if _, ok := rekey(Proposal{Number: 1, Protocol: ProtoIKE, Transforms: append(slices.Clone(base), unusable)}); ok {
@@ -258,7 +258,7 @@ func TestUnusableIntegrityAlternativeDoesNotRefuseTheProposal(t *testing.T) {
 		{Number: 1, Protocol: ProtoIKE, Transforms: append(slices.Clone(base), unusable)},
 		{Number: 2, Protocol: ProtoIKE, Transforms: slices.Clone(base)},
 	})
-	if selected, _, err := selectIKEProposal(pair, DH_CURVE25519, Suites{}); err != nil || selected.Number != 2 {
+	if selected, _, err := selectIKEProposal(pair, DH_CURVE25519, Suites{}, false); err != nil || selected.Number != 2 {
 		t.Errorf("the second proposal was not considered: %v, %v", selected.Number, err)
 	}
 }

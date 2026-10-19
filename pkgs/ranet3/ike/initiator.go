@@ -83,9 +83,12 @@ type ikeContext struct {
 	established time.Time
 	// ownDelete marks a replaced IKE SA whose Delete this end sends, and stateMu guards it
 	ownDelete bool
-	// answeredAuth marks the SA whose IKE_AUTH this end answered, where the peer's request at Message ID 2 is the INFORMATIONAL exchange immediately following it
+	// answeredAuth marks the SA whose IKE_AUTH this end answered, where the peer's request at authMID+1 is the INFORMATIONAL exchange immediately following it
 	answeredAuth bool
-	sendIV       atomic.Uint64
+	// authMID is the Message ID of the IKE_AUTH that made the SA, one past its IKE_INTERMEDIATE exchanges, and zero for an SA a rekey made
+	// RFC 9242 section 3.2: "The Message ID for the first pair of IKE_AUTH messages is one more than the value used in the last IKE_INTERMEDIATE exchange."
+	authMID uint32
+	sendIV  atomic.Uint64
 
 	// localMIDMu guards nextLocalMID across the whole allocate-send-consume
 	// step. Run allocates there on its own goroutine while a caller tearing
@@ -490,13 +493,15 @@ func randUint32Nonzero() uint32 {
 	}
 }
 
-// Initiate runs IKE_SA_INIT then IKE_AUTH against cfg.RemoteAddr:RemotePort
-// and returns an established Session with one Child SA. It implements
-// exactly RFC 7815's minimal-initiator surface plus what ranet's
-// strongSwan deployments require: raw Ed25519 signature auth and
-// unconditional UDP encapsulation on that one explicit port. Every IKE
-// message, from IKE_SA_INIT onward, carries the non-ESP marker. There is
-// no NAT-T floating to a separate port, certificates, EAP, or MOBIKE.
+// Initiate runs IKE_SA_INIT, an IKE_INTERMEDIATE exchange for each
+// additional key exchange of RFC 9370 the responder took, then IKE_AUTH
+// against cfg.RemoteAddr:RemotePort and returns an established Session with
+// one Child SA. It implements exactly RFC 7815's minimal-initiator surface
+// plus those additional key exchanges and what ranet's strongSwan deployments
+// require: raw Ed25519 signature auth and unconditional UDP encapsulation on
+// that one explicit port. Every IKE message, from IKE_SA_INIT onward, carries
+// the non-ESP marker. There is no NAT-T floating to a separate port,
+// certificates, EAP, or MOBIKE.
 func Initiate(cfg PeerConfig) (*Session, error) {
 	return InitiateContext(context.Background(), cfg)
 }
@@ -587,6 +592,9 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 			{Type: PayloadNonce, Body: EncodeNonce(ni)},
 			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_SIGNATURE_HASH_ALGORITHMS, Data: hashAlgos})},
 		}
+		if lists.asksIntermediate() {
+			payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INTERMEDIATE_EXCHANGE_SUPPORTED})})
+		}
 		// RFC 7296 section 2.23: "The recipient of either the NAT_DETECTION_SOURCE_IP or NAT_DETECTION_DESTINATION_IP notification MAY compare the supplied value to a SHA-1 hash of the SPIs, source or recipient IP address, and port (respectively), and if they don't match, it SHOULD enable NAT traversal."
 		// the source hash is of a random address, as strongSwan's force_encap makes it, and the responder then always encapsulates ESP in UDP
 		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NAT_DETECTION_SOURCE_IP, Data: srcHash})})
@@ -671,7 +679,9 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		mux.Close()
 		return nil, fmt.Errorf("ike: bad SA in IKE_SA_INIT response: %v", err)
 	}
-	suite, err := suiteFromProposal(props[0], offer, false)
+	// RFC 9242 section 3.2: "If both peers indicated their support for the Intermediate Exchange, the initiator may use one or more these exchanges to transfer additional data."
+	intermediate := lists.asksIntermediate() && carriesNotify(resp, N_INTERMEDIATE_EXCHANGE_SUPPORTED)
+	suite, err := suiteFromProposal(props[0], offer, intermediate)
 	if err != nil {
 		mux.Close()
 		return nil, err
@@ -698,13 +708,14 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		return nil, err
 	}
 
+	authMID := suite.authMID()
 	sess := &Session{
 		started:          time.Now(),
 		childRetireDelay: childRetireDelay,
 		mux:              mux,
 		current: &ikeContext{suite: suite,
 			skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr,
-			spiI: spiI, spiR: spiR, nextLocalMID: 2, established: time.Now()},
+			spiI: spiI, spiR: spiR, authMID: authMID, nextLocalMID: authMID + 1, established: time.Now()},
 		requests:        make(chan *localRequest, 1),
 		probes:          make(chan struct{}, 1),
 		childRekeyEnded: make(chan struct{}, 1),
@@ -713,6 +724,12 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		suites:          cfg.Suites,
 		rechecks:        make(chan struct{}, 1),
 		events:          cfg.Events, local: cfg.Local, remote: cfg.Remote,
+	}
+	// a cancel during IKE_INTERMEDIATE closes the mux under it, as one during IKE_SA_INIT does, since the responder holds a half-open SA alone
+	chain, err := sess.runIntermediates(ni, nr)
+	if err != nil {
+		mux.Close()
+		return nil, err
 	}
 	// from IKE_AUTH on the responder may hold the SA
 	// so a cancel no longer closes the mux under the answer
@@ -724,7 +741,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	endWait := sync.OnceFunc(func() { time.AfterFunc(canceledAuthWait, func() { _ = mux.Close() }) })
 	stopWait := context.AfterFunc(ctx, endWait)
 	defer stopWait()
-	if err := sess.completeIKEAuth(cfg, req, respRaw, ni, nr); err != nil {
+	if err := sess.completeIKEAuth(cfg, req, respRaw, ni, nr, chain); err != nil {
 		mux.Close()
 		return nil, err
 	}
@@ -829,8 +846,8 @@ func transformsOf(proposals []Proposal) []Transform {
 	return transforms
 }
 
-func (s *Session) completeIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr []byte) error {
-	authenticated, err := s.doIKEAuth(cfg, realMessage1, realMessage2, ni, nr)
+func (s *Session) completeIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr []byte, chain intAuth) error {
+	authenticated, err := s.doIKEAuth(cfg, realMessage1, realMessage2, ni, nr, chain)
 	if err == nil {
 		return nil
 	}
@@ -875,7 +892,7 @@ func (s *Session) informAfterAuth(inner []RawPayload) error {
 	if err != nil {
 		return fmt.Errorf("ike: build INFORMATIONAL request: %w", err)
 	}
-	response, responseInner, err := encryptedRoundTripWithin(s.mux, ctx, request, teardownRetransmits, func(raw []byte) bool { return s.answerAfterAuth(ctx, raw) })
+	_, response, responseInner, _, err := encryptedExchange(s.mux, ctx, request, teardownRetransmits, func(raw []byte) bool { return s.answerAfterAuth(ctx, raw) })
 	// RFC 7296 section 2.25.2: "If a peer receives a request to close an IKE SA that it is currently trying to close, it SHOULD reply as usual, and forget about its own close request."
 	if errors.Is(err, errOvertaken) {
 		return nil
@@ -984,7 +1001,7 @@ func (s *Session) answerAgain(ctx *ikeContext, hdr *Header) bool {
 }
 
 // doIKEAuth reports true once it accepts the responder's AUTH and IDr in an answer carrying none of the notifies that leave the IKE SA uncreated, and returns an *authRefusal for a decrypted answer it refuses before then, other than one failed at the responder
-func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr []byte) (bool, error) {
+func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr []byte, chain intAuth) (bool, error) {
 	mySPI := randUint32Nonzero()
 	spiBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(spiBuf, mySPI)
@@ -1019,7 +1036,7 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	}
 
 	macedIDForI := prf(s.current.suite.PRFID, s.current.skpi, idiBody)
-	signedOctets := concat(realMessage1, nr, macedIDForI)
+	signedOctets := concat(realMessage1, nr, macedIDForI, chain.octets(s.current.authMID))
 	authBody := BuildAuth(cfg.LocalPrivateKey, signedOctets)
 
 	offer := s.lists().espProposal(spiBuf)
@@ -1030,7 +1047,7 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 		RawPayload{Type: PayloadTSi, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
 		RawPayload{Type: PayloadTSr, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
 	)
-	hdr := Header{SPIInitiator: s.current.spiI, SPIResponder: s.current.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	hdr := Header{SPIInitiator: s.current.spiI, SPIResponder: s.current.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: s.current.authMID}
 	req, err := s.current.encrypt(s.current.skei, hdr, nil, inner)
 	if err != nil {
 		return false, err
@@ -1071,7 +1088,7 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 		return false, refuse(N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: incomplete IKE_AUTH response"))
 	}
 	macedIDForR := prf(s.current.suite.PRFID, s.current.skpr, idrRecv.Body)
-	responderSigned := concat(realMessage2, ni, macedIDForR)
+	responderSigned := concat(realMessage2, ni, macedIDForR, chain.octets(s.current.authMID))
 	if err := VerifyAuth(cfg.RemotePublicKey, responderSigned, authRecv.Body); err != nil {
 		return false, refuse(N_AUTHENTICATION_FAILED, nil, err)
 	}

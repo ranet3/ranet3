@@ -5,7 +5,9 @@ package ike
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"log/slog"
 )
 
 // intAuthChunk is IntAuth_[i/r]*A followed by IntAuth_[i/r]*P of one IKE_INTERMEDIATE message
@@ -51,4 +53,180 @@ func (a intAuth) octets(authMID uint32) []byte {
 		return nil
 	}
 	return binary.BigEndian.AppendUint32(concat(a.i, a.r), authMID)
+}
+
+// keData is the KE data of the one KE payload of an IKE_INTERMEDIATE message, which names method
+// RFC 9370 section 2.2.2: "The former "Diffie-Hellman Group Num" (now called "Key Exchange Method") field in the KEi(n) and KEr(n) payloads MUST match the n-th negotiated additional key exchange."
+func keData(inner []RawPayload, method uint16) ([]byte, error) {
+	var data []byte
+	found := false
+	for _, payload := range inner {
+		if payload.Type != PayloadKE {
+			continue
+		}
+		if found {
+			return nil, errors.New("ike: IKE_INTERMEDIATE message carries two KE payloads")
+		}
+		got, body, err := DecodeKE(payload.Body)
+		if err != nil {
+			return nil, err
+		}
+		if got != method {
+			return nil, fmt.Errorf("ike: IKE_INTERMEDIATE KE payload names method %d, and the exchange runs %d", got, method)
+		}
+		data, found = body, true
+	}
+	if !found {
+		return nil, errors.New("ike: IKE_INTERMEDIATE message carries no KE payload")
+	}
+	return data, nil
+}
+
+// kexRejection is the peer's KE data of side, the key or the ciphertext, that the IKE_INTERMEDIATE exchange of method refused
+type kexRejection struct {
+	method uint16
+	side   string
+	err    error
+}
+
+func (e *kexRejection) Error() string {
+	return fmt.Sprintf("ike: IKE_INTERMEDIATE %s %s refused: %v", transformName(Transform{Type: TransDH, ID: e.method}), e.side, e.err)
+}
+
+func (e *kexRejection) Unwrap() error { return e.err }
+
+func (e *kexRejection) attrs() []slog.Attr {
+	return []slog.Attr{
+		slog.String("exchange", "IKE_INTERMEDIATE"),
+		slog.String("method", transformName(Transform{Type: TransDH, ID: e.method})),
+		slog.String("side", e.side),
+	}
+}
+
+// runIntermediates runs an IKE_INTERMEDIATE exchange for each additional key exchange of the SA's entry, at Message IDs from 1, and leaves the SA under the keys of the last
+// it returns IntAuth's chain over them
+// RFC 9370 section 2.2.2: "For each additional key exchange agreed to in the IKE_SA_INIT exchange, the initiator and the responder perform an IKE_INTERMEDIATE exchange, as described in [RFC9242]."
+// RFC 9242 section 3.3.1: "Every subsequent IKE_INTERMEDIATE exchange uses the most recently calculated IKE SA keys before this exchange is started."
+func (s *Session) runIntermediates(ni, nr []byte) (intAuth, error) {
+	ctx := s.current
+	var chain intAuth
+	for n, method := range ctx.suite.entry().added() {
+		mid := uint32(n + 1)
+		pair, err := generateKEM(method)
+		if err != nil {
+			return intAuth{}, err
+		}
+		inner := []RawPayload{{Type: PayloadKE, Body: EncodeKE(method, pair.PublicBytes())}}
+		hdr := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: IKE_INTERMEDIATE, Flags: FlagInitiator, MessageID: mid}
+		request, err := ctx.encrypt(ctx.skei, hdr, nil, inner)
+		if err != nil {
+			return intAuth{}, err
+		}
+		raw, response, answer, plaintext, err := encryptedExchange(s.mux, ctx, request, maxRetransmits, nil)
+		if err != nil {
+			return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d: %w", mid, err)
+		}
+		if unsupported, found := firstUnsupportedCritical(response.Payloads, answer); found {
+			return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d response marks unsupported payload type %d critical", mid, unsupported)
+		}
+		// RFC 9242 section 3.4 on the error handling of RFC 7296 sections 2.21.1 and 2.21.2: "these considerations are also applied to the IKE_INTERMEDIATE exchange"
+		if err := refusal("IKE_INTERMEDIATE", answer); err != nil {
+			return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d: %w", mid, err)
+		}
+		ciphertext, err := keData(answer, method)
+		var secret []byte
+		if err == nil {
+			secret, err = pair.SharedSecret(ciphertext)
+		}
+		if err != nil {
+			// draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the check fails, the initiator MUST reject the ciphertext and MUST fail the exchange, log the error, and stop creating the SA (i.e. not initiate IKE_AUTH or next IKE_INTERMEDIATE)."
+			rejected := &kexRejection{method: method, side: "ciphertext", err: err}
+			slog.Warn("ike rejected the responder's ML-KEM ciphertext", "mid", mid, "err", rejected)
+			s.emit("ike.kex.rejected", rejected.attrs()...)
+			return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d: %w", mid, rejected)
+		}
+		requestChunk, err := intAuthChunk(request, HeaderLen, encodePayloadChain(inner))
+		if err != nil {
+			return intAuth{}, err
+		}
+		responseChunk, err := intAuthChunk(raw, response.skHeaderOffset, plaintext)
+		if err != nil {
+			return intAuth{}, err
+		}
+		chain = chain.add(ctx.suite.PRFID, ctx.skpi, ctx.skpr, requestChunk, responseChunk)
+		if err := ctx.nextGeneration(secret, ni, nr); err != nil {
+			return intAuth{}, err
+		}
+	}
+	return chain, nil
+}
+
+// RFC 9370 section 2.2.2: "SKEYSEED(n) = prf(SK_d(n-1), SK(n) | Ni | Nr)"
+// that is the SKEYSEED of an IKE SA rekey, with the nonces of IKE_SA_INIT and the PRF kept
+// RFC 9370 section 2.2.2: "Both the initiator and the responder use these updated key values in the next exchange (IKE_INTERMEDIATE or IKE_AUTH)."
+func (ctx *ikeContext) nextGeneration(secret, ni, nr []byte) error {
+	keys, err := DeriveRekeyedIKEKeys(ctx.suite.PRFID, ctx.skD, ctx.suite, secret, ni, nr, ctx.spiI, ctx.spiR)
+	if err != nil {
+		return err
+	}
+	ctx.skD, ctx.skei, ctx.sker, ctx.skpi, ctx.skpr = keys.SKd, keys.SKei, keys.SKer, keys.SKpi, keys.SKpr
+	return nil
+}
+
+// answerIntermediate answers the IKE_INTERMEDIATE request of the exchange running method, decrypted into its first payload's type and plain, and moves the SA to that exchange's keys
+// it returns the response, which a retransmission of the request draws again, and chain with the exchange taken in
+// a request this end refuses is answered with the refusal and ends the half-open SA
+// RFC 7296 section 2.21.2: "request messages that contain an unsupported critical payload, or where the whole message is malformed (rather than just bad payload contents), MUST be rejected in their entirety, and MUST only lead to an UNSUPPORTED_CRITICAL_PAYLOAD or INVALID_SYNTAX Notification sent as a response."
+func (s *Session) answerIntermediate(chain intAuth, request *authRequest, method uint16, ni, nr []byte) ([]byte, intAuth, error) {
+	ctx, mid := s.current, request.outer.Header.MessageID
+	refuse := func(notify NotifyType, data []byte, err error) ([]byte, intAuth, error) {
+		if response, buildErr := s.responseNotifyData(ctx, mid, IKE_INTERMEDIATE, notify, data); buildErr == nil {
+			_ = s.mux.SendIKETo(response, request.source)
+		}
+		return nil, intAuth{}, err
+	}
+	plaintext, err := unpadded(request.plaintext)
+	var inner []RawPayload
+	if err == nil {
+		inner, err = decodeInnerPayloads(request.innerFirst, plaintext)
+	}
+	if err != nil {
+		return refuse(N_INVALID_SYNTAX, nil, fmt.Errorf("ike: malformed IKE_INTERMEDIATE %d request: %w", mid, err))
+	}
+	if unsupported, found := firstUnsupportedCritical(request.outer.Payloads, inner); found {
+		return refuse(N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupported)}, fmt.Errorf("ike: IKE_INTERMEDIATE %d request marks payload type %d critical", mid, unsupported))
+	}
+	key, err := keData(inner, method)
+	if err != nil {
+		return refuse(N_INVALID_SYNTAX, nil, err)
+	}
+	secret, ciphertext, err := encapsulateKEM(method, key)
+	if err != nil {
+		// draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the checks fail, the responder MUST reject the initiator's improper public key and SHOULD send a Notify payload of type INVALID_SYNTAX as a response to the request to prevent resource exhaustion or denial of service risks."
+		// the handshake's failure records ike.kex.rejected under the limit of ike.handshake.failed
+		return refuse(N_INVALID_SYNTAX, nil, &kexRejection{method: method, side: "key", err: err})
+	}
+	answer := []RawPayload{{Type: PayloadKE, Body: EncodeKE(method, ciphertext)}}
+	response, err := s.response(ctx, mid, IKE_INTERMEDIATE, answer)
+	if err != nil {
+		return nil, intAuth{}, err
+	}
+	requestChunk, err := intAuthChunk(request.raw, request.outer.skHeaderOffset, plaintext)
+	if err != nil {
+		return nil, intAuth{}, err
+	}
+	responseChunk, err := intAuthChunk(response, HeaderLen, encodePayloadChain(answer))
+	if err != nil {
+		return nil, intAuth{}, err
+	}
+	chain = chain.add(ctx.suite.PRFID, ctx.skpi, ctx.skpr, requestChunk, responseChunk)
+	if err := ctx.nextGeneration(secret, ni, nr); err != nil {
+		return nil, intAuth{}, err
+	}
+	// RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
+	// the handshake adopts a source at IKE_AUTH alone
+	if err := s.mux.SendIKETo(response, request.source); err != nil {
+		return nil, intAuth{}, err
+	}
+	return response, chain, nil
 }

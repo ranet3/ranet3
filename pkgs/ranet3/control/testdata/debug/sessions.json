@@ -26,5 +26,21 @@
     "started_at": "2026-10-04T13:50:01Z",
     "age": "1s",
     "idle": "1s"
+  },
+  {
+    "path": "example/relay:0@0",
+    "peer": "example/relay",
+    "remote": "198.51.100.4:13000",
+    "preferred": false,
+    "active": true,
+    "local_spi": 1592590337,
+    "remote_spi": 1592590338,
+    "ike_cipher": "aes256gcm",
+    "ike_prf": "sha384",
+    "ike_kex": "x25519+mlkem768",
+    "esp_cipher": "aes256gcm",
+    "started_at": "2026-10-04T13:40:01Z",
+    "age": "10m0s",
+    "idle": "300ms"
   }
 ]

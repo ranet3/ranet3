@@ -494,7 +494,7 @@ func cryptos() hegel.Generator[ike.Crypto] {
 					Max:   hegel.Draw(tc, hegel.Optional(between(time.Minute, time.Hour))),
 				},
 			},
-			IKE: ike.IKESuites{Cipher: suiteList(tc, cipherNames), PRF: suiteList(tc, prfNames), Kex: suiteList(tc, kexNames)},
+			IKE: ike.IKESuites{Cipher: suiteList(tc, cipherNames), PRF: suiteList(tc, prfNames), Kex: suiteList(tc, kexEntries)},
 			ESP: ike.ESPSuites{Cipher: suiteList(tc, cipherNames)},
 		}
 	})
@@ -506,8 +506,14 @@ var (
 	prfNames    = []string{"sha384", "sha256"}
 	kexNames    = []string{"x25519", "p384", "p256"}
 	// postQuantum are the key exchanges a kex entry joins after a classical one
-	postQuantum = []string{"mlkem512", "mlkem768", "mlkem1024"}
+	postQuantum = []string{"mlkem768", "mlkem1024"}
 )
+
+// kexEntries are the entries cap.crypto ike kex takes, each classical key exchange alone or joined by mlkem768
+var kexEntries = slices.Concat(kexNames, []string{"x25519+mlkem768", "p384+mlkem768", "p256+mlkem768"})
+
+// strangers are names no cap.crypto list takes
+var strangers = []string{"", "mlkem512", "aes192gcm", "AES256GCM", "sha512", "x448", "p521", " x25519", "MLKEM768"}
 
 // suiteList draws a list left out or a run of distinct names from every in the order drawn
 func suiteList(tc hegel.TestCase, every []string) []string {
@@ -538,15 +544,15 @@ type cryptoList struct {
 var cryptoLists = []cryptoList{
 	{"ike", "cipher", "ike cipher", cipherNames},
 	{"ike", "prf", "ike prf", prfNames},
-	{"ike", "kex", "ike kex", kexNames},
+	{"ike", "kex", "ike kex", kexEntries},
 	{"esp", "cipher", "esp cipher", cipherNames},
 }
 
 // defects names each defect a list can be written with, the list empty, a name written twice, a name the list does not take or one it takes in capitals
-// kex can also join a key exchange after a classical one or lead an entry with an ML-KEM name
+// a kex entry can also join a classical key exchange, join more than one, join mlkem1024, join a name no list takes or lead with an ML-KEM name
 func defects(list cryptoList) []string {
 	if list.key == "kex" {
-		return []string{"empty", "twice", "unknown", "capitals", "joined", "leading"}
+		return []string{"empty", "twice", "unknown", "capitals", "classical", "chained", "mlkem1024", "stranger", "leading"}
 	}
 	return []string{"empty", "twice", "unknown", "capitals"}
 }
@@ -572,7 +578,7 @@ func defective(tc hegel.TestCase, list cryptoList, kind string) ([]string, strin
 		return slices.Insert(names, again, names[at]), fmt.Sprintf("cap.crypto %s names %s twice", list.field, names[at])
 	case "unknown":
 		var others []string
-		for _, name := range slices.Concat(cipherNames, prfNames, kexNames, postQuantum, []string{"", "aes192gcm", "AES256GCM", "sha512", "x448", "p521", " x25519"}) {
+		for _, name := range slices.Concat(cipherNames, prfNames, kexEntries, postQuantum, strangers) {
 			if !slices.Contains(list.every, name) && !(list.key == "kex" && slices.Contains(postQuantum, name)) && !slices.Contains(others, name) {
 				others = append(others, name)
 			}
@@ -581,15 +587,30 @@ func defective(tc hegel.TestCase, list cryptoList, kind string) ([]string, strin
 		return insert(name), fmt.Sprintf("cap.crypto %s names %q, which is not one of", list.field, name)
 	case "capitals":
 		name := strings.ToUpper(hegel.Draw(tc, hegel.SampledFrom(list.every)))
-		return insert(name), fmt.Sprintf("cap.crypto %s names %q, which is not one of", list.field, name)
-	case "joined":
-		// a classical exchange joined after another is refused as an ML-KEM one is
-		joined := postQuantum
-		if hegel.Draw(tc, hegel.Booleans()) {
-			joined = kexNames
+		// a joined entry is refused by its first name, the first it does not take
+		if first, _, joined := strings.Cut(name, "+"); joined {
+			return insert(name), fmt.Sprintf("cap.crypto ike kex entry %q names %q, which is not one of", name, first)
 		}
-		entry := hegel.Draw(tc, hegel.SampledFrom(kexNames)) + "+" + hegel.Draw(tc, hegel.SampledFrom(joined))
-		return insert(entry), fmt.Sprintf("cap.crypto ike kex entry %q joins key exchanges", entry)
+		return insert(name), fmt.Sprintf("cap.crypto %s names %q, which is not one of", list.field, name)
+	case "classical":
+		joined := hegel.Draw(tc, hegel.SampledFrom(kexNames))
+		entry := hegel.Draw(tc, hegel.SampledFrom(kexNames)) + "+" + joined
+		return insert(entry), fmt.Sprintf("cap.crypto ike kex entry %q joins %s, and an entry joins only an ML-KEM method after its first", entry, joined)
+	case "chained":
+		joined := hegel.Draw(tc, hegel.Lists(hegel.SampledFrom(slices.Concat(postQuantum, kexNames))).MinSize(2).MaxSize(3))
+		entry := strings.Join(slices.Concat([]string{hegel.Draw(tc, hegel.SampledFrom(kexNames))}, joined), "+")
+		return insert(entry), fmt.Sprintf("cap.crypto ike kex entry %q joins %d key exchanges after its first, and an entry joins one", entry, len(joined))
+	case "mlkem1024":
+		entry := hegel.Draw(tc, hegel.SampledFrom(kexNames)) + "+mlkem1024"
+		return insert(entry), fmt.Sprintf("cap.crypto ike kex entry %q joins mlkem1024, whose IKE_INTERMEDIATE messages pass 1500 octets and need the IKE fragmentation of RFC 7383", entry)
+	case "stranger":
+		// a name no list takes, joined after a classical key exchange or leading one an entry joins
+		stranger := hegel.Draw(tc, hegel.SampledFrom(strangers))
+		entry := hegel.Draw(tc, hegel.SampledFrom(kexNames)) + "+" + stranger
+		if hegel.Draw(tc, hegel.Booleans()) {
+			entry = stranger + "+" + hegel.Draw(tc, hegel.SampledFrom(slices.Concat(postQuantum, kexNames)))
+		}
+		return insert(entry), fmt.Sprintf("cap.crypto ike kex entry %q names %q, which is not one of", entry, stranger)
 	default:
 		leading := hegel.Draw(tc, hegel.SampledFrom(postQuantum))
 		entry := leading

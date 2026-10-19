@@ -226,7 +226,6 @@ func (r *Responder) Serve(ctx context.Context, onSession func(*Session, Accepted
 	}
 }
 
-// handshake runs IKE_SA_INIT and IKE_AUTH from the responder side for one initiator
 // a failure before the mux exists is answered statelessly or not at all
 // one after it closes the mux
 // so nothing survives a rejected exchange
@@ -299,7 +298,12 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	if err != nil {
 		return nil, Accepted{}, fmt.Errorf("ike: decode KE: %w", err)
 	}
-	proposal, suite, err := selectIKEProposal(saPayload.Body, peerGroup, current(r.cfg.Suites))
+	// RFC 9370 section 2.2.1: "If the responder agrees to use additional key exchanges while establishing an initial IKE SA, it MUST also return this notification in the IKE_SA_INIT response message, confirming that IKE_INTERMEDIATE exchange is supported and will be used for transferring additional key exchange data."
+	// RFC 9242 section 3.1: "If the responder also supports this exchange, it includes this notification in the response message."
+	// so it goes back whatever proposal is answered, and carriesNotify reads its type alone
+	// RFC 9242 section 3.1: "Implementations MUST ignore non-empty Notification Data if they don't understand its purpose."
+	intermediate := carriesNotify(request, N_INTERMEDIATE_EXCHANGE_SUPPORTED)
+	proposal, suite, err := selectIKEProposal(saPayload.Body, peerGroup, current(r.cfg.Suites), intermediate)
 	if err != nil {
 		if wrongGroup, ok := errors.AsType[*invalidKEError](err); ok {
 			// outside statelessErrors, as COOKIE is
@@ -357,7 +361,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		}
 	}()
 
-	response, err := r.buildSAInitResponse(spiI, spiR, proposal, suite, dh, nr, datagram.Endpoint)
+	response, err := r.buildSAInitResponse(spiI, spiR, proposal, suite, dh, nr, datagram.Endpoint, intermediate)
 	if err != nil {
 		return nil, Accepted{}, err
 	}
@@ -365,6 +369,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		return nil, Accepted{}, err
 	}
 
+	authMID := suite.authMID()
 	session := &Session{
 		started:          time.Now(),
 		childRetireDelay: childRetireDelay,
@@ -373,9 +378,9 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 			suite: suite,
 			skD:   keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr,
 			spiI: spiI, spiR: spiR, responder: true, answeredAuth: true, established: time.Now(),
-			// RFC 7296 section 2.2: "Thus, the first pair of IKE_AUTH messages will have an ID of 1, the second (when EAP is used) will be 2, and so on."
-			// with no EAP the initiator's next request is at 2, and this end has made no request of its own
-			nextPeerMID: 2, nextLocalMID: 0,
+			authMID: authMID,
+			// with no EAP the initiator's next request is the one after IKE_AUTH, and this end has made no request of its own
+			nextPeerMID: authMID + 1, nextLocalMID: 0,
 		},
 		requests:        make(chan *localRequest, 1),
 		probes:          make(chan struct{}, 1),
@@ -409,28 +414,14 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	return session, accepted, nil
 }
 
-// buildSAInitResponse mirrors the initiator's IKE_SA_INIT, including the
-// deliberately wrong NAT_DETECTION_SOURCE_IP. ranet3's transport accepts
-// UDP-encapsulated ESP only, so the initiator has to conclude that we are
-// behind a NAT: hashing a random address guarantees the mismatch that makes
-// it, exactly as strongSwan's own force_encap does (ike_natd.c).
-//
-// Both notifies have to be present. strongSwan enables NAT traversal only
-// when it has seen a source and a destination notify, and treats one alone as
-// a peer that does not implement RFC 7296 section 2.23 at all, so sending the
-// mismatching source on its own leaves it building raw ESP that no userspace
-// transport ever sees. The destination hash is the honest one, over the
-// address this datagram actually came from.
-//
-// It follows that the peer must be reachable on the port it already knows.
-// RFC 7296 section 2.23 obliges a conformant initiator that sees the mismatch
-// to move everything to UDP 4500, and nothing here binds 4500 separately, so
-// the registry port has to be the port both ends keep using. strongSwan does
-// that when charon.port_nat_t is set to it, which the fleet and the
-// integration test both configure, and a peer left on the default would float
-// away to a socket that is not listening. Config rejects port 500 outright for
-// the related reason that the non-ESP marker cannot be used there.
-func (r *Responder) buildSAInitResponse(spiI, spiR uint64, proposal Proposal, suite SASuite, dh *DHKeyPair, nr []byte, endpoint transport.Endpoint) ([]byte, error) {
+// buildSAInitResponse mirrors the initiator's IKE_SA_INIT, a NAT_DETECTION_SOURCE_IP hash of a random address among it
+// ranet3's transport takes UDP-encapsulated ESP alone, so the initiator must conclude that this end is behind a NAT, as strongSwan's own force_encap makes it (ike_natd.c)
+// both notifies go, since strongSwan enables NAT traversal only on a source and a destination notify and takes one alone for a peer without RFC 7296 section 2.23, which leaves it building raw ESP no userspace transport sees
+// the destination hash is the honest one, over the address the datagram came from
+// so the peer must reach this end on the port it knows: an initiator that sees the mismatch moves to UDP 4500 by RFC 7296 section 2.23, nothing binds 4500 apart, and the registry port is the one both ends keep
+// strongSwan keeps it with charon.port_nat_t set to it, as the fleet and the integration test configure, and config refuses port 500, where the non-ESP marker cannot be used
+// intermediate tells whether the request carried INTERMEDIATE_EXCHANGE_SUPPORTED, which the response then returns
+func (r *Responder) buildSAInitResponse(spiI, spiR uint64, proposal Proposal, suite SASuite, dh *DHKeyPair, nr []byte, endpoint transport.Endpoint, intermediate bool) ([]byte, error) {
 	hashAlgos := make([]byte, 2)
 	binary.BigEndian.PutUint16(hashAlgos, HashIdentity)
 	var fakeAddr [4]byte
@@ -452,17 +443,19 @@ func (r *Responder) buildSAInitResponse(spiI, spiR uint64, proposal Proposal, su
 			Data: natDetectionHash(spiI, spiR, net.IP(peer.Addr().AsSlice()), peer.Port()),
 		})},
 	}
+	if intermediate {
+		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INTERMEDIATE_EXCHANGE_SUPPORTED})})
+	}
 	header := Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_SA_INIT, Flags: FlagResponse, MessageID: 0}
 	return (&Message{Header: header, Payloads: payloads}).Encode(), nil
 }
 
-// completeResponderAuth waits for IKE_AUTH, authenticates the initiator and
-// answers with our own AUTH and the selected Child SA. A duplicate
-// IKE_SA_INIT while waiting is answered with the identical response.
-// created, with an error, reports an answer carrying our AUTH and the Child SA's error, which leaves the IKE SA established
+// completeResponderAuth waits for IKE_AUTH, authenticates the initiator and answers with this end's AUTH and the selected Child SA
+// a repeat of IKE_SA_INIT while it waits is answered with the identical response, and each IKE_INTERMEDIATE exchange the suite runs first
+// created, with an error, reports an answer carrying this end's AUTH and the Child SA's error, which leaves the IKE SA established
 func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2, ni, nr []byte, deadline time.Time) (_ Accepted, created bool, _ error) {
 	ctx := s.current
-	got, err := s.awaitAuthRequest(realMessage1, realMessage2, deadline)
+	got, chain, err := s.awaitAuthRequest(realMessage1, realMessage2, ni, nr, deadline)
 	if err != nil {
 		return Accepted{}, false, err
 	}
@@ -504,7 +497,7 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, err)
 	}
 	macedIDForI := prf(ctx.suite.PRFID, ctx.skpi, idiPayload.Body)
-	if err := VerifyAuth(peerKey, concat(realMessage1, nr, macedIDForI), authPayload.Body); err != nil {
+	if err := VerifyAuth(peerKey, concat(realMessage1, nr, macedIDForI, chain.octets(ctx.authMID)), authPayload.Body); err != nil {
 		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, err)
 	}
 	// RFC 7296 section 3.5 has the identity "used for policy lookup" and "to perform access control decisions"
@@ -528,14 +521,14 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 		r.cfg.Events(localID, peerID, "ike.id.resolved", peer.attrs(idrBody)...)
 	}
 	macedIDForR := prf(ctx.suite.PRFID, ctx.skpr, idrBody)
-	authBody := BuildAuth(r.cfg.LocalPrivateKey, concat(realMessage2, ni, macedIDForR))
+	authBody := BuildAuth(r.cfg.LocalPrivateKey, concat(realMessage2, ni, macedIDForR, chain.octets(ctx.authMID)))
 
 	// RFC 7296 section 2.21.2: "If authentication has succeeded in the IKE_AUTH exchange, the IKE SA is established"
 	// and: "Specifically, a responder may include all the payloads associated with authentication (IDr, CERT, and AUTH) while sending error notifications for the piggybacked exchanges (FAILED_CP_REQUIRED, NO_PROPOSAL_CHOSEN, and so on), and the initiator MUST NOT fail the authentication because of this."
 	child, err := s.selectResponderChild(request, ni, nr)
 	if err != nil {
 		// no KE payload follows in IKE_AUTH, so no INVALID_KE_PAYLOAD could be acted on
-		response, buildErr := s.response(ctx, 1, IKE_AUTH, []RawPayload{
+		response, buildErr := s.response(ctx, ctx.authMID, IKE_AUTH, []RawPayload{
 			{Type: PayloadIDr, Body: idrBody},
 			{Type: PayloadAUTH, Body: authBody},
 			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NO_PROPOSAL_CHOSEN})},
@@ -545,7 +538,7 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 		}
 		// retained before it is sent, since an IKE_AUTH retransmitted while the IKE SA's Delete is outstanding is answered from it
 		s.stateMu.Lock()
-		ctx.lastPeerResponseID, ctx.lastPeerResponse = 1, response
+		ctx.lastPeerResponseID, ctx.lastPeerResponse = ctx.authMID, response
 		s.stateMu.Unlock()
 		_ = s.mux.SendIKE(response)
 		return Accepted{}, true, err
@@ -554,7 +547,7 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	localSPI := make([]byte, 4)
 	binary.BigEndian.PutUint32(localSPI, child.sa.LocalSPI)
 	tsv4, tsv6 := FullRangeV4(), FullRangeV6()
-	response, err := s.response(ctx, 1, IKE_AUTH, []RawPayload{
+	response, err := s.response(ctx, ctx.authMID, IKE_AUTH, []RawPayload{
 		{Type: PayloadIDr, Body: idrBody},
 		{Type: PayloadAUTH, Body: authBody},
 		{Type: PayloadSA, Body: EncodeSA([]Proposal{child.proposal(localSPI)})},
@@ -567,11 +560,9 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	if err := s.replaceChild(child.sa); err != nil {
 		return Accepted{}, false, err
 	}
-	// Retain the response before sending it: Session.Run answers a
-	// retransmitted IKE_AUTH from here, and the initiator may retransmit
-	// before we ever reach Run.
+	// retained before it is sent, since Run answers a retransmitted IKE_AUTH from it and the initiator may retransmit before Run starts
 	s.stateMu.Lock()
-	ctx.lastPeerResponseID, ctx.lastPeerResponse = 1, response
+	ctx.lastPeerResponseID, ctx.lastPeerResponse = ctx.authMID, response
 	s.stateMu.Unlock()
 	if err := s.mux.SendIKE(response); err != nil {
 		return Accepted{}, false, err
@@ -579,8 +570,7 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	return Accepted{Peer: peerID, Local: localID, Key: peerKey}, true, nil
 }
 
-// authRequest is the first IKE_AUTH request that decrypted under this
-// half-open SA's keys, with the pieces that proved it.
+// authRequest is a request of the handshake that decrypted under the half-open SA's keys, an IKE_INTERMEDIATE or the first IKE_AUTH, with the pieces that proved it
 type authRequest struct {
 	raw        []byte
 	outer      *Message
@@ -589,17 +579,26 @@ type authRequest struct {
 	source     transport.Endpoint
 }
 
-// awaitAuthRequest waits for the initiator's IKE_AUTH, answering a repeat of
-// the IKE_SA_INIT request with the identical response we already sent.
-//
+// awaitAuthRequest waits for the initiator's IKE_AUTH, answering a repeat of the IKE_SA_INIT request with the response it sent and first the IKE_INTERMEDIATE exchange of each additional key exchange the suite runs
+// it returns IntAuth's chain over those
 // RFC 7296 section 2.1: "It is not sufficient to use the initiator's SPI and/or IP address to differentiate between these three cases because two different peers behind a single NAT could choose the same initiator SPI."
 // so a repeat is matched on the whole packet, which also keeps a bare header naming a live SPIi, which anyone who opened one knows, from drawing the response at whatever source it claims
-func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse []byte, deadline time.Time) (*authRequest, error) {
+// RFC 9242 section 3.2: "Implementations MUST verify that Message IDs in the IKE_INTERMEDIATE messages they receive actually follow this rule."
+// RFC 9242 section 3.2: "these exchanges MUST be sequential and MUST all be completed before the IKE_AUTH exchange is initiated."
+// RFC 9242 section 5: "Specifications utilizing the Intermediate Exchange MUST NOT allow an unlimited number of these exchanges to take place at the initiator's discretion."
+func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse, ni, nr []byte, deadline time.Time) (*authRequest, intAuth, error) {
 	ctx := s.current
+	methods := ctx.suite.entry().added()
+	var chain intAuth
+	// answered counts the IKE_INTERMEDIATE exchanges run, and lastRequest and lastResponse are the last one's request digest and response
+	// a half-open SA keeps the digest and not the request, whose size the initiator chooses
+	var answered uint32
+	var lastRequest [sha256.Size]byte
+	var lastResponse []byte
 	for {
 		raw, source, err := s.mux.RecvIKEFromUntil(deadline)
 		if err != nil {
-			return nil, fmt.Errorf("ike: waiting for IKE_AUTH: %w", err)
+			return nil, intAuth{}, fmt.Errorf("ike: waiting for IKE_AUTH: %w", err)
 		}
 		header, err := decodeHeader(raw)
 		if err == nil && higherVersion(s.mux.SendIKETo, header, source) {
@@ -614,11 +613,23 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse []byte, deadlin
 				continue
 			}
 			if err := s.mux.SendIKETo(saInitResponse, source); err != nil {
-				return nil, err
+				return nil, intAuth{}, err
 			}
 			continue
 		}
-		if header.ExchangeType != IKE_AUTH || header.MessageID != 1 || header.SPIResponder != ctx.spiR {
+		if header.SPIResponder != ctx.spiR {
+			continue
+		}
+		// RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
+		if header.ExchangeType == IKE_INTERMEDIATE && answered > 0 && header.MessageID == answered {
+			if sha256.Sum256(raw) == lastRequest {
+				if err := s.mux.SendIKETo(lastResponse, source); err != nil {
+					return nil, intAuth{}, err
+				}
+			}
+			continue
+		}
+		if header.ExchangeType != IKE_INTERMEDIATE && header.ExchangeType != IKE_AUTH || header.MessageID != answered+1 {
 			continue
 		}
 		// a datagram with the right header that does not authenticate is one more to wait past, since anyone who sees the responder SPI can send one
@@ -631,7 +642,23 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse []byte, deadlin
 		if err != nil {
 			continue
 		}
-		return &authRequest{raw: raw, outer: outer, innerFirst: innerFirst, plaintext: plaintext, source: source}, nil
+		request := &authRequest{raw: raw, outer: outer, innerFirst: innerFirst, plaintext: plaintext, source: source}
+		switch {
+		case header.ExchangeType == IKE_AUTH && int(answered) == len(methods):
+			return request, chain, nil
+		case header.ExchangeType == IKE_INTERMEDIATE && int(answered) < len(methods):
+			response, next, err := s.answerIntermediate(chain, request, methods[answered], ni, nr)
+			if err != nil {
+				return nil, intAuth{}, err
+			}
+			chain, answered, lastRequest, lastResponse = next, answered+1, sha256.Sum256(raw), response
+		default:
+			// an IKE_AUTH ahead of the last IKE_INTERMEDIATE, or an IKE_INTERMEDIATE past it
+			if response, err := s.responseNotify(ctx, header.MessageID, header.ExchangeType, N_INVALID_SYNTAX); err == nil {
+				_ = s.mux.SendIKETo(response, source)
+			}
+			return nil, intAuth{}, fmt.Errorf("ike: %d IKE_INTERMEDIATE exchanges ran of %d, and the initiator sent exchange type %d at Message ID %d", answered, len(methods), header.ExchangeType, header.MessageID)
+		}
 	}
 }
 
@@ -642,8 +669,13 @@ func (r *Responder) noteHandshakeFailure(endpoint transport.Endpoint, err error)
 	}
 	slog.Warn("ike responder handshake failed", "peer", endpoint, "err", err)
 	// recorded where it is said, so a source that fails over and over costs the record what it costs the log
+	// a key failing its FIPS 203 check is among those, since anyone past IKE_SA_INIT can send one
 	if r.cfg.Events != nil {
-		r.cfg.Events(identity.Identity{}, identity.Identity{}, "ike.handshake.failed", slog.String("from", endpoint.String()), slog.String("err", err.Error()))
+		from := slog.String("from", endpoint.String())
+		if rejected, ok := errors.AsType[*kexRejection](err); ok {
+			r.cfg.Events(identity.Identity{}, identity.Identity{}, "ike.kex.rejected", append(rejected.attrs(), from)...)
+		}
+		r.cfg.Events(identity.Identity{}, identity.Identity{}, "ike.handshake.failed", from, slog.String("err", err.Error()))
 	}
 }
 
@@ -671,12 +703,10 @@ func (r *Responder) failureIsDue(endpoint transport.Endpoint) bool {
 	return true
 }
 
-// rejectAuth answers a refused IKE_AUTH request inside the SK payload, which
-// the initiator can decrypt, and returns the underlying reason unchanged. An
-// authentication failure is deliberately uninformative: which of identity, key
-// or signature failed is not the peer's business.
+// rejectAuth answers a refused IKE_AUTH request inside the SK payload, which the initiator can decrypt, and returns cause unchanged
+// an authentication failure tells the peer nothing of which of identity, key or signature failed
 func (s *Session) rejectAuth(notify NotifyType, data []byte, cause error) error {
-	response, err := s.responseNotifyData(s.current, 1, IKE_AUTH, notify, data)
+	response, err := s.responseNotifyData(s.current, s.current.authMID, IKE_AUTH, notify, data)
 	if err == nil {
 		_ = s.mux.SendIKE(response)
 	}
@@ -949,16 +979,16 @@ func (r *Responder) sendStatelessNotify(datagram transport.Unclaimed, request *H
 
 // selectIKEProposal answers an IKE_SA_INIT offer from lists
 // a KE payload in another group than the one chosen draws INVALID_KE_PAYLOAD naming that group
+// intermediate tells whether the request carried INTERMEDIATE_EXCHANGE_SUPPORTED, which the answer returns, so whether the exchange is negotiated
 // RFC 9370 section 2.2.1: "If the IKE_INTERMEDIATE exchange is not negotiated, then the peers MUST treat any ADDKE Transform Types in the IKE_SA_INIT exchange messages as unknown transform types and skip the proposals they appear in."
-// and this end negotiates none
-func selectIKEProposal(body []byte, keGroup uint16, lists Suites) (Proposal, SASuite, error) {
+func selectIKEProposal(body []byte, keGroup uint16, lists Suites, intermediate bool) (Proposal, SASuite, error) {
 	proposals, err := DecodeSA(body)
 	if err != nil {
 		return Proposal{}, SASuite{}, fmt.Errorf("ike: invalid IKE SA proposal: %w", err)
 	}
 	proposals = slices.DeleteFunc(proposals, func(proposal Proposal) bool {
 		return proposal.Number == 0 || proposal.Protocol != ProtoIKE || len(proposal.SPI) != 0 ||
-			slices.ContainsFunc(proposal.Transforms, func(transform Transform) bool { return additional(transform.Type) })
+			!intermediate && slices.ContainsFunc(proposal.Transforms, func(transform Transform) bool { return additional(transform.Type) })
 	})
 	chosen, retry, ok := chooseIKE(proposals, lists.ikeCiphers(), lists.ikePRFs(), lists.kexEntries(), keGroup)
 	if retry != 0 {

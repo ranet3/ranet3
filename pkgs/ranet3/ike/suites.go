@@ -15,8 +15,8 @@ import (
 type IKESuites struct {
 	Cipher []string `yaml:"cipher,omitempty" json:"cipher,omitempty" toml:"cipher,omitempty"`
 	PRF    []string `yaml:"prf,omitempty" json:"prf,omitempty" toml:"prf,omitempty"`
-	// an entry of Kex joins key exchanges with +
-	// the first runs in IKE_SA_INIT and each after it as one more exchange
+	// an entry of Kex is a classical key exchange, which runs in IKE_SA_INIT, alone or joined with + to mlkem768, which runs after it in an IKE_INTERMEDIATE exchange of its own
+	// RFC 9370 section 2.2.1: "Additional key exchanges negotiated via newly defined transforms MUST take place in a series of IKE_INTERMEDIATE exchanges following the IKE_SA_INIT exchange, performed in an order of the values of their Transform Types."
 	Kex []string `yaml:"kex,omitempty" json:"kex,omitempty" toml:"kex,omitempty"`
 }
 
@@ -46,8 +46,11 @@ var (
 		{"p384", Transform{Type: TransDH, ID: DH_ECP_384}},
 		{"p256", Transform{Type: TransDH, ID: DH_ECP_256}},
 	}
-	// postQuantumKex runs only joined after a classical key exchange
-	postQuantumKex = []string{"mlkem512", "mlkem768", "mlkem1024"}
+	// each of postQuantumNames runs only joined after a classical key exchange, in an IKE_INTERMEDIATE exchange of its own
+	postQuantumNames = []suiteName{
+		{"mlkem768", Transform{Type: TransDH, ID: ML_KEM_768}},
+		{"mlkem1024", Transform{Type: TransDH, ID: ML_KEM_1024}},
+	}
 )
 
 // Suites is the four cap.crypto lists as transforms and kex entries, each most preferred first
@@ -77,6 +80,10 @@ func (e kexEntry) added() []uint16 {
 
 // entry is the kex entry whose key exchanges made an SA of suite
 func (s SASuite) entry() kexEntry { return kexEntry{group: s.DHGroup, additions: s.Additions} }
+
+// authMID is the Message ID of the IKE_AUTH that makes an SA of suite, one IKE_INTERMEDIATE exchange for each additional key exchange ahead of it
+// RFC 9242 section 3.2: "The Message ID for the first pair of IKE_AUTH messages is one more than the value used in the last IKE_INTERMEDIATE exchange."
+func (s SASuite) authMID() uint32 { return uint32(len(s.entry().added())) + 1 }
 
 // Suites resolves the four lists, refusing a list no session could negotiate from by the field and the name an operator wrote
 func (c Crypto) Suites() (Suites, error) {
@@ -120,6 +127,8 @@ func resolve(field string, list []string, names []suiteName) ([]Transform, error
 
 // resolveKex reads a joined entry whole
 // so a name joined after a classical one is refused for the exchange it asks for
+// an entry is a classical key exchange, which IKE_SA_INIT runs, and at most one ML-KEM method after it, which one IKE_INTERMEDIATE exchange runs
+// draft-ietf-ipsecme-ikev2-mlkem-09 section 2.1: "Thus, implementations transporting IKE over UDP and not performing Path MTU (PMTU) discovery SHOULD NOT use ML-KEM-768 or ML-KEM-1024 in the IKE_SA_INIT exchange on networks where the PMTU is unknown or restricted."
 func resolveKex(list []string) ([]kexEntry, error) {
 	if list == nil {
 		return nil, nil
@@ -127,7 +136,7 @@ func resolveKex(list []string) ([]kexEntry, error) {
 	if len(list) == 0 {
 		return nil, fmt.Errorf("ike: cap.crypto ike kex is empty, which leaves nothing to negotiate")
 	}
-	classical := namesOf(kexNames)
+	classical, postQuantum := namesOf(kexNames), namesOf(postQuantumNames)
 	out := make([]kexEntry, 0, len(list))
 	for i, entry := range list {
 		if slices.Contains(list[:i], entry) {
@@ -135,23 +144,35 @@ func resolveKex(list []string) ([]kexEntry, error) {
 		}
 		parts := strings.Split(entry, "+")
 		for _, part := range parts {
-			if slices.Contains(classical, part) || slices.Contains(postQuantumKex, part) {
+			if slices.Contains(classical, part) || slices.Contains(postQuantum, part) {
 				continue
 			}
 			if len(parts) == 1 {
 				return nil, fmt.Errorf("ike: cap.crypto ike kex names %q, which is not one of %s", entry, spelled(classical))
 			}
 			return nil, fmt.Errorf("ike: cap.crypto ike kex entry %q names %q, which is not one of %s",
-				entry, part, spelled(slices.Concat(classical, postQuantumKex)))
+				entry, part, spelled(slices.Concat(classical, postQuantum)))
 		}
-		if slices.Contains(postQuantumKex, parts[0]) {
+		if slices.Contains(postQuantum, parts[0]) {
 			return nil, fmt.Errorf("ike: cap.crypto ike kex entry %q starts with %s, which runs only after a classical key exchange, as in x25519+%s",
 				entry, parts[0], parts[0])
 		}
-		if len(parts) > 1 {
-			return nil, fmt.Errorf("ike: cap.crypto ike kex entry %q joins key exchanges, and the additional key exchanges of RFC 9370 are not implemented", entry)
+		if len(parts) > 2 {
+			return nil, fmt.Errorf("ike: cap.crypto ike kex entry %q joins %d key exchanges after its first, and an entry joins one", entry, len(parts)-1)
 		}
-		out = append(out, kexEntry{group: kexNames[slices.Index(classical, entry)].transform.ID})
+		resolved := kexEntry{group: kexNames[slices.Index(classical, parts[0])].transform.ID}
+		if len(parts) == 2 {
+			joined := parts[1]
+			if slices.Contains(classical, joined) {
+				return nil, fmt.Errorf("ike: cap.crypto ike kex entry %q joins %s, and an entry joins only an ML-KEM method after its first, one of %s",
+					entry, joined, spelled(postQuantum))
+			}
+			if joined == "mlkem1024" {
+				return nil, fmt.Errorf("ike: cap.crypto ike kex entry %q joins mlkem1024, whose IKE_INTERMEDIATE messages pass 1500 octets and need the IKE fragmentation of RFC 7383, which is not implemented", entry)
+			}
+			resolved.additions[0] = postQuantumNames[slices.Index(postQuantum, joined)].transform.ID
+		}
+		out = append(out, resolved)
 	}
 	return out, nil
 }
@@ -235,6 +256,12 @@ func (s Suites) ikeProposals(group uint16) []Proposal {
 // ikeRekeyProposals is the offer of a rekey replacing an IKE SA whose PRF is prfID, with its KE payload in group, one proposal for each entry a CREATE_CHILD_SA runs
 func (s Suites) ikeRekeyProposals(spi []byte, prfID, group uint16) []Proposal {
 	return leadingGroup(s.entryProposals(s.rekeyable(), s.rekeyPRFs(prfID), spi), group)
+}
+
+// asksIntermediate reports whether the IKE_SA_INIT offer of the lists holds an ADDKE type
+// RFC 9370 section 2.2.1: "If the initiator includes any ADDKE Transform Types into the SA payload in the IKE_SA_INIT exchange request message, then it MUST also negotiate the use of the IKE_INTERMEDIATE exchange, as described in [RFC9242] by including an INTERMEDIATE_EXCHANGE_SUPPORTED notification in the same message."
+func (s Suites) asksIntermediate() bool {
+	return slices.ContainsFunc(s.kexEntries(), func(entry kexEntry) bool { return !entry.classical() })
 }
 
 // entryProposals is a proposal for each of entries offering every listed cipher, prfs and the entry's key exchanges
@@ -600,7 +627,7 @@ func (s *Session) unlisted() (child, ikeSA string, prf bool) {
 }
 
 func transformName(t Transform) string {
-	for _, table := range [][]suiteName{cipherNames, prfNames, kexNames} {
+	for _, table := range [][]suiteName{cipherNames, prfNames, kexNames, postQuantumNames} {
 		for _, named := range table {
 			if named.transform == t {
 				return named.name

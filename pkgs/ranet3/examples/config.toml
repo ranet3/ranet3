@@ -298,13 +298,20 @@ update = "16s"
 # The transforms a session may use, each list most preferred first. A list left
 # out holds every name it takes, in the order written here, and an empty list
 # or a name written twice is refused. A peer whose lists share no transform of
-# one kind with these is answered with NO_PROPOSAL_CHOSEN. A kex entry joining
-# key exchanges with "+", such as "x25519+mlkem768", is refused until the
-# additional key exchanges of RFC 9370 are implemented. A reload applies the
-# lists to the next exchange. It rekeys an SA whose cipher or group it removed
-# after a delay drawn within the rekey jitter, and no later than the SA's
-# scheduled rekey. It replaces through a new handshake an IKE SA whose PRF it
-# removed, since no rekey changes the PRF.
+# one kind with these is answered with NO_PROPOSAL_CHOSEN. A kex entry is a
+# classical key exchange, which IKE_SA_INIT runs, alone or joined with "+" by
+# mlkem768, which an IKE_INTERMEDIATE exchange of RFC 9370 runs after it, as
+# in the list ["x25519+mlkem768", "x25519", "p256"]. Each entry is a proposal
+# of its own. An entry that starts with mlkem768, joins a classical name or
+# joins more than one is refused, and so is mlkem1024 until IKE fragmentation
+# is implemented. A list of joined entries alone refuses peers without ML-KEM
+# and leaves an attacker on the path no classical exchange to steer two nodes
+# to. Until IKE_FOLLOWUP_KE is implemented, an IKE SA of a joined entry
+# is replaced through a new handshake at each rekey. A reload applies the
+# lists to the next exchange. It rekeys an SA whose cipher or kex entry it
+# removed after a delay drawn within the rekey jitter, and no later than the
+# SA's scheduled rekey. It replaces through a new handshake an IKE SA whose PRF
+# it removed, since no rekey changes the PRF.
 # [cap.crypto.ike]
 # cipher = ["aes256gcm", "aes128gcm", "chacha20poly1305"]
 # prf = ["sha384", "sha256"]

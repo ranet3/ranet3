@@ -22,16 +22,15 @@ var errOvertaken = errors.New("ike: the peer's own request settled the exchange"
 // tag verifies, syntax errors are returned to the caller rather than retried,
 // with the response that carried them, so a nil response means none decrypted.
 func encryptedRoundTrip(mux *transport.Mux, ctx *ikeContext, req []byte) (*Message, []RawPayload, error) {
-	return encryptedRoundTripWithin(mux, ctx, req, maxRetransmits, nil)
+	_, response, inner, _, err := encryptedExchange(mux, ctx, req, maxRetransmits, nil)
+	return response, inner, err
 }
 
-// encryptedRoundTripWithin is encryptedRoundTrip with its own retransmission
-// budget, for an exchange whose answer this end does not depend on.
-func encryptedRoundTripWithin(mux *transport.Mux, ctx *ikeContext, req []byte, attempts int, request func([]byte) bool) (*Message, []RawPayload, error) {
-	var response *Message
+// encryptedExchange also returns the response's octets and its inner payloads in plaintext, which IntAuth covers
+func encryptedExchange(mux *transport.Mux, ctx *ikeContext, req []byte, attempts int, request func([]byte) bool) (raw []byte, response *Message, inner []RawPayload, plaintext []byte, err error) {
 	var first PayloadType
 	var plain []byte
-	_, err := sendRecvWithin(mux, req, attempts, func(raw []byte) bool {
+	raw, err = sendRecvWithin(mux, req, attempts, func(raw []byte) bool {
 		m, err := DecodeMessage(raw)
 		if err != nil {
 			return false
@@ -44,10 +43,13 @@ func encryptedRoundTripWithin(mux *transport.Mux, ctx *ikeContext, req []byte, a
 		return true
 	}, request)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	inner, err := decodeMessagePlaintext(first, plain)
-	return response, inner, err
+	if plaintext, err = unpadded(plain); err != nil {
+		return raw, response, nil, nil, err
+	}
+	inner, err = decodeInnerPayloads(first, plaintext)
+	return raw, response, inner, plaintext, err
 }
 
 // sendRecv sends req and waits for a correlated response, retransmitting on

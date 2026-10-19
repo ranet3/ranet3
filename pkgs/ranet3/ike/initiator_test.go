@@ -72,7 +72,7 @@ func TestSessionScheduledRekeyFailureRetries(t *testing.T) {
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	s := &Session{
 		mux: mux,
-		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2,
+		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, authMID: 1, nextLocalMID: 2,
 			skei: make([]byte, 20), sker: make([]byte, 20), skD: []byte("test child rekey SK_d material")},
 		Child:            ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080},
 		childEstablished: time.Now(),
@@ -194,7 +194,7 @@ func TestSessionScheduledRekeyChild(t *testing.T) {
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	s := &Session{
 		mux: mux,
-		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2,
+		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, authMID: 1, nextLocalMID: 2,
 			skei: make([]byte, 20), sker: make([]byte, 20), skD: []byte("test child rekey SK_d material")},
 		Child:            ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: oldLocalSPI, RemoteSPI: oldRemoteSPI},
 		childEstablished: time.Now(),
@@ -399,7 +399,7 @@ func TestSessionRekeyIKE(t *testing.T) {
 	const oldSPIr = 0x1112131415161718
 	const newSPIr = 0x2122232425262728
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
-	old := &ikeContext{suite: suite, spiI: oldSPIi, spiR: oldSPIr, nextLocalMID: 2,
+	old := &ikeContext{suite: suite, spiI: oldSPIi, spiR: oldSPIr, authMID: 1, nextLocalMID: 2,
 		skD: []byte("old IKE rekey SK_d material-------"), skei: make([]byte, 20), sker: make([]byte, 20)}
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
 	s := &Session{mux: mux, current: old, Child: child, requests: make(chan *localRequest, 1)}
@@ -800,7 +800,7 @@ func TestSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 	const oldSPIr = 0x1112131415161718
 	const peerSPIi = 0x2122232425262728
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
-	old := &ikeContext{suite: suite, spiI: oldSPIi, spiR: oldSPIr, nextLocalMID: 2,
+	old := &ikeContext{suite: suite, spiI: oldSPIi, spiR: oldSPIr, authMID: 1, nextLocalMID: 2,
 		skD: []byte("old IKE rekey SK_d material-------"), skei: make([]byte, 20), sker: make([]byte, 20)}
 	localNonce := make([]byte, 32)
 	for i := range localNonce {
@@ -947,9 +947,8 @@ func TestSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 			return
 		}
 
-		// The winner sends exactly one Delete, for the SA its rekey replaced.
-		// RFC 7296 section 2.8.2 leaves the redundant candidate to the node
-		// that created it, which here is the peer.
+		// the winner sends one Delete, for the SA its rekey replaced, and the peer created the losing candidate
+		// RFC 7296 section 2.8.2: "The new IKE SA containing the lowest nonce SHOULD be deleted by the node that created it, and the other surviving new IKE SA MUST inherit all the Child SAs."
 		n, _, err = peer.ReadFromUDP(buf)
 		if err != nil {
 			t.Errorf("read replaced-context delete: %v", err)
@@ -977,8 +976,7 @@ func TestSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 			return
 		}
 
-		// And the peer retires its own losing candidate, which this end has
-		// kept routable for exactly that.
+		// the peer retires its own losing candidate, which this end kept routable for that
 		loserDelete, err := EncryptMessage(suite, collisionKeys.SKei, Header{SPIInitiator: peerSPIi, SPIResponder: peerSPIr, ExchangeType: INFORMATIONAL, Flags: FlagInitiator, MessageID: 0}, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
 		if err != nil {
 			t.Errorf("build loser delete: %v", err)
@@ -1121,7 +1119,7 @@ func testIKEAuthAuthenticatesBeforeChildFailure(t *testing.T, remoteOrganization
 	s := &Session{
 		mux: mux,
 		current: &ikeContext{
-			suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2,
+			suite: suite, spiI: spiI, spiR: spiR, authMID: 1, nextLocalMID: 2,
 			skei: make([]byte, 20), sker: make([]byte, 20),
 			skD: make([]byte, 32), skpi: make([]byte, 32), skpr: make([]byte, 32),
 		},
@@ -1170,7 +1168,7 @@ func testIKEAuthAuthenticatesBeforeChildFailure(t *testing.T, remoteOrganization
 			if err != nil {
 				return fmt.Errorf("encrypt IKE_AUTH response: %w", err)
 			}
-			// An SK-shaped packet with a forged tag must not terminate the exchange.
+			// an SK-shaped packet with a forged tag ends no exchange
 			forged := append([]byte(nil), response...)
 			forged[len(forged)-1] ^= 1
 			if _, err := peer.WriteToUDP(withNonESPMarker(forged), clientAddr); err != nil {
@@ -1229,7 +1227,7 @@ func testIKEAuthAuthenticatesBeforeChildFailure(t *testing.T, remoteOrganization
 		}()
 	}()
 
-	err = s.completeIKEAuth(cfg, realMessage1, realMessage2, ni, nr)
+	err = s.completeIKEAuth(cfg, realMessage1, realMessage2, ni, nr, intAuth{})
 	if err == nil || err.Error() != "ike: Child SA rejected: notify type 14" {
 		t.Fatalf("completeIKEAuth error = %v, want authenticated Child SA rejection", err)
 	}
@@ -1274,7 +1272,7 @@ func TestAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.
 	s := &Session{
 		mux: mux,
 		current: &ikeContext{
-			suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2,
+			suite: suite, spiI: spiI, spiR: spiR, authMID: 1, nextLocalMID: 2,
 			skei: make([]byte, 20), sker: make([]byte, 20),
 			skD: make([]byte, 32), skpi: make([]byte, 32), skpr: make([]byte, 32),
 		},
@@ -1353,7 +1351,7 @@ func TestAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.
 		}()
 	}()
 
-	if err := s.completeIKEAuth(cfg, realMessage1, realMessage2, ni, nr); err == nil {
+	if err := s.completeIKEAuth(cfg, realMessage1, realMessage2, ni, nr, intAuth{}); err == nil {
 		t.Fatal("completeIKEAuth took an authenticated Child SA rejection")
 	}
 	if err := <-peerDone; err != nil {
@@ -1506,7 +1504,7 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 			s := &Session{
 				mux: mux,
 				current: &ikeContext{
-					suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2,
+					suite: suite, spiI: spiI, spiR: spiR, authMID: 1, nextLocalMID: 2,
 					skei: make([]byte, 20), sker: make([]byte, 20),
 					skD: make([]byte, 32), skpi: make([]byte, 32), skpr: make([]byte, 32),
 				},
@@ -1610,7 +1608,7 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 				}()
 			}()
 
-			err = s.completeIKEAuth(cfg, []byte("test IKE_SA_INIT request"), realMessage2, ni, nr)
+			err = s.completeIKEAuth(cfg, []byte("test IKE_SA_INIT request"), realMessage2, ni, nr, intAuth{})
 			if err == nil {
 				t.Fatal("the initiator took an IKE_AUTH answer it should have refused")
 			}
@@ -1758,7 +1756,7 @@ func TestInitiatorPassesOverIKESAInitAnswersCarryingAnErrorNotify(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, suite, err := selectIKEProposal(sa.Body, group, Suites{})
+	proposal, suite, err := selectIKEProposal(sa.Body, group, Suites{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1865,7 +1863,7 @@ func dialPlayedResponder(t *testing.T, shape func(exchange ExchangeType, payload
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal, suite, err := selectIKEProposal(sa.Body, group, Suites{})
+	proposal, suite, err := selectIKEProposal(sa.Body, group, Suites{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1945,7 +1943,7 @@ func TestInitiatorRefusesAnIKESAInitAnswerMarkingAnUnsupportedPayloadCritical(t 
 			t.Error(err)
 			return
 		}
-		proposal, suite, err := selectIKEProposal(sa.Body, group, Suites{})
+		proposal, suite, err := selectIKEProposal(sa.Body, group, Suites{}, false)
 		if err != nil {
 			t.Error(err)
 			return
@@ -2109,7 +2107,7 @@ func TestSessionRequestSerializesLocalMessageIDs(t *testing.T) {
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	s := &Session{
 		mux: mux,
-		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, nextLocalMID: 2,
+		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, authMID: 1, nextLocalMID: 2,
 			skei: make([]byte, 20), sker: make([]byte, 20)},
 		requests: make(chan *localRequest, 1),
 	}

@@ -107,7 +107,7 @@ func TestListsResolveToOffersInTheirOrder(t *testing.T) {
 }
 
 // Validate refuses a list no session negotiates from, naming the field and what is wrong with it
-// a key exchange joined after another with + waits for RFC 9370
+// an entry joins with + one ML-KEM method after a classical key exchange, and mlkem1024 waits for the fragmentation of RFC 7383
 // and an ML-KEM name runs only after a classical exchange
 func TestListsRefuseWhatNoSessionNegotiates(t *testing.T) {
 	for _, test := range []struct {
@@ -126,20 +126,25 @@ func TestListsRefuseWhatNoSessionNegotiates(t *testing.T) {
 		{Crypto{IKE: IKESuites{PRF: []string{"sha384", "sha512"}}}, `cap.crypto ike prf names "sha512", which is not one of sha384 and sha256`},
 		{Crypto{IKE: IKESuites{Kex: []string{"x448"}}}, `cap.crypto ike kex names "x448", which is not one of x25519, p384 and p256`},
 		{Crypto{ESP: ESPSuites{Cipher: []string{"sha256"}}}, `cap.crypto esp cipher names "sha256", which is not one of aes256gcm, aes128gcm and chacha20poly1305`},
-		{Crypto{IKE: IKESuites{Kex: []string{"x25519", "x25519+mlkem768"}}},
-			`cap.crypto ike kex entry "x25519+mlkem768" joins key exchanges, and the additional key exchanges of RFC 9370 are not implemented`},
+		{Crypto{IKE: IKESuites{Kex: []string{"x25519", "x25519+mlkem1024"}}},
+			`cap.crypto ike kex entry "x25519+mlkem1024" joins mlkem1024, whose IKE_INTERMEDIATE messages pass 1500 octets and need the IKE fragmentation of RFC 7383, which is not implemented`},
 		{Crypto{IKE: IKESuites{Kex: []string{"x25519+p256"}}},
-			`cap.crypto ike kex entry "x25519+p256" joins key exchanges, and the additional key exchanges of RFC 9370 are not implemented`},
+			`cap.crypto ike kex entry "x25519+p256" joins p256, and an entry joins only an ML-KEM method after its first, one of mlkem768 and mlkem1024`},
+		{Crypto{IKE: IKESuites{Kex: []string{"p384+mlkem768+mlkem768"}}},
+			`cap.crypto ike kex entry "p384+mlkem768+mlkem768" joins 2 key exchanges after its first, and an entry joins one`},
 		{Crypto{IKE: IKESuites{Kex: []string{"p384+mlkem1024+mlkem512"}}},
-			`cap.crypto ike kex entry "p384+mlkem1024+mlkem512" joins key exchanges, and the additional key exchanges of RFC 9370 are not implemented`},
+			`cap.crypto ike kex entry "p384+mlkem1024+mlkem512" names "mlkem512", which is not one of x25519, p384, p256, mlkem768 and mlkem1024`},
+		{Crypto{IKE: IKESuites{Kex: []string{"x25519+mlkem512"}}},
+			`cap.crypto ike kex entry "x25519+mlkem512" names "mlkem512", which is not one of x25519, p384, p256, mlkem768 and mlkem1024`},
 		{Crypto{IKE: IKESuites{Kex: []string{"mlkem768"}}},
 			`cap.crypto ike kex entry "mlkem768" starts with mlkem768, which runs only after a classical key exchange, as in x25519+mlkem768`},
 		{Crypto{IKE: IKESuites{Kex: []string{"mlkem1024+p384"}}},
 			`cap.crypto ike kex entry "mlkem1024+p384" starts with mlkem1024, which runs only after a classical key exchange, as in x25519+mlkem1024`},
 		{Crypto{IKE: IKESuites{Kex: []string{"x25519+x448"}}},
-			`cap.crypto ike kex entry "x25519+x448" names "x448", which is not one of x25519, p384, p256, mlkem512, mlkem768 and mlkem1024`},
+			`cap.crypto ike kex entry "x25519+x448" names "x448", which is not one of x25519, p384, p256, mlkem768 and mlkem1024`},
 		{Crypto{IKE: IKESuites{Kex: []string{"x25519+"}}},
-			`cap.crypto ike kex entry "x25519+" names "", which is not one of x25519, p384, p256, mlkem512, mlkem768 and mlkem1024`},
+			`cap.crypto ike kex entry "x25519+" names "", which is not one of x25519, p384, p256, mlkem768 and mlkem1024`},
+		{Crypto{IKE: IKESuites{Kex: []string{"x25519+mlkem768", "x25519+mlkem768"}}}, "cap.crypto ike kex names x25519+mlkem768 twice"},
 	} {
 		err := test.crypto.Validate()
 		if err == nil || !strings.Contains(err.Error(), test.want) {
@@ -152,6 +157,10 @@ func TestListsRefuseWhatNoSessionNegotiates(t *testing.T) {
 	}
 	if err := every.Validate(); err != nil {
 		t.Errorf("every name in another order was refused: %v", err)
+	}
+	joined := Crypto{IKE: IKESuites{Kex: []string{"p256+mlkem768", "x25519", "x25519+mlkem768", "p384+mlkem768"}}}
+	if err := joined.Validate(); err != nil {
+		t.Errorf("entries joining mlkem768 were refused: %v", err)
 	}
 }
 
@@ -835,7 +844,7 @@ func TestReloadRekeysAtOnceAnSAWhoseCipherOrGroupItLeftOut(t *testing.T) {
 	}
 }
 
-// a reload whose lists still hold every transform of the live SAs leaves them be
+// a reload whose lists still hold every transform of the live SAs leaves them be, an entry joining ML-KEM-768 to the IKE SA's group ahead of its own among them
 // and a rekey keeps the cipher of the SA it replaces
 func TestReloadLeavesAnSAWhoseTransformsItStillLists(t *testing.T) {
 	dialed := &recorder{}
@@ -843,7 +852,10 @@ func TestReloadLeavesAnSAWhoseTransformsItStillLists(t *testing.T) {
 	dialing := new(atomic.Pointer[Suites])
 	dialing.Store(&Suites{})
 	initiator, responder, initiatorRun, _ := dialSuited(t, h, dialing, dialed.record, nil)
-	next := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm", "aes256gcm"}}, ESP: ESPSuites{Cipher: []string{"aes128gcm", "aes256gcm"}}})
+	next := suitesOf(t, Crypto{
+		IKE: IKESuites{Cipher: []string{"aes128gcm", "aes256gcm"}, Kex: []string{"x25519+mlkem768", "x25519", "p384", "p256"}},
+		ESP: ESPSuites{Cipher: []string{"aes128gcm", "aes256gcm"}},
+	})
 	dialing.Store(&next)
 	if ended, err := recheck(t, initiator, initiatorRun); ended {
 		t.Fatalf("the session ended with %v", err)

@@ -716,7 +716,7 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 			{"DecodeSA", sa, func(b []byte) string { _, _ = DecodeSA(b); return "" }},
 			{"decodeProposal", sa, func(b []byte) string { _, _, _, _ = decodeProposal(b); return "" }},
 			{"decodeTransform", sa, func(b []byte) string { _, _, _, _ = decodeTransform(b); return "" }},
-			{"selectIKEProposal", sa, func(b []byte) string { _, _, _ = selectIKEProposal(b, DH_CURVE25519, Suites{}); return "" }},
+			{"selectIKEProposal", sa, func(b []byte) string { _, _, _ = selectIKEProposal(b, DH_CURVE25519, Suites{}, false); return "" }},
 			{"decodeChildProposal", sa, func(b []byte) string {
 				_, _, _, _ = decodeChildProposal(b, espProposal(nil).Transforms)
 				return ""

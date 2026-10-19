@@ -52,7 +52,7 @@ var (
 )
 
 func goldenContext(responder bool) *ikeContext {
-	return &ikeContext{suite: goldenSuite, spiI: 0x0102030405060708, spiR: 0x1112131415161718, responder: responder,
+	return &ikeContext{suite: goldenSuite, spiI: 0x0102030405060708, spiR: 0x1112131415161718, responder: responder, authMID: 1,
 		skD: bytes.Repeat([]byte{1}, 32), skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20),
 		skpi: bytes.Repeat([]byte{4}, 32), skpr: bytes.Repeat([]byte{5}, 32)}
 }
@@ -319,7 +319,7 @@ func initiatorExchange(t *testing.T, x payloadExchange, events Recorder) ([]RawP
 			answer(from, request, nil)
 		}
 	})
-	authErr := s.completeIKEAuth(cfg, goldenMessage1, goldenMessage2, goldenNi, goldenNr)
+	authErr := s.completeIKEAuth(cfg, goldenMessage1, goldenMessage2, goldenNi, goldenNr, intAuth{})
 	return <-sent, authErr
 }
 
