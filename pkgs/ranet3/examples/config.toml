@@ -246,8 +246,9 @@ update = "16s"
 # translation, so a leaf picks this exit by naming its SID. allow is required:
 # a packet passes only when its outer and its inner source are both inside it,
 # so the exit is no open proxy. It needs cap.egress, which may advertise
-# nothing, and the iif rule above. The node announces the SID's /128 itself
-# while the exit is ready, so cap.route does not. linux only.
+# nothing, the iif rule above, and cap.border below with allow inside its
+# overlay. The node announces the SID's /128 itself while the exit is ready,
+# so cap.route does not. linux only.
 # local = [
 #   { sid = "3fff:1:69c:8c6::1", behavior = "End.DT46" },
 #   { sid = "3fff:1:69c:8c6::2", behavior = "End" },
@@ -346,3 +347,14 @@ update = "16s"
 # The periodic pass, which reinstalls a table somebody removed and re-reads the
 # forwarding sysctls. Omitted it is 30s.
 # sweep = "30s"
+
+# Drop what arrives from outside the mesh and only a forger sends: a source in
+# the prefixes the mesh numbers its nodes from, an IPv6 routing header of type
+# 4, and a packet to one of this node's own local segments. Write it on every
+# node that forwards, or a host on any of its links can send a mesh source
+# through it to an exit. The devices inside the mesh are derived: the tun, the
+# egress device, lo and the VRF master. An egress segment needs it, with every
+# allow entry inside overlay, and a prefix cap.egress advertises, a default
+# aside, may not overlap overlay. linux only, refused by name elsewhere.
+# [cap.border]
+# overlay = ["3fff::/20", "198.18.0.0/15"]

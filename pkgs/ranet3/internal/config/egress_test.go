@@ -30,10 +30,16 @@ behavior = "End.DT46"
 deliver = "egress"
 allow = ["23.161.104.0/24", "2602:f590::/36"]
 `
-	egressExitTOML = "\n[cap.egress]\n" + egressTableTOML + egressSegmentTOML
+	egressBorderTOML = `
+[cap.border]
+overlay = ["23.161.104.0/24", "2602:f590::/36"]
+`
+	egressExitTOML = "\n[cap.egress]\n" + egressBorderTOML + egressTableTOML + egressSegmentTOML
 	egressExitYAML = `
 cap:
   egress: {}
+  border:
+    overlay: [23.161.104.0/24, 2602:f590::/36]
   table:
     rules:
       - { to: 10.66.0.0/16, table: 200, priority: 100 }
@@ -53,6 +59,7 @@ cap:
   "dial": {"to": ["example/gateway"]},
   "cap": {
     "egress": {},
+    "border": {"overlay": ["23.161.104.0/24", "2602:f590::/36"]},
     "table": {"rules": [
       {"to": "10.66.0.0/16", "table": 200, "priority": 100},
       {"iif": "ranet3e", "table": "main", "priority": 120, "family": "both"},

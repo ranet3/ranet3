@@ -183,6 +183,8 @@ type Caps struct {
 	Segment *srv6.Segments `yaml:"segment,omitempty" json:"segment,omitempty" toml:"segment,omitempty"`
 	Crypto  *ike.Crypto    `yaml:"crypto,omitempty" json:"crypto,omitempty" toml:"crypto,omitempty"`
 	Egress  *egress.Egress `yaml:"egress,omitempty" json:"egress,omitempty" toml:"egress,omitempty"`
+	// Border drops what arrives from outside the mesh carrying a mesh source, a routing header or one of this node's SIDs
+	Border *egress.Border `yaml:"border,omitempty" json:"border,omitempty" toml:"border,omitempty"`
 }
 
 // Routes, Babel, Segments and Crypto are the capability in force, which for an
@@ -802,6 +804,9 @@ func (c *Config) validateAcrossCapabilities() error {
 	if err := c.validateEgressSegments(egressSegments); err != nil {
 		return err
 	}
+	if err := c.validateBorder(egressSegments); err != nil {
+		return err
+	}
 	if err := c.validateUnderlayMark(); err != nil {
 		return err
 	}
@@ -851,6 +856,49 @@ func (c *Config) validateEgressSegments(segments []srv6.Segment) error {
 		}
 	}
 	return c.validateEgressRule(sid, device)
+}
+
+// validateBorder asks cap.border to check itself where it was written, as
+// Validate asks cap.egress, then refuses what the filter and the egress
+// segments cannot both mean: a segment no filter guards, an allow entry a
+// forwarding node's filter would pass forged, and an advertised prefix whose
+// own hosts the filter would drop. The exit default overlaps everything and
+// is left out, since nothing behind an exit is numbered from the mesh.
+func (c *Config) validateBorder(segments []srv6.Segment) error {
+	border := c.Cap.Border
+	if border == nil {
+		if len(segments) != 0 {
+			return fmt.Errorf("config: cap.segment local %s delivers to egress and cap.border is absent, so a forged allowed source can reach it through this node's own links: add cap.border", segments[0].SID)
+		}
+		return nil
+	}
+	if err := border.Validate(); err != nil {
+		return err
+	}
+	for _, segment := range segments {
+		for _, allowed := range segment.Allow {
+			covered := slices.ContainsFunc(border.Overlay, func(overlay schema.Prefix) bool {
+				return overlay.Bits() <= allowed.Bits() && overlay.Contains(allowed.Addr())
+			})
+			if !covered {
+				return fmt.Errorf("config: cap.segment local %s allow %s lies outside cap.border overlay, so every forwarding node's filter lets a forged %s source through to it", segment.SID, allowed, allowed)
+			}
+		}
+	}
+	if c.Cap.Egress == nil {
+		return nil
+	}
+	for _, advertised := range c.Cap.Egress.Advertise {
+		if advertised.Bits() == 0 {
+			continue
+		}
+		for _, overlay := range border.Overlay {
+			if advertised.Overlaps(overlay.Prefix) {
+				return fmt.Errorf("config: cap.egress advertise %s overlaps cap.border overlay %s, so the hosts behind this node arrive on a link outside the mesh with a mesh source and the filter drops them", advertised, overlay)
+			}
+		}
+	}
+	return nil
 }
 
 // validateEgressRule refuses an egress segment until cap.table holds, in each
