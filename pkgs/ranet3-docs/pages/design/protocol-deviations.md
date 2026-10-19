@@ -253,11 +253,13 @@ request retransmitted until it is answered or the IKE SA is deemed failed, and
 [section 2.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.3) has an
 end wait for the answer to each request before it sends the next, so the Delete
 waits for the exchange already out. That exchange gets the 5 sends of a silent
-peer, about 62 seconds, whatever traffic the peer keeps up, and the IKE SA is
-then deemed failed. The peer's rekeys are answered `TEMPORARY_FAILURE`, and
-nothing else starts. A replaced IKE SA this end deletes carries that Delete,
-which section 2.8 makes the last request on the old SA, and takes its answer
-past the lifetime.
+peer, about 62 seconds, whatever traffic the peer keeps up, or 2 when it is a
+Delete of an IKE SA, and the IKE SA is then deemed failed. The peer's rekeys are
+answered `TEMPORARY_FAILURE`, and nothing else starts. A replaced IKE SA this
+end deletes carries that Delete, which section 2.8 makes the last request on the
+old SA, and takes its answer past the lifetime. When both of its sends go
+unanswered, the replaced IKE SA alone is deemed failed, since the new one holds
+its Child SAs.
 
 An ESP batch that took a Child SA's keys before its lifetime finishes on them.
 The keys leave the dataplane at the lifetime, and the batch holds the set of SAs

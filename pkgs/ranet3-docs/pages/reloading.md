@@ -205,7 +205,7 @@ Every exchange after it, a new handshake or a rekey of a live session, offers
 and accepts what the new lists hold, and a new order changes which transform an
 answering node takes. `cap.crypto.replay` and `cap.crypto.rekey` need a restart,
 as [what a reload refuses](#what-a-reload-refuses) describes. `ranet3 sessions`
-shows the transforms each session runs, so a reload can be seen taking hold.
+shows the transforms each session runs. A reload can be seen taking hold there.
 
 Each live session then checks its SAs against the new lists. An SA whose cipher
 or group they leave out is rekeyed under them, and the session records an
@@ -214,18 +214,21 @@ up to `cap.crypto.rekey.jitter`, so 2 ends that reload the same lists at once
 rarely rekey the SA together and refuse each other's rekey, as
 [RFC 7296 section 2.8.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8.1)
 asks. The delay ends no later than the SA's scheduled rekey, which keeps the
-margin before its lifetime. When the IKE SA and its Child SA both hold a
-transform the lists leave out, the IKE SA rekeys first, since the Child SA's
-keys come from it, and the Child SA draws its own delay once the IKE SA's rekey
-has ended. The removed transform can then stay in use for up to 2 delays and
-both exchanges.
+margin before its lifetime. When one reload leaves out a transform of both the
+IKE SA and its Child SA, the IKE SA rekeys first, since the Child SA's keys come
+from it. The Child SA draws its own delay once the IKE SA's rekey has ended, its
+Delete of the replaced IKE SA included. A rekey already under way at the reload
+runs under the lists it started with, and the forced rekeys wait for it. The
+removed transform can stay in use for up to 2 delays, a rekey already under way,
+the IKE SA's rekey with its Delete, and the Child SA's rekey. A Child SA that an
+earlier reload already left out keeps the delay it drew then, and can rekey
+before an IKE SA that a later reload left out.
 
 A forced rekey the peer refuses is retried on the backoff of
-`cap.crypto.rekey.retry`, but only while the lists still leave the SA out. Once
-a later reload lists it again, the SA goes back to its scheduled rekey, or to
-none where its interval is 0. A forced rekey runs inside the SA's lifetime like
-any other, so an SA whose peer keeps refusing reaches its lifetime and closes
-the IKE SA, as
+`cap.crypto.rekey.retry` for as long as the lists leave the SA out. Once a later
+reload lists it again, the SA goes back to its scheduled rekey, or to none where
+its interval is 0. A forced rekey runs inside the SA's lifetime like any other:
+an SA whose peer keeps refusing reaches its lifetime and closes the IKE SA, as
 [the configuration reference](configuration-reference.md#capcryptorekey)
 describes. An SA whose interval is 0 has no lifetime, and its forced rekey keeps
 retrying while the lists leave it out.
@@ -235,15 +238,19 @@ PRF. The session records an `ike.suite.unlisted` with `action=replace`, deletes
 the IKE SA, which closes its Child SA, and ends, and the node that dialed it
 dials again at once under the new lists. A node that only answered the session
 wakes its own dialer of that peer, if one stood down behind the session. When
-both ends replace the same IKE SA and their Deletes cross, each still dials
-again at once. The Delete is the last request the session sends. Once the
-session is ending, as at an SA's lifetime, the Delete has the 2 sends of
-[the Delete that ends an IKE SA](design/limits.md#ike). Past the IKE SA's
-lifetime it goes out as that IKE SA's own Delete, and no second Delete follows.
+both ends replace the same IKE SA and their Deletes cross, each session still
+ends for a new handshake, and each end dials again or wakes its dialer as above.
+The Delete is the last request the session sends, and it has the 2 sends of
+[the Delete that ends an IKE SA](design/limits.md#ike) from its first send. Past
+the IKE SA's lifetime it goes out as that IKE SA's own Delete, and no second
+Delete follows. When both sends go unanswered, the session still ends for a new
+handshake, and its log line says the session ended before its Delete was
+answered, with `peer unresponsive after 2 attempts`. A lost answer alone does
+that: the peer answers no resend of a Delete it took.
 
 A peer's offer the new lists refuse with `NO_PROPOSAL_CHOSEN` has the session
-check its SAs as well, so a peer's rekey of an SA the lists left out starts this
-end's own rekey or replacement of it.
+check its SAs as well. A peer's rekey of an SA the lists left out then starts
+this end's own rekey or replacement of it.
 
 ## Events
 

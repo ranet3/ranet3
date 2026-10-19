@@ -346,7 +346,11 @@ transforms the session started with. The `suite` of an `ike.rekey.completed`
 names the replacement's transforms the same way, the IKE SA's for `sa=ike` and
 the Child SA's for `sa=child`. A Child SA keyed by a key exchange of its own, as
 a peer's rekey with a group runs, has that group after its cipher, such as
-`aes128gcm/p256`.
+`aes128gcm/p256`. An IKE SA rekey whose Delete of the replaced or redundant IKE
+SA goes unanswered or is refused records `ike.rekey.completed`, since the
+surviving IKE SA is current by then. The session logs
+`ike replaced IKE SA was not deleted by this end` or
+`ike redundant IKE SA was not deleted by this end` with the error.
 
 An `ike.suite.unlisted` is recorded when a session finds that the lists in force
 leave out a transform one of its SAs runs. Its `sa` names the SA, its `suite`
