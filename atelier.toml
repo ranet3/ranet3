@@ -24,6 +24,13 @@ exclude = [
   "checks.aarch64-linux.integration-suites-apart",
   "checks.aarch64-linux.integration-suites-apart-responder",
   "checks.aarch64-linux.integration-egress-segment",
+  "checks.aarch64-linux.integration-mlkem-meet",
+  "checks.aarch64-linux.integration-mlkem-meet-responder",
+  "checks.aarch64-linux.integration-mlkem-apart",
+  "checks.aarch64-linux.integration-mlkem-apart-responder",
+  "checks.aarch64-linux.integration-mlkem-fallback",
+  "checks.aarch64-linux.integration-mlkem-optional",
+  "checks.aarch64-linux.integration-mlkem-none",
   "checks.aarch64-linux.netlink",
   # both linux arches put the same files in front of these, so the
   # x86_64-linux arm covers the aarch64 one exactly. go test stays on both,
