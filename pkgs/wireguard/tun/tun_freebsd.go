@@ -159,7 +159,11 @@ func tunDestroy(name string) error {
 	return nil
 }
 
-func CreateTUN(name string, mtu int, _ ...Option) (Device, error) {
+func CreateTUN(name string, mtu int, opts ...Option) (Device, error) {
+	config := defaultConfig()
+	for _, opt := range opts {
+		opt.apply(&config)
+	}
 	if len(name) > unix.IFNAMSIZ-1 {
 		return nil, errors.New("interface name too long")
 	}
@@ -258,7 +262,7 @@ func CreateTUN(name string, mtu int, _ ...Option) (Device, error) {
 		}
 	}
 
-	return CreateTUNFromFile(tunFile, mtu)
+	return createTUNFromFile(tunFile, mtu, config)
 }
 
 func CreateTUNFromFiles(files []*os.File, mtu int) (Device, error) {
@@ -266,6 +270,10 @@ func CreateTUNFromFiles(files []*os.File, mtu int) (Device, error) {
 }
 
 func CreateTUNFromFile(file *os.File, mtu int) (Device, error) {
+	return createTUNFromFile(file, mtu, defaultConfig())
+}
+
+func createTUNFromFile(file *os.File, mtu int, config config) (Device, error) {
 	tun := &NativeTun{
 		tunFile: file,
 		events:  make(chan Event, 10),
@@ -299,13 +307,17 @@ func CreateTUNFromFile(file *os.File, mtu int) (Device, error) {
 		return nil, err
 	}
 
-	tun.routeSocket, err = unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.AF_UNSPEC)
-	if err != nil {
-		tun.tunFile.Close()
-		return nil, err
-	}
+	if config.unmonitored {
+		tun.routeSocket = -1
+	} else {
+		tun.routeSocket, err = unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.AF_UNSPEC)
+		if err != nil {
+			tun.tunFile.Close()
+			return nil, err
+		}
 
-	go tun.routineRouteListener(tunIfindex)
+		go tun.routineRouteListener(tunIfindex)
+	}
 
 	err = tun.setMTU(mtu)
 	if err != nil {
