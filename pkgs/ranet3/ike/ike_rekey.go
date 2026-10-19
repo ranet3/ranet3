@@ -181,12 +181,13 @@ func (s *Session) RekeyIKE() (err error) {
 			// the redundant SA goes whether or not the peer answers
 			// one left in s.collision refuses every later peer rekey
 			// and the next local one takes this branch again with no peer nonce
-			// so the failure would last rather than cost one exchange
+			// the peer's candidate is current from here, so the rekey has taken effect whatever this exchange does
 			answer, deleteErr := s.requestOnLocked(newContext, INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
 			if deleteErr == nil {
-				if refused := refusal("INFORMATIONAL", answer); refused != nil {
-					slog.Info("ike redundant IKE SA was not deleted by this end", "spi", spiI, "err", refused)
-				}
+				deleteErr = refusal("INFORMATIONAL", answer)
+			}
+			if deleteErr != nil {
+				slog.Info("ike redundant IKE SA was not deleted by this end", "spi", spiI, "err", deleteErr)
 			}
 			// released only while nothing else routes by it
 			// unregistering the SA the session is current on leaves the control channel deaf while ESP flows
@@ -196,9 +197,6 @@ func (s *Session) RekeyIKE() (err error) {
 			}
 			s.releaseSPILocked(spiI)
 			s.stateMu.Unlock()
-			if deleteErr != nil {
-				return fmt.Errorf("ike: delete redundant local IKE SA: %w", deleteErr)
-			}
 			return nil
 		}
 		// RFC 7296 section 2.8.2: "The new IKE SA containing the lowest nonce SHOULD be deleted by the node that created it, and the other surviving new IKE SA MUST inherit all the Child SAs."

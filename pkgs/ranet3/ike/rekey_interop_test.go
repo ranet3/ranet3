@@ -334,7 +334,7 @@ func TestRekeyIKETakesAnErrorNotifyItDoesNotRecognizeAsARejection(t *testing.T) 
 }
 
 func TestPeerRekeyDefersConflictingTransition(t *testing.T) {
-	for _, state := range []string{"local Child rekey", "Child retirement", "local IKE rekey", "old IKE SA"} {
+	for _, state := range []string{"local Child rekey", "Child retirement", "local IKE rekey", "old IKE SA", "replaced IKE SA"} {
 		t.Run(state, func(t *testing.T) {
 			ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128}, skei: make([]byte, 20)}
 			s := &Session{current: ctx}
@@ -350,6 +350,9 @@ func TestPeerRekeyDefersConflictingTransition(t *testing.T) {
 			case "old IKE SA":
 				s.current = new(ikeContext)
 				handle = s.handleChildRekey
+			// RFC 7296 section 2.8.2: "it SHOULD return TEMPORARY_FAILURE because it is an IKE SA that it is currently trying to close (whether or not it has already sent the delete notification for the SA)."
+			case "replaced IKE SA":
+				s.current, s.old = new(ikeContext), ctx
 			}
 			raw, err := handle(ctx, 0, nil)
 			if err != nil {
