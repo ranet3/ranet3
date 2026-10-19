@@ -1297,6 +1297,12 @@ func fullConfig() Config {
 					Table:    100,
 					Priority: 42,
 					Family:   kernel.FamilyBoth,
+				}, {
+					// the rule the egress segment below needs
+					IIF:      "ranet0e",
+					Table:    schema.TableMain,
+					Priority: 43,
+					Family:   kernel.FamilyBoth,
 				}},
 			},
 			Segment: &srv6.Segments{

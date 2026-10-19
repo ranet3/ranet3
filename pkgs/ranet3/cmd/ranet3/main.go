@@ -322,12 +322,15 @@ func runDaemon(opts options) int {
 			// this callback only has to say that they changed.
 			Announce: func([]netip.Prefix) { node.Republish() },
 			Events:   bus,
+			Egress:   node.EgressDevice(),
+			Device:   node.EgressDeviceReader(),
+			Ready:    node.SetEgressReady,
 		})
 		if err != nil {
 			return refuseToStart(err)
 		}
 		node.SetEgressAnnounce(translator.Announce)
-		node.SetEgressStatus(func() control.EgressStatus { return egressStatus(translator) })
+		node.SetEgressStatus(func() control.EgressStatus { return egressStatus(translator, node.EgressDevice()) })
 		// handed over before the first pass, as the reconciler's is
 		node.SetEgressEnable(translator.SetEnabled)
 		reconciler.Go(func() {
@@ -492,15 +495,25 @@ func coverNames(families []kernel.Family) []string {
 // configured half comes from the translator rather than from the config file,
 // so a block that never became a translator reports as off rather than
 // describing rules nobody installed.
-func egressStatus(translator *egress.Translator) control.EgressStatus {
+func egressStatus(translator *egress.Translator, device string) control.EgressStatus {
 	cfg, stats := translator.Capability(), translator.Stats()
 	advertise := make([]netip.Prefix, 0, len(cfg.Advertise))
 	for _, entry := range cfg.Advertise {
 		advertise = append(advertise, entry.Prefix)
 	}
+	var ready []string
+	if stats.Ready4 {
+		ready = append(ready, "ipv4")
+	}
+	if stats.Ready6 {
+		ready = append(ready, "ipv6")
+	}
 	return control.EgressStatus{
 		Enabled:   true,
 		Where:     translator.Where(),
+		Device:    device,
+		Ready:     ready,
+		Unready:   stats.Unready,
 		Source4:   cfg.Source4.String(),
 		Source6:   cfg.Source6.String(),
 		Return:    cfg.Return,

@@ -793,11 +793,14 @@ func (c *Config) validateAcrossCapabilities() error {
 	if slices.Contains(c.Babel().Cost.Extra.Nodes(), c.Node) {
 		return fmt.Errorf("config: cap.babel cost.extra node %s is this node", c.Node)
 	}
-	// nothing here creates the egress device, so no segment delivers to egress and an exit serves only what it advertises
+	egressSegments := c.Segments().Egress()
 	if c.Cap.Egress != nil {
-		if err := c.Cap.Egress.Serves(false); err != nil {
+		if err := c.Cap.Egress.Serves(len(egressSegments) > 0); err != nil {
 			return err
 		}
+	}
+	if err := c.validateEgressSegments(egressSegments); err != nil {
+		return err
 	}
 	if err := c.validateUnderlayMark(); err != nil {
 		return err
@@ -824,6 +827,114 @@ func (c *Config) validateAcrossCapabilities() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) validateEgressSegments(segments []srv6.Segment) error {
+	if len(segments) == 0 {
+		return nil
+	}
+	sid := segments[0].SID
+	switch {
+	case c.Cap.Egress == nil:
+		return fmt.Errorf("config: cap.segment local %s delivers to egress and cap.egress is absent, so nothing translates what leaves the egress device: add cap.egress, whose advertise may stay empty", sid)
+	case c.Cap.Table == nil:
+		return fmt.Errorf("config: cap.segment local %s delivers to egress and cap.table is absent, so no reconciler holds the iif rule that sends the egress device's traffic to the main table", sid)
+	}
+	device, err := netstack.EgressName(c.Link.TUN)
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	for _, segment := range segments {
+		own := netip.PrefixFrom(segment.SID.Addr, segment.SID.BitLen())
+		if slices.Contains(c.Routes().Announced(), own) {
+			return fmt.Errorf("config: cap.route announces %s, the egress segment's own route, which would announce it whether or not the segment is ready", own)
+		}
+	}
+	return c.validateEgressRule(sid, device)
+}
+
+// validateEgressRule refuses an egress segment until cap.table holds, in each
+// family, a rule sending what arrives on device to the main table, placed after
+// every rule into the mesh table selecting a destination and before every one
+// selecting a source. A steered packet keeps its sender's mesh source, so a
+// "from" rule ahead of it sends the packet to the mesh table and out of another
+// exit, while a "to" rule behind it would carry a packet for a mesh
+// destination out of the uplink. Rules another writer installs are the
+// operator's to order around, since this file cannot see them.
+func (c *Config) validateEgressRule(sid schema.Addr, device string) error {
+	table := c.Cap.Table.Normalized()
+	for _, family := range []kernel.Family{kernel.FamilyIPv4, kernel.FamilyIPv6} {
+		var after, before *kernel.Rule
+		var candidates []kernel.Rule
+		// kernel.Table.Normalized sorts the rules by priority, so the first "from" rule seen is the lowest and the last "to" rule seen is the highest
+		for _, rule := range table.Rules {
+			switch {
+			case rule.Family != family:
+			case rule.Table == table.ID && rule.From.IsValid():
+				if before == nil {
+					before = &rule
+				}
+			case rule.Table == table.ID && rule.To.IsValid():
+				after = &rule
+			case rule.IIF == device && rule.Table == schema.TableMain && !rule.To.IsValid() && !rule.From.IsValid() && rule.FWMark == 0:
+				candidates = append(candidates, rule)
+			}
+		}
+		lo, hi := uint32(0), uint32(math.MaxUint32)
+		if after != nil {
+			lo = after.Priority
+		}
+		if before != nil {
+			hi = before.Priority
+		}
+		place := egressRulePlace(lo, hi, after != nil, before != nil)
+		if len(candidates) == 0 && !egressRuleFits(lo, hi, before != nil) {
+			return fmt.Errorf("config: cap.segment local %s delivers to egress, and the rule sending what arrives on %s to the main table for %s goes after every \"to\" rule into table %s and before every \"from\" rule into it: %s", sid, device, family, table.ID, place)
+		}
+		if len(candidates) == 0 {
+			suggested := uint32(egressRulePriority)
+			if suggested <= lo || suggested >= hi {
+				suggested = lo + 1
+			}
+			return fmt.Errorf("config: cap.segment local %s delivers to egress, and cap.table rules holds no rule sending what arrives on %s to the main table for %s: add { iif = %q, table = \"main\", priority = %d, family = \"both\" }, after every \"to\" rule into table %s and before every \"from\" rule into it, or a steered packet follows the mesh table to another exit",
+				sid, device, family, device, suggested, table.ID)
+		}
+		for _, rule := range candidates {
+			switch {
+			case after != nil && rule.Priority <= after.Priority:
+				return fmt.Errorf("config: cap.table rules %s comes before the \"to\" rule at priority %d into table %s, which sends steered packets for mesh destinations out of the uplink: %s", rule, after.Priority, table.ID, place)
+			case before != nil && rule.Priority >= before.Priority:
+				return fmt.Errorf("config: cap.table rules %s comes after the \"from\" rule at priority %d into table %s, which takes steered packets to the mesh table first: %s", rule, before.Priority, table.ID, place)
+			}
+		}
+	}
+	return nil
+}
+
+// egressRuleFits reports a priority after lo and before hi, which a "from" rule below a "to" rule leaves none of
+// with no "to" rule lo is 0, which no rule may take, and with no "from" rule nothing caps the priority short of 4294967295
+func egressRuleFits(lo, hi uint32, capped bool) bool {
+	if !capped {
+		return lo < math.MaxUint32
+	}
+	return hi > lo && hi-lo >= 2
+}
+
+func egressRulePlace(lo, hi uint32, bounded, capped bool) string {
+	fits := egressRuleFits(lo, hi, capped)
+	switch {
+	case !fits && bounded && capped:
+		return fmt.Sprintf("no priority lies after %d and before %d, so move one of those rules", lo, hi)
+	case !fits && bounded:
+		return fmt.Sprintf("no priority lies after %d, so move that rule", lo)
+	case !fits:
+		return fmt.Sprintf("no priority lies before %d, so move that rule", hi)
+	case bounded && capped:
+		return fmt.Sprintf("move it between %d and %d", lo, hi)
+	case bounded:
+		return fmt.Sprintf("move it after %d", lo)
+	}
+	return fmt.Sprintf("move it before %d", hi)
 }
 
 // validateSteeredMTU refuses a link.mtu the longest cap.segment steer list takes under the 1280 bytes IPv6 requires of every link

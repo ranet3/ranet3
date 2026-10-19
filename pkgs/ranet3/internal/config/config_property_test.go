@@ -30,6 +30,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -438,13 +439,31 @@ func steering(inherited bool) hegel.Generator[srv6.Steer] {
 	})
 }
 
-// segments draws cap.segment.
+// allowPool is the prefixes a drawn egress segment's allow list is taken from,
+// each a length the loader takes
+var allowPool = []schema.Prefix{
+	schema.MustPrefix("3fff:a::/32"), schema.MustPrefix("2602:f590::/36"),
+	schema.MustPrefix("23.161.104.0/24"), schema.MustPrefix("10.0.0.0/8"),
+}
+
+// segments draws cap.segment, an End.DT46 entry half the time delivering to
+// egress through an allow list holding an IPv6 prefix and up to three more
 func segments() hegel.Generator[srv6.Segments] {
 	local := hegel.Composite(func(tc hegel.TestCase) srv6.Segment {
-		return srv6.Segment{
+		segment := srv6.Segment{
 			SID:      hegel.Draw(tc, segmentAddresses()),
 			Behavior: hegel.Draw(tc, hegel.SampledFrom([]srv6.Behavior{srv6.BehaviorEnd, srv6.BehaviorEndDT46})),
 		}
+		if segment.Behavior == srv6.BehaviorEndDT46 && hegel.Draw(tc, hegel.Booleans()) {
+			segment.Deliver = srv6.DeliverEgress
+			segment.Allow = []schema.Prefix{allowPool[0]}
+			for _, prefix := range hegel.Draw(tc, hegel.Lists(hegel.SampledFrom(allowPool[1:])).MaxSize(3)) {
+				if !slices.Contains(segment.Allow, prefix) {
+					segment.Allow = append(segment.Allow, prefix)
+				}
+			}
+		}
+		return segment
 	})
 	return hegel.Composite(func(tc hegel.TestCase) srv6.Segments {
 		var block srv6.Segments
@@ -820,6 +839,16 @@ func configurations() hegel.Generator[Config] {
 		if mark := c.Link.Underlay.Mark; mark != 0 && c.Cap.Table != nil && !c.Cap.Table.ReadsMark(mark) {
 			c.Cap.Table.Rules = append(c.Cap.Table.Rules, kernel.Rule{
 				FWMark:   mark,
+				Table:    schema.TableMain,
+				Priority: hegel.Draw(tc, edges[uint32](1, math.MaxUint32)),
+				Family:   kernel.FamilyBoth,
+			})
+		}
+		// an egress segment needs the rule sending its device to the main table, which a node with a table carries
+		if device, err := netstack.EgressName(c.Link.TUN); err == nil && c.Cap.Table != nil && c.Cap.Segment != nil &&
+			slices.ContainsFunc(c.Cap.Segment.Local, func(segment srv6.Segment) bool { return segment.Deliver == srv6.DeliverEgress }) {
+			c.Cap.Table.Rules = append(c.Cap.Table.Rules, kernel.Rule{
+				IIF:      device,
 				Table:    schema.TableMain,
 				Priority: hegel.Draw(tc, edges[uint32](1, math.MaxUint32)),
 				Family:   kernel.FamilyBoth,

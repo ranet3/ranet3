@@ -29,6 +29,11 @@
   # measured against a third machine rather than against this tree's own idea
   # of what it installed.
   egress ? false,
+  # egressSegment makes the client's exit an egress segment the gateway's own
+  # kernel steers into with seg6 encap, rather than a prefix it advertises, so
+  # a kernel leaf's bytes are checked against the exit that has to act on them.
+  # It goes with egress and segments, and only the SID is announced.
+  egressSegment ? false,
   # fqdn names both ends by an FQDN in place of a DN, strongSwan by its own id
   # and ranet3 by auth.aliases, so an ID of another type than a DN is checked
   # against the implementation it has to interoperate with.
@@ -63,6 +68,12 @@ let
   # can pick as the source for the mesh traffic that leaves through it, and
   # nothing announces this one, so the replies would have nowhere to go.
   clientBehind = "fd00:88::9";
+  # The egress segment's SID, announced by the client only while its egress
+  # device is ready, and the device named after the client's tun. The
+  # gateway's outside address is in neither prefix the allow list names.
+  clientEgressSID = "fd00:88::6:3";
+  clientEgressDevice = "${clientDevice}e";
+  gatewayOutside = "fd00:77::1";
   # The network behind the exit node, on the same link as the underlay but in
   # prefixes neither the gateway nor the test harness assigns, so the gateway
   # reaches it through the mesh or not at all. behind answers there and has no
@@ -120,6 +131,8 @@ testers.runNixOSTest {
       "ranet3-suites-${suites}${lib.optionalString responder "-responder"}"
     else if responder then
       "ranet3-responder${lib.optionalString fqdn "-fqdn"}"
+    else if egressSegment then
+      "ranet3-egress-segment"
     else if kernel then
       "ranet3-kernel"
     else if segments then
@@ -201,7 +214,8 @@ testers.runNixOSTest {
               # the tunnel prefix is a connected /64 on this link: an address
               # inside it that is not assigned locally is one the gateway
               # sends straight back to the client.
-              ++ pkgs.lib.optionals segments [ { Address = "${gatewayBehind}/128"; } ];
+              ++ pkgs.lib.optionals segments [ { Address = "${gatewayBehind}/128"; } ]
+              ++ pkgs.lib.optionals egressSegment [ { Address = "${gatewayOutside}/128"; } ];
             };
           };
         };
@@ -529,7 +543,16 @@ testers.runNixOSTest {
                     sid = clientSID;
                     behavior = "End.DT46";
                   }
-                ];
+                ]
+                ++ pkgs.lib.optional egressSegment {
+                  sid = clientEgressSID;
+                  behavior = "End.DT46";
+                  deliver = "egress";
+                  allow = [
+                    "fd00:99::/64"
+                    "10.99.0.0/24"
+                  ];
+                };
                 steer = [
                   {
                     from = "${clientTunnel}/128";
@@ -538,8 +561,10 @@ testers.runNixOSTest {
                   }
                 ];
               };
+              # an exit for an egress segment alone advertises nothing, so the
+              # gateway reaches the far side through the segment or not at all
               egress = pkgs.lib.mkIf egress {
-                advertise = [
+                advertise = pkgs.lib.optionals (!egressSegment) [
                   exitNetV4
                   exitNetV6
                 ];
@@ -570,7 +595,15 @@ testers.runNixOSTest {
                       table = kernelTable;
                       priority = 100;
                     }
-                  ];
+                  ]
+                  # what leaves the egress device follows main, after the to
+                  # rules so a mesh destination still goes to the mesh
+                  ++ pkgs.lib.optional egressSegment {
+                    iif = clientEgressDevice;
+                    table = "main";
+                    priority = 120;
+                    family = "both";
+                  };
                 }
               );
             };
@@ -872,6 +905,101 @@ testers.runNixOSTest {
             print(client.execute("nft list ruleset")[1])
             print(client.execute("ip -4 rule show")[1])
             print(client.execute(f"ip -4 route show table {kernel_table}")[1])
+            print(gateway.execute("birdc show route")[1])
+      '';
+
+      # The gateway is a kernel leaf: its own seg6 encap steers a ping into the
+      # client's egress segment, and the far side sees the exit's address. The
+      # IPv6 arm only, since the root test in internal/client carries IPv4
+      # with synthetic frames. The SID's /128 is the exit's liveness on the
+      # gateway's own table.
+      egressSegmentScript = ''
+        import json
+
+        def status():
+            return json.loads(client.succeed("ranet3 status --json"))
+
+        def counters():
+            return status()["segment_counters"]
+
+        try:
+            gateway.wait_for_unit("systemd-networkd-wait-online.service")
+            gateway.wait_for_unit("strongswan-swanctl.service")
+            gateway.wait_for_unit("bird.service")
+            behind.wait_until_succeeds("ip addr show dev eth1 | grep -qF ${behindV6}", timeout=timeout)
+            client.wait_for_unit("ranet3.service")
+            client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
+
+            # the device exists with no address, and the SID reaches the gateway once both families are ready
+            client.wait_until_succeeds(
+                "ranet3 status --json | jq -e '.egress.ready == [\"ipv4\", \"ipv6\"]'", timeout=timeout)
+            device = client.succeed("ip -d addr show dev ${clientEgressDevice}")
+            print(device)
+            assert "inet" not in device, f"the egress device carries an address:\n{device}"
+            gateway.wait_until_succeeds("ip -6 route show ${clientEgressSID} | grep -q swan0", timeout=timeout)
+            print(client.execute("journalctl -u ranet3.service --no-pager | grep -F 'egress device'")[1])
+
+            # the kernel builds the header from the address the tunnel source names, which the allow list covers
+            gateway.succeed("ip sr tunsrc set ${gatewayTunnel}")
+            gateway.succeed(
+                "ip -6 route replace ${behindV6}/128 encap seg6 mode encap segs ${clientEgressSID} dev swan0")
+            print(gateway.succeed("ip -6 route show ${behindV6}/128"))
+
+            # behind has no route to the tunnel prefixes, so a reply is a source the exit translated and put back
+            before = counters()
+            gateway.wait_until_succeeds("ping -c 1 -W 2 -I ${gatewayTunnel} ${behindV6}", timeout=timeout)
+            behind.succeed("rm -f /tmp/segment.pcap /tmp/segment.log")
+            behind.execute("tcpdump -Uni eth1 -c 3 -w /tmp/segment.pcap 'icmp6 and ip6[40] = 128' >/tmp/segment.log 2>&1 &")
+            behind.wait_until_succeeds("grep -q 'listening on' /tmp/segment.log", timeout=timeout)
+            print(gateway.succeed("ping -c 3 -i 0.3 -W 2 -I ${gatewayTunnel} ${behindV6}"))
+            behind.wait_until_fails("pgrep -x tcpdump", timeout=timeout)
+            capture = behind.succeed("tcpdump -nr /tmp/segment.pcap")
+            print(capture)
+            assert "${exitV6} > ${behindV6}" in capture, f"the far side did not see the exit's own address:\n{capture}"
+            assert "${gatewayTunnel}" not in capture, f"the gateway's address reached the far side untranslated:\n{capture}"
+            after = counters()
+            print(json.dumps(after, indent=2))
+            assert after["egressed"] >= before["egressed"] + 4, f"the steered pings were not egressed: {before} then {after}"
+            assert after["refused"] == before["refused"], f"an allowed source was refused: {after}"
+
+            # an inner source outside the allow list is refused and answered with nothing
+            before = counters()
+            gateway.fail("ping -c 3 -i 0.3 -W 1 -I ${gatewayOutside} ${behindV6}")
+            after = counters()
+            assert after["refused"] >= before["refused"] + 3, f"a source outside the list was not refused: {before} then {after}"
+            assert after["egressed"] == before["egressed"], f"a source outside the list was egressed: {after}"
+
+            metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics")
+            for want in ['ranet3_egress_device_ready{family="ipv4"} 1', 'ranet3_egress_device_ready{family="ipv6"} 1']:
+                assert want in metrics, f"the scrape does not carry {want}:\n{metrics}"
+
+            # a host forwarding one family serves it, so IPv6 forwarding off leaves the SID announced
+            client.succeed("sysctl -w net.ipv6.conf.all.forwarding=0")
+            client.wait_until_succeeds("ranet3 status --json | jq -e '.egress.ready == [\"ipv4\"]'", timeout=timeout)
+            gateway.succeed("ip -6 route show ${clientEgressSID} | grep -q swan0")
+            client.succeed("sysctl -w net.ipv6.conf.all.forwarding=1")
+            client.wait_until_succeeds("ranet3 status --json | jq -e '.egress.ready | length == 2'", timeout=timeout)
+
+            # a family the host forwards and the device cannot pass withdraws the SID, and putting it right brings it back
+            client.succeed("sysctl -w net.ipv4.conf.all.rp_filter=2")
+            client.wait_until_succeeds("ranet3 status --json | jq -e '.egress.ready == [\"ipv6\"]'", timeout=timeout)
+            print(status()["egress"])
+            gateway.wait_until_fails("ip -6 route show ${clientEgressSID} | grep -q swan0", timeout=timeout)
+            client.succeed("sysctl -w net.ipv4.conf.all.rp_filter=0")
+            gateway.wait_until_succeeds("ip -6 route show ${clientEgressSID} | grep -q swan0", timeout=timeout)
+            gateway.wait_until_succeeds("ping -c 1 -W 2 -I ${gatewayTunnel} ${behindV6}", timeout=timeout)
+
+            # shutdown takes the device and the tables with it
+            client.succeed("systemctl stop ranet3.service")
+            assert client.succeed("systemctl show -p Result --value ranet3.service").strip() == "success"
+            client.fail("ip link show ${clientEgressDevice}")
+            left = client.succeed("nft list tables").strip()
+            assert left == "", f"shutdown left tables behind: {left}"
+            client.succeed("journalctl -u ranet3.service --no-pager | grep -F 'egress device withdrawn'")
+        finally:
+            print(client.execute("ranet3 status")[1])
+            print(client.execute("nft list ruleset")[1])
+            print(client.execute("ip -6 rule show; ip -4 rule show")[1])
             print(gateway.execute("birdc show route")[1])
       '';
 
@@ -1181,6 +1309,8 @@ testers.runNixOSTest {
         suitesApart
       else if responder then
         responderScript
+      else if egressSegment then
+        egressSegmentScript
       else if segments then
         segmentRouted
       else if egress then

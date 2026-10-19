@@ -227,6 +227,20 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 		}
 	}
 
+	if strings.Contains(out.String(), "ranet3_egress_device_ready") {
+		t.Errorf("a node with no egress device wrote its readiness:\n%s", out.String())
+	}
+	c.SetEgressStatus(func() control.EgressStatus {
+		return control.EgressStatus{Enabled: true, Device: "ranet3e", Ready: []string{"ipv6"}}
+	})
+	var device strings.Builder
+	c.renderEgress(&device)
+	for _, want := range []string{`ranet3_egress_device_ready{family="ipv4"} 0`, `ranet3_egress_device_ready{family="ipv6"} 1`} {
+		if !strings.Contains(device.String(), want) {
+			t.Errorf("the scrape of a node with an egress device does not carry %q:\n%s", want, device.String())
+		}
+	}
+
 	// A node that carries nothing for anybody writes none of it, rather than
 	// zeroes that read as an exit node translating nothing.
 	c.SetEgressStatus(func() control.EgressStatus { return control.EgressStatus{} })

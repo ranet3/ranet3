@@ -279,25 +279,33 @@ func sumTCP(raw []byte) {
 // a read waits captureWait for one
 func captureInbound(t *testing.T, name string) int {
 	t.Helper()
+	fd, err := openCapture(name, captureWait)
+	if err != nil {
+		t.Fatalf("capture %s: %v", name, err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fd) })
+	return fd
+}
+
+// openCapture opens a packet socket reading each packet crossing the link name in the calling thread's namespace, each read waiting wait
+func openCapture(name string, wait time.Duration) (int, error) {
 	link, err := net.InterfaceByName(name)
 	if err != nil {
-		t.Fatalf("look up %s: %v", name, err)
+		return -1, err
 	}
 	// every protocol, in the network byte order packet(7) takes it in
 	all := binary.NativeEndian.Uint16(binary.BigEndian.AppendUint16(nil, unix.ETH_P_ALL))
 	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, int(all))
 	if err != nil {
-		t.Fatalf("open a packet socket: %v", err)
+		return -1, err
 	}
-	t.Cleanup(func() { _ = unix.Close(fd) })
-	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: all, Ifindex: link.Index}); err != nil {
-		t.Fatalf("bind the packet socket to %s: %v", name, err)
+	timeout := unix.NsecToTimeval(wait.Nanoseconds())
+	if err := errors.Join(unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: all, Ifindex: link.Index}),
+		unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout)); err != nil {
+		_ = unix.Close(fd)
+		return -1, err
 	}
-	wait := unix.NsecToTimeval(captureWait.Nanoseconds())
-	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &wait); err != nil {
-		t.Fatalf("bound how long a read of the capture waits: %v", err)
-	}
-	return fd
+	return fd, nil
 }
 
 // linkMTU is the MTU the kernel holds for the link name

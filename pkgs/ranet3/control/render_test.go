@@ -152,6 +152,19 @@ func TestStatusSegmentLineRendersAsTheGoldenFile(t *testing.T) {
 	golden(t, "status-segments.txt", []byte(out.String()))
 }
 
+// the egress line names the egress device and the families it carries, and
+// says the ones it does not carry yet in the voice of a withheld prefix
+func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
+	var out strings.Builder
+	for _, ready := range [][]string{nil, {"ipv6"}, {"ipv4", "ipv6"}} {
+		out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3, ip6 ranet3", Device: "ranet3e", Ready: ready}) + "\n")
+	}
+	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3, ip6 ranet3", Device: "ranet3e",
+		Unready: "the egress device is gone, the kernel lists no link named ranet3e"}) + "\n")
+	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3", Installed: 1}) + "\n")
+	golden(t, "status-egress.txt", []byte(out.String()))
+}
+
 // Go's own String gives "1h3m0.5762s" for an uptime, where the digits make two
 // rows harder to compare and carry nothing.
 func TestShortDurationRoundsToWhatIsReadable(t *testing.T) {

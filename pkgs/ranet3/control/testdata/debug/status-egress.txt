@@ -1,0 +1,5 @@
+nftables ip ranet3, ip6 ranet3, 0 rules, 0 flows, egress device ranet3e not ready for ipv4 ipv6 until its rule is installed and the kernel forwards it, no pass yet
+nftables ip ranet3, ip6 ranet3, 0 rules, 0 flows, egress device ranet3e ready for ipv6, not ready for ipv4 until its rule is installed and the kernel forwards it, no pass yet
+nftables ip ranet3, ip6 ranet3, 0 rules, 0 flows, egress device ranet3e ready for ipv4 ipv6, no pass yet
+nftables ip ranet3, ip6 ranet3, 0 rules, 0 flows, egress device ranet3e not ready for ipv4 ipv6, the egress device is gone, the kernel lists no link named ranet3e, no pass yet
+nftables ip ranet3, 1 rules, 0 flows, no pass yet
