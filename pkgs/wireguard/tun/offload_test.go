@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -329,6 +330,54 @@ func TestGSOSplitShortPacketWithoutCsum(t *testing.T) {
 	got := slab[packets[0].Offset : packets[0].Offset+packets[0].Size]
 	if !slices.Equal(got, in) {
 		t.Fatalf("packet = %x, want %x", got, in)
+	}
+}
+
+// TestGSOSplitRefusalsAreInvalidFrames verifies that every input GSOSplit
+// refuses is reported as ErrInvalidFrame, and that a slab too small is not.
+func TestGSOSplitRefusalsAreInvalidFrames(t *testing.T) {
+	packet := func(version byte, length int) []byte {
+		in := make([]byte, length)
+		in[0] = version << 4
+		return in
+	}
+	tests := []struct {
+		name    string
+		in      []byte
+		options GSOOptions
+		want    string
+	}{
+		{"zero GSOSize", packet(4, 300), GSOOptions{GSOType: GSOTCPv4}, "zero GSOSize"},
+		{"checksum past end", packet(4, 30), GSOOptions{NeedsCsum: true, CsumStart: 20, CsumOffset: 16}, "end of checksum offset"},
+		{"shorter than HdrLen", packet(4, 30), GSOOptions{HdrLen: 40}, "< GSO HdrLen"},
+		{"HdrLen before CsumStart", packet(4, 300), GSOOptions{GSOType: GSOTCPv4, GSOSize: 100, HdrLen: 10, CsumStart: 20, CsumOffset: 16}, "< GSO CsumStart"},
+		{"ipv4 as TCPv6", packet(4, 300), GSOOptions{GSOType: GSOTCPv6, GSOSize: 100, HdrLen: 60, CsumStart: 40, CsumOffset: 16}, "GSO type: GSOTCPv6"},
+		{"short ipv4", packet(4, 15), GSOOptions{GSOType: GSOUDPL4, GSOSize: 1, HdrLen: 8, CsumOffset: 6}, "minimum ipv4 header size"},
+		{"ipv6 as TCPv4", packet(6, 300), GSOOptions{GSOType: GSOTCPv4, GSOSize: 100, HdrLen: 40, CsumStart: 20, CsumOffset: 16}, "GSO type: GSOTCPv4"},
+		{"short ipv6", packet(6, 30), GSOOptions{GSOType: GSOUDPL4, GSOSize: 1, HdrLen: 8, CsumOffset: 6}, "minimum ipv6 header size"},
+		{"ip version 5", packet(5, 300), GSOOptions{GSOType: GSOUDPL4, GSOSize: 100, HdrLen: 28, CsumStart: 20, CsumOffset: 6}, "invalid ip header version"},
+		{"short tcp", packet(4, 39), GSOOptions{GSOType: GSOTCPv4, GSOSize: 1, HdrLen: 30, CsumStart: 20, CsumOffset: 16}, "minimum TCP header size"},
+		{"ipv4 header past HdrLen", packet(4, 30), GSOOptions{GSOType: GSOUDPL4, GSOSize: 1, HdrLen: 8, CsumOffset: 6}, "IPv4 header exceeds"},
+		{"ipv6 header past HdrLen", packet(6, 60), GSOOptions{GSOType: GSOUDPL4, GSOSize: 1, HdrLen: 8, CsumOffset: 6}, "IPv6 header exceeds"},
+		{"tcp header past HdrLen", packet(4, 300), GSOOptions{GSOType: GSOTCPv4, GSOSize: 100, HdrLen: 30, CsumStart: 20, CsumOffset: 16}, "TCP header at offset"},
+		{"udp header past HdrLen", packet(4, 300), GSOOptions{GSOType: GSOUDPL4, GSOSize: 100, HdrLen: 24, CsumStart: 20, CsumOffset: 6}, "UDP header at offset"},
+		{"checksum past HdrLen", packet(4, 300), GSOOptions{GSOType: GSOUDPL4, GSOSize: 100, HdrLen: 28, CsumStart: 20, CsumOffset: 30}, "checksum field at offset"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			n, err := GSOSplit(tt.in, tt.options, make([]byte, 1024), make([]ReadPacket, 4), ReadPacketSpacing)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("GSOSplit = %d, %v, want an error containing %q", n, err, tt.want)
+			}
+			if !errors.Is(err, ErrInvalidFrame) {
+				t.Errorf("GSOSplit error %v is not ErrInvalidFrame", err)
+			}
+		})
+	}
+
+	_, err := GSOSplit(packet(4, 300), GSOOptions{}, make([]byte, 1024), nil, ReadPacketSpacing)
+	if !errors.Is(err, ErrTooManySegments) || errors.Is(err, ErrInvalidFrame) {
+		t.Errorf("GSOSplit with no packets = %v, want ErrTooManySegments alone", err)
 	}
 }
 

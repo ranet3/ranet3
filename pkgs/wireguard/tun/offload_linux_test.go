@@ -6,6 +6,7 @@
 package tun
 
 import (
+	"errors"
 	"net/netip"
 	"slices"
 	"testing"
@@ -267,6 +268,37 @@ func Test_handleVirtioRead(t *testing.T) {
 						i, packets[i].Offset, wantOffset,
 					)
 				}
+			}
+		})
+	}
+}
+
+func Test_handleVirtioReadRefusalsAreInvalidFrames(t *testing.T) {
+	frame := func(hdr virtioNetHdr, pkt []byte) []byte {
+		b := make([]byte, virtioNetHdrLen+len(pkt))
+		hdr.encode(b)
+		copy(b[virtioNetHdrLen:], pkt)
+		return b
+	}
+	badTCPHeaderLen := make([]byte, 60)
+	badTCPHeaderLen[20+12] = 3 << 4
+	tests := []struct {
+		name string
+		in   []byte
+	}{
+		{"short header", make([]byte, virtioNetHdrLen-1)},
+		{"unsupported gsoType", frame(virtioNetHdr{gsoType: unix.VIRTIO_NET_HDR_GSO_UDP}, make([]byte, 60))},
+		{"packet too short", frame(virtioNetHdr{gsoType: unix.VIRTIO_NET_HDR_GSO_TCPV4, csumStart: 20}, make([]byte, 32))},
+		{"tcp header len", frame(virtioNetHdr{gsoType: unix.VIRTIO_NET_HDR_GSO_TCPV4, csumStart: 20}, badTCPHeaderLen)},
+		{"gso split", frame(virtioNetHdr{gsoType: unix.VIRTIO_NET_HDR_GSO_UDP_L4, csumStart: 20, csumOffset: 6}, make([]byte, 60))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := make([]byte, 2*(1<<16-1))
+			packets := make([]ReadPacket, conn.IdealBatchSize)
+			n, err := handleVirtioRead(tt.in, out, packets)
+			if !errors.Is(err, ErrInvalidFrame) {
+				t.Fatalf("handleVirtioRead = %d, %v, want ErrInvalidFrame", n, err)
 			}
 		})
 	}

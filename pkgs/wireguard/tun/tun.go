@@ -42,7 +42,9 @@ type Reader interface {
 	// Callers must provide a slab of at least 2*[ReadPacketSpacing] bytes.
 	//
 	// Read returns [ErrTooManySegments] if packets or slab cannot accommodate
-	// all packets produced by the read.
+	// all packets produced by the read. It returns 0 and an error wrapping
+	// [ErrInvalidFrame] if the device produced a frame that cannot be decoded
+	// into packets.
 	Read(slab []byte, packets []ReadPacket) (n int, err error)
 }
 
