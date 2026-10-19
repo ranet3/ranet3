@@ -170,17 +170,14 @@ func (c *Client) renderEgress(w io.Writer) {
 	fmt.Fprintf(w, "ranet3_egress_pass_failed %d\n", boolValue(egress.Err != ""))
 }
 
-// renderSegmentCounters writes the segment routing half. Nothing exported it
-// before, and on a fleet node there was nothing to export: the behaviors were
-// seg6local routes and the kernel counted them. Here the dataplane is this
-// process, so a scrape is the only place from which a steered path that
-// stopped working can be seen.
+// The dataplane is this process rather than the kernel, so a scrape is the
+// only place from which a steered path that stopped working can be seen.
 //
 // What this node did for a peer and what it did with its own traffic are
-// separate series, because they fail for different reasons: a rising dropped
-// means peers are sending headers this node will not act on, and a rising
-// steer_dropped means this node's own policy is pointing somewhere the mesh
-// cannot reach.
+// separate series, because they fail for different reasons. A rising dropped
+// means peers are sending packets this node will not act on, or the egress
+// device is refusing writes, and a rising steer_dropped means this node's own
+// policy is pointing somewhere the mesh cannot reach.
 func (c *Client) renderSegmentCounters(w io.Writer) {
 	segments := c.Mesh.SegmentCounters()
 	fmt.Fprint(w, "# HELP ranet3_segments_forwarded_total Packets an End behavior sent on to their next segment.\n")
@@ -195,6 +192,18 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_segments_answered_total ICMP errors sent for refused packets, which is the half of the dropped ones whose sender was told why.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_answered_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_answered_total %d\n", segments.Answered)
+	fmt.Fprint(w, "# HELP ranet3_segments_egressed_total Packets an egress segment handed to the egress device.\n")
+	fmt.Fprint(w, "# TYPE ranet3_segments_egressed_total counter\n")
+	fmt.Fprintf(w, "ranet3_segments_egressed_total %d\n", segments.Egressed)
+	fmt.Fprint(w, "# HELP ranet3_segments_refused_total Packets an egress segment's allow list refused, which are among the dropped ones and never answered.\n")
+	fmt.Fprint(w, "# TYPE ranet3_segments_refused_total counter\n")
+	fmt.Fprintf(w, "ranet3_segments_refused_total %d\n", segments.Refused)
+	fmt.Fprint(w, "# HELP ranet3_segments_not_ready_total Packets an egress segment let through and no egress device took, because none was installed or it closed under the write.\n")
+	fmt.Fprint(w, "# TYPE ranet3_segments_not_ready_total counter\n")
+	fmt.Fprintf(w, "ranet3_segments_not_ready_total %d\n", segments.NotReady)
+	fmt.Fprint(w, "# HELP ranet3_segments_drained_total Packets read off the egress device and thrown away, each one a route into the wrong device.\n")
+	fmt.Fprint(w, "# TYPE ranet3_segments_drained_total counter\n")
+	fmt.Fprintf(w, "ranet3_segments_drained_total %d\n", segments.Drained)
 	fmt.Fprint(w, "# HELP ranet3_steered_total This node's own packets a steering policy encapsulated.\n")
 	fmt.Fprint(w, "# TYPE ranet3_steered_total counter\n")
 	fmt.Fprintf(w, "ranet3_steered_total %d\n", segments.Steered)

@@ -141,9 +141,15 @@ func readStream(listener *net.TCPListener, total int) error {
 	return nil
 }
 
-// tunReceived is how many packets the kernel counts the link name as having received, one for each packet a write put into the tun
-// read in the calling thread's own namespace, where the mesh opened the tun
-func tunReceived(t *testing.T, name string) uint64 {
+// the fields of a link's counters holding the packets it received, one for each packet a write put into a tun, and sent, one for each frame read off it
+// eight receive counters come first, bytes and then packets, and the transmit counters follow in the same order
+const (
+	receivedPackets = 1
+	sentPackets     = 9
+)
+
+// tunPackets is the field of the link name's counters, read in the calling thread's own namespace, where the test opened the tun
+func tunPackets(t *testing.T, name string, field int) uint64 {
 	t.Helper()
 	dev, err := os.ReadFile("/proc/thread-self/net/dev")
 	if err != nil {
@@ -151,11 +157,10 @@ func tunReceived(t *testing.T, name string) uint64 {
 	}
 	for line := range strings.Lines(string(dev)) {
 		link, counters, ok := strings.Cut(line, ":")
-		// the receive counters come first, bytes and then packets
-		if fields := strings.Fields(counters); ok && strings.TrimSpace(link) == name && len(fields) > 1 {
-			packets, err := strconv.ParseUint(fields[1], 10, 64)
+		if fields := strings.Fields(counters); ok && strings.TrimSpace(link) == name && len(fields) > field {
+			packets, err := strconv.ParseUint(fields[field], 10, 64)
 			if err != nil {
-				t.Fatalf("read the packets %s received off %q: %v", name, line, err)
+				t.Fatalf("read field %d of %s off %q: %v", field, name, line, err)
 			}
 			return packets
 		}
@@ -201,14 +206,14 @@ func TestTUNCoalescesFramesIntoAKernelSocket(t *testing.T) {
 	stream.mu.Unlock()
 	m.DeliverInboundBatch(framed(stream.segment(iss+1, ack, ackFlag, nil, nil)), DefaultMTU)
 
-	before := tunReceived(t, m.Name)
+	before := tunPackets(t, m.Name, receivedPackets)
 	for burst := range groBursts {
 		offset := burst * groSegments * groMSS
 		m.DeliverInboundBatch(stream.burst(iss+1, ack, offset), DefaultMTU)
 		want := uint32(iss + 1 + offset + groSegments*groMSS)
 		waitUntil(t, fmt.Sprintf("burst %d to be acknowledged", burst), func() bool { got, _ := stream.acknowledged(); return got == want })
 	}
-	written := tunReceived(t, m.Name) - before
+	written := tunPackets(t, m.Name, receivedPackets) - before
 	t.Logf("%d segments went into the tun as %d packets", groBursts*groSegments, written)
 	if written >= groBursts*groSegments {
 		t.Errorf("%d segments went into the tun as %d packets, so its GRO coalesced none of them", groBursts*groSegments, written)
@@ -251,7 +256,7 @@ func TestTUNWriteAllocatesNothing(t *testing.T) {
 		t.Fatalf("open the mesh: %v", err)
 	}
 	t.Cleanup(m.Close)
-	before := tunReceived(t, m.Name)
+	before := tunPackets(t, m.Name, receivedPackets)
 	for _, write := range laneWrites() {
 		// GRO rewrites the packets it coalesces, so each write is of a fresh copy laid out as the frames are
 		work := framed(unframed(write.frames)...)
@@ -268,7 +273,7 @@ func TestTUNWriteAllocatesNothing(t *testing.T) {
 			t.Errorf("a lane's write of %s allocated %v times, want none", write.name, allocations)
 		}
 	}
-	if tunReceived(t, m.Name) == before {
+	if tunPackets(t, m.Name, receivedPackets) == before {
 		t.Fatal("the writes put no packet into the tun, so this proves nothing")
 	}
 }

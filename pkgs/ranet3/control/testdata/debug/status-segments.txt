@@ -1,0 +1,40 @@
+Node        example/gateway
+Version     v0.1.0
+Uptime      26h0m0s
+Port        13000
+Endpoints   0/ip4 1/ip6
+TUN         ranet3 MTU 1400 queues 4
+Role        initiator, responder, transit
+Forwarding  IPv4 on IPv6 on
+Registry    /etc/ranet3/registry.json, 12 nodes in 1 organizations
+Kernel      table 100, 0 installed, last pass 3 minutes ago
+Egress      off, this node carries no traffic for others
+Dialers     0 running
+Sessions    0
+Neighbors   0, 0 alive
+Routes      0 prefixes, 0 selected, 1 originated
+Originate   2001:db8:a::/48
+Segments    3fff:1:69c:8c6::1 End.DT46, 3fff:1:69c:8c6::2 End (7 forwarded, 5 delivered, 4 dropped)
+Steering    off
+ESP         0 in, 0 dropped, 0 refused
+
+Node        example/gateway
+Version     v0.1.0
+Uptime      26h0m0s
+Port        13000
+Endpoints   0/ip4 1/ip6
+TUN         ranet3 MTU 1400 queues 4
+Role        initiator, responder, transit
+Forwarding  IPv4 on IPv6 on
+Registry    /etc/ranet3/registry.json, 12 nodes in 1 organizations
+Kernel      table 100, 0 installed, last pass 3 minutes ago
+Egress      off, this node carries no traffic for others
+Dialers     0 running
+Sessions    0
+Neighbors   0, 0 alive
+Routes      0 prefixes, 0 selected, 1 originated
+Originate   2001:db8:a::/48
+Segments    3fff:1:69c:8c6::1 End.DT46, 3fff:1:69c:8c6::2 End (7 forwarded, 5 delivered, 4 dropped, 1 answered, 33 egressed, 2 refused, 3 not ready, 6 drained)
+Steering    off
+ESP         0 in, 0 dropped, 0 refused
+

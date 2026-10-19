@@ -74,6 +74,7 @@ type Mesh struct {
 	// everything this file does not touch stays in segments.go with the code
 	// that does.
 	segmentCounters
+	egressSlot
 }
 
 // outboundBatch owns the TUN buffers from one read until a crypto worker has
@@ -740,6 +741,7 @@ func hashBytes(raw []byte) uint64 {
 func (m *Mesh) Close() {
 	m.closeOnce.Do(func() {
 		close(m.closed)
+		m.SetEgress(nil)
 		if m.dev != nil {
 			_ = m.dev.Close()
 		}

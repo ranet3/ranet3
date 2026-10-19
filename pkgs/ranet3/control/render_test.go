@@ -134,6 +134,24 @@ func TestStatusSaysTheRoleInWords(t *testing.T) {
 	}
 }
 
+// the segment line always names forwarded, delivered and dropped
+// and names answered, egressed, refused, not ready and drained only while each is above 0
+func TestStatusSegmentLineRendersAsTheGoldenFile(t *testing.T) {
+	status := downStatus()
+	status.Down = nil
+	status.Segments = []string{"3fff:1:69c:8c6::1 End.DT46", "3fff:1:69c:8c6::2 End"}
+	var out strings.Builder
+	for _, counters := range []SegmentCounters{
+		{Forwarded: 7, Delivered: 5, Dropped: 4},
+		{Forwarded: 7, Delivered: 5, Dropped: 4, Answered: 1, Egressed: 33, Refused: 2, NotReady: 3, Drained: 6},
+	} {
+		status.SegmentCounters = counters
+		RenderStatus(&out, status)
+		out.WriteString("\n")
+	}
+	golden(t, "status-segments.txt", []byte(out.String()))
+}
+
 // Go's own String gives "1h3m0.5762s" for an uptime, where the digits make two
 // rows harder to compare and carry nothing.
 func TestShortDurationRoundsToWhatIsReadable(t *testing.T) {
