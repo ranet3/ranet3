@@ -378,7 +378,7 @@ func (s *Session) lists() Suites { return current(s.suites) }
 // it never blocks
 // an SA holding a cipher or a group they left out is rekeyed after a delay drawn within the rekey jitter
 // and no later than the rekey its schedule already holds
-// a Child SA whose IKE SA they left out as well draws its delay once that IKE SA's rekey has ended
+// a Child SA whose IKE SA they left out as well draws its delay once that IKE SA's rekey has ended, unless an earlier check already drew one
 // an IKE SA whose PRF they left out is deleted for a new handshake
 func (s *Session) SuitesChanged() {
 	select {
