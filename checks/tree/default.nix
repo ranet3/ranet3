@@ -4,6 +4,8 @@
 {
   deno,
   go,
+  inputs,
+  lib,
   nixfmt,
   reuse,
   runCommand,
@@ -11,6 +13,18 @@
   writableTmpDirAsHomeHook,
 }:
 
+let
+  prefix = "checks.aarch64-linux.";
+  checks = inputs.self.checks.aarch64-linux;
+  kvm = lib.filter (name: lib.elem "kvm" ((checks.${name}.out).requiredSystemFeatures or [ ])) (
+    lib.attrNames checks
+  );
+  exclude = (lib.importTOML ../../atelier.toml).exclude;
+  missing = lib.subtractLists exclude (map (name: prefix + name) kvm);
+  stale = lib.filter (
+    line: lib.hasPrefix prefix line && !(checks ? ${lib.removePrefix prefix line})
+  ) exclude;
+in
 runCommand "ranet3-tree"
   {
     nativeBuildInputs = [
@@ -45,6 +59,21 @@ runCommand "ranet3-tree"
     fi
     nixfmt --check $files
     taplo format --check atelier.toml REUSE.toml pkgs/ranet3/REUSE.toml pkgs/ranet3/examples/*.toml pkgs/ranet3/gomod2nix.toml pkgs/wireguard/REUSE.toml pkgs/wireguard/gomod2nix.toml
+
+    if [ ${toString (lib.length kvm)} -eq 0 ]; then
+      echo "the tree check found no aarch64-linux check that needs kvm" >&2
+      exit 1
+    fi
+    excluded=1
+    for line in ${lib.escapeShellArgs missing}; do
+      echo "atelier.toml does not exclude $line, which needs kvm" >&2
+      excluded=0
+    done
+    for line in ${lib.escapeShellArgs stale}; do
+      echo "atelier.toml excludes $line, which no check carries" >&2
+      excluded=0
+    done
+    test "$excluded" = 1
 
     awk '
       $1 == "require" && $2 == "(" { block = 1; next }
