@@ -151,7 +151,7 @@ let
     none = [ "x25519" ];
   };
   # strongSwan prefixes an additional key exchange's keyword with ke1_ for ADDKE1, and ke1_none makes it optional
-  # "meet" esp_proposals take an ESP rekey with no key exchange at all, which is the one ranet3 sends
+  # "meet" esp_proposals take an ESP rekey with no key exchange at all, which is the one ranet3 sends, and strongSwan's own runs x25519 and ML-KEM-768
   # a variant missing here leaves strongSwan its defaults
   mlkemSwan = {
     meet = {
@@ -337,8 +337,7 @@ testers.runNixOSTest {
                 esp_proposals = pkgs.lib.mkIf (swan ? esp) swan.esp;
                 dpd_action = "restart";
                 start_action = "none";
-                # ranet3 dials nobody in "meet" with responder, so strongSwan dials again once a Delete took its IKE SA
-                close_action = if mlkem == "meet" && responder then "start" else "none";
+                close_action = "none";
               };
             };
           };
@@ -1438,18 +1437,24 @@ testers.runNixOSTest {
 
         swan_log = "journalctl -u strongswan-swanctl.service --no-pager"
         ranet3_log = "journalctl -u ranet3.service --no-pager"
-        # each wait for a handshake or a rekey outlasts the IKE SA rekey, due the margin before the ike lifetime, and the Delete and handshake that follow it
-        handshake_timeout = dt.timedelta(seconds=60)
+        # each wait for a rekey outlasts the ike lifetime, by which ranet3's own IKE SA rekey, due the margin before it, has replaced the SA, and strongSwan's retry of a rekey ranet3 answered TEMPORARY_FAILURE
+        rekey_timeout = dt.timedelta(seconds=60)
+        # the IKE SA both ends run where they meet on ML-KEM-768
+        hybrid_suite = "aes256gcm/sha384/x25519+mlkem768"
         # strongSwan's lines of the exchanges of one handshake and of what it chose and dropped
         swan_lines = "IKE_SA_INIT|IKE_INTERMEDIATE|IKE_AUTH|CREATE_CHILD_SA|INFORMATIONAL|proposal|DELETE|restarting|initiating|established|rekeyed"
 
         def swan_count(line):
             return int(gateway.succeed(f"{swan_log} | grep -cF '{line}' || true").strip())
 
-        def connected(n):
-            """ranet3 has completed n handshakes"""
-            client.wait_until_succeeds(
-                f"test $({ranet3_log} | grep -cF ': connected (SPI') -ge {n}", timeout=handshake_timeout)
+        def connected():
+            """ranet3 has completed a handshake, within the wait the other scripts give theirs"""
+            client.wait_until_succeeds(f"{ranet3_log} | grep -F ': connected (SPI'", timeout=timeout)
+
+        def connected_once():
+            """ranet3 has completed one handshake and no other, every rekey keeping the session it made"""
+            handshakes = int(client.succeed(f"{ranet3_log} | grep -cF ': connected (SPI' || true").strip())
+            assert handshakes == 1, f"ranet3 completed {handshakes} handshakes, want 1"
 
         def session_runs(want):
             """ranet3's one session holds each field of want, read again while an SA is being replaced"""
@@ -1479,10 +1484,10 @@ testers.runNixOSTest {
 
       # the two ends share aes256gcm, sha384 and x25519+mlkem768, ML-KEM-768 in an IKE_INTERMEDIATE exchange
       # with responder strongSwan dials, and without it ranet3 dials
-      # ranet3 runs no IKE_FOLLOWUP_KE, so each of its IKE SA rekeys is a Delete and a new handshake, and pings resume after each
+      # each rekey of the IKE SA, ranet3's and strongSwan's, and strongSwan's rekey of the Child SA run ML-KEM-768 in an IKE_FOLLOWUP_KE exchange after their CREATE_CHILD_SA, and pings go on across each
       mlkemMeet = ''
         responder_enabled = ${if responder then "True" else "False"}
-        # strongSwan's side of each handshake, whose IKE_AUTH takes Message ID 2 after the one IKE_INTERMEDIATE
+        # strongSwan's side of the handshake, whose IKE_AUTH takes Message ID 2 after the one IKE_INTERMEDIATE
         if responder_enabled:
             exchanges = [
                 "generating IKE_INTERMEDIATE request 1 [ KE ]",
@@ -1498,32 +1503,50 @@ testers.runNixOSTest {
                 "generating IKE_AUTH response 2 [",
             ]
 
+        def chained(journal, side):
+            """strongSwan's lines of one rekey through IKE_FOLLOWUP_KE, whose CREATE_CHILD_SA response carries the link in N(ADD_KE) and whose IKE_FOLLOWUP_KE request echoes it"""
+            create, followup = ("parsed", "generating") if side == "request" else ("generating", "parsed")
+            for line in [
+                f"{create} CREATE_CHILD_SA response",
+                f"{followup} IKE_FOLLOWUP_KE request",
+            ]:
+                gateway.wait_until_succeeds(f"{journal} | grep -F '{line}' | grep -F 'N(ADD_KE)'", timeout=timeout)
+            gateway.wait_until_succeeds(f"{journal} | grep -F '{create} IKE_FOLLOWUP_KE response' | grep -F '[ KE ]'", timeout=timeout)
+
         try:
+            # strongSwan's journal from before the handshake, which ranet3's own IKE SA rekey reaches before any rekey of strongSwan's
+            own_rekey = journal_after(gateway, "strongswan-swanctl.service")
             if responder_enabled:
                 gateway.succeed("swanctl --initiate --child default")
-            # the first handshake and the two that replace its IKE SA and the next
-            for n in [1, 2, 3]:
-                connected(n)
-                client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
-                for line in exchanges:
-                    count = swan_count(line)
-                    assert count >= n, f"strongSwan's log holds {line} {count} times by handshake {n}"
-                session_runs({"ike_cipher": "aes256gcm", "ike_prf": "sha384", "ike_kex": "x25519+mlkem768", "esp_cipher": "aes256gcm"})
-                gateway.wait_until_succeeds(
-                    "swanctl --list-sas | grep -F 'AES_GCM_16-256/PRF_HMAC_SHA2_384/CURVE_25519/KE1_ML_KEM_768'", timeout=timeout)
+            connected()
+            client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
+            for line in exchanges:
+                gateway.succeed(f"{swan_log} | grep -F '{line}'")
+            session_runs({"ike_cipher": "aes256gcm", "ike_prf": "sha384", "ike_kex": "x25519+mlkem768", "esp_cipher": "aes256gcm"})
+            gateway.wait_until_succeeds(
+                "swanctl --list-sas | grep -F 'AES_GCM_16-256/PRF_HMAC_SHA2_384/CURVE_25519/KE1_ML_KEM_768'", timeout=timeout)
 
-            closed = ike_sas_closed()
-            assert len(closed) >= 2 and set(closed) == {"rekey by handshake"}, f"ranet3 closed IKE SAs for {closed}"
-            # ranet3's rekeys left the IKE SA to a new handshake and never ran a CREATE_CHILD_SA without ML-KEM-768
-            client.fail("ranet3 debug wait ike.rekey.completed --attr sa=ike --past 10m --timeout 1s")
+            # ranet3's own scheduled rekey of the IKE SA first, strongSwan answering it with a link and taking the next IKE_FOLLOWUP_KE
+            print(client.succeed(f"ranet3 debug wait ike.rekey.completed --attr sa=ike --attr suite={hybrid_suite} --past 10m --timeout {rekey_timeout.seconds}s"))
+            chained(own_rekey, "response")
+            client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
+
+            # strongSwan's rekeys of the IKE SA and of the Child SA right after it and before ranet3's next, ranet3 answering each with a link and the next IKE_FOLLOWUP_KE
+            # two CREATE_CHILD_SA requests in flight at once would be settled on the nonces, and strongSwan's, where it lost, would send no IKE_FOLLOWUP_KE
+            for sa, done in [("--ike ranet", "IKE_SA ranet.* rekeyed between"), ("--child default", "rekeyed CHILD_SA default")]:
+                peer_rekey = journal_after(gateway, "strongswan-swanctl.service")
+                print(gateway.succeed(f"swanctl --rekey {sa}"))
+                gateway.wait_until_succeeds(f"{peer_rekey} | grep -E '{done}'", timeout=rekey_timeout)
+                chained(peer_rekey, "request")
+                client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
+            session_runs({"ike_cipher": "aes256gcm", "ike_prf": "sha384", "ike_kex": "x25519+mlkem768", "esp_cipher": "aes256gcm"})
+
+            assert ike_sas_closed() == [], f"ranet3 closed IKE SAs for {ike_sas_closed()}"
+            connected_once()
+            restarts = swan_count("restarting CHILD_SA default")
+            assert restarts == 0, f"strongSwan dialed again {restarts} times"
             if responder_enabled:
-                # ranet3 dials nobody, so strongSwan dialed each handshake after the first on ranet3's Delete
                 client.fail(f"{ranet3_log} | grep -F ': dialing '")
-                restarts = swan_count("restarting CHILD_SA default")
-                assert restarts >= 2, f"strongSwan dialed again {restarts} times"
-            else:
-                restarts = swan_count("restarting CHILD_SA default")
-                assert restarts == 0, f"strongSwan dialed {restarts} times under close_action none"
 
             client.fail(f"{ranet3_log} | grep -F 'no matching inbound ESP SA'")
             # an SA that reached its lifetime before a rekey replaced it drops what the peer still sends on it, and this names that cause
@@ -1567,7 +1590,7 @@ testers.runNixOSTest {
       # so strongSwan takes x25519 alone, no IKE_INTERMEDIATE runs, and ranet3's IKE SA rekeys are CREATE_CHILD_SA exchanges of x25519
       mlkemFallback = ''
         try:
-            connected(1)
+            connected()
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
             session_runs({"ike_kex": "x25519"})
             gateway.succeed(f"{swan_log} | grep -F 'received proposals: ' | grep -F '/CURVE_25519/KE1_ML_KEM_768'")
@@ -1584,10 +1607,10 @@ testers.runNixOSTest {
             session = json.loads(client.succeed("ranet3 sessions --json"))[0]
             suite = f"{session['ike_cipher']}/{session['ike_prf']}/x25519"
             print(client.succeed(
-                f"ranet3 debug wait ike.rekey.completed --attr sa=ike --attr suite={suite} --past 10m --timeout {handshake_timeout.seconds}s"))
+                f"ranet3 debug wait ike.rekey.completed --attr sa=ike --attr suite={suite} --past 10m --timeout {rekey_timeout.seconds}s"))
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
             assert ike_sas_closed() == [], f"ranet3 closed IKE SAs for {ike_sas_closed()}"
-            client.succeed(f"test $({ranet3_log} | grep -cF ': connected (SPI') -eq 1")
+            connected_once()
 
             client.fail(f"{ranet3_log} | grep -F 'no matching inbound ESP SA'")
             client.fail(f"{ranet3_log} | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
@@ -1605,7 +1628,7 @@ testers.runNixOSTest {
 
         try:
             gateway.succeed("swanctl --initiate --child default")
-            connected(1)
+            connected()
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
             gateway.succeed(f"{swan_log} | grep -F 'parsed IKE_SA_INIT response 0 [' | grep -F 'N(IKE_INT_SUP)'")
             if joined:
@@ -1619,10 +1642,12 @@ testers.runNixOSTest {
                 ]:
                     gateway.succeed(f"{swan_log} | grep -F '{line}'")
                 # strongSwan's ke1_none would take a CREATE_CHILD_SA rekey without ML-KEM-768
-                # and ranet3 closes the IKE SA for a new handshake instead, which close_action none leaves undialed
+                # and ranet3's own rekey keeps it, in an IKE_FOLLOWUP_KE exchange
                 print(client.succeed(
-                    f"ranet3 debug wait ike.sa.closed --attr sa=ike --attr 'reason=rekey by handshake' --past 10m --timeout {handshake_timeout.seconds}s"))
-                client.fail("ranet3 debug wait ike.rekey.completed --attr sa=ike --past 10m --timeout 1s")
+                    f"ranet3 debug wait ike.rekey.completed --attr sa=ike --attr suite={hybrid_suite} --past 10m --timeout {rekey_timeout.seconds}s"))
+                gateway.succeed(f"{swan_log} | grep -F 'parsed IKE_FOLLOWUP_KE request' | grep -F 'N(ADD_KE)'")
+                client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
+                assert ike_sas_closed() == [], f"ranet3 closed IKE SAs for {ike_sas_closed()}"
             else:
                 session_runs({"ike_cipher": "aes256gcm", "ike_prf": "sha384", "ike_kex": "x25519"})
                 for line in [
@@ -1633,7 +1658,7 @@ testers.runNixOSTest {
                 gateway.fail(f"{swan_log} | grep -F IKE_INTERMEDIATE")
                 # the IKE SA rekeys as any SA of one key exchange does, strongSwan taking NONE for an ADDKE1 the offer leaves out
                 print(client.succeed(
-                    f"ranet3 debug wait ike.rekey.completed --attr sa=ike --attr suite=aes256gcm/sha384/x25519 --past 10m --timeout {handshake_timeout.seconds}s"))
+                    f"ranet3 debug wait ike.rekey.completed --attr sa=ike --attr suite=aes256gcm/sha384/x25519 --past 10m --timeout {rekey_timeout.seconds}s"))
                 client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
                 assert ike_sas_closed() == [], f"ranet3 closed IKE SAs for {ike_sas_closed()}"
 
