@@ -355,6 +355,49 @@ func TestWriteAllocs(t *testing.T) {
 	}
 }
 
+func TestReadError(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		err     error
+		closed  bool
+		invalid bool
+	}{
+		{"EINVAL", &os.PathError{Op: "read", Path: "/dev/net/tun", Err: unix.EINVAL}, false, true},
+		{"EBADFD", &os.PathError{Op: "read", Path: "/dev/net/tun", Err: unix.EBADFD}, true, false},
+		{"closed file", os.ErrClosed, true, false},
+		{"EFAULT", &os.PathError{Op: "read", Path: "/dev/net/tun", Err: unix.EFAULT}, false, false},
+		{"EIO", &os.PathError{Op: "read", Path: "/dev/net/tun", Err: unix.EIO}, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := readError(tt.err)
+			if got := errors.Is(err, os.ErrClosed); got != tt.closed {
+				t.Errorf("errors.Is(readError(%v), os.ErrClosed) = %v, want %v", tt.err, got, tt.closed)
+			}
+			if got := errors.Is(err, ErrInvalidFrame); got != tt.invalid {
+				t.Errorf("errors.Is(readError(%v), ErrInvalidFrame) = %v, want %v", tt.err, got, tt.invalid)
+			}
+		})
+	}
+}
+
+// TestQueueReadEINVALIsInvalidFrame reads an eventfd into a buffer shorter
+// than its 8-byte counter, which fails with EINVAL as a tun read of a packet
+// the kernel cannot copy out does.
+func TestQueueReadEINVALIsInvalidFrame(t *testing.T) {
+	fd, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := os.NewFile(uintptr(fd), "eventfd")
+	defer file.Close()
+	q := &tunQueue{tun: &NativeTun{}, file: file}
+	slab := make([]byte, 2*ReadPacketSpacing+4)
+	n, err := q.Read(slab, make([]ReadPacket, 1))
+	if !errors.Is(err, ErrInvalidFrame) || !errors.Is(err, unix.EINVAL) {
+		t.Fatalf("Read = %d, %v, want ErrInvalidFrame wrapping EINVAL", n, err)
+	}
+}
+
 func TestCreateTUNFromFilesRejectsEmpty(t *testing.T) {
 	dev, err := CreateTUNFromFiles(nil, testMTU)
 	if err == nil {

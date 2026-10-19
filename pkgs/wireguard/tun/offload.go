@@ -87,6 +87,9 @@ const (
 // If packets or slab cannot accommodate every segment, GSOSplit returns the
 // number successfully written together with [ErrTooManySegments]. packets[:n]
 // remains valid.
+//
+// If in does not agree with options, GSOSplit returns 0 and an error wrapping
+// [ErrInvalidFrame].
 func GSOSplit(in []byte, options GSOOptions, slab []byte, packets []ReadPacket, spacing int) (int, error) {
 	if spacing < 0 {
 		return 0, errors.New("spacing must be nonnegative")
@@ -94,7 +97,7 @@ func GSOSplit(in []byte, options GSOOptions, slab []byte, packets []ReadPacket, 
 
 	// return early if instructed to split with no split size
 	if options.GSOType != GSONone && options.GSOSize == 0 {
-		return 0, fmt.Errorf("invalid GSOType (%v) with zero GSOSize", options.GSOType)
+		return 0, fmt.Errorf("%w: invalid GSOType (%v) with zero GSOSize", ErrInvalidFrame, options.GSOType)
 	}
 
 	// return early if we can't fill a single packet
@@ -107,11 +110,11 @@ func GSOSplit(in []byte, options GSOOptions, slab []byte, packets []ReadPacket, 
 	// without NeedsCsum is copied as it is, however short.
 	cSumAt := int(options.CsumStart) + int(options.CsumOffset)
 	if (options.NeedsCsum || options.GSOType != GSONone) && cSumAt+1 >= len(in) {
-		return 0, fmt.Errorf("end of checksum offset (%d) exceeds packet length (%d)", cSumAt+1, len(in))
+		return 0, fmt.Errorf("%w: end of checksum offset (%d) exceeds packet length (%d)", ErrInvalidFrame, cSumAt+1, len(in))
 	}
 
 	if len(in) < int(options.HdrLen) {
-		return 0, fmt.Errorf("length of packet (%d) < GSO HdrLen (%d)", len(in), options.HdrLen)
+		return 0, fmt.Errorf("%w: length of packet (%d) < GSO HdrLen (%d)", ErrInvalidFrame, len(in), options.HdrLen)
 	}
 
 	// Handle the conditions where we are copying a single element to slab.
@@ -146,27 +149,27 @@ func GSOSplit(in []byte, options GSOOptions, slab []byte, packets []ReadPacket, 
 	}
 
 	if options.HdrLen < options.CsumStart {
-		return 0, fmt.Errorf("GSO HdrLen (%d) < GSO CsumStart (%d)", options.HdrLen, options.CsumStart)
+		return 0, fmt.Errorf("%w: GSO HdrLen (%d) < GSO CsumStart (%d)", ErrInvalidFrame, options.HdrLen, options.CsumStart)
 	}
 
 	ipVersion := in[0] >> 4
 	switch ipVersion {
 	case 4:
 		if options.GSOType != GSOTCPv4 && options.GSOType != GSOUDPL4 {
-			return 0, fmt.Errorf("ip header version: %d, GSO type: %s", ipVersion, options.GSOType)
+			return 0, fmt.Errorf("%w: ip header version: %d, GSO type: %s", ErrInvalidFrame, ipVersion, options.GSOType)
 		}
 		if len(in) < 20 {
-			return 0, fmt.Errorf("length of packet (%d) < minimum ipv4 header size (%d)", len(in), 20)
+			return 0, fmt.Errorf("%w: length of packet (%d) < minimum ipv4 header size (%d)", ErrInvalidFrame, len(in), 20)
 		}
 	case 6:
 		if options.GSOType != GSOTCPv6 && options.GSOType != GSOUDPL4 {
-			return 0, fmt.Errorf("ip header version: %d, GSO type: %s", ipVersion, options.GSOType)
+			return 0, fmt.Errorf("%w: ip header version: %d, GSO type: %s", ErrInvalidFrame, ipVersion, options.GSOType)
 		}
 		if len(in) < 40 {
-			return 0, fmt.Errorf("length of packet (%d) < minimum ipv6 header size (%d)", len(in), 40)
+			return 0, fmt.Errorf("%w: length of packet (%d) < minimum ipv6 header size (%d)", ErrInvalidFrame, len(in), 40)
 		}
 	default:
-		return 0, fmt.Errorf("invalid ip header version: %d", ipVersion)
+		return 0, fmt.Errorf("%w: invalid ip header version: %d", ErrInvalidFrame, ipVersion)
 	}
 
 	// Calculate how many segments fit in slab. I found it helpful to mentally
@@ -238,8 +241,8 @@ func GSOSplit(in []byte, options GSOOptions, slab []byte, packets []ReadPacket, 
 	if options.GSOType == GSOTCPv4 || options.GSOType == GSOTCPv6 {
 		protocol = ipProtoTCP
 		if len(in) < int(options.CsumStart)+20 {
-			return 0, fmt.Errorf("length of packet (%d) < GSO CsumStart (%d) + minimum TCP header size (%d)",
-				len(in), options.CsumStart, 20)
+			return 0, fmt.Errorf("%w: length of packet (%d) < GSO CsumStart (%d) + minimum TCP header size (%d)",
+				ErrInvalidFrame, len(in), options.CsumStart, 20)
 		}
 		firstTCPSeqNum = binary.BigEndian.Uint32(in[options.CsumStart+4:])
 	} else {
@@ -253,32 +256,32 @@ func GSOSplit(in []byte, options GSOOptions, slab []byte, packets []ReadPacket, 
 	csumAt := csumStart + int(options.CsumOffset)
 	if ipVersion == 4 {
 		if hdrLen < 20 {
-			return 0, fmt.Errorf("IPv4 header exceeds GSO header length %d", hdrLen)
+			return 0, fmt.Errorf("%w: IPv4 header exceeds GSO header length %d", ErrInvalidFrame, hdrLen)
 		}
 	} else {
 		if hdrLen < 40 {
-			return 0, fmt.Errorf("IPv6 header exceeds GSO header length %d", hdrLen)
+			return 0, fmt.Errorf("%w: IPv6 header exceeds GSO header length %d", ErrInvalidFrame, hdrLen)
 		}
 	}
 	if protocol == ipProtoTCP {
 		if hdrLen < csumStart+20 {
 			return 0, fmt.Errorf(
-				"TCP header at offset %d exceeds GSO header length %d",
-				csumStart, hdrLen,
+				"%w: TCP header at offset %d exceeds GSO header length %d",
+				ErrInvalidFrame, csumStart, hdrLen,
 			)
 		}
 	} else {
 		if hdrLen < csumStart+8 {
 			return 0, fmt.Errorf(
-				"UDP header at offset %d exceeds GSO header length %d",
-				csumStart, hdrLen,
+				"%w: UDP header at offset %d exceeds GSO header length %d",
+				ErrInvalidFrame, csumStart, hdrLen,
 			)
 		}
 	}
 	if hdrLen < csumAt+2 {
 		return 0, fmt.Errorf(
-			"checksum field at offset %d exceeds GSO header length %d",
-			csumAt, hdrLen,
+			"%w: checksum field at offset %d exceeds GSO header length %d",
+			ErrInvalidFrame, csumAt, hdrLen,
 		)
 	}
 

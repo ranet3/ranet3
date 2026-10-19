@@ -495,18 +495,19 @@ func (q *tunQueue) write(bufs [][]byte, offset int) (int, error) {
 // handleVirtioRead splits in into slab, leaving [ReadPacketSpacing] bytes at
 // the front of the first packet, between every adjacent packet, and at the end
 // of the last packet. It mutates packets to reflect the size and offset of each
-// packet in slab, and returns the number of packets read.
+// packet in slab, and returns the number of packets read. A frame it cannot
+// split is refused with an error wrapping [ErrInvalidFrame].
 func handleVirtioRead(in []byte, slab []byte, packets []ReadPacket) (int, error) {
 	var hdr virtioNetHdr
 	err := hdr.decode(in)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %w", ErrInvalidFrame, err)
 	}
 	in = in[virtioNetHdrLen:]
 
 	options, err := hdr.toGSOOptions()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %w", ErrInvalidFrame, err)
 	}
 
 	// Don't trust HdrLen from the kernel as it can be equal to the length
@@ -517,13 +518,13 @@ func handleVirtioRead(in []byte, slab []byte, packets []ReadPacket) (int, error)
 		options.HdrLen = options.CsumStart + 8
 	} else if options.GSOType != GSONone {
 		if len(in) <= int(options.CsumStart+12) {
-			return 0, errors.New("packet is too short")
+			return 0, fmt.Errorf("%w: packet is too short", ErrInvalidFrame)
 		}
 
 		tcpHLen := uint16(in[options.CsumStart+12] >> 4 * 4)
 		if tcpHLen < 20 || tcpHLen > 60 {
 			// A TCP header must be between 20 and 60 bytes in length.
-			return 0, fmt.Errorf("tcp header len is invalid: %d", tcpHLen)
+			return 0, fmt.Errorf("%w: tcp header len is invalid: %d", ErrInvalidFrame, tcpHLen)
 		}
 		options.HdrLen = options.CsumStart + tcpHLen
 	}
@@ -550,11 +551,8 @@ func (q *tunQueue) Read(slab []byte, packets []ReadPacket) (int, error) {
 		}
 		readInto := slab[start : len(slab)-ReadPacketSpacing]
 		n, err := q.file.Read(readInto)
-		if errors.Is(err, syscall.EBADFD) {
-			err = os.ErrClosed
-		}
 		if err != nil {
-			return 0, err
+			return 0, readError(err)
 		}
 		if q.tun.vnetHdr {
 			return handleVirtioRead(readInto[:n], slab, packets)
@@ -564,6 +562,21 @@ func (q *tunQueue) Read(slab []byte, packets []ReadPacket) (int, error) {
 			return 1, nil
 		}
 	}
+}
+
+// readError maps an error from reading a queue's file to the error Read
+// returns.
+func readError(err error) error {
+	switch {
+	case errors.Is(err, syscall.EBADFD):
+		return os.ErrClosed
+	case errors.Is(err, syscall.EINVAL):
+		// The kernel frees a packet it fails to copy out before returning
+		// EINVAL, see tun_do_read() in drivers/net/tun.c. The queue stays
+		// readable.
+		return fmt.Errorf("%w: %w", ErrInvalidFrame, err)
+	}
+	return err
 }
 
 func (tun *NativeTun) Events() <-chan Event {
