@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"os/exec"
 	"runtime"
 	"slices"
 	"strconv"
@@ -88,6 +89,28 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 		t.Error("a pass would rewrite rules the kernel already holds")
 	}
 
+	// A rule with no comment in this tool's chain is another writer's, and the
+	// readback holds it where the kernel does, so a diff built from it rewrites
+	// the chain.
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Fatal("another writer's rule is written through nft, which is not on the path")
+	}
+	if out, err := exec.Command(nft, "insert", "rule", "ip", TableName, ChainName, "accept").CombinedOutput(); err != nil {
+		t.Fatalf("insert another writer's rule: %v\n%s", err, out)
+	}
+	withOther, err := be.Rules()
+	if err != nil {
+		t.Fatalf("read the rules back beside another writer's: %v", err)
+	}
+	got = got[:0]
+	for _, rule := range withOther {
+		got = append(got, rule.Spec)
+	}
+	if !slices.Equal(got, append([]string{""}, want...)) {
+		t.Errorf("with another writer's uncommented rule at the head of the ip chain the readback holds %q, want it ahead of %q", got, want)
+	}
+
 	// A counter in every rule, at zero, since nothing has crossed this
 	// namespace. Reading it back at all is the part that can break: it is a
 	// 64-bit attribute the kernel aligns with a padding attribute of its own.
@@ -139,7 +162,10 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	if held, err = steered.Rules(); err != nil || !sameRules(held, only) {
 		t.Fatalf("the kernel holds %v (%v), want %v", held, err, only)
 	}
-	if tables, err := steered.(*nftables).ownTables(); err != nil || len(tables) != 2 {
+	tables, err := ownTables(steered.(*nftables).conn)
+	_, v4 := tables[unix.NFPROTO_IPV4]
+	_, v6 := tables[unix.NFPROTO_IPV6]
+	if err != nil || len(tables) != 2 || !v4 || !v6 {
 		t.Errorf("an exit advertising nothing holds tables in %v (%v), want both families", tables, err)
 	}
 	if err := steered.Withdraw(); err != nil {
@@ -158,9 +184,10 @@ const (
 	foreignTransactions = 50
 )
 
-// The kernel tells the backend when another writer deletes its table, and its
+// The kernel tells the backend at once when another writer adds a rule to its
+// chain, sets its table dormant or deletes it, well inside a sweep, and its
 // own installs and withdrawals wake nothing.
-func TestNftablesNotifiesAnotherWritersDeletion(t *testing.T) {
+func TestNftablesNotifiesAnotherWritersChange(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
@@ -175,17 +202,20 @@ func TestNftablesNotifiesAnotherWritersDeletion(t *testing.T) {
 	quiet := func(what string) {
 		t.Helper()
 		select {
-		case <-be.Deleted():
+		case <-be.Changed():
 			t.Fatalf("%s woke the translator", what)
 		case <-time.After(quietFor):
 		}
 	}
 	rules := newTranslator(Egress{}, rt, be).desired()
-	for range 2 {
+	install := func() {
+		t.Helper()
 		if err := be.Apply(rules); err != nil {
 			t.Fatalf("install %d rules: %v", len(rules), err)
 		}
 	}
+	install()
+	install()
 	quiet("its own install and reinstall")
 
 	another, err := dialNetfilter()
@@ -193,19 +223,63 @@ func TestNftablesNotifiesAnotherWritersDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = another.Close() })
-	if err := another.batch([]nftRequest{delTable(FamilyIPv6)}); err != nil {
-		t.Fatalf("delete the ip6 table from another socket: %v", err)
-	}
-	select {
-	case <-be.Deleted():
-	case <-time.After(notificationWait):
-		t.Fatal("another writer deleted the ip6 table and the translator was not woken")
+	for _, change := range []struct {
+		name    string
+		request nftRequest
+	}{
+		{"inserted an accept at the head of the ip6 chain", anotherWritersAccept(unix.NFPROTO_IPV6, ChainName)},
+		{"set the ip table dormant", dormantTable(unix.NFPROTO_IPV4)},
+		{"deleted the ip6 table", delTable(FamilyIPv6)},
+	} {
+		if err := another.batch([]nftRequest{change.request}); err != nil {
+			t.Fatalf("another writer %s: %v", change.name, err)
+		}
+		if !woken(be.Changed()) {
+			t.Fatalf("another writer %s and the translator was not woken", change.name)
+		}
+		install()
+		quiet("its own install after another writer " + change.name)
 	}
 
 	if err := be.Withdraw(); err != nil {
 		t.Fatalf("withdraw: %v", err)
 	}
 	quiet("its own withdrawal")
+}
+
+// woken waits up to notificationWait for a wake on changed, then for quietFor
+// with none, so every notification of the writes before it has been read, and
+// reports whether one came
+func woken(changed <-chan struct{}) bool {
+	select {
+	case <-changed:
+	case <-time.After(notificationWait):
+		return false
+	}
+	for {
+		select {
+		case <-changed:
+		case <-time.After(quietFor):
+			return true
+		}
+	}
+}
+
+// anotherWritersAccept is another writer's rule with no comment accepting
+// every packet, at the head of chain in this tool's table of the family proto
+func anotherWritersAccept(proto uint8, chain string) nftRequest {
+	body := putAttrString(putAttrString(putNfgenmsg(nil, proto), unix.NFTA_RULE_TABLE, TableName), unix.NFTA_RULE_CHAIN, chain)
+	body = putAttr(body, unix.NFTA_RULE_EXPRESSIONS|nlaNested, verdict(chainAccept))
+	// with no NLM_F_APPEND the kernel inserts the rule at the head of the chain
+	return nftRequest{kind: nftCommand(unix.NFT_MSG_NEWRULE), flags: unix.NLM_F_CREATE, body: body}
+}
+
+// dormantTable is another writer's update setting this tool's table of the
+// family proto dormant
+func dormantTable(proto uint8) nftRequest {
+	table := tableRequest(unix.NFT_MSG_NEWTABLE, unix.NLM_F_CREATE, proto)
+	table.body = putAttrBE32(table.body, unix.NFTA_TABLE_FLAGS, unix.NFT_TABLE_F_DORMANT)
+	return table
 }
 
 // A rule with no comment that another writer inserts at the head of the
@@ -238,13 +312,7 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = another.Close() })
-	verdict := putAttrBE32(nil, unix.NFTA_VERDICT_CODE, 1) // NF_ACCEPT
-	immediate := putAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)
-	immediate = putAttr(immediate, unix.NFTA_IMMEDIATE_DATA|nlaNested, putAttr(nil, unix.NFTA_DATA_VERDICT|nlaNested, verdict))
-	body := putAttrString(putAttrString(putNfgenmsg(nil, unix.NFPROTO_IPV6), unix.NFTA_RULE_TABLE, TableName), unix.NFTA_RULE_CHAIN, ChainName)
-	body = putAttr(body, unix.NFTA_RULE_EXPRESSIONS|nlaNested, expression("immediate", immediate))
-	// with no NLM_F_APPEND the kernel inserts the rule at the head of the chain
-	if err := another.batch([]nftRequest{{kind: nftCommand(unix.NFT_MSG_NEWRULE), flags: unix.NLM_F_CREATE, body: body}}); err != nil {
+	if err := another.batch([]nftRequest{anotherWritersAccept(unix.NFPROTO_IPV6, ChainName)}); err != nil {
 		t.Fatalf("insert another writer's accept rule: %v", err)
 	}
 	if held, err := be.Rules(); err != nil || !slices.ContainsFunc(held, func(rule Installed) bool { return rule.Spec == "" }) {
@@ -331,7 +399,7 @@ func socketDrops(t *testing.T, raw syscall.RawConn) (dropped, queued uint64) {
 
 // Another writer's transaction too large for the notification socket's
 // buffer reaches the translator through the backend's Missed, and never
-// through Deleted, since the transaction deletes nothing
+// through Changed, since the transaction writes none of this tool's tables
 func TestNftablesWakesMissedOnAnOverflow(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
@@ -379,8 +447,8 @@ func TestNftablesWakesMissedOnAnOverflow(t *testing.T) {
 		t.Fatalf("an overflow of the notification socket never woke missed: %d transactions, its receive buffer at %d bytes, %d notifications dropped and %d bytes queued", transactions, rcvbuf, dropped, queued)
 	}
 	select {
-	case <-be.Deleted():
-		t.Error("another writer's transaction that deletes nothing woke deleted")
+	case <-be.Changed():
+		t.Error("another writer's transaction that writes none of this tool's tables woke changed")
 	default:
 	}
 }
@@ -390,7 +458,7 @@ func TestNftablesWakesMissedOnAnOverflow(t *testing.T) {
 // whatever the inode said.
 func requireEmptyRuleset(t *testing.T, be backend) {
 	t.Helper()
-	tables, err := be.(*nftables).ownTables()
+	tables, err := ownTables(be.(*nftables).conn)
 	if err != nil {
 		t.Fatalf("list this tool's tables: %v", err)
 	}

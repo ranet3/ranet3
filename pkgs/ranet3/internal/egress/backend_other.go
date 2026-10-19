@@ -5,7 +5,10 @@
 
 package egress
 
-import "fmt"
+import (
+	"fmt"
+	"runtime"
+)
 
 // newBackend refuses the capability by name where there is nothing to install
 // it with. It is a refusal rather than a stub that does nothing, for the same
@@ -29,3 +32,10 @@ func refuseWhatThisPlatformLacks(cfg Egress, rt Runtime) error {
 	}
 	return fmt.Errorf("%w: cap.egress asks this node to translate a source address, and nftables is a linux facility", ErrUnsupported)
 }
+
+// errNoBorder refuses cap.border by name, as newBackend refuses cap.egress: a
+// node that accepted the block and filtered nothing would carry forged mesh
+// sources from its other links while its status said otherwise.
+var errNoBorder = fmt.Errorf("egress: cap.border is an nftables chain, which %s does not have, so this node cannot filter what enters the mesh from its other links", runtime.GOOS)
+
+func newBorderBackend() (borderBackend, error) { return nil, errNoBorder }

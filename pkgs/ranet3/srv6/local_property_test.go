@@ -25,11 +25,11 @@ import (
 // the full one, the two ends drawn outright, and none written twice
 func allowLists() hegel.Generator[[]netip.Prefix] {
 	v6 := hegel.Filter(hegel.Composite(func(tc hegel.TestCase) netip.Prefix {
-		return netip.PrefixFrom(hegel.Draw(tc, hegel.IPAddresses().IPv6()), hegel.Draw(tc, pbt.Spanning(minAllowBits6, 128))).Masked()
+		return netip.PrefixFrom(hegel.Draw(tc, hegel.IPAddresses().IPv6()), hegel.Draw(tc, pbt.Spanning(schema.MinSourceBits6, 128))).Masked()
 	}), func(prefix netip.Prefix) bool { return !prefix.Addr().Is4In6() })
 	prefix := hegel.Composite(func(tc hegel.TestCase) netip.Prefix {
 		if hegel.Draw(tc, hegel.Booleans()) {
-			return netip.PrefixFrom(hegel.Draw(tc, hegel.IPAddresses().IPv4()), hegel.Draw(tc, pbt.Spanning(minAllowBits4, 32))).Masked()
+			return netip.PrefixFrom(hegel.Draw(tc, hegel.IPAddresses().IPv4()), hegel.Draw(tc, pbt.Spanning(schema.MinSourceBits4, 32))).Masked()
 		}
 		return hegel.Draw(tc, v6)
 	})
@@ -172,9 +172,9 @@ func TestEgressNeverCarriesASourceOutsideItsAllowList(t *testing.T) {
 // below its length
 func allowEntries(ipv6 bool) hegel.Generator[schema.Prefix] {
 	return hegel.Composite(func(tc hegel.TestCase) schema.Prefix {
-		address, floor := hegel.Draw(tc, hegel.IPAddresses().IPv6()), minAllowBits6
+		address, floor := hegel.Draw(tc, hegel.IPAddresses().IPv6()), schema.MinSourceBits6
 		if !ipv6 {
-			address, floor = hegel.Draw(tc, hegel.IPAddresses().IPv4()), minAllowBits4
+			address, floor = hegel.Draw(tc, hegel.IPAddresses().IPv4()), schema.MinSourceBits4
 		}
 		width := address.BitLen()
 		bits := hegel.Draw(tc, hegel.OneOf(hegel.Just(floor), hegel.Just(width), pbt.Spanning(floor, width)))
@@ -189,9 +189,9 @@ func allowEntries(ipv6 bool) hegel.Generator[schema.Prefix] {
 func allowSlips(entry schema.Prefix, beside []schema.Prefix) hegel.Generator[schema.Prefix] {
 	return hegel.Composite(func(tc hegel.TestCase) schema.Prefix {
 		address, width := entry.Addr(), entry.Addr().BitLen()
-		floor := minAllowBits6
+		floor := schema.MinSourceBits6
 		if address.Is4() {
-			floor = minAllowBits4
+			floor = schema.MinSourceBits4
 		}
 		switch hegel.Draw(tc, pbt.Spanning(0, 5)) {
 		case 0:
@@ -208,7 +208,7 @@ func allowSlips(entry schema.Prefix, beside []schema.Prefix) hegel.Generator[sch
 			return schema.PrefixFrom(netip.PrefixFrom(address, bits).Masked())
 		case 4:
 			mapped := netip.AddrFrom16(hegel.Draw(tc, hegel.IPAddresses().IPv4()).As16())
-			return schema.PrefixFrom(netip.PrefixFrom(mapped, 96+hegel.Draw(tc, pbt.Spanning(minAllowBits4, 32))).Masked())
+			return schema.PrefixFrom(netip.PrefixFrom(mapped, 96+hegel.Draw(tc, pbt.Spanning(schema.MinSourceBits4, 32))).Masked())
 		default:
 			bits := entry.Bits()
 			if bits == width {

@@ -42,7 +42,10 @@ const (
 	natSrcPriority = 100
 	// chainAccept is NF_ACCEPT, the only policy a nat base chain may carry
 	// here: this package translates and never decides whether a packet lives.
+	// The border chain carries it too, and its accept rules end with it.
 	chainAccept = 1
+	// verdictDrop is NF_DROP, which a border chain drop rule ends with
+	verdictDrop = 0
 	// nlaNested and nlaTypeMask are NLA_F_NESTED and NLA_TYPE_MASK. libnftnl
 	// sets the flag, so it is set on the way out and masked off on the way in.
 	nlaNested   = 0x8000
@@ -59,16 +62,18 @@ const (
 	// matches a prefix of another device's name.
 	ifNameSize = 16
 	// ipv4SourceOffset and ipv6SourceOffset are where the source address sits
-	// in each network header, with the length that follows it.
+	// in each network header, with the length that follows it, and
+	// ipv6DestinationOffset where the IPv6 destination does.
 	ipv4SourceOffset, ipv4AddressLen = 12, 4
 	ipv6SourceOffset, ipv6AddressLen = 8, 16
+	ipv6DestinationOffset            = 24
 )
 
 // nftables is the linux backend: the tables named after this tool, one per
 // address family in use.
 type nftables struct {
 	conn     *nftConn
-	monitor  *deletionMonitor
+	monitor  *changeMonitor
 	families []uint8
 }
 
@@ -87,7 +92,7 @@ func newBackend(cfg Egress, rt Runtime) (backend, error) {
 		conn.Close()
 		return nil, err
 	}
-	if be.monitor, err = openDeletionMonitor(conn.pid); err != nil {
+	if be.monitor, err = openChangeMonitor(conn.pid, translatorTables); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -96,27 +101,44 @@ func newBackend(cfg Egress, rt Runtime) (backend, error) {
 
 func (n *nftables) Close() error { return errors.Join(n.monitor.Close(), n.conn.Close()) }
 
-func (n *nftables) Deleted() <-chan struct{} { return n.monitor.deleted }
+func (n *nftables) Changed() <-chan struct{} { return n.monitor.changed }
 
 func (n *nftables) Missed() <-chan struct{} { return n.monitor.missed }
 
-// deletionMonitor wakes deleted once per datagram of nf_tables notifications
-// that holds another writer's deletion in this tool's tables, and missed once
+// tableScope is one table name in a set of nf_tables families, the tables one
+// owner holds and its change monitor watches
+type tableScope struct {
+	name     string
+	families []uint8
+}
+
+var (
+	// translatorTables is the translator's ip and ip6 tables
+	translatorTables = tableScope{TableName, []uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6}}
+	// borderTables is the border filter's inet table, which shares the name
+	borderTables = tableScope{TableName, []uint8{unix.NFPROTO_INET}}
+)
+
+// changeMonitor wakes changed once per datagram of nf_tables notifications
+// that holds another writer's change to its owner's tables, and missed once
 // per overflow or datagram it cannot parse. A NixOS firewall reload flushes
-// the whole ruleset, which takes the steered rule with it until the next pass.
-type deletionMonitor struct {
+// the whole ruleset, which takes the steered rule and the border chain with it
+// until the next pass. A rule another writer adds, or a table it sets dormant,
+// bypasses the chain as surely.
+type changeMonitor struct {
 	file    *os.File
 	read    func([]byte) (int, error)
 	pid     uint32
-	deleted chan struct{}
+	scope   tableScope
+	changed chan struct{}
 	missed  chan struct{}
 	done    chan struct{}
 }
 
-// openDeletionMonitor joins the nf_tables notification group. pid is the
-// socket this backend writes through, whose own changes the kernel stamps with
+// openChangeMonitor joins the nf_tables notification group. pid is the
+// socket the owner writes through, whose own changes the kernel stamps with
 // it and which are not another writer's.
-func openDeletionMonitor(pid uint32) (*deletionMonitor, error) {
+func openChangeMonitor(pid uint32, scope tableScope) (*changeMonitor, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, unix.NETLINK_NETFILTER)
 	if err != nil {
 		return nil, fmt.Errorf("egress: open netfilter notification socket: %w", err)
@@ -128,11 +150,12 @@ func openDeletionMonitor(pid uint32) (*deletionMonitor, error) {
 	growReceiveBuffer(fd)
 	// nonblocking, so os.NewFile registers it with the runtime poller and Close unblocks the reader
 	file := os.NewFile(uintptr(fd), "nftables-monitor")
-	m := &deletionMonitor{
+	m := &changeMonitor{
 		file:    file,
 		read:    file.Read,
 		pid:     pid,
-		deleted: make(chan struct{}, 1),
+		scope:   scope,
+		changed: make(chan struct{}, 1),
 		missed:  make(chan struct{}, 1),
 		done:    make(chan struct{}),
 	}
@@ -140,7 +163,7 @@ func openDeletionMonitor(pid uint32) (*deletionMonitor, error) {
 	return m, nil
 }
 
-func (m *deletionMonitor) run() {
+func (m *changeMonitor) run() {
 	defer close(m.done)
 	buf := make([]byte, notificationReadSize)
 	for {
@@ -160,8 +183,8 @@ func (m *deletionMonitor) run() {
 		switch {
 		case err != nil:
 			notify(m.missed)
-		case slices.ContainsFunc(messages, func(message nftMessage) bool { return deletedByAnother(message, m.pid) }):
-			notify(m.deleted)
+		case slices.ContainsFunc(messages, func(message nftMessage) bool { return changedByAnother(message, m.pid, m.scope) }):
+			notify(m.changed)
 		}
 	}
 }
@@ -183,32 +206,32 @@ func notify(signal chan<- struct{}) {
 	}
 }
 
-func (m *deletionMonitor) Close() error {
+func (m *changeMonitor) Close() error {
 	err := m.file.Close()
 	<-m.done
 	return err
 }
 
-func deletedByAnother(message nftMessage, pid uint32) bool {
+func changedByAnother(message nftMessage, pid uint32, scope tableScope) bool {
 	if message.Pid == pid || message.Kind>>8 != unix.NFNL_SUBSYS_NFTABLES || len(message.Data) < sizeofNfgenmsg {
 		return false
 	}
-	if family := message.Data[0]; family != unix.NFPROTO_IPV4 && family != unix.NFPROTO_IPV6 {
+	if !slices.Contains(scope.families, message.Data[0]) {
 		return false
 	}
 	var naming uint16
 	switch message.Kind & 0xff {
-	case unix.NFT_MSG_DELTABLE:
+	case unix.NFT_MSG_NEWTABLE, unix.NFT_MSG_DELTABLE:
 		naming = unix.NFTA_TABLE_NAME
-	case unix.NFT_MSG_DELCHAIN:
+	case unix.NFT_MSG_NEWCHAIN, unix.NFT_MSG_DELCHAIN:
 		naming = unix.NFTA_CHAIN_TABLE
-	case unix.NFT_MSG_DELRULE:
+	case unix.NFT_MSG_NEWRULE, unix.NFT_MSG_DELRULE:
 		naming = unix.NFTA_RULE_TABLE
 	default:
 		return false
 	}
 	for kind, value := range message.attributes(sizeofNfgenmsg) {
-		if kind == naming && unix.ByteSliceToString(value) == TableName {
+		if kind == naming && unix.ByteSliceToString(value) == scope.name {
 			return true
 		}
 	}
@@ -244,25 +267,32 @@ func nftFamily(family uint8) uint8 {
 }
 
 // Rules reads back the chain this tool owns, in order, with the flow counter
-// each rule has carried. The kernel dumps every rule in the family and the
-// table and chain names are matched here. A rule another writer put in this
-// tool's chain changes what the chain does to a packet, so it is read back
-// too, one with no comment as an empty spec, and the next pass rewrites the
-// chain without it. A rule in any other table or chain is skipped, so it is
-// never removed.
+// each rule has carried. A rule another writer put in this tool's chain
+// changes what the chain does to a packet, so it is read back too, one with no
+// comment as an empty spec, and the next pass rewrites the chain without it. A
+// rule in any other table or chain is skipped, so it is never removed.
 func (n *nftables) Rules() ([]Installed, error) {
 	var out []Installed
 	for _, family := range n.families {
-		body := putNfgenmsg(nil, nftFamily(family))
-		replies, err := n.conn.dump(nftCommand(unix.NFT_MSG_GETRULE), body)
+		rules, err := chainRules(n.conn, nftFamily(family), ChainName)
 		if err != nil {
 			return nil, fmt.Errorf("egress: dump %s rules: %w", tableFamilyName(family), err)
 		}
-		for _, reply := range replies {
-			table, chain, spec, packets, bytes := decodeRule(reply)
-			if table != TableName || chain != ChainName {
-				continue
-			}
+		out = append(out, rules...)
+	}
+	return out, nil
+}
+
+// chainRules dumps every rule of chain in this tool's table of the nf_tables
+// family proto, in order, one with no comment as an empty spec
+func chainRules(conn *nftConn, proto uint8, chain string) ([]Installed, error) {
+	replies, err := conn.dump(nftCommand(unix.NFT_MSG_GETRULE), putNfgenmsg(nil, proto))
+	if err != nil {
+		return nil, err
+	}
+	var out []Installed
+	for _, reply := range replies {
+		if table, name, spec, packets, bytes := decodeRule(reply); table == TableName && name == chain {
 			out = append(out, Installed{Spec: spec, Packets: packets, Bytes: bytes})
 		}
 	}
@@ -353,7 +383,7 @@ func (n *nftables) Apply(rules []Rule) error {
 	var requests []nftRequest
 	for _, family := range n.families {
 		requests = append(requests,
-			newTable(family),
+			newTable(nftFamily(family)),
 			newChain(family),
 			// No handle, which is how nf_tables spells "every rule in this
 			// chain". It reaches only the chain named here, in the table named
@@ -394,48 +424,46 @@ func (n *nftables) removeUnusedTables() error {
 // goes away between the listing and the delete fails the same way, which only
 // something else writing under this tool's own name can cause.
 func (n *nftables) removeTables(match func(uint8) bool) error {
-	held, err := n.ownTables()
+	held, err := ownTables(n.conn)
 	if err != nil {
 		return err
 	}
 	var requests []nftRequest
-	for _, family := range held {
-		if match(family) {
+	for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
+		if _, ok := held[nftFamily(family)]; ok && match(family) {
 			requests = append(requests, delTable(family))
 		}
 	}
 	return n.conn.batch(requests)
 }
 
-// ownTables is the families in which a table of this tool's name exists.
-func (n *nftables) ownTables() ([]uint8, error) {
-	replies, err := n.conn.dump(nftCommand(unix.NFT_MSG_GETTABLE), putNfgenmsg(nil, unix.NFPROTO_UNSPEC))
+// ownTables is the flags of each table of this tool's name, keyed by its
+// nf_tables family, which every caller reads its own of
+func ownTables(conn *nftConn) (map[uint8]uint32, error) {
+	replies, err := conn.dump(nftCommand(unix.NFT_MSG_GETTABLE), putNfgenmsg(nil, unix.NFPROTO_UNSPEC))
 	if err != nil {
 		return nil, fmt.Errorf("egress: dump tables: %w", err)
 	}
-	var out []uint8
+	held := make(map[uint8]uint32)
 	for _, reply := range replies {
 		if len(reply.Data) < sizeofNfgenmsg {
 			continue
 		}
-		var family uint8
-		switch reply.Data[0] {
-		case unix.NFPROTO_IPV4:
-			family = FamilyIPv4
-		case unix.NFPROTO_IPV6:
-			family = FamilyIPv6
-		default:
-			continue
-		}
+		var name string
+		var flags uint32
 		for kind, value := range reply.attributes(sizeofNfgenmsg) {
-			if kind == unix.NFTA_TABLE_NAME && unix.ByteSliceToString(value) == TableName &&
-				!slices.Contains(out, family) {
-				out = append(out, family)
+			switch {
+			case kind == unix.NFTA_TABLE_NAME:
+				name = unix.ByteSliceToString(value)
+			case kind == unix.NFTA_TABLE_FLAGS && len(value) == 4:
+				flags = binary.BigEndian.Uint32(value)
 			}
 		}
+		if name == TableName {
+			held[reply.Data[0]] = flags
+		}
 	}
-	slices.Sort(out)
-	return out, nil
+	return held, nil
 }
 
 // Conflicts names the other source translation this node's traffic can meet: a
@@ -514,43 +542,127 @@ func decodeChain(message nftMessage) (table, chain, kind string, hook uint32, pr
 	return table, chain, kind, hook, priority
 }
 
-// newTable creates the table if it is absent and leaves it alone if it is
-// there, which is how a table a previous instance left behind is adopted.
-func newTable(family uint8) nftRequest {
-	body := putNfgenmsg(nil, nftFamily(family))
-	body = putAttrString(body, unix.NFTA_TABLE_NAME, TableName)
-	return nftRequest{kind: nftCommand(unix.NFT_MSG_NEWTABLE), flags: unix.NLM_F_CREATE, body: body}
+// newTable creates the table in the nf_tables family proto if it is absent
+// and adopts it if it is there, which is how a table a previous instance left
+// behind is taken over. It writes the flags as none over whatever another
+// writer set, so a dormant table is woken.
+func newTable(proto uint8) nftRequest {
+	table := tableRequest(unix.NFT_MSG_NEWTABLE, unix.NLM_F_CREATE, proto)
+	table.body = putAttrBE32(table.body, unix.NFTA_TABLE_FLAGS, 0)
+	return table
 }
 
 func delTable(family uint8) nftRequest {
-	body := putNfgenmsg(nil, nftFamily(family))
-	body = putAttrString(body, unix.NFTA_TABLE_NAME, TableName)
-	return nftRequest{kind: nftCommand(unix.NFT_MSG_DELTABLE), body: body}
+	return tableRequest(unix.NFT_MSG_DELTABLE, 0, nftFamily(family))
 }
 
-// newChain creates the one base chain, at the source translation hook and the
-// priority every other source translation on the host also runs at. A
-// different priority would not avoid the overlap, only reorder it, and a
-// number nothing else uses would put this node's translation either before or
-// after whatever the operator arranged on purpose.
-func newChain(family uint8) nftRequest {
-	hook := putAttrBE32(nil, unix.NFTA_HOOK_HOOKNUM, unix.NF_INET_POST_ROUTING)
-	hook = putAttrBE32(hook, unix.NFTA_HOOK_PRIORITY, uint32(natSrcPriority))
-	body := putNfgenmsg(nil, nftFamily(family))
+// tableRequest is one command on this tool's table in the nf_tables family proto
+func tableRequest(command int, flags uint16, proto uint8) nftRequest {
+	body := putNfgenmsg(nil, proto)
+	body = putAttrString(body, unix.NFTA_TABLE_NAME, TableName)
+	return nftRequest{kind: nftCommand(command), flags: flags, body: body}
+}
+
+// hookedChain is the base chain one owner writes in this tool's table, which
+// accepts what no rule decides
+type hookedChain struct {
+	name     string
+	kind     string
+	hook     uint32
+	priority int32
+}
+
+var (
+	// postrouting is the translator's chain, at the source translation hook
+	// and the priority every other source translation on the host also runs
+	// at. A different priority would not avoid the overlap, only reorder it,
+	// and a number nothing else uses would put this node's translation either
+	// before or after whatever the operator arranged on purpose.
+	postrouting = hookedChain{ChainName, "nat", unix.NF_INET_POST_ROUTING, natSrcPriority}
+	prerouting  = hookedChain{BorderChain, "filter", unix.NF_INET_PRE_ROUTING, rawPriority}
+)
+
+func newChain(family uint8) nftRequest { return baseChain(nftFamily(family), postrouting) }
+
+// baseChain creates chain in this tool's table of the family proto, and
+// writes its policy over whatever another writer set
+func baseChain(proto uint8, chain hookedChain) nftRequest {
+	hooked := putAttrBE32(nil, unix.NFTA_HOOK_HOOKNUM, chain.hook)
+	hooked = putAttrBE32(hooked, unix.NFTA_HOOK_PRIORITY, uint32(chain.priority))
+	body := putNfgenmsg(nil, proto)
 	body = putAttrString(body, unix.NFTA_CHAIN_TABLE, TableName)
-	body = putAttrString(body, unix.NFTA_CHAIN_NAME, ChainName)
-	body = putAttr(body, unix.NFTA_CHAIN_HOOK|nlaNested, hook)
+	body = putAttrString(body, unix.NFTA_CHAIN_NAME, chain.name)
+	body = putAttr(body, unix.NFTA_CHAIN_HOOK|nlaNested, hooked)
 	body = putAttrBE32(body, unix.NFTA_CHAIN_POLICY, chainAccept)
-	body = putAttrString(body, unix.NFTA_CHAIN_TYPE, "nat")
+	body = putAttrString(body, unix.NFTA_CHAIN_TYPE, chain.kind)
 	return nftRequest{kind: nftCommand(unix.NFT_MSG_NEWCHAIN), flags: unix.NLM_F_CREATE, body: body}
 }
 
-// flushChain empties the chain. It names a table and a chain and no handle,
-// which nf_tables reads as every rule in that chain.
-func flushChain(family uint8) nftRequest {
-	body := putNfgenmsg(nil, nftFamily(family))
+// fault names how the chain a dump holds differs from c as baseChain writes
+// it, empty for that chain as written and for any other. remake holds where
+// it differs in what nf_tables will not change in place: its type, hook or
+// priority, or a hook at all, since a regular chain cannot become a base
+// chain.
+func (c hookedChain) fault(message nftMessage) (fault string, remake bool) {
+	table, chain, kind, hook, priority := decodeChain(message)
+	if table != TableName || chain != c.name {
+		return "", false
+	}
+	policy := ^uint32(0)
+	for attribute, value := range message.attributes(sizeofNfgenmsg) {
+		if attribute == unix.NFTA_CHAIN_POLICY && len(value) == 4 {
+			policy = binary.BigEndian.Uint32(value)
+		}
+	}
+	remake = kind != c.kind || hook != c.hook || priority != c.priority
+	if !remake && policy == chainAccept {
+		return "", false
+	}
+	return fmt.Sprintf("its chain reads back as type %q at hook %d, priority %d, policy %d, where a %s chain at hook %d, priority %d, policy accept was written",
+		kind, int32(hook), priority, int32(policy), c.kind, c.hook, c.priority), remake
+}
+
+// readChain reads back c whole with the table of this tool's name holding it
+// in the nf_tables family proto, whose flags tables holds as ownTables read
+// them: every rule in order with its counter, the chain's type, hook,
+// priority and policy, and the table's flags
+func readChain(conn *nftConn, tables map[uint8]uint32, proto uint8, c hookedChain) (chainReadback, error) {
+	flags, held := tables[proto]
+	if !held {
+		return chainReadback{}, nil
+	}
+	var read chainReadback
+	if flags != 0 {
+		read.fault = fmt.Sprintf("its table carries flags %#x, where none are written and 0x1 is dormant", flags)
+	}
+	// nf_tables clears no flag of a table in place but dormant
+	read.remake = flags&^unix.NFT_TABLE_F_DORMANT != 0
+	chains, err := conn.dump(nftCommand(unix.NFT_MSG_GETCHAIN), putNfgenmsg(nil, proto))
+	if err != nil {
+		return chainReadback{}, fmt.Errorf("dump chains: %w", err)
+	}
+	for _, reply := range chains {
+		fault, remake := c.fault(reply)
+		if read.fault == "" {
+			read.fault = fault
+		}
+		read.remake = read.remake || remake
+	}
+	if read.rules, err = chainRules(conn, proto, c.name); err != nil {
+		return chainReadback{}, fmt.Errorf("dump rules: %w", err)
+	}
+	return read, nil
+}
+
+func flushChain(family uint8) nftRequest { return chainFlush(nftFamily(family), ChainName) }
+
+// chainFlush empties chain in this tool's table of the family proto. It names
+// a table and a chain and no handle, which nf_tables reads as every rule in
+// that chain.
+func chainFlush(proto uint8, chain string) nftRequest {
+	body := putNfgenmsg(nil, proto)
 	body = putAttrString(body, unix.NFTA_RULE_TABLE, TableName)
-	body = putAttrString(body, unix.NFTA_RULE_CHAIN, ChainName)
+	body = putAttrString(body, unix.NFTA_RULE_CHAIN, chain)
 	return nftRequest{kind: nftCommand(unix.NFT_MSG_DELRULE), body: body}
 }
 
@@ -559,17 +671,12 @@ func flushChain(family uint8) nftRequest {
 // to the prefix it was written for, count, and translate.
 func newRule(rule Rule) (nftRequest, error) {
 	spec := rule.String()
-	if len(spec) >= udataCommentMax {
-		return nftRequest{}, fmt.Errorf("egress: rule %s does not fit in a %d byte comment, which is its identity on the host", spec, udataCommentMax)
+	if err := commentFits(spec); err != nil {
+		return nftRequest{}, err
 	}
 	for _, name := range []string{rule.Interface, rule.Egress} {
-		if len(name) >= ifNameSize {
-			// A name this long cannot be a device's, since the kernel caps one at
-			// IFNAMSIZ-1, and the comparison below would be against 16 bytes with
-			// no terminator, which no interface register can ever equal. The rule
-			// would install and then match nothing, or in the inbound direction
-			// everything.
-			return nftRequest{}, fmt.Errorf("egress: interface %q is %d bytes, and a device name is at most %d", name, len(name), ifNameSize-1)
+		if err := deviceName(name); err != nil {
+			return nftRequest{}, err
 		}
 	}
 	// a steered packet routed back into the mesh keeps its source, so departure is still tested against the mesh device
@@ -607,13 +714,39 @@ func newRule(rule Rule) (nftRequest, error) {
 	}
 	expressions = append(expressions, expression("counter", nil))
 	expressions = append(expressions, translate(rule)...)
+	return ruleRequest(nftFamily(rule.Family), ChainName, spec, expressions), nil
+}
 
-	body := putNfgenmsg(nil, nftFamily(rule.Family))
+// commentFits refuses a spelling longer than the comment that carries it,
+// which is truncated rather than refused by the host and would then never
+// read back as the rule it names
+func commentFits(spec string) error {
+	if len(spec) >= udataCommentMax {
+		return fmt.Errorf("egress: rule %s does not fit in a %d byte comment, which is its identity on the host", spec, udataCommentMax)
+	}
+	return nil
+}
+
+// deviceName refuses a name too long to be a device's. The kernel caps one at
+// IFNAMSIZ-1, and a comparison of 16 bytes with no terminator equals no
+// interface register: the rule would install and then match nothing, or
+// through a "not" everything.
+func deviceName(name string) error {
+	if len(name) >= ifNameSize {
+		return fmt.Errorf("egress: interface %q is %d bytes, and a device name is at most %d", name, len(name), ifNameSize-1)
+	}
+	return nil
+}
+
+// ruleRequest appends one rule of expressions to chain in this tool's table of
+// the family proto, carrying spec as its comment and identity
+func ruleRequest(proto uint8, chain, spec string, expressions [][]byte) nftRequest {
+	body := putNfgenmsg(nil, proto)
 	body = putAttrString(body, unix.NFTA_RULE_TABLE, TableName)
-	body = putAttrString(body, unix.NFTA_RULE_CHAIN, ChainName)
+	body = putAttrString(body, unix.NFTA_RULE_CHAIN, chain)
 	body = putAttr(body, unix.NFTA_RULE_EXPRESSIONS|nlaNested, slices.Concat(expressions...))
 	body = putAttr(body, unix.NFTA_RULE_USERDATA, userdata(spec))
-	return nftRequest{kind: nftCommand(unix.NFT_MSG_NEWRULE), flags: unix.NLM_F_CREATE | unix.NLM_F_APPEND, body: body}, nil
+	return nftRequest{kind: nftCommand(unix.NFT_MSG_NEWRULE), flags: unix.NLM_F_CREATE | unix.NLM_F_APPEND, body: body}
 }
 
 // translate is the statement that rewrites the source: the address written in
@@ -657,11 +790,7 @@ func sourcePrefix(prefix netip.Prefix) [][]byte {
 	if prefix.Addr().Is4() {
 		offset, length = ipv4SourceOffset, ipv4AddressLen
 	}
-	load := putAttrBE32(nil, unix.NFTA_PAYLOAD_DREG, unix.NFT_REG_1)
-	load = putAttrBE32(load, unix.NFTA_PAYLOAD_BASE, unix.NFT_PAYLOAD_NETWORK_HEADER)
-	load = putAttrBE32(load, unix.NFTA_PAYLOAD_OFFSET, offset)
-	load = putAttrBE32(load, unix.NFTA_PAYLOAD_LEN, length)
-	out := [][]byte{expression("payload", load)}
+	out := [][]byte{networkLoad(offset, length)}
 	if int(prefix.Bits()) < int(length)*8 {
 		mask := prefixMask(prefix)
 		bitwise := putAttrBE32(nil, unix.NFTA_BITWISE_SREG, unix.NFT_REG_1)
@@ -673,6 +802,15 @@ func sourcePrefix(prefix netip.Prefix) [][]byte {
 		out = append(out, expression("bitwise", bitwise))
 	}
 	return append(out, expression("cmp", compare(unix.NFT_CMP_EQ, addressBytes(prefix.Masked().Addr()))))
+}
+
+// networkLoad loads length bytes at offset into the network header
+func networkLoad(offset, length uint32) []byte {
+	load := putAttrBE32(nil, unix.NFTA_PAYLOAD_DREG, unix.NFT_REG_1)
+	load = putAttrBE32(load, unix.NFTA_PAYLOAD_BASE, unix.NFT_PAYLOAD_NETWORK_HEADER)
+	load = putAttrBE32(load, unix.NFTA_PAYLOAD_OFFSET, offset)
+	load = putAttrBE32(load, unix.NFTA_PAYLOAD_LEN, length)
+	return expression("payload", load)
 }
 
 // prefixMask is the prefix length as the bytes a bitwise expression masks

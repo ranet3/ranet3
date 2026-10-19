@@ -135,26 +135,19 @@ func (s Segment) checkAllow() error {
 	if len(s.Allow) == 0 {
 		return fmt.Errorf("srv6: cap.segment local %s delivers to egress with no allow list, so it would carry any source's traffic", s.SID)
 	}
-	ipv6 := false
-	for i, entry := range s.Allow {
-		prefix := entry.Prefix
+	err := schema.CheckPrefixes(fmt.Sprintf("srv6: cap.segment local %s allow", s.SID), s.Allow, func(prefix netip.Prefix) string {
 		switch {
-		case !prefix.IsValid():
-			return fmt.Errorf("srv6: cap.segment local %s allow entry %d is not a prefix", s.SID, i+1)
-		case prefix.Masked() != prefix:
-			return fmt.Errorf("srv6: cap.segment local %s allow %s has bits set below its prefix length", s.SID, prefix)
-		case prefix.Addr().Is4In6():
-			return fmt.Errorf("srv6: cap.segment local %s allow %s is an IPv4 prefix written as IPv6, so write it as %s", s.SID, prefix, netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96))
 		case prefix.Bits() == 0:
-			return fmt.Errorf("srv6: cap.segment local %s allow %s admits every address of its family, which makes the segment an open proxy", s.SID, prefix)
-		case prefix.Addr().Is4() && prefix.Bits() < minAllowBits4, prefix.Addr().Is6() && prefix.Bits() < minAllowBits6:
-			return fmt.Errorf("srv6: cap.segment local %s allow %s is shorter than /%d for IPv4 or /%d for IPv6, the unit IANA delegates to a regional registry, so it admits holders the mesh has nothing to do with", s.SID, prefix, minAllowBits4, minAllowBits6)
-		case slices.ContainsFunc(s.Allow[:i], func(other schema.Prefix) bool { return other.Prefix == prefix }):
-			return fmt.Errorf("srv6: cap.segment local %s allow %s is written twice", s.SID, prefix)
+			return "admits every address of its family, which makes the segment an open proxy"
+		case schema.BelowSourceFloor(prefix):
+			return fmt.Sprintf("is shorter than /%d for IPv4 or /%d for IPv6, the unit IANA delegates to a regional registry, so it admits holders the mesh has nothing to do with", schema.MinSourceBits4, schema.MinSourceBits6)
 		}
-		ipv6 = ipv6 || prefix.Addr().Is6()
+		return ""
+	})
+	if err != nil {
+		return err
 	}
-	if !ipv6 {
+	if !slices.ContainsFunc(s.Allow, func(entry schema.Prefix) bool { return entry.Addr().Is6() }) {
 		return fmt.Errorf("srv6: cap.segment local %s allow holds no IPv6 prefix, and the outer source of a segment routed packet is always IPv6, so no packet could pass", s.SID)
 	}
 	return nil

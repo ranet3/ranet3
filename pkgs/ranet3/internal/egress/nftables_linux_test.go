@@ -405,11 +405,11 @@ func TestOversizedInterfaceNameIsRefused(t *testing.T) {
 	}
 }
 
-// Only another writer's deletion of this tool's table, of a chain in it or of a
-// rule in it wakes the translator. Its own flush and withdrawal reach the
-// notification group stamped with its own socket, and another table's churn is
-// none of its business.
-func TestOnlyAnotherWritersDeletionInTheTableWakes(t *testing.T) {
+// Only another writer's deletion or addition of this tool's table, of a chain
+// in it or of a rule in it wakes the translator, a table update setting it
+// dormant among them. Its own writes reach the notification group stamped
+// with its own socket, and another table's churn is none of its business.
+func TestOnlyAnotherWritersChangeToTheTableWakes(t *testing.T) {
 	const own, other = 7, 9
 	notification := func(command int, family uint8, naming uint16, table string, pid uint32) nftMessage {
 		return nftMessage{
@@ -422,29 +422,34 @@ func TestOnlyAnotherWritersDeletionInTheTableWakes(t *testing.T) {
 		message nftMessage
 		wakes   bool
 	}{
-		"its table deleted":         {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, TableName, other), true},
-		"its chain deleted":         {notification(unix.NFT_MSG_DELCHAIN, unix.NFPROTO_IPV6, unix.NFTA_CHAIN_TABLE, TableName, other), true},
-		"a rule of it deleted":      {notification(unix.NFT_MSG_DELRULE, unix.NFPROTO_IPV4, unix.NFTA_RULE_TABLE, TableName, other), true},
-		"its own flush":             {notification(unix.NFT_MSG_DELRULE, unix.NFPROTO_IPV4, unix.NFTA_RULE_TABLE, TableName, own), false},
-		"its own withdrawal":        {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV6, unix.NFTA_TABLE_NAME, TableName, own), false},
-		"another table deleted":     {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, "nat", other), false},
-		"a table of its name added": {notification(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, TableName, other), false},
-		"an inet table of its name": {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_INET, unix.NFTA_TABLE_NAME, TableName, other), false},
-		"a name it starts":          {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, TableName+"x", other), false},
+		"its table deleted":              {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, TableName, other), true},
+		"its chain deleted":              {notification(unix.NFT_MSG_DELCHAIN, unix.NFPROTO_IPV6, unix.NFTA_CHAIN_TABLE, TableName, other), true},
+		"a rule of it deleted":           {notification(unix.NFT_MSG_DELRULE, unix.NFPROTO_IPV4, unix.NFTA_RULE_TABLE, TableName, other), true},
+		"its table added or set dormant": {notification(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, TableName, other), true},
+		"a chain added or changed":       {notification(unix.NFT_MSG_NEWCHAIN, unix.NFPROTO_IPV6, unix.NFTA_CHAIN_TABLE, TableName, other), true},
+		"a rule added":                   {notification(unix.NFT_MSG_NEWRULE, unix.NFPROTO_IPV4, unix.NFTA_RULE_TABLE, TableName, other), true},
+		"its own flush":                  {notification(unix.NFT_MSG_DELRULE, unix.NFPROTO_IPV4, unix.NFTA_RULE_TABLE, TableName, own), false},
+		"its own withdrawal":             {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV6, unix.NFTA_TABLE_NAME, TableName, own), false},
+		"its own table":                  {notification(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, TableName, own), false},
+		"its own rule":                   {notification(unix.NFT_MSG_NEWRULE, unix.NFPROTO_IPV6, unix.NFTA_RULE_TABLE, TableName, own), false},
+		"another table deleted":          {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, "nat", other), false},
+		"a rule added to another table":  {notification(unix.NFT_MSG_NEWRULE, unix.NFPROTO_IPV4, unix.NFTA_RULE_TABLE, "nat", other), false},
+		"an inet table of its name":      {notification(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_INET, unix.NFTA_TABLE_NAME, TableName, other), false},
+		"a name it starts":               {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, TableName+"x", other), false},
 		"another subsystem": {
 			nftMessage{Kind: uint16(unix.NFNL_SUBSYS_CTNETLINK)<<8 | unix.NFT_MSG_DELTABLE, Pid: other, Data: putAttrString(putNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_TABLE_NAME, TableName)},
 			false,
 		},
 	} {
-		if got := deletedByAnother(c.message, own); got != c.wakes {
+		if got := changedByAnother(c.message, own, translatorTables); got != c.wakes {
 			t.Errorf("%s: woke %v, want %v", name, got, c.wakes)
 		}
 	}
 }
 
-// The monitor wakes missed and not deleted for notifications it lost to an
+// The monitor wakes missed and not changed for notifications it lost to an
 // overflow or could not parse, since another table's large transaction
-// overflows the socket as readily as a flush of this tool's, wakes deleted
+// overflows the socket as readily as a flush of this tool's, wakes changed
 // for another writer's deletion of this tool's table, and stops on a closed
 // socket, each wake read through the backend as the translator reads it
 func TestMonitorTellsLostNotificationsFromADeletion(t *testing.T) {
@@ -455,7 +460,7 @@ func TestMonitorTellsLostNotificationsFromADeletion(t *testing.T) {
 	}
 	answers := make(chan answer)
 	asked := make(chan struct{})
-	m := &deletionMonitor{
+	m := &changeMonitor{
 		read: func(buf []byte) (int, error) {
 			asked <- struct{}{}
 			a, ok := <-answers
@@ -465,7 +470,8 @@ func TestMonitorTellsLostNotificationsFromADeletion(t *testing.T) {
 			return copy(buf, a.datagram), a.err
 		},
 		pid:     own,
-		deleted: make(chan struct{}, 1),
+		scope:   translatorTables,
+		changed: make(chan struct{}, 1),
 		missed:  make(chan struct{}, 1),
 		done:    make(chan struct{}),
 	}
@@ -507,7 +513,7 @@ func TestMonitorTellsLostNotificationsFromADeletion(t *testing.T) {
 	for _, c := range []struct {
 		name            string
 		answer          answer
-		deleted, missed bool
+		changed, missed bool
 	}{
 		{"an overflow", answer{err: unix.ENOBUFS}, false, true},
 		{"a datagram cut short", answer{datagram: deletion[:unix.SizeofNlMsghdr+sizeofNfgenmsg]}, false, true},
@@ -515,8 +521,8 @@ func TestMonitorTellsLostNotificationsFromADeletion(t *testing.T) {
 	} {
 		answers <- c.answer
 		next()
-		if deleted, missed := woke(be.Deleted()), woke(be.Missed()); deleted != c.deleted || missed != c.missed {
-			t.Errorf("%s woke deleted %v and missed %v, want %v and %v", c.name, deleted, missed, c.deleted, c.missed)
+		if changed, missed := woke(be.Changed()), woke(be.Missed()); changed != c.changed || missed != c.missed {
+			t.Errorf("%s woke changed %v and missed %v, want %v and %v", c.name, changed, missed, c.changed, c.missed)
 		}
 	}
 	answers <- answer{err: os.ErrClosed}
@@ -527,7 +533,7 @@ func TestMonitorTellsLostNotificationsFromADeletion(t *testing.T) {
 	case <-time.After(passWait):
 		t.Fatal("the monitor never returned after its socket closed")
 	}
-	if woke(be.Deleted()) || woke(be.Missed()) {
+	if woke(be.Changed()) || woke(be.Missed()) {
 		t.Error("a closed socket woke the translator")
 	}
 }

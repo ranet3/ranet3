@@ -184,6 +184,43 @@ func ComparePrefix(a, b Prefix) int {
 // CompareAddr orders two addresses, and is there for the same reason.
 func CompareAddr(a, b Addr) int { return a.Addr.Compare(b.Addr) }
 
+// CheckPrefixes refuses the first entry of a list of prefixes a file may not
+// write, as subject followed by the entry and why: one that is not a prefix,
+// has bits set below its length or spells IPv4 as IPv6, then one extra words
+// a reason for, then one written twice. Every list of prefixes a capability
+// holds refuses its entries in these words.
+func CheckPrefixes(subject string, list []Prefix, extra func(netip.Prefix) string) error {
+	for i, entry := range list {
+		prefix := entry.Prefix
+		var reason string
+		switch {
+		case !prefix.IsValid():
+			return fmt.Errorf("%s entry %d is not a prefix", subject, i+1)
+		case prefix.Masked() != prefix:
+			reason = "has bits set below its prefix length"
+		case prefix.Addr().Is4In6():
+			reason = fmt.Sprintf("is an IPv4 prefix written as IPv6, so write it as %s", netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96))
+		case extra != nil && extra(prefix) != "":
+			reason = extra(prefix)
+		case slices.ContainsFunc(list[:i], func(other Prefix) bool { return other.Prefix == prefix }):
+			reason = "is written twice"
+		default:
+			continue
+		}
+		return fmt.Errorf("%s %s %s", subject, prefix, reason)
+	}
+	return nil
+}
+
+// BelowSourceFloor reports a prefix shorter than its family's floor for a list
+// of the mesh's own sources
+func BelowSourceFloor(prefix netip.Prefix) bool {
+	if prefix.Addr().Is4() {
+		return prefix.Bits() < MinSourceBits4
+	}
+	return prefix.Bits() < MinSourceBits6
+}
+
 // Addr is one address, with no prefix length and no zone. Every field written
 // as one names a host, a segment or a source and never a link, so a zone is
 // refused by name rather than carried somewhere it means nothing.
