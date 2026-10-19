@@ -5,6 +5,7 @@ package client
 
 import (
 	"encoding/hex"
+	"net/netip"
 	"slices"
 	"strings"
 	"time"
@@ -90,6 +91,7 @@ func (c *Client) Status() control.Status {
 		},
 		Kernel: c.kernel(),
 		Egress: c.egress(),
+		Border: c.borderStatus(),
 		Counts: control.Counts{
 			Dialers:        c.dialerCount(),
 			Sessions:       len(c.sessions.paths()),
@@ -178,12 +180,54 @@ func (c *Client) kernel() control.KernelStatus {
 // SetEgressStatus rather than from the config file, because a block that
 // failed validation never became a translator and reporting its fields would
 // describe rules nobody installed.
+//
+// The translator reports the families it holds ready, and the egress device
+// carries neither while the border's chain is not read back, so the status
+// says what the mesh holds.
 func (c *Client) egress() control.EgressStatus {
 	read := c.egressStatus.Load()
 	if read == nil {
 		return control.EgressStatus{}
 	}
-	return (*read)()
+	status := (*read)()
+	if status.Device != "" && c.borderHeld.Load() {
+		status.Ready = nil
+		reasons := slices.DeleteFunc([]string{status.Unready, "until the border filter is read back"}, func(reason string) bool { return reason == "" })
+		status.Unready = strings.Join(reasons, ", and ")
+	}
+	return status
+}
+
+// borderStatus reports the border filter, and nil on a node with no cap.border
+func (c *Client) borderStatus() *control.BorderStatus {
+	f := c.border.Load()
+	if f == nil {
+		return nil
+	}
+	border := *f
+	stats := border.Stats()
+	overlay := border.Capability().Normalized().Overlay
+	prefixes := make([]netip.Prefix, 0, len(overlay))
+	for _, entry := range overlay {
+		prefixes = append(prefixes, entry.Prefix)
+	}
+	return &control.BorderStatus{
+		Where:     border.Where(),
+		Inside:    border.Inside(),
+		Overlay:   prefixes,
+		SIDs:      slices.SortedFunc(slices.Values(border.SIDs()), netip.Addr.Compare),
+		Ready:     stats.Ready,
+		Unready:   stats.Unready,
+		PassAt:    stats.At,
+		Installed: stats.Installed,
+		Dropped: control.BorderDrops{
+			OverlaySourceIPv4: stats.Dropped.Source4,
+			OverlaySourceIPv6: stats.Dropped.Source6,
+			RoutingHeader:     stats.Dropped.RoutingHeader,
+			SIDDestination:    stats.Dropped.Destination,
+		},
+		Err: stats.Err,
+	}
 }
 
 func (c *Client) registryReadAt() time.Time {

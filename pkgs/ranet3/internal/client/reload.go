@@ -22,6 +22,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/registry"
+	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
@@ -122,6 +123,9 @@ func (c *Client) ReloadFrom(path string) (err error) {
 			return err
 		}
 	}
+	if err := c.reborder(old, cfg); err != nil {
+		return err
+	}
 	// a peer the trust document cannot support is skipped rather than refused
 	// or one stale entry would block every later reload
 	peers := effectivePeers(cfg, x)
@@ -173,6 +177,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	_, nodes := x.Size()
 	applied = changedCapabilities(old, cfg)
 	log.Printf("reloaded %s: %d peers, %d nodes in the trust document", path, len(peers), nodes)
+	warnUnbordered(cfg, forwardingEnabled)
 	return nil
 }
 
@@ -208,6 +213,9 @@ func changedCapabilities(old, next *config.Config) []string {
 	was, _ := old.Crypto().Suites()
 	is, _ := next.Crypto().Suites()
 	out = append(out, was.Changed(is)...)
+	if !sameOverlay(old, next) {
+		out = append(out, "cap.border")
+	}
 	if !reflect.DeepEqual(old.Routes(), next.Routes()) {
 		out = append(out, "cap.route")
 	}
@@ -381,8 +389,45 @@ func reloadable(old, next *config.Config) error {
 		return fmt.Errorf("config: cap.segment adds the first egress segment, restart to apply")
 	case len(old.Segments().Egress()) > 0 && len(next.Segments().Egress()) == 0:
 		return fmt.Errorf("config: cap.segment removes the last egress segment, restart to apply")
+	case old.Cap.Border == nil && next.Cap.Border != nil:
+		// the filter and its run goroutine are built once in main, as the translator is
+		return fmt.Errorf("config: cap.border added, restart to apply")
+	case old.Cap.Border != nil && next.Cap.Border == nil:
+		return fmt.Errorf("config: cap.border removed, restart to apply")
 	}
 	return sameReturnSources(old, next)
+}
+
+// reborder hands the running border filter the overlay and the SIDs next
+// carries, where either moved. The loader ran every check SetConfig runs, so
+// after retable it adds no refusal a file can reach.
+func (c *Client) reborder(old, next *config.Config) error {
+	f := c.border.Load()
+	if f == nil || next.Cap.Border == nil || sameBorder(old, next) {
+		return nil
+	}
+	return (*f).SetConfig(*next.Cap.Border, borderSIDs(next))
+}
+
+// sameBorder compares cap.border as the filter runs it, with the SIDs it drops,
+// so a list written in another order is no change
+func sameBorder(old, next *config.Config) bool {
+	return sameOverlay(old, next) && slices.Equal(sortedAddrs(borderSIDs(old)), sortedAddrs(borderSIDs(next)))
+}
+
+// sameOverlay compares cap.border's overlay as the filter runs it
+func sameOverlay(old, next *config.Config) bool {
+	overlay := func(cfg *config.Config) []schema.Prefix {
+		if cfg.Cap.Border == nil {
+			return nil
+		}
+		return cfg.Cap.Border.Normalized().Overlay
+	}
+	return slices.Equal(overlay(old), overlay(next))
+}
+
+func sortedAddrs(addrs []netip.Addr) []netip.Addr {
+	return slices.SortedFunc(slices.Values(addrs), netip.Addr.Compare)
 }
 
 // sameReturnSources refuses a reload whose mesh addresses resolve another return source than the running translator's, or fail to resolve one
@@ -504,7 +549,7 @@ func sortedPrefixes(prefixes []netip.Prefix) []netip.Prefix {
 // because an exit withholds a prefix whose rule is not installed and that
 // answer changes under a running node.
 func (c *Client) announced(cfg *config.Config) []babel.OriginatedRoute {
-	serves := c.egressServes.Load()
+	serves := c.egressServes.Load() && !c.borderHeld.Load()
 	routes := cfg.Routes().Originated()
 	for _, prefix := range c.egressAdvertised() {
 		routes = append(routes, babel.OriginatedRoute{Destination: prefix})

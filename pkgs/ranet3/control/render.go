@@ -30,11 +30,11 @@ func table(w io.Writer, header []string, rows [][]string) {
 	out.Flush()
 }
 
-// pairs writes rows of a name and its value, aligned
+// pairs writes rows aligned under no header, most of them a name and its value
 func pairs(w io.Writer, rows [][]string) {
 	out := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, row := range rows {
-		fmt.Fprintf(out, "%s\t%s\n", row[0], row[1])
+		fmt.Fprintln(out, strings.Join(row, "\t"))
 	}
 	out.Flush()
 }
@@ -61,6 +61,10 @@ func RenderStatus(w io.Writer, s Status) {
 		{"Segments", segmentLine(s)},
 		{"Steering", steeringLine(s)},
 		{"ESP", fmt.Sprintf("%d in, %d dropped, %d refused", s.ESP.InboundPackets, s.ESP.InboundDropped, s.ESP.ReceiveRefused)},
+	}
+	// under the egress line, and only on a node that writes cap.border
+	if s.Border != nil {
+		rows = slices.Insert(rows, slices.IndexFunc(rows, func(row []string) bool { return row[0] == "Egress" })+1, []string{"Border", borderLine(*s.Border)})
 	}
 	// only on a node running less than its file says, since it would read none on every other
 	if len(s.Disabled) > 0 {
@@ -175,6 +179,26 @@ func egressLine(e EgressStatus) string {
 		line += ", " + e.Err
 	}
 	return line
+}
+
+// borderLine leads with where the chain is and what it accepts, then the drops
+// counted, so an operator who injected a packet finds its count on the line, or
+// says it is not installed and why
+func borderLine(b BorderStatus) string {
+	if !b.Ready {
+		why := b.Err
+		if why == "" {
+			why = b.Unready
+		}
+		return "not installed, " + why
+	}
+	overlay := fmt.Sprintf("%d overlay prefixes", len(b.Overlay))
+	if len(b.Overlay) == 1 {
+		overlay = "1 overlay prefix"
+	}
+	return fmt.Sprintf("%s, inside %s, %s, %s, dropped %d overlay sources, %d routing headers, %d SID destinations",
+		b.Where, strings.Join(b.Inside, " "), overlay, countOf(len(b.SIDs), "SID"),
+		b.Dropped.OverlaySourceIPv4+b.Dropped.OverlaySourceIPv6, b.Dropped.RoutingHeader, b.Dropped.SIDDestination)
 }
 
 func egressDeviceText(ready []string, unready string) string {

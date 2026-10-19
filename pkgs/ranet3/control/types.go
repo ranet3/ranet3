@@ -272,9 +272,11 @@ type Status struct {
 	Registry     RegistryInfo `json:"registry"`
 	Kernel       KernelStatus `json:"kernel"`
 	Egress       EgressStatus `json:"egress"`
-	Counts       Counts       `json:"counts"`
-	ESP          ESPCounters  `json:"esp"`
-	Originate    []Originated `json:"originate"`
+	// Border is absent on a node that writes no cap.border
+	Border    *BorderStatus `json:"border,omitempty"`
+	Counts    Counts        `json:"counts"`
+	ESP       ESPCounters   `json:"esp"`
+	Originate []Originated  `json:"originate"`
 	// Segments lists the addresses this node answers for as a waypoint or an
 	// exit, each written as the address and the behavior, then for an egress
 	// segment its delivery and its allow list. It is absent on a
@@ -416,6 +418,36 @@ type EgressStatus struct {
 	// connection keeps it.
 	Conflicts []string `json:"conflicts,omitempty"`
 	Err       string   `json:"err,omitempty"`
+}
+
+// BorderStatus is the border filter: the chain dropping what arrives from
+// outside the mesh carrying a mesh source, a routing header or one of this
+// node's SIDs. Status carries one only under cap.border.
+type BorderStatus struct {
+	// Where names the table and the chain, as the filter spells them
+	Where string `json:"where"`
+	// Inside is the devices whose traffic the chain accepts whatever it carries
+	Inside  []string       `json:"inside"`
+	Overlay []netip.Prefix `json:"overlay"`
+	SIDs    []netip.Addr   `json:"sids,omitempty"`
+	// Ready is whether the last pass read the chain back as written, which
+	// every family of the egress device waits for, and Unready why it did not
+	Ready   bool   `json:"ready"`
+	Unready string `json:"unready,omitempty"`
+	// PassAt is zero until the first pass has run
+	PassAt    time.Time   `json:"pass_at,omitzero"`
+	Installed int         `json:"installed"`
+	Dropped   BorderDrops `json:"dropped"`
+	Err       string      `json:"err,omitempty"`
+}
+
+// BorderDrops is the packets each drop of the chain has counted, as the last
+// pass read them. A rewrite of the chain starts them from zero.
+type BorderDrops struct {
+	OverlaySourceIPv4 uint64 `json:"overlay_source_ipv4"`
+	OverlaySourceIPv6 uint64 `json:"overlay_source_ipv6"`
+	RoutingHeader     uint64 `json:"routing_header"`
+	SIDDestination    uint64 `json:"sid_destination"`
 }
 
 // Counts is the mesh in six numbers, which is the first thing to read when

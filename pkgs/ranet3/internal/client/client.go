@@ -21,6 +21,7 @@ import (
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
@@ -106,11 +107,24 @@ type Client struct {
 	egressWithdrawn atomic.Bool
 	// egressServes is the translator's last word on whether the egress SIDs are served
 	egressServes atomic.Bool
+	// borderHeld is a cap.border whose chain is not read back, which holds
+	// both families of the egress device and the egress SIDs back
+	borderHeld atomic.Bool
 	// republishMu runs one republish at a time, each reading the stored
-	// configuration and egressServes once it holds it, so the last to finish
-	// reads the last of both
+	// configuration, egressServes and borderHeld once it holds it, so the last
+	// to finish reads the last of all three
 	// it is taken after reloadMu and before the speaker's own
 	republishMu sync.Mutex
+	// egressMu orders the mesh's moves of egress readiness, each computed from
+	// the translator's pair and borderHeld, so the mesh holds the last of both
+	// it never wraps a republish
+	egressMu                 sync.Mutex
+	translator4, translator6 bool
+	// border is the border filter, handed over by the command that built it
+	// and nil on a node with no cap.border
+	border atomic.Pointer[borderFilter]
+	// ruleDump reads every policy rule the host holds, and nil means kernel.DumpRules
+	ruleDump func() ([]kernel.DumpedRule, error)
 
 	// running is the control socket's write path state: whether each named
 	// subsystem is acting. It is the record rather than the mechanism, since
@@ -193,6 +207,7 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 		return nil, err
 	}
 	warnUnforwardableTransit(cfg)
+	warnUnbordered(cfg, forwardingEnabled)
 	warnVRFWithoutL3mdev(cfg)
 	// Before the tun exists, so a segment this node could not answer for
 	// refuses the startup without a device to clean up.
@@ -324,6 +339,8 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 		events:  bus,
 		network: network,
 	}
+	// the border's first pass reports it ready before main hands the filter over
+	c.borderHeld.Store(cfg.Cap.Border != nil)
 	c.sessions.events = bus
 	c.sessions.trust = liveTrust{c}
 	c.sessions.steering = mesh.Steering()
@@ -451,9 +468,83 @@ func (c *Client) EgressDeviceReader() func() (v4, v6 error) {
 // attracts finds the mesh writing, and a packet arriving after the
 // translation went is dropped before the retraction reaches anyone.
 func (c *Client) SetEgressReady(v4, v6, serves bool) {
-	c.Mesh.SetEgressReady(v4, v6)
+	c.egressMu.Lock()
+	c.translator4, c.translator6 = v4, v6
+	c.moveMeshEgressLocked()
+	c.egressMu.Unlock()
 	c.egressServes.Store(serves)
 	c.Republish()
+}
+
+// SetBorderReady takes whether the border filter's chain reads back as the
+// configuration asks. Neither family of the egress device is ready, and no
+// egress SID is served, while it does not, in the order SetEgressReady keeps.
+func (c *Client) SetBorderReady(ok bool) {
+	c.egressMu.Lock()
+	c.borderHeld.Store(!ok)
+	c.moveMeshEgressLocked()
+	c.egressMu.Unlock()
+	c.Republish()
+}
+
+// moveMeshEgressLocked hands the mesh each family the translator and the
+// border both hold ready, with c.egressMu held
+func (c *Client) moveMeshEgressLocked() {
+	held := c.borderHeld.Load()
+	c.Mesh.SetEgressReady(c.translator4 && !held, c.translator6 && !held)
+}
+
+// borderFilter is the border filter as the node reloads and reports it. The
+// command builds it, since it owns a table in the host's packet filter and
+// this owns the mesh.
+type borderFilter interface {
+	SetConfig(egress.Border, []netip.Addr) error
+	Capability() egress.Border
+	SIDs() []netip.Addr
+	Inside() []string
+	Where() string
+	Stats() egress.BorderStats
+	Debug() egress.BorderDebug
+}
+
+// SetBorder hands the node the border filter the command built, which a
+// reload hands the overlay and the SIDs and the status reads
+func (c *Client) SetBorder(f borderFilter) { c.border.Store(&f) }
+
+// BorderInside is the devices the border filter accepts whatever they carry:
+// the mesh tun, the egress device where one exists, lo, through which a packet
+// this host sends to its own address meets prerouting, and the VRF master the
+// tun is enslaved to, as which a packet arriving on the tun meets prerouting a
+// second time. A reload moves none of them.
+func (c *Client) BorderInside() []string {
+	inside := []string{c.Mesh.Name}
+	if c.egressDevice != "" {
+		inside = append(inside, c.egressDevice)
+	}
+	inside = append(inside, "lo")
+	if table := c.config().Cap.Table; table != nil && table.Name() != "" {
+		inside = append(inside, table.Name())
+	}
+	return inside
+}
+
+// BorderRuntime hands the border filter what the node resolves at startup: the
+// devices inside the mesh, the SIDs of the configuration in force, the
+// readiness the egress device's families wait for and the bus
+func (c *Client) BorderRuntime() egress.BorderRuntime {
+	return egress.BorderRuntime{Inside: c.BorderInside(), SIDs: borderSIDs(c.config()), Ready: c.SetBorderReady, Events: c.events}
+}
+
+// borderSIDs is the SID of every local segment cfg writes, whatever its
+// behavior, each of which the border drops as a destination arriving from
+// outside the mesh
+func borderSIDs(cfg *config.Config) []netip.Addr {
+	local := cfg.Segments().Local
+	sids := make([]netip.Addr, 0, len(local))
+	for _, segment := range local {
+		sids = append(sids, segment.SID.Addr)
+	}
+	return sids
 }
 
 // CaptureRoutes holds the routing the reconciler needs while the mesh carries

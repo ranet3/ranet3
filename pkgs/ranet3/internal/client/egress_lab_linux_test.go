@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -59,14 +60,16 @@ var (
 )
 
 // An exit node in a namespace of its own, started through New with the
-// reconciler and the translator main builds, carries a synthetic leaf's
-// steered packets out of a veth uplink to a far host in another namespace.
+// border, the reconciler and the translator main builds, carries a synthetic
+// leaf's steered packets out of a veth uplink to a far host in another
+// namespace. They leave the egress device with the leaf's source, so they
+// reach the far host only while the border accepts the device.
 func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
 	}
 	exit, far := startNamespaceThread(t), startNamespaceThread(t)
-	labUplink(t, exit, far)
+	labUplink(t, exit, far, "")
 	cfg := labConfig(t)
 	bus := events.New()
 	var node *Client
@@ -110,8 +113,12 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 	}
 	var routes *kernel.Reconciler
 	var translator *egress.Translator
+	var border *egress.BorderFilter
 	inExit := func(f func()) { _ = exit.do(func() error { f(); return nil }) }
 	if err := exit.do(func() (err error) {
+		if border, err = egress.NewBorderFilter(*cfg.Cap.Border, node.BorderRuntime()); err != nil {
+			return err
+		}
 		if routes, err = kernel.New(*cfg.Cap.Table, node.KernelRuntime(), node.Mesh.Routes); err != nil {
 			return err
 		}
@@ -129,8 +136,9 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 		})
 		return err
 	}); err != nil {
-		t.Fatalf("build the reconciler and the translator: %v", err)
+		t.Fatalf("build the border, the reconciler and the translator: %v", err)
 	}
+	node.SetBorder(border)
 	node.SetEgressAnnounce(translator.Announce)
 	runs.Go(func() {
 		if err := routes.Run(ctx); err != nil {
@@ -140,6 +148,11 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 	runs.Go(func() {
 		if err := translator.Run(ctx); err != nil {
 			t.Errorf("the translator: %v", err)
+		}
+	})
+	runs.Go(func() {
+		if err := border.Run(ctx); err != nil {
+			t.Errorf("the border: %v", err)
 		}
 	})
 	waitFor(t, convergeBudget, "the egress device ready for both families, its rule installed and the mesh table covering the far host", func() bool {
@@ -259,6 +272,8 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 	})
 
 	t.Run("a packet from the far host to the SID", func(t *testing.T) {
+		spec := "drop ipv6 destination " + labSID.String()
+		dropped := borderDropped(t, exit, border, spec)
 		before := node.Mesh.SegmentCounters()
 		if err := far.do(func() error {
 			netlink, err := openNetlinkRoute()
@@ -290,6 +305,9 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 		time.Sleep(labQuiet)
 		if got := node.Mesh.SegmentCounters(); got != before {
 			t.Errorf("packets sent to the SID from beyond the uplink moved the counters from %+v to %+v", before, got)
+		}
+		if got := borderDropped(t, exit, border, spec); got < dropped+3 {
+			t.Errorf("the border counted %d packets to the SID from beyond the uplink after %d, want three more", got, dropped)
 		}
 	})
 
@@ -365,45 +383,8 @@ func TestTUNSetEgressReadyMovesTheMeshBeforeTheAnnouncement(t *testing.T) {
 		t.Skip("creating a tun needs root on linux")
 	}
 	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(labSID.String(), labLeaves...)) })
-	segments, steering, err := c.config().Segments().Tables()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := startNamespaceThread(t).do(func() error {
-		mesh, err := netstack.NewNamed(0, labTUN, nil)
-		if err != nil {
-			return err
-		}
-		device, err := netstack.NewEgressDevice(labEgress, netstack.DefaultMTU)
-		if err != nil {
-			mesh.Close()
-			return err
-		}
-		mesh.SetSegments(segments)
-		mesh.SetSteering(steering)
-		mesh.SetEgress(device)
-		c.Mesh = mesh
-		return nil
-	}); err != nil {
-		t.Fatalf("open the mesh and its egress device: %v", err)
-	}
-	t.Cleanup(c.Mesh.Close)
+	carried := meshCarrying(t, c)
 	speakerRecording(t, c, bus)
-	carried := func() (families [2]bool) {
-		for i, inner := range [][]byte{
-			udpPacket(labLeaf4, labFar4.Addr(), labLeafPort, labPort, []byte("steered IPv4")),
-			udpPacket(labHeadend, labFar6.Addr(), labLeafPort, labPort, []byte("steered IPv6")),
-		} {
-			outer, err := srv6.Encapsulate(inner, labHeadend, []netip.Addr{labSID})
-			if err != nil {
-				t.Fatalf("encapsulate toward %s: %v", labSID, err)
-			}
-			egressed := c.Mesh.SegmentCounters().Egressed
-			c.Mesh.DeliverInbound(outer, 0)
-			families[i] = c.Mesh.SegmentCounters().Egressed > egressed
-		}
-		return families
-	}
 	var rebuiltWith [2]bool
 	c.SetEgressAnnounce(func() []netip.Prefix {
 		rebuiltWith = carried()
@@ -474,14 +455,37 @@ func labConfig(t *testing.T) *config.Config {
 
 // labUplink makes the veth pair from the exit's namespace to the far host's,
 // addresses both ends and turns forwarding on at the exit before any device
-// of the node exists, so the egress device takes it from conf.default
-func labUplink(t *testing.T, exit, far *namespaceThread) {
+// of the node exists, so the egress device takes it from conf.default. Where
+// master is not empty, a VRF of that name bound to the mesh table is made
+// first and the exit's end joins it before it is addressed. A kernel with no
+// VRF support skips the test, as the reconciler's own VRF test does.
+func labUplink(t *testing.T, exit, far *namespaceThread, master string) {
 	t.Helper()
+	var unsupported error
 	if err := exit.do(func() error {
 		for _, path := range []string{"/proc/sys/net/ipv4/ip_forward", "/proc/sys/net/ipv6/conf/all/forwarding"} {
 			if err := os.WriteFile(path, []byte("1\n"), 0o644); err != nil {
 				return err
 			}
+		}
+		netlink, err := openNetlinkRoute()
+		if err != nil {
+			return err
+		}
+		defer netlink.close()
+		var enslave []byte
+		if master != "" {
+			vrf := slices.Concat(rtattr(unix.IFLA_INFO_KIND, cstring("vrf")), rtattr(unix.IFLA_INFO_DATA, rtattr(unix.IFLA_VRF_TABLE, u32(kernel.DefaultTable))))
+			if err := netlink.request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL,
+				slices.Concat(ifinfo(0, unix.IFF_UP), rtattr(unix.IFLA_IFNAME, cstring(master)), rtattr(unix.IFLA_LINKINFO, vrf))); err != nil {
+				unsupported = err
+				return nil
+			}
+			link, err := net.InterfaceByName(master)
+			if err != nil {
+				return err
+			}
+			enslave = rtattr(unix.IFLA_MASTER, u32(uint32(link.Index)))
 		}
 		other, err := unix.Open(far.path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 		if err != nil {
@@ -490,18 +494,21 @@ func labUplink(t *testing.T, exit, far *namespaceThread) {
 		defer unix.Close(other)
 		peer := slices.Concat(ifinfo(0, 0), rtattr(unix.IFLA_IFNAME, cstring("labf")), rtattr(unix.IFLA_NET_NS_FD, u32(uint32(other))))
 		kind := slices.Concat(rtattr(unix.IFLA_INFO_KIND, cstring("veth")), rtattr(unix.IFLA_INFO_DATA, rtattr(vethPeer, peer)))
-		netlink, err := openNetlinkRoute()
-		if err != nil {
-			return err
-		}
-		defer netlink.close()
 		if err := netlink.request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL,
-			slices.Concat(ifinfo(0, 0), rtattr(unix.IFLA_IFNAME, cstring("labx")), rtattr(unix.IFLA_LINKINFO, kind))); err != nil {
+			slices.Concat(ifinfo(0, 0), rtattr(unix.IFLA_IFNAME, cstring("labx")), enslave, rtattr(unix.IFLA_LINKINFO, kind))); err != nil {
 			return fmt.Errorf("make the veth pair: %w", err)
+		}
+		if master != "" {
+			if held, err := labMaster("labx"); err != nil || held != master {
+				return fmt.Errorf("the uplink is enslaved to %q (%v), want %s", held, err, master)
+			}
 		}
 		return labAddress(netlink, "labx", labExit4, labExit6)
 	}); err != nil {
 		t.Fatalf("make the exit's end of the uplink: %v", err)
+	}
+	if unsupported != nil {
+		t.Skipf("no vrf support in this kernel: %v", unsupported)
 	}
 	if err := far.do(func() error {
 		netlink, err := openNetlinkRoute()
@@ -513,6 +520,44 @@ func labUplink(t *testing.T, exit, far *namespaceThread) {
 	}); err != nil {
 		t.Fatalf("address the far host's end of the uplink: %v", err)
 	}
+}
+
+// labMaster names the device name is enslaved to in the calling thread's
+// namespace, empty for none, out of a dump of every link
+func labMaster(name string) (string, error) {
+	link, err := net.InterfaceByName(name)
+	if err != nil {
+		return "", err
+	}
+	rib, err := syscall.NetlinkRIB(syscall.RTM_GETLINK, syscall.AF_UNSPEC)
+	if err != nil {
+		return "", err
+	}
+	messages, err := syscall.ParseNetlinkMessage(rib)
+	if err != nil {
+		return "", err
+	}
+	for _, message := range messages {
+		if message.Header.Type != syscall.RTM_NEWLINK || len(message.Data) < syscall.SizeofIfInfomsg ||
+			int(int32(binary.NativeEndian.Uint32(message.Data[4:]))) != link.Index {
+			continue
+		}
+		attrs, err := syscall.ParseNetlinkRouteAttr(&message)
+		if err != nil {
+			return "", err
+		}
+		for _, attr := range attrs {
+			if attr.Attr.Type == syscall.IFLA_MASTER && len(attr.Value) == 4 {
+				master, err := net.InterfaceByIndex(int(binary.NativeEndian.Uint32(attr.Value)))
+				if err != nil {
+					return "", err
+				}
+				return master.Name, nil
+			}
+		}
+		return "", nil
+	}
+	return "", fmt.Errorf("the link dump holds no %s", name)
 }
 
 func labAddress(netlink netlinkRoute, name string, addresses ...netip.Prefix) error {
@@ -528,8 +573,14 @@ func labAddress(netlink netlinkRoute, name string, addresses ...netip.Prefix) er
 	return nil
 }
 
+// labRouteVia routes to through gateway on link index in the main table, in
+// the family of to
 func labRouteVia(netlink netlinkRoute, index int, to netip.Prefix, gateway netip.Addr) error {
-	header := []byte{unix.AF_INET6, byte(to.Bits()), 0, 0, unix.RT_TABLE_MAIN, unix.RTPROT_BOOT, unix.RT_SCOPE_UNIVERSE, unix.RTN_UNICAST, 0, 0, 0, 0}
+	family := byte(unix.AF_INET6)
+	if to.Addr().Is4() {
+		family = unix.AF_INET
+	}
+	header := []byte{family, byte(to.Bits()), 0, 0, unix.RT_TABLE_MAIN, unix.RTPROT_BOOT, unix.RT_SCOPE_UNIVERSE, unix.RTN_UNICAST, 0, 0, 0, 0}
 	body := slices.Concat(header, rtattr(unix.RTA_DST, to.Addr().AsSlice()), rtattr(unix.RTA_GATEWAY, gateway.AsSlice()), rtattr(unix.RTA_OIF, u32(uint32(index))))
 	return netlink.request(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, body)
 }
@@ -578,23 +629,46 @@ func labQuietFor(t *testing.T, listener *net.UDPConn, payload []byte) {
 // labCaptureReply calls send until the capture reads a UDP packet to leaf's labLeafPort carrying payload
 func labCaptureReply(t *testing.T, capture int, leaf netip.Addr, payload []byte, send func()) {
 	t.Helper()
-	buf := make([]byte, 1<<16)
 	for deadline := time.Now().Add(convergeBudget); time.Now().Before(deadline); {
 		send()
-		for {
-			n, _, err := unix.Recvfrom(capture, buf, 0)
-			if errors.Is(err, unix.EINTR) {
-				continue
-			}
-			if err != nil {
-				break
-			}
-			if to, port, got, ok := labUDPOf(buf[:n]); ok && to == leaf && port == labLeafPort && bytes.Equal(got, payload) {
-				return
-			}
+		if labCaptured(capture, labReplyTo(leaf, payload)) {
+			return
 		}
 	}
 	t.Fatalf("no reply to %s crossed the mesh tun within %s", leaf, convergeBudget)
+}
+
+// labCaptured reads the capture until a read times out, and reports whether
+// it read a packet match takes
+func labCaptured(capture int, match func(packet []byte) bool) bool {
+	buf := make([]byte, 1<<16)
+	for {
+		n, _, err := unix.Recvfrom(capture, buf, 0)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return false
+		}
+		if match(buf[:n]) {
+			return true
+		}
+	}
+}
+
+// labReplyTo takes a UDP packet to leaf's labLeafPort carrying payload
+func labReplyTo(leaf netip.Addr, payload []byte) func([]byte) bool {
+	return func(packet []byte) bool {
+		to, port, got, ok := labUDPOf(packet)
+		return ok && to == leaf && port == labLeafPort && bytes.Equal(got, payload)
+	}
+}
+
+// labIPv6To takes an IPv6 packet to destination holding payload
+func labIPv6To(destination netip.Addr, payload []byte) func([]byte) bool {
+	return func(packet []byte) bool {
+		return len(packet) > 40 && packet[0]>>4 == 6 && netip.AddrFrom16([16]byte(packet[24:40])) == destination && bytes.Contains(packet, payload)
+	}
 }
 
 // labUDPOf reads the destination, its port and the payload of the UDP packet raw

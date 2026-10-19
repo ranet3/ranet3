@@ -47,8 +47,8 @@
 // An exit's allow list says which sources it carries out of the mesh, and
 // it is authorization rather than a border: a host on any link of a forwarding
 // node can send a packet with a mesh source into that node, which routes it
-// into the mesh and on to the exit as if a mesh node had sent it.
-// BorderFilter owns a second table of this tool's name, inet
+// into the mesh and on to the exit as if a mesh node had sent it. cap.border
+// closes that. BorderFilter owns a second table of this tool's name, inet
 // rather than ip and ip6, holding one filter chain at prerouting and priority
 // raw, before conntrack, so a forged packet creates no connection entry. It
 // accepts whatever arrives on a device inside the mesh, the tun, the egress
@@ -66,7 +66,11 @@
 //
 // It is a second owner beside Translator, with its own run goroutine, socket
 // and change monitor, and neither writes, replaces or deletes the other's
-// table.
+// table. The filter keeps its table through `ranet3 down`, since it guards
+// the host's links rather than the mesh, and withdraws it last at shutdown,
+// after nothing routes into the tun. Its readiness is a condition of every
+// family on the egress device, so an exit whose border is down stops
+// egressing until a pass puts it back.
 package egress
 
 import (

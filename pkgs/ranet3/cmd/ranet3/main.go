@@ -206,6 +206,38 @@ func runDaemon(opts options) int {
 		return refuseToStart(err)
 	}
 
+	// cap.border is on before the reconciler routes anything into the tun,
+	// and goes only once the reconciler has withdrawn those routes and the
+	// mesh has closed, so nothing forwards into the mesh while it is gone.
+	// down leaves it running, since the kernel still forwards and the host's
+	// services still trust mesh sources.
+	stopBorder := func() {}
+	if block := cfg.Cap.Border; block != nil {
+		border, err := egress.NewBorderFilter(*block, node.BorderRuntime())
+		if err != nil {
+			return refuseToStart(err)
+		}
+		node.SetBorder(border)
+		borderCtx, cancelBorder := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			// the error is the withdrawal failing, which leaves the chain in
+			// the host's ruleset and is no clean exit
+			if err := border.Run(borderCtx); err != nil {
+				log.Printf("border: %v", err)
+				failed.Store(true)
+			}
+		}()
+		stopBorder = sync.OnceFunc(func() {
+			cancelBorder()
+			<-done
+		})
+		// a refusal later in the start withdraws the chain on the way out
+		defer stopBorder()
+		log.Printf("border filter in %s, inside %s", border.Where(), strings.Join(border.Inside(), " "))
+	}
+
 	// A separate listener from pprof: a fleet node wants metrics scraped
 	// without exposing a profiler, and a profiling run wants the profiler
 	// without rewiring monitoring.
@@ -409,12 +441,20 @@ func runDaemon(opts options) int {
 	}
 	// Whichever side stopped first, stop the other, then let the reconciler
 	// finish withdrawing before the process exits.
-	cancel()
-	reconciler.Wait()
+	stopInOrder(cancel, reconciler.Wait, stopBorder)
 	if failed.Load() {
 		return 1
 	}
 	return 0
+}
+
+// stopInOrder ends a daemon whose mesh has stopped: it cancels the reconciler
+// and the translator, waits for both to withdraw, and only then withdraws the
+// border, so no route into the tun outlives the filter
+func stopInOrder(cancel context.CancelFunc, wait, stopBorder func()) {
+	cancel()
+	wait()
+	stopBorder()
 }
 
 // debugNode is the node under the --debug-access it was started with

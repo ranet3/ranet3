@@ -1,0 +1,28 @@
+{
+  "where": "nftables table inet ranet3 chain border",
+  "inside": [
+    "ranet3",
+    "ranet3e",
+    "lo",
+    "gravity"
+  ],
+  "overlay": [
+    "23.161.104.0/24",
+    "192.104.136.0/24",
+    "204.115.20.0/23",
+    "2602:f590::/36",
+    "2a0c:b641:69c::/48"
+  ],
+  "sids": [
+    "2a0c:b641:69c:5d26::3"
+  ],
+  "ready": true,
+  "pass_at": "2026-10-19T09:14:02Z",
+  "installed": 11,
+  "dropped": {
+    "overlay_source_ipv4": 3,
+    "overlay_source_ipv6": 1,
+    "routing_header": 2,
+    "sid_destination": 5
+  }
+}

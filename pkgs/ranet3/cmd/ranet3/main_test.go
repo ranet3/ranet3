@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -59,6 +60,36 @@ func TestFirstSignalShutsDownAndTheSecondGivesUp(t *testing.T) {
 				t.Error("the shutdown was never started")
 			}
 		})
+	}
+}
+
+// The border withdraws only once the reconciler and the translator have
+// withdrawn, which they start on the cancel, so no route into the tun outlives
+// the filter. The two owners are a recording fake around the WaitGroup main
+// waits on.
+func TestShutdownWithdrawsTheBorderLast(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	record := func(step string) {
+		mu.Lock()
+		defer mu.Unlock()
+		order = append(order, step)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var owners sync.WaitGroup
+	for _, owner := range []string{"reconciler", "translator"} {
+		owners.Go(func() {
+			<-ctx.Done()
+			record(owner + " withdrew")
+		})
+	}
+	wait := func() {
+		owners.Wait()
+		record("both waited for")
+	}
+	stopInOrder(cancel, wait, func() { record("border withdrew") })
+	if len(order) != 4 || order[2] != "both waited for" || order[3] != "border withdrew" {
+		t.Errorf("the shutdown ran %v, want the border to withdraw after the reconciler and the translator", order)
 	}
 }
 

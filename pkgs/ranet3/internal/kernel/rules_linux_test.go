@@ -161,11 +161,18 @@ func TestRuleDumpKeepsOnlyWhatThisReconcilerOwns(t *testing.T) {
 	unmarked := plat.ruleMessage(Rule{Family: FamilyIPv4, To: schema.MustPrefix("192.0.2.0/24"), Table: 200, Priority: 102})
 	unmarked = stripProtocol(t, unmarked)
 
+	// marked as this reconciler's, yet looking up no table or sitting at
+	// priority 0, the local table's, neither of which it could have written
+	tableless := plat.ruleMessage(Rule{Family: FamilyIPv4, To: schema.MustPrefix("192.0.2.0/24"), Priority: 103})
+	first := plat.ruleMessage(Rule{Family: FamilyIPv4, To: schema.MustPrefix("198.51.100.0/24"), Table: 200})
+
 	conn.replies = []nlMessage{
 		{Kind: unix.RTM_NEWRULE, Data: plat.ruleMessage(ours)},
 		{Kind: unix.RTM_NEWRULE, Data: other},
 		{Kind: unix.RTM_NEWRULE, Data: blackhole},
 		{Kind: unix.RTM_NEWRULE, Data: unmarked},
+		{Kind: unix.RTM_NEWRULE, Data: tableless},
+		{Kind: unix.RTM_NEWRULE, Data: first},
 	}
 	got, err := plat.Rules()
 	if err != nil {

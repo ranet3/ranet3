@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/netip"
 
 	"golang.org/x/sys/unix"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -104,65 +103,22 @@ func (p *netlinkPlatform) Rules() ([]Rule, error) {
 	return out, nil
 }
 
-// decodeRule reads one dumped rule, and reports false for anything this
-// reconciler does not own or could not have written. Everything it accepts has
-// to compare equal to the configured rule it came from, or the diff installs a
-// duplicate on every pass.
+// decodeRule reads one dumped rule through the dump's decoder, and reports
+// false for anything this reconciler does not own or could not have written.
+// Everything it accepts has to compare equal to the configured rule it came
+// from, or the diff installs a duplicate on every pass.
 func (p *netlinkPlatform) decodeRule(message nlMessage) (Rule, bool) {
-	if len(message.Data) < sizeofFibRuleHdr {
-		return Rule{}, false
-	}
-	family := message.Data[0]
-	if family != unix.AF_INET && family != unix.AF_INET6 {
-		return Rule{}, false
-	}
+	held, ok := decodeDumpedRule(message)
 	// Only the action this file writes. A rule that blackholes or that reaches
 	// a goto target is not one of ours however it is marked, and deleting it
 	// on the strength of a protocol byte alone would be taking somebody's
 	// word for what it does.
-	if message.Data[7] != unix.FR_ACT_TO_TBL {
+	if !ok || held.Action != actionName(unix.FR_ACT_TO_TBL) || held.Protocol != p.table.Proto || held.Table == 0 || held.Priority == 0 {
 		return Rule{}, false
 	}
-	rule := Rule{Family: FamilyIPv6}
-	if family == unix.AF_INET {
-		rule.Family = FamilyIPv4
-	}
-	dstLen, srcLen := message.Data[1], message.Data[2]
-	ours := false
-	for kind, value := range message.attributes(sizeofFibRuleHdr) {
-		switch kind {
-		case unix.FRA_PROTOCOL:
-			ours = len(value) == 1 && value[0] == p.table.Proto
-		case unix.FRA_TABLE:
-			if len(value) == 4 {
-				rule.Table = schema.TableID(binary.NativeEndian.Uint32(value))
-			}
-		case unix.FRA_PRIORITY:
-			if len(value) == 4 {
-				rule.Priority = binary.NativeEndian.Uint32(value)
-			}
-		case unix.FRA_FWMARK:
-			if len(value) == 4 {
-				rule.FWMark = binary.NativeEndian.Uint32(value)
-			}
-		case unix.FRA_FWMASK:
-			if len(value) == 4 {
-				rule.FWMask = binary.NativeEndian.Uint32(value)
-			}
-		case unix.FRA_DST:
-			if address, ok := addressFromBytes(value); ok {
-				rule.To = schema.PrefixFrom(netip.PrefixFrom(address, int(dstLen)))
-			}
-		case unix.FRA_SRC:
-			if address, ok := addressFromBytes(value); ok {
-				rule.From = schema.PrefixFrom(netip.PrefixFrom(address, int(srcLen)))
-			}
-		case unix.FRA_IIFNAME:
-			rule.IIF = unix.ByteSliceToString(value)
-		}
-	}
-	if !ours || rule.Table == 0 || rule.Priority == 0 {
-		return Rule{}, false
+	rule := Rule{
+		Family: held.Family, To: schema.PrefixFrom(held.To), From: schema.PrefixFrom(held.From),
+		FWMark: held.FWMark, FWMask: held.FWMask, IIF: held.IIF, Table: schema.TableID(held.Table), Priority: held.Priority,
 	}
 	// A mask the kernel reports as all ones is the exact match an absent
 	// FRA_FWMASK asks for, so the two spellings compare equal rather than
