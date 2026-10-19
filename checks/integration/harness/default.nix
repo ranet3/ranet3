@@ -568,9 +568,10 @@ testers.runNixOSTest {
                   }
                 ];
               };
-              # an egress segment needs the border, whose overlay covers both
-              # tunnel prefixes and so the segment's allow list
-              border = pkgs.lib.mkIf egressSegment {
+              # a local segment needs the border, whose overlay covers both
+              # tunnel prefixes, so every outer source the gateway sends from
+              # and the egress segment's allow list
+              border = pkgs.lib.mkIf segments {
                 overlay = [
                   "fd00:88::/32"
                   "fd00:99::/32"

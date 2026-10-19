@@ -1061,7 +1061,8 @@ func TestValidatedRouteSpeakerAndSegmentsReadBackFromTheirFile(t *testing.T) {
 		drawn := hegel.Draw(ht, nodes())
 		drawn.Dial.All = true
 		route, speaker, segment := hegel.Draw(ht, routes()), hegel.Draw(ht, speakers()), hegel.Draw(ht, segments())
-		drawn.Cap = Caps{Route: &route, Babel: &speaker, Segment: &segment}
+		// the overlay every local segment needs, covering every allow entry
+		drawn.Cap = Caps{Route: &route, Babel: &speaker, Segment: &segment, Border: &egress.Border{Overlay: overlayPool}}
 		ht.Assume(drawn.Validate() == nil)
 		if !hegel.Draw(ht, hegel.WeightedBooleans(0.25)) {
 			sameAfterEachEncoder(ht, drawn)

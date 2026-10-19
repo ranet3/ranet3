@@ -136,7 +136,7 @@ func TestReaderCountsTheSYNsItClamps(t *testing.T) {
 func TestExitClampsTheMSSOfASYNToTheSessionItArrivedThrough(t *testing.T) {
 	const session, offered = 1300, 8800
 	exit := segAddr("3fff:1:69c:8c6::1")
-	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(exit), Behavior: srv6.BehaviorEndDT46}})
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(exit), Behavior: srv6.BehaviorEndDT46}}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -100,9 +100,15 @@ func (d Delivery) String() string {
 	return fmt.Sprintf("delivery(%d)", uint8(d))
 }
 
-// ErrSourceRefused is an egress segment's refusal of a packet whose outer or
-// inner source is outside its allow list, or whose inner source it cannot read
-var ErrSourceRefused = errors.New("srv6: the egress segment's allow list does not hold the packet's source")
+// ErrSourceRefused is a local SID's refusal of a packet for its source: at
+// every SID an outer source outside the overlay, and at an egress segment an
+// outer or inner source outside its allow list, or an inner source it cannot
+// read
+var ErrSourceRefused = errors.New("srv6: the segment does not admit the packet's source")
+
+// errOutsideOverlay is ErrSourceRefused for an outer source outside the
+// overlay, made once so a refused packet allocates nothing
+var errOutsideOverlay = fmt.Errorf("%w: its outer source lies outside cap.border overlay", ErrSourceRefused)
 
 // String is the segment as the file spells it, its delivery and allow list
 // only where it writes them
@@ -158,13 +164,42 @@ func (s Segment) checkAllow() error {
 // method below works on one so a caller never has to ask first.
 type LocalTable struct {
 	entries map[netip.Addr]Segment
+	// overlay is the IPv6 prefixes of cap.border's overlay, the only outer
+	// sources any SID of entries acts on
+	overlay []netip.Prefix
 }
 
 // NewLocalTable builds the table, refusing a SID that is not an address this
 // node could be reached at. A v4 SID has no meaning, since a segment list is
 // carried in an IPv6 routing header, and a duplicate is a configuration whose
 // two halves disagree about what this node does.
-func NewLocalTable(segments []Segment) (*LocalTable, error) {
+//
+// Every SID refuses a packet whose outer source lies outside overlay's IPv6
+// prefixes, the per-node list of RFC 8754 section 5.1 item 2. A node writing
+// cap.border drops those sources arriving from outside the mesh, so a host
+// beyond the mesh reaches no SID through it, whatever the SID delivers to. A
+// node that forwards without cap.border is only warned at load, and passes a
+// forged overlay source on to every SID. An outer source is always IPv6, so a
+// table holding a SID and no IPv6 prefix of overlay is refused.
+func NewLocalTable(segments []Segment, overlay []schema.Prefix) (*LocalTable, error) {
+	entries, err := localEntries(segments)
+	if err != nil || entries == nil {
+		return nil, err
+	}
+	table := &LocalTable{entries: entries}
+	for _, prefix := range overlay {
+		if prefix.Addr().Is6() {
+			table.overlay = append(table.overlay, prefix.Prefix)
+		}
+	}
+	if len(table.overlay) == 0 {
+		return nil, fmt.Errorf("srv6: cap.segment local %s would refuse every packet, since cap.border overlay holds no IPv6 prefix to admit an outer source from", segments[0].SID)
+	}
+	return table, nil
+}
+
+// localEntries checks segments and keys them by SID, nil for none
+func localEntries(segments []Segment) (map[netip.Addr]Segment, error) {
 	if len(segments) == 0 {
 		return nil, nil
 	}
@@ -196,7 +231,7 @@ func NewLocalTable(segments []Segment) (*LocalTable, error) {
 		}
 		entries[segment.SID.Addr] = segment
 	}
-	return &LocalTable{entries: entries}, nil
+	return entries, nil
 }
 
 // Segments is the table in a stable order, for a diagnostic to print.
@@ -207,6 +242,16 @@ func (t *LocalTable) Segments() []Segment {
 	out := slices.Collect(maps.Values(t.entries))
 	slices.SortFunc(out, func(a, b Segment) int { return a.SID.Compare(b.SID.Addr) })
 	return out
+}
+
+// admits is whether an outer source lies in the overlay
+func (t *LocalTable) admits(source netip.Addr) bool {
+	for _, prefix := range t.overlay {
+		if prefix.Contains(source) {
+			return true
+		}
+	}
+	return false
 }
 
 // Action tells the caller how to treat a packet Handle has looked at.
@@ -247,7 +292,8 @@ type Result struct {
 // holds, which is the common case and costs one map lookup on the IPv6
 // packets alone. Only a packet this node is the current segment of is parsed
 // any further, so a peer cannot make this node do work by sending it segment
-// routing headers addressed elsewhere.
+// routing headers addressed elsewhere. One from an outer source outside the
+// overlay is refused before that, so it is never answered.
 //
 // The packet is rewritten in place for a waypoint, as the RFC's own
 // pseudocode does, which keeps a forwarded packet off a second buffer.
@@ -260,6 +306,10 @@ func (t *LocalTable) Handle(raw []byte) Result {
 	if !ours {
 		return Result{Action: ActionPass}
 	}
+	source := netip.AddrFrom16([16]byte(raw[8:24]))
+	if !t.admits(source) {
+		return Result{Action: ActionDrop, Err: errOutsideOverlay}
+	}
 	switch segment.Behavior {
 	case BehaviorEnd:
 		next, err := End(raw)
@@ -271,7 +321,7 @@ func (t *LocalTable) Handle(raw []byte) Result {
 		// the outer source is checked before anything is parsed, so an unlisted
 		// sender is never answered with an ICMP error about its header
 		egress := segment.Deliver == DeliverEgress
-		if egress && !segment.allows(netip.AddrFrom16([16]byte(raw[8:24]))) {
+		if egress && !segment.allows(source) {
 			return Result{Action: ActionDrop, Err: ErrSourceRefused}
 		}
 		inner, family, err := Decap(raw)

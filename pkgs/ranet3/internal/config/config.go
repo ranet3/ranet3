@@ -212,6 +212,16 @@ func (c *Config) Segments() srv6.Segments {
 	return *c.Cap.Segment
 }
 
+// SegmentTables is cap.segment's two tables as the dataplane runs them, every
+// local SID admitting only an outer source in cap.border's overlay
+func (c *Config) SegmentTables() (*srv6.LocalTable, *srv6.SteerTable, error) {
+	var overlay []schema.Prefix
+	if c.Cap.Border != nil {
+		overlay = c.Cap.Border.Overlay
+	}
+	return c.Segments().Tables(overlay)
+}
+
 func (c *Config) Crypto() ike.Crypto {
 	if c.Cap.Crypto == nil {
 		return ike.Crypto{}
@@ -804,7 +814,7 @@ func (c *Config) validateAcrossCapabilities() error {
 	if err := c.validateEgressSegments(egressSegments); err != nil {
 		return err
 	}
-	if err := c.validateBorder(egressSegments); err != nil {
+	if err := c.validateBorder(); err != nil {
 		return err
 	}
 	if err := c.validateUnderlayMark(); err != nil {
@@ -859,23 +869,29 @@ func (c *Config) validateEgressSegments(segments []srv6.Segment) error {
 }
 
 // validateBorder asks cap.border to check itself where it was written, as
-// Validate asks cap.egress, then refuses what the filter and the egress
-// segments cannot both mean: a segment no filter guards, an allow entry a
-// forwarding node's filter would pass forged, and an advertised prefix whose
-// own hosts the filter would drop. The exit default overlaps everything and
-// is left out, since nothing behind an exit is numbered from the mesh.
-func (c *Config) validateBorder(segments []srv6.Segment) error {
+// Validate asks cap.egress, then refuses what the filter and the local
+// segments cannot both mean: a segment no filter guards and no overlay
+// bounds, an overlay admitting no outer source, which is always IPv6, an
+// allow entry a forwarding node's filter would pass forged, and an advertised
+// prefix whose own hosts the filter would drop. The exit default overlaps
+// everything and is left out, since nothing behind an exit is numbered from
+// the mesh.
+func (c *Config) validateBorder() error {
+	local := c.Segments().Local
 	border := c.Cap.Border
 	if border == nil {
-		if len(segments) != 0 {
-			return fmt.Errorf("config: cap.segment local %s delivers to egress and cap.border is absent, so a forged allowed source can reach it through this node's own links: add cap.border", segments[0].SID)
+		if len(local) != 0 {
+			return fmt.Errorf("config: cap.segment local %s is written and cap.border is absent, so nothing bounds the outer sources it acts on and a forged mesh source reaches it through this node's own links: add cap.border", local[0].SID)
 		}
 		return nil
 	}
 	if err := border.Validate(); err != nil {
 		return err
 	}
-	for _, segment := range segments {
+	if len(local) != 0 && !slices.ContainsFunc(border.Overlay, func(prefix schema.Prefix) bool { return prefix.Addr().Is6() }) {
+		return fmt.Errorf("config: cap.border overlay holds no IPv6 prefix, so cap.segment local %s would refuse every packet, whose outer source is always IPv6", local[0].SID)
+	}
+	for _, segment := range c.Segments().Egress() {
 		for _, allowed := range segment.Allow {
 			covered := slices.ContainsFunc(border.Overlay, func(overlay schema.Prefix) bool {
 				return overlay.Bits() <= allowed.Bits() && overlay.Contains(allowed.Addr())
@@ -989,7 +1005,7 @@ func egressRulePlace(lo, hi uint32, bounded, capped bool) string {
 // the device runs at link.mtu less that list
 // the daemon makes the device with the same call, so a file this takes is one the daemon starts on
 func (c *Config) validateSteeredMTU() error {
-	_, steering, err := c.Segments().Tables()
+	_, steering, err := c.SegmentTables()
 	if err != nil {
 		return err
 	}

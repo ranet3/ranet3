@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"hegel.dev/go/hegel"
@@ -21,12 +22,13 @@ import (
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
-// borderTaken is the model of what the loader takes of cap.border beside an
-// egress segment and cap.egress: without the block, no egress segment, and
-// with it, an overlay of at least one entry, each a masked prefix of its own
-// family no shorter than the family's floor and longer than zero, none written
-// twice, covering every allow entry, and overlapping no advertised prefix but
-// a default
+// borderTaken is the model of what the loader takes of cap.border beside
+// egress segments and cap.egress, where a node with an allow entry writes a
+// local segment: without the block, no local segment, and with it, an overlay
+// of at least one entry, each a masked prefix of its own family no shorter
+// than the family's floor and longer than zero, none written twice, holding an
+// IPv6 prefix beside a local segment, covering every allow entry, and
+// overlapping no advertised prefix but a default
 func borderTaken(border *egress.Border, allow, advertise []schema.Prefix) bool {
 	if border == nil {
 		return len(allow) == 0
@@ -44,6 +46,9 @@ func borderTaken(border *egress.Border, allow, advertise []schema.Prefix) bool {
 			slices.ContainsFunc(border.Overlay[:i], func(other schema.Prefix) bool { return other.Prefix == prefix }) {
 			return false
 		}
+	}
+	if len(allow) > 0 && !slices.ContainsFunc(border.Overlay, func(entry schema.Prefix) bool { return entry.Addr().Is6() }) {
+		return false
 	}
 	for _, allowed := range allow {
 		covered := false
@@ -77,8 +82,9 @@ func maskedTo(prefix schema.Prefix, bits int) netip.Addr {
 // An exit with one or two egress segments and cap.egress loads exactly where
 // the model takes its cap.border, drawn absent, from overlay entries on either
 // side of the allow lists' and the advertised prefixes' edges, and with each
-// entry the block refuses on its own, and a configuration it takes reads back
-// unchanged from each format
+// entry the block refuses on its own, a node without the block refused for
+// that by name, and a configuration it takes reads back unchanged from each
+// format
 func TestBorderLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 	pool := []schema.Prefix{
 		// covering the allow list's IPv4 entry, equal to it, shorter, longer, beside it
@@ -171,6 +177,10 @@ func TestBorderLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 		err := c.Validate()
 		if want := borderTaken(border, allow, advertise); want != (err == nil) {
 			ht.Fatalf("%s beside allow %v and advertise %v loaded with %v, want taken %v", describe(border), allow, advertise, err, want)
+		}
+		// refused for the absent block itself, not later for the local table it leaves unbounded
+		if border == nil && len(allow) > 0 && !strings.Contains(fmt.Sprint(err), "is written and cap.border is absent") {
+			ht.Fatalf("local segments without cap.border were refused with %v, want the absent block named", err)
 		}
 		if err == nil {
 			sameAfterEachEncoder(ht, c)

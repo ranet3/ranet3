@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -21,6 +22,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
@@ -54,7 +56,11 @@ type borderLab struct {
 //     mesh destination, crosses the mesh tun, so the path exists
 //   - the same from a source inside the overlay never does, and the border
 //     counts it
-//   - a type 4 routing header and a packet to the local SID are counted
+//   - a type 4 routing header, alone or behind one of type 0 or 2, never
+//     crosses the tun and is counted, as is a packet to the local SID
+//   - a packet from beyond the uplink to another node's SID, with no routing
+//     header and an outer source outside the overlay, crosses the tun, and
+//     the SID's owner refuses and counts it, delivering one from inside
 //   - a packet the mesh writes into the tun with a mesh source reaches the far
 //     host, so the tun is inside
 //   - with the border withdrawn and forwarding off, the packet of the first
@@ -120,6 +126,54 @@ func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 			lab.routeFar(t, netip.PrefixFrom(labSID, 128), labExit6.Addr())
 			lab.sender(t, labFar6.Addr(), labSID, []byte("to the SID from beyond the uplink"))()
 			lab.counts(t, spec, before)
+		})
+		t.Run("another node's SID from outside the overlay", func(t *testing.T) {
+			// an address of the leaf's mesh prefix, standing for an End.DT46 SID of the leaf's
+			other := netip.MustParseAddr("3fff:a::d46")
+			// outer is a packet from source to other with no routing header, carrying an IPv4 packet with a mesh source
+			outer := func(source netip.Addr, payload []byte) []byte { return labOuter(source, other, nil, payload) }
+			// it carries no mesh source, no routing header and none of this node's SIDs, so the border passes it into the mesh
+			crossing := []byte("to another node's SID from beyond the uplink")
+			crossed := false
+			for deadline := time.Now().Add(convergeBudget); !crossed && time.Now().Before(deadline); {
+				lab.raw(t, other, outer(labFar6.Addr(), crossing))
+				crossed = labCaptured(lab.capture, labIPv6To(other, crossing))
+			}
+			if !crossed {
+				t.Fatalf("the packet to %s never crossed the mesh tun", other)
+			}
+
+			// the SID's owner, here this node with the SID in the table it builds, refuses it, counts it and delivers nothing
+			cfg := *lab.node.config()
+			segment := *cfg.Cap.Segment
+			segment.Local = append(slices.Clone(segment.Local), srv6.Segment{SID: schema.AddrFrom(other), Behavior: srv6.BehaviorEndDT46})
+			cfg.Cap.Segment = &segment
+			table, _, err := cfg.SegmentTables()
+			if err != nil {
+				t.Fatalf("build the owner's table: %v", err)
+			}
+			held := lab.node.Mesh.Segments()
+			lab.node.Mesh.SetSegments(table)
+			defer lab.node.Mesh.SetSegments(held)
+			var listener *net.UDPConn
+			if err := lab.exit.do(func() (err error) {
+				listener, err = net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(labExit4.Addr(), labPort)))
+				return err
+			}); err != nil {
+				t.Fatalf("listen at the owner: %v", err)
+			}
+			defer listener.Close()
+			refused := lab.node.Mesh.SegmentCounters().Refused
+			forged := []byte("forged through another node's SID")
+			lab.node.Mesh.DeliverInbound(outer(labFar6.Addr(), forged), 0)
+			labQuietFor(t, listener, forged)
+			if got := lab.node.Mesh.SegmentCounters().Refused; got != refused+1 {
+				t.Errorf("the owner counted %d refusals past %d, want one", got-refused, refused)
+			}
+			inside := []byte("through another node's SID from inside the overlay")
+			if from := labReceive(t, listener, inside, func() { lab.node.Mesh.DeliverInbound(outer(labHeadend, inside), 0) }); from.Addr() != labLeaf4 {
+				t.Errorf("from inside the overlay the owner's socket read %s, want %s", from, labLeaf4)
+			}
 		})
 		lab.written(t)
 
@@ -191,7 +245,7 @@ func TestTUNEgressCarriesNothingWhileTheBorderIsNotReady(t *testing.T) {
 // the families of a steered packet to labSID the mesh writes into the device
 func meshCarrying(t *testing.T, c *Client) func() [2]bool {
 	t.Helper()
-	segments, steering, err := c.config().Segments().Tables()
+	segments, steering, err := c.config().SegmentTables()
 	if err != nil {
 		t.Fatal(err)
 	}

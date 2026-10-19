@@ -202,7 +202,7 @@ var (
 // sender records what goes back to the sources the packets above come from
 func waypointOf(tb testing.TB, after netip.Addr, session *Peer) (*Mesh, *recordingPeer) {
 	tb.Helper()
-	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(thisWaypoint), Behavior: srv6.BehaviorEnd}})
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(thisWaypoint), Behavior: srv6.BehaviorEnd}}, everySource)
 	if err != nil {
 		tb.Fatal(err)
 	}

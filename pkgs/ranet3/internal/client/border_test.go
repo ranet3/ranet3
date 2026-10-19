@@ -246,6 +246,39 @@ func TestReloadMovesTheBorderInPlace(t *testing.T) {
 	}
 }
 
+// every local SID admits only an outer source in the overlay, so a reload
+// narrowing the overlay alone rebuilds the table the mesh acts on, and a SID
+// delivering to the mesh refuses a source the old overlay held
+func TestReloadMovingTheOverlayRebuildsTheLocalTable(t *testing.T) {
+	const sid, mesh = "3fff:1:69c:8c6::3", "3fff:1:69c:8c6::1"
+	c, path, _, _ := reloadOf(t, func(cfg *config.Config) {
+		egressNode(cfg, egressSegment(sid, "3fff:a::/32"), srv6.Segment{SID: schema.MustAddr(mesh), Behavior: srv6.BehaviorEndDT46})
+	})
+	segmentsOf(t, c)
+	c.SetBorder(&borderRecord{})
+	handled := func() srv6.Result {
+		inner := make([]byte, 40)
+		inner[0], inner[6] = 0x60, 59
+		raw, err := srv6.Encapsulate(inner, netip.MustParseAddr("3fff:b::1"), []netip.Addr{netip.MustParseAddr(mesh)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.Mesh.Segments().Handle(raw)
+	}
+	if got := handled(); got.Action != srv6.ActionDeliver {
+		t.Fatalf("from inside 3fff::/20 the SID returned %v (%v), want a delivery", got.Action, got.Err)
+	}
+	narrowed := *c.config()
+	narrowed.Cap.Border = borderOf("198.18.0.0/15", "3fff:a::/32")
+	writeConfig(t, path, &narrowed)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("a narrowed overlay was refused: %v", err)
+	}
+	if got := handled(); got.Action != srv6.ActionDrop || !errors.Is(got.Err, srv6.ErrSourceRefused) {
+		t.Errorf("from outside the narrowed overlay the SID returned %v (%v), want a refusal of the source", got.Action, got.Err)
+	}
+}
+
 // the filter and its run goroutine are built once in main, so a reload
 // adding cap.border is refused and applies nothing
 func TestReloadRefusesAddingTheBorder(t *testing.T) {

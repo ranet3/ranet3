@@ -330,7 +330,7 @@ type SegmentCounters struct {
 	Answered uint64 `json:"answered"`
 	// Egressed counts the packets the egress device accepted
 	Egressed uint64 `json:"egressed"`
-	// Refused counts the packets an egress segment refused for a source outside its allow list or an inner source it cannot read, a part of Dropped never answered
+	// Refused counts the packets a local SID refused for their source, an outer source outside cap.border overlay at any SID or, at an egress segment, a source outside its allow list or an inner source it cannot read, a part of Dropped never answered
 	Refused uint64 `json:"refused"`
 	// NotReady counts the egress results dropped with no egress device installed, closed under the write or not ready for their family, which is not in Dropped
 	NotReady uint64 `json:"not_ready"`

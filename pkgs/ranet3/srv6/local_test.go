@@ -18,10 +18,14 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
+// everySource is an overlay admitting every outer source, for a table whose
+// tests do not reach the overlay's bound
+var everySource = []schema.Prefix{schema.MustPrefix("::/0")}
+
 // A packet not addressed to one of this node's segments costs a map lookup and
 // goes where it was going, which is almost every packet on the mesh.
 func TestPacketsForSomebodyElsePassThrough(t *testing.T) {
-	table, err := NewLocalTable([]Segment{{SID: saddr("3fff:1:69c:8c6::1"), Behavior: BehaviorEndDT46}})
+	table, err := NewLocalTable([]Segment{{SID: saddr("3fff:1:69c:8c6::1"), Behavior: BehaviorEndDT46}}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +61,7 @@ func TestWaypointAndExitActOnTheirOwnSegments(t *testing.T) {
 	table, err := NewLocalTable([]Segment{
 		{SID: schema.AddrFrom(waypoint), Behavior: BehaviorEnd},
 		{SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46},
-	})
+	}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +98,7 @@ func TestWaypointAndExitActOnTheirOwnSegments(t *testing.T) {
 // as an undeliverable IPv6 packet addressed to an address of ours.
 func TestSegmentsOfOursThatCannotBeActedOnAreDropped(t *testing.T) {
 	sid := addr("3fff:1:69c:8c6::2")
-	waypoint, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(sid), Behavior: BehaviorEnd}})
+	waypoint, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(sid), Behavior: BehaviorEnd}}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +119,7 @@ func TestSegmentsOfOursThatCannotBeActedOnAreDropped(t *testing.T) {
 
 	// An exit reached with segments still to go.
 	exitSID := addr("3fff:1:69c:98d6::1")
-	exit, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(exitSID), Behavior: BehaviorEndDT46}})
+	exit, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(exitSID), Behavior: BehaviorEndDT46}}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +144,7 @@ func TestEgressSegmentCarriesOnlyTheSourcesItAllows(t *testing.T) {
 		schema.MustPrefix("3fff:1:69c:8c0::/60"),
 		schema.MustPrefix("3fff:a::/64"),
 		schema.MustPrefix("198.18.104.0/24"),
-	}}})
+	}}}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,13 +196,73 @@ func TestEgressSegmentCarriesOnlyTheSourcesItAllows(t *testing.T) {
 	}
 }
 
+// Every SID refuses a packet whose outer source lies outside the overlay,
+// whatever it delivers to and before its header is parsed, so a host beyond
+// the mesh is never answered, and acts on one from inside. The egress
+// segment's allow list holds the outside source, so the overlay alone refuses
+// it there. A table holding a SID and no IPv6 prefix of the overlay is refused.
+func TestEverySIDRefusesAnOuterSourceOutsideTheOverlay(t *testing.T) {
+	waypoint, exit, egress := addr("3fff:1:69c:8c6::2"), addr("3fff:1:69c:98d6::1"), addr("3fff:1:69c:98d6::3")
+	segments := []Segment{
+		{SID: schema.AddrFrom(waypoint), Behavior: BehaviorEnd},
+		{SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46},
+		{SID: schema.AddrFrom(egress), Behavior: BehaviorEndDT46, Deliver: DeliverEgress, Allow: []schema.Prefix{
+			schema.MustPrefix("2001:db8::/32"), schema.MustPrefix("3fff:a::/64"),
+		}},
+	}
+	table, err := NewLocalTable(segments, []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff::/20")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inside, outside := addr("3fff:a::1"), addr("2001:db8:f::2")
+	for name, c := range map[string]struct {
+		path   []netip.Addr
+		broken bool
+		acts   Action
+	}{
+		"End":                         {[]netip.Addr{waypoint, exit}, false, ActionForward},
+		"End.DT46 delivering to mesh": {[]netip.Addr{exit}, false, ActionDeliver},
+		"an egress segment":           {[]netip.Addr{egress}, false, ActionEgress},
+		// segments left past the last entry, which a source inside is answered about
+		"End with a broken header": {[]netip.Addr{waypoint, exit}, true, ActionDrop},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, source := range []netip.Addr{inside, outside} {
+				inner := innerV6("payload")
+				copy(inner[8:], addr16(inside))
+				raw, err := Encapsulate(inner, source, c.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if c.broken {
+					raw[ipv6HeaderLen+3] = 5
+				}
+				result := table.Handle(raw)
+				switch {
+				case source == outside && (result.Action != ActionDrop || !errors.Is(result.Err, ErrSourceRefused)):
+					t.Errorf("from %s outside the overlay Handle returned %v (%v), want a refusal of the source", source, result.Action, result.Err)
+				case source == inside && (result.Action != c.acts || errors.Is(result.Err, ErrSourceRefused)):
+					t.Errorf("from %s inside the overlay Handle returned %v (%v), want %v", source, result.Action, result.Err, c.acts)
+				}
+			}
+		})
+	}
+	if _, err := NewLocalTable(segments, []schema.Prefix{schema.MustPrefix("198.18.0.0/15")}); err == nil ||
+		err.Error() != "srv6: cap.segment local 3fff:1:69c:8c6::2 would refuse every packet, since cap.border overlay holds no IPv6 prefix to admit an outer source from" {
+		t.Errorf("a table under an overlay of IPv4 alone was built with %v", err)
+	}
+	if table, err := NewLocalTable(nil, nil); table != nil || err != nil {
+		t.Errorf("no segments under no overlay built %v (%v), want no table", table, err)
+	}
+}
+
 // The dataplane reads the table's allow list without a lock, so a caller that
 // changes the slice it passed in must not change what the table lets through.
 func TestEgressAllowListSurvivesTheCallerChangingItsSlice(t *testing.T) {
 	exit := addr("3fff:1:69c:98d6::3")
 	allow := make([]schema.Prefix, 1, 2)
 	allow[0] = schema.MustPrefix("3fff:a::/64")
-	table, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46, Deliver: DeliverEgress, Allow: allow}})
+	table, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46, Deliver: DeliverEgress, Allow: allow}}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +305,7 @@ func TestLocalTableRefusesWhatItCannotAnswerFor(t *testing.T) {
 		"one not written":  {{SID: saddr("2001:db8::1"), Behavior: Behavior(99)}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := NewLocalTable(segments)
+			_, err := NewLocalTable(segments, everySource)
 			if err == nil {
 				t.Fatalf("%s was accepted", name)
 			}
@@ -250,7 +314,7 @@ func TestLocalTableRefusesWhatItCannotAnswerFor(t *testing.T) {
 			}
 		})
 	}
-	table, err := NewLocalTable(nil)
+	table, err := NewLocalTable(nil, everySource)
 	if err != nil || table != nil {
 		t.Errorf("an empty configuration produced %v (%v), want no table at all", table, err)
 	}
@@ -300,7 +364,7 @@ func TestEgressSegmentIsRefusedWhereItWouldCarryTheWrongSources(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := NewLocalTable(c.segments)
+			_, err := NewLocalTable(c.segments, everySource)
 			if err == nil {
 				t.Fatal("the segment was accepted")
 			}
@@ -310,7 +374,7 @@ func TestEgressSegmentIsRefusedWhereItWouldCarryTheWrongSources(t *testing.T) {
 		})
 	}
 	// the floors themselves are accepted
-	if _, err := NewLocalTable([]Segment{egressAt(sid, "3ff0::/12", "4.0.0.0/8")}); err != nil {
+	if _, err := NewLocalTable([]Segment{egressAt(sid, "3ff0::/12", "4.0.0.0/8")}, everySource); err != nil {
 		t.Errorf("an allow list at the floors was refused: %v", err)
 	}
 }
@@ -423,7 +487,7 @@ func TestSegmentsReportInAStableOrder(t *testing.T) {
 	table, err := NewLocalTable([]Segment{
 		{SID: saddr("3fff:1:69c:8c6::2"), Behavior: BehaviorEnd},
 		{SID: saddr("3fff:1:69c:8c6::1"), Behavior: BehaviorEndDT46},
-	})
+	}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}

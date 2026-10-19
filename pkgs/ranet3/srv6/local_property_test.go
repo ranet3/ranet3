@@ -120,7 +120,7 @@ func TestEgressNeverCarriesASourceOutsideItsAllowList(t *testing.T) {
 		for i, prefix := range allow {
 			written[i] = schema.PrefixFrom(prefix)
 		}
-		table, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46, Deliver: DeliverEgress, Allow: written}})
+		table, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46, Deliver: DeliverEgress, Allow: written}}, everySource)
 		if err != nil {
 			ht.Fatalf("an egress segment allowing %v was refused: %v", allow, err)
 		}
@@ -163,6 +163,83 @@ func TestEgressNeverCarriesASourceOutsideItsAllowList(t *testing.T) {
 		case !carried && (result.Action != ActionDrop || !errors.Is(result.Err, ErrSourceRefused)):
 			ht.Fatalf("from %s and %s against %v, announced as %d, Handle returned %v (%v), want a refusal of the source",
 				outer, from, allow, raw[ipv6HeaderLen], result.Action, result.Err)
+		}
+	})
+}
+
+// No SID acts on a packet whose outer source lies outside the overlay's IPv6
+// prefixes, whatever it delivers to, refusing it with ErrSourceRefused, and
+// every SID acts on one inside, an egress segment where its allow list holds
+// the source as well. The overlay is drawn as a file writes it, IPv4 entries
+// beside the IPv6 ones, the egress segment's allow list reaches past it, and
+// the outer source lies on either side of an edge of either, now and then as
+// a v4-mapped address no IPv4 entry may admit. Now and then the overlay keeps
+// its IPv4 entries alone, at least one, which admit no outer source, and the
+// table is refused.
+func TestNoSIDActsOnAnOuterSourceOutsideTheOverlay(t *testing.T) {
+	waypoint, exit, egress := addr("3fff:1:69c:8c6::2"), addr("3fff:1:69c:98d6::1"), addr("3fff:1:69c:98d6::3")
+	pbt.Check(t, func(ht *hegel.T) {
+		overlay := hegel.Draw(ht, allowLists())
+		if hegel.Draw(ht, hegel.WeightedBooleans(1.0/4)) {
+			overlay = slices.DeleteFunc(overlay, func(prefix netip.Prefix) bool { return prefix.Addr().Is6() })
+			if ipv4 := hegel.Draw(ht, allowEntries(false)).Prefix; !slices.Contains(overlay, ipv4) {
+				overlay = append(overlay, ipv4)
+			}
+		}
+		var allow []netip.Prefix
+		for _, prefix := range slices.Concat(overlay, hegel.Draw(ht, allowLists())) {
+			if !slices.Contains(allow, prefix) {
+				allow = append(allow, prefix)
+			}
+		}
+		written := func(prefixes []netip.Prefix) []schema.Prefix {
+			out := make([]schema.Prefix, len(prefixes))
+			for i, prefix := range prefixes {
+				out[i] = schema.PrefixFrom(prefix)
+			}
+			return out
+		}
+		table, err := NewLocalTable([]Segment{
+			{SID: schema.AddrFrom(waypoint), Behavior: BehaviorEnd},
+			{SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46},
+			{SID: schema.AddrFrom(egress), Behavior: BehaviorEndDT46, Deliver: DeliverEgress, Allow: written(allow)},
+		}, written(overlay))
+		if !slices.ContainsFunc(overlay, func(prefix netip.Prefix) bool { return prefix.Addr().Is6() }) {
+			if err == nil {
+				ht.Fatalf("a table under overlay %v, which admits no outer source, was taken", overlay)
+			}
+			return
+		}
+		if err != nil {
+			ht.Fatalf("a table under overlay %v, the egress segment allowing %v, was refused: %v", overlay, allow, err)
+		}
+		outer := hegel.Draw(ht, mostly(sources(allow, false), hegel.Composite(func(tc hegel.TestCase) netip.Addr {
+			return netip.AddrFrom16(hegel.Draw(tc, sources(overlay, true)).As16())
+		})))
+		kind := hegel.Draw(ht, hegel.SampledFrom([]struct {
+			path []netip.Addr
+			acts Action
+		}{
+			{[]netip.Addr{waypoint, exit}, ActionForward},
+			{[]netip.Addr{exit}, ActionDeliver},
+			{[]netip.Addr{egress}, ActionEgress},
+		}))
+		// the inner source is the outer one, so an egress segment's two checks read one address
+		inner := innerV6("payload")
+		copy(inner[8:24], outer.AsSlice())
+		raw, err := Encapsulate(inner, exit, kind.path)
+		if err != nil {
+			ht.Fatalf("Encapsulate refused the packet over %v: %v", kind.path, err)
+		}
+		copy(raw[8:24], outer.AsSlice())
+
+		result := table.Handle(raw)
+		acted := listed(overlay, outer) && (kind.acts != ActionEgress || listed(allow, outer))
+		switch {
+		case acted && result.Action != kind.acts:
+			ht.Fatalf("from %s inside overlay %v, allowed %v, Handle returned %v (%v), want %v", outer, overlay, allow, result.Action, result.Err, kind.acts)
+		case !acted && (result.Action != ActionDrop || !errors.Is(result.Err, ErrSourceRefused)):
+			ht.Fatalf("from %s against overlay %v, allowed %v, Handle returned %v (%v), want a refusal of the source", outer, overlay, allow, result.Action, result.Err)
 		}
 	})
 }
@@ -287,7 +364,7 @@ func TestEgressSegmentLoadsExactlyWhenItsAllowListHolds(t *testing.T) {
 			beside := slices.Delete(slices.Clone(segment.Allow), i, i+1)
 			segment.Allow[i] = hegel.Draw(ht, allowSlips(segment.Allow[i], beside))
 		}
-		_, err := NewLocalTable([]Segment{segment})
+		_, err := NewLocalTable([]Segment{segment}, everySource)
 		switch want := takes(segment); {
 		case want && err != nil:
 			ht.Fatalf("%s was refused: %v", segment, err)

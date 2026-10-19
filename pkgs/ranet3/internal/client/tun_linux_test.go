@@ -60,7 +60,9 @@ func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 	cfg := *bravo.client.config()
 	cfg.Link.MTU = session
 	cfg.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{{SID: schema.AddrFrom(exit), Behavior: srv6.BehaviorEndDT46}}}
-	segments, _, err := cfg.Segments().Tables()
+	// holding the headend's outer source below
+	cfg.Cap.Border = borderOf(alpha.prefix.Masked().String())
+	segments, _, err := cfg.SegmentTables()
 	if err != nil {
 		t.Fatalf("build bravo's segment table: %v", err)
 	}

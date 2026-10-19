@@ -55,7 +55,7 @@ func TestDeviceStartsAtLinkMTULessTheLongestSteeringList(t *testing.T) {
 			}
 			return
 		}
-		_, steering, err := cfg.Segments().Tables()
+		_, steering, err := cfg.SegmentTables()
 		if err != nil {
 			tb.Fatalf("a file the loader took built no tables: %v", err)
 		}

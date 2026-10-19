@@ -95,11 +95,11 @@ func TestEgressSegmentReadsAlikeInEveryFormat(t *testing.T) {
 			}
 		})
 	}
-	written, err := loadTOML(t, nodeTOML+"[[cap.segment.local]]\nsid = \"2001:db8::1\"\nbehavior = \"End.DT46\"\ndeliver = \"mesh\"\n")
+	written, err := loadTOML(t, nodeTOML+egressBorderTOML+"[[cap.segment.local]]\nsid = \"2001:db8::1\"\nbehavior = \"End.DT46\"\ndeliver = \"mesh\"\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	omitted, err := loadTOML(t, nodeTOML+"[[cap.segment.local]]\nsid = \"2001:db8::1\"\nbehavior = \"End.DT46\"\n")
+	omitted, err := loadTOML(t, nodeTOML+egressBorderTOML+"[[cap.segment.local]]\nsid = \"2001:db8::1\"\nbehavior = \"End.DT46\"\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,8 +231,8 @@ func TestEgressSegmentIsRefusedWithoutWhatCarriesIt(t *testing.T) {
 			t.Errorf("%s was refused: %v", name, err)
 		}
 	}
-	// a segment that delivers to the mesh asks for none of it
-	if _, err := loadTOML(t, nodeTOML+"[[cap.segment.local]]\nsid = \"2001:db8::1\"\nbehavior = \"End.DT46\"\n"); err != nil {
+	// a segment that delivers to the mesh asks for none of it but cap.border
+	if _, err := loadTOML(t, nodeTOML+egressBorderTOML+"[[cap.segment.local]]\nsid = \"2001:db8::1\"\nbehavior = \"End.DT46\"\n"); err != nil {
 		t.Errorf("a segment delivering to the mesh was refused: %v", err)
 	}
 }
