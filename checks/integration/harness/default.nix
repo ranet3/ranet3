@@ -47,18 +47,24 @@
   # "apart" lists x25519+mlkem768 alone against strongSwan's defaults, which hold no ML-KEM
   # "fallback" lists x25519 after it against those defaults
   # "optional" and "none" answer a strongSwan that dials with ML-KEM-768 optional, listing x25519+mlkem768 first or x25519 alone
+  # "fragment" dials x25519+mlkem768 and then p384+mlkem1024, over IPv6 on a link of MTU 1280 and then over IPv4 on one of 576
   mlkem ? null,
 }:
 
 assert suites == null || mlkem == null;
-# strongSwan dials in "optional" and "none" and ranet3 in "fallback"
+# strongSwan dials in "optional" and "none" and ranet3 in "fallback" and "fragment"
 assert
   lib.elem mlkem [
     "optional"
     "none"
   ]
   -> responder;
-assert mlkem == "fallback" -> !responder;
+assert
+  lib.elem mlkem [
+    "fallback"
+    "fragment"
+  ]
+  -> !responder;
 
 let
   gatewayTunnel = "fd00:99::1";
@@ -149,7 +155,45 @@ let
       "x25519"
     ];
     none = [ "x25519" ];
+    fragment = [ "x25519+mlkem768" ];
   };
+  # "fragment" runs on vlan 1 at the IPv6 minimum MTU and on vlan 2 at the IPv4 floor of RFC 7383 section 2.5.1
+  # ranet3 cuts its messages at the path MTU, 1280 and then 576, and strongSwan at its fragment_size of 1280 on both
+  # so on vlan 2 the kernel splits strongSwan's fragments into IP fragments, which the client's kernel puts back together
+  fragment = mlkem == "fragment";
+  fragmentMTU = {
+    ip6 = 1280;
+    ip4 = 576;
+  };
+  # the specialisations "fragment" switches the client into after its first handshakes, in order, each with the family of its endpoint and its kex entry
+  fragmentPhases = [
+    {
+      name = "mlkem1024";
+      family = "ip6";
+      kex = "p384+mlkem1024";
+    }
+    {
+      name = "ipv4";
+      family = "ip4";
+      kex = "x25519+mlkem768";
+    }
+    {
+      name = "ipv4-mlkem1024";
+      family = "ip4";
+      kex = "p384+mlkem1024";
+    }
+  ];
+  # the family of the endpoints ranet3 starts on
+  underlay = if fragment then "ip6" else "ip4";
+  # a node's endpoint in family, on vlan 1 but for "fragment" over IPv4, which takes vlan 2
+  underlayAddress =
+    node: family:
+    if family == "ip6" then
+      node.networking.primaryIPv6Address
+    else if fragment then
+      (lib.head node.networking.interfaces.eth2.ipv4.addresses).address
+    else
+      node.networking.primaryIPAddress;
   # strongSwan prefixes an additional key exchange's keyword with ke1_ for ADDKE1, and ke1_none makes it optional
   # "meet" esp_proposals take an ESP rekey with no key exchange at all, which is the one ranet3 sends, and strongSwan's own runs x25519 and ML-KEM-768
   # a variant missing here leaves strongSwan its defaults
@@ -160,6 +204,14 @@ let
     };
     optional.ike = [ "aes256gcm16-prfsha384-x25519-ke1_mlkem768-ke1_none" ];
     none.ike = [ "aes256gcm16-prfsha384-x25519-ke1_mlkem768-ke1_none" ];
+    # strongSwan answers the one entry ranet3 offers, ke1_mlkem768 and then ke1_mlkem1024
+    fragment = {
+      ike = [
+        "aes256gcm16-prfsha384-x25519-ke1_mlkem768"
+        "aes256gcm16-prfsha384-ecp384-ke1_mlkem1024"
+      ];
+      esp = [ "aes256gcm16-x25519-none-ke1_mlkem768-ke1_none" ];
+    };
   };
   swan =
     if suites != null then
@@ -173,13 +225,22 @@ let
       { };
 
   common = {
-    virtualisation.vlans = [ 1 ];
+    virtualisation.vlans = [ 1 ] ++ lib.optional fragment 2;
     virtualisation.cores = cores;
     networking = {
       useNetworkd = true;
       useDHCP = false;
       firewall.enable = false;
+      interfaces = lib.mkIf fragment {
+        eth1.mtu = fragmentMTU.ip6;
+      };
     };
+  };
+  # vlan 2's MTU is that of each end's route to the other, since linux takes IPv6 off a device under 1280
+  # and the gateway's kernel builds no route for IPv6 in an SA over a device without IPv6
+  fragmentRoute = peer: {
+    Destination = "${underlayAddress peer "ip4"}/32";
+    MTUBytes = fragmentMTU.ip4;
   };
 in
 testers.runNixOSTest {
@@ -251,12 +312,18 @@ testers.runNixOSTest {
               Name = "swan0";
               Kind = "xfrm";
             };
-            xfrmConfig.InterfaceId = 1;
+            # the kernel routes what an xfrm interface encapsulates out of its underlying device alone
+            # and "fragment" carries the SA over eth1 and then over eth2, so its swan0 has none
+            xfrmConfig = {
+              InterfaceId = 1;
+            }
+            // lib.optionalAttrs fragment { Independent = true; };
           };
           networks = {
             # The test network module already defines 40-eth1. Extend it to
             # create swan0 with eth1 as its underlying device.
-            "40-eth1".networkConfig.Xfrm = "swan0";
+            "40-eth1".networkConfig.Xfrm = lib.mkIf (!fragment) "swan0";
+            "40-eth2" = lib.mkIf fragment { routes = [ (fragmentRoute nodes.client) ]; };
             "40-swan0" = {
               matchConfig.Name = "swan0";
               linkConfig = {
@@ -285,7 +352,7 @@ testers.runNixOSTest {
           # so the log shows each transform of ranet3's answer, a NONE among them
           strongswan.extraConfig = ''
             charon-systemd {
-              interfaces_use = eth1
+              interfaces_use = ${if fragment then "eth1,eth2" else "eth1"}
               port = 0
               port_nat_t = 13000
             }
@@ -296,14 +363,24 @@ testers.runNixOSTest {
                 cfg = 2
               }
             }
+          ''
+          # its default, written out since each end's fragments are cut to a size of its own
+          + lib.optionalString fragment ''
+            charon-systemd {
+              fragment_size = 1280
+            }
           '';
           swanctl = {
             connections.ranet = {
               version = 2;
-              local_addrs = [ "0.0.0.0/0" ];
+              local_addrs = [ "0.0.0.0/0" ] ++ lib.optional fragment "::/0";
               # A wildcard remote can only answer. Naming the client lets
               # swanctl --initiate dial it.
-              remote_addrs = if responder then [ nodes.client.networking.primaryIPAddress ] else [ "0.0.0.0/0" ];
+              remote_addrs =
+                if responder then
+                  [ nodes.client.networking.primaryIPAddress ]
+                else
+                  [ "0.0.0.0/0" ] ++ lib.optional fragment "::/0";
               local_port = 13000;
               remote_port = 14000;
               encap = true;
@@ -418,6 +495,43 @@ testers.runNixOSTest {
 
     client =
       { nodes, ... }:
+      let
+        # the registry this node trusts, with each end's endpoint in family
+        registry =
+          family:
+          builtins.toJSON [
+            {
+              public_key = publicKey;
+              organization = "testorg";
+              nodes = [
+                {
+                  common_name = "client";
+                  endpoints = [
+                    {
+                      serial_number = "2";
+                      address_family = family;
+                      address = underlayAddress nodes.client family;
+                      port = 14000;
+                    }
+                  ];
+                  remarks = { };
+                }
+                {
+                  common_name = "server";
+                  endpoints = [
+                    {
+                      serial_number = "1";
+                      address_family = family;
+                      address = underlayAddress nodes.gateway family;
+                      port = 13000;
+                    }
+                  ];
+                  remarks = { };
+                }
+              ];
+            }
+          ];
+      in
       {
         imports = [
           common
@@ -425,6 +539,29 @@ testers.runNixOSTest {
         ];
 
         boot.kernelModules = [ "tun" ];
+
+        # what "fragment" switches the client into after its first handshakes, p384+mlkem1024 and then IPv4
+        specialisation = pkgs.lib.mkIf fragment (
+          lib.listToAttrs (
+            map (
+              phase:
+              lib.nameValuePair phase.name {
+                configuration = {
+                  environment.etc."ranet3/registry.json".text = lib.mkForce (registry phase.family);
+                  networking.ranet3.settings = {
+                    link.endpoints = lib.mkForce [
+                      {
+                        serial = "2";
+                        inherit (phase) family;
+                      }
+                    ];
+                    cap.crypto.ike.kex = lib.mkForce [ phase.kex ];
+                  };
+                };
+              }
+            ) fragmentPhases
+          )
+        );
 
         # An exit node forwards for its peers, and a node that advertises a
         # prefix it will not forward attracts traffic and drops it. The
@@ -483,6 +620,7 @@ testers.runNixOSTest {
               VNetHeader = true;
             };
           };
+          networks."40-eth2" = lib.mkIf fragment { routes = [ (fragmentRoute nodes.gateway) ]; };
           networks."05-lo" = pkgs.lib.mkIf segments {
             matchConfig.Name = "lo";
             networkConfig.ConfigureWithoutCarrier = true;
@@ -510,38 +648,7 @@ testers.runNixOSTest {
 
         environment.etc = {
           "ranet3/key.pem".source = ../../fixtures/org-key.pem;
-          "ranet3/registry.json".text = builtins.toJSON [
-            {
-              public_key = publicKey;
-              organization = "testorg";
-              nodes = [
-                {
-                  common_name = "client";
-                  endpoints = [
-                    {
-                      serial_number = "2";
-                      address_family = "ip4";
-                      address = nodes.client.networking.primaryIPAddress;
-                      port = 14000;
-                    }
-                  ];
-                  remarks = { };
-                }
-                {
-                  common_name = "server";
-                  endpoints = [
-                    {
-                      serial_number = "1";
-                      address_family = "ip4";
-                      address = nodes.gateway.networking.primaryIPAddress;
-                      port = 13000;
-                    }
-                  ];
-                  remarks = { };
-                }
-              ];
-            }
-          ];
+          "ranet3/registry.json".text = registry underlay;
         };
 
         networking.ranet3 = {
@@ -574,7 +681,7 @@ testers.runNixOSTest {
               endpoints = [
                 {
                   serial = "2";
-                  family = "ip4";
+                  family = underlay;
                 }
               ];
               tun = clientDevice;
@@ -717,6 +824,7 @@ testers.runNixOSTest {
   };
 
   testScript =
+    { nodes, ... }:
     let
       preamble = ''
         import datetime as dt
@@ -1673,6 +1781,100 @@ testers.runNixOSTest {
             print(gateway.execute(f"{swan_log} | grep -E '{swan_lines}'")[1])
             print(client.execute("ranet3 debug events --kind ike")[1])
       '';
+
+      # ranet3 dials x25519+mlkem768 and then p384+mlkem1024, over IPv6 on vlan 1 and then over IPv4 on vlan 2
+      # the reload to p384+mlkem1024 first rekeys the IKE SA, ML-KEM-1024 in an IKE_FOLLOWUP_KE exchange after the CREATE_CHILD_SA, and a restart then dials with it
+      # each IKE_INTERMEDIATE and IKE_FOLLOWUP_KE request passes the path MTU, so ranet3 cuts it to the path and strongSwan reassembles it
+      # each ML-KEM-1024 response passes strongSwan's fragment_size, so strongSwan splits it and ranet3 reassembles it
+      # the ML-KEM-768 response fits 1280 octets, and on vlan 2 the kernel carries it in IP fragments
+      mlkemFragment = ''
+        # the client's first configuration and then each specialisation, with the family of its endpoint and its kex entry
+        phases = json.loads('${
+          builtins.toJSON (
+            [
+              {
+                name = null;
+                family = underlay;
+                kex = lib.head mlkemLists.fragment;
+              }
+            ]
+            ++ fragmentPhases
+          )
+        }')
+        # the address ranet3 reaches strongSwan at and the threshold ranet3 cuts at, in each family
+        remotes = {"ip6": "[${underlayAddress nodes.gateway "ip6"}]:13000", "ip4": "${underlayAddress nodes.gateway "ip4"}:13000"}
+        thresholds = json.loads('${builtins.toJSON fragmentMTU}')
+        # strongSwan's name of each kex entry
+        swan_suites = {"x25519+mlkem768": "CURVE_25519/KE1_ML_KEM_768", "p384+mlkem1024": "ECP_384/KE1_ML_KEM_1024"}
+
+        def cut_both_ways(exchange, threshold, swan_since, ranet3_since, swan_splits):
+            """ranet3 cut its request of exchange to the path and strongSwan reassembled it, and where swan_splits holds strongSwan split its response and ranet3 reassembled it"""
+            client.wait_until_succeeds(
+                f"{ranet3_since} | grep -F 'ike sending a message in fragments' | grep -F 'exchange={exchange}' | grep -F 'threshold={threshold}'",
+                timeout=timeout)
+            print(client.succeed(
+                f"ranet3 debug wait ike.message.fragmented --attr exchange={exchange} --attr threshold={threshold} --past 10m --timeout 1s"))
+            gateway.wait_until_succeeds(f"{swan_since} | grep -F 'reassembled fragmented IKE message'", timeout=timeout)
+            if swan_splits:
+                gateway.wait_until_succeeds(
+                    f"{swan_since} | grep -E 'splitting IKE message \\([0-9]+ bytes\\) into [0-9]+ fragments'", timeout=timeout)
+                client.wait_until_succeeds(
+                    f"{ranet3_since} | grep -F 'ike reassembled a message from fragments' | grep -F 'exchange={exchange}'",
+                    timeout=timeout)
+
+        try:
+            for machine, peer in [(client, "${underlayAddress nodes.gateway "ip4"}"), (gateway, "${underlayAddress nodes.client "ip4"}")]:
+                machine.succeed("ip link show eth1 | grep -F 'mtu ${toString fragmentMTU.ip6} '")
+                machine.succeed(f"ip -4 route show {peer}/32 | grep -E 'mtu (lock )?${toString fragmentMTU.ip4}'")
+
+            family = "${underlay}"
+            for phase in phases:
+                name, phase_family, kex = phase["name"], phase["family"], phase["kex"]
+                suite, remote, threshold = swan_suites[kex], remotes[phase_family], thresholds[phase_family]
+                # each ML-KEM-1024 response passes strongSwan's fragment_size of 1280
+                swan_splits = kex.endswith("+mlkem1024")
+                if name is None:
+                    swan_since, ranet3_since = swan_log, ranet3_log
+                else:
+                    swan_since = journal_after(gateway, "strongswan-swanctl.service")
+                    ranet3_since = journal_after(client, "ranet3.service")
+                    status, output = client.execute(
+                        f"${nodes.client.system.build.toplevel}/specialisation/{name}/bin/switch-to-configuration test 2>&1")
+                    print(output)
+                    if phase_family == family:
+                        # a reload applies the kex list and rekeys the IKE SA whose entry it removed, keeping the session
+                        assert status == 0, f"the switch into {name} exited with {status}"
+                        session_runs({"ike_kex": kex, "remote": remote, "ike_fragments": True, "ike_fragment_threshold": threshold})
+                        session = json.loads(client.succeed("ranet3 sessions --json"))[0]
+                        print(client.succeed(
+                            f"ranet3 debug wait ike.rekey.completed --attr sa=ike --attr suite={session['ike_cipher']}/{session['ike_prf']}/{kex} --past 10m --timeout {rekey_timeout.seconds}s"))
+                        cut_both_ways("IKE_FOLLOWUP_KE", threshold, swan_since, ranet3_since, swan_splits)
+                        client.fail(f"{ranet3_since} | grep -F ': connected (SPI'")
+                        swan_since = journal_after(gateway, "strongswan-swanctl.service")
+                        ranet3_since = journal_after(client, "ranet3.service")
+                    # the endpoints are read at the start, and a restart dials with the phase's entry
+                    client.succeed("systemctl restart ranet3.service")
+                    client.wait_until_succeeds("ranet3 sessions --json", timeout=timeout)
+                    family = phase_family
+
+                # the session view says both ends support RFC 7383 fragmentation and the threshold ranet3 cuts at
+                session_runs({"ike_kex": kex, "remote": remote, "ike_fragments": True, "ike_fragment_threshold": threshold})
+                gateway.wait_until_succeeds(f"swanctl --list-sas | grep -F '{suite}'", timeout=timeout)
+                # the handshake runs ML-KEM in IKE_INTERMEDIATE
+                cut_both_ways("IKE_INTERMEDIATE", threshold, swan_since, ranet3_since, swan_splits)
+                for address in ["${gatewayTunnel}", "${gatewayTunnelV4}"]:
+                    client.wait_until_succeeds(f"ping -c 1 {address}", timeout=timeout)
+
+            client.fail(f"{ranet3_log} | grep -F 'no matching inbound ESP SA'")
+            client.fail(f"{ranet3_log} | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
+            client.fail(f"{ranet3_log} | grep -F 'ike dropped the fragments of a message the peer left incomplete'")
+            gateway.fail(f"{swan_log} | grep -E 'integrity check failed|no CHILD_SA built|AUTHENTICATION_FAILED'")
+        finally:
+            print(gateway.execute("swanctl --list-sas")[1])
+            print(gateway.execute(f"{swan_log} | grep -E '{swan_lines}|fragment|splitting'")[1])
+            print(client.execute("ranet3 sessions")[1])
+            print(client.execute("ranet3 debug events --kind ike")[1])
+      '';
     in
     preamble
     + (
@@ -1686,6 +1888,8 @@ testers.runNixOSTest {
         mlkemCommon + mlkemApart
       else if mlkem == "fallback" then
         mlkemCommon + mlkemFallback
+      else if fragment then
+        mlkemCommon + mlkemFragment
       else if mlkem != null then
         mlkemCommon + mlkemAnswered
       else if responder then
