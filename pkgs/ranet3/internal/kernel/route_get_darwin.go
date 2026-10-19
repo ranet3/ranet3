@@ -14,15 +14,17 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// RouteGet asks the kernel which route it takes to dst, with the RTM_GET that
-// `route -n get` sends. XNU's lookup takes neither a source nor an input
-// device, so src does not enter it and a packet arriving on iif is refused
-// rather than answered as this host's own.
-func RouteGet(src, dst netip.Addr, iif string) (MatchedRoute, error) {
+// XNU's lookup takes neither a source nor an input device, so src does not
+// enter it and a packet arriving on iif is refused rather than answered as
+// this host's own
+func routeGet(_, dst netip.Addr, iif string) (MatchedRoute, error) {
 	if iif != "" {
-		return MatchedRoute{}, fmt.Errorf("kernel: darwin looks up the route of this host's own packet only, not of one arriving on %s", iif)
+		return MatchedRoute{}, fmt.Errorf("%w: darwin looks up the route of this host's own packet only, not of one arriving on %s", ErrUnsupported, iif)
 	}
 	answer, err := routeRequest(dst, netip.Addr{})
+	if errors.Is(err, ErrNoDefaultRoute) {
+		return MatchedRoute{}, fmt.Errorf("kernel: look up the route to %s: %w", dst, unix.ENETUNREACH)
+	}
 	if err != nil {
 		return MatchedRoute{}, err
 	}
