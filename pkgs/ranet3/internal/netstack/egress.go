@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/srv6"
 	"ranet3.com/pkgs/wireguard/tun"
 )
 
@@ -16,6 +17,35 @@ import (
 type egressSlot struct {
 	egressMu sync.Mutex
 	egress   atomic.Pointer[egressDevice]
+	// egressReady holds egressReady4 and egressReady6 for the families the translator reported ready, none at first
+	egressReady atomic.Uint32
+}
+
+const (
+	egressReady4 uint32 = 1 << iota
+	egressReady6
+)
+
+// SetEgressReady tells the mesh which families the egress device carries out
+// translated, from the translator's last pass, and an egress result of a
+// family that is not ready is dropped and counted NotReady
+func (m *Mesh) SetEgressReady(v4, v6 bool) {
+	var ready uint32
+	if v4 {
+		ready |= egressReady4
+	}
+	if v6 {
+		ready |= egressReady6
+	}
+	m.egressReady.Store(ready)
+}
+
+// egressReadyFor is the bit of egressReady that family, an srv6 next header, needs
+func egressReadyFor(family uint8) uint32 {
+	if family == srv6.NextHeaderIPv4 {
+		return egressReady4
+	}
+	return egressReady6
 }
 
 // egressDevice is an installed egress device and the drains reading its queues
@@ -85,13 +115,20 @@ func (m *Mesh) writeEgress(frames [][]byte) {
 	}
 }
 
-// every route into the overlay names the mesh tun, so a packet here took a route into the wrong device
+// every route into the overlay names the mesh tun, so a packet counted here took a route into the wrong device
+// no route sends to an IPv6 multicast address of interface-local or link-local scope, so a packet to one is the kernel's own, its MLD reports among them, and is not counted
 func (m *Mesh) drain(e *egressDevice, queue tun.Queue) {
 	slab := make([]byte, outboundSlabSize)
 	reads := make([]tun.ReadPacket, e.dev.BatchSize())
 	for {
 		n, err := queue.Read(slab, reads)
-		m.segmentsDrained.Add(uint64(n))
+		routed := 0
+		for _, read := range reads[:n] {
+			if !linkScopedMulticast(slab[read.Offset : read.Offset+read.Size]) {
+				routed++
+			}
+		}
+		m.segmentsDrained.Add(uint64(routed))
 		if err == nil || errors.Is(err, tun.ErrTooManySegments) {
 			continue
 		}
@@ -107,4 +144,9 @@ func (m *Mesh) drain(e *egressDevice, queue tun.Queue) {
 		case <-time.After(egressDrainRetry):
 		}
 	}
+}
+
+// linkScopedMulticast reports an IPv6 packet to a multicast address whose scope, the low nibble of its second byte, is interface-local or link-local (RFC 4291 section 2.7)
+func linkScopedMulticast(packet []byte) bool {
+	return len(packet) >= 40 && packet[0]>>4 == 6 && packet[24] == 0xff && packet[25]&0x0f <= 2
 }

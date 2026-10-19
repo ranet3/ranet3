@@ -65,6 +65,7 @@ func steered(tb testing.TB, inner []byte, source netip.Addr, path ...netip.Addr)
 	return outer
 }
 
+// egressMesh is a mesh of one tun lane recording its writes, holding egressTable, with both families ready to egress
 // its drop reports are not spaced, so every one reaches the log
 func egressMesh(tb testing.TB) (*Mesh, *recordingDevice) {
 	tb.Helper()
@@ -72,6 +73,7 @@ func egressMesh(tb testing.TB) (*Mesh, *recordingDevice) {
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 	m.setDevice(dev)
 	m.SetSegments(egressTable(tb))
+	m.SetEgressReady(true, true)
 	tb.Cleanup(m.Close)
 	return m, dev
 }
@@ -336,6 +338,42 @@ func TestEgressWithoutADeviceIsNotReady(t *testing.T) {
 	}
 }
 
+// with a device installed, an egress result of a family the translator has not reported ready is dropped and counted not ready
+// since the device would carry it out of the uplink untranslated
+// it reaches neither the device, the mesh tun nor the sender, while the ready family's result is written
+func TestEgressOfAFamilyNotReadyIsNotReady(t *testing.T) {
+	m, meshTUN := egressMesh(t)
+	m.SetEgressReady(false, false)
+	dev := newFakeEgress()
+	m.SetEgress(dev)
+	back := &recordingPeer{}
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(headend, 128), back.peer(t, "headend"))
+	egressed6 := plainV6(segAddr("3fff:a::1"), segAddr("2001:4860:4860::8888"), "egressed over IPv6")
+	egressed4 := udpPacket(tooBigSource[4], tooBigDestination[4], 64, false)
+	batch := func() {
+		m.DeliverInboundBatch(framed(steered(t, egressed6, headend, egressExit), steered(t, egressed4, headend, egressExit)), DefaultMTU)
+	}
+
+	batch()
+	if counters := m.SegmentCounters(); counters.NotReady != 2 || counters.Egressed != 0 || counters.Dropped != 0 {
+		t.Errorf("a mesh with neither family ready counted %+v, want 2 not ready", counters)
+	}
+	m.SetEgressReady(false, true)
+	batch()
+	if writes := dev.accepted(); len(writes) != 1 || !slices.EqualFunc(writes[0], [][]byte{egressed6}, bytes.Equal) {
+		t.Errorf("with IPv6 alone ready the egress device took %q, want the IPv6 packet alone", writes)
+	}
+	if counters := m.SegmentCounters(); counters.NotReady != 3 || counters.Egressed != 1 || counters.Dropped != 0 {
+		t.Errorf("with IPv6 alone ready the mesh counted %+v, want 3 not ready and 1 egressed", counters)
+	}
+	if writes := tunWrites(meshTUN); len(writes) != 0 {
+		t.Errorf("an egress result not ready reached the mesh tun as %q", writes)
+	}
+	if sent := back.packets(t); len(sent) != 0 {
+		t.Errorf("an egress result not ready was answered with %q", sent)
+	}
+}
+
 // a packet whose outer or inner source is outside the egress segment's allow list is counted refused and dropped
 // and stays out of the egress device, the mesh tun and the answers to its sender, whose route is there and whose ICMP budget is full
 func TestEgressRefusedSourceIsCountedAndNeverAnswered(t *testing.T) {
@@ -523,6 +561,37 @@ func TestEgressDrainCountsWhatItReadsAndEndsWithItsDevice(t *testing.T) {
 	}
 	if closes := first.closes.Load(); closes != 1 {
 		t.Errorf("the first device was closed %d times in all, want once", closes)
+	}
+}
+
+// the drain leaves out of Drained an IPv6 packet to a multicast address of
+// scope 0 to 2, and counts one to every wider scope, an IPv4 packet whatever
+// its bytes where an IPv6 destination would sit, and a packet too short to hold
+// an IPv6 header
+func TestEgressDrainLeavesTheKernelsLinkScopedMulticastUncounted(t *testing.T) {
+	m, _ := egressMesh(t)
+	dev := newFakeEgress()
+	m.SetEgress(dev)
+	var packets [][]byte
+	var want uint64
+	for scope := range 16 {
+		destination := netip.AddrFrom16([16]byte{0: 0xff, 1: byte(scope), 15: 1})
+		packets = append(packets, plainV6(segAddr("3fff:a::1"), destination, "multicast"))
+		if scope > 2 {
+			want++
+		}
+	}
+	ipv4 := plainV6(segAddr("3fff:a::1"), segAddr("ff02::16"), "ipv4")
+	ipv4[0] = 0x45
+	packets = append(packets, ipv4, []byte{0x60})
+	want += 2
+	dev.reads <- scriptedRead{packets: packets}
+	waitUntil(t, "the drain to count what it read", func() bool { return m.SegmentCounters().Drained >= want })
+	// a read of one packet that counts shows the drain has finished the read before it
+	dev.reads <- scriptedRead{packets: [][]byte{plainV6(segAddr("3fff:a::1"), segAddr("2001:db8::1"), "unicast")}}
+	waitUntil(t, "the drain to count the unicast packet", func() bool { return m.SegmentCounters().Drained >= want+1 })
+	if drained := m.SegmentCounters().Drained; drained != want+1 {
+		t.Errorf("drained reads %d, want %d", drained, want+1)
 	}
 }
 

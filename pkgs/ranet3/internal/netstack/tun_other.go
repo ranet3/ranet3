@@ -8,7 +8,7 @@ package netstack
 import "ranet3.com/pkgs/wireguard/tun"
 
 // Keep the platform TUN backend's existing behavior outside Linux.
-func bringTUNUp(string) error { return nil }
+func bringTUNUp(string, uint16) error { return nil }
 
 // darwin and the BSDs have one queue, so the count is ignored
 // nothing reads the device's events, and a monitored device hands a failure of its route socket to Read

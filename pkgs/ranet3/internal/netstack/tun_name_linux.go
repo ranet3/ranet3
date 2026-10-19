@@ -7,7 +7,7 @@ package netstack
 
 // defaultTUNName is the device an empty link.tun opens, named after the program
 // one fixed name rather than one the kernel numbers, only ever created and never attached to
-const defaultTUNName = "ranet3"
+const defaultTUNName = linuxTUNName
 
 // utunNamesOnly is false, the kernel judging a name when the device is made
 const utunNamesOnly = false

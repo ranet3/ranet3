@@ -12,6 +12,8 @@ import (
 	"net/netip"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // the address the test below gives the egress device, and the far end the kernel routes out of it
@@ -33,16 +35,17 @@ func egressTUN(t *testing.T) (*Mesh, string) {
 	if err != nil {
 		t.Fatalf("open the egress device: %v", err)
 	}
-	if err := bringTUNUp(name); err != nil {
+	if err := bringTUNUp(name, unix.IFF_MULTICAST); err != nil {
 		_ = dev.Close()
 		t.Fatalf("bring %s up: %v", name, err)
 	}
 	m.SetEgress(dev)
+	m.SetEgressReady(true, true)
 	return m, name
 }
 
 // the inner packet of an egress segment reaches a kernel socket through the egress device whole, from the inner source
-// and a packet the kernel routes into it is read by the drain, which counts every frame the kernel says it handed the device
+// and a packet the kernel routes into it is read by the drain and counted once, whatever link-local IPv6 multicast the kernel sends there of its own
 func TestTUNEgressDeviceCarriesAndDrains(t *testing.T) {
 	enterEmptyNamespace(t)
 	m, name := egressTUN(t)
@@ -75,9 +78,8 @@ func TestTUNEgressDeviceCarriesAndDrains(t *testing.T) {
 
 	before := tunPackets(t, name, sentPackets)
 	sendUDP(t, egressFar, []byte("routed into the wrong device"))
-	waitUntil(t, "the drain to read every frame the kernel handed the egress device", func() bool {
-		sent := tunPackets(t, name, sentPackets)
-		return sent > before && m.SegmentCounters().Drained == sent
+	waitUntil(t, "the drain to count the one packet a route sent into the egress device", func() bool {
+		return tunPackets(t, name, sentPackets) > before && m.SegmentCounters().Drained == 1
 	})
 }
 

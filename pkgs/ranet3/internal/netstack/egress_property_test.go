@@ -55,9 +55,9 @@ func tagged(raw []byte, frames int) (int, bool) {
 
 // a drawn batch mixes passed packets, packets for an End.DT46 to the mesh, a waypoint and an egress segment
 // egress packets with both sources in the allow list, with the outer or the inner one outside it, of either inner family
-// and headers the waypoint refuses, with an egress device installed or none
+// and headers the waypoint refuses, with an egress device installed or none, and each family ready to egress or not
 // every frame ends in exactly one place, the mesh tun, the egress device, the forward path or a counter alone
-// the place is the one its kind names, and an allowed egress packet with no device is counted not ready
+// the place is the one its kind names, and an allowed egress packet with no device or of a family not ready is counted not ready
 // so no packet with a source outside the allow list reaches the egress device or the mesh tun
 // each destination takes its frames in batch order, the egress device in at most one write
 // an answer quotes only a refused header, never a refused source
@@ -66,12 +66,14 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		kinds := make([]segmentKind, hegel.Draw(ht, pbt.Spanning(1, 10)))
 		frames := make([][]byte, len(kinds))
+		families := make([]int, len(kinds))
 		for i := range kinds {
 			kinds[i] = segmentKind(hegel.Draw(ht, pbt.Spanning(0, int(kindCount)-1)))
 			family := 6
 			if hegel.Draw(ht, hegel.Booleans()) {
 				family = 4
 			}
+			families[i] = family
 			source := map[int]netip.Addr{4: segAddr("10.1.0.1"), 6: segAddr("3fff:a::1")}[family]
 			if kinds[i] == kindInnerOutside {
 				source = stranger[family]
@@ -97,8 +99,10 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 			}
 		}
 		present := hegel.Draw(ht, hegel.Booleans())
+		ready := map[int]bool{4: hegel.Draw(ht, hegel.Booleans()), 6: hegel.Draw(ht, hegel.Booleans())}
 
 		m, meshTUN := egressMesh(ht)
+		m.SetEgressReady(ready[4], ready[6])
 		next, back := &recordingPeer{}, &recordingPeer{}
 		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(egressNext, 128), next.peer(ht, "next"))
 		answers := back.peer(ht, "back")
@@ -148,7 +152,7 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 				place = placeForward
 				want.Forwarded++
 			case kindEgress:
-				if present {
+				if present && ready[families[i]] {
 					place = placeEgress
 					want.Egressed++
 				} else {
@@ -165,7 +169,7 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 				wantReached = []segmentPlace{place}
 			}
 			if !slices.Equal(reached[i], wantReached) {
-				ht.Fatalf("frame %d of kind %d with the device present %v reached %v, want %v", i, kind, present, reached[i], wantReached)
+				ht.Fatalf("frame %d of kind %d and family %d with the device present %v and ready %v reached %v, want %v", i, kind, families[i], present, ready, reached[i], wantReached)
 			}
 		}
 		for place, frames := range order {
@@ -186,7 +190,7 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 		}
 		want.Answered = uint64(len(sent))
 		if got := m.SegmentCounters(); got != want {
-			ht.Fatalf("the batch %v with the device present %v counted %+v, want %+v", kinds, present, got, want)
+			ht.Fatalf("the batch %v of families %v with the device present %v and ready %v counted %+v, want %+v", kinds, families, present, ready, got, want)
 		}
 	})
 }

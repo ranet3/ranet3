@@ -31,6 +31,13 @@ const (
 	// followed by a unit number it asks for that unit
 	// the control creates no other name
 	utunName = "utun"
+	// linuxTUNName is the mesh tun an empty link.tun opens on linux, named after the program
+	// the egress device's name is formed from it on every platform
+	linuxTUNName = "ranet3"
+	// egressSuffix follows the mesh tun's name in the egress device's
+	egressSuffix = "e"
+	// ifNameSize is IFNAMSIZ, which counts the name's terminating NUL
+	ifNameSize = 16
 )
 
 // TUNHeadroom is the space in front of each packet a Device.Write is handed, the offset wireguard-go's own device writes at
