@@ -41,6 +41,32 @@
 // and forwardable, and with nothing at all while either is missing. It is the
 // same fact internal/client warns about for transit, read from the same place,
 // and acted on here because this end is the only one that knows.
+//
+// # The border filter
+//
+// An exit's allow list says which sources it carries out of the mesh, and
+// it is authorization rather than a border: a host on any link of a forwarding
+// node can send a packet with a mesh source into that node, which routes it
+// into the mesh and on to the exit as if a mesh node had sent it.
+// BorderFilter owns a second table of this tool's name, inet
+// rather than ip and ip6, holding one filter chain at prerouting and priority
+// raw, before conntrack, so a forged packet creates no connection entry. It
+// accepts whatever arrives on a device inside the mesh, the tun, the egress
+// device, lo and the VRF master the tun is enslaved to, then drops a source
+// in the mesh's own prefixes, any routing header and this node's own SIDs as
+// destinations, in that order, each drop counted. The routing header rule
+// takes every type, since nf_tables finds only the first routing header of a
+// packet, and one of type 0 or 2 would otherwise hide a type 4 header behind
+// it. From Linux 7.1 the kernel's search for it gives up at the thirteenth
+// extension header, so one behind twelve others passes, and a Linux host from
+// 7.1 it is addressed to with seg6_enabled set still acts on a segment routing
+// header there. That host's receive path drops a packet whose routing header
+// sits further back. Before 7.1 neither search has a limit: the rule finds a
+// routing header anywhere in the chain, and the host acts on one anywhere.
+//
+// It is a second owner beside Translator, with its own run goroutine, socket
+// and change monitor, and neither writes, replaces or deletes the other's
+// table.
 package egress
 
 import (
@@ -56,20 +82,6 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/schema"
-)
-
-const (
-	// TableName is the nftables table this package owns, and the whole of its
-	// ownership claim. It is the binary's own name so that an operator reading
-	// `nft list ruleset` on a shared host can tell at a glance who wrote it.
-	TableName = "ranet3"
-	// ChainName is the one chain in that table, a nat postrouting base chain.
-	ChainName = "postrouting"
-	// DefaultSweep is the periodic pass a capability that names none takes.
-	DefaultSweep = 30 * time.Second
-	// minRetryInterval is the first delay after a failed pass, and it doubles up
-	// to the sweep interval, as in internal/kernel.
-	minRetryInterval = time.Second
 )
 
 // FamilyIPv4 and FamilyIPv6 are AF_INET and AF_INET6, spelled here rather than
@@ -205,33 +217,10 @@ func (e Egress) Validate() error {
 	if e.Return && len(e.Advertise) == 0 {
 		return errors.New("egress: cap.egress return is set and advertise is empty, so there is no prefix to translate from")
 	}
-	for _, entry := range e.Advertise {
-		prefix := entry.Prefix
-		if !prefix.IsValid() {
-			return fmt.Errorf("egress: cap.egress advertise %s is not a prefix", entry)
-		}
-		if prefix.Masked() != prefix {
-			// Refused rather than masked, as internal/kernel refuses the same
-			// typo on a rule: masking it advertises a whole prefix where one
-			// address was written, and says nothing.
-			return fmt.Errorf("egress: cap.egress advertise %s has bits set below its prefix length", prefix)
-		}
-		if prefix.Addr().Zone() != "" {
-			return fmt.Errorf("egress: cap.egress advertise %s carries a zone, which no prefix the mesh announces can", prefix)
-		}
-		if prefix.Addr().Is4In6() {
-			// Refused rather than unmapped, because the two spellings send the
-			// prefix to different tables here: the 4-in-6 form would be
-			// translated by an IPv6 rule matching an address family no packet
-			// on the wire carries, and the node would advertise a prefix it
-			// silently never acts on.
-			return fmt.Errorf("egress: cap.egress advertise %s is an IPv4 prefix written as IPv6, so write it as %s", prefix, netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96))
-		}
-	}
-	for i, entry := range e.Advertise {
-		if slices.ContainsFunc(e.Advertise[:i], func(other schema.Prefix) bool { return other.Prefix == entry.Prefix }) {
-			return fmt.Errorf("egress: cap.egress advertise %s is written twice", entry)
-		}
+	// a prefix with bits below its length is refused rather than masked, which would advertise a whole prefix where one address was written
+	// and one spelling IPv4 as IPv6 rather than unmapped, which an IPv6 rule would translate for a family no packet on the wire carries
+	if err := schema.CheckPrefixes("egress: cap.egress advertise", e.Advertise, nil); err != nil {
+		return err
 	}
 	for _, named := range []struct {
 		field  string
@@ -415,6 +404,22 @@ type Installed struct {
 	Bytes   uint64
 }
 
+// chainReadback is the chain one owner writes, and the table of this tool's
+// name holding it in one nf_tables family, as a listing finds them
+type chainReadback struct {
+	// rules is every rule of the chain in order, one carrying no comment as an
+	// empty spec, which no rule this package writes has
+	rules []Installed
+	// fault names how the table or the chain differs from what Apply writes,
+	// empty where neither does
+	fault string
+	// remake holds where the table or the chain differs in what nf_tables
+	// will not change in place, a table flag other than dormant, or the
+	// chain's type, hook or priority or a hook at all, so Apply deletes the
+	// table and makes it again in its one transaction
+	remake bool
+}
+
 // backend is the kernel surface a translator drives. Everything above it is
 // portable and syscall-free, so the diff and the refusal rules are testable
 // against a fake.
@@ -432,11 +437,11 @@ type backend interface {
 	// Withdraw removes this tool's own tables. A table that is already gone is
 	// success.
 	Withdraw() error
-	// Deleted carries one coalesced wake-up per batch of deletions another
-	// writer made in this tool's own tables.
-	Deleted() <-chan struct{}
+	// Changed carries one coalesced wake-up per batch of changes another
+	// writer made to this tool's own tables, a deletion or an addition.
+	Changed() <-chan struct{}
 	// Missed carries one coalesced wake-up per batch of notifications the
-	// backend lost or could not read, any of which may have been a deletion.
+	// backend lost or could not read, any of which may have been a change.
 	Missed() <-chan struct{}
 	Close() error
 	// where names the space this backend owns, for a log line.
@@ -664,24 +669,20 @@ func (t *Translator) Run(ctx context.Context) error {
 		"advertise", len(t.cfg.Advertise))
 	ticker := time.NewTicker(t.cfg.sweep())
 	defer ticker.Stop()
-	retry := time.NewTimer(t.cfg.sweep())
-	stopTimer(retry)
+	retry := newRetryTimer(t.cfg.sweep())
 	defer retry.Stop()
 
-	backoff := time.Duration(0)
 	t.trigger = "start"
 	for ctx.Err() == nil {
 		if !t.enabled.Load() {
 			// once per stop rather than once per wake, and a withdrawal that
 			// failed is retried on the backoff a failed pass takes
 			if !t.withdrawn {
-				stopTimer(retry)
 				if err := t.stop(); err != nil {
-					backoff = min(max(2*backoff, minRetryInterval), t.cfg.sweep())
-					slog.Warn("egress could not withdraw its tables, retrying", "err", err, "retry_in", backoff)
-					retry.Reset(backoff)
+					slog.Warn("egress could not withdraw its tables, retrying", "err", err, "retry_in", retry.failed())
 				} else {
-					t.withdrawn, backoff = true, 0
+					t.withdrawn = true
+					retry.passed()
 				}
 			}
 		} else {
@@ -691,13 +692,9 @@ func (t *Translator) Run(ctx context.Context) error {
 				slog.Info("egress translator started again", "where", t.Where())
 			}
 			if err := t.reconcile(); err != nil {
-				backoff = min(max(2*backoff, minRetryInterval), t.cfg.sweep())
-				slog.Warn("egress pass failed, retrying", "err", err, "retry_in", backoff)
-				stopTimer(retry)
-				retry.Reset(backoff)
-			} else if backoff != 0 {
-				backoff = 0
-				stopTimer(retry)
+				slog.Warn("egress pass failed, retrying", "err", err, "retry_in", retry.failed())
+			} else {
+				retry.passed()
 			}
 		}
 		select {
@@ -712,10 +709,10 @@ func (t *Translator) Run(ctx context.Context) error {
 			if t.enabled.Load() {
 				t.trigger = "enable"
 			}
-		case <-t.be.Deleted():
-			// the steered rule may be gone already, so the mesh stops writing before the pass that puts it back
-			t.trigger = "deleted"
-			const why = "another writer deleted part of its table"
+		case <-t.be.Changed():
+			// the steered rule may be gone or bypassed already, so the mesh stops writing before the pass that puts it back
+			t.trigger = "changed"
+			const why = "another writer changed its table"
 			t.setReady(false, false, why, why)
 		case <-t.be.Missed():
 			// another table's large transaction overflows the socket as readily as a flush of this one, so only the pass's readback decides
@@ -738,6 +735,35 @@ func stopTimer(timer *time.Timer) {
 		case <-timer.C:
 		default:
 		}
+	}
+}
+
+// retryTimer is a run loop's retry of a failed pass, on a backoff doubling
+// from minRetryInterval up to the sweep, armed only while the backoff is set
+type retryTimer struct {
+	*time.Timer
+	sweep, backoff time.Duration
+}
+
+func newRetryTimer(sweep time.Duration) *retryTimer {
+	r := &retryTimer{Timer: time.NewTimer(sweep), sweep: sweep}
+	stopTimer(r.Timer)
+	return r
+}
+
+// failed arms the timer with the backoff doubled, which it returns
+func (r *retryTimer) failed() time.Duration {
+	r.backoff = min(max(2*r.backoff, minRetryInterval), r.sweep)
+	stopTimer(r.Timer)
+	r.Reset(r.backoff)
+	return r.backoff
+}
+
+// passed disarms the timer and starts the backoff over
+func (r *retryTimer) passed() {
+	if r.backoff != 0 {
+		r.backoff = 0
+		stopTimer(r.Timer)
 	}
 }
 

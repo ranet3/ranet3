@@ -41,9 +41,9 @@ type fakeBackend struct {
 	// flows is added to each rule's counter on every readback, so a test can
 	// tell a rule the pass rewrote from one it left alone.
 	flows uint64
-	// deleted stands for another writer's deletions in the tables and missed
+	// changed stands for another writer's changes to the tables and missed
 	// for notifications lost, nil for none
-	deleted, missed chan struct{}
+	changed, missed chan struct{}
 	// failRules makes a host whose rules cannot be listed
 	failRules bool
 	// log records each listing, apply and withdrawal in order, beside what record adds
@@ -119,7 +119,7 @@ func (f *fakeBackend) Withdraw() error {
 
 func (f *fakeBackend) Close() error { return nil }
 
-func (f *fakeBackend) Deleted() <-chan struct{} { return f.deleted }
+func (f *fakeBackend) Changed() <-chan struct{} { return f.changed }
 
 func (f *fakeBackend) Missed() <-chan struct{} { return f.missed }
 
@@ -498,7 +498,7 @@ func TestShutdownRetractsBeforeItWithdraws(t *testing.T) {
 // withdrawals, and whose egress.ready events go to bus
 func readyLog(t *testing.T, cfg Egress, bus *events.Bus) (*Translator, *fakeBackend) {
 	t.Helper()
-	be := &fakeBackend{deleted: make(chan struct{}, 1), missed: make(chan struct{}, 1)}
+	be := &fakeBackend{changed: make(chan struct{}, 1), missed: make(chan struct{}, 1)}
 	rt := Runtime{
 		Egress: "ranet0e",
 		Events: bus,
@@ -553,11 +553,11 @@ func TestStoppingReportsTheEgressDeviceNotReadyFirst(t *testing.T) {
 	}
 }
 
-// Another writer deleting part of the translator's table, a firewall reload
-// flushing the ruleset for one, wakes the translator, which reports the egress
-// device not ready before the pass that puts the rules back and ready again
-// after it, with no sweep due
-func TestAnotherWritersDeletionStopsTheMeshUntilThePassRestoresIt(t *testing.T) {
+// Another writer changing the translator's table, a firewall reload flushing
+// the ruleset for one, wakes the translator, which reports the egress device
+// not ready before the pass that puts the rules back and ready again after
+// it, with no sweep due
+func TestAnotherWritersChangeStopsTheMeshUntilThePassRestoresIt(t *testing.T) {
 	bus := events.New()
 	tr, be := readyLog(t, Egress{Sweep: schema.Duration(lateSweep)}, bus)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -583,18 +583,18 @@ func TestAnotherWritersDeletionStopsTheMeshUntilThePassRestoresIt(t *testing.T) 
 	be.held = nil
 	be.mu.Unlock()
 	mark := len(be.entries())
-	be.deleted <- struct{}{}
+	be.changed <- struct{}{}
 	ready(2)
 	after := be.entries()[mark:]
 	if want := []string{"ready false false sid false", "rules", "apply", "rules", "ready true true sid true"}; !slices.Equal(after, want) {
-		t.Errorf("after the deletion the translator went %q, want %q", after, want)
+		t.Errorf("after the change the translator went %q, want %q", after, want)
 	}
 	var triggers []string
 	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.pass" }, 0) {
 		triggers = append(triggers, event.Attrs["trigger"])
 	}
-	if !slices.Contains(triggers, "deleted") {
-		t.Errorf("the passes were woken by %q, none by the deletion", triggers)
+	if !slices.Contains(triggers, "changed") {
+		t.Errorf("the passes were woken by %q, none by the change", triggers)
 	}
 }
 
