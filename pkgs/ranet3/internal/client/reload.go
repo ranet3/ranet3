@@ -72,7 +72,7 @@ func (c *Client) syncPeers() (stopped []*dialer) {
 
 // ReloadFrom applies the configuration at path and the trust document it names, keeping every tunnel this node carries that the two still admit
 // a tunnel goes where the trust document no longer admits its peer
-// one also goes where cap.crypto ike prf no longer holds its IKE SA's PRF
+// one also goes where cap.crypto ike prf no longer holds its IKE SA's PRF, or where the lists leave out a transform of an IKE SA no CREATE_CHILD_SA can rekey under them
 // and a new handshake replaces that one
 // it refuses a change to what peers already authenticated or what the dataplane is attached to
 // so no reload applies by half
