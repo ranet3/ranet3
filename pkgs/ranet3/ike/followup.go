@@ -14,7 +14,6 @@ import (
 )
 
 // followupChain is a peer's rekey this end answered with additional key exchanges still to run, each in an IKE_FOLLOWUP_KE exchange of its own
-// RFC 9370 section 2.2.4: "With multiple key exchanges, the SAs are not yet created when the CREATE_CHILD_SA is completed. Instead, they would be created only after the series of IKE_FOLLOWUP_KE exchanges is finished."
 type followupChain struct {
 	// ctx is the IKE SA the chain's exchanges run on
 	ctx      *ikeContext
@@ -25,29 +24,49 @@ type followupChain struct {
 	// secrets holds SK(0) and the secret of each additional key exchange run so far
 	secrets [][]byte
 	ni, nr  []byte
-	// ike is the IKE SA the rekey makes
-	ike *followupIKE
+	// made is the SA the chain makes
+	made peerSA
 	// done is closed when the chain ends, however it ends
 	done chan struct{}
 }
 
-// followupIKE is the IKE SA a peer's rekey makes once its chain ends
-type followupIKE struct {
+// peerSA is the SA a peer's rekey or creation makes, at the answer or once its chain's last exchange ends
+type peerSA interface {
+	// kind names the SA as the events' sa attribute does
+	kind() string
+	// install makes the SA under ctx from secrets, SK(0) and then those of the additional key exchanges in order, with the nonces ni and nr, puts it in place and ends the peer's chain
+	// it reports false where this end's own rekey superseded the SA and nothing was put in place
+	install(s *Session, ctx *ikeContext, secrets [][]byte, ni, nr []byte) (bool, error)
+}
+
+// peerIKE is the IKE SA a peer's rekey makes
+type peerIKE struct {
 	suite      SASuite
 	spiI, spiR uint64
 }
 
-func newFollowupChain(ctx *ikeContext, methods []uint16, shared, ni, nr []byte, now time.Time) *followupChain {
-	c := &followupChain{ctx: ctx, methods: slices.Clone(methods), secrets: [][]byte{shared}, ni: ni, nr: nr, done: make(chan struct{})}
-	c.relink(now)
+func (*peerIKE) kind() string { return "ike" }
+
+// peerChild is the Child SA a peer's creation or rekey makes, keyed by the key exchanges of entry
+type peerChild struct {
+	encr                Transform
+	localSPI, remoteSPI uint32
+	entry               kexEntry
+}
+
+func (*peerChild) kind() string { return "child" }
+
+func newFollowupChain(ctx *ikeContext, made peerSA, methods []uint16, shared, ni, nr []byte) *followupChain {
+	c := &followupChain{ctx: ctx, methods: slices.Clone(methods), secrets: [][]byte{shared}, ni: ni, nr: nr, made: made, done: make(chan struct{})}
+	c.relink()
 	return c
 }
 
 // relink draws the link of the next exchange and restarts the wait for it
 // RFC 9370 section 2.2.4: "The responder MUST include this notification in a CREATE_CHILD_SA or IKE_FOLLOWUP_KE response message in case the next IKE_FOLLOWUP_KE exchange is expected, filling it with some data that would allow linking the current exchange to the next one."
-func (c *followupChain) relink(now time.Time) {
+func (c *followupChain) relink() {
 	rand.Read(c.link[:])
-	c.deadline = now.Add(followupWait)
+	c.deadline = time.Now().Add(followupWait)
 }
 
 // links reports whether data is the link of the next exchange, in a time that tells nothing of where the two differ
@@ -58,9 +77,6 @@ func (c *followupChain) links(data []byte) bool {
 func (c *followupChain) linkPayload() RawPayload {
 	return linkPayload(c.link[:])
 }
-
-// kind names the SA the chain makes as the events' sa attribute does
-func (c *followupChain) kind() string { return "ike" }
 
 // linkPayload is the ADDITIONAL_KEY_EXCHANGE notify carrying data
 // RFC 9370 section 2.2.4: "Its Notify Message Type value is 16441, and the Protocol ID and SPI Size are both set to 0."
@@ -86,17 +102,6 @@ func linkOf(payloads []RawPayload) ([]byte, error) {
 	return nil, nil
 }
 
-// openChainLocked makes c the peer's chain, and returns the one it supersedes
-// it must be called with stateMu held
-func (s *Session) openChainLocked(c *followupChain) *followupChain {
-	superseded := s.peerChain
-	s.peerChain = c
-	if superseded != nil {
-		close(superseded.done)
-	}
-	return superseded
-}
-
 // takeChainLocked ends the peer's chain and returns it, nil where none is open
 // it must be called with stateMu held
 func (s *Session) takeChainLocked() *followupChain {
@@ -110,26 +115,41 @@ func (s *Session) takeChainLocked() *followupChain {
 
 // dropped tells of a chain this end dropped before its last exchange, once
 func (s *Session) dropped(c *followupChain, reason string) {
-	if c == nil {
-		return
-	}
-	slog.Info("ike dropped the peer's additional key exchanges", "sa", c.kind(), "reason", reason)
-	s.emit("ike.followup.dropped", slog.String("sa", c.kind()), slog.String("reason", reason))
+	slog.Info("ike dropped the peer's additional key exchanges", "sa", c.made.kind(), "reason", reason)
+	s.emit("ike.followup.dropped", slog.String("sa", c.made.kind()), slog.String("reason", reason))
 }
+
+// dropChain ends the peer's chain where why gives a reason to, and tells of it
+// why runs with stateMu held and gives "" to keep the chain
+func (s *Session) dropChain(why func(c *followupChain) string) {
+	s.stateMu.Lock()
+	var c *followupChain
+	reason := ""
+	if open := s.peerChain; open != nil {
+		if reason = why(open); reason != "" {
+			c = s.takeChainLocked()
+		}
+	}
+	s.stateMu.Unlock()
+	if c != nil {
+		s.dropped(c, reason)
+	}
+}
+
+// superseded drops any chain, as a peer's new rekey or creation of an SA does, the peer running one at a time
+func superseded(*followupChain) string { return "superseded" }
 
 // expireChain drops the peer's chain once its wait ran out, or once the IKE SA it runs on is no longer current
 func (s *Session) expireChain(now time.Time) {
-	s.stateMu.Lock()
-	var c *followupChain
-	reason := "expired"
-	if open := s.peerChain; open != nil && (!now.Before(open.deadline) || open.ctx != s.current) {
-		if now.Before(open.deadline) {
-			reason = "superseded"
+	s.dropChain(func(c *followupChain) string {
+		switch {
+		case !now.Before(c.deadline):
+			return "expired"
+		case c.ctx != s.current:
+			return "superseded"
 		}
-		c = s.takeChainLocked()
-	}
-	s.stateMu.Unlock()
-	s.dropped(c, reason)
+		return ""
+	})
 }
 
 // nextChainExpiry is when the peer's chain runs out of time, for Run to wake at
@@ -142,10 +162,19 @@ func (s *Session) nextChainExpiry() (time.Time, bool) {
 	return s.peerChain.deadline, true
 }
 
-func (s *Session) chainOpen() bool {
+// chainKind names the SA the peer's open chain makes, "" where none is open
+func (s *Session) chainKind() string {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
-	return s.peerChain != nil
+	return s.chainKindLocked()
+}
+
+// chainKindLocked is chainKind with stateMu held
+func (s *Session) chainKindLocked() string {
+	if s.peerChain == nil {
+		return ""
+	}
+	return s.peerChain.made.kind()
 }
 
 // handleFollowup answers a peer's IKE_FOLLOWUP_KE on ctx
@@ -163,6 +192,8 @@ func (s *Session) handleFollowup(ctx *ikeContext, msgID uint32, inner []RawPaylo
 		return s.responseNotify(ctx, msgID, IKE_FOLLOWUP_KE, N_STATE_NOT_FOUND)
 	}
 	// RFC 7296 section 2.25.2: "If a peer receives a request to rekey an IKE SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
+	// section 2.25.1: "If a peer receives a request to rekey a Child SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
+	// and a Child SA closes with its IKE SA
 	// an IKE SA past its lifetime is closing as well, and the chain is kept for a peer that asks again before the close
 	if s.closing.Load() || s.ikeExpired(ctx) {
 		return s.responseNotify(ctx, msgID, IKE_FOLLOWUP_KE, N_TEMPORARY_FAILURE)
@@ -183,42 +214,61 @@ func (s *Session) handleFollowup(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	s.stateMu.Lock()
 	c.secrets, c.methods = append(c.secrets, secret), c.methods[1:]
 	if len(c.methods) > 0 {
-		c.relink(time.Now())
+		c.relink()
 		answer = append(answer, c.linkPayload())
 		s.stateMu.Unlock()
 		return s.response(ctx, msgID, IKE_FOLLOWUP_KE, answer)
 	}
 	s.stateMu.Unlock()
-	return s.finishIKEChain(ctx, msgID, c, answer)
+	return s.finishChain(ctx, msgID, c, answer)
 }
 
-// finishIKEChain makes the IKE SA of the peer's rekey whose last additional key exchange answer holds, and switches to it as handleIKERekey does
-// RFC 9370 section 2.2.4: "SKEYSEED = prf(SK_d, SK(0) | Ni | Nr | SK(1) | ... SK(n))"
-func (s *Session) finishIKEChain(ctx *ikeContext, msgID uint32, c *followupChain, answer []RawPayload) ([]byte, error) {
-	made := c.ike
-	newContext, err := rekeyedContext(ctx, made.suite, c.secrets, c.ni, c.nr, made.spiI, made.spiR, true)
-	if err == nil {
-		err = s.mux.RegisterIKE(made.spiI)
+// finishChain makes the SA of the peer's chain c, whose last exchange ctx carried at msgID, and answers that exchange with answer where the SA is in place
+// a failure of this end's keeps the SA the chain would replace, as handleIKERekey and handleChildRekey keep it
+func (s *Session) finishChain(ctx *ikeContext, msgID uint32, c *followupChain, answer []RawPayload) ([]byte, error) {
+	placed, err := c.made.install(s, ctx, c.secrets, c.ni, c.nr)
+	switch {
+	case err != nil:
+		slog.Warn("ike cannot answer a peer rekey", "sa", c.made.kind(), "err", err)
+	case !placed:
+		// this end's own rekey won the simultaneous rekey, so the peer's chain was to stop before this exchange
+		s.dropped(c, "superseded")
+	default:
+		return s.response(ctx, msgID, IKE_FOLLOWUP_KE, answer)
 	}
-	// the IKE SA the rekey would replace is kept, as handleIKERekey keeps it on a failure of this end's
-	if err != nil {
-		slog.Warn("ike cannot answer a peer IKE rekey", "err", err)
-		s.stateMu.Lock()
-		s.takeChainLocked()
-		s.stateMu.Unlock()
-		return s.responseNotify(ctx, msgID, IKE_FOLLOWUP_KE, N_TEMPORARY_FAILURE)
+	return s.responseNotify(ctx, msgID, IKE_FOLLOWUP_KE, N_TEMPORARY_FAILURE)
+}
+
+// install makes the Child SA and puts it in place, replacing the one the peer rekeys where it rekeys one
+// RFC 9370 section 2.2.4: "KEYMAT = prf+ (SK_d, SK(0) | Ni | Nr | SK(1) |  ... SK(n))"
+func (made *peerChild) install(s *Session, ctx *ikeContext, secrets [][]byte, ni, nr []byte) (bool, error) {
+	s.stateMu.Lock()
+	s.takeChainLocked()
+	s.stateMu.Unlock()
+	initKey, respKey, err := childSAKeymat(ctx.suite.PRFID, ctx.skD, secrets[0], ni, nr, made.encr.ID, made.encr.KeyLengthBits, secrets[1:]...)
+	if err == nil {
+		err = s.replaceKeyedChild(ChildSA{EncrID: made.encr.ID, EncrKeyBits: made.encr.KeyLengthBits, LocalSPI: made.localSPI, RemoteSPI: made.remoteSPI, InboundKey: initKey, OutboundKey: respKey}, made.entry)
+	}
+	return err == nil, err
+}
+
+// install makes the IKE SA and switches to it, or holds it as the collision's candidate
+// RFC 9370 section 2.2.4: "SKEYSEED = prf(SK_d, SK(0) | Ni | Nr | SK(1) | ... SK(n))"
+func (made *peerIKE) install(s *Session, ctx *ikeContext, secrets [][]byte, ni, nr []byte) (bool, error) {
+	newContext, err := rekeyedContext(ctx, made.suite, secrets, ni, nr, made.spiI, made.spiR, true)
+	if err == nil {
+		// the SPI map is shared by every mux on the hub
+		// so a peer holding two sessions with this node can name an SPI already taken
+		err = s.mux.RegisterIKE(made.spiI)
 	}
 	// the chain gives way to its SA under one lock, so this end's own rekey reads either as the rekey it collides with
 	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	s.takeChainLocked()
-	placed := s.placePeerIKELocked(ctx, newContext, c.ni, c.nr)
-	s.stateMu.Unlock()
-	if !placed {
-		// this end's own rekey won the simultaneous rekey, so the peer's chain was to stop before this exchange
-		s.dropped(c, "superseded")
-		return s.responseNotify(ctx, msgID, IKE_FOLLOWUP_KE, N_TEMPORARY_FAILURE)
+	if err != nil {
+		return false, err
 	}
-	return s.response(ctx, msgID, IKE_FOLLOWUP_KE, answer)
+	return s.placePeerIKELocked(ctx, newContext, ni, nr), nil
 }
 
 // awaitPeerRekey waits for the peer's chain on old, which won a simultaneous rekey this end's own lost, to replace old, and fails when the chain ends without replacing it or the IKE SA starts to close

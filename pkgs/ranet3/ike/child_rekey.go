@@ -21,6 +21,8 @@ import (
 // The old inbound Child SA remains installed until the INFORMATIONAL Delete
 // exchange acknowledges retirement. After a failed Child SA rekey, on any
 // path, it refuses until the retry delay Run gives the schedule has passed.
+// It fails while the peer's rekey of either SA runs its additional key
+// exchanges.
 func (s *Session) RekeyChild() error {
 	return s.rekeyChild(false)
 }
@@ -116,6 +118,11 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 		s.childRetry.end(err)
 		s.rekeyEnded("child", err)
 	}()
+	// RFC 7296 section 2.25.2: "If a peer receives a request to create or rekey a Child SA when it is currently rekeying the IKE SA, it SHOULD reply with TEMPORARY_FAILURE."
+	// and a peer's creation or rekey of the Child SA replaces the SA this one would, so this end starts neither while the peer's chain is open, and the schedule retries after its backoff
+	if s.chainKind() != "" {
+		return errors.New("ike: Child SA rekey: the peer's own rekey runs its additional key exchanges")
+	}
 	old := s.currentChild()
 	if old.LocalSPI == 0 && old.RemoteSPI == 0 {
 		return s.negotiateChild(nil)
@@ -282,7 +289,9 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	s.stateMu.RLock()
 	// RFC 7296 section 1.4.1: "Deleting an IKE SA implicitly closes any remaining Child SAs negotiated under it."
 	// section 2.25.1: "If a peer receives a request to rekey a Child SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
-	ikeBusy := ctx != s.current || s.localRekey != nil || s.closing.Load() || s.ikeExpired(ctx)
+	// section 2.25.2: "If a peer receives a request to create or rekey a Child SA when it is currently rekeying the IKE SA, it SHOULD reply with TEMPORARY_FAILURE."
+	// a peer's rekey of the IKE SA runs at this end until its chain ends
+	ikeBusy := ctx != s.current || s.localRekey != nil || s.chainKindLocked() == "ike" || s.closing.Load() || s.ikeExpired(ctx)
 	s.stateMu.RUnlock()
 	if ikeBusy || s.retiringChild().LocalSPI != 0 {
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
@@ -325,7 +334,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 		}
 	}
 	s.childMu.RLock()
-	child, childGroup := s.Child, s.childGroupLocked()
+	child, childEntry := s.Child, s.childEntryLocked()
 	s.childMu.RUnlock()
 	if !rekeying && (child.LocalSPI != 0 || child.RemoteSPI != 0) {
 		// RFC 7296 section 2.25: "A peer that receives a CHILD_SA_NOT_FOUND notification SHOULD silently delete the Child SA (if it still exists) and send a request to create a new Child SA from scratch (if the Child SA does not yet exist)."
@@ -343,15 +352,16 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 		}
 		expected = &child
 	}
+	// the peer runs one creation or rekey of the Child SA at a time, so a new one ends the chain of the last
+	s.dropChain(superseded)
 	if err := validateFullRangeSelectors(payloads.tsi, payloads.tsr); err != nil {
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
 	}
 	lists := s.lists()
-	// a Child SA runs no additional key exchange
-	ciphers, entries := lists.espCiphers(), slices.DeleteFunc(slices.Clone(lists.kexEntries()), func(entry kexEntry) bool { return !entry.classical() })
-	if expected != nil && childGroup == group {
-		// the answer keeps the cipher and the group of the Child SA it replaces where the offer and the lists hold them
-		entries = promoted(entries, kexEntry{group: childGroup})
+	ciphers, entries := lists.espCiphers(), lists.kexEntries()
+	if expected != nil && childEntry.group == group {
+		// the answer keeps the cipher and the key exchanges of the Child SA it replaces where the offer and the lists hold them
+		entries = promoted(entries, childEntry)
 	}
 	if expected != nil {
 		ciphers = lists.rekeyChoice(*expected)
@@ -401,14 +411,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	if _, err := rand.Read(nr); err != nil {
 		return fail(err)
 	}
-	initKey, respKey, err := childSAKeymat(ctx.suite.PRFID, ctx.skD, sharedSecret, payloads.nonce.Body, nr, encr.ID, encr.KeyLengthBits)
-	if err != nil {
-		return fail(err)
-	}
-	replacement := ChildSA{EncrID: encr.ID, EncrKeyBits: encr.KeyLengthBits, LocalSPI: binary.BigEndian.Uint32(spi[:]), RemoteSPI: selected.remoteSPI, InboundKey: initKey, OutboundKey: respKey}
-	if err := s.replaceKeyedChild(replacement, selected.dh.ID); err != nil {
-		return fail(err)
-	}
+	ni := append([]byte(nil), payloads.nonce.Body...)
 	responseEncr := encr
 	if responseEncr.ID == ENCR_CHACHA20_POLY1305 {
 		// RFC 7296 section 3.3.6: "Any attributes of a selected transform MUST be returned unmodified."
@@ -429,6 +432,21 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 		responsePayloads = append(responsePayloads, RawPayload{Type: PayloadKE, Body: EncodeKE(selected.dh.ID, localPublic)})
 	}
 	responsePayloads = append(responsePayloads, RawPayload{Type: PayloadTSi, Body: payloads.tsi.Body}, RawPayload{Type: PayloadTSr, Body: payloads.tsr.Body})
+	entry := kexChoice{dh: selected.dh, additions: selected.additions}.entry()
+	made := &peerChild{encr: encr, localSPI: binary.BigEndian.Uint32(spi[:]), remoteSPI: selected.remoteSPI, entry: entry}
+	// RFC 9370 section 2.2.4: "With multiple key exchanges, the SAs are not yet created when the CREATE_CHILD_SA is completed. Instead, they would be created only after the series of IKE_FOLLOWUP_KE exchanges is finished."
+	// so the Child SA waits for the last of them, and nothing is installed until then
+	if added := entry.added(); len(added) > 0 {
+		c := newFollowupChain(ctx, made, added, sharedSecret, ni, nr)
+		s.stateMu.Lock()
+		// the chain dropped above was the last one open, since only Run's goroutine opens one
+		s.peerChain = c
+		s.stateMu.Unlock()
+		return s.response(ctx, msgID, CREATE_CHILD_SA, append(responsePayloads, c.linkPayload()))
+	}
+	if _, err := made.install(s, ctx, [][]byte{sharedSecret}, ni, nr); err != nil {
+		return fail(err)
+	}
 	return s.response(ctx, msgID, CREATE_CHILD_SA, responsePayloads)
 }
 

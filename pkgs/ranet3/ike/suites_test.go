@@ -187,17 +187,21 @@ func TestChangedNamesEachListByItsKey(t *testing.T) {
 	}
 }
 
-// a session names each SA's transforms as cap.crypto spells them, a Child SA keyed by a key exchange of its own with its group after a /
+// a session names each SA's transforms as cap.crypto spells them, a Child SA keyed by key exchanges of its own with their kex entry after a /
 func TestSuiteNamesTransformsAsTheListsDo(t *testing.T) {
 	ikeSA := ikeSuite(SASuite{EncrID: ENCR_CHACHA20_POLY1305, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_ECP_384})
 	if got := ikeSA.IKE(); got != "chacha20poly1305/sha256/p384" {
 		t.Errorf("the IKE SA is named %s", got)
 	}
-	cipher, kex := childSuite(ChildSA{EncrID: ENCR_CHACHA20_POLY1305, EncrKeyBits: 256, LocalSPI: 1}, DH_CURVE25519)
+	cipher, kex := childSuite(ChildSA{EncrID: ENCR_CHACHA20_POLY1305, EncrKeyBits: 256, LocalSPI: 1}, kexEntry{group: DH_CURVE25519})
 	if got := (Suite{ESPCipher: cipher, ESPKex: kex}).ESP(); got != "chacha20poly1305/x25519" {
 		t.Errorf("a Child SA keyed by its own X25519 exchange is named %s", got)
 	}
-	cipher, kex = childSuite(ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 1}, 0)
+	cipher, kex = childSuite(ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 1}, kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}})
+	if got := (Suite{ESPCipher: cipher, ESPKex: kex}).ESP(); got != "aes128gcm/x25519+mlkem768" {
+		t.Errorf("a Child SA keyed by its own X25519 and ML-KEM-768 exchanges is named %s", got)
+	}
+	cipher, kex = childSuite(ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 1}, kexEntry{})
 	if got := (Suite{ESPCipher: cipher, ESPKex: kex}).ESP(); got != "aes128gcm" {
 		t.Errorf("a Child SA keyed from SK_d alone is named %s", got)
 	}
@@ -410,24 +414,26 @@ func TestPeerRekeyIsAnsweredInTheCipherItReplaces(t *testing.T) {
 	}
 }
 
-// a Child SA keyed by a key exchange of its own is unlisted once ike kex leaves out that exchange's group
+// a Child SA keyed by key exchanges of its own is unlisted once ike kex leaves out their whole entry
 // one keyed from SK_d alone is held by its cipher alone
 func TestChildSAKeyedInAGroupTheListsLeftOutIsUnlisted(t *testing.T) {
-	p256Only := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"p256"}}})
+	lists := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"p256", "x25519+mlkem768"}}})
 	ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 256, PRFID: PRF_HMAC_SHA2_384, DHGroup: DH_ECP_256}}
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
 	for _, test := range []struct {
-		group uint16
+		entry kexEntry
 		want  string
 	}{
-		{DH_CURVE25519, "aes128gcm/x25519"},
-		{DH_ECP_256, ""},
-		{0, ""},
+		{kexEntry{group: DH_CURVE25519}, "aes128gcm/x25519"},
+		{kexEntry{group: DH_ECP_256, additions: [addkeTypes]uint16{ML_KEM_768}}, "aes128gcm/p256+mlkem768"},
+		{kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}, ""},
+		{kexEntry{group: DH_ECP_256}, ""},
+		{kexEntry{}, ""},
 	} {
-		s := &Session{current: ctx, Child: child, childGroup: childPFS{spi: child.LocalSPI, group: test.group},
-			suites: func() Suites { return p256Only }}
+		s := &Session{current: ctx, Child: child, childKex: keyedEntry{spi: child.LocalSPI, entry: test.entry},
+			suites: func() Suites { return lists }}
 		if got, ikeSA, _ := s.unlisted(); got != test.want || ikeSA != "" {
-			t.Errorf("a Child SA keyed in group %d is unlisted as %q beside an IKE SA unlisted as %q, want %q", test.group, got, ikeSA, test.want)
+			t.Errorf("a Child SA keyed by %s is unlisted as %q beside an IKE SA unlisted as %q, want %q", kexName(test.entry), got, ikeSA, test.want)
 		}
 	}
 }

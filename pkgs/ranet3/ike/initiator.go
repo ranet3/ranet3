@@ -152,10 +152,10 @@ type Session struct {
 	childMu          sync.RWMutex
 	Child            ChildSA
 	childEstablished time.Time
-	// childGroup is the group of the key exchange whose secret keyed the Child SA holding its SPI
-	childGroup childPFS
-	withdrawn  []uint32
-	retiring   ChildSA
+	// childKex is the kex entry of the key exchanges whose secrets keyed the Child SA holding its SPI
+	childKex  keyedEntry
+	withdrawn []uint32
+	retiring  ChildSA
 	// retiringEnds is where the replaced SA's lifetime ends, which its drain does not pass
 	retiringEnds time.Time
 	// retiringBy bounds how long the replaced SA waits for the peer's Delete.

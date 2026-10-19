@@ -217,8 +217,7 @@ type childProposalSelection struct {
 	// type the offer included back in the answer, and the only one this
 	// implementation can take is NONE.
 	integ Transform
-	// additions holds NONE for each ADDKE type the proposal holds, in type order
-	// a Child SA runs no additional key exchange of RFC 9370
+	// additions holds one transform of each ADDKE type the proposal holds, in type order, NONE for each the answer runs no exchange in
 	additions []Transform
 	remoteSPI uint32
 }
@@ -245,7 +244,7 @@ func (e *invalidKEError) Error() string {
 
 // selectChildRequestProposal answers a Child SA offer from ciphers and kex entries, each in this end's order, as chooseIKE answers an IKE SA offer
 // rule tells chooseKex whether the answer may go without a group
-// entries are classical ones, so a proposal requiring an additional key exchange meets none and is skipped
+// IKE_AUTH passes no entries, so a proposal there requiring a key exchange meets none and is skipped
 func selectChildRequestProposal(body []byte, ciphers []Transform, entries []kexEntry, keGroup uint16, rule groupRule) (childProposalSelection, error) {
 	props, err := DecodeSA(body)
 	if err != nil {

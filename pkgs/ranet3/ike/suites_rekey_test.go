@@ -26,7 +26,7 @@ func answeringSession(t testing.TB, mux *transport.Mux, suite SASuite, child Chi
 	t.Helper()
 	ctx := &ikeContext{suite: suite, spiI: randUint64Nonzero(), spiR: randUint64Nonzero(), skD: bytes.Repeat([]byte{1}, 32),
 		skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20), responder: true}
-	s := &Session{mux: mux, current: ctx, Child: child, childGroup: childPFS{spi: child.LocalSPI, group: group},
+	s := &Session{mux: mux, current: ctx, Child: child, childKex: keyedEntry{spi: child.LocalSPI, entry: kexEntry{group: group}},
 		suites: func() Suites { return lists }, rechecks: make(chan struct{}, 1), started: time.Now()}
 	s.SetChildHandler(func(ChildSA) error { return nil })
 	return s

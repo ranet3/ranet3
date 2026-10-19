@@ -27,6 +27,7 @@ func (e *saEnding) Unwrap() error { return e.err }
 // RekeyIKE replaces the IKE SA while retaining the current Child SAs
 // Run must be serving the IKE requests it sends
 // a failure it returns as a *saEnding ends the IKE SA with a Delete
+// it fails while the peer's rekey of either SA runs its additional key exchanges
 func (s *Session) RekeyIKE() (err error) {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
@@ -37,9 +38,8 @@ func (s *Session) RekeyIKE() (err error) {
 			s.stateNotFounds = 0
 		}
 	}()
-	// RFC 9370 section 2.2.4: "a situation may occur when, due to packet loss, one of the peers receives the CREATE_CHILD_SA message requesting the rekey of an SA that is already being rekeyed by this peer (i.e., the CREATE_CHILD_SA exchange initiated by this peer has already been completed, and the series of IKE_FOLLOWUP_KE exchanges is in progress). In this case, a TEMPORARY_FAILURE notification MUST be sent in response to such a request."
-	// so this end starts no rekey while the peer's runs its additional key exchanges, and the schedule retries after its backoff
-	if s.chainOpen() {
+	// the peer refuses this end's rekey while its own rekey of either SA runs its chain, for the reasons handleIKERekey refuses the peer's, so this end starts none then and the schedule retries after its backoff
+	if s.chainKind() != "" {
 		return errors.New("ike: IKE SA rekey: the peer's own rekey runs its additional key exchanges")
 	}
 	ni := make([]byte, nonceLen)
@@ -157,6 +157,10 @@ func (s *Session) RekeyIKE() (err error) {
 		return s.yieldIKERekey(old, candidate, nil)
 	}
 	collision, chain := s.collision, s.peerChain
+	// a peer's chain opened as this rekey started collides with it only where it rekeys the IKE SA
+	if s.chainKindLocked() != "ike" {
+		chain = nil
+	}
 	peerNi, peerNr := local.peerNonce, local.peerResponseNonce
 	if chain != nil {
 		peerNi, peerNr = chain.ni, chain.nr
@@ -452,17 +456,17 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	s.stateMu.RLock()
 	accept := ctx == s.current && (s.old == nil || s.localRekey != nil) && s.collision == nil
 	ownChain := s.localRekey != nil && s.localRekey.chain
+	childChain := s.chainKindLocked() == "child"
 	s.stateMu.RUnlock()
-	// RFC 7296 section 2.25.2: "If a peer receives a request to rekey an IKE SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
+	// RFC 7296 section 2.25.1: "If a peer receives a request to rekey the IKE SA, and it is currently creating, rekeying, or closing a Child SA of that IKE SA, it SHOULD reply with TEMPORARY_FAILURE."
+	// a peer's creation or rekey of the Child SA runs at this end until its chain ends
+	// section 2.25.2: "If a peer receives a request to rekey an IKE SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
 	// RFC 9370 section 2.2.4: "a situation may occur when, due to packet loss, one of the peers receives the CREATE_CHILD_SA message requesting the rekey of an SA that is already being rekeyed by this peer (i.e., the CREATE_CHILD_SA exchange initiated by this peer has already been completed, and the series of IKE_FOLLOWUP_KE exchanges is in progress). In this case, a TEMPORARY_FAILURE notification MUST be sent in response to such a request."
-	if !accept || ownChain || s.closing.Load() || s.childRekeying.Load() || s.retiringChild().LocalSPI != 0 || s.ikeExpired(ctx) {
+	if !accept || ownChain || childChain || s.closing.Load() || s.childRekeying.Load() || s.retiringChild().LocalSPI != 0 || s.ikeExpired(ctx) {
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 	}
 	// the peer runs one rekey of the IKE SA at a time, so a new one ends the chain of the last
-	s.stateMu.Lock()
-	superseded := s.takeChainLocked()
-	s.stateMu.Unlock()
-	s.dropped(superseded, "superseded")
+	s.dropChain(superseded)
 	malformed := func(err error) ([]byte, error) { return s.refuseRequest(ctx, msgID, CREATE_CHILD_SA, err) }
 	payloads, err := parseChildExchangePayloads(inner)
 	if err != nil {
@@ -542,35 +546,27 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 		{Type: PayloadNonce, Body: EncodeNonce(nr)},
 		{Type: PayloadKE, Body: EncodeKE(group, dh.PublicBytes())},
 	}
+	made := &peerIKE{suite: suite, spiI: spiI, spiR: spiR}
 	// RFC 9370 section 2.2.4: "If the initiator includes any ADDKE Transform Types in the SA payload (along with Transform Type 4), and if the responder agrees to perform additional key exchanges, then the additional key exchanges are performed in a series of new IKE_FOLLOWUP_KE exchanges that follow the CREATE_CHILD_SA exchange."
 	// so the new SA waits for the last of them, and nothing is registered or switched until then
 	if added := suite.entry().added(); len(added) > 0 {
-		c := newFollowupChain(ctx, added, shared, ni, nr, time.Now())
-		c.ike = &followupIKE{suite: suite, spiI: spiI, spiR: spiR}
+		c := newFollowupChain(ctx, made, added, shared, ni, nr)
 		s.stateMu.Lock()
 		// this end's own rekey may have completed its CREATE_CHILD_SA while the answer was made
 		if s.ownChainLocked(ctx) {
 			s.stateMu.Unlock()
 			return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 		}
-		s.openChainLocked(c)
+		// the chain dropped above was the last one open, since only Run's goroutine opens one
+		s.peerChain = c
 		s.stateMu.Unlock()
 		return s.response(ctx, msgID, CREATE_CHILD_SA, append(answer, c.linkPayload()))
 	}
-	made, err := rekeyedContext(ctx, suite, [][]byte{shared}, ni, nr, spiI, spiR, true)
+	placed, err := made.install(s, ctx, [][]byte{shared}, ni, nr)
 	if err != nil {
 		slog.Warn("ike cannot answer a peer IKE rekey", "err", err)
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 	}
-	if err := s.mux.RegisterIKE(spiI); err != nil {
-		// the SPI map is shared by every mux on the hub
-		// so a peer holding two sessions with this node can name an SPI already taken
-		slog.Warn("ike cannot answer a peer IKE rekey", "err", err)
-		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
-	}
-	s.stateMu.Lock()
-	placed := s.placePeerIKELocked(ctx, made, ni, nr)
-	s.stateMu.Unlock()
 	if !placed {
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 	}
