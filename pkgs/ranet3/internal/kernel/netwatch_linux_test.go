@@ -374,7 +374,7 @@ func nexthop(index uint32, flags uint8, gateway netip.Addr) []byte {
 }
 
 // the hop of a route is its own device unless the kernel marks it dead or without carrier, and the first live one of a multipath route
-// a hop whose length does not fit ends the walk
+// a hop whose length does not fit ends the walk, and so does a last hop of unaligned length at the attribute's end
 func TestRouteHopTakesTheFirstLiveHop(t *testing.T) {
 	first, second := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("198.51.100.1")
 	single := func(flags uint32) nlMessage {
@@ -393,6 +393,9 @@ func TestRouteHopTakesTheFirstLiveHop(t *testing.T) {
 		binary.NativeEndian.PutUint16(hop, size)
 		return hop
 	}
+	unaligned := func(hop []byte) []byte {
+		return sized(append(hop, 0), uint16(len(hop)+1))
+	}
 	for _, arm := range []struct {
 		name    string
 		message nlMessage
@@ -408,6 +411,7 @@ func TestRouteHopTakesTheFirstLiveHop(t *testing.T) {
 		{"every hop down", multipath(nexthop(2, unix.RTNH_F_DEAD, first), nexthop(3, unix.RTNH_F_LINKDOWN, second)), 0, netip.Addr{}},
 		{"a hop shorter than its header", multipath(sized(nexthop(2, 0, first), unix.SizeofRtNexthop-1), nexthop(3, 0, second)), 0, netip.Addr{}},
 		{"a hop longer than the attribute", multipath(sized(nexthop(2, 0, first), 64)), 0, netip.Addr{}},
+		{"a dead last hop of unaligned length", multipath(unaligned(nexthop(2, unix.RTNH_F_DEAD, first))), 0, netip.Addr{}},
 		{"a message shorter than its header", nlMessage{Kind: unix.RTM_NEWROUTE, Data: make([]byte, unix.SizeofRtMsg-1)}, 0, netip.Addr{}},
 	} {
 		if device, gateway := routeHop(arm.message); device != arm.device || gateway != arm.gateway {

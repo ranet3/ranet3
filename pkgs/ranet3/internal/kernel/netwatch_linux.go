@@ -186,48 +186,15 @@ func upDefault(replies []nlMessage, family uint8, up map[uint32]string) DefaultR
 }
 
 // routeHop is the device and gateway of one route, the first live hop of a multipath one
-// a hop the kernel marks dead or without carrier answers device 0
+// a hop the kernel marks dead or without carrier answers device 0, and so does a malformed one
 func routeHop(message nlMessage) (uint32, netip.Addr) {
-	if len(message.Data) < unix.SizeofRtMsg {
-		return 0, netip.Addr{}
-	}
-	var oif uint32
-	var gateway netip.Addr
-	var hops []byte
-	for attr, value := range message.attributes(unix.SizeofRtMsg) {
-		switch attr {
-		case unix.RTA_OIF:
-			if len(value) == 4 {
-				oif = binary.NativeEndian.Uint32(value)
-			}
-		case unix.RTA_GATEWAY:
-			gateway, _ = addressFromBytes(value)
-		case unix.RTA_MULTIPATH:
-			hops = value
-		}
-	}
-	const down = unix.RTNH_F_DEAD | unix.RTNH_F_LINKDOWN
-	if oif != 0 {
-		if binary.NativeEndian.Uint32(message.Data[8:])&down != 0 {
-			return 0, netip.Addr{}
-		}
-		return oif, gateway
-	}
-	for len(hops) >= unix.SizeofRtNexthop {
-		size := int(binary.NativeEndian.Uint16(hops))
-		if size < unix.SizeofRtNexthop || size > len(hops) {
+	for hop, err := range routeNextHops(message) {
+		if err != nil {
 			break
 		}
-		if hops[2]&down == 0 {
-			hop := nlMessage{Data: hops[:size]}
-			for attr, value := range hop.attributes(unix.SizeofRtNexthop) {
-				if attr == unix.RTA_GATEWAY {
-					gateway, _ = addressFromBytes(value)
-				}
-			}
-			return binary.NativeEndian.Uint32(hops[4:]), gateway
+		if hop.flags&(unix.RTNH_F_DEAD|unix.RTNH_F_LINKDOWN) == 0 {
+			return hop.index, hop.gateway
 		}
-		hops = hops[rtaAlign(size):]
 	}
 	return 0, netip.Addr{}
 }
