@@ -6,6 +6,7 @@
 package kernel
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -64,15 +65,16 @@ func TestDarwinRouteGetReadsTheAnswer(t *testing.T) {
 }
 
 // XNU's lookup has no input device, so a packet said to arrive on one is
-// refused rather than answered as this host's own
+// refused rather than answered as this host's own, as a lookup this platform
+// does not make rather than as a kernel's answer
 func TestDarwinRouteGetRefusesAnArrivalDevice(t *testing.T) {
-	if got, err := RouteGet(netip.MustParseAddr("192.0.2.7"), netip.MustParseAddr("127.0.0.1"), "en0"); err == nil {
-		t.Errorf("a packet arriving on en0 was answered with %+v", got)
+	if got, err := RouteGet(netip.MustParseAddr("192.0.2.7"), netip.MustParseAddr("127.0.0.1"), "en0"); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("a packet arriving on en0 was answered with %+v and %v, want ErrUnsupported", got, err)
 	}
 }
 
-// The lookup against this host's own kernel, which needs no privilege: the
-// loopback address leaves by lo0 on every darwin host.
+// The lookup against this host's own kernel needs no privilege, and the
+// loopback address leaves by lo0 on every darwin host
 func TestDarwinRouteGetNamesTheLoopbackRoute(t *testing.T) {
 	loopback := netip.MustParseAddr("127.0.0.1")
 	got, err := RouteGet(netip.Addr{}, loopback, "")

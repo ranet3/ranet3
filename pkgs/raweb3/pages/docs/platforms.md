@@ -179,8 +179,7 @@ an error.
 
 On a platform other than Linux and macOS:
 
-- `cap.table` fails the start with
-  `route reconciliation is unsupported on this platform`.
+- `cap.table` fails the start with `kernel: unsupported on this platform`.
 - `cap.egress`, `cap.border` and both `link.underlay` settings are refused.
 - An egress segment fails the start, naming its SID, since the egress device is
   a Linux tun the kernel forwards from.

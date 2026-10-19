@@ -15,19 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// RouteGet asks the kernel which route it takes for a packet from src to dst.
-// An empty iif is this host's own packet, and a device name is the input
-// lookup a packet arriving there takes. An invalid src sends none. Without an
-// arrival device the source must be this host's, and IPv4 answers ENETUNREACH
-// for a source it does not hold. Where the kernel routes no such packet its
-// errno is the error. An IPv4 input lookup with forwarding off answers
-// EHOSTUNREACH, where IPv6 answers its route and drops the packet later.
-// Reverse path filtering answers EXDEV before Linux 6.13 and EINVAL from 6.13
-// on, the errno a martian source and a blackhole route answer too
-func RouteGet(src, dst netip.Addr, iif string) (MatchedRoute, error) {
-	if !dst.IsValid() || src.IsValid() && src.Is4() != dst.Is4() {
-		return MatchedRoute{}, fmt.Errorf("kernel: no route lookup from %s to %s, which are not of one family", src, dst)
-	}
+func routeGet(src, dst netip.Addr, iif string) (MatchedRoute, error) {
 	conn, err := dialNetlink()
 	if err != nil {
 		return MatchedRoute{}, err

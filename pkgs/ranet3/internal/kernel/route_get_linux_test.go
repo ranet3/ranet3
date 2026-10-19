@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -86,6 +87,10 @@ func TestNetlinkRouteGetNamesTheMatchedRouteAndTable(t *testing.T) {
 	got, err = RouteGet(netip.Addr{}, netip.MustParseAddr("10.99.0.1"), "")
 	holds("a packet to this host's own address", got, err,
 		MatchedRoute{Prefix: prefix("10.99.0.1/32"), Table: unix.RT_TABLE_LOCAL, Type: "local", NextHops: []NextHop{{Device: device}}})
+	unrouted := netip.MustParseAddr("203.0.113.1")
+	if got, err := RouteGet(netip.Addr{}, unrouted, ""); !errors.Is(err, unix.ENETUNREACH) || !strings.Contains(err.Error(), unrouted.String()) {
+		t.Fatalf("a packet to %s, which no route takes, answered %+v and %v, want ENETUNREACH naming it", unrouted, got, err)
+	}
 
 	const arrival = "routeget1"
 	createTUN(t, arrival)
@@ -96,20 +101,29 @@ func TestNetlinkRouteGetNamesTheMatchedRouteAndTable(t *testing.T) {
 	setLinkFlags(t, conn, link.index, unix.IFF_UP)
 	sysctl := func(path, value string) {
 		t.Helper()
-		if err := os.WriteFile("/proc/sys/net/ipv4/"+path, []byte(value), 0); err != nil {
+		if err := os.WriteFile("/proc/sys/net/"+path, []byte(value), 0); err != nil {
 			t.Fatalf("set %s to %s: %v", path, value, err)
 		}
 	}
 	// a new namespace takes its IPv4 settings from the host's, forwarding and
 	// reverse path filtering among them
-	sysctl("conf/all/rp_filter", "0")
-	sysctl("conf/"+arrival+"/rp_filter", "0")
-	sysctl("ip_forward", "0")
+	sysctl("ipv4/conf/all/rp_filter", "0")
+	sysctl("ipv4/conf/"+arrival+"/rp_filter", "0")
+	sysctl("ipv4/ip_forward", "0")
 	forwarded := netip.MustParseAddr("10.99.0.7")
 	if got, err := RouteGet(forwarded, netip.MustParseAddr("198.18.1.1"), arrival); !errors.Is(err, unix.EHOSTUNREACH) {
 		t.Fatalf("a packet arriving on %s with forwarding off answered %+v and %v, want EHOSTUNREACH", arrival, got, err)
 	}
-	sysctl("ip_forward", "1")
+	sysctl("ipv4/ip_forward", "1")
 	got, err = RouteGet(forwarded, netip.MustParseAddr("198.18.1.1"), arrival)
 	holds("a packet arriving with forwarding on", got, err, matched("198.18.0.0/15"))
+
+	// IPv6 decides forwarding after its input lookup rather than in it, so
+	// the kernel answers with the route it would forward by either way
+	forwarded = netip.MustParseAddr("3fff:a:1::7")
+	for _, forwarding := range []string{"0", "1"} {
+		sysctl("ipv6/conf/all/forwarding", forwarding)
+		got, err = RouteGet(forwarded, netip.MustParseAddr("3fff:b::1"), arrival)
+		holds("an IPv6 packet arriving with forwarding "+forwarding, got, err, matched("3fff:b::/32"))
+	}
 }

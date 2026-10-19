@@ -25,6 +25,6 @@ func refuseMeaningless(Table, string) error { return ErrUnsupported }
 // WatchNetwork has no routing table to read here, for the same reason
 func WatchNetwork(Host, string) (*NetworkWatch, error) { return nil, ErrUnsupported }
 
-func RouteGet(_, _ netip.Addr, _ string) (MatchedRoute, error) {
-	return MatchedRoute{}, fmt.Errorf("kernel: the route a packet takes is not read on %s", runtime.GOOS)
+func routeGet(_, _ netip.Addr, _ string) (MatchedRoute, error) {
+	return MatchedRoute{}, fmt.Errorf("%w, which is %s", ErrUnsupported, runtime.GOOS)
 }

@@ -88,9 +88,10 @@ const (
 	defaultIPv6Metric = 1024
 )
 
-// ErrUnsupported is returned by New on every platform without an
-// implementation, which is everything but linux and darwin.
-var ErrUnsupported = errors.New("kernel: route reconciliation is unsupported on this platform")
+// ErrUnsupported is a platform's refusal of what it does not implement, New and
+// WatchNetwork everywhere but linux and darwin, DumpRules everywhere but linux,
+// and the route lookups RouteGet does not make
+var ErrUnsupported = errors.New("kernel: unsupported on this platform")
 
 // errRouteSkipped distinguishes a route that was deliberately not installed
 // from one that was, and from a transient failure. It covers a route the
