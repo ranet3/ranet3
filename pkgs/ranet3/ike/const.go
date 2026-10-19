@@ -8,15 +8,15 @@
 // transforms and no others: raw Ed25519 public key authentication ([RFC 7427]
 // Digital Signature with an ASN1_DN identity, or an ID of another type
 // [Aliases] names an endpoint by), a key exchange in X25519, P-384 or P-256,
-// alone or followed by ML-KEM-768 in an IKE_INTERMEDIATE exchange at setup and
-// an IKE_FOLLOWUP_KE exchange at a rekey, as [RFC 9370] runs them, encryption
-// in AES-GCM or ChaCha20-Poly1305, a PRF in HMAC-SHA2-384 or HMAC-SHA2-256, UDP
-// encapsulation forced on, and 0.0.0.0/0 with ::/0 as the traffic selectors. A
-// message larger than the path goes in the Encrypted Fragment payloads of
-// [RFC 7383] to a peer that announced them, and such a peer's fragments are
-// reassembled. [Suites] is the part of that set a session offers and accepts,
-// in the order it prefers. It interoperates with a strongSwan responder
-// configured the same way.
+// alone or followed by ML-KEM-768 or ML-KEM-1024 in an IKE_INTERMEDIATE
+// exchange at setup and an IKE_FOLLOWUP_KE exchange at a rekey, as [RFC 9370]
+// runs them, encryption in AES-GCM or ChaCha20-Poly1305, a PRF in
+// HMAC-SHA2-384 or HMAC-SHA2-256, UDP encapsulation forced on, and 0.0.0.0/0
+// with ::/0 as the traffic selectors. A message larger than the path goes in
+// the Encrypted Fragment payloads of [RFC 7383] to a peer that announced
+// them, and such a peer's fragments are reassembled. [Suites] is the part of
+// that set a session offers and accepts, in the order it prefers. It
+// interoperates with a strongSwan responder configured the same way.
 //
 // Certificates, EAP, MOBIKE and the legacy transforms, CBC ciphers, MODP
 // groups and SHA-1 or MD5, are left out rather than unfinished, and a peer

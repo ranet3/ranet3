@@ -15,7 +15,7 @@ import (
 type IKESuites struct {
 	Cipher []string `yaml:"cipher,omitempty" json:"cipher,omitempty" toml:"cipher,omitempty"`
 	PRF    []string `yaml:"prf,omitempty" json:"prf,omitempty" toml:"prf,omitempty"`
-	// an entry of Kex is a classical key exchange, which runs in IKE_SA_INIT or a rekey's CREATE_CHILD_SA, alone or joined with + to mlkem768, which runs after it in an IKE_INTERMEDIATE or IKE_FOLLOWUP_KE exchange of its own
+	// an entry of Kex is a classical key exchange, which runs in IKE_SA_INIT or a rekey's CREATE_CHILD_SA, alone or joined with + to mlkem768 or mlkem1024, which runs after it in an IKE_INTERMEDIATE or IKE_FOLLOWUP_KE exchange of its own
 	// RFC 9370 section 2.2.1: "Additional key exchanges negotiated via newly defined transforms MUST take place in a series of IKE_INTERMEDIATE exchanges following the IKE_SA_INIT exchange, performed in an order of the values of their Transform Types."
 	Kex []string `yaml:"kex,omitempty" json:"kex,omitempty" toml:"kex,omitempty"`
 }
@@ -166,9 +166,6 @@ func resolveKex(list []string) ([]kexEntry, error) {
 			if slices.Contains(classical, joined) {
 				return nil, fmt.Errorf("ike: cap.crypto ike kex entry %q joins %s, and an entry joins only an ML-KEM method after its first, one of %s",
 					entry, joined, spelled(postQuantum))
-			}
-			if joined == "mlkem1024" {
-				return nil, fmt.Errorf("ike: cap.crypto ike kex entry %q joins mlkem1024, whose IKE_INTERMEDIATE messages pass 1500 octets and need the IKE fragmentation of RFC 7383, which is not implemented", entry)
 			}
 			resolved.additions[0] = postQuantumNames[slices.Index(postQuantum, joined)].transform.ID
 		}

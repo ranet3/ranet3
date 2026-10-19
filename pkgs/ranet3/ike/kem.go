@@ -16,11 +16,14 @@ type kemMethod struct {
 	parse    func([]byte) (crypto.Encapsulator, error)
 }
 
-// ML-KEM-1024 waits for the IKE fragmentation of RFC 7383, which its messages need, and Go has no ML-KEM-512
+// kemMethods is the parameter sets crypto/mlkem implements, which has no ML-KEM-512
 var kemMethods = []kemMethod{
 	{ML_KEM_768,
 		func() (crypto.Decapsulator, error) { return mlkem.GenerateKey768() },
 		func(key []byte) (crypto.Encapsulator, error) { return mlkem.NewEncapsulationKey768(key) }},
+	{ML_KEM_1024,
+		func() (crypto.Decapsulator, error) { return mlkem.GenerateKey1024() },
+		func(key []byte) (crypto.Encapsulator, error) { return mlkem.NewEncapsulationKey1024(key) }},
 }
 
 func kemOf(id uint16) (kemMethod, error) {
