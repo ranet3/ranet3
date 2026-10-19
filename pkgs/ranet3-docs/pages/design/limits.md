@@ -368,12 +368,12 @@ can configure are in
 | Error answers sent in the clear                | 256 at once, then 32 a second, for the whole node                                       | A further one is not sent, and at most 1 line a minute counts those held back             |
 | Responder handshake                            | 30 seconds                                                                              | The handshake is abandoned                                                                |
 | Canceled dial's wait for its `IKE_AUTH` answer | 2 seconds                                                                               | The dial ends, and a peer whose answer is late keeps its session until liveness fails     |
-| Sends of a request                             | 5, waiting 2, 4, 8, 16 and 32 seconds after each                                        | The exchange fails after 62 seconds, and the session ends                                 |
-| Sends while the peer's other traffic continues | 20, about 9 minutes in all                                                              | The exchange fails, and the session ends even though the peer's ESP still arrives         |
+| Sends of a request                             | 5, waiting 2, 4, 8, 16 and 32 seconds after each                                        | The exchange fails after 62 seconds, and its IKE SA is deemed failed                      |
+| Sends while the peer's other traffic continues | 20, about 9 minutes in all                                                              | The exchange fails, and its IKE SA is deemed failed though the peer's ESP still arrives   |
 | Silence before a liveness check                | 10 seconds                                                                              | The session sends an `INFORMATIONAL` request, retransmitted on the schedule above         |
 | Live session                                   | 20 seconds since the peer's last authenticated IKE, 20 to 30 seconds since its last ESP | The session no longer counts as live                                                      |
 | Reconnect delay                                | 10 seconds                                                                              | A dialer whose session ended waits this long before it dials again                        |
-| Sends of the Delete that ends an IKE SA        | 2, waiting 2 and 4 seconds after each                                                   | The IKE SA is deemed failed after 6 seconds, and the session ends                         |
+| Sends of the Delete that ends an IKE SA        | 2, waiting 2 and 4 seconds after each                                                   | The IKE SA is deemed failed after 6 seconds                                               |
 | SA lifetime                                    | `cap.crypto.rekey.child` and `cap.crypto.rekey.ike`                                     | The SA is no longer used, and without a rekey replacing it the IKE SA is deleted          |
 | `TEMPORARY_FAILURE` answers on 1 IKE SA        | 5 minutes                                                                               | The IKE SA is deleted, and the session ends                                               |
 | Peer rekeys                                    | 1 per second for each kind of SA                                                        | A faster rekey is answered `TEMPORARY_FAILURE`                                            |
@@ -398,25 +398,35 @@ holds its half-open slot until `IKE_AUTH`, and the half-open limits and cookies
 bound it. 256 answers every half-open slot at once, and 32 a second refills them
 within the reconnect delay.
 
+An IKE SA deemed failed ends the session when it is the session's current IKE
+SA, and the node that dialed it dials again. A replaced or redundant IKE SA
+still kept for a Delete holds no Child SA once the rekey has moved them to its
+successor. It alone ends, and the session goes on.
+
 A request is sent up to 20 times while the peer's authenticated traffic has
 arrived within the last 10 seconds. The exchange holds the only outstanding
 request this end allows. Rekeys, Deletes and liveness checks wait until it ends.
-A liveness check itself never takes the longer schedule, and neither does an
-exchange still outstanding when its IKE SA reaches its lifetime.
+A liveness check and a Delete of an IKE SA never take the longer schedule, and
+neither does an exchange still outstanding when its IKE SA reaches its lifetime.
+A request on the session's current IKE SA waits behind the Delete of a replaced
+or redundant IKE SA for at most 6 seconds. Behind a liveness check left on an
+IKE SA the peer rekeyed, it waits for that check's 5 sends, up to 62 seconds,
+unless the peer's Delete of that IKE SA ends the check first.
 
-The 2 sends of a Delete are those of a session that ends its IKE SA itself, at a
-lifetime, after 5 minutes of `TEMPORARY_FAILURE` or on a failure of its own, and
-of a responder that refused the Child SA in `IKE_AUTH`. That Delete waits for an
-exchange already out. A node closing a session, as at shutdown, waits 2 seconds
-for its Delete to be answered. Once a session is ending, every Delete of an IKE
-SA it has outstanding gets the same 2 sends, among them the Delete of an IKE SA
-whose PRF a reload left out, which until then has the sends of any request, as
-[reloading](../reloading.md#capcrypto) describes.
-
-The peer rekey limit counts a rekey once the offer is settled, before its key
-exchange. A rekey answered with `INVALID_KE_PAYLOAD` does not count, so the
-retry in the group asked for is taken. A rekey whose key exchange then fails
-counts, and is answered with `INVALID_SYNTAX`.
+Every Delete of an IKE SA has the 2 sends, since a peer that took it has deleted
+the SA and ignores a resend, as
+[RFC 7296 section 2.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.1)
+asks of a responder that has forgotten its response. They are the sends of a
+session that ends its IKE SA itself, at a lifetime, after 5 minutes of
+`TEMPORARY_FAILURE` or on a failure of its own, of a responder that refused the
+Child SA in `IKE_AUTH`, of a rekey's Delete of the replaced or redundant IKE SA,
+of the Delete of an IKE SA whose PRF a reload left out, as
+[reloading](../reloading.md#capcrypto) describes, and of a node closing a
+session. The session's own Delete waits for an exchange already out. A node
+closing a session, as at shutdown, waits 2 seconds for its Delete to be
+answered. Once a Delete of the session's IKE SA has gone out, whoever sent it,
+the session starts no other request or liveness check on that IKE SA, and sends
+no Delete of its own when it then ends.
 
 An `INVALID_SYNTAX`, sent or received, ends the IKE SA it came on at once and
 without a Delete. On the session's current IKE SA the session ends, and the node
@@ -434,6 +444,11 @@ Delete. It still carries the exchange outstanding at its lifetime and answers
 the peer's requests, a rekey with `TEMPORARY_FAILURE`. A replaced IKE SA the
 peer owes a Delete is dropped at its lifetime, and one this end deletes is kept
 for that Delete.
+
+The limit on peer rekeys counts a rekey once the offer is settled, before its
+key exchange. A rekey answered with `INVALID_KE_PAYLOAD` does not count, so the
+retry in the group asked for is taken. A rekey whose key exchange then fails
+counts, and is answered with `INVALID_SYNTAX`.
 
 ### Babel
 

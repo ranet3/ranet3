@@ -321,9 +321,10 @@ scheduled and peer-initiated rekeys, BIRD withdrawal and recovery, and a clean
 stop and restart with an idle tun read. `integration-responder` drives both
 rekeys from the peer.
 
-The checks give the Child SA a lifetime of 20 seconds and the IKE SA one of 30
-seconds, with a margin of 18 seconds and no jitter, so each SA rekeys soon after
-it is made, and the margin outlasts a request and 3 resends. The script of
+The checks give the Child SA a lifetime of 24 seconds and the IKE SA one of 34
+seconds, with a margin of 22 seconds and no jitter, so each SA rekeys soon after
+it is made. The margin covers the unanswered Delete of a replaced IKE SA, which
+holds the session's next request, and then a rekey's 3 lost sends. The script of
 `integration-initiator` and `integration-kernel` also has the gateway drop the
 client's IKE for 5 seconds while iperf3 runs, which outlasts a rekey's first
 send, and asserts that a Child SA rekey completed and that no Child SA reached
