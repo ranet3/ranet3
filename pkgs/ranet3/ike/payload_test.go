@@ -221,16 +221,16 @@ func samePayloads(a, b []RawPayload) bool {
 func TestIKEContextAllocatesUniqueIVs(t *testing.T) {
 	context := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128}}
 	key := make([]byte, 20)
-	first, err := context.encrypt(key, Header{}, nil, nil)
+	first, err := context.seal(key, Header{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := context.encrypt(key, Header{}, nil, nil)
+	second, err := context.seal(key, Header{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstIV := first[HeaderLen+genericPayloadHeaderLen : HeaderLen+genericPayloadHeaderLen+8]
-	secondIV := second[HeaderLen+genericPayloadHeaderLen : HeaderLen+genericPayloadHeaderLen+8]
+	firstIV := first.whole[HeaderLen+genericPayloadHeaderLen : HeaderLen+genericPayloadHeaderLen+8]
+	secondIV := second.whole[HeaderLen+genericPayloadHeaderLen : HeaderLen+genericPayloadHeaderLen+8]
 	if string(firstIV) == string(secondIV) {
 		t.Fatalf("reused IKE IV %x", firstIV)
 	}

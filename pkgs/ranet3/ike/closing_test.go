@@ -639,12 +639,15 @@ func runAnswer(t *testing.T, header Header, cleartext, inner []RawPayload) []Raw
 	t.Helper()
 	_, s := closingAfterAuth(t)
 	header.SPIInitiator, header.SPIResponder = s.current.spiI, s.current.spiR
-	raw, _ := s.handleRequest(s.current, &header, cleartext, inner)
-	message, err := DecodeMessage(raw)
+	response, _ := s.handleRequest(s.current, &header, cleartext, inner)
+	if response == nil {
+		t.Fatal("Run answers nothing")
+	}
+	message, err := DecodeMessage(response.whole)
 	if err != nil {
 		t.Fatalf("Run's answer does not decode: %v", err)
 	}
-	answer, err := DecryptMessage(s.current.suite, s.current.skei, raw, message)
+	answer, err := DecryptMessage(s.current.suite, s.current.skei, response.whole, message)
 	if err != nil {
 		t.Fatal(err)
 	}

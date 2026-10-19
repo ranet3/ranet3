@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"math"
 	"net"
 	"slices"
 	"strings"
@@ -528,11 +529,11 @@ func TestPeerChildRekeyKEOutsideItsOfferIsAnsweredWithTheGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	message, err := DecodeMessage(raw)
+	message, err := DecodeMessage(raw.whole)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inner, err := DecryptMessage(suite, ctx.localEncryptionKey(), raw, message)
+	inner, err := DecryptMessage(suite, ctx.localEncryptionKey(), raw.whole, message)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +611,7 @@ func TestPeerRekeyRetriedInTheGroupItWasAskedForIsTaken(t *testing.T) {
 				if _, refused := errors.AsType[invalidSyntaxSent](err); err != nil && !refused {
 					t.Fatal(err)
 				}
-				answers = append(answers, sealedAnswer(t, ctx, raw))
+				answers = append(answers, sealedAnswer(t, ctx, raw.whole))
 			}
 			return answers
 		}
@@ -670,7 +671,7 @@ func TestPeerChildRekeyOfferingNONEIsAnsweredWithoutAKE(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer := sealedAnswer(t, ctx, raw)
+	answer := sealedAnswer(t, ctx, raw.whole)
 	sa := findType(answer, PayloadSA)
 	if sa == nil {
 		t.Fatalf("the rekey was answered %v, want a Child SA", answer)
@@ -784,7 +785,7 @@ func TestChildSAProposalNamingSPIZeroIsRefused(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := takenProposal(t, sealedAnswer(t, ctx, raw)); got != test.taken {
+			if got := takenProposal(t, sealedAnswer(t, ctx, raw.whole)); got != test.taken {
 				t.Errorf("the answer took proposal %d, want %d", got, test.taken)
 			}
 			child := s.currentChild()
@@ -939,4 +940,72 @@ func answerIKEAuth(t testing.TB, h *responderHarness, lists Suites, children ...
 		t.Fatal(err)
 	}
 	return inner, authErr
+}
+
+// an IKE_AUTH whose Child SA offer is refused ends with the error that kept its answer from going, where the answer cannot be sealed or, for a request in fragments, cannot be cut
+// the IV space of the responder's key runs out at the answer's seal or at its first fragment
+func TestRefusedIKEAuthWhoseAnswerCannotGoEndsWithTheAnswersError(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	for name, test := range map[string]struct {
+		// used is the IVs the responder's key used before the answer
+		used uint64
+		// cut is the octets of plaintext in each fragment of the request, zero for the request whole
+		cut int
+	}{
+		"an answer that cannot be sealed": {math.MaxUint64, 0},
+		"an answer that cannot be cut":    {math.MaxUint64 - 1, 100},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mux, err := h.responder.cfg.Hub.NewMux(net.IPv4(127, 0, 0, 1), h.initiator.LocalAddr().(*net.UDPAddr).Port)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mux.Close()
+			peer, err := h.initiator.NewMux(net.IPv4(127, 0, 0, 1), h.remotePort)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer peer.Close()
+			spiI, spiR := randUint64Nonzero(), randUint64Nonzero()
+			suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+			ctx := &ikeContext{suite: suite, spiI: spiI, spiR: spiR, responder: true,
+				skD: bytes.Repeat([]byte{1}, 32), skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20),
+				skpi: bytes.Repeat([]byte{4}, 32), skpr: bytes.Repeat([]byte{5}, 32)}
+			ctx.sendIV.Store(test.used)
+			s := &Session{mux: mux, current: ctx, suites: func() Suites { return Suites{} }, fragments: test.cut > 0, pathMTU: noPathMTU}
+			if err := mux.RegisterIKE(spiI); err != nil {
+				t.Fatal(err)
+			}
+			message1, message2 := []byte("the IKE_SA_INIT request"), []byte("the IKE_SA_INIT response")
+			ni, nr := bytes.Repeat([]byte{6}, 32), bytes.Repeat([]byte{7}, 32)
+			idi := idBody("testorg/client:2")
+			header := Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+			inner := []RawPayload{
+				{Type: PayloadIDi, Body: idi},
+				{Type: PayloadAUTH, Body: BuildAuth(h.private, concat(message1, nr, prf(suite.PRFID, ctx.skpi, idi)))},
+				{Type: PayloadSA, Body: EncodeSA([]Proposal{espProposal([]byte{0, 0, 0, 0})})},
+				{Type: PayloadTSi, Body: fullRangeSelectors()},
+				{Type: PayloadTSr, Body: fullRangeSelectors()},
+			}
+			var request [][]byte
+			if test.cut > 0 {
+				request = cutInto(t, suite, ctx.skei, header, inner, test.cut)
+			} else {
+				raw, err := EncryptMessage(suite, ctx.skei, header, nil, inner)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request = [][]byte{raw}
+			}
+			for _, datagram := range request {
+				if err := peer.SendIKE(datagram); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, created, err := s.completeResponderAuth(h.responder, message1, message2, ni, nr, time.Now().Add(answerBudget))
+			if created || err == nil || !strings.Contains(err.Error(), "IV space exhausted") {
+				t.Errorf("an IKE_AUTH in %d datagrams whose refusal could not go ended with %v and created %v, want the IV space's error and no IKE SA", len(request), err, created)
+			}
+		})
+	}
 }

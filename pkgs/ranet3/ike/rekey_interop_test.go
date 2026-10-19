@@ -49,11 +49,11 @@ func TestPeerChildRekeyWithPFS(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				message, err := DecodeMessage(raw)
+				message, err := DecodeMessage(raw.whole)
 				if err != nil {
 					t.Fatal(err)
 				}
-				inner, err := DecryptMessage(suite, ctx.localEncryptionKey(), raw, message)
+				inner, err := DecryptMessage(suite, ctx.localEncryptionKey(), raw.whole, message)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -87,8 +87,7 @@ func TestPeerChildRekeyWithPFS(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				// Derive from the peer's DH secret, independently of the Child
-				// helper. Keys follow the exchange initiator, not the IKE role.
+				// the keys follow the exchange's initiator, not the IKE role
 				keymat := prfPlus(suite.PRFID, ctx.skD, concat(shared, ni, payloads.nonce.Body), 40)
 				child := s.currentChild()
 				if !bytes.Equal(child.InboundKey, keymat[:20]) || !bytes.Equal(child.OutboundKey, keymat[20:]) {
@@ -363,11 +362,11 @@ func TestPeerRekeyDefersConflictingTransition(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			message, err := DecodeMessage(raw)
+			message, err := DecodeMessage(raw.whole)
 			if err != nil {
 				t.Fatal(err)
 			}
-			inner, err := DecryptMessage(ctx.suite, ctx.skei, raw, message)
+			inner, err := DecryptMessage(ctx.suite, ctx.skei, raw.whole, message)
 			if err != nil || len(inner) != 1 || inner[0].Type != PayloadN {
 				t.Fatalf("response = %v, %v", inner, err)
 			}
@@ -410,9 +409,7 @@ func TestQueuedChildRequestDoesNotUseRetiredIKE(t *testing.T) {
 	}
 }
 
-// The rate limit has to sit in handleChildRekey, before the Diffie-Hellman and
-// the keymat, the work a peer rekeying in a loop is really asking us to
-// spend.
+// a peer's second Child SA rekey in one interval is refused with TEMPORARY_FAILURE before the key exchange and the keys it would cost
 func TestHandleChildRekeyRefusesSecondRekeyInSameInterval(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
@@ -432,11 +429,11 @@ func TestHandleChildRekeyRefusesSecondRekeyInSameInterval(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		message, err := DecodeMessage(raw)
+		message, err := DecodeMessage(raw.whole)
 		if err != nil {
 			t.Fatal(err)
 		}
-		inner, err := DecryptMessage(suite, ctx.localEncryptionKey(), raw, message)
+		inner, err := DecryptMessage(suite, ctx.localEncryptionKey(), raw.whole, message)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -447,14 +444,12 @@ func TestHandleChildRekeyRefusesSecondRekeyInSameInterval(t *testing.T) {
 		decoded, _ := DecodeNotify(notify.Body)
 		t.Fatalf("the first peer rekey was refused with notify type %d", decoded.Type)
 	}
-	// Clear the retirement the first rekey left outstanding, which would
-	// refuse the second on its own and hide what this test is about.
+	// the retirement the first rekey left would refuse the second on its own
 	s.childMu.Lock()
 	s.retiring = ChildSA{}
 	s.childMu.Unlock()
 
-	// The replacement is now current, so the second names it and is refused
-	// only because it is too soon.
+	// the second names the current replacement, so only the interval refuses it
 	next := s.currentChild()
 	notify := findType(rekey(1, next.RemoteSPI), PayloadN)
 	if notify == nil {
@@ -466,20 +461,17 @@ func TestHandleChildRekeyRefusesSecondRekeyInSameInterval(t *testing.T) {
 	}
 }
 
-// ChaCha20-Poly1305 carries no KEY_LENGTH attribute, and the CREATE_CHILD_SA
-// response path has its own copy of the rule that suppresses it.
+// the answer to a Child SA rekey in ChaCha20-Poly1305 carries no Key Length attribute
 func TestChaChaChildRekeyResponseEchoesNoKeyLength(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),
 		skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20)}
-	// A rekey keeps the cipher, so the SA being replaced has to be the one
-	// whose response encoding is under test.
+	// a rekey keeps the cipher of the SA it replaces
 	old := ChildSA{EncrID: ENCR_CHACHA20_POLY1305, EncrKeyBits: 256, LocalSPI: 21, RemoteSPI: 22}
 	s := &Session{mux: mux, current: ctx, Child: old, started: time.Now()}
 
-	// Offered the way a conformant peer offers a fixed-key cipher: no Key
-	// Length attribute at all.
+	// a fixed-key cipher offered with no Key Length attribute
 	proposal := Proposal{
 		Number: 1, Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, 32),
 		Transforms: []Transform{{Type: TransEncr, ID: ENCR_CHACHA20_POLY1305}, {Type: TransESN, ID: ESN_NO}},
@@ -494,11 +486,11 @@ func TestChaChaChildRekeyResponseEchoesNoKeyLength(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	message, err := DecodeMessage(raw)
+	message, err := DecodeMessage(raw.whole)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inner, err := DecryptMessage(suite, ctx.localEncryptionKey(), raw, message)
+	inner, err := DecryptMessage(suite, ctx.localEncryptionKey(), raw.whole, message)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,11 +514,8 @@ func TestChaChaChildRekeyResponseEchoesNoKeyLength(t *testing.T) {
 	}
 }
 
-// The Child path's half of the same rule. A local failure installing the
-// replacement is not the peer's fault and not a reason to lose the IKE SA that
-// carried the exchange. RFC 7296 section 1.3.1 is explicit that "A failed
-// attempt to create a Child SA SHOULD NOT tear down the IKE SA". Returning an
-// error instead sends Run down the teardown path.
+// a local failure installing a peer's Child SA rekey answers TEMPORARY_FAILURE and returns no error, which Run would end the session on
+// RFC 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA: there is no reason to lose the work done to set up the IKE SA."
 func TestLocalFailureAnsweringAChildRekeyIsTemporary(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
@@ -534,8 +523,6 @@ func TestLocalFailureAnsweringAChildRekeyIsTemporary(t *testing.T) {
 		skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20)}
 	old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
 	s := &Session{mux: mux, current: ctx, Child: old, started: time.Now()}
-	// The dataplane refusing the replacement is the shape this actually takes:
-	// the SA is negotiated and cannot be installed here.
 	s.SetChildHandler(func(ChildSA) error { return errors.New("the dataplane is gone") })
 
 	raw, err := s.handleChildRekey(ctx, 0, []RawPayload{
@@ -549,11 +536,11 @@ func TestLocalFailureAnsweringAChildRekeyIsTemporary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a local failure was returned as an error, which Run turns into a teardown: %v", err)
 	}
-	message, err := DecodeMessage(raw)
+	message, err := DecodeMessage(raw.whole)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inner, err := DecryptMessage(suite, ctx.localEncryptionKey(), raw, message)
+	inner, err := DecryptMessage(suite, ctx.localEncryptionKey(), raw.whole, message)
 	if err != nil {
 		t.Fatal(err)
 	}

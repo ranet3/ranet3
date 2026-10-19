@@ -45,9 +45,9 @@ type requestResult struct {
 
 type pendingRequest struct {
 	localRequest
+	transmission
 	context  *ikeContext
 	msgID    uint32
-	raw      []byte
 	attempts int
 	// sent counts transmissions. attempts drives the backoff and stops
 	// growing at maxRetransmits, so it cannot also bound the exchange.
@@ -536,6 +536,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		}
 		s.expireRetainedContexts(now)
 		s.expireChain(now)
+		fragmentsExpire, fragmentsHeld := s.expireFragments(now)
 		if err := settleChildRekeys(); err != nil {
 			fail(err)
 		}
@@ -654,6 +655,9 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		if expiry, ok := s.nextChainExpiry(); ok && expiry.Before(deadline) {
 			deadline = expiry
 		}
+		if fragmentsHeld && fragmentsExpire.Before(deadline) {
+			deadline = fragmentsExpire
+		}
 
 		// everything this loop reacts to is selectable, so it sleeps until one of them happens rather than polling
 		if !timer.Stop() {
@@ -753,7 +757,8 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 				return fmt.Errorf("ike: peer unresponsive after %d attempts", pending.sent)
 			}
 			// RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
-			// section 2.4: "an endpoint MUST NOT conclude that the other endpoint has failed based on any routing information (e.g., ICMP messages)"
+			// RFC 7383 section 2.5.2: "it MUST start from larger values and refragment the original message"
+			// RFC 7296 section 2.4: "an endpoint MUST NOT conclude that the other endpoint has failed based on any routing information (e.g., ICMP messages)"
 			// so a send that fails locally ends nothing and only the attempt count above does
 			s.sendPending(pending)
 			continue
@@ -795,7 +800,8 @@ func (s *Session) Probe() {
 }
 
 // probe starts a liveness check, or sends the outstanding request again now
-// the resend leaves the request's attempts and backoff to their schedule, so probes can neither end an exchange early nor keep it alive
+// a resend that cut the request again counts as the retransmission that starts its backoff over, and any other leaves the request's attempts and backoff to their schedule, so a probe that cuts nothing can neither end an exchange early nor keep it alive
+// no probe counts toward stepDownSends, and one after the backoff's stepDownSends sends under the request's cut steps it down to its family's floor
 func (s *Session) probe(pending *pendingRequest) (*pendingRequest, error) {
 	if pending == nil {
 		started, err := s.startLiveness()
@@ -806,7 +812,11 @@ func (s *Session) probe(pending *pendingRequest) (*pendingRequest, error) {
 		return started, nil
 	}
 	pending.lastSent = time.Now()
-	s.noteSend(s.mux.SendIKE(pending.raw))
+	again, err := s.resend(&pending.transmission, 0, s.mux.SendIKE)
+	if again {
+		s.counted(pending, true)
+	}
+	s.noteSend(err)
 	s.emit("ike.probe", slog.String("action", "retransmission"), slog.Uint64("message_id", uint64(pending.msgID)))
 	return pending, nil
 }
@@ -858,15 +868,14 @@ func (s *Session) startRequest(req *localRequest) (*pendingRequest, error) {
 	}
 	retired := context != s.current
 	s.stateMu.RUnlock()
-	// A peer rekey may replace the context after a local caller queues work.
-	// Do not send a fresh negotiation on an SA the peer is already deleting.
+	// a peer rekey may replace the context after a local caller queued work, and an SA the peer is deleting takes no new negotiation
 	if req.exchange == CREATE_CHILD_SA && retired {
 		return nil, fmt.Errorf("ike: IKE SA changed before Child SA exchange started")
 	}
 	context.localMIDMu.Lock()
 	defer context.localMIDMu.Unlock()
-	// Leave the final 32-bit value unused so incrementing the next local ID
-	// can never wrap. RFC 7296 section 2.2 requires rekeying or closing first.
+	// the last 32-bit value stays unused so the next local ID never wraps
+	// RFC 7296 section 2.2: "In the unlikely event that Message IDs grow too large to fit in 32 bits, the IKE SA MUST be closed or rekeyed."
 	if context.nextLocalMID == maxMessageID {
 		return nil, errMessageIDExhausted
 	}
@@ -876,12 +885,12 @@ func (s *Session) startRequest(req *localRequest) (*pendingRequest, error) {
 		flags = FlagInitiator
 	}
 	hdr := Header{SPIInitiator: context.spiI, SPIResponder: context.spiR, ExchangeType: req.exchange, Flags: flags, MessageID: msgID}
-	raw, err := context.encrypt(context.localEncryptionKey(), hdr, nil, req.inner)
+	sent, err := s.sealRequest(context, hdr, req.inner)
 	if err != nil {
 		return nil, err
 	}
 	// the request owns its Message ID even when this send fails, which spends an attempt as an unanswered one does
-	pending := &pendingRequest{localRequest: *req, context: context, msgID: msgID, raw: raw}
+	pending := &pendingRequest{localRequest: *req, transmission: *sent, context: context, msgID: msgID}
 	context.nextLocalMID++
 	s.sendPending(pending)
 	return pending, nil
@@ -889,12 +898,21 @@ func (s *Session) startRequest(req *localRequest) (*pendingRequest, error) {
 
 // sendPending counts one attempt against the budget whether or not it goes out
 func (s *Session) sendPending(pending *pendingRequest) {
-	pending.sent++
-	nextAttempt := min(pending.attempts+1, maxRetransmits)
 	pending.lastSent = time.Now()
-	pending.deadline = pending.lastSent.Add(retransmitDelay(s.retransmitTimeout(), nextAttempt))
-	pending.attempts = nextAttempt
-	s.noteSend(s.mux.SendIKE(pending.raw))
+	again, err := s.retransmit(&pending.transmission, s.mux.SendIKE)
+	s.counted(pending, again)
+	s.noteSend(err)
+}
+
+// counted takes one send of pending into its budget, again telling whether the send cut the request again
+// RFC 7383 section 2.5.2: "When starting a new probe, the node MUST reset its retransmission timers so that if it employs exponential back-off the timers will start over."
+func (s *Session) counted(pending *pendingRequest, again bool) {
+	if again {
+		pending.attempts = 0
+	}
+	pending.sent++
+	pending.attempts = min(pending.attempts+1, maxRetransmits)
+	pending.deadline = time.Now().Add(retransmitDelay(s.retransmitTimeout(), pending.attempts))
 }
 
 // noteSend warns at the first failed send of an outage and records when the outage starts and ends
@@ -923,22 +941,15 @@ func pendingRetransmitsExhausted(pending *pendingRequest, peerAlive bool) bool {
 	if deletesIKE(pending.inner) {
 		return pending.sent >= teardownRetransmits
 	}
+	// a split again starts the backoff over, and the sends of a busy peer's exchange bound one all the same
 	if pending.attempts < maxRetransmits {
-		return false
+		return pending.sent >= maxRetransmitsWhileBusy
 	}
 	if pending.dpd || !peerAlive {
 		return true
 	}
-	// A peer that keeps authenticated traffic flowing gets more room, because
-	// an ordinary exchange can lose out to a busy control loop for a while.
-	// Not unlimited room: this exchange holds the one outstanding local
-	// request IKEv2 allows, so until it ends there is no rekey, no Delete on
-	// teardown and no dead peer detection, and the session reports up the
-	// whole time. A peer that answers ESP and never answers IKE, which it can
-	// do with RFC 4303 section 2.6 dummy packets alone, would otherwise pin it
-	// until the sequence space ran out. RFC 7296 section 2.1 leaves the policy
-	// open, "until it either receives a corresponding response or deems the
-	// IKE SA to have failed". This is where it is deemed to have failed.
+	// a peer that keeps authenticated traffic flowing gets more room, bounded since this exchange holds the one outstanding request and a peer answering ESP alone would hold it forever
+	// RFC 7296 section 2.1: "IKE is a reliable protocol: the initiator MUST retransmit a request until it either receives a corresponding response or deems the IKE SA to have failed."
 	return pending.sent >= maxRetransmitsWhileBusy
 }
 
@@ -949,9 +960,8 @@ func retransmitDelay(first time.Duration, attempt int) time.Duration {
 	return first << min(attempt-1, maxRetransmits-1)
 }
 
-// dispatch returns true only when raw is a fresh authenticated message. Run
-// uses that result as evidence of peer liveness. Authenticated replays may
-// receive a cached response, but must not refresh DPD or migrate the endpoint.
+// dispatch reports whether raw is a fresh authenticated message, which Run takes as the peer alive
+// an authenticated repeat may draw the kept response but neither refreshes dead peer detection nor moves the endpoint
 func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pendingRequest) bool {
 	hdr, err := decodeHeader(raw)
 	if err != nil || higherVersion(s.mux.SendIKETo, hdr, source) {
@@ -978,23 +988,36 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	if err != nil {
 		return false
 	}
-	innerFirst, plaintext, err := decryptMessagePlaintext(ctx.suite, ctx.peerEncryptionKey(), raw, outer)
-	if err != nil {
-		return false
-	}
+	queue := &ctx.responseFragments
+	var nextPeerMID uint32
 	if matching == nil {
 		s.stateMu.RLock()
-		nextPeerMID := ctx.nextPeerMID
+		nextPeerMID = ctx.nextPeerMID
 		lastPeerResponseID := ctx.lastPeerResponseID
-		lastPeerResponse := ctx.lastPeerResponse
 		s.stateMu.RUnlock()
 		if hdr.MessageID != nextPeerMID {
-			if nextPeerMID > 0 && hdr.MessageID == nextPeerMID-1 && lastPeerResponseID == hdr.MessageID {
-				// a replay can come from any address, so this send says nothing about the path to the peer
-				_ = s.mux.SendIKETo(lastPeerResponse, source)
+			if nextPeerMID == 0 || hdr.MessageID != nextPeerMID-1 || lastPeerResponseID != hdr.MessageID {
+				return false
+			}
+			// a replay can come from any address, so this send says nothing about the path to the peer
+			if err := s.answerRepeat(ctx, raw, outer, source); err != nil {
+				s.fragmentLimit(ctx, hdr.MessageID, err)
+				return true
 			}
 			return false
 		}
+		queue = &ctx.requestFragments
+	}
+	message, err := s.open(ctx, queue, raw, outer)
+	if err != nil {
+		s.fragmentLimit(ctx, hdr.MessageID, err)
+		return true
+	}
+	if message == nil {
+		return false
+	}
+	outer, innerFirst, plaintext := message.outer, message.innerFirst, message.plaintext
+	if matching == nil {
 		// RFC 7296 section 2.2: "In the unlikely event that Message IDs grow too large to fit in 32 bits, the IKE SA MUST be closed or rekeyed."
 		// a request at the last Message ID leaves no next one to expect, so the IKE SA closes rather than take it
 		if nextPeerMID == maxMessageID {
@@ -1013,7 +1036,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 			matching.result <- requestResult{err: fmt.Errorf("ike: malformed authenticated response: %w", err)}
 			*pending = nil
 		} else if response, _ := s.refuseRequest(ctx, hdr.MessageID, hdr.ExchangeType, err); response != nil {
-			_ = s.mux.SendIKETo(response, source)
+			s.answer(response, message.form, source)
 		}
 		// section 2.21.3's "the IKE SA is deleted" names the IKE SA the request came on, so a retained one ends alone, as when the peer answers INVALID_SYNTAX on it
 		if matching == nil && s.removeRetainedContext(ctx) {
@@ -1053,7 +1076,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	response, err := s.handleRequest(ctx, hdr, outer.Payloads, inner)
 	if err != nil {
 		if response != nil {
-			_ = s.mux.SendIKETo(response, source)
+			s.answer(response, message.form, source)
 		}
 		if _, refused := errors.AsType[invalidSyntaxSent](err); refused && s.removeRetainedContext(ctx) {
 			return true
@@ -1061,14 +1084,27 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		s.mux.Close()
 		return true
 	}
-	s.stateMu.Lock()
-	ctx.lastPeerResponseID = hdr.MessageID
-	ctx.lastPeerResponse = response
-	ctx.nextPeerMID++
-	s.stateMu.Unlock()
+	sent, err := s.keepAnswer(ctx, hdr.MessageID, response, message)
+	if err != nil {
+		s.mux.Close()
+		return true
+	}
 	// a failed reply keeps the session, since the peer retransmits and is answered from the reply kept above
-	s.noteSend(s.mux.SendIKETo(response, source))
+	s.noteSend(s.sendTo(sent.datagrams, source))
 	return true
+}
+
+// fragmentLimit ends ctx's IKE SA, alone where it is a retained one, once the peer's fragments of one message at mid passed reassemblyLimit
+// RFC 7383 section 5: "If the peer sends so many fragments that the above condition is not met, the receiver can consider this situation to be either an attack or a broken sender implementation. In either case, the receiver SHOULD drop the connection and discard all the received fragments."
+func (s *Session) fragmentLimit(ctx *ikeContext, mid uint32, err error) {
+	slog.Warn("ike the peer's fragments of one message passed the reassembly limit, which ends the IKE SA", "message_id", mid, "limit", reassemblyLimit)
+	if s.removeRetainedContext(ctx) {
+		return
+	}
+	if !s.closing.Load() {
+		s.emit("ike.sa.closed", slog.String("sa", "ike"), slog.String("reason", "fragment limit"), slog.String("err", err.Error()))
+	}
+	s.mux.Close()
 }
 
 func (s *Session) contextForHeader(hdr *Header) *ikeContext {
@@ -1086,7 +1122,7 @@ func (s *Session) contextForHeader(hdr *Header) *ikeContext {
 	return nil
 }
 
-func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner []RawPayload) ([]byte, error) {
+func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner []RawPayload) (*outbound, error) {
 	if response, rejected, err := s.rejectUnsupportedCritical(ctx, hdr, cleartext, inner); rejected {
 		return response, err
 	}
@@ -1167,7 +1203,7 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner [
 // refuseRequest answers a request with INVALID_SYNTAX, and the error it returns, why, ends the IKE SA
 // RFC 7296 section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
 // section 3.10.1 on INVALID_SYNTAX: "To aid debugging, more detailed error information should be written to a console or log."
-func (s *Session) refuseRequest(ctx *ikeContext, msgID uint32, exchange ExchangeType, why error) ([]byte, error) {
+func (s *Session) refuseRequest(ctx *ikeContext, msgID uint32, exchange ExchangeType, why error) (*outbound, error) {
 	response, err := s.responseNotify(ctx, msgID, exchange, N_INVALID_SYNTAX)
 	if err != nil {
 		return nil, err
@@ -1219,12 +1255,14 @@ func findNotify(payloads []RawPayload, types ...NotifyType) (NotifyType, bool) {
 // section 3.2: "The reasoning behind not setting the critical bit for payloads defined in this document is that all implementations MUST understand all payload types defined in this document and therefore must ignore the critical bit's value."
 // section 4: "If the critical bit is set in an unsupported payload header, all implementations MUST reject the messages containing those payloads."
 // the types defined there run from SA to EAP, and this end skips the ones it does not act on: CERT, CERTREQ, V, CP and EAP
+// RFC 7383 section 2.5: "The Encrypted Fragment payload is denoted SKF{...}, and its payload type is 53."
+// SKF is a type this end reassembles and so understands
 func supportedPayloadType(payloadType PayloadType) bool {
-	return payloadType >= PayloadSA && payloadType <= PayloadEAP
+	return payloadType >= PayloadSA && payloadType <= PayloadEAP || payloadType == PayloadSKF
 }
 
 // RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected and the response to the IKE request containing that payload MUST include a Notify payload UNSUPPORTED_CRITICAL_PAYLOAD, indicating an unsupported critical payload was included. In that Notify payload, the Notification Data contains the one-octet payload type."
-func (s *Session) rejectUnsupportedCritical(ctx *ikeContext, hdr *Header, cleartext, inner []RawPayload) ([]byte, bool, error) {
+func (s *Session) rejectUnsupportedCritical(ctx *ikeContext, hdr *Header, cleartext, inner []RawPayload) (*outbound, bool, error) {
 	unsupported, found := firstUnsupportedCritical(cleartext, inner)
 	if !found {
 		return nil, false, nil
@@ -1233,17 +1271,17 @@ func (s *Session) rejectUnsupportedCritical(ctx *ikeContext, hdr *Header, cleart
 	return response, true, err
 }
 
-func (s *Session) response(ctx *ikeContext, msgID uint32, exchange ExchangeType, inner []RawPayload) ([]byte, error) {
+func (s *Session) response(ctx *ikeContext, msgID uint32, exchange ExchangeType, inner []RawPayload) (*outbound, error) {
 	flags := uint8(FlagResponse)
 	if !ctx.responder {
 		flags |= FlagInitiator
 	}
 	hdr := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: exchange, Flags: flags, MessageID: msgID}
-	raw, err := ctx.encrypt(ctx.localEncryptionKey(), hdr, nil, inner)
+	message, err := ctx.seal(ctx.localEncryptionKey(), hdr, inner)
 	if err != nil {
 		return nil, fmt.Errorf("ike: build response: %w", err)
 	}
-	return raw, nil
+	return message, nil
 }
 
 func (ctx *ikeContext) localEncryptionKey() []byte {
@@ -1260,15 +1298,15 @@ func (ctx *ikeContext) peerEncryptionKey() []byte {
 	return ctx.sker
 }
 
-func (s *Session) responseNotify(ctx *ikeContext, msgID uint32, exchange ExchangeType, notifyType NotifyType) ([]byte, error) {
+func (s *Session) responseNotify(ctx *ikeContext, msgID uint32, exchange ExchangeType, notifyType NotifyType) (*outbound, error) {
 	return s.responseNotifyData(ctx, msgID, exchange, notifyType, nil)
 }
 
-func (s *Session) responseNotifyData(ctx *ikeContext, msgID uint32, exchange ExchangeType, notifyType NotifyType, data []byte) ([]byte, error) {
+func (s *Session) responseNotifyData(ctx *ikeContext, msgID uint32, exchange ExchangeType, notifyType NotifyType, data []byte) (*outbound, error) {
 	return s.response(ctx, msgID, exchange, []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: notifyType, Data: data})}})
 }
 
-func (s *Session) responseNotifySA(ctx *ikeContext, msgID uint32, exchange ExchangeType, notifyType NotifyType, protocol ProtocolID, spi []byte) ([]byte, error) {
+func (s *Session) responseNotifySA(ctx *ikeContext, msgID uint32, exchange ExchangeType, notifyType NotifyType, protocol ProtocolID, spi []byte) (*outbound, error) {
 	return s.response(ctx, msgID, exchange, []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Protocol: protocol, SPI: spi, Type: notifyType})}})
 }
 
@@ -1316,8 +1354,7 @@ func (s *Session) startClosing() {
 	}
 }
 
-// sendUnansweredRequest transmits one encrypted request and does not wait for
-// the response.
+// sendUnansweredRequest sends one encrypted request and waits for no response
 func (s *Session) sendUnansweredRequest(inner []RawPayload) error {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
@@ -1335,10 +1372,10 @@ func (s *Session) sendUnansweredRequest(inner []RawPayload) error {
 		Flags:        flags,
 		MessageID:    ctx.nextLocalMID,
 	}
-	request, err := ctx.encrypt(ctx.localEncryptionKey(), header, nil, inner)
+	sent, err := s.sealRequest(ctx, header, inner)
 	if err != nil {
 		return fmt.Errorf("ike: build IKE Delete: %w", err)
 	}
 	ctx.nextLocalMID++
-	return s.mux.SendIKE(request)
+	return s.send(sent.datagrams)
 }

@@ -77,10 +77,10 @@ func TestNextDueRekeyPreservesChildPriority(t *testing.T) {
 }
 
 // RFC 7296 section 3.2: "all implementations MUST understand all payload types defined in this document"
-// this end understands every payload type RFC 7296 defines, and no other
+// this end understands every payload type RFC 7296 defines and the Encrypted Fragment payload of RFC 7383, and no other
 func TestSupportedPayloadTypeNamesEveryTypeThisEndUnderstands(t *testing.T) {
 	understood := []PayloadType{PayloadSA, PayloadKE, PayloadIDi, PayloadIDr, PayloadCERT, PayloadCERTREQ, PayloadAUTH, PayloadNonce,
-		PayloadN, PayloadD, PayloadV, PayloadTSi, PayloadTSr, PayloadSK, PayloadCP, PayloadEAP}
+		PayloadN, PayloadD, PayloadV, PayloadTSi, PayloadTSr, PayloadSK, PayloadCP, PayloadEAP, PayloadSKF}
 	for value := range 256 {
 		payloadType := PayloadType(value)
 		if got := supportedPayloadType(payloadType); got != slices.Contains(understood, payloadType) {
@@ -709,16 +709,19 @@ func TestSessionAnswersAMalformedCreateChildSAWithInvalidSyntax(t *testing.T) {
 	noneBeside := noneDH
 	noneBeside.Transforms = append(slices.Clone(noneDH.Transforms), Transform{Type: TransDH, ID: DH_CURVE25519})
 	offersNoneBesideAGroup := RawPayload{Type: PayloadSA, Body: EncodeSA([]Proposal{noneBeside})}
-	answered := func(t *testing.T, s *Session, ctx *ikeContext, raw []byte, err error, want NotifyType) Notify {
+	answered := func(t *testing.T, s *Session, ctx *ikeContext, response *outbound, err error, want NotifyType) Notify {
 		t.Helper()
 		if ended := err != nil; ended != (want == N_INVALID_SYNTAX) {
 			t.Errorf("the IKE SA ended %v (%v), want %v", ended, err, want == N_INVALID_SYNTAX)
 		}
-		message, decodeErr := DecodeMessage(raw)
+		if response == nil {
+			t.Fatal("the request drew no answer")
+		}
+		message, decodeErr := DecodeMessage(response.whole)
 		if decodeErr != nil {
 			t.Fatalf("the request drew no answer: %v", decodeErr)
 		}
-		inner, decryptErr := DecryptMessage(ctx.suite, ctx.skei, raw, message)
+		inner, decryptErr := DecryptMessage(ctx.suite, ctx.skei, response.whole, message)
 		if decryptErr != nil || message.Header.ExchangeType != CREATE_CHILD_SA || message.Header.MessageID != 5 || len(inner) != 1 || inner[0].Type != PayloadN {
 			t.Fatalf("the request drew exchange %d at Message ID %d carrying %v (%v), want one notify at 5", message.Header.ExchangeType, message.Header.MessageID, inner, decryptErr)
 		}
@@ -1263,13 +1266,13 @@ func TestChildRequestRejectionNotifications(t *testing.T) {
 		{Type: PayloadTSr, Body: fullRangeSelectors()},
 	}
 
-	decodeResponse := func(raw []byte) Notify {
+	decodeResponse := func(response *outbound) Notify {
 		t.Helper()
-		message, err := DecodeMessage(raw)
+		message, err := DecodeMessage(response.whole)
 		if err != nil {
 			t.Fatal(err)
 		}
-		inner, err := DecryptMessage(suite, ikeCtx.skei, raw, message)
+		inner, err := DecryptMessage(suite, ikeCtx.skei, response.whole, message)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1339,11 +1342,11 @@ func TestChildRequestCreatesMissingChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	message, err := DecodeMessage(response)
+	message, err := DecodeMessage(response.whole)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inner, err := DecryptMessage(suite, ikeCtx.skei, response, message)
+	inner, err := DecryptMessage(suite, ikeCtx.skei, response.whole, message)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1392,11 +1395,11 @@ func TestInformationalDeletesEveryDesignatedChildSA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	message, err := DecodeMessage(response)
+	message, err := DecodeMessage(response.whole)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inner, err := DecryptMessage(suite, ikeCtx.skei, response, message)
+	inner, err := DecryptMessage(suite, ikeCtx.skei, response.whole, message)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1456,11 +1459,14 @@ func TestAuthenticationFailureEndsOnlyTheSAWhoseIKEAuthItFollows(t *testing.T) {
 			if ended := err != nil; ended != test.ends {
 				t.Errorf("the session ended %v (%v), want %v", ended, err, test.ends)
 			}
-			message, err := DecodeMessage(response)
+			if response == nil {
+				t.Fatal("the request drew no answer")
+			}
+			message, err := DecodeMessage(response.whole)
 			if err != nil {
 				t.Fatalf("the request drew no answer: %v", err)
 			}
-			inner, err := DecryptMessage(ikeCtx.suite, ikeCtx.sker, response, message)
+			inner, err := DecryptMessage(ikeCtx.suite, ikeCtx.sker, response.whole, message)
 			if err != nil || len(inner) != 0 || message.Header.MessageID != test.messageID {
 				t.Errorf("the answer is %v at Message ID %d (%v), want an empty one at %d", inner, message.Header.MessageID, err, test.messageID)
 			}
@@ -1853,7 +1859,7 @@ func TestSessionThatCannotSendEndsAfterItsBudget(t *testing.T) {
 }
 
 // an outage of replies is said once and ended by a reply that goes out
-// a cached reply goes to wherever a replay came from, so it neither adds to an outage nor ends one
+// a cached reply goes to the address a replay came from, so it neither adds to an outage nor ends one, and one that cannot go out ends nothing
 func TestFailedReplyKeepsTheSession(t *testing.T) {
 	levels := captureLevels(t)
 	peer := listenPeer(t)
@@ -1894,7 +1900,7 @@ func TestFailedReplyKeepsTheSession(t *testing.T) {
 		if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
 			t.Fatal(err)
 		}
-		if n, _, err := peer.ReadFromUDP(buf); err != nil || !bytes.Equal(buf[NonESPMarkerLen:n], ikeCtx.lastPeerResponse) {
+		if n, _, err := peer.ReadFromUDP(buf); err != nil || ikeCtx.lastPeer.response == nil || len(ikeCtx.lastPeer.response.datagrams) != 1 || !bytes.Equal(buf[NonESPMarkerLen:n], ikeCtx.lastPeer.response.datagrams[0]) {
 			t.Fatalf("the peer was not answered with the reply kept for its request: %v", err)
 		}
 		return taken
@@ -1907,17 +1913,20 @@ func TestFailedReplyKeepsTheSession(t *testing.T) {
 		}
 	}
 
-	if !s.dispatch(request(0), unreachable, &pending) {
+	// a replay is the request bitwise, as RFC 7296 section 2.1 has a retransmission
+	first := request(0)
+	if !s.dispatch(first, unreachable, &pending) {
 		t.Fatal("a fresh request was not taken")
 	}
 	if mux.IsClosed() {
 		t.Fatal("a reply that could not go out ended the session")
 	}
 	outage("a reply that could not go out", 1, 1, 1, 0)
-	if s.dispatch(request(0), unreachable, &pending) {
-		t.Fatal("a replay was taken as fresh")
+	if s.dispatch(first, unreachable, &pending) || mux.IsClosed() || ikeCtx.lastPeer.answers != 1 {
+		t.Fatalf("a replay whose reply could not go out was taken as fresh or ended the session, after %d answers, want 1", ikeCtx.lastPeer.answers)
 	}
-	if fromPeer(request(0)) {
+	// the session's endpoint moved to the address the fresh request came from, so the peer's own replay draws the reply within the octets it sent
+	if fromPeer(first) {
 		t.Fatal("a replay was taken as fresh")
 	}
 	outage("replays answered from the cache", 1, 1, 1, 0)

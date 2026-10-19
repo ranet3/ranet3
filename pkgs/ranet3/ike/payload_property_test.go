@@ -46,12 +46,11 @@ func drawBody(tc hegel.TestCase) []byte {
 	return drawBytes(tc, 300, 255-genericPayloadHeaderLen, 256-genericPayloadHeaderLen)
 }
 
-// chainTypes are the payload types a chain can carry before its end, and the
-// types SK can carry. Zero ends a chain, SK has to be the last payload of a
-// message, and SK carries no other SK.
+// chainTypes are the payload types a chain carries before its end, and those SK carries
+// all but zero, which ends a chain, and SK and SKF, which end a message and which SK never carries
 var chainTypes = withEdges(
-	hegel.Filter(hegel.Integers[PayloadType](1, 255), func(t PayloadType) bool { return t != PayloadSK }),
-	1, PayloadSK-1, PayloadSK+1, 255)
+	hegel.Filter(hegel.Integers[PayloadType](1, 255), func(t PayloadType) bool { return t != PayloadSK && t != PayloadSKF }),
+	1, PayloadSK-1, PayloadSK+1, PayloadSKF-1, PayloadSKF+1, 255)
 
 // innerTypes are the payload types a chain read on its own can carry, where
 // only zero, which ends it, is out.

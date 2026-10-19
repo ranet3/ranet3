@@ -46,15 +46,34 @@ const (
 	minPeerChildRekeyInterval = time.Second
 	// a peer-initiated IKE SA rekey costs a key exchange on the goroutine that runs the session, and a legitimate one is minutes apart
 	minPeerIKERekeyInterval = time.Second
+	// requestBudget is the sends of one cut of a request, the time this end resends it under one threshold to a silent peer before it deems the IKE SA failed
+	// a request that steps to its family's floor starts its waits over at the step, as one cut again for a path MTU that fell does, so its sends run past the budget
+	// the sends of a step and of one or two falls still come within it, and a chain of falls can carry the last past it
+	requestBudget = requestTimeout * (1<<maxRetransmits - 1)
 	// RFC 9370 section 2.2.4: "The responder MUST handle this situation gracefully and delete the associated state if it does not receive the next expected IKE_FOLLOWUP_KE request after some reasonable period of time."
-	// the request budget, the time an initiator gives a request before it deems a silent peer's IKE SA failed
-	// this end's own IKE_FOLLOWUP_KE is resent as any request is, and a STATE_NOT_FOUND answering a send past the wait from the answer before is not counted toward stateNotFoundLimit
-	followupWait = requestTimeout * (1<<maxRetransmits - 1)
+	// this end's own IKE_FOLLOWUP_KE is resent as any request is, and a STATE_NOT_FOUND answering a send past the wait from the answer before, where a chain of falls carried it, fails the rekey without counting toward stateNotFoundLimit, and the rekey is retried on its schedule with the IKE SA kept
+	followupWait = requestBudget
 	// RFC 9370 section 2.2.4: "If the initiator continues to receive STATE_NOT_FOUND notifications after several retries, it MUST treat this situation as a fatal error and delete the IKE SA by sending a DELETE payload."
 	// a series and two retries of it
 	stateNotFoundLimit = 3
 	// a link is drawn at random for each response, so an IKE_FOLLOWUP_KE that did not read it matches it only by guessing it
 	followupLinkLen = 8
+
+	// RFC 7383 section 5: "It is NOT RECOMMENDED for this value to exceed 64 KB because any IKE message before fragmentation would likely be shorter than that."
+	// it bounds the datagrams one message's fragments arrive in, which hold more than their content, and leaves the largest message a peer sends room at the IPv4 floor
+	reassemblyLimit = 16 << 10
+	// RFC 7383 section 2.6: "It is RECOMMENDED that the reassembling timeout for the responder be equal to the time interval that the implementation waits before completely giving up when acting as the initiator of an exchange."
+	// and: "Implementations can use a shorter timeout to conserve memory."
+	// it is the sends of one cut, each new cut starting the queue over at its larger Total Fragments, and a half-open SA takes its fragments with it at handshakeTimeout, which comes first
+	reassemblyTimeout = requestBudget
+	// movedCredits bounds the credits an exchange keeps for addresses other than the origin that repeat its request, and with them the repeats in fragments it gathers, each within reassemblyLimit
+	// a newcomer past them takes the place of the address whose last datagram arrived least recently
+	// what an address draws spends its own credit alone, so a replay from fresh sources holds a moved peer only while more than movedCredits-1 of them arrive between every two of the peer's datagrams, for as long as the exchange runs, where a table that refused newcomers would hold it for the whole exchange once replays filled it before the peer moved
+	movedCredits = 4
+	// RFC 7383 section 2.5.2: "Performing a few retries within several seconds for each probe seems appropriate, but different environments may require different rules."
+	// the backoff's sends under the path's threshold then span its first two intervals, and one lost datagram moves no threshold
+	// a send that comes after them, the backoff's or a probe's, steps the request and starts the backoff over
+	stepDownSends = 2
 
 	// handshakeTimeout bounds a responder's whole handshake, the life of the cheapest state an unauthenticated peer can make it hold
 	handshakeTimeout = 30 * time.Second

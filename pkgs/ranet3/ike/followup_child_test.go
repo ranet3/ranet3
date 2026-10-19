@@ -151,7 +151,7 @@ func TestBadKeyInAChildChainIsAnsweredInvalidSyntax(t *testing.T) {
 	peer.rekey(t, s.handleChildRekey, ctx, request)
 	_, key := modelKEM(t, ML_KEM_768)
 	raw, err := s.handleFollowup(ctx, 0, []RawPayload{{Type: PayloadKE, Body: EncodeKE(ML_KEM_768, key[:len(key)-1])}, linkPayload(peer.link)})
-	if _, ending := errors.AsType[invalidSyntaxSent](err); !ending || raw == nil || !notified(sealedAnswer(t, ctx, raw), N_INVALID_SYNTAX, nil) {
+	if _, ending := errors.AsType[invalidSyntaxSent](err); !ending || raw == nil || !notified(sealedAnswer(t, ctx, raw.whole), N_INVALID_SYNTAX, nil) {
 		t.Errorf("the IKE_FOLLOWUP_KE drew an answer ending the IKE SA %v, %v, want INVALID_SYNTAX", ending, err)
 	}
 	if peer.installed(s) {
@@ -311,7 +311,7 @@ func TestPeerChildChainAnsweredAsThisEndsIKESARekeyStartsCollidesWithNone(t *tes
 	s, _ := initiatingSession(t, classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519, entry768}})
 	old := s.current
 	peer, request := newPeerChildRekey(t, s, childOffer, above)
-	var crossing []byte
+	var crossing *outbound
 	var crossingErr error
 	drawn := 0
 	s.ikeRekeyNonce = func(n []byte) error {
@@ -327,7 +327,7 @@ func TestPeerChildChainAnsweredAsThisEndsIKESARekeyStartsCollidesWithNone(t *tes
 	if crossingErr != nil {
 		t.Fatalf("the peer's Child SA creation ended the IKE SA: %v", crossingErr)
 	}
-	if peer.read(t, sealedAnswer(t, old, crossing)); peer.link == nil {
+	if peer.read(t, sealedAnswer(t, old, crossing.whole)); peer.link == nil {
 		t.Fatal("the peer's Child SA creation drew no link")
 	}
 	answer, answering := answerRekey(t, create.inner, 0, nil, answered)

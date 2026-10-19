@@ -106,6 +106,9 @@ type ResponderConfig struct {
 	// Events records each answered session's state changes and the handshakes it refuses
 	// nil records nothing
 	Events Recorder
+
+	// pathMTU stands in for each answered session's mux PathMTU, and nil reads the mux
+	pathMTU func() (int, error)
 }
 
 // Accepted names both ends of an SA a peer opened to us. The local identity
@@ -303,6 +306,8 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	// so it goes back whatever proposal is answered, and carriesNotify reads its type alone
 	// RFC 9242 section 3.1: "Implementations MUST ignore non-empty Notification Data if they don't understand its purpose."
 	intermediate := carriesNotify(request, N_INTERMEDIATE_EXCHANGE_SUPPORTED)
+	// RFC 7383 section 2.3: "If the responder also supports this extension and is willing to use it, it includes this notification in the response message."
+	fragments := carriesNotify(request, N_IKEV2_FRAGMENTATION_SUPPORTED)
 	proposal, suite, err := selectIKEProposal(saPayload.Body, peerGroup, current(r.cfg.Suites), intermediate)
 	if err != nil {
 		if wrongGroup, ok := errors.AsType[*invalidKEError](err); ok {
@@ -361,7 +366,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		}
 	}()
 
-	response, err := r.buildSAInitResponse(spiI, spiR, proposal, suite, dh, nr, datagram.Endpoint, intermediate)
+	response, err := r.buildSAInitResponse(spiI, spiR, proposal, suite, dh, nr, datagram.Endpoint, intermediate, fragments)
 	if err != nil {
 		return nil, Accepted{}, err
 	}
@@ -389,6 +394,8 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		childFailed:     make(chan error, 1),
 		suites:          r.cfg.Suites,
 		rechecks:        make(chan struct{}, 1),
+		fragments:       fragments,
+		pathMTU:         r.cfg.pathMTU,
 	}
 
 	accepted, created, err := session.completeResponderAuth(r, datagram.Raw, response, ni, nr, deadline)
@@ -420,8 +427,8 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 // the destination hash is the honest one, over the address the datagram came from
 // so the peer must reach this end on the port it knows: an initiator that sees the mismatch moves to UDP 4500 by RFC 7296 section 2.23, nothing binds 4500 apart, and the registry port is the one both ends keep
 // strongSwan keeps it with charon.port_nat_t set to it, as the fleet and the integration test configure, and config refuses port 500, where the non-ESP marker cannot be used
-// intermediate tells whether the request carried INTERMEDIATE_EXCHANGE_SUPPORTED, which the response then returns
-func (r *Responder) buildSAInitResponse(spiI, spiR uint64, proposal Proposal, suite SASuite, dh *DHKeyPair, nr []byte, endpoint transport.Endpoint, intermediate bool) ([]byte, error) {
+// intermediate and fragments tell whether the request carried INTERMEDIATE_EXCHANGE_SUPPORTED and IKEV2_FRAGMENTATION_SUPPORTED, which the response then returns
+func (r *Responder) buildSAInitResponse(spiI, spiR uint64, proposal Proposal, suite SASuite, dh *DHKeyPair, nr []byte, endpoint transport.Endpoint, intermediate, fragments bool) ([]byte, error) {
 	hashAlgos := make([]byte, 2)
 	binary.BigEndian.PutUint16(hashAlgos, HashIdentity)
 	var fakeAddr [4]byte
@@ -446,6 +453,9 @@ func (r *Responder) buildSAInitResponse(spiI, spiR uint64, proposal Proposal, su
 	if intermediate {
 		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INTERMEDIATE_EXCHANGE_SUPPORTED})})
 	}
+	if fragments {
+		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_IKEV2_FRAGMENTATION_SUPPORTED})})
+	}
 	header := Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_SA_INIT, Flags: FlagResponse, MessageID: 0}
 	return (&Message{Header: header, Payloads: payloads}).Encode(), nil
 }
@@ -466,56 +476,56 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	inner, err := decodeMessagePlaintext(got.innerFirst, got.plaintext)
 	if err != nil {
 		// RFC 7296 section 2.21.2: "request messages that contain an unsupported critical payload, or where the whole message is malformed (rather than just bad payload contents), MUST be rejected in their entirety, and MUST only lead to an UNSUPPORTED_CRITICAL_PAYLOAD or INVALID_SYNTAX Notification sent as a response."
-		return Accepted{}, false, s.rejectAuth(N_INVALID_SYNTAX, nil, fmt.Errorf("ike: malformed IKE_AUTH request: %w", err))
+		return Accepted{}, false, s.rejectAuth(got.form, N_INVALID_SYNTAX, nil, fmt.Errorf("ike: malformed IKE_AUTH request: %w", err))
 	}
 
 	// RFC 7296 section 2.5: "In that Notify payload, the Notification Data contains the one-octet payload type."
 	if unsupported, found := firstUnsupportedCritical(outer.Payloads, inner); found {
-		return Accepted{}, false, s.rejectAuth(N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupported)},
+		return Accepted{}, false, s.rejectAuth(got.form, N_UNSUPPORTED_CRITICAL_PAYLOAD, []byte{byte(unsupported)},
 			fmt.Errorf("ike: IKE_AUTH request marks payload type %d critical", unsupported))
 	}
 
 	request := &Message{Header: outer.Header, Payloads: inner}
 	idiPayload, authPayload := request.find(PayloadIDi), request.find(PayloadAUTH)
 	if idiPayload == nil || authPayload == nil {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: IKE_AUTH request has no IDi or AUTH"))
+		return Accepted{}, false, s.rejectAuth(got.form, N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: IKE_AUTH request has no IDi or AUTH"))
 	}
 	aliases := r.aliases()
 	peer, err := aliases.resolve(idiPayload.Body)
 	if err != nil {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, err)
+		return Accepted{}, false, s.rejectAuth(got.form, N_AUTHENTICATION_FAILED, nil, err)
 	}
 	peerID := peer.endpoint
 	// with a key its organization shares, another node of it could otherwise claim our name
 	for local := range r.cfg.Local {
 		if local.Node() == peerID.Node() {
-			return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: IDi names our own node %s", peerID.Node()))
+			return Accepted{}, false, s.rejectAuth(got.form, N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: IDi names our own node %s", peerID.Node()))
 		}
 	}
 	peerKey, peerFamily, err := r.cfg.Trust.Key(peerID)
 	if err != nil {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, err)
+		return Accepted{}, false, s.rejectAuth(got.form, N_AUTHENTICATION_FAILED, nil, err)
 	}
 	macedIDForI := prf(ctx.suite.PRFID, ctx.skpi, idiPayload.Body)
 	if err := VerifyAuth(peerKey, concat(realMessage1, nr, macedIDForI, chain.octets(ctx.authMID)), authPayload.Body); err != nil {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, err)
+		return Accepted{}, false, s.rejectAuth(got.form, N_AUTHENTICATION_FAILED, nil, err)
 	}
 	// RFC 7296 section 3.5 has the identity "used for policy lookup" and "to perform access control decisions"
 	// an IDi naming an endpoint of another family names one that did not dial, as an endpoint dials in its own family alone
 	// the endpoint's family is compared, never an address the ID holds
 	arrived := familyOf(source.AddrPort().Addr())
 	if peerFamily != arrived {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil,
+		return Accepted{}, false, s.rejectAuth(got.form, N_AUTHENTICATION_FAILED, nil,
 			fmt.Errorf("ike: IDi names %s, an endpoint of the %s family, and the request arrived in %s", peerID, peerFamily, arrived))
 	}
 
 	presented, err := aliases.presented(peerID)
 	if err != nil {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, err)
+		return Accepted{}, false, s.rejectAuth(got.form, N_AUTHENTICATION_FAILED, nil, err)
 	}
 	localID, idrBody, err := r.localIdentity(aliases, request.find(PayloadIDr), presented, arrived)
 	if err != nil {
-		return Accepted{}, false, s.rejectAuth(N_AUTHENTICATION_FAILED, nil, err)
+		return Accepted{}, false, s.rejectAuth(got.form, N_AUTHENTICATION_FAILED, nil, err)
 	}
 	if r.cfg.Events != nil {
 		r.cfg.Events(localID, peerID, "ike.id.resolved", peer.attrs(idrBody)...)
@@ -534,13 +544,20 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NO_PROPOSAL_CHOSEN})},
 		})
 		if buildErr != nil {
-			return Accepted{}, false, err
+			return Accepted{}, false, buildErr
+		}
+		sent, buildErr := s.transmit(response, got.form)
+		if buildErr != nil {
+			return Accepted{}, false, buildErr
 		}
 		// retained before it is sent, since an IKE_AUTH retransmitted while the IKE SA's Delete is outstanding is answered from it
 		s.stateMu.Lock()
-		ctx.lastPeerResponseID, ctx.lastPeerResponse = ctx.authMID, response
+		buildErr = ctx.keep(ctx.authMID, &got.opened, sent)
 		s.stateMu.Unlock()
-		_ = s.mux.SendIKE(response)
+		if buildErr != nil {
+			return Accepted{}, false, buildErr
+		}
+		_ = s.send(sent.datagrams)
 		return Accepted{}, true, err
 	}
 
@@ -557,26 +574,30 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	if err != nil {
 		return Accepted{}, false, err
 	}
+	sent, err := s.transmit(response, got.form)
+	if err != nil {
+		return Accepted{}, false, err
+	}
 	if err := s.replaceChild(child.sa); err != nil {
 		return Accepted{}, false, err
 	}
 	// retained before it is sent, since Run answers a retransmitted IKE_AUTH from it and the initiator may retransmit before Run starts
 	s.stateMu.Lock()
-	ctx.lastPeerResponseID, ctx.lastPeerResponse = ctx.authMID, response
+	err = ctx.keep(ctx.authMID, &got.opened, sent)
 	s.stateMu.Unlock()
-	if err := s.mux.SendIKE(response); err != nil {
+	if err != nil {
+		return Accepted{}, false, err
+	}
+	if err := s.send(sent.datagrams); err != nil {
 		return Accepted{}, false, err
 	}
 	return Accepted{Peer: peerID, Local: localID, Key: peerKey}, true, nil
 }
 
-// authRequest is a request of the handshake that decrypted under the half-open SA's keys, an IKE_INTERMEDIATE or the first IKE_AUTH, with the pieces that proved it
+// authRequest is a request of the handshake that decrypted under the half-open SA's keys, an IKE_INTERMEDIATE or the first IKE_AUTH, and where its last datagram came from
 type authRequest struct {
-	raw        []byte
-	outer      *Message
-	innerFirst PayloadType
-	plaintext  []byte
-	source     transport.Endpoint
+	opened
+	source transport.Endpoint
 }
 
 // awaitAuthRequest waits for the initiator's IKE_AUTH, answering a repeat of the IKE_SA_INIT request with the response it sent and first the IKE_INTERMEDIATE exchange of each additional key exchange the suite runs
@@ -590,11 +611,8 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse, ni, nr []byte,
 	ctx := s.current
 	methods := ctx.suite.entry().added()
 	var chain intAuth
-	// answered counts the IKE_INTERMEDIATE exchanges run, and lastRequest and lastResponse are the last one's request digest and response
-	// a half-open SA keeps the digest and not the request, whose size the initiator chooses
+	// answered counts the IKE_INTERMEDIATE exchanges run, and ctx.lastPeer holds the request of the last one
 	var answered uint32
-	var lastRequest [sha256.Size]byte
-	var lastResponse []byte
 	for {
 		raw, source, err := s.mux.RecvIKEFromUntil(deadline)
 		if err != nil {
@@ -620,10 +638,9 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse, ni, nr []byte,
 		if header.SPIResponder != ctx.spiR {
 			continue
 		}
-		// RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
 		if header.ExchangeType == IKE_INTERMEDIATE && answered > 0 && header.MessageID == answered {
-			if sha256.Sum256(raw) == lastRequest {
-				if err := s.mux.SendIKETo(lastResponse, source); err != nil {
+			if m, err := DecodeMessage(raw); err == nil {
+				if err := s.answerRepeat(ctx, raw, m, source); err != nil {
 					return nil, intAuth{}, err
 				}
 			}
@@ -638,28 +655,169 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse, ni, nr []byte,
 		if err != nil {
 			continue
 		}
-		innerFirst, plaintext, err := decryptMessagePlaintext(ctx.suite, ctx.peerEncryptionKey(), raw, outer)
+		// RFC 7383 section 5: "In either case, the receiver SHOULD drop the connection and discard all the received fragments."
+		message, err := s.open(ctx, &ctx.requestFragments, raw, outer)
 		if err != nil {
+			return nil, intAuth{}, err
+		}
+		if message == nil {
 			continue
 		}
-		request := &authRequest{raw: raw, outer: outer, innerFirst: innerFirst, plaintext: plaintext, source: source}
+		request := &authRequest{opened: *message, source: source}
 		switch {
 		case header.ExchangeType == IKE_AUTH && int(answered) == len(methods):
 			return request, chain, nil
 		case header.ExchangeType == IKE_INTERMEDIATE && int(answered) < len(methods):
+			key := ctx.peerEncryptionKey()
 			response, next, err := s.answerIntermediate(chain, request, methods[answered], ni, nr)
 			if err != nil {
 				return nil, intAuth{}, err
 			}
-			chain, answered, lastRequest, lastResponse = next, answered+1, sha256.Sum256(raw), response
+			if err := ctx.lastPeer.answered(&request.opened, key, response); err != nil {
+				return nil, intAuth{}, err
+			}
+			chain, answered = next, answered+1
 		default:
 			// an IKE_AUTH ahead of the last IKE_INTERMEDIATE, or an IKE_INTERMEDIATE past it
 			if response, err := s.responseNotify(ctx, header.MessageID, header.ExchangeType, N_INVALID_SYNTAX); err == nil {
-				_ = s.mux.SendIKETo(response, source)
+				s.answer(response, request.form, source)
 			}
 			return nil, intAuth{}, fmt.Errorf("ike: %d IKE_INTERMEDIATE exchanges ran of %d, and the initiator sent exchange type %d at Message ID %d", answered, len(methods), header.ExchangeType, header.MessageID)
 		}
 	}
+}
+
+// answeredRequest is the request of the last exchange of the peer's an IKE SA answered, the key it came under and its answer, as a repeat of the request is read against: an IKE_INTERMEDIATE in the half-open wait, any request after
+// digest is the SHA-256 of its octets as it came whole, or of the header its fragments make, whose Length counts more octets than it holds, and content that of what it carries however it came
+// answers counts the repeats the origin drew the answer with, others holds the credit of each address other than the origin a repeat came from, at most movedCredits of them, and arrivals counts the datagrams those credits took, which orders them
+type answeredRequest struct {
+	digest, content [sha256.Size]byte
+	key             []byte
+	response        *transmission
+	answers         int
+	others          []*credit
+	arrivals        int
+}
+
+// credit is the state an exchange keeps for one address other than the origin that repeats its request
+// octets counts the octets on the wire the address's repeats in the exchange sent that answers there have not spent, repeat gathers its repeat in fragments, and last is the arrival of its last datagram among the exchange's
+type credit struct {
+	from   transport.Endpoint
+	octets int
+	repeat reassembly
+	last   int
+}
+
+// answered moves a to the exchange whose request came as request under key and drew response, with no repeat of it taken yet and no credit
+// an IKE SA keeps digests of the request and not the request, whose size the peer chooses
+func (a *answeredRequest) answered(request *opened, key []byte, response *transmission) error {
+	content, err := contentDigest(request)
+	if err != nil {
+		return err
+	}
+	*a = answeredRequest{digest: sha256.Sum256(request.raw), content: content, key: key, response: response}
+	return nil
+}
+
+// account takes octets of a repeat from source, an address other than the origin, into source's credit in the exchange, and returns that credit
+// a repeat from one address never touches another's credit, nor the queue the next request is gathered in
+func (a *answeredRequest) account(source transport.Endpoint, octets int) *credit {
+	a.arrivals++
+	var c *credit
+	if at := slices.IndexFunc(a.others, func(c *credit) bool { return c.from.AddrPort() == source.AddrPort() }); at >= 0 {
+		c = a.others[at]
+	} else if len(a.others) < movedCredits {
+		c = &credit{from: source}
+		a.others = append(a.others, c)
+	} else {
+		c = slices.MinFunc(a.others, func(x, y *credit) int { return x.last - y.last })
+		*c = credit{from: source}
+	}
+	c.octets, c.last = c.octets+octets, a.arrivals
+	return c
+}
+
+// answerRepeat sends the answer ctx.lastPeer holds to source where raw, decoded as m, repeats its request, gathering in source's credit a repeat in fragments from anywhere but the origin
+// it is the one rule of every site that resends a kept answer: the half-open wait, Run's dispatch and answerAgain, which is the wait after IKE_AUTH's
+// RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
+// the origin is the session's endpoint, the address and port the peer proved it receives at: in the half-open wait the IKE_SA_INIT source, which took the IKE_SA_INIT answer, and after IKE_AUTH where its last fresh message came from
+// a repeat from the origin is answered on its fragment 1, at most maxRetransmitsWhileBusy times in each exchange, the bound on the sends of one request this end counts, so each counted send of a peer that resends as this end does draws the answer
+// one from any other address and port is answered once all of the request has come from there, and only where the octets of that address's repeats in the exchange cover those of every answer it drew in it
+// so an address that never proved it receives draws no more octets in an exchange than it sent repeating the request, and neither an initiator that holds the keys without having authenticated nor anyone replaying a captured fragment 1 can aim more at another than is sent in that address's name
+// that credit bounds what another address draws, so its answers spend nothing of the origin's count, which a replay sent in the origin's own address and port spends as the origin's own repeats do
+// those octets are counted on the wire, where an answer aimed at an address lands, and onWire counts a datagram of either side with its IP header, UDP header and non-ESP marker as path counts one
+// the answer goes within the datagrams that drew it, fragment 1 from the origin and the largest of the set from elsewhere, and its octets are counted as that send cuts it
+// it returns errFragmentLimit once a repeat's fragments pass reassemblyLimit, and nothing for a send that fails, so a repeat from an address that takes nothing never ends the IKE SA, and the peer repeats the request
+func (s *Session) answerRepeat(ctx *ikeContext, raw []byte, m *Message, source transport.Endpoint) error {
+	a := &ctx.lastPeer
+	if a.response == nil {
+		return nil
+	}
+	moved := source.AddrPort() != s.mux.Endpoint().AddrPort()
+	if !moved && a.answers >= maxRetransmitsWhileBusy {
+		return nil
+	}
+	suite := ctx.suite
+	var from *credit
+	fit := 0
+	switch {
+	case !fragment(m):
+		// RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
+		// a repeat whole carries no fragment size, so the answer goes again cut for the path alone
+		if sha256.Sum256(raw) != a.digest {
+			return nil
+		}
+		if moved {
+			from = a.account(source, onWire(source, 1, len(raw)))
+		}
+	case !moved:
+		if !s.asksAgain(suite, a.key, raw, m, a.response.request) {
+			return nil
+		}
+		fit = len(raw)
+	default:
+		// a fragment that does not authenticate moves nothing, so only the key holder, or a replay of what it sent, makes or moves a credit
+		if !s.repeats(suite, a.key, raw, m, a.response.request) {
+			return nil
+		}
+		from = a.account(source, onWire(source, 1, len(raw)))
+		message, err := from.repeat.take(suite, a.key, raw, m, time.Now())
+		if err != nil {
+			return err
+		}
+		if message == nil {
+			return nil
+		}
+		if content, err := contentDigest(message); err != nil || content != a.content {
+			return nil
+		}
+		fit = message.largest
+	}
+	threshold, size := s.cutFor(a.response, fit)
+	if from == nil {
+		a.answers++
+	} else {
+		datagrams, octets := a.response.carried(size)
+		spent := onWire(source, datagrams, octets)
+		if spent > from.octets {
+			return nil
+		}
+		from.octets -= spent
+	}
+	_, _ = s.sendCut(a.response, threshold, size, s.to(source))
+	return nil
+}
+
+// contentDigest is the SHA-256 of what m carries, the type of its first inner payload and its inner payloads, which a repeat holds however it is cut
+func contentDigest(m *opened) ([sha256.Size]byte, error) {
+	content, err := unpadded(m.plaintext)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	digest := sha256.New()
+	digest.Write([]byte{byte(m.innerFirst)})
+	digest.Write(content)
+	return [sha256.Size]byte(digest.Sum(nil)), nil
 }
 
 func (r *Responder) noteHandshakeFailure(endpoint transport.Endpoint, err error) {
@@ -704,11 +862,15 @@ func (r *Responder) failureIsDue(endpoint transport.Endpoint) bool {
 }
 
 // rejectAuth answers a refused IKE_AUTH request inside the SK payload, which the initiator can decrypt, and returns cause unchanged
+// request is the form the request came in
 // an authentication failure tells the peer nothing of which of identity, key or signature failed
-func (s *Session) rejectAuth(notify NotifyType, data []byte, cause error) error {
+func (s *Session) rejectAuth(request form, notify NotifyType, data []byte, cause error) error {
 	response, err := s.responseNotifyData(s.current, s.current.authMID, IKE_AUTH, notify, data)
-	if err == nil {
-		_ = s.mux.SendIKE(response)
+	if err != nil {
+		return cause
+	}
+	if sent, err := s.transmit(response, request); err == nil {
+		_ = s.send(sent.datagrams)
 	}
 	return cause
 }
