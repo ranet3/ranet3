@@ -84,6 +84,10 @@ const (
 // and is not written yet.
 var ErrUnsupported = errors.New("egress: source translation is unsupported on this platform")
 
+// ErrDeviceGone is wrapped by a Runtime.Device error saying the egress device
+// no longer exists, which leaves neither family a device to leave by
+var ErrDeviceGone = errors.New("the egress device is gone")
+
 // Egress is the cap.egress capability: this node carries other nodes' traffic
 // out of the mesh, the one action behind an exit node and a subnet router.
 // Writing the block turns it on. There is no enable field to forget.
@@ -95,9 +99,11 @@ type Egress struct {
 	// carry is one it has no reason to translate out of the mesh.
 	Advertise []schema.Prefix `yaml:"advertise,omitempty" json:"advertise,omitempty" toml:"advertise,omitempty"`
 	// Source4 and Source6 are the address a translated packet leaves under,
-	// per family. See Source: "auto" is the address this node's own routes
-	// would have used, which is the only answer available to a deployment that
-	// owns no address block.
+	// per family, out of the mesh device and out of the egress device alike:
+	// a property of the node rather than of the path a packet took. See
+	// Source: "auto" is the address this node's own routes would have used,
+	// which is the only answer available to a deployment that owns no address
+	// block.
 	Source4 Source `yaml:"source4,omitempty" json:"source4,omitzero" toml:"source4,omitempty"`
 	Source6 Source `yaml:"source6,omitempty" json:"source6,omitzero" toml:"source6,omitempty"`
 	// Return translates the other direction too: a packet arriving from one of
@@ -141,6 +147,22 @@ type Runtime struct {
 	// empty list while nothing may be advertised. Nil means the caller does
 	// not announce, which only a test does.
 	Announce func([]netip.Prefix)
+	// Device reports per family why the egress device cannot pass it, nil
+	// while it can: the kernel forwards an IPv4 packet arriving on it only
+	// while its effective rp_filter is 0 and its own forwarding is on, and
+	// discards every IPv6 packet arriving on it while its disable_ipv6 is set.
+	// An error wrapping ErrDeviceGone holds its family not ready ahead of
+	// every other reason. Read on every pass beside Forwarding, and required
+	// with Egress.
+	Device func() (v4, v6 error)
+	// Ready receives the egress device's readiness per family, and whether
+	// the egress SIDs are served, whenever one of the three moves, starting
+	// from none. A family is ready while its rule keyed on the egress device
+	// reads back, the host forwards it and Device passes it, and is
+	// reported not ready before the tables are withdrawn. The SIDs are served
+	// while at least one family is ready and every family the host forwards
+	// is. Nil where nothing reads it, which only a test does.
+	Ready func(v4, v6, serves bool)
 	// Events records every pass that rewrote the rules, moved the announcement or failed
 	// nil records nothing
 	Events *events.Bus
@@ -337,7 +359,9 @@ type Rule struct {
 	Interface string
 	// Egress keys an Out rule on the egress device in place of the mesh
 	// device: a packet arriving on it and leaving by any link but the mesh
-	// device is translated. Empty keys the rule on the mesh device.
+	// device is translated. Empty keys the rule on the mesh device. On an In
+	// rule it is excluded as an arrival, since what the egress device carries
+	// came out of the mesh and never from behind this node.
 	Egress string
 	// Source is the address to translate to. An invalid address means the
 	// backend lets the host pick, which is nftables masquerade: the address of
@@ -358,7 +382,10 @@ func (r Rule) String() string {
 		source = "source " + r.Source.String()
 	}
 	parts := []string{r.Direction.String(), "via", r.Interface}
-	if r.Egress != "" {
+	switch {
+	case r.Egress != "" && r.Direction == In:
+		parts = append(parts, "not", r.Egress)
+	case r.Egress != "":
 		parts = []string{r.Direction.String(), "via", r.Egress, "not", r.Interface}
 	}
 	parts = append(parts, familyName(r.Family))
@@ -402,6 +429,12 @@ type backend interface {
 	// Withdraw removes this tool's own tables. A table that is already gone is
 	// success.
 	Withdraw() error
+	// Deleted carries one coalesced wake-up per batch of deletions another
+	// writer made in this tool's own tables.
+	Deleted() <-chan struct{}
+	// Missed carries one coalesced wake-up per batch of notifications the
+	// backend lost or could not read, any of which may have been a deletion.
+	Missed() <-chan struct{}
 	Close() error
 	// where names the space this backend owns, for a log line.
 	where(Egress) string
@@ -422,6 +455,10 @@ type Stats struct {
 	Announced []netip.Prefix
 	Conflicts []string
 	Err       string
+	// Ready4 and Ready6 are false on a node with no egress device, and
+	// Unready is empty while both are ready
+	Ready4, Ready6 bool
+	Unready        string
 }
 
 // Translator owns the capability on one node: the rules, the tables they live
@@ -451,6 +488,12 @@ type Translator struct {
 	enabled   atomic.Bool
 	wake      chan struct{}
 	withdrawn bool
+	// ready4, ready6 and serves hold what Runtime.Ready was last given,
+	// forwards4 and forwards6 the forwarding the last pass read, and unready
+	// the reason a family is not, all of them the run goroutine's
+	ready4, ready6, serves bool
+	forwards4, forwards6   bool
+	unready                string
 }
 
 // New validates the capability against the platform and opens whatever the
@@ -471,6 +514,9 @@ func New(cfg Egress, rt Runtime) (*Translator, error) {
 	}
 	if rt.Forwarding == nil {
 		return nil, errors.New("egress: a forwarding reader is required")
+	}
+	if rt.Egress != "" && rt.Device == nil {
+		return nil, errors.New("egress: the egress device needs a reader of what it passes")
 	}
 	// Resolved before the backend is opened, so a return direction with no
 	// mesh address to translate to is refused with nothing to clean up.
@@ -663,12 +709,22 @@ func (t *Translator) Run(ctx context.Context) error {
 			if t.enabled.Load() {
 				t.trigger = "enable"
 			}
+		case <-t.be.Deleted():
+			// the steered rule may be gone already, so the mesh stops writing before the pass that puts it back
+			t.trigger = "deleted"
+			const why = "another writer deleted part of its table"
+			t.setReady(false, false, why, why)
+		case <-t.be.Missed():
+			// another table's large transaction overflows the socket as readily as a flush of this one, so only the pass's readback decides
+			t.trigger = "missed"
 		}
 	}
-	// The advertisement goes before the rules do. A peer that keeps selecting
-	// this node while its table is being taken down is a peer whose traffic
-	// leaves untranslated, and babel's own retraction is the only thing that
-	// can tell it otherwise.
+	// Readiness and the advertisement go before the rules do. A peer that
+	// keeps selecting this node while its table is being taken down is a peer
+	// whose traffic leaves untranslated, and babel's own retraction is the
+	// only thing that can tell it otherwise.
+	const why = "the translator is stopping"
+	t.setReady(false, false, why, why)
 	t.publish(nil)
 	return errors.Join(t.withdraw(), t.be.Close())
 }
@@ -737,6 +793,9 @@ func (t *Translator) reconcile() error {
 			announced = append(announced, entry.Prefix)
 		}
 	}
+	if t.rt.Egress != "" {
+		t.setSteeredReady(desired, installed, forwards)
+	}
 	moved := t.publish(announced)
 
 	var flows, bytes uint64
@@ -748,6 +807,7 @@ func (t *Translator) reconcile() error {
 		At: time.Now(), Desired: len(desired), Installed: len(held),
 		Flows: flows, Bytes: bytes,
 		Announced: announced, Conflicts: conflicts,
+		Ready4: t.ready4, Ready6: t.ready6, Unready: t.unready,
 	}
 	if err != nil {
 		stats.Err = err.Error()
@@ -816,7 +876,7 @@ func (t *Translator) desired() []Rule {
 			if addressFamily(prefix.Addr()) != family {
 				continue
 			}
-			inbound := Rule{Family: family, Direction: In, Interface: t.rt.Interface, Source: source}
+			inbound := Rule{Family: family, Direction: In, Interface: t.rt.Interface, Egress: t.rt.Egress, Source: source}
 			// A prefix covering every address narrows nothing, and a rule
 			// carrying it would encode a mask no packet fails, so it is left
 			// off and the rule selects on the direction alone.
@@ -854,6 +914,71 @@ func (t *Translator) publish(prefixes []netip.Prefix) bool {
 	return true
 }
 
+func (t *Translator) setSteeredReady(desired []Rule, installed map[string]bool, forwards map[uint8]bool) {
+	judge := func(family uint8, device error) (bool, string) {
+		held := slices.ContainsFunc(desired, func(rule Rule) bool {
+			return rule.Family == family && rule.Direction == Out && rule.Egress != "" && installed[rule.String()]
+		})
+		switch {
+		case errors.Is(device, ErrDeviceGone):
+			return false, device.Error()
+		case !held:
+			return false, "its rule keyed on the egress device is not installed"
+		case !forwards[family]:
+			return false, "the kernel does not forward " + familyName(family)
+		case device != nil:
+			return false, device.Error()
+		}
+		return true, ""
+	}
+	device4, device6 := t.rt.Device()
+	ready4, why4 := judge(FamilyIPv4, device4)
+	ready6, why6 := judge(FamilyIPv6, device6)
+	t.forwards4, t.forwards6 = forwards[FamilyIPv4], forwards[FamilyIPv6]
+	t.setReady(ready4, ready6, why4, why6)
+}
+
+func (t *Translator) setReady(v4, v6 bool, why4, why6 string) {
+	t.unready = unreadyText(v4, v6, why4, why6)
+	// a leaf reads the SID's /128 as the exit's liveness, so a family the host forwards and cannot carry out withdraws it
+	serves := (v4 || v6) && (v4 || !t.forwards4) && (v6 || !t.forwards6)
+	if v4 == t.ready4 && v6 == t.ready6 && serves == t.serves {
+		return
+	}
+	for _, moved := range []struct {
+		family     uint8
+		was, ready bool
+		why        string
+	}{{FamilyIPv4, t.ready4, v4, why4}, {FamilyIPv6, t.ready6, v6, why6}} {
+		switch {
+		case moved.was == moved.ready:
+		case moved.ready:
+			slog.Info("egress segments ready", "family", familyName(moved.family), "device", t.rt.Egress)
+		default:
+			slog.Warn("egress segments not ready", "family", familyName(moved.family), "device", t.rt.Egress, "detail", moved.why)
+		}
+	}
+	t.ready4, t.ready6, t.serves = v4, v6, serves
+	if t.rt.Ready != nil {
+		t.rt.Ready(v4, v6, serves)
+	}
+	t.rt.Events.Emit("egress.ready", "", slog.Bool("ipv4", v4), slog.Bool("ipv6", v6), slog.Bool("sid", serves))
+}
+
+func unreadyText(v4, v6 bool, why4, why6 string) string {
+	switch {
+	case v4 && v6:
+		return ""
+	case v6:
+		return why4
+	case v4:
+		return why6
+	case why4 == why6:
+		return why4
+	}
+	return "ipv4 " + why4 + ", ipv6 " + why6
+}
+
 // reportConflicts names other source translation on this host once per new
 // entry. It is a report rather than an action: several nat postrouting chains
 // coexist, the first to translate a connection wins it, and taking another
@@ -875,6 +1000,8 @@ func (t *Translator) reportConflicts(conflicts []string) {
 // diagnostic does not go on reporting the rules of the last pass that ran.
 func (t *Translator) stop() error {
 	started := time.Now()
+	const why = "the translator is stopped"
+	t.setReady(false, false, why, why)
 	t.publish(nil)
 	err := t.withdraw()
 	stats := Stats{At: time.Now()}

@@ -8,9 +8,11 @@ package egress
 import (
 	"encoding/binary"
 	"net/netip"
+	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -400,5 +402,132 @@ func TestOversizedInterfaceNameIsRefused(t *testing.T) {
 	}
 	if _, err := newRule(Rule{Family: FamilyIPv4, Direction: Out, Interface: strings.Repeat("r", ifNameSize-1)}); err != nil {
 		t.Errorf("the longest name a device can have was refused: %v", err)
+	}
+}
+
+// Only another writer's deletion of this tool's table, of a chain in it or of a
+// rule in it wakes the translator. Its own flush and withdrawal reach the
+// notification group stamped with its own socket, and another table's churn is
+// none of its business.
+func TestOnlyAnotherWritersDeletionInTheTableWakes(t *testing.T) {
+	const own, other = 7, 9
+	notification := func(command int, family uint8, naming uint16, table string, pid uint32) nftMessage {
+		return nftMessage{
+			Kind: nftCommand(command),
+			Pid:  pid,
+			Data: putAttrString(putNfgenmsg(nil, family), naming, table),
+		}
+	}
+	for name, c := range map[string]struct {
+		message nftMessage
+		wakes   bool
+	}{
+		"its table deleted":         {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, TableName, other), true},
+		"its chain deleted":         {notification(unix.NFT_MSG_DELCHAIN, unix.NFPROTO_IPV6, unix.NFTA_CHAIN_TABLE, TableName, other), true},
+		"a rule of it deleted":      {notification(unix.NFT_MSG_DELRULE, unix.NFPROTO_IPV4, unix.NFTA_RULE_TABLE, TableName, other), true},
+		"its own flush":             {notification(unix.NFT_MSG_DELRULE, unix.NFPROTO_IPV4, unix.NFTA_RULE_TABLE, TableName, own), false},
+		"its own withdrawal":        {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV6, unix.NFTA_TABLE_NAME, TableName, own), false},
+		"another table deleted":     {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, "nat", other), false},
+		"a table of its name added": {notification(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, TableName, other), false},
+		"an inet table of its name": {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_INET, unix.NFTA_TABLE_NAME, TableName, other), false},
+		"a name it starts":          {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, TableName+"x", other), false},
+		"another subsystem": {
+			nftMessage{Kind: uint16(unix.NFNL_SUBSYS_CTNETLINK)<<8 | unix.NFT_MSG_DELTABLE, Pid: other, Data: putAttrString(putNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_TABLE_NAME, TableName)},
+			false,
+		},
+	} {
+		if got := deletedByAnother(c.message, own); got != c.wakes {
+			t.Errorf("%s: woke %v, want %v", name, got, c.wakes)
+		}
+	}
+}
+
+// The monitor wakes missed and not deleted for notifications it lost to an
+// overflow or could not parse, since another table's large transaction
+// overflows the socket as readily as a flush of this tool's, wakes deleted
+// for another writer's deletion of this tool's table, and stops on a closed
+// socket, each wake read through the backend as the translator reads it
+func TestMonitorTellsLostNotificationsFromADeletion(t *testing.T) {
+	const own, other = 7, 9
+	type answer struct {
+		datagram []byte
+		err      error
+	}
+	answers := make(chan answer)
+	asked := make(chan struct{})
+	m := &deletionMonitor{
+		read: func(buf []byte) (int, error) {
+			asked <- struct{}{}
+			a, ok := <-answers
+			if !ok {
+				return 0, os.ErrClosed
+			}
+			return copy(buf, a.datagram), a.err
+		},
+		pid:     own,
+		deleted: make(chan struct{}, 1),
+		missed:  make(chan struct{}, 1),
+		done:    make(chan struct{}),
+	}
+	go m.run()
+	t.Cleanup(func() {
+		close(answers)
+		for deadline := time.After(passWait); ; {
+			select {
+			case <-asked:
+			case <-m.done:
+				return
+			case <-deadline:
+				return
+			}
+		}
+	})
+	next := func() {
+		t.Helper()
+		select {
+		case <-asked:
+		case <-m.done:
+			t.Fatal("the monitor stopped reading")
+		case <-time.After(passWait):
+			t.Fatal("the monitor never read again")
+		}
+	}
+	var be backend = &nftables{monitor: m}
+	woke := func(signal <-chan struct{}) bool {
+		select {
+		case <-signal:
+			return true
+		default:
+			return false
+		}
+	}
+	deletion := (&nftConn{pid: other}).appendMessage(nil, nftCommand(unix.NFT_MSG_DELTABLE), 0, 1,
+		putAttrString(putNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_TABLE_NAME, TableName))
+	next()
+	for _, c := range []struct {
+		name            string
+		answer          answer
+		deleted, missed bool
+	}{
+		{"an overflow", answer{err: unix.ENOBUFS}, false, true},
+		{"a datagram cut short", answer{datagram: deletion[:unix.SizeofNlMsghdr+sizeofNfgenmsg]}, false, true},
+		{"another writer deleting its table", answer{datagram: deletion}, true, false},
+	} {
+		answers <- c.answer
+		next()
+		if deleted, missed := woke(be.Deleted()), woke(be.Missed()); deleted != c.deleted || missed != c.missed {
+			t.Errorf("%s woke deleted %v and missed %v, want %v and %v", c.name, deleted, missed, c.deleted, c.missed)
+		}
+	}
+	answers <- answer{err: os.ErrClosed}
+	select {
+	case <-m.done:
+	case <-asked:
+		t.Fatal("the monitor read on after its socket closed")
+	case <-time.After(passWait):
+		t.Fatal("the monitor never returned after its socket closed")
+	}
+	if woke(be.Deleted()) || woke(be.Missed()) {
+		t.Error("a closed socket woke the translator")
 	}
 }

@@ -94,11 +94,12 @@ testers.runNixOSTest {
     # hands back for a diff to compare against, is checked here and nowhere
     # else short of the full exit node arm.
     out = machine.succeed(
-        "${netlinkTests}/bin/egress-tests -test.v -test.run 'TestNftablesRoundTrip' 2>&1"
+        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestNftables(RoundTrip|NotifiesAnotherWritersDeletion|RewritesAnotherWritersRuleInItsChain|WakesMissedOnAnOverflow)' 2>&1"
     )
     print(out)
-    assert "SKIP" not in out, f"the nftables round trip skipped itself under root:\n{out}"
-    assert "--- PASS" in out, f"the nftables round trip did not run:\n{out}"
+    assert "SKIP" not in out, f"the nftables round trips skipped themselves under root:\n{out}"
+    ran = out.count("--- PASS")
+    assert ran >= 4, f"only {ran} nftables round trips ran:\n{out}"
 
     # the tun round trips create a device, attach to one and read its gso limit back
     # refuse a mesh under the default name where a device of that name is there

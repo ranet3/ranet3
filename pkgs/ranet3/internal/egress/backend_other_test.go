@@ -31,7 +31,7 @@ func TestUnsupportedPlatformRefusesTheCapabilityByName(t *testing.T) {
 		t.Errorf("the refusal %q does not say what is missing", err)
 	}
 	// an exit advertising nothing still asks to translate what its egress device carries
-	_, err = New(Egress{}, Runtime{Interface: "utun9", Egress: "utun9e", Forwarding: func() (bool, bool) { return true, true }})
+	_, err = New(Egress{}, Runtime{Interface: "utun9", Egress: "utun9e", Forwarding: func() (bool, bool) { return true, true }, Device: func() (error, error) { return nil, nil }})
 	if !errors.Is(err, ErrUnsupported) {
 		t.Errorf("New returned %v for an exit advertising nothing, want the unsupported sentinel", err)
 	}

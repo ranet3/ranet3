@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log/slog"
 	"net/netip"
+	"os"
 	"slices"
 	"strings"
 
@@ -66,6 +68,7 @@ const (
 // address family in use.
 type nftables struct {
 	conn     *nftConn
+	monitor  *deletionMonitor
 	families []uint8
 }
 
@@ -84,10 +87,134 @@ func newBackend(cfg Egress, rt Runtime) (backend, error) {
 		conn.Close()
 		return nil, err
 	}
+	if be.monitor, err = openDeletionMonitor(conn.pid); err != nil {
+		conn.Close()
+		return nil, err
+	}
 	return be, nil
 }
 
-func (n *nftables) Close() error { return n.conn.Close() }
+func (n *nftables) Close() error { return errors.Join(n.monitor.Close(), n.conn.Close()) }
+
+func (n *nftables) Deleted() <-chan struct{} { return n.monitor.deleted }
+
+func (n *nftables) Missed() <-chan struct{} { return n.monitor.missed }
+
+// deletionMonitor wakes deleted once per datagram of nf_tables notifications
+// that holds another writer's deletion in this tool's tables, and missed once
+// per overflow or datagram it cannot parse. A NixOS firewall reload flushes
+// the whole ruleset, and until the next pass the steered rule is gone while the
+// mesh still writes into the egress device.
+type deletionMonitor struct {
+	file    *os.File
+	read    func([]byte) (int, error)
+	pid     uint32
+	deleted chan struct{}
+	missed  chan struct{}
+	done    chan struct{}
+}
+
+// openDeletionMonitor joins the nf_tables notification group. pid is the
+// socket this backend writes through, whose own changes the kernel stamps with
+// it and which are not another writer's.
+func openDeletionMonitor(pid uint32) (*deletionMonitor, error) {
+	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, unix.NETLINK_NETFILTER)
+	if err != nil {
+		return nil, fmt.Errorf("egress: open netfilter notification socket: %w", err)
+	}
+	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Groups: 1 << (unix.NFNLGRP_NFTABLES - 1)}); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("egress: join the nf_tables notification group: %w", err)
+	}
+	growReceiveBuffer(fd)
+	// nonblocking, so os.NewFile registers it with the runtime poller and Close unblocks the reader
+	file := os.NewFile(uintptr(fd), "nftables-monitor")
+	m := &deletionMonitor{
+		file:    file,
+		read:    file.Read,
+		pid:     pid,
+		deleted: make(chan struct{}, 1),
+		missed:  make(chan struct{}, 1),
+		done:    make(chan struct{}),
+	}
+	go m.run()
+	return m, nil
+}
+
+func (m *deletionMonitor) run() {
+	defer close(m.done)
+	buf := make([]byte, notificationReadSize)
+	for {
+		n, err := m.read(buf)
+		switch {
+		case errors.Is(err, os.ErrClosed):
+			return
+		case errors.Is(err, unix.ENOBUFS):
+			notify(m.missed)
+			continue
+		case err != nil:
+			notify(m.missed)
+			slog.Warn("egress stopped reading nf_tables notifications", "err", err)
+			return
+		}
+		messages, err := parseMessages(buf[:n])
+		switch {
+		case err != nil:
+			notify(m.missed)
+		case slices.ContainsFunc(messages, func(message nftMessage) bool { return deletedByAnother(message, m.pid) }):
+			notify(m.deleted)
+		}
+	}
+}
+
+// growReceiveBuffer asks for receiveBuffer bytes of receive buffer on fd, past
+// rmem_max where it can. Best effort: the forced form needs the capability
+// this process already holds to write a rule at all, and a kernel that refuses
+// both leaves the smaller buffer rather than a failure to start.
+func growReceiveBuffer(fd int) {
+	if unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUFFORCE, receiveBuffer) != nil {
+		_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, receiveBuffer)
+	}
+}
+
+func notify(signal chan<- struct{}) {
+	select {
+	case signal <- struct{}{}:
+	default:
+	}
+}
+
+func (m *deletionMonitor) Close() error {
+	err := m.file.Close()
+	<-m.done
+	return err
+}
+
+func deletedByAnother(message nftMessage, pid uint32) bool {
+	if message.Pid == pid || message.Kind>>8 != unix.NFNL_SUBSYS_NFTABLES || len(message.Data) < sizeofNfgenmsg {
+		return false
+	}
+	if family := message.Data[0]; family != unix.NFPROTO_IPV4 && family != unix.NFPROTO_IPV6 {
+		return false
+	}
+	var naming uint16
+	switch message.Kind & 0xff {
+	case unix.NFT_MSG_DELTABLE:
+		naming = unix.NFTA_TABLE_NAME
+	case unix.NFT_MSG_DELCHAIN:
+		naming = unix.NFTA_CHAIN_TABLE
+	case unix.NFT_MSG_DELRULE:
+		naming = unix.NFTA_RULE_TABLE
+	default:
+		return false
+	}
+	for kind, value := range message.attributes(sizeofNfgenmsg) {
+		if kind == naming && unix.ByteSliceToString(value) == TableName {
+			return true
+		}
+	}
+	return false
+}
 
 // where names the tables this backend owns, for a log line.
 func (n *nftables) where(Egress) string {
@@ -119,8 +246,11 @@ func nftFamily(family uint8) uint8 {
 
 // Rules reads back the chain this tool owns, in order, with the flow counter
 // each rule has carried. The kernel dumps every rule in the family and the
-// table and chain names are matched here, so what a diff is built from holds
-// nothing but this tool's own rules and can never remove another writer's.
+// table and chain names are matched here. A rule another writer put in this
+// tool's chain changes what the chain does to a packet, so it is read back
+// too, one with no comment as an empty spec, and the next pass rewrites the
+// chain without it. A rule in any other table or chain is never read, so it is
+// never removed.
 func (n *nftables) Rules() ([]Installed, error) {
 	var out []Installed
 	for _, family := range n.families {
@@ -131,7 +261,7 @@ func (n *nftables) Rules() ([]Installed, error) {
 		}
 		for _, reply := range replies {
 			table, chain, spec, packets, bytes := decodeRule(reply)
-			if table != TableName || chain != ChainName || spec == "" {
+			if table != TableName || chain != ChainName {
 				continue
 			}
 			out = append(out, Installed{Spec: spec, Packets: packets, Bytes: bytes})
@@ -443,12 +573,9 @@ func newRule(rule Rule) (nftRequest, error) {
 			return nftRequest{}, fmt.Errorf("egress: interface %q is %d bytes, and a device name is at most %d", name, len(name), ifNameSize-1)
 		}
 	}
-	if rule.Direction == In && rule.Egress != "" {
-		return nftRequest{}, fmt.Errorf("egress: rule %s keys an inbound rule on the egress device, and only an outbound one can be", spec)
-	}
 	// a steered packet routed back into the mesh keeps its source, so departure is still tested against the mesh device
 	arrival := rule.Interface
-	if rule.Egress != "" {
+	if rule.Egress != "" && rule.Direction == Out {
 		arrival = rule.Egress
 	}
 	inbound, outbound := unix.NFT_CMP_EQ, unix.NFT_CMP_NEQ
@@ -470,6 +597,9 @@ func newRule(rule Rule) (nftRequest, error) {
 		// thing on a kernel that breaks the rule instead: a locally generated
 		// packet reads as interface zero either way.
 		expressions = append(expressions, metaCompareValue(unix.NFT_META_IIF, unix.NFT_CMP_NEQ, make([]byte, 4))...)
+		if rule.Egress != "" {
+			expressions = append(expressions, metaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_NEQ, rule.Egress)...)
+		}
 	}
 	expressions = append(expressions, metaCompare(unix.NFT_META_IIFNAME, inbound, arrival)...)
 	expressions = append(expressions, metaCompare(unix.NFT_META_OIFNAME, outbound, rule.Interface)...)
@@ -652,13 +782,8 @@ func dialNetfilter() (*nftConn, error) {
 	// all of those acks while this process is still inside its one send, with
 	// nothing draining them. The default receive buffer holds a few hundred,
 	// which a node advertising a few hundred prefixes would exceed, and the
-	// overflow arrives as an ENOBUFS that explains nothing. Best effort: the
-	// forced form needs the capability this process already holds to write a
-	// rule at all, and a kernel that refuses both leaves the smaller buffer
-	// rather than a failure to start.
-	if unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUFFORCE, receiveBuffer) != nil {
-		_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, receiveBuffer)
-	}
+	// overflow arrives as an ENOBUFS that explains nothing.
+	growReceiveBuffer(fd)
 	return &nftConn{fd: fd, pid: local.Pid, buf: make([]byte, 64*1024)}, nil
 }
 
