@@ -44,18 +44,20 @@ unless run as root.
   attach to a real TUN device. They read its `gso_max_segs` back, open several
   queues as 1 device and no more than the kernel attaches, and refuse a mesh
   under the default name where a device of that name exists. They warn at a new
-  mesh's first cut read, keep a lane reading past a frame of 1 byte, and check
-  that the device queues no link event and leaves no route listener running
-  after the mesh closes. They hold the MTU a device was created or attached at
-  and move it, carry a read of 65535 bytes through a device opened at the
-  default MTU, steer a read as large as the device and clamp the MSS of a SYN.
-  They answer a packet larger than its session, at the headend and at a
-  waypoint, until the kernel that sent it holds the smaller path MTU. Another
-  writes a TCP stream into a kernel socket as frames lying in 1 buffer, as a
-  session's datagrams do, and checks that the tun's GRO coalesces them and that
-  the socket reads back the bytes sent. 2 more check that a lane's write into
-  the tun allocates nothing and keeps no reference to the frames it wrote,
-  whether its packets go alone or coalesce.
+  mesh's first cut read, keep a lane reading past a frame of 1 byte and past a
+  frame with a virtio-net header the read refuses, report a link deleted under a
+  running mesh once and stop every lane's reader, and check that the device
+  queues no link event and leaves no route listener running after the mesh
+  closes. They hold the MTU a device was created or attached at and move it,
+  carry a read of 65535 bytes through a device opened at the default MTU, steer
+  a read as large as the device and clamp the MSS of a SYN. They answer a packet
+  larger than its session, at the headend and at a waypoint, until the kernel
+  that sent it holds the smaller path MTU. Another writes a TCP stream into a
+  kernel socket as frames lying in 1 buffer, as a session's datagrams do, and
+  checks that the tun's GRO coalesces them and that the socket reads back the
+  bytes sent. 2 more check that a lane's write into the tun allocates nothing
+  and keeps no reference to the frames it wrote, whether its packets go alone or
+  coalesce.
 - `internal/client` has tests under the same prefix that run a node on a real
   TUN device:
   - A SYN arriving through a session between 2 nodes on loopback reaches the tun
@@ -95,7 +97,10 @@ set. The Mac that runs them may be on a live mesh.
   each way through a utun addressed in `198.18.0.0/15`: a datagram sent out of
   it reaches a recording peer whole, and a frame delivered inbound reaches a
   socket behind it. They take the address and its route off again and check that
-  no route on another interface changed.
+  no route on another interface changed. Another checks that the mesh's utun
+  runs no route listener and queues no link event while its MTU moves more times
+  than the device's event channel holds, and that closing the mesh closes that
+  channel.
 - `internal/client` has arms that put a node on a real utun.
 - `transport` has 1 that sends through a feth pair whose MTU is 1400. A datagram
   past that MTU is refused, or fragmented while a session asks. A second checks
