@@ -60,14 +60,13 @@ type Mesh struct {
 	// a field so a test can record when it runs against the steering table in force
 	setMTU func(name string, mtu int) error
 
-	// tunReadsTruncated counts the reads that lost the tail of a GSO frame
-	tunReadsTruncated atomic.Uint64
-	// truncatedNextWarning is the earliest the next warning about those reads may go out
-	// in nanoseconds since segmentsStarted, which keeps it on the monotonic clock
-	// zero lets the first cut read warn at once
-	// truncatedAtWarning is tunReadsTruncated as the last warning reported it
-	truncatedNextWarning atomic.Int64
-	truncatedAtWarning   atomic.Uint64
+	// readsTruncated counts the reads that lost the tail of a GSO frame, and framesRefused the frames the device refused
+	readsTruncated, framesRefused tunReadCount
+	// events records the mesh's changes of state, nil recording nothing
+	events func(kind, peer string, attrs ...slog.Attr)
+	// failed is closed once a reader finds the device gone while the mesh is not closing, nil for a mesh with no device
+	failed     chan struct{}
+	failedOnce sync.Once
 	// mssClamped counts the SYNs ClampMSS lowered, and tooBigAnswered the answers to packets past their session's budget it sent
 	mssClamped, tooBigAnswered atomic.Uint64
 
@@ -173,7 +172,8 @@ func NewRoutesOnly() *Mesh {
 // NewNamed attaches to or creates name through wireguard-go's TUN backend.
 // an empty name opens defaultTUNName, which is always created and never attached to
 // mtu is the device's MTU, zero taking DefaultMTU
-func NewNamed(mtu int, name string) (*Mesh, error) {
+// events records the mesh's changes of state, nil recording nothing
+func NewNamed(mtu int, name string, events func(kind, peer string, attrs ...slog.Attr)) (*Mesh, error) {
 	if mtu == 0 {
 		mtu = DefaultMTU
 	}
@@ -203,6 +203,7 @@ func NewNamed(mtu int, name string) (*Mesh, error) {
 		Name:   actualName,
 		setMTU: setTUNMTU,
 		closed: make(chan struct{}),
+		events: events,
 	}
 	m.setDevice(dev)
 	m.startSegmentReports()
@@ -214,6 +215,7 @@ func NewNamed(mtu int, name string) (*Mesh, error) {
 // setDevice makes dev the mesh's tun, each of its queues a lane
 func (m *Mesh) setDevice(dev tun.Device) {
 	m.dev, m.queues, m.write = dev, tun.QueuesOf(dev), tun.WriteToOf(dev)
+	m.failed = make(chan struct{})
 }
 
 // QueueCount reports the number of independent TUN I/O lanes.
@@ -312,27 +314,19 @@ func (m *Mesh) outboundReader(queue tun.Queue) {
 			return
 		}
 		n, err := queue.Read(b.slab, b.reads)
-		// ErrTooManySegments comes with the n packets of the GSO frame that fit, each whole
-		// only the rest of that one frame is lost
-		// the device stays readable
-		if err != nil && !errors.Is(err, tun.ErrTooManySegments) {
-			// Closure is the ordinary reason and says nothing. Anything else
-			// ends this queue's reader for the life of the process, and on
-			// linux the kernel keeps steering its share of flows to the queue
-			// it belongs to, so a share of the mesh black-holes with nothing
-			// in the log. The device's own error channel carries a
-			// route-socket failure on darwin and the BSDs, which is not
-			// closure.
-			select {
-			case <-m.closed:
-			default:
-				slog.Error("netstack tun reader stopped", "interface", m.Name, "err", err)
-			}
-			m.outboundFree <- b
-			return
-		}
-		if err != nil {
+		// ErrTooManySegments comes with the n packets of the GSO frame that fit, each whole, and ErrInvalidFrame with none
+		// either way only that one frame is lost and the device stays readable
+		switch {
+		case err == nil:
+		case errors.Is(err, tun.ErrTooManySegments):
 			m.noteTruncatedRead()
+		case errors.Is(err, tun.ErrInvalidFrame):
+			m.noteRefusedFrame(err)
+		default:
+			// any other error is the device gone, or closed by Close
+			m.outboundFree <- b
+			m.noteDeviceGone(err)
+			return
 		}
 		b.n = n
 		m.classify(b)
@@ -415,24 +409,80 @@ func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, ne
 
 // TUNReadsTruncated is how many reads off the tun lost the tail of a GSO frame
 // because it split into more segments than one read holds
-func (m *Mesh) TUNReadsTruncated() uint64 { return m.tunReadsTruncated.Load() }
+func (m *Mesh) TUNReadsTruncated() uint64 { return m.readsTruncated.total.Load() }
+
+// TUNFramesRefused is how many frames read off the tun the device could not decode into packets
+func (m *Mesh) TUNFramesRefused() uint64 { return m.framesRefused.total.Load() }
+
+// Failed is closed once the device is gone, the error line and the event netstack.tun.failed written before it
+// nothing in the process can make the device again, and a mesh with no device never fails
+func (m *Mesh) Failed() <-chan struct{} { return m.failed }
 
 // noteTruncatedRead counts one read cut short
 // and warns at most once an interval with the count since the last warning
 func (m *Mesh) noteTruncatedRead() {
-	total := m.tunReadsTruncated.Add(1)
-	if !m.claimTruncatedWarning(int64(time.Since(m.segmentsStarted)), m.truncatedNextWarning.Load()) {
-		return
+	if reads, warn := m.readsTruncated.add(int64(time.Since(m.segmentsStarted))); warn {
+		slog.Warn("netstack tun reads lost the tail of a gso frame", "interface", m.Name, "reads", reads)
 	}
-	slog.Warn("netstack tun reads lost the tail of a gso frame", "interface", m.Name, "reads", total-m.truncatedAtWarning.Swap(total))
 }
 
-// claimTruncatedWarning says whether the reader that cut a read at now writes the warning
+// noteRefusedFrame counts one frame the device refused with err
+// and warns and records an event at most once an interval with the count since the last warning
+func (m *Mesh) noteRefusedFrame(err error) {
+	frames, warn := m.framesRefused.add(int64(time.Since(m.segmentsStarted)))
+	if !warn {
+		return
+	}
+	slog.Warn("netstack tun refused a frame", "interface", m.Name, "frames", frames, "err", err)
+	if m.events != nil {
+		m.events("netstack.tun.refused", "", slog.String("interface", m.Name), slog.Uint64("frames", frames), slog.String("err", err.Error()))
+	}
+}
+
+// noteDeviceGone reports err, which ended a queue's reader, unless the mesh is closing
+// the first reader to see the device gone reports it, and the readers after it stop with nothing to add
+func (m *Mesh) noteDeviceGone(err error) {
+	select {
+	case <-m.closed:
+		return
+	default:
+	}
+	m.failedOnce.Do(func() {
+		slog.Error("netstack tun failed", "interface", m.Name, "err", err)
+		if m.events != nil {
+			m.events("netstack.tun.failed", "", slog.String("interface", m.Name), slog.String("err", err.Error()))
+		}
+		close(m.failed)
+	})
+}
+
+// tunReadCount counts one kind of trouble on the tun's reads and spaces the warnings about it an interval apart
+type tunReadCount struct {
+	total atomic.Uint64
+	// next is the earliest the next warning may go out
+	// in nanoseconds since segmentsStarted, which keeps it on the monotonic clock
+	// zero lets the first one warn at once
+	next atomic.Int64
+	// warned is total as the last warning reported it
+	warned atomic.Uint64
+}
+
+// add counts one at now, in nanoseconds since segmentsStarted
+// and reports whether the caller warns, with the count since the last warning
+func (c *tunReadCount) add(now int64) (uint64, bool) {
+	total := c.total.Add(1)
+	if !c.claim(now, c.next.Load()) {
+		return 0, false
+	}
+	return total - c.warned.Swap(total), true
+}
+
+// claim says whether the reader that counted one at now writes the warning
 // next is the earliest time of the next warning as that reader loaded it
 // of the readers that loaded the same next only the first to claim it writes one
 // and its claim moves the next warning an interval past now
-func (m *Mesh) claimTruncatedWarning(now, next int64) bool {
-	return now >= next && m.truncatedNextWarning.CompareAndSwap(next, now+int64(truncatedReadInterval))
+func (c *tunReadCount) claim(now, next int64) bool {
+	return now >= next && c.next.CompareAndSwap(next, now+int64(tunWarningInterval))
 }
 
 // a reservation takes its peer's reserveMu alone
@@ -626,8 +676,10 @@ func collectReadyInbound(first inboundWriteBatch, queue <-chan inboundWriteBatch
 
 func (m *Mesh) writeInbound(lane int, frames [][]byte) {
 	if _, err := m.write(lane, frames, TUNHeadroom); err != nil {
+		// a device reported gone refuses every write until the shutdown it started closes the mesh
 		select {
 		case <-m.closed:
+		case <-m.failed:
 		default:
 			log.Printf("netstack: write to tun device queue %d: %v", lane, err)
 		}

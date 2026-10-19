@@ -12,9 +12,11 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/wireguard/tun"
 )
@@ -357,55 +359,122 @@ func TestCongestedPeerDoesNotStallOthers(t *testing.T) {
 	}
 }
 
-// failingReadDevice returns one transient read error and would go on reading
-// afterward, which is how a netlink failure on linux or a route-socket
-// overflow on darwin looks from here. Neither is device closure.
-type failingReadDevice struct {
+// goneDevice answers its first working reads with a packet each and every read after them with err
+// as a queue of a tun whose link is gone does
+type goneDevice struct {
 	recordingDevice
-	reads atomic.Int64
-	fail  int64
+	reads   atomic.Int64
+	working int64
+	err     error
 }
 
-func (d *failingReadDevice) Read(slab []byte, packets []tun.ReadPacket) (int, error) {
-	if d.reads.Add(1) == d.fail {
-		return 0, errors.New("read failed")
+func (d *goneDevice) Read(slab []byte, packets []tun.ReadPacket) (int, error) {
+	if d.reads.Add(1) > d.working {
+		return 0, d.err
 	}
 	return layOut(slab, packets, [][]byte{{0x60}}), nil
 }
 
-// A read error that is not closure used to end the queue's reader with no log,
-// no metric and no restart. On linux the kernel keeps steering its share of
-// flows to that queue, so a share of the mesh black-holes for the life of the
-// process with nothing saying so. On darwin there is one queue, so all
-// outbound forwarding stops. The reader still stops, because nothing here can
-// repair the device, but it says so and gives its batch back.
+// a read error other than closure is the device gone, which nothing in the process can make again
+// so every queue's reader stops rather than reads on, and gives its batch back
+// and the failure is reported once, whichever queue saw it first, for the daemon to shut down on
 func TestTunReadFailureIsReportedAndGivesTheBatchBack(t *testing.T) {
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
+	bus := events.New()
 
-	dev := &failingReadDevice{fail: 3}
-	m := &Mesh{Name: "test0", closed: make(chan struct{}),
-		Routes: NewRouteTable(), outboundFree: make(chan *outboundBatch, 2)}
-	m.setDevice(dev)
-	for range 2 {
+	const queues, working = 4, 2
+	lanes := make([]*goneDevice, queues)
+	devices := make([]tun.Device, queues)
+	for i := range lanes {
+		lanes[i] = &goneDevice{working: working, err: &os.PathError{Op: "read", Path: "/dev/net/tun", Err: syscall.EFAULT}}
+		devices[i] = lanes[i]
+	}
+	m := &Mesh{Name: "test0", closed: make(chan struct{}), Routes: NewRouteTable(),
+		outboundFree: make(chan *outboundBatch, 2*queues), events: bus.Emit}
+	m.setDevice(lanesOf(devices...))
+	for range cap(m.outboundFree) {
 		m.outboundFree <- newOutboundBatch(4)
 	}
-	m.outboundReaderWG.Add(1)
-	done := make(chan struct{})
-	go func() { m.outboundReader(dev); close(done) }()
+	for _, queue := range m.queues {
+		m.outboundReaderWG.Add(1)
+		go m.outboundReader(queue)
+	}
+	stopped := make(chan struct{})
+	go func() { m.outboundReaderWG.Wait(); close(stopped) }()
 	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the reader never returned after its device failed")
+	case <-stopped:
+	case <-time.After(deliveryTimeout):
+		t.Fatal("the readers did not all return after their device was gone")
 	}
-	if got := dev.reads.Load(); got != 3 {
-		t.Errorf("the device was read %d times, want the three up to the failure", got)
+	select {
+	case <-m.Failed():
+	default:
+		t.Fatal("a device gone under an open mesh was not reported")
 	}
-	if len(m.outboundFree) != 2 {
-		t.Errorf("the reader kept %d of its batches, so the pool shrinks on every failure", 2-len(m.outboundFree))
+	for i, lane := range lanes {
+		if got := lane.reads.Load(); got != working+1 {
+			t.Errorf("queue %d was read %d times, want the %d up to the failure", i, got, working+1)
+		}
 	}
-	if !bytes.Contains(logs.Bytes(), []byte("tun reader stopped")) {
-		t.Errorf("a failed read said nothing: %s", logs.Bytes())
+	if len(m.outboundFree) != cap(m.outboundFree) {
+		t.Errorf("the readers kept %d of their batches", cap(m.outboundFree)-len(m.outboundFree))
+	}
+	if got := bytes.Count(logs.Bytes(), []byte("netstack tun failed")); got != 1 {
+		t.Errorf("%d queues failing wrote %d error lines, want 1: %s", queues, got, logs.Bytes())
+	}
+	got := tunEvents(bus)
+	if len(got) != 1 || got[0].Kind != "netstack.tun.failed" || got[0].Attrs["interface"] != "test0" {
+		t.Errorf("%d queues failing recorded %+v, want one netstack.tun.failed on test0", queues, got)
+	}
+}
+
+// enteringDevice says each time a reader enters Read
+type enteringDevice struct {
+	scriptedDevice
+	entered chan struct{}
+}
+
+func (d *enteringDevice) Read(slab []byte, packets []tun.ReadPacket) (int, error) {
+	d.entered <- struct{}{}
+	return d.scriptedDevice.Read(slab, packets)
+}
+
+// Close ending every reader inside its read is the ordinary closure and reports nothing
+func TestTunClosedByCloseReportsNothing(t *testing.T) {
+	const lanes = 2
+	var logs bytes.Buffer
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
+	bus := events.New()
+	dev := &enteringDevice{scriptedDevice{reads: make(chan scriptedRead), closed: make(chan struct{})}, make(chan struct{}, lanes)}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), events: bus.Emit}
+	m.setDevice(lanesOf(dev, dev))
+	m.startOutboundPipeline()
+	for range lanes {
+		select {
+		case <-dev.entered:
+		case <-time.After(deliveryTimeout):
+			m.Close()
+			t.Fatal("a reader never entered its read, so this proves nothing")
+		}
+	}
+	closed := make(chan struct{})
+	go func() { m.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(deliveryTimeout):
+		t.Fatal("Close did not return")
+	}
+	select {
+	case <-m.Failed():
+		t.Error("Close was reported as the device gone")
+	default:
+	}
+	if bytes.Contains(logs.Bytes(), []byte("netstack tun failed")) {
+		t.Errorf("Close wrote an error line: %s", logs.Bytes())
+	}
+	if got := tunEvents(bus); len(got) != 0 {
+		t.Errorf("Close recorded %+v", got)
 	}
 }
 

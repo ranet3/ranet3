@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
 	"slices"
 	"syscall"
 	"testing"
@@ -49,7 +48,7 @@ func TestTUNSteersAReadAsLargeAsTheDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	device := largest - steering.Overhead()
-	m, err := NewNamed(device, "mtutest0")
+	m, err := NewNamed(device, "mtutest0", nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -95,7 +94,7 @@ func TestTUNHoldsTheMTUItWasOpenedAt(t *testing.T) {
 		t.Run(arm.name, func(t *testing.T) {
 			enterEmptyNamespace(t)
 			arm.setup(t)
-			m, err := NewNamed(jumbo, "mtutest0")
+			m, err := NewNamed(jumbo, "mtutest0", nil)
 			if err != nil {
 				t.Fatalf("open the mesh: %v", err)
 			}
@@ -124,7 +123,7 @@ func TestTUNHoldsTheMTUItWasOpenedAt(t *testing.T) {
 func TestTUNCarriesAReadAsLargeAsTheSlabHolds(t *testing.T) {
 	const largest = 65535
 	enterEmptyNamespace(t)
-	m, err := NewNamed(0, "mtutest0")
+	m, err := NewNamed(0, "mtutest0", nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -219,35 +218,13 @@ func assignIPv6(t *testing.T, name string, prefix netip.Prefix) {
 	if err != nil {
 		t.Fatalf("look up %s: %v", name, err)
 	}
-	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
-	if err != nil {
-		t.Fatalf("open route netlink: %v", err)
-	}
-	defer unix.Close(fd)
 	// struct ifaddrmsg of include/uapi/linux/if_addr.h, then the address as its IFA_ADDRESS
 	header := []byte{unix.AF_INET6, byte(prefix.Bits()), unix.IFA_F_NODAD, unix.RT_SCOPE_UNIVERSE, 0, 0, 0, 0}
 	binary.NativeEndian.PutUint32(header[4:], uint32(link.Index))
 	attribute := binary.NativeEndian.AppendUint16(binary.NativeEndian.AppendUint16(nil, unix.SizeofRtAttr+16), unix.IFA_ADDRESS)
 	address := prefix.Addr().As16()
-	message := slices.Concat(make([]byte, unix.NLMSG_HDRLEN), header, attribute, address[:])
-	binary.NativeEndian.PutUint32(message[0:], uint32(len(message)))
-	binary.NativeEndian.PutUint16(message[4:], unix.RTM_NEWADDR)
-	binary.NativeEndian.PutUint16(message[6:], unix.NLM_F_REQUEST|unix.NLM_F_ACK|unix.NLM_F_CREATE|unix.NLM_F_EXCL)
-	if err := unix.Sendto(fd, message, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
+	if err := routeRequest(t, unix.RTM_NEWADDR, unix.NLM_F_CREATE|unix.NLM_F_EXCL, slices.Concat(header, attribute, address[:])); err != nil {
 		t.Fatalf("give %s the address %s: %v", name, prefix, err)
-	}
-	reply := make([]byte, os.Getpagesize())
-	got, _, err := unix.Recvfrom(fd, reply, 0)
-	if err != nil {
-		t.Fatalf("read the answer to the address %s on %s: %v", prefix, name, err)
-	}
-	// the answer is one struct nlmsgerr, whose error is the negated errno and zero for an acknowledgment
-	answers, err := syscall.ParseNetlinkMessage(reply[:got])
-	if err != nil || len(answers) != 1 || answers[0].Header.Type != unix.NLMSG_ERROR || len(answers[0].Data) < 4 {
-		t.Fatalf("the kernel answered the address %s on %s with %x", prefix, name, reply[:got])
-	}
-	if errno := unix.Errno(-int32(binary.NativeEndian.Uint32(answers[0].Data))); errno != 0 {
-		t.Fatalf("give %s the address %s: %v", name, prefix, errno)
 	}
 	waitUntil(t, "the local route of "+prefix.Addr().String(), func() bool { return hasLocalRoute(t, prefix.Addr()) })
 }
@@ -348,7 +325,7 @@ func TestTUNPacketTooBigTeachesTheKernel(t *testing.T) {
 	for _, family := range pathFamilies {
 		t.Run(family.name, func(t *testing.T) {
 			enterEmptyNamespace(t)
-			m, err := NewNamed(DefaultMTU, "ptbtest0")
+			m, err := NewNamed(DefaultMTU, "ptbtest0", nil)
 			if err != nil {
 				t.Fatalf("open the mesh: %v", err)
 			}
@@ -389,7 +366,7 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 				t.Fatal(err)
 			}
 			device := headendSession - steering.Overhead()
-			headend, err := NewNamed(device, "wpttest0")
+			headend, err := NewNamed(device, "wpttest0", nil)
 			if err != nil {
 				t.Fatalf("open the mesh: %v", err)
 			}
@@ -461,7 +438,7 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 func TestTUNClampsTheMSSOfASYN(t *testing.T) {
 	const session = 1300
 	enterEmptyNamespace(t)
-	m, err := NewNamed(DefaultMTU, "msstest0")
+	m, err := NewNamed(DefaultMTU, "msstest0", nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}

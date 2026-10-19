@@ -199,7 +199,7 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	if err != nil {
 		return nil, err
 	}
-	mesh, err := netstack.NewNamed(mtu, cfg.Link.TUN)
+	mesh, err := netstack.NewNamed(mtu, cfg.Link.TUN, bus.Emit)
 	if err != nil {
 		return nil, err
 	}

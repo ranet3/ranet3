@@ -8,6 +8,7 @@ package netstack
 import (
 	"bytes"
 	"encoding/binary"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -19,6 +20,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/wireguard/tun"
 )
 
@@ -51,7 +54,7 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 				t.Logf("gso_max_segs %d before the mesh attached", gsoMaxSegs(t, path.device))
 			}
 
-			m, err := NewNamed(0, path.asked)
+			m, err := NewNamed(0, path.asked, nil)
 			if err != nil {
 				t.Fatalf("open the mesh on %q: %v", path.asked, err)
 			}
@@ -76,12 +79,12 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 // so the first cut read of a mesh NewNamed opened warns at once rather than an interval later
 func TestTUNMeshWarnsAtItsFirstCutRead(t *testing.T) {
 	enterEmptyNamespace(t)
-	m, err := NewNamed(0, "gsocap0")
+	m, err := NewNamed(0, "gsocap0", nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
 	t.Cleanup(m.Close)
-	warned := warnedReads(t)
+	warned := warnedCounts(t, "reads")
 	m.noteTruncatedRead()
 	if got := warned(); !slices.Equal(got, []uint64{1}) {
 		t.Errorf("the first cut read of a new mesh warned with counts %v, want one line at once", got)
@@ -95,7 +98,7 @@ func TestTUNMeshWarnsAtItsFirstCutRead(t *testing.T) {
 // and that open has to refuse the device too
 func TestTUNUnderTheDefaultNameIsNeverShared(t *testing.T) {
 	heldByAMesh := func(t *testing.T) {
-		first, err := NewNamed(0, "")
+		first, err := NewNamed(0, "", nil)
 		if err != nil {
 			t.Fatalf("open the first mesh: %v", err)
 		}
@@ -120,7 +123,7 @@ func TestTUNUnderTheDefaultNameIsNeverShared(t *testing.T) {
 			enterEmptyNamespace(t)
 			arm.setup(t)
 
-			m, err := NewNamed(0, arm.asked)
+			m, err := NewNamed(0, arm.asked, nil)
 			if err == nil {
 				m.Close()
 				t.Fatalf("a mesh asking for %q joined %s, which was there before it", arm.asked, m.Name)
@@ -201,7 +204,7 @@ func TestTUNLaneOutlivesAOneByteFrame(t *testing.T) {
 	enterEmptyNamespace(t)
 	previous := runtime.GOMAXPROCS(1)
 	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
-	m, err := NewNamed(DefaultMTU, "onebyte0")
+	m, err := NewNamed(DefaultMTU, "onebyte0", nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -237,6 +240,164 @@ func TestTUNLaneOutlivesAOneByteFrame(t *testing.T) {
 	}
 }
 
+// a process with CAP_NET_RAW can send a GSO frame on the tun through AF_PACKET with a virtio-net header of its own
+// the kernel hands a UDP GSO frame whose IP header claims version 5 to the tun as it was sent, and the read refuses it
+// the lane counts it and goes on reading
+// the mesh has one lane, so the datagram after the frame is read by the reader that refused the frame
+func TestTUNLaneOutlivesARefusedFrame(t *testing.T) {
+	enterEmptyNamespace(t)
+	previous := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
+	m, err := NewNamed(DefaultMTU, "refused0", nil)
+	if err != nil {
+		t.Fatalf("open the mesh: %v", err)
+	}
+	t.Cleanup(m.Close)
+	if lanes := m.QueueCount(); lanes != 1 {
+		t.Fatalf("the mesh opened %d lanes, want 1", lanes)
+	}
+	sent := &recordingPeer{}
+	peer := sent.peer(t, "peer")
+	peer.SetMTU(DefaultMTU)
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(tunPeer, 32), peer)
+	assignPeer(t, m.Name, tunAddress, tunPeer)
+
+	sendUDP(t, tunPeer, []byte("before"))
+	waitUntil(t, "the datagram before the frame to reach the peer", func() bool { return len(sent.packets(t)) > 0 })
+	link, err := net.InterfaceByName(m.Name)
+	if err != nil {
+		t.Fatalf("look up %s: %v", m.Name, err)
+	}
+	ipv4 := uint16(unix.ETH_P_IP)
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, int(ipv4<<8|ipv4>>8))
+	if err != nil {
+		t.Fatalf("open an AF_PACKET socket: %v", err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fd) })
+	if err := unix.SetsockoptInt(fd, unix.SOL_PACKET, unix.PACKET_VNET_HDR, 1); err != nil {
+		t.Fatalf("have the AF_PACKET socket take a virtio-net header: %v", err)
+	}
+	// struct virtio_net_hdr of include/uapi/linux/virtio_net.h: 2 segments of UDP from the 28 byte header on
+	frame := make([]byte, 10+20+8+1000)
+	frame[0], frame[1] = unix.VIRTIO_NET_HDR_F_NEEDS_CSUM, unix.VIRTIO_NET_HDR_GSO_UDP_L4
+	for i, field := range []uint16{28, 500, 20, 6} {
+		binary.NativeEndian.PutUint16(frame[2+2*i:], field)
+	}
+	packet := frame[10:]
+	packet[0], packet[9] = 5<<4|5, unix.IPPROTO_UDP
+	binary.BigEndian.PutUint16(packet[2:], uint16(len(packet)))
+	copy(packet[12:], tunAddress.AsSlice())
+	copy(packet[16:], tunPeer.AsSlice())
+	if err := unix.Sendto(fd, frame, 0, &unix.SockaddrLinklayer{Protocol: ipv4<<8 | ipv4>>8, Ifindex: link.Index}); err != nil {
+		t.Fatalf("send a GSO frame on %s: %v", m.Name, err)
+	}
+	sendUDP(t, tunPeer, []byte("after"))
+	waitUntil(t, "the datagram after the frame to reach the peer", func() bool { return len(sent.packets(t)) > 1 })
+	if packets := sent.packets(t); len(packets) != 2 || !bytes.Equal(packets[1][20+8:], []byte("after")) {
+		t.Errorf("the peer was sent %q, want the two datagrams and not the frame", packets)
+	}
+	if got := m.TUNFramesRefused(); got != 1 {
+		t.Errorf("the counter reads %d refused frames, want the 1", got)
+	}
+}
+
+// a tun's link deleted under a running mesh leaves every queue's descriptor refusing reads
+// so the failure is reported once and every reader stops, rather than reading on into nothing
+// the mesh has several lanes, so every one of their readers has to see the device gone
+func TestTUNLinkDeletedUnderTheMeshIsReportedOnce(t *testing.T) {
+	const lanes = 4
+	enterEmptyNamespace(t)
+	previous := runtime.GOMAXPROCS(lanes)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
+	var logs bytes.Buffer
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
+	bus := events.New()
+	m, err := NewNamed(DefaultMTU, "gone0", bus.Emit)
+	if err != nil {
+		t.Fatalf("open the mesh: %v", err)
+	}
+	if got := m.QueueCount(); got != lanes {
+		m.Close()
+		t.Fatalf("the mesh opened %d lanes, want %d", got, lanes)
+	}
+	deleteLink(t, m.Name)
+
+	select {
+	case <-m.Failed():
+	case <-time.After(deliveryTimeout):
+		m.Close()
+		t.Fatal("the mesh did not report its link deleted")
+	}
+	stopped := make(chan struct{})
+	go func() { m.outboundReaderWG.Wait(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(deliveryTimeout):
+		m.Close()
+		t.Fatal("a reader went on after the device was gone")
+	}
+	if got := bytes.Count(logs.Bytes(), []byte("netstack tun failed")); got != 1 {
+		t.Errorf("%d lanes of a deleted link wrote %d error lines, want 1: %s", lanes, got, logs.Bytes())
+	}
+	if got := tunEvents(bus); len(got) != 1 || got[0].Kind != "netstack.tun.failed" {
+		t.Errorf("%d lanes of a deleted link recorded %+v, want one netstack.tun.failed", lanes, got)
+	}
+	closed := make(chan struct{})
+	go func() { m.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(deliveryTimeout):
+		t.Fatal("Close did not return on a mesh whose device was gone")
+	}
+}
+
+// deleteLink deletes the link name with RTM_DELLINK
+func deleteLink(t *testing.T, name string) {
+	t.Helper()
+	link, err := net.InterfaceByName(name)
+	if err != nil {
+		t.Fatalf("look up %s: %v", name, err)
+	}
+	// struct ifinfomsg of include/uapi/linux/rtnetlink.h, whose index alone names the link
+	body := make([]byte, unix.SizeofIfInfomsg)
+	binary.NativeEndian.PutUint32(body[4:], uint32(link.Index))
+	if err := routeRequest(t, unix.RTM_DELLINK, 0, body); err != nil {
+		t.Fatalf("delete %s: %v", name, err)
+	}
+}
+
+// routeRequest sends a route netlink message of type kind and flags with body after its header
+// and returns the error the kernel acknowledged it with
+func routeRequest(t *testing.T, kind, flags uint16, body []byte) error {
+	t.Helper()
+	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
+	if err != nil {
+		t.Fatalf("open route netlink: %v", err)
+	}
+	defer unix.Close(fd)
+	message := slices.Concat(make([]byte, unix.NLMSG_HDRLEN), body)
+	binary.NativeEndian.PutUint32(message[0:], uint32(len(message)))
+	binary.NativeEndian.PutUint16(message[4:], kind)
+	binary.NativeEndian.PutUint16(message[6:], unix.NLM_F_REQUEST|unix.NLM_F_ACK|flags)
+	if err := unix.Sendto(fd, message, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
+		return err
+	}
+	reply := make([]byte, os.Getpagesize())
+	got, _, err := unix.Recvfrom(fd, reply, 0)
+	if err != nil {
+		return err
+	}
+	// the answer is one struct nlmsgerr, whose error is the negated errno and zero for an acknowledgment
+	answers, err := syscall.ParseNetlinkMessage(reply[:got])
+	if err != nil || len(answers) != 1 || answers[0].Header.Type != unix.NLMSG_ERROR || len(answers[0].Data) < 4 {
+		t.Fatalf("the kernel answered message type %d with %x", kind, reply[:got])
+	}
+	if errno := unix.Errno(-int32(binary.NativeEndian.Uint32(answers[0].Data))); errno != 0 {
+		return errno
+	}
+	return nil
+}
+
 // listenerSettle is how long a route listener has to hear the link changes the kernel sends it
 const listenerSettle = 500 * time.Millisecond
 
@@ -246,7 +407,7 @@ const listenerSettle = 500 * time.Millisecond
 func TestTUNDeviceQueuesNoLinkEventsAndLeavesNoListener(t *testing.T) {
 	const moves = 10
 	enterEmptyNamespace(t)
-	m, err := NewNamed(DefaultMTU, "events0")
+	m, err := NewNamed(DefaultMTU, "events0", nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}

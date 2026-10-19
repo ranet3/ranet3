@@ -49,7 +49,7 @@ const synPort = 443
 func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 	const session = 1300
 	enterEmptyNamespace(t)
-	mesh, err := netstack.NewNamed(0, "synclamp0")
+	mesh, err := netstack.NewNamed(0, "synclamp0", nil)
 	if err != nil {
 		t.Fatalf("open bravo's mesh: %v", err)
 	}

@@ -49,7 +49,7 @@ func requireUTUN(t *testing.T) {
 func openAddressedUTUN(t *testing.T) *Mesh {
 	t.Helper()
 	before := routesElsewhere(t, 0)
-	m, err := NewNamed(utunJumbo, "")
+	m, err := NewNamed(utunJumbo, "", nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}

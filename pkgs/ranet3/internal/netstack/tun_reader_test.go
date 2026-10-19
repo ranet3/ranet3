@@ -5,6 +5,7 @@ package netstack
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"os"
@@ -12,11 +13,14 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/wireguard/conn"
 	"ranet3.com/pkgs/wireguard/tun"
@@ -185,15 +189,15 @@ func TestReaderRoutesEveryPacketOfOneRead(t *testing.T) {
 	}
 }
 
-// warnedReads points the default logger at a buffer for the test
-// and returns the reads= count of every warning written so far
-func warnedReads(t *testing.T) func() []uint64 {
+// warnedCounts points the default logger at a buffer for the test
+// and returns the count under key of every warning written so far
+func warnedCounts(t *testing.T, key string) func() []uint64 {
 	t.Helper()
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
 	return func() []uint64 {
 		var counts []uint64
-		for _, match := range regexp.MustCompile(`reads=(\d+)`).FindAllStringSubmatch(logs.String(), -1) {
+		for _, match := range regexp.MustCompile(key+`=(\d+)`).FindAllStringSubmatch(logs.String(), -1) {
 			count, err := strconv.ParseUint(match[1], 10, 64)
 			if err != nil {
 				t.Fatalf("a warning carried %q: %v", match[0], err)
@@ -215,7 +219,7 @@ func startedMesh() *Mesh {
 // the count stays exact while the log gets one line an interval
 // and each line says how many reads were cut since the one before
 func TestCutReadsAreCountedExactlyAndWarnedRarely(t *testing.T) {
-	warned := warnedReads(t)
+	warned := warnedCounts(t, "reads")
 	m := startedMesh()
 	const cut = 1000
 	for range cut {
@@ -228,7 +232,7 @@ func TestCutReadsAreCountedExactlyAndWarnedRarely(t *testing.T) {
 		t.Fatalf("%d reads cut short warned with counts %v, want one line for the first", cut, got)
 	}
 
-	m.truncatedNextWarning.Add(-int64(truncatedReadInterval))
+	m.readsTruncated.next.Add(-int64(tunWarningInterval))
 	m.noteTruncatedRead()
 	if got := warned(); !slices.Equal(got, []uint64{1, cut}) {
 		t.Errorf("once the interval passed the warnings carried %v, want the %d cut since the first line", got, cut)
@@ -240,7 +244,7 @@ func TestCutReadsAreCountedExactlyAndWarnedRarely(t *testing.T) {
 // whose counts add up to the counter
 // each wave lets every reader go at once just as an interval has run out
 func TestCutReadsOnEveryQueueShareOneWarning(t *testing.T) {
-	warned := warnedReads(t)
+	warned := warnedCounts(t, "reads")
 	m := startedMesh()
 	const queues, waves = 8, 200
 	for wave := range waves {
@@ -259,7 +263,7 @@ func TestCutReadsOnEveryQueueShareOneWarning(t *testing.T) {
 		if got := warned(); len(got) != wave+1 {
 			t.Fatalf("after wave %d of %d readers cutting reads at once the warnings are %v, want one a wave", wave, queues, got)
 		}
-		m.truncatedNextWarning.Add(-int64(truncatedReadInterval))
+		m.readsTruncated.next.Add(-int64(tunWarningInterval))
 	}
 
 	m.noteTruncatedRead()
@@ -278,21 +282,102 @@ func TestCutReadsOnEveryQueueShareOneWarning(t *testing.T) {
 // the claims are made one after another here, so the check holds on one cpu as on many
 func TestOnlyOneReaderClaimsAWarning(t *testing.T) {
 	m := startedMesh()
-	now, next := int64(time.Since(m.segmentsStarted)), m.truncatedNextWarning.Load()
-	if !m.claimTruncatedWarning(now, next) {
+	now, next := int64(time.Since(m.segmentsStarted)), m.readsTruncated.next.Load()
+	if !m.readsTruncated.claim(now, next) {
 		t.Fatal("the first reader to cut a read did not get to warn")
 	}
-	if m.claimTruncatedWarning(now, next) {
+	if m.readsTruncated.claim(now, next) {
 		t.Fatal("a second reader warned as well, with the time it had loaded before the first claim")
 	}
-	later := m.truncatedNextWarning.Load()
-	if later != now+int64(truncatedReadInterval) {
-		t.Fatalf("the claim put the next warning %s after it, want %s", time.Duration(later-now), truncatedReadInterval)
+	later := m.readsTruncated.next.Load()
+	if later != now+int64(tunWarningInterval) {
+		t.Fatalf("the claim put the next warning %s after it, want %s", time.Duration(later-now), tunWarningInterval)
 	}
-	if m.claimTruncatedWarning(later-1, later) {
+	if m.readsTruncated.claim(later-1, later) {
 		t.Error("a reader warned before the interval had passed")
 	}
-	if !m.claimTruncatedWarning(later, later) {
+	if !m.readsTruncated.claim(later, later) {
 		t.Error("the first reader once the interval had passed did not get to warn")
+	}
+}
+
+// errRefusedFrame is the error a device returns for a frame it could not decode into packets
+var errRefusedFrame = fmt.Errorf("%w: tcp header len is invalid: 12", tun.ErrInvalidFrame)
+
+// tunEvents lists the events the tun's readers recorded on bus
+func tunEvents(bus *events.Bus) []control.Event {
+	return bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return strings.HasPrefix(kind, "netstack.tun.") }, 0)
+}
+
+// a frame the device could not decode is lost alone
+// the reader counts it, says so once and reads the packet after it
+func TestTunReaderOutlivesARefusedFrame(t *testing.T) {
+	warned := warnedCounts(t, "frames")
+	bus := events.New()
+	dev := &scriptedDevice{reads: make(chan scriptedRead, 2), closed: make(chan struct{})}
+	sent := &recordingPeer{}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), events: bus.Emit}
+	m.startSegmentReports()
+	m.setDevice(dev)
+	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("::/0"), sent.peer(t, "peer"))
+	m.startOutboundPipeline()
+	t.Cleanup(m.Close)
+
+	want := plainV6(segAddr("fd00::1"), segAddr("fd00::2"), "after the refused frame")
+	dev.reads <- scriptedRead{err: errRefusedFrame}
+	dev.reads <- scriptedRead{packets: [][]byte{want}}
+	waitUntil(t, "the packet after the refused frame to reach the peer", func() bool { return len(sent.packets(t)) > 0 })
+	if got := sent.packets(t); len(got) != 1 || !bytes.Equal(got[0], want) {
+		t.Errorf("the peer was sent %x, want the one packet after the refused frame", got)
+	}
+	if got := m.TUNFramesRefused(); got != 1 {
+		t.Errorf("the counter reads %d refused frames, want 1", got)
+	}
+	if got := warned(); !slices.Equal(got, []uint64{1}) {
+		t.Errorf("the refused frame warned with counts %v, want one line for it", got)
+	}
+	got := tunEvents(bus)
+	if len(got) != 1 || got[0].Kind != "netstack.tun.refused" || got[0].Attrs["frames"] != "1" || got[0].Attrs["interface"] != "test0" {
+		t.Errorf("the refused frame recorded %+v, want one netstack.tun.refused of 1 frame on test0", got)
+	}
+	select {
+	case <-m.Failed():
+		t.Error("a refused frame was reported as the device gone")
+	default:
+	}
+}
+
+// a stream of refused frames costs a counter
+// the log and the events get one line an interval, each with the frames refused since the one before
+func TestRefusedFramesAreCountedExactlyAndWarnedRarely(t *testing.T) {
+	warned := warnedCounts(t, "frames")
+	bus := events.New()
+	m := startedMesh()
+	m.events = bus.Emit
+	const refused = 1000
+	for range refused {
+		m.noteRefusedFrame(errRefusedFrame)
+	}
+	if got := m.TUNFramesRefused(); got != refused {
+		t.Errorf("the counter reads %d for %d refused frames", got, refused)
+	}
+	if got := warned(); !slices.Equal(got, []uint64{1}) {
+		t.Fatalf("%d refused frames warned with counts %v, want one line for the first", refused, got)
+	}
+	if got := tunEvents(bus); len(got) != 1 {
+		t.Fatalf("%d refused frames recorded %d events, want one for the first", refused, len(got))
+	}
+
+	m.framesRefused.next.Add(-int64(tunWarningInterval))
+	m.noteRefusedFrame(errRefusedFrame)
+	if got := warned(); !slices.Equal(got, []uint64{1, refused}) {
+		t.Errorf("once the interval passed the warnings carried %v, want the %d refused since the first line", got, refused)
+	}
+	var frames []string
+	for _, event := range tunEvents(bus) {
+		frames = append(frames, event.Attrs["frames"])
+	}
+	if want := []string{"1", strconv.Itoa(refused)}; !slices.Equal(frames, want) {
+		t.Errorf("the events carried frames %v, want %v", frames, want)
 	}
 }
