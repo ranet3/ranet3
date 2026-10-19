@@ -690,9 +690,14 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		if pending != nil && !time.Now().Before(pending.deadline) {
 			// RFC 7296 section 2.1: "the initiator MUST retransmit a request until it either receives a corresponding response or deems the IKE SA to have failed."
 			// an exchange its IKE SA carries past its lifetime has a silent peer's budget whatever traffic the peer keeps up, and then the IKE SA is deemed failed
-			// a Delete of the IKE SA ends a session that is ending whatever the answer, as the lifecycle's own does, so it has that Delete's budget
-			if pendingRetransmitsExhausted(pending, time.Since(lastAuthenticated) < s.dpdInterval() && !s.ikeExpired(pending.context)) ||
-				ending != nil && deletesIKE(pending.inner) && pending.sent >= teardownRetransmits {
+			if pendingRetransmitsExhausted(pending, time.Since(lastAuthenticated) < s.dpdInterval() && !s.ikeExpired(pending.context)) {
+				// section 2.1 goes on: "In the latter case, the initiator discards all state associated with the IKE SA and any Child SAs that were negotiated using that IKE SA."
+				// section 2.8: "An IKE SA so created inherits all of the original IKE SA's Child SAs", so a retained IKE SA holds none and is deemed failed alone
+				if s.removeRetainedContext(pending.context) {
+					pending.result <- requestResult{err: fmt.Errorf("ike: IKE SA %d deemed failed after %d unanswered attempts", pending.context.spiI, pending.sent)}
+					pending = nil
+					continue
+				}
 				s.mux.Close()
 				if pending == ender {
 					return ending
@@ -858,7 +863,9 @@ func (s *Session) noteSend(err error) {
 }
 
 func pendingRetransmitsExhausted(pending *pendingRequest, peerAlive bool) bool {
-	if pending.teardown {
+	// RFC 7296 section 2.1: "If the responder receives a retransmitted request for which it has already forgotten the response, it MUST ignore the request"
+	// a peer that took a Delete of an IKE SA has deleted the SA and answers no resend, so every such Delete has the teardown's budget
+	if deletesIKE(pending.inner) {
 		return pending.sent >= teardownRetransmits
 	}
 	if pending.attempts < maxRetransmits {
