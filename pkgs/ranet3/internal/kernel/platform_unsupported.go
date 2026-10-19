@@ -5,6 +5,12 @@
 
 package kernel
 
+import (
+	"fmt"
+	"net/netip"
+	"runtime"
+)
+
 // android is excluded with the linux backend and ios with the darwin one: the
 // kernel under each is the supported one, but an application there has neither
 // the privilege nor a routing table of its own, so the backend would only ever
@@ -18,3 +24,7 @@ func refuseMeaningless(Table, string) error { return ErrUnsupported }
 
 // WatchNetwork has no routing table to read here, for the same reason
 func WatchNetwork(Host, string) (*NetworkWatch, error) { return nil, ErrUnsupported }
+
+func RouteGet(_, _ netip.Addr, _ string) (MatchedRoute, error) {
+	return MatchedRoute{}, fmt.Errorf("kernel: the route a packet takes is not read on %s", runtime.GOOS)
+}
