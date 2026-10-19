@@ -451,7 +451,7 @@ func TestOfferLeadsWithOneProposalInTheKEGroup(t *testing.T) {
 			Suites{kex: []kexEntry{p384, joined, p256, x25519}}.ikeProposals(DH_CURVE25519), []kexEntry{joined, p384, p256, x25519},
 		},
 		"an IKE SA rekey in the group of a later entry": {
-			Suites{kex: []kexEntry{p384, joined, p256, x25519}}.ikeRekeyProposals(spi, PRF_HMAC_SHA2_256, DH_CURVE25519), []kexEntry{x25519, p384, p256},
+			Suites{kex: []kexEntry{p384, joined, p256, x25519}}.ikeRekeyProposals(spi, SASuite{PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_ECP_384}, DH_CURVE25519), []kexEntry{joined, p384, p256, x25519},
 		},
 	} {
 		var got []kexEntry

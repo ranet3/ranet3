@@ -55,8 +55,8 @@ func (a intAuth) octets(authMID uint32) []byte {
 	return binary.BigEndian.AppendUint32(concat(a.i, a.r), authMID)
 }
 
-// keData is the KE data of the one KE payload of an IKE_INTERMEDIATE message, which names method
-// RFC 9370 section 2.2.2: "The former "Diffie-Hellman Group Num" (now called "Key Exchange Method") field in the KEi(n) and KEr(n) payloads MUST match the n-th negotiated additional key exchange."
+// keData is the KE data of the one KE payload of an IKE_INTERMEDIATE or IKE_FOLLOWUP_KE message, which names method
+// RFC 9370 sections 2.2.2 and 2.2.4: "The former "Diffie-Hellman Group Num" (now called "Key Exchange Method") field in the KEi(n) and KEr(n) payloads MUST match the n-th negotiated additional key exchange."
 func keData(inner []RawPayload, method uint16) ([]byte, error) {
 	var data []byte
 	found := false
@@ -65,39 +65,40 @@ func keData(inner []RawPayload, method uint16) ([]byte, error) {
 			continue
 		}
 		if found {
-			return nil, errors.New("ike: IKE_INTERMEDIATE message carries two KE payloads")
+			return nil, errors.New("ike: the message carries two KE payloads")
 		}
 		got, body, err := DecodeKE(payload.Body)
 		if err != nil {
 			return nil, err
 		}
 		if got != method {
-			return nil, fmt.Errorf("ike: IKE_INTERMEDIATE KE payload names method %d, and the exchange runs %d", got, method)
+			return nil, fmt.Errorf("ike: the KE payload names method %d, and the exchange runs %d", got, method)
 		}
 		data, found = body, true
 	}
 	if !found {
-		return nil, errors.New("ike: IKE_INTERMEDIATE message carries no KE payload")
+		return nil, errors.New("ike: the message carries no KE payload")
 	}
 	return data, nil
 }
 
-// kexRejection is the peer's KE data of side, the key or the ciphertext, that the IKE_INTERMEDIATE exchange of method refused
+// kexRejection is the peer's KE data of side, the key or the ciphertext, that the exchange of method refused
 type kexRejection struct {
-	method uint16
-	side   string
-	err    error
+	exchange string
+	method   uint16
+	side     string
+	err      error
 }
 
 func (e *kexRejection) Error() string {
-	return fmt.Sprintf("ike: IKE_INTERMEDIATE %s %s refused: %v", transformName(Transform{Type: TransDH, ID: e.method}), e.side, e.err)
+	return fmt.Sprintf("ike: %s %s %s refused: %v", e.exchange, transformName(Transform{Type: TransDH, ID: e.method}), e.side, e.err)
 }
 
 func (e *kexRejection) Unwrap() error { return e.err }
 
 func (e *kexRejection) attrs() []slog.Attr {
 	return []slog.Attr{
-		slog.String("exchange", "IKE_INTERMEDIATE"),
+		slog.String("exchange", e.exchange),
 		slog.String("method", transformName(Transform{Type: TransDH, ID: e.method})),
 		slog.String("side", e.side),
 	}
@@ -140,7 +141,7 @@ func (s *Session) runIntermediates(ni, nr []byte) (intAuth, error) {
 		}
 		if err != nil {
 			// draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the check fails, the initiator MUST reject the ciphertext and MUST fail the exchange, log the error, and stop creating the SA (i.e. not initiate IKE_AUTH or next IKE_INTERMEDIATE)."
-			rejected := &kexRejection{method: method, side: "ciphertext", err: err}
+			rejected := &kexRejection{exchange: "IKE_INTERMEDIATE", method: method, side: "ciphertext", err: err}
 			slog.Warn("ike rejected the responder's ML-KEM ciphertext", "mid", mid, "err", rejected)
 			s.emit("ike.kex.rejected", rejected.attrs()...)
 			return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d: %w", mid, rejected)
@@ -204,7 +205,7 @@ func (s *Session) answerIntermediate(chain intAuth, request *authRequest, method
 	if err != nil {
 		// draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the checks fail, the responder MUST reject the initiator's improper public key and SHOULD send a Notify payload of type INVALID_SYNTAX as a response to the request to prevent resource exhaustion or denial of service risks."
 		// the handshake's failure records ike.kex.rejected under the limit of ike.handshake.failed
-		return refuse(N_INVALID_SYNTAX, nil, &kexRejection{method: method, side: "key", err: err})
+		return refuse(N_INVALID_SYNTAX, nil, &kexRejection{exchange: "IKE_INTERMEDIATE", method: method, side: "key", err: err})
 	}
 	answer := []RawPayload{{Type: PayloadKE, Body: EncodeKE(method, ciphertext)}}
 	response, err := s.response(ctx, mid, IKE_INTERMEDIATE, answer)

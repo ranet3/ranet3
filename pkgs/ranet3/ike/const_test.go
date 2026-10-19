@@ -22,6 +22,7 @@ func TestNotifyTypesAreRegistryValues(t *testing.T) {
 		"NO_ADDITIONAL_SAS":            {N_NO_ADDITIONAL_SAS, 35},
 		"TEMPORARY_FAILURE":            {N_TEMPORARY_FAILURE, 43},
 		"CHILD_SA_NOT_FOUND":           {N_CHILD_SA_NOT_FOUND, 44},
+		"STATE_NOT_FOUND":              {N_STATE_NOT_FOUND, 47},
 		"INITIAL_CONTACT":              {N_INITIAL_CONTACT, 16384},
 		"SET_WINDOW_SIZE":              {N_SET_WINDOW_SIZE, 16385},
 		"NAT_DETECTION_SOURCE_IP":      {N_NAT_DETECTION_SOURCE_IP, 16388},
@@ -29,6 +30,7 @@ func TestNotifyTypesAreRegistryValues(t *testing.T) {
 		"COOKIE":                       {N_COOKIE, 16390},
 		"REKEY_SA":                     {N_REKEY_SA, 16393},
 		"SIGNATURE_HASH_ALGORITHMS":    {N_SIGNATURE_HASH_ALGORITHMS, 16431},
+		"ADDITIONAL_KEY_EXCHANGE":      {N_ADDITIONAL_KEY_EXCHANGE, 16441},
 	} {
 		if uint16(pair.got) != pair.want {
 			t.Errorf("N_%s is %d on the wire, want %d", name, pair.got, pair.want)
@@ -44,6 +46,7 @@ func TestWireNumbersAreRegistryValues(t *testing.T) {
 		"IKE_AUTH":        {uint16(IKE_AUTH), 35},
 		"CREATE_CHILD_SA": {uint16(CREATE_CHILD_SA), 36},
 		"INFORMATIONAL":   {uint16(INFORMATIONAL), 37},
+		"IKE_FOLLOWUP_KE": {uint16(IKE_FOLLOWUP_KE), 44},
 		"PayloadSA":       {uint16(PayloadSA), 33},
 		"PayloadKE":       {uint16(PayloadKE), 34},
 		"PayloadIDi":      {uint16(PayloadIDi), 35},

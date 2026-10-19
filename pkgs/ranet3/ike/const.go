@@ -70,6 +70,8 @@ const (
 	INFORMATIONAL   ExchangeType = 37
 	// RFC 9242 section 3.2 of IKE_INTERMEDIATE: "its Exchange Type is 43."
 	IKE_INTERMEDIATE ExchangeType = 43
+	// RFC 9370 section 2.2.4 of IKE_FOLLOWUP_KE: "Its Exchange Type value is 44."
+	IKE_FOLLOWUP_KE ExchangeType = 44
 )
 
 // IKE header flags, RFC 7296 section 3.1.
@@ -181,10 +183,12 @@ const (
 	N_NO_ADDITIONAL_SAS            NotifyType = 35
 	N_TEMPORARY_FAILURE            NotifyType = 43
 	N_CHILD_SA_NOT_FOUND           NotifyType = 44
-	N_REKEY_SA                     NotifyType = 16393
-	N_INITIAL_CONTACT              NotifyType = 16384
-	N_SET_WINDOW_SIZE              NotifyType = 16385
-	N_COOKIE                       NotifyType = 16390
+	// RFC 9370 section 2.2.4 of STATE_NOT_FOUND: "Its Notify Message Type value is 47, its Protocol ID and SPI Size are both set to 0, and the data is empty."
+	N_STATE_NOT_FOUND NotifyType = 47
+	N_REKEY_SA        NotifyType = 16393
+	N_INITIAL_CONTACT NotifyType = 16384
+	N_SET_WINDOW_SIZE NotifyType = 16385
+	N_COOKIE          NotifyType = 16390
 
 	// N_SIGNATURE_HASH_ALGORITHMS, RFC 7427 section 4: without this in IKE_SA_INIT,
 	// strongSwan assumes the peer only understands the classic RSA/ECDSA
@@ -194,6 +198,8 @@ const (
 	N_SIGNATURE_HASH_ALGORITHMS NotifyType = 16431
 	// RFC 9242 section 3.1: "The INTERMEDIATE_EXCHANGE_SUPPORTED is a Status Type IKEv2 notification with Notify Message Type 16438."
 	N_INTERMEDIATE_EXCHANGE_SUPPORTED NotifyType = 16438
+	// RFC 9370 section 2.2.4 of ADDITIONAL_KEY_EXCHANGE: "Its Notify Message Type value is 16441, and the Protocol ID and SPI Size are both set to 0."
+	N_ADDITIONAL_KEY_EXCHANGE NotifyType = 16441
 )
 
 // Hash algorithm IDs for the SIGNATURE_HASH_ALGORITHMS notify data (RFC 7427

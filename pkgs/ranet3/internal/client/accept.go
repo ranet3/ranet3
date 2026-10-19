@@ -59,7 +59,7 @@ func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 				closed.Add(1)
 			}
 			// a dialer of this node's that stood down behind the session dials again at once under the lists in force
-			if replacedByHandshake(err) {
+			if errors.Is(err, ike.ErrPRFUnlisted) {
 				c.wakeDialers(c.matchingDialers(identity.Path(accepted.Peer, accepted.Local), false))
 			}
 			// losing to a session the other end also prefers is ordinary on a full mesh

@@ -10,7 +10,7 @@ import (
 
 // a peer's proposal whose ADDKE types each offer NONE, or that leaves one out, is answered with NONE written out for each type it holds
 // in IKE_AUTH, in a rekey of the Child SA and in a rekey of an IKE SA whose key exchange ran alone
-// one requiring an additional key exchange is skipped, since this end runs none there, and NO_PROPOSAL_CHOSEN answers an offer of nothing else
+// one requiring an additional key exchange is skipped under lists of classical entries alone, and NO_PROPOSAL_CHOSEN answers an offer of nothing else
 // RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
 // RFC 9370 section 2.2.1: "The responder MUST treat all of the omitted ADDKE transforms as if they were proposed with Transform ID NONE."
 func TestEachADDKETypeIsAnsweredNoneOrItsProposalIsSkipped(t *testing.T) {
@@ -113,29 +113,6 @@ var hybrid = Suites{kex: []kexEntry{{group: DH_CURVE25519, additions: [addkeType
 // kexOf is the key exchange transforms of a proposal in the order it holds them
 func kexOf(proposal Proposal) []Transform {
 	return slices.DeleteFunc(slices.Clone(proposal.Transforms), func(t Transform) bool { return t.Type != TransDH && !additional(t.Type) })
-}
-
-// a CREATE_CHILD_SA runs the entries of one key exchange alone, since this end runs no IKE_FOLLOWUP_KE
-// so its own IKE SA rekey offers those, and a peer's rekey or new Child SA requiring an additional key exchange is refused though kex lists the entry
-// RFC 9370 section 2.2.4: "If the initiator includes any ADDKE Transform Types in the SA payload (along with Transform Type 4), and if the responder agrees to perform additional key exchanges, then the additional key exchanges are performed in a series of new IKE_FOLLOWUP_KE exchanges that follow the CREATE_CHILD_SA exchange."
-func TestRekeyRunsOnlyEntriesOfOneKeyExchange(t *testing.T) {
-	offer := hybrid.ikeRekeyProposals([]byte{1, 2, 3, 4, 5, 6, 7, 8}, PRF_HMAC_SHA2_256, DH_ECP_256)
-	if len(offer) != 1 || !slices.Equal(kexOf(offer[0]), []Transform{{Type: TransDH, ID: DH_ECP_256}}) {
-		t.Errorf("the rekey offer of x25519+mlkem768 and p256 is %+v, want p256 alone", offer)
-	}
-	mux, _ := lifecycleMuxes(t)
-	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_ECP_256}
-	s := answeringSession(t, mux, suite, ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}, 0, hybrid)
-	requiring := []Proposal{{Transforms: []Transform{encrAES128, prfSHA256, dhX25519, {Type: TransADDKE1, ID: ML_KEM_768}}}}
-	if answer := answerPeerRekey(t, s, true, peerRekeyOf(t, s, true, requiring, DH_CURVE25519)); answer.notify.Type != N_NO_PROPOSAL_CHOSEN {
-		t.Errorf("a peer's rekey requiring x25519+mlkem768 was answered %+v, want NO_PROPOSAL_CHOSEN", answer)
-	}
-	// a peer's request for the Child SA a session has none of is a rekey's request without REKEY_SA
-	fresh := answeringSession(t, mux, suite, ChildSA{}, 0, hybrid)
-	requiring = []Proposal{{Transforms: []Transform{encrAES128, esnNone, dhX25519, {Type: TransADDKE1, ID: ML_KEM_768}}}}
-	if answer := answerPeerRekey(t, fresh, false, peerRekeyOf(t, fresh, false, requiring, DH_CURVE25519)[1:]); answer.notify.Type != N_NO_PROPOSAL_CHOSEN {
-		t.Errorf("a peer's request for a Child SA requiring x25519+mlkem768 was answered %+v, want NO_PROPOSAL_CHOSEN", answer)
-	}
 }
 
 // an IKE SA is listed while kex holds its whole entry, and a reload changing any part of an entry changes the list

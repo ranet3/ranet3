@@ -46,6 +46,15 @@ const (
 	minPeerChildRekeyInterval = time.Second
 	// a peer-initiated IKE SA rekey costs a key exchange on the goroutine that runs the session, and a legitimate one is minutes apart
 	minPeerIKERekeyInterval = time.Second
+	// RFC 9370 section 2.2.4: "The responder MUST handle this situation gracefully and delete the associated state if it does not receive the next expected IKE_FOLLOWUP_KE request after some reasonable period of time."
+	// the request budget, the time an initiator gives a request before it deems a silent peer's IKE SA failed
+	// this end's own IKE_FOLLOWUP_KE is resent as any request is, and a STATE_NOT_FOUND answering a send past the wait from the answer before is not counted toward stateNotFoundLimit
+	followupWait = requestTimeout * (1<<maxRetransmits - 1)
+	// RFC 9370 section 2.2.4: "If the initiator continues to receive STATE_NOT_FOUND notifications after several retries, it MUST treat this situation as a fatal error and delete the IKE SA by sending a DELETE payload."
+	// a series and two retries of it
+	stateNotFoundLimit = 3
+	// a link is drawn at random for each response, so an IKE_FOLLOWUP_KE that did not read it matches it only by guessing it
+	followupLinkLen = 8
 
 	// handshakeTimeout bounds a responder's whole handshake, the life of the cheapest state an unauthenticated peer can make it hold
 	handshakeTimeout = 30 * time.Second

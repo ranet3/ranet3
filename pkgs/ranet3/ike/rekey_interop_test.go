@@ -137,9 +137,9 @@ func TestChildProposalDHSelection(t *testing.T) {
 
 func TestIKERekeyProposalKeepsPRF(t *testing.T) {
 	for _, prf := range []uint16{PRF_HMAC_SHA2_256, PRF_HMAC_SHA2_384} {
-		offer := Suites{}.ikeRekeyProposals(nil, prf, DH_CURVE25519)
-		if len(offer) != len(Suites{}.rekeyable()) {
-			t.Fatalf("offered %d proposals, want one for each of %d kex entries", len(offer), len(Suites{}.rekeyable()))
+		offer := Suites{}.ikeRekeyProposals(nil, SASuite{PRFID: prf, DHGroup: DH_CURVE25519}, DH_CURVE25519)
+		if len(offer) != len(Suites{}.kexEntries()) {
+			t.Fatalf("offered %d proposals, want one for each of %d kex entries", len(offer), len(Suites{}.kexEntries()))
 		}
 		for _, proposal := range offer {
 			var count int
@@ -156,7 +156,7 @@ func TestIKERekeyProposalKeepsPRF(t *testing.T) {
 			}
 		}
 		lists := Suites{}
-		chosen, _, ok := chooseIKE([]Proposal{ikeProposal()}, lists.ikeCiphers(), lists.rekeyPRFs(prf), lists.rekeyable(), DH_CURVE25519)
+		chosen, _, ok := chooseIKE([]Proposal{ikeProposal()}, lists.ikeCiphers(), lists.rekeyPRFs(prf), lists.rekeyEntries(kexEntry{group: DH_CURVE25519}, DH_CURVE25519), DH_CURVE25519)
 		if !ok || chosen.suite.PRFID != prf {
 			t.Fatalf("selected PRF %d, want %d", chosen.suite.PRFID, prf)
 		}
