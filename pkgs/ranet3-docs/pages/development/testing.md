@@ -188,20 +188,23 @@ nix build .#checks.x86_64-linux.netlink -L
 `nix flake check -L` builds every check of the host's system. The VM tests below
 have commands of their own.
 
-| Check           | Systems | CI runs it on                    | What it runs                                                                                                                                                                  |
-| --------------- | ------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote hegel's cache                                                                                 |
-| `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, and `staticcheck ./...`                                                                                                     |
-| `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions both `go.mod` files require, and `reuse lint` |
-| `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                                                                                  |
-| `netlink`       | Linux   | `x86_64-linux`                   | the Linux root tests listed below, as root in a VM                                                                                                                            |
-| `integration-*` | Linux   | `x86_64-linux`                   | the VM tests below                                                                                                                                                            |
+| Check           | Systems | CI runs it on                    | What it runs                                                                                                                                                                                                                               |
+| --------------- | ------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote hegel's cache                                                                                                                                              |
+| `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, and `staticcheck ./...`                                                                                                                                                                  |
+| `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions both `go.mod` files require, a check of the `aarch64-linux` exclusions in `atelier.toml`, and `reuse lint` |
+| `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                                                                                                                                               |
+| `netlink`       | Linux   | `x86_64-linux`                   | the Linux root tests listed below, as root in a VM                                                                                                                                                                                         |
+| `integration-*` | Linux   | `x86_64-linux`                   | the VM tests below                                                                                                                                                                                                                         |
 
 The 3 systems are `x86_64-linux`, `aarch64-linux` and `aarch64-darwin`. CI
 builds through atelier, and `atelier.toml` sets what it skips. The
 `aarch64-linux` runner has no KVM, so CI runs the VM tests on `x86_64-linux`
-alone. CI also builds every package, every dev shell and the formatter on all 3
-systems, and never builds `legacyPackages.*.profile`.
+alone. The `tree` check fails when a check whose derivation requires the `kvm`
+system feature on `aarch64-linux` has no `checks.aarch64-linux.<name>` line in
+the `exclude` list of `atelier.toml`, and when such a line names a check that
+does not exist. CI also builds every package, every dev shell and the formatter
+on all 3 systems, and never builds `legacyPackages.*.profile`.
 
 The `netlink` check runs these root tests: the `internal/kernel` tests whose
 names start with `TestNetlink`, the `internal/egress` round trip, the `TestTUN`
