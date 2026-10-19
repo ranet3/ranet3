@@ -47,7 +47,7 @@ func egressTable(tb testing.TB) *srv6.LocalTable {
 	}
 	table, err := srv6.NewLocalTable([]srv6.Segment{
 		{SID: schema.AddrFrom(meshExit), Behavior: srv6.BehaviorEndDT46},
-		srv6.EgressSegment(schema.AddrFrom(egressExit), allow),
+		{SID: schema.AddrFrom(egressExit), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: allow},
 		{SID: schema.AddrFrom(egressWaypoint), Behavior: srv6.BehaviorEnd},
 	})
 	if err != nil {

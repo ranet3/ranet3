@@ -498,7 +498,7 @@ func TestReloadInstallsTheSegmentTablesItBuilds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := c.Mesh.Segments().Segments(); !slices.Equal(got, segments.Segments()) {
+	if got := c.Mesh.Segments().Segments(); !slices.EqualFunc(got, segments.Segments(), func(a, b srv6.Segment) bool { return reflect.DeepEqual(a, b) }) {
 		t.Errorf("the mesh answers for %v, want %v", got, segments.Segments())
 	}
 	if got := c.Mesh.Steering().Entries(); !slices.Equal(got, steered.Entries()) {

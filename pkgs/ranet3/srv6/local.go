@@ -70,37 +70,94 @@ func ParseBehavior(name string) (Behavior, error) {
 type Segment struct {
 	SID      schema.Addr `yaml:"sid" json:"sid" toml:"sid"`
 	Behavior Behavior    `yaml:"behavior" json:"behavior" toml:"behavior"`
-	// nil for a segment that delivers to the mesh, and set by EgressSegment
-	// alone, so no file names an egress segment
-	egress *egress
+	// Deliver is the table End.DT46 hands the inner packet to, the parameter
+	// RFC 8986 section 4.8 gives the behavior
+	Deliver Delivery `yaml:"deliver,omitempty" json:"deliver,omitempty" toml:"deliver,omitempty"`
+	// Allow holds the outer and inner sources a segment delivering to egress
+	// carries, and is read with no other delivery
+	Allow []schema.Prefix `yaml:"allow,omitempty" json:"allow,omitempty" toml:"allow,omitempty"`
 }
 
-// egress holds the allow list of an End.DT46 segment that delivers to the
-// egress device, behind a pointer so that a Segment stays comparable
-type egress struct {
-	allow []schema.Prefix
-}
+// Delivery is where an End.DT46 segment hands the packet it decapsulated.
+type Delivery uint8
 
-// EgressSegment is an End.DT46 segment whose inner packet Handle returns as
-// ActionEgress, for the egress device, when its outer and its inner source
-// both lie inside allow
-func EgressSegment(sid schema.Addr, allow []schema.Prefix) Segment {
-	return Segment{SID: sid, Behavior: BehaviorEndDT46, egress: &egress{allow: allow}}
+const (
+	// DeliverMesh hands it to the mesh tun, and a file omitting deliver means it
+	DeliverMesh Delivery = iota
+	// DeliverEgress hands it to the egress device, whose traffic the kernel
+	// routes out of the uplink under cap.egress's translation, and only for a
+	// packet whose outer and inner sources both lie in Allow
+	DeliverEgress
+)
+
+func (d Delivery) String() string {
+	switch d {
+	case DeliverMesh:
+		return "mesh"
+	case DeliverEgress:
+		return "egress"
+	}
+	return fmt.Sprintf("delivery(%d)", uint8(d))
 }
 
 // ErrSourceRefused is an egress segment's refusal of a packet whose outer or
 // inner source is outside its allow list, or whose inner source it cannot read
 var ErrSourceRefused = errors.New("srv6: the egress segment's allow list does not hold the packet's source")
 
-func (s Segment) String() string { return s.SID.String() + " " + s.Behavior.String() }
+// String is the segment as the file spells it, its delivery and allow list
+// only where it writes them
+func (s Segment) String() string {
+	parts := []string{s.SID.String(), s.Behavior.String()}
+	if s.Deliver != DeliverMesh {
+		parts = append(parts, "deliver", s.Deliver.String())
+	}
+	if len(s.Allow) > 0 {
+		parts = append(parts, "allow")
+		for _, prefix := range s.Allow {
+			parts = append(parts, prefix.String())
+		}
+	}
+	return strings.Join(parts, " ")
+}
 
-func (e *egress) allows(source netip.Addr) bool {
-	for _, prefix := range e.allow {
+func (s Segment) allows(source netip.Addr) bool {
+	for _, prefix := range s.Allow {
 		if prefix.Contains(source) {
 			return true
 		}
 	}
 	return false
+}
+
+// checkAllow refuses an allow list that would make an egress segment an open
+// proxy, or that a packet could never pass
+func (s Segment) checkAllow() error {
+	if len(s.Allow) == 0 {
+		return fmt.Errorf("srv6: cap.segment local %s delivers to egress with no allow list, so it would carry any source's traffic", s.SID)
+	}
+	ipv6 := false
+	for i, entry := range s.Allow {
+		prefix := entry.Prefix
+		switch {
+		case !prefix.IsValid():
+			return fmt.Errorf("srv6: cap.segment local %s allow entry %d is not a prefix", s.SID, i+1)
+		case prefix.Masked() != prefix:
+			return fmt.Errorf("srv6: cap.segment local %s allow %s has bits set below its prefix length", s.SID, prefix)
+		case prefix.Addr().Is4In6():
+			return fmt.Errorf("srv6: cap.segment local %s allow %s is an IPv4 prefix written as IPv6, so write it as %s", s.SID, prefix, netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96))
+		case prefix.Bits() == 0:
+			return fmt.Errorf("srv6: cap.segment local %s allow %s admits every address of its family, which makes the segment an open proxy", s.SID, prefix)
+		case prefix.Addr().Is4() && prefix.Bits() < minAllowBits4, prefix.Addr().Is6() && prefix.Bits() < minAllowBits6:
+			return fmt.Errorf("srv6: cap.segment local %s allow %s is shorter than /%d for IPv4 or /%d for IPv6, the unit IANA delegates to a regional registry, so it admits holders the mesh has nothing to do with", s.SID, prefix, minAllowBits4, minAllowBits6)
+		case slices.ContainsFunc(s.Allow[:i], func(other schema.Prefix) bool { return other.Prefix == prefix }):
+			return fmt.Errorf("srv6: cap.segment local %s allow %s is written twice", s.SID, prefix)
+		}
+		ipv6 = ipv6 || prefix.Addr().Is6()
+	}
+	if !ipv6 {
+		return fmt.Errorf("srv6: cap.segment local %s allow holds no IPv6 prefix, and the outer source of a segment routed packet is always IPv6, so no packet could pass", s.SID)
+	}
+	return nil
 }
 
 // LocalTable is the set of segments this node answers for. A nil table answers
@@ -127,14 +184,22 @@ func NewLocalTable(segments []Segment) (*LocalTable, error) {
 			return nil, fmt.Errorf("srv6: cap.segment local %s: %s is not implemented", segment.SID, segment.Behavior)
 		}
 		if existing, dup := entries[segment.SID.Addr]; dup {
-			return nil, fmt.Errorf("srv6: cap.segment local %s is configured as both %s and %s", segment.SID, existing.Behavior, segment.Behavior)
+			return nil, fmt.Errorf("srv6: cap.segment local %s is written twice, as %s and as %s", segment.SID, existing, segment)
 		}
-		if segment.egress != nil {
-			if len(segment.egress.allow) == 0 {
-				return nil, fmt.Errorf("srv6: cap.segment local %s delivers to egress with no allow list, so it would carry any source's traffic", segment.SID)
+		switch {
+		case segment.Deliver != DeliverMesh && segment.Deliver != DeliverEgress:
+			return nil, fmt.Errorf("srv6: cap.segment local %s: %s is not mesh or egress", segment.SID, segment.Deliver)
+		case segment.Deliver == DeliverEgress && segment.Behavior == BehaviorEnd:
+			return nil, fmt.Errorf("srv6: cap.segment local %s: deliver egress belongs to End.DT46, and End hands the packet to its next segment", segment.SID)
+		case segment.Deliver == DeliverMesh && len(segment.Allow) > 0:
+			return nil, fmt.Errorf("srv6: cap.segment local %s: allow is read only with deliver = \"egress\"", segment.SID)
+		}
+		if segment.Deliver == DeliverEgress {
+			if err := segment.checkAllow(); err != nil {
+				return nil, err
 			}
 			// the table is read by every dataplane goroutine and owns its list
-			segment.egress = &egress{allow: slices.Clone(segment.egress.allow)}
+			segment.Allow = slices.Clone(segment.Allow)
 		}
 		entries[segment.SID.Addr] = segment
 	}
@@ -212,17 +277,18 @@ func (t *LocalTable) Handle(raw []byte) Result {
 	case BehaviorEndDT46:
 		// the outer source is checked before anything is parsed, so an unlisted
 		// sender is never answered with an ICMP error about its header
-		if segment.egress != nil && !segment.egress.allows(netip.AddrFrom16([16]byte(raw[8:24]))) {
+		egress := segment.Deliver == DeliverEgress
+		if egress && !segment.allows(netip.AddrFrom16([16]byte(raw[8:24]))) {
 			return Result{Action: ActionDrop, Err: ErrSourceRefused}
 		}
 		inner, family, err := Decap(raw)
 		if err != nil {
 			return Result{Action: ActionDrop, Err: err}
 		}
-		if segment.egress == nil {
+		if !egress {
 			return Result{Action: ActionDeliver, Inner: inner, Family: family}
 		}
-		if source, ok := innerSource(inner, family); !ok || !segment.egress.allows(source) {
+		if source, ok := innerSource(inner, family); !ok || !segment.allows(source) {
 			return Result{Action: ActionDrop, Err: ErrSourceRefused}
 		}
 		return Result{Action: ActionEgress, Inner: inner, Family: family}
