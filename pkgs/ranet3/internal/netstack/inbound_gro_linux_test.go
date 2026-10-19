@@ -170,7 +170,7 @@ func tunReceived(t *testing.T, name string) uint64 {
 func TestTUNCoalescesFramesIntoAKernelSocket(t *testing.T) {
 	const iss = 7000
 	enterEmptyNamespace(t)
-	m, err := NewNamed(DefaultMTU, "grotest0")
+	m, err := NewNamed(DefaultMTU, "grotest0", nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -246,7 +246,7 @@ func laneWrites() []laneWrite {
 // a lane's write into the tun allocates nothing, whether its packets go one a writev or coalesce
 func TestTUNWriteAllocatesNothing(t *testing.T) {
 	enterEmptyNamespace(t)
-	m, err := NewNamed(DefaultMTU, "allocs0")
+	m, err := NewNamed(DefaultMTU, "allocs0", nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestTUNWriteAllocatesNothing(t *testing.T) {
 // so the storage a session's datagrams lie in goes once the packets in it are written, whether they went alone or coalesced
 func TestTUNWriteKeepsNoReferenceToItsFrames(t *testing.T) {
 	enterEmptyNamespace(t)
-	m, err := NewNamed(DefaultMTU, "keep0")
+	m, err := NewNamed(DefaultMTU, "keep0", nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}

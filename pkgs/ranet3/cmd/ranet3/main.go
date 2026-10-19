@@ -244,6 +244,15 @@ func runDaemon(opts options) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go watchSignals(signals, cancel, func() { os.Exit(1) })
+	// the supervisor restarts the node on the exit status
+	go func() {
+		select {
+		case <-mesh.Failed():
+			failed.Store(true)
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	// SIGHUP reconciles rather than restarts. The registry is rewritten every
 	// time any node joins the mesh, and a restart to pick that up would drop

@@ -40,9 +40,9 @@ const (
 // a read needs none, the device laying out the slab it reads into
 const TUNHeadroom = 16
 
-// truncatedReadInterval is the least time between two warnings about tun reads cut short
+// tunWarningInterval is the least time between two warnings about one kind of tun read, a read cut short or a frame the device refused
 // the counter keeps the exact count, and the line only has to point at it
-const truncatedReadInterval = 30 * time.Second
+const tunWarningInterval = 30 * time.Second
 
 // peerDataBudget is the bytes one peer may hold from their reservation until the transmit that carried them returns
 // a full budget drains in about codelTarget at 9.7 Gbit/s, the most one peer was measured to carry, so a peer that drains slower is bounded by the delay control and a faster one by the budget

@@ -940,18 +940,19 @@ testers.runNixOSTest {
             assert segments == "128", f"{client_device} holds gso_max_segs {segments}, want the read batch of 128"
 
             # at this segment size one gso frame can carry more packets than a tun read holds
-            # which may cost the tail of that frame and never the reader of its queue
-            stops = journal_after(client, "ranet3.service")
+            # which may cost the tail of that frame, and neither refuses a frame nor loses the device
+            tun_lines = journal_after(client, "ranet3.service")
             print(client.wait_until_succeeds(
                 "iperf3 --client ${gatewayTunnel} --parallel 8 --time 5 --set-mss 400",
                 timeout=iperf_timeout,
             ))
-            client.fail(f"{stops} | grep -F 'tun reader stopped'")
+            client.fail(f"{tun_lines} | grep -F -e 'netstack tun failed' -e 'netstack tun refused a frame'")
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
             # the kernel splits such a frame before the tun
-            # and no read came back cut short
+            # and no read came back cut short or refused
             metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics")
             assert "ranet3_tun_reads_truncated_total 0" in metrics.splitlines(), metrics
+            assert "ranet3_tun_frames_refused_total 0" in metrics.splitlines(), metrics
 
             if not profile:
                 # a rekey lost under load still replaces its SA before the lifetime: the gateway drops the client's IKE for 5 s while iperf runs
