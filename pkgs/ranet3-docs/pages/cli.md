@@ -123,17 +123,18 @@ stable interface. A command, its output and the events it reports may change in
 any revision. `--control` and `--json` on `debug` apply to every command under
 it. [Debugging](development/debug.md) describes each command and the events.
 
-| Command                                | Help                                   | Flags                                                                 |
-| -------------------------------------- | -------------------------------------- | --------------------------------------------------------------------- |
-| `debug socket [METHOD] PATH [BODY\|-]` | Send a raw control socket request      | `--timeout` (10 seconds)                                              |
-| `debug buildinfo`                      | Print Go build information             | none                                                                  |
-| `debug events`                         | Show node events                       | `-f`, `--follow`, `--for` (30 seconds), `--kind`, `--since`, `--peer` |
-| `debug wait <kind>`                    | Wait for a node event                  | `--attr key=value`, `--past` (0), `--timeout` (10 seconds), `--peer`  |
-| `debug netmon`                         | Show the host network the node watches | none                                                                  |
-| `debug pmtu [peer]`                    | Show each session's path MTU           | none                                                                  |
-| `debug probe [peer]`                   | Probe sessions now                     | `--all`                                                               |
-| `debug runtime`                        | Show daemon runtime state              | none                                                                  |
-| `debug updown`                         | Show whether the node is on the mesh   | none                                                                  |
+| Command                                | Help                                                       | Flags                                                                 |
+| -------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------- |
+| `debug socket [METHOD] PATH [BODY\|-]` | Send a raw control socket request                          | `--timeout` (10 seconds)                                              |
+| `debug buildinfo`                      | Print Go build information                                 | none                                                                  |
+| `debug events`                         | Show node events                                           | `-f`, `--follow`, `--for` (30 seconds), `--kind`, `--since`, `--peer` |
+| `debug wait <kind>`                    | Wait for a node event                                      | `--attr key=value`, `--past` (0), `--timeout` (10 seconds), `--peer`  |
+| `debug netmon`                         | Show the host network the node watches                     | none                                                                  |
+| `debug pmtu [peer]`                    | Show each session's path MTU                               | none                                                                  |
+| `debug probe [peer]`                   | Probe sessions now                                         | `--all`                                                               |
+| `debug rules`                          | Show the host's policy rules and the border filter's chain | none                                                                  |
+| `debug runtime`                        | Show daemon runtime state                                  | none                                                                  |
+| `debug updown`                         | Show whether the node is on the mesh                       | none                                                                  |
 
 - `debug socket` sends GET, or POST when a body follows the path. A body of `-`
   is read from standard input. The answer goes to standard output and its status

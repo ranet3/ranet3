@@ -60,6 +60,8 @@ as [what a reload refuses](#what-a-reload-refuses) describes.
 | `cap.crypto.ike`, `cap.crypto.esp` and every key under them          | applied                                  | To each exchange after it. An SA holding a transform they leave out is rekeyed or replaced, as [`cap.crypto`](#capcrypto) says.              |
 | `cap.crypto.replay`, `cap.crypto.rekey` and every key under it       | refused when its effective value changes |                                                                                                                                              |
 | `cap.egress`, written, removed, or any key under it                  | refused when its effective value changes | A new order of `advertise`, `sweep` written as its default and `"auto"` written out for `source4` or `source6` are no change.                |
+| `cap.border`, written or removed                                     | refused                                  |                                                                                                                                              |
+| `cap.border.overlay`                                                 | applied                                  | The filter rewrites its chain on the pass the reload wakes. A new order is no change.                                                        |
 
 ## Sessions the trust document no longer admits
 
@@ -310,6 +312,16 @@ created under the families it translated at startup, the advertised ones and
 both beside an egress device. A new block applied here would leave the host
 holding rules from a configuration nothing is running.
 
+`cap.border` appearing or going is refused with
+`config: cap.border added, restart to apply` or
+`config: cap.border removed, restart to apply`, since the filter and its pass
+are built once at startup, as the translator is. Its `overlay` list reloads in
+place, and so do the SIDs it drops, which follow `cap.segment.local`: the reload
+hands both to the running filter, which rewrites its chain on the pass the
+reload wakes. A reload of a node whose host forwards and whose file writes no
+`cap.border` logs the warning
+[the border filter](border-filter.md#nodes-that-forward-without-it) describes.
+
 With `cap.egress.return` set, the daemon also picks a return source at startup
 for each advertised family that has no `source4` or `source6`. It picks among
 this node's mesh addresses, the host prefixes `cap.route` announces and those
@@ -347,6 +359,9 @@ an unknown key is refused whole. The checks across blocks run again:
   rule placed between the `to` and `from` rules into the mesh table, and a
   `link.tun` naming the egress device, and `cap.route` must not announce its
   SID's `/128`
+- an egress segment needs `cap.border`, whose `overlay` covers every entry of
+  its `allow` list, and a `cap.egress.advertise` entry longer than 0 bits must
+  not overlap the `overlay`
 - `auth.aliases.local` needs at most 1 `link.endpoints` entry in each family,
   and its `keyid` values must not spell an endpoint of another node, as
   [the configuration reference](configuration-reference.md#authaliases) lists

@@ -209,12 +209,21 @@ uses it:
 [cap.egress]
 advertise = []
 
+[cap.border]
+overlay = ["10.99.0.0/16", "fd00:99::/32"]
+
 [[cap.segment.local]]
 sid = "2001:db8:0:6::3"
 behavior = "End.DT46"
 deliver = "egress"
 allow = ["10.99.0.0/24", "fd00:99::/64"]
 ```
+
+An egress segment needs [the border filter](border-filter.md), and its `allow`
+list lies inside the filter's `overlay`. The daemon refuses a file with an
+egress segment and no `cap.border`, or with an `allow` entry the overlay does
+not cover. The list names mesh sources, which a host on a link of any forwarding
+node could otherwise forge and send through that node to the SID.
 
 ### The egress device's rule
 
@@ -250,21 +259,23 @@ puts it back when another writer deletes it.
 
 ### Readiness
 
-The mesh writes into the egress device only for a family the translator reports
-ready, and counts an egress segment's packet of another family as not ready. A
-family is ready while its rule keyed on the egress device reads back, the host
-forwards the family and the kernel would take the family from the device. The
-kernel takes the larger of `net.ipv4.conf.all.rp_filter` and the device's own,
-and an address-less device fails even loose mode. Each pass therefore puts the
-device's own `rp_filter` back to 0 when another writer set it, as systemd-sysctl
-does for each new link on a host shipping its `50-default.conf`. A nonzero
-`conf.all.rp_filter` is host policy the daemon leaves alone, and holds IPv4 not
-ready until it is 0. The device's own IPv4 forwarding off does the same. For
-IPv6, the kernel discards every packet arriving on a device whose `disable_ipv6`
-is 1. The daemon makes the device with it at 0, whatever
-`net.ipv6.conf.default.disable_ipv6` holds, and each pass puts it back to 0 when
-another writer set it. IPv6 is not ready while it still reads 1. The device
-gone, for example deleted by another writer, holds both families not ready.
+The mesh writes into the egress device only for a family that is ready, and
+counts an egress segment's packet of another family as not ready. A family is
+ready while its rule keyed on the egress device reads back, the host forwards
+the family, the border filter's chain reads back and the kernel would take the
+family from the device. The border is 1 chain for both families, so while it is
+not read back neither family is ready. The kernel takes the larger of
+`net.ipv4.conf.all.rp_filter` and the device's own, and an address-less device
+fails even loose mode. Each pass therefore puts the device's own `rp_filter`
+back to 0 when another writer set it, as systemd-sysctl does for each new link
+on a host shipping its `50-default.conf`. A nonzero `conf.all.rp_filter` is host
+policy the daemon leaves alone, and holds IPv4 not ready until it is 0. The
+device's own IPv4 forwarding off does the same. For IPv6, the kernel discards
+every packet arriving on a device whose `disable_ipv6` is 1. The daemon makes
+the device with it at 0, whatever `net.ipv6.conf.default.disable_ipv6` holds,
+and each pass puts it back to 0 when another writer set it. IPv6 is not ready
+while it still reads 1. The device gone, for example deleted by another writer,
+holds both families not ready.
 
 Another writer deleting part of the `ranet3` tables, a `nftables.service` reload
 that flushes the ruleset for one, holds both families not ready until the pass
@@ -306,27 +317,28 @@ kernel forwards it", the egress device and the families it is ready for, any
 chain it shares the hook with, the time since the last pass and the last error.
 A family not ready is named with the reason the last pass found, or in the
 withholding clause's words before the first pass and while the translator is
-stopped.
+stopped. While the border filter holds the device back, the line says
+`until the border filter is read back`.
 
-| Log line                                                             | Level | When                                                                                                                 |
-| -------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------- |
-| `egress translating for N prefixes in <where>`                       | info  | the daemon starts the translator                                                                                     |
-| `egress translator started`                                          | info  | the translator starts, with the egress device as `egress`, empty for none                                            |
-| `egress device created`                                              | info  | the daemon made the egress device, with `name` and `mtu`                                                             |
-| `egress device withdrawn`                                            | info  | the daemon removed it at shutdown                                                                                    |
-| `egress segments ready`                                              | info  | a family went ready, with `family`                                                                                   |
-| `egress segments not ready`                                          | warn  | a family stopped being ready, with `family` and the reason as `detail`                                               |
-| `egress device rp_filter put back to 0`                              | info  | another writer set the device's own, with `was`                                                                      |
-| `egress device disable_ipv6 put back to 0`                           | info  | another writer turned IPv6 off on the device, with `was`                                                             |
-| `egress device takes rp_filter <n> from net.ipv4.conf.all.rp_filter` | warn  | IPv4 cannot be ready, once per value                                                                                 |
-| `egress stopped reading nf_tables notifications`                     | warn  | a read of the notification socket failed, with `err`, after which another writer's deletion waits for the next sweep |
-| `egress rules installed`                                             | info  | a pass wrote the chain                                                                                               |
-| `egress advertisement changed`                                       | warn  | the announced prefixes changed after the first pass                                                                  |
-| `egress is sharing the source translation hook with another writer`  | warn  | a new chain appears at the same hook, once each                                                                      |
-| `egress pass failed, retrying`                                       | warn  | a pass failed, retried with backoff                                                                                  |
-| `egress translator withdrawn`                                        | info  | the tables are removed, at shutdown or at `ranet3 down`                                                              |
-| `egress could not withdraw its tables, retrying`                     | warn  | `ranet3 down` could not remove the tables                                                                            |
-| `egress translator started again`                                    | info  | the first pass after `ranet3 up`                                                                                     |
+| Log line                                                             | Level | When                                                                                                               |
+| -------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------ |
+| `egress translating for N prefixes in <where>`                       | info  | the daemon starts the translator                                                                                   |
+| `egress translator started`                                          | info  | the translator starts, with the egress device as `egress`, empty for none                                          |
+| `egress device created`                                              | info  | the daemon made the egress device, with `name` and `mtu`                                                           |
+| `egress device withdrawn`                                            | info  | the daemon removed it at shutdown                                                                                  |
+| `egress segments ready`                                              | info  | a family went ready, with `family`                                                                                 |
+| `egress segments not ready`                                          | warn  | a family stopped being ready, with `family` and the reason as `detail`                                             |
+| `egress device rp_filter put back to 0`                              | info  | another writer set the device's own, with `was`                                                                    |
+| `egress device disable_ipv6 put back to 0`                           | info  | another writer turned IPv6 off on the device, with `was`                                                           |
+| `egress device takes rp_filter <n> from net.ipv4.conf.all.rp_filter` | warn  | IPv4 cannot be ready, once per value                                                                               |
+| `egress stopped reading nf_tables notifications`                     | warn  | a read of the notification socket failed, with `err`, after which another writer's change waits for the next sweep |
+| `egress rules installed`                                             | info  | a pass wrote the chain                                                                                             |
+| `egress advertisement changed`                                       | warn  | the announced prefixes changed after the first pass                                                                |
+| `egress is sharing the source translation hook with another writer`  | warn  | a new chain appears at the same hook, once each                                                                    |
+| `egress pass failed, retrying`                                       | warn  | a pass failed, retried with backoff                                                                                |
+| `egress translator withdrawn`                                        | info  | the tables are removed, at shutdown or at `ranet3 down`                                                            |
+| `egress could not withdraw its tables, retrying`                     | warn  | `ranet3 down` could not remove the tables                                                                          |
+| `egress translator started again`                                    | info  | the first pass after `ranet3 up`                                                                                   |
 
 A pass that writes the chain, changes the announced prefixes or fails records an
 `egress.pass` event. So does `ranet3 down`. The event carries `trigger`, `took`,

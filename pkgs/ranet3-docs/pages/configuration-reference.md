@@ -459,9 +459,12 @@ The segments this node answers for.
   shorter than `/8`, an IPv6 entry shorter than `/12`, an entry with bits set
   below its length, an IPv4 address written as IPv6, an entry written twice and
   a list with no IPv6 entry are refused. The order does not matter.
-- An egress segment needs `cap.egress`, which may advertise nothing, and
-  `cap.table` with the egress device's rule. `cap.route` may not announce its
-  SID's `/128`, which the node originates while the exit is ready.
+- Every segment needs `cap.border` with an IPv6 prefix in its `overlay`, and
+  acts only on a packet whose outer source lies in those prefixes.
+- An egress segment needs `cap.egress`, which may advertise nothing, `cap.table`
+  with the egress device's rule, and `cap.border` whose `overlay` covers every
+  `allow` entry. `cap.route` may not announce its SID's `/128`, which the node
+  originates while the exit is ready.
 
 ### `cap.segment.steer`
 
@@ -647,6 +650,36 @@ needs.
 - The periodic pass reinstalls a removed table and reads the forwarding sysctls
   again. `sweep` also caps the delay between retries of a failed pass. A
   negative `sweep` is refused.
+- With `cap.border` written, an `advertise` entry longer than 0 bits that
+  overlaps an `overlay` entry is refused: the hosts behind this node would
+  arrive on a link outside the mesh with a mesh source, and the filter would
+  drop them. The exit defaults, `0.0.0.0/0` and `::/0`, are left out of the
+  test.
+
+## `cap.border`
+
+Drop what arrives on a link outside the mesh carrying a mesh source, an IPv6
+routing header of any type or one of this node's SIDs. Linux only, and the
+daemon refuses it at startup on other platforms.
+[The border filter](border-filter.md) describes what it drops and where.
+
+| Key       | Value            | Default  | Meaning                                      |
+| --------- | ---------------- | -------- | -------------------------------------------- |
+| `overlay` | list of prefixes | required | The prefixes the mesh numbers its nodes from |
+
+- An empty list is refused, since the filter would pass every forged mesh
+  source.
+- An entry of length 0, an IPv4 entry shorter than `/8`, an IPv6 entry shorter
+  than `/12`, an entry with bits set below its length, an IPv4 address written
+  as IPv6 and an entry written twice are refused. The order does not matter.
+- Every node of the mesh writes the same list, which covers every exit's `allow`
+  list.
+- A file with a local segment and no `cap.border` is refused, and so is one
+  whose `overlay` holds no IPv6 prefix, since every local SID acts only on an
+  outer source in those prefixes. An egress segment's `allow` entry no `overlay`
+  entry covers is refused too.
+- The SIDs it drops are those of `cap.segment.local`, and the devices it accepts
+  are derived, so neither is a key.
 
 ## Daemon flags
 

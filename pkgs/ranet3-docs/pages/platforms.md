@@ -30,6 +30,7 @@ setting or skips a route instead.
 | `cap.table.metric`                   | supported                                                                 | ignored                                                 |
 | `cap.egress`                         | nftables                                                                  | refused                                                 |
 | Egress segments                      | a second tun, `link.tun` plus `e`                                         | refused                                                 |
+| `cap.border`                         | an nftables chain at prerouting                                           | refused                                                 |
 | Network watch                        | rtnetlink                                                                 | routing socket                                          |
 | Don't fragment                       | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO`                                      | `IP_DONTFRAG`, `IPV6_DONTFRAG`                          |
 | Path MTU a search starts from        | the route's MTU, including a path MTU the host learned                    | the MTU of the interface the route leaves by            |
@@ -38,8 +39,12 @@ setting or skips a route instead.
 | Default state directory              | `/var/lib/ranet3`                                                         | `/var/db/ranet3`                                        |
 
 The forwarding settings decide whether a node warns about transit it cannot
-carry, and whether `cap.egress` advertises its prefixes. The caller's
-credentials decide who may use the debug paths beyond the read paths.
+carry, whether it warns about forwarding without `cap.border`, and whether
+`cap.egress` advertises its prefixes. On macOS `cap.border` is refused at
+startup with
+`egress: cap.border is an nftables chain, which darwin does not have, so this node cannot filter what enters the mesh from its other links`,
+and a Mac that forwards gets the warning instead. The caller's credentials
+decide who may use the debug paths beyond the read paths.
 
 ## The tun device
 
@@ -175,7 +180,7 @@ On a platform other than Linux and macOS:
 
 - `cap.table` fails the start with
   `route reconciliation is unsupported on this platform`.
-- `cap.egress` and both `link.underlay` settings are refused.
+- `cap.egress`, `cap.border` and both `link.underlay` settings are refused.
 - An egress segment fails the start, naming its SID, since the egress device is
   a Linux tun the kernel forwards from.
 - The node has no network watch, so a moved host waits for each session's own
