@@ -1260,8 +1260,8 @@ func TestReplacementOfAnIKESAPastItsLifetimeSendsItsDelete(t *testing.T) {
 	}
 }
 
-// the replacement's Delete of an IKE SA whose PRF a reload removed ends the session whatever the answer
-// so once a Child SA reaches its lifetime it has the budget of the Delete the lifecycle sends
+// the replacement's Delete of an IKE SA whose PRF a reload removed has the budget of the Delete the lifecycle sends
+// and keeps it once a Child SA reaches its lifetime behind it
 func TestReplacementDeleteHasTheTeardownBudgetOnceTheSessionIsEnding(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
