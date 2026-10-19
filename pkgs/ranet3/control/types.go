@@ -305,9 +305,9 @@ type Down struct {
 
 // SegmentCounters is this node's segment routing, counted since startup.
 // Forwarded is packets an End sent on to their next segment, Delivered is
-// packets an End.DT46 took the outer header off and handed to the stack, and
-// Dropped is packets addressed to one of this node's segments that it would
-// not act on.
+// packets an End.DT46 took the outer header off and handed to the stack
+// through the mesh tun, and Dropped is packets addressed to one of this node's
+// segments that it would not act on.
 type SegmentCounters struct {
 	Forwarded uint64 `json:"forwarded"`
 	Delivered uint64 `json:"delivered"`
@@ -324,6 +324,14 @@ type SegmentCounters struct {
 	// Answered counts the ICMP errors sent for refused packets, which is the
 	// half of Dropped whose sender was told why.
 	Answered uint64 `json:"answered"`
+	// Egressed counts the packets the egress device accepted
+	Egressed uint64 `json:"egressed"`
+	// Refused counts the packets an egress segment's allow list refused, a part of Dropped never answered
+	Refused uint64 `json:"refused"`
+	// NotReady counts the egress results dropped while no egress device took them, which is not in Dropped
+	NotReady uint64 `json:"not_ready"`
+	// Drained counts the packets read off the egress device and thrown away
+	Drained uint64 `json:"drained"`
 }
 
 // RegistryInfo is the trust root as this node last read it. A reload replaces

@@ -108,6 +108,15 @@ type SegmentCounters struct {
 	// Answered counts the ICMP errors sent for refused packets, which is the
 	// half of Dropped a sender was told about.
 	Answered uint64
+	// Egressed counts the packets the egress device accepted
+	Egressed uint64
+	// Refused counts the packets an egress segment's allow list refused, a part of Dropped never answered
+	Refused uint64
+	// NotReady counts the egress results dropped with no egress device installed or closed under the write
+	// it is this node's own state, so it is not in Dropped
+	NotReady uint64
+	// Drained counts the packets read off the egress device and thrown away, each one a route into the wrong device
+	Drained uint64
 }
 
 func (m *Mesh) SegmentCounters() SegmentCounters {
@@ -119,6 +128,10 @@ func (m *Mesh) SegmentCounters() SegmentCounters {
 		Unsteered: m.segmentsUnsteered.Load(),
 		Unrouted:  m.segmentsUnrouted.Load(),
 		Answered:  m.segmentsAnswered.Load(),
+		Egressed:  m.segmentsEgressed.Load(),
+		Refused:   m.segmentsRefused.Load(),
+		NotReady:  m.segmentsNotReady.Load(),
+		Drained:   m.segmentsDrained.Load(),
 	}
 }
 
@@ -127,13 +140,17 @@ func (m *Mesh) SegmentCounters() SegmentCounters {
 // left to be written to the tun.
 // a packet an exit takes out of its outer header leaves in the tail of its own frame, the end of the header it lost being its headroom
 // mtu is the largest packet the session the batch came through carries
-// a SYN an End.DT46 delivers has its MSS clamped to it here, since the session's clamp saw only the outer header
+// a SYN an End.DT46 delivers or egresses has its MSS clamped to it here, since the session's clamp saw only the outer header
 func (m *Mesh) applySegments(frames [][]byte, mtu int) [][]byte {
 	table := m.segmentTable.Load()
 	if table == nil {
 		return frames
 	}
-	var deliver [][]byte
+	return m.actOnSegments(frames, mtu, func(packet []byte) srv6.Result { return actLocally(table, packet) })
+}
+
+func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Result) [][]byte {
+	var deliver, egress [][]byte
 	take := func(i int) {
 		if deliver == nil {
 			deliver = append(make([][]byte, 0, len(frames)), frames[:i]...)
@@ -142,7 +159,7 @@ func (m *Mesh) applySegments(frames [][]byte, mtu int) [][]byte {
 	var forward []forwardedSegment
 	for i, frame := range frames {
 		packet := frame[TUNHeadroom:]
-		result := actLocally(table, packet)
+		result := act(packet)
 		switch result.Action {
 		case srv6.ActionPass:
 			if deliver != nil {
@@ -154,6 +171,13 @@ func (m *Mesh) applySegments(frames [][]byte, mtu int) [][]byte {
 			m.ClampMSS(result.Inner, mtu)
 			// Decap hands back the tail of the packet it was given, behind at least the fixed header
 			deliver = append(deliver, frame[len(frame)-TUNHeadroom-len(result.Inner):])
+		case srv6.ActionEgress:
+			take(i)
+			m.ClampMSS(result.Inner, mtu)
+			if egress == nil {
+				egress = make([][]byte, 0, len(frames)-i)
+			}
+			egress = append(egress, frame[len(frame)-TUNHeadroom-len(result.Inner):])
 		case srv6.ActionForward:
 			take(i)
 			forward = append(forward, forwardedSegment{raw: packet, next: result.Next})
@@ -161,9 +185,14 @@ func (m *Mesh) applySegments(frames [][]byte, mtu int) [][]byte {
 			take(i)
 			m.noteSegmentDrop(result.Err)
 			m.answerRefused(packet, result.Err)
+		default:
+			take(i)
+			m.segmentsDropped.Add(1)
+			m.reportSegmentDrop("a segment's result names an action this node does not act on", "action", result.Action)
 		}
 	}
 	m.forwardSegments(forward)
+	m.writeEgress(egress)
 	if deliver == nil {
 		return frames
 	}
@@ -292,6 +321,9 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment) {
 
 func (m *Mesh) noteSegmentDrop(err error) {
 	m.segmentsDropped.Add(1)
+	if errors.Is(err, srv6.ErrSourceRefused) {
+		m.segmentsRefused.Add(1)
+	}
 	m.reportSegmentDrop("a packet addressed to one of this node's segments was refused", "err", err)
 }
 
@@ -465,6 +497,10 @@ type segmentCounters struct {
 	segmentsUnsteered atomic.Uint64
 	segmentsUnrouted  atomic.Uint64
 	segmentsAnswered  atomic.Uint64
+	segmentsEgressed  atomic.Uint64
+	segmentsRefused   atomic.Uint64
+	segmentsNotReady  atomic.Uint64
+	segmentsDrained   atomic.Uint64
 	// icmpTokens and icmpFilled are the bucket answerRefused draws from, in
 	// tokens and in nanoseconds since segmentsStarted.
 	icmpTokens atomic.Int64

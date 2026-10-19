@@ -130,6 +130,10 @@ func segmentCounters(counters netstack.SegmentCounters) control.SegmentCounters 
 		Unsteered: counters.Unsteered,
 		Unrouted:  counters.Unrouted,
 		Answered:  counters.Answered,
+		Egressed:  counters.Egressed,
+		Refused:   counters.Refused,
+		NotReady:  counters.NotReady,
+		Drained:   counters.Drained,
 	}
 }
 

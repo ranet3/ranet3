@@ -217,8 +217,19 @@ func segmentLine(s Status) string {
 	line := fmt.Sprintf("%s (%d forwarded, %d delivered, %d dropped",
 		strings.Join(s.Segments, ", "),
 		s.SegmentCounters.Forwarded, s.SegmentCounters.Delivered, s.SegmentCounters.Dropped)
-	if s.SegmentCounters.Answered > 0 {
-		line += fmt.Sprintf(", %d answered", s.SegmentCounters.Answered)
+	for _, count := range []struct {
+		n    uint64
+		name string
+	}{
+		{s.SegmentCounters.Answered, "answered"},
+		{s.SegmentCounters.Egressed, "egressed"},
+		{s.SegmentCounters.Refused, "refused"},
+		{s.SegmentCounters.NotReady, "not ready"},
+		{s.SegmentCounters.Drained, "drained"},
+	} {
+		if count.n > 0 {
+			line += fmt.Sprintf(", %d %s", count.n, count.name)
+		}
 	}
 	return line + ")"
 }

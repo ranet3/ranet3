@@ -15,7 +15,7 @@ const (
 	// it holds every segment of the largest GSO frame a tun whose gso_max_segs is the read batch hands over, ReadPacketSpacing around each, as TestSlabHoldsTheLargestGSOFrame computes
 	// so it holds a packet of 65535 bytes whatever the device's MTU
 	outboundSlabSize = 2 * 65535
-	// inboundWriteBatchSize is the most packets one tun write carries
+	// inboundWriteBatchSize is the most packets one write to the mesh tun or the egress device carries
 	// wireguard-go's tun write sizes its GRO tables for that many
 	inboundWriteBatchSize = 128
 	// inboundWriteQueueSize is the batches one inbound writer lane queues before a delivery to it waits
@@ -103,6 +103,10 @@ const sendErrReportInterval = 10 * time.Second
 // choosing to send malformed headers should cost this node a counter, not a
 // log line per packet.
 const segmentDropInterval = 30 * time.Second
+
+// egressDrainRetry is how long the egress device's drain waits after a read that failed other than by closing
+// it keeps a device that fails every read from spinning a core
+const egressDrainRetry = 100 * time.Millisecond
 
 // icmpBurst and icmpRefill bound the ICMP errors this node answers refused
 // packets with. A traceroute sends three probes per hop, so the burst carries
