@@ -1304,6 +1304,12 @@ func fullConfig() Config {
 				Local: []srv6.Segment{
 					{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEndDT46},
 					{SID: schema.MustAddr("3fff:1:69c:8c6::2"), Behavior: srv6.BehaviorEnd},
+					{
+						SID:      schema.MustAddr("3fff:1:69c:8c6::3"),
+						Behavior: srv6.BehaviorEndDT46,
+						Deliver:  srv6.DeliverEgress,
+						Allow:    []schema.Prefix{schema.MustPrefix("3fff:a::/32"), schema.MustPrefix("198.18.104.0/24")},
+					},
 				},
 				Steer: []srv6.Steer{{
 					From:   schema.MustPrefix("3fff:a::198:18:104:117/128"),

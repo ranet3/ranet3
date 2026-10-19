@@ -42,9 +42,10 @@ type Segments struct {
 //
 // Both lists are read as sets: the local segments become a map keyed by SID
 // and the steering entries a trie keyed by their selector, and a duplicate key
-// in either is refused rather than resolved by position. The segments inside
-// one steering entry are the exception and are left alone, because Via is the
-// order a packet visits its waypoints.
+// in either is refused rather than resolved by position. An egress segment's
+// allow list is a set too, sorted here and refused with a duplicate. The
+// segments inside one steering entry are the exception and are left alone,
+// because Via is the order a packet visits its waypoints.
 func (s Segments) Normalized() Segments {
 	if len(s.Local) == 0 {
 		s.Local = nil
@@ -52,6 +53,9 @@ func (s Segments) Normalized() Segments {
 		s.Local = slices.SortedFunc(slices.Values(s.Local), func(a, b Segment) int {
 			return cmp.Or(schema.CompareAddr(a.SID, b.SID), cmp.Compare(a.Behavior, b.Behavior))
 		})
+		for i := range s.Local {
+			s.Local[i].Allow = slices.SortedFunc(slices.Values(s.Local[i].Allow), schema.ComparePrefix)
+		}
 	}
 	if len(s.Steer) == 0 {
 		s.Steer = nil
@@ -77,6 +81,16 @@ func (s Segments) Normalized() Segments {
 		)
 	})
 	return s
+}
+
+func (s Segments) Egress() []Segment {
+	var out []Segment
+	for _, segment := range s.Local {
+		if segment.Deliver == DeliverEgress {
+			out = append(out, segment)
+		}
+	}
+	return out
 }
 
 // Validate refuses a capability this node could not act on, by building the
@@ -126,4 +140,27 @@ func (b Behavior) MarshalText() ([]byte, error) {
 
 func (b *Behavior) UnmarshalYAML(value *yaml.Node) error {
 	return schema.Scalar(value, "a behavior, End or End.DT46", b)
+}
+
+func (d *Delivery) UnmarshalText(text []byte) error {
+	switch string(text) {
+	case "mesh":
+		*d = DeliverMesh
+	case "egress":
+		*d = DeliverEgress
+	default:
+		return fmt.Errorf("srv6: deliver %q is not mesh or egress", text)
+	}
+	return nil
+}
+
+func (d Delivery) MarshalText() ([]byte, error) {
+	if d != DeliverMesh && d != DeliverEgress {
+		return nil, fmt.Errorf("srv6: %s has no spelling", d)
+	}
+	return []byte(d.String()), nil
+}
+
+func (d *Delivery) UnmarshalYAML(value *yaml.Node) error {
+	return schema.Scalar(value, "a delivery, mesh or egress", d)
 }

@@ -136,11 +136,11 @@ func TestSegmentsOfOursThatCannotBeActedOnAreDropped(t *testing.T) {
 // never answered about the header.
 func TestEgressSegmentCarriesOnlyTheSourcesItAllows(t *testing.T) {
 	exit := addr("3fff:1:69c:98d6::3")
-	table, err := NewLocalTable([]Segment{EgressSegment(schema.AddrFrom(exit), []schema.Prefix{
+	table, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46, Deliver: DeliverEgress, Allow: []schema.Prefix{
 		schema.MustPrefix("3fff:1:69c:8c0::/60"),
 		schema.MustPrefix("3fff:a::/64"),
 		schema.MustPrefix("198.18.104.0/24"),
-	})})
+	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestEgressAllowListSurvivesTheCallerChangingItsSlice(t *testing.T) {
 	exit := addr("3fff:1:69c:98d6::3")
 	allow := make([]schema.Prefix, 1, 2)
 	allow[0] = schema.MustPrefix("3fff:a::/64")
-	table, err := NewLocalTable([]Segment{EgressSegment(schema.AddrFrom(exit), allow)})
+	table, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46, Deliver: DeliverEgress, Allow: allow}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,16 +232,13 @@ func TestEgressAllowListSurvivesTheCallerChangingItsSlice(t *testing.T) {
 
 // A configuration whose two halves disagree about what this node does, or that
 // names something not implemented, is refused at startup rather than skipped.
-// An egress segment with no allow list would carry any source's traffic.
 // Each refusal names the segment.
 func TestLocalTableRefusesWhatItCannotAnswerFor(t *testing.T) {
 	for name, segments := range map[string][]Segment{
-		"a v4 segment":         {{SID: saddr("198.18.104.117"), Behavior: BehaviorEnd}},
-		"a duplicate":          {{SID: saddr("2001:db8::1"), Behavior: BehaviorEnd}, {SID: saddr("2001:db8::1"), Behavior: BehaviorEndDT46}},
-		"a behavior of no":     {{SID: saddr("2001:db8::1"), Behavior: 0}},
-		"one not written":      {{SID: saddr("2001:db8::1"), Behavior: Behavior(99)}},
-		"egress with no list":  {EgressSegment(saddr("2001:db8::1"), nil)},
-		"egress with an empty": {EgressSegment(saddr("2001:db8::1"), []schema.Prefix{})},
+		"a v4 segment":     {{SID: saddr("198.18.104.117"), Behavior: BehaviorEnd}},
+		"a duplicate":      {{SID: saddr("2001:db8::1"), Behavior: BehaviorEnd}, {SID: saddr("2001:db8::1"), Behavior: BehaviorEndDT46}},
+		"a behavior of no": {{SID: saddr("2001:db8::1"), Behavior: 0}},
+		"one not written":  {{SID: saddr("2001:db8::1"), Behavior: Behavior(99)}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := NewLocalTable(segments)
@@ -256,6 +253,114 @@ func TestLocalTableRefusesWhatItCannotAnswerFor(t *testing.T) {
 	table, err := NewLocalTable(nil)
 	if err != nil || table != nil {
 		t.Errorf("an empty configuration produced %v (%v), want no table at all", table, err)
+	}
+}
+
+// egressAt is an egress segment on sid allowing the prefixes written
+func egressAt(sid string, allow ...string) Segment {
+	segment := Segment{SID: saddr(sid), Behavior: BehaviorEndDT46, Deliver: DeliverEgress}
+	for _, prefix := range allow {
+		segment.Allow = append(segment.Allow, sprefix(prefix))
+	}
+	return segment
+}
+
+// Each refusal of an egress segment is one an operator reads at load and names
+// the field to change: a list that would make the exit an open proxy, one no
+// packet could pass, and a delivery or a list on a segment that never reads it
+func TestEgressSegmentIsRefusedWhereItWouldCarryTheWrongSources(t *testing.T) {
+	const sid = "2001:db8::3"
+	with := func(segment Segment, change func(*Segment)) Segment {
+		change(&segment)
+		return segment
+	}
+	valid := egressAt(sid, "3fff:a::/32", "198.18.0.0/15")
+	for name, c := range map[string]struct {
+		segments []Segment
+		says     string
+	}{
+		"deliver egress on End":      {[]Segment{with(valid, func(s *Segment) { s.Behavior = BehaviorEnd })}, "deliver egress belongs to End.DT46, and End hands the packet to its next segment"},
+		"allow on a mesh End.DT46":   {[]Segment{with(valid, func(s *Segment) { s.Deliver = DeliverMesh })}, `allow is read only with deliver = "egress"`},
+		"allow on End":               {[]Segment{with(valid, func(s *Segment) { s.Deliver, s.Behavior = DeliverMesh, BehaviorEnd })}, `allow is read only with deliver = "egress"`},
+		"a delivery with no name":    {[]Segment{with(valid, func(s *Segment) { s.Deliver = 7 })}, "delivery(7) is not mesh or egress"},
+		"no allow list":              {[]Segment{egressAt(sid)}, "delivers to egress with no allow list"},
+		"an empty allow list":        {[]Segment{with(valid, func(s *Segment) { s.Allow = []schema.Prefix{} })}, "delivers to egress with no allow list"},
+		"an entry that is no prefix": {[]Segment{with(valid, func(s *Segment) { s.Allow = append(s.Allow, schema.Prefix{}) })}, "allow entry 3 is not a prefix"},
+		"bits below the length":      {[]Segment{egressAt(sid, "3fff:a::1/32")}, "allow 3fff:a::1/32 has bits set below its prefix length"},
+		"an IPv4 prefix as IPv6":     {[]Segment{egressAt(sid, "3fff:a::/32", "::ffff:198.18.0.0/111")}, "allow ::ffff:198.18.0.0/111 is an IPv4 prefix written as IPv6, so write it as 198.18.0.0/15"},
+		"every IPv4 address":         {[]Segment{egressAt(sid, "3fff:a::/32", "0.0.0.0/0")}, "allow 0.0.0.0/0 admits every address of its family, which makes the segment an open proxy"},
+		"every IPv6 address":         {[]Segment{egressAt(sid, "::/0")}, "allow ::/0 admits every address of its family"},
+		"an IPv4 entry under /8":     {[]Segment{egressAt(sid, "3fff:a::/32", "4.0.0.0/7")}, "allow 4.0.0.0/7 is shorter than /8 for IPv4 or /12 for IPv6"},
+		"an IPv6 entry under /12":    {[]Segment{egressAt(sid, "3fe0::/11")}, "allow 3fe0::/11 is shorter than /8 for IPv4 or /12 for IPv6"},
+		"an entry written twice":     {[]Segment{egressAt(sid, "3fff:a::/32", "198.18.0.0/15", "3fff:a::/32")}, "allow 3fff:a::/32 is written twice"},
+		"no IPv6 entry":              {[]Segment{egressAt(sid, "198.18.0.0/15")}, "allow holds no IPv6 prefix, and the outer source of a segment routed packet is always IPv6"},
+		"a SID written twice": {
+			[]Segment{valid, {SID: saddr(sid), Behavior: BehaviorEnd}},
+			"cap.segment local 2001:db8::3 is written twice, as 2001:db8::3 End.DT46 deliver egress allow 3fff:a::/32 198.18.0.0/15 and as 2001:db8::3 End",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewLocalTable(c.segments)
+			if err == nil {
+				t.Fatal("the segment was accepted")
+			}
+			if !strings.Contains(err.Error(), c.says) || !strings.Contains(err.Error(), "cap.segment local "+sid) {
+				t.Errorf("the refusal %q does not say %q of %s", err, c.says, sid)
+			}
+		})
+	}
+	// the floors themselves are accepted
+	if _, err := NewLocalTable([]Segment{egressAt(sid, "3ff0::/12", "4.0.0.0/8")}); err != nil {
+		t.Errorf("an allow list at the floors was refused: %v", err)
+	}
+}
+
+// String is the segment as the file spells it, which the status line and the
+// duplicate refusal print
+func TestSegmentPrintsItsDeliveryAndAllowList(t *testing.T) {
+	for want, segment := range map[string]Segment{
+		"2001:db8::3 End.DT46": {SID: saddr("2001:db8::3"), Behavior: BehaviorEndDT46},
+		"2001:db8::2 End":      {SID: saddr("2001:db8::2"), Behavior: BehaviorEnd},
+		"2001:db8::3 End.DT46 deliver egress allow 3fff:a::/32 198.18.0.0/15": egressAt("2001:db8::3", "3fff:a::/32", "198.18.0.0/15"),
+	} {
+		if got := segment.String(); got != want {
+			t.Errorf("the segment prints as %q, want %q", got, want)
+		}
+	}
+}
+
+// deliver is spelled as a word in every format, an omitted one is the mesh,
+// and a word that is neither is refused by name
+func TestDeliverSpellsMeshOrEgress(t *testing.T) {
+	type holder struct {
+		Deliver Delivery `yaml:"deliver,omitempty" json:"deliver,omitempty" toml:"deliver,omitempty"`
+	}
+	for name, c := range map[string]struct {
+		decode func(string, *holder) error
+		mesh   string
+		egress string
+		other  string
+	}{
+		"toml": {func(s string, h *holder) error { _, err := toml.Decode(s, h); return err }, `deliver = "mesh"`, `deliver = "egress"`, `deliver = "kernel"`},
+		"yaml": {func(s string, h *holder) error { return yaml.Unmarshal([]byte(s), h) }, "deliver: mesh", "deliver: egress", "deliver: kernel"},
+		"json": {func(s string, h *holder) error { return json.Unmarshal([]byte(s), h) }, `{"deliver": "mesh"}`, `{"deliver": "egress"}`, `{"deliver": "kernel"}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for written, want := range map[string]Delivery{c.mesh: DeliverMesh, c.egress: DeliverEgress} {
+				got := holder{Deliver: 7}
+				if err := c.decode(written, &got); err != nil || got.Deliver != want {
+					t.Errorf("%s read as %v (%v), want %v", written, got.Deliver, err, want)
+				}
+			}
+			if err := c.decode(c.other, &holder{}); err == nil || !strings.Contains(err.Error(), `deliver "kernel" is not mesh or egress`) {
+				t.Errorf("%s was not refused by name: %v", c.other, err)
+			}
+		})
+	}
+	for name, render := range map[string]func(any) ([]byte, error){"yaml": yaml.Marshal, "json": json.Marshal, "toml": toml.Marshal} {
+		if written, err := render(holder{Deliver: 7}); err == nil {
+			t.Errorf("%s wrote a delivery with no spelling as %q", name, written)
+		}
 	}
 }
 
