@@ -195,7 +195,7 @@ func NewNamed(mtu int, name string, events func(kind, peer string, attrs ...slog
 		}
 		return nil, fmt.Errorf("netstack: create tun device: %w", err)
 	}
-	if err := bringTUNUp(actualName); err != nil {
+	if err := bringTUNUp(actualName, 0); err != nil {
 		_ = dev.Close()
 		return nil, fmt.Errorf("netstack: bring tun device up: %w", err)
 	}

@@ -105,17 +105,18 @@ type SegmentCounters struct {
 	Steered   uint64
 	Unsteered uint64
 	Unrouted  uint64
-	// Answered counts the ICMP errors sent for refused packets, which is the
+	// Answered counts the ICMP errors sent for dropped packets, which is the
 	// half of Dropped a sender was told about.
 	Answered uint64
 	// Egressed counts the packets the egress device accepted
 	Egressed uint64
-	// Refused counts the packets an egress segment's allow list refused, a part of Dropped never answered
+	// Refused counts the packets an egress segment refused for a source outside its allow list or an inner source it cannot read, a part of Dropped never answered
 	Refused uint64
-	// NotReady counts the egress results dropped with no egress device installed or closed under the write
+	// NotReady counts the egress results dropped with no egress device installed, closed under the write or not ready for their family
 	// it is this node's own state, so it is not in Dropped
 	NotReady uint64
 	// Drained counts the packets read off the egress device and thrown away, each one a route into the wrong device
+	// a packet to an IPv6 multicast address of interface-local or link-local scope is the kernel's own and not counted
 	Drained uint64
 }
 
@@ -157,6 +158,8 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 		}
 	}
 	var forward []forwardedSegment
+	var ready uint32
+	readyRead := false
 	for i, frame := range frames {
 		packet := frame[TUNHeadroom:]
 		result := act(packet)
@@ -173,6 +176,14 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 			deliver = append(deliver, frame[len(frame)-TUNHeadroom-len(result.Inner):])
 		case srv6.ActionEgress:
 			take(i)
+			if !readyRead {
+				ready, readyRead = m.egressReady.Load(), true
+			}
+			// a packet written while its family's translation is missing leaves the uplink untranslated
+			if ready&egressReadyFor(result.Family) == 0 {
+				m.segmentsNotReady.Add(1)
+				continue
+			}
 			m.ClampMSS(result.Inner, mtu)
 			if egress == nil {
 				egress = make([][]byte, 0, len(frames)-i)
