@@ -532,15 +532,16 @@ func (s Suites) holdsPRF(prfID uint16) bool {
 	return slices.Contains(s.ikePRFs(), Transform{Type: TransPRF, ID: prfID})
 }
 
-// holdsChild reports whether the lists still hold a Child SA's cipher and, for keys a key exchange of its own made, the entry of that one exchange
-func (s Suites) holdsChild(child ChildSA, group uint16) bool {
+// holdsChild reports whether the lists still hold a Child SA's cipher and, for keys key exchanges of its own made, the entry of those exchanges
+func (s Suites) holdsChild(child ChildSA, entry kexEntry) bool {
 	return slices.Contains(s.espCiphers(), wireCipher(child)) &&
-		(group == 0 || slices.Contains(s.kexEntries(), kexEntry{group: group}))
+		(entry == kexEntry{} || slices.Contains(s.kexEntries(), entry))
 }
 
-type childPFS struct {
+// keyedEntry ties a kex entry to the local SPI of the Child SA its key exchanges keyed
+type keyedEntry struct {
 	spi   uint32
-	group uint16
+	entry kexEntry
 }
 
 func (s *Session) lists() Suites { return current(s.suites) }
@@ -568,7 +569,7 @@ type Suite struct {
 	IKECipher, IKEPRF, IKEKex string
 	// ESPCipher is empty while the session holds no Child SA
 	ESPCipher string
-	// ESPKex is the group of the Child SA's own key exchange
+	// ESPKex is the kex entry of the Child SA's own key exchanges
 	// it is empty for a Child SA SK_d alone keyed
 	ESPKex string
 }
@@ -582,7 +583,7 @@ func (s Suite) IKE() string {
 	return s.IKECipher + "/" + s.IKEPRF + "/" + s.IKEKex
 }
 
-// ESP is the Child SA's cipher, with the group of its own key exchange after a / where it ran one
+// ESP is the Child SA's cipher, with the kex entry of its own key exchanges after a / where it ran any
 func (s Suite) ESP() string {
 	if s.ESPKex == "" {
 		return s.ESPCipher
@@ -599,16 +600,16 @@ func (s *Session) Suite() Suite {
 	}
 	s.childMu.RLock()
 	defer s.childMu.RUnlock()
-	suite.ESPCipher, suite.ESPKex = childSuite(s.Child, s.childGroupLocked())
+	suite.ESPCipher, suite.ESPKex = childSuite(s.Child, s.childEntryLocked())
 	return suite
 }
 
-// childGroupLocked is the group of the key exchange that keyed the Child SA, or zero, with childMu held
-func (s *Session) childGroupLocked() uint16 {
-	if s.childGroup.spi != s.Child.LocalSPI {
-		return 0
+// childEntryLocked is the entry of the key exchanges that keyed the Child SA, or the zero entry, with childMu held
+func (s *Session) childEntryLocked() kexEntry {
+	if s.childKex.spi != s.Child.LocalSPI {
+		return kexEntry{}
 	}
-	return s.childGroup.group
+	return s.childKex.entry
 }
 
 // unlisted names the suite of each SA holding a transform the lists in force left out
@@ -624,8 +625,8 @@ func (s *Session) unlisted() (child, ikeSA string, prf bool) {
 	}
 	s.childMu.RLock()
 	defer s.childMu.RUnlock()
-	if group := s.childGroupLocked(); s.Child.LocalSPI != 0 && !lists.holdsChild(s.Child, group) {
-		cipher, kex := childSuite(s.Child, group)
+	if entry := s.childEntryLocked(); s.Child.LocalSPI != 0 && !lists.holdsChild(s.Child, entry) {
+		cipher, kex := childSuite(s.Child, entry)
 		child = Suite{ESPCipher: cipher, ESPKex: kex}.ESP()
 	}
 	return child, ikeSA, prf
@@ -660,14 +661,14 @@ func kexName(entry kexEntry) string {
 	return strings.Join(names, "+")
 }
 
-// childSuite is a Child SA's cipher by its cap.crypto name, and the group of a key exchange of its own
-func childSuite(child ChildSA, group uint16) (cipher, kex string) {
+// childSuite is a Child SA's cipher by its cap.crypto name, and the kex entry of key exchanges of its own
+func childSuite(child ChildSA, entry kexEntry) (cipher, kex string) {
 	if child.LocalSPI == 0 {
 		return "", ""
 	}
 	cipher = transformName(wireCipher(child))
-	if group != 0 {
-		kex = transformName(Transform{Type: TransDH, ID: group})
+	if entry != (kexEntry{}) {
+		kex = kexName(entry)
 	}
 	return cipher, kex
 }

@@ -129,11 +129,12 @@ func TestEntriesAreComparedWhole(t *testing.T) {
 	if hybrid.holdsIKE(keyed) || !classical.holdsIKE(keyed) {
 		t.Errorf("an IKE SA of x25519 is held by x25519+mlkem768 %v and by x25519 %v, want false and true", hybrid.holdsIKE(keyed), classical.holdsIKE(keyed))
 	}
-	// a Child SA's own key exchange is the entry of its group alone
+	// a Child SA's own key exchanges are held by their whole entry as well
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 1}
-	if hybrid.holdsChild(child, DH_CURVE25519) || !hybrid.holdsChild(child, DH_ECP_256) {
-		t.Errorf("a Child SA keyed in x25519 is held by x25519+mlkem768 %v, one in p256 by p256 %v, want false and true",
-			hybrid.holdsChild(child, DH_CURVE25519), hybrid.holdsChild(child, DH_ECP_256))
+	joined, x25519, p256 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}, kexEntry{group: DH_CURVE25519}, kexEntry{group: DH_ECP_256}
+	if hybrid.holdsChild(child, x25519) || !hybrid.holdsChild(child, p256) || !hybrid.holdsChild(child, joined) || classical.holdsChild(child, joined) {
+		t.Errorf("a Child SA keyed in x25519 is held by x25519+mlkem768 %v, one in p256 by p256 %v, one in x25519+mlkem768 by x25519+mlkem768 %v and by x25519 %v, want false, true, true and false",
+			hybrid.holdsChild(child, x25519), hybrid.holdsChild(child, p256), hybrid.holdsChild(child, joined), classical.holdsChild(child, joined))
 	}
 }
 

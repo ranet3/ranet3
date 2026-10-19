@@ -48,9 +48,16 @@ func drawnRekeyKeyInputs(ht *hegel.T) rekeyKeyInputs {
 	return in
 }
 
-// the chained secrets of RFC 9370 section 2.2.4, SK(0) | Ni | Nr | SK(1) | ... SK(n)
+// the chained secrets of RFC 9370 section 2.2.4, SK(0) | Ni | Nr | SK(1) | ... SK(n), written one after another in that order
 func (in rekeyKeyInputs) chained() []byte {
-	return concat(slices.Concat([][]byte{in.shared, in.ni, in.nr}, in.additional)...)
+	var chain bytes.Buffer
+	chain.Write(in.shared)
+	chain.Write(in.ni)
+	chain.Write(in.nr)
+	for _, secret := range in.additional {
+		chain.Write(secret)
+	}
+	return chain.Bytes()
 }
 
 // the keys of an IKE SA rekey with additional key exchanges equal the chain RFC 9370 and RFC 7296 give, computed with crypto/hmac
@@ -248,77 +255,127 @@ func TestIKERekeyAnswerIsTakenOnlyAsTheSingleChoiceOfAnOfferedProposal(t *testin
 	})
 }
 
-// a peer's rekeys and IKE_FOLLOWUP_KE exchanges, in any order beside other requests and the passing of time, are answered as a model of the chain RFC 9370 section 2.2.4 gives
-// a rekey keeping the SA's additional key exchanges is answered with a link where it runs any, and replaces the SA at once where it runs none
+// a peer's rekeys of the IKE SA and the Child SA and its IKE_FOLLOWUP_KE exchanges, in any order beside other requests and the passing of time, are answered as a model of the chain RFC 9370 section 2.2.4 gives
+// an IKE SA rekey keeping the SA's additional key exchanges, and any Child SA rekey, is answered with a link where it runs any, and replaces its SA at once where it runs none
 // an IKE_FOLLOWUP_KE echoing the open chain's link is answered with the next method's ciphertext, a new link while methods remain, and the new SA once none remain
-// any other IKE_FOLLOWUP_KE draws STATE_NOT_FOUND, and a new rekey or followupWait passing drops the open chain, each recorded with its reason
+// any other IKE_FOLLOWUP_KE draws STATE_NOT_FOUND, a rekey of the SA the open chain makes or followupWait passing drops the chain, each recorded with the SA and the reason, and a rekey of the other SA draws TEMPORARY_FAILURE and leaves the chain
+// a Delete of the Child SA is answered with the Delete of this end's half and leaves the chain, and the peer then makes a Child SA from scratch
 // RFC 9370 section 2.2.4: "If the responder receives an IKE_FOLLOWUP_KE message for which it does not have a key exchange state, it MUST send back a new error type notification called "STATE_NOT_FOUND"."
+// RFC 7296 section 2.25.1: "If a peer receives a request to rekey the IKE SA, and it is currently creating, rekeying, or closing a Child SA of that IKE SA, it SHOULD reply with TEMPORARY_FAILURE."
 func TestPeerChainsAreAnsweredAsTheModelOfTheChain(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
-	lists := Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519, entry768, entry768And1024}}
+	entry1024And768 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024, ML_KEM_768}}
+	// the model's entries, each with the methods of its additional key exchanges in the order they run
+	entries := []struct {
+		entry   kexEntry
+		methods []uint16
+	}{{entryX25519, nil}, {entry768, []uint16{ML_KEM_768}}, {entry768And1024, []uint16{ML_KEM_768, ML_KEM_1024}}, {entry1024And768, []uint16{ML_KEM_1024, ML_KEM_768}}}
+	// leavesOut holds each pair of the SA's entry and a rekey's entry where the rekey runs without one of the SA's methods, which the lists holding the SA's entry refuse
+	// RFC 9370 section 2.2.1: "With these semantics, note that ADDKE Transform Types are not associated with any particular type of key exchange and do not have any Transform IDs that are specific per Transform Type IANA registry."
+	// RFC 9370 section 4: "The ordering of the additional key exchanges should not matter in general, as only the final shared secret is of interest."
+	// so a method that moves to another ADDKE type is kept, and x25519+mlkem768+mlkem1024 and x25519+mlkem1024+mlkem768 each keep the other
+	leavesOut := map[[2]int]bool{{1, 0}: true, {2, 0}: true, {2, 1}: true, {3, 0}: true, {3, 1}: true}
+	lists := Suites{ikeCipher: []Transform{encrAES128}}
+	for _, e := range entries {
+		lists.kex = append(lists.kex, e.entry)
+	}
+	offering := func(base []Transform, at int) []Transform {
+		offer := slices.Clone(base)
+		for n, method := range entries[at].methods {
+			offer = append(offer, Transform{Type: TransADDKE1 + TransformType(n), ID: method})
+		}
+		return offer
+	}
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
 	pbt.Check(t, func(ht *hegel.T) {
-		s := answeringSession(ht, mux, classicalSuite, child, 0, lists)
+		// the model: the IKE SA's entry, drawn so that a rekey dropping an addition can meet the first step, whether the session holds a Child SA, and the open chain's SA, entry, peer and methods left, none open where peer is nil
+		current, offered := hegel.Draw(ht, hegel.Integers(0, len(entries)-1)), 0
+		held := true
+		suite := classicalSuite
+		suite.Additions = entries[current].entry.additions
+		s := answeringSession(ht, mux, suite, child, 0, lists)
 		events := &recorder{}
 		s.events = events.record
-		// the model: the SA's entry, and the open chain's entry, peer and methods left, none open where peer is nil
-		current, offered := entryX25519, kexEntry{}
 		var peer *peerRekey
+		var kind string
 		var left int
+		// drops holds the sa and reason attributes of each chain dropped
 		var drops []string
 		// links holds the link of each chain that ended, which no later IKE_FOLLOWUP_KE may reach
 		var links [][]byte
-		// replaced checks the SA was replaced by the one the peer's rekey made in entry, and has the peer delete the SA it replaced
-		replaced := func(old *ikeContext, by *peerRekey, entry kexEntry) {
+		// replaced checks the SA was replaced by the one the peer's rekey made in the entry at index at, and has the peer delete the SA it replaced
+		replaced := func(old *ikeContext, by *peerRekey, at int) {
 			suite := classicalSuite
-			suite.Additions = entry.additions
+			suite.Additions = entries[at].entry.additions
 			now, retained := s.contexts()
 			if now == old || retained != old || now.suite != suite || now.spiI != by.spiI || !sameKeys(now, by.keys(ht, old, suite)) {
-				ht.Fatalf("the session is current on an SA in %+v and retains the old one is %v, want the SA of %+v the peer's rekey made", now.suite, retained == old, entry)
+				ht.Fatalf("the session is current on an SA in %+v and retains the old one is %v, want the SA of %+v the peer's rekey made", now.suite, retained == old, entries[at].entry)
 			}
 			header := Header{SPIInitiator: old.spiI, SPIResponder: old.spiR, ExchangeType: INFORMATIONAL}
 			if _, err := s.handleRequest(old, &header, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}); err != nil {
 				ht.Fatalf("the peer's Delete of the replaced SA ended the session: %v", err)
 			}
-			current = entry
+			current = at
+		}
+		// replacedChild checks the Child SA was made by the peer's rekey or creation in the entry at index at, and has the peer delete the Child SA it replaced where the session held one, which every later rekey would wait on
+		replacedChild := func(by *peerRekey, at int) {
+			ctx := s.current
+			initKey, respKey, err := childSAKeymat(ctx.suite.PRFID, ctx.skD, by.shared, by.ni, by.nr, ENCR_AES_GCM_16, 128, by.secrets...)
+			if err != nil {
+				ht.Fatal(err)
+			}
+			got := s.currentChild()
+			if !by.installed(s) || !bytes.Equal(got.InboundKey, initKey) || !bytes.Equal(got.OutboundKey, respKey) || s.Suite().ESPKex != kexName(entries[at].entry) {
+				ht.Fatalf("the session holds the Child SA of SPIs %08x and %08x in %s, want the Child SA of %+v the peer's rekey made", got.LocalSPI, got.RemoteSPI, s.Suite().ESP(), entries[at].entry)
+			}
+			if held {
+				header := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL}
+				deleted := Delete{Protocol: ProtoESP, SPIs: [][]byte{binary.BigEndian.AppendUint32(nil, s.retiringChild().RemoteSPI)}}
+				if _, err := s.handleRequest(ctx, &header, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(deleted)}}); err != nil || s.retiringChild().LocalSPI != 0 {
+					ht.Fatalf("the peer's Delete of the replaced Child SA ended the session with %v or left it retiring", err)
+				}
+			}
+			held = true
 		}
 		for range hegel.Draw(ht, pbt.Spanning(1, 12)) {
 			ctx := s.current
-			switch hegel.Draw(ht, hegel.Integers(0, 5)) {
+			switch hegel.Draw(ht, hegel.Integers(0, 7)) {
 			case 0:
-				entry := hegel.Draw(ht, hegel.SampledFrom(lists.kex))
-				offer := slices.Clone(classicalOffer)
-				for at, method := range entry.added() {
-					offer = append(offer, Transform{Type: TransADDKE1 + TransformType(at), ID: method})
-				}
+				at := hegel.Draw(ht, hegel.Integers(0, len(entries)-1))
 				// the steps come faster than the limit on a peer's rekeys allows, so each starts it over
 				s.lastPeerIKERekey.Store(0)
-				next, request := newPeerRekey(ht, offer, hegel.Draw(ht, hegel.Binary(32, 32)))
-				answer := next.rekey(ht, s, ctx, request)
+				next, request := newPeerRekey(ht, offering(classicalOffer, at), hegel.Draw(ht, hegel.Binary(32, 32)))
+				answer := next.rekey(ht, s.handleIKERekey, ctx, request)
+				// the peer's rekey of the Child SA runs until its chain ends
+				if peer != nil && kind == "child" {
+					if !notified(answer, N_TEMPORARY_FAILURE, nil) {
+						ht.Fatalf("an IKE SA rekey during a Child SA chain drew %v, want TEMPORARY_FAILURE", payloadTypes(answer))
+					}
+					break
+				}
 				// a rekey of the IKE SA ends the peer's last one, whatever its own answer
 				if peer != nil {
-					drops, links, peer = append(drops, "superseded"), append(links, peer.link), nil
+					drops, links, peer = append(drops, "sa=ike reason=superseded"), append(links, peer.link), nil
 				}
-				// while the lists hold the SA's entry, a rekey keeps each of its additional key exchanges
-				kept := !slices.ContainsFunc(current.added(), func(method uint16) bool { return !slices.Contains(entry.added(), method) })
 				switch {
-				case !kept:
+				// while the lists hold the SA's entry, a rekey keeps each of its additional key exchanges
+				case leavesOut[[2]int{current, at}]:
 					if !notified(answer, N_NO_PROPOSAL_CHOSEN, nil) {
-						ht.Fatalf("a rekey into %+v of an SA of %+v drew %v, want NO_PROPOSAL_CHOSEN", entry, current, payloadTypes(answer))
+						ht.Fatalf("a rekey into %+v of an SA of %+v drew %v, want NO_PROPOSAL_CHOSEN", entries[at].entry, entries[current].entry, payloadTypes(answer))
 					}
-				case entry.classical():
+				case len(entries[at].methods) == 0:
 					if findType(answer, PayloadSA) == nil || next.link != nil {
-						ht.Fatalf("a rekey into %+v drew %v with the link %x, want it taken with no link", entry, payloadTypes(answer), next.link)
+						ht.Fatalf("a rekey into %+v drew %v with the link %x, want it taken with no link", entries[at].entry, payloadTypes(answer), next.link)
 					}
-					replaced(ctx, next, entry)
+					replaced(ctx, next, at)
 				default:
 					if findType(answer, PayloadSA) == nil || len(next.link) != followupLinkLen {
-						ht.Fatalf("a rekey into %+v drew %v with the link %x, want it taken with a link of %d octets", entry, payloadTypes(answer), next.link, followupLinkLen)
+						ht.Fatalf("a rekey into %+v drew %v with the link %x, want it taken with a link of %d octets", entries[at].entry, payloadTypes(answer), next.link, followupLinkLen)
 					}
 					if now, _ := s.contexts(); now != ctx {
 						ht.Fatal("a rekey with additional key exchanges replaced the SA at its CREATE_CHILD_SA")
 					}
-					peer, offered, left = next, entry, len(entry.added())
+					peer, kind, offered, left = next, "ike", at, len(entries[at].methods)
 				}
 			case 1:
 				if peer == nil {
@@ -327,7 +384,8 @@ func TestPeerChainsAreAnsweredAsTheModelOfTheChain(t *testing.T) {
 					}
 					continue
 				}
-				method, previous := offered.added()[len(offered.added())-left], peer.link
+				methods := entries[offered].methods
+				method, previous := methods[len(methods)-left], peer.link
 				answer, err := peer.followup(ht, s, ctx, method, previous)
 				if left--; left > 0 {
 					if err != nil || findType(answer, PayloadKE) == nil || len(peer.link) != followupLinkLen || bytes.Equal(peer.link, previous) {
@@ -339,7 +397,11 @@ func TestPeerChainsAreAnsweredAsTheModelOfTheChain(t *testing.T) {
 					ht.Fatalf("the last IKE_FOLLOWUP_KE drew %v, %v, want KEr alone", payloadTypes(answer), err)
 				}
 				links = append(links, previous)
-				replaced(ctx, peer, offered)
+				if kind == "child" {
+					replacedChild(peer, offered)
+				} else {
+					replaced(ctx, peer, offered)
+				}
 				peer = nil
 			case 2:
 				link := hegel.Draw(ht, hegel.Binary(followupLinkLen, followupLinkLen))
@@ -358,18 +420,71 @@ func TestPeerChainsAreAnsweredAsTheModelOfTheChain(t *testing.T) {
 			case 4:
 				s.expireChain(time.Now().Add(followupWait))
 				if peer != nil {
-					drops, links, peer = append(drops, "expired"), append(links, peer.link), nil
+					drops, links, peer = append(drops, "sa="+kind+" reason=expired"), append(links, peer.link), nil
 				}
 			case 5:
 				s.expireChain(time.Now())
+			case 6:
+				at := hegel.Draw(ht, hegel.Integers(0, len(entries)-1))
+				s.lastPeerChildRekey.Store(0)
+				next, request := newPeerChildRekey(ht, s, offering([]Transform{encrAES128, dhX25519}, at), hegel.Draw(ht, hegel.Binary(32, 32)))
+				answer := next.rekey(ht, s.handleChildRekey, ctx, request)
+				// the peer's rekey of the IKE SA runs until its chain ends
+				if peer != nil && kind == "ike" {
+					if !notified(answer, N_TEMPORARY_FAILURE, nil) {
+						ht.Fatalf("a Child SA rekey during an IKE SA chain drew %v, want TEMPORARY_FAILURE", payloadTypes(answer))
+					}
+					break
+				}
+				if peer != nil {
+					drops, links, peer = append(drops, "sa=child reason=superseded"), append(links, peer.link), nil
+				}
+				if findType(answer, PayloadSA) == nil {
+					ht.Fatalf("a Child SA rekey into %+v drew %v, want it taken", entries[at].entry, payloadTypes(answer))
+				}
+				if len(entries[at].methods) == 0 {
+					if next.link != nil {
+						ht.Fatalf("a Child SA rekey into %+v drew the link %x, want none", entries[at].entry, next.link)
+					}
+					replacedChild(next, at)
+					break
+				}
+				if len(next.link) != followupLinkLen || next.installed(s) {
+					ht.Fatalf("a Child SA rekey into %+v drew the link %x and installed the Child SA is %v, want a link of %d octets and the Child SA left to the chain", entries[at].entry, next.link, next.installed(s), followupLinkLen)
+				}
+				peer, kind, offered, left = next, "child", at, len(entries[at].methods)
+			case 7:
+				if !held {
+					break
+				}
+				// the peer deletes the Child SA, which leaves any chain open, and its next Child SA request makes one from scratch
+				deleting := s.currentChild()
+				header := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL}
+				deleted := Delete{Protocol: ProtoESP, SPIs: [][]byte{binary.BigEndian.AppendUint32(nil, deleting.RemoteSPI)}}
+				raw, err := s.handleRequest(ctx, &header, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(deleted)}})
+				if err != nil {
+					ht.Fatalf("the peer's Delete of the Child SA ended the session: %v", err)
+				}
+				var answered Delete
+				if payload := findType(sealedAnswer(ht, ctx, raw), PayloadD); payload != nil {
+					answered, err = DecodeDelete(payload.Body)
+				}
+				if err != nil || answered.Protocol != ProtoESP || len(answered.SPIs) != 1 || binary.BigEndian.Uint32(answered.SPIs[0]) != deleting.LocalSPI || s.currentChild().LocalSPI != 0 {
+					ht.Fatalf("the peer's Delete of the Child SA of SPIs %08x and %08x drew %+v, %v, want the Delete of this end's half and the Child SA gone", deleting.LocalSPI, deleting.RemoteSPI, answered, err)
+				}
+				held = false
 			}
-			if s.chainOpen() != (peer != nil) {
-				ht.Fatalf("the session holds a chain is %v, the model %v", s.chainOpen(), peer != nil)
+			want := ""
+			if peer != nil {
+				want = kind
+			}
+			if got := s.chainKind(); got != want {
+				ht.Fatalf("the session holds a chain of %q, the model of %q", got, want)
 			}
 			var dropped []string
 			for _, line := range events.recorded() {
-				if reason, ok := strings.CutPrefix(line, "ike.followup.dropped > sa=ike reason="); ok {
-					dropped = append(dropped, reason)
+				if attrs, ok := strings.CutPrefix(line, "ike.followup.dropped > "); ok {
+					dropped = append(dropped, attrs)
 				}
 			}
 			if !slices.Equal(dropped, drops) {
