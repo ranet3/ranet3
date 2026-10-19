@@ -294,6 +294,9 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	}
 	var pending *pendingRequest
 	var ender *pendingRequest
+	// RFC 7296 section 2.8: "the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
+	// once a caller's Delete of the current IKE SA has gone out, the replacement's among them, no request goes out on that SA, a liveness check and the session's own Delete among them
+	deleted := false
 	childSchedule, err := s.newRekeySchedule("Child SA", "child", s.childRekeyInterval, s.RekeyChild, s.childEstablishedAt)
 	if err != nil {
 		return err
@@ -473,7 +476,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	// until then an expired IKE SA carries that exchange, its answers to the peer and its Delete, and starts nothing else
 	expired := func() bool { return s.ikeExpired(s.currentContext()) }
 	livenessDue := func() time.Time {
-		if expired() {
+		if expired() || deleted {
 			return time.Now().Add(s.dpdInterval())
 		}
 		return lastAuthenticated.Add(s.dpdInterval())
@@ -547,7 +550,13 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			lastAuthenticated = time.Now()
 			s.noteActive()
 		}
-		// the replacement's Delete ends the IKE SA in place of this one, and no request follows a Delete of the IKE SA
+		// a session ending once a caller's Delete of the IKE SA has gone out sends no Delete of its own, and the replacement's ends the session through replaced
+		// it follows every check that can start the ending in the same pass, a lifetime among them, so an ending started there sends none either
+		if ending != nil && deleted && pending == nil && !replacing {
+			s.mux.Close()
+			return ending
+		}
+		// the replacement's Delete ends the IKE SA in place of this one
 		if ending != nil && running == nil && pending == nil && ender == nil && !replacing {
 			started, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, inner: []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}},
 				result: make(chan requestResult, 1), teardown: true})
@@ -561,11 +570,15 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			select {
 			case req := <-s.requests:
 				var err error
+				switch {
+				case deleted:
+					err = errors.New("ike: the IKE SA's Delete was sent")
 				// an expired IKE SA still carries its Delete, which while replacing is the replacement's
-				if expired() && !deletesIKE(req.inner) {
+				case expired() && !deletesIKE(req.inner):
 					err = errors.New("ike: the IKE SA is past its lifetime")
-				} else {
+				default:
 					pending, err = s.startRequest(req)
+					deleted = err == nil && deletesIKE(req.inner) && pending.context == s.currentContext()
 				}
 				if err != nil {
 					req.result <- requestResult{err: err}
@@ -657,7 +670,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			fail(err)
 			continue
 		case <-s.probes:
-			if pending == nil && expired() {
+			if pending == nil && (expired() || deleted) {
 				continue
 			}
 			probed, err := s.probe(pending)
