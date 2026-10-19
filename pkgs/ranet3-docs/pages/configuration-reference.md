@@ -548,24 +548,52 @@ the peer deleted, or `ranet3 rekey`. The retries stop at the SA's lifetime.
 
 The IKE SA's transforms, each list most preferred first.
 
-| Key      | Value         | Default                                          | Meaning             |
-| -------- | ------------- | ------------------------------------------------ | ------------------- |
-| `cipher` | list of names | `["aes256gcm", "aes128gcm", "chacha20poly1305"]` | IKE SA ciphers      |
-| `prf`    | list of names | `["sha384", "sha256"]`                           | IKE SA PRFs         |
-| `kex`    | list of names | `["x25519", "p384", "p256"]`                     | Key exchange groups |
+| Key      | Value           | Default                                          | Meaning        |
+| -------- | --------------- | ------------------------------------------------ | -------------- |
+| `cipher` | list of names   | `["aes256gcm", "aes128gcm", "chacha20poly1305"]` | IKE SA ciphers |
+| `prf`    | list of names   | `["sha384", "sha256"]`                           | IKE SA PRFs    |
+| `kex`    | list of entries | `["x25519", "p384", "p256"]`                     | Key exchanges  |
 
 - `aes256gcm` and `aes128gcm` are AES-GCM with a 16-octet tag and a 256 or
   128-bit key, and `chacha20poly1305` is ChaCha20-Poly1305. `sha384` and
   `sha256` are HMAC-SHA2-384 and HMAC-SHA2-256. `x25519`, `p384` and `p256` are
-  Curve25519 and the NIST curves P-384 and P-256.
-- A list left out holds every name in the default's order. An empty list, a name
-  written twice and a name not in the default are refused, and names are
-  lowercase.
-- A `kex` entry that joins key exchanges with `+`, such as `x25519+mlkem768`, is
-  refused, since the additional key exchanges of RFC 9370 are not implemented.
-  An ML-KEM name alone, such as `mlkem768`, is refused, since it runs only after
-  a classical key exchange.
-- `kex` also holds the groups a peer's Child SA rekey may run a key exchange in.
+  Curve25519 and the NIST curves P-384 and P-256, and `mlkem768` is ML-KEM-768
+  of FIPS 203.
+- A list left out holds every name in the default's order. An empty list, an
+  entry written twice and a name not in the default, other than `mlkem768`
+  joined in a `kex` entry, are refused, and names are lowercase.
+- A `kex` entry is a classical key exchange, alone or joined with `+` by
+  `mlkem768`, as in `x25519+mlkem768`. The classical key exchange runs in
+  `IKE_SA_INIT`, and ML-KEM-768 runs after it in an `IKE_INTERMEDIATE` exchange
+  of its own, as
+  [RFC 9370 section 2.2](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2)
+  and [RFC 9242](https://www.rfc-editor.org/rfc/rfc9242.html) describe. The IKE
+  SA's keys come from both.
+- The load refuses these `kex` entries, and its error names the entry:
+  - An entry that starts with an ML-KEM name or is one alone, such as
+    `mlkem768`, since ML-KEM runs only after a classical key exchange.
+  - An entry that joins a classical name, such as `x25519+p256`.
+  - An entry that joins more than 1 name.
+  - An entry that joins `mlkem1024`, whose `IKE_INTERMEDIATE` messages pass 1500
+    octets and need the IKE fragmentation of RFC 7383, which ranet3 does not
+    implement.
+  - An entry that names `mlkem512` or any other name `kex` does not take.
+- The classical entries of `kex` are the groups a peer's Child SA rekey may run
+  a key exchange in. A Child SA runs no additional key exchange, so a peer's
+  Child SA proposal that requires one is not taken, and one that offers `NONE`
+  for it gets `NONE` back.
+
+A list of joined entries alone, such as `["x25519+mlkem768"]`, refuses every
+peer without ML-KEM-768. A list that also holds a classical entry lets a session
+fall back to it. Between 2 nodes that both list a classical entry, an attacker
+on the path who can break the classical key exchange while the handshake runs
+can steer them to that entry.
+[The ML-KEM draft's section 3](https://datatracker.ietf.org/doc/html/draft-ietf-ipsecme-ikev2-mlkem-09#section-3)
+says "The simplest way to prevent such active attacks is to disable support for
+traditional-only sequences of key exchanges whenever possible." List only joined
+entries for peers known to run ML-KEM-768. The `IKE_INTERMEDIATE` request of
+ML-KEM-768 needs a path of 1281 bytes over IPv4 and 1301 over IPv6, as
+[limits](design/limits.md#ml-kem-and-the-path) describes.
 
 ### `cap.crypto.esp`
 
@@ -578,14 +606,22 @@ of `cap.crypto.ike.cipher`.
 
 ### How the lists are used
 
-A dialing node offers each list in its order, with its key exchange in the first
-`kex` group. An answering node takes, of each kind, the first transform of its
-own list that the offer holds, whatever order the offer gives. With the default
-lists, a strongSwan initiator that proposes `chacha20poly1305` first, as a host
-without AES instructions does, gets `aes256gcm`. The group is the first of `kex`
-that the offer holds. An offer whose key exchange is in another group is
-answered with `INVALID_KE_PAYLOAD` naming that first group, and the peer tries
-again in it, which costs 1 round trip.
+A dialing node offers 1 proposal for each `kex` entry, in the list's order, each
+holding every listed cipher and PRF, and sends its key exchange in the group of
+the first entry. An offer holding a joined entry also asks the peer for
+`IKE_INTERMEDIATE`. A proposal holds an entry when it offers the entry's group
+and its ML-KEM method, and `NONE` in any additional key exchange type the entry
+does not use. An answering node takes the first entry of its own `kex` that a
+proposal of the offer holds, and of 2 proposals holding it the earlier. A
+proposal that offers an additional key exchange counts only when the offer asked
+for `IKE_INTERMEDIATE`. Of each other kind the node takes the first transform of
+its own list that the proposal holds, whatever order the offer gives. With the
+default lists, a strongSwan initiator that proposes `chacha20poly1305` first, as
+a host without AES instructions does, gets `aes256gcm`. An offer whose key
+exchange is in another group than the chosen entry's is answered with
+`INVALID_KE_PAYLOAD` naming that group, and the peer tries again in it, which
+costs 1 round trip. A dialing node asked for another group moves the first
+proposal in that group ahead of the rest, which keep their order.
 
 An offer the lists share no transform of one kind with is refused with
 `NO_PROPOSAL_CHOSEN`, in `IKE_SA_INIT`, in the Child SA of `IKE_AUTH` and in
@@ -596,13 +632,15 @@ A Child SA rekey this node starts offers only the cipher of the SA it replaces
 while `esp.cipher` holds it. Answering a peer's Child SA rekey, it takes that
 cipher first when the offer holds it. An IKE SA rekey keeps the PRF and takes
 the cipher as a new IKE SA does. An IKE SA rekey this node starts runs its key
-exchange in the SA's group while `kex` holds it, and a peer's rekey whose key
-exchange is in the SA's group keeps that group. `ranet3 sessions` and the
-`ike.session.established` event name the transforms each session runs.
+exchange in the SA's group while `kex` holds that group as an entry of its own,
+and a peer's rekey whose key exchange is in the SA's group keeps that entry.
+`ranet3 sessions` and the `ike.session.established` event name the transforms
+each session runs, an IKE SA's joined entry with its `+`, such as
+`x25519+mlkem768`.
 
 A reload applies the lists to the next exchange, as
-[reloading](reloading.md#capcrypto) describes. An SA holding a cipher or a group
-the new lists leave out is rekeyed under them after a delay drawn up to
+[reloading](reloading.md#capcrypto) describes. An SA holding a cipher or a kex
+entry the new lists leave out is rekeyed under them after a delay drawn up to
 `cap.crypto.rekey.jitter`, and no later than its scheduled rekey. An IKE SA
 whose PRF they leave out is deleted, and a new handshake replaces it.
 

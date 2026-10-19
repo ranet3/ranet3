@@ -312,6 +312,13 @@ nix build .#checks.x86_64-linux.integration-suites-meet -L
 nix build .#checks.x86_64-linux.integration-suites-meet-responder -L
 nix build .#checks.x86_64-linux.integration-suites-apart -L
 nix build .#checks.x86_64-linux.integration-suites-apart-responder -L
+nix build .#checks.x86_64-linux.integration-mlkem-meet -L
+nix build .#checks.x86_64-linux.integration-mlkem-meet-responder -L
+nix build .#checks.x86_64-linux.integration-mlkem-apart -L
+nix build .#checks.x86_64-linux.integration-mlkem-apart-responder -L
+nix build .#checks.x86_64-linux.integration-mlkem-fallback -L
+nix build .#checks.x86_64-linux.integration-mlkem-optional -L
+nix build .#checks.x86_64-linux.integration-mlkem-none -L
 ```
 
 `integration-responder` inverts the exchange: strongSwan dials and ranet3
@@ -337,6 +344,25 @@ suite, rekeys each SA from strongSwan's side and from ranet3's, and asserts the
 same suite after. In `suites-apart` the 2 ends share no IKE cipher, and the
 answering end refuses the handshake with `NO_PROPOSAL_CHOSEN` whichever end
 dials.
+
+The `integration-mlkem-*` checks set ranet3's `cap.crypto.ike.kex` against
+strongSwan's proposals, which carry ML-KEM-768 as an additional key exchange. In
+`mlkem-meet` both ends run `x25519+mlkem768` with ranet3 dialing, and in
+`mlkem-meet-responder` with strongSwan dialing. Each asserts from strongSwan's
+log the `IKE_INTERMEDIATE` exchange at Message ID 1 and `IKE_AUTH` at 2, and
+that `ranet3 sessions --json` names `x25519+mlkem768` and `swanctl --list-sas`
+`KE1_ML_KEM_768`. In `mlkem-apart` and `mlkem-apart-responder` ranet3 lists
+`x25519+mlkem768` alone against strongSwan's default proposals, which hold no
+ML-KEM, and the answering end refuses the handshake with `NO_PROPOSAL_CHOSEN`
+whichever end dials. In `mlkem-fallback` ranet3 dials listing `x25519+mlkem768`
+and then `x25519` against those defaults. strongSwan takes `x25519`, no
+`IKE_INTERMEDIATE` runs, and ranet3's rekey of the IKE SA completes in `x25519`.
+In `mlkem-optional` and `mlkem-none` strongSwan dials with ML-KEM-768 or `NONE`
+for its additional key exchange. ranet3 lists `x25519+mlkem768` first in
+`mlkem-optional` and takes ML-KEM-768. It lists `x25519` alone in `mlkem-none`,
+answers with `NONE` written out, runs no `IKE_INTERMEDIATE` and rekeys its IKE
+SA in `x25519`. strongSwan logs at level 2 for its `cfg` group in these checks,
+so its journal shows the proposals it received from ranet3, a `NONE` among them.
 
 `integration-egress` makes the client an exit node and boots a third machine
 behind it, holding prefixes the gateway can reach through the mesh and no other
@@ -403,8 +429,9 @@ holds the session's next request, and then a rekey's 3 lost sends. The script of
 `integration-initiator` and `integration-kernel` also has the gateway drop the
 client's IKE for 5 seconds while iperf3 runs, which outlasts a rekey's first
 send, and asserts that a Child SA rekey completed and that no Child SA reached
-its lifetime. The scripts of the initiator, responder and `suites-meet` checks
-fail whenever ranet3 logs that it stopped ESP on a Child SA past its lifetime.
+its lifetime. The scripts of the initiator, responder and `suites-meet` checks,
+and of the `mlkem-*` checks but the 2 `mlkem-apart` ones, fail whenever ranet3
+logs that it stopped ESP on a Child SA past its lifetime.
 
 The VM console, systemd, strongSwan, BIRD, ranet3, and iperf3 output is streamed
 by the Nix test driver. The test also prints strongSwan SA state and BIRD

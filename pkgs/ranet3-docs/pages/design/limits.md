@@ -361,6 +361,25 @@ until they expire, in both families. A steered IPv6 packet of 1280 bytes through
 a narrow session is lost too, as [segment routing](../segment-routing.md)
 describes.
 
+## ML-KEM and the path
+
+A kex entry joined by `mlkem768` adds 1 `IKE_INTERMEDIATE` exchange to the
+handshake, as [`cap.crypto.ike`](../configuration-reference.md#capcryptoike)
+describes. Its request carries the ML-KEM-768 encapsulation key in an IKE
+message of 1249 octets, a datagram of 1281 bytes over IPv4 and 1301 over IPv6
+with the Non-ESP Marker and the UDP and IP headers. Its response carries the
+ciphertext in 1153 octets, a datagram of 1185 and 1205 bytes. `IKE_SA_INIT`
+carries no ML-KEM key and keeps its size.
+
+Linux and macOS send IKE with DF, so a path that carries less than the request,
+such as an IPv6 path at the 1280-byte minimum or a tunnel of 1280 bytes, loses
+it, and the handshake fails. The one exception is a family whose sockets let the
+host fragment while a session of that family is under the floor, as above.
+ranet3 does not implement the IKE fragmentation of
+[RFC 7383](https://www.rfc-editor.org/rfc/rfc7383.html), which would split the
+message, and it refuses a kex entry joining `mlkem1024`, whose messages of 1633
+octets pass a 1500-byte path.
+
 ## Limits by area
 
 Each table gives a fixed bound, its value, and what happens past it. Bounds you
@@ -369,24 +388,25 @@ can configure are in
 
 ### IKE
 
-| Limit                                          | Value                                                                                   | Past it                                                                                   |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Half-open SAs before a cookie                  | 32 in all, or 2 from 1 address                                                          | An `IKE_SA_INIT` without a valid cookie is answered with one (RFC 7296 section 2.6)       |
-| Half-open SAs                                  | 256 in all, 16 from 1 address                                                           | A further `IKE_SA_INIT` is dropped unanswered, and its sender retransmits                 |
-| Error answers sent in the clear                | 256 at once, then 32 a second, for the whole node                                       | A further one is not sent, and at most 1 line a minute counts those held back             |
-| Responder handshake                            | 30 seconds                                                                              | The handshake is abandoned                                                                |
-| Canceled dial's wait for its `IKE_AUTH` answer | 2 seconds                                                                               | The dial ends, and a peer whose answer is late keeps its session until liveness fails     |
-| Sends of a request                             | 5, waiting 2, 4, 8, 16 and 32 seconds after each                                        | The exchange fails after 62 seconds, and its IKE SA is deemed failed                      |
-| Sends while the peer's other traffic continues | 20, about 9 minutes in all                                                              | The exchange fails, and its IKE SA is deemed failed though the peer's ESP still arrives   |
-| Silence before a liveness check                | 10 seconds                                                                              | The session sends an `INFORMATIONAL` request, retransmitted on the schedule above         |
-| Live session                                   | 20 seconds since the peer's last authenticated IKE, 20 to 30 seconds since its last ESP | The session no longer counts as live                                                      |
-| Reconnect delay                                | 10 seconds                                                                              | A dialer whose session ended waits this long before it dials again                        |
-| Sends of the Delete that ends an IKE SA        | 2, waiting 2 and 4 seconds after each                                                   | The IKE SA is deemed failed after 6 seconds                                               |
-| SA lifetime                                    | `cap.crypto.rekey.child` and `cap.crypto.rekey.ike`                                     | The SA is no longer used, and without a rekey replacing it the IKE SA is deleted          |
-| `TEMPORARY_FAILURE` answers on 1 IKE SA        | 5 minutes                                                                               | The IKE SA is deleted, and the session ends                                               |
-| Peer rekeys                                    | 1 per second for each kind of SA                                                        | A faster rekey is answered `TEMPORARY_FAILURE`                                            |
-| Replaced Child SA awaiting the peer's Delete   | up to 30 seconds, then this end deletes it                                              | Every Child SA rekey in either direction, and a peer's IKE SA rekey, is refused meanwhile |
-| Replaced IKE SA awaiting the peer's Delete     | up to 2 minutes, and no longer than its lifetime                                        | A peer's IKE SA rekey is answered `TEMPORARY_FAILURE` meanwhile                           |
+| Limit                                          | Value                                                                                   | Past it                                                                                                |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Half-open SAs before a cookie                  | 32 in all, or 2 from 1 address                                                          | An `IKE_SA_INIT` without a valid cookie is answered with one (RFC 7296 section 2.6)                    |
+| Half-open SAs                                  | 256 in all, 16 from 1 address                                                           | A further `IKE_SA_INIT` is dropped unanswered, and its sender retransmits                              |
+| Error answers sent in the clear                | 256 at once, then 32 a second, for the whole node                                       | A further one is not sent, and at most 1 line a minute counts those held back                          |
+| Responder handshake                            | 30 seconds                                                                              | The handshake is abandoned                                                                             |
+| `IKE_INTERMEDIATE` exchanges in a handshake    | 1 for each additional key exchange of the chosen kex entry, so at most 1                | A further one, or an `IKE_AUTH` ahead of the last, is answered `INVALID_SYNTAX` and the handshake ends |
+| Canceled dial's wait for its `IKE_AUTH` answer | 2 seconds                                                                               | The dial ends, and a peer whose answer is late keeps its session until liveness fails                  |
+| Sends of a request                             | 5, waiting 2, 4, 8, 16 and 32 seconds after each                                        | The exchange fails after 62 seconds, and its IKE SA is deemed failed                                   |
+| Sends while the peer's other traffic continues | 20, about 9 minutes in all                                                              | The exchange fails, and its IKE SA is deemed failed though the peer's ESP still arrives                |
+| Silence before a liveness check                | 10 seconds                                                                              | The session sends an `INFORMATIONAL` request, retransmitted on the schedule above                      |
+| Live session                                   | 20 seconds since the peer's last authenticated IKE, 20 to 30 seconds since its last ESP | The session no longer counts as live                                                                   |
+| Reconnect delay                                | 10 seconds                                                                              | A dialer whose session ended waits this long before it dials again                                     |
+| Sends of the Delete that ends an IKE SA        | 2, waiting 2 and 4 seconds after each                                                   | The IKE SA is deemed failed after 6 seconds                                                            |
+| SA lifetime                                    | `cap.crypto.rekey.child` and `cap.crypto.rekey.ike`                                     | The SA is no longer used, and without a rekey replacing it the IKE SA is deleted                       |
+| `TEMPORARY_FAILURE` answers on 1 IKE SA        | 5 minutes                                                                               | The IKE SA is deleted, and the session ends                                                            |
+| Peer rekeys                                    | 1 per second for each kind of SA                                                        | A faster rekey is answered `TEMPORARY_FAILURE`                                                         |
+| Replaced Child SA awaiting the peer's Delete   | up to 30 seconds, then this end deletes it                                              | Every Child SA rekey in either direction, and a peer's IKE SA rekey, is refused meanwhile              |
+| Replaced IKE SA awaiting the peer's Delete     | up to 2 minutes, and no longer than its lifetime                                        | A peer's IKE SA rekey is answered `TEMPORARY_FAILURE` meanwhile                                        |
 
 The second row holds even for a request with a valid cookie. More than 16 nodes
 behind 1 NAT that restart at once therefore wait for their retransmissions.
@@ -405,6 +425,14 @@ cookies nor the half-open limit bound how many go out. An `IKE_SA_INIT` response
 holds its half-open slot until `IKE_AUTH`, and the half-open limits and cookies
 bound it. 256 answers every half-open slot at once, and 32 a second refills them
 within the reconnect delay.
+
+No ML-KEM key travels in `IKE_SA_INIT`, so a responder runs ML-KEM only for an
+initiator that holds a half-open slot, past the cookies. The responder's 30
+seconds for a handshake cover its `IKE_INTERMEDIATE` exchange. A half-open SA
+that has answered one keeps the response, 1153 octets for ML-KEM-768, to answer
+a retransmitted request, with a digest of the request and the 2 values of
+IntAuth, so the 256 half-open SAs keep under 512 KiB of it whatever the
+initiators send.
 
 An IKE SA deemed failed ends the session when it is the session's current IKE
 SA, and the node that dialed it dials again. A replaced or redundant IKE SA
