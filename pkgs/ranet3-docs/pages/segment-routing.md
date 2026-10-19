@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-10-16
+updated: 2026-10-19
 order: 60
 ---
 
@@ -147,16 +147,34 @@ Each change also records a `pmtu.steering` event with `budget`, `need` and
 
 `status` prints a Segments line and a Steering line. Each says `off` on a node
 that configures none. The Segments line lists the local SIDs, then the node's
-forwarded, delivered and dropped counts, and the answered count once it is above
-0. The Steering line lists the entries with the steered count, and the count for
-each reason a steered packet was lost once it is above 0.
+forwarded, delivered and dropped counts, and each of the answered, egressed,
+refused, not ready and drained counts once it is above 0. The Steering line
+lists the entries with the steered count, and the count for each reason a
+steered packet was lost once it is above 0.
+
+An egress segment is an `End.DT46` whose inner packet leaves through the egress
+device, a second tun, rather than through the mesh tun. Its packets are counted
+4 ways. Egressed is a packet the egress device took. Refused is a packet whose
+outer or inner source is outside the segment's allow list, or whose inner source
+it cannot read, counted among the dropped and never answered. Not ready is a
+packet the allow list let through while no egress device was installed, or whose
+device closed under the write. It is this node's own state and is not counted
+among the dropped. A write the egress device refuses for any other reason counts
+its packets among the dropped. Drained is a packet read off the egress device
+and thrown away. Every route into the overlay names the mesh tun, so each
+drained packet took a route into the wrong device. No configuration names an
+egress segment yet, which keeps these at 0.
 
 | Metric                               | Meaning                                                         |
 | ------------------------------------ | --------------------------------------------------------------- |
 | `ranet3_segments_forwarded_total`    | packets an `End` sent on to their next segment                  |
-| `ranet3_segments_delivered_total`    | packets an `End.DT46` delivered                                 |
+| `ranet3_segments_delivered_total`    | packets an `End.DT46` delivered to the mesh tun                 |
 | `ranet3_segments_dropped_total`      | packets to a local SID this node would not act on               |
 | `ranet3_segments_answered_total`     | ICMP errors sent for refused packets                            |
+| `ranet3_segments_egressed_total`     | packets an egress segment handed to the egress device           |
+| `ranet3_segments_refused_total`      | packets an egress segment's allow list refused                  |
+| `ranet3_segments_not_ready_total`    | packets an egress segment let through and no device took        |
+| `ranet3_segments_drained_total`      | packets read off the egress device and thrown away              |
 | `ranet3_steered_total`               | packets a steering entry encapsulated                           |
 | `ranet3_steer_dropped_total{reason}` | steered packets not sent, `reason` is `too_large` or `no_route` |
 

@@ -23,8 +23,9 @@ those that failed and handed their peer back to the shared socket.
 It also reports 3 subsystems that run inside the daemon. The route reconciler is
 reported as routes installed and skipped, when its last pass finished and
 whether that pass failed. Segment routing is reported as what this node did for
-peers (forwarded, delivered, dropped, answered) and what it did with its own
-traffic (steered, and dropped with a reason). `cap.egress` is reported as rules
+peers (forwarded, delivered, dropped, answered, and for an egress segment
+egressed, refused, not ready and drained) and what it did with its own traffic
+(steered, and dropped with a reason). `cap.egress` is reported as rules
 installed, connections translated, other translation found at the same hook,
 when its last pass finished and whether that pass failed, and the 2 prefix
 counts whose difference says this node is withholding an advertisement it cannot
@@ -74,9 +75,13 @@ The `peer` label is the path of the peer's session, such as
 | `ranet3_mss_clamped_total`               | counter | none             | TCP SYNs whose MSS this node lowered                                                                    | always                                                          |
 | `ranet3_pmtu_probes_total`               | counter | `result`         | Path MTU probes that left, `acked` or `lost`                                                            | always                                                          |
 | `ranet3_segments_forwarded_total`        | counter | none             | Packets an End behavior sent on to their next segment                                                   | always                                                          |
-| `ranet3_segments_delivered_total`        | counter | none             | Packets an End.DT46 behavior decapsulated and handed to the stack                                       | always                                                          |
+| `ranet3_segments_delivered_total`        | counter | none             | Packets an End.DT46 behavior decapsulated and handed to the stack through the mesh tun                  | always                                                          |
 | `ranet3_segments_dropped_total`          | counter | none             | Packets to one of this node's segments that it would not act on                                         | always                                                          |
 | `ranet3_segments_answered_total`         | counter | none             | ICMP errors sent for those dropped packets                                                              | always                                                          |
+| `ranet3_segments_egressed_total`         | counter | none             | Packets an egress segment handed to the egress device                                                   | always                                                          |
+| `ranet3_segments_refused_total`          | counter | none             | Packets an egress segment's allow list refused, counted among the dropped and never answered            | always                                                          |
+| `ranet3_segments_not_ready_total`        | counter | none             | Packets an egress segment let through that no egress device took, not counted among the dropped         | always                                                          |
+| `ranet3_segments_drained_total`          | counter | none             | Packets read off the egress device and thrown away, each one routed into the wrong device               | always                                                          |
 | `ranet3_steered_total`                   | counter | none             | This node's own packets a steering policy encapsulated                                                  | always                                                          |
 | `ranet3_steer_dropped_total`             | counter | `reason`         | Packets a steering policy claimed and this node did not send, `too_large` or `no_route`                 | always                                                          |
 | `ranet3_kernel_routes_installed`         | gauge   | none             | Routes the kernel holds for the reconciler as of its last pass                                          | with `cap.table`                                                |
