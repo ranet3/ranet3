@@ -80,7 +80,7 @@ func answerPeerRekey(t testing.TB, s *Session, ike bool, request []RawPayload) r
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer := sealedAnswer(t, ctx, raw)
+	answer := sealedAnswer(t, ctx, raw.whole)
 	if sa := findType(answer, PayloadSA); sa != nil {
 		proposals, err := DecodeSA(sa.Body)
 		if err != nil || len(proposals) != 1 {

@@ -490,13 +490,7 @@ func TestRetainedIKESAThePeerNeverDeletesIsGivenUp(t *testing.T) {
 	}
 }
 
-// A peer that answers this end's rekey with one of its own may name any SPI
-// it likes, and every SPI this session routes is one it has already been told.
-// Sharing one makes two contexts indistinguishable to the mux, and whichever
-// of them is dropped first unregisters the SPI the other is still reached by,
-// which leaves the control channel deaf while ESP keeps flowing. RFC 7296
-// section 2.6 leaves the choice to the initiator, so refusing it costs a
-// conforming peer nothing.
+// a peer's rekey naming an SPI this session already routes is refused, since the context dropped first would take the SPI the other is reached by
 func TestPeerIKERekeyRefusesTheSPIThisEndAlreadyOffered(t *testing.T) {
 	const spiI, spiR = 0x0102030405060708, 0x1112131415161718
 	const inFlight = 0x2122232425262728
@@ -531,11 +525,11 @@ func TestPeerIKERekeyRefusesTheSPIThisEndAlreadyOffered(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			header, err := DecodeMessage(raw)
+			header, err := DecodeMessage(raw.whole)
 			if err != nil {
 				t.Fatal(err)
 			}
-			inner, err := DecryptMessage(suite, ctx.skei, raw, header)
+			inner, err := DecryptMessage(suite, ctx.skei, raw.whole, header)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -550,8 +544,7 @@ func TestPeerIKERekeyRefusesTheSPIThisEndAlreadyOffered(t *testing.T) {
 			if want := offered != free; refused != want {
 				t.Errorf("offering %#x was refused=%v, want %v", offered, refused, want)
 			}
-			// The accepted arm answers with a whole SA, so the three refusals
-			// above are not all failing somewhere earlier for a shared reason.
+			// the free SPI draws a whole SA, so each refusal comes from its SPI alone
 			if offered == free && findType(inner, PayloadSA) == nil {
 				t.Errorf("an SPI nothing else holds drew no SA payload: %v", inner)
 			}
@@ -559,12 +552,7 @@ func TestPeerIKERekeyRefusesTheSPIThisEndAlreadyOffered(t *testing.T) {
 	}
 }
 
-// A peer-initiated IKE rekey costs a key exchange, a shared secret, a full key
-// derivation and a registration in the hub's SPI map, on the goroutine that
-// also runs this session's dead peer detection and its Delete handling, and
-// the request plus the Delete that lets the peer ask again are 282 bytes. The
-// gate keeps that from being about 33 Mbit/s of someone else's bandwidth. Its Child-path sibling has had a test since both were added,
-// and this one did not, so the asymmetry was an accident.
+// a peer's IKE rekey inside the interval after the last one is refused with TEMPORARY_FAILURE, since each costs a key exchange and a registration on the goroutine that runs dead peer detection
 func TestPeerIKERekeyIsRateLimited(t *testing.T) {
 	const spiI, spiR = 0x0102030405060708, 0x1112131415161718
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
@@ -585,11 +573,11 @@ func TestPeerIKERekeyIsRateLimited(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		header, err := DecodeMessage(raw)
+		header, err := DecodeMessage(raw.whole)
 		if err != nil {
 			t.Fatal(err)
 		}
-		inner, err := DecryptMessage(suite, ctx.skei, raw, header)
+		inner, err := DecryptMessage(suite, ctx.skei, raw.whole, header)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -611,9 +599,7 @@ func TestPeerIKERekeyIsRateLimited(t *testing.T) {
 	})
 	t.Run("a second inside the interval is refused", func(t *testing.T) {
 		s, ctx := session(t)
-		// The record one accepted rekey leaves, without the state a completed
-		// one also leaves: this end is otherwise willing, so a refusal here is
-		// the rate gate and nothing else.
+		// the time an accepted rekey records and nothing else it leaves, so a refusal is the interval's
 		s.lastPeerIKERekey.Store(int64(time.Since(s.started)) + 1)
 		payload := findType(ask(t, s, ctx), PayloadN)
 		if payload == nil {
@@ -629,12 +615,8 @@ func TestPeerIKERekeyIsRateLimited(t *testing.T) {
 	})
 }
 
-// A local failure answering a peer's rekey is not the peer's fault and not a
-// reason to lose the SA. Returning an error instead sends Run down the
-// teardown path, so a transient shortage on this side drops a working session
-// and every route through it. RFC 7296 section 1.3.1: "A failed attempt to
-// create a Child SA SHOULD NOT tear down the IKE SA: there is no reason to
-// lose the work done to set up the IKE SA."
+// a local failure answering a peer's rekey answers TEMPORARY_FAILURE and returns no error, which Run would end the session on
+// RFC 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA: there is no reason to lose the work done to set up the IKE SA."
 func TestLocalFailureAnsweringARekeyIsTemporary(t *testing.T) {
 	const spiI, spiR = 0x0102030405060708, 0x1112131415161718
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
@@ -655,8 +637,7 @@ func TestLocalFailureAnsweringARekeyIsTemporary(t *testing.T) {
 		"the nonce source fails": func(s *Session, _ *transport.Mux) {
 			s.ikeRekeyNonce = func([]byte) error { return errors.New("no entropy") }
 		},
-		// A peer holding two sessions with this node knows an SPI the hub's
-		// map already carries, so it can make this registration fail.
+		// a peer holding two sessions with this node knows an SPI the hub's map already carries
 		"the SPI is already taken": func(_ *Session, other *transport.Mux) {
 			if err := other.RegisterIKE(0x2122232425262728); err != nil {
 				t.Fatal(err)
@@ -674,11 +655,11 @@ func TestLocalFailureAnsweringARekeyIsTemporary(t *testing.T) {
 			if err != nil {
 				t.Fatalf("a local failure was returned as an error, which Run turns into a teardown: %v", err)
 			}
-			header, err := DecodeMessage(raw)
+			header, err := DecodeMessage(raw.whole)
 			if err != nil {
 				t.Fatal(err)
 			}
-			inner, err := DecryptMessage(suite, ctx.skei, raw, header)
+			inner, err := DecryptMessage(suite, ctx.skei, raw.whole, header)
 			if err != nil {
 				t.Fatal(err)
 			}

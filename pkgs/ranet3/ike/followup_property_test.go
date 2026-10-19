@@ -414,7 +414,7 @@ func TestPeerChainsAreAnsweredAsTheModelOfTheChain(t *testing.T) {
 			case 3:
 				header := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL}
 				raw, err := s.handleRequest(ctx, &header, nil, nil)
-				if err != nil || len(sealedAnswer(ht, ctx, raw)) != 0 {
+				if err != nil || len(sealedAnswer(ht, ctx, raw.whole)) != 0 {
 					ht.Fatalf("an empty INFORMATIONAL drew an error %v or a payload", err)
 				}
 			case 4:
@@ -466,7 +466,7 @@ func TestPeerChainsAreAnsweredAsTheModelOfTheChain(t *testing.T) {
 					ht.Fatalf("the peer's Delete of the Child SA ended the session: %v", err)
 				}
 				var answered Delete
-				if payload := findType(sealedAnswer(ht, ctx, raw), PayloadD); payload != nil {
+				if payload := findType(sealedAnswer(ht, ctx, raw.whole), PayloadD); payload != nil {
 					answered, err = DecodeDelete(payload.Body)
 				}
 				if err != nil || answered.Protocol != ProtoESP || len(answered.SPIs) != 1 || binary.BigEndian.Uint32(answered.SPIs[0]) != deleting.LocalSPI || s.currentChild().LocalSPI != 0 {

@@ -178,7 +178,7 @@ func (s *Session) chainKindLocked() string {
 }
 
 // handleFollowup answers a peer's IKE_FOLLOWUP_KE on ctx
-func (s *Session) handleFollowup(ctx *ikeContext, msgID uint32, inner []RawPayload) ([]byte, error) {
+func (s *Session) handleFollowup(ctx *ikeContext, msgID uint32, inner []RawPayload) (*outbound, error) {
 	link, err := linkOf(inner)
 	if err != nil {
 		return s.refuseRequest(ctx, msgID, IKE_FOLLOWUP_KE, err)
@@ -206,7 +206,7 @@ func (s *Session) handleFollowup(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	secret, ciphertext, err := encapsulateKEM(method, key)
 	if err != nil {
 		// draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the checks fail, the responder MUST reject the initiator's improper public key and SHOULD send a Notify payload of type INVALID_SYNTAX as a response to the request to prevent resource exhaustion or denial of service risks."
-		rejected := &kexRejection{exchange: "IKE_FOLLOWUP_KE", method: method, side: "key", err: err}
+		rejected := &kexRejection{exchange: exchangeName(IKE_FOLLOWUP_KE), method: method, side: "key", err: err}
 		s.emit("ike.kex.rejected", rejected.attrs()...)
 		return s.refuseRequest(ctx, msgID, IKE_FOLLOWUP_KE, rejected)
 	}
@@ -225,7 +225,7 @@ func (s *Session) handleFollowup(ctx *ikeContext, msgID uint32, inner []RawPaylo
 
 // finishChain makes the SA of the peer's chain c, whose last exchange ctx carried at msgID, and answers that exchange with answer where the SA is in place
 // a failure of this end's keeps the SA the chain would replace, as handleIKERekey and handleChildRekey keep it
-func (s *Session) finishChain(ctx *ikeContext, msgID uint32, c *followupChain, answer []RawPayload) ([]byte, error) {
+func (s *Session) finishChain(ctx *ikeContext, msgID uint32, c *followupChain, answer []RawPayload) (*outbound, error) {
 	placed, err := c.made.install(s, ctx, c.secrets, c.ni, c.nr)
 	switch {
 	case err != nil:

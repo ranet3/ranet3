@@ -766,11 +766,11 @@ func TestPeerIKERekeyInvalidKERequestsPreferredGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := DecodeMessage(raw)
+	response, err := DecodeMessage(raw.whole)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inner, err := DecryptMessage(suite, ctx.skei, raw, response)
+	inner, err := DecryptMessage(suite, ctx.skei, raw.whole, response)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1436,9 +1436,9 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 			want: "incomplete IKE_AUTH response", follow: refusal(N_AUTHENTICATION_FAILED)},
 		"payload chain short of its plaintext": {trailing: true, sa: usable, tsi: full, tsr: full,
 			want: "trailing bytes", follow: refusal(N_INVALID_SYNTAX)},
-		// SKF, which RFC 7383 defines and this end does not implement
-		"critical payload this end does not implement": {critical: 53, sa: usable, tsi: full, tsr: full,
-			want: "marks unsupported payload type 53 critical", follow: refusal(N_UNSUPPORTED_CRITICAL_PAYLOAD, 53)},
+		// PS, which RFC 8019 defines and this end does not implement
+		"critical payload this end does not implement": {critical: 54, sa: usable, tsi: full, tsr: full,
+			want: "marks unsupported payload type 54 critical", follow: refusal(N_UNSUPPORTED_CRITICAL_PAYLOAD, 54)},
 		"responder's own refusal": {alone: []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_AUTHENTICATION_FAILED})}},
 			want: fmt.Sprintf("notify type %d", N_AUTHENTICATION_FAILED)},
 		"responder's own refusal after a status notify": {alone: []RawPayload{
@@ -1682,7 +1682,7 @@ func TestInitiatorTakesAnswersInAnyOrderAndAsksInTheFiguresOrder(t *testing.T) {
 	}
 	// the figure of section 1.2: "HDR, SAi1, KEi, Ni"
 	// the notifies follow Ni
-	if got, want := payloadTypes(saInit.Payloads), []PayloadType{PayloadSA, PayloadKE, PayloadNonce, PayloadN, PayloadN, PayloadN}; !slices.Equal(got, want) {
+	if got, want := payloadTypes(saInit.Payloads), []PayloadType{PayloadSA, PayloadKE, PayloadNonce, PayloadN, PayloadN, PayloadN, PayloadN}; !slices.Equal(got, want) {
 		t.Errorf("the IKE_SA_INIT request carries payload types %v, want %v", got, want)
 	}
 	// the figure of section 1.2: "HDR, SK {IDi, [CERT,] [CERTREQ,] [IDr,] AUTH, SAi2, TSi, TSr}"

@@ -17,74 +17,73 @@ import (
 // errOvertaken ends an exchange whose own answer no longer matters, since a request the peer sent while it was out settled it
 var errOvertaken = errors.New("ike: the peer's own request settled the exchange")
 
-// encryptedRoundTrip ignores unauthenticated packets even if their public
-// header matches the outstanding exchange (RFC 7296 section 2.21). Once the
-// tag verifies, syntax errors are returned to the caller rather than retried,
-// with the response that carried them, so a nil response means none decrypted.
-func encryptedRoundTrip(mux *transport.Mux, ctx *ikeContext, req []byte) (*Message, []RawPayload, error) {
-	_, response, inner, _, err := encryptedExchange(mux, ctx, req, maxRetransmits, nil)
+// encryptedRoundTrip ignores a packet that does not authenticate though its header matches the outstanding exchange
+// a syntax error once the tag verifies goes to the caller with the response that carried it, so a nil response means none decrypted
+func (s *Session) encryptedRoundTrip(ctx *ikeContext, req *transmission) (*Message, []RawPayload, error) {
+	_, response, inner, _, err := s.encryptedExchange(ctx, req, maxRetransmits, nil)
 	return response, inner, err
 }
 
 // encryptedExchange also returns the response's octets and its inner payloads in plaintext, which IntAuth covers
-func encryptedExchange(mux *transport.Mux, ctx *ikeContext, req []byte, attempts int, request func([]byte) bool) (raw []byte, response *Message, inner []RawPayload, plaintext []byte, err error) {
-	var first PayloadType
-	var plain []byte
-	raw, err = sendRecvWithin(mux, req, attempts, func(raw []byte) bool {
+// a response that arrives in fragments is the message they make
+func (s *Session) encryptedExchange(ctx *ikeContext, req *transmission, attempts int, request func([]byte, transport.Endpoint) bool) (raw []byte, response *Message, inner []RawPayload, plaintext []byte, err error) {
+	var answer *opened
+	var limit error
+	resend := func(t *transmission) (bool, error) { return s.retransmit(t, s.mux.SendIKE) }
+	_, err = sendRecvWithin(s.mux, req, attempts, requestTimeout, resend, func(raw []byte) bool {
 		m, err := DecodeMessage(raw)
 		if err != nil {
 			return false
 		}
-		first, plain, err = decryptMessagePlaintext(ctx.suite, ctx.peerEncryptionKey(), raw, m)
-		if err != nil {
-			return false
-		}
-		response = m
-		return true
+		answer, limit = s.open(ctx, &ctx.responseFragments, raw, m)
+		return answer != nil || limit != nil
 	}, request)
+	if err == nil {
+		err = limit
+	}
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	if plaintext, err = unpadded(plain); err != nil {
-		return raw, response, nil, nil, err
+	if plaintext, err = unpadded(answer.plaintext); err != nil {
+		return answer.raw, answer.outer, nil, nil, err
 	}
-	inner, err = decodeInnerPayloads(first, plaintext)
-	return raw, response, inner, plaintext, err
+	inner, err = decodeInnerPayloads(answer.innerFirst, plaintext)
+	return answer.raw, answer.outer, inner, plaintext, err
 }
 
-// sendRecv sends req and waits for a correlated response, retransmitting on
-// timeout. accept is consulted for every response matching req's SPI and
-// Message ID: of an unauthenticated error notification, RFC 7815 section 2.1 says an
-// implementation "can simply ignore" it and keep retransmitting until timeout,
-// which this does, since an IKE_SA_INIT response (and the outer,
-// pre-decryption layer of an IKE_AUTH response) carries no integrity
-// protection of its own: anyone able to
-// spoof the initiator's SPI, visible in the plaintext request, can inject a
-// forged error notify to abort an in-progress handshake otherwise. accept
-// lets each exchange decide what counts as a real response worth stopping
-// for. A nil accept treats any correlated response as final.
+// sendRecv sends req until a correlated response accept takes arrives, and a nil accept takes any
+// RFC 7815 section 2.1: "A minimal implementation can simply ignore those errors and retransmit its request until it times out, and if that happens, then the IKE SA (and Child SA) creation failed."
 func sendRecv(mux *transport.Mux, req []byte, accept func([]byte) bool) ([]byte, error) {
-	return sendRecvWithin(mux, req, maxRetransmits, accept, nil)
+	return sendRecvWithin(mux, &transmission{datagrams: [][]byte{req}}, maxRetransmits, requestTimeout, nil, accept, nil)
 }
 
-// sendRecvWithin is sendRecv with the retransmission budget as a parameter,
-// and request, where it is set, takes each request the peer sends meanwhile
-// and reports whether that request settles the exchange.
-func sendRecvWithin(mux *transport.Mux, req []byte, attempts int, accept func([]byte) bool, request func([]byte) bool) ([]byte, error) {
-	reqHdr, err := decodeHeader(req)
+// sendRecvWithin is sendRecv within attempts sends whose backoff starts at timeout, and request, where it is set, takes each request the peer sends meanwhile with the address it came from and reports whether it settles the exchange
+// resend, where it is set, sends each attempt and reports whether it cut the request again, and the request otherwise goes as it is
+func sendRecvWithin(mux *transport.Mux, req *transmission, attempts int, timeout time.Duration, resend func(*transmission) (bool, error), accept func([]byte) bool, request func([]byte, transport.Endpoint) bool) ([]byte, error) {
+	reqHdr, err := decodeHeader(req.datagrams[0])
 	if err != nil {
 		return nil, err
 	}
-	// Register before the first transmission so a response cannot race the
-	// receive loop on a shared hub.
+	// registered before the first send, so a response cannot race the receive loop on a shared hub
 	if err := mux.RegisterIKE(reqHdr.SPIInitiator); err != nil {
 		return nil, err
 	}
-	for attempt := range attempts {
-		if err := mux.SendIKE(req); err != nil {
+	if resend == nil {
+		resend = func(t *transmission) (bool, error) { return false, sendEach(mux.SendIKE, t.datagrams) }
+	}
+	sends := 0
+	// a split again starts the budget over, so the sends of a busy peer's exchange bound it
+	for attempt := 0; attempt < attempts && sends < maxRetransmitsWhileBusy; attempt++ {
+		again, err := resend(req)
+		if err != nil {
 			return nil, err
 		}
-		deadline := time.Now().Add(retransmitDelay(requestTimeout, attempt+1))
+		// RFC 7383 section 2.5.2: "When starting a new probe, the node MUST reset its retransmission timers so that if it employs exponential back-off the timers will start over."
+		if again {
+			attempt = 0
+		}
+		sends++
+		deadline := time.Now().Add(retransmitDelay(timeout, attempt+1))
 		for time.Now().Before(deadline) {
 			raw, source, err := mux.RecvIKEFromUntil(deadline)
 			if err != nil {
@@ -92,7 +91,7 @@ func sendRecvWithin(mux *transport.Mux, req []byte, attempts int, accept func([]
 				if mux.IsClosed() {
 					return nil, err
 				}
-				break // timeout, retransmit
+				break
 			}
 			h, err := decodeHeader(raw)
 			if err != nil || higherVersion(mux.SendIKETo, h, source) {
@@ -102,18 +101,16 @@ func sendRecvWithin(mux *transport.Mux, req []byte, attempts int, accept func([]
 				if accept == nil || accept(raw) {
 					return raw, nil
 				}
-				// Correlated but rejected by accept (e.g. a bare,
-				// unauthenticated error notify): keep waiting instead of
-				// treating a possibly-forged message as authoritative.
+				// a correlated response accept refuses, such as an unauthenticated error notify, may be forged
 				continue
 			}
 			// RFC 7296 section 2.3: "An IKE endpoint MUST be prepared to accept and process a request while it has a request outstanding in order to avoid a deadlock in this situation."
-			if request != nil && !h.IsResponse() && request(raw) {
+			if request != nil && !h.IsResponse() && request(raw, source) {
 				return nil, errOvertaken
 			}
 		}
 	}
-	return nil, fmt.Errorf("ike: no response after %d attempts", attempts)
+	return nil, fmt.Errorf("ike: no response after %d attempts", sends)
 }
 
 func validResponseHeader(request, response *Header, rawLen int) bool {

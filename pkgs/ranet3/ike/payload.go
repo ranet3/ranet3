@@ -28,11 +28,8 @@ type Message struct {
 	Header   Header
 	Payloads []RawPayload
 
-	// skHeaderOffset is the byte offset (from the start of the decoded
-	// message) of the SK payload's generic header, set only when the last
-	// decoded payload is PayloadSK. It lets DecryptMessage reconstruct the exact
-	// AAD (RFC 5282 section 5.1: header + cleartext payloads + SK generic header)
-	// without re-encoding anything.
+	// skHeaderOffset is the offset in the message of the SK or SKF payload's generic header where the last payload decoded is one of them
+	// so DecryptMessage reads the associated data, the octets through that header, as they arrived
 	skHeaderOffset int
 }
 
@@ -116,10 +113,7 @@ func decodePayloadChain(first PayloadType, b []byte) ([]RawPayload, error) {
 	return out, nil
 }
 
-// DecodeMessage parses an IKE header and walks its payload chain. It does
-// not decrypt SK payloads: the SK payload, if present, is returned as a
-// single RawPayload{Type: PayloadSK} whose Body is the encrypted blob
-// (IV || ciphertext || ICV), for the caller to decrypt and re-parse.
+// DecodeMessage parses an IKE header and its payload chain, and leaves the SK or SKF payload that ends it encrypted, its Body the IV, ciphertext and ICV, after Fragment Number and Total Fragments for SKF
 func DecodeMessage(b []byte) (*Message, error) {
 	h, err := decodeHeader(b)
 	if err != nil {
@@ -147,16 +141,15 @@ func DecodeMessage(b []byte) (*Message, error) {
 			Critical: rest[1]&0x80 != 0,
 			Body:     rest[genericPayloadHeaderLen:plLen],
 		}
-		if p.Type == PayloadSK {
+		// RFC 7383 section 2.5: "As is the case for the Encrypted payload, the Encrypted Fragment payload, if present in a message, MUST be the last payload in the message."
+		encrypted := p.Type == PayloadSK || p.Type == PayloadSKF
+		if encrypted {
 			m.skHeaderOffset = int(h.Length) - len(rest)
 		}
 		next = PayloadType(rest[0])
 		m.Payloads = append(m.Payloads, p)
 		rest = rest[plLen:]
-		// The SK payload's declared length only covers its own header +
-		// ciphertext. Everything else in the message is encrypted inside it,
-		// so there is no further chain to walk in the outer message.
-		if p.Type == PayloadSK {
+		if encrypted {
 			if len(rest) != 0 {
 				return nil, fmt.Errorf("ike: %d trailing bytes after SK payload", len(rest))
 			}

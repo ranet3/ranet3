@@ -274,13 +274,13 @@ func (p *peerRekey) read(t testing.TB, answer []RawPayload) {
 }
 
 // rekey hands the peer's request on ctx to handle, the session's handler of an IKE SA or a Child SA rekey, and reads the answer
-func (p *peerRekey) rekey(t testing.TB, handle func(*ikeContext, uint32, []RawPayload) ([]byte, error), ctx *ikeContext, request []RawPayload) []RawPayload {
+func (p *peerRekey) rekey(t testing.TB, handle func(*ikeContext, uint32, []RawPayload) (*outbound, error), ctx *ikeContext, request []RawPayload) []RawPayload {
 	t.Helper()
 	raw, err := handle(ctx, 0, request)
 	if err != nil {
 		t.Fatalf("the peer's rekey ended the IKE SA: %v", err)
 	}
-	answer := sealedAnswer(t, ctx, raw)
+	answer := sealedAnswer(t, ctx, raw.whole)
 	p.read(t, answer)
 	return answer
 }
@@ -325,7 +325,7 @@ func (p *peerRekey) followup(t testing.TB, s *Session, ctx *ikeContext, method u
 	if raw == nil {
 		t.Fatalf("the IKE_FOLLOWUP_KE drew no answer: %v", err)
 	}
-	answer := sealedAnswer(t, ctx, raw)
+	answer := sealedAnswer(t, ctx, raw.whole)
 	p.take(t, answer, method, decapsulate)
 	return answer, err
 }
@@ -956,7 +956,7 @@ func TestBadKeyInAFollowupIsAnsweredInvalidSyntax(t *testing.T) {
 			peer, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
 			peer.rekey(t, s.handleIKERekey, ctx, request)
 			raw, err := s.handleFollowup(ctx, 0, append(test.ke(t), linkPayload(peer.link)))
-			if _, ending := errors.AsType[invalidSyntaxSent](err); !ending || raw == nil || !notified(sealedAnswer(t, ctx, raw), N_INVALID_SYNTAX, nil) {
+			if _, ending := errors.AsType[invalidSyntaxSent](err); !ending || raw == nil || !notified(sealedAnswer(t, ctx, raw.whole), N_INVALID_SYNTAX, nil) {
 				t.Errorf("the IKE_FOLLOWUP_KE drew an answer ending the IKE SA %v, %v, want INVALID_SYNTAX", ending, err)
 			}
 			if current, _ := s.contexts(); current != ctx {
@@ -1155,7 +1155,7 @@ func answeredAsUsual(t *testing.T, s *Session, ctx *ikeContext) {
 	t.Helper()
 	header := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL, MessageID: 1}
 	raw, err := s.handleRequest(ctx, &header, nil, nil)
-	if err != nil || len(sealedAnswer(t, ctx, raw)) != 0 {
+	if err != nil || len(sealedAnswer(t, ctx, raw.whole)) != 0 {
 		t.Errorf("an empty INFORMATIONAL was answered with %v, want an empty answer", err)
 	}
 	header.MessageID = 2
@@ -1163,7 +1163,7 @@ func answeredAsUsual(t *testing.T, s *Session, ctx *ikeContext) {
 	if err != nil {
 		t.Fatalf("a Delete of the Child SA ended the IKE SA: %v", err)
 	}
-	payload := findType(sealedAnswer(t, ctx, raw), PayloadD)
+	payload := findType(sealedAnswer(t, ctx, raw.whole), PayloadD)
 	if payload == nil {
 		t.Fatal("a Delete of the Child SA drew no Delete")
 	}
@@ -1507,7 +1507,7 @@ func TestPeerChainAnsweredAsThisEndsRekeyStartsIsSettledOnItsNonces(t *testing.T
 	s, _ := initiatingSession(t, chainSuite, chainLists)
 	old := s.current
 	peer, request := newPeerRekey(t, hybridOffer, above)
-	var crossing []byte
+	var crossing *outbound
 	var crossingErr error
 	drawn := 0
 	s.ikeRekeyNonce = func(n []byte) error {
@@ -1526,7 +1526,7 @@ func TestPeerChainAnsweredAsThisEndsRekeyStartsIsSettledOnItsNonces(t *testing.T
 	if crossingErr != nil {
 		t.Fatalf("the peer's rekey ended the IKE SA: %v", crossingErr)
 	}
-	if peer.read(t, sealedAnswer(t, old, crossing)); peer.link == nil {
+	if peer.read(t, sealedAnswer(t, old, crossing.whole)); peer.link == nil {
 		t.Fatal("the peer's rekey drew no link")
 	}
 	answer, _ := answerRekey(t, create.inner, 0, []byte("link1"), answered)
@@ -1721,7 +1721,7 @@ func TestIKESARekeyReplacesThePeersSAMadeAsItStarted(t *testing.T) {
 	s, _ := initiatingSession(t, classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519}})
 	first := s.current
 	peer, request := newPeerRekey(t, classicalOffer, drawnOctets(t, 32))
-	var crossing []byte
+	var crossing *outbound
 	var crossingErr error
 	drawn := 0
 	s.ikeRekeyNonce = func(n []byte) error {
@@ -1738,7 +1738,7 @@ func TestIKESARekeyReplacesThePeersSAMadeAsItStarted(t *testing.T) {
 	if crossingErr != nil {
 		t.Fatalf("the peer's rekey ended the IKE SA: %v", crossingErr)
 	}
-	peer.read(t, sealedAnswer(t, first, crossing))
+	peer.read(t, sealedAnswer(t, first, crossing.whole))
 	replaced, _ := s.contexts()
 	if replaced.spiI != peer.spiI || replaced.spiR != peer.spiR {
 		t.Fatal("the peer's rekey did not replace the SA")
@@ -1903,7 +1903,7 @@ func TestRefusedRekeyEndsAtItsDecision(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the peer's rekey ended the IKE SA: %v", err)
 		}
-		if peer.read(t, sealedAnswer(t, old, raw)); peer.link == nil {
+		if peer.read(t, sealedAnswer(t, old, raw.whole)); peer.link == nil {
 			t.Fatal("the peer's rekey drew no link")
 		}
 		return s, old, local, peer
@@ -1947,7 +1947,7 @@ func TestRefusedRekeyEndsAtItsDecision(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the peer's next rekey ended the IKE SA: %v", err)
 		}
-		if answer := sealedAnswer(t, adopted, raw); !notified(answer, N_TEMPORARY_FAILURE, nil) {
+		if answer := sealedAnswer(t, adopted, raw.whole); !notified(answer, N_TEMPORARY_FAILURE, nil) {
 			t.Errorf("the peer's rekey of the adopted SA before its Delete of the SA it replaced drew %v, want TEMPORARY_FAILURE", payloadTypes(answer))
 		}
 		peerDeletes(t, s, old)
@@ -2136,7 +2136,7 @@ func TestRefusedRekeyAdoptsThePeersSAHeldAsTheCollision(t *testing.T) {
 		s, _ := initiatingSession(t, chainSuite, chainLists)
 		old := s.current
 		peer, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
-		var answered []byte
+		var answered *outbound
 		var answerErr error
 		drawn := 0
 		s.ikeRekeyNonce = func(n []byte) error {
@@ -2153,7 +2153,7 @@ func TestRefusedRekeyAdoptsThePeersSAHeldAsTheCollision(t *testing.T) {
 		if answerErr != nil {
 			t.Fatalf("the peer's rekey ended the IKE SA: %v", answerErr)
 		}
-		if peer.read(t, sealedAnswer(t, old, answered)); peer.link == nil {
+		if peer.read(t, sealedAnswer(t, old, answered.whole)); peer.link == nil {
 			t.Fatal("the peer's rekey drew no link")
 		}
 		if last, err := peer.followup(t, s, old, ML_KEM_768, peer.link); err != nil || findType(last, PayloadKE) == nil {

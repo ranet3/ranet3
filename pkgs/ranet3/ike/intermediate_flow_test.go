@@ -77,13 +77,12 @@ func newSetupModel(ni, nr []byte, spiI, spiR uint64, shared []byte) *setupModel 
 	return m
 }
 
-// modelChunk is one IKE_INTERMEDIATE message's IntAuth chunk, its octets up to the Encrypted payload's generic header with both lengths adjusted, then its inner payloads
-// every message these tests take a chunk of carries the Encrypted payload first
+// modelChunk is one IKE_INTERMEDIATE message's IntAuth chunk, its octets up to the generic header of the Encrypted payload at offset with both lengths adjusted, then its inner payloads
 // RFC 9242 section 3.3.2: "In other words, the Length field in the IKE Header (denoted as Adjusted Length in Figure 1) is set to the sum of the lengths of IntAuth_[i/r]*A and IntAuth_[i/r]*P, and the Payload Length field in the Encrypted payload header (denoted as Adjusted Payload Length in Figure 1) is set to the length of IntAuth_[i/r]*P plus the size of the Encrypted payload header (four octets)."
-func modelChunk(raw, inner []byte) []byte {
-	chunk := concat(raw[:HeaderLen+4], inner)
+func modelChunk(raw []byte, offset int, inner []byte) []byte {
+	chunk := concat(raw[:offset+4], inner)
 	binary.BigEndian.PutUint32(chunk[24:28], uint32(len(chunk)))
-	binary.BigEndian.PutUint16(chunk[HeaderLen+2:HeaderLen+4], uint16(4+len(inner)))
+	binary.BigEndian.PutUint16(chunk[offset+2:offset+4], uint16(4+len(inner)))
 	return chunk
 }
 
@@ -91,8 +90,8 @@ func modelChunk(raw, inner []byte) []byte {
 // RFC 9242 section 3.3.2: "IntAuth_iN = prf(SK_piN, IntAuth_iN-1 | IntAuth_iNA [| IntAuth_iNP])" and "IntAuth_rN = prf(SK_prN, IntAuth_rN-1 | IntAuth_rNA [| IntAuth_rNP])"
 // RFC 9370 section 2.2.2: "SKEYSEED(n) = prf(SK_d(n-1), SK(n) | Ni | Nr)"
 func (m *setupModel) exchanged(request, requestInner, response, responseInner, secret []byte) {
-	m.i = modelPRF(m.keys[3], concat(m.i, modelChunk(request, requestInner)))
-	m.r = modelPRF(m.keys[4], concat(m.r, modelChunk(response, responseInner)))
+	m.i = modelPRF(m.keys[3], concat(m.i, modelChunk(request, HeaderLen, requestInner)))
+	m.r = modelPRF(m.keys[4], concat(m.r, modelChunk(response, HeaderLen, responseInner)))
 	m.keys = modelKeys(sha512.New384, modelPRF(m.keys[0], concat(secret, m.ni, m.nr)), concat(m.ni, m.nr, m.spis), modelKeyLen)
 }
 
@@ -187,11 +186,23 @@ type scripted struct {
 	spiI, spiR         uint64
 	message1, message2 []byte
 	answer             *Message
+	// cut, where it is set, sends each request in IKE Fragment messages of that many octets of plaintext, sent is the datagrams of the last request and got those of the last message received
+	cut  int
+	sent [][]byte
+	got  [][]byte
+	// between, where it is set, runs before the last of a request's two or more datagrams goes
+	between func()
 }
 
 // openScripted runs IKE_SA_INIT with offer, a KE payload in X25519 and INTERMEDIATE_EXCHANGE_SUPPORTED where notify holds, its Notification Data data
 // an answer of a notify alone returns that notify's type and no setup
 func openScripted(t *testing.T, h *responderHarness, offer []Proposal, notify bool, data ...byte) (*scripted, NotifyType) {
+	t.Helper()
+	return openScriptedWith(t, h, offer, nil, notify, data...)
+}
+
+// openScriptedWith is openScripted with extra after the notifies of the IKE_SA_INIT request
+func openScriptedWith(t *testing.T, h *responderHarness, offer []Proposal, extra []RawPayload, notify bool, data ...byte) (*scripted, NotifyType) {
 	t.Helper()
 	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
 	if err != nil {
@@ -217,6 +228,7 @@ func openScripted(t *testing.T, h *responderHarness, offer []Proposal, notify bo
 	if notify {
 		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INTERMEDIATE_EXCHANGE_SUPPORTED, Data: data})})
 	}
+	payloads = append(payloads, extra...)
 	message1 := (&Message{Header: Header{SPIInitiator: spiI, ExchangeType: IKE_SA_INIT, Flags: FlagInitiator}, Payloads: payloads}).Encode()
 	message2 := statelessAnswer(t, mux, message1, "the responder did not answer IKE_SA_INIT")
 	answer, err := DecodeMessage(message2)
@@ -254,29 +266,61 @@ func (s *scripted) chose() []Transform {
 	return selected[0].Transforms
 }
 
-// send seals inner as the request of exchange at mid under the newest generation and returns its octets
+// send seals inner as the request of exchange at mid under the newest generation and returns its octets whole
 func (s *scripted) send(exchange ExchangeType, mid uint32, inner []RawPayload) []byte {
 	s.t.Helper()
-	raw, err := EncryptMessage(modelSuite, s.model.keys[1], Header{SPIInitiator: s.spiI, SPIResponder: s.spiR, ExchangeType: exchange, Flags: FlagInitiator, MessageID: mid}, nil, inner)
+	header := Header{SPIInitiator: s.spiI, SPIResponder: s.spiR, ExchangeType: exchange, Flags: FlagInitiator, MessageID: mid}
+	raw, err := EncryptMessage(modelSuite, s.model.keys[1], header, nil, inner)
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	if err := s.mux.SendIKE(raw); err != nil {
-		s.t.Fatal(err)
+	s.sent = [][]byte{raw}
+	if s.cut > 0 {
+		s.sent = cutInto(s.t, modelSuite, s.model.keys[1], header, inner, s.cut)
+	}
+	for i, datagram := range s.sent {
+		if i > 0 && i == len(s.sent)-1 && s.between != nil {
+			s.between()
+		}
+		if err := s.mux.SendIKE(datagram); err != nil {
+			s.t.Fatal(err)
+		}
 	}
 	return raw
 }
 
-// receive is the next message the responder sends past repeats of its IKE_SA_INIT answer, decrypted under the newest generation
+// receive is the next message the responder sends past repeats of its IKE_SA_INIT answer, whole or in fragments, opened under the newest generation
+// it returns the message's octets through its Encrypted payload's generic header as the message has them whole
 func (s *scripted) receive() (Header, []RawPayload, []byte) {
 	s.t.Helper()
-	return responderMessage(s.t, s.mux, &ikeContext{suite: modelSuite, sker: s.model.keys[2]})
+	s.got = collect(s.t, func() ([]byte, error) { return s.mux.RecvIKEUntil(time.Now().Add(answerBudget)) })
+	header, inner, raw, _ := assembled(s.t, modelSuite, s.model.keys[2], s.got)
+	return header, inner, raw
 }
 
 // silent reports whether the responder sends nothing for quietPeriod
 func (s *scripted) silent() bool {
 	_, err := s.mux.RecvIKEUntil(time.Now().Add(quietPeriod))
 	return err != nil
+}
+
+// moved is a mux of the same SPIs on another local port, where the initiator's datagrams come from once its NAT mapping moved
+func (s *scripted) moved() *transport.Mux {
+	s.t.Helper()
+	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	s.t.Cleanup(func() { hub.Close() })
+	mux, err := hub.NewMux(net.ParseIP("127.0.0.1"), s.h.remotePort)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	s.t.Cleanup(func() { mux.Close() })
+	if err := mux.RegisterIKE(s.spiI); err != nil {
+		s.t.Fatal(err)
+	}
+	return mux
 }
 
 // intermediate runs IKE_INTERMEDIATE at mid with a fresh key of method and takes the exchange into the model
@@ -517,7 +561,7 @@ func TestResponderTakesIntermediateExchangesInMessageIDOrder(t *testing.T) {
 	s.accepted(3, []uint16{ML_KEM_768, ML_KEM_1024})
 }
 
-// the responder answers an IKE_INTERMEDIATE at the address and port it came from, though IKE_SA_INIT came from another, and refuses one there too
+// the responder answers an IKE_INTERMEDIATE and a repeat of it at the address and port they came from, though IKE_SA_INIT came from another, and refuses one there too
 // RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
 func TestResponderAnswersAnIntermediateWhereItCameFrom(t *testing.T) {
 	for name, refused := range map[string]bool{"answered": false, "refused": true} {
@@ -528,23 +572,21 @@ func TestResponderAnswersAnIntermediateWhereItCameFrom(t *testing.T) {
 			if s == nil {
 				t.Fatalf("the responder refused the offer with notify %d", notify)
 			}
-			hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { hub.Close() })
-			moved, err := hub.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { moved.Close() })
-			if err := moved.RegisterIKE(s.spiI); err != nil {
-				t.Fatal(err)
-			}
 			// the same SPIs and keys from a second endpoint, where intermediate and receive wait for the response
-			s.mux = moved
+			origin := s.mux
+			s.mux = s.moved()
 			if !refused {
 				s.intermediate(1, ML_KEM_768)
+				// a repeat of the request whole from there draws the answer there, and nothing at the endpoint the IKE SA was set up from
+				if err := s.mux.SendIKE(s.sent[0]); err != nil {
+					t.Fatal(err)
+				}
+				if again, err := s.mux.RecvIKEUntil(time.Now().Add(answerBudget)); err != nil || !bytes.Equal(again, s.got[0]) {
+					t.Errorf("a repeat of the request from the second endpoint drew %d octets there (%v), want the answer again", len(again), err)
+				}
+				if _, err := origin.RecvIKEUntil(time.Now().Add(quietPeriod)); err == nil {
+					t.Error("a repeat of the request from the second endpoint drew an answer at the first")
+				}
 				s.authenticate(2, 2)
 				s.accepted(2, []uint16{ML_KEM_768})
 				return
@@ -760,10 +802,11 @@ func keptIntermediate(t *testing.T, method kemMethod, cipher Transform, prfID ui
 	}
 	key := make([]byte, params.KeyLen+params.SaltLen)
 	ctx := &ikeContext{suite: suite, spiI: 1, spiR: 2, responder: true, skei: key, sker: key}
-	raw, err := (&Session{current: ctx}).response(ctx, 1, IKE_INTERMEDIATE, []RawPayload{{Type: PayloadKE, Body: EncodeKE(method.id, make([]byte, kemSizes[method.id][1]))}})
+	sealed, err := (&Session{current: ctx}).response(ctx, 1, IKE_INTERMEDIATE, []RawPayload{{Type: PayloadKE, Body: EncodeKE(method.id, make([]byte, kemSizes[method.id][1]))}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	raw := sealed.whole
 	// the IKE header, the Encrypted payload's header and IV, the KE payload's header and method, the ciphertext, the Pad Length octet and the ICV
 	if want := HeaderLen + genericPayloadHeaderLen + params.IVLen + genericPayloadHeaderLen + 4 + kemSizes[method.id][1] + 1 + params.ICVLen; len(raw) != want {
 		t.Errorf("method %d under cipher %d sends a response of %d octets, want %d", method.id, cipher.ID, len(raw), want)
@@ -818,15 +861,25 @@ type played struct {
 	dialer ed25519.PublicKey
 	key    ed25519.PrivateKey
 	// forge sends a response under another key ahead of each IKE_INTERMEDIATE response
-	forge   bool
-	cancel  context.CancelFunc
-	done    chan struct{}
-	session *Session
-	err     error
+	forge bool
+	// fragments answers IKE_SA_INIT with IKEV2_FRAGMENTATION_SUPPORTED, cut, where it is set, sends each response in IKE Fragment messages of that many octets of plaintext, and last is the datagrams of the last request read
+	fragments bool
+	cut       int
+	last      [][]byte
+	cancel    context.CancelFunc
+	done      chan struct{}
+	session   *Session
+	err       error
 }
 
 // dialPlayed starts a dial under lists of a responder the test plays, recording into events, and reads its IKE_SA_INIT request
 func dialPlayed(t *testing.T, lists Suites, events Recorder) *played {
+	t.Helper()
+	return dialPlayedWith(t, lists, events, func(*PeerConfig) {})
+}
+
+// dialPlayedWith is dialPlayed with the dial's configuration as configure leaves it
+func dialPlayedWith(t *testing.T, lists Suites, events Recorder, configure func(*PeerConfig)) *played {
 	t.Helper()
 	peer := listenPeer(t)
 	at := peer.LocalAddr().(*net.UDPAddr)
@@ -845,6 +898,7 @@ func dialPlayed(t *testing.T, lists Suites, events Recorder) *played {
 		Suites: func() Suites { return lists },
 		Events: events,
 	}
+	configure(&cfg)
 	p := &played{t: t, peer: peer, dialer: dialer, key: key, done: make(chan struct{})}
 	ctx, cancel := context.WithTimeout(context.Background(), answerBudget)
 	p.cancel = cancel
@@ -890,6 +944,16 @@ func (p *played) read(exchange ExchangeType) (*Message, []byte) {
 		p.from = from
 		return message, raw
 	}
+}
+
+// readAll is the datagrams of the dial's next request past retransmissions of any before it, which must be of exchange, the request whole or each of its fragments once
+func (p *played) readAll(exchange ExchangeType) [][]byte {
+	p.t.Helper()
+	p.last = collect(p.t, func() ([]byte, error) {
+		_, raw := p.read(exchange)
+		return raw, nil
+	})
+	return p.last
 }
 
 // quiet reports whether the dial sends nothing new for quietPeriod
@@ -944,6 +1008,9 @@ func (p *played) answerSAInit(number uint8, transforms []Transform, notify bool,
 	if notify {
 		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INTERMEDIATE_EXCHANGE_SUPPORTED, Data: data})})
 	}
+	if p.fragments {
+		payloads = append(payloads, fragmentationSupported)
+	}
 	p.message2 = (&Message{Header: Header{SPIInitiator: p.spiI, SPIResponder: p.spiR, ExchangeType: IKE_SA_INIT, Flags: FlagResponse}, Payloads: payloads}).Encode()
 	if _, err := p.peer.WriteToUDP(withNonESPMarker(p.message2), p.from); err != nil {
 		p.t.Fatal(err)
@@ -951,29 +1018,32 @@ func (p *played) answerSAInit(number uint8, transforms []Transform, notify bool,
 	p.model = newSetupModel(DecodeNonce(nonce.Body), nr, p.spiI, p.spiR, shared)
 }
 
-// send seals inner as the response of exchange at mid under key and returns its octets
+// send seals inner as the response of exchange at mid under key and returns its octets whole
 func (p *played) send(key []byte, exchange ExchangeType, mid uint32, inner []RawPayload) []byte {
 	p.t.Helper()
-	raw, err := EncryptMessage(modelSuite, key, Header{SPIInitiator: p.spiI, SPIResponder: p.spiR, ExchangeType: exchange, Flags: FlagResponse, MessageID: mid}, nil, inner)
+	header := Header{SPIInitiator: p.spiI, SPIResponder: p.spiR, ExchangeType: exchange, Flags: FlagResponse, MessageID: mid}
+	raw, err := EncryptMessage(modelSuite, key, header, nil, inner)
 	if err != nil {
 		p.t.Fatal(err)
 	}
-	if _, err := p.peer.WriteToUDP(withNonESPMarker(raw), p.from); err != nil {
-		p.t.Fatal(err)
+	datagrams := [][]byte{raw}
+	if p.cut > 0 {
+		datagrams = cutInto(p.t, modelSuite, key, header, inner, p.cut)
+	}
+	for _, datagram := range datagrams {
+		if _, err := p.peer.WriteToUDP(withNonESPMarker(datagram), p.from); err != nil {
+			p.t.Fatal(err)
+		}
 	}
 	return raw
 }
 
-// open is the dial's request of exchange at mid, decrypted under the newest generation, and its octets
+// open is the dial's request of exchange at mid, whole or in fragments, opened under the newest generation, and its octets through its Encrypted payload's generic header as the request has them whole
 func (p *played) open(exchange ExchangeType, mid uint32) ([]RawPayload, []byte) {
 	p.t.Helper()
-	message, raw := p.read(exchange)
-	if header := message.Header; header.MessageID != mid || !header.IsInitiator() || header.IsResponse() {
+	header, inner, raw, _ := assembled(p.t, modelSuite, p.model.keys[1], p.readAll(exchange))
+	if header.MessageID != mid || !header.IsInitiator() || header.IsResponse() {
 		p.t.Fatalf("the dial sent exchange %d at Message ID %d, initiator %v response %v, want its request at %d", exchange, header.MessageID, header.IsInitiator(), header.IsResponse(), mid)
-	}
-	inner, err := DecryptMessage(modelSuite, p.model.keys[1], raw, message)
-	if err != nil {
-		p.t.Fatalf("the dial's exchange %d at Message ID %d does not decrypt under the model's keys: %v", exchange, mid, err)
 	}
 	return inner, raw
 }
@@ -1310,6 +1380,5 @@ func TestTwoEndsOfTwoAdditionsAgreeOnEveryGeneration(t *testing.T) {
 
 // fmtExchange names a request by its exchange and Message ID
 func fmtExchange(header *Header) string {
-	names := map[ExchangeType]string{IKE_SA_INIT: "IKE_SA_INIT", IKE_INTERMEDIATE: "IKE_INTERMEDIATE", IKE_AUTH: "IKE_AUTH", CREATE_CHILD_SA: "CREATE_CHILD_SA", INFORMATIONAL: "INFORMATIONAL"}
-	return fmt.Sprintf("%s %d", names[header.ExchangeType], header.MessageID)
+	return fmt.Sprintf("%s %d", exchangeName(header.ExchangeType), header.MessageID)
 }

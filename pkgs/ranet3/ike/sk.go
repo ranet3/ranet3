@@ -23,14 +23,12 @@ func EncryptMessage(suite SASuite, key []byte, hdr Header, cleartext, inner []Ra
 	return encryptMessageIV(suite, key, hdr, cleartext, inner, iv[:])
 }
 
-func (c *ikeContext) encrypt(key []byte, hdr Header, cleartext, inner []RawPayload) ([]byte, error) {
+func (c *ikeContext) nextIV() ([]byte, error) {
 	value := c.sendIV.Add(1)
 	if value == 0 {
 		return nil, fmt.Errorf("ike: AEAD IV space exhausted")
 	}
-	var iv [8]byte
-	binary.BigEndian.PutUint64(iv[:], value)
-	return encryptMessageIV(c.suite, key, hdr, cleartext, inner, iv[:])
+	return binary.BigEndian.AppendUint64(nil, value), nil
 }
 
 func encryptMessageIV(suite SASuite, key []byte, hdr Header, cleartext, inner []RawPayload, iv []byte) ([]byte, error) {
@@ -44,6 +42,19 @@ func encryptMessageIV(suite SASuite, key []byte, hdr Header, cleartext, inner []
 }
 
 func encryptMessagePlaintextIV(suite SASuite, key []byte, hdr Header, cleartext []RawPayload, innerFirst PayloadType, plain, iv []byte) ([]byte, error) {
+	return sealMessage(suite, key, hdr, cleartext, PayloadSK, []byte{byte(innerFirst), 0, 0, 0}, plain, iv)
+}
+
+// encryptFragmentIV is one IKE Fragment message, plain the padded chunk numbered number of total and next the Next Payload of its Encrypted Fragment payload
+func encryptFragmentIV(suite SASuite, key []byte, hdr Header, cleartext []RawPayload, next PayloadType, number, total uint16, plain, iv []byte) ([]byte, error) {
+	header := binary.BigEndian.AppendUint16(binary.BigEndian.AppendUint16([]byte{byte(next), 0, 0, 0}, number), total)
+	return sealMessage(suite, key, hdr, cleartext, PayloadSKF, header, plain, iv)
+}
+
+// sealMessage is a message whose cleartext payloads come ahead of an encrypted payload of kind, its header encrypted ahead of the IV with the Payload Length filled in
+// RFC 7383 section 2.5: "The cryptographic processing of the Encrypted Fragment payload is identical to that described in Section 3.14 of [RFC7296], as well as documents updating such processing for particular algorithms or modes, such as [RFC5282]."
+// so an Encrypted Fragment payload's associated data runs to the end of its Total Fragments field, as an Encrypted payload's runs to the end of its generic header
+func sealMessage(suite SASuite, key []byte, hdr Header, cleartext []RawPayload, kind PayloadType, encrypted, plain, iv []byte) ([]byte, error) {
 	ap, err := aeadParams(suite.EncrID, suite.EncrKeyBits)
 	if err != nil {
 		return nil, err
@@ -62,14 +73,13 @@ func encryptMessagePlaintextIV(suite SASuite, key []byte, hdr Header, cleartext 
 	}
 	nonce := append(append([]byte{}, salt...), iv...)
 
-	cleartextBytes := encodePayloadChainBefore(cleartext, PayloadSK)
+	cleartextBytes := encodePayloadChainBefore(cleartext, kind)
 
-	skHdr := make([]byte, genericPayloadHeaderLen)
-	skHdr[0] = byte(innerFirst)
+	skHdr := slices.Clone(encrypted)
 	ciphertextLen := len(plain) + ap.ICVLen
-	binary.BigEndian.PutUint16(skHdr[2:4], uint16(genericPayloadHeaderLen+ap.IVLen+ciphertextLen))
+	binary.BigEndian.PutUint16(skHdr[2:4], uint16(len(skHdr)+ap.IVLen+ciphertextLen))
 
-	firstOuter := PayloadSK
+	firstOuter := kind
 	if len(cleartext) > 0 {
 		firstOuter = cleartext[0].Type
 	}
@@ -102,13 +112,17 @@ func DecryptMessage(suite SASuite, key []byte, raw []byte, m *Message) ([]RawPay
 	return decodeMessagePlaintext(innerFirst, plain)
 }
 
-// decryptMessagePlaintext returns only after the SK payload's AEAD tag has
-// authenticated. Keeping plaintext parsing separate lets post-handshake
-// request handling distinguish unauthenticated packets from authenticated
-// INVALID_SYNTAX errors as required by RFC 7296 section 2.21.3.
+// decryptMessagePlaintext returns once the tag authenticated and leaves the parse to the caller, which keeps an authenticated syntax error apart from a packet that does not authenticate
 func decryptMessagePlaintext(suite SASuite, key []byte, raw []byte, m *Message) (PayloadType, []byte, error) {
-	sk := m.find(PayloadSK)
-	if sk == nil {
+	if len(m.Payloads) == 0 {
+		return PayloadNone, nil, fmt.Errorf("ike: message has no SK payload")
+	}
+	// the Encrypted payload and the Encrypted Fragment payload both end a message, and the latter's Fragment Number and Total Fragments come ahead of its IV
+	sk, headerLen := m.Payloads[len(m.Payloads)-1], genericPayloadHeaderLen
+	switch {
+	case sk.Type == PayloadSKF && len(sk.Body) >= 4:
+		sk.Body, headerLen = sk.Body[4:], genericPayloadHeaderLen+4
+	case sk.Type != PayloadSK:
 		return PayloadNone, nil, fmt.Errorf("ike: message has no SK payload")
 	}
 	ap, err := aeadParams(suite.EncrID, suite.EncrKeyBits)
@@ -130,7 +144,7 @@ func decryptMessagePlaintext(suite SASuite, key []byte, raw []byte, m *Message) 
 	ciphertext := sk.Body[ap.IVLen:]
 	nonce := append(append([]byte{}, salt...), iv...)
 
-	aad := raw[:m.skHeaderOffset+genericPayloadHeaderLen]
+	aad := raw[:m.skHeaderOffset+headerLen]
 	plain, err := aead.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
 		return PayloadNone, nil, fmt.Errorf("ike: SK payload authentication failed: %w", err)

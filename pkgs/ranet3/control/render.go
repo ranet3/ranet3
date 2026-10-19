@@ -470,12 +470,22 @@ func RenderSessions(w io.Writer, sessions []Session) {
 			upDown(s.Active),
 			fmt.Sprintf("%08x/%08x", s.LocalSPI, s.RemoteSPI),
 			suite(s.IKECipher, s.IKEPRF, s.IKEKex),
+			fragments(s.IKEFragments, s.IKEFragmentThreshold),
 			esp,
 			shortDuration(time.Duration(s.Age)),
 			shortDuration(time.Duration(s.Idle)),
 		})
 	}
-	table(w, []string{"Path", "Peer", "Remote", "End", "State", "SPI in/out", "IKE", "ESP", "Age", "Idle"}, rows)
+	table(w, []string{"Path", "Peer", "Remote", "End", "State", "SPI in/out", "IKE", "Fragments", "ESP", "Age", "Idle"}, rows)
+}
+
+// fragments is the path's threshold, the largest IP datagram this end cuts a new IKE message to fit, or no where its ends did not both say they support RFC 7383 fragmentation
+// a request stepped to the floor, and an answer cut within the datagrams of the request or repeat it answers, go below it
+func fragments(supported bool, threshold int) string {
+	if !supported {
+		return "no"
+	}
+	return strconv.Itoa(threshold)
 }
 
 // suite joins an SA's transform names as cap.crypto spells them

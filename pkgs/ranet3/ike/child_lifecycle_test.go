@@ -651,11 +651,11 @@ func crossingDelete(t *testing.T, s *Session, remoteSPI uint32) []RawPayload {
 	if err != nil {
 		t.Fatal(err)
 	}
-	message, err := DecodeMessage(response)
+	message, err := DecodeMessage(response.whole)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inner, err := DecryptMessage(ctx.suite, ctx.localEncryptionKey(), response, message)
+	inner, err := DecryptMessage(ctx.suite, ctx.localEncryptionKey(), response.whole, message)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -878,11 +878,11 @@ func TestEachChildSAAnswerDrawsItsOwnNonce(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		message, err := DecodeMessage(raw)
+		message, err := DecodeMessage(raw.whole)
 		if err != nil {
 			t.Fatal(err)
 		}
-		inner, err := DecryptMessage(ctx.suite, ctx.skei, raw, message)
+		inner, err := DecryptMessage(ctx.suite, ctx.skei, raw.whole, message)
 		if err != nil {
 			t.Fatal(err)
 		}

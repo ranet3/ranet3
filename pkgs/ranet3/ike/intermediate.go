@@ -11,7 +11,7 @@ import (
 )
 
 // intAuthChunk is IntAuth_[i/r]*A followed by IntAuth_[i/r]*P of one IKE_INTERMEDIATE message
-// raw is the message as it went on the wire without the non-ESP marker, skOffset the offset of its Encrypted payload's generic header, and inner its inner payloads in plaintext
+// raw is the message whole as it went on the wire without the non-ESP marker, or as merge rebuilt it from its fragments, skOffset the offset of its Encrypted payload's generic header, and inner its inner payloads in plaintext
 // so both ends take the same octets, the critical bit and RESERVED of the Encrypted payload header among them
 // RFC 9242 section 3.3.2: "The IntAuth_[i/r]*A chunk consists of the sequence of octets from the first octet of the IKE Header (not including the prepended four octets of zeros, if UDP encapsulation or TCP encapsulation of ESP packets is used) to the last octet of the generic header of the Encrypted payload."
 // RFC 9242 section 3.3.2: "In other words, the IntAuth_[i/r]*P chunk is the inner payloads of the Encrypted payload in plaintext form, which is stressed by using the "P" suffix in its name."
@@ -119,11 +119,11 @@ func (s *Session) runIntermediates(ni, nr []byte) (intAuth, error) {
 		}
 		inner := []RawPayload{{Type: PayloadKE, Body: EncodeKE(method, pair.PublicBytes())}}
 		hdr := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: IKE_INTERMEDIATE, Flags: FlagInitiator, MessageID: mid}
-		request, err := ctx.encrypt(ctx.skei, hdr, nil, inner)
+		sent, err := s.sealRequest(ctx, hdr, inner)
 		if err != nil {
 			return intAuth{}, err
 		}
-		raw, response, answer, plaintext, err := encryptedExchange(s.mux, ctx, request, maxRetransmits, nil)
+		raw, response, answer, plaintext, err := s.encryptedExchange(ctx, sent, maxRetransmits, nil)
 		if err != nil {
 			return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d: %w", mid, err)
 		}
@@ -131,7 +131,7 @@ func (s *Session) runIntermediates(ni, nr []byte) (intAuth, error) {
 			return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d response marks unsupported payload type %d critical", mid, unsupported)
 		}
 		// RFC 9242 section 3.4 on the error handling of RFC 7296 sections 2.21.1 and 2.21.2: "these considerations are also applied to the IKE_INTERMEDIATE exchange"
-		if err := refusal("IKE_INTERMEDIATE", answer); err != nil {
+		if err := refusal(exchangeName(IKE_INTERMEDIATE), answer); err != nil {
 			return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d: %w", mid, err)
 		}
 		ciphertext, err := keData(answer, method)
@@ -141,12 +141,13 @@ func (s *Session) runIntermediates(ni, nr []byte) (intAuth, error) {
 		}
 		if err != nil {
 			// draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the check fails, the initiator MUST reject the ciphertext and MUST fail the exchange, log the error, and stop creating the SA (i.e. not initiate IKE_AUTH or next IKE_INTERMEDIATE)."
-			rejected := &kexRejection{exchange: "IKE_INTERMEDIATE", method: method, side: "ciphertext", err: err}
+			rejected := &kexRejection{exchange: exchangeName(IKE_INTERMEDIATE), method: method, side: "ciphertext", err: err}
 			slog.Warn("ike rejected the responder's ML-KEM ciphertext", "mid", mid, "err", rejected)
 			s.emit("ike.kex.rejected", rejected.attrs()...)
 			return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d: %w", mid, rejected)
 		}
-		requestChunk, err := intAuthChunk(request, HeaderLen, encodePayloadChain(inner))
+		// RFC 9242 section 3.3.2: "The prf calculations MUST be applied to whole messages only, before possible IKE fragmentation."
+		requestChunk, err := intAuthChunk(sent.message.whole, HeaderLen, sent.message.inner)
 		if err != nil {
 			return intAuth{}, err
 		}
@@ -178,11 +179,11 @@ func (ctx *ikeContext) nextGeneration(secret, ni, nr []byte) error {
 // it returns the response, which a retransmission of the request draws again, and chain with the exchange taken in
 // a request this end refuses is answered with the refusal and ends the half-open SA
 // RFC 7296 section 2.21.2: "request messages that contain an unsupported critical payload, or where the whole message is malformed (rather than just bad payload contents), MUST be rejected in their entirety, and MUST only lead to an UNSUPPORTED_CRITICAL_PAYLOAD or INVALID_SYNTAX Notification sent as a response."
-func (s *Session) answerIntermediate(chain intAuth, request *authRequest, method uint16, ni, nr []byte) ([]byte, intAuth, error) {
+func (s *Session) answerIntermediate(chain intAuth, request *authRequest, method uint16, ni, nr []byte) (*transmission, intAuth, error) {
 	ctx, mid := s.current, request.outer.Header.MessageID
-	refuse := func(notify NotifyType, data []byte, err error) ([]byte, intAuth, error) {
+	refuse := func(notify NotifyType, data []byte, err error) (*transmission, intAuth, error) {
 		if response, buildErr := s.responseNotifyData(ctx, mid, IKE_INTERMEDIATE, notify, data); buildErr == nil {
-			_ = s.mux.SendIKETo(response, request.source)
+			s.answer(response, request.form, request.source)
 		}
 		return nil, intAuth{}, err
 	}
@@ -205,18 +206,24 @@ func (s *Session) answerIntermediate(chain intAuth, request *authRequest, method
 	if err != nil {
 		// draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the checks fail, the responder MUST reject the initiator's improper public key and SHOULD send a Notify payload of type INVALID_SYNTAX as a response to the request to prevent resource exhaustion or denial of service risks."
 		// the handshake's failure records ike.kex.rejected under the limit of ike.handshake.failed
-		return refuse(N_INVALID_SYNTAX, nil, &kexRejection{exchange: "IKE_INTERMEDIATE", method: method, side: "key", err: err})
+		return refuse(N_INVALID_SYNTAX, nil, &kexRejection{exchange: exchangeName(IKE_INTERMEDIATE), method: method, side: "key", err: err})
 	}
 	answer := []RawPayload{{Type: PayloadKE, Body: EncodeKE(method, ciphertext)}}
 	response, err := s.response(ctx, mid, IKE_INTERMEDIATE, answer)
 	if err != nil {
 		return nil, intAuth{}, err
 	}
+	// RFC 9242 section 3.3.2: "If the message was received in fragmented form, it MUST be reconstructed before calculating the prf as if it were received unfragmented."
 	requestChunk, err := intAuthChunk(request.raw, request.outer.skHeaderOffset, plaintext)
 	if err != nil {
 		return nil, intAuth{}, err
 	}
-	responseChunk, err := intAuthChunk(response, HeaderLen, encodePayloadChain(answer))
+	// RFC 9242 section 3.3.2: "The prf calculations MUST be applied to whole messages only, before possible IKE fragmentation."
+	responseChunk, err := intAuthChunk(response.whole, HeaderLen, response.inner)
+	if err != nil {
+		return nil, intAuth{}, err
+	}
+	sent, err := s.transmit(response, request.form)
 	if err != nil {
 		return nil, intAuth{}, err
 	}
@@ -226,8 +233,8 @@ func (s *Session) answerIntermediate(chain intAuth, request *authRequest, method
 	}
 	// RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
 	// the handshake adopts a source at IKE_AUTH alone
-	if err := s.mux.SendIKETo(response, request.source); err != nil {
+	if err := s.sendTo(sent.datagrams, request.source); err != nil {
 		return nil, intAuth{}, err
 	}
-	return response, chain, nil
+	return sent, chain, nil
 }

@@ -11,10 +11,12 @@
 // alone or followed by ML-KEM-768 in an IKE_INTERMEDIATE exchange at setup and
 // an IKE_FOLLOWUP_KE exchange at a rekey, as [RFC 9370] runs them, encryption
 // in AES-GCM or ChaCha20-Poly1305, a PRF in HMAC-SHA2-384 or HMAC-SHA2-256, UDP
-// encapsulation forced on, and 0.0.0.0/0 with ::/0 as the traffic selectors.
-// [Suites] is the part of that set a session offers and accepts, in the order
-// it prefers. It interoperates with a strongSwan responder configured the same
-// way.
+// encapsulation forced on, and 0.0.0.0/0 with ::/0 as the traffic selectors. A
+// message larger than the path goes in the Encrypted Fragment payloads of
+// [RFC 7383] to a peer that announced them, and such a peer's fragments are
+// reassembled. [Suites] is the part of that set a session offers and accepts,
+// in the order it prefers. It interoperates with a strongSwan responder
+// configured the same way.
 //
 // Certificates, EAP, MOBIKE and the legacy transforms, CBC ciphers, MODP
 // groups and SHA-1 or MD5, are left out rather than unfinished, and a peer
@@ -52,11 +54,12 @@
 // The message, payload and transform codecs are exported beside those, so a
 // caller can build or read one exchange without driving a session. The
 // constants here are numbered by [RFC 7296] and by the documents that add to
-// it, [RFC 9242], [RFC 9370] and [draft-ietf-ipsecme-ikev2-mlkem-09], and each
-// declaration names its section.
+// it, [RFC 7383], [RFC 9242], [RFC 9370] and
+// [draft-ietf-ipsecme-ikev2-mlkem-09], and each declaration names its section.
 //
 // [draft-ietf-ipsecme-ikev2-mlkem-09]: https://datatracker.ietf.org/doc/html/draft-ietf-ipsecme-ikev2-mlkem-09
 // [RFC 7296]: https://www.rfc-editor.org/rfc/rfc7296
+// [RFC 7383]: https://www.rfc-editor.org/rfc/rfc7383
 // [RFC 7427]: https://www.rfc-editor.org/rfc/rfc7427
 // [RFC 7815]: https://www.rfc-editor.org/rfc/rfc7815
 // [RFC 9242]: https://www.rfc-editor.org/rfc/rfc9242
@@ -105,6 +108,8 @@ const (
 	PayloadSK      PayloadType = 46
 	PayloadCP      PayloadType = 47
 	PayloadEAP     PayloadType = 48
+	// RFC 7383 section 2.5: "The Encrypted Fragment payload is denoted SKF{...}, and its payload type is 53."
+	PayloadSKF PayloadType = 53
 )
 
 // Protocol IDs, RFC 7296 section 3.3.1.
@@ -199,6 +204,8 @@ const (
 	// Digital Signature, which fails outright for an Ed25519 key (charon's
 	// sign_classic() only handles KEY_RSA/KEY_ECDSA).
 	N_SIGNATURE_HASH_ALGORITHMS NotifyType = 16431
+	// RFC 7383 section 2.3: "Notify Message Type (2 octets) - MUST be 16430, the value assigned for the IKEV2_FRAGMENTATION_SUPPORTED notification."
+	N_IKEV2_FRAGMENTATION_SUPPORTED NotifyType = 16430
 	// RFC 9242 section 3.1: "The INTERMEDIATE_EXCHANGE_SUPPORTED is a Status Type IKEv2 notification with Notify Message Type 16438."
 	N_INTERMEDIATE_EXCHANGE_SUPPORTED NotifyType = 16438
 	// RFC 9370 section 2.2.4 of ADDITIONAL_KEY_EXCHANGE: "Its Notify Message Type value is 16441, and the Protocol ID and SPI Size are both set to 0."

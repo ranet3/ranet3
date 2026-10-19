@@ -310,7 +310,7 @@ func (s *Session) followups(methods []uint16, link []byte, answered time.Time) (
 		if err != nil {
 			// draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the error occurs in the CREATE_CHILD_SA or IKE_FOLLOWUP_KE exchanges, the initiator MUST delete the existing IKE SA and send a Delete payload in a new INFORMATIONAL exchange for the responder to also remove it."
 			// a missing KE and another method end it alike, since the two ends then hold different state
-			rejected := &kexRejection{exchange: "IKE_FOLLOWUP_KE", method: method, side: "ciphertext", err: err}
+			rejected := &kexRejection{exchange: exchangeName(IKE_FOLLOWUP_KE), method: method, side: "ciphertext", err: err}
 			slog.Warn("ike rejected the responder's ML-KEM ciphertext", "err", rejected)
 			s.emit("ike.kex.rejected", rejected.attrs()...)
 			return nil, &saEnding{reason: "kex rejected", err: rejected}
@@ -461,7 +461,7 @@ func selectsAddition(body []byte) bool {
 // handleIKERekey answers a peer's IKE SA rekey under ctx
 // the new context is current from the answer on, or from the last IKE_FOLLOWUP_KE of a rekey with additional key exchanges
 // ctx stays until the peer deletes it
-func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPayload) ([]byte, error) {
+func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPayload) (*outbound, error) {
 	s.stateMu.RLock()
 	accept := ctx == s.current && (s.old == nil || s.localRekey != nil) && s.collision == nil
 	ownChain := s.localRekey != nil && s.localRekey.chain
@@ -476,7 +476,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	}
 	// the peer runs one rekey of the IKE SA at a time, so a new one ends the chain of the last
 	s.dropChain(superseded)
-	malformed := func(err error) ([]byte, error) { return s.refuseRequest(ctx, msgID, CREATE_CHILD_SA, err) }
+	malformed := func(err error) (*outbound, error) { return s.refuseRequest(ctx, msgID, CREATE_CHILD_SA, err) }
 	payloads, err := parseChildExchangePayloads(inner)
 	if err != nil {
 		return malformed(err)

@@ -477,8 +477,7 @@ func idBody(text string) []byte {
 	return body
 }
 
-// Two ranet3 nodes could never reach each other before the responder
-// existed, so this is the case the whole feature is for.
+// an initiator and a responder complete a handshake over loopback, and each end's Child SA mirrors the other's
 func TestResponderCompletesHandshakeWithInitiator(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	initiator, err := h.dial(t)
@@ -505,8 +504,7 @@ func TestResponderCompletesHandshakeWithInitiator(t *testing.T) {
 	if !accepted.Key.Equal(h.public) {
 		t.Fatalf("the responder reports %x as the key that verified the initiator, want the trust's %x", accepted.Key, h.public)
 	}
-	// Each side's outbound key must be the other's inbound key, or the first
-	// ESP packet decrypts to nothing on a tunnel both ends believe is up.
+	// each end's outbound key is the other's inbound key, or the first ESP packet decrypts to nothing on a tunnel both ends report up
 	if !bytes.Equal(initiator.Child.OutboundKey, responder.Child.InboundKey) {
 		t.Error("initiator outbound key does not match responder inbound key")
 	}
@@ -527,8 +525,8 @@ func TestResponderCompletesHandshakeWithInitiator(t *testing.T) {
 		t.Errorf("responder message ids = peer %d, local %d; want 2 and 0",
 			responder.current.nextPeerMID, responder.current.nextLocalMID)
 	}
-	// A retransmitted IKE_AUTH has to be answerable from Run onwards.
-	if responder.current.lastPeerResponseID != 1 || len(responder.current.lastPeerResponse) == 0 {
+	// the responder keeps its IKE_AUTH response, so Run answers a repeat of the request with it
+	if responder.current.lastPeerResponseID != 1 || responder.current.lastPeer.response == nil || len(responder.current.lastPeer.response.datagrams) == 0 {
 		t.Error("responder did not retain its IKE_AUTH response for retransmission")
 	}
 }
@@ -1014,8 +1012,7 @@ func firstTestNotify(t testing.TB, raw []byte) Notify {
 }
 
 // RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected and the response to the IKE request containing that payload MUST include a Notify payload UNSUPPORTED_CRITICAL_PAYLOAD, indicating an unsupported critical payload was included. In that Notify payload, the Notification Data contains the one-octet payload type."
-// The answer is stateless and costs nothing, which is the only reason it can
-// be given before anything about the peer is known.
+// the answer is stateless, so it goes out before anything about the peer is known
 func TestResponderRefusesCriticalPayloadItDoesNotImplement(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
@@ -1030,16 +1027,15 @@ func TestResponderRefusesCriticalPayloadItDoesNotImplement(t *testing.T) {
 	if err := mux.RegisterIKE(spiI); err != nil {
 		t.Fatal(err)
 	}
-	// SKF, which RFC 7383 defines and this end does not implement, and nothing
-	// else about the request is wrong.
-	critical := []RawPayload{{Type: 53, Critical: true, Body: []byte{0}}}
+	// PS, which RFC 8019 defines and this end does not implement, in a request otherwise well formed
+	critical := []RawPayload{{Type: 54, Critical: true, Body: []byte{0}}}
 	reply := statelessAnswer(t, mux, encodeTestSAInit(t, spiI, ni, ikeProposal(), critical),
 		"a critical payload we do not implement drew no answer")
 	notify := firstTestNotify(t, reply)
 	if notify.Type != N_UNSUPPORTED_CRITICAL_PAYLOAD {
 		t.Fatalf("the responder answered notify %d, want UNSUPPORTED_CRITICAL_PAYLOAD", notify.Type)
 	}
-	if len(notify.Data) != 1 || notify.Data[0] != 53 {
+	if len(notify.Data) != 1 || notify.Data[0] != 54 {
 		t.Errorf("the notify named %v, want the payload type that was refused", notify.Data)
 	}
 	select {

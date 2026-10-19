@@ -122,10 +122,7 @@ func TestFullRangeSelectorSemantics(t *testing.T) {
 	}
 }
 
-// The teardown Delete gets its own retransmission budget, and the error it
-// reports has to name the budget it spent: an operator reading "no response
-// after 5 attempts" from an exchange that made two is being told the wrong
-// thing about how long the failure took.
+// an exchange's failure names the sends of the budget it spent, which differs from the default for the teardown Delete
 func TestSendRecvReportsTheBudgetItSpent(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
@@ -139,10 +136,8 @@ func TestSendRecvReportsTheBudgetItSpent(t *testing.T) {
 		Flags: FlagInitiator, MessageID: 0,
 	}}).Encode()
 
-	// One attempt, so the test costs one requestTimeout rather than the full
-	// budget, and the peer never answers.
 	start := time.Now()
-	_, err = sendRecvWithin(mux, request, 1, nil, nil)
+	_, err = sendRecvWithin(mux, &transmission{datagrams: [][]byte{request}}, 1, requestTimeout, nil, nil, nil)
 	if err == nil {
 		t.Fatal("an unanswered exchange reported success")
 	}
@@ -186,7 +181,7 @@ func TestSendRecvSendsAnUnansweredRequestAgain(t *testing.T) {
 		}
 	})
 
-	raw, err := sendRecvWithin(mux, request, 2, nil, nil)
+	raw, err := sendRecvWithin(mux, &transmission{datagrams: [][]byte{request}}, 2, requestTimeout, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("a request whose first copy went unanswered failed: %v", err)
 	}
@@ -253,7 +248,7 @@ func TestExchangeAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
 	})
 
 	var handed [][]byte
-	raw, err := sendRecvWithin(mux, request, maxRetransmits, nil, func(raw []byte) bool { handed = append(handed, slices.Clone(raw)); return false })
+	raw, err := sendRecvWithin(mux, &transmission{datagrams: [][]byte{request}}, maxRetransmits, requestTimeout, nil, nil, func(raw []byte, _ transport.Endpoint) bool { handed = append(handed, slices.Clone(raw)); return false })
 	if err != nil {
 		t.Fatalf("the exchange failed: %v", err)
 	}

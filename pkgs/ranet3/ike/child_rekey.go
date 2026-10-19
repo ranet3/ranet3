@@ -285,7 +285,7 @@ func decodeChildNegotiationResponse(response []RawPayload, prfID uint16) (childE
 	return payloads, nil
 }
 
-func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPayload) ([]byte, error) {
+func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPayload) (*outbound, error) {
 	s.stateMu.RLock()
 	// RFC 7296 section 1.4.1: "Deleting an IKE SA implicitly closes any remaining Child SAs negotiated under it."
 	// section 2.25.1: "If a peer receives a request to rekey a Child SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
@@ -296,7 +296,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	if ikeBusy || s.retiringChild().LocalSPI != 0 {
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 	}
-	malformed := func(err error) ([]byte, error) { return s.refuseRequest(ctx, msgID, CREATE_CHILD_SA, err) }
+	malformed := func(err error) (*outbound, error) { return s.refuseRequest(ctx, msgID, CREATE_CHILD_SA, err) }
 	payloads, err := decodeChildExchangePayloads(inner, ctx.suite.PRFID)
 	if err != nil {
 		return malformed(err)
@@ -384,7 +384,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	}
 	// RFC 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA: there is no reason to lose the work done to set up the IKE SA."
 	// an error returned from here would end the IKE SA, so a failure of this end's answers TEMPORARY_FAILURE
-	fail := func(err error) ([]byte, error) {
+	fail := func(err error) (*outbound, error) {
 		slog.Warn("ike cannot answer a peer Child SA rekey", "err", err)
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
 	}

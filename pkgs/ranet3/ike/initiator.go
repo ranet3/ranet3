@@ -58,6 +58,9 @@ type PeerConfig struct {
 	// Events records the session's state changes
 	// nil records nothing
 	Events Recorder
+
+	// pathMTU stands in for the mux's PathMTU, and nil reads the mux
+	pathMTU func() (int, error)
 }
 
 // Recorder takes one state change of a session, with the session's two ends
@@ -99,7 +102,11 @@ type ikeContext struct {
 	nextLocalMID       uint32 // next Message ID we allocate for a local request
 	nextPeerMID        uint32 // next Message ID expected from a peer request
 	lastPeerResponseID uint32
-	lastPeerResponse   []byte
+	// lastPeer is the request of the peer's at lastPeerResponseID and its answer, as a repeat of the request is read against
+	lastPeer answeredRequest
+
+	// requestFragments gathers the peer's request and responseFragments its response to this end's while either arrives in fragments
+	requestFragments, responseFragments reassembly
 }
 
 // Session is an established IKE SA: it owns the shared UDP mux and can
@@ -149,6 +156,10 @@ type Session struct {
 	sendFailures int
 	// answeredInvalidSyntax is set once the peer answers a request on the current IKE SA with INVALID_SYNTAX, after which Run returns, and only Run's goroutine touches it
 	answeredInvalidSyntax bool
+	// fragments tells whether both ends sent IKEV2_FRAGMENTATION_SUPPORTED in the IKE_SA_INIT that opened the session, which each IKE SA a rekey makes inherits
+	fragments bool
+	// pathMTU stands in for the mux's PathMTU, and nil reads the mux
+	pathMTU func() (int, error)
 
 	childMu          sync.RWMutex
 	Child            ChildSA
@@ -615,6 +626,8 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NAT_DETECTION_SOURCE_IP, Data: srcHash})})
 		dstHash := natDetectionHash(spiI, 0, cfg.RemoteAddr, uint16(cfg.RemotePort))
 		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NAT_DETECTION_DESTINATION_IP, Data: dstHash})})
+		// RFC 7383 section 2.3: "The initiator indicates its support for IKE fragmentation and willingness to use it by including a Notification payload of type IKEV2_FRAGMENTATION_SUPPORTED in the IKE_SA_INIT request message."
+		payloads = append(payloads, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_IKEV2_FRAGMENTATION_SUPPORTED})})
 
 		if cookie != nil {
 			// RFC 7296 section 2.6: "If the IKE_SA_INIT response includes the COOKIE notification, the initiator MUST then retry the IKE_SA_INIT request, and include the COOKIE notification containing the received data as the first payload, and all other payloads unchanged."
@@ -739,6 +752,9 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		suites:          cfg.Suites,
 		rechecks:        make(chan struct{}, 1),
 		events:          cfg.Events, local: cfg.Local, remote: cfg.Remote,
+		// RFC 7383 section 2.3: "If the responder also supports this extension and is willing to use it, it includes this notification in the response message."
+		fragments: carriesNotify(resp, N_IKEV2_FRAGMENTATION_SUPPORTED),
+		pathMTU:   cfg.pathMTU,
 	}
 	// a cancel during IKE_INTERMEDIATE closes the mux under it, as one during IKE_SA_INIT does, since the responder holds a half-open SA alone
 	chain, err := sess.runIntermediates(ni, nr)
@@ -903,11 +919,11 @@ func (s *Session) deleteAuthenticatedIKE() error {
 func (s *Session) informAfterAuth(inner []RawPayload) error {
 	ctx := s.current
 	header := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL, Flags: FlagInitiator, MessageID: ctx.nextLocalMID}
-	request, err := ctx.encrypt(ctx.localEncryptionKey(), header, nil, inner)
+	request, err := s.sealRequest(ctx, header, inner)
 	if err != nil {
 		return fmt.Errorf("ike: build INFORMATIONAL request: %w", err)
 	}
-	_, response, responseInner, _, err := encryptedExchange(s.mux, ctx, request, teardownRetransmits, func(raw []byte) bool { return s.answerAfterAuth(ctx, raw) })
+	_, response, responseInner, _, err := s.encryptedExchange(ctx, request, teardownRetransmits, func(raw []byte, source transport.Endpoint) bool { return s.answerAfterAuth(ctx, raw, source) })
 	// RFC 7296 section 2.25.2: "If a peer receives a request to close an IKE SA that it is currently trying to close, it SHOULD reply as usual, and forget about its own close request."
 	if errors.Is(err, errOvertaken) {
 		return nil
@@ -915,7 +931,8 @@ func (s *Session) informAfterAuth(inner []RawPayload) error {
 	if response == nil && s.mux.IsClosed() {
 		// the responder holds its SA until told, and a closed mux still sends, so the request goes out once more whether or not it left before
 		// RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
-		_ = s.mux.SendIKE(request)
+		// RFC 7383 section 2.5.2: "it MUST start from larger values and refragment the original message"
+		_, _ = s.resend(request, 0, s.mux.SendIKE)
 	}
 	if err != nil {
 		return err
@@ -935,7 +952,8 @@ func (s *Session) informAfterAuth(inner []RawPayload) error {
 	return nil
 }
 
-func (s *Session) answerAfterAuth(ctx *ikeContext, raw []byte) bool {
+// answerAfterAuth takes raw, a request of the peer's from source while ctx's exchange after IKE_AUTH is out, and reports whether it settles that exchange
+func (s *Session) answerAfterAuth(ctx *ikeContext, raw []byte, source transport.Endpoint) bool {
 	hdr, err := decodeHeader(raw)
 	if err != nil || hdr.IsInitiator() != ctx.responder || hdr.SPIInitiator != ctx.spiI || hdr.SPIResponder != ctx.spiR {
 		return false
@@ -944,23 +962,34 @@ func (s *Session) answerAfterAuth(ctx *ikeContext, raw []byte) bool {
 	if err != nil {
 		return false
 	}
-	first, plain, err := decryptMessagePlaintext(ctx.suite, ctx.peerEncryptionKey(), raw, message)
-	if err != nil || s.answerAgain(ctx, hdr) || hdr.MessageID != ctx.nextPeerMID {
+	// RFC 7383 section 5: "In either case, the receiver SHOULD drop the connection and discard all the received fragments."
+	// the IKE SA going ends with the exchange, for a request's fragments and for a repeat's from another address alike
+	repeat, err := s.answerAgain(ctx, hdr, raw, message, source)
+	if repeat || err != nil || hdr.MessageID != ctx.nextPeerMID {
+		return err != nil
+	}
+	request, err := s.open(ctx, &ctx.requestFragments, raw, message)
+	if err != nil {
+		return true
+	}
+	if request == nil {
 		return false
 	}
-	response, ends, err := s.answerInWait(ctx, hdr, message.Payloads, first, plain)
+	response, ends, err := s.answerInWait(ctx, hdr, request.outer.Payloads, request.innerFirst, request.plaintext)
 	if err != nil {
 		return false
 	}
-	ctx.lastPeerResponseID, ctx.lastPeerResponse = hdr.MessageID, response
-	ctx.nextPeerMID++
-	_ = s.mux.SendIKE(response)
+	sent, err := s.keepAnswer(ctx, hdr.MessageID, response, request)
+	if err != nil {
+		return false
+	}
+	_ = s.send(sent.datagrams)
 	return ends
 }
 
 // the IKE SA going carries no Child SA, so an INFORMATIONAL request whose Delete payloads decode is answered empty
 // RFC 7296 section 2.25.1: "If a peer receives a request to close a Child SA that does not exist, it SHOULD reply without a Delete payload."
-func (s *Session) answerInWait(ctx *ikeContext, hdr *Header, cleartext []RawPayload, first PayloadType, plain []byte) ([]byte, bool, error) {
+func (s *Session) answerInWait(ctx *ikeContext, hdr *Header, cleartext []RawPayload, first PayloadType, plain []byte) (*outbound, bool, error) {
 	inner, err := decodeMessagePlaintext(first, plain)
 	if err != nil {
 		// RFC 7296 section 2.21.3: "After the IKE SA is authenticated, all requests having errors MUST result in a response notifying the other end of the error."
@@ -1016,12 +1045,13 @@ func deletesIKE(payloads []RawPayload) bool {
 }
 
 // RFC 7296 section 2.1: "The responder MUST never retransmit a response unless it receives a retransmission of the request. In that event, the responder MUST ignore the retransmitted request except insofar as it causes a retransmission of the response."
-func (s *Session) answerAgain(ctx *ikeContext, hdr *Header) bool {
-	if ctx.lastPeerResponse == nil || hdr.MessageID != ctx.lastPeerResponseID || hdr.MessageID+1 != ctx.nextPeerMID {
-		return false
+// it reports whether raw, decoded as m, from source, is at the Message ID of such a retransmission, which answerRepeat answers as the half-open wait's rule says, the dial's endpoint standing for the origin
+// and it returns answerRepeat's error once a repeat's fragments pass reassemblyLimit
+func (s *Session) answerAgain(ctx *ikeContext, hdr *Header, raw []byte, m *Message, source transport.Endpoint) (bool, error) {
+	if ctx.lastPeer.response == nil || hdr.MessageID != ctx.lastPeerResponseID || hdr.MessageID+1 != ctx.nextPeerMID {
+		return false, nil
 	}
-	_ = s.mux.SendIKE(ctx.lastPeerResponse)
-	return true
+	return true, s.answerRepeat(ctx, raw, m, source)
 }
 
 // doIKEAuth reports true once it accepts the responder's AUTH and IDr in an answer carrying none of the notifies that leave the IKE SA uncreated, and returns an *authRefusal for a decrypted answer it refuses before then, other than one failed at the responder
@@ -1072,12 +1102,12 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 		RawPayload{Type: PayloadTSr, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
 	)
 	hdr := Header{SPIInitiator: s.current.spiI, SPIResponder: s.current.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: s.current.authMID}
-	req, err := s.current.encrypt(s.current.skei, hdr, nil, inner)
+	req, err := s.sealRequest(s.current, hdr, inner)
 	if err != nil {
 		return false, err
 	}
 
-	resp, respInner, err := encryptedRoundTrip(s.mux, s.current, req)
+	resp, respInner, err := s.encryptedRoundTrip(s.current, req)
 	if resp == nil {
 		return false, err
 	}

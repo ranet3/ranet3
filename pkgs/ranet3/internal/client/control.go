@@ -311,21 +311,24 @@ func (c *Client) Sessions() []control.Session {
 		local, remote := session.session.ChildSPIs()
 		started := session.session.StartedAt()
 		suite := session.session.Suite()
+		fragments, threshold := session.session.Fragments()
 		entry := control.Session{
-			Path:      session.path,
-			Peer:      session.peer.Node().String(),
-			Preferred: session.preferred,
-			Active:    session.session.Active(),
-			LocalSPI:  local,
-			RemoteSPI: remote,
-			IKECipher: suite.IKECipher,
-			IKEPRF:    suite.IKEPRF,
-			IKEKex:    suite.IKEKex,
-			ESPCipher: suite.ESPCipher,
-			ESPKex:    suite.ESPKex,
-			StartedAt: started,
-			Age:       control.Duration(time.Since(started)),
-			Idle:      control.Duration(session.session.Idle()),
+			Path:                 session.path,
+			Peer:                 session.peer.Node().String(),
+			Preferred:            session.preferred,
+			Active:               session.session.Active(),
+			LocalSPI:             local,
+			RemoteSPI:            remote,
+			IKECipher:            suite.IKECipher,
+			IKEPRF:               suite.IKEPRF,
+			IKEKex:               suite.IKEKex,
+			IKEFragments:         fragments,
+			IKEFragmentThreshold: threshold,
+			ESPCipher:            suite.ESPCipher,
+			ESPKex:               suite.ESPKex,
+			StartedAt:            started,
+			Age:                  control.Duration(time.Since(started)),
+			Idle:                 control.Duration(session.session.Idle()),
 		}
 		if endpoint := session.session.Mux().Endpoint(); endpoint != nil {
 			entry.Remote = endpoint.AddrPort().String()
