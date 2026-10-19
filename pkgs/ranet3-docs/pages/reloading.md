@@ -56,7 +56,7 @@ as [what a reload refuses](#what-a-reload-refuses) describes.
 | `cap.table.metric`, `cap.table.reconcile`, `cap.table.capture_grace` | applied                                  |                                                                                                                                              |
 | `cap.table.addresses`, `cap.table.assign_announced`                  | applied                                  | Refused when it moves the address `cap.egress.return` translates to.                                                                         |
 | `cap.table.prefsrc4`, `cap.table.rules`                              | applied                                  | Refused on macOS, as at startup.                                                                                                             |
-| `cap.segment` and every key under it                                 | applied                                  | Refused when the tun cannot move.                                                                                                            |
+| `cap.segment` and every key under it                                 | applied                                  | Refused when the tun cannot move, and when it adds the first egress segment or removes the last.                                             |
 | `cap.crypto.ike`, `cap.crypto.esp` and every key under them          | applied                                  | To each exchange after it. An SA holding a transform they leave out is rekeyed or replaced, as [`cap.crypto`](#capcrypto) says.              |
 | `cap.crypto.replay`, `cap.crypto.rekey` and every key under it       | refused when its effective value changes |                                                                                                                                              |
 | `cap.egress`, written, removed, or any key under it                  | refused when its effective value changes | A new order of `advertise`, `sweep` written as its default and `"auto"` written out for `source4` or `source6` are no change.                |
@@ -173,6 +173,15 @@ moves. Any other table goes in before the tun moves. Either way, the tun's MTU
 plus the steering header in force stays within the larger of the old and the new
 `link.mtu`. A steering stopped with `ranet3 disable steering` stays stopped with
 the new table installed.
+
+The egress device, the translator's rule keyed on it and its readiness are made
+at startup. A reload adding the first egress segment is refused with
+`config: cap.segment adds the first egress segment, restart to apply`, and one
+removing the last with
+`config: cap.segment removes the last egress segment, restart to apply`. A
+reload moving an egress segment to another SID, adding a second or editing an
+`allow` list applies, and the originated `/128` follows the SIDs. A reordered
+`allow` list is no change.
 
 A changed `link.mtu` moves the tun the same way. A read off the tun takes a
 packet of up to 65535 bytes whatever `link.mtu` the node started with, so the
@@ -333,6 +342,10 @@ an unknown key is refused whole. The checks across blocks run again:
   tun
 - a `cap.route` announcement must not equal a `cap.egress.advertise` prefix,
   which it would announce whether or not the translation rule is installed
+- an egress segment needs `cap.egress`, `cap.table` with the egress device's
+  rule placed between the `to` and `from` rules into the mesh table, and a
+  `link.tun` naming the egress device, and `cap.route` must not announce its
+  SID's `/128`
 - `auth.aliases.local` needs at most 1 `link.endpoints` entry in each family,
   and its `keyid` values must not spell an endpoint of another node, as
   [the configuration reference](configuration-reference.md#authaliases) lists

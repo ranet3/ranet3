@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-10-18
+updated: 2026-10-19
 order: 100
 ---
 
@@ -29,6 +29,7 @@ setting or skips a route instead.
 | `cap.table.prefsrc4`                 | supported                                                                 | refused                                                 |
 | `cap.table.metric`                   | supported                                                                 | ignored                                                 |
 | `cap.egress`                         | nftables                                                                  | refused                                                 |
+| Egress segments                      | a second tun, `link.tun` plus `e`                                         | refused                                                 |
 | Network watch                        | rtnetlink                                                                 | routing socket                                          |
 | Don't fragment                       | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO`                                      | `IP_DONTFRAG`, `IPV6_DONTFRAG`                          |
 | Path MTU a search starts from        | the route's MTU, including a path MTU the host learned                    | the MTU of the interface the route leaves by            |
@@ -175,6 +176,8 @@ On a platform other than Linux and macOS:
 - `cap.table` fails the start with
   `route reconciliation is unsupported on this platform`.
 - `cap.egress` and both `link.underlay` settings are refused.
+- An egress segment fails the start, naming its SID, since the egress device is
+  a Linux tun the kernel forwards from.
 - The node has no network watch, so a moved host waits for each session's own
   liveness check.
 - Every peer shares the 1 socket of its family, busy or not.

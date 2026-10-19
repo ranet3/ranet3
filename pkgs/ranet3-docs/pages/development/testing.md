@@ -23,7 +23,13 @@ unshares a network namespace, refuses to continue unless it is empty, and skips
 unless run as root.
 
 - `internal/kernel` has tests that write to a real routing table.
-- `internal/egress` has 1 that writes into a real packet filter.
+- `internal/egress` has 4 that write into a real packet filter. One round trips
+  the rules, another checks that the kernel tells the backend when another
+  writer deletes its table, and that its own installs and withdrawals tell it
+  nothing, and the third checks that another writer's transactions overflowing
+  the notification socket reach the backend as lost notifications. The fourth
+  checks that another writer's uncommented rule at the head of the translator's
+  chain is read back, and that the next pass leaves only the translator's rules.
 - `transport` has 2 that send through a veth pair to a peer in a second
   namespace, behind a route with a locked path MTU. They check that the kernel
   refuses what the path cannot carry, segmented or single, and reports the path
@@ -57,7 +63,21 @@ unless run as root.
   checks that the tun's GRO coalesces them and that the socket reads back the
   bytes sent. 2 more check that a lane's write into the tun allocates nothing
   and keeps no reference to the frames it wrote, whether its packets go alone or
-  coalesce.
+  coalesce. 5 run the egress device: `TestTUNEgressDeviceCarriesAndDrains`
+  carries an egress segment's inner packet whole through it to a kernel socket
+  and drains a packet the kernel routes into it, and
+  `TestTUNEgressWritesMoreFlowsThanABatch` writes more flows into it than 1
+  batch holds. `TestTUNEgressDeviceIsMadeWithNoAddress` makes it up, with no
+  address, router advertisements refused and `rp_filter` off, and refuses a
+  device of its name already there, held open or left persistent.
+  `TestTUNEgressDeviceTakesIPv6WhereTheHostTurnsItOffForNewLinks` makes it on a
+  host whose new links take `disable_ipv6` 1, and checks that the kernel takes a
+  steered IPv6 packet from it rather than discard it.
+  `TestTUNEgressDrainCountsOnlyWhatARouteSends` makes it on a host forwarding
+  IPv6 and checks that the kernel's MLD reports at start and after a
+  `disable_ipv6` put-back, and a packet to a link-local multicast address, leave
+  the drained count alone, while a packet to a multicast address of wider scope
+  and a unicast packet each count.
 - `internal/client` has tests under the same prefix that run a node on a real
   TUN device:
   - A SYN arriving through a session between 2 nodes on loopback reaches the tun
@@ -69,6 +89,17 @@ unless run as root.
   - A Babel packet sent in fragments reaches the speaker whole, and the tun
     never sees it. A fragment of ordinary traffic on the same session reaches
     the tun as sent.
+  - `TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink` runs an exit node
+    with an egress segment and a far host behind a veth pair. Steered IPv4 and
+    IPv6 leave under the uplink's address and the replies come back through the
+    mesh tun, while a source outside the allow list is refused. The node puts
+    back a rule and a table another writer deleted and the device's
+    `disable_ipv6` another writer set, and when the egress device is deleted
+    under it, both families go not ready and the SID's /128 is withdrawn. It
+    leaves no link, rule or table behind.
+  - `TestTUNSetEgressReadyMovesTheMeshBeforeTheAnnouncement` reads what the mesh
+    writes into a real egress device while the announcement is rebuilt, and
+    checks that it already follows the readiness just given.
 - `internal/client` also has 1,
   `TestTransitWarnsOnlyWhereTheHostCannotForwardIt`, that writes its namespace's
   forwarding sysctls and checks that an enabled `cap.transit` warns only where
@@ -207,7 +238,7 @@ does not exist. CI also builds every package, every dev shell and the formatter
 on all 3 systems, and never builds `legacyPackages.*.profile`.
 
 The `netlink` check runs these root tests: the `internal/kernel` tests whose
-names start with `TestNetlink`, the `internal/egress` round trip, the `TestTUN`
+names start with `TestNetlink`, the 4 `internal/egress` tests, the `TestTUN`
 tests of `internal/netstack` and `internal/client`, the 3 `transport` sends, and
 the 4 `internal/client` tests above with
 `TestTransitWarnsOnlyWhereTheHostCannotForwardIt` under `unshare -n`, and every
@@ -219,9 +250,9 @@ table of theirs is left on the host. The `internal/kernel` tests
 no check, and so do the 7 `transport` tests of the sockets connected to 1 peer
 and the 3 of a session's fallback from its address.
 
-The `netlink` check and `integration-egress` are the only places where a real
-kernel takes the `nf_tables` encoding. Elsewhere the encoding meets only the
-decoder written beside it.
+The `netlink` check, `integration-egress` and `integration-egress-segment` are
+the only places where a real kernel takes the `nf_tables` encoding. Elsewhere
+the encoding meets only the decoder written beside it.
 
 `nix fmt` rewrites the tree in place. It runs `deno fmt` on the Markdown, the
 example JSON and the site, then `nixfmt-tree`, then `go fmt`, `go vet`,
@@ -250,6 +281,7 @@ nix build .#checks.x86_64-linux.integration-responder-fqdn -L
 nix build .#checks.x86_64-linux.integration-kernel -L
 nix build .#checks.x86_64-linux.integration-segments -L
 nix build .#checks.x86_64-linux.integration-egress -L
+nix build .#checks.x86_64-linux.integration-egress-segment -L
 nix build .#checks.x86_64-linux.integration-suites-meet -L
 nix build .#checks.x86_64-linux.integration-suites-meet-responder -L
 nix build .#checks.x86_64-linux.integration-suites-apart -L
@@ -289,6 +321,15 @@ rules rather than rewriting them, that turning `net.ipv4.ip_forward` off
 withdraws the IPv4 advertisement and leaves the IPv6 one alone, and that a stop
 leaves no nftables table behind. A start after the stop installs the tables
 again.
+
+`integration-egress-segment` gives the exit node an egress segment instead of an
+advertisement. It asserts that the egress device is ready for both families with
+no address and that BIRD holds the SID's /128. The gateway then steers its IPv6
+traffic to the SID, and the machine behind the exit sees the exit's own address.
+A source outside the allow list is refused. Turning IPv6 forwarding off keeps
+the SID, since a family the host does not forward is not waited for, and
+`net.ipv4.conf.all.rp_filter=2` withdraws it until it is 0 again. A stop removes
+the device and the tables.
 
 `integration-segments` steers 1 destination through a segment routing header
 (RFC 8754). The gateway's own kernel removes the header with End.DT6, and a

@@ -245,6 +245,8 @@ connections to the reads.
 | `kernel.pass`                         | a reconciler pass that took a reload, changed, skipped anew or failed       |
 | `kernel.cover`                        | a family's zero-free cover went into the kernel or came out, on macOS       |
 | `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed      |
+| `egress.ready`                        | the egress device's readiness or its SIDs moved, with `ipv4`, `ipv6`, `sid` |
+| `egress.device`                       | the egress device was created or withdrawn, with `name` and `action`        |
 | `network.changed`                     | the host's default or addresses moved, so every session was probed          |
 | `transport.underlay.bound`            | the underlay socket moved onto another interface                            |
 | `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable   |
@@ -258,8 +260,9 @@ connections to the reads.
 | `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets               |
 | `netstack.tun.failed`                 | the tun went away under the running node, which then stops                  |
 
-`egress.pass` and `transport.endpoint.unsegmented` are recorded on Linux alone,
-and `transport.endpoint.unpinned` on Linux and macOS alone, the platforms that
+`egress.pass`, `egress.ready`, `egress.device` and
+`transport.endpoint.unsegmented` are recorded on Linux alone, and
+`transport.endpoint.unpinned` on Linux and macOS alone, the platforms that
 answer from the address a request reached. `transport.underlay.bound` is
 recorded on macOS alone, because only macOS binds the underlay socket to an
 interface. `transport.pair.connected` and `transport.pair.closed` are recorded
@@ -310,6 +313,8 @@ Each kind carries these attributes:
 | `kernel.pass`                                 | `trigger`, `took`, `added`, `removed`, `skipped`, `installed`, `err`                                                                        |
 | `kernel.cover`                                | `family`, `installed`                                                                                                                       |
 | `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                          |
+| `egress.ready`                                | `ipv4`, `ipv6`, `sid`                                                                                                                       |
+| `egress.device`                               | `name`, `action` (`created` or `withdrawn`)                                                                                                 |
 | `network.changed`                             | `ipv4_default`, `ipv4_default_was`, `ipv4_added`, `ipv4_removed`, the same 4 for `ipv6`, `probed`, `woken`                                  |
 | `transport.underlay.bound`                    | `interface_index`                                                                                                                           |
 | `transport.endpoint.unpinned`, `.unsegmented` | `endpoint`, `errno`                                                                                                                         |
@@ -326,7 +331,9 @@ Each kind carries these attributes:
 `egress.pass` only when the step failed. The `trigger` of a `kernel.pass` is
 `start`, `sweep`, `retry`, `grace`, `disable`, `enable`, `reload`, `mesh` or
 `kernel`. The `trigger` of an `egress.pass` is `start`, `sweep`, `retry`,
-`disable` or `enable`.
+`disable`, `enable`, `deleted` when another writer deleted part of its tables,
+or `missed` when the daemon lost nf_tables notifications to an overflow or could
+not read one, whoever's tables they were about.
 
 An `ike.sa.expired` is recorded for the current Child SA and for a replaced one
 still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an

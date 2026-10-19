@@ -52,6 +52,42 @@ SIDs of one node in a row, the node acts on all of them in one pass. A TCP SYN
 or SYN-ACK that `End.DT46` delivers has its MSS clamped, as
 [path MTU](path-mtu.md) describes.
 
+## Egress segments
+
+An `End.DT46` with `deliver = "egress"` writes its inner packet into the egress
+device rather than the mesh tun, and the host forwards it out of the uplink
+under the exit's translated source. A leaf steering to the SID picks this exit
+by its segment list. `deliver = "mesh"`, the default, is the tun.
+[Exit nodes](exit-nodes.md#egress-segments) describes the device, the rule it
+needs in `cap.table` and when the exit is ready.
+
+```toml
+[[cap.segment.local]]
+sid = "2001:db8:0:6::3"
+behavior = "End.DT46"
+deliver = "egress"
+allow = ["10.99.0.0/24", "fd00:99::/64"]
+```
+
+`allow` is required with `deliver = "egress"` and read with nothing else. A
+packet passes only when its outer source and its inner source both fall inside
+an entry of the list. Anything else counts as refused and is never answered,
+since an exit carrying any source would be an open proxy. The loader refuses:
+
+- a list with no entry, or with no IPv6 entry, since every outer source is IPv6
+- an entry of length 0, which admits every address of its family
+- an IPv4 entry shorter than `/8` or an IPv6 entry shorter than `/12`
+- an entry with bits set past its length, an IPv4 address written as IPv6, or an
+  entry written twice
+
+The order of the list does not matter, and a reload reordering it changes
+nothing. `deliver = "egress"` belongs to `End.DT46` alone, and an egress segment
+needs `cap.egress`, `cap.table` and a `link.tun` that names the egress device in
+14 bytes or fewer without a `%`. The node originates the SID's `/128` itself
+while the exit is ready, so `cap.route` does not announce it. The Segments line
+of `status` prints an egress segment as its SID, its behavior, `deliver egress`
+and its list.
+
 ## Steering
 
 `cap.segment.steer` is which packets read off the tun go through a segment list.
@@ -157,26 +193,30 @@ device, a second tun, rather than through the mesh tun. Its packets are counted
 4 ways. Egressed is a packet the egress device took. Refused is a packet whose
 outer or inner source is outside the segment's allow list, or whose inner source
 it cannot read, counted among the dropped and never answered. Not ready is a
-packet the allow list let through while no egress device was installed, or whose
-device closed under the write. It is this node's own state and is not counted
-among the dropped. A write the egress device refuses for any other reason counts
-its packets among the dropped. Drained is a packet read off the egress device
-and thrown away. Every route into the overlay names the mesh tun, so each
-drained packet took a route into the wrong device. No configuration names an
-egress segment yet, which keeps these at 0.
+packet the allow list let through while no egress device was installed, whose
+device closed under the write, or whose family the translator had not reported
+ready. It is this node's own state and is not counted among the dropped. A write
+the egress device refuses for any other reason counts its packets among the
+dropped. Drained is a packet read off the egress device and thrown away. Every
+route into the overlay names the mesh tun, so each drained packet took a route
+into the wrong device. The kernel also sends packets of its own out of the
+device, its MLD reports for `ff02::2` each time the device's IPv6 comes up on a
+host forwarding IPv6. These go to IPv6 multicast addresses of interface-local or
+link-local scope, which no route sends to, so a packet to such an address is
+read and dropped without being counted.
 
-| Metric                               | Meaning                                                         |
-| ------------------------------------ | --------------------------------------------------------------- |
-| `ranet3_segments_forwarded_total`    | packets an `End` sent on to their next segment                  |
-| `ranet3_segments_delivered_total`    | packets an `End.DT46` delivered to the mesh tun                 |
-| `ranet3_segments_dropped_total`      | packets to a local SID this node would not act on               |
-| `ranet3_segments_answered_total`     | ICMP errors sent for refused packets                            |
-| `ranet3_segments_egressed_total`     | packets an egress segment handed to the egress device           |
-| `ranet3_segments_refused_total`      | packets an egress segment's allow list refused                  |
-| `ranet3_segments_not_ready_total`    | packets an egress segment let through and no device took        |
-| `ranet3_segments_drained_total`      | packets read off the egress device and thrown away              |
-| `ranet3_steered_total`               | packets a steering entry encapsulated                           |
-| `ranet3_steer_dropped_total{reason}` | steered packets not sent, `reason` is `too_large` or `no_route` |
+| Metric                               | Meaning                                                                                                                          |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `ranet3_segments_forwarded_total`    | packets an `End` sent on to their next segment                                                                                   |
+| `ranet3_segments_delivered_total`    | packets an `End.DT46` delivered to the mesh tun                                                                                  |
+| `ranet3_segments_dropped_total`      | packets to a local SID this node would not act on, or the open egress device refused                                             |
+| `ranet3_segments_answered_total`     | ICMP errors sent for dropped packets                                                                                             |
+| `ranet3_segments_egressed_total`     | packets an egress segment handed to the egress device                                                                            |
+| `ranet3_segments_refused_total`      | packets an egress segment's allow list refused, or whose inner source it cannot read                                             |
+| `ranet3_segments_not_ready_total`    | packets an egress segment let through and no ready device took                                                                   |
+| `ranet3_segments_drained_total`      | packets read off the egress device and thrown away, leaving out the kernel's own to interface-local or link-local IPv6 multicast |
+| `ranet3_steered_total`               | packets a steering entry encapsulated                                                                                            |
+| `ranet3_steer_dropped_total{reason}` | steered packets not sent, `reason` is `too_large` or `no_route`                                                                  |
 
 ## Interoperation with the Linux kernel
 
@@ -193,3 +233,11 @@ dropped count to stay where it was. No VM arm configures `End`. Unit tests in
 `srv6` check that an encapsulation copies the traffic class, flow label and hop
 limit as `__seg6_do_srh_encap` does. They also check that `End` forwards the
 reduced header `encap.red` writes.
+
+The `egress-segment` VM check makes the gateway a kernel leaf of an egress
+segment on the client. The gateway's `encap seg6 mode encap` route steers a ping
+to an address behind the client, which sees the client's own address as the
+source and answers. The check requires the client's egressed count to rise, an
+inner source outside the allow list to count as refused, and the SID's `/128` on
+the gateway to follow the client's readiness. It runs the IPv6 arm. The IPv4
+path is checked by a root test with frames built in the test.
