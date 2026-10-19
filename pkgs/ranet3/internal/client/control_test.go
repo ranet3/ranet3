@@ -58,6 +58,7 @@ func TestLocalSegmentOnOneOfThisNodesAddressesIsRefused(t *testing.T) {
 		{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEndDT46},
 	}})
 	cfg.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{schema.MustPrefix("3fff:1:69c:8c6::1/128")}}
+	cfg.Cap.Border = borderOf("3fff::/20")
 	if err := cfg.Validate(); err == nil {
 		t.Error("a segment on one of this node's own addresses was accepted")
 	}

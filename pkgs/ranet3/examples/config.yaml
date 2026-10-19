@@ -120,3 +120,5 @@ cap:
   #   source6: auto
   #   return: true
   #   sweep: 30s
+  # border:                       # every local segment needs it, and acts only on an outer source in overlay
+  #   overlay: ["3fff::/20", "198.18.0.0/15"]

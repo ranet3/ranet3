@@ -49,7 +49,7 @@ func egressTable(tb testing.TB) *srv6.LocalTable {
 		{SID: schema.AddrFrom(meshExit), Behavior: srv6.BehaviorEndDT46},
 		{SID: schema.AddrFrom(egressExit), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: allow},
 		{SID: schema.AddrFrom(egressWaypoint), Behavior: srv6.BehaviorEnd},
-	})
+	}, everySource)
 	if err != nil {
 		tb.Fatal(err)
 	}

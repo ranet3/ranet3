@@ -211,7 +211,7 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	warnVRFWithoutL3mdev(cfg)
 	// Before the tun exists, so a segment this node could not answer for
 	// refuses the startup without a device to clean up.
-	segments, steering, err := cfg.Segments().Tables()
+	segments, steering, err := cfg.SegmentTables()
 	if err != nil {
 		return nil, err
 	}

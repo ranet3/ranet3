@@ -133,6 +133,8 @@ cap:
     source: "3fff:1:69c:8c0::1"
     local:
       - { sid: "3fff:1:69c:8c6::1", behavior: "End.DT46" }
+  border:
+    overlay: ["3fff::/20"]
   crypto:
     replay: 4096
     rekey: { child: 1h, retry: { first: 5s, max: 5m } }
@@ -159,6 +161,8 @@ rules = [{ fwmark = 0x726c, table = "main", priority = 40, family = "both" }]
 [cap.segment]
 source = "3fff:1:69c:8c0::1"
 local = [{ sid = "3fff:1:69c:8c6::1", behavior = "End.DT46" }]
+[cap.border]
+overlay = ["3fff::/20"]
 [cap.crypto]
 replay = 4096
 rekey = { child = "1h", retry = { first = "5s", max = "5m" } }
@@ -322,8 +326,8 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 			asTOML: "[cap.crypto.rekey]\nchild = \"5m\"\n",
 		},
 		"a segment this node also carries as an address": {
-			asYAML: "cap:\n  table:\n    addresses: [\"3fff:1:69c:8c6::1/128\"]\n  segment:\n    local: [{ sid: \"3fff:1:69c:8c6::1\", behavior: End }]\n",
-			asTOML: "[cap.table]\naddresses = [\"3fff:1:69c:8c6::1/128\"]\n[cap.segment]\nlocal = [{ sid = \"3fff:1:69c:8c6::1\", behavior = \"End\" }]\n",
+			asYAML: "cap:\n  table:\n    addresses: [\"3fff:1:69c:8c6::1/128\"]\n  segment:\n    local: [{ sid: \"3fff:1:69c:8c6::1\", behavior: End }]\n  border:\n    overlay: [\"3fff::/20\"]\n",
+			asTOML: "[cap.table]\naddresses = [\"3fff:1:69c:8c6::1/128\"]\n[cap.segment]\nlocal = [{ sid = \"3fff:1:69c:8c6::1\", behavior = \"End\" }]\n[cap.border]\noverlay = [\"3fff::/20\"]\n",
 		},
 		"an exit that advertises nothing": {
 			asYAML: "cap:\n  egress:\n    source4: auto\n",

@@ -245,16 +245,17 @@ type tunPlan struct {
 	from, to int
 }
 
-// planTUN builds what a reload from old to next changes on the tun, nothing where cap.segment and link.mtu stay
+// planTUN builds what a reload from old to next changes on the tun, nothing where cap.segment, cap.border's overlay and link.mtu stay
 // a move of the device's MTU is refused on a platform that sets the MTU only at the open
 func (c *Client) planTUN(old, next *config.Config) (tunPlan, error) {
-	plan := tunPlan{tables: !sameSegments(old, next)}
+	// the local table admits only an outer source in the overlay, so a moved overlay rebuilds it
+	plan := tunPlan{tables: !sameSegments(old, next) || !sameOverlay(old, next)}
 	if !plan.tables && old.Link.SessionMTU() == next.Link.SessionMTU() {
 		return plan, nil
 	}
 	plan.steering = c.Mesh.Steering()
 	if plan.tables {
-		segments, steering, err := next.Segments().Tables()
+		segments, steering, err := next.SegmentTables()
 		if err != nil {
 			return tunPlan{}, err
 		}

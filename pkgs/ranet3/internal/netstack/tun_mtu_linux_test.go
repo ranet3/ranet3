@@ -374,7 +374,7 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 			headend.SetSteering(steering)
 			family.assign(t, headend.Name)
 
-			segments, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}})
+			segments, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}}, everySource)
 			if err != nil {
 				t.Fatal(err)
 			}

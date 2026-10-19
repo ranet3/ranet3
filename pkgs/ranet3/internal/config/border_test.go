@@ -80,10 +80,10 @@ func TestEgressSegmentIsRefusedOutsideTheBorder(t *testing.T) {
 	for name, c := range map[string]struct{ body, says string }{
 		"no cap.border": {
 			strings.Replace(exit, egressBorderTOML, "", 1),
-			"config: cap.segment local 2a0c:b641:69c:5d26::3 delivers to egress and cap.border is absent, so a forged allowed source can reach it through this node's own links: add cap.border",
+			"config: cap.segment local 2a0c:b641:69c:5d26::3 is written and cap.border is absent",
 		},
 		"an allow entry of another family's overlay": {
-			overlay(`["23.161.104.0/24"]`),
+			overlay(`["23.161.104.0/24", "3fff::/20"]`),
 			"config: cap.segment local 2a0c:b641:69c:5d26::3 allow 2602:f590::/36 lies outside cap.border overlay, so every forwarding node's filter lets a forged 2602:f590::/36 source through to it",
 		},
 		"an allow entry wider than its overlay entry": {
@@ -115,6 +115,42 @@ func TestEgressSegmentIsRefusedOutsideTheBorder(t *testing.T) {
 	// a node with no egress segment writes the filter on its own
 	if _, err := loadTOML(t, nodeTOML+egressBorderTOML); err != nil {
 		t.Errorf("a node with cap.border alone was refused: %v", err)
+	}
+}
+
+// Every local segment loads only beside cap.border, whose overlay's IPv6
+// prefixes are the only outer sources a local SID acts on, so a segment
+// delivering to the mesh is refused without the block, and with an overlay
+// holding no IPv6 prefix, which would refuse every packet. A segment cap.segment
+// refuses for itself is refused for that first, with or without the block.
+func TestEveryLocalSegmentNeedsTheBorder(t *testing.T) {
+	const mesh = "[[cap.segment.local]]\nsid = \"2a0c:b641:69c:5d26::1\"\nbehavior = \"End\"\n"
+	for name, c := range map[string]struct{ body, says string }{
+		"a segment cap.segment refuses, and no cap.border": {
+			nodeTOML + mesh + "deliver = \"egress\"\n",
+			"srv6: cap.segment local 2a0c:b641:69c:5d26::1: deliver egress belongs to End.DT46, and End hands the packet to its next segment",
+		},
+		"no cap.border": {
+			nodeTOML + mesh,
+			"config: cap.segment local 2a0c:b641:69c:5d26::1 is written and cap.border is absent, so nothing bounds the outer sources it acts on and a forged mesh source reaches it through this node's own links: add cap.border",
+		},
+		"an overlay of IPv4 alone": {
+			nodeTOML + mesh + "[cap.border]\noverlay = [\"23.161.104.0/24\", \"198.18.0.0/15\"]\n",
+			"config: cap.border overlay holds no IPv6 prefix, so cap.segment local 2a0c:b641:69c:5d26::1 would refuse every packet, whose outer source is always IPv6",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := loadTOML(t, c.body); err == nil || err.Error() != c.says {
+				t.Errorf("refused with %v, want %q", err, c.says)
+			}
+		})
+	}
+	if _, err := loadTOML(t, nodeTOML+mesh+"[cap.border]\noverlay = [\"23.161.104.0/24\", \"2602:f590::/36\"]\n"); err != nil {
+		t.Errorf("a segment beside an overlay holding an IPv6 prefix was refused: %v", err)
+	}
+	// with no local segment the overlay may hold one family alone
+	if _, err := loadTOML(t, nodeTOML+"[cap.border]\noverlay = [\"23.161.104.0/24\"]\n"); err != nil {
+		t.Errorf("an overlay of IPv4 alone on a node with no segment was refused: %v", err)
 	}
 }
 

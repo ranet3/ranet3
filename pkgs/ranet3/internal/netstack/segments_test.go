@@ -21,6 +21,10 @@ import (
 func segAddr(s string) netip.Addr     { return netip.MustParseAddr(s) }
 func segPrefix(s string) netip.Prefix { return netip.MustParsePrefix(s) }
 
+// everySource is an overlay admitting every outer source, for a table whose
+// tests do not reach the overlay's bound
+var everySource = []schema.Prefix{schema.MustPrefix("::/0")}
+
 // plainV6 is a minimal IPv6 packet, enough for the header reading the
 // dataplane does.
 func plainV6(src, dst netip.Addr, payload string) []byte {
@@ -98,7 +102,7 @@ func TestBatchWithoutSegmentsIsUntouched(t *testing.T) {
 // its frame is the tail of the outer packet's, the end of the outer header the headroom in front of it, rather than a copy
 func TestExitDeliversWhatWasInside(t *testing.T) {
 	exit := segAddr("3fff:1:69c:8c6::1")
-	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(exit), Behavior: srv6.BehaviorEndDT46}})
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(exit), Behavior: srv6.BehaviorEndDT46}}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +142,7 @@ func TestExitDeliversWhatWasInside(t *testing.T) {
 func TestWaypointForwardsInsteadOfDelivering(t *testing.T) {
 	waypoint := segAddr("3fff:1:69c:8c6::2")
 	exit := segAddr("3fff:1:69c:98d6::1")
-	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}})
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +178,7 @@ func TestWaypointForwardsInsteadOfDelivering(t *testing.T) {
 // where they would arrive as undeliverable packets addressed to us.
 func TestSegmentsThatCannotBeActedOnAreDropped(t *testing.T) {
 	waypoint := segAddr("3fff:1:69c:8c6::2")
-	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}})
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +216,7 @@ func TestSegmentsThatCannotBeActedOnAreDropped(t *testing.T) {
 // its own backing array.
 func TestPacketsBeforeAndAfterASegmentKeepTheirOrder(t *testing.T) {
 	exit := segAddr("3fff:1:69c:8c6::1")
-	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(exit), Behavior: srv6.BehaviorEndDT46}})
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(exit), Behavior: srv6.BehaviorEndDT46}}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +320,7 @@ func TestPacketThatCannotBeSteeredIsDropped(t *testing.T) {
 // rather than one of each per packet.
 func TestWaypointBatchTakesOnePlacePerPeer(t *testing.T) {
 	waypoint := segAddr("3fff:1:69c:8c6::2")
-	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}})
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +381,7 @@ func TestWaypointBatchTakesOnePlacePerPeer(t *testing.T) {
 // record.
 func TestRefusedPacketsAreAnsweredAtABoundedRate(t *testing.T) {
 	waypoint := segAddr("3fff:1:69c:8c6::2")
-	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}})
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +439,7 @@ func TestTwoSegmentsOfThisNodeInOneListAreBothActedOn(t *testing.T) {
 	table, err := srv6.NewLocalTable([]srv6.Segment{
 		{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd},
 		{SID: schema.AddrFrom(exit), Behavior: srv6.BehaviorEndDT46},
-	})
+	}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}

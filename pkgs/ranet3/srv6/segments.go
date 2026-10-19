@@ -95,7 +95,9 @@ func (s Segments) Egress() []Segment {
 
 // Validate refuses a capability this node could not act on, by building the
 // two tables and throwing them away. Everything it can say is said by the
-// constructors, so there is one set of rules rather than two.
+// constructors, so there is one set of rules rather than two. The overlay the
+// local table needs belongs to cap.border, so the loader checks it where it
+// reads both blocks.
 func (s Segments) Validate() error {
 	if s.Source.IsValid() && !Usable(s.Source.Addr) {
 		// Checked here rather than where the first steering entry needs it,
@@ -103,15 +105,19 @@ func (s Segments) Validate() error {
 		// yet would otherwise carry a source it can never send from.
 		return fmt.Errorf("srv6: cap.segment source %s cannot address a segment routed packet", s.Source)
 	}
-	_, _, err := s.Tables()
+	if _, err := localEntries(s.Local); err != nil {
+		return err
+	}
+	_, err := NewSteerTable(s.Steer, s.Source)
 	return err
 }
 
-// Tables is the pair the dataplane runs on: what this node answers for and
-// what it steers. Either is nil where the capability configures none of it,
-// and every method on both works on a nil table.
-func (s Segments) Tables() (*LocalTable, *SteerTable, error) {
-	local, err := NewLocalTable(s.Local)
+// Tables is the pair the dataplane runs on: what this node answers for, each
+// SID admitting only an outer source in overlay, and what it steers. Either
+// is nil where the capability configures none of it, and every method on both
+// works on a nil table.
+func (s Segments) Tables(overlay []schema.Prefix) (*LocalTable, *SteerTable, error) {
+	local, err := NewLocalTable(s.Local, overlay)
 	if err != nil {
 		return nil, nil, err
 	}

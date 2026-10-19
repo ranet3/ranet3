@@ -314,6 +314,8 @@ func TestReloadTheReconcilerRefusesChangesNothing(t *testing.T) {
 	c, path, reconciler, bus := reloadOf(t, func(old *config.Config) {
 		old.Cap.Segment = steering("3fff:1:69c:98d6::1")
 		old.Cap.Table = &kernel.Table{}
+		// the overlay the segment the reload adds needs
+		old.Cap.Border = borderOf("3fff::/20")
 	})
 	segmentsOf(t, c)
 	speakerRecording(t, c, bus)
@@ -456,7 +458,7 @@ func steering(via ...string) *srv6.Segments {
 // segmentsOf gives c a mesh holding the tables of its cap.segment, as New installs them
 func segmentsOf(t *testing.T, c *Client) {
 	t.Helper()
-	segments, steering, err := c.config().Segments().Tables()
+	segments, steering, err := c.config().SegmentTables()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +486,11 @@ func TestReloadHandsTheSpeakerAChangedCapBabel(t *testing.T) {
 
 // a reload installs the tables cap.segment builds, and a steering stopped over the control socket stays stopped with the new table
 func TestReloadInstallsTheSegmentTablesItBuilds(t *testing.T) {
-	c, path, _, bus := reloadOf(t, func(old *config.Config) { old.Cap.Segment = steering("3fff:1:69c:98d6::1") })
+	c, path, _, bus := reloadOf(t, func(old *config.Config) {
+		old.Cap.Segment = steering("3fff:1:69c:98d6::1")
+		// the overlay the segment the reload adds needs
+		old.Cap.Border = borderOf("3fff::/20")
+	})
 	segmentsOf(t, c)
 	c.Mesh.SetSteeringEnabled(false)
 	next := *c.config()
@@ -494,7 +500,7 @@ func TestReloadInstallsTheSegmentTablesItBuilds(t *testing.T) {
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("a steering of the same length was refused: %v", err)
 	}
-	segments, steered, err := next.Segments().Tables()
+	segments, steered, err := next.SegmentTables()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -526,7 +532,7 @@ func TestReloadAppliesASteeringThatNeedsAnotherMTU(t *testing.T) {
 		if err := c.ReloadFrom(path); err != nil {
 			t.Fatalf("a steering through %d segments was refused: %v", len(via), err)
 		}
-		_, steered, err := next.Segments().Tables()
+		_, steered, err := next.SegmentTables()
 		if err != nil {
 			t.Fatal(err)
 		}

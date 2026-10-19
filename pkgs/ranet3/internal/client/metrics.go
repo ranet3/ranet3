@@ -228,7 +228,7 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_segments_egressed_total Packets an egress segment handed to the egress device.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_egressed_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_egressed_total %d\n", segments.Egressed)
-	fmt.Fprint(w, "# HELP ranet3_segments_refused_total Packets an egress segment refused for a source outside its allow list or an inner source it cannot read, which are among the dropped ones and never answered.\n")
+	fmt.Fprint(w, "# HELP ranet3_segments_refused_total Packets a local SID refused for their source, an outer source outside cap.border overlay at any SID or, at an egress segment, a source outside its allow list or an inner source it cannot read, which are among the dropped ones and never answered.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_refused_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_refused_total %d\n", segments.Refused)
 	fmt.Fprint(w, "# HELP ranet3_segments_not_ready_total Packets an egress segment let through and no egress device took, because none was installed, it closed under the write or its family was not ready.\n")
