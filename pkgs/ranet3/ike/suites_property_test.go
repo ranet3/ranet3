@@ -8,8 +8,10 @@ package ike
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"slices"
+	"sync"
 	"testing"
 
 	"hegel.dev/go/hegel"
@@ -17,12 +19,15 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
-// what a list left out holds, each kind's names in the order a node runs them
+// what a cipher or prf list left out holds, each kind's names in the order a node runs them, and each classical key exchange in that order
 var (
 	everyCipher = []string{"aes256gcm", "aes128gcm", "chacha20poly1305"}
 	everyPRF    = []string{"sha384", "sha256"}
 	everyKex    = []string{"x25519", "p384", "p256"}
 )
+
+// defaultKexNames names the entries of a kex list left out, x25519+mlkem768 and then each classical key exchange
+var defaultKexNames = slices.Concat([]string{"x25519+mlkem768"}, everyKex)
 
 // firstShared is the first name of the responder's list the initiator's holds, a list left out holding every name
 func firstShared(responder, initiator, every []string) string {
@@ -45,6 +50,29 @@ func TestHandshakeRunsTheResponderFirstChoiceOrIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { probe.Close() })
+	// refusal ends the dial of the example running once the responder answers its IKE_SA_INIT request with NO_PROPOSAL_CHOSEN
+	// the dial passes over that unauthenticated answer and would wait out its budget, so lists the responder refuses fail the example at once
+	var refusal struct {
+		sync.Mutex
+		cancel context.CancelCauseFunc
+		spi    uint64
+	}
+	relayed := relay(t, h.remotePort, func(fromInitiator bool, header *Header, raw []byte) bool {
+		if header == nil || header.ExchangeType != IKE_SA_INIT {
+			return true
+		}
+		refusal.Lock()
+		defer refusal.Unlock()
+		switch {
+		case fromInitiator:
+			refusal.spi = header.SPIInitiator
+		case refusal.cancel != nil && header.SPIInitiator == refusal.spi:
+			if m, err := DecodeMessage(raw); err == nil && carriesNotify(m, N_NO_PROPOSAL_CHOSEN) {
+				refusal.cancel(errors.New("the responder answered IKE_SA_INIT with NO_PROPOSAL_CHOSEN"))
+			}
+		}
+		return true
+	})
 	pbt.Check(t, func(ht *hegel.T) {
 		var drawn [2]Crypto
 		for i := range drawn {
@@ -57,7 +85,7 @@ func TestHandshakeRunsTheResponderFirstChoiceOrIsRefused(t *testing.T) {
 		want := Suite{
 			IKECipher: firstShared(answering.IKE.Cipher, dialing.IKE.Cipher, everyCipher),
 			IKEPRF:    firstShared(answering.IKE.PRF, dialing.IKE.PRF, everyPRF),
-			IKEKex:    firstShared(answering.IKE.Kex, dialing.IKE.Kex, everyKex),
+			IKEKex:    firstShared(answering.IKE.Kex, dialing.IKE.Kex, defaultKexNames),
 			ESPCipher: firstShared(answering.ESP.Cipher, dialing.ESP.Cipher, everyCipher),
 		}
 		initiatorLists, responderLists := suitesOf(ht, dialing), suitesOf(ht, answering)
@@ -80,12 +108,24 @@ func TestHandshakeRunsTheResponderFirstChoiceOrIsRefused(t *testing.T) {
 			}
 		default:
 			cfg := h.peerConfig()
+			cfg.RemotePort = relayed
 			cfg.Suites = func() Suites { return initiatorLists }
-			ctx, cancel := context.WithTimeout(context.Background(), answerBudget)
-			defer cancel()
+			refused, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+			// a request of this dial sets the SPI again, so an answer to an earlier example's request ends nothing
+			refusal.Lock()
+			refusal.cancel, refusal.spi = cancel, 0
+			refusal.Unlock()
+			defer func() {
+				refusal.Lock()
+				refusal.cancel = nil
+				refusal.Unlock()
+			}()
+			ctx, stop := context.WithTimeout(refused, answerBudget)
+			defer stop()
 			initiator, err := InitiateContext(ctx, cfg)
 			if err != nil {
-				ht.Fatalf("lists meeting in every type failed the handshake: %v", err)
+				ht.Fatalf("lists meeting in every type failed the handshake: %v (%v)", err, context.Cause(ctx))
 			}
 			defer initiator.Mux().Close()
 			var responder *Session

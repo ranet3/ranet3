@@ -24,7 +24,7 @@ func TestLosingLocalIKERekeyAcceptsDeleteResponse(t *testing.T) {
 	mux, other := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
-	s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1), ikeRekeyNonce: func(n []byte) error {
+	s := &Session{mux: mux, current: old, suites: func() Suites { return classicalLists }, requests: make(chan *localRequest, 1), ikeRekeyNonce: func(n []byte) error {
 		copy(n, bytes.Repeat([]byte{1}, len(n)))
 		return nil
 	}}
@@ -35,9 +35,7 @@ func TestLosingLocalIKERekeyAcceptsDeleteResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	winner := &ikeContext{suite: suite, spiI: 31, spiR: 32, responder: true}
-	// The winner is routed by its own SPI the way handleIKERekey leaves it,
-	// so releasing the redundant candidate's registration can be told apart
-	// from releasing the SPI the session is about to be current on.
+	// the winner is routed by its own SPI as handleIKERekey leaves it, so a release of the losing candidate's SPI differs from a release of the SPI the session becomes current on
 	if err := mux.RegisterIKE(winner.spiI); err != nil {
 		t.Fatal(err)
 	}
@@ -63,8 +61,7 @@ func TestLosingLocalIKERekeyAcceptsDeleteResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The peer may retire the original IKE SA while our redundant-SA Delete
-	// is still outstanding. Completing that Delete must not resurrect it.
+	// the peer may retire the original IKE SA while the Delete of the losing candidate is outstanding, and completing that Delete must not bring the original back
 	s.removeRetainedContext(old)
 	if !s.dispatch(response, nil, &pending) {
 		deleteRequest.result <- requestResult{err: fmt.Errorf("test cleanup")}
@@ -78,8 +75,7 @@ func TestLosingLocalIKERekeyAcceptsDeleteResponse(t *testing.T) {
 	if current != winner || retained != nil || s.collision != nil {
 		t.Fatal("collision did not retain only the winning IKE SA")
 	}
-	// Probed from a second mux on the same hub, because registering an SPI a
-	// mux already owns succeeds: only another mux can tell held from released.
+	// a mux registering an SPI it already owns succeeds, so only a second mux on the hub tells a held SPI from a released one
 	if err := other.RegisterIKE(winner.spiI); err == nil {
 		t.Error("the losing branch released the SPI the session is now current on")
 	}
@@ -127,10 +123,11 @@ func newCollisionPeer(t *testing.T, established time.Time) *collisionPeer {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { mux.Close() })
-	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	// the SA holds the group the collision's rekeys run, so the lists hold it and Run forces no rekey of its own when the peer's rekey ends
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519}
 	old := &ikeContext{suite: suite, spiI: collisionOldSPIi, spiR: collisionOldSPIr, nextLocalMID: 2, established: established,
 		skD: []byte("old IKE rekey SK_d material-------"), skei: make([]byte, 20), sker: make([]byte, 20)}
-	s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1),
+	s := &Session{mux: mux, current: old, suites: func() Suites { return classicalLists }, requests: make(chan *localRequest, 1),
 		ikeRekeyNonce: func(n []byte) error {
 			copy(n, collisionLocalNonce)
 			return nil
@@ -748,17 +745,15 @@ func TestDroppingOneContextKeepsAnSPIAnotherStillUses(t *testing.T) {
 	}
 }
 
-// The replacement is current from the moment the exchange completes, so the
-// rekey has taken effect whatever the Delete of the old SA then does. RFC 7296
-// section 2.8 has the initiator delete the replaced SA, and a peer that
-// deletes it first is the same outcome. Reporting the failure would cost a
-// backoff and a second rekey this end does not need.
+// the replacement is current once the exchange completes, so a refused Delete of the old SA fails no rekey, since failing it would cost a backoff and a second rekey this end does not need
+// a peer that deleted the old SA first refuses that Delete the same way
+// RFC 7296 section 2.8: "After the new equivalent IKE SA is created, the initiator deletes the old IKE SA, and the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 func TestDeleteOfAReplacedIKESAIsBestEffort(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32),
 		skei: make([]byte, 20), sker: make([]byte, 20)}
-	s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1),
+	s := &Session{mux: mux, current: old, suites: func() Suites { return classicalLists }, requests: make(chan *localRequest, 1),
 		ikeRekeyNonce: func(n []byte) error {
 			copy(n, bytes.Repeat([]byte{1}, len(n)))
 			return nil
@@ -784,8 +779,7 @@ func TestDeleteOfAReplacedIKESAIsBestEffort(t *testing.T) {
 		{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, dh.PublicBytes())},
 	}}
 
-	// The Delete of the SA the rekey replaced, refused. A peer that deleted it
-	// first is exactly this from here.
+	// the Delete of the SA the rekey replaced, refused as by a peer that deleted it first
 	deleteRequest := <-s.requests
 	if deleteRequest.exchange != INFORMATIONAL {
 		t.Fatalf("the exchange after the rekey is %d, want the INFORMATIONAL that retires the old SA", deleteRequest.exchange)

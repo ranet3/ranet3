@@ -22,7 +22,7 @@ import (
 	"ranet3.com/pkgs/ranet3/identity"
 )
 
-// a peer's IKE_SA_INIT offer of every transform a node writing none of the cap.crypto lists takes, in one proposal with Curve25519 first
+// a peer's IKE_SA_INIT offer of every cipher and PRF a node writing none of the cap.crypto lists takes and every classical group, in one proposal with Curve25519 first
 func ikeProposal() Proposal { return combinedProposal(nil, Suites{}.ikePRFs()) }
 
 // a peer's offer replacing an IKE SA whose PRF is prfID, every cipher and group in one proposal
@@ -31,13 +31,16 @@ func ikeRekeyProposal(spi []byte, prfID uint16) Proposal {
 }
 
 func combinedProposal(spi []byte, prfs []Transform) Proposal {
-	var lists Suites
-	transforms := slices.Concat(lists.ikeCiphers(), prfs)
-	for _, entry := range lists.kexEntries() {
-		transforms = append(transforms, Transform{Type: TransDH, ID: entry.group})
+	transforms := slices.Concat(Suites{}.ikeCiphers(), prfs)
+	for _, named := range kexNames {
+		transforms = append(transforms, named.transform)
 	}
 	return Proposal{Number: 1, Protocol: ProtoIKE, SPI: spi, Transforms: transforms}
 }
+
+// classicalLists is a node's lists with each classical key exchange alone in kex and each other list left out, the defaults before x25519+mlkem768 led them
+// a CREATE_CHILD_SA rekeys an SA of these entries with no IKE_FOLLOWUP_KE after it, and a test whose rekeys run alone takes them
+var classicalLists = Suites{kex: []kexEntry{{group: DH_CURVE25519}, {group: DH_ECP_384}, {group: DH_ECP_256}}}
 
 // the offers of a node that writes none of the cap.crypto lists
 func espProposal(spi []byte) Proposal { return Suites{}.espProposal(spi) }
@@ -68,7 +71,7 @@ func suitesOf(t testing.TB, c Crypto) Suites {
 }
 
 // a node offers one IKE SA proposal for each kex entry, numbered from 1 in the order the list gives, each holding every cipher and PRF
-// a node that writes no list offers the entries in the order kexNames gives
+// a node that writes no list offers the entries of defaultKex, x25519 with ML-KEM-768 in ADDKE1 first and then each classical group alone
 // a written list offers its names in the order written
 func TestListsResolveToOffersInTheirOrder(t *testing.T) {
 	spi := []byte{1, 2, 3, 4}
@@ -79,9 +82,10 @@ func TestListsResolveToOffersInTheirOrder(t *testing.T) {
 		ike, esp string
 	}{
 		"every list left out": {
-			ike: "0200004001010006" + every + "000000080400001f" +
-				"0200004002010006" + every + "0000000804000014" +
-				"0000004003010006" + every + "0000000804000013",
+			ike: "0200004801010007" + every + "030000080400001f" + "0000000806000024" +
+				"0200004002010006" + every + "000000080400001f" +
+				"0200004003010006" + every + "0000000804000014" +
+				"0000004004010006" + every + "0000000804000013",
 			esp: "0000003401030404" + "01020304" + "0300000c01000014800e0100" + "0300000c01000014800e0080" + "030000080100001c" + "0000000805000000",
 		},
 		"every list written": {
@@ -180,7 +184,7 @@ func TestListsTakeEntriesJoiningMLKEM1024(t *testing.T) {
 // a list written out as the one a node runs without it is no change
 func TestChangedNamesEachListByItsKey(t *testing.T) {
 	written := suitesOf(t, Crypto{
-		IKE: IKESuites{Cipher: []string{"aes256gcm", "aes128gcm", "chacha20poly1305"}, PRF: []string{"sha384", "sha256"}, Kex: []string{"x25519", "p384", "p256"}},
+		IKE: IKESuites{Cipher: []string{"aes256gcm", "aes128gcm", "chacha20poly1305"}, PRF: []string{"sha384", "sha256"}, Kex: []string{"x25519+mlkem768", "x25519", "p384", "p256"}},
 		ESP: ESPSuites{Cipher: []string{"aes256gcm", "aes128gcm", "chacha20poly1305"}},
 	})
 	if got := (Suites{}).Changed(written); len(got) != 0 {
@@ -189,6 +193,9 @@ func TestChangedNamesEachListByItsKey(t *testing.T) {
 	reordered := suitesOf(t, Crypto{IKE: IKESuites{PRF: []string{"sha256", "sha384"}}})
 	if got := (Suites{}).Changed(reordered); !slices.Equal(got, []string{"cap.crypto.ike.prf"}) {
 		t.Errorf("reordering ike prf changed %q", got)
+	}
+	if got := (Suites{}).Changed(classicalLists); !slices.Equal(got, []string{"cap.crypto.ike.kex"}) {
+		t.Errorf("writing out the classical kex entries alone changed %q", got)
 	}
 	every := suitesOf(t, Crypto{
 		IKE: IKESuites{Cipher: []string{"aes128gcm"}, PRF: []string{"sha256"}, Kex: []string{"p256"}},

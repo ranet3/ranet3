@@ -424,7 +424,7 @@ func TestIKESARekeyOffersTheGroupOfItsKEPayloadFirst(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_ECP_256},
 		spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
-	s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1)}
+	s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }}
 	done := make(chan error, 1)
 	go func() { done <- s.RekeyIKE() }()
 	offered := func(request *localRequest) (uint16, []Transform) {
@@ -479,6 +479,7 @@ func TestRefusedForcedRekeyWaitsForItsRetry(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	aes256 := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes256gcm"}}})
+	aes256.kex = classicalLists.kex
 	h.lists.Store(&aes256)
 	var rekeys atomic.Int32
 	cfg, dialing := listedConfig(h, dialed.record)
@@ -864,6 +865,7 @@ func TestRefusedForcedRekeyStopsOnceTheListsHoldItsSA(t *testing.T) {
 			var completed atomic.Pointer[time.Time]
 			h := newResponderHarness(t, nil)
 			aes256 := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes256gcm"}}})
+			aes256.kex = classicalLists.kex
 			h.lists.Store(&aes256)
 			cfg, dialing := listedConfig(h, timedRecorder(dialed, "ike.rekey.completed", &completed))
 			if due > 0 {

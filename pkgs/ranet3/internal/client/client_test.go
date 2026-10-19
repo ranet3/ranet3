@@ -572,7 +572,7 @@ func TestReloadAppliesTheCryptoListsInPlace(t *testing.T) {
 	omitted := &config.Config{Node: identity.MustParse("example/node"), Link: config.Link{Port: 13000}}
 	written := *omitted
 	written.Cap.Crypto = &ike.Crypto{
-		IKE: ike.IKESuites{Cipher: []string{"aes256gcm", "aes128gcm", "chacha20poly1305"}, PRF: []string{"sha384", "sha256"}, Kex: []string{"x25519", "p384", "p256"}},
+		IKE: ike.IKESuites{Cipher: []string{"aes256gcm", "aes128gcm", "chacha20poly1305"}, PRF: []string{"sha384", "sha256"}, Kex: []string{"x25519+mlkem768", "x25519", "p384", "p256"}},
 		ESP: ike.ESPSuites{Cipher: []string{"aes256gcm", "aes128gcm", "chacha20poly1305"}},
 	}
 	if err := reloadable(omitted, &written); err != nil {

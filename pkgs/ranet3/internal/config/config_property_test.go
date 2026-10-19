@@ -514,7 +514,7 @@ func cryptos() hegel.Generator[ike.Crypto] {
 	})
 }
 
-// the names each cap.crypto list takes, in the order a list left out holds them
+// the names each cap.crypto list takes, cipher and prf in the order a list left out holds them
 var (
 	cipherNames = []string{"aes256gcm", "aes128gcm", "chacha20poly1305"}
 	prfNames    = []string{"sha384", "sha256"}

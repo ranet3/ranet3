@@ -292,7 +292,11 @@ func TestOwnIKESARekeyOffersTheListsAndTakesOnlyWhatTheyOffer(t *testing.T) {
 		group := hegel.Draw(ht, hegel.SampledFrom(everyKex))
 		ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: transformOf(prf).ID, DHGroup: transformOf(group).ID},
 			spiI: randUint64Nonzero(), spiR: randUint64Nonzero(), skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
+		// a kex list left out leads with x25519+mlkem768, whose rekey runs IKE_FOLLOWUP_KE after it, so a rekey here offers each classical key exchange alone in its place
 		suites := suitesOf(ht, lists)
+		if lists.IKE.Kex == nil {
+			suites.kex = classicalLists.kex
+		}
 		s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1), suites: func() Suites { return suites }}
 		done := make(chan error, 1)
 		go func() { done <- s.RekeyIKE() }()
@@ -517,7 +521,7 @@ func TestReloadRekeysOrReplacesWhatItLeftOut(t *testing.T) {
 		initiatorRun := make(chan error, 1)
 		runs.Go(func() { initiatorRun <- initiator.Run(ctx) })
 		runs.Go(func() { _ = responder.Run(ctx) })
-		// the responder lists every name, so each SA runs the first of its order the dialing lists hold
+		// the responder lists every cipher and prf and each classical key exchange, so each SA runs the first of its order the dialing lists hold
 		sa := Suite{
 			IKECipher: firstShared(nil, before.IKE.Cipher, everyCipher), IKEPRF: firstShared(nil, before.IKE.PRF, everyPRF),
 			IKEKex: firstShared(nil, before.IKE.Kex, everyKex), ESPCipher: firstShared(nil, before.ESP.Cipher, everyCipher),
@@ -689,8 +693,9 @@ func TestInitiatorTakesOnlyAnAnswerItsListsOffer(t *testing.T) {
 			}
 			group, answerKE = keGroup, keGroup
 		}
-		// the answer names proposal 1, the one in the KE payload's group
-		take := slices.Contains(offer[0].Transforms, cipher) && slices.Contains(offer[0].Transforms, prf) && group == keGroup && answerKE == group
+		// the answer names proposal 1, the one in the KE payload's group, and leaves out the ADDKE transform proposal 1 of a kex list left out holds
+		take := slices.Contains(offer[0].Transforms, cipher) && slices.Contains(offer[0].Transforms, prf) && group == keGroup && answerKE == group &&
+			!slices.ContainsFunc(offer[0].Transforms, func(t Transform) bool { return additional(t.Type) })
 		dh, err := GenerateDH(answerKE.ID)
 		if err != nil {
 			ht.Fatal(err)

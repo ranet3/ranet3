@@ -185,7 +185,7 @@ func TestRekeyIKETellsOfARefusedDeleteOfAnIKESAItLeaves(t *testing.T) {
 			suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 			old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
 			ones := func(n []byte) error { copy(n, bytes.Repeat([]byte{1}, len(n))); return nil }
-			s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1), ikeRekeyNonce: ones}
+			s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }, ikeRekeyNonce: ones}
 			done := make(chan error, 1)
 			go func() { done <- s.RekeyIKE() }()
 			request := <-s.requests

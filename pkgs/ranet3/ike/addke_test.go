@@ -98,7 +98,7 @@ func answerADDKEOffer(t *testing.T, auth, ike bool, offer []Proposal) (Proposal,
 	}
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519}
-	s := answeringSession(t, mux, suite, ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}, 0, Suites{})
+	s := answeringSession(t, mux, suite, ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}, 0, classicalLists)
 	var keGroup uint16
 	if ike {
 		keGroup = DH_CURVE25519
