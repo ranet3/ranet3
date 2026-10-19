@@ -215,6 +215,19 @@ update = "16s"
 # from = "10.66.0.5/32"
 # table = 200
 # priority = 150
+#
+# A node with an egress segment below sends what arrives on its egress device,
+# the tun named link.tun plus e, to main: ranet0e beside the link.tun above,
+# ranet3e with the default. It sits after every "to" rule into
+# the mesh table, so a steered packet for a mesh destination still goes to the
+# mesh, and before every "from" rule into it, which would take the leaf's
+# source to the mesh table's default and out of another exit. The load refuses
+# it missing or on the wrong side of either.
+# [[cap.table.rules]]
+# iif = "ranet0e"
+# table = "main"
+# priority = 120
+# family = "both"
 
 # Segment routing, RFC 8986, performed in this process rather than by a kernel,
 # so it works the same on every platform: darwin has no segment routing and a
@@ -227,9 +240,18 @@ update = "16s"
 # `ip route ... encap seg6local action` takes.
 # [cap.segment]
 # source = "3fff:1:69c:8c0::1"     # the outer source, as `ip sr tunsrc` sets it
+#
+# The third is an egress segment, an End.DT46 whose inner packet leaves through
+# the egress device and out of this node's uplink under cap.egress's source
+# translation, so a leaf picks this exit by naming its SID. allow is required:
+# a packet passes only when its outer and its inner source are both inside it,
+# so the exit is no open proxy. It needs cap.egress, which may advertise
+# nothing, and the iif rule above. The node announces the SID's /128 itself
+# while the exit is ready, so cap.route does not. linux only.
 # local = [
 #   { sid = "3fff:1:69c:8c6::1", behavior = "End.DT46" },
 #   { sid = "3fff:1:69c:8c6::2", behavior = "End" },
+#   { sid = "3fff:1:69c:8c6::3", behavior = "End.DT46", deliver = "egress", allow = ["3fff:a::/32", "198.18.104.0/24"] },
 # ]
 
 # Which of this node's own packets go through a segment list. from and to
@@ -310,6 +332,7 @@ update = "16s"
 # answer a deployment owning no address block has: leaving the mesh that is the
 # address of the link the packet goes out by, and entering it, this node's own
 # mesh address. An address written out is used unchanged in both directions.
+# An egress segment's packets leave under the same source as the tun's.
 # source4 = "auto"
 # source6 = "auto"
 

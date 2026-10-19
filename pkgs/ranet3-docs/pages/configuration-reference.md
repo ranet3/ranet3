@@ -160,6 +160,10 @@ handshake reads an ID.
   otherwise. The default `ranet3` is never attached to: the daemon refuses to
   start when a device called `ranet3` exists. On macOS, `tun` takes only `utun`
   and `utunN`, and the daemon refuses any other name at startup.
+- A node with an egress segment names its egress device `tun` plus `e`,
+  `ranet3e` by default, and always creates it. The load refuses a `tun` longer
+  than 14 bytes or holding `%`, since the device's name has to be known before
+  the daemon starts.
 - The device runs at `mtu` less the header of the longest `cap.segment.steer`
   list. A value that leaves the device under 1280 bytes, or a value over 65470,
   is refused at load. [Path MTU](path-mtu.md) describes how sessions use it.
@@ -416,6 +420,11 @@ order written. A rule only selects a table to look up.
 - `family` is required on a rule that has neither `to` nor `from`, and refused
   on a rule with `to` or `from`. `both` installs the rule once per family.
 - 2 entries that install the same rule are refused.
+- A node with an egress segment needs, in each family, a rule with `iif` naming
+  the egress device, `table = "main"` and nothing else to match on. It sits
+  after every `to` rule into `id` and before every `from` rule into it, and the
+  load refuses a file where it is missing or misplaced.
+  [Exit nodes](exit-nodes.md#the-egress-devices-rule) describes why.
 
 ## `cap.segment`
 
@@ -432,15 +441,27 @@ selector may be IPv4.
 
 The segments this node answers for.
 
-| Key        | Value               | Default  | Meaning                             |
-| ---------- | ------------------- | -------- | ----------------------------------- |
-| `sid`      | address             | required | The segment identifier              |
-| `behavior` | `End` or `End.DT46` | required | What this node does with the packet |
+| Key        | Value               | Default  | Meaning                                                  |
+| ---------- | ------------------- | -------- | -------------------------------------------------------- |
+| `sid`      | address             | required | The segment identifier                                   |
+| `behavior` | `End` or `End.DT46` | required | What this node does with the packet                      |
+| `deliver`  | `mesh` or `egress`  | `mesh`   | Where `End.DT46` writes the inner packet                 |
+| `allow`    | list of prefixes    | none     | Sources an egress segment carries, outer and inner alike |
 
 - `End` sends the packet to its next segment. `End.DT46` removes the outer
-  header and delivers the inner packet.
+  header and delivers the inner packet, to the mesh tun or, with
+  `deliver = "egress"`, to the egress device.
 - `behavior` is read in any case.
 - A SID written twice is refused.
+- `deliver = "egress"` is refused on `End`, and `allow` on anything but an
+  egress segment.
+- An egress segment's `allow` is required. An entry of length 0, an IPv4 entry
+  shorter than `/8`, an IPv6 entry shorter than `/12`, an entry with bits set
+  below its length, an IPv4 address written as IPv6, an entry written twice and
+  a list with no IPv6 entry are refused. The order does not matter.
+- An egress segment needs `cap.egress`, which may advertise nothing, and
+  `cap.table` with the egress device's rule. `cap.route` may not announce its
+  SID's `/128`, which the node originates while the exit is ready.
 
 ### `cap.segment.steer`
 
@@ -597,6 +618,8 @@ needs.
 | `return`    | boolean           | `false`  | Also translate traffic from the advertised prefixes into the mesh |
 | `sweep`     | duration          | `"30s"`  | Interval of the periodic pass                                     |
 
+- `advertise` may be empty on a node with an egress segment, which serves that
+  segment alone and attracts no route.
 - An exit advertises `0.0.0.0/0` and `::/0` only, for Linux and macOS clients
   alike. The `/1` halves would win over every `/0` exit by longest prefix, as
   [exit nodes](exit-nodes.md#what-to-advertise) describes. A subnet router
@@ -609,7 +632,8 @@ needs.
   announces is refused. That announcement would go out whether or not the rule
   is installed.
 - For traffic leaving the mesh, `auto` uses the address of the link the packet
-  leaves by. The host's routes pick it for each packet.
+  leaves by. The host's routes pick it for each packet. Traffic an egress
+  segment carries leaves under the same source as traffic from the tun.
 - For traffic entering the mesh, `auto` uses this node's mesh address. The
   daemon picks it once at startup, from the host prefixes `cap.route` announces
   and `cap.table` assigns.
