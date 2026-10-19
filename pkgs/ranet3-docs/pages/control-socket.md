@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-10-18
+updated: 2026-10-19
 order: 80
 ---
 
@@ -235,7 +235,7 @@ when empty, and every counter is always present. Other lists, such as
 | `down`             | `since`, `for`                                                                                                                                                                                                                                                                                                                                                                   |
 | neighbor           | `peer`, `address`, `alive`, `cost`, `extra`, `reported_cost` (absent until an IHU arrives), `rtt` (absent until a timestamped IHU arrives), `routes`, `expires`, `dropped`, `send_failed`                                                                                                                                                                                        |
 | route              | `destination`, `from`, `via` (absent for a prefix held unreachable), `metric`, `router_id`, `seqno`, `candidates`, `originated`                                                                                                                                                                                                                                                  |
-| session            | `path`, `peer` (the peer's node), `remote` (address and port), `preferred`, `active`, `local_spi`, `remote_spi`, `started_at`, `age`, `idle`                                                                                                                                                                                                                                     |
+| session            | `path`, `peer` (the peer's node), `remote` (address and port), `preferred`, `active`, `local_spi`, `remote_spi`, `ike_cipher`, `ike_prf` and `ike_kex` (the IKE SA's transforms by their `cap.crypto` names), `esp_cipher` (the Child SA's), `started_at`, `age`, `idle`                                                                                                         |
 | peer               | `path`, `peer`, `connected`, `generated` (taken from the trust document under `dial.all`)                                                                                                                                                                                                                                                                                        |
 | result             | `acted`, `detail`                                                                                                                                                                                                                                                                                                                                                                |
 

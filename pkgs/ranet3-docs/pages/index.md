@@ -5,7 +5,7 @@
 title: "ranet3"
 description: "What ranet3 is, and where each part of it is documented."
 created: 2026-08-17
-updated: 2026-10-16
+updated: 2026-10-19
 order: 10
 ---
 
@@ -57,7 +57,7 @@ peers in `dial`. Everything else it does is a block under `cap`. `cap.table`,
 | `cap.table`   | Runs the route reconciler, which installs routes, addresses, policy rules and a VRF in the kernel                    |
 | `cap.segment` | Steers traffic by source and destination prefix through SRv6 waypoints, and lists the segments this node answers for |
 | `cap.egress`  | Translates source addresses for exit nodes and subnet routers, on Linux                                              |
-| `cap.crypto`  | Sets the rekey intervals and the ESP replay window                                                                   |
+| `cap.crypto`  | Chooses and orders the ciphers, PRFs and key exchanges, and sets the rekey intervals and the ESP replay window       |
 
 ## Running a node
 

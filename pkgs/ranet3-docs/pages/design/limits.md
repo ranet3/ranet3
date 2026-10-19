@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-18
+updated: 2026-10-19
 order: 10
 ---
 
@@ -408,7 +408,15 @@ The 2 sends of a Delete are those of a session that ends its IKE SA itself, at a
 lifetime, after 5 minutes of `TEMPORARY_FAILURE` or on a failure of its own, and
 of a responder that refused the Child SA in `IKE_AUTH`. That Delete waits for an
 exchange already out. A node closing a session, as at shutdown, waits 2 seconds
-for its Delete to be answered.
+for its Delete to be answered. Once a session is ending, every Delete of an IKE
+SA it has outstanding gets the same 2 sends, among them the Delete of an IKE SA
+whose PRF a reload left out, which until then has the sends of any request, as
+[reloading](../reloading.md#capcrypto) describes.
+
+The peer rekey limit counts a rekey once the offer is settled, before its key
+exchange. A rekey answered with `INVALID_KE_PAYLOAD` does not count, so the
+retry in the group asked for is taken. A rekey whose key exchange then fails
+counts, and is answered with `INVALID_SYNTAX`.
 
 An `INVALID_SYNTAX`, sent or received, ends the IKE SA it came on at once and
 without a Delete. On the session's current IKE SA the session ends, and the node

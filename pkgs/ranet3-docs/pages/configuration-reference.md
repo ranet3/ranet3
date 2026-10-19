@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-10-18
+updated: 2026-10-19
 order: 35
 ---
 
@@ -467,8 +467,9 @@ traffic and any traffic the host forwards into the mesh.
 
 ## `cap.crypto`
 
-Key lifetimes and the replay window. A session takes these values when its SA is
-set up.
+The transforms a session negotiates, key lifetimes and the replay window. A
+session takes the replay window and the rekey timers when its SA is set up, and
+reads the lists of `cap.crypto.ike` and `cap.crypto.esp` at each exchange.
 
 | Key      | Value   | Default | Meaning                            |
 | -------- | ------- | ------- | ---------------------------------- |
@@ -489,6 +490,9 @@ set up.
 - `margin` is positive whenever `child` or `ike` is on, since a rekey due at the
   end of its SA's lifetime could never replace it.
 - `margin` plus `jitter` is less than every interval that is on.
+
+`jitter` also delays the rekey a reload forces on an SA whose transform the new
+lists leave out, as [`cap.crypto.ike`](#capcryptoike) describes.
 
 An SA's lifetime starts when the SA is made, and its rekey counts from there, so
 `margin` is the time the rekey has before the lifetime ends however late the
@@ -515,6 +519,68 @@ the peer deleted, or `ranet3 rekey`. The retries stop at the SA's lifetime.
 | `max`   | duration | `"5m"`  | Longest delay |
 
 - Both are positive. `first` is at most `max`.
+
+### `cap.crypto.ike`
+
+The IKE SA's transforms, each list most preferred first.
+
+| Key      | Value         | Default                                          | Meaning             |
+| -------- | ------------- | ------------------------------------------------ | ------------------- |
+| `cipher` | list of names | `["aes256gcm", "aes128gcm", "chacha20poly1305"]` | IKE SA ciphers      |
+| `prf`    | list of names | `["sha384", "sha256"]`                           | IKE SA PRFs         |
+| `kex`    | list of names | `["x25519", "p384", "p256"]`                     | Key exchange groups |
+
+- `aes256gcm` and `aes128gcm` are AES-GCM with a 16-octet tag and a 256 or
+  128-bit key, and `chacha20poly1305` is ChaCha20-Poly1305. `sha384` and
+  `sha256` are HMAC-SHA2-384 and HMAC-SHA2-256. `x25519`, `p384` and `p256` are
+  Curve25519 and the NIST curves P-384 and P-256.
+- A list left out holds every name in the default's order. An empty list, a name
+  written twice and a name not in the default are refused, and names are
+  lowercase.
+- A `kex` entry that joins key exchanges with `+`, such as `x25519+mlkem768`, is
+  refused, since the additional key exchanges of RFC 9370 are not implemented.
+  An ML-KEM name alone, such as `mlkem768`, is refused, since it runs only after
+  a classical key exchange.
+- `kex` also holds the groups a peer's Child SA rekey may run a key exchange in.
+
+### `cap.crypto.esp`
+
+The Child SA's ciphers, most preferred first, by the names and under the rules
+of `cap.crypto.ike.cipher`.
+
+| Key      | Value         | Default                                          | Meaning          |
+| -------- | ------------- | ------------------------------------------------ | ---------------- |
+| `cipher` | list of names | `["aes256gcm", "aes128gcm", "chacha20poly1305"]` | Child SA ciphers |
+
+### How the lists are used
+
+A dialing node offers each list in its order, with its key exchange in the first
+`kex` group. An answering node takes, of each kind, the first transform of its
+own list that the offer holds, whatever order the offer gives. With the default
+lists, a strongSwan initiator that proposes `chacha20poly1305` first, as a host
+without AES instructions does, gets `aes256gcm`. The group is the first of `kex`
+that the offer holds. An offer whose key exchange is in another group is
+answered with `INVALID_KE_PAYLOAD` naming that first group, and the peer tries
+again in it, which costs 1 round trip.
+
+An offer the lists share no transform of one kind with is refused with
+`NO_PROPOSAL_CHOSEN`, in `IKE_SA_INIT`, in the Child SA of `IKE_AUTH` and in
+every `CREATE_CHILD_SA`. A dialing node refuses an answer that takes a transform
+its lists do not hold.
+
+A Child SA rekey this node starts offers only the cipher of the SA it replaces
+while `esp.cipher` holds it. Answering a peer's Child SA rekey, it takes that
+cipher first when the offer holds it. An IKE SA rekey keeps the PRF and takes
+the cipher as a new IKE SA does. An IKE SA rekey this node starts runs its key
+exchange in the SA's group while `kex` holds it, and a peer's rekey whose key
+exchange is in the SA's group keeps that group. `ranet3 sessions` and the
+`ike.session.established` event name the transforms each session runs.
+
+A reload applies the lists to the next exchange, as
+[reloading](reloading.md#capcrypto) describes. An SA holding a cipher or a group
+the new lists leave out is rekeyed under them after a delay drawn up to
+`cap.crypto.rekey.jitter`, and no later than its scheduled rekey. An IKE SA
+whose PRF they leave out is deleted, and a new handshake replaces it.
 
 ## `cap.egress`
 

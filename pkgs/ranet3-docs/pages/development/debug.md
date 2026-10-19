@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-18
+updated: 2026-10-19
 order: 30
 ---
 
@@ -229,6 +229,7 @@ connections to the reads.
 | `ike.rekey.failed`                    | the same rekey failing, with its error                                      |
 | `ike.sa.expired`                      | a Child SA reached its lifetime, and its keys left the dataplane            |
 | `ike.sa.closed`                       | a session decided to delete its IKE SA, and why                             |
+| `ike.suite.unlisted`                  | an SA runs a transform the lists left out, and its rekey or replacement     |
 | `ike.endpoint.moved`                  | a session moved to the addresses of its peer's latest fresh request         |
 | `ike.send.failed`, `.recovered`       | a session's sends to its peer began to fail, and one went out again         |
 | `ike.probe`                           | asked to prove its path, a session started a check or resent its request    |
@@ -279,14 +280,16 @@ Each kind carries these attributes:
 | `dial.woken`                                  | none                                                                                                                                        |
 | `ike.handshake.failed`                        | `from`, `err`                                                                                                                               |
 | `ike.id.resolved`                             | `type`, `id`, `sent`                                                                                                                        |
-| `ike.session.established`                     | `role`, `spi_in`, `spi_out`                                                                                                                 |
-| `ike.session.ended`                           | `role`, `spi_in`, `spi_out`, `err`                                                                                                          |
+| `ike.session.established`                     | `role`, `spi_in`, `spi_out`, `ike`, `esp`                                                                                                   |
+| `ike.session.ended`                           | `role`, `spi_in`, `spi_out`, `ike`, `esp`, `err`                                                                                            |
 | `ike.session.resolved`                        | `kept`                                                                                                                                      |
 | `ike.session.revoked`                         | `reason`, `peer`, `endpoint`, `err`                                                                                                         |
-| `ike.rekey.started`, `.completed`             | `sa`, which is `child` or `ike`                                                                                                             |
+| `ike.rekey.started`                           | `sa`, which is `child` or `ike`                                                                                                             |
+| `ike.rekey.completed`                         | `sa`, which is `child` or `ike`, `suite`                                                                                                    |
 | `ike.rekey.failed`                            | `sa`, `err`                                                                                                                                 |
 | `ike.sa.expired`                              | `sa`, which is `child`, `spi_in`, `spi_out`                                                                                                 |
 | `ike.sa.closed`                               | `sa`, which is `child` or `ike`, `reason`, `err`                                                                                            |
+| `ike.suite.unlisted`                          | `sa`, which is `child` or `ike`, `suite`, `action`                                                                                          |
 | `ike.endpoint.moved`                          | `endpoint`                                                                                                                                  |
 | `ike.send.failed`                             | `err`                                                                                                                                       |
 | `ike.send.recovered`                          | `failed`                                                                                                                                    |
@@ -334,6 +337,23 @@ refused a change to a Child SA. `err` says what ended it, and the
 `ike.session.ended` that follows carries it as well. An `INVALID_SYNTAX` this
 end sends on the current IKE SA records no `ike.sa.closed`: the session logs a
 warning and ends with `ike.session.ended`.
+
+The `ike` of an `ike.session.established` names the IKE SA's cipher, PRF and
+group by their `cap.crypto` names, joined by `/`, such as
+`aes256gcm/sha384/x25519`, and its `esp` names the Child SA's cipher, such as
+`aes256gcm`. The `ike.session.ended` that follows carries the same 2, the
+transforms the session started with. The `suite` of an `ike.rekey.completed`
+names the replacement's transforms the same way, the IKE SA's for `sa=ike` and
+the Child SA's for `sa=child`. A Child SA keyed by a key exchange of its own, as
+a peer's rekey with a group runs, has that group after its cipher, such as
+`aes128gcm/p256`.
+
+An `ike.suite.unlisted` is recorded when a session finds that the lists in force
+leave out a transform one of its SAs runs. Its `sa` names the SA, its `suite`
+the transforms that SA runs, named as above, and its `action` what the session
+does about it: `rekey` for a rekey under the lists, or `replace` when the lists
+left out the IKE SA's PRF, which no rekey changes, so the session deletes the
+IKE SA for a new handshake, as [reloading](../reloading.md#capcrypto) describes.
 
 A `transport.pair.connected` names in `local` the address the socket bound and
 in `remote` the peer it is connected to. The `reason` of a

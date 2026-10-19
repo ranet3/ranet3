@@ -4,16 +4,17 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-17
+updated: 2026-10-19
 order: 70
 ---
 
 `SIGHUP` re-reads the config file and the trust document and reconciles instead
 of restarting. A reload applies the trust document, the peers dialed,
-`auth.aliases`, the prefixes originated, `cap.babel`, `cap.segment`,
-`link.listen`, `link.mtu` and most of `cap.table`. A node joining or leaving the
-mesh then costs 1 dialer, and every other session this node carries stays up.
-This matters because the trust document is rewritten every time any node joins.
+`auth.aliases`, the prefixes originated, `cap.babel`, `cap.segment`, the
+transform lists of `cap.crypto`, `link.listen`, `link.mtu` and most of
+`cap.table`. A node joining or leaving the mesh then costs 1 dialer, and every
+other session this node carries stays up. This matters because the trust
+document is rewritten every time any node joins.
 
 ## Asking for a reload
 
@@ -56,7 +57,8 @@ as [what a reload refuses](#what-a-reload-refuses) describes.
 | `cap.table.addresses`, `cap.table.assign_announced`                  | applied                                  | Refused when it moves the address `cap.egress.return` translates to.                                                                         |
 | `cap.table.prefsrc4`, `cap.table.rules`                              | applied                                  | Refused on macOS, as at startup.                                                                                                             |
 | `cap.segment` and every key under it                                 | applied                                  | Refused when the tun cannot move.                                                                                                            |
-| `cap.crypto` and every key under it                                  | refused when its effective value changes |                                                                                                                                              |
+| `cap.crypto.ike`, `cap.crypto.esp` and every key under them          | applied                                  | To each exchange after it. An SA holding a transform they leave out is rekeyed or replaced, as [`cap.crypto`](#capcrypto) says.              |
+| `cap.crypto.replay`, `cap.crypto.rekey` and every key under it       | refused when its effective value changes |                                                                                                                                              |
 | `cap.egress`, written, removed, or any key under it                  | refused when its effective value changes | A new order of `advertise`, `sweep` written as its default and `"auto"` written out for `source4` or `source6` are no change.                |
 
 ## Sessions the trust document no longer admits
@@ -196,17 +198,65 @@ while it is off, so a responder started again later answers only what arrives
 after it. A responder stopped with `ranet3 disable responder` stays stopped
 across a reload.
 
+## `cap.crypto`
+
+A reload applies the lists of `cap.crypto.ike` and `cap.crypto.esp` in place.
+Every exchange after it, a new handshake or a rekey of a live session, offers
+and accepts what the new lists hold, and a new order changes which transform an
+answering node takes. `cap.crypto.replay` and `cap.crypto.rekey` need a restart,
+as [what a reload refuses](#what-a-reload-refuses) describes. `ranet3 sessions`
+shows the transforms each session runs, so a reload can be seen taking hold.
+
+Each live session then checks its SAs against the new lists. An SA whose cipher
+or group they leave out is rekeyed under them, and the session records an
+`ike.suite.unlisted` with `action=rekey`. The rekey starts after a delay drawn
+up to `cap.crypto.rekey.jitter`, so 2 ends that reload the same lists at once
+rarely rekey the SA together and refuse each other's rekey, as
+[RFC 7296 section 2.8.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8.1)
+asks. The delay ends no later than the SA's scheduled rekey, which keeps the
+margin before its lifetime. When the IKE SA and its Child SA both hold a
+transform the lists leave out, the IKE SA rekeys first, since the Child SA's
+keys come from it, and the Child SA draws its own delay once the IKE SA's rekey
+has ended. The removed transform can then stay in use for up to 2 delays and
+both exchanges.
+
+A forced rekey the peer refuses is retried on the backoff of
+`cap.crypto.rekey.retry`, but only while the lists still leave the SA out. Once
+a later reload lists it again, the SA goes back to its scheduled rekey, or to
+none where its interval is 0. A forced rekey runs inside the SA's lifetime like
+any other, so an SA whose peer keeps refusing reaches its lifetime and closes
+the IKE SA, as
+[the configuration reference](configuration-reference.md#capcryptorekey)
+describes. An SA whose interval is 0 has no lifetime, and its forced rekey keeps
+retrying while the lists leave it out.
+
+An IKE SA whose PRF the lists leave out is not rekeyed, since a rekey keeps the
+PRF. The session records an `ike.suite.unlisted` with `action=replace`, deletes
+the IKE SA, which closes its Child SA, and ends, and the node that dialed it
+dials again at once under the new lists. A node that only answered the session
+wakes its own dialer of that peer, if one stood down behind the session. When
+both ends replace the same IKE SA and their Deletes cross, each still dials
+again at once. The Delete is the last request the session sends. Once the
+session is ending, as at an SA's lifetime, the Delete has the 2 sends of
+[the Delete that ends an IKE SA](design/limits.md#ike). Past the IKE SA's
+lifetime it goes out as that IKE SA's own Delete, and no second Delete follows.
+
+A peer's offer the new lists refuse with `NO_PROPOSAL_CHOSEN` has the session
+check its SAs as well, so a peer's rekey of an SA the lists left out starts this
+end's own rekey or replacement of it.
+
 ## Events
 
 A reload is recorded as a `daemon.reload` event that names the file in `path`.
 Its `applied` lists the blocks the reload changed among `auth.aliases.local`,
-`auth.aliases.remote`, `cap.babel`, `cap.route`, `cap.segment`, `cap.table`,
-`link.listen` and `link.mtu`, comma separated, such as `applied=cap.table` for
-one that changed the table. A reload that changed only the trust document or the
-peers dialed carries no `applied`. A refused reload carries `err` instead.
-`cap.route` is listed when `announce` changed. `cap.transit` is never listed,
-since a reload that would change it is refused, and writing out the value in
-force changes nothing.
+`auth.aliases.remote`, `cap.babel`, `cap.crypto.esp.cipher`,
+`cap.crypto.ike.cipher`, `cap.crypto.ike.kex`, `cap.crypto.ike.prf`,
+`cap.route`, `cap.segment`, `cap.table`, `link.listen` and `link.mtu`, comma
+separated, such as `applied=cap.table` for one that changed the table. A reload
+that changed only the trust document or the peers dialed carries no `applied`. A
+refused reload carries `err` instead. `cap.route` is listed when `announce`
+changed. `cap.transit` is never listed, since a reload that would change it is
+refused, and writing out the value in force changes nothing.
 
 The speaker records a `babel.config.applied` with the intervals and the cost it
 took, and a `babel.neighbor.extra` for each neighbor whose amount the reload

@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-10-16
+updated: 2026-10-19
 order: 30
 ---
 
@@ -122,7 +122,7 @@ no `cap.babel` sends Hellos every 4 seconds and updates every 16 seconds (RFC
 | `cap.babel`   | The speaker's timers, link quality estimator and costs                        |
 | `cap.table`   | The route reconciler: a routing table, addresses, a VRF and policy rules      |
 | `cap.segment` | Segment routing (RFC 8986): the SIDs this node answers for and what it steers |
-| `cap.crypto`  | The replay window and the rekey timers                                        |
+| `cap.crypto`  | The transforms, the replay window and the rekey timers                        |
 | `cap.egress`  | Source translation for an exit node or a subnet router, Linux only            |
 
 [Routing](routing.md), [segment routing](segment-routing.md) and
