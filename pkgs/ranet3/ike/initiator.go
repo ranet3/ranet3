@@ -121,6 +121,13 @@ type Session struct {
 	collisionBy   time.Time
 	localRekey    *ikeRekey
 	ikeRekeyNonce func([]byte) error
+	// peerChain is the peer's rekey whose additional key exchanges this end answers, nil while none is open, and stateMu guards it
+	peerChain *followupChain
+	// stateNotFounds counts the IKE SA rekeys in a row whose IKE_FOLLOWUP_KE the peer answered STATE_NOT_FOUND, and requestMu guards it
+	stateNotFounds int
+	// quiet is set while this end's IKE SA rekey may run additional key exchanges, or waits for the peer's after losing a simultaneous rekey, and Run starts no request of its own meanwhile
+	// strongSwan destroys an IKE SA that takes any other request while it waits for IKE_FOLLOWUP_KE (ike_rekey.c)
+	quiet atomic.Bool
 
 	requestMu sync.Mutex // IKEv2 permits only one outstanding local request.
 	requests  chan *localRequest
@@ -173,6 +180,9 @@ type Session struct {
 	serving atomic.Bool
 	// closing is set from the decision to close the IKE SA and never cleared, so each IKE SA current from then is one this end is trying to close
 	closing atomic.Bool
+	// closed is closed with closing set, for a wait that ends there, and closedMu guards it
+	closedMu sync.Mutex
+	closed   chan struct{}
 	// started fixes the origin lastActive is measured from. It is written
 	// once, before the session is handed to anyone.
 	started time.Time
@@ -228,6 +238,8 @@ type ikeRekey struct {
 	nonce             []byte
 	peerNonce         []byte
 	peerResponseNonce []byte
+	// chain is set once the rekey's CREATE_CHILD_SA selected additional key exchanges this end then runs, and lost once the rekey lost a simultaneous rekey and stopped
+	chain, lost bool
 }
 
 func (s *Session) Mux() *transport.Mux { return s.mux }
@@ -974,6 +986,10 @@ func (s *Session) answerInWait(ctx *ikeContext, hdr *Header, cleartext []RawPayl
 		// RFC 7296 section 2.25.2: "If a peer receives a request to rekey an IKE SA that it is currently trying to close, it SHOULD reply with TEMPORARY_FAILURE."
 		// the IKE SA going takes no new Child SA either
 		response, err := s.responseNotify(ctx, hdr.MessageID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
+		return response, false, err
+	case IKE_FOLLOWUP_KE:
+		// RFC 9370 section 2.2.4: "If the responder receives an IKE_FOLLOWUP_KE message for which it does not have a key exchange state, it MUST send back a new error type notification called "STATE_NOT_FOUND"."
+		response, err := s.responseNotify(ctx, hdr.MessageID, IKE_FOLLOWUP_KE, N_STATE_NOT_FOUND)
 		return response, false, err
 	}
 	// as Run answers an exchange it does not take, which ends the IKE SA

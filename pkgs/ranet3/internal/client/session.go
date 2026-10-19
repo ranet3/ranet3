@@ -146,15 +146,10 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 // endOf picks which of its two halves' ends a session reports, first being the half that ended first
 // the IKE SA's replacement for a new handshake ended the session whichever half saw the mux close first
 func endOf(first, second sessionResult) sessionResult {
-	if replacedByHandshake(second.err) {
+	if errors.Is(second.err, ike.ErrPRFUnlisted) {
 		return second
 	}
 	return first
-}
-
-// replacedByHandshake reports a session that deleted its IKE SA for a new handshake under the lists in force
-func replacedByHandshake(err error) bool {
-	return errors.Is(err, ike.ErrPRFUnlisted) || errors.Is(err, ike.ErrRekeyByHandshake)
 }
 
 // sessionResult is how one of a session's two halves ended, IKE's control loop or ESP's receive

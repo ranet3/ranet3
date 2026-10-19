@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/events"
@@ -693,101 +695,132 @@ func TestReloadAtTheAnsweringEndDialsAgainAtOnce(t *testing.T) {
 	})
 }
 
-// a reload at the answering end whose cap.crypto ike kex leaves out the entry of its live x25519+mlkem768 IKE SA replaces that SA by a new handshake
-// and that end's dialer standing down behind the session dials at once
-func TestHybridReplacementAtTheAnsweringEndDialsAgainAtOnce(t *testing.T) {
+// two nodes listing x25519+mlkem768 make their session with ML-KEM-768 joined after X25519, which the event and the control socket name with +
+// an IKE SA rekey either end starts runs ML-KEM-768 again in an IKE_FOLLOWUP_KE exchange after its CREATE_CHILD_SA
+// and the session it rekeys stays the one each end holds
+// RFC 9370 section 2.2.4: "If the initiator includes any ADDKE Transform Types in the SA payload (along with Transform Type 4), and if the responder agrees to perform additional key exchanges, then the additional key exchanges are performed in a series of new IKE_FOLLOWUP_KE exchanges that follow the CREATE_CHILD_SA exchange."
+func TestHybridSessionRekeysItsIKESAThroughFollowupExchanges(t *testing.T) {
 	alpha, bravo := newLoopbackMesh(t)
 	hybrid := &ike.Crypto{IKE: ike.IKESuites{Kex: []string{"x25519+mlkem768"}}}
-	// alpha starts answering and never dialing
-	// so its first session is one bravo dials
-	// and the one it dials once woken is the one the preference rule keeps
-	quiet := *alpha.cfg
-	quiet.Dial.To = nil
-	quiet.Cap.Crypto = hybrid
-	alpha.client.cfg.Store(&quiet)
-	dialing := *bravo.cfg
-	dialing.Cap.Crypto = &ike.Crypto{IKE: ike.IKESuites{Kex: []string{"x25519+mlkem768", "x25519"}}}
-	bravo.client.cfg.Store(&dialing)
-	// a dial after the reconnect delay comes after this test gives up
-	// so only a dialer woken at once passes
-	alpha.client.dialRetry = 2 * convergeBudget
-	bravo.client.dialRetry = 2 * convergeBudget
-	run(t, alpha, bravo)
-	established := func() []control.Event { return recorded(alpha.events, "ike.session.established") }
-	waitFor(t, convergeBudget, "the session bravo dials", func() bool { return len(established()) == 1 })
-	if got := established()[0].Attrs["ike"]; got != "aes256gcm/sha384/x25519+mlkem768" {
-		t.Fatalf("the session bravo dialed runs %s", got)
-	}
-	// alpha's dialer starts under the same kex, finds the path held and stands down
-	joined := *alpha.cfg
-	joined.Cap.Crypto = hybrid
-	writeConfig(t, alpha.configPath, &joined)
-	if err := alpha.client.ReloadFrom(alpha.configPath); err != nil {
-		t.Fatalf("a reload adding alpha's dialer was refused: %v", err)
-	}
-	waitFor(t, convergeBudget, "alpha's dialer standing down behind the session bravo dialed", dialerStandingDown)
-
-	next := joined
-	next.Cap.Crypto = &ike.Crypto{IKE: ike.IKESuites{Kex: []string{"x25519"}}}
-	writeConfig(t, alpha.configPath, &next)
-	if err := alpha.client.ReloadFrom(alpha.configPath); err != nil {
-		t.Fatalf("a reload changing ike kex was refused: %v", err)
-	}
-	waitFor(t, convergeBudget, "alpha dialing a session under x25519 alone", func() bool {
-		sessions := established()
-		return len(sessions) == 2 && sessions[1].Attrs["role"] == "initiator" && sessions[1].Attrs["ike"] == "aes256gcm/sha384/x25519"
-	})
-}
-
-// two nodes listing x25519+mlkem768 make their session with ML-KEM-768 joined after X25519, which the event and the control socket name with +
-// a reload at the dialing end leaving that entry out ends the session for a new handshake, with the reason rekey by handshake, and its dialer dials again at once
-// RFC 9370 section 2.2.4: "If the initiator includes any ADDKE Transform Types in the SA payload (along with Transform Type 4), and if the responder agrees to perform additional key exchanges, then the additional key exchanges are performed in a series of new IKE_FOLLOWUP_KE exchanges that follow the CREATE_CHILD_SA exchange."
-func TestHybridSessionIsReplacedByAHandshakeWhenItsEntryGoes(t *testing.T) {
-	alpha, bravo := newLoopbackMesh(t)
 	dialing := *alpha.cfg
-	dialing.Cap.Crypto = &ike.Crypto{IKE: ike.IKESuites{Kex: []string{"x25519+mlkem768"}}}
+	dialing.Cap.Crypto = hybrid
 	alpha.client.cfg.Store(&dialing)
 	// bravo answers and never dials
 	// so every session is one alpha dials
 	quiet := *bravo.cfg
 	quiet.Dial.To = nil
-	quiet.Cap.Crypto = &ike.Crypto{IKE: ike.IKESuites{Kex: []string{"x25519+mlkem768", "x25519"}}}
+	quiet.Cap.Crypto = hybrid
 	bravo.client.cfg.Store(&quiet)
-	// a dial after the reconnect delay comes after this test gives up
-	// so only one the replacement starts at once passes
-	alpha.client.dialRetry = 2 * convergeBudget
 	run(t, alpha, bravo)
-	established := func() []control.Event { return recorded(alpha.events, "ike.session.established") }
-	waitFor(t, convergeBudget, "alpha's first session", func() bool { return len(established()) == 1 })
-	if got := established()[0].Attrs["ike"]; got != "aes256gcm/sha384/x25519+mlkem768" {
+	established := func(node *loopbackNode) []control.Event { return recorded(node.events, "ike.session.established") }
+	waitFor(t, convergeBudget, "the session alpha dials at both ends", func() bool {
+		return len(established(alpha)) == 1 && len(established(bravo)) == 1
+	})
+	if got := established(alpha)[0].Attrs["ike"]; got != "aes256gcm/sha384/x25519+mlkem768" {
 		t.Fatalf("alpha's first session runs %s", got)
 	}
-	if held := alpha.client.Sessions(); len(held) != 1 || held[0].IKEKex != "x25519+mlkem768" {
-		t.Errorf("alpha's control socket reports its session as %+v", held)
+	for _, end := range []struct{ node, other *loopbackNode }{{alpha, bravo}, {bravo, alpha}} {
+		held := end.node.client.sessions.snapshot()
+		if len(held) != 1 {
+			t.Fatalf("%s holds %d sessions", end.node.name, len(held))
+		}
+		if err := held[0].session.RekeyIKE(); err != nil {
+			t.Fatalf("%s could not rekey its IKE SA: %v", end.node.name, err)
+		}
+		rekeyed := end.node.events.Recorded(func(kind, peer string, _ []slog.Attr) bool {
+			return kind == "ike.rekey.completed" && identity.Names(peer, end.other.name)
+		}, 0)
+		if len(rekeyed) != 1 || rekeyed[0].Attrs["sa"] != "ike" || rekeyed[0].Attrs["suite"] != "aes256gcm/sha384/x25519+mlkem768" {
+			t.Errorf("%s recorded its IKE SA rekey as %+v", end.node.name, rekeyed)
+		}
+		if held := end.node.client.Sessions(); len(held) != 1 || held[0].IKEKex != "x25519+mlkem768" {
+			t.Errorf("%s's control socket reports its session as %+v after the rekey", end.node.name, held)
+		}
+	}
+	for _, node := range []*loopbackNode{alpha, bravo} {
+		if got := len(established(node)); got != 1 {
+			t.Errorf("%s recorded %d sessions, want the one both rekeys kept", node.name, got)
+		}
+		if ended := recorded(node.events, "ike.session.ended"); len(ended) != 0 {
+			t.Errorf("%s ended its session as %+v", node.name, ended)
+		}
+	}
+}
+
+// a peer's rekey of a live x25519+mlkem768 IKE SA that leaves ML-KEM-768 out is refused while this end's cap.crypto ike kex holds that entry
+// a reload whose cap.crypto ike kex leaves the entry out then rekeys the SA under x25519 alone, with no new session
+// RFC 9370 section 2.2.4: "If the initiator includes any ADDKE Transform Types in the SA payload (along with Transform Type 4), and if the responder agrees to perform additional key exchanges, then the additional key exchanges are performed in a series of new IKE_FOLLOWUP_KE exchanges that follow the CREATE_CHILD_SA exchange."
+// an offer of x25519 alone holds no ADDKE Transform Type, so no IKE_FOLLOWUP_KE follows its CREATE_CHILD_SA
+func TestReloadLeavingOutTheHybridEntryRekeysTheIKESA(t *testing.T) {
+	alpha, bravo := newLoopbackMesh(t)
+	// a forced rekey starts within the jitter
+	// so each end's comes well inside the budget
+	rekey := ike.Rekey{Jitter: durationOf(time.Millisecond)}
+	dialing := *alpha.cfg
+	dialing.Cap.Crypto = &ike.Crypto{IKE: ike.IKESuites{Kex: []string{"x25519+mlkem768", "x25519"}}, Rekey: rekey}
+	alpha.client.cfg.Store(&dialing)
+	// bravo answers and never dials
+	// so every session is one alpha dials
+	quiet := *bravo.cfg
+	quiet.Dial.To = nil
+	quiet.Cap.Crypto = &ike.Crypto{IKE: ike.IKESuites{Kex: []string{"x25519+mlkem768", "x25519"}}, Rekey: rekey}
+	bravo.client.cfg.Store(&quiet)
+	writeConfig(t, bravo.configPath, &quiet)
+	// a dial after the reconnect delay comes after this test gives up
+	// so a second session in the budget is one a reload started at once
+	alpha.client.dialRetry = 2 * convergeBudget
+	run(t, alpha, bravo)
+	established := func(node *loopbackNode) []control.Event { return recorded(node.events, "ike.session.established") }
+	waitFor(t, convergeBudget, "the session alpha dials at both ends", func() bool {
+		return len(established(alpha)) == 1 && len(established(bravo)) == 1
+	})
+	if got := established(alpha)[0].Attrs["ike"]; got != "aes256gcm/sha384/x25519+mlkem768" {
+		t.Fatalf("alpha's first session runs %s", got)
+	}
+	classical := &ike.Crypto{IKE: ike.IKESuites{Kex: []string{"x25519"}}, Rekey: rekey}
+
+	answering := quiet
+	answering.Cap.Crypto = classical
+	writeConfig(t, bravo.configPath, &answering)
+	if err := bravo.client.ReloadFrom(bravo.configPath); err != nil {
+		t.Fatalf("a reload changing bravo's ike kex was refused: %v", err)
+	}
+	refused := func() bool {
+		return slices.ContainsFunc(recorded(bravo.events, "ike.rekey.failed"), func(event control.Event) bool {
+			return event.Attrs["sa"] == "ike" && strings.Contains(event.Attrs["err"], fmt.Sprintf("notify type %d", ike.N_NO_PROPOSAL_CHOSEN))
+		})
+	}
+	waitFor(t, convergeBudget, "alpha refusing bravo's rekey under x25519 alone", refused)
+	if unlisted := recorded(bravo.events, "ike.suite.unlisted"); len(unlisted) != 1 || unlisted[0].Attrs["sa"] != "ike" ||
+		unlisted[0].Attrs["suite"] != "aes256gcm/sha384/x25519+mlkem768" || unlisted[0].Attrs["action"] != "rekey" {
+		t.Errorf("bravo recorded its unlisted IKE SA as %+v", unlisted)
 	}
 
 	next := dialing
-	next.Cap.Crypto = &ike.Crypto{IKE: ike.IKESuites{Kex: []string{"x25519"}}}
+	next.Cap.Crypto = classical
 	writeConfig(t, alpha.configPath, &next)
 	if err := alpha.client.ReloadFrom(alpha.configPath); err != nil {
-		t.Fatalf("a reload changing ike kex was refused: %v", err)
+		t.Fatalf("a reload changing alpha's ike kex was refused: %v", err)
 	}
-	waitFor(t, convergeBudget, "alpha's session under x25519 alone", func() bool {
-		return len(established()) == 2 && established()[1].Attrs["ike"] == "aes256gcm/sha384/x25519"
+	// bravo's retry may start before alpha's forced rekey, and either replaces the SA under x25519
+	rekeyed := func(node *loopbackNode) bool {
+		return slices.ContainsFunc(recorded(node.events, "ike.rekey.completed"), func(event control.Event) bool {
+			return event.Attrs["sa"] == "ike" && event.Attrs["suite"] == "aes256gcm/sha384/x25519"
+		})
+	}
+	waitFor(t, convergeBudget, "the IKE SA rekeyed under x25519 alone", func() bool { return rekeyed(alpha) || rekeyed(bravo) })
+	waitFor(t, convergeBudget, "both control sockets to report the rekeyed SA", func() bool {
+		a, b := alpha.client.Sessions(), bravo.client.Sessions()
+		return len(a) == 1 && a[0].IKEKex == "x25519" && len(b) == 1 && b[0].IKEKex == "x25519"
 	})
-	closed := recorded(alpha.events, "ike.sa.closed")
-	if !slices.ContainsFunc(closed, func(event control.Event) bool {
-		return event.Attrs["sa"] == "ike" && event.Attrs["reason"] == "rekey by handshake"
-	}) {
-		t.Errorf("the replaced IKE SA was closed as %+v, want the reason rekey by handshake", closed)
+	for _, node := range []*loopbackNode{alpha, bravo} {
+		if got := len(established(node)); got != 1 {
+			t.Errorf("%s recorded %d sessions, want the one the rekey kept", node.name, got)
+		}
+		if ended := recorded(node.events, "ike.session.ended"); len(ended) != 0 {
+			t.Errorf("%s ended its session as %+v", node.name, ended)
+		}
 	}
-	if ended := recorded(alpha.events, "ike.session.ended"); len(ended) == 0 || !strings.Contains(ended[0].Attrs["err"], ike.ErrRekeyByHandshake.Error()) {
-		t.Errorf("the replaced session ended as %+v", ended)
-	}
-	waitFor(t, convergeBudget, "alpha's control socket to report the new session", func() bool {
-		held := alpha.client.Sessions()
-		return len(held) == 1 && held[0].IKEKex == "x25519"
-	})
 }
 
 // a session whose handshake ends while a reload runs takes the link.mtu that reload stores

@@ -32,11 +32,15 @@ type localRequest struct {
 	result   chan requestResult
 	dpd      bool
 	teardown bool
+	// lateFrom, where set, is when the peer may have dropped the state the request needs, so a send from then on may reach a peer without it
+	lateFrom time.Time
 }
 
 type requestResult struct {
 	inner []RawPayload
 	err   error
+	// late reports an answer that came after a send at or past the request's lateFrom
+	late bool
 }
 
 type pendingRequest struct {
@@ -47,7 +51,9 @@ type pendingRequest struct {
 	attempts int
 	// sent counts transmissions. attempts drives the backoff and stops
 	// growing at maxRetransmits, so it cannot also bound the exchange.
-	sent     int
+	sent int
+	// lastSent is when the request last went out, a probe's resend among the sends
+	lastSent time.Time
 	deadline time.Time
 }
 
@@ -275,7 +281,7 @@ func (s *Session) Run(ctx context.Context) error { return s.run(ctx, nil) }
 
 func (s *Session) run(ctx context.Context, ending error) (err error) {
 	if ending != nil {
-		s.closing.Store(true)
+		s.startClosing()
 	}
 	var rekeys sync.WaitGroup
 	defer func() {
@@ -337,7 +343,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	}()
 	end := func(schedule *rekeySchedule, reason string, err error) {
 		ending = err
-		s.closing.Store(true)
+		s.startClosing()
 		slog.Warn("ike deleting the IKE SA", "sa", schedule.name, "reason", reason, "err", err)
 		s.emit("ike.sa.closed", slog.String("sa", schedule.sa), slog.String("reason", reason), slog.String("err", err.Error()))
 	}
@@ -475,8 +481,9 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	// this end keeps one request outstanding whatever window the peer offers, so the Delete that closes an expired SA waits on the exchange outstanding at its lifetime
 	// until then an expired IKE SA carries that exchange, its answers to the peer and its Delete, and starts nothing else
 	expired := func() bool { return s.ikeExpired(s.currentContext()) }
+	// while this end's rekey may run additional key exchanges, or waits for the peer's, the requests on the IKE SA are the rekey's alone
 	livenessDue := func() time.Time {
-		if expired() || deleted {
+		if expired() || deleted || s.quiet.Load() {
 			return time.Now().Add(s.dpdInterval())
 		}
 		return lastAuthenticated.Add(s.dpdInterval())
@@ -498,6 +505,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			rekeys.Go(func() { s.deleteOverdueChild(child) })
 		}
 		s.expireRetainedContexts(time.Now())
+		s.expireChain(time.Now())
 		if err := settleChildRekeys(); err != nil {
 			fail(err)
 		}
@@ -517,11 +525,11 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		select {
 		case result := <-rekeyResult:
 			running = nil
-			// an IKE SA no CREATE_CHILD_SA can rekey goes with one Delete for a new handshake
+			// a rekey that failed as a saEnding ends the IKE SA with the teardown's Delete
 			// while a replacement for a PRF the lists left out is under way, its Delete is that one
-			if errors.Is(result.err, ErrRekeyByHandshake) {
+			if ended, ok := errors.AsType[*saEnding](result.err); ok {
 				if ending == nil && !replacing {
-					end(result.schedule, "rekey by handshake", result.err)
+					end(result.schedule, ended.reason, result.err)
 				}
 				continue
 			}
@@ -618,6 +626,9 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		if expiry, ok := s.nextRetainedExpiry(); ok && expiry.Before(deadline) {
 			deadline = expiry
 		}
+		if expiry, ok := s.nextChainExpiry(); ok && expiry.Before(deadline) {
+			deadline = expiry
+		}
 
 		// everything this loop reacts to is selectable, so it sleeps until one of them happens rather than polling
 		if !timer.Stop() {
@@ -672,7 +683,8 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			fail(err)
 			continue
 		case <-s.probes:
-			if pending == nil && (expired() || deleted) {
+			// a quiet session's rekey or the peer's chain it waits on proves the path, and a liveness check beside them is a request the peer may destroy the IKE SA for
+			if pending == nil && (expired() || deleted || s.quiet.Load()) {
 				continue
 			}
 			probed, err := s.probe(pending)
@@ -770,6 +782,7 @@ func (s *Session) probe(pending *pendingRequest) (*pendingRequest, error) {
 		s.emit("ike.probe", slog.String("action", "liveness check"), slog.Uint64("message_id", uint64(started.msgID)))
 		return started, nil
 	}
+	pending.lastSent = time.Now()
 	s.noteSend(s.mux.SendIKE(pending.raw))
 	s.emit("ike.probe", slog.String("action", "retransmission"), slog.Uint64("message_id", uint64(pending.msgID)))
 	return pending, nil
@@ -789,23 +802,28 @@ func (s *Session) requestLocked(exchange ExchangeType, inner []RawPayload) ([]Ra
 }
 
 func (s *Session) requestOnLocked(context *ikeContext, exchange ExchangeType, inner []RawPayload) ([]RawPayload, error) {
-	req := &localRequest{exchange: exchange, inner: inner, context: context, result: make(chan requestResult, 1)}
+	result := s.awaitLocked(&localRequest{exchange: exchange, inner: inner, context: context, result: make(chan requestResult, 1)})
+	return result.inner, result.err
+}
+
+// awaitLocked hands req to Run and waits for its answer while requestMu is held
+func (s *Session) awaitLocked(req *localRequest) requestResult {
 	select {
 	case s.requests <- req:
 	case <-s.mux.Done():
-		return nil, fmt.Errorf("ike: session closed")
+		return requestResult{err: fmt.Errorf("ike: session closed")}
 	}
 	select {
 	case result := <-req.result:
-		return result.inner, result.err
+		return result
 	case <-s.mux.Done():
 		// Run may have supplied a specific failure immediately before closing.
 		select {
 		case result := <-req.result:
-			return result.inner, result.err
+			return result
 		default:
 		}
-		return nil, fmt.Errorf("ike: session closed")
+		return requestResult{err: fmt.Errorf("ike: session closed")}
 	}
 }
 
@@ -850,7 +868,8 @@ func (s *Session) startRequest(req *localRequest) (*pendingRequest, error) {
 func (s *Session) sendPending(pending *pendingRequest) {
 	pending.sent++
 	nextAttempt := min(pending.attempts+1, maxRetransmits)
-	pending.deadline = time.Now().Add(retransmitDelay(s.retransmitTimeout(), nextAttempt))
+	pending.lastSent = time.Now()
+	pending.deadline = pending.lastSent.Add(retransmitDelay(s.retransmitTimeout(), nextAttempt))
 	pending.attempts = nextAttempt
 	s.noteSend(s.mux.SendIKE(pending.raw))
 }
@@ -1004,7 +1023,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 				slog.Warn("ike the peer refused the Delete that ends the IKE SA", "err", refused)
 			}
 		}
-		matching.result <- requestResult{inner: inner}
+		matching.result <- requestResult{inner: inner, late: !matching.lateFrom.IsZero() && !matching.lastSent.Before(matching.lateFrom)}
 		*pending = nil
 		return true
 	}
@@ -1115,6 +1134,9 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner [
 			}
 		}
 		return s.handleChildRekey(ctx, hdr.MessageID, inner)
+	}
+	if hdr.ExchangeType == IKE_FOLLOWUP_KE {
+		return s.handleFollowup(ctx, hdr.MessageID, inner)
 	}
 	return s.refuseRequest(ctx, hdr.MessageID, hdr.ExchangeType, fmt.Errorf("ike: unsupported exchange type %d", hdr.ExchangeType))
 }
@@ -1231,7 +1253,7 @@ func (s *Session) responseNotifySA(ctx *ikeContext, msgID uint32, exchange Excha
 // RFC 7296 section 1.4.1: "Deleting an IKE SA implicitly closes any remaining Child SAs negotiated under it."
 // the caller bounds how long the exchange may take
 func (s *Session) DeleteIKE() error {
-	s.closing.Store(true)
+	s.startClosing()
 	payloads := []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}
 	if s.serving.Load() {
 		answer, err := s.request(INFORMATIONAL, payloads)
@@ -1246,6 +1268,29 @@ func (s *Session) DeleteIKE() error {
 	}
 	// before Run serves the session nothing drains the request queue, so a Delete sent through it would never go out
 	return s.sendUnansweredRequest(payloads)
+}
+
+// closingSignal is closed once the IKE SA starts to close
+func (s *Session) closingSignal() chan struct{} {
+	s.closedMu.Lock()
+	defer s.closedMu.Unlock()
+	if s.closed == nil {
+		s.closed = make(chan struct{})
+	}
+	return s.closed
+}
+
+// startClosing marks the IKE SA closing and wakes what waits on closingSignal
+func (s *Session) startClosing() {
+	s.closing.Store(true)
+	closed := s.closingSignal()
+	s.closedMu.Lock()
+	defer s.closedMu.Unlock()
+	select {
+	case <-closed:
+	default:
+		close(closed)
+	}
 }
 
 // sendUnansweredRequest transmits one encrypted request and does not wait for

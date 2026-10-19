@@ -347,10 +347,14 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
 	}
 	lists := s.lists()
-	ciphers, entries := lists.espCiphers(), lists.rekeyable()
-	if expected != nil {
+	// a Child SA runs no additional key exchange
+	ciphers, entries := lists.espCiphers(), slices.DeleteFunc(slices.Clone(lists.kexEntries()), func(entry kexEntry) bool { return !entry.classical() })
+	if expected != nil && childGroup == group {
 		// the answer keeps the cipher and the group of the Child SA it replaces where the offer and the lists hold them
-		ciphers, entries = lists.rekeyChoice(*expected), lists.rekeyEntries(kexEntry{group: childGroup}, group)
+		entries = promoted(entries, kexEntry{group: childGroup})
+	}
+	if expected != nil {
+		ciphers = lists.rekeyChoice(*expected)
 	}
 	selected, err := selectChildRequestProposal(payloads.sa.Body, ciphers, entries, group, groupOptional)
 	if err != nil {

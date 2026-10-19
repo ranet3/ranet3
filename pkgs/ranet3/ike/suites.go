@@ -204,10 +204,20 @@ func (s Suites) kexEntries() []kexEntry {
 	return all
 }
 
-// rekeyable is the kex entries a CREATE_CHILD_SA can run, those of one key exchange, since this end runs no IKE_FOLLOWUP_KE
-// RFC 9370 section 2.2.4: "If the initiator includes any ADDKE Transform Types in the SA payload (along with Transform Type 4), and if the responder agrees to perform additional key exchanges, then the additional key exchanges are performed in a series of new IKE_FOLLOWUP_KE exchanges that follow the CREATE_CHILD_SA exchange."
-func (s Suites) rekeyable() []kexEntry {
-	return slices.DeleteFunc(slices.Clone(s.kexEntries()), func(entry kexEntry) bool { return !entry.classical() })
+// rekeyable is the kex entries a rekey of an IKE SA the key exchanges of current made may run
+// while kex holds current, only those that keep each of its additional key exchanges, since the session proved the peer runs them
+// a reload that removed current leaves the rekey every entry, as the operator chose
+func (s Suites) rekeyable(current kexEntry) []kexEntry {
+	entries := s.kexEntries()
+	if !slices.Contains(entries, current) {
+		return entries
+	}
+	return slices.DeleteFunc(slices.Clone(entries), func(entry kexEntry) bool { return !entry.keeps(current) })
+}
+
+// keeps reports whether e runs each additional key exchange other runs
+func (e kexEntry) keeps(other kexEntry) bool {
+	return !slices.ContainsFunc(other.added(), func(method uint16) bool { return !slices.Contains(e.added(), method) })
 }
 
 func listed(list []Transform, names []suiteName) []Transform {
@@ -253,9 +263,9 @@ func (s Suites) ikeProposals(group uint16) []Proposal {
 	return leadingGroup(s.entryProposals(s.kexEntries(), s.ikePRFs(), nil), group)
 }
 
-// ikeRekeyProposals is the offer of a rekey replacing an IKE SA whose PRF is prfID, with its KE payload in group, one proposal for each entry a CREATE_CHILD_SA runs
-func (s Suites) ikeRekeyProposals(spi []byte, prfID, group uint16) []Proposal {
-	return leadingGroup(s.entryProposals(s.rekeyable(), s.rekeyPRFs(prfID), spi), group)
+// ikeRekeyProposals is the offer of a rekey replacing an IKE SA of current, with its KE payload in group, one proposal for each entry the rekey may run
+func (s Suites) ikeRekeyProposals(spi []byte, current SASuite, group uint16) []Proposal {
+	return leadingGroup(s.entryProposals(s.rekeyable(current.entry()), s.rekeyPRFs(current.PRFID), spi), group)
 }
 
 // asksIntermediate reports whether the IKE_SA_INIT offer of the lists holds an ADDKE type
@@ -343,9 +353,9 @@ func (s Suites) rekeyChoice(old ChildSA) []Transform {
 // RFC 7296 section 2.8: "Note that, when rekeying, the new Child SA SHOULD NOT have different Traffic Selectors and algorithms than the old one."
 func (s Suites) rekeyEntries(current kexEntry, keGroup uint16) []kexEntry {
 	if current.group != keGroup {
-		return s.rekeyable()
+		return s.rekeyable(current)
 	}
-	return promoted(s.rekeyable(), current)
+	return promoted(s.rekeyable(current), current)
 }
 
 func promoted[T comparable](list []T, first T) []T {
@@ -540,7 +550,7 @@ func (s *Session) lists() Suites { return current(s.suites) }
 // an SA holding a cipher or a kex entry they left out is rekeyed after a delay drawn within the rekey jitter
 // and no later than the rekey its schedule already holds
 // a Child SA whose IKE SA they left out as well draws its delay once that IKE SA's rekey has ended, unless an earlier check already drew one
-// an IKE SA whose PRF they left out is deleted for a new handshake, as is one that rekey finds no CREATE_CHILD_SA for
+// an IKE SA whose PRF they left out is deleted for a new handshake
 func (s *Session) SuitesChanged() {
 	select {
 	case s.rechecks <- struct{}{}:
@@ -552,11 +562,6 @@ func (s *Session) SuitesChanged() {
 // no rekey changes the PRF
 // so the session deletes the SA and a new handshake under the lists in force replaces it
 var ErrPRFUnlisted = errors.New("ike: cap.crypto ike prf no longer holds the IKE SA's PRF, which no rekey changes")
-
-// ErrRekeyByHandshake ends a session whose IKE SA rekey has no CREATE_CHILD_SA to run
-// that is an SA whose entry has additional key exchanges, since this end runs no IKE_FOLLOWUP_KE and a rekey without them would drop them, and an SA whose lists hold no entry of one key exchange
-// so the session deletes the SA and a new handshake under the lists in force replaces it
-var ErrRekeyByHandshake = errors.New("ike: no CREATE_CHILD_SA can rekey the IKE SA under its key exchanges and the lists in force, so a new handshake replaces it")
 
 // Suite is the transforms a session's SAs use, each by the name cap.crypto lists it under
 type Suite struct {

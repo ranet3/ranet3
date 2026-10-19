@@ -405,10 +405,11 @@ func TestOwnIKESARekeyOffersTheListsAndTakesOnlyWhatTheyOffer(t *testing.T) {
 	})
 }
 
-// an IKE SA rekey of an SA whose group kex holds only in an entry with additional key exchanges sends its KE payload in the first entry a CREATE_CHILD_SA runs
-// and every proposal it offers is in that group
-// RFC 7296 section 3.4: "This Diffie-Hellman Group Num MUST match a Diffie-Hellman group specified in a proposal in the SA payload that is sent in the same message"
-func TestOwnIKESARekeyOfAGroupOnlyAJoinedEntryHoldsRunsTheFirstRekeyableGroup(t *testing.T) {
+// an IKE SA rekey of an SA whose group kex holds only in an entry with additional key exchanges sends its KE payload in that group
+// and offers that entry first, with the other entries after it
+// RFC 7296 section 3.4: "This Diffie-Hellman Group Num MUST match a Diffie-Hellman group specified in a proposal in the SA payload that is sent in the same message, and SHOULD match the Diffie-Hellman group in the first group in the first proposal, if such exists."
+// RFC 9370 section 2.2.4: "If the initiator includes any ADDKE Transform Types in the SA payload (along with Transform Type 4), and if the responder agrees to perform additional key exchanges, then the additional key exchanges are performed in a series of new IKE_FOLLOWUP_KE exchanges that follow the CREATE_CHILD_SA exchange."
+func TestOwnIKESARekeyOfAGroupOnlyAJoinedEntryHoldsOffersThatEntryFirst(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	lists := Suites{kex: []kexEntry{{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}, {group: DH_ECP_384}}}
 	ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519},
@@ -430,17 +431,18 @@ func TestOwnIKESARekeyOfAGroupOnlyAJoinedEntryHoldsRunsTheFirstRekeyableGroup(t 
 	if sa == nil || ke == nil {
 		t.Fatalf("the rekey request carried %v", request.inner)
 	}
-	if group, _, err := DecodeKE(ke.Body); err != nil || group != DH_ECP_384 {
-		t.Errorf("the KE payload is in group %d, %v, want %d", group, err, DH_ECP_384)
+	if group, _, err := DecodeKE(ke.Body); err != nil || group != DH_CURVE25519 {
+		t.Errorf("the KE payload is in group %d, %v, want %d", group, err, DH_CURVE25519)
 	}
 	proposals, err := DecodeSA(sa.Body)
-	if err != nil || len(proposals) == 0 {
-		t.Fatalf("the rekey offered %+v, %v", proposals, err)
+	if err != nil || len(proposals) != 2 {
+		t.Fatalf("the rekey offered %+v, %v, want one proposal for each entry", proposals, err)
 	}
-	for _, proposal := range proposals {
-		if kex := kexOf(proposal); !slices.Equal(kex, []Transform{dhP384}) {
-			t.Errorf("proposal %d offers the key exchanges %+v, want p384 alone", proposal.Number, kex)
-		}
+	if kex := kexOf(proposals[0]); !slices.Equal(kex, []Transform{dhX25519, {Type: TransADDKE1, ID: ML_KEM_768}}) {
+		t.Errorf("proposal 1 offers the key exchanges %+v, want x25519 joined by ML-KEM-768", kex)
+	}
+	if kex := kexOf(proposals[1]); !slices.Equal(kex, []Transform{dhP384}) {
+		t.Errorf("proposal 2 offers the key exchanges %+v, want p384 alone", kex)
 	}
 }
 

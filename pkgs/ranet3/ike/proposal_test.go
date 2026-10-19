@@ -96,7 +96,7 @@ func TestUnknownTransformAttributeMakesOnlyTransformUnacceptable(t *testing.T) {
 		t.Fatal("unknown attribute was silently discarded")
 	}
 	lists := Suites{}
-	chosen, _, ok := chooseIKE(decoded, lists.ikeCiphers(), lists.rekeyPRFs(PRF_HMAC_SHA2_256), lists.rekeyable(), DH_CURVE25519)
+	chosen, _, ok := chooseIKE(decoded, lists.ikeCiphers(), lists.rekeyPRFs(PRF_HMAC_SHA2_256), lists.rekeyEntries(kexEntry{group: DH_CURVE25519}, DH_CURVE25519), DH_CURVE25519)
 	if !ok || chosen.suite.EncrKeyBits != 128 || chosen.transforms[0].KeyLengthBits != 128 {
 		t.Fatalf("selection did not skip attributed transform: selected=%#v suite=%#v", chosen.transforms, chosen.suite)
 	}
@@ -116,7 +116,7 @@ func TestIKERekeyProposalRejectsUnexpectedTransformType(t *testing.T) {
 	}
 	lists := Suites{}
 	rekey := func(p Proposal) (ikeChoice, bool) {
-		chosen, _, ok := chooseIKE([]Proposal{p}, lists.ikeCiphers(), lists.rekeyPRFs(PRF_HMAC_SHA2_256), lists.rekeyable(), DH_CURVE25519)
+		chosen, _, ok := chooseIKE([]Proposal{p}, lists.ikeCiphers(), lists.rekeyPRFs(PRF_HMAC_SHA2_256), lists.rekeyEntries(kexEntry{group: DH_CURVE25519}, DH_CURVE25519), DH_CURVE25519)
 		return chosen, ok
 	}
 	unknown := Proposal{Number: 1, Protocol: ProtoIKE,
@@ -234,7 +234,7 @@ func TestUnusableIntegrityAlternativeDoesNotRefuseTheProposal(t *testing.T) {
 
 	lists := Suites{}
 	rekey := func(p Proposal) (ikeChoice, bool) {
-		chosen, _, ok := chooseIKE([]Proposal{p}, lists.ikeCiphers(), lists.rekeyPRFs(PRF_HMAC_SHA2_256), lists.rekeyable(), DH_CURVE25519)
+		chosen, _, ok := chooseIKE([]Proposal{p}, lists.ikeCiphers(), lists.rekeyPRFs(PRF_HMAC_SHA2_256), lists.rekeyEntries(kexEntry{group: DH_CURVE25519}, DH_CURVE25519), DH_CURVE25519)
 		return chosen, ok
 	}
 	rekeySelected, ok := rekey(Proposal{Number: 1, Protocol: ProtoIKE, Transforms: withBoth})

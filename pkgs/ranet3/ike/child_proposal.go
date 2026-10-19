@@ -218,7 +218,7 @@ type childProposalSelection struct {
 	// implementation can take is NONE.
 	integ Transform
 	// additions holds NONE for each ADDKE type the proposal holds, in type order
-	// a Child SA runs no additional key exchange of RFC 9370, since this end runs no IKE_FOLLOWUP_KE
+	// a Child SA runs no additional key exchange of RFC 9370
 	additions []Transform
 	remoteSPI uint32
 }
