@@ -276,7 +276,8 @@ type Status struct {
 	ESP          ESPCounters  `json:"esp"`
 	Originate    []Originated `json:"originate"`
 	// Segments lists the addresses this node answers for as a waypoint or an
-	// exit, each written as the address and the behavior. It is absent on a
+	// exit, each written as the address and the behavior, then for an egress
+	// segment its delivery and its allow list. It is absent on a
 	// node that configures no segment routing, which is most of them.
 	Segments []string `json:"segments,omitempty"`
 	// Steering is the policies deciding which of this node's own packets go
@@ -307,7 +308,8 @@ type Down struct {
 // Forwarded is packets an End sent on to their next segment, Delivered is
 // packets an End.DT46 took the outer header off and handed to the stack
 // through the mesh tun, and Dropped is packets addressed to one of this node's
-// segments that it would not act on.
+// segments that it would not act on, and egress packets the egress device
+// refused while open.
 type SegmentCounters struct {
 	Forwarded uint64 `json:"forwarded"`
 	Delivered uint64 `json:"delivered"`
@@ -321,16 +323,16 @@ type SegmentCounters struct {
 	Steered   uint64 `json:"steered"`
 	Unsteered uint64 `json:"unsteered"`
 	Unrouted  uint64 `json:"unrouted"`
-	// Answered counts the ICMP errors sent for refused packets, which is the
+	// Answered counts the ICMP errors sent for dropped packets, which is the
 	// half of Dropped whose sender was told why.
 	Answered uint64 `json:"answered"`
 	// Egressed counts the packets the egress device accepted
 	Egressed uint64 `json:"egressed"`
-	// Refused counts the packets an egress segment's allow list refused, a part of Dropped never answered
+	// Refused counts the packets an egress segment refused for a source outside its allow list or an inner source it cannot read, a part of Dropped never answered
 	Refused uint64 `json:"refused"`
-	// NotReady counts the egress results dropped while no egress device took them, which is not in Dropped
+	// NotReady counts the egress results dropped with no egress device installed, closed under the write or not ready for their family, which is not in Dropped
 	NotReady uint64 `json:"not_ready"`
-	// Drained counts the packets read off the egress device and thrown away
+	// Drained counts the packets a route sent into the egress device, read off it and thrown away
 	Drained uint64 `json:"drained"`
 }
 
@@ -386,6 +388,12 @@ type EgressStatus struct {
 	Enabled bool `json:"enabled"`
 	// Where names the tables this node owns, as the backend spells them.
 	Where string `json:"where,omitempty"`
+	// Device names the egress device an egress segment's inner packets leave
+	// through, Ready the families it carries out translated, ipv4 and ipv6,
+	// and Unready the reason the last pass found a family not ready
+	Device  string   `json:"device,omitempty"`
+	Ready   []string `json:"ready,omitempty"`
+	Unready string   `json:"unready,omitempty"`
 	// Source4 and Source6 are the address a translated packet leaves under,
 	// or "auto" where the host's own routes decide it per packet.
 	Source4 string `json:"source4,omitempty"`

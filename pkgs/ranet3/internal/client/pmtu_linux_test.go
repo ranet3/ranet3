@@ -476,16 +476,26 @@ func (n netlinkRoute) close() { _ = unix.Close(int(n)) }
 
 // request sends one message and answers the error the kernel acknowledged it with
 func (n netlinkRoute) request(kind, flags uint16, body []byte) error {
+	return acknowledged(int(n), netlinkMessage(kind, flags|unix.NLM_F_ACK, body))
+}
+
+// netlinkMessage is one netlink request of kind carrying body, with flags added
+func netlinkMessage(kind, flags uint16, body []byte) []byte {
 	message := make([]byte, unix.NLMSG_HDRLEN, unix.NLMSG_HDRLEN+len(body))
 	message = append(message, body...)
 	binary.NativeEndian.PutUint32(message[0:], uint32(len(message)))
 	binary.NativeEndian.PutUint16(message[4:], kind)
-	binary.NativeEndian.PutUint16(message[6:], flags|unix.NLM_F_REQUEST|unix.NLM_F_ACK)
-	if err := unix.Sendto(int(n), message, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
+	binary.NativeEndian.PutUint16(message[6:], flags|unix.NLM_F_REQUEST)
+	return message
+}
+
+// acknowledged sends the messages in raw, one of them asking for an acknowledgment, on the netlink socket fd and answers the error the kernel acknowledged it with
+func acknowledged(fd int, raw []byte) error {
+	if err := unix.Sendto(fd, raw, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
 		return err
 	}
 	reply := make([]byte, os.Getpagesize())
-	got, _, err := unix.Recvfrom(int(n), reply, 0)
+	got, _, err := unix.Recvfrom(fd, reply, 0)
 	if err != nil {
 		return err
 	}

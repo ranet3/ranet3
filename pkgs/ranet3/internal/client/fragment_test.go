@@ -20,28 +20,40 @@ import (
 // babelGroup is the address every Babel speaker listens on, RFC 8966 section 4
 var babelGroup = netip.MustParseAddr("ff02::1:6")
 
-// udpPacket is an IPv6 packet from src to dst carrying payload in UDP from port sport to dport
-// with the checksum RFC 8200 section 8.1 makes mandatory, and a hop limit of 64
+// udpPacket is an IP packet of src's family from src to dst carrying payload in UDP from port sport to dport
+// with a hop limit of 64 and the checksum RFC 8200 section 8.1 makes mandatory, sent as all ones where it computes to zero as RFC 768 says
 func udpPacket(src, dst netip.Addr, sport, dport uint16, payload []byte) []byte {
-	raw := make([]byte, 40+8+len(payload))
-	raw[0] = 0x60
-	binary.BigEndian.PutUint16(raw[4:], uint16(8+len(payload)))
-	raw[6], raw[7] = 17, 64
-	copy(raw[8:], src.AsSlice())
-	copy(raw[24:], dst.AsSlice())
-	udp := raw[40:]
+	udp := make([]byte, 8+len(payload))
 	binary.BigEndian.PutUint16(udp[0:], sport)
 	binary.BigEndian.PutUint16(udp[2:], dport)
 	binary.BigEndian.PutUint16(udp[4:], uint16(len(udp)))
 	copy(udp[8:], payload)
 	length := binary.BigEndian.AppendUint16(nil, uint16(len(udp)))
-	pseudo := slices.Concat(raw[8:40], []byte{0, 0}, length, []byte{0, 0, 0, 17})
+	var header, pseudo []byte
+	if src.Is4() {
+		header = make([]byte, 20)
+		header[0] = 0x45
+		binary.BigEndian.PutUint16(header[2:], uint16(20+len(udp)))
+		header[8], header[9] = 64, 17
+		copy(header[12:], src.AsSlice())
+		copy(header[16:], dst.AsSlice())
+		binary.BigEndian.PutUint16(header[10:], ^uint16(packet.Sum(0, header)))
+		pseudo = slices.Concat(header[12:20], []byte{0, 17}, length)
+	} else {
+		header = make([]byte, 40)
+		header[0] = 0x60
+		binary.BigEndian.PutUint16(header[4:], uint16(len(udp)))
+		header[6], header[7] = 17, 64
+		copy(header[8:], src.AsSlice())
+		copy(header[24:], dst.AsSlice())
+		pseudo = slices.Concat(header[8:40], []byte{0, 0}, length, []byte{0, 0, 0, 17})
+	}
 	checksum := ^uint16(packet.Sum(packet.Sum(0, pseudo), udp))
 	if checksum == 0 {
 		checksum = 0xffff
 	}
 	binary.BigEndian.PutUint16(udp[6:], checksum)
-	return raw
+	return slices.Concat(header, udp)
 }
 
 // babelFrom is a Babel packet from src to the group of udp octets of UDP with its header, padded out with PadN

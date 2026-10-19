@@ -143,7 +143,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	// every exchange from here reads the cap.crypto lists just stored
 	// and every live session checks the SAs it holds against them
 	c.sessions.resuite()
-	c.republish(cfg)
+	c.Republish()
 	c.syncPeers()
 	c.speaker.SetConfig(cfg.Babel())
 	if old.Link.Listen != cfg.Link.Listen {
@@ -376,6 +376,11 @@ func reloadable(old, next *config.Config) error {
 		// the translator is built once in main and owns the tables it made under the families the old block named
 		// a new block applied here would leave the host holding rules from a configuration nothing runs any more
 		return fmt.Errorf("config: cap.egress changed, restart to apply")
+	case len(old.Segments().Egress()) == 0 && len(next.Segments().Egress()) > 0:
+		// the egress device, the translator's rule keyed on it and its readiness are made at startup
+		return fmt.Errorf("config: cap.segment adds the first egress segment, restart to apply")
+	case len(old.Segments().Egress()) > 0 && len(next.Segments().Egress()) == 0:
+		return fmt.Errorf("config: cap.segment removes the last egress segment, restart to apply")
 	}
 	return sameReturnSources(old, next)
 }
@@ -493,14 +498,22 @@ func sortedPrefixes(prefixes []netip.Prefix) []netip.Prefix {
 
 // announced is every prefix this node is putting into the mesh right now: the
 // ones cap.route asks for unconditionally, plus the ones cap.egress is
-// currently willing to stand behind. The second set is read from the
-// translator on every call rather than from the file, because an exit withholds
-// a prefix whose rule is not installed and that answer changes under a running
-// node.
+// currently willing to stand behind, plus the /128 of each egress SID while
+// the translator's last word says the SIDs are served. The second and third
+// sets are read from the translator on every call rather than from the file,
+// because an exit withholds a prefix whose rule is not installed and that
+// answer changes under a running node.
 func (c *Client) announced(cfg *config.Config) []babel.OriginatedRoute {
+	serves := c.egressServes.Load()
 	routes := cfg.Routes().Originated()
 	for _, prefix := range c.egressAdvertised() {
 		routes = append(routes, babel.OriginatedRoute{Destination: prefix})
+	}
+	if !serves {
+		return routes
+	}
+	for _, segment := range cfg.Segments().Egress() {
+		routes = append(routes, babel.OriginatedRoute{Destination: netip.PrefixFrom(segment.SID.Addr, segment.SID.BitLen())})
 	}
 	return routes
 }
@@ -522,10 +535,10 @@ func (c *Client) egressAdvertised() []netip.Prefix {
 // cap.egress calls it whenever the prefixes it may advertise change, which is
 // how an exit whose rule stopped being installed retracts rather than going on
 // attracting traffic it would have to drop.
-func (c *Client) Republish() { c.republish(c.config()) }
-
-func (c *Client) republish(cfg *config.Config) {
-	c.speaker.SetOriginated(c.announced(cfg))
+func (c *Client) Republish() {
+	c.republishMu.Lock()
+	defer c.republishMu.Unlock()
+	c.speaker.SetOriginated(c.announced(c.config()))
 }
 
 // forgetDialer drops a dialer that ended by itself, and only if the map still

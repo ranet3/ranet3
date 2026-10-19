@@ -162,14 +162,17 @@ func dumpRoutes() ([]kernelRoute, error) {
 
 // kernelRule is one policy rule a dump of the namespace reads back
 type kernelRule struct {
+	family      uint8
 	destination netip.Prefix
-	table       uint32
-	priority    uint32
-	protocol    uint8
+	// iif is the name of the link the rule matches arrivals on, empty for a rule matching any
+	iif      string
+	table    uint32
+	priority uint32
+	protocol uint8
 }
 
 func (r kernelRule) String() string {
-	return fmt.Sprintf("to %s table %d priority %d proto %d", r.destination, r.table, r.priority, r.protocol)
+	return fmt.Sprintf("family %d to %s iif %q table %d priority %d proto %d", r.family, r.destination, r.iif, r.table, r.priority, r.protocol)
 }
 
 // dumpRules reads every policy rule of every family in the namespace
@@ -188,7 +191,7 @@ func dumpRules() ([]kernelRule, error) {
 		if message.Header.Type != unix.RTM_NEWRULE || len(message.Data) < fibRuleHeader {
 			continue
 		}
-		rule := kernelRule{table: uint32(message.Data[4])}
+		rule := kernelRule{family: message.Data[0], table: uint32(message.Data[4])}
 		for data := message.Data[fibRuleHeader:]; len(data) >= unix.SizeofRtAttr; {
 			length := int(binary.NativeEndian.Uint16(data))
 			if length < unix.SizeofRtAttr || length > len(data) {
@@ -200,6 +203,8 @@ func dumpRules() ([]kernelRule, error) {
 				if address, ok := netip.AddrFromSlice(value); ok {
 					rule.destination = netip.PrefixFrom(address, int(message.Data[1]))
 				}
+			case unix.FRA_IIFNAME:
+				rule.iif = strings.TrimRight(string(value), "\x00")
 			case unix.FRA_TABLE:
 				if len(value) >= 4 {
 					rule.table = binary.NativeEndian.Uint32(value)
@@ -466,7 +471,7 @@ func (n *kernelNode) restored(t *testing.T) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rule := kernelRule{destination: kernelMeshPrefix, table: n.table, priority: n.priority, protocol: n.protocol}
+	rule := kernelRule{family: unix.AF_INET, destination: kernelMeshPrefix, table: n.table, priority: n.priority, protocol: n.protocol}
 	return slices.Contains(addresses, n.prefix) && slices.Contains(rules, rule)
 }
 

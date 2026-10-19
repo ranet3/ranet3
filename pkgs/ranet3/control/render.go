@@ -157,6 +157,9 @@ func egressLine(e EgressStatus) string {
 		// to learn that.
 		line += ", withholding " + strings.Join(withheld, " ") + " until its rule is installed and the kernel forwards it"
 	}
+	if e.Device != "" {
+		line += ", egress device " + e.Device + egressDeviceText(e.Ready, e.Unready)
+	}
 	if len(e.Conflicts) > 0 {
 		line += fmt.Sprintf(", sharing the hook with %s", strings.Join(e.Conflicts, "; "))
 	}
@@ -172,6 +175,26 @@ func egressLine(e EgressStatus) string {
 		line += ", " + e.Err
 	}
 	return line
+}
+
+func egressDeviceText(ready []string, unready string) string {
+	var notReady []string
+	for _, family := range []string{"ipv4", "ipv6"} {
+		if !slices.Contains(ready, family) {
+			notReady = append(notReady, family)
+		}
+	}
+	var parts []string
+	if len(ready) > 0 {
+		parts = append(parts, " ready for "+strings.Join(ready, " "))
+	}
+	switch {
+	case len(notReady) > 0 && unready != "":
+		parts = append(parts, " not ready for "+strings.Join(notReady, " ")+", "+unready)
+	case len(notReady) > 0:
+		parts = append(parts, " not ready for "+strings.Join(notReady, " ")+" until its rule is installed and the kernel forwards it")
+	}
+	return strings.Join(parts, ",")
 }
 
 // disabledLine names the stopped subsystems and says the state goes away by

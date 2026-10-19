@@ -27,6 +27,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/srv6"
 	"ranet3.com/pkgs/ranet3/transport"
+	"ranet3.com/pkgs/wireguard/tun"
 )
 
 type Client struct {
@@ -99,6 +100,17 @@ type Client struct {
 	// node.
 	egressStatus   atomic.Pointer[func() control.EgressStatus]
 	egressAnnounce atomic.Pointer[func() []netip.Prefix]
+	// egressDevice is set once by New and empty on a node with no egress device
+	egressDevice string
+	// egressWithdrawn makes Close report the device's removal once
+	egressWithdrawn atomic.Bool
+	// egressServes is the translator's last word on whether the egress SIDs are served
+	egressServes atomic.Bool
+	// republishMu runs one republish at a time, each reading the stored
+	// configuration and egressServes once it holds it, so the last to finish
+	// reads the last of both
+	// it is taken after reloadMu and before the speaker's own
+	republishMu sync.Mutex
 
 	// running is the control socket's write path state: whether each named
 	// subsystem is acting. It is the record rather than the mechanism, since
@@ -199,8 +211,16 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	if err != nil {
 		return nil, err
 	}
+	// before the mesh tun, so a platform with no egress device refuses with nothing made
+	egressName, egressDevice, err := newEgressDevice(cfg, mtu)
+	if err != nil {
+		return nil, err
+	}
 	mesh, err := netstack.NewNamed(mtu, cfg.Link.TUN, bus.Emit)
 	if err != nil {
+		if egressDevice != nil {
+			_ = egressDevice.Close()
+		}
 		return nil, err
 	}
 	mesh.SetSegments(segments)
@@ -210,7 +230,38 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 			mesh.Close()
 		}
 	}()
-	return newClient(cfg, privateKey, x, mesh, nil, bus)
+	if egressDevice != nil {
+		// the mesh owns the device from here and closes it with itself, which removes the link
+		mesh.SetEgress(egressDevice)
+		slog.Info("egress device created", "name", egressName, "mtu", mtu)
+		bus.Emit("egress.device", "", slog.String("name", egressName), slog.String("action", "created"))
+	}
+	c, err := newClient(cfg, privateKey, x, mesh, nil, bus)
+	if err != nil {
+		return nil, err
+	}
+	c.egressDevice = egressName
+	return c, nil
+}
+
+func newEgressDevice(cfg *config.Config, mtu int) (string, tun.Device, error) {
+	segments := cfg.Segments().Egress()
+	if len(segments) == 0 {
+		return "", nil, nil
+	}
+	name, err := netstack.EgressName(cfg.Link.TUN)
+	if err != nil {
+		return "", nil, fmt.Errorf("config: %w", err)
+	}
+	device, err := netstack.NewEgressDevice(name, mtu)
+	return name, device, egressDeviceRefusal(segments[0], err)
+}
+
+func egressDeviceRefusal(segment srv6.Segment, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("cap.segment local %s delivers to egress: %w", segment.SID, err)
 }
 
 // steeredMTU is the device MTU for sessions carrying packets of up to largest bytes
@@ -378,6 +429,31 @@ func (c *Client) Close() {
 		_ = c.network.Close()
 	}
 	c.Mesh.Close()
+	if c.egressDevice != "" && c.egressWithdrawn.CompareAndSwap(false, true) {
+		slog.Info("egress device withdrawn", "name", c.egressDevice)
+		c.events.Emit("egress.device", "", slog.String("name", c.egressDevice), slog.String("action", "withdrawn"))
+	}
+}
+
+func (c *Client) EgressDevice() string { return c.egressDevice }
+
+// EgressDeviceReader is nil on a node with no egress device
+func (c *Client) EgressDeviceReader() func() (v4, v6 error) {
+	if c.egressDevice == "" {
+		return nil
+	}
+	return egressDeviceReader(c.egressDevice)
+}
+
+// SetEgressReady takes the translator's readiness of the egress device per
+// family and its word on whether the egress SIDs are served. The mesh learns
+// it before the SID's /128 is originated or retracted: a packet the /128
+// attracts finds the mesh writing, and a packet arriving after the
+// translation went is dropped before the retraction reaches anyone.
+func (c *Client) SetEgressReady(v4, v6, serves bool) {
+	c.Mesh.SetEgressReady(v4, v6)
+	c.egressServes.Store(serves)
+	c.Republish()
 }
 
 // CaptureRoutes holds the routing the reconciler needs while the mesh carries
