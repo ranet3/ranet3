@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-18
+updated: 2026-10-19
 order: 20
 ---
 
@@ -242,6 +242,10 @@ nix build .#checks.x86_64-linux.integration-responder-fqdn -L
 nix build .#checks.x86_64-linux.integration-kernel -L
 nix build .#checks.x86_64-linux.integration-segments -L
 nix build .#checks.x86_64-linux.integration-egress -L
+nix build .#checks.x86_64-linux.integration-suites-meet -L
+nix build .#checks.x86_64-linux.integration-suites-meet-responder -L
+nix build .#checks.x86_64-linux.integration-suites-apart -L
+nix build .#checks.x86_64-linux.integration-suites-apart-responder -L
 ```
 
 `integration-responder` inverts the exchange: strongSwan dials and ranet3
@@ -257,6 +261,16 @@ exercises the route reconciler against a real table. In every one of these
 checks the client runs ranet3 through the NixOS module, which writes its
 settings as the TOML a deployed node runs, and the check reads back the unit's
 runtime directory and group.
+
+`integration-suites-meet` and `integration-suites-apart` set ranet3's
+`cap.crypto` lists against strongSwan's proposals, with ranet3 dialing, and
+their `-responder` variants with strongSwan dialing. In `suites-meet` the 2 ends
+share AES-GCM with a 128-bit key, HMAC-SHA2-256 and P-256 alone. Each check
+asserts that `ranet3 sessions --json` and `swanctl --list-sas` both report that
+suite, rekeys each SA from strongSwan's side and from ranet3's, and asserts the
+same suite after. In `suites-apart` the 2 ends share no IKE cipher, and the
+answering end refuses the handshake with `NO_PROPOSAL_CHOSEN` whichever end
+dials.
 
 `integration-egress` makes the client an exit node and boots a third machine
 behind it, holding prefixes the gateway can reach through the mesh and no other
@@ -306,6 +320,15 @@ restart comes up on the mesh.
 scheduled and peer-initiated rekeys, BIRD withdrawal and recovery, and a clean
 stop and restart with an idle tun read. `integration-responder` drives both
 rekeys from the peer.
+
+The checks give the Child SA a lifetime of 20 seconds and the IKE SA one of 30
+seconds, with a margin of 18 seconds and no jitter, so each SA rekeys soon after
+it is made, and the margin outlasts a request and 3 resends. The script of
+`integration-initiator` and `integration-kernel` also has the gateway drop the
+client's IKE for 5 seconds while iperf3 runs, which outlasts a rekey's first
+send, and asserts that a Child SA rekey completed and that no Child SA reached
+its lifetime. The scripts of the initiator, responder and `suites-meet` checks
+fail whenever ranet3 logs that it stopped ESP on a Child SA past its lifetime.
 
 The VM console, systemd, strongSwan, BIRD, ranet3, and iperf3 output is streamed
 by the Nix test driver. The test also prints strongSwan SA state and BIRD
