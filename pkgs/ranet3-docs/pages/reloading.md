@@ -219,7 +219,7 @@ as [what a reload refuses](#what-a-reload-refuses) describes. `ranet3 sessions`
 shows the transforms each session runs. A reload can be seen taking hold there.
 
 Each live session then checks its SAs against the new lists. An SA whose cipher
-or group they leave out is rekeyed under them, and the session records an
+or kex entry they leave out is rekeyed under them, and the session records an
 `ike.suite.unlisted` with `action=rekey`. The rekey starts after a delay drawn
 up to `cap.crypto.rekey.jitter`, so 2 ends that reload the same lists at once
 rarely rekey the SA together and refuse each other's rekey, as
@@ -233,7 +233,8 @@ runs under the lists it started with, and the forced rekeys wait for it. The
 removed transform can stay in use for up to 2 delays, a rekey already under way,
 the IKE SA's rekey with its Delete, and the Child SA's rekey. A Child SA that an
 earlier reload already left out keeps the delay it drew then, and can rekey
-before an IKE SA that a later reload left out.
+before an IKE SA that a later reload left out. A reload that only adds
+transforms or kex entries, a joined entry among them, starts no rekey.
 
 A forced rekey the peer refuses is retried on the backoff of
 `cap.crypto.rekey.retry` for as long as the lists leave the SA out. Once a later
