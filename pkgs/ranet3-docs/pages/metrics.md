@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-10-17
+updated: 2026-10-19
 order: 90
 ---
 
@@ -69,6 +69,7 @@ The `peer` label is the path of the peer's session, such as
 | `ranet3_transport_pair_sockets`          | gauge   | none             | Sockets open or opening that are connected to 1 busy peer each                                          | always                                                          |
 | `ranet3_transport_pair_fallbacks_total`  | counter | none             | Sockets connected to 1 peer that a send or a read failed on, whose pairs went back to the shared socket | always                                                          |
 | `ranet3_tun_reads_truncated_total`       | counter | none             | Reads off the tun that lost the tail of a GSO frame                                                     | always                                                          |
+| `ranet3_tun_frames_refused_total`        | counter | none             | Frames read off the tun that could not be read as packets                                               | always                                                          |
 | `ranet3_packet_too_big_sent_total`       | counter | none             | Packet Too Big and fragmentation needed answers this node sent                                          | always                                                          |
 | `ranet3_mss_clamped_total`               | counter | none             | TCP SYNs whose MSS this node lowered                                                                    | always                                                          |
 | `ranet3_pmtu_probes_total`               | counter | `result`         | Path MTU probes that left, `acked` or `lost`                                                            | always                                                          |
@@ -106,6 +107,16 @@ refuses the setting leaves a warning in the log at startup, and a sender with a
 small MSS then cuts reads short. Each such read loses the rest of its frame,
 which TCP sends again, and the reader goes on. A warning carries their count
 since the previous warning, at most once every 30 seconds.
+
+`ranet3_tun_frames_refused_total` counts frames the tun handed over that could
+not be read as packets, and each such frame is lost alone while the reader goes
+on. On Linux that is a frame whose virtio-net header does not describe its
+packet, which a sender that writes the header itself, as through an `AF_PACKET`
+socket, can produce, or one the kernel could not copy out. A warning and a
+`netstack.tun.refused` event carry their count since the previous warning, at
+most once every 30 seconds. Any other error reading the tun means the device is
+gone, and the node then stops as
+[the service](service.md#restarts-and-the-network) describes.
 
 ## Packets a peer did not send
 

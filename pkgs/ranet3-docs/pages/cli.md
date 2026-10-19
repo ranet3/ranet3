@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-10-16
+updated: 2026-10-19
 order: 75
 ---
 
@@ -160,12 +160,12 @@ it. [Debugging](development/debug.md) describes each command and the events.
 
 ## Exit status
 
-| Command        | Status                                                                                                                                                                                                                                                                                                                                                 |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| every command  | 0 on success. 1 on an error, which goes to standard error.                                                                                                                                                                                                                                                                                             |
-| `daemon`       | 0 after a clean shutdown. 1 when it refuses to start, when a second signal cuts the shutdown short, when the pprof listener, the metrics listener, the control socket or the mesh failed while it ran, or when the route reconciler or the egress translator could not withdraw what it installed. A failed pass of either does not change the status. |
-| `debug socket` | 1 when the answer's status is not 2xx.                                                                                                                                                                                                                                                                                                                 |
-| `debug wait`   | 0 when the event came. 1 when none came within `--timeout`. 2 when it could not watch for the event or lost it, or refused an argument or flag.                                                                                                                                                                                                        |
+| Command        | Status                                                                                                                                                                                                                                                                                                                                                                                  |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| every command  | 0 on success. 1 on an error, which goes to standard error.                                                                                                                                                                                                                                                                                                                              |
+| `daemon`       | 0 after a clean shutdown. 1 when it refuses to start, when a second signal cuts the shutdown short, when the pprof listener, the metrics listener, the control socket or the mesh failed while it ran, when its tun went away under it, or when the route reconciler or the egress translator could not withdraw what it installed. A failed pass of either does not change the status. |
+| `debug socket` | 1 when the answer's status is not 2xx.                                                                                                                                                                                                                                                                                                                                                  |
+| `debug wait`   | 0 when the event came. 1 when none came within `--timeout`. 2 when it could not watch for the event or lost it, or refused an argument or flag.                                                                                                                                                                                                                                         |
 
 The daemon logs why it refuses to start at the error level, which every
 `--log-level` keeps. A flag value it refuses goes to standard error as plain

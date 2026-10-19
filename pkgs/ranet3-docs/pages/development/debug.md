@@ -255,6 +255,8 @@ connections to the reads.
 | `pmtu.steering`                       | a session fell under what a steered 1280-byte packet needs, or rose back    |
 | `netstack.codel.dropping`             | a peer's sender began dropping for a queue delay above its target           |
 | `netstack.codel.drained`              | that peer's queue emptied, or its delay fell back below the target          |
+| `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets               |
+| `netstack.tun.failed`                 | the tun went away under the running node, which then stops                  |
 
 `egress.pass` and `transport.endpoint.unsegmented` are recorded on Linux alone,
 and `transport.endpoint.unpinned` on Linux and macOS alone, the platforms that
@@ -317,6 +319,8 @@ Each kind carries these attributes:
 | `pmtu.floor`                                  | `endpoint`, `under`                                                                                                                         |
 | `pmtu.steering`                               | `budget`, `need`, `under`                                                                                                                   |
 | `netstack.codel.dropping`, `.drained`         | `sojourn`, `target`                                                                                                                         |
+| `netstack.tun.refused`                        | `interface`, `frames`, `err`                                                                                                                |
+| `netstack.tun.failed`                         | `interface`, `err`                                                                                                                          |
 
 `err` appears on `daemon.reload`, `control.verb`, `kernel.pass` and
 `egress.pass` only when the step failed. The `trigger` of a `kernel.pass` is
@@ -490,6 +494,16 @@ state, how long that batch had waited since it was reserved, and the `target`. A
 sender drops 1 packet at a time on its own schedule and records no event per
 packet, so `ranet3_peer_send_delay_dropped_total` is where the drops are
 counted.
+
+A `netstack.tun.refused` is recorded at most once every 30 seconds, as is its
+warning in the log, and its `frames` is how many frames were refused since the
+one before. `err` is why the last of them was refused.
+`ranet3_tun_frames_refused_total` counts every one, as
+[metrics](../metrics.md#tun-reads) describes. Only a tun on Linux refuses a
+frame, so the event is recorded there alone. A `netstack.tun.failed` is recorded
+once, before the node starts the shutdown it ends with, and `err` is the error
+the read returned. On Linux, a tun whose link was deleted reads
+`file already closed`.
 
 ## Adding a view
 
