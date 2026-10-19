@@ -165,6 +165,40 @@ func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 	golden(t, "status-egress.txt", []byte(out.String()))
 }
 
+// the border row follows the egress row, naming where the chain is, what it
+// accepts and what each drop counted, or that it is not installed and why, and
+// the egress line names the border when it holds the device back
+func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
+	status := downStatus()
+	status.Down = nil
+	status.Border = &BorderStatus{
+		Where:  "nftables table inet ranet3 chain border",
+		Inside: []string{"ranet3", "ranet3e", "lo", "gravity"},
+		Overlay: []netip.Prefix{
+			netip.MustParsePrefix("23.161.104.0/24"), netip.MustParsePrefix("192.104.136.0/24"), netip.MustParsePrefix("204.115.20.0/23"),
+			netip.MustParsePrefix("2602:f590::/36"), netip.MustParsePrefix("2a0c:b641:69c::/48"),
+		},
+		SIDs:      []netip.Addr{netip.MustParseAddr("2a0c:b641:69c:5d26::3")},
+		Ready:     true,
+		PassAt:    time.Date(2026, 10, 19, 9, 14, 2, 0, time.UTC),
+		Installed: 11,
+		Dropped:   BorderDrops{OverlaySourceIPv4: 3, OverlaySourceIPv6: 1, RoutingHeader: 2, SIDDestination: 5},
+	}
+	var out strings.Builder
+	RenderStatus(&out, status)
+	goldenJSON(t, "status-border.json", status.Border)
+	out.WriteString("\n")
+	where := "nftables table inet ranet3 chain border"
+	for _, border := range []BorderStatus{
+		{Where: where, Unready: "another writer changed its table"},
+		{Where: where, Unready: "the readback differs", Err: "egress: list the rules of nftables table inet ranet3 chain border: operation not permitted"},
+	} {
+		out.WriteString(borderLine(border) + "\n")
+	}
+	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3, ip6 ranet3", Device: "ranet3e", Unready: "until the border filter is read back"}) + "\n")
+	golden(t, "status-border.txt", []byte(out.String()))
+}
+
 // Go's own String gives "1h3m0.5762s" for an uptime, where the digits make two
 // rows harder to compare and carry nothing.
 func TestShortDurationRoundsToWhatIsReadable(t *testing.T) {

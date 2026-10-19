@@ -74,6 +74,13 @@ let
   clientEgressSID = "fd00:88::6:3";
   clientEgressDevice = "${clientDevice}e";
   gatewayOutside = "fd00:77::1";
+  # Mesh sources behind forges from the client's link, inside the border's
+  # overlay and owned by nobody on the mesh.
+  borderForged4 = "10.99.0.77";
+  borderForged6 = "fd00:99::77";
+  # A segment behind's routing header names, in the prefix it routes through
+  # the exit.
+  borderSegment = "fd00:99::2";
   # The network behind the exit node, on the same link as the underlay but in
   # prefixes neither the gateway nor the test harness assigns, so the gateway
   # reaches it through the mesh or not at all. behind answers there and has no
@@ -980,8 +987,58 @@ testers.runNixOSTest {
             assert after["egressed"] == before["egressed"], f"a source outside the list was egressed: {after}"
 
             metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics")
-            for want in ['ranet3_egress_device_ready{family="ipv4"} 1', 'ranet3_egress_device_ready{family="ipv6"} 1']:
+            for want in ['ranet3_egress_device_ready{family="ipv4"} 1', 'ranet3_egress_device_ready{family="ipv6"} 1', "ranet3_border_ready 1"]:
                 assert want in metrics, f"the scrape does not carry {want}:\n{metrics}"
+
+            # behind is on the client's link and outside the mesh, so a mesh source, a type 4 routing
+            # header and the client's own SID arriving from it are dropped at the client's border:
+            # each is counted, none reaches the gateway, and nothing is egressed or refused
+            behind.succeed(
+                "ip -6 addr add ${borderForged6}/128 dev eth1 nodad",
+                "ip addr add ${borderForged4}/32 dev eth1",
+                "ip -6 route add fd00:99::/64 via ${exitV6}",
+                "ip route add 10.99.0.0/24 via ${exitV4}",
+                "ip -6 route add ${clientEgressSID}/128 via ${exitV6}",
+                # the outer header leaves from an address outside the overlay, so the header alone drops it
+                "ip sr tunsrc set ${behindV6}",
+            )
+            before = counters()
+            gateway.succeed("rm -f /tmp/border.pcap /tmp/border.log")
+            gateway.execute(
+                "tcpdump -Uni swan0 -Q in -w /tmp/border.pcap"
+                " 'src ${borderForged4} or src ${borderForged6} or src ${behindV6} or src ${behindV4}' >/tmp/border.log 2>&1 &")
+            gateway.wait_until_succeeds("grep -q 'listening on' /tmp/border.log", timeout=timeout)
+            behind.fail("ping -c 3 -i 0.3 -W 1 -I ${borderForged6} ${gatewayTunnel}")
+            behind.fail("ping -c 3 -i 0.3 -W 1 -I ${borderForged4} ${gatewayTunnelV4}")
+            behind.fail("ping -c 3 -i 0.3 -W 1 -I ${behindV6} ${clientEgressSID}")
+            # the segment lies outside the encap route, which would otherwise take its own outer header again
+            behind.succeed("ip -6 route add ${gatewayTunnel}/128 encap seg6 mode encap segs ${borderSegment} via ${exitV6} dev eth1")
+            behind.fail("ping -c 3 -i 0.3 -W 1 -I ${behindV6} ${gatewayTunnel}")
+            # the counters reach the scrape at the border's next pass, one sweep at most
+            for reason, family in [("overlay_source", "ipv6"), ("overlay_source", "ipv4"), ("sid_destination", "ipv6"), ("routing_header", "ipv6")]:
+                series = 'ranet3_border_dropped_packets_total{reason="' + reason + '",family="' + family + '"}'
+                client.wait_until_succeeds(
+                    "curl -sf http://127.0.0.1:9669/metrics | awk -v want='" + series + "' '$1 == want && $2 >= 3 { found = 1 } END { exit !found }'",
+                    timeout=dt.timedelta(seconds=90))
+            gateway.succeed("pkill -x tcpdump")
+            gateway.wait_until_fails("pgrep -x tcpdump", timeout=timeout)
+            capture = gateway.succeed("tcpdump -nr /tmp/border.pcap 2>/dev/null").strip()
+            assert capture == "", f"a packet the border drops reached the gateway:\n{capture}"
+            after = counters()
+            assert after["egressed"] == before["egressed"] and after["refused"] == before["refused"], f"a dropped packet reached the egress segment: {before} then {after}"
+            print(client.succeed("ranet3 debug rules"))
+            rules = json.loads(client.succeed("ranet3 debug rules --json"))
+            assert rules["border"]["ready"], f"the border reads not ready: {rules['border']}"
+            assert status()["border"]["ready"], "the status reports the border not ready"
+            behind.succeed(
+                "ip -6 route del ${gatewayTunnel}/128",
+                "ip -6 route del ${clientEgressSID}/128",
+                "ip route del 10.99.0.0/24",
+                "ip -6 route del fd00:99::/64",
+                "ip addr del ${borderForged4}/32 dev eth1",
+                "ip -6 addr del ${borderForged6}/128 dev eth1",
+                "ip sr tunsrc set ::",
+            )
 
             # a host forwarding one family serves it, so IPv6 forwarding off leaves the SID announced
             client.succeed("sysctl -w net.ipv6.conf.all.forwarding=0")

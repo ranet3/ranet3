@@ -1,0 +1,182 @@
+{
+  "policy": [
+    {
+      "family": "ipv4",
+      "priority": 0,
+      "action": "lookup",
+      "table": 255,
+      "protocol": 2,
+      "owned": false,
+      "wanted": false
+    },
+    {
+      "family": "ipv4",
+      "priority": 40,
+      "fwmark": 29292,
+      "fwmask": 65535,
+      "action": "lookup",
+      "table": 254,
+      "protocol": 155,
+      "owned": true,
+      "wanted": true
+    },
+    {
+      "family": "ipv4",
+      "priority": 100,
+      "to": "23.161.104.0/24",
+      "action": "lookup",
+      "table": 200,
+      "protocol": 4,
+      "owned": false,
+      "wanted": false
+    },
+    {
+      "family": "ipv4",
+      "priority": 120,
+      "iif": "ranet3e",
+      "action": "lookup",
+      "table": 254,
+      "protocol": 155,
+      "owned": true,
+      "wanted": true
+    },
+    {
+      "family": "ipv4",
+      "priority": 150,
+      "from": "23.161.104.0/24",
+      "action": "lookup",
+      "table": 254,
+      "protocol": 4,
+      "owned": false,
+      "wanted": false
+    },
+    {
+      "family": "ipv4",
+      "priority": 32766,
+      "action": "lookup",
+      "table": 254,
+      "protocol": 2,
+      "owned": false,
+      "wanted": false
+    },
+    {
+      "family": "ipv4",
+      "priority": 32767,
+      "action": "lookup",
+      "table": 253,
+      "protocol": 2,
+      "owned": false,
+      "wanted": false
+    },
+    {
+      "family": "ipv6",
+      "priority": 0,
+      "action": "lookup",
+      "table": 255,
+      "protocol": 2,
+      "owned": false,
+      "wanted": false
+    },
+    {
+      "family": "ipv6",
+      "priority": 200,
+      "iif": "eth0",
+      "invert": true,
+      "action": "unreachable",
+      "protocol": 4,
+      "owned": false,
+      "wanted": false
+    },
+    {
+      "family": "ipv6",
+      "priority": 32766,
+      "action": "lookup",
+      "table": 254,
+      "protocol": 2,
+      "owned": false,
+      "wanted": false
+    }
+  ],
+  "missing": [
+    {
+      "family": "ipv6",
+      "priority": 120,
+      "iif": "ranet3e",
+      "action": "lookup",
+      "table": 254,
+      "protocol": 155,
+      "owned": true,
+      "wanted": true
+    }
+  ],
+  "border": {
+    "where": "nftables table inet ranet3 chain border",
+    "hook": "prerouting",
+    "priority": -300,
+    "read_at": "2026-10-19T09:14:02Z",
+    "read_ago": "3s",
+    "ready": true,
+    "rules": [
+      {
+        "spec": "accept via ranet3",
+        "verdict": "accept",
+        "reason": "inside",
+        "held": true,
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "accept via ranet3e",
+        "verdict": "accept",
+        "reason": "inside",
+        "held": true,
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "accept via lo",
+        "verdict": "accept",
+        "reason": "inside",
+        "held": true,
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "drop ipv4 source 23.161.104.0/24",
+        "verdict": "drop",
+        "reason": "overlay_source",
+        "family": "ipv4",
+        "held": true,
+        "packets": 12,
+        "bytes": 720
+      },
+      {
+        "spec": "drop ipv6 source 2602:f590::/36",
+        "verdict": "drop",
+        "reason": "overlay_source",
+        "family": "ipv6",
+        "held": true,
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "drop ipv6 routing header",
+        "verdict": "drop",
+        "reason": "routing_header",
+        "family": "ipv6",
+        "held": true,
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "drop ipv6 destination 2a0c:b641:69c:5d26::3",
+        "verdict": "drop",
+        "reason": "sid_destination",
+        "family": "ipv6",
+        "held": false,
+        "packets": 0,
+        "bytes": 0
+      }
+    ]
+  }
+}

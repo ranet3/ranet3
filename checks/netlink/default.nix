@@ -86,6 +86,7 @@ testers.runNixOSTest {
     )
     print(out)
     assert "SKIP" not in out, f"the tests skipped themselves under root:\n{out}"
+    assert "--- PASS: TestNetlinkDumpRulesReadsEveryOwner" in out, f"the rule dump's round trip did not run:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 4, f"only {ran} netlink round trips ran:\n{out}"
 
@@ -121,6 +122,7 @@ testers.runNixOSTest {
     )
     print(out)
     assert "SKIP" not in out, f"the client's tun round trips skipped themselves under root:\n{out}"
+    assert "--- PASS: TestTUNBorderDropsAForgedSourceAtTheUplink" in out, f"the border's lab did not run:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 10, f"only {ran} of the client's tun round trips ran:\n{out}"
 

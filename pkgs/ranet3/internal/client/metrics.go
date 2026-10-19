@@ -95,6 +95,32 @@ func (c *Client) Metrics(w io.Writer) {
 	c.renderSegmentCounters(w)
 	c.renderKernel(w)
 	c.renderEgress(w)
+	c.renderBorder(w)
+}
+
+// renderBorder writes the border filter's readiness and the packets each drop
+// counted as its last pass read them, and nothing on a node with no cap.border
+func (c *Client) renderBorder(w io.Writer) {
+	border := c.borderStatus()
+	if border == nil {
+		return
+	}
+	fmt.Fprint(w, "# HELP ranet3_border_ready Whether the border filter's chain reads back as the configuration asks, which every family of the egress device waits for.\n")
+	fmt.Fprint(w, "# TYPE ranet3_border_ready gauge\n")
+	fmt.Fprintf(w, "ranet3_border_ready %d\n", boolValue(border.Ready))
+	fmt.Fprint(w, "# HELP ranet3_border_dropped_packets_total Packets arriving from outside the mesh that the border filter dropped, by what they carried, as of its last pass. A rewrite of the chain starts them from zero.\n")
+	fmt.Fprint(w, "# TYPE ranet3_border_dropped_packets_total counter\n")
+	for _, row := range []struct {
+		reason, family string
+		packets        uint64
+	}{
+		{"overlay_source", "ipv4", border.Dropped.OverlaySourceIPv4},
+		{"overlay_source", "ipv6", border.Dropped.OverlaySourceIPv6},
+		{"routing_header", "ipv6", border.Dropped.RoutingHeader},
+		{"sid_destination", "ipv6", border.Dropped.SIDDestination},
+	} {
+		fmt.Fprintf(w, "ranet3_border_dropped_packets_total{reason=\"%s\",family=\"%s\"} %d\n", row.reason, row.family, row.packets)
+	}
 }
 
 // renderReassembly writes what became of the Babel packets each neighbor's session sent in fragments

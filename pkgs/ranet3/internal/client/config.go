@@ -280,3 +280,30 @@ func warnUnforwardableTransit(cfg *config.Config) {
 	log.Printf("config: this node redistributes the routes it learns, so it is offering to carry the mesh, but %s forwarding is off: peers that select it will have their traffic dropped with nothing to tell them. Write enable = false under cap.transit, or turn forwarding on",
 		strings.Join(off, " and "))
 }
+
+// warnUnbordered says so when the host forwards and the file writes no
+// cap.border. A host on any of this node's links can then hand it a packet
+// with a mesh source, which the kernel forwards into the tun and every peer
+// takes as the mesh's own.
+//
+// A warning rather than a refusal, as with transit: forwarding moves under a
+// running node, and darwin, which forwards with no filter to offer, would
+// otherwise not start at all.
+func warnUnbordered(cfg *config.Config, forwards func() (v4, v6 bool)) {
+	if cfg.Cap.Border != nil {
+		return
+	}
+	v4, v6 := forwards()
+	var on []string
+	if v4 {
+		on = append(on, "IPv4")
+	}
+	if v6 {
+		on = append(on, "IPv6")
+	}
+	if len(on) == 0 {
+		return
+	}
+	log.Printf("config: this node forwards %s and holds no cap.border, so a host on any of its links can forge a mesh source through it into the mesh: add cap.border with the prefixes the mesh numbers its nodes from",
+		strings.Join(on, " and "))
+}
