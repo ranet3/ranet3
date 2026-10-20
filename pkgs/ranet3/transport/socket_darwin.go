@@ -33,13 +33,11 @@ import (
 // to one interface. Nothing else on darwin keeps an underlay out of the mesh's
 // own routing: there are no marks, no policy rules and one table shared by
 // every program, so a real default route out of the mesh tun would otherwise
-// carry this node's own ESP into the tunnel that ESP is carrying.
+// carry this node's own ESP into the tunnel that ESP is carrying. The second
+// is the address and interface each datagram reached.
 //
 // Scoping the socket is necessary and, on this kernel, not sufficient. See
 // reportBoundReach for what else the host needs and for the measurement.
-//
-// The second is the address and interface each datagram reached, which an
-// answer to an IKE request names as its source.
 //
 // The portable bind is wireguard's StdNetBind, which keeps its descriptors to
 // itself, so there is no seam to set a socket option through. The socket work
