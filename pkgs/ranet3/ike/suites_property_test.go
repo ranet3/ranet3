@@ -24,31 +24,11 @@ var (
 	everyKex    = []string{"x25519", "p384", "p256"}
 )
 
-// drawnList draws a list left out or a run of distinct names from every in the order drawn
-func drawnList(tc hegel.TestCase, every []string) []string {
-	if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
-		return nil
-	}
-	remaining := slices.Clone(every)
-	out := make([]string, 0, len(every))
-	for range hegel.Draw(tc, pbt.Spanning(1, len(every))) {
-		at := hegel.Draw(tc, hegel.Integers(0, len(remaining)-1))
-		out = append(out, remaining[at])
-		remaining = slices.Delete(remaining, at, at+1)
-	}
-	return out
-}
-
 // firstShared is the first name of the responder's list the initiator's holds, a list left out holding every name
 func firstShared(responder, initiator, every []string) string {
-	if responder == nil {
-		responder = every
-	}
-	if initiator == nil {
-		initiator = every
-	}
-	for _, name := range responder {
-		if slices.Contains(initiator, name) {
+	held := written(initiator, every)
+	for _, name := range written(responder, every) {
+		if slices.Contains(held, name) {
 			return name
 		}
 	}
@@ -69,8 +49,8 @@ func TestHandshakeRunsTheResponderFirstChoiceOrIsRefused(t *testing.T) {
 		var drawn [2]Crypto
 		for i := range drawn {
 			drawn[i] = Crypto{
-				IKE: IKESuites{Cipher: drawnList(ht, everyCipher), PRF: drawnList(ht, everyPRF), Kex: drawnList(ht, everyKex)},
-				ESP: ESPSuites{Cipher: drawnList(ht, everyCipher)},
+				IKE: IKESuites{Cipher: pbt.List(ht, everyCipher), PRF: pbt.List(ht, everyPRF), Kex: pbt.List(ht, everyKex)},
+				ESP: ESPSuites{Cipher: pbt.List(ht, everyCipher)},
 			}
 		}
 		dialing, answering := drawn[0], drawn[1]

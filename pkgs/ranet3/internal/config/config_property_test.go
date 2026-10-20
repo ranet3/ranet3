@@ -494,8 +494,8 @@ func cryptos() hegel.Generator[ike.Crypto] {
 					Max:   hegel.Draw(tc, hegel.Optional(between(time.Minute, time.Hour))),
 				},
 			},
-			IKE: ike.IKESuites{Cipher: suiteList(tc, cipherNames), PRF: suiteList(tc, prfNames), Kex: suiteList(tc, kexEntries)},
-			ESP: ike.ESPSuites{Cipher: suiteList(tc, cipherNames)},
+			IKE: ike.IKESuites{Cipher: pbt.List(tc, cipherNames), PRF: pbt.List(tc, prfNames), Kex: pbt.List(tc, kexEntries)},
+			ESP: ike.ESPSuites{Cipher: pbt.List(tc, cipherNames)},
 		}
 	})
 }
@@ -514,26 +514,6 @@ var kexEntries = slices.Concat(kexNames, []string{"x25519+mlkem768", "p384+mlkem
 
 // strangers are names no cap.crypto list takes
 var strangers = []string{"", "mlkem512", "aes192gcm", "AES256GCM", "sha512", "x448", "p521", " x25519", "MLKEM768"}
-
-// suiteList draws a list left out or a run of distinct names from every in the order drawn
-func suiteList(tc hegel.TestCase, every []string) []string {
-	if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
-		return nil
-	}
-	return someOf(tc, every)
-}
-
-// someOf draws a run of distinct names from every in the order drawn
-func someOf(tc hegel.TestCase, every []string) []string {
-	remaining := slices.Clone(every)
-	out := make([]string, 0, len(every))
-	for range hegel.Draw(tc, pbt.Spanning(1, len(every))) {
-		at := hegel.Draw(tc, hegel.Integers(0, len(remaining)-1))
-		out = append(out, remaining[at])
-		remaining = slices.Delete(remaining, at, at+1)
-	}
-	return out
-}
 
 // cryptoList is one cap.crypto list, under block and key in a file and named field in a refusal
 type cryptoList struct {
@@ -559,7 +539,7 @@ func defects(list cryptoList) []string {
 
 // defective is a run of names list takes with the defect kind drawn into it, with the words its refusal carries
 func defective(tc hegel.TestCase, list cryptoList, kind string) ([]string, string) {
-	names := someOf(tc, list.every)
+	names := pbt.Subset(tc, list.every, 1, len(list.every))
 	insert := func(entry string) []string {
 		at := hegel.Draw(tc, hegel.Integers(0, len(names)))
 		return slices.Insert(names, at, entry)
@@ -675,7 +655,7 @@ func TestCryptoListsLoadAsWrittenOrAreRefusedByName(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		written := make([][]string, len(cryptoLists))
 		for i, list := range cryptoLists {
-			written[i] = suiteList(ht, list.every)
+			written[i] = pbt.List(ht, list.every)
 		}
 		extension := hegel.Draw(ht, hegel.SampledFrom([]string{".toml", ".yaml", ".json"}))
 		for at, list := range cryptoLists {

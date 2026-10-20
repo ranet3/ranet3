@@ -56,8 +56,8 @@ func namedAll(names []string) []Transform {
 // drawnCrypto draws the four lists
 func drawnCrypto(tc hegel.TestCase) Crypto {
 	return Crypto{
-		IKE: IKESuites{Cipher: drawnList(tc, everyCipher), PRF: drawnList(tc, everyPRF), Kex: drawnList(tc, everyKex)},
-		ESP: ESPSuites{Cipher: drawnList(tc, everyCipher)},
+		IKE: IKESuites{Cipher: pbt.List(tc, everyCipher), PRF: pbt.List(tc, everyPRF), Kex: pbt.List(tc, everyKex)},
+		ESP: ESPSuites{Cipher: pbt.List(tc, everyCipher)},
 	}
 }
 
@@ -79,15 +79,6 @@ func transformOf(name string) Transform {
 		}
 	}
 	panic("no transform is named " + name)
-}
-
-// someNames draws a run of one or more distinct names from every in the order drawn
-func someNames(tc hegel.TestCase, every []string) []string {
-	for {
-		if list := drawnList(tc, every); list != nil {
-			return list
-		}
-	}
 }
 
 // ahead is list with name first where list holds it
@@ -140,12 +131,12 @@ func TestPeerRekeyIsAnsweredByTheListsOrRefused(t *testing.T) {
 		childGroup := hegel.Draw(ht, hegel.SampledFrom(slices.Concat([]string{""}, everyKex)))
 		offer := make([]offered, hegel.Draw(ht, pbt.Spanning(1, 3)))
 		for i := range offer {
-			offer[i].ciphers = someNames(ht, everyCipher)
+			offer[i].ciphers = pbt.Subset(ht, everyCipher, 1, len(everyCipher))
 			if ike {
-				offer[i].prfs = someNames(ht, everyPRF)
-				offer[i].groups = someNames(ht, everyKex)
+				offer[i].prfs = pbt.Subset(ht, everyPRF, 1, len(everyPRF))
+				offer[i].groups = pbt.Subset(ht, everyKex, 1, len(everyKex))
 			} else {
-				offer[i].groups = drawnList(ht, everyKex)
+				offer[i].groups = pbt.List(ht, everyKex)
 				offer[i].none = hegel.Draw(ht, hegel.WeightedBooleans(1.0/4))
 			}
 			offer[i].unknown = hegel.Draw(ht, hegel.WeightedBooleans(1.0/8))

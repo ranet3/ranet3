@@ -23,30 +23,13 @@ func drawnEntries(tc hegel.TestCase, classical bool) []kexEntry {
 	for range hegel.Draw(tc, pbt.Spanning(1, 4)) {
 		entry := kexEntry{group: hegel.Draw(tc, hegel.SampledFrom(kexMethods[:3]))}
 		if !classical {
-			remaining := slices.Clone(kexMethods)
-			for at := range hegel.Draw(tc, pbt.Spanning(0, 3)) {
-				i := hegel.Draw(tc, hegel.Integers(0, len(remaining)-1))
-				entry.additions[at] = remaining[i]
-				remaining = slices.Delete(remaining, i, i+1)
-			}
+			copy(entry.additions[:], pbt.Subset(tc, kexMethods, 0, 3))
 		}
 		if !slices.Contains(entries, entry) {
 			entries = append(entries, entry)
 		}
 	}
 	return entries
-}
-
-// drawnSubset draws a run of distinct transforms of every in the order drawn, of least to most of them
-func drawnSubset(tc hegel.TestCase, every []Transform, least, most int) []Transform {
-	remaining := slices.Clone(every)
-	var out []Transform
-	for range hegel.Draw(tc, pbt.Spanning(least, min(most, len(every)))) {
-		i := hegel.Draw(tc, hegel.Integers(0, len(remaining)-1))
-		out = append(out, remaining[i])
-		remaining = slices.Delete(remaining, i, i+1)
-	}
-	return out
 }
 
 // drawnIKEProposal draws a peer's IKE SA proposal numbered number
@@ -59,9 +42,9 @@ func drawnIKEProposal(tc hegel.TestCase, number uint8, entries []kexEntry, aim i
 		groups = append(groups, Transform{Type: TransDH, ID: method})
 	}
 	transforms := slices.Concat(
-		drawnSubset(tc, listed(nil, cipherNames), 1, 3),
-		drawnSubset(tc, listed(nil, prfNames), 1, 2),
-		drawnSubset(tc, groups, 0, 3))
+		pbt.Subset(tc, listed(nil, cipherNames), 1, 3),
+		pbt.Subset(tc, listed(nil, prfNames), 1, 2),
+		pbt.Subset(tc, groups, 0, 3))
 	var offered [addkeTypes][]uint16
 	pool := append([]uint16{0}, kexMethods...)
 	if hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)) {
@@ -217,7 +200,7 @@ func TestIKEOfferIsAnsweredAsTheModelOfEveryEntryAndProposalPairChooses(t *testi
 		// half the time the lists hold every cipher and PRF, so the key exchanges alone decide between proposals
 		ciphers, prfs := listed(nil, cipherNames), listed(nil, prfNames)
 		if hegel.Draw(ht, hegel.Booleans()) {
-			ciphers, prfs = drawnSubset(ht, ciphers, 1, 3), drawnSubset(ht, prfs, 1, 2)
+			ciphers, prfs = pbt.Subset(ht, ciphers, 1, 3), pbt.Subset(ht, prfs, 1, 2)
 		}
 		// half the time the proposals aim at the entries in reverse, where the order of R304 and the order of the proposals part
 		reversed := hegel.Draw(ht, hegel.Booleans())
@@ -281,13 +264,13 @@ func TestIKEOfferIsAnsweredAsTheModelOfEveryEntryAndProposalPairChooses(t *testi
 func TestSplitClassicalOfferIsAnsweredAsOneProposalOfEveryGroup(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		initiator := Suites{
-			ikeCipher: drawnSubset(ht, listed(nil, cipherNames), 0, 3),
-			ikePRF:    drawnSubset(ht, listed(nil, prfNames), 0, 2),
+			ikeCipher: pbt.Subset(ht, listed(nil, cipherNames), 0, 3),
+			ikePRF:    pbt.Subset(ht, listed(nil, prfNames), 0, 2),
 			kex:       drawnEntries(ht, true),
 		}
 		responder := Suites{
-			ikeCipher: drawnSubset(ht, listed(nil, cipherNames), 0, 3),
-			ikePRF:    drawnSubset(ht, listed(nil, prfNames), 0, 2),
+			ikeCipher: pbt.Subset(ht, listed(nil, cipherNames), 0, 3),
+			ikePRF:    pbt.Subset(ht, listed(nil, prfNames), 0, 2),
 			kex:       drawnEntries(ht, true),
 		}
 		keGroup := hegel.Draw(ht, hegel.SampledFrom(kexMethods[:3]))
