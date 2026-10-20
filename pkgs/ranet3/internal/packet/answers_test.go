@@ -28,9 +28,9 @@ func TestErrorsMatchTheirGoldenAnswers(t *testing.T) {
 	var out strings.Builder
 	for _, offending := range [][]byte{validHeader(8), validHeader(1216)} {
 		for _, builder := range errorBuilders {
-			answer := builder.build(offending, source, 1400, always)
+			answer := builder.build(offending, source, 64, 1400, always)
 			if builder.kind == icmpParameterProblem {
-				answer = builder.build(offending, source, ipv4HeaderLen, always)
+				answer = builder.build(offending, source, 64, ipv4HeaderLen, always)
 			}
 			if answer == nil {
 				t.Fatalf("%s refused a %d byte datagram", builder.name, len(offending))
@@ -66,7 +66,7 @@ func TestErrorsMatchTheirGoldenAnswers(t *testing.T) {
 	} {
 		var answered []string
 		for _, builder := range errorBuilders {
-			if builder.build(refused.raw, refused.source, 1400, always) != nil {
+			if builder.build(refused.raw, refused.source, 64, 1400, always) != nil {
 				answered = append(answered, builder.name)
 			}
 		}

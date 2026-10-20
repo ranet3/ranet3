@@ -640,7 +640,7 @@ func TestReloadRefusesARotatedPrivateKey(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey,
-		speaker: speaker, dialers: make(map[string]*dialer)}
+		speaker: speaker, dialers: make(map[string]*dialer), Mesh: mesh}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))
 	defer func() { cancel(); c.peers.Wait() }()
@@ -691,7 +691,7 @@ func reloadFixture(t *testing.T) (*Client, string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
 		ctx: ctx, cancel: cancel, privateKey: privateKey,
-		speaker: speaker, dialers: make(map[string]*dialer),
+		speaker: speaker, dialers: make(map[string]*dialer), Mesh: netstack.NewRoutesOnly(),
 	}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))
@@ -1156,7 +1156,7 @@ func TestReloadAppliesRegistryPeersAndOriginations(t *testing.T) {
 	defer cancel()
 	c := &Client{
 		ctx: ctx, cancel: cancel, privateKey: privateKey,
-		speaker: speaker, dialers: make(map[string]*dialer),
+		speaker: speaker, dialers: make(map[string]*dialer), Mesh: mesh,
 		// A dialer that resolves its peer asks the set whether that path is
 		// already held, and this fixture's organization carries a public key,
 		// so a dialer gets that far.
@@ -1524,7 +1524,7 @@ func TestReloadSkipsPeerRegistryNoLongerNames(t *testing.T) {
 	defer cancel()
 	c := &Client{
 		ctx: ctx, cancel: cancel, privateKey: privateKey,
-		speaker: speaker, dialers: make(map[string]*dialer),
+		speaker: speaker, dialers: make(map[string]*dialer), Mesh: mesh,
 	}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, joined))

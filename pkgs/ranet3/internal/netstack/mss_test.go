@@ -86,7 +86,7 @@ func TestReaderClampsTheMSSOfASYNToItsSession(t *testing.T) {
 		for segments := range 3 {
 			steering := steerBothFrom(t, segments)
 			syn := tcpPacket(family, 0, false, synFlag, []byte{optionMSS, mssLen, 0x05, 0xb4}, 0, 0)
-			b, peer, _ := readOff(t, syn, steering, session)
+			b, peer, _ := readOff(t, syn, steering, session, AnswerSources{})
 			if b.peers[0] != peer {
 				t.Fatalf("an IPv%d SYN under %d segments did not go to its peer", family, segments)
 			}

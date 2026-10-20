@@ -148,6 +148,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	// and every live session checks the SAs it holds against them
 	c.sessions.resuite()
 	c.Republish()
+	c.retakeTTL()
 	c.speaker.SetAssigned(assignedAddresses(cfg))
 	c.syncPeers()
 	c.speaker.SetConfig(cfg.Babel())
@@ -579,14 +580,17 @@ func (c *Client) egressAdvertised() []netip.Prefix {
 	return nil
 }
 
-// Republish rebuilds the announcement set and hands it to the speaker.
+// Republish rebuilds the announcement set and hands it to the speaker, and the router-ids and the answer SID to the mesh,
+// which End's answers to a packet past its session and transit's errors come from, as netstack's answerTooBig and errorSource say.
 // cap.egress calls it whenever the prefixes it may advertise change, which is
 // how an exit whose rule stopped being installed retracts rather than going on
 // attracting traffic it would have to drop.
 func (c *Client) Republish() {
 	c.republishMu.Lock()
 	defer c.republishMu.Unlock()
-	c.speaker.SetOriginated(c.announced(c.config()))
+	cfg := c.config()
+	c.speaker.SetOriginated(c.announced(cfg))
+	c.Mesh.SetAnswerSources(answerSources(cfg))
 }
 
 // forgetDialer drops a dialer that ended by itself, and only if the map still

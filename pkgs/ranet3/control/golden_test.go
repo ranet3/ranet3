@@ -4,36 +4,17 @@
 package control
 
 import (
-	"bytes"
 	"encoding/json"
-	"flag"
-	"os"
 	"path/filepath"
 	"testing"
-)
 
-var update = flag.Bool("update", false, "rewrite the golden files under testdata/debug from what the code writes now")
+	"ranet3.com/pkgs/ranet3/internal/goldentest"
+)
 
 // golden holds got to testdata/debug/name, or writes it there under -update
 func golden(t *testing.T, name string, got []byte) {
 	t.Helper()
-	path := filepath.Join("testdata", "debug", name)
-	if *update {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, got, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("%v, and go test ./control -update writes it", err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Errorf("%s no longer matches, and go test ./control -update rewrites it\n--- golden\n%s\n--- now\n%s", path, want, got)
-	}
+	goldentest.Check(t, "./control", filepath.Join("testdata", "debug", name), got)
 }
 
 // goldenJSON holds a value's wire form, indented as --json prints it

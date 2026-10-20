@@ -18,20 +18,20 @@ import (
 )
 
 // a packet within the largest its peer's session carries leaves for the peer as it came, under its steering header if a policy claims it
-// past that, an IPv6 one, and an IPv4 one with DF, are answered into the tun from their destination
+// past that, an IPv6 one, and an IPv4 one with DF, are answered into the tun from their destination, whatever router-id the mesh holds
 // with packet too big or fragmentation needed carrying the session's MTU less the steering header
-// the first quoting as much of the packet as fits 1280 bytes, the second its header and 8 bytes, each summing as its receiver checks it
+// each quoting as much of the packet as fits 1280 bytes over IPv6 and 576 over IPv4, each summing as its receiver checks it
 // and an IPv4 one without DF leaves for the peer as fragments that each fit the session
 // each behind the steering header the packet would have had, its payload length counting the fragment
-// each family, with and without DF and steering, one byte either side of the session's MTU, is tried before anything is drawn
+// each family, with and without DF, steering and router-ids, one byte either side of the session's MTU, is tried before anything is drawn
 func TestPacketsPastTheirSessionAreAnsweredOrCut(t *testing.T) {
-	check := func(tb testing.TB, family, segments, mtu, excess int, df bool) {
+	check := func(tb testing.TB, family, segments, mtu, excess int, df bool, held map[int]bool) {
 		tb.Helper()
 		steering := steerBothFrom(tb, segments)
 		overhead := steering.Overhead()
 		source, destination := tooBigSource[family], tooBigDestination[family]
 		inner := udpPacket(source, destination, mtu+excess-overhead, df)
-		b, peer, answers := readOff(tb, inner, steering, mtu)
+		b, peer, answers := readOff(tb, inner, steering, mtu, holding(held))
 		share := b.shares[peer]
 		if excess <= 0 {
 			sent := b.packets[0]
@@ -51,7 +51,7 @@ func TestPacketsPastTheirSessionAreAnsweredOrCut(t *testing.T) {
 			if len(answers) != 1 || share.count != 0 || len(b.cut.fragments) != 0 {
 				tb.Fatalf("an IPv%d packet past its session left %d answers, %d packets and %d fragments", family, len(answers), share.count, len(b.cut.fragments))
 			}
-			checkAnswer(tb, answers[0], inner, limit)
+			checkAnswer(tb, answers[0], inner, limit, destination)
 			return
 		}
 		if len(answers) != 0 || share.count != len(b.cut.fragments) || len(b.cut.fragments) < 2 {
@@ -78,8 +78,10 @@ func TestPacketsPastTheirSessionAreAnsweredOrCut(t *testing.T) {
 	for _, family := range []int{4, 6} {
 		for _, segments := range []int{0, 2} {
 			for excess := -1; excess <= 1; excess++ {
-				check(t, family, segments, srv6.MinimumIPv6MTU+srv6.Overhead(2), excess, false)
-				check(t, family, segments, DefaultMTU, excess, true)
+				for _, held := range []map[int]bool{nil, {4: true, 6: true}} {
+					check(t, family, segments, srv6.MinimumIPv6MTU+srv6.Overhead(2), excess, false, held)
+					check(t, family, segments, DefaultMTU, excess, true, held)
+				}
 			}
 		}
 	}
@@ -95,19 +97,22 @@ func TestPacketsPastTheirSessionAreAnsweredOrCut(t *testing.T) {
 		if hegel.Draw(ht, hegel.Booleans()) {
 			excess = hegel.Draw(ht, pbt.Spanning(-512, 4096))
 		}
-		check(ht, family, segments, mtu, excess, df)
+		held := map[int]bool{4: hegel.Draw(ht, hegel.Booleans()), 6: hegel.Draw(ht, hegel.Booleans())}
+		check(ht, family, segments, mtu, excess, df, held)
 	})
 }
 
 // a forwarded segment within the largest the session to its next segment carries goes on as End left it
-// past that, the IPv6 packet it carries, and the IPv4 one with DF, are answered back through the mesh from that packet's destination
+// past that, the IPv6 packet it carries, and the IPv4 one with DF, are answered back through the mesh
+// from the waypoint's router-id of that packet's family where it holds one
+// else over IPv6 from the SID the segment reached, an address of the waypoint, and over IPv4 from that packet's destination
 // with packet too big or fragmentation needed carrying the session's MTU less the headers in front of the packet
 // the answer to the segment's own source would reach the node that steered it, which has nothing to tell
 // and the IPv4 one without DF goes on as fragments that each fit the session, each behind those headers
 // those headers take each shape srv6.Parse walks, with hop-by-hop and destination options in front of the routing header and TLVs after its list
-// each family, with and without DF, one byte either side of the session's MTU, is tried with each shape before anything is drawn
+// each family, with and without DF and router-ids, one byte either side of the session's MTU, is tried with each shape before anything is drawn
 func TestSegmentsPastTheirNextSessionAreAnsweredOrCut(t *testing.T) {
-	check := func(tb testing.TB, family, segments, mtu, excess int, df bool, shape headerShape) {
+	check := func(tb testing.TB, family, segments, mtu, excess int, df bool, shape headerShape, held map[int]bool) {
 		tb.Helper()
 		path := make([]netip.Addr, segments)
 		for i := range path {
@@ -115,6 +120,7 @@ func TestSegmentsPastTheirNextSessionAreAnsweredOrCut(t *testing.T) {
 		}
 		session, next := sessionOf(tb, mtu)
 		m, sender := waypointOf(tb, path[0], session)
+		m.SetAnswerSources(holding(held))
 		overhead := srv6.Overhead(1+segments) + shape.size()
 		inner := udpPacket(tooBigSource[family], tooBigDestination[family], mtu+excess-overhead, df)
 		outer := shape.around(steeredThrough(tb, inner, path...))
@@ -142,7 +148,14 @@ func TestSegmentsPastTheirNextSessionAreAnsweredOrCut(t *testing.T) {
 			if len(sent) != 0 || len(answers) != 1 || counters.Dropped != 1 || counters.Answered != 1 {
 				tb.Fatalf("a segment carrying IPv%d past its %d byte session went on as %d packets with %d answers, counted %+v", family, mtu, len(sent), len(answers), counters)
 			}
-			checkAnswer(tb, answers[0], inner, mtu-overhead)
+			from := tooBigDestination[family]
+			switch {
+			case held[family]:
+				from = routerIDs[family]
+			case family == 6:
+				from = thisWaypoint
+			}
+			checkAnswer(tb, answers[0], inner, mtu-overhead, from)
 			if _, _, want, _ := addrsOf(inner); !bytes.Equal(sender.nextHeaders(), []byte{want}) {
 				tb.Fatalf("the answer went back under next headers %v, want the %d of its family", sender.nextHeaders(), want)
 			}
@@ -159,8 +172,10 @@ func TestSegmentsPastTheirNextSessionAreAnsweredOrCut(t *testing.T) {
 		for _, segments := range []int{1, 3} {
 			for _, shape := range shapes {
 				for excess := -1; excess <= 1; excess++ {
-					check(t, family, segments, srv6.MinimumIPv6MTU+srv6.Overhead(1+segments)+shape.size(), excess, false, shape)
-					check(t, family, segments, DefaultMTU, excess, true, shape)
+					for _, held := range []map[int]bool{nil, {4: true, 6: true}} {
+						check(t, family, segments, srv6.MinimumIPv6MTU+srv6.Overhead(1+segments)+shape.size(), excess, false, shape, held)
+						check(t, family, segments, DefaultMTU, excess, true, shape, held)
+					}
 				}
 			}
 		}
@@ -178,6 +193,7 @@ func TestSegmentsPastTheirNextSessionAreAnsweredOrCut(t *testing.T) {
 			excess = hegel.Draw(ht, pbt.Spanning(-512, 4096))
 		}
 		shape := headerShape{front: fronts[hegel.Draw(ht, hegel.Integers(0, len(fronts)-1))], tlv: 8 * hegel.Draw(ht, pbt.Spanning(0, 2))}
-		check(ht, family, segments, mtu, excess, df, shape)
+		held := map[int]bool{4: hegel.Draw(ht, hegel.Booleans()), 6: hegel.Draw(ht, hegel.Booleans())}
+		check(ht, family, segments, mtu, excess, df, shape, held)
 	})
 }

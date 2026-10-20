@@ -37,7 +37,7 @@ var errorTypes = []byte{3, 4, 5, 11, 12}
 type errorBuilder struct {
 	name       string
 	kind, code byte
-	build      func(offending []byte, source netip.Addr, value int, allow func() bool) []byte
+	build      func(offending []byte, source netip.Addr, ttl uint8, value int, allow func() bool) []byte
 	rest       func(value int) uint32
 }
 
@@ -45,41 +45,50 @@ func noValue(int) uint32 { return 0 }
 
 // errorBuilders are every IPv4 error this package builds
 var errorBuilders = []errorBuilder{
-	{"time exceeded", 11, 0, func(raw []byte, source netip.Addr, _ int, allow func() bool) []byte {
-		return TimeExceeded(raw, source, allow)
+	{"time exceeded", 11, 0, func(raw []byte, source netip.Addr, ttl uint8, _ int, allow func() bool) []byte {
+		return TimeExceeded(raw, source, ttl, allow)
 	}, noValue},
-	{"net unreachable", 3, 0, func(raw []byte, source netip.Addr, _ int, allow func() bool) []byte {
-		return NetUnreachable(raw, source, allow)
+	{"net unreachable", 3, 0, func(raw []byte, source netip.Addr, ttl uint8, _ int, allow func() bool) []byte {
+		return NetUnreachable(raw, source, ttl, allow)
 	}, noValue},
-	{"host unreachable", 3, 1, func(raw []byte, source netip.Addr, _ int, allow func() bool) []byte {
-		return HostUnreachable(raw, source, allow)
+	{"host unreachable", 3, 1, func(raw []byte, source netip.Addr, ttl uint8, _ int, allow func() bool) []byte {
+		return HostUnreachable(raw, source, ttl, allow)
 	}, noValue},
-	{"communication administratively prohibited", 3, 13, func(raw []byte, source netip.Addr, _ int, allow func() bool) []byte {
-		return Prohibited(raw, source, allow)
+	{"communication administratively prohibited", 3, 13, func(raw []byte, source netip.Addr, ttl uint8, _ int, allow func() bool) []byte {
+		return Prohibited(raw, source, ttl, allow)
 	}, noValue},
 	{"fragmentation needed", 3, 4, FragmentationNeeded, func(mtu int) uint32 { return uint32(mtu) }},
 	{"parameter problem", 12, 0, ParameterProblem, func(pointer int) uint32 { return uint32(pointer) << 24 }},
 }
 
-// for any IPv4 packet and any source, each error answers exactly when RFC 1812 section 4.3.2.7 lets an error answer the packet
-// its header passes the five tests of section 5.2.2, nothing follows it, and the answer comes from a source that names one host
-// and allow, asked once then and never otherwise, lets it out
-// the answer is one ICMP message of the error's type and code from that source to the packet's, with DF and a TTL of 64
+// for any IPv4 packet, any source and any TTL, each error answers exactly when RFC 1812 section 4.3.2.7 lets an error answer the packet
+// its header passes the five tests of section 5.2.2, nothing follows it, the answer comes from a source that names one host
+// its TTL is not 0, which section 4.2.2.9 has no router originate, and allow, asked once then and never otherwise, lets it out
+// the answer is one ICMP message of the error's type and code from that source to the packet's, with DF and the TTL it was given
 // at precedence 6 with the packet's TOS, section 4.3.2.5, carrying the error's value in the word after the checksum
 // and quoting as much of the datagram as fits 576 bytes, section 4.3.2.3
 // both its sums checking as a receiver checks them
-// every ICMP type is tried first under each error in a packet every other rule lets an error answer, which meets each error type in every run
+// every ICMP type is tried first under each error in a packet every other rule lets an error answer, which meets each error type
+// and the word each carries in every run
 func TestErrorsAnswerOnlyWhatAnErrorMayAnswer(t *testing.T) {
 	oneHost := netip.AddrFrom4([4]byte{198, 51, 100, 1})
 	for _, builder := range errorBuilders {
+		value := 1280
+		if builder.kind == icmpParameterProblem {
+			value = ipv4HeaderLen
+		}
 		for kind := range 256 {
 			raw := ipv4Packet(nil, dontFragment, 0, icmpHeaderLen)
 			raw[9], raw[ipv4HeaderLen] = icmpProtocol, byte(kind)
 			resum(raw)
 			asked := false
-			ok := builder.build(raw, oneHost, 1280, func() bool { asked = true; return true }) != nil
+			answer := builder.build(raw, oneHost, 64, value, func() bool { asked = true; return true })
+			ok := answer != nil
 			if ok == (bytes.IndexByte(errorTypes, byte(kind)) >= 0) || asked != ok {
 				t.Errorf("%s answered an ICMP message of type %d %t, allow asked %t", builder.name, kind, ok, asked)
+			}
+			if ok && binary.BigEndian.Uint32(answer[ipv4HeaderLen+4:]) != builder.rest(value) {
+				t.Errorf("%s carrying %d has %x after its checksum", builder.name, value, answer[ipv4HeaderLen+4:ipv4HeaderLen+8])
 			}
 		}
 	}
@@ -87,7 +96,7 @@ func TestErrorsAnswerOnlyWhatAnErrorMayAnswer(t *testing.T) {
 		builder := errorBuilders[hegel.Draw(ht, hegel.Integers(0, len(errorBuilders)-1))]
 		// half the cases break one rule at most, which puts each rule against packets every other rule lets through
 		alone := hegel.Draw(ht, hegel.Booleans())
-		broken := hegel.Draw(ht, hegel.Integers(0, 7))
+		broken := hegel.Draw(ht, hegel.Integers(0, 8))
 		breaks := func(rule int) bool {
 			if alone {
 				return broken == rule
@@ -155,22 +164,26 @@ func TestErrorsAnswerOnlyWhatAnErrorMayAnswer(t *testing.T) {
 		if builder.kind == icmpParameterProblem {
 			value = hegel.Draw(ht, pbt.Spanning(0, headerLen-1))
 		}
+		ttl := uint8(hegel.Draw(ht, hegel.Integers(1, 0xff)))
+		if breaks(8) {
+			ttl = 0
+		}
 		allowed := hegel.Draw(ht, hegel.Booleans())
 
 		asked := 0
-		answer := builder.build(raw, source, value, func() bool { asked++; return allowed })
+		answer := builder.build(raw, source, ttl, value, func() bool { asked++; return allowed })
 		ok := answer != nil
-		eligible := fromOneHost && senderIsOneHost && !toAGroup && !laterFragment && !carriesError && !invalid && trailer == 0
+		eligible := fromOneHost && senderIsOneHost && !toAGroup && !laterFragment && !carriesError && !invalid && trailer == 0 && ttl != 0
 		if want := eligible && allowed; ok != want || (asked == 1) != eligible || asked > 1 {
-			ht.Fatalf("%s for a packet from %s to %s, flags %#04x, protocol %d, its header valid %t, %d bytes after it, answered from %s was sent %t asking allow %d times, want %t asking it %t",
-				builder.name, sender, receiver, field, raw[9], !invalid, trailer, source, ok, asked, want, eligible)
+			ht.Fatalf("%s for a packet from %s to %s, flags %#04x, protocol %d, its header valid %t, %d bytes after it, answered from %s with a TTL of %d was sent %t asking allow %d times, want %t asking it %t",
+				builder.name, sender, receiver, field, raw[9], !invalid, trailer, source, ttl, ok, asked, want, eligible)
 		}
 		if !eligible {
 			return
 		}
 		// a refusal builds nothing, so every eligible case reads its form from the answer allow would have let out
 		if !allowed {
-			answer = builder.build(raw, source, value, func() bool { return true })
+			answer = builder.build(raw, source, ttl, value, func() bool { return true })
 		}
 		quoted := min(headerLen+data, 576-ipv4HeaderLen-icmpHeaderLen)
 		if len(answer) != ipv4HeaderLen+icmpHeaderLen+quoted {
@@ -178,8 +191,8 @@ func TestErrorsAnswerOnlyWhatAnErrorMayAnswer(t *testing.T) {
 		}
 		header := answer[:ipv4HeaderLen]
 		if header[0] != 0x45 || header[1] != 0xc0|raw[1]&0x1e || int(binary.BigEndian.Uint16(header[2:])) != len(answer) ||
-			binary.BigEndian.Uint16(header[4:]) != 0 || binary.BigEndian.Uint16(header[6:]) != 0x4000 || header[8] != 64 || header[9] != 1 {
-			ht.Fatalf("the answer to a packet with TOS %#02x has the header %x", raw[1], header)
+			binary.BigEndian.Uint16(header[4:]) != 0 || binary.BigEndian.Uint16(header[6:]) != 0x4000 || header[8] != ttl || header[9] != 1 {
+			ht.Fatalf("the answer with a TTL of %d to a packet with TOS %#02x has the header %x", ttl, raw[1], header)
 		}
 		if headerSum(header) != 0xffff {
 			ht.Fatalf("the answer's header sums to %#04x", headerSum(header))

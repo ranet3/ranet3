@@ -75,6 +75,7 @@ type Mesh struct {
 	// that does.
 	segmentCounters
 	egressSlot
+	answerState
 }
 
 // outboundBatch owns the TUN buffers from one read until a crypto worker has
@@ -127,13 +128,13 @@ type fragmentList struct {
 // each fragment goes behind its own copy of header, whose payload length then counts that fragment
 // each fits mtu with its header
 // it reports how many fragments it queued and their bytes, none for a packet that cannot be cut
-func (l *fragmentList) add(peer *Peer, nextHeader byte, header, inner []byte, mtu int) (int, int) {
+// with the octet at fault AppendFragments names for one whose option list does not describe itself
+func (l *fragmentList) add(peer *Peer, nextHeader byte, header, inner []byte, mtu int) (count, bytes, fault int) {
 	start := len(l.bytes)
 	var ok bool
-	if l.bytes, _, ok = packet.AppendFragments(l.bytes, header, inner, mtu-len(header)); !ok {
-		return 0, 0
+	if l.bytes, fault, ok = packet.AppendFragments(l.bytes, header, inner, mtu-len(header)); !ok {
+		return 0, 0, fault
 	}
-	count := 0
 	for rest := l.bytes[start:]; len(rest) != 0; count++ {
 		fragment, _ := packet.Payload(rest[len(header):])
 		piece := rest[:len(header)+len(fragment)]
@@ -144,7 +145,7 @@ func (l *fragmentList) add(peer *Peer, nextHeader byte, header, inner []byte, mt
 		}
 		l.fragments = append(l.fragments, outboundFragment{peer: peer, header: nextHeader, raw: piece})
 	}
-	return count, len(l.bytes) - start
+	return count, len(l.bytes) - start, 0
 }
 
 // appendTo hands every fragment to its peer's batch, and leaves out those of a peer with none
@@ -397,9 +398,14 @@ func (m *Mesh) classify(b *outboundBatch) {
 // the packet behind it is held to mtu less that header
 // an answer goes into the tun, whichever side of it the source sits
 func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, nextHeader byte, mtu int) (int, int) {
-	answer, cut := m.answerTooBig(raw[overhead:], mtu-overhead)
+	inner := raw[overhead:]
+	answer, cut := m.answerTooBig(inner, mtu-overhead, false, netip.Addr{})
 	if cut {
-		return b.cut.add(peer, nextHeader, raw[:overhead], raw[overhead:], mtu)
+		count, bytes, fault := b.cut.add(peer, nextHeader, raw[:overhead], inner, mtu)
+		if answer = m.answerOptions(inner, fault, false); answer != nil {
+			m.DeliverInbound(answer, 0)
+		}
+		return count, bytes
 	}
 	if answer != nil {
 		m.DeliverInbound(answer, 0)

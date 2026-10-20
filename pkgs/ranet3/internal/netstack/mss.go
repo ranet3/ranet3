@@ -5,7 +5,8 @@ package netstack
 
 import (
 	"encoding/binary"
-	"math/bits"
+
+	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
 // the TCP of RFC 9293 section 3.1 that a SYN's MSS option is read out of
@@ -94,7 +95,7 @@ func clampSYN(segment []byte, limit int) bool {
 		if segment[i] == optionMSS && length == mssLen {
 			if from := binary.BigEndian.Uint16(segment[i+2:]); int(from) > limit {
 				checksum := binary.BigEndian.Uint16(segment[tcpChecksum:])
-				binary.BigEndian.PutUint16(segment[tcpChecksum:], adjusted(checksum, from, uint16(limit), i%2 == 1))
+				binary.BigEndian.PutUint16(segment[tcpChecksum:], packet.AdjustChecksum(checksum, from, uint16(limit), i%2 == 1))
 				binary.BigEndian.PutUint16(segment[i+2:], uint16(limit))
 				lowered = true
 			}
@@ -120,16 +121,4 @@ func describesItself(options []byte) bool {
 		i += int(options[i+1])
 	}
 	return true
-}
-
-// adjusted is checksum once a 16 bit field it covers moved from one value to another, RFC 1624 equation 3
-// a field at an odd offset straddles two of the 16 bit words the checksum adds up, which take its bytes swapped
-func adjusted(checksum, from, to uint16, odd bool) uint16 {
-	if odd {
-		from, to = bits.ReverseBytes16(from), bits.ReverseBytes16(to)
-	}
-	sum := uint32(^checksum) + uint32(^from) + uint32(to)
-	sum = sum&0xffff + sum>>16
-	sum = sum&0xffff + sum>>16
-	return ^uint16(sum)
 }

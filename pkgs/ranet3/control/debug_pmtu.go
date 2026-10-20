@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -25,7 +26,8 @@ type PMTUSource interface {
 	DebugPMTU(peer string) PMTUInfo
 }
 
-// PMTUInfo is the node's link.mtu and tun, what it did to packets past a session's budget, and each session's search
+// PMTUInfo is the node's link.mtu and tun, what it did to packets past a session's budget, its router-ids and answer SID, and each session's search
+// End's answers to a packet past its session and transit's errors come from the router-ids and the answer SID as netstack's answerTooBig and errorSource say
 type PMTUInfo struct {
 	// LinkMTU is link.mtu, the largest inner packet a session carries
 	LinkMTU int `json:"link_mtu"`
@@ -36,8 +38,14 @@ type PMTUInfo struct {
 	// TooBigSent counts the packet too big and fragmentation needed answers to packets past their session's budget
 	TooBigSent uint64 `json:"packet_too_big_sent"`
 	// MSSClamped counts the SYNs whose MSS the node lowered to a session's budget
-	MSSClamped uint64        `json:"mss_clamped"`
-	Sessions   []PMTUSession `json:"sessions"`
+	MSSClamped uint64 `json:"mss_clamped"`
+	// RouterIDv4 and RouterIDv6 are the router-id of each family, RFC 1812 section 2.2.7, absent where the node holds none
+	RouterIDv4 netip.Addr `json:"router_id_ipv4,omitzero"`
+	RouterIDv6 netip.Addr `json:"router_id_ipv6,omitzero"`
+	// AnswerSID is the End SID an IPv6 time exceeded or destination unreachable for a packet in transit comes from where the node holds no IPv6 router-id
+	// absent where the node holds none
+	AnswerSID netip.Addr    `json:"answer_sid,omitzero"`
+	Sessions  []PMTUSession `json:"sessions"`
 }
 
 // the states of a session's search, RFC 8899's phases as ranet3 runs them
@@ -155,11 +163,20 @@ func RenderPMTU(w io.Writer, info PMTUInfo) {
 		{"Device MTU", device},
 		{"Too big", countOf(int(info.TooBigSent), "answer") + " sent to packets past their session's budget"},
 		{"MSS clamped", countOf(int(info.MSSClamped), "SYN")},
+		{"Answer sources", sourceText(info.RouterIDv4) + " for IPv4, " + sourceText(info.RouterIDv6) + " for IPv6"},
+		{"Answer SID", sourceText(info.AnswerSID)},
 	})
 	for _, session := range info.Sessions {
 		fmt.Fprintln(w)
 		pairs(w, sessionPairs(session))
 	}
+}
+
+func sourceText(address netip.Addr) string {
+	if !address.IsValid() {
+		return "none"
+	}
+	return address.String()
 }
 
 func sessionPairs(s PMTUSession) [][]string {

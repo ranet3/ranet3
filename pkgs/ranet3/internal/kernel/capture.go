@@ -18,9 +18,11 @@ import (
 // machine has no working network at all.
 const DefaultCaptureGrace = 10 * time.Second
 
-// capturesTheMachine reports a route that takes this machine's own traffic
-// rather than a prefix of it. Two arms, and each comes from a measurement
-// rather than from a rule of thumb about prefix lengths.
+func capturesTheMachine(r Route) bool { return CapturesTheMachine(r.Destination) }
+
+// CapturesTheMachine reports a prefix that, routed out of the tun, takes this
+// machine's own traffic rather than a prefix of it. Two arms, and each comes
+// from a measurement rather than from a rule of thumb about prefix lengths.
 //
 //   - Half the address space or more. That is how a default that does not
 //     replace the host's own is written, 0.0.0.0/1 with 128.0.0.0/1 or ::/1
@@ -45,11 +47,11 @@ const DefaultCaptureGrace = 10 * time.Second
 // family's zero address, so holding those back breaks every full cover and
 // restores the kernel's fallback. Measured: with 0.0.0.0/1 withdrawn,
 // 128.0.0.0/1 alone leaves both probes reaching.
-func capturesTheMachine(r Route) bool {
-	if r.Destination.Bits() <= 1 {
+func CapturesTheMachine(prefix netip.Prefix) bool {
+	if prefix.Bits() <= 1 {
 		return true
 	}
-	return r.Destination.Contains(unspecifiedOf(r.Destination.Addr()))
+	return prefix.Contains(unspecifiedOf(prefix.Addr()))
 }
 
 // unspecifiedOf is the all-zeros address of a prefix's family.
