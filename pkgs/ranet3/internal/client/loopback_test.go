@@ -291,8 +291,8 @@ func TestTwoNodesConvergeOverLoopback(t *testing.T) {
 
 // reaches is whether from forwards to an address in to's prefix through the mesh
 func reaches(from, to *loopbackNode) bool {
-	peer, ok := from.client.Mesh.Routes.Lookup(netip.Addr{}, to.prefix.Addr().Next())
-	return ok && peer != nil
+	peer, verdict := from.client.Mesh.Routes.Resolve(netip.Addr{}, to.prefix.Addr().Next())
+	return verdict == netstack.RoutePeer && peer != nil
 }
 
 // preferenceOf reads the preference bit of the one session a node is holding.
@@ -363,15 +363,13 @@ func waitFor(t testing.TB, limit time.Duration, what string, done func() bool) {
 }
 
 // SIGHUP announcing a new prefix has to reach the peer's forwarding table.
-// The existing reload test sets Originate and asserts peer and registry
-// counts, so deleting the SetOriginated call passes it.
 func TestReloadAnnouncesNewPrefixToPeer(t *testing.T) {
 	alpha, bravo := newLoopbackMesh(t)
 	run(t, alpha, bravo)
 	added := netip.MustParsePrefix("fd00:aa::/64")
 	waitFor(t, convergeBudget, "the initial route", func() bool {
-		peer, ok := bravo.client.Mesh.Routes.Lookup(netip.Addr{}, alpha.prefix.Addr().Next())
-		return ok && peer != nil
+		peer, verdict := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alpha.prefix.Addr().Next())
+		return verdict == netstack.RoutePeer && peer != nil
 	})
 
 	writeLoopbackConfig(t, alpha, bravo, alpha.cfg.Auth.Key, alpha.cfg.Auth.Trust,
@@ -381,8 +379,8 @@ func TestReloadAnnouncesNewPrefixToPeer(t *testing.T) {
 	}
 
 	waitFor(t, convergeBudget, "the reloaded prefix to reach the peer", func() bool {
-		peer, ok := bravo.client.Mesh.Routes.Lookup(netip.Addr{}, added.Addr().Next())
-		return ok && peer != nil
+		peer, verdict := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, added.Addr().Next())
+		return verdict == netstack.RoutePeer && peer != nil
 	})
 }
 
@@ -564,8 +562,8 @@ func TestSessionsCarryTheLinkMTUOfTheirOwnNode(t *testing.T) {
 	for _, end := range ends {
 		// looked up on every poll, since a simultaneous open replaces the first session and its peer with it
 		waitFor(t, convergeBudget, fmt.Sprintf("%s to forward to %s's prefix over a session carrying its link.mtu of %d", end.node.name, end.peer.name, end.mtu), func() bool {
-			found, ok := end.node.client.Mesh.Routes.Lookup(netip.Addr{}, end.peer.prefix.Addr().Next())
-			return ok && found != nil && found.MTU() == int(end.mtu)
+			found, verdict := end.node.client.Mesh.Routes.Resolve(netip.Addr{}, end.peer.prefix.Addr().Next())
+			return verdict == netstack.RoutePeer && found != nil && found.MTU() == int(end.mtu)
 		})
 	}
 }
@@ -573,8 +571,8 @@ func TestSessionsCarryTheLinkMTUOfTheirOwnNode(t *testing.T) {
 // a reload hands every session a node holds the new link.mtu, as a session made after it gets, and the search carries it there over a loopback path
 // bravo starts at link.mtu 1300 with nothing steered and holds the one session alpha dials
 // a reload to the default link.mtu with a two segment list through alpha's prefix applies
-// a session kept at 1300 would answer a steered IPv6 packet past 1220 bytes with a packet too big naming 1220
-// and RFC 8201 section 4 keeps its sender's path MTU at 1280 or more, past what the session carries
+// a session kept at 1300 would answer a steered IPv6 packet past 1300 less the list's header with a packet too big naming that size, under the IPv6 minimum link MTU
+// and RFC 8201 section 4 has the sender drop that answer: "If a node receives a Packet Too Big message reporting a next-hop MTU that is less than the IPv6 minimum link MTU, it must discard it."
 func TestReloadHandsALiveSessionTheNewLinkMTU(t *testing.T) {
 	const started = 1300
 	alpha, bravo := newLoopbackMesh(t)
@@ -586,9 +584,9 @@ func TestReloadHandsALiveSessionTheNewLinkMTU(t *testing.T) {
 	run(t, alpha, bravo)
 	var peer *netstack.Peer
 	waitFor(t, convergeBudget, "bravo forwarding to alpha's prefix", func() bool {
-		found, ok := bravo.client.Mesh.Routes.Lookup(netip.Addr{}, alpha.prefix.Addr().Next())
+		found, verdict := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alpha.prefix.Addr().Next())
 		peer = found
-		return ok && found != nil
+		return verdict == netstack.RoutePeer && found != nil
 	})
 	if got := peer.MTU(); got != started {
 		t.Fatalf("bravo's session to alpha carries %d byte packets before the reload, want its link.mtu of %d", got, started)
@@ -851,9 +849,9 @@ func TestSessionAdoptedDuringAReloadTakesTheStoredLinkMTU(t *testing.T) {
 	held = false
 	var peer *netstack.Peer
 	waitFor(t, convergeBudget, "bravo forwarding to alpha's prefix", func() bool {
-		found, ok := bravo.client.Mesh.Routes.Lookup(netip.Addr{}, alpha.prefix.Addr().Next())
+		found, verdict := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alpha.prefix.Addr().Next())
 		peer = found
-		return ok && found != nil
+		return verdict == netstack.RoutePeer && found != nil
 	})
 	if got := peer.MTU(); got != netstack.DefaultMTU {
 		t.Errorf("the session adopted during the reload carries %d byte packets, want the stored link.mtu of %d", got, netstack.DefaultMTU)

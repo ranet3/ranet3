@@ -108,14 +108,14 @@ func TestNodeThatMissedAStartupIsToldTheNeighborsRoutesAtItsFirstHello(t *testin
 	w.helloFromB()
 	w.b.flushUpdates()
 	w.deliver()
-	if peer, ok := w.a.mesh.Routes.Lookup(dest.Addr(), dest.Addr()); ok {
+	if peer, verdict := w.a.mesh.Routes.Resolve(dest.Addr(), dest.Addr()); verdict == netstack.RoutePeer {
 		t.Fatalf("a learned the route through %q from a session it had not registered, so this proves nothing", peer.ID)
 	}
 
 	w.joinA()
 	w.helloFromB()
 	w.deliver()
-	if peer, ok := w.a.mesh.Routes.Lookup(dest.Addr(), dest.Addr()); !ok || peer != w.peerBForA.Peer {
+	if peer, verdict := w.a.mesh.Routes.Resolve(dest.Addr(), dest.Addr()); verdict != netstack.RoutePeer || peer != w.peerBForA.Peer {
 		t.Errorf("a did not learn the neighbor's route from its first hello, and holds %v", w.a.mesh.Routes.Debug())
 	}
 }

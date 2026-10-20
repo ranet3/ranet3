@@ -36,7 +36,7 @@ func upWire(t *testing.T, dest netip.Prefix) *heldWire {
 	w.deliver()
 	w.a.flushUpdates()
 	w.deliver()
-	if peer, ok := w.b.mesh.Routes.Lookup(dest.Addr(), dest.Addr()); !ok || peer != w.peerAForB.Peer {
+	if peer, verdict := w.b.mesh.Routes.Resolve(dest.Addr(), dest.Addr()); verdict != netstack.RoutePeer || peer != w.peerAForB.Peer {
 		t.Fatalf("b did not learn a's prefix, so this proves nothing: %v", w.b.mesh.Routes.Debug())
 	}
 	return w
@@ -221,14 +221,14 @@ func TestReloadedCostReselectsEveryPrefix(t *testing.T) {
 	speaker.routes.update(far, key, advertisement{routerID: [8]byte{1}, seqno: 1, metric: 10}, time.Minute, now)
 	speaker.routes.update(near, key, advertisement{routerID: [8]byte{2}, seqno: 1, metric: 10}, time.Minute, now)
 	speaker.mu.Unlock()
-	if peer, ok := mesh.Routes.Lookup(dest.Addr(), dest.Addr()); !ok || peer != b.Peer {
+	if peer, verdict := mesh.Routes.Resolve(dest.Addr(), dest.Addr()); verdict != netstack.RoutePeer || peer != b.Peer {
 		t.Fatalf("the prefix is not through b while round trips cost nothing, so this proves nothing: %v", mesh.Routes.Debug())
 	}
 	b.settle(t)
 	toB = nil
 
 	speaker.SetConfig(Config{Cost: CostOptions{RTT: RTTOptions{Weight: &heavy}}})
-	if peer, ok := mesh.Routes.Lookup(dest.Addr(), dest.Addr()); !ok || peer != c.Peer {
+	if peer, verdict := mesh.Routes.Resolve(dest.Addr(), dest.Addr()); verdict != netstack.RoutePeer || peer != c.Peer {
 		t.Errorf("the prefix is forwarded as %v once b's round trip costs %d, want through c", mesh.Routes.Debug(), heavy)
 	}
 	want := DefaultCostParams()

@@ -34,9 +34,9 @@ func TestTUNTakesFragmentsOfOrdinaryTrafficAndNoneOfABabelPacket(t *testing.T) {
 	run(t, alpha, bravo)
 	var peer *netstack.Peer
 	waitFor(t, convergeBudget, "alpha forwarding to bravo's prefix", func() bool {
-		found, ok := alpha.client.Mesh.Routes.Lookup(netip.Addr{}, bravo.prefix.Addr().Next())
+		found, verdict := alpha.client.Mesh.Routes.Resolve(netip.Addr{}, bravo.prefix.Addr().Next())
 		peer = found
-		return ok && found != nil
+		return verdict == netstack.RoutePeer && found != nil
 	})
 	// alpha's speaker as bravo's heard it, which the Babel packet comes from so that bravo's view of alpha stays as it is
 	var from netip.Addr
@@ -49,7 +49,6 @@ func TestTUNTakesFragmentsOfOrdinaryTrafficAndNoneOfABabelPacket(t *testing.T) {
 	ordinary := udpPacket(alpha.prefix.Addr().Next(), bravo.prefix.Addr().Next(), 40000, 9, make([]byte, 1435))
 	buf := make([]byte, 1<<16)
 	deadline := time.Now().Add(convergeBudget)
-	// each try sends both packets under a new identification, until the ordinary fragments of one try all arrive
 	for id := uint32(1); time.Now().Before(deadline); id++ {
 		cut := fragmentsOf(ordinary, id, 1336)
 		for _, f := range slices.Concat(fragmentsOf(babelFrom(from, 1443), id, 1336), cut) {

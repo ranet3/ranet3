@@ -38,7 +38,7 @@ const captureWait = time.Second
 const synPort = 443
 
 // a SYN a peer sends through its session reaches the tun with its MSS lowered to what this node's session carries back
-// bravo's link.mtu of 1300 bytes leaves an MSS of 1260 under IPv4 and 1240 under IPv6
+// the MSS bravo's link.mtu leaves is that link.mtu less the IP and TCP headers of the SYN's family
 // alpha hands each SYN straight to its session
 // which leaves bravo's inbound path the only one that can have lowered it
 // a steered SYN reaches bravo inside an outer IPv6 header to an End.DT46 SID of bravo's, which the session's own clamp passes over
@@ -72,9 +72,9 @@ func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 	run(t, alpha, bravo)
 	var peer *netstack.Peer
 	waitFor(t, convergeBudget, "alpha forwarding to bravo's prefix", func() bool {
-		found, ok := alpha.client.Mesh.Routes.Lookup(netip.Addr{}, bravo.prefix.Addr().Next())
+		found, verdict := alpha.client.Mesh.Routes.Resolve(netip.Addr{}, bravo.prefix.Addr().Next())
 		peer = found
-		return ok && found != nil
+		return verdict == netstack.RoutePeer && found != nil
 	})
 	headend := alpha.prefix.Addr().Next()
 	for _, arm := range []struct {

@@ -246,10 +246,9 @@ type forwardedSegment struct {
 // forwardSegments sends the packets a waypoint has rewritten on to the peers
 // their new destinations select.
 //
-// It reserves each peer's whole share of the batch at once, as dispatchOutbound
-// does for a tun read, so the share takes one ticket and one sequence range
-// and is sealed in one call, against the bytes of the peer's budget it
-// carries.
+// Each peer's share of the batch takes one ticket and one sequence range and
+// is sealed in one call, as a share of a tun read is, against the bytes of the
+// peer's budget it carries.
 //
 // The budget is the peer's ordinary one rather than the control budget babel
 // runs on, because this is somebody else's traffic: a segment list pointed at
@@ -260,10 +259,8 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment) {
 	if len(segments) == 0 {
 		return
 	}
-	// Sized for the peers a batch names rather than for its packets: one
-	// inbound batch is up to 128 packets and names one peer in the ordinary
-	// case, so hinting the packet count is several kilobytes of garbage per
-	// batch that nothing reads.
+	// Sized for the peers a batch names, one in the ordinary case, rather than
+	// for its packets.
 	counts := make(map[*Peer]outboundShare)
 	order := make([]*Peer, 0, 4)
 	// cut holds the fragments of the segments too large for their next sessions
@@ -275,8 +272,8 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment) {
 			m.noteSegmentDrop(errNotIP)
 			continue
 		}
-		peer, ok := m.Routes.Lookup(src, dst)
-		if !ok || peer == nil {
+		peer, verdict := m.Routes.Resolve(src, dst)
+		if verdict != RoutePeer || peer == nil {
 			m.segmentsDropped.Add(1)
 			m.reportSegmentDrop("no route to the next segment", "segment", segment.next)
 			continue
@@ -438,8 +435,8 @@ func (m *Mesh) sendBack(answer []byte) bool {
 	if !ok {
 		return false
 	}
-	peer, ok := m.Routes.Lookup(source, destination)
-	if !ok || peer == nil {
+	peer, verdict := m.Routes.Resolve(source, destination)
+	if verdict != RoutePeer || peer == nil {
 		return false
 	}
 	batch := peer.reserveBatchNow(1, len(answer))

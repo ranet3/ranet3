@@ -174,8 +174,6 @@ func TestSpeakerLearnsRouteAndRTT(t *testing.T) {
 	extra := netip.MustParsePrefix("10.66.9.9/32")
 	speakerB.Originate(extra)
 
-	// extra is an ordinary (any-source) route, so the source address
-	// passed to Lookup is irrelevant. Any placeholder works.
 	dummySrc := netip.MustParseAddr("192.0.2.1")
 
 	ctx := t.Context()
@@ -184,20 +182,19 @@ func TestSpeakerLearnsRouteAndRTT(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, ok := meshA.Routes.Lookup(dummySrc, extra.Addr()); ok {
+		if _, verdict := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict == netstack.RoutePeer {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	peer, ok := meshA.Routes.Lookup(dummySrc, extra.Addr())
-	if !ok {
+	peer, verdict := meshA.Routes.Resolve(dummySrc, extra.Addr())
+	if verdict != netstack.RoutePeer {
 		t.Fatal("A never learned B's originated route within the deadline")
 	}
 	if peer.ID != "b" {
 		t.Fatalf("route installed via peer %q, want \"b\"", peer.ID)
 	}
 
-	// RTT should get measured over the local (near-zero-latency) link.
 	deadline = time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		speakerA.mu.Lock()
@@ -236,7 +233,7 @@ func TestSpeakerIgnoresEchoedOwnPrefix(t *testing.T) {
 	}))
 	speakerA.handlePacket(n, pkt[ipv6HeaderLen+udpHeaderLen:])
 
-	if peer, ok := meshA.Routes.Lookup(netip.MustParseAddr("192.0.2.1"), mine.Addr()); ok {
+	if peer, verdict := meshA.Routes.Resolve(netip.MustParseAddr("192.0.2.1"), mine.Addr()); verdict == netstack.RoutePeer {
 		t.Fatalf("A installed a learned route for its own originated prefix via peer %q", peer.ID)
 	}
 }
@@ -280,13 +277,10 @@ func makeNeighborReachable(n *neighborState) {
 	n.ihuExpiry = time.Now().Add(time.Minute)
 }
 
-// TestSpeakerSADR covers genuine source-specific (SADR) route handling:
-// a Source Prefix sub-TLV is installed as a real (source, destination)
-// entry in the mesh's route table, not approximated by checking whether
-// it happens to cover some fixed local address. Two source-specific
-// routes to the same destination, from different peers/prefixes, must
-// coexist independently and only resolve for lookups whose source
-// address actually falls within their respective source prefix.
+// A Source Prefix sub-TLV is installed as a (source, destination) entry in the
+// mesh's route table. Two source-specific routes to the same destination, from
+// different peers or prefixes, must coexist independently and only resolve for
+// lookups whose source address falls within their respective source prefix.
 func TestSpeakerSADR(t *testing.T) {
 	_, _, speakerA, _ := wireSpeakerPair(t, Config{})
 
@@ -308,12 +302,12 @@ func TestSpeakerSADR(t *testing.T) {
 
 	// A source inside `other`'s prefix must resolve via the
 	// source-specific route just installed.
-	if _, ok := speakerA.mesh.Routes.Lookup(netip.MustParseAddr("10.99.1.1"), dest.Addr()); !ok {
+	if _, verdict := speakerA.mesh.Routes.Resolve(netip.MustParseAddr("10.99.1.1"), dest.Addr()); verdict != netstack.RoutePeer {
 		t.Fatal("did not install the source-specific route for a source within its prefix")
 	}
 	// A source outside `other`'s prefix, and with no any-source fallback
 	// route to dest, must not match at all.
-	if _, ok := speakerA.mesh.Routes.Lookup(netip.MustParseAddr("10.66.1.1"), dest.Addr()); ok {
+	if _, verdict := speakerA.mesh.Routes.Resolve(netip.MustParseAddr("10.66.1.1"), dest.Addr()); verdict == netstack.RoutePeer {
 		t.Fatal("a source-specific route matched a source outside its prefix")
 	}
 
@@ -325,10 +319,10 @@ func TestSpeakerSADR(t *testing.T) {
 	}))
 	speakerA.handlePacket(n, pkt[ipv6HeaderLen+udpHeaderLen:])
 
-	if _, ok := speakerA.mesh.Routes.Lookup(netip.MustParseAddr("10.66.1.1"), dest.Addr()); !ok {
+	if _, verdict := speakerA.mesh.Routes.Resolve(netip.MustParseAddr("10.66.1.1"), dest.Addr()); verdict != netstack.RoutePeer {
 		t.Fatal("did not install the second source-specific route")
 	}
-	if _, ok := speakerA.mesh.Routes.Lookup(netip.MustParseAddr("10.99.1.1"), dest.Addr()); !ok {
+	if _, verdict := speakerA.mesh.Routes.Resolve(netip.MustParseAddr("10.99.1.1"), dest.Addr()); verdict != netstack.RoutePeer {
 		t.Fatal("installing a second source-specific route disturbed the first")
 	}
 }
@@ -348,12 +342,12 @@ func TestSpeakerRetractsRouteOnNeighborDown(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, ok := meshA.Routes.Lookup(dummySrc, extra.Addr()); ok {
+		if _, verdict := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict == netstack.RoutePeer {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if _, ok := meshA.Routes.Lookup(dummySrc, extra.Addr()); !ok {
+	if _, verdict := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict != netstack.RoutePeer {
 		t.Fatal("A never learned the route before the down test could proceed")
 	}
 
@@ -361,7 +355,7 @@ func TestSpeakerRetractsRouteOnNeighborDown(t *testing.T) {
 
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, ok := meshA.Routes.Lookup(dummySrc, extra.Addr()); !ok {
+		if _, verdict := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict != netstack.RoutePeer {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -388,7 +382,7 @@ func TestPeerHandleRemovesExactNeighborAndRoutes(t *testing.T) {
 	if speaker.neighbors[peer.ID] != nil {
 		t.Fatal("closed peer remains registered")
 	}
-	if _, ok := mesh.Routes.Lookup(netip.MustParseAddr("192.0.2.1"), dest.Addr()); ok {
+	if _, verdict := mesh.Routes.Resolve(netip.MustParseAddr("192.0.2.1"), dest.Addr()); verdict == netstack.RoutePeer {
 		t.Fatal("closed peer route remains installed")
 	}
 
@@ -644,10 +638,10 @@ func TestStalledNeighborDoesNotHoldOthers(t *testing.T) {
 	}
 }
 
-// Three things reach the route table only through New, and each can be nulled
-// out with the rest of the suite green: dropping a forwarding entry, and the
-// smoothing time constant of RFC 8966 Appendix A.3 and the triggered-update
-// threshold of section 3.7.2, both of which the config decides.
+// Three things reach the route table only through New: dropping a forwarding
+// entry, and the smoothing time constant of RFC 8966 Appendix A.3 and the
+// triggered-update threshold of section 3.7.2, both of which the config
+// decides.
 func TestNewSpeakerCarriesItsConfigurationIntoTheRouteTable(t *testing.T) {
 	cfg := Config{Hello: dur(4 * time.Second), Update: dur(16 * time.Second)}
 	mesh := &netstack.Mesh{Routes: netstack.NewRouteTable()}
@@ -661,8 +655,8 @@ func TestNewSpeakerCarriesItsConfigurationIntoTheRouteTable(t *testing.T) {
 		key := routeKey{dest: netip.MustParsePrefix("fd00:a::/64")}
 		mesh.Routes.Set(key.source, key.dest, netstack.Unreachable)
 		speaker.routes.forget(key)
-		if _, ok := mesh.Routes.Lookup(netip.Addr{}, key.dest.Addr().Next()); ok {
-			t.Error("forget left the forwarding entry behind")
+		if _, verdict := mesh.Routes.Resolve(netip.Addr{}, key.dest.Addr().Next()); verdict != netstack.RouteNone {
+			t.Errorf("forget left the forwarding entry behind, which resolves as %v", verdict)
 		}
 	}
 	// RFC 8966 Appendix A.3 recommends a hysteresis time constant of a small
@@ -916,16 +910,16 @@ func TestPrefixNoLongerOriginatedCanBeReachedAgain(t *testing.T) {
 		EncodeUpdate(Update{AE: AEIPv6, Plen: covering.Bits(), Prefix: covering.Addr().AsSlice(),
 			Interval: 6000, Seqno: 1, Metric: 64}),
 	}))
-	if _, ok := speaker.mesh.Routes.Lookup(netip.Addr{}, inside); !ok {
+	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
 		t.Fatal("the covering route the neighbor announced never reached the forwarding table")
 	}
 
 	speaker.Originate(specific)
-	if peer, ok := speaker.mesh.Routes.Lookup(netip.Addr{}, inside); ok {
+	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict == netstack.RoutePeer {
 		t.Fatalf("an originated prefix still forwards to %q, so the hold is doing nothing", peer.ID)
 	}
 	speaker.SetOriginated(nil)
-	if _, ok := speaker.mesh.Routes.Lookup(netip.Addr{}, inside); !ok {
+	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
 		t.Fatal("the prefix stayed held after this node stopped originating it, so it is black-holed for good")
 	}
 }
@@ -1014,15 +1008,15 @@ func TestFlushedPrefixGivesUpItsHold(t *testing.T) {
 	}
 	announce(covering, 64)
 	announce(specific, 64)
-	if _, ok := speaker.mesh.Routes.Lookup(netip.Addr{}, inside); !ok {
+	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
 		t.Fatal("the route never reached the forwarding table")
 	}
 
 	// Retracted: held rather than removed, so the covering route does not
 	// quietly take traffic the neighbor has just said it cannot carry.
 	announce(specific, MetricInfinity)
-	if peer, ok := speaker.mesh.Routes.Lookup(netip.Addr{}, inside); ok {
-		t.Fatalf("a retracted prefix fell through to %q instead of being held", peer.ID)
+	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
+		t.Fatalf("a retracted prefix resolved as %v through %v instead of being held", verdict, peer)
 	}
 
 	// Expired out of the table entirely, which is the flush. The sweep takes
@@ -1037,7 +1031,7 @@ func TestFlushedPrefixGivesUpItsHold(t *testing.T) {
 		t.Fatal("the retracted route was not flushed, so this proves nothing")
 	}
 	announce(covering, 64)
-	if _, ok := speaker.mesh.Routes.Lookup(netip.Addr{}, inside); !ok {
+	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
 		t.Errorf("%s is still held after its prefix was flushed, so the covering route can never serve it", inside)
 	}
 }

@@ -23,22 +23,32 @@ func NewRouteTable() *RouteTable { return &RouteTable{changed: make(chan struct{
 
 // Unreachable is installed for a prefix that is known and has no usable route.
 // A lookup that lands on it is answered rather than falling through to a
-// covering entry, as RFC 8966 section 3.5.4 requires while a
-// retracted prefix is still held: "packets destined to an address within P
-// MUST NOT be forwarded by following a route for a shorter prefix". Without it
-// a more specific prefix that has just been retracted immediately starts
-// following the default a transit node also carries, and the two ends pass the
-// packet back and forth until its hop limit runs out.
-// It is a sentinel rather than a usable Peer: its budgets have no room, so a
-// send through it is refused and counted in its Dropped. Lookup answers it as
-// "no route", and Snapshot hands it out as a value a caller has to recognize,
-// as the doc there says.
+// covering entry, as RFC 8966 section 3.5.4 requires while a retracted prefix
+// is still held: "packets destined to an address within P MUST NOT be
+// forwarded by following a route for a shorter prefix". It is a sentinel
+// rather than a usable Peer: its budgets have no room, so a send through it is
+// refused and counted in its Dropped. Resolve answers it as RouteHeld, and
+// Snapshot hands it out as a value a caller has to recognize, as the doc there
+// says.
 var Unreachable = &Peer{ID: "unreachable"}
 
-// IsUnreachable reports whether a peer from Snapshot or Lookup is the hold a
-// retracted prefix leaves behind rather than somewhere to send. Comparing
-// against the sentinel directly works too, but this names the question.
-func IsUnreachable(p *Peer) bool { return p == Unreachable }
+// Local is installed for a prefix this node originates.
+var Local = &Peer{ID: "this node"}
+
+// Assigned is installed for an address cap.table assigns this node and nothing
+// originates, which the kernel mirror leaves out, since the host already
+// delivers an address it carries.
+var Assigned = &Peer{ID: "this node"}
+
+// Verdict is the table's answer for a packet.
+type Verdict uint8
+
+const (
+	RouteNone Verdict = iota
+	RoutePeer
+	RouteLocal
+	RouteHeld
+)
 
 // Changed carries one coalesced notification per batch of forwarding table
 // changes, so a mirror outside this process reconciles from Snapshot rather
@@ -53,8 +63,9 @@ func (rt *RouteTable) Changed() <-chan struct{} { return rt.changed }
 // their value. They exist to stop a packet for a retracted prefix following a
 // shorter one instead, and a mirror of this table has to hold them for the
 // same reason rather than letting its own longest-prefix match fall through.
-// The sentinel is not a Peer that can be sent through, so a caller walking
-// these has to ask IsUnreachable before treating one as a destination.
+// This node's own entries are included too, carrying Local or Assigned. No
+// sentinel is a Peer that can be sent through, so a caller walking these has
+// to recognize each before treating one as a destination.
 func (rt *RouteTable) Snapshot() []sadr.Route[*Peer] {
 	var out []sadr.Route[*Peer]
 	for route := range rt.table.All() {
@@ -88,17 +99,25 @@ func (rt *RouteTable) RemovePeer(peer *Peer) {
 	rt.notify()
 }
 
-// Lookup answers with the most specific entry that matches. An entry holding
-// Unreachable answers "no route" rather than letting the lookup continue to a
-// covering prefix, which is the reason for holding it: the caller sees the
-// same "drop this packet" it would see for an unknown destination, and the
-// shorter prefix is not consulted.
-func (rt *RouteTable) Lookup(src, dst netip.Addr) (*Peer, bool) {
+// Resolve answers a packet from src to dst with the entry RFC 9079 section 4
+// prefers among those that match it, by "destination-first ordering, where
+// routing table entry R1 is preferred to routing table entry R2 when either
+// R1's destination prefix is more specific than R2's or the destination
+// prefixes are equal and R1's source prefix is more specific than R2's". An
+// entry holding Unreachable answers RouteHeld, so no covering entry is
+// consulted for a packet inside it. The peer is nil for every verdict but
+// RoutePeer.
+func (rt *RouteTable) Resolve(src, dst netip.Addr) (*Peer, Verdict) {
 	peer, ok := rt.table.Lookup(src, dst)
-	if !ok || peer == Unreachable {
-		return nil, false
+	switch {
+	case !ok:
+		return nil, RouteNone
+	case peer == Unreachable:
+		return nil, RouteHeld
+	case peer == Local || peer == Assigned:
+		return nil, RouteLocal
 	}
-	return peer, true
+	return peer, RoutePeer
 }
 
 func (rt *RouteTable) Debug() []string {
