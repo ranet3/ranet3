@@ -25,6 +25,13 @@ precedence = "override"
 SPDX-FileCopyrightText = "2026 Yifei Sun"
 SPDX-License-Identifier = "FSL-1.1-ALv2"
 
+# a golden file of answers holds what the builders write byte for byte, so it has no room for a header either
+[[annotations]]
+path = ["internal/packet/testdata/answers/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Yifei Sun"
+SPDX-License-Identifier = "FSL-1.1-ALv2"
+
 [[annotations]]
 path = ["examples/config.json", "gomod2nix.toml", "version.txt"]
 precedence = "override"

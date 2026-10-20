@@ -101,6 +101,7 @@ func readOff(tb testing.TB, raw []byte, steering *srv6.SteerTable, mtu int) (*ou
 
 // checkAnswer holds an answer to offending against what its family's error carries
 // from the packet's destination back to its source, with mtu where the next link's MTU goes
+// quoting as much of the packet as fits 1280 bytes over IPv6, RFC 4443 section 2.4 (c), and 576 over IPv4, RFC 1812 section 4.3.2.3
 func checkAnswer(tb testing.TB, answer, offending []byte, mtu int) {
 	tb.Helper()
 	if offending[0]>>4 == 6 {
@@ -127,9 +128,9 @@ func checkAnswer(tb testing.TB, answer, offending []byte, mtu int) {
 		}
 		return
 	}
-	headerLen := int(offending[0]&0x0f) * 4
-	if len(answer) != 20+8+headerLen+8 || answer[9] != 1 || int(binary.BigEndian.Uint16(answer[2:4])) != len(answer) {
-		tb.Fatalf("the answer is %d bytes of protocol %d, want fragmentation needed quoting %d", len(answer), answer[9], headerLen+8)
+	quoted := min(len(offending), 576-20-8)
+	if len(answer) != 20+8+quoted || answer[9] != 1 || int(binary.BigEndian.Uint16(answer[2:4])) != len(answer) {
+		tb.Fatalf("the answer is %d bytes of protocol %d, want fragmentation needed quoting %d", len(answer), answer[9], quoted)
 	}
 	if !bytes.Equal(answer[12:16], offending[16:20]) || !bytes.Equal(answer[16:20], offending[12:16]) {
 		tb.Fatalf("the answer goes from %x to %x, want from the packet's destination back to its source", answer[12:16], answer[16:20])
@@ -144,8 +145,8 @@ func checkAnswer(tb testing.TB, answer, offending []byte, mtu int) {
 	if sum := packet.Sum(0, message); sum != 0xffff {
 		tb.Fatalf("the answer's message sums to %#04x", sum)
 	}
-	if !bytes.Equal(message[8:], offending[:headerLen+8]) {
-		tb.Fatal("the answer does not quote the packet's header and the 8 bytes after it")
+	if !bytes.Equal(message[8:], offending[:quoted]) {
+		tb.Fatal("the answer does not quote the packet it is about")
 	}
 }
 
