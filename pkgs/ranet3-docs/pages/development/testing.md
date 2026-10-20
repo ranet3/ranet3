@@ -355,7 +355,9 @@ scheduled rekey of the IKE SA, and strongSwan rekeys the IKE SA and the Child SA
 right after it. Each asserts from strongSwan's log that ranet3's rekey of the
 IKE SA, strongSwan's of the IKE SA and strongSwan's of the Child SA each run
 ML-KEM-768 in an `IKE_FOLLOWUP_KE` exchange whose request echoes the link of the
-`CREATE_CHILD_SA` response, and that a ping crosses each. It also asserts that
+`CREATE_CHILD_SA` response, that a ping crosses each, and that
+`ranet3 sessions --json` names no kex entry for the Child SA of `IKE_AUTH` and
+`x25519+mlkem768` for the Child SA of strongSwan's rekey. It also asserts that
 ranet3 closed no IKE SA and completed 1 handshake, and that strongSwan never
 dialed again. In `mlkem-apart` and `mlkem-apart-responder` ranet3 lists
 `x25519+mlkem768` alone against strongSwan's default proposals, which hold no
