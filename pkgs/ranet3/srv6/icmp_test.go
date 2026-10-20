@@ -154,14 +154,15 @@ func TestLargeOffendingPacketIsQuotedUpToTheMinimumMTU(t *testing.T) {
 // RFC 4443 section 2.4 (e) names what an error may not answer. Every one of
 // these turns one refused packet into many, which is the reason the rule
 // exists and the reason a segment routing node is a good place to break it.
-// None is answered, and the rate limit an answer would draw from is never
-// asked.
+// No error this package builds answers one, and none asks the rate limit an
+// answer would draw from.
 //
 // The walk finds an ICMPv6 error or a redirect behind every header it steps
-// over, and the packets it shows no error in are answered, asking the rate
-// limit once: an informational message, a later fragment, no next header,
-// ESP or another protocol, a header the packet ends inside the octets the
-// walk reads of, and a chain past the headers the walk reads.
+// over, and the packets it shows no error in are answered by every error,
+// each asking the rate limit once: an informational message, a later
+// fragment, no next header, ESP or another protocol, a header the packet ends
+// inside the octets the walk reads of, and a chain past the headers the walk
+// reads.
 func TestNoErrorAnswersWhatWouldMultiply(t *testing.T) {
 	sid := addr("3fff:1:69c:8c6::2")
 	damaged := func(damage func(raw []byte)) []byte {
@@ -213,10 +214,12 @@ func TestNoErrorAnswersWhatWouldMultiply(t *testing.T) {
 		{"an extension header behind one running past the end of the packet", runningPast(behindRouting(t, 2, anError)), true},
 		{"an icmp error behind 8 extension headers, past what the walk reads", behindRouting(t, maxExtensionHeaders-1, anError), true},
 	} {
-		asked := 0
-		answer := TimeExceeded(c.offending, sid, func() bool { asked++; return true })
-		if (answer != nil) != c.answered || (asked == 1) != c.answered || asked > 1 {
-			t.Errorf("%s was answered %t asking the rate limit %d times, want answered %t", c.name, answer != nil, asked, c.answered)
+		for _, builder := range errorBuilders {
+			asked := 0
+			answer := builder.build(c.offending, sid, func() bool { asked++; return true })
+			if (answer != nil) != c.answered || (asked == 1) != c.answered || asked > 1 {
+				t.Errorf("%s for %s was built %t asking the rate limit %d times, want built %t", builder.name, c.name, answer != nil, asked, c.answered)
+			}
 		}
 	}
 }
@@ -247,19 +250,12 @@ func TestPacketTooBigToAGroupIsRefusedDepartingFromRFC4443(t *testing.T) {
 // it asks nothing about a packet it would not answer, so a rate limit behind allow spends nothing on one
 func TestBuildersAskAllowOnlyBeforeAnAnswer(t *testing.T) {
 	sid := addr("3fff:1:69c:8c6::2")
-	builders := map[string]func(offending []byte, source netip.Addr, allow func() bool) []byte{
-		"time exceeded":     TimeExceeded,
-		"parameter problem": ParameterProblem,
-		"packet too big": func(offending []byte, source netip.Addr, allow func() bool) []byte {
-			return PacketTooBig(offending, source, MinimumIPv6MTU, allow)
-		},
-	}
-	for name, build := range builders {
+	for _, builder := range errorBuilders {
 		for _, allowed := range []bool{true, false} {
 			asked := 0
-			answer := build(segmentRouted(t), sid, func() bool { asked++; return allowed })
+			answer := builder.build(segmentRouted(t), sid, func() bool { asked++; return allowed })
 			if asked != 1 || (answer != nil) != allowed {
-				t.Errorf("%s asked allow %d times and built %t with allow saying %t, want once and %t", name, asked, answer != nil, allowed, allowed)
+				t.Errorf("%s asked allow %d times and built %t with allow saying %t, want once and %t", builder.name, asked, answer != nil, allowed, allowed)
 			}
 		}
 		for what, refused := range map[string]struct {
@@ -270,8 +266,8 @@ func TestBuildersAskAllowOnlyBeforeAnAnswer(t *testing.T) {
 			"another icmp error":               {behindRouting(t, 0, icmpTimeExceeded), sid},
 		} {
 			asked := false
-			if answer := build(refused.offending, refused.source, func() bool { asked = true; return true }); answer != nil || asked {
-				t.Errorf("%s for %s was built %t, and allow was asked %t", name, what, answer != nil, asked)
+			if answer := builder.build(refused.offending, refused.source, func() bool { asked = true; return true }); answer != nil || asked {
+				t.Errorf("%s for %s was built %t, and allow was asked %t", builder.name, what, answer != nil, asked)
 			}
 		}
 	}
@@ -279,6 +275,25 @@ func TestBuildersAskAllowOnlyBeforeAnAnswer(t *testing.T) {
 	if answer := ParameterProblem(innerV6("payload"), sid, func() bool { asked = true; return true }); answer != nil || asked {
 		t.Errorf("a parameter problem with no routing header to point at was built %t, and allow was asked %t", answer != nil, asked)
 	}
+}
+
+// errorBuilder is one of the errors this package answers with and the type and code it writes
+type errorBuilder struct {
+	name       string
+	kind, code byte
+	build      func(offending []byte, source netip.Addr, allow func() bool) []byte
+}
+
+// errorBuilders are every ICMPv6 error this package builds, packet too big carrying 1280
+var errorBuilders = []errorBuilder{
+	{"time exceeded", 3, 0, TimeExceeded},
+	{"parameter problem", 4, 0, ParameterProblem},
+	{"packet too big", 2, 0, func(raw []byte, source netip.Addr, allow func() bool) []byte {
+		return PacketTooBig(raw, source, MinimumIPv6MTU, allow)
+	}},
+	{"no route to destination", 1, 0, NoRoute},
+	{"communication administratively prohibited", 1, 1, Prohibited},
+	{"beyond scope of source address", 1, 2, BeyondScope},
 }
 
 // verify sums a finished message the way a receiver does, with the checksum

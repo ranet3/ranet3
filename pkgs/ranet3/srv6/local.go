@@ -262,7 +262,8 @@ const (
 	// almost all of them: it goes where it was going.
 	ActionPass Action = iota
 	// ActionForward is a waypoint's result. The packet was rewritten in place
-	// and goes to Result.Next.
+	// and goes to Result.Next. Result.SID is the segment of this node it was
+	// addressed to.
 	ActionForward
 	// ActionDeliver is the result of an exit that delivers to the mesh.
 	// Result.Inner is the packet that was inside and Result.Family says which
@@ -281,6 +282,7 @@ const (
 type Result struct {
 	Action Action
 	Next   netip.Addr
+	SID    netip.Addr
 	Inner  []byte
 	Family uint8
 	Err    error
@@ -316,7 +318,7 @@ func (t *LocalTable) Handle(raw []byte) Result {
 		if err != nil {
 			return Result{Action: ActionDrop, Err: err}
 		}
-		return Result{Action: ActionForward, Next: next}
+		return Result{Action: ActionForward, Next: next, SID: destination}
 	case BehaviorEndDT46:
 		// the outer source is checked before anything is parsed, so an unlisted
 		// sender is never answered with an ICMP error about its header

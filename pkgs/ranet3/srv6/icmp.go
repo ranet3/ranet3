@@ -10,8 +10,9 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
-// This file builds the ICMPv6 errors RFC 8986's pseudocode answers a refused
-// packet with, rather than dropping it in silence. It takes bytes and returns
+// This file builds the ICMPv6 errors a router answers a packet it does not
+// forward with, among them those RFC 8986's pseudocode answers a refused
+// segment with, rather than dropping it in silence. It takes bytes and returns
 // bytes like the rest of the package: whether an answer is sent at all, and
 // how often, is the dataplane's to decide.
 //
@@ -32,8 +33,13 @@ const (
 	icmpPacketTooBig = 2
 	// icmpRedirect is RFC 4861 section 4.5, informational by its type and still one RFC 4443 section 2.4 (e.2) lets no error answer
 	icmpRedirect = 137
+	// icmpUnreachable is RFC 4443 section 3.1, with the three codes a router forwarding a packet answers with
+	icmpUnreachable = 1
+	icmpNoRoute     = 0
+	icmpProhibited  = 1
+	icmpBeyondScope = 2
 	// icmpHeaderLen is the type, the code, the checksum and the four octets
-	// the three messages use differently.
+	// each message uses its own way.
 	icmpHeaderLen = 8
 	// segmentsLeftInHeader is where Segments Left sits inside a routing header,
 	// which findRouting says where to find.
@@ -41,8 +47,7 @@ const (
 )
 
 // TimeExceeded answers a packet whose hop limit ran out at this node, RFC 4443
-// section 3.3. source is the segment the packet was addressed to, which is the
-// address a router answers an expired packet from. allow is icmpError's.
+// section 3.3, from source. allow is icmpError's.
 func TimeExceeded(offending []byte, source netip.Addr, allow func() bool) []byte {
 	return icmpError(offending, source, icmpTimeExceeded, icmpHopLimitInTranst, 0, allow)
 }
@@ -67,6 +72,22 @@ func ParameterProblem(offending []byte, source netip.Addr, allow func() bool) []
 // source is the address the answer comes from, and allow is icmpError's
 func PacketTooBig(offending []byte, source netip.Addr, mtu int, allow func() bool) []byte {
 	return icmpError(offending, source, icmpPacketTooBig, 0, uint32(mtu), allow)
+}
+
+// NoRoute answers a packet no entry of the forwarding table carries, RFC 4443 section 3.1 code 0, from source, and allow is icmpError's
+func NoRoute(offending []byte, source netip.Addr, allow func() bool) []byte {
+	return icmpError(offending, source, icmpUnreachable, icmpNoRoute, 0, allow)
+}
+
+// Prohibited answers a packet this node does not forward by its policy, RFC 4443 section 3.1 code 1, from source, and allow is icmpError's
+func Prohibited(offending []byte, source netip.Addr, allow func() bool) []byte {
+	return icmpError(offending, source, icmpUnreachable, icmpProhibited, 0, allow)
+}
+
+// BeyondScope answers a packet whose destination lies past the scope of its source, RFC 4443 section 3.1 code 2, from source, and allow is icmpError's
+// a link-local source with a wider destination, which no router forwards off its link
+func BeyondScope(offending []byte, source netip.Addr, allow func() bool) []byte {
+	return icmpError(offending, source, icmpUnreachable, icmpBeyondScope, 0, allow)
 }
 
 // icmpError builds one message carrying as much of the offending packet as
