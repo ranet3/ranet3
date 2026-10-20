@@ -107,8 +107,9 @@ example/gateway:0@0  up     116   0      96       27.2ms   15      11.3s    0   
 other/relay:2@1      up     1218  1024   96       176.7ms  130     9.8s     0        0
 
 $ ranet3 routes
-Destination  From         Via                  Metric  Router ID         Seqno  Paths
-::/0         3fff:a::/36  example/gateway:0@0  212     0a1b2c3d4e5f6071  42     7
+Destination          From         Via                  Metric  Router ID         Seqno  Paths
+::/0                 3fff:a::/36  example/gateway:0@0  212     0a1b2c3d4e5f6071  42     7
+3fff:1:69c:8c0::/60               this node            0                         0      0
 ```
 
 `neighbors` is the counterpart of `birdc show babel neighbors`. It shows the
@@ -119,9 +120,10 @@ receive cost they report as well. It also shows 2 dataplane counters BIRD lacks.
 
 `routes` is the counterpart of `birdc show route`. It reads the Babel route
 table, not the forwarding table, so a prefix every neighbor has retracted still
-shows as a row. `sessions` is the counterpart of `swanctl --list-sas`. `peers`
-lists who this node dials, from the config file or from the trust document under
-`dial.all`, and whether it got there.
+shows as a row. A prefix this node announces and an address `cap.table` assigns
+it show as rows via `this node`. `sessions` is the counterpart of
+`swanctl --list-sas`. `peers` lists who this node dials, from the config file or
+from the trust document under `dial.all`, and whether it got there.
 
 ### Naming a peer
 
@@ -165,7 +167,9 @@ recorded events carry.
   prints the prefix that covers the address and the peer this node reaches it
   through, then what the address would fall back to. It names the peer, not the
   originating node, because Babel carries a router id and no name, and ranet3
-  gives each speaker a random router id.
+  gives each speaker a random router id. A prefix of this node's own is named as
+  originated by this node, or as assigned to it for an address `cap.table`
+  assigns.
 - `ip` prints this node's own mesh addresses, 1 per line, taken from the host
   prefixes it announces.
 - `exit list` prints the defaults the mesh advertises, with the 2 `/1` halves of
@@ -238,7 +242,7 @@ when empty, and every counter is always present. Other lists, such as
 | `segment_counters` | `forwarded`, `delivered`, `dropped`, `steered`, `unsteered`, `unrouted`, `answered`, `egressed`, `refused`, `not_ready`, `drained`                                                                                                                                                                                                                                                                                                                    |
 | `down`             | `since`, `for`                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | neighbor           | `peer`, `address`, `alive`, `cost`, `extra`, `reported_cost` (absent until an IHU arrives), `rtt` (absent until a timestamped IHU arrives), `routes`, `expires`, `dropped`, `send_failed`                                                                                                                                                                                                                                                             |
-| route              | `destination`, `from`, `via` (absent for a prefix held unreachable), `metric`, `router_id`, `seqno`, `candidates`, `originated`                                                                                                                                                                                                                                                                                                                       |
+| route              | `destination`, `from`, `via` (absent for a prefix held unreachable and for this node's own), `metric`, `router_id`, `seqno`, `candidates`, `originated` (this node announces it), `assigned` (an address `cap.table` assigns, announced only where `originated` is set too)                                                                                                                                                                           |
 | session            | `path`, `peer` (the peer's node), `remote` (address and port), `preferred`, `active`, `local_spi`, `remote_spi`, `ike_cipher`, `ike_prf` and `ike_kex` (the IKE SA's transforms by their `cap.crypto` names, `ike_kex` its whole kex entry, such as `x25519+mlkem768`), `esp_cipher` and `esp_kex` (the Child SA's, `esp_kex` the kex entry of its own key exchanges, absent for a Child SA keyed from the IKE SA alone), `started_at`, `age`, `idle` |
 | peer               | `path`, `peer`, `connected`, `generated` (taken from the trust document under `dial.all`)                                                                                                                                                                                                                                                                                                                                                             |
 | result             | `acted`, `missed` (`entry`, `reason`), `detail`                                                                                                                                                                                                                                                                                                                                                                                                       |

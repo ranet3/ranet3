@@ -32,13 +32,14 @@ timestamp (RFC 9616). The IHU carries this node's receive cost and echoes the
 neighbor's timestamps. A full route update goes out every update interval. Each
 Babel packet other than a path MTU probe fits in a 1280-byte inner IPv6 packet.
 
-| Timer           | Default    | Rule                                      |
-| --------------- | ---------- | ----------------------------------------- |
-| Hello interval  | 4 seconds  | `cap.babel.hello`                         |
-| Update interval | 16 seconds | `cap.babel.update`, or 4 x the Hello one  |
-| Neighbor dead   | 14 seconds | 3.5 x the neighbor's Hello interval       |
-| IHU expiry      | 14 seconds | 3.5 x the interval the IHU names          |
-| Route hold      | 56 seconds | 3.5 x the interval of the carrying Update |
+| Timer           | Default    | Rule                                                                                              |
+| --------------- | ---------- | ------------------------------------------------------------------------------------------------- |
+| Hello interval  | 4 seconds  | `cap.babel.hello`                                                                                 |
+| Update interval | 16 seconds | `cap.babel.update`, or 4 x the Hello one                                                          |
+| Neighbor dead   | 14 seconds | 3.5 x the neighbor's Hello interval                                                               |
+| IHU expiry      | 14 seconds | 3.5 x the interval the IHU names                                                                  |
+| Route hold      | 56 seconds | 3.5 x the interval of the carrying Update                                                         |
+| Lost route hold | 60 seconds | the latest expiry of any update this node sent for it: 3.5 x that update's interval, plus 1 Hello |
 
 The router id is random. The speaker keeps it in the state directory
 (`--state-dir`) together with a limit on the seqnos it has sent. A restart
@@ -100,9 +101,15 @@ with metric 0, under its own router id and seqno. An entry is a prefix, or a
 prefix with the source it serves (`{ prefix, from }`). A source-specific entry
 is IPv6 only (RFC 9079).
 
-The node holds each prefix it originates as unreachable in its own table. A
-packet for an address inside the prefix that this node does not carry is
-dropped. It does not follow a covering route such as a default.
+The node holds each prefix it originates as its own in its table. It holds each
+address `cap.table` assigns the same way, as a host route that it announces only
+if it originates that route too. A route a neighbor offers for the same
+destination and source prefix as one of these never replaces it. A
+source-specific route a neighbor offers for the same destination is another
+route: the node learns it and prefers it for packets from its source, by RFC
+9079 section 4's destination-first ordering. A packet for an address inside the
+prefix that this node does not carry is dropped. It does not follow a covering
+route such as a default.
 
 With transit on, the node relays every route it selects to its other neighbors.
 With transit off, it advertises only the prefixes it originates, and still
@@ -146,14 +153,44 @@ A retracted or expired route is held at infinity for the hold time of the Update
 it replaced, then flushed. While it is held, the forwarding entry answers
 "unreachable" (RFC 8966 section 3.5.4). A packet for that prefix is dropped
 instead of following a shorter covering route, such as a default another node
-carries. The reconciler installs the same hold in the kernel.
+carries. The reconciler installs the same hold in the kernel. Once the route is
+flushed, the prefix stays held until the latest time any update this node sent
+naming it reachable expires at a neighbor, if that is later, as the next
+paragraph says. Neither hold waits for every neighbor to acknowledge the
+retraction, as
+[the protocol deviations](design/protocol-deviations.md#updates-and-requests)
+say.
+
+A prefix loses its last route when that route is flushed, when the session of
+the neighbor that offered it closes or is replaced, or when this node stops
+announcing it. A neighbor this node told the prefix is reachable may still send
+packets for it here until that update expires there, even after a retraction,
+which is sent once and never acknowledged. So the prefix is held the same way
+until the latest time any update this node sent naming it reachable expires at a
+neighbor, unless a neighbor's route for it is selected first. Each update's time
+is the route expiry of
+[RFC 8966 Appendix B](https://www.rfc-editor.org/rfc/rfc8966.html#appendix-B),
+"3.5 times the advertised update interval", counted from when that update was
+sent and taken from the interval it carried, plus 1 Hello interval for it to
+arrive. That covers a neighbor that expires a route at the multiple Appendix B
+suggests, as ranet3 does. RFC 8966 section 3.5.3 lets a neighbor choose "a small
+multiple". A shorter update interval set later does not shorten the hold, since
+a neighbor that missed the update sent under it still counts toward the one
+before. The prefix stays unreachable for that time even when every neighbor read
+the retraction, since this node cannot know that they did. A prefix that no
+update from this node named reachable in that time is not held, and a covering
+route serves it at once. The same goes for an address `cap.table` stops
+assigning.
 
 ## The route reconciler
 
 Writing a `cap.table` block turns the reconciler on. It mirrors the mesh's
-selected routes and its holds into a kernel table. Every route other than a hold
-leaves through the tun. The reconciler also assigns the tun's addresses. On
-Linux it also installs policy rules and enslaves the tun to a VRF.
+selected routes and its holds into a kernel table, and installs each prefix this
+node originates as a hold. An address `cap.table` assigns gets no route there
+unless this node originates it too, since the host's kernel holds it as one of
+its own already. Every route other than a hold leaves through the tun. The
+reconciler also assigns the tun's addresses. On Linux it also installs policy
+rules and enslaves the tun to a VRF.
 
 ### What it installs
 
@@ -327,16 +364,19 @@ it.
 These commands show the routes. [Command line](cli.md) lists their flags.
 
 - `ranet3 routes` shows Babel's table, every prefix, including the ones held
-  unreachable. It is not the kernel's table.
+  unreachable. The prefixes this node announces and the addresses `cap.table`
+  assigns show `this node` as their next hop. It is not the kernel's table.
 - `ranet3 neighbors` shows each neighbor with its link cost, the amount
   `cap.babel.cost.extra` charges it, the cost it reports, its round trip and the
   routes it offers.
 - `ranet3 whois <address>` shows the longest prefix covering an address first,
-  then the shorter ones, each with the neighbor that is its next hop.
+  then the shorter ones, each with the neighbor that is its next hop, or this
+  node for one of its own.
 - The Kernel line of `ranet3 status` shows where the reconciler writes, the
   routes installed and skipped, and the last pass.
 
-`SIGUSR1` writes the mesh's routes to the log.
+`SIGUSR1` writes the mesh's routes to the log, this node's own entries as
+`via this node` and the holds as `via unreachable`.
 
 | Log line                                   | Level | When                                                                            |
 | ------------------------------------------ | ----- | ------------------------------------------------------------------------------- |
