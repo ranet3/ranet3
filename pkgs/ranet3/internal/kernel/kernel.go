@@ -1858,6 +1858,12 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer]) []Route {
 	out := make([]Route, 0, len(snapshot))
 	warned := make(map[Route]bool, len(r.warned))
 	for _, entry := range snapshot {
+		// The host's kernel holds every address cap.table assigns as one of its
+		// own already, so the mirror installs nothing for one this node does not
+		// originate.
+		if entry.Value == netstack.Assigned {
+			continue
+		}
 		destination, ok := canonicalPrefix(entry.Destination)
 		if !ok {
 			continue
@@ -1871,7 +1877,9 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer]) []Route {
 			warned[key] = true
 			continue
 		}
-		unreachable := entry.Value == netstack.Unreachable
+		// Local is installed exactly as the hold is, so the kernel holds the
+		// same route for a key whichever of the two the mesh's entry carries.
+		unreachable := entry.Value == netstack.Unreachable || entry.Value == netstack.Local
 		route := Route{
 			Destination: destination,
 			Metric:      routeMetric(r.table.Metric, destination, unreachable),
@@ -1884,23 +1892,6 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer]) []Route {
 		// same outage in a different shape.
 		if capturesTheMachine(route) && !r.capture {
 			continue
-		}
-		// A source covering every address is not a source-specific route, and
-		// installing it as one is beyond what the linux encoder can express: it
-		// derives rtm_src_len from the length and omits RTA_SRC at zero, so
-		// the route would install as a plain one, read back with no source,
-		// never match the diff, and be withdrawn and reinstalled on every pass
-		// for the life of the process. Dropping the source says the same thing
-		// and installs.
-		//
-		// Nothing currently reaches this. RFC 9079 section 5 makes a
-		// zero-length source prefix an ordinary route, so babel's decoder
-		// refuses source plen 0 on the wire, originatedKey drops it from a
-		// local announcement, and the config refuses "from: ::/0". It is here
-		// because the cost of one of those changing is a route the kernel
-		// tears down and reinstalls four times a second.
-		if entry.Source.IsValid() && entry.Source.Bits() == 0 {
-			entry.Source = netip.Prefix{}
 		}
 		if entry.Source.IsValid() {
 			source, ok := canonicalPrefix(entry.Source)
