@@ -5,6 +5,7 @@ package babel
 
 import (
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
-// adoptOriginatedLocked deletes an originated prefix's route table entry, so a
+// adoptOwnLocked deletes an originated prefix's route table entry, so a
 // dump that walks the route table alone omits every prefix this node
 // announces, which is the half an operator checks first.
 func TestRouteDumpCarriesOriginatedPrefixes(t *testing.T) {
@@ -51,6 +52,31 @@ func TestRouteDumpCarriesOriginatedPrefixes(t *testing.T) {
 	}
 	if stats := speaker.Stats(); stats.Prefixes != 2 || stats.Originated != 2 {
 		t.Errorf("stats count %d prefixes and %d originated, want two of each", stats.Prefixes, stats.Originated)
+	}
+}
+
+// An address cap.table assigns is in the dump as this node's own, at metric 0
+// with no next hop, and a host prefix both announced and assigned is one row
+// that says both. Prefixes counts each key once.
+func TestRouteDumpCarriesAssignedAddresses(t *testing.T) {
+	speaker, err := New(Config{}, Routes{}, Runtime{}, &netstack.Mesh{Routes: netstack.NewRouteTable()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	both := netip.MustParseAddr("198.18.104.117")
+	assigned := netip.MustParseAddr("2001:db8::5")
+	speaker.Originate(netip.PrefixFrom(both, both.BitLen()))
+	speaker.SetAssigned([]netip.Addr{both, assigned})
+
+	want := []RouteStat{
+		{Destination: netip.PrefixFrom(both, both.BitLen()), Originated: true, Assigned: true},
+		{Destination: netip.PrefixFrom(assigned, assigned.BitLen()), Assigned: true},
+	}
+	if dump := speaker.RouteDump(); !slices.Equal(dump, want) {
+		t.Errorf("the dump reads %+v, want %+v", dump, want)
+	}
+	if stats := speaker.Stats(); stats.Prefixes != 2 || stats.Originated != 1 {
+		t.Errorf("stats count %d prefixes and %d originated, want 2 and 1", stats.Prefixes, stats.Originated)
 	}
 }
 

@@ -18,6 +18,18 @@
 //     and a new process starts past the limit SetOrigin was handed, so the
 //     routes of a restarted node are newer than any a far node still holds.
 //     See seqnoLimitAhead.
+//   - 3.5.3: an update for a key this node originates, or for the host key of
+//     an address cap.table assigns it, creates no entry. Appendix E's stub
+//     prefers the direct route to a directly attached prefix "even when the
+//     prefixes are the same", and every key this node holds as its own is
+//     treated so.
+//   - 3.5.4: a hold ends when an expiry timer runs out, not once every
+//     neighbor acknowledged a retraction, the option the section RECOMMENDS.
+//     A retracted route is held until its own expiry. Once it is flushed, or
+//     once a prefix loses its last route any other way, the prefix is held
+//     until the latest time any finite update this node sent for it expires at
+//     a neighbor, if that is later. The section gives the reason itself: "The
+//     former option is simpler".
 //   - 3.7.2: a triggered update or retraction is sent once, not repeated and
 //     not acknowledged. Each link is one ESP tunnel with in-order delivery
 //     rather than lossy multicast, and the periodic dump plus the retraction
@@ -46,9 +58,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -165,9 +179,13 @@ type Speaker struct {
 
 	mesh *netstack.Mesh
 
-	mu           sync.Mutex
-	neighbors    map[string]*neighborState
-	originate    map[routeKey]struct{}
+	mu        sync.Mutex
+	neighbors map[string]*neighborState
+	originate map[routeKey]struct{}
+	// assigned is the host key of every address cap.table assigns this node,
+	// each held as this node's own as an originated key is, and announced only
+	// if it is originated too.
+	assigned     map[routeKey]struct{}
 	routes       *routeTable
 	pendingSeqno map[sourceKey]pendingSeqno
 	// pendingByAsker is how much of pendingSeqno each neighbor is holding, so
@@ -274,6 +292,7 @@ func New(cfg Config, routes Routes, rt Runtime, mesh *netstack.Mesh) (*Speaker, 
 
 		neighbors:      make(map[string]*neighborState),
 		originate:      make(map[routeKey]struct{}),
+		assigned:       make(map[routeKey]struct{}),
 		pendingSeqno:   make(map[sourceKey]pendingSeqno),
 		pendingByAsker: make(map[string]int),
 		askedSeqno:     make(map[askedKey]time.Time),
@@ -283,7 +302,7 @@ func New(cfg Config, routes Routes, rt Runtime, mesh *netstack.Mesh) (*Speaker, 
 		changed:        make(chan struct{}, 1),
 	}
 	s.routes = newRouteTable(s.installRoute)
-	s.routes.forget = func(key routeKey) { s.mesh.Routes.Remove(key.source, key.dest) }
+	s.routes.forget = s.unrouteLocked
 	s.applyEffective(cfg.Effective())
 	s.SetRoutes(routes)
 	return s, nil
@@ -301,6 +320,13 @@ func (s *Speaker) applyEffective(effective Effective) {
 	// which a metric change is worth a triggered update rather than a wait for
 	// the next periodic dump.
 	s.routes.tau, s.routes.trigger = 3*s.hello, s.cost.RxCost
+	// A neighbor resets a route's expiry timer to "a small multiple of the
+	// interval value included in the update" (RFC 8966 section 3.5.3), counted
+	// from its arrival. This covers a neighbor that takes the multiple Appendix
+	// B suggests, "Route Expiry time:  3.5 times the advertised update
+	// interval", as this node's own receive does, for an update carrying
+	// s.update. One Hello interval more covers that update's transit.
+	s.routes.updateExpiry = deadTimeout(s.update) + s.hello
 }
 
 // SetConfig applies a reloaded cap.babel, which config.Load has validated
@@ -471,35 +497,82 @@ func (s *Speaker) OriginateFrom(dest, source netip.Prefix) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, known := s.originate[key]; !known {
+		s.noteOwnLocked("originated", []routeKey{key}, nil, nil)
+	}
 	s.originate[key] = struct{}{}
-	s.adoptOriginatedLocked(key)
+	s.adoptOwnLocked(key)
 	s.updatePending = true
 	s.wake()
 }
 
-// adoptOriginatedLocked takes over a prefix this node now originates itself.
-// Whatever it had learned has to go: a learned route left selected keeps
-// advertiseTo's split horizon comparing its next hop against nil, so it never
-// fires and the node advertises the prefix at metric 0 back to the neighbor it
-// is still forwarding to, which is a loop until the entry expires.
+// adoptOwnLocked takes over a key this node now holds as its own, a
+// prefix it announces or an address cap.table assigns it. Whatever it had
+// learned for the key goes. A learned route left selected keeps advertiseTo's
+// split horizon comparing its next hop against nil, so it never fires and the
+// node advertises the prefix at metric 0 back to the neighbor it is still
+// forwarding to, which is a loop until the entry expires. An entry left in the
+// route table would also write its next selection over the forwarding entry,
+// and its flush would remove it.
 //
-// The forwarding entry is held unreachable rather than removed, and the hold
-// goes in whether or not anything was learned. Originating a prefix is a claim
-// to be its origin, not a promise that every address in it is reachable. With
-// no entry at all, a packet for an address in the prefix that is not assigned
-// locally falls through to a covering route, and on a node holding one that is
-// straight back out to a neighbor which learned this prefix from here at
-// metric 0 and returns it.
-func (s *Speaker) adoptOriginatedLocked(key routeKey) {
+// The forwarding entry is this node's whether or not anything was learned, and
+// receive drops every later update for the key, so no learned route replaces
+// it. With no entry at all, a packet for an address in the prefix falls
+// through to a covering route, and on a node holding one that is straight back
+// out to a neighbor which learned this prefix from here at metric 0 and
+// returns it.
+func (s *Speaker) adoptOwnLocked(key routeKey) {
 	delete(s.routes.entries, key)
-	s.mesh.Routes.Set(key.source, key.dest, netstack.Unreachable)
+	s.mesh.Routes.Set(key.source, key.dest, s.ownEntryLocked(key))
 }
 
-// releaseOriginatedLocked gives a prefix back after it stops being originated,
-// so a route to it can be learned from a neighbor again rather than staying
-// held against the hold adoptOriginatedLocked installed.
-func (s *Speaker) releaseOriginatedLocked(key routeKey) {
+// releaseOwnLocked gives a key back once this node holds it as its own in
+// neither way, so a route to it can be learned from a neighbor again rather
+// than staying behind the entry adoptOwnLocked installed, and reports whether
+// the key is held. A key given back loses its last route, and the route table
+// holds it until the latest time any finite update this node sent for it
+// expires at a neighbor, however long ago it stopped being announced. A key
+// still held the other way keeps an entry of this node's, the one
+// ownEntryLocked names for it now.
+func (s *Speaker) releaseOwnLocked(key routeKey, now time.Time) bool {
+	if !s.ownsLocked(key) {
+		return s.routes.lose(key, now)
+	}
+	s.mesh.Routes.Set(key.source, key.dest, s.ownEntryLocked(key))
+	return false
+}
+
+// unrouteLocked writes the forwarding entry of a key the route table holds no
+// route for, unreachable while it is held and none otherwise. A key this node
+// holds as its own keeps the entry its owner wrote, which the end of a hold
+// leaves alone.
+func (s *Speaker) unrouteLocked(key routeKey, held bool) {
+	if s.ownsLocked(key) {
+		return
+	}
+	if held {
+		s.mesh.Routes.Set(key.source, key.dest, netstack.Unreachable)
+		return
+	}
 	s.mesh.Routes.Remove(key.source, key.dest)
+}
+
+// ownEntryLocked is the forwarding entry of a key this node holds as its own:
+// Local for one it originates, whether cap.table assigns it too or not, and
+// Assigned for an address cap.table assigns and nothing originates.
+func (s *Speaker) ownEntryLocked(key routeKey) *netstack.Peer {
+	if _, originated := s.originate[key]; originated {
+		return netstack.Local
+	}
+	return netstack.Assigned
+}
+
+// ownsLocked reports a key this node holds as its own, one it originates or
+// the host key of an address cap.table assigns it.
+func (s *Speaker) ownsLocked(key routeKey) bool {
+	_, originated := s.originate[key]
+	_, assigned := s.assigned[key]
+	return originated || assigned
 }
 
 // SetRoutes applies the cap.route capability, which a reload may replace. Only
@@ -522,31 +595,79 @@ func (s *Speaker) SetOriginated(routes []OriginatedRoute) {
 		wanted[key] = struct{}{}
 	}
 	s.mu.Lock()
-	changed := len(wanted) != len(s.originate)
-	for key := range s.originate {
-		if _, keep := wanted[key]; !keep {
-			changed = true
-		}
+	defer s.mu.Unlock()
+	previous := s.originate
+	s.originate = wanted
+	s.replaceOwnLocked("originated", previous, wanted)
+}
+
+// SetAssigned replaces the addresses cap.table assigns this node. Each is held
+// at its host route as this node's own, and announced only if it is originated
+// too. A route request for one that is not is answered as RFC 8966 section
+// 3.8.1.1 has a node answer one for a prefix it has no selected route to: "if
+// such a route does not exist, it MUST send a retraction for that prefix".
+func (s *Speaker) SetAssigned(addresses []netip.Addr) {
+	wanted := make(map[routeKey]struct{}, len(addresses))
+	for _, address := range addresses {
+		wanted[routeKey{dest: netip.PrefixFrom(address, address.BitLen())}] = struct{}{}
 	}
-	if !changed {
-		s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous := s.assigned
+	s.assigned = wanted
+	s.replaceOwnLocked("assigned", previous, wanted)
+}
+
+// replaceOwnLocked carries out the change of one set of this node's own keys,
+// the one named set, from previous to wanted, which its caller has just made
+// the set. Each key that leaves it is released, and a neighbor told of one
+// hears the retraction the next advertisement carries, since advertiseTo
+// reports an unknown route as infinity. Each key of wanted is adopted. The
+// change is recorded once, and the same set again changes nothing.
+func (s *Speaker) replaceOwnLocked(set string, previous, wanted map[routeKey]struct{}) {
+	if maps.Equal(previous, wanted) {
 		return
 	}
-	// A prefix that has gone away is dropped here. Neighbors learn of
-	// it through the retraction the next advertisement carries, since
-	// advertiseTo reports an unknown route as infinity.
-	for key := range s.originate {
-		if _, keep := wanted[key]; !keep {
-			s.releaseOriginatedLocked(key)
+	now := time.Now()
+	var added, removed, held []routeKey
+	for key := range previous {
+		if _, kept := wanted[key]; !kept {
+			removed = append(removed, key)
+			if s.releaseOwnLocked(key, now) {
+				held = append(held, key)
+			}
 		}
 	}
-	s.originate = wanted
 	for key := range wanted {
-		s.adoptOriginatedLocked(key)
+		if _, known := previous[key]; !known {
+			added = append(added, key)
+		}
+		s.adoptOwnLocked(key)
 	}
+	s.noteOwnLocked(set, added, removed, held)
 	s.updatePending = true
 	s.wake()
-	s.mu.Unlock()
+}
+
+// noteOwnLocked records a change to the keys this node originates or to the
+// addresses cap.table assigns it, each set of keys in route order
+func (s *Speaker) noteOwnLocked(set string, added, removed, held []routeKey) {
+	attrs := []slog.Attr{slog.String("set", set)}
+	for _, named := range []struct {
+		name string
+		keys []routeKey
+	}{{"added", added}, {"removed", removed}, {"held", held}} {
+		if len(named.keys) == 0 {
+			continue
+		}
+		slices.SortFunc(named.keys, func(a, b routeKey) int { return compareKey(a.dest, a.source, b.dest, b.source) })
+		described := make([]string, len(named.keys))
+		for i, key := range named.keys {
+			described[i] = describeRoute(key)
+		}
+		attrs = append(attrs, slog.String(named.name, strings.Join(described, ", ")))
+	}
+	s.events.Emit("babel.own.changed", "", attrs...)
 }
 
 // OriginatedRoute is one configured announcement, an ordinary prefix when
@@ -963,9 +1084,9 @@ type NeighborStat struct {
 type Stats struct {
 	Neighbors []NeighborStat
 	Selected  int
-	// Prefixes is every key this speaker holds, learned and originated
-	// together, so a node whose routes are all retracted can be told from one
-	// that has heard nothing at all.
+	// Prefixes is every key this speaker holds, the ones RouteDump lists, so a
+	// node whose routes are all retracted can be told from one that has heard
+	// nothing at all.
 	Prefixes   int
 	Originated int
 }
@@ -987,16 +1108,7 @@ func (s *Speaker) Stats() Stats {
 			received[neighbor]++
 		}
 	}
-	// adoptOriginatedLocked deletes an originated prefix's entry, so the two
-	// maps are disjoint in the steady state and the sum is the key count. The
-	// membership test covers the window where a neighbor has re-advertised a
-	// prefix this node originates and the entry is back.
-	stats.Prefixes = len(s.routes.entries)
-	for key := range s.originate {
-		if _, present := s.routes.entries[key]; !present {
-			stats.Prefixes++
-		}
-	}
+	s.eachKnownKeyLocked(func(routeKey) { stats.Prefixes++ })
 	for _, neighbor := range s.neighbors {
 		// read before Dropped, which the dataplane raises first
 		// so a snapshot never holds more delay drops than drops
@@ -1070,7 +1182,8 @@ func comparePrefix(a, b netip.Prefix) int {
 // RouteStat is one prefix of the Babel route table as an operator reads it:
 // the selected route, where it points, and how many neighbors offered one.
 // Via is empty for a prefix held unreachable, which a retraction leaves behind
-// so a packet does not follow a shorter prefix instead.
+// so a packet does not follow a shorter prefix instead, and for a key this
+// node holds as its own, which Originated or Assigned names.
 type RouteStat struct {
 	Destination netip.Prefix
 	// Source is invalid on an ordinary route and set on a source-specific one,
@@ -1082,6 +1195,9 @@ type RouteStat struct {
 	Seqno      uint16
 	Candidates int
 	Originated bool
+	// Assigned is the host route of an address cap.table assigns this node,
+	// held as its own and announced only where Originated says so too.
+	Assigned bool
 }
 
 // RouteDump is every prefix this speaker holds, taken under the same lock the
@@ -1104,33 +1220,23 @@ func (s *Speaker) RouteDump() []RouteStat {
 func (s *Speaker) routeStats() []RouteStat {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Both maps, the way advertisableKeys reads both: adoptOriginatedLocked
-	// deletes a prefix's entry when this node takes it over, so a walk of the
-	// route table alone omits everything this node announces, which is the
-	// half an operator checks first.
-	out := make([]RouteStat, 0, len(s.originate)+len(s.routes.entries))
-	seen := make(map[routeKey]struct{}, len(s.originate)+len(s.routes.entries))
-	add := func(key routeKey) {
-		if _, done := seen[key]; done {
-			return
-		}
-		seen[key] = struct{}{}
+	out := make([]RouteStat, 0, len(s.originate)+len(s.assigned)+len(s.routes.entries)+len(s.routes.held))
+	s.eachKnownKeyLocked(func(key routeKey) {
 		_, originated := s.originate[key]
+		_, assigned := s.assigned[key]
 		stat := RouteStat{
 			Destination: key.dest,
 			Source:      key.source,
 			Metric:      MetricInfinity,
 			Originated:  originated,
+			Assigned:    assigned,
 		}
-		if originated {
-			// A prefix this node originates is advertised at metric zero and
-			// points at nowhere else, whatever a neighbor is still saying
-			// about it.
+		if originated || assigned {
 			stat.Metric = 0
 		}
 		if entry := s.routes.entries[key]; entry != nil {
 			stat.Candidates = len(entry.routes)
-			if !originated && entry.selected.neighbor != nil {
+			if entry.selected.neighbor != nil {
 				stat.Via = entry.selected.neighbor.peer.ID
 				stat.Metric = entry.selected.cost
 				stat.RouterID = entry.selected.routerID
@@ -1138,12 +1244,31 @@ func (s *Speaker) routeStats() []RouteStat {
 			}
 		}
 		out = append(out, stat)
-	}
+	})
+	return out
+}
+
+// eachKnownKeyLocked calls do once for each key this speaker knows: this
+// node's own keys, the learned ones, and the keys under the hold of RFC 8966
+// section 3.5.4 that no route table entry is left for. A key can be
+// originated and assigned at the same time, and under the hold while it is
+// either, but the route table has no entry for a key of this node's own,
+// since adoptOwnLocked takes it out and receive keeps it out.
+func (s *Speaker) eachKnownKeyLocked(do func(routeKey)) {
 	for key := range s.originate {
-		add(key)
+		do(key)
+	}
+	for key := range s.assigned {
+		if _, originated := s.originate[key]; !originated {
+			do(key)
+		}
 	}
 	for key := range s.routes.entries {
-		add(key)
+		do(key)
 	}
-	return out
+	for key := range s.routes.held {
+		if _, learned := s.routes.entries[key]; !learned && !s.ownsLocked(key) {
+			do(key)
+		}
+	}
 }
