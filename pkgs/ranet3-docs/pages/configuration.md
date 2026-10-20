@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-10-19
+updated: 2026-10-20
 order: 30
 ---
 
@@ -76,9 +76,9 @@ they describe the same node.
 ## Structure
 
 The top level says what the node **is**. Everything the node **does** lives
-under `cap`, 1 block per capability. Writing `cap.table`, `cap.segment` or
-`cap.egress` turns that capability on. Writing `cap.route`, `cap.babel` or
-`cap.crypto` changes its defaults. There is no `enabled` field.
+under `cap`, 1 block per capability. Writing `cap.table`, `cap.segment`,
+`cap.egress` or `cap.border` turns that capability on. Writing `cap.route`,
+`cap.babel` or `cap.crypto` changes its defaults. There is no `enabled` field.
 
 A node that only joins the mesh writes `node`, `auth`, `link` and `dial`:
 
@@ -109,9 +109,9 @@ These keys are required:
 
 Every other key has a default. A left-out `cap.route`, `cap.babel` or
 `cap.crypto` runs its defaults. A left-out `cap.table`, `cap.segment`,
-`cap.egress` or [`cap.transit`](configuration-reference.md) is off. A node with
-no `cap.babel` sends Hellos every 4 seconds and updates every 16 seconds (RFC
-8966 Appendix B). A node with no `cap.route` announces nothing.
+`cap.egress`, `cap.border` or [`cap.transit`](configuration-reference.md) is
+off. A node with no `cap.babel` sends Hellos every 4 seconds and updates every
+16 seconds (RFC 8966 Appendix B). A node with no `cap.route` announces nothing.
 
 ### Capabilities
 
@@ -124,9 +124,11 @@ no `cap.babel` sends Hellos every 4 seconds and updates every 16 seconds (RFC
 | `cap.segment` | Segment routing (RFC 8986): the SIDs this node answers for and what it steers |
 | `cap.crypto`  | The transforms, the replay window and the rekey timers                        |
 | `cap.egress`  | Source translation for an exit node or a subnet router, Linux only            |
+| `cap.border`  | A filter for forged mesh traffic arriving from other links, Linux only        |
 
-[Routing](routing.md), [segment routing](segment-routing.md) and
-[exit nodes](exit-nodes.md) describe what the larger blocks do.
+[Routing](routing.md), [segment routing](segment-routing.md),
+[exit nodes](exit-nodes.md) and [the border filter](border-filter.md) describe
+what the larger blocks do.
 
 ## Names
 
@@ -197,6 +199,7 @@ itself there:
 - `cap.route` and `cap.babel` are `internal/babel`'s `Routes` and `Config`.
 - `cap.crypto` is `ike`'s `Crypto`.
 - `cap.egress` is `internal/egress`'s `Egress`.
+- `cap.border` is `internal/egress`'s `Border`.
 
 `internal/config` holds the node's own keys and the checks that span 2
 capabilities, such as a SID that is also an address the reconciler assigns. The

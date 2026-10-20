@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-10-19
+updated: 2026-10-20
 order: 100
 ---
 
@@ -33,7 +33,7 @@ setting or skips a route instead.
 | `cap.border`                         | an nftables chain at prerouting                                           | refused                                                 |
 | Network watch                        | rtnetlink                                                                 | routing socket                                          |
 | Don't fragment                       | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO`                                      | `IP_DONTFRAG`, `IPV6_DONTFRAG`                          |
-| Path MTU a search starts from        | the route's MTU, including a path MTU the host learned                    | the MTU of the interface the route leaves by            |
+| Path MTU a search starts from        | the route's MTU, including a path MTU the host learned                    | the MTU of the interface the session sends through      |
 | Forwarding read from                 | `/proc/sys/net/ipv4/ip_forward`, `/proc/sys/net/ipv6/conf/all/forwarding` | `net.inet.ip.forwarding`, `net.inet6.ip6.forwarding`    |
 | Control socket caller                | `SO_PEERCRED`                                                             | `LOCAL_PEERCRED`, `LOCAL_PEERPID`                       |
 | Default state directory              | `/var/lib/ranet3`                                                         | `/var/db/ranet3`                                        |
@@ -212,15 +212,15 @@ a later request moves it to the address that one arrived on. On other platforms
 the kernel always chooses.
 
 Where the host still holds the address but has no route from it to the peer, the
-session's traffic leaves from the kernel's choice too, until a fresh request
-after a minute, which a peer sends once that traffic is lost. A fresh request to
-the address within a minute of the fallback leaves the session there. The first
-one a minute or more after it moves the session back, and if the address still
-has no route, the session falls back again, at most once a minute. Where the
-session's traffic from the other address still reaches the peer, the session
-works, and it stays there until the peer's next request, such as a rekey. Each
-answer to a request that reaches the address is sent from the address itself
-first, so answers leave from it as soon as it routes again.
+session's traffic leaves from the kernel's choice too. A fresh request to the
+address within 1 minute of the fallback changes nothing, and the session keeps
+sending from the kernel's choice. The first one after that minute, which a peer
+sends once that traffic is lost, moves the session back to the address. If the
+address still has no route, the session falls back again, at most once every
+minute. Where the session's traffic from the other address still reaches the
+peer, the session works, and it stays there until the peer's next request, such
+as a rekey. Each answer to a request that reaches the address is sent from the
+address itself first, so answers leave from it as soon as it routes again.
 
 A session that cannot send at all, because the host has no route to the peer,
 holds while its liveness check retransmits on the usual schedule, and ends once
@@ -369,9 +369,14 @@ stays open. The stop holds for that peer on the shared socket and on its own
 alike.
 
 On macOS every datagram leaves with `IP_DONTFRAG` or `IPV6_DONTFRAG`. The host
-refuses one past the MTU of the interface its route leaves by, rather than past
-a path MTU it learned. A session's search starts from that interface's MTU, and
-the probes alone find a narrower hop beyond it.
+refuses one past the MTU of the interface it leaves by, rather than past a path
+MTU it learned. A socket that `link.underlay.bind` holds to an interface sends
+through it. Otherwise a session the peer opened sends through the interface
+holding the address it sends from, the one the peer's latest request reached
+until a send from it falls back, as [moving hosts](#moving-hosts) describes. Any
+other session, one whose send fell back included, sends through the interface
+its route leaves by. A session's search starts from the MTU of the interface it
+sends through, and the probes alone find a narrower hop beyond it.
 
 A session on a path under the floor fragments on either platform as
 [the design's limits](design/limits.md) describe. While one does, Linux lets the

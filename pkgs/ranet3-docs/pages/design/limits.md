@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-19
+updated: 2026-10-20
 order: 10
 ---
 
@@ -37,6 +37,14 @@ it. A prefix an exit node offers to carry is advertised only while its family's
 translation chain reads back exactly as written and the host forwards the
 family. It is retracted on the first pass that finds either untrue. A pass runs
 every 30 seconds unless `cap.egress.sweep` names another interval.
+
+An exit or subnet router set up as
+[exit nodes](../exit-nodes.md#the-return-path) describes should not carry
+transit. Its `cap.table.rules` send only the mesh prefixes to the mesh table. A
+transit packet for a prefix another node announces outside them therefore leaves
+by the host's own routes out of the uplink. It leaves translated to the node's
+address in a family `advertise` covers, and under the sender's mesh address in
+any other.
 
 With transit off, a node advertises only the prefixes it announces and never
 relays one it learned. Transit is off unless

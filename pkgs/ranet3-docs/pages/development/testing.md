@@ -55,7 +55,7 @@ unless run as root.
   a dialed pair binds the source of the route the underlay mark selects. 3 more,
   in `unpin_namespace_linux_test.go`, check that an answer from an address with
   no route to the peer leaves from the kernel's choice, and that the session
-  returns to its address once the host holds it again, or a minute after a
+  returns to its address once the host holds it again, or 1 minute after a
   fallback for want of a route, once it routes again.
 - `internal/netstack` has tests whose names start with `TestTUN` that create and
   attach to a real TUN device. They read its `gso_max_segs` back, open several
@@ -162,10 +162,10 @@ set. The Mac that runs them may be on a live mesh.
   that a socket connected to 1 peer from a hub bound to 1 feth binds that feth's
   address, where the host's own route leaves by the other. 6 more check where
   answers leave from. An answer leaves from the address its request reached, by
-  the interface holding that address, whose MTU the session's path MTU then
-  reads, and the datagrams of a send that fit still leave from it after one is
-  refused for its size. Once the address is gone or has no route to the peer,
-  sends leave from the kernel's choice and return to the address as
+  the interface holding that address. The session's path MTU reads the MTU of
+  that interface. The datagrams of a send that fit still leave from the address
+  after one is refused for its size. Once the address is gone or has no route to
+  the peer, sends leave from the kernel's choice and return to the address as
   [moving hosts](../platforms.md#moving-hosts) describes. A send refused from
   the address and again without it keeps the address.
 - `control` has 1 that checks that the control socket and the directories the

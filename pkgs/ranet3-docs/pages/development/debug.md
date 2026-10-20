@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-19
+updated: 2026-10-20
 order: 30
 ---
 
@@ -496,27 +496,32 @@ trust's refusal as `err`, such as
 organization's key changed.
 
 An `ike.endpoint.moved` is recorded when a fresh request comes from another peer
-address or port, or, in a session the peer opened, reaches an address of this
-node the session's sends do not leave from. Its `endpoint` names the peer's
-address and port, so in the second case it can name the same one as before. A
-session that fell back from an address with no route to the peer moves back, and
-records one, only at the first fresh request a minute or more after the
-fallback.
+address or port, or, in a session the peer opened, reaches this node at an
+address other than the one the session's sends name. In a session that names an
+interface, as it does on Linux and for a link-local address on macOS, a fresh
+request arriving on another interface records it too. Its `endpoint` names the
+peer's address and port, which in these two cases can be the same as before. A
+session whose sends fell back from an address that is gone names no address, and
+its next fresh request records an `ike.endpoint.moved` wherever it arrives. A
+session that fell back from an address with no route to the peer moves back to
+it, recording an `ike.endpoint.moved`, only at the first fresh request 1 minute
+or more after the fallback.
 
 A `transport.endpoint` event carries the peer's `endpoint` and the `errno` the
-kernel refused the send with. An `unpinned` one is recorded once for an
-endpoint. While a session's address has no route to the peer, that is at most
-once a minute for the session's own sends, and once more for each answer to a
-request that reaches the address, since every answer is sent to its request's
-own endpoint. An `unsegmented` one is recorded each time segmentation stops,
-which for a route that keeps refusing segments is at most once every 10 minutes.
-A send refused only for its size records none, since it lowers that session's
-budget instead. On a socket that fragments, a segmented message refused with
-`EMSGSIZE` twice in a row records an `unsegmented` one with that `errno`, as
-[platforms](../platforms.md#path-mtu) describes. An `ike.send.failed` carries
-the error of the first send that failed, and its `ike.send.recovered` how many
-failed before one went out. A reply to a retransmitted request counts toward
-neither, since a replay can come from any address.
+kernel refused the send with. An `unpinned` event is recorded once for an
+endpoint, at its first fallback. Every answer is sent to its request's own
+endpoint. While a session's address has no route to the peer, each answer to a
+request that reaches the address therefore records an `unpinned` event, and the
+session's own sends record at most one every minute. An `unsegmented` one is
+recorded each time segmentation stops, which for a route that keeps refusing
+segments is at most once every 10 minutes. A send refused only for its size
+records none, since it lowers that session's budget instead. On a socket that
+fragments, a segmented message refused with `EMSGSIZE` twice in a row records an
+`unsegmented` one with that `errno`, as [platforms](../platforms.md#path-mtu)
+describes. An `ike.send.failed` carries the error of the first send that failed,
+and its `ike.send.recovered` how many failed before one went out. A reply to a
+retransmitted request counts toward neither, since a replay can come from any
+address.
 
 A `netstack.codel` event carries the `sojourn` of the batch that changed the
 state, how long that batch had waited since it was reserved, and the `target`. A

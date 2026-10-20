@@ -622,8 +622,8 @@ needs.
 | `sweep`     | duration          | `"30s"` | Interval of the periodic pass                                     |
 
 - `advertise` is required unless the node has an egress segment, where it may be
-  empty or left out. Such a node serves that segment alone and attracts no
-  route.
+  empty or left out unless `return` is set. Such a node serves that segment
+  alone and attracts no route.
 - An exit advertises `0.0.0.0/0` and `::/0` only, for Linux and macOS clients
   alike. The `/1` halves would win over every `/0` exit by longest prefix, as
   [exit nodes](exit-nodes.md#what-to-advertise) describes. A subnet router

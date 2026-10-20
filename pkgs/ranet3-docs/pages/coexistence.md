@@ -227,13 +227,13 @@ rules to find its own and to report conflicts, and writes, replaces or deletes
 nothing outside its own tables. It replaces the chain's contents in 1
 transaction, so no packet is ever evaluated against half a ruleset, and deletes
 and makes a table again in that transaction where nf_tables will not change it
-in place.
+in place, any chain another writer put in the table with it.
 
-It removes its tables at shutdown and at `ranet3 down`. A table left behind by
-an earlier instance carries the same name and is adopted, then brought to what
-the configuration now asks for, and one in a family the configuration no longer
-covers is removed at startup rather than left translating under rules nothing is
-maintaining.
+It removes its tables at shutdown and at `ranet3 down`, with any chain another
+writer put in them. A table left behind by an earlier instance carries the same
+name and is adopted, then brought to what the configuration now asks for, and
+one in a family the configuration no longer covers is removed at startup rather
+than left translating under rules nothing is maintaining.
 
 Nothing here writes iptables. The 2 are separate registries in the kernel, an
 `iptables-nft` rule is visible here as an ordinary nftables table, and the

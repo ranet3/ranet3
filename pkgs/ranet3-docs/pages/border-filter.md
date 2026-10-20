@@ -219,8 +219,9 @@ the list is no change.
 `status` prints 1 line for the filter, after the egress line: the table and the
 chain, the devices inside, the overlay prefixes and SIDs it holds, and the
 packets each kind of drop counted as of the last pass. A filter whose chain is
-not read back reads `not installed`, with the reason. The egress line of an exit
-whose filter holds the egress device back says
+not read back reads `not installed`, with the reason, also where the chain is
+there and holds another writer's rule or sits in a dormant table. The egress
+line of an exit whose filter holds the egress device back says
 `until the border filter is read back`.
 
 `ranet3 debug rules` reads the chain now, through a socket of its own, so an

@@ -132,6 +132,18 @@ table = 200
 priority = 100
 ```
 
+**An exit or subnet router set up this way should not carry transit.** The `to`
+rules send only the mesh prefixes to the mesh table. With `cap.transit` on, a
+packet arriving on the tun for a prefix another node announces outside those
+rules never consults the mesh table. Such prefixes include the subnet behind
+another subnet router, and a default another exit announces where this node does
+not originate the same one, such as a default from a source prefix. The packet
+follows the host's own routes out of the uplink and never reaches the node that
+announces the prefix. In a family `advertise` covers, the out rule translates
+its source to this node's address. In any other family, and on a node that
+advertises nothing and serves only egress segments, no out rule matches it, and
+it leaves under the sender's mesh address.
+
 ## Refusing to advertise
 
 **An exit that cannot translate refuses to advertise.** Babel carries no
@@ -146,10 +158,11 @@ policy in a table with no flags, and the host forwards that family. Each pass
 first rewrites a chain that reads back otherwise, such as one missing a rule,
 holding another writer's or in a dormant table. nf_tables clears no table flag
 in place but dormant, and changes no chain's type, hook or priority, so when one
-of those differs the pass deletes the family's table and makes it again in the
-same transaction. When the chain still does not read back as written, or the
-host stops forwarding the family, that pass retracts the prefix. A pass runs at
-least every `sweep` (30 seconds by default).
+of those differs the pass deletes the family's table, and any chain another
+writer put in it, then makes it again in the same transaction. When the chain
+still does not read back as written, or the host stops forwarding the family,
+that pass retracts the prefix. A pass runs at least every `sweep` (30 seconds by
+default).
 
 The node reads forwarding from `/proc/sys/net/ipv4/ip_forward` and
 `/proc/sys/net/ipv6/conf/all/forwarding`. Any value other than `0` counts as on,
@@ -324,6 +337,8 @@ installs them again on the next pass, and the advertisement follows.
 flows, what it announces, what it withholds "until its rule is installed and the
 kernel forwards it", the egress device and the families it is ready for, any
 chain it shares the hook with, the time since the last pass and the last error.
+The withholding clause reads the same where the rule is installed and the chain
+still does not read back as written, such as one holding another writer's rule.
 A family not ready is named with the reason the last pass found, or in the
 withholding clause's words before the first pass and while the translator is
 stopped. While the border filter holds the device back, the line says
