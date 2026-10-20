@@ -245,6 +245,35 @@ func (r *rekeySchedule) reset(delay time.Duration) {
 	r.due = false
 }
 
+// rearm puts schedule back on the rekey its interval gives, so a forced delay a rekey on another path overtook, a packet count's among them, runs out on nothing
+// a schedule with no interval then holds no rekey, and no deadline for the loop's wait
+func (s *Session) rearm(schedule *rekeySchedule) error {
+	schedule.forced, schedule.failures, schedule.lastErr = false, 0, nil
+	if schedule.interval == 0 {
+		schedule.timer.Stop()
+		schedule.deadline = time.Time{}
+		schedule.due = false
+		return nil
+	}
+	delay, err := s.scheduledDelay(schedule)
+	if err != nil {
+		return err
+	}
+	schedule.reset(delay)
+	return nil
+}
+
+// wake is the earlier of deadline and the time the loop wakes for r, its timer's deadline or its SA's lifetime while that is ahead of now
+func (r *rekeySchedule) wake(deadline, now time.Time) time.Time {
+	if !r.deadline.IsZero() && r.deadline.Before(deadline) {
+		deadline = r.deadline
+	}
+	if lifetime, ok := r.lifetimeEnd(); ok && now.Before(lifetime) && lifetime.Before(deadline) {
+		deadline = lifetime
+	}
+	return deadline
+}
+
 func nextDueRekey(schedules []*rekeySchedule, running *rekeySchedule) *rekeySchedule {
 	if running != nil {
 		return nil
@@ -371,17 +400,8 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			return next, nil
 		}
 		slog.Info("ike rekey completed", "sa", schedule.name)
-		schedule.failures, schedule.lastErr, s.temporary = 0, nil, temporaryStreak{}
-		schedule.forced = false
-		if schedule.interval == 0 {
-			return time.Time{}, nil
-		}
-		delay, err := s.scheduledDelay(schedule)
-		if err != nil {
-			return time.Time{}, err
-		}
-		schedule.reset(delay)
-		return time.Time{}, nil
+		s.temporary = temporaryStreak{}
+		return time.Time{}, s.rearm(schedule)
 	}
 	// a rekey that ended is checked against the lists once its outcome is settled, since a check while it ran left its SA to it
 	resuiteDue := false
@@ -414,14 +434,9 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 				startRekey(schedule)
 				return
 			}
-			schedule.forced, schedule.failures, schedule.lastErr = false, 0, nil
-			if schedule.interval > 0 {
-				delay, err := s.scheduledDelay(schedule)
-				if err != nil {
-					end(schedule, "local failure", err)
-					return
-				}
-				schedule.reset(delay)
+			if err := s.rearm(schedule); err != nil {
+				end(schedule, "local failure", err)
+				return
 			}
 		}
 	}
@@ -470,7 +485,6 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 				return err
 			}
 		}
-		startDueRekey()
 		return nil
 	}
 	if err := resuite(); err != nil {
@@ -618,12 +632,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			deadline = pending.deadline
 		}
 		for _, schedule := range schedules {
-			if !schedule.deadline.IsZero() && schedule.deadline.Before(deadline) {
-				deadline = schedule.deadline
-			}
-			if lifetime, ok := schedule.lifetimeEnd(); ok && now.Before(lifetime) && lifetime.Before(deadline) {
-				deadline = lifetime
-			}
+			deadline = schedule.wake(deadline, now)
 		}
 		// the sweeps at the top of the loop run only when the loop wakes, so it waits for their deadlines too
 		if retire, ok := s.nextRetirement(now); ok && retire.Before(deadline) {

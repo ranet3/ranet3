@@ -935,6 +935,92 @@ func TestRefusedForcedChildSARekeyStopsOnceTheListsHoldIt(t *testing.T) {
 	}
 }
 
+// a forced Child SA rekey whose delay a packet-count rekey overtook starts nothing when that delay runs out, where the Child SA has no interval
+// the packet-count rekey made a Child SA the lists hold, which leaves the schedule nothing to run
+func TestForcedDelayAPacketCountRekeyOvertookStartsNothing(t *testing.T) {
+	dialed := &recorder{}
+	h := newResponderHarness(t, nil)
+	cfg, dialing := listedConfig(h, dialed.record)
+	cfg.RekeyJitter = forcedJitter
+	initiator, responder := dialPaused(t, h, cfg)
+	if initiator.childRekeyInterval != 0 {
+		t.Fatalf("the Child SA rekeys every %s, want no interval", initiator.childRekeyInterval)
+	}
+	initiator.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return forcedDelay, nil }
+	runSession(t, responder)
+	initiatorRun := runSession(t, initiator)
+	// the initiator's Run answers a rekey the responder starts after the check Run makes when it starts
+	if err := responder.RekeyChild(); err != nil {
+		t.Fatal(err)
+	}
+	aes128 := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{"aes128gcm"}}})
+	dialing.Store(&aes128)
+	initiator.SuitesChanged()
+	awaitRecorded(t, dialed, "ike.suite.unlisted "+dialedPair+" sa=child suite=aes256gcm action=rekey")
+	forced := time.Now()
+	// the peer rekey limit spaces rekeys a legitimate peer starts minutes apart
+	responder.lastPeerChildRekey.Store(0)
+	if err := initiator.RekeyChildProactively(); err != nil {
+		t.Fatal(err)
+	}
+	awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa=child suite=aes128gcm")
+	if waited := time.Since(forced); waited >= forcedDelay {
+		t.Fatalf("the packet-count rekey completed %s after the reload, past the forced delay of %s", waited, forcedDelay)
+	}
+	// so a rekey started once the delay ran out would be answered too
+	responder.lastPeerChildRekey.Store(0)
+	time.Sleep(forcedDelay + 2*quietPeriod)
+	select {
+	case err := <-initiatorRun:
+		t.Fatalf("the session ended with %v", err)
+	default:
+	}
+	if got := strings.Count(strings.Join(dialed.recorded(), "\n"), "ike.rekey.started "+dialedPair+" sa=child"); got != 1 {
+		t.Errorf("the session started %d Child SA rekeys, want the packet-count one alone: %q", got, dialed.recorded())
+	}
+}
+
+// a schedule with no interval that a rekey on another path put back holds nothing for the loop
+// a forced delay still running leaves no deadline for the wait and no timer to fall due, and one that fell due leaves no rekey due
+// so the wait is never set from a deadline past, which would wake the loop at once on every pass
+func TestScheduleWithNoIntervalPutBackHoldsNothingForTheLoop(t *testing.T) {
+	s := &Session{}
+	far := time.Now().Add(time.Hour)
+	t.Run("a forced delay still running", func(t *testing.T) {
+		schedule := retryOnly("Child SA", "child", func() error { return nil })
+		schedule.forced = true
+		schedule.reset(forcedRetry)
+		if err := s.rearm(schedule); err != nil {
+			t.Fatal(err)
+		}
+		if !schedule.deadline.IsZero() || schedule.forced {
+			t.Errorf("the schedule holds the deadline %v and forced %v, want neither", schedule.deadline, schedule.forced)
+		}
+		time.Sleep(forcedRetry + quietPeriod)
+		if wake := schedule.wake(far, time.Now()); !wake.Equal(far) {
+			t.Errorf("the wait takes %v from the schedule once the delay is past, want nothing of it", wake)
+		}
+		if schedule.poll(); schedule.due {
+			t.Error("the forced delay fell due once the schedule was put back")
+		}
+	})
+	t.Run("a forced delay that fell due", func(t *testing.T) {
+		schedule := retryOnly("Child SA", "child", func() error { return nil })
+		schedule.forced = true
+		schedule.reset(0)
+		time.Sleep(quietPeriod)
+		if schedule.poll(); !schedule.due {
+			t.Fatal("the forced delay did not fall due")
+		}
+		if err := s.rearm(schedule); err != nil {
+			t.Fatal(err)
+		}
+		if next := nextDueRekey([]*rekeySchedule{schedule}, nil); next != nil {
+			t.Error("the forced rekey is still due once the schedule was put back")
+		}
+	})
+}
+
 // a forced rekey that falls due once the lists hold its SA again runs nothing, and a rekey due beside it starts at once
 // in a quiet session nothing else wakes Run for that rekey before its SA's lifetime
 func TestDroppedForcedRekeyLeavesTheRekeyDueBesideItToStart(t *testing.T) {
