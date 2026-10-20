@@ -541,23 +541,26 @@ such restarts produce.
 
 ### Dataplane and sockets
 
-| Limit                                   | Value                                      | Past it                                                                                                      |
-| --------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
-| ESP receive queue of 1 session          | 8 MiB or 1,024 batches                     | A batch is dropped before decryption, and each of its datagrams is counted in `ranet3_receive_dropped_total` |
-| IKE receive queue of 1 session          | 16 datagrams                               | A datagram is dropped and counted the same way                                                               |
-| IKE datagrams waiting for the responder | 64                                         | A datagram is counted in `ranet3_receive_refused_total`, and its sender retransmits                          |
-| UDP socket buffers                      | 7 MiB each way                             | Linux grants more than `net.core.rmem_max` or `net.core.wmem_max` only with `CAP_NET_ADMIN`                  |
-| Datagrams in 1 `UDP_SEGMENT` send       | 64                                         | Linux before 6.9 refuses more                                                                                |
-| Sockets connected to 1 peer each        | 256                                        | A busy peer past the cap stays on the shared socket                                                          |
-| Bytes before a peer gets such a socket  | 1 MiB within 30 seconds, sent and received | Less leaves the peer on the shared socket, and the count starts over every 30 seconds                        |
-| Socket buffers of such a socket         | 4 MiB each way                             | Linux grants more than `net.core.rmem_max` or `net.core.wmem_max` only with `CAP_NET_ADMIN`                  |
-| Read buffers of such a socket           | 4 messages of 64 KiB on Linux, 256 KiB     | 64 MiB at the cap. A read takes 4 messages at most, and the kernel holds the rest for the next               |
+| Limit                                     | Value                                                                                                                         | Past it                                                                                                      |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| ESP receive queue of 1 session            | 8 MiB or 1,024 batches                                                                                                        | A batch is dropped before decryption, and each of its datagrams is counted in `ranet3_receive_dropped_total` |
+| IKE receive queue of 1 session            | 16 datagrams                                                                                                                  | A datagram is dropped and counted the same way                                                               |
+| IKE datagrams waiting for the responder   | 64                                                                                                                            | A datagram is counted in `ranet3_receive_refused_total`, and its sender retransmits                          |
+| UDP socket buffers                        | 7 MiB each way                                                                                                                | Linux grants more than `net.core.rmem_max` or `net.core.wmem_max` only with `CAP_NET_ADMIN`                  |
+| Datagrams in 1 `UDP_SEGMENT` send         | 64                                                                                                                            | Linux before 6.9 refuses more                                                                                |
+| Sockets connected to 1 peer each          | 256                                                                                                                           | A busy peer past the cap stays on the shared socket                                                          |
+| Bytes before a peer gets such a socket    | 1 MiB within 30 seconds, sent and received                                                                                    | Less leaves the peer on the shared socket, and the count starts over every 30 seconds                        |
+| Socket buffers of such a socket           | 4 MiB each way                                                                                                                | Linux grants more than `net.core.rmem_max` or `net.core.wmem_max` only with `CAP_NET_ADMIN`                  |
+| Read buffers of such a socket             | 4 messages of 64 KiB on Linux, 256 KiB                                                                                        | 64 MiB at the cap. A read takes 4 messages at most, and the kernel holds the rest for the next               |
+| ICMP errors to 1 source                   | 6 at once, then 1 a second over IPv4 and 1 every 100 milliseconds over IPv6, Packet Too Big and fragmentation needed left out | The error is not sent, and `ranet3_icmp_withheld_total{limit="source"}` counts it                            |
+| Sources the ICMP limit keeps a bucket for | 4,096                                                                                                                         | The source that drew least recently gives its place, and starts full when it returns                         |
+| ICMP errors of the whole node             | 10,000 at once, then 10,000 a second, of either family and every kind                                                         | The error is not sent, and `ranet3_icmp_withheld_total{limit="node"}` counts it                              |
 
 [Platforms](../platforms.md) lists the tun queues and the socket differences
 between Linux and macOS, and describes the
 [sockets connected to 1 peer](../platforms.md#sockets-connected-to-1-peer).
-[Path MTU](../path-mtu.md#packets-that-do-not-fit) gives the ICMP rate limit all
-answers share.
+[Path MTU](../path-mtu.md#packets-that-do-not-fit) describes the ICMP rate
+limits.
 
 ### Kernel routes
 

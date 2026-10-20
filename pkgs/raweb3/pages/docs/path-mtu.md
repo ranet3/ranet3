@@ -4,7 +4,7 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-10-17
+updated: 2026-10-21
 order: 65
 ---
 
@@ -112,10 +112,37 @@ A node that moves a steered packet on to its next segment does the same when the
 session to that segment carries less, as [segment routing](segment-routing.md)
 describes.
 
-All ICMP answers share 1 rate limit per node: a burst of 8, then 1 every 250
-milliseconds. Time Exceeded and Parameter Problem answers for refused segments
-count against it too. A packet that would be answered past the rate limit is
-dropped without an answer.
+ICMP answers are held to 2 limits. Their intervals, burst and cap are the Linux
+kernel's defaults, since ranet3 sends what the kernel sent before. The number of
+sources a node keeps buckets for is ranet3's own:
+
+- **Per source**: every ICMP error but Packet Too Big and fragmentation needed,
+  such as the Time Exceeded and Parameter Problem a refused segment gets, draws
+  from a bucket for the source of the packet it answers. A bucket holds 6
+  answers and earns 1 back every second for an IPv4 source and every 100
+  milliseconds for an IPv6 one. A node keeps buckets for 4,096 sources. The
+  source that drew least recently gives its place to a new one, and a source new
+  or returning starts full.
+- **Per node**: every answer, of either family and kind, also draws from 1 cap
+  for the node, 10,000 at once and 10,000 a second.
+
+An answer draws from the limits only once its packet is one an error may answer,
+and is built only once it has drawn. A packet no error may answer, such as an
+ICMP error, spends nothing of either. Neither does a packet to a multicast
+group, which ranet3 answers with no Packet Too Big, as
+[the deviations](design/protocol-deviations.md#icmp-answers) list. A flood past
+a limit costs no answer built. The cap is read first, and an answer it holds
+back spends nothing of its source's bucket. A packet that would be answered past
+either limit is dropped without an answer, and `ranet3_icmp_withheld_total`
+counts it by the limit that held it back.
+
+A sender's flood of expired or refused packets spends only its own bucket and
+never holds back another's path MTU discovery. Packet Too Big and fragmentation
+needed are limited only by the cap, so one sender's packets past their session,
+at the cap's rate, hold back every answer. They draw from no source's bucket
+because one address can stand for many hosts behind a NAT that routes into the
+tun, and a bucket of 6 answers, then 1 a second over IPv4 or 10 over IPv6, would
+hold back path MTU discovery for all of them.
 
 ## MSS clamping
 
