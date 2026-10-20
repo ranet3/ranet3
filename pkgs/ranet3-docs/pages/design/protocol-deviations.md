@@ -124,18 +124,18 @@ In exchange a session follows a peer that moved, whichever end dialed.
 ## Answer addresses
 
 [RFC 7296 section 2.11](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.11)
-says of a response "It MUST specify the address and port at which the request
+says an implementation "MUST specify the address and port at which the request
 was received as the source address and port in the response." On Linux and macOS
 each answer names the address its request reached, and a session the peer opened
 sends everything else from that address too, as
 [moving hosts](../platforms.md#moving-hosts) describes. Once the host no longer
 holds the address, or holds it with no route from it to the peer, the kernel
 refuses a send from it, and the send goes again from the kernel's choice of
-source. The alternative is no answer at all.
+source. Without that resend the answer would not leave at all.
 
 Where the address has no route, each answer still tries it first, so answers
 leave from it again as soon as a route returns. The session's own sends stay on
-the kernel's choice until a fresh request after a minute, which a peer sends
+the kernel's choice until a fresh request after 1 minute, which a peer sends
 once that traffic is lost. Where the session's ESP from the other address still
 reaches the peer, the peer has no cause to probe, and the session stays there
 until the peer's next request, such as a rekey.
@@ -458,9 +458,10 @@ once for each such SA, with both SPIs, both identities, the peer's address and
 the sequence number, and the log line carries its own time. Its `src` names only
 the local port. The socket is bound to the wildcard address. A session this node
 dialed sends from the address the kernel picks for each datagram, which the
-session never learns, and the address a session the peer opened sends from is
-not logged. No Flow ID is logged. ranet3 sets no flow label, so the label on
-each outer IPv6 header is the kernel's.
+session never learns. A session the peer opened sends from the address its
+request reached, and the log does not name that one either. No Flow ID is
+logged. ranet3 sets no flow label, so the label on each outer IPv6 header is the
+kernel's.
 
 ## UDP checksums
 
@@ -649,7 +650,16 @@ drop any packet entering the domain for a SID of the domain. Before typed SIDs a
 node cannot tell which destinations are SIDs, and a header naming another node's
 SID is the same forgery one hop later, so it drops the header whatever it names.
 A node that is a transit router for another segment routing domain between 2
-links outside the mesh loses that traffic. No deployment here is one.
+links outside the mesh loses that traffic. No deployment here is one. The drop
+also takes another domain's packet routed from outside into the mesh, and a
+packet from outside addressed to one of this node's own addresses that is not a
+SID, which
+[section 4.3.2](https://www.rfc-editor.org/rfc/rfc8754.html#section-4.3.2) has
+the node process:
+
+> If Segments Left is zero, the node must ignore the routing header and proceed
+> to process the next header in the packet, whose type is identified by the Next
+> Header field in the routing header.
 
 The filter drops routing headers of types 0 and 2 too, since nf_tables finds
 only the first routing header of a packet, and either would otherwise carry a

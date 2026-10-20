@@ -223,16 +223,17 @@ device, a second tun, rather than through the mesh tun. Its packets are counted
 4 ways. Egressed is a packet the egress device took. Refused is a packet whose
 outer or inner source is outside the segment's allow list, or whose inner source
 it cannot read. Not ready is a packet the allow list let through while no egress
-device was installed, whose device closed under the write, or whose family the
-translator had not reported ready. It is this node's own state and is not
-counted among the dropped. A write the egress device refuses for any other
-reason counts its packets among the dropped. Drained is a packet read off the
-egress device and thrown away. Every route into the overlay names the mesh tun,
-so each drained packet took a route into the wrong device. The kernel also sends
-packets of its own out of the device, its MLD reports for `ff02::2` each time
-the device's IPv6 comes up on a host forwarding IPv6. These go to IPv6 multicast
-addresses of interface-local or link-local scope, which no route sends to, so a
-packet to such an address is read and dropped without being counted.
+device was installed, whose device closed under the write, or whose family was
+not ready, as [exit nodes](exit-nodes.md#readiness) describes. It is this node's
+own state and is not counted among the dropped. A write the egress device
+refuses for any other reason counts its packets among the dropped. Drained is a
+packet read off the egress device and thrown away. Every route into the overlay
+names the mesh tun, so each drained packet took a route into the wrong device.
+The kernel also sends packets of its own out of the device, its MLD reports for
+`ff02::2` each time the device's IPv6 comes up on a host forwarding IPv6. These
+go to IPv6 multicast addresses of interface-local or link-local scope, which no
+route sends to, so a packet to such an address is read and dropped without being
+counted.
 
 | Metric                               | Meaning                                                                                                                          |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |

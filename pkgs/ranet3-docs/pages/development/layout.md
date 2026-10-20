@@ -68,7 +68,7 @@ program's own. Go commands run from `pkgs/ranet3`.
 | `internal/cmd/gendn`     | test tool: prints the strongSwan `asn1dn:#hex` identity for an organization, common name and serial number                             |
 | `internal/cmd/iketest`   | test tool: runs 1 IKEv2 initiator handshake against a strongSwan responder and prints the negotiated Child SA                          |
 | `internal/config`        | reads the config file                                                                                                                  |
-| `internal/egress`        | source address translation for exit nodes and subnet routers                                                                           |
+| `internal/egress`        | source address translation for exit nodes and subnet routers, and the border filter                                                    |
 | `internal/events`        | the event recorder behind `debug events`                                                                                               |
 | `internal/kernel`        | the route reconciler, the host network watch, and on macOS the scoped default route a bound underlay socket can need                   |
 | `internal/logtest`       | swaps the default logger for 1 test, imported by test files alone                                                                      |
