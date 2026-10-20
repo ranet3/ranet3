@@ -261,6 +261,35 @@ func TestReconcileHoldsBackARetractedDefaultToo(t *testing.T) {
 	}
 }
 
+// This node's own default, an exit's from its transit prefix among them, is
+// held back while nothing is live, as a held default is, and goes in as the
+// hold once a session is.
+func TestReconcileHoldsBackThisNodesOwnDefault(t *testing.T) {
+	live := 0
+	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return live }})
+	reconciler.now = func() time.Time { return start }
+	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), netstack.Local)
+	table.Set(prefix("2001:db8:a::/48"), prefix("::/0"), netstack.Local)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.snapshot(); len(got) != 0 {
+		t.Fatalf("installed %v with nothing live, want nothing", got)
+	}
+	live = 1
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := []Route{
+		{Destination: prefix("0.0.0.0/0"), Metric: holdMetric, Unreachable: true},
+		{Destination: prefix("::/0"), Source: prefix("2001:db8:a::/48"), Metric: holdMetric, Unreachable: true},
+	}
+	slices.SortFunc(want, compareRoutes)
+	if got := fake.snapshot(); !slices.Equal(got, want) {
+		t.Errorf("installed %v with a session live, want the holds %v", got, want)
+	}
+}
+
 // A reconciler nobody told about sessions keeps the behavior it had before the
 // gate existed. It is driven by something that has no sessions to report, and
 // answering zero for it would leave every default uninstallable.

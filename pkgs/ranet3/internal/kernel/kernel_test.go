@@ -1187,6 +1187,60 @@ func TestRetractedPrefixIsHeldInKernelTable(t *testing.T) {
 	}
 }
 
+// This node's own entry goes into the kernel exactly as a hold does, whatever
+// its key: a prefix, a host route, a source-specific route, and an IPv4 prefix
+// and host route under a preferred source.
+func TestLocalIsInstalledExactlyAsTheHold(t *testing.T) {
+	keys := []struct{ source, destination netip.Prefix }{
+		{netip.Prefix{}, prefix("2001:db8:1::/48")},
+		{netip.Prefix{}, prefix("2001:db8:2::1/128")},
+		{prefix("2001:db8:a::/48"), prefix("2001:db8:3::/48")},
+		{netip.Prefix{}, prefix("192.0.2.0/24")},
+		{netip.Prefix{}, prefix("198.51.100.7/32")},
+	}
+	installed := func(value *netstack.Peer) []Route {
+		r, table, kernel := harness(t, Table{PrefSrc4: schema.AddrFrom(addr("192.0.2.1"))})
+		for _, key := range keys {
+			table.Set(key.source, key.destination, value)
+		}
+		if err := r.applyRoutes(); err != nil {
+			t.Fatal(err)
+		}
+		return kernel.snapshot()
+	}
+	held, local := installed(netstack.Unreachable), installed(netstack.Local)
+	if len(held) != len(keys) {
+		t.Fatalf("the holds installed as %v, want one route for each of %d keys", held, len(keys))
+	}
+	for _, route := range held {
+		if !route.Unreachable || route.Metric != holdMetric {
+			t.Fatalf("a hold installed as %v", route)
+		}
+	}
+	if !slices.Equal(local, held) {
+		t.Errorf("this node's own entries installed as %v, want what the holds installed, %v", local, held)
+	}
+}
+
+// An address cap.table assigns and this node does not originate gets no route
+// of the reconciler's in either family, and is neither wanted nor skipped,
+// while a prefix this node originates beside it goes in as the hold.
+func TestAssignedAddressIsLeftOutOfTheKernel(t *testing.T) {
+	reconciler, table, fake := harness(t, Table{})
+	table.Set(netip.Prefix{}, prefix("2001:db8:2::1/128"), netstack.Assigned)
+	table.Set(netip.Prefix{}, prefix("198.51.100.7/32"), netstack.Assigned)
+	table.Set(netip.Prefix{}, prefix("2001:db8:1::/48"), netstack.Local)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.snapshot(); len(got) != 1 || got[0].Destination != prefix("2001:db8:1::/48") || !got[0].Unreachable {
+		t.Errorf("the kernel holds %v, want only the hold for 2001:db8:1::/48", got)
+	}
+	if stats := reconciler.Stats(); stats.Desired != 1 || stats.Skipped != 0 {
+		t.Errorf("the pass reports %+v, want one route desired and none skipped", stats)
+	}
+}
+
 // The startup line tells an operator where this reconciler's routes went. On a
 // platform with no routing tables it used to print table 0, the config's
 // zero value read before defaults were applied, on a machine that has no
