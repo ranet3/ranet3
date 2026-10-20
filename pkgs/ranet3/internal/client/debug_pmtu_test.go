@@ -207,7 +207,7 @@ func TestPMTUViewShowsTheSessionsOfThePeerNamed(t *testing.T) {
 	}
 }
 
-// the probe totals, the answers and the clamps reach a scrape under the names the docs give them
+// the probe totals, the answers, the answers withheld and the clamps reach a scrape under the names the docs give them
 func TestMetricsCountProbesAnswersAndClamps(t *testing.T) {
 	c := &Client{Mesh: &netstack.Mesh{Routes: netstack.NewRouteTable()}}
 	c.probes.acked.Add(7)
@@ -216,6 +216,7 @@ func TestMetricsCountProbesAnswersAndClamps(t *testing.T) {
 	c.renderPathMTU(&out)
 	for _, want := range []string{
 		"# TYPE ranet3_packet_too_big_sent_total counter\nranet3_packet_too_big_sent_total 0\n",
+		"# TYPE ranet3_icmp_withheld_total counter\nranet3_icmp_withheld_total{limit=\"source\"} 0\nranet3_icmp_withheld_total{limit=\"node\"} 0\n",
 		"# TYPE ranet3_mss_clamped_total counter\nranet3_mss_clamped_total 0\n",
 		"# TYPE ranet3_pmtu_probes_total counter\n",
 		"ranet3_pmtu_probes_total{result=\"acked\"} 7\n",

@@ -47,9 +47,9 @@ const (
 // a read needs none, the device laying out the slab it reads into
 const TUNHeadroom = 16
 
-// tunWarningInterval is the least time between two warnings about one kind of tun read, a read cut short or a frame the device refused
-// the counter keeps the exact count, and the line only has to point at it
-const tunWarningInterval = 30 * time.Second
+// reportInterval is the least time between two reports of one reportedCount, a read cut short, a frame the device refused or an ICMP error a limit withheld
+// the counter keeps the exact count, and the report only has to point at it
+const reportInterval = 30 * time.Second
 
 // peerDataBudget is the bytes one peer may hold from their reservation until the transmit that carried them returns
 // a full budget drains in about codelTarget at 9.7 Gbit/s, the most one peer was measured to carry, so a peer that drains slower is bounded by the delay control and a faster one by the budget
@@ -115,11 +115,22 @@ const segmentDropInterval = 30 * time.Second
 // it keeps a device that fails every read from spinning a core
 const egressDrainRetry = 100 * time.Millisecond
 
-// icmpBurst and icmpRefill bound the ICMP errors this node answers refused
-// packets with. A traceroute sends three probes per hop, so the burst carries
-// two hops' worth without waiting, and the refill bounds what a peer sending
-// refused headers in a loop gets out of this node.
+// the intervals, the burst and the cap of the ICMP error limits are the Linux kernel's defaults, and the bound on the sources held is this node's own
 const (
-	icmpBurst  = 8
-	icmpRefill = 250 * time.Millisecond
+	// icmpSourceInterval4 and icmpSourceInterval6 are the cost of one answer to a source's bucket, net.ipv4.icmp_ratelimit and net.ipv6.icmp.ratelimit
+	icmpSourceInterval4 = time.Second
+	icmpSourceInterval6 = 100 * time.Millisecond
+	// icmpSourceBurst is the answers a full source's bucket holds, XRLIM_BURST_FACTOR
+	icmpSourceBurst = 6
+	// icmpSources is the most sources the limit holds a bucket for
+	icmpSources = 4096
+	// icmpNodeRate and icmpNodeBurst are the cap over every answer, icmp_msgs_per_sec and icmp_msgs_burst
+	icmpNodeRate  = 10000
+	icmpNodeBurst = 10000
+	// icmpNodeCost is the time the cap takes to earn one answer back
+	icmpNodeCost = time.Second / icmpNodeRate
 )
+
+// linePad is the padding on each side of spentUntil and of each withheld count, a 64-byte cache line less the 8 bytes a word is aligned to
+// so none of them shares a line with another field wherever the allocator puts the Mesh, since every withheld draw reads spentUntil and adds to a count
+const linePad = 64 - 8

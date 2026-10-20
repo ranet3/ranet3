@@ -569,6 +569,28 @@ func TestExtensionHeaderWalkRefusesWhatAPeerCanChoose(t *testing.T) {
 	}
 }
 
+// findRouting reads 8 headers past the fixed one, the routing header among them, so it finds a routing header behind 6 or 7 destination options headers
+// and refuses one behind 8 or 9 as more than it walks, the counts written out so a walk one header longer or shorter fails here
+func TestRoutingHeaderIsFoundBehindSevenHeadersAndRefusedBehindEight(t *testing.T) {
+	for front := 6; front <= 9; front++ {
+		routed := segmentRouted(t)
+		chain := []byte(nil)
+		for range front {
+			chain = append(chain, options(nextHeaderDestOpts)...)
+		}
+		chain[len(chain)-8] = routed[6]
+		raw := slices.Concat(routed[:ipv6HeaderLen], chain, routed[ipv6HeaderLen:])
+		raw[6] = nextHeaderDestOpts
+		_, err := findRouting(raw)
+		if found := err == nil; found != (front <= 7) {
+			t.Errorf("the routing header behind %d destination options headers was found %t, with %v", front, found, err)
+		}
+		if front >= 8 && !errors.Is(err, ErrHeaderInvalid) {
+			t.Errorf("the routing header behind %d destination options headers was refused with %v, want ErrHeaderInvalid", front, err)
+		}
+	}
+}
+
 // Every byte Parse, End and Decap read comes from a peer, and the bounds are
 // arithmetic on fields the peer chose, so the one thing none of them may do is
 // panic. The corpus holds well formed packets, so the mutations start near the
@@ -591,7 +613,7 @@ func FuzzParseNeverPanics(f *testing.F) {
 		}
 		End(bytes.Clone(raw))
 		Decap(bytes.Clone(raw))
-		TimeExceeded(raw, addr("3fff:1:69c:8c6::2"))
-		ParameterProblem(raw, addr("3fff:1:69c:8c6::2"))
+		TimeExceeded(raw, addr("3fff:1:69c:8c6::2"), always)
+		ParameterProblem(raw, addr("3fff:1:69c:8c6::2"), always)
 	})
 }

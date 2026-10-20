@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"math"
 	"net/netip"
 	"slices"
 	"testing"
@@ -277,8 +278,181 @@ func TestParseNeverPanicsOnArbitraryBytes(t *testing.T) {
 			}
 		}
 		from := addr("3fff:1:69c:8c6::2")
-		TimeExceeded(raw, from)
-		ParameterProblem(raw, from)
+		TimeExceeded(raw, from, always)
+		ParameterProblem(raw, from, always)
+	})
+}
+
+// laidHeader is one extension header of a packet the walk's model lays out, RFC 8200 section 4: its kind, the octets it takes, and the byte its body is filled with
+// hop-by-hop, routing and destination options take 8 octets and 8 more for each unit of their length octet, sections 4.3, 4.4 and 4.6
+// an authentication header takes 8 octets and 4 more for each unit of its length octet, RFC 4302 section 2.2, and a fragment header 8, its second octet reserved, section 4.5
+type laidHeader struct {
+	kind   byte
+	octets int
+	fill   byte
+	// more is a fragment header's M flag, its offset being 0
+	more bool
+}
+
+// laidPacket is an IPv6 packet as the walk's model lays it out: the extension headers after the fixed header, what ends their chain, and where the packet is cut
+type laidPacket struct {
+	headers []laidHeader
+	// last is the protocol the last header names: 58 for an ICMPv6 message of type icmp, 44 for a fragment header at offset later, which holds an ICMPv6 error, or 59, 50 or another
+	last  byte
+	icmp  byte
+	later uint16
+	// length is how much of the packet is kept
+	length int
+}
+
+// whole lays out every byte of the packet, and starts gives where each header begins and then where the item ending the chain does
+func (p laidPacket) whole() (raw []byte, starts []int) {
+	raw = make([]byte, 40, 40+8*len(p.headers))
+	raw[0], raw[7] = 0x60, 64
+	copy(raw[8:], addr16(addr("3fff:a::1")))
+	copy(raw[24:], addr16(addr("3fff:b::2")))
+	raw[6] = p.last
+	for i, h := range p.headers {
+		if i == 0 {
+			raw[6] = h.kind
+		}
+		header := bytes.Repeat([]byte{h.fill}, h.octets)
+		header[0] = p.last
+		if i+1 < len(p.headers) {
+			header[0] = p.headers[i+1].kind
+		}
+		switch h.kind {
+		case 44:
+			// offset 0, and the reserved octet and bits keep the fill, which section 4.5 has a reader ignore
+			header[2], header[3] = 0, h.fill&0x06
+			if h.more {
+				header[3] |= 1
+			}
+		case 51:
+			header[1] = byte(h.octets/4 - 2)
+		default:
+			header[1] = byte(h.octets/8 - 1)
+		}
+		starts = append(starts, len(raw))
+		raw = append(raw, header...)
+	}
+	starts = append(starts, len(raw))
+	switch p.last {
+	case 58:
+		raw = append(raw, p.icmp, 0, 0, 0, 0, 0, 0, 0)
+	case 44:
+		later := []byte{58, 0, 0, 0, 0, 0, 0, 7, 1, 0, 0, 0, 0, 0, 0, 0}
+		binary.BigEndian.PutUint16(later[2:], p.later<<3)
+		raw = append(raw, later...)
+	case 59:
+	default:
+		raw = append(raw, 0, 0, 0, 1, 0, 0, 0, 1)
+	}
+	binary.BigEndian.PutUint16(raw[4:], uint16(len(raw)-40))
+	return raw, starts
+}
+
+// refused is the model's verdict on a packet of length octets: the walk reads 8 headers past the fixed one at most, so it reaches the item ending the chain only behind 7 extension headers or fewer
+// it steps over a laid header only when the packet holds the octets saying what follows, the first 2, and the first 4 of a fragment header, whose offset they hold
+// and it refuses only an ICMPv6 message it reaches whose type is an error's, below 128, or a redirect's, 137, or which the packet ends before the type of
+func (p laidPacket) refused() bool {
+	const read = 8
+	if len(p.headers) >= read {
+		return false
+	}
+	start := 40
+	for _, h := range p.headers {
+		says := 2
+		if h.kind == 44 {
+			says = 4
+		}
+		if p.length < start+says {
+			return false
+		}
+		start += h.octets
+	}
+	return p.last == 58 && (p.length <= start || p.icmp < 128 || p.icmp == 137)
+}
+
+// laidKinds are the extension headers the walk steps over, hop-by-hop, routing, destination options, AH, and a fragment header at offset 0
+var laidKinds = []byte{0, 43, 60, 51, 44}
+
+// laid is a header of kind taking the octets units of its length octet give it
+// a fragment header has no length octet, and the parity of units gives its M flag
+func laid(kind byte, units int, fill byte) laidHeader {
+	switch kind {
+	case 44:
+		return laidHeader{kind: kind, octets: 8, fill: fill, more: units%2 == 1}
+	case 51:
+		return laidHeader{kind: kind, octets: 4 * (units + 2), fill: fill}
+	}
+	return laidHeader{kind: kind, octets: 8 * (units + 1), fill: fill}
+}
+
+// checkLaid holds Time Exceeded and Packet Too Big for p to the model: each is built exactly when the model refuses nothing, asking allow once then and never otherwise
+func checkLaid(tb testing.TB, p laidPacket) {
+	tb.Helper()
+	raw, _ := p.whole()
+	p.length = min(p.length, len(raw))
+	offending := slices.Clip(raw[:p.length])
+	sid := addr("3fff:1:69c:8c6::2")
+	for name, build := range map[string]func(allow func() bool) []byte{
+		"time exceeded":  func(allow func() bool) []byte { return TimeExceeded(offending, sid, allow) },
+		"packet too big": func(allow func() bool) []byte { return PacketTooBig(offending, sid, MinimumIPv6MTU, allow) },
+	} {
+		asked := 0
+		answer := build(func() bool { asked++; return true })
+		if want := !p.refused(); (answer != nil) != want || (asked == 1) != want || asked > 1 {
+			tb.Fatalf("%s for %d octets of a packet laid out as %+v was built %t asking allow %d times, the model answers %t", name, p.length, p, answer != nil, asked, want)
+		}
+	}
+}
+
+// any chain of the headers the walk steps over, in any order and with lengths across their whole range, ending in an ICMPv6 message of any type, a later fragment, no next header, ESP or another protocol
+// and cut anywhere or near where a header starts, gets Time Exceeded and Packet Too Big exactly when the model of its layout finds no ICMPv6 error or redirect, RFC 4443 section 2.4 (e.1) and (e.2)
+// every ICMPv6 type behind each kind of header, every length of each, every cut through each and its ICMPv6 header, and chains of each as long as the walk reads and either side, are tried first, which meets each in every run
+func TestWalkRefusesExactlyWhatTheModelFindsAnError(t *testing.T) {
+	for _, kind := range laidKinds {
+		for icmp := range 256 {
+			checkLaid(t, laidPacket{headers: []laidHeader{laid(kind, 0, 0xff)}, last: 58, icmp: byte(icmp), length: math.MaxInt})
+		}
+		for units := range 256 {
+			for _, icmp := range []byte{1, 128} {
+				checkLaid(t, laidPacket{headers: []laidHeader{laid(kind, units, 0xff)}, last: 58, icmp: icmp, length: math.MaxInt})
+			}
+		}
+		for units := range 2 {
+			p := laidPacket{headers: []laidHeader{laid(kind, units, 0xff)}, last: 58, icmp: 128}
+			raw, _ := p.whole()
+			for p.length = 40; p.length <= len(raw); p.length++ {
+				checkLaid(t, p)
+			}
+		}
+		for count := 6; count <= 9; count++ {
+			for _, icmp := range []byte{1, 128} {
+				checkLaid(t, laidPacket{headers: slices.Repeat([]laidHeader{laid(kind, 0, 0xff)}, count), last: 58, icmp: icmp, length: math.MaxInt})
+			}
+		}
+	}
+	pbt.Check(t, func(ht *hegel.T) {
+		p := laidPacket{
+			last: hegel.Draw(ht, hegel.SampledFrom([]byte{58, 58, 58, 44, 59, 50, 6, 17, 41})),
+			// any type, and often one at the edge of the errors or the redirect
+			icmp:   hegel.Draw(ht, hegel.OneOf(pbt.Spanning[byte](0, 255), hegel.SampledFrom([]byte{127, 128, 136, 137, 138}))),
+			later:  hegel.Draw(ht, pbt.Spanning[uint16](1, 1<<13-1)),
+			length: math.MaxInt,
+		}
+		// mostly a few headers, and often as many as the walk reads or more
+		for range hegel.Draw(ht, hegel.OneOf(pbt.Spanning(0, 3), hegel.SampledFrom([]int{6, 7, 8, 9}))) {
+			kind := hegel.Draw(ht, hegel.SampledFrom(laidKinds))
+			p.headers = append(p.headers, laid(kind, hegel.Draw(ht, pbt.Spanning(0, 255)), hegel.Draw(ht, hegel.Integers[byte](0, 255))))
+		}
+		// half the packets are cut a few octets past where a header or the item ending the chain starts, where the walk decides between reading on and stopping
+		if hegel.Draw(ht, hegel.Booleans()) {
+			_, starts := p.whole()
+			p.length = hegel.Draw(ht, hegel.SampledFrom(starts)) + hegel.Draw(ht, pbt.Spanning(0, 4))
+		}
+		checkLaid(ht, p)
 	})
 }
 

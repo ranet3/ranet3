@@ -232,7 +232,7 @@ func TestCutReadsAreCountedExactlyAndWarnedRarely(t *testing.T) {
 		t.Fatalf("%d reads cut short warned with counts %v, want one line for the first", cut, got)
 	}
 
-	m.readsTruncated.next.Add(-int64(tunWarningInterval))
+	m.readsTruncated.next.Add(-int64(reportInterval))
 	m.noteTruncatedRead()
 	if got := warned(); !slices.Equal(got, []uint64{1, cut}) {
 		t.Errorf("once the interval passed the warnings carried %v, want the %d cut since the first line", got, cut)
@@ -263,7 +263,7 @@ func TestCutReadsOnEveryQueueShareOneWarning(t *testing.T) {
 		if got := warned(); len(got) != wave+1 {
 			t.Fatalf("after wave %d of %d readers cutting reads at once the warnings are %v, want one a wave", wave, queues, got)
 		}
-		m.readsTruncated.next.Add(-int64(tunWarningInterval))
+		m.readsTruncated.next.Add(-int64(reportInterval))
 	}
 
 	m.noteTruncatedRead()
@@ -290,8 +290,8 @@ func TestOnlyOneReaderClaimsAWarning(t *testing.T) {
 		t.Fatal("a second reader warned as well, with the time it had loaded before the first claim")
 	}
 	later := m.readsTruncated.next.Load()
-	if later != now+int64(tunWarningInterval) {
-		t.Fatalf("the claim put the next warning %s after it, want %s", time.Duration(later-now), tunWarningInterval)
+	if later != now+int64(reportInterval) {
+		t.Fatalf("the claim put the next warning %s after it, want %s", time.Duration(later-now), reportInterval)
 	}
 	if m.readsTruncated.claim(later-1, later) {
 		t.Error("a reader warned before the interval had passed")
@@ -368,7 +368,7 @@ func TestRefusedFramesAreCountedExactlyAndWarnedRarely(t *testing.T) {
 		t.Fatalf("%d refused frames recorded %d events, want one for the first", refused, len(got))
 	}
 
-	m.framesRefused.next.Add(-int64(tunWarningInterval))
+	m.framesRefused.next.Add(-int64(reportInterval))
 	m.noteRefusedFrame(errRefusedFrame)
 	if got := warned(); !slices.Equal(got, []uint64{1, refused}) {
 		t.Errorf("once the interval passed the warnings carried %v, want the %d refused since the first line", got, refused)
