@@ -62,8 +62,8 @@ const rekeyAskInterval = 250 * time.Millisecond
 
 // errNoChildSA means the peer deleted the Child SA and kept the IKE SA, which
 // RFC 7296 section 1.4.1 allows, or the Child SA reached its lifetime. Sending
-// resumes once a replacement is negotiated, and the session closes the IKE SA
-// when none can be, so it is not a reason to close anything here.
+// resumes once a replacement is negotiated. The ike session itself closes the
+// IKE SA when none can be, so a sender that meets this error closes nothing.
 var errNoChildSA = errors.New("peer has no active Child SA")
 
 // fatalReserveError reports whether a refusal from reserve is a reason to end
