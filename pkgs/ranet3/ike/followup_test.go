@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // chainSuite is an IKE SA of x25519+mlkem768 under AES-GCM with a 128-bit key and HMAC-SHA2-256
@@ -87,7 +89,7 @@ func drawsInTurn(s *Session, nonces ...[]byte) {
 }
 
 // requested is the next request of s's rekey, which must be of exchange
-func requested(t *testing.T, s *Session, done <-chan error, exchange ExchangeType) *localRequest {
+func requested(t testing.TB, s *Session, done <-chan error, exchange ExchangeType) *localRequest {
 	t.Helper()
 	select {
 	case request := <-s.requests:
@@ -105,7 +107,7 @@ func requested(t *testing.T, s *Session, done <-chan error, exchange ExchangeTyp
 }
 
 // ended is how s's rekey ended, which must come with no further request
-func ended(t *testing.T, s *Session, done <-chan error) error {
+func ended(t testing.TB, s *Session, done <-chan error) error {
 	t.Helper()
 	select {
 	case err := <-done:
@@ -132,7 +134,7 @@ func noRequest(t *testing.T, s *Session, done <-chan error, why string) {
 	}
 }
 
-func offerOf(t *testing.T, request []RawPayload) []Proposal {
+func offerOf(t testing.TB, request []RawPayload) []Proposal {
 	t.Helper()
 	sa := findType(request, PayloadSA)
 	if sa == nil {
@@ -158,7 +160,7 @@ func keysOf(keys *IKEKeys) [5][]byte {
 }
 
 // answerRekey answers request, a CREATE_CHILD_SA rekeying the IKE SA, with the first transform of each type in the offer's proposal at index proposal, a KE payload in the request's group, Nr nr or one drawn where nr is nil, and a link where link is non-nil
-func answerRekey(t *testing.T, request []RawPayload, proposal int, link, nr []byte) ([]RawPayload, *peerRekey) {
+func answerRekey(t testing.TB, request []RawPayload, proposal int, link, nr []byte) ([]RawPayload, *peerRekey) {
 	t.Helper()
 	offer := offerOf(t, request)
 	var chosen []Transform
@@ -1438,7 +1440,7 @@ func TestInvalidSyntaxForAFollowupEndsTheIKESAWithoutADelete(t *testing.T) {
 }
 
 // peerDeletes hands s the peer's Delete of the IKE SA ctx, which s must answer and outlive
-func peerDeletes(t *testing.T, s *Session, ctx *ikeContext) {
+func peerDeletes(t testing.TB, s *Session, ctx *ikeContext) {
 	t.Helper()
 	header := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL, MessageID: 1}
 	if _, err := s.handleRequest(ctx, &header, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}); err != nil {
@@ -1837,8 +1839,8 @@ func TestAnswerAfterASendPastLateFromIsLate(t *testing.T) {
 	}
 }
 
-// a refusal of this end's IKE SA rekey adopts only the peer's rekey of the same SA held for it, and only on TEMPORARY_FAILURE
-// so the redundant SA of an earlier crossing, kept for the peer's Delete, stays as it is, and so does the peer's SA held for this rekey when another refusal comes
+// a refusal of this end's IKE SA rekey adopts only the peer's rekey of the same SA held for it, and an answer this end does not take adopts nothing
+// so the redundant SA of an earlier crossing, kept for the peer's Delete, stays as it is, and so does the peer's SA held for this rekey when the answer is not one this end takes
 func TestRefusedRekeyAdoptsOnlyThePeersSAHeldForIt(t *testing.T) {
 	lists := Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519}}
 	holds := func(t *testing.T, s *Session, old, collision *ikeContext) {
@@ -1861,7 +1863,7 @@ func TestRefusedRekeyAdoptsOnlyThePeersSAHeldForIt(t *testing.T) {
 		}
 		holds(t, s, old, redundant)
 	})
-	t.Run("another refusal", func(t *testing.T) {
+	t.Run("an answer this end does not take", func(t *testing.T) {
 		s, _ := initiatingSession(t, classicalSuite, lists)
 		old := s.current
 		done := rekeying(s)
@@ -1876,9 +1878,9 @@ func TestRefusedRekeyAdoptsOnlyThePeersSAHeldForIt(t *testing.T) {
 		if held == nil {
 			t.Fatal("the peer's rekey is not held as the collision")
 		}
-		create.result <- requestResult{inner: notifyAnswer(N_NO_PROPOSAL_CHOSEN)}
-		if err := ended(t, s, done); !rejectedWith(err, N_NO_PROPOSAL_CHOSEN) {
-			t.Errorf("this end's rekey ended with %v, want NO_PROPOSAL_CHOSEN", err)
+		create.result <- requestResult{}
+		if err := ended(t, s, done); err == nil || errors.As(err, new(*rejectedError)) {
+			t.Errorf("this end's rekey ended with %v, want the answer refused by this end", err)
 		}
 		holds(t, s, old, held)
 	})
@@ -1952,16 +1954,216 @@ func TestRefusedRekeyEndsAtItsDecision(t *testing.T) {
 	})
 }
 
-// a TEMPORARY_FAILURE answering this end's IKE SA rekey while the SA of the peer's rekey, chained or classical, is held as the collision makes that SA current, keyed as the peer keys it, and holds it no longer
+// crossingAnswer is the peer's answer to this end's IKE SA rekey that crosses the peer's rekey of the same SA
+type crossingAnswer struct {
+	name string
+	// made is whether the peer made an SA of this end's request and answers with it
+	made bool
+	// replies are the peer's answers otherwise, each but the last asking for the retry this end sends next
+	replies [][]RawPayload
+	// refused is whether the last reply refuses the request, which then made nothing at the peer
+	refused bool
+}
+
+func invalidKEAnswer(group uint16) []RawPayload {
+	return []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INVALID_KE_PAYLOAD, Data: invalidKENotifyData(group)})}}
+}
+
+// crossingAnswers are an SA, the refusals this end tells apart and answers this end does not take, an SA first
+// this end's offer holds X25519 alone
+var crossingAnswers = []crossingAnswer{
+	{name: "an SA", made: true},
+	{name: "TEMPORARY_FAILURE", replies: [][]RawPayload{notifyAnswer(N_TEMPORARY_FAILURE)}, refused: true},
+	{name: "NO_PROPOSAL_CHOSEN", replies: [][]RawPayload{notifyAnswer(N_NO_PROPOSAL_CHOSEN)}, refused: true},
+	{name: "NO_ADDITIONAL_SAS", replies: [][]RawPayload{notifyAnswer(N_NO_ADDITIONAL_SAS)}, refused: true},
+	{name: "an error type this end lacks", replies: [][]RawPayload{{unrecognizedError}}, refused: true},
+	{name: "INVALID_KE_PAYLOAD naming a group the offer left out", replies: [][]RawPayload{invalidKEAnswer(DH_ECP_384)}, refused: true},
+	{name: "INVALID_KE_PAYLOAD again after the retry", replies: [][]RawPayload{invalidKEAnswer(DH_CURVE25519), invalidKEAnswer(DH_CURVE25519)}, refused: true},
+	{name: "INVALID_KE_PAYLOAD naming no group", replies: [][]RawPayload{notifyAnswer(N_INVALID_KE_PAYLOAD)}, refused: true},
+	{name: "an answer with no SA", replies: [][]RawPayload{{{Type: PayloadNonce, Body: EncodeNonce(make([]byte, nonceLen))}}}},
+	{name: "a notify that does not decode", replies: [][]RawPayload{{{Type: PayloadN, Body: []byte{0}}}}},
+}
+
+// crossedRekeys is this end's IKE SA rekey crossing the peer's rekey of the same SA
+type crossedRekeys struct {
+	answer crossingAnswer
+	// answeredFirst is whether this end answered the peer's rekey before the peer's answer to this end's came
+	answeredFirst bool
+	// chained is whether the peer's rekey runs ML-KEM-768 in an IKE_FOLLOWUP_KE, and chainEndsFirst whether this end answered that exchange too before the peer's answer came
+	chained, chainEndsFirst bool
+	// nonces are this end's Ni and the peer's Nr in this end's exchange, then the peer's Ni and this end's Nr in the peer's, and the one at lowest is the lowest
+	nonces [][]byte
+	lowest int
+}
+
+// crossingNonces is four nonces of nonceLen octets, the one at lowest the lowest of them
+func crossingNonces(t testing.TB, lowest int) [][]byte {
+	t.Helper()
+	nonces := make([][]byte, 4)
+	for i := range nonces {
+		nonces[i] = drawnOctets(t, nonceLen)
+		nonces[i][0] = max(nonces[i][0], 1)
+	}
+	nonces[lowest][0] = 0
+	return nonces
+}
+
+// keeps plays c on a session over mux, and checks that this end's rekey ends as the model has it and leaves this end current on the SA the model keeps, holding nothing else once the peer's Delete has come
+// the model, RFC 7296 section 2.8.2: the peer made an SA of this end's request only where it answered with one
+// this end made one of the peer's where it answered it before its own rekey ended, or after its own made nothing, since of an IKE SA it rekeyed already "it SHOULD return TEMPORARY_FAILURE because it is an IKE SA that it is currently trying to close", and a chained rekey's SA is made at its last exchange
+// with both made, "The new IKE SA containing the lowest nonce SHOULD be deleted by the node that created it", and the end whose SA survives deletes the old SA
+// a refusal of this end's rekey takes the peer's SA made by then, and an answer this end does not take tells nothing of what the peer made, so it takes nothing and the peer's SA stays held
+func (c crossedRekeys) keeps(t testing.TB, mux *transport.Mux) {
+	t.Helper()
+	suite, lists, offer := classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519}}, classicalOffer
+	if c.chained {
+		suite, lists, offer = chainSuite, chainLists, hybridOffer
+	}
+	madeOwn := c.answer.made
+	madePeer := c.answeredFirst || !madeOwn
+	chainedEarly := c.chained && c.answeredFirst && c.chainEndsFirst
+	heldFirst := c.answeredFirst && (!c.chained || chainedEarly)
+	tookEffect := madeOwn || c.answer.refused && heldFirst
+	ownSurvives := madeOwn && (!madePeer || c.lowest >= 2)
+
+	s := &Session{mux: mux, current: chainContext(t, suite), requests: make(chan *localRequest, 1), suites: func() Suites { return lists }}
+	old := s.current
+	drawsInTurn(s, c.nonces[0], c.nonces[3])
+	done := rekeying(s)
+	create := requested(t, s, done, CREATE_CHILD_SA)
+	peer, request := newPeerRekey(t, offer, c.nonces[2])
+	answerPeer := func() {
+		answered := peer.rekey(t, s.handleIKERekey, old, request)
+		if made := findType(answered, PayloadSA) != nil; made != madePeer {
+			t.Fatalf("the peer's rekey answered %v made an SA %v, the model %v", payloadTypes(answered), made, madePeer)
+		}
+	}
+	endChain := func() {
+		if peer.link == nil {
+			t.Fatal("the peer's chained rekey drew no link")
+		}
+		if last, err := peer.followup(t, s, old, ML_KEM_768, peer.link); err != nil || findType(last, PayloadKE) == nil {
+			t.Fatalf("the peer's IKE_FOLLOWUP_KE drew %v, %v, want KEr", payloadTypes(last), err)
+		}
+	}
+	if c.answeredFirst {
+		answerPeer()
+	}
+	if chainedEarly {
+		endChain()
+	}
+	var own *peerRekey
+	if madeOwn {
+		var reply []RawPayload
+		reply, own = answerRekey(t, create.inner, 0, nil, c.nonces[1])
+		create.result <- requestResult{inner: reply}
+	}
+	for i, reply := range c.answer.replies {
+		if i > 0 {
+			create = requested(t, s, done, CREATE_CHILD_SA)
+		}
+		create.result <- requestResult{inner: reply}
+	}
+	if err := deletingUntilEnded(t, s, done); (err == nil) != tookEffect {
+		t.Fatalf("this end's rekey answered %s ended with %v, the model a rekey that took effect %v", c.answer.name, err, tookEffect)
+	}
+	if !c.answeredFirst {
+		answerPeer()
+	}
+	if c.chained && !chainedEarly {
+		endChain()
+	}
+
+	s.stateMu.RLock()
+	held := s.collision
+	s.stateMu.RUnlock()
+	if heldFirst && !madeOwn && !c.answer.refused {
+		if current, _ := s.contexts(); current != old || held == nil || held.spiI != peer.spiI || held.spiR != peer.spiR {
+			t.Fatalf("answered %s, which this end does not take, this end left the old SA current %v and the peer's SA held %v, want both", c.answer.name, current == old, held != nil)
+		}
+		return
+	}
+	switch {
+	case !ownSurvives:
+		peerDeletes(t, s, old)
+	case madePeer:
+		if held == nil || held.spiI != peer.spiI || held.spiR != peer.spiR {
+			t.Fatal("the SA of the peer's rekey, which the peer deletes, is not held for its Delete")
+		}
+		peerDeletes(t, s, held)
+	}
+	kept := peer
+	if ownSurvives {
+		kept = own
+	}
+	current, retained := s.contexts()
+	s.stateMu.RLock()
+	collision := s.collision
+	s.stateMu.RUnlock()
+	if current.spiI != kept.spiI || current.spiR != kept.spiR || !sameKeys(current, kept.keys(t, old, suite)) {
+		t.Fatalf("answered %s with the lowest nonce at %d, this end is current on another SA than the one the model keeps, its own %v", c.answer.name, c.lowest, ownSurvives)
+	}
+	if retained != nil || collision != nil {
+		t.Fatal("an SA past the peer's Delete is still held")
+	}
+}
+
+// deletingUntilEnded answers each Delete s's rekey sends until the rekey ends, and returns how it ended
+func deletingUntilEnded(t testing.TB, s *Session, done <-chan error) error {
+	t.Helper()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case request := <-s.requests:
+			if request.exchange != INFORMATIONAL || findType(request.inner, PayloadD) == nil {
+				request.result <- requestResult{err: errors.New("not an exchange the test expects")}
+				t.Fatalf("the rekey sent exchange %d carrying %v, want only Deletes", request.exchange, payloadTypes(request.inner))
+			}
+			request.result <- requestResult{}
+		case <-time.After(answerBudget):
+			t.Fatal("the rekey never ended")
+		}
+	}
+}
+
+// a refusal answering this end's IKE SA rekey while the SA of the peer's rekey, chained or classical, is held as the collision makes that SA current, keyed as the peer keys it, and holds it no longer, whatever notify the refusal carries
+// an INVALID_KE_PAYLOAD this end does not retry is such a refusal, as is one answering its retry
 // RFC 9370 section 2.2.4: "In this case, a TEMPORARY_FAILURE notification MUST be sent in response to such a request."
+// RFC 7296 section 3.10.1: "An implementation receiving a Notify payload with one of these types that it does not recognize in a response MUST assume that the corresponding request has failed entirely."
 func TestRefusedRekeyAdoptsThePeersSAHeldAsTheCollision(t *testing.T) {
-	adopts := func(t *testing.T, s *Session, done <-chan error, create *localRequest, old *ikeContext, peer *peerRekey, suite SASuite) {
-		t.Helper()
+	t.Run("chained", func(t *testing.T) {
+		s, _ := initiatingSession(t, chainSuite, chainLists)
+		old := s.current
+		peer, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
+		var answered []byte
+		var answerErr error
+		drawn := 0
+		s.ikeRekeyNonce = func(n []byte) error {
+			drawn++
+			// RekeyIKE draws its Ni before it records its rekey
+			if drawn == 1 {
+				answered, answerErr = s.handleIKERekey(old, 0, request)
+			}
+			_, err := rand.Read(n)
+			return err
+		}
+		done := rekeying(s)
+		create := requested(t, s, done, CREATE_CHILD_SA)
+		if answerErr != nil {
+			t.Fatalf("the peer's rekey ended the IKE SA: %v", answerErr)
+		}
+		if peer.read(t, sealedAnswer(t, old, answered)); peer.link == nil {
+			t.Fatal("the peer's rekey drew no link")
+		}
+		if last, err := peer.followup(t, s, old, ML_KEM_768, peer.link); err != nil || findType(last, PayloadKE) == nil {
+			t.Fatalf("the peer's IKE_FOLLOWUP_KE drew %v, %v, want KEr", payloadTypes(last), err)
+		}
 		create.result <- requestResult{inner: notifyAnswer(N_TEMPORARY_FAILURE)}
 		if err := ended(t, s, done); err != nil {
 			t.Errorf("this end's rekey ended with %v, want the peer's SA adopted", err)
 		}
-		if current, _ := s.contexts(); current.spiI != peer.spiI || current.spiR != peer.spiR || !sameKeys(current, peer.keys(t, old, suite)) {
+		if current, _ := s.contexts(); current.spiI != peer.spiI || current.spiR != peer.spiR || !sameKeys(current, peer.keys(t, old, chainSuite)) {
 			t.Error("the session is not current on the SA of the peer's rekey, which the peer installed")
 		}
 		s.stateMu.RLock()
@@ -1971,53 +2173,16 @@ func TestRefusedRekeyAdoptsThePeersSAHeldAsTheCollision(t *testing.T) {
 			t.Error("the adopted SA is still held as the collision, which refuses every later peer rekey")
 		}
 		peerDeletes(t, s, old)
+	})
+	for _, answer := range crossingAnswers {
+		if !answer.refused {
+			continue
+		}
+		t.Run("classical, "+answer.name, func(t *testing.T) {
+			mux, _ := lifecycleMuxes(t)
+			crossedRekeys{answer: answer, answeredFirst: true, nonces: crossingNonces(t, 0)}.keeps(t, mux)
+		})
 	}
-	t.Run("chained", func(t *testing.T) {
-		s, _ := initiatingSession(t, chainSuite, chainLists)
-		old := s.current
-		peer, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
-		var crossing []byte
-		var crossingErr error
-		drawn := 0
-		s.ikeRekeyNonce = func(n []byte) error {
-			drawn++
-			// RekeyIKE draws its Ni before it records its rekey
-			if drawn == 1 {
-				crossing, crossingErr = s.handleIKERekey(old, 0, request)
-			}
-			_, err := rand.Read(n)
-			return err
-		}
-		done := rekeying(s)
-		create := requested(t, s, done, CREATE_CHILD_SA)
-		if crossingErr != nil {
-			t.Fatalf("the peer's rekey ended the IKE SA: %v", crossingErr)
-		}
-		if peer.read(t, sealedAnswer(t, old, crossing)); peer.link == nil {
-			t.Fatal("the peer's rekey drew no link")
-		}
-		if last, err := peer.followup(t, s, old, ML_KEM_768, peer.link); err != nil || findType(last, PayloadKE) == nil {
-			t.Fatalf("the peer's IKE_FOLLOWUP_KE drew %v, %v, want KEr", payloadTypes(last), err)
-		}
-		adopts(t, s, done, create, old, peer, chainSuite)
-	})
-	t.Run("classical", func(t *testing.T) {
-		s, _ := initiatingSession(t, classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519}})
-		old := s.current
-		done := rekeying(s)
-		create := requested(t, s, done, CREATE_CHILD_SA)
-		peer, request := newPeerRekey(t, classicalOffer, drawnOctets(t, 32))
-		raw, err := s.handleIKERekey(old, 0, request)
-		if err != nil {
-			t.Fatalf("the peer's rekey ended the IKE SA: %v", err)
-		}
-		answer := sealedAnswer(t, old, raw)
-		if findType(answer, PayloadSA) == nil {
-			t.Fatalf("the peer's rekey drew %v, want it answered", payloadTypes(answer))
-		}
-		peer.read(t, answer)
-		adopts(t, s, done, create, old, peer, classicalSuite)
-	})
 }
 
 // a success answering a resend of the last IKE_FOLLOWUP_KE past the peer's wait completes the rekey on the SA the peer made, keyed as the peer keys it, and the old SA's Delete takes the next Message ID
