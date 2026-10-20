@@ -8,7 +8,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -526,10 +525,7 @@ func TestDownSaysNothingAboutReconnecting(t *testing.T) {
 		return len(alpha.client.sessions.paths()) == 1 && len(bravo.client.sessions.paths()) == 1
 	})
 
-	written := &syncBuffer{}
-	previous := log.Writer()
-	log.SetOutput(written)
-	t.Cleanup(func() { log.SetOutput(previous) })
+	written := capturedLog(t)
 	if _, err := alpha.client.Down(context.Background()); err != nil {
 		t.Fatal(err)
 	}

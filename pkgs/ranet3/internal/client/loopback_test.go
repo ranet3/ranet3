@@ -12,7 +12,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -448,10 +447,7 @@ func TestShutdownSaysNothingAboutReconnecting(t *testing.T) {
 		return len(alpha.client.sessions.paths()) == 1 && len(bravo.client.sessions.paths()) == 1
 	})
 
-	written := &syncBuffer{}
-	previous := log.Writer()
-	log.SetOutput(written)
-	t.Cleanup(func() { log.SetOutput(previous) })
+	written := capturedLog(t)
 	stopAlpha()
 	// Only alpha is stopping, and both nodes write to the one logger this
 	// captures, so the lines that count are the ones naming alpha's own peer.

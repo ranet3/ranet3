@@ -128,7 +128,9 @@ func (r *reader) rekeyCommand() *cobra.Command {
 		Short: "Rekey sessions now",
 		Long: `Each session replaces its child SA without waiting for its own schedule.
 Name a peer to rekey its sessions, or pass --all to rekey every session
-this node holds.`,
+this node holds. The answer comes once every rekey has ended, or after ` + control.Spelled(control.RekeyWait) + `,
+and lists each session that did not rekey with the reason. The command
+exits 1 when any session did not rekey.`,
 		Args:              peerOrAll(&all),
 		ValidArgsFunction: r.completePeers,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -185,7 +187,13 @@ func (r *reader) report(cmd *cobra.Command, result control.Result, err error) er
 		return err
 	}
 	w := cmd.OutOrStdout()
-	return emit(w, r.asJSON, result, func() { control.RenderResult(w, result) })
+	if err := emit(w, r.asJSON, result, func() { control.RenderResult(w, result) }); err != nil {
+		return err
+	}
+	if len(result.Missed) > 0 {
+		return writeMissed
+	}
+	return nil
 }
 
 // completePeers offers the peers this node dials or holds a session with, and nothing when the daemon cannot be reached, since an error would land in the command line

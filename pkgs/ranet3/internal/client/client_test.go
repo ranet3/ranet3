@@ -1904,10 +1904,7 @@ func TestDialerRepeatingOneFailureSaysItOnce(t *testing.T) {
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))
 
-	written := &syncBuffer{}
-	previous := log.Writer()
-	log.SetOutput(written)
-	t.Cleanup(func() { log.SetOutput(previous) })
+	written := capturedLog(t)
 
 	done := make(chan struct{})
 	d := dialTo(t, cfg, cfg.Dial.To[0])
@@ -1932,6 +1929,16 @@ func TestDialerRepeatingOneFailureSaysItOnce(t *testing.T) {
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
+}
+
+// capturedLog routes the standard logger into a syncBuffer until t ends
+func capturedLog(t *testing.T) *syncBuffer {
+	t.Helper()
+	written := &syncBuffer{}
+	previous := log.Writer()
+	log.SetOutput(written)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	return written
 }
 
 func (b *syncBuffer) Write(p []byte) (int, error) {

@@ -233,16 +233,19 @@ func disabledLine(subsystems []Subsystem) string {
 }
 
 // RenderResult writes the answer to a write. The entries are listed under the
-// sentence only where the verb reached more than one, so a redial that covered
-// four paths names them and a disable does not repeat the subsystem it just
-// said.
+// sentence only where the verb reached more than one or missed any, so a redial
+// that covered four paths names them and a disable does not repeat the
+// subsystem it just said.
 func RenderResult(w io.Writer, result Result) {
 	fmt.Fprintln(w, result.Detail)
-	if len(result.Acted) < 2 {
+	if len(result.Acted) < 2 && len(result.Missed) == 0 {
 		return
 	}
 	for _, entry := range result.Acted {
 		fmt.Fprintf(w, "  %s\n", entry)
+	}
+	for _, missed := range result.Missed {
+		fmt.Fprintf(w, "  %s: %s\n", missed.Entry, missed.Reason)
 	}
 }
 

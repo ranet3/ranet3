@@ -4,10 +4,16 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +22,7 @@ import (
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -424,6 +431,197 @@ func TestRekeyAsksTheSessionsItNames(t *testing.T) {
 	}
 	if _, err := c.Rekey(context.Background(), "nobody", false); err == nil {
 		t.Error("rekeying a peer this node holds no session with was accepted")
+	}
+}
+
+const (
+	// rekeyTestWait is the rekey verb's wait in the tests, long enough for a rekey that returns at once to be waited for on a loaded machine
+	rekeyTestWait = 500 * time.Millisecond
+	// rekeyAnswerBudget is how long past rekeyTestWait the verb's answer may take on a loaded machine, short of a wait that never ends
+	rekeyAnswerBudget = 5 * time.Second
+	// rekeyUnendingWait is a rekey wait no test outlasts
+	rekeyUnendingWait = time.Hour
+)
+
+// rekeyAll asks c to rekey every session and returns the answer, failing where it takes longer than the verb's wait and rekeyAnswerBudget
+func rekeyAll(t *testing.T, c *Client) control.Result {
+	t.Helper()
+	type answer struct {
+		result control.Result
+		err    error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		result, err := c.Rekey(context.Background(), "", true)
+		answered <- answer{result, err}
+	}()
+	select {
+	case got := <-answered:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		return got.result
+	case <-time.After(c.sessions.rekeyWait + rekeyAnswerBudget):
+		t.Fatalf("the rekey verb did not answer within %s", c.sessions.rekeyWait+rekeyAnswerBudget)
+		return control.Result{}
+	}
+}
+
+// a rekey answers with the sessions that rekeyed and each that did not with why, a rekey still running when the wait ran out among the ones that did not
+// each that did not is logged and recorded as control.verb under its path with its reason, and each that rekeyed is recorded with none
+// the answer renders as the golden files, and one where every session rekeyed lists them all
+func TestRekeyAnswersWhichSessionsRekeyed(t *testing.T) {
+	c := writable(t)
+	c.events = events.New()
+	written := capturedLog(t)
+	c.sessions.close = func(*ike.Session) {}
+	c.sessions.active = func(*ike.Session) bool { return true }
+	c.sessions.rekeyWait = rekeyTestWait
+	held := errors.New("ike: a Child SA rekey waits out the retry delay of the one that failed")
+	bravo, charlie, delta := &ike.Session{}, &ike.Session{}, &ike.Session{}
+	// the first ask finds charlie held and delta's exchange outlasting the wait, and the second finds every session free
+	var failing atomic.Bool
+	failing.Store(true)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	c.sessions.rekey = func(sess *ike.Session) error {
+		switch {
+		case sess == charlie && failing.Load():
+			return held
+		case sess == delta && failing.Load():
+			<-release
+		}
+		return nil
+	}
+	for path, sess := range map[string]*ike.Session{"example/bravo:0@0": bravo, "example/charlie:0@0": charlie, "example/delta:0@0": delta} {
+		c.sessions.adoptPreferred(path, sess, true, nil)
+	}
+	render := func(name string, result control.Result) {
+		t.Helper()
+		var out bytes.Buffer
+		control.RenderResult(&out, result)
+		verbGolden(t, name+".txt", out.Bytes())
+		body, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		verbGolden(t, name+".json", append(body, '\n'))
+	}
+
+	result := rekeyAll(t, c)
+	stillRunning := fmt.Sprintf("still rekeying after %s, and ike.rekey.completed or ike.rekey.failed tells how it ends", control.Spelled(rekeyTestWait))
+	wantMissed := []control.Missed{{Entry: "example/charlie:0@0", Reason: held.Error()}, {Entry: "example/delta:0@0", Reason: stillRunning}}
+	if !slices.Equal(result.Acted, []string{"example/bravo:0@0"}) || !slices.Equal(result.Missed, wantMissed) {
+		t.Errorf("the rekey answered that %v rekeyed and %+v did not, want bravo alone rekeyed and %+v", result.Acted, result.Missed, wantMissed)
+	}
+	render("rekey-missed", result)
+	if got := written.count("peer example/charlie:0@0: rekey asked for on the control socket: " + held.Error()); got != 1 {
+		t.Errorf("the held rekey was logged %d times, want once", got)
+	}
+	reasons := map[string]string{}
+	for _, event := range recorded(c.events, "control.verb") {
+		reasons[event.Peer] = event.Attrs["err"]
+	}
+	if want := map[string]string{"example/bravo:0@0": "", "example/charlie:0@0": held.Error(), "example/delta:0@0": stillRunning}; !maps.Equal(reasons, want) {
+		t.Errorf("the rekey was recorded with the reasons %q, want %q", reasons, want)
+	}
+
+	failing.Store(false)
+	result = rekeyAll(t, c)
+	if want := []string{"example/bravo:0@0", "example/charlie:0@0", "example/delta:0@0"}; !slices.Equal(result.Acted, want) || len(result.Missed) != 0 {
+		t.Errorf("the second rekey answered that %v rekeyed and %+v did not, want %v and none", result.Acted, result.Missed, want)
+	}
+	render("rekey", result)
+}
+
+// a rekey that every session missed is recorded as control.verb under each with its reason, and not again without a peer
+func TestRekeyEverySessionMissedIsRecordedUnderEachAlone(t *testing.T) {
+	c := writable(t)
+	c.events = events.New()
+	capturedLog(t)
+	c.sessions.close = func(*ike.Session) {}
+	c.sessions.active = func(*ike.Session) bool { return true }
+	c.sessions.rekeyWait = rekeyTestWait
+	held := errors.New("ike: a Child SA rekey waits out the retry delay of the one that failed")
+	c.sessions.rekey = func(*ike.Session) error { return held }
+	for _, path := range []string{"example/bravo:0@0", "example/charlie:0@0"} {
+		c.sessions.adoptPreferred(path, &ike.Session{}, true, nil)
+	}
+	if result := rekeyAll(t, c); len(result.Acted) != 0 || len(result.Missed) != 2 {
+		t.Fatalf("the rekey answered %+v, want both sessions missed", result)
+	}
+	reasons := map[string]string{}
+	for _, event := range recorded(c.events, "control.verb") {
+		reasons[event.Peer] = event.Attrs["err"]
+	}
+	if want := map[string]string{"example/bravo:0@0": held.Error(), "example/charlie:0@0": held.Error()}; !maps.Equal(reasons, want) {
+		t.Errorf("the rekey was recorded under the peers and with the reasons %q, want %q", reasons, want)
+	}
+}
+
+// a rekey whose caller went away answers then, listing a rekey still running among those that did not, which goes on
+// so the caller's place on the control socket is free again before the wait runs out
+func TestRekeyWhoseCallerWentAwayAnswersThen(t *testing.T) {
+	c := writable(t)
+	capturedLog(t)
+	c.sessions.close = func(*ike.Session) {}
+	c.sessions.active = func(*ike.Session) bool { return true }
+	c.sessions.rekeyWait = rekeyUnendingWait
+	started := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	c.sessions.rekey = func(*ike.Session) error {
+		close(started)
+		<-release
+		return nil
+	}
+	c.sessions.adoptPreferred("example/bravo:0@0", &ike.Session{}, true, nil)
+	ctx, hangUp := context.WithCancel(context.Background())
+	answered := make(chan control.Result, 1)
+	go func() {
+		result, _ := c.Rekey(ctx, "", true)
+		answered <- result
+	}()
+	select {
+	case <-started:
+	case <-time.After(rekeyAnswerBudget):
+		t.Fatal("the rekey verb asked no session to rekey")
+	}
+	hangUp()
+	select {
+	case result := <-answered:
+		want := []control.Missed{{Entry: "example/bravo:0@0", Reason: "still rekeying when the caller went away, and ike.rekey.completed or ike.rekey.failed tells how it ends"}}
+		if len(result.Acted) != 0 || !slices.Equal(result.Missed, want) {
+			t.Errorf("the rekey answered that %v rekeyed and %+v did not, want %+v", result.Acted, result.Missed, want)
+		}
+	case <-time.After(rekeyAnswerBudget):
+		t.Fatal("the rekey verb still waited once its caller went away")
+	}
+}
+
+// the rekey verb on a live session answers with what each ask came to
+// the first rekeys, the peer's limit on rekeys refuses a second asked at once with TEMPORARY_FAILURE, and a third waits out the retry delay that refusal set, so it starts no exchange and says so
+func TestRekeyVerbOnALiveSessionSaysWhatEachAskCameTo(t *testing.T) {
+	alpha, bravo := newLoopbackMesh(t)
+	// bravo answers and never dials, so alpha holds the one session it dials
+	quiet := *bravo.cfg
+	quiet.Dial.To = nil
+	bravo.client.cfg.Store(&quiet)
+	run(t, alpha, bravo)
+	waitFor(t, convergeBudget, "the session alpha dials at both ends", func() bool {
+		return len(alpha.client.Sessions()) == 1 && len(bravo.client.Sessions()) == 1
+	})
+	for i, missedFor := range []string{"", fmt.Sprintf("notify type %d", ike.N_TEMPORARY_FAILURE), "retry delay"} {
+		result := rekeyAll(t, alpha.client)
+		if missedFor == "" {
+			if len(result.Acted) != 1 || len(result.Missed) != 0 {
+				t.Errorf("ask %d answered %+v, want the session rekeyed", i+1, result)
+			}
+			continue
+		}
+		if len(result.Acted) != 0 || len(result.Missed) != 1 || !strings.Contains(result.Missed[0].Reason, missedFor) {
+			t.Errorf("ask %d answered %+v, want the session missed for %q", i+1, result, missedFor)
+		}
 	}
 }
 

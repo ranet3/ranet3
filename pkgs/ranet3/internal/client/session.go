@@ -13,9 +13,11 @@ import (
 	"log"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
@@ -193,12 +195,15 @@ type sessionSet struct {
 	shut bool
 
 	// close is closeSession, active is (*ike.Session).Active and rekey is
-	// (*ike.Session).RekeyChildProactively in production. A test drives the
+	// (*ike.Session).RekeyChild in production. A test drives the
 	// resolution rule and the rekey verb without standing up two real SAs by
 	// replacing them.
+	// rekey is the form that fails where the session starts no exchange, so the verb can say so
 	close  func(*ike.Session)
 	active func(*ike.Session) bool
 	rekey  func(*ike.Session) error
+	// rekeyWait is how long the rekey verb waits for the rekeys it asked for, control.RekeyWait unless a test shortens it
+	rekeyWait time.Duration
 	// probe is (*ike.Session).Probe in production, replaced the same way
 	probe func(*ike.Session)
 	// endpoint is the address a session's mux sends to in production, replaced the same way
@@ -227,12 +232,13 @@ type liveSession struct {
 
 func newSessionSet() *sessionSet {
 	return &sessionSet{
-		live:     make(map[string]*liveSession),
-		close:    closeSession,
-		active:   (*ike.Session).Active,
-		rekey:    (*ike.Session).RekeyChildProactively,
-		probe:    (*ike.Session).Probe,
-		endpoint: func(sess *ike.Session) string { return sess.Mux().Endpoint().String() },
+		live:      make(map[string]*liveSession),
+		close:     closeSession,
+		active:    (*ike.Session).Active,
+		rekey:     (*ike.Session).RekeyChild,
+		rekeyWait: control.RekeyWait,
+		probe:     (*ike.Session).Probe,
+		endpoint:  func(sess *ike.Session) string { return sess.Mux().Endpoint().String() },
 	}
 }
 
@@ -543,18 +549,55 @@ func (s *sessionSet) matching(peer string, all bool, act func(liveSessionView)) 
 	return paths
 }
 
-// startRekey asks one session to replace its Child SA
-//
-// Each exchange runs on its own and none of them is waited for. A rekey is two
-// messages and a retransmit schedule against a peer that may be gone, so
-// waiting would make the answer to a mesh-wide ask depend on its least
-// reachable member. The new SPIs appear under Sessions as each one lands.
-func (s *sessionSet) startRekey(live liveSessionView) {
-	go func() {
-		if err := s.rekey(live.session); err != nil {
-			log.Printf("peer %s: rekey asked for on the control socket: %v", live.path, err)
+// rekeyEach has each session given replace its Child SA, all at once, and returns the paths that rekeyed and each that did not with why
+// a rekey against a peer that is gone runs a whole retransmit schedule, so the answer waits rekeyWait at most, and no longer than the caller asking, and lists a rekey still running then among those that did not
+func (s *sessionSet) rekeyEach(ctx context.Context, asked []liveSessionView) ([]string, []control.Missed) {
+	type outcome struct {
+		path string
+		err  error
+	}
+	outcomes := make(chan outcome, len(asked))
+	for _, live := range asked {
+		go func() {
+			err := s.rekey(live.session)
+			if err != nil {
+				log.Printf("peer %s: rekey asked for on the control socket: %v", live.path, err)
+			}
+			outcomes <- outcome{live.path, err}
+		}()
+	}
+	ended := make(map[string]error, len(asked))
+	wait := time.NewTimer(s.rekeyWait)
+	defer wait.Stop()
+	running := "still rekeying after " + control.Spelled(s.rekeyWait)
+waiting:
+	for len(ended) < len(asked) {
+		select {
+		case o := <-outcomes:
+			ended[o.path] = o.err
+		case <-wait.C:
+			break waiting
+		case <-ctx.Done():
+			running = "still rekeying when the caller went away"
+			break waiting
 		}
-	}()
+	}
+	var rekeyed []string
+	var missed []control.Missed
+	for _, live := range asked {
+		err, done := ended[live.path]
+		switch {
+		case !done:
+			missed = append(missed, control.Missed{Entry: live.path, Reason: running + ", and ike.rekey.completed or ike.rekey.failed tells how it ends"})
+		case err != nil:
+			missed = append(missed, control.Missed{Entry: live.path, Reason: err.Error()})
+		default:
+			rekeyed = append(rekeyed, live.path)
+		}
+	}
+	slices.Sort(rekeyed)
+	slices.SortFunc(missed, func(a, b control.Missed) int { return strings.Compare(a.Entry, b.Entry) })
+	return rekeyed, missed
 }
 
 // startProbe asks one session to prove its path now, and its search to confirm the budget

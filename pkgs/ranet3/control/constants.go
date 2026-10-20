@@ -33,6 +33,9 @@ const (
 	idleTimeout = 30 * time.Second
 	// ReadTimeout bounds one exchange of the client with the daemon, a stream excepted
 	ReadTimeout = 10 * time.Second
+	// RekeyWait bounds how long the rekey verb waits for the rekeys it asked for
+	// half of ReadTimeout leaves the answer the other half to reach the subcommand while it still reads
+	RekeyWait = ReadTimeout / 2
 	// maxStreams is how many streams a daemon holds open at once, leaving the rest of maxConnections to the reads
 	maxStreams = 4
 	// streamBudget is how long one stream write may wait on its reader before the stream is dropped

@@ -66,9 +66,10 @@ func (c *Client) SetConfigPath(path string) { c.configPath.Store(&path) }
 
 // noteVerb records a verb with the caller the socket reported, and what it came to
 // it is recorded under the path of each session or dialer it acted on, as every other event about a peer is
-// one that acted on none is recorded once without a peer
+// and under the path of each it missed with why in the attribute err
+// one that acted on none and missed none is recorded once without a peer
 // the peer as the caller named it goes in the attribute peer
-func (c *Client) noteVerb(ctx context.Context, verb, peer string, acted []string, err error, attrs ...slog.Attr) {
+func (c *Client) noteVerb(ctx context.Context, verb, peer string, result control.Result, err error, attrs ...slog.Attr) {
 	attrs = append([]slog.Attr{slog.String("verb", verb)}, attrs...)
 	if peer != "" {
 		attrs = append(attrs, slog.String("peer", peer))
@@ -79,11 +80,14 @@ func (c *Client) noteVerb(ctx context.Context, verb, peer string, acted []string
 	if err != nil {
 		attrs = append(attrs, slog.String("err", err.Error()))
 	}
-	if len(acted) == 0 {
+	if len(result.Acted) == 0 && len(result.Missed) == 0 {
 		c.events.Emit("control.verb", "", attrs...)
 	}
-	for _, path := range acted {
+	for _, path := range result.Acted {
 		c.events.Emit("control.verb", path, attrs...)
+	}
+	for _, missed := range result.Missed {
+		c.events.Emit("control.verb", missed.Entry, append(slices.Clip(attrs), slog.String("err", missed.Reason))...)
 	}
 }
 
@@ -94,7 +98,7 @@ func (c *Client) SetSubsystem(ctx context.Context, name control.Subsystem, on bo
 	if on {
 		verb = "enable"
 	}
-	defer func() { c.noteVerb(ctx, verb, "", nil, err, slog.String("subsystem", string(name))) }()
+	defer func() { c.noteVerb(ctx, verb, "", control.Result{}, err, slog.String("subsystem", string(name))) }()
 	if !slices.Contains(control.Subsystems, name) {
 		return control.Result{}, fmt.Errorf("control: no subsystem is called %q, so nothing changed: this node runs %s",
 			name, strings.Join(control.SubsystemNames(), ", "))
@@ -200,7 +204,7 @@ func startedStopped(on bool) string {
 // and stand down for another reconnect delay.
 // every peer at once answers a network change the watch cannot see, such as a captive portal
 func (c *Client) Redial(ctx context.Context, peer string, all bool) (result control.Result, err error) {
-	defer func() { c.noteVerb(ctx, "redial", peer, result.Acted, err, slog.Bool("all", all)) }()
+	defer func() { c.noteVerb(ctx, "redial", peer, result, err, slog.Bool("all", all)) }()
 	if all == (peer != "") {
 		return control.Result{}, errors.New("control: redial takes either a peer or every peer, not both and not neither")
 	}
@@ -268,16 +272,21 @@ func (c *Client) wakeDialers(paths []string) {
 	}
 }
 
-// Rekey asks one peer's sessions, or every session, to replace their Child SA.
+// Rekey asks one peer's sessions, or every session, to replace their Child SA
+// it answers once each rekey has ended or the session set's rekey wait ran out, naming the sessions that rekeyed and each that did not with why
 func (c *Client) Rekey(ctx context.Context, peer string, all bool) (result control.Result, err error) {
-	defer func() { c.noteVerb(ctx, "rekey", peer, result.Acted, err, slog.Bool("all", all)) }()
-	asked, err := c.askSessions("rekey", peer, all, c.sessions.startRekey)
-	if err != nil {
+	defer func() { c.noteVerb(ctx, "rekey", peer, result, err, slog.Bool("all", all)) }()
+	var asked []liveSessionView
+	if _, err := c.askSessions("rekey", peer, all, func(live liveSessionView) { asked = append(asked, live) }); err != nil {
 		return control.Result{}, err
 	}
-	log.Printf("control: %d session(s) asked to replace their child SA", len(asked))
-	return control.Result{Acted: asked,
-		Detail: fmt.Sprintf("Asked %d session(s) to replace their child SA and the new SPIs appear under sessions as each lands", len(asked))}, nil
+	rekeyed, missed := c.sessions.rekeyEach(ctx, asked)
+	log.Printf("control: %d of %d session(s) replaced their child SA", len(rekeyed), len(asked))
+	detail := fmt.Sprintf("Rekeyed %d session(s), and the new SPIs show under sessions", len(rekeyed))
+	if len(missed) > 0 {
+		detail = fmt.Sprintf("Rekeyed %d of %d session(s), and the %d listed with a reason did not", len(rekeyed), len(asked), len(missed))
+	}
+	return control.Result{Acted: rekeyed, Missed: missed, Detail: detail}, nil
 }
 
 // askSessions runs act on one peer's sessions, or every session, for the verb named
@@ -302,7 +311,7 @@ func (c *Client) askSessions(verb, peer string, all bool, act func(liveSessionVi
 // Reload re-reads the configuration file and the trust document it names, as
 // SIGHUP does, so a supervisor is not the only way to ask.
 func (c *Client) Reload(ctx context.Context) (_ control.Result, err error) {
-	defer func() { c.noteVerb(ctx, "reload", "", nil, err) }()
+	defer func() { c.noteVerb(ctx, "reload", "", control.Result{}, err) }()
 	path := c.configPath.Load()
 	if path == nil || *path == "" {
 		return control.Result{}, errors.New("control: this node was never told which file it was configured from, so there is nothing to re-read")
