@@ -22,7 +22,7 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 7296 section 2.25.1                     | Complete both colliding Child SA rekeys and keep 1                                                        | The peer's rekey is answered `TEMPORARY_FAILURE`                                | 1 Child SA per session                                        |
 | RFC 7296 section 2.8                        | The responder may switch to the new SA once it sends its response                                         | It switches just before sending the response                                    | The difference is the time to encrypt 1 message               |
 | RFC 7296 section 2.18                       | An IKE SA rekey may choose a new PRF                                                                      | The PRF stays, and a reload that drops it replaces the IKE SA                   | strongSwan expands keys with the old PRF                      |
-| RFC 7296 section 4                          | After `NO_ADDITIONAL_SAS`, delete the old SA and create a new one                                         | The old SA stays, and the rekey is retried                                      | Not implemented                                               |
+| RFC 7296 section 4                          | After `NO_ADDITIONAL_SAS`, delete the old SA and create a new one                                         | Without a crossing peer rekey held, the old SA stays and the rekey is retried   | Not implemented                                               |
 | RFC 7296 section 2.25.2                     | Answer as usual a rekey of an IKE SA this end is rekeying too                                             | Past the IKE SA's lifetime it is answered `TEMPORARY_FAILURE`                   | Section 2.8: an SA past its lifetime is not used              |
 | RFC 7296 section 2.8                        | An SA past its lifetime is not used                                                                       | It finishes its exchange, answers the peer and sends its Delete                 | Sections 2.1 and 2.3 keep 1 request until it ends             |
 | RFC 7296 section 2.8                        | A rekeyed Child SA keeps the algorithms of the old one                                                    | A Child SA rekey may move to another listed cipher                              | Either end's lists left the old cipher out                    |
@@ -263,11 +263,13 @@ keeping a cipher the lists left out.
 
 When a peer refuses a rekey with `NO_ADDITIONAL_SAS`,
 [RFC 7296 section 4](https://www.rfc-editor.org/rfc/rfc7296.html#section-4)
-requires that the node can delete the old SA and create a new one instead.
-ranet3 keeps the old SA and retries the rekey on its backoff, from 5 seconds up
-to 5 minutes at the defaults, until the SA's lifetime ends and the IKE SA is
-deleted with it. Only `CHILD_SA_NOT_FOUND` makes it create a new Child SA from
-scratch.
+requires that the node can delete the old SA and create a new one instead. Where
+the peer's own rekey of the same IKE SA crossed this node's and this node
+answered it, its SA is held, and ranet3 takes that SA, as it does after any
+error notify but `INVALID_SYNTAX`. Otherwise ranet3 keeps the old SA and retries
+the rekey on its backoff, from 5 seconds up to 5 minutes at the defaults, until
+the SA's lifetime ends and the IKE SA is deleted with it. Only
+`CHILD_SA_NOT_FOUND` makes it create a new Child SA from scratch.
 
 [RFC 7296 section 2.25.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.25.2)
 asks an end that receives a rekey of an IKE SA it is rekeying itself to reply as

@@ -217,9 +217,10 @@ and accepts what the new lists hold, and a new order changes which transform an
 answering node takes. `cap.crypto.replay` and `cap.crypto.rekey` need a restart,
 as [what a reload refuses](#what-a-reload-refuses) describes. `ranet3 sessions`
 shows the transforms each session runs, and a reload can be seen taking hold
-there. Its column for the Child SA names the cipher alone: a Child SA's kex
-entry shows only in the `suite` of an `ike.suite.unlisted`, which the session
-records once a reload left that entry out.
+there. Its column for the Child SA names the cipher, followed by the kex entry
+of the Child SA's own key exchanges where it ran any, as the `suite` of an
+`ike.suite.unlisted` does, which the session records once a reload left that
+entry out.
 
 Each live session then checks its SAs against the new lists. An SA whose cipher
 or kex entry they leave out is rekeyed under them, and the session records an

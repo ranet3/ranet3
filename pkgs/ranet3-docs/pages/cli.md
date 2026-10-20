@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-10-20
+updated: 2026-10-21
 order: 75
 ---
 
@@ -83,6 +83,11 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
 `--control` names the socket to read, `/var/run/ranet3/control.sock` by default.
 `--json` prints JSON instead of the table.
 
+- `sessions` names the transforms of each IKE SA and of its Child SA by their
+  `cap.crypto` names. A Child SA the peer's creation or rekey keyed with key
+  exchanges of its own has their kex entry after its cipher, such as
+  `aes256gcm/x25519+mlkem768`, until this node's own rekey of it, which runs
+  none.
 - `whois` takes 1 address. It prints the longest prefix that covers the address,
   then the shorter ones it falls back to.
 - `ip` prints the host prefixes this node announces, 1 address per line.
@@ -167,6 +172,7 @@ it. [Debugging](development/debug.md) describes each command and the events.
 | `daemon`       | 0 after a clean shutdown. 1 when it refuses to start, when a second signal cuts the shutdown short, when the pprof listener, the metrics listener, the control socket or the mesh failed while it ran, when its tun went away under it, or when the route reconciler, the egress translator or the border filter could not withdraw what it installed. A failed pass of any of them does not change the status. |
 | `debug socket` | 1 when the answer's status is not 2xx.                                                                                                                                                                                                                                                                                                                                                                          |
 | `debug wait`   | 0 when the event came. 1 when none came within `--timeout`. 2 when it could not watch for the event or lost it, or refused an argument or flag.                                                                                                                                                                                                                                                                 |
+| `rekey`        | 1 when a session did not rekey, after the answer lists it with the reason.                                                                                                                                                                                                                                                                                                                                      |
 
 The daemon logs why it refuses to start at the error level, which every
 `--log-level` keeps. A flag value it refuses goes to standard error as plain

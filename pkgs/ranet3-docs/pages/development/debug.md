@@ -234,7 +234,7 @@ connections to the reads.
 | `daemon.reload`                       | the file and trust document were read again, with what applied or the error |
 | `node.down`, `node.up`                | the node went off the mesh or came back, by a request or from its flag      |
 | `responder.changed`                   | a reload turned `link.listen` on or off, with the answered sessions closed  |
-| `control.verb`                        | a verb over the socket, once under each session or dialer it acted on       |
+| `control.verb`                        | a verb over the socket, under each session or dialer it acted on or missed  |
 | `dial.attempt`, `dial.failed`         | a dialer sent a handshake, or ended short of a session                      |
 | `dial.woken`                          | a dialer was set going before its delay, as `redial` does                   |
 | `ike.handshake.failed`                | the responder refused a handshake, as often as it logs one                  |
@@ -355,15 +355,16 @@ Each kind carries these attributes:
 | `netstack.tun.failed`                         | `interface`, `err`                                                                                                                          |
 
 `err` appears on `daemon.reload`, `control.verb`, `kernel.pass`, `egress.pass`
-and `border.pass` only when the step failed. The `trigger` of a `kernel.pass` is
-`start`, `sweep`, `retry`, `grace`, `disable`, `enable`, `reload`, `mesh` or
-`kernel`. The `trigger` of an `egress.pass` is `start`, `sweep`, `retry`,
-`disable`, `enable`, `changed` when another writer added, changed or deleted
-part of its tables, or `missed` when the daemon lost nf_tables notifications to
-an overflow or could not read one, whoever's tables they were about. The
-`trigger` of a `border.pass` is `start`, `sweep`, `retry`, `reload`, `changed`
-when another writer added, changed or deleted part of its table, or `missed` as
-for an `egress.pass`.
+and `border.pass` only when the step failed, and on a `control.verb` under a
+session the verb missed it is the reason the answer gives. The `trigger` of a
+`kernel.pass` is `start`, `sweep`, `retry`, `grace`, `disable`, `enable`,
+`reload`, `mesh` or `kernel`. The `trigger` of an `egress.pass` is `start`,
+`sweep`, `retry`, `disable`, `enable`, `changed` when another writer added,
+changed or deleted part of its tables, or `missed` when the daemon lost
+nf_tables notifications to an overflow or could not read one, whoever's tables
+they were about. The `trigger` of a `border.pass` is `start`, `sweep`, `retry`,
+`reload`, `changed` when another writer added, changed or deleted part of its
+table, or `missed` as for an `egress.pass`.
 
 An `ike.sa.expired` is recorded for the current Child SA and for a replaced one
 still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an
@@ -397,12 +398,18 @@ starts runs no key exchange, so the `suite` of `sa=child` is the cipher alone. A
 peer's rekey records no `ike.rekey.completed`. A Child SA the peer's creation or
 rekey keyed with key exchanges of its own has their kex entry after its cipher,
 such as `aes128gcm/p256` or `aes128gcm/x25519+mlkem768`, in the `suite` of an
-`ike.suite.unlisted`. Where the peer answers this node's IKE SA rekey with
-`TEMPORARY_FAILURE` after this node answered the peer's own rekey of the same
-SA, this node takes the SA the peer's rekey made, and the `ike.rekey.completed`
-names that SA. An IKE SA rekey whose Delete of the replaced or redundant IKE SA
-goes unanswered or is refused records `ike.rekey.completed`, since the surviving
-IKE SA is current by then. The session logs
+`ike.suite.unlisted`. Where the peer refuses this node's IKE SA rekey with an
+error notify after this node answered the peer's own rekey of the same SA, its
+last `IKE_FOLLOWUP_KE` included where it ran any, this node takes the SA the
+peer's rekey made, and the `ike.rekey.completed` names that SA. Every error
+notify does so but `INVALID_SYNTAX`, which ends the IKE SA, and an
+`INVALID_KE_PAYLOAD` naming a group this node offered is retried once in that
+group first. A refusal that comes while the peer's rekey still runs its
+`IKE_FOLLOWUP_KE` records `ike.rekey.failed`, and the last of those exchanges
+then makes the peer's SA current with no `ike.rekey.completed`, since a peer's
+rekey records none. An IKE SA rekey whose Delete of the replaced or redundant
+IKE SA goes unanswered or is refused records `ike.rekey.completed`, since the
+surviving IKE SA is current by then. The session logs
 `ike replaced IKE SA was not deleted by this end` or
 `ike redundant IKE SA was not deleted by this end` with the error.
 
@@ -481,8 +488,9 @@ a Delete, and a `node.up` carries `cause=request`.
 A `control.verb` carries the caller's uid and pid, and in its `peer` attribute
 the peer as the verb named it, when it named one. The event's peer is the path
 of the session or dialer it was recorded under, which `--peer` takes by any name
-of that peer. A verb that acted on none, a refused one included, is recorded
-once without a peer.
+of that peer. A verb is recorded under each path its answer lists in `acted` or
+`missed`, and one that lists none, a refused one included, is recorded once
+without a peer.
 
 A `babel.request.sent` is recorded when the node decides to send the request,
 and a send queue with no room can still refuse it, which
