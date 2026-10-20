@@ -12,9 +12,11 @@
 // On linux the translation is an nftables table named after this tool, one per
 // address family, holding one nat postrouting chain. That name is the ownership
 // marker, the way Table.Proto is the reconciler's in internal/kernel. This
-// package creates the table, writes only inside it, withdraws it whole at
-// shutdown and never reads, replaces or deletes a table, a chain or a rule it
-// did not create. Other source translation already on the host is reported
+// package creates the table, writes only inside it and withdraws it whole at
+// shutdown. It reads other writers' tables, chains and rules to find its own
+// and to report conflicts, and writes, replaces or deletes nothing outside its
+// own tables. A rule another writer puts in its own chain is removed by the
+// next pass. Other source translation already on the host is reported
 // rather than fought over: several nat postrouting chains coexist at the same
 // hook, the first to translate a connection wins it, and taking somebody else's
 // rule away to win that race would break whatever put it there.
@@ -125,8 +127,9 @@ type Egress struct {
 // write.
 type Runtime struct {
 	// Interface is the mesh device, named as the kernel named it. A packet
-	// arriving on it and leaving by another link is translated, while one arriving
-	// on it and leaving by it again is mesh transit and is left alone.
+	// arriving on it and leaving by another link is translated in each
+	// advertised family, while one arriving on it and leaving by it again is
+	// mesh transit and is left alone.
 	Interface string
 	// Egress is the egress device, named as the kernel named it: the second
 	// tun a local segment delivering to egress writes steered traffic into.

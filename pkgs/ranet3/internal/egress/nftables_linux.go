@@ -103,8 +103,7 @@ func (n *nftables) Missed() <-chan struct{} { return n.monitor.missed }
 // deletionMonitor wakes deleted once per datagram of nf_tables notifications
 // that holds another writer's deletion in this tool's tables, and missed once
 // per overflow or datagram it cannot parse. A NixOS firewall reload flushes
-// the whole ruleset, and until the next pass the steered rule is gone while the
-// mesh still writes into the egress device.
+// the whole ruleset, which takes the steered rule with it until the next pass.
 type deletionMonitor struct {
 	file    *os.File
 	read    func([]byte) (int, error)
@@ -249,7 +248,7 @@ func nftFamily(family uint8) uint8 {
 // table and chain names are matched here. A rule another writer put in this
 // tool's chain changes what the chain does to a packet, so it is read back
 // too, one with no comment as an empty spec, and the next pass rewrites the
-// chain without it. A rule in any other table or chain is never read, so it is
+// chain without it. A rule in any other table or chain is skipped, so it is
 // never removed.
 func (n *nftables) Rules() ([]Installed, error) {
 	var out []Installed
