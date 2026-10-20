@@ -74,7 +74,7 @@ type Segment struct {
 	// RFC 8986 section 4.8 gives the behavior
 	Deliver Delivery `yaml:"deliver,omitempty" json:"deliver,omitempty" toml:"deliver,omitempty"`
 	// Allow holds the outer and inner sources a segment delivering to egress
-	// carries, and is read with no other delivery
+	// carries, and is refused with any other delivery
 	Allow []schema.Prefix `yaml:"allow,omitempty" json:"allow,omitempty" toml:"allow,omitempty"`
 }
 
