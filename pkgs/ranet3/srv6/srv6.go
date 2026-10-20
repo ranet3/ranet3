@@ -81,12 +81,15 @@ const (
 	// SRH's own, and the two below it announce an encapsulated inner packet.
 	nextHeaderRouting = 43
 	// The headers RFC 8200 section 4.1 allows in front of a routing header,
-	// and the fragment header, which this node refuses rather than walks.
+	// and the fragment header, which findRouting refuses rather than walks.
 	nextHeaderHopByHop  = 0
 	nextHeaderDestOpts  = 60
 	nextHeaderFragment  = 44
 	extensionUnit       = 8
 	maxExtensionHeaders = 8
+	// nextHeaderAuth is the authentication header of RFC 4302, which may sit
+	// between the routing header and the upper-layer header.
+	nextHeaderAuth = 51
 	// NextHeaderIPv4 and NextHeaderIPv6 name what H.Encaps put inside, which
 	// an End.DT46 has to read to know which stack to deliver to.
 	NextHeaderIPv4 = 4
@@ -389,7 +392,9 @@ func Parse(raw []byte) (Header, error) {
 // A fragment is refused rather than walked past, because a segment list spread
 // across fragments needs reassembly this package does not do. The number of
 // headers walked is bounded here rather than by the packet, so a peer cannot
-// choose how much of this node's time one packet costs.
+// choose how much of this node's time one packet costs. The routing header is
+// the last of the maxExtensionHeaders headers it reads, as the upper-layer
+// header is in carriesUnanswerable.
 func findRouting(raw []byte) (int, error) {
 	next, offset := raw[6], ipv6HeaderLen
 	for range maxExtensionHeaders {
@@ -402,15 +407,32 @@ func findRouting(raw []byte) (int, error) {
 		default:
 			return 0, ErrNotSegmentRouted
 		}
-		if len(raw) < offset+extensionUnit {
-			return 0, ErrNotSegmentRouted
-		}
-		next, offset = raw[offset], offset+extensionUnit*(1+int(raw[offset+1]))
-		if offset > len(raw) {
+		var ok bool
+		if next, offset, ok = stepExtension(raw, next, offset); !ok || offset > len(raw) {
 			return 0, ErrNotSegmentRouted
 		}
 	}
 	return 0, fmt.Errorf("%w: more extension headers than this node walks", ErrHeaderInvalid)
+}
+
+// stepExtension reads the extension header of type kind at offset, RFC 8200
+// section 4, for the header that follows it and where that one starts. It
+// reads only the octets that say so, and reports false when the packet ends
+// before them, so the start it gives may lie past the packet's end.
+func stepExtension(raw []byte, kind byte, offset int) (next byte, end int, ok bool) {
+	if len(raw) < offset+2 {
+		return 0, 0, false
+	}
+	switch kind {
+	case nextHeaderFragment:
+		end = offset + extensionUnit
+	case nextHeaderAuth:
+		// RFC 4302 section 2.2 counts AH in 4-octet units, less 2
+		end = offset + 4*(2+int(raw[offset+1]))
+	default:
+		end = offset + extensionUnit*(1+int(raw[offset+1]))
+	}
+	return raw[offset], end, true
 }
 
 // End is the waypoint behavior of RFC 8986 section 4.1: the packet is not

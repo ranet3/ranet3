@@ -31,7 +31,8 @@ var addressKinds = []func(rest [3]byte) netip.Addr{
 var errorTypes = []byte{3, 4, 5, 11, 12}
 
 // for any IPv4 packet and any source and mtu, an answer comes exactly when RFC 1122 section 3.2.2 lets an error answer the packet
-// from a source that names one host
+// whose header checksum checks, RFC 1812 sections 4.3.2.7 and 5.2.2
+// from a source that names one host, and allow, asked once then and never otherwise, lets it out
 // it is one destination unreachable, fragmentation needed, from that source to the packet's, sent with DF at precedence 6
 // carrying the mtu as its next-hop MTU and the packet's header and 8 bytes of its data, both its sums checking as a receiver checks them
 // every ICMP type is tried first in a packet every other rule lets an error answer, which meets each error type in every run
@@ -42,14 +43,16 @@ func TestFragmentationNeededAnswersOnlyWhatAnErrorMayAnswer(t *testing.T) {
 		raw[9], raw[ipv4HeaderLen] = icmpProtocol, byte(kind)
 		binary.BigEndian.PutUint16(raw[10:], 0)
 		binary.BigEndian.PutUint16(raw[10:], ^headerSum(raw[:ipv4HeaderLen]))
-		if _, ok := FragmentationNeeded(raw, oneHost, maxDatagram); ok == (bytes.IndexByte(errorTypes, byte(kind)) >= 0) {
-			t.Errorf("an ICMP message of type %d was answered %t", kind, ok)
+		asked := false
+		ok := FragmentationNeeded(raw, oneHost, maxDatagram, func() bool { asked = true; return true }) != nil
+		if ok == (bytes.IndexByte(errorTypes, byte(kind)) >= 0) || asked != ok {
+			t.Errorf("an ICMP message of type %d was answered %t, allow asked %t", kind, ok, asked)
 		}
 	}
 	pbt.Check(t, func(ht *hegel.T) {
 		// half the cases break one rule at most, which puts each rule against packets every other rule lets through
 		alone := hegel.Draw(ht, hegel.Booleans())
-		broken := hegel.Draw(ht, hegel.Integers(0, 5))
+		broken := hegel.Draw(ht, hegel.Integers(0, 6))
 		breaks := func(rule int) bool {
 			if alone {
 				return broken == rule
@@ -103,13 +106,22 @@ func TestFragmentationNeededAnswersOnlyWhatAnErrorMayAnswer(t *testing.T) {
 		}
 		binary.BigEndian.PutUint16(raw[10:], 0)
 		binary.BigEndian.PutUint16(raw[10:], ^headerSum(raw[:headerLen]))
+		damaged := breaks(6)
+		if damaged {
+			// one bit moves the one's complement sum by a power of 2 below 0xffff, so it no longer folds to 0xffff
+			bit := hegel.Draw(ht, hegel.Integers(0, 15))
+			raw[10+bit/8] ^= 1 << (bit % 8)
+		}
 		mtu := hegel.Draw(ht, pbt.Spanning(68, maxDatagram))
+		allowed := hegel.Draw(ht, hegel.Booleans())
 
-		answer, ok := FragmentationNeeded(raw, source, mtu)
-		want := fromOneHost && senderIsOneHost && !toAGroup && !laterFragment && !carriesError
-		if ok != want {
-			ht.Fatalf("a packet from %s to %s, flags %#04x, protocol %d, answered from %s was answered %t, want %t",
-				sender, receiver, field, raw[9], source, ok, want)
+		asked := 0
+		answer := FragmentationNeeded(raw, source, mtu, func() bool { asked++; return allowed })
+		ok := answer != nil
+		eligible := fromOneHost && senderIsOneHost && !toAGroup && !laterFragment && !carriesError && !damaged
+		if want := eligible && allowed; ok != want || (asked == 1) != eligible || asked > 1 {
+			ht.Fatalf("a packet from %s to %s, flags %#04x, protocol %d, damaged %t, answered from %s was answered %t asking allow %d times, want %t asking it %t",
+				sender, receiver, field, raw[9], damaged, source, ok, asked, want, eligible)
 		}
 		if !ok {
 			return

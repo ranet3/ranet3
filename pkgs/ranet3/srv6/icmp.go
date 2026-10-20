@@ -30,6 +30,8 @@ const (
 	icmpErroneousHeader  = 0
 	// icmpPacketTooBig is RFC 4443 section 3.2, whose one code is 0 and whose four octets carry the MTU
 	icmpPacketTooBig = 2
+	// icmpRedirect is RFC 4861 section 4.5, informational by its type and still one RFC 4443 section 2.4 (e.2) lets no error answer
+	icmpRedirect = 137
 	// icmpHeaderLen is the type, the code, the checksum and the four octets
 	// the three messages use differently.
 	icmpHeaderLen = 8
@@ -40,42 +42,43 @@ const (
 
 // TimeExceeded answers a packet whose hop limit ran out at this node, RFC 4443
 // section 3.3. source is the segment the packet was addressed to, which is the
-// address a router answers an expired packet from.
-func TimeExceeded(offending []byte, source netip.Addr) ([]byte, bool) {
-	return icmpError(offending, source, icmpTimeExceeded, icmpHopLimitInTranst, 0)
+// address a router answers an expired packet from. allow is icmpError's.
+func TimeExceeded(offending []byte, source netip.Addr, allow func() bool) []byte {
+	return icmpError(offending, source, icmpTimeExceeded, icmpHopLimitInTranst, 0, allow)
 }
 
 // ParameterProblem answers a routing header this node will not act on, RFC
 // 4443 section 3.4, pointing at the Segments Left field that RFC 8986 section
-// 4.1 S10 names.
-func ParameterProblem(offending []byte, source netip.Addr) ([]byte, bool) {
+// 4.1 S10 names. allow is icmpError's.
+func ParameterProblem(offending []byte, source netip.Addr, allow func() bool) []byte {
 	if len(offending) < ipv6HeaderLen {
-		return nil, false
+		return nil
 	}
 	// The pointer names a field, so a packet whose routing header cannot be
 	// found is one this answer has nothing to point at.
 	offset, err := findRouting(offending)
 	if err != nil {
-		return nil, false
+		return nil
 	}
-	return icmpError(offending, source, icmpParameterProblem, icmpErroneousHeader, uint32(offset+segmentsLeftInHeader))
+	return icmpError(offending, source, icmpParameterProblem, icmpErroneousHeader, uint32(offset+segmentsLeftInHeader), allow)
 }
 
 // PacketTooBig answers a packet larger than the next link carries, RFC 4443 section 3.2, with that link's mtu
-// source is the address the answer comes from
-func PacketTooBig(offending []byte, source netip.Addr, mtu int) ([]byte, bool) {
-	return icmpError(offending, source, icmpPacketTooBig, 0, uint32(mtu))
+// source is the address the answer comes from, and allow is icmpError's
+func PacketTooBig(offending []byte, source netip.Addr, mtu int, allow func() bool) []byte {
+	return icmpError(offending, source, icmpPacketTooBig, 0, uint32(mtu), allow)
 }
 
 // icmpError builds one message carrying as much of the offending packet as
 // fits, RFC 4443 section 3.3: enough that the whole reply stays inside the
 // IPv6 minimum MTU, so it reaches the sender without fragmenting.
 //
-// It reports false for a packet no error may answer, which keeps one message
-// from becoming many.
-func icmpError(offending []byte, source netip.Addr, kind, code uint8, pointer uint32) ([]byte, bool) {
-	if !Usable(source) || !answerable(offending) {
-		return nil, false
+// It returns nil for a packet no error may answer, which keeps one message
+// from becoming many, and for one allow refuses. allow is called once the
+// packet is one an error may answer and before anything is built.
+func icmpError(offending []byte, source netip.Addr, kind, code uint8, pointer uint32, allow func() bool) []byte {
+	if !Usable(source) || !answerable(offending) || !allow() {
+		return nil
 	}
 	destination := netip.AddrFrom16([16]byte(offending[8:24]))
 	quoted := min(len(offending), MinimumIPv6MTU-ipv6HeaderLen-icmpHeaderLen)
@@ -93,16 +96,22 @@ func icmpError(offending []byte, source netip.Addr, kind, code uint8, pointer ui
 	copy(out[24:], addr16(destination))
 	copy(out[ipv6HeaderLen:], body)
 	binary.BigEndian.PutUint16(out[ipv6HeaderLen+2:], icmpChecksum(source, destination, body))
-	return out, true
+	return out
 }
 
 // answerable is RFC 4443 section 2.4 (e): the rules that stop one refused
-// packet turning into many. An ICMPv6 error may not answer another, and it may
-// not answer anything addressed to or sent from more than one interface, since
-// every receiver would answer the same packet.
+// packet turning into many. An ICMPv6 error may not answer another or a
+// redirect, and it may not answer anything addressed to or sent from more than
+// one interface, since every receiver would answer the same packet.
 //
-// The link-layer cases of (e.3) and (e.4) cannot arise, because every packet
-// reaching here was decrypted out of a unicast ESP session with one peer.
+// Packet Too Big refuses a multicast destination as well, departing from the
+// first exception of (e.3), since the dataplane answers from the packet's
+// destination, which for a group is no address an answer may come from, and
+// the mesh routes no multicast.
+//
+// The link-layer cases (e.4) and (e.5) cannot arise, because every packet
+// reaching here was read off the tun or decrypted out of a unicast ESP session
+// with one peer, and neither has a link layer.
 func answerable(offending []byte) bool {
 	if len(offending) < ipv6HeaderLen || offending[0]>>4 != 6 {
 		return false
@@ -112,22 +121,36 @@ func answerable(offending []byte) bool {
 	if from.IsUnspecified() || from.IsMulticast() || to.IsMulticast() {
 		return false
 	}
-	return !carriesICMPError(offending)
+	return !carriesUnanswerable(offending)
 }
 
-// carriesICMPError reads past the one extension header this node acts on, so
-// that an error refused at a segment is not answered with another error.
-func carriesICMPError(offending []byte) bool {
-	next, payload := offending[6], ipv6HeaderLen
-	if offset, err := findRouting(offending); err == nil {
-		if len(offending) < offset+srhFixedLen {
+// carriesUnanswerable reports whether offending is an ICMPv6 error or a redirect, which RFC 4443 section 2.4 (e.1) and (e.2) let no error answer
+// the walk steps over each extension header in any order but ESP, which hides what follows it, and a fragment other than the first, which holds no upper-layer header, as the kernel's ipv6_skip_exthdr does
+// the upper-layer header is the last of the maxExtensionHeaders headers it reads, so an error behind 8 extension headers or more is answered, departing from (e.1)
+// since refusing at the bound would withhold the answers RFC 4443 sections 3.2 and 3.3 require from a packet not shown to be an error
+// an ICMPv6 header cut short before its type counts as an error, as the kernel's is_ineligible reads one, and every other end of the walk shows none
+func carriesUnanswerable(offending []byte) bool {
+	next, offset := offending[6], ipv6HeaderLen
+	for range maxExtensionHeaders {
+		switch next {
+		case icmpv6Next:
+			// a type below 128 is an error message, RFC 4443 section 2.1
+			return len(offending) <= offset || offending[offset] < 128 || offending[offset] == icmpRedirect
+		case nextHeaderFragment:
+			// the fragment offset is the field's top 13 bits, RFC 8200 section 4.5
+			if len(offending) < offset+4 || binary.BigEndian.Uint16(offending[offset+2:])>>3 != 0 {
+				return false
+			}
+		case nextHeaderHopByHop, nextHeaderRouting, nextHeaderDestOpts, nextHeaderAuth:
+		default:
 			return false
 		}
-		next = offending[offset]
-		payload = offset + srhFixedLen + extensionUnit*int(offending[offset+1])
+		var ok bool
+		if next, offset, ok = stepExtension(offending, next, offset); !ok {
+			return false
+		}
 	}
-	// An ICMPv6 type below 128 is an error message, RFC 4443 section 2.1.
-	return next == icmpv6Next && len(offending) > payload && offending[payload] < 128
+	return false
 }
 
 // icmpChecksum is the RFC 4443 section 2.3 checksum over the pseudo-header of

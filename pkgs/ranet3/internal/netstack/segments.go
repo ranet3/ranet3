@@ -340,25 +340,23 @@ func (m *Mesh) noteSegmentDrop(err error) {
 // node will not act on. Everything else is dropped in silence, because an
 // error is only worth sending where it names something the sender can fix.
 //
-// The budget is the whole of the bound. An error is a packet a peer's packet
-// caused this node to send, which is the shape every amplification this tree
-// has had took, and RFC 4443 section 2.4 (f) requires a limit for that reason.
-// A burst covers a traceroute's three probes per hop, and the refill bounds a
-// node sending refused headers in a loop.
+// RFC 4443 section 2.4 (f) requires the limit, which the builder draws from
+// once the packet is one an error may answer and before it builds, so a flood
+// past its bucket builds nothing.
 func (m *Mesh) answerRefused(offending []byte, reason error) {
+	sender := netip.AddrFrom16([16]byte(offending[8:24]))
+	segment := netip.AddrFrom16([16]byte(offending[24:40]))
+	allow := func() bool { return m.takeICMPToken(sender) }
 	var answer []byte
-	var ok bool
-	source := netip.AddrFrom16([16]byte(offending[24:40]))
 	switch {
 	case errors.Is(reason, srv6.ErrHopLimit):
-		answer, ok = srv6.TimeExceeded(offending, source)
+		answer = srv6.TimeExceeded(offending, segment, allow)
 	case errors.Is(reason, srv6.ErrHeaderInvalid):
-		answer, ok = srv6.ParameterProblem(offending, source)
+		answer = srv6.ParameterProblem(offending, segment, allow)
 	}
-	if !ok || !m.takeICMPToken() {
-		return
+	if answer != nil {
+		m.sendBack(answer)
 	}
-	m.sendBack(answer)
 }
 
 // segmentTooBig takes a forwarded segment larger than mtu, the largest the session to its next segment carries
@@ -400,28 +398,18 @@ func carriedPacket(raw []byte) (int, bool) {
 }
 
 // answerTooBig answers inner, a packet larger than mtu, the largest its next link carries, from the address it went to
-// IPv6 with packet too big and IPv4 with DF with fragmentation needed, under the bucket answerRefused draws from
-// the token goes first, which spares a flood the answers it would build and drop
+// IPv6 with packet too big and IPv4 with DF with fragmentation needed, under the node's cap alone, which the builder draws from as answerRefused's does
 // cut reports IPv4 without DF, which a router cuts into fragments rather than answers
 func (m *Mesh) answerTooBig(inner []byte, mtu int) (answer []byte, cut bool) {
-	var ok bool
+	allow := func() bool { return m.takeICMPToken(netip.Addr{}) }
 	switch {
 	case inner[0]>>4 == 6:
-		if !m.takeICMPToken() {
-			return nil, false
-		}
-		answer, ok = srv6.PacketTooBig(inner, netip.AddrFrom16([16]byte(inner[24:40])), mtu)
+		answer = srv6.PacketTooBig(inner, netip.AddrFrom16([16]byte(inner[24:40])), mtu, allow)
 	// DF, RFC 791 section 3.1
 	case inner[6]&0x40 != 0:
-		if !m.takeICMPToken() {
-			return nil, false
-		}
-		answer, ok = packet.FragmentationNeeded(inner, netip.AddrFrom4([4]byte(inner[16:20])), mtu)
+		answer = packet.FragmentationNeeded(inner, netip.AddrFrom4([4]byte(inner[16:20])), mtu, allow)
 	default:
 		return nil, true
-	}
-	if !ok {
-		return nil, false
 	}
 	return answer, false
 }
@@ -452,22 +440,29 @@ func (m *Mesh) sendBack(answer []byte) bool {
 	return true
 }
 
-// takeICMPToken reports whether this node may answer one more refused packet.
-// The bucket holds icmpBurst and refills at icmpRefill, so a traceroute gets
-// its probes answered and a flood gets the refill rate.
-func (m *Mesh) takeICMPToken() bool {
+// takeICMPToken reports whether this node may send one more ICMP error to sender, the source of the packet it answers
+// sender is the zero Addr for packet too big and fragmentation needed, which only the node's cap holds back
+func (m *Mesh) takeICMPToken(sender netip.Addr) bool {
 	now := int64(time.Since(m.segmentsStarted))
-	for {
-		last := m.icmpFilled.Load()
-		tokens := min(icmpBurst, m.icmpTokens.Load()+(now-last)/int64(icmpRefill))
-		if tokens < 1 {
-			return false
-		}
-		if m.icmpFilled.CompareAndSwap(last, now) {
-			m.icmpTokens.Store(tokens - 1)
-			return true
-		}
+	var count *reportedCount
+	var limit string
+	switch m.icmpLimit.take(now, sender) {
+	case icmpBySource:
+		count, limit = &m.withheldBySource, "source"
+	case icmpByNode:
+		count, limit = &m.withheldByNode, "node"
+	default:
+		return true
 	}
+	if withheld, report := count.add(now); report && m.events != nil {
+		m.events("netstack.icmp.withheld", "", slog.String("interface", m.Name), slog.String("limit", limit), slog.Uint64("withheld", withheld))
+	}
+	return false
+}
+
+// ICMPWithheld is how many ICMP errors this node did not send, those its source's bucket withheld and those the node's cap withheld
+func (m *Mesh) ICMPWithheld() (source, node uint64) {
+	return m.withheldBySource.total.Load(), m.withheldByNode.total.Load()
 }
 
 // reportSegmentDrop writes at most one line per interval, whatever the reason,
@@ -509,10 +504,13 @@ type segmentCounters struct {
 	segmentsRefused   atomic.Uint64
 	segmentsNotReady  atomic.Uint64
 	segmentsDrained   atomic.Uint64
-	// icmpTokens and icmpFilled are the bucket answerRefused draws from, in
-	// tokens and in nanoseconds since segmentsStarted.
-	icmpTokens atomic.Int64
-	icmpFilled atomic.Int64
+	// icmpLimit holds back the ICMP errors past their limits, its clock nanoseconds since segmentsStarted
+	icmpLimit icmpLimit
+	// withheldBySource and withheldByNode count the answers a source's bucket and the node's cap withheld, as IcmpOutRateLimitHost and IcmpOutRateLimitGlobal count them
+	withheldBySource reportedCount
+	_                [linePad]byte
+	withheldByNode   reportedCount
+	_                [linePad]byte
 	// segmentsStarted and segmentReported space the drop reports on the
 	// monotonic clock, as Peer.sendErrReported does, so a backward step of the
 	// wall clock cannot suppress every report until it catches up.
@@ -525,5 +523,4 @@ type segmentCounters struct {
 func (c *segmentCounters) startSegmentReports() {
 	c.segmentsStarted = time.Now()
 	c.segmentReported.Store(-int64(segmentDropInterval))
-	c.icmpTokens.Store(icmpBurst)
 }

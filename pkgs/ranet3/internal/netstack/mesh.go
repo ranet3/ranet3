@@ -61,7 +61,7 @@ type Mesh struct {
 	setMTU func(name string, mtu int) error
 
 	// readsTruncated counts the reads that lost the tail of a GSO frame, and framesRefused the frames the device refused
-	readsTruncated, framesRefused tunReadCount
+	readsTruncated, framesRefused reportedCount
 	// events records the mesh's changes of state, nil recording nothing
 	events func(kind, peer string, attrs ...slog.Attr)
 	// failed is closed once a reader finds the device gone while the mesh is not closing, nil for a mesh with no device
@@ -457,33 +457,33 @@ func (m *Mesh) noteDeviceGone(err error) {
 	})
 }
 
-// tunReadCount counts one kind of trouble on the tun's reads and spaces the warnings about it an interval apart
-type tunReadCount struct {
+// reportedCount counts one kind of trouble on the tun's reads, or the answers one ICMP limit withheld, and spaces the reports about it, a warning or an event, an interval apart
+type reportedCount struct {
 	total atomic.Uint64
-	// next is the earliest the next warning may go out
+	// next is the earliest the next report may go out
 	// in nanoseconds since segmentsStarted, which keeps it on the monotonic clock
-	// zero lets the first one warn at once
+	// zero lets the first one report at once
 	next atomic.Int64
-	// warned is total as the last warning reported it
-	warned atomic.Uint64
+	// reported is total as the last report gave it
+	reported atomic.Uint64
 }
 
 // add counts one at now, in nanoseconds since segmentsStarted
-// and reports whether the caller warns, with the count since the last warning
-func (c *tunReadCount) add(now int64) (uint64, bool) {
+// and reports whether the caller reports, with the count since the last report
+func (c *reportedCount) add(now int64) (uint64, bool) {
 	total := c.total.Add(1)
 	if !c.claim(now, c.next.Load()) {
 		return 0, false
 	}
-	return total - c.warned.Swap(total), true
+	return total - c.reported.Swap(total), true
 }
 
-// claim says whether the reader that counted one at now writes the warning
-// next is the earliest time of the next warning as that reader loaded it
-// of the readers that loaded the same next only the first to claim it writes one
-// and its claim moves the next warning an interval past now
-func (c *tunReadCount) claim(now, next int64) bool {
-	return now >= next && c.next.CompareAndSwap(next, now+int64(tunWarningInterval))
+// claim says whether the caller that counted one at now writes the report
+// next is the earliest time of the next report as that caller loaded it
+// of the callers that loaded the same next only the first to claim it writes one
+// and its claim moves the next report an interval past now
+func (c *reportedCount) claim(now, next int64) bool {
+	return now >= next && c.next.CompareAndSwap(next, now+int64(reportInterval))
 }
 
 // a reservation takes its peer's reserveMu alone

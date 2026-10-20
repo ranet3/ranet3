@@ -12,8 +12,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/logtest"
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -374,11 +376,8 @@ func TestWaypointBatchTakesOnePlacePerPeer(t *testing.T) {
 	}
 }
 
-// An ICMP error is a packet a peer's packet made this node send, which is the
-// shape of every amplification this tree has had. RFC 4443 section 2.4 (f)
-// requires a limit for that reason, so a peer sending refused headers in a
-// loop gets the refill rate and no more, while the counters keep the whole
-// record.
+// a node sending refused headers in a loop gets its own bucket's burst and refill and no more, RFC 4443 section 2.4 (f)
+// while the counters keep the whole record, and a second node's refused header is answered after the flood as before it
 func TestRefusedPacketsAreAnsweredAtABoundedRate(t *testing.T) {
 	waypoint := segAddr("3fff:1:69c:8c6::2")
 	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}}, everySource)
@@ -395,33 +394,214 @@ func TestRefusedPacketsAreAnsweredAtABoundedRate(t *testing.T) {
 
 	// A segment list this node will not act on, which is the refusal RFC 8986
 	// section 4.1 S10 answers with a Parameter Problem.
-	const flood = 500
-	batch := make([][]byte, 0, flood)
-	for range flood {
+	refused := func(from netip.Addr) []byte {
 		outer, err := srv6.Encapsulate(
 			plainV6(segAddr("3fff:a::1"), segAddr("3fff:a::2"), "payload"),
-			segAddr("3fff:1:69c:8c0::1"), []netip.Addr{waypoint, segAddr("3fff:1:69c:98d6::1")})
+			from, []netip.Addr{waypoint, segAddr("3fff:1:69c:98d6::1")})
 		if err != nil {
 			t.Fatal(err)
 		}
 		outer[ipv6HeaderOffsetSegmentsLeft] = 9 // past the last entry
-		batch = append(batch, outer)
+		return outer
+	}
+	const flood = 500
+	batch := make([][]byte, 0, flood)
+	for range flood {
+		batch = append(batch, refused(segAddr("3fff:1:69c:8c0::1")))
 	}
 	m.applySegments(framed(batch...), DefaultMTU)
 
+	// the bucket starts full with 6 and earns one back every 100 milliseconds since the mesh started
+	most := 6 + uint64(time.Since(m.segmentsStarted)/(100*time.Millisecond))
 	counters := m.SegmentCounters()
 	if counters.Dropped != flood {
 		t.Errorf("%d of %d refused packets were counted", counters.Dropped, flood)
 	}
-	if counters.Answered > icmpBurst {
-		t.Errorf("%d answers went out for %d refused packets, over the burst of %d",
-			counters.Answered, flood, icmpBurst)
+	if counters.Answered < 6 || counters.Answered > most {
+		t.Errorf("%d answers went out for %d refused packets from one source, want from the burst of 6 to %d", counters.Answered, flood, most)
 	}
-	if counters.Answered == 0 {
-		t.Error("nothing was answered, so a traceroute through this node sees nothing")
+	if source, node := m.ICMPWithheld(); source != flood-counters.Answered || node != 0 {
+		t.Errorf("the limits withheld %d answers by source and %d by the node's cap, want %d and 0", source, node, flood-counters.Answered)
 	}
-	if sent := len(recorder.packets(t)); uint64(sent) != counters.Answered {
-		t.Errorf("%d packets went to the peer against %d counted", sent, counters.Answered)
+	m.applySegments(framed(refused(segAddr("3fff:1:69c:8c1::1"))), DefaultMTU)
+	if got := m.SegmentCounters().Answered; got != counters.Answered+1 {
+		t.Errorf("a second source's refused packet after the flood was answered %d times, want once", got-counters.Answered)
+	}
+	sent := recorder.packets(t)
+	if uint64(len(sent)) != counters.Answered+1 {
+		t.Errorf("%d packets went to the peer against %d counted", len(sent), counters.Answered+1)
+	}
+	// RFC 8986 section 4.1 S10 points at Segments Left
+	for i, answer := range sent {
+		if kind, code, pointer := answer[40], answer[41], binary.BigEndian.Uint32(answer[44:48]); kind != 4 || code != 0 || pointer != ipv6HeaderOffsetSegmentsLeft {
+			t.Errorf("answer %d is ICMPv6 type %d code %d pointing at %d, want parameter problem code 0 pointing at %d", i, kind, code, pointer, ipv6HeaderOffsetSegmentsLeft)
+		}
+	}
+}
+
+// a segment whose hop limit runs out at an End SID of this node gets one time exceeded, code 0, RFC 8986 section 4.1 S06 and RFC 4443 section 3.3
+// from that SID back to the node that steered it, and goes no further
+func TestHopLimitRunningOutAtAWaypointIsAnsweredWithTimeExceeded(t *testing.T) {
+	waypoint, steerer := segAddr("3fff:1:69c:8c6::2"), segAddr("3fff:1:69c:8c0::1")
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}}, everySource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := &recordingPeer{}
+	m := &Mesh{Routes: NewRouteTable()}
+	m.startSegmentReports()
+	m.SetSegments(table)
+	// the steering node and the next segment share one route, so a segment that went on would reach the recorder too
+	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1:69c::/48"), recorder.peer(t, "sender"))
+	outer, err := srv6.Encapsulate(plainV6(segAddr("3fff:a::1"), segAddr("3fff:a::2"), "payload"), steerer, []netip.Addr{waypoint, segAddr("3fff:1:69c:98d6::1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer[7] = 1
+	m.applySegments(framed(outer), DefaultMTU)
+	sent := recorder.packets(t)
+	if len(sent) != 1 {
+		t.Fatalf("a segment whose hop limit ran out here sent %d packets, want its one answer", len(sent))
+	}
+	answer := sent[0]
+	if answer[6] != 58 || answer[40] != 3 || answer[41] != 0 {
+		t.Errorf("the answer is next header %d, ICMPv6 type %d code %d, want time exceeded code 0", answer[6], answer[40], answer[41])
+	}
+	if from, to := netip.AddrFrom16([16]byte(answer[8:24])), netip.AddrFrom16([16]byte(answer[24:40])); from != waypoint || to != steerer {
+		t.Errorf("the answer goes from %s to %s, want from %s to %s", from, to, waypoint, steerer)
+	}
+	if counters := m.SegmentCounters(); counters.Dropped != 1 || counters.Answered != 1 || counters.Forwarded != 0 {
+		t.Errorf("the waypoint counted %+v, want the segment dropped and answered once", counters)
+	}
+}
+
+// a refused packet past its source's bucket, or past the node's cap, costs no answer built, since the builder draws before it builds
+// and so do packets past their session past the cap, of either family
+func TestPacketsPastALimitBuildNoAnswer(t *testing.T) {
+	from := segAddr("3fff:1:69c:8c0::1")
+	outer, err := srv6.Encapsulate(plainV6(segAddr("3fff:a::1"), segAddr("3fff:a::2"), "payload"), from, []netip.Addr{segAddr("3fff:1:69c:8c6::2")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tooBig6 := udpPacket(tooBigSource[6], tooBigDestination[6], DefaultMTU, false)
+	tooBig4 := udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, true)
+	answerTooBig := func(inner []byte) func(m *Mesh) bool {
+		return func(m *Mesh) bool {
+			answer, _ := m.answerTooBig(inner, srv6.MinimumIPv6MTU)
+			return answer != nil
+		}
+	}
+	for _, c := range []struct {
+		name   string
+		spend  func(m *Mesh)
+		answer func(m *Mesh) bool
+	}{
+		{"a refused packet past its source's bucket", func(m *Mesh) {
+			for m.takeICMPToken(from) {
+			}
+		}, func(m *Mesh) bool { m.answerRefused(outer, srv6.ErrHeaderInvalid); return false }},
+		{"a refused packet past the cap", func(m *Mesh) { capHolding(m, 0) }, func(m *Mesh) bool { m.answerRefused(outer, srv6.ErrHopLimit); return false }},
+		{"packet too big past the cap", func(m *Mesh) { capHolding(m, 0) }, answerTooBig(tooBig6)},
+		{"fragmentation needed past the cap", func(m *Mesh) { capHolding(m, 0) }, answerTooBig(tooBig4)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m := &Mesh{Routes: NewRouteTable()}
+			m.startSegmentReports()
+			c.spend(m)
+			answered := false
+			if allocs := testing.AllocsPerRun(100, func() { answered = c.answer(m) || answered }); allocs != 0 || answered {
+				t.Errorf("%s cost %.0f allocations and was answered %t, want none and no answer", c.name, allocs, answered)
+			}
+		})
+	}
+}
+
+// a packet no error may answer spends nothing of the node's cap or of its source's bucket, and counts nothing withheld
+// on each path an answer takes, a segment refused here, packet too big and fragmentation needed, an IPv4 header whose checksum fails among them
+// and so does a packet to a multicast group past its session, which gets no packet too big, departing from RFC 4443 section 3.2
+// a stream of them twice the cap long leaves the limit as it found it, and an answerable packet after it is answered
+func TestPacketsNoErrorAnswersLeaveTheLimitsUntouched(t *testing.T) {
+	const stream = 2 * icmpNodeBurst
+	waypoint := segAddr("3fff:1:69c:8c6::2")
+	refused := func(damage func(outer []byte)) []byte {
+		outer, err := srv6.Encapsulate(plainV6(segAddr("3fff:a::1"), segAddr("3fff:a::2"), "payload"), segAddr("3fff:1:69c:8c0::1"), []netip.Addr{waypoint, segAddr("3fff:1:69c:98d6::1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		damage(outer)
+		return outer
+	}
+	// the routing header of two segments ends 80 bytes in, where the packet it carries starts
+	// an ICMPv6 error behind a first fragment, offset 0 with M set, or behind an AH of 24 octets, RFC 8200 section 4.5 and RFC 4302 section 2.2
+	behindFragment := []byte{58, 0, 0, 1, 0, 0, 0, 7, 1}
+	behindAH := append(append([]byte{58, 4}, make([]byte, 22)...), 1)
+	refusedCases := map[string][]byte{
+		"a segment refused at a multicast destination":                       refused(func(outer []byte) { copy(outer[24:40], segAddr("ff02::1").AsSlice()) }),
+		"a segment refused from the unspecified source":                      refused(func(outer []byte) { copy(outer[8:24], segAddr("::").AsSlice()) }),
+		"a segment refused carrying an icmpv6 error":                         refused(func(outer []byte) { outer[40], outer[80] = 58, 1 }),
+		"a segment refused carrying an icmpv6 error behind a first fragment": refused(func(outer []byte) { outer[40] = 44; copy(outer[80:], behindFragment) }),
+		"a segment refused carrying an icmpv6 error behind ah":               refused(func(outer []byte) { outer[40] = 51; copy(outer[80:], behindAH) }),
+	}
+	for name, offending := range refusedCases {
+		t.Run(name, func(t *testing.T) {
+			recorder := &recordingPeer{}
+			m := &Mesh{Routes: NewRouteTable()}
+			m.startSegmentReports()
+			m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), recorder.peer(t, "sender"))
+			for range stream {
+				m.answerRefused(offending, srv6.ErrHopLimit)
+			}
+			untouched(t, m)
+			m.answerRefused(refused(func([]byte) {}), srv6.ErrHopLimit)
+			if sent := len(recorder.packets(t)); sent != 1 {
+				t.Errorf("%d answers went out, want the one to the answerable segment after the stream", sent)
+			}
+		})
+	}
+
+	tooBig6 := func(source, destination netip.Addr) []byte { return udpPacket(source, destination, DefaultMTU, false) }
+	tooBig4 := func(source, destination netip.Addr) []byte { return udpPacket(source, destination, DefaultMTU, true) }
+	icmp6Error := tooBig6(tooBigSource[6], tooBigDestination[6])
+	icmp6Error[6], icmp6Error[40] = 58, 1
+	icmp6ErrorBehindFragment := tooBig6(tooBigSource[6], tooBigDestination[6])
+	icmp6ErrorBehindFragment[6] = 44
+	copy(icmp6ErrorBehindFragment[40:], behindFragment)
+	icmp6ErrorBehindAH := tooBig6(tooBigSource[6], tooBigDestination[6])
+	icmp6ErrorBehindAH[6] = 51
+	copy(icmp6ErrorBehindAH[40:], behindAH)
+	icmp4Error := tooBig4(tooBigSource[4], tooBigDestination[4])
+	icmp4Error[9], icmp4Error[20] = 1, 3
+	binary.BigEndian.PutUint16(icmp4Error[10:], 0)
+	binary.BigEndian.PutUint16(icmp4Error[10:], ^uint16(packet.Sum(0, icmp4Error[:20])))
+	damaged4 := tooBig4(tooBigSource[4], tooBigDestination[4])
+	damaged4[10] ^= 0x01
+	answerable6, answerable4 := tooBig6(tooBigSource[6], tooBigDestination[6]), tooBig4(tooBigSource[4], tooBigDestination[4])
+	tooBigCases := map[string]struct{ offending, answerable []byte }{
+		"packet too big to a multicast group, a departure from rfc 4443 section 3.2":      {tooBig6(tooBigSource[6], segAddr("ff0e::1")), answerable6},
+		"packet too big from the unspecified source":                                      {tooBig6(segAddr("::"), tooBigDestination[6]), answerable6},
+		"packet too big to an icmpv6 error":                                               {icmp6Error, answerable6},
+		"packet too big to an icmpv6 error behind a first fragment":                       {icmp6ErrorBehindFragment, answerable6},
+		"packet too big to an icmpv6 error behind ah":                                     {icmp6ErrorBehindAH, answerable6},
+		"fragmentation needed to a multicast group":                                       {tooBig4(tooBigSource[4], segAddr("239.1.2.3")), answerable4},
+		"fragmentation needed to the limited broadcast":                                   {tooBig4(tooBigSource[4], segAddr("255.255.255.255")), answerable4},
+		"fragmentation needed from this network":                                          {tooBig4(segAddr("0.1.2.3"), tooBigDestination[4]), answerable4},
+		"fragmentation needed to an icmp error":                                           {icmp4Error, answerable4},
+		"fragmentation needed to a header whose checksum fails, rfc 1812 section 4.3.2.7": {damaged4, answerable4},
+	}
+	for name, c := range tooBigCases {
+		t.Run(name, func(t *testing.T) {
+			m := &Mesh{Routes: NewRouteTable()}
+			m.startSegmentReports()
+			for range stream {
+				if answer, cut := m.answerTooBig(c.offending, srv6.MinimumIPv6MTU); answer != nil || cut {
+					t.Fatalf("a packet no error may answer was answered %t or cut %t", answer != nil, cut)
+				}
+			}
+			untouched(t, m)
+			if answer, _ := m.answerTooBig(c.answerable, srv6.MinimumIPv6MTU); answer == nil {
+				t.Error("an answerable packet after the stream was not answered")
+			}
+		})
 	}
 }
 

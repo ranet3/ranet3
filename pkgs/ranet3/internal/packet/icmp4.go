@@ -33,11 +33,12 @@ const (
 // mtu is that link's, carried as the next-hop MTU, and source the address the answer comes from
 // the answer quotes the packet's header and the first 8 bytes of its data
 // it goes with DF, an atomic datagram, whose zero identification RFC 6864 allows
-// it reports false for anything but one whole IPv4 packet, for a source that is not one host
-// and for a packet RFC 1122 section 3.2.2 lets no error answer
-func FragmentationNeeded(offending []byte, source netip.Addr, mtu int) ([]byte, bool) {
-	if Version(offending) != 4 || !singleHost(source) || !answerable(offending) {
-		return nil, false
+// it returns nil for anything but one whole IPv4 packet whose header passes RFC 1812 section 5.2.2's tests, which section 4.3.2.7 asks of a packet an error answers
+// for a source that is not one host, for a packet RFC 1122 section 3.2.2 lets no error answer, and for one allow refuses
+// allow is called once the packet is one an error may answer and before anything is built
+func FragmentationNeeded(offending []byte, source netip.Addr, mtu int, allow func() bool) []byte {
+	if Version(offending) != 4 || !HeaderValid(offending) || !singleHost(source) || !answerable(offending) || !allow() {
+		return nil
 	}
 	headerLen := int(offending[0]&0x0f) * 4
 	quoted := min(len(offending), headerLen+quotedData)
@@ -57,7 +58,7 @@ func FragmentationNeeded(offending []byte, source netip.Addr, mtu int) ([]byte, 
 	binary.BigEndian.PutUint16(message[6:], uint16(mtu))
 	copy(message[icmpHeaderLen:], offending[:quoted])
 	binary.BigEndian.PutUint16(message[2:], ^uint16(Sum(0, message)))
-	return out, true
+	return out
 }
 
 // answerable is RFC 1122 section 3.2.2, the rules that keep one packet from turning into many

@@ -270,14 +270,29 @@ func (s headerShape) around(outer []byte) []byte {
 	return out
 }
 
-// a waypoint answers the segments too large for the session to their next segment under the bucket answerRefused draws from
-// a flood of them, carrying IPv6 and IPv4 with DF in turn, gets the burst answered and no more
+// emptyBuckets spends the buckets of the sources the packets above come from, leaving the node's cap all but full
+func emptyBuckets(tb testing.TB, m *Mesh) {
+	tb.Helper()
+	for _, source := range tooBigSource {
+		for range icmpSourceBurst {
+			if !m.takeICMPToken(source) {
+				tb.Fatalf("a fresh bucket of %s held fewer than %d answers", source, icmpSourceBurst)
+			}
+		}
+	}
+}
+
+// a waypoint answers the segments too large for the session to their next segment under the node's cap alone
+// a flood of them, carrying IPv6 and IPv4 with DF in turn from sources whose buckets other errors emptied, gets as many answers as the cap holds, of both families
+// the cap withholds the rest and no source's bucket any
 // and each answer goes to the source of the packet the segment carries rather than to the node that steered it
-func TestSegmentsPastTheirNextSessionAreAnsweredAtABoundedRate(t *testing.T) {
-	const flood = 64
+func TestSegmentsPastTheirNextSessionAreAnsweredUnderTheCapAlone(t *testing.T) {
+	const flood, left = 64, 10
 	after := segAddr("3fff:1:69c:98d6::1")
 	session, next := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
 	m, sender := waypointOf(t, after, session)
+	emptyBuckets(t, m)
+	capHolding(m, left)
 	batch := make([][]byte, flood)
 	for i := range batch {
 		family := []int{4, 6}[i%2]
@@ -287,13 +302,24 @@ func TestSegmentsPastTheirNextSessionAreAnsweredAtABoundedRate(t *testing.T) {
 		t.Fatalf("%d segments reached the tun", len(left))
 	}
 	answers := sender.packets(t)
-	if len(answers) == 0 || len(answers) > icmpBurst {
-		t.Errorf("%d segments past their next session were answered %d times, want at least one and at most the burst of %d", flood, len(answers), icmpBurst)
+	if len(answers) != left {
+		t.Errorf("%d segments past their next session were answered %d times with %d answers left in the cap, want %d", flood, len(answers), left, left)
 	}
+	if source, node := m.ICMPWithheld(); source != 0 || node != flood-left {
+		t.Errorf("the limits withheld %d answers by source and %d by the node's cap, want 0 and %d", source, node, flood-left)
+	}
+	to4 := 0
 	for i, answer := range answers {
-		if _, to, _ := packet.Addrs(answer); to != tooBigSource[4] && to != tooBigSource[6] {
+		_, to, _ := packet.Addrs(answer)
+		if to != tooBigSource[4] && to != tooBigSource[6] {
 			t.Errorf("answer %d goes to %s, want the source of the packet the segment carries", i, to)
 		}
+		if to.Is4() {
+			to4++
+		}
+	}
+	if to4 != left/2 {
+		t.Errorf("%d of %d answers carry fragmentation needed, want half, since the families take turns", to4, len(answers))
 	}
 	if sent := next.packets(t); len(sent) != 0 {
 		t.Errorf("%d of %d segments past their next session went on to it", len(sent), flood)
@@ -526,14 +552,17 @@ func TestBatchCutsEveryReadIntoTheStorageOfItsFirst(t *testing.T) {
 	}
 }
 
-// answers are packets a peer's packets made this node send, and the bucket answerRefused draws from bounds them too
-// a read full of packets past their session, IPv6 and IPv4 with DF in turn, gets the burst answered and no more, and nothing reaches the peer
-func TestPacketsPastTheirSessionAreAnsweredAtABoundedRate(t *testing.T) {
-	const flood = 64
+// the node's cap alone holds back the answers to packets read off the tun past their session
+// a read full of them, IPv6 and IPv4 with DF in turn from sources whose buckets other errors emptied, gets as many answers as the cap holds
+// the cap withholds the rest and no source's bucket any, and nothing reaches the peer
+func TestPacketsPastTheirSessionAreAnsweredUnderTheCapAlone(t *testing.T) {
+	const flood, left = 64, 10
 	dev := &recordingDevice{writes: make(chan recordedWrite, flood)}
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 	m.setDevice(dev)
 	m.startSegmentReports()
+	emptyBuckets(t, m)
+	capHolding(m, left)
 	peer := (&recordingPeer{}).peer(t, "peer")
 	peer.SetMTU(srv6.MinimumIPv6MTU)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
@@ -547,8 +576,11 @@ func TestPacketsPastTheirSessionAreAnsweredAtABoundedRate(t *testing.T) {
 	fill(b, packets...)
 	m.classify(b)
 	answered := len(dev.writes)
-	if answered == 0 || answered > icmpBurst {
-		t.Errorf("%d packets past their session were answered %d times, want at least one and at most the burst of %d", flood, answered, icmpBurst)
+	if answered != left {
+		t.Errorf("%d packets past their session were answered %d times with %d answers left in the cap, want %d", flood, answered, left, left)
+	}
+	if source, node := m.ICMPWithheld(); source != 0 || node != flood-left {
+		t.Errorf("the limits withheld %d answers by source and %d by the node's cap, want 0 and %d", source, node, flood-left)
 	}
 	if got := m.TooBigAnswered(); got != uint64(answered) {
 		t.Errorf("the mesh counted %d answers, want the %d it wrote into the tun", got, answered)
