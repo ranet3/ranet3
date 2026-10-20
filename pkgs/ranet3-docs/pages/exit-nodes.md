@@ -140,10 +140,16 @@ advertisement is all a peer learns. An exit whose rule will not install would
 attract traffic and drop it without telling the sender.
 
 The capability publishes the advertisement per family on every pass. A prefix is
-announced only while every rule of its family is installed and the host forwards
-that family. Each pass first reinstalls a missing rule. When a rule still cannot
-be installed, or the host stops forwarding the family, that pass retracts the
-prefix. A pass runs at least every `sweep` (30 seconds by default).
+announced only while its family's chain reads back exactly as the node wrote it,
+every rule in order and no other writer's among them, at its hook, priority and
+policy in a table with no flags, and the host forwards that family. Each pass
+first rewrites a chain that reads back otherwise, such as one missing a rule,
+holding another writer's or in a dormant table. nf_tables clears no table flag
+in place but dormant, and changes no chain's type, hook or priority, so when one
+of those differs the pass deletes the family's table and makes it again in the
+same transaction. When the chain still does not read back as written, or the
+host stops forwarding the family, that pass retracts the prefix. A pass runs at
+least every `sweep` (30 seconds by default).
 
 The node reads forwarding from `/proc/sys/net/ipv4/ip_forward` and
 `/proc/sys/net/ipv6/conf/all/forwarding`. Any value other than `0` counts as on,
@@ -261,29 +267,32 @@ puts it back when another writer deletes it.
 
 The mesh writes into the egress device only for a family that is ready, and
 counts an egress segment's packet of another family as not ready. A family is
-ready while its rule keyed on the egress device reads back, the host forwards
-the family, the border filter's chain reads back and the kernel would take the
-family from the device. The border is 1 chain for both families, so while it is
-not read back neither family is ready. The kernel takes the larger of
-`net.ipv4.conf.all.rp_filter` and the device's own, and an address-less device
-fails even loose mode. Each pass therefore puts the device's own `rp_filter`
-back to 0 when another writer set it, as systemd-sysctl does for each new link
-on a host shipping its `50-default.conf`. A nonzero `conf.all.rp_filter` is host
-policy the daemon leaves alone, and holds IPv4 not ready until it is 0. The
-device's own IPv4 forwarding off does the same. For IPv6, the kernel discards
-every packet arriving on a device whose `disable_ipv6` is 1. The daemon makes
-the device with it at 0, whatever `net.ipv6.conf.default.disable_ipv6` holds,
-and each pass puts it back to 0 when another writer set it. IPv6 is not ready
-while it still reads 1. The device gone, for example deleted by another writer,
-holds both families not ready.
+ready while its chain, which holds its rule keyed on the egress device, reads
+back exactly as written with its table, the host forwards the family, the border
+filter's chain reads back and the kernel would take the family from the device.
+The border is 1 chain for both families, so while it is not read back neither
+family is ready. The kernel takes the larger of `net.ipv4.conf.all.rp_filter`
+and the device's own, and an address-less device fails even loose mode. Each
+pass therefore puts the device's own `rp_filter` back to 0 when another writer
+set it, as systemd-sysctl does for each new link on a host shipping its
+`50-default.conf`. A nonzero `conf.all.rp_filter` is host policy the daemon
+leaves alone, and holds IPv4 not ready until it is 0. The device's own IPv4
+forwarding off does the same. For IPv6, the kernel discards every packet
+arriving on a device whose `disable_ipv6` is 1. The daemon makes the device with
+it at 0, whatever `net.ipv6.conf.default.disable_ipv6` holds, and each pass puts
+it back to 0 when another writer set it. IPv6 is not ready while it still
+reads 1. The device gone, for example deleted by another writer, holds both
+families not ready.
 
-Another writer deleting part of the `ranet3` tables, a `nftables.service` reload
-that flushes the ruleset for one, holds both families not ready until the pass
-it wakes restores them, rather than until the next sweep. Notifications the
-daemon lost, which another table's large transaction can overflow its socket
-with, wake a pass too and leave readiness as it was, since that pass reads the
-rules back. A rule another writer adds to a `ranet3` chain wakes nothing, and
-the next pass, at most `sweep` later, rewrites the chain without it.
+Another writer adding, changing or deleting part of the `ranet3` tables, such as
+a `nftables.service` reload that flushes the ruleset, a rule put in a `ranet3`
+chain or a table set dormant, holds both families not ready until the pass it
+wakes restores them, rather than until the next sweep. The daemon's own writes
+wake nothing. Notifications the daemon lost, which another table's large
+transaction can overflow its socket with, wake a pass too and leave readiness as
+it was, since that pass reads the rules back. A pass that reads another writer's
+change back and cannot undo it holds that family not ready, with the change
+named, and its prefixes withheld until a later pass does.
 
 The node originates each egress SID as a `/128` while at least 1 family is ready
 and every family the host forwards is. A leaf reads the `/128` as the exit's

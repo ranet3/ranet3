@@ -46,6 +46,12 @@ type fakeBackend struct {
 	changed, missed chan struct{}
 	// failRules makes a host whose rules cannot be listed
 	failRules bool
+	// faults is how a family's table or chain differs from what Apply writes.
+	// An apply clears it unless stuck holds it, or remake names the family and
+	// the apply does not delete its table first.
+	faults map[uint8]string
+	remake map[uint8]bool
+	stuck  bool
 	// log records each listing, apply and withdrawal in order, beside what record adds
 	log []string
 }
@@ -62,16 +68,23 @@ func (f *fakeBackend) entries() []string {
 	return slices.Clone(f.log)
 }
 
-func (f *fakeBackend) Rules() ([]Installed, error) {
+func (f *fakeBackend) Rules() (map[uint8]chainReadback, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log = append(f.log, "rules")
 	if f.failRules {
 		return nil, errors.New("no")
 	}
-	out := slices.Clone(f.held)
-	for i := range out {
-		out[i].Packets += f.flows
+	out := map[uint8]chainReadback{}
+	for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
+		read := chainReadback{fault: f.faults[family], remake: f.faults[family] != "" && f.remake[family]}
+		for _, rule := range f.held {
+			if rule.Family == family {
+				rule.Packets += f.flows
+				read.rules = append(read.rules, rule)
+			}
+		}
+		out[family] = read
 	}
 	return out, nil
 }
@@ -79,20 +92,30 @@ func (f *fakeBackend) Rules() ([]Installed, error) {
 // Apply stores the rules grouped by family, as the nftables backend does: each
 // family is a table of its own, written and read back one at a time. A fake
 // that kept the order it was handed would hide a desired list ordered any other
-// way, which never compares equal to its own readback.
-func (f *fakeBackend) Apply(rules []Rule) error {
+// way, which never compares equal to its own readback. It logs remake and the
+// families for an apply that deletes tables first.
+func (f *fakeBackend) Apply(rules []Rule, remake []uint8) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.log = append(f.log, "apply")
+	entry := "apply"
+	if len(remake) != 0 {
+		entry = fmt.Sprint("remake ", remake)
+	}
+	f.log = append(f.log, entry)
 	if f.failApply {
 		return errors.New("no")
 	}
 	f.applied++
+	for family := range f.faults {
+		if !f.stuck && (!f.remake[family] || slices.Contains(remake, family)) {
+			delete(f.faults, family)
+		}
+	}
 	f.held = nil
 	for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
 		for _, rule := range rules {
 			if rule.Family == family {
-				f.held = append(f.held, Installed{Spec: rule.String()})
+				f.held = append(f.held, Installed{Spec: rule.String(), Family: family})
 			}
 		}
 	}
@@ -453,6 +476,108 @@ func TestRemovedRuleIsReinstalledAndTheAdvertisementWaits(t *testing.T) {
 	}
 	if got := tr.Announce(); len(got) != 0 {
 		t.Errorf("kept announcing %v after the rule went away", got)
+	}
+}
+
+// Another writer's rule at the head of a family's chain, which a host refusing
+// the rewrite leaves there, holds that family not ready and its prefixes
+// withheld although every rule the translator wrote still reads back, since
+// the chain no longer does to a packet what was written. The pass that
+// rewrites the chain makes the family ready again, and the other family,
+// whose chain reads back as written, stays ready throughout.
+func TestAnotherWritersRuleInAChainHoldsItsFamilyNotReady(t *testing.T) {
+	cfg := Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}
+	tr, be := readyLog(t, cfg, events.New())
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	written := be.specs()
+	be.mu.Lock()
+	be.held = append([]Installed{{Family: FamilyIPv4}}, be.held...)
+	be.failApply = true
+	be.mu.Unlock()
+	if err := tr.reconcile(); err == nil {
+		t.Fatal("a pass the host refused the rewrite of reported no error")
+	}
+	if got := be.specs(); !slices.Equal(got, append([]string{""}, written...)) {
+		t.Fatalf("the host holds %q, want another writer's rule ahead of every rule the translator wrote, %q", got, written)
+	}
+	if stats := tr.Stats(); stats.Ready4 || !stats.Ready6 || stats.Unready != "its chain does not read back as written" {
+		t.Errorf("with another writer's rule in the ip chain the pass reports ready %v and %v with the reason %q, want IPv4 alone not ready for its chain",
+			stats.Ready4, stats.Ready6, stats.Unready)
+	}
+	if got, want := tr.Announce(), plain(prefixes(t, "::/0")); !slices.Equal(got, want) {
+		t.Errorf("with another writer's rule in the ip chain the translator announces %v, want %v", got, want)
+	}
+	be.mu.Lock()
+	be.failApply = false
+	be.mu.Unlock()
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got := be.specs(); !slices.Equal(got, written) {
+		t.Errorf("the pass the host took left %q, want %q", got, written)
+	}
+	if stats := tr.Stats(); !stats.Ready4 || !stats.Ready6 {
+		t.Errorf("once the chain was rewritten the pass reports ready %v and %v, want both", stats.Ready4, stats.Ready6)
+	}
+	if got, want := tr.Announce(), plain(cfg.Advertise); !slices.Equal(got, want) {
+		t.Errorf("once the chain was rewritten the translator announces %v, want %v", got, want)
+	}
+	var moved []string
+	for _, entry := range be.entries() {
+		if strings.HasPrefix(entry, "ready") {
+			moved = append(moved, entry)
+		}
+	}
+	if want := []string{"ready true true sid true", "ready false true sid false", "ready true true sid true"}; !slices.Equal(moved, want) {
+		t.Errorf("Ready was told %q, want %q", moved, want)
+	}
+}
+
+// A family's table set dormant, or its chain made again where nf_tables will
+// not change it in place, makes the pass rewrite it, deleting that family's
+// table first in the second case, after which both families read ready. A
+// setting the rewrite cannot put back holds that family alone not ready,
+// named, and its prefixes withheld.
+func TestTranslatorRewritesATableOrChainReadingBackOtherThanWritten(t *testing.T) {
+	cfg := Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}
+	be := &fakeBackend{}
+	tr := translator(t, cfg, Runtime{Interface: "ranet0", Egress: "ranet0e", Forwarding: func() (bool, bool) { return true, true }, Device: func() (error, error) { return nil, nil }}, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	const dormant = "its table carries flags 0x1, where none are written and 0x1 is dormant"
+	for _, change := range []struct {
+		name   string
+		faults map[uint8]string
+		remake map[uint8]bool
+		pass   []string
+	}{
+		{"an ip6 table set dormant", map[uint8]string{FamilyIPv6: dormant}, nil, []string{"rules", "apply", "rules"}},
+		{"the ip chain made again at another priority", map[uint8]string{FamilyIPv4: "its chain reads back at priority 0"}, map[uint8]bool{FamilyIPv4: true}, []string{"rules", fmt.Sprint("remake ", []uint8{FamilyIPv4}), "rules"}},
+	} {
+		be.mu.Lock()
+		be.faults, be.remake, be.log = change.faults, change.remake, nil
+		be.mu.Unlock()
+		if err := tr.reconcile(); err != nil {
+			t.Fatalf("%s: %v", change.name, err)
+		}
+		if got, stats := be.entries(), tr.Stats(); !slices.Equal(got, change.pass) || !stats.Ready4 || !stats.Ready6 {
+			t.Errorf("%s: the pass went %q and left ready %v and %v, want %q and both ready", change.name, got, stats.Ready4, stats.Ready6, change.pass)
+		}
+	}
+	be.mu.Lock()
+	be.faults, be.stuck = map[uint8]string{FamilyIPv6: dormant}, true
+	be.mu.Unlock()
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if stats := tr.Stats(); !stats.Ready4 || stats.Ready6 || stats.Unready != dormant {
+		t.Errorf("an ip6 table the rewrite leaves dormant reads ready %v and %v, unready %q", stats.Ready4, stats.Ready6, stats.Unready)
+	}
+	if got, want := tr.Announce(), plain(prefixes(t, "0.0.0.0/0")); !slices.Equal(got, want) {
+		t.Errorf("with the ip6 table left dormant the translator announces %v, want %v", got, want)
 	}
 }
 

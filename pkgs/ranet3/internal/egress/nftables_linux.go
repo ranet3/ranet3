@@ -266,19 +266,31 @@ func nftFamily(family uint8) uint8 {
 	return unix.NFPROTO_IPV6
 }
 
-// Rules reads back the chain this tool owns, in order, with the flow counter
-// each rule has carried. A rule another writer put in this tool's chain
-// changes what the chain does to a packet, so it is read back too, one with no
-// comment as an empty spec, and the next pass rewrites the chain without it. A
-// rule in any other table or chain is skipped, so it is never removed.
-func (n *nftables) Rules() ([]Installed, error) {
-	var out []Installed
+// Rules reads back the chain this tool owns and its table in each family, the
+// rules in order with the family each was read from and the flow counter it
+// has carried. A rule another writer put in this tool's chain changes what the
+// chain does to a packet, so it is read back too, one with no comment as an
+// empty spec. Its family is not ready while it stays, and the next pass
+// rewrites the chain without it. A rule in any other table or chain is
+// skipped. This backend never removes one in another table, and one in
+// another chain of its table goes with that table, which a pass deletes
+// whole, every chain in it included, to make it again where the readback
+// sets remake.
+func (n *nftables) Rules() (map[uint8]chainReadback, error) {
+	tables, err := ownTables(n.conn)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uint8]chainReadback, len(n.families))
 	for _, family := range n.families {
-		rules, err := chainRules(n.conn, nftFamily(family), ChainName)
+		read, err := readChain(n.conn, tables, nftFamily(family), postrouting)
 		if err != nil {
-			return nil, fmt.Errorf("egress: dump %s rules: %w", tableFamilyName(family), err)
+			return nil, fmt.Errorf("egress: read table %s %s: %w", tableFamilyName(family), TableName, err)
 		}
-		out = append(out, rules...)
+		for i := range read.rules {
+			read.rules[i].Family = family
+		}
+		out[family] = read
 	}
 	return out, nil
 }
@@ -379,9 +391,12 @@ func counters(expressions []byte) (packets, bytes uint64) {
 // commits atomically: no packet is ever evaluated against half a ruleset, and
 // the alternative is a window in which a flow leaves untranslated and
 // conntrack then holds that decision for its whole lifetime.
-func (n *nftables) Apply(rules []Rule) error {
+func (n *nftables) Apply(rules []Rule, remake []uint8) error {
 	var requests []nftRequest
 	for _, family := range n.families {
+		if slices.Contains(remake, family) {
+			requests = append(requests, delTable(family))
+		}
 		requests = append(requests,
 			newTable(nftFamily(family)),
 			newChain(family),

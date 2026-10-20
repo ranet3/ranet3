@@ -6,6 +6,7 @@
 package egress
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"os"
@@ -14,11 +15,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // The tests of this file are the only ones here that speak to a real kernel.
@@ -62,7 +66,7 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	if len(desired) != 7 {
 		t.Fatalf("the configuration asks for %d rules, want two out of the mesh device, two out of the egress device and three in", len(desired))
 	}
-	if err := be.Apply(desired); err != nil {
+	if err := be.Apply(desired, nil); err != nil {
 		t.Fatalf("install %d rules: %v", len(desired), err)
 	}
 
@@ -70,9 +74,13 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	// kept the rules in the order they were written, and handed back the
 	// spelling this package wrote into each one's comment. A mismatch here is
 	// a ruleset the reconcile loop would rewrite on every pass forever.
-	held, err := be.Rules()
+	read, err := be.Rules()
 	if err != nil {
 		t.Fatalf("read the rules back: %v", err)
+	}
+	held, faulted, remake := flatten(read)
+	if faulted || len(remake) != 0 {
+		t.Errorf("the tables read back as %+v, want both as written", read)
 	}
 	want := make([]string, 0, len(desired))
 	for _, rule := range desired {
@@ -90,8 +98,9 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	}
 
 	// A rule with no comment in this tool's chain is another writer's, and the
-	// readback holds it where the kernel does, so a diff built from it rewrites
-	// the chain.
+	// readback holds it where the kernel does, in the family it was read from,
+	// so a diff built from it rewrites the chain and the ip family alone stops
+	// reading back as written.
 	nft, err := exec.LookPath("nft")
 	if err != nil {
 		t.Fatal("another writer's rule is written through nft, which is not on the path")
@@ -99,16 +108,20 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	if out, err := exec.Command(nft, "insert", "rule", "ip", TableName, ChainName, "accept").CombinedOutput(); err != nil {
 		t.Fatalf("insert another writer's rule: %v\n%s", err, out)
 	}
-	withOther, err := be.Rules()
+	read, err = be.Rules()
 	if err != nil {
 		t.Fatalf("read the rules back beside another writer's: %v", err)
 	}
+	withOther, _, _ := flatten(read)
 	got = got[:0]
 	for _, rule := range withOther {
 		got = append(got, rule.Spec)
 	}
 	if !slices.Equal(got, append([]string{""}, want...)) {
 		t.Errorf("with another writer's uncommented rule at the head of the ip chain the readback holds %q, want it ahead of %q", got, want)
+	}
+	if v4, v6 := sameFamilyRules(withOther, desired, FamilyIPv4), sameFamilyRules(withOther, desired, FamilyIPv6); v4 || !v6 {
+		t.Errorf("with another writer's rule in the ip chain alone the ip readback reads as written %v and the ip6 one %v, want false and true", v4, v6)
 	}
 
 	// A counter in every rule, at zero, since nothing has crossed this
@@ -132,10 +145,11 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 
 	// Applying the same rules again replaces the chain rather than appending
 	// to it, the path a changed configuration takes on a running node.
-	if err := be.Apply(desired); err != nil {
+	if err := be.Apply(desired, nil); err != nil {
 		t.Fatalf("reinstall the rules: %v", err)
 	}
-	if held, err = be.Rules(); err != nil || len(held) != len(desired) {
+	read, err = be.Rules()
+	if held, _, _ = flatten(read); err != nil || len(held) != len(desired) {
 		t.Fatalf("a second install left %d rules (%v), want %d", len(held), err, len(desired))
 	}
 
@@ -156,10 +170,11 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = steered.Close() })
 	only := newTranslator(Egress{}, rt, steered).desired()
-	if err := steered.Apply(only); err != nil {
+	if err := steered.Apply(only, nil); err != nil {
 		t.Fatalf("install %d rules: %v", len(only), err)
 	}
-	if held, err = steered.Rules(); err != nil || !sameRules(held, only) {
+	read, err = steered.Rules()
+	if held, _, _ = flatten(read); err != nil || !sameRules(held, only) {
 		t.Fatalf("the kernel holds %v (%v), want %v", held, err, only)
 	}
 	tables, err := ownTables(steered.(*nftables).conn)
@@ -210,7 +225,7 @@ func TestNftablesNotifiesAnotherWritersChange(t *testing.T) {
 	rules := newTranslator(Egress{}, rt, be).desired()
 	install := func() {
 		t.Helper()
-		if err := be.Apply(rules); err != nil {
+		if err := be.Apply(rules, nil); err != nil {
 			t.Fatalf("install %d rules: %v", len(rules), err)
 		}
 	}
@@ -315,8 +330,8 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	if err := another.batch([]nftRequest{anotherWritersAccept(unix.NFPROTO_IPV6, ChainName)}); err != nil {
 		t.Fatalf("insert another writer's accept rule: %v", err)
 	}
-	if held, err := be.Rules(); err != nil || !slices.ContainsFunc(held, func(rule Installed) bool { return rule.Spec == "" }) {
-		t.Errorf("with another writer's accept rule at the head of the ip6 chain the readback holds %v (%v), want that rule with no comment among them", held, err)
+	if read, err := be.Rules(); err != nil || !slices.ContainsFunc(read[FamilyIPv6].rules, func(rule Installed) bool { return rule.Spec == "" }) {
+		t.Errorf("with another writer's accept rule at the head of the ip6 chain the readback holds %v (%v), want that rule with no comment among them", read, err)
 	}
 
 	if err := tr.reconcile(); err != nil {
@@ -345,6 +360,112 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	if s := tr.Stats(); !s.Ready4 || !s.Ready6 {
 		t.Errorf("after the next pass the translator reads %+v, want both families ready", s)
 	}
+}
+
+// Another writer setting a family's table dormant, or making its chain again
+// at another priority or as a regular chain, wakes the translator, which
+// reports both families not ready until the pass that follows, with no sweep
+// due, writes the table back, deleting and making it again in the second and
+// third case, and reads both ready
+func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Fatal("another writer's changes are made through nft, which is not on the path")
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command(nft, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("nft %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	var mu sync.Mutex
+	var told []string
+	entries := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(told)
+	}
+	rt := Runtime{
+		Interface:  "ranet0",
+		Egress:     "ranet0e",
+		Forwarding: func() (bool, bool) { return true, true },
+		Device:     func() (error, error) { return nil, nil },
+		Ready: func(v4, v6, _ bool) {
+			mu.Lock()
+			defer mu.Unlock()
+			told = append(told, fmt.Sprintf("ready %v %v", v4, v6))
+		},
+	}
+	// no sweep comes within notificationWait, so only a wake explains a pass
+	cfg := Egress{Sweep: schema.Duration(lateSweep)}
+	be, err := newBackend(cfg, rt)
+	if err != nil {
+		t.Fatalf("open the nftables backend: %v", err)
+	}
+	requireEmptyRuleset(t, be)
+	// a backend of its own reads the tables back, since the run goroutine holds be's socket
+	check, err := newBackend(cfg, rt)
+	if err != nil {
+		t.Fatalf("open a second nftables backend: %v", err)
+	}
+	t.Cleanup(func() { _ = check.Close() })
+	tr := newTranslator(cfg, rt, be)
+	desired := tr.desired()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- tr.Run(ctx) }()
+	moved := func(what string, mark int, want ...string) {
+		t.Helper()
+		for deadline := time.Now().Add(notificationWait); ; time.Sleep(passPoll) {
+			got := entries()[mark:]
+			if len(got) >= len(want) && slices.Equal(got[:1], want[:1]) && got[len(got)-1] == want[len(want)-1] {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: the translator went %q, want %q", what, got, want)
+			}
+		}
+	}
+	moved("the first pass", 0, "ready true true")
+	for _, change := range []struct {
+		name   string
+		family string
+		// command is one transaction, so no pass runs between its parts
+		command string
+		// nft lists gone in the family's table while the change stands
+		gone string
+	}{
+		{"the ip6 table set dormant", "ip6", fmt.Sprintf("add table ip6 %s { flags dormant; }", TableName), "flags dormant"},
+		{"the ip chain made again at priority 0", "ip",
+			fmt.Sprintf("delete chain ip %[1]s %[2]s; add chain ip %[1]s %[2]s { type nat hook postrouting priority 0; policy accept; }", TableName, ChainName),
+			"priority filter;"},
+		{"the ip6 chain made again as a regular chain", "ip6",
+			fmt.Sprintf("delete chain ip6 %[1]s %[2]s; add chain ip6 %[1]s %[2]s", TableName, ChainName),
+			fmt.Sprintf("chain %s {\n\t}", ChainName)},
+	} {
+		mark := len(entries())
+		run(change.command)
+		moved(change.name, mark, "ready false false", "ready true true")
+		read, err := check.Rules()
+		held, faulted, remake := flatten(read)
+		if err != nil || faulted || len(remake) != 0 || !sameRules(held, desired) {
+			t.Errorf("%s: after the pass the tables read back as %+v (%v), want %v as written", change.name, read, err, desired)
+		}
+		if listing := run("list", "table", change.family, TableName); strings.Contains(listing, change.gone) {
+			t.Errorf("%s: after the pass nft still lists %q in:\n%s", change.name, change.gone, listing)
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("stop the translator: %v", err)
+	}
+	requireEmptyRuleset(t, check)
 }
 
 // foreignTransaction is another writer's table, chain and count rules, never naming this tool's table
@@ -465,11 +586,11 @@ func requireEmptyRuleset(t *testing.T, be backend) {
 	if len(tables) != 0 {
 		t.Fatalf("the namespace holds %d tables named %s", len(tables), TableName)
 	}
-	rules, err := be.Rules()
+	read, err := be.Rules()
 	if err != nil {
 		t.Fatalf("list rules: %v", err)
 	}
-	if len(rules) != 0 {
+	if rules, _, _ := flatten(read); len(rules) != 0 {
 		t.Fatalf("the namespace holds %d rules of this tool's", len(rules))
 	}
 }
