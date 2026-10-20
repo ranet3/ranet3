@@ -495,17 +495,23 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			s.mux.Close()
 			return ending
 		}
-		if err := s.expireChild(time.Now()); err != nil {
+		// the sweeps and the lifetime and retirement deadlines of a pass take this one reading, so a lifetime a sweep did not reach is one the wait below is offered
+		// the liveness and retry deadlines and the IKE SA's expiry read the clock themselves, where a stale reading would do no harm
+		now := time.Now()
+		if s.clock != nil {
+			now = s.clock()
+		}
+		if err := s.expireChild(now); err != nil {
 			fail(err)
 		}
-		if err := s.expireRetiredChildren(time.Now()); err != nil {
+		if err := s.expireRetiredChildren(now); err != nil {
 			fail(err)
 		}
-		if child, ok := s.overdueRetiring(time.Now()); ok {
+		if child, ok := s.overdueRetiring(now); ok {
 			rekeys.Go(func() { s.deleteOverdueChild(child) })
 		}
-		s.expireRetainedContexts(time.Now())
-		s.expireChain(time.Now())
+		s.expireRetainedContexts(now)
+		s.expireChain(now)
 		if err := settleChildRekeys(); err != nil {
 			fail(err)
 		}
@@ -550,7 +556,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			// a Child SA rekey started outside the schedule, as a proactive one is, counts as the scheduled one does
 			rekeying := schedule == running || schedule == childSchedule && s.childRekeying.Load()
 			spent := schedule == childSchedule && s.currentChildSpent()
-			if ending == nil && !rekeying && (spent || schedule.outlived(time.Now())) {
+			if ending == nil && !rekeying && (spent || schedule.outlived(now)) {
 				reason, err := "lifetime", fmt.Errorf("ike: the %s reached its lifetime of %s before a rekey replaced it", schedule.name, schedule.interval)
 				if spent {
 					reason, err = "sequence space", errors.New("ike: the Child SA ran out of sequence numbers before a rekey replaced it")
@@ -615,12 +621,12 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			if !schedule.deadline.IsZero() && schedule.deadline.Before(deadline) {
 				deadline = schedule.deadline
 			}
-			if lifetime, ok := schedule.lifetimeEnd(); ok && time.Now().Before(lifetime) && lifetime.Before(deadline) {
+			if lifetime, ok := schedule.lifetimeEnd(); ok && now.Before(lifetime) && lifetime.Before(deadline) {
 				deadline = lifetime
 			}
 		}
 		// the sweeps at the top of the loop run only when the loop wakes, so it waits for their deadlines too
-		if retire, ok := s.nextRetirement(); ok && retire.Before(deadline) {
+		if retire, ok := s.nextRetirement(now); ok && retire.Before(deadline) {
 			deadline = retire
 		}
 		if expiry, ok := s.nextRetainedExpiry(); ok && expiry.Before(deadline) {

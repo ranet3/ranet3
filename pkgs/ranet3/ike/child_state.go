@@ -295,7 +295,9 @@ func (s *Session) retireInboundLocked(spi uint32, replaced bool) error {
 // the peer's Delete counts too: nothing else would wake the loop to give up on
 // a Delete that is not coming. Once this end's own Delete for it is out, the
 // answer wakes the loop, and its deadline would only wake it to do nothing.
-func (s *Session) nextRetirement() (time.Time, bool) {
+// now is the reading the loop swept by, so a lifetime the sweep did not reach
+// is offered.
+func (s *Session) nextRetirement(now time.Time) (time.Time, bool) {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
 	var earliest time.Time
@@ -310,7 +312,7 @@ func (s *Session) nextRetirement() (time.Time, bool) {
 	if s.retiring.LocalSPI != 0 && !s.retiringDeleting {
 		sooner(s.retiringBy)
 	}
-	if s.retiring.LocalSPI != 0 && s.childRekeyInterval > 0 && !slices.Contains(s.withdrawn, s.retiring.LocalSPI) && time.Now().Before(s.retiringEnds) {
+	if s.retiring.LocalSPI != 0 && s.childRekeyInterval > 0 && !slices.Contains(s.withdrawn, s.retiring.LocalSPI) && now.Before(s.retiringEnds) {
 		sooner(s.retiringEnds)
 	}
 	return earliest, !earliest.IsZero()

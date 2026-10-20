@@ -482,7 +482,7 @@ func TestReplacedChildSAThePeerNeverDeletesIsDeletedAtTheDeadline(t *testing.T) 
 	if _, ok := s.overdueRetiring(time.Now().Add(retirementDeadline - time.Second)); ok {
 		t.Fatal("the replaced SA was given up while the peer's Delete could still arrive")
 	}
-	if when, ok := s.nextRetirement(); !ok || when.IsZero() {
+	if when, ok := s.nextRetirement(time.Now()); !ok || when.IsZero() {
 		t.Fatal("nothing wakes the control loop to give up on a Delete that is not coming")
 	}
 	child, ok := s.overdueRetiring(time.Now().Add(retirementDeadline))
@@ -492,7 +492,7 @@ func TestReplacedChildSAThePeerNeverDeletesIsDeletedAtTheDeadline(t *testing.T) 
 	if _, ok := s.overdueRetiring(time.Now().Add(retirementDeadline)); ok {
 		t.Error("the replaced SA was handed back a second time, so a second Delete for it would follow the first")
 	}
-	if _, ok := s.nextRetirement(); ok {
+	if _, ok := s.nextRetirement(time.Now()); ok {
 		t.Error("the control loop still wakes for an SA whose Delete is out, which spins it until the answer")
 	}
 
