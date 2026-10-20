@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-19
+updated: 2026-10-20
 order: 20
 ---
 
@@ -231,11 +231,13 @@ have commands of their own.
 The 3 systems are `x86_64-linux`, `aarch64-linux` and `aarch64-darwin`. CI
 builds through atelier, and `atelier.toml` sets what it skips. The
 `aarch64-linux` runner has no KVM, so CI runs the VM tests on `x86_64-linux`
-alone. The `tree` check fails when a check whose derivation requires the `kvm`
-system feature on `aarch64-linux` has no `checks.aarch64-linux.<name>` line in
-the `exclude` list of `atelier.toml`, and when such a line names a check that
-does not exist. CI also builds every package, every dev shell and the formatter
-on all 3 systems, and never builds `legacyPackages.*.profile`.
+alone. CI also builds every package, every dev shell and the formatter on all 3
+systems, and never builds `legacyPackages.*.profile`.
+
+The `tree` check fails when an `aarch64-linux` check whose derivation requires
+the `kvm` system feature has no `checks.aarch64-linux.<name>` line in the
+`exclude` list of `atelier.toml`, when such a line names a check that does not
+exist, and when it finds no `aarch64-linux` check that requires `kvm` at all.
 
 The `netlink` check runs these root tests: the `internal/kernel` tests whose
 names start with `TestNetlink`, the 4 `internal/egress` tests, the `TestTUN`

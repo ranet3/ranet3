@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-10-19
+updated: 2026-10-20
 order: 75
 ---
 
@@ -58,11 +58,11 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
 
 ### Signals
 
-| Signal              | Effect                                                                                                                                                                                                                  |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SIGHUP`            | Reloads the file `--config` names and the trust document it names. A refusal goes to the log as `reload: <reason>`, and the node runs on as before. See [reloading](reloading.md).                                      |
-| `SIGINT`, `SIGTERM` | Starts a clean shutdown. The daemon closes every session with a Delete, withdraws the routes, rules, addresses and egress tables it installed, and waits for every dialer. A second signal exits at once with status 1. |
-| `SIGUSR1`           | Writes the mesh route table to the log.                                                                                                                                                                                 |
+| Signal              | Effect                                                                                                                                                                                                                                             |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SIGHUP`            | Reloads the file `--config` names and the trust document it names. A refusal goes to the log as `reload: <reason>`, and the node runs on as before. See [reloading](reloading.md).                                                                 |
+| `SIGINT`, `SIGTERM` | Starts a clean shutdown. The daemon closes every session with a Delete, withdraws the routes, rules, addresses and egress tables it installed, removes the egress device, and waits for every dialer. A second signal exits at once with status 1. |
+| `SIGUSR1`           | Writes the mesh route table to the log.                                                                                                                                                                                                            |
 
 ## Reading state
 

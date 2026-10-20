@@ -4,7 +4,7 @@
 title: "Running it as a service"
 description: "Running ranet3 from the NixOS and nix-darwin modules."
 created: 2026-09-22
-updated: 2026-10-19
+updated: 2026-10-20
 order: 40
 ---
 
@@ -200,14 +200,18 @@ The unit starts the daemon again 5 seconds after it fails, and it does not stop
 trying. A key that a secrets tool has not installed yet, or a port another IKE
 daemon still holds, costs 5 seconds a try and nothing else.
 
-A tun that goes away under a running node, such as one an operator deleted, is a
-failure the daemon cannot repair. It logs `netstack tun failed` with the
+The mesh tun going away under a running node, such as one an operator deleted,
+is a failure the daemon cannot repair. It logs `netstack tun failed` with the
 interface and the error, records a `netstack.tun.failed` event, and stops as it
 does on SIGTERM: it closes every session with its grace period and withdraws its
 routes and its translation rules. It then exits 1, and the unit starts it again
 5 seconds later, which opens the tun anew. On macOS launchd starts it again
 through `KeepAlive`. A single frame the tun hands over that cannot be read as
 packets costs that frame alone, as [metrics](metrics.md#tun-reads) describes.
+The egress device going away does not stop the daemon. It holds both families
+not ready instead and withdraws the egress SIDs, as
+[exit nodes](exit-nodes.md#readiness) says, until a restart makes the device
+again.
 
 dhcpcd and NetworkManager are told to leave the tun alone. The module adds
 `ranet*` to `networking.dhcpcd.denyInterfaces`, and as an `interface-name:`

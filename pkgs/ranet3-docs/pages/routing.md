@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-10-18
+updated: 2026-10-20
 order: 45
 ---
 
@@ -111,7 +111,9 @@ learns and installs every route. Transit is off unless
 to it takes a restart, as [reloading](reloading.md) lists.
 
 `cap.egress` adds the prefixes it is ready to carry, without a source prefix.
-[Exit nodes](exit-nodes.md) describes when it does.
+[Exit nodes](exit-nodes.md) describes when it does. A node with an egress
+segment also originates each egress SID as a `/128` while the exit is ready, as
+[exit nodes](exit-nodes.md#readiness) describes.
 
 ## Route selection
 

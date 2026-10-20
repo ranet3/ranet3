@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-19
+updated: 2026-10-20
 order: 70
 ---
 
@@ -306,8 +306,9 @@ by name, whether the path moved or the file was rewritten in place. The node
 keeps signing with the key it started with until a restart.
 
 `cap.egress` is read once at startup as well. The capability owns the tables it
-created under the families the old block named. A new block applied here would
-leave the host holding rules from a configuration nothing is running.
+created under the families it translated at startup, the advertised ones and
+both beside an egress device. A new block applied here would leave the host
+holding rules from a configuration nothing is running.
 
 With `cap.egress.return` set, the daemon also picks a return source at startup
 for each advertised family that has no `source4` or `source6`. It picks among

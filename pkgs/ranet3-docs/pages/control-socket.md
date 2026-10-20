@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-10-19
+updated: 2026-10-20
 order: 80
 ---
 
@@ -227,7 +227,7 @@ when empty, and every counter is always present. Other lists, such as
 | status             | `version`, `node`, `port`, `endpoints` (`serial/family`), `tun`, `mtu`, `queues`, `started_at`, `uptime`, `responder` (`link.listen` is on), `full_mesh` (`dial.all` is on), `no_transit` (`cap.transit` is off), `forwards_ipv4`, `forwards_ipv6`, `registry`, `kernel`, `egress`, `counts`, `esp`, `originate`, `segments`, `steering`, `segment_counters`, `disabled`, `down` |
 | `registry`         | `path`, `organizations`, `nodes`, `read_at`                                                                                                                                                                                                                                                                                                                                      |
 | `kernel`           | `enabled`, `where`, `table`, `protocol`, `metric`, `vrf`, `l3mdev_accept`, `pass_at`, `installed`, `skipped`, `added`, `removed`, `cover`, `err`                                                                                                                                                                                                                                 |
-| `egress`           | `enabled`, `where`, `source4`, `source6`, `return`, `advertise`, `announced`, `pass_at`, `installed`, `flows`, `bytes`, `conflicts`, `err`                                                                                                                                                                                                                                       |
+| `egress`           | `enabled`, `where`, `device` (the egress device, on a node with an egress segment), `ready` (`ipv4`, `ipv6`), `unready` (why a family is not ready, a reason a node with no egress device also carries after another writer's deletion or a stop), `source4`, `source6`, `return`, `advertise`, `announced`, `pass_at`, `installed`, `flows`, `bytes`, `conflicts`, `err`        |
 | `counts`           | `dialers`, `sessions`, `neighbors`, `neighbors_alive`, `prefixes`, `selected`, `originated`                                                                                                                                                                                                                                                                                      |
 | `esp`              | `inbound_packets`, `inbound_dropped`, `receive_dropped`, `receive_refused`, `keepalives`                                                                                                                                                                                                                                                                                         |
 | `originate`        | a list of `prefix` and `from`                                                                                                                                                                                                                                                                                                                                                    |

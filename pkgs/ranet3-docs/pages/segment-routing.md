@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-10-19
+updated: 2026-10-20
 order: 60
 ---
 
@@ -69,7 +69,7 @@ deliver = "egress"
 allow = ["10.99.0.0/24", "fd00:99::/64"]
 ```
 
-`allow` is required with `deliver = "egress"` and read with nothing else. A
+`allow` is required with `deliver = "egress"` and refused with anything else. A
 packet passes only when its outer source and its inner source both fall inside
 an entry of the list. Anything else counts as refused and is never answered,
 since an exit carrying any source would be an open proxy. The loader refuses:
