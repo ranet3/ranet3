@@ -758,15 +758,25 @@ func awaitRecorded(t testing.TB, r *recorder, line string) {
 	}
 }
 
-// dialSuited dials h's responder with the lists dialing holds, the dialing session recording into dialed
-// a non-nil pass carries the sessions' datagrams through a relay that forwards what it reports
-// it runs both sessions
-// it returns how each Run ended
-func dialSuited(t *testing.T, h *responderHarness, dialing *atomic.Pointer[Suites], dialed Recorder, pass func(fromInitiator bool, header *Header, raw []byte) bool) (initiator, responder *Session, initiatorRun, responderRun <-chan error) {
-	t.Helper()
+// dialedPair is how the events of a session dialing a responderHarness name its pair
+const dialedPair = "testorg/client:2>testorg/server:1"
+
+// listedConfig is h's dialing configuration under the lists the pointer it returns holds, none at first, the dialing session recording into dialed
+func listedConfig(h *responderHarness, dialed Recorder) (PeerConfig, *atomic.Pointer[Suites]) {
+	dialing := new(atomic.Pointer[Suites])
+	dialing.Store(&Suites{})
 	cfg := h.peerConfig()
 	cfg.Suites = func() Suites { return *dialing.Load() }
 	cfg.Events = dialed
+	return cfg, dialing
+}
+
+// dialSuited dials h's responder with cfg, one listedConfig made
+// a non-nil pass carries the sessions' datagrams through a relay that forwards what it reports
+// it runs both sessions
+// it returns how each Run ended
+func dialSuited(t *testing.T, h *responderHarness, cfg PeerConfig, pass func(fromInitiator bool, header *Header, raw []byte) bool) (initiator, responder *Session, initiatorRun, responderRun <-chan error) {
+	t.Helper()
 	if pass != nil {
 		cfg.RemotePort = relay(t, h.remotePort, pass)
 	}
@@ -811,9 +821,8 @@ func endedWithin(t *testing.T, run <-chan error, which string) error {
 func TestReloadRekeysAtOnceAnSAWhoseCipherOrGroupItLeftOut(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	initiator, responder, _, _ := dialSuited(t, h, dialing, dialed.record, nil)
+	cfg, dialing := listedConfig(h, dialed.record)
+	initiator, responder, _, _ := dialSuited(t, h, cfg, nil)
 	if got := initiator.Suite(); got.IKE() != "aes256gcm/sha384/x25519" || got.ESP() != "aes256gcm" {
 		t.Fatalf("the session runs %s and %s before the reload", got.IKE(), got.ESP())
 	}
@@ -825,13 +834,12 @@ func TestReloadRekeysAtOnceAnSAWhoseCipherOrGroupItLeftOut(t *testing.T) {
 	next := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"p256"}}, ESP: ESPSuites{Cipher: []string{"chacha20poly1305", "aes128gcm"}}})
 	dialing.Store(&next)
 	initiator.SuitesChanged()
-	const ends = "testorg/client:2>testorg/server:1"
 	// the responder lists every cipher and takes the first of them the offer holds
 	want := []string{
-		"ike.suite.unlisted " + ends + " sa=ike suite=aes256gcm/sha384/x25519 action=rekey",
-		"ike.rekey.completed " + ends + " sa=ike suite=aes256gcm/sha384/p256",
-		"ike.suite.unlisted " + ends + " sa=child suite=aes256gcm action=rekey",
-		"ike.rekey.completed " + ends + " sa=child suite=aes128gcm",
+		"ike.suite.unlisted " + dialedPair + " sa=ike suite=aes256gcm/sha384/x25519 action=rekey",
+		"ike.rekey.completed " + dialedPair + " sa=ike suite=aes256gcm/sha384/p256",
+		"ike.suite.unlisted " + dialedPair + " sa=child suite=aes256gcm action=rekey",
+		"ike.rekey.completed " + dialedPair + " sa=child suite=aes128gcm",
 	}
 	for _, line := range want {
 		awaitRecorded(t, dialed, line)
@@ -855,9 +863,8 @@ func TestReloadRekeysAtOnceAnSAWhoseCipherOrGroupItLeftOut(t *testing.T) {
 func TestReloadLeavesAnSAWhoseTransformsItStillLists(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	initiator, responder, initiatorRun, _ := dialSuited(t, h, dialing, dialed.record, nil)
+	cfg, dialing := listedConfig(h, dialed.record)
+	initiator, responder, initiatorRun, _ := dialSuited(t, h, cfg, nil)
 	next := suitesOf(t, Crypto{
 		IKE: IKESuites{Cipher: []string{"aes128gcm", "aes256gcm"}, Kex: []string{"x25519+mlkem768", "x25519", "p384", "p256"}},
 		ESP: ESPSuites{Cipher: []string{"aes128gcm", "aes256gcm"}},
@@ -883,19 +890,14 @@ func TestReloadLeavesAnSAWhoseTransformsItStillLists(t *testing.T) {
 func TestRunChecksTheSAsOfListsChangedBeforeItStarted(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	cfg := h.peerConfig()
-	cfg.Suites = func() Suites { return *dialing.Load() }
-	cfg.Events = dialed.record
+	cfg, dialing := listedConfig(h, dialed.record)
 	initiator, responder := dialPaused(t, h, cfg)
 	runSession(t, responder)
 	next := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm"}}})
 	dialing.Store(&next)
 	runSession(t, initiator)
-	const ends = "testorg/client:2>testorg/server:1"
-	awaitRecorded(t, dialed, "ike.suite.unlisted "+ends+" sa=ike suite=aes256gcm/sha384/x25519 action=rekey")
-	awaitRecorded(t, dialed, "ike.rekey.completed "+ends+" sa=ike suite=aes128gcm/sha384/x25519")
+	awaitRecorded(t, dialed, "ike.suite.unlisted "+dialedPair+" sa=ike suite=aes256gcm/sha384/x25519 action=rekey")
+	awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa=ike suite=aes128gcm/sha384/x25519")
 }
 
 // a reload whose ike prf left out the PRF of a live IKE SA deletes that SA, whichever end reloaded
@@ -906,14 +908,13 @@ func TestReloadLeavingOutThePRFReplacesTheIKESA(t *testing.T) {
 		t.Run("the "+reloading+" end", func(t *testing.T) {
 			dialed, answered := &recorder{}, &recorder{}
 			h := newResponderHarness(t, nil, answered.record)
-			dialing := new(atomic.Pointer[Suites])
-			dialing.Store(&Suites{})
-			initiator, responder, initiatorRun, responderRun := dialSuited(t, h, dialing, dialed.record, nil)
+			cfg, dialing := listedConfig(h, dialed.record)
+			initiator, responder, initiatorRun, responderRun := dialSuited(t, h, cfg, nil)
 			if got := initiator.Suite().IKEPRF; got != "sha384" {
 				t.Fatalf("the IKE SA runs %s before the reload", got)
 			}
 			sha256Only := suitesOf(t, Crypto{IKE: IKESuites{PRF: []string{"sha256"}}})
-			replacing, other, replacingRun, otherRun, record, ends := initiator, responder, initiatorRun, responderRun, dialed, "testorg/client:2>testorg/server:1"
+			replacing, other, replacingRun, otherRun, record, ends := initiator, responder, initiatorRun, responderRun, dialed, dialedPair
 			if reloading == "answering" {
 				replacing, other, replacingRun, otherRun, record, ends = responder, initiator, responderRun, initiatorRun, answered, "testorg/server:1>testorg/client:2"
 			}
@@ -935,7 +936,8 @@ func TestReloadLeavingOutThePRFReplacesTheIKESA(t *testing.T) {
 			if err := endedWithin(t, otherRun, "other"); err == nil {
 				t.Error("the other end's session outlived the Delete")
 			}
-			next, _, _, _ := dialSuited(t, h, dialing, nil, nil)
+			cfg.Events = nil
+			next, _, _, _ := dialSuited(t, h, cfg, nil)
 			if got := next.Suite().IKEPRF; got != "sha256" {
 				t.Errorf("the next handshake runs %s, want the PRF the lists hold", got)
 			}
