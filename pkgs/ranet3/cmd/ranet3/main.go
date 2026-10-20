@@ -348,10 +348,10 @@ func runDaemon(opts options) int {
 			MeshAddresses: client.MeshAddresses(cfg),
 			Forwarding:    client.Forwarding,
 			// Published through the runtime rather than read out of the
-			// config, which is how an exit whose rule is not installed
-			// withholds its advertisement instead of attracting traffic it
-			// would drop. The prefixes are read back from the translator, so
-			// this callback only has to say that they changed.
+			// config, which is how an exit whose chain does not read back as
+			// written withholds its advertisement instead of attracting
+			// traffic it would drop. The prefixes are read back from the
+			// translator, so this callback only has to say that they changed.
 			Announce: func([]netip.Prefix) { node.Republish() },
 			Events:   bus,
 			Egress:   node.EgressDevice(),

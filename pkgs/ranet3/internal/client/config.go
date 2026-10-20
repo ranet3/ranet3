@@ -101,10 +101,10 @@ func validateExtraCost(cfg *config.Config, x *registry.Index) error {
 
 // refuseEgressAdvertisedUnconditionally rejects a prefix cap.egress offers to
 // carry that cap.route announces as well. The capability withholds a prefix
-// whose translation rule is not installed, so that this node stops attracting
-// traffic it would have to drop. An unconditional announcement of the same
-// prefix takes that back and leaves the withholding reporting as working while
-// changing nothing on the wire.
+// whose translation chain does not read back as written, so that this node
+// stops attracting traffic it would have to drop. An unconditional
+// announcement of the same prefix takes that back and leaves the withholding
+// reporting as working while changing nothing on the wire.
 //
 // It is here rather than in either capability because each half is in a
 // different block, which is the one check neither can make for itself.

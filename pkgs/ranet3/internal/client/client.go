@@ -96,9 +96,9 @@ type Client struct {
 	kernelStatus atomic.Pointer[func() control.KernelStatus]
 	// egressStatus and egressAnnounce are the egress capability's, supplied
 	// the same way. The second is read on every republication rather than
-	// captured, because an exit withholds its advertisement whenever its rule
-	// is not installed and the set it may announce changes under a running
-	// node.
+	// captured, because an exit withholds its advertisement whenever its chain
+	// does not read back as written and the set it may announce changes under
+	// a running node.
 	egressStatus   atomic.Pointer[func() control.EgressStatus]
 	egressAnnounce atomic.Pointer[func() []netip.Prefix]
 	// egressDevice is set once by New and empty on a node with no egress device
