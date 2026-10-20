@@ -15,10 +15,11 @@ import (
 // Segments is the cap.segment capability, parsed straight out of the file: the
 // segments this node answers for and the ones it sends its own packets
 // through. This tree acts on a routing header in the dataplane rather than
-// asking a kernel to, so the same block works on every platform: darwin has no
+// asking a kernel to, so steering works on every platform: darwin has no
 // segment routing and a mobile tunnel provider has no forwarding table at all,
 // and neither needs one when the process carrying the packet is the one acting
-// on the header.
+// on the header. A local segment needs cap.border beside it, which only linux
+// runs.
 type Segments struct {
 	// Source is the outer source address an encapsulation is sent from, which
 	// the fleet sets once per node with `ip sr tunsrc`. A steering entry
@@ -93,11 +94,10 @@ func (s Segments) Egress() []Segment {
 	return out
 }
 
-// Validate refuses a capability this node could not act on, by building the
-// two tables and throwing them away. Everything it can say is said by the
-// constructors, so there is one set of rules rather than two. The overlay the
-// local table needs belongs to cap.border, so the loader checks it where it
-// reads both blocks.
+// Validate refuses a capability this node could not act on, through the checks
+// the two tables' constructors run, so there is one set of rules rather than
+// two. The overlay the local table needs belongs to cap.border, so the loader
+// checks it where it reads both blocks.
 func (s Segments) Validate() error {
 	if s.Source.IsValid() && !Usable(s.Source.Addr) {
 		// Checked here rather than where the first steering entry needs it,

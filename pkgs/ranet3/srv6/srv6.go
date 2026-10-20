@@ -25,11 +25,11 @@
 //     [Overhead] sizes the result beforehand and [CheckPath] refuses a path
 //     before anything is built from it.
 //   - Receiving, for a segment this node answers for. [NewLocalTable] takes
-//     the [Segment] list and [LocalTable.Handle] returns a [Result] saying
-//     whether to pass the packet on untouched, forward it to the [Result.Next]
-//     segment, deliver the [Result.Inner] packet to the mesh or to the egress
-//     device, or drop it. [End] and [Decap] are End and End.DT46 on
-//     their own.
+//     the [Segment] list and the overlay every SID admits an outer source
+//     from, and [LocalTable.Handle] returns a [Result] saying whether to pass
+//     the packet on untouched, forward it to the [Result.Next] segment,
+//     deliver the [Result.Inner] packet to the mesh or to the egress device,
+//     or drop it. [End] and [Decap] are End and End.DT46 on their own.
 //   - Choosing. [NewSteerTable] takes the [Steer] list and [SteerTable.Lookup]
 //     answers which [Policy], if any, one of this node's own packets takes.
 //

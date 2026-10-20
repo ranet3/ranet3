@@ -17,7 +17,7 @@ import (
 type egressSlot struct {
 	egressMu sync.Mutex
 	egress   atomic.Pointer[egressDevice]
-	// egressReady holds egressReady4 and egressReady6 for the families the translator reported ready, none at first
+	// egressReady holds egressReady4 and egressReady6 for the families SetEgressReady last named ready, none at first
 	egressReady atomic.Uint32
 }
 
@@ -27,8 +27,9 @@ const (
 )
 
 // SetEgressReady tells the mesh which families the egress device carries out
-// translated, from the translator's last pass, and an egress result of a
-// family that is not ready is dropped and counted NotReady
+// translated, from the translator's last pass and, under cap.border, the
+// border filter's, and an egress result of a family that is not ready is
+// dropped and counted NotReady
 func (m *Mesh) SetEgressReady(v4, v6 bool) {
 	var ready uint32
 	if v4 {
