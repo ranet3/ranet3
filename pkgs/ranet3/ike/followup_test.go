@@ -1443,7 +1443,7 @@ func TestInvalidSyntaxForAFollowupEndsTheIKESAWithoutADelete(t *testing.T) {
 func peerDeletes(t testing.TB, s *Session, ctx *ikeContext) {
 	t.Helper()
 	header := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL, MessageID: 1}
-	if _, err := s.handleRequest(ctx, &header, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}); err != nil {
+	if _, err := s.handleRequest(ctx, &header, nil, deleteIKEPayloads()); err != nil {
 		t.Fatalf("the peer's Delete of the IKE SA ended the session: %v", err)
 	}
 }

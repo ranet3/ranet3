@@ -719,7 +719,7 @@ func TestSessionHandlesPeerIKERekey(t *testing.T) {
 		t.Fatalf("decrypt new-context response: %v", err)
 	}
 
-	request, err = EncryptMessage(old.suite, old.sker, Header{SPIInitiator: oldSPIi, SPIResponder: oldSPIr, ExchangeType: INFORMATIONAL, MessageID: 1}, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+	request, err = EncryptMessage(old.suite, old.sker, Header{SPIInitiator: oldSPIi, SPIResponder: oldSPIr, ExchangeType: INFORMATIONAL, MessageID: 1}, nil, deleteIKEPayloads())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -977,7 +977,7 @@ func TestSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 		}
 
 		// the peer retires its own losing candidate, which this end kept routable for that
-		loserDelete, err := EncryptMessage(suite, collisionKeys.SKei, Header{SPIInitiator: peerSPIi, SPIResponder: peerSPIr, ExchangeType: INFORMATIONAL, Flags: FlagInitiator, MessageID: 0}, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+		loserDelete, err := EncryptMessage(suite, collisionKeys.SKei, Header{SPIInitiator: peerSPIi, SPIResponder: peerSPIr, ExchangeType: INFORMATIONAL, Flags: FlagInitiator, MessageID: 0}, nil, deleteIKEPayloads())
 		if err != nil {
 			t.Errorf("build loser delete: %v", err)
 			return

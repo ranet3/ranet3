@@ -401,7 +401,7 @@ func TestPeerDeleteOnOneSidedCollisionKeepsSessionOpen(t *testing.T) {
 
 	del, err := EncryptMessage(suite, old.sker, Header{
 		SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: INFORMATIONAL, MessageID: 0,
-	}, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+	}, nil, deleteIKEPayloads())
 	if err != nil {
 		t.Fatal(err)
 	}

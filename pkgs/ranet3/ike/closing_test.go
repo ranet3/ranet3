@@ -367,7 +367,7 @@ func TestInitiatorClosingAfterAuthIgnoresARequestThatDoesNotAuthenticate(t *test
 	own := peer.read(t)
 
 	header := Header{SPIInitiator: peer.held.spiI, SPIResponder: peer.held.spiR, ExchangeType: INFORMATIONAL}
-	forged, err := EncryptMessage(peer.held.suite, peer.held.sker, header, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+	forged, err := EncryptMessage(peer.held.suite, peer.held.sker, header, nil, deleteIKEPayloads())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestInitiatorClosingAfterAuthIgnoresADeleteOutsideTheWindow(t *testing.T) {
 		}
 	}
 	for _, mid := range []uint32{0, 5} {
-		peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: mid}, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+		peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: mid}, deleteIKEPayloads())
 		peer.unanswered(t)
 		waitsOn(t, done)
 	}

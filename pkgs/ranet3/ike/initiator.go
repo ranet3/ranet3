@@ -897,7 +897,7 @@ func refuse(notify NotifyType, data []byte, err error) error {
 }
 
 func (s *Session) deleteAuthenticatedIKE() error {
-	return s.informAfterAuth([]RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+	return s.informAfterAuth(deleteIKEPayloads())
 }
 
 func (s *Session) informAfterAuth(inner []RawPayload) error {
@@ -998,6 +998,11 @@ func (s *Session) answerInWait(ctx *ikeContext, hdr *Header, cleartext []RawPayl
 	// as Run answers an exchange it does not take, which ends the IKE SA
 	response, err := s.responseNotify(ctx, hdr.MessageID, hdr.ExchangeType, N_INVALID_SYNTAX)
 	return response, true, err
+}
+
+// RFC 7296 section 3.11: "Deletion of the IKE SA is indicated by a protocol ID of 1 (IKE) but no SPIs."
+func deleteIKEPayloads() []RawPayload {
+	return []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}
 }
 
 func deletesIKE(payloads []RawPayload) bool {

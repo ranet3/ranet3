@@ -980,7 +980,7 @@ func TestSessionAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
 		return taken, slices.Clone(buf[4:n])
 	}
 	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, MessageID: 0}
-	deletion := sealedEdited(t, held.suite, held.sker, header, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}, atMajorVersion3)
+	deletion := sealedEdited(t, held.suite, held.sker, header, deleteIKEPayloads(), atMajorVersion3)
 	taken, reply := answer(deletion)
 	if taken {
 		t.Fatal("the Delete at major version 3 was taken as a fresh authenticated request")
@@ -1593,7 +1593,7 @@ func TestUnansweredExchangeStillEnds(t *testing.T) {
 // a Delete of an IKE SA ends after teardownRetransmits sends, whether or not the peer keeps other traffic coming
 // the budget goes by what the request deletes, so it is the same whoever sent the Delete, Run's own teardown or a caller
 func TestDeleteEndingAnIKESAHasTheTeardownBudget(t *testing.T) {
-	ender := &pendingRequest{localRequest: localRequest{inner: []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}}}
+	ender := &pendingRequest{localRequest: localRequest{inner: deleteIKEPayloads()}}
 	for ender.sent < teardownRetransmits-1 {
 		ender.sent++
 		ender.attempts++
@@ -1652,7 +1652,7 @@ func TestRunEndingReturnsWhyItDeletedTheIKESA(t *testing.T) {
 			case "answers":
 				peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
 			case "crosses":
-				peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: 0}, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+				peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: 0}, deleteIKEPayloads())
 				if answer := peer.answer(t); answer.Header.MessageID != 0 {
 					t.Errorf("the peer's crossing Delete drew an answer at Message ID %d, want 0", answer.Header.MessageID)
 				}
