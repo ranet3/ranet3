@@ -18,6 +18,7 @@
 package pbt
 
 import (
+	"slices"
 	"testing"
 
 	"hegel.dev/go/hegel"
@@ -60,4 +61,26 @@ func Spanning[T Integer](lo, hi T) hegel.Generator[T] {
 		}
 		return hegel.Draw(tc, hegel.Integers(lo, hi))
 	})
+}
+
+// Subset draws a run of distinct elements of every, at least least and at
+// most most of them, in the order drawn. A run of none is nil.
+func Subset[T any](tc hegel.TestCase, every []T, least, most int) []T {
+	remaining := slices.Clone(every)
+	var out []T
+	for range hegel.Draw(tc, Spanning(least, min(most, len(every)))) {
+		at := hegel.Draw(tc, hegel.Integers(0, len(remaining)-1))
+		out = append(out, remaining[at])
+		remaining = slices.Delete(remaining, at, at+1)
+	}
+	return out
+}
+
+// List draws a list of names a configuration writes, left out one time in
+// four, which is nil, and otherwise a run of distinct names from every.
+func List(tc hegel.TestCase, every []string) []string {
+	if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
+		return nil
+	}
+	return Subset(tc, every, 1, len(every))
 }
