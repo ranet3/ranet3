@@ -79,15 +79,15 @@ func TestTUNStreamKeepsFlowingThroughABlackHole(t *testing.T) {
 	t.Cleanup(func() { t.Logf("alpha's search: %q", searchRecord(alpha.events)) })
 	run(t, alpha, bravo)
 	waitFor(t, convergeBudget, "alpha forwarding to bravo's prefix and bravo to alpha's", func() bool {
-		found, ok := alpha.client.Mesh.Routes.Lookup(netip.Addr{}, bravoHost.Addr())
-		back, backOK := bravo.client.Mesh.Routes.Lookup(netip.Addr{}, alphaHost.Addr())
-		return ok && found != nil && backOK && back != nil
+		found, verdict := alpha.client.Mesh.Routes.Resolve(netip.Addr{}, bravoHost.Addr())
+		back, backVerdict := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alphaHost.Addr())
+		return verdict == netstack.RoutePeer && found != nil && backVerdict == netstack.RoutePeer && back != nil
 	})
 	// looked up on every poll, since a simultaneous open replaces the first session and its peer with it
 	settledAt := func(mtu int) func() bool {
 		return func() bool {
-			found, ok := alpha.client.Mesh.Routes.Lookup(netip.Addr{}, bravoHost.Addr())
-			return ok && found != nil && found.MTU() == mtu
+			found, verdict := alpha.client.Mesh.Routes.Resolve(netip.Addr{}, bravoHost.Addr())
+			return verdict == netstack.RoutePeer && found != nil && found.MTU() == mtu
 		}
 	}
 	settled := esp.Inner(holeWire, 20)
@@ -375,8 +375,8 @@ func TestSessionLowersItsBudgetAtTheRefusalOfItsOwnData(t *testing.T) {
 	alpha, bravo := newLoopbackMeshOn(t, mesh)
 	run(t, alpha, bravo)
 	waitFor(t, convergeBudget, fmt.Sprintf("bravo's session to alpha to settle at %d", netstack.DefaultMTU), func() bool {
-		peer, ok := bravo.client.Mesh.Routes.Lookup(netip.Addr{}, alphaHost.Addr())
-		return ok && peer != nil && peer.MTU() == netstack.DefaultMTU
+		peer, verdict := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alphaHost.Addr())
+		return verdict == netstack.RoutePeer && peer != nil && peer.MTU() == netstack.DefaultMTU
 	})
 
 	netlink, err := openNetlinkRoute()
@@ -416,7 +416,6 @@ func TestSessionLowersItsBudgetAtTheRefusalOfItsOwnData(t *testing.T) {
 	// the payload of a UDP datagram whose IPv6 packet fills the budget
 	datagram := make([]byte, netstack.DefaultMTU-40-8)
 	refusal := fmt.Sprintf("%d to %d by refusal", netstack.DefaultMTU, esp.Inner(narrowedLoopback, 20))
-	// each poll sends one more datagram
 	waitFor(t, pathWait, fmt.Sprintf("bravo's search to record %q", refusal), func() bool {
 		_, _ = conn.Write(datagram)
 		return slices.Contains(searchRecord(bravo.events), refusal)

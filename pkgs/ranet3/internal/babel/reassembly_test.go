@@ -108,7 +108,7 @@ func TestUpdateCutAsTheFieldCutsItInstallsItsRoutes(t *testing.T) {
 				}
 			}
 			for _, prefix := range prefixes {
-				if via, ok := speaker.mesh.Routes.Lookup(prefix.Addr(), prefix.Addr()); !ok || via != neighbor.peer {
+				if via, verdict := speaker.mesh.Routes.Resolve(prefix.Addr(), prefix.Addr()); verdict != netstack.RoutePeer || via != neighbor.peer {
 					t.Fatalf("%s is not forwarded through the neighbor that announced it: %v", prefix, speaker.mesh.Routes.Debug())
 				}
 			}
@@ -480,7 +480,7 @@ func TestFloodingNeighborStaysInItsBoundsAndCrowdsOutNoOther(t *testing.T) {
 		t.Fatalf("the other neighbor's packet was read %d times, want once", read)
 	}
 	for _, prefix := range prefixes {
-		if via, ok := speaker.mesh.Routes.Lookup(prefix.Addr(), prefix.Addr()); !ok || via != quiet.peer {
+		if via, verdict := speaker.mesh.Routes.Resolve(prefix.Addr(), prefix.Addr()); verdict != netstack.RoutePeer || via != quiet.peer {
 			t.Fatalf("%s is not forwarded through the neighbor that announced it", prefix)
 		}
 	}

@@ -363,8 +363,8 @@ func (m *Mesh) classify(b *outboundBatch) {
 				continue
 			}
 		}
-		peer, ok := m.Routes.Lookup(src, dst)
-		if !ok {
+		peer, verdict := m.Routes.Resolve(src, dst)
+		if verdict != RoutePeer {
 			if policy != nil {
 				m.segmentsUnrouted.Add(1)
 				m.reportSegmentDrop("no route to the first segment of a steered packet", "segment", dst)
