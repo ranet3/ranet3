@@ -1043,7 +1043,7 @@ func TestReplacedChildSAAwaitingItsDeleteIsWithdrawnAtItsLifetime(t *testing.T) 
 	if err := s.replaceChild(ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}); err != nil {
 		t.Fatal(err)
 	}
-	if at, ok := s.nextRetirement(); !ok || !at.Equal(ends) {
+	if at, ok := s.nextRetirement(time.Now()); !ok || !at.Equal(ends) {
 		t.Errorf("the session next wakes for its replaced SA at %v, want its lifetime's end %v", at, ends)
 	}
 	removed := func(change keyChange) bool { return change.spi == old.LocalSPI && change.removed }
@@ -1059,7 +1059,7 @@ func TestReplacedChildSAAwaitingItsDeleteIsWithdrawnAtItsLifetime(t *testing.T) 
 	if !slices.ContainsFunc(keys.recorded(), removed) {
 		t.Fatalf("at its lifetime the replaced Child SA's keys are still in, the dataplane saw %+v", keys.recorded())
 	}
-	if at, ok := s.nextRetirement(); !ok || !at.Equal(s.retiringBy) {
+	if at, ok := s.nextRetirement(ends); !ok || !at.Equal(s.retiringBy) {
 		t.Errorf("after the withdrawal the session next wakes for its replaced SA at %v, want the wait for the peer's Delete to end at %v", at, s.retiringBy)
 	}
 	if err := other.RegisterESP(old.LocalSPI); err == nil {
@@ -1074,6 +1074,80 @@ func TestReplacedChildSAAwaitingItsDeleteIsWithdrawnAtItsLifetime(t *testing.T) 
 	if got := slices.DeleteFunc(keys.recorded(), func(change keyChange) bool { return !removed(change) }); len(got) != 1 {
 		t.Errorf("the replaced Child SA's keys came out %d times, want once", len(got))
 	}
+}
+
+// clockShortOf has s's loop read the clock just short of boundary on its first pass at or past it, as a pass that read it just before boundary and set its wait just after does, and read it as it is on every other pass
+func clockShortOf(s *Session, boundary time.Time) {
+	moved := false
+	s.clock = func() time.Time {
+		now := time.Now()
+		if !now.Before(boundary) && !moved {
+			moved = true
+			return boundary.Add(-time.Nanosecond)
+		}
+		return now
+	}
+}
+
+// a lifetime that ends while a pass of the session's loop runs, after its sweep and before its wait, is one that wait is set for, so the session acts on it at once
+// a wait set by a reading taken past the end would leave it to the next deadline, which for a replaced Child SA is the wait for the peer's Delete and for the Child SA's own schedule the retry of its failed rekey
+func TestLifetimeEndingWhileAPassRunsIsWaitedFor(t *testing.T) {
+	const (
+		// left is how long the SA has to live when the session starts
+		left = 300 * time.Millisecond
+		// acted bounds how long past the end the session takes to act on it, well inside retirementDeadline and the retry delay, which are the next deadlines otherwise
+		acted = 3 * time.Second
+	)
+	t.Run("replaced Child SA", func(t *testing.T) {
+		mux, _ := lifecycleMuxes(t)
+		old := ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}
+		if err := mux.RegisterESP(old.LocalSPI); err != nil {
+			t.Fatal(err)
+		}
+		s := &Session{mux: mux, current: &ikeContext{}, requests: make(chan *localRequest), Child: old, dpdEvery: noDPD,
+			childRekeyInterval: time.Hour, childEstablished: time.Now().Add(-time.Hour + left)}
+		keys := newDataplane(s)
+		ends := s.childEstablished.Add(time.Hour)
+		if err := s.replaceChild(ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}); err != nil {
+			t.Fatal(err)
+		}
+		clockShortOf(s, ends)
+		runSession(t, s)
+		removed := func(change keyChange) bool { return change.spi == old.LocalSPI && change.removed }
+		for !slices.ContainsFunc(keys.recorded(), removed) {
+			if time.Now().After(ends.Add(acted)) {
+				t.Fatalf("the replaced Child SA's keys were still in %s past its lifetime, the dataplane saw %+v", acted, keys.recorded())
+			}
+			time.Sleep(recordPoll)
+		}
+		changes := keys.recorded()
+		if at := changes[slices.IndexFunc(changes, removed)].at; at.Before(ends) {
+			t.Errorf("the replaced Child SA's keys came out %s before its lifetime", ends.Sub(at))
+		}
+	})
+	t.Run("Child SA schedule", func(t *testing.T) {
+		mux, _ := lifecycleMuxes(t)
+		events := &recorder{}
+		// the rekey falls due at once and fails, since the SA has no outbound half, and its retry is past the test
+		s := &Session{mux: mux, current: chainContext(t, classicalSuite), requests: make(chan *localRequest), Child: ChildSA{LocalSPI: 0x11111111}, dpdEvery: noDPD,
+			childRekeyInterval: time.Hour, childEstablished: time.Now().Add(-time.Hour + left), rekeyMargin: time.Hour / 2,
+			rekeyRetryInitial: time.Hour, rekeyRetryMax: time.Hour, events: events.record}
+		ends := s.childEstablished.Add(time.Hour)
+		clockShortOf(s, ends)
+		runSession(t, s)
+		closed := func(line string) bool {
+			return strings.HasPrefix(line, "ike.sa.closed ") && strings.HasSuffix(line, " sa=child reason=lifetime")
+		}
+		for !slices.ContainsFunc(events.recorded(), closed) {
+			if time.Now().After(ends.Add(acted)) {
+				t.Fatalf("the session went on %s past the Child SA's lifetime, recording %q", acted, events.recorded())
+			}
+			time.Sleep(recordPoll)
+		}
+		if !slices.Contains(events.recorded(), "ike.rekey.failed "+s.local.String()+">"+s.remote.String()+" sa=child") {
+			t.Errorf("the session recorded %q, want the Child SA's rekey failing before its lifetime", events.recorded())
+		}
+	})
 }
 
 // a replaced Child SA whose Delete arrives past its lifetime, before the session has withdrawn it, has nothing left to drain, so its keys leave with the Delete

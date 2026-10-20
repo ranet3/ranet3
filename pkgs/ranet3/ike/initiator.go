@@ -212,6 +212,8 @@ type Session struct {
 	rekeyRetryInitial  time.Duration
 	rekeyRetryMax      time.Duration
 	rekeyJitterSource  func(time.Duration) (time.Duration, error)
+	// clock is time.Now where nil, read once for each pass of Run's loop
+	clock func() time.Time
 	// temporary is run's alone
 	temporary temporaryStreak
 	// dpdEvery overrides defaultDPDInterval, and zero means the default.
