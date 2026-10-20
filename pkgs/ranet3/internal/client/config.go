@@ -127,24 +127,32 @@ func refuseEgressAdvertisedUnconditionally(cfg *config.Config) error {
 // it is the host prefixes cap.route announces and what cap.table assigns
 // the announced ones count because a node that configures its tun externally assigns nothing
 func MeshAddresses(cfg *config.Config) []netip.Addr {
-	announced := cfg.Routes().Announced()
 	var out []netip.Addr
-	add := func(prefix netip.Prefix) {
+	for _, prefix := range slices.Concat(cfg.Routes().Announced(), assignedPrefixes(cfg)) {
 		// Only a host prefix. A shorter one is a range this node carries
 		// traffic for rather than an address it answers at, and translating
 		// to its base address would send replies to a host that may not exist.
-		if prefix.Bits() != prefix.Addr().BitLen() {
-			return
+		if prefix.IsSingleIP() {
+			out = append(out, prefix.Addr())
 		}
+	}
+	return out
+}
+
+// assignedPrefixes is every prefix cap.table assigns, the ones cap.route announces among them where it asks for those
+func assignedPrefixes(cfg *config.Config) []netip.Prefix {
+	if cfg.Cap.Table == nil {
+		return nil
+	}
+	return cfg.Cap.Table.Assigned(cfg.Routes().Announced())
+}
+
+// assignedAddresses is every address cap.table assigns, whatever the length of its prefix, which the speaker holds as this node's own
+func assignedAddresses(cfg *config.Config) []netip.Addr {
+	assigned := assignedPrefixes(cfg)
+	out := make([]netip.Addr, 0, len(assigned))
+	for _, prefix := range assigned {
 		out = append(out, prefix.Addr())
-	}
-	for _, prefix := range announced {
-		add(prefix)
-	}
-	if table := cfg.Cap.Table; table != nil {
-		for _, prefix := range table.Assigned(announced) {
-			add(prefix)
-		}
 	}
 	return out
 }

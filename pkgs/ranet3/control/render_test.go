@@ -123,6 +123,45 @@ func TestRoutesNameOriginatedAndUnreachable(t *testing.T) {
 	}
 }
 
+// ownAndLearned is a route table with a row of each kind: a host prefix this
+// node announces and is assigned, a prefix it announces, an address cap.table
+// assigns it alone, a prefix held after a retraction, and a learned default
+// from a source prefix
+func ownAndLearned() []Route {
+	return []Route{
+		{Destination: netip.MustParsePrefix("198.18.104.117/32"), Originated: true, Assigned: true},
+		{Destination: netip.MustParsePrefix("2001:db8::/48"), Originated: true},
+		{Destination: netip.MustParsePrefix("2001:db8::5/128"), Assigned: true},
+		{Destination: netip.MustParsePrefix("2001:db8:1::/48"), Metric: 65535, Candidates: 1},
+		{Destination: netip.MustParsePrefix("::/0"), From: netip.MustParsePrefix("2001:db8::/32"), Via: "example/exit@0",
+			Metric: 212, RouterID: "0a1b2c3d4e5f6071", Seqno: 42, Candidates: 2},
+	}
+}
+
+// Every row this node holds as its own names this node as Via, whether it is
+// announced, assigned or both, and the wire form says which.
+func TestRoutesRenderAsTheGoldenFiles(t *testing.T) {
+	routes := ownAndLearned()
+	var out strings.Builder
+	RenderRoutes(&out, routes)
+	golden(t, "routes.txt", []byte(out.String()))
+	goldenJSON(t, "routes.json", routes)
+}
+
+// whois answers an address cap.table assigns with its host route as this
+// node's, then the prefixes it would fall back to, and names one this node
+// announces as well as originated.
+func TestWhoisNamesAnAssignedAddressThisNodes(t *testing.T) {
+	var out strings.Builder
+	for i, address := range []netip.Addr{netip.MustParseAddr("2001:db8::5"), netip.MustParseAddr("198.18.104.117")} {
+		if i > 0 {
+			out.WriteString("\n")
+		}
+		RenderWhois(&out, address, Covering(ownAndLearned(), address))
+	}
+	golden(t, "whois-assigned.txt", []byte(out.String()))
+}
+
 // The role line is the three settings that decide what a node is on a fleet,
 // said as words rather than as booleans a reader reassembles.
 func TestStatusSaysTheRoleInWords(t *testing.T) {

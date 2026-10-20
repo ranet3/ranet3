@@ -526,7 +526,8 @@ type Neighbor struct {
 // Route is one entry of the Babel route table, selected or not, which is
 // `birdc show route` for the mesh. Via is empty when the prefix is held
 // unreachable, which a retraction leaves behind so a packet does not follow a
-// shorter prefix instead.
+// shorter prefix instead, and when it is this node's own, which Originated or
+// Assigned says.
 type Route struct {
 	Destination netip.Prefix `json:"destination"`
 	From        netip.Prefix `json:"from,omitzero"`
@@ -539,6 +540,10 @@ type Route struct {
 	// one path can be told from one with a dozen.
 	Candidates int  `json:"candidates"`
 	Originated bool `json:"originated"`
+	// Assigned is the host route of an address cap.table assigns this node,
+	// which the node holds as its own and announces only where Originated is
+	// set too.
+	Assigned bool `json:"assigned"`
 }
 
 // Session is one live IKE SA. Path names the local and remote endpoint pair

@@ -321,6 +321,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 	if err != nil {
 		return nil, err
 	}
+	speaker.SetAssigned(assignedAddresses(cfg))
 	network, err := openNetwork(host, mesh.Name)
 	if err != nil {
 		return nil, err

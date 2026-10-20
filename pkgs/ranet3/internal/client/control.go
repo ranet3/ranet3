@@ -288,6 +288,7 @@ func (c *Client) Routes() []control.Route {
 			Seqno:       route.Seqno,
 			Candidates:  route.Candidates,
 			Originated:  route.Originated,
+			Assigned:    route.Assigned,
 		})
 	}
 	return out

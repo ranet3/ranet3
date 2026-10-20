@@ -14,6 +14,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
@@ -139,6 +140,42 @@ func TestAnnouncementTakesTheEgressPrefixesFromTheTranslator(t *testing.T) {
 	routes := c.announced(cfg)
 	if len(routes) != 2 || routes[1].Destination != exit {
 		t.Errorf("announced %v, want cap.route's list and the exit's own prefix", routes)
+	}
+}
+
+// assignedRows is the destinations the route table view marks as addresses cap.table assigns
+func assignedRows(c *Client) []netip.Prefix {
+	var out []netip.Prefix
+	for _, route := range c.Routes() {
+		if route.Assigned {
+			out = append(out, route.Destination)
+		}
+	}
+	return out
+}
+
+// The addresses cap.table assigns are this node's own from the start, each at
+// its host route whatever prefix length it is written with, and the route
+// table view marks them.
+func TestAssignedAddressesAreThisNodesOwnFromTheStart(t *testing.T) {
+	cfg, privateKey, reg := runtimeFixture(t)
+	cfg.Cap.Table = &kernel.Table{
+		Addresses:       []schema.Prefix{schema.MustPrefix("10.66.0.5/24")},
+		AssignAnnounced: true,
+	}
+	cfg.Cap.Route = &babel.Routes{Announce: announce("fd00:1::1/64")}
+	c, err := newClient(cfg, privateKey, trust(t, reg), netstack.NewRoutesOnly(), nil, events.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	address := netip.MustParseAddr("10.66.0.5")
+	if _, verdict := c.Mesh.Routes.Resolve(address, address); verdict != netstack.RouteLocal {
+		t.Errorf("%s resolves as %v, want this node's own", address, verdict)
+	}
+	want := []netip.Prefix{netip.MustParsePrefix("10.66.0.5/32"), netip.MustParsePrefix("fd00:1::1/128")}
+	if got := assignedRows(c); !slices.Equal(got, want) {
+		t.Errorf("the route table view marks %v assigned, want %v", got, want)
 	}
 }
 
