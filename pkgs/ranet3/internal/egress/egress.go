@@ -176,9 +176,10 @@ type Runtime struct {
 	Device func() (v4, v6 error)
 	// Ready receives the egress device's readiness per family, and whether
 	// the egress SIDs are served, whenever one of the three moves, starting
-	// from none. A family is ready while its rule keyed on the egress device
-	// reads back, the host forwards it and Device passes it, and is
-	// reported not ready before the tables are withdrawn. The SIDs are served
+	// from none. A family is ready while its chain, which holds its rule
+	// keyed on the egress device, reads back exactly as written, the host
+	// forwards it and Device passes it, and is reported not ready before the
+	// tables are withdrawn. The SIDs are served
 	// while at least one family is ready and every family the host forwards
 	// is. Nil where nothing reads it, which only a test does.
 	Ready func(v4, v6, serves bool)
@@ -399,11 +400,16 @@ func familyName(family uint8) string {
 }
 
 // Installed is one rule as the backend read it back: the spelling it was
-// written under and what it has carried since. The counters are outside the
-// diff on purpose, because they change on every packet and a diff holding them
-// would rewrite the ruleset on every pass.
+// written under, the family whose table it was read from and what it has
+// carried since. The counters are outside the diff on purpose, because they
+// change on every packet and a diff holding them would rewrite the ruleset on
+// every pass.
 type Installed struct {
-	Spec    string
+	Spec string
+	// Family places a rule another writer put in a chain, which reads back with
+	// no spelling, in its family's readback. The border's one inet table leaves
+	// it 0.
+	Family  uint8
 	Packets uint64
 	Bytes   uint64
 }
@@ -428,13 +434,15 @@ type chainReadback struct {
 // portable and syscall-free, so the diff and the refusal rules are testable
 // against a fake.
 type backend interface {
-	// Rules returns the rules held in this tool's own table, in order.
-	Rules() ([]Installed, error)
-	// Apply brings this tool's own chain to rules. It replaces the chain's
-	// contents in one transaction rather than editing it, because nftables
-	// commits a batch atomically and a chain rewritten rule by rule has a
-	// window in which a packet leaves untranslated.
-	Apply([]Rule) error
+	// Rules reads back this tool's own chain and the table holding it in each
+	// family it owns, keyed by family.
+	Rules() (map[uint8]chainReadback, error)
+	// Apply brings this tool's own chain to rules, deleting the table of each
+	// family in remake first. It replaces the chain's contents in one
+	// transaction rather than editing it, because nftables commits a batch
+	// atomically and a chain rewritten rule by rule has a window in which a
+	// packet leaves untranslated.
+	Apply(rules []Rule, remake []uint8) error
 	// Conflicts names the source translation already on the host that this
 	// node's traffic could meet, for an operator rather than as a number.
 	Conflicts() ([]string, error)
@@ -652,8 +660,8 @@ func (t *Translator) Stats() Stats {
 }
 
 // Announce is the prefixes this node may advertise right now: the configured
-// list narrowed to the families whose rule is installed and whose forwarding
-// is on, and nothing at all before the first pass has run. A caller announces
+// list narrowed to the families whose chain reads back as written and whose
+// forwarding is on, and nothing at all before the first pass has run. A caller announces
 // from this rather than from the configuration, which is how an exit that
 // cannot translate refuses to advertise rather than advertising and dropping.
 func (t *Translator) Announce() []netip.Prefix {
@@ -773,17 +781,18 @@ func (r *retryTimer) passed() {
 
 // reconcile brings the host to the rules the configuration asks for and
 // republishes what may be advertised as a result. The rules are compared
-// before they are written, so a pass that changes nothing costs one dump and
-// leaves the counters where they are.
+// before they are written, so a pass that changes nothing costs one readback
+// and leaves the counters where they are.
 func (t *Translator) reconcile() error {
 	started := time.Now()
 	desired := t.desired()
 	applied := false
-	held, err := t.be.Rules()
+	read, err := t.be.Rules()
+	held, faulted, remake := flatten(read)
 	if err != nil {
 		err = fmt.Errorf("list rules: %w", err)
-	} else if !sameRules(held, desired) {
-		if applyErr := t.be.Apply(desired); applyErr != nil {
+	} else if faulted || !sameRules(held, desired) {
+		if applyErr := t.be.Apply(desired, remake); applyErr != nil {
 			err = fmt.Errorf("install rules: %w", applyErr)
 		} else {
 			applied = true
@@ -792,9 +801,10 @@ func (t *Translator) reconcile() error {
 			// host's, and a rule the kernel accepted under a spelling other
 			// than the one asked for has to fail the readiness test rather
 			// than pass it on this pass and fail on the next.
-			if held, err = t.be.Rules(); err != nil {
+			if read, err = t.be.Rules(); err != nil {
 				err = fmt.Errorf("list rules: %w", err)
 			}
+			held, _, _ = flatten(read)
 		}
 	}
 	conflicts, conflictErr := t.be.Conflicts()
@@ -804,30 +814,30 @@ func (t *Translator) reconcile() error {
 	// Readiness is per family and is read from the host on every pass rather
 	// than captured at startup, because both halves of it change under a
 	// running node: a table can be flushed by somebody else and a forwarding
-	// sysctl can be turned on after this process started.
-	installed := make(map[string]bool, len(held))
-	for _, rule := range held {
-		installed[rule.Spec] = true
-	}
+	// sysctl can be turned on after this process started. A family's chain
+	// counts only while it and its table read back exactly as written, since
+	// another writer's rule among this tool's, a dormant table or a chain at
+	// another hook, which an apply that failed leaves in place, changes what
+	// the chain does to a packet.
 	v4, v6 := t.rt.Forwarding()
 	forwards := map[uint8]bool{FamilyIPv4: v4, FamilyIPv6: v6}
-	ready := make(map[uint8]bool, 2)
-	for _, family := range t.cfg.families() {
-		ready[family] = forwards[family]
-		for _, rule := range desired {
-			if rule.Family == family && !installed[rule.String()] {
-				ready[family] = false
-			}
+	unwritten := map[uint8]string{}
+	for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
+		switch {
+		case read[family].fault != "":
+			unwritten[family] = read[family].fault
+		case !sameFamilyRules(held, desired, family):
+			unwritten[family] = "its chain does not read back as written"
 		}
 	}
 	announced := make([]netip.Prefix, 0, len(t.cfg.Advertise))
 	for _, entry := range t.cfg.Advertise {
-		if ready[addressFamily(entry.Addr())] {
+		if family := addressFamily(entry.Addr()); unwritten[family] == "" && forwards[family] {
 			announced = append(announced, entry.Prefix)
 		}
 	}
 	if t.rt.Egress != "" {
-		t.setSteeredReady(desired, installed, forwards)
+		t.setSteeredReady(unwritten, forwards)
 	}
 	moved := t.publish(announced)
 
@@ -872,6 +882,28 @@ func sameRules(held []Installed, desired []Rule) bool {
 		}
 	}
 	return true
+}
+
+// flatten is every family's rules in the order desired groups them, whether
+// any family's table or chain reads back with a fault, and the families whose
+// table Apply deletes and makes again
+func flatten(read map[uint8]chainReadback) (held []Installed, faulted bool, remake []uint8) {
+	for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
+		held = append(held, read[family].rules...)
+		faulted = faulted || read[family].fault != ""
+		if read[family].remake {
+			remake = append(remake, family)
+		}
+	}
+	return held, faulted, remake
+}
+
+// sameFamilyRules is sameRules over family's table alone, so a rule another
+// writer put in one family's chain leaves the other family's readback whole
+func sameFamilyRules(held []Installed, desired []Rule, family uint8) bool {
+	held = slices.DeleteFunc(slices.Clone(held), func(rule Installed) bool { return rule.Family != family })
+	desired = slices.DeleteFunc(slices.Clone(desired), func(rule Rule) bool { return rule.Family != family })
+	return sameRules(held, desired)
 }
 
 // desired is the rules this configuration asks for, grouped by family and
@@ -939,7 +971,7 @@ func (t *Translator) publish(prefixes []netip.Prefix) bool {
 		// the advertisement is a customer's exit node going away and the
 		// counters alone would not name it.
 		slog.Warn("egress advertisement changed", "prefixes", len(prefixes),
-			"was", len(*previous), "detail", "a family is advertised only while its rule is installed and the kernel forwards it")
+			"was", len(*previous), "detail", "a family is advertised only while its chain reads back as written and the kernel forwards it")
 	}
 	if t.rt.Announce != nil {
 		t.rt.Announce(slices.Clone(prefixes))
@@ -947,16 +979,16 @@ func (t *Translator) publish(prefixes []netip.Prefix) bool {
 	return true
 }
 
-func (t *Translator) setSteeredReady(desired []Rule, installed map[string]bool, forwards map[uint8]bool) {
+// setSteeredReady judges each family beside an egress device. Every family's
+// chain then holds a rule keyed on the device, so a chain reading back as
+// written, with no entry in unwritten, covers that rule.
+func (t *Translator) setSteeredReady(unwritten map[uint8]string, forwards map[uint8]bool) {
 	judge := func(family uint8, device error) (bool, string) {
-		held := slices.ContainsFunc(desired, func(rule Rule) bool {
-			return rule.Family == family && rule.Direction == Out && rule.Egress != "" && installed[rule.String()]
-		})
 		switch {
 		case errors.Is(device, ErrDeviceGone):
 			return false, device.Error()
-		case !held:
-			return false, "its rule keyed on the egress device is not installed"
+		case unwritten[family] != "":
+			return false, unwritten[family]
 		case !forwards[family]:
 			return false, "the kernel does not forward " + familyName(family)
 		case device != nil:

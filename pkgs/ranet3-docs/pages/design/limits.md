@@ -33,10 +33,10 @@ A node that advertises transit still has to forward it, which takes 2 things:
 
 Advertising transit without them means announced paths blackhole.
 [`cap.egress`](../exit-nodes.md) acts on the same fact rather than warning about
-it. A prefix an exit node offers to carry is advertised only while its
-translation rule is installed and the host forwards its family. It is retracted
-on the first pass that finds either untrue. A pass runs every 30 seconds unless
-`cap.egress.sweep` names another interval.
+it. A prefix an exit node offers to carry is advertised only while its family's
+translation chain reads back exactly as written and the host forwards the
+family. It is retracted on the first pass that finds either untrue. A pass runs
+every 30 seconds unless `cap.egress.sweep` names another interval.
 
 With transit off, a node advertises only the prefixes it announces and never
 relays one it learned. Transit is off unless

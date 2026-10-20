@@ -316,10 +316,10 @@ update = "16s"
 # Carry other nodes' traffic out of the mesh: an exit node advertises the
 # defaults, a subnet router the prefixes behind it, and both end at the same
 # source translation. linux only, refused by name elsewhere. A prefix here is
-# announced only while its rule is installed and the kernel forwards its
-# family, so an exit that cannot translate stops attracting traffic it would
-# drop. Do not name one of these under cap.route as well, which would announce
-# it either way.
+# announced only while its family's chain reads back exactly as the node wrote
+# it and the kernel forwards the family, so an exit that cannot translate stops
+# attracting traffic it would drop. Do not name one of these under cap.route as
+# well, which would announce it either way.
 #
 # A node that translates needs both of the cap.table.rules shapes above, not
 # only the "from" one: conntrack reverses the translation before the reply is

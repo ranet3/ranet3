@@ -219,12 +219,15 @@ creates 1 nftables table named after this tool for each address family it
 translates, the advertised ones and both beside an egress device, `ip ranet3`
 and `ip6 ranet3`, each holding 1 nat postrouting chain. That name is the whole
 of its ownership claim, as `rt_proto` is the reconciler's. It writes only inside
-those tables and reads back every rule of their chains, so a rule another writer
-puts in one, which changes what the chain does to a packet, is removed by the
-next pass. It reads other writers' tables, chains and rules to find its own and
-to report conflicts, and writes, replaces or deletes nothing outside its own
-tables. It replaces the chain's contents in 1 transaction, so no packet is ever
-evaluated against half a ruleset.
+those tables and reads back every rule of their chains, with the tables' flags
+and the chains' type, hook, priority and policy, so a rule another writer puts
+in one or a table it sets dormant, which changes what the chain does to a
+packet, is undone by the next pass. It reads other writers' tables, chains and
+rules to find its own and to report conflicts, and writes, replaces or deletes
+nothing outside its own tables. It replaces the chain's contents in 1
+transaction, so no packet is ever evaluated against half a ruleset, and deletes
+and makes a table again in that transaction where nf_tables will not change it
+in place.
 
 It removes its tables at shutdown and at `ranet3 down`. A table left behind by
 an earlier instance carries the same name and is adopted, then brought to what

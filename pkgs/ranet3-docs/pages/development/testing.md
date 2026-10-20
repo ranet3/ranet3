@@ -23,20 +23,24 @@ unshares a network namespace, refuses to continue unless it is empty, and skips
 unless run as root.
 
 - `internal/kernel` has tests that write to a real routing table.
-- `internal/egress` has 6 that write into a real packet filter. One round trips
+- `internal/egress` has 7 that write into a real packet filter. One round trips
   the translator's rules, another checks that the kernel tells the backend when
   another writer adds a rule to its chain, sets its table dormant or deletes it,
   and that its own writes tell it nothing, and a third checks that another
   writer's transactions overflowing the notification socket reach the backend as
   lost notifications. The fourth checks that another writer's uncommented rule
   at the head of the translator's chain is read back, and that the next pass
-  leaves only the translator's rules. The other 2 round trip the border filter's
-  chain. One puts it back on the pass another writer wakes by deleting the
-  table, adding a rule or setting the table dormant, and leaves no table behind.
-  The other writes it back after another writer adds a rule to it, sets its
-  table dormant, turns its policy to drop, makes the chain again at another
-  priority or as a regular chain, or makes the table again with a flag nf_tables
-  will not clear in place, the last 3 by deleting and making the table again.
+  leaves only the translator's rules. The fifth runs the translator while
+  another writer sets a table dormant or makes a chain again at another priority
+  or as a regular chain, and checks that each holds both families not ready
+  until the pass it wakes writes the table back and reads them ready. The other
+  2 round trip the border filter's chain. One puts it back on the pass another
+  writer wakes by deleting the table, adding a rule or setting the table
+  dormant, and leaves no table behind. The other writes it back after another
+  writer adds a rule to it, sets its table dormant, turns its policy to drop,
+  makes the chain again at another priority or as a regular chain, or makes the
+  table again with a flag nf_tables will not clear in place, the last 3 by
+  deleting and making the table again.
 - `transport` has 2 that send through a veth pair to a peer in a second
   namespace, behind a route with a locked path MTU. They check that the kernel
   refuses what the path cannot carry, segmented or single, and reports the path
@@ -260,7 +264,7 @@ the `kvm` system feature has no `checks.aarch64-linux.<name>` line in the
 exist, and when it finds no `aarch64-linux` check that requires `kvm` at all.
 
 The `netlink` check runs these root tests: the `internal/kernel` tests whose
-names start with `TestNetlink`, the 6 `internal/egress` tests, the `TestTUN`
+names start with `TestNetlink`, the 7 `internal/egress` tests, the `TestTUN`
 tests of `internal/netstack` and `internal/client`, the 3 `transport` sends, and
 the 4 `internal/client` tests above with
 `TestTransitWarnsOnlyWhereTheHostCannotForwardIt` under `unshare -n`, and every

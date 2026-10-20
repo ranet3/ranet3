@@ -628,8 +628,9 @@ needs.
   alike. The `/1` halves would win over every `/0` exit by longest prefix, as
   [exit nodes](exit-nodes.md#what-to-advertise) describes. A subnet router
   advertises the prefixes behind it.
-- A prefix is announced only while its family's translation rule is installed
-  and the host forwards that family.
+- A prefix is announced only while its family's translation chain reads back
+  exactly as written, with no other writer's rule among it, and the host
+  forwards that family.
 - An `advertise` prefix with bits set below its length, written as IPv4-mapped
   IPv6, or written twice is refused at load.
 - At startup and on every reload, an `advertise` prefix that `cap.route` also
