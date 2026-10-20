@@ -638,10 +638,11 @@ func TestStalledNeighborDoesNotHoldOthers(t *testing.T) {
 	}
 }
 
-// Three things reach the route table only through New: dropping a forwarding
-// entry, and the smoothing time constant of RFC 8966 Appendix A.3 and the
-// triggered-update threshold of section 3.7.2, both of which the config
-// decides.
+// Four things reach the route table only through New: writing the forwarding
+// entry of a key it holds no route for, how long an update this node sends
+// stays selectable at a neighbor, and the smoothing time constant of RFC 8966
+// Appendix A.3 and the triggered-update threshold of section 3.7.2, the last
+// three of which the config decides.
 func TestNewSpeakerCarriesItsConfigurationIntoTheRouteTable(t *testing.T) {
 	cfg := Config{Hello: dur(4 * time.Second), Update: dur(16 * time.Second)}
 	mesh := &netstack.Mesh{Routes: netstack.NewRouteTable()}
@@ -649,15 +650,25 @@ func TestNewSpeakerCarriesItsConfigurationIntoTheRouteTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if speaker.routes.forget == nil {
-		t.Error("the route table cannot drop a forwarding entry, so every expired route leaks one")
-	} else {
-		key := routeKey{dest: netip.MustParsePrefix("fd00:a::/64")}
-		mesh.Routes.Set(key.source, key.dest, netstack.Unreachable)
-		speaker.routes.forget(key)
-		if _, verdict := mesh.Routes.Resolve(netip.Addr{}, key.dest.Addr().Next()); verdict != netstack.RouteNone {
-			t.Errorf("forget left the forwarding entry behind, which resolves as %v", verdict)
-		}
+	key := routeKey{dest: netip.MustParsePrefix("fd00:a::/64")}
+	resolves := func() netstack.Verdict {
+		_, verdict := mesh.Routes.Resolve(netip.Addr{}, key.dest.Addr().Next())
+		return verdict
+	}
+	mesh.Routes.Set(key.source, key.dest, netstack.Unreachable)
+	speaker.routes.forget(key, false)
+	if verdict := resolves(); verdict != netstack.RouteNone {
+		t.Errorf("forget left the forwarding entry behind, which resolves as %v", verdict)
+	}
+	speaker.routes.forget(key, true)
+	if verdict := resolves(); verdict != netstack.RouteHeld {
+		t.Errorf("forget of a held key resolves it as %v, want it held", verdict)
+	}
+	// RFC 8966 Appendix B: a neighbor's route expires 3.5 update intervals,
+	// 56 seconds, after this node's update arrives, which takes up to one
+	// Hello interval to get there
+	if want := 60 * time.Second; speaker.routes.updateExpiry != want {
+		t.Errorf("an update stays selectable for %s, want %s", speaker.routes.updateExpiry, want)
 	}
 	// RFC 8966 Appendix A.3 recommends a hysteresis time constant of a small
 	// multiple of the Hello interval, and one link's base cost is the scale at
@@ -893,34 +904,491 @@ func TestEmittersCannotInvertWhatTheyDecided(t *testing.T) {
 	}
 }
 
-// Originating a prefix holds it unreachable, so a stale route to it learned
-// from a neighbor cannot take traffic this node is supposed to deliver
-// locally. Giving it back when the prefix stops being originated is the other
-// half: a reload that drops one from the configuration would otherwise leave
-// it black-holed for the life of the process, with a neighbor announcing a
-// perfectly good path to it the whole time.
-func TestPrefixNoLongerOriginatedCanBeReachedAgain(t *testing.T) {
-	speaker, neighbor, _ := captureSpeaker(t, Config{})
-	makeNeighborReachable(neighbor)
-	covering := netip.MustParsePrefix("fd00::/16")
-	specific := netip.MustParsePrefix("fd00:1::/64")
-	inside := netip.MustParseAddr("fd00:1::1")
-	speaker.handlePacket(neighbor, EncodePacket([]RawTLV{
-		EncodeRouterID([8]byte{1}),
-		EncodeUpdate(Update{AE: AEIPv6, Plen: covering.Bits(), Prefix: covering.Addr().AsSlice(),
-			Interval: 6000, Seqno: 1, Metric: 64}),
+// updateFrom hands speaker an Update for prefix from neighbor n, under the
+// router id router, at a 60 second interval
+func updateFrom(speaker *Speaker, n *neighborState, router byte, prefix netip.Prefix, metric uint16) {
+	speaker.handlePacket(n, EncodePacket([]RawTLV{
+		EncodeRouterID([8]byte{router}),
+		EncodeUpdate(Update{AE: AEIPv6, Plen: prefix.Bits(), Prefix: prefix.Addr().AsSlice(),
+			Interval: 6000, Seqno: 1, Metric: metric}),
 	}))
+}
+
+// dumpAt sends the periodic dump as flushUpdates does, as if at the moment at,
+// so that a test can tell the end of a hold that update sets from one counted
+// from any later moment
+func dumpAt(speaker *Speaker, at time.Time) {
+	speaker.mu.Lock()
+	send := speaker.emitLocked(speaker.updateActions(at))
+	speaker.mu.Unlock()
+	send()
+}
+
+// sentUpdatesFor is every Update for prefix in the packets sent since the
+// capture's last reset
+func sentUpdatesFor(t *testing.T, packets *capture, prefix netip.Prefix) []Update {
+	t.Helper()
+	var tlvs []RawTLV
+	for _, packet := range packets.sent() {
+		decoded, err := DecodePacket(packet[ipv6HeaderLen+udpHeaderLen:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		tlvs = append(tlvs, decoded...)
+	}
+	return updatesFor(t, tlvs, prefix)
+}
+
+// releasedFixture is a speaker whose neighbor announces a covering prefix, and
+// which originated a prefix inside it, told the neighbor of it in a dump at
+// told, ten seconds back, then stopped originating it and sent the neighbor
+// the retraction. The neighbor stays up for longer than any hold the tests
+// reach.
+func releasedFixture(t *testing.T) (speaker *Speaker, neighbor *neighborState, specific netip.Prefix, inside netip.Addr, told time.Time) {
+	t.Helper()
+	speaker, neighbor, _ = captureSpeaker(t, Config{})
+	makeNeighborReachable(neighbor)
+	neighbor.ihuExpiry = time.Now().Add(time.Hour)
+	covering := netip.MustParsePrefix("fd00::/16")
+	specific = netip.MustParsePrefix("fd00:1::/64")
+	inside = netip.MustParseAddr("fd00:1::1")
+	updateFrom(speaker, neighbor, 1, covering, 64)
 	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
 		t.Fatal("the covering route the neighbor announced never reached the forwarding table")
 	}
-
 	speaker.Originate(specific)
-	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict == netstack.RoutePeer {
-		t.Fatalf("an originated prefix still forwards to %q, so the hold is doing nothing", peer.ID)
+	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteLocal {
+		t.Fatalf("an originated prefix resolves as verdict %d, want it this node's own", verdict)
+	}
+	told = time.Now().Add(-10 * time.Second)
+	dumpAt(speaker, told)
+	speaker.SetOriginated(nil)
+	speaker.flushUpdates()
+	return speaker, neighbor, specific, inside, told
+}
+
+// A prefix this node stops originating is retracted, and RFC 8966 section
+// 3.5.4 has "packets destined to an address within P MUST NOT be forwarded by
+// following a route for a shorter prefix" while it is held: the covering route
+// leads back to the neighbor, which may still forward to this node. The hold
+// "is removed as soon as a finite-metric update for prefix P is received and
+// the resulting route selected", and the neighbor's route is reached. The
+// route view lists the held prefix until then. When that route goes too, the
+// prefix is held again, since the update this node sent for it before has not
+// yet expired, and the selection ended the hold and not that update.
+func TestPrefixNoLongerOriginatedIsHeldUntilANeighborsRouteIsSelected(t *testing.T) {
+	speaker, neighbor, specific, inside, told := releasedFixture(t)
+	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
+		t.Fatalf("a packet for the prefix no longer originated resolves as verdict %d through %s, want it held rather than sent by the covering route", verdict, peerName(peer))
+	}
+	key := routeKey{dest: specific}
+	listed := false
+	for _, route := range speaker.RouteDump() {
+		if route.Destination == specific {
+			listed = route.Via == "" && route.Metric == MetricInfinity && !route.Originated
+		}
+	}
+	if !listed || speaker.Stats().Prefixes != 2 {
+		t.Errorf("the route view lists the held prefix %v, and counts %d prefixes, want it listed as held among 2", listed, speaker.Stats().Prefixes)
+	}
+
+	updateFrom(speaker, neighbor, 1, specific, 64)
+	if value, ok := entryAt(speaker.mesh, key); !ok || value != neighbor.peer {
+		t.Fatalf("%s holds %s once the neighbor's route for it is selected, want the neighbor", specific, peerName(value))
+	}
+	speaker.mu.Lock()
+	_, held := speaker.routes.held[key]
+	speaker.mu.Unlock()
+	if held {
+		t.Error("the hold outlived the selected route")
+	}
+	speaker.removePeer(neighbor)
+	speaker.mu.Lock()
+	_, held = speaker.routes.held[key]
+	end := speaker.routes.advertisedUntil[key]
+	hold := deadTimeout(speaker.update) + speaker.hello
+	speaker.mu.Unlock()
+	if value, ok := entryAt(speaker.mesh, key); !ok || value != netstack.Unreachable || !held || !end.Equal(told.Add(hold)) {
+		t.Errorf("%s holds %s once its selected route went with the neighbor, until %v past the update this node sent, want it held until %v past", specific, peerName(value), end.Sub(told), hold)
+	}
+}
+
+// With no route for the prefix forthcoming, the hold ends once the last
+// update this node sent for it has expired at a neighbor: "waiting until the
+// route's expiry timer has expired", RFC 8966 section 3.5.4, which is the route
+// expiry a neighbor derives from the interval that update carried, counted
+// from when it was sent rather than from the release, and one Hello interval
+// more for its transit. The run loop wakes for it, and once it ends nothing of
+// the prefix is left: the covering route is reached again, the route view and
+// the count no longer hold it, and the run loop sleeps until whatever comes
+// next.
+func TestPrefixNoLongerOriginatedIsHeldUntilItsAdvertisementsExpire(t *testing.T) {
+	speaker, _, specific, inside, told := releasedFixture(t)
+	key := routeKey{dest: specific}
+	speaker.mu.Lock()
+	_, held := speaker.routes.held[key]
+	end := speaker.routes.advertisedUntil[key]
+	deadline := speaker.deadlineLocked()
+	hold := deadTimeout(speaker.update) + speaker.hello
+	speaker.mu.Unlock()
+	if !held || !end.Equal(told.Add(hold)) {
+		t.Fatalf("the hold ends %v past the update this node sent, want the route expiry and its margin, %v", end.Sub(told), hold)
+	}
+	if !deadline.Equal(end) {
+		t.Errorf("the run loop next wakes at %v, where the hold ends at %v", deadline, end)
+	}
+
+	speaker.mu.Lock()
+	speaker.sweepExpiredLocked(end.Add(-time.Nanosecond))
+	deadline = speaker.deadlineLocked()
+	speaker.mu.Unlock()
+	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
+		t.Fatalf("a packet for the prefix resolves as verdict %d before the hold ends, want it held", verdict)
+	}
+	if !deadline.Equal(end) {
+		t.Errorf("after a sweep the run loop next wakes at %v, where the hold ends at %v", deadline, end)
+	}
+	speaker.mu.Lock()
+	speaker.sweepExpiredLocked(end)
+	_, held = speaker.routes.held[key]
+	_, recorded := speaker.routes.advertisedUntil[key]
+	deadline = speaker.deadlineLocked()
+	speaker.mu.Unlock()
+	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
+		t.Errorf("a packet for the prefix resolves as verdict %d through %s once the hold ended, want the covering route", verdict, peerName(peer))
+	}
+	if held || recorded {
+		t.Errorf("the route table still records the hold %v and the update's expiry %v once it ended", held, recorded)
+	}
+	if value, ok := entryAt(speaker.mesh, key); ok {
+		t.Errorf("%s holds %s once its hold ended, want nothing", specific, peerName(value))
+	}
+	for _, route := range speaker.RouteDump() {
+		if route.Destination == specific {
+			t.Errorf("the route view still lists %s once its hold ended", specific)
+		}
+	}
+	if got := speaker.Stats().Prefixes; got != 1 {
+		t.Errorf("the speaker counts %d prefixes once the hold ended, want the covering one alone", got)
+	}
+	if !deadline.After(end) {
+		t.Errorf("the run loop next wakes at %v, at or before the end %v it has already swept, so it spins", deadline, end)
+	}
+}
+
+// The end of a hold takes out the hold alone. A prefix this node originates
+// again keeps its own entry, and one the route table holds a route for that
+// it cannot select stays held until the route table flushes it. While both
+// are held, the route view and the count name each once.
+func TestHoldEndLeavesTheEntryOfAnotherOwner(t *testing.T) {
+	speaker, neighbor, specific, _, _ := releasedFixture(t)
+	other := netip.MustParsePrefix("fd00:2::/64")
+	speaker.Originate(specific)
+	speaker.Originate(other)
+	speaker.flushUpdates()
+	speaker.SetOriginated([]OriginatedRoute{{Destination: specific}})
+	speaker.flushUpdates()
+	speaker.mu.Lock()
+	neighbor.haveReportedCost = false
+	speaker.mu.Unlock()
+	updateFrom(speaker, neighbor, 1, other, 64)
+	if got := speaker.Stats().Prefixes; got != 3 {
+		t.Errorf("the speaker counts %d prefixes, want the covering one and the 2 held ones once each", got)
+	}
+	listed := make(map[netip.Prefix]int)
+	for _, route := range speaker.RouteDump() {
+		listed[route.Destination]++
+	}
+	if listed[specific] != 1 || listed[other] != 1 {
+		t.Errorf("the route view lists %s %d times and %s %d times, want each once", specific, listed[specific], other, listed[other])
+	}
+	speaker.mu.Lock()
+	_, learned := speaker.routes.entries[routeKey{dest: other}]
+	end := speaker.routes.advertisedUntil[routeKey{dest: specific}]
+	if later := speaker.routes.advertisedUntil[routeKey{dest: other}]; later.After(end) {
+		end = later
+	}
+	speaker.sweepExpiredLocked(end)
+	speaker.mu.Unlock()
+	if !learned {
+		t.Fatal("the neighbor's route for the released prefix never entered the route table, so this proves nothing")
+	}
+	for _, test := range []struct {
+		prefix netip.Prefix
+		want   *netstack.Peer
+	}{
+		{specific, netstack.Local},
+		{other, netstack.Unreachable},
+	} {
+		if value, ok := entryAt(speaker.mesh, routeKey{dest: test.prefix}); !ok || value != test.want {
+			t.Errorf("%s holds %s once its hold ended, want %s", test.prefix, peerName(value), test.want.ID)
+		}
+	}
+}
+
+// A neighbor whose link is not yet usable offers a route for a prefix this
+// node holds, so the route table keeps an entry it cannot select, and the
+// entry goes again: its route expires twice over at its own short interval,
+// or the neighbor's session closes. The hold outlives the entry, and the
+// route view lists the prefix once while both are there.
+func TestHeldPrefixStaysHeldWhenAnUnselectableRouteForItGoes(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		// interval is the offered update's, in centiseconds
+		interval uint16
+		lose     func(speaker *Speaker, handle *PeerHandle, offered time.Time)
+	}{
+		{"expired twice", 100, func(speaker *Speaker, _ *PeerHandle, offered time.Time) {
+			for _, at := range []time.Duration{4 * time.Second, 8 * time.Second} {
+				speaker.mu.Lock()
+				speaker.sweepExpiredLocked(offered.Add(at))
+				speaker.mu.Unlock()
+			}
+		}},
+		{"its neighbor gone", 6000, func(_ *Speaker, handle *PeerHandle, _ time.Time) { handle.Close() }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			speaker, _, specific, inside, _ := releasedFixture(t)
+			key := routeKey{dest: specific}
+			handle := speaker.AddPeer(newHeldPeer(t, "other", nil).Peer, identity.Identity{})
+			speaker.mu.Lock()
+			other := speaker.neighbors["other"]
+			speaker.mu.Unlock()
+			offered := time.Now()
+			speaker.handlePacket(other, EncodePacket([]RawTLV{
+				EncodeRouterID([8]byte{2}),
+				EncodeUpdate(Update{AE: AEIPv6, Plen: specific.Bits(), Prefix: specific.Addr().AsSlice(),
+					Interval: test.interval, Seqno: 1, Metric: 64}),
+			}))
+			speaker.mu.Lock()
+			_, learned := speaker.routes.entries[key]
+			speaker.mu.Unlock()
+			if !learned {
+				t.Fatal("the other neighbor's route never entered the route table, so this proves nothing")
+			}
+			if got := speaker.Stats().Prefixes; got != 2 {
+				t.Errorf("the speaker counts %d prefixes while the held one has an entry, want each of the 2 once", got)
+			}
+
+			test.lose(speaker, handle, offered)
+			speaker.mu.Lock()
+			_, learned = speaker.routes.entries[key]
+			speaker.mu.Unlock()
+			if learned {
+				t.Fatal("the route table still holds the other neighbor's route, so this proves nothing")
+			}
+			if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
+				t.Errorf("a packet for the prefix resolves as verdict %d through %s inside its hold, want it held", verdict, peerName(peer))
+			}
+			listed := 0
+			for _, route := range speaker.RouteDump() {
+				if route.Destination == specific && route.Via == "" && route.Metric == MetricInfinity {
+					listed++
+				}
+			}
+			if listed != 1 {
+				t.Errorf("the route view lists the held prefix %d times as unreachable, want once", listed)
+			}
+		})
+	}
+}
+
+// A prefix this node stops originating before it told any neighbor of it
+// leaves nothing to hold. No neighbor can have selected this node for it, so
+// the covering route serves it at once.
+func TestPrefixNoNeighborWasToldOfIsNotHeld(t *testing.T) {
+	speaker, neighbor, _ := captureSpeaker(t, Config{})
+	makeNeighborReachable(neighbor)
+	covering, specific := netip.MustParsePrefix("fd00::/16"), netip.MustParsePrefix("fd00:1::/64")
+	inside := netip.MustParseAddr("fd00:1::1")
+	updateFrom(speaker, neighbor, 1, covering, 64)
+	speaker.Originate(specific)
+	speaker.SetOriginated(nil)
+	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer || peer != neighbor.peer {
+		t.Errorf("a packet for a prefix no neighbor was told of resolves as verdict %d through %s once it is no longer originated, want the covering route", verdict, peerName(peer))
+	}
+}
+
+// A prefix whose last update has already expired at its neighbors when it is
+// no longer originated leaves nothing to hold either, though no sweep has yet
+// dropped the record of that update: no neighbor can still select this node
+// for it, so the covering route serves it at once.
+func TestPrefixWhoseLastUpdateHasExpiredIsNotHeld(t *testing.T) {
+	speaker, neighbor, _ := captureSpeaker(t, Config{})
+	makeNeighborReachable(neighbor)
+	neighbor.ihuExpiry = time.Now().Add(time.Hour)
+	covering, specific := netip.MustParsePrefix("fd00::/16"), netip.MustParsePrefix("fd00:1::/64")
+	inside := netip.MustParseAddr("fd00:1::1")
+	updateFrom(speaker, neighbor, 1, covering, 64)
+	speaker.Originate(specific)
+	speaker.mu.Lock()
+	hold := deadTimeout(speaker.update) + speaker.hello
+	speaker.mu.Unlock()
+	dumpAt(speaker, time.Now().Add(-hold-time.Second))
+	speaker.mu.Lock()
+	_, recorded := speaker.routes.advertisedUntil[routeKey{dest: specific}]
+	speaker.mu.Unlock()
+	if !recorded {
+		t.Fatal("the route table never recorded the update this node sent, so this proves nothing")
 	}
 	speaker.SetOriginated(nil)
+	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer || peer != neighbor.peer {
+		t.Errorf("a packet for a prefix whose last update has expired resolves as verdict %d through %s once it is no longer originated, want the covering route", verdict, peerName(peer))
+	}
+}
+
+// relayedFixture is a speaker whose neighbor peer announces a covering prefix
+// and whose neighbor other announces a prefix inside it, which this node
+// selects and, where relayed is set, tells peer of in a dump at relayedAt, ten
+// seconds back. Peer's packets are captured and reach nothing, and peer stays
+// up for longer than any hold the tests reach.
+func relayedFixture(t *testing.T, relayed bool) (speaker *Speaker, other *neighborState, handle *PeerHandle, specific netip.Prefix, inside netip.Addr, relayedAt time.Time, packets *capture) {
+	t.Helper()
+	speaker, neighbor, packets := captureSpeaker(t, Config{})
+	makeNeighborReachable(neighbor)
+	neighbor.ihuExpiry = time.Now().Add(time.Hour)
+	specific, inside = netip.MustParsePrefix("fd00:7::/64"), netip.MustParseAddr("fd00:7::1")
+	updateFrom(speaker, neighbor, 1, netip.MustParsePrefix("fd00::/16"), 64)
+	handle = speaker.AddPeer(newHeldPeer(t, "other", nil).Peer, identity.Identity{})
+	speaker.mu.Lock()
+	other = speaker.neighbors["other"]
+	makeNeighborReachable(other)
+	speaker.mu.Unlock()
+	updateFrom(speaker, other, 2, specific, 64)
+	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer || peer != other.peer {
+		t.Fatalf("%s resolves as verdict %d through %s, want other's route by the longer match", inside, verdict, peerName(peer))
+	}
+	if relayed {
+		relayedAt = time.Now().Add(-10 * time.Second)
+		dumpAt(speaker, relayedAt)
+	}
+	return speaker, other, handle, specific, inside, relayedAt, packets
+}
+
+// heldUntil checks that the prefix through inside is held, and only until
+// end: held a nanosecond before it, and served by the covering route at it
+func heldUntil(t *testing.T, speaker *Speaker, key routeKey, inside netip.Addr, end time.Time) {
+	t.Helper()
+	speaker.mu.Lock()
+	_, held := speaker.routes.held[key]
+	recorded := speaker.routes.advertisedUntil[key]
+	speaker.mu.Unlock()
+	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld || !held {
+		t.Fatalf("%s resolves as verdict %d through %s, held %v, want it held", inside, verdict, peerName(peer), held)
+	}
+	if !recorded.Equal(end) {
+		t.Errorf("the hold ends %v after the end wanted", recorded.Sub(end))
+	}
+	for _, at := range []time.Time{end.Add(-time.Nanosecond), end} {
+		speaker.mu.Lock()
+		speaker.sweepExpiredLocked(at)
+		speaker.mu.Unlock()
+		want := netstack.RouteHeld
+		if at.Equal(end) {
+			want = netstack.RoutePeer
+		}
+		if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != want {
+			t.Errorf("%s resolves as verdict %d through %s %v from the end of its hold, want %d", inside, verdict, peerName(peer), at.Sub(end), want)
+		}
+	}
+}
+
+// A prefix whose last route goes with the session of the neighbor that offered
+// it is retracted, RFC 8966 section 3.5.4's "whether due to the expiry timer
+// or for other reasons", and a neighbor this node told the prefix is reachable
+// may still forward to this node until that update expires there. The prefix
+// is held until then, rather than left to a covering route that leads back to
+// that neighbor, whether its route was selected or already retracted, and
+// whether the session closed or another replaced it.
+func TestPrefixWhoseLastRouteGoesWithItsNeighborIsHeld(t *testing.T) {
+	for _, retracted := range []bool{false, true} {
+		for _, replaced := range []bool{false, true} {
+			t.Run(fmt.Sprintf("retracted first %v, session replaced %v", retracted, replaced), func(t *testing.T) {
+				speaker, other, handle, specific, inside, relayedAt, _ := relayedFixture(t, true)
+				key := routeKey{dest: specific}
+				if retracted {
+					updateFrom(speaker, other, 2, specific, MetricInfinity)
+					if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
+						t.Fatalf("%s resolves as verdict %d once retracted, want it held", inside, verdict)
+					}
+				}
+				if replaced {
+					speaker.AddPeer(newHeldPeer(t, other.peer.ID, nil).Peer, identity.Identity{})
+				} else {
+					handle.Close()
+				}
+				speaker.mu.Lock()
+				_, learned := speaker.routes.entries[key]
+				hold := deadTimeout(speaker.update) + speaker.hello
+				speaker.mu.Unlock()
+				if learned {
+					t.Fatal("the route table still holds the route of the neighbor that went, so this proves nothing")
+				}
+				heldUntil(t, speaker, key, inside, relayedAt.Add(hold))
+			})
+		}
+	}
+}
+
+// A retraction is sent once and never acknowledged, so a neighbor this node
+// told of a prefix may have missed it and still route the prefix here until
+// the last finite update this node sent expires there. When the route's
+// neighbor then goes, the prefix is held until that expiry, whether the
+// retraction arrived or not, which this node cannot know.
+func TestPrefixWhoseRetractionMayHaveBeenLostIsHeldUntilItsLastUpdateExpires(t *testing.T) {
+	speaker, other, handle, specific, inside, relayedAt, packets := relayedFixture(t, true)
+	updateFrom(speaker, other, 2, specific, MetricInfinity)
+	packets.reset()
+	speaker.flushUpdates()
+	if updates := sentUpdatesFor(t, packets, specific); len(updates) != 1 || updates[0].Metric != MetricInfinity {
+		t.Fatalf("this node sent %v for the retracted prefix, want one retraction, which its neighbor then never reads", updates)
+	}
+	handle.Close()
+	speaker.mu.Lock()
+	hold := deadTimeout(speaker.update) + speaker.hello
+	speaker.mu.Unlock()
+	heldUntil(t, speaker, routeKey{dest: specific}, inside, relayedAt.Add(hold))
+}
+
+// The end of a hold is the latest time any finite update this node sent for
+// the prefix expires at a neighbor. A neighbor that receives an update sent
+// under a shorter interval counts from it instead, but one that missed it
+// still counts toward the expiry of the update before, under the longer
+// interval. That update's expiry falls after the later one's, so the later
+// one moves nothing.
+func TestHoldKeepsTheIntervalOfTheLastUpdateSentUnderALongerOne(t *testing.T) {
+	speaker, neighbor, packets := captureSpeaker(t, Config{Hello: dur(4 * time.Second), Update: dur(16 * time.Second)})
+	makeNeighborReachable(neighbor)
+	neighbor.ihuExpiry = time.Now().Add(time.Hour)
+	specific, inside := netip.MustParsePrefix("fd00:1::/64"), netip.MustParseAddr("fd00:1::1")
+	updateFrom(speaker, neighbor, 1, netip.MustParsePrefix("fd00::/16"), 64)
+	speaker.Originate(specific)
+	told := time.Now().Add(-10 * time.Second)
+	dumpAt(speaker, told)
+	speaker.mu.Lock()
+	long := deadTimeout(speaker.update) + speaker.hello
+	speaker.mu.Unlock()
+	packets.reset()
+	speaker.SetConfig(Config{Hello: dur(2 * time.Second), Update: dur(8 * time.Second)})
+	if updates := sentUpdatesFor(t, packets, specific); len(updates) != 1 || updates[0].Metric == MetricInfinity || updates[0].Interval != 800 {
+		t.Fatalf("the reload sent %v for the prefix, want one finite update under the shorter interval, so this proves nothing", updates)
+	}
+	speaker.SetOriginated(nil)
+	heldUntil(t, speaker, routeKey{dest: specific}, inside, told.Add(long))
+}
+
+// The same session going leaves nothing to hold when no update this node sent
+// ever named the prefix, since no neighbor can have selected this node for it.
+// The route's own infinite entry goes with the routes of the neighbor that
+// offered it, and the covering route serves the prefix at once.
+func TestPrefixNoNeighborIsToldOfLeavesNothingWhenItsNeighborGoes(t *testing.T) {
+	speaker, _, handle, specific, inside, _, _ := relayedFixture(t, false)
+	handle.Close()
+	if value, ok := entryAt(speaker.mesh, routeKey{dest: specific}); ok {
+		t.Errorf("%s holds %s once the neighbor that offered it went, want nothing", specific, peerName(value))
+	}
 	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
-		t.Fatal("the prefix stayed held after this node stopped originating it, so it is black-holed for good")
+		t.Errorf("%s resolves as verdict %d, want the covering route", inside, verdict)
 	}
 }
 
@@ -986,13 +1454,15 @@ func TestRouteTableTakesHysteresisFromConfig(t *testing.T) {
 	}
 }
 
-// A prefix flushed from the route table has to take its unreachable hold with
-// it. RFC 8966 section 3.5.4 asks for the hold while a retracted prefix is
-// still remembered, and it deliberately stops a covering route from
-// serving the destination. Once the entry is gone there is nothing left to
-// hold, and nothing else ever removes it: no later selection will name a
-// prefix the table no longer has, so the destination stays black-holed for the
-// life of the process with a perfectly good covering route in place.
+// A prefix flushed from the route table that no update from this node named
+// has to take its unreachable hold with it. RFC 8966 section 3.5.4 asks for
+// the hold while a retracted prefix is still remembered, or while a neighbor
+// may still route it through this node, and it deliberately stops a covering
+// route from serving the destination. Once the entry is gone and no update
+// named the prefix there is nothing left to hold, and nothing else ever
+// removes it: no later selection will name a prefix the table no longer has,
+// so the destination stays black-holed for the life of the process with a
+// perfectly good covering route in place.
 func TestFlushedPrefixGivesUpItsHold(t *testing.T) {
 	speaker, neighbor, _ := captureSpeaker(t, Config{})
 	makeNeighborReachable(neighbor)
@@ -1024,15 +1494,79 @@ func TestFlushedPrefixGivesUpItsHold(t *testing.T) {
 	// is being tested is whether the hold left with the prefix, not whether
 	// the covering route survived.
 	speaker.mu.Lock()
+	_, named := speaker.routes.advertisedUntil[routeKey{dest: specific}]
 	speaker.routes.sweepExpired(time.Now().Add(time.Hour))
 	_, held := speaker.routes.entries[routeKey{dest: specific}]
 	speaker.mu.Unlock()
+	if named {
+		t.Fatal("an update from this node named the prefix, so this is not the case it tests")
+	}
 	if held {
 		t.Fatal("the retracted route was not flushed, so this proves nothing")
 	}
 	announce(covering, 64)
 	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
 		t.Errorf("%s is still held after its prefix was flushed, so the covering route can never serve it", inside)
+	}
+}
+
+// A learned route this node relayed is retracted or expires, is held at
+// infinity for its own hold time, and is then flushed. The flush is a loss of
+// the prefix's last route like any other, and the neighbor this node relayed
+// it to may still route it here until that update expires there, so the
+// prefix stays held until then. The neighbor that offered the route runs a 1
+// second interval, so the route's own hold ends long before.
+func TestFlushedPrefixThisNodeRelayedIsHeldUntilItsUpdatesExpire(t *testing.T) {
+	for _, retracted := range []bool{true, false} {
+		t.Run(fmt.Sprintf("retracted %v", retracted), func(t *testing.T) {
+			speaker, neighbor, _ := captureSpeaker(t, Config{})
+			makeNeighborReachable(neighbor)
+			neighbor.ihuExpiry = time.Now().Add(time.Hour)
+			specific, inside := netip.MustParsePrefix("fd00:7::/64"), netip.MustParseAddr("fd00:7::1")
+			key := routeKey{dest: specific}
+			updateFrom(speaker, neighbor, 1, netip.MustParsePrefix("fd00::/16"), 64)
+			speaker.AddPeer(newHeldPeer(t, "other", nil).Peer, identity.Identity{})
+			speaker.mu.Lock()
+			other := speaker.neighbors["other"]
+			makeNeighborReachable(other)
+			other.ihuExpiry = time.Now().Add(time.Hour)
+			speaker.mu.Unlock()
+			offer := func(metric uint16) {
+				speaker.handlePacket(other, EncodePacket([]RawTLV{
+					EncodeRouterID([8]byte{2}),
+					EncodeUpdate(Update{AE: AEIPv6, Plen: specific.Bits(), Prefix: specific.Addr().AsSlice(),
+						Interval: 100, Seqno: 1, Metric: metric}),
+				}))
+			}
+			offer(64)
+			if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer || peer != other.peer {
+				t.Fatalf("%s resolves as verdict %d through %s, want other's route by the longer match", inside, verdict, peerName(peer))
+			}
+			relayedAt := time.Now()
+			dumpAt(speaker, relayedAt)
+
+			// a route at a 1 second interval is held at infinity for 3.5
+			// seconds once retracted or expired, and the next sweep flushes it
+			start := time.Now()
+			flushAt := start.Add(3600 * time.Millisecond)
+			if retracted {
+				offer(MetricInfinity)
+			} else {
+				speaker.mu.Lock()
+				speaker.sweepExpiredLocked(flushAt)
+				speaker.mu.Unlock()
+				flushAt = flushAt.Add(3600 * time.Millisecond)
+			}
+			speaker.mu.Lock()
+			speaker.sweepExpiredLocked(flushAt)
+			_, learned := speaker.routes.entries[key]
+			hold := deadTimeout(speaker.update) + speaker.hello
+			speaker.mu.Unlock()
+			if learned {
+				t.Fatal("other's route was not flushed, so this proves nothing")
+			}
+			heldUntil(t, speaker, key, inside, relayedAt.Add(hold))
+		})
 	}
 }
 

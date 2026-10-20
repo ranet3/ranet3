@@ -114,33 +114,49 @@ type routeTable struct {
 	// its own routes rather than to what it advertises.
 	cost    CostParams
 	install func(routeKey, routeSelection)
-	// forget drops the forwarding entry entirely, ending the
-	// unreachable hold install leaves behind for a retracted prefix.
-	forget func(routeKey)
+	// forget writes the forwarding entry of a key the table holds no route
+	// for, unreachable while held is true and none otherwise
+	forget func(key routeKey, held bool)
+	// updateExpiry is how long an update this node sends now stays selectable
+	// at a neighbor: RFC 8966 Appendix B's route expiry of the interval the
+	// update carries, plus one Hello interval for its transit
+	updateExpiry time.Duration
+	// advertisedUntil is, for each key, the latest time any finite update this
+	// node sent for it expires at a neighbor. A retraction moves nothing, since
+	// it is sent once and never acknowledged, and a neighbor that missed it
+	// may route the key through this node until then.
+	advertisedUntil map[routeKey]time.Time
+	// held is every key that lost its last route before its advertisedUntil,
+	// the end of the hold of RFC 8966 section 3.5.4, which no route table entry
+	// at infinity is left to carry. A key can be held while this node holds it
+	// as its own again, since its own entry ends nothing a neighbor was told.
+	held map[routeKey]struct{}
 	// warnedOverfull keeps a refused flood from becoming a log flood, and
 	// warnedOrigins does the same for the source table.
 	warnedOverfull bool
 	warnedOrigins  bool
-	// nextExpiryAt is the earliest route.expiresAt in the table, the deadline
-	// the run loop sleeps on, kept rather than recomputed: the walk that
-	// derived it was one route read per route in the table, 1.8 ms at
-	// maxRouteKeys prefixes over eight neighbors, paid on every pass. Only
-	// ever moved earlier between sweeps, so dropping a route leaves it early
-	// rather than late: one pass that finds nothing due, where late would miss
-	// an expiry. sweepExpired recomputes it exactly.
+	// nextExpiryAt is the earliest route.expiresAt or end of a hold in the
+	// table, the deadline the run loop sleeps on, kept rather than recomputed
+	// by a walk of the whole table on every pass. Only ever moved earlier
+	// between sweeps, so dropping a route or a hold leaves it early rather
+	// than late: one pass that finds nothing due, where late would miss an
+	// expiry. sweepExpired recomputes it exactly.
 	nextExpiryAt time.Time
 }
 
 func newRouteTable(install func(routeKey, routeSelection)) *routeTable {
 	return &routeTable{
-		entries:       make(map[routeKey]*keyEntry),
-		sources:       make(map[sourceKey]*sourceEntry),
-		retracted:     make(map[*neighborState]bool),
-		originsPerKey: make(map[routeKey]int),
-		originsBy:     make(map[originShare]int),
-		sourcesByPeer: make(map[string]int),
-		dirty:         make(map[routeKey]struct{}),
-		install:       install,
+		entries:         make(map[routeKey]*keyEntry),
+		sources:         make(map[sourceKey]*sourceEntry),
+		retracted:       make(map[*neighborState]bool),
+		originsPerKey:   make(map[routeKey]int),
+		originsBy:       make(map[originShare]int),
+		sourcesByPeer:   make(map[string]int),
+		dirty:           make(map[routeKey]struct{}),
+		advertisedUntil: make(map[routeKey]time.Time),
+		held:            make(map[routeKey]struct{}),
+		install:         install,
+		forget:          func(routeKey, bool) {},
 	}
 }
 
@@ -279,6 +295,12 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 	// a neighbor whose measured RTT moved, which under RFC 9616 costing is
 	// most IHUs.
 	if selected.neighbor != previous.neighbor {
+		if selected.neighbor != nil {
+			// RFC 8966 section 3.5.4: the hold "is removed as soon as a
+			// finite-metric update for prefix P is received and the resulting
+			// route selected"
+			delete(rt.held, key)
+		}
 		rt.install(key, selected)
 	}
 	if rt.significant(previous, selected) {
@@ -300,10 +322,45 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 	if len(entry.routes) == 0 {
 		delete(rt.entries, key)
 		rt.dirty[key] = struct{}{} // a flushed prefix may still need retracting
-		// The entry is gone, so the section 3.5.4 hold goes with it and a
-		// covering route may serve this destination again.
-		rt.flush(key)
+		rt.lose(key, now)
 	}
+}
+
+// lose settles the forwarding entry of a key that has just lost its last
+// route, and reports whether it is held. RFC 8966 section 3.5.4 maintains a
+// retracted prefix "at least until it is guaranteed that no neighbour has
+// selected the current node as next hop for prefix P", and a neighbor may
+// have, until every finite update this node sent for it has expired there.
+// That holds for every way a key loses its last route, a flush at the route's
+// own expiry among them. A key whose updates have all expired, or that no
+// update ever named, loses its entry, so a covering route may serve it again.
+func (rt *routeTable) lose(key routeKey, now time.Time) bool {
+	if end := rt.advertisedUntil[key]; now.Before(end) {
+		rt.held[key] = struct{}{}
+		rt.noteExpiry(end)
+	}
+	return rt.flush(key)
+}
+
+// noteAdvertised records a finite update for key built at now. The time only
+// ever moves later. A neighbor that receives a later update resets its expiry
+// timer to that update's interval (RFC 8966 section 3.5.3), but an update is
+// sent once and never acknowledged, so a neighbor that missed a later one
+// under a shorter interval still counts toward the expiry of the one before,
+// which can fall after the later one's.
+func (rt *routeTable) noteAdvertised(key routeKey, now time.Time) {
+	if until := now.Add(rt.updateExpiry); until.After(rt.advertisedUntil[key]) {
+		rt.advertisedUntil[key] = until
+	}
+}
+
+// flush writes the forwarding entry of a key the table holds no route for,
+// unreachable while it is held, and reports whether it is. The sweep is the
+// one place a hold ends by time.
+func (rt *routeTable) flush(key routeKey) bool {
+	_, held := rt.held[key]
+	rt.forget(key, held)
+	return held
 }
 
 // significant decides whether a selection change earns a triggered update,
@@ -451,6 +508,23 @@ func (rt *routeTable) sweepExpired(now time.Time) {
 	for key, entry := range rt.entries {
 		rt.selectRoute(key, entry, now)
 	}
+	for key := range rt.held {
+		if end := rt.advertisedUntil[key]; now.Before(end) {
+			rt.noteExpiry(end)
+			continue
+		}
+		delete(rt.held, key)
+		// a key with routes keeps the entry their selection wrote, until the
+		// last of them goes
+		if rt.entries[key] == nil {
+			rt.flush(key)
+		}
+	}
+	for key, end := range rt.advertisedUntil {
+		if !now.Before(end) {
+			delete(rt.advertisedUntil, key)
+		}
+	}
 	rt.sweepSources(now)
 }
 
@@ -510,10 +584,4 @@ func (rt *routeTable) tooManyOrigins(key routeKey, routerID [8]byte, why string,
 	rt.warnedOrigins = true
 	slog.Warn("babel is refusing a new origin: "+why,
 		"limit", limit, "prefix", key.dest, "refused", fmt.Sprintf("%x", routerID))
-}
-
-func (rt *routeTable) flush(key routeKey) {
-	if rt.forget != nil {
-		rt.forget(key)
-	}
 }

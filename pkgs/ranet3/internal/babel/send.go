@@ -487,8 +487,11 @@ func (s *Speaker) advertiseTo(n *neighborState, key routeKey, force bool, now ti
 		// to, and is not rolled back: having promised a distance and then not
 		// sent it is safe, while sending one we did not record is not. The
 		// neighbor it is charged to is the one whose route this node selected,
-		// or nobody for a prefix this node originates.
+		// or nobody for a prefix this node originates. The update's expiry at
+		// the neighbor is recorded the same way, for the hold of a key that
+		// loses its last route before then.
 		s.routes.observe(key, adv, s.selectedPeer(key), now)
+		s.routes.noteAdvertised(key, now)
 		n.advertised[key] = struct{}{}
 	}
 	return updateTLVs(key, adv, s.update), spent

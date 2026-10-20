@@ -63,9 +63,8 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 	// babel packet here is sent from an IPv6 link-local address, which is the
 	// next hop an IPv6 prefix falls back to.
 	var haveIPv4NextHop bool
-	// One MTU-sized packet holds about ninety Update TLVs, so a peer that
-	// sends a packet of malformed ones costs one log line rather than ninety.
-	// RFC 8966 section 4.6.9 asks for them to be "silently ignored".
+	// A packet costs two log lines at most, however many malformed Updates a
+	// peer packs into it.
 	badUpdates := 0
 	linkChanged, cameUp := false, false
 	for _, t := range tlvs {
@@ -235,8 +234,12 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 				continue
 			}
 			key := routeKey{source: u.SourcePrefix, dest: dest}
-			if _, local := s.originate[key]; local {
-				continue // a directly attached prefix always wins, Appendix E
+			// RFC 8966 Appendix E has a stub that "always prefers the direct
+			// route to a directly attached prefix to a route learnt over the
+			// Babel protocol, even when the prefixes are the same", and this
+			// node treats every key it holds as its own the same way.
+			if s.ownsLocked(key) {
+				continue
 			}
 			adv := advertisement{routerID: routerID, seqno: u.Seqno, metric: u.Metric}
 			if !haveRouterID {
