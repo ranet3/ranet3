@@ -28,9 +28,8 @@ func TestLosingLocalIKERekeyAcceptsDeleteResponse(t *testing.T) {
 		copy(n, bytes.Repeat([]byte{1}, len(n)))
 		return nil
 	}}
-	done := make(chan error, 1)
-	go func() { done <- s.RekeyIKE() }()
-	request := <-s.requests
+	done := rekeying(s)
+	request := requested(t, s, done, CREATE_CHILD_SA)
 	dh, err := GenerateDH(DH_CURVE25519)
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +53,7 @@ func TestLosingLocalIKERekeyAcceptsDeleteResponse(t *testing.T) {
 		{Type: PayloadNonce, Body: bytes.Repeat([]byte{1}, 32)},
 		{Type: PayloadKE, Body: EncodeKE(DH_CURVE25519, dh.PublicBytes())},
 	}}
-	deleteRequest := <-s.requests
+	deleteRequest := requested(t, s, done, INFORMATIONAL)
 	pending, err := s.startRequest(deleteRequest)
 	if err != nil {
 		t.Fatal(err)
@@ -69,10 +68,10 @@ func TestLosingLocalIKERekeyAcceptsDeleteResponse(t *testing.T) {
 	s.removeRetainedContext(old)
 	if !s.dispatch(response, nil, &pending) {
 		deleteRequest.result <- requestResult{err: fmt.Errorf("test cleanup")}
-		<-done
+		ended(t, s, done)
 		t.Fatal("valid Delete response for the losing local IKE SA was discarded")
 	}
-	if err := <-done; err != nil {
+	if err := ended(t, s, done); err != nil {
 		t.Fatal(err)
 	}
 	current, retained := s.contexts()
