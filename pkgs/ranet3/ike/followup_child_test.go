@@ -182,6 +182,36 @@ func TestRequestsDuringAPeersChildChainAreAnsweredAsUsual(t *testing.T) {
 	}
 }
 
+// a peer's Child SA chain whose Child SA the dataplane refuses at the last IKE_FOLLOWUP_KE is answered TEMPORARY_FAILURE rather than the ciphertext, so the peer makes no SA either, and the session keeps the Child SA the chain would replace
+// RFC 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA"
+// RFC 9370 section 2.2.4: "Instead, they would be created only after the series of IKE_FOLLOWUP_KE exchanges is finished."
+func TestRefusedInstallAtAChildChainsLastExchangeIsAnsweredTemporaryFailure(t *testing.T) {
+	s, _ := answeringChain(t, chainSuite, chainLists)
+	ctx, old := s.current, s.currentChild()
+	peer, request := newPeerChildRekey(t, s, childOffer, drawnOctets(t, 32))
+	peer.rekey(t, s.handleChildRekey, ctx, request)
+	if len(peer.link) != followupLinkLen {
+		t.Fatalf("the peer's Child SA rekey drew the link %x, want a chain", peer.link)
+	}
+	s.SetChildHandler(func(ChildSA) error { return errors.New("the dataplane is gone") })
+	answer, err := peer.followup(t, s, ctx, ML_KEM_768, peer.link)
+	if err != nil {
+		t.Fatalf("the refused install ended the IKE SA: %v", err)
+	}
+	if !notified(answer, N_TEMPORARY_FAILURE, nil) || findType(answer, PayloadKE) != nil {
+		t.Errorf("the last IKE_FOLLOWUP_KE drew %v, want TEMPORARY_FAILURE alone", payloadTypes(answer))
+	}
+	if got := s.currentChild(); got.LocalSPI != old.LocalSPI || got.RemoteSPI != old.RemoteSPI || peer.installed(s) {
+		t.Errorf("the session holds the Child SA of SPIs %08x and %08x, want the one the chain would replace, %08x and %08x", got.LocalSPI, got.RemoteSPI, old.LocalSPI, old.RemoteSPI)
+	}
+	if retiring := s.retiringChild(); retiring.LocalSPI != 0 {
+		t.Errorf("the session retires the Child SA of SPI %08x, which nothing replaced", retiring.LocalSPI)
+	}
+	if kind := s.chainKind(); kind != "" {
+		t.Errorf("the chain of the %s is still open after its last exchange", kind)
+	}
+}
+
 // a peer's rekey of the IKE SA while its Child SA chain is open, and its creation or rekey of the Child SA while its IKE SA chain is open, are answered TEMPORARY_FAILURE and leave the open chain
 // RFC 7296 section 2.25.1: "If a peer receives a request to rekey the IKE SA, and it is currently creating, rekeying, or closing a Child SA of that IKE SA, it SHOULD reply with TEMPORARY_FAILURE."
 // RFC 7296 section 2.25.2: "If a peer receives a request to create or rekey a Child SA when it is currently rekeying the IKE SA, it SHOULD reply with TEMPORARY_FAILURE."
