@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-20
+updated: 2026-10-21
 order: 70
 ---
 
@@ -216,7 +216,10 @@ Every exchange after it, a new handshake or a rekey of a live session, offers
 and accepts what the new lists hold, and a new order changes which transform an
 answering node takes. `cap.crypto.replay` and `cap.crypto.rekey` need a restart,
 as [what a reload refuses](#what-a-reload-refuses) describes. `ranet3 sessions`
-shows the transforms each session runs. A reload can be seen taking hold there.
+shows the transforms each session runs, and a reload can be seen taking hold
+there. Its column for the Child SA names the cipher alone: a Child SA's kex
+entry shows only in the `suite` of an `ike.suite.unlisted`, which the session
+records once a reload left that entry out.
 
 Each live session then checks its SAs against the new lists. An SA whose cipher
 or kex entry they leave out is rekeyed under them, and the session records an

@@ -5,7 +5,7 @@
 title: "ranet3"
 description: "What ranet3 is, and where each part of it is documented."
 created: 2026-08-17
-updated: 2026-10-20
+updated: 2026-10-21
 order: 10
 ---
 
@@ -22,17 +22,17 @@ Ed25519 key it signs with.
 
 ## Protocols
 
-| Part           | Standard                                                                                                                                                                                                                                       |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Transport      | ESP ([RFC 4303](https://www.rfc-editor.org/rfc/rfc4303)) in tunnel mode, in UDP ([RFC 3948](https://www.rfc-editor.org/rfc/rfc3948))                                                                                                           |
-| Handshake      | IKEv2 ([RFC 7296](https://www.rfc-editor.org/rfc/rfc7296)) in the minimal shape of [RFC 7815](https://www.rfc-editor.org/rfc/rfc7815), as initiator and as responder                                                                           |
-| Authentication | Ed25519 signatures ([RFC 7427](https://www.rfc-editor.org/rfc/rfc7427), [RFC 8420](https://www.rfc-editor.org/rfc/rfc8420))                                                                                                                    |
-| Key exchange   | X25519, P-256 or P-384, alone or followed by ML-KEM-768 ([FIPS 203](https://csrc.nist.gov/pubs/fips/203/final)) in `IKE_INTERMEDIATE` ([RFC 9242](https://www.rfc-editor.org/rfc/rfc9242), [RFC 9370](https://www.rfc-editor.org/rfc/rfc9370)) |
-| Ciphers        | AES-GCM or ChaCha20-Poly1305                                                                                                                                                                                                                   |
-| Routing        | Babel ([RFC 8966](https://www.rfc-editor.org/rfc/rfc8966)) with RTT costs ([RFC 9616](https://www.rfc-editor.org/rfc/rfc9616)) and source-specific routes ([RFC 9079](https://www.rfc-editor.org/rfc/rfc9079))                                 |
-| IPv4 over IPv6 | IPv4 routes with IPv6 next hops ([RFC 9229](https://www.rfc-editor.org/rfc/rfc9229))                                                                                                                                                           |
-| Steering       | SRv6 ([RFC 8754](https://www.rfc-editor.org/rfc/rfc8754), [RFC 8986](https://www.rfc-editor.org/rfc/rfc8986)) with the End and End.DT46 behaviors                                                                                              |
-| Path MTU       | Datagram path MTU discovery ([RFC 8899](https://www.rfc-editor.org/rfc/rfc8899)) over Babel probes                                                                                                                                             |
+| Part           | Standard                                                                                                                                                                                                                                                                                 |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Transport      | ESP ([RFC 4303](https://www.rfc-editor.org/rfc/rfc4303)) in tunnel mode, in UDP ([RFC 3948](https://www.rfc-editor.org/rfc/rfc3948))                                                                                                                                                     |
+| Handshake      | IKEv2 ([RFC 7296](https://www.rfc-editor.org/rfc/rfc7296)) in the minimal shape of [RFC 7815](https://www.rfc-editor.org/rfc/rfc7815), as initiator and as responder                                                                                                                     |
+| Authentication | Ed25519 signatures ([RFC 7427](https://www.rfc-editor.org/rfc/rfc7427), [RFC 8420](https://www.rfc-editor.org/rfc/rfc8420))                                                                                                                                                              |
+| Key exchange   | X25519, P-256 or P-384, alone or followed by ML-KEM-768 ([FIPS 203](https://csrc.nist.gov/pubs/fips/203/final)) in `IKE_INTERMEDIATE` at setup and `IKE_FOLLOWUP_KE` at a rekey ([RFC 9242](https://www.rfc-editor.org/rfc/rfc9242), [RFC 9370](https://www.rfc-editor.org/rfc/rfc9370)) |
+| Ciphers        | AES-GCM or ChaCha20-Poly1305                                                                                                                                                                                                                                                             |
+| Routing        | Babel ([RFC 8966](https://www.rfc-editor.org/rfc/rfc8966)) with RTT costs ([RFC 9616](https://www.rfc-editor.org/rfc/rfc9616)) and source-specific routes ([RFC 9079](https://www.rfc-editor.org/rfc/rfc9079))                                                                           |
+| IPv4 over IPv6 | IPv4 routes with IPv6 next hops ([RFC 9229](https://www.rfc-editor.org/rfc/rfc9229))                                                                                                                                                                                                     |
+| Steering       | SRv6 ([RFC 8754](https://www.rfc-editor.org/rfc/rfc8754), [RFC 8986](https://www.rfc-editor.org/rfc/rfc8986)) with the End and End.DT46 behaviors                                                                                                                                        |
+| Path MTU       | Datagram path MTU discovery ([RFC 8899](https://www.rfc-editor.org/rfc/rfc8899)) over Babel probes                                                                                                                                                                                       |
 
 IKE and ESP share 1 UDP port, `link.port`. ESP always travels in UDP, and every
 IKE message carries the 4-byte Non-ESP Marker from `IKE_SA_INIT` on, whether or

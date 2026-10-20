@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-20
+updated: 2026-10-21
 order: 10
 ---
 
@@ -369,13 +369,23 @@ describes. Its request carries the ML-KEM-768 encapsulation key in an IKE
 message of 1249 octets, a datagram of 1281 bytes over IPv4 and 1301 over IPv6
 with the Non-ESP Marker and the UDP and IP headers. Its response carries the
 ciphertext in 1153 octets, a datagram of 1185 and 1205 bytes. `IKE_SA_INIT`
-carries no ML-KEM key and keeps its size.
+carries no ML-KEM key. A joined entry adds to the `IKE_SA_INIT` request a
+proposal of its own, which holds an `ADDKE1` transform of 8 octets, and an
+`INTERMEDIATE_EXCHANGE_SUPPORTED` notify of 8 octets.
+
+An IKE SA rekey that runs a joined entry, either end's, and a peer's Child SA
+creation or rekey that runs one add 1 `IKE_FOLLOWUP_KE` exchange after the
+`CREATE_CHILD_SA`. Its request carries the same key and the 16-octet
+`ADDITIONAL_KEY_EXCHANGE` notify that links it to the `CREATE_CHILD_SA`, an IKE
+message of 1265 octets, a datagram of 1297 bytes over IPv4 and 1317 over IPv6.
+Its response carries the ciphertext in 1153 octets, as above.
 
 Linux and macOS send IKE with DF, so a path that carries less than the request,
 such as an IPv6 path at the 1280-byte minimum or a tunnel of 1280 bytes, loses
-it, and the handshake fails. The one exception is a family whose sockets let the
-host fragment while a session of that family is under the floor, as above.
-ranet3 does not implement the IKE fragmentation of
+it. The handshake then fails, and a rekey's `IKE_FOLLOWUP_KE` goes unanswered
+until the IKE SA is deemed failed and the session ends. The one exception is a
+family whose sockets let the host fragment while a session of that family is
+under the floor, as above. ranet3 does not implement the IKE fragmentation of
 [RFC 7383](https://www.rfc-editor.org/rfc/rfc7383.html), which would split the
 message, and it refuses a kex entry joining `mlkem1024`, whose messages of 1633
 octets pass a 1500-byte path.
@@ -392,9 +402,11 @@ can configure are in
 | ---------------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Half-open SAs before a cookie                  | 32 in all, or 2 from 1 address                                                          | An `IKE_SA_INIT` without a valid cookie is answered with one (RFC 7296 section 2.6)                    |
 | Half-open SAs                                  | 256 in all, 16 from 1 address                                                           | A further `IKE_SA_INIT` is dropped unanswered, and its sender retransmits                              |
-| Error answers sent in the clear                | 256 at once, then 32 a second, for the whole node                                       | A further one is not sent, and at most 1 line a minute counts those held back                          |
+| Error answers sent in the clear                | 256 at once, then 32 a second, for the whole node                                       | A further one is not sent, and at most 1 log line every minute counts those held back                  |
 | Responder handshake                            | 30 seconds                                                                              | The handshake is abandoned                                                                             |
-| `IKE_INTERMEDIATE` exchanges in a handshake    | 1 for each additional key exchange of the chosen kex entry, so at most 1                | A further one, or an `IKE_AUTH` ahead of the last, is answered `INVALID_SYNTAX` and the handshake ends |
+| `IKE_INTERMEDIATE` exchanges in a handshake    | 1 for each additional key exchange of the chosen kex entry, at most 1                   | A further one, or an `IKE_AUTH` ahead of the last, is answered `INVALID_SYNTAX` and the handshake ends |
+| Wait for a peer's next `IKE_FOLLOWUP_KE`       | 62 seconds from this end's last answer in the rekey                                     | The peer's rekey is dropped, and its next `IKE_FOLLOWUP_KE` is answered `STATE_NOT_FOUND`              |
+| Rekeys in a row answered `STATE_NOT_FOUND`     | 3                                                                                       | The IKE SA is deleted, and the session ends                                                            |
 | Canceled dial's wait for its `IKE_AUTH` answer | 2 seconds                                                                               | The dial ends, and a peer whose answer is late keeps its session until liveness fails                  |
 | Sends of a request                             | 5, waiting 2, 4, 8, 16 and 32 seconds after each                                        | The exchange fails after 62 seconds, and its IKE SA is deemed failed                                   |
 | Sends while the peer's other traffic continues | 20, about 9 minutes in all                                                              | The exchange fails, and its IKE SA is deemed failed though the peer's ESP still arrives                |
@@ -413,26 +425,43 @@ behind 1 NAT that restart at once therefore wait for their retransmissions.
 
 The errors the third row limits are `INVALID_MAJOR_VERSION`,
 `UNSUPPORTED_CRITICAL_PAYLOAD` and `NO_PROPOSAL_CHOSEN`, sent in the clear to a
-request that no IKE SA protects, which end the exchange. A `COOKIE`, an
+request that no IKE SA protects. Each of them ends the exchange. A `COOKIE`, an
 `INVALID_KE_PAYLOAD` and an `IKE_SA_INIT` response that carries the handshake
-forward are outside the limit: an initiator goes on after each of them, so one
+forward are outside the limit: an initiator goes on after each of them, and one
 source that spends the limit cannot stop another's dial. A `COOKIE` is the
 defense against a flood of `IKE_SA_INIT` requests that
 [RFC 7296 section 2.6](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.6)
-gives a responder. An `INVALID_KE_PAYLOAD` is 1 answer of 38 octets to a request
-of at least 102, and it gives its half-open slot back as it is sent, so neither
-cookies nor the half-open limit bound how many go out. An `IKE_SA_INIT` response
-holds its half-open slot until `IKE_AUTH`, and the half-open limits and cookies
-bound it. 256 answers every half-open slot at once, and 32 a second refills them
+gives a responder. An `INVALID_KE_PAYLOAD` is 1 IKE message of 38 octets
+answering a request of at least 102 octets, and it gives its half-open slot back
+as it is sent. Neither cookies nor the half-open limit bound how many go out. An
+`IKE_SA_INIT` response holds its half-open slot until `IKE_AUTH`, and the
+half-open limits and cookies bound it. The burst of 256 error answers can answer
+every half-open slot at once, and the rate of 32 a second fills the burst again
 within the reconnect delay.
 
-No ML-KEM key travels in `IKE_SA_INIT`, so a responder runs ML-KEM only for an
+No ML-KEM key travels in `IKE_SA_INIT`. A responder runs ML-KEM only for an
 initiator that holds a half-open slot, past the cookies. The responder's 30
 seconds for a handshake cover its `IKE_INTERMEDIATE` exchange. A half-open SA
 that has answered one keeps the response, 1153 octets for ML-KEM-768, to answer
 a retransmitted request, with a digest of the request and the 2 values of
-IntAuth, so the 256 half-open SAs keep under 512 KiB of it whatever the
-initiators send.
+IntAuth. The 256 half-open SAs keep under 512 KiB of it whatever the initiators
+send.
+
+The wait for a peer's next `IKE_FOLLOWUP_KE` is the time this end resends a
+request to a silent peer, and each answer in the peer's rekey starts it again. A
+peer's new rekey of the same SA drops the earlier one before its wait ends.
+Either way the dropped rekey records `ike.followup.dropped`, as
+[debugging](../development/debug.md#events) describes. This end's own
+`IKE_FOLLOWUP_KE` is resent as any request is, until it is answered or the IKE
+SA is deemed failed, and its answer settles the rekey whenever it comes. A
+`STATE_NOT_FOUND` that answers a send made 62 seconds or more after the answer
+before it fails the rekey without counting toward the 3 in a row, since the peer
+was free to drop the rekey by then. The schedule retries a failed rekey after
+its backoff. A session sends no liveness check, not even when asked to probe its
+path, while its own rekey may run `IKE_FOLLOWUP_KE` exchanges, nor while it
+waits for the peer's after losing a simultaneous rekey to it. That wait ends
+when the peer's rekey replaces the IKE SA or is dropped, or when the IKE SA
+starts to close.
 
 An IKE SA deemed failed ends the session when it is the session's current IKE
 SA, and the node that dialed it dials again. A replaced or redundant IKE SA
@@ -453,33 +482,34 @@ Every Delete of an IKE SA has the 2 sends, since a peer that took it has deleted
 the SA and ignores a resend, as
 [RFC 7296 section 2.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.1)
 asks of a responder that has forgotten its response. They are the sends of a
-session that ends its IKE SA itself, at a lifetime, after 5 minutes of
-`TEMPORARY_FAILURE` or on a failure of its own, of a responder that refused the
-Child SA in `IKE_AUTH`, of a rekey's Delete of the replaced or redundant IKE SA,
-of the Delete of an IKE SA whose PRF a reload left out, as
-[reloading](../reloading.md#capcrypto) describes, and of a node closing a
-session. The session's own Delete waits for an exchange already out. A node
-closing a session, as at shutdown, waits 2 seconds for its Delete to be
-answered. Once a Delete of the session's IKE SA has gone out, whoever sent it,
-the session starts no other request or liveness check on that IKE SA, and sends
-no Delete of its own when it then ends.
+session that ends its IKE SA itself once it runs, at a lifetime, after 5 minutes
+of `TEMPORARY_FAILURE` or on a failure of its own, of either end of an
+`IKE_AUTH` whose Child SA the responder refused, of a rekey's Delete of the
+replaced or redundant IKE SA, of the Delete of an IKE SA whose PRF a reload left
+out, as [reloading](../reloading.md#capcrypto) describes, and of a node closing
+a session. A session whose dataplane refuses its first Child SA has not started
+to run, and sends its Delete once without waiting for an answer. The session's
+own Delete waits for an exchange already out. A node closing a session, as at
+shutdown, waits 2 seconds for its Delete to be answered. Once a Delete of the
+session's IKE SA has gone out, whoever sent it, the session starts no other
+request or liveness check on that IKE SA, and sends no Delete of its own when it
+then ends.
 
 An `INVALID_SYNTAX`, sent or received, ends the IKE SA it came on at once and
 without a Delete. On the session's current IKE SA the session ends, and the node
 that dialed it dials again. On a replaced or redundant IKE SA still kept for a
 Delete, that IKE SA alone ends, and the session goes on. A peer that answers
-this end's Delete of a Child SA with an error keeps its half of the pair. This
-end keeps its own half down, does not ask again, and gives that SPI to no later
+this end's Delete of a Child SA with an error still holds its inbound and
+outbound SAs of that Child SA. This end keeps both of its own out of the
+dataplane, does not ask again, and gives the Child SA's inbound SPI to no later
 Child SA of the session.
 
 [The configuration reference](../configuration-reference.md#capcryptorekey) says
-what happens at an SA's lifetime. A Child SA's keys leave the dataplane at its
-lifetime whatever exchange is under way, and a replaced one leaves then too if
-its drain would end later. An IKE SA past its lifetime starts nothing but its
-Delete. It still carries the exchange outstanding at its lifetime and answers
-the peer's requests, a rekey with `TEMPORARY_FAILURE`. A replaced IKE SA the
-peer owes a Delete is dropped at its lifetime, and one this end deletes is kept
-for that Delete.
+what happens at an SA's lifetime, and
+[Lifetimes](protocol-deviations.md#lifetimes) what an IKE SA still carries past
+it. A replaced Child SA's keys leave the dataplane at its lifetime where its
+drain would end later. A replaced IKE SA the peer owes a Delete is dropped at
+its lifetime, and one this end deletes is kept for that Delete.
 
 The limit on peer rekeys counts a rekey once the offer is settled, before its
 key exchange. A rekey answered with `INVALID_KE_PAYLOAD` does not count, so the
