@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-10-21
+updated: 2026-10-22
 order: 60
 ---
 
@@ -56,9 +56,10 @@ rebuilds the table of SIDs in place.
 
 A node parses a packet only when its destination is one of its SIDs. It accepts
 a reduced header, which leaves out the segment the destination address already
-carries, and ignores TLVs after the segment list. It walks hop-by-hop and
-destination options headers to reach the routing header. It refuses a fragment
-header and a list of more than 16 segments.
+carries, and ignores TLVs after the segment list. It walks up to 7 hop-by-hop
+and destination options headers to reach the routing header. It refuses a
+fragment header among them, a routing header behind more, and a list of more
+than 16 segments.
 
 An `End` reached with no segments left drops the packet without an answer. So
 does an `End.DT46` reached with segments still left. When a list names several
@@ -144,7 +145,7 @@ hop limit of the packet it carries, as `__seg6_do_srh_encap` does. For an IPv4
 packet, the outer hop limit is 64 and the traffic class and flow label are 0.
 Each waypoint decrements the outer hop limit. The inner packet keeps its own hop
 limit. A waypoint that would take the outer hop limit to 0 answers the outer
-source with ICMP Time Exceeded, within the ICMP rate limit below.
+source with ICMP Time Exceeded, within the ICMP rate limits below.
 
 A packet a policy claims and this node cannot send is dropped. The ordinary
 route would put it out of another exit under a source that exit does not
@@ -168,22 +169,42 @@ the outer header and the routing header.
 These are dropped without an answer:
 
 - a segment whose routing header names something other than the packet behind it
-- an IPv4 packet whose options do not parse
-- a packet no ICMP error may answer: an ICMP error, or a packet from the
-  unspecified address, from a multicast address or to a multicast group
-- an IPv4 fragment other than the first, an IPv4 packet to `255.255.255.255`, or
-  an IPv4 packet from `0.0.0.0/8`, a loopback address or `240.0.0.0/4`
-- an IPv4 packet without DF that cannot be cut, because its data runs past 65535
-  bytes or the session leaves no room for 8 bytes of data behind its header
+- an IPv6 packet no ICMP error may answer: an ICMPv6 error or Redirect behind up
+  to 7 hop-by-hop, routing, destination options, authentication and first
+  fragment headers, an ICMPv6 header cut short before its type, or a packet from
+  the unspecified address or from a multicast address
+- an IPv6 packet to a multicast group, which RFC 4443 lets no error answer but
+  Packet Too Big and the Parameter Problem for an unrecognized option, and which
+  ranet3 answers with no Packet Too Big either, as
+  [the deviations](design/protocol-deviations.md#icmp-answers) list
+- an IPv4 packet with DF that no ICMP error may answer: an ICMP error, a
+  fragment other than the first, a packet to a multicast group or to
+  `255.255.255.255`, a packet from `0.0.0.0/8`, a loopback address, a multicast
+  address or `240.0.0.0/4`, or a packet whose header checksum fails
+- an IPv4 packet without DF whose options do not parse, or that cannot be cut,
+  because its data runs past 65535 bytes or the session leaves no room for 8
+  bytes of data behind its header
 - a packet whose answer has no route back to its source
-- a packet that would be answered past the ICMP rate limit
+- a packet that would be answered past the ICMP rate limits
 
-The ICMP rate limit allows a burst of 8 answers, then 1 every 250 milliseconds.
-Time Exceeded, Parameter Problem, Packet Too Big and fragmentation needed all
-count against it. `status` counts a segment answered or dropped this way among
-the dropped, each answer among the answered, and each fragment of a cut segment
-among the forwarded. The log reports a dropped segment at most once every 30
-seconds.
+The search for an ICMPv6 error reads at most 8 headers after the IPv6 header,
+and a packet it finds none in is answered: one whose headers lead to another
+upper-layer header, to ESP, to no next header or to a fragment past offset 0,
+one that ends before an extension header's next header and length octets or a
+fragment header's offset, and one with 8 extension headers or more in front of
+its upper-layer header. An ICMPv6 error behind 8 extension headers or more is
+answered too, a departure from RFC 4443 that
+[the deviations](design/protocol-deviations.md#icmp-answers) give the reason
+for.
+
+[Path MTU](path-mtu.md#packets-that-do-not-fit) gives the ICMP rate limits. Time
+Exceeded and Parameter Problem count against the bucket of the outer source, the
+node that steered the packet, and against the node's cap. Packet Too Big and
+fragmentation needed count against the cap alone. A packet no ICMP error may
+answer, or one to a multicast group, counts against neither. `status` counts a
+segment answered or dropped this way among the dropped, each answer among the
+answered, and each fragment of a cut segment among the forwarded. The log
+reports a dropped segment at most once every 30 seconds.
 
 No node fragments the outer packet of a steered packet. What does not fit the
 session it leaves by is answered or cut as above. The answer names what the

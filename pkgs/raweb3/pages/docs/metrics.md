@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-10-19
+updated: 2026-10-21
 order: 90
 ---
 
@@ -79,6 +79,7 @@ The `peer` label is the path of the peer's session, such as
 | `ranet3_tun_reads_truncated_total`       | counter | none               | Reads off the tun that lost the tail of a GSO frame                                                                                                                     | always                                                          |
 | `ranet3_tun_frames_refused_total`        | counter | none               | Frames read off the tun that could not be read as packets                                                                                                               | always                                                          |
 | `ranet3_packet_too_big_sent_total`       | counter | none               | Packet Too Big and fragmentation needed answers this node sent                                                                                                          | always                                                          |
+| `ranet3_icmp_withheld_total`             | counter | `limit`            | ICMP errors this node did not send, by the limit that held them back, `source` for the bucket of the source answered or `node` for the node's cap                       | always                                                          |
 | `ranet3_mss_clamped_total`               | counter | none               | TCP SYNs whose MSS this node lowered                                                                                                                                    | always                                                          |
 | `ranet3_pmtu_probes_total`               | counter | `result`           | Path MTU probes that left, `acked` or `lost`                                                                                                                            | always                                                          |
 | `ranet3_segments_forwarded_total`        | counter | none               | Packets an End behavior sent on to their next segment                                                                                                                   | always                                                          |
@@ -185,6 +186,16 @@ probes climbing on a node whose sessions have settled say a path loses its
 session's largest packets now and then, and
 [`ranet3 debug pmtu`](development/debug.md) names the session and shows its
 search. [Path MTU](path-mtu.md) describes the search itself.
+
+`ranet3_icmp_withheld_total` counts the ICMP errors the
+[rate limits](path-mtu.md#packets-that-do-not-fit) held back, as the kernel's
+`IcmpOutRateLimitHost` and `IcmpOutRateLimitGlobal` do. `limit="source"` rising
+alone is a sender drawing past its own bucket, such as a flood of expired
+probes, and costs no other sender anything. `limit="node"` rising is answers
+past the node's cap, from many sources at once or from one sender's packets past
+their session, since Packet Too Big and fragmentation needed draw from the cap
+alone. Either way the cap holds back every sender's answers, Packet Too Big
+included.
 
 ## Babel fragments
 
