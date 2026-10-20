@@ -107,7 +107,7 @@ func (s *Session) RekeyIKE() (err error) {
 		}
 		answered = time.Now()
 
-		var retryGroup uint16
+		var invalidKE *Notify
 		for i := range response {
 			if response[i].Type != PayloadN {
 				continue
@@ -116,20 +116,25 @@ func (s *Session) RekeyIKE() (err error) {
 			if err != nil {
 				return fmt.Errorf("ike: invalid IKE SA rekey notify: %w", err)
 			}
-			if notify.Type != N_INVALID_KE_PAYLOAD {
-				continue
+			if notify.Type == N_INVALID_KE_PAYLOAD {
+				invalidKE = &notify
+				break
 			}
-			if len(notify.Data) != 2 {
-				return fmt.Errorf("ike: invalid IKE SA rekey INVALID_KE_PAYLOAD data")
-			}
-			retryGroup = binary.BigEndian.Uint16(notify.Data)
+		}
+		if invalidKE == nil {
 			break
 		}
-		if retryGroup == 0 {
-			break
+		// an INVALID_KE_PAYLOAD this end does not retry refuses the request as any other error notify does
+		refused := &rejectedError{exchange: "IKE SA rekey", notify: *invalidKE}
+		if len(invalidKE.Data) != 2 {
+			return s.refusedIKERekey(local, fmt.Errorf("%w with %d octets of data", refused, len(invalidKE.Data)))
 		}
-		if attempt != 0 || !slices.Contains(transformsOf(offer), Transform{Type: TransDH, ID: retryGroup}) {
-			return fmt.Errorf("ike: IKE SA rekey rejected: requested unoffered DH group %d", retryGroup)
+		retryGroup := binary.BigEndian.Uint16(invalidKE.Data)
+		if attempt != 0 {
+			return s.refusedIKERekey(local, fmt.Errorf("%w again, requesting DH group %d", refused, retryGroup))
+		}
+		if !slices.Contains(transformsOf(offer), Transform{Type: TransDH, ID: retryGroup}) {
+			return s.refusedIKERekey(local, fmt.Errorf("%w, requesting unoffered DH group %d", refused, retryGroup))
 		}
 		// RFC 7296 section 1.3: "In the case of such a rejection, the CREATE_CHILD_SA exchange fails, and the initiator will probably retry the exchange with a Diffie-Hellman proposal and KEi in the group that the responder gave in the INVALID_KE_PAYLOAD Notify payload."
 		group = retryGroup
@@ -335,8 +340,11 @@ func (s *Session) refusedFollowup(err error, late bool) error {
 }
 
 // refusedIKERekey is how local, this end's IKE SA rekey, ends where its CREATE_CHILD_SA drew a refusal or an answer this end does not take, err saying which, nil where it takes the peer's rekey of the same SA held for it in its place
+// RFC 7296 section 2.8.2, of a peer that stops its rekey at an error notify: "Because the other peer has already rekeyed the exchange, doing so does not have any ill effects."
+// RFC 7296 section 2.25: "A TEMPORARY_FAILURE notification SHOULD be sent when a peer receives a request that cannot be completed due to a temporary condition such as a rekeying operation."
 // RFC 9370 section 2.2.4: "In this case, a TEMPORARY_FAILURE notification MUST be sent in response to such a request."
-// so a peer whose rekey of the SA this end answered may refuse this one, and it installs its own SA as it reads the answer, which makes the SA held here the one both ends keep
+// a crossing should draw TEMPORARY_FAILURE, yet a peer that refused this end's request with any notify made no SA of it, and it installs the SA of its own rekey as it reads this end's answer, so the SA held here is the one both ends keep whatever notify the refusal carries
+// an answer this end does not take tells nothing of what the peer made
 // the peer's nonces are recorded only where its rekey of the SA was held for this one, and a collision without them is the redundant SA of an earlier crossing
 func (s *Session) refusedIKERekey(local *ikeRekey, err error) error {
 	s.stateMu.Lock()
@@ -345,7 +353,7 @@ func (s *Session) refusedIKERekey(local *ikeRekey, err error) error {
 	if s.localRekey == local {
 		s.localRekey = nil
 	}
-	if s.collision == nil || local.peerNonce == nil || !rejectedWith(err, N_TEMPORARY_FAILURE) {
+	if _, refused := errors.AsType[*rejectedError](err); !refused || s.collision == nil || local.peerNonce == nil {
 		return err
 	}
 	s.retainOldLocked(local.old)
