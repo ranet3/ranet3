@@ -1603,7 +1603,7 @@ testers.runNixOSTest {
             print(sas)
             assert "/CURVE_25519" in sas and "KE1_" not in sas, "strongSwan's IKE SA does not run x25519 alone"
 
-            # each rekey of the IKE SA keeps the cipher and the PRF and offers the entry of x25519 alone
+            # each rekey of the IKE SA keeps the cipher and the PRF, and strongSwan takes the entry of x25519 alone from its offer
             session = json.loads(client.succeed("ranet3 sessions --json"))[0]
             suite = f"{session['ike_cipher']}/{session['ike_prf']}/x25519"
             print(client.succeed(
