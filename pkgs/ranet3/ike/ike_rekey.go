@@ -334,7 +334,7 @@ func (s *Session) refusedFollowup(err error, late bool) error {
 	return err
 }
 
-// refusedIKERekey is how local, this end's IKE SA rekey, ends where the peer refused its CREATE_CHILD_SA with err, nil where it takes the peer's rekey of the same SA held for it in its place
+// refusedIKERekey is how local, this end's IKE SA rekey, ends where its CREATE_CHILD_SA drew a refusal or an answer this end does not take, err saying which, nil where it takes the peer's rekey of the same SA held for it in its place
 // RFC 9370 section 2.2.4: "In this case, a TEMPORARY_FAILURE notification MUST be sent in response to such a request."
 // so a peer whose rekey of the SA this end answered may refuse this one, and it installs its own SA as it reads the answer, which makes the SA held here the one both ends keep
 // the peer's nonces are recorded only where its rekey of the SA was held for this one, and a collision without them is the redundant SA of an earlier crossing

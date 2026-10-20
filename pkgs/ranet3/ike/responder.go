@@ -146,9 +146,9 @@ type Responder struct {
 	// whether there has been a rotation at all. A cookie is issued and echoed
 	// a round trip apart, so rotating without keeping the old one refuses
 	// every cookie in flight at that moment. The initiator accepts one COOKIE
-	// per dial, so it then retransmits a cookie that can never be accepted
-	// until its whole budget runs out. One generation back is all it takes,
-	// because a cookie older than that is older than cookieLifetime.
+	// for each group it tries, so it then retransmits a cookie that can never
+	// be accepted until its whole budget runs out. One generation back is all
+	// it takes, because a cookie older than that is older than cookieLifetime.
 	previousSecret [cookieSecretLen]byte
 	previousValid  bool
 	cookieVersion  uint8

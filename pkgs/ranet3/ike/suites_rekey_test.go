@@ -1216,7 +1216,8 @@ func TestReplacementOfAnIKESAPastItsLifetimeSendsItsDelete(t *testing.T) {
 	cfg := h.peerConfig()
 	cfg.Suites = func() Suites { return *dialing.Load() }
 	cfg.Events = dialed.record
-	// the IKE SA's rekey falls due soon after the SA is made, and its lifetime falls while the relay holds that rekey
+	// the IKE SA's rekey falls due soon after the SA is made
+	// and its lifetime ends while the relay holds that rekey
 	cfg.IKERekeyInterval, cfg.RekeyMargin = 3*time.Second, 2*time.Second
 	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
 		if !fromInitiator || header == nil || header.IsResponse() {
