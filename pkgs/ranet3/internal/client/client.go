@@ -202,7 +202,6 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 		return nil, err
 	}
 	warnUnbordered(cfg, forwardingEnabled)
-	warnVRFWithoutL3mdev(cfg)
 	warnCountedAdvertisements(cfg)
 	// Before the tun exists, so a segment this node could not answer for
 	// refuses the startup without a device to clean up.
@@ -494,16 +493,10 @@ type borderFilter interface {
 func (c *Client) SetBorder(f borderFilter) { c.border.Store(&f) }
 
 // BorderInside is the devices the border filter accepts whatever they carry:
-// the mesh tun, lo, through which a packet this host sends to its own address
-// meets prerouting, and the VRF master the tun is enslaved to, as which a
-// packet arriving on the tun meets prerouting a second time. A reload moves
-// none of them.
+// the mesh tun and lo, through which a packet this host sends to its own
+// address meets prerouting. A reload moves neither of them.
 func (c *Client) BorderInside() []string {
-	inside := []string{c.Mesh.Name, "lo"}
-	if table := c.config().Cap.Table; table != nil && table.Name() != "" {
-		inside = append(inside, table.Name())
-	}
-	return inside
+	return []string{c.Mesh.Name, "lo"}
 }
 
 // BorderRuntime hands the border filter what the node resolves at startup: the

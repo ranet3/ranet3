@@ -19,7 +19,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -80,7 +79,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 		t.Skip("creating a tun needs root on linux")
 	}
 	exit, far := netnstest.StartThread(t), netnstest.StartThread(t)
-	labUplink(t, exit, far, "")
+	labUplink(t, exit, far)
 	// the exit routes every other destination out of its uplink to the far host, as an exit does, which the translator's lookups read
 	if err := exit.Do(func() error {
 		netlink, err := netnstest.OpenNetlink()
@@ -749,37 +748,14 @@ func labConfig(t *testing.T) *config.Config {
 
 // labUplink makes the veth pair from the exit's namespace to the far host's,
 // addresses both ends and turns forwarding on at the exit before any device
-// of the node exists, so the mesh tun takes it from conf.default. Where
-// master is not empty, a VRF of that name bound to the mesh table is made
-// first and the exit's end joins it before it is addressed. A kernel with no
-// VRF support skips the test, as the reconciler's own VRF test does.
-func labUplink(t *testing.T, exit, far *netnstest.Thread, master string) {
+// of the node exists, so the mesh tun takes it from conf.default
+func labUplink(t *testing.T, exit, far *netnstest.Thread) {
 	t.Helper()
-	var unsupported error
 	if err := exit.Do(func() error {
 		for _, path := range []string{"/proc/sys/net/ipv4/ip_forward", "/proc/sys/net/ipv6/conf/all/forwarding"} {
 			if err := os.WriteFile(path, []byte("1\n"), 0o644); err != nil {
 				return err
 			}
-		}
-		netlink, err := netnstest.OpenNetlink()
-		if err != nil {
-			return err
-		}
-		defer netlink.Close()
-		var enslave []byte
-		if master != "" {
-			vrf := slices.Concat(netnstest.Attr(unix.IFLA_INFO_KIND, netnstest.CString("vrf")), netnstest.Attr(unix.IFLA_INFO_DATA, netnstest.Attr(unix.IFLA_VRF_TABLE, netnstest.U32(kernel.DefaultTable))))
-			if err := netlink.Request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL,
-				slices.Concat(netnstest.IfInfo(0, unix.IFF_UP), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString(master)), netnstest.Attr(unix.IFLA_LINKINFO, vrf))); err != nil {
-				unsupported = err
-				return nil
-			}
-			link, err := net.InterfaceByName(master)
-			if err != nil {
-				return err
-			}
-			enslave = netnstest.Attr(unix.IFLA_MASTER, netnstest.U32(uint32(link.Index)))
 		}
 		other, err := unix.Open(far.Path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 		if err != nil {
@@ -788,21 +764,18 @@ func labUplink(t *testing.T, exit, far *netnstest.Thread, master string) {
 		defer unix.Close(other)
 		peer := slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString("labf")), netnstest.Attr(unix.IFLA_NET_NS_FD, netnstest.U32(uint32(other))))
 		kind := slices.Concat(netnstest.Attr(unix.IFLA_INFO_KIND, netnstest.CString("veth")), netnstest.Attr(unix.IFLA_INFO_DATA, netnstest.Attr(netnstest.VethPeer, peer)))
-		if err := netlink.Request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL,
-			slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString("labx")), enslave, netnstest.Attr(unix.IFLA_LINKINFO, kind))); err != nil {
-			return fmt.Errorf("make the veth pair: %w", err)
+		netlink, err := netnstest.OpenNetlink()
+		if err != nil {
+			return err
 		}
-		if master != "" {
-			if held, err := labMaster("labx"); err != nil || held != master {
-				return fmt.Errorf("the uplink is enslaved to %q (%v), want %s", held, err, master)
-			}
+		defer netlink.Close()
+		if err := netlink.Request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL,
+			slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString("labx")), netnstest.Attr(unix.IFLA_LINKINFO, kind))); err != nil {
+			return fmt.Errorf("make the veth pair: %w", err)
 		}
 		return netlink.AddAddresses("labx", labExit4, labExit6)
 	}); err != nil {
 		t.Fatalf("make the exit's end of the uplink: %v", err)
-	}
-	if unsupported != nil {
-		t.Skipf("no vrf support in this kernel: %v", unsupported)
 	}
 	if err := far.Do(func() error {
 		netlink, err := netnstest.OpenNetlink()
@@ -814,44 +787,6 @@ func labUplink(t *testing.T, exit, far *netnstest.Thread, master string) {
 	}); err != nil {
 		t.Fatalf("address the far host's end of the uplink: %v", err)
 	}
-}
-
-// labMaster names the device name is enslaved to in the calling thread's
-// namespace, empty for none, out of a dump of every link
-func labMaster(name string) (string, error) {
-	link, err := net.InterfaceByName(name)
-	if err != nil {
-		return "", err
-	}
-	rib, err := syscall.NetlinkRIB(syscall.RTM_GETLINK, syscall.AF_UNSPEC)
-	if err != nil {
-		return "", err
-	}
-	messages, err := syscall.ParseNetlinkMessage(rib)
-	if err != nil {
-		return "", err
-	}
-	for _, message := range messages {
-		if message.Header.Type != syscall.RTM_NEWLINK || len(message.Data) < syscall.SizeofIfInfomsg ||
-			int(int32(binary.NativeEndian.Uint32(message.Data[4:]))) != link.Index {
-			continue
-		}
-		attrs, err := syscall.ParseNetlinkRouteAttr(&message)
-		if err != nil {
-			return "", err
-		}
-		for _, attr := range attrs {
-			if attr.Attr.Type == syscall.IFLA_MASTER && len(attr.Value) == 4 {
-				master, err := net.InterfaceByIndex(int(binary.NativeEndian.Uint32(attr.Value)))
-				if err != nil {
-					return "", err
-				}
-				return master.Name, nil
-			}
-		}
-		return "", nil
-	}
-	return "", fmt.Errorf("the link dump holds no %s", name)
 }
 
 // labReceive calls send until listener reads payload, and returns where it came from

@@ -12,7 +12,6 @@ import (
 	"iter"
 	"net/netip"
 	"slices"
-	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -214,11 +213,8 @@ func (m nlMessage) attributes(offset int) iter.Seq2[uint16, []byte] {
 
 // linkInfo holds the fields of one RTM_NEWLINK this package reads
 type linkInfo struct {
-	index, master uint32
-	name          string
-	// vrfTable is the table a vrf is bound to, and 0 for a device of another kind
-	// the kernel binds no vrf to table 0
-	vrfTable uint32
+	index uint32
+	name  string
 }
 
 // link asks about one device by index, or by name when index is 0, with a keyed RTM_GETLINK rather than a dump
@@ -241,17 +237,13 @@ func (c *nlConn) link(index uint32, name string) (linkInfo, error) {
 	return linkInfo{}, unix.ENODEV
 }
 
-// decodeLink reads one RTM_NEWLINK, split from the socket so the nesting is checked without one
+// decodeLink reads one RTM_NEWLINK, a lookup's reply or a dump's entry alike
+// the caller has checked that it holds a whole ifinfomsg
 func decodeLink(reply nlMessage) linkInfo {
-	link := linkInfo{index: binary.NativeEndian.Uint32(reply.Data[4:]), vrfTable: linkVRFTable(reply)}
+	link := linkInfo{index: binary.NativeEndian.Uint32(reply.Data[4:])}
 	for kind, value := range reply.attributes(unix.SizeofIfInfomsg) {
-		switch kind {
-		case unix.IFLA_IFNAME:
+		if kind == unix.IFLA_IFNAME {
 			link.name = unix.ByteSliceToString(value)
-		case unix.IFLA_MASTER:
-			if len(value) == 4 {
-				link.master = binary.NativeEndian.Uint32(value)
-			}
 		}
 	}
 	return link
@@ -273,39 +265,6 @@ func putAttrU32(buf []byte, kind uint16, value uint32) []byte {
 	var raw [4]byte
 	binary.NativeEndian.PutUint32(raw[:], value)
 	return putAttr(buf, kind, raw[:])
-}
-
-// linkVRFTable finds IFLA_VRF_TABLE two levels down in one RTM_NEWLINK, inside
-// IFLA_INFO_DATA inside IFLA_LINKINFO, and only when IFLA_INFO_KIND names a
-// VRF. The nest flag is masked off because the kernel is free to set it on
-// either level.
-// a device of another kind answers 0
-func linkVRFTable(reply nlMessage) uint32 {
-	for kind, info := range reply.attributes(unix.SizeofIfInfomsg) {
-		if kind&^unix.NLA_F_NESTED != unix.IFLA_LINKINFO {
-			continue
-		}
-		vrf := false
-		var data []byte
-		for kind, value := range (nlMessage{Data: info}).attributes(0) {
-			switch kind &^ unix.NLA_F_NESTED {
-			case unix.IFLA_INFO_KIND:
-				vrf = strings.TrimSuffix(string(value), "\x00") == "vrf"
-			case unix.IFLA_INFO_DATA:
-				data = value
-			}
-		}
-		if !vrf {
-			return 0
-		}
-		for kind, value := range (nlMessage{Data: data}).attributes(0) {
-			if kind == unix.IFLA_VRF_TABLE && len(value) == 4 {
-				return binary.NativeEndian.Uint32(value)
-			}
-		}
-		return 0
-	}
-	return 0
 }
 
 func putAttrString(buf []byte, kind uint16, value string) []byte {

@@ -5,6 +5,7 @@ Policy rules, ipv4
   100       to 23.161.104.0/24    200      protocol 4
   120       iif eth1              main     ranet3
   150       from 23.161.104.0/24  main     protocol 4
+  1000      l3mdev                0        kernel
   32766     all                   main     kernel
   32767     all                   default  kernel
 Policy rules, ipv6

@@ -6,20 +6,17 @@
 package kernel
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"golang.org/x/sys/unix"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// This file is the linux realization of policy routing and of the VRF the mesh
-// table is bound to. Both are linux facilities with no equivalent on the other
-// platforms this tree builds for, which is why they are optional halves of the
-// platform rather than methods every backend has to stub. See ruler and
-// vrfMaker in kernel.go for what the other platforms do instead.
+// This file is the linux realization of policy routing, a linux facility with
+// no equivalent on the other platforms this tree builds for, which is why it
+// is an optional half of the platform rather than methods every backend has to
+// stub. See ruler in kernel.go for what the other platforms do instead.
 //
 // Ownership is the same as routes': every rule this file writes carries
 // FRA_PROTOCOL set to the reconciler's protocol, a dump keeps only those, and
@@ -150,87 +147,6 @@ func (p *netlinkPlatform) DelRule(rule Rule) error {
 	}
 	if err != nil {
 		return fmt.Errorf("kernel: delete rule %s: %w", rule, err)
-	}
-	return nil
-}
-
-// EnsureVRF creates the device when nothing of that name exists. A device that
-// is already there is left exactly as it is, whatever kind it is and whatever
-// table it is bound to: rebinding somebody else's VRF moves every route in it,
-// and replacing a device of another kind takes its addresses with it.
-func (p *netlinkPlatform) EnsureVRF(name string, table uint32) (uint32, error) {
-	if _, err := p.conn.link(0, name); err == nil {
-		return 0, nil
-	} else if !errors.Is(err, unix.ENODEV) {
-		return 0, fmt.Errorf("kernel: look up %s: %w", name, err)
-	}
-	body := make([]byte, unix.SizeofIfInfomsg)
-	body[0] = unix.AF_UNSPEC
-	// IFF_UP in the change mask and the flags, so the device is usable as a
-	// master the moment it exists rather than after a second call.
-	binary.NativeEndian.PutUint32(body[8:], unix.IFF_UP)
-	binary.NativeEndian.PutUint32(body[12:], unix.IFF_UP)
-	body = putAttrString(body, unix.IFLA_IFNAME, name)
-	data := putAttrU32(nil, unix.IFLA_VRF_TABLE, table)
-	info := putAttrString(nil, unix.IFLA_INFO_KIND, "vrf")
-	info = putAttr(info, unix.IFLA_INFO_DATA, data)
-	body = putAttr(body, unix.IFLA_LINKINFO, info)
-	if _, err := p.conn.execute(unix.RTM_NEWLINK,
-		unix.NLM_F_CREATE|unix.NLM_F_EXCL|unix.NLM_F_ACK, body); err != nil {
-		// Something else won the race between the lookup and the create, which
-		// is a device that now exists and is therefore not ours to have made.
-		if errors.Is(err, unix.EEXIST) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("kernel: create vrf %s: %w", name, err)
-	}
-	made, err := p.conn.link(0, name)
-	if err != nil {
-		// no stop can remove a device whose index this process never read
-		// it goes now
-		// the next pass makes it again and reads the index
-		byName := putAttrString(make([]byte, unix.SizeofIfInfomsg), unix.IFLA_IFNAME, name)
-		if _, removeErr := p.conn.execute(unix.RTM_DELLINK, unix.NLM_F_ACK, byName); removeErr != nil && !errors.Is(removeErr, unix.ENODEV) {
-			return 0, fmt.Errorf("kernel: look up the vrf %s just created: %w, and remove it again: %w", name, err, removeErr)
-		}
-		return 0, fmt.Errorf("kernel: look up the vrf %s just created: %w", name, err)
-	}
-	return made.index, nil
-}
-
-// VRFTable answers 0 for a name nothing holds yet, which is the state before the first pass creates the vrf
-func (p *netlinkPlatform) VRFTable(name string) (uint32, error) {
-	link, err := p.conn.link(0, name)
-	if errors.Is(err, unix.ENODEV) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	return link.vrfTable, nil
-}
-
-func (p *netlinkPlatform) RemoveVRF(name string, index uint32) error {
-	link, err := p.conn.link(0, name)
-	if errors.Is(err, unix.ENODEV) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("kernel: look up %s: %w", name, err)
-	}
-	if link.index != index {
-		slog.Warn("kernel is leaving a vrf it did not create", "vrf", name,
-			"detail", "the device it created is gone and another one holds the name now")
-		return nil
-	}
-	body := make([]byte, unix.SizeofIfInfomsg)
-	body[0] = unix.AF_UNSPEC
-	binary.NativeEndian.PutUint32(body[4:], link.index)
-	if _, err := p.conn.execute(unix.RTM_DELLINK, unix.NLM_F_ACK, body); err != nil {
-		if errors.Is(err, unix.ENODEV) {
-			return nil
-		}
-		return fmt.Errorf("kernel: remove vrf %s: %w", name, err)
 	}
 	return nil
 }

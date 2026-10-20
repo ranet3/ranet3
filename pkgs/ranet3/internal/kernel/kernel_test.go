@@ -48,24 +48,14 @@ type fakeKernel struct {
 	foreign map[Route]bool
 	addrs   map[netip.Prefix]bool
 	deleted []netip.Prefix
-	master  string
 	name    string
 	closed  bool
 	adds    int
 	dels    int
 
 	rules    map[Rule]bool
-	vrfs     map[string]uint32
 	ruleAdds int
 	ruleDels int
-	vrfErr   error
-	// vrfIndex is the index of each vrf EnsureVRF made
-	// lastIndex is the last index it handed out, 40 before the first
-	// a flag in place of an index reads as 1, which names none of the fake's vrfs
-	vrfIndex  map[string]uint32
-	lastIndex uint32
-	// bindErr fails every read of a vrf's binding
-	bindErr error
 
 	failAdd     map[Route]error
 	failDel     map[Route]error
@@ -91,9 +81,6 @@ func newFakeKernel(t *testing.T) *fakeKernel {
 		foreign:     make(map[Route]bool),
 		addrs:       make(map[netip.Prefix]bool),
 		rules:       make(map[Rule]bool),
-		vrfs:        make(map[string]uint32),
-		vrfIndex:    make(map[string]uint32),
-		lastIndex:   40,
 		failAdd:     make(map[Route]error),
 		failDel:     make(map[Route]error),
 		failAddRule: make(map[Rule]error),
@@ -202,26 +189,6 @@ func (f *fakeKernel) DelAddr(address netip.Prefix) error {
 
 // keysByLength reads byLength without the lock, which is set before the reconciler runs
 func (f *fakeKernel) keysByLength(address netip.Addr) bool { return f.byLength && address.Is4() }
-
-func (f *fakeKernel) Master() (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.master, nil
-}
-
-func (f *fakeKernel) Enslave(master string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.master = master
-	return nil
-}
-
-func (f *fakeKernel) Release() error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.master = ""
-	return nil
-}
 
 func (f *fakeKernel) Notify() <-chan struct{} { return f.signal }
 
@@ -506,17 +473,13 @@ func captureKernelLogs(t *testing.T) *bytes.Buffer {
 }
 
 // auditingKernel is the fake with a startup census
-// it names the writers each case sets and keeps what it was told about the table
+// it names the writers each case sets
 type auditingKernel struct {
 	*fakeKernel
 	writers []string
-	ownVRF  []bool
 }
 
-func (a *auditingKernel) foreignWriters(ownVRF bool) ([]string, error) {
-	a.ownVRF = append(a.ownVRF, ownVRF)
-	return a.writers, nil
-}
+func (a *auditingKernel) foreignWriters() ([]string, error) { return a.writers, nil }
 
 // logRecord is the one record carrying msg among the logs captureKernelLogs collected, and nil when there is none
 func logRecord(t *testing.T, logs *bytes.Buffer, msg string) map[string]any {
@@ -538,197 +501,29 @@ func logRecord(t *testing.T, logs *bytes.Buffer, msg string) map[string]any {
 	return found
 }
 
-// A VRF that existed first keeps its own table, and traffic inside it never
-// looks at this one, so the mesh comes up looking complete and carries nothing
-// from inside the VRF. The pass says so, only when the two tables differ, and
-// names both, since either one is the setting an operator changes.
-// the fix stands in an attribute of its own
-// it is one an operator can follow, whatever made the device and whatever table it is bound to
-func TestPassSaysWhenTheVRFIsBoundToAnotherTable(t *testing.T) {
-	type binding struct {
-		bound  uint32
-		create bool
-		fix    string
-	}
-	cases := map[string]binding{
-		"bound to this table":    {bound: DefaultTable},
-		"bound to another table": {bound: 300, fix: "bind the vrf to table 200 in whatever creates it, or set cap.table id to 300"},
-		"not a vrf yet":          {},
-		// deleting the device would detach the vrf's other links
-		// the one made again in its place would be a device this process removes at its next stop
-		"bound to another table with create set": {bound: 300, create: true, fix: "bind the vrf to table 200 in whatever creates it, or set cap.table id to 300"},
-	}
-	// the kernel keeps tables 253 to 255 for itself
-	// the sweep takes one table past each end as well
-	// cap.table id is offered exactly where cap.table takes it
-	// a node told to follow the vrf into a table cap.table refuses would not start
-	for bound := uint32(252); bound <= 256; bound++ {
-		fix := "bind the vrf to table 200 in whatever creates it"
-		if (Table{ID: schema.TableID(bound)}).Validate() == nil {
-			fix += fmt.Sprintf(", or set cap.table id to %d", bound)
-		}
-		cases[fmt.Sprintf("bound to table %d", bound)] = binding{bound: bound, fix: fix}
-	}
-	for name, test := range cases {
-		t.Run(name, func(t *testing.T) {
-			reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh", Create: test.create}})
-			if test.bound != 0 {
-				fake.vrfs["mesh"] = test.bound
-			}
-			logs := captureKernelLogs(t)
-			if err := reconciler.reconcile(); err != nil {
-				t.Fatal(err)
-			}
-			record := logRecord(t, logs, "kernel's vrf is bound to another table than the one it writes")
-			if test.fix == "" {
-				if record != nil {
-					t.Errorf("the pass said %v", record)
-				}
-				return
-			}
-			if record == nil {
-				t.Fatalf("the pass said nothing about a vrf bound to table %d: %q", test.bound, logs.String())
-			}
-			if record["vrf"] != "mesh" || record["vrf_table"] != float64(test.bound) || record["table"] != float64(DefaultTable) {
-				t.Errorf("the warning names %v, %v and %v, want the vrf, both tables", record["vrf"], record["vrf_table"], record["table"])
-			}
-			if record["fix"] != test.fix {
-				t.Errorf("the fix reads %q, want %q", record["fix"], test.fix)
-			}
-			// with no unreachable default in the vrf's table a miss leaves by the uplink
-			// a ping that answers then makes the warning read as spurious
-			detail, _ := record["detail"].(string)
-			if !strings.Contains(detail, "falls through to the main table") || strings.ContainsRune(detail, ';') {
-				t.Errorf("the detail reads %q, want it to say a miss falls through to the main table, with no semicolon", detail)
-			}
-		})
-	}
-	// a binding that cannot be read fails the pass, which says so where an operator reads it
-	reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh"}})
-	fake.bindErr = errors.New("netlink went away")
-	if err := reconciler.reconcile(); err == nil || !strings.Contains(err.Error(), "netlink went away") {
-		t.Errorf("a binding that could not be read left the pass with %v", err)
-	}
-}
-
-// a vrf that appears or is remade bound to another table while this process runs is reported once
-// the first pass to find it reports it
-// a binding read once at startup missed such a vrf
-// the status line then read like a healthy node's
-func TestPassReportsAVRFBoundElsewhereOnceItAppears(t *testing.T) {
+// the census says what sharing a table costs and names the writers it found
+func TestCensusNamesTheWritersAndTheFix(t *testing.T) {
+	reconciler, _, fake := harness(t, Table{})
+	reconciler.plat = &auditingKernel{fakeKernel: fake, writers: []string{"bird (12)"}}
 	logs := captureKernelLogs(t)
-	reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh"}})
-	reported := func() int { return strings.Count(logs.String(), "bound to another table") }
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
+	reconciler.audit()
+	record := logRecord(t, logs, "kernel is sharing its table with another routing protocol")
+	if record == nil {
+		t.Fatalf("the census said nothing about bird: %q", logs.String())
 	}
-	if got := reported(); got != 0 {
-		t.Fatalf("a pass that found no vrf reported a binding %d times", got)
+	if record["protocols"] != "bird (12)" {
+		t.Errorf("the census names %v, want bird (12)", record["protocols"])
 	}
-	fake.mu.Lock()
-	fake.vrfs["mesh"] = 300
-	fake.mu.Unlock()
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
+	if want := "give this reconciler a table of its own"; record["fix"] != want {
+		t.Errorf("the fix reads %q, want %q", record["fix"], want)
 	}
-	if got := reported(); got != 1 {
-		t.Fatalf("the pass that found the vrf bound to table 300 reported it %d times, want once", got)
-	}
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if got := reported(); got != 1 {
-		t.Errorf("a binding that did not change was reported again, %d times in all", got)
-	}
-	// the vrf goes while the tun still names it as its master
-	// it then reads as bound to table 0, which is no binding to report
-	fake.mu.Lock()
-	delete(fake.vrfs, "mesh")
-	fake.mu.Unlock()
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if got := reported(); got != 1 {
-		t.Errorf("a vrf that went was reported as bound to table 0, %d reports in all", got)
+	if detail, _ := record["detail"].(string); strings.Contains(detail, "a table of its own") {
+		t.Errorf("the detail reads %q, which gives advice beside the fix", detail)
 	}
 }
 
-// the census is told the table is its vrf's own only when the kernel says the vrf is bound there
-// a binding that cannot be read is reported once
-// the census still runs, rather than dropping the whole report over one lookup
-func TestCensusAsksTheKernelWhichTableTheVRFIsBoundTo(t *testing.T) {
-	for name, test := range map[string]struct {
-		bound  uint32
-		err    error
-		ownVRF bool
-		logged string
-	}{
-		"bound to this table":    {bound: DefaultTable, ownVRF: true},
-		"bound to another table": {bound: 300},
-		"not a vrf yet":          {},
-		"unreadable":             {err: errors.New("netlink went away"), logged: "netlink went away"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh"}})
-			if test.bound != 0 {
-				fake.vrfs["mesh"] = test.bound
-			}
-			fake.bindErr = test.err
-			census := &auditingKernel{fakeKernel: fake, writers: []string{"bird (12)"}}
-			reconciler.plat = census
-			logs := captureKernelLogs(t)
-			reconciler.audit()
-			if !slices.Equal(census.ownVRF, []bool{test.ownVRF}) {
-				t.Errorf("the census was told ownVRF %v, want once %v", census.ownVRF, test.ownVRF)
-			}
-			got := logs.String()
-			if !strings.Contains(got, "bird (12)") {
-				t.Errorf("the census report was dropped: %q", got)
-			}
-			if test.logged != "" && strings.Count(got, test.logged) != 1 {
-				t.Errorf("the failed read was reported %d times, want once: %q", strings.Count(got, test.logged), got)
-			}
-		})
-	}
-}
-
-// the census says what sharing a table costs
-// it gives the one fix this node can follow in an attribute of its own
-// a node with a vrf cannot hand the reconciler another table, since the vrf looks this one up
-// it is told to stop the other writer instead
-// told to take another table, a fleet node mid-migration met the binding warning pointing back, one restart per step
-func TestCensusGivesTheFixTheNodeCanFollow(t *testing.T) {
-	for name, test := range map[string]struct {
-		vrf *VRF
-		fix string
-	}{
-		"a node without a vrf": {fix: "give this reconciler a table of its own"},
-		"a node with a vrf":    {vrf: &VRF{Name: "mesh"}, fix: "stop the other writer exporting into this table"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			reconciler, _, fake := harness(t, Table{VRF: test.vrf})
-			reconciler.plat = &auditingKernel{fakeKernel: fake, writers: []string{"bird (12)"}}
-			logs := captureKernelLogs(t)
-			reconciler.audit()
-			record := logRecord(t, logs, "kernel is sharing its table with another routing protocol")
-			if record == nil {
-				t.Fatalf("the census said nothing about bird: %q", logs.String())
-			}
-			if record["fix"] != test.fix {
-				t.Errorf("the fix reads %q, want %q", record["fix"], test.fix)
-			}
-			if detail, _ := record["detail"].(string); strings.Contains(detail, "a table of its own") {
-				t.Errorf("the detail reads %q, which gives advice beside the fix", detail)
-			}
-		})
-	}
-}
-
-// Run takes the census before its first pass
-// that pass enslaves the tun
-// the enslave flushes every route out of the tun, another writer's among them
-func TestRunTakesTheCensusBeforeItsFirstPass(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{VRF: &VRF{Name: "mesh"}})
+func TestRunTakesTheCensus(t *testing.T) {
+	reconciler, table, fake := harness(t, Table{})
 	reconciler.plat = &auditingKernel{fakeKernel: fake, writers: []string{"bird (12)"}}
 	route := Route{Destination: prefix("10.0.0.0/8")}
 	table.Set(netip.Prefix{}, route.Destination, nil)
@@ -741,13 +536,8 @@ func TestRunTakesTheCensusBeforeItsFirstPass(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	got := logs.String()
-	census, enslaved := strings.Index(got, "sharing its table"), strings.Index(got, "kernel interface enslaved")
-	if census < 0 {
+	if got := logs.String(); !strings.Contains(got, "sharing its table") {
 		t.Fatalf("a run over a table bird writes into said nothing about it: %q", got)
-	}
-	if enslaved < 0 || census > enslaved {
-		t.Errorf("the census did not come before the first pass enslaved the tun: %q", got)
 	}
 }
 
@@ -870,43 +660,6 @@ func TestApplyAddressesOnlyRemovesWhatItAdded(t *testing.T) {
 	// silently leaves the address behind.
 	if !slices.Equal(fake.deleted, []netip.Prefix{ours}) {
 		t.Errorf("withdrawal asked to delete %v, want only %s", fake.deleted, ours)
-	}
-}
-
-func TestApplyMasterEnslavesOnlyUnclaimedLink(t *testing.T) {
-	reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh"}})
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	if fake.master != "mesh" {
-		t.Fatalf("master is %q, want mesh", fake.master)
-	}
-	// idempotent: a second pass must not touch a link already in place.
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	if err := reconciler.withdraw(); err != nil {
-		t.Fatalf("withdraw: %v", err)
-	}
-	if fake.master != "" {
-		t.Fatalf("master is %q after withdrawal, want empty", fake.master)
-	}
-}
-
-func TestApplyMasterLeavesAnotherManagersLinkAlone(t *testing.T) {
-	reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh"}})
-	fake.master = "somebody-else"
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	if fake.master != "somebody-else" {
-		t.Fatalf("master is %q, want the one already there", fake.master)
-	}
-	if err := reconciler.withdraw(); err != nil {
-		t.Fatalf("withdraw: %v", err)
-	}
-	if fake.master != "somebody-else" {
-		t.Fatal("withdrawal released a master the reconciler did not set")
 	}
 }
 
@@ -1485,43 +1238,9 @@ func (f *fakeKernel) DelRule(rule Rule) error {
 	return nil
 }
 
-func (f *fakeKernel) EnsureVRF(name string, table uint32) (uint32, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.vrfErr != nil {
-		return 0, f.vrfErr
-	}
-	if _, exists := f.vrfs[name]; exists {
-		return 0, nil
-	}
-	f.lastIndex++
-	f.vrfs[name], f.vrfIndex[name] = table, f.lastIndex
-	return f.lastIndex, nil
-}
-
-func (f *fakeKernel) VRFTable(name string) (uint32, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.bindErr != nil {
-		return 0, f.bindErr
-	}
-	return f.vrfs[name], nil
-}
-
-// RemoveVRF leaves a device holding the name under another index, as the linux backend does
-func (f *fakeKernel) RemoveVRF(name string, index uint32) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.vrfIndex[name] == index {
-		delete(f.vrfs, name)
-		delete(f.vrfIndex, name)
-	}
-	return nil
-}
-
-// routesOnly is a platform with no policy engine and no VRFs, which is every
-// platform but linux. It delegates rather than embedding, because embedding
-// promotes the rule methods and the point of this type is not having them.
+// routesOnly is a platform with no policy engine, which is every platform but
+// linux. It delegates rather than embedding, because embedding promotes the
+// rule methods and the point of this type is not having them.
 type routesOnly struct{ inner *fakeKernel }
 
 func (p routesOnly) Routes() ([]Route, error)          { return p.inner.Routes() }
@@ -1531,9 +1250,6 @@ func (p routesOnly) DelRoute(r Route) error            { return p.inner.DelRoute
 func (p routesOnly) Addrs() ([]netip.Prefix, error)    { return p.inner.Addrs() }
 func (p routesOnly) AddAddr(prefix netip.Prefix) error { return p.inner.AddAddr(prefix) }
 func (p routesOnly) DelAddr(prefix netip.Prefix) error { return p.inner.DelAddr(prefix) }
-func (p routesOnly) Master() (string, error)           { return p.inner.Master() }
-func (p routesOnly) Enslave(master string) error       { return p.inner.Enslave(master) }
-func (p routesOnly) Release() error                    { return p.inner.Release() }
 func (p routesOnly) Notify() <-chan struct{}           { return p.inner.Notify() }
 func (p routesOnly) retable(t Table)                   { p.inner.retable(t) }
 func (p routesOnly) Close() error                      { return p.inner.Close() }
@@ -1550,22 +1266,9 @@ func TestPlatformWithoutRulesRefusesThemByName(t *testing.T) {
 	if !strings.Contains(err.Error(), "scoped") {
 		t.Errorf("the refusal reads %q, want it to say what the platform does instead", err)
 	}
-	if err := refuseWhatThePlatformLacks(Table{VRF: &VRF{Name: "mesh", Create: true}}, plat); err == nil {
-		t.Fatal("vrf creation was accepted on a platform with no VRFs")
-	}
-	// Naming a VRF without asking for one to be created still needs the link
-	// enslaved to it, which the same platforms cannot do.
-	if err := refuseWhatThePlatformLacks(Table{VRF: &VRF{Name: "mesh"}}, plat); err == nil {
-		t.Fatal("a vrf was accepted on a platform with no VRFs")
-	}
-	// Asking for a device with no name is a configuration that cannot mean
-	// anything, and is refused where the file is read rather than here.
-	if err := (Table{VRF: &VRF{Create: true}}).Validate(); err == nil {
-		t.Fatal("a vrf naming no device was accepted")
-	}
-	// The same configuration on a platform that has both is accepted.
-	if err := refuseWhatThePlatformLacks(Table{Rules: []Rule{rule}, VRF: &VRF{Name: "mesh", Create: true}}, newFakeKernel(t)); err != nil {
-		t.Errorf("a platform with rules and VRFs refused them: %v", err)
+	// The same configuration on a platform that has rules is accepted.
+	if err := refuseWhatThePlatformLacks(Table{Rules: []Rule{rule}}, newFakeKernel(t)); err != nil {
+		t.Errorf("a platform with rules refused them: %v", err)
 	}
 }
 
@@ -1695,16 +1398,13 @@ func TestDeviceRuleNamesItsFamilyAndSortsOneWay(t *testing.T) {
 func TestRulePassInstallsOnceAndWithdrawsWhatIsGone(t *testing.T) {
 	underlay := Rule{Family: FamilyIPv4, FWMark: 0x726c, Table: 254, Priority: 40}
 	mesh := Rule{From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150}
-	reconciler, _, fake := harness(t, Table{Rules: []Rule{underlay, mesh}, VRF: &VRF{Name: "mesh", Create: true}})
+	reconciler, _, fake := harness(t, Table{Rules: []Rule{underlay, mesh}})
 
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := fake.Rules(); err != nil || len(got) != 2 {
 		t.Fatalf("the first pass installed %v (%v), want both rules", got, err)
-	}
-	if table, ok := fake.vrfs["mesh"]; !ok || table != DefaultTable {
-		t.Fatalf("the vrf is %v bound to %d, want the reconciler's table", ok, table)
 	}
 
 	adds, dels := fake.ruleAdds, fake.ruleDels
@@ -1732,54 +1432,6 @@ func TestRulePassInstallsOnceAndWithdrawsWhatIsGone(t *testing.T) {
 	}
 	if got, _ := fake.Rules(); len(got) != 0 {
 		t.Errorf("shutdown left %v behind", got)
-	}
-	if _, ok := fake.vrfs["mesh"]; ok {
-		t.Error("shutdown left behind the vrf it created")
-	}
-}
-
-// A VRF that was already there belongs to whoever made it: rebinding it moves
-// every route in its table, and removing it at shutdown takes them with it.
-func TestVRFThatWasAlreadyThereIsLeftAlone(t *testing.T) {
-	reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh", Create: true}})
-	fake.vrfs["mesh"] = 42
-
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if table := fake.vrfs["mesh"]; table != 42 {
-		t.Fatalf("the existing vrf was rebound to %d", table)
-	}
-	if err := reconciler.withdraw(); err != nil {
-		t.Fatal(err)
-	}
-	if table, ok := fake.vrfs["mesh"]; !ok || table != 42 {
-		t.Errorf("shutdown removed a vrf it did not create: %v %d", ok, table)
-	}
-}
-
-// a vrf this process made is removed at shutdown by the index the kernel gave it
-// a device made again after somebody deleted it carries a new index, which the reconciler keeps
-// a flag or the first index in its place leaves the device behind
-func TestWithdrawRemovesTheVRFItMadeByItsIndex(t *testing.T) {
-	reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh", Create: true}})
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	first := fake.vrfIndex["mesh"]
-	delete(fake.vrfs, "mesh")
-	delete(fake.vrfIndex, "mesh")
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if again := fake.vrfIndex["mesh"]; again == 0 || again == first {
-		t.Fatalf("the vrf was made again under index %d after %d, so this proves nothing", again, first)
-	}
-	if err := reconciler.withdraw(); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := fake.vrfs["mesh"]; ok {
-		t.Error("shutdown left behind the vrf this process made")
 	}
 }
 
@@ -1874,14 +1526,15 @@ func TestRulesAreCanonicalizedToWhatTheKernelReportsBack(t *testing.T) {
 }
 
 // A pass that fails anywhere has to say so where an operator reads it. Only
-// applyRoutes counts, so a node whose rules or VRF fail on every pass would
+// applyRoutes counts, so a node whose rules fail on every pass would
 // otherwise report a clean route count and no error at all.
 func TestStatsCarryTheWholePassError(t *testing.T) {
-	reconciler, _, fake := harness(t, Table{VRF: &VRF{Name: "mesh", Create: true}})
-	fake.vrfErr = errors.New("no permission to create a vrf")
+	rule := Rule{Family: FamilyIPv6, From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150}
+	reconciler, _, fake := harness(t, Table{Rules: []Rule{rule}})
+	fake.failRules = errors.New("no permission to read the rules")
 
 	if err := reconciler.reconcile(); err == nil {
-		t.Fatal("a failing vrf did not fail the pass")
+		t.Fatal("a failing rule pass did not fail the pass")
 	}
 	stats := reconciler.Stats()
 	if stats.Err == "" {
@@ -1889,6 +1542,35 @@ func TestStatsCarryTheWholePassError(t *testing.T) {
 	}
 	if stats.At.IsZero() {
 		t.Error("a failing pass left no timestamp, so a stale one reads as current")
+	}
+}
+
+// An address that cannot be assigned stops neither routes nor rules, and a
+// route that cannot be installed does not stop rules
+func TestFailingStepLeavesTheLaterStepsToRun(t *testing.T) {
+	rule := Rule{Family: FamilyIPv6, From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150}
+	route := Route{Destination: prefix("10.0.0.0/8")}
+	reconciler, table, fake := harness(t, Table{Addresses: prefixes(prefix("198.18.104.5/32")), Rules: []Rule{rule}})
+	table.Set(netip.Prefix{}, route.Destination, nil)
+	fake.failAddrs = errors.New("the link refuses the address")
+	if err := reconciler.reconcile(); err == nil {
+		t.Fatal("a failing address step did not fail the pass")
+	}
+	if !fake.has(route) {
+		t.Error("a failing address step stopped the route step")
+	}
+	if fake.ruleAdds != 1 {
+		t.Errorf("a failing address step left %d rules installed, want 1", fake.ruleAdds)
+	}
+
+	reconciler, table, fake = harness(t, Table{Rules: []Rule{rule}})
+	table.Set(netip.Prefix{}, route.Destination, nil)
+	fake.failAdd[route] = errors.New("netlink says no")
+	if err := reconciler.reconcile(); err == nil {
+		t.Fatal("a failing route did not fail the pass")
+	}
+	if fake.ruleAdds != 1 {
+		t.Errorf("a failing route left %d rules installed, want 1", fake.ruleAdds)
 	}
 }
 

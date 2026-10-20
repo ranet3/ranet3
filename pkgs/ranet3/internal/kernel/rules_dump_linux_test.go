@@ -20,8 +20,9 @@ import (
 
 // A dump reads every policy rule, whoever wrote it and whatever it does: the
 // kernel's own, the reconciler's, another writer's, one taking a packet to no
-// table and one matching what its selectors do not, each with its family,
-// priority, selectors, action, table and protocol as the kernel holds them
+// table, one matching what its selectors do not and the l3mdev rule a VRF of
+// any owner brings, each with its family, priority, selectors, action, table
+// and protocol as the kernel holds them
 func TestNetlinkDumpRulesReadsEveryOwner(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
@@ -58,7 +59,12 @@ func TestNetlinkDumpRulesReadsEveryOwner(t *testing.T) {
 	unreachable = putAttrU32(unreachable, unix.FRA_PRIORITY, 200)
 	unreachable = putAttrString(unreachable, unix.FRA_IIFNAME, device)
 	unreachable = putAttr(unreachable, unix.FRA_PROTOCOL, []byte{unix.RTPROT_STATIC})
-	for _, body := range [][]byte{foreign, unreachable} {
+	l3mdev := make([]byte, sizeofFibRuleHdr)
+	l3mdev[0], l3mdev[7] = unix.AF_INET6, unix.FR_ACT_TO_TBL
+	l3mdev = putAttrU32(l3mdev, unix.FRA_PRIORITY, 1000)
+	l3mdev = putAttr(l3mdev, unix.FRA_L3MDEV, []byte{1})
+	l3mdev = putAttr(l3mdev, unix.FRA_PROTOCOL, []byte{unix.RTPROT_KERNEL})
+	for _, body := range [][]byte{foreign, unreachable, l3mdev} {
 		if _, err := conn.execute(unix.RTM_NEWRULE, unix.NLM_F_CREATE|unix.NLM_F_EXCL|unix.NLM_F_ACK, body); err != nil {
 			t.Fatalf("install another writer's rule: %v", err)
 		}
@@ -78,12 +84,13 @@ func TestNetlinkDumpRulesReadsEveryOwner(t *testing.T) {
 		{Family: FamilyIPv6, Priority: 40, FWMark: 0x726c, FWMask: 0xffff, Action: "lookup", Table: unix.RT_TABLE_MAIN, Protocol: DefaultProtocol},
 		{Family: FamilyIPv6, Priority: 101, From: netip.MustParsePrefix("3fff:1::/32"), Action: "lookup", Table: 300, Protocol: unix.RTPROT_STATIC},
 		{Family: FamilyIPv4, Priority: 200, IIF: device, Invert: true, Action: "unreachable", Protocol: unix.RTPROT_STATIC},
+		{Family: FamilyIPv6, Priority: 1000, L3mdev: true, Action: "lookup", Protocol: unix.RTPROT_KERNEL},
 	} {
 		if !slices.Contains(dumped, want) {
 			t.Errorf("the dump does not hold %+v in:\n%+v", want, dumped)
 		}
 	}
-	if len(dumped) != 9 {
-		t.Errorf("the dump holds %d rules, want the kernel's five and the four written:\n%+v", len(dumped), dumped)
+	if len(dumped) != 10 {
+		t.Errorf("the dump holds %d rules, want the kernel's five and the five written:\n%+v", len(dumped), dumped)
 	}
 }

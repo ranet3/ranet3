@@ -3,10 +3,10 @@
 
 # The netlink round trips in internal/kernel and internal/egress/kernel need root and
 # a network namespace to make a mess in, so they skip themselves under the go
-# check, which builds as an unprivileged user. That left every rule and VRF
-# write, the FRA_PROTOCOL ownership they rest on, and every byte of the
-# nf_tables encoding asserted nowhere any check ran. These are the same test
-# binaries, run as root against a real kernel.
+# check, which builds as an unprivileged user. That left every rule write, the
+# FRA_PROTOCOL ownership it rests on, and every byte of the nf_tables encoding
+# asserted nowhere any check ran. These are the same test binaries, run as root
+# against a real kernel.
 # internal/netstack's tun round trips run here for the same reason
 # and so does transport's send through a path whose mtu is locked
 # and the tun and conn packages of pkgs/wireguard
@@ -205,10 +205,9 @@ testers.runNixOSTest {
     assert "--- PASS: TestStdNetBindSendRetryWithoutGSO" in out, f"the send retry without GSO did not pass:\n{out}"
 
     # Nothing the tests wrote may outlive them: they run against the host's own
-    # kernel here rather than against a fake, so a rule, a VRF or a table left
+    # kernel here rather than against a fake, so a rule, a link or a table left
     # behind is a leak this check is the only thing positioned to see.
     assert "proto 155" not in machine.succeed("ip rule show; ip -6 rule show")
-    machine.fail("ip link show mesh")
     machine.fail("ip link show gsocap0")
     machine.fail("ip link show ranet3")
     links = machine.succeed("ip -br link")

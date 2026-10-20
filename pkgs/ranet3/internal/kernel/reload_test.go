@@ -259,21 +259,17 @@ func TestStoppedReconcilerTakesAReloadAndInstallsItOnlyOnceStarted(t *testing.T)
 // a reload is refused before anything is handed to the loop, so the capability in force, the platform and the kernel stay as they were
 func TestReloadRefusesWhatTheReconcilerCannotTake(t *testing.T) {
 	underlay := Rule{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: FamilyBoth}
-	start := Table{Rules: []Rule{underlay}, Addresses: prefixes(prefix("198.18.104.5/32")), VRF: &VRF{Name: "mesh"}}
-	vrf := func(table Table, to *VRF) Table { table.VRF = to; return table }
+	start := Table{Rules: []Rule{underlay}, Addresses: prefixes(prefix("198.18.104.5/32"))}
 	for name, refused := range map[string]struct {
 		next   Table
 		naming string
 	}{
-		"another id":         {Table{ID: 201, VRF: start.VRF}, "cap.table id changed"},
-		"another proto":      {Table{Proto: DefaultProtocol + 1, VRF: start.VRF}, "cap.table proto changed"},
-		"no vrf":             {vrf(start, nil), "cap.table vrf changed"},
-		"another vrf":        {vrf(start, &VRF{Name: "other"}), "cap.table vrf changed"},
-		"the vrf made here":  {vrf(start, &VRF{Name: "mesh", Create: true}), "cap.table vrf changed"},
-		"a reserved proto":   {Table{Proto: protocolStatic, VRF: start.VRF}, "is reserved"},
-		"a negative sweep":   {Table{Reconcile: -1, VRF: start.VRF}, "not an interval"},
-		"one rule twice":     {Table{Rules: []Rule{underlay, underlay}, VRF: start.VRF}, "configured twice"},
-		"an address at zero": {Table{Addresses: []schema.Prefix{{}}, VRF: start.VRF}, "not a prefix"},
+		"another id":         {Table{ID: 201}, "cap.table id changed"},
+		"another proto":      {Table{Proto: DefaultProtocol + 1}, "cap.table proto changed"},
+		"a reserved proto":   {Table{Proto: protocolStatic}, "is reserved"},
+		"a negative sweep":   {Table{Reconcile: -1}, "not an interval"},
+		"one rule twice":     {Table{Rules: []Rule{underlay, underlay}}, "configured twice"},
+		"an address at zero": {Table{Addresses: []schema.Prefix{{}}}, "not a prefix"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, table, fake := harness(t, start)

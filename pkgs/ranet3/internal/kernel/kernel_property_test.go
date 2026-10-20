@@ -386,7 +386,7 @@ func reloadAddresses() hegel.Generator[[]schema.Prefix] {
 	})
 }
 
-// reloads draws a cap.table block from a few values of every field, the id, the proto and the vrf among them, so that a sequence keeps some and moves others
+// reloads draws a cap.table block from a few values of every field, the id and the proto among them, so that a sequence keeps some and moves others
 func reloads() hegel.Generator[Table] {
 	shared := []Rule{
 		{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: FamilyBoth},
@@ -406,12 +406,6 @@ func reloads() hegel.Generator[Table] {
 		}
 		if source := hegel.Draw(tc, hegel.Integers(0, 2)); source > 0 {
 			table.PrefSrc4 = schema.AddrFrom(netip.AddrFrom4([4]byte{198, 18, 104, byte(4 + source)}))
-		}
-		switch hegel.Draw(tc, hegel.Integers(0, 2)) {
-		case 1:
-			table.VRF = &VRF{Name: "mesh"}
-		case 2:
-			table.VRF = &VRF{Name: "mesh", Create: true}
 		}
 		return table
 	})
@@ -437,7 +431,7 @@ func reloadHarness(t *testing.T, table Table, announced, foreign []netip.Prefix,
 	return r, fake
 }
 
-// inSpaceOf is next on the id, the proto and the vrf of first, a default spelled either way
+// inSpaceOf is next on the id and the proto of first, a default spelled either way
 func inSpaceOf(tc hegel.TestCase, first, next Table) Table {
 	next.ID, next.Proto = first.ID, first.Proto
 	if first.Normalized().ID == DefaultTable {
@@ -445,11 +439,6 @@ func inSpaceOf(tc hegel.TestCase, first, next Table) Table {
 	}
 	if first.Normalized().Proto == DefaultProtocol {
 		next.Proto = hegel.Draw(tc, hegel.SampledFrom([]uint8{0, DefaultProtocol}))
-	}
-	next.VRF = nil
-	if first.VRF != nil {
-		vrf := *first.VRF
-		next.VRF = &vrf
 	}
 	return next
 }
@@ -459,8 +448,6 @@ type held struct {
 	routes    []Route
 	addresses []netip.Prefix
 	rules     []Rule
-	master    string
-	vrfs      map[string]uint32
 }
 
 func heldBy(f *fakeKernel) held {
@@ -471,14 +458,12 @@ func heldBy(f *fakeKernel) held {
 		routes:    routes,
 		addresses: addresses,
 		rules:     sortedRules(slices.Collect(maps.Keys(f.rules))),
-		master:    f.master,
-		vrfs:      maps.Clone(f.vrfs),
 	}
 }
 
-// movedAlone is first with only its id, only its proto and only its vrf moved, each to a value a block may carry
+// movedAlone is first with only its id and only its proto moved, each to a value a block may carry
 func movedAlone(first Table) []Table {
-	id, proto, vrf := first, first, first
+	id, proto := first, first
 	id.ID = DefaultTable
 	if first.Normalized().ID == DefaultTable {
 		id.ID = DefaultTable + 1
@@ -487,27 +472,23 @@ func movedAlone(first Table) []Table {
 	if first.Normalized().Proto == DefaultProtocol {
 		proto.Proto = DefaultProtocol + 1
 	}
-	vrf.VRF = nil
-	if first.VRF == nil {
-		vrf.VRF = &VRF{Name: "mesh"}
-	}
-	return []Table{id, proto, vrf}
+	return []Table{id, proto}
 }
 
 // meaningfulHere is whether the platform under test can carry t, written apart from the platform's code
-// linux carries every setting, darwin no table, protocol, vrf or preferred source of a block's own, and the rest nothing
+// linux carries every setting, darwin no table, protocol or preferred source of a block's own, and the rest nothing
 func meaningfulHere(t Table) bool {
 	n := t.Normalized()
 	switch runtime.GOOS {
 	case "linux":
 		return true
 	case "darwin":
-		return n.ID == DefaultTable && n.Proto == DefaultProtocol && n.VRF == nil && !n.PrefSrc4.IsValid()
+		return n.ID == DefaultTable && n.Proto == DefaultProtocol && !n.PrefSrc4.IsValid()
 	}
 	return false
 }
 
-// a reload is taken when it validates, means something on this platform and keeps the id, the proto and the vrf the reconciler started on
+// a reload is taken when it validates, means something on this platform and keeps the id and the proto the reconciler started on
 // the pass after one it took leaves the kernel holding what a reconciler started on that capability holds after its first pass
 // that includes the addresses another writer holds
 // on a link that keys an IPv4 address by its length, a link carrying IPv4 before and after that pass carries it throughout
@@ -524,7 +505,7 @@ func TestReloadConvergesOnWhatAFreshReconcilerHolds(t *testing.T) {
 		if err := r.reconcile(); err != nil {
 			ht.Fatalf("the first pass on %+v: %v", first, err)
 		}
-		// the drawn reloads keep the id, the proto and the vrf in most samples, so each is moved alone first
+		// the drawn reloads keep the id and the proto in most samples, so each is moved alone first
 		moves := movedAlone(first)
 		for i := range len(moves) + hegel.Draw(ht, hegel.Integers(1, 4)) {
 			var next Table
@@ -539,8 +520,7 @@ func TestReloadConvergesOnWhatAFreshReconcilerHolds(t *testing.T) {
 			}
 			before, running := heldBy(kernel), r.Table()
 			err := r.SetTable(next, nil, announced)
-			keeps := next.Normalized().ID == first.Normalized().ID && next.Normalized().Proto == first.Normalized().Proto &&
-				reflect.DeepEqual(next.VRF, first.VRF)
+			keeps := next.Normalized().ID == first.Normalized().ID && next.Normalized().Proto == first.Normalized().Proto
 			takes := keeps && next.Validate() == nil && meaningfulHere(next)
 			if (err == nil) != takes {
 				ht.Fatalf("a reload from %+v to %+v answered %v", first, next, err)

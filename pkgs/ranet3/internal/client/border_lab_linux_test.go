@@ -34,10 +34,10 @@ var (
 	// labForged4 and labForged6 are the far host's addresses inside the overlay, which no packet from beyond the uplink may carry into the mesh
 	labForged4 = netip.MustParsePrefix("198.18.104.200/32")
 	labForged6 = netip.MustParsePrefix("3fff:a::200/128")
+	// labOwn4 and labOwn6 are the exit's own mesh addresses, inside the overlay and outside the leaves' prefixes
+	labOwn4 = netip.MustParsePrefix("198.18.105.1/32")
+	labOwn6 = netip.MustParsePrefix("3fff:b::1/128")
 )
-
-// labVRF is the master the VRF arm enslaves the mesh tun and the exit's end of the uplink to
-const labVRF = "labv"
 
 // borderLab is the border's lab: the exit's node, its reconciler and its
 // border built as main builds them, a far host beyond the uplink, and a
@@ -67,157 +67,142 @@ type borderLab struct {
 //     the SID's owner refuses and counts it, delivering one from inside
 //   - a packet the mesh writes into the tun with a mesh source reaches the far
 //     host, so the tun is inside
+//   - a packet the exit sends to a mesh address of its own reaches it, so lo
+//     is inside
 //   - with the border withdrawn and forwarding off, the packet of the first
 //     arm no longer crosses the tun, so the host forwards nothing from its
 //     links into the mesh without forwarding
-//   - with the tun and the uplink in a VRF, the first and fourth arms again,
-//     so a packet meeting prerouting a second time as the master passes
 //   - shutdown leaves no inet table of the border
 func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
 	}
-	t.Run("in the host's own tables", func(t *testing.T) {
-		lab := startBorderLab(t, "")
-		for _, arm := range []struct {
-			family     string
-			from, leaf netip.Addr
-		}{{"IPv4", labFar4.Addr(), labLeaf4}, {"IPv6", labFar6.Addr(), labHeadend}} {
-			t.Run("a source outside the overlay over "+arm.family, func(t *testing.T) {
-				payload := []byte("from outside the overlay over " + arm.family)
-				labCaptureReply(t, lab.capture, arm.leaf, payload, lab.sender(t, arm.from, arm.leaf, payload))
-			})
-		}
-		for _, arm := range []struct {
-			family     string
-			from, leaf netip.Addr
-			spec       string
-		}{
-			{"IPv4", labForged4.Addr(), labLeaf4, "drop ipv4 source 198.18.0.0/15"},
-			{"IPv6", labForged6.Addr(), labHeadend, "drop ipv6 source 3fff::/20"},
-		} {
-			t.Run("a source inside the overlay over "+arm.family, func(t *testing.T) {
-				payload := []byte("forged inside the overlay over " + arm.family)
-				before := lab.dropped(t, arm.spec)
-				lab.quiet(t, payload, labReplyTo(arm.leaf, payload), lab.sender(t, arm.from, arm.leaf, payload))
-				lab.counts(t, arm.spec, before)
-			})
-		}
-		// an address of the leaf's mesh prefix, which a packet the border passes reaches through the tun
-		beyond := netip.MustParseAddr("3fff:a::d4")
-		for _, arm := range []struct {
-			name    string
-			routing []uint8
-		}{
-			{"a type 4 routing header", []uint8{4}},
-			{"a type 4 routing header behind a type 0", []uint8{0, 4}},
-			{"a type 4 routing header behind a type 2", []uint8{2, 4}},
-		} {
-			t.Run(arm.name, func(t *testing.T) {
-				const spec = "drop ipv6 routing header"
-				payload := []byte(arm.name + " from beyond the uplink")
-				before := lab.dropped(t, spec)
-				lab.quiet(t, payload, labIPv6To(beyond, payload), func() { lab.raw(t, beyond, labOuter(labFar6.Addr(), beyond, arm.routing, payload)) })
-				lab.counts(t, spec, before)
-			})
-		}
-		t.Run("a packet to the local SID", func(t *testing.T) {
-			spec := "drop ipv6 destination " + labSID.String()
+	lab := startBorderLab(t)
+	for _, arm := range []struct {
+		family     string
+		from, leaf netip.Addr
+	}{{"IPv4", labFar4.Addr(), labLeaf4}, {"IPv6", labFar6.Addr(), labHeadend}} {
+		t.Run("a source outside the overlay over "+arm.family, func(t *testing.T) {
+			payload := []byte("from outside the overlay over " + arm.family)
+			labCaptureReply(t, lab.capture, arm.leaf, payload, lab.sender(t, arm.from, arm.leaf, payload))
+		})
+	}
+	for _, arm := range []struct {
+		family     string
+		from, leaf netip.Addr
+		spec       string
+	}{
+		{"IPv4", labForged4.Addr(), labLeaf4, "drop ipv4 source 198.18.0.0/15"},
+		{"IPv6", labForged6.Addr(), labHeadend, "drop ipv6 source 3fff::/20"},
+	} {
+		t.Run("a source inside the overlay over "+arm.family, func(t *testing.T) {
+			payload := []byte("forged inside the overlay over " + arm.family)
+			before := lab.dropped(t, arm.spec)
+			lab.quiet(t, payload, labReplyTo(arm.leaf, payload), lab.sender(t, arm.from, arm.leaf, payload))
+			lab.counts(t, arm.spec, before)
+		})
+	}
+	// an address of the leaf's mesh prefix, which a packet the border passes reaches through the tun
+	beyond := netip.MustParseAddr("3fff:a::d4")
+	for _, arm := range []struct {
+		name    string
+		routing []uint8
+	}{
+		{"a type 4 routing header", []uint8{4}},
+		{"a type 4 routing header behind a type 0", []uint8{0, 4}},
+		{"a type 4 routing header behind a type 2", []uint8{2, 4}},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			const spec = "drop ipv6 routing header"
+			payload := []byte(arm.name + " from beyond the uplink")
 			before := lab.dropped(t, spec)
-			lab.routeFar(t, netip.PrefixFrom(labSID, 128), labExit6.Addr())
-			lab.sender(t, labFar6.Addr(), labSID, []byte("to the SID from beyond the uplink"))()
+			lab.quiet(t, payload, labIPv6To(beyond, payload), func() { lab.raw(t, beyond, labOuter(labFar6.Addr(), beyond, arm.routing, payload)) })
 			lab.counts(t, spec, before)
 		})
-		t.Run("another node's SID from outside the overlay", func(t *testing.T) {
-			// an address of the leaf's mesh prefix, standing for an End.DT46 SID of the leaf's
-			other := netip.MustParseAddr("3fff:a::d46")
-			// outer is a packet from source to other with no routing header, carrying an IPv4 packet with a mesh source
-			outer := func(source netip.Addr, payload []byte) []byte { return labOuter(source, other, nil, payload) }
-			// it carries no mesh source, no routing header and none of this node's SIDs, so the border passes it into the mesh
-			crossing := []byte("to another node's SID from beyond the uplink")
-			crossed := false
-			for deadline := time.Now().Add(convergeBudget); !crossed && time.Now().Before(deadline); {
-				lab.raw(t, other, outer(labFar6.Addr(), crossing))
-				crossed = labCaptured(lab.capture, labIPv6To(other, crossing))
-			}
-			if !crossed {
-				t.Fatalf("the packet to %s never crossed the mesh tun", other)
-			}
-
-			// the SID's owner, here this node with the SID in the table it builds, refuses it, counts it and delivers nothing
-			cfg := *lab.node.config()
-			segment := *cfg.Cap.Segment
-			segment.Local = append(slices.Clone(segment.Local), srv6.Segment{SID: schema.AddrFrom(other), Behavior: srv6.BehaviorEndDT46})
-			cfg.Cap.Segment = &segment
-			table, _, err := cfg.SegmentTables()
-			if err != nil {
-				t.Fatalf("build the owner's table: %v", err)
-			}
-			held := lab.node.Mesh.Segments()
-			lab.node.Mesh.SetSegments(table)
-			defer lab.node.Mesh.SetSegments(held)
-			// the inner packet's destination is an address of the owner's host, as one cap.table assigns, so its mesh writes it to the tun
-			// and the reconciler writes nothing for it into the kernel
-			owned := netip.PrefixFrom(labExit4.Addr(), 32)
-			lab.node.Mesh.Routes.Set(netip.Prefix{}, owned, netstack.Assigned)
-			defer lab.node.Mesh.Routes.Remove(netip.Prefix{}, owned)
-			var listener *net.UDPConn
-			if err := lab.exit.Do(func() (err error) {
-				listener, err = net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(labExit4.Addr(), labPort)))
-				return err
-			}); err != nil {
-				t.Fatalf("listen at the owner: %v", err)
-			}
-			defer listener.Close()
-			refused := lab.node.Mesh.SegmentCounters().Refused
-			forged := []byte("forged through another node's SID")
-			lab.node.Mesh.DeliverInbound(outer(labFar6.Addr(), forged), 0)
-			labQuietFor(t, listener, forged)
-			if got := lab.node.Mesh.SegmentCounters().Refused; got != refused+1 {
-				t.Errorf("the owner counted %d refusals past %d, want one", got-refused, refused)
-			}
-			inside := []byte("through another node's SID from inside the overlay")
-			if from := labReceive(t, listener, inside, func() { lab.node.Mesh.DeliverInbound(outer(labHeadend, inside), 0) }); from.Addr() != labLeaf4 {
-				t.Errorf("from inside the overlay the owner's socket read %s, want %s", from, labLeaf4)
-			}
-		})
-		lab.written(t)
-
-		t.Run("forwarding off with the border withdrawn", func(t *testing.T) {
-			lab.stopBorder()
-			lab.withoutTable(t)
-			if err := lab.exit.Do(func() error {
-				for _, path := range []string{"/proc/sys/net/ipv4/ip_forward", "/proc/sys/net/ipv6/conf/all/forwarding"} {
-					if err := os.WriteFile(path, []byte("0\n"), 0o644); err != nil {
-						return err
-					}
-				}
-				return nil
-			}); err != nil {
-				t.Fatalf("turn forwarding off at the exit: %v", err)
-			}
-			for _, arm := range []struct{ from, leaf netip.Addr }{{labFar4.Addr(), labLeaf4}, {labFar6.Addr(), labHeadend}} {
-				payload := []byte("with forwarding off from " + arm.from.String())
-				lab.quiet(t, payload, labReplyTo(arm.leaf, payload), lab.sender(t, arm.from, arm.leaf, payload))
-			}
-		})
-		lab.stop()
-		lab.withoutTable(t)
+	}
+	t.Run("a packet to the local SID", func(t *testing.T) {
+		spec := "drop ipv6 destination " + labSID.String()
+		before := lab.dropped(t, spec)
+		lab.routeFar(t, netip.PrefixFrom(labSID, 128), labExit6.Addr())
+		lab.sender(t, labFar6.Addr(), labSID, []byte("to the SID from beyond the uplink"))()
+		lab.counts(t, spec, before)
 	})
+	t.Run("another node's SID from outside the overlay", func(t *testing.T) {
+		// an address of the leaf's mesh prefix, standing for an End.DT46 SID of the leaf's
+		other := netip.MustParseAddr("3fff:a::d46")
+		// outer is a packet from source to other with no routing header, carrying an IPv4 packet with a mesh source
+		outer := func(source netip.Addr, payload []byte) []byte { return labOuter(source, other, nil, payload) }
+		// it carries no mesh source, no routing header and none of this node's SIDs, so the border passes it into the mesh
+		crossing := []byte("to another node's SID from beyond the uplink")
+		crossed := false
+		for deadline := time.Now().Add(convergeBudget); !crossed && time.Now().Before(deadline); {
+			lab.raw(t, other, outer(labFar6.Addr(), crossing))
+			crossed = labCaptured(lab.capture, labIPv6To(other, crossing))
+		}
+		if !crossed {
+			t.Fatalf("the packet to %s never crossed the mesh tun", other)
+		}
 
-	t.Run("in a vrf", func(t *testing.T) {
-		lab := startBorderLab(t, labVRF)
-		if !slices.Contains(lab.border.Inside(), labVRF) {
-			t.Fatalf("the border accepts %v, without the vrf master %s", lab.border.Inside(), labVRF)
+		// the SID's owner, here this node with the SID in the table it builds, refuses it, counts it and delivers nothing
+		cfg := *lab.node.config()
+		segment := *cfg.Cap.Segment
+		segment.Local = append(slices.Clone(segment.Local), srv6.Segment{SID: schema.AddrFrom(other), Behavior: srv6.BehaviorEndDT46})
+		cfg.Cap.Segment = &segment
+		table, _, err := cfg.SegmentTables()
+		if err != nil {
+			t.Fatalf("build the owner's table: %v", err)
+		}
+		held := lab.node.Mesh.Segments()
+		lab.node.Mesh.SetSegments(table)
+		defer lab.node.Mesh.SetSegments(held)
+		// the inner packet's destination is an address of the owner's host, as one cap.table assigns, so its mesh writes it to the tun
+		// and the reconciler writes nothing for it into the kernel
+		owned := netip.PrefixFrom(labExit4.Addr(), 32)
+		lab.node.Mesh.Routes.Set(netip.Prefix{}, owned, netstack.Assigned)
+		defer lab.node.Mesh.Routes.Remove(netip.Prefix{}, owned)
+		var listener *net.UDPConn
+		if err := lab.exit.Do(func() (err error) {
+			listener, err = net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(labExit4.Addr(), labPort)))
+			return err
+		}); err != nil {
+			t.Fatalf("listen at the owner: %v", err)
+		}
+		defer listener.Close()
+		refused := lab.node.Mesh.SegmentCounters().Refused
+		forged := []byte("forged through another node's SID")
+		lab.node.Mesh.DeliverInbound(outer(labFar6.Addr(), forged), 0)
+		labQuietFor(t, listener, forged)
+		if got := lab.node.Mesh.SegmentCounters().Refused; got != refused+1 {
+			t.Errorf("the owner counted %d refusals past %d, want one", got-refused, refused)
+		}
+		inside := []byte("through another node's SID from inside the overlay")
+		if from := labReceive(t, listener, inside, func() { lab.node.Mesh.DeliverInbound(outer(labHeadend, inside), 0) }); from.Addr() != labLeaf4 {
+			t.Errorf("from inside the overlay the owner's socket read %s, want %s", from, labLeaf4)
+		}
+	})
+	lab.written(t)
+	lab.itself(t)
+
+	t.Run("forwarding off with the border withdrawn", func(t *testing.T) {
+		lab.stopBorder()
+		lab.withoutTable(t)
+		if err := lab.exit.Do(func() error {
+			for _, path := range []string{"/proc/sys/net/ipv4/ip_forward", "/proc/sys/net/ipv6/conf/all/forwarding"} {
+				if err := os.WriteFile(path, []byte("0\n"), 0o644); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("turn forwarding off at the exit: %v", err)
 		}
 		for _, arm := range []struct{ from, leaf netip.Addr }{{labFar4.Addr(), labLeaf4}, {labFar6.Addr(), labHeadend}} {
-			payload := []byte("from outside the overlay through the vrf from " + arm.from.String())
-			labCaptureReply(t, lab.capture, arm.leaf, payload, lab.sender(t, arm.from, arm.leaf, payload))
+			payload := []byte("with forwarding off from " + arm.from.String())
+			lab.quiet(t, payload, labReplyTo(arm.leaf, payload), lab.sender(t, arm.from, arm.leaf, payload))
 		}
-		lab.written(t)
-		lab.stop()
-		lab.withoutTable(t)
 	})
+	lab.stop()
+	lab.withoutTable(t)
 }
 
 // an exit whose border's chain is not read back egresses neither family of an
@@ -296,17 +281,13 @@ func meshCarrying(t *testing.T, c *Client) func() [2]bool {
 	}
 }
 
-// startBorderLab makes the two namespaces and their uplink, the exit's tun
-// and the uplink's end enslaved to master where it is not empty, and starts
-// the exit's node, reconciler and border with the leaves' routes in the mesh
-func startBorderLab(t *testing.T, master string) *borderLab {
+// startBorderLab makes the two namespaces and their uplink, and starts the
+// exit's node, reconciler and border with the leaves' routes in the mesh
+func startBorderLab(t *testing.T) *borderLab {
 	t.Helper()
 	lab := &borderLab{exit: netnstest.StartThread(t), far: netnstest.StartThread(t)}
-	labUplink(t, lab.exit, lab.far, master)
+	labUplink(t, lab.exit, lab.far)
 	cfg := labConfig(t)
-	if master != "" {
-		cfg.Cap.Table.VRF = &kernel.VRF{Name: master}
-	}
 	bus := events.New()
 	if err := lab.exit.Do(func() (err error) {
 		lab.node, err = New(cfg, bus)
@@ -411,7 +392,7 @@ func startBorderLab(t *testing.T, master string) *borderLab {
 
 // written sends a packet of each family from a leaf's address through the
 // mesh into the tun, as a session would deliver it, and reads it at the far
-// host: the border accepts the tun, and in a VRF the master
+// host: the border accepts the tun
 // the mesh writes a packet to the tun only for a destination it holds as this node's
 // so the far host's addresses are held as addresses cap.table assigns, which the reconciler leaves out of the kernel
 func (lab *borderLab) written(t *testing.T) {
@@ -425,6 +406,44 @@ func (lab *borderLab) written(t *testing.T) {
 		t.Run("a mesh source written into the tun from "+arm.leaf.String(), func(t *testing.T) {
 			payload := []byte("written into the tun from " + arm.leaf.String())
 			labReceive(t, lab.listeners[i], payload, func() { lab.node.Mesh.DeliverInbound(udpPacket(arm.leaf, arm.far, labLeafPort, labPort, payload), 0) })
+		})
+	}
+}
+
+// itself gives the exit's tun a mesh address of each family and sends from
+// the exit to each, which arrives through lo with a source in the overlay:
+// the border accepts lo
+func (lab *borderLab) itself(t *testing.T) {
+	t.Helper()
+	if err := lab.exit.Do(func() error {
+		netlink, err := netnstest.OpenNetlink()
+		if err != nil {
+			return err
+		}
+		defer netlink.Close()
+		return netlink.AddAddresses(lab.node.Mesh.Name, labOwn4, labOwn6)
+	}); err != nil {
+		t.Fatalf("give the exit its own mesh addresses: %v", err)
+	}
+	for _, own := range []netip.Addr{labOwn4.Addr(), labOwn6.Addr()} {
+		t.Run("the exit's own mesh address "+own.String()+" from the exit", func(t *testing.T) {
+			var listener, conn *net.UDPConn
+			if err := lab.exit.Do(func() (err error) {
+				listener, err = net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(own, labPort)))
+				return err
+			}); err != nil {
+				t.Fatalf("listen at %s: %v", own, err)
+			}
+			defer listener.Close()
+			if err := lab.exit.Do(func() (err error) {
+				conn, err = net.DialUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(own, 0)), net.UDPAddrFromAddrPort(netip.AddrPortFrom(own, labPort)))
+				return err
+			}); err != nil {
+				t.Fatalf("open a socket of the exit from %s: %v", own, err)
+			}
+			defer conn.Close()
+			payload := []byte("from the exit to its own mesh address " + own.String())
+			labReceive(t, listener, payload, func() { _, _ = conn.Write(payload) })
 		})
 	}
 }

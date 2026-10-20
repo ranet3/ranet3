@@ -389,33 +389,24 @@ func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 	}
 }
 
-// the border accepts the mesh tun, lo and the VRF master where the node has
-// one, and an exit's egress leaves through the mesh tun, so it adds nothing
+// the border accepts the mesh tun and lo, and an exit's egress leaves through
+// the mesh tun, so it adds nothing
 func TestBorderInsideIsEveryDeviceTheMeshArrivesOn(t *testing.T) {
 	for name, node := range map[string]struct {
 		exit bool
-		vrf  string
 		want []string
 	}{
-		"a leaf":                     {false, "", []string{"ranet3", "lo"}},
-		"an exit":                    {true, "", []string{"ranet3", "lo"}},
-		"a server in a vrf":          {false, "gravity", []string{"ranet3", "lo", "gravity"}},
-		"an exit of a server in one": {true, "gravity", []string{"ranet3", "lo", "gravity"}},
+		"a leaf":  {false, []string{"ranet3", "lo"}},
+		"an exit": {true, []string{"ranet3", "lo"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
 				if node.exit {
 					egressNode(cfg, egressSegment("3fff:1:69c:8c6::3", "3fff:a::/32"))
 				}
-				if node.vrf != "" {
-					if cfg.Cap.Table == nil {
-						cfg.Cap.Table = &kernel.Table{}
-					}
-					cfg.Cap.Table.VRF = &kernel.VRF{Name: node.vrf}
-				}
 			})
 			c.Mesh = &netstack.Mesh{Name: "ranet3"}
-			if got := c.BorderRuntime().Inside; !slices.Equal(got, node.want) {
+			if got := c.BorderInside(); !slices.Equal(got, node.want) {
 				t.Errorf("the border accepts %v, want %v", got, node.want)
 			}
 		})
@@ -478,10 +469,11 @@ func TestMetricsExposeTheBorderOnlyWhereItRuns(t *testing.T) {
 	}
 }
 
-// debug rules reads every policy rule the dump finds, marks the reconciler's
-// by the protocol cap.table names and the ones cap.table asks for, a mark
-// written with no mask among them, lists what cap.table asks for that the host
-// does not hold, and carries the border's chain
+// debug rules reads every policy rule the dump finds, an l3mdev rule as one,
+// marks the reconciler's by the protocol cap.table names and the ones
+// cap.table asks for, a mark written with no mask among them, lists what
+// cap.table asks for that the host does not hold, and carries the border's
+// chain
 func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 	const ownProto = kernel.DefaultProtocol + 1
 	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
@@ -499,12 +491,13 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		{Family: kernel.FamilyIPv4, Priority: 130, IIF: "eth1", Action: "lookup", Table: 254, Protocol: ownProto},
 		// the default protocol, which a reconciler naming another does not own
 		{Family: kernel.FamilyIPv4, Priority: 150, From: netip.MustParsePrefix("198.18.104.0/24"), Action: "lookup", Table: 254, Protocol: kernel.DefaultProtocol},
+		{Family: kernel.FamilyIPv4, Priority: 1000, L3mdev: true, Action: "lookup", Protocol: 2},
 		{Family: kernel.FamilyIPv6, Priority: 120, IIF: "eth1", Action: "lookup", Table: 254, Protocol: 4},
 	}
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return held, nil }
 	info := c.DebugRules()
 	type flags struct{ owned, wanted bool }
-	want := []flags{{false, false}, {true, true}, {true, true}, {true, true}, {true, false}, {false, false}, {false, false}}
+	want := []flags{{false, false}, {true, true}, {true, true}, {true, true}, {true, false}, {false, false}, {false, false}, {false, false}}
 	if len(info.Policy) != len(want) {
 		t.Fatalf("debug rules read %d rules, want %d: %+v", len(info.Policy), len(want), info.Policy)
 	}
@@ -512,6 +505,9 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		if got := (flags{rule.Owned, rule.Wanted}); got != want[i] {
 			t.Errorf("rule %d %+v reads owned %v, wanted %v, want %+v", i, rule, rule.Owned, rule.Wanted, want[i])
 		}
+	}
+	if !info.Policy[6].L3mdev {
+		t.Errorf("debug rules reads the l3mdev rule as %+v", info.Policy[6])
 	}
 	missing := control.PolicyRule{Family: "ipv6", Priority: 120, IIF: "eth1", Action: "lookup", Table: 254, Protocol: ownProto, Owned: true, Wanted: true}
 	if !slices.Equal(info.Missing, []control.PolicyRule{missing}) {

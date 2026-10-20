@@ -23,11 +23,10 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// This is the only test that speaks to a real kernel. It refuses to run
-// anywhere but inside a network namespace it created itself and proved empty,
-// because the code under test writes routes, addresses and link masters, and
-// the machine running the suite is usually on the mesh it is being written
-// for.
+// This test speaks to a real kernel. It refuses to run anywhere but inside a
+// network namespace it created itself and proved empty, because the code under
+// test writes routes and addresses, and the machine running the suite is
+// usually on the mesh it is being written for.
 func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
@@ -145,7 +144,7 @@ func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
 		t.Errorf("the dump carried %d routes for the %d of ours", len(recorder.replies), len(want))
 	}
 	recorder.replies = nil
-	if writers, err := filtered.foreignWriters(false); err != nil || !slices.Equal(writers, []string{protocolLabel(DefaultProtocol + 1)}) {
+	if writers, err := filtered.foreignWriters(); err != nil || !slices.Equal(writers, []string{protocolLabel(DefaultProtocol + 1)}) {
 		t.Errorf("the census read %v (err %v), want the other protocol in this table alone", writers, err)
 	}
 	if len(recorder.replies) != len(want)+1 {
@@ -201,8 +200,6 @@ func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
 	if assigned, _ := plat.Addrs(); slices.Contains(assigned, local4) {
 		t.Fatalf("%s survived removal: %v", local4, assigned)
 	}
-
-	testVRFEnslavement(t, conn, plat)
 }
 
 func TestNetlinkReportsOccupiedRoute(t *testing.T) {
@@ -441,44 +438,6 @@ func TestNetlinkReloadRenumberingTheOnlyAddressKeepsAnotherWritersRoutes(t *test
 	}
 }
 
-// testVRFEnslavement runs last: joining a VRF flushes the device's addresses
-// and routes, so it must not run before the route assertions.
-func testVRFEnslavement(t *testing.T, conn *nlConn, plat *netlinkPlatform) {
-	t.Helper()
-	const master = "vrftest0"
-	data := putAttrU32(nil, unix.IFLA_VRF_TABLE, uint32(plat.table.ID))
-	if err := createLink(conn, master, "vrf", data); err != nil {
-		t.Skipf("no vrf support in this kernel: %v", err)
-	}
-	vrf, err := conn.link(0, master)
-	if err != nil {
-		t.Fatalf("look up %s: %v", master, err)
-	}
-	setLinkFlags(t, conn, vrf.index, unix.IFF_UP)
-
-	if current, err := plat.Master(); err != nil || current != "" {
-		t.Fatalf("the device already has master %q (err %v)", current, err)
-	}
-	// a device that is not a vrf is refused by name, read from this kernel's own linkinfo
-	if err := plat.Enslave("lo"); err == nil || !strings.Contains(err.Error(), "lo is not a vrf") {
-		t.Fatalf("enslaving to lo reported %v, want it refused as not a vrf", err)
-	}
-	for range 2 { // enslaving twice must be indistinguishable from once
-		if err := plat.Enslave(master); err != nil {
-			t.Fatalf("enslave to %s: %v", master, err)
-		}
-	}
-	if current, err := plat.Master(); err != nil || current != master {
-		t.Fatalf("master is %q, want %s (err %v)", current, master, err)
-	}
-	if err := plat.Release(); err != nil {
-		t.Fatalf("release from %s: %v", master, err)
-	}
-	if current, err := plat.Master(); err != nil || current != "" {
-		t.Fatalf("master is %q after release, want empty (err %v)", current, err)
-	}
-}
-
 // enterThrowawayNamespace moves this test's thread into a fresh network
 // namespace. The thread is never unlocked, so the Go runtime destroys it when
 // this goroutine exits and takes the namespace with it.
@@ -551,13 +510,9 @@ func setLinkFlags(t testing.TB, conn *nlConn, index uint32, flags uint32) {
 }
 
 // createLink is test scaffolding, not part of the reconciler: the daemon never
-// creates a link, it only ever joins one.
-func createLink(conn *nlConn, name, kind string, data []byte) error {
-	var info []byte
-	info = putAttrString(info, unix.IFLA_INFO_KIND, kind)
-	if data != nil {
-		info = putAttr(info, unix.IFLA_INFO_DATA, data)
-	}
+// creates a link through netlink.
+func createLink(conn *nlConn, name, kind string) error {
+	info := putAttrString(nil, unix.IFLA_INFO_KIND, kind)
 	body := make([]byte, unix.SizeofIfInfomsg)
 	body = putAttrString(body, unix.IFLA_IFNAME, name)
 	body = putAttr(body, unix.IFLA_LINKINFO, info)
@@ -663,11 +618,11 @@ func TestNetlinkHoldsRetractedPrefix(t *testing.T) {
 	}
 }
 
-// The policy engine and the VRF against a real kernel. Everything else about
-// rules is checked against an encoder, which proves the bytes and not that the
-// kernel takes them: FRA_PROTOCOL is the whole ownership story and a kernel
-// that ignored it would leave this reconciler deleting other people's rules.
-func TestNetlinkRulesAndVRFInNetworkNamespace(t *testing.T) {
+// The policy engine against a real kernel. Everything else about rules is
+// checked against an encoder, which proves the bytes and not that the kernel
+// takes them: FRA_PROTOCOL is the whole ownership story and a kernel that
+// ignored it would leave this reconciler deleting other people's rules.
+func TestNetlinkRulesInNetworkNamespace(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
@@ -748,60 +703,5 @@ func TestNetlinkRulesAndVRFInNetworkNamespace(t *testing.T) {
 	}
 	if rules, err := plat.Rules(); err != nil || len(rules) != 0 {
 		t.Fatalf("after withdrawal the kernel holds %v (err %v)", rules, err)
-	}
-
-	made, err := plat.EnsureVRF("gravitytest", DefaultTable)
-	if err != nil {
-		t.Fatalf("create the vrf: %v", err)
-	}
-	if made == 0 {
-		t.Fatal("creating a vrf that did not exist reported that it was already there")
-	}
-	// The binding the shared-table audit reads back, decoded from this
-	// kernel's own encoding rather than from a hand-built message: the nest
-	// flags and the terminator on the kind are whatever it sends.
-	if vrf, err := conn.link(0, "gravitytest"); err != nil || vrf.index != made || vrf.vrfTable != DefaultTable {
-		t.Fatalf("the vrf read back as index %d bound to %d (err %v), want index %d bound to %d", vrf.index, vrf.vrfTable, err, made, DefaultTable)
-	}
-	if lo, err := conn.link(0, "lo"); err != nil || lo.vrfTable != 0 {
-		t.Fatalf("lo read back as a vrf bound to %d (err %v)", lo.vrfTable, err)
-	}
-	// A second call finds it and says so, which is the answer that keeps
-	// shutdown from removing a device this process did not make.
-	if again, err := plat.EnsureVRF("gravitytest", DefaultTable); err != nil || again != 0 {
-		t.Fatalf("a second EnsureVRF reported index %d (err %v)", again, err)
-	}
-
-	// somebody else deletes the device and makes their own under the name, bound to another table
-	gone := make([]byte, unix.SizeofIfInfomsg)
-	binary.NativeEndian.PutUint32(gone[4:], made)
-	if _, err := conn.execute(unix.RTM_DELLINK, unix.NLM_F_ACK, gone); err != nil {
-		t.Fatalf("delete the vrf by hand: %v", err)
-	}
-	if err := createLink(conn, "gravitytest", "vrf", putAttrU32(nil, unix.IFLA_VRF_TABLE, DefaultTable+1)); err != nil {
-		t.Fatalf("make another vrf under the name: %v", err)
-	}
-	theirs, err := conn.link(0, "gravitytest")
-	if err != nil {
-		t.Fatalf("look up the other vrf: %v", err)
-	}
-	if theirs.index == made {
-		t.Fatalf("the kernel gave the other vrf index %d again, so this proves nothing", made)
-	}
-	// removing what this process made leaves theirs with everything in its table
-	if err := plat.RemoveVRF("gravitytest", made); err != nil {
-		t.Fatalf("remove the vrf this process made: %v", err)
-	}
-	if vrf, err := conn.link(0, "gravitytest"); err != nil || vrf.index != theirs.index {
-		t.Fatalf("the other writer's vrf is gone or changed (index %d, err %v)", vrf.index, err)
-	}
-	if err := plat.RemoveVRF("gravitytest", theirs.index); err != nil {
-		t.Fatalf("remove the vrf by its own index: %v", err)
-	}
-	if err := plat.RemoveVRF("gravitytest", theirs.index); err != nil {
-		t.Fatalf("removing a vrf that is already gone: %v", err)
-	}
-	if _, err := conn.link(0, "gravitytest"); !errors.Is(err, unix.ENODEV) {
-		t.Fatal("the vrf survived its removal")
 	}
 }

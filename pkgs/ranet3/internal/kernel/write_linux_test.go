@@ -16,7 +16,6 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
-	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 // fakeNetlink stands in for the socket so what this backend writes can be read
@@ -29,8 +28,6 @@ type fakeNetlink struct {
 	}
 	replies []nlMessage
 	err     error
-	// links is every device the fake kernel holds, a name missing here being one nothing holds
-	links []linkInfo
 }
 
 func (f *fakeNetlink) execute(kind, flags uint16, body []byte) ([]nlMessage, error) {
@@ -41,14 +38,7 @@ func (f *fakeNetlink) execute(kind, flags uint16, body []byte) ([]nlMessage, err
 	return f.replies, f.err
 }
 
-func (f *fakeNetlink) link(index uint32, name string) (linkInfo, error) {
-	for _, link := range f.links {
-		if index != 0 && index == link.index || index == 0 && name == link.name {
-			return link, nil
-		}
-	}
-	return linkInfo{}, unix.ENODEV
-}
+func (f *fakeNetlink) link(uint32, string) (linkInfo, error) { return linkInfo{}, unix.ENODEV }
 
 func (f *fakeNetlink) Close() error { return nil }
 
@@ -133,8 +123,7 @@ func TestLinuxReportsOccupiedRouteAsSkipped(t *testing.T) {
 }
 
 // the kernel takes a preferred source only when it is local in the route's own table or in the local table
-// an address on a link inside a vrf bound to another table is local in neither
-// the refusal names that rule and the table, not a missing address that is there
+// the refusal names that rule and the table rather than an address missing from the host
 func TestLinuxNamesTheRuleAPreferredSourceBroke(t *testing.T) {
 	plat, conn := writePlatform(t)
 	conn.err = unix.EINVAL
@@ -184,7 +173,7 @@ func TestLinuxForeignWritersDumpsBothFamilies(t *testing.T) {
 		// Our own routes, which are not foreign.
 		routeDump(ourTable, ourProtocol, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.1.0/24")),
 	}
-	got, err := plat.foreignWriters(false)
+	got, err := plat.foreignWriters()
 	if err != nil {
 		t.Fatalf("dump: %v", err)
 	}
@@ -214,7 +203,7 @@ func TestLinuxDumpsCarryTheTableFilter(t *testing.T) {
 	if _, err := plat.Routes(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := plat.foreignWriters(false); err != nil {
+	if _, err := plat.foreignWriters(); err != nil {
 		t.Fatal(err)
 	}
 	if len(conn.sent) != 4 {
@@ -264,7 +253,7 @@ func TestLinuxReadsATableNothingWroteAsEmpty(t *testing.T) {
 	if routes, err := plat.Routes(); err != nil || len(routes) != 0 {
 		t.Errorf("a table that does not exist yet read as %v and %v, want it empty", routes, err)
 	}
-	if writers, err := plat.foreignWriters(false); err != nil || len(writers) != 0 {
+	if writers, err := plat.foreignWriters(); err != nil || len(writers) != 0 {
 		t.Errorf("the census of a table that does not exist yet read as %v and %v, want nobody", writers, err)
 	}
 	if _, err := plat.Addrs(); !errors.Is(err, unix.ENOENT) {
@@ -272,141 +261,6 @@ func TestLinuxReadsATableNothingWroteAsEmpty(t *testing.T) {
 	}
 	if _, err := plat.Rules(); !errors.Is(err, unix.ENOENT) {
 		t.Errorf("a rule dump ending on ENOENT read as %v, want the errno", err)
-	}
-}
-
-// the census and the binding check run on the linux platform itself
-// the table is not the default one and the vrf is not named mesh
-// a check that compares against DefaultTable or reads a vrf by a fixed name fails a case here
-// a vrf that existed first keeps whatever table it was bound to
-// the configured name proves nothing about that table, which the kernel is asked for
-func TestLinuxCensusAndBindingReadTheConfiguredTableAndVRF(t *testing.T) {
-	for name, test := range map[string]struct {
-		bound   uint32
-		want    []string
-		without []string
-	}{
-		"vrf bound to the configured table": {
-			bound:   201,
-			want:    []string{"bird (12)"},
-			without: []string{"kernel (2)", "bound to another table"},
-		},
-		"vrf bound to another table": {
-			bound: 300,
-			want:  []string{"bird (12)", "kernel (2)", "bound to another table", `"vrf_table":300`, `"table":201`},
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			plat, conn := writePlatform(t)
-			plat.table.ID = 201
-			plat.table.VRF = &VRF{Name: "gravity"}
-			conn.links = []linkInfo{
-				{index: 7, name: "ranet0", master: 9},
-				{index: 9, name: "gravity", vrfTable: test.bound},
-				{index: 11, name: "mesh", vrfTable: 999},
-			}
-			conn.replies = []nlMessage{
-				routeDump(201, unix.RTPROT_BIRD, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.0.0/24")),
-				routeDump(201, unix.RTPROT_KERNEL, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.1.0/24")),
-			}
-			reconciler := newReconciler(plat.table, plat.rt, nil, nil, netstack.NewRouteTable(), plat)
-			logs := captureKernelLogs(t)
-			reconciler.audit()
-			if err := reconciler.reconcile(); err != nil {
-				t.Fatalf("pass: %v", err)
-			}
-			got := logs.String()
-			for _, want := range test.want {
-				if !strings.Contains(got, want) {
-					t.Errorf("the census and the pass said %q, want them to include %s", got, want)
-				}
-			}
-			for _, not := range test.without {
-				if strings.Contains(got, not) {
-					t.Errorf("the census and the pass said %q, want nothing about %s", got, not)
-				}
-			}
-		})
-	}
-}
-
-// a vrf nothing has made yet reads as bound to no table rather than as a failure
-// every fresh start with create set meets one
-func TestLinuxVRFTableReadsAMissingVRFAsUnbound(t *testing.T) {
-	plat, conn := writePlatform(t)
-	conn.links = []linkInfo{{index: 9, name: "mesh", vrfTable: 300}, {index: 10, name: "dummy0"}}
-	for name, want := range map[string]uint32{"mesh": 300, "dummy0": 0, "absent": 0} {
-		if got, err := plat.VRFTable(name); err != nil || got != want {
-			t.Errorf("%s read as bound to %d (err %v), want %d", name, got, err, want)
-		}
-	}
-}
-
-// a device of another kind holding the vrf's name is refused by name, and the tun is never handed to it
-// the kernel answers that enslave with a bare errno on every pass, naming neither the device nor its kind
-func TestLinuxEnslavesTheTunOnlyToAVRF(t *testing.T) {
-	plat, conn := writePlatform(t)
-	conn.links = []linkInfo{{index: 9, name: "mesh"}}
-	if err := plat.Enslave("mesh"); err == nil || !strings.Contains(err.Error(), "mesh is not a vrf") {
-		t.Errorf("enslaving to a device that is not a vrf reported %v", err)
-	}
-	if len(conn.sent) != 0 {
-		t.Fatalf("the refusal still wrote %d messages", len(conn.sent))
-	}
-	conn.links[0].vrfTable = 200
-	if err := plat.Enslave("mesh"); err != nil {
-		t.Fatalf("enslave to a vrf: %v", err)
-	}
-	if len(conn.sent) != 1 || conn.sent[0].kind != unix.RTM_NEWLINK {
-		t.Fatalf("the enslave wrote %d messages", len(conn.sent))
-	}
-	for kind, value := range (nlMessage{Data: conn.sent[0].body}).attributes(unix.SizeofIfInfomsg) {
-		if kind == unix.IFLA_MASTER && binary.NativeEndian.Uint32(value) != 9 {
-			t.Errorf("the tun was handed to master %d, want the vrf's index 9", binary.NativeEndian.Uint32(value))
-		}
-	}
-}
-
-// lookupFails is the fake whose lookups fail from the nth on
-// every other request is answered as the fake answers it
-type lookupFails struct {
-	*fakeNetlink
-	lookups, from int
-}
-
-func (f *lookupFails) link(index uint32, name string) (linkInfo, error) {
-	if f.lookups++; f.lookups >= f.from {
-		return linkInfo{}, unix.ENOBUFS
-	}
-	return f.fakeNetlink.link(index, name)
-}
-
-// a vrf made and then not found by the lookup after it has an index nobody read
-// no stop could remove it by that index
-// it is deleted by name before the error returns
-// the next pass then makes it again and reads the index back
-func TestLinuxRemovesAVRFItMadeAndCouldNotLookUp(t *testing.T) {
-	plat, conn := writePlatform(t)
-	plat.conn = &lookupFails{fakeNetlink: conn, from: 2}
-	if index, err := plat.EnsureVRF("mesh", 200); !errors.Is(err, unix.ENOBUFS) || index != 0 {
-		t.Fatalf("a vrf whose lookup failed after the create reported index %d and %v", index, err)
-	}
-	if len(conn.sent) != 2 || conn.sent[0].kind != unix.RTM_NEWLINK || conn.sent[1].kind != unix.RTM_DELLINK {
-		t.Fatalf("the create and the failed lookup after it wrote %d messages, want the create and a delete", len(conn.sent))
-	}
-	removed := conn.sent[1]
-	name := ""
-	for kind, value := range (nlMessage{Data: removed.body}).attributes(unix.SizeofIfInfomsg) {
-		if kind == unix.IFLA_IFNAME {
-			name = unix.ByteSliceToString(value)
-		}
-	}
-	if index := binary.NativeEndian.Uint32(removed.body[4:]); index != 0 || name != "mesh" {
-		t.Errorf("the delete named index %d and device %q, want mesh by its name", index, name)
-	}
-	// without the ack the kernel sends nothing back, and the request waits forever
-	if removed.flags&unix.NLM_F_ACK == 0 {
-		t.Errorf("the delete carries flags %#x, without the ack", removed.flags)
 	}
 }
 
@@ -421,7 +275,7 @@ func TestForeignWriterReportRendersReadably(t *testing.T) {
 		routeDump(200, unix.RTPROT_BIRD, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.0.0/24")),
 		routeDump(200, unix.RTPROT_KERNEL, unix.RTN_UNICAST, 7, netip.MustParsePrefix("10.99.1.0/24")),
 	}
-	writers, err := plat.foreignWriters(false)
+	writers, err := plat.foreignWriters()
 	if err != nil {
 		t.Fatalf("dump: %v", err)
 	}

@@ -90,7 +90,6 @@ cap:
   #   assign_announced: false
   #   reconcile: 30s
   #   capture_grace: 10s          # how long an announced default outlives the last live session, 1s floor
-  #   vrf: { name: mesh, create: true }
   #   rules:
   #     - { fwmark: 0x726c, table: main, priority: 40, family: both }
   #     - { to: "3fff:b::/48", table: 200, priority: 100 }
