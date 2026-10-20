@@ -33,54 +33,53 @@ const (
 	internetControl = 0xc0
 	// typeOfService is the TOS field RFC 1349 puts between the precedence and the last bit, which section 4.3.2.5 has an error copy
 	typeOfService = 0x1e
-	// defaultTTL is the time to live RFC 1700 recommends
-	defaultTTL = 64
 )
 
 // limitedBroadcast is { -1, -1 } of RFC 1812 section 4.2.2.11
 var limitedBroadcast = netip.AddrFrom4([4]byte{255, 255, 255, 255})
 
-// TimeExceeded answers an IPv4 packet whose TTL ran out in transit, RFC 1812 section 5.3.1, from source, and allow is icmpError's
-func TimeExceeded(offending []byte, source netip.Addr, allow func() bool) []byte {
-	return icmpError(offending, source, icmpTimeExceeded, icmpTTLExceeded, 0, allow)
+// TimeExceeded answers an IPv4 packet whose TTL ran out in transit, RFC 1812 section 5.3.1, from source with ttl, and allow is icmpError's
+func TimeExceeded(offending []byte, source netip.Addr, ttl uint8, allow func() bool) []byte {
+	return icmpError(offending, source, ttl, icmpTimeExceeded, icmpTTLExceeded, 0, allow)
 }
 
-// NetUnreachable answers an IPv4 packet for a network no route reaches, RFC 1812 section 5.2.7.1 code 0, from source, and allow is icmpError's
-func NetUnreachable(offending []byte, source netip.Addr, allow func() bool) []byte {
-	return icmpError(offending, source, icmpUnreachable, icmpNetUnreachable, 0, allow)
+// NetUnreachable answers an IPv4 packet for a network no route reaches, RFC 1812 section 5.2.7.1 code 0, from source with ttl, and allow is icmpError's
+func NetUnreachable(offending []byte, source netip.Addr, ttl uint8, allow func() bool) []byte {
+	return icmpError(offending, source, ttl, icmpUnreachable, icmpNetUnreachable, 0, allow)
 }
 
 // HostUnreachable answers an IPv4 packet for a host no route reaches where other hosts of its network may be reachable
-// RFC 1812 section 5.2.7.1 code 1, from source, and allow is icmpError's
-func HostUnreachable(offending []byte, source netip.Addr, allow func() bool) []byte {
-	return icmpError(offending, source, icmpUnreachable, icmpHostUnreachable, 0, allow)
+// RFC 1812 section 5.2.7.1 code 1, from source with ttl, and allow is icmpError's
+func HostUnreachable(offending []byte, source netip.Addr, ttl uint8, allow func() bool) []byte {
+	return icmpError(offending, source, ttl, icmpUnreachable, icmpHostUnreachable, 0, allow)
 }
 
-// Prohibited answers an IPv4 packet this node does not forward by its policy, RFC 1812 section 5.2.7.1 code 13, from source, and allow is icmpError's
-func Prohibited(offending []byte, source netip.Addr, allow func() bool) []byte {
-	return icmpError(offending, source, icmpUnreachable, icmpProhibited, 0, allow)
+// Prohibited answers an IPv4 packet this node does not forward by its policy, RFC 1812 section 5.2.7.1 code 13, from source with ttl, and allow is icmpError's
+func Prohibited(offending []byte, source netip.Addr, ttl uint8, allow func() bool) []byte {
+	return icmpError(offending, source, ttl, icmpUnreachable, icmpProhibited, 0, allow)
 }
 
 // FragmentationNeeded answers an IPv4 packet with DF that is larger than the next link carries, RFC 1191 section 4
-// mtu is that link's, carried as the next-hop MTU, source the address the answer comes from, and allow is icmpError's
-func FragmentationNeeded(offending []byte, source netip.Addr, mtu int, allow func() bool) []byte {
-	return icmpError(offending, source, icmpUnreachable, icmpFragmentationNeeded, uint32(uint16(mtu)), allow)
+// mtu is that link's, carried as the next-hop MTU, source the address the answer comes from with ttl, and allow is icmpError's
+func FragmentationNeeded(offending []byte, source netip.Addr, ttl uint8, mtu int, allow func() bool) []byte {
+	return icmpError(offending, source, ttl, icmpUnreachable, icmpFragmentationNeeded, uint32(uint16(mtu)), allow)
 }
 
-// ParameterProblem answers an IPv4 packet whose header this node cannot read, RFC 1812 section 4.3.3.5, and allow is icmpError's
+// ParameterProblem answers an IPv4 packet whose header this node cannot read, RFC 1812 section 4.3.3.5, from source with ttl, and allow is icmpError's
 // pointer names the octet at fault, counted from the header's first
-func ParameterProblem(offending []byte, source netip.Addr, pointer int, allow func() bool) []byte {
-	return icmpError(offending, source, icmpParameterProblem, 0, uint32(pointer)<<24, allow)
+func ParameterProblem(offending []byte, source netip.Addr, ttl uint8, pointer int, allow func() bool) []byte {
+	return icmpError(offending, source, ttl, icmpParameterProblem, 0, uint32(pointer)<<24, allow)
 }
 
 // icmpError answers offending with one ICMP error of kind and code from source, rest being the second word of its header
+// ttl is the fixed TTL RFC 1812 section 4.2.2.9 has be configurable, which a node takes from its host's default
 // the answer quotes as much of the datagram as RFC 1812 section 4.3.2.3 lets it without passing 576 bytes
 // it goes with DF, an atomic datagram, whose zero identification RFC 6864 allows
 // it returns nil for anything but one whole IPv4 packet whose header HeaderValid passes, for a source that is not one host
-// for a packet RFC 1812 section 4.3.2.7 lets no error answer, and for one allow refuses
+// for a TTL of 0, which section 4.2.2.9 has no router originate, for a packet section 4.3.2.7 lets no error answer, and for one allow refuses
 // allow is called once the packet is one an error may answer and before anything is built
-func icmpError(offending []byte, source netip.Addr, kind, code byte, rest uint32, allow func() bool) []byte {
-	if Version(offending) != 4 || !HeaderValid(offending) || !SingleHost(source) || !answerable(offending) || !allow() {
+func icmpError(offending []byte, source netip.Addr, ttl, kind, code byte, rest uint32, allow func() bool) []byte {
+	if ttl == 0 || Version(offending) != 4 || !HeaderValid(offending) || !SingleHost(source) || !answerable(offending) || !allow() {
 		return nil
 	}
 	quoted := min(len(offending), maxErrorDatagram-ipv4HeaderLen-icmpHeaderLen)
@@ -89,7 +88,7 @@ func icmpError(offending []byte, source netip.Addr, kind, code byte, rest uint32
 	out[1] = internetControl | offending[1]&typeOfService
 	binary.BigEndian.PutUint16(out[2:], uint16(len(out)))
 	binary.BigEndian.PutUint16(out[6:], dontFragment)
-	out[8] = defaultTTL
+	out[8] = ttl
 	out[9] = icmpProtocol
 	from := source.As4()
 	copy(out[12:16], from[:])

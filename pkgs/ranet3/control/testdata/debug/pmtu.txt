@@ -1,8 +1,10 @@
-Link MTU     8918 B
-Steering     56 B of segment list in front of a steered packet
-Device MTU   8862 B
-Too big      4 answers sent to packets past their session's budget
-MSS clamped  1 SYN
+Link MTU        8918 B
+Steering        56 B of segment list in front of a steered packet
+Device MTU      8862 B
+Too big         4 answers sent to packets past their session's budget
+MSS clamped     1 SYN
+Answer sources  100.64.0.1 for IPv4, 2001:db8::1 for IPv6
+Answer SID      2001:db8:5::1
 
 Session   example/bravo:2@alpha
 Peer      example/bravo

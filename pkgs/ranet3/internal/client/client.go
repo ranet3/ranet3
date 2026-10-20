@@ -296,6 +296,11 @@ func steeredMTU(largest int, steering *srv6.SteerTable) (int, error) {
 // machine the underlay reads and writes, nil for the one this process is
 // running on, as New passes and as a deployment gets.
 func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.Index, mesh *netstack.Mesh, host kernel.Host, bus *events.Bus) (_ *Client, err error) {
+	ttl, err := defaultTTL()
+	if err != nil {
+		return nil, err
+	}
+	mesh.SetAnswerTTL(ttl)
 	underlay, capture, closeUnderlay, err := underlayRuntime(cfg.Link.Underlay, mesh.Name, host)
 	if err != nil {
 		return nil, err
@@ -348,6 +353,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 	c.dropReported.Store(-int64(espDropReportInterval))
 	c.cfg.Store(cfg)
 	c.storeIndex(x)
+	mesh.SetAnswerSources(answerSources(cfg))
 	return c, nil
 }
 

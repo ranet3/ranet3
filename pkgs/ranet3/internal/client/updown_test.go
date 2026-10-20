@@ -6,7 +6,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -22,6 +21,7 @@ import (
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/goldentest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 )
@@ -31,8 +31,6 @@ var _ interface {
 	control.Sink
 	control.UpDownSource
 } = (*Client)(nil)
-
-var update = flag.Bool("update", false, "rewrite the verb golden files under control/testdata/debug from what the code writes now")
 
 // shortDialRetry brings a peer that lost its session back to dial within a test's wait
 const shortDialRetry = 200 * time.Millisecond
@@ -44,20 +42,7 @@ var flaggedAt = time.Date(2026, 10, 12, 21, 4, 5, 0, time.UTC)
 // the verbs' sentences are this package's, and their golden files sit beside the renders of control's own
 func verbGolden(t *testing.T, name string, got []byte) {
 	t.Helper()
-	path := filepath.Join("..", "..", "control", "testdata", "debug", name)
-	if *update {
-		if err := os.WriteFile(path, got, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("%v, and go test ./internal/client -update writes it", err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Errorf("%s no longer matches, and go test ./internal/client -update rewrites it\n--- golden\n%s\n--- now\n%s", path, want, got)
-	}
+	goldentest.Check(t, "./internal/client", filepath.Join("..", "..", "control", "testdata", "debug", name), got)
 }
 
 // switchRecord is a reconciler or a translator as down and up drive one

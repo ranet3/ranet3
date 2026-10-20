@@ -18,7 +18,12 @@ import (
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/internal/registry"
+	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 // validateRuntimeConfig is the startup check, which refuses a configuration the trust document does not support and logs a peer it only cannot dial
@@ -155,6 +160,46 @@ func assignedAddresses(cfg *config.Config) []netip.Addr {
 		out = append(out, prefix.Addr())
 	}
 	return out
+}
+
+// answerSources is the router-id of each family, RFC 1812 section 2.2.7, a cap.table address before a host prefix cap.route announces
+// and the End SID of cap.segment local that transit's IPv6 errors come from
+// each the first address of its kind a router forwards packets from, as InvalidSource says, that is no IPv4 address mapped into IPv6 and that an announced prefix with no source, and that does not capture the machine, covers
+// a sender's strict reverse path check drops an answer from any other, which the mesh does not route back to this node
+// it walks the node's addresses apart from MeshAddresses, which takes host prefixes alone and the announced ones first
+// since a cap.table address leads, whatever the length of the prefix it is assigned in
+func answerSources(cfg *config.Config) netstack.AnswerSources {
+	routes := cfg.Routes()
+	covered := func(address netip.Addr) bool {
+		return !packet.InvalidSource(address) && !address.Is4In6() && slices.ContainsFunc(routes.Announce, func(entry schema.Announce) bool {
+			return !entry.From.IsValid() && !kernel.CapturesTheMachine(entry.Prefix.Prefix) && entry.Prefix.Contains(address)
+		})
+	}
+	candidates := assignedPrefixes(cfg)
+	for _, entry := range routes.Announce {
+		if entry.Prefix.IsSingleIP() {
+			candidates = append(candidates, entry.Prefix.Prefix)
+		}
+	}
+	var sources netstack.AnswerSources
+	for _, prefix := range candidates {
+		address := prefix.Addr()
+		switch {
+		// a network's base address names no host, RFC 1812 section 4.2.2.11, and over IPv6 it is the Subnet-Router anycast address, RFC 4291 section 2.6.1
+		case !prefix.IsSingleIP() && prefix.Masked().Addr() == address, !covered(address):
+		case address.Is4() && !sources.Router4.IsValid():
+			sources.Router4 = address
+		case address.Is6() && !sources.Router6.IsValid():
+			sources.Router6 = address
+		}
+	}
+	for _, segment := range cfg.Segments().Local {
+		if segment.Behavior == srv6.BehaviorEnd && covered(segment.SID.Addr) {
+			sources.SID = segment.SID.Addr
+			break
+		}
+	}
+	return sources
 }
 
 // effectivePeers is who this node dials: the configured list, or when all is set that list followed by every other node the trust document names, the N-to-N reconciliation ranet does

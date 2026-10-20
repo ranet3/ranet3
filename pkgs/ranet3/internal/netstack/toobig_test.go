@@ -6,6 +6,7 @@ package netstack
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"net/netip"
 	"slices"
 	"sync"
@@ -75,15 +76,45 @@ func udpPacket(source, destination netip.Addr, size int, df bool) []byte {
 	return raw
 }
 
-// readOff runs classify over one read of raw on a mesh whose one peer carries mtu byte packets of every family
+// withOptions is raw, an IPv4 packet, with options after its fixed header, its header length, total length and checksum following them
+func withOptions(raw, options []byte) []byte {
+	out := slices.Concat(raw[:20], options, raw[20:])
+	headerLen := 20 + len(options)
+	out[0] = 4<<4 | byte(headerLen/4)
+	binary.BigEndian.PutUint16(out[2:], uint16(len(out)))
+	binary.BigEndian.PutUint16(out[10:], 0)
+	binary.BigEndian.PutUint16(out[10:], ^uint16(packet.Sum(0, out[:headerLen])))
+	return out
+}
+
+// misframed is an IPv4 packet of DefaultMTU bytes without DF, with a Record Route claiming 9 bytes in a list of 4
+// which Linux's ip_options_compile refuses at the option's type octet, octet 20 of the header
+var misframed = withOptions(udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU-4, false), []byte{7, 9, 4, 0})
+
+var routerIDs = map[int]netip.Addr{4: segAddr("100.64.0.1"), 6: segAddr("3fff:c::1")}
+
+func holding(held map[int]bool) AnswerSources {
+	var sources AnswerSources
+	if held[4] {
+		sources.Router4 = routerIDs[4]
+	}
+	if held[6] {
+		sources.Router6 = routerIDs[6]
+	}
+	return sources
+}
+
+// readOff runs classify over one read of raw on a mesh whose one peer carries mtu byte packets of every family, holding sources as its router-ids and answer SID
 // it returns the read, the peer, and what the mesh wrote into its tun on the way
-func readOff(tb testing.TB, raw []byte, steering *srv6.SteerTable, mtu int) (*outboundBatch, *Peer, [][]byte) {
+func readOff(tb testing.TB, raw []byte, steering *srv6.SteerTable, mtu int, sources AnswerSources) (*outboundBatch, *Peer, [][]byte) {
 	tb.Helper()
 	dev := &recordingDevice{writes: make(chan recordedWrite, 1)}
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 	m.setDevice(dev)
 	m.startSegmentReports()
 	m.SetSteering(steering)
+	m.SetAnswerSources(sources)
+	m.SetAnswerTTL(64)
 	peer := (&recordingPeer{}).peer(tb, "peer")
 	peer.SetMTU(mtu)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
@@ -100,17 +131,17 @@ func readOff(tb testing.TB, raw []byte, steering *srv6.SteerTable, mtu int) (*ou
 }
 
 // checkAnswer holds an answer to offending against what its family's error carries
-// from the packet's destination back to its source, with mtu where the next link's MTU goes
+// from the address from back to the packet's source, with mtu where the next link's MTU goes
 // quoting as much of the packet as fits 1280 bytes over IPv6, RFC 4443 section 2.4 (c), and 576 over IPv4, RFC 1812 section 4.3.2.3
-func checkAnswer(tb testing.TB, answer, offending []byte, mtu int) {
+func checkAnswer(tb testing.TB, answer, offending []byte, mtu int, from netip.Addr) {
 	tb.Helper()
 	if offending[0]>>4 == 6 {
 		quoted := min(len(offending), srv6.MinimumIPv6MTU-40-8)
 		if len(answer) != 40+8+quoted || answer[0]>>4 != 6 || answer[6] != 58 || int(binary.BigEndian.Uint16(answer[4:6])) != len(answer)-40 {
 			tb.Fatalf("the answer is %d bytes, next header %d, quoting what should be %d bytes", len(answer), answer[6], quoted)
 		}
-		if !bytes.Equal(answer[8:24], offending[24:40]) || !bytes.Equal(answer[24:40], offending[8:24]) {
-			tb.Fatalf("the answer goes from %x to %x, want from the packet's destination back to its source", answer[8:24], answer[24:40])
+		if !bytes.Equal(answer[8:24], from.AsSlice()) || !bytes.Equal(answer[24:40], offending[8:24]) {
+			tb.Fatalf("the answer goes from %x to %x, want from %s back to the packet's source", answer[8:24], answer[24:40], from)
 		}
 		message := answer[40:]
 		if message[0] != 2 || message[1] != 0 || int(binary.BigEndian.Uint32(message[4:8])) != mtu {
@@ -128,19 +159,27 @@ func checkAnswer(tb testing.TB, answer, offending []byte, mtu int) {
 		}
 		return
 	}
+	// fragmentation needed, RFC 1191 section 4, carries the MTU in the low half of the word
+	checkICMPv4(tb, answer, offending, from, 3, 4, uint32(mtu))
+}
+
+// checkICMPv4 holds answer to offending, an IPv4 packet, against the ICMP error of kind and code carrying rest in the word after its checksum
+// from the address from back to the packet's source, quoting as much of the packet as fits 576 bytes, RFC 1812 section 4.3.2.3
+func checkICMPv4(tb testing.TB, answer, offending []byte, from netip.Addr, kind, code byte, rest uint32) {
+	tb.Helper()
 	quoted := min(len(offending), 576-20-8)
 	if len(answer) != 20+8+quoted || answer[9] != 1 || int(binary.BigEndian.Uint16(answer[2:4])) != len(answer) {
-		tb.Fatalf("the answer is %d bytes of protocol %d, want fragmentation needed quoting %d", len(answer), answer[9], quoted)
+		tb.Fatalf("the answer is %d bytes of protocol %d, want ICMP type %d quoting %d", len(answer), answer[9], kind, quoted)
 	}
-	if !bytes.Equal(answer[12:16], offending[16:20]) || !bytes.Equal(answer[16:20], offending[12:16]) {
-		tb.Fatalf("the answer goes from %x to %x, want from the packet's destination back to its source", answer[12:16], answer[16:20])
+	if !bytes.Equal(answer[12:16], from.AsSlice()) || !bytes.Equal(answer[16:20], offending[12:16]) {
+		tb.Fatalf("the answer goes from %x to %x, want from %s back to the packet's source", answer[12:16], answer[16:20], from)
 	}
 	if sum := packet.Sum(0, answer[:20]); sum != 0xffff {
 		tb.Fatalf("the answer's header sums to %#04x", sum)
 	}
 	message := answer[20:]
-	if message[0] != 3 || message[1] != 4 || int(binary.BigEndian.Uint16(message[6:8])) != mtu {
-		tb.Fatalf("the answer is ICMP type %d code %d carrying %d, want fragmentation needed carrying %d", message[0], message[1], binary.BigEndian.Uint16(message[6:8]), mtu)
+	if message[0] != kind || message[1] != code || binary.BigEndian.Uint32(message[4:8]) != rest {
+		tb.Fatalf("the answer is ICMP type %d code %d carrying %#08x, want type %d code %d carrying %#08x", message[0], message[1], binary.BigEndian.Uint32(message[4:8]), kind, code, rest)
 	}
 	if sum := packet.Sum(0, message); sum != 0xffff {
 		tb.Fatalf("the answer's message sums to %#04x", sum)
@@ -210,6 +249,7 @@ func waypointOf(tb testing.TB, after netip.Addr, session *Peer) (*Mesh, *recordi
 	m := &Mesh{Routes: NewRouteTable()}
 	m.startSegmentReports()
 	m.SetSegments(table)
+	m.SetAnswerTTL(64)
 	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(after, 128), session)
 	sender := &recordingPeer{}
 	back := sender.peer(tb, "sender")
@@ -562,6 +602,7 @@ func TestPacketsPastTheirSessionAreAnsweredUnderTheCapAlone(t *testing.T) {
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 	m.setDevice(dev)
 	m.startSegmentReports()
+	m.SetAnswerTTL(64)
 	emptyBuckets(t, m)
 	capHolding(m, left)
 	peer := (&recordingPeer{}).peer(t, "peer")
@@ -644,5 +685,131 @@ func TestReaderSendsTheFragmentsItCutToThePeer(t *testing.T) {
 	}
 	if places != len(got) {
 		t.Errorf("the peer reserved %d places for the %d packets it was handed", places, len(got))
+	}
+}
+
+// nextSegment is the segment after thisWaypoint that the End tests below send a packet on to
+var nextSegment = segAddr("3fff:d::1")
+
+// an IPv4 packet without DF past its session whose header fails RFC 1812 section 5.2.2's checks, by its checksum, is dropped unanswered
+// rather than cut into fragments whose fresh checksums would hide the fault, on a read off the tun and at End
+func TestPacketsPastTheirSessionWithABadChecksumAreDropped(t *testing.T) {
+	inner := udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, false)
+	inner[10] ^= 0x5a
+	t.Run("read off the tun", func(t *testing.T) {
+		b, peer, answers := readOff(t, inner, nil, srv6.MinimumIPv6MTU, holding(map[int]bool{4: true}))
+		if len(answers) != 0 || len(b.cut.fragments) != 0 || b.shares[peer].count != 0 {
+			t.Errorf("the packet left %d answers and %d fragments counted as %d", len(answers), len(b.cut.fragments), b.shares[peer].count)
+		}
+	})
+	t.Run("End", func(t *testing.T) {
+		after := nextSegment
+		session, next := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
+		m, sender := waypointOf(t, after, session)
+		m.SetAnswerSources(holding(map[int]bool{4: true}))
+		m.applySegments(framed(steeredThrough(t, inner, after)), DefaultMTU)
+		if sent, answers, counters := next.packets(t), sender.packets(t), m.SegmentCounters(); len(sent) != 0 || len(answers) != 0 || counters.Dropped != 1 || counters.Answered != 0 {
+			t.Errorf("the segment went on as %d packets with %d answers, counted %+v", len(sent), len(answers), counters)
+		}
+	})
+}
+
+// an IPv4 packet without DF past its session whose option list cannot be framed is answered with parameter problem at the option's type octet
+// RFC 1812 section 4.3.3.5, and nothing of it goes on: on a read off the tun into the tun from the packet's destination
+// and at End back through the mesh from the router-id, else from the destination, counted answered and not as an answer about its size
+func TestPacketsPastTheirSessionWithOptionsThatDoNotFrameAreAnswered(t *testing.T) {
+	for _, held := range []map[int]bool{nil, {4: true}} {
+		t.Run(fmt.Sprintf("read off the tun with a router-id %t", held[4]), func(t *testing.T) {
+			b, peer, answers := readOff(t, misframed, nil, srv6.MinimumIPv6MTU, holding(held))
+			if len(answers) != 1 || len(b.cut.fragments) != 0 || b.shares[peer].count != 0 {
+				t.Fatalf("the packet left %d answers and %d fragments counted as %d", len(answers), len(b.cut.fragments), b.shares[peer].count)
+			}
+			checkICMPv4(t, answers[0], misframed, tooBigDestination[4], 12, 0, 20<<24)
+		})
+		t.Run(fmt.Sprintf("End with a router-id %t", held[4]), func(t *testing.T) {
+			after := nextSegment
+			session, next := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
+			m, sender := waypointOf(t, after, session)
+			m.SetAnswerSources(holding(held))
+			m.applySegments(framed(steeredThrough(t, misframed, after)), DefaultMTU)
+			sent, answers, counters := next.packets(t), sender.packets(t), m.SegmentCounters()
+			if len(sent) != 0 || len(answers) != 1 || counters.Dropped != 1 || counters.Answered != 1 || m.TooBigAnswered() != 0 {
+				t.Fatalf("the segment went on as %d packets with %d answers, counted %+v and %d answers about its size", len(sent), len(answers), counters, m.TooBigAnswered())
+			}
+			from := tooBigDestination[4]
+			if held[4] {
+				from = routerIDs[4]
+			}
+			checkICMPv4(t, answers[0], misframed, from, 12, 0, 20<<24)
+		})
+	}
+}
+
+// a read full of IPv4 packets without DF past their session whose options do not frame, all from one source, gets the burst of that source's bucket answered and no more
+// the bucket withholds the rest and the node's cap none, and none of those answers counts as one about a packet's size
+func TestPacketsPastTheirSessionWithOptionsThatDoNotFrameAreAnsweredAtABoundedRate(t *testing.T) {
+	const flood = 64
+	dev := &recordingDevice{writes: make(chan recordedWrite, flood)}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+	m.setDevice(dev)
+	m.startSegmentReports()
+	m.SetAnswerTTL(64)
+	peer := (&recordingPeer{}).peer(t, "peer")
+	peer.SetMTU(srv6.MinimumIPv6MTU)
+	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	b := newOutboundBatch(flood)
+	fill(b, slices.Repeat([][]byte{misframed}, flood)...)
+	m.classify(b)
+	if answered := len(dev.writes); answered != icmpSourceBurst {
+		t.Errorf("%d packets from one source whose options do not frame were answered %d times, want the %d its bucket holds", flood, answered, icmpSourceBurst)
+	}
+	if source, node := m.ICMPWithheld(); source != flood-icmpSourceBurst || node != 0 {
+		t.Errorf("the limits withheld %d answers by source and %d by the node's cap, want %d and 0", source, node, flood-icmpSourceBurst)
+	}
+	if counted := m.TooBigAnswered(); counted != 0 {
+		t.Errorf("%d answers to packets whose options do not frame were counted as answers about their size", counted)
+	}
+}
+
+// the ICMPv4 errors the mesh builds carry the TTL it holds, which a node takes from its host's default as RFC 1812 section 4.2.2.9 has
+// a read off the tun and End each answer an IPv4 packet with DF past its session, and one whose options do not frame, under it
+// and a mesh holding none answers neither, since the same section has no router originate a TTL of 0
+func TestICMPv4AnswersCarryTheTTLTheMeshHolds(t *testing.T) {
+	after := nextSegment
+	for _, inner := range [][]byte{udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, true), misframed} {
+		for _, ttl := range []uint8{0, 1, 128, 255} {
+			dev := &recordingDevice{writes: make(chan recordedWrite, 1)}
+			m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+			m.setDevice(dev)
+			m.startSegmentReports()
+			m.SetAnswerTTL(ttl)
+			peer := (&recordingPeer{}).peer(t, "peer")
+			peer.SetMTU(srv6.MinimumIPv6MTU)
+			m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+			b := newOutboundBatch(1)
+			fill(b, inner)
+			m.classify(b)
+			var answers [][]byte
+			if len(dev.writes) != 0 {
+				answers = (<-dev.writes).packets
+			}
+			session, _ := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
+			waypoint, sender := waypointOf(t, after, session)
+			waypoint.SetAnswerTTL(ttl)
+			waypoint.applySegments(framed(steeredThrough(t, inner, after)), DefaultMTU)
+			answers = append(answers, sender.packets(t)...)
+			want := 2
+			if ttl == 0 {
+				want = 0
+			}
+			if len(answers) != want {
+				t.Fatalf("a read off the tun and End under a TTL of %d answered a packet with the flags %#02x %d times, want %d", ttl, inner[6], len(answers), want)
+			}
+			for _, answer := range answers {
+				if answer[8] != ttl {
+					t.Errorf("an answer to a packet with the flags %#02x carries a TTL of %d, want the %d the mesh holds", inner[6], answer[8], ttl)
+				}
+			}
+		}
 	}
 }

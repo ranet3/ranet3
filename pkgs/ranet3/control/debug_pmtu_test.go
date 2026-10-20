@@ -6,6 +6,7 @@ package control
 import (
 	"context"
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 func pmtuFixture() PMTUInfo {
 	return PMTUInfo{
 		LinkMTU: 8918, Steering: 56, DeviceMTU: 8862, TooBigSent: 4, MSSClamped: 1,
+		RouterIDv4: netip.MustParseAddr("100.64.0.1"), RouterIDv6: netip.MustParseAddr("2001:db8::1"), AnswerSID: netip.MustParseAddr("2001:db8:5::1"),
 		Sessions: []PMTUSession{
 			{
 				Path: "example/bravo:2@alpha", Peer: "example/bravo", Endpoint: "198.51.100.7:4500", State: PMTUConfirmed, DontFragment: true,
@@ -53,8 +55,9 @@ func TestPMTURendersAsTheGoldenFiles(t *testing.T) {
 	golden(t, "pmtu.txt", []byte(out.String()))
 	goldenJSON(t, "pmtu.json", info)
 
-	// a node with no steering whose tun did not answer, and no session
+	// a node with no steering whose tun did not answer, no session, and no router-id or answer SID
 	info.Steering, info.DeviceMTU, info.Sessions = 0, 0, []PMTUSession{}
+	info.RouterIDv4, info.RouterIDv6, info.AnswerSID = netip.Addr{}, netip.Addr{}, netip.Addr{}
 	out.Reset()
 	RenderPMTU(&out, info)
 	golden(t, "pmtu-bare.txt", []byte(out.String()))

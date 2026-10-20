@@ -487,7 +487,7 @@ func TestPacketsPastALimitBuildNoAnswer(t *testing.T) {
 	tooBig4 := udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, true)
 	answerTooBig := func(inner []byte) func(m *Mesh) bool {
 		return func(m *Mesh) bool {
-			answer, _ := m.answerTooBig(inner, srv6.MinimumIPv6MTU)
+			answer, _ := m.answerTooBig(inner, srv6.MinimumIPv6MTU, false, netip.Addr{})
 			return answer != nil
 		}
 	}
@@ -507,6 +507,7 @@ func TestPacketsPastALimitBuildNoAnswer(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			m := &Mesh{Routes: NewRouteTable()}
 			m.startSegmentReports()
+			m.SetAnswerTTL(64)
 			c.spend(m)
 			answered := false
 			if allocs := testing.AllocsPerRun(100, func() { answered = c.answer(m) || answered }); allocs != 0 || answered {
@@ -592,13 +593,14 @@ func TestPacketsNoErrorAnswersLeaveTheLimitsUntouched(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m := &Mesh{Routes: NewRouteTable()}
 			m.startSegmentReports()
+			m.SetAnswerTTL(64)
 			for range stream {
-				if answer, cut := m.answerTooBig(c.offending, srv6.MinimumIPv6MTU); answer != nil || cut {
+				if answer, cut := m.answerTooBig(c.offending, srv6.MinimumIPv6MTU, false, netip.Addr{}); answer != nil || cut {
 					t.Fatalf("a packet no error may answer was answered %t or cut %t", answer != nil, cut)
 				}
 			}
 			untouched(t, m)
-			if answer, _ := m.answerTooBig(c.answerable, srv6.MinimumIPv6MTU); answer == nil {
+			if answer, _ := m.answerTooBig(c.answerable, srv6.MinimumIPv6MTU, false, netip.Addr{}); answer == nil {
 				t.Error("an answerable packet after the stream was not answered")
 			}
 		})

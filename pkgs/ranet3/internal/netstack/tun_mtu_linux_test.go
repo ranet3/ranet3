@@ -11,7 +11,10 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"os/exec"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -318,118 +321,201 @@ func dialDF(t *testing.T, family pathFamily) (fd int, pathMTU func() int, waitPa
 }
 
 // a packet past what its session carries teaches the kernel that sent it the session's MTU
-// IPv4 with DF through fragmentation needed and IPv6 through packet too big, each written into the tun from the address the packet went to
+// IPv4 with DF through fragmentation needed and IPv6 through packet too big, each written into the tun
+// from the address the packet went to, whatever router-id the mesh holds
 // and a connected socket under a device that let the packet through reads the session's MTU back as its path MTU
 func TestTUNPacketTooBigTeachesTheKernel(t *testing.T) {
 	const session = 1300
 	for _, family := range pathFamilies {
-		t.Run(family.name, func(t *testing.T) {
-			enterEmptyNamespace(t)
-			m, err := NewNamed(DefaultMTU, "ptbtest0", nil)
-			if err != nil {
-				t.Fatalf("open the mesh: %v", err)
-			}
-			t.Cleanup(m.Close)
-			sent := &recordingPeer{}
-			peer := sent.peer(t, "peer")
-			peer.SetMTU(session)
-			m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(family.peer, family.peer.BitLen()), peer)
-			family.assign(t, m.Name)
+		for _, held := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s with a router-id %t", family.name, held), func(t *testing.T) {
+				enterEmptyNamespace(t)
+				_, waitPathMTU := sendPastTheSession(t, family, "ptbtest0", held, session)
+				waitPathMTU(session)
+			})
+		}
+	}
+}
 
-			fd, pathMTU, waitPathMTU := dialDF(t, family)
-			if got := pathMTU(); got != DefaultMTU {
-				t.Fatalf("the path MTU reads %d before anything was sent, want the device's %d", got, DefaultMTU)
+// sendPastTheSession opens a mesh named name whose peer toward family's far end carries session bytes, holding the tun's own addresses as router-ids where held
+// and sends that end one datagram with DF as large as the device's MTU from a socket that has learned no path MTU
+// it returns the mesh and a wait for the path MTU that socket reads
+func sendPastTheSession(t *testing.T, family pathFamily, name string, held bool, session int) (*Mesh, func(want int)) {
+	t.Helper()
+	m, err := NewNamed(DefaultMTU, name, nil)
+	if err != nil {
+		t.Fatalf("open the mesh: %v", err)
+	}
+	t.Cleanup(m.Close)
+	m.SetAnswerTTL(64)
+	if held {
+		m.SetAnswerSources(AnswerSources{Router4: tunAddress, Router6: tunAddress6.Addr()})
+	}
+	sent := &recordingPeer{}
+	peer := sent.peer(t, "peer")
+	peer.SetMTU(session)
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(family.peer, family.peer.BitLen()), peer)
+	family.assign(t, m.Name)
+
+	fd, pathMTU, waitPathMTU := dialDF(t, family)
+	if got := pathMTU(); got != DefaultMTU {
+		t.Fatalf("the path MTU reads %d before anything was sent, want the device's %d", got, DefaultMTU)
+	}
+	if _, err := unix.Write(fd, make([]byte, DefaultMTU-family.header)); err != nil {
+		t.Fatalf("send a %d byte packet: %v", DefaultMTU, err)
+	}
+	return m, waitPathMTU
+}
+
+// reversePathChains are the match of the reverse path chain NixOS's firewall puts in prerouting, strict and loose
+// as nixos/modules/services/networking/firewall-nftables.nix writes it for networking.firewall.checkReversePath
+var reversePathChains = []struct{ name, match string }{
+	{"strict", "fib saddr . mark . iif oif exists accept"},
+	{"loose", "fib saddr . mark oif exists accept"},
+}
+
+// reversePathRuleset is NixOS's reverse path chain with match, its policy drop, and the empty chain it jumps to
+func reversePathRuleset(match string) string {
+	return "table inet nixos-fw {\n" +
+		"\tchain rpfilter {\n" +
+		"\t\ttype filter hook prerouting priority mangle + 10; policy drop;\n" +
+		"\t\tmeta nfproto ipv4 udp sport . udp dport { 67 . 68, 68 . 67 } accept\n" +
+		"\t\t" + match + "\n" +
+		"\t\tjump rpfilter-allow\n" +
+		"\t}\n" +
+		"\tchain rpfilter-allow {\n" +
+		"\t}\n" +
+		"}\n"
+}
+
+// an answer written into the tun passes the reverse path check NixOS's firewall puts in prerouting, strict or loose
+// and the sender's socket reads the session's MTU back as its path MTU, in either family with a router-id held or none
+// a tun read's answer comes from the packet's destination, which the host routes out of the tun
+// the host's own address would fail the lookup, which finds a local route and so no interface for the source
+func TestTUNPacketTooBigPassesAReversePathCheck(t *testing.T) {
+	const session = 1300
+	for _, family := range pathFamilies {
+		for _, chain := range reversePathChains {
+			for _, held := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s under the %s chain with a router-id %t", family.name, chain.name, held), func(t *testing.T) {
+					enterEmptyNamespace(t)
+					nft, err := exec.LookPath("nft")
+					if err != nil {
+						t.Fatal("the reverse path chain is written through nft, which is not on the path")
+					}
+					load := exec.Command(nft, "-f", "-")
+					load.Stdin = strings.NewReader(reversePathRuleset(chain.match))
+					if out, err := load.CombinedOutput(); err != nil {
+						t.Fatalf("load the %s reverse path chain: %v\n%s", chain.name, err, out)
+					}
+					m, waitPathMTU := sendPastTheSession(t, family, "rpftest0", held, session)
+					waitUntil(t, "the answer to be written into the tun", func() bool { return m.TooBigAnswered() == 1 })
+					waitPathMTU(session)
+				})
 			}
-			if _, err := unix.Write(fd, make([]byte, DefaultMTU-family.header)); err != nil {
-				t.Fatalf("send a %d byte packet: %v", DefaultMTU, err)
-			}
-			waitPathMTU(session)
-		})
+		}
 	}
 }
 
 // a waypoint whose session to the next segment carries less than the headend's answers the sender behind the headend about its own packet
-// IPv4 with DF with fragmentation needed and IPv6 with packet too big, from the address the packet went to, back through the mesh into the headend's tun
+// IPv4 with DF with fragmentation needed and IPv6 with packet too big, back through the mesh into the headend's tun
+// from the waypoint's router-id of the packet's family where it holds one
+// else over IPv6 from the waypoint's SID, and over IPv4 from the address the packet went to
 // the sender then holds the waypoint's session less the steering header as its path MTU
 // and a datagram of that size crosses the waypoint whole to the exit
 func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 	const headendSession, waypointSession = 1500, 1400
 	waypoint, exit := segAddr("3fff:1:69c:8c6::2"), segAddr("3fff:1:69c:98d6::1")
 	for _, family := range pathFamilies {
-		t.Run(family.name, func(t *testing.T) {
-			enterEmptyNamespace(t)
-			steering, err := srv6.NewSteerTable([]srv6.Steer{{
-				From: schema.PrefixFrom(netip.PrefixFrom(family.local, family.local.BitLen())),
-				Via:  []schema.Addr{schema.AddrFrom(waypoint), schema.AddrFrom(exit)},
-			}}, schema.MustAddr("3fff:1:69c:8c0::1"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			device := headendSession - steering.Overhead()
-			headend, err := NewNamed(device, "wpttest0", nil)
-			if err != nil {
-				t.Fatalf("open the mesh: %v", err)
-			}
-			t.Cleanup(headend.Close)
-			headend.SetSteering(steering)
-			family.assign(t, headend.Name)
-
-			segments, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}}, everySource)
-			if err != nil {
-				t.Fatal(err)
-			}
-			transit := &Mesh{Name: "transit0", Routes: NewRouteTable(), closed: make(chan struct{})}
-			transit.setDevice(&recordingDevice{writes: make(chan recordedWrite, 1)})
-			transit.startSegmentReports()
-			transit.SetSegments(segments)
-			// a session hands what it carries to the mesh at its far end, as the peer decrypting it does
-			session := func(id string, far *Mesh, mtu int) *Peer {
-				peer := NewPeer(id, func(int) (BatchSealer, error) { return cloning, nil }, func(sealed [][]byte) error {
-					for _, raw := range sealed {
-						far.DeliverInbound(raw, mtu)
+		for _, held := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s with a router-id %t", family.name, held), func(t *testing.T) {
+				enterEmptyNamespace(t)
+				// no route of the headend's leads back to the router-id below, so the check of reverse paths would drop an answer from it
+				// where the waypoint's router-id is announced, the route the headend learns passes that check
+				if held {
+					for _, path := range []string{"/proc/sys/net/ipv4/conf/all/rp_filter", "/proc/sys/net/ipv4/conf/default/rp_filter"} {
+						if err := os.WriteFile(path, []byte("0"), 0); err != nil {
+							t.Fatalf("set %s: %v", path, err)
+						}
 					}
-					return nil
-				}, nil)
-				t.Cleanup(peer.Close)
-				peer.SetMTU(mtu)
-				return peer
-			}
-			headend.Routes.Set(netip.Prefix{}, netip.PrefixFrom(waypoint, 128), session("waypoint", transit, headendSession))
-			transit.Routes.Set(netip.Prefix{}, netip.PrefixFrom(family.local, family.local.BitLen()), session("headend", headend, headendSession))
-			exited := &recordingPeer{}
-			toExit := exited.peer(t, "exit")
-			toExit.SetMTU(waypointSession)
-			transit.Routes.Set(netip.Prefix{}, netip.PrefixFrom(exit, 128), toExit)
+				}
+				steering, err := srv6.NewSteerTable([]srv6.Steer{{
+					From: schema.PrefixFrom(netip.PrefixFrom(family.local, family.local.BitLen())),
+					Via:  []schema.Addr{schema.AddrFrom(waypoint), schema.AddrFrom(exit)},
+				}}, schema.MustAddr("3fff:1:69c:8c0::1"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				device := headendSession - steering.Overhead()
+				headend, err := NewNamed(device, "wpttest0", nil)
+				if err != nil {
+					t.Fatalf("open the mesh: %v", err)
+				}
+				t.Cleanup(headend.Close)
+				headend.SetSteering(steering)
+				family.assign(t, headend.Name)
 
-			fd, pathMTU, waitPathMTU := dialDF(t, family)
-			if got := pathMTU(); got != device {
-				t.Fatalf("the path MTU reads %d before anything was sent, want the device's %d", got, device)
-			}
-			if _, err := unix.Write(fd, make([]byte, device-family.header)); err != nil {
-				t.Fatalf("send a %d byte packet: %v", device, err)
-			}
-			learned := waypointSession - steering.Overhead()
-			waitPathMTU(learned)
-			// the answer left its error on the connected socket, which the next send would report in place of sending
-			if _, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_ERROR); err != nil {
-				t.Fatalf("take the error the answer left on the socket: %v", err)
-			}
-			payload := bytes.Repeat([]byte("crosses"), learned)[:learned-family.header]
-			if _, err := unix.Write(fd, payload); err != nil {
-				t.Fatalf("send a %d byte packet: %v", learned, err)
-			}
-			waitUntil(t, "the datagram the sender sent at its new path MTU to reach the exit", func() bool { return len(exited.packets(t)) > 0 })
-			sent := exited.packets(t)
-			if len(sent) != 1 || len(sent[0]) != waypointSession {
-				t.Fatalf("the exit was sent %d packets, the first of %d bytes, want the one %d byte segment the sender's second datagram became", len(sent), len(sent[0]), waypointSession)
-			}
-			if inner := sent[0][steering.Overhead():]; !bytes.Equal(inner[family.header:], payload) {
-				t.Error("the segment the exit was sent does not carry the datagram as it was sent")
-			}
-			if counters := transit.SegmentCounters(); counters.Forwarded != 1 || counters.Dropped != 1 || counters.Answered != 1 {
-				t.Errorf("the waypoint counted %+v, want the first datagram dropped and answered and the second forwarded", counters)
-			}
-		})
+				segments, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}}, everySource)
+				if err != nil {
+					t.Fatal(err)
+				}
+				transit := &Mesh{Name: "transit0", Routes: NewRouteTable(), closed: make(chan struct{})}
+				transit.setDevice(&recordingDevice{writes: make(chan recordedWrite, 1)})
+				transit.startSegmentReports()
+				transit.SetSegments(segments)
+				transit.SetAnswerTTL(64)
+				if held {
+					transit.SetAnswerSources(AnswerSources{Router4: netip.MustParseAddr("198.18.0.9"), Router6: netip.MustParseAddr("3fff:c::9")})
+				}
+				// a session hands what it carries to the mesh at its far end, as the peer decrypting it does
+				session := func(id string, far *Mesh, mtu int) *Peer {
+					peer := NewPeer(id, func(int) (BatchSealer, error) { return cloning, nil }, func(sealed [][]byte) error {
+						for _, raw := range sealed {
+							far.DeliverInbound(raw, mtu)
+						}
+						return nil
+					}, nil)
+					t.Cleanup(peer.Close)
+					peer.SetMTU(mtu)
+					return peer
+				}
+				headend.Routes.Set(netip.Prefix{}, netip.PrefixFrom(waypoint, 128), session("waypoint", transit, headendSession))
+				transit.Routes.Set(netip.Prefix{}, netip.PrefixFrom(family.local, family.local.BitLen()), session("headend", headend, headendSession))
+				exited := &recordingPeer{}
+				toExit := exited.peer(t, "exit")
+				toExit.SetMTU(waypointSession)
+				transit.Routes.Set(netip.Prefix{}, netip.PrefixFrom(exit, 128), toExit)
+
+				fd, pathMTU, waitPathMTU := dialDF(t, family)
+				if got := pathMTU(); got != device {
+					t.Fatalf("the path MTU reads %d before anything was sent, want the device's %d", got, device)
+				}
+				if _, err := unix.Write(fd, make([]byte, device-family.header)); err != nil {
+					t.Fatalf("send a %d byte packet: %v", device, err)
+				}
+				learned := waypointSession - steering.Overhead()
+				waitPathMTU(learned)
+				// the answer left its error on the connected socket, which the next send would report in place of sending
+				if _, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_ERROR); err != nil {
+					t.Fatalf("take the error the answer left on the socket: %v", err)
+				}
+				payload := bytes.Repeat([]byte("crosses"), learned)[:learned-family.header]
+				if _, err := unix.Write(fd, payload); err != nil {
+					t.Fatalf("send a %d byte packet: %v", learned, err)
+				}
+				waitUntil(t, "the datagram the sender sent at its new path MTU to reach the exit", func() bool { return len(exited.packets(t)) > 0 })
+				sent := exited.packets(t)
+				if len(sent) != 1 || len(sent[0]) != waypointSession {
+					t.Fatalf("the exit was sent %d packets, the first of %d bytes, want the one %d byte segment the sender's second datagram became", len(sent), len(sent[0]), waypointSession)
+				}
+				if inner := sent[0][steering.Overhead():]; !bytes.Equal(inner[family.header:], payload) {
+					t.Error("the segment the exit was sent does not carry the datagram as it was sent")
+				}
+				if counters := transit.SegmentCounters(); counters.Forwarded != 1 || counters.Dropped != 1 || counters.Answered != 1 {
+					t.Errorf("the waypoint counted %+v, want the first datagram dropped and answered and the second forwarded", counters)
+				}
+			})
+		}
 	}
 }
 
