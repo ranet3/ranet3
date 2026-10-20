@@ -1,0 +1,48 @@
+time exceeded answering 32 bytes: 60 bytes from 198.51.100.1 to 192.0.2.7, type 11 code 0, quoting 32
+00000000  45 c8 00 3c 00 00 40 00  40 01 4d bd c6 33 64 01  |E..<..@.@.M..3d.|
+00000010  c0 00 02 07 0b 00 f4 dd  00 00 00 00              |............|
+net unreachable answering 32 bytes: 60 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 0, quoting 32
+00000000  45 c8 00 3c 00 00 40 00  40 01 4d bd c6 33 64 01  |E..<..@.@.M..3d.|
+00000010  c0 00 02 07 03 00 fc dd  00 00 00 00              |............|
+host unreachable answering 32 bytes: 60 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 1, quoting 32
+00000000  45 c8 00 3c 00 00 40 00  40 01 4d bd c6 33 64 01  |E..<..@.@.M..3d.|
+00000010  c0 00 02 07 03 01 fc dc  00 00 00 00              |............|
+communication administratively prohibited answering 32 bytes: 60 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 13, quoting 32
+00000000  45 c8 00 3c 00 00 40 00  40 01 4d bd c6 33 64 01  |E..<..@.@.M..3d.|
+00000010  c0 00 02 07 03 0d fc d0  00 00 00 00              |............|
+fragmentation needed answering 32 bytes: 60 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 4, quoting 32
+00000000  45 c8 00 3c 00 00 40 00  40 01 4d bd c6 33 64 01  |E..<..@.@.M..3d.|
+00000010  c0 00 02 07 03 04 f7 61  00 00 05 78              |.......a...x|
+parameter problem answering 32 bytes: 60 bytes from 198.51.100.1 to 192.0.2.7, type 12 code 0, quoting 32
+00000000  45 c8 00 3c 00 00 40 00  40 01 4d bd c6 33 64 01  |E..<..@.@.M..3d.|
+00000010  c0 00 02 07 0c 00 df dd  14 00 00 00              |............|
+time exceeded answering 1240 bytes: 576 bytes from 198.51.100.1 to 192.0.2.7, type 11 code 0, quoting 548
+00000000  45 c8 02 40 00 00 40 00  40 01 4b b9 c6 33 64 01  |E..@..@.@.K..3d.|
+00000010  c0 00 02 07 0b 00 68 46  00 00 00 00              |......hF....|
+net unreachable answering 1240 bytes: 576 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 0, quoting 548
+00000000  45 c8 02 40 00 00 40 00  40 01 4b b9 c6 33 64 01  |E..@..@.@.K..3d.|
+00000010  c0 00 02 07 03 00 70 46  00 00 00 00              |......pF....|
+host unreachable answering 1240 bytes: 576 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 1, quoting 548
+00000000  45 c8 02 40 00 00 40 00  40 01 4b b9 c6 33 64 01  |E..@..@.@.K..3d.|
+00000010  c0 00 02 07 03 01 70 45  00 00 00 00              |......pE....|
+communication administratively prohibited answering 1240 bytes: 576 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 13, quoting 548
+00000000  45 c8 02 40 00 00 40 00  40 01 4b b9 c6 33 64 01  |E..@..@.@.K..3d.|
+00000010  c0 00 02 07 03 0d 70 39  00 00 00 00              |......p9....|
+fragmentation needed answering 1240 bytes: 576 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 4, quoting 548
+00000000  45 c8 02 40 00 00 40 00  40 01 4b b9 c6 33 64 01  |E..@..@.@.K..3d.|
+00000010  c0 00 02 07 03 04 6a ca  00 00 05 78              |......j....x|
+parameter problem answering 1240 bytes: 576 bytes from 198.51.100.1 to 192.0.2.7, type 12 code 0, quoting 548
+00000000  45 c8 02 40 00 00 40 00  40 01 4b b9 c6 33 64 01  |E..@..@.@.K..3d.|
+00000010  c0 00 02 07 0c 00 53 46  14 00 00 00              |......SF....|
+an ICMP error: refused by every error
+a fragment but the first: refused by every error
+a datagram from this network: refused by every error
+a datagram from loopback: refused by every error
+a datagram to a group: refused by every error
+a datagram to the limited broadcast: refused by every error
+a header failing its checksum: refused by every error
+a header longer than the datagram: refused by every error
+a datagram longer than the bytes read: refused by every error
+a datagram with bytes after it: refused by every error
+a datagram answered from a group: refused by every error
+a datagram answered from an IPv6 address: refused by every error

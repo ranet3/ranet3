@@ -172,7 +172,7 @@ func TestFragmentsReassembleToThePacket(t *testing.T) {
 		tb.Helper()
 		original := ipv4Packet(options.written, field, seed, data)
 		prefix := []byte("kept")
-		out, ok := AppendFragments(prefix, outer, original, mtu)
+		out, _, ok := AppendFragments(prefix, outer, original, mtu)
 		if !ok {
 			tb.Fatalf("a %d byte packet with the flags %#04x was refused at an mtu of %d", len(original), field, mtu)
 		}
@@ -234,27 +234,58 @@ func TestFragmentsReassembleToThePacket(t *testing.T) {
 }
 
 // what RFC 791 section 3.2 cannot cut, or a reassembly could not put back, is refused and dst comes back as it was, with no tunnel header on it
+// so is a header RFC 1812 section 5.2.2's checks refuse, whose fault fresh checksums would hide
+// an option list that does not describe itself is refused at its option's type octet, counted from the header's first, and anything else at 0
 func TestFragmentsAreRefusedForWhatCannotBeCut(t *testing.T) {
+	failingItsChecksum := func(raw []byte) []byte {
+		raw[10] ^= 0x5a
+		return raw
+	}
 	for _, refused := range []struct {
-		name string
-		raw  []byte
-		mtu  int
+		name  string
+		raw   []byte
+		mtu   int
+		fault int
 	}{
-		{"DF", ipv4Packet(nil, dontFragment, 0, 2000), 1280},
-		{"an option whose length runs past the header", ipv4Packet([]byte{7, 9, 4, 0}, 0, 0, 2000), 1280},
-		{"an option of length one", ipv4Packet([]byte{0x83, 1, 0, 0}, 0, 0, 2000), 1280},
-		{"an option with no length", ipv4Packet([]byte{optionNOP, optionNOP, optionNOP, 0x83}, 0, 0, 2000), 1280},
-		{"data past the largest datagram", ipv4Packet(nil, fragmentOffset, 0, 2000), 1280},
-		{"no room for 8 bytes past the longest header", ipv4Packet(bytes.Repeat([]byte{optionNOP}, 40), 0, 0, 2000), 67},
-		{"anything but IPv4", append([]byte{0x60}, make([]byte, 1999)...), 1280},
-		{"a packet longer than its total length", append(ipv4Packet(nil, 0, 0, 2000), 0), 1280},
+		{"DF", ipv4Packet(nil, dontFragment, 0, 2000), 1280, 0},
+		{"an option whose length runs past the header", ipv4Packet([]byte{7, 9, 4, 0}, 0, 0, 2000), 1280, 20},
+		{"an option whose length runs one byte past the header", ipv4Packet([]byte{7, 5, 4, 0}, 0, 0, 2000), 1280, 20},
+		{"an option of length one", ipv4Packet([]byte{0x83, 1, 0, 0}, 0, 0, 2000), 1280, 20},
+		{"an option of length 0", ipv4Packet([]byte{0x83, 0, 0, 0}, 0, 0, 2000), 1280, 20},
+		{"an option with no length", ipv4Packet([]byte{optionNOP, optionNOP, optionNOP, 0x83}, 0, 0, 2000), 1280, 23},
+		{"data past the largest datagram", ipv4Packet(nil, fragmentOffset, 0, 2000), 1280, 0},
+		{"no room for 8 bytes past the longest header", ipv4Packet(bytes.Repeat([]byte{optionNOP}, 40), 0, 0, 2000), 67, 0},
+		{"anything but IPv4", append([]byte{0x60}, make([]byte, 1999)...), 1280, 0},
+		{"a packet longer than its total length", append(ipv4Packet(nil, 0, 0, 2000), 0), 1280, 0},
+		{"a header failing its checksum", failingItsChecksum(ipv4Packet(nil, 0, 0, 2000)), 1280, 0},
+		{"a header failing its checksum whose options do not frame", failingItsChecksum(ipv4Packet([]byte{7, 9, 4, 0}, 0, 0, 2000)), 1280, 0},
 	} {
 		t.Run(refused.name, func(t *testing.T) {
-			out, ok := AppendFragments([]byte("kept"), []byte("a tunnel header"), refused.raw, refused.mtu)
+			out, fault, ok := AppendFragments([]byte("kept"), []byte("a tunnel header"), refused.raw, refused.mtu)
 			if ok || string(out) != "kept" {
 				t.Errorf("AppendFragments took it, reporting %t with %d bytes after dst", ok, len(out)-len("kept"))
 			}
+			if fault != refused.fault {
+				t.Errorf("AppendFragments refused it at %d, want %d", fault, refused.fault)
+			}
 		})
+	}
+}
+
+// a packet cut into a dst with room for its fragments costs no allocation, with no options or with a Router Alert
+// every IPv4 packet the tun path or End cuts takes this path
+func TestFragmentsAreCutWithoutAllocating(t *testing.T) {
+	for _, options := range [][]byte{nil, {148, 4, 0, 0}} {
+		raw := ipv4Packet(options, 0, 0, 1400-ipv4HeaderLen-len(options))
+		dst := make([]byte, 0, 2*len(raw))
+		allocations := testing.AllocsPerRun(100, func() {
+			if _, _, ok := AppendFragments(dst, nil, raw, 1300); !ok {
+				t.Fatal("a 1400 byte packet without DF was refused at an mtu of 1300")
+			}
+		})
+		if allocations != 0 {
+			t.Errorf("cutting a packet whose header is %d bytes allocated %v times, want none", ipv4HeaderLen+len(options), allocations)
+		}
 	}
 }
 

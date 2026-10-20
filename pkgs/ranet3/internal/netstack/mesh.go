@@ -130,7 +130,7 @@ type fragmentList struct {
 func (l *fragmentList) add(peer *Peer, nextHeader byte, header, inner []byte, mtu int) (int, int) {
 	start := len(l.bytes)
 	var ok bool
-	if l.bytes, ok = packet.AppendFragments(l.bytes, header, inner, mtu-len(header)); !ok {
+	if l.bytes, _, ok = packet.AppendFragments(l.bytes, header, inner, mtu-len(header)); !ok {
 		return 0, 0
 	}
 	count := 0
