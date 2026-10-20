@@ -110,13 +110,14 @@ type Session struct {
 	stateMu sync.RWMutex
 	current *ikeContext
 	old     *ikeContext
-	// collision retains a peer-initiated candidate that a simultaneous rekey
-	// decided against: the losing one until the local rekey exchange can
-	// delete it, or the peer's own losing one until the peer deletes it. The
-	// normal current/old pair retains the winning candidate and the SA it
-	// replaces.
+	// collision retains the candidate of a simultaneous rekey that is not
+	// current: the peer's while this end's own rekey has yet to settle the
+	// collision, then the losing one, this end's until its own Delete of it
+	// or the peer's until the peer deletes it. The normal current/old pair
+	// retains the winning candidate and the SA it replaces.
 	collision *ikeContext
-	// oldBy and collisionBy bound how long each waits for the peer's Delete.
+	// oldBy and collisionBy bound how long each is kept for the Delete that
+	// ends it, the peer's or this end's, as retainedUntil gives.
 	oldBy         time.Time
 	collisionBy   time.Time
 	localRekey    *ikeRekey
@@ -327,9 +328,9 @@ func (s *Session) routedLocked(spi uint64) bool {
 }
 
 // expireRetainedContexts drops a retained IKE SA whose Delete never arrived,
-// and one the peer owes a Delete at its lifetime. Its SPI leaves the mux with
-// it, so a later datagram naming it is answered the way any other unknown SA
-// is.
+// and a replaced IKE SA whose Delete the peer owes once that SA's lifetime
+// ends. Its SPI leaves the mux with it, so a later datagram naming it is
+// answered the way any other unknown SA is.
 func (s *Session) expireRetainedContexts(now time.Time) {
 	s.stateMu.Lock()
 	var dropped []*ikeContext

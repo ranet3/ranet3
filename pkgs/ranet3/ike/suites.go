@@ -15,7 +15,7 @@ import (
 type IKESuites struct {
 	Cipher []string `yaml:"cipher,omitempty" json:"cipher,omitempty" toml:"cipher,omitempty"`
 	PRF    []string `yaml:"prf,omitempty" json:"prf,omitempty" toml:"prf,omitempty"`
-	// an entry of Kex is a classical key exchange, which runs in IKE_SA_INIT, alone or joined with + to mlkem768, which runs after it in an IKE_INTERMEDIATE exchange of its own
+	// an entry of Kex is a classical key exchange, which runs in IKE_SA_INIT or a rekey's CREATE_CHILD_SA, alone or joined with + to mlkem768, which runs after it in an IKE_INTERMEDIATE or IKE_FOLLOWUP_KE exchange of its own
 	// RFC 9370 section 2.2.1: "Additional key exchanges negotiated via newly defined transforms MUST take place in a series of IKE_INTERMEDIATE exchanges following the IKE_SA_INIT exchange, performed in an order of the values of their Transform Types."
 	Kex []string `yaml:"kex,omitempty" json:"kex,omitempty" toml:"kex,omitempty"`
 }
@@ -46,7 +46,7 @@ var (
 		{"p384", Transform{Type: TransDH, ID: DH_ECP_384}},
 		{"p256", Transform{Type: TransDH, ID: DH_ECP_256}},
 	}
-	// each of postQuantumNames runs only joined after a classical key exchange, in an IKE_INTERMEDIATE exchange of its own
+	// each of postQuantumNames runs only joined after a classical key exchange, in an IKE_INTERMEDIATE or IKE_FOLLOWUP_KE exchange of its own
 	postQuantumNames = []suiteName{
 		{"mlkem768", Transform{Type: TransDH, ID: ML_KEM_768}},
 		{"mlkem1024", Transform{Type: TransDH, ID: ML_KEM_1024}},
@@ -127,7 +127,7 @@ func resolve(field string, list []string, names []suiteName) ([]Transform, error
 
 // resolveKex reads a joined entry whole
 // so a name joined after a classical one is refused for the exchange it asks for
-// an entry is a classical key exchange, which IKE_SA_INIT runs, and at most one ML-KEM method after it, which one IKE_INTERMEDIATE exchange runs
+// an entry is a classical key exchange and at most one ML-KEM method after it, which one IKE_INTERMEDIATE or IKE_FOLLOWUP_KE exchange runs
 // draft-ietf-ipsecme-ikev2-mlkem-09 section 2.1: "Thus, implementations transporting IKE over UDP and not performing Path MTU (PMTU) discovery SHOULD NOT use ML-KEM-768 or ML-KEM-1024 in the IKE_SA_INIT exchange on networks where the PMTU is unknown or restricted."
 func resolveKex(list []string) ([]kexEntry, error) {
 	if list == nil {
@@ -347,10 +347,9 @@ func (s Suites) rekeyChoice(old ChildSA) []Transform {
 	return promoted(s.espCiphers(), wireCipher(old))
 }
 
-// rekeyEntries is the order this end answers a peer's rekey in, for an SA the key exchanges of current keyed
-// that entry comes first while kex holds it and the KE payload is in its group
+// rekeyEntries is the entries rekeyable gives, in the order this end answers a peer's rekey of an IKE SA of current
+// current comes first while kex holds it and the KE payload is in its group
 // so a rekey between ends whose lists order the entries differently keeps the entry and asks for no other
-// RFC 7296 section 2.8: "Note that, when rekeying, the new Child SA SHOULD NOT have different Traffic Selectors and algorithms than the old one."
 func (s Suites) rekeyEntries(current kexEntry, keGroup uint16) []kexEntry {
 	if current.group != keGroup {
 		return s.rekeyable(current)
@@ -550,7 +549,7 @@ func (s *Session) lists() Suites { return current(s.suites) }
 // it never blocks
 // an SA holding a cipher or a kex entry they left out is rekeyed after a delay drawn within the rekey jitter
 // and no later than the rekey its schedule already holds
-// a Child SA whose IKE SA they left out as well draws its delay once that IKE SA's rekey has ended, unless an earlier check already drew one
+// a Child SA whose IKE SA also holds a cipher or a kex entry they left out draws its delay once that IKE SA's rekey has ended, unless an earlier check already drew one
 // an IKE SA whose PRF they left out is deleted for a new handshake
 func (s *Session) SuitesChanged() {
 	select {

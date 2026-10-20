@@ -8,12 +8,13 @@
 // transforms and no others: raw Ed25519 public key authentication ([RFC 7427]
 // Digital Signature with an ASN1_DN identity, or an ID of another type
 // [Aliases] names an endpoint by), a key exchange in X25519, P-384 or P-256,
-// alone or followed by ML-KEM-768 in an IKE_INTERMEDIATE exchange of
-// [RFC 9370], encryption in AES-GCM or ChaCha20-Poly1305, a PRF in
-// HMAC-SHA2-384 or HMAC-SHA2-256, UDP encapsulation forced on, and 0.0.0.0/0
-// with ::/0 as the traffic selectors. [Suites] is the part of that set a
-// session offers and accepts, in the order it prefers. It interoperates with a
-// strongSwan responder configured the same way.
+// alone or followed by ML-KEM-768 in an IKE_INTERMEDIATE exchange at setup and
+// an IKE_FOLLOWUP_KE exchange at a rekey, as [RFC 9370] runs them, encryption
+// in AES-GCM or ChaCha20-Poly1305, a PRF in HMAC-SHA2-384 or HMAC-SHA2-256, UDP
+// encapsulation forced on, and 0.0.0.0/0 with ::/0 as the traffic selectors.
+// [Suites] is the part of that set a session offers and accepts, in the order
+// it prefers. It interoperates with a strongSwan responder configured the same
+// way.
 //
 // Certificates, EAP, MOBIKE and the legacy transforms, CBC ciphers, MODP
 // groups and SHA-1 or MD5, are left out rather than unfinished, and a peer
@@ -49,10 +50,12 @@
 //     the Default constants below give the values an absent block runs with.
 //
 // The message, payload and transform codecs are exported beside those, so a
-// caller can build or read one exchange without driving a session. [RFC 7296]
-// numbers the constants here, [RFC 9242], [RFC 9370] and the ML-KEM draft the
-// ones they add, and each declaration names its section.
+// caller can build or read one exchange without driving a session. The
+// constants here are numbered by [RFC 7296] and by the documents that add to
+// it, [RFC 9242], [RFC 9370] and [draft-ietf-ipsecme-ikev2-mlkem-09], and each
+// declaration names its section.
 //
+// [draft-ietf-ipsecme-ikev2-mlkem-09]: https://datatracker.ietf.org/doc/html/draft-ietf-ipsecme-ikev2-mlkem-09
 // [RFC 7296]: https://www.rfc-editor.org/rfc/rfc7296
 // [RFC 7427]: https://www.rfc-editor.org/rfc/rfc7427
 // [RFC 7815]: https://www.rfc-editor.org/rfc/rfc7815

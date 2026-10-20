@@ -166,7 +166,7 @@ func TestPeerRekeyIsAnsweredByTheListsOrRefused(t *testing.T) {
 				childGroup = ke
 			}
 		}
-		// a Child SA rekey with its KE payload in the SA's own group, listed behind the first, under a first proposal that offers it, drawn outright
+		// a Child SA's own group listed behind the first is drawn outright, so every run meets it answered ahead of kex order
 		if !ike && len(groups) > 1 && hegel.Draw(ht, pbt.Spanning(0, 3)) == 0 {
 			ke = groups[hegel.Draw(ht, pbt.Spanning(1, len(groups)-1))]
 			childGroup = ke
