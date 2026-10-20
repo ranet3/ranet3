@@ -257,6 +257,7 @@ connections to the reads.
 | `babel.request.sent`                  | this node asked a neighbor that came up for its whole table                 |
 | `babel.neighbor.extra`                | a neighbor's `cost.extra` amount changed, as it joined or on a reload       |
 | `babel.config.applied`                | the speaker took a reloaded `cap.babel`, with its intervals and cost        |
+| `babel.own.changed`                   | the prefixes this node announces or the addresses `cap.table` assigns moved |
 | `babel.route.selected`, `.retracted`  | a prefix's next hop changed, every time rather than once a second as logged |
 | `babel.seqno.requested`               | a seqno request naming this node's own router id arrived                    |
 | `babel.seqno.raised`                  | this node's own seqno rose, at a start of the speaker or for a request      |
@@ -328,6 +329,7 @@ Each kind carries these attributes:
 | `babel.request.sent`                          | none                                                                                                                                        |
 | `babel.neighbor.extra`                        | `from`, `extra`                                                                                                                             |
 | `babel.config.applied`                        | `hello`, `update`, `quality`, `rx`, `rtt_weight`, `rtt_min`, `rtt_max`                                                                      |
+| `babel.own.changed`                           | `set`, and `added`, `removed` and `held` where they name a route                                                                            |
 | `babel.route.selected`                        | `route`, `metric`                                                                                                                           |
 | `babel.route.retracted`                       | `route`                                                                                                                                     |
 | `babel.seqno.requested`                       | `route`, `asked`, `seqno`, `raised`                                                                                                         |
@@ -491,6 +493,16 @@ of the session or dialer it was recorded under, which `--peer` takes by any name
 of that peer. A verb is recorded under each path its answer lists in `acted` or
 `missed`, and one that lists none, a refused one included, is recorded once
 without a peer.
+
+A `babel.own.changed` is recorded once for each change to the routes this node
+holds as its own, at the start, on a reload and when `cap.egress` moves what the
+node announces. Its `set` is `originated` for the prefixes it announces and
+`assigned` for the host routes of the addresses `cap.table` assigns it. `added`
+and `removed` name the routes that joined the set and left it, and `held` the
+ones among those that left which the node now holds unreachable, as
+[routing](../routing.md#retracted-routes) describes. Each names its routes in
+order, separated by commas, with a source prefix after `from`. A change that
+leaves the set as it was records none.
 
 A `babel.request.sent` is recorded when the node decides to send the request,
 and a send queue with no room can still refuse it, which
