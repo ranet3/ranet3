@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6 and ICMP specifications on purpose."
 created: 2026-08-23
-updated: 2026-10-20
+updated: 2026-10-21
 order: 20
 ---
 
@@ -26,17 +26,17 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 7296 section 2.25.2                     | Answer as usual a rekey of an IKE SA this end is rekeying too                                             | Past the IKE SA's lifetime it is answered `TEMPORARY_FAILURE`                   | Section 2.8: an SA past its lifetime is not used              |
 | RFC 7296 section 2.8                        | An SA past its lifetime is not used                                                                       | It finishes its exchange, answers the peer and sends its Delete                 | Sections 2.1 and 2.3 keep 1 request until it ends             |
 | RFC 7296 section 2.8                        | A rekeyed Child SA keeps the algorithms of the old one                                                    | A Child SA rekey may move to another listed cipher                              | Either end's lists left the old cipher out                    |
-| RFC 7296 section 2.8                        | A rekeyed Child SA keeps the algorithms of the old one                                                    | This end's own Child SA rekey runs no key exchange and drops a group            | No Child SA key exchange of its own, see Rekeying             |
+| RFC 7296 section 2.8                        | A rekeyed Child SA keeps the algorithms of the old one                                                    | This end's own Child SA rekey drops the key exchanges a peer's rekey ran        | No Child SA key exchange of its own, see Rekeying             |
 | RFC 7296 section 1.3.1                      | A failed Child SA does not tear down the IKE SA                                                           | When the Child SA in `IKE_AUTH` fails, both ends delete the IKE SA              | An IKE SA carries nothing without its Child SA                |
 | RFC 7296 section 2.4                        | Send a Delete for an IKE SA closed while the peer still answers                                           | None when a Message ID space is spent or a message cannot be built              | A Delete needs a Message ID and the same encoding             |
-| RFC 7296 section 2.21.3                     | Answer every request with errors on an authenticated IKE SA                                               | A replaced IKE SA past its lifetime answers no request                          | Section 2.8: an SA past its lifetime is not used              |
+| RFC 7296 section 2.21.3                     | Answer each erroneous request on an authenticated IKE SA with an error                                    | A replaced IKE SA past its lifetime answers no request                          | Section 2.8: an SA past its lifetime is not used              |
 | RFC 7296 section 4                          | Accept configured RSA certificates and shared keys                                                        | Ed25519 signatures only, against the trust document                             | Keys come from the trust document                             |
 | RFC 7296 section 2.9                        | Refuse unacceptable traffic selectors with `TS_UNACCEPTABLE`, or narrow them                              | Only the full IPv4 and IPv6 ranges, anything else `NO_PROPOSAL_CHOSEN`          | Babel picks the peer for each packet                          |
 | RFC 7296 section 2.21.4                     | Tell the peer of an error outside a request, such as ESP on an unknown SPI                                | Such ESP is counted and dropped, and nothing is sent                            | A known gap                                                   |
 | RFC 7296 section 2.21.4                     | Answer a suspicious message from a peer's address over its IKE SA                                         | It is dropped, and nothing is sent over the SA                                  | A spoofed address could make the node send                    |
 | RFC 7296 section 3.3.4                      | Let an administrator enter new Diffie-Hellman groups and their parameters                                 | No such interface                                                               | Elliptic curve groups only, fixed in code                     |
 | RFC 7296 section 3.3.5                      | Accept an offer of a longer key than the one configured                                                   | A key length the lists leave out is refused                                     | Section 3.3.4's suite controls are a MUST                     |
-| RFC 8247, RFC 8221                          | Support AES-CBC, MODP 14, `PRF_HMAC_SHA1`, HMAC integrity and RSA signatures                              | AEAD ciphers and elliptic curve groups only                                     | Legacy transforms are left out                                |
+| RFC 8247, RFC 8221                          | Support AES-CBC, MODP 14, `PRF_HMAC_SHA1`, `AUTH_HMAC_SHA1_96`, HMAC integrity and RSA signatures         | AEAD ciphers and elliptic curve groups only                                     | Legacy transforms are left out                                |
 | RFC 4303 sections 2.6 and 2.7               | Be able to generate dummy packets                                                                         | None are generated, and no traffic flow confidentiality padding is sent         | A known gap                                                   |
 | RFC 4303 sections 3.3.3 and 4               | Log a sequence number overflow with the source address and IPv6 Flow ID                                   | The log names the local port, not the source address, and no Flow ID            | A wildcard socket, and no flow label is set                   |
 | RFC 3948 section 2.1                        | Send the IPv4 UDP checksum as zero                                                                        | Every IPv4 datagram carries a computed checksum                                 | Linux refuses segmented sends without one                     |
@@ -191,14 +191,20 @@ PRF an IKE SA runs, no rekey of it is open, so the session deletes the IKE SA
 and a new handshake under the new lists replaces it, as
 [reloading](../reloading.md#capcrypto) describes.
 
-An IKE SA rekey this node starts, of an SA of a classical entry, runs its key
-exchange in the SA's group while `cap.crypto.ike.kex` holds that group as a
-classical entry, and in the group of the first classical `kex` entry otherwise.
-The `IKE_SA_INIT` offer holds 1 proposal for each `kex` entry, and the offer of
-an IKE SA rekey 1 for each classical entry, in `kex` order, with the first
-proposal in the group of its key exchange moved ahead of the rest. A retry after
-`INVALID_KE_PAYLOAD` sends its key exchange in the group the answer named and
-moves the first proposal in that group ahead.
+An IKE SA rekey this node starts may run each `cap.crypto.ike.kex` entry that
+keeps every ML-KEM method of the SA's entry while `kex` holds that entry, and
+any `kex` entry once a reload left it out. An SA of `x25519+mlkem768` is then
+rekeyed only by an entry joining `mlkem768`, and an SA of a classical entry may
+move to a joined one. The rekey runs its key exchange in the SA's group while
+one of those entries has that group, and in the group of the first of them
+otherwise. A joined entry's ML-KEM-768 then runs in an `IKE_FOLLOWUP_KE`
+exchange after the `CREATE_CHILD_SA`, as
+[RFC 9370 section 2.2.4](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2.4)
+describes. The `IKE_SA_INIT` offer holds 1 proposal for each `kex` entry, and
+the offer of an IKE SA rekey 1 for each entry the rekey may run, in `kex` order,
+with the first proposal in the group of its key exchange moved ahead of the
+rest. A retry after `INVALID_KE_PAYLOAD` sends its key exchange in the group the
+answer named and moves the first proposal in that group ahead.
 [RFC 7296 section 3.4](https://www.rfc-editor.org/rfc/rfc7296.html#section-3.4)
 says the group of the key exchange "SHOULD match the Diffie-Hellman group in the
 first group in the first proposal, if such exists."
@@ -210,32 +216,38 @@ it offers the entry's group and its ML-KEM method, and `NONE` in any additional
 key exchange type the entry does not use, as
 [the configuration reference](../configuration-reference.md#how-the-lists-are-used)
 gives it. In `IKE_SA_INIT`, a proposal that offers an additional key exchange
-counts only when the request asked for `IKE_INTERMEDIATE`. An IKE SA rekey and a
-Child SA rekey take only classical entries. A key exchange in another group than
-the entry's is answered with `INVALID_KE_PAYLOAD` naming the entry's group, in
-`IKE_SA_INIT`, in an IKE SA rekey and in a Child SA rekey that carries a key
-exchange, as
+counts only when the request asked for `IKE_INTERMEDIATE`. A peer's IKE SA rekey
+takes only an entry this node's own rekey of the SA may run, and is refused with
+`NO_PROPOSAL_CHOSEN` when the offer holds none. While `kex` holds the entry of
+an SA of `x25519+mlkem768`, a peer's rekey of it without ML-KEM-768 is refused
+that way. A peer's Child SA creation or rekey may take any `kex` entry. After
+either one's `CREATE_CHILD_SA`, a joined entry's ML-KEM-768 runs in an
+`IKE_FOLLOWUP_KE` exchange. A key exchange in another group than the entry's is
+answered with `INVALID_KE_PAYLOAD` naming the entry's group, in `IKE_SA_INIT`,
+in an IKE SA rekey and in a Child SA rekey that carries a key exchange, as
 [section 1.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-1.3) lets a
 responder "indicate its preferred Diffie-Hellman group". A peer whose key
 exchange is in the group of an entry this node lists lower spends 1 round trip.
-A peer's rekey of an SA of a classical entry, whose key exchange is in the SA's
-group, keeps that entry while `kex` holds it and the offer holds it, so a peer's
-scheduled rekey in the SA's group costs no round trip. That holds for an IKE SA
-of a classical entry and for a Child SA the peer keyed with a group.
+A peer's rekey whose key exchange is in the SA's group keeps the SA's entry
+while `kex` holds it and the offer holds it, so a peer's scheduled rekey in the
+SA's group costs no round trip. That holds for an IKE SA and for a Child SA the
+peer keyed with key exchanges of its own.
 
-A peer's Child SA rekey can run a key exchange for PFS in the group of any
-classical `kex` entry. A Child SA rekey this node starts derives keys from the
-IKE SA without one, so a Child SA the peer keyed with a group loses it at this
-node's next rekey. That departs from section 2.8, which says that "when
-rekeying, the new Child SA SHOULD NOT have different Traffic Selectors and
-algorithms than the old one", since ranet3 starts no Child SA key exchange of
-its own. A PFS peer's rekey of a Child SA ranet3's own rekey made then has no
-group to keep. strongSwan sends it in the first group of its proposals, and
-ranet3 answers `INVALID_KE_PAYLOAD` naming the group of the first classical
-entry of its own `kex` that the offer holds, where the two differ. strongSwan
-tries again in that group and is taken. That costs 1 `CREATE_CHILD_SA` round
-trip for each such rekey over the session's life, since each rekey of ranet3's
-in between drops the group again.
+A peer's Child SA creation or rekey can run key exchanges for PFS with any `kex`
+entry. A Child SA rekey this node starts runs no key exchange and derives keys
+from the IKE SA alone, and a Child SA the peer keyed with key exchanges of its
+own loses them at this node's next rekey. That departs from section 2.8, which
+says that "when rekeying, the new Child SA SHOULD NOT have different Traffic
+Selectors and algorithms than the old one", since ranet3 starts no Child SA key
+exchange of its own. The new Child SA's keys still come from the IKE SA's
+`SK_d`, which an IKE SA of a joined entry derives with ML-KEM-768. A PFS peer's
+rekey of a Child SA that ranet3's own rekey made has no entry to keep.
+strongSwan sends it in the first group of its proposals, and ranet3 answers
+`INVALID_KE_PAYLOAD` naming the group of the first entry of its own `kex` that a
+proposal of the offer holds, where that is not the group of strongSwan's key
+exchange. strongSwan tries again in that group and is taken. That costs 1
+`CREATE_CHILD_SA` round trip for each such rekey over the session's life, since
+each rekey of ranet3's in between drops the key exchanges again.
 
 A Child SA rekey this node starts offers only the cipher of the SA it replaces
 while `cap.crypto.esp.cipher` holds it, as
@@ -264,7 +276,24 @@ usual. Past the IKE SA's lifetime, ranet3 answers every rekey on it with
 [Section 2.8](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8) says that
 once its lifetime expires, an SA "MUST NOT be used", and a rekey answered on it
 would use its keys for the exchange and for the new SA's keys. Before the
-lifetime, such a rekey is answered as usual.
+lifetime, such a rekey is answered as usual, except while this end's own rekey
+of the IKE SA has had its `CREATE_CHILD_SA` answered and runs its
+`IKE_FOLLOWUP_KE` exchanges. ranet3 then answers the peer's rekey with
+`TEMPORARY_FAILURE`, as
+[RFC 9370 section 2.2.4](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2.4)
+requires for a rekey that arrives while "the CREATE_CHILD_SA exchange initiated
+by this peer has already been completed, and the series of IKE_FOLLOWUP_KE
+exchanges is in progress": "a TEMPORARY_FAILURE notification MUST be sent in
+response to such a request."
+
+[RFC 9370 section 2.2.4](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2.4)
+has a responder delete the state of a rekey whose next `IKE_FOLLOWUP_KE` request
+it "does not receive ... after some reasonable period of time", and says "In
+general, 5-20 seconds of waiting time should be appropriate in most cases."
+ranet3 waits 62 seconds, the time it resends a request to a silent peer before
+it deems the IKE SA failed. A peer that resends to a silent peer as ranet3 does
+makes each send of its next request within those 62 seconds, and finds the state
+kept. The wait and what follows it are in [limits](limits.md#ike).
 
 ## Lifetimes
 
@@ -277,7 +306,7 @@ lifetime, its answers to the peer's requests and then its own Delete.
 [Section 2.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.1) has a
 request retransmitted until it is answered or the IKE SA is deemed failed, and
 [section 2.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.3) has an
-end wait for the answer to each request before it sends the next, so the Delete
+end wait for the answer to each request before it sends the next. The Delete
 waits for the exchange already out. That exchange gets the 5 sends of a silent
 peer, about 62 seconds, whatever traffic the peer keeps up, or 2 when it is a
 Delete of an IKE SA, and the IKE SA is then deemed failed. The peer's rekeys are
@@ -301,9 +330,9 @@ it answers with its `AUTH` and the error, as
 [section 1.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-1.2) asks, and
 then sends a Delete for the IKE SA. An initiator that receives such an answer
 deletes the IKE SA too, and so does an end whose own dataplane refuses the first
-Child SA. An IKE SA carries nothing here without its Child SA, so keeping it
-would hold state on both ends with no traffic to protect, and the node that
-dialed dials again.
+Child SA. An IKE SA carries nothing here without its Child SA, and keeping it
+would hold state on both ends with no traffic to protect. The node that dialed
+dials again.
 
 Any error notify beside the responder's `AUTH` is such a refusal, a type ranet3
 does not know included, since
@@ -311,9 +340,9 @@ does not know included, since
 says a recipient of one it does not recognize "MUST assume that the
 corresponding request has failed entirely". The exceptions are
 `AUTHENTICATION_FAILED`, `INVALID_SYNTAX` and `UNSUPPORTED_CRITICAL_PAYLOAD`,
-which
+after which
 [section 2.21.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.21.2)
-lets leave the IKE SA uncreated without a Delete.
+leaves the IKE SA uncreated without a Delete.
 
 [RFC 7296 section 2.4](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.4)
 asks an end that closes an IKE SA to send a Delete for it "unless the other
@@ -327,10 +356,10 @@ answer, except in 3 cases where it closes without one:
   [Section 2.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.2) has the
   peer rekey or close the IKE SA long before.
 
-Two closes come near these. The session settings applied after `IKE_AUTH` refuse
-only what the configuration's validation refuses, so a loaded configuration
-never reaches that close. An answer to this end's own request that does not
-decode after its integrity check closes the IKE SA as
+Two closes come near these. A loaded configuration never reaches the close of
+the session settings applied after `IKE_AUTH`, which refuse only what the
+configuration's validation refuses. An answer to this end's own request that
+does not decode after its integrity check closes the IKE SA as
 [section 2.21.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.21.3)
 closes one after a malformed request, without a Delete, since the 2 ends'
 encodings disagree and a Delete's answer would come from the same encoder.
@@ -339,13 +368,16 @@ encodings disagree and a Delete's answer would come from the same encoder.
 says "After the IKE SA is authenticated, all requests having errors MUST result
 in a response notifying the other end of the error." ranet3 answers a request
 that does not parse with `INVALID_SYNTAX`, and an `INVALID_SYNTAX` sent or
-received ends the IKE SA it came on without a Delete, as the same section has
-both ends do. A replaced IKE SA past its lifetime answers no request, malformed
-or not. [Section 2.8](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8)
-says "When the lifetime of a Security Association expires, the Security
-Association MUST NOT be used", and an answer would go out under its keys. Past
-its lifetime such an IKE SA takes only the answer to this end's own Delete on
-it, as [Lifetimes](#lifetimes) describes.
+received ends the IKE SA it came on without a Delete, since that section makes
+the error fatal to both ends. A `CREATE_CHILD_SA` on an IKE SA that is busy, as
+a replaced IKE SA still kept for its Delete always is, is answered
+`TEMPORARY_FAILURE` before it is parsed, malformed or not, and the IKE SA stays.
+A replaced IKE SA past its lifetime answers no request, malformed or not.
+[Section 2.8](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8) says
+"When the lifetime of a Security Association expires, the Security Association
+MUST NOT be used", and an answer would go out under its keys. Past its lifetime
+such an IKE SA takes only the answer to this end's own Delete on it, as
+[Lifetimes](#lifetimes) describes.
 
 ## Authentication
 
@@ -408,12 +440,12 @@ ranet3 offers and accepts only these algorithms:
 | ESP encryption | AES-GCM with a 16-octet tag, 256 or 128-bit keys, ChaCha20-Poly1305 |
 | ESP integrity  | none, since every cipher is AEAD                                    |
 
-[`cap.crypto`](../configuration-reference.md#capcryptoike) narrows each row of
-the table and orders it, and a node takes, of each kind, the first transform of
-its own list that an offer holds. The answering end's `esp.cipher` order decides
-a Child SA's cipher, so with the default lists a strongSwan initiator that
-proposes ChaCha20-Poly1305 first, as a host without AES instructions does, gets
-AES-GCM with a 256-bit key.
+[`cap.crypto`](../configuration-reference.md#capcryptoike) narrows the
+encryption, PRF and key exchange rows of the table and orders them, and a node
+takes, of each kind, the first transform of its own list that an offer holds.
+The answering end's `esp.cipher` order decides a Child SA's cipher, so with the
+default lists a strongSwan initiator that proposes ChaCha20-Poly1305 first, as a
+host without AES instructions does, gets AES-GCM with a 256-bit key.
 
 [RFC 7296 section 3.3.4](https://www.rfc-editor.org/rfc/rfc7296.html#section-3.3.4)
 says "all implementations of IKEv2 SHOULD include a management facility that
@@ -450,7 +482,8 @@ Every Child SA carries exactly 2 traffic selectors on each side, the full IPv4
 range and the full IPv6 range. ranet3 proposes those and accepts nothing else. A
 request with any other selectors is refused with `NO_PROPOSAL_CHOSEN`. A
 `CREATE_CHILD_SA` request whose TS payload does not parse or holds no selector
-is malformed instead, and is answered `INVALID_SYNTAX`.
+is malformed instead, and is answered `INVALID_SYNTAX` on an IKE SA that is not
+busy, as [Closing SAs](#closing-sas) describes.
 [RFC 7296 section 2.9](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.9)
 has a responder narrow the selectors, or refuse with `TS_UNACCEPTABLE` when it
 accepts no part of them. ranet3 never narrows and never sends `TS_UNACCEPTABLE`.

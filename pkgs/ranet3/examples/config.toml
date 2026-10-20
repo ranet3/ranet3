@@ -301,12 +301,16 @@ update = "16s"
 # one kind with these is answered with NO_PROPOSAL_CHOSEN. A kex entry is a
 # classical key exchange, which IKE_SA_INIT runs, alone or joined with "+" by
 # mlkem768, which an IKE_INTERMEDIATE exchange of RFC 9370 runs after it, as
-# in the list ["x25519+mlkem768", "x25519", "p256"]. Each entry is a proposal
-# of its own. An entry that starts with mlkem768, joins a classical name or
-# joins more than one is refused, and so is mlkem1024 until IKE fragmentation
-# is implemented. A list of joined entries alone refuses peers without ML-KEM
-# and leaves an attacker on the path no classical exchange to steer two nodes
-# to. A reload applies the lists to the next exchange. It rekeys an SA whose
+# in the list ["x25519+mlkem768", "x25519", "p256"]. An IKE SA rekey runs the
+# joined mlkem768 in an IKE_FOLLOWUP_KE exchange after its CREATE_CHILD_SA, and
+# so may a peer's creation or rekey of a Child SA. An IKE SA of a joined entry
+# keeps mlkem768 across its rekeys while the list holds that entry, and one of
+# a classical entry may move to a joined one. Each entry is a proposal of its
+# own. An entry that starts with mlkem768, joins a classical name or joins more
+# than one is refused, and so is mlkem1024 until IKE fragmentation is
+# implemented. A list of joined entries alone refuses peers without ML-KEM and
+# leaves an attacker on the path no classical exchange to steer two nodes to. A
+# reload applies the lists to the next exchange. It rekeys an SA whose
 # cipher or kex entry it removed after a delay drawn within the rekey jitter,
 # and no later than the SA's scheduled rekey. It replaces through a new
 # handshake an IKE SA whose PRF it removed, since no rekey changes the PRF.

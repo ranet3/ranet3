@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-20
+updated: 2026-10-21
 order: 30
 ---
 
@@ -161,11 +161,14 @@ These commands take flags of their own:
   fails for a peer the node holds no session with.
 - `debug probe <peer>` and `debug probe --all` ask the sessions of one peer, or
   every session, to send a liveness check now and to probe their path MTU
-  budget, as each does after a network change, and name the sessions asked. It
-  is an action, so it takes the root class, and it is recorded as a
-  `control.verb` like the other verbs. It completes to the peers the node dials
-  and the nodes it holds a session with. The daemon refuses it while the node is
-  down, and when no session matches.
+  budget, as each does after a network change, and name the sessions asked. A
+  session with a request outstanding resends that request instead. One with none
+  sends no liveness check while its IKE SA is past its lifetime or a Delete of
+  it has gone out, or while a rekey of its own may run `IKE_FOLLOWUP_KE`
+  exchanges or waits on the peer's. It is an action, so it takes the root class,
+  and it is recorded as a `control.verb` like the other verbs. It completes to
+  the peers the node dials and the nodes it holds a session with. The daemon
+  refuses it while the node is down, and when no session matches.
 - `debug updown` is whether the node is on the mesh and since when, the flag
   that keeps it off through a restart and whether the flag is there, and the
   last move between up and down with its cause, a request or the flag at start.
@@ -235,7 +238,8 @@ connections to the reads.
 | `dial.attempt`, `dial.failed`         | a dialer sent a handshake, or ended short of a session                      |
 | `dial.woken`                          | a dialer was set going before its delay, as `redial` does                   |
 | `ike.handshake.failed`                | the responder refused a handshake, as often as it logs one                  |
-| `ike.kex.rejected`                    | a peer's ML-KEM key or ciphertext failed its FIPS 203 check                 |
+| `ike.kex.rejected`                    | a peer's ML-KEM key or ciphertext was refused                               |
+| `ike.followup.dropped`                | a peer's rekey was dropped before its last `IKE_FOLLOWUP_KE`                |
 | `ike.id.resolved`                     | a handshake took the peer's ID as naming the endpoint it authenticated as   |
 | `ike.session.established`, `.ended`   | a session started serving, and stopped                                      |
 | `ike.session.resolved`                | 2 sessions for 1 path were resolved to 1                                    |
@@ -302,7 +306,8 @@ Each kind carries these attributes:
 | `dial.failed`                                 | `err`                                                                                                                                       |
 | `dial.woken`                                  | none                                                                                                                                        |
 | `ike.handshake.failed`                        | `from`, `err`                                                                                                                               |
-| `ike.kex.rejected`                            | `exchange`, `method`, `side`, and `from` at the responder                                                                                   |
+| `ike.kex.rejected`                            | `exchange`, `method`, `side`, and `from` at the answering end of a handshake                                                                |
+| `ike.followup.dropped`                        | `sa`, which is `child` or `ike`, `reason`                                                                                                   |
 | `ike.id.resolved`                             | `type`, `id`, `sent`                                                                                                                        |
 | `ike.session.established`                     | `role`, `spi_in`, `spi_out`, `ike`, `esp`                                                                                                   |
 | `ike.session.ended`                           | `role`, `spi_in`, `spi_out`, `ike`, `esp`, `err`                                                                                            |
@@ -311,7 +316,7 @@ Each kind carries these attributes:
 | `ike.rekey.started`                           | `sa`, which is `child` or `ike`                                                                                                             |
 | `ike.rekey.completed`                         | `sa`, which is `child` or `ike`, `suite`                                                                                                    |
 | `ike.rekey.failed`                            | `sa`, `err`                                                                                                                                 |
-| `ike.sa.expired`                              | `sa`, which is `child`, `spi_in`, `spi_out`                                                                                                 |
+| `ike.sa.expired`                              | `spi_in`, `spi_out`, and `sa`, which is always `child`                                                                                      |
 | `ike.sa.closed`                               | `sa`, which is `child` or `ike`, `reason`, `err`                                                                                            |
 | `ike.suite.unlisted`                          | `sa`, which is `child` or `ike`, `suite`, `action`                                                                                          |
 | `ike.endpoint.moved`                          | `endpoint`                                                                                                                                  |
@@ -369,10 +374,16 @@ answered this end's rekeys with `TEMPORARY_FAILURE` for 5 minutes,
 `invalid syntax` when the peer answered a request of this end's on the current
 IKE SA with `INVALID_SYNTAX`, which ends it without a Delete, and
 `local failure` when this node failed on its own side, as when its dataplane
-refused a change to a Child SA. `err` says what ended it, and the
-`ike.session.ended` that follows carries it as well. An `INVALID_SYNTAX` this
-end sends on the current IKE SA records no `ike.sa.closed`: the session logs a
-warning and ends with `ike.session.ended`.
+refused a change to a Child SA. An IKE SA rekey of this node's that runs
+`IKE_FOLLOWUP_KE` adds 3 more: `rekey answer refused` when this node refused the
+peer's answer that selected an additional key exchange or carried its link, or
+when an `IKE_FOLLOWUP_KE` response linked no next exchange the rekey still
+needs, `kex rejected` when the peer's ML-KEM ciphertext was refused, and
+`state not found` when 3 rekeys in a row drew `STATE_NOT_FOUND`. Each closes the
+IKE SA with a Delete. `err` says what ended it, and the `ike.session.ended` that
+follows carries it as well. An `INVALID_SYNTAX` this end sends on the current
+IKE SA records no `ike.sa.closed`: the session logs a warning and ends with
+`ike.session.ended`.
 
 The `ike` of an `ike.session.established` names the IKE SA's cipher, PRF and kex
 entry by their `cap.crypto` names, joined by `/`, such as
@@ -381,31 +392,54 @@ whose keys came from X25519 and ML-KEM-768, and its `esp` names the Child SA's
 cipher, such as `aes256gcm`. The `ike.session.ended` that follows carries the
 same 2, the transforms the session started with. The `suite` of an
 `ike.rekey.completed` names the replacement's transforms the same way, the IKE
-SA's for `sa=ike` and the Child SA's for `sa=child`. A Child SA keyed by a key
-exchange of its own, as a peer's rekey with a group runs, has that group after
-its cipher, such as `aes128gcm/p256`. An IKE SA rekey whose Delete of the
-replaced or redundant IKE SA goes unanswered or is refused records
-`ike.rekey.completed`, since the surviving IKE SA is current by then. The
-session logs `ike replaced IKE SA was not deleted by this end` or
+SA's for `sa=ike` and the Child SA's for `sa=child`. A Child SA rekey this node
+starts runs no key exchange, so the `suite` of `sa=child` is the cipher alone. A
+peer's rekey records no `ike.rekey.completed`. A Child SA the peer's creation or
+rekey keyed with key exchanges of its own has their kex entry after its cipher,
+such as `aes128gcm/p256` or `aes128gcm/x25519+mlkem768`, in the `suite` of an
+`ike.suite.unlisted`. Where the peer answers this node's IKE SA rekey with
+`TEMPORARY_FAILURE` after this node answered the peer's own rekey of the same
+SA, this node takes the SA the peer's rekey made, and the `ike.rekey.completed`
+names that SA. An IKE SA rekey whose Delete of the replaced or redundant IKE SA
+goes unanswered or is refused records `ike.rekey.completed`, since the surviving
+IKE SA is current by then. The session logs
+`ike replaced IKE SA was not deleted by this end` or
 `ike redundant IKE SA was not deleted by this end` with the error.
 
-An `ike.suite.unlisted` is recorded when a session finds that the lists in force
-leave out a transform one of its SAs runs. Its `sa` names the SA, its `suite`
-the transforms that SA runs, named as above, and its `action` what the session
-does about it: `rekey` for a rekey under the lists, or `replace` when the lists
-left out the IKE SA's PRF, which no rekey changes, so the session deletes the
-IKE SA for a new handshake, as [reloading](../reloading.md#capcrypto) describes.
+An `ike.suite.unlisted` is recorded when a session schedules a rekey or a
+replacement for an SA running a transform the lists in force leave out. An SA
+whose rekey is already running, due, scheduled this way or backing off from a
+failure records none. The event's `sa` names the SA, its `suite` the transforms
+that SA runs, named as above, and its `action` what the session does about it:
+`rekey` for a rekey under the lists, or `replace` when the lists left out the
+IKE SA's PRF, which no rekey changes, so the session deletes the IKE SA for a
+new handshake, as [reloading](../reloading.md#capcrypto) describes.
 
-An `ike.kex.rejected` is recorded when the ML-KEM key exchange of a handshake
-fails its check of FIPS 203. Its `exchange` is `IKE_INTERMEDIATE`, its `method`
-the ML-KEM method by its `cap.crypto` name, `mlkem768`, and its `side` what
-failed. At the answering end `side=key` names the dialing peer's encapsulation
-key, which the check of section 7.2 refused. The responder answers it with
-`INVALID_SYNTAX` and ends the handshake, and records the event, with the source
-in `from`, beside the `ike.handshake.failed` that follows and as often as that
-one, since anyone past `IKE_SA_INIT` can send such a key. At the dialing end
-`side=ciphertext` names the answering peer's ciphertext, which the check of
-section 7.3 refused, and the dial records the event and ends without `IKE_AUTH`.
+An `ike.kex.rejected` is recorded when this node refuses the peer's side of an
+ML-KEM key exchange. Its `exchange` is `IKE_INTERMEDIATE` in a handshake and
+`IKE_FOLLOWUP_KE` after a `CREATE_CHILD_SA`, its `method` the ML-KEM method by
+its `cap.crypto` name, `mlkem768`, and its `side` what was refused. `side=key`
+names the encapsulation key of the peer that sent the request, which the check
+of FIPS 203 section 7.2 refused, and the answer is `INVALID_SYNTAX`. In a
+handshake the answer ends the handshake, and the event carries the source in
+`from`. It is recorded beside the `ike.handshake.failed` that follows and as
+often as that one, since anyone past `IKE_SA_INIT` can send such a key. In an
+`IKE_FOLLOWUP_KE` the `INVALID_SYNTAX` ends the IKE SA without a Delete.
+`side=ciphertext` names the ciphertext of the peer that answered, which the
+check of section 7.3 refused, or a response whose KE payload is missing, appears
+twice or names another method. A dial then ends without `IKE_AUTH`, and an IKE
+SA rekey ends the IKE SA with a Delete and records `ike.sa.closed` with the
+reason `kex rejected`.
+
+An `ike.followup.dropped` is recorded once for each rekey of the peer's that
+this node drops before its last `IKE_FOLLOWUP_KE`. Its `sa` names the SA the
+rekey would have made. Its `reason` is `expired` when the peer's next
+`IKE_FOLLOWUP_KE` did not come within the wait [limits](../design/limits.md#ike)
+gives, and `superseded` when a new rekey of the peer's replaced it, the IKE SA
+it ran on was replaced, or this node's own rekey won a simultaneous rekey
+against it. The peer's next `IKE_FOLLOWUP_KE` for a dropped rekey is answered
+`STATE_NOT_FOUND`, or `TEMPORARY_FAILURE` where that exchange is the one that
+found this node's own rekey had won.
 
 A `transport.pair.connected` names in `local` the address the socket bound and
 in `remote` the peer it is connected to. The `reason` of a

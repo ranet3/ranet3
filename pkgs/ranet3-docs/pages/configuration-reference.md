@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-10-20
+updated: 2026-10-21
 order: 35
 ---
 
@@ -516,7 +516,7 @@ reads the lists of `cap.crypto.ike` and `cap.crypto.esp` at each exchange.
 - `margin` plus `jitter` is less than every interval that is on.
 
 `jitter` also delays the rekey a reload forces on an SA whose transform the new
-lists leave out, as [`cap.crypto.ike`](#capcryptoike) describes.
+lists leave out, as [how the lists are used](#how-the-lists-are-used) describes.
 
 An SA's lifetime starts when the SA is made, and its rekey counts from there, so
 `margin` is the time the rekey has before the lifetime ends however late the
@@ -526,9 +526,9 @@ reaches its lifetime with no rekey replacing it, or a Child SA that runs out of
 sequence numbers with none replacing it, closes the IKE SA. The session logs
 `ike deleting the IKE SA` with the reason, records `ike.sa.closed`, sends a
 Delete for the IKE SA and ends, and the node that dialed it dials again. A rekey
-still under way at the lifetime decides by its result. A peer that answers this
-end's rekeys on 1 IKE SA with `TEMPORARY_FAILURE` for 5 minutes closes it the
-same way.
+still under way at the lifetime may yet replace the SA, and the IKE SA closes
+only if that rekey fails. A peer that answers this end's rekeys on 1 IKE SA with
+`TEMPORARY_FAILURE` for 5 minutes closes it the same way.
 
 ### `cap.crypto.rekey.retry`
 
@@ -563,12 +563,15 @@ The IKE SA's transforms, each list most preferred first.
   entry written twice and a name not in the default, other than `mlkem768`
   joined in a `kex` entry, are refused, and names are lowercase.
 - A `kex` entry is a classical key exchange, alone or joined with `+` by
-  `mlkem768`, as in `x25519+mlkem768`. The classical key exchange runs in
-  `IKE_SA_INIT`, and ML-KEM-768 runs after it in an `IKE_INTERMEDIATE` exchange
-  of its own, as
+  `mlkem768`, as in `x25519+mlkem768`. At setup the classical key exchange runs
+  in `IKE_SA_INIT`, and ML-KEM-768 runs after it in an `IKE_INTERMEDIATE`
+  exchange of its own, as
   [RFC 9370 section 2.2](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2)
-  and [RFC 9242](https://www.rfc-editor.org/rfc/rfc9242.html) describe. The IKE
-  SA's keys come from both.
+  and [RFC 9242](https://www.rfc-editor.org/rfc/rfc9242.html) describe. In a
+  rekey the classical key exchange runs in `CREATE_CHILD_SA`, and ML-KEM-768
+  after it in an `IKE_FOLLOWUP_KE` exchange of its own, as
+  [section 2.2.4](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2.4)
+  describes. The SA's keys come from both.
 - The load refuses these `kex` entries, and its error names the entry:
   - An entry that starts with an ML-KEM name or is one alone, such as
     `mlkem768`, since ML-KEM runs only after a classical key exchange.
@@ -578,10 +581,10 @@ The IKE SA's transforms, each list most preferred first.
     octets and need the IKE fragmentation of RFC 7383, which ranet3 does not
     implement.
   - An entry that names `mlkem512` or any other name `kex` does not take.
-- The classical entries of `kex` are the groups a peer's Child SA rekey may run
-  a key exchange in. A Child SA runs no additional key exchange, so a peer's
-  Child SA proposal that requires one is not taken, and one that offers `NONE`
-  for it gets `NONE` back.
+- A peer's Child SA creation or rekey may run any entry of `kex`, a joined
+  entry's ML-KEM-768 in `IKE_FOLLOWUP_KE`. A proposal that offers `NONE` for an
+  additional key exchange the entry does not use gets `NONE` back. A Child SA
+  rekey this node starts runs no key exchange.
 
 A list of joined entries alone, such as `["x25519+mlkem768"]`, refuses every
 peer without ML-KEM-768. A list that also holds a classical entry lets a session
@@ -592,7 +595,8 @@ can steer them to that entry.
 says "The simplest way to prevent such active attacks is to disable support for
 traditional-only sequences of key exchanges whenever possible." List only joined
 entries for peers known to run ML-KEM-768. The `IKE_INTERMEDIATE` request of
-ML-KEM-768 needs a path of 1281 bytes over IPv4 and 1301 over IPv6, as
+ML-KEM-768 needs a path of 1281 bytes over IPv4 and 1301 over IPv6, and the
+`IKE_FOLLOWUP_KE` request of a rekey 1297 and 1317, as
 [limits](design/limits.md#ml-kem-and-the-path) describes.
 
 ### `cap.crypto.esp`
@@ -631,12 +635,17 @@ its lists do not hold.
 A Child SA rekey this node starts offers only the cipher of the SA it replaces
 while `esp.cipher` holds it. Answering a peer's Child SA rekey, it takes that
 cipher first when the offer holds it. An IKE SA rekey keeps the PRF and takes
-the cipher as a new IKE SA does. An IKE SA rekey this node starts runs its key
-exchange in the SA's group while `kex` holds that group as an entry of its own,
-and a peer's rekey whose key exchange is in the SA's group keeps that entry.
-`ranet3 sessions` and the `ike.session.established` event name the transforms
-each session runs, an IKE SA's joined entry with its `+`, such as
-`x25519+mlkem768`.
+the cipher as a new IKE SA does. While `kex` holds the IKE SA's entry, either
+end's rekey of the SA may run only an entry that keeps each ML-KEM method of it,
+so an IKE SA of `x25519+mlkem768` keeps ML-KEM-768 across its rekeys and an IKE
+SA of a classical entry may move to a joined one. A peer's rekey that offers no
+such entry is refused with `NO_PROPOSAL_CHOSEN`. Once a reload leaves the SA's
+entry out, a rekey may run any entry of `kex`. An IKE SA rekey this node starts
+runs its key exchange in the SA's group while one of the entries it may run has
+that group, and a peer's rekey whose key exchange is in the SA's group keeps the
+SA's entry while `kex` holds it. `ranet3 sessions` and the
+`ike.session.established` event name the transforms each session runs, an IKE
+SA's joined entry with its `+`, such as `x25519+mlkem768`.
 
 A reload applies the lists to the next exchange, as
 [reloading](reloading.md#capcrypto) describes. An SA holding a cipher or a kex
