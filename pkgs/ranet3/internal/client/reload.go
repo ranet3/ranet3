@@ -373,7 +373,7 @@ func reloadable(old, next *config.Config) error {
 		// so a change dialed sessions alone took would run two policies at once
 		return fmt.Errorf("config: cap.crypto rekey or replay changed, restart to apply")
 	case !sameEgress(old, next):
-		// the translator is built once in main and owns the tables it made under the families the old block named
+		// the translator is built once in main and owns the tables it made under the families it translated at startup
 		// a new block applied here would leave the host holding rules from a configuration nothing runs any more
 		return fmt.Errorf("config: cap.egress changed, restart to apply")
 	case len(old.Segments().Egress()) == 0 && len(next.Segments().Egress()) > 0:
