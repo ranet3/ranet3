@@ -13,7 +13,7 @@ import (
 
 // DebugProbe asks the sessions of one peer, or every session, to prove their path now, as a network change asks every one
 func (c *Client) DebugProbe(ctx context.Context, peer string, all bool) (result control.Result, err error) {
-	defer func() { c.noteVerb(ctx, "probe", peer, result.Acted, err, slog.Bool("all", all)) }()
+	defer func() { c.noteVerb(ctx, "probe", peer, result, err, slog.Bool("all", all)) }()
 	probed, err := c.askSessions("probe", peer, all, c.sessions.startProbe)
 	if err != nil {
 		return control.Result{}, err

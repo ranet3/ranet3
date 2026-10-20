@@ -22,4 +22,6 @@ const (
 	waitTimedOut exitCode = 1
 	// waitUnwatched is its status when it could not watch for the event or lost it, as grep's on an error
 	waitUnwatched exitCode = 2
+	// writeMissed is a write's status when its answer lists an entry it did not reach, as a rekey lists a session that did not rekey
+	writeMissed exitCode = 1
 )

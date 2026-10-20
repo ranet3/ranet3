@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -23,6 +24,8 @@ type writingStub struct {
 	stubSource
 	mu   sync.Mutex
 	last string
+	// missed goes in every answer the stub gives
+	missed []control.Missed
 }
 
 // a stub that stopped matching the interface would leave every verb refused rather than fail to build
@@ -68,7 +71,13 @@ func (s *writingStub) record(call string) (control.Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.last = call
-	return control.Result{Acted: []string{call}, Detail: "the daemon took " + call}, nil
+	return control.Result{Acted: []string{call}, Missed: s.missed, Detail: "the daemon took " + call}, nil
+}
+
+func (s *writingStub) answerMissing(missed ...control.Missed) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.missed = missed
 }
 
 func (s *writingStub) asked() string {
@@ -128,6 +137,21 @@ func TestVerbJSONPrintsTheWireForm(t *testing.T) {
 	}
 	if !strings.Contains(out, `"detail"`) || !strings.Contains(out, `"acted"`) {
 		t.Errorf("reload --json printed %q", out)
+	}
+}
+
+// a verb whose answer lists an entry it did not reach prints the answer with why and exits writeMissed, under --json as well
+func TestVerbMissingAnEntryExitsWriteMissed(t *testing.T) {
+	socket, sink := serveWritingStub(t)
+	sink.answerMissing(control.Missed{Entry: "example/gateway:0@0", Reason: "ike: a Child SA rekey waits out the retry delay of the one that failed"})
+	for _, args := range [][]string{{"rekey", "--all"}, {"rekey", "--all", "--json"}} {
+		out, err := execute(t, append(args, "--control", socket)...)
+		if code, ok := errors.AsType[exitCode](err); !ok || code != writeMissed {
+			t.Errorf("%v ended with %v, want exit status %d", args, err, writeMissed)
+		}
+		if !strings.Contains(out, "example/gateway:0@0") || !strings.Contains(out, "retry delay") {
+			t.Errorf("%v printed %q, want the session that did not rekey and why", args, out)
+		}
 	}
 }
 

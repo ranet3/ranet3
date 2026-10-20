@@ -178,8 +178,17 @@ type Request struct {
 // summarizes. Detail is that sentence, written once here rather than once in
 // the daemon's log and again in the subcommand.
 type Result struct {
-	Acted  []string `json:"acted,omitempty"`
+	Acted []string `json:"acted,omitempty"`
+	// Missed names what the verb asked of and did not reach, each with why
+	// the subcommand exits 1 on a result with any
+	Missed []Missed `json:"missed,omitempty"`
 	Detail string   `json:"detail"`
+}
+
+// Missed is one entry a verb asked of that did not do what it asked, and why
+type Missed struct {
+	Entry  string `json:"entry"`
+	Reason string `json:"reason"`
 }
 
 // Sink is the write path, and is optional: [Handler] serves these verbs for a
@@ -205,8 +214,9 @@ type Sink interface {
 	// every peer the answer to a network change nothing on this host saw.
 	Redial(ctx context.Context, peer string, all bool) (Result, error)
 	// Rekey asks one peer's sessions, or every session, to replace their Child
-	// SA. The exchange runs on its own and the new SPIs appear under
-	// [Client.Sessions]. The answer says how many were asked.
+	// SA, and waits a bounded time for the exchanges. The answer names the
+	// sessions that rekeyed in Acted and each that did not in Missed with why,
+	// a rekey still running when the wait ran out among them.
 	Rekey(ctx context.Context, peer string, all bool) (Result, error)
 	// Reload re-reads the configuration file and the trust document it names,
 	// as SIGHUP does, so a supervisor is not the only way to ask.

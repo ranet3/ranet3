@@ -5,7 +5,6 @@ package client
 
 import (
 	"fmt"
-	"log"
 	"maps"
 	"slices"
 	"strings"
@@ -153,10 +152,7 @@ func TestStartupRefusesAnAliasTheTrustDocumentCannotBack(t *testing.T) {
 // a reload takes an auth.aliases entry naming whom the trust document does not hold and logs it, as it does a dial.to peer, or one stale entry would block every later reload
 func TestReloadLogsAnAliasTheTrustDocumentCannotBack(t *testing.T) {
 	c, path, _, bus := reloadOf(t, func(*config.Config) {})
-	written := &syncBuffer{}
-	previous := log.Writer()
-	log.SetOutput(written)
-	t.Cleanup(func() { log.SetOutput(previous) })
+	written := capturedLog(t)
 	next := *c.config()
 	next.Auth.Aliases = ike.Aliases{
 		Remote: ike.RemoteAliases{FQDN: map[string]identity.Identity{"gw.example.net": identity.MustParse("example/gateway:9")}},

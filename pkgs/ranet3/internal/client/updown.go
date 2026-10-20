@@ -62,7 +62,7 @@ func (c *Client) SetEgressEnable(set func(bool)) {
 
 // Down takes the node off the mesh until Up puts it back, through every restart and reboot between
 func (c *Client) Down(ctx context.Context) (result control.Result, err error) {
-	defer func() { c.noteVerb(ctx, "down", "", result.Acted, err) }()
+	defer func() { c.noteVerb(ctx, "down", "", result, err) }()
 	if c.stateDir == "" {
 		return control.Result{}, errNoStateDir
 	}
@@ -89,7 +89,7 @@ func (c *Client) Down(ctx context.Context) (result control.Result, err error) {
 
 // Up removes the flag and puts the node back on the mesh as a start would, a subsystem somebody disabled staying disabled
 func (c *Client) Up(ctx context.Context) (result control.Result, err error) {
-	defer func() { c.noteVerb(ctx, "up", "", nil, err) }()
+	defer func() { c.noteVerb(ctx, "up", "", control.Result{}, err) }()
 	if c.stateDir == "" {
 		return control.Result{}, errNoStateDir
 	}

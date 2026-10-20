@@ -1,0 +1,16 @@
+{
+  "acted": [
+    "example/bravo:0@0"
+  ],
+  "missed": [
+    {
+      "entry": "example/charlie:0@0",
+      "reason": "ike: a Child SA rekey waits out the retry delay of the one that failed"
+    },
+    {
+      "entry": "example/delta:0@0",
+      "reason": "still rekeying after 500 milliseconds, and ike.rekey.completed or ike.rekey.failed tells how it ends"
+    }
+  ],
+  "detail": "Rekeyed 1 of 3 session(s), and the 2 listed with a reason did not"
+}

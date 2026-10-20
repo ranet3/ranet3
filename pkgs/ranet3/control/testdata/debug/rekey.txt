@@ -1,0 +1,4 @@
+Rekeyed 3 session(s), and the new SPIs show under sessions
+  example/bravo:0@0
+  example/charlie:0@0
+  example/delta:0@0
