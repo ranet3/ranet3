@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-10-19
+updated: 2026-10-20
 order: 50
 ---
 
@@ -13,7 +13,8 @@ mesh. 1 action covers both features a customer asks for: an exit node advertises
 `0.0.0.0/0` and `::/0`, a subnet router advertises the prefixes behind it, and
 each ends at the same operation. A packet arrives on the tun, its source is
 translated to an address the far side can answer, and the host forwards it by
-its ordinary routes.
+its ordinary routes. An [egress segment](#egress-segments) ends at the same
+operation, with its packets arriving on a second tun, the egress device.
 
 `cap.egress` works on Linux only. On any other platform the daemon refuses it at
 startup with `egress: source translation is unsupported on this platform`. A
@@ -72,11 +73,11 @@ it with an empty interface name. The inbound rule therefore also requires an
 arrival interface index other than 0. Without that test, this node's own traffic
 into the mesh would leave under the return source.
 
-| Direction | Installed               | Matches                                                                                                                |
-| --------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| out       | always                  | arrives on the tun, leaves by another interface                                                                        |
-| out       | beside an egress device | arrives on the egress device, leaves by any interface but the tun                                                      |
-| in        | with `return`           | arrives on an interface other than the tun or the egress device, leaves by the tun, source inside an advertised prefix |
+| Direction | Installed                 | Matches                                                                                                                |
+| --------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| out       | in each advertised family | arrives on the tun, leaves by another interface                                                                        |
+| out       | beside an egress device   | arrives on the egress device, leaves by any interface but the tun                                                      |
+| in        | with `return`             | arrives on an interface other than the tun or the egress device, leaves by the tun, source inside an advertised prefix |
 
 `source4` and `source6` say what the source becomes, per family, for every out
 rule. They are a property of the node, so a packet from the tun and one from an
@@ -156,8 +157,10 @@ carries the advertised and the announced counts as `ranet3_egress_prefixes`.
 
 ## The nftables tables
 
-The translator owns 1 table named `ranet3` in each advertised family, `ip` and
-`ip6`. Each table holds 1 chain:
+The translator owns 1 table named `ranet3` in each family it translates, `ip`
+and `ip6`: each advertised family, and both beside an egress device, whatever
+`advertise` holds, since an egress segment carries both families. Each table
+holds 1 chain:
 
 | Property | Value          |
 | -------- | -------------- |
@@ -178,10 +181,8 @@ identity as its comment, which `nft list ruleset` shows:
 - `in via ranet3 not ranet3e ipv4 from 192.168.1.0/24 source 10.66.0.5`, the
   same rule on a node with an egress device
 
-An in rule carries `from` unless its prefix covers every address. Beside an
-egress device the translator owns both tables, whatever `advertise` holds, since
-an egress segment carries both families. A nat chain is consulted once per
-connection, so the rule counters count flows, not packets.
+An in rule carries `from` unless its prefix covers every address. A nat chain is
+consulted once per connection, so the rule counters count flows, not packets.
 [Sharing a host](coexistence.md) describes how the tables live beside other
 writers.
 
@@ -304,26 +305,28 @@ flows, what it announces, what it withholds "until its rule is installed and the
 kernel forwards it", the egress device and the families it is ready for, any
 chain it shares the hook with, the time since the last pass and the last error.
 A family not ready is named with the reason the last pass found, or in the
-withholding clause's words before the first.
+withholding clause's words before the first pass and while the translator is
+stopped.
 
-| Log line                                                             | Level | When                                                                      |
-| -------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------- |
-| `egress translating for N prefixes in <where>`                       | info  | the daemon starts the translator                                          |
-| `egress translator started`                                          | info  | the translator starts, with the egress device as `egress`, empty for none |
-| `egress device created`                                              | info  | the daemon made the egress device, with `name` and `mtu`                  |
-| `egress device withdrawn`                                            | info  | the daemon removed it at shutdown                                         |
-| `egress segments ready`                                              | info  | a family went ready, with `family`                                        |
-| `egress segments not ready`                                          | warn  | a family stopped being ready, with `family` and the reason as `detail`    |
-| `egress device rp_filter put back to 0`                              | info  | another writer set the device's own, with `was`                           |
-| `egress device disable_ipv6 put back to 0`                           | info  | another writer turned IPv6 off on the device, with `was`                  |
-| `egress device takes rp_filter <n> from net.ipv4.conf.all.rp_filter` | warn  | IPv4 cannot be ready, once per value                                      |
-| `egress rules installed`                                             | info  | a pass wrote the chain                                                    |
-| `egress advertisement changed`                                       | warn  | the announced prefixes changed after the first pass                       |
-| `egress is sharing the source translation hook with another writer`  | warn  | a new chain appears at the same hook, once each                           |
-| `egress pass failed, retrying`                                       | warn  | a pass failed, retried with backoff                                       |
-| `egress translator withdrawn`                                        | info  | the tables are removed, at shutdown or at `ranet3 down`                   |
-| `egress could not withdraw its tables, retrying`                     | warn  | `ranet3 down` could not remove the tables                                 |
-| `egress translator started again`                                    | info  | the first pass after `ranet3 up`                                          |
+| Log line                                                             | Level | When                                                                                                                 |
+| -------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------- |
+| `egress translating for N prefixes in <where>`                       | info  | the daemon starts the translator                                                                                     |
+| `egress translator started`                                          | info  | the translator starts, with the egress device as `egress`, empty for none                                            |
+| `egress device created`                                              | info  | the daemon made the egress device, with `name` and `mtu`                                                             |
+| `egress device withdrawn`                                            | info  | the daemon removed it at shutdown                                                                                    |
+| `egress segments ready`                                              | info  | a family went ready, with `family`                                                                                   |
+| `egress segments not ready`                                          | warn  | a family stopped being ready, with `family` and the reason as `detail`                                               |
+| `egress device rp_filter put back to 0`                              | info  | another writer set the device's own, with `was`                                                                      |
+| `egress device disable_ipv6 put back to 0`                           | info  | another writer turned IPv6 off on the device, with `was`                                                             |
+| `egress device takes rp_filter <n> from net.ipv4.conf.all.rp_filter` | warn  | IPv4 cannot be ready, once per value                                                                                 |
+| `egress stopped reading nf_tables notifications`                     | warn  | a read of the notification socket failed, with `err`, after which another writer's deletion waits for the next sweep |
+| `egress rules installed`                                             | info  | a pass wrote the chain                                                                                               |
+| `egress advertisement changed`                                       | warn  | the announced prefixes changed after the first pass                                                                  |
+| `egress is sharing the source translation hook with another writer`  | warn  | a new chain appears at the same hook, once each                                                                      |
+| `egress pass failed, retrying`                                       | warn  | a pass failed, retried with backoff                                                                                  |
+| `egress translator withdrawn`                                        | info  | the tables are removed, at shutdown or at `ranet3 down`                                                              |
+| `egress could not withdraw its tables, retrying`                     | warn  | `ranet3 down` could not remove the tables                                                                            |
+| `egress translator started again`                                    | info  | the first pass after `ranet3 up`                                                                                     |
 
 A pass that writes the chain, changes the announced prefixes or fails records an
 `egress.pass` event. So does `ranet3 down`. The event carries `trigger`, `took`,

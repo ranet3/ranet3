@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-10-19
+updated: 2026-10-20
 order: 35
 ---
 
@@ -610,16 +610,17 @@ Linux only, and the daemon refuses it at startup on other platforms.
 [Exit nodes](exit-nodes.md) describes the translation and the policy rules it
 needs.
 
-| Key         | Value             | Default  | Meaning                                                           |
-| ----------- | ----------------- | -------- | ----------------------------------------------------------------- |
-| `advertise` | list of prefixes  | required | Prefixes this node offers to carry                                |
-| `source4`   | `auto` or address | `auto`   | IPv4 source of a translated packet                                |
-| `source6`   | `auto` or address | `auto`   | IPv6 source of a translated packet                                |
-| `return`    | boolean           | `false`  | Also translate traffic from the advertised prefixes into the mesh |
-| `sweep`     | duration          | `"30s"`  | Interval of the periodic pass                                     |
+| Key         | Value             | Default | Meaning                                                           |
+| ----------- | ----------------- | ------- | ----------------------------------------------------------------- |
+| `advertise` | list of prefixes  | none    | Prefixes this node offers to carry                                |
+| `source4`   | `auto` or address | `auto`  | IPv4 source of a translated packet                                |
+| `source6`   | `auto` or address | `auto`  | IPv6 source of a translated packet                                |
+| `return`    | boolean           | `false` | Also translate traffic from the advertised prefixes into the mesh |
+| `sweep`     | duration          | `"30s"` | Interval of the periodic pass                                     |
 
-- `advertise` may be empty on a node with an egress segment, which serves that
-  segment alone and attracts no route.
+- `advertise` is required unless the node has an egress segment, where it may be
+  empty or left out. Such a node serves that segment alone and attracts no
+  route.
 - An exit advertises `0.0.0.0/0` and `::/0` only, for Linux and macOS clients
   alike. The `/1` halves would win over every `/0` exit by longest prefix, as
   [exit nodes](exit-nodes.md#what-to-advertise) describes. A subnet router

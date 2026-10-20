@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-10-17
+updated: 2026-10-20
 order: 110
 ---
 
@@ -216,13 +216,15 @@ tunnel is using.
 
 `cap.egress` writes into the packet filter, where the same 3 rules hold. It
 creates 1 nftables table named after this tool for each address family it
-advertises, `ip ranet3` and `ip6 ranet3`, each holding 1 nat postrouting chain.
-That name is the whole of its ownership claim, as `rt_proto` is the
-reconciler's. It writes only inside those tables and reads back every rule of
-their chains, so a rule another writer puts in one, which changes what the chain
-does to a packet, is removed by the next pass. A rule in any other table is
-never read or removed. It replaces the chain's contents in 1 transaction, so no
-packet is ever evaluated against half a ruleset.
+translates, the advertised ones and both beside an egress device, `ip ranet3`
+and `ip6 ranet3`, each holding 1 nat postrouting chain. That name is the whole
+of its ownership claim, as `rt_proto` is the reconciler's. It writes only inside
+those tables and reads back every rule of their chains, so a rule another writer
+puts in one, which changes what the chain does to a packet, is removed by the
+next pass. It reads other writers' tables, chains and rules to find its own and
+to report conflicts, and writes, replaces or deletes nothing outside its own
+tables. It replaces the chain's contents in 1 transaction, so no packet is ever
+evaluated against half a ruleset.
 
 It removes its tables at shutdown and at `ranet3 down`. A table left behind by
 an earlier instance carries the same name and is adopted, then brought to what
@@ -247,5 +249,5 @@ rules and this one are usually disjoint, since this one matches on the mesh
 device in both directions.
 
 The scrape counts the other chains as `ranet3_egress_conflicts`. The report
-covers nat postrouting chains in `ip` and `ip6` tables of the advertised
-families. It leaves out chains in `inet` tables.
+covers nat postrouting chains in `ip` and `ip6` tables of the families it
+translates. It leaves out chains in `inet` tables.
