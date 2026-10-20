@@ -273,9 +273,8 @@ func nftFamily(family uint8) uint8 {
 // empty spec. Its family is not ready while it stays, and the next pass
 // rewrites the chain without it. A rule in any other table or chain is
 // skipped. This backend never removes one in another table, and one in
-// another chain of its table goes with that table, which a pass deletes
-// whole, every chain in it included, to make it again where the readback
-// sets remake.
+// another chain of its table goes with the table whenever the table is
+// removed whole.
 func (n *nftables) Rules() (map[uint8]chainReadback, error) {
 	tables, err := ownTables(n.conn)
 	if err != nil {
@@ -390,7 +389,9 @@ func counters(expressions []byte) (packets, bytes uint64) {
 // is emptied and rewritten rather than edited rule by rule, because a batch
 // commits atomically: no packet is ever evaluated against half a ruleset, and
 // the alternative is a window in which a flow leaves untranslated and
-// conntrack then holds that decision for its whole lifetime.
+// conntrack then holds that decision for its whole lifetime. The table of a
+// family in remake is deleted first in the same transaction, with every chain
+// in it, and made again.
 func (n *nftables) Apply(rules []Rule, remake []uint8) error {
 	var requests []nftRequest
 	for _, family := range n.families {
@@ -418,10 +419,11 @@ func (n *nftables) Apply(rules []Rule, remake []uint8) error {
 	return n.conn.batch(requests)
 }
 
-// Withdraw removes the tables this tool created, and only those: the dump
-// names them, and a name that is not this tool's is never deleted. Both
-// families are swept rather than the configured ones alone, so a table left
-// behind by an instance with a different configuration leaves with the rest.
+// Withdraw removes the tables this tool created, and only those, each whole
+// with every chain in it: the dump names them, and a name that is not this
+// tool's is never deleted. Both families are swept rather than the configured
+// ones alone, so a table left behind by an instance with a different
+// configuration leaves with the rest.
 func (n *nftables) Withdraw() error {
 	return n.removeTables(func(uint8) bool { return true })
 }
