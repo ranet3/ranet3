@@ -148,6 +148,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	// and every live session checks the SAs it holds against them
 	c.sessions.resuite()
 	c.Republish()
+	c.speaker.SetAssigned(assignedAddresses(cfg))
 	c.syncPeers()
 	c.speaker.SetConfig(cfg.Babel())
 	if old.Link.Listen != cfg.Link.Listen {

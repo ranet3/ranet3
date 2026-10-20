@@ -194,6 +194,58 @@ func TestReloadHandsTheReconcilerNothingWhileTheAssignedAddressesStay(t *testing
 	}
 }
 
+// A reload moves the addresses this node holds as its own with cap.table: the
+// one the file now names is held and the one it no longer names is given back.
+func TestReloadMovesTheAddressesThisNodeHolds(t *testing.T) {
+	c, path, _, _ := reloadOf(t, func(old *config.Config) {
+		old.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{schema.MustPrefix("10.66.0.5/32")}}
+	})
+	for _, step := range []struct {
+		written string
+		held    netip.Prefix
+	}{
+		{"10.66.0.6/24", netip.MustParsePrefix("10.66.0.6/32")},
+		{"10.66.0.5/32", netip.MustParsePrefix("10.66.0.5/32")},
+	} {
+		next := *c.config()
+		next.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{schema.MustPrefix(step.written)}}
+		writeConfig(t, path, &next)
+		if err := c.ReloadFrom(path); err != nil {
+			t.Fatalf("a reload assigning %s was refused: %v", step.written, err)
+		}
+		if got := assignedRows(c); !slices.Equal(got, []netip.Prefix{step.held}) {
+			t.Errorf("after a reload assigning %s the node holds %v, want %s alone", step.written, got, step.held)
+		}
+	}
+}
+
+// recordedAt is the moment the golden events are rendered at, which the recorder's own clock would move on every run
+var recordedAt = time.Date(2026, 10, 21, 1, 0, 0, 0, time.UTC)
+
+// A reload that moves the prefixes this node announces and the address cap.table assigns records each set's change once,
+// the announcement it dropped held, and renders as the golden file
+func TestReloadRecordsTheOwnKeysItMoves(t *testing.T) {
+	c, path, _, bus := reloadOf(t, func(old *config.Config) {
+		old.Cap.Route = &babel.Routes{Announce: announce("fd00:1::/64", "fd00:2::/64")}
+		old.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{schema.MustPrefix("10.66.0.5/32")}}
+	})
+	speakerRecording(t, c, bus)
+	c.speaker.SetAssigned(assignedAddresses(c.config()))
+	next := *c.config()
+	next.Cap.Route = &babel.Routes{Announce: announce("fd00:2::/64", "fd00:3::/64")}
+	next.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{schema.MustPrefix("10.66.0.6/24")}}
+	writeConfig(t, path, &next)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("the reload was refused: %v", err)
+	}
+	var out strings.Builder
+	for _, event := range recorded(bus, "babel.own.changed") {
+		event.Seq, event.At = 0, recordedAt
+		control.RenderEvent(&out, event)
+	}
+	verbGolden(t, "events-own.txt", []byte(out.String()))
+}
+
 // heldReloadWait is how long a second reload is given to get through while the first is held inside the reconciler
 // a reload nothing holds back takes a few milliseconds
 const heldReloadWait = 300 * time.Millisecond

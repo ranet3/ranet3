@@ -333,8 +333,7 @@ func RenderNeighbors(w io.Writer, neighbors []Neighbor) {
 	table(w, []string{"Peer", "State", "Cost", "Extra", "Rx cost", "RTT", "Routes", "Expires", "Dropped", "Failed"}, rows)
 }
 
-// RenderRoutes writes the mesh route table, one line per prefix, which is the
-// answer `birdc show route` gave while Babel lived in BIRD.
+// RenderRoutes writes the mesh route table, one line per prefix.
 func RenderRoutes(w io.Writer, routes []Route) {
 	rows := make([][]string, 0, len(routes))
 	for _, r := range routes {
@@ -346,7 +345,7 @@ func RenderRoutes(w io.Writer, routes []Route) {
 		if via == "" {
 			via = "unreachable"
 		}
-		if r.Originated {
+		if r.Originated || r.Assigned {
 			via = "this node"
 		}
 		rows = append(rows, []string{
@@ -380,6 +379,8 @@ func RenderWhois(w io.Writer, address netip.Addr, covering []Route) {
 	switch {
 	case best.Originated:
 		fmt.Fprintf(w, "%s is in %s originated by this node\n", address, best.Destination)
+	case best.Assigned:
+		fmt.Fprintf(w, "%s is in %s assigned to this node\n", address, best.Destination)
 	case best.Via == "":
 		fmt.Fprintf(w, "%s is in %s held unreachable\n", address, best.Destination)
 	default:

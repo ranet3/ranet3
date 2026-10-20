@@ -73,9 +73,10 @@ send and the packets the transport lost.`,
 				}
 				return emit(w, asJSON, neighbors, func() { control.RenderNeighbors(w, neighbors) })
 			}),
-		r.command("routes", "Show the Babel route table", `Every prefix has a row, whether its route is selected or held
-unreachable after a retraction. This is Babel's table and not the
-routing table of the kernel.`,
+		r.command("routes", "Show the Babel route table", `Every prefix has a row, whether its route is selected, held
+unreachable after a retraction, or this node's own. A prefix this node
+announces and an address cap.table assigns it show this node as Via.
+This is Babel's table and not the routing table of the kernel.`,
 			func(c *control.Client, w io.Writer, asJSON bool) error {
 				routes, err := c.Routes()
 				if err != nil {
