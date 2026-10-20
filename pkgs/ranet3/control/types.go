@@ -381,11 +381,11 @@ type KernelStatus struct {
 // between the two.
 //
 // Advertise and Announced are separate fields because they disagree exactly
-// when something is wrong. A prefix is announced only while its translation
-// rule is installed and the kernel forwards its family, so a configured prefix
-// missing from Announced is this node declining to attract traffic it would
-// have to drop, and it is the line to read when a customer's exit node has
-// stopped being selected.
+// when something is wrong. A prefix is announced only while its family's
+// translation chain reads back as written and the kernel forwards the family,
+// so a configured prefix missing from Announced is this node declining to
+// attract traffic it would have to drop, and it is the line to read when a
+// customer's exit node has stopped being selected.
 type EgressStatus struct {
 	Enabled bool `json:"enabled"`
 	// Where names the tables this node owns, as the backend spells them.

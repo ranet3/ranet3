@@ -545,10 +545,11 @@ func sortedPrefixes(prefixes []netip.Prefix) []netip.Prefix {
 // announced is every prefix this node is putting into the mesh right now: the
 // ones cap.route asks for unconditionally, plus the ones cap.egress is
 // currently willing to stand behind, plus the /128 of each egress SID while
-// the translator's last word says the SIDs are served. The second and third
-// sets are read from the translator on every call rather than from the file,
-// because an exit withholds a prefix whose rule is not installed and that
-// answer changes under a running node.
+// the translator's last word says the SIDs are served and, under cap.border,
+// the border filter's chain reads back. The second and third sets are read
+// from what the translator and the filter last reported on every call rather
+// than from the file, because an exit withholds a prefix whose chain does not
+// read back as written and that answer changes under a running node.
 func (c *Client) announced(cfg *config.Config) []babel.OriginatedRoute {
 	serves := c.egressServes.Load() && !c.borderHeld.Load()
 	routes := cfg.Routes().Originated()
