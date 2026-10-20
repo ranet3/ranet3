@@ -420,9 +420,6 @@ func reconcilers() hegel.Generator[kernel.Table] {
 		if hegel.Draw(tc, hegel.WeightedBooleans(0.1)) {
 			table.Addresses = append(table.Addresses, hegel.Draw(tc, notPrefixes()))
 		}
-		if hegel.Draw(tc, hegel.Booleans()) {
-			table.VRF = &kernel.VRF{Name: hegel.Draw(tc, names()), Create: hegel.Draw(tc, hegel.Booleans())}
-		}
 		return table
 	})
 }

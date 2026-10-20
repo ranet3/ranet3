@@ -412,12 +412,6 @@ type KernelStatus struct {
 	Table    uint32 `json:"table,omitempty"`
 	Protocol uint8  `json:"protocol,omitempty"`
 	Metric   uint32 `json:"metric,omitempty"`
-	VRF      string `json:"vrf,omitempty"`
-	// L3mdevAccept is whether a socket outside the VRF is matched by traffic
-	// arriving through it, which is off by default and decides whether
-	// anything on this node can use a mesh address at all. Nil where no VRF is
-	// configured, since the question does not arise.
-	L3mdevAccept *bool `json:"l3mdev_accept,omitempty"`
 	// PassAt is zero until the first pass has run.
 	PassAt    time.Time `json:"pass_at,omitzero"`
 	Installed int       `json:"installed"`

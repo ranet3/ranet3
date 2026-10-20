@@ -125,7 +125,7 @@ type routePlatform struct {
 }
 
 func newPlatform(t Table, rt Runtime) (platform, error) {
-	if err := refuseMeaningless(t, rt.Interface); err != nil {
+	if err := refuseMeaningless(t); err != nil {
 		return nil, err
 	}
 	if len(rt.Interface) >= unix.IFNAMSIZ {
@@ -157,7 +157,7 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 }
 
 // refuseMeaningless refuses a setting naming something darwin does not have, before anything is opened for it
-func refuseMeaningless(t Table, device string) error {
+func refuseMeaningless(t Table) error {
 	// a linux-shaped configuration names a table and a protocol that mean
 	// nothing here. Rejecting them is the difference between a deployment that
 	// is wrong at startup and one that looks like it works.
@@ -167,11 +167,8 @@ func refuseMeaningless(t Table, device string) error {
 	if t.Proto != DefaultProtocol {
 		return fmt.Errorf("kernel: darwin has no route protocol, protocol %d has no meaning here", t.Proto)
 	}
-	if t.Name() != "" {
-		return fmt.Errorf("kernel: darwin has no VRF, %s cannot be enslaved to %s", device, t.Name())
-	}
 	if t.PrefSrc4.IsValid() {
-		// The same reasoning as the three above. There is no RTA_PREFSRC here,
+		// The same reasoning as the two above. There is no RTA_PREFSRC here,
 		// and the address a route prefers is whichever one the interface
 		// carries, so a configuration that names one is asking for something
 		// this platform decides for itself. Put the address on the tun with
@@ -834,19 +831,6 @@ func (p *routePlatform) DelAddr(prefix netip.Prefix) error {
 	}
 	return nil
 }
-
-// Master reports no master, always. darwin has no VRF and no master device of
-// any kind, so the reconciler's "leave a link somebody else owns alone" branch
-// is unreachable here and Enslave is the error that says so.
-func (p *routePlatform) Master() (string, error) { return "", nil }
-
-func (p *routePlatform) Enslave(master string) error {
-	return fmt.Errorf("kernel: darwin has no VRF, %s cannot be enslaved to %s", p.rt.Interface, master)
-}
-
-// Release is unreachable: the reconciler releases only what it enslaved, and
-// Enslave never succeeds.
-func (p *routePlatform) Release() error { return nil }
 
 // where is the interface itself: darwin has one FIB and no routing tables.
 func (p *routePlatform) where(Table) string { return "interface " + p.rt.Interface }

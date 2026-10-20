@@ -506,17 +506,12 @@ func changedNothing(t *testing.T, c *Client, old *config.Config, bus *events.Bus
 }
 
 func TestReloadRefusesMovingTheTableByName(t *testing.T) {
-	mesh := &kernel.VRF{Name: "mesh"}
 	for name, move := range map[string]struct {
 		old, next *kernel.Table
 		naming    string
 	}{
 		"another id":          {&kernel.Table{}, &kernel.Table{ID: 201}, "cap.table id changed"},
 		"another proto":       {&kernel.Table{}, &kernel.Table{Proto: kernel.DefaultProtocol + 1}, "cap.table proto changed"},
-		"a vrf written":       {&kernel.Table{}, &kernel.Table{VRF: mesh}, "cap.table vrf changed"},
-		"the vrf taken out":   {&kernel.Table{VRF: mesh}, &kernel.Table{}, "cap.table vrf changed"},
-		"another vrf":         {&kernel.Table{VRF: mesh}, &kernel.Table{VRF: &kernel.VRF{Name: "other"}}, "cap.table vrf changed"},
-		"the vrf made here":   {&kernel.Table{VRF: mesh}, &kernel.Table{VRF: &kernel.VRF{Name: "mesh", Create: true}}, "cap.table vrf changed"},
 		"the block written":   {nil, &kernel.Table{}, "cap.table added"},
 		"the block taken out": {&kernel.Table{}, nil, "cap.table removed"},
 	} {

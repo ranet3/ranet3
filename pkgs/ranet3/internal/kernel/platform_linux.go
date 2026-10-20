@@ -60,7 +60,6 @@ type netlinkPlatform struct {
 var (
 	_ auditor     = (*netlinkPlatform)(nil)
 	_ ruler       = (*netlinkPlatform)(nil)
-	_ vrfMaker    = (*netlinkPlatform)(nil)
 	_ lengthKeyer = (*netlinkPlatform)(nil)
 )
 
@@ -278,18 +277,14 @@ func (p *netlinkPlatform) retable(t Table) { p.table = t }
 
 // refuseMeaningless refuses nothing
 // every cap.table setting means something on linux
-func refuseMeaningless(Table, string) error { return nil }
+func refuseMeaningless(Table) error { return nil }
 
 func (p *netlinkPlatform) AddRoute(route Route) error {
 	// EXCL rather than REPLACE. A replace takes over whatever sits first at the
 	// same prefix, tos and priority no matter who wrote it: fib_table_insert
-	// compares neither rtm_protocol nor the route type. In a VRF table, which
-	// is the kind a mesh node gives this reconciler, that first entry is the
-	// kernel's own RTPROT_KERNEL local and connected route for an address on an
-	// enslaved link, sitting at priority 0 where an IPv4 route with no
-	// configured metric also sits. Replacing it would stop the node reaching
-	// its own address, and withdraw would not put it back, because DelRoute
-	// matches on our protocol.
+	// compares neither rtm_protocol nor the route type. Replacing another
+	// writer's route would take it from that writer, and withdraw would not put
+	// it back, because DelRoute matches on our protocol.
 	//
 	// Refusing instead costs an update that changes only a non-key attribute,
 	// a preferred source at an unchanged metric. applyRoutes withdraws before
@@ -324,8 +319,6 @@ func (p *netlinkPlatform) AddRoute(route Route) error {
 		// normally the node's own mesh address, which this same reconciler
 		// assigns, so the first passes can legitimately run before it is
 		// there.
-		// an address on a link inside a vrf is local only in the vrf's table
-		// a vrf bound to another table then breaks the rule with the address present
 		err = fmt.Errorf("%w (prefsrc %s is not a local address in table %d or in the local table)", err, route.PrefSrc, uint32(p.table.ID))
 	}
 	if err == nil {
@@ -446,50 +439,6 @@ func promoteSecondaries(conn netlinkConn, index uint32) error {
 	binary.NativeEndian.PutUint32(body[4:], index)
 	body = putAttr(body, unix.IFLA_AF_SPEC, inet)
 	_, err := conn.execute(unix.RTM_NEWLINK, unix.NLM_F_ACK, body)
-	return err
-}
-
-func (p *netlinkPlatform) Master() (string, error) {
-	tun, err := p.conn.link(0, p.rt.Interface)
-	if err != nil {
-		return "", err
-	}
-	if tun.master == 0 {
-		return "", nil
-	}
-	master, err := p.conn.link(tun.master, "")
-	if err != nil {
-		return "", err
-	}
-	return master.name, nil
-}
-
-func (p *netlinkPlatform) Enslave(master string) error {
-	link, err := p.conn.link(0, master)
-	if err != nil {
-		return err
-	}
-	// a device of another kind holding the name refuses the tun with a bare errno that names neither
-	if link.vrfTable == 0 {
-		return fmt.Errorf("kernel: %s is not a vrf", master)
-	}
-	return p.setMaster(link.index)
-}
-
-func (p *netlinkPlatform) Release() error {
-	if err := p.setMaster(0); err != nil && !gone(err) {
-		return err
-	}
-	return nil
-}
-
-// setMaster is RTM_NEWLINK without NLM_F_CREATE, which the kernel treats as a
-// change to the existing link, the same request "ip link set master" sends.
-func (p *netlinkPlatform) setMaster(master uint32) error {
-	body := make([]byte, unix.SizeofIfInfomsg)
-	binary.NativeEndian.PutUint32(body[4:], p.index)
-	body = putAttrU32(body, unix.IFLA_MASTER, master)
-	_, err := p.conn.execute(unix.RTM_NEWLINK, unix.NLM_F_ACK, body)
 	return err
 }
 
@@ -638,14 +587,14 @@ func notificationTable(message nlMessage) uint32 {
 // this reconciler is pointed at during a migration. Reporting it is the
 // difference between a migration that looks fine and one that is visibly
 // sharing a table.
-func (p *netlinkPlatform) foreignWriters(ownVRF bool) ([]string, error) {
+func (p *netlinkPlatform) foreignWriters() ([]string, error) {
 	seen := map[uint8]bool{}
 	for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
 		replies, err := p.dumpTable(family, 0)
 		if err != nil {
 			return nil, err
 		}
-		collectForeignWriters(replies, uint32(p.table.ID), p.table.Proto, ownVRF, seen)
+		collectForeignWriters(replies, uint32(p.table.ID), p.table.Proto, seen)
 	}
 	// Labeled here rather than by the caller, because rt_proto is a linux
 	// registry and kernel.go is the portable half. Returning the numbers bare
@@ -661,8 +610,8 @@ func (p *netlinkPlatform) foreignWriters(ownVRF bool) ([]string, error) {
 // protocolLabel names a routing protocol the way iproute2 prints it, from the
 // rt_protos registry, and falls back to the bare number for one nothing has
 // claimed. The one a fleet node meets in table 200 is bird, during a
-// migration. The kernel's own entries appear there only when some other VRF is
-// bound to that table.
+// migration. The kernel's own entries appear there only when a VRF is bound to
+// that table.
 func protocolLabel(protocol uint8) string {
 	var name string
 	switch protocol {
@@ -705,11 +654,10 @@ func protocolLabel(protocol uint8) string {
 }
 
 // collectForeignWriters is the filter half of foreignWriters, split out so the
-// rule can be tested without a netlink socket. ownVRF says the table is the
-// one this reconciler's configured VRF is bound to.
+// rule can be tested without a netlink socket.
 // replies hold the routes of table alone
 // the kernel filtered the dump to it
-func collectForeignWriters(replies []nlMessage, table uint32, ours uint8, ownVRF bool, seen map[uint8]bool) {
+func collectForeignWriters(replies []nlMessage, table uint32, ours uint8, seen map[uint8]bool) {
 	for _, reply := range replies {
 		if reply.Kind != unix.RTM_NEWROUTE || len(reply.Data) < unix.SizeofRtMsg {
 			continue
@@ -718,17 +666,13 @@ func collectForeignWriters(replies []nlMessage, table uint32, ours uint8, ownVRF
 		if kind != unix.RTN_UNICAST || protocol == ours {
 			continue
 		}
-		// RTPROT_KERNEL marks the kernel's own entries, and two tables hold
-		// them by construction: the main table, where they are the plumbing
-		// for the machine's addresses, and the table this reconciler's own VRF
-		// is bound to, where the kernel files the connected routes of every
-		// link enslaved to that VRF. The second is present on every node of
-		// that profile, so reporting it told each one to take a table of its
-		// own, advice the profile cannot follow. Nothing is lost by leaving it
-		// out: an install asks for its key exclusively and never takes one of
-		// these over, and a key it is refused is reported on its own route. In
-		// any other table the same entries mean another VRF is bound there.
-		if protocol == unix.RTPROT_KERNEL && (table == unix.RT_TABLE_MAIN || ownVRF) {
+		// RTPROT_KERNEL marks the kernel's own entries, and the main table
+		// holds them by construction, as the plumbing for the machine's
+		// addresses. Nothing is lost by leaving them out: an install asks for
+		// its key exclusively and never takes one of these over, and a key it
+		// is refused is reported on its own route. In any other table the same
+		// entries mean a VRF is bound there.
+		if protocol == unix.RTPROT_KERNEL && table == unix.RT_TABLE_MAIN {
 			continue
 		}
 		seen[protocol] = true

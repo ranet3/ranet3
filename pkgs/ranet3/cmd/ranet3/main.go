@@ -495,7 +495,6 @@ func kernelStatus(routes *kernel.Reconciler) control.KernelStatus {
 		Table:     uint32(table.ID),
 		Protocol:  table.Proto,
 		Metric:    table.Metric,
-		VRF:       table.Name(),
 		PassAt:    stats.At,
 		Installed: stats.Installed,
 		Skipped:   stats.Skipped,

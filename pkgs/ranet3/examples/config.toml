@@ -185,13 +185,6 @@ update = "16s"
 # reconcile = "30s"
 # capture_grace = "10s"            # how long an announced default outlives the last live session, 1s floor
 
-# Enslave the device to a VRF, and make that device when nothing of the name
-# exists. linux only: the other platforms have one forwarding table and refuse
-# this by name.
-# [cap.table.vrf]
-# name = "mesh"
-# create = true
-
 # The policy rules the reconciler owns, linux only, in the order written. Each
 # carries the protocol above, so a dump reads back only these and a delete can
 # never reach another writer's rule, and they are withdrawn at shutdown with
@@ -358,10 +351,10 @@ update = "16s"
 # the prefixes the mesh numbers its nodes from, an IPv6 routing header of any
 # type, and a packet to one of this node's own local segments. Write it on every
 # node that forwards, or a host on any of its links can send a mesh source
-# through it to an exit. The devices inside the mesh are derived: the tun, lo
-# and the VRF master. A local segment needs it, with an IPv6 prefix in
-# overlay, an egress segment every allow entry inside overlay as well, and a
-# prefix cap.egress advertises, a default aside, may not overlap overlay.
-# linux only, refused by name elsewhere.
+# through it to an exit. The devices inside the mesh are derived: the tun and
+# lo. A local segment needs it, with an IPv6 prefix in overlay, an egress
+# segment every allow entry inside overlay as well, and a prefix cap.egress
+# advertises, a default aside, may not overlap overlay. linux only, refused by
+# name elsewhere.
 # [cap.border]
 # overlay = ["3fff::/20", "203.0.113.0/24"]

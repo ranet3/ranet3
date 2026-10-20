@@ -126,7 +126,6 @@ cap:
   table:
     id: 200
     addresses: ["10.66.0.5/32"]
-    vrf: { name: mesh, create: true }
     rules:
       - { fwmark: 0x726c, table: main, priority: 40, family: both }
   segment:
@@ -156,7 +155,6 @@ max = "1024ms"
 [cap.table]
 id = 200
 addresses = ["10.66.0.5/32"]
-vrf = { name = "mesh", create = true }
 rules = [{ fwmark = 0x726c, table = "main", priority = 40, family = "both" }]
 [cap.segment]
 source = "3fff:1:69c:8c0::1"
@@ -241,10 +239,6 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 		"an address with no prefix length": {
 			asYAML: "cap:\n  table:\n    addresses: [\"2001:db8::1/0\"]\n",
 			asTOML: "[cap.table]\naddresses = [\"2001:db8::1/0\"]\n",
-		},
-		"a vrf naming no device": {
-			asYAML: "cap:\n  table:\n    vrf: { create: true }\n",
-			asTOML: "[cap.table.vrf]\ncreate = true\n",
 		},
 		// RTA_PREFSRC is stamped on IPv4 routes alone, and IPv6 carries no
 		// preferred source at all, so an address of the other family is a
@@ -365,6 +359,37 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 			}
 			if _, err := loadTOML(t, nodeTOML+pair.asTOML); err == nil {
 				t.Errorf("toml took %q", pair.asTOML)
+			}
+		})
+	}
+}
+
+// a file writing cap.table vrf is refused as an unknown key under every decoder
+// the same block without the key loads, so the refusal is the key's
+func TestLoaderRefusesTheVRFKeyAsUnknown(t *testing.T) {
+	const asJSON = `{"node":"example/laptop","auth":{"key":"key.pem","trust":"trust.json"},` +
+		`"link":{"port":13000,"endpoints":[{"serial":"0","family":"ip4"}]},"dial":{"to":["example/gateway"]},` +
+		`"cap":{"table":{"id":200%s}}}`
+	for name, test := range map[string]struct{ extension, with, without, refusal string }{
+		"toml": {".toml",
+			nodeTOML + "[cap.table]\nid = 200\n[cap.table.vrf]\nname = \"gravity\"\n",
+			nodeTOML + "[cap.table]\nid = 200\n",
+			`unknown field "cap.table.vrf"`},
+		"yaml": {".yaml",
+			nodeYAML + "cap:\n  table:\n    id: 200\n    vrf: { name: gravity }\n",
+			nodeYAML + "cap:\n  table:\n    id: 200\n",
+			"field vrf not found in type kernel.Table"},
+		"json": {".json",
+			fmt.Sprintf(asJSON, `,"vrf":{"name":"gravity"}`),
+			fmt.Sprintf(asJSON, ""),
+			"field vrf not found in type kernel.Table"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := load(t, test.extension, test.without); err != nil {
+				t.Fatalf("cap.table without vrf was refused: %v", err)
+			}
+			if _, err := load(t, test.extension, test.with); err == nil || !strings.Contains(err.Error(), test.refusal) {
+				t.Errorf("cap.table with vrf loaded with %v, want it refused as %s", err, test.refusal)
 			}
 		})
 	}
@@ -771,7 +796,7 @@ func TestIntegerFieldRefusesANumberThatIsNotWhole(t *testing.T) {
 func TestTOMLRefusesAKeyThatDiffersOnlyInCase(t *testing.T) {
 	for name, body := range map[string]string{
 		"a capability's field":          "[cap.route]\nANNOUNCE = [\"10.66.0.5/32\"]\n",
-		"a nested block":                "[cap.table.VRF]\nname = \"mesh\"\n",
+		"a nested block":                "[cap.crypto.REKEY]\nchild = \"1h\"\n",
 		"a field inside a list":         "[cap.table]\nrules = [{ FWMARK = 0x726c, table = \"main\", priority = 40, family = \"both\" }]\n",
 		"a field in an array of tables": "[[cap.table.rules]]\nFWMARK = 0x726c\ntable = \"main\"\npriority = 40\nfamily = \"both\"\n",
 		// Both spellings in one document, where the folded one used to win or
@@ -790,7 +815,7 @@ func TestTOMLRefusesAKeyThatDiffersOnlyInCase(t *testing.T) {
 	}
 	// The same keys spelled right are still taken, so the check refuses the
 	// case rather than the key.
-	if _, err := loadTOML(t, nodeTOML+"[cap.table]\nrules = [{ fwmark = 0x726c, table = \"main\", priority = 40, family = \"both\" }]\n[cap.table.vrf]\nname = \"mesh\"\n"); err != nil {
+	if _, err := loadTOML(t, nodeTOML+"[cap.table]\nrules = [{ fwmark = 0x726c, table = \"main\", priority = 40, family = \"both\" }]\n[cap.crypto.rekey]\nchild = \"1h\"\n"); err != nil {
 		t.Errorf("the keys as the tags spell them were refused: %v", err)
 	}
 }
@@ -914,7 +939,7 @@ func TestValidateRefusesAStringThatIsNotText(t *testing.T) {
 		"auth.key":              func(c *Config) { c.Auth.Key = "key\xfe.pem" },
 		"link.tun":              func(c *Config) { c.Link.TUN = "ranet\xff" },
 		"link.endpoints.serial": func(c *Config) { c.Link.Endpoints[0].Serial = "\xc3" },
-		"cap.table.vrf.name":    func(c *Config) { c.Cap.Table.VRF.Name = "mesh\xff" },
+		"cap.table.rules.iif":   func(c *Config) { c.Cap.Table.Rules[0].IIF = "ranet0\xff" },
 	} {
 		t.Run(path, func(t *testing.T) {
 			cfg := fullConfig()
@@ -999,30 +1024,6 @@ func TestUnderlayMarkNeedsTheRuleThatReadsIt(t *testing.T) {
 	// Refusing here would refuse a fleet node that works.
 	if _, err := loadYAML(t, markedYAML); err != nil {
 		t.Errorf("a mark on a node that configures its routes elsewhere was refused: %v", err)
-	}
-}
-
-// One level down, where the rule holds the same way: a cap.table.vrf naming no
-// device is refused by name under either decoder, rather than read as no VRF
-// under one of them.
-func TestNestedBlockPresenceAgreesAcrossDecoders(t *testing.T) {
-	spellings := map[string]string{
-		"yaml bare key":      ".yaml\x00" + nodeYAML + "cap:\n  table:\n    vrf:\n",
-		"yaml empty mapping": ".yaml\x00" + nodeYAML + "cap:\n  table:\n    vrf: {}\n",
-		"yaml explicit null": ".yaml\x00" + nodeYAML + "cap:\n  table:\n    vrf: null\n",
-		"toml table header":  ".toml\x00" + nodeTOML + "[cap.table.vrf]\n",
-		"toml inline table":  ".toml\x00" + nodeTOML + "[cap.table]\nvrf = {}\n",
-	}
-	for _, how := range slices.Sorted(maps.Keys(spellings)) {
-		extension, body, _ := strings.Cut(spellings[how], "\x00")
-		cfg, err := load(t, extension, body)
-		if err == nil {
-			t.Errorf("cap.table.vrf written as a %s loaded, and it names no device: %+v", how, cfg.Cap.Table.VRF)
-			continue
-		}
-		if !strings.Contains(err.Error(), "cap.table vrf") {
-			t.Errorf("cap.table.vrf written as a %s was refused without naming itself: %v", how, err)
-		}
 	}
 }
 
@@ -1276,7 +1277,6 @@ func fullConfig() Config {
 				PrefSrc4:        schema.MustAddr("10.66.0.5"),
 				Addresses:       []schema.Prefix{schema.MustPrefix("10.66.0.5/32")},
 				AssignAnnounced: true,
-				VRF:             &kernel.VRF{Name: "mesh", Create: true},
 				Reconcile:       schema.Duration(30 * time.Second),
 				CaptureGrace:    schema.Duration(10 * time.Second),
 				// a rule naming an address is refused for also naming the family the address says
@@ -1618,8 +1618,7 @@ func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 			Table:    schema.TableMain,
 			Priority: 40,
 		}}},
-		"cap.table vrf": kernel.Table{VRF: &kernel.VRF{Name: "mesh"}},
-		"auth aliases":  Auth{Aliases: ike.Aliases{Local: map[string]ike.LocalAlias{"example/gateway": {Email: "laptop@example.net"}}}},
+		"auth aliases": Auth{Aliases: ike.Aliases{Local: map[string]ike.LocalAlias{"example/gateway": {Email: "laptop@example.net"}}}},
 		"auth aliases remote": ike.Aliases{Remote: ike.RemoteAliases{
 			KeyID: map[string]identity.Identity{"0a1b2c3d": identity.MustParse("example/gateway:1")},
 		}},
@@ -1658,7 +1657,7 @@ func TestUnwrittenBlockLeavesNoKey(t *testing.T) {
 	}{
 		"cap.crypto": {ike.Crypto{}, []string{"rekey", "retry", "ike", "esp"}},
 		"cap.babel":  {babel.Config{}, []string{"cost", "rtt"}},
-		"cap.table":  {kernel.Table{}, []string{"vrf", "rules"}},
+		"cap.table":  {kernel.Table{}, []string{"rules"}},
 		// the blocks inside rekey and cost are asked on their own
 		// because cap.crypto and cap.babel drop those two whole
 		"cap.crypto rekey": {ike.Rekey{}, []string{"retry"}},

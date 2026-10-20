@@ -131,8 +131,8 @@ type Link struct {
 	// One block for both platforms because it is one idea, spelled two ways:
 	// the type in transport says which field each of them reads, and
 	// each is refused by name on the platform that has no meaning for it. That
-	// refusal is at startup rather than at load, as cap.table's rules and VRF
-	// are, so one file can carry a fleet's settings and a laptop's.
+	// refusal is at startup rather than at load, as cap.table's rules are, so
+	// one file can carry a fleet's settings and a laptop's.
 	Underlay transport.Underlay `yaml:"underlay,omitempty" json:"underlay,omitzero" toml:"underlay,omitempty"`
 }
 
@@ -499,11 +499,10 @@ func blocksWritten(body []byte, c *Config) error {
 }
 
 // fillBlocks walks the document beside the value it decoded to and allocates
-// every block a written key left nil, at whatever depth: cap.table.vrf obeys
-// the same rule cap.table does. It descends by the yaml key rather than by
-// field order, into every entry of a map as well, and stops at a type that
-// reads its own yaml, since such a type spells a scalar and carries no block
-// under it. It hands every other scalar to wholeNumber.
+// every block a written key left nil, at whatever depth. It descends by the
+// yaml key rather than by field order, into every entry of a map as well, and
+// stops at a type that reads its own yaml, since such a type spells a scalar
+// and carries no block under it. It hands every other scalar to wholeNumber.
 func fillBlocks(node *yaml.Node, target reflect.Value) error {
 	node = schema.Followed(node)
 	if decodesItself(target.Type()) {

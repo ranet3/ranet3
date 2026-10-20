@@ -26,19 +26,14 @@
 //
 // Installation asks for the route exclusively, so a key another writer already
 // holds in that table is left alone and reported once rather than taken
-// over. A replace would compare neither rtm_protocol nor the route type, which
-// matters most in a VRF table: the kernel's own local and connected entries
-// for an address on an enslaved link sit at priority 0, where an IPv4 route
-// with no configured metric also sits. Give the reconciler a table no other
-// daemon writes all the same, or the routes it declines to fight over are
-// routes the mesh wanted.
+// over. A replace compares neither rtm_protocol nor the route type, so it
+// would take the route another writer holds at that key. Give the reconciler a
+// table no other daemon writes all the same, or the routes it declines to
+// fight over are routes the mesh wanted.
 //
-// Addresses and VRF enslavement are narrower still. Only an address this
-// reconciler added itself, in this process lifetime, is ever removed again, while
-// an address that was already on the link belongs to whoever put it there.
-// The link is enslaved only when it has no master at all, so the reconciler
-// never takes the device away from systemd-networkd or anything else
-// that claimed it first.
+// Addresses are narrower still. Only an address this reconciler added itself,
+// in this process lifetime, is ever removed again, while an address that was
+// already on the link belongs to whoever put it there.
 //
 // # Failure
 //
@@ -134,9 +129,6 @@ type Table struct {
 	// is the locally originated address an operator otherwise configures by
 	// hand. A default is announced and never assigned, so it is skipped.
 	AssignAnnounced bool `yaml:"assign_announced,omitempty" json:"assign_announced,omitempty" toml:"assign_announced,omitempty"`
-	// VRF enslaves the device to a master, and optionally creates it. Absent
-	// leaves the link's master alone.
-	VRF *VRF `yaml:"vrf,omitempty" json:"vrf,omitempty" toml:"vrf,omitempty"`
 	// Rules are the policy rules this reconciler owns, in the order written.
 	// Each carries Proto in FRA_PROTOCOL, the same ownership marker routes
 	// carry, so a dump reads back only these and a delete can never reach
@@ -157,19 +149,6 @@ type Table struct {
 	// node waits before falling back to its own uplink. Zero uses
 	// DefaultCaptureGrace.
 	CaptureGrace schema.Duration `yaml:"capture_grace,omitempty" json:"capture_grace,omitempty" toml:"capture_grace,omitempty"`
-}
-
-// VRF is the master device the mesh table is bound to.
-type VRF struct {
-	// Name is the device the reconciler enslaves its interface to, and only
-	// while that link has no master, so networkd keeps whatever it claimed.
-	Name string `yaml:"name" json:"name" toml:"name"`
-	// Create makes that device when nothing of the name exists, bound to the
-	// table above, so a deployment does not need its host's network manager to
-	// make it first. One this process created is removed again at shutdown.
-	// linux only: there are no VRFs on the other platforms this builds for,
-	// and a configuration asking for one there is refused by name.
-	Create bool `yaml:"create,omitempty" json:"create,omitempty" toml:"create,omitempty"`
 }
 
 // Runtime holds what the reconciler reads from outside cap.table: the device
@@ -230,18 +209,6 @@ type Runtime struct {
 	// nil records nothing
 	Events *events.Bus
 }
-
-// Name is the master device, empty for a table bound to none.
-func (t Table) Name() string {
-	if t.VRF == nil {
-		return ""
-	}
-	return t.VRF.Name
-}
-
-// creates reports a VRF this reconciler makes itself rather than expecting to
-// find.
-func (t Table) creates() bool { return t.VRF != nil && t.VRF.Create }
 
 // Assigned is every address the reconciler puts on the device: the ones
 // written in the capability and, when it asks for them, the prefixes
@@ -328,9 +295,6 @@ func (t Table) Validate() error {
 		if prefix.Bits() == 0 {
 			return fmt.Errorf("kernel: cap.table addresses %s has no prefix length, and an interface carries an address under one", prefix)
 		}
-	}
-	if t.VRF != nil && t.VRF.Name == "" {
-		return errors.New("kernel: cap.table vrf names no device, so there is nothing to join")
 	}
 	if t.Reconcile < 0 {
 		return fmt.Errorf("kernel: cap.table reconcile %s is not an interval", t.Reconcile)
@@ -436,9 +400,7 @@ type auditor interface {
 	// foreignWriters returns each protocol already writing into the space,
 	// labeled for an operator rather than numbered, since the numbering is
 	// the platform's own registry.
-	// ownVRF says the space is the table the configured vrf is bound to
-	// the kernel files the connected routes of the vrf's links there
-	foreignWriters(ownVRF bool) ([]string, error)
+	foreignWriters() ([]string, error)
 }
 
 // ruler is implemented by a platform that has a policy routing engine. linux
@@ -460,24 +422,6 @@ type ruler interface {
 	DelRule(Rule) error
 }
 
-// vrfMaker is implemented by a platform that can create the master device a
-// mesh table is bound to. Same rule as ruler: absent rather than stubbed, so a
-// configuration asking for one where there are no VRFs is refused by name.
-type vrfMaker interface {
-	// EnsureVRF creates the device when no device of that name exists and
-	// returns the index the kernel gave it, or 0 when it created none. A
-	// device that is already there is left alone, whatever it is bound to,
-	// because it belongs to whoever made it.
-	EnsureVRF(name string, table uint32) (index uint32, err error)
-	// RemoveVRF deletes the device of that name this reconciler created under
-	// index. A device that is already gone is success.
-	// one holding the name under another index was made by somebody else after this one went, and stays
-	RemoveVRF(name string, index uint32) error
-	// VRFTable reports the table the vrf of that name is bound to, read from the kernel
-	// it is 0 when nothing holds the name or the device holding it is not a vrf, since no vrf is bound to table 0
-	VRFTable(name string) (uint32, error)
-}
-
 // platform is the kernel surface the reconciler drives. Everything above it is
 // portable and syscall-free, so the diff is testable against a
 // fake kernel.
@@ -495,14 +439,10 @@ type platform interface {
 	Addrs() ([]netip.Prefix, error)
 	AddAddr(netip.Prefix) error
 	DelAddr(netip.Prefix) error
-	// Master is the interface's current master device, empty when it has none.
-	Master() (string, error)
-	Enslave(master string) error
-	Release() error
 	// Notify carries one coalesced wake-up per batch of kernel route
 	// notifications in the reconciler's table.
 	Notify() <-chan struct{}
-	// retable takes the capability a reload installed, on the id, proto and vrf the platform was opened with
+	// retable takes the capability a reload installed, on the id and proto the platform was opened with
 	retable(Table)
 	Close() error
 }
@@ -812,15 +752,6 @@ type Reconciler struct {
 	// current pass, rotated the way warned is so a report costs one log line
 	// rather than one per pass.
 	warnedAddrs map[netip.Prefix]bool
-	// enslaved records that this reconciler set the link's master itself.
-	enslaved bool
-	// master is the last master observed, so a link somebody else owns is
-	// reported once per transition rather than once per pass.
-	master string
-	// bound is the table the configured vrf was last seen bound to, 0 before a pass has read it
-	// it is kept the way master is
-	// a binding to another table is then reported once per change rather than once per pass
-	bound uint32
 	// warned holds the routes already reported as unrepresentable. It is
 	// rebuilt from each pass, so it stays bounded by the snapshot.
 	warned map[Route]bool
@@ -837,16 +768,10 @@ type Reconciler struct {
 	// the second ask after the deletes.
 	want Covered
 
-	// rules and vrfs are the optional halves of the platform, nil where it has
-	// no policy engine or no VRFs. New and SetTable refuse a configuration that
-	// needs one of them on such a platform, so nil here means the configuration
-	// asked for nothing.
+	// rules is the optional half of the platform, nil where it has no policy
+	// engine. New and SetTable refuse a configuration that needs one on such a
+	// platform, so nil here means the configuration asked for no rules.
 	rules ruler
-	vrfs  vrfMaker
-	// madeVRF is the index of the VRF device this reconciler created itself, 0
-	// for none, and the only device it removes again.
-	// a name proves nothing, since somebody else can remake a device under it
-	madeVRF uint32
 
 	// gate holds back the routes that would carry this machine's own traffic
 	// until the mesh has proved it can carry them. Only the reconcile
@@ -887,7 +812,7 @@ type Reconciler struct {
 	// a refused route is tried and refused on every pass, so refusedAnew marks the pass that refused one first
 	refused     map[Route]bool
 	refusedAnew bool
-	// changed says the pass under way wrote a rule, an address, the master or the vrf, which the route counts do not show
+	// changed says the pass under way wrote a rule or an address, which the route counts do not show
 	// it belongs to the same goroutine, and the withdrawal never sets it
 	changed bool
 }
@@ -1051,7 +976,6 @@ func sortedRules(rules []Rule) []Rule {
 
 // Unreloadable names the setting next changes that a reconciler running t keeps for its life, or is empty
 // the platform reads the id and proto it was opened on
-// and the tun is bound to the vrf
 func (t Table) Unreloadable(next Table) string {
 	t, next = t.Normalized(), next.Normalized()
 	switch {
@@ -1059,8 +983,6 @@ func (t Table) Unreloadable(next Table) string {
 		return "id"
 	case t.Proto != next.Proto:
 		return "proto"
-	case (t.VRF == nil) != (next.VRF == nil) || t.VRF != nil && *t.VRF != *next.VRF:
-		return "vrf"
 	}
 	return ""
 }
@@ -1070,17 +992,13 @@ func (t Table) Unreloadable(next Table) string {
 // backend, so a refusal says what the platform does instead as well as what it
 // will not do.
 //
-// Refusing matters more than it looks. Policy rules and a VRF are the two
-// halves of the steering a fleet node needs, and a platform that accepted the
-// configuration and reconciled only the routes would come up with a working
-// mesh and no steering at all, which is the shape of outage that reads as a
-// routing problem for a day.
+// Refusing matters more than it looks. Policy rules are the steering a fleet
+// node needs, and a platform that accepted the configuration and reconciled
+// only the routes would come up with a working mesh and no steering at all,
+// which is the shape of outage that reads as a routing problem for a day.
 func refuseWhatThePlatformLacks(t Table, plat platform) error {
 	if _, ok := plat.(ruler); !ok && len(t.Rules) > 0 {
 		return fmt.Errorf("kernel: %d cap.table rules are configured and this platform has no policy routing: %s", len(t.Rules), rulesUnavailable)
-	}
-	if _, ok := plat.(vrfMaker); !ok && t.Name() != "" {
-		return errors.New("kernel: cap.table vrf is set and this platform has no VRFs: there is one forwarding table here and the reconciler already writes it")
 	}
 	return nil
 }
@@ -1118,7 +1036,6 @@ func newReconciler(t Table, rt Runtime, rules []Rule, addresses []netip.Prefix, 
 	// Nil on a platform without them, which New has already refused to
 	// configure, so every use below is reached only where the backend answers.
 	r.rules, _ = plat.(ruler)
-	r.vrfs, _ = plat.(vrfMaker)
 	return r
 }
 
@@ -1163,7 +1080,7 @@ type accepted struct {
 }
 
 // SetTable hands the loop the capability a reload read, with cap.border's overlay and the prefixes cap.route announces, for a pass at once
-// it refuses what New refuses and a change of id, proto or vrf
+// it refuses what New refuses and a change of id or proto
 // a refusal changes nothing
 func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []netip.Prefix) error {
 	if err := t.Validate(); err != nil {
@@ -1173,7 +1090,7 @@ func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []neti
 	if setting := r.Table().Unreloadable(t); setting != "" {
 		return fmt.Errorf("kernel: cap.table %s changed, restart to apply", setting)
 	}
-	if err := refuseMeaningless(t, r.rt.Interface); err != nil {
+	if err := refuseMeaningless(t); err != nil {
 		return err
 	}
 	if err := refuseWhatThePlatformLacks(t, r.plat); err != nil {
@@ -1348,14 +1265,14 @@ func stopTimer(t *time.Timer) {
 	}
 }
 
-// reconcile brings the kernel to one snapshot. The five steps are independent
-// and every error is collected, so a VRF that cannot be joined does not stop
-// routes from being installed.
+// reconcile brings the kernel to one snapshot. The steps are independent and
+// every error is collected, so an address that cannot be assigned does not stop
+// routes or rules from being installed.
 //
 // The pass is recorded here rather than inside applyRoutes, so that what a
-// diagnostic reports is the error Run logged rather than one fifth of it: a
-// node whose rules or VRF fail on every pass would otherwise answer `ranet3
-// status` with a clean route count and no error at all. See
+// diagnostic reports is the error Run logged rather than part of it: a
+// node whose rules fail on every pass would otherwise answer `ranet3 status`
+// with a clean route count and no error at all. See
 // refuseWhatThePlatformLacks for why that particular silence is the expensive
 // one.
 func (r *Reconciler) reconcile() error {
@@ -1364,9 +1281,7 @@ func (r *Reconciler) reconcile() error {
 	// installed under one answer and withdrawn under another would leave the
 	// kernel holding a key the diff never names again.
 	r.sampleCapture()
-	// The VRF first, because applyMaster enslaves the link to it and a master
-	// that does not exist yet is a master the link cannot join.
-	err := errors.Join(r.applyVRF(), r.applyMaster(), r.applyAddresses(), r.applyRoutes(), r.applyRules())
+	err := errors.Join(r.applyAddresses(), r.applyRoutes(), r.applyRules())
 	r.recordPass(err, time.Since(started))
 	return err
 }
@@ -1439,96 +1354,24 @@ func (r *Reconciler) recordPass(err error, took time.Duration) {
 
 // audit reports, once at startup, what in the space this reconciler is about
 // to take over would defeat it without anything failing.
-// it runs before the first pass
-// that pass enslaves the tun, which flushes every route out of it, another writer's among them
 func (r *Reconciler) audit() {
 	audit, ok := r.plat.(auditor)
 	if !ok {
 		return
-	}
-	// Read from the kernel rather than taken from the configuration: a VRF
-	// that existed before this process keeps whatever table it was bound to,
-	// so naming one does not make this table its table.
-	// read once, and a read that fails still leaves the census to run
-	ownVRF := false
-	if name := r.table.Name(); name != "" {
-		bound, err := r.vrfs.VRFTable(name)
-		if err != nil {
-			slog.Warn("kernel could not read which table its vrf is bound to", "vrf", name, "err", err)
-		}
-		ownVRF = bound == uint32(r.table.ID)
 	}
 	// An install refuses a key another writer already holds, so sharing a table
 	// with another daemon means the routes it refuses are routes the mesh
 	// wanted. Say so once at startup: on a fleet node mid-migration the other
 	// writer is BIRD in table 200, which is the intended overlap and still
 	// worth seeing.
-	if writers, err := audit.foreignWriters(ownVRF); err != nil {
+	if writers, err := audit.foreignWriters(); err != nil {
 		slog.Warn("kernel could not check the table for other writers", "err", err)
 	} else if len(writers) > 0 {
-		fix := "give this reconciler a table of its own"
-		// a vrf looks this table up
-		// moving the reconciler to another table would move it away from the vrf's traffic
-		if r.table.Name() != "" {
-			fix = "stop the other writer exporting into this table"
-		}
 		slog.Warn("kernel is sharing its table with another routing protocol",
 			"table", uint32(r.table.ID), "protocols", strings.Join(writers, ", "),
 			"detail", "an install refuses a key another writer already holds, so where both write a prefix the one that wrote it first keeps it",
-			"fix", fix)
+			"fix", "give this reconciler a table of its own")
 	}
-}
-
-// checkBinding reads which table the vrf holding the tun is bound to, on every pass that finds the tun in it
-// a vrf made or remade while this process runs can be bound to another table as much as one made before it
-func (r *Reconciler) checkBinding() error {
-	bound, err := r.vrfs.VRFTable(r.table.Name())
-	if err != nil {
-		return fmt.Errorf("read the table vrf %s is bound to: %w", r.table.Name(), err)
-	}
-	// A VRF that existed before this process keeps the table it was bound to,
-	// since applyVRF never rebinds one. Traffic inside a VRF is looked up in
-	// the VRF's own table, so when that is another table the routes installed
-	// here are never consulted from inside it unless a policy rule sends the
-	// lookup here, and the mesh comes up looking complete. A warning rather
-	// than a refusal, as with the l3mdev sysctls the client checks: the device
-	// can be recreated while this process runs, and with create set the next
-	// pass makes it bound to this table.
-	if bound != r.bound && bound != 0 && bound != uint32(r.table.ID) {
-		// the fix never deletes the device, which would detach the vrf's other links
-		// the one made again in its place would also be a device this process removes at its next stop
-		fix := fmt.Sprintf("bind the vrf to table %d in whatever creates it", uint32(r.table.ID))
-		// cap.table refuses the tables the kernel keeps for itself
-		// a node told to follow the vrf into one of them would not start
-		if bound < reservedTable || bound > lastByteTable {
-			fix += fmt.Sprintf(", or set cap.table id to %d", bound)
-		}
-		slog.Warn("kernel's vrf is bound to another table than the one it writes",
-			"vrf", r.table.Name(), "vrf_table", bound, "table", uint32(r.table.ID),
-			"detail", "traffic in the vrf is looked up in the vrf's own table and falls through to the main table wherever nothing there matches, so it reaches the routes installed here only through a policy rule",
-			"fix", fix)
-	}
-	r.bound = bound
-	return nil
-}
-
-// applyVRF creates the master device when the configuration asked for one and
-// nothing of that name exists. A device that is already there is left as it
-// is, whatever table it is bound to: it belongs to whoever created it, and
-// rebinding somebody else's VRF would move every route in it.
-func (r *Reconciler) applyVRF() error {
-	if r.vrfs == nil || !r.table.creates() || r.table.Name() == "" {
-		return nil
-	}
-	index, err := r.vrfs.EnsureVRF(r.table.Name(), uint32(r.table.ID))
-	if err != nil {
-		return fmt.Errorf("create vrf %s: %w", r.table.Name(), err)
-	}
-	if index != 0 {
-		r.madeVRF, r.changed = index, true
-		slog.Info("kernel created the mesh vrf", "vrf", r.table.Name(), "table", uint32(r.table.ID))
-	}
-	return nil
 }
 
 // applyRules brings the policy rules to the configured set. It removes before
@@ -1964,9 +1807,7 @@ func unroutable(destination netip.Prefix) string {
 // holdMetric is where a retraction sits among the routes to the same prefix:
 // last. A lookup is longest prefix first and only then by metric, so a hold
 // still outranks the covering route it exists to keep a packet away from,
-// while anything else holding that exact prefix wins. On a converted fleet
-// node that anything else is the mesh VRF's connected route for the /60 the
-// node itself originates, in the same table.
+// while anything else holding that exact prefix wins.
 const holdMetric = ^uint32(0)
 
 // routeMetric is the value the kernel will actually hold, so a dump compares
@@ -2151,41 +1992,10 @@ func (r *Reconciler) applyAddresses() error {
 	return errors.Join(errs...)
 }
 
-// applyMaster joins the configured VRF, and only ever from no master at all.
-// A link somebody else already enslaved is reported and left alone: taking it
-// over would start a flap war with whatever put it there.
-func (r *Reconciler) applyMaster() error {
-	if r.table.Name() == "" {
-		return nil
-	}
-	master, err := r.plat.Master()
-	if err != nil {
-		return fmt.Errorf("read master of %s: %w", r.rt.Interface, err)
-	}
-	switch master {
-	case r.table.Name():
-		r.master = master
-	case "":
-		if err := r.plat.Enslave(r.table.Name()); err != nil {
-			return fmt.Errorf("enslave %s to %s: %w", r.rt.Interface, r.table.Name(), err)
-		}
-		r.enslaved, r.master, r.changed = true, r.table.Name(), true
-		slog.Info("kernel interface enslaved", "interface", r.rt.Interface, "master", r.table.Name())
-	default:
-		if r.master != master {
-			slog.Warn("kernel leaving interface in the master it already has",
-				"interface", r.rt.Interface, "master", master, "configured", r.table.Name())
-		}
-		r.master = master
-		return nil
-	}
-	return r.checkBinding()
-}
-
-// withdraw removes exactly what this reconciler installed: every route still
-// carrying its marker, every address it added itself, and the VRF master only
-// if it set it. Routes are read back rather than remembered, so routes an
-// earlier crashed instance left behind go with them.
+// withdraw removes exactly what this reconciler installed: every route and
+// rule still carrying its marker and every address it added itself. Routes are
+// read back rather than remembered, so routes an earlier crashed instance left
+// behind go with them.
 func (r *Reconciler) withdraw() error {
 	var errs []error
 	routes, err := r.plat.Routes()
@@ -2225,13 +2035,6 @@ func (r *Reconciler) withdraw() error {
 	}
 	removed, failed := r.release(addresses, held)
 	errs = append(errs, failed...)
-	if r.enslaved {
-		if err := r.plat.Release(); err != nil {
-			errs = append(errs, fmt.Errorf("release %s from %s: %w", r.rt.Interface, r.table.Name(), err))
-		} else {
-			r.enslaved = false
-		}
-	}
 	// Rules go the same way routes do, read back under this reconciler's own
 	// protocol rather than remembered, so one an earlier instance left behind
 	// leaves with them.
@@ -2247,16 +2050,6 @@ func (r *Reconciler) withdraw() error {
 			} else {
 				rules++
 			}
-		}
-	}
-	// Only a VRF this process created. One that was already there when it
-	// started belongs to whoever made it, and removing it would take every
-	// route in its table with it.
-	if r.madeVRF != 0 {
-		if err := r.vrfs.RemoveVRF(r.table.Name(), r.madeVRF); err != nil {
-			errs = append(errs, fmt.Errorf("remove vrf %s: %w", r.table.Name(), err))
-		} else {
-			r.madeVRF = 0
 		}
 	}
 	// Every count is of something that left, so a line reporting nothing

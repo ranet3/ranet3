@@ -159,7 +159,7 @@ func openBatchLab(tb testing.TB, prefixes int) {
 	}
 	index := make(map[string]uint32)
 	for _, name := range []string{batchTUN, batchUplink, batchDead, batchLinkDown} {
-		if err := createLink(conn, name, "dummy", nil); err != nil {
+		if err := createLink(conn, name, "dummy"); err != nil {
 			tb.Fatalf("create the dummy %s: %v", name, err)
 		}
 		link, err := conn.link(0, name)

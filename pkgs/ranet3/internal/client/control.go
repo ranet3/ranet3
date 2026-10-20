@@ -175,17 +175,7 @@ func (c *Client) kernel() control.KernelStatus {
 	if read == nil {
 		return control.KernelStatus{}
 	}
-	status := (*read)()
-	// Answered here rather than by the reconciler, because it is a property of
-	// the host and not of the table: the reconciler writes the routes either
-	// way, and what this decides is whether anything outside the VRF can use
-	// them. Left nil where no VRF is configured, since the question does not
-	// arise there.
-	if status.VRF != "" {
-		accepts := l3mdevAccept()
-		status.L3mdevAccept = &accepts
-	}
-	return status
+	return (*read)()
 }
 
 // egress reports the exit node capability, or that there is none. As with the

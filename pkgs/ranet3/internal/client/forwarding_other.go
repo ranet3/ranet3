@@ -12,6 +12,3 @@ func forwardingEnabled() (v4, v6 bool) { return true, true }
 // Sysctl reads no setting, since the paths the kernel exit names are linux's
 // and this build carries no exit
 func Sysctl(string) string { return "" }
-
-// l3mdevAccept cannot be answered here either. See forwardingEnabled.
-func l3mdevAccept() bool { return true }

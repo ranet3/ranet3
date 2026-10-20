@@ -53,12 +53,11 @@
 // closes that. BorderFilter owns a second table of this tool's name, inet
 // rather than ip and ip6, holding one filter chain at prerouting and priority
 // raw, before conntrack, so a forged packet creates no connection entry. It
-// accepts whatever arrives on a device inside the mesh, the tun, lo and the
-// VRF master the tun is enslaved to, then drops a source
-// in the mesh's own prefixes, any routing header and this node's own SIDs as
-// destinations, in that order, each drop counted. The routing header rule
-// takes every type, since nf_tables finds only the first routing header of a
-// packet, and one of type 0 or 2 would otherwise hide a type 4 header behind
+// accepts whatever arrives on a device inside the mesh, the tun and lo, then
+// drops a source in the mesh's own prefixes, any routing header and this node's
+// own SIDs as destinations, in that order, each drop counted. The routing header
+// rule takes every type, since nf_tables finds only the first routing header of
+// a packet, and one of type 0 or 2 would otherwise hide a type 4 header behind
 // it. From Linux 7.1 the kernel's search for it gives up at the thirteenth
 // extension header, so one behind twelve others passes, and a Linux host from
 // 7.1 it is addressed to with seg6_enabled set still acts on a segment routing

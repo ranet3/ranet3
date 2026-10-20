@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// rulesFixture is an exit beside networkd's rules, its border chain read
-// three seconds after its last pass with one forged source dropped
+// rulesFixture is an exit beside networkd's rules and a VRF's, its border
+// chain read three seconds after its last pass with one forged source dropped
 func rulesFixture() RulesInfo {
 	lookup := func(family string, priority uint32, table uint32, protocol uint8, owned bool) PolicyRule {
 		return PolicyRule{Family: family, Priority: priority, Action: "lookup", Table: table, Protocol: protocol, Owned: owned, Wanted: owned}
@@ -25,11 +25,13 @@ func rulesFixture() RulesInfo {
 	iif.IIF = "eth1"
 	from := lookup("ipv4", 150, 254, 4, false)
 	from.From = netip.MustParsePrefix("23.161.104.0/24")
+	l3mdev := lookup("ipv4", 1000, 0, 2, false)
+	l3mdev.L3mdev = true
 	unreachable := PolicyRule{Family: "ipv6", Priority: 200, Invert: true, IIF: "eth0", Action: "unreachable", Protocol: 4}
 	wanted := PolicyRule{Family: "ipv6", Priority: 120, IIF: "eth1", Action: "lookup", Table: 254, Protocol: 155, Owned: true, Wanted: true}
 	return RulesInfo{
 		Policy: []PolicyRule{
-			lookup("ipv4", 0, 255, 2, false), mark, to, iif, from, lookup("ipv4", 32766, 254, 2, false), lookup("ipv4", 32767, 253, 2, false),
+			lookup("ipv4", 0, 255, 2, false), mark, to, iif, from, l3mdev, lookup("ipv4", 32766, 254, 2, false), lookup("ipv4", 32767, 253, 2, false),
 			lookup("ipv6", 0, 255, 2, false), unreachable, lookup("ipv6", 32766, 254, 2, false),
 		},
 		Missing: []PolicyRule{wanted},

@@ -562,9 +562,9 @@ func TestDarwinDeleteRequests(t *testing.T) {
 	}
 }
 
-// A configuration written for the linux backend names a table, a protocol or a
-// VRF, none of which exists here. Refusing at startup is the difference
-// between a deployment that is wrong and one that looks like it works.
+// A configuration written for the linux backend names a table or a protocol,
+// neither of which exists here. Refusing at startup is the difference between
+// a deployment that is wrong and one that looks like it works.
 func TestDarwinPlatformRejectsLinuxConfig(t *testing.T) {
 	baseTable := Table{ID: DefaultTable, Proto: DefaultProtocol}
 	baseRuntime := Runtime{Interface: "utun9"}
@@ -575,7 +575,6 @@ func TestDarwinPlatformRejectsLinuxConfig(t *testing.T) {
 	}{
 		{"table", func(c *Table, _ *Runtime) { c.ID = 220 }, "routing tables"},
 		{"protocol", func(c *Table, _ *Runtime) { c.Proto = 12 }, "route protocol"},
-		{"vrf", func(c *Table, _ *Runtime) { c.VRF = &VRF{Name: "mesh"} }, "VRF"},
 		{"name", func(_ *Table, rt *Runtime) { rt.Interface = strings.Repeat("u", unix.IFNAMSIZ) }, "ifreq"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -590,22 +589,6 @@ func TestDarwinPlatformRejectsLinuxConfig(t *testing.T) {
 				t.Fatalf("the error is %q, which does not say why: want it to mention %q", err, test.mention)
 			}
 		})
-	}
-}
-
-func TestDarwinHasNoVRF(t *testing.T) {
-	plat, _ := testPlatform(t, Table{}, Runtime{})
-	if master, err := plat.Master(); master != "" || err != nil {
-		t.Fatalf("Master reported %q, %v, want the empty string and no error", master, err)
-	}
-	err := plat.Enslave("mesh")
-	if err == nil || !strings.Contains(err.Error(), "darwin") {
-		t.Fatalf("Enslave reported %v, want an error naming the platform", err)
-	}
-	// Release is only reached for a master this reconciler set, which cannot
-	// happen once Enslave always fails.
-	if err := plat.Release(); err != nil {
-		t.Fatalf("Release reported %v, want nothing to do", err)
 	}
 }
 
@@ -1438,7 +1421,6 @@ func TestDarwinRefusesSettingsItCannotHonor(t *testing.T) {
 	for name, mutate := range map[string]func(*Table){
 		"table":    func(c *Table) { c.ID = DefaultTable + 1 },
 		"protocol": func(c *Table) { c.Proto = DefaultProtocol + 1 },
-		"vrf":      func(c *Table) { c.VRF = &VRF{Name: "mesh"} },
 		"prefsrc4": func(c *Table) { c.PrefSrc4 = schema.MustAddr("198.18.104.117") },
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -83,7 +83,7 @@ func heldAs(held kernel.DumpedRule, rule kernel.Rule) bool {
 	}
 	return held.Family == rule.Family && held.Priority == rule.Priority &&
 		held.To == rule.To.Prefix && held.From == rule.From.Prefix &&
-		held.IIF == rule.IIF && held.OIF == "" && !held.L3mdev && !held.Invert &&
+		held.IIF == rule.IIF && held.OIF == "" && !held.Invert &&
 		held.FWMark == rule.FWMark && mask == want &&
 		held.Action == "lookup" && held.Table == uint32(rule.Table)
 }

@@ -17,7 +17,8 @@ type DumpedRule struct {
 	// IIF and OIF are the device names the rule selects on, empty for none
 	IIF, OIF       string
 	FWMark, FWMask uint32
-	// L3mdev selects the table of the VRF the packet's device is enslaved to
+	// L3mdev is FRA_L3MDEV, a lookup in the table of the l3mdev master the
+	// packet's device belongs to, whichever program made that master
 	L3mdev bool
 	// Invert is FIB_RULE_INVERT, a rule matching every packet its selectors do not
 	Invert bool

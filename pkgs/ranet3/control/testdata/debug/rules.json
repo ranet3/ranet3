@@ -52,6 +52,15 @@
     },
     {
       "family": "ipv4",
+      "priority": 1000,
+      "l3mdev": true,
+      "action": "lookup",
+      "protocol": 2,
+      "owned": false,
+      "wanted": false
+    },
+    {
+      "family": "ipv4",
       "priority": 32766,
       "action": "lookup",
       "table": 254,

@@ -56,9 +56,7 @@ func (b Border) Validate() error {
 // BorderRuntime holds what the command resolves at startup for the filter
 type BorderRuntime struct {
 	// Inside names the devices whose traffic the filter takes whatever it
-	// carries: the mesh tun, lo and the VRF master the tun
-	// is enslaved to, which a packet arriving on the tun meets prerouting as a
-	// second time
+	// carries: the mesh tun and lo
 	Inside []string
 	// SIDs are this node's own local segments, each dropped as a destination
 	// arriving from outside. SetConfig replaces them on a reload.
