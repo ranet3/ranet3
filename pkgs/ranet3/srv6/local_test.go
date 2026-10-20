@@ -52,9 +52,10 @@ func TestPacketsForSomebodyElsePassThrough(t *testing.T) {
 	}
 }
 
-// A waypoint moves the packet to the next segment and says where it now goes.
-// An exit hands back what was inside. Both are reached only by a packet whose
-// current segment is this node's.
+// A waypoint moves the packet to the next segment and says where it now goes,
+// and which of this node's segments the packet reached, the address an answer
+// about the packet may come from. An exit hands back what was inside. Both are
+// reached only by a packet whose current segment is this node's.
 func TestWaypointAndExitActOnTheirOwnSegments(t *testing.T) {
 	waypoint := addr("3fff:1:69c:8c6::2")
 	exit := addr("3fff:1:69c:98d6::1")
@@ -77,6 +78,9 @@ func TestWaypointAndExitActOnTheirOwnSegments(t *testing.T) {
 	}
 	if forwarded.Next != exit {
 		t.Fatalf("the waypoint forwarded to %s, want the next segment %s", forwarded.Next, exit)
+	}
+	if forwarded.SID != waypoint {
+		t.Errorf("the waypoint names %s as the segment the packet reached, want %s", forwarded.SID, waypoint)
 	}
 	if got := netip.AddrFrom16([16]byte(raw[24:40])); got != exit {
 		t.Errorf("the packet's destination is %s, so it was not rewritten in place", got)
