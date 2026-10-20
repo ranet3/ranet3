@@ -488,7 +488,6 @@ func TestUnlistedNamesEachSAOutsideTheLists(t *testing.T) {
 // the rekeyed SA runs what a peer listing every name answers the new offer with
 func TestReloadRekeysOrReplacesWhatItLeftOut(t *testing.T) {
 	h := newResponderHarness(t, nil)
-	const ends = "testorg/client:2>testorg/server:1"
 	pbt.Check(t, func(ht *hegel.T) {
 		before, after := drawnCrypto(ht), drawnCrypto(ht)
 		dialed := &recorder{}
@@ -539,7 +538,7 @@ func TestReloadRekeysOrReplacesWhatItLeftOut(t *testing.T) {
 				unlisted = append(unlisted, line)
 			}
 		}
-		ikeLine := "ike.suite.unlisted " + ends + " sa=ike suite=" + sa.IKE()
+		ikeLine := "ike.suite.unlisted " + dialedPair + " sa=ike suite=" + sa.IKE()
 		switch {
 		case prfOut:
 			if !slices.Equal(unlisted, []string{ikeLine + " action=replace"}) {
@@ -566,9 +565,9 @@ func TestReloadRekeysOrReplacesWhatItLeftOut(t *testing.T) {
 			if !slices.Contains(written(after.IKE.Kex, everyKex), kex) {
 				kex = firstShared(nil, after.IKE.Kex, everyKex)
 			}
-			awaitRecorded(ht, dialed, "ike.rekey.completed "+ends+" sa=ike suite="+firstShared(nil, after.IKE.Cipher, everyCipher)+"/"+sa.IKEPRF+"/"+kex)
+			awaitRecorded(ht, dialed, "ike.rekey.completed "+dialedPair+" sa=ike suite="+firstShared(nil, after.IKE.Cipher, everyCipher)+"/"+sa.IKEPRF+"/"+kex)
 		case childOut:
-			if len(unlisted) == 0 || unlisted[0] != "ike.suite.unlisted "+ends+" sa=child suite="+sa.ESPCipher+" action=rekey" {
+			if len(unlisted) == 0 || unlisted[0] != "ike.suite.unlisted "+dialedPair+" sa=child suite="+sa.ESPCipher+" action=rekey" {
 				ht.Fatalf("a reload from %+v to %+v recorded %q, want the Child SA rekeyed", before, after, unlisted)
 			}
 		default:
@@ -577,7 +576,7 @@ func TestReloadRekeysOrReplacesWhatItLeftOut(t *testing.T) {
 			}
 		}
 		if childOut {
-			childLine := "ike.suite.unlisted " + ends + " sa=child suite=" + sa.ESPCipher + " action=rekey"
+			childLine := "ike.suite.unlisted " + dialedPair + " sa=child suite=" + sa.ESPCipher + " action=rekey"
 			// a check once the IKE SA's rekey ended marks the Child SA where the rekey's end has not
 			if ikeOut {
 				if gone, ended := recheck(ht, initiator, initiatorRun); gone {
@@ -587,7 +586,7 @@ func TestReloadRekeysOrReplacesWhatItLeftOut(t *testing.T) {
 			if !slices.Contains(dialed.recorded(), childLine) {
 				ht.Fatalf("a reload from %+v to %+v recorded %q, want the Child SA rekeyed", before, after, dialed.recorded())
 			}
-			awaitRecorded(ht, dialed, "ike.rekey.completed "+ends+" sa=child suite="+firstShared(nil, after.ESP.Cipher, everyCipher))
+			awaitRecorded(ht, dialed, "ike.rekey.completed "+dialedPair+" sa=child suite="+firstShared(nil, after.ESP.Cipher, everyCipher))
 		}
 	})
 }

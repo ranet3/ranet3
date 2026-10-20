@@ -29,7 +29,7 @@ func TestNothingFollowsADeleteOfTheIKESA(t *testing.T) {
 		return true
 	})
 	initiator, responder := dialPaused(t, h, cfg)
-	initiator.retransmitAfter = busyRetransmit
+	initiator.retransmitAfter = unansweredRetransmit
 	initiator.dpdEvery, responder.dpdEvery = quietDPD, time.Hour
 	runSession(t, responder)
 	runSession(t, initiator)

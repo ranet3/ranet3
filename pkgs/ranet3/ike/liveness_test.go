@@ -1590,26 +1590,24 @@ func TestUnansweredExchangeStillEnds(t *testing.T) {
 	}
 }
 
-// a Delete of an IKE SA ends after teardownRetransmits sends, whether or not the peer keeps other traffic coming, and whether Run's own teardown or a caller sent it
+// a Delete of an IKE SA ends after teardownRetransmits sends, whether or not the peer keeps other traffic coming
+// the budget goes by what the request deletes, so it is the same whoever sent the Delete, Run's own teardown or a caller
 func TestDeleteEndingAnIKESAHasTheTeardownBudget(t *testing.T) {
-	deleteIKE := []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}
-	for name, request := range map[string]localRequest{"the teardown's": {inner: deleteIKE, teardown: true}, "a caller's": {inner: deleteIKE}} {
-		ender := &pendingRequest{localRequest: request}
-		for ender.sent < teardownRetransmits-1 {
-			ender.sent++
-			ender.attempts++
-		}
-		for _, alive := range []bool{false, true} {
-			if pendingRetransmitsExhausted(ender, alive) {
-				t.Fatalf("%s Delete gave up after %d of its %d sends, peer alive %v", name, ender.sent, teardownRetransmits, alive)
-			}
-		}
+	ender := &pendingRequest{localRequest: localRequest{inner: []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}}}
+	for ender.sent < teardownRetransmits-1 {
 		ender.sent++
 		ender.attempts++
-		for _, alive := range []bool{false, true} {
-			if !pendingRetransmitsExhausted(ender, alive) {
-				t.Errorf("%s Delete went on past its %d sends, peer alive %v", name, teardownRetransmits, alive)
-			}
+	}
+	for _, alive := range []bool{false, true} {
+		if pendingRetransmitsExhausted(ender, alive) {
+			t.Fatalf("the Delete gave up after %d of its %d sends, peer alive %v", ender.sent, teardownRetransmits, alive)
+		}
+	}
+	ender.sent++
+	ender.attempts++
+	for _, alive := range []bool{false, true} {
+		if !pendingRetransmitsExhausted(ender, alive) {
+			t.Errorf("the Delete went on past its %d sends, peer alive %v", teardownRetransmits, alive)
 		}
 	}
 }

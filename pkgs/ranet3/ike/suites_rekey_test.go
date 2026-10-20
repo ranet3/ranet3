@@ -375,9 +375,8 @@ func TestRekeysBetweenEndsOrderingTheGroupsDifferentlyKeepTheGroup(t *testing.T)
 	var mu sync.Mutex
 	seen := map[request]bool{}
 	sent := map[bool]int{}
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	initiator, responder, _, _ := dialSuited(t, h, dialing, nil, func(fromInitiator bool, header *Header, _ []byte) bool {
+	cfg, _ := listedConfig(h, nil)
+	initiator, responder, _, _ := dialSuited(t, h, cfg, func(fromInitiator bool, header *Header, _ []byte) bool {
 		if header != nil && header.ExchangeType == CREATE_CHILD_SA && !header.IsResponse() {
 			mu.Lock()
 			if key := (request{fromInitiator, header.SPIInitiator, header.MessageID}); !seen[key] {
@@ -482,9 +481,8 @@ func TestRefusedForcedRekeyWaitsForItsRetry(t *testing.T) {
 	aes256 := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes256gcm"}}})
 	h.lists.Store(&aes256)
 	var rekeys atomic.Int32
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	initiator, responder, _, _ := dialSuited(t, h, dialing, dialed.record, func(fromInitiator bool, header *Header, _ []byte) bool {
+	cfg, dialing := listedConfig(h, dialed.record)
+	initiator, responder, _, _ := dialSuited(t, h, cfg, func(fromInitiator bool, header *Header, _ []byte) bool {
 		if fromInitiator && header != nil && header.ExchangeType == CREATE_CHILD_SA && !header.IsResponse() {
 			rekeys.Add(1)
 		}
@@ -511,18 +509,16 @@ func TestChildSARekeysOnceTheIKESARekeyFailed(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	x25519 := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"x25519"}}})
 	h.lists.Store(&x25519)
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	initiator, responder, _, _ := dialSuited(t, h, dialing, dialed.record, nil)
+	cfg, dialing := listedConfig(h, dialed.record)
+	initiator, responder, _, _ := dialSuited(t, h, cfg, nil)
 	if err := responder.RekeyChild(); err != nil {
 		t.Fatal(err)
 	}
 	next := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"p256"}}, ESP: ESPSuites{Cipher: []string{"aes128gcm"}}})
 	dialing.Store(&next)
 	initiator.SuitesChanged()
-	const ends = "testorg/client:2>testorg/server:1"
-	awaitRecorded(t, dialed, "ike.rekey.failed "+ends+" sa=ike")
-	awaitRecorded(t, dialed, "ike.rekey.completed "+ends+" sa=child suite=aes128gcm")
+	awaitRecorded(t, dialed, "ike.rekey.failed "+dialedPair+" sa=ike")
+	awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa=child suite=aes128gcm")
 	if got := initiator.Suite().IKEKex; got != "x25519" {
 		t.Errorf("the IKE SA runs %s, want the group its refused rekey kept", got)
 	}
@@ -535,11 +531,7 @@ func TestReplacementStartsNothingElseWhileItsDeleteIsUnanswered(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	var deleting, released atomic.Bool
 	var rekeysAfter atomic.Int32
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	cfg := h.peerConfig()
-	cfg.Suites = func() Suites { return *dialing.Load() }
-	cfg.Events = dialed.record
+	cfg, dialing := listedConfig(h, dialed.record)
 	// a Child SA rekey falls due while the Delete waits, a quiet period into the SA and long before its lifetime
 	cfg.ChildRekeyInterval, cfg.RekeyMargin = time.Hour, time.Hour-quietPeriod
 	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
@@ -599,11 +591,7 @@ func TestRecheckWhileARekeyRunsMarksAnUnlistedSAOnce(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	var rekeying, released atomic.Bool
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	cfg := h.peerConfig()
-	cfg.Suites = func() Suites { return *dialing.Load() }
-	cfg.Events = dialed.record
+	cfg, dialing := listedConfig(h, dialed.record)
 	// the IKE SA's scheduled rekey, due a quiet period into the SA and long before its lifetime, is under way when the lists change
 	cfg.IKERekeyInterval, cfg.RekeyMargin = time.Hour, time.Hour-quietPeriod
 	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
@@ -626,26 +614,21 @@ func TestRecheckWhileARekeyRunsMarksAnUnlistedSAOnce(t *testing.T) {
 			t.Fatalf("the session ended with %v", err)
 		}
 	}
-	const ends = "testorg/client:2>testorg/server:1"
-	const unlisted = "ike.suite.unlisted " + ends + " sa=child suite=aes256gcm action=rekey"
+	const unlisted = "ike.suite.unlisted " + dialedPair + " sa=child suite=aes256gcm action=rekey"
 	if got := strings.Count(strings.Join(dialed.recorded(), "\n"), unlisted); got != 1 {
 		t.Errorf("checks during the IKE SA's rekey marked the Child SA %d times, want once", got)
 	}
 	released.Store(true)
-	awaitRecorded(t, dialed, "ike.rekey.completed "+ends+" sa=child suite=aes128gcm")
+	awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa=child suite=aes128gcm")
 }
 
-// a reload during a rekey leaves the SA to that rekey, and the SA the rekey made is checked against the lists once the rekey has ended
-// so an IKE SA rekeyed under the lists from before the reload is rekeyed again under the new ones
+// a reload during a rekey leaves the SA to that rekey and marks nothing while it runs, and the SA the rekey made is checked against the lists once the rekey has ended
+// so an IKE SA rekeyed under the lists from before the reload is marked once and rekeyed again under the new ones
 func TestReloadDuringARekeyChecksTheSAItMade(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	var rekeying, released atomic.Bool
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	cfg := h.peerConfig()
-	cfg.Suites = func() Suites { return *dialing.Load() }
-	cfg.Events = dialed.record
+	cfg, dialing := listedConfig(h, dialed.record)
 	// the IKE SA's scheduled rekey is under way when the lists change, and the next falls due long after the test
 	cfg.IKERekeyInterval, cfg.RekeyMargin, cfg.RekeyJitter = time.Hour, 10*time.Minute, 50*time.Minute-time.Millisecond
 	// the peer refuses a second rekey within minPeerIKERekeyInterval of the first, and the retry comes after it
@@ -677,9 +660,14 @@ func TestReloadDuringARekeyChecksTheSAItMade(t *testing.T) {
 		t.Fatalf("the session ended with %v", err)
 	}
 	released.Store(true)
-	const ends = "testorg/client:2>testorg/server:1"
-	awaitRecorded(t, dialed, "ike.rekey.completed "+ends+" sa=ike suite=aes256gcm/sha384/x25519")
-	awaitRecorded(t, dialed, "ike.rekey.completed "+ends+" sa=ike suite=aes128gcm/sha384/x25519")
+	completed := "ike.rekey.completed " + dialedPair + " sa=ike suite=aes256gcm/sha384/x25519"
+	awaitRecorded(t, dialed, completed)
+	awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa=ike suite=aes128gcm/sha384/x25519")
+	recorded := dialed.recorded()
+	unlisted := "ike.suite.unlisted " + dialedPair + " sa=ike suite=aes256gcm/sha384/x25519 action=rekey"
+	if got := strings.Count(strings.Join(recorded, "\n"), unlisted); got != 1 || slices.Index(recorded, unlisted) < slices.Index(recorded, completed) {
+		t.Errorf("the session recorded %q, want the IKE SA marked unlisted once, after the rekey under way at the reload completed", recorded)
+	}
 }
 
 // a Child SA a reload left out whose scheduled rekey fell due behind a rekey under way is rekeyed by that schedule, not forced as well
@@ -687,11 +675,7 @@ func TestReloadLeavesADueRekeyToItsSchedule(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	var rekeying, released atomic.Bool
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	cfg := h.peerConfig()
-	cfg.Suites = func() Suites { return *dialing.Load() }
-	cfg.Events = dialed.record
+	cfg, dialing := listedConfig(h, dialed.record)
 	// the IKE SA's scheduled rekey, due a quiet period into the SA, is under way when the Child SA's falls due a quiet period later, each long before its lifetime
 	cfg.IKERekeyInterval, cfg.ChildRekeyInterval, cfg.RekeyMargin = time.Hour, time.Hour+quietPeriod, time.Hour-quietPeriod
 	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
@@ -715,8 +699,7 @@ func TestReloadLeavesADueRekeyToItsSchedule(t *testing.T) {
 		t.Fatalf("the session ended with %v", err)
 	}
 	released.Store(true)
-	const ends = "testorg/client:2>testorg/server:1"
-	awaitRecorded(t, dialed, "ike.rekey.completed "+ends+" sa=child suite=aes128gcm")
+	awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa=child suite=aes128gcm")
 	if got := recordedKind(dialed, "ike.suite.unlisted"); got != 0 {
 		t.Errorf("a reload forced a rekey that was due already: %q", dialed.recorded())
 	}
@@ -726,11 +709,7 @@ func TestReloadLeavesADueRekeyToItsSchedule(t *testing.T) {
 func TestReloadLeavesARekeyBackingOffToItsRetry(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	cfg := h.peerConfig()
-	cfg.Suites = func() Suites { return *dialing.Load() }
-	cfg.Events = dialed.record
+	cfg, dialing := listedConfig(h, dialed.record)
 	// the scheduled rekey falls due a quiet period into the IKE SA, long before its lifetime
 	cfg.IKERekeyInterval, cfg.RekeyMargin = time.Hour, time.Hour-quietPeriod
 	// the retry falls after the test
@@ -740,8 +719,7 @@ func TestReloadLeavesARekeyBackingOffToItsRetry(t *testing.T) {
 	responder.lastPeerIKERekey.Store(int64(100 * answerBudget))
 	runSession(t, responder)
 	initiatorRun := runSession(t, initiator)
-	const ends = "testorg/client:2>testorg/server:1"
-	awaitRecorded(t, dialed, "ike.rekey.failed "+ends+" sa=ike")
+	awaitRecorded(t, dialed, "ike.rekey.failed "+dialedPair+" sa=ike")
 	aes128 := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm"}}})
 	dialing.Store(&aes128)
 	if ended, err := recheck(t, initiator, initiatorRun); ended {
@@ -757,8 +735,6 @@ func TestReloadLeavesARekeyBackingOffToItsRetry(t *testing.T) {
 func TestReloadAtBothEndsEndsEachSessionForANewHandshake(t *testing.T) {
 	for run := range 3 {
 		h := newResponderHarness(t, nil)
-		dialing := new(atomic.Pointer[Suites])
-		dialing.Store(&Suites{})
 		// the dialing Run holds in the event of the liveness check it starts, so the reload's check and the peer's Delete both come while it is busy
 		var hold atomic.Bool
 		held, release := make(chan struct{}), make(chan struct{})
@@ -769,7 +745,8 @@ func TestReloadAtBothEndsEndsEachSessionForANewHandshake(t *testing.T) {
 				<-release
 			}
 		}
-		initiator, responder, initiatorRun, responderRun := dialSuited(t, h, dialing, events, nil)
+		cfg, dialing := listedConfig(h, events)
+		initiator, responder, initiatorRun, responderRun := dialSuited(t, h, cfg, nil)
 		t.Cleanup(releaseRun)
 		hold.Store(true)
 		initiator.Probe()
@@ -832,11 +809,7 @@ func TestForcedRekeyWaitsADelayDrawnWithinTheRekeyJitter(t *testing.T) {
 	dialed := &recorder{}
 	var started atomic.Pointer[time.Time]
 	h := newResponderHarness(t, nil)
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	cfg := h.peerConfig()
-	cfg.Suites = func() Suites { return *dialing.Load() }
-	cfg.Events = timedRecorder(dialed, "ike.rekey.started", &started)
+	cfg, dialing := listedConfig(h, timedRecorder(dialed, "ike.rekey.started", &started))
 	cfg.RekeyJitter = forcedJitter
 	initiator, responder := dialPaused(t, h, cfg)
 	var asked atomic.Int64
@@ -858,9 +831,8 @@ func TestForcedRekeyWaitsADelayDrawnWithinTheRekeyJitter(t *testing.T) {
 	if ended, err := recheck(t, initiator, initiatorRun); ended {
 		t.Fatalf("the session ended with %v", err)
 	}
-	const ends = "testorg/client:2>testorg/server:1"
-	const unlisted = "ike.suite.unlisted " + ends + " sa=child suite=aes256gcm action=rekey"
-	awaitRecorded(t, dialed, "ike.rekey.completed "+ends+" sa=child suite=aes128gcm")
+	const unlisted = "ike.suite.unlisted " + dialedPair + " sa=child suite=aes256gcm action=rekey"
+	awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa=child suite=aes128gcm")
 	if got := time.Duration(asked.Load()); got != forcedJitter {
 		t.Errorf("the delay was drawn within %s, want the rekey jitter %s", got, forcedJitter)
 	}
@@ -876,7 +848,7 @@ func TestForcedRekeyWaitsADelayDrawnWithinTheRekeyJitter(t *testing.T) {
 	chacha := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{"chacha20poly1305"}}})
 	dialing.Store(&chacha)
 	initiator.SuitesChanged()
-	awaitRecorded(t, dialed, "ike.rekey.completed "+ends+" sa=child suite=chacha20poly1305")
+	awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa=child suite=chacha20poly1305")
 }
 
 // a forced rekey the peer refused retries only while the lists still leave out its SA
@@ -893,11 +865,7 @@ func TestRefusedForcedRekeyStopsOnceTheListsHoldItsSA(t *testing.T) {
 			h := newResponderHarness(t, nil)
 			aes256 := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes256gcm"}}})
 			h.lists.Store(&aes256)
-			dialing := new(atomic.Pointer[Suites])
-			dialing.Store(&Suites{})
-			cfg := h.peerConfig()
-			cfg.Suites = func() Suites { return *dialing.Load() }
-			cfg.Events = timedRecorder(dialed, "ike.rekey.completed", &completed)
+			cfg, dialing := listedConfig(h, timedRecorder(dialed, "ike.rekey.completed", &completed))
 			if due > 0 {
 				// the lifetime lies past the test
 				cfg.IKERekeyInterval, cfg.RekeyMargin = time.Hour, time.Hour-due
@@ -915,8 +883,7 @@ func TestRefusedForcedRekeyStopsOnceTheListsHoldItsSA(t *testing.T) {
 			aes128 := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm"}}})
 			dialing.Store(&aes128)
 			initiator.SuitesChanged()
-			const ends = "testorg/client:2>testorg/server:1"
-			awaitRecorded(t, dialed, "ike.rekey.failed "+ends+" sa=ike")
+			awaitRecorded(t, dialed, "ike.rekey.failed "+dialedPair+" sa=ike")
 			dialing.Store(&Suites{})
 			if due == 0 {
 				time.Sleep(forcedRetry + quietPeriod)
@@ -927,10 +894,10 @@ func TestRefusedForcedRekeyStopsOnceTheListsHoldItsSA(t *testing.T) {
 				h.lists.Store(&Suites{})
 				dialing.Store(&aes128)
 				initiator.SuitesChanged()
-				awaitRecorded(t, dialed, "ike.rekey.completed "+ends+" sa=ike suite=aes128gcm/sha384/x25519")
+				awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa=ike suite=aes128gcm/sha384/x25519")
 				return
 			}
-			awaitRecorded(t, dialed, "ike.rekey.completed "+ends+" sa=ike suite=aes256gcm/sha384/x25519")
+			awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa=ike suite=aes256gcm/sha384/x25519")
 			if at := completed.Load().Sub(established); at < due {
 				t.Errorf("the scheduled rekey completed %s after the IKE SA was made, want no sooner than its deadline %s", at, due)
 			}
@@ -945,11 +912,7 @@ func TestRefusedForcedChildSARekeyStopsOnceTheListsHoldIt(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	aes256 := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{"aes256gcm"}}})
 	h.lists.Store(&aes256)
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	cfg := h.peerConfig()
-	cfg.Suites = func() Suites { return *dialing.Load() }
-	cfg.Events = dialed.record
+	cfg, dialing := listedConfig(h, dialed.record)
 	cfg.RekeyRetryInitial, cfg.RekeyRetryMax = forcedRetry, forcedRetry
 	initiator, responder := dialPaused(t, h, cfg)
 	// each delay is drawn as zero, so the retry comes forcedRetry after the refusal
@@ -977,11 +940,7 @@ func TestRefusedForcedChildSARekeyStopsOnceTheListsHoldIt(t *testing.T) {
 func TestDroppedForcedRekeyLeavesTheRekeyDueBesideItToStart(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	cfg := h.peerConfig()
-	cfg.Suites = func() Suites { return *dialing.Load() }
-	cfg.Events = dialed.record
+	cfg, dialing := listedConfig(h, dialed.record)
 	cfg.IKERekeyInterval, cfg.RekeyMargin = time.Hour, 10*time.Minute
 	initiator, responder := dialPaused(t, h, cfg)
 	// the IKE SA's scheduled rekey is already due when Run starts
@@ -1001,13 +960,12 @@ func TestDroppedForcedRekeyLeavesTheRekeyDueBesideItToStart(t *testing.T) {
 	dialing.Store(&aes128)
 	runSession(t, responder)
 	runSession(t, initiator)
-	const ends = "testorg/client:2>testorg/server:1"
-	awaitRecorded(t, dialed, "ike.rekey.started "+ends+" sa=ike")
+	awaitRecorded(t, dialed, "ike.rekey.started "+dialedPair+" sa=ike")
 	recorded := dialed.recorded()
-	if !slices.Contains(recorded, "ike.suite.unlisted "+ends+" sa=child suite=aes256gcm action=rekey") {
+	if !slices.Contains(recorded, "ike.suite.unlisted "+dialedPair+" sa=child suite=aes256gcm action=rekey") {
 		t.Errorf("the check Run makes when it starts forced no Child SA rekey: %q", recorded)
 	}
-	if slices.Contains(recorded, "ike.rekey.started "+ends+" sa=child") {
+	if slices.Contains(recorded, "ike.rekey.started "+dialedPair+" sa=child") {
 		t.Errorf("the forced Child SA rekey ran once the lists held the Child SA again: %q", recorded)
 	}
 }
@@ -1034,11 +992,7 @@ func TestForcedRekeyStartsNoLaterThanTheRekeyItsScheduleHolds(t *testing.T) {
 			dialed := &recorder{}
 			var started atomic.Pointer[time.Time]
 			h := newResponderHarness(t, nil)
-			dialing := new(atomic.Pointer[Suites])
-			dialing.Store(&Suites{})
-			cfg := h.peerConfig()
-			cfg.Suites = func() Suites { return *dialing.Load() }
-			cfg.Events = timedRecorder(dialed, "ike.rekey.started", &started)
+			cfg, dialing := listedConfig(h, timedRecorder(dialed, "ike.rekey.started", &started))
 			cfg.IKERekeyInterval, cfg.RekeyMargin, cfg.RekeyJitter = c.interval, c.margin, c.jitter
 			initiator, responder := dialPaused(t, h, cfg)
 			established := time.Now().Add(-c.age)
@@ -1079,9 +1033,8 @@ func TestForcedRekeyStartsNoLaterThanTheRekeyItsScheduleHolds(t *testing.T) {
 			if at.Before(scheduled) {
 				t.Errorf("the IKE SA rekey started %s into the SA, before its schedule's %s", at.Sub(established), scheduled.Sub(established))
 			}
-			const ends = "testorg/client:2>testorg/server:1"
-			awaitRecorded(t, dialed, "ike.rekey.completed "+ends+" sa=ike suite="+suite)
-			if all := strings.Join(dialed.recorded(), "\n"); strings.Contains(all, "ike.sa.closed "+ends+" sa=ike reason=lifetime") {
+			awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa=ike suite="+suite)
+			if all := strings.Join(dialed.recorded(), "\n"); strings.Contains(all, "ike.sa.closed "+dialedPair+" sa=ike reason=lifetime") {
 				t.Errorf("the IKE SA closed at its lifetime: %s", all)
 			}
 		})
@@ -1102,11 +1055,7 @@ func TestReloadDuringAPacketCountRekeyChecksTheChildSAItMade(t *testing.T) {
 			dialed := &recorder{}
 			h := newResponderHarness(t, nil)
 			var rekeying, released atomic.Bool
-			dialing := new(atomic.Pointer[Suites])
-			dialing.Store(&Suites{})
-			cfg := h.peerConfig()
-			cfg.Suites = func() Suites { return *dialing.Load() }
-			cfg.Events = dialed.record
+			cfg, dialing := listedConfig(h, dialed.record)
 			// the Child SA's scheduled rekey falls due long after the test
 			cfg.ChildRekeyInterval, cfg.RekeyMargin, cfg.RekeyJitter = time.Hour, 10*time.Minute, forcedJitter
 			cfg.RekeyRetryInitial, cfg.RekeyRetryMax = forcedRetry, forcedRetry
@@ -1138,12 +1087,11 @@ func TestReloadDuringAPacketCountRekeyChecksTheChildSAItMade(t *testing.T) {
 			if err := <-proactive; err != nil {
 				t.Fatalf("the packet-count rekey failed: %v", err)
 			}
-			const ends = "testorg/client:2>testorg/server:1"
-			awaitRecorded(t, dialed, "ike.rekey.completed "+ends+" sa=child suite=aes256gcm")
+			awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa=child suite=aes256gcm")
 			made := time.Now()
 			// the rekey jitter bounds the forced delay, and the peer refuses a second Child SA rekey within minPeerChildRekeyInterval of the first
 			bound := forcedJitter + minPeerChildRekeyInterval + quietPeriod
-			rekeyed := "ike.rekey.completed " + ends + " sa=child suite=aes128gcm"
+			rekeyed := "ike.rekey.completed " + dialedPair + " sa=child suite=aes128gcm"
 			for !slices.Contains(dialed.recorded(), rekeyed) {
 				if time.Since(made) > bound {
 					t.Fatalf("the Child SA made in aes256gcm was not rekeyed under the new lists within %s: %q", bound, dialed.recorded())
@@ -1162,11 +1110,7 @@ func TestReplacementPastAChildSALifetimeSendsNoSecondDelete(t *testing.T) {
 	var released atomic.Bool
 	var mu sync.Mutex
 	informational := map[uint32]bool{}
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	cfg := h.peerConfig()
-	cfg.Suites = func() Suites { return *dialing.Load() }
-	cfg.Events = dialed.record
+	cfg, dialing := listedConfig(h, dialed.record)
 	// the Child SA's lifetime falls while the Delete waits, and its scheduled rekey falls due behind the Delete
 	cfg.ChildRekeyInterval, cfg.RekeyMargin = 1500*time.Millisecond, 200*time.Millisecond
 	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
@@ -1186,9 +1130,8 @@ func TestReplacementPastAChildSALifetimeSendsNoSecondDelete(t *testing.T) {
 	sha256Only := suitesOf(t, Crypto{IKE: IKESuites{PRF: []string{"sha256"}}})
 	dialing.Store(&sha256Only)
 	initiator.SuitesChanged()
-	const ends = "testorg/client:2>testorg/server:1"
-	awaitRecorded(t, dialed, "ike.suite.unlisted "+ends+" sa=ike suite=aes256gcm/sha384/x25519 action=replace")
-	awaitRecorded(t, dialed, "ike.sa.closed "+ends+" sa=child reason=lifetime")
+	awaitRecorded(t, dialed, "ike.suite.unlisted "+dialedPair+" sa=ike suite=aes256gcm/sha384/x25519 action=replace")
+	awaitRecorded(t, dialed, "ike.sa.closed "+dialedPair+" sa=child reason=lifetime")
 	released.Store(true)
 	if err := endedWithin(t, run, "dialing"); !errors.Is(err, ErrPRFUnlisted) {
 		t.Errorf("the session ended with %v, want its IKE SA deleted for a new handshake", err)
@@ -1211,11 +1154,7 @@ func TestReplacementOfAnIKESAPastItsLifetimeSendsItsDelete(t *testing.T) {
 	var rekeying, released atomic.Bool
 	var mu sync.Mutex
 	informational := map[uint32]bool{}
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	cfg := h.peerConfig()
-	cfg.Suites = func() Suites { return *dialing.Load() }
-	cfg.Events = dialed.record
+	cfg, dialing := listedConfig(h, dialed.record)
 	// the IKE SA's rekey falls due soon after the SA is made
 	// and its lifetime ends while the relay holds that rekey
 	cfg.IKERekeyInterval, cfg.RekeyMargin = 3*time.Second, 2*time.Second
@@ -1249,14 +1188,13 @@ func TestReplacementOfAnIKESAPastItsLifetimeSendsItsDelete(t *testing.T) {
 	sha256Only := suitesOf(t, Crypto{IKE: IKESuites{PRF: []string{"sha256"}}})
 	dialing.Store(&sha256Only)
 	initiator.SuitesChanged()
-	const ends = "testorg/client:2>testorg/server:1"
-	awaitRecorded(t, dialed, "ike.suite.unlisted "+ends+" sa=ike suite=aes256gcm/sha384/x25519 action=replace")
+	awaitRecorded(t, dialed, "ike.suite.unlisted "+dialedPair+" sa=ike suite=aes256gcm/sha384/x25519 action=replace")
 	time.Sleep(time.Until(established.Add(cfg.IKERekeyInterval + quietPeriod)))
 	released.Store(true)
 	if err := endedWithin(t, run, "dialing"); !errors.Is(err, ErrPRFUnlisted) {
 		t.Errorf("the session ended with %v, want its IKE SA deleted for a new handshake", err)
 	}
-	if all := strings.Join(dialed.recorded(), "\n"); !strings.Contains(all, "ike.sa.closed "+ends+" sa=ike reason=lifetime") {
+	if all := strings.Join(dialed.recorded(), "\n"); !strings.Contains(all, "ike.sa.closed "+dialedPair+" sa=ike reason=lifetime") {
 		t.Errorf("the IKE SA did not close at its lifetime: %s", all)
 	}
 	// a request sent as the session ended reaches the relay after it
@@ -1270,15 +1208,11 @@ func TestReplacementOfAnIKESAPastItsLifetimeSendsItsDelete(t *testing.T) {
 
 // the replacement's Delete of an IKE SA whose PRF a reload removed has the budget of the Delete the lifecycle sends
 // and keeps it once a Child SA reaches its lifetime behind it
-func TestReplacementDeleteHasTheTeardownBudgetOnceTheSessionIsEnding(t *testing.T) {
+func TestReplacementDeleteHasTheTeardownBudget(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	var sent atomic.Int32
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	cfg := h.peerConfig()
-	cfg.Suites = func() Suites { return *dialing.Load() }
-	cfg.Events = dialed.record
+	cfg, dialing := listedConfig(h, dialed.record)
 	// the Child SA's lifetime falls before the Delete's third send, and its scheduled rekey falls due behind the Delete
 	cfg.ChildRekeyInterval, cfg.RekeyMargin = 1500*time.Millisecond, 200*time.Millisecond
 	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
@@ -1298,8 +1232,7 @@ func TestReplacementDeleteHasTheTeardownBudgetOnceTheSessionIsEnding(t *testing.
 	sha256Only := suitesOf(t, Crypto{IKE: IKESuites{PRF: []string{"sha256"}}})
 	dialing.Store(&sha256Only)
 	initiator.SuitesChanged()
-	const ends = "testorg/client:2>testorg/server:1"
-	awaitRecorded(t, dialed, "ike.sa.closed "+ends+" sa=child reason=lifetime")
+	awaitRecorded(t, dialed, "ike.sa.closed "+dialedPair+" sa=child reason=lifetime")
 	if err := endedWithin(t, run, "dialing"); !errors.Is(err, ErrPRFUnlisted) {
 		t.Errorf("the session ended with %v, want its IKE SA deleted for a new handshake", err)
 	}

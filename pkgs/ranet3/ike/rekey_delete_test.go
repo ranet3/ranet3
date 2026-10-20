@@ -13,10 +13,8 @@ import (
 	"time"
 )
 
+// a quiet peer's liveness interval falls inside the sends of an unanswered request
 const (
-	// a peer that answers at once is busy throughout the sends of a request, since its last answer is far inside the liveness interval
-	busyRetransmit = 50 * time.Millisecond
-	// a quiet peer's liveness interval falls inside the sends of an unanswered request
 	quietRetransmit = 400 * time.Millisecond
 	quietDPD        = 500 * time.Millisecond
 )
@@ -49,7 +47,8 @@ func stillRunning(t *testing.T, run <-chan error) {
 func TestUnansweredDeleteOfAReplacedIKESAEndsItAlone(t *testing.T) {
 	for name, peer := range map[string]struct{ retransmitAfter, dpdEvery time.Duration }{
 		"a quiet peer": {quietRetransmit, quietDPD},
-		"a busy peer":  {busyRetransmit, time.Hour},
+		// a peer that answers at once is busy throughout the sends of a request, since its last answer is far inside the liveness interval
+		"a busy peer": {unansweredRetransmit, time.Hour},
 	} {
 		t.Run(name, func(t *testing.T) {
 			lines := recordLines(t)
@@ -115,11 +114,12 @@ func TestUnansweredDeleteOfAReplacedIKESAEndsItAlone(t *testing.T) {
 
 // RFC 7296 section 2.8.2: "The new IKE SA containing the lowest nonce SHOULD be deleted by the node that created it, and the other surviving new IKE SA MUST inherit all the Child SAs."
 // the peer answers none of the sends of the Delete of the redundant IKE SA this end made
-// so the Delete ends that SA alone after teardownRetransmits sends, the rekey stands, and a request waiting behind it is answered over the surviving IKE SA
+// so the Delete ends that SA alone after teardownRetransmits sends, which the session logs, the rekey stands, and a request waiting behind it is answered over the surviving IKE SA
 func TestUnansweredDeleteOfARedundantIKESAEndsItAlone(t *testing.T) {
+	lines := recordLines(t)
 	p := newCollisionPeer(t, time.Now())
 	s, suite := p.session, p.old.suite
-	s.retransmitAfter, s.dpdEvery = busyRetransmit, time.Hour
+	s.retransmitAfter, s.dpdEvery = unansweredRetransmit, time.Hour
 
 	var deletes atomic.Int32
 	deleting := make(chan struct{})
@@ -180,6 +180,9 @@ func TestUnansweredDeleteOfARedundantIKESAEndsItAlone(t *testing.T) {
 	if current.spiI != collisionPeerSPIi || held != nil {
 		t.Errorf("after the rekey the session is current on %016x and holds %+v, want the peer's candidate alone", current.spiI, held)
 	}
+	if told := lines.said(slog.LevelInfo, "ike redundant IKE SA was not deleted by this end", "err"); len(told) != 1 || told[0].Any() == nil {
+		t.Errorf("the unanswered Delete was told %d times with the errors %v, want once with its error", len(told), told)
+	}
 }
 
 // a liveness check outstanding on an IKE SA the peer rekeys goes on over the SA it replaced, which this end keeps until the peer's Delete
@@ -202,7 +205,7 @@ func TestUnansweredLivenessCheckOnAnIKESAThePeerReplacedEndsItAlone(t *testing.T
 	initiator, responder := dialPaused(t, h, cfg)
 	old := initiator.currentContext()
 	replaced.Store(old.spiI)
-	initiator.retransmitAfter, responder.retransmitAfter = busyRetransmit, busyRetransmit
+	initiator.retransmitAfter, responder.retransmitAfter = unansweredRetransmit, unansweredRetransmit
 	initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 	runSession(t, responder)
 	run := runSession(t, initiator)
@@ -237,8 +240,12 @@ func TestUnansweredLivenessCheckOnAnIKESAThePeerReplacedEndsItAlone(t *testing.T
 // so a Delete of the IKE SA the session runs on stops after teardownRetransmits sends from the first, whoever asked for it, while the peer counts as alive
 // a replacement whose Delete goes unanswered still ends with ErrPRFUnlisted, which internal/client reads to dial again at once
 func TestDeleteOfTheCurrentIKESAHasTheTeardownBudget(t *testing.T) {
-	for name, deleteIKE := range map[string]func(t *testing.T, s *Session, dialing *atomic.Pointer[Suites]){
-		"a teardown": func(t *testing.T, s *Session, _ *atomic.Pointer[Suites]) {
+	for name, c := range map[string]struct {
+		deleteIKE func(t *testing.T, s *Session, dialing *atomic.Pointer[Suites])
+		// ended is the error the session ends with, nil where it may end with any
+		ended error
+	}{
+		"a caller's": {deleteIKE: func(t *testing.T, s *Session, _ *atomic.Pointer[Suites]) {
 			// before Run serves, DeleteIKE sends once and waits for no answer
 			if !waitUntil(s.serving.Load) {
 				t.Fatal("Run never served the session")
@@ -246,20 +253,17 @@ func TestDeleteOfTheCurrentIKESAHasTheTeardownBudget(t *testing.T) {
 			if err := s.DeleteIKE(); err == nil {
 				t.Error("a Delete nothing answered returned no error")
 			}
-		},
-		"a replacement": func(t *testing.T, s *Session, dialing *atomic.Pointer[Suites]) {
+		}},
+		"a replacement": {deleteIKE: func(t *testing.T, s *Session, dialing *atomic.Pointer[Suites]) {
 			sha256Only := suitesOf(t, Crypto{IKE: IKESuites{PRF: []string{"sha256"}}})
 			dialing.Store(&sha256Only)
 			s.SuitesChanged()
-		},
+		}, ended: ErrPRFUnlisted},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newResponderHarness(t, nil)
 			var deletes atomic.Int32
-			dialing := new(atomic.Pointer[Suites])
-			dialing.Store(&Suites{})
-			cfg := h.peerConfig()
-			cfg.Suites = func() Suites { return *dialing.Load() }
+			cfg, dialing := listedConfig(h, nil)
 			cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
 				if fromInitiator && header != nil && !header.IsResponse() && header.ExchangeType == INFORMATIONAL {
 					deletes.Add(1)
@@ -268,14 +272,13 @@ func TestDeleteOfTheCurrentIKESAHasTheTeardownBudget(t *testing.T) {
 				return true
 			})
 			initiator, responder := dialPaused(t, h, cfg)
-			initiator.retransmitAfter = busyRetransmit
+			initiator.retransmitAfter = unansweredRetransmit
 			initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 			runSession(t, responder)
 			run := runSession(t, initiator)
-			deleteIKE(t, initiator, dialing)
-			err := endedWithin(t, run, "deleting")
-			if name == "a replacement" && !errors.Is(err, ErrPRFUnlisted) {
-				t.Errorf("the session ended with %v, want its IKE SA deleted for a new handshake", err)
+			c.deleteIKE(t, initiator, dialing)
+			if err := endedWithin(t, run, "deleting"); c.ended != nil && !errors.Is(err, c.ended) {
+				t.Errorf("the session ended with %v, want %v", err, c.ended)
 			}
 			if got := deletes.Load(); got != teardownRetransmits {
 				t.Errorf("the Delete was sent %d times, want %d", got, teardownRetransmits)
@@ -291,10 +294,7 @@ func TestLifetimeBehindAnUnansweredDeleteOfAReplacedIKESAStillDeletesTheIKESA(t 
 	h := newResponderHarness(t, nil)
 	var replaced atomic.Uint64
 	var replacedSent, currentSent atomic.Int32
-	dialing := new(atomic.Pointer[Suites])
-	dialing.Store(&Suites{})
-	cfg := h.peerConfig()
-	cfg.Suites = func() Suites { return *dialing.Load() }
+	cfg, dialing := listedConfig(h, nil)
 	// the IKE SA's own schedule lies past the test, the Child SA's rekey falls due behind the IKE SA's, and its lifetime falls while the replaced IKE SA's Delete is out
 	cfg.IKERekeyInterval, cfg.ChildRekeyInterval, cfg.RekeyMargin = time.Hour, 2500*time.Millisecond, 200*time.Millisecond
 	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, _ []byte) bool {
