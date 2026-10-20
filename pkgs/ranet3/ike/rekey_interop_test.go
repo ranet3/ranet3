@@ -122,7 +122,7 @@ func TestChildProposalDHSelection(t *testing.T) {
 			for _, group := range tc.groups {
 				proposal.Transforms = append(proposal.Transforms, Transform{Type: TransDH, ID: group})
 			}
-			selected, err := selectChildRequestProposal(EncodeSA([]Proposal{proposal}), Suites{}.espCiphers(), Suites{}.kexEntries(), tc.ke, groupOptional)
+			selected, err := selectChildRequestProposal(EncodeSA([]Proposal{proposal}), Suites{}.espCiphers(), Suites{}.kexEntries(), tc.ke)
 			if tc.retryGroup != 0 {
 				var invalid *invalidKEError
 				if !errors.As(err, &invalid) || invalid.group != tc.retryGroup {

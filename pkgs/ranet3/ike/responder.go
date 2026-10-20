@@ -763,7 +763,7 @@ func (s *Session) selectResponderChild(request *Message, ni, nr []byte) (respond
 	// so no group is taken here, and a proposal offering only groups is unacceptable
 	// RFC 9370 section 2.2.3: "After all IKE_INTERMEDIATE exchanges have completed, the initiator and the responder perform an IKE_AUTH exchange." and "This exchange is the standard IKE exchange, as described in [RFC7296], with the modification of AUTH payload calculation described in [RFC9242]."
 	// so an ADDKE type in its SA payloads is read as Transform Type 4 is: answered NONE, and a proposal holding one without NONE unacceptable
-	selection, err := selectChildRequestProposal(saPayload.Body, s.lists().espCiphers(), nil, 0, groupOptional)
+	selection, err := selectChildRequestProposal(saPayload.Body, s.lists().espCiphers(), nil, 0)
 	if err != nil {
 		return responderChild{}, err
 	}
@@ -1015,33 +1015,14 @@ type ikeChoice struct {
 // retry is the group to ask for in INVALID_KE_PAYLOAD
 // RFC 7296 section 3.3: "If there is more than one, they MUST be ordered from most preferred to least preferred."
 // RFC 7296 section 3.3.4: "The implementation MUST reject SA proposals that are not authorized by these IKE suite controls."
-// RFC 7296 section 3.3.6: "If the responder receives a proposal that contains a Transform Type it does not understand, or a proposal that is missing a mandatory Transform Type, it MUST consider this proposal unacceptable" and "other proposals in the same SA payload are processed as usual."
 func chooseIKE(proposals []Proposal, ciphers, prfs []Transform, entries []kexEntry, keGroup uint16) (ikeChoice, uint16, bool) {
 	var met []ikeChoice
 	var offers [][]Transform
 	for _, proposal := range proposals {
-		known := true
-		var integ *Transform
-		offeredInteg := false
-		for i := range proposal.Transforms {
-			transform := proposal.Transforms[i]
-			switch {
-			case transform.Type == TransEncr, transform.Type == TransPRF, transform.Type == TransDH:
-			case additional(transform.Type):
-			case transform.Type == TransInteg:
-				// RFC 7296 section 3.3: "Combined-mode ciphers include both integrity and encryption in a single encryption algorithm, and MUST either offer no integrity algorithm or a single integrity algorithm of "NONE", with no integrity algorithm being the RECOMMENDED method."
-				// RFC 7296 section 3.3.6: "if the responder receives a transform that it does not understand, or one that contains a Transform Attribute it does not understand, it MUST consider this transform unacceptable" and "other transforms with the same Transform Type are processed as usual."
-				offeredInteg = true
-				if integ == nil && transform.ID == INTEG_NONE && !transform.UnsupportedAttributes {
-					integ = &transform
-				}
-			default:
-				known = false
-			}
-		}
+		integ, acceptable := combinedIntegrity(proposal.Transforms, TransEncr, TransPRF, TransDH)
 		encr, haveEncr := choose(ciphers, proposal.Transforms)
 		prfT, havePRF := choose(prfs, proposal.Transforms)
-		if !known || offeredInteg && integ == nil || !haveEncr || !havePRF {
+		if !acceptable || !haveEncr || !havePRF {
 			continue
 		}
 		// RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
@@ -1052,7 +1033,8 @@ func chooseIKE(proposals []Proposal, ciphers, prfs []Transform, entries []kexEnt
 		met = append(met, ikeChoice{offered: proposal, transforms: transforms, suite: SASuite{EncrID: encr.ID, EncrKeyBits: encr.KeyLengthBits, PRFID: prfT.ID}})
 		offers = append(offers, proposal.Transforms)
 	}
-	at, kex, retry, ok := chooseKex(offers, entries, keGroup, groupRequired)
+	// RFC 7296 section 2.18: "an initiator MUST NOT propose the value "NONE" for the Diffie-Hellman transform, and a responder MUST NOT accept such a proposal."
+	at, kex, retry, ok := chooseKex(offers, entries, keGroup, false)
 	if !ok {
 		return ikeChoice{}, retry, false
 	}

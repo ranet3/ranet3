@@ -366,7 +366,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	if expected != nil {
 		ciphers = lists.rekeyChoice(*expected)
 	}
-	selected, err := selectChildRequestProposal(payloads.sa.Body, ciphers, entries, group, groupOptional)
+	selected, err := selectChildRequestProposal(payloads.sa.Body, ciphers, entries, group)
 	if err != nil {
 		if invalidKE, ok := errors.AsType[*invalidKEError](err); ok {
 			return s.responseNotifyData(ctx, msgID, CREATE_CHILD_SA, N_INVALID_KE_PAYLOAD,

@@ -243,9 +243,9 @@ func (e *invalidKEError) Error() string {
 }
 
 // selectChildRequestProposal answers a Child SA offer from ciphers and kex entries, each in this end's order, as chooseIKE answers an IKE SA offer
-// rule tells chooseKex whether the answer may go without a group
+// the answer may go without a group
 // IKE_AUTH passes no entries, so a proposal there requiring a key exchange meets none and is skipped
-func selectChildRequestProposal(body []byte, ciphers []Transform, entries []kexEntry, keGroup uint16, rule groupRule) (childProposalSelection, error) {
+func selectChildRequestProposal(body []byte, ciphers []Transform, entries []kexEntry, keGroup uint16) (childProposalSelection, error) {
 	props, err := DecodeSA(body)
 	if err != nil {
 		return childProposalSelection{}, fmt.Errorf("ike: invalid Child SA proposal")
@@ -258,39 +258,26 @@ func selectChildRequestProposal(body []byte, ciphers []Transform, entries []kexE
 		if p.Number == 0 || p.Protocol != ProtoESP || len(p.SPI) != 4 || binary.BigEndian.Uint32(p.SPI) == 0 {
 			continue
 		}
-		var integ Transform
-		var haveESN, haveInteg, offeredInteg, unacceptable bool
-		for _, transform := range p.Transforms {
-			switch {
-			case transform.Type == TransEncr, transform.Type == TransDH, additional(transform.Type):
-			case transform.Type == TransESN:
-				if !haveESN && transform.ID == ESN_NO && transform.KeyLengthBits == 0 && !transform.UnsupportedAttributes {
-					haveESN = true
-				}
-			case transform.Type == TransInteg:
-				// RFC 7296 section 3.3.6: "if the responder receives a transform that it does not understand, or one that contains a Transform Attribute it does not understand, it MUST consider this transform unacceptable" and "other transforms with the same Transform Type are processed as usual."
-				offeredInteg = true
-				if !haveInteg && transform.ID == INTEG_NONE && !transform.UnsupportedAttributes {
-					integ = transform
-					haveInteg = true
-				}
-			default:
-				// RFC 7296 section 3.3.6: "If the responder receives a proposal that contains a Transform Type it does not understand, or a proposal that is missing a mandatory Transform Type, it MUST consider this proposal unacceptable" and "other proposals in the same SA payload are processed as usual."
-				unacceptable = true
-			}
-		}
+		integ, acceptable := combinedIntegrity(p.Transforms, TransEncr, TransDH, TransESN)
+		haveESN := slices.ContainsFunc(p.Transforms, func(transform Transform) bool {
+			return transform.Type == TransESN && transform.ID == ESN_NO && transform.KeyLengthBits == 0 && !transform.UnsupportedAttributes
+		})
 		cipher, haveCipher := choose(ciphers, p.Transforms)
-		if unacceptable || offeredInteg && !haveInteg || !haveCipher || !haveESN {
+		if !acceptable || !haveCipher || !haveESN {
 			continue
 		}
 		encryption, err := canonicalEncryptionTransform(cipher)
 		if err != nil {
 			return childProposalSelection{}, err
 		}
-		met = append(met, childProposalSelection{proposal: p, encryption: encryption, integ: integ, remoteSPI: binary.BigEndian.Uint32(p.SPI)})
+		selection := childProposalSelection{proposal: p, encryption: encryption, remoteSPI: binary.BigEndian.Uint32(p.SPI)}
+		if integ != nil {
+			selection.integ = *integ
+		}
+		met = append(met, selection)
 		offers = append(offers, p.Transforms)
 	}
-	at, kex, retry, ok := chooseKex(offers, entries, keGroup, rule)
+	at, kex, retry, ok := chooseKex(offers, entries, keGroup, true)
 	if retry != 0 {
 		return childProposalSelection{}, &invalidKEError{retry}
 	}

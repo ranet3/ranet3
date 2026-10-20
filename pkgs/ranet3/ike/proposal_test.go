@@ -21,7 +21,7 @@ func addUnknownTVAttributeToFirstTransform(raw []byte) []byte {
 	withAttribute = append(withAttribute, raw[:insertAt]...)
 	withAttribute = append(withAttribute, unknown...)
 	withAttribute = append(withAttribute, raw[insertAt:]...)
-	binary.BigEndian.PutUint16(withAttribute[2:4], uint16(len(withAttribute)))
+	binary.BigEndian.PutUint16(withAttribute[2:4], binary.BigEndian.Uint16(raw[2:4])+uint16(len(unknown)))
 	binary.BigEndian.PutUint16(withAttribute[transformOffset+2:transformOffset+4], uint16(transformLength+len(unknown)))
 	return withAttribute
 }
@@ -124,6 +124,11 @@ func TestIKERekeyProposalRejectsUnexpectedTransformType(t *testing.T) {
 	if _, ok := rekey(unknown); ok {
 		t.Fatal("accepted IKE rekey proposal with unexpected transform type")
 	}
+	// ESN is a type of an ESP proposal's alone
+	esn := Proposal{Number: 1, Protocol: ProtoIKE, Transforms: append(slices.Clone(base), esnNone)}
+	if _, ok := rekey(esn); ok {
+		t.Fatal("accepted an IKE rekey proposal holding an ESN transform")
+	}
 	// every cipher this end lists is combined mode
 	// so an integrity algorithm has no key here
 	unusable := Proposal{Number: 1, Protocol: ProtoIKE,
@@ -166,7 +171,7 @@ func TestProposalOfAnotherProtocolIsUnacceptable(t *testing.T) {
 			{Number: 1, Protocol: ProtoAH, SPI: []byte{0, 0, 0, 9}, Transforms: []Transform{encrAES128, esnNone}},
 			{Number: 2, Protocol: ProtoESP, SPI: []byte{0, 0, 0, 9}, Transforms: []Transform{encrAES128, esnNone}},
 		})
-		selection, err := selectChildRequestProposal(body, Suites{}.espCiphers(), Suites{}.kexEntries(), 0, groupOptional)
+		selection, err := selectChildRequestProposal(body, Suites{}.espCiphers(), Suites{}.kexEntries(), 0)
 		if err != nil || selection.proposal.Number != 2 {
 			t.Errorf("an AH proposal ahead of an ESP one was answered with proposal %d, %v, want 2", selection.proposal.Number, err)
 		}
