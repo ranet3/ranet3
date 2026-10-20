@@ -312,7 +312,7 @@ func TestPeerChainsAreAnsweredAsTheModelOfTheChain(t *testing.T) {
 				ht.Fatalf("the session is current on an SA in %+v and retains the old one is %v, want the SA of %+v the peer's rekey made", now.suite, retained == old, entries[at].entry)
 			}
 			header := Header{SPIInitiator: old.spiI, SPIResponder: old.spiR, ExchangeType: INFORMATIONAL}
-			if _, err := s.handleRequest(old, &header, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}); err != nil {
+			if _, err := s.handleRequest(old, &header, nil, deleteIKEPayloads()); err != nil {
 				ht.Fatalf("the peer's Delete of the replaced SA ended the session: %v", err)
 			}
 			current = at

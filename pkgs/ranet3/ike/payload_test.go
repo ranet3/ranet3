@@ -27,7 +27,7 @@ func TestDecodeMessageRejectsInvalidDeclaredExtent(t *testing.T) {
 // a payload after SK belongs to no chain of the message, which is refused
 // the SK payload carries a Delete, so its Next Payload field names the chain inside and not the end of the message
 func TestDecodeMessageRefusesAPayloadAfterSK(t *testing.T) {
-	inner := []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}
+	inner := deleteIKEPayloads()
 	raw, err := encryptMessageIV(SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128}, make([]byte, 16+4), Header{}, nil, inner, make([]byte, 8))
 	if err != nil {
 		t.Fatal(err)

@@ -212,12 +212,8 @@ func (s *Session) RekeyIKE() (err error) {
 
 	// RFC 7296 section 2.8: "After the new equivalent IKE SA is created, the initiator deletes the old IKE SA, and the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 	// the replacement is current from here, so the rekey has taken effect whatever this exchange does, a peer's own Delete of the old SA arriving first and a refusal among them
-	deleted, deleteErr := s.requestOnLocked(old, INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
-	if deleteErr == nil {
-		deleteErr = refusal("INFORMATIONAL", deleted)
-	}
-	if deleteErr != nil {
-		slog.Info("ike replaced IKE SA was not deleted by this end", "spi", old.spiI, "err", deleteErr)
+	if err := s.sendOwnDeleteLocked(old); err != nil {
+		slog.Info("ike replaced IKE SA was not deleted by this end", "spi", old.spiI, "err", err)
 	}
 	s.stateMu.Lock()
 	if s.old == old {
@@ -253,12 +249,8 @@ func (s *Session) yieldIKERekey(old, candidate, winner *ikeContext) error {
 	// the redundant SA goes whether or not the peer answers
 	// one left in s.collision refuses every later peer rekey
 	// and the next rekey of this end's would collide with it, with no peer nonce to settle on
-	answer, deleteErr := s.requestOnLocked(candidate, INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
-	if deleteErr == nil {
-		deleteErr = refusal("INFORMATIONAL", answer)
-	}
-	if deleteErr != nil {
-		slog.Info("ike redundant IKE SA was not deleted by this end", "spi", candidate.spiI, "err", deleteErr)
+	if err := s.sendOwnDeleteLocked(candidate); err != nil {
+		slog.Info("ike redundant IKE SA was not deleted by this end", "spi", candidate.spiI, "err", err)
 	}
 	// released only while nothing else routes by it
 	// unregistering the SA the session is current on leaves the control channel deaf while ESP flows
@@ -269,6 +261,15 @@ func (s *Session) yieldIKERekey(old, candidate, winner *ikeContext) error {
 	s.releaseSPILocked(candidate.spiI)
 	s.stateMu.Unlock()
 	return nil
+}
+
+// sendOwnDeleteLocked is called with requestMu held
+func (s *Session) sendOwnDeleteLocked(ctx *ikeContext) error {
+	answer, err := s.requestOnLocked(ctx, INFORMATIONAL, deleteIKEPayloads())
+	if err == nil {
+		err = refusal("INFORMATIONAL", answer)
+	}
+	return err
 }
 
 // rekeyedContext is the IKE SA a rekey of old makes in suite between spiI and spiR, keyed by the secrets of its key exchanges in the order they ran, the responder's where responder holds

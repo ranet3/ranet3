@@ -498,7 +498,7 @@ func TestInvalidSyntaxOnARetainedIKESAEndsItAlone(t *testing.T) {
 	if err := s.mux.RegisterIKE(old.spiI); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, context: old, inner: []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}},
+	pending, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, context: old, inner: deleteIKEPayloads(),
 		result: make(chan requestResult, 1)})
 	if err != nil {
 		t.Fatal(err)

@@ -1918,7 +1918,7 @@ func TestResponderAnswersTheDeleteCrossingItsOwn(t *testing.T) {
 	header, inner, _ := responderMessage(t, mux, held)
 	wantIKEDelete(t, header, inner)
 	request, err := EncryptMessage(held.suite, held.skei, Header{SPIInitiator: held.spiI, SPIResponder: held.spiR,
-		ExchangeType: INFORMATIONAL, Flags: FlagInitiator, MessageID: 2}, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}})
+		ExchangeType: INFORMATIONAL, Flags: FlagInitiator, MessageID: 2}, nil, deleteIKEPayloads())
 	if err != nil {
 		t.Fatal(err)
 	}

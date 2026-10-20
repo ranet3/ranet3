@@ -330,7 +330,6 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	var pending *pendingRequest
 	var ender *pendingRequest
 	// RFC 7296 section 2.8: "the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
-	// once a caller's Delete of the current IKE SA has gone out, the replacement's among them, no request goes out on that SA, a liveness check and the session's own Delete among them
 	deleted := false
 	childSchedule, err := s.newRekeySchedule("Child SA", "child", s.childRekeyInterval, s.RekeyChild, s.childEstablishedAt)
 	if err != nil {
@@ -496,8 +495,9 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	// until then an expired IKE SA carries that exchange, its answers to the peer and its Delete, and starts nothing else
 	expired := func() bool { return s.ikeExpired(s.currentContext()) }
 	// while this end's rekey may run additional key exchanges, or waits for the peer's, the requests on the IKE SA are the rekey's alone
+	livenessHeld := func() bool { return expired() || deleted || s.quiet.Load() }
 	livenessDue := func() time.Time {
-		if expired() || deleted || s.quiet.Load() {
+		if livenessHeld() {
 			return time.Now().Add(s.dpdInterval())
 		}
 		return lastAuthenticated.Add(s.dpdInterval())
@@ -529,7 +529,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		if err := settleChildRekeys(); err != nil {
 			fail(err)
 		}
-		// a check the lists asked for is taken here as well as in the wait below, which may take a datagram that came after it first
+		// a check the lists asked for runs here, taken here or by the wait below, which may take a datagram that came after it first
 		// so a peer's Delete crossing this end's own finds the IKE SA's replacement under way, and the session ends for a new handshake
 		select {
 		case <-s.rechecks:
@@ -594,8 +594,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		}
 		// the replacement's Delete ends the IKE SA in place of this one
 		if ending != nil && running == nil && pending == nil && ender == nil && !replacing {
-			started, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, inner: []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}},
-				result: make(chan requestResult, 1), teardown: true})
+			started, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, inner: deleteIKEPayloads(), result: make(chan requestResult, 1), teardown: true})
 			if err != nil {
 				s.mux.Close()
 				return fmt.Errorf("%w, and its Delete could not be sent: %v", ending, err)
@@ -606,15 +605,16 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			select {
 			case req := <-s.requests:
 				var err error
+				deletes := deletesIKE(req.inner)
 				switch {
 				case deleted:
 					err = errors.New("ike: the IKE SA's Delete was sent")
 				// an expired IKE SA still carries its Delete, which while replacing is the replacement's
-				case expired() && !deletesIKE(req.inner):
+				case expired() && !deletes:
 					err = errors.New("ike: the IKE SA is past its lifetime")
 				default:
 					pending, err = s.startRequest(req)
-					deleted = err == nil && deletesIKE(req.inner) && pending.context == s.currentContext()
+					deleted = err == nil && deletes && pending.context == s.currentContext()
 				}
 				if err != nil {
 					req.result <- requestResult{err: err}
@@ -699,7 +699,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			continue
 		case <-s.probes:
 			// a quiet session's rekey or the peer's chain it waits on proves the path, and a liveness check beside them is a request the peer may destroy the IKE SA for
-			if pending == nil && (expired() || deleted || s.quiet.Load()) {
+			if pending == nil && livenessHeld() {
 				continue
 			}
 			probed, err := s.probe(pending)
@@ -710,9 +710,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			pending = probed
 			continue
 		case <-s.rechecks:
-			if err := resuite(); err != nil {
-				fail(err)
-			}
+			resuiteDue = true
 			continue
 		case err := <-replaced:
 			if err != nil {
@@ -1269,7 +1267,7 @@ func (s *Session) responseNotifySA(ctx *ikeContext, msgID uint32, exchange Excha
 // the caller bounds how long the exchange may take
 func (s *Session) DeleteIKE() error {
 	s.startClosing()
-	payloads := []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}
+	payloads := deleteIKEPayloads()
 	if s.serving.Load() {
 		answer, err := s.request(INFORMATIONAL, payloads)
 		if err != nil {

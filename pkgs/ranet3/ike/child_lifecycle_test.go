@@ -305,7 +305,7 @@ func TestLocalMessageIDIsNotAllocatedTwiceAtOnce(t *testing.T) {
 		requests: make(chan *localRequest),
 	}
 
-	payloads := []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoIKE})}}
+	payloads := deleteIKEPayloads()
 	seen := make(chan uint32, 64)
 	var senders sync.WaitGroup
 	for range 8 {
