@@ -15,8 +15,8 @@
 // package creates the table, writes only inside it and withdraws it whole at
 // shutdown. It reads other writers' tables, chains and rules to find its own
 // and to report conflicts, and writes, replaces or deletes nothing outside its
-// own tables. A rule another writer puts in its own chain is removed by the
-// next pass. Other source translation already on the host is reported
+// own tables. A rule another writer puts in this package's chain is removed by
+// the next pass. Other source translation already on the host is reported
 // rather than fought over: several nat postrouting chains coexist at the same
 // hook, the first to translate a connection wins it, and taking somebody else's
 // rule away to win that race would break whatever put it there.
@@ -37,10 +37,11 @@
 // An exit whose rule will not install, or whose kernel will not forward, would
 // therefore attract traffic and drop it with nothing to tell the sender. So the
 // advertisement is published by this package rather than by the configuration:
-// Runtime.Announce is called with the prefixes whose family is both installed
-// and forwardable, and with nothing at all while either is missing. It is the
-// same fact internal/client warns about for transit, read from the same place,
-// and acted on here because this end is the only one that knows.
+// Runtime.Announce is called with the prefixes of each family whose chain
+// reads back as written and which the kernel forwards, and with nothing at all
+// while no family is both. It is the same fact internal/client warns about
+// for transit, read from the same place, and acted on here because this end
+// is the only one that knows.
 //
 // # The border filter
 //
