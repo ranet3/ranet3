@@ -404,7 +404,7 @@ func TestPeerRekeyIsAnsweredInTheCipherItReplaces(t *testing.T) {
 		"an offer leaving the cipher out": {[]Transform{encrAES256, encrChaCha, esnNone}, Transform{Type: TransEncr, ID: ENCR_CHACHA20_POLY1305, KeyLengthBits: 256}},
 	} {
 		offer := EncodeSA([]Proposal{{Number: 1, Protocol: ProtoESP, SPI: []byte{0, 0, 0, 32}, Transforms: test.offer}})
-		selection, err := selectChildRequestProposal(offer, lists.rekeyChoice(old), lists.kexEntries(), 0, groupOptional)
+		selection, err := selectChildRequestProposal(offer, lists.rekeyChoice(old), lists.kexEntries(), 0)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}

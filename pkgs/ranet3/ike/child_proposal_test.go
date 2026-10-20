@@ -63,7 +63,7 @@ func TestSelectChildRekeyProposalSkipsAttributedTransform(t *testing.T) {
 		},
 	}
 	raw := addUnknownTVAttributeToFirstTransform(EncodeSA([]Proposal{proposal}))
-	selection, err := selectChildRequestProposal(raw, Suites{}.rekeyChoice(want), Suites{}.kexEntries(), 0, groupOptional)
+	selection, err := selectChildRequestProposal(raw, Suites{}.rekeyChoice(want), Suites{}.kexEntries(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestIntegNoneIsTakenAndEchoedOnEveryProposal(t *testing.T) {
 			{Type: TransESN, ID: ESN_NO},
 		}, extra...)}})
 	}
-	selection, err := selectChildRequestProposal(esp(integ), Suites{}.espCiphers(), Suites{}.kexEntries(), 0, groupOptional)
+	selection, err := selectChildRequestProposal(esp(integ), Suites{}.espCiphers(), Suites{}.kexEntries(), 0)
 	if err != nil {
 		t.Fatalf("a Child SA proposal naming INTEG NONE was refused: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestIntegNoneIsTakenAndEchoedOnEveryProposal(t *testing.T) {
 	// every cipher this end lists is combined mode
 	// so an integrity algorithm has no key here
 	unusable := Transform{Type: TransInteg, ID: 12}
-	if _, err := selectChildRequestProposal(esp(unusable), Suites{}.espCiphers(), Suites{}.kexEntries(), 0, groupOptional); err == nil {
+	if _, err := selectChildRequestProposal(esp(unusable), Suites{}.espCiphers(), Suites{}.kexEntries(), 0); err == nil {
 		t.Error("a Child SA proposal naming a real integrity algorithm was accepted")
 	}
 	if _, _, _, err := decodeChildProposal(esp(unusable), espProposal(nil).Transforms); err == nil {
@@ -225,7 +225,7 @@ func TestUnusableChildIntegrityAlternativeDoesNotRefuseTheProposal(t *testing.T)
 
 	body := EncodeSA([]Proposal{{Number: 1, Protocol: ProtoESP, SPI: spi,
 		Transforms: append(slices.Clone(base), unusable, none)}})
-	selection, err := selectChildRequestProposal(body, Suites{}.espCiphers(), Suites{}.kexEntries(), 0, groupOptional)
+	selection, err := selectChildRequestProposal(body, Suites{}.espCiphers(), Suites{}.kexEntries(), 0)
 	if err != nil {
 		t.Fatalf("an offer naming an integrity algorithm alongside NONE was refused: %v", err)
 	}
@@ -235,14 +235,14 @@ func TestUnusableChildIntegrityAlternativeDoesNotRefuseTheProposal(t *testing.T)
 
 	onlyUnusable := EncodeSA([]Proposal{{Number: 1, Protocol: ProtoESP, SPI: spi,
 		Transforms: append(slices.Clone(base), unusable)}})
-	if _, err := selectChildRequestProposal(onlyUnusable, Suites{}.espCiphers(), Suites{}.kexEntries(), 0, groupOptional); err == nil {
+	if _, err := selectChildRequestProposal(onlyUnusable, Suites{}.espCiphers(), Suites{}.kexEntries(), 0); err == nil {
 		t.Error("an offer whose every integrity alternative is unusable was accepted")
 	}
 	pair := EncodeSA([]Proposal{
 		{Number: 1, Protocol: ProtoESP, SPI: spi, Transforms: append(slices.Clone(base), unusable)},
 		{Number: 2, Protocol: ProtoESP, SPI: spi, Transforms: slices.Clone(base)},
 	})
-	if selection, err := selectChildRequestProposal(pair, Suites{}.espCiphers(), Suites{}.kexEntries(), 0, groupOptional); err != nil || selection.proposal.Number != 2 {
+	if selection, err := selectChildRequestProposal(pair, Suites{}.espCiphers(), Suites{}.kexEntries(), 0); err != nil || selection.proposal.Number != 2 {
 		t.Errorf("the second proposal was not considered: %v, %v", selection.proposal.Number, err)
 	}
 }
@@ -348,7 +348,7 @@ func TestResponderEchoesEveryTypeTheOfferNamed(t *testing.T) {
 					keGroup = transform.ID
 				}
 			}
-			selection, err := selectChildRequestProposal(offer, Suites{}.espCiphers(), Suites{}.kexEntries(), keGroup, groupOptional)
+			selection, err := selectChildRequestProposal(offer, Suites{}.espCiphers(), Suites{}.kexEntries(), keGroup)
 			if err != nil {
 				t.Fatalf("the offer was refused: %v", err)
 			}
@@ -387,7 +387,7 @@ func TestRekeyOffersOnlyTheCipherItsAnswerReaderWillTake(t *testing.T) {
 		if ciphers != 1 {
 			t.Errorf("the rekey offer names %d ciphers, want the one the answer may carry", ciphers)
 		}
-		selection, err := selectChildRequestProposal(EncodeSA([]Proposal{offer}), Suites{}.espCiphers(), Suites{}.kexEntries(), 0, groupOptional)
+		selection, err := selectChildRequestProposal(EncodeSA([]Proposal{offer}), Suites{}.espCiphers(), Suites{}.kexEntries(), 0)
 		if err != nil {
 			t.Fatalf("the rekey offer was refused: %v", err)
 		}
@@ -442,7 +442,7 @@ func TestEveryInvalidKENotifyNamesAGroup(t *testing.T) {
 		{Type: TransESN, ID: ESN_NO},
 		{Type: TransDH, ID: DH_CURVE25519},
 	}}})
-	_, err := selectChildRequestProposal(offer, Suites{}.espCiphers(), Suites{}.kexEntries(), 0, groupOptional)
+	_, err := selectChildRequestProposal(offer, Suites{}.espCiphers(), Suites{}.kexEntries(), 0)
 	var wrongGroup *invalidKEError
 	if !errors.As(err, &wrongGroup) {
 		t.Fatalf("an offer naming a group this end did not use reported %v", err)
@@ -799,24 +799,61 @@ func TestChildSAProposalNamingSPIZeroIsRefused(t *testing.T) {
 }
 
 // a Child SA proposal carrying a Transform Type this end does not understand is unacceptable
-// so is one without ESN, a type every ESP proposal carries
-// and a proposal after either in the same offer is taken
+// so is one carrying a PRF, a type of an IKE SA's proposal alone, and one without ESN, a type every ESP proposal carries
+// and a proposal after any of them in the same offer is taken
 // RFC 7296 section 3.3.6: "If the responder receives a proposal that contains a Transform Type it does not understand, or a proposal that is missing a mandatory Transform Type, it MUST consider this proposal unacceptable" and "other proposals in the same SA payload are processed as usual."
 func TestChildSAProposalOfAnUnknownTypeOrWithoutESNIsUnacceptable(t *testing.T) {
 	unknown := espProposal([]byte{0, 0, 0, 8})
 	unknown.Transforms = append(unknown.Transforms, Transform{Type: TransformType(15), ID: 1})
+	withPRF := espProposal([]byte{0, 0, 0, 8})
+	withPRF.Transforms = append(withPRF.Transforms, prfSHA256)
 	withoutESN := espProposal([]byte{0, 0, 0, 8})
 	withoutESN.Transforms = slices.DeleteFunc(withoutESN.Transforms, func(t Transform) bool { return t.Type == TransESN })
 	valid := espProposal([]byte{0, 0, 0, 9})
 	valid.Number = 2
-	for name, unusable := range map[string]Proposal{"a type it does not understand": unknown, "no ESN": withoutESN} {
-		if _, err := selectChildRequestProposal(EncodeSA([]Proposal{unusable}), Suites{}.espCiphers(), Suites{}.kexEntries(), 0, groupOptional); err == nil {
+	for name, unusable := range map[string]Proposal{"a type it does not understand": unknown, "a PRF": withPRF, "no ESN": withoutESN} {
+		if _, err := selectChildRequestProposal(EncodeSA([]Proposal{unusable}), Suites{}.espCiphers(), Suites{}.kexEntries(), 0); err == nil {
 			t.Errorf("a proposal with %s was taken", name)
 		}
-		selection, err := selectChildRequestProposal(EncodeSA([]Proposal{unusable, valid}), Suites{}.espCiphers(), Suites{}.kexEntries(), 0, groupOptional)
+		selection, err := selectChildRequestProposal(EncodeSA([]Proposal{unusable, valid}), Suites{}.espCiphers(), Suites{}.kexEntries(), 0)
 		if err != nil || selection.proposal.Number != valid.Number {
 			t.Errorf("an offer of a proposal with %s and another was answered with proposal %d, %v, want the other", name, selection.proposal.Number, err)
 		}
+	}
+}
+
+// a Child SA proposal whose only ESN carries an attribute this end does not understand or a key length is unacceptable, as is one whose only integrity transform is a NONE carrying such an attribute
+// and a proposal after it in the same offer is taken
+// RFC 7296 section 3.3.6: "if the responder receives a transform that it does not understand, or one that contains a Transform Attribute it does not understand, it MUST consider this transform unacceptable"
+func TestChildSAProposalWhoseESNOrIntegrityNONECarriesAnAttributeIsUnacceptable(t *testing.T) {
+	valid := espProposal([]byte{0, 0, 0, 9})
+	valid.Number = 2
+	for name, test := range map[string]struct {
+		first Transform
+		// attributed is whether first carries an attribute this end does not understand
+		attributed bool
+	}{
+		"an ESN carrying an attribute this end does not understand":        {first: esnNone, attributed: true},
+		"an ESN carrying a key length":                                     {first: Transform{Type: TransESN, ID: ESN_NO, KeyLengthBits: 128}},
+		"an INTEG NONE carrying an attribute this end does not understand": {first: Transform{Type: TransInteg, ID: INTEG_NONE}, attributed: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			unusable := espProposal([]byte{0, 0, 0, 8})
+			unusable.Transforms = append([]Transform{test.first}, slices.DeleteFunc(unusable.Transforms, func(t Transform) bool { return t.Type == test.first.Type })...)
+			for _, offer := range [][]Proposal{{unusable}, {unusable, valid}} {
+				body := EncodeSA(offer)
+				if test.attributed {
+					body = addUnknownTVAttributeToFirstTransform(body)
+				}
+				selection, err := selectChildRequestProposal(body, Suites{}.espCiphers(), Suites{}.kexEntries(), 0)
+				switch {
+				case len(offer) == 1 && err == nil:
+					t.Errorf("a proposal with %s was taken", name)
+				case len(offer) == 2 && (err != nil || selection.proposal.Number != valid.Number):
+					t.Errorf("an offer of a proposal with %s and another was answered with proposal %d, %v, want the other", name, selection.proposal.Number, err)
+				}
+			}
+		})
 	}
 }
 

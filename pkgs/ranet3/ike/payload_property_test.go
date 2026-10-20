@@ -722,7 +722,7 @@ func TestDecodersReturnOnArbitraryBytes(t *testing.T) {
 				return ""
 			}},
 			{"selectChildRequestProposal", sa, func(b []byte) string {
-				_, _ = selectChildRequestProposal(b, Suites{}.espCiphers(), Suites{}.kexEntries(), DH_CURVE25519, groupOptional)
+				_, _ = selectChildRequestProposal(b, Suites{}.espCiphers(), Suites{}.kexEntries(), DH_CURVE25519)
 				return ""
 			}},
 			{"DecodeTS", selectors, func(b []byte) string { _, _ = DecodeTS(b); return "" }},

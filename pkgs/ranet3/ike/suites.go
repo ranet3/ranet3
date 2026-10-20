@@ -390,16 +390,26 @@ func choose(preferred, offered []Transform) (Transform, bool) {
 	return Transform{}, false
 }
 
-// groupRule tells chooseKex whether an answer may go without a group
-type groupRule int
-
-const (
-	// an IKE SA's group, in IKE_SA_INIT and in its rekey
-	// RFC 7296 section 2.18: "an initiator MUST NOT propose the value "NONE" for the Diffie-Hellman transform, and a responder MUST NOT accept such a proposal."
-	groupRequired groupRule = iota
-	// a Child SA's group, which a proposal may leave out or offer as NONE
-	groupOptional
-)
+// combinedIntegrity is the integrity transform of NONE a proposal of combined-mode ciphers offers, nil where it offers no integrity transform
+// acceptable is false where it offers integrity transforms and no NONE this end takes among them, or a Transform Type outside types and the ADDKE types
+// RFC 7296 section 3.3: "Combined-mode ciphers include both integrity and encryption in a single encryption algorithm, and MUST either offer no integrity algorithm or a single integrity algorithm of "NONE", with no integrity algorithm being the RECOMMENDED method."
+// RFC 7296 section 3.3.6: "if the responder receives a transform that it does not understand, or one that contains a Transform Attribute it does not understand, it MUST consider this transform unacceptable" and "other transforms with the same Transform Type are processed as usual."
+// RFC 7296 section 3.3.6: "If the responder receives a proposal that contains a Transform Type it does not understand, or a proposal that is missing a mandatory Transform Type, it MUST consider this proposal unacceptable" and "other proposals in the same SA payload are processed as usual."
+func combinedIntegrity(transforms []Transform, types ...TransformType) (integ *Transform, acceptable bool) {
+	offered := false
+	for i, transform := range transforms {
+		switch {
+		case transform.Type == TransInteg:
+			offered = true
+			if integ == nil && transform.ID == INTEG_NONE && !transform.UnsupportedAttributes {
+				integ = &transforms[i]
+			}
+		case !slices.Contains(types, transform.Type) && !additional(transform.Type):
+			return nil, false
+		}
+	}
+	return integ, !offered || integ != nil
+}
 
 // kexChoice is the key exchange transforms an answer takes from the proposal it answers
 type kexChoice struct {
@@ -426,10 +436,10 @@ func (c kexChoice) entry() kexEntry {
 // offers are the transforms of each proposal the lists meet in every other type, in the offer's order
 // the entry is the first of entries any of them takes, and the first of them taking it is answered
 // a KE payload in another group than that entry's gets the group to ask for in INVALID_KE_PAYLOAD instead
-// a Child SA's proposal offering NONE or no group is answered without one ahead of every entry while the KE payload is absent and behind every entry while it is present
+// groupOptional holds for a Child SA's proposal, which may leave out a group or offer NONE, and such a proposal is answered without one ahead of every entry while the KE payload is absent and behind every entry while it is present
 // RFC 7296 section 1.3: "If the responder selects a proposal using a different Diffie-Hellman group (other than NONE), the responder MUST reject the request and indicate its preferred Diffie-Hellman group in the INVALID_KE_PAYLOAD Notify payload."
 // RFC 7296 section 3.3.6: "Responders MUST select a single complete set of parameters from the offers (or reject all offers if none are acceptable)."
-func chooseKex(offers [][]Transform, entries []kexEntry, keGroup uint16, rule groupRule) (int, kexChoice, uint16, bool) {
+func chooseKex(offers [][]Transform, entries []kexEntry, keGroup uint16, groupOptional bool) (int, kexChoice, uint16, bool) {
 	withoutGroup := func() (int, kexChoice, bool) {
 		for i, transforms := range offers {
 			var offersGroup, offersNone bool
@@ -450,7 +460,7 @@ func chooseKex(offers [][]Transform, entries []kexEntry, keGroup uint16, rule gr
 		}
 		return 0, kexChoice{}, false
 	}
-	if rule == groupOptional && keGroup == 0 {
+	if groupOptional && keGroup == 0 {
 		if i, choice, ok := withoutGroup(); ok {
 			return i, choice, 0, true
 		}
@@ -471,7 +481,7 @@ func chooseKex(offers [][]Transform, entries []kexEntry, keGroup uint16, rule gr
 			return i, kexChoice{dh: group, additions: additions}, 0, true
 		}
 	}
-	if rule == groupOptional {
+	if groupOptional {
 		if i, choice, ok := withoutGroup(); ok {
 			return i, choice, 0, true
 		}
