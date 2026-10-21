@@ -126,7 +126,7 @@ to = ["example/gateway:0"]
 # prefix. An exit node adds { prefix = "::/0", from = "2001:db8:1::/48" } to
 # the list beside its own address, while an ordinary node announces its own address
 # and nothing else, as this file does.
-announce = ["10.66.0.5/32"]
+announce = ["203.0.113.10/32"]
 
 # Whether this node relays the routes it learns. A node that does carries other
 # nodes' packets in plaintext, each decrypted from one session and sealed again
@@ -179,8 +179,8 @@ update = "16s"
 # id = 200
 # proto = 155
 # metric = 64                      # BIRD's kbabel uses 32, so not 32 beside it
-# prefsrc4 = "10.66.0.5"           # linux only, refused on darwin
-# addresses = ["10.66.0.5/32"]     # assigned to the device, removed at exit
+# prefsrc4 = "203.0.113.10"        # linux only, refused on darwin
+# addresses = ["203.0.113.10/32"]  # assigned to the device, removed at exit
 # assign_announced = false         # also assign what cap.route announces
 # reconcile = "30s"
 # capture_grace = "10s"            # how long an announced default outlives the last live session, 1s floor
@@ -212,7 +212,7 @@ update = "16s"
 # table = 200
 # priority = 100
 # [[cap.table.rules]]
-# from = "10.66.0.5/32"
+# from = "203.0.113.10/32"
 # table = 200
 # priority = 150
 #
@@ -370,4 +370,4 @@ update = "16s"
 # well, and a prefix cap.egress advertises, a default aside, may not overlap
 # overlay. linux only, refused by name elsewhere.
 # [cap.border]
-# overlay = ["3fff::/20", "10.66.0.0/16", "203.0.113.0/24"]
+# overlay = ["3fff::/20", "203.0.113.0/24"]

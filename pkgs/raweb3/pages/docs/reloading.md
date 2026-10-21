@@ -342,7 +342,7 @@ refused as a startup would be. That refusal names the key `egress.source4` or
 `cap.egress.source6`. A reload that moves only addresses the pick does not
 consider is applied: any of them under a written source, one of a family the
 node does not advertise, a link-local one, or one assigned under a prefix
-shorter than a host prefix, `10.66.0.7/24` for instance.
+shorter than a host prefix, `203.0.113.7/24` for instance.
 
 The rekey and replay settings are captured by a session when it is created.
 Applying them to new sessions alone would run 2 policies at once, so a change to

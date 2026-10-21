@@ -97,7 +97,7 @@ endpoints = [{ serial = "0", family = "ip4" }]
 to = ["example/gateway:0"]
 
 [cap.route]
-announce = ["10.66.0.5/32"]       # this node's own mesh address
+announce = ["203.0.113.10/32"]    # this node's own mesh address
 ```
 
 These keys are required:

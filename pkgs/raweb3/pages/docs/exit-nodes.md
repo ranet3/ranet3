@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-10-20
+updated: 2026-10-21
 order: 50
 ---
 
@@ -115,19 +115,19 @@ that selects on this node's own source does not match a reply.
 Without the `to` rule, the outbound half works and the translation counter
 moves. No reply reaches the mesh, so the exit looks like one that answers
 nothing rather than like a missing rule. This example sends replies for
-`10.99.0.0/24` and `fd00:99::/64` to the mesh table:
+`203.0.113.0/25` and `3fff:a::/64` to the mesh table:
 
 ```toml
 [cap.table]
 id = 200
 
 [[cap.table.rules]]
-to = "10.99.0.0/24"
+to = "203.0.113.0/25"
 table = 200
 priority = 100
 
 [[cap.table.rules]]
-to = "fd00:99::/64"
+to = "3fff:a::/64"
 table = 200
 priority = 100
 ```
@@ -196,8 +196,8 @@ identity as its comment, which `nft list ruleset` shows:
 - `out via ranet3 ipv6 source 2001:db8::1`
 - `out via ranet3e not ranet3 ipv4 masquerade`, the rule keyed on the egress
   device
-- `in via ranet3 ipv4 from 192.168.1.0/24 source 10.66.0.5`
-- `in via ranet3 not ranet3e ipv4 from 192.168.1.0/24 source 10.66.0.5`, the
+- `in via ranet3 ipv4 from 198.51.100.0/24 source 203.0.113.10`
+- `in via ranet3 not ranet3e ipv4 from 198.51.100.0/24 source 203.0.113.10`, the
   same rule on a node with an egress device
 
 An in rule carries `from` unless its prefix covers every address. A nat chain is
@@ -229,13 +229,13 @@ uses it:
 advertise = []
 
 [cap.border]
-overlay = ["10.99.0.0/16", "fd00:99::/32"]
+overlay = ["203.0.113.0/24", "3fff:a::/36"]
 
 [[cap.segment.local]]
 sid = "2001:db8:0:6::3"
 behavior = "End.DT46"
 deliver = "egress"
-allow = ["10.99.0.0/24", "fd00:99::/64"]
+allow = ["203.0.113.0/25", "3fff:a::/64"]
 ```
 
 An egress segment needs [the border filter](border-filter.md), and its `allow`

@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-10-20
+updated: 2026-10-21
 order: 60
 ---
 
@@ -80,7 +80,7 @@ needs in `cap.table` and when the exit is ready.
 sid = "2001:db8:0:6::3"
 behavior = "End.DT46"
 deliver = "egress"
-allow = ["10.99.0.0/24", "fd00:99::/64"]
+allow = ["203.0.113.0/25", "3fff:a::/64"]
 ```
 
 `allow` is required with `deliver = "egress"` and refused with anything else. A
