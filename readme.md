@@ -43,9 +43,7 @@ Each version converts to
 [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) two years after its
 original publication date.
 
-The codebase began as a fork of
-[NickCao/ranet-lite](https://github.com/NickCao/ranet-lite) and
-[NickCao/ranet](https://github.com/NickCao/ranet), and the portions derived
+The codebase began as a fork of ranet-lite and ranet, and the portions derived
 from them remain under the [MIT](licenses/MIT.txt) license.
 
 [`pkgs/wireguard`](pkgs/wireguard) holds a copy of
