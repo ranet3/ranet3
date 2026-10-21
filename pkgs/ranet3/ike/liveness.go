@@ -510,7 +510,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			return ending
 		}
 		// the sweeps and the lifetime and retirement deadlines of a pass take this one reading, so a lifetime a sweep did not reach is one the wait below is offered
-		// the liveness and retry deadlines and the IKE SA's expiry read the clock themselves, where a stale reading would do no harm
+		// every other reading in the pass, of the liveness, retry, rekey and request deadlines, the TEMPORARY_FAILURE streak and the IKE SA's expiry, is the clock's own, where a stale reading would do no harm
 		now := time.Now()
 		if s.clock != nil {
 			now = s.clock()
