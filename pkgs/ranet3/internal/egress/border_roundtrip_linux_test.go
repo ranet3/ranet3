@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
 // What nf_tables takes of the border chain and hands back, against a real
@@ -34,7 +36,7 @@ func TestBorderRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the border backend: %v", err)
 	}
-	conn, err := dialNetfilter()
+	conn, err := nftables.Dial()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,13 +77,13 @@ func TestBorderRoundTrip(t *testing.T) {
 	case <-time.After(quietFor):
 	}
 
-	replies, err := conn.dump(nftCommand(unix.NFT_MSG_GETCHAIN), putNfgenmsg(nil, unix.NFPROTO_INET))
+	replies, err := conn.Dump(nftables.Command(unix.NFT_MSG_GETCHAIN), nftables.PutNfgenmsg(nil, unix.NFPROTO_INET))
 	if err != nil {
 		t.Fatal(err)
 	}
 	chains := 0
 	for _, reply := range replies {
-		table, chain, kind, hook, priority := decodeChain(reply)
+		table, chain, kind, hook, priority := nftables.DecodeChain(reply)
 		if table != TableName {
 			continue
 		}
@@ -127,21 +129,21 @@ func TestBorderRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- f.Run(ctx) }()
-	another, err := dialNetfilter()
+	another, err := nftables.Dial()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = another.Close() })
 	for _, change := range []struct {
 		name    string
-		request nftRequest
+		request nftables.Request
 	}{
-		{"deleted the table", tableRequest(unix.NFT_MSG_DELTABLE, 0, unix.NFPROTO_INET)},
+		{"deleted the table", nftables.DeleteTable(unix.NFPROTO_INET, TableName)},
 		{"inserted an accept at the head of the chain", anotherWritersAccept(unix.NFPROTO_INET, BorderChain)},
 		{"set the table dormant", dormantTable(unix.NFPROTO_INET)},
 	} {
 		mark := len(fake.entries())
-		if err := another.batch([]nftRequest{change.request}); err != nil {
+		if err := another.Batch([]nftables.Request{change.request}); err != nil {
 			t.Fatalf("another writer %s: %v", change.name, err)
 		}
 		for deadline := time.Now().Add(notificationWait); ; time.Sleep(passPoll) {
@@ -177,9 +179,9 @@ func TestBorderRoundTrip(t *testing.T) {
 }
 
 // inetTables counts the inet tables of this tool's name
-func inetTables(t *testing.T, conn *nftConn) int {
+func inetTables(t *testing.T, conn *nftables.Conn) int {
 	t.Helper()
-	tables, err := ownTables(conn)
+	tables, err := nftables.Tables(conn, TableName)
 	if err != nil {
 		t.Fatalf("list inet tables: %v", err)
 	}

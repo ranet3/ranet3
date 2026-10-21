@@ -15,7 +15,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"golang.org/x/sys/unix"
+	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
 var update = flag.Bool("update", false, "rewrite testdata/messages.golden from what the translator and the border build now")
@@ -49,14 +49,14 @@ func everyTranslation() []Rule {
 // holds
 func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 	var out bytes.Buffer
-	write := func(name string, requests []nftRequest, err error) {
+	write := func(name string, requests []nftables.Request, err error) {
 		t.Helper()
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		fmt.Fprintf(&out, "%s\n", name)
 		for _, request := range requests {
-			fmt.Fprintf(&out, "  kind %#06x flags %#06x body %x\n", request.kind, request.flags, request.body)
+			fmt.Fprintf(&out, "  kind %#06x flags %#06x body %x\n", request.Kind, request.Flags, request.Body)
 		}
 	}
 	both, rules := []uint8{FamilyIPv4, FamilyIPv6}, everyTranslation()
@@ -68,7 +68,7 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 	write("translator remaking ipv6 alone", requests, err)
 	requests, err = translatorBatch([]uint8{FamilyIPv4}, nil, nil)
 	write("translator in ipv4 with no rule", requests, err)
-	write("translator withdrawal", []nftRequest{delTable(FamilyIPv4), delTable(FamilyIPv6)}, nil)
+	write("translator withdrawal", []nftables.Request{delTable(FamilyIPv4), delTable(FamilyIPv6)}, nil)
 
 	rt := BorderRuntime{Inside: []string{"ranet3", "lo"}, SIDs: []netip.Addr{netip.MustParseAddr("2001:db8:a::1")}}
 	desired := newBorderFilter(overlay(t, "192.0.2.0/24", "2001:db8:1::7/128"), rt, &fakeBorder{}).desired()
@@ -78,7 +78,7 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 	write("border remaking its table", requests, err)
 	requests, err = borderBatch(nil, false)
 	write("border with no rule", requests, err)
-	write("border withdrawal", []nftRequest{tableRequest(unix.NFT_MSG_DELTABLE, 0, unix.NFPROTO_INET)}, nil)
+	write("border withdrawal", []nftables.Request{delBorderTable()}, nil)
 
 	path := filepath.Join("testdata", "messages.golden")
 	if *update {

@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -41,17 +42,17 @@ type chainRun struct {
 // runChain evaluates the encoded rules in order against packet, as
 // nf_tables does: the first rule to reach a verdict decides, and a packet no
 // rule decides meets the chain's accept policy
-func runChain(t testing.TB, rules []nftRequest, packet borderPacket) chainRun {
+func runChain(t testing.TB, rules []nftables.Request, packet borderPacket) chainRun {
 	t.Helper()
 	for i, rule := range rules {
-		code, counted, decided := runRule(t, rule.body, packet)
+		code, counted, decided := runRule(t, rule.Body, packet)
 		if !decided {
 			continue
 		}
-		if code != chainAccept && code != verdictDrop {
+		if code != nftables.Accept && code != verdictDrop {
 			t.Fatalf("rule %d ends with verdict %d, neither accept nor drop", i, code)
 		}
-		return chainRun{rule: i, accept: code == chainAccept, counted: counted}
+		return chainRun{rule: i, accept: code == nftables.Accept, counted: counted}
 	}
 	return chainRun{rule: -1, accept: true}
 }
@@ -63,20 +64,20 @@ func runChain(t testing.TB, rules []nftRequest, packet borderPacket) chainRun {
 func runRule(t testing.TB, body []byte, packet borderPacket) (code uint32, counted, decided bool) {
 	t.Helper()
 	var register []byte
-	for kind, value := range (nftMessage{Data: body}).attributes(sizeofNfgenmsg) {
+	for kind, value := range (nftables.Message{Data: body}).Attributes() {
 		if kind != unix.NFTA_RULE_EXPRESSIONS {
 			continue
 		}
-		for _, element := range nested(value) {
+		for _, element := range nftables.Nested(value) {
 			var name string
 			fields := map[uint16][]byte{}
-			for _, field := range nested(element.value) {
-				switch field.kind {
+			for _, field := range nftables.Nested(element.Value) {
+				switch field.Kind {
 				case unix.NFTA_EXPR_NAME:
-					name = unix.ByteSliceToString(field.value)
+					name = unix.ByteSliceToString(field.Value)
 				case unix.NFTA_EXPR_DATA:
-					for _, inner := range nested(field.value) {
-						fields[inner.kind] = inner.value
+					for _, inner := range nftables.Nested(field.Value) {
+						fields[inner.Kind] = inner.Value
 					}
 				}
 			}
@@ -90,7 +91,7 @@ func runRule(t testing.TB, body []byte, packet borderPacket) (code uint32, count
 				requireRegister(t, name, fields, unix.NFTA_META_DREG)
 				switch be32(t, fields[unix.NFTA_META_KEY]) {
 				case unix.NFT_META_IIFNAME:
-					register = make([]byte, ifNameSize)
+					register = make([]byte, unix.IFNAMSIZ)
 					copy(register, packet.iif)
 				case unix.NFT_META_NFPROTO:
 					register = []byte{packet.nfproto}
@@ -168,13 +169,13 @@ func runRule(t testing.TB, body []byte, packet borderPacket) (code uint32, count
 				if be32(t, fields[unix.NFTA_IMMEDIATE_DREG]) != unix.NFT_REG_VERDICT {
 					t.Fatalf("immediate loads register %d rather than the verdict", be32(t, fields[unix.NFTA_IMMEDIATE_DREG]))
 				}
-				for _, data := range nested(fields[unix.NFTA_IMMEDIATE_DATA]) {
-					if data.kind != unix.NFTA_DATA_VERDICT {
+				for _, data := range nftables.Nested(fields[unix.NFTA_IMMEDIATE_DATA]) {
+					if data.Kind != unix.NFTA_DATA_VERDICT {
 						continue
 					}
-					for _, field := range nested(data.value) {
-						if field.kind == unix.NFTA_VERDICT_CODE {
-							return be32(t, field.value), counted, true
+					for _, field := range nftables.Nested(data.Value) {
+						if field.Kind == unix.NFTA_VERDICT_CODE {
+							return be32(t, field.Value), counted, true
 						}
 					}
 				}
@@ -217,9 +218,9 @@ func be32(t testing.TB, value []byte) uint32 {
 
 // dataValue is the bytes of an NFTA_DATA_VALUE nested in an attribute
 func dataValue(attribute []byte) []byte {
-	for _, inner := range nested(attribute) {
-		if inner.kind == unix.NFTA_DATA_VALUE {
-			return inner.value
+	for _, inner := range nftables.Nested(attribute) {
+		if inner.Kind == unix.NFTA_DATA_VALUE {
+			return inner.Value
 		}
 	}
 	return nil
@@ -407,7 +408,7 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		inside := []string{"ranet3"}
 		for range hegel.Draw(ht, pbt.Spanning(0, 3)) {
-			size := hegel.Draw(ht, pbt.Spanning(1, ifNameSize))
+			size := hegel.Draw(ht, pbt.Spanning(1, unix.IFNAMSIZ))
 			inside = append(inside, hegel.Draw(ht, hegel.Text().Alphabet("ranet3").MinSize(size).MaxSize(size)))
 		}
 		cfg := Border{Overlay: hegel.Draw(ht, overlayPrefixes())}
@@ -420,7 +421,7 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 		}
 		desired := newBorderFilter(cfg, BorderRuntime{Inside: inside, SIDs: sids}, &fakeBorder{}).desired()
 		requests, err := borderBatch(desired, false)
-		refused := slices.ContainsFunc(inside, func(name string) bool { return len(name) >= ifNameSize })
+		refused := slices.ContainsFunc(inside, func(name string) bool { return len(name) >= unix.IFNAMSIZ })
 		if refused != (err != nil) {
 			ht.Fatalf("the chain over inside %q encoded with %v, want refused %v", inside, err, refused)
 		}
@@ -481,7 +482,7 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 		arrivals := []string{"eth0", "ranet3a1b2"}
 		for _, name := range inside {
 			arrivals = append(arrivals, name, name[:len(name)-1])
-			if len(name) < ifNameSize-1 {
+			if len(name) < unix.IFNAMSIZ-1 {
 				arrivals = append(arrivals, name+"a")
 			}
 		}

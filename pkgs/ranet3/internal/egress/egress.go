@@ -415,19 +415,13 @@ type Installed struct {
 	Bytes   uint64
 }
 
-// chainReadback is the chain one owner writes, and the table of this tool's
-// name holding it in one nf_tables family, as a listing finds them
+// chainReadback is nftables.Readback with each rule placed in its family. It
+// lives here rather than there because this file builds on every platform.
 type chainReadback struct {
 	// rules is every rule of the chain in order, one carrying no comment as an
 	// empty spec, which no rule this package writes has
-	rules []Installed
-	// fault names how the table or the chain differs from what Apply writes,
-	// empty where neither does
-	fault string
-	// remake holds where the table or the chain differs in what nf_tables
-	// will not change in place, a table flag other than dormant, or the
-	// chain's type, hook or priority or a hook at all, so Apply deletes the
-	// table and makes it again in its one transaction
+	rules  []Installed
+	fault  string
 	remake bool
 }
 

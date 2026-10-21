@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
@@ -38,27 +39,27 @@ func interfaceTests(body []byte) []interfaceTest {
 	var out []interfaceTest
 	var key uint32
 	meta := false
-	for kind, value := range (nftMessage{Data: body}).attributes(sizeofNfgenmsg) {
+	for kind, value := range (nftables.Message{Data: body}).Attributes() {
 		if kind != unix.NFTA_RULE_EXPRESSIONS {
 			continue
 		}
-		for _, element := range nested(value) {
+		for _, element := range nftables.Nested(value) {
 			var name string
 			var data []byte
-			for _, field := range nested(element.value) {
-				switch field.kind {
+			for _, field := range nftables.Nested(element.Value) {
+				switch field.Kind {
 				case unix.NFTA_EXPR_NAME:
-					name = unix.ByteSliceToString(field.value)
+					name = unix.ByteSliceToString(field.Value)
 				case unix.NFTA_EXPR_DATA:
-					data = field.value
+					data = field.Value
 				}
 			}
 			switch name {
 			case "meta":
 				meta = false
-				for _, field := range nested(data) {
-					if field.kind == unix.NFTA_META_KEY && len(field.value) == 4 {
-						key, meta = binary.BigEndian.Uint32(field.value), true
+				for _, field := range nftables.Nested(data) {
+					if field.Kind == unix.NFTA_META_KEY && len(field.Value) == 4 {
+						key, meta = binary.BigEndian.Uint32(field.Value), true
 					}
 				}
 			case "cmp":
@@ -66,14 +67,14 @@ func interfaceTests(body []byte) []interfaceTest {
 					continue
 				}
 				test := interfaceTest{key: key}
-				for _, field := range nested(data) {
-					switch field.kind {
+				for _, field := range nftables.Nested(data) {
+					switch field.Kind {
 					case unix.NFTA_CMP_OP:
-						test.op = binary.BigEndian.Uint32(field.value)
+						test.op = binary.BigEndian.Uint32(field.Value)
 					case unix.NFTA_CMP_DATA:
-						for _, inner := range nested(field.value) {
-							if inner.kind == unix.NFTA_DATA_VALUE {
-								test.value = inner.value
+						for _, inner := range nftables.Nested(field.Value) {
+							if inner.Kind == unix.NFTA_DATA_VALUE {
+								test.value = inner.Value
 							}
 						}
 					}
@@ -92,7 +93,7 @@ func interfaceTests(body []byte) []interfaceTest {
 // a packet this host sent, and cmp compares the leading bytes of the register
 // its value covers.
 func (test interfaceTest) holds(packet crossing) bool {
-	register := make([]byte, ifNameSize)
+	register := make([]byte, unix.IFNAMSIZ)
 	switch test.key {
 	case unix.NFT_META_IIFNAME:
 		copy(register, packet.arrival)
@@ -145,7 +146,7 @@ func meant(rule Rule, packet crossing) bool {
 // share a prefix.
 func deviceNames() hegel.Generator[string] {
 	return hegel.Composite(func(tc hegel.TestCase) string {
-		size := hegel.Draw(tc, pbt.Spanning(1, ifNameSize))
+		size := hegel.Draw(tc, pbt.Spanning(1, unix.IFNAMSIZ))
 		return hegel.Draw(tc, hegel.Text().Alphabet("ran0e").MinSize(size).MaxSize(size))
 	})
 }
@@ -176,14 +177,14 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 		}
 
 		request, err := newRule(rule)
-		refused := len(rule.Interface) >= ifNameSize || len(rule.Egress) >= ifNameSize
+		refused := len(rule.Interface) >= unix.IFNAMSIZ || len(rule.Egress) >= unix.IFNAMSIZ
 		if refused != (err != nil) {
 			ht.Fatalf("%s encoded with %v, want refused %v", rule, err, refused)
 		}
 		if refused {
 			return
 		}
-		tests := interfaceTests(request.body)
+		tests := interfaceTests(request.Body)
 		devices := []string{rule.Interface, rule.Interface + "1", "eth0"}
 		if rule.Egress != "" {
 			devices = append(devices, rule.Egress, rule.Egress+"1")
