@@ -344,7 +344,7 @@ func (rt *routeTable) lose(key routeKey, now time.Time) bool {
 
 // noteAdvertised records a finite update for key built at now. The time only
 // ever moves later. A neighbor that receives a later update resets its expiry
-// timer to that update's interval (RFC 8966 section 3.5.3), but an update is
+// timer from that update's interval (RFC 8966 section 3.5.3), but an update is
 // sent once and never acknowledged, so a neighbor that missed a later one
 // under a shorter interval still counts toward the expiry of the one before,
 // which can fall after the later one's.

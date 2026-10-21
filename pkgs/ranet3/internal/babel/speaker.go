@@ -183,8 +183,8 @@ type Speaker struct {
 	neighbors map[string]*neighborState
 	originate map[routeKey]struct{}
 	// assigned is the host key of every address cap.table assigns this node,
-	// each held as this node's own as an originated key is, and announced only
-	// if it is originated too.
+	// each this node's own as an originated key is, and announced only if it
+	// is originated too.
 	assigned     map[routeKey]struct{}
 	routes       *routeTable
 	pendingSeqno map[sourceKey]pendingSeqno
@@ -532,8 +532,8 @@ func (s *Speaker) adoptOwnLocked(key routeKey) {
 // the key is held. A key given back loses its last route, and the route table
 // holds it until the latest time any finite update this node sent for it
 // expires at a neighbor, however long ago it stopped being announced. A key
-// still held the other way keeps an entry of this node's, the one
-// ownEntryLocked names for it now.
+// this node still holds as its own the other way keeps an entry of this
+// node's, the one ownEntryLocked names for it now.
 func (s *Speaker) releaseOwnLocked(key routeKey, now time.Time) bool {
 	if !s.ownsLocked(key) {
 		return s.routes.lose(key, now)
@@ -601,11 +601,11 @@ func (s *Speaker) SetOriginated(routes []OriginatedRoute) {
 	s.replaceOwnLocked("originated", previous, wanted)
 }
 
-// SetAssigned replaces the addresses cap.table assigns this node. Each is held
-// at its host route as this node's own, and announced only if it is originated
-// too. A route request for one that is not is answered as RFC 8966 section
-// 3.8.1.1 has a node answer one for a prefix it has no selected route to: "if
-// such a route does not exist, it MUST send a retraction for that prefix".
+// SetAssigned replaces the addresses cap.table assigns this node. Each is this
+// node's own at its host route, and announced only if it is originated too. A
+// route request for one that is not is answered as RFC 8966 section 3.8.1.1
+// has a node answer one for a prefix it has no selected route to: "if such a
+// route does not exist, it MUST send a retraction for that prefix".
 func (s *Speaker) SetAssigned(addresses []netip.Addr) {
 	wanted := make(map[routeKey]struct{}, len(addresses))
 	for _, address := range addresses {
@@ -1084,7 +1084,7 @@ type NeighborStat struct {
 type Stats struct {
 	Neighbors []NeighborStat
 	Selected  int
-	// Prefixes is every key this speaker holds, the ones RouteDump lists, so a
+	// Prefixes is every key this speaker knows, the ones RouteDump lists, so a
 	// node whose routes are all retracted can be told from one that has heard
 	// nothing at all.
 	Prefixes   int
@@ -1196,7 +1196,7 @@ type RouteStat struct {
 	Candidates int
 	Originated bool
 	// Assigned is the host route of an address cap.table assigns this node,
-	// held as its own and announced only where Originated says so too.
+	// this node's own and announced only where Originated says so too.
 	Assigned bool
 }
 
