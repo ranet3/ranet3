@@ -21,8 +21,10 @@ import (
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/renderer/html"
 	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 	"go.yaml.in/yaml/v3"
 
 	"ranet3.com/pkgs/raweb3/internal/pages"
@@ -69,7 +71,11 @@ type page struct {
 var markdown = goldmark.New(
 	goldmark.WithExtensions(extension.GFM),
 	goldmark.WithParserOptions(parser.WithAutoHeadingID()),
-	goldmark.WithRendererOptions(html.WithUnsafe()),
+	goldmark.WithRendererOptions(
+		html.WithUnsafe(),
+		// ahead of goldmark's own renderer at 1000
+		renderer.WithNodeRenderers(util.Prioritized(highlighter{}, 100)),
+	),
 )
 
 // loadPages reads and renders every page under dir. Every page is parsed

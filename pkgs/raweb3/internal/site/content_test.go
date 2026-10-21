@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alecthomas/chroma/v2"
 )
 
 func TestPagePathServesEveryPageAsADirectory(t *testing.T) {
@@ -89,6 +91,53 @@ func TestLoadPagesPointsLinksAtServedPaths(t *testing.T) {
 	}
 }
 
+func TestLoadPagesHighlightsCodeBlocks(t *testing.T) {
+	dir := writePages(t, map[string]string{
+		"index.md": landing + "```sh\n# a comment\ncd \"$HOME\" && go vet\n```\n\n```\n<plain> & \"text\"\n```\n",
+	})
+	ps, err := loadPages(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`<pre><code class="language-sh"><span class="c"># a comment</span>`,
+		`<span class="nf">cd</span>`,
+		`<span class="k">&amp;&amp;</span> go vet` + "\n</code></pre>",
+		"<pre><code>&lt;plain&gt; &amp; &quot;text&quot;\n</code></pre>",
+	} {
+		if !strings.Contains(ps[0].html, want) {
+			t.Errorf("renders without %s:\n%s", want, ps[0].html)
+		}
+	}
+}
+
+func TestTokenClassFollowsNordsSyntaxGuide(t *testing.T) {
+	for _, tc := range []struct {
+		kind  chroma.TokenType
+		value string
+		want  string
+	}{
+		{chroma.Text, "go", ""},
+		{chroma.Punctuation, "{", ""},
+		{chroma.Punctuation, ",", "k"},
+		{chroma.KeywordDeclaration, "let", "k"},
+		{chroma.KeywordType, "int", "kt"},
+		{chroma.NameBuiltin, "cd", "nf"},
+		{chroma.NameBuiltinPseudo, "self", "k"},
+		{chroma.CommentSingle, "# x", "c"},
+		{chroma.CommentPreproc, "#include", "cp"},
+		{chroma.LiteralStringDouble, `"x"`, "s"},
+		{chroma.LiteralStringEscape, `\n`, "se"},
+		{chroma.LiteralNumberInteger, "1", "m"},
+		{chroma.NameVariable, "$HOME", "nv"},
+		{chroma.Error, "?", "err"},
+	} {
+		if got := tokenClass(chroma.Token{Type: tc.kind, Value: tc.value}); got != tc.want {
+			t.Errorf("tokenClass(%v %q) = %q, want %q", tc.kind, tc.value, got, tc.want)
+		}
+	}
+}
+
 func TestLoadPagesRefusesBrokenSources(t *testing.T) {
 	for name, tc := range map[string]struct {
 		files map[string]string
@@ -117,6 +166,10 @@ func TestLoadPagesRefusesBrokenSources(t *testing.T) {
 		"unknown frontmatter field": {
 			map[string]string{"index.md": landing, "a.md": strings.Replace(front, "order", "weight", 1)},
 			"field weight not found",
+		},
+		"code block in a language chroma has no lexer for": {
+			map[string]string{"index.md": landing, "docs/a.md": front + "```tmol\nx = 1\n```\n"},
+			`code block language "tmol" has no lexer`,
 		},
 		"no front page": {
 			map[string]string{"a.md": front},
