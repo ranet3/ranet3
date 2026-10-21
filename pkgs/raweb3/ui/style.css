@@ -8,6 +8,14 @@
 @source "../internal/pages/*.templ";
 @source "../pages/**/*.md";
 
+/* the system fonts of each platform, as ysun sets them */
+@theme {
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, avenir next, avenir, segoe ui, helvetica
+    neue, Cantarell, Ubuntu, roboto, noto, helvetica, arial, sans-serif;
+  --font-mono: Menlo, Consolas, Monaco, Liberation Mono, Lucida Console, monospace;
+}
+
 @theme static {
   --color-nord-0: #2e3440;
   --color-nord-1: #3b4252;
