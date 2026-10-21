@@ -10,11 +10,13 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // Which sets of unscoped routes out of a tun cost a bound socket its route,
-// measured rather than assumed, because capturesTheMachine's second arm is
-// this table and nothing else.
+// measured rather than assumed, because schema.CapturesTheMachine's arm over
+// the unspecified address is this table and nothing else.
 //
 // The rule the kernel applies: a socket bound with IP_BOUND_IF loses
 // destination D exactly when the tun's unscoped routes best-match both D and
@@ -23,9 +25,8 @@ import (
 // be on the bound interface, so the size of the covering prefix is beside the
 // point: 0.0.0.0/24 takes the fallback away and 64.0.0.0/2 does not.
 //
-// It matters because a prefix length is the wrong predicate. Three ordinary
-// announcements, none of them half the address space, took this machine off
-// the network before the second arm existed.
+// A prefix length alone is the wrong predicate here, since 0.0.0.0/24 is
+// longer than either floor and strands a bound socket as a default does.
 func TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress(t *testing.T) {
 	requireNetTest(t)
 	mesh, _ := createUTUNWithFD(t)
@@ -105,7 +106,7 @@ func TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress(t *testing.T) {
 			// back restores the fallback.
 			held := false
 			for _, one := range test.set {
-				if capturesTheMachine(Route{Destination: prefix(one)}) {
+				if schema.CapturesTheMachine(prefix(one), nil) {
 					held = true
 				}
 			}

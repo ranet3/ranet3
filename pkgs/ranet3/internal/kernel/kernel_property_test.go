@@ -538,7 +538,7 @@ func TestReloadConvergesOnWhatAFreshReconcilerHolds(t *testing.T) {
 				}
 			}
 			before, running := heldBy(kernel), r.Table()
-			err := r.SetTable(next, announced)
+			err := r.SetTable(next, nil, announced)
 			keeps := next.Normalized().ID == first.Normalized().ID && next.Normalized().Proto == first.Normalized().Proto &&
 				reflect.DeepEqual(next.VRF, first.VRF)
 			takes := keeps && next.Validate() == nil && meaningfulHere(next)

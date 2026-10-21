@@ -41,12 +41,14 @@ import (
 // reconcilerStandIn is the reconciler a reload hands cap.table to, answering with refusal
 type reconcilerStandIn struct {
 	tables    []kernel.Table
+	overlays  [][]schema.Prefix
 	announced [][]netip.Prefix
 	refusal   error
 }
 
-func (s *reconcilerStandIn) setTable(t kernel.Table, announced []netip.Prefix) error {
+func (s *reconcilerStandIn) setTable(t kernel.Table, overlay []schema.Prefix, announced []netip.Prefix) error {
 	s.tables = append(s.tables, t)
+	s.overlays = append(s.overlays, overlay)
 	s.announced = append(s.announced, announced)
 	return s.refusal
 }
@@ -151,6 +153,92 @@ func TestReloadHandsAChangedTableToTheReconciler(t *testing.T) {
 	}
 	if attrs := lastReload(t, bus); attrs["applied"] != "" || attrs["err"] != "" {
 		t.Errorf("a reload that changed nothing was recorded as %v", attrs)
+	}
+}
+
+// a reload moving cap.border's overlay alone hands the reconciler the table it runs with the new overlay, which decides what counts as a default
+func TestReloadHandsTheReconcilerAMovedOverlay(t *testing.T) {
+	c, path, reconciler, _ := reloadOf(t, func(old *config.Config) {
+		old.Cap.Table = &kernel.Table{}
+		old.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20")}}
+	})
+	segmentsOf(t, c)
+	next := *c.config()
+	moved := []schema.Prefix{schema.MustPrefix("3ff0::/12")}
+	next.Cap.Border = &egress.Border{Overlay: moved}
+	writeConfig(t, path, &next)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("the reload was refused: %v", err)
+	}
+	if len(reconciler.overlays) != 1 || !slices.Equal(reconciler.overlays[0], moved) {
+		t.Errorf("the reconciler was handed the overlays %v, want %v once", reconciler.overlays, moved)
+	}
+}
+
+// the reconciler a node starts is handed cap.border's overlay, which decides what counts as a default
+func TestKernelRuntimeCarriesTheOverlay(t *testing.T) {
+	overlay := []schema.Prefix{schema.MustPrefix("3fff::/20")}
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) { cfg.Cap.Border = &egress.Border{Overlay: overlay} })
+	c.Mesh = netstack.NewRoutesOnly()
+	if got := c.KernelRuntime().Overlay; !slices.Equal(got, overlay) {
+		t.Errorf("the reconciler's runtime carries the overlay %v, want %v", got, overlay)
+	}
+}
+
+// a node with cap.border and no cap.table runs no reconciler, and a reload moving its overlay alone applies with nothing to hand over
+func TestReloadMovesTheOverlayOfANodeWithNoTable(t *testing.T) {
+	c, path, reconciler, _ := reloadOf(t, func(old *config.Config) {
+		old.Cap.Table = nil
+		old.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20")}}
+	})
+	segmentsOf(t, c)
+	c.reconcilerTable.Store(nil)
+	next := *c.config()
+	moved := []schema.Prefix{schema.MustPrefix("3ff0::/12")}
+	next.Cap.Border = &egress.Border{Overlay: moved}
+	writeConfig(t, path, &next)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("a moved overlay on a node without cap.table was refused: %v", err)
+	}
+	if got := c.config().Overlay(); !slices.Equal(got, moved) {
+		t.Errorf("the node runs the overlay %v, want %v", got, moved)
+	}
+	if len(reconciler.tables) != 0 {
+		t.Errorf("the reconciler was handed %d tables", len(reconciler.tables))
+	}
+}
+
+// a reload moving the overlay alone before main hands the reconciler over is refused naming the overlay, since the reconciler being built reads the one it started with
+func TestReloadMovingTheOverlayBeforeTheReconcilerIsHandedOverNamesIt(t *testing.T) {
+	c, path, _, _ := reloadOf(t, func(old *config.Config) {
+		old.Cap.Table = &kernel.Table{}
+		old.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20")}}
+	})
+	segmentsOf(t, c)
+	c.reconcilerTable.Store(nil)
+	next := *c.config()
+	next.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3ff0::/12")}}
+	writeConfig(t, path, &next)
+	err := c.ReloadFrom(path)
+	if err == nil || !strings.Contains(err.Error(), "cap.border overlay changed and no reconciler is running") {
+		t.Errorf("the reload was refused with %v, want it to name the overlay", err)
+	}
+}
+
+// a reload moving cap.table before main hands the reconciler over is refused naming cap.table, even with the overlay unchanged
+func TestReloadMovingTheTableBeforeTheReconcilerIsHandedOverNamesIt(t *testing.T) {
+	c, path, _, _ := reloadOf(t, func(old *config.Config) {
+		old.Cap.Table = &kernel.Table{}
+		old.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20")}}
+	})
+	segmentsOf(t, c)
+	c.reconcilerTable.Store(nil)
+	next := *c.config()
+	next.Cap.Table = &kernel.Table{Metric: 64}
+	writeConfig(t, path, &next)
+	err := c.ReloadFrom(path)
+	if err == nil || !strings.Contains(err.Error(), "cap.table changed and no reconciler is running") {
+		t.Errorf("the reload was refused with %v, want it to name cap.table", err)
 	}
 }
 
@@ -264,7 +352,7 @@ func TestOverlappingReloadsLeaveTheReconcilerOnTheStoredTable(t *testing.T) {
 	var running kernel.Table
 	calls := 0
 	entered, release := make(chan struct{}), make(chan struct{})
-	c.SetReconcilerTable(func(table kernel.Table, _ []netip.Prefix) error {
+	c.SetReconcilerTable(func(table kernel.Table, _ []schema.Prefix, _ []netip.Prefix) error {
 		mu.Lock()
 		running, calls = table, calls+1
 		hold := calls == 1

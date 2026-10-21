@@ -15,6 +15,7 @@ import (
 	"hegel.dev/go/hegel"
 
 	"ranet3.com/pkgs/ranet3/internal/pbt"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // coverCase is one table: the routes beside the defaults, which of them the
@@ -126,7 +127,7 @@ func TestCoverForwardsAsThePlainDefaultDoes(t *testing.T) {
 			if r.Destination.Bits() == 0 && plainDefault(r) {
 				ht.Fatalf("a plain default %s is still in the kernel's table", r.Destination)
 			}
-			if r.Cover && r.Destination.Contains(unspecifiedOf(r.Destination.Addr())) {
+			if r.Cover && schema.HoldsUnspecified(r.Destination) {
 				ht.Fatalf("member %s holds its family's zero address", r.Destination)
 			}
 		}

@@ -53,7 +53,7 @@ func TestPlainDefaultBecomesItsZeroFreeCover(t *testing.T) {
 		if !r.Cover {
 			t.Errorf("%s is not marked a cover member", r.Destination)
 		}
-		if r.Destination.Contains(unspecifiedOf(r.Destination.Addr())) {
+		if schema.HoldsUnspecified(r.Destination) {
 			t.Errorf("%s holds its family's zero address", r.Destination)
 		}
 		if r.Destination.Addr().Is4() && (r.Metric != 7 || r.PrefSrc != src) {
@@ -955,11 +955,11 @@ func TestScopedRouteWithholdsNoMember(t *testing.T) {
 	}
 }
 
-// A capture the platform scopes takes none of the machine's unscoped lookups,
-// so it asks the underlay for nothing and goes in with the underlay
-// uncovered: the hold Babel keeps at a retracted default, and a default from
-// a source.
-func TestScopedCaptureAsksTheUnderlayForNothing(t *testing.T) {
+// A capture the platform scopes takes none of the machine's unscoped lookups:
+// a default from a source asks the underlay for nothing and goes in with the
+// underlay uncovered. The hold Babel keeps at a retracted default stays out of
+// the kernel, scoped or not.
+func TestScopedCaptureAsksTheUnderlayForNothingAndAHeldDefaultStaysOut(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
 	reconciler.plat = scopingCoveringKernel{fake}
 	capture := &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
@@ -973,12 +973,8 @@ func TestScopedCaptureAsksTheUnderlayForNothing(t *testing.T) {
 	if slices.ContainsFunc(capture.wants, func(want Covered) bool { return want != (Covered{}) }) {
 		t.Errorf("a scoped capture asked the underlay to cover %v", capture.wants)
 	}
-	for _, route := range []Route{
-		{Destination: prefix("0.0.0.0/0"), Unreachable: true, Metric: holdMetric},
-		{Destination: prefix("::/0"), Source: prefix("2001:db8:bb::/48"), Metric: defaultIPv6Metric},
-	} {
-		if !fake.has(route) {
-			t.Errorf("%+v was held back with the underlay uncovered: %v", route, fake.snapshot())
-		}
+	sourced := Route{Destination: prefix("::/0"), Source: prefix("2001:db8:bb::/48"), Metric: defaultIPv6Metric}
+	if got := fake.snapshot(); !slices.Equal(got, []Route{sourced}) {
+		t.Errorf("installed %v, want only %+v", got, sourced)
 	}
 }

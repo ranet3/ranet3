@@ -141,40 +141,6 @@ func TestCaptureGateAsksToBeWokenOnlyWhileTheGraceRuns(t *testing.T) {
 	}
 }
 
-// The predicate's two arms, each stated as what it is for. The second is the
-// one a prefix length misses: 0.0.0.0/24 is a quarter of a thousandth of the
-// space and costs a bound socket every destination the tun also covers,
-// because the kernel's fallback is a lookup of the family's zero address.
-// TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress is the measurement.
-func TestCapturesTheMachineCoversEverySpellingOfADefault(t *testing.T) {
-	for name, destinations := range map[string][]string{
-		"half the address space or more": {"0.0.0.0/0", "::/0", "0.0.0.0/1", "::/1", "128.0.0.0/1", "8000::/1"},
-		"any prefix over the zero address": {
-			"0.0.0.0/2", "0.0.0.0/8", "0.0.0.0/24", "0.0.0.0/32",
-			"::/2", "::/64", "::/128",
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			for _, destination := range destinations {
-				if !capturesTheMachine(Route{Destination: prefix(destination)}) {
-					t.Errorf("%s does not read as carrying this machine's own traffic", destination)
-				}
-			}
-		})
-	}
-	// a prefix over neither half of the space nor the zero address is an ordinary mesh route
-	for _, destination := range []string{"10.0.0.0/8", "2000::/3", "3fff:a::/36", "64.0.0.0/2", "192.0.2.0/24"} {
-		if capturesTheMachine(Route{Destination: prefix(destination)}) {
-			t.Errorf("%s reads as carrying this machine's own traffic", destination)
-		}
-	}
-	// 128.0.0.0/1 is half the space, so the first arm holds it. What it must
-	// not be is held for the second reason.
-	if prefix("128.0.0.0/1").Contains(netip.IPv4Unspecified()) {
-		t.Error("128.0.0.0/1 contains the zero address")
-	}
-}
-
 // The gate as the reconciler applies it: an announced default reaches the
 // kernel only while the mesh can carry it, and the ordinary mesh prefixes
 // around it are never held back, because a prefix route leaves the machine's
@@ -261,32 +227,102 @@ func TestReconcileHoldsBackARetractedDefaultToo(t *testing.T) {
 	}
 }
 
-// This node's own default, an exit's from its transit prefix among them, is
-// held back while nothing is live, as a held default is, and goes in as the
-// hold once a session is.
-func TestReconcileHoldsBackThisNodesOwnDefault(t *testing.T) {
+// This node's own prefix that counts, an exit's default from its transit
+// prefix and a split internet it originates among them, never reaches the
+// kernel, with nothing live or with a session live, while its own prefix that
+// does not count goes in as the hold.
+func TestReconcileNeverInstallsThisNodesOwnCountedPrefix(t *testing.T) {
 	live := 0
 	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return live }})
 	reconciler.now = func() time.Time { return start }
-	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), netstack.Local)
+	for _, destination := range []string{"0.0.0.0/0", "64.0.0.0/2", "2000::/3"} {
+		table.Set(netip.Prefix{}, prefix(destination), netstack.Local)
+	}
 	table.Set(prefix("2001:db8:a::/48"), prefix("::/0"), netstack.Local)
+	table.Set(netip.Prefix{}, prefix("2001:db8:a::/48"), netstack.Local)
+	want := []Route{{Destination: prefix("2001:db8:a::/48"), Metric: holdMetric, Unreachable: true}}
+	for _, live = range []int{0, 1} {
+		if err := reconciler.reconcile(); err != nil {
+			t.Fatal(err)
+		}
+		if got := fake.snapshot(); !slices.Equal(got, want) {
+			t.Errorf("installed %v with %d sessions live, want only %v", got, live, want)
+		}
+	}
+}
+
+// A short prefix outside the overlay counts and is held back while nothing is
+// live, and once a reload moves the overlay over it the same prefix is a
+// subnet and installs.
+func TestReconcileReadsTheOverlayItIsHanded(t *testing.T) {
+	reconciler, table, fake := harness(t, Table{}, Runtime{
+		Sessions: func() int { return 0 },
+		Overlay:  []schema.Prefix{schema.MustPrefix("3fff::/20")},
+	})
+	reconciler.now = func() time.Time { return start }
+	wide := Route{Destination: prefix("3ff0::/14"), Metric: defaultIPv6Metric}
+	table.Set(netip.Prefix{}, wide.Destination, nil)
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if got := fake.snapshot(); len(got) != 0 {
-		t.Fatalf("installed %v with nothing live, want nothing", got)
+	if fake.has(wide) {
+		t.Fatal("3ff0::/14 outside the overlay installed with nothing live")
+	}
+	if err := reconciler.SetTable(Table{}, []schema.Prefix{schema.MustPrefix("3ff0::/12")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !reconciler.adopt() {
+		t.Fatal("an accepted reload handed the loop nothing")
+	}
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if !fake.has(wide) {
+		t.Errorf("3ff0::/14 was held back with nothing live once the overlay held it: %v", fake.snapshot())
+	}
+}
+
+// A split internet, four IPv4 /2s and 2000::/3, takes this machine's traffic
+// as a default does: it reaches the kernel only once a session is live, and
+// once its exit retracts it, with other sessions still live, it leaves no
+// unreachable hold that would answer the host's own traffic with an error.
+func TestReconcileLeavesNoHoldOfARetractedSplitInternet(t *testing.T) {
+	live := 0
+	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return live }})
+	reconciler.now = func() time.Time { return start }
+	split := []string{"0.0.0.0/2", "64.0.0.0/2", "128.0.0.0/2", "192.0.0.0/2", "2000::/3"}
+	for _, destination := range split {
+		table.Set(netip.Prefix{}, prefix(destination), nil)
+	}
+	subnet := Route{Destination: prefix("3fff:a::/36"), Metric: defaultIPv6Metric}
+	table.Set(netip.Prefix{}, subnet.Destination, nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.snapshot(); !slices.Equal(got, []Route{subnet}) {
+		t.Fatalf("installed %v with nothing live, want only %v", got, subnet)
 	}
 	live = 1
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	want := []Route{
-		{Destination: prefix("0.0.0.0/0"), Metric: holdMetric, Unreachable: true},
-		{Destination: prefix("::/0"), Source: prefix("2001:db8:a::/48"), Metric: holdMetric, Unreachable: true},
+	for _, destination := range split {
+		route := Route{Destination: prefix(destination)}
+		if route.Destination.Addr().Is6() {
+			route.Metric = defaultIPv6Metric
+		}
+		if !fake.has(route) {
+			t.Errorf("%s did not install with a session live: %v", destination, fake.snapshot())
+		}
 	}
-	slices.SortFunc(want, compareRoutes)
-	if got := fake.snapshot(); !slices.Equal(got, want) {
-		t.Errorf("installed %v with a session live, want the holds %v", got, want)
+	for _, destination := range split {
+		table.Set(netip.Prefix{}, prefix(destination), netstack.Unreachable)
+	}
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.snapshot(); !slices.Equal(got, []Route{subnet}) {
+		t.Errorf("installed %v once the split was retracted with a session live, want only %v", got, subnet)
 	}
 }
 
@@ -366,7 +402,7 @@ func (c *recordingCapture) HostDefaults() (Covered, error) {
 // capturing describes whether the kernel currently holds a route that would
 // carry this machine's own traffic.
 func (c *recordingCapture) capturing() string {
-	if slices.ContainsFunc(c.fake.snapshot(), capturesTheMachine) {
+	if slices.ContainsFunc(c.fake.snapshot(), func(r Route) bool { return schema.CapturesTheMachine(r.Destination, nil) }) {
 		return "the default installed"
 	}
 	return "no default installed"
@@ -464,6 +500,28 @@ func TestReconcileReleasesTheUnderlayOnceTheCaptureGoes(t *testing.T) {
 	}
 	if got := capture.at[asked:]; !slices.Equal(got, []string{"released with no default installed"}) {
 		t.Errorf("the withdrawal told the underlay %q, want it released", got)
+	}
+}
+
+// A split internet counts as a default though it holds no zero address, and
+// the pass that takes it out once its exit retracts it asks the underlay
+// again after the delete.
+func TestReconcileAsksTheUnderlayAgainOnceASplitInternetGoes(t *testing.T) {
+	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
+	capture := &recordingCapture{fake: fake, covered: Covered{V4: true, V6: true}}
+	reconciler.rt.Capture = capture
+	reconciler.now = func() time.Time { return start }
+	table.Set(netip.Prefix{}, prefix("2000::/3"), nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	table.Set(netip.Prefix{}, prefix("2000::/3"), netstack.Unreachable)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"released with no default installed", "released with the default installed", "released with no default installed"}
+	if !slices.Equal(capture.at, want) {
+		t.Errorf("the underlay was asked as %v, want %v", capture.at, want)
 	}
 }
 
@@ -589,24 +647,28 @@ func TestRunWithdrawsTheCaptureOnTheGraceRatherThanTheSweep(t *testing.T) {
 // defaults three times as often as reconcile says.
 //
 // The wake is needed only while a capturing route is installed or wanted,
-// which is the state whose withdrawal nothing else would schedule.
+// which is the state whose withdrawal nothing else would schedule. A split
+// internet holding no zero address counts as a default and arms it too.
 func TestGraceWakesOnlyWhileACaptureIsInPlay(t *testing.T) {
-	for name, announce := range map[string]netip.Prefix{
-		"nothing capturing announced": prefix("3fff:a::/36"),
-		"a capture announced":         prefix("::/0"),
+	for name, test := range map[string]struct {
+		announce netip.Prefix
+		armed    bool
+	}{
+		"nothing capturing announced": {prefix("3fff:a::/36"), false},
+		"a capture announced":         {prefix("::/0"), true},
+		"a split internet announced":  {prefix("2000::/3"), true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			reconciler, table, _ := harness(t,
 				Table{CaptureGrace: schema.Duration(time.Second)},
 				Runtime{Sessions: func() int { return 1 }})
 			reconciler.now = func() time.Time { return start }
-			table.Set(netip.Prefix{}, announce, nil)
+			table.Set(netip.Prefix{}, test.announce, nil)
 			if err := reconciler.reconcile(); err != nil {
 				t.Fatal(err)
 			}
-			_, armed := reconciler.captureDeadline()
-			if want := announce.Bits() == 0; armed != want {
-				t.Errorf("the grace wake is armed %v with %s announced, want %v", armed, announce, want)
+			if _, armed := reconciler.captureDeadline(); armed != test.armed {
+				t.Errorf("the grace wake is armed %v with %s announced, want %v", armed, test.announce, test.armed)
 			}
 		})
 	}

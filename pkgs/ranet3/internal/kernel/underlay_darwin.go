@@ -16,6 +16,8 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // UnderlayDefaults writes the one route this package puts out of an interface
@@ -30,7 +32,7 @@ import (
 // to a longest-prefix match on the family's unspecified address and requires
 // that answer to be on the bound interface. So a route as small as 0.0.0.0/24
 // out of the tun takes the fallback away from every destination the tun also
-// covers, and the underlay is gone. See capturesTheMachine for the measured
+// covers, and the underlay is gone. See schema.CapturesTheMachine for the measured
 // table, and TestDarwinBoundSocketNeedsAScopedDefault for the end to end.
 //
 // A default scoped to the underlay's own interface answers the scoped lookup
@@ -319,7 +321,7 @@ func zeroRoutes(messages []route.Message, counts func(index int) bool) Covered {
 			continue
 		}
 		destination, ok := dumpedPrefix(rm)
-		if !ok || destination.Bits() == 0 || !destination.Contains(unspecifiedOf(destination.Addr())) {
+		if !ok || destination.Bits() == 0 || !schema.HoldsUnspecified(destination) {
 			continue
 		}
 		if destination.Addr().Is4() {
