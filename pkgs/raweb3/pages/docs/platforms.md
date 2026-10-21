@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-10-20
+updated: 2026-10-21
 order: 100
 ---
 
@@ -72,7 +72,7 @@ set to `cap.table.proto`, the same ownership marker the routes carry, so a dump
 reads back only this reconciler's and a delete can never reach another writer's.
 systemd-networkd stamps `RTPROT_STATIC` on the rules it writes, so the 2 sets
 stay apart. `cap.table.prefsrc4` takes an IPv4 address in its plain spelling.
-The IPv4-mapped one, `::ffff:198.18.104.5` for instance, is refused with the
+The IPv4-mapped one, `::ffff:203.0.113.5` for instance, is refused with the
 spelling to write instead.
 
 `cap.table.vrf.create` makes the master device the mesh table is bound to when

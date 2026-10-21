@@ -45,8 +45,8 @@ the same names. A key not listed here is refused when the file loads.
 - An integer written with a fraction, an exponent or a minus sign is refused
   with its line.
 - In a name, a byte outside letters, digits, `-`, `.`, `_` and `~` is written as
-  `%` and 2 uppercase hex digits. The organization `nick cao` is `nick%20cao`.
-  No other spelling is taken.
+  `%` and 2 uppercase hex digits. The organization `example org` is
+  `example%20org`. No other spelling is taken.
 
 ## Top level
 
@@ -307,9 +307,9 @@ goes. Left out, every neighbor pays nothing.
 
 ```toml
 [cap.babel.cost.extra]
-foreign = 1024                    # any organization other than this node's own
-org = { gravity = 2048 }          # by organization
-node = { "ysun/lagern" = 300 }    # by organization/name
+foreign = 1024                      # any organization other than this node's own
+org = { other = 2048 }              # by organization
+node = { "example/gateway" = 300 }  # by organization/name
 ```
 
 | Key       | Value                          | Default | Meaning                                          |
@@ -325,7 +325,7 @@ node = { "ysun/lagern" = 300 }    # by organization/name
 - Every organization named is an organization with a node in the trust document,
   and every node named is a node in it, at startup and on each reload. One that
   is not is refused by name, as in
-  `config: cap.babel cost.extra node ysun/lagern is not a node of the trust document`.
+  `config: cap.babel cost.extra node example/gateway is not a node of the trust document`.
   An organization is written as the trust document writes it. A node is
   `organization/name`, with no serial. A node of this node's own organization
   may be named. This node itself is refused.

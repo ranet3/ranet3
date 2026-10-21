@@ -116,9 +116,9 @@ Every page's frontmatter carries `title`, `description`, `created` and
 `updated`, and a page under `docs/` also an `order`, its place in the sidebar.
 `layout` is optional: under `docs/` a page takes the docs layout, elsewhere
 `page`, and `bare` leaves the whole width to the Markdown, as the front page
-does. `vetted: <date>` is optional too. Only Yifei sets it, by hand, on the day
-Yifei last read the page in full. A page without it, or with a `vetted` older
-than its `updated`, shows a notice that it may contain unreviewed machine
+does. `vetted: <date>` is optional too. Only the maintainer sets it, by hand, on
+the day they last read the page in full. A page without it, or with a `vetted`
+older than its `updated`, shows a notice that it may contain unreviewed machine
 generated text.
 
 A fenced code block names its language after the opening fence, and chroma
