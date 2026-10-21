@@ -20,6 +20,7 @@
 *.zsh text eol=lf
 
 *.json text
+*.svg text
 *.toml text
 *.xml text
 *.yaml text
@@ -55,7 +56,6 @@
 *.jpeg binary
 *.jpg binary
 *.png binary
-*.svg binary
 *.tif binary
 *.tiff binary
 
