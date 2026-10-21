@@ -11,9 +11,9 @@ analytics:
   domain: ranet3.com
 nav:
   - title: Why ranet3
-    href: /#why
+    href: /why/
   - title: Benchmarks
-    href: /#benchmarks
+    href: /benchmarks/
   - title: Docs
     href: /docs/
   - title: GitHub
@@ -21,3 +21,75 @@ nav:
 cta:
   title: Request a Demo
   href: mailto:mesh@ranet3.com?subject=ranet3%20demo
+# a cited part is a link to the standard the text before it follows
+footer:
+  title: See it on your network.
+  stack:
+    - label: Transport
+      parts:
+        - text: Userspace ESP
+        - text: RFC 4303
+          href: https://www.rfc-editor.org/info/rfc4303/
+          cite: true
+        - text: in tunnel mode over UDP
+        - text: RFC 3948
+          href: https://www.rfc-editor.org/info/rfc3948/
+          cite: true
+    - label: Handshake
+      parts:
+        - text: IKEv2
+        - text: RFC 7296
+          href: https://www.rfc-editor.org/info/rfc7296/
+          cite: true
+        - text: with hybrid ML-KEM
+        - text: FIPS 203
+          href: https://csrc.nist.gov/pubs/fips/203/final
+          cite: true
+        - text: key exchange
+        - text: RFC 9370
+          href: https://www.rfc-editor.org/info/rfc9370/
+          cite: true
+    - label: Routing
+      parts:
+        - text: Embedded Babel speaker
+        - text: RFC 8966
+          href: https://www.rfc-editor.org/info/rfc8966/
+          cite: true
+        - text: with RTT metrics
+        - text: RFC 9616
+          href: https://www.rfc-editor.org/info/rfc9616/
+          cite: true
+        - text: and source specific routes
+        - text: RFC 9079
+          href: https://www.rfc-editor.org/info/rfc9079/
+          cite: true
+    - label: Steering
+      parts:
+        - text: SRv6
+        - text: RFC 8986
+          href: https://www.rfc-editor.org/info/rfc8986/
+          cite: true
+        - text: by source/destination prefix
+  project:
+    - label: Source
+      parts:
+        - text: github:ranet3/ranet3
+          href: https://github.com/ranet3/ranet3
+    - label: License
+      parts:
+        - text: FSL-1.1-ALv2
+          href: https://github.com/ranet3/ranet3/blob/master/licenses/FSL-1.1-ALv2.txt
+        - text: /
+        - text: Apache-2.0
+          href: https://www.apache.org/licenses/LICENSE-2.0
+    - label: Email
+      parts:
+        - text: mesh@ranet3.com
+          href: mailto:mesh@ranet3.com
+    - label: Powering
+      parts:
+        - text: AS10779
+          href: https://bgp.tools/as/10779
+        - text: /
+        - text: AS18932
+          href: https://bgp.tools/as/18932

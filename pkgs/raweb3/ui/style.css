@@ -137,7 +137,7 @@
   /* one row of a list of links, numbered, with an arrow at the end */
   .index-row {
     @apply grid grid-cols-[4ch_minmax(0,1fr)_auto] gap-4 border-b border-bg2
-      px-1 py-[18px] text-left text-fg after:text-acc after:content-['\2193']
+      px-1 py-[18px] text-left text-fg after:text-acc after:content-['\2192']
       hover:bg-bg2;
   }
   .page-section {
