@@ -13,6 +13,7 @@ templ frame(site ui.Site, page ui.Page, unvetted bool, body string) {
 		<head>
 			@ui.Head(site, page) {
 				<link rel="stylesheet" href="/style.css"/>
+				@themeScript()
 			}
 		</head>
 		<body class={ "bg-bg text-fg2 antialiased", body }>
@@ -32,14 +33,117 @@ templ bar(site ui.Site) {
 				@ui.Mark(26)
 				<span>{ site.Name }</span>
 			</a>
-			<a href={ templ.SafeURL(site.CTA.Href) } class="bg-acc px-3.5 py-2 font-bold text-bg sm:order-last">{ site.CTA.Title }</a>
-			<div class="flex w-full gap-x-7 overflow-x-auto sm:w-auto">
-				for _, l := range site.Nav {
-					<a href={ templ.SafeURL(l.Href) } class="whitespace-nowrap text-fg2 hover:text-acc">{ l.Title }</a>
-				}
+			<a href={ templ.SafeURL(site.CTA.Href) } class="bg-acc px-3.5 py-2 font-bold text-bg lg:order-last">{ site.CTA.Title }</a>
+			<div class="flex w-full items-center gap-x-7 lg:w-auto">
+				<div class="flex min-w-0 gap-x-7 overflow-x-auto">
+					for _, l := range site.Nav {
+						<a href={ templ.SafeURL(l.Href) } class="whitespace-nowrap text-fg2 hover:text-acc">{ l.Title }</a>
+					}
+				</div>
+				@themeSwitch()
 			</div>
 		</nav>
 	</header>
+}
+
+// themeSwitch picks the light or dark scheme, or auto to follow the system.
+// themeScript shows it and stores the pick.
+templ themeSwitch() {
+	<div class="ml-auto flex shrink-0 border border-line" role="group" aria-label="Theme" data-theme-switch hidden>
+		@themeChoice("light", "Light") {
+			<circle cx="12" cy="12" r="4"></circle>
+			<path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+		}
+		@themeChoice("auto", "Auto") {
+			<circle cx="12" cy="12" r="9"></circle>
+			<path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"></path>
+		}
+		@themeChoice("dark", "Dark") {
+			<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5z"></path>
+		}
+	</div>
+}
+
+templ themeChoice(theme, title string) {
+	<button type="button" class="p-1.5 text-mute hover:text-fg aria-pressed:bg-bg2 aria-pressed:text-acc" data-theme-choice={ theme } aria-pressed="false" title={ title }>
+		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="block" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+			{ children... }
+		</svg>
+		<span class="sr-only">{ title }</span>
+	</button>
+}
+
+// themeScript runs in the head before the body exists, so a stored theme
+// applies before the page paints. A browser that runs no script, or keeps no
+// storage, follows the system's scheme.
+templ themeScript() {
+	<script>
+		(() => {
+			const key = "theme";
+			const root = document.documentElement;
+			// the browser bar takes the chosen scheme's color too
+			const metas = [...document.querySelectorAll('meta[name="theme-color"]')]
+				.map((m) => [m, m.media]);
+
+			const stored = () => {
+				try {
+					return localStorage.getItem(key);
+				} catch {
+					return null;
+				}
+			};
+
+			const store = (theme) => {
+				try {
+					if (theme === "auto") localStorage.removeItem(key);
+					else localStorage.setItem(key, theme);
+				} catch {
+					// the choice then lasts until the page closes
+				}
+			};
+
+			const apply = (theme) => {
+				const fixed = theme === "light" || theme === "dark";
+				if (fixed) root.dataset.theme = theme;
+				else delete root.dataset.theme;
+				for (const [m, media] of metas) {
+					m.media = !fixed ? media : media.includes(theme) ? "all" : "not all";
+				}
+			};
+
+			const mark = () => {
+				const theme = root.dataset.theme ?? "auto";
+				for (const b of document.querySelectorAll("[data-theme-choice]")) {
+					b.setAttribute("aria-pressed", String(b.dataset.themeChoice === theme));
+				}
+			};
+
+			apply(stored());
+
+			// another tab of the site changed the theme
+			addEventListener("storage", (e) => {
+				if (e.key === key || e.key === null) {
+					apply(stored());
+					mark();
+				}
+			});
+
+			addEventListener("DOMContentLoaded", () => {
+				for (const b of document.querySelectorAll("[data-theme-choice]")) {
+					b.addEventListener("click", () => {
+						store(b.dataset.themeChoice);
+						apply(b.dataset.themeChoice);
+						mark();
+					});
+				}
+				mark();
+				// the switch stays hidden on a page that runs no script
+				for (const s of document.querySelectorAll("[data-theme-switch]")) {
+					s.hidden = false;
+				}
+			});
+		})();
+	</script>
 }
 
 templ notice() {
