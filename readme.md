@@ -32,7 +32,7 @@
 </div>
 <!-- deno-fmt-ignore-end -->
 
-This monorepo contains the source code of `ranet3`, a mesh networking toolkit
+This monorepo contains the source code of [`ranet3`](https://ranet3.com), a mesh networking toolkit
 with userspace IPsec, latency-aware Babel routing, source-specific routes and
 segment routing.
 
