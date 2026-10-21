@@ -79,7 +79,7 @@ The read subcommands print a table, or the wire form with `--json`. `metrics`
 prints the scrape, and `bugreport` prints JSON alone. [Command line](cli.md)
 lists every command and its flags.
 
-```
+```console
 $ ranet3 status
 Node        example/laptop
 Version     2026.912.0+860393bf1c2e
@@ -388,7 +388,7 @@ down, `redial`, `rekey`, `enable` and `debug probe` are refused with an error
 saying it is down. A reload applies the file and the trust document and leaves
 the node down, and a peer the reload adds is dialed after `up`.
 
-```
+```console
 $ ranet3 down
 This node is off the mesh with 2 session(s) closed, and it stays off through a restart until ranet3 up
   example/bravo:0@0
