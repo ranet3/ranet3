@@ -1,0 +1,45 @@
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: FSL-1.1-ALv2
+
+package ui
+
+// Head is the inside of a page's head element. Children go after the metas
+// and before the analytics script.
+templ Head(site Site, page Page) {
+	<meta charset="utf-8"/>
+	<meta name="viewport" content="width=device-width, initial-scale=1"/>
+	<title>{ page.Title }</title>
+	<meta name="description" content={ page.Description }/>
+	if page.Path != "" {
+		<meta name="robots" content="index, follow"/>
+		<link rel="canonical" href={ templ.SafeURL(site.URL + page.Path) }/>
+	} else {
+		<meta name="robots" content="noindex"/>
+	}
+	<link rel="icon" href="/favicon.svg" type="image/svg+xml"/>
+	<meta name="theme-color" content="#2E3440" media="(prefers-color-scheme: dark)"/>
+	<meta name="theme-color" content="#ECEFF4" media="(prefers-color-scheme: light)"/>
+	<meta name="color-scheme" content="light dark"/>
+	<meta property="og:type" content="website"/>
+	<meta property="og:site_name" content={ site.Name }/>
+	<meta property="og:title" content={ page.Title }/>
+	<meta property="og:description" content={ page.Description }/>
+	if page.Path != "" {
+		<meta property="og:url" content={ site.URL + page.Path }/>
+	}
+	<meta name="twitter:card" content="summary"/>
+	<meta name="twitter:title" content={ page.Title }/>
+	<meta name="twitter:description" content={ page.Description }/>
+	for _, m := range site.Metas {
+		<meta name={ m.Name } content={ m.Content }/>
+	}
+	{ children... }
+	<script defer data-domain={ site.Analytics.Domain } src={ site.Analytics.Src }></script>
+}
+
+// Logo is the ASCII logo, a core node inside 2 broken orbits, each carrying a peer.
+templ Logo(class string) {
+	<pre class={ class } role="img" aria-label="The ranet3 logo, a core node inside 2 broken orbits, each carrying a peer">
+		@templ.Raw(logo)
+	</pre>
+}
