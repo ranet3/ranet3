@@ -17,6 +17,14 @@ result
 result-*
 vendor/
 
+.DS_Store
+._*
+.idea/
+.vscode/
+Thumbs.db
+[Dd]esktop.ini
+ehthumbs.db
+
 /*.pem
 /testpki/
 registry.json
