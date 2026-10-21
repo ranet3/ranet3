@@ -559,7 +559,9 @@ type Session struct {
 	IKEPRF    string `json:"ike_prf,omitempty"`
 	IKEKex    string `json:"ike_kex,omitempty"`
 	// ESPCipher is the Child SA's cipher by its cap.crypto name
-	ESPCipher string    `json:"esp_cipher,omitempty"`
+	ESPCipher string `json:"esp_cipher,omitempty"`
+	// ESPKex is the kex entry of the Child SA's own key exchanges, absent for a Child SA keyed from SK_d alone
+	ESPKex    string    `json:"esp_kex,omitempty"`
 	StartedAt time.Time `json:"started_at"`
 	Age       Duration  `json:"age"`
 	// Idle is how long since the peer last proved it is still there, which is

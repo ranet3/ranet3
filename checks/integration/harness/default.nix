@@ -1522,7 +1522,8 @@ testers.runNixOSTest {
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
             for line in exchanges:
                 gateway.succeed(f"{swan_log} | grep -F '{line}'")
-            session_runs({"ike_cipher": "aes256gcm", "ike_prf": "sha384", "ike_kex": "x25519+mlkem768", "esp_cipher": "aes256gcm"})
+            # the Child SA of IKE_AUTH has no key exchange of its own
+            session_runs({"ike_cipher": "aes256gcm", "ike_prf": "sha384", "ike_kex": "x25519+mlkem768", "esp_cipher": "aes256gcm", "esp_kex": None})
             gateway.wait_until_succeeds(
                 "swanctl --list-sas | grep -F 'AES_GCM_16-256/PRF_HMAC_SHA2_384/CURVE_25519/KE1_ML_KEM_768'", timeout=timeout)
 
@@ -1539,7 +1540,8 @@ testers.runNixOSTest {
                 gateway.wait_until_succeeds(f"{peer_rekey} | grep -E '{done}'", timeout=rekey_timeout)
                 chained(peer_rekey, "request")
                 client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
-            session_runs({"ike_cipher": "aes256gcm", "ike_prf": "sha384", "ike_kex": "x25519+mlkem768", "esp_cipher": "aes256gcm"})
+            # the Child SA of strongSwan's rekey shows the entry of its key exchanges until ranet3's own rekey replaces it a rekey interval later
+            session_runs({"ike_cipher": "aes256gcm", "ike_prf": "sha384", "ike_kex": "x25519+mlkem768", "esp_cipher": "aes256gcm", "esp_kex": "x25519+mlkem768"})
 
             assert ike_sas_closed() == [], f"ranet3 closed IKE SAs for {ike_sas_closed()}"
             connected_once()

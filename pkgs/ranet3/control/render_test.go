@@ -49,6 +49,7 @@ func TestRenderersKeepTheirColumns(t *testing.T) {
 }
 
 // the session table names each SA's transforms by their cap.crypto names, an entry's key exchanges joined with +
+// a Child SA keyed by key exchanges of its own has their kex entry after its cipher
 // a session the daemon reported no transforms for reads as a dash
 func TestSessionsRenderAsTheGoldenFiles(t *testing.T) {
 	sessions := []Session{
@@ -58,7 +59,7 @@ func TestSessionsRenderAsTheGoldenFiles(t *testing.T) {
 		{Path: "example/exit:1@0", Peer: "example/exit", Remote: "[2001:db8::1]:13000", LocalSPI: 1, RemoteSPI: 2,
 			StartedAt: time.Date(2026, 10, 4, 13, 50, 1, 0, time.UTC), Age: Duration(time.Second), Idle: Duration(time.Second)},
 		{Path: "example/relay:0@0", Peer: "example/relay", Remote: "198.51.100.4:13000", Active: true,
-			LocalSPI: 0x5eed0001, RemoteSPI: 0x5eed0002, IKECipher: "aes256gcm", IKEPRF: "sha384", IKEKex: "x25519+mlkem768", ESPCipher: "aes256gcm",
+			LocalSPI: 0x5eed0001, RemoteSPI: 0x5eed0002, IKECipher: "aes256gcm", IKEPRF: "sha384", IKEKex: "x25519+mlkem768", ESPCipher: "aes256gcm", ESPKex: "x25519+mlkem768",
 			StartedAt: time.Date(2026, 10, 4, 13, 40, 1, 0, time.UTC), Age: Duration(10 * time.Minute), Idle: Duration(300 * time.Millisecond)},
 	}
 	var out strings.Builder

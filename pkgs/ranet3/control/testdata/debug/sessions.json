@@ -39,6 +39,7 @@
     "ike_prf": "sha384",
     "ike_kex": "x25519+mlkem768",
     "esp_cipher": "aes256gcm",
+    "esp_kex": "x25519+mlkem768",
     "started_at": "2026-10-04T13:40:01Z",
     "age": "10m0s",
     "idle": "300ms"

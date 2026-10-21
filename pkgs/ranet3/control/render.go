@@ -456,6 +456,11 @@ func RenderAddresses(w io.Writer, addresses []netip.Addr) {
 func RenderSessions(w io.Writer, sessions []Session) {
 	rows := make([][]string, 0, len(sessions))
 	for _, s := range sessions {
+		// as ike.suite.unlisted names a Child SA's suite
+		esp := suite(s.ESPCipher)
+		if s.ESPKex != "" {
+			esp = suite(s.ESPCipher, s.ESPKex)
+		}
 		rows = append(rows, []string{
 			s.Path,
 			s.Peer,
@@ -464,7 +469,7 @@ func RenderSessions(w io.Writer, sessions []Session) {
 			upDown(s.Active),
 			fmt.Sprintf("%08x/%08x", s.LocalSPI, s.RemoteSPI),
 			suite(s.IKECipher, s.IKEPRF, s.IKEKex),
-			suite(s.ESPCipher),
+			esp,
 			shortDuration(time.Duration(s.Age)),
 			shortDuration(time.Duration(s.Idle)),
 		})
