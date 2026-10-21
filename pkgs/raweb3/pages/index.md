@@ -38,8 +38,7 @@ layout: bare
               <span class="text-mute">..::----::..</span>
 </pre>
 </div>
-<h1 class="mt-14 text-[clamp(36px,7vw,52px)] leading-[1.1] font-bold tracking-[-.01em]">ranet3</h1>
-<p class="mt-6 max-w-[58ch] text-[18px] text-balance text-acc">High performance <span class="whitespace-nowrap">policy routed</span> IPsec mesh <span class="whitespace-nowrap">SD-WAN</span></p>
+<h1 class="mt-14 max-w-[28ch] text-[clamp(32px,6vw,52px)] leading-[1.1] font-bold tracking-[-.01em] text-balance">Mesh network, reimagined.</h1>
 <div class="mt-9 flex flex-wrap justify-center gap-3">
 <a href="mailto:mesh@ranet3.com?subject=ranet3%20demo" class="btn-primary">Request a Demo</a>
 <a href="/docs/getting-started/" class="btn-secondary after:content-['\00a0\2192']">Get started</a>
