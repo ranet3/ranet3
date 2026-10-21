@@ -5,6 +5,12 @@
 
 package egress
 
-// notificationReadSize is the read buffer of the notification socket, above
-// NLMSG_GOODSIZE, the most the kernel puts in one notification datagram
-const notificationReadSize = 64 << 10
+const (
+	// natSrcPriority is NF_IP_PRI_NAT_SRC, where source translation runs.
+	// Chains of several writers coexist there. See Conflicts.
+	natSrcPriority = 100
+	// verdictDrop is NF_DROP, which a border chain drop rule ends with
+	verdictDrop = 0
+	// ipv6DestinationOffset is where the destination sits in an IPv6 header
+	ipv6DestinationOffset = 24
+)

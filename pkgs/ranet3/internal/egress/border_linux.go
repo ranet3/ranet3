@@ -8,9 +8,12 @@ package egress
 import (
 	"errors"
 	"fmt"
+	"net"
 	"slices"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
 // borderTable is the border filter's linux backend: the inet table of this
@@ -19,16 +22,16 @@ import (
 // unlike nft, which adds that test implicitly, the raw encoder spells it, or
 // an IPv4 rule would read bytes 12 to 15 of an IPv6 header.
 type borderTable struct {
-	conn    *nftConn
-	monitor *changeMonitor
+	conn    *nftables.Conn
+	monitor *nftables.Monitor
 }
 
 func newBorderBackend() (borderBackend, error) {
-	conn, err := dialNetfilter()
+	conn, err := nftables.Dial()
 	if err != nil {
 		return nil, err
 	}
-	monitor, err := openChangeMonitor(conn.pid, borderTables)
+	monitor, err := nftables.OpenMonitor(conn, borderTables)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -38,16 +41,16 @@ func newBorderBackend() (borderBackend, error) {
 
 func (b *borderTable) Close() error { return errors.Join(b.monitor.Close(), b.conn.Close()) }
 
-func (b *borderTable) Changed() <-chan struct{} { return b.monitor.changed }
+func (b *borderTable) Changed() <-chan struct{} { return b.monitor.Changed() }
 
-func (b *borderTable) Missed() <-chan struct{} { return b.monitor.missed }
+func (b *borderTable) Missed() <-chan struct{} { return b.monitor.Missed() }
 
 func (b *borderTable) Rules() (chainReadback, error) { return readBorder(b.conn) }
 
 // Read dumps through a socket of its own, so the run goroutine's stays with
 // its one user
 func (b *borderTable) Read() (chainReadback, error) {
-	conn, err := dialNetfilter()
+	conn, err := nftables.Dial()
 	if err != nil {
 		return chainReadback{}, err
 	}
@@ -55,17 +58,20 @@ func (b *borderTable) Read() (chainReadback, error) {
 	return readBorder(conn)
 }
 
-func readBorder(conn *nftConn) (chainReadback, error) {
-	tables, err := ownTables(conn)
+func readBorder(conn *nftables.Conn) (chainReadback, error) {
+	tables, err := nftables.Tables(conn, TableName)
 	if err != nil {
 		return chainReadback{}, err
 	}
-	read, err := readChain(conn, tables, unix.NFPROTO_INET, prerouting)
+	read, err := prerouting.Read(conn, tables, unix.NFPROTO_INET)
 	if err != nil {
 		return chainReadback{}, fmt.Errorf("egress: read table inet %s: %w", TableName, err)
 	}
-	return read, nil
+	return readback(read, 0), nil
 }
+
+// prerouting is the border chain
+var prerouting = nftables.Chain{Table: TableName, Name: BorderChain, Type: "filter", Hook: unix.NF_INET_PRE_ROUTING, Priority: rawPriority}
 
 // Apply creates the table and the chain and rewrites the chain in one
 // transaction, so no packet meets half a chain
@@ -74,22 +80,19 @@ func (b *borderTable) Apply(rules []BorderRule, remake bool) error {
 	if err != nil {
 		return err
 	}
-	return b.conn.batch(requests)
+	return b.conn.Batch(requests)
 }
 
-// borderBatch is the transaction Apply sends: the table deleted first where
-// remake holds, the table and the chain created where absent and adopted
-// where present, the table's flags and the chain's policy written over
-// whatever another writer set, the chain emptied, then rules
-func borderBatch(rules []BorderRule, remake bool) ([]nftRequest, error) {
-	var requests []nftRequest
+// borderBatch is the transaction Apply sends
+func borderBatch(rules []BorderRule, remake bool) ([]nftables.Request, error) {
+	var requests []nftables.Request
 	if remake {
-		requests = append(requests, tableRequest(unix.NFT_MSG_DELTABLE, 0, unix.NFPROTO_INET))
+		requests = append(requests, delBorderTable())
 	}
 	requests = append(requests,
-		newTable(unix.NFPROTO_INET),
-		baseChain(unix.NFPROTO_INET, prerouting),
-		chainFlush(unix.NFPROTO_INET, BorderChain))
+		nftables.NewTable(unix.NFPROTO_INET, TableName),
+		prerouting.Create(unix.NFPROTO_INET),
+		prerouting.Flush(unix.NFPROTO_INET))
 	for _, rule := range rules {
 		request, err := newBorderRule(rule)
 		if err != nil {
@@ -100,37 +103,37 @@ func borderBatch(rules []BorderRule, remake bool) ([]nftRequest, error) {
 	return requests, nil
 }
 
-// Withdraw deletes the inet table of this tool's name where one exists. It
-// lists first, since deleting a table that is not there fails the batch.
+// Withdraw lists first, since deleting a table that is not there fails the
+// batch
 func (b *borderTable) Withdraw() error {
-	tables, err := ownTables(b.conn)
+	tables, err := nftables.Tables(b.conn, TableName)
 	if err != nil {
 		return err
 	}
 	if _, held := tables[unix.NFPROTO_INET]; !held {
 		return nil
 	}
-	return b.conn.batch([]nftRequest{tableRequest(unix.NFT_MSG_DELTABLE, 0, unix.NFPROTO_INET)})
+	return b.conn.Batch([]nftables.Request{delBorderTable()})
 }
 
-// newBorderRule encodes one rule of the chain. Only a drop carries a counter,
-// since a counter on an accept would be an update on every mesh packet. A
-// rule whose device name fits spells a comment well inside the limit, so the
-// device is the one length checked.
-func newBorderRule(rule BorderRule) (nftRequest, error) {
+func delBorderTable() nftables.Request { return nftables.DeleteTable(unix.NFPROTO_INET, TableName) }
+
+// newBorderRule counts only a drop, since a counter on an accept would be an
+// update on every mesh packet
+func newBorderRule(rule BorderRule) (nftables.Request, error) {
 	var expressions [][]byte
 	switch rule.Class {
 	case BorderInside:
-		if err := deviceName(rule.Device); err != nil {
-			return nftRequest{}, err
+		if err := nftables.DeviceName(rule.Device); err != nil {
+			return nftables.Request{}, err
 		}
-		expressions = append(metaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, rule.Device), verdict(chainAccept))
+		expressions = append(nftables.MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, rule.Device), verdict(nftables.Accept))
 	case BorderSource:
 		proto := uint8(unix.NFPROTO_IPV6)
 		if rule.Source.Addr().Is4() {
 			proto = unix.NFPROTO_IPV4
 		}
-		expressions = slices.Concat(nfproto(proto), sourcePrefix(rule.Source), countedDrop())
+		expressions = slices.Concat(nfproto(proto), nftables.SourcePrefix(rule.Source), countedDrop())
 	case BorderRoutingHeader:
 		// whether any routing header is present rather than its type: the
 		// kernel's search finds only the first routing header, so a test of
@@ -138,32 +141,34 @@ func newBorderRule(rule BorderRule) (nftRequest, error) {
 		// behind it. From Linux 7.1 the search gives up at the thirteenth
 		// extension header, so one behind twelve others passes, and before
 		// 7.1 it finds one anywhere
-		exthdr := putAttrBE32(nil, unix.NFTA_EXTHDR_DREG, unix.NFT_REG_1)
-		exthdr = putAttr(exthdr, unix.NFTA_EXTHDR_TYPE, []byte{unix.IPPROTO_ROUTING})
-		exthdr = putAttrBE32(exthdr, unix.NFTA_EXTHDR_OFFSET, 0)
-		exthdr = putAttrBE32(exthdr, unix.NFTA_EXTHDR_LEN, 1)
-		exthdr = putAttrBE32(exthdr, unix.NFTA_EXTHDR_FLAGS, unix.NFT_EXTHDR_F_PRESENT)
+		exthdr := nftables.PutAttrBE32(nil, unix.NFTA_EXTHDR_DREG, unix.NFT_REG_1)
+		exthdr = nftables.PutAttr(exthdr, unix.NFTA_EXTHDR_TYPE, []byte{unix.IPPROTO_ROUTING})
+		exthdr = nftables.PutAttrBE32(exthdr, unix.NFTA_EXTHDR_OFFSET, 0)
+		exthdr = nftables.PutAttrBE32(exthdr, unix.NFTA_EXTHDR_LEN, 1)
+		exthdr = nftables.PutAttrBE32(exthdr, unix.NFTA_EXTHDR_FLAGS, unix.NFT_EXTHDR_F_PRESENT)
 		expressions = slices.Concat(nfproto(unix.NFPROTO_IPV6),
-			[][]byte{expression("exthdr", exthdr), expression("cmp", compare(unix.NFT_CMP_EQ, []byte{1}))}, countedDrop())
+			[][]byte{nftables.Expression("exthdr", exthdr), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{1}))}, countedDrop())
 	default:
 		expressions = slices.Concat(nfproto(unix.NFPROTO_IPV6),
-			[][]byte{networkLoad(ipv6DestinationOffset, ipv6AddressLen), expression("cmp", compare(unix.NFT_CMP_EQ, addressBytes(rule.Destination)))},
+			[][]byte{nftables.NetworkLoad(ipv6DestinationOffset, net.IPv6len), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, nftables.AddressBytes(rule.Destination)))},
 			countedDrop())
 	}
-	return ruleRequest(unix.NFPROTO_INET, BorderChain, rule.String(), expressions), nil
+	return prerouting.Rule(unix.NFPROTO_INET, rule.String(), expressions)
 }
 
 // nfproto tests the packet's family, the nf_tables family an inet chain saw it in
 func nfproto(proto uint8) [][]byte {
-	return metaCompareValue(unix.NFT_META_NFPROTO, unix.NFT_CMP_EQ, []byte{proto})
+	return nftables.MetaCompareValue(unix.NFT_META_NFPROTO, unix.NFT_CMP_EQ, []byte{proto})
 }
 
-func countedDrop() [][]byte { return [][]byte{expression("counter", nil), verdict(verdictDrop)} }
+func countedDrop() [][]byte {
+	return [][]byte{nftables.Expression("counter", nil), verdict(verdictDrop)}
+}
 
 // verdict ends the chain for a packet with code, NF_ACCEPT or NF_DROP
 func verdict(code uint32) []byte {
-	data := putAttr(nil, unix.NFTA_DATA_VERDICT|nlaNested, putAttrBE32(nil, unix.NFTA_VERDICT_CODE, code))
-	immediate := putAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)
-	immediate = putAttr(immediate, unix.NFTA_IMMEDIATE_DATA|nlaNested, data)
-	return expression("immediate", immediate)
+	data := nftables.PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, nftables.PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, code))
+	immediate := nftables.PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)
+	immediate = nftables.PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, data)
+	return nftables.Expression("immediate", immediate)
 }

@@ -16,12 +16,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -177,7 +177,7 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	if held, _, _ = flatten(read); err != nil || !sameRules(held, only) {
 		t.Fatalf("the kernel holds %v (%v), want %v", held, err, only)
 	}
-	tables, err := ownTables(steered.(*nftables).conn)
+	tables, err := nftables.Tables(steered.(*natTables).conn, TableName)
 	_, v4 := tables[unix.NFPROTO_IPV4]
 	_, v6 := tables[unix.NFPROTO_IPV6]
 	if err != nil || len(tables) != 2 || !v4 || !v6 {
@@ -233,20 +233,20 @@ func TestNftablesNotifiesAnotherWritersChange(t *testing.T) {
 	install()
 	quiet("its own install and reinstall")
 
-	another, err := dialNetfilter()
+	another, err := nftables.Dial()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = another.Close() })
 	for _, change := range []struct {
 		name    string
-		request nftRequest
+		request nftables.Request
 	}{
 		{"inserted an accept at the head of the ip6 chain", anotherWritersAccept(unix.NFPROTO_IPV6, ChainName)},
 		{"set the ip table dormant", dormantTable(unix.NFPROTO_IPV4)},
 		{"deleted the ip6 table", delTable(FamilyIPv6)},
 	} {
-		if err := another.batch([]nftRequest{change.request}); err != nil {
+		if err := another.Batch([]nftables.Request{change.request}); err != nil {
 			t.Fatalf("another writer %s: %v", change.name, err)
 		}
 		if !woken(be.Changed()) {
@@ -282,19 +282,19 @@ func woken(changed <-chan struct{}) bool {
 
 // anotherWritersAccept is another writer's rule with no comment accepting
 // every packet, at the head of chain in this tool's table of the family proto
-func anotherWritersAccept(proto uint8, chain string) nftRequest {
-	body := putAttrString(putAttrString(putNfgenmsg(nil, proto), unix.NFTA_RULE_TABLE, TableName), unix.NFTA_RULE_CHAIN, chain)
-	body = putAttr(body, unix.NFTA_RULE_EXPRESSIONS|nlaNested, verdict(chainAccept))
+func anotherWritersAccept(proto uint8, chain string) nftables.Request {
+	body := nftables.PutAttrString(nftables.PutAttrString(nftables.PutNfgenmsg(nil, proto), unix.NFTA_RULE_TABLE, TableName), unix.NFTA_RULE_CHAIN, chain)
+	body = nftables.PutAttr(body, unix.NFTA_RULE_EXPRESSIONS|unix.NLA_F_NESTED, verdict(nftables.Accept))
 	// with no NLM_F_APPEND the kernel inserts the rule at the head of the chain
-	return nftRequest{kind: nftCommand(unix.NFT_MSG_NEWRULE), flags: unix.NLM_F_CREATE, body: body}
+	return nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWRULE), Flags: unix.NLM_F_CREATE, Body: body}
 }
 
 // dormantTable is another writer's update setting this tool's table of the
 // family proto dormant
-func dormantTable(proto uint8) nftRequest {
-	table := tableRequest(unix.NFT_MSG_NEWTABLE, unix.NLM_F_CREATE, proto)
-	table.body = putAttrBE32(table.body, unix.NFTA_TABLE_FLAGS, unix.NFT_TABLE_F_DORMANT)
-	return table
+func dormantTable(proto uint8) nftables.Request {
+	body := nftables.PutAttrString(nftables.PutNfgenmsg(nil, proto), unix.NFTA_TABLE_NAME, TableName)
+	body = nftables.PutAttrBE32(body, unix.NFTA_TABLE_FLAGS, unix.NFT_TABLE_F_DORMANT)
+	return nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE, Body: body}
 }
 
 // A rule with no comment that another writer inserts at the head of the
@@ -322,12 +322,12 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 		t.Fatalf("first pass: %v", err)
 	}
 
-	another, err := dialNetfilter()
+	another, err := nftables.Dial()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = another.Close() })
-	if err := another.batch([]nftRequest{anotherWritersAccept(unix.NFPROTO_IPV6, ChainName)}); err != nil {
+	if err := another.Batch([]nftables.Request{anotherWritersAccept(unix.NFPROTO_IPV6, ChainName)}); err != nil {
 		t.Fatalf("insert another writer's accept rule: %v", err)
 	}
 	if read, err := be.Rules(); err != nil || !slices.ContainsFunc(read[FamilyIPv6].rules, func(rule Installed) bool { return rule.Spec == "" }) {
@@ -344,12 +344,12 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	// read through the other socket, so the chain compared holds every rule the kernel does, whatever this tool's readback keeps
 	var got []string
 	for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
-		replies, err := another.dump(nftCommand(unix.NFT_MSG_GETRULE), putNfgenmsg(nil, nftFamily(family)))
+		replies, err := another.Dump(nftables.Command(unix.NFT_MSG_GETRULE), nftables.PutNfgenmsg(nil, nftFamily(family)))
 		if err != nil {
 			t.Fatalf("dump the %s rules: %v", tableFamilyName(family), err)
 		}
 		for _, reply := range replies {
-			if table, chain, spec, _, _ := decodeRule(reply); table == TableName && chain == ChainName {
+			if table, chain, spec, _, _ := nftables.DecodeRule(reply); table == TableName && chain == ChainName {
 				got = append(got, spec)
 			}
 		}
@@ -469,48 +469,91 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 }
 
 // foreignTransaction is another writer's table, chain and count rules, never naming this tool's table
-func foreignTransaction(table string, count int) []nftRequest {
+func foreignTransaction(table string, count int) []nftables.Request {
 	const chain = "input"
-	requests := []nftRequest{
-		{kind: nftCommand(unix.NFT_MSG_NEWTABLE), flags: unix.NLM_F_CREATE, body: putAttrString(putNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_TABLE_NAME, table)},
-		{kind: nftCommand(unix.NFT_MSG_NEWCHAIN), flags: unix.NLM_F_CREATE, body: putAttrString(putAttrString(putNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_CHAIN_TABLE, table), unix.NFTA_CHAIN_NAME, chain)},
+	requests := []nftables.Request{
+		{Kind: nftables.Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE, Body: nftables.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_TABLE_NAME, table)},
+		{Kind: nftables.Command(unix.NFT_MSG_NEWCHAIN), Flags: unix.NLM_F_CREATE, Body: nftables.PutAttrString(nftables.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_CHAIN_TABLE, table), unix.NFTA_CHAIN_NAME, chain)},
 	}
 	for i := range count {
 		var expressions []byte
-		for _, e := range append(metaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, fmt.Sprintf("eth%d", i%100)), expression("counter", nil)) {
+		for _, e := range append(nftables.MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, fmt.Sprintf("eth%d", i%100)), nftables.Expression("counter", nil)) {
 			expressions = append(expressions, e...)
 		}
-		body := putAttrString(putAttrString(putNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_RULE_TABLE, table), unix.NFTA_RULE_CHAIN, chain)
-		requests = append(requests, nftRequest{kind: nftCommand(unix.NFT_MSG_NEWRULE), flags: unix.NLM_F_CREATE | unix.NLM_F_APPEND,
-			body: putAttr(body, unix.NFTA_RULE_EXPRESSIONS|nlaNested, expressions)})
+		body := nftables.PutAttrString(nftables.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_RULE_TABLE, table), unix.NFTA_RULE_CHAIN, chain)
+		requests = append(requests, nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWRULE), Flags: unix.NLM_F_CREATE | unix.NLM_F_APPEND,
+			Body: nftables.PutAttr(body, unix.NFTA_RULE_EXPRESSIONS|unix.NLA_F_NESTED, expressions)})
 	}
 	return requests
 }
 
-// socketDrops is how many datagrams the kernel has dropped for the netlink socket behind raw, and the bytes it holds queued, read from this thread's namespace
-func socketDrops(t *testing.T, raw syscall.RawConn) (dropped, queued uint64) {
+// netlinkSockets is each netlink socket of this thread's namespace, by its
+// inode, as /proc lists it: sk Eth Pid Groups Rmem Wmem Dump Locks Drops Inode
+func netlinkSockets(t *testing.T) map[string][]string {
 	t.Helper()
-	var st unix.Stat_t
-	var statErr error
-	if err := raw.Control(func(fd uintptr) { statErr = unix.Fstat(int(fd), &st) }); err != nil || statErr != nil {
-		t.Fatalf("stat the notification socket: %v, %v", err, statErr)
-	}
 	body, err := os.ReadFile("/proc/thread-self/net/netlink")
 	if err != nil {
 		t.Fatalf("read the netlink sockets: %v", err)
 	}
-	// sk Eth Pid Groups Rmem Wmem Dump Locks Drops Inode
+	out := map[string][]string{}
 	for line := range strings.Lines(string(body)) {
-		fields := strings.Fields(line)
-		if len(fields) != 10 || fields[9] != strconv.FormatUint(st.Ino, 10) {
+		if fields := strings.Fields(line); len(fields) == 10 {
+			out[fields[9]] = fields
+		}
+	}
+	return out
+}
+
+// notificationSocket is the descriptor of the one NETLINK_NETFILTER socket of
+// this process that joined a group, the backend's notification socket
+func notificationSocket(t *testing.T) int {
+	t.Helper()
+	sockets := netlinkSockets(t)
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found []int
+	for _, entry := range entries {
+		target, err := os.Readlink("/proc/self/fd/" + entry.Name())
+		inode, ok := strings.CutPrefix(target, "socket:[")
+		if err != nil || !ok {
 			continue
 		}
+		fields := sockets[strings.TrimSuffix(inode, "]")]
+		if fields == nil || fields[1] != strconv.Itoa(unix.NETLINK_NETFILTER) || strings.Trim(fields[3], "0") == "" {
+			continue
+		}
+		fd, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		found = append(found, fd)
+	}
+	if len(found) != 1 {
+		t.Fatalf("found %d netfilter netlink sockets in a group, want the backend's one", len(found))
+	}
+	return found[0]
+}
+
+// socketDrops is how many datagrams the kernel has dropped for the netlink socket fd, and the bytes it holds queued, read from this thread's namespace
+func socketDrops(t *testing.T, fd int) (dropped, queued uint64) {
+	t.Helper()
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		t.Fatalf("stat the notification socket: %v", err)
+	}
+	for _, fields := range netlinkSockets(t) {
+		if fields[9] != strconv.FormatUint(st.Ino, 10) {
+			continue
+		}
+		var err error
 		queued, err = strconv.ParseUint(fields[4], 10, 64)
 		if err == nil {
 			dropped, err = strconv.ParseUint(fields[8], 10, 64)
 		}
 		if err != nil {
-			t.Fatalf("the netlink socket of inode %d reads %q: %v", st.Ino, line, err)
+			t.Fatalf("the netlink socket of inode %d reads %q: %v", st.Ino, fields, err)
 		}
 		return dropped, queued
 	}
@@ -531,26 +574,22 @@ func TestNftablesWakesMissedOnAnOverflow(t *testing.T) {
 		t.Fatalf("open the nftables backend: %v", err)
 	}
 	t.Cleanup(func() { _ = be.Close() })
-	raw, err := be.(*nftables).monitor.file.SyscallConn()
-	if err != nil {
-		t.Fatal(err)
+	monitor := notificationSocket(t)
+	if err := unix.SetsockoptInt(monitor, unix.SOL_SOCKET, unix.SO_RCVBUF, 1); err != nil {
+		t.Fatalf("shrink the notification socket's buffer: %v", err)
 	}
-	var shrunk error
-	if err := raw.Control(func(fd uintptr) { shrunk = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, 1) }); err != nil || shrunk != nil {
-		t.Fatalf("shrink the notification socket's buffer: %v, %v", err, shrunk)
-	}
-	another, err := dialNetfilter()
+	another, err := nftables.Dial()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = another.Close() })
 	// a reader the scheduler favors can keep up with one transaction's notifications, so transactions go on until the kernel has dropped one
 	transactions := 0
-	for dropped, _ := socketDrops(t, raw); dropped == 0; dropped, _ = socketDrops(t, raw) {
+	for dropped, _ := socketDrops(t, monitor); dropped == 0; dropped, _ = socketDrops(t, monitor) {
 		if transactions == foreignTransactions {
 			t.Fatalf("after %d transactions of %d rules the kernel had dropped no notification", transactions, foreignRules)
 		}
-		if err := another.batch(foreignTransaction(fmt.Sprintf("fw%d", transactions), foreignRules)); err != nil {
+		if err := another.Batch(foreignTransaction(fmt.Sprintf("fw%d", transactions), foreignRules)); err != nil {
 			t.Fatalf("commit another writer's transaction: %v", err)
 		}
 		transactions++
@@ -559,12 +598,11 @@ func TestNftablesWakesMissedOnAnOverflow(t *testing.T) {
 	select {
 	case <-be.Missed():
 	case <-time.After(notificationWait):
-		var rcvbuf int
-		var readErr error
-		if err := raw.Control(func(fd uintptr) { rcvbuf, readErr = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF) }); err != nil || readErr != nil {
-			t.Logf("read the notification socket's buffer back: %v, %v", err, readErr)
+		rcvbuf, err := unix.GetsockoptInt(monitor, unix.SOL_SOCKET, unix.SO_RCVBUF)
+		if err != nil {
+			t.Logf("read the notification socket's buffer back: %v", err)
 		}
-		dropped, queued := socketDrops(t, raw)
+		dropped, queued := socketDrops(t, monitor)
 		t.Fatalf("an overflow of the notification socket never woke missed: %d transactions, its receive buffer at %d bytes, %d notifications dropped and %d bytes queued", transactions, rcvbuf, dropped, queued)
 	}
 	select {
@@ -579,7 +617,7 @@ func TestNftablesWakesMissedOnAnOverflow(t *testing.T) {
 // whatever the inode said.
 func requireEmptyRuleset(t *testing.T, be backend) {
 	t.Helper()
-	tables, err := ownTables(be.(*nftables).conn)
+	tables, err := nftables.Tables(be.(*natTables).conn, TableName)
 	if err != nil {
 		t.Fatalf("list this tool's tables: %v", err)
 	}
