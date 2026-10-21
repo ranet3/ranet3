@@ -321,6 +321,7 @@ func (c *Client) Sessions() []control.Session {
 			IKEPRF:    suite.IKEPRF,
 			IKEKex:    suite.IKEKex,
 			ESPCipher: suite.ESPCipher,
+			ESPKex:    suite.ESPKex,
 			StartedAt: started,
 			Age:       control.Duration(time.Since(started)),
 			Idle:      control.Duration(session.session.Idle()),
