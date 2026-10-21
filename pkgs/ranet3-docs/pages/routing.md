@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-10-20
+updated: 2026-10-21
 order: 45
 ---
 
@@ -32,14 +32,14 @@ timestamp (RFC 9616). The IHU carries this node's receive cost and echoes the
 neighbor's timestamps. A full route update goes out every update interval. Each
 Babel packet other than a path MTU probe fits in a 1280-byte inner IPv6 packet.
 
-| Timer           | Default    | Rule                                                                                              |
-| --------------- | ---------- | ------------------------------------------------------------------------------------------------- |
-| Hello interval  | 4 seconds  | `cap.babel.hello`                                                                                 |
-| Update interval | 16 seconds | `cap.babel.update`, or 4 x the Hello one                                                          |
-| Neighbor dead   | 14 seconds | 3.5 x the neighbor's Hello interval                                                               |
-| IHU expiry      | 14 seconds | 3.5 x the interval the IHU names                                                                  |
-| Route hold      | 56 seconds | 3.5 x the interval of the carrying Update                                                         |
-| Lost route hold | 60 seconds | the latest expiry of any update this node sent for it: 3.5 x that update's interval, plus 1 Hello |
+| Timer           | Default    | Rule                                                                                                           |
+| --------------- | ---------- | -------------------------------------------------------------------------------------------------------------- |
+| Hello interval  | 4 seconds  | `cap.babel.hello`                                                                                              |
+| Update interval | 16 seconds | `cap.babel.update`, or 4 x the Hello one                                                                       |
+| Neighbor dead   | 14 seconds | 3.5 x the neighbor's Hello interval                                                                            |
+| IHU expiry      | 14 seconds | 3.5 x the interval the IHU names                                                                               |
+| Route hold      | 56 seconds | 3.5 x the interval of the carrying Update                                                                      |
+| Lost route hold | 60 seconds | the latest expiry of any update this node sent naming it reachable: 3.5 x that update's interval, plus 1 Hello |
 
 The router id is random. The speaker keeps it in the state directory
 (`--state-dir`) together with a limit on the seqnos it has sent. A restart

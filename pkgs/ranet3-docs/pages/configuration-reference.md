@@ -369,6 +369,10 @@ configure.
 - An `addresses` entry is assigned when missing and removed at shutdown or when
   a reload drops it. The reconciler removes only addresses it added. Each entry
   needs a length above 0.
+- The mesh's own table holds each address this block assigns as this node's, at
+  its host route, and announces it only if it originates that route too. A route
+  a neighbor offers for that host route never replaces it, as
+  [routing](routing.md#what-a-node-announces) describes.
 - A default is announced and never assigned, even with `assign_announced`.
 - A negative `reconcile` is refused.
 - A route that would carry this host's own traffic, such as an announced
