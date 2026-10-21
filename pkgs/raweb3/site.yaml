@@ -23,7 +23,7 @@ cta:
   href: mailto:mesh@ranet3.com?subject=ranet3%20demo
 # a cited part is a link to the standard the text before it follows
 footer:
-  title: See it on your network.
+  title: High performance policy routed IPsec mesh SD-WAN
   stack:
     - label: Transport
       parts:
