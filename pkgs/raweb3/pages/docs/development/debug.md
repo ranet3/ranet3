@@ -141,24 +141,28 @@ These commands take flags of their own:
 - `debug pmtu [peer]` is the path MTU of every session, or of one peer's: first
   `link.mtu`, the steering header and the tun's MTU, with the answers sent to
   packets past a session's budget and the SYNs whose MSS was clamped, both for
-  the node as a whole. Then for each session its path, the peer node it is with,
-  its endpoint and whether its datagrams leave with DF, the state of its search,
-  which is `confirming`, `searching up`, `searching down`, `confirmed`,
-  `under the floor`, or `not searched` where datagrams leave without DF, its
-  budget and the MSS it clamps to, the route's MTU when last read and the target
-  it sets, the probe out and how the last one ended, its probes sent, acked and
-  lost, the sends the host refused as too large for the path, and the budget's
-  last change with its reason. A session that is `not searched` shows its path,
-  peer, endpoint, state and budget, and no probes. Its budget follows
-  `link.mtu`, and it records no change. A probe whose target the search moves
-  while it is out counts as sent, and as neither acked nor lost. A refusal, the
-  route read lower after a network change or `debug probe`, a change of
-  `link.mtu` and a move to another endpoint can each move the target. A probe
-  answered after its wait ran out counts as both acked and lost, so the 3 counts
-  need not add up. `ranet3_pmtu_probes_total` counts acked and lost probes the
-  same way and has no series for probes sent. The peer is named as `rekey` names
-  one, and completes to the nodes of the sessions the daemon holds. The command
-  fails for a peer the node holds no session with.
+  the node as a whole. `Answer sources` is the router-id of each family, an
+  address rather than the 16 hex digits of Babel's router id that `debug updown`
+  shows, and `Answer SID` the answer SID, each `none` where the node holds none,
+  as [path MTU](../path-mtu.md#where-answers-come-from) describes. Then for each
+  session its path, the peer node it is with, its endpoint and whether its
+  datagrams leave with DF, the state of its search, which is `confirming`,
+  `searching up`, `searching down`, `confirmed`, `under the floor`, or
+  `not searched` where datagrams leave without DF, its budget and the MSS it
+  clamps to, the route's MTU when last read and the target it sets, the probe
+  out and how the last one ended, its probes sent, acked and lost, the sends the
+  host refused as too large for the path, and the budget's last change with its
+  reason. A session that is `not searched` shows its path, peer, endpoint, state
+  and budget, and no probes. Its budget follows `link.mtu`, and it records no
+  change. A probe whose target the search moves while it is out counts as sent,
+  and as neither acked nor lost. A refusal, the route read lower after a network
+  change or `debug probe`, a change of `link.mtu` and a move to another endpoint
+  can each move the target. A probe answered after its wait ran out counts as
+  both acked and lost, so the 3 counts need not add up.
+  `ranet3_pmtu_probes_total` counts acked and lost probes the same way and has
+  no series for probes sent. The peer is named as `rekey` names one, and
+  completes to the nodes of the sessions the daemon holds. The command fails for
+  a peer the node holds no session with.
 - `debug probe <peer>` and `debug probe --all` ask the sessions of one peer, or
   every session, to send a liveness check now and to probe their path MTU
   budget, as each does after a network change, and name the sessions asked. A
@@ -232,6 +236,7 @@ connections to the reads.
 | ------------------------------------- | ---------------------------------------------------------------------------- |
 | `daemon.started`, `daemon.stopping`   | the node is up, and its shutdown has begun                                   |
 | `daemon.reload`                       | the file and trust document were read again, with what applied or the error  |
+| `daemon.ttl`                          | a reload could not read the host's default TTL, which ICMPv4 answers carry   |
 | `node.down`, `node.up`                | the node went off the mesh or came back, by a request or from its flag       |
 | `responder.changed`                   | a reload turned `link.listen` on or off, with the answered sessions closed   |
 | `control.verb`                        | a verb over the socket, under each session or dialer it acted on or missed   |
@@ -284,6 +289,7 @@ connections to the reads.
 | `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets                |
 | `netstack.tun.failed`                 | the tun went away under the running node, which then stops                   |
 | `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit |
+| `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                       |
 
 `egress.pass`, `egress.ready`, `egress.device`, the 3 `border` kinds and
 `transport.endpoint.unsegmented` are recorded on Linux alone, and
@@ -301,6 +307,7 @@ Each kind carries these attributes:
 | `daemon.started`                              | `version`, `config`                                                                                                                         |
 | `daemon.stopping`                             | none                                                                                                                                        |
 | `daemon.reload`                               | `path`, `applied`, `err`                                                                                                                    |
+| `daemon.ttl`                                  | `ttl`, the TTL the answers keep, and `err`                                                                                                  |
 | `node.down`                                   | `cause`, `since`, `closed`                                                                                                                  |
 | `node.up`                                     | `cause`                                                                                                                                     |
 | `responder.changed`                           | `listen`, `closed`                                                                                                                          |
@@ -359,6 +366,7 @@ Each kind carries these attributes:
 | `netstack.tun.refused`                        | `interface`, `frames`, `err`                                                                                                                |
 | `netstack.tun.failed`                         | `interface`, `err`                                                                                                                          |
 | `netstack.icmp.withheld`                      | `interface`, `limit`, `withheld`                                                                                                            |
+| `netstack.answer.source`                      | `ipv4`, `ipv6`, `sid`, each only where the node holds it                                                                                    |
 
 `err` appears on `daemon.reload`, `control.verb`, `kernel.pass`, `egress.pass`
 and `border.pass` only when the step failed, and on a `control.verb` under a
@@ -504,6 +512,12 @@ A reconciler stopped with `disable` runs no pass when it takes a reload, and the
 pass that installs the block once it is enabled again reads `trigger=enable`.
 The same holds for a reconciler `ranet3 down` stopped, until `ranet3 up`.
 
+A `daemon.ttl` is recorded when a reload cannot read the host's default TTL,
+`net.ipv4.ip_default_ttl` on Linux or `net.inet.ip.ttl` on macOS. Its `ttl` is
+the TTL the node's ICMPv4 answers keep, and its `err` names the setting and why
+the read failed. The reload applies the rest of the file, as
+[path MTU](../path-mtu.md#packets-that-do-not-fit) describes.
+
 A `node.down` carries its `cause`, `request` for `ranet3 down` and `flag` for a
 daemon that found the flag when it started, and in `since` the moment the flag
 holds. One a request caused carries in `closed` how many sessions it closed with
@@ -638,6 +652,12 @@ seconds. Each limit is recorded apart from the other. `limit` names it as the
 metric's label does, `source` for the buckets of the sources answered or `node`
 for the node's cap, and `withheld` is how many answers it withheld since its
 last event, this one included. `ranet3_icmp_withheld_total` counts every one.
+
+A `netstack.answer.source` is recorded at start where the node holds a router-id
+or a SID, and again each time a reload moves one. Its `ipv4` and `ipv6` are the
+router-id of each family and its `sid` the answer SID, as
+[path MTU](../path-mtu.md#where-answers-come-from) describes. An attribute is
+left out where the node holds no such address.
 
 ## Adding a view
 
