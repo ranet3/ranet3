@@ -145,7 +145,8 @@ hop limit of the packet it carries, as `__seg6_do_srh_encap` does. For an IPv4
 packet, the outer hop limit is 64 and the traffic class and flow label are 0.
 Each waypoint decrements the outer hop limit. The inner packet keeps its own hop
 limit. A waypoint that would take the outer hop limit to 0 answers the outer
-source with ICMP Time Exceeded, within the ICMP rate limits below.
+source with ICMP Time Exceeded from the SID the packet reached, an address of
+the waypoint, within the ICMP rate limits below.
 
 A packet a policy claims and this node cannot send is dropped. The ordinary
 route would put it out of another exit under a source that exit does not
@@ -161,10 +162,20 @@ When the steered packet is larger than that session carries, the waypoint
 answers or cuts the inner packet. The headend (the node that steered the packet)
 does the same with a packet read off its tun. An IPv6 packet gets Packet Too
 Big, and an IPv4 packet with DF set gets fragmentation needed. The answer names
-what the session carries less the headers in front of the packet. It goes from
-the packet's destination back through the mesh to its source. An IPv4 packet
-without DF is cut into fragments that fit, each sent on behind its own copy of
-the outer header and the routing header.
+what the session carries less the headers in front of the packet. A waypoint's
+answer goes back through the mesh to the packet's source, and the headend writes
+its answer into its tun, each from the address
+[path MTU](path-mtu.md#where-answers-come-from) names. An IPv4 packet without DF
+is cut into fragments that fit, each sent on behind its own copy of the outer
+header and the routing header. One whose options cannot be read is answered with
+Parameter Problem instead, naming the octet at fault, from the same address.
+
+A waypoint other than a ranet3 node may answer the steered packet itself
+instead, to the headend, as a tunnel's node answers under RFC 2473. A Linux
+`seg6local` waypoint does. The headend writes such an answer into its tun and
+does not turn it into one for the sender of the packet it carries, so path MTU
+discovery through such a waypoint fails, as
+[protocol deviations](design/protocol-deviations.md#icmp-answers) describes.
 
 These are dropped without an answer:
 
@@ -177,13 +188,14 @@ These are dropped without an answer:
   Packet Too Big and the Parameter Problem for an unrecognized option, and which
   ranet3 answers with no Packet Too Big either, as
   [the deviations](design/protocol-deviations.md#icmp-answers) list
-- an IPv4 packet with DF that no ICMP error may answer: an ICMP error, a
-  fragment other than the first, a packet to a multicast group or to
-  `255.255.255.255`, a packet from `0.0.0.0/8`, a loopback address, a multicast
-  address or `240.0.0.0/4`, or a packet whose header checksum fails
-- an IPv4 packet without DF whose options do not parse, or that cannot be cut,
-  because its data runs past 65535 bytes or the session leaves no room for 8
-  bytes of data behind its header
+- an IPv4 packet whose header fails the checks of RFC 1812 section 5.2.2, a bad
+  checksum among them
+- an IPv4 packet with DF, or without DF and with options that do not parse, that
+  no ICMP error may answer: an ICMP error, a fragment other than the first, a
+  packet to a multicast group or to `255.255.255.255`, or a packet from
+  `0.0.0.0/8`, a loopback address, a multicast address or `240.0.0.0/4`
+- an IPv4 packet without DF that cannot be cut, because its data runs past 65535
+  bytes or the session leaves no room for 8 bytes of data behind its header
 - a packet whose answer has no route back to its source
 - a packet that would be answered past the ICMP rate limits
 
@@ -197,14 +209,17 @@ answered too, a departure from RFC 4443 that
 [the deviations](design/protocol-deviations.md#icmp-answers) give the reason
 for.
 
-[Path MTU](path-mtu.md#packets-that-do-not-fit) gives the ICMP rate limits. Time
-Exceeded and Parameter Problem count against the bucket of the outer source, the
-node that steered the packet, and against the node's cap. Packet Too Big and
-fragmentation needed count against the cap alone. A packet no ICMP error may
-answer, or one to a multicast group, counts against neither. `status` counts a
-segment answered or dropped this way among the dropped, each answer among the
-answered, and each fragment of a cut segment among the forwarded. The log
-reports a dropped segment at most once every 30 seconds.
+[Path MTU](path-mtu.md#packets-that-do-not-fit) gives the ICMP rate limits. The
+Time Exceeded and Parameter Problem a refused segment gets count against the
+bucket of the outer source, the node that steered the packet, and against the
+node's cap. A Parameter Problem for options that cannot be read answers the
+packet the segment carries, and counts against the bucket of that packet's
+source and against the cap. Packet Too Big and fragmentation needed count
+against the cap alone. A packet no ICMP error may answer, or one to a multicast
+group, counts against neither. `status` counts a segment answered or dropped
+this way among the dropped, each answer among the answered, and each fragment of
+a cut segment among the forwarded. The log reports a dropped segment at most
+once every 30 seconds.
 
 No node fragments the outer packet of a steered packet. What does not fit the
 session it leaves by is answered or cut as above. The answer names what the

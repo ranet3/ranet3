@@ -4,7 +4,7 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-10-21
+updated: 2026-10-22
 order: 65
 ---
 
@@ -102,11 +102,13 @@ A packet larger than its session's budget is never sent as it is.
 
 - **IPv6, or IPv4 with DF set**: the packet is dropped and answered with ICMPv6
   Packet Too Big, or ICMP fragmentation needed. The answer names the budget less
-  the steering header the packet would take. It comes from the address the
-  packet was going to, so the sending host records the smaller path MTU for that
-  destination.
+  the steering header the packet would take. The sending host matches the answer
+  by the packet it quotes and records the smaller path MTU for that destination.
 - **IPv4 without DF**: the packet is cut into fragments that fit, as a router
-  does (RFC 791). Its destination reassembles it.
+  does (RFC 791). Its destination reassembles it. A packet whose header fails
+  the checks of RFC 1812 section 5.2.2, a bad checksum among them, is dropped
+  without an answer. A packet whose options cannot be read is dropped and
+  answered with ICMP Parameter Problem, which names the octet at fault.
 
 A node that moves a steered packet on to its next segment does the same when the
 session to that segment carries less, as [segment routing](segment-routing.md)
@@ -143,6 +145,46 @@ at the cap's rate, hold back every answer. They draw from no source's bucket
 because one address can stand for many hosts behind a NAT that routes into the
 tun, and a bucket of 6 answers, then 1 a second over IPv4 or 10 over IPv6, would
 hold back path MTU discovery for all of them.
+
+Every ICMPv4 answer carries the host's default TTL: `net.ipv4.ip_default_ttl` on
+Linux, and `net.inet.ip.ttl` on macOS. The node reads it at start and at each
+reload. A start that cannot read it stops with an error naming the setting. A
+reload that cannot read it keeps the TTL the answers carried, records a
+`daemon.ttl` event and applies the rest of the file. ICMPv6 answers carry a hop
+limit of 64.
+
+### Where answers come from
+
+A packet the node read off its tun is answered into the tun from the address the
+packet was going to, in both families, whatever router-id the node holds. `End`
+answers a segment too large for its next session about the packet the segment
+carries, through the mesh to that packet's source. The answer comes from the
+node's router-id of the carried packet's family, the address
+[RFC 1812 section 2.2.7](https://www.rfc-editor.org/rfc/rfc1812.html#section-2.2.7)
+names a router by. Where the node holds none, an IPv6 answer comes from the SID
+the segment reached and an IPv4 answer from the address the carried packet was
+going to. A Parameter Problem for options that cannot be read comes from the
+same address as a fragmentation needed would.
+[Protocol deviations](design/protocol-deviations.md#icmp-answers) gives the
+reasons.
+
+The router-id of a family is the first address `cap.table` assigns in it that a
+prefix `cap.route` announces covers, else the first host route of it that
+`cap.route` announces. A prefix covers an address only where it has no source
+prefix and does not capture the machine, which leaves out a default, its 2
+halves and a source-specific entry. An address no announced prefix covers is not
+a router-id, since the mesh does not route it back to the node and a sender's
+strict check of reverse paths would drop an answer from it. Nor is a loopback or
+link-local address, or one no answer may come from: over IPv4 one in `0.0.0.0/8`
+or `240.0.0.0/4`, and over IPv6 an IPv4 address mapped into it. A network's base
+address is not one either. Over IPv4 it names no host
+([RFC 1812 section 4.2.2.11](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.2.2.11)),
+and over IPv6 it is the Subnet-Router anycast address
+([RFC 4291 section 2.6.1](https://www.rfc-editor.org/rfc/rfc4291.html#section-2.6.1)).
+The node takes the router-id at start and again each time it rebuilds its
+announcements. The answer SID that `ranet3 debug pmtu` shows beside the
+router-ids is the first `End` segment of `cap.segment.local` that an announced
+prefix covers, under the same rules.
 
 ## MSS clamping
 

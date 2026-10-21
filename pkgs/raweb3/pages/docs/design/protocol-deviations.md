@@ -46,7 +46,11 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 4303 sections 3.3.3 and 4                | Log a sequence number overflow with the source address and IPv6 Flow ID                                                                | The log names the local port, not the source address, and no Flow ID                              | A wildcard socket, and no flow label is set                                                                                    |
 | RFC 3948 section 2.1                         | Send the IPv4 UDP checksum as zero                                                                                                     | Every IPv4 datagram carries a computed checksum                                                   | Linux refuses segmented sends without one                                                                                      |
 | RFC 3948 section 4                           | Send NAT keepalives                                                                                                                    | None are sent                                                                                     | Hellos and IKE liveness checks keep the mapping open                                                                           |
-| RFC 4443 section 2.2                         | Answer from an address of the node's own                                                                                               | Packet Too Big comes from the packet's destination                                                | A leaf may hold no address of the packet's family                                                                              |
+| RFC 4443 section 2.2                         | Answer from an address of the node's own                                                                                               | A tun read's Packet Too Big comes from the packet's destination                                   | Only the destination passes every check, see ICMP answers                                                                      |
+| RFC 4443 sections 2.4 and 3.2                | Answer the packet that could not be forwarded, to its source                                                                           | `End` answers the packet its segment carries, to that packet's source                             | The headend relays no answer to the sender, see ICMP answers                                                                   |
+| RFC 1812 sections 4.2.2.11 and 4.3.2.4       | Originate from an address of the router's own, of the interface the answer leaves by                                                   | An ICMPv4 answer to a tun read comes from the packet's destination                                | Only the destination passes `rp_filter` 1 and a strict chain                                                                   |
+| RFC 1812 sections 4.2.2.11 and 4.3.2.4       | Originate from an address of the router's own, of the interface the answer leaves by                                                   | With no IPv4 router-id, `End` answers IPv4 from the packet's destination                          | `rp_filter` 1 and a strict chain drop it from 192.0.0.8                                                                        |
+| RFC 1812 section 4.3.2.6                     | Reverse a source route the packet carries into the error, unless a policy known to the router would keep the error from its sender     | No ICMPv4 answer carries a source route                                                           | A Linux host drops a source-routed packet at its default, see ICMP answers                                                     |
 | RFC 4443 section 3.2                         | Send Packet Too Big for a packet larger than the next link, one to a multicast group included                                          | None for a packet to a multicast group                                                            | The answer would come from the group, and the mesh routes no multicast                                                         |
 | RFC 4443 section 2.4 (e.1)                   | Originate no ICMPv6 error in answer to an ICMPv6 error                                                                                 | One behind 8 extension headers or more is answered                                                | Refusing at the bound would withhold the errors sections 3.2 and 3.3 require from a packet not shown to be an error            |
 | RFC 4443 section 2.4 (f)                     | Make the rate limit's parameters configurable, since "the best defaults depend on where the implementation is expected to be deployed" | Fixed in code, the Linux kernel's defaults but for the bound on sources kept                      | Buckets per source scale the node's budget with the senders it answers, and the cap bounds a flood's cost on the smallest node |
@@ -68,6 +72,8 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 8200 section 4.5                         | Wait 60 seconds for fragments, and answer errors with ICMP                                                                             | Wait 16 seconds, send no ICMP, drop more                                                          | Fragments of 1 packet cross 1 session together                                                                                 |
 | RFC 5095 section 4.2                         | A firewall forwards by default every routing header but type 0                                                                         | The border filter drops a routing header of any type arriving from outside                        | A first header of type 0 or 2 hides an SRH from nf_tables                                                                      |
 | RFC 8754 section 4.2                         | A transit node forwards an SRH it is not the destination of                                                                            | The border filter drops a routing header of any type arriving from outside                        | The mesh is the SR domain and this node its edge, section 5.1                                                                  |
+| RFC 8754 section 5.4                         | Handle errors as RFC 2473 does, and send them to sources in the SR domain                                                              | `End` answers the carried packet to its source, in the mesh or not                                | The headend relays no answer to the sender, see ICMP answers                                                                   |
+| RFC 8754 section 5.4                         | Handle the errors an encapsulated packet meets as RFC 2473 does                                                                        | A headend writes an ICMPv6 error about its encapsulation into its tun                             | A known gap, see ICMP answers                                                                                                  |
 | RFC 8754 section 7                           | Admit at ingress only the sources of the attached networks, as BCP 38 does                                                             | The border filter denies the mesh's own space from outside and admits the rest                    | The permit half needs first-hop source validation                                                                              |
 
 ## NAT traversal and ports
@@ -656,24 +662,114 @@ so nothing on the wire depends on a zero one.
 
 ## ICMP answers
 
-A packet larger than its session carries is answered from the address it was
-going to rather than from one of this node's own.
 [RFC 4443 section 2.2](https://www.rfc-editor.org/rfc/rfc4443.html#section-2.2)
 has a node answer a packet addressed elsewhere from a unicast address of its
 own, and
 [RFC 1812 section 4.3.2.4](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.3.2.4)
-has a router answer from an address of the interface the answer leaves by.
-ranet3 answers from the destination for 2 reasons. The node that read the packet
-off its tun writes the answer back into the tun, and that node is often a leaf
-with no address of the packet's family. A waypoint is a hop inside the tunnel
-that the sender never addressed.
+has a router answer from an address of the interface the answer leaves by, and
+[section 4.2.2.11](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.2.2.11)
+has it originate every datagram from an address of its own.
+[Path MTU](../path-mtu.md#where-answers-come-from) says where each answer to a
+packet larger than its session carries comes from. A tun read's answer departs
+from them, coming from the packet's destination in both families, and so does
+`End`'s IPv4 answer where the node holds no IPv4 router-id.
+
+A tun read's answer comes from the packet's destination because that is the one
+source every check of the sending host takes. The host drops an arriving packet
+from one of its own addresses. Over IPv4 the kernel drops it unless
+`accept_local` is set, whatever `rp_filter` holds (`fib_validate_source`,
+net/ipv4/fib_frontend.c:402-409 and 456-471 at Linux `940de590`). A reverse path
+check on nftables' `fib` finds no interface for such a source in either family
+(net/ipv6/netfilter/nft_fib_ipv6.c:244 and
+net/ipv4/netfilter/nft_fib_ipv4.c:139-140), and xt_rpfilter refuses it unless
+`--accept-local` is given (net/ipv6/netfilter/ip6t_rpfilter.c:70-71 and
+net/ipv4/netfilter/ipt_rpfilter.c:42).
+
+A node can also hold an address the host does not: its `End` SID, which
+[segment routing](../segment-routing.md) keeps off the tun, or a router-id from
+a host route it announces and the host routes elsewhere. A strict reverse path
+check drops an answer from an address the host routes out of another link, since
+it takes a source only where the route back to it leaves by the link the answer
+arrived on (net/ipv6/netfilter/nft_fib_ipv6.c:244-252). The NixOS firewall
+writes such a check, `fib saddr . mark . iif oif exists accept` under a policy
+of drop, and its loose form, `fib saddr . mark oif exists accept`, takes an
+address the host routes elsewhere. The `internal/netstack` root tests run both
+chains, and under each the sender learns the path MTU from an answer from the
+destination, in both families. With the IPv6 answer written from the tun's own
+address instead, that test fails under both chains, since the sender never
+learns the path MTU.
+
+An IPv4 answer does not come from 192.0.0.8 either, the dummy address
+[RFC 7600 section 4.8](https://www.rfc-editor.org/rfc/rfc7600.html#section-4.8)
+has a translator answer from. `rp_filter` 1 drops an answer from it unless the
+host routes 192.0.0.8 into the tun, and so does NixOS's strict chain.
+`rp_filter` 2 takes it where the host has any route to 192.0.0.8, a default
+route among them, and drops it where the host has none
+(net/ipv4/fib_frontend.c:400-401 and 425-438). Every setting takes an answer
+from the destination. `End`'s IPv4 answer with no IPv4 router-id comes from the
+destination for the same reason, since the node of the carried packet's source
+writes it into its own tun, and an IPv6 SID cannot be the source of an ICMPv4
+answer.
 
 The sender's stack matches an ICMP error to its connection by the packet the
-error quotes. Linux takes the smaller path MTU to the destination from such an
-answer. The `internal/netstack` root tests check this for both families, at the
-node that read the packet and behind a waypoint. The Time Exceeded and Parameter
-Problem a refused segment gets also come from the segment's destination. That
-address is one of this node's own segments, which is within the RFC.
+error quotes, whatever address the error comes from. Linux takes the smaller
+path MTU to the destination from such an answer. The `internal/netstack` root
+tests check this for both families, with and without a router-id, at the node
+that read the packet and behind a waypoint.
+
+`End` answers the packet its segment carries, to that packet's source, rather
+than the segment it could not forward, to the headend.
+[RFC 4443 section 2.4](https://www.rfc-editor.org/rfc/rfc4443.html#section-2.4)
+says an error "MUST include as much of the IPv6 offending (invoking) packet (the
+packet that caused the error) as possible", section 3.2 sends a Packet Too Big
+to the address "Copied from the Source Address field of the invoking packet",
+and
+[RFC 8754 section 5.4](https://www.rfc-editor.org/rfc/rfc8754.html#section-5.4)
+says "For IP packets encapsulated in an outer IPv6 header, ICMP error handling
+is as defined in [RFC2473]." The carried packet's source is the host whose path
+MTU must shrink, and a ranet3 headend turns no Packet Too Big about its
+encapsulation into one for the sender. The carried packet was going to an
+address that is not this node's, so
+[RFC 4443 section 2.2](https://www.rfc-editor.org/rfc/rfc4443.html#section-2.2)
+(b) governs the answer's source.
+
+RFC 8754 section 5.4 also says "ICMP error packets generated within the SR
+domain are sent to source nodes within the SR domain." The carried packet's
+source can lie outside the mesh, behind the headend, and `End`'s answer goes to
+it all the same.
+
+The headend's half of RFC 2473's handling is a known gap. A ranet3 headend
+writes an ICMPv6 error about its own encapsulation into its tun, and the sender
+of the packet it carried never learns of it. So a waypoint that answers the
+outer source, the headend, as RFC 2473 has a tunnel's node do, breaks path MTU
+discovery through it. A Linux `seg6local` waypoint is one: its `End` forwards
+the packet as the kernel forwards any IPv6 packet, and answers one too large for
+the next link with a Packet Too Big to the outer source
+(net/ipv6/seg6_local.c:405-416 and net/ipv6/ip6_output.c:669-672 at Linux
+`940de590`).
+
+The Time Exceeded and Parameter Problem a refused segment gets come from the
+segment's destination. That address is one of this node's SIDs, which is within
+the RFC. An IPv4 answer quotes as much of the packet as fits 576 bytes
+([RFC 1812 section 4.3.2.3](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.3.2.3)),
+and an IPv6 answer as much as fits 1280 bytes
+([RFC 4443 section 2.4](https://www.rfc-editor.org/rfc/rfc4443.html#section-2.4)).
+
+No ICMPv4 answer carries a source route.
+[RFC 1812 section 4.3.2.6](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.3.2.6)
+says an error to a packet with one "SHOULD also contain a source route option of
+the same type (strict or loose), created by reversing the portion before the
+pointer", "unless the router is aware of policy that would prevent the delivery
+of the ICMP error message". That exception covers every ICMPv4 answer ranet3
+sends. Each reaches a host through a tun, this node's or that of the node the
+mesh routes the answer to, and a Linux host drops a packet with a source route
+arriving on an interface unless `accept_source_route` is set both there and
+under `all`, where it starts at 0 (`ip_rcv_options`,
+net/ipv4/ip_input.c:295-306, net/ipv4/devinet.c:71-81 and
+include/linux/inetdevice.h:85-87 and 105-106 at Linux `940de590`). An answer
+with no source route goes back by the mesh's routes, as every other answer does.
+A sender that sets `accept_source_route` and that only its source route reaches
+gets no answer.
 
 [RFC 4443 section 3.2](https://www.rfc-editor.org/rfc/rfc4443.html#section-3.2)
 says:
