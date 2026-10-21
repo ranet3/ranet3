@@ -6,8 +6,8 @@ version = 'v1.6.0'
 hash = 'sha256-ptdUJvuc21ixeLt+M5way/na3aCnCO4MYHWulWp8NEY='
 
 [mod.'github.com/ebitengine/purego']
-version = 'v0.12.0-alpha.1.0.20261015130536-d456b1bb95e8'
-hash = 'sha256-svoEqTIpxar19nKBy6Ywt4Altueur23XIWFfZHypsTc='
+version = 'v0.12.0-alpha.1.0.20261017145726-715acd0097ea'
+hash = 'sha256-ZU6uyu6e1+H9MvhBmvsxi6FLKiMeL7VgeTsLx4wGVjY='
 
 [mod.'github.com/inconshreveable/mousetrap']
 version = 'v1.1.0'
@@ -38,5 +38,5 @@ version = 'v0.49.0'
 hash = 'sha256-/1S3yy3in72ygZT1CKymvOzJZqCMYiGSqZDfvSyB3LI='
 
 [mod.'hegel.dev/go/hegel']
-version = 'v0.9.25'
-hash = 'sha256-1jfwR5ihjCivdLTHqoWZLPuswXrFd0J+ADGZS/QibhI='
+version = 'v0.9.27'
+hash = 'sha256-w3hIa2vQryJqcC968EM8w1wasPYEf98CyWMDKd7sELU='
