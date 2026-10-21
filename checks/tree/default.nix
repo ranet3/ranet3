@@ -10,6 +10,7 @@
   reuse,
   runCommand,
   taplo,
+  templ,
   writableTmpDirAsHomeHook,
 }:
 
@@ -37,6 +38,7 @@ runCommand "ranet3-tree"
       # builders, and reuse fails for want of the man output it declares
       (reuse.overridePythonAttrs { __structuredAttrs = false; })
       taplo
+      templ
       writableTmpDirAsHomeHook
     ];
   }
@@ -48,7 +50,8 @@ runCommand "ranet3-tree"
     # assigned first, so a file gofmt cannot parse fails the check as well
     unformatted="$(gofmt -l . | tee /dev/stderr)"
     test -z "$unformatted"
-    deno fmt --check readme.md pkgs/ranet3-docs/pages pkgs/ranet3/examples/config.json pkgs/ranet3-site
+    deno fmt --check readme.md pkgs/ranet3/examples/config.json pkgs/raweb3
+    templ fmt -fail pkgs/raweb3
     # found rather than globbed, so a new directory cannot quietly drop out of
     # the check. The count tells a narrowed walk from a tree that lost files
     files="$(find . -name '*.nix' -not -path './.*/*' | sort)"
@@ -58,7 +61,7 @@ runCommand "ranet3-tree"
       exit 1
     fi
     nixfmt --check $files
-    taplo format --check atelier.toml REUSE.toml pkgs/ranet3/REUSE.toml pkgs/ranet3/examples/*.toml pkgs/ranet3/gomod2nix.toml pkgs/wireguard/REUSE.toml pkgs/wireguard/gomod2nix.toml
+    taplo format --check atelier.toml REUSE.toml pkgs/ranet3/REUSE.toml pkgs/ranet3/examples/*.toml pkgs/ranet3/gomod2nix.toml pkgs/wireguard/REUSE.toml pkgs/wireguard/gomod2nix.toml pkgs/raweb3/REUSE.toml pkgs/raweb3/gomod2nix.toml
 
     if [ ${toString (lib.length kvm)} -eq 0 ]; then
       echo "the tree check found no aarch64-linux check that needs kvm" >&2
@@ -86,7 +89,7 @@ runCommand "ranet3-tree"
         failed = 1
       }
       END { exit failed }
-    ' pkgs/ranet3/go.mod pkgs/wireguard/go.mod >&2
+    ' pkgs/ranet3/go.mod pkgs/wireguard/go.mod pkgs/raweb3/go.mod >&2
 
     # reuse looks for the license texts in LICENSES alone. The rename goes
     # through a second name because a case-insensitive build directory reads

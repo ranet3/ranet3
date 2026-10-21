@@ -104,10 +104,12 @@ func loadConfig(path string) (config, error) {
 		}
 	}
 	// the go command reads the module's repository from these on every page
-	for _, name := range []string{"go-import", "go-source"} {
-		if c.Metas[name] == "" {
-			errs = append(errs, fmt.Errorf("%s: metas.%s missing", path, name))
-		}
+	host := strings.TrimPrefix(c.URL, "https://")
+	if f := strings.Fields(c.Metas["go-import"]); len(f) != 3 || f[0] != host || f[1] != "git" || !strings.HasPrefix(f[2], "https://") {
+		errs = append(errs, fmt.Errorf("%s: metas.go-import %q wants %s, git and an https repository", path, c.Metas["go-import"], host))
+	}
+	if len(strings.Fields(c.Metas["go-source"])) != 4 {
+		errs = append(errs, fmt.Errorf("%s: metas.go-source %q wants 4 fields", path, c.Metas["go-source"]))
 	}
 	for i, l := range c.Nav {
 		if l.Title == "" || l.Href == "" {

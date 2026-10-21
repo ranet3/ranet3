@@ -243,14 +243,15 @@ nix build .#checks.x86_64-linux.netlink -L
 `nix flake check -L` builds every check of the host's system. The VM tests below
 have commands of their own.
 
-| Check           | Systems | CI runs it on                    | What it runs                                                                                                                                                                                                                               |
-| --------------- | ------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote hegel's cache                                                                                                                                              |
-| `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, and `staticcheck ./...`                                                                                                                                                                  |
-| `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions both `go.mod` files require, a check of the `aarch64-linux` exclusions in `atelier.toml`, and `reuse lint` |
-| `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                                                                                                                                               |
-| `netlink`       | Linux   | `x86_64-linux`                   | the Linux root tests listed below, as root in a VM                                                                                                                                                                                         |
-| `integration-*` | Linux   | `x86_64-linux`                   | the VM tests below                                                                                                                                                                                                                         |
+| Check           | Systems | CI runs it on                    | What it runs                                                                                                                                                                                                                                                   |
+| --------------- | ------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote hegel's cache                                                                                                                                                                  |
+| `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, and `staticcheck ./...`                                                                                                                                                                                      |
+| `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `templ fmt -fail`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions the 3 `go.mod` files require, a check of the `aarch64-linux` exclusions in `atelier.toml`, and `reuse lint` |
+| `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                                                                                                                                                                   |
+| `raweb3`        | all 3   | all 3                            | `go vet ./...` and `go test ./...` in `pkgs/raweb3`                                                                                                                                                                                                            |
+| `netlink`       | Linux   | `x86_64-linux`                   | the Linux root tests listed below, as root in a VM                                                                                                                                                                                                             |
+| `integration-*` | Linux   | `x86_64-linux`                   | the VM tests below                                                                                                                                                                                                                                             |
 
 The 3 systems are `x86_64-linux`, `aarch64-linux` and `aarch64-darwin`. CI
 builds through atelier, and `atelier.toml` sets what it skips. The
@@ -283,8 +284,9 @@ the encoding meets only the decoder written beside it.
 `nix fmt` rewrites the tree in place. It runs `deno fmt` on the Markdown, the
 example JSON and the site, then `nixfmt-tree`, then `go fmt`, `go vet`,
 `staticcheck`, `gomod2nix` and `go run ./internal/cmd/notices` in `pkgs/ranet3`,
-then `gomod2nix` in `pkgs/wireguard`, then `taplo format` on every TOML file.
-The notices command regenerates `internal/notices/third_party.md`.
+then `gomod2nix` in `pkgs/wireguard`, then `templ fmt`, `go fmt` and `gomod2nix`
+in `pkgs/raweb3`, then `taplo format` on every TOML file. The notices command
+regenerates `internal/notices/third_party.md`.
 `TestEveryDirectRequirementIsNoticed` fails when a direct requirement in
 `go.mod` has no section there.
 
