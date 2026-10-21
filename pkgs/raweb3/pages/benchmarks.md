@@ -5,6 +5,7 @@ title: "Benchmarks"
 description: "ranet3 against kernel WireGuard, wireguard-go and kernel IPsec on 10 GbE, with the hardware, software and method of the runs."
 created: 2026-10-21
 updated: 2026-10-21
+vetted: 2026-10-21
 layout: bare
 ---
 

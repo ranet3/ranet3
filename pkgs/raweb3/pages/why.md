@@ -5,6 +5,7 @@ title: "Why ranet3"
 description: "The standard protocols ranet3 speaks, how it routes by latency, and how it steers traffic with segment routing."
 created: 2026-10-21
 updated: 2026-10-21
+vetted: 2026-10-21
 layout: bare
 ---
 
