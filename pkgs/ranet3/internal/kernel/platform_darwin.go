@@ -14,6 +14,8 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // routePlatform is the PF_ROUTE half of the reconciler on darwin. Nothing here
@@ -556,7 +558,7 @@ func (p *routePlatform) AddRoute(r Route) error {
 	if r.Unreachable {
 		// A hold rather than a path, so it answers with an error instead of
 		// carrying the packet out of the tun. It keeps the scope decision
-		// above: a held default must no more be visible to an unbound socket
+		// above: a held route must no more be visible to an unbound socket
 		// than a real one.
 		message.Flags |= unix.RTF_REJECT
 	}
@@ -656,7 +658,8 @@ func (p *routePlatform) scopeRoute(r Route) bool {
 	if p.rt.BoundUnderlay {
 		return coversAny(r.Destination, p.underlay)
 	}
-	return capturesTheMachine(r) || coversAny(r.Destination, p.underlay)
+	// cap.border, and with it an overlay, is refused on this platform
+	return schema.CapturesTheMachine(r.Destination, nil) || coversAny(r.Destination, p.underlay)
 }
 
 // interface scope is the only thing on this platform that draws the

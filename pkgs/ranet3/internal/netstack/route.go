@@ -62,7 +62,10 @@ func (rt *RouteTable) Changed() <-chan struct{} { return rt.changed }
 // The unreachable holds are included, carrying the Unreachable sentinel as
 // their value. They exist to stop a packet for a retracted prefix following a
 // shorter one instead, and a mirror of this table has to hold them for the
-// same reason rather than letting its own longest-prefix match fall through.
+// same reason rather than letting its own longest-prefix match fall through,
+// but for a hold that counts as a default (schema.CapturesTheMachine): the
+// kernel's mirror leaves that one to this table's lookup, the departure the
+// protocol deviations page lists for RFC 8966 section 3.5.4.
 // This node's own entries are included too, carrying Local or Assigned. No
 // sentinel is a Peer that can be sent through, so a caller walking these has
 // to recognize each before treating one as a destination.

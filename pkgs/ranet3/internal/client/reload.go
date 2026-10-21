@@ -118,8 +118,8 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	}
 	// the last refusal
 	// the reconciler takes a table it accepts at once
-	if !sameTable(old, cfg) {
-		if err := c.retable(cfg); err != nil {
+	if !sameTable(old, cfg) || cfg.Cap.Table != nil && !sameOverlay(old, cfg) {
+		if err := c.retable(old, cfg); err != nil {
 			return err
 		}
 	}
@@ -184,17 +184,22 @@ func (c *Client) ReloadFrom(path string) (err error) {
 }
 
 // SetReconcilerTable hands the reload path the route reconciler's SetTable, as SetReconcilerEnable hands the write path its stop and start
-func (c *Client) SetReconcilerTable(set func(kernel.Table, []netip.Prefix) error) {
+func (c *Client) SetReconcilerTable(set func(kernel.Table, []schema.Prefix, []netip.Prefix) error) {
 	c.reconcilerTable.Store(&set)
 }
 
-// retable hands the running reconciler the cap.table next carries, with the prefixes its cap.route announces
-func (c *Client) retable(next *config.Config) error {
+// retable refuses a move made before main hands the reconciler over, which
+// would otherwise be lost to the reconciler built from what it read first
+func (c *Client) retable(old, next *config.Config) error {
 	set := c.reconcilerTable.Load()
 	if set == nil {
-		return errors.New("config: cap.table changed and no reconciler is running to take it, restart to apply")
+		moved := "cap.table"
+		if sameTable(old, next) {
+			moved = "cap.border overlay"
+		}
+		return fmt.Errorf("config: %s changed and no reconciler is running to take it, restart to apply", moved)
 	}
-	return (*set)(*next.Cap.Table, next.Routes().Announced())
+	return (*set)(*next.Cap.Table, next.Overlay(), next.Routes().Announced())
 }
 
 // changedCapabilities names each capability a reload from old to next applied in place
@@ -418,15 +423,12 @@ func sameBorder(old, next *config.Config) bool {
 	return sameOverlay(old, next) && slices.Equal(sortedAddrs(borderSIDs(old)), sortedAddrs(borderSIDs(next)))
 }
 
-// sameOverlay compares cap.border's overlay as the filter runs it
+// sameOverlay compares cap.border's overlay as the filter runs it, in any order
 func sameOverlay(old, next *config.Config) bool {
-	overlay := func(cfg *config.Config) []schema.Prefix {
-		if cfg.Cap.Border == nil {
-			return nil
-		}
-		return cfg.Cap.Border.Normalized().Overlay
+	sorted := func(cfg *config.Config) []schema.Prefix {
+		return slices.SortedFunc(slices.Values(cfg.Overlay()), schema.ComparePrefix)
 	}
-	return slices.Equal(overlay(old), overlay(next))
+	return slices.Equal(sorted(old), sorted(next))
 }
 
 func sortedAddrs(addrs []netip.Addr) []netip.Addr {

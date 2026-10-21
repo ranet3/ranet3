@@ -159,19 +159,39 @@ func TestDarwinScopedRouteSelection(t *testing.T) {
 func TestDarwinScopesARouteThatCoversTheUnderlay(t *testing.T) {
 	peer := netip.MustParseAddr("2001:db8:beef::1")
 	plat, _ := testPlatform(t, Table{}, Runtime{Underlay: func() []netip.Addr { return []netip.Addr{peer} }})
-	capturing := Route{Destination: prefix("2000::/3")}
+	covering := Route{Destination: prefix("2001:db8::/32")}
 	elsewhere := Route{Destination: prefix("3fff:1::/32")}
-	if plat.scopeRoute(capturing) {
+	if plat.scopeRoute(covering) {
 		t.Fatal("the underlay was consulted before Routes took it, so a pass would decide scope two ways")
 	}
 	if _, err := plat.Routes(); err != nil {
 		t.Fatal(err)
 	}
-	if !plat.scopeRoute(capturing) {
-		t.Error("a /3 holding a peer's endpoint installs unscoped, so an unbound socket routes the ESP into the tun")
+	if !plat.scopeRoute(covering) {
+		t.Error("a /32 holding a peer's endpoint installs unscoped, which routes an unbound socket's ESP into the tun")
 	}
 	if plat.scopeRoute(elsewhere) {
 		t.Error("a mesh prefix holding no endpoint was scoped, so the mesh is reachable only from a bound socket")
+	}
+}
+
+// A route schema.CapturesTheMachine counts is scoped out of every unbound
+// socket's reach, a split internet and a wide prefix as much as a default,
+// while one at the floor stays unscoped.
+func TestDarwinScopesARouteThatCountsAsADefault(t *testing.T) {
+	plat, _ := testPlatform(t, Table{}, Runtime{})
+	for destination, want := range map[string]bool{
+		"::/0":        true,
+		"64.0.0.0/2":  true,
+		"192.0.0.0/7": true,
+		"2000::/3":    true,
+		"fd00::/8":    true,
+		"192.0.0.0/8": false,
+		"2001::/16":   false,
+	} {
+		if got := plat.scopeRoute(Route{Destination: prefix(destination)}); got != want {
+			t.Errorf("%s is scoped %v, want %v", destination, got, want)
+		}
 	}
 }
 

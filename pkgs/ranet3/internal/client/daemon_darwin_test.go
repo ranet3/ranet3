@@ -431,8 +431,8 @@ func TestCaptureIsHeldBackForAFamilyTheUnderlayCannotFallBackOn(t *testing.T) {
 // A prefix covering a peer's own endpoint takes this node's ESP into the
 // tunnel carrying it, however the socket is bound, because the peer is then
 // reached through the tun rather than past it. It is scoped for that reason
-// alone, and neither half the address space nor a route containing the
-// family's zero address, so the capture gate does not cover it.
+// alone: it does not count as a default, and the capture gate does not cover
+// it.
 func TestPrefixCoveringAPeerEndpointIsScopedEvenWithABoundSocket(t *testing.T) {
 	d := startDaemon(t, true, recordedHost(t))
 	d.live(t)

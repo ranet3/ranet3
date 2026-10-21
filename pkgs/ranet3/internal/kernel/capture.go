@@ -6,6 +6,8 @@ package kernel
 import (
 	"net/netip"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // DefaultCaptureGrace is how long a route that would capture this machine's
@@ -18,48 +20,13 @@ import (
 // machine has no working network at all.
 const DefaultCaptureGrace = 10 * time.Second
 
-func capturesTheMachine(r Route) bool { return CapturesTheMachine(r.Destination) }
-
-// CapturesTheMachine reports a prefix that, routed out of the tun, takes this
-// machine's own traffic rather than a prefix of it. Two arms, and each comes
-// from a measurement rather than from a rule of thumb about prefix lengths.
-//
-//   - Half the address space or more. That is how a default that does not
-//     replace the host's own is written, 0.0.0.0/1 with 128.0.0.0/1 or ::/1
-//     with 8000::/1, the spelling wg-quick and the tunnels on darwin use, and
-//     a neighbor can announce one: the Update decoder bounds a prefix length
-//     only at 32 and 128.
-//
-//   - Any prefix containing the family's unspecified address, however small.
-//     That is the darwin kernel's own trigger, measured on Darwin 27.2.0 by
-//     TestZMeasureWhichSetsStrandABoundSocket and kept as
-//     TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress: a socket bound
-//     with IP_BOUND_IF loses a destination exactly when the tun's unscoped
-//     routes best-match both that destination and the all-zeros address of
-//     its family. The scoped lookup falls back to a longest-prefix match on
-//     the unspecified address and requires the answer to be on the bound
-//     interface, so a route as small as 0.0.0.0/24 out of the tun takes the
-//     fallback away. 0.0.0.0/24 with 192.0.2.0/24 strands, but 64.0.0.0/2 with
-//     192.0.2.0/24 does not.
-//
-// The second arm makes this a property of the set rather than of one
-// route: no set can cover a family without some member containing that
-// family's zero address, so holding those back breaks every full cover and
-// restores the kernel's fallback. Measured: with 0.0.0.0/1 withdrawn,
-// 128.0.0.0/1 alone leaves both probes reaching.
+// CapturesTheMachine reports a prefix of at most one bit or one holding its family's all-zeros address, the rule answerSources reads
 func CapturesTheMachine(prefix netip.Prefix) bool {
-	if prefix.Bits() <= 1 {
-		return true
-	}
-	return prefix.Contains(unspecifiedOf(prefix.Addr()))
+	return prefix.Bits() <= 1 || schema.HoldsUnspecified(prefix)
 }
 
-// unspecifiedOf is the all-zeros address of a prefix's family.
-func unspecifiedOf(address netip.Addr) netip.Addr {
-	if address.Is4() {
-		return netip.IPv4Unspecified()
-	}
-	return netip.IPv6Unspecified()
+func (r *Reconciler) captures(route Route) bool {
+	return schema.CapturesTheMachine(route.Destination, r.rt.Overlay)
 }
 
 // CaptureRoutes is the routing the underlay depends on before the mesh may be

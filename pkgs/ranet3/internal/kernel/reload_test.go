@@ -26,7 +26,7 @@ import (
 // reload hands r the capability and runs the pass the loop runs after taking it
 func reload(t *testing.T, r *Reconciler, next Table, announced ...netip.Prefix) {
 	t.Helper()
-	if err := r.SetTable(next, announced); err != nil {
+	if err := r.SetTable(next, nil, announced); err != nil {
 		t.Fatalf("the reload was refused: %v", err)
 	}
 	if !r.adopt() {
@@ -185,7 +185,7 @@ func TestReloadSweepsAtTheNewInterval(t *testing.T) {
 	table.Set(netip.Prefix{}, ordinary.Destination, nil)
 	last := runToRecord(t, r, table, bus)
 	awaitPass(t, last, "the first pass", "start", func() bool { return fake.has(ordinary) })
-	if err := r.SetTable(Table{Reconcile: schema.Duration(sweepEvery)}, nil); err != nil {
+	if err := r.SetTable(Table{Reconcile: schema.Duration(sweepEvery)}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	// a route deleted before the reload pass reads the kernel is put back by that pass rather than by a sweep
@@ -208,7 +208,7 @@ func TestReloadWithdrawsTheCaptureOnTheNewGrace(t *testing.T) {
 	last := runToRecord(t, r, table, bus)
 	awaitPass(t, last, "the capture", "start", func() bool { return fake.has(capture) })
 	shorter := Table{Reconcile: schema.Duration(time.Hour), CaptureGrace: schema.Duration(MinCaptureGrace)}
-	if err := r.SetTable(shorter, nil); err != nil {
+	if err := r.SetTable(shorter, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	awaitPass(t, last, "the pass after the reload", "reload", func() bool { return true })
@@ -235,13 +235,13 @@ func TestStoppedReconcilerTakesAReloadAndInstallsItOnlyOnceStarted(t *testing.T)
 	waitFor(t, func() bool { return len(fake.snapshot()) == 0 && len(fake.heldAddresses()) == 0 })
 
 	next := Table{Metric: 32, Addresses: prefixes(prefix("198.18.104.6/32")), Rules: []Rule{rule}}
-	if err := r.SetTable(next, nil); err != nil {
+	if err := r.SetTable(next, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return r.Table().Metric == 32 })
 	later := next
 	later.Reconcile = schema.Duration(time.Minute)
-	if err := r.SetTable(later, nil); err != nil {
+	if err := r.SetTable(later, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return r.Table().Reconcile.Duration() == time.Minute })
@@ -282,7 +282,7 @@ func TestReloadRefusesWhatTheReconcilerCannotTake(t *testing.T) {
 				t.Fatal(err)
 			}
 			routes, addresses, rules := fake.snapshot(), fake.heldAddresses(), fake.heldRules()
-			err := r.SetTable(refused.next, nil)
+			err := r.SetTable(refused.next, nil, nil)
 			if err == nil || !strings.Contains(err.Error(), refused.naming) {
 				t.Fatalf("the reload was refused with %v, want it to say %q", err, refused.naming)
 			}
@@ -302,7 +302,7 @@ func TestReloadRefusesWhatTheReconcilerCannotTake(t *testing.T) {
 	}
 	// a platform with no policy routing refuses a reload that asks for a rule, as New refuses one
 	r := newReconciler(Table{}.Normalized(), Runtime{Interface: "utun9"}, nil, nil, netstack.NewRouteTable(), routesOnly{inner: newFakeKernel(t)})
-	if err := r.SetTable(Table{Rules: []Rule{underlay}}, nil); err == nil || !strings.Contains(err.Error(), "no policy routing") {
+	if err := r.SetTable(Table{Rules: []Rule{underlay}}, nil, nil); err == nil || !strings.Contains(err.Error(), "no policy routing") {
 		t.Errorf("a rule on a platform without them was refused with %v", err)
 	}
 	if r.adopt() {
@@ -326,11 +326,11 @@ func TestReloadPassIsRecordedAsAReload(t *testing.T) {
 		}
 		return out
 	}
-	if err := r.SetTable(Table{Reconcile: schema.Duration(time.Minute)}, nil); err != nil {
+	if err := r.SetTable(Table{Reconcile: schema.Duration(time.Minute)}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return len(reloadPasses()) == 1 })
-	if err := r.SetTable(Table{Reconcile: schema.Duration(time.Minute), Metric: 32}, nil); err != nil {
+	if err := r.SetTable(Table{Reconcile: schema.Duration(time.Minute), Metric: 32}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return len(reloadPasses()) == 2 })
@@ -347,7 +347,7 @@ func TestWhereIsReadWhileTheLoopTakesAReload(t *testing.T) {
 	table.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
 	last := runToRecord(t, r, table, bus)
 	awaitPass(t, last, "the first pass", "start", func() bool { return true })
-	if err := r.SetTable(Table{Metric: 32}, nil); err != nil {
+	if err := r.SetTable(Table{Metric: 32}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	awaitPass(t, last, "the pass after the reload", "reload", func() bool { return r.Where() == "table 200" })
@@ -364,11 +364,11 @@ func TestSecondReloadReadsTheTableTheLoopTook(t *testing.T) {
 	table.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
 	last := runToRecord(t, r, table, bus)
 	awaitPass(t, last, "the first pass", "start", func() bool { return true })
-	if err := r.SetTable(Table{Metric: 32}, nil); err != nil {
+	if err := r.SetTable(Table{Metric: 32}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(reloadsApart)
-	if err := r.SetTable(Table{Metric: 64}, nil); err != nil {
+	if err := r.SetTable(Table{Metric: 64}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	awaitPass(t, last, "the pass after the second reload", "reload", func() bool { return r.Table().Metric == 64 })
@@ -387,7 +387,7 @@ func TestReloadInsideTheSettleWindowIsTaken(t *testing.T) {
 	awaitPass(t, last, "the first pass", "start", func() bool { return true })
 	table.Set(netip.Prefix{}, prefix("10.1.0.0/16"), nil)
 	time.Sleep(insideSettle)
-	if err := r.SetTable(Table{Metric: 32}, nil); err != nil {
+	if err := r.SetTable(Table{Metric: 32}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	awaitPass(t, last, "the pass after the reload", "reload", func() bool { return r.Table().Metric == 32 })
@@ -403,7 +403,7 @@ func TestPassTakingOffAnAddressAReloadDroppedIsRecorded(t *testing.T) {
 	if err := r.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.SetTable(Table{}, nil); err != nil {
+	if err := r.SetTable(Table{}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !r.adopt() {

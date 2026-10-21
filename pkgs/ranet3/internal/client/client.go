@@ -26,6 +26,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
+	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 	"ranet3.com/pkgs/ranet3/transport"
 	"ranet3.com/pkgs/wireguard/tun"
@@ -137,8 +138,8 @@ type Client struct {
 	// cap.table, where the verb is refused by name rather than reported as
 	// having stopped something.
 	reconcilerEnable atomic.Pointer[func(bool)]
-	// reconcilerTable hands the route reconciler a reloaded cap.table, supplied as reconcilerEnable is
-	reconcilerTable atomic.Pointer[func(kernel.Table, []netip.Prefix) error]
+	// reconcilerTable hands the route reconciler a reloaded cap.table and cap.border overlay, supplied as reconcilerEnable is
+	reconcilerTable atomic.Pointer[func(kernel.Table, []schema.Prefix, []netip.Prefix) error]
 	// egressEnable stops and starts the egress translator, supplied as reconcilerEnable is and nil on a node with no cap.egress
 	egressEnable atomic.Pointer[func(bool)]
 	// configPath is where the daemon read this node's configuration, so the
@@ -559,22 +560,22 @@ func borderSIDs(cfg *config.Config) []netip.Addr {
 // command that builds the reconciler hands it to kernel.Config.
 func (c *Client) CaptureRoutes() kernel.CaptureRoutes { return c.capture }
 
-// KernelRuntime is everything cap.table is handed rather than told: the device
-// the mesh actually got, the addresses the transport has to keep reaching, the
-// prefixes cap.route announces, and the two halves of link.underlay that only
-// a running node knows. None of it is a fact an operator writes down, which is
-// why none of it is in the capability.
+// KernelRuntime assembles what cap.table's reconciler reads from outside the
+// capability: the device the mesh actually got, the addresses the transport
+// has to keep reaching and the two halves of link.underlay, which only a
+// running node knows, and what other capabilities write, the prefixes
+// cap.route announces and cap.border's overlay.
 //
-// It is assembled here rather than in the command because five of the seven
-// are this client's own and the other two are the settings it opened them
-// under. The command builds the reconciler from it. See kernel.Runtime for
-// what each field decides.
+// It is assembled here rather than in the command because most of it is this
+// client's own and the rest is the configuration it runs. The command builds
+// the reconciler from it. See kernel.Runtime for what each field decides.
 func (c *Client) KernelRuntime() kernel.Runtime {
 	cfg := c.config()
 	return kernel.Runtime{
 		Interface: c.Mesh.Name,
 		Underlay:  c.Underlay,
 		Announced: cfg.Routes().Announced(),
+		Overlay:   cfg.Overlay(),
 		Sessions:  c.LiveSessions,
 		// One setting decides both halves, so they cannot be set against each
 		// other: the transport binds its socket off the forwarding table, and

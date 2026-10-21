@@ -171,10 +171,10 @@ type VRF struct {
 	Create bool `yaml:"create,omitempty" json:"create,omitempty" toml:"create,omitempty"`
 }
 
-// Runtime is the half the reconciler is handed rather than told: the device
-// the mesh actually got, the addresses this node's transport has to keep
-// reaching, and the prefixes cap.route announces. None of the three is a fact an
-// operator writes down, so none of them is in the capability.
+// Runtime holds what the reconciler reads from outside cap.table: the device
+// the mesh actually got and the addresses this node's transport has to keep
+// reaching, which only a running node knows, and what other capabilities
+// write, the prefixes cap.route announces and cap.border's overlay among them.
 type Runtime struct {
 	// Interface is the TUN device every installed route points at, named as
 	// the kernel named it (netstack.Mesh.Name, not the requested name).
@@ -189,6 +189,10 @@ type Runtime struct {
 	// Table.AssignAnnounced puts on the device beside the addresses written
 	// here.
 	Announced []netip.Prefix
+	// Overlay is cap.border's overlay, nil without the block, which
+	// schema.CapturesTheMachine reads to tell a route that counts as a default
+	// from a subnet. SetTable replaces it on a reload.
+	Overlay []schema.Prefix
 	// BoundUnderlay says the transport's own socket no longer consults the
 	// forwarding table, because it is bound to the interface the host's
 	// default route leaves by. The darwin backend then installs an announced
@@ -1153,13 +1157,14 @@ func (r *Reconciler) Enabled() bool { return r.enabled.Load() }
 // accepted is a capability SetTable took, resolved as New resolves one
 type accepted struct {
 	table     Table
+	overlay   []schema.Prefix
 	addresses []netip.Prefix
 }
 
-// SetTable hands the loop the capability a reload read, with the prefixes cap.route announces, for a pass at once
+// SetTable hands the loop the capability a reload read, with cap.border's overlay and the prefixes cap.route announces, for a pass at once
 // it refuses what New refuses and a change of id, proto or vrf
 // a refusal changes nothing
-func (r *Reconciler) SetTable(t Table, announced []netip.Prefix) error {
+func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []netip.Prefix) error {
 	if err := t.Validate(); err != nil {
 		return err
 	}
@@ -1177,7 +1182,7 @@ func (r *Reconciler) SetTable(t Table, announced []netip.Prefix) error {
 	if err != nil {
 		return err
 	}
-	r.next.Store(&accepted{table: t, addresses: addresses})
+	r.next.Store(&accepted{table: t, overlay: overlay, addresses: addresses})
 	select {
 	case r.reload <- struct{}{}:
 	default:
@@ -1191,7 +1196,7 @@ func (r *Reconciler) adopt() bool {
 	if next == nil {
 		return false
 	}
-	r.table, r.ruleSet, r.addresses = next.table, next.table.Rules, next.addresses
+	r.table, r.ruleSet, r.addresses, r.rt.Overlay = next.table, next.table.Rules, next.addresses, next.overlay
 	r.gate.grace = next.table.CaptureGrace.Duration()
 	r.plat.retable(next.table)
 	r.inForce.Store(&next.table)
@@ -1592,7 +1597,7 @@ func (r *Reconciler) applyRoutes() error {
 	// Whether this pass leaves the mesh carrying this machine's own traffic,
 	// which desired answers alone: it already holds only the capturing routes
 	// this pass may install.
-	r.capturing = slices.ContainsFunc(desired, capturesTheMachine)
+	r.capturing = slices.ContainsFunc(desired, r.captures)
 	covering, scopes := r.covers(), r.platformScopes()
 	scoped := func(route Route) bool { return route.Scoped || scopes != nil && scopes(route) }
 	// A member is withheld only for a route the kernel holds once the pass has
@@ -1613,9 +1618,9 @@ func (r *Reconciler) applyRoutes() error {
 	unmet := func(route Route) bool { return scoped(route) || unheld[route] }
 	bare := desired
 	// After the capture grace check and the readiness check, which judge the
-	// default whole: a member holds no zero address, so capturesTheMachine
-	// reads only a /1 member as a capture and would pass the rest while that
-	// check holds captures back.
+	// default whole: a member holds no zero address, and CapturesTheMachine
+	// counts one by its length outside the overlay alone, which would pass the
+	// rest while that check holds captures back.
 	if covering {
 		desired = coverDefaults(bare, unmet)
 	}
@@ -1661,7 +1666,7 @@ func (r *Reconciler) applyRoutes() error {
 		} else {
 			removed++
 			delete(held, route)
-			released = released || capturesTheMachine(route) && !route.Cover
+			released = released || r.captures(route) && !route.Cover
 		}
 	}
 	if released && r.rt.Capture != nil {
@@ -1792,8 +1797,7 @@ func (r *Reconciler) covered(desired []Route) ([]Route, error) {
 	covering, scopes := r.covers(), r.platformScopes()
 	coverOnly := func(route Route) bool { return covering && plainDefault(route) }
 	needsUnderlay := func(route Route) bool {
-		zero := unspecifiedOf(route.Destination.Addr())
-		return route.Destination.Contains(zero) && !coverOnly(route) && (scopes == nil || !scopes(route))
+		return schema.HoldsUnspecified(route.Destination) && !coverOnly(route) && (scopes == nil || !scopes(route))
 	}
 	var want Covered
 	for _, route := range desired {
@@ -1887,10 +1891,16 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer]) []Route {
 		}
 		// Left out of the pass rather than reported as skipped: skipped counts
 		// what the mesh wanted and the kernel would not take, and this is the
-		// reconciler declining to ask. A hold is declined too, because a hold
-		// at a default answers with an error for every destination and is the
-		// same outage in a different shape.
-		if capturesTheMachine(route) && !r.capture {
+		// reconciler declining to ask. A hold or this node's own entry that
+		// counts is declined whatever the gate says: it would answer with an
+		// error every lookup of the host's own traffic it covers, which cuts the
+		// host off while other sessions are live. RFC 8966 section 3.5.4's
+		// "packets destined to an address within P MUST NOT be forwarded by
+		// following a route for a shorter prefix" is kept by the mesh's own
+		// lookup, which answers RouteHeld or RouteLocal on every tun read inside
+		// the entry, while the host's own and forwarded traffic there takes the
+		// host's routes, the departure the protocol deviations page lists.
+		if r.captures(route) && (unreachable || !r.capture) {
 			continue
 		}
 		if entry.Source.IsValid() {

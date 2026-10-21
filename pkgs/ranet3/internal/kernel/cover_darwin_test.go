@@ -563,10 +563,10 @@ func TestDarwinAnotherProgramsCaptureDrawsTheScopedDefaultWithinAPass(t *testing
 	}
 }
 
-// The hold Babel keeps at a retracted default and a default from a source are
-// scoped to the tun, out of every unscoped lookup, so both go in and neither
-// draws a default scoped to the underlay's interface.
-func TestDarwinScopedCaptureDrawsNoScopedDefault(t *testing.T) {
+// A default from a source is scoped to the tun, out of every unscoped lookup:
+// it goes in and draws no default scoped to the underlay's interface. The hold
+// Babel keeps at a retracted default stays out of the tun's table.
+func TestDarwinScopedCaptureDrawsNoScopedDefaultAndAHeldDefaultStaysOut(t *testing.T) {
 	requireNetTest(t)
 	rig := newCoverRig(t, coverRigOptions{})
 	rig.passByHand(t)
@@ -576,10 +576,11 @@ func TestDarwinScopedCaptureDrawsNoScopedDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	held := heldOn(t, rig.meshIndex)
-	for _, destination := range []netip.Prefix{prefix("0.0.0.0/0"), prefix("::/0")} {
-		if scoped, ok := held[destination]; !ok || !scoped {
-			t.Errorf("the tun's table holds %s as found %v scoped %v, want it scoped", destination, ok, scoped)
-		}
+	if scoped, ok := held[prefix("::/0")]; !ok || !scoped {
+		t.Errorf("the tun's table holds ::/0 as found %v scoped %v, want it scoped", ok, scoped)
+	}
+	if _, ok := held[prefix("0.0.0.0/0")]; ok {
+		t.Error("the tun's table holds the retracted 0.0.0.0/0")
 	}
 	for _, is4 := range []bool{true, false} {
 		if scopedDefaultOn(t, rig.host4, is4) {

@@ -14,10 +14,12 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// The IPv6 arm of capturesTheMachine, measured rather than inferred from the
-// IPv4 one.
+// The IPv6 half of schema.CapturesTheMachine's arm over the unspecified
+// address, measured rather than inferred from the IPv4 one.
 //
 // It needs an unscoped ::/0 to fall back to, and this host has none: every
 // ::/0 here is a scoped route on somebody's utun. So the uplink is built
@@ -96,7 +98,7 @@ func TestDarwinStrandsABoundIPv6SocketThroughTheZeroAddress(t *testing.T) {
 			}
 			held := false
 			for _, one := range test.set {
-				if capturesTheMachine(Route{Destination: prefix(one)}) {
+				if schema.CapturesTheMachine(prefix(one), nil) {
 					held = true
 				}
 			}

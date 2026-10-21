@@ -221,6 +221,80 @@ func BelowSourceFloor(prefix netip.Prefix) bool {
 	return prefix.Bits() < MinSourceBits6
 }
 
+// CapturesTheMachine reports a prefix that, routed out of the tun, takes this
+// machine's own traffic rather than a prefix of it, given the overlay
+// cap.border names. Such a prefix counts as a default, and a node advertising
+// one is an exit for its family. Two arms.
+//
+//   - Outside the overlay and shorter than the family's floor, MinSubnetBits4
+//     or MinSubnetBits6. That is how a default that does not replace the
+//     host's own is written, 0.0.0.0/1 with 128.0.0.0/1 or ::/1 with
+//     8000::/1, the spelling wg-quick and the tunnels on darwin use, and how a
+//     split internet is, four /2s or 2000::/3, which capture a host's traffic
+//     as a default does and, once retracted, cut it off through their holds.
+//     A neighbor can announce any of them: the Update decoder bounds a prefix
+//     length only at 32 and 128. A prefix inside the overlay, each address of
+//     it in some entry, counts nothing under this arm: the overlay is the space
+//     the mesh numbers its own nodes from, and a route inside it carries traffic
+//     to mesh addresses alone, however wide. The design's later rule sending the
+//     overlay to the mesh's table ahead of the host's routes is not installed
+//     yet, and until it is, such a route goes into the kernel as any subnet
+//     does. The border filter reads the overlay as the same union.
+//
+//   - Any prefix containing the family's unspecified address, however small,
+//     inside the overlay or not. That is the darwin kernel's own trigger,
+//     measured on Darwin 27.2.0 by TestZMeasureWhichSetsStrandABoundSocket and
+//     kept as TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress: a socket
+//     bound with IP_BOUND_IF loses a destination exactly when the tun's
+//     unscoped routes best-match both that destination and the all-zeros
+//     address of its family. The scoped lookup falls back to a longest-prefix
+//     match on the unspecified address and requires the answer to be on the
+//     bound interface, so a route as small as 0.0.0.0/24 out of the tun takes
+//     the fallback away, and an overlay holding it changes nothing in that
+//     lookup. 0.0.0.0/24 with 192.0.2.0/24 strands, but 64.0.0.0/2 with
+//     192.0.2.0/24 does not.
+//
+// The second arm makes this a property of the set rather than of one route: no
+// set can cover a family without some member containing that family's zero
+// address, so holding those back breaks every full cover and restores the
+// kernel's fallback. Measured: with 0.0.0.0/1 withdrawn, 128.0.0.0/1 alone
+// leaves both probes reaching.
+func CapturesTheMachine(prefix netip.Prefix, overlay []Prefix) bool {
+	if HoldsUnspecified(prefix) {
+		return true
+	}
+	floor := MinSubnetBits6
+	if prefix.Addr().Is4() {
+		floor = MinSubnetBits4
+	}
+	return prefix.Bits() < floor && !insideOverlay(prefix.Masked(), overlay)
+}
+
+// insideOverlay reports each address of a masked prefix lying in some entry of
+// the overlay
+func insideOverlay(prefix netip.Prefix, overlay []Prefix) bool {
+	split := false
+	for _, entry := range overlay {
+		if entry.Bits() <= prefix.Bits() && entry.Contains(prefix.Addr()) {
+			return true
+		}
+		split = split || prefix.Contains(entry.Addr())
+	}
+	if !split {
+		return false
+	}
+	// an entry lies within the prefix and covers only part of it, which leaves
+	// each half to be covered on its own
+	high := prefix.Addr().AsSlice()
+	high[prefix.Bits()/8] |= 0x80 >> (prefix.Bits() % 8)
+	upper, _ := netip.AddrFromSlice(high)
+	return insideOverlay(netip.PrefixFrom(prefix.Addr(), prefix.Bits()+1), overlay) &&
+		insideOverlay(netip.PrefixFrom(upper, prefix.Bits()+1), overlay)
+}
+
+// HoldsUnspecified reports a prefix holding its family's all-zeros address.
+func HoldsUnspecified(prefix netip.Prefix) bool { return prefix.Masked().Addr().IsUnspecified() }
+
 // Addr is one address, with no prefix length and no zone. Every field written
 // as one names a host, a segment or a source and never a link, so a zone is
 // refused by name rather than carried somewhere it means nothing.
