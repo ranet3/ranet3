@@ -37,9 +37,13 @@ templ Head(site Site, page Page) {
 	<script defer data-domain={ site.Analytics.Domain } src={ site.Analytics.Src }></script>
 }
 
-// Logo is the ASCII logo, a core node inside 2 broken orbits, each carrying a peer.
-templ Logo(class string) {
-	<pre class={ class } role="img" aria-label="The ranet3 logo, a core node inside 2 broken orbits, each carrying a peer">
-		@templ.Raw(logo)
-	</pre>
+// Mark is the logo drawn small, the core node and its 2 orbits, size pixels square.
+templ Mark(size int) {
+	<svg viewBox="0 0 100 100" width={ size } height={ size } aria-hidden="true" class="block flex-none">
+		<path d="M90.8 33.5 A44 44 0 1 1 70.7 11.2" style="fill:none;stroke:var(--mute);stroke-width:6;stroke-linecap:round"></path>
+		<circle cx="82.7" cy="20.6" r="7" style="fill:var(--fg)"></circle>
+		<path d="M24.6 61.8 A28 28 0 1 1 38.2 75.4" style="fill:none;stroke:var(--fg);stroke-width:7;stroke-linecap:round"></path>
+		<circle cx="30.2" cy="69.8" r="7" style="fill:var(--fg)"></circle>
+		<circle cx="50" cy="50" r="12" style="fill:var(--acc)"></circle>
+	</svg>
 }

@@ -32,7 +32,7 @@ const (
 
 // layouts a page's frontmatter may name
 const (
-	layoutLanding = "landing"
-	layoutPage    = "page"
-	layoutDocs    = "docs"
+	layoutBare = "bare"
+	layoutPage = "page"
+	layoutDocs = "docs"
 )

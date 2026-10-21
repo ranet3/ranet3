@@ -5,14 +5,6 @@
 // shares, whichever site or service renders it.
 package ui
 
-import _ "embed"
-
-// logo is the ASCII logo's markup, kept out of templ, which would collapse its
-// whitespace
-//
-//go:embed logo.html
-var logo string
-
 // Site holds what every page says about the site it belongs to.
 type Site struct {
 	Name       string
@@ -21,6 +13,15 @@ type Site struct {
 	// Metas go on every page in this order, the 404 page included
 	Metas     []Meta
 	Analytics Analytics
+	// Nav are the links of every page's header, and CTA its one button
+	Nav []Link
+	CTA Link
+}
+
+// Link is a title and the address it leads to.
+type Link struct {
+	Title string
+	Href  string
 }
 
 // Meta is one name and content pair of a meta element.

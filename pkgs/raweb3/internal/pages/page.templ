@@ -7,25 +7,13 @@ import "ranet3.com/pkgs/raweb3/ui"
 
 // Page is a page of prose outside the docs.
 templ Page(site ui.Site, c Content) {
-	<!DOCTYPE html>
-	<html lang="en">
-		<head>
-			@ui.Head(site, ui.Page{Title: c.Title + " | " + site.Name, Description: c.Description, Path: c.Path}) {
-				<link rel="stylesheet" href="/style.css"/>
-			}
-		</head>
-		<body class="bg-bg text-fg2 antialiased">
-			@bar(site)
-			if c.Unvetted {
-				@unvetted("bg-warn px-4 py-2 text-center font-mono text-sm text-bg")
-			}
-			<main class="mx-auto max-w-6xl px-4 py-10">
-				<article class="prose prose-site max-w-3xl">
-					<h1 class="font-mono">{ c.Title }</h1>
-					<p class="lead">{ c.Description }</p>
-					@templ.Raw(c.Body)
-				</article>
-			</main>
-		</body>
-	</html>
+	@frame(site, ui.Page{Title: pageTitle(site, c), Description: c.Description, Path: c.Path}, c.Unvetted, "") {
+		<main class="mx-auto max-w-6xl px-4 py-10 md:px-6">
+			<article class="prose prose-site max-w-3xl">
+				<h1 class="font-mono">{ c.Title }</h1>
+				<p class="lead">{ c.Description }</p>
+				@templ.Raw(c.Body)
+			</article>
+		</main>
+	}
 }

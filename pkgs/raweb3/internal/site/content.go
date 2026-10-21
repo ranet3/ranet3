@@ -186,10 +186,10 @@ func layoutOf(src, named string) (string, error) {
 			return "", fmt.Errorf("layout %s outside %s/", named, docsDir)
 		}
 		return named, nil
-	case layoutLanding, layoutPage:
+	case layoutBare, layoutPage:
 		return named, nil
 	}
-	return "", fmt.Errorf("layout %q is none of %s, %s and %s", named, layoutLanding, layoutPage, layoutDocs)
+	return "", fmt.Errorf("layout %q is none of %s, %s and %s", named, layoutBare, layoutPage, layoutDocs)
 }
 
 func (p *page) check() error {
@@ -211,9 +211,6 @@ func (p *page) check() error {
 	}
 	if p.layout == layoutDocs && p.front.Order == nil {
 		errs = append(errs, errors.New("order missing, which places a docs page in the navigation"))
-	}
-	if p.layout == layoutLanding && len(bytes.TrimSpace(p.body)) > 0 {
-		errs = append(errs, fmt.Errorf("the %s layout renders no markdown, so the body would be lost", layoutLanding))
 	}
 	return errors.Join(errs...)
 }

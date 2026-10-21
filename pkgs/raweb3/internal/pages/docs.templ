@@ -7,49 +7,27 @@ import "ranet3.com/pkgs/raweb3/ui"
 
 // Docs is one docs page.
 templ Docs(site ui.Site, doc Content) {
-	<!DOCTYPE html>
-	<html lang="en">
-		<head>
-			@ui.Head(site, ui.Page{Title: docsTitle(site, doc), Description: doc.Description, Path: doc.Path}) {
-				<link rel="stylesheet" href="/style.css"/>
-			}
-		</head>
-		<body class="bg-bg text-fg2 antialiased">
-			@bar(site)
-			if doc.Unvetted {
-				@unvetted("bg-warn px-4 py-2 text-center font-mono text-sm text-bg")
-			}
-			<div class="mx-auto flex max-w-6xl gap-12 px-4">
-				<nav class="hidden w-56 shrink-0 py-10 md:block" aria-label="Docs">
-					@navList(doc.Nav)
-				</nav>
-				<main class="min-w-0 flex-1 py-10">
-					<details class="mb-8 border-b border-bg2 pb-4 md:hidden">
-						<summary class="cursor-pointer font-mono text-sm text-fg">Pages</summary>
-						<div class="mt-4">
-							@navList(doc.Nav)
-						</div>
-					</details>
-					<article class="prose prose-site max-w-3xl">
-						<h1 class="font-mono">{ doc.Title }</h1>
-						<p class="lead">{ doc.Description }</p>
-						@templ.Raw(doc.Body)
-					</article>
-					<p class="mt-12 font-mono text-sm text-mute">Updated { doc.Updated.Format("2006-01-02") }</p>
-				</main>
-			</div>
-		</body>
-	</html>
-}
-
-templ bar(site ui.Site) {
-	<header class="border-b border-bg2">
-		<div class="mx-auto flex max-w-6xl items-center gap-6 px-4 py-3 font-mono text-sm">
-			<a href="/" class="font-bold text-fg">{ site.Name }</a>
-			<a href="/docs/" class="text-fg2 hover:text-acc">Docs</a>
-			<a href={ templ.SafeURL(site.Repository) } class="ml-auto text-fg2 hover:text-acc">GitHub</a>
+	@frame(site, ui.Page{Title: docsTitle(site, doc), Description: doc.Description, Path: doc.Path}, doc.Unvetted, "") {
+		<div class="mx-auto flex max-w-6xl gap-12 px-4 md:px-6">
+			<nav class="hidden w-56 shrink-0 py-10 md:block" aria-label="Docs">
+				@navList(doc.Nav)
+			</nav>
+			<main class="min-w-0 flex-1 py-10">
+				<details class="mb-8 border-b border-bg2 pb-4 md:hidden">
+					<summary class="cursor-pointer font-mono text-sm text-fg">Pages</summary>
+					<div class="mt-4">
+						@navList(doc.Nav)
+					</div>
+				</details>
+				<article class="prose prose-site max-w-3xl">
+					<h1 class="font-mono">{ doc.Title }</h1>
+					<p class="lead">{ doc.Description }</p>
+					@templ.Raw(doc.Body)
+				</article>
+				<p class="mt-12 font-mono text-sm text-mute">Updated { doc.Updated.Format("2006-01-02") }</p>
+			</main>
 		</div>
-	</header>
+	}
 }
 
 templ navList(nav []Section) {

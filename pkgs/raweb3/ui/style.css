@@ -6,30 +6,63 @@
 
 @source "./*.templ";
 @source "../internal/pages/*.templ";
+@source "../pages/**/*.md";
 
-:root {
-  --bg: #2E3440;
-  --bg2: #3B4252;
-  --line: #4C566A;
-  --mute: #8D929A;
-  --fg2: #D8DEE9;
-  --fg: #ECEFF4;
-  --acc: #88C0D0;
-  --accl: #88C0D066;
-  --warn: #EBCB8B;
+@theme static {
+  --color-nord-0: #2e3440;
+  --color-nord-1: #3b4252;
+  --color-nord-2: #434c5e;
+  --color-nord-3: #4c566a;
+  --color-nord-4: #d8dee9;
+  --color-nord-5: #e5e9f0;
+  --color-nord-6: #eceff4;
+  --color-nord-7: #8fbcbb;
+  --color-nord-8: #88c0d0;
+  --color-nord-9: #81a1c1;
+  --color-nord-10: #5e81ac;
+  --color-nord-11: #bf616a;
+  --color-nord-12: #d08770;
+  --color-nord-13: #ebcb8b;
+  --color-nord-14: #a3be8c;
+  --color-nord-15: #b48ead;
 }
 
+/* the roles the pages color by, on the nord palette where it has the shade */
+:root {
+  --bg: var(--color-nord-0);
+  --bg2: var(--color-nord-1);
+  --line: var(--color-nord-3);
+  --track: var(--color-nord-1);
+  --bar: #616e88;
+  --mute: #8d929a;
+  --mutel: color-mix(in srgb, var(--mute) 40%, transparent);
+  --fg2: var(--color-nord-4);
+  --fg: var(--color-nord-6);
+  --acc: var(--color-nord-8);
+  --accl: color-mix(in srgb, var(--acc) 40%, transparent);
+  --tint: color-mix(in srgb, var(--acc) 10%, transparent);
+  --warn: var(--color-nord-13);
+  --dir: var(--color-nord-13);
+  --win: var(--color-nord-14);
+  --lose: var(--color-nord-11);
+}
+
+/* light shades darker than nord's own, for contrast on its snow storm */
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #ECEFF4;
-    --bg2: #E5E9F0;
-    --line: #D8DEE9;
-    --mute: #4C566A;
-    --fg2: #3B4252;
-    --fg: #2E3440;
-    --acc: #5E81AC;
-    --accl: #5E81AC66;
-    --warn: #9A5328;
+    --bg: var(--color-nord-6);
+    --bg2: var(--color-nord-5);
+    --line: var(--color-nord-4);
+    --track: var(--color-nord-4);
+    --bar: #a0aabb;
+    --mute: var(--color-nord-3);
+    --fg2: var(--color-nord-1);
+    --fg: var(--color-nord-0);
+    --acc: var(--color-nord-10);
+    --tint: color-mix(in srgb, var(--acc) 8%, transparent);
+    --warn: #9a5328;
+    --dir: #9a5328;
+    --win: #4c6f38;
   }
 }
 
@@ -43,6 +76,13 @@
   --color-acc: var(--acc);
   --color-accl: var(--accl);
   --color-warn: var(--warn);
+  --color-tint: var(--tint);
+  --color-track: var(--track);
+  --color-bar: var(--bar);
+  --color-mutel: var(--mutel);
+  --color-dir: var(--dir);
+  --color-win: var(--win);
+  --color-lose: var(--lose);
 }
 
 @layer base {
@@ -79,5 +119,117 @@
   & :where(table) {
     display: block;
     overflow-x: auto;
+  }
+}
+
+/* the pieces pages repeat. Components sit below utilities, so a utility on
+   the same element wins */
+@layer components {
+  .link {
+    @apply text-acc underline decoration-accl underline-offset-[.2em]
+      hover:decoration-current;
+  }
+  .btn-primary {
+    @apply bg-acc px-[18px] py-3 font-bold text-bg;
+  }
+  .btn-secondary {
+    @apply border border-line px-[18px] py-3 text-fg;
+  }
+  .label {
+    @apply text-[13px] text-mute;
+  }
+  /* one row of a list of links, numbered, with an arrow at the end */
+  .index-row {
+    @apply grid grid-cols-[4ch_minmax(0,1fr)_auto] gap-4 border-b border-bg2
+      px-1 py-[18px] text-left text-fg after:text-acc after:content-['\2193']
+      hover:bg-bg2;
+  }
+  .page-section {
+    @apply mx-auto max-w-[92ch] px-4 py-12 text-[15px] leading-normal
+      max-sm:text-[13px];
+  }
+  .subhead {
+    @apply text-[1em] font-bold text-acc;
+  }
+  .note {
+    @apply mt-[.6em] text-[.9em] text-mute;
+  }
+  .callout {
+    @apply mt-[1.2em] border-l-[3px] border-acc bg-tint px-[1.2em] py-[.8em]
+      text-fg;
+  }
+  .spec-list {
+    @apply mt-[.8em] grid grid-cols-[16ch_1fr] gap-x-[2ch] gap-y-[.4em] text-fg2
+      max-sm:grid-cols-[max-content_1fr];
+    & :where(dt) {
+      @apply text-mute;
+    }
+  }
+  /* a bar under a figure, as long as --w */
+  .meter {
+    --fill: var(--bar);
+    @apply mt-[.3em] block h-[3px]
+      bg-[linear-gradient(to_left,var(--fill)_var(--w),var(--track)_0)];
+  }
+  .meter-accent {
+    --fill: var(--acc);
+  }
+  /* figures right aligned, row labels left, a rule between tbody groups */
+  .data-table {
+    @apply w-full border-collapse whitespace-nowrap tabular-nums;
+    & :where(th, td) {
+      @apply px-[1ch] py-[.45em] text-right font-normal text-fg2;
+    }
+    & :where(thead th) {
+      @apply border-b border-line align-bottom;
+    }
+    & :where(thead small) {
+      @apply block text-[.82em] text-mute;
+    }
+    & :where(tbody th) {
+      @apply pl-0 text-left text-mute;
+    }
+    & :where(tbody small) {
+      @apply text-[.85em] text-mute;
+    }
+    & :where(tbody + tbody tr:first-child > *) {
+      @apply border-t border-bg2;
+    }
+  }
+  /* every column left aligned, labels in the body color */
+  .data-table-left {
+    & :where(th, td) {
+      @apply pr-[1.5ch] pl-0 text-left;
+    }
+    & :where(tr > :last-child) {
+      @apply pr-0;
+    }
+    & :where(tbody th) {
+      @apply text-fg2;
+    }
+  }
+  /* each body row ruled off and spaced */
+  .data-table-ruled :where(tbody tr > *) {
+    @apply border-b border-bg2 py-[.7em];
+  }
+  /* columns of figures wide enough to compare on a screen, tight on a phone */
+  .data-table-wide {
+    @apply max-sm:text-[.85em];
+    & :where(td) {
+      @apply min-w-[9ch] max-sm:min-w-0;
+    }
+    & :where(th, td) {
+      @apply max-sm:px-[.6ch];
+    }
+    & :where(tbody th) {
+      @apply max-sm:pl-0;
+    }
+  }
+  .row-accent > * {
+    @apply font-bold text-acc;
+  }
+  .cell-best {
+    @apply font-bold text-fg before:mr-[1ch] before:font-normal before:text-acc
+      before:content-['\25B8'];
   }
 }
