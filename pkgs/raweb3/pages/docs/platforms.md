@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-10-21
+updated: 2026-10-22
 order: 100
 ---
 
@@ -131,10 +131,11 @@ carrying it. The reconciler installs these routes scoped to the tun, where no
 unbound socket can select them:
 
 - a source-specific route
-- a retracted route, which it holds as a reject route
+- a retracted route, which it holds as a reject route, unless the route counts
+  as a default, whose hold it does not install at all
 - any route that contains a literal endpoint address the trust document lists
-- without `link.underlay.bind`, any route with a prefix length of 0 or 1, and
-  any route that contains the family's unspecified address, a default included
+- without `link.underlay.bind`, any route that
+  [counts as a default](routing.md#routes-that-count-as-a-default)
 
 A source-specific route is installed only when its source prefix holds an
 address on the tun, because interface scope stands in for "from an address of

@@ -39,11 +39,14 @@ func Covering(routes []Route, address netip.Addr) []Route {
 	return out
 }
 
-// Defaults is every route carrying a default, the advertisement that makes a
-// node an exit, and both /1 halves of a family where one node advertises the
-// pair, which covers the family as a default does. Both families are
-// included and the order the daemon gave is kept, so two entries for one
-// family read next to each other.
+// Defaults is every route carrying a default and both /1 halves of a family
+// where one node advertises the pair, which covers the family as a default
+// does, and nothing else. A node advertising another prefix that counts as a
+// default (schema.CapturesTheMachine), such as 2000::/3, carries its family's
+// traffic with no entry here and shows among the routes alone, since which
+// prefixes count turns on the daemon's overlay. Both families are included
+// and the order the daemon gave is kept, which leaves two entries for one
+// family next to each other.
 //
 // The test is the prefix length against a zero address rather than the length
 // alone: a /0 is the only prefix that covers everything, and spelling it this

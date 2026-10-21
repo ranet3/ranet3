@@ -105,7 +105,10 @@ command to see which ones the mesh offers and which one this node takes.`,
 		Long: `Each row is a default route that a node advertises, or one of the two
 /1 halves of a family that one node advertises together. Its state is
 selected for the one this node takes, withdrawn for one that its node
-stopped advertising, and advertised by this node for this node's own.`,
+stopped advertising, and advertised by this node for this node's own.
+A node whose other advertisement counts as a default, such as 2000::/3,
+carries its family's traffic with no row here: routes shows its route,
+and whois names the peer an address inside it takes.`,
 		Args: noArguments,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			routes, err := control.Dial(r.socket).Routes()
