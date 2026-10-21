@@ -393,8 +393,17 @@ func counters(expressions []byte) (packets, bytes uint64) {
 // family in remake is deleted first in the same transaction, with every chain
 // in it, and made again.
 func (n *nftables) Apply(rules []Rule, remake []uint8) error {
+	requests, err := translatorBatch(n.families, rules, remake)
+	if err != nil {
+		return err
+	}
+	return n.conn.batch(requests)
+}
+
+// translatorBatch is the transaction Apply sends over families
+func translatorBatch(families []uint8, rules []Rule, remake []uint8) ([]nftRequest, error) {
 	var requests []nftRequest
-	for _, family := range n.families {
+	for _, family := range families {
 		if slices.Contains(remake, family) {
 			requests = append(requests, delTable(family))
 		}
@@ -411,12 +420,12 @@ func (n *nftables) Apply(rules []Rule, remake []uint8) error {
 			}
 			request, err := newRule(rule)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			requests = append(requests, request)
 		}
 	}
-	return n.conn.batch(requests)
+	return requests, nil
 }
 
 // Withdraw removes the tables this tool created, and only those, each whole
