@@ -122,7 +122,8 @@
   --tw-prose-quotes: var(--fg2);
   --tw-prose-quote-borders: var(--line);
   --tw-prose-code: var(--fg);
-  --tw-prose-pre-code: var(--fg);
+  /* plain code text is nord4 in dark, as nord's VS Code port has it */
+  --tw-prose-pre-code: light-dark(var(--color-nord-0), var(--color-nord-4));
   --tw-prose-pre-bg: var(--bg2);
   --tw-prose-th-borders: var(--line);
   --tw-prose-td-borders: var(--bg2);
@@ -256,44 +257,45 @@
       before:content-['\25B8'];
   }
   /* the tokens of a highlighted code block, in the color nord's syntax guide
-     gives each kind, light shade first, with plain text and brackets in fg.
-     Where a nord color falls short of 4.5:1 on the block's bg2, the shade
-     keeps the color's oklch hue and chroma and moves only its lightness as far
-     as it takes, since a mix toward another nord color grays the kinds into
-     one another */
+     gives each kind, or its VS Code port where the guide says nothing, light
+     shade first. Where a nord color falls short of 4.5:1 on the block's bg2,
+     the shade keeps the color's oklch hue and moves its lightness only as far
+     as it takes. In light the chroma is 2.2 times nord's too, since nord's
+     pale colors darkened that far read as one gray */
   pre {
     & .c {
       color: var(--mute);
     }
-    & .nv {
-      color: var(--fg2);
+    & .p {
+      color: var(--fg);
     }
-    & .kt {
-      color: light-dark(#3f6969, var(--color-nord-7));
+    & .kt,
+    & .na {
+      color: light-dark(#006e6d, var(--color-nord-7));
     }
     & .nf {
-      color: light-dark(#326978, var(--color-nord-8));
+      color: light-dark(#056b80, var(--color-nord-8));
     }
     & .k {
-      color: light-dark(#476582, #90b1d1);
+      color: light-dark(#0e65a8, #90b1d1);
     }
     & .cp {
-      color: light-dark(#43648e, #8cb1de);
+      color: light-dark(#0162b9, #8cb1de);
     }
     & .err {
-      color: light-dark(#9f454f, #f59199);
+      color: light-dark(#c50040, #f59199);
     }
     & .nd {
-      color: light-dark(#93503b, #e79c84);
+      color: light-dark(#b23701, #e79c84);
     }
     & .se {
-      color: light-dark(#7a5e1c, var(--color-nord-13));
+      color: light-dark(#7e5d01, var(--color-nord-13));
     }
     & .s {
-      color: light-dark(#51693b, var(--color-nord-14));
+      color: light-dark(#436d02, var(--color-nord-14));
     }
     & .m {
-      color: light-dark(#7a5774, #c9a2c1);
+      color: light-dark(#934489, #c9a2c1);
     }
   }
 }

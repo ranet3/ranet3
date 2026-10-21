@@ -93,7 +93,9 @@ func TestLoadPagesPointsLinksAtServedPaths(t *testing.T) {
 
 func TestLoadPagesHighlightsCodeBlocks(t *testing.T) {
 	dir := writePages(t, map[string]string{
-		"index.md": landing + "```sh\n# a comment\ncd \"$HOME\" && go vet\n```\n\n```\n<plain> & \"text\"\n```\n",
+		"index.md": landing + "```sh\n# a comment\ncd \"$HOME\" && go vet ./...\nsudo nix run . -- --config x.toml \\\n  --dry\n```\n\n" +
+			"```nix\n{\n  networking.ranet3.enable = true;\n  imports = [ inputs.x ];\n}\n```\n\n" +
+			"```\n<plain> & \"text\"\n```\n",
 	})
 	ps, err := loadPages(dir)
 	if err != nil {
@@ -102,7 +104,11 @@ func TestLoadPagesHighlightsCodeBlocks(t *testing.T) {
 	for _, want := range []string{
 		`<pre><code class="language-sh"><span class="c"># a comment</span>`,
 		`<span class="nf">cd</span>`,
-		`<span class="k">&amp;&amp;</span> go vet` + "\n</code></pre>",
+		`<span class="k">&amp;&amp;</span> <span class="nf">go</span> vet ./...` + "\n",
+		`<span class="nf">sudo</span> <span class="nf">nix</span> run . <span class="k">--</span> <span class="k">--config</span> x.toml <span class="se">`,
+		"<span class=\"se\">\\\n</span>  <span class=\"k\">--dry</span>\n</code></pre>",
+		`<span class="na">networking</span><span class="k">.</span><span class="na">ranet3</span><span class="k">.</span><span class="na">enable</span> <span class="k">=</span> <span class="k">true;</span>`,
+		`<span class="na">imports</span> <span class="k">=</span> <span class="p">[</span> inputs<span class="k">.</span>x <span class="p">]</span>`,
 		"<pre><code>&lt;plain&gt; &amp; &quot;text&quot;\n</code></pre>",
 	} {
 		if !strings.Contains(ps[0].html, want) {
@@ -118,7 +124,9 @@ func TestTokenClassFollowsNordsSyntaxGuide(t *testing.T) {
 		want  string
 	}{
 		{chroma.Text, "go", ""},
-		{chroma.Punctuation, "{", ""},
+		{chroma.Text, " \n", ""},
+		{chroma.Error, "\n", ""},
+		{chroma.Punctuation, "{", "p"},
 		{chroma.Punctuation, ",", "k"},
 		{chroma.KeywordDeclaration, "let", "k"},
 		{chroma.KeywordType, "int", "kt"},
@@ -131,7 +139,10 @@ func TestTokenClassFollowsNordsSyntaxGuide(t *testing.T) {
 		{chroma.LiteralStringDouble, `"x"`, "s"},
 		{chroma.LiteralStringEscape, `\n`, "se"},
 		{chroma.LiteralNumberInteger, "1", "m"},
-		{chroma.NameVariable, "$HOME", "nv"},
+		{chroma.NameVariable, "$HOME", ""},
+		{chroma.NameConstant, "true", "k"},
+		{chroma.NameOther, "port", "na"},
+		{chroma.NameTag, `"nodes"`, "na"},
 		{chroma.Error, "?", "err"},
 	} {
 		if got := tokenClass(chroma.Token{Type: tc.kind, Value: tc.value}); got != tc.want {
