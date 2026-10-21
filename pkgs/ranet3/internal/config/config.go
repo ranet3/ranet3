@@ -215,11 +215,15 @@ func (c *Config) Segments() srv6.Segments {
 // SegmentTables is cap.segment's two tables as the dataplane runs them, every
 // local SID admitting only an outer source in cap.border's overlay
 func (c *Config) SegmentTables() (*srv6.LocalTable, *srv6.SteerTable, error) {
-	var overlay []schema.Prefix
-	if c.Cap.Border != nil {
-		overlay = c.Cap.Border.Overlay
+	return c.Segments().Tables(c.Overlay())
+}
+
+// Overlay is cap.border's overlay as written, nil without the block
+func (c *Config) Overlay() []schema.Prefix {
+	if c.Cap.Border == nil {
+		return nil
 	}
-	return c.Segments().Tables(overlay)
+	return c.Cap.Border.Overlay
 }
 
 func (c *Config) Crypto() ike.Crypto {
