@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 Yifei Sun
+# SPDX-License-Identifier: FSL-1.1-ALv2
+
+# the licenses of the files that cannot carry a comment
+version = 1
+
+[[annotations]]
+path = ["go.sum", "gomod2nix.toml"]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Yifei Sun"
+SPDX-License-Identifier = "FSL-1.1-ALv2"
+
+# the logo goes into the page as written, so a header would show in it
+[[annotations]]
+path = "ui/logo.html"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Yifei Sun"
+SPDX-License-Identifier = "CC-BY-4.0"

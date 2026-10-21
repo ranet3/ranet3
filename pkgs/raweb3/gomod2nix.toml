@@ -1,0 +1,34 @@
+schema = 3
+
+[mod]
+[mod.'github.com/a-h/templ']
+version = 'v0.3.1020'
+hash = 'sha256-CdZZ9Td8IbeYsjBqqr+TixEIlLjezkmah0Ww2qrv7JQ='
+
+[mod.'github.com/inconshreveable/mousetrap']
+version = 'v1.1.0'
+hash = 'sha256-XWlYH0c8IcxAwQTnIi6WYqq44nOKUylSWxWO/vi+8pE='
+
+[mod.'github.com/spf13/cobra']
+version = 'v1.10.2'
+hash = 'sha256-nbRCTFiDCC2jKK7AHi79n7urYCMP5yDZnWtNVJrDi+k='
+
+[mod.'github.com/spf13/pflag']
+version = 'v1.0.10'
+hash = 'sha256-uDPnWjHpSrzXr17KEYEA1yAbizfcsfo5AyztY2tS6ZU='
+
+[mod.'github.com/tdewolff/minify/v2']
+version = 'v2.24.22'
+hash = 'sha256-7gsV6LfmpgpYpJqflSJ5Ixrtq4D0Dbyyo/A/66b2sUY='
+
+[mod.'github.com/tdewolff/parse/v2']
+version = 'v2.8.19'
+hash = 'sha256-zRP1y9UFZ/c3g7sooImn/WahlrLyTfEEvnUaaJ9F0bg='
+
+[mod.'github.com/yuin/goldmark']
+version = 'v1.8.6'
+hash = 'sha256-rAwGzzmVrhhtzr8OSGid+F+NM5YWMyYYW6BSTWaDIGE='
+
+[mod.'go.yaml.in/yaml/v3']
+version = 'v3.0.5'
+hash = 'sha256-ygho+GU5kE7vPMx+dZYyNfCaeMjNxj66XmrcVf3afFE='

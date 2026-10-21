@@ -1,0 +1,83 @@
+/* SPDX-FileCopyrightText: 2026 Yifei Sun */
+/* SPDX-License-Identifier: FSL-1.1-ALv2 */
+
+@import "tailwindcss" source(none);
+@plugin "@tailwindcss/typography";
+
+@source "./*.templ";
+@source "../internal/pages/*.templ";
+
+:root {
+  --bg: #2E3440;
+  --bg2: #3B4252;
+  --line: #4C566A;
+  --mute: #8D929A;
+  --fg2: #D8DEE9;
+  --fg: #ECEFF4;
+  --acc: #88C0D0;
+  --accl: #88C0D066;
+  --warn: #EBCB8B;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #ECEFF4;
+    --bg2: #E5E9F0;
+    --line: #D8DEE9;
+    --mute: #4C566A;
+    --fg2: #3B4252;
+    --fg: #2E3440;
+    --acc: #5E81AC;
+    --accl: #5E81AC66;
+    --warn: #9A5328;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg2: var(--bg2);
+  --color-line: var(--line);
+  --color-mute: var(--mute);
+  --color-fg2: var(--fg2);
+  --color-fg: var(--fg);
+  --color-acc: var(--acc);
+  --color-accl: var(--accl);
+  --color-warn: var(--warn);
+}
+
+@layer base {
+  html {
+    color-scheme: light dark;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+}
+
+@utility prose-site {
+  --tw-prose-body: var(--fg2);
+  --tw-prose-headings: var(--fg);
+  --tw-prose-lead: var(--mute);
+  --tw-prose-links: var(--acc);
+  --tw-prose-bold: var(--fg);
+  --tw-prose-counters: var(--mute);
+  --tw-prose-bullets: var(--line);
+  --tw-prose-hr: var(--bg2);
+  --tw-prose-quotes: var(--fg2);
+  --tw-prose-quote-borders: var(--line);
+  --tw-prose-code: var(--fg);
+  --tw-prose-pre-code: var(--fg2);
+  --tw-prose-pre-bg: var(--bg2);
+  --tw-prose-th-borders: var(--line);
+  --tw-prose-td-borders: var(--bg2);
+
+  & :where(code):not(:where(pre *))::before,
+  & :where(code):not(:where(pre *))::after {
+    content: none;
+  }
+
+  /* the reference tables are wider than a phone */
+  & :where(table) {
+    display: block;
+    overflow-x: auto;
+  }
+}

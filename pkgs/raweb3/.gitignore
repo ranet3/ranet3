@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Yifei Sun
+# SPDX-License-Identifier: FSL-1.1-ALv2
+
+# templ generate writes these from the .templ files, in the build and while writing
+*_templ.go
