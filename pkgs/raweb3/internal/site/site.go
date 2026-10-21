@@ -32,8 +32,9 @@ type config struct {
 		Src    string `yaml:"src"`
 		Domain string `yaml:"domain"`
 	} `yaml:"analytics"`
-	Nav []link `yaml:"nav"`
-	CTA link   `yaml:"cta"`
+	Nav    []link    `yaml:"nav"`
+	CTA    link      `yaml:"cta"`
+	Footer ui.Footer `yaml:"footer"`
 }
 
 type link struct {
@@ -61,6 +62,7 @@ func Load(root, dir string) (*Site, error) {
 		Repository: c.Repository,
 		Analytics:  ui.Analytics{Src: c.Analytics.Src, Domain: c.Analytics.Domain},
 		CTA:        ui.Link{Title: c.CTA.Title, Href: c.CTA.Href},
+		Footer:     c.Footer,
 	}}
 	for _, l := range c.Nav {
 		s.ui.Nav = append(s.ui.Nav, ui.Link{Title: l.Title, Href: l.Href})
@@ -95,6 +97,7 @@ func loadConfig(path string) (config, error) {
 		"analytics.domain": c.Analytics.Domain,
 		"cta.title":        c.CTA.Title,
 		"cta.href":         c.CTA.Href,
+		"footer.title":     c.Footer.Title,
 	} {
 		if v == "" {
 			errs = append(errs, fmt.Errorf("%s: %s missing", path, field))
@@ -109,6 +112,21 @@ func loadConfig(path string) (config, error) {
 	for i, l := range c.Nav {
 		if l.Title == "" || l.Href == "" {
 			errs = append(errs, fmt.Errorf("%s: nav entry %d wants a title and an href", path, i+1))
+		}
+	}
+	for _, g := range []struct {
+		name  string
+		facts []ui.Fact
+	}{{"stack", c.Footer.Stack}, {"project", c.Footer.Project}} {
+		for i, f := range g.facts {
+			if f.Label == "" || len(f.Parts) == 0 {
+				errs = append(errs, fmt.Errorf("%s: footer.%s entry %d wants a label and parts", path, g.name, i+1))
+			}
+			for j, p := range f.Parts {
+				if p.Text == "" || p.Cite && p.Href == "" {
+					errs = append(errs, fmt.Errorf("%s: footer.%s entry %d part %d wants a text, and an href when it cites", path, g.name, i+1, j+1))
+				}
+			}
 		}
 	}
 	if strings.HasSuffix(c.URL, "/") {

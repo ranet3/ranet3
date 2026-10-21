@@ -22,6 +22,7 @@ templ frame(site ui.Site, page ui.Page, unvetted bool, body string) {
 				@notice()
 			}
 			{ children... }
+			@footer(site)
 		</body>
 	</html>
 }
@@ -144,6 +145,50 @@ templ themeScript() {
 			});
 		})();
 	</script>
+}
+
+// footer ends every page, full width below the content.
+templ footer(site ui.Site) {
+	<footer class="mt-16 bg-bg2 font-mono text-[15px] leading-[1.55]">
+		<div class="mx-auto max-w-6xl px-4 py-12 md:px-6">
+			<div class="flex flex-wrap items-center gap-6">
+				<p class="mr-auto text-[28px] leading-tight font-bold text-fg">{ site.Footer.Title }</p>
+				<a href={ templ.SafeURL(site.CTA.Href) } class="btn-primary">{ site.CTA.Title }</a>
+			</div>
+			<dl class="mt-10 grid gap-10 border-t border-line pt-10 sm:grid-cols-2 lg:grid-cols-4">
+				@facts(site.Footer.Stack)
+			</dl>
+			<dl class="mt-10 grid gap-x-10 gap-y-6 border-t border-line pt-8 text-[13px] sm:grid-cols-2 lg:grid-cols-4">
+				@facts(site.Footer.Project)
+			</dl>
+		</div>
+	</footer>
+}
+
+templ facts(fs []ui.Fact) {
+	for _, f := range fs {
+		<div class="flex flex-col gap-2">
+			<dt class="label">{ f.Label }</dt>
+			<dd class="text-fg">
+				for i, p := range f.Parts {
+					if i > 0 {
+						{ " " }
+					}
+					@part(p)
+				}
+			</dd>
+		</div>
+	}
+}
+
+templ part(p ui.Part) {
+	if p.Cite {
+		<span class="text-mute">({ "" }<a href={ templ.SafeURL(p.Href) } class="link whitespace-nowrap">{ p.Text }</a>{ "" })</span>
+	} else if p.Href != "" {
+		<a href={ templ.SafeURL(p.Href) } class="link">{ p.Text }</a>
+	} else {
+		{ p.Text }
+	}
 }
 
 templ notice() {

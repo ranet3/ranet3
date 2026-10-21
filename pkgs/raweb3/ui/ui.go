@@ -16,6 +16,30 @@ type Site struct {
 	// Nav are the links of every page's header, and CTA its one button
 	Nav []Link
 	CTA Link
+	// Footer ends every page, with CTA's button again
+	Footer Footer
+}
+
+// Footer is a title beside the button, above the facts of the protocol stack
+// and those of the project.
+type Footer struct {
+	Title   string
+	Stack   []Fact
+	Project []Fact
+}
+
+// Fact is a label and its text, in parts joined by spaces.
+type Fact struct {
+	Label string
+	Parts []Part
+}
+
+// Part is a run of text, a link when Href is set. A cited part links the
+// standard the text before it follows, set in parentheses.
+type Part struct {
+	Text string
+	Href string
+	Cite bool
 }
 
 // Link is a title and the address it leads to.
