@@ -93,13 +93,13 @@ cap:
   #   vrf: { name: mesh, create: true }
   #   rules:
   #     - { fwmark: 0x726c, table: main, priority: 40, family: both }
-  #     - { to: "3fff:1:69c::/48", table: 200, priority: 100 }
+  #     - { to: "3fff:b::/48", table: 200, priority: 100 }
   # segment:
-  #   source: "3fff:1:69c:8c0::1"
+  #   source: "3fff:b:0:100::1"
   #   local:
-  #     - { sid: "3fff:1:69c:8c6::1", behavior: "End.DT46" }
+  #     - { sid: "3fff:b:0:106::1", behavior: "End.DT46" }
   #   steer:
-  #     - { from: "3fff:a::198:18:104:117/128", via: ["3fff:1:69c:98d6::1"] }
+  #     - { from: "3fff:a::203:0:113:10/128", via: ["3fff:b:0:206::1"] }
   # crypto:
   #   replay: 4096
   #   rekey:
@@ -121,4 +121,4 @@ cap:
   #   return: true
   #   sweep: 30s
   # border:                       # every local segment needs it, and acts only on an outer source in overlay
-  #   overlay: ["3fff::/20", "198.18.0.0/15"]
+  #   overlay: ["3fff::/20", "10.66.0.0/16", "203.0.113.0/24"]

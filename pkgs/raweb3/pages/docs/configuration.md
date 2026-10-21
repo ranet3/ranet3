@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-10-20
+updated: 2026-10-21
 order: 30
 ---
 
@@ -148,8 +148,8 @@ Every name is written in full. An organization has 1 level. These are refused:
 - An entry written twice.
 
 A byte outside letters, digits, `-`, `.`, `_` and `~` is written as `%` and 2
-uppercase hex digits. The organization `nick cao` is written `nick%20cao`, and
-no other spelling is taken.
+uppercase hex digits. The organization `example org` is written `example%20org`,
+and no other spelling is taken.
 
 The control socket, the command line, the logs and the events name nodes and
 endpoints in the same form. A session is named by the peer's endpoint, `@` and

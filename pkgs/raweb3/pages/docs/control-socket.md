@@ -89,27 +89,28 @@ Endpoints   0/ip6 1/ip4
 TUN         ranet0 MTU 1400 queues 16
 Role        initiator, responder, full mesh, no transit
 Forwarding  IPv4 on IPv6 on
-Registry    /etc/ranet/registry.json, 142 nodes in 31 organizations
-Kernel      table 200 protocol 155, 609 installed, last pass 12 seconds ago
+Registry    /etc/ranet/registry.json, 6 nodes in 2 organizations
+Kernel      table 200 protocol 155, 14 installed, last pass 12 seconds ago
 Egress      off, this node carries no traffic for others
-Dialers     117 running
-Sessions    83
-Neighbors   83, 81 alive
-Routes      611 prefixes, 604 selected, 3 originated
-Originate   198.18.104.117/32 3fff:a::198:18:104:117/128 3fff:1:69c:8c0::/60
-Segments    3fff:1:69c:8c6::1 End.DT46 (0 forwarded, 5 delivered, 0 dropped)
-Steering    from 3fff:a::198:18:104:117/128 via 3fff:1:69c:98d6::1 (12 steered, 2 with no route to their first segment)
+Border      nftables table inet ranet3 chain border, inside ranet0 lo, 3 overlay prefixes, 1 SID, dropped 2 overlay sources, 0 routing headers, 0 SID destinations
+Dialers     5 running
+Sessions    2
+Neighbors   2, 2 alive
+Routes      14 prefixes, 11 selected, 3 originated
+Originate   203.0.113.10/32 3fff:a::203:0:113:10/128 3fff:b:0:100::/60
+Segments    3fff:b:0:106::1 End.DT46 (0 forwarded, 5 delivered, 0 dropped)
+Steering    from 3fff:a::203:0:113:10/128 via 3fff:b:0:206::1 (12 steered, 2 with no route to their first segment)
 ESP         41822931 in, 0 dropped, 14 refused
 
 $ ranet3 neighbors
 Peer                 State  Cost  Extra  Rx cost  RTT      Routes  Expires  Dropped  Failed
-example/gateway:0@0  up     116   0      96       27.2ms   15      11.3s    0        0
-other/relay:2@1      up     1218  1024   96       176.7ms  130     9.8s     0        0
+example/gateway:0@0  up     116   0      96       27.2ms   7       11.3s    0        0
+other/relay:2@1      up     1218  1024   96       176.7ms  5       9.8s     0        0
 
 $ ranet3 routes
-Destination          From         Via                  Metric  Router ID         Seqno  Paths
-::/0                 3fff:a::/36  example/gateway:0@0  212     0a1b2c3d4e5f6071  42     7
-3fff:1:69c:8c0::/60               this node            0                         0      0
+Destination        From         Via                  Metric  Router ID         Seqno  Paths
+::/0               3fff:a::/36  example/gateway:0@0  212     0a1b2c3d4e5f6071  42     2
+3fff:b:0:100::/60               this node            0                         0      0
 ```
 
 `neighbors` is the counterpart of `birdc show babel neighbors`. It shows the
@@ -152,9 +153,9 @@ of a dialer with no endpoint pinned is named by the endpoint that answered.
 - `debug events --peer` takes the same names as `rekey` and a dialer's name. A
   dialer's name selects a dial's events until its endpoint resolves.
 
-A name matches whole. `example/isere` takes no session of `example/isere2`. A
-name with a serial and no organization, such as `isere:1`, names nothing. For
-`redial`, `rekey` and `debug probe`, completion offers the peers the daemon
+A name matches whole. `example/gateway` takes no session of `example/gateway2`.
+A name with a serial and no organization, such as `gateway:1`, names nothing.
+For `redial`, `rekey` and `debug probe`, completion offers the peers the daemon
 dials and the nodes it holds a session with. For `debug pmtu`, it offers the
 nodes of its sessions. For `debug events --peer`, it offers the names the
 recorded events carry.

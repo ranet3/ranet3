@@ -4,7 +4,7 @@
 title: "The border filter"
 description: "Dropping what arrives from outside the mesh carrying a mesh source, a routing header or one of this node's SIDs."
 created: 2026-10-19
-updated: 2026-10-20
+updated: 2026-10-21
 order: 55
 ---
 
@@ -17,7 +17,7 @@ routing header behind it.
 
 ```toml
 [cap.border]
-overlay = ["23.161.104.0/24", "192.104.136.0/24", "204.115.20.0/23", "2602:f590::/36", "2a0c:b641:69c::/48"]
+overlay = ["203.0.113.0/24", "10.66.0.0/24", "10.66.2.0/23", "3fff:a::/36", "3fff:b::/48"]
 ```
 
 [The configuration reference](configuration-reference.md#capborder) lists the
@@ -140,8 +140,8 @@ node's own addresses is dropped as well as one to forward. Priority `raw` comes
 after defragmentation and before conntrack, so a forged packet creates no
 conntrack entry. Each rule carries its spelling as its comment, which
 `nft list ruleset` shows: `accept via ranet3`,
-`drop ipv4 source 23.161.104.0/24`, `drop ipv6 routing header`,
-`drop ipv6 destination 2a0c:b641:69c:5d26::3`. Only the drops carry counters.
+`drop ipv4 source 203.0.113.0/24`, `drop ipv6 routing header`,
+`drop ipv6 destination 3fff:b:0:306::3`. Only the drops carry counters.
 
 The filter needs no forwarding. With forwarding off the kernel routes nothing
 from the node's links into the tun, but a forged mesh source to the node's own
