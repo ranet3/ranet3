@@ -12,7 +12,7 @@
     "to": ["example/gateway:0"]
   },
   "cap": {
-    "route": { "announce": ["10.66.0.5/32"] },
+    "route": { "announce": ["203.0.113.10/32"] },
     "babel": { "hello": "4s", "update": "16s" }
   }
 }

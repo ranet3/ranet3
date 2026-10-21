@@ -17,7 +17,7 @@ routing header behind it.
 
 ```toml
 [cap.border]
-overlay = ["203.0.113.0/24", "10.66.0.0/24", "10.66.2.0/23", "3fff:a::/36", "3fff:b::/48"]
+overlay = ["203.0.113.0/24", "3fff:a::/36", "3fff:b::/48"]
 ```
 
 [The configuration reference](configuration-reference.md#capborder) lists the

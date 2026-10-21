@@ -5,7 +5,7 @@
 title: "Getting started"
 description: "Building the binary, the binary cache, and running a node by hand."
 created: 2026-08-17
-updated: 2026-10-16
+updated: 2026-10-21
 order: 20
 ---
 
@@ -67,8 +67,8 @@ Without a `cap.table` block, the line ends in
 you configure them, for example on Linux:
 
 ```sh
-ip addr add 10.66.0.5/32 dev ranet3
-ip route add 10.66.0.0/16 dev ranet3
+ip addr add 203.0.113.10/32 dev ranet3
+ip route add 203.0.113.0/24 dev ranet3
 ```
 
 With `cap.table`, the node installs its routes itself. It assigns the addresses

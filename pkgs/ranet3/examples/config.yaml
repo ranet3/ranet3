@@ -69,7 +69,7 @@ cap:
     # Either a bare prefix or a prefix and the source it is reachable from,
     # which is how an exit announces a default out of its transit prefix.
     announce:
-      - "10.66.0.5/32"
+      - "203.0.113.10/32"
       # - { prefix: "::/0", from: "2001:db8:1::/48" }
   # Off when left out, and the one block that states its value.
   # transit:
@@ -86,7 +86,7 @@ cap:
   #   id: 200
   #   proto: 155
   #   metric: 64
-  #   addresses: ["10.66.0.5/32"]
+  #   addresses: ["203.0.113.10/32"]
   #   assign_announced: false
   #   reconcile: 30s
   #   capture_grace: 10s          # how long an announced default outlives the last live session, 1s floor
@@ -121,4 +121,4 @@ cap:
   #   return: true
   #   sweep: 30s
   # border:                       # every local segment needs it, and acts only on an outer source in overlay
-  #   overlay: ["3fff::/20", "10.66.0.0/16", "203.0.113.0/24"]
+  #   overlay: ["3fff::/20", "203.0.113.0/24"]

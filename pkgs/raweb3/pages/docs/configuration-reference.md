@@ -232,9 +232,9 @@ nothing.
 | ---------- | ----- | ------- | --------------------------------- |
 | `announce` | list  | none    | The prefixes this node originates |
 
-- An `announce` entry is a prefix, `"10.66.0.5/32"`, or a prefix and the source
-  it serves, `{ prefix = "::/0", from = "2001:db8:1::/48" }`. An exit announces
-  its default in the second form.
+- An `announce` entry is a prefix, `"203.0.113.10/32"`, or a prefix and the
+  source it serves, `{ prefix = "::/0", from = "2001:db8:1::/48" }`. An exit
+  announces its default in the second form.
 - A source-specific entry is IPv6 only. Its `from` is in the same family as its
   `prefix`. A `from` of length 0 is refused.
 - A prefix of length 0 with host bits set, such as `"2001:db8::/0"`, is refused
