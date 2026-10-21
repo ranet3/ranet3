@@ -239,6 +239,11 @@ nothing.
   `prefix`. A `from` of length 0 is refused.
 - A prefix of length 0 with host bits set, such as `"2001:db8::/0"`, is refused
   as a typo for a default.
+- A prefix that
+  [counts as a default](routing.md#routes-that-count-as-a-default), such as one
+  outside `cap.border.overlay` shorter than `/8` for IPv4 or `/16` for IPv6,
+  makes this node an exit for its family. Such an entry other than a default
+  loads with a warning.
 - `transit` under `cap.route` is refused at load, with a message naming
   `cap.transit`. That key meant transit on when left out, and a node that relied
   on it carries no transit until it writes `cap.transit.enable = true`.
@@ -375,9 +380,11 @@ configure.
   [routing](routing.md#what-a-node-announces) describes.
 - A default is announced and never assigned, even with `assign_announced`.
 - A negative `reconcile` is refused.
-- A route that would carry this host's own traffic, such as an announced
-  default, is installed only after a session has been live. A `capture_grace` of
-  `0` takes the default. Any other value under 1 second is refused.
+- A route that [counts as a default](routing.md#routes-that-count-as-a-default),
+  such as a default or `2000::/3` a neighbor announces, is installed only after
+  a session has been live, and its hold never. This node's own prefix that
+  counts is never installed. A `capture_grace` of `0` takes the default. Any
+  other value under 1 second is refused.
 - A `cap.segment.local` SID that is also an address this block assigns is
   refused at load.
 
@@ -687,6 +694,10 @@ needs.
   alike. The `/1` halves would win over every `/0` exit by longest prefix, as
   [exit nodes](exit-nodes.md#what-to-advertise) describes. A subnet router
   advertises the prefixes behind it.
+- An `advertise` prefix that
+  [counts as a default](routing.md#routes-that-count-as-a-default) makes this
+  node an exit for its family, as under `cap.route`, and loads with a warning
+  unless it is a default.
 - A prefix is announced only while its family's translation chain reads back
   exactly as written, with no other writer's rule among it, and the host
   forwards that family.

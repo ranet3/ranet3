@@ -151,13 +151,15 @@ waits for the next full update.
 
 A retracted or expired route is held at infinity for the hold time of the Update
 it replaced, then flushed. While it is held, the forwarding entry answers
-"unreachable" (RFC 8966 section 3.5.4). A packet for that prefix is dropped
-instead of following a shorter covering route, such as a default another node
-carries. The reconciler installs the same hold in the kernel. Once the route is
-flushed, the prefix stays held until the latest time any update this node sent
-naming it reachable expires at a neighbor, if that is later, as the next
-paragraph says. Neither hold waits for every neighbor to acknowledge the
-retraction, as
+"unreachable" (RFC 8966 section 3.5.4). A packet the tun hands ranet3 for that
+prefix is dropped instead of following a shorter covering route, such as a
+default another node carries. A packet a peer sends is written to the tun and
+forwarded by the host's kernel, where the reconciler installs the same hold, but
+for a route that [counts as a default](#routes-that-count-as-a-default). Once
+the route is flushed, the prefix stays held until the latest time any update
+this node sent naming it reachable expires at a neighbor, if that is later, as
+the next paragraph says. Neither hold waits for every neighbor to acknowledge
+the retraction, as
 [the protocol deviations](design/protocol-deviations.md#updates-and-requests)
 say.
 
@@ -187,11 +189,12 @@ route serves it at once.
 
 Writing a `cap.table` block turns the reconciler on. It mirrors the mesh's
 selected routes and its holds into a kernel table, and installs each prefix this
-node originates as a hold. An address `cap.table` assigns gets no route there
-unless this node originates it too, since the host's kernel holds it as one of
-its own already. Every route other than a hold leaves through the tun. The
-reconciler also assigns the tun's addresses. On Linux it also installs policy
-rules and enslaves the tun to a VRF.
+node originates as a hold, but for one that
+[counts as a default](#routes-that-count-as-a-default). An address `cap.table`
+assigns gets no route there unless this node originates it too, since the host's
+kernel holds it as one of its own already. Every route other than a hold leaves
+through the tun. The reconciler also assigns the tun's addresses. On Linux it
+also installs policy rules and enslaves the tun to a VRF.
 
 ### What it installs
 
@@ -229,21 +232,39 @@ the rules. It removes what the mesh no longer wants before it installs.
 - A periodic pass runs every `cap.table.reconcile` (30 seconds by default) and
   corrects drift.
 - A failed pass is retried after 1 second, doubling up to the periodic interval.
-- A reload that changes `cap.table` or the addresses it assigns,
-  `ranet3 enable reconciler` and `ranet3 disable reconciler` start a pass too.
+- A reload that changes `cap.table`, the addresses it assigns or
+  `cap.border.overlay`, `ranet3 enable reconciler` and
+  `ranet3 disable reconciler` start a pass too.
 
 `ranet3 disable reconciler` withdraws every route, address and rule the
 reconciler installed. It also takes the tun out of a VRF the reconciler enslaved
 it to, and removes a VRF the reconciler created. `ranet3 enable reconciler` puts
 them back. Both are refused on a node with no `cap.table`.
 
-### Routes that carry the host's own traffic
+### Routes that count as a default
 
-Some routes would carry the host's own traffic into the mesh. Such a route has a
-prefix length of 0 or 1, or contains the family's unspecified address. The
-reconciler installs one only after a session has been live. It withdraws them
-all once no session has been live for `cap.table.capture_grace` (10 seconds by
-default, 1 second at least), and restores them on the first live session.
+Some routes would carry the host's own traffic into the mesh, and they count as
+a default. Such a route lies outside `cap.border.overlay` and is shorter than
+`/8` for IPv4 or `/16` for IPv6, or contains its family's unspecified address
+however long it is. A default and its `/1` halves count, and so do a split
+internet such as four IPv4 `/2`s or `2000::/3`, and a wide prefix such as
+`fd00::/8`, `fc00::/7` or an IPv4 `/7`. A route at or longer than the floor, or
+inside the overlay, is a subnet, unless it contains the unspecified address. A
+route lies inside the overlay when each of its addresses lies in some entry,
+whether one entry holds it or several together do. Without `cap.border`, which
+macOS refuses at startup, no route lies inside the overlay.
+
+The floors are `/8` and `/16` because a route shorter than either takes a share
+of a host's traffic as a default does, a split internet above all, while the
+subnets a mesh routes outside its overlay are longer. The unspecified address
+counts at any length because macOS falls back to it for a socket bound with
+`IP_BOUND_IF`, as [sharing a host](coexistence.md#the-underlay-default-on-macos)
+describes.
+
+The reconciler installs a route that counts only after a session has been live.
+It withdraws them all once no session has been live for
+`cap.table.capture_grace` (10 seconds by default, 1 second at least), and
+restores them on the first live session.
 
 A session is live for 20 seconds after the last authenticated IKE message from
 its peer, and for 20 to 30 seconds after the last authenticated ESP packet, as
@@ -252,6 +273,32 @@ while the underlay socket is not ready. The withdrawal logs
 `kernel is withdrawing the routes that would carry this machine's own traffic`,
 and the restore logs
 `kernel is carrying this machine's own traffic over the mesh again`.
+
+The reconciler never installs a hold of a route that counts, nor this node's own
+prefix that counts, whatever the sessions. An `unreachable` route of that width
+in the kernel would answer the host's own traffic it covers with an error while
+other sessions stay live, and a retracted split internet would cut the host off.
+The mesh's own table keeps the hold, and a packet the tun hands ranet3 for an
+address inside it is dropped rather than following a shorter route (RFC 8966
+section 3.5.4). A packet the host sends or forwards for such an address, a
+peer's packet among them, follows the host's own routes instead: out of its
+uplink, or by a shorter route back into the tun, where ranet3 drops it with no
+answer. [The protocol deviations](design/protocol-deviations.md) list both
+departures.
+
+A node whose `cap.route` announces, or whose `cap.egress` advertises, a prefix
+that counts and is not a default makes itself an exit for that family, as if it
+announced a default: every other node's reconciler treats a route to the prefix
+as above. The file still loads, and the daemon logs a warning at startup and on
+each reload it applies, such as
+`config: cap.route announces fd00::/8, outside the overlay and shorter than /8 for IPv4 or /16 for IPv6 or holding the unspecified address, which counts as a default and makes this node an exit for its family, as routing.md says`.
+A gateway to a network numbered from `fd00::/8` that should stay a subnet router
+announces the prefixes it carries, each `/16` or longer, instead.
+
+`ranet3 exit list` lists a `/0` or the two `/1` halves one node advertises
+together, and nothing else. A node whose other advertisement counts, such as
+`2000::/3`, carries its family's traffic with no row there: `ranet3 routes`
+shows its route, and `ranet3 whois` names the peer an address inside it takes.
 
 ### Ownership
 
@@ -272,7 +319,7 @@ utun. [Sharing a host](coexistence.md) describes the rules in full.
 | Source-specific IPv6 route                         | installed with its source      | scoped to the utun, when the source covers an address on the utun                                                  |
 | A route covering a listed literal endpoint address | installed                      | scoped to the utun, with or without `link.underlay.bind`                                                           |
 | A `/0` default                                     | installed                      | scoped to the utun. With `link.underlay.bind`, installed as its zero-free cover, unscoped                          |
-| The `/1` halves                                    | installed                      | scoped to the utun. With `link.underlay.bind`, scoped when it covers a listed endpoint address, otherwise unscoped |
+| Any other route that counts as a default           | installed                      | scoped to the utun. With `link.underlay.bind`, scoped when it covers a listed endpoint address, otherwise unscoped |
 | VRF, rules, `prefsrc4`                             | supported                      | refused at startup                                                                                                 |
 | `where` in the logs                                | `table 200 protocol 155`       | `interface utun6`, for example                                                                                     |
 
@@ -349,8 +396,9 @@ the skipped count last until a delete succeeds. Meanwhile the member leaves by
 the utun as the route would, and traffic is forwarded as Babel selects.
 
 Until exit selection exists, a Mac with `bind` set takes whichever `/0` Babel
-selects. A source-specific default, a hold and a real `/1` half that a node
-advertises are not covered. They are routes like any other.
+selects. A source-specific default and a real `/1` half that a node advertises
+are not covered. They are routes like any other, and a hold of a default is not
+installed at all.
 
 A route the reconciler installs unscoped that is not a member but holds a zero
 address, such as a real `0.0.0.0/1` or a `0.0.0.0/24`, needs a default scoped to

@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-10-20
+updated: 2026-10-22
 order: 110
 ---
 
@@ -95,8 +95,8 @@ the utun.
 - A route that covers a literal endpoint address the trust document lists.
   Unscoped, it would carry this node's own ESP to that peer into the tunnel.
 - A route that would carry the host's own traffic, unless `link.underlay.bind`
-  is set. Such a route has a prefix length of 0 or 1, or contains the family's
-  unspecified address.
+  is set. Such a route is one that
+  [counts as a default](routing.md#routes-that-count-as-a-default).
 
 With `bind` set, every route outside the first 3 kinds is installed unscoped, so
 the mesh is reachable from the Mac without every program binding first.

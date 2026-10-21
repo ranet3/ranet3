@@ -60,9 +60,11 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 4443 section 3.1                         | Answer a packet refused for its source with Destination Unreachable, code 5                                                            | An egress segment drops a source outside its allow list with no answer                            | A source may be forged, so an answer could reach a bystander                                                                   |
 | RFC 4443 section 3.1                         | Answer a packet a firewall refuses with Destination Unreachable, code 1                                                                | The border filter drops a routing header from outside the mesh with no answer                     | An answer tells the sender this node is the mesh's edge                                                                        |
 | RFC 4443 section 3.1                         | Answer a packet a firewall refuses with Destination Unreachable, code 1                                                                | The border filter drops a SID of this node from outside the mesh with no answer                   | An answer tells the sender which addresses are SIDs                                                                            |
+| RFC 4443 section 3.1                         | Answer a packet with no route with Destination Unreachable, code 0                                                                     | A packet routed into the tun inside a hold that counts as a default is dropped with no answer     | That hold cuts the host off, and no held tun read is answered                                                                  |
 | RFC 8966 section 3.2.2                       | Raise the node's own seqno only when asked                                                                                             | The seqno rises at every start                                                                    | Peers take a restarted node's routes at once                                                                                   |
 | RFC 8966 section 3.5.3, RFC 9079 section 5.1 | Create a route table entry for each finite update a neighbor sends                                                                     | An update for the destination and source of this node's own prefix or assigned address is dropped | Appendix E: the directly attached prefix is preferred                                                                          |
 | RFC 8966 section 3.5.4                       | End a hold once every neighbor acknowledges a retraction                                                                               | The hold lasts until an expiry timer runs out                                                     | The RFC's own reason: "The former option is simpler"                                                                           |
+| RFC 8966 section 3.5.4                       | Forward no packet inside a held prefix by a shorter route                                                                              | The kernel keeps no hold that counts as a default, and the host's own routes take its traffic     | That hold in the kernel would cut the host off                                                                                 |
 | RFC 8966 section 3.7.2                       | Try to reach every neighbor with a triggered update                                                                                    | It is sent once                                                                                   | Each link is 1 ESP tunnel that delivers in order                                                                               |
 | RFC 8966 sections 3.8.1.1, 3.8.1.2           | Answer a request when a selected route exists                                                                                          | Split horizon applies to replies                                                                  | The requester is the route's next hop                                                                                          |
 | RFC 8966 section 3.8.1.2                     | Forward a seqno request only while advertising the prefix                                                                              | Forwarded whenever a route exists                                                                 | Starvation leaves nothing advertised                                                                                           |
@@ -873,6 +875,7 @@ it measures, which any speaker answers with its Ack and otherwise ignores.
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 3.5.3, and RFC 9079 section 5.1 | Create a route table entry for each finite update a neighbor sends                                                   | Drops it when its destination and source are a prefix this node announces or an address `cap.table` assigns                                                                                                |
 | 3.5.4                           | End the hold of a retracted prefix once every neighbor acknowledges a retraction sent with an acknowledgment request | Keeps it until the route's expiry timer runs out and, once the prefix has lost its last route, until the latest time any update this node sent naming it reachable expires at a neighbor, if that is later |
+| 3.5.4                           | Forward no packet inside a held prefix by following a route for a shorter prefix                                     | Drops each packet the tun hands it inside a hold, but the kernel keeps no hold that counts as a default, and a packet the host sends or forwards inside one, a peer's too, takes the host's routes         |
 | 3.7.2                           | Make a reasonable attempt to reach every neighbor with a triggered update or retraction                              | Sends it once, with no acknowledgment and no repeat                                                                                                                                                        |
 | 3.8.1.1                         | Send an update for a requested prefix that has a selected route                                                      | Sends a retraction when the selected route's next hop is the requester                                                                                                                                     |
 | 3.8.1.2                         | Send an update for a seqno request the selected route satisfies                                                      | Forwards the request instead when the selected route's next hop is the requester                                                                                                                           |
@@ -914,6 +917,24 @@ automatic aggregation by creating spurious black-holes for aggregated routes". A
 retracted prefix that a shorter route covers stays unreachable until the route's
 expiry timer runs out, and a packet for it is dropped meanwhile rather than
 following the shorter route.
+
+The same section has a held prefix's packets dropped: "packets destined to an
+address within P MUST NOT be forwarded by following a route for a shorter
+prefix". Every packet inside a hold that the tun hands ranet3 is dropped. A
+packet a peer sends is written to the tun and forwarded by the host's kernel,
+which drops it inside a hold the kernel keeps. The kernel keeps no copy of a
+hold that [counts as a default](../routing.md#routes-that-count-as-a-default),
+since an `unreachable` route that wide would answer the host's own traffic it
+covers with an error while other sessions stay live, and a retracted split
+internet would cut the host off. A packet the host sends or forwards for an
+address inside such a hold, a peer's packet among them, takes the host's own
+route, as it did before the mesh carried the prefix, or a shorter route back
+into the tun, where ranet3 drops it with no answer, as
+[drops with no answer](#drops-with-no-answer) says. It pays the cost the section
+names for using the shorter route, "running the risk of creating a routing loop
+(Section 2.8)": until every neighbor has read the retraction, a packet the host
+forwards by its own route can come back through a neighbor that still routes the
+prefix through this node.
 
 A prefix that loses its last route, because its route was flushed at that
 expiry, its neighbor's session went, or this node stopped announcing it while
@@ -1114,6 +1135,9 @@ says:
 
 It gives each failure to deliver a code, among them:
 
+> If the reason for the failure to deliver is lack of a matching entry in the
+> forwarding node's routing table, the Code field is set to 0.
+
 > If the reason for the failure to deliver is administrative prohibition (e.g.,
 > a "firewall filter"), the Code field is set to 1.
 
@@ -1143,6 +1167,12 @@ drops:
 - For code 1, the border filter drops one of this node's SIDs as the destination
   of a packet arriving from outside the mesh. An answer would tell its sender
   which addresses are SIDs.
+- For code 0, ranet3 drops a packet the tun hands it for an address inside a
+  hold that [counts as a default](../routing.md#routes-that-count-as-a-default).
+  The host sends or forwards such a packet into the tun by a shorter route, such
+  as another exit's default, since the kernel keeps no copy of that hold: one
+  would answer the host's own traffic it covers with an error and cut the host
+  off. The mesh answers no packet it reads off the tun inside a hold.
 
 The same section says:
 

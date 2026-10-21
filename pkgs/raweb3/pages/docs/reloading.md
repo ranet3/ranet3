@@ -115,7 +115,10 @@ A reload hands a changed `cap.table` to the running reconciler. It takes a new
 announcements it expands into, `rules`, `reconcile` and `capture_grace`. The
 reconciler checks the block as it would at startup and runs a pass at once. From
 then on the periodic pass runs every `reconcile`, and an announced default
-outlives the last live session by `capture_grace`.
+outlives the last live session by `capture_grace`. A reload that moves
+`cap.border.overlay` hands the reconciler the new overlay with its block too,
+and its pass judges again which routes
+[count as a default](routing.md#routes-that-count-as-a-default).
 
 That first pass moves every route to the new metric and preferred source. It
 deletes the rules the block no longer names and installs the new ones. It takes

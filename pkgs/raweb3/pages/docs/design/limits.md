@@ -92,7 +92,7 @@ unscoped routes per family that hold every address but `0.0.0.0/8` and `::/8`,
 as [routing](../routing.md#the-zero-free-cover-on-macos) describes. Any other
 route that carries the host's own traffic is installed unscoped too, unless it
 covers a literal endpoint address the trust document lists. Without `bind`, the
-reconciler scopes a `/0` and the `/1` halves to the tun, as
+reconciler scopes every route that counts as a default to the tun, as
 [platforms](../platforms.md#macos) describes. No unbound socket selects a scoped
 route. A node without `bind` can hold an exit-announced address and still cannot
 send its traffic through the exit.
@@ -199,8 +199,9 @@ rewriting it.
 On Linux and macOS, a route that would carry this host's own traffic is held
 back until at least 1 session is live. It is withdrawn once none has been live
 for `cap.table.capture_grace` (10 seconds by default), and restored on the next
-live session. Such a route is one covering half a family's address space or
-more, or one covering that family's unspecified address however small.
+live session. Such a route is one that
+[counts as a default](../routing.md#routes-that-count-as-a-default). A hold of
+such a route, and this node's own prefix that counts, are never installed.
 
 The rule about the unspecified address follows the macOS kernel. A bound
 socket's lookup falls back to the route for the unspecified address of its
