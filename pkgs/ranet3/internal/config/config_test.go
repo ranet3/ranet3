@@ -1387,6 +1387,14 @@ func TestEveryWrittenFieldSurvivesEachEncoder(t *testing.T) {
 	sameAfterEachEncoder(t, want)
 }
 
+// << names an FQDN alias and a cost.extra organization in every file, so the yaml rendering has to quote it
+func TestMergeKeySpelledMapKeysSurviveEachEncoder(t *testing.T) {
+	want := fullConfig()
+	want.Auth.Aliases.Remote.FQDN["<<"] = identity.MustParse("example/gateway:1")
+	want.Cap.Babel.Cost.Extra.Org["<<"] = 7
+	sameAfterEachEncoder(t, want)
+}
+
 // difference names the first field at which got parts from want, in the path
 // a file writes it under, so a failure reads as one setting rather than as two
 // renderings that may share the fault being looked for.
@@ -1547,9 +1555,29 @@ var encoders = []struct {
 	render    func(any) ([]byte, error)
 	parse     func([]byte, any) error
 }{
-	{".yaml", yaml.Marshal, yaml.Unmarshal},
+	{".yaml", marshalYAML, yaml.Unmarshal},
 	{".toml", toml.Marshal, toml.Unmarshal},
 	{".json", json.Marshal, json.Unmarshal},
+}
+
+// marshalYAML writes what yaml.Marshal writes with every << quoted, since the
+// decoder takes a plain, untagged << key for a merge key
+func marshalYAML(value any) ([]byte, error) {
+	var document yaml.Node
+	if err := document.Encode(value); err != nil {
+		return nil, err
+	}
+	quoteMergeKeys(&document)
+	return yaml.Marshal(&document)
+}
+
+func quoteMergeKeys(node *yaml.Node) {
+	if node.Value == "<<" {
+		node.Tag, node.Style = "!!str", yaml.DoubleQuotedStyle
+	}
+	for _, child := range node.Content {
+		quoteMergeKeys(child)
+	}
 }
 
 // a block holding one written field and nothing else still reaches the daemon

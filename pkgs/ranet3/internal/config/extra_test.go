@@ -11,14 +11,15 @@ import (
 )
 
 // the block reads alike under each decoder, the three keys with it
+// an organization named << is written quoted, since yaml takes an untagged << for a merge key only when it is plain
 func TestExtraCostReadsAlikeUnderEachDecoder(t *testing.T) {
-	want := babel.ExtraCost{Foreign: 1024, Org: map[string]uint16{"gravity": 2048}, Node: map[string]uint16{"ysun/lagern": 300}}
+	want := babel.ExtraCost{Foreign: 1024, Org: map[string]uint16{"example": 2048, "<<": 7}, Node: map[string]uint16{"example/gateway": 300}}
 	for name, file := range map[string]struct{ extension, body string }{
-		"toml": {".toml", nodeTOML + "[cap.babel.cost.extra]\nforeign = 1024\norg = { gravity = 2048 }\nnode = { \"ysun/lagern\" = 300 }\n"},
-		"yaml": {".yaml", nodeYAML + "cap:\n  babel:\n    cost:\n      extra:\n        foreign: 1024\n        org: {gravity: 2048}\n        node: {ysun/lagern: 300}\n"},
+		"toml": {".toml", nodeTOML + "[cap.babel.cost.extra]\nforeign = 1024\norg = { example = 2048, \"<<\" = 7 }\nnode = { \"example/gateway\" = 300 }\n"},
+		"yaml": {".yaml", nodeYAML + "cap:\n  babel:\n    cost:\n      extra:\n        foreign: 1024\n        org: {example: 2048, \"<<\": 7}\n        node: {example/gateway: 300}\n"},
 		"json": {".json", `{"node":"example/laptop","auth":{"key":"key.pem","trust":"trust.json"},` +
 			`"link":{"port":13000,"endpoints":[{"serial":"0","family":"ip4"}]},"dial":{"all":true},` +
-			`"cap":{"babel":{"cost":{"extra":{"foreign":1024,"org":{"gravity":2048},"node":{"ysun/lagern":300}}}}}}`},
+			`"cap":{"babel":{"cost":{"extra":{"foreign":1024,"org":{"example":2048,"<<":7},"node":{"example/gateway":300}}}}}}`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg, err := load(t, file.extension, file.body)

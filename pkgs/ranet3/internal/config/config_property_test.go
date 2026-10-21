@@ -67,6 +67,16 @@ func textOf(alphabet string, longest int) hegel.Generator[string] {
 // names draws what a file names a node, a peer, a serial or a device with.
 func names() hegel.Generator[string] { return text(12) }
 
+// orMergeKey draws << outright and a key otherwise, since << is a valid key that a name generator seldom draws
+func orMergeKey(keys hegel.Generator[string]) hegel.Generator[string] {
+	return hegel.Composite(func(tc hegel.TestCase) string {
+		if hegel.Draw(tc, hegel.WeightedBooleans(0.1)) {
+			return "<<"
+		}
+		return hegel.Draw(tc, keys)
+	})
+}
+
 // paths draws a file name, which is a name allowed to run longer.
 func paths() hegel.Generator[string] { return text(24) }
 
@@ -135,8 +145,12 @@ func localAlias(kind, written string) ike.LocalAlias {
 func aliasTables() hegel.Generator[ike.Aliases] {
 	remote := func(tc hegel.TestCase, kind string) map[string]identity.Identity {
 		table := make(map[string]identity.Identity)
+		keys := aliasIDs(kind)
+		if kind == "fqdn" {
+			keys = orMergeKey(keys)
+		}
 		for range hegel.Draw(tc, hegel.Integers(0, 3)) {
-			table[hegel.Draw(tc, aliasIDs(kind))] = identityAt(tc, hegel.Draw(tc, names()))
+			table[hegel.Draw(tc, keys)] = identityAt(tc, hegel.Draw(tc, names()))
 		}
 		if kind == "keyid" && hegel.Draw(tc, hegel.WeightedBooleans(0.1)) {
 			endpoint := identityAt(tc, hegel.Draw(tc, names()))
@@ -320,7 +334,7 @@ func speakers() hegel.Generator[babel.Config] {
 				},
 				Extra: babel.ExtraCost{
 					Foreign: hegel.Draw(tc, edges[uint16](0, babel.MetricInfinity-1)),
-					Org:     amounts(tc, names()),
+					Org:     amounts(tc, orMergeKey(names())),
 					Node:    amounts(tc, nodeKeys),
 				},
 			},
