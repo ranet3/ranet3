@@ -118,8 +118,8 @@ Every page's frontmatter carries `title`, `description`, `created` and
 `page`, and `bare` leaves the whole width to the Markdown, as the front page
 does. `vetted: <date>` is optional too. Only Yifei sets it, by hand, on the day
 Yifei last read the page in full. A page without it, or with a `vetted` older
-than its `updated`, shows a notice that it holds machine generated text no one
-has checked yet.
+than its `updated`, shows a notice that it may contain unreviewed machine
+generated text.
 
 The build fails on a missing field, an `updated` before `created`, a relative
 link to a page that does not exist, and a link to a heading the page does not
