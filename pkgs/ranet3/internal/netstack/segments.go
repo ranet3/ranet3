@@ -275,7 +275,7 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment) {
 			m.noteSegmentDrop(errNotIP)
 			continue
 		}
-		peer, verdict := m.Routes.Resolve(src, dst)
+		peer, verdict, _ := m.Routes.Resolve(src, dst)
 		if verdict != RoutePeer || peer == nil {
 			m.segmentsDropped.Add(1)
 			m.reportSegmentDrop("no route to the next segment", "segment", segment.next)
@@ -459,7 +459,7 @@ func (m *Mesh) sendBack(answer []byte) bool {
 	if !ok {
 		return false
 	}
-	peer, verdict := m.Routes.Resolve(source, destination)
+	peer, verdict, _ := m.Routes.Resolve(source, destination)
 	if verdict != RoutePeer || peer == nil {
 		return false
 	}

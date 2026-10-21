@@ -41,12 +41,12 @@ func TestStubSelectsLowestCostAndReselectsOnWorsening(t *testing.T) {
 	b := addReachablePeer(t, s, "b", 10)
 	s.Receive(a, routePacket(dest, 1, 20, 1000))
 	s.Receive(b, routePacket(dest, 2, 20, 1000))
-	if got, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != b {
+	if got, _, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != b {
 		t.Error("did not select the cheaper link to an independent origin")
 	}
 	s.Receive(b, routePacket(dest, 2, 1, 1000))
 	s.Receive(b, routePacket(dest, 2, 500, 1000))
-	if got, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != a {
+	if got, _, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != a {
 		t.Error("kept a worsened route instead of selecting the existing fallback")
 	}
 }
@@ -57,7 +57,7 @@ func TestStubPrefersLocalPrefixAfterRouterIDChanges(t *testing.T) {
 	dest := netip.MustParsePrefix("10.5.0.0/16")
 	s.Originate(dest)
 	s.Receive(p, routePacket(dest, 99, 10, 1000))
-	if _, verdict := s.mesh.Routes.Resolve(netip.MustParseAddr("192.0.2.1"), dest.Addr()); verdict == netstack.RoutePeer {
+	if _, verdict, _ := s.mesh.Routes.Resolve(netip.MustParseAddr("192.0.2.1"), dest.Addr()); verdict == netstack.RoutePeer {
 		t.Fatal("installed a reflected local prefix from a previous router ID")
 	}
 }
@@ -68,7 +68,7 @@ func TestReceiveFromReplacedPeerCannotChangeRoutes(t *testing.T) {
 	addReachablePeer(t, s, "remote", 10)
 	dest := netip.MustParsePrefix("10.5.0.0/16")
 	s.Receive(old, routePacket(dest, 99, 10, 1000))
-	if _, verdict := s.mesh.Routes.Resolve(netip.MustParseAddr("192.0.2.1"), dest.Addr()); verdict == netstack.RoutePeer {
+	if _, verdict, _ := s.mesh.Routes.Resolve(netip.MustParseAddr("192.0.2.1"), dest.Addr()); verdict == netstack.RoutePeer {
 		t.Fatal("a retired session installed a route through its replacement")
 	}
 }
@@ -116,7 +116,7 @@ func TestExpiryUsesRemoteDeadlines(t *testing.T) {
 // peer. A prefix held as unreachable answers false: it does not forward and it
 // does not fall through to a covering route.
 func forwards(mesh *netstack.Mesh, dest netip.Prefix) bool {
-	_, verdict := mesh.Routes.Resolve(dest.Addr(), dest.Addr())
+	_, verdict, _ := mesh.Routes.Resolve(dest.Addr(), dest.Addr())
 	return verdict == netstack.RoutePeer
 }
 
@@ -137,7 +137,7 @@ func TestIPv4UpdateWithNoNextHopIsIgnored(t *testing.T) {
 	a := addReachablePeer(t, s, "a", 100)
 	s.Receive(a, buildPacket(netip.MustParseAddr("fe80::2"), multicastGroup,
 		EncodePacket([]RawTLV{EncodeRouterID([8]byte{1}), plain})))
-	if got, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != nil {
+	if got, _, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != nil {
 		t.Error("an IPv4 update with no next hop of its own family was installed")
 	}
 
@@ -151,7 +151,7 @@ func TestIPv4UpdateWithNoNextHopIsIgnored(t *testing.T) {
 	s.Receive(a, buildPacket(netip.MustParseAddr("fe80::2"), multicastGroup, EncodePacket([]RawTLV{
 		mapped, EncodeRouterID([8]byte{1}), plain,
 	})))
-	if got, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != nil {
+	if got, _, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != nil {
 		t.Error("an IPv4 update behind a v4-mapped IPv6 next hop was installed")
 	}
 
@@ -160,7 +160,7 @@ func TestIPv4UpdateWithNoNextHopIsIgnored(t *testing.T) {
 		EncodeNextHop(net.ParseIP("192.0.2.254")),
 		EncodeRouterID([8]byte{1}), plain,
 	})))
-	if got, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != a {
+	if got, _, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != a {
 		t.Error("an IPv4 update carrying a next hop was ignored too")
 	}
 
@@ -174,7 +174,7 @@ func TestIPv4UpdateWithNoNextHopIsIgnored(t *testing.T) {
 		EncodeUpdate(Update{AE: AEIPv4, Plen: dest.Bits(), Prefix: dest.Addr().AsSlice(),
 			Seqno: 2, Metric: MetricInfinity, Interval: 1000}),
 	})))
-	if got, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got == a {
+	if got, _, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got == a {
 		t.Error("an IPv4 retraction was ignored, so the prefix is held until it expires and advertised onward meanwhile")
 	}
 }
@@ -197,12 +197,12 @@ func TestZeroIHUIntervalIsIgnoredRatherThanHonored(t *testing.T) {
 		EncodeUpdate(Update{AE: AEIPv4, Plen: dest.Bits(), Prefix: dest.Addr().AsSlice(),
 			Seqno: 1, Metric: 20, Interval: 1000}),
 	})))
-	if got, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != a {
+	if got, _, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != a {
 		t.Fatal("the route was not selected, so this proves nothing")
 	}
 	s.Receive(a, buildPacket(netip.MustParseAddr("fe80::2"), multicastGroup,
 		EncodePacket([]RawTLV{EncodeIHU(IHU{RxCost: 100, Interval: 0})})))
-	if got, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != a {
+	if got, _, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != a {
 		t.Error("an IHU with a zero interval unselected every route through the neighbor that sent it")
 	}
 	s.mu.Lock()
@@ -278,7 +278,7 @@ func TestIgnoredNextHopStillSetsTheParserState(t *testing.T) {
 		EncodeUpdate(Update{AE: AEIPv4, Plen: dest.Bits(), Prefix: dest.Addr().AsSlice(),
 			Seqno: 1, Metric: 20, Interval: 1000}),
 	})))
-	if got, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != a {
+	if got, _, _ := s.mesh.Routes.Resolve(src, dest.Addr()); got != a {
 		t.Error("the update after an ignored next hop was dropped, so the whole packet's IPv4 routes go with it")
 	}
 }
@@ -320,7 +320,7 @@ func TestRouteHeardAheadOfItsLinkCostIsUsedWhenTheCostArrives(t *testing.T) {
 			if !held {
 				t.Fatal("the route was not kept")
 			}
-			if peer, verdict := speaker.mesh.Routes.Resolve(dest.Addr(), dest.Addr()); verdict != netstack.RoutePeer || peer != neighbor.peer {
+			if peer, verdict, _ := speaker.mesh.Routes.Resolve(dest.Addr(), dest.Addr()); verdict != netstack.RoutePeer || peer != neighbor.peer {
 				t.Errorf("the packet that completed the link cost left the route unused, so it waits for whatever reselects next: %v", speaker.mesh.Routes.Debug())
 			}
 		})

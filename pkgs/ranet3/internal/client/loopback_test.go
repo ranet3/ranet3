@@ -291,7 +291,7 @@ func TestTwoNodesConvergeOverLoopback(t *testing.T) {
 
 // reaches is whether from forwards to an address in to's prefix through the mesh
 func reaches(from, to *loopbackNode) bool {
-	peer, verdict := from.client.Mesh.Routes.Resolve(netip.Addr{}, to.prefix.Addr().Next())
+	peer, verdict, _ := from.client.Mesh.Routes.Resolve(netip.Addr{}, to.prefix.Addr().Next())
 	return verdict == netstack.RoutePeer && peer != nil
 }
 
@@ -368,7 +368,7 @@ func TestReloadAnnouncesNewPrefixToPeer(t *testing.T) {
 	run(t, alpha, bravo)
 	added := netip.MustParsePrefix("fd00:aa::/64")
 	waitFor(t, convergeBudget, "the initial route", func() bool {
-		peer, verdict := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alpha.prefix.Addr().Next())
+		peer, verdict, _ := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alpha.prefix.Addr().Next())
 		return verdict == netstack.RoutePeer && peer != nil
 	})
 
@@ -379,7 +379,7 @@ func TestReloadAnnouncesNewPrefixToPeer(t *testing.T) {
 	}
 
 	waitFor(t, convergeBudget, "the reloaded prefix to reach the peer", func() bool {
-		peer, verdict := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, added.Addr().Next())
+		peer, verdict, _ := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, added.Addr().Next())
 		return verdict == netstack.RoutePeer && peer != nil
 	})
 }
@@ -562,7 +562,7 @@ func TestSessionsCarryTheLinkMTUOfTheirOwnNode(t *testing.T) {
 	for _, end := range ends {
 		// looked up on every poll, since a simultaneous open replaces the first session and its peer with it
 		waitFor(t, convergeBudget, fmt.Sprintf("%s to forward to %s's prefix over a session carrying its link.mtu of %d", end.node.name, end.peer.name, end.mtu), func() bool {
-			found, verdict := end.node.client.Mesh.Routes.Resolve(netip.Addr{}, end.peer.prefix.Addr().Next())
+			found, verdict, _ := end.node.client.Mesh.Routes.Resolve(netip.Addr{}, end.peer.prefix.Addr().Next())
 			return verdict == netstack.RoutePeer && found != nil && found.MTU() == int(end.mtu)
 		})
 	}
@@ -584,7 +584,7 @@ func TestReloadHandsALiveSessionTheNewLinkMTU(t *testing.T) {
 	run(t, alpha, bravo)
 	var peer *netstack.Peer
 	waitFor(t, convergeBudget, "bravo forwarding to alpha's prefix", func() bool {
-		found, verdict := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alpha.prefix.Addr().Next())
+		found, verdict, _ := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alpha.prefix.Addr().Next())
 		peer = found
 		return verdict == netstack.RoutePeer && found != nil
 	})
@@ -850,7 +850,7 @@ func TestSessionAdoptedDuringAReloadTakesTheStoredLinkMTU(t *testing.T) {
 	held = false
 	var peer *netstack.Peer
 	waitFor(t, convergeBudget, "bravo forwarding to alpha's prefix", func() bool {
-		found, verdict := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alpha.prefix.Addr().Next())
+		found, verdict, _ := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alpha.prefix.Addr().Next())
 		peer = found
 		return verdict == netstack.RoutePeer && found != nil
 	})

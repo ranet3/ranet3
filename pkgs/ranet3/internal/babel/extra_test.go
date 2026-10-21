@@ -219,14 +219,14 @@ func TestReloadedExtraCostMovesTheRoute(t *testing.T) {
 	speaker.routes.update(speaker.neighbors["b"], key, advertisement{routerID: [8]byte{1}, seqno: 1, metric: 10}, time.Minute, now)
 	speaker.routes.update(speaker.neighbors["c"], key, advertisement{routerID: [8]byte{2}, seqno: 1, metric: 100}, time.Minute, now)
 	speaker.mu.Unlock()
-	if peer, verdict := mesh.Routes.Resolve(dest.Addr(), dest.Addr()); verdict != netstack.RoutePeer || peer != b.Peer {
+	if peer, verdict, _ := mesh.Routes.Resolve(dest.Addr(), dest.Addr()); verdict != netstack.RoutePeer || peer != b.Peer {
 		t.Fatalf("the prefix is not through b before the reload, so this proves nothing: %v", mesh.Routes.Debug())
 	}
 	b.settle(t)
 	toB = nil
 
 	speaker.SetConfig(Config{Cost: CostOptions{RTT: cost.RTT, Extra: ExtraCost{Org: map[string]uint16{"bravo": 500}}}})
-	if peer, verdict := mesh.Routes.Resolve(dest.Addr(), dest.Addr()); verdict != netstack.RoutePeer || peer != c.Peer {
+	if peer, verdict, _ := mesh.Routes.Resolve(dest.Addr(), dest.Addr()); verdict != netstack.RoutePeer || peer != c.Peer {
 		t.Errorf("the prefix is forwarded as %v once b pays 500, want through c", mesh.Routes.Debug())
 	}
 	for _, neighbor := range speaker.Stats().Neighbors {

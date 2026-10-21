@@ -24,15 +24,16 @@ func TestRouteTableOrdinaryLookup(t *testing.T) {
 	rt.Set(netip.Prefix{}, mustPrefix("10.1.0.0/16"), b)
 
 	// Longest destination prefix wins regardless of order installed.
-	peer, verdict := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.1.2.3"))
-	if verdict != RoutePeer || peer != b {
-		t.Fatalf("got %v, %v; want b, peer", peer, verdict)
+	// the length comes in IPv4's own bits
+	peer, verdict, match := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.1.2.3"))
+	if verdict != RoutePeer || peer != b || match.Bits != 16 {
+		t.Fatalf("got %v, %v under /%d; want b, peer under /16", peer, verdict, match.Bits)
 	}
-	peer, verdict = rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.9.9.9"))
-	if verdict != RoutePeer || peer != a {
-		t.Fatalf("got %v, %v; want a, peer", peer, verdict)
+	peer, verdict, match = rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.9.9.9"))
+	if verdict != RoutePeer || peer != a || match.Bits != 8 {
+		t.Fatalf("got %v, %v under /%d; want a, peer under /8", peer, verdict, match.Bits)
 	}
-	if peer, verdict := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("192.168.1.1")); verdict != RouteNone || peer != nil {
+	if peer, verdict, _ := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("192.168.1.1")); verdict != RouteNone || peer != nil {
 		t.Fatalf("got %v, %v; want no route", peer, verdict)
 	}
 }
@@ -48,14 +49,14 @@ func TestRouteTableSourceSpecificTakesPriorityAtEqualDestSpecificity(t *testing.
 
 	// Source falls inside the source-specific entry's prefix: it must win
 	// even though both entries match the same destination.
-	peer, verdict := rt.Resolve(mustAddr("2001:db8:1::5"), mustAddr("2001:db8::1"))
+	peer, verdict, _ := rt.Resolve(mustAddr("2001:db8:1::5"), mustAddr("2001:db8::1"))
 	if verdict != RoutePeer || peer != specific {
 		t.Fatalf("got %v, %v; want specific, peer", peer, verdict)
 	}
 
 	// Source falls outside the source-specific entry: falls back to the
 	// any-source (ordinary) route, not "no match".
-	peer, verdict = rt.Resolve(mustAddr("2001:db8:2::5"), mustAddr("2001:db8::1"))
+	peer, verdict, _ = rt.Resolve(mustAddr("2001:db8:2::5"), mustAddr("2001:db8::1"))
 	if verdict != RoutePeer || peer != any {
 		t.Fatalf("got %v, %v; want any, peer", peer, verdict)
 	}
@@ -73,7 +74,7 @@ func TestRouteTableDestSpecificityBeatsSourceSpecificity(t *testing.T) {
 	rt.Set(mustPrefix("2001:db8:1::/48"), mustPrefix("2001:db8::/32"), broad)
 	rt.Set(netip.Prefix{}, mustPrefix("2001:db8::/48"), narrow)
 
-	peer, verdict := rt.Resolve(mustAddr("2001:db8:1::5"), mustAddr("2001:db8::1"))
+	peer, verdict, _ := rt.Resolve(mustAddr("2001:db8:1::5"), mustAddr("2001:db8::1"))
 	if verdict != RoutePeer || peer != narrow {
 		t.Fatalf("got %v, %v; want narrow (more specific destination), peer", peer, verdict)
 	}
@@ -91,7 +92,7 @@ func TestRouteTableSetReplacesSameKey(t *testing.T) {
 	if debug := rt.Debug(); len(debug) != 1 {
 		t.Fatalf("expected exactly one entry after replace, got %v", debug)
 	}
-	peer, verdict := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.0.0.5"))
+	peer, verdict, _ := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.0.0.5"))
 	if verdict != RoutePeer || peer != b {
 		t.Fatalf("got %v, %v; want b, peer", peer, verdict)
 	}
@@ -111,7 +112,7 @@ func TestRouteTableSourceSpecificAndOrdinaryCoexistIndependently(t *testing.T) {
 
 	// Removing the source-specific one must not disturb the ordinary one.
 	rt.Remove(mustPrefix("192.168.0.0/16"), dest)
-	peer, verdict := rt.Resolve(mustAddr("192.168.1.1"), mustAddr("10.0.0.5"))
+	peer, verdict, _ := rt.Resolve(mustAddr("192.168.1.1"), mustAddr("10.0.0.5"))
 	if verdict != RoutePeer || peer != any {
 		t.Fatalf("got %v, %v; want any (fallback survives), peer", peer, verdict)
 	}
@@ -127,13 +128,13 @@ func TestRouteTableRemovePeer(t *testing.T) {
 
 	rt.RemovePeer(a)
 
-	if _, verdict := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.0.0.5")); verdict != RouteNone {
+	if _, verdict, _ := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.0.0.5")); verdict != RouteNone {
 		t.Fatalf("expected a's routes to be gone, got %v", verdict)
 	}
-	if _, verdict := rt.Resolve(mustAddr("192.168.1.1"), mustAddr("10.0.0.5")); verdict != RouteNone {
+	if _, verdict, _ := rt.Resolve(mustAddr("192.168.1.1"), mustAddr("10.0.0.5")); verdict != RouteNone {
 		t.Fatalf("expected a's source-specific route to be gone too, got %v", verdict)
 	}
-	if peer, verdict := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.1.0.5")); verdict != RoutePeer || peer != b {
+	if peer, verdict, _ := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.1.0.5")); verdict != RoutePeer || peer != b {
 		t.Fatalf("b's route should be unaffected, got %v, %v", peer, verdict)
 	}
 }
@@ -220,12 +221,12 @@ func TestRouteTableTrieRealBranching(t *testing.T) {
 		{"10.1.2.3", root},
 	}
 	for _, c := range cases {
-		peer, verdict := rt.Resolve(mustAddr("1.2.3.4"), mustAddr(c.addr))
+		peer, verdict, _ := rt.Resolve(mustAddr("1.2.3.4"), mustAddr(c.addr))
 		if verdict != RoutePeer || peer != c.want {
 			t.Fatalf("resolve(%s): got %v, %v; want %s", c.addr, peer, verdict, c.want.ID)
 		}
 	}
-	if _, verdict := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("11.0.0.1")); verdict != RouteNone {
+	if _, verdict, _ := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("11.0.0.1")); verdict != RouteNone {
 		t.Fatalf("expected no route outside 10.0.0.0/8 entirely, got %v", verdict)
 	}
 }
@@ -241,10 +242,10 @@ func TestRouteTableTrieCompactionPreservesSiblings(t *testing.T) {
 
 	rt.Remove(netip.Prefix{}, mustPrefix("10.0.0.0/9"))
 
-	if _, verdict := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.1.2.3")); verdict != RouteNone {
+	if _, verdict, _ := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.1.2.3")); verdict != RouteNone {
 		t.Fatalf("removed route still resolves as %v", verdict)
 	}
-	peer, verdict := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.129.0.1"))
+	peer, verdict, _ := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.129.0.1"))
 	if verdict != RoutePeer || peer != b {
 		t.Fatalf("sibling route corrupted by removal: got %v, %v; want b, peer", peer, verdict)
 	}
@@ -270,14 +271,14 @@ func TestRouteTableTrieRemovePeerCompactsAcrossFamilies(t *testing.T) {
 	rt.RemovePeer(a)
 
 	for _, addr := range []string{"10.1.2.3", "10.200.0.1", "2001:db8:1::5"} {
-		if _, verdict := rt.Resolve(mustAddr("1.2.3.4"), mustAddr(addr)); verdict != RouteNone {
+		if _, verdict, _ := rt.Resolve(mustAddr("1.2.3.4"), mustAddr(addr)); verdict != RouteNone {
 			t.Fatalf("a's route for %s should be gone, got %v", addr, verdict)
 		}
 	}
-	if peer, verdict := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.64.1.1")); verdict != RoutePeer || peer != b {
+	if peer, verdict, _ := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("10.64.1.1")); verdict != RoutePeer || peer != b {
 		t.Fatalf("b's IPv4 route should be unaffected, got %v, %v", peer, verdict)
 	}
-	if peer, verdict := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("2001:db8:2::5")); verdict != RoutePeer || peer != b {
+	if peer, verdict, _ := rt.Resolve(mustAddr("1.2.3.4"), mustAddr("2001:db8:2::5")); verdict != RoutePeer || peer != b {
 		t.Fatalf("b's IPv6 route should be unaffected, got %v, %v", peer, verdict)
 	}
 }
@@ -303,7 +304,7 @@ func TestSnapshotCarriesUnreachableHold(t *testing.T) {
 	if !found {
 		t.Errorf("the hold for %s was left out of the snapshot, so a mirror deletes it", held)
 	}
-	if peer, verdict := rt.Resolve(netip.Addr{}, held.Addr().Next()); verdict != RouteHeld || peer != nil {
+	if peer, verdict, _ := rt.Resolve(netip.Addr{}, held.Addr().Next()); verdict != RouteHeld || peer != nil {
 		t.Errorf("a packet for a held prefix resolved as %v, %v rather than held", peer, verdict)
 	}
 }
@@ -358,7 +359,7 @@ func TestSnapshotHandsOutTheHoldAsASentinel(t *testing.T) {
 	if !held {
 		t.Fatal("the snapshot does not carry the hold at all, so a mirror would fall through to a shorter prefix")
 	}
-	if _, verdict := table.Resolve(netip.Addr{}, dest.Addr().Next()); verdict != RouteHeld {
+	if _, verdict, _ := table.Resolve(netip.Addr{}, dest.Addr().Next()); verdict != RouteHeld {
 		t.Errorf("a lookup landing on the hold resolved as %v", verdict)
 	}
 }
@@ -389,7 +390,7 @@ func TestResolveAnswersEachVerdict(t *testing.T) {
 		{"2001:db8:4::1", nil, RouteNone, "no route"},
 		{"198.51.100.1", nil, RouteNone, "no route"},
 	} {
-		if got, verdict := rt.Resolve(netip.Addr{}, mustAddr(test.to)); got != test.peer || verdict != test.want {
+		if got, verdict, _ := rt.Resolve(netip.Addr{}, mustAddr(test.to)); got != test.peer || verdict != test.want {
 			t.Errorf("a packet to %s resolved as verdict %d through %v, want %s", test.to, verdict, got, test.wanted)
 		}
 	}
@@ -404,10 +405,10 @@ func TestResolveHoldsARetractedPrefixInsideALocalOne(t *testing.T) {
 		rt := NewRouteTable()
 		rt.Set(netip.Prefix{}, mustPrefix(covering), Local)
 		rt.Set(netip.Prefix{}, mustPrefix("2001:db8:1::/48"), Unreachable)
-		if _, verdict := rt.Resolve(netip.Addr{}, mustAddr("2001:db8:1::1")); verdict != RouteHeld {
+		if _, verdict, _ := rt.Resolve(netip.Addr{}, mustAddr("2001:db8:1::1")); verdict != RouteHeld {
 			t.Errorf("a packet for a prefix held inside %s resolved as %v", covering, verdict)
 		}
-		if _, verdict := rt.Resolve(netip.Addr{}, mustAddr("2001:db8:2::1")); verdict != RouteLocal {
+		if _, verdict, _ := rt.Resolve(netip.Addr{}, mustAddr("2001:db8:2::1")); verdict != RouteLocal {
 			t.Errorf("a packet for %s outside the hold resolved as %v", covering, verdict)
 		}
 	}
@@ -421,10 +422,10 @@ func TestResolvePrefersALearnedMoreSpecificOverLocal(t *testing.T) {
 	peer := &Peer{ID: "peer"}
 	rt.Set(netip.Prefix{}, mustPrefix("::/0"), Local)
 	rt.Set(netip.Prefix{}, mustPrefix("2001:db8::/32"), peer)
-	if got, verdict := rt.Resolve(netip.Addr{}, mustAddr("2001:db8::1")); verdict != RoutePeer || got != peer {
+	if got, verdict, _ := rt.Resolve(netip.Addr{}, mustAddr("2001:db8::1")); verdict != RoutePeer || got != peer {
 		t.Errorf("a packet for the learned prefix resolved as %v, %v", got, verdict)
 	}
-	if got, verdict := rt.Resolve(netip.Addr{}, mustAddr("2001:db9::1")); verdict != RouteLocal || got != nil {
+	if got, verdict, _ := rt.Resolve(netip.Addr{}, mustAddr("2001:db9::1")); verdict != RouteLocal || got != nil {
 		t.Errorf("a packet only the default covers resolved as %v, %v", got, verdict)
 	}
 }
@@ -462,7 +463,7 @@ func TestResolveOrdersSourceSpecificKeysDestinationFirst(t *testing.T) {
 		{inside, mustAddr("2001:db8:7::1"), other, RoutePeer, "the other peer"},
 		{outside, mustAddr("2001:db8:7::1"), nil, RouteLocal, "this node's"},
 	} {
-		if got, verdict := rt.Resolve(test.from, test.to); got != test.peer || verdict != test.want {
+		if got, verdict, _ := rt.Resolve(test.from, test.to); got != test.peer || verdict != test.want {
 			t.Errorf("a packet from %v to %v resolved as verdict %d through %v, want %s", test.from, test.to, verdict, got, test.wanted)
 		}
 	}

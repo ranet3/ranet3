@@ -91,17 +91,19 @@ func (m *routeModel) best(src, dst netip.Addr) (tableEntry, bool) {
 }
 
 // answer resolves a packet from src to dst by the model
-func (m *routeModel) answer(src, dst netip.Addr) (*Peer, Verdict) {
+// the match carries the best entry's destination length
+func (m *routeModel) answer(src, dst netip.Addr) (*Peer, Verdict, Match) {
 	e, ok := m.best(src, dst)
+	match := Match{Bits: e.destination.Bits()}
 	switch {
 	case !ok:
-		return nil, RouteNone
+		return nil, RouteNone, Match{}
 	case e.kind == heldEntry:
-		return nil, RouteHeld
+		return nil, RouteHeld, match
 	case e.kind == localEntry, e.kind == assignedEntry:
-		return nil, RouteLocal
+		return nil, RouteLocal, match
 	}
-	return m.peers[e.peer], RoutePeer
+	return m.peers[e.peer], RoutePeer, match
 }
 
 // anchorNear keeps the first keep bits of address and draws the rest
@@ -170,6 +172,8 @@ func edges(p netip.Prefix) []netip.Addr {
 // sometimes an IPv4 one mapped, and each is asked from and to the edges of
 // every entry it holds and from and to addresses drawn inside them and
 // anywhere.
+// the length answered is the preferred entry's destination
+// shorter than the deepest destination holding the packet whenever every source there misses it
 func TestResolveAgreesWithLongestMatchUnderTheHold(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		anchors4 := hegel.Draw(ht, hegel.Lists(hegel.IPAddresses().IPv4()).MinSize(1).MaxSize(3))
@@ -219,14 +223,14 @@ func TestResolveAgreesWithLongestMatchUnderTheHold(t *testing.T) {
 
 		for _, to := range tos {
 			for _, from := range froms {
-				peer, verdict := rt.Resolve(from, to)
-				if wantPeer, want := m.answer(from, to); peer != wantPeer || verdict != want {
-					match := "no entry"
-					if best, found := m.best(from, to); found {
-						match = best.GoString()
+				peer, verdict, match := rt.Resolve(from, to)
+				if wantPeer, want, wantMatch := m.answer(from, to); peer != wantPeer || verdict != want || match != wantMatch {
+					best := "no entry"
+					if e, found := m.best(from, to); found {
+						best = e.GoString()
 					}
-					ht.Fatalf("a packet from %v to %v resolved as verdict %d through %v, where the longest match is %s, in %#v",
-						from, to, verdict, peer, match, m.entries)
+					ht.Fatalf("a packet from %v to %v resolved as verdict %d through %v under /%d, where the longest match is %s, in %#v",
+						from, to, verdict, peer, match.Bits, best, m.entries)
 				}
 			}
 		}

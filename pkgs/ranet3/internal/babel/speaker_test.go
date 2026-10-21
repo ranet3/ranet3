@@ -182,12 +182,12 @@ func TestSpeakerLearnsRouteAndRTT(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, verdict := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict == netstack.RoutePeer {
+		if _, verdict, _ := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict == netstack.RoutePeer {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	peer, verdict := meshA.Routes.Resolve(dummySrc, extra.Addr())
+	peer, verdict, _ := meshA.Routes.Resolve(dummySrc, extra.Addr())
 	if verdict != netstack.RoutePeer {
 		t.Fatal("A never learned B's originated route within the deadline")
 	}
@@ -233,7 +233,7 @@ func TestSpeakerIgnoresEchoedOwnPrefix(t *testing.T) {
 	}))
 	speakerA.handlePacket(n, pkt[ipv6HeaderLen+udpHeaderLen:])
 
-	if peer, verdict := meshA.Routes.Resolve(netip.MustParseAddr("192.0.2.1"), mine.Addr()); verdict == netstack.RoutePeer {
+	if peer, verdict, _ := meshA.Routes.Resolve(netip.MustParseAddr("192.0.2.1"), mine.Addr()); verdict == netstack.RoutePeer {
 		t.Fatalf("A installed a learned route for its own originated prefix via peer %q", peer.ID)
 	}
 }
@@ -302,12 +302,12 @@ func TestSpeakerSADR(t *testing.T) {
 
 	// A source inside `other`'s prefix must resolve via the
 	// source-specific route just installed.
-	if _, verdict := speakerA.mesh.Routes.Resolve(netip.MustParseAddr("10.99.1.1"), dest.Addr()); verdict != netstack.RoutePeer {
+	if _, verdict, _ := speakerA.mesh.Routes.Resolve(netip.MustParseAddr("10.99.1.1"), dest.Addr()); verdict != netstack.RoutePeer {
 		t.Fatal("did not install the source-specific route for a source within its prefix")
 	}
 	// A source outside `other`'s prefix, and with no any-source fallback
 	// route to dest, must not match at all.
-	if _, verdict := speakerA.mesh.Routes.Resolve(netip.MustParseAddr("10.66.1.1"), dest.Addr()); verdict == netstack.RoutePeer {
+	if _, verdict, _ := speakerA.mesh.Routes.Resolve(netip.MustParseAddr("10.66.1.1"), dest.Addr()); verdict == netstack.RoutePeer {
 		t.Fatal("a source-specific route matched a source outside its prefix")
 	}
 
@@ -319,10 +319,10 @@ func TestSpeakerSADR(t *testing.T) {
 	}))
 	speakerA.handlePacket(n, pkt[ipv6HeaderLen+udpHeaderLen:])
 
-	if _, verdict := speakerA.mesh.Routes.Resolve(netip.MustParseAddr("10.66.1.1"), dest.Addr()); verdict != netstack.RoutePeer {
+	if _, verdict, _ := speakerA.mesh.Routes.Resolve(netip.MustParseAddr("10.66.1.1"), dest.Addr()); verdict != netstack.RoutePeer {
 		t.Fatal("did not install the second source-specific route")
 	}
-	if _, verdict := speakerA.mesh.Routes.Resolve(netip.MustParseAddr("10.99.1.1"), dest.Addr()); verdict != netstack.RoutePeer {
+	if _, verdict, _ := speakerA.mesh.Routes.Resolve(netip.MustParseAddr("10.99.1.1"), dest.Addr()); verdict != netstack.RoutePeer {
 		t.Fatal("installing a second source-specific route disturbed the first")
 	}
 }
@@ -342,12 +342,12 @@ func TestSpeakerRetractsRouteOnNeighborDown(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, verdict := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict == netstack.RoutePeer {
+		if _, verdict, _ := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict == netstack.RoutePeer {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if _, verdict := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict != netstack.RoutePeer {
+	if _, verdict, _ := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict != netstack.RoutePeer {
 		t.Fatal("A never learned the route before the down test could proceed")
 	}
 
@@ -355,7 +355,7 @@ func TestSpeakerRetractsRouteOnNeighborDown(t *testing.T) {
 
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, verdict := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict != netstack.RoutePeer {
+		if _, verdict, _ := meshA.Routes.Resolve(dummySrc, extra.Addr()); verdict != netstack.RoutePeer {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -382,7 +382,7 @@ func TestPeerHandleRemovesExactNeighborAndRoutes(t *testing.T) {
 	if speaker.neighbors[peer.ID] != nil {
 		t.Fatal("closed peer remains registered")
 	}
-	if _, verdict := mesh.Routes.Resolve(netip.MustParseAddr("192.0.2.1"), dest.Addr()); verdict == netstack.RoutePeer {
+	if _, verdict, _ := mesh.Routes.Resolve(netip.MustParseAddr("192.0.2.1"), dest.Addr()); verdict == netstack.RoutePeer {
 		t.Fatal("closed peer route remains installed")
 	}
 
@@ -652,7 +652,7 @@ func TestNewSpeakerCarriesItsConfigurationIntoTheRouteTable(t *testing.T) {
 	}
 	key := routeKey{dest: netip.MustParsePrefix("fd00:a::/64")}
 	resolves := func() netstack.Verdict {
-		_, verdict := mesh.Routes.Resolve(netip.Addr{}, key.dest.Addr().Next())
+		_, verdict, _ := mesh.Routes.Resolve(netip.Addr{}, key.dest.Addr().Next())
 		return verdict
 	}
 	mesh.Routes.Set(key.source, key.dest, netstack.Unreachable)
@@ -953,11 +953,11 @@ func releasedFixture(t *testing.T) (speaker *Speaker, neighbor *neighborState, s
 	specific = netip.MustParsePrefix("fd00:1::/64")
 	inside = netip.MustParseAddr("fd00:1::1")
 	updateFrom(speaker, neighbor, 1, covering, 64)
-	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
+	if _, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
 		t.Fatal("the covering route the neighbor announced never reached the forwarding table")
 	}
 	speaker.Originate(specific)
-	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteLocal {
+	if _, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteLocal {
 		t.Fatalf("an originated prefix resolves as verdict %d, want it this node's own", verdict)
 	}
 	told = time.Now().Add(-10 * time.Second)
@@ -978,7 +978,7 @@ func releasedFixture(t *testing.T) (speaker *Speaker, neighbor *neighborState, s
 // yet expired, and the selection ended the hold and not that update.
 func TestPrefixNoLongerOriginatedIsHeldUntilANeighborsRouteIsSelected(t *testing.T) {
 	speaker, neighbor, specific, inside, told := releasedFixture(t)
-	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
+	if peer, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
 		t.Fatalf("a packet for the prefix no longer originated resolves as verdict %d through %s, want it held rather than sent by the covering route", verdict, peerName(peer))
 	}
 	key := routeKey{dest: specific}
@@ -1042,7 +1042,7 @@ func TestPrefixNoLongerOriginatedIsHeldUntilItsAdvertisementsExpire(t *testing.T
 	speaker.sweepExpiredLocked(end.Add(-time.Nanosecond))
 	deadline = speaker.deadlineLocked()
 	speaker.mu.Unlock()
-	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
+	if _, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
 		t.Fatalf("a packet for the prefix resolves as verdict %d before the hold ends, want it held", verdict)
 	}
 	if !deadline.Equal(end) {
@@ -1054,7 +1054,7 @@ func TestPrefixNoLongerOriginatedIsHeldUntilItsAdvertisementsExpire(t *testing.T
 	_, recorded := speaker.routes.advertisedUntil[key]
 	deadline = speaker.deadlineLocked()
 	speaker.mu.Unlock()
-	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
+	if peer, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
 		t.Errorf("a packet for the prefix resolves as verdict %d through %s once the hold ended, want the covering route", verdict, peerName(peer))
 	}
 	if held || recorded {
@@ -1177,7 +1177,7 @@ func TestHeldPrefixStaysHeldWhenAnUnselectableRouteForItGoes(t *testing.T) {
 			if learned {
 				t.Fatal("the route table still holds the other neighbor's route, so this proves nothing")
 			}
-			if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
+			if peer, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
 				t.Errorf("a packet for the prefix resolves as verdict %d through %s inside its hold, want it held", verdict, peerName(peer))
 			}
 			listed := 0
@@ -1204,7 +1204,7 @@ func TestPrefixNoNeighborWasToldOfIsNotHeld(t *testing.T) {
 	updateFrom(speaker, neighbor, 1, covering, 64)
 	speaker.Originate(specific)
 	speaker.SetOriginated(nil)
-	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer || peer != neighbor.peer {
+	if peer, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer || peer != neighbor.peer {
 		t.Errorf("a packet for a prefix no neighbor was told of resolves as verdict %d through %s once it is no longer originated, want the covering route", verdict, peerName(peer))
 	}
 }
@@ -1232,7 +1232,7 @@ func TestPrefixWhoseLastUpdateHasExpiredIsNotHeld(t *testing.T) {
 		t.Fatal("the route table never recorded the update this node sent, so this proves nothing")
 	}
 	speaker.SetOriginated(nil)
-	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer || peer != neighbor.peer {
+	if peer, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer || peer != neighbor.peer {
 		t.Errorf("a packet for a prefix whose last update has expired resolves as verdict %d through %s once it is no longer originated, want the covering route", verdict, peerName(peer))
 	}
 }
@@ -1255,7 +1255,7 @@ func relayedFixture(t *testing.T, relayed bool) (speaker *Speaker, other *neighb
 	makeNeighborReachable(other)
 	speaker.mu.Unlock()
 	updateFrom(speaker, other, 2, specific, 64)
-	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer || peer != other.peer {
+	if peer, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer || peer != other.peer {
 		t.Fatalf("%s resolves as verdict %d through %s, want other's route by the longer match", inside, verdict, peerName(peer))
 	}
 	if relayed {
@@ -1273,7 +1273,7 @@ func heldUntil(t *testing.T, speaker *Speaker, key routeKey, inside netip.Addr, 
 	_, held := speaker.routes.held[key]
 	recorded := speaker.routes.advertisedUntil[key]
 	speaker.mu.Unlock()
-	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld || !held {
+	if peer, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld || !held {
 		t.Fatalf("%s resolves as verdict %d through %s, held %v, want it held", inside, verdict, peerName(peer), held)
 	}
 	if !recorded.Equal(end) {
@@ -1287,7 +1287,7 @@ func heldUntil(t *testing.T, speaker *Speaker, key routeKey, inside netip.Addr, 
 		if at.Equal(end) {
 			want = netstack.RoutePeer
 		}
-		if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != want {
+		if peer, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != want {
 			t.Errorf("%s resolves as verdict %d through %s %v from the end of its hold, want %d", inside, verdict, peerName(peer), at.Sub(end), want)
 		}
 	}
@@ -1308,7 +1308,7 @@ func TestPrefixWhoseLastRouteGoesWithItsNeighborIsHeld(t *testing.T) {
 				key := routeKey{dest: specific}
 				if retracted {
 					updateFrom(speaker, other, 2, specific, MetricInfinity)
-					if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
+					if _, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
 						t.Fatalf("%s resolves as verdict %d once retracted, want it held", inside, verdict)
 					}
 				}
@@ -1387,7 +1387,7 @@ func TestPrefixNoNeighborIsToldOfLeavesNothingWhenItsNeighborGoes(t *testing.T) 
 	if value, ok := entryAt(speaker.mesh, routeKey{dest: specific}); ok {
 		t.Errorf("%s holds %s once the neighbor that offered it went, want nothing", specific, peerName(value))
 	}
-	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
+	if _, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
 		t.Errorf("%s resolves as verdict %d, want the covering route", inside, verdict)
 	}
 }
@@ -1478,14 +1478,14 @@ func TestFlushedPrefixGivesUpItsHold(t *testing.T) {
 	}
 	announce(covering, 64)
 	announce(specific, 64)
-	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
+	if _, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
 		t.Fatal("the route never reached the forwarding table")
 	}
 
 	// Retracted: held rather than removed, so the covering route does not
 	// quietly take traffic the neighbor has just said it cannot carry.
 	announce(specific, MetricInfinity)
-	if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
+	if peer, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RouteHeld {
 		t.Fatalf("a retracted prefix resolved as %v through %v instead of being held", verdict, peer)
 	}
 
@@ -1505,7 +1505,7 @@ func TestFlushedPrefixGivesUpItsHold(t *testing.T) {
 		t.Fatal("the retracted route was not flushed, so this proves nothing")
 	}
 	announce(covering, 64)
-	if _, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
+	if _, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer {
 		t.Errorf("%s is still held after its prefix was flushed, so the covering route can never serve it", inside)
 	}
 }
@@ -1539,7 +1539,7 @@ func TestFlushedPrefixThisNodeRelayedIsHeldUntilItsUpdatesExpire(t *testing.T) {
 				}))
 			}
 			offer(64)
-			if peer, verdict := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer || peer != other.peer {
+			if peer, verdict, _ := speaker.mesh.Routes.Resolve(netip.Addr{}, inside); verdict != netstack.RoutePeer || peer != other.peer {
 				t.Fatalf("%s resolves as verdict %d through %s, want other's route by the longer match", inside, verdict, peerName(peer))
 			}
 			relayedAt := time.Now()

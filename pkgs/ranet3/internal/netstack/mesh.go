@@ -364,7 +364,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 				continue
 			}
 		}
-		peer, verdict := m.Routes.Resolve(src, dst)
+		peer, verdict, _ := m.Routes.Resolve(src, dst)
 		if verdict != RoutePeer {
 			if policy != nil {
 				m.segmentsUnrouted.Add(1)
