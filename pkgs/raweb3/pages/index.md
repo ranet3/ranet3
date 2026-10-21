@@ -45,10 +45,10 @@ layout: bare
 </div>
 </div>
 
-<div class="grid border-y border-bg2 text-[15px] leading-[1.55] md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)]">
-<div class="px-6 py-10 md:border-r md:border-bg2 md:px-12"><div class="text-[clamp(44px,4.6vw,64px)] leading-none font-bold whitespace-nowrap text-acc">95%</div><p class="mt-3.5 text-fg2">of the 10 GbE payload limit, 1 stream one way</p><p class="label mt-1">8.39 of 8.84 Gbit/s</p></div>
-<div class="border-t border-bg2 px-6 py-10 md:border-t-0 md:border-r md:px-12"><div class="text-[clamp(44px,4.6vw,64px)] leading-none font-bold whitespace-nowrap text-acc">1.6-2.1x</div><p class="mt-3.5 text-fg2">kernel WireGuard throughput</p><p class="label mt-1">All 6 tests</p></div>
-<div class="flex flex-col justify-center gap-3.5 border-t border-bg2 px-6 py-10 text-fg2 md:border-t-0 md:px-12">
+<div class="grid border-y border-line text-[15px] leading-[1.55] md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)]">
+<div class="px-6 py-10 md:border-r md:border-line md:px-12"><div class="text-[clamp(44px,4.6vw,64px)] leading-none font-bold whitespace-nowrap text-acc">95%</div><p class="mt-3.5 text-fg2">of the 10 GbE payload limit, 1 stream one way</p><p class="label mt-1">8.39 of 8.84 Gbit/s</p></div>
+<div class="border-t border-line px-6 py-10 md:border-t-0 md:border-r md:px-12"><div class="text-[clamp(44px,4.6vw,64px)] leading-none font-bold whitespace-nowrap text-acc">1.6-2.1x</div><p class="mt-3.5 text-fg2">kernel WireGuard throughput</p><p class="label mt-1">All 6 tests</p></div>
+<div class="flex flex-col justify-center gap-3.5 border-t border-line px-6 py-10 text-fg2 md:border-t-0 md:px-12">
 <div class="flex gap-[2ch]"><span class="text-acc">+</span><span>1.2-1.5x wireguard-go throughput, all 6 tests</span></div>
 <div class="flex gap-[2ch]"><span class="text-acc">+</span><span>1.91-4.96 ms RTT p99 under saturation, kernel dataplanes 0.85-2.51 ms</span></div>
 <div class="flex gap-[2ch]"><span class="text-acc">+</span><span>Medians of 3 runs under saturation</span></div>
@@ -56,10 +56,9 @@ layout: bare
 </div>
 </div>
 
-<div class="mx-auto mt-24 flex w-full max-w-[760px] flex-col border-t border-bg2 px-4 text-[15px] leading-[1.55] md:px-0">
+<div class="mx-auto mt-24 flex w-full max-w-[760px] flex-col border-t border-line px-4 text-[15px] leading-[1.55] md:px-0">
 <a href="/why/#standard-protocols" class="index-row"><span class="text-mute">01</span><span>Standard protocols</span></a>
 <a href="/why/#latency-routing" class="index-row"><span class="text-mute">02</span><span>Latency routing</span></a>
 <a href="/why/#segment-routing" class="index-row"><span class="text-mute">03</span><span>Segment routing</span></a>
-<a href="/benchmarks/" class="index-row"><span class="text-mute">04</span><span>Benchmarks, measured on 2026-10-15</span></a>
-<a href="/benchmarks/#setup" class="index-row"><span class="text-mute">05</span><span>Setup: hardware, software and method</span></a>
+<a href="/benchmarks/" class="index-row"><span class="text-mute">04</span><span>Benchmarks</span></a>
 </div>

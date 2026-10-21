@@ -9,8 +9,8 @@ vetted: 2026-10-21
 layout: bare
 ---
 
-<section class="page-section" aria-labelledby="bench-h">
-        <h1 id="bench-h" class="text-[2em] font-bold text-fg">Benchmarks</h1>
+<section class="page-section">
+        <h1 class="text-[2em] font-bold text-fg">Benchmarks</h1>
         <div class="overflow-x-auto mt-[1em]">
           <table class="data-table data-table-left max-sm:whitespace-normal">
             <thead>
@@ -45,7 +45,7 @@ layout: bare
           </table>
         </div>
         <p class="note">Medians of 3 runs under saturation</p>
-        <h3 class="subhead mt-[3em]" id="head-to-head">Head to head</h3>
+        <h3 class="subhead mt-[3em]">Head to head</h3>
         <div class="overflow-x-auto mt-[1em]">
           <table class="data-table data-table-left data-table-ruled max-sm:whitespace-normal">
             <thead>
@@ -79,7 +79,7 @@ layout: bare
           </table>
         </div>
         <p class="note">Each range is ranet3's result divided by the other dataplane's across the 6 tests below.</p>
-        <h3 class="subhead mt-[3em]" id="kernel-and-userspace">Kernel and userspace</h3>
+        <h3 class="subhead mt-[3em]">Kernel and userspace</h3>
         <p class="mt-[.6em] text-fg2">Userspace dataplanes copy every packet into their own process and are usually expected to be slower than kernel ones.</p>
         <div class="overflow-x-auto mt-[1em]">
           <table class="data-table max-sm:whitespace-normal">
@@ -122,7 +122,7 @@ layout: bare
         <p class="note">* Plain TCP without tunnel</p>
         <p class="note">Kernel WireGuard stays at 5.1 to 5.4 Gbit/s one way.</p>
         <p class="note">Kernel IPsec stays at 4.0 to 4.7 Gbit/s because its single flow lands on 1 NIC receive queue.</p>
-        <h3 class="subhead mt-[3em]" id="full-results">Full results</h3>
+        <h3 class="subhead mt-[3em]">Full results</h3>
         <figure class="mt-[2em]">
           <figcaption class="mb-[.6em] flex flex-wrap gap-x-[1.5ch] text-fg"><b>Throughput, saturated</b><span class="text-mute">Gbit/s received</span><span class="text-dir">Higher is better</span></figcaption>
           <div class="overflow-x-auto">
@@ -312,9 +312,9 @@ layout: bare
         </figure>
       </section>
 
-<section class="page-section" id="setup" aria-labelledby="setup-h">
-        <h2 id="setup-h" class="text-[1.5em] font-bold text-fg">Setup</h2>
-        <h3 class="subhead mt-[1em]" id="hardware">Hardware</h3>
+<section class="page-section">
+        <h2 class="text-[1.5em] font-bold text-fg">Setup</h2>
+        <h3 class="subhead mt-[1em]">Hardware</h3>
         <dl class="spec-list">
           <dt>Hosts</dt>
           <dd>2 x Dell PowerEdge C6420</dd>
@@ -331,7 +331,7 @@ layout: bare
           <dt>Switch</dt>
           <dd>Both hosts on the same Dell S5296F-ON</dd>
         </dl>
-        <h3 class="subhead mt-[3em]" id="software">Software</h3>
+        <h3 class="subhead mt-[3em]">Software</h3>
         <dl class="spec-list">
           <dt>OS</dt>
           <dd>Debian 13</dd>
@@ -346,7 +346,7 @@ layout: bare
           <dt>iperf3</dt>
           <dd><a href="https://github.com/esnet/iperf/releases/tag/3.21" class="link">3.21</a></dd>
         </dl>
-        <h3 class="subhead mt-[3em]" id="method">Method</h3>
+        <h3 class="subhead mt-[3em]">Method</h3>
         <dl class="spec-list">
           <dt>Traffic</dt>
           <dd>TCP with cubic at inner MTU 1400</dd>

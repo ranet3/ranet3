@@ -9,8 +9,8 @@ vetted: 2026-10-21
 layout: bare
 ---
 
-<section class="page-section" aria-labelledby="why-h">
-        <h1 id="why-h" class="text-[2em] font-bold text-fg">Why ranet3</h1>
+<section class="page-section">
+        <h1 class="text-[2em] font-bold text-fg">Why ranet3</h1>
         <h3 class="subhead mt-[1em]" id="standard-protocols">Standard protocols</h3>
         <p class="mt-[.6em] text-fg2">Peers only need standard IKEv2, ESP, Babel and SRv6.</p>
         <p class="note">Interoperability is checked against:</p>

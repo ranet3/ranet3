@@ -42,7 +42,7 @@ type frontmatter struct {
 	Layout string `yaml:"layout"`
 	// Vetted is the day a person last read the page in full, set by hand
 	// only and never shown. A page without it, or changed since, carries a
-	// notice that it holds unchecked generated text
+	// notice that it may contain unreviewed machine generated text
 	Vetted time.Time `yaml:"vetted"`
 }
 

@@ -5,8 +5,8 @@ package pages
 
 import "ranet3.com/pkgs/raweb3/ui"
 
-// frame is every page around its content: the head, the header and the
-// notice on a page no person has read in full since it last changed.
+// frame is every page around its content: the head, the header, the notice
+// on a page no person has read in full since it last changed, and the footer.
 templ frame(site ui.Site, page ui.Page, unvetted bool, body string) {
 	<!DOCTYPE html>
 	<html lang="en">
@@ -28,7 +28,7 @@ templ frame(site ui.Site, page ui.Page, unvetted bool, body string) {
 }
 
 templ bar(site ui.Site) {
-	<header class="border-b border-bg2 font-mono text-[15px]">
+	<header class="border-b border-line font-mono text-[15px]">
 		<nav class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-7 gap-y-3 px-4 py-4 md:px-6">
 			<a href="/" class="mr-auto flex items-center gap-2.5 text-[17px] font-bold text-fg">
 				@ui.Mark(26)
