@@ -126,6 +126,8 @@ func TestTokenClassFollowsNordsSyntaxGuide(t *testing.T) {
 		{chroma.NameBuiltinPseudo, "self", "k"},
 		{chroma.CommentSingle, "# x", "c"},
 		{chroma.CommentPreproc, "#include", "cp"},
+		{chroma.GenericPrompt, "$", "c"},
+		{chroma.GenericOutput, "Node example/laptop", ""},
 		{chroma.LiteralStringDouble, `"x"`, "s"},
 		{chroma.LiteralStringEscape, `\n`, "se"},
 		{chroma.LiteralNumberInteger, "1", "m"},

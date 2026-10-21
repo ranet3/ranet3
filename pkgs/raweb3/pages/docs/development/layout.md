@@ -11,7 +11,7 @@ order: 10
 ranet3 is 1 repository holding every package it ships, each under `pkgs/`, with
 the Nix that builds and deploys them beside it.
 
-```
+```text
 flake.nix               the flake, loaded by directory through autopilot
 flake.lock              the pinned flake inputs
 atelier.toml            the systems and outputs CI builds, and the ones it skips

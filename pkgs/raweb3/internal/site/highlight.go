@@ -89,7 +89,9 @@ func tokenClass(t chroma.Token) string {
 		return "err"
 	case k.InSubCategory(chroma.CommentPreproc), k == chroma.CommentHashbang, k == chroma.CommentSpecial:
 		return "cp"
-	case k.InCategory(chroma.Comment):
+	// comments, and the prompt of a shell session, which is no part of the
+	// command
+	case k.InCategory(chroma.Comment), k == chroma.GenericPrompt:
 		return "c"
 	case k == chroma.NameDecorator:
 		return "nd"
