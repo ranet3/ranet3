@@ -32,6 +32,13 @@ type config struct {
 		Src    string `yaml:"src"`
 		Domain string `yaml:"domain"`
 	} `yaml:"analytics"`
+	Nav []link `yaml:"nav"`
+	CTA link   `yaml:"cta"`
+}
+
+type link struct {
+	Title string `yaml:"title"`
+	Href  string `yaml:"href"`
 }
 
 // Site is every source of the site, loaded and checked.
@@ -53,7 +60,11 @@ func Load(root, dir string) (*Site, error) {
 		URL:        c.URL,
 		Repository: c.Repository,
 		Analytics:  ui.Analytics{Src: c.Analytics.Src, Domain: c.Analytics.Domain},
+		CTA:        ui.Link{Title: c.CTA.Title, Href: c.CTA.Href},
 	}}
+	for _, l := range c.Nav {
+		s.ui.Nav = append(s.ui.Nav, ui.Link{Title: l.Title, Href: l.Href})
+	}
 	for _, name := range slices.Sorted(maps.Keys(c.Metas)) {
 		s.ui.Metas = append(s.ui.Metas, ui.Meta{Name: name, Content: c.Metas[name]})
 	}
@@ -82,6 +93,8 @@ func loadConfig(path string) (config, error) {
 		"repository":       c.Repository,
 		"analytics.src":    c.Analytics.Src,
 		"analytics.domain": c.Analytics.Domain,
+		"cta.title":        c.CTA.Title,
+		"cta.href":         c.CTA.Href,
 	} {
 		if v == "" {
 			errs = append(errs, fmt.Errorf("%s: %s missing", path, field))
@@ -91,6 +104,11 @@ func loadConfig(path string) (config, error) {
 	for _, name := range []string{"go-import", "go-source"} {
 		if c.Metas[name] == "" {
 			errs = append(errs, fmt.Errorf("%s: metas.%s missing", path, name))
+		}
+	}
+	for i, l := range c.Nav {
+		if l.Title == "" || l.Href == "" {
+			errs = append(errs, fmt.Errorf("%s: nav entry %d wants a title and an href", path, i+1))
 		}
 	}
 	if strings.HasSuffix(c.URL, "/") {
@@ -113,8 +131,8 @@ func (s *Site) Pages() map[string]templ.Component {
 		}
 		var page templ.Component
 		switch p.layout {
-		case layoutLanding:
-			page = pages.Landing(s.ui, c)
+		case layoutBare:
+			page = pages.Bare(s.ui, c)
 		case layoutDocs:
 			c.Nav = docsNav(s.pages, p)
 			page = pages.Docs(s.ui, c)

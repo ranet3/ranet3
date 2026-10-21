@@ -46,7 +46,7 @@ func TestUnvettedUntilVettedOnOrAfterTheLastUpdate(t *testing.T) {
 // front is a frontmatter with every field a docs page needs.
 const front = "---\ntitle: T\ndescription: D\ncreated: 2026-10-01\nupdated: 2026-10-02\norder: 10\n---\n"
 
-const landing = "---\ntitle: T\ndescription: D\ncreated: 2026-10-01\nupdated: 2026-10-02\nlayout: landing\n---\n"
+const landing = "---\ntitle: T\ndescription: D\ncreated: 2026-10-01\nupdated: 2026-10-02\nlayout: bare\n---\n"
 
 func writePages(t *testing.T, files map[string]string) string {
 	t.Helper()
@@ -113,10 +113,6 @@ func TestLoadPagesRefusesBrokenSources(t *testing.T) {
 		"docs page without an order": {
 			map[string]string{"index.md": landing, "docs/a.md": strings.Replace(front, "order: 10\n", "", 1)},
 			"order missing",
-		},
-		"landing page with a body": {
-			map[string]string{"index.md": landing + "lost\n"},
-			"renders no markdown",
 		},
 		"unknown frontmatter field": {
 			map[string]string{"index.md": landing, "a.md": strings.Replace(front, "order", "weight", 1)},

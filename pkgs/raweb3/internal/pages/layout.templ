@@ -1,0 +1,65 @@
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: FSL-1.1-ALv2
+
+package pages
+
+import "ranet3.com/pkgs/raweb3/ui"
+
+// frame is every page around its content: the head, the header and the
+// notice on a page no person has read in full since it last changed.
+templ frame(site ui.Site, page ui.Page, unvetted bool, body string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			@ui.Head(site, page) {
+				<link rel="stylesheet" href="/style.css"/>
+			}
+		</head>
+		<body class={ "bg-bg text-fg2 antialiased", body }>
+			@bar(site)
+			if unvetted {
+				@notice()
+			}
+			{ children... }
+		</body>
+	</html>
+}
+
+templ bar(site ui.Site) {
+	<header class="border-b border-bg2 font-mono text-[15px]">
+		<nav class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-7 gap-y-3 px-4 py-4 md:px-6">
+			<a href="/" class="mr-auto flex items-center gap-2.5 text-[17px] font-bold text-fg">
+				@ui.Mark(26)
+				<span>{ site.Name }</span>
+			</a>
+			<a href={ templ.SafeURL(site.CTA.Href) } class="bg-acc px-3.5 py-2 font-bold text-bg sm:order-last">{ site.CTA.Title }</a>
+			<div class="flex w-full gap-x-7 overflow-x-auto sm:w-auto">
+				for _, l := range site.Nav {
+					<a href={ templ.SafeURL(l.Href) } class="whitespace-nowrap text-fg2 hover:text-acc">{ l.Title }</a>
+				}
+			</div>
+		</nav>
+	</header>
+}
+
+templ notice() {
+	<p class="bg-warn px-4 py-2 text-center font-mono text-sm text-bg" role="note">This page contains machine generated text that no one has checked yet. Use it with care.</p>
+}
+
+// Bare is a page whose markdown lays itself out, full width.
+templ Bare(site ui.Site, c Content) {
+	@frame(site, ui.Page{Title: pageTitle(site, c), Description: c.Description, Path: c.Path}, c.Unvetted, "font-mono") {
+		<main>
+			@templ.Raw(c.Body)
+		</main>
+	}
+}
+
+// pageTitle is a page's title with the site's name after it, the site's name
+// alone on the front page.
+func pageTitle(site ui.Site, c Content) string {
+	if c.Path == "/" {
+		return c.Title
+	}
+	return c.Title + " | " + site.Name
+}
