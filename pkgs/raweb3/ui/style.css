@@ -40,7 +40,7 @@
    for the states. Where a nord color falls short of 4.5:1 for text, 3:1 for a
    meter on its track or 2:1 for a divider, the shade is that color mixed
    toward another nord color only as far as it takes. The scheme follows the
-   system unless the theme switch sets data-theme */
+   system unless the theme switch sets data-theme to light or dark */
 :root {
   color-scheme: light dark;
   --bg: light-dark(var(--color-nord-6), var(--color-nord-0));
@@ -70,6 +70,18 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
+}
+
+/* the theme script sets data-theme before the page paints, so the switch
+   shows with its pick marked from the first paint, and a page that runs no
+   script has no switch */
+@custom-variant scripted (:root[data-theme] &);
+@custom-variant picked {
+  :root[data-theme="light"] &[data-theme-choice="light"],
+  :root[data-theme="auto"] &[data-theme-choice="auto"],
+  :root[data-theme="dark"] &[data-theme-choice="dark"] {
+    @slot;
+  }
 }
 
 @theme inline {

@@ -48,9 +48,9 @@ templ bar(site ui.Site) {
 }
 
 // themeSwitch picks the light or dark scheme, or auto to follow the system.
-// themeScript shows it and stores the pick.
+// It shows, with the pick marked, once themeScript sets data-theme.
 templ themeSwitch() {
-	<div class="ml-auto flex shrink-0 border border-line" role="group" aria-label="Theme" data-theme-switch hidden>
+	<div class="ml-auto hidden shrink-0 border border-line scripted:flex" role="group" aria-label="Theme">
 		@themeChoice("light", "Light") {
 			<circle cx="12" cy="12" r="4"></circle>
 			<path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
@@ -66,7 +66,7 @@ templ themeSwitch() {
 }
 
 templ themeChoice(theme, title string) {
-	<button type="button" class="p-1.5 text-mute hover:text-fg aria-pressed:bg-bg2 aria-pressed:text-acc" data-theme-choice={ theme } aria-pressed="false" title={ title }>
+	<button type="button" class="p-1.5 text-mute hover:text-fg picked:bg-bg2 picked:text-acc" data-theme-choice={ theme } aria-pressed="false" title={ title }>
 		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="block" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 			{ children... }
 		</svg>
@@ -75,8 +75,9 @@ templ themeChoice(theme, title string) {
 }
 
 // themeScript runs in the head before the body exists, so a stored theme
-// applies before the page paints. A browser that runs no script, or keeps no
-// storage, follows the system's scheme.
+// applies, and the switch shows with its pick marked, before the page paints.
+// A browser that runs no script, or keeps no storage, follows the system's
+// scheme.
 templ themeScript() {
 	<script>
 		(() => {
@@ -105,15 +106,14 @@ templ themeScript() {
 
 			const apply = (theme) => {
 				const fixed = theme === "light" || theme === "dark";
-				if (fixed) root.dataset.theme = theme;
-				else delete root.dataset.theme;
+				root.dataset.theme = fixed ? theme : "auto";
 				for (const [m, media] of metas) {
 					m.media = !fixed ? media : media.includes(theme) ? "all" : "not all";
 				}
 			};
 
 			const mark = () => {
-				const theme = root.dataset.theme ?? "auto";
+				const theme = root.dataset.theme;
 				for (const b of document.querySelectorAll("[data-theme-choice]")) {
 					b.setAttribute("aria-pressed", String(b.dataset.themeChoice === theme));
 				}
@@ -138,10 +138,6 @@ templ themeScript() {
 					});
 				}
 				mark();
-				// the switch stays hidden on a page that runs no script
-				for (const s of document.querySelectorAll("[data-theme-switch]")) {
-					s.hidden = false;
-				}
 			});
 		})();
 	</script>
