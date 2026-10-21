@@ -1545,7 +1545,8 @@ testers.runNixOSTest {
 
         swan_log = "journalctl -u strongswan-swanctl.service --no-pager"
         ranet3_log = "journalctl -u ranet3.service --no-pager"
-        # each wait for a rekey outlasts the ike lifetime, by which ranet3's own IKE SA rekey, due the margin before it, has replaced the SA, and strongSwan's retry of a rekey ranet3 answered TEMPORARY_FAILURE
+        # each wait for a rekey outlasts the ike lifetime, within which ranet3's own IKE SA rekey, due the margin before it, replaces the SA through its retries
+        # and it covers a rekey asked of strongSwan with each ask again after a TEMPORARY_FAILURE or an IKE SA rekey crossing that strongSwan lost, every ask made once the next of ranet3's Child SA rekeys has ended, so it ends on strongSwan's own rekey
         rekey_timeout = dt.timedelta(seconds=60)
         # the IKE SA both ends run where they meet on ML-KEM-768
         hybrid_suite = "aes256gcm/sha384/x25519+mlkem768"
@@ -1594,6 +1595,8 @@ testers.runNixOSTest {
       # with responder strongSwan dials, and without it ranet3 dials
       # each rekey of the IKE SA, ranet3's and strongSwan's, and strongSwan's rekey of the Child SA run ML-KEM-768 in an IKE_FOLLOWUP_KE exchange after their CREATE_CHILD_SA, and pings go on across each
       mlkemMeet = ''
+        import re
+
         responder_enabled = ${if responder then "True" else "False"}
         # strongSwan's side of the handshake, whose IKE_AUTH takes Message ID 2 after the one IKE_INTERMEDIATE
         if responder_enabled:
@@ -1621,6 +1624,36 @@ testers.runNixOSTest {
                 gateway.wait_until_succeeds(f"{journal} | grep -F '{line}' | grep -F 'N(ADD_KE)'", timeout=timeout)
             gateway.wait_until_succeeds(f"{journal} | grep -F '{create} IKE_FOLLOWUP_KE response' | grep -F '[ KE ]'", timeout=timeout)
 
+        def peer_rekey(sa, made, done):
+            """strongSwan's journal from its own rekey of sa, asked for right after strongSwan answers ranet3's Delete of a Child SA ranet3 rekeyed, and asked for again that way after a TEMPORARY_FAILURE or a crossing it lost, until the rekey ends
+            made finds the name strongSwan gives the SA its own rekey makes, and done, given that name, the line that ends the rekey, which no rekey of ranet3's logs"""
+            journal = ""
+
+            def ask():
+                nonlocal journal
+                # ranet3's next Child SA rekey waits the child interval less the margin, so a rekey asked now runs before it
+                since = journal_after(gateway, "strongswan-swanctl.service")
+                gateway.wait_until_succeeds(f"{since} | grep -F 'generating INFORMATIONAL response' | grep -F '[ D ]'", timeout=timeout)
+                journal = journal_after(gateway, "strongswan-swanctl.service")
+                print(gateway.succeed(f"swanctl --rekey {sa}"))
+
+            def rekeyed(last_try):
+                lines = gateway.succeed(journal)
+                names = re.findall(made, lines)
+                if names and done.format(names[-1]) in lines:
+                    return True
+                # RFC 7296 section 2.25: "When a peer receives a TEMPORARY_FAILURE notification, it MUST NOT immediately retry the operation" and "it MUST wait so that the sender may complete whatever operation caused the temporary condition."
+                # so the rekey is asked again once ranet3's Child SA rekey has ended, as strongSwan's own retry may come after a rekey of ranet3's has replaced the SA it was for
+                # RFC 9370 section 2.2.4: "because there is nothing to delete yet, the initiator of this exchange just stops the rekeying process, and it MUST NOT initiate the IKE_FOLLOWUP_KE exchange."
+                # so an IKE SA rekey of strongSwan's that crossed one of ranet3's and lost on the nonces, the collision strongSwan logs as lost, makes no SA of its own and is asked again too
+                if any("parsed " in line and " response " in line and "N(TEMP_FAIL)" in line for line in lines.splitlines()) or "IKE_SA rekey collision lost" in lines:
+                    ask()
+                return False
+
+            ask()
+            retry(rekeyed, timeout=rekey_timeout)
+            return journal
+
         try:
             # strongSwan's journal from before the handshake, which ranet3's own IKE SA rekey reaches before any rekey of strongSwan's
             own_rekey = journal_after(gateway, "strongswan-swanctl.service")
@@ -1640,13 +1673,12 @@ testers.runNixOSTest {
             chained(own_rekey, "response")
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
 
-            # strongSwan's rekeys of the IKE SA and of the Child SA right after it and before ranet3's next, ranet3 answering each with a link and the next IKE_FOLLOWUP_KE
-            # two CREATE_CHILD_SA requests in flight at once would be settled on the nonces, and strongSwan's, where it lost, would send no IKE_FOLLOWUP_KE
-            for sa, done in [("--ike ranet", "IKE_SA ranet.* rekeyed between"), ("--child default", "rekeyed CHILD_SA default")]:
-                peer_rekey = journal_after(gateway, "strongswan-swanctl.service")
-                print(gateway.succeed(f"swanctl --rekey {sa}"))
-                gateway.wait_until_succeeds(f"{peer_rekey} | grep -E '{done}'", timeout=rekey_timeout)
-                chained(peer_rekey, "request")
+            # strongSwan's rekeys of the IKE SA and of the Child SA, each between two of ranet3's Child SA rekeys, ranet3 answering each with a link and the next IKE_FOLLOWUP_KE
+            for sa, made, done in [
+                ("--ike ranet", r"initiating IKE_SA (ranet\[\d+\]) to ", "IKE_SA {} rekeyed between"),
+                ("--child default", r"establishing CHILD_SA (default\{\d+\})", "with {} with SPIs"),
+            ]:
+                chained(peer_rekey(sa, made, done), "request")
                 client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
             # the Child SA of strongSwan's rekey shows the entry of its key exchanges until ranet3's own rekey replaces it a rekey interval later
             session_runs({"ike_cipher": "aes256gcm", "ike_prf": "sha384", "ike_kex": "x25519+mlkem768", "esp_cipher": "aes256gcm", "esp_kex": "x25519+mlkem768"})
