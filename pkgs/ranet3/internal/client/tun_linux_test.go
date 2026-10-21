@@ -72,7 +72,7 @@ func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 	run(t, alpha, bravo)
 	var peer *netstack.Peer
 	waitFor(t, convergeBudget, "alpha forwarding to bravo's prefix", func() bool {
-		found, verdict := alpha.client.Mesh.Routes.Resolve(netip.Addr{}, bravo.prefix.Addr().Next())
+		found, verdict, _ := alpha.client.Mesh.Routes.Resolve(netip.Addr{}, bravo.prefix.Addr().Next())
 		peer = found
 		return verdict == netstack.RoutePeer && found != nil
 	})

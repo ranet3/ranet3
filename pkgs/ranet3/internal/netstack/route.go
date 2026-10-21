@@ -102,6 +102,12 @@ func (rt *RouteTable) RemovePeer(peer *Peer) {
 	rt.notify()
 }
 
+// Match is the entry Resolve matched, beside its verdict
+type Match struct {
+	// Bits is the length of the entry's destination prefix in the bits of the destination's own family, zero when no entry matched
+	Bits int
+}
+
 // Resolve answers a packet from src to dst with the entry RFC 9079 section 4
 // prefers among those that match it, by "destination-first ordering, where
 // routing table entry R1 is preferred to routing table entry R2 when either
@@ -110,17 +116,19 @@ func (rt *RouteTable) RemovePeer(peer *Peer) {
 // entry holding Unreachable answers RouteHeld, so no covering entry is
 // consulted for a packet inside it. The peer is nil for every verdict but
 // RoutePeer.
-func (rt *RouteTable) Resolve(src, dst netip.Addr) (*Peer, Verdict) {
-	peer, ok := rt.table.Lookup(src, dst)
+// the match is the entry's from the same walk, so it costs no second lookup
+func (rt *RouteTable) Resolve(src, dst netip.Addr) (*Peer, Verdict, Match) {
+	peer, bits, ok := rt.table.LookupBits(src, dst)
+	match := Match{Bits: bits}
 	switch {
 	case !ok:
-		return nil, RouteNone
+		return nil, RouteNone, match
 	case peer == Unreachable:
-		return nil, RouteHeld
+		return nil, RouteHeld, match
 	case peer == Local || peer == Assigned:
-		return nil, RouteLocal
+		return nil, RouteLocal, match
 	}
-	return peer, RoutePeer
+	return peer, RoutePeer, match
 }
 
 func (rt *RouteTable) Debug() []string {

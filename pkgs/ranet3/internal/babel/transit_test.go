@@ -229,7 +229,7 @@ func (f *meshFabric) nextHop(node string, key routeKey) string {
 // routed packet does, so a prefix held unreachable and a prefix missing
 // altogether can be told apart: the second falls through to a covering route.
 func (f *meshFabric) forwards(node string, address netip.Addr) string {
-	peer, verdict := f.meshes[node].Routes.Resolve(netip.Addr{}, address)
+	peer, verdict, _ := f.meshes[node].Routes.Resolve(netip.Addr{}, address)
 	if verdict != netstack.RoutePeer {
 		return ""
 	}
@@ -301,7 +301,7 @@ func TestThreeNodeChainRedistributesAndCannotLoop(t *testing.T) {
 	if got := fabric.selected("a", key); got.cost != 64 || got.routerID != routerID("c") {
 		t.Fatalf("relayed route = cost %d from router %v, want 64 from c", got.cost, got.routerID)
 	}
-	if peer, verdict := fabric.meshes["a"].Routes.Resolve(netip.MustParseAddr("2001:db8::1"), dest.Addr()); verdict != netstack.RoutePeer || peer.ID != "b" {
+	if peer, verdict, _ := fabric.meshes["a"].Routes.Resolve(netip.MustParseAddr("2001:db8::1"), dest.Addr()); verdict != netstack.RoutePeer || peer.ID != "b" {
 		t.Fatal("the relayed route was not published to the forwarding table")
 	}
 	// Split horizon keeps a from offering the route back to the node it came
@@ -351,7 +351,7 @@ func TestRetractionPropagatesThroughTransit(t *testing.T) {
 	if len(updates) != 1 || updates[0].Metric != MetricInfinity {
 		t.Fatalf("b sent %v for a prefix it lost, want a single retraction", updates)
 	}
-	if peer, verdict := fabric.meshes["a"].Routes.Resolve(netip.MustParseAddr("2001:db8::1"), dest.Addr()); verdict == netstack.RoutePeer {
+	if peer, verdict, _ := fabric.meshes["a"].Routes.Resolve(netip.MustParseAddr("2001:db8::1"), dest.Addr()); verdict == netstack.RoutePeer {
 		t.Fatalf("a kept forwarding to %q after the retraction", peer.ID)
 	}
 
@@ -468,17 +468,17 @@ func TestSourceSpecificOriginationAndSelection(t *testing.T) {
 				t.Fatalf("the source-specific route was selected via %q, want \"a\"", got)
 			}
 			routes := fabric.meshes["b"].Routes
-			if peer, verdict := routes.Resolve(netip.MustParseAddr(test.match), netip.MustParseAddr(test.lookup)); verdict != netstack.RoutePeer || peer.ID != "a" {
+			if peer, verdict, _ := routes.Resolve(netip.MustParseAddr(test.match), netip.MustParseAddr(test.lookup)); verdict != netstack.RoutePeer || peer.ID != "a" {
 				t.Fatal("a source inside the announced prefix does not resolve")
 			}
-			if _, verdict := routes.Resolve(netip.MustParseAddr(test.miss), netip.MustParseAddr(test.lookup)); verdict == netstack.RoutePeer {
+			if _, verdict, _ := routes.Resolve(netip.MustParseAddr(test.miss), netip.MustParseAddr(test.lookup)); verdict == netstack.RoutePeer {
 				t.Fatal("a source outside the announced prefix resolved anyway")
 			}
 
 			// A source-specific route is an independent entry: retracting it
 			// must not need the ordinary route to the same destination.
 			fabric.down("a-b")
-			if _, verdict := routes.Resolve(netip.MustParseAddr(test.match), netip.MustParseAddr(test.lookup)); verdict == netstack.RoutePeer {
+			if _, verdict, _ := routes.Resolve(netip.MustParseAddr(test.match), netip.MustParseAddr(test.lookup)); verdict == netstack.RoutePeer {
 				t.Fatal("the source-specific route outlived its peer")
 			}
 		})
@@ -629,7 +629,7 @@ func TestRetractedPrefixDoesNotFallThroughToCoveringRoute(t *testing.T) {
 	fabric.flush("b", "c", "a")
 
 	inside := netip.MustParseAddr("fd00:b::1")
-	if peer, verdict := fabric.meshes["a"].Routes.Resolve(inside, inside); verdict != netstack.RoutePeer || peer.ID != "b" {
+	if peer, verdict, _ := fabric.meshes["a"].Routes.Resolve(inside, inside); verdict != netstack.RoutePeer || peer.ID != "b" {
 		t.Fatalf("a reaches %s via %v, want b", inside, peer)
 	}
 
@@ -641,13 +641,13 @@ func TestRetractedPrefixDoesNotFallThroughToCoveringRoute(t *testing.T) {
 		EncodeUpdate(Update{AE: AEIPv6, Plen: specific.Bits(), Prefix: specific.Addr().AsSlice(),
 			Interval: 6000, Seqno: 1, Metric: MetricInfinity}))
 
-	if peer, verdict := fabric.meshes["a"].Routes.Resolve(inside, inside); verdict != netstack.RouteHeld {
+	if peer, verdict, _ := fabric.meshes["a"].Routes.Resolve(inside, inside); verdict != netstack.RouteHeld {
 		t.Errorf("a resolved a prefix that was just retracted as %v through %v, want it held", verdict, peer)
 	}
 	// The covering prefix itself still works, so the hold is scoped to the
 	// prefix that was retracted rather than blanking the table.
 	outside := netip.MustParseAddr("fd00:ffff::1")
-	if _, verdict := fabric.meshes["a"].Routes.Resolve(outside, outside); verdict != netstack.RoutePeer {
+	if _, verdict, _ := fabric.meshes["a"].Routes.Resolve(outside, outside); verdict != netstack.RoutePeer {
 		t.Error("the covering route stopped working too")
 	}
 }
@@ -1422,7 +1422,7 @@ func TestNoTransitAdvertisesOnlyWhatThisNodeOriginates(t *testing.T) {
 	if got := fabric.nextHop("b", routeKey{dest: far}); got != "c" {
 		t.Fatalf("b reaches the origin via %q, want \"c\"", got)
 	}
-	if peer, verdict := fabric.meshes["b"].Routes.Resolve(netip.MustParseAddr("2001:db8::1"), far.Addr()); verdict != netstack.RoutePeer || peer.ID != "c" {
+	if peer, verdict, _ := fabric.meshes["b"].Routes.Resolve(netip.MustParseAddr("2001:db8::1"), far.Addr()); verdict != netstack.RoutePeer || peer.ID != "c" {
 		t.Fatal("b did not install the route it learned, so it cannot use the mesh")
 	}
 

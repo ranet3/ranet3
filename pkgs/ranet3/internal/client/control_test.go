@@ -170,7 +170,7 @@ func TestAssignedAddressesAreThisNodesOwnFromTheStart(t *testing.T) {
 	}
 	t.Cleanup(c.Close)
 	address := netip.MustParseAddr("10.66.0.5")
-	if _, verdict := c.Mesh.Routes.Resolve(address, address); verdict != netstack.RouteLocal {
+	if _, verdict, _ := c.Mesh.Routes.Resolve(address, address); verdict != netstack.RouteLocal {
 		t.Errorf("%s resolves as %v, want this node's own", address, verdict)
 	}
 	want := []netip.Prefix{netip.MustParsePrefix("10.66.0.5/32"), netip.MustParsePrefix("fd00:1::1/128")}

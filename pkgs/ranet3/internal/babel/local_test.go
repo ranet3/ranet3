@@ -71,7 +71,7 @@ func TestOriginationInstallsLocal(t *testing.T) {
 		{netip.MustParseAddr("2001:db8:a::1"), internet, netstack.RouteLocal, "this node's own"},
 		{netip.MustParseAddr("2001:db8:b::1"), internet, netstack.RouteNone, "no route"},
 	} {
-		if _, verdict := mesh.Routes.Resolve(test.from, test.to); verdict != test.want {
+		if _, verdict, _ := mesh.Routes.Resolve(test.from, test.to); verdict != test.want {
 			t.Errorf("a packet from %s to %s resolves as verdict %d, want %s", test.from, test.to, verdict, test.wanted)
 		}
 	}
@@ -285,12 +285,12 @@ func TestRetractedPrefixInsideThisNodesOwnIsHeld(t *testing.T) {
 	fabric.speakers["a"].Originate(covering)
 	fabric.speakers["b"].Originate(specific.dest)
 	fabric.flush("b")
-	if peer, verdict := fabric.meshes["a"].Routes.Resolve(inside, inside); verdict != netstack.RoutePeer || peer.ID != "b" {
+	if peer, verdict, _ := fabric.meshes["a"].Routes.Resolve(inside, inside); verdict != netstack.RoutePeer || peer.ID != "b" {
 		t.Fatalf("a resolves %s as %v through %s, want b by the longer match", inside, verdict, peerName(peer))
 	}
 
 	fabric.offer("a", "b", "b", specific, 1, MetricInfinity)
-	if peer, verdict := fabric.meshes["a"].Routes.Resolve(inside, inside); verdict != netstack.RouteHeld {
+	if peer, verdict, _ := fabric.meshes["a"].Routes.Resolve(inside, inside); verdict != netstack.RouteHeld {
 		t.Fatalf("a resolves %s as %v through %s once it is retracted, want it held", inside, verdict, peerName(peer))
 	}
 
@@ -302,7 +302,7 @@ func TestRetractedPrefixInsideThisNodesOwnIsHeld(t *testing.T) {
 	if held {
 		t.Fatal("the retracted route was not flushed, so this proves nothing")
 	}
-	if _, verdict := fabric.meshes["a"].Routes.Resolve(inside, inside); verdict != netstack.RouteLocal {
+	if _, verdict, _ := fabric.meshes["a"].Routes.Resolve(inside, inside); verdict != netstack.RouteLocal {
 		t.Errorf("a resolves %s as %v once the hold is flushed, want this node's own covering prefix", inside, verdict)
 	}
 }

@@ -79,14 +79,14 @@ func TestTUNStreamKeepsFlowingThroughABlackHole(t *testing.T) {
 	t.Cleanup(func() { t.Logf("alpha's search: %q", searchRecord(alpha.events)) })
 	run(t, alpha, bravo)
 	waitFor(t, convergeBudget, "alpha forwarding to bravo's prefix and bravo to alpha's", func() bool {
-		found, verdict := alpha.client.Mesh.Routes.Resolve(netip.Addr{}, bravoHost.Addr())
-		back, backVerdict := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alphaHost.Addr())
+		found, verdict, _ := alpha.client.Mesh.Routes.Resolve(netip.Addr{}, bravoHost.Addr())
+		back, backVerdict, _ := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alphaHost.Addr())
 		return verdict == netstack.RoutePeer && found != nil && backVerdict == netstack.RoutePeer && back != nil
 	})
 	// looked up on every poll, since a simultaneous open replaces the first session and its peer with it
 	settledAt := func(mtu int) func() bool {
 		return func() bool {
-			found, verdict := alpha.client.Mesh.Routes.Resolve(netip.Addr{}, bravoHost.Addr())
+			found, verdict, _ := alpha.client.Mesh.Routes.Resolve(netip.Addr{}, bravoHost.Addr())
 			return verdict == netstack.RoutePeer && found != nil && found.MTU() == mtu
 		}
 	}
@@ -375,7 +375,7 @@ func TestSessionLowersItsBudgetAtTheRefusalOfItsOwnData(t *testing.T) {
 	alpha, bravo := newLoopbackMeshOn(t, mesh)
 	run(t, alpha, bravo)
 	waitFor(t, convergeBudget, fmt.Sprintf("bravo's session to alpha to settle at %d", netstack.DefaultMTU), func() bool {
-		peer, verdict := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alphaHost.Addr())
+		peer, verdict, _ := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alphaHost.Addr())
 		return verdict == netstack.RoutePeer && peer != nil && peer.MTU() == netstack.DefaultMTU
 	})
 
