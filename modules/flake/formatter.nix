@@ -12,7 +12,7 @@
         root="$(${lib.getExe pkgs.git} rev-parse --show-toplevel)"
         pushd "$root" > /dev/null
 
-        ${lib.getExe pkgs.deno} fmt **/*.md pkgs/ranet3/examples/*.json pkgs/ranet3-site/*.{html,svg}
+        ${lib.getExe pkgs.deno} fmt **/*.md pkgs/ranet3/examples/*.json pkgs/raweb3
         ${lib.getExe pkgs.nixfmt-tree} .
 
         pushd pkgs/ranet3 > /dev/null
@@ -24,6 +24,13 @@
         popd > /dev/null
 
         pushd pkgs/wireguard > /dev/null
+        ${lib.getExe' pkgs.gomod2nix "gomod2nix"}
+        popd > /dev/null
+
+        # templ fmt formats the go inside the components with the go on PATH
+        pushd pkgs/raweb3 > /dev/null
+        PATH="${lib.makeBinPath [ pkgs.go ]}:$PATH" ${lib.getExe pkgs.templ} fmt .
+        ${lib.getExe pkgs.go} fmt ./...
         ${lib.getExe' pkgs.gomod2nix "gomod2nix"}
         popd > /dev/null
 

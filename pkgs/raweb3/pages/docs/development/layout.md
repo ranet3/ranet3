@@ -4,7 +4,7 @@
 title: "Repository layout"
 description: "Where everything lives in the repository."
 created: 2026-10-03
-updated: 2026-10-20
+updated: 2026-10-21
 order: 10
 ---
 
@@ -22,7 +22,7 @@ readme.md               the front page of the repository
 .gitattributes          line endings and diff drivers by file type
 .gitignore              build results, test binaries, local keys and registries
 .github/workflows/      ci.yaml runs the flake through atelier, merge.yaml merges bot
-                        pull requests whose checks pass, pages.yaml deploys ranet3-site
+                        pull requests whose checks pass, pages.yaml deploys raweb3
 .github/dependabot.yaml weekly updates of the actions and the flake inputs
 .github/codeowners      the owner of every path
 licenses/               the license texts every file names
@@ -35,8 +35,7 @@ modules/common/         the options both modules import
 checks/                 checks, the VM tests among them, and the profiling runs
 checks/fixtures/        the synthetic organization key pair the tests use
 pkgs/ranet3/            the Go module, ranet3.com/pkgs/ranet3
-pkgs/ranet3-docs/       these pages
-pkgs/ranet3-site/       the ranet3.com page
+pkgs/raweb3/            ranet3.com with these pages, and the generator that builds it
 pkgs/iperf3-benchmark/  the iperf3 build the benchmarks use
 pkgs/wireguard/         wireguard-go's tun, conn and rwcancel, ranet3.com/pkgs/wireguard
 ```
@@ -90,22 +89,44 @@ takes. A new top-level package has to be added to that list.
 and license, and its `readme.md` says which upstream and tailscale commits it is
 built from and how it follows upstream.
 
-## Docs and site
+## The site and these pages
 
-`pkgs/ranet3-docs` holds these pages and what checks and builds them:
+`pkgs/raweb3` builds ranet3.com, these pages among it, with a generator of its
+own, the Go module `ranet3.com/pkgs/raweb3`. Each page is a Markdown file with
+YAML frontmatter, rendered into templ components and styled with Tailwind.
 
-| Path          | What it holds                                                                                                               |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `pages/`      | these pages, with `design/` and `development/` beneath                                                                      |
-| `site.yaml`   | the site's title, address and repository, and the `go-import` and `go-source` metas                                         |
-| `check.py`    | the check of each page's frontmatter and relative links, and of the site's `go-import`                                      |
-| `default.nix` | the build: it runs `check.py`, copies the pages and their licenses, and writes an index and a 404 page that carry the metas |
-| `shell.nix`   | the `ranet3-docs` dev shell                                                                                                 |
-| `.envrc`      | direnv's entry to that shell                                                                                                |
+| Path             | What it holds                                                                                                                                               |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pages/`         | the pages by the path they serve at: `index.md` is the front page, and `docs/` holds these pages, with `design/` and `development/` beneath                 |
+| `site.yaml`      | the site's title, address and repository, the `go-import` and `go-source` metas, the analytics, the header links, the call to action and the footer's facts |
+| `static/`        | files the site serves as they are, `favicon.svg` among them                                                                                                 |
+| `cmd/raweb3`     | the `raweb3` binary: `raweb3 build` writes the site to a directory, `raweb3 serve` renders each page as it is asked for                                     |
+| `internal/site`  | loads `site.yaml` and the pages, checks them, and renders and minifies every page                                                                           |
+| `internal/pages` | the layouts: the frame every page shares, with its header, theme switch and notice, and the docs, page and 404 layouts                                      |
+| `ui/`            | what another site in the repository can take: the head, the logo mark, and `style.css`, the colors and components                                           |
+| `default.nix`    | the generator's build, and the site's, which runs `raweb3 build` with Tailwind                                                                              |
+| `shell.nix`      | the `raweb3` dev shell                                                                                                                                      |
+| `.envrc`         | direnv's entry to that shell                                                                                                                                |
 
-`pkgs/ranet3-site` holds `index.html` and `favicon.svg`, the ranet3.com page.
-Its build minifies both. `.github/workflows/pages.yaml` deploys it to GitHub
-Pages when a push to `master` changes the site, the workflow or `flake.lock`.
+Beside them are `go.mod`, `go.sum`, `gomod2nix.toml` and a `REUSE.toml` of its
+own. A file `a.md` serves at `/a/`, and so does `a/index.md`. Both in one
+directory fail the build.
+
+Every page's frontmatter carries `title`, `description`, `created` and
+`updated`, and a page under `docs/` also an `order`, its place in the sidebar.
+`layout` is optional: under `docs/` a page takes the docs layout, elsewhere
+`page`, and `bare` leaves the whole width to the Markdown, as the front page
+does. `vetted: <date>` is optional too. Only Yifei sets it, by hand, on the day
+Yifei last read the page in full. A page without it, or with a `vetted` older
+than its `updated`, shows a notice that it holds machine generated text no one
+has checked yet.
+
+The build fails on a missing field, an `updated` before `created`, a relative
+link to a page that does not exist, and a link to a heading the page does not
+have. A relative link to a `.md` file serves as the path of that page.
+
+`.github/workflows/pages.yaml` deploys `raweb3` to GitHub Pages when a push to
+`master` changes `pkgs/raweb3`, the workflow or `flake.lock`.
 
 ## Flake outputs
 
@@ -121,17 +142,17 @@ also a dev shell of the same name.
 | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `packages.<system>.default`                                         | `ranet3`, for `nix run` with no attribute                                                                                                                                                   |
 | `legacyPackages.<system>.ranet3`                                    | the `ranet3` binary                                                                                                                                                                         |
-| `legacyPackages.<system>.ranet3-docs`                               | these pages, checked                                                                                                                                                                        |
-| `legacyPackages.<system>.ranet3-site`                               | the ranet3.com page                                                                                                                                                                         |
+| `legacyPackages.<system>.raweb3`                                    | ranet3.com with these pages, checked as it builds                                                                                                                                           |
 | `legacyPackages.<system>.iperf3-benchmark`                          | the iperf3 build the benchmarks use                                                                                                                                                         |
 | `legacyPackages.<system>.wireguard`                                 | the Go module in `pkgs/wireguard`, built without its tests                                                                                                                                  |
 | `legacyPackages.<system>.profile.integration`, `.profile.namespace` | the profiling runs [testing](testing.md) describes, which build only on Linux                                                                                                               |
 | `checks.<system>.go-test`, `.go-lint`, `.tree`                      | the Go tests, the linters, and the format and licenses of the tree with its `atelier.toml` exclusions, on every system                                                                      |
 | `checks.<system>.wireguard`                                         | the vet and the tests of `pkgs/wireguard`, on every system                                                                                                                                  |
+| `checks.<system>.raweb3`                                            | the vet and the tests of the generator in `pkgs/raweb3`, on every system                                                                                                                    |
 | `checks.<system>.netlink`, `.integration-*`                         | the VM tests, on Linux                                                                                                                                                                      |
 | `devShells.<system>.default`                                        | deno, git, nixfmt-tree and taplo                                                                                                                                                            |
 | `devShells.<system>.ranet3`                                         | the default shell, the build inputs of `ranet3`, go-tools, gomod2nix, gopls, pprof and Python, and on Linux BIRD, strongSwan, iproute2, iputils, ethtool, util-linux and `iperf3-benchmark` |
-| `devShells.<system>.ranet3-docs`                                    | the default shell and the build inputs of the docs                                                                                                                                          |
+| `devShells.<system>.raweb3`                                         | the default shell, the build inputs of the generator, go-tools, gomod2nix, gopls and Tailwind                                                                                               |
 | `formatter.<system>`                                                | what `nix fmt` runs, which [testing](testing.md) lists                                                                                                                                      |
 | `overlays.default`                                                  | every package under `pkgs/`                                                                                                                                                                 |
 | `nixosModules.ranet3`                                               | the NixOS module                                                                                                                                                                            |

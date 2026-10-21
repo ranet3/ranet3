@@ -17,8 +17,9 @@ https://github.com/tailscale/wireguard-go. The copied files are licensed under
 the MIT License, and each names its copyright holders in its header or in
 pkgs/wireguard/REUSE.toml.
 
-The documentation under pkgs/ranet3-docs is licensed under the Creative
-Commons Attribution 4.0 International License (CC-BY-4.0).
+The pages under pkgs/raweb3/pages, ranet3.com and its documentation, are
+licensed under the Creative Commons Attribution 4.0 International License
+(CC-BY-4.0), and the code in some of them also under the MIT License.
 
 Every file names its license and its copyright holders in
 SPDX-License-Identifier and SPDX-FileCopyrightText lines at its top, or in a
