@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-21
+updated: 2026-10-22
 order: 20
 ---
 
@@ -196,17 +196,17 @@ The packages that read bytes a peer or a file chooses also carry property tests,
 in files ending in `_property_test.go`: `esp`, `ike`, `identity`, `transport`,
 `sadr`, `srv6`, `internal/babel`, `internal/packet`, `internal/netstack`,
 `schema`, `internal/config`, `internal/registry`, `internal/client`,
-`internal/kernel`, `internal/egress` and `control`. They run with the rest of
-`go test`, under hegel-go through `internal/pbt`, whose `Check` gives every
-property the same terms: 200 cases, or 10 under `go test -short`, where hegel
-replaces the count `Check` sets, no example database, and a derandomized engine.
-hegel seeds the labels of nested generators per process, so two runs need not
-draw the same sample, and a boundary the code branches on is drawn outright,
-with `pbt.Spanning` or by name, rather than left to the sample. A failing
-property prints the smallest input it found. hegel is a test dependency only:
-`internal/notices` fails when a non-test file outside `internal/pbt` imports it,
-or when a non-test file imports `internal/pbt`, so it never reaches the binary
-or its notices.
+`internal/kernel`, `internal/egress`, `internal/nftables` and `control`. They
+run with the rest of `go test`, under hegel-go through `internal/pbt`, whose
+`Check` gives every property the same terms: 200 cases, or 10 under
+`go test -short`, where hegel replaces the count `Check` sets, no example
+database, and a derandomized engine. hegel seeds the labels of nested generators
+per process, so two runs need not draw the same sample, and a boundary the code
+branches on is drawn outright, with `pbt.Spanning` or by name, rather than left
+to the sample. A failing property prints the smallest input it found. hegel is a
+test dependency only: `internal/notices` fails when a non-test file outside
+`internal/pbt` imports it, or when a non-test file imports `internal/pbt`, so it
+never reaches the binary or its notices.
 
 hegel-go runs on a library of its own. With `HEGEL_LIBHEGEL_PATH` set it loads
 that file and no other. Otherwise it writes the copy it embeds into the user
@@ -222,10 +222,11 @@ fails if a test wrote hegel's cache under the check's home directory anyway.
 Property tests build on Linux and macOS alone. `internal/pbt` and every property
 test carry a build constraint that names them. The `transport` properties of its
 sends and of the source a socket connected to 1 peer binds, the
-`internal/kernel` netlink and rule message properties and the `internal/egress`
-nftables property build on Linux alone, and the `transport` property of the
-address an answer leaves from builds on macOS alone. The `go-lint` check vets
-the tree for FreeBSD, which fails on a property test without the constraint.
+`internal/kernel` netlink and rule message properties, the `internal/egress`
+nftables and border chain properties and the `internal/nftables` properties
+build on Linux alone, and the `transport` property of the address an answer
+leaves from builds on macOS alone. The `go-lint` check vets the tree for
+FreeBSD, which fails on a property test without the constraint.
 
 ## Nix checks
 

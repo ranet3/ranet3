@@ -4,7 +4,7 @@
 title: "Repository layout"
 description: "Where everything lives in the repository."
 created: 2026-10-03
-updated: 2026-10-21
+updated: 2026-10-22
 order: 10
 ---
 
@@ -72,6 +72,7 @@ program's own. Go commands run from `pkgs/ranet3`.
 | `internal/kernel`        | the route reconciler, the host network watch, and on macOS the scoped default route a bound underlay socket can need                   |
 | `internal/logtest`       | swaps the default logger for 1 test, imported by test files alone                                                                      |
 | `internal/netstack`      | moves packets between the tun and the sessions                                                                                         |
+| `internal/nftables`      | writes, reads back and watches the translator's and the border filter's nf_tables tables, chains and rules over netlink                |
 | `internal/notices`       | the third-party notice the binary embeds and `ranet3 licenses` prints                                                                  |
 | `internal/packet`        | checks the IP envelope of packets from the tun and from ESP                                                                            |
 | `internal/pbt`           | the settings every property test runs under                                                                                            |
