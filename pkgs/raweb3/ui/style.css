@@ -35,22 +35,23 @@
   --color-nord-15: #b48ead;
 }
 
-/* the roles the pages color by, on the nord palette where it has the shade.
-   Each gives its light shade first, darker than nord's own for contrast on
-   its snow storm. The scheme follows the system unless the theme switch sets
-   data-theme */
+/* the roles the pages color by, light shade first: polar night under snow
+   storm text in dark, the reverse in light, frost for the accent and aurora
+   for the states. Where a nord color falls short of 4.5:1 for text, 3:1 for a
+   meter on its track or 2:1 for a divider, the shade is that color mixed
+   toward another nord color only as far as it takes. The scheme follows the
+   system unless the theme switch sets data-theme */
 :root {
   color-scheme: light dark;
   --bg: light-dark(var(--color-nord-6), var(--color-nord-0));
-  --bg2: light-dark(var(--color-nord-5), var(--color-nord-1));
-  --line: light-dark(var(--color-nord-4), var(--color-nord-3));
+  --bg2: light-dark(var(--color-nord-4), var(--color-nord-1));
+  --line: light-dark(#a3aab9, #576174);
   --track: light-dark(var(--color-nord-4), var(--color-nord-1));
-  --bar: light-dark(#a0aabb, #616e88);
-  --mute: light-dark(var(--color-nord-3), #8d929a);
-  --mutel: color-mix(in srgb, var(--mute) 40%, transparent);
+  --bar: light-dark(#757d8f, #858e9e);
+  --mute: light-dark(var(--color-nord-3), #a7aebd);
   --fg2: light-dark(var(--color-nord-1), var(--color-nord-4));
   --fg: light-dark(var(--color-nord-0), var(--color-nord-6));
-  --acc: light-dark(var(--color-nord-10), var(--color-nord-8));
+  --acc: light-dark(#4b6382, var(--color-nord-8));
   --accl: color-mix(in srgb, var(--acc) 40%, transparent);
   --tint: light-dark(
     color-mix(in srgb, var(--acc) 8%, transparent),
@@ -59,7 +60,7 @@
   --warn: light-dark(#9a5328, var(--color-nord-13));
   --dir: light-dark(#9a5328, var(--color-nord-13));
   --win: light-dark(#4c6f38, var(--color-nord-14));
-  --lose: var(--color-nord-11);
+  --lose: light-dark(#8c515b, #cc8a92);
 }
 
 /* only keeps a browser's own dark mode from darkening the light theme */
@@ -82,9 +83,7 @@
   --color-accl: var(--accl);
   --color-warn: var(--warn);
   --color-tint: var(--tint);
-  --color-track: var(--track);
   --color-bar: var(--bar);
-  --color-mutel: var(--mutel);
   --color-dir: var(--dir);
   --color-win: var(--win);
   --color-lose: var(--lose);
@@ -107,7 +106,7 @@
   --tw-prose-bold: var(--fg);
   --tw-prose-counters: var(--mute);
   --tw-prose-bullets: var(--line);
-  --tw-prose-hr: var(--bg2);
+  --tw-prose-hr: var(--line);
   --tw-prose-quotes: var(--fg2);
   --tw-prose-quote-borders: var(--line);
   --tw-prose-code: var(--fg);
@@ -152,7 +151,7 @@
   }
   /* one row of a list of links, numbered, with an arrow at the end */
   .index-row {
-    @apply grid grid-cols-[4ch_minmax(0,1fr)_auto] gap-4 border-b border-bg2
+    @apply grid grid-cols-[4ch_minmax(0,1fr)_auto] gap-4 border-b border-line
       px-1 py-[18px] text-left text-fg after:text-acc after:content-['\2192']
       hover:bg-bg2;
   }
@@ -205,7 +204,7 @@
       @apply text-[.85em] text-mute;
     }
     & :where(tbody + tbody tr:first-child > *) {
-      @apply border-t border-bg2;
+      @apply border-t border-line;
     }
   }
   /* every column left aligned, labels in the body color */
@@ -222,7 +221,7 @@
   }
   /* each body row ruled off and spaced */
   .data-table-ruled :where(tbody tr > *) {
-    @apply border-b border-bg2 py-[.7em];
+    @apply border-b border-line py-[.7em];
   }
   /* columns of figures wide enough to compare on a screen, tight on a phone */
   .data-table-wide {

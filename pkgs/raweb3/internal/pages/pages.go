@@ -13,7 +13,8 @@ type Content struct {
 	// Path is the page's absolute path on the site
 	Path    string
 	Updated time.Time
-	// Unvetted puts the notice that the page holds unchecked generated text on it
+	// Unvetted puts the notice that the page may contain unreviewed machine
+	// generated text on it
 	Unvetted bool
 	// Body is the page's markdown rendered to HTML
 	Body string
