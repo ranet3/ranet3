@@ -90,6 +90,8 @@
 }
 
 @utility prose-site {
+  /* a word wider than a phone breaks rather than widen the page */
+  overflow-wrap: break-word;
   --tw-prose-body: var(--fg2);
   --tw-prose-headings: var(--fg);
   --tw-prose-lead: var(--mute);
@@ -109,6 +111,12 @@
   & :where(code):not(:where(pre *))::before,
   & :where(code):not(:where(pre *))::after {
     content: none;
+  }
+
+  /* a long name in inline code breaks rather than widen the page. The
+     tables scroll instead */
+  & :where(code):not(:where(pre *, table *)) {
+    overflow-wrap: anywhere;
   }
 
   /* the reference tables are wider than a phone */
