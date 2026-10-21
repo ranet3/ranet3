@@ -210,6 +210,7 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	warnUnforwardableTransit(cfg)
 	warnUnbordered(cfg, forwardingEnabled)
 	warnVRFWithoutL3mdev(cfg)
+	warnCountedAdvertisements(cfg)
 	// Before the tun exists, so a segment this node could not answer for
 	// refuses the startup without a device to clean up.
 	segments, steering, err := cfg.SegmentTables()

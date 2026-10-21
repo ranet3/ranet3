@@ -180,6 +180,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	applied = changedCapabilities(old, cfg)
 	log.Printf("reloaded %s: %d peers, %d nodes in the trust document", path, len(peers), nodes)
 	warnUnbordered(cfg, forwardingEnabled)
+	warnCountedAdvertisements(cfg)
 	return nil
 }
 

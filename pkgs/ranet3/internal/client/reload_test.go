@@ -175,6 +175,97 @@ func TestReloadHandsTheReconcilerAMovedOverlay(t *testing.T) {
 	}
 }
 
+// countedWarning is the line warnCountedAdvertisements logs for prefix under key
+func countedWarning(key, prefix string) string {
+	verb := map[string]string{"cap.route": "announces", "cap.egress": "advertises"}[key]
+	return fmt.Sprintf("config: %s %s %s, outside the overlay and shorter than /8 for IPv4 or /16 for IPv6 or holding the unspecified address, which counts as a default and makes this node an exit for its family, as routing.md says", key, verb, prefix)
+}
+
+// An advertisement that counts as a default and is not one is warned of once
+// under either key, one over the unspecified address among them, while a
+// default, a prefix at the floor and one inside the overlay, two adjacent
+// entries holding it, are not.
+func TestCountedAdvertisementIsWarnedOf(t *testing.T) {
+	overlay := []schema.Prefix{schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("3ff0::/13"), schema.MustPrefix("3ff8::/13")}
+	for _, key := range []string{"cap.route", "cap.egress"} {
+		for prefix, warned := range map[string]bool{
+			"fd00::/8": true, "2000::/3": true, "192.0.0.0/7": true, "0.0.0.0/24": true,
+			"0.0.0.0/0": false, "::/0": false, "198.0.0.0/8": false, "2001::/16": false, "3ff0::/12": false,
+		} {
+			t.Run(key+" "+prefix, func(t *testing.T) {
+				cfg := &config.Config{}
+				cfg.Cap.Border = &egress.Border{Overlay: overlay}
+				if key == "cap.route" {
+					cfg.Cap.Route = &babel.Routes{Announce: announce(prefix)}
+				} else {
+					cfg.Cap.Egress = &egress.Egress{Advertise: []schema.Prefix{schema.MustPrefix(prefix)}}
+				}
+				written := capturedLog(t)
+				warnCountedAdvertisements(cfg)
+				want := 0
+				if warned {
+					want = 1
+				}
+				if got := written.count(countedWarning(key, prefix)); got != want {
+					t.Errorf("warned %d times, want %d: %q", got, want, written.lines("config:"))
+				}
+			})
+		}
+	}
+}
+
+// A node starting with an advertisement that counts as a default logs it
+// before it opens a device, and here a steering entry selecting nothing then
+// refuses the start.
+func TestNewLogsAnAdvertisementThatCountsAsADefault(t *testing.T) {
+	cfg, privateKey, reg := runtimeFixture(t)
+	dir := t.TempDir()
+	cfg.Link.Port = 13000
+	cfg.Auth.Key, cfg.Auth.Trust = filepath.Join(dir, "key.pem"), filepath.Join(dir, "registry.json")
+	writeKey(t, cfg.Auth.Key, privateKey)
+	writeRegistry(t, cfg.Auth.Trust, reg)
+	cfg.Cap.Route = &babel.Routes{Announce: announce("fd00::/8")}
+	cfg.Cap.Segment = &srv6.Segments{Steer: []srv6.Steer{{}}}
+	written := capturedLog(t)
+	c, err := New(cfg, events.New())
+	if err == nil {
+		c.Close()
+		t.Fatal("a node steering by an entry selecting nothing started")
+	}
+	if !strings.Contains(err.Error(), "cap.segment steer") {
+		t.Fatalf("the start was refused before the warnings with %v", err)
+	}
+	if got := written.count(countedWarning("cap.route", "fd00::/8")); got != 1 {
+		t.Errorf("the start logged the warning %d times, want once", got)
+	}
+}
+
+// A reload logs each advertisement that counts as a default and is not one
+// once it applies the file, and a refused reload logs none.
+func TestReloadLogsAnAdvertisementThatCountsAsADefault(t *testing.T) {
+	c, path, _, _ := reloadOf(t, func(*config.Config) {})
+	written := capturedLog(t)
+	refused := *c.config()
+	refused.Link.Port++
+	refused.Cap.Route = &babel.Routes{Announce: announce("fd00::/8")}
+	writeConfig(t, path, &refused)
+	if err := c.ReloadFrom(path); err == nil {
+		t.Fatal("a reload changing link.port was taken")
+	}
+	if got := written.count(countedWarning("cap.route", "fd00::/8")); got != 0 {
+		t.Errorf("the refused reload logged the warning %d times", got)
+	}
+	next := *c.config()
+	next.Cap.Route = &babel.Routes{Announce: announce("fd00::/8")}
+	writeConfig(t, path, &next)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("the reload was refused: %v", err)
+	}
+	if got := written.count(countedWarning("cap.route", "fd00::/8")); got != 1 {
+		t.Errorf("the reload logged the warning %d times, want once", got)
+	}
+}
+
 // the reconciler a node starts is handed cap.border's overlay, which decides what counts as a default
 func TestKernelRuntimeCarriesTheOverlay(t *testing.T) {
 	overlay := []schema.Prefix{schema.MustPrefix("3fff::/20")}

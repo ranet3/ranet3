@@ -360,3 +360,24 @@ func warnUnbordered(cfg *config.Config, forwards func() (v4, v6 bool)) {
 	log.Printf("config: this node forwards %s and holds no cap.border, so a host on any of its links can forge a mesh source through it into the mesh: add cap.border with the prefixes the mesh numbers its nodes from",
 		strings.Join(on, " and "))
 }
+
+// warnCountedAdvertisements names each advertisement in cap.route or
+// cap.egress that schema.CapturesTheMachine counts and that is not a default,
+// which makes this node an exit for its family as a default does. The file
+// loads all the same.
+func warnCountedAdvertisements(cfg *config.Config) {
+	warn := func(key, verb string, prefix netip.Prefix) {
+		if prefix.Bits() > 0 && schema.CapturesTheMachine(prefix, cfg.Overlay()) {
+			log.Printf("config: %s %s %s, outside the overlay and shorter than /%d for IPv4 or /%d for IPv6 or holding the unspecified address, which counts as a default and makes this node an exit for its family, as routing.md says",
+				key, verb, prefix, schema.MinSubnetBits4, schema.MinSubnetBits6)
+		}
+	}
+	for _, entry := range cfg.Routes().Announce {
+		warn("cap.route", "announces", entry.Prefix.Prefix)
+	}
+	if exit := cfg.Egress(); exit != nil {
+		for _, prefix := range exit.Advertise {
+			warn("cap.egress", "advertises", prefix.Prefix)
+		}
+	}
+}
