@@ -377,18 +377,26 @@ func removeValue[V comparable](n *trieNode[V], value V) *trieNode[V] {
 }
 
 func (t *Table[V]) Lookup(src, dst netip.Addr) (V, bool) {
+	value, _, ok := t.LookupBits(src, dst)
+	return value, ok
+}
+
+// LookupBits is Lookup that also answers the length of the destination prefix the answer is held under, in the bits of dst's own family
+// the length is the node the entry was taken from, shorter than the deepest node the walk reached when every source there missed
+func (t *Table[V]) LookupBits(src, dst netip.Addr) (V, int, bool) {
 	var result V
 	current := t.roots.Load()
 	// A zoned destination is inside no prefix, as Prefix.Contains has it,
 	// which is also how a zoned source is read below.
 	if current == nil || !dst.IsValid() || dst.Zone() != "" {
-		return result, false
+		return result, 0, false
 	}
 	n := current.ipv6
 	if dst.Is4() {
 		n = current.ipv4
 	}
 	found := false
+	var length uint8
 	address := dst.As16()
 	hi, lo := binary.BigEndian.Uint64(address[:8]), binary.BigEndian.Uint64(address[8:])
 	for n != nil && n.matches(hi, lo) {
@@ -420,14 +428,23 @@ func (t *Table[V]) Lookup(src, dst netip.Addr) (V, bool) {
 			}
 		}
 		if !matched && n.haveAny {
-			result, found = n.anySrc, true
+			result, found, matched = n.anySrc, true, true
+		}
+		if matched {
+			length = n.prefixLen
 		}
 		if n.prefixLen == 128 {
 			break
 		}
 		n = n.child[(address[n.byteIndex]>>n.bitShift)&1]
 	}
-	return result, found
+	if !found {
+		return result, 0, false
+	}
+	if dst.Is4() {
+		return result, int(length) - 96, true
+	}
+	return result, int(length), true
 }
 
 // All captures a consistent snapshot at the call. The caller may modify the

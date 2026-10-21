@@ -66,7 +66,8 @@ func (m *referenceTable) removeValue(value int) {
 // lookup takes the longest destination holding a route whose source matches,
 // and within it the longest source. An invalid source matches every address
 // and ranks below a source of any length, since its Bits is -1.
-func (m *referenceTable) lookup(src, dst netip.Addr) (int, bool) {
+// it answers that destination's length beside its value
+func (m *referenceTable) lookup(src, dst netip.Addr) (int, int, bool) {
 	var best *Route[int]
 	for i, route := range m.routes {
 		if !route.Destination.Contains(dst) || route.Source.IsValid() && !route.Source.Contains(src) {
@@ -78,9 +79,9 @@ func (m *referenceTable) lookup(src, dst netip.Addr) (int, bool) {
 		}
 	}
 	if best == nil {
-		return 0, false
+		return 0, 0, false
 	}
-	return best.Value, true
+	return best.Value, best.Destination.Bits(), true
 }
 
 type tableOpKind uint8
@@ -328,10 +329,14 @@ func (m *tableMachine) RuleLookup(tc hegel.TestCase) {
 	op := m.op(tc, func(d opDrawer) tableOp {
 		return tableOp{kind: opLookup, from: d.zoned(d.address(d.pool.srcs)), to: d.zoned(d.address(d.pool.dsts))}
 	})
-	got, ok := m.table.Lookup(op.from, op.to)
-	want, wantOK := m.model.lookup(op.from, op.to)
-	if got != want || ok != wantOK {
-		tc.Errorf("%#v answered %d, %v where the reference answers %d, %v", op, got, ok, want, wantOK)
+	got, bits, ok := m.table.LookupBits(op.from, op.to)
+	want, wantBits, wantOK := m.model.lookup(op.from, op.to)
+	if got != want || bits != wantBits || ok != wantOK {
+		tc.Errorf("%#v answered %d under /%d, %v where the reference answers %d under /%d, %v",
+			op, got, bits, ok, want, wantBits, wantOK)
+	}
+	if plain, plainOK := m.table.Lookup(op.from, op.to); plain != got || plainOK != ok {
+		tc.Errorf("%#v answered %d, %v without the length and %d, %v with it", op, plain, plainOK, got, ok)
 	}
 }
 
@@ -384,11 +389,11 @@ func (m *tableMachine) InvariantEveryRouteAnswersLikeReference(tc hegel.TestCase
 		}
 		for _, from := range froms {
 			for _, to := range tos {
-				got, ok := m.table.Lookup(from, to)
-				want, wantOK := m.model.lookup(from, to)
-				if got != want || ok != wantOK {
-					tc.Errorf("Lookup(%v, %v) answered %d, %v where the reference answers %d, %v",
-						from, to, got, ok, want, wantOK)
+				got, bits, ok := m.table.LookupBits(from, to)
+				want, wantBits, wantOK := m.model.lookup(from, to)
+				if got != want || bits != wantBits || ok != wantOK {
+					tc.Errorf("LookupBits(%v, %v) answered %d under /%d, %v where the reference answers %d under /%d, %v",
+						from, to, got, bits, ok, want, wantBits, wantOK)
 				}
 			}
 		}
