@@ -1,0 +1,15 @@
+# HELP ranet3_transit_packets_total Packets the forwarding decision forwarded to a peer, delivered to the tun or dropped, by reason, and the ICMP errors it answered or could not answer them with.
+# TYPE ranet3_transit_packets_total counter
+ranet3_transit_packets_total{decision="forwarded",reason=""} 1200
+ranet3_transit_packets_total{decision="delivered",reason=""} 340
+ranet3_transit_packets_total{decision="dropped",reason="expired"} 1
+ranet3_transit_packets_total{decision="dropped",reason="no_route"} 2
+ranet3_transit_packets_total{decision="dropped",reason="held"} 3
+ranet3_transit_packets_total{decision="dropped",reason="refused"} 4
+ranet3_transit_packets_total{decision="dropped",reason="invalid"} 5
+ranet3_transit_packets_total{decision="dropped",reason="martian"} 6
+ranet3_transit_packets_total{decision="dropped",reason="source_route"} 7
+ranet3_transit_packets_total{decision="dropped",reason="too_big"} 8
+ranet3_transit_packets_total{decision="dropped",reason="multicast"} 9
+ranet3_transit_packets_total{decision="answered",reason=""} 10
+ranet3_transit_packets_total{decision="unanswered",reason=""} 11

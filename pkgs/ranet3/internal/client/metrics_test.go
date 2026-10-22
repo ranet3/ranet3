@@ -193,6 +193,20 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 	}
 }
 
+// the forwarding decision's counters are one series, each drop under its reason, and render as the golden file
+// a node that forwarded nothing writes every series at 0
+func TestMetricsExposeTheTransitCountersAsTheGoldenFile(t *testing.T) {
+	var out strings.Builder
+	writeTransitCounters(&out, control.TransitCounters{Forwarded: 1200, Delivered: 340, Expired: 1, NoRoute: 2, Held: 3, Refused: 4, Invalid: 5, Martian: 6, SourceRoute: 7, TooBig: 8, Multicast: 9, Answered: 10, Unanswered: 11})
+	verbGolden(t, "metrics-transit.txt", []byte(out.String()))
+	c := &Client{Mesh: &netstack.Mesh{Routes: netstack.NewRouteTable()}}
+	var zero strings.Builder
+	c.renderTransitCounters(&zero)
+	if want := `ranet3_transit_packets_total{decision="dropped",reason="no_route"} 0`; !strings.Contains(zero.String(), want) {
+		t.Errorf("the scrape does not carry %q:\n%s", want, zero.String())
+	}
+}
+
 // The advertised and announced prefix counts are separate series, because
 // their difference is the alert: a prefix is announced only while its rule is
 // installed and the kernel forwards its family, so announcing fewer than are

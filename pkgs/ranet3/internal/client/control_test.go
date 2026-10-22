@@ -5,6 +5,7 @@ package client
 
 import (
 	"net/netip"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -30,6 +31,19 @@ import (
 func TestSegmentCountersDoNotDrift(t *testing.T) {
 	var counters netstack.SegmentCounters
 	_ = control.SegmentCounters(counters)
+}
+
+// the forwarding decision's counters and their wire form hold the same fields in the same order, so a field added to either has to be added to both
+// and transitCounters carries each field onto the one of its name
+func TestTransitCountersDoNotDrift(t *testing.T) {
+	var counters netstack.TransitCounters
+	fields := reflect.ValueOf(&counters).Elem()
+	for i := range fields.NumField() {
+		fields.Field(i).SetUint(uint64(i + 1))
+	}
+	if got, want := transitCounters(counters), control.TransitCounters(counters); got != want {
+		t.Errorf("status carries %+v for the decision's %+v", got, want)
+	}
 }
 
 // loadable is a node complete enough to load carrying segment

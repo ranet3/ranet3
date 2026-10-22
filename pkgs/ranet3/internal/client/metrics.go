@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 )
 
@@ -93,6 +94,7 @@ func (c *Client) Metrics(w io.Writer) {
 	c.renderReceiveCounters(w)
 	c.renderPairSockets(w)
 	c.renderSegmentCounters(w)
+	c.renderTransitCounters(w)
 	c.renderKernel(w)
 	c.renderEgress(w)
 	c.renderBorder(w)
@@ -249,6 +251,24 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 	fmt.Fprint(w, "# TYPE ranet3_steer_dropped_total counter\n")
 	fmt.Fprintf(w, "ranet3_steer_dropped_total{reason=\"too_large\"} %d\n", segments.Unsteered)
 	fmt.Fprintf(w, "ranet3_steer_dropped_total{reason=\"no_route\"} %d\n", segments.Unrouted)
+}
+
+// renderTransitCounters writes the forwarding decision's counters as one series, decision saying what became of a packet and reason why one was dropped
+// reason is empty for the decisions that are no drop
+func (c *Client) renderTransitCounters(w io.Writer) {
+	writeTransitCounters(w, transitCounters(c.Mesh.TransitCounters()))
+}
+
+func writeTransitCounters(w io.Writer, transit control.TransitCounters) {
+	fmt.Fprint(w, "# HELP ranet3_transit_packets_total Packets the forwarding decision forwarded to a peer, delivered to the tun or dropped, by reason, and the ICMP errors it answered or could not answer them with.\n")
+	fmt.Fprint(w, "# TYPE ranet3_transit_packets_total counter\n")
+	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"forwarded\",reason=\"\"} %d\n", transit.Forwarded)
+	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"delivered\",reason=\"\"} %d\n", transit.Delivered)
+	for _, drop := range transit.Drops() {
+		fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"dropped\",reason=\"%s\"} %d\n", drop.Label, drop.Packets)
+	}
+	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"answered\",reason=\"\"} %d\n", transit.Answered)
+	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"unanswered\",reason=\"\"} %d\n", transit.Unanswered)
 }
 
 // renderKernel writes the route reconciler's last pass, the half of a node

@@ -60,6 +60,7 @@ func RenderStatus(w io.Writer, s Status) {
 		{"Originate", originateLine(s.Originate)},
 		{"Segments", segmentLine(s)},
 		{"Steering", steeringLine(s)},
+		{"Transit", transitLine(s.Transit)},
 		{"ESP", fmt.Sprintf("%d in, %d dropped, %d refused", s.ESP.InboundPackets, s.ESP.InboundDropped, s.ESP.ReceiveRefused)},
 	}
 	// under the egress line, and only on a node that writes cap.border
@@ -282,6 +283,30 @@ func segmentLine(s Status) string {
 		}
 	}
 	return line + ")"
+}
+
+// transitLine always names forwarded, delivered and dropped
+// and each reason a packet was dropped for, answered and unanswered only while each is above 0
+func transitLine(c TransitCounters) string {
+	var dropped uint64
+	var reasons []string
+	for _, drop := range c.Drops() {
+		dropped += drop.Packets
+		if drop.Packets > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d %s", drop.Packets, drop.Words))
+		}
+	}
+	line := fmt.Sprintf("%d forwarded, %d delivered, %d dropped", c.Forwarded, c.Delivered, dropped)
+	if len(reasons) > 0 {
+		line += " (" + strings.Join(reasons, ", ") + ")"
+	}
+	if c.Answered > 0 {
+		line += fmt.Sprintf(", %d answered", c.Answered)
+	}
+	if c.Unanswered > 0 {
+		line += fmt.Sprintf(", %d unanswered", c.Unanswered)
+	}
+	return line
 }
 
 // steeringLine says "off" on a node that steers nothing, which is most of

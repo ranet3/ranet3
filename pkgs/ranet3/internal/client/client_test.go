@@ -826,6 +826,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 		"ranet3_peer_send_dropped_total", "ranet3_peer_send_delay_dropped_total", "ranet3_receive_dropped_total",
 		"ranet3_transport_pair_sockets", "ranet3_transport_pair_fallbacks_total",
 		"ranet3_tun_reads_truncated_total", "ranet3_tun_frames_refused_total",
+		"ranet3_transit_packets_total",
 	} {
 		if !strings.Contains(text, "# HELP "+name+" ") || !strings.Contains(text, "# TYPE "+name+" ") {
 			t.Errorf("metric %s has no HELP or TYPE", name)
