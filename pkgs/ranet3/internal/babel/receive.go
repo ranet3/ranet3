@@ -238,7 +238,9 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 			// route to a directly attached prefix to a route learnt over the
 			// Babel protocol, even when the prefixes are the same", and this
 			// node treats every key it holds as its own the same way.
-			if s.ownsLocked(key) {
+			// a host address of this node's is delivered whatever the source, as the host's kernel delivers it
+			// so no neighbor's route to it from a source takes its packets by RFC 9079 section 4's order
+			if s.ownsLocked(key) || dest.IsSingleIP() && s.ownsHostLocked(dest) {
 				continue
 			}
 			adv := advertisement{routerID: routerID, seqno: u.Seqno, metric: u.Metric}
