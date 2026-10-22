@@ -356,6 +356,9 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 	c.cfg.Store(cfg)
 	c.storeIndex(x)
 	mesh.SetAnswerSources(answerSources(cfg))
+	// a reload that changes cap.transit is refused, so the decision reads the start's
+	mesh.SetTransit(cfg.Transits())
+	mesh.SetOverlay(overlayPrefixes(cfg))
 	return c, nil
 }
 

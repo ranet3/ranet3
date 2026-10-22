@@ -76,6 +76,7 @@ type Mesh struct {
 	segmentCounters
 	egressSlot
 	answerState
+	transitState
 }
 
 // outboundBatch owns the TUN buffers from one read until a crypto worker has
@@ -99,6 +100,8 @@ type outboundBatch struct {
 	peerOrder []*Peer
 	// cut holds the fragments of the read's packets too large for their peers' sessions
 	cut fragmentList
+	// free is the pool the batch goes back to once sealed, nil for a tun reader's, which goes back to outboundFree
+	free chan *outboundBatch
 }
 
 // outboundShare is one peer's part of a read
@@ -274,10 +277,15 @@ func (m *Mesh) SetMTU(mtu int, steering *srv6.SteerTable) error {
 
 func (m *Mesh) startOutboundPipeline() {
 	workers := max(1, runtime.GOMAXPROCS(0))
-	m.outboundJobs = make(chan *outboundBatch, outboundJobsPerWorker*workers)
-	m.outboundFree = make(chan *outboundBatch, cap(m.outboundJobs)+len(m.queues))
+	// the sessions' forwarded packets fill batches of their own, and the job queue holds those beside the readers'
+	m.forwardFree = make(chan *outboundBatch, outboundJobsPerWorker*workers)
+	m.outboundJobs = make(chan *outboundBatch, outboundJobsPerWorker*workers+cap(m.forwardFree))
+	m.outboundFree = make(chan *outboundBatch, outboundJobsPerWorker*workers+len(m.queues))
 	for range cap(m.outboundFree) {
 		m.outboundFree <- newOutboundBatch(m.dev.BatchSize())
+	}
+	for range cap(m.forwardFree) {
+		m.forwardFree <- newForwardBatch(m.dev.BatchSize(), m.forwardFree)
 	}
 	for range workers {
 		m.outboundWorkerWG.Add(1)
@@ -300,6 +308,20 @@ func newOutboundBatch(size int) *outboundBatch {
 		shares:    make(map[*Peer]outboundShare),
 		batches:   make(map[*Peer]*peerBatch),
 		peerOrder: make([]*Peer, 0, size),
+	}
+}
+
+// newForwardBatch is a batch of size packets a session's delivery forwards, going back to free once sealed
+// its packets stay in the frames the session delivered them in, so it holds no slab
+func newForwardBatch(size int, free chan *outboundBatch) *outboundBatch {
+	return &outboundBatch{
+		packets:   make([][]byte, size),
+		peers:     make([]*Peer, size),
+		headers:   make([]byte, size),
+		shares:    make(map[*Peer]outboundShare),
+		batches:   make(map[*Peer]*peerBatch),
+		peerOrder: make([]*Peer, 0, size),
+		free:      free,
 	}
 }
 
@@ -403,12 +425,12 @@ func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, ne
 	if cut {
 		count, bytes, fault := b.cut.add(peer, nextHeader, raw[:overhead], inner, mtu)
 		if answer = m.answerOptions(inner, fault, false); answer != nil {
-			m.DeliverInbound(answer, 0)
+			m.writeHostPacket(answer)
 		}
 		return count, bytes
 	}
 	if answer != nil {
-		m.DeliverInbound(answer, 0)
+		m.writeHostPacket(answer)
 		m.tooBigAnswered.Add(1)
 	}
 	return 0, 0
@@ -463,7 +485,9 @@ func (m *Mesh) noteDeviceGone(err error) {
 	})
 }
 
-// reportedCount counts one kind of trouble on the tun's reads, or the answers one ICMP limit withheld, and spaces the reports about it, a warning or an event, an interval apart
+// reportedCount counts one kind of trouble on the tun's reads and spaces the reports about it, a warning or an event, an interval apart
+// the forwarding decision's drop report spaces its reports with claim alone, its counters keeping the count
+// and each ICMP limit's report with claim and since, the limit's shards keeping the count
 type reportedCount struct {
 	total atomic.Uint64
 	// next is the earliest the next report may go out
@@ -481,7 +505,12 @@ func (c *reportedCount) add(now int64) (uint64, bool) {
 	if !c.claim(now, c.next.Load()) {
 		return 0, false
 	}
-	return total - c.reported.Swap(total), true
+	return c.since(total), true
+}
+
+// since is how many of total came since the last report, which the caller holding the claim writes with total
+func (c *reportedCount) since(total uint64) uint64 {
+	return total - c.reported.Swap(total)
 }
 
 // claim says whether the caller that counted one at now writes the report
@@ -541,8 +570,12 @@ func (m *Mesh) outboundWorker() {
 			}
 		}
 		b.reset()
+		free := b.free
+		if free == nil {
+			free = m.outboundFree
+		}
 		select {
-		case m.outboundFree <- b:
+		case free <- b:
 		case <-m.closed:
 		}
 	}
@@ -577,34 +610,45 @@ func addrsOf(raw []byte) (src, dst netip.Addr, nextHeader byte, ok bool) {
 	}
 }
 
-// DeliverInbound injects an already-decapsulated tunnel-mode IP packet into
-// the TUN device, as if it had arrived on the wire.
+// DeliverInbound hands the mesh one already-decapsulated tunnel-mode IP packet of no session, as DeliverInboundBatch does
 // it copies raw into a frame of its own, raw staying the caller's
 // mtu is the largest packet the session it came through carries, as DeliverInboundBatch takes it
 func (m *Mesh) DeliverInbound(raw []byte, mtu int) {
 	frame := make([]byte, TUNHeadroom+len(raw))
 	copy(frame[TUNHeadroom:], raw)
-	m.DeliverInboundBatch([][]byte{frame}, mtu)
+	m.DeliverInboundBatch([][]byte{frame}, mtu, nil)
 }
 
-// DeliverInboundBatch injects a group of already-decapsulated tunnel-mode IP
-// packets. On a multiqueue TUN, packets are assigned by their inner flow to a
-// persistent writer lane. That preserves each flow's packet order and lets the
-// kernel process unrelated streams in parallel.
+// DeliverInboundBatch hands the mesh a group of already-decapsulated tunnel-mode IP packets a session delivered, in the order it delivered them
+// this node's segments act on the packets addressed to them, and the forwarding decision takes the rest
 // each frame is TUNHeadroom bytes a write to the tun may overwrite, then the packet to the frame's end
-// the frames are the mesh's from the call until a lane has written them, and the tun is handed them as they are
+// the frames are the mesh's from the call until a lane has written them or a worker has sealed them, and the tun is handed them as they are
 // mtu is the largest packet the session they came through carries, zero for packets of no session
 // a SYN that an End.DT46 of this node takes out of its outer header has its MSS clamped to it
-func (m *Mesh) DeliverInboundBatch(frames [][]byte, mtu int) {
+// from is the peer of that session, which an answer about a link-local source goes back to, nil for packets of no session
+func (m *Mesh) DeliverInboundBatch(frames [][]byte, mtu int, from *Peer) {
 	// A mesh with no device only exists in a test, where nothing should reach
 	// here: babel's own traffic is intercepted before delivery.
 	if len(frames) == 0 || m.dev == nil {
 		return
 	}
-	// A packet addressed to one of this node's own segments is acted on here
-	// rather than written to the tun, where it would arrive as an
-	// undeliverable packet addressed to an address of ours.
-	frames = m.applySegments(frames, mtu)
+	routed, granted := m.applySegments(frames, mtu)
+	m.writeHost(m.decide(routed, granted, from))
+}
+
+// writeHostPacket writes one packet to the tun, copied into a frame of its own
+func (m *Mesh) writeHostPacket(raw []byte) {
+	if m.dev == nil {
+		return
+	}
+	frame := make([]byte, TUNHeadroom+len(raw))
+	copy(frame[TUNHeadroom:], raw)
+	m.writeHost([][]byte{frame})
+}
+
+// writeHost writes frames to the tun, on a multiqueue tun each to the persistent writer lane of its inner flow
+// which keeps each flow's order and lets the kernel take unrelated flows in parallel
+func (m *Mesh) writeHost(frames [][]byte) {
 	if len(frames) == 0 {
 		return
 	}
@@ -743,7 +787,8 @@ func hashBytes(raw []byte) uint64 {
 
 // a session's delivery may run during or after Close, and touches only what outlives the mesh
 // the route table and the peers it forwards segments and answers through, a closed descriptor, which refuses the write,
-// and a lane nobody reads any more, where it leaves its entry or gives way to the closed mesh
+// a lane nobody reads any more, where it leaves its entry or gives way to the closed mesh,
+// and the forward pool, whose batch it gives back once the job queue is closing
 func (m *Mesh) Close() {
 	m.closeOnce.Do(func() {
 		close(m.closed)
@@ -752,6 +797,10 @@ func (m *Mesh) Close() {
 			_ = m.dev.Close()
 		}
 		m.outboundReaderWG.Wait()
+		// a session's delivery may still be submitting a forward batch, and one submitted after the close would panic
+		m.submitMu.Lock()
+		m.closing = true
+		m.submitMu.Unlock()
 		if m.outboundJobs != nil {
 			close(m.outboundJobs)
 		}

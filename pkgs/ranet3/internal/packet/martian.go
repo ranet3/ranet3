@@ -20,7 +20,7 @@ func InvalidSource(address netip.Addr) bool {
 // IPv6 unspecified and loopback, RFC 4291 sections 2.5.2 and 2.5.3, and link-local, section 2.5.6
 func InvalidDestination(address netip.Addr) bool {
 	if address.Is4() {
-		return special(address) && address != limitedBroadcast || address.IsLinkLocalUnicast()
+		return special(address) && address != LimitedBroadcast || address.IsLinkLocalUnicast()
 	}
 	return address.IsUnspecified() || address.IsLoopback() || address.IsLinkLocalUnicast()
 }

@@ -154,10 +154,10 @@ func TestExitClampsTheMSSOfASYNToTheSessionItArrivedThrough(t *testing.T) {
 					t.Fatal(err)
 				}
 				dev := &recordingDevice{writes: make(chan recordedWrite, 1)}
-				m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+				m := ownEverything(&Mesh{Name: "test0", closed: make(chan struct{})})
 				m.setDevice(dev)
 				m.SetSegments(table)
-				m.DeliverInboundBatch(framed(outer), mtu)
+				m.DeliverInboundBatch(framed(outer), mtu, nil)
 				want, clamps := bytes.Clone(inner), uint64(0)
 				if mtu != 0 {
 					binary.BigEndian.PutUint16(want[header+tcpHeaderLen+2:], uint16(mtu-header-tcpHeaderLen))

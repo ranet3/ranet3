@@ -159,6 +159,9 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if tun.tables {
 		c.Mesh.SetSegments(tun.segments)
 	}
+	if !sameOverlay(old, cfg) {
+		c.Mesh.SetOverlay(overlayPrefixes(cfg))
+	}
 	var tunErr error
 	switch {
 	case tun.to != tun.from:
@@ -430,6 +433,19 @@ func sameOverlay(old, next *config.Config) bool {
 		return slices.SortedFunc(slices.Values(cfg.Overlay()), schema.ComparePrefix)
 	}
 	return slices.Equal(sorted(old), sorted(next))
+}
+
+// overlayPrefixes is cap.border's overlay as the mesh's forwarding decision reads it, nil without cap.border
+func overlayPrefixes(cfg *config.Config) []netip.Prefix {
+	overlay := cfg.Overlay()
+	if overlay == nil {
+		return nil
+	}
+	out := make([]netip.Prefix, len(overlay))
+	for i, prefix := range overlay {
+		out[i] = prefix.Prefix
+	}
+	return out
 }
 
 func sortedAddrs(addrs []netip.Addr) []netip.Addr {

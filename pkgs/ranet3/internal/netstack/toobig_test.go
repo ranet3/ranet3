@@ -136,31 +136,38 @@ func readOff(tb testing.TB, raw []byte, steering *srv6.SteerTable, mtu int, sour
 func checkAnswer(tb testing.TB, answer, offending []byte, mtu int, from netip.Addr) {
 	tb.Helper()
 	if offending[0]>>4 == 6 {
-		quoted := min(len(offending), srv6.MinimumIPv6MTU-40-8)
-		if len(answer) != 40+8+quoted || answer[0]>>4 != 6 || answer[6] != 58 || int(binary.BigEndian.Uint16(answer[4:6])) != len(answer)-40 {
-			tb.Fatalf("the answer is %d bytes, next header %d, quoting what should be %d bytes", len(answer), answer[6], quoted)
-		}
-		if !bytes.Equal(answer[8:24], from.AsSlice()) || !bytes.Equal(answer[24:40], offending[8:24]) {
-			tb.Fatalf("the answer goes from %x to %x, want from %s back to the packet's source", answer[8:24], answer[24:40], from)
-		}
-		message := answer[40:]
-		if message[0] != 2 || message[1] != 0 || int(binary.BigEndian.Uint32(message[4:8])) != mtu {
-			tb.Fatalf("the answer is ICMPv6 type %d code %d carrying %d, want packet too big carrying %d", message[0], message[1], binary.BigEndian.Uint32(message[4:8]), mtu)
-		}
-		var pseudo [40]byte
-		copy(pseudo[:], answer[8:40])
-		binary.BigEndian.PutUint32(pseudo[32:], uint32(len(message)))
-		pseudo[39] = 58
-		if sum := packet.Sum(packet.Sum(0, pseudo[:]), message); sum != 0xffff {
-			tb.Fatalf("the answer sums to %#04x as its receiver adds it up", sum)
-		}
-		if !bytes.Equal(message[8:], offending[:quoted]) {
-			tb.Fatal("the answer does not quote the packet it is about")
-		}
+		checkICMPv6(tb, answer, offending, from, 2, 0, uint32(mtu))
 		return
 	}
 	// fragmentation needed, RFC 1191 section 4, carries the MTU in the low half of the word
 	checkICMPv4(tb, answer, offending, from, 3, 4, uint32(mtu))
+}
+
+// checkICMPv6 holds answer to offending, an IPv6 packet, against the ICMPv6 error of kind and code carrying rest in the word after its checksum
+// from the address from back to the packet's source, quoting as much of the packet as fits 1280 bytes, RFC 4443 section 2.4 (c)
+func checkICMPv6(tb testing.TB, answer, offending []byte, from netip.Addr, kind, code byte, rest uint32) {
+	tb.Helper()
+	quoted := min(len(offending), srv6.MinimumIPv6MTU-40-8)
+	if len(answer) != 40+8+quoted || answer[0]>>4 != 6 || answer[6] != 58 || int(binary.BigEndian.Uint16(answer[4:6])) != len(answer)-40 {
+		tb.Fatalf("the answer is %d bytes, next header %d, quoting what should be %d bytes", len(answer), answer[6], quoted)
+	}
+	if !bytes.Equal(answer[8:24], from.AsSlice()) || !bytes.Equal(answer[24:40], offending[8:24]) {
+		tb.Fatalf("the answer goes from %x to %x, want from %s back to the packet's source", answer[8:24], answer[24:40], from)
+	}
+	message := answer[40:]
+	if message[0] != kind || message[1] != code || binary.BigEndian.Uint32(message[4:8]) != rest {
+		tb.Fatalf("the answer is ICMPv6 type %d code %d carrying %#08x, want type %d code %d carrying %#08x", message[0], message[1], binary.BigEndian.Uint32(message[4:8]), kind, code, rest)
+	}
+	var pseudo [40]byte
+	copy(pseudo[:], answer[8:40])
+	binary.BigEndian.PutUint32(pseudo[32:], uint32(len(message)))
+	pseudo[39] = 58
+	if sum := packet.Sum(packet.Sum(0, pseudo[:]), message); sum != 0xffff {
+		tb.Fatalf("the answer sums to %#04x as its receiver adds it up", sum)
+	}
+	if !bytes.Equal(message[8:], offending[:quoted]) {
+		tb.Fatal("the answer does not quote the packet it is about")
+	}
 }
 
 // checkICMPv4 holds answer to offending, an IPv4 packet, against the ICMP error of kind and code carrying rest in the word after its checksum
@@ -339,7 +346,7 @@ func TestSegmentsPastTheirNextSessionAreAnsweredUnderTheCapAlone(t *testing.T) {
 		family := []int{4, 6}[i%2]
 		batch[i] = steeredThrough(t, udpPacket(tooBigSource[family], tooBigDestination[family], DefaultMTU, true), after)
 	}
-	if left := m.applySegments(framed(batch...), DefaultMTU); len(left) != 0 {
+	if left, _ := m.applySegments(framed(batch...), DefaultMTU); len(left) != 0 {
 		t.Fatalf("%d segments reached the tun", len(left))
 	}
 	answers := sender.packets(t)
@@ -452,7 +459,7 @@ func TestSegmentPastItsNextSessionIsAnsweredOnlyAboutThePacketItsHeaderNames(t *
 		}
 		outer[40] = c.next
 		// no room past its end, so a read past the tail fails rather than finds spare capacity
-		if left := m.applySegments(framed(outer), DefaultMTU); len(left) != 0 {
+		if left, _ := m.applySegments(framed(outer), DefaultMTU); len(left) != 0 {
 			t.Fatalf("%d segments reached the tun", len(left))
 		}
 		if answers, forwarded := sender.packets(t), sent.packets(t); len(answers) != 0 || len(forwarded) != 0 {

@@ -197,19 +197,20 @@ func TestTUNCoalescesFramesIntoAKernelSocket(t *testing.T) {
 	}, nil)
 	t.Cleanup(far.Close)
 	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(tunPeer6, 128), far)
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(tunAddress6.Addr(), 128), Local)
 
 	mss := binary.BigEndian.AppendUint16([]byte{optionMSS, mssLen}, groMSS)
-	m.DeliverInboundBatch(framed(stream.segment(iss, 0, synFlag, mss, nil)), DefaultMTU)
+	m.DeliverInboundBatch(framed(stream.segment(iss, 0, synFlag, mss, nil)), DefaultMTU, nil)
 	waitUntil(t, "the kernel's SYN-ACK", func() bool { _, synAck := stream.acknowledged(); return synAck })
 	stream.mu.Lock()
 	ack := stream.rcvNxt
 	stream.mu.Unlock()
-	m.DeliverInboundBatch(framed(stream.segment(iss+1, ack, ackFlag, nil, nil)), DefaultMTU)
+	m.DeliverInboundBatch(framed(stream.segment(iss+1, ack, ackFlag, nil, nil)), DefaultMTU, nil)
 
 	before := tunPackets(t, m.Name, receivedPackets)
 	for burst := range groBursts {
 		offset := burst * groSegments * groMSS
-		m.DeliverInboundBatch(stream.burst(iss+1, ack, offset), DefaultMTU)
+		m.DeliverInboundBatch(stream.burst(iss+1, ack, offset), DefaultMTU, nil)
 		want := uint32(iss + 1 + offset + groSegments*groMSS)
 		waitUntil(t, fmt.Sprintf("burst %d to be acknowledged", burst), func() bool { got, _ := stream.acknowledged(); return got == want })
 	}

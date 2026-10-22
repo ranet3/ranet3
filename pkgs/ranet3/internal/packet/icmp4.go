@@ -35,8 +35,8 @@ const (
 	typeOfService = 0x1e
 )
 
-// limitedBroadcast is { -1, -1 } of RFC 1812 section 4.2.2.11
-var limitedBroadcast = netip.AddrFrom4([4]byte{255, 255, 255, 255})
+// LimitedBroadcast is { -1, -1 } of RFC 1812 section 4.2.2.11, which no router forwards, section 5.3.5.1
+var LimitedBroadcast = netip.AddrFrom4([4]byte{255, 255, 255, 255})
 
 // TimeExceeded answers an IPv4 packet whose TTL ran out in transit, RFC 1812 section 5.3.1, from source with ttl, and allow is icmpError's
 func TimeExceeded(offending []byte, source netip.Addr, ttl uint8, allow func() bool) []byte {
@@ -110,7 +110,7 @@ func answerable(offending []byte) bool {
 		return false
 	}
 	destination := netip.AddrFrom4([4]byte(offending[16:20]))
-	if !SingleHost(netip.AddrFrom4([4]byte(offending[12:16]))) || destination.IsMulticast() || destination == limitedBroadcast {
+	if !SingleHost(netip.AddrFrom4([4]byte(offending[12:16]))) || destination.IsMulticast() || destination == LimitedBroadcast {
 		return false
 	}
 	headerLen := int(offending[0]&0x0f) * 4

@@ -528,7 +528,7 @@ func TestWaypointDropsASegmentTheTableAnswersHeldOrLocal(t *testing.T) {
 		m, _ := waypointOf(t, after, session)
 		m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1:69c:98d6::/64"), session)
 		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(after, 128), value)
-		left := m.applySegments(framed(steeredThrough(t, udpPacket(tooBigSource[6], tooBigDestination[6], 200, false), after)), DefaultMTU)
+		left, _ := m.applySegments(framed(steeredThrough(t, udpPacket(tooBigSource[6], tooBigDestination[6], 200, false), after)), DefaultMTU)
 		if len(left) != 0 {
 			t.Fatalf("a segment whose next one is %s reached the tun", value.ID)
 		}

@@ -147,10 +147,10 @@ func (d *heldDevice) Write(bufs [][]byte, _ int) (int, error) {
 func TestCloseWaitsForInboundWriters(t *testing.T) {
 	dev := &heldDevice{entered: make(chan struct{}, 2), release: make(chan struct{})}
 	// two lanes, so the writers run, both on the one device so either lane is held
-	m := &Mesh{closed: make(chan struct{})}
+	m := ownEverything(&Mesh{closed: make(chan struct{})})
 	m.setDevice(lanesOf(dev, dev))
 	m.startInboundWriters()
-	m.DeliverInboundBatch(framed(ipv6TCPPacket(40000, 5201, 1)), DefaultMTU)
+	m.DeliverInboundBatch(framed(ipv6TCPPacket(40000, 5201, 1)), DefaultMTU, nil)
 	select {
 	case <-dev.entered:
 	case <-time.After(deliveryTimeout):
@@ -224,14 +224,14 @@ func TestDeliveriesRacingCloseAllReturn(t *testing.T) {
 			for i := range devs {
 				devs[i] = dev
 			}
-			m := &Mesh{closed: make(chan struct{})}
+			m := ownEverything(&Mesh{closed: make(chan struct{})})
 			m.setDevice(lanesOf(devs...))
 			m.startInboundWriters()
 			var delivering sync.WaitGroup
 			for session := range sessions {
 				delivering.Go(func() {
 					for i := range deliveries {
-						m.DeliverInboundBatch(framed(ipv6TCPPacket(uint16(40000+session), uint16(i), 1)), DefaultMTU)
+						m.DeliverInboundBatch(framed(ipv6TCPPacket(uint16(40000+session), uint16(i), 1)), DefaultMTU, nil)
 					}
 				})
 			}
@@ -266,7 +266,7 @@ func TestSingleQueueInboundSplitsLargeBatches(t *testing.T) {
 	for i := range packets {
 		packets[i] = []byte{byte(i)}
 	}
-	m.DeliverInboundBatch(framed(packets...), DefaultMTU)
+	m.writeHost(framed(packets...))
 	if len(dev.writes) != 2 {
 		t.Fatalf("got %d TUN writes, want two bounded batches", len(dev.writes))
 	}

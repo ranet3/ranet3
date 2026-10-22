@@ -155,6 +155,11 @@ func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 			held := lab.node.Mesh.Segments()
 			lab.node.Mesh.SetSegments(table)
 			defer lab.node.Mesh.SetSegments(held)
+			// the inner packet's destination is an address of the owner's host, as one cap.table assigns, so its mesh writes it to the tun
+			// and the reconciler writes nothing for it into the kernel
+			owned := netip.PrefixFrom(labExit4.Addr(), 32)
+			lab.node.Mesh.Routes.Set(netip.Prefix{}, owned, netstack.Assigned)
+			defer lab.node.Mesh.Routes.Remove(netip.Prefix{}, owned)
 			var listener *net.UDPConn
 			if err := lab.exit.do(func() (err error) {
 				listener, err = net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(labExit4.Addr(), labPort)))
@@ -402,8 +407,15 @@ func startBorderLab(t *testing.T, master string) *borderLab {
 // written sends a packet of each family from a leaf's address through the
 // mesh into the tun, as a session would deliver it, and reads it at the far
 // host: the border accepts the tun, and in a VRF the master
+// the mesh writes a packet to the tun only for a destination it holds as this node's
+// so the far host's addresses are held as addresses cap.table assigns, which the reconciler leaves out of the kernel
 func (lab *borderLab) written(t *testing.T) {
 	t.Helper()
+	for _, far := range []netip.Addr{labFar4.Addr(), labFar6.Addr()} {
+		host := netip.PrefixFrom(far, far.BitLen())
+		lab.node.Mesh.Routes.Set(netip.Prefix{}, host, netstack.Assigned)
+		t.Cleanup(func() { lab.node.Mesh.Routes.Remove(netip.Prefix{}, host) })
+	}
 	for i, arm := range []struct{ leaf, far netip.Addr }{{labLeaf4, labFar4.Addr()}, {labHeadend, labFar6.Addr()}} {
 		t.Run("a mesh source written into the tun from "+arm.leaf.String(), func(t *testing.T) {
 			payload := []byte("written into the tun from " + arm.leaf.String())

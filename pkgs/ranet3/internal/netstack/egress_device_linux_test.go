@@ -146,7 +146,7 @@ func TestTUNEgressDeviceTakesIPv6WhereTheHostTurnsItOffForNewLinks(t *testing.T)
 
 	received, discarded := ipv6DeviceStat(t, name, "Ip6InReceives"), ipv6DeviceStat(t, name, "Ip6InDiscards")
 	inner := udpPacket(netip.MustParseAddr("3fff:1:69c:1::5"), netip.MustParseAddr("2001:db8:1::1"), 40+8+16, false)
-	m.DeliverInboundBatch(framed(steered(t, inner, headend, egressExit)), DefaultMTU)
+	m.DeliverInboundBatch(framed(steered(t, inner, headend, egressExit)), DefaultMTU, nil)
 	waitUntil(t, "the kernel to receive the steered IPv6 packet on the egress device", func() bool {
 		return ipv6DeviceStat(t, name, "Ip6InReceives") > received
 	})

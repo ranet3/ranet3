@@ -4,7 +4,10 @@
 package netstack
 
 import (
+	"encoding/binary"
 	"log/slog"
+	"math"
+	"math/bits"
 	"net/netip"
 	"slices"
 	"sync"
@@ -22,8 +25,11 @@ const (
 	icmpRaceDraws   = 200
 )
 
-// capSpentWait is how long decidedUnderLock waits for draws on a spent cap while it holds the limit's lock
+// capSpentWait is how long decidedUnderLock waits for draws on a spent cap while it holds every shard's lock
 const capSpentWait = 5 * time.Second
+
+// warmDrawRuns is how many times TestWarmDrawAllocatesNothing makes its draws
+const warmDrawRuns = 100
 
 // freshSource is the i-th of a run of addresses no other test draws from, IPv6 for an even i and IPv4 for an odd one
 func freshSource(i int) netip.Addr {
@@ -31,6 +37,38 @@ func freshSource(i int) netip.Addr {
 		return netip.AddrFrom4([4]byte{10, 200, byte(i >> 9), byte(i >> 1)})
 	}
 	return netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 0xff, 12: byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)})
+}
+
+// icmpShardOf is the shard the table's rule puts source in, of 64
+// the two halves of its 16-byte form, each XORed with its word of the seed, multiply into 128 bits, and the top bits of their halves' XOR pick the shard
+func icmpShardOf(source netip.Addr) int {
+	address := source.As16()
+	hi, lo := bits.Mul64(binary.BigEndian.Uint64(address[:8])^icmpSeed[0], binary.BigEndian.Uint64(address[8:])^icmpSeed[1])
+	return int((hi ^ lo) >> 58)
+}
+
+// sourcesOfShard is the first count fresh sources from the from-th on that lie in shard
+func sourcesOfShard(shard, from, count int) []netip.Addr {
+	var out []netip.Addr
+	for i := from; len(out) < count; i++ {
+		if source := freshSource(i); icmpShardOf(source) == shard {
+			out = append(out, source)
+		}
+	}
+	return out
+}
+
+// held is how many sources the limit's shards hold, failing unless each shard's order lists as many as its map
+func held(tb testing.TB, l *icmpLimit) int {
+	tb.Helper()
+	total := 0
+	for i := range l.shards {
+		if got, listed := len(l.shards[i].sources), l.shards[i].order.Len(); got != listed {
+			tb.Fatalf("shard %d holds %d sources in a list of %d", i, got, listed)
+		}
+		total += len(l.shards[i].sources)
+	}
+	return total
 }
 
 // decided is how many of a run of answers the limit let out and how many each of its limits withheld
@@ -55,7 +93,9 @@ func draws(l *icmpLimit, now time.Duration, source netip.Addr, count int) decide
 // capHolding leaves the node's cap of m holding left answers, which it earns no more of for an hour of the mesh's clock
 // a draw before the cap's last draw is judged as of that one
 func capHolding(m *Mesh, left int) {
-	m.icmpLimit.node = icmpBucket{spent: (icmpNodeBurst - int64(left)) * int64(icmpNodeCost), last: int64(time.Since(m.segmentsStarted) + time.Hour)}
+	last := int64(time.Since(m.segmentsStarted) + time.Hour)
+	m.icmpLimit.node.last.Store(last)
+	m.icmpLimit.node.full.Store(last + (icmpNodeBurst-int64(left))*int64(icmpNodeCost))
 }
 
 // untouched fails unless the limit of m was never drawn from and counted nothing withheld
@@ -64,8 +104,8 @@ func untouched(tb testing.TB, m *Mesh) {
 	if source, node := m.ICMPWithheld(); source != 0 || node != 0 {
 		tb.Errorf("the limits withheld %d answers by source and %d by the node's cap, want none", source, node)
 	}
-	if m.icmpLimit.node != (icmpBucket{}) || len(m.icmpLimit.sources) != 0 {
-		tb.Errorf("the cap spent %d nanoseconds of its burst and the table holds %d sources, want the limit untouched", m.icmpLimit.node.spent, len(m.icmpLimit.sources))
+	if full, sources := m.icmpLimit.node.full.Load(), held(tb, &m.icmpLimit); full != 0 || m.icmpLimit.node.last.Load() != 0 || sources != 0 {
+		tb.Errorf("the cap is full again at %d and the table holds %d sources, want the limit untouched", full, sources)
 	}
 }
 
@@ -137,7 +177,6 @@ func TestNodeCapBoundsEveryAnswer(t *testing.T) {
 	if got := draws(&l, 0, netip.Addr{}, 9995); got.allowed != 9995 {
 		t.Fatalf("the cap let %d of the 9995 too-big answers left of its burst out, want every one", got.allowed)
 	}
-	// kept asks first, so its answer is the one the cap withholds under the lock, before a draw can find the cap spent without it
 	for _, source := range []netip.Addr{kept, freshSource(0), {}} {
 		if got := l.take(0, source); got != icmpByNode {
 			t.Errorf("answer 10001, to %s, was decided %d, want withheld by the cap", source, got)
@@ -172,12 +211,14 @@ type heldDraw struct {
 	source netip.Addr
 }
 
-// decidedUnderLock makes the draws in turn on another goroutine while this one holds the limit's lock, and returns what each was decided
-// a draw the early-out does not withhold waits for the lock, so draws still waiting after capSpentWait fail the test
+// decidedUnderLock makes the draws in turn on another goroutine while this one holds every shard's lock, and returns what each was decided
+// a draw the cap does not withhold first waits for its shard's lock, so draws still waiting after capSpentWait fail the test
 func decidedUnderLock(t *testing.T, l *icmpLimit, held ...heldDraw) []icmpVerdict {
 	t.Helper()
 	returned := make(chan []icmpVerdict, 1)
-	l.mu.Lock()
+	for i := range l.shards {
+		l.shards[i].mu.Lock()
+	}
 	go func() {
 		got := make([]icmpVerdict, 0, len(held))
 		for _, d := range held {
@@ -192,15 +233,17 @@ func decidedUnderLock(t *testing.T, l *icmpLimit, held ...heldDraw) []icmpVerdic
 	case <-time.After(capSpentWait):
 		waited = true
 	}
-	l.mu.Unlock()
+	for i := range l.shards {
+		l.shards[i].mu.Unlock()
+	}
 	if waited {
 		got = <-returned
-		t.Errorf("draws on a spent cap were still waiting for the limit's lock after %s", capSpentWait)
+		t.Errorf("draws on a spent cap were still waiting for a shard's lock after %s", capSpentWait)
 	}
 	return got
 }
 
-// once the cap has withheld an answer, a draw of either kind before it earns its next token comes back withheld by it while another goroutine holds the limit's lock
+// once the cap is spent, a draw of either kind before it earns its next token comes back withheld by it while another goroutine holds every shard's lock
 // and a draw at the instant it earns that token lets one answer out
 func TestSpentCapWithholdsWithoutTheLock(t *testing.T) {
 	var l icmpLimit
@@ -216,15 +259,15 @@ func TestSpentCapWithholdsWithoutTheLock(t *testing.T) {
 	}
 }
 
-// a withheld draw whose clock reading trails the cap's last draw publishes the instant the cap next holds a token, not one taken from its own reading
-// so a draw at the cap's last instant, before that token, is withheld without the lock as one after a leading draw is
-func TestTrailingDrawPublishesTheCapsNextToken(t *testing.T) {
+// a draw on a spent cap whose clock reading trails the cap's last answer is judged as of that answer, not its own reading
+// so a draw at the cap's last instant, before its next token, is withheld without the lock as one after a leading draw is
+func TestTrailingDrawOnASpentCapIsJudgedAsOfItsLastAnswer(t *testing.T) {
 	var l icmpLimit
 	at, cost := time.Hour, icmpNodeCost
 	if got := draws(&l, at, netip.Addr{}, icmpNodeBurst); got != (decided{allowed: icmpNodeBurst}) {
 		t.Fatalf("of the cap's burst %+v, want every answer let out", got)
 	}
-	// the last token went at at, and a draw that read the clock 10 tokens' time earlier reaches the lock only now
+	// the last token went at at, and a draw that read the clock 10 tokens' time earlier reaches the cap only now
 	if got := l.take(int64(at-10*cost), netip.Addr{}); got != icmpByNode {
 		t.Fatalf("the trailing draw on a spent cap was decided %d, want withheld by the cap", got)
 	}
@@ -233,29 +276,33 @@ func TestTrailingDrawPublishesTheCapsNextToken(t *testing.T) {
 	}
 }
 
-// every withheld draw reads spentUntil and segmentsStarted and adds to withheldBySource or withheldByNode
-// 56 bytes no other field takes lie on each side of spentUntil and of each count, a 64-byte line less the 8 bytes a word is aligned to
-// so none of them shares a line with another field wherever the allocator puts the Mesh
-func TestWithheldCountsSitOnLinesOfTheirOwn(t *testing.T) {
+// every draw reads the cap and writes its shard, its lock, its table and its counts
+// 120 bytes no other field takes lie on each side of the cap and after each shard's fields, a 128-byte line less the 8 bytes a word is aligned to
+// so the cap shares no line of 64 or 128 bytes with a shard or another field, and no shard one with another, wherever the allocator puts the Mesh
+func TestCapAndShardsSitOnLinesOfTheirOwn(t *testing.T) {
 	var c segmentCounters
+	var s icmpShard
 	limit := unsafe.Offsetof(c.icmpLimit)
-	spent := limit + unsafe.Offsetof(c.icmpLimit.spentUntil)
+	node := limit + unsafe.Offsetof(c.icmpLimit.node)
+	shards := limit + unsafe.Offsetof(c.icmpLimit.shards)
+	used := unsafe.Offsetof(s.withheld) + unsafe.Sizeof(s.withheld)
+	last := shards + (icmpShards-1)*unsafe.Sizeof(s)
 	for _, gap := range []struct {
 		before, after string
 		end, start    uintptr
 	}{
-		{"the limit's list", "spentUntil", limit + unsafe.Offsetof(c.icmpLimit.order) + unsafe.Sizeof(c.icmpLimit.order), spent},
-		{"spentUntil", "withheldBySource", spent + unsafe.Sizeof(c.icmpLimit.spentUntil), unsafe.Offsetof(c.withheldBySource)},
-		{"withheldBySource", "withheldByNode", unsafe.Offsetof(c.withheldBySource) + unsafe.Sizeof(c.withheldBySource), unsafe.Offsetof(c.withheldByNode)},
-		{"withheldByNode", "segmentsStarted", unsafe.Offsetof(c.withheldByNode) + unsafe.Sizeof(c.withheldByNode), unsafe.Offsetof(c.segmentsStarted)},
+		{"segmentsDrained", "the cap", unsafe.Offsetof(c.segmentsDrained) + unsafe.Sizeof(c.segmentsDrained), node},
+		{"the cap", "the first shard", node + unsafe.Sizeof(c.icmpLimit.node), shards},
+		{"a shard's counts", "the next shard", shards + used, shards + unsafe.Sizeof(s)},
+		{"the last shard's counts", "withheldBySource", last + used, unsafe.Offsetof(c.withheldBySource)},
 	} {
-		if gap.start < gap.end+56 {
-			t.Errorf("%d bytes lie between %s and %s, want 56 or more", gap.start-gap.end, gap.before, gap.after)
+		if gap.start < gap.end+120 {
+			t.Errorf("%d bytes lie between %s and %s, want 120 or more", gap.start-gap.end, gap.before, gap.after)
 		}
 	}
 }
 
-// draws from many goroutines at one instant let the cap's burst out and no more, whether a draw takes the lock or meets the spent cap without it
+// draws from many goroutines at one instant let the cap's burst out and no more, whether a draw spends the cap or meets it spent
 func TestCapLetsItsBurstOutToConcurrentDraws(t *testing.T) {
 	const goroutines, each = 16, 1000
 	var l icmpLimit
@@ -279,39 +326,151 @@ func TestCapLetsItsBurstOutToConcurrentDraws(t *testing.T) {
 	}
 }
 
-// the table holds at most 4096 sources and gives the place of the one that drew least recently, which returns full like a new one
-// a source that drew since keeps its place and what it spent
-func TestICMPLimitTableEvictsTheLeastRecentSource(t *testing.T) {
+// at a reading near the end of the clock, as a mesh with no segmentsStarted reads, the cap lets its burst out at one instant and no more
+// so neither its check nor its spend carries a sum past the end
+func TestCapHoldsItsBurstAtTheClocksEnd(t *testing.T) {
 	var l icmpLimit
-	for i := range 4096 {
-		draws(&l, 0, freshSource(i), 1)
+	end := time.Duration(math.MaxInt64)
+	if got := draws(&l, end, netip.Addr{}, icmpNodeBurst+1); got.allowed != icmpNodeBurst || got.byNode != 1 {
+		t.Errorf("of %d draws at the clock's end %d were let out and %d withheld by the cap, want %d and 1", icmpNodeBurst+1, got.allowed, got.byNode, icmpNodeBurst)
 	}
-	draws(&l, 0, freshSource(0), 1)
-	draws(&l, 0, freshSource(4096), 1)
-	if got := len(l.sources); got != 4096 || l.order.Len() != 4096 {
-		t.Fatalf("the table holds %d sources in a list of %d, want 4096", got, l.order.Len())
+}
+
+// emitters drawing at one instant, each for sources of its own and for too-big answers, let out the cap's burst and not one more
+// every draw is let out or withheld once, and ICMPWithheld sums what each limit withheld over every shard
+// a source's bucket has spent its answers let out and nothing more, and one whose every draw the cap withheld is not in the table
+// since a draw the cap withholds spends nothing of its source and leaves the table as it found it
+func TestConcurrentDrawsKeepTheCapExactAndTheBucketsTheirOwn(t *testing.T) {
+	const emitters, sourcesEach, drawsEach, tooBigEach = 16, 64, 10, 500
+	type tally struct{ allowed, bySource, byNode int }
+	m := &Mesh{Routes: NewRouteTable()}
+	at := int64(time.Hour)
+	tallies := make([][sourcesEach]tally, emitters)
+	tooBig := make([]tally, emitters)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for e := range emitters {
+		wg.Go(func() {
+			<-start
+			count := func(t *tally, verdict icmpVerdict) {
+				switch verdict {
+				case icmpAllowed:
+					t.allowed++
+				case icmpBySource:
+					t.bySource++
+				case icmpByNode:
+					t.byNode++
+				}
+			}
+			for step := range drawsEach * sourcesEach {
+				k := step % sourcesEach
+				count(&tallies[e][k], m.icmpLimit.take(at, freshSource(e*sourcesEach+k)))
+				if step < tooBigEach {
+					count(&tooBig[e], m.icmpLimit.take(at, netip.Addr{}))
+				}
+			}
+		})
 	}
-	if _, ok := l.sources[freshSource(1)]; ok {
-		t.Fatal("the table kept the source that drew least recently")
-	}
-	for _, c := range []struct {
-		source int
-		left   int
-	}{
-		{2, 5},
-		{0, 4},
-		{4096, 5},
-		{1, 6},
-	} {
-		if got := draws(&l, 0, freshSource(c.source), 7); got.allowed != c.left {
-			t.Errorf("source %d drew %d answers, want %d", c.source, got.allowed, c.left)
+	close(start)
+	wg.Wait()
+	var allowed, bySource, byNode int
+	for e := range emitters {
+		allowed, byNode = allowed+tooBig[e].allowed, byNode+tooBig[e].byNode
+		for k, got := range tallies[e] {
+			source := freshSource(e*sourcesEach + k)
+			allowed, bySource, byNode = allowed+got.allowed, bySource+got.bySource, byNode+got.byNode
+			if got.allowed+got.bySource+got.byNode != drawsEach || got.allowed > icmpSourceBurst || got.bySource > 0 && got.allowed != icmpSourceBurst {
+				t.Errorf("%s drew %+v of %d answers, want at most %d let out and its bucket withholding only once they were", source, got, drawsEach, icmpSourceBurst)
+			}
+			interval := int64(icmpSourceInterval6)
+			if source.Is4() {
+				interval = int64(icmpSourceInterval4)
+			}
+			element := m.icmpLimit.shard(source).sources[source]
+			switch {
+			case got.allowed+got.bySource == 0 && element != nil:
+				t.Errorf("%s is in the table, though the cap withheld its every draw", source)
+			case got.allowed+got.bySource != 0 && element == nil:
+				t.Errorf("%s is not in the table after %d draws its bucket decided", source, got.allowed+got.bySource)
+			case element != nil:
+				if spent := element.Value.(*icmpSource).bucket.spent; spent != int64(got.allowed)*interval {
+					t.Errorf("%s's bucket spent %d nanoseconds for %d answers let out, want %d", source, spent, got.allowed, int64(got.allowed)*interval)
+				}
+			}
 		}
 	}
-	for i := 4097; i < 4097+5000; i++ {
+	if allowed != icmpNodeBurst {
+		t.Errorf("%d answers went out at one instant, want the cap's %d", allowed, icmpNodeBurst)
+	}
+	if source, node := m.ICMPWithheld(); source != uint64(bySource) || node != uint64(byNode) {
+		t.Errorf("ICMPWithheld reads %d by source and %d by the cap, want the %d and %d the draws were decided", source, node, bySource, byNode)
+	}
+}
+
+// a draw on a warm table, for a source it holds or for a too-big answer, let out or withheld, allocates nothing
+func TestWarmDrawAllocatesNothing(t *testing.T) {
+	var l icmpLimit
+	v4, v6 := freshSource(1), freshSource(2)
+	draws(&l, 0, v4, 1)
+	draws(&l, 0, v6, 1)
+	now := time.Duration(0)
+	if allocs := testing.AllocsPerRun(warmDrawRuns, func() {
+		now += time.Microsecond
+		draws(&l, now, v4, 3)
+		draws(&l, now, v6, 3)
+		draws(&l, now, netip.Addr{}, 1)
+	}); allocs != 0 {
+		t.Errorf("a run of draws on a warm table allocated %.1f times, want none", allocs)
+	}
+}
+
+// each shard holds at most its share of the sources, 96, and gives the place of its own source that drew least recently, which returns full like a new one
+// a source that drew since keeps its place and what it spent, and a source of another shard keeps its place however long ago it drew
+func TestICMPLimitShardEvictsItsLeastRecentSource(t *testing.T) {
+	const share = 96
+	var l icmpLimit
+	first := freshSource(0)
+	in := sourcesOfShard((icmpShardOf(first)+1)%64, 1, share+1)
+	shard := l.shard(in[0])
+	draws(&l, 0, first, 1)
+	for _, source := range in[:share] {
+		draws(&l, 0, source, 1)
+	}
+	draws(&l, 0, in[0], 1)
+	draws(&l, 0, in[share], 1)
+	if got := len(shard.sources); got != share || shard.order.Len() != share {
+		t.Fatalf("the shard holds %d sources in a list of %d, want %d", got, shard.order.Len(), share)
+	}
+	if _, ok := shard.sources[in[1]]; ok {
+		t.Fatal("the shard kept its source that drew least recently")
+	}
+	if _, ok := l.shard(first).sources[first]; !ok {
+		t.Fatal("a source of another shard gave its place to one of a full shard")
+	}
+	for _, c := range []struct {
+		source netip.Addr
+		left   int
+	}{
+		{in[2], 5},
+		{in[0], 4},
+		{in[share], 5},
+		{in[1], 6},
+		{first, 5},
+	} {
+		if got := draws(&l, 0, c.source, 7); got.allowed != c.left {
+			t.Errorf("%s drew %d answers, want %d", c.source, got.allowed, c.left)
+		}
+	}
+	for i := share + 1; i < share+1+5000; i++ {
 		draws(&l, time.Nanosecond, freshSource(i), 1)
 	}
-	if got := len(l.sources); got != 4096 || l.order.Len() != 4096 {
-		t.Errorf("the table holds %d sources in a list of %d after 5000 more, want 4096", got, l.order.Len())
+	for i := range l.shards {
+		if got := len(l.shards[i].sources); got > share {
+			t.Errorf("shard %d holds %d sources after 5000 more, want %d at most", i, got, share)
+		}
+	}
+	if got := held(t, &l); got > icmpSources {
+		t.Errorf("the table holds %d sources, want %d at most", got, icmpSources)
 	}
 }
 

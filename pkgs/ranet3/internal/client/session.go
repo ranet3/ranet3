@@ -124,7 +124,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 			c.noteInboundDropped(sessionName, dropped, lastError)
 		}
 		c.countInbound(len(results) - dropped)
-		c.Mesh.DeliverInboundBatch(frames, mtu)
+		c.Mesh.DeliverInboundBatch(frames, mtu, peer)
 		clear(frames)
 	}
 	results := make(chan sessionResult, 2)

@@ -112,7 +112,7 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 		if present {
 			m.SetEgress(dev)
 		}
-		m.DeliverInboundBatch(framed(frames...), DefaultMTU)
+		m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
 
 		reached := make([][]segmentPlace, len(kinds))
 		order := map[segmentPlace][]int{}

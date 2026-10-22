@@ -47,7 +47,7 @@ const (
 // a read needs none, the device laying out the slab it reads into
 const TUNHeadroom = 16
 
-// reportInterval is the least time between two reports of one reportedCount, a read cut short, a frame the device refused or an ICMP error a limit withheld
+// reportInterval is the least time between two reports of one reportedCount, a read cut short, a frame the device refused, an ICMP error a limit withheld or a packet the forwarding decision dropped
 // the counter keeps the exact count, and the report only has to point at it
 const reportInterval = 30 * time.Second
 
@@ -115,15 +115,19 @@ const segmentDropInterval = 30 * time.Second
 // it keeps a device that fails every read from spinning a core
 const egressDrainRetry = 100 * time.Millisecond
 
-// the intervals, the burst and the cap of the ICMP error limits are the Linux kernel's defaults, and the bound on the sources held is this node's own
+// the intervals, the burst and the cap of the ICMP error limits are the Linux kernel's defaults, and the bound on the sources held and their shards are this node's own
 const (
 	// icmpSourceInterval4 and icmpSourceInterval6 are the cost of one answer to a source's bucket, net.ipv4.icmp_ratelimit and net.ipv6.icmp.ratelimit
 	icmpSourceInterval4 = time.Second
 	icmpSourceInterval6 = 100 * time.Millisecond
 	// icmpSourceBurst is the answers a full source's bucket holds, XRLIM_BURST_FACTOR
 	icmpSourceBurst = 6
-	// icmpSources is the most sources the limit holds a bucket for
-	icmpSources = 4096
+	// icmpSources is the most sources the limit holds a bucket for, 96 in each shard
+	// 4096 sources at random put about 64 in a shard with a deviation of 8, and up to about 88 in the fullest of 64
+	// so a shard of 96 holds them all, and its first eviction comes near 4800, where a shard of 64 began evicting near 3000
+	icmpSources = 6144
+	// icmpShards is how many shards the sources lie in, more than the emitters drawing at once so draws for distinct sources rarely wait on one lock
+	icmpShards = 64
 	// icmpNodeRate and icmpNodeBurst are the cap over every answer, icmp_msgs_per_sec and icmp_msgs_burst
 	icmpNodeRate  = 10000
 	icmpNodeBurst = 10000
@@ -131,6 +135,7 @@ const (
 	icmpNodeCost = time.Second / icmpNodeRate
 )
 
-// linePad is the padding on each side of spentUntil and of each withheld count, a 64-byte cache line less the 8 bytes a word is aligned to
-// so none of them shares a line with another field wherever the allocator puts the Mesh, since every withheld draw reads spentUntil and adds to a count
-const linePad = 64 - 8
+// linePad is the padding on each side of the ICMP limit's cap and after each of its shards, 128 bytes less the 8 bytes a word is aligned to
+// 128 bytes are a cache line of Apple's M-series and the pair of 64-byte lines Intel's adjacent-line prefetcher fetches together
+// so neither shares a line with another field on any target, wherever the allocator puts the Mesh, since every draw reads the cap and writes its shard
+const linePad = 128 - 8

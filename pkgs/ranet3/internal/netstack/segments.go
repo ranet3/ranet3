@@ -137,25 +137,36 @@ func (m *Mesh) SegmentCounters() SegmentCounters {
 	}
 }
 
-// applySegments takes the frames whose packets are addressed to this node's
-// own segments out of an inbound batch, acts on each, and returns the frames
-// left to be written to the tun.
-// a packet an exit takes out of its outer header leaves in the tail of its own frame, the end of the header it lost being its headroom
+// applySegments takes the frames whose packets are addressed to this node's own segments out of an inbound batch and acts on each
+// it returns the frames left for the forwarding decision
+// a packet an End.DT46 delivering to the mesh takes out of its outer header leaves in the tail of its own frame, the end of the header it lost being its headroom
+// granted marks those frames among the ones returned, nil where there are none, since configuring the segment grants what arrives on it transit
 // mtu is the largest packet the session the batch came through carries
 // a SYN an End.DT46 delivers or egresses has its MSS clamped to it here, since the session's clamp saw only the outer header
-func (m *Mesh) applySegments(frames [][]byte, mtu int) [][]byte {
+func (m *Mesh) applySegments(frames [][]byte, mtu int) (routed [][]byte, granted []bool) {
 	table := m.segmentTable.Load()
 	if table == nil {
-		return frames
+		return frames, nil
 	}
 	return m.actOnSegments(frames, mtu, func(packet []byte) srv6.Result { return actLocally(table, packet) })
 }
 
-func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Result) [][]byte {
-	var deliver, egress [][]byte
+func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Result) ([][]byte, []bool) {
+	var routed, egress [][]byte
+	var granted []bool
 	take := func(i int) {
-		if deliver == nil {
-			deliver = append(make([][]byte, 0, len(frames)), frames[:i]...)
+		if routed == nil {
+			routed = append(make([][]byte, 0, len(frames)), frames[:i]...)
+		}
+	}
+	// keep adds frame to routed, and to granted where it is an End.DT46's inner packet or granted already holds one
+	keep := func(frame []byte, inner bool) {
+		if inner && granted == nil {
+			granted = make([]bool, len(routed), cap(routed))
+		}
+		routed = append(routed, frame)
+		if granted != nil {
+			granted = append(granted, inner)
 		}
 	}
 	var forward []forwardedSegment
@@ -166,15 +177,15 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 		result := act(packet)
 		switch result.Action {
 		case srv6.ActionPass:
-			if deliver != nil {
-				deliver = append(deliver, frame)
+			if routed != nil {
+				keep(frame, false)
 			}
 		case srv6.ActionDeliver:
 			take(i)
 			m.segmentsDelivered.Add(1)
 			m.ClampMSS(result.Inner, mtu)
 			// Decap hands back the tail of the packet it was given, behind at least the fixed header
-			deliver = append(deliver, frame[len(frame)-TUNHeadroom-len(result.Inner):])
+			keep(frame[len(frame)-TUNHeadroom-len(result.Inner):], true)
 		case srv6.ActionEgress:
 			take(i)
 			if !readyRead {
@@ -205,10 +216,10 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 	}
 	m.forwardSegments(forward)
 	m.writeEgress(egress)
-	if deliver == nil {
-		return frames
+	if routed == nil {
+		return frames, nil
 	}
-	return deliver
+	return routed, granted
 }
 
 // actLocally runs this node's own segments until the packet is going somewhere
@@ -453,8 +464,17 @@ func (m *Mesh) source4(inner []byte, end bool) netip.Addr {
 // TooBigAnswered is how many answers with packet too big or fragmentation needed to packets past their session's budget this node sent
 func (m *Mesh) TooBigAnswered() uint64 { return m.tooBigAnswered.Load() }
 
-// sendBack sends an ICMP error to the source of the packet it answers, through the peer its own addresses route to
+// sendBack sends an ICMP error about a segment to the source of the packet it answers, as sendAnswer does, and counts it answered
 func (m *Mesh) sendBack(answer []byte) bool {
+	if !m.sendAnswer(answer) {
+		return false
+	}
+	m.segmentsAnswered.Add(1)
+	return true
+}
+
+// sendAnswer sends an ICMP error to the source of the packet it answers, through the peer its own addresses route to
+func (m *Mesh) sendAnswer(answer []byte) bool {
 	source, destination, nextHeader, ok := addrsOf(answer)
 	if !ok {
 		return false
@@ -463,16 +483,20 @@ func (m *Mesh) sendBack(answer []byte) bool {
 	if verdict != RoutePeer || peer == nil {
 		return false
 	}
-	batch := peer.reserveBatchNow(1, len(answer))
+	return m.sendThrough(peer, answer, nextHeader)
+}
+
+// sendThrough sends one packet under nextHeader through peer, sealed on the caller's goroutine, and drops it where peer's budget has no room
+func (m *Mesh) sendThrough(peer *Peer, raw []byte, nextHeader byte) bool {
+	batch := peer.reserveBatchNow(1, len(raw))
 	if batch == nil {
 		return false
 	}
-	batch.append(answer, nextHeader)
+	batch.append(raw, nextHeader)
 	if err := batch.enqueue(); err != nil {
 		m.reportSegmentDrop("the transport lost an icmp error", "err", err)
 		return false
 	}
-	m.segmentsAnswered.Add(1)
 	return true
 }
 
@@ -480,25 +504,29 @@ func (m *Mesh) sendBack(answer []byte) bool {
 // sender is the zero Addr for packet too big and fragmentation needed, which only the node's cap holds back
 func (m *Mesh) takeICMPToken(sender netip.Addr) bool {
 	now := int64(time.Since(m.segmentsStarted))
-	var count *reportedCount
+	verdict := m.icmpLimit.take(now, sender)
+	var report *reportedCount
 	var limit string
-	switch m.icmpLimit.take(now, sender) {
+	switch verdict {
 	case icmpBySource:
-		count, limit = &m.withheldBySource, "source"
+		report, limit = &m.withheldBySource, "source"
 	case icmpByNode:
-		count, limit = &m.withheldByNode, "node"
+		report, limit = &m.withheldByNode, "node"
 	default:
 		return true
 	}
-	if withheld, report := count.add(now); report && m.events != nil {
-		m.events("netstack.icmp.withheld", "", slog.String("interface", m.Name), slog.String("limit", limit), slog.Uint64("withheld", withheld))
+	if report.claim(now, report.next.Load()) {
+		withheld := report.since(m.icmpLimit.withheld(verdict))
+		if m.events != nil {
+			m.events("netstack.icmp.withheld", "", slog.String("interface", m.Name), slog.String("limit", limit), slog.Uint64("withheld", withheld))
+		}
 	}
 	return false
 }
 
 // ICMPWithheld is how many ICMP errors this node did not send, those its source's bucket withheld and those the node's cap withheld
 func (m *Mesh) ICMPWithheld() (source, node uint64) {
-	return m.withheldBySource.total.Load(), m.withheldByNode.total.Load()
+	return m.icmpLimit.withheld(icmpBySource), m.icmpLimit.withheld(icmpByNode)
 }
 
 // reportSegmentDrop writes at most one line per interval, whatever the reason,
@@ -542,11 +570,8 @@ type segmentCounters struct {
 	segmentsDrained   atomic.Uint64
 	// icmpLimit holds back the ICMP errors past their limits, its clock nanoseconds since segmentsStarted
 	icmpLimit icmpLimit
-	// withheldBySource and withheldByNode count the answers a source's bucket and the node's cap withheld, as IcmpOutRateLimitHost and IcmpOutRateLimitGlobal count them
-	withheldBySource reportedCount
-	_                [linePad]byte
-	withheldByNode   reportedCount
-	_                [linePad]byte
+	// withheldBySource and withheldByNode space the reports of the answers a source's bucket and the node's cap withheld, which the limit's shards count as IcmpOutRateLimitHost and IcmpOutRateLimitGlobal count them
+	withheldBySource, withheldByNode reportedCount
 	// segmentsStarted and segmentReported space the drop reports on the
 	// monotonic clock, as Peer.sendErrReported does, so a backward step of the
 	// wall clock cannot suppress every report until it catches up.

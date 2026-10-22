@@ -329,14 +329,14 @@ func TestInboundWritesHandTheDeviceTheFramesThemselves(t *testing.T) {
 			for i := range devices {
 				devices[i] = dev
 			}
-			m := &Mesh{closed: make(chan struct{})}
+			m := ownEverything(&Mesh{closed: make(chan struct{})})
 			m.setDevice(lanesOf(devices...))
 			m.startInboundWriters()
 			t.Cleanup(m.Close)
 
 			want := [][]byte{ipv6TCPPacket(40000, 5201, 1), ipv6TCPPacket(40000, 5201, 2)}
 			frames := framed(want...)
-			m.DeliverInboundBatch(frames, DefaultMTU)
+			m.DeliverInboundBatch(frames, DefaultMTU, nil)
 			select {
 			case got := <-dev.writes:
 				if got.offset != TUNHeadroom {
@@ -384,7 +384,7 @@ func TestDeliverInboundBatchUsesFlowAffineQueues(t *testing.T) {
 		}
 		devices[i] = recorders[i]
 	}
-	m := &Mesh{closed: make(chan struct{})}
+	m := ownEverything(&Mesh{closed: make(chan struct{})})
 	m.setDevice(lanesOf(devices...))
 	m.startInboundWriters()
 	t.Cleanup(m.Close)
@@ -399,7 +399,7 @@ func TestDeliverInboundBatchUsesFlowAffineQueues(t *testing.T) {
 			want[lane] = append(want[lane], packet)
 		}
 	}
-	m.DeliverInboundBatch(framed(packets...), DefaultMTU)
+	m.DeliverInboundBatch(framed(packets...), DefaultMTU, nil)
 
 	active := 0
 	for lane, expected := range want {
