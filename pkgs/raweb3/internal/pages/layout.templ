@@ -18,6 +18,7 @@ templ frame(site ui.Site, page ui.Page, unvetted bool, body string) {
 			@ui.Head(site, page) {
 				<link rel="stylesheet" href="/style.css"/>
 				@themeScript()
+				@menuScript()
 			}
 		</head>
 		<body class={ "bg-bg text-fg2 antialiased", body }>
@@ -34,8 +35,8 @@ templ frame(site ui.Site, page ui.Page, unvetted bool, body string) {
 
 // bar is one row. Below sm the links and the switch move into a menu, a
 // popover sheet over the top of the page that repeats the logo row with a
-// close button where the menu button was. A browser without popover support
-// shows the sheet as a block under the bar.
+// close button where the menu button was, and scrolls on a short screen. A
+// browser without popover support shows the sheet as a block under the bar.
 templ bar(site ui.Site, path string) {
 	<header class="border-b border-line font-mono text-[15px]">
 		<nav class="mx-auto flex max-w-6xl items-center gap-x-7 px-4 py-4 md:px-6" aria-label="Site">
@@ -52,7 +53,7 @@ templ bar(site ui.Site, path string) {
 				<path d="M4 7h16M4 12h16M4 17h16"></path>
 			}
 		</nav>
-		<div id="menu" popover class="inset-x-0 top-0 bottom-auto m-0 w-full border-0 border-b border-line bg-bg p-0 text-fg2 backdrop:bg-bg/70 sm:hidden">
+		<div id="menu" popover class="inset-x-0 top-0 bottom-auto m-0 max-h-dvh w-full border-0 border-b border-line bg-bg p-0 text-fg2 backdrop:bg-bg/70 sm:hidden">
 			<div class="flex items-center px-4 py-4">
 				@brand(site)
 				@menuButton("hide", "Close menu", "") {
@@ -95,14 +96,40 @@ templ brand(site ui.Site) {
 }
 
 // menuButton opens or closes the menu, sized and drawn as the theme switch's
-// buttons are.
+// buttons are. The close button takes the focus when the menu opens.
 templ menuButton(action, title, class string) {
-	<button type="button" class={ "border border-line p-1.5 text-fg2 hover:text-fg", class } popovertarget="menu" popovertargetaction={ action }>
+	<button type="button" class={ "border border-line p-1.5 text-fg2 hover:text-fg", class } popovertarget="menu" popovertargetaction={ action } autofocus?={ action == "hide" }>
 		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="block" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 			{ children... }
 		</svg>
 		<span class="sr-only">{ title }</span>
 	</button>
+}
+
+// menuScript makes the rest of the page inert while the menu is open, as a
+// modal dialog would, so focus cannot reach what the sheet covers. The page
+// turns inert once the menu has opened, after the popover has noted the menu
+// button to give the focus back to, and stops being inert before the menu
+// hides, so the focus can go back. Without the script the menu still opens.
+templ menuScript() {
+	<script>
+		addEventListener("DOMContentLoaded", () => {
+			const menu = document.getElementById("menu");
+			const setInert = (inert) => {
+				for (let n = menu; n !== document.body; n = n.parentElement) {
+					for (const s of n.parentElement.children) {
+						if (s !== n) s.inert = inert;
+					}
+				}
+			};
+			menu.addEventListener("toggle", (e) => {
+				if (e.newState === "open") setInert(true);
+			});
+			menu.addEventListener("beforetoggle", (e) => {
+				if (e.newState === "closed") setInert(false);
+			});
+		});
+	</script>
 }
 
 // themeSwitch picks the light or dark scheme, or auto to follow the system.
