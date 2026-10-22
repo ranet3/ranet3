@@ -9,7 +9,7 @@ vetted: 2026-10-22
 layout: bare
 ---
 
-<div class="mx-auto grid max-w-6xl items-end gap-x-14 gap-y-10 px-4 pt-24 pb-18 text-[15px] leading-[1.55] text-fg max-lg:text-center md:px-6 lg:grid-cols-[minmax(0,1fr)_auto]">
+<div class="hero items-end gap-x-14 pb-18 text-fg">
 <div>
 <h1 class="text-[clamp(40px,5vw,64px)] leading-[1.05] font-bold tracking-[-.02em] text-balance">Mesh network, reimagined.</h1>
 <p class="mt-7 max-w-[56ch] text-[18px] text-pretty text-fg2 max-lg:mx-auto max-sm:text-[16px]">High performance policy routed IPsec mesh SD-WAN with userspace ESP, IKEv2, an embedded Babel speaker and SRv6 steering.</p>
@@ -18,12 +18,12 @@ layout: bare
 <a href="/docs/getting-started/" class="btn-secondary arrow">Get started</a>
 </div>
 </div>
-<div class="order-first text-[clamp(7px,3vw,12px)] max-lg:justify-self-center lg:order-none lg:self-start">
+<div class="hero-mark">
 <ui-ascii-mark></ui-ascii-mark>
 </div>
 </div>
 
-<div class="border-y border-line text-[15px] leading-[1.55]">
+<div class="border-y border-line">
 <div class="mx-auto grid max-w-6xl px-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)] md:px-6">
 <div class="py-10 md:border-r md:border-line md:pr-14"><div class="text-[clamp(44px,5.6vw,72px)] leading-none font-bold whitespace-nowrap text-acc">95%</div><p class="mt-3.5 text-fg2">of the 10 GbE payload limit, 1 stream one way</p><p class="label mt-1">8.39 of 8.84 Gbit/s</p></div>
 <div class="border-t border-line py-10 md:border-t-0 md:border-r md:px-14"><div class="text-[clamp(44px,5.6vw,72px)] leading-none font-bold whitespace-nowrap text-acc">2.1x</div><p class="mt-3.5 text-fg2">kernel WireGuard throughput, at best</p><p class="label mt-1">1.6-2.1x across all tests</p></div>
@@ -36,10 +36,8 @@ layout: bare
 </div>
 </div>
 
-<div class="mx-auto mt-24 grid w-full max-w-6xl gap-x-16 gap-y-8 px-4 text-[15px] leading-[1.55] md:px-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-<div class="lg:pt-[18px]">
-<h2 class="text-[24px] leading-tight font-bold text-balance text-fg">Why ranet3</h2>
-</div>
+<div class="split mt-24">
+<h2 class="title">Why ranet3</h2>
 <div class="flex flex-col border-t border-line">
 <details class="fold">
 <summary class="row"><span class="text-mute">01</span><span>Interoperability<small>Peers only need standard IKEv2, ESP, Babel and SRv6.</small></span></summary>
