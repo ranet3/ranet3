@@ -27,6 +27,8 @@ templ frame(site ui.Site, page ui.Page, unvetted bool, body string) {
 	</html>
 }
 
+// bar is one row from sm up. Below it the switch moves up beside the logo and
+// the links take a row of their own, spread across it.
 templ bar(site ui.Site) {
 	<header class="border-b border-line font-mono text-[15px]">
 		<nav class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-7 gap-y-3 px-4 py-4 md:px-6">
@@ -34,14 +36,12 @@ templ bar(site ui.Site) {
 				@ui.Mark(26)
 				<span>{ site.Name }</span>
 			</a>
-			<div class="flex w-full items-center gap-x-7 sm:w-auto">
-				<div class="flex min-w-0 gap-x-7 overflow-x-auto">
-					for _, l := range site.Nav {
-						<a href={ templ.SafeURL(l.Href) } class="whitespace-nowrap text-fg2 hover:text-acc">{ l.Title }</a>
-					}
-				</div>
-				@themeSwitch()
+			<div class="flex flex-wrap gap-x-7 gap-y-2 max-sm:order-last max-sm:w-full max-sm:justify-between">
+				for _, l := range site.Nav {
+					<a href={ templ.SafeURL(l.Href) } class="whitespace-nowrap text-fg2 hover:text-acc">{ l.Title }</a>
+				}
 			</div>
+			@themeSwitch()
 		</nav>
 	</header>
 }
@@ -49,7 +49,7 @@ templ bar(site ui.Site) {
 // themeSwitch picks the light or dark scheme, or auto to follow the system.
 // It shows, with the pick marked, once themeScript sets data-theme.
 templ themeSwitch() {
-	<div class="ml-auto hidden shrink-0 border border-line scripted:flex" role="group" aria-label="Theme">
+	<div class="hidden shrink-0 border border-line scripted:flex" role="group" aria-label="Theme">
 		@themeChoice("light", "Light") {
 			<circle cx="12" cy="12" r="4"></circle>
 			<path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
