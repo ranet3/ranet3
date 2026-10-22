@@ -266,15 +266,17 @@
       text-fg;
   }
   /* the top block of a bare page, its text beside the ASCII mark from lg up
-     and centered under it below */
+     and centered under it below. On a phone the top padding is small, so the
+     heading and the buttons fit the first screen */
   .hero {
-    @apply mx-auto grid max-w-6xl gap-y-10 px-4 pt-24 max-lg:text-center
-      md:px-6 lg:grid-cols-[minmax(0,1fr)_auto];
+    @apply mx-auto grid max-w-6xl gap-y-10 px-4 pt-10 max-lg:text-center
+      sm:pt-24 md:px-6 lg:grid-cols-[minmax(0,1fr)_auto];
   }
   /* the ASCII mark of a hero, of one size and in one place on every page, so
-     it does not move between them */
+     it does not move between them. It is at full size from 632px up and
+     shrinks below, at 7.4px a character on a 390px phone */
   .hero-mark {
-    @apply order-first text-[clamp(7px,3vw,12px)] max-lg:justify-self-center
+    @apply order-first text-[clamp(5px,1.9vw,12px)] max-lg:justify-self-center
       lg:order-none lg:self-start;
   }
   /* a heading beside a list from lg up, above it below */
