@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-10-21
+updated: 2026-10-22
 order: 50
 ---
 
@@ -46,7 +46,10 @@ The lower half, `0.0.0.0/1` or `::/1`, also contains its family's zero address,
 so a Mac with `link.underlay.bind` set installs it unscoped only beside a
 default the daemon writes scoped to the underlay's interface, the route the
 zero-free cover does without. A node that does advertise both halves of a family
-is still listed by `ranet3 exit list`, as an exit for that family.
+is still listed by `ranet3 exit list`, as an exit for that family. It egresses
+as an exit does, and so does a node advertising a split such as four `/2`s,
+since each of those prefixes
+[counts as a default](routing.md#routes-that-count-as-a-default).
 
 Until exit selection exists, a Mac with `link.underlay.bind` set takes whichever
 `/0` Babel selects, once a session has been live, and installs it as its
@@ -132,17 +135,46 @@ table = 200
 priority = 100
 ```
 
-**An exit or subnet router set up this way should not carry transit.** The `to`
-rules send only the mesh prefixes to the mesh table. With `cap.transit` on, a
-packet arriving on the tun for a prefix another node announces outside those
-rules never consults the mesh table. Such prefixes include the subnet behind
-another subnet router, and a default another exit announces where this node does
-not originate the same one, such as a default from a source prefix. The packet
-follows the host's own routes out of the uplink and never reaches the node that
-announces the prefix. In a family `advertise` covers, the out rule translates
-its source to this node's address. In any other family, and on a node that
-advertises nothing and serves only egress segments, no out rule matches it, and
-it leaves under the sender's mesh address.
+An exit or subnet router set up this way can carry transit. With `cap.transit`
+on, a packet another node sends through it for a prefix a third node announces,
+such as the subnet behind another subnet router, goes on through the mesh by the
+mesh's own table, as [routing](routing.md#transit) describes. It never reaches
+the tun, so the `to` rules and the host's routes out of the uplink never see it.
+
+## What an exit carries out
+
+A packet a session delivers for a destination this node holds through a route
+that [counts as a default](routing.md#routes-that-count-as-a-default), such as
+the `0.0.0.0/0` and `::/0` it advertises, is egress. The
+[forwarding decision](routing.md#transit) hands it to the tun, where the host
+translates it and forwards it out of its uplink, only where 3 checks pass:
+
+- A destination inside `cap.border.overlay` belongs to the mesh. One that no
+  node announces is answered as a destination no route holds, IPv6 code 0 and
+  IPv4 Host Unreachable, and never sent out of the uplink.
+- The mesh routes a reply to the packet's source. The decision looks the source
+  up as a reply from the packet's destination is routed, so a route announced
+  from a source prefix covers the source only where that prefix covers the
+  destination, and it passes over every route that counts as a default, another
+  exit's among them. The reply's route has to reach a peer or a held prefix. A
+  packet from any other source is dropped with no answer and counted as
+  `unrouted source`, since no reply to it could come back.
+- For a prefix `cap.egress` advertises, the packet's family is one the node
+  announces some prefix of, as [refusing to advertise](#refusing-to-advertise)
+  describes. A packet of another family is dropped with no answer and counted as
+  `not ready`. The node takes the families it announces before the speaker
+  announces or retracts them, so a fresh announcement attracts no packet before
+  its family is ready, and a packet of a family that went is dropped before the
+  retraction reaches anyone. Once the speaker retracts the prefix, the decision
+  treats a packet for it as [retracted routes](routing.md#retracted-routes)
+  describe. The border filter takes no part: it holds back the egress SIDs and
+  the egress device alone.
+
+A packet through a prefix counting as a default that `cap.route` announces meets
+the first 2 checks, and past them goes to the tun with no readiness to wait on,
+since no translation of this node stands behind it. An
+[egress segment](#egress-segments)'s inner packet meets the second check after
+its `allow` list.
 
 ## Refusing to advertise
 
@@ -166,10 +198,9 @@ default).
 
 The node reads forwarding from `/proc/sys/net/ipv4/ip_forward` and
 `/proc/sys/net/ipv6/conf/all/forwarding`. Any value other than `0` counts as on,
-and so does a file the node cannot read.
-[The transit warning](design/limits.md#transit) reads the same settings. An exit
-acts on them by withholding its advertisement, because no other node can tell
-whether it forwards.
+and so does a file the node cannot read. An exit acts on them by withholding its
+advertisement, because no other node can tell whether it forwards. Transit
+between sessions needs neither setting, since the mesh forwards it itself.
 
 `status` names the prefixes it announces and the ones it withholds. The scrape
 carries the advertised and the announced counts as `ranet3_egress_prefixes`.

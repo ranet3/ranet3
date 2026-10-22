@@ -265,10 +265,11 @@ session and encrypts it again onto the next.
 - The daemon reads `enable` at startup. A reload that would turn transit on or
   off is refused with `config: cap.transit enable changed, restart to apply`. A
   reload between a left-out block and `enable = false` changes nothing.
-- With `enable = true` and forwarding off for either family, the daemon logs a
-  warning at startup: peers that select this node would have their traffic
-  dropped. It reads forwarding from the settings [platforms](platforms.md)
-  lists.
+- The mesh forwards transit itself, so the host's forwarding settings play no
+  part in it. With transit off, a packet for another node that reaches this one
+  all the same is answered administratively prohibited, unless an End.DT46 SID
+  of this node delivering to the mesh took it out of its outer header.
+  [Routing](routing.md#transit) lists the decision and its answers.
 
 ## `cap.babel`
 

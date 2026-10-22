@@ -4,7 +4,7 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-10-22
+updated: 2026-10-25
 order: 65
 ---
 
@@ -119,12 +119,15 @@ kernel's defaults, since ranet3 sends what the kernel sent before. The number of
 sources a node keeps buckets for is ranet3's own:
 
 - **Per source**: every ICMP error but Packet Too Big and fragmentation needed,
-  such as the Time Exceeded and Parameter Problem a refused segment gets, draws
-  from a bucket for the source of the packet it answers. A bucket holds 6
+  such as the Time Exceeded and Parameter Problem a refused segment gets and
+  every answer of the [forwarding decision](routing.md#transit) to transit,
+  draws from a bucket for the source of the packet it answers. A bucket holds 6
   answers and earns 1 back every second for an IPv4 source and every 100
-  milliseconds for an IPv6 one. A node keeps buckets for 4,096 sources. The
-  source that drew least recently gives its place to a new one, and a source new
-  or returning starts full.
+  milliseconds for an IPv6 one. A node keeps buckets for 6,144 sources, in 64
+  shards of 96 that a hash of the address under a seed random to each run picks,
+  so 4,096 sources at random fit with none evicted in all but about 1 run in
+  200. In a full shard, the source that drew least recently gives its place to a
+  new one, and a source new or returning starts full.
 - **Per node**: every answer, of either family and kind, also draws from 1 cap
   for the node, 10,000 at once and 10,000 a second.
 
@@ -146,6 +149,16 @@ because one address can stand for many hosts behind a NAT that routes into the
 tun, and a bucket of 6 answers, then 1 a second over IPv4 or 10 over IPv6, would
 hold back path MTU discovery for all of them.
 
+Each answer draws once. A Linux router draws twice for a packet no route holds,
+from the one bucket it keeps for the packet's source: `ip_error` takes 1 second
+of tokens, from a bucket holding at most 5 seconds of them, before the answer is
+sent, and `icmpv4_xrlim_allow` takes 1 second more as it is sent
+(net/ipv4/route.c:119-120 and 1024-1037, net/ipv4/icmp.c:334-336 and
+net/ipv4/inetpeer.c:277-301 at Linux `940de590`). A source new to that router
+gets 2 Destination Unreachable answers to a burst, and none after while it sends
+more often than once a second. ranet3 answers such a burst from an IPv4 source 6
+times, and then once a second.
+
 Every ICMPv4 answer carries the host's default TTL: `net.ipv4.ip_default_ttl` on
 Linux, and `net.inet.ip.ttl` on macOS. The node reads it at start and at each
 reload. A start that cannot read it stops with an error naming the setting. A
@@ -164,7 +177,10 @@ node's router-id of the carried packet's family, the address
 names a router by. Where the node holds none, an IPv6 answer comes from the SID
 the segment reached and an IPv4 answer from the address the carried packet was
 going to. A Parameter Problem for options that cannot be read comes from the
-same address as a fragmentation needed would.
+same address as a fragmentation needed would. The
+[forwarding decision](routing.md#transit) answers a transit packet too large for
+its next session from the router-id of its family as well, and from the address
+the packet was going to where the node holds none.
 [Protocol deviations](design/protocol-deviations.md#icmp-answers) gives the
 reasons.
 
@@ -184,10 +200,14 @@ address is not one either. Over IPv4 it names no host
 ([RFC 1812 section 4.2.2.11](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.2.2.11)),
 and over IPv6 it is the Subnet-Router anycast address
 ([RFC 4291 section 2.6.1](https://www.rfc-editor.org/rfc/rfc4291.html#section-2.6.1)).
-The node takes the router-id at start and again each time it rebuilds its
-announcements. The answer SID that `ranet3 debug pmtu` shows beside the
-router-ids is the first `End` segment of `cap.segment.local` that an announced
-prefix covers, under the same rules.
+Nor is an IPv4 network's all-ones host, its directed broadcast, which the same
+RFC 1812 section says "MUST NOT be used as a source address", in a network
+shorter than `/31`. A `/31` has no broadcast, its 2 addresses being its 2 hosts
+([RFC 3021](https://www.rfc-editor.org/rfc/rfc3021.html)). The node takes the
+router-id at start and again each time it rebuilds its announcements. The answer
+SID that `ranet3 debug pmtu` shows beside the router-ids is the first `End`
+segment of `cap.segment.local` that an announced prefix covers, under the same
+rules.
 
 ## MSS clamping
 
@@ -197,6 +217,8 @@ segment fits its session:
 - A SYN read off the tun gets the budget of its session, less 40 bytes under
   IPv4 or 60 bytes under IPv6, less the steering header when a policy steers it.
 - A SYN arriving through a session gets the budget of that session the same way.
+- A SYN the forwarding decision sends on to another session gets the budget of
+  that session too.
 - A SYN that an `End.DT46` segment delivers is clamped to the session it arrived
   on.
 

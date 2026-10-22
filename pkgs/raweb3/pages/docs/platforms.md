@@ -38,10 +38,10 @@ setting or skips a route instead.
 | Control socket caller                | `SO_PEERCRED`                                                             | `LOCAL_PEERCRED`, `LOCAL_PEERPID`                       |
 | Default state directory              | `/var/lib/ranet3`                                                         | `/var/db/ranet3`                                        |
 
-The forwarding settings decide whether a node warns about transit it cannot
-carry, whether it warns about forwarding without `cap.border`, and whether
-`cap.egress` advertises its prefixes. On macOS `cap.border` is refused at
-startup with
+The forwarding settings decide whether a node warns about forwarding without
+`cap.border`, and whether `cap.egress` advertises its prefixes. Transit needs
+neither, since the mesh forwards it between sessions itself on every platform.
+On macOS `cap.border` is refused at startup with
 `egress: cap.border is an nftables chain, which darwin does not have, so this node cannot filter what enters the mesh from its other links`,
 and a Mac that forwards gets the warning instead. The caller's credentials
 decide who may use the debug paths beyond the read paths.

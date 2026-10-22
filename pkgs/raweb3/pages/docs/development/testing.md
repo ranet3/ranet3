@@ -69,17 +69,20 @@ unless run as root.
   carry a read of 65535 bytes through a device opened at the default MTU, steer
   a read as large as the device and clamp the MSS of a SYN. They answer a packet
   larger than its session, at the headend and at a waypoint, until the kernel
-  that sent it holds the smaller path MTU. Another writes a TCP stream into a
-  kernel socket as frames lying in 1 buffer, as a session's datagrams do, and
-  checks that the tun's GRO coalesces them and that the socket reads back the
-  bytes sent. 2 more check that a lane's write into the tun allocates nothing
-  and keeps no reference to the frames it wrote, whether its packets go alone or
-  coalesce. 5 run the egress device: `TestTUNEgressDeviceCarriesAndDrains`
-  carries an egress segment's inner packet whole through it to a kernel socket
-  and drains a packet the kernel routes into it, and
-  `TestTUNEgressWritesMoreFlowsThanABatch` writes more flows into it than 1
-  batch holds. `TestTUNEgressDeviceIsMadeWithNoAddress` makes it up, with no
-  address, router advertisements refused and `rp_filter` off, and refuses a
+  that sent it holds the smaller path MTU, and
+  `TestTUNAnswerToThisHostPassesAReversePathCheck` checks that a session's
+  packet from this host, answered by the forwarding decision, reaches the
+  sending socket under a strict and a loose reverse path chain in both families.
+  Another writes a TCP stream into a kernel socket as frames lying in 1 buffer,
+  as a session's datagrams do, and checks that the tun's GRO coalesces them and
+  that the socket reads back the bytes sent. 2 more check that a lane's write
+  into the tun allocates nothing and keeps no reference to the frames it wrote,
+  whether its packets go alone or coalesce. 5 run the egress device:
+  `TestTUNEgressDeviceCarriesAndDrains` carries an egress segment's inner packet
+  whole through it to a kernel socket and drains a packet the kernel routes into
+  it, and `TestTUNEgressWritesMoreFlowsThanABatch` writes more flows into it
+  than 1 batch holds. `TestTUNEgressDeviceIsMadeWithNoAddress` makes it up, with
+  no address, router advertisements refused and `rp_filter` off, and refuses a
   device of its name already there, held open or left persistent.
   `TestTUNEgressDeviceTakesIPv6WhereTheHostTurnsItOffForNewLinks` makes it on a
   host whose new links take `disable_ipv6` 1, and checks that the kernel takes a
@@ -124,10 +127,35 @@ unless run as root.
     `TestTUNEgressFollowsTheTranslatorOnlyWhileTheBorderReadsBack` read what the
     mesh writes into a real egress device, and check that it carries a family
     only while the translator holds it ready and the border's chain reads back.
-- `internal/client` also has 1,
-  `TestTransitWarnsOnlyWhereTheHostCannotForwardIt`, that writes its namespace's
-  forwarding sysctls and checks that an enabled `cap.transit` warns only where
-  the host does not forward a family, naming the family.
+  - `TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter` runs 3
+    nodes in a line, each in a namespace of its own, with transit on at the
+    middle one, whose kernel forwards neither family and whose tun holds no
+    address. Datagrams of both families cross it, and it answers from its
+    router-id: Time Exceeded at a hop limit of 1, Packet Too Big and
+    Fragmentation Needed with its next session's size, which the sender caches,
+    and Destination Unreachable inside a prefix it holds. With no address of
+    either family it answers IPv4 from `192.0.0.8`, a Packet Too Big from the
+    packet's destination and IPv6's Time Exceeded not at all. Its kernel
+    forwards nothing and reads nothing from its tun throughout.
+  - `TestTUNLineRefusesTransitWhileItIsOffButNotThroughAnEndDT46SID` runs the
+    line with transit off at the middle node, which answers administratively
+    prohibited, and still carries what the sender steers through its End.DT46
+    SID.
+  - `TestTUNExitCarriesTransitInProcessAndNothingOutOfItsUplink` runs an exit
+    that announces a default of each family, with forwarding on and a default
+    route out of an uplink to a fourth namespace. Transit between its 2
+    neighbors crosses it in the mesh, its kernel forwards none of it, and
+    nothing of it reaches the uplink.
+  - `TestTUNExitEgressesEachShapeOfTheInternetTranslated` runs the same exit
+    advertising each family through `cap.egress` as a default, a pair of `/1`
+    halves and four `/2`s, with the translator running. A neighbor's datagrams
+    of both families reach the fourth namespace from the exit's uplink address,
+    and a datagram from a source the mesh routes no reply to is counted at the
+    exit and never reaches the uplink.
+  - `TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment` gives a node
+    with `cap.egress` and no egress segment a real tun, and checks that its
+    egress through a default reaches the tun for each family it announces and is
+    counted not ready for the others, whatever the border's chain reads back.
 
 The `internal/client` tests `TestNodeGoingDownLeavesItsPeerAndItsKernelAtOnce`,
 `TestNodeRestartedWhileDownInstallsNothingUntilUp`,
@@ -268,11 +296,10 @@ exist, and when it finds no `aarch64-linux` check that requires `kvm` at all.
 The `netlink` check runs these root tests: the `internal/kernel` tests whose
 names start with `TestNetlink`, the 7 `internal/egress` tests, the `TestTUN`
 tests of `internal/netstack` and `internal/client`, the 3 `transport` sends, and
-the 4 `internal/client` tests above with
-`TestTransitWarnsOnlyWhereTheHostCannotForwardIt` under `unshare -n`, and every
-test of the `tun` and `conn` packages of `pkgs/wireguard`. It fails if any of
-them skips. It then checks that no rule, link, xfrm state or policy, or nftables
-table of theirs is left on the host. The `internal/kernel` tests
+the 4 `internal/client` tests above under `unshare -n`, and every test of the
+`tun` and `conn` packages of `pkgs/wireguard`. It fails if any of them skips. It
+then checks that no rule, link, xfrm state or policy, or nftables table of
+theirs is left on the host. The `internal/kernel` tests
 `TestNetworkWatchInNetworkNamespace` and
 `TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault` need root and run in
 no check, and so do the 7 `transport` tests of the sockets connected to 1 peer
@@ -447,7 +474,11 @@ capture on the gateway shows the bare inner packet. `ranet3 status --json`
 counts steered packets and no unsteered ones. With the gateway's SID removed,
 the steered packets still arrive and nothing removes the header. In the other
 direction the gateway's kernel builds the header, and the client's End.DT46
-delivers the packet, which its `delivered` counter records.
+delivers the packet, which its `delivered` counter records with no segment
+dropped. The address it delivers to is one the client holds on loopback and
+announces, since the forwarding decision delivers only to an address the client
+routes. A rule on the gateway ahead of its main table sends that address through
+the segment rather than the route it learns.
 
 `integration-reload` boots one machine and no gateway. It runs ranet3 through
 the NixOS module with a trust document that names only itself. The machine has 4
@@ -613,10 +644,12 @@ The commands above do not name these benchmarks. The `sadr` ones other than
 `BenchmarkFillOneDestination` still match the `-bench` pattern of the previous
 command.
 
-| Package             | Benchmarks                                                                                                                                                                                       | What they measure                                                                           |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| `esp`               | `BenchmarkReplayCommitJumpDistances`                                                                                                                                                             | a replay window commit across growing jumps of the sequence number                          |
-| `sadr`              | `BenchmarkLookupBySourceCount`, `BenchmarkLookupByDistinctLengths`, `BenchmarkLookupDownADestinationChain`, `BenchmarkRouteChangeOnOneDestination`, `BenchmarkFillOneDestination`                | lookups and edits with many sources on one destination, or spread over many prefix lengths  |
-| `internal/babel`    | `BenchmarkRunLoopPass`, `BenchmarkRunLoopDeadline`, `BenchmarkEmitDump`, `BenchmarkReceiveHello`, `BenchmarkCoalesceOneTarget`                                                                   | the speaker's run loop, a full table dump, a hello against a full table and send coalescing |
-| `internal/netstack` | `BenchmarkPeerEnqueueSerialSinglePacket`, `BenchmarkPeerEnqueueSerialBatched`, `BenchmarkPeerEnqueueParallelSinglePacket`, `BenchmarkPeerEnqueueParallelBatched`, `BenchmarkPeerSenderRoundTrip` | a peer's send queue with 1 packet or batches of 128, and the round trip through its sender  |
-| `transport`         | `BenchmarkUDPReceiveVector`                                                                                                                                                                      | batched UDP receive through the real syscalls, on Linux                                     |
+| Package             | Benchmarks                                                                                                                                                                                       | What they measure                                                                                                                                |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `esp`               | `BenchmarkReplayCommitJumpDistances`                                                                                                                                                             | a replay window commit across growing jumps of the sequence number                                                                               |
+| `sadr`              | `BenchmarkLookupBySourceCount`, `BenchmarkLookupByDistinctLengths`, `BenchmarkLookupDownADestinationChain`, `BenchmarkRouteChangeOnOneDestination`, `BenchmarkFillOneDestination`                | lookups and edits with many sources on one destination, or spread over many prefix lengths                                                       |
+| `internal/babel`    | `BenchmarkRunLoopPass`, `BenchmarkRunLoopDeadline`, `BenchmarkEmitDump`, `BenchmarkReceiveHello`, `BenchmarkCoalesceOneTarget`                                                                   | the speaker's run loop, a full table dump, a hello against a full table and send coalescing                                                      |
+| `internal/netstack` | `BenchmarkPeerEnqueueSerialSinglePacket`, `BenchmarkPeerEnqueueSerialBatched`, `BenchmarkPeerEnqueueParallelSinglePacket`, `BenchmarkPeerEnqueueParallelBatched`, `BenchmarkPeerSenderRoundTrip` | a peer's send queue with 1 packet or batches of 128, and the round trip through its sender                                                       |
+| `internal/netstack` | `BenchmarkResolve`, `BenchmarkDecide`, `BenchmarkDecideWithheld`, `BenchmarkOptionStage`                                                                                                         | the route lookup with its matched length, the forwarding decision per packet, the decision with every answer withheld, and the IPv4 option stage |
+| `internal/packet`   | `BenchmarkMartianChecks`                                                                                                                                                                         | the checks of a source and a destination no router forwards                                                                                      |
+| `transport`         | `BenchmarkUDPReceiveVector`                                                                                                                                                                      | batched UDP receive through the real syscalls, on Linux                                                                                          |

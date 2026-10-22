@@ -83,6 +83,10 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
 `--control` names the socket to read, `/var/run/ranet3/control.sock` by default.
 `--json` prints JSON instead of the table.
 
+- `status` shows the counters of the [forwarding decision](routing.md#transit)
+  on its `Transit` line: the packets sessions delivered that went on to a peer
+  or to the tun, those dropped with each reason above 0, and the ICMP errors
+  answered and unanswered about them. `--json` carries them under `transit`.
 - `sessions` names the transforms of each IKE SA and of its Child SA by their
   `cap.crypto` names. A Child SA the peer's creation or rekey keyed with key
   exchanges of its own has their kex entry after its cipher, such as
