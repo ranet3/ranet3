@@ -199,6 +199,7 @@ func TestTUNCarriesAUTUNReadWhole(t *testing.T) {
 func TestTUNWritesAnInboundFrameIntoAUTUN(t *testing.T) {
 	requireUTUN(t)
 	m := openAddressedUTUN(t)
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(utunLocal, 32), Local)
 	socket, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(utunLocal, 0)))
 	if err != nil {
 		t.Fatalf("listen on %s: %v", utunLocal, err)
@@ -208,7 +209,7 @@ func TestTUNWritesAnInboundFrameIntoAUTUN(t *testing.T) {
 	for _, size := range []int{20 + 8 + 1, utunJumbo} {
 		packet := udpPacket(utunPeer, utunLocal, size, false)
 		binary.BigEndian.PutUint16(packet[20+2:], uint16(port))
-		m.DeliverInboundBatch(framed(packet), utunJumbo)
+		m.DeliverInboundBatch(framed(packet), utunJumbo, nil)
 		if err := socket.SetReadDeadline(time.Now().Add(deliveryTimeout)); err != nil {
 			t.Fatal(err)
 		}

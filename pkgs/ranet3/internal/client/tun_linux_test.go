@@ -69,6 +69,8 @@ func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 	// as New installs the table of cap.segment
 	mesh.SetSegments(segments)
 	bravo.client.cfg.Store(&cfg)
+	// the IPv4 destinations below are bravo's own, as a prefix it announced would make them, so its mesh writes them to the tun
+	mesh.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("192.0.2.0/24"), netstack.Local)
 	run(t, alpha, bravo)
 	var peer *netstack.Peer
 	waitFor(t, convergeBudget, "alpha forwarding to bravo's prefix", func() bool {
@@ -84,9 +86,9 @@ func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 		mss                 uint16
 		steered             bool
 	}{
-		{"IPv4", netip.MustParseAddr("10.66.0.2"), netip.MustParseAddr("10.66.0.1"), esp.NextHeaderIPv4, session - 40, false},
+		{"IPv4", netip.MustParseAddr("203.0.113.2"), netip.MustParseAddr("192.0.2.1"), esp.NextHeaderIPv4, session - 40, false},
 		{"IPv6", headend, bravo.prefix.Addr().Next(), esp.NextHeaderIPv6, session - 60, false},
-		{"IPv4 steered to an End.DT46 SID", netip.MustParseAddr("10.66.0.2"), netip.MustParseAddr("10.66.0.11"), esp.NextHeaderIPv4, session - 40, true},
+		{"IPv4 steered to an End.DT46 SID", netip.MustParseAddr("203.0.113.2"), netip.MustParseAddr("192.0.2.11"), esp.NextHeaderIPv4, session - 40, true},
 		{"IPv6 steered to an End.DT46 SID", headend, netip.MustParseAddr("fd00:b::11"), esp.NextHeaderIPv6, session - 60, true},
 	} {
 		t.Run(arm.name, func(t *testing.T) {

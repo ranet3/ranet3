@@ -17,20 +17,26 @@ import (
 
 // icmpModel is the limit as the kernel describes it, inet_peer_xrlim_allow's credit per source and icmp_global_allow's over the node
 // a credit is earned in nanoseconds up to a burst and an answer spends one interval of it, a new source starting full
-// the least recent source is found by walking the draws in order and skipping each a source has made a later one since
+// the sources lie in 64 shards as icmpShardOf puts them, each holding the limit's share, and a full shard forgets its own least recent source
+// found by walking that shard's draws in order and skipping each a source has made a later one since
 type icmpModel struct {
 	node    modelCredit
 	sources map[netip.Addr]*modelSource
-	draws   []netip.Addr
-	oldest  int
+	shards  [64]modelShard
 }
 
 type modelCredit struct{ credit, last int64 }
 
 type modelSource struct {
 	credit modelCredit
-	// latest is the index in draws of the source's latest draw
+	// latest is the index in its shard's draws of the source's latest draw
 	latest int
+}
+
+type modelShard struct {
+	draws  []netip.Addr
+	oldest int
+	held   int
 }
 
 // earn adds the time since last, up to most, now never before last
@@ -55,16 +61,18 @@ func (m *icmpModel) take(now int64, source netip.Addr) icmpVerdict {
 		if source.Is4() {
 			interval = int64(time.Second)
 		}
+		shard := &m.shards[icmpShardOf(source)]
 		entry := m.sources[source]
 		if entry == nil {
-			if len(m.sources) == 4096 {
-				m.evict()
+			if shard.held == icmpSources/icmpShards {
+				m.evict(shard)
 			}
 			entry = &modelSource{credit: modelCredit{credit: 6 * interval, last: now}}
 			m.sources[source] = entry
+			shard.held++
 		}
-		entry.latest = len(m.draws)
-		m.draws = append(m.draws, source)
+		entry.latest = len(shard.draws)
+		shard.draws = append(shard.draws, source)
 		entry.credit.earn(now, 6*interval)
 		if entry.credit.credit < interval {
 			return icmpBySource
@@ -75,25 +83,28 @@ func (m *icmpModel) take(now int64, source netip.Addr) icmpVerdict {
 	return icmpAllowed
 }
 
-// evict forgets the source whose latest draw is the oldest
-func (m *icmpModel) evict() {
-	for ; ; m.oldest++ {
-		source := m.draws[m.oldest]
-		if entry := m.sources[source]; entry != nil && entry.latest == m.oldest {
+// evict forgets the source of shard whose latest draw is the oldest
+func (m *icmpModel) evict(shard *modelShard) {
+	for ; ; shard.oldest++ {
+		source := shard.draws[shard.oldest]
+		if entry := m.sources[source]; entry != nil && entry.latest == shard.oldest {
 			delete(m.sources, source)
-			m.oldest++
+			shard.held--
+			shard.oldest++
 			return
 		}
 	}
 }
 
 // icmpStep is one instant of a drawn run: count answers to packets from one source of icmpPool, after one answer each from spray sources never seen before
+// a homed spray draws only the fresh sources lying in the shard of the step's source, and no too-big answer
 type icmpStep struct {
 	at     int64
 	source int
 	tooBig bool
 	count  int
 	spray  int
+	homed  bool
 }
 
 // icmpPool is the sources a run's steps draw from, IPv4 and IPv6 in turn
@@ -108,9 +119,16 @@ func runICMPSteps(steps []icmpStep, take func(now int64, source netip.Addr) bool
 	var verdicts []bool
 	fresh := 0
 	for _, step := range steps {
+		home := icmpShardOf(icmpPool[step.source])
 		for range step.spray {
 			source := freshSource(fresh)
-			if fresh%3 == 0 {
+			switch {
+			case step.homed:
+				for icmpShardOf(source) != home {
+					fresh++
+					source = freshSource(fresh)
+				}
+			case fresh%3 == 0:
 				source = netip.Addr{}
 			}
 			verdicts = append(verdicts, take(step.at, source))
@@ -128,27 +146,28 @@ func runICMPSteps(steps []icmpStep, take func(now int64, source netip.Addr) bool
 }
 
 // drawn runs of answers of drawn kinds from drawn sources, at drawn instants on a fake clock, get the model's verdicts, each naming the limit that withheld it
-// and the table holds as many sources as the model, every source that has drawn from a bucket up to 4096
+// and each shard holds as many sources as the model's, every source of it that has drawn from a bucket up to the limit's share, in the order of their latest draws
 // and three statements hold that need no model
 // over any span of instants the answers let out number at most the cap's burst and what the span earns it
 // with no spray step, which keeps the cap from withholding and every source in the table, one source's answers get the same verdicts with every other source's answers taken out of the run
 // and the answers other than packet too big and fragmentation needed the same verdicts with those taken out, while every too-big answer goes out
 // a source that draws between two sprays, which keeps its place only by the draw moving it to the front, is tried before anything is drawn
-// and so are a source drawing last before the table fills, and a cap spent at one instant, which the drawn runs reach only now and then
+// and so are a source drawing last before its shard fills, and a cap spent at one instant, which the drawn runs reach only now and then
 func TestICMPLimitMatchesTheKernelsModel(t *testing.T) {
-	// a spray's too-big answers take no place in the table, so the second spray evicts some of the first's sources and, but for its draw between them, icmpPool[0]
+	// the first spray puts 24 sources in icmpPool[0]'s shard of 96 and the second 73 more, so 2 places go, the first spray's least recent
+	// which but for icmpPool[0]'s draw between the sprays would be its own
 	checkICMPSteps(t, []icmpStep{
 		{source: 0, count: 3},
-		{spray: 3000},
+		{spray: 24, homed: true},
 		{source: 0, count: 1},
-		{spray: 3500},
+		{spray: 73, homed: true},
 		{source: 0, count: 3},
 	}, true)
-	// a spray of 6143 leaves 4095 sources in the table, so icmpPool[0] is the newest of 4096 when the next new source takes the least recent one's place, and it keeps what it spent
+	// a spray leaving 95 sources in icmpPool[0]'s shard, so it is the newest of 96 when 3 more new sources take the least recent places, and it keeps what it spent
 	checkICMPSteps(t, []icmpStep{
-		{spray: 6143},
+		{spray: 95, homed: true},
 		{source: 0, count: 1},
-		{spray: 3},
+		{spray: 3, homed: true},
 		{source: 0, count: 6},
 	}, true)
 	// a spray spending the cap at one instant, then a source's answer the cap withholds before that source's bucket is read
@@ -202,13 +221,30 @@ func checkICMPSteps(tb testing.TB, steps []icmpStep, sprayed bool) {
 		if got != want {
 			tb.Fatalf("answer %d to %s at %d was decided %d, the model says %d", answer, source, now, got, want)
 		}
-		// the model holds every source that drew from a bucket up to the 4096 it writes out, so a table of another size fails against it
-		if held := len(model.sources); len(l.sources) != held || l.order.Len() != held {
-			tb.Fatalf("after answer %d the table holds %d sources in a list of %d, want the model's %d", answer, len(l.sources), l.order.Len(), held)
+		// the model holds every source of a shard that drew from a bucket up to the limit's share, so a shard of another size or a table evicting across shards fails against it
+		// and the drawn source's shard lists the sources the model holds there, from the latest draw to the least recent
+		// so a draw the cap withheld that kept its source or moved a held one forward fails at once
+		if source.IsValid() {
+			shard, home := l.shard(source), icmpShardOf(source)
+			if got, want := len(shard.sources), model.shards[home].held; got != want || shard.order.Len() != want {
+				tb.Fatalf("after answer %d the shard of %s holds %d sources in a list of %d, want the model's %d", answer, source, got, shard.order.Len(), want)
+			}
+			latest := len(model.shards[home].draws)
+			for element := shard.order.Front(); element != nil; element = element.Next() {
+				held := element.Value.(*icmpSource).addr
+				entry := model.sources[held]
+				if entry == nil || icmpShardOf(held) != home || entry.latest >= latest {
+					tb.Fatalf("after answer %d the shard of %s lists %s out of the model's order", answer, source, held)
+				}
+				latest = entry.latest
+			}
 		}
 		answer++
 		return got == icmpAllowed
 	})
+	if got, want := held(tb, &l), len(model.sources); got != want {
+		tb.Fatalf("the table holds %d sources after the run, want the model's %d", got, want)
+	}
 
 	for i := range steps {
 		let := int64(0)

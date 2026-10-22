@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -90,7 +91,7 @@ func (r *recordingPeer) nextHeaders() []byte {
 func TestBatchWithoutSegmentsIsUntouched(t *testing.T) {
 	mesh := &Mesh{Routes: NewRouteTable()}
 	batch := framed(plainV6(segAddr("2001:db8::1"), segAddr("2001:db8::2"), "one"))
-	got := mesh.applySegments(batch, DefaultMTU)
+	got, _ := mesh.applySegments(batch, DefaultMTU)
 	if &got[0] != &batch[0] || len(got) != len(batch) {
 		t.Fatal("a batch with no segments configured was rebuilt")
 	}
@@ -99,8 +100,8 @@ func TestBatchWithoutSegmentsIsUntouched(t *testing.T) {
 	}
 }
 
-// An exit takes the outer header off and what was inside goes to the tun in
-// place of it, so the batch that comes back carries the inner packet.
+// an exit takes the outer header off and what was inside goes to the forwarding decision in place of it
+// so the batch that comes back carries the inner packet, marked as one the segment grants transit
 // its frame is the tail of the outer packet's, the end of the outer header the headroom in front of it, rather than a copy
 func TestExitDeliversWhatWasInside(t *testing.T) {
 	exit := segAddr("3fff:1:69c:8c6::1")
@@ -119,9 +120,12 @@ func TestExitDeliversWhatWasInside(t *testing.T) {
 	passer := plainV6(segAddr("2001:db8::1"), segAddr("2001:db8::2"), "not ours")
 
 	frames := framed(passer, outer)
-	left := mesh.applySegments(frames, DefaultMTU)
+	left, granted := mesh.applySegments(frames, DefaultMTU)
 	if len(left) != 2 {
 		t.Fatalf("the batch came back with %d packets", len(left))
+	}
+	if !slices.Equal(granted, []bool{false, true}) {
+		t.Errorf("the batch came back granting %v, want the inner packet alone", granted)
 	}
 	got := unframed(left)
 	if !bytes.Equal(got[0], passer) || &left[0][0] != &frames[0][0] {
@@ -159,7 +163,7 @@ func TestWaypointForwardsInsteadOfDelivering(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := mesh.applySegments(framed(outer), DefaultMTU)
+	got, _ := mesh.applySegments(framed(outer), DefaultMTU)
 	if len(got) != 0 {
 		t.Fatalf("a forwarded packet was also delivered to the tun: %v", got)
 	}
@@ -188,7 +192,7 @@ func TestSegmentsThatCannotBeActedOnAreDropped(t *testing.T) {
 	// Addressed to our waypoint with no routing header.
 	mesh := &Mesh{Routes: NewRouteTable()}
 	mesh.SetSegments(table)
-	if got := mesh.applySegments(framed(plainV6(segAddr("2001:db8::1"), waypoint, "payload")), DefaultMTU); len(got) != 0 {
+	if got, _ := mesh.applySegments(framed(plainV6(segAddr("2001:db8::1"), waypoint, "payload")), DefaultMTU); len(got) != 0 {
 		t.Fatalf("a refused segment reached the tun: %v", got)
 	}
 	if counters := mesh.SegmentCounters(); counters.Dropped != 1 {
@@ -205,7 +209,7 @@ func TestSegmentsThatCannotBeActedOnAreDropped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := unrouted.applySegments(framed(outer), DefaultMTU); len(got) != 0 {
+	if got, _ := unrouted.applySegments(framed(outer), DefaultMTU); len(got) != 0 {
 		t.Fatalf("a segment with nowhere to go reached the tun: %v", got)
 	}
 	if counters := unrouted.SegmentCounters(); counters.Dropped != 1 || counters.Forwarded != 0 {
@@ -234,7 +238,8 @@ func TestPacketsBeforeAndAfterASegmentKeepTheirOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := unframed(mesh.applySegments(framed(first, second, outer, last), DefaultMTU))
+	left, granted := mesh.applySegments(framed(first, second, outer, last), DefaultMTU)
+	got := unframed(left)
 	if len(got) != 4 {
 		t.Fatalf("the batch came back with %d packets", len(got))
 	}
@@ -242,6 +247,9 @@ func TestPacketsBeforeAndAfterASegmentKeepTheirOrder(t *testing.T) {
 		if !bytes.Equal(got[i], want) {
 			t.Errorf("packet %d is not the one that belongs there", i)
 		}
+	}
+	if !slices.Equal(granted, []bool{false, false, true, false}) {
+		t.Errorf("the batch came back granting %v, want the inner packet alone", granted)
 	}
 }
 
@@ -357,7 +365,7 @@ func TestWaypointBatchTakesOnePlacePerPeer(t *testing.T) {
 		}
 		batch = append(batch, outer)
 	}
-	if left := m.applySegments(framed(batch...), DefaultMTU); len(left) != 0 {
+	if left, _ := m.applySegments(framed(batch...), DefaultMTU); len(left) != 0 {
 		t.Fatalf("%d waypointed packets reached the tun", len(left))
 	}
 	if got := batches.Load(); got != 1 {
@@ -634,7 +642,8 @@ func TestTwoSegmentsOfThisNodeInOneListAreBothActedOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := unframed(mesh.applySegments(framed(outer), DefaultMTU))
+	left, _ := mesh.applySegments(framed(outer), DefaultMTU)
+	got := unframed(left)
 	if len(got) != 1 || !bytes.Equal(got[0], inner) {
 		t.Fatalf("the exit on this node did not deliver the inner packet: %v", got)
 	}

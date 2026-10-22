@@ -185,7 +185,8 @@ func answerSources(cfg *config.Config) netstack.AnswerSources {
 		address := prefix.Addr()
 		switch {
 		// a network's base address names no host, RFC 1812 section 4.2.2.11, and over IPv6 it is the Subnet-Router anycast address, RFC 4291 section 2.6.1
-		case !prefix.IsSingleIP() && prefix.Masked().Addr() == address, !covered(address):
+		// nor does an IPv4 network's all-ones host, its directed broadcast, which the same section bars as a source address
+		case !prefix.IsSingleIP() && prefix.Masked().Addr() == address, directedBroadcast(prefix), !covered(address):
 		case address.Is4() && !sources.Router4.IsValid():
 			sources.Router4 = address
 		case address.Is6() && !sources.Router6.IsValid():
@@ -199,6 +200,17 @@ func answerSources(cfg *config.Config) netstack.AnswerSources {
 		}
 	}
 	return sources
+}
+
+// directedBroadcast reports whether prefix's address is the all-ones host of its IPv4 network, RFC 1812 section 4.2.2.11
+// a /31 has none, its two addresses being its two hosts, RFC 3021
+func directedBroadcast(prefix netip.Prefix) bool {
+	if !prefix.Addr().Is4() || prefix.Bits() >= 31 {
+		return false
+	}
+	address := prefix.Addr().As4()
+	host := uint32(1)<<(32-prefix.Bits()) - 1
+	return (uint32(address[0])<<24|uint32(address[1])<<16|uint32(address[2])<<8|uint32(address[3]))&host == host
 }
 
 // effectivePeers is who this node dials: the configured list, or when all is set that list followed by every other node the trust document names, the N-to-N reconciliation ranet does

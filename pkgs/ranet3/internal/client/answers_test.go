@@ -29,7 +29,7 @@ func tableOf(addresses ...string) *kernel.Table {
 // and the SID is the first End SID of cap.segment local that an announced prefix covers
 // a prefix covers only where it has no source and does not count as a default with cap.border's overlay
 // so a default, its halves and a source-specific entry never do, nor a prefix shorter than /8 or /16 the overlay leaves uncovered, fd00::/8 among them
-// an address no packet from elsewhere may come from, a network's base address and a prefix covering more than one host never is one
+// an address no packet from elsewhere may come from, a network's base address, an IPv4 network's directed broadcast but a /31's and a prefix covering more than one host never is one
 func TestAnswerSourcesAreTheRouterIDsAndTheFirstSID(t *testing.T) {
 	for _, tc := range []struct {
 		name                  string
@@ -118,6 +118,22 @@ func TestAnswerSourcesAreTheRouterIDsAndTheFirstSID(t *testing.T) {
 				Route: &babel.Routes{Announce: announce("240.0.0.0/8", "0.1.2.0/24", "10.66.0.0/24")},
 			}},
 			router4: "10.66.0.6",
+		},
+		{
+			name: "a table assigning a network's directed broadcast first",
+			cfg: config.Config{Cap: config.Caps{
+				Table: tableOf("192.0.2.255/24", "192.0.2.7/24"),
+				Route: &babel.Routes{Announce: announce("192.0.2.0/24")},
+			}},
+			router4: "192.0.2.7",
+		},
+		{
+			name: "a table assigning the upper host of a /31",
+			cfg: config.Config{Cap: config.Caps{
+				Table: tableOf("192.0.2.9/31"),
+				Route: &babel.Routes{Announce: announce("192.0.2.8/31")},
+			}},
+			router4: "192.0.2.9",
 		},
 		{
 			name: "a table assigning an IPv4 address mapped into IPv6 first",

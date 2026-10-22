@@ -83,13 +83,17 @@ let
   gatewayBehind = "fd00:99::9";
   # The mirror image, for the direction where the gateway's kernel builds the
   # header and this tree acts on it. The SID is announced so the gateway can
-  # route to it, and clientBehind is not, so the only way a packet reaches it
-  # is the segment.
+  # route to it. clientBehind is the client's own and announced too, since the
+  # forwarding decision delivers an End.DT46's inner packet only to an address
+  # the client routes, and the gateway sends it through the segment by a rule
+  # ahead of the route it learns.
   clientSID = "fd00:88::6:1";
   # On loopback rather than on the tun: an address on the tun is one the kernel
-  # can pick as the source for the mesh traffic that leaves through it, and
-  # nothing announces this one, so the replies would have nowhere to go.
+  # can pick as the source for the mesh traffic that leaves through it.
   clientBehind = "fd00:88::9";
+  # The gateway's table for the segment's route to clientBehind, and its rule's
+  # priority, ahead of main's.
+  segmentTable = 88;
   # The egress segment's SID, announced by the client only while its egress
   # device is ready, and the device named after the client's tun. The
   # gateway's outside address is in neither prefix the allow list names.
@@ -624,8 +628,8 @@ testers.runNixOSTest {
           networks."05-lo" = pkgs.lib.mkIf segments {
             matchConfig.Name = "lo";
             networkConfig.ConfigureWithoutCarrier = true;
-            # What an End.DT46 on this node delivers to, reachable through the
-            # segment and nothing else, because nothing announces it.
+            # What an End.DT46 on this node delivers to, which the gateway
+            # reaches through the segment alone, by its rule.
             addresses = [ { Address = "${clientBehind}/128"; } ];
           };
           networks."40-${clientDevice}" = {
@@ -695,7 +699,10 @@ testers.runNixOSTest {
                 "${clientTunnel}/128"
                 "${clientTunnelV4}/32"
               ]
-              ++ pkgs.lib.optional segments "${clientSID}/128";
+              ++ pkgs.lib.optionals segments [
+                "${clientSID}/128"
+                "${clientBehind}/128"
+              ];
               babel = {
                 hello = "500ms";
                 update = "1s";
@@ -907,9 +914,10 @@ testers.runNixOSTest {
 
         def steer_and_capture(machine, name):
             """Three steered packets, and what the gateway made of them."""
-            machine.succeed(f"rm -f /tmp/{name}.pcap")
-            machine.execute(f"tcpdump -ni swan0 -w /tmp/{name}.pcap ip6 >/dev/null 2>&1 &")
-            machine.wait_until_succeeds("pgrep -x tcpdump", timeout=timeout)
+            machine.succeed(f"rm -f /tmp/{name}.pcap /tmp/{name}.log")
+            # an answered ping ends inside libpcap's block timeout, and the kill would lose the block it holds
+            machine.execute(f"tcpdump --immediate-mode -ni swan0 -w /tmp/{name}.pcap ip6 >/tmp/{name}.log 2>&1 &")
+            machine.wait_until_succeeds(f"grep -q 'listening on' /tmp/{name}.log", timeout=timeout)
             client.execute("ping -c 3 -i 0.3 -W 1 -I ${clientTunnel} ${gatewayBehind}")
             machine.succeed("pkill -x tcpdump")
             machine.wait_until_fails("pgrep -x tcpdump", timeout=timeout)
@@ -951,14 +959,16 @@ testers.runNixOSTest {
         assert not bare_inner(refused), f"something still decapsulated the header:\n{refused}"
 
         # The other direction: the gateway's kernel builds the header and this
-        # tree acts on it. Nothing announces the address behind the client, so
-        # the gateway reaches it through the segment or not at all, and the
-        # client's own counter says which of the two carried the packet.
+        # tree acts on it. The client announces the address behind it, and the
+        # gateway's rule ahead of main sends it through the segment rather than
+        # the route it learned, so the client's own counter says which of the
+        # two carried the packet.
         gateway.wait_until_succeeds("ip -6 route get ${clientSID}", timeout=timeout)
         gateway.succeed(
-            "ip -6 route replace ${clientBehind}/128 encap seg6 mode encap segs ${clientSID} dev swan0"
+            "ip -6 route replace ${clientBehind}/128 encap seg6 mode encap segs ${clientSID} dev swan0 table ${toString segmentTable}",
+            "ip -6 rule add to ${clientBehind}/128 table ${toString segmentTable} priority ${toString segmentTable}",
         )
-        print(gateway.succeed("ip -6 route show ${clientBehind}/128"))
+        print(gateway.succeed("ip -6 route show table ${toString segmentTable}"))
 
         before = json.loads(client.succeed("ranet3 status --json"))["segment_counters"]
         gateway.wait_until_succeeds(

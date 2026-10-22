@@ -60,7 +60,7 @@ func TestTUNEgressDeviceCarriesAndDrains(t *testing.T) {
 	payload := []byte("left through the egress device")
 	inner := udpPacket(egressFar, egressLocal, 20+8+len(payload), false)
 	copy(inner[20+8:], payload)
-	m.DeliverInboundBatch(framed(steered(t, inner, headend, egressExit)), DefaultMTU)
+	m.DeliverInboundBatch(framed(steered(t, inner, headend, egressExit)), DefaultMTU, nil)
 	if err := listener.SetReadDeadline(time.Now().Add(deliveryTimeout)); err != nil {
 		t.Fatalf("bound the read: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestTUNEgressWritesMoreFlowsThanABatch(t *testing.T) {
 		binary.BigEndian.PutUint16(inner[20+tcpChecksum:], tcpSum(inner, 20))
 		frames[i] = steered(t, inner, headend, egressExit)
 	}
-	m.DeliverInboundBatch(framed(frames...), DefaultMTU)
+	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
 	if counters := m.SegmentCounters(); counters.Egressed != flows || counters.Dropped != 0 || counters.NotReady != 0 {
 		t.Errorf("%d egress results of distinct flows counted %+v, want each egressed", flows, counters)
 	}
