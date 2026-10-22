@@ -19,7 +19,6 @@ import (
 	"github.com/tdewolff/minify/v2/css"
 	"github.com/tdewolff/minify/v2/html"
 	"github.com/tdewolff/minify/v2/js"
-	"github.com/tdewolff/minify/v2/json"
 	"github.com/tdewolff/minify/v2/svg"
 )
 
@@ -110,7 +109,6 @@ func newMinifier() *minify.M {
 	m.Add("text/html", &html.Minifier{KeepDocumentTags: true, KeepQuotes: true})
 	m.AddFunc("image/svg+xml", svg.Minify)
 	m.AddFuncRegexp(regexp.MustCompile(`^(application|text)/(x-)?(java|ecma)script$`), js.Minify)
-	m.AddFuncRegexp(regexp.MustCompile(`[/+]json$`), json.Minify)
 	return m
 }
 

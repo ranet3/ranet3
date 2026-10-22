@@ -25,24 +25,16 @@ import (
 	"ranet3.com/pkgs/raweb3/ui"
 )
 
-// config is site.yaml.
+// config is site.yaml. The ui types take their keys from their field names,
+// lowercased.
 type config struct {
-	Title      string            `yaml:"title"`
-	URL        string            `yaml:"url"`
-	Repository string            `yaml:"repository"`
-	Metas      map[string]string `yaml:"metas"`
-	Analytics  struct {
-		Src    string `yaml:"src"`
-		Domain string `yaml:"domain"`
-	} `yaml:"analytics"`
-	Nav    []link    `yaml:"nav"`
-	CTA    link      `yaml:"cta"`
-	Footer ui.Footer `yaml:"footer"`
-}
-
-type link struct {
-	Title string `yaml:"title"`
-	Href  string `yaml:"href"`
+	Title     string            `yaml:"title"`
+	URL       string            `yaml:"url"`
+	Metas     map[string]string `yaml:"metas"`
+	Analytics ui.Analytics      `yaml:"analytics"`
+	Nav       []ui.Link         `yaml:"nav"`
+	CTA       ui.Link           `yaml:"cta"`
+	Footer    ui.Footer         `yaml:"footer"`
 }
 
 // Site is every source of the site, loaded and checked.
@@ -57,27 +49,21 @@ type Site struct {
 // to root. It reports every source that does not hold up rather than the
 // first.
 func Load(root, dir string) (*Site, error) {
-	c, err := loadConfig(filepath.Join(root, configFile))
-	if err != nil {
+	c, cerr := loadConfig(filepath.Join(root, configFile))
+	ps, perr := loadPages(filepath.Join(root, dir))
+	if err := errors.Join(cerr, perr); err != nil {
 		return nil, err
 	}
-	s := &Site{static: os.DirFS(filepath.Join(root, staticDir)), ui: ui.Site{
-		Name:       c.Title,
-		URL:        c.URL,
-		Repository: c.Repository,
-		Analytics:  ui.Analytics{Src: c.Analytics.Src, Domain: c.Analytics.Domain},
-		CTA:        ui.Link{Title: c.CTA.Title, Href: c.CTA.Href},
-		Footer:     c.Footer,
+	s := &Site{static: os.DirFS(filepath.Join(root, staticDir)), pages: ps, ui: ui.Site{
+		Name:      c.Title,
+		URL:       c.URL,
+		Analytics: c.Analytics,
+		Nav:       c.Nav,
+		CTA:       c.CTA,
+		Footer:    c.Footer,
 	}}
-	for _, l := range c.Nav {
-		s.ui.Nav = append(s.ui.Nav, ui.Link{Title: l.Title, Href: l.Href})
-	}
 	for _, name := range slices.Sorted(maps.Keys(c.Metas)) {
 		s.ui.Metas = append(s.ui.Metas, ui.Meta{Name: name, Content: c.Metas[name]})
-	}
-	s.pages, err = loadPages(filepath.Join(root, dir))
-	if err != nil {
-		return nil, err
 	}
 	return s, nil
 }
@@ -94,18 +80,17 @@ func loadConfig(path string) (config, error) {
 		return c, fmt.Errorf("%s: %w", path, err)
 	}
 	var errs []error
-	for field, v := range map[string]string{
-		"title":            c.Title,
-		"url":              c.URL,
-		"repository":       c.Repository,
-		"analytics.src":    c.Analytics.Src,
-		"analytics.domain": c.Analytics.Domain,
-		"cta.title":        c.CTA.Title,
-		"cta.href":         c.CTA.Href,
-		"footer.title":     c.Footer.Title,
+	for _, f := range []struct{ name, value string }{
+		{"title", c.Title},
+		{"url", c.URL},
+		{"analytics.src", c.Analytics.Src},
+		{"analytics.domain", c.Analytics.Domain},
+		{"cta.title", c.CTA.Title},
+		{"cta.href", c.CTA.Href},
+		{"footer.title", c.Footer.Title},
 	} {
-		if v == "" {
-			errs = append(errs, fmt.Errorf("%s: %s missing", path, field))
+		if f.value == "" {
+			errs = append(errs, fmt.Errorf("%s: %s missing", path, f.name))
 		}
 	}
 	// the go command reads the module's repository from these on every page

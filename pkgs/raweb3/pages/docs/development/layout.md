@@ -96,18 +96,18 @@ built from and how it follows upstream.
 own, the Go module `ranet3.com/pkgs/raweb3`. Each page is a Markdown file with
 YAML frontmatter, rendered into templ components and styled with Tailwind.
 
-| Path             | What it holds                                                                                                                                               |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pages/`         | the pages by the path they serve at: `index.md` is the front page, and `docs/` holds these pages, with `design/` and `development/` beneath                 |
-| `site.yaml`      | the site's title, address and repository, the `go-import` and `go-source` metas, the analytics, the header links, the call to action and the footer's facts |
-| `static/`        | files the site serves as they are, `favicon.svg` among them                                                                                                 |
-| `cmd/raweb3`     | the `raweb3` binary: `raweb3 build` writes the site to a directory, `raweb3 serve` renders each page as it is asked for                                     |
-| `internal/site`  | loads `site.yaml` and the pages, checks them, and renders, highlights and minifies every page                                                               |
-| `internal/pages` | the layouts: the frame every page shares, with its header, theme switch and notice, and the docs, page and 404 layouts                                      |
-| `ui/`            | what another site in the repository can take: the head, the logo mark drawn in SVG and in text, and `style.css`, the colors and components                  |
-| `default.nix`    | the generator's build, and the site's, which runs `raweb3 build` with Tailwind                                                                              |
-| `shell.nix`      | the `raweb3` dev shell                                                                                                                                      |
-| `.envrc`         | direnv's entry to that shell                                                                                                                                |
+| Path             | What it holds                                                                                                                                   |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pages/`         | the pages by the path they serve at: `index.md` is the front page, and `docs/` holds these pages, with `design/` and `development/` beneath     |
+| `site.yaml`      | the site's title and address, the `go-import` and `go-source` metas, the analytics, the header links, the call to action and the footer's facts |
+| `static/`        | files the site serves as they are, `favicon.svg` among them                                                                                     |
+| `cmd/raweb3`     | the `raweb3` binary: `raweb3 build` writes the site to a directory, `raweb3 serve` renders each page as it is asked for                         |
+| `internal/site`  | loads `site.yaml` and the pages, checks them, and renders, highlights and minifies every page                                                   |
+| `internal/pages` | the layouts: the frame every page shares, with its header, theme switch and notice, and the docs, page and 404 layouts                          |
+| `ui/`            | what another site in the repository can take: the head, the logo mark drawn in SVG and in text, and `style.css`, the colors and components      |
+| `default.nix`    | the generator's build, and the site's, which runs `raweb3 build` with Tailwind                                                                  |
+| `shell.nix`      | the `raweb3` dev shell                                                                                                                          |
+| `.envrc`         | direnv's entry to that shell                                                                                                                    |
 
 Beside them are `go.mod`, `go.sum`, `gomod2nix.toml` and a `REUSE.toml` of its
 own. A file `a.md` serves at `/a/`, and so does `a/index.md`. Both in one
