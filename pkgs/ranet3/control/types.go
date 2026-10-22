@@ -273,10 +273,8 @@ type Status struct {
 	Responder bool `json:"responder"`
 	FullMesh  bool `json:"full_mesh"`
 	NoTransit bool `json:"no_transit"`
-	// Forwarding is the kernel's, per family. A node that redistributes with
-	// forwarding off attracts traffic it drops and nothing tells the sender,
-	// so the answer belongs next to NoTransit rather than in a sysctl an
-	// operator has to think to check.
+	// ForwardsIPv4 and ForwardsIPv6 are the kernel's forwarding, per family
+	// an exit egresses only a family its kernel forwards, and transit needs neither
 	ForwardsIPv4 bool         `json:"forwards_ipv4"`
 	ForwardsIPv6 bool         `json:"forwards_ipv6"`
 	Registry     RegistryInfo `json:"registry"`

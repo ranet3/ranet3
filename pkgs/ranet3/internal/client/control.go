@@ -42,10 +42,8 @@ func (c *Client) SetEgressStatus(read func() control.EgressStatus) {
 	c.egressStatus.Store(&read)
 }
 
-// Forwarding reports whether this host forwards, per family. It is exported so
-// that the egress capability and the transit warning read one answer rather
-// than two: a node that advertises a prefix is promising to carry it, and both
-// the warning and the withheld advertisement come from this fact.
+// Forwarding reports whether this host forwards, per family
+// it is exported so the egress capability withholds an advertisement over the answer status and cap.border's warning read
 func Forwarding() (v4, v6 bool) { return forwardingEnabled() }
 
 func (c *Client) Status() control.Status {

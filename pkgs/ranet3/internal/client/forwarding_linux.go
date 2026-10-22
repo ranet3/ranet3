@@ -17,17 +17,9 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 )
 
-// forwardingEnabled reports whether this host forwards, per family. Babel has
-// no way to say "I carry my own prefixes but nothing else": a node that
-// advertises a route is promising to forward it, so the only signal a peer
-// ever gets is the advertisement itself. A node that redistributes with
-// forwarding off therefore attracts traffic it drops, and nothing tells the
-// sender.
-//
-// It is read here rather than in each package that needs it, so that transit
-// and the egress capability answer the question the same way. Forwarding
-// exports it, and internal/egress withholds an advertisement over the same fact
-// this warns about.
+// forwardingEnabled reports whether this host forwards, per family
+// an exit egresses only a family its kernel forwards, while the mesh forwards transit itself
+// it is read here alone, so the egress capability, status and cap.border's warning answer alike
 func forwardingEnabled() (v4, v6 bool) {
 	return sysctlIsOne("/proc/sys/net/ipv4/ip_forward"),
 		sysctlIsOne("/proc/sys/net/ipv6/conf/all/forwarding")

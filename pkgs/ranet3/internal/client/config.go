@@ -314,45 +314,13 @@ func warnVRFWithoutL3mdev(cfg *config.Config) {
 		cfg.Cap.Table.Name())
 }
 
-// warnUnforwardableTransit says so when this node offers to carry the mesh and
-// the kernel will not.
-//
-// Babel carries no capability signal: a node that advertises a route is
-// promising to forward it, and the only thing a peer ever learns is the
-// advertisement. So a node that redistributes with forwarding off attracts
-// traffic and drops it, and the sender is never told. Nothing here can fix
-// that from the far end, which leaves saying it at the end that knows.
-//
-// A warning rather than a refusal, because forwarding can be turned on after
-// this process starts and because cap.transit is the setting that makes the
-// promise match the machine.
-func warnUnforwardableTransit(cfg *config.Config) {
-	if !cfg.Transits() {
-		return
-	}
-	v4, v6 := forwardingEnabled()
-	if v4 && v6 {
-		return
-	}
-	var off []string
-	if !v4 {
-		off = append(off, "IPv4")
-	}
-	if !v6 {
-		off = append(off, "IPv6")
-	}
-	log.Printf("config: this node redistributes the routes it learns, so it is offering to carry the mesh, but %s forwarding is off: peers that select it will have their traffic dropped with nothing to tell them. Write enable = false under cap.transit, or turn forwarding on",
-		strings.Join(off, " and "))
-}
-
 // warnUnbordered says so when the host forwards and the file writes no
 // cap.border. A host on any of this node's links can then hand it a packet
 // with a mesh source, which the kernel forwards into the tun and every peer
 // takes as the mesh's own.
 //
-// A warning rather than a refusal, as with transit: forwarding moves under a
-// running node, and darwin, which forwards with no filter to offer, would
-// otherwise not start at all.
+// a warning rather than a refusal, since forwarding moves under a running node
+// and darwin, which forwards with no filter to offer, would otherwise not start at all
 func warnUnbordered(cfg *config.Config, forwards func() (v4, v6 bool)) {
 	if cfg.Cap.Border != nil {
 		return
