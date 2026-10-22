@@ -41,7 +41,7 @@ layout: bare
 <h1 class="mt-14 max-w-[28ch] text-[clamp(32px,6vw,52px)] leading-[1.1] font-bold tracking-[-.01em] text-balance">Mesh network, reimagined.</h1>
 <div class="mt-9 flex flex-wrap justify-center gap-3">
 <a href="/contact/" class="btn-primary">Request a Demo</a>
-<a href="/docs/getting-started/" class="btn-secondary arrow-after">Get started</a>
+<a href="/docs/getting-started/" class="btn-secondary arrow">Get started</a>
 </div>
 </div>
 
@@ -61,12 +61,12 @@ layout: bare
 <h2 class="text-[24px] leading-tight font-bold text-balance text-fg">Why ranet3</h2>
 </div>
 <div class="flex flex-col border-t border-line">
-<details class="index-details">
-<summary class="index-row"><span class="text-mute">01</span><span>Interoperability<small>Peers only need standard IKEv2, ESP, Babel and SRv6.</small></span></summary>
+<details class="fold">
+<summary class="row"><span class="text-mute">01</span><span>Interoperability<small>Peers only need standard IKEv2, ESP, Babel and SRv6.</small></span></summary>
 <div>
 <p class="callout mt-0">Common mesh VPN and SD-WAN tools (Tailscale, NetBird, ZeroTier, Nebula, etc.) admit only nodes that run their own agent, and ranet3 runs beside them on the same host.</p>
 <p class="mt-[1.2em] text-fg2">Interoperability is checked against:</p>
-<dl class="spec-list">
+<dl class="terms">
 <dt>strongSwan</dt>
 <dd>IKEv2 and ESP sessions with Ed25519 keys</dd>
 <dt>BIRD</dt>
@@ -77,8 +77,8 @@ layout: bare
 <p class="note">Any other router or switch that supports IKEv2 with Ed25519 keys, Babel and SRv6 should interoperate as well.</p>
 </div>
 </details>
-<details class="index-details">
-<summary class="index-row"><span class="text-mute">02</span><span>Latency aware routing<small>Babel measures the round trip of every link and routes through a relay whenever the direct link is slower.</small></span></summary>
+<details class="fold">
+<summary class="row"><span class="text-mute">02</span><span>Latency aware routing<small>Babel measures the round trip of every link and routes through a relay whenever the direct link is slower.</small></span></summary>
 <div>
 <figure class="mt-[.6em]">
 <svg width="100%" height="176" role="img" aria-label="Nodes A and C linked directly at 265 ms and through relay B at 40 ms per hop, with traffic taking the relay" class="block overflow-visible">
@@ -100,8 +100,8 @@ layout: bare
 <p class="mt-[1em] text-fg2">RTT is measured continuously, and packet loss and outages count against a link. Traffic always takes the fastest path, moving back to the direct link once it is faster again.</p>
 </div>
 </details>
-<details class="index-details">
-<summary class="index-row"><span class="text-mute">03</span><span>Segment routing<small>A policy on source and destination prefix sends traffic through chosen waypoints and out at a chosen exit.</small></span></summary>
+<details class="fold">
+<summary class="row"><span class="text-mute">03</span><span>Segment routing<small>A policy on source and destination prefix sends traffic through chosen waypoints and out at a chosen exit.</small></span></summary>
 <div>
 <p class="text-fg2">Segment routing is implemented in userspace and works even on macOS, whose XNU kernel has no support for it.</p>
 <figure class="mt-[1.4em]">
@@ -126,11 +126,11 @@ layout: bare
 <p class="mt-[1em] text-fg2">Waypoints can come in any order the user specifies and may repeat, e.g. <span class="whitespace-nowrap">A->B->C->B->D</span> with D as the exit.</p>
 </div>
 </details>
-<details class="index-details">
-<summary class="index-row"><span class="text-mute">04</span><span>Security<small>Hybrid post-quantum key exchange.</small></span></summary>
+<details class="fold">
+<summary class="row"><span class="text-mute">04</span><span>Security<small>Hybrid post-quantum key exchange.</small></span></summary>
 <div>
 <p class="text-fg2">Per-device keys under CA chains of any depth are on the way.</p>
-<dl class="spec-list">
+<dl class="terms">
 <dt>Authentication</dt>
 <dd>Ed25519 signatures</dd>
 <dt>Key exchange</dt>
@@ -141,11 +141,11 @@ layout: bare
 <p class="note"><span class="whitespace-nowrap">ML-KEM-768</span> is enabled per node.</p>
 </div>
 </details>
-<details class="index-details">
-<summary class="index-row"><span class="text-mute">05</span><span>Auditability<small>Source available, Apache-2.0 after 2 years.</small></span></summary>
+<details class="fold">
+<summary class="row"><span class="text-mute">05</span><span>Auditability<small>Source available, Apache-2.0 after 2 years.</small></span></summary>
 <div>
 <p class="text-fg2">The codebase is licensed under the <a href="https://github.com/ranet3/ranet3/blob/master/licenses/FSL-1.1-ALv2.txt" class="link whitespace-nowrap">FSL-1.1-ALv2</a>, and each version converts to <a href="https://www.apache.org/licenses/LICENSE-2.0" class="link whitespace-nowrap">Apache-2.0</a> 2 years after its original publication date.</p></div>
 </details>
-<a href="/benchmarks/" class="index-row"><span class="text-mute">06</span><span>Benchmarks<small>Higher throughput than kernel WireGuard, wireguard-go and kernel IPsec in all tests on 10 GbE.</small></span></a>
+<a href="/benchmarks/" class="row"><span class="text-mute">06</span><span>Benchmarks<small>Higher throughput than kernel WireGuard, wireguard-go and kernel IPsec in all tests on 10 GbE.</small></span></a>
 </div>
 </div>

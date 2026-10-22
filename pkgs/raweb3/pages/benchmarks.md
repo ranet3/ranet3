@@ -9,7 +9,7 @@ vetted: 2026-10-21
 layout: bare
 ---
 
-<section class="page-section">
+<section class="section">
         <h1 class="text-[2em] font-bold text-fg">Benchmarks</h1>
         <div class="overflow-x-auto mt-[1em]">
           <table class="data-table data-table-left max-sm:whitespace-normal">
@@ -21,7 +21,7 @@ layout: bare
               </tr>
             </thead>
             <tbody>
-              <tr class="row-accent">
+              <tr class="tr-accent">
                 <th scope="row">ranet3</th>
                 <td>Userspace</td>
                 <td>ESP in UDP, <span class="whitespace-nowrap">AES-256-GCM</span></td>
@@ -59,21 +59,21 @@ layout: bare
             <tbody>
               <tr>
                 <th scope="row"><span class="whitespace-nowrap">wireguard-go</span> <small>user</small></th>
-                <td><span class="font-bold whitespace-nowrap text-win">1.2-1.5x</span> <small>better</small></td>
-                <td><span class="font-bold whitespace-nowrap text-win">0.8-0.9x</span> <small>better</small></td>
+                <td><span class="font-bold whitespace-nowrap text-good">1.2-1.5x</span> <small>better</small></td>
+                <td><span class="font-bold whitespace-nowrap text-good">0.8-0.9x</span> <small>better</small></td>
                 <td><span class="font-bold whitespace-nowrap text-mute">0.2-1.0x</span> <small>mixed</small></td>
               </tr>
               <tr>
                 <th scope="row">WireGuard <small>kernel</small></th>
-                <td><span class="font-bold whitespace-nowrap text-win">1.6-2.1x</span> <small>better</small></td>
-                <td><span class="font-bold whitespace-nowrap text-win">0.6x</span> <small>better</small></td>
-                <td><span class="font-bold whitespace-nowrap text-lose">1.9-2.4x</span> <small>worse</small></td>
+                <td><span class="font-bold whitespace-nowrap text-good">1.6-2.1x</span> <small>better</small></td>
+                <td><span class="font-bold whitespace-nowrap text-good">0.6x</span> <small>better</small></td>
+                <td><span class="font-bold whitespace-nowrap text-bad">1.9-2.4x</span> <small>worse</small></td>
               </tr>
               <tr>
                 <th scope="row">IPsec <small>kernel</small></th>
-                <td><span class="font-bold whitespace-nowrap text-win">1.8-3.9x</span> <small>better</small></td>
-                <td><span class="font-bold whitespace-nowrap text-lose">1.1-1.7x</span> <small>worse</small></td>
-                <td><span class="font-bold whitespace-nowrap text-lose">1.6-2.0x</span> <small>worse</small></td>
+                <td><span class="font-bold whitespace-nowrap text-good">1.8-3.9x</span> <small>better</small></td>
+                <td><span class="font-bold whitespace-nowrap text-bad">1.1-1.7x</span> <small>worse</small></td>
+                <td><span class="font-bold whitespace-nowrap text-bad">1.6-2.0x</span> <small>worse</small></td>
               </tr>
             </tbody>
           </table>
@@ -110,7 +110,7 @@ layout: bare
                 <td>10.78</td>
                 <td>77%</td>
               </tr>
-              <tr class="row-accent">
+              <tr class="tr-accent">
                 <th scope="row">Userspace, ranet3</th>
                 <td>8.39</td>
                 <td>14.87</td>
@@ -124,7 +124,7 @@ layout: bare
         <p class="note">Kernel IPsec stays at 4.0 to 4.7 Gbit/s because its single flow lands on 1 NIC receive queue.</p>
         <h3 class="subhead mt-[3em]">Full results</h3>
         <figure class="mt-[2em]">
-          <figcaption class="mb-[.6em] flex flex-wrap gap-x-[1.5ch] text-fg"><b>Throughput, saturated</b><span class="text-mute">Gbit/s received</span><span class="text-dir">Higher is better</span></figcaption>
+          <figcaption class="mb-[.6em] flex flex-wrap gap-x-[1.5ch] text-fg"><b>Throughput, saturated</b><span class="text-mute">Gbit/s received</span><span class="text-hint">Higher is better</span></figcaption>
           <div class="overflow-x-auto">
             <table class="data-table data-table-wide max-sm:whitespace-normal">
               <thead>
@@ -139,21 +139,21 @@ layout: bare
               <tbody>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">1 stream,</span> out</th>
-                  <td class="bg-tint cell-best">8.39<span class="meter meter-accent" style="--w:100%"></span></td>
+                  <td class="bg-tint td-best">8.39<span class="meter meter-accent" style="--w:100%"></span></td>
                   <td>6.77<span class="meter" style="--w:80.7%"></span></td>
                   <td>5.35<span class="meter" style="--w:63.8%"></span></td>
                   <td>4.67<span class="meter" style="--w:55.7%"></span></td>
                 </tr>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">1 stream,</span> in</th>
-                  <td class="bg-tint cell-best">8.37<span class="meter meter-accent" style="--w:100%"></span></td>
+                  <td class="bg-tint td-best">8.37<span class="meter meter-accent" style="--w:100%"></span></td>
                   <td>6.95<span class="meter" style="--w:83%"></span></td>
                   <td>5.10<span class="meter" style="--w:60.9%"></span></td>
                   <td>4.44<span class="meter" style="--w:53%"></span></td>
                 </tr>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">1 stream,</span> both</th>
-                  <td class="bg-tint cell-best">14.87<span class="meter meter-accent" style="--w:100%"></span></td>
+                  <td class="bg-tint td-best">14.87<span class="meter meter-accent" style="--w:100%"></span></td>
                   <td>10.78<span class="meter" style="--w:72.5%"></span></td>
                   <td>7.46<span class="meter" style="--w:50.2%"></span></td>
                   <td>4.67<span class="meter" style="--w:31.4%"></span></td>
@@ -162,21 +162,21 @@ layout: bare
               <tbody>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">8 streams,</span> out</th>
-                  <td class="bg-tint cell-best">8.52<span class="meter meter-accent" style="--w:100%"></span></td>
+                  <td class="bg-tint td-best">8.52<span class="meter meter-accent" style="--w:100%"></span></td>
                   <td>6.06<span class="meter" style="--w:71.1%"></span></td>
                   <td>5.14<span class="meter" style="--w:60.3%"></span></td>
                   <td>3.97<span class="meter" style="--w:46.6%"></span></td>
                 </tr>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">8 streams,</span> in</th>
-                  <td class="bg-tint cell-best">8.48<span class="meter meter-accent" style="--w:100%"></span></td>
+                  <td class="bg-tint td-best">8.48<span class="meter meter-accent" style="--w:100%"></span></td>
                   <td>6.72<span class="meter" style="--w:79.2%"></span></td>
                   <td>5.12<span class="meter" style="--w:60.4%"></span></td>
                   <td>4.06<span class="meter" style="--w:47.9%"></span></td>
                 </tr>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">8 streams,</span> both</th>
-                  <td class="bg-tint cell-best">15.79<span class="meter meter-accent" style="--w:100%"></span></td>
+                  <td class="bg-tint td-best">15.79<span class="meter meter-accent" style="--w:100%"></span></td>
                   <td>10.33<span class="meter" style="--w:65.4%"></span></td>
                   <td>7.41<span class="meter" style="--w:46.9%"></span></td>
                   <td>4.10<span class="meter" style="--w:26%"></span></td>
@@ -186,7 +186,7 @@ layout: bare
           </div>
         </figure>
         <figure class="mt-[2em]">
-          <figcaption class="mb-[.6em] flex flex-wrap gap-x-[1.5ch] text-fg"><b>CPU cost at 3 Gbit/s offered</b><span class="text-mute">Busy cores per Gbit/s, both hosts</span><span class="text-dir">Lower is better</span></figcaption>
+          <figcaption class="mb-[.6em] flex flex-wrap gap-x-[1.5ch] text-fg"><b>CPU cost at 3 Gbit/s offered</b><span class="text-mute">Busy cores per Gbit/s, both hosts</span><span class="text-hint">Lower is better</span></figcaption>
           <div class="overflow-x-auto">
             <table class="data-table data-table-wide max-sm:whitespace-normal">
               <thead>
@@ -204,21 +204,21 @@ layout: bare
                   <td class="bg-tint">0.909<span class="meter meter-accent" style="--w:60.2%"></span></td>
                   <td>1.079<span class="meter" style="--w:71.4%"></span></td>
                   <td>1.511<span class="meter" style="--w:100%"></span></td>
-                  <td class="cell-best">0.672<span class="meter" style="--w:44.5%"></span></td>
+                  <td class="td-best">0.672<span class="meter" style="--w:44.5%"></span></td>
                 </tr>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">1 stream,</span> in</th>
                   <td class="bg-tint">0.925<span class="meter meter-accent" style="--w:60.7%"></span></td>
                   <td>1.092<span class="meter" style="--w:71.6%"></span></td>
                   <td>1.525<span class="meter" style="--w:100%"></span></td>
-                  <td class="cell-best">0.664<span class="meter" style="--w:43.5%"></span></td>
+                  <td class="td-best">0.664<span class="meter" style="--w:43.5%"></span></td>
                 </tr>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">1 stream,</span> both</th>
                   <td class="bg-tint">0.898<span class="meter meter-accent" style="--w:59.7%"></span></td>
                   <td>0.996<span class="meter" style="--w:66.2%"></span></td>
                   <td>1.504<span class="meter" style="--w:100%"></span></td>
-                  <td class="cell-best">0.525<span class="meter" style="--w:34.9%"></span></td>
+                  <td class="td-best">0.525<span class="meter" style="--w:34.9%"></span></td>
                 </tr>
               </tbody>
               <tbody>
@@ -227,21 +227,21 @@ layout: bare
                   <td class="bg-tint">0.996<span class="meter meter-accent" style="--w:57.2%"></span></td>
                   <td>1.213<span class="meter" style="--w:69.7%"></span></td>
                   <td>1.740<span class="meter" style="--w:100%"></span></td>
-                  <td class="cell-best">0.845<span class="meter" style="--w:48.6%"></span></td>
+                  <td class="td-best">0.845<span class="meter" style="--w:48.6%"></span></td>
                 </tr>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">8 streams,</span> in</th>
                   <td class="bg-tint">0.990<span class="meter meter-accent" style="--w:56.6%"></span></td>
                   <td>1.182<span class="meter" style="--w:67.6%"></span></td>
                   <td>1.748<span class="meter" style="--w:100%"></span></td>
-                  <td class="cell-best">0.866<span class="meter" style="--w:49.5%"></span></td>
+                  <td class="td-best">0.866<span class="meter" style="--w:49.5%"></span></td>
                 </tr>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">8 streams,</span> both</th>
                   <td class="bg-tint">0.948<span class="meter meter-accent" style="--w:63.2%"></span></td>
                   <td>1.087<span class="meter" style="--w:72.5%"></span></td>
                   <td>1.500<span class="meter" style="--w:100%"></span></td>
-                  <td class="cell-best">0.620<span class="meter" style="--w:41.3%"></span></td>
+                  <td class="td-best">0.620<span class="meter" style="--w:41.3%"></span></td>
                 </tr>
               </tbody>
             </table>
@@ -249,7 +249,7 @@ layout: bare
           <p class="note">In the "both" rows kernel IPsec carried only 4.67 and 4.14 of the 6 Gbit/s offered.</p>
         </figure>
         <figure class="mt-[2em]">
-          <figcaption class="mb-[.6em] flex flex-wrap gap-x-[1.5ch] text-fg"><b>Latency under saturation</b><span class="text-mute">RTT p99, ms</span><span class="text-dir">Lower is better</span></figcaption>
+          <figcaption class="mb-[.6em] flex flex-wrap gap-x-[1.5ch] text-fg"><b>Latency under saturation</b><span class="text-mute">RTT p99, ms</span><span class="text-hint">Lower is better</span></figcaption>
           <div class="overflow-x-auto">
             <table class="data-table data-table-wide max-sm:whitespace-normal">
               <thead>
@@ -267,20 +267,20 @@ layout: bare
                   <td class="bg-tint">2.01<span class="meter meter-accent" style="--w:95.7%"></span></td>
                   <td>2.10<span class="meter" style="--w:100%"></span></td>
                   <td>1.07<span class="meter" style="--w:51%"></span></td>
-                  <td class="cell-best">1.04<span class="meter" style="--w:49.5%"></span></td>
+                  <td class="td-best">1.04<span class="meter" style="--w:49.5%"></span></td>
                 </tr>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">1 stream,</span> in</th>
                   <td class="bg-tint">1.91<span class="meter meter-accent" style="--w:87.6%"></span></td>
                   <td>2.18<span class="meter" style="--w:100%"></span></td>
-                  <td class="cell-best">0.85<span class="meter" style="--w:39%"></span></td>
+                  <td class="td-best">0.85<span class="meter" style="--w:39%"></span></td>
                   <td>1.23<span class="meter" style="--w:56.4%"></span></td>
                 </tr>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">1 stream,</span> both</th>
                   <td class="bg-tint">3.17<span class="meter meter-accent" style="--w:100%"></span></td>
                   <td>3.15<span class="meter" style="--w:99.4%"></span></td>
-                  <td class="cell-best">1.65<span class="meter" style="--w:52.1%"></span></td>
+                  <td class="td-best">1.65<span class="meter" style="--w:52.1%"></span></td>
                   <td>1.76<span class="meter" style="--w:55.5%"></span></td>
                 </tr>
               </tbody>
@@ -289,21 +289,21 @@ layout: bare
                   <th scope="row"><span class="whitespace-nowrap">8 streams,</span> out</th>
                   <td class="bg-tint">2.77<span class="meter meter-accent" style="--w:16.9%"></span></td>
                   <td>16.40<span class="meter" style="--w:100%"></span></td>
-                  <td class="cell-best">1.26<span class="meter" style="--w:7.7%"></span></td>
+                  <td class="td-best">1.26<span class="meter" style="--w:7.7%"></span></td>
                   <td>1.53<span class="meter" style="--w:9.3%"></span></td>
                 </tr>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">8 streams,</span> in</th>
                   <td class="bg-tint">2.86<span class="meter meter-accent" style="--w:56.2%"></span></td>
                   <td>5.09<span class="meter" style="--w:100%"></span></td>
-                  <td class="cell-best">1.17<span class="meter" style="--w:23%"></span></td>
+                  <td class="td-best">1.17<span class="meter" style="--w:23%"></span></td>
                   <td>1.50<span class="meter" style="--w:29.5%"></span></td>
                 </tr>
                 <tr>
                   <th scope="row"><span class="whitespace-nowrap">8 streams,</span> both</th>
                   <td class="bg-tint">4.96<span class="meter meter-accent" style="--w:64.5%"></span></td>
                   <td>7.69<span class="meter" style="--w:100%"></span></td>
-                  <td class="cell-best">2.48<span class="meter" style="--w:32.2%"></span></td>
+                  <td class="td-best">2.48<span class="meter" style="--w:32.2%"></span></td>
                   <td>2.51<span class="meter" style="--w:32.6%"></span></td>
                 </tr>
               </tbody>
@@ -312,10 +312,10 @@ layout: bare
         </figure>
       </section>
 
-<section class="page-section">
+<section class="section">
         <h2 class="text-[1.5em] font-bold text-fg">Setup</h2>
         <h3 class="subhead mt-[1em]">Hardware</h3>
-        <dl class="spec-list">
+        <dl class="terms">
           <dt>Hosts</dt>
           <dd>2 x Dell PowerEdge C6420</dd>
           <dt>Processor</dt>
@@ -332,7 +332,7 @@ layout: bare
           <dd>Both hosts on the same Dell S5296F-ON</dd>
         </dl>
         <h3 class="subhead mt-[3em]">Software</h3>
-        <dl class="spec-list">
+        <dl class="terms">
           <dt>OS</dt>
           <dd>Debian 13</dd>
           <dt>Kernel</dt>
@@ -347,7 +347,7 @@ layout: bare
           <dd><a href="https://github.com/esnet/iperf/releases/tag/3.21" class="link">3.21</a></dd>
         </dl>
         <h3 class="subhead mt-[3em]">Method</h3>
-        <dl class="spec-list">
+        <dl class="terms">
           <dt>Traffic</dt>
           <dd>TCP with cubic at inner MTU 1400</dd>
           <dt>Streams</dt>

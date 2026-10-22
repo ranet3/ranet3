@@ -19,7 +19,7 @@ templ Docs(site ui.Site, doc Content) {
 						@navList(doc.Nav)
 					</div>
 				</details>
-				<article class="prose prose-site max-w-3xl">
+				<article class="prose prose-theme max-w-3xl">
 					<h1 class="font-mono">{ doc.Title }</h1>
 					<p class="lead">{ doc.Description }</p>
 					@templ.Raw(doc.Body)
