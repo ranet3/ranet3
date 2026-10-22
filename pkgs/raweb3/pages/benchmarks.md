@@ -45,7 +45,7 @@ layout: bare
           </table>
         </div>
         <p class="note">Medians of 3 runs under saturation</p>
-        <h3 class="subhead mt-[3em]">Head to head</h3>
+        <h2 class="subhead mt-[3em]">Head to head</h2>
         <div class="overflow-x-auto mt-[1em]">
           <table class="data-table data-table-left data-table-ruled max-sm:whitespace-normal">
             <thead>
@@ -79,7 +79,7 @@ layout: bare
           </table>
         </div>
         <p class="note">Each range is ranet3's result divided by the other dataplane's across the 6 tests below.</p>
-        <h3 class="subhead mt-[3em]">Kernel and userspace</h3>
+        <h2 class="subhead mt-[3em]">Kernel and userspace</h2>
         <p class="mt-[.6em] text-fg2">Userspace dataplanes copy every packet into their own process and are usually expected to be slower than kernel ones.</p>
         <div class="overflow-x-auto mt-[1em]">
           <table class="data-table max-sm:whitespace-normal">
@@ -122,14 +122,14 @@ layout: bare
         <p class="note">* Plain TCP without tunnel</p>
         <p class="note">Kernel WireGuard stays at 5.1 to 5.4 Gbit/s one way.</p>
         <p class="note">Kernel IPsec stays at 4.0 to 4.7 Gbit/s because its single flow lands on 1 NIC receive queue.</p>
-        <h3 class="subhead mt-[3em]">Full results</h3>
+        <h2 class="subhead mt-[3em]">Full results</h2>
         <figure class="mt-[2em]">
           <figcaption class="mb-[.6em] flex flex-wrap gap-x-[1.5ch] text-fg"><b>Throughput, saturated</b><span class="text-mute">Gbit/s received</span><span class="text-hint">Higher is better</span></figcaption>
           <div class="overflow-x-auto">
             <table class="data-table data-table-wide max-sm:whitespace-normal">
               <thead>
                 <tr>
-                  <th scope="col"></th>
+                  <td></td>
                   <th scope="col" class="bg-acc font-bold text-bg">ranet3<small class="text-bg">user</small></th>
                   <th scope="col">wireguard-go<small>user</small></th>
                   <th scope="col">WireGuard<small>kernel</small></th>
@@ -191,7 +191,7 @@ layout: bare
             <table class="data-table data-table-wide max-sm:whitespace-normal">
               <thead>
                 <tr>
-                  <th scope="col"></th>
+                  <td></td>
                   <th scope="col" class="bg-acc font-bold text-bg">ranet3<small class="text-bg">user</small></th>
                   <th scope="col">wireguard-go<small>user</small></th>
                   <th scope="col">WireGuard<small>kernel</small></th>
@@ -254,7 +254,7 @@ layout: bare
             <table class="data-table data-table-wide max-sm:whitespace-normal">
               <thead>
                 <tr>
-                  <th scope="col"></th>
+                  <td></td>
                   <th scope="col" class="bg-acc font-bold text-bg">ranet3<small class="text-bg">user</small></th>
                   <th scope="col">wireguard-go<small>user</small></th>
                   <th scope="col">WireGuard<small>kernel</small></th>

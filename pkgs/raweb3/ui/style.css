@@ -253,8 +253,7 @@
     }
   }
   .section {
-    @apply mx-auto max-w-[92ch] px-4 py-12 text-[15px] leading-normal
-      max-sm:text-[13px];
+    @apply mx-auto max-w-[92ch] px-4 py-12 text-[15px] leading-normal;
   }
   .subhead {
     @apply text-[1em] font-bold text-acc;
@@ -298,7 +297,7 @@
     & :where(th, td) {
       @apply px-[1ch] py-[.45em] text-right font-normal text-fg2;
     }
-    & :where(thead th) {
+    & :where(thead > tr > *) {
       @apply border-b border-line align-bottom;
     }
     & :where(thead small) {
@@ -330,9 +329,9 @@
   .data-table-ruled :where(tbody tr > *) {
     @apply border-b border-line py-[.7em];
   }
-  /* columns of figures wide enough to compare on a screen, tight on a phone */
+  /* columns of figures wide enough to compare on a screen, tight on a phone,
+     where the table scrolls rather than shrink its text */
   .data-table-wide {
-    @apply max-sm:text-[.85em];
     & :where(td) {
       @apply min-w-[9ch] max-sm:min-w-0;
     }
@@ -349,6 +348,12 @@
   .td-best {
     @apply font-bold text-fg before:mr-[1ch] before:font-normal before:text-acc
       before:content-['\25B8'];
+    /* the marker reads as a word to assistive tech, which would read the
+       glyph. A browser without alternative text for content keeps the glyph
+       alone */
+    &::before {
+      content: "\25B8" / "best ";
+    }
   }
   /* the tokens of a highlighted code block, in the color nord's syntax guide
      gives each kind, or its VS Code port where the guide says nothing, light
