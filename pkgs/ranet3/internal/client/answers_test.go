@@ -9,6 +9,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
@@ -26,7 +27,8 @@ func tableOf(addresses ...string) *kernel.Table {
 
 // a router-id is the first global address cap.table assigns in its family that an announced prefix covers, else the first host prefix of it cap.route announces
 // and the SID is the first End SID of cap.segment local that an announced prefix covers
-// a prefix covers only where it has no source and does not capture the machine, so a default, its halves and a source-specific entry never do
+// a prefix covers only where it has no source and does not count as a default with cap.border's overlay
+// so a default, its halves and a source-specific entry never do, nor a prefix shorter than /8 or /16 the overlay leaves uncovered, fd00::/8 among them
 // an address no packet from elsewhere may come from, a network's base address and a prefix covering more than one host never is one
 func TestAnswerSourcesAreTheRouterIDsAndTheFirstSID(t *testing.T) {
 	for _, tc := range []struct {
@@ -71,6 +73,33 @@ func TestAnswerSourcesAreTheRouterIDsAndTheFirstSID(t *testing.T) {
 				Table: tableOf("10.67.0.5/32", "198.51.100.5/32", "3fff:2::5/128"),
 				Route: &babel.Routes{Announce: announce("0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1", "10.66.0.0/24", "3fff:1::/48")},
 			}},
+		},
+		{
+			name: "a table and a segment only prefixes shorter than /8 or /16 outside the overlay cover",
+			cfg: config.Config{Cap: config.Caps{
+				Table:   tableOf("192.0.2.5/32", "fd00::5/128"),
+				Route:   &babel.Routes{Announce: announce("192.0.0.0/7", "fd00::/8")},
+				Border:  &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")}},
+				Segment: &srv6.Segments{Local: []srv6.Segment{{SID: schema.MustAddr("fd00::1"), Behavior: srv6.BehaviorEnd}}},
+			}},
+		},
+		{
+			name: "the same prefixes without cap.border",
+			cfg: config.Config{Cap: config.Caps{
+				Table:   tableOf("192.0.2.5/32", "fd00::5/128"),
+				Route:   &babel.Routes{Announce: announce("192.0.0.0/7", "fd00::/8")},
+				Segment: &srv6.Segments{Local: []srv6.Segment{{SID: schema.MustAddr("fd00::1"), Behavior: srv6.BehaviorEnd}}},
+			}},
+		},
+		{
+			name: "the same prefixes inside the overlay",
+			cfg: config.Config{Cap: config.Caps{
+				Table:   tableOf("192.0.2.5/32", "fd00::5/128"),
+				Route:   &babel.Routes{Announce: announce("192.0.0.0/7", "fd00::/8")},
+				Border:  &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("192.0.0.0/7"), schema.MustPrefix("fd00::/8")}},
+				Segment: &srv6.Segments{Local: []srv6.Segment{{SID: schema.MustAddr("fd00::1"), Behavior: srv6.BehaviorEnd}}},
+			}},
+			router4: "192.0.2.5", router6: "fd00::5", sid: "fd00::1",
 		},
 		{
 			name: "a table and a host prefix only source-specific entries cover",

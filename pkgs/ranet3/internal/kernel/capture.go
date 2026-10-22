@@ -20,11 +20,6 @@ import (
 // machine has no working network at all.
 const DefaultCaptureGrace = 10 * time.Second
 
-// CapturesTheMachine reports a prefix of at most one bit or one holding its family's all-zeros address, the rule answerSources reads
-func CapturesTheMachine(prefix netip.Prefix) bool {
-	return prefix.Bits() <= 1 || schema.HoldsUnspecified(prefix)
-}
-
 func (r *Reconciler) captures(route Route) bool {
 	return schema.CapturesTheMachine(route.Destination, r.rt.Overlay)
 }
