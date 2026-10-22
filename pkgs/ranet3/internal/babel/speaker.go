@@ -520,8 +520,19 @@ func (s *Speaker) OriginateFrom(dest, source netip.Prefix) {
 // through to a covering route, and on a node holding one that is straight back
 // out to a neighbor which learned this prefix from here at metric 0 and
 // returns it.
+//
+// a host prefix takes with it every route learned to the same address from a source, which receive drops from then on
+// since the host delivers its own address whatever the source
 func (s *Speaker) adoptOwnLocked(key routeKey) {
 	delete(s.routes.entries, key)
+	if key.dest.IsSingleIP() {
+		for learned := range s.routes.entries {
+			if learned.dest == key.dest {
+				delete(s.routes.entries, learned)
+				s.mesh.Routes.Remove(learned.source, learned.dest)
+			}
+		}
+	}
 	s.mesh.Routes.Set(key.source, key.dest, s.ownEntryLocked(key))
 }
 
@@ -570,6 +581,19 @@ func (s *Speaker) ownsLocked(key routeKey) bool {
 	_, originated := s.originate[key]
 	_, assigned := s.assigned[key]
 	return originated || assigned
+}
+
+// ownsHostLocked reports a host prefix this node holds as its own under any source, an address cap.table assigns it or a /32 or /128 it originates
+func (s *Speaker) ownsHostLocked(dest netip.Prefix) bool {
+	if _, assigned := s.assigned[routeKey{dest: dest}]; assigned {
+		return true
+	}
+	for key := range s.originate {
+		if key.dest == dest {
+			return true
+		}
+	}
+	return false
 }
 
 // SetRoutes applies the cap.route capability, which a reload may replace. Only

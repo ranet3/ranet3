@@ -8,6 +8,7 @@ package babel
 import (
 	"fmt"
 	"maps"
+	"net/netip"
 	"slices"
 	"testing"
 	"time"
@@ -18,6 +19,11 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
+
+// ownsHost reports a host prefix one of own holds under any source, for which a node drops every route a neighbor offers whatever its source
+func ownsHost(own []routeKey, dest netip.Prefix) bool {
+	return dest.IsSingleIP() && slices.ContainsFunc(own, func(key routeKey) bool { return key.dest == dest })
+}
 
 func TestNodeHoldsExactlyWhatItsNeighborAnnouncesAfterItsFirstHello(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
@@ -35,11 +41,13 @@ func TestNodeHoldsExactlyWhatItsNeighborAnnouncesAfterItsFirstHello(t *testing.T
 			w.b.OriginateFrom(key.dest, key.source)
 		}
 		// an end holds its own keys as Local and every other key through its neighbor,
-		// so a key that both announce stays its own at each
+		// so a key that both announce stays its own at each, and one for a host prefix an end holds under another source goes nowhere there
 		held := func(own, announced []routeKey, neighbor *netstack.Peer) map[routeKey]*netstack.Peer {
 			want := make(map[routeKey]*netstack.Peer, len(own)+len(announced))
 			for _, key := range announced {
-				want[key] = neighbor
+				if !ownsHost(own, key.dest) {
+					want[key] = neighbor
+				}
 			}
 			for _, key := range own {
 				want[key] = netstack.Local
@@ -139,7 +147,7 @@ func TestNodeHoldsWhatItRelayedOnceItsNeighborGoes(t *testing.T) {
 		w.deliver()
 		w.a.AddPeer(c.Peer, identity.Identity{})
 		for key := range retracted {
-			if value, ok := entryAt(w.a.mesh, key); !own[key] && (!ok || value != w.peerBForA.Peer) {
+			if value, ok := entryAt(w.a.mesh, key); !own[key] && !ownsHost(keysA, key.dest) && (!ok || value != w.peerBForA.Peer) {
 				ht.Fatalf("a holds %s for %s before b goes, so this proves nothing", peerName(value), describeRoute(key))
 			}
 		}
@@ -172,7 +180,7 @@ func TestNodeHoldsWhatItRelayedOnceItsNeighborGoes(t *testing.T) {
 		ends := make(map[routeKey]time.Time)
 		for key := range retracted {
 			switch {
-			case own[key]:
+			case own[key], ownsHost(keysA, key.dest):
 			case relayedAfter && !retracted[key]:
 				ends[key] = later.Add(hold)
 			case relayed:

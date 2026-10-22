@@ -113,6 +113,47 @@ func TestLearnedRouteNeverReplacesThisNodesOwnEntry(t *testing.T) {
 	}
 }
 
+// a neighbor's route to a host address of this node's from any source is dropped, an address cap.table assigns and a host prefix it originates alike
+// so the address is delivered whatever a packet's source, as the host's kernel delivers it
+// one learned before the address became this node's goes with it, and a wider prefix from a source keeps RFC 9079 section 4's order
+func TestRouteToAHostAddressOfThisNodeFromASourceIsDropped(t *testing.T) {
+	fabric := newMeshFabric(t, Config{}, "a-b")
+	a, b := fabric.speakers["a"], fabric.speakers["b"]
+	assigned, originated := netip.MustParseAddr("2001:db8:5::1"), netip.MustParseAddr("2001:db8:5::2")
+	from := netip.MustParsePrefix("2001:db8:9::/48")
+	sender := netip.MustParseAddr("2001:db8:9::1")
+	earlier := routeKey{source: from, dest: netip.MustParsePrefix("2001:db8:5::1/128")}
+	b.OriginateFrom(earlier.dest, earlier.source)
+	fabric.flush("b")
+	if _, learned := a.routes.entries[earlier]; !learned {
+		t.Fatalf("a did not learn %s before the address was its own, so this proves nothing", describeRoute(earlier))
+	}
+	a.SetAssigned([]netip.Addr{assigned})
+	a.Originate(netip.PrefixFrom(originated, 128))
+	if _, learned := a.routes.entries[earlier]; learned {
+		t.Errorf("%s stayed learned once its address was a's own", describeRoute(earlier))
+	}
+	if _, ok := entryAt(fabric.meshes["a"], earlier); ok {
+		t.Errorf("%s stayed in a's forwarding table once its address was a's own", describeRoute(earlier))
+	}
+	wider := routeKey{source: from, dest: netip.MustParsePrefix("2001:db8:5::/64")}
+	for _, key := range []routeKey{earlier, {source: from, dest: netip.PrefixFrom(originated, 128)}, wider} {
+		fabric.offer("a", "b", "b", key, 9, 1)
+		_, learned := a.routes.entries[key]
+		if want := key == wider; learned != want {
+			t.Errorf("b's offer of %s entered a's route table %t, want %t", describeRoute(key), learned, want)
+		}
+	}
+	for _, address := range []netip.Addr{assigned, originated} {
+		if _, verdict, _ := fabric.meshes["a"].Routes.Resolve(sender, address); verdict != netstack.RouteLocal {
+			t.Errorf("a packet from %s to %s resolves as verdict %d, want this node's own", sender, address, verdict)
+		}
+	}
+	if _, verdict, _ := fabric.meshes["a"].Routes.Resolve(sender, netip.MustParseAddr("2001:db8:5::3")); verdict != netstack.RoutePeer {
+		t.Errorf("a packet from %s inside the wider prefix b offers resolves as verdict %d, want b's route", sender, verdict)
+	}
+}
+
 // An address cap.table assigns is this node's own and is never announced. A
 // neighbor told of it before, as a route this node relayed, is sent a
 // retraction by the next dump, and no dump after that mentions it. A route
