@@ -153,34 +153,46 @@
     @apply text-acc underline decoration-accl underline-offset-[.2em]
       hover:decoration-current;
   }
+  /* both kinds take a border, so they are as tall as each other */
   .btn-primary {
-    @apply bg-acc px-[18px] py-3 font-bold text-bg;
+    @apply inline-block border border-acc bg-acc px-[18px] py-3 font-bold
+      text-bg;
   }
   .btn-secondary {
-    @apply border border-line px-[18px] py-3 text-fg;
+    @apply inline-block border border-line px-[18px] py-3 text-fg;
+  }
+  /* a line box places the letters where the font's ascent and descent put
+     them, off center by the font's own amount, 1.5px high in Liberation Mono.
+     Trimmed to the capitals and the baseline, even padding centers them */
+  @supports (text-box: trim-both cap alphabetic) {
+    .btn-primary,
+    .btn-secondary {
+      @apply py-[18px];
+      text-box: trim-both cap alphabetic;
+    }
   }
   .label {
     @apply text-[13px] text-mute;
   }
   /* an icon after the text, drawn as the theme switch draws its icons: a 24px
-     grid, a 2px round stroke, the text's color. Its box is one line tall at
-     the top of the flex or grid it sits in, so it centers on the first line,
-     which a glyph of the font does not */
+     grid, a 2px round stroke, the text's color, 1em square */
   .arrow,
   .row {
     --icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M5 12h14M13 6l6 6-6 6'/></svg>");
     &::after {
       content: "";
-      flex: none;
-      align-self: start;
       width: 1em;
-      height: 1lh;
       background-color: currentColor;
-      mask: var(--icon) center / contain no-repeat;
+      mask: var(--icon) center / 1em no-repeat;
     }
   }
-  .arrow {
-    @apply inline-flex items-center gap-[1ch];
+  /* in a run of text the icon's box stands on the baseline as tall as a
+     capital, so it centers on the capitals as the letters do, which a glyph
+     of the font does not */
+  .arrow::after {
+    display: inline-block;
+    height: 1cap;
+    margin-left: 1ch;
   }
   /* one row of a list: a short lead such as a number, the body, and an icon
      at the end, an arrow unless a fold sets another. A small in the body is a
@@ -188,6 +200,11 @@
   .row {
     @apply grid grid-cols-[4ch_minmax(0,1fr)_auto] gap-4 border-b border-line
       px-1 py-[18px] text-left text-fg after:text-acc hover:bg-bg2;
+    /* one line tall at the top, so the icon stays on the title's line */
+    &::after {
+      align-self: start;
+      height: 1lh;
+    }
     & small {
       @apply mt-1 block text-[.9em] text-mute;
     }
