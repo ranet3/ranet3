@@ -23,6 +23,7 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
+	extast "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/renderer/html"
@@ -233,9 +234,10 @@ func (p *page) check() error {
 	return errors.Join(errs...)
 }
 
-// render points every link of the page at where its target is served and
-// renders the page. A relative link must name another page by its file, and a
-// fragment one of that page's headings.
+// render points every link of the page at where its target is served, makes
+// every table focusable, since a table wider than the page scrolls and a
+// keyboard has to reach it, and renders the page. A relative link must name
+// another page by its file, and a fragment one of that page's headings.
 func (p *page) render(bySrc map[string]*page) []error {
 	var errs []error
 	ast.Walk(p.root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -245,6 +247,10 @@ func (p *page) render(bySrc map[string]*page) []error {
 			dest = &n.Destination
 		case *ast.Image:
 			dest = &n.Destination
+		case *extast.Table:
+			if entering {
+				n.SetAttributeString("tabindex", []byte("0"))
+			}
 		}
 		if !entering || dest == nil {
 			return ast.WalkContinue, nil
