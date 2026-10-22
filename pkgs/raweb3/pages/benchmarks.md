@@ -4,13 +4,14 @@
 title: "Benchmarks"
 description: "ranet3 against kernel WireGuard, wireguard-go and kernel IPsec on 10 GbE, with the hardware, software and method of the runs."
 created: 2026-10-21
-updated: 2026-10-21
+updated: 2026-10-22
 vetted: 2026-10-21
 layout: bare
 ---
 
 <section class="section">
         <h1 class="text-[2em] font-bold text-fg">Benchmarks</h1>
+        <p class="note">Measured on 2026-10-15</p>
         <div class="overflow-x-auto mt-[1em]" tabindex="0">
           <table class="data-table data-table-left max-sm:whitespace-normal">
             <thead>
