@@ -111,7 +111,7 @@ type SegmentCounters struct {
 	Answered uint64
 	// Egressed counts the packets the egress device accepted
 	Egressed uint64
-	// Refused counts the packets a local SID refused for their source, an outer source outside cap.border overlay at any SID or, at an egress segment, a source outside its allow list or an inner source it cannot read, a part of Dropped never answered
+	// Refused counts the packets a local SID refused for their source, an outer source outside cap.border overlay at any SID or, at an egress segment, a source outside its allow list, an inner source it cannot read, an inner packet no router forwards or one the mesh routes no reply to, a part of Dropped never answered
 	Refused uint64
 	// NotReady counts the egress results dropped with no egress device installed, closed under the write or not ready for their family
 	// it is this node's own state, so it is not in Dropped
@@ -170,8 +170,7 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 		}
 	}
 	var forward []forwardedSegment
-	var ready uint32
-	readyRead := false
+	var check egressCheck
 	for i, frame := range frames {
 		packet := frame[TUNHeadroom:]
 		result := act(packet)
@@ -188,11 +187,32 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 			keep(frame[len(frame)-TUNHeadroom-len(result.Inner):], true)
 		case srv6.ActionEgress:
 			take(i)
-			if !readyRead {
-				ready, readyRead = m.egressReady.Load(), true
+			// past the allow list the inner source has to be one the mesh routes a reply to, as the decision's egress has
+			version := byte(6)
+			if result.Family == srv6.NextHeaderIPv4 {
+				version = 4
+			}
+			source, destination := addressesOf(result.Inner, version)
+			// the host forwards what the uplink takes, so the martians the decision drops are dropped here too
+			if martian(source, destination) {
+				m.segmentsDropped.Add(1)
+				m.segmentsRefused.Add(1)
+				if m.segmentDropDue() {
+					slog.Warn("an egress segment refused an inner packet no router forwards", "interface", m.Name, "source", source, "destination", destination)
+				}
+				continue
+			}
+			if !m.routed(&check, source, destination) {
+				m.segmentsDropped.Add(1)
+				m.segmentsRefused.Add(1)
+				// the source is boxed only for the one refusal an interval reports
+				if m.segmentDropDue() {
+					slog.Warn("an egress segment refused an inner source the mesh routes no reply to", "interface", m.Name, "source", source)
+				}
+				continue
 			}
 			// a packet written while its family's translation is missing leaves the uplink untranslated
-			if ready&egressReadyFor(result.Family) == 0 {
+			if !m.readyFor(&check, result.Family, false) {
 				m.segmentsNotReady.Add(1)
 				continue
 			}
@@ -220,6 +240,11 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 		return frames, nil
 	}
 	return routed, granted
+}
+
+// martian is a packet the decision drops as one no router forwards, by its source or by its destination
+func martian(source, destination netip.Addr) bool {
+	return packet.InvalidSource(source) || martianDestination(destination)
 }
 
 // actLocally runs this node's own segments until the packet is going somewhere
@@ -529,24 +554,24 @@ func (m *Mesh) ICMPWithheld() (source, node uint64) {
 	return m.icmpLimit.withheld(icmpBySource), m.icmpLimit.withheld(icmpByNode)
 }
 
-// reportSegmentDrop writes at most one line per interval, whatever the reason,
-// so a peer sending a stream of refused headers costs a counter rather than a
-// log. The counter is the record, while the line is there to say what kind.
+// reportSegmentDrop writes at most one line per interval, whatever the reason
+// so a peer sending a stream of refused headers costs a counter rather than a log, the counter being the record and the line saying what kind
 func (m *Mesh) reportSegmentDrop(message string, args ...any) {
-	if m.segmentsStarted.IsZero() {
-		// time.Since of a zero time saturates, so an unstarted counter set
-		// would report once and then suppress everything for 292 years. A
-		// Mesh built without startSegmentReports only exists in a test, and
-		// reporting is the answer that cannot hide anything.
+	if m.segmentDropDue() {
 		slog.Warn(message, append([]any{"interface", m.Name}, args...)...)
-		return
+	}
+}
+
+// segmentDropDue claims the interval's one segment drop report, and a caller holding it writes the line
+// a mesh built without startSegmentReports, which only a test builds, reports every drop
+// since time.Since of a zero time saturates and would hold every report after the first
+func (m *Mesh) segmentDropDue() bool {
+	if m.segmentsStarted.IsZero() {
+		return true
 	}
 	now := int64(time.Since(m.segmentsStarted))
 	previous := m.segmentReported.Load()
-	if now-previous < int64(segmentDropInterval) || !m.segmentReported.CompareAndSwap(previous, now) {
-		return
-	}
-	slog.Warn(message, append([]any{"interface", m.Name}, args...)...)
+	return now-previous >= int64(segmentDropInterval) && m.segmentReported.CompareAndSwap(previous, now)
 }
 
 // segmentCounters is the atomic half of SegmentCounters, embedded in Mesh.

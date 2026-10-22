@@ -319,7 +319,7 @@ func TestNodeWithNoEgressSegmentOriginatesNoSID(t *testing.T) {
 	cfg := &config.Config{Cap: config.Caps{Segment: &srv6.Segments{Local: []srv6.Segment{{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEnd}}}}}
 	c := &Client{}
 	c.egressServes.Store(true)
-	if routes := c.announced(cfg); len(routes) != 0 {
+	if routes := c.announced(cfg, c.egressAdvertised()); len(routes) != 0 {
 		t.Errorf("a waypoint originated %v", routes)
 	}
 }

@@ -340,7 +340,7 @@ type SegmentCounters struct {
 	Answered uint64 `json:"answered"`
 	// Egressed counts the packets the egress device accepted
 	Egressed uint64 `json:"egressed"`
-	// Refused counts the packets a local SID refused for their source, an outer source outside cap.border overlay at any SID or, at an egress segment, a source outside its allow list or an inner source it cannot read, a part of Dropped never answered
+	// Refused counts the packets a local SID refused for their source, an outer source outside cap.border overlay at any SID or, at an egress segment, a source outside its allow list, an inner source it cannot read, an inner packet no router forwards or one the mesh routes no reply to, a part of Dropped never answered
 	Refused uint64 `json:"refused"`
 	// NotReady counts the egress results dropped with no egress device installed, closed under the write or not ready for their family, which is not in Dropped
 	NotReady uint64 `json:"not_ready"`
@@ -354,19 +354,21 @@ type SegmentCounters struct {
 // Answered counts the ICMP errors sent about dropped packets, and Unanswered the dropped packets the decision would answer that find no address of their family to come from
 // counted before the rules that keep an error from answering a packet and before the rate
 type TransitCounters struct {
-	Forwarded   uint64 `json:"forwarded"`
-	Delivered   uint64 `json:"delivered"`
-	Expired     uint64 `json:"expired"`
-	NoRoute     uint64 `json:"no_route"`
-	Held        uint64 `json:"held"`
-	Refused     uint64 `json:"refused"`
-	Invalid     uint64 `json:"invalid"`
-	Martian     uint64 `json:"martian"`
-	SourceRoute uint64 `json:"source_route"`
-	TooBig      uint64 `json:"too_big"`
-	Multicast   uint64 `json:"multicast"`
-	Answered    uint64 `json:"answered"`
-	Unanswered  uint64 `json:"unanswered"`
+	Forwarded      uint64 `json:"forwarded"`
+	Delivered      uint64 `json:"delivered"`
+	Expired        uint64 `json:"expired"`
+	NoRoute        uint64 `json:"no_route"`
+	Held           uint64 `json:"held"`
+	Refused        uint64 `json:"refused"`
+	Invalid        uint64 `json:"invalid"`
+	Martian        uint64 `json:"martian"`
+	SourceRoute    uint64 `json:"source_route"`
+	UnroutedSource uint64 `json:"unrouted_source"`
+	NotReady       uint64 `json:"not_ready"`
+	TooBig         uint64 `json:"too_big"`
+	Multicast      uint64 `json:"multicast"`
+	Answered       uint64 `json:"answered"`
+	Unanswered     uint64 `json:"unanswered"`
 }
 
 // Drops are the reasons a packet is dropped, in the order status and the metrics name them, with their counts in c
@@ -379,6 +381,8 @@ func (c TransitCounters) Drops() []TransitDrop {
 		{"invalid", "invalid", c.Invalid},
 		{"martian", "martian", c.Martian},
 		{"source_route", "source route", c.SourceRoute},
+		{"unrouted_source", "unrouted source", c.UnroutedSource},
+		{"not_ready", "not ready", c.NotReady},
 		{"too_big", "too big", c.TooBig},
 		{"multicast", "multicast", c.Multicast},
 	}

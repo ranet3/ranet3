@@ -19,6 +19,24 @@ type egressSlot struct {
 	egress   atomic.Pointer[egressDevice]
 	// egressReady holds egressReady4 and egressReady6 for the families SetEgressReady last named ready, none at first
 	egressReady atomic.Uint32
+	// advertisedReady holds the same bits for the families SetAdvertisedReady last named ready, none at first
+	advertisedReady atomic.Uint32
+}
+
+// SetAdvertisedReady tells the mesh which families cap.egress translates for the prefixes it advertises, those the translator lets this node announce
+// a packet egressing through such a prefix of a family that is not ready is dropped and counted not ready
+// the egress device's readiness is not it, since a node with no egress segment has no device and its translation of advertised prefixes is ready all the same
+func (m *Mesh) SetAdvertisedReady(v4, v6 bool) { m.advertisedReady.Store(readyBits(v4, v6)) }
+
+func readyBits(v4, v6 bool) uint32 {
+	var ready uint32
+	if v4 {
+		ready |= egressReady4
+	}
+	if v6 {
+		ready |= egressReady6
+	}
+	return ready
 }
 
 const (
@@ -30,16 +48,7 @@ const (
 // translated, from the translator's last pass and, under cap.border, the
 // border filter's, and an egress result of a family that is not ready is
 // dropped and counted NotReady
-func (m *Mesh) SetEgressReady(v4, v6 bool) {
-	var ready uint32
-	if v4 {
-		ready |= egressReady4
-	}
-	if v6 {
-		ready |= egressReady6
-	}
-	m.egressReady.Store(ready)
-}
+func (m *Mesh) SetEgressReady(v4, v6 bool) { m.egressReady.Store(readyBits(v4, v6)) }
 
 // egressReadyFor is the bit of egressReady that family, an srv6 next header, needs
 func egressReadyFor(family uint8) uint32 {

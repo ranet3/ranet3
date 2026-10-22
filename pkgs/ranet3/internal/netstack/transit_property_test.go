@@ -271,7 +271,7 @@ func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
 			}
 		}
 
-		allow := []schema.Prefix{schema.PrefixFrom(transitOverlay[0]), schema.PrefixFrom(transitOverlay[1])}
+		allow := transitOverlay
 		var handoffs atomic.Int64
 		meshes := make([]*Mesh, n)
 		tuns := make([]*scriptedDevice, n)

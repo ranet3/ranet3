@@ -8,11 +8,13 @@ package netstack
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"hegel.dev/go/hegel"
 
 	"ranet3.com/pkgs/ranet3/internal/pbt"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // entryKind is the kind of value one entry of a drawn table holds
@@ -50,9 +52,64 @@ func (e tableEntry) matches(src, dst netip.Addr) bool {
 }
 
 // routeModel is a drawn table as a plain list, one entry per key, the last one written for a key kept
+// with the overlay and the prefixes cap.egress advertises as last handed to the table
 type routeModel struct {
 	entries []tableEntry
 	peers   []*Peer
+	overlay []schema.Prefix
+	egress  []netip.Prefix
+}
+
+// reload hands rt cap.border's overlay, the prefixes cap.egress advertises or both, in a drawn order
+// a reload of the config hands the overlay alone, since a change to cap.egress waits for a restart
+// so each setter has to flag the entries again on its own
+func (m *routeModel) reload(tc hegel.TestCase, rt *RouteTable, anchors4, anchors6 []netip.Addr) {
+	overlay := func() {
+		m.overlay = m.drawOverlay(tc, anchors4, anchors6)
+		rt.SetOverlay(m.overlay)
+	}
+	egress := func() {
+		m.egress = nil
+		for _, e := range m.entries {
+			if hegel.Draw(tc, hegel.Booleans()) {
+				m.egress = append(m.egress, e.destination)
+			}
+		}
+		rt.SetEgress(m.egress)
+	}
+	switch hegel.Draw(tc, hegel.Integers(0, 3)) {
+	case 0:
+		overlay()
+	case 1:
+		egress()
+	case 2:
+		overlay()
+		egress()
+	default:
+		egress()
+		overlay()
+	}
+}
+
+// drawOverlay draws cap.border's overlay near the anchors and over the destinations held
+// an overlay prefix over a destination held covers or uncovers an entry written before the reload
+// so an entry shorter than the floor changes whether it counts as a default
+func (m *routeModel) drawOverlay(tc hegel.TestCase, anchors4, anchors6 []netip.Addr) []schema.Prefix {
+	var overlay []schema.Prefix
+	for range hegel.Draw(tc, pbt.Spanning(0, 3)) {
+		anchors := anchors6
+		if hegel.Draw(tc, hegel.Booleans()) {
+			anchors = anchors4
+		}
+		overlay = append(overlay, schema.PrefixFrom(drawPrefix(tc, anchors).Masked()))
+	}
+	for _, e := range m.entries {
+		if hegel.Draw(tc, hegel.Booleans()) {
+			over := netip.PrefixFrom(e.destination.Addr(), hegel.Draw(tc, pbt.Spanning(0, e.destination.Bits())))
+			overlay = append(overlay, schema.PrefixFrom(over.Masked()))
+		}
+	}
+	return overlay
 }
 
 func (m *routeModel) set(e tableEntry) {
@@ -91,10 +148,15 @@ func (m *routeModel) best(src, dst netip.Addr) (tableEntry, bool) {
 }
 
 // answer resolves a packet from src to dst by the model
-// the match carries the best entry's destination length
+// the match carries the best entry's destination length, whether it counts as a default with the overlay
+// and whether it is this node's own for a prefix cap.egress advertises, with no source
 func (m *routeModel) answer(src, dst netip.Addr) (*Peer, Verdict, Match) {
 	e, ok := m.best(src, dst)
-	match := Match{Bits: e.destination.Bits()}
+	match := Match{
+		Bits:    e.destination.Bits(),
+		Counted: schema.CapturesTheMachine(e.destination, m.overlay),
+		Egress:  e.kind == localEntry && !e.source.IsValid() && slices.Contains(m.egress, e.destination),
+	}
 	switch {
 	case !ok:
 		return nil, RouteNone, Match{}
@@ -118,18 +180,20 @@ func anchorNear(tc hegel.TestCase, address netip.Addr, keep int) netip.Addr {
 	return out
 }
 
+// drawPrefix draws a prefix of the family of anchors near one of them, so prefixes nest and diverge at a drawn depth
+func drawPrefix(tc hegel.TestCase, anchors []netip.Addr) netip.Prefix {
+	width := anchors[0].BitLen()
+	anchor := hegel.Draw(tc, hegel.SampledFrom(anchors))
+	address := anchorNear(tc, anchor, hegel.Draw(tc, pbt.Spanning(0, width)))
+	return netip.PrefixFrom(address, hegel.Draw(tc, pbt.Spanning(0, width)))
+}
+
 // drawEntry draws one entry of the family of anchors, its prefixes near one
 // of them so entries nest and diverge at a drawn depth, and a source or none
 func drawEntry(tc hegel.TestCase, anchors []netip.Addr, peers int) tableEntry {
-	width := anchors[0].BitLen()
-	prefix := func() netip.Prefix {
-		anchor := hegel.Draw(tc, hegel.SampledFrom(anchors))
-		address := anchorNear(tc, anchor, hegel.Draw(tc, pbt.Spanning(0, width)))
-		return netip.PrefixFrom(address, hegel.Draw(tc, pbt.Spanning(0, width)))
-	}
-	e := tableEntry{destination: prefix()}
+	e := tableEntry{destination: drawPrefix(tc, anchors)}
 	if hegel.Draw(tc, hegel.Booleans()) {
-		e.source = prefix()
+		e.source = drawPrefix(tc, anchors)
 	}
 	e.kind = hegel.Draw(tc, hegel.SampledFrom([]entryKind{learnedEntry, heldEntry, localEntry, assignedEntry}))
 	e.peer = hegel.Draw(tc, hegel.Integers(0, peers-1))
@@ -174,6 +238,9 @@ func edges(p netip.Prefix) []netip.Addr {
 // anywhere.
 // the length answered is the preferred entry's destination
 // shorter than the deepest destination holding the packet whenever every source there misses it
+// the entry counts as a default exactly where schema.CapturesTheMachine counts its destination with the overlay last handed to the table
+// and is flagged an egress exactly where it is this node's own for a prefix cap.egress last advertised to the table, with no source
+// reloads come between writes and hand the overlay, the egress prefixes or both, so each setter alone flags an entry written before it again
 func TestResolveAgreesWithLongestMatchUnderTheHold(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		anchors4 := hegel.Draw(ht, hegel.Lists(hegel.IPAddresses().IPv4()).MinSize(1).MaxSize(3))
@@ -187,6 +254,10 @@ func TestResolveAgreesWithLongestMatchUnderTheHold(t *testing.T) {
 		rt := NewRouteTable()
 		count := hegel.Draw(ht, pbt.Spanning(1, 12))
 		for range count {
+			// a reload between writes leaves entries written under the overlay and the egress prefixes before it
+			if hegel.Draw(ht, hegel.WeightedBooleans(1.0/4)) {
+				m.reload(ht, rt, anchors4, anchors6)
+			}
 			anchors := anchors6
 			if hegel.Draw(ht, hegel.Booleans()) {
 				anchors = anchors4
@@ -203,6 +274,9 @@ func TestResolveAgreesWithLongestMatchUnderTheHold(t *testing.T) {
 			}
 			rt.Set(e.source, e.destination, value)
 			m.set(e)
+		}
+		if hegel.Draw(ht, hegel.Booleans()) {
+			m.reload(ht, rt, anchors4, anchors6)
 		}
 
 		froms := []netip.Addr{{}}
@@ -229,8 +303,8 @@ func TestResolveAgreesWithLongestMatchUnderTheHold(t *testing.T) {
 					if e, found := m.best(from, to); found {
 						best = e.GoString()
 					}
-					ht.Fatalf("a packet from %v to %v resolved as verdict %d through %v under /%d, where the longest match is %s, in %#v",
-						from, to, verdict, peer, match.Bits, best, m.entries)
+					ht.Fatalf("a packet from %v to %v resolved as verdict %d through %v under %+v, where the longest match is %s, in %#v under the overlay %v and the egress prefixes %v",
+						from, to, verdict, peer, match, best, m.entries, m.overlay, m.egress)
 				}
 			}
 		}

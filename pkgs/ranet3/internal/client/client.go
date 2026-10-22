@@ -355,10 +355,17 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 	c.cfg.Store(cfg)
 	c.storeIndex(x)
 	mesh.SetAnswerSources(answerSources(cfg))
+	startDecision(mesh, cfg)
+	return c, nil
+}
+
+// startDecision hands mesh what its forwarding decision reads of cfg from the start
+func startDecision(mesh *netstack.Mesh, cfg *config.Config) {
 	// a reload that changes cap.transit is refused, so the decision reads the start's
 	mesh.SetTransit(cfg.Transits())
-	mesh.SetOverlay(overlayPrefixes(cfg))
-	return c, nil
+	mesh.SetOverlay(cfg.Overlay())
+	// a reload that changes cap.egress is refused, so the start's prefixes hold
+	mesh.SetEgressPrefixes(egressPrefixes(cfg))
 }
 
 // Run is called once. It returns only after peer handshakes, IKE sessions, ESP

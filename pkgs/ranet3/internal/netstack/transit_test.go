@@ -26,14 +26,29 @@ import (
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
-// ownEverything makes every destination of either family m's own, so every packet a session delivers that no segment takes goes to the tun
+// ownEverything makes every destination of either family m's own but the first /8 of IPv4 and the first /16 of IPv6, which hold the zero address
+// through entries an overlay holds, so none counts as a default and every packet a session delivers that no segment takes goes to the tun
 // it gives m a table where it has none
 func ownEverything(m *Mesh) *Mesh {
 	if m.Routes == nil {
 		m.Routes = NewRouteTable()
 	}
-	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("0.0.0.0/0"), Local)
-	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("::/0"), Local)
+	var owned []schema.Prefix
+	for _, family := range []struct {
+		zero  netip.Addr
+		floor int
+	}{{netip.IPv4Unspecified(), schema.MinSubnetBits4}, {netip.IPv6Unspecified(), schema.MinSubnetBits6}} {
+		for bits := 1; bits <= family.floor; bits++ {
+			raw := family.zero.AsSlice()
+			raw[(bits-1)/8] = 0x80 >> ((bits - 1) % 8)
+			address, _ := netip.AddrFromSlice(raw)
+			owned = append(owned, schema.PrefixFrom(netip.PrefixFrom(address, bits)))
+		}
+	}
+	m.SetOverlay(owned)
+	for _, prefix := range owned {
+		m.Routes.Set(netip.Prefix{}, prefix.Prefix, Local)
+	}
 	return m
 }
 
@@ -48,7 +63,7 @@ var (
 	transitHeldHost = map[int]netip.Addr{4: segAddr("192.0.2.4"), 6: segAddr("3fff::4")}
 	transitUnrouted = map[int]netip.Addr{4: segAddr("192.0.2.5"), 6: segAddr("3fff::5")}
 	transitNowhere  = map[int]netip.Addr{4: segAddr("203.0.113.5"), 6: segAddr("2001:db8::5")}
-	transitOverlay  = []netip.Prefix{segPrefix("192.0.2.0/24"), segPrefix("3fff::/20")}
+	transitOverlay  = []schema.Prefix{schema.PrefixFrom(segPrefix("192.0.2.0/24")), schema.PrefixFrom(segPrefix("3fff::/20"))}
 	transitSID      = segAddr("3fff:5::1")
 )
 
@@ -192,11 +207,13 @@ func forwardedAs(raw []byte) []byte {
 
 // a session's packet for this node's own or an address cap.table assigns is written to the tun, and one for a peer forwarded with its hop limit taken down
 // no route and a hold are answered destination unreachable from the router-id, and nothing else reaches the tun or a peer
-// IPv4 answers host unreachable inside the overlay and inside a hold longer than a default, where other hosts of the network may be reachable, and network unreachable elsewhere
+// IPv4 answers host unreachable inside the overlay and inside a hold that does not count as a default, where other hosts of the network may be reachable
+// and network unreachable elsewhere, a held default and a held half of one among them
 func TestDecisionActsOnEachVerdict(t *testing.T) {
 	for _, family := range []int{4, 6} {
 		hostCode := map[int]byte{4: 1, 6: 0}[family]
 		everything := map[int]netip.Prefix{4: segPrefix("0.0.0.0/0"), 6: segPrefix("::/0")}[family]
+		half := map[int]netip.Prefix{4: segPrefix("128.0.0.0/1"), 6: segPrefix("::/1")}[family]
 		for _, c := range []struct {
 			name     string
 			to       netip.Addr
@@ -215,6 +232,7 @@ func TestDecisionActsOnEachVerdict(t *testing.T) {
 			{name: "a hold", to: transitHeldHost[family], answer: true, code: hostCode, want: TransitCounters{Held: 1, Answered: 1}},
 			{name: "a held prefix outside the overlay", to: transitNowhere[family], entry: netip.PrefixFrom(transitNowhere[family], 24).Masked(), value: Unreachable, answer: true, code: hostCode, want: TransitCounters{Held: 1, Answered: 1}},
 			{name: "a held default outside the overlay", to: transitNowhere[family], entry: everything, value: Unreachable, answer: true, code: 0, want: TransitCounters{Held: 1, Answered: 1}},
+			{name: "a held half of a default outside the overlay", to: transitNowhere[family], entry: half, value: Unreachable, answer: true, code: 0, want: TransitCounters{Held: 1, Answered: 1}},
 		} {
 			t.Run(fmt.Sprintf("IPv%d %s", family, c.name), func(t *testing.T) {
 				n := newTransitNode(t, DefaultMTU)
@@ -733,22 +751,47 @@ func TestDecisionAnswersWithoutARouterID(t *testing.T) {
 // an answer to a packet this host or a network behind it sent goes into the tun, from the answered packet's destination
 // the one source every reverse path check of the host takes, where the router-id is an address of the host itself
 // the reply's route decides it, so where a peer routes the source from a source prefix holding the destination the answer goes back through the session
+// and a source only an entry of this node's counting as a default reaches is no network behind this host, so it gets no answer at all and draws on neither limit
 func TestDecisionAnswersThisHostIntoTheTun(t *testing.T) {
 	for _, family := range []int{4, 6} {
 		for _, c := range []struct {
-			name     string
-			fromPeer bool
+			name              string
+			fromPeer, counted bool
 		}{
-			{"from this host", false},
-			{"from a source a peer routes from a source prefix holding the destination", true},
+			{"from this host", false, false},
+			{"from a source a peer routes from a source prefix holding the destination", true, false},
+			{"from a source only a default of this node's reaches", false, true},
 		} {
 			t.Run(fmt.Sprintf("IPv%d %s", family, c.name), func(t *testing.T) {
 				n := newTransitNode(t, DefaultMTU)
-				n.m.Routes.Set(netip.Prefix{}, hostPrefix(transitSender[family]), Local)
+				source := transitSender[family]
+				n.m.Routes.Set(netip.Prefix{}, hostPrefix(source), Local)
 				if c.fromPeer {
-					n.m.Routes.Set(map[int]netip.Prefix{4: segPrefix("192.0.2.0/24"), 6: segPrefix("3fff::/20")}[family], hostPrefix(transitSender[family]), n.fromPeer)
+					n.m.Routes.Set(map[int]netip.Prefix{4: segPrefix("192.0.2.0/24"), 6: segPrefix("3fff::/20")}[family], hostPrefix(source), n.fromPeer)
 				}
-				raw := udpPacket(transitSender[family], transitUnrouted[family], 200, true)
+				if c.counted {
+					source = transitStranger[family]
+					n.m.Routes.Set(netip.Prefix{}, exitShapes[0].prefixes[family][0], Local)
+				}
+				raw := udpPacket(source, transitUnrouted[family], 200, true)
+				if c.counted {
+					// one past the source's bucket, which draws nothing, so neither limit withholds the last
+					packets := make([][]byte, icmpSourceBurst+1)
+					for i := range packets {
+						packets[i] = raw
+					}
+					tun, out, back := n.deliver(t, packets...)
+					if len(out)+len(tun)+len(back) != 0 {
+						t.Errorf("the next hop was sent %x, a session %x and the tun took %x, want nothing", out, back, tun)
+					}
+					if got := n.m.TransitCounters(); got != (TransitCounters{NoRoute: icmpSourceBurst + 1}) {
+						t.Errorf("%d unanswered drops counted %+v", icmpSourceBurst+1, got)
+					}
+					if source, node := n.m.ICMPWithheld(); source+node != 0 {
+						t.Errorf("%d unanswered drops drew on the limits, which withheld %d by source and %d by the cap", icmpSourceBurst+1, source, node)
+					}
+					return
+				}
 				tun, out, back := n.deliver(t, raw)
 				answers, from := tun, transitUnrouted[family]
 				if c.fromPeer {

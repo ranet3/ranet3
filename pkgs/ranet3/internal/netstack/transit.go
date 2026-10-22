@@ -13,6 +13,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/internal/packet"
+	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
@@ -36,6 +37,10 @@ const (
 	transitMartian
 	// transitSourceRoute counts IPv4 packets carrying a loose or strict source route
 	transitSourceRoute
+	// transitUnroutedSource counts packets that would egress through an entry counting as a default from a source the mesh routes no reply to
+	transitUnroutedSource
+	// transitNotReady counts packets that would egress through a prefix cap.egress advertises while their family's translation is not ready
+	transitNotReady
 	// transitTooBig counts packets larger than the session to their next hop, answered or past cutting
 	transitTooBig
 	// transitMulticast counts reads off the tun to a multicast destination or the limited broadcast, which the mesh routes none of
@@ -46,18 +51,20 @@ const (
 
 // transitReasonNames name each reason in the drop report and its event
 var transitReasonNames = [transitReasonCount]string{
-	transitForwarded:   "forwarded",
-	transitDelivered:   "delivered",
-	transitExpired:     "expired",
-	transitNoRoute:     "no_route",
-	transitHeld:        "held",
-	transitRefused:     "refused",
-	transitInvalid:     "invalid",
-	transitMartian:     "martian",
-	transitSourceRoute: "source_route",
-	transitTooBig:      "too_big",
-	transitMulticast:   "multicast",
-	transitAnswered:    "answered",
+	transitForwarded:      "forwarded",
+	transitDelivered:      "delivered",
+	transitExpired:        "expired",
+	transitNoRoute:        "no_route",
+	transitHeld:           "held",
+	transitRefused:        "refused",
+	transitInvalid:        "invalid",
+	transitMartian:        "martian",
+	transitSourceRoute:    "source_route",
+	transitUnroutedSource: "unrouted_source",
+	transitNotReady:       "not_ready",
+	transitTooBig:         "too_big",
+	transitMulticast:      "multicast",
+	transitAnswered:       "answered",
 }
 
 // transitState is the decision's state, embedded in Mesh
@@ -65,7 +72,7 @@ type transitState struct {
 	// transitOn is cap.transit, set once at start since a reload changing it is refused
 	transitOn atomic.Bool
 	// overlay is cap.border's overlay, which a reload may move, nil on a node with no cap.border
-	overlay atomic.Pointer[[]netip.Prefix]
+	overlay atomic.Pointer[[]schema.Prefix]
 	// transitCounts counts each reason since startup
 	transitCounts [transitReasonCount]atomic.Uint64
 	// transitReport spaces the drop reports, its next claimed by the one report of each interval
@@ -83,15 +90,21 @@ type transitState struct {
 // with it off a packet for another node is answered administratively prohibited, but for one an End.DT46 of this node delivers to the mesh
 func (m *Mesh) SetTransit(on bool) { m.transitOn.Store(on) }
 
-// SetOverlay sets cap.border's overlay, the mesh's own address space, nil for none
+// SetOverlay sets cap.border's overlay as written, the mesh's own address space, nil for none
 // an IPv4 packet no route reaches inside it is answered host unreachable, since other hosts of the overlay may be reachable
-func (m *Mesh) SetOverlay(overlay []netip.Prefix) {
+// and every entry of the table is flagged again for whether it counts as a default with it
+func (m *Mesh) SetOverlay(overlay []schema.Prefix) {
+	m.Routes.SetOverlay(overlay)
 	if overlay == nil {
 		m.overlay.Store(nil)
 		return
 	}
 	m.overlay.Store(&overlay)
 }
+
+// SetEgressPrefixes sets the prefixes cap.egress advertises, which flags this node's own entries for them
+// a packet egressing through one that counts as a default waits on the readiness SetAdvertisedReady gives its family
+func (m *Mesh) SetEgressPrefixes(advertised []netip.Prefix) { m.Routes.SetEgress(advertised) }
 
 // inOverlay reports whether address lies inside cap.border's overlay
 func (m *Mesh) inOverlay(address netip.Addr) bool {
@@ -111,9 +124,9 @@ func (m *Mesh) inOverlay(address netip.Addr) bool {
 type TransitCounters struct {
 	// Forwarded counts packets a session delivered that went on to a peer, and Delivered the ones written to the tun
 	Forwarded, Delivered uint64
-	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute and TooBig count the packets a session delivered that were dropped, by reason
-	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, TooBig uint64
-	// Multicast counts reads off the tun to a multicast destination, dropped
+	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady and TooBig count the packets a session delivered that were dropped, by reason
+	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig uint64
+	// Multicast counts reads off the tun to a multicast destination or the limited broadcast, dropped
 	Multicast uint64
 	// Answered counts the ICMP errors sent about dropped packets
 	// Unanswered counts the dropped packets the decision would answer that find no address of their family to come from
@@ -124,19 +137,21 @@ type TransitCounters struct {
 func (m *Mesh) TransitCounters() TransitCounters {
 	count := func(reason transitReason) uint64 { return m.transitCounts[reason].Load() }
 	return TransitCounters{
-		Forwarded:   count(transitForwarded),
-		Delivered:   count(transitDelivered),
-		Expired:     count(transitExpired),
-		NoRoute:     count(transitNoRoute),
-		Held:        count(transitHeld),
-		Refused:     count(transitRefused),
-		Invalid:     count(transitInvalid),
-		Martian:     count(transitMartian),
-		SourceRoute: count(transitSourceRoute),
-		TooBig:      count(transitTooBig),
-		Multicast:   count(transitMulticast),
-		Answered:    count(transitAnswered),
-		Unanswered:  m.unanswered.Load(),
+		Forwarded:      count(transitForwarded),
+		Delivered:      count(transitDelivered),
+		Expired:        count(transitExpired),
+		NoRoute:        count(transitNoRoute),
+		Held:           count(transitHeld),
+		Refused:        count(transitRefused),
+		Invalid:        count(transitInvalid),
+		Martian:        count(transitMartian),
+		SourceRoute:    count(transitSourceRoute),
+		UnroutedSource: count(transitUnroutedSource),
+		NotReady:       count(transitNotReady),
+		TooBig:         count(transitTooBig),
+		Multicast:      count(transitMulticast),
+		Answered:       count(transitAnswered),
+		Unanswered:     m.unanswered.Load(),
 	}
 }
 
@@ -217,6 +232,7 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 	defer m.addTally(&tally)
 	out := frames[:0]
 	var b *outboundBatch
+	var egress egressCheck
 	for i, frame := range frames {
 		// trimmed to the length its header declares, so what follows the packet in its frame is neither forwarded nor quoted
 		raw, version := packet.Payload(frame[TUNHeadroom:])
@@ -242,6 +258,10 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 			continue
 		}
 		peer, verdict, match := m.Routes.Resolve(src, dst)
+		// an overlay address no node announces reaches an entry counting as a default, which would egress it
+		if verdict == RouteLocal && match.Counted && m.inOverlay(dst) {
+			verdict = RouteNone
+		}
 		// RFC 1812 section 5.2.2 before any processing, and the host's kernel checks what this node delivers to it
 		if verdict != RouteLocal && version == 4 && !packet.HeaderValid(raw) {
 			m.dropTransit(&tally, transitInvalid, src, dst)
@@ -249,6 +269,14 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 		}
 		switch verdict {
 		case RouteLocal:
+			// egress through an entry counting as a default leaves only from a source the mesh routes
+			// and through a prefix cap.egress advertises only while its family's translation is ready
+			if match.Counted {
+				if reason, ok := m.egresses(&egress, src, dst, version, match); !ok {
+					m.dropTransit(&tally, reason, src, dst)
+					continue
+				}
+			}
 			out = append(out, frame)
 			tally[transitDelivered]++
 			continue
@@ -301,13 +329,79 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 
 // unreachable is the answer to a packet no route reaches, verdict and match being what the table answered for it
 // RFC 4443 section 3.1 code 0 over IPv6, and over IPv4 RFC 1812 section 5.2.7.1's last rule
-// host unreachable where other hosts of the destination's network may be reachable, inside a hold longer than a default or inside the overlay
-// network unreachable where no network of hosts holds it, a default among them
+// host unreachable where other hosts of the destination's network may be reachable, inside a hold that does not count as a default or inside the overlay
+// network unreachable where no network of hosts holds it, under an entry counting as a default or none
 func (m *Mesh) unreachable(verdict Verdict, match Match, destination netip.Addr) answerKind {
-	if destination.Is4() && (verdict == RouteHeld && match.Bits != 0 || m.inOverlay(destination)) {
+	if destination.Is4() && (verdict == RouteHeld && !match.Counted || m.inOverlay(destination)) {
 		return answerHostUnreachable
 	}
 	return answerNoRoute
+}
+
+// egressCheck keeps one batch's egress lookups
+// each pair's answer for the batch, and the readiness words read once
+type egressCheck struct {
+	pairs      [egressPairs][2]netip.Addr
+	routed     [egressPairs]bool
+	kept       int
+	ready      uint32
+	advertised uint32
+	readyRead  bool
+}
+
+// routed reports whether the mesh routes a reply to a packet from source to destination
+// the reply's route reaching a peer, a hold or this node's own entry, its LAN or an address of its own, entries counting as a default passed over
+// a route announced from a source prefix decides it, so the answer is kept per pair rather than per source
+func (m *Mesh) routed(check *egressCheck, source, destination netip.Addr) bool {
+	pair := [2]netip.Addr{source, destination}
+	for i := range check.kept {
+		if check.pairs[i] == pair {
+			return check.routed[i]
+		}
+	}
+	_, verdict, match := m.replyRoute(source, destination)
+	routed := !match.Counted && (verdict == RoutePeer || verdict == RouteHeld || verdict == RouteLocal)
+	if check.kept < egressPairs {
+		check.pairs[check.kept], check.routed[check.kept] = pair, routed
+		check.kept++
+	}
+	return routed
+}
+
+// replyRoute resolves the route a reply to a packet from source to destination takes, from destination to source
+// so a route announced from a source prefix covers source only where that prefix covers destination, RFC 9079 section 4
+func (m *Mesh) replyRoute(source, destination netip.Addr) (*Peer, Verdict, Match) {
+	return m.Routes.Resolve(destination, source)
+}
+
+// readyFor reports the translation of family, an srv6 next header, ready, through the egress device or for an advertised prefix as advertised says
+// both words are read once a batch
+func (m *Mesh) readyFor(check *egressCheck, family uint8, advertised bool) bool {
+	if !check.readyRead {
+		check.ready, check.advertised, check.readyRead = m.egressReady.Load(), m.advertisedReady.Load(), true
+	}
+	word := check.ready
+	if advertised {
+		word = check.advertised
+	}
+	return word&egressReadyFor(family) != 0
+}
+
+// egresses reports whether a packet of version from source to destination egresses through match, an entry of this node's counting as a default, and the reason it does not
+// a packet the mesh routes no reply to is dropped with no answer, since nothing routes one back
+// and a prefix cap.egress advertises waits on its family's readiness, which a counted cap.route announcement has none of
+func (m *Mesh) egresses(check *egressCheck, source, destination netip.Addr, version byte, match Match) (transitReason, bool) {
+	if !m.routed(check, source, destination) {
+		return transitUnroutedSource, false
+	}
+	family := uint8(srv6.NextHeaderIPv6)
+	if version == 4 {
+		family = srv6.NextHeaderIPv4
+	}
+	if match.Egress && !m.readyFor(check, family, true) {
+		return transitNotReady, false
+	}
+	return transitDelivered, true
 }
 
 // forwardOptions processes the options of raw, an IPv4 header HeaderValid passed that carries some, as RFC 1812 sections 5.3.13.4 to 5.3.13.6 have a router forwarding it
@@ -474,7 +568,11 @@ func (m *Mesh) answer(raw []byte, version byte, kind answerKind, value int) {
 	// the one source every reverse path check of the host takes
 	// the host drops an IPv4 packet from an address of its own, fib_validate_source
 	// and a strict chain one from an address it routes out of another link, nft_fib_ipv6.c, which the router-id and a SID can both be
-	if _, verdict, _ := m.Routes.Resolve(dst, src); verdict == RouteLocal {
+	// a source only an entry counting as a default reaches is no network behind this host, and the mesh routes no answer to it
+	if _, verdict, match := m.replyRoute(src, dst); verdict == RouteLocal {
+		if match.Counted {
+			return
+		}
 		if out := buildAnswer(raw, version, kind, value, dst, m.AnswerTTL(), allow); out != nil {
 			m.writeHostPacket(out)
 			m.noteAnswered(kind)
