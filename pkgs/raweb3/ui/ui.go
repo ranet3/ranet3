@@ -7,9 +7,8 @@ package ui
 
 // Site holds what every page says about the site it belongs to.
 type Site struct {
-	Name       string
-	URL        string
-	Repository string
+	Name string
+	URL  string
 	// Metas go on every page in this order, the 404 page included
 	Metas     []Meta
 	Analytics Analytics
