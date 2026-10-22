@@ -199,6 +199,10 @@
       background-color: currentColor;
       mask: var(--icon) center / 1em no-repeat;
     }
+    /* a link off the site points up and out */
+    &[href^="http"] {
+      --icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 18 18 6M8 6h10v10'/></svg>");
+    }
   }
   /* forced colors drop background colors, which would paint the icon's mask
      in the canvas color */
