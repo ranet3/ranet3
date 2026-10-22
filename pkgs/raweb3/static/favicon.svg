@@ -1,5 +1,6 @@
 <!-- SPDX-FileCopyrightText: 2026 Yifei Sun -->
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
+<!-- nord-0, nord-6 and nord-8 of ui/style.css, written out since a favicon reads no variable -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
   <rect width="100" height="100" fill="#2E3440" />
   <g transform="translate(14 14) scale(.72)" fill="none" stroke="#ECEFF4"

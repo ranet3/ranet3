@@ -4,6 +4,7 @@
 package site
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"unicode"
@@ -33,7 +34,7 @@ func renderCode(w util.BufWriter, source []byte, node ast.Node, entering bool) (
 		_, _ = w.WriteString("</code></pre>\n")
 		return ast.WalkContinue, nil
 	}
-	var code strings.Builder
+	var code bytes.Buffer
 	for i := range node.Lines().Len() {
 		line := node.Lines().At(i)
 		code.Write(line.Value(source))
@@ -45,7 +46,7 @@ func renderCode(w util.BufWriter, source []byte, node ast.Node, entering bool) (
 	}
 	if lang == nil {
 		_ = w.WriteByte('>')
-		html.DefaultWriter.RawWrite(w, []byte(code.String()))
+		html.DefaultWriter.RawWrite(w, code.Bytes())
 		return ast.WalkContinue, nil
 	}
 	lexer := lexers.Get(string(lang))
@@ -60,7 +61,7 @@ func renderCode(w util.BufWriter, source []byte, node ast.Node, entering bool) (
 		return ast.WalkStop, fmt.Errorf("code block language %q: %w", lang, err)
 	}
 	tokens, classes := classify(lexer.Config().Name, it.Tokens())
-	var run strings.Builder
+	var run bytes.Buffer
 	class := ""
 	flush := func() {
 		if run.Len() == 0 {
@@ -69,7 +70,7 @@ func renderCode(w util.BufWriter, source []byte, node ast.Node, entering bool) (
 		if class != "" {
 			_, _ = w.WriteString(`<span class="` + class + `">`)
 		}
-		html.DefaultWriter.RawWrite(w, []byte(run.String()))
+		html.DefaultWriter.RawWrite(w, run.Bytes())
 		if class != "" {
 			_, _ = w.WriteString("</span>")
 		}

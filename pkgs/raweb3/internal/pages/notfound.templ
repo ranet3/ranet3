@@ -10,7 +10,7 @@ templ NotFound(site ui.Site) {
 	@frame(site, ui.Page{Title: "Not found | " + site.Name, Description: "No page at this address."}, false, "") {
 		<main id="main" class="mx-auto max-w-6xl px-4 py-16 font-mono md:px-6">
 			<h1 class="text-2xl font-bold text-fg">Not found</h1>
-			<p class="mt-4">No page at this address. See the <a href="/" class="text-acc underline decoration-accl underline-offset-4 hover:decoration-current">front page</a> or the <a href="/docs/" class="text-acc underline decoration-accl underline-offset-4 hover:decoration-current">docs</a>.</p>
+			<p class="mt-4">No page at this address. See the <a href="/" class="link">front page</a> or the <a href="/docs/" class="link">docs</a>.</p>
 		</main>
 	}
 }

@@ -3,7 +3,11 @@
 
 package pages
 
-import "ranet3.com/pkgs/raweb3/ui"
+import (
+	"time"
+
+	"ranet3.com/pkgs/raweb3/ui"
+)
 
 // Docs is one docs page.
 templ Docs(site ui.Site, doc Content) {
@@ -24,7 +28,7 @@ templ Docs(site ui.Site, doc Content) {
 					<p class="lead">{ doc.Description }</p>
 					@templ.Raw(doc.Body)
 				</article>
-				<p class="mt-12 font-mono text-sm text-mute">Updated { doc.Updated.Format("2006-01-02") }</p>
+				<p class="mt-12 font-mono text-sm text-mute">Updated <time datetime={ doc.Updated.Format(time.DateOnly) }>{ doc.Updated.Format(time.DateOnly) }</time></p>
 			</main>
 		</div>
 	}
@@ -51,10 +55,10 @@ templ navList(nav []Section) {
 	}
 }
 
-// docsTitle is the title of a docs page, the docs alone for the page that
-// carries the site's own name
+// docsTitle is the title of a docs page, the docs alone for the docs' own
+// front page.
 func docsTitle(site ui.Site, doc Content) string {
-	if doc.Title == site.Name {
+	if doc.Path == "/docs/" {
 		return site.Name + " docs"
 	}
 	return doc.Title + " | " + site.Name + " docs"

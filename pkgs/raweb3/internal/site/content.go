@@ -282,8 +282,12 @@ func place(rendered string) (string, error) {
 	var errs []error
 	out := componentTag.ReplaceAllStringFunc(rendered, func(tag string) string {
 		m := componentTag.FindStringSubmatch(tag)
+		if m[1] != m[2] {
+			errs = append(errs, fmt.Errorf("<ui-%s> closes as </ui-%s>", m[1], m[2]))
+			return ""
+		}
 		c, ok := components[m[1]]
-		if !ok || m[1] != m[2] {
+		if !ok {
 			errs = append(errs, fmt.Errorf("%s names no component", tag))
 			return ""
 		}
