@@ -288,6 +288,7 @@ connections to the reads.
 | `netstack.codel.drained`              | that peer's queue emptied, or its delay fell back below the target           |
 | `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets                |
 | `netstack.tun.failed`                 | the tun went away under the running node, which then stops                   |
+| `netstack.transit.dropped`            | the forwarding decision dropped a packet a session delivered, with why       |
 | `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit |
 | `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                       |
 
@@ -365,6 +366,7 @@ Each kind carries these attributes:
 | `netstack.codel.dropping`, `.drained`         | `sojourn`, `target`                                                                                                                         |
 | `netstack.tun.refused`                        | `interface`, `frames`, `err`                                                                                                                |
 | `netstack.tun.failed`                         | `interface`, `err`                                                                                                                          |
+| `netstack.transit.dropped`                    | `reason`, `src`, `dst`                                                                                                                      |
 | `netstack.icmp.withheld`                      | `interface`, `limit`, `withheld`                                                                                                            |
 | `netstack.answer.source`                      | `ipv4`, `ipv6`, `sid`, each only where the node holds it                                                                                    |
 
@@ -643,6 +645,12 @@ frame, so the event is recorded there alone. A `netstack.tun.failed` is recorded
 once, before the node starts the shutdown it ends with, and `err` is the error
 the read returned. On Linux, a tun whose link was deleted reads
 `file already closed`.
+
+A `netstack.transit.dropped` is recorded at most once every 30 seconds, as is
+its warning in the log, for the packet that dropped first in that time. `reason`
+is the `reason` label of `ranet3_transit_packets_total`, which counts every
+drop, as [metrics](../metrics.md#transit-counters) describes. `src` and `dst`
+read `invalid IP` for a frame that holds no whole IP packet.
 
 A `netstack.icmp.withheld` is recorded when one of the
 [ICMP rate limits](../path-mtu.md#packets-that-do-not-fit) withholds an answer

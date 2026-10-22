@@ -21,33 +21,30 @@ and the feasibility condition of
 A node that carries transit decrypts other nodes' packets from one session and
 encrypts them again onto the next, so it sees their plaintext.
 
-A node that advertises transit still has to forward it, which takes 2 things:
+ranet3 forwards transit itself. A packet a session delivers goes to the next
+session by the mesh's own route table, with its hop limit or TTL taken down, and
+never through the host. A relay needs its tun and nothing more: the host's
+forwarding settings, its firewall's forward chain and its kernel tables play no
+part in transit, and the tun carries only this host's own traffic. An exit or a
+subnet router carries transit the same way, so transit for a prefix another node
+announces never leaves by the uplink.
 
-- Forwarding is on for both families, `net.ipv4.ip_forward` and
-  `net.ipv6.conf.all.forwarding` on Linux, `net.inet.ip.forwarding` and
-  `net.inet6.ip6.forwarding` on macOS. With `cap.transit.enable = true` and
-  either family off, ranet3 logs a warning at startup.
-- The learned routes reach a kernel table the node consults.
-  [`cap.table`](../configuration-reference.md) installs them, or another program
-  does.
+A packet this node does not forward is answered as a router answers it, from the
+node's router-id: Time Exceeded at a hop limit or TTL of 1, Packet Too Big or
+Fragmentation Needed past the next session's size, and Destination Unreachable
+with no route or inside a held prefix. [Routing](../routing.md#transit) lists
+the answers and their codes.
 
-Advertising transit without them means announced paths blackhole.
-[`cap.egress`](../exit-nodes.md) acts on the same fact rather than warning about
-it. A prefix an exit node offers to carry is advertised only while its family's
-translation chain reads back exactly as written and the host forwards the
-family. It is retracted on the first pass that finds either untrue. A pass runs
-every 30 seconds unless `cap.egress.sweep` names another interval.
-
-An exit or subnet router set up as
-[exit nodes](../exit-nodes.md#the-return-path) describes should not carry
-transit. Its `cap.table.rules` send only the mesh prefixes to the mesh table. A
-transit packet for a prefix another node announces outside them therefore leaves
-by the host's own routes out of the uplink. It leaves translated to the node's
-address in a family `advertise` covers, and under the sender's mesh address in
-any other.
+[`cap.egress`](../exit-nodes.md) still reads the host's forwarding, for what an
+exit sends out of its uplink. A prefix an exit node offers to carry is
+advertised only while its family's translation chain reads back exactly as
+written and the host forwards the family. It is retracted on the first pass that
+finds either untrue. A pass runs every 30 seconds unless `cap.egress.sweep`
+names another interval.
 
 With transit off, a node advertises only the prefixes it announces and never
-relays one it learned. Transit is off unless
+relays one it learned. A packet for another node that reaches it all the same is
+answered administratively prohibited. Transit is off unless
 [`cap.transit`](../configuration-reference.md) writes `enable = true`, and a
 leaf leaves it out. Refusing to advertise cannot close a loop, so this only
 narrows what the feasibility condition already bounds.
@@ -677,7 +674,7 @@ such restarts produce.
 | Socket buffers of such a socket           | 4 MiB each way                                                                                                                | Linux grants more than `net.core.rmem_max` or `net.core.wmem_max` only with `CAP_NET_ADMIN`                  |
 | Read buffers of such a socket             | 4 messages of 64 KiB on Linux, 256 KiB                                                                                        | 64 MiB at the cap. A read takes 4 messages at most, and the kernel holds the rest for the next               |
 | ICMP errors to 1 source                   | 6 at once, then 1 a second over IPv4 and 1 every 100 milliseconds over IPv6, Packet Too Big and fragmentation needed left out | The error is not sent, and `ranet3_icmp_withheld_total{limit="source"}` counts it                            |
-| Sources the ICMP limit keeps a bucket for | 4,096                                                                                                                         | The source that drew least recently gives its place, and starts full when it returns                         |
+| Sources the ICMP limit keeps a bucket for | 6,144, in 64 shards of 96 by a seeded hash of the address                                                                     | In a full shard, the source that drew least recently gives its place, and starts full when it returns        |
 | ICMP errors of the whole node             | 10,000 at once, then 10,000 a second, of either family and every kind                                                         | The error is not sent, and `ranet3_icmp_withheld_total{limit="node"}` counts it                              |
 
 [Platforms](../platforms.md) lists the tun queues and the socket differences

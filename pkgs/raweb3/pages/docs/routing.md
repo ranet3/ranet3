@@ -104,16 +104,21 @@ is IPv6 only (RFC 9079).
 The node holds each prefix it originates as its own in its table. It holds each
 address `cap.table` assigns the same way, as a host route that it announces only
 if it originates that route too. A route a neighbor offers for the same
-destination and source prefix as one of these never replaces it. A
-source-specific route a neighbor offers for the same destination is another
-route: the node learns it and prefers it for packets from its source, by RFC
-9079 section 4's destination-first ordering. A packet for an address inside the
-prefix that this node does not carry is dropped. It does not follow a covering
-route such as a default.
+destination and source prefix as one of these never replaces it. A host address
+of this node's, a `/32` or `/128` it originates or `cap.table` assigns, is
+delivered whatever the source, as the host's kernel delivers it, so a route a
+neighbor offers for that address is dropped whatever its source prefix. For a
+wider prefix, a source-specific route a neighbor offers for the same destination
+is another route: the node learns it and prefers it for packets from its source,
+by RFC 9079 section 4's destination-first ordering. A peer's packet for an
+address inside a prefix this node originates goes to the tun, and the host
+decides it. A read off the tun for such an address is dropped with no answer.
+Neither follows a covering route such as a default.
 
-With transit on, the node relays every route it selects to its other neighbors.
-With transit off, it advertises only the prefixes it originates, and still
-learns and installs every route. Transit is off unless
+With transit on, the node relays every route it selects to its other neighbors
+and forwards the packets they bring, as [transit](#transit) describes. With
+transit off, it advertises only the prefixes it originates, and still learns and
+installs every route. Transit is off unless
 [`cap.transit`](configuration-reference.md) writes `enable = true`, and a change
 to it takes a restart, as [reloading](reloading.md) lists.
 
@@ -151,15 +156,16 @@ waits for the next full update.
 
 A retracted or expired route is held at infinity for the hold time of the Update
 it replaced, then flushed. While it is held, the forwarding entry answers
-"unreachable" (RFC 8966 section 3.5.4). A packet the tun hands ranet3 for that
-prefix is dropped instead of following a shorter covering route, such as a
-default another node carries. A packet a peer sends is written to the tun and
-forwarded by the host's kernel, where the reconciler installs the same hold, but
-for a route that [counts as a default](#routes-that-count-as-a-default). Once
-the route is flushed, the prefix stays held until the latest time any update
-this node sent naming it reachable expires at a neighbor, if that is later, as
-the next paragraph says. Neither hold waits for every neighbor to acknowledge
-the retraction, as
+"unreachable" (RFC 8966 section 3.5.4). A packet for that prefix is dropped
+instead of following a shorter covering route, such as a default another node
+carries. The [forwarding decision](#transit) answers one a peer sends with
+Destination Unreachable, and one the tun hands ranet3 goes unanswered. The
+reconciler installs the same hold in the kernel, but for a route that
+[counts as a default](#routes-that-count-as-a-default). Once the route is
+flushed, the prefix stays held until the latest time any update this node sent
+naming it reachable expires at a neighbor, if that is later, as the next
+paragraph says. Neither hold waits for every neighbor to acknowledge the
+retraction, as
 [the protocol deviations](design/protocol-deviations.md#updates-and-requests)
 say.
 
@@ -184,6 +190,103 @@ before. The prefix stays unreachable for that time even when every neighbor read
 the retraction, since this node cannot know that they did. A prefix that no
 update from this node named reachable in that time is not held, and a covering
 route serves it at once.
+
+A hold costs transit what it costs this host's own traffic. A retracted prefix
+covered by a shorter route is answered unreachable until the latest update this
+node sent for it expires, 60 seconds at the defaults. An exit whose readiness
+withdraws its default holds that default the same way. While it originates its
+own default it holds no other exit's, since it drops every update for a prefix
+it originates. With another exit's default on offer, its transit for the
+internet moves to that exit once that exit's next update arrives, within 16
+seconds at the defaults. With none, it answers that transit unreachable, IPv6
+code 0 and IPv4 Network Unreachable, until the hold ends. Only a peer's packet
+is answered so. A hold drops this host's own traffic into it with no answer, or,
+where the hold counts as a default, leaves that traffic to the host's own
+routes, since the kernel keeps no such hold. A leaf holding no other feasible
+default holds its own for its own hold time, 56 seconds at the defaults.
+
+## Transit
+
+ranet3 decides each packet a session delivers in its own table, after this
+node's [segments](segment-routing.md) take the ones addressed to them. Nothing
+of the host takes part: its forwarding settings, its firewall's forward chain
+and its kernel tables do not, and the tun carries only this host's own traffic.
+The checks run in RFC 1812's order for both families, each before any answer, so
+a malformed packet draws none:
+
+1. A frame that holds no whole IP packet is dropped with no answer.
+2. A multicast, limited broadcast or IPv6 link-local destination goes to the
+   tun, whatever the table holds. An IPv4 link-local destination does not, since
+   [RFC 3927 section 7](https://www.rfc-editor.org/rfc/rfc3927.html#section-7)
+   says "A router MUST NOT forward a packet with an IPv4 Link-Local source or
+   destination address", and the next check drops it.
+3. A source or destination no router forwards is dropped, an IPv4-mapped
+   destination in `::ffff:0:0/96` among them, which
+   [RFC 6890 section 2.2.3](https://www.rfc-editor.org/rfc/rfc6890.html#section-2.2.3)
+   marks not forwardable. An IPv6 link-local source with a wider destination is
+   answered on the session it came from.
+4. The table answers the packet as [route selection](#route-selection) leaves
+   it. An IPv4 header failing RFC 1812 section 5.2.2's checks is then dropped
+   with no answer, unless an entry of this node's own holds the destination, in
+   which case the host's kernel checks the header. This node's own destination
+   goes to the tun. A destination no entry holds, and one inside a held prefix,
+   is answered unreachable. A destination this node holds through a route that
+   [counts as a default](#routes-that-count-as-a-default) is egress, which an
+   exit carries out as [exit nodes](exit-nodes.md#what-an-exit-carries-out)
+   describe: one inside `cap.border.overlay` is answered as one no entry holds,
+   and any other goes to the tun only where the mesh routes a reply to its
+   source, through a peer, a held prefix, or a network or address of this node's
+   own.
+5. With `cap.transit` off, a packet for another node is answered
+   administratively prohibited, unless an End.DT46 SID of this node delivering
+   to the mesh took it out of its outer header.
+6. A hop limit or TTL of 1 or less is answered Time Exceeded, before the size is
+   looked at.
+7. An IPv4 header with options has them processed. A source route is dropped,
+   Record Route and Timestamp record the IPv4 router-id, and options that cannot
+   be read are answered Parameter Problem.
+8. A packet larger than the next session carries is answered Packet Too Big, or
+   Fragmentation Needed where it sets DF, naming that session's size. An IPv4
+   packet without DF is cut into fragments. Any other packet has its hop limit
+   or TTL taken down and a TCP SYN's MSS lowered to the next session's, and goes
+   on.
+
+| Packet                         | IPv6 answer                     | IPv4 answer                                                                                                                                                                                             |
+| ------------------------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hop limit or TTL of 1 or less  | Time Exceeded, code 0           | Time Exceeded, code 0                                                                                                                                                                                   |
+| No entry holds the destination | Destination Unreachable, code 0 | Host Unreachable, code 1, inside `cap.border.overlay`, Network Unreachable, code 0, elsewhere                                                                                                           |
+| Inside a held prefix           | Destination Unreachable, code 0 | Host Unreachable, code 1, under a hold that does not [count as a default](#routes-that-count-as-a-default) or inside `cap.border.overlay`, Network Unreachable, code 0, elsewhere under one that counts |
+| `cap.transit` off              | Destination Unreachable, code 1 | Destination Unreachable, code 13                                                                                                                                                                        |
+| Larger than the next session   | Packet Too Big                  | Fragmentation Needed with DF, cut without                                                                                                                                                               |
+| Options that cannot be read    |                                 | Parameter Problem                                                                                                                                                                                       |
+| Link-local source              | Destination Unreachable, code 2 | none                                                                                                                                                                                                    |
+
+An answer comes from the node's router-id of the family. With no IPv4 router-id
+it comes from `192.0.0.8`, and with no IPv6 one from the node's first `End` SID,
+or not at all. A Packet Too Big with no IPv6 router-id and no SID, and a
+Fragmentation Needed with no IPv4 router-id, come from the packet's destination.
+An answer to a packet from this host or a network behind it, a source an entry
+of this node's own reaches that does not count as a default, goes into the tun
+instead, from the answered packet's destination, the one source every reverse
+path check of the host takes. A source only this node's own default reaches gets
+no answer, but for the beyond scope answer to an IPv6 link-local source, which
+goes back on the session the packet came by.
+[Path MTU](path-mtu.md#packets-that-do-not-fit) gives the rate limits the
+answers draw on, and
+[the protocol deviations](design/protocol-deviations.md#icmp-answers) say where
+each departs from the RFCs.
+
+A read off the tun to a multicast destination, link scope included, or to the
+limited broadcast 255.255.255.255 is dropped and counted as multicast before its
+route is looked up or it is steered. The mesh routes no multicast, and
+[RFC 1812 section 5.3.5.1](https://www.rfc-editor.org/rfc/rfc1812.html#section-5.3.5.1)
+says "Limited broadcasts MUST NOT be forwarded", where a covering route such as
+a default would carry either to the one peer it names.
+
+`ranet3 status` counts each outcome on its `Transit` line, and
+`ranet3_transit_packets_total` exports the same counts. A dropped packet also
+records the event `netstack.transit.dropped` with its reason, at most once every
+30 seconds.
 
 ## The route reconciler
 
@@ -280,8 +383,9 @@ in the kernel would answer the host's own traffic it covers with an error while
 other sessions stay live, and a retracted split internet would cut the host off.
 The mesh's own table keeps the hold, and a packet the tun hands ranet3 for an
 address inside it is dropped rather than following a shorter route (RFC 8966
-section 3.5.4). A packet the host sends or forwards for such an address, a
-peer's packet among them, follows the host's own routes instead: out of its
+section 3.5.4). A peer's packet for such an address never reaches the host, and
+the [forwarding decision](#transit) answers it unreachable. A packet the host
+sends or forwards for one follows the host's own routes instead: out of its
 uplink, or by a shorter route back into the tun, where ranet3 drops it with no
 answer. [The protocol deviations](design/protocol-deviations.md) list both
 departures.

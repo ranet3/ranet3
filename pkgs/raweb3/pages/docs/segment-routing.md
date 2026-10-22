@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-10-22
+updated: 2026-10-25
 order: 60
 ---
 
@@ -31,9 +31,13 @@ and the same code runs on every platform.
 
 `cap.segment.local` names the addresses this node answers for. `End` moves a
 packet to its next segment and sends it on. `End.DT46` strips the outer header
-and writes the inner packet, IPv4 or IPv6, to the tun. It takes no table. The
-spelling is the one `ip route ... encap seg6local action` takes, so a fleet's
-own SIDs move across unchanged.
+and hands the inner packet, IPv4 or IPv6, to the mesh's
+[forwarding decision](routing.md#transit), which writes it to the tun where its
+destination is this node's own and sends it on to the node that holds it
+otherwise. The SID grants what arrives through it transit, so the inner packet
+goes on with `cap.transit` off too. It takes no table. The spelling is the one
+`ip route ... encap seg6local action` takes, so a fleet's own SIDs move across
+unchanged.
 
 Other nodes reach a SID through the mesh, so this node announces a prefix
 covering it under `cap.route`. A SID may not be an address `cap.table` assigns
@@ -72,9 +76,9 @@ or SYN-ACK that `End.DT46` delivers has its MSS clamped, as
 An `End.DT46` with `deliver = "egress"` writes its inner packet into the egress
 device rather than the mesh tun, and the host forwards it out of the uplink
 under the exit's translated source. A leaf steering to the SID picks this exit
-by its segment list. `deliver = "mesh"`, the default, is the tun.
-[Exit nodes](exit-nodes.md#egress-segments) describes the device, the rule it
-needs in `cap.table` and when the exit is ready.
+by its segment list. `deliver = "mesh"`, the default, is the forwarding
+decision. [Exit nodes](exit-nodes.md#egress-segments) describes the device, the
+rule it needs in `cap.table` and when the exit is ready.
 
 ```toml
 [[cap.segment.local]]
@@ -86,9 +90,12 @@ allow = ["203.0.113.0/25", "3fff:a::/64"]
 
 `allow` is required with `deliver = "egress"` and refused with anything else. A
 packet passes only when its outer source and its inner source both fall inside
-an entry of the list, past the overlay every SID admits. Anything else counts as
-refused and is never answered, since an exit carrying any source would be an
-open proxy. The loader refuses:
+an entry of the list, past the overlay every SID admits, its inner source and
+destination are ones a router forwards, and the mesh routes a reply to its inner
+packet, as an exit's
+[egress through a default](exit-nodes.md#what-an-exit-carries-out) checks.
+Anything else counts as refused and is never answered, since an exit carrying
+any source would be an open proxy. The loader refuses:
 
 - a list with no entry, or with no IPv6 entry, since every outer source is IPv6
 - an entry of length 0, which admits every address of its family
@@ -257,8 +264,10 @@ the count for each reason a steered packet was lost once it is above 0.
 An egress segment is an `End.DT46` whose inner packet leaves through the egress
 device, a second tun, rather than through the mesh tun. Its packets are counted
 4 ways. Egressed is a packet the egress device took. Refused is a packet whose
-outer or inner source is outside the segment's allow list, or whose inner source
-it cannot read. Not ready is a packet the allow list let through while no egress
+outer or inner source is outside the segment's allow list, whose inner source it
+cannot read, whose inner source or destination no router forwards, an IPv4
+link-local destination among them, or whose inner packet the mesh routes no
+reply to. Not ready is a packet the allow list let through while no egress
 device was installed, whose device closed under the write, or whose family was
 not ready, as [exit nodes](exit-nodes.md#readiness) describes. It is this node's
 own state and is not counted among the dropped. A write the egress device
@@ -271,18 +280,18 @@ go to IPv6 multicast addresses of interface-local or link-local scope, which no
 route sends to, so a packet to such an address is read and dropped without being
 counted.
 
-| Metric                               | Meaning                                                                                                                          |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `ranet3_segments_forwarded_total`    | packets an `End` sent on to their next segment                                                                                   |
-| `ranet3_segments_delivered_total`    | packets an `End.DT46` delivered to the mesh tun                                                                                  |
-| `ranet3_segments_dropped_total`      | packets to a local SID this node would not act on, or the open egress device refused                                             |
-| `ranet3_segments_answered_total`     | ICMP errors sent for dropped packets                                                                                             |
-| `ranet3_segments_egressed_total`     | packets an egress segment handed to the egress device                                                                            |
-| `ranet3_segments_refused_total`      | packets a SID refused for their source, outside the overlay or an allow list                                                     |
-| `ranet3_segments_not_ready_total`    | packets an egress segment let through and no ready device took                                                                   |
-| `ranet3_segments_drained_total`      | packets read off the egress device and thrown away, leaving out the kernel's own to interface-local or link-local IPv6 multicast |
-| `ranet3_steered_total`               | packets a steering entry encapsulated                                                                                            |
-| `ranet3_steer_dropped_total{reason}` | steered packets not sent, `reason` is `too_large` or `no_route`                                                                  |
+| Metric                               | Meaning                                                                                                                                   |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `ranet3_segments_forwarded_total`    | packets an `End` sent on to their next segment                                                                                            |
+| `ranet3_segments_delivered_total`    | packets an `End.DT46` delivered to the mesh's forwarding decision                                                                         |
+| `ranet3_segments_dropped_total`      | packets to a local SID this node would not act on, or the open egress device refused                                                      |
+| `ranet3_segments_answered_total`     | ICMP errors sent for dropped packets                                                                                                      |
+| `ranet3_segments_egressed_total`     | packets an egress segment handed to the egress device                                                                                     |
+| `ranet3_segments_refused_total`      | packets a SID refused, from outside the overlay or an allow list, for an inner packet no router forwards, or the mesh routing no reply to |
+| `ranet3_segments_not_ready_total`    | packets an egress segment let through and no ready device took                                                                            |
+| `ranet3_segments_drained_total`      | packets read off the egress device and thrown away, leaving out the kernel's own to interface-local or link-local IPv6 multicast          |
+| `ranet3_steered_total`               | packets a steering entry encapsulated                                                                                                     |
+| `ranet3_steer_dropped_total{reason}` | steered packets not sent, `reason` is `too_large` or `no_route`                                                                           |
 
 ## Interoperation with the Linux kernel
 
