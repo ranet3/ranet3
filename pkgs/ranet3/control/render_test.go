@@ -138,7 +138,7 @@ func ownAndLearned() []Route {
 	}
 }
 
-// Every row this node holds as its own names this node as Via, whether it is
+// Every row this node owns names this node as Via, whether it is
 // announced, assigned or both, and the wire form says which.
 func TestRoutesRenderAsTheGoldenFiles(t *testing.T) {
 	routes := ownAndLearned()
