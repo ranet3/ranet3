@@ -39,54 +39,67 @@ func (t Tailwind) compile(ctx context.Context, root string, minified bool) ([]by
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w: %s", t.Bin, err, bytes.TrimSpace(stderr.Bytes()))
+		if msg := bytes.TrimSpace(stderr.Bytes()); len(msg) > 0 {
+			return nil, fmt.Errorf("%s: %w: %s", t.Bin, err, msg)
+		}
+		return nil, fmt.Errorf("%s: %w", t.Bin, err)
 	}
 	return out, nil
 }
 
 // Build writes the site from the sources under root, with its pages in dir,
 // to out, minified as it is served. out must not exist yet, so nothing of an
-// earlier build survives in it.
+// earlier build survives in it, and it is made only once every file is
+// ready, so a build that fails leaves none behind.
 func Build(ctx context.Context, root, dir, out string, tw Tailwind) error {
 	s, err := Load(root, dir)
+	if err != nil {
+		return err
+	}
+	files, err := s.Render(ctx)
+	if err != nil {
+		return err
+	}
+	m := newMinifier()
+	for file, b := range files {
+		if files[file], err = m.Bytes("text/html", b); err != nil {
+			return fmt.Errorf("%s: %w", file, err)
+		}
+	}
+	if files[styleOutput], err = tw.compile(ctx, root, true); err != nil {
+		return err
+	}
+	err = fs.WalkDir(s.static, ".", func(p string, e fs.DirEntry, err error) error {
+		if err != nil || e.IsDir() {
+			return err
+		}
+		if _, ok := files[p]; ok {
+			return fmt.Errorf("%s/%s: the site serves another file at %s", staticDir, p, p)
+		}
+		b, err := fs.ReadFile(s.static, p)
+		if err != nil {
+			return err
+		}
+		if kind := mime.TypeByExtension(path.Ext(p)); kind == "image/svg+xml" {
+			if b, err = m.Bytes(kind, b); err != nil {
+				return fmt.Errorf("%s/%s: %w", staticDir, p, err)
+			}
+		}
+		files[p] = b
+		return nil
+	})
 	if err != nil {
 		return err
 	}
 	if err := os.Mkdir(out, dirMode); err != nil {
 		return err
 	}
-	m := newMinifier()
-	for file, page := range s.Pages() {
-		var b bytes.Buffer
-		if err := page.Render(ctx, &b); err != nil {
-			return fmt.Errorf("%s: %w", file, err)
-		}
-		if err := writeMinified(m, filepath.Join(out, file), "text/html", b.Bytes()); err != nil {
+	for file, b := range files {
+		if err := write(filepath.Join(out, filepath.FromSlash(file)), b); err != nil {
 			return err
 		}
 	}
-	style, err := tw.compile(ctx, root, true)
-	if err != nil {
-		return err
-	}
-	if err := write(filepath.Join(out, styleOutput), style); err != nil {
-		return err
-	}
-	static := filepath.Join(root, staticDir)
-	return fs.WalkDir(os.DirFS(static), ".", func(p string, e fs.DirEntry, err error) error {
-		if err != nil || e.IsDir() {
-			return err
-		}
-		b, err := os.ReadFile(filepath.Join(static, p))
-		if err != nil {
-			return err
-		}
-		dest := filepath.Join(out, filepath.FromSlash(p))
-		if kind := mime.TypeByExtension(path.Ext(p)); kind == "image/svg+xml" {
-			return writeMinified(m, dest, kind, b)
-		}
-		return write(dest, b)
-	})
+	return nil
 }
 
 // newMinifier minifies as tdewolff's minify command does, keeping the html,
@@ -99,14 +112,6 @@ func newMinifier() *minify.M {
 	m.AddFuncRegexp(regexp.MustCompile(`^(application|text)/(x-)?(java|ecma)script$`), js.Minify)
 	m.AddFuncRegexp(regexp.MustCompile(`[/+]json$`), json.Minify)
 	return m
-}
-
-func writeMinified(m *minify.M, file, kind string, b []byte) error {
-	b, err := m.Bytes(kind, b)
-	if err != nil {
-		return fmt.Errorf("%s: %w", file, err)
-	}
-	return write(file, b)
 }
 
 func write(file string, b []byte) error {

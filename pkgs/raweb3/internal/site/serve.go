@@ -4,20 +4,16 @@
 package site
 
 import (
-	"bytes"
 	"io/fs"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
 // Handler serves the site from the sources under root, with its pages in dir,
-// unminified. It loads them again on each request, so an edit to a page,
-// site.yaml or the stylesheet shows on the next reload. A templ component
-// needs the server rebuilt.
+// unminified. It loads and renders them again on each request, so an edit to
+// a page, site.yaml or the stylesheet shows on the next reload. A templ
+// component needs the server rebuilt.
 func Handler(root, dir string, tw Tailwind) http.Handler {
-	static := os.DirFS(filepath.Join(root, staticDir))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/"+styleOutput {
 			style, err := tw.compile(r.Context(), root, false)
@@ -34,34 +30,32 @@ func Handler(root, dir string, tw Tailwind) http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		pages := s.Pages()
+		files, err := s.Render(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		file := strings.TrimPrefix(r.URL.Path, "/")
 		if file == "" || strings.HasSuffix(file, "/") {
 			file += indexFile
 		}
 		status := http.StatusOK
-		page, ok := pages[file]
+		page, ok := files[file]
 		switch {
 		case ok:
-		case pages[file+"/"+indexFile] != nil:
+		case files[file+"/"+indexFile] != nil:
 			// as GitHub Pages answers a directory asked for without its slash
 			http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
 			return
-		case fs.ValidPath(file) && isFile(static, file):
-			http.ServeFileFS(w, r, static, file)
+		case fs.ValidPath(file) && isFile(s.static, file):
+			http.ServeFileFS(w, r, s.static, file)
 			return
 		default:
-			status, page = http.StatusNotFound, pages[notFoundFile]
-		}
-		// rendered whole before the status goes out, so a failed render is a 500
-		var b bytes.Buffer
-		if err := page.Render(r.Context(), &b); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			status, page = http.StatusNotFound, files[notFoundFile]
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(status)
-		w.Write(b.Bytes())
+		w.Write(page)
 	})
 }
 

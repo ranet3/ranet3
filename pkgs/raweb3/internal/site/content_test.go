@@ -4,10 +4,12 @@
 package site
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/alecthomas/chroma/v2"
@@ -219,5 +221,25 @@ func TestLoadPagesRefusesBrokenSources(t *testing.T) {
 				t.Fatalf("loadPages error %v, want one containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestRenderRefusesLinksToPathsTheSiteServesNothingAt(t *testing.T) {
+	ps, err := loadPages(writePages(t, map[string]string{
+		"index.md":      landing + "<a href=\"/nope/\">x</a> <a href=\"/docs/#a\">x</a> <a href=\"/favicon.svg\">x</a> <a href=\"/style.css\">x</a> <a href=\"//example.com/\">x</a>\n",
+		"docs/index.md": front,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Site{pages: ps, static: fstest.MapFS{"favicon.svg": {Data: []byte("<svg/>")}}}
+	_, err = s.Render(context.Background())
+	if err == nil || !strings.Contains(err.Error(), `index.html: link "/nope/" leads to nothing`) {
+		t.Fatalf("Render error %v, want one for /nope/", err)
+	}
+	for _, ok := range []string{"/docs/#a", "/favicon.svg", "/style.css", "//example.com/"} {
+		if strings.Contains(err.Error(), `"`+ok+`"`) {
+			t.Errorf("Render refuses %s, which the site serves or which leaves it: %v", ok, err)
+		}
 	}
 }

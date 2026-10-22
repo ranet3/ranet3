@@ -7,11 +7,14 @@ package site
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -46,6 +49,8 @@ type link struct {
 type Site struct {
 	ui    ui.Site
 	pages []*page
+	// static holds the files served as they are
+	static fs.FS
 }
 
 // Load reads site.yaml under root and every page under dir, a path relative
@@ -56,7 +61,7 @@ func Load(root, dir string) (*Site, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Site{ui: ui.Site{
+	s := &Site{static: os.DirFS(filepath.Join(root, staticDir)), ui: ui.Site{
 		Name:       c.Title,
 		URL:        c.URL,
 		Repository: c.Repository,
@@ -162,4 +167,46 @@ func (s *Site) Pages() map[string]templ.Component {
 		out[strings.TrimPrefix(p.path, "/")+indexFile] = page
 	}
 	return out
+}
+
+// siteLink is an href or src that leads to a path on the site.
+var siteLink = regexp.MustCompile(`\s(?:href|src)="(/|/[^/"][^"]*)"`)
+
+// Render renders every page of the site to the file it is served from. It
+// fails where a link leads to a path the site serves nothing at. Loading
+// checks the links of the markdown, and only this checks those of the
+// layouts, of site.yaml and of the HTML in a page.
+func (s *Site) Render(ctx context.Context) (map[string][]byte, error) {
+	out := map[string][]byte{}
+	for file, page := range s.Pages() {
+		var b bytes.Buffer
+		if err := page.Render(ctx, &b); err != nil {
+			return nil, fmt.Errorf("%s: %w", file, err)
+		}
+		out[file] = b.Bytes()
+	}
+	var errs []error
+	for _, file := range slices.Sorted(maps.Keys(out)) {
+		for _, m := range siteLink.FindAllSubmatch(out[file], -1) {
+			if !s.serves(out, string(m[1])) {
+				errs = append(errs, fmt.Errorf("%s: link %q leads to nothing the site serves", file, m[1]))
+			}
+		}
+	}
+	return out, errors.Join(errs...)
+}
+
+// serves says whether the site serves anything at the path link leads to,
+// given its rendered pages.
+func (s *Site) serves(rendered map[string][]byte, link string) bool {
+	p, _, _ := strings.Cut(link, "#")
+	p, _, _ = strings.Cut(p, "?")
+	file := strings.TrimPrefix(p, "/")
+	if file == "" || strings.HasSuffix(file, "/") {
+		file += indexFile
+	}
+	if _, ok := rendered[file]; ok || file == styleOutput {
+		return true
+	}
+	return fs.ValidPath(file) && isFile(s.static, file)
 }
