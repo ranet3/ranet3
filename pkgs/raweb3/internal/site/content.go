@@ -6,6 +6,7 @@ package site
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,10 +14,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/a-h/templ"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
@@ -28,6 +31,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"ranet3.com/pkgs/raweb3/internal/pages"
+	"ranet3.com/pkgs/raweb3/ui"
 )
 
 // frontmatter is the YAML between a page's fences.
@@ -77,6 +81,14 @@ var markdown = goldmark.New(
 		renderer.WithNodeRenderers(util.Prioritized(highlighter{}, 100)),
 	),
 )
+
+// components are the ui components a page places with an empty element of
+// their name, such as <ui-ascii-mark></ui-ascii-mark>
+var components = map[string]templ.Component{
+	"ascii-mark": ui.ASCIIMark(),
+}
+
+var componentTag = regexp.MustCompile(`<ui-([a-z0-9-]+)></ui-([a-z0-9-]+)>`)
 
 // loadPages reads and renders every page under dir. Every page is parsed
 // before any is rendered, since a link is checked against the headings of the
@@ -249,8 +261,36 @@ func (p *page) render(bySrc map[string]*page) []error {
 	if err := markdown.Renderer().Render(&b, p.body, p.root); err != nil {
 		errs = append(errs, fmt.Errorf("%s: %w", p.src, err))
 	}
-	p.html = b.String()
+	out, err := place(b.String())
+	if err != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", p.src, err))
+	}
+	p.html = out
 	return errs
+}
+
+// place renders each component the page's HTML names in place of its
+// element. Rendered markdown carries a raw < only in markup, so a <ui- left
+// over is an element that is not empty.
+func place(rendered string) (string, error) {
+	var errs []error
+	out := componentTag.ReplaceAllStringFunc(rendered, func(tag string) string {
+		m := componentTag.FindStringSubmatch(tag)
+		c, ok := components[m[1]]
+		if !ok || m[1] != m[2] {
+			errs = append(errs, fmt.Errorf("%s names no component", tag))
+			return ""
+		}
+		var b strings.Builder
+		if err := c.Render(context.Background(), &b); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", tag, err))
+		}
+		return b.String()
+	})
+	if len(errs) == 0 && strings.Contains(out, "<ui-") {
+		errs = append(errs, errors.New("a <ui-> element holds content, and a component takes none"))
+	}
+	return out, errors.Join(errs...)
 }
 
 func (p *page) resolve(dest string, bySrc map[string]*page) (string, error) {

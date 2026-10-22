@@ -117,6 +117,22 @@ func TestLoadPagesHighlightsCodeBlocks(t *testing.T) {
 	}
 }
 
+func TestLoadPagesPlacesComponentsNamedByEmptyElements(t *testing.T) {
+	dir := writePages(t, map[string]string{
+		"index.md": landing + "<div class=\"text-[13px]\">\n<ui-ascii-mark></ui-ascii-mark>\n</div>\n",
+	})
+	ps, err := loadPages(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ps[0].html, `<div class="text-[13px]">`+"\n"+`<pre class="m-0`) || !strings.Contains(ps[0].html, "..::----::..") {
+		t.Errorf("renders without the ascii mark in place:\n%s", ps[0].html)
+	}
+	if strings.Contains(ps[0].html, "<ui-") {
+		t.Errorf("renders the component's element:\n%s", ps[0].html)
+	}
+}
+
 func TestTokenClassFollowsNordsSyntaxGuide(t *testing.T) {
 	for _, tc := range []struct {
 		kind  chroma.TokenType
@@ -183,6 +199,14 @@ func TestLoadPagesRefusesBrokenSources(t *testing.T) {
 		"code block in a language chroma has no lexer for": {
 			map[string]string{"index.md": landing, "docs/a.md": front + "```tmol\nx = 1\n```\n"},
 			`code block language "tmol" has no lexer`,
+		},
+		"element that names no component": {
+			map[string]string{"index.md": landing + "<ui-nope></ui-nope>\n"},
+			"<ui-nope></ui-nope> names no component",
+		},
+		"component element with content": {
+			map[string]string{"index.md": landing + "<ui-ascii-mark>x</ui-ascii-mark>\n"},
+			"a component takes none",
 		},
 		"no front page": {
 			map[string]string{"a.md": front},
