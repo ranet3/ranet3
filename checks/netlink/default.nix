@@ -118,6 +118,7 @@ testers.runNixOSTest {
     # among them a TCP stream through a black hole a session's search finds
     # a veth pair to a second namespace whose far end drops what it cannot take and answers nothing
     # and three nodes in a line whose middle one forwards and answers in process, with its kernel forwarding nothing
+    # and an exit carrying transit in process, with nothing out of its uplink
     out = machine.succeed(
         "${netlinkTests}/bin/client-tests -test.v -test.run 'TestTUN' 2>&1"
     )
@@ -126,6 +127,7 @@ testers.runNixOSTest {
     assert "--- PASS: TestTUNBorderDropsAForgedSourceAtTheUplink" in out, f"the border's lab did not run:\n{out}"
     assert "--- PASS: TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter" in out, f"the line's lab did not run:\n{out}"
     assert "--- PASS: TestTUNLineRefusesTransitWhileItIsOffButNotThroughAnEndDT46SID" in out, f"the line's lab with transit off did not run:\n{out}"
+    assert "--- PASS: TestTUNExitCarriesTransitInProcessAndNothingOutOfItsUplink" in out, f"the exit's lab did not run:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 10, f"only {ran} of the client's tun round trips ran:\n{out}"
 
