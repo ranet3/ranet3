@@ -65,6 +65,8 @@ type rekeySchedule struct {
 	established func() (time.Time, bool)
 	timer       *time.Timer
 	deadline    time.Time
+	// countedFrom is the establishment the interval's rekey was last counted from
+	countedFrom time.Time
 	due         bool
 	failures    uint
 	lastErr     error
@@ -81,6 +83,12 @@ func (r *rekeySchedule) lifetimeEnd() (time.Time, bool) {
 func (r *rekeySchedule) outlived(now time.Time) bool {
 	end, ok := r.lifetimeEnd()
 	return ok && !now.Before(end)
+}
+
+// replaced reports an SA established since the schedule counted its rekey, by a rekey on any path, the peer's among them
+func (r *rekeySchedule) replaced() bool {
+	established, ok := r.established()
+	return ok && !established.Equal(r.countedFrom)
 }
 
 func (s *Session) childEstablishedAt() (time.Time, bool) {
@@ -168,16 +176,16 @@ func (s *Session) rekeyDue(interval time.Duration, established time.Time) (time.
 }
 
 // an SA not yet made counts from now
-func (s *Session) scheduledDelay(r *rekeySchedule) (time.Duration, error) {
-	established, ok := r.established()
+func (s *Session) scheduledDelay(r *rekeySchedule) (delay time.Duration, from time.Time, err error) {
+	from, ok := r.established()
 	if !ok {
-		established = time.Now()
+		from = time.Now()
 	}
-	due, err := s.rekeyDue(r.interval, established)
+	due, err := s.rekeyDue(r.interval, from)
 	if err != nil {
-		return 0, err
+		return 0, time.Time{}, err
 	}
-	return max(time.Until(due), 0), nil
+	return max(time.Until(due), 0), from, nil
 }
 
 // rekeyRetryDelay backs off exponentially and then spreads the result over the
@@ -213,11 +221,11 @@ func (s *Session) newRekeySchedule(name, sa string, interval time.Duration, run 
 		return nil, nil
 	}
 	schedule := &rekeySchedule{name: name, sa: sa, interval: interval, run: run, established: established}
-	delay, err := s.scheduledDelay(schedule)
+	delay, from, err := s.scheduledDelay(schedule)
 	if err != nil {
 		return nil, err
 	}
-	schedule.timer, schedule.deadline = time.NewTimer(delay), time.Now().Add(delay)
+	schedule.timer, schedule.deadline, schedule.countedFrom = time.NewTimer(delay), time.Now().Add(delay), from
 	return schedule, nil
 }
 
@@ -255,11 +263,12 @@ func (s *Session) rearm(schedule *rekeySchedule) error {
 		schedule.due = false
 		return nil
 	}
-	delay, err := s.scheduledDelay(schedule)
+	delay, from, err := s.scheduledDelay(schedule)
 	if err != nil {
 		return err
 	}
 	schedule.reset(delay)
+	schedule.countedFrom = from
 	return nil
 }
 
@@ -422,6 +431,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		return nil
 	}
 	// a forced rekey falling due, after its delay or after a failure's backoff, runs only while the lists still leave out its SA
+	// any other rekey falling due runs only while its SA is the one the schedule counted it from, since a scheduled rekey counts from its SA's establishment
 	// otherwise its schedule goes back to the rekey its interval gives, or to none
 	startDueRekey := func() {
 		if ending != nil || replacing {
@@ -429,7 +439,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		}
 		for schedule := nextDueRekey(schedules, running); schedule != nil; schedule = nextDueRekey(schedules, running) {
 			child, ikeSA, _ := s.unlisted()
-			if !schedule.forced || schedule == ikeSchedule && ikeSA != "" || schedule == childSchedule && child != "" {
+			if !schedule.forced && !schedule.replaced() || schedule == ikeSchedule && ikeSA != "" || schedule == childSchedule && child != "" {
 				startRekey(schedule)
 				return
 			}
