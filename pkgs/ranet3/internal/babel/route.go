@@ -128,8 +128,8 @@ type routeTable struct {
 	advertisedUntil map[routeKey]time.Time
 	// held is every key that lost its last route before its advertisedUntil,
 	// the end of the hold of RFC 8966 section 3.5.4, which no route table entry
-	// at infinity is left to carry. A key can be held while this node holds it
-	// as its own again, since its own entry ends nothing a neighbor was told.
+	// at infinity is left to carry. A key can be held while this node owns it
+	// again, since its own entry ends nothing a neighbor was told.
 	held map[routeKey]struct{}
 	// warnedOverfull keeps a refused flood from becoming a log flood, and
 	// warnedOrigins does the same for the source table.
@@ -354,7 +354,7 @@ func (rt *routeTable) noteAdvertised(key routeKey, now time.Time) {
 	}
 }
 
-// flush writes the forwarding entry of a key the table holds no route for,
+// flush writes the forwarding entry of a key the table has no route for,
 // unreachable while it is held, and reports whether it is. The sweep is the
 // one place a hold ends by time.
 func (rt *routeTable) flush(key routeKey) bool {

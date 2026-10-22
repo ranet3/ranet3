@@ -21,8 +21,7 @@
 //   - 3.5.3: an update for a key this node originates, or for the host key of
 //     an address cap.table assigns it, creates no entry. Appendix E's stub
 //     prefers the direct route to a directly attached prefix "even when the
-//     prefixes are the same", and every key this node holds as its own is
-//     treated so.
+//     prefixes are the same", and every key this node owns is treated so.
 //   - 3.5.4: a hold ends when an expiry timer runs out, not once every
 //     neighbor acknowledged a retraction, the option the section RECOMMENDS.
 //     A retracted route is held until its own expiry. Once it is flushed, or
@@ -183,8 +182,8 @@ type Speaker struct {
 	neighbors map[string]*neighborState
 	originate map[routeKey]struct{}
 	// assigned is the host key of every address cap.table assigns this node,
-	// each this node's own as an originated key is, and announced only if it
-	// is originated too.
+	// each owned as an originated key is, and announced only if it is
+	// originated too.
 	assigned     map[routeKey]struct{}
 	routes       *routeTable
 	pendingSeqno map[sourceKey]pendingSeqno
@@ -506,8 +505,8 @@ func (s *Speaker) OriginateFrom(dest, source netip.Prefix) {
 	s.wake()
 }
 
-// adoptOwnLocked takes over a key this node now holds as its own, a
-// prefix it announces or an address cap.table assigns it. Whatever it had
+// adoptOwnLocked takes over a key this node now owns, a prefix it
+// announces or an address cap.table assigns it. Whatever it had
 // learned for the key goes. A learned route left selected keeps advertiseTo's
 // split horizon comparing its next hop against nil, so it never fires and the
 // node advertises the prefix at metric 0 back to the neighbor it is still
@@ -526,14 +525,13 @@ func (s *Speaker) adoptOwnLocked(key routeKey) {
 	s.mesh.Routes.Set(key.source, key.dest, s.ownEntryLocked(key))
 }
 
-// releaseOwnLocked gives a key back once this node holds it as its own in
-// neither way, so a route to it can be learned from a neighbor again rather
-// than staying behind the entry adoptOwnLocked installed, and reports whether
-// the key is held. A key given back loses its last route, and the route table
-// holds it until the latest time any finite update this node sent for it
-// expires at a neighbor, however long ago it stopped being announced. A key
-// this node still holds as its own the other way keeps an entry of this
-// node's, the one ownEntryLocked names for it now.
+// releaseOwnLocked gives a key back once this node owns it in neither way, so
+// a route to it can be learned from a neighbor again rather than staying
+// behind the entry adoptOwnLocked installed, and reports whether the key is
+// held. A key given back loses its last route, and is held until the latest
+// time any finite update this node sent for it expires at a neighbor, however
+// long ago it stopped being announced. A key this node still owns the other
+// way keeps an entry of this node's, the one ownEntryLocked names for it now.
 func (s *Speaker) releaseOwnLocked(key routeKey, now time.Time) bool {
 	if !s.ownsLocked(key) {
 		return s.routes.lose(key, now)
@@ -542,10 +540,9 @@ func (s *Speaker) releaseOwnLocked(key routeKey, now time.Time) bool {
 	return false
 }
 
-// unrouteLocked writes the forwarding entry of a key the route table holds no
+// unrouteLocked writes the forwarding entry of a key the route table has no
 // route for, unreachable while it is held and none otherwise. A key this node
-// holds as its own keeps the entry its owner wrote, which the end of a hold
-// leaves alone.
+// owns keeps the entry its owner wrote, which the end of a hold leaves alone.
 func (s *Speaker) unrouteLocked(key routeKey, held bool) {
 	if s.ownsLocked(key) {
 		return
@@ -557,7 +554,7 @@ func (s *Speaker) unrouteLocked(key routeKey, held bool) {
 	s.mesh.Routes.Remove(key.source, key.dest)
 }
 
-// ownEntryLocked is the forwarding entry of a key this node holds as its own:
+// ownEntryLocked is the forwarding entry of a key this node owns:
 // Local for one it originates, whether cap.table assigns it too or not, and
 // Assigned for an address cap.table assigns and nothing originates.
 func (s *Speaker) ownEntryLocked(key routeKey) *netstack.Peer {
@@ -567,8 +564,8 @@ func (s *Speaker) ownEntryLocked(key routeKey) *netstack.Peer {
 	return netstack.Assigned
 }
 
-// ownsLocked reports a key this node holds as its own, one it originates or
-// the host key of an address cap.table assigns it.
+// ownsLocked reports a key this node owns, one it originates or the host key
+// of an address cap.table assigns it.
 func (s *Speaker) ownsLocked(key routeKey) bool {
 	_, originated := s.originate[key]
 	_, assigned := s.assigned[key]
@@ -1183,7 +1180,7 @@ func comparePrefix(a, b netip.Prefix) int {
 // the selected route, where it points, and how many neighbors offered one.
 // Via is empty for a prefix held unreachable, which a retraction leaves behind
 // so a packet does not follow a shorter prefix instead, and for a key this
-// node holds as its own, which Originated or Assigned names.
+// node owns, which Originated or Assigned names.
 type RouteStat struct {
 	Destination netip.Prefix
 	// Source is invalid on an ordinary route and set on a source-specific one,
@@ -1200,7 +1197,7 @@ type RouteStat struct {
 	Assigned bool
 }
 
-// RouteDump is every prefix this speaker holds, taken under the same lock the
+// RouteDump is every prefix this speaker knows, taken under the same lock the
 // protocol runs under so the table is a moment rather than a walk across
 // several. It is the diagnostic BIRD answered with `show route`, and it is
 // deliberately the route table rather than the forwarding table: a prefix with
