@@ -47,3 +47,39 @@ templ Mark(size int) {
 		<circle cx="50" cy="50" r="12" style="fill:var(--acc)"></circle>
 	</svg>
 }
+
+// ASCIIMark is the logo drawn in text, as large as the font size it inherits.
+templ ASCIIMark() {
+	<pre class="m-0 cursor-default text-left leading-none text-fg select-none" role="img" aria-label="The ranet3 logo, a core node inside 2 broken orbits, each carrying a peer">
+		@templ.Raw(asciiMark)
+	</pre>
+}
+
+// asciiMark is the art of ASCIIMark, markup in a string since templ collapses
+// the whitespace of a pre's text
+const asciiMark = `
+              <span class="text-mute">..::----::..</span>
+          <span class="text-mute">.:-++++++++++++++-:.</span>
+        <span class="text-mute">:=+++-:..      ..:-+++=:</span>
+      <span class="text-mute">:=++-.                .-+-.</span>
+    <span class="text-mute">.=++-.</span>       ::::::       <span class="text-mute">.</span>   .::.
+   <span class="text-mute">:++=.</span>     :+#@@@@@@@@#+:      *@@@@=
+  <span class="text-mute">:++=</span>     -#@@%*+-::-+*%@@#-   :@@@@@@
+ <span class="text-mute">.++=</span>    .*@@#-          -#@@*. .#@@@@*
+ <span class="text-mute">-++.</span>   .#@@=              =@@#.  -++:
+<span class="text-mute">.++-</span>    *@@-      <span class="text-acc">:++:</span>      -@@*
+<span class="text-mute">:++.</span>   .@@#     <span class="text-acc">-%@@@@%-</span>     #@@.   <span class="text-mute">.--:</span>
+<span class="text-mute">-++</span>    .++:     <span class="text-acc">%@@@@@@%</span>     +@@:    <span class="text-mute">++-</span>
+<span class="text-mute">-++</span>             <span class="text-acc">%@@@@@@%</span>     +@@:    <span class="text-mute">++-</span>
+<span class="text-mute">:++.</span>    .=+-.   <span class="text-acc">-%@@@@%-</span>     #@@.   <span class="text-mute">.++:</span>
+<span class="text-mute">.++-</span>   :%@@@%:    <span class="text-acc">:++:</span>      -@@*    <span class="text-mute">-++.</span>
+ <span class="text-mute">-++.</span>  =@@@@@=             =@@#.   <span class="text-mute">.++-</span>
+ <span class="text-mute">.++=</span>   +%@%+            -#@@*.    <span class="text-mute">=++.</span>
+  <span class="text-mute">:++=</span>         =*+-::-+*%@@#-     <span class="text-mute">=++:</span>
+   <span class="text-mute">:++=.</span>      .#@@@@@@@@#+:     <span class="text-mute">.=++:</span>
+    <span class="text-mute">.=++-.</span>       ::::::       <span class="text-mute">.-++=.</span>
+      <span class="text-mute">:=++-.                .-++=:</span>
+        <span class="text-mute">:=+++-:..      ..:-+++=:</span>
+          <span class="text-mute">.:-++++++++++++++-:.</span>
+              <span class="text-mute">..::----::..</span>
+`

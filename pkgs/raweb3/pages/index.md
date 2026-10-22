@@ -5,38 +5,13 @@ title: "ranet3"
 description: "High performance policy routed IPsec mesh SD-WAN with userspace ESP, IKEv2, an embedded Babel speaker and SRv6 steering."
 created: 2026-10-06
 updated: 2026-10-22
-vetted: 2026-10-21
+vetted: 2026-10-22
 layout: bare
 ---
 
 <div class="flex min-h-[calc(100svh-7rem)] flex-col items-center justify-center px-4 py-[72px] text-center text-[15px] leading-[1.55] text-fg md:px-14">
 <div class="text-[clamp(7px,3.4vw,15px)]">
-<pre class="m-0 cursor-default text-left leading-none text-fg select-none" role="img" aria-label="The ranet3 logo, a core node inside 2 broken orbits, each carrying a peer">
-              <span class="text-mute">..::----::..</span>
-          <span class="text-mute">.:-++++++++++++++-:.</span>
-        <span class="text-mute">:=+++-:..      ..:-+++=:</span>
-      <span class="text-mute">:=++-.                .-+-.</span>
-    <span class="text-mute">.=++-.</span>       ::::::       <span class="text-mute">.</span>   .::.
-   <span class="text-mute">:++=.</span>     :+#@@@@@@@@#+:      *@@@@=
-  <span class="text-mute">:++=</span>     -#@@%*+-::-+*%@@#-   :@@@@@@
- <span class="text-mute">.++=</span>    .*@@#-          -#@@*. .#@@@@*
- <span class="text-mute">-++.</span>   .#@@=              =@@#.  -++:
-<span class="text-mute">.++-</span>    *@@-      <span class="text-acc">:++:</span>      -@@*
-<span class="text-mute">:++.</span>   .@@#     <span class="text-acc">-%@@@@%-</span>     #@@.   <span class="text-mute">.--:</span>
-<span class="text-mute">-++</span>    .++:     <span class="text-acc">%@@@@@@%</span>     +@@:    <span class="text-mute">++-</span>
-<span class="text-mute">-++</span>             <span class="text-acc">%@@@@@@%</span>     +@@:    <span class="text-mute">++-</span>
-<span class="text-mute">:++.</span>    .=+-.   <span class="text-acc">-%@@@@%-</span>     #@@.   <span class="text-mute">.++:</span>
-<span class="text-mute">.++-</span>   :%@@@%:    <span class="text-acc">:++:</span>      -@@*    <span class="text-mute">-++.</span>
- <span class="text-mute">-++.</span>  =@@@@@=             =@@#.   <span class="text-mute">.++-</span>
- <span class="text-mute">.++=</span>   +%@%+            -#@@*.    <span class="text-mute">=++.</span>
-  <span class="text-mute">:++=</span>         =*+-::-+*%@@#-     <span class="text-mute">=++:</span>
-   <span class="text-mute">:++=.</span>      .#@@@@@@@@#+:     <span class="text-mute">.=++:</span>
-    <span class="text-mute">.=++-.</span>       ::::::       <span class="text-mute">.-++=.</span>
-      <span class="text-mute">:=++-.                .-++=:</span>
-        <span class="text-mute">:=+++-:..      ..:-+++=:</span>
-          <span class="text-mute">.:-++++++++++++++-:.</span>
-              <span class="text-mute">..::----::..</span>
-</pre>
+<ui-ascii-mark></ui-ascii-mark>
 </div>
 <h1 class="mt-14 max-w-[28ch] text-[clamp(32px,6vw,52px)] leading-[1.1] font-bold tracking-[-.01em] text-balance">Mesh network, reimagined.</h1>
 <div class="mt-9 flex flex-wrap justify-center gap-3">
