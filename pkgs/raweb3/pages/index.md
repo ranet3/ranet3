@@ -18,7 +18,7 @@ layout: bare
 <a href="/docs/getting-started/" class="btn-secondary arrow">Get started</a>
 </div>
 </div>
-<div class="order-first text-[clamp(7px,3vw,12px)] max-lg:justify-self-center lg:order-none">
+<div class="order-first text-[clamp(7px,3vw,12px)] max-lg:justify-self-center lg:order-none lg:self-start">
 <ui-ascii-mark></ui-ascii-mark>
 </div>
 </div>
