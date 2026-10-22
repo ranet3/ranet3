@@ -11,7 +11,7 @@ import (
 
 // frame is every page around its content: the head, the header, the notice
 // on a page no person has read in full since it last changed, and the footer.
-templ frame(site ui.Site, page ui.Page, unvetted bool, body string) {
+templ frame(site ui.Site, page ui.Page, unvetted bool, bodyClass string) {
 	<!DOCTYPE html>
 	<html lang="en">
 		<head>
@@ -21,7 +21,7 @@ templ frame(site ui.Site, page ui.Page, unvetted bool, body string) {
 				@menuScript()
 			}
 		</head>
-		<body class={ "bg-bg text-fg2 antialiased", body }>
+		<body class={ "bg-bg text-fg2 antialiased", bodyClass }>
 			<a href="#main" class="sr-only border border-line bg-bg px-3 py-2 font-mono text-sm text-fg focus:not-sr-only focus:fixed focus:top-3 focus:left-4 focus:z-10">Skip to content</a>
 			@bar(site, page.Path)
 			if unvetted {
