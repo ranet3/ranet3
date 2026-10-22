@@ -71,16 +71,8 @@ func newTransitNode(tb testing.TB, outMTU int) *transitNode {
 // newRecordingTransitNode is newTransitNode recording its events through events, which the mesh holds before any of its goroutines starts
 func newRecordingTransitNode(tb testing.TB, outMTU int, events func(kind, peer string, attrs ...slog.Attr)) *transitNode {
 	tb.Helper()
-	dev := &scriptedDevice{recordingDevice: recordingDevice{writes: make(chan recordedWrite, 64)}, reads: make(chan scriptedRead), closed: make(chan struct{})}
-	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), events: events}
-	m.setDevice(dev)
-	m.startSegmentReports()
-	m.startOutboundPipeline()
+	m, dev := startTransitMesh(events)
 	tb.Cleanup(m.Close)
-	m.SetTransit(true)
-	m.SetOverlay(transitOverlay)
-	m.SetAnswerSources(AnswerSources{Router4: transitOwn[4], Router6: transitOwn[6]})
-	m.SetAnswerTTL(64)
 	n := &transitNode{m: m, tun: dev, from: &recordingPeer{}, out: &recordingPeer{}}
 	n.fromPeer = n.from.peer(tb, "from")
 	n.outPeer = n.out.peer(tb, "out")
@@ -92,6 +84,21 @@ func newRecordingTransitNode(tb testing.TB, outMTU int, events func(kind, peer s
 		m.Routes.Set(netip.Prefix{}, hostPrefix(transitHeldHost[family]), Unreachable)
 	}
 	return n
+}
+
+// startTransitMesh is a mesh with a tun of one lane recording its writes and its outbound pipeline running
+// with cap.transit on, the overlay above, the router-id of each family held and an answer TTL of 64, which its caller closes
+func startTransitMesh(events func(kind, peer string, attrs ...slog.Attr)) (*Mesh, *scriptedDevice) {
+	dev := &scriptedDevice{recordingDevice: recordingDevice{writes: make(chan recordedWrite, 64)}, reads: make(chan scriptedRead), closed: make(chan struct{})}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), events: events}
+	m.setDevice(dev)
+	m.startSegmentReports()
+	m.startOutboundPipeline()
+	m.SetTransit(true)
+	m.SetOverlay(transitOverlay)
+	m.SetAnswerSources(AnswerSources{Router4: transitOwn[4], Router6: transitOwn[6]})
+	m.SetAnswerTTL(64)
+	return m, dev
 }
 
 func hostPrefix(address netip.Addr) netip.Prefix { return netip.PrefixFrom(address, address.BitLen()) }
@@ -852,6 +859,27 @@ func TestDecisionIPv4AnswersCarryTheTTLTheMeshHolds(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// a session's delivery waiting for a forward batch while every one is taken returns once the mesh closes
+func TestDecisionWaitingForAForwardBatchReturnsOnClose(t *testing.T) {
+	m, _ := startTransitMesh(nil)
+	out := &recordingPeer{}
+	m.Routes.Set(netip.Prefix{}, hostPrefix(transitFar[4]), out.peer(t, "out"))
+	for range cap(m.forwardFree) {
+		<-m.forwardFree
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.DeliverInboundBatch(framed(udpPacket(transitSender[4], transitFar[4], 100, true)), DefaultMTU, nil)
+	}()
+	m.Close()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a delivery waiting for a forward batch had not returned 10 seconds after Close")
 	}
 }
 
