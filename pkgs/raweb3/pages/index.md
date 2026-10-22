@@ -9,25 +9,30 @@ vetted: 2026-10-22
 layout: bare
 ---
 
-<div class="flex min-h-[calc(100svh-7rem)] flex-col items-center justify-center px-4 py-[72px] text-center text-[15px] leading-[1.55] text-fg md:px-14">
-<div class="text-[clamp(7px,3.4vw,15px)]">
-<ui-ascii-mark></ui-ascii-mark>
-</div>
-<h1 class="mt-14 max-w-[28ch] text-[clamp(32px,6vw,52px)] leading-[1.1] font-bold tracking-[-.01em] text-balance">Mesh network, reimagined.</h1>
-<div class="mt-9 flex flex-wrap justify-center gap-3">
+<div class="mx-auto grid max-w-6xl items-end gap-x-14 gap-y-10 px-4 pt-24 pb-18 text-[15px] leading-[1.55] text-fg md:px-6 lg:grid-cols-[minmax(0,1fr)_auto]">
+<div>
+<h1 class="text-[clamp(40px,5vw,64px)] leading-[1.05] font-bold tracking-[-.02em] text-balance">Mesh network, reimagined.</h1>
+<p class="mt-7 max-w-[56ch] text-[18px] text-pretty text-fg2 max-sm:text-[16px]">High performance policy routed IPsec mesh SD-WAN with userspace ESP, IKEv2, an embedded Babel speaker and SRv6 steering.</p>
+<div class="mt-9 flex flex-wrap gap-3">
 <a href="/contact/" class="btn-primary">Request a Demo</a>
 <a href="/docs/getting-started/" class="btn-secondary arrow">Get started</a>
 </div>
 </div>
+<div class="order-first text-[clamp(7px,3vw,12px)] lg:order-none">
+<ui-ascii-mark></ui-ascii-mark>
+</div>
+</div>
 
-<div class="grid border-y border-line text-[15px] leading-[1.55] md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)]">
-<div class="px-6 py-10 md:border-r md:border-line md:px-12"><div class="text-[clamp(44px,4.6vw,64px)] leading-none font-bold whitespace-nowrap text-acc">95%</div><p class="mt-3.5 text-fg2">of the 10 GbE payload limit, 1 stream one way</p><p class="label mt-1">8.39 of 8.84 Gbit/s</p></div>
-<div class="border-t border-line px-6 py-10 md:border-t-0 md:border-r md:px-12"><div class="text-[clamp(44px,4.6vw,64px)] leading-none font-bold whitespace-nowrap text-acc">1.6-2.1x</div><p class="mt-3.5 text-fg2">kernel WireGuard throughput</p><p class="label mt-1">All tests</p></div>
-<div class="flex flex-col justify-center gap-3.5 border-t border-line px-6 py-10 text-fg2 md:border-t-0 md:px-12">
+<div class="border-y border-line text-[15px] leading-[1.55]">
+<div class="mx-auto grid max-w-6xl px-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)] md:px-6">
+<div class="py-10 md:border-r md:border-line md:pr-14"><div class="text-[clamp(44px,5.6vw,72px)] leading-none font-bold whitespace-nowrap text-acc">95%</div><p class="mt-3.5 text-fg2">of the 10 GbE payload limit, 1 stream one way</p><p class="label mt-1">8.39 of 8.84 Gbit/s</p></div>
+<div class="border-t border-line py-10 md:border-t-0 md:border-r md:px-14"><div class="text-[clamp(44px,5.6vw,72px)] leading-none font-bold whitespace-nowrap text-acc">2.1x</div><p class="mt-3.5 text-fg2">kernel WireGuard throughput, at best</p><p class="label mt-1">1.6-2.1x across all tests</p></div>
+<div class="flex flex-col justify-center gap-3.5 border-t border-line py-10 text-fg2 md:border-t-0 md:pl-14">
 <div class="flex gap-[2ch]"><span class="text-acc">+</span><span>1.2-1.5x wireguard-go throughput, all tests</span></div>
 <div class="flex gap-[2ch]"><span class="text-acc">+</span><span>1.91-4.96 ms RTT p99 under saturation, kernel dataplanes 0.85-2.51 ms</span></div>
 <div class="flex gap-[2ch]"><span class="text-acc">+</span><span>Medians of 3 runs under saturation</span></div>
 <a href="/benchmarks/" class="link mt-1.5">Benchmarks</a>
+</div>
 </div>
 </div>
 
