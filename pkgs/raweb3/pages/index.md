@@ -14,7 +14,7 @@ layout: bare
 <h1 class="text-[clamp(40px,5vw,64px)] leading-[1.05] font-bold tracking-[-.02em] text-balance">Mesh network, reimagined.</h1>
 <p class="mt-7 max-w-[56ch] text-[18px] text-pretty text-fg2 max-lg:mx-auto max-sm:text-[16px]">High performance policy routed IPsec mesh SD-WAN with userspace ESP, IKEv2, an embedded Babel speaker and SRv6 steering.</p>
 <div class="mt-9 flex flex-wrap gap-3 max-lg:justify-center">
-<a href="/contact/" class="btn-primary">Request a Demo</a>
+<a href="/contact/" class="btn-primary">Request a demo</a>
 <a href="/docs/getting-started/" class="btn-secondary arrow">Get started</a>
 </div>
 </div>

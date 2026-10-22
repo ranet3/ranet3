@@ -15,7 +15,7 @@ layout: bare
 <p class="mt-6 max-w-[60ch] text-fg2 max-lg:mx-auto">For a demo, early access, partnerships or investment, email us. Tell us a little about your network and what you want it to do.</p>
 <p class="mt-8 text-[1.2em]"><a href="mailto:mesh@ranet3.com" class="link">mesh@ranet3.com</a></p>
 <div class="mt-9 flex flex-wrap gap-3 max-lg:justify-center">
-<a href="mailto:mesh@ranet3.com?subject=Requesting%20ranet3%20demo" class="btn-primary">Request a Demo</a>
+<a href="mailto:mesh@ranet3.com?subject=Requesting%20ranet3%20demo" class="btn-primary">Request a demo</a>
 <a href="https://github.com/ranet3/ranet3" class="btn-secondary arrow">GitHub</a>
 </div>
 </div>
