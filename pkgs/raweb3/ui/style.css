@@ -265,6 +265,30 @@
     @apply mt-[1.2em] border-l-[3px] border-acc bg-tint px-[1.2em] py-[.8em]
       text-fg;
   }
+  /* the top block of a bare page, its text beside the ASCII mark from lg up
+     and centered under it below */
+  .hero {
+    @apply mx-auto grid max-w-6xl gap-y-10 px-4 pt-24 max-lg:text-center
+      md:px-6 lg:grid-cols-[minmax(0,1fr)_auto];
+  }
+  /* the ASCII mark of a hero, of one size and in one place on every page, so
+     it does not move between them */
+  .hero-mark {
+    @apply order-first text-[clamp(7px,3vw,12px)] max-lg:justify-self-center
+      lg:order-none lg:self-start;
+  }
+  /* a heading beside a list from lg up, above it below */
+  .split {
+    @apply mx-auto grid max-w-6xl gap-x-16 gap-y-8 px-4 md:px-6
+      lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)];
+    /* level with the list's first line */
+    & > :first-child {
+      @apply lg:pt-[18px];
+    }
+  }
+  .title {
+    @apply text-[24px] leading-tight font-bold text-balance text-fg;
+  }
   /* terms beside their descriptions */
   .terms {
     @apply mt-[.8em] grid grid-cols-[16ch_1fr] gap-x-[2ch] gap-y-[.4em] text-fg2
