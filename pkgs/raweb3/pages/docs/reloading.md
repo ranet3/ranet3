@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-21
+updated: 2026-10-22
 order: 70
 ---
 
@@ -122,9 +122,9 @@ deletes the rules the block no longer names and installs the new ones. It takes
 off the tun each address it added that the block no longer assigns. An address
 another writer put on the tun stays, named or not. The mesh's own table holds
 each newly assigned address as this node's at once, and gives back each one the
-block no longer assigns at once too, unless this node still announces it. An
-address given back is held only while an update this node sent naming it
-reachable has yet to expire at a neighbor, as
+block no longer assigns at once too, unless this node still announces its host
+route. An address given back is held only while an update this node sent naming
+it reachable has yet to expire at a neighbor, as
 [routing](routing.md#retracted-routes) describes.
 
 The tun keeps an IPv4 address throughout, because Linux drops every IPv4 route

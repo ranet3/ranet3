@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-10-21
+updated: 2026-10-22
 order: 45
 ---
 
@@ -163,12 +163,13 @@ say.
 
 A prefix loses its last route when that route is flushed, when the session of
 the neighbor that offered it closes or is replaced, or when this node stops
-announcing it. A neighbor this node told the prefix is reachable may still send
-packets for it here until that update expires there, even after a retraction,
-which is sent once and never acknowledged. So the prefix is held the same way
-until the latest time any update this node sent naming it reachable expires at a
-neighbor, unless a neighbor's route for it is selected first. Each update's time
-is the route expiry of
+announcing it or, for the host route of an address, `cap.table` stops assigning
+it, unless the other still keeps it this node's. A neighbor this node told the
+prefix is reachable may still send packets for it here until that update expires
+there, even after a retraction, which is sent once and never acknowledged. So
+the prefix is held the same way until the latest time any update this node sent
+naming it reachable expires at a neighbor, unless a neighbor's route for it is
+selected first. Each update's time is the route expiry of
 [RFC 8966 Appendix B](https://www.rfc-editor.org/rfc/rfc8966.html#appendix-B),
 "3.5 times the advertised update interval", counted from when that update was
 sent and taken from the interval it carried, plus 1 Hello interval for it to
@@ -179,8 +180,7 @@ a neighbor that missed the update sent under it still counts toward the one
 before. The prefix stays unreachable for that time even when every neighbor read
 the retraction, since this node cannot know that they did. A prefix that no
 update from this node named reachable in that time is not held, and a covering
-route serves it at once. The same goes for an address `cap.table` stops
-assigning.
+route serves it at once.
 
 ## The route reconciler
 

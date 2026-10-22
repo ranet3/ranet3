@@ -281,6 +281,11 @@ and the 3 of a session's fallback from its address.
 The `netlink` check, `integration-egress` and `integration-egress-segment` are
 the only places where a real kernel takes the `nf_tables` encoding. Elsewhere
 the encoding meets only the decoder written beside it.
+`internal/egress/testdata/messages.golden` holds the kind, flags and body of
+every request in the transactions the translator and the border filter write, in
+the order each transaction sends them. It holds neither their dumps nor what a
+batch adds on the wire, its markers, sequence numbers and acknowledgment flag,
+and `go test ./internal/egress -update` rewrites it on Linux.
 
 `nix fmt` rewrites the tree in place. It runs `deno fmt` on the Markdown, the
 example JSON and the site, then `nixfmt-tree`, then `go fmt`, `go vet`,

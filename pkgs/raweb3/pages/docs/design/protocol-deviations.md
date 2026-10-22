@@ -581,7 +581,8 @@ Linux kernel does, and reads at most 8 headers, the upper-layer header the last
 of them. A packet whose chain runs longer is answered as one that is not an
 error. Refusing it would withhold the Time Exceeded and Packet Too Big that
 sections 3.2 and 3.3 require from a packet nothing shows to be an error. The
-kernel reads 12 headers. An error ranet3 builds carries its ICMPv6 header right
+kernel reads 13 headers, so it refuses an error behind 8 to 12 extension headers
+that ranet3 answers. An error ranet3 builds carries its ICMPv6 header right
 after the IPv6 header, so two ranet3 nodes never answer each other's errors this
 way. The case needs a sender that puts its error behind 8 headers, and the
 answers to it draw on the rate limits below like any other.
@@ -700,10 +701,11 @@ expiry timer runs out, and a packet for it is dropped meanwhile rather than
 following the shorter route.
 
 A prefix that loses its last route, because its route was flushed at that
-expiry, its neighbor's session went or this node stopped announcing it, is held
-until the latest time any update this node sent naming it reachable expires at a
-neighbor, if that is later, whether or not a retraction followed, as
-[the routing page](../routing.md#retracted-routes) says.
+expiry, its neighbor's session went, or this node stopped announcing it or
+`cap.table` stopped assigning its address while the other did not keep it this
+node's, is held until the latest time any update this node sent naming it
+reachable expires at a neighbor, if that is later, whether or not a retraction
+followed, as [the routing page](../routing.md#retracted-routes) says.
 
 Each link is 1 ESP tunnel that delivers in order rather than lossy multicast.
 The periodic update and the retraction hold cover a lost triggered update.
