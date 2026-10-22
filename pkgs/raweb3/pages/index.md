@@ -29,8 +29,8 @@ layout: bare
 <div class="border-t border-line py-10 md:border-t-0 md:border-r md:px-14"><div class="text-[clamp(44px,5.6vw,72px)] leading-none font-bold whitespace-nowrap text-acc">2.1x</div><p class="mt-3.5 text-fg2">kernel WireGuard throughput, at best</p><p class="label mt-1">1.6-2.1x across all tests</p></div>
 <div class="flex flex-col justify-center gap-3.5 border-t border-line py-10 text-fg2 md:border-t-0 md:pl-14">
 <div class="flex gap-[2ch]"><span class="text-acc">+</span><span>1.2-1.5x wireguard-go throughput, all tests</span></div>
-<div class="flex gap-[2ch]"><span class="text-acc">+</span><span>1.91-4.96 ms RTT p99 under saturation, kernel dataplanes 0.85-2.51 ms</span></div>
-<div class="flex gap-[2ch]"><span class="text-acc">+</span><span>Medians of 3 runs under saturation</span></div>
+<div class="pl-[3ch]">1.91-4.96 ms RTT p99 under saturation, kernel dataplanes 0.85-2.51 ms</div>
+<div class="pl-[3ch]"><span class="label">Medians of 3 runs under saturation</span></div>
 <a href="/benchmarks/" class="link mt-1.5">Benchmarks</a>
 </div>
 </div>
@@ -116,7 +116,7 @@ layout: bare
 <dt>Ciphers</dt>
 <dd><span class="whitespace-nowrap">AES-GCM</span> or ChaCha20-Poly1305</dd>
 </dl>
-<p class="note"><span class="whitespace-nowrap">ML-KEM-768</span> is enabled per node.</p>
+<p class="note"><span class="whitespace-nowrap">ML-KEM-768</span> is opt-in per node.</p>
 </div>
 </details>
 <details class="fold">
