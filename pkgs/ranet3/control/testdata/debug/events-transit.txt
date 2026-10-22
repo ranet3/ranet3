@@ -1,0 +1,3 @@
+2026-10-22T01:00:00.000Z netstack.transit.dropped dst=2001:db8::5 reason=no_route src=3fff::1
+2026-10-22T01:00:00.000Z netstack.transit.dropped dst=192.0.2.3 reason=martian src=127.0.0.1
+2026-10-22T01:00:00.000Z netstack.transit.dropped dst=192.0.2.3 reason=expired src=192.0.2.1

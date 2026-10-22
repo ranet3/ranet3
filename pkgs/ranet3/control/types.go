@@ -300,6 +300,8 @@ type Status struct {
 	// routing at all, and those are the two states a reader is trying to tell
 	// apart.
 	SegmentCounters SegmentCounters `json:"segment_counters"`
+	// Transit is always present, zeroes included, since a node that has decided nothing yet would otherwise read as one that counts nothing
+	Transit TransitCounters `json:"transit"`
 	// Disabled names the subsystems somebody stopped over the control socket,
 	// and is absent where none is. A node whose file says it reconciles routes
 	// and which is not reconciling them says so here and nowhere else, so this
@@ -346,6 +348,48 @@ type SegmentCounters struct {
 	NotReady uint64 `json:"not_ready"`
 	// Drained counts the packets a route sent into the egress device, read off it and thrown away
 	Drained uint64 `json:"drained"`
+}
+
+// TransitCounters counts the forwarding decision's outcomes since startup
+// Forwarded counts the packets a session delivered that went on to a peer, and Delivered the ones written to the tun
+// the fields from Expired to Multicast count the packets dropped, by reason, Multicast counting reads off the tun
+// Answered counts the ICMP errors sent about dropped packets, and Unanswered the dropped packets the decision would answer that find no address of their family to come from
+// counted before the rules that keep an error from answering a packet and before the rate
+type TransitCounters struct {
+	Forwarded   uint64 `json:"forwarded"`
+	Delivered   uint64 `json:"delivered"`
+	Expired     uint64 `json:"expired"`
+	NoRoute     uint64 `json:"no_route"`
+	Held        uint64 `json:"held"`
+	Refused     uint64 `json:"refused"`
+	Invalid     uint64 `json:"invalid"`
+	Martian     uint64 `json:"martian"`
+	SourceRoute uint64 `json:"source_route"`
+	TooBig      uint64 `json:"too_big"`
+	Multicast   uint64 `json:"multicast"`
+	Answered    uint64 `json:"answered"`
+	Unanswered  uint64 `json:"unanswered"`
+}
+
+// Drops are the reasons a packet is dropped, in the order status and the metrics name them, with their counts in c
+func (c TransitCounters) Drops() []TransitDrop {
+	return []TransitDrop{
+		{"expired", "expired", c.Expired},
+		{"no_route", "no route", c.NoRoute},
+		{"held", "held", c.Held},
+		{"refused", "refused", c.Refused},
+		{"invalid", "invalid", c.Invalid},
+		{"martian", "martian", c.Martian},
+		{"source_route", "source route", c.SourceRoute},
+		{"too_big", "too big", c.TooBig},
+		{"multicast", "multicast", c.Multicast},
+	}
+}
+
+// TransitDrop is one reason a packet is dropped, as the metrics label it and as status words it, and its count
+type TransitDrop struct {
+	Label, Words string
+	Packets      uint64
 }
 
 // RegistryInfo is the trust root as this node last read it. A reload replaces

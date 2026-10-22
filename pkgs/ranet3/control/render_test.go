@@ -197,6 +197,22 @@ func TestStatusSegmentLineRendersAsTheGoldenFile(t *testing.T) {
 	golden(t, "status-segments.txt", []byte(out.String()))
 }
 
+// the transit line always names forwarded, delivered and dropped, the last summing the reasons
+// and names each reason, answered and unanswered only while each is above 0, and --json carries every count under transit
+func TestStatusTransitLineRendersAsTheGoldenFile(t *testing.T) {
+	status := downStatus()
+	status.Down = nil
+	var out strings.Builder
+	every := TransitCounters{Forwarded: 1200, Delivered: 340, Expired: 1, NoRoute: 2, Held: 3, Refused: 4, Invalid: 5, Martian: 6, SourceRoute: 7, TooBig: 8, Multicast: 9, Answered: 10, Unanswered: 11}
+	for _, counters := range []TransitCounters{{}, {Forwarded: 1200, Delivered: 340, NoRoute: 2, Answered: 2}, every} {
+		status.Transit = counters
+		RenderStatus(&out, status)
+		out.WriteString("\n")
+	}
+	golden(t, "status-transit.txt", []byte(out.String()))
+	goldenJSON(t, "status-transit.json", every)
+}
+
 // the egress line names the egress device and the families it carries, and
 // says the ones it does not carry yet in the voice of a withheld prefix
 func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {

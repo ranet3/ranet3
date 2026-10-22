@@ -1,0 +1,63 @@
+Node        example/gateway
+Version     v0.1.0
+Uptime      26h0m0s
+Port        13000
+Endpoints   0/ip4 1/ip6
+TUN         ranet3 MTU 1400 queues 4
+Role        initiator, responder, transit
+Forwarding  IPv4 on IPv6 on
+Registry    /etc/ranet3/registry.json, 12 nodes in 1 organizations
+Kernel      table 100, 0 installed, last pass 3 minutes ago
+Egress      off, this node carries no traffic for others
+Dialers     0 running
+Sessions    0
+Neighbors   0, 0 alive
+Routes      0 prefixes, 0 selected, 1 originated
+Originate   2001:db8:a::/48
+Segments    off
+Steering    off
+Transit     0 forwarded, 0 delivered, 0 dropped
+ESP         0 in, 0 dropped, 0 refused
+
+Node        example/gateway
+Version     v0.1.0
+Uptime      26h0m0s
+Port        13000
+Endpoints   0/ip4 1/ip6
+TUN         ranet3 MTU 1400 queues 4
+Role        initiator, responder, transit
+Forwarding  IPv4 on IPv6 on
+Registry    /etc/ranet3/registry.json, 12 nodes in 1 organizations
+Kernel      table 100, 0 installed, last pass 3 minutes ago
+Egress      off, this node carries no traffic for others
+Dialers     0 running
+Sessions    0
+Neighbors   0, 0 alive
+Routes      0 prefixes, 0 selected, 1 originated
+Originate   2001:db8:a::/48
+Segments    off
+Steering    off
+Transit     1200 forwarded, 340 delivered, 2 dropped (2 no route), 2 answered
+ESP         0 in, 0 dropped, 0 refused
+
+Node        example/gateway
+Version     v0.1.0
+Uptime      26h0m0s
+Port        13000
+Endpoints   0/ip4 1/ip6
+TUN         ranet3 MTU 1400 queues 4
+Role        initiator, responder, transit
+Forwarding  IPv4 on IPv6 on
+Registry    /etc/ranet3/registry.json, 12 nodes in 1 organizations
+Kernel      table 100, 0 installed, last pass 3 minutes ago
+Egress      off, this node carries no traffic for others
+Dialers     0 running
+Sessions    0
+Neighbors   0, 0 alive
+Routes      0 prefixes, 0 selected, 1 originated
+Originate   2001:db8:a::/48
+Segments    off
+Steering    off
+Transit     1200 forwarded, 340 delivered, 45 dropped (1 expired, 2 no route, 3 held, 4 refused, 5 invalid, 6 martian, 7 source route, 8 too big, 9 multicast), 10 answered, 11 unanswered
+ESP         0 in, 0 dropped, 0 refused
+

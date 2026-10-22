@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +18,9 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/goldentest"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -1053,8 +1057,27 @@ func TestDecisionReportsDropsAtMostOnceAnInterval(t *testing.T) {
 	}
 }
 
-// a read off the tun to a multicast destination is dropped and counted before any route is looked up, link scope among it
-// where a default would otherwise carry a group's packet to the one peer it names
+// a drop's event names its reason, the packet's source and its destination, and renders as the golden file
+func TestDecisionRecordsADropAsTheGoldenFile(t *testing.T) {
+	bus := events.New()
+	for _, raw := range [][]byte{
+		udpPacket(transitSender[6], transitNowhere[6], 100, false),
+		udpPacket(segAddr("127.0.0.1"), transitFar[4], 100, false),
+		withTTL(udpPacket(transitSender[4], transitFar[4], 100, false), 1),
+	} {
+		n := newRecordingTransitNode(t, DefaultMTU, bus.Emit)
+		n.deliver(t, raw)
+	}
+	var out strings.Builder
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "netstack.transit.dropped" }, 0) {
+		event.Seq, event.At = 0, time.Date(2026, 10, 22, 1, 0, 0, 0, time.UTC)
+		control.RenderEvent(&out, event)
+	}
+	goldentest.Check(t, "./internal/netstack", filepath.Join("..", "..", "control", "testdata", "debug", "events-transit.txt"), []byte(out.String()))
+}
+
+// a read off the tun to a multicast destination or the limited broadcast is dropped and counted before any route is looked up, link scope among it
+// where a default would otherwise carry it to the one peer it names, RFC 1812 section 5.3.5.1
 func TestReaderDropsWhatIsForAGroup(t *testing.T) {
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 	m.startSegmentReports()

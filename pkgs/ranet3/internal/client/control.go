@@ -112,6 +112,7 @@ func (c *Client) Status() control.Status {
 		Segments:        segmentText(c.Mesh.Segments()),
 		Steering:        c.Mesh.Steering().Entries(),
 		SegmentCounters: segmentCounters(c.Mesh.SegmentCounters()),
+		Transit:         transitCounters(c.Mesh.TransitCounters()),
 		Disabled:        c.disabledSubsystems(),
 		Down:            c.downStatus(),
 	}
@@ -136,6 +137,26 @@ func segmentCounters(counters netstack.SegmentCounters) control.SegmentCounters 
 		Refused:   counters.Refused,
 		NotReady:  counters.NotReady,
 		Drained:   counters.Drained,
+	}
+}
+
+// transitCounters carries the forwarding decision's counters onto the wire field by field, as segmentCounters does
+// TestTransitCountersDoNotDrift holds the two shapes identical
+func transitCounters(counters netstack.TransitCounters) control.TransitCounters {
+	return control.TransitCounters{
+		Forwarded:   counters.Forwarded,
+		Delivered:   counters.Delivered,
+		Expired:     counters.Expired,
+		NoRoute:     counters.NoRoute,
+		Held:        counters.Held,
+		Refused:     counters.Refused,
+		Invalid:     counters.Invalid,
+		Martian:     counters.Martian,
+		SourceRoute: counters.SourceRoute,
+		TooBig:      counters.TooBig,
+		Multicast:   counters.Multicast,
+		Answered:    counters.Answered,
+		Unanswered:  counters.Unanswered,
 	}
 }
 

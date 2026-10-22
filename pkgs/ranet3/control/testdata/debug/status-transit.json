@@ -1,0 +1,15 @@
+{
+  "forwarded": 1200,
+  "delivered": 340,
+  "expired": 1,
+  "no_route": 2,
+  "held": 3,
+  "refused": 4,
+  "invalid": 5,
+  "martian": 6,
+  "source_route": 7,
+  "too_big": 8,
+  "multicast": 9,
+  "answered": 10,
+  "unanswered": 11
+}
