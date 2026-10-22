@@ -102,14 +102,14 @@ func TestLoadPagesHighlightsCodeBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`<pre><code class="language-sh"><span class="c"># a comment</span>`,
+		`<code class="language-sh"><span class="c"># a comment</span>`,
 		`<span class="nf">cd</span>`,
 		`<span class="k">&amp;&amp;</span> <span class="nf">go</span> vet ./...` + "\n",
 		`<span class="nf">sudo</span> <span class="nf">nix</span> run . <span class="k">--</span> <span class="k">--config</span> x.toml <span class="se">`,
 		"<span class=\"se\">\\\n</span>  <span class=\"k\">--dry</span>\n</code></pre>",
 		`<span class="na">networking</span><span class="k">.</span><span class="na">ranet3</span><span class="k">.</span><span class="na">enable</span> <span class="k">=</span> <span class="k">true;</span>`,
 		`<span class="na">imports</span> <span class="k">=</span> <span class="p">[</span> inputs<span class="k">.</span>x <span class="p">]</span>`,
-		"<pre><code>&lt;plain&gt; &amp; &quot;text&quot;\n</code></pre>",
+		"<code>&lt;plain&gt; &amp; &quot;text&quot;\n</code></pre>",
 	} {
 		if !strings.Contains(ps[0].html, want) {
 			t.Errorf("renders without %s:\n%s", want, ps[0].html)

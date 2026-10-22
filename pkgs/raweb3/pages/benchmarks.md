@@ -11,7 +11,7 @@ layout: bare
 
 <section class="section">
         <h1 class="text-[2em] font-bold text-fg">Benchmarks</h1>
-        <div class="overflow-x-auto mt-[1em]">
+        <div class="overflow-x-auto mt-[1em]" tabindex="0">
           <table class="data-table data-table-left max-sm:whitespace-normal">
             <thead>
               <tr>
@@ -46,7 +46,7 @@ layout: bare
         </div>
         <p class="note">Medians of 3 runs under saturation</p>
         <h2 class="subhead mt-[3em]">Head to head</h2>
-        <div class="overflow-x-auto mt-[1em]">
+        <div class="overflow-x-auto mt-[1em]" tabindex="0">
           <table class="data-table data-table-left data-table-ruled max-sm:whitespace-normal">
             <thead>
               <tr>
@@ -81,7 +81,7 @@ layout: bare
         <p class="note">Each range is ranet3's result divided by the other dataplane's across the 6 tests below.</p>
         <h2 class="subhead mt-[3em]">Kernel and userspace</h2>
         <p class="mt-[.6em] text-fg2">Userspace dataplanes copy every packet into their own process and are usually expected to be slower than kernel ones.</p>
-        <div class="overflow-x-auto mt-[1em]">
+        <div class="overflow-x-auto mt-[1em]" tabindex="0">
           <table class="data-table max-sm:whitespace-normal">
             <thead>
               <tr>
@@ -125,7 +125,7 @@ layout: bare
         <h2 class="subhead mt-[3em]">Full results</h2>
         <figure class="mt-[2em]">
           <figcaption class="mb-[.6em] flex flex-wrap gap-x-[1.5ch] text-fg"><b>Throughput, saturated</b><span class="text-mute">Gbit/s received</span><span class="text-hint">Higher is better</span></figcaption>
-          <div class="overflow-x-auto">
+          <div class="overflow-x-auto" tabindex="0">
             <table class="data-table data-table-wide max-sm:whitespace-normal">
               <thead>
                 <tr>
@@ -187,7 +187,7 @@ layout: bare
         </figure>
         <figure class="mt-[2em]">
           <figcaption class="mb-[.6em] flex flex-wrap gap-x-[1.5ch] text-fg"><b>CPU cost at 3 Gbit/s offered</b><span class="text-mute">Busy cores per Gbit/s, both hosts</span><span class="text-hint">Lower is better</span></figcaption>
-          <div class="overflow-x-auto">
+          <div class="overflow-x-auto" tabindex="0">
             <table class="data-table data-table-wide max-sm:whitespace-normal">
               <thead>
                 <tr>
@@ -250,7 +250,7 @@ layout: bare
         </figure>
         <figure class="mt-[2em]">
           <figcaption class="mb-[.6em] flex flex-wrap gap-x-[1.5ch] text-fg"><b>Latency under saturation</b><span class="text-mute">RTT p99, ms</span><span class="text-hint">Lower is better</span></figcaption>
-          <div class="overflow-x-auto">
+          <div class="overflow-x-auto" tabindex="0">
             <table class="data-table data-table-wide max-sm:whitespace-normal">
               <thead>
                 <tr>

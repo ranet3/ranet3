@@ -16,29 +16,33 @@ import (
 	"github.com/yuin/goldmark/util"
 )
 
-// highlighter renders a fenced code block as goldmark does, with each run of
-// tokens of one kind in a span of that kind's class. A block that names no
-// language renders as plain text, and one that names a language chroma has no
-// lexer for fails the page.
+// highlighter renders a code block as goldmark does, with each run of tokens
+// of one kind in a span of that kind's class, and focusable, since a block
+// wider than the page scrolls and a keyboard has to reach it. A block that
+// names no language renders as plain text, and one that names a language
+// chroma has no lexer for fails the page.
 type highlighter struct{}
 
 func (highlighter) RegisterFuncs(r renderer.NodeRendererFuncRegisterer) {
-	r.Register(ast.KindFencedCodeBlock, renderFencedCode)
+	r.Register(ast.KindFencedCodeBlock, renderCode)
+	r.Register(ast.KindCodeBlock, renderCode)
 }
 
-func renderFencedCode(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func renderCode(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if !entering {
 		_, _ = w.WriteString("</code></pre>\n")
 		return ast.WalkContinue, nil
 	}
-	n := node.(*ast.FencedCodeBlock)
 	var code strings.Builder
-	for i := range n.Lines().Len() {
-		line := n.Lines().At(i)
+	for i := range node.Lines().Len() {
+		line := node.Lines().At(i)
 		code.Write(line.Value(source))
 	}
-	_, _ = w.WriteString("<pre><code")
-	lang := n.Language(source)
+	_, _ = w.WriteString(`<pre tabindex="0"><code`)
+	var lang []byte
+	if n, ok := node.(*ast.FencedCodeBlock); ok {
+		lang = n.Language(source)
+	}
 	if lang == nil {
 		_ = w.WriteByte('>')
 		html.DefaultWriter.RawWrite(w, []byte(code.String()))
