@@ -147,7 +147,7 @@ func assignedPrefixes(cfg *config.Config) []netip.Prefix {
 	return cfg.Cap.Table.Assigned(cfg.Routes().Announced())
 }
 
-// assignedAddresses is every address cap.table assigns, whatever the length of its prefix, which the speaker holds as this node's own
+// assignedAddresses is every address cap.table assigns, whatever the length of its prefix, each of which the speaker takes as owned by this node
 func assignedAddresses(cfg *config.Config) []netip.Addr {
 	assigned := assignedPrefixes(cfg)
 	out := make([]netip.Addr, 0, len(assigned))
