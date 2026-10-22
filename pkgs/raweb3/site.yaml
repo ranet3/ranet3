@@ -10,17 +10,15 @@ analytics:
   src: https://stats.ysun.co/js/script.file-downloads.hash.outbound-links.js
   domain: ranet3.com
 nav:
-  - title: Why ranet3
-    href: /why/
   - title: Benchmarks
     href: /benchmarks/
   - title: Docs
     href: /docs/
-  - title: GitHub
-    href: https://github.com/ranet3/ranet3
+  - title: Contact
+    href: /contact/
 cta:
   title: Request a Demo
-  href: mailto:mesh@ranet3.com?subject=ranet3%20demo
+  href: /contact/
 # a cited part is a link to the standard the text before it follows
 footer:
   title: High performance policy routed IPsec mesh SD-WAN

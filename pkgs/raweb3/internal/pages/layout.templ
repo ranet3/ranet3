@@ -34,8 +34,7 @@ templ bar(site ui.Site) {
 				@ui.Mark(26)
 				<span>{ site.Name }</span>
 			</a>
-			<a href={ templ.SafeURL(site.CTA.Href) } class="bg-acc px-3.5 py-2 font-bold text-bg lg:order-last">{ site.CTA.Title }</a>
-			<div class="flex w-full items-center gap-x-7 lg:w-auto">
+			<div class="flex w-full items-center gap-x-7 sm:w-auto">
 				<div class="flex min-w-0 gap-x-7 overflow-x-auto">
 					for _, l := range site.Nav {
 						<a href={ templ.SafeURL(l.Href) } class="whitespace-nowrap text-fg2 hover:text-acc">{ l.Title }</a>

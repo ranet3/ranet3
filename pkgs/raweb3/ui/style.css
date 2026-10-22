@@ -162,11 +162,50 @@
   .label {
     @apply text-[13px] text-mute;
   }
-  /* one row of a list of links, numbered, with an arrow at the end */
+  /* an icon after the text, drawn as the theme switch draws its icons: a 24px
+     grid, a 2px round stroke, the text's color. Its box is one line tall at
+     the top of the flex or grid it sits in, so it centers on the first line,
+     which a glyph of the font does not */
+  .arrow-after,
+  .index-row {
+    --icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M5 12h14M13 6l6 6-6 6'/></svg>");
+    &::after {
+      content: "";
+      flex: none;
+      align-self: start;
+      width: 1em;
+      height: 1lh;
+      background-color: currentColor;
+      mask: var(--icon) center / contain no-repeat;
+    }
+  }
+  .arrow-after {
+    @apply inline-flex items-center gap-[1ch];
+  }
+  /* one row of a list of links, numbered, with an arrow at the end and a
+     line in a small under its title */
   .index-row {
     @apply grid grid-cols-[4ch_minmax(0,1fr)_auto] gap-4 border-b border-line
-      px-1 py-[18px] text-left text-fg after:text-acc after:content-['\2192']
-      hover:bg-bg2;
+      px-1 py-[18px] text-left text-fg after:text-acc hover:bg-bg2;
+    & small {
+      @apply mt-1 block text-[.9em] text-mute;
+    }
+  }
+  /* a row of the index that opens in place, a plus or minus at its end for
+     its state, the detail aligned with the row's title */
+  .index-details {
+    @apply border-b border-line;
+    & > summary {
+      --icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'><path d='M12 5v14M5 12h14'/></svg>");
+      @apply cursor-pointer list-none border-b-0
+        [&::-webkit-details-marker]:hidden;
+    }
+    &[open] > summary {
+      --icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'><path d='M5 12h14'/></svg>");
+    }
+    & > summary + * {
+      @apply px-1 pb-10 sm:pl-[calc(4ch+1.25rem)];
+    }
   }
   .page-section {
     @apply mx-auto max-w-[92ch] px-4 py-12 text-[15px] leading-normal
