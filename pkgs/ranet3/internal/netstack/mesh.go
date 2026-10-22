@@ -373,6 +373,12 @@ func (m *Mesh) classify(b *outboundBatch) {
 		if !ok {
 			continue
 		}
+		// the mesh routes no group and forwards no limited broadcast, RFC 1812 section 5.3.5.1
+		// and a covering unicast route, a default among them, would carry either to one peer
+		if dst.IsMulticast() || dst == packet.LimitedBroadcast {
+			m.transitCounts[transitMulticast].Add(1)
+			continue
+		}
 		// Steering happens before the route lookup, because a steered
 		// packet is routed by the segment it is going to rather than by
 		// the address it was addressed to.

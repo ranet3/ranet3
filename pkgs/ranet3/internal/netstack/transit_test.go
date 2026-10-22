@@ -1052,3 +1052,30 @@ func TestDecisionReportsDropsAtMostOnceAnInterval(t *testing.T) {
 		t.Errorf("three drops counted %d", got)
 	}
 }
+
+// a read off the tun to a multicast destination is dropped and counted before any route is looked up, link scope among it
+// where a default would otherwise carry a group's packet to the one peer it names
+func TestReaderDropsWhatIsForAGroup(t *testing.T) {
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+	m.startSegmentReports()
+	peer := (&recordingPeer{}).peer(t, "peer")
+	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
+	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	var reads [][]byte
+	for _, to := range []string{"ff02::1", "ff02::fb", "ff0e::1", "224.0.0.251", "239.1.1.1", "255.255.255.255", "3fff::3", "192.0.2.3", "192.0.2.255"} {
+		destination := segAddr(to)
+		reads = append(reads, udpPacket(transitSender[familyOf(destination)], destination, 100, false))
+	}
+	b := newOutboundBatch(len(reads))
+	fill(b, reads...)
+	m.classify(b)
+	for i, raw := range reads {
+		_, destination, _ := packet.Addrs(raw)
+		if want := !destination.IsMulticast() && destination != segAddr("255.255.255.255"); (b.peers[i] == peer) != want {
+			t.Errorf("a read to %s went to the peer %t, want %t", destination, b.peers[i] == peer, want)
+		}
+	}
+	if got := m.TransitCounters(); got != (TransitCounters{Multicast: 6}) {
+		t.Errorf("a read of five packets for groups and one for the limited broadcast counted %+v", got)
+	}
+}

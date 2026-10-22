@@ -38,7 +38,7 @@ const (
 	transitSourceRoute
 	// transitTooBig counts packets larger than the session to their next hop, answered or past cutting
 	transitTooBig
-	// transitMulticast counts reads off the tun to a multicast destination, which the mesh routes none of
+	// transitMulticast counts reads off the tun to a multicast destination or the limited broadcast, which the mesh routes none of
 	transitMulticast
 	transitAnswered
 	transitReasonCount
