@@ -5,6 +5,7 @@ package babel
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"reflect"
@@ -345,6 +346,55 @@ func TestRetractedPrefixInsideThisNodesOwnIsHeld(t *testing.T) {
 	}
 	if _, verdict, _ := fabric.meshes["a"].Routes.Resolve(inside, inside); verdict != netstack.RouteLocal {
 		t.Errorf("a resolves %s as %v once the hold is flushed, want this node's own covering prefix", inside, verdict)
+	}
+}
+
+// an exit whose egress readiness withdraws its default holds it as it holds any key it releases, RFC 8966 section 3.5.4
+// so its transit for the internet resolves held through an entry of length 0, which the forwarding decision answers network unreachable
+// another exit's default is no route of the exit's while it originates its own, since receive drops every update for an own key
+// so the transit moves to that exit at that exit's next update, and with no other default the hold lasts until this node's last update expires at a neighbor
+func TestExitWithdrawingItsDefaultHoldsItsTransit(t *testing.T) {
+	sender, internet := netip.MustParseAddr("3fff:1::1"), netip.MustParseAddr("2001:db8:ff::1")
+	whole := routeKey{dest: netip.MustParsePrefix("::/0")}
+	for _, another := range []bool{true, false} {
+		t.Run(fmt.Sprintf("another exit %t", another), func(t *testing.T) {
+			fabric := newMeshFabric(t, Config{}, "l-e", "e-x")
+			e, routes := fabric.speakers["e"], fabric.meshes["e"].Routes
+			if another {
+				fabric.speakers["x"].Originate(whole.dest)
+			}
+			e.Originate(whole.dest)
+			fabric.flush("x", "e")
+			if _, verdict, _ := routes.Resolve(sender, internet); verdict != netstack.RouteLocal {
+				t.Fatalf("the exit resolves the internet as verdict %d while it originates its default, want its own", verdict)
+			}
+			e.mu.Lock()
+			_, learned := e.routes.entries[whole]
+			e.mu.Unlock()
+			if learned {
+				t.Errorf("the exit learned a default while it originates its own")
+			}
+			e.SetOriginated(nil)
+			if _, verdict, match := routes.Resolve(sender, internet); verdict != netstack.RouteHeld || match.Bits != 0 {
+				t.Fatalf("once its readiness withdraws its default the exit resolves the internet as verdict %d through %d bits, want held through the default", verdict, match.Bits)
+			}
+			if another {
+				fabric.flush("x")
+				if peer, verdict, _ := routes.Resolve(sender, internet); verdict != netstack.RoutePeer || peer.ID != "x" {
+					t.Errorf("after the other exit's next update the exit resolves the internet as verdict %d through %s, want x", verdict, peerName(peer))
+				}
+				return
+			}
+			e.mu.Lock()
+			end := e.routes.advertisedUntil[whole]
+			e.sweepExpiredLocked(end.Add(-time.Nanosecond))
+			_, before, _ := routes.Resolve(sender, internet)
+			e.sweepExpiredLocked(end)
+			e.mu.Unlock()
+			if _, after, _ := routes.Resolve(sender, internet); before != netstack.RouteHeld || after != netstack.RouteNone {
+				t.Errorf("with no other default the exit resolves the internet as verdict %d just before its last update expires and %d at it, want held then none", before, after)
+			}
+		})
 	}
 }
 
