@@ -146,12 +146,12 @@ func TestAnnouncementTakesTheEgressPrefixesFromTheTranslator(t *testing.T) {
 		Route: &babel.Routes{Announce: []schema.Announce{{Prefix: schema.MustPrefix("10.88.0.2/32")}}},
 	}}
 	c := &Client{}
-	if routes := c.announced(cfg); len(routes) != 1 {
+	if routes := c.announced(cfg, c.egressAdvertised()); len(routes) != 1 {
 		t.Fatalf("announced %v with no translator, want cap.route alone", routes)
 	}
 	exit := netip.MustParsePrefix("0.0.0.0/0")
 	c.SetEgressAnnounce(func() []netip.Prefix { return []netip.Prefix{exit} })
-	routes := c.announced(cfg)
+	routes := c.announced(cfg, c.egressAdvertised())
 	if len(routes) != 2 || routes[1].Destination != exit {
 		t.Errorf("announced %v, want cap.route's list and the exit's own prefix", routes)
 	}

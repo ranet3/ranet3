@@ -139,6 +139,7 @@ func TestTUNEgressDeviceTakesIPv6WhereTheHostTurnsItOffForNewLinks(t *testing.T)
 	m.SetSegments(egressTable(t))
 	m.SetEgress(dev)
 	m.SetEgressReady(true, true)
+	routeLeaf(t, m, netip.MustParseAddr("3fff:1:69c:1::5"))
 	path := "/proc/sys/net/ipv6/conf/" + name + "/disable_ipv6"
 	if body, err := os.ReadFile(path); err != nil || strings.TrimSpace(string(body)) != "0" {
 		t.Errorf("%s reads %q (%v), want 0", path, body, err)

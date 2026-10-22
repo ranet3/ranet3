@@ -152,6 +152,27 @@ func BenchmarkDecideWithheld(b *testing.B) {
 	}
 }
 
+// BenchmarkDecideEgressed takes every packet out through an entry of this node's counting as a default, past the egress check
+// from one source to one destination, whose answer a batch keeps, and to as many destinations as a batch holds packets, past what it keeps
+func BenchmarkDecideEgressed(b *testing.B) {
+	for _, c := range []struct{ family, destinations int }{{4, 1}, {4, decideBatch}, {6, 1}, {6, decideBatch}} {
+		b.Run(fmt.Sprintf("IPv%d destinations=%d", c.family, c.destinations), func(b *testing.B) {
+			m := benchTransitMesh(b)
+			m.Routes.Set(netip.Prefix{}, exitShapes[0].prefixes[c.family][0], Local)
+			source := map[int]netip.Addr{4: segAddr("192.0.2.129"), 6: segAddr("3fff:0:0:1::1")}[c.family]
+			packets := make([][]byte, c.destinations)
+			for i := range packets {
+				destination := netip.AddrFrom4([4]byte{203, 0, 113, byte(i)})
+				if c.family == 6 {
+					destination = netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 15: byte(i)})
+				}
+				packets[i] = udpPacket(source, destination, 100, false)
+			}
+			benchmarkDecide(b, m, packets)
+		})
+	}
+}
+
 // BenchmarkOptionStage is the stage the decision runs on a forwarded IPv4 header for its options
 // against the call that reads the clock and the router-id for every header
 func BenchmarkOptionStage(b *testing.B) {

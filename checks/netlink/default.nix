@@ -119,6 +119,7 @@ testers.runNixOSTest {
     # a veth pair to a second namespace whose far end drops what it cannot take and answers nothing
     # and three nodes in a line whose middle one forwards and answers in process, with its kernel forwarding nothing
     # and an exit carrying transit in process, with nothing out of its uplink
+    # and the same exit egressing each shape of the internet it advertises translated, a stranger's source refused
     out = machine.succeed(
         "${netlinkTests}/bin/client-tests -test.v -test.run 'TestTUN' 2>&1"
     )
@@ -128,6 +129,8 @@ testers.runNixOSTest {
     assert "--- PASS: TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter" in out, f"the line's lab did not run:\n{out}"
     assert "--- PASS: TestTUNLineRefusesTransitWhileItIsOffButNotThroughAnEndDT46SID" in out, f"the line's lab with transit off did not run:\n{out}"
     assert "--- PASS: TestTUNExitCarriesTransitInProcessAndNothingOutOfItsUplink" in out, f"the exit's lab did not run:\n{out}"
+    assert "--- PASS: TestTUNExitEgressesEachShapeOfTheInternetTranslated" in out, f"the exit's egress lab did not run:\n{out}"
+    assert "--- PASS: TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment" in out, f"mode 2 egress at a node with no egress segment did not run:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 10, f"only {ran} of the client's tun round trips ran:\n{out}"
 

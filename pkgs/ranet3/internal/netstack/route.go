@@ -7,16 +7,72 @@ package netstack
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
+	"sync"
 
 	"ranet3.com/pkgs/ranet3/sadr"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // RouteTable adds peer diagnostics to the shared SADR implementation. The
 // forwarding trie is the sole source of truth for lookup, removal and dumps.
 type RouteTable struct {
-	table   sadr.Table[*Peer]
+	table   sadr.Table[routeEntry]
 	changed chan struct{}
+	// mu orders the writers, so each entry takes its flags from the overlay and the egress prefixes in force as it enters
+	// and a change of either flags every entry again with no write lost between
+	mu sync.Mutex
+	// overlay is cap.border's overlay as written, nil without cap.border
+	overlay []schema.Prefix
+	// egress is the prefixes cap.egress advertises, masked
+	egress []netip.Prefix
+}
+
+// routeEntry is one entry's value, with the flags Resolve answers beside its verdict
+type routeEntry struct {
+	peer *Peer
+	// counted is an entry whose destination counts as a default with the overlay, schema.CapturesTheMachine
+	counted bool
+	// egress is this node's own entry for a prefix cap.egress advertises, with no source prefix
+	egress bool
+}
+
+// flaggedLocked is peer's entry for src and dst, flagged under the overlay and the egress prefixes rt holds, with rt.mu held
+func (rt *RouteTable) flaggedLocked(src, dst netip.Prefix, peer *Peer) routeEntry {
+	return routeEntry{
+		peer:    peer,
+		counted: schema.CapturesTheMachine(dst, rt.overlay),
+		egress:  peer == Local && !src.IsValid() && slices.Contains(rt.egress, dst.Masked()),
+	}
+}
+
+// SetOverlay flags every entry again under cap.border's overlay as written, nil without cap.border
+func (rt *RouteTable) SetOverlay(overlay []schema.Prefix) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.overlay = slices.Clone(overlay)
+	rt.reflagLocked()
+}
+
+// SetEgress flags every entry again under the prefixes cap.egress advertises
+func (rt *RouteTable) SetEgress(advertised []netip.Prefix) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	rt.egress = make([]netip.Prefix, len(advertised))
+	for i, prefix := range advertised {
+		rt.egress[i] = prefix.Masked()
+	}
+	rt.reflagLocked()
+}
+
+// reflagLocked writes again each entry whose flags the overlay or the egress prefixes now set otherwise, with rt.mu held
+func (rt *RouteTable) reflagLocked() {
+	for route := range rt.table.All() {
+		if next := rt.flaggedLocked(route.Source, route.Destination, route.Value.peer); next != route.Value {
+			rt.table.Set(route.Source, route.Destination, next)
+		}
+	}
 }
 
 func NewRouteTable() *RouteTable { return &RouteTable{changed: make(chan struct{}, 1)} }
@@ -72,7 +128,7 @@ func (rt *RouteTable) Changed() <-chan struct{} { return rt.changed }
 func (rt *RouteTable) Snapshot() []sadr.Route[*Peer] {
 	var out []sadr.Route[*Peer]
 	for route := range rt.table.All() {
-		out = append(out, route)
+		out = append(out, sadr.Route[*Peer]{Source: route.Source, Destination: route.Destination, Value: route.Value.peer})
 	}
 	return out
 }
@@ -88,17 +144,23 @@ func (rt *RouteTable) notify() {
 }
 
 func (rt *RouteTable) Set(src, dst netip.Prefix, peer *Peer) {
-	rt.table.Set(src, dst, peer)
+	rt.mu.Lock()
+	rt.table.Set(src, dst, rt.flaggedLocked(src, dst, peer))
+	rt.mu.Unlock()
 	rt.notify()
 }
 
 func (rt *RouteTable) Remove(src, dst netip.Prefix) {
+	rt.mu.Lock()
 	rt.table.Remove(src, dst)
+	rt.mu.Unlock()
 	rt.notify()
 }
 
 func (rt *RouteTable) RemovePeer(peer *Peer) {
-	rt.table.RemoveValue(peer)
+	rt.mu.Lock()
+	rt.table.RemoveFunc(func(entry routeEntry) bool { return entry.peer == peer })
+	rt.mu.Unlock()
 	rt.notify()
 }
 
@@ -106,6 +168,11 @@ func (rt *RouteTable) RemovePeer(peer *Peer) {
 type Match struct {
 	// Bits is the length of the entry's destination prefix in the bits of the destination's own family, zero when no entry matched
 	Bits int
+	// Counted is an entry whose destination counts as a default with cap.border's overlay, schema.CapturesTheMachine
+	// every entry covering such an entry's destination counts too, so a lookup passing over it finds none
+	Counted bool
+	// Egress is this node's own entry for a prefix cap.egress advertises
+	Egress bool
 }
 
 // Resolve answers a packet from src to dst with the entry RFC 9079 section 4
@@ -116,28 +183,27 @@ type Match struct {
 // entry holding Unreachable answers RouteHeld, so no covering entry is
 // consulted for a packet inside it. The peer is nil for every verdict but
 // RoutePeer.
-// the match is the entry's from the same walk, so it costs no second lookup
 func (rt *RouteTable) Resolve(src, dst netip.Addr) (*Peer, Verdict, Match) {
-	peer, bits, ok := rt.table.LookupBits(src, dst)
-	match := Match{Bits: bits}
+	entry, bits, ok := rt.table.LookupBits(src, dst)
+	match := Match{Bits: bits, Counted: entry.counted, Egress: entry.egress}
 	switch {
 	case !ok:
 		return nil, RouteNone, match
-	case peer == Unreachable:
+	case entry.peer == Unreachable:
 		return nil, RouteHeld, match
-	case peer == Local || peer == Assigned:
+	case entry.peer == Local || entry.peer == Assigned:
 		return nil, RouteLocal, match
 	}
-	return peer, RoutePeer, match
+	return entry.peer, RoutePeer, match
 }
 
 func (rt *RouteTable) Debug() []string {
 	var out []string
 	for route := range rt.table.All() {
 		if route.Source.IsValid() {
-			out = append(out, fmt.Sprintf("%s from %s via %s", route.Destination, route.Source, route.Value.ID))
+			out = append(out, fmt.Sprintf("%s from %s via %s", route.Destination, route.Source, route.Value.peer.ID))
 		} else {
-			out = append(out, fmt.Sprintf("%s via %s", route.Destination, route.Value.ID))
+			out = append(out, fmt.Sprintf("%s via %s", route.Destination, route.Value.peer.ID))
 		}
 	}
 	sort.Strings(out)

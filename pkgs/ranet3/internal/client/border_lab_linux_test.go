@@ -267,6 +267,14 @@ func meshCarrying(t *testing.T, c *Client) func() [2]bool {
 		mesh.SetSegments(segments)
 		mesh.SetSteering(steering)
 		mesh.SetEgress(device)
+		// the egress segment egresses an inner source only where the mesh routes a reply to it, here through a synthetic leaf
+		leaf := netstack.NewPeer("example/leaf", func(int) (netstack.BatchSealer, error) {
+			return nil, errors.New("the leaf is synthetic")
+		}, func([][]byte) error { return nil }, nil)
+		t.Cleanup(leaf.Close)
+		for _, prefix := range labLeafPrefixes() {
+			mesh.Routes.Set(netip.Prefix{}, prefix, leaf)
+		}
 		c.Mesh = mesh
 		return nil
 	}); err != nil {

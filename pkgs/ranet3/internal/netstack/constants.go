@@ -111,6 +111,10 @@ const sendErrReportInterval = 10 * time.Second
 // log line per packet.
 const segmentDropInterval = 30 * time.Second
 
+// egressPairs is how many source and destination pairs a batch keeps the egress check's answer for, each pair past them looked up again
+// a batch carries a few flows, and a search of the kept pairs costs less than the lookup it saves only while they are few
+const egressPairs = 8
+
 // egressDrainRetry is how long the egress device's drain waits after a read that failed other than by closing
 // it keeps a device that fails every read from spinning a core
 const egressDrainRetry = 100 * time.Millisecond

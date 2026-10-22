@@ -83,7 +83,7 @@ func TestTableAgainstLinearModel(t *testing.T) {
 			k, value := keys[rng.IntN(len(keys))], rng.IntN(16)
 			switch rng.IntN(10) {
 			case 0:
-				table.RemoveValue(value)
+				table.RemoveFunc(func(held int) bool { return held == value })
 				for k, v := range model {
 					if v == value {
 						delete(model, k)
@@ -142,7 +142,7 @@ func TestConcurrentReadersAndWriters(t *testing.T) {
 						t.Errorf("corrupt snapshot: %+v", entry)
 					}
 				}
-				table.RemoveValue(i)
+				table.RemoveFunc(func(held int) bool { return held == i })
 			}
 		})
 	}

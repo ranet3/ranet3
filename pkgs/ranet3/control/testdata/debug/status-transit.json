@@ -8,6 +8,8 @@
   "invalid": 5,
   "martian": 6,
   "source_route": 7,
+  "unrouted_source": 12,
+  "not_ready": 13,
   "too_big": 8,
   "multicast": 9,
   "answered": 10,

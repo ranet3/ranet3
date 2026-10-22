@@ -160,7 +160,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 		c.Mesh.SetSegments(tun.segments)
 	}
 	if !sameOverlay(old, cfg) {
-		c.Mesh.SetOverlay(overlayPrefixes(cfg))
+		c.Mesh.SetOverlay(cfg.Overlay())
 	}
 	var tunErr error
 	switch {
@@ -435,14 +435,13 @@ func sameOverlay(old, next *config.Config) bool {
 	return slices.Equal(sorted(old), sorted(next))
 }
 
-// overlayPrefixes is cap.border's overlay as the mesh's forwarding decision reads it, nil without cap.border
-func overlayPrefixes(cfg *config.Config) []netip.Prefix {
-	overlay := cfg.Overlay()
-	if overlay == nil {
+// egressPrefixes lists the prefixes cap.egress advertises, whose entries the forwarding decision egresses through only while their family is ready
+func egressPrefixes(cfg *config.Config) []netip.Prefix {
+	if cfg.Egress() == nil {
 		return nil
 	}
-	out := make([]netip.Prefix, len(overlay))
-	for i, prefix := range overlay {
+	out := make([]netip.Prefix, len(cfg.Egress().Advertise))
+	for i, prefix := range cfg.Egress().Advertise {
 		out[i] = prefix.Prefix
 	}
 	return out
@@ -571,10 +570,11 @@ func sortedPrefixes(prefixes []netip.Prefix) []netip.Prefix {
 // from what the translator and the filter last reported on every call rather
 // than from the file, because an exit withholds a prefix whose chain does not
 // read back as written and that answer changes under a running node.
-func (c *Client) announced(cfg *config.Config) []babel.OriginatedRoute {
+// advertised is the second set, as the caller's one read of egressAdvertised gives it
+func (c *Client) announced(cfg *config.Config, advertised []netip.Prefix) []babel.OriginatedRoute {
 	serves := c.egressServes.Load() && !c.borderHeld.Load()
 	routes := cfg.Routes().Originated()
-	for _, prefix := range c.egressAdvertised() {
+	for _, prefix := range advertised {
 		routes = append(routes, babel.OriginatedRoute{Destination: prefix})
 	}
 	if !serves {
@@ -604,11 +604,20 @@ func (c *Client) egressAdvertised() []netip.Prefix {
 // cap.egress calls it whenever the prefixes it may advertise change, which is
 // how an exit whose rule stopped being installed retracts rather than going on
 // attracting traffic it would have to drop.
+// the mesh takes the families cap.egress may advertise before the speaker announces or retracts them, both from one read
+// so no prefix is announced while the mesh's word for its family is unset
+// and mode 2 egress of a family that went is dropped before its retraction reaches anyone
 func (c *Client) Republish() {
 	c.republishMu.Lock()
 	defer c.republishMu.Unlock()
 	cfg := c.config()
-	c.speaker.SetOriginated(c.announced(cfg))
+	advertised := c.egressAdvertised()
+	var v4, v6 bool
+	for _, prefix := range advertised {
+		v4, v6 = v4 || prefix.Addr().Is4(), v6 || prefix.Addr().Is6()
+	}
+	c.Mesh.SetAdvertisedReady(v4, v6)
+	c.speaker.SetOriginated(c.announced(cfg, advertised))
 	c.Mesh.SetAnswerSources(answerSources(cfg))
 }
 

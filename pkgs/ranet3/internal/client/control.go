@@ -142,19 +142,21 @@ func segmentCounters(counters netstack.SegmentCounters) control.SegmentCounters 
 // TestTransitCountersDoNotDrift holds the two shapes identical
 func transitCounters(counters netstack.TransitCounters) control.TransitCounters {
 	return control.TransitCounters{
-		Forwarded:   counters.Forwarded,
-		Delivered:   counters.Delivered,
-		Expired:     counters.Expired,
-		NoRoute:     counters.NoRoute,
-		Held:        counters.Held,
-		Refused:     counters.Refused,
-		Invalid:     counters.Invalid,
-		Martian:     counters.Martian,
-		SourceRoute: counters.SourceRoute,
-		TooBig:      counters.TooBig,
-		Multicast:   counters.Multicast,
-		Answered:    counters.Answered,
-		Unanswered:  counters.Unanswered,
+		Forwarded:      counters.Forwarded,
+		Delivered:      counters.Delivered,
+		Expired:        counters.Expired,
+		NoRoute:        counters.NoRoute,
+		Held:           counters.Held,
+		Refused:        counters.Refused,
+		Invalid:        counters.Invalid,
+		Martian:        counters.Martian,
+		SourceRoute:    counters.SourceRoute,
+		UnroutedSource: counters.UnroutedSource,
+		NotReady:       counters.NotReady,
+		TooBig:         counters.TooBig,
+		Multicast:      counters.Multicast,
+		Answered:       counters.Answered,
+		Unanswered:     counters.Unanswered,
 	}
 }
 

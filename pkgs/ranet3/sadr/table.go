@@ -339,8 +339,8 @@ func (t *Table[V]) Remove(src, dst netip.Prefix) {
 	})
 }
 
-// RemoveValue atomically removes all routes with the given value.
-func (t *Table[V]) RemoveValue(value V) {
+// RemoveFunc atomically removes every route whose value remove reports
+func (t *Table[V]) RemoveFunc(remove func(V) bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	current := t.roots.Load()
@@ -348,17 +348,17 @@ func (t *Table[V]) RemoveValue(value V) {
 		return
 	}
 	t.roots.Store(&roots[V]{
-		ipv4: removeValue(current.ipv4, value),
-		ipv6: removeValue(current.ipv6, value),
+		ipv4: removeValue(current.ipv4, remove),
+		ipv6: removeValue(current.ipv6, remove),
 	})
 }
 
-func removeValue[V comparable](n *trieNode[V], value V) *trieNode[V] {
+func removeValue[V comparable](n *trieNode[V], remove func(V) bool) *trieNode[V] {
 	if n == nil {
 		return nil
 	}
-	left, right := removeValue(n.child[0], value), removeValue(n.child[1], value)
-	match := slices.ContainsFunc(n.srcs, func(entry srcEntry[V]) bool { return entry.value == value })
+	left, right := removeValue(n.child[0], remove), removeValue(n.child[1], remove)
+	match := slices.ContainsFunc(n.srcs, func(entry srcEntry[V]) bool { return remove(entry.value) })
 	if !match && left == n.child[0] && right == n.child[1] {
 		return n
 	}
@@ -367,7 +367,7 @@ func removeValue[V comparable](n *trieNode[V], value V) *trieNode[V] {
 	if match {
 		kept := make([]srcEntry[V], 0, len(n.srcs))
 		for _, entry := range n.srcs {
-			if entry.value != value {
+			if !remove(entry.value) {
 				kept = append(kept, entry)
 			}
 		}

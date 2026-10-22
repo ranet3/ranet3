@@ -29,13 +29,13 @@ func TestTableLPMAndSADRSelection(t *testing.T) {
 	}
 }
 
-func TestTableRemoveValue(t *testing.T) {
+func TestTableRemoveFunc(t *testing.T) {
 	var table Table[string]
 	table.Set(netip.Prefix{}, prefix("10.0.0.0/8"), "remove")
 	table.Set(prefix("192.0.2.0/24"), prefix("10.1.0.0/16"), "remove")
 	table.Set(netip.Prefix{}, prefix("10.2.0.0/16"), "keep")
 
-	table.RemoveValue("remove")
+	table.RemoveFunc(func(held string) bool { return held == "remove" })
 	if _, ok := table.Lookup(addr("192.0.2.1"), addr("10.1.0.1")); ok {
 		t.Fatal("removed value still resolves")
 	}

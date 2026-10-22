@@ -41,6 +41,7 @@ func egressTUN(t *testing.T) (*Mesh, string) {
 	}
 	m.SetEgress(dev)
 	m.SetEgressReady(true, true)
+	routeLeaf(t, m, egressFar, tooBigSource[4])
 	return m, name
 }
 

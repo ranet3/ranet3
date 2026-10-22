@@ -89,7 +89,7 @@ type tableOpKind uint8
 const (
 	opSet tableOpKind = iota
 	opRemove
-	opRemoveValue
+	opRemoveFunc
 	opLookup
 )
 
@@ -109,8 +109,8 @@ func (op tableOp) GoString() string {
 		return fmt.Sprintf("Set(%v, %v, %d)", op.src, op.dst, op.value)
 	case opRemove:
 		return fmt.Sprintf("Remove(%v, %v)", op.src, op.dst)
-	case opRemoveValue:
-		return fmt.Sprintf("RemoveValue(%d)", op.value)
+	case opRemoveFunc:
+		return fmt.Sprintf("RemoveFunc(held == %d)", op.value)
 	}
 	return fmt.Sprintf("Lookup(%v, %v)", op.from, op.to)
 }
@@ -319,9 +319,9 @@ func (m *tableMachine) RuleRemove(tc hegel.TestCase) {
 	m.model.remove(op.src, op.dst)
 }
 
-func (m *tableMachine) RuleRemoveValue(tc hegel.TestCase) {
-	op := m.op(tc, func(d opDrawer) tableOp { return tableOp{kind: opRemoveValue, value: d.value()} })
-	m.table.RemoveValue(op.value)
+func (m *tableMachine) RuleRemoveFunc(tc hegel.TestCase) {
+	op := m.op(tc, func(d opDrawer) tableOp { return tableOp{kind: opRemoveFunc, value: d.value()} })
+	m.table.RemoveFunc(func(held int) bool { return held == op.value })
 	m.model.removeValue(op.value)
 }
 

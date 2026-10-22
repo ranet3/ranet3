@@ -9,6 +9,7 @@ import (
 	"slices"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
@@ -392,6 +393,55 @@ func TestResolveAnswersEachVerdict(t *testing.T) {
 	} {
 		if got, verdict, _ := rt.Resolve(netip.Addr{}, mustAddr(test.to)); got != test.peer || verdict != test.want {
 			t.Errorf("a packet to %s resolved as verdict %d through %v, want %s", test.to, verdict, got, test.wanted)
+		}
+	}
+}
+
+// A new overlay or a new set of the prefixes cap.egress advertises flags again
+// the entries the table already holds, each flag off and on again, and leaves
+// the other flag as it was.
+func TestOverlayAndEgressFlagTheEntriesAlreadyHeldAgain(t *testing.T) {
+	rt := NewRouteTable()
+	peer := &Peer{ID: "peer"}
+	// a split internet in each family, counting as a default but inside an overlay holding it
+	rt.Set(netip.Prefix{}, mustPrefix("2000::/3"), peer)
+	rt.Set(netip.Prefix{}, mustPrefix("64.0.0.0/2"), peer)
+	// this node's own prefix from any source, from one source, and a peer's
+	rt.Set(netip.Prefix{}, mustPrefix("3fff:a::/48"), Local)
+	rt.Set(mustPrefix("3fff:b::/48"), mustPrefix("3fff:a::/48"), Local)
+	rt.Set(netip.Prefix{}, mustPrefix("3fff:c::/48"), peer)
+	probes := []struct {
+		from, to netip.Addr
+		entry    string
+	}{
+		{netip.Addr{}, mustAddr("2001:db8::1"), "2000::/3"},
+		{netip.Addr{}, mustAddr("64.0.0.1"), "64.0.0.0/2"},
+		{netip.Addr{}, mustAddr("3fff:a::1"), "this node's 3fff:a::/48 from any source"},
+		{mustAddr("3fff:b::1"), mustAddr("3fff:a::1"), "this node's 3fff:a::/48 from 3fff:b::/48"},
+		{netip.Addr{}, mustAddr("3fff:c::1"), "the peer's 3fff:c::/48"},
+	}
+	covering := []schema.Prefix{schema.PrefixFrom(mustPrefix("2000::/3")), schema.PrefixFrom(mustPrefix("64.0.0.0/2"))}
+	elsewhere := []schema.Prefix{schema.PrefixFrom(mustPrefix("fd00::/8")), schema.PrefixFrom(mustPrefix("10.0.0.0/8"))}
+	advertised := []netip.Prefix{mustPrefix("3fff:a::/48"), mustPrefix("3fff:c::/48")}
+	for _, step := range []struct {
+		name    string
+		change  func()
+		counted []bool
+		egress  []bool
+	}{
+		{"with no overlay and nothing advertised", func() {}, []bool{true, true, false, false, false}, []bool{false, false, false, false, false}},
+		{"under an overlay holding both splits", func() { rt.SetOverlay(covering) }, []bool{false, false, false, false, false}, []bool{false, false, false, false, false}},
+		{"advertising this node's and the peer's prefix", func() { rt.SetEgress(advertised) }, []bool{false, false, false, false, false}, []bool{false, false, true, false, false}},
+		{"under an overlay elsewhere", func() { rt.SetOverlay(elsewhere) }, []bool{true, true, false, false, false}, []bool{false, false, true, false, false}},
+		{"advertising nothing", func() { rt.SetEgress(nil) }, []bool{true, true, false, false, false}, []bool{false, false, false, false, false}},
+	} {
+		step.change()
+		for i, probe := range probes {
+			_, _, match := rt.Resolve(probe.from, probe.to)
+			if match.Counted != step.counted[i] || match.Egress != step.egress[i] {
+				t.Errorf("%s, %s answers counted %v and egress %v, want %v and %v",
+					step.name, probe.entry, match.Counted, match.Egress, step.counted[i], step.egress[i])
+			}
 		}
 	}
 }

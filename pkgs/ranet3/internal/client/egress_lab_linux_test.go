@@ -96,14 +96,9 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 		node.Mesh.DeliverInbound(outer, 0)
 	}
 
-	before := node.Mesh.SegmentCounters()
-	steer(udpPacket(labHeadend, labFar6.Addr(), labLeafPort, labPort, []byte("before the first pass")))
-	if got := node.Mesh.SegmentCounters(); got.NotReady != before.NotReady+1 || got.Egressed != before.Egressed {
-		t.Errorf("an egress result before the translator's first pass counted %+v, want one more not ready", got)
-	}
-
 	// the replies leave through the mesh tun by a route the reconciler installs for the leaf's prefixes, as babel would select it
 	// and the mesh carries a route covering the far host too, which the from rules would send a steered packet into without the egress device's rule
+	// the route to the leaf's prefixes is also the reply route the egress segment needs for an inner source before it egresses anything
 	leaf := netstack.NewPeer("example/leaf", func(int) (netstack.BatchSealer, error) {
 		return nil, errors.New("the leaf is synthetic")
 	}, func([][]byte) error { return nil }, nil)
@@ -111,6 +106,13 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 	for _, prefix := range append([]netip.Prefix{labFar4.Masked(), labFar6.Masked()}, labLeafPrefixes()...) {
 		node.Mesh.Routes.Set(netip.Prefix{}, prefix, leaf)
 	}
+
+	before := node.Mesh.SegmentCounters()
+	steer(udpPacket(labHeadend, labFar6.Addr(), labLeafPort, labPort, []byte("before the first pass")))
+	if got := node.Mesh.SegmentCounters(); got.NotReady != before.NotReady+1 || got.Egressed != before.Egressed {
+		t.Errorf("an egress result before the translator's first pass counted %+v, want one more not ready", got)
+	}
+
 	var routes *kernel.Reconciler
 	var translator *egress.Translator
 	var border *egress.BorderFilter
