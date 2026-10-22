@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-21
+updated: 2026-10-22
 order: 30
 ---
 
@@ -497,8 +497,8 @@ of that peer. A verb is recorded under each path its answer lists in `acted` or
 without a peer.
 
 A `babel.own.changed` is recorded once for each change to the routes this node
-holds as its own, at the start, on a reload and when `cap.egress` moves what the
-node announces. Its `set` is `originated` for the prefixes it announces and
+owns, at the start, on a reload and when `cap.egress` moves what the node
+announces. Its `set` is `originated` for the prefixes it announces and
 `assigned` for the host routes of the addresses `cap.table` assigns it. `added`
 and `removed` name the routes that joined the set and left it, and `held` the
 ones among those that left which the node now holds unreachable, as
