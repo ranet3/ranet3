@@ -159,6 +159,14 @@
     @apply text-acc underline decoration-accl underline-offset-[.2em]
       hover:decoration-current;
   }
+  /* a link of the header, underlined where the page is or is under it */
+  .nav-link {
+    @apply text-fg2 hover:text-acc;
+    &[aria-current] {
+      @apply text-fg underline decoration-acc decoration-2
+        underline-offset-[.4em];
+    }
+  }
   /* both kinds take a border, so they are as tall as each other */
   .btn-primary {
     @apply inline-block border border-acc bg-acc px-[18px] py-3 font-bold

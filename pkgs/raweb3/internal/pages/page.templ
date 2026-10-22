@@ -8,7 +8,7 @@ import "ranet3.com/pkgs/raweb3/ui"
 // Page is a page of prose outside the docs.
 templ Page(site ui.Site, c Content) {
 	@frame(site, ui.Page{Title: pageTitle(site, c), Description: c.Description, Path: c.Path}, c.Unvetted, "") {
-		<main class="mx-auto max-w-6xl px-4 py-10 md:px-6">
+		<main id="main" class="mx-auto max-w-6xl px-4 py-10 md:px-6">
 			<article class="prose prose-theme max-w-3xl">
 				<h1 class="font-mono">{ c.Title }</h1>
 				<p class="lead">{ c.Description }</p>
