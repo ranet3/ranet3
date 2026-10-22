@@ -9,16 +9,16 @@ vetted: 2026-10-22
 layout: bare
 ---
 
-<div class="mx-auto grid max-w-6xl items-end gap-x-14 gap-y-10 px-4 pt-24 pb-18 text-[15px] leading-[1.55] text-fg md:px-6 lg:grid-cols-[minmax(0,1fr)_auto]">
+<div class="mx-auto grid max-w-6xl items-end gap-x-14 gap-y-10 px-4 pt-24 pb-18 text-[15px] leading-[1.55] text-fg max-lg:text-center md:px-6 lg:grid-cols-[minmax(0,1fr)_auto]">
 <div>
 <h1 class="text-[clamp(40px,5vw,64px)] leading-[1.05] font-bold tracking-[-.02em] text-balance">Mesh network, reimagined.</h1>
-<p class="mt-7 max-w-[56ch] text-[18px] text-pretty text-fg2 max-sm:text-[16px]">High performance policy routed IPsec mesh SD-WAN with userspace ESP, IKEv2, an embedded Babel speaker and SRv6 steering.</p>
-<div class="mt-9 flex flex-wrap gap-3">
+<p class="mt-7 max-w-[56ch] text-[18px] text-pretty text-fg2 max-lg:mx-auto max-sm:text-[16px]">High performance policy routed IPsec mesh SD-WAN with userspace ESP, IKEv2, an embedded Babel speaker and SRv6 steering.</p>
+<div class="mt-9 flex flex-wrap gap-3 max-lg:justify-center">
 <a href="/contact/" class="btn-primary">Request a Demo</a>
 <a href="/docs/getting-started/" class="btn-secondary arrow">Get started</a>
 </div>
 </div>
-<div class="order-first text-[clamp(7px,3vw,12px)] lg:order-none">
+<div class="order-first text-[clamp(7px,3vw,12px)] max-lg:justify-self-center lg:order-none">
 <ui-ascii-mark></ui-ascii-mark>
 </div>
 </div>
