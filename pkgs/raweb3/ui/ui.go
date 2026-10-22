@@ -13,10 +13,10 @@ type Site struct {
 	// Metas go on every page in this order, the 404 page included
 	Metas     []Meta
 	Analytics Analytics
-	// Nav are the links of every page's header, and CTA its one button
+	// Nav are the links of every page's header
 	Nav []Link
-	CTA Link
-	// Footer ends every page, with CTA's button again
+	// Footer ends every page, with CTA's button beside its title
+	CTA    Link
 	Footer Footer
 }
 
