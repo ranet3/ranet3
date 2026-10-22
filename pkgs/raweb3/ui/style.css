@@ -58,9 +58,9 @@
     color-mix(in srgb, var(--acc) 10%, transparent)
   );
   --warn: light-dark(#9a5328, var(--color-nord-13));
-  --dir: light-dark(#9a5328, var(--color-nord-13));
-  --win: light-dark(#4c6f38, var(--color-nord-14));
-  --lose: light-dark(#8c515b, #cc8a92);
+  --hint: light-dark(#9a5328, var(--color-nord-13));
+  --good: light-dark(#4c6f38, var(--color-nord-14));
+  --bad: light-dark(#8c515b, #cc8a92);
 }
 
 /* only keeps a browser's own dark mode from darkening the light theme */
@@ -96,9 +96,9 @@
   --color-warn: var(--warn);
   --color-tint: var(--tint);
   --color-bar: var(--bar);
-  --color-dir: var(--dir);
-  --color-win: var(--win);
-  --color-lose: var(--lose);
+  --color-hint: var(--hint);
+  --color-good: var(--good);
+  --color-bad: var(--bad);
 }
 
 @layer base {
@@ -108,7 +108,7 @@
   }
 }
 
-@utility prose-site {
+@utility prose-theme {
   /* a word wider than a phone breaks rather than widen the page */
   overflow-wrap: break-word;
   --tw-prose-body: var(--fg2);
@@ -166,8 +166,8 @@
      grid, a 2px round stroke, the text's color. Its box is one line tall at
      the top of the flex or grid it sits in, so it centers on the first line,
      which a glyph of the font does not */
-  .arrow-after,
-  .index-row {
+  .arrow,
+  .row {
     --icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M5 12h14M13 6l6 6-6 6'/></svg>");
     &::after {
       content: "";
@@ -179,21 +179,22 @@
       mask: var(--icon) center / contain no-repeat;
     }
   }
-  .arrow-after {
+  .arrow {
     @apply inline-flex items-center gap-[1ch];
   }
-  /* one row of a list of links, numbered, with an arrow at the end and a
-     line in a small under its title */
-  .index-row {
+  /* one row of a list: a short lead such as a number, the body, and an icon
+     at the end, an arrow unless a fold sets another. A small in the body is a
+     line under its title */
+  .row {
     @apply grid grid-cols-[4ch_minmax(0,1fr)_auto] gap-4 border-b border-line
       px-1 py-[18px] text-left text-fg after:text-acc hover:bg-bg2;
     & small {
       @apply mt-1 block text-[.9em] text-mute;
     }
   }
-  /* a row of the index that opens in place, a plus or minus at its end for
-     its state, the detail aligned with the row's title */
-  .index-details {
+  /* a details element whose summary is a row that opens it in place, a plus
+     or minus at its end for its state, the content aligned with the row's body */
+  .fold {
     @apply border-b border-line;
     & > summary {
       --icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'><path d='M12 5v14M5 12h14'/></svg>");
@@ -207,7 +208,7 @@
       @apply px-1 pb-10 sm:pl-[calc(4ch+1.25rem)];
     }
   }
-  .page-section {
+  .section {
     @apply mx-auto max-w-[92ch] px-4 py-12 text-[15px] leading-normal
       max-sm:text-[13px];
   }
@@ -221,7 +222,8 @@
     @apply mt-[1.2em] border-l-[3px] border-acc bg-tint px-[1.2em] py-[.8em]
       text-fg;
   }
-  .spec-list {
+  /* terms beside their descriptions */
+  .terms {
     @apply mt-[.8em] grid grid-cols-[16ch_1fr] gap-x-[2ch] gap-y-[.4em] text-fg2
       max-sm:grid-cols-[max-content_1fr];
     & :where(dt) {
@@ -288,10 +290,10 @@
       @apply max-sm:pl-0;
     }
   }
-  .row-accent > * {
+  .tr-accent > * {
     @apply font-bold text-acc;
   }
-  .cell-best {
+  .td-best {
     @apply font-bold text-fg before:mr-[1ch] before:font-normal before:text-acc
       before:content-['\25B8'];
   }
