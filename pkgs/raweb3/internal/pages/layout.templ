@@ -27,23 +27,65 @@ templ frame(site ui.Site, page ui.Page, unvetted bool, body string) {
 	</html>
 }
 
-// bar is one row from sm up. Below it the switch moves up beside the logo and
-// the links take a row of their own, spread across it.
+// bar is one row. Below sm the links and the switch move into a menu, a
+// popover sheet over the top of the page that repeats the logo row with a
+// close button where the menu button was. A browser without popover support
+// shows the sheet as a block under the bar.
 templ bar(site ui.Site) {
 	<header class="border-b border-line font-mono text-[15px]">
-		<nav class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-7 gap-y-3 px-4 py-4 md:px-6">
-			<a href="/" class="mr-auto flex items-center gap-2.5 text-[17px] font-bold text-fg">
-				@ui.Mark(26)
-				<span>{ site.Name }</span>
-			</a>
-			<div class="flex flex-wrap gap-x-7 gap-y-2 max-sm:order-last max-sm:w-full max-sm:justify-between">
+		<nav class="mx-auto flex max-w-6xl items-center gap-x-7 px-4 py-4 md:px-6">
+			@brand(site)
+			<div class="flex gap-x-7 max-sm:hidden">
 				for _, l := range site.Nav {
 					<a href={ templ.SafeURL(l.Href) } class="whitespace-nowrap text-fg2 hover:text-acc">{ l.Title }</a>
 				}
 			</div>
-			@themeSwitch()
+			<div class="contents max-sm:hidden">
+				@themeSwitch()
+			</div>
+			@menuButton("show", "Menu", "sm:hidden") {
+				<path d="M4 7h16M4 12h16M4 17h16"></path>
+			}
 		</nav>
+		<div id="menu" popover class="inset-x-0 top-0 bottom-auto m-0 w-full border-0 border-b border-line bg-bg p-0 text-fg2 backdrop:bg-bg/70 sm:hidden">
+			<div class="flex items-center px-4 py-4">
+				@brand(site)
+				@menuButton("hide", "Close menu", "") {
+					<path d="M6 6l12 12M18 6L6 18"></path>
+				}
+			</div>
+			<div class="flex flex-col border-t border-line px-4">
+				for _, l := range site.Nav {
+					<a href={ templ.SafeURL(l.Href) } class="border-b border-line py-3 text-fg hover:text-acc">{ l.Title }</a>
+				}
+			</div>
+			<div class="hidden items-center justify-between px-4 py-3 scripted:flex">
+				// the group carries the same name for assistive tech
+				<span class="text-fg" aria-hidden="true">Theme</span>
+				@themeSwitch()
+			</div>
+		</div>
 	</header>
+}
+
+// brand is the logo link, as tall as the theme switch and the menu button, so
+// the bar keeps one height at every width and with or without the script.
+templ brand(site ui.Site) {
+	<a href="/" class="mr-auto flex h-7.5 items-center gap-2.5 text-[17px] font-bold text-fg">
+		@ui.Mark(26)
+		<span>{ site.Name }</span>
+	</a>
+}
+
+// menuButton opens or closes the menu, sized and drawn as the theme switch's
+// buttons are.
+templ menuButton(action, title, class string) {
+	<button type="button" class={ "border border-line p-1.5 text-fg2 hover:text-fg", class } popovertarget="menu" popovertargetaction={ action }>
+		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="block" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+			{ children... }
+		</svg>
+		<span class="sr-only">{ title }</span>
+	</button>
 }
 
 // themeSwitch picks the light or dark scheme, or auto to follow the system.
