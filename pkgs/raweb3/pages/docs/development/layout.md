@@ -104,7 +104,7 @@ YAML frontmatter, rendered into templ components and styled with Tailwind.
 | `cmd/raweb3`     | the `raweb3` binary: `raweb3 build` writes the site to a directory, `raweb3 serve` renders each page as it is asked for                                     |
 | `internal/site`  | loads `site.yaml` and the pages, checks them, and renders, highlights and minifies every page                                                               |
 | `internal/pages` | the layouts: the frame every page shares, with its header, theme switch and notice, and the docs, page and 404 layouts                                      |
-| `ui/`            | what another site in the repository can take: the head, the logo mark, and `style.css`, the colors and components                                           |
+| `ui/`            | what another site in the repository can take: the head, the logo mark drawn in SVG and in text, and `style.css`, the colors and components                  |
 | `default.nix`    | the generator's build, and the site's, which runs `raweb3 build` with Tailwind                                                                              |
 | `shell.nix`      | the `raweb3` dev shell                                                                                                                                      |
 | `.envrc`         | direnv's entry to that shell                                                                                                                                |
@@ -122,14 +122,19 @@ the day they last read the page in full. A page without it, or with a `vetted`
 older than its `updated`, shows a notice that it may contain unreviewed machine
 generated text.
 
+A page places a component of `ui/` with an empty element named after it, such as
+`<ui-ascii-mark></ui-ascii-mark>` for the logo mark drawn in text, and sets its
+size and where it shows on an element around it.
+
 A fenced code block names its language after the opening fence, and chroma
 splits it into tokens, each colored as Nord's syntax guide colors its kind. A
 block that names no language shows as plain text.
 
 The build fails on a missing field, an `updated` before `created`, a relative
 link to a page that does not exist, a link to a heading the page does not have,
-and a code block in a language chroma has no lexer for. A relative link to a
-`.md` file serves as the path of that page.
+a code block in a language chroma has no lexer for, and a `ui-` element that
+names no component or holds content. A relative link to a `.md` file serves as
+the path of that page.
 
 `.github/workflows/pages.yaml` deploys `raweb3` to GitHub Pages when a push to
 `master` changes `pkgs/raweb3`, the workflow or `flake.lock`.
