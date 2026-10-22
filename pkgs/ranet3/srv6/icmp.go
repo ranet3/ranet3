@@ -126,7 +126,7 @@ func answerable(offending []byte) bool {
 
 // carriesUnanswerable reports whether offending is an ICMPv6 error or a redirect, which RFC 4443 section 2.4 (e.1) and (e.2) let no error answer
 // the walk steps over each extension header in any order but ESP, which hides what follows it, and a fragment other than the first, which holds no upper-layer header, as the kernel's ipv6_skip_exthdr does
-// the upper-layer header is the last of the maxExtensionHeaders headers it reads, so an error behind 8 extension headers or more is answered, departing from (e.1)
+// the upper-layer header is the last of the maxExtensionHeaders headers it reads, so an error behind maxExtensionHeaders extension headers or more is answered, departing from (e.1)
 // since refusing at the bound would withhold the answers RFC 4443 sections 3.2 and 3.3 require from a packet not shown to be an error
 // an ICMPv6 header cut short before its type counts as an error, as the kernel's is_ineligible reads one, and every other end of the walk shows none
 func carriesUnanswerable(offending []byte) bool {
