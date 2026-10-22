@@ -71,14 +71,20 @@ var (
 		{places: [2]int{0, 1}, ends: [2]netip.Prefix{netip.MustParsePrefix("198.51.100.1/30"), netip.MustParsePrefix("198.51.100.2/30")}},
 		{places: [2]int{1, 2}, ends: [2]netip.Prefix{netip.MustParsePrefix("198.51.100.5/30"), netip.MustParsePrefix("198.51.100.6/30")}, mtu: lineNarrow},
 	}
+	// exitUplink is the exit lab's uplink, e's end and then i's, each with an address of each family
+	exitUplink = [2][2]netip.Prefix{
+		{netip.MustParsePrefix("198.51.100.9/30"), netip.MustParsePrefix("2001:db8:1::1/64")},
+		{netip.MustParsePrefix("198.51.100.10/30"), netip.MustParsePrefix("2001:db8:1::2/64")},
+	}
 )
 
 // a, b and c in a line, each in a network namespace of its own, a's sessions to c going through b's
 // cap.transit is on at b, b's kernel forwards neither family and b's tun holds no address
 // a's datagrams of each family reach c through b, which the mesh forwards in process
-// and b answers as a router from its router-id: time exceeded at a hop limit of 1, where 2 reaches c
+// and b answers as a router from its router-id, time exceeded at a hop limit of 1 where 2 reaches c
 // packet too big and fragmentation needed with its session to c's size, which a caches and then fits
 // and destination unreachable inside a prefix b holds, host unreachable over IPv4
+// an IPv6 link-local source draws beyond the scope of the source back on a's session, which a writes into its tun
 // with no address of either family b answers IPv4 from the dummy address, a packet too big from its destination and IPv6's time exceeded not at all
 // b's kernel forwards nothing and reads nothing from its tun throughout
 func TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter(t *testing.T) {
@@ -140,6 +146,39 @@ func TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter(t *testing
 		})
 	}
 
+	t.Run("an IPv6 link-local source", func(t *testing.T) {
+		// RFC 4443 section 3.1 code 2, beyond the scope of the source, sent back on the session the packet came through
+		var capture int
+		if err := a.ns.do(func() (err error) {
+			capture, err = openCapture(a.client.Mesh.Name, labRetry)
+			return err
+		}); err != nil {
+			t.Fatalf("capture a's tun: %v", err)
+		}
+		defer unix.Close(capture)
+		linkLocal := netip.MustParseAddr("fe80::1")
+		raw := make([]byte, 40)
+		raw[0], raw[6], raw[7] = 0x60, unix.IPPROTO_NONE, 64
+		copy(raw[8:], linkLocal.AsSlice())
+		copy(raw[24:], lineC[6].AsSlice())
+		fd := -1
+		if err := a.ns.do(func() (err error) {
+			fd, err = unix.Socket(unix.AF_INET6, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_RAW)
+			return err
+		}); err != nil {
+			t.Fatalf("open a raw socket at a: %v", err)
+		}
+		defer unix.Close(fd)
+		beyondScope := func(packet []byte) bool {
+			return len(packet) >= 48 && packet[0]>>4 == 6 && packet[6] == unix.IPPROTO_ICMPV6 && packet[40] == 1 && packet[41] == 2 &&
+				netip.AddrFrom16([16]byte(packet[8:24])) == lineB[6] && netip.AddrFrom16([16]byte(packet[24:40])) == linkLocal
+		}
+		waitFor(t, convergeBudget, "b's answer to a link-local source to reach a's tun", func() bool {
+			_ = unix.Sendto(fd, raw, 0, &unix.SockaddrInet6{Addr: lineC[6].As16()})
+			return labCaptured(capture, beyondScope)
+		})
+	})
+
 	t.Run("a middle node with no address of either family", func(t *testing.T) {
 		bare := *b.cfg
 		bare.Cap.Route = nil
@@ -175,17 +214,98 @@ func TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter(t *testing
 		}
 	})
 
-	if err := b.ns.do(func() error {
+	labForwardedNothing(t, b)
+}
+
+// l, e and t, each in a network namespace of its own, l's and t's sessions going through e's, and i on e's uplink
+// e is an exit announcing a default of each family, its kernel forwarding both and routing every destination out of its uplink to i
+// l's datagrams of each family reach t through e, which the mesh forwards in process
+// so e's kernel forwards none of them and i reads none, where the kernel's own forwarding would carry them out to i
+func TestTUNExitCarriesTransitInProcessAndNothingOutOfItsUplink(t *testing.T) {
+	specs := lineSpecs(true)
+	specs[1].announce = append(specs[1].announce, "0.0.0.0/0", "::/0")
+	specs[1].forwards = true
+	nodes := startLab(t, specs, lineLinks)
+	l, e, far := nodes[0], nodes[1], nodes[2]
+	i := &labNode{loopbackNode: &loopbackNode{name: "lab-i"}, ns: startNamespaceThread(t)}
+	labPair(t, e, i, labLink{places: [2]int{1, 3}, ends: [2]netip.Prefix{exitUplink[0][0], exitUplink[1][0]}})
+	// as labPair names the two ends of the pair joining places 1 and 3
+	uplink := [2]string{"vbd", "vdb"}
+	for side, end := range []*labNode{e, i} {
+		if err := end.ns.do(func() error {
+			netlink, err := openNetlinkRoute()
+			if err != nil {
+				return err
+			}
+			defer netlink.close()
+			if err := labAddress(netlink, uplink[side], exitUplink[side][1]); err != nil || side == 1 {
+				return err
+			}
+			link, err := net.InterfaceByName(uplink[0])
+			if err != nil {
+				return err
+			}
+			for _, gateway := range exitUplink[1] {
+				every := netip.PrefixFrom(netip.IPv6Unspecified(), 0)
+				if gateway.Addr().Is4() {
+					every = netip.PrefixFrom(netip.IPv4Unspecified(), 0)
+				}
+				if err := labRouteVia(netlink, link.Index, every, gateway.Addr()); err != nil {
+					return fmt.Errorf("route %s through i: %w", every, err)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("join %s to i: %v", e.name, err)
+		}
+	}
+	var capture int
+	if err := i.ns.do(func() (err error) {
+		capture, err = openCapture(uplink[1], labRetry)
+		return err
+	}); err != nil {
+		t.Fatalf("capture i's end of the uplink: %v", err)
+	}
+	t.Cleanup(func() { _ = unix.Close(capture) })
+
+	run(t, l.loopbackNode, e.loopbackNode, far.loopbackNode)
+	// l reaches t by e's default as soon as it learns it, and e egresses into its tun what it holds no route to t for
+	labRoutes(t, e, lineC[4], lineC[6])
+	labRoutes(t, l, lineC[4], lineC[6])
+	listener := labListen(t, far)
+	for _, family := range labFamilies {
+		t.Run(family.name, func(t *testing.T) {
+			before := e.client.Mesh.TransitCounters().Forwarded
+			payload := []byte("through the exit over " + family.name)
+			labReceive(t, listener, payload, labWrite(labDatagrams(t, l, family, lineC[family.version], 0), payload))
+			if got := e.client.Mesh.TransitCounters().Forwarded; got <= before {
+				t.Errorf("t read l's datagram and e counted %d forwarded, as before it", got)
+			}
+		})
+	}
+	if labCaptured(capture, func(packet []byte) bool {
+		to, _, _, ok := labUDPOf(packet)
+		return ok && (to == lineC[4] || to == lineC[6])
+	}) {
+		t.Errorf("i read a datagram for t on e's uplink")
+	}
+	labForwardedNothing(t, e)
+}
+
+// labForwardedNothing fails the test where node's kernel forwarded a packet of either family or read one from node's tun
+func labForwardedNothing(t *testing.T, node *labNode) {
+	t.Helper()
+	if err := node.ns.do(func() error {
 		for _, counter := range []struct{ file, name string }{
 			{"/proc/thread-self/net/snmp", "ForwDatagrams"},
 			{"/proc/thread-self/net/snmp6", "Ip6OutForwDatagrams"},
 		} {
 			if got, err := labKernelCount(counter.file, counter.name); err != nil || got != 0 {
-				return fmt.Errorf("b's kernel counts %d %s (%v), want none", got, counter.name, err)
+				return fmt.Errorf("%s's kernel counts %d %s (%v), want none", node.name, got, counter.name, err)
 			}
 		}
-		if got, err := labTUNReceived(b.client.Mesh.Name); err != nil || got != 0 {
-			return fmt.Errorf("b's kernel read %d packets from its tun (%v), want none", got, err)
+		if got, err := labTUNReceived(node.client.Mesh.Name); err != nil || got != 0 {
+			return fmt.Errorf("%s's kernel read %d packets from its tun (%v), want none", node.name, got, err)
 		}
 		return nil
 	}); err != nil {
@@ -197,6 +317,7 @@ func TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter(t *testing
 // and an End.DT46 SID delivering to the mesh, which a steers its datagrams for another network of c's through
 // b answers a datagram for c administratively prohibited from its router-id
 // and carries the one a steers through its SID to c all the same
+// a datagram inside b's overlay that b holds no route for draws host unreachable, and network unreachable once a reload moves the overlay off IPv4
 func TestTUNLineRefusesTransitWhileItIsOffButNotThroughAnEndDT46SID(t *testing.T) {
 	nodes := startLab(t, lineSpecs(false), lineLinks)
 	a, b, c := nodes[0], nodes[1], nodes[2]
@@ -227,6 +348,44 @@ func TestTUNLineRefusesTransitWhileItIsOffButNotThroughAnEndDT46SID(t *testing.T
 			})
 		})
 	}
+
+	t.Run("no route inside the overlay", func(t *testing.T) {
+		// a sends what no prefix b announces holds to b, as a default b announced would
+		unrouted := netip.MustParseAddr("192.0.2.200")
+		toB := netip.PrefixFrom(unrouted, 32)
+		defer a.client.Mesh.Routes.Remove(netip.Prefix{}, toB)
+		v4 := labFamilies[0]
+		answer := func() labError {
+			fd := labDatagrams(t, a, v4, unrouted, 0)
+			var got labError
+			waitFor(t, convergeBudget, "b to answer a datagram it holds no route for", func() bool {
+				peer, verdict, _ := a.client.Mesh.Routes.Resolve(netip.Addr{}, lineB[4])
+				if verdict != netstack.RoutePeer {
+					return false
+				}
+				a.client.Mesh.Routes.Set(netip.Prefix{}, toB, peer)
+				labWrite(fd, []byte("nowhere"))()
+				var ok bool
+				got, ok = labReadError(t, fd, v4, labRetry)
+				return ok
+			})
+			return got
+		}
+		// RFC 1812 section 5.2.7.1, host unreachable where other hosts of the overlay may be reachable, and network unreachable outside it
+		const hostUnreachable, networkUnreachable = 1, 0
+		if got := answer(); got.kind != v4.unreachable || got.code != hostUnreachable || got.from != lineB[4] {
+			t.Errorf("a datagram inside b's overlay that b holds no route for drew type %d code %d from %s, want host unreachable from %s", got.kind, got.code, got.from, lineB[4])
+		}
+		moved := *b.cfg
+		moved.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.PrefixFrom(labOverlay[1])}}
+		writeConfig(t, b.configPath, &moved)
+		if err := b.ns.do(func() error { return b.client.ReloadFrom(b.configPath) }); err != nil {
+			t.Fatalf("b's reload moving its overlay off IPv4 was refused: %v", err)
+		}
+		if got := answer(); got.kind != v4.unreachable || got.code != networkUnreachable || got.from != lineB[4] {
+			t.Errorf("a datagram b holds no route for, outside its overlay once reloaded, drew type %d code %d from %s, want network unreachable from %s", got.kind, got.code, got.from, lineB[4])
+		}
+	})
 }
 
 // lineSpecs is the line's three nodes, with cap.transit at b as transit says
