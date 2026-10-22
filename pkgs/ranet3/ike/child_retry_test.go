@@ -57,7 +57,7 @@ func refuseRekeys(_, responder *Session) { responder.childRekeying.Store(true) }
 const (
 	retryDelay  = time.Second
 	scheduleDue = 300 * time.Millisecond
-	// scheduleAhead is where the scheduled rekey falls due in the test of a schedule another path's rekey resets
+	// scheduleAhead is where the scheduled rekey falls due in the tests of a schedule another path's rekey resets
 	scheduleAhead = time.Second
 	// childDue is where the Child SA's scheduled rekey falls due in the test of one that waits on the IKE SA's, which falls due scheduleDue into the session
 	childDue = 2 * time.Second
@@ -241,6 +241,42 @@ func TestChildSARekeySucceedingOnAnyPathResetsTheSchedule(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the schedule never rekeyed the SA the rekey asked for made, the session recorded %q", pair.dialed.recorded())
 		}
+	}
+}
+
+// a rekey the peer starts puts the schedule's next one an interval ahead of the SA it made, as one this end starts does
+func TestPeerRekeyResetsTheSchedule(t *testing.T) {
+	for _, sa := range []string{"child", "ike"} {
+		t.Run(sa, func(t *testing.T) {
+			pair := dialRefusing(t, func(cfg *PeerConfig) {
+				if sa == "child" {
+					cfg.ChildRekeyInterval = time.Hour
+				} else {
+					cfg.IKERekeyInterval = time.Hour
+				}
+				cfg.RekeyMargin = time.Hour - scheduleAhead
+			}, func(initiator, _ *Session) { initiator.rekeyJitterSource = unjittered })
+			rekey := pair.responder.RekeyChild
+			if sa == "ike" {
+				rekey = pair.responder.RekeyIKE
+			}
+			time.Sleep(scheduleAhead / 2)
+			if err := rekey(); err != nil {
+				t.Fatalf("the peer's rekey failed: %v", err)
+			}
+			rekeyed := time.Now()
+			started := "ike.rekey.started testorg/client:2>testorg/server:1 sa=" + sa
+			// the schedule's rekey of the SA the handshake made was due scheduleAhead into the session, which this is past
+			time.Sleep(time.Until(rekeyed.Add(scheduleAhead * 3 / 4)))
+			if slices.Contains(pair.dialed.recorded(), started) {
+				t.Fatalf("the schedule rekeyed the SA the peer's rekey made within %s of it, want %s after it, the session recorded %q", scheduleAhead*3/4, scheduleAhead, pair.dialed.recorded())
+			}
+			for deadline := time.Now().Add(answerBudget); !slices.Contains(pair.dialed.recorded(), started); time.Sleep(recordPoll) {
+				if time.Now().After(deadline) {
+					t.Fatalf("the schedule never rekeyed the SA the peer's rekey made, the session recorded %q", pair.dialed.recorded())
+				}
+			}
+		})
 	}
 }
 
