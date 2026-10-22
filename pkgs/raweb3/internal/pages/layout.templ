@@ -3,7 +3,11 @@
 
 package pages
 
-import "ranet3.com/pkgs/raweb3/ui"
+import (
+	"strings"
+
+	"ranet3.com/pkgs/raweb3/ui"
+)
 
 // frame is every page around its content: the head, the header, the notice
 // on a page no person has read in full since it last changed, and the footer.
@@ -17,7 +21,8 @@ templ frame(site ui.Site, page ui.Page, unvetted bool, body string) {
 			}
 		</head>
 		<body class={ "bg-bg text-fg2 antialiased", body }>
-			@bar(site)
+			<a href="#main" class="sr-only border border-line bg-bg px-3 py-2 font-mono text-sm text-fg focus:not-sr-only focus:fixed focus:top-3 focus:left-4 focus:z-10">Skip to content</a>
+			@bar(site, page.Path)
 			if unvetted {
 				@notice()
 			}
@@ -31,13 +36,13 @@ templ frame(site ui.Site, page ui.Page, unvetted bool, body string) {
 // popover sheet over the top of the page that repeats the logo row with a
 // close button where the menu button was. A browser without popover support
 // shows the sheet as a block under the bar.
-templ bar(site ui.Site) {
+templ bar(site ui.Site, path string) {
 	<header class="border-b border-line font-mono text-[15px]">
-		<nav class="mx-auto flex max-w-6xl items-center gap-x-7 px-4 py-4 md:px-6">
+		<nav class="mx-auto flex max-w-6xl items-center gap-x-7 px-4 py-4 md:px-6" aria-label="Site">
 			@brand(site)
 			<div class="flex gap-x-7 max-sm:hidden">
 				for _, l := range site.Nav {
-					<a href={ templ.SafeURL(l.Href) } class="whitespace-nowrap text-fg2 hover:text-acc">{ l.Title }</a>
+					@navLink(l, path, "whitespace-nowrap")
 				}
 			</div>
 			<div class="contents max-sm:hidden">
@@ -54,11 +59,11 @@ templ bar(site ui.Site) {
 					<path d="M6 6l12 12M18 6L6 18"></path>
 				}
 			</div>
-			<div class="flex flex-col border-t border-line px-4">
+			<nav class="flex flex-col border-t border-line px-4" aria-label="Site">
 				for _, l := range site.Nav {
-					<a href={ templ.SafeURL(l.Href) } class="border-b border-line py-3 text-fg hover:text-acc">{ l.Title }</a>
+					@navLink(l, path, "border-b border-line py-3 text-fg hover:text-acc")
 				}
-			</div>
+			</nav>
 			<div class="hidden items-center justify-between px-4 py-3 scripted:flex">
 				// the group carries the same name for assistive tech
 				<span class="text-fg" aria-hidden="true">Theme</span>
@@ -66,6 +71,18 @@ templ bar(site ui.Site) {
 			</div>
 		</div>
 	</header>
+}
+
+// navLink is a link of the header, marked current on the page it names and
+// on every page under it.
+templ navLink(l ui.Link, path, class string) {
+	if l.Href == path {
+		<a href={ templ.SafeURL(l.Href) } class={ "nav-link", class } aria-current="page">{ l.Title }</a>
+	} else if l.Href != "/" && strings.HasPrefix(path, l.Href) {
+		<a href={ templ.SafeURL(l.Href) } class={ "nav-link", class } aria-current="true">{ l.Title }</a>
+	} else {
+		<a href={ templ.SafeURL(l.Href) } class={ "nav-link", class }>{ l.Title }</a>
+	}
 }
 
 // brand is the logo link, as tall as the theme switch and the menu button, so
@@ -235,7 +252,7 @@ templ notice() {
 // Bare is a page whose markdown lays itself out, full width.
 templ Bare(site ui.Site, c Content) {
 	@frame(site, ui.Page{Title: pageTitle(site, c), Description: c.Description, Path: c.Path}, c.Unvetted, "font-mono") {
-		<main>
+		<main id="main">
 			@templ.Raw(c.Body)
 		</main>
 	}

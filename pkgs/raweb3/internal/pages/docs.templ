@@ -12,12 +12,12 @@ templ Docs(site ui.Site, doc Content) {
 			<nav class="hidden w-56 shrink-0 py-10 md:block" aria-label="Docs">
 				@navList(doc.Nav)
 			</nav>
-			<main class="min-w-0 flex-1 py-10">
+			<main id="main" class="min-w-0 flex-1 py-10">
 				<details class="mb-8 border-b border-line pb-4 md:hidden">
 					<summary class="cursor-pointer font-mono text-sm text-fg">Pages</summary>
-					<div class="mt-4">
+					<nav class="mt-4" aria-label="Docs">
 						@navList(doc.Nav)
-					</div>
+					</nav>
 				</details>
 				<article class="prose prose-theme max-w-3xl">
 					<h1 class="font-mono">{ doc.Title }</h1>
@@ -40,7 +40,7 @@ templ navList(nav []Section) {
 				for _, l := range s.Links {
 					<li>
 						if l.Current {
-							<a href={ templ.SafeURL(l.Path) } aria-current="page" class="text-acc">{ l.Title }</a>
+							<a href={ templ.SafeURL(l.Path) } aria-current="page" class="-ml-2.5 border-l-2 border-acc pl-2 font-bold text-fg">{ l.Title }</a>
 						} else {
 							<a href={ templ.SafeURL(l.Path) } class="text-fg2 hover:text-acc">{ l.Title }</a>
 						}
