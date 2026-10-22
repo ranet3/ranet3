@@ -207,7 +207,6 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	if err := validateRuntimeConfig(cfg, privateKey, x); err != nil {
 		return nil, err
 	}
-	warnUnforwardableTransit(cfg)
 	warnUnbordered(cfg, forwardingEnabled)
 	warnVRFWithoutL3mdev(cfg)
 	warnCountedAdvertisements(cfg)

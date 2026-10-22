@@ -141,15 +141,14 @@ testers.runNixOSTest {
     # two nodes taken down and put back up against linux itself
     # a session moved under the floor handing its fragmenting to the new endpoint's family
     # the refusal of a session's own data past a narrower loopback lowering its budget
-    # the transit warning against the forwarding sysctls a namespace of its own is given
     # every goroutine of a node opens sockets and tuns, so the whole process runs in a namespace of its own
     out = machine.succeed(
-        "unshare -n ${netlinkTests}/bin/client-tests -test.v -test.run '^TestNode(GoingDown|RestartedWhileDown)|^TestSession(MovedUnderTheFloorHandsItsFragmentingOver|LowersItsBudgetAtTheRefusalOfItsOwnData)|^TestTransitWarnsOnlyWhereTheHostCannotForwardIt' 2>&1"
+        "unshare -n ${netlinkTests}/bin/client-tests -test.v -test.run '^TestNode(GoingDown|RestartedWhileDown)|^TestSession(MovedUnderTheFloorHandsItsFragmentingOver|LowersItsBudgetAtTheRefusalOfItsOwnData)' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the client's round trips in a namespace of their own skipped themselves under root:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 5, f"only {ran} of the client's round trips in a namespace of their own ran:\n{out}"
+    assert ran >= 4, f"only {ran} of the client's round trips in a namespace of their own ran:\n{out}"
 
     out = machine.succeed(
         "${wireguardTests}/bin/tun-tests -test.v 2>&1"
