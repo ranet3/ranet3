@@ -106,6 +106,12 @@
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
   }
+  /* the browser's own ring is about 1.1:1 against the primary button, fg is
+     10.8:1 against the page around it */
+  :focus-visible {
+    outline: 2px solid var(--fg);
+    outline-offset: 2px;
+  }
 }
 
 @utility prose-theme {
@@ -186,6 +192,15 @@
       mask: var(--icon) center / 1em no-repeat;
     }
   }
+  /* forced colors drop background colors, which would paint the icon's mask
+     in the canvas color */
+  @media (forced-colors: active) {
+    .arrow::after,
+    .row::after {
+      forced-color-adjust: none;
+      background-color: CanvasText;
+    }
+  }
   /* in a run of text the icon's box stands on the baseline as tall as a
      capital, so it centers on the capitals as the letters do, which a glyph
      of the font does not */
@@ -255,6 +270,15 @@
   }
   .meter-accent {
     --fill: var(--acc);
+  }
+  /* forced colors drop a gradient background, so the bar keeps its own in
+     system colors */
+  @media (forced-colors: active) {
+    .meter {
+      forced-color-adjust: none;
+      --fill: CanvasText;
+      --track: GrayText;
+    }
   }
   /* figures right aligned, row labels left, a rule between tbody groups */
   .data-table {

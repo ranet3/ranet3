@@ -107,7 +107,7 @@ templ themeSwitch() {
 }
 
 templ themeChoice(theme, title string) {
-	<button type="button" class="p-1.5 text-mute hover:text-fg picked:bg-bg2 picked:text-acc" data-theme-choice={ theme } aria-pressed="false" title={ title }>
+	<button type="button" class="p-1.5 text-mute hover:text-fg picked:bg-acc picked:text-bg forced-colors:picked:bg-[Highlight] forced-colors:picked:text-[HighlightText] forced-colors:picked:forced-color-adjust-none" data-theme-choice={ theme } aria-pressed="false" title={ title }>
 		<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" class="block" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 			{ children... }
 		</svg>
