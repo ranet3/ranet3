@@ -18,7 +18,6 @@ import (
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
-	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/internal/registry"
@@ -164,15 +163,15 @@ func assignedAddresses(cfg *config.Config) []netip.Addr {
 
 // answerSources is the router-id of each family, RFC 1812 section 2.2.7, a cap.table address before a host prefix cap.route announces
 // and the End SID of cap.segment local that transit's IPv6 errors come from
-// each the first address of its kind a router forwards packets from, as InvalidSource says, that is no IPv4 address mapped into IPv6 and that an announced prefix with no source, and that does not capture the machine, covers
+// each the first address of its kind a router forwards packets from, as InvalidSource says, that is no IPv4 address mapped into IPv6 and that an announced prefix with no source, and that does not count as a default with cap.border's overlay, covers
 // a sender's strict reverse path check drops an answer from any other, which the mesh does not route back to this node
 // it walks the node's addresses apart from MeshAddresses, which takes host prefixes alone and the announced ones first
 // since a cap.table address leads, whatever the length of the prefix it is assigned in
 func answerSources(cfg *config.Config) netstack.AnswerSources {
-	routes := cfg.Routes()
+	routes, overlay := cfg.Routes(), cfg.Overlay()
 	covered := func(address netip.Addr) bool {
 		return !packet.InvalidSource(address) && !address.Is4In6() && slices.ContainsFunc(routes.Announce, func(entry schema.Announce) bool {
-			return !entry.From.IsValid() && !kernel.CapturesTheMachine(entry.Prefix.Prefix) && entry.Prefix.Contains(address)
+			return !entry.From.IsValid() && !schema.CapturesTheMachine(entry.Prefix.Prefix, overlay) && entry.Prefix.Contains(address)
 		})
 	}
 	candidates := assignedPrefixes(cfg)
