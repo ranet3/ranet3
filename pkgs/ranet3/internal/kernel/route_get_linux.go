@@ -21,6 +21,33 @@ func routeGet(src, dst netip.Addr, iif string) (MatchedRoute, error) {
 		return MatchedRoute{}, err
 	}
 	defer conn.Close()
+	var arrival uint32
+	if iif != "" {
+		link, err := conn.link(0, iif)
+		if err != nil {
+			return MatchedRoute{}, fmt.Errorf("kernel: look up interface %s: %w", iif, err)
+		}
+		arrival = link.index
+	}
+	route, indexes, err := conn.matchedRoute(src, dst, arrival)
+	if err != nil {
+		return MatchedRoute{}, err
+	}
+	for i, index := range indexes {
+		link, err := conn.link(index, "")
+		if err != nil {
+			return MatchedRoute{}, fmt.Errorf("kernel: name interface %d: %w", index, err)
+		}
+		route.NextHops[i].Device = link.name
+	}
+	return route, nil
+}
+
+// matchedRoute is one RTM_GETROUTE under RTM_F_FIB_MATCH, for a packet from src
+// to dst arriving on the device of index arrival, or this host's own for 0. It
+// answers each next hop's interface index at its place in NextHops, whose
+// Device it leaves empty
+func (c *nlConn) matchedRoute(src, dst netip.Addr, arrival uint32) (MatchedRoute, []uint32, error) {
 	body := make([]byte, unix.SizeofRtMsg)
 	body[0] = unix.AF_INET6
 	flags := uint32(unix.RTM_F_FIB_MATCH)
@@ -38,35 +65,20 @@ func routeGet(src, dst netip.Addr, iif string) (MatchedRoute, error) {
 	if src.IsValid() {
 		body = putAttr(body, unix.RTA_SRC, addressBytes(src))
 	}
-	if iif != "" {
-		link, err := conn.link(0, iif)
-		if err != nil {
-			return MatchedRoute{}, fmt.Errorf("kernel: look up interface %s: %w", iif, err)
-		}
-		body = putAttrU32(body, unix.RTA_IIF, link.index)
+	if arrival != 0 {
+		body = putAttrU32(body, unix.RTA_IIF, arrival)
 	}
-	replies, err := conn.execute(unix.RTM_GETROUTE, 0, body)
+	replies, err := c.execute(unix.RTM_GETROUTE, 0, body)
 	if err != nil {
-		return MatchedRoute{}, fmt.Errorf("kernel: look up the route to %s: %w", dst, err)
+		return MatchedRoute{}, nil, fmt.Errorf("kernel: look up the route to %s: %w", dst, err)
 	}
 	for _, reply := range replies {
 		if reply.Kind != unix.RTM_NEWROUTE || len(reply.Data) < unix.SizeofRtMsg {
 			continue
 		}
-		route, indexes, err := decodeMatchedRoute(reply)
-		if err != nil {
-			return MatchedRoute{}, err
-		}
-		for i, index := range indexes {
-			link, err := conn.link(index, "")
-			if err != nil {
-				return MatchedRoute{}, fmt.Errorf("kernel: name interface %d: %w", index, err)
-			}
-			route.NextHops[i].Device = link.name
-		}
-		return route, nil
+		return decodeMatchedRoute(reply)
 	}
-	return MatchedRoute{}, fmt.Errorf("kernel: the route to %s was not answered", dst)
+	return MatchedRoute{}, nil, fmt.Errorf("kernel: the route to %s was not answered", dst)
 }
 
 // rtaNHID is RTA_NH_ID of linux/rtnetlink.h, which x/sys does not carry

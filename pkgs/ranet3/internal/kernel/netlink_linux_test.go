@@ -482,7 +482,7 @@ func testVRFEnslavement(t *testing.T, conn *nlConn, plat *netlinkPlatform) {
 // enterThrowawayNamespace moves this test's thread into a fresh network
 // namespace. The thread is never unlocked, so the Go runtime destroys it when
 // this goroutine exits and takes the namespace with it.
-func enterThrowawayNamespace(t *testing.T) {
+func enterThrowawayNamespace(t testing.TB) {
 	t.Helper()
 	runtime.LockOSThread()
 	before := namespaceID(t)
@@ -494,7 +494,7 @@ func enterThrowawayNamespace(t *testing.T) {
 	}
 }
 
-func namespaceID(t *testing.T) uint64 {
+func namespaceID(t testing.TB) uint64 {
 	t.Helper()
 	var st unix.Stat_t
 	if err := unix.Stat("/proc/thread-self/ns/net", &st); err != nil {
@@ -505,7 +505,7 @@ func namespaceID(t *testing.T) uint64 {
 
 // requireEmptyNamespace is the second guard. A namespace that already holds a
 // route is somebody's real one, whatever the inode said.
-func requireEmptyNamespace(t *testing.T, conn *nlConn) {
+func requireEmptyNamespace(t testing.TB, conn *nlConn) {
 	t.Helper()
 	body := make([]byte, unix.SizeofRtMsg)
 	body[0] = unix.AF_UNSPEC
@@ -539,7 +539,7 @@ func createTUN(t *testing.T, name string) {
 	}
 }
 
-func setLinkFlags(t *testing.T, conn *nlConn, index uint32, flags uint32) {
+func setLinkFlags(t testing.TB, conn *nlConn, index uint32, flags uint32) {
 	t.Helper()
 	body := make([]byte, unix.SizeofIfInfomsg)
 	binary.NativeEndian.PutUint32(body[4:], index)
