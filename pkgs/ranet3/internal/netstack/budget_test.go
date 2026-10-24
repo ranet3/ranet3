@@ -121,6 +121,7 @@ func TestReservationHoldsTheBytesItSends(t *testing.T) {
 	m.startSegmentReports()
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	ownHosts(m, tooBigSource)
 
 	t.Run("read", func(t *testing.T) {
 		b := newOutboundBatch(2)

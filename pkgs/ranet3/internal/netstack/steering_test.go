@@ -159,6 +159,7 @@ func TestSteeredReadAllocatesNoMoreThanItsEncapsulation(t *testing.T) {
 	peer.SetMTU(0xffff)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	ownHosts(m, tooBigSource)
 	b := newOutboundBatch(len(packets))
 	fill(b, packets...)
 	read := func() {

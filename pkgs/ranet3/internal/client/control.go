@@ -150,6 +150,7 @@ func transitCounters(counters netstack.TransitCounters) control.TransitCounters 
 		Forged:         counters.Forged,
 		RoutingHeader:  counters.RoutingHeader,
 		SID:            counters.SID,
+		UnownedSource:  counters.UnownedSource,
 		Answered:       counters.Answered,
 		Unanswered:     counters.Unanswered,
 	}

@@ -553,6 +553,7 @@ func TestReadSendsNothingTheTableAnswersHeldOrLocal(t *testing.T) {
 	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:c::/64"), Local)
 	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:e::9/128"), Assigned)
 	source := tooBigSource[6]
+	ownHosts(m, tooBigSource)
 	b := newOutboundBatch(4)
 	fill(b,
 		udpPacket(source, segAddr("3fff:b::9"), 100, false),
