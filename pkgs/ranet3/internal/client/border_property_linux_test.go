@@ -17,7 +17,7 @@ import (
 const readinessMoves = 8
 
 // Over a run of the translator's words and the border's readiness, handed over
-// in any order, the mesh writes into a real egress device each family the
+// in any order, the mesh egresses into a real tun each family the
 // translator holds ready while the border's chain reads back, and the SID's
 // /128 is originated exactly while the translator serves the SIDs and the
 // border's chain reads back

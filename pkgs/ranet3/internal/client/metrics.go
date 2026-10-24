@@ -107,7 +107,7 @@ func (c *Client) renderBorder(w io.Writer) {
 	if border == nil {
 		return
 	}
-	fmt.Fprint(w, "# HELP ranet3_border_ready Whether the border filter's chain reads back as the configuration asks, which every family of the egress device waits for.\n")
+	fmt.Fprint(w, "# HELP ranet3_border_ready Whether the border filter's chain reads back as the configuration asks, which every family of the egress segments waits for.\n")
 	fmt.Fprint(w, "# TYPE ranet3_border_ready gauge\n")
 	fmt.Fprintf(w, "ranet3_border_ready %d\n", boolValue(border.Ready))
 	fmt.Fprint(w, "# HELP ranet3_border_dropped_packets_total Packets arriving from outside the mesh that the border filter dropped, by what they carried, as of its last pass. A rewrite of the chain starts them from zero.\n")
@@ -201,13 +201,12 @@ func (c *Client) renderEgress(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_egress_pass_failed Whether the last pass reported an error.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_pass_failed gauge\n")
 	fmt.Fprintf(w, "ranet3_egress_pass_failed %d\n", boolValue(egress.Err != ""))
-	if egress.Device == "" {
-		return
-	}
-	fmt.Fprint(w, "# HELP ranet3_egress_device_ready Whether the egress device carries a family out translated, which an egress segment's packets of that family wait for.\n")
-	fmt.Fprint(w, "# TYPE ranet3_egress_device_ready gauge\n")
-	fmt.Fprintf(w, "ranet3_egress_device_ready{family=\"ipv4\"} %d\n", boolValue(slices.Contains(egress.Ready, "ipv4")))
-	fmt.Fprintf(w, "ranet3_egress_device_ready{family=\"ipv6\"} %d\n", boolValue(slices.Contains(egress.Ready, "ipv6")))
+	// the translator's own judgment, since ranet3_border_ready reports the border's hold on the egress segments
+	ready := c.translatorStatus().Ready
+	fmt.Fprint(w, "# HELP ranet3_egress_ready Whether this node carries a family out of the mesh translated, which egress of that family waits for in both modes.\n")
+	fmt.Fprint(w, "# TYPE ranet3_egress_ready gauge\n")
+	fmt.Fprintf(w, "ranet3_egress_ready{family=\"ipv4\"} %d\n", boolValue(slices.Contains(ready, "ipv4")))
+	fmt.Fprintf(w, "ranet3_egress_ready{family=\"ipv6\"} %d\n", boolValue(slices.Contains(ready, "ipv6")))
 }
 
 // The dataplane is this process rather than the kernel, so a scrape is the
@@ -215,8 +214,8 @@ func (c *Client) renderEgress(w io.Writer) {
 //
 // What this node did for a peer and what it did with its own traffic are
 // separate series, because they fail for different reasons. A rising dropped
-// means peers are sending packets this node will not act on, or the egress
-// device is refusing writes, and a rising steer_dropped means this node's own
+// means peers are sending packets this node will not act on, and a rising
+// steer_dropped means this node's own
 // policy is pointing somewhere the mesh cannot reach.
 func (c *Client) renderSegmentCounters(w io.Writer) {
 	segments := c.Mesh.SegmentCounters()
@@ -226,24 +225,21 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_segments_delivered_total Packets an End.DT46 behavior took the outer header off and handed to the stack through the mesh tun.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_delivered_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_delivered_total %d\n", segments.Delivered)
-	fmt.Fprint(w, "# HELP ranet3_segments_dropped_total Packets addressed to one of this node's segments that it would not act on, and egress packets the egress device refused while open.\n")
+	fmt.Fprint(w, "# HELP ranet3_segments_dropped_total Packets addressed to one of this node's segments that it would not act on.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_dropped_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_dropped_total %d\n", segments.Dropped)
 	fmt.Fprint(w, "# HELP ranet3_segments_answered_total ICMP errors sent for dropped packets, which is the half of the dropped ones whose sender was told why.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_answered_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_answered_total %d\n", segments.Answered)
-	fmt.Fprint(w, "# HELP ranet3_segments_egressed_total Packets an egress segment handed to the egress device.\n")
+	fmt.Fprint(w, "# HELP ranet3_segments_egressed_total Packets an egress segment handed to the mesh tun to leave the mesh.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_egressed_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_egressed_total %d\n", segments.Egressed)
 	fmt.Fprint(w, "# HELP ranet3_segments_refused_total Packets a local SID refused for their source, an outer source outside cap.border overlay at any SID or, at an egress segment, a source outside its allow list, an inner source it cannot read, an inner packet no router forwards or one the mesh routes no reply to, which are among the dropped ones and never answered.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_refused_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_refused_total %d\n", segments.Refused)
-	fmt.Fprint(w, "# HELP ranet3_segments_not_ready_total Packets an egress segment let through and no egress device took, because none was installed, it closed under the write or its family was not ready.\n")
+	fmt.Fprint(w, "# HELP ranet3_segments_not_ready_total Packets an egress segment let through and dropped because their family was not ready.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_not_ready_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_not_ready_total %d\n", segments.NotReady)
-	fmt.Fprint(w, "# HELP ranet3_segments_drained_total Packets read off the egress device and thrown away, each one a route into the wrong device, leaving out the kernel's own to IPv6 multicast addresses of interface-local or link-local scope.\n")
-	fmt.Fprint(w, "# TYPE ranet3_segments_drained_total counter\n")
-	fmt.Fprintf(w, "ranet3_segments_drained_total %d\n", segments.Drained)
 	fmt.Fprint(w, "# HELP ranet3_steered_total This node's own packets a steering policy encapsulated.\n")
 	fmt.Fprint(w, "# TYPE ranet3_steered_total counter\n")
 	fmt.Fprintf(w, "ranet3_steered_total %d\n", segments.Steered)

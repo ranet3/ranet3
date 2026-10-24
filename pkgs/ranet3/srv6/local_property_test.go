@@ -104,8 +104,8 @@ func listed(allow []netip.Prefix, address netip.Addr) bool {
 	return false
 }
 
-// An egress segment at the end of a segment list of any length hands the
-// egress device exactly the packets whose outer and inner sources the allow
+// An egress segment at the end of a segment list of any length hands
+// egress exactly the packets whose outer and inner sources the allow
 // list holds, the inner one as its own version spells it, and refuses every
 // other with ErrSourceRefused. The sources are drawn on both sides of every
 // edge of the list's prefixes, in both families, the outer one now and then as
@@ -158,7 +158,7 @@ func TestEgressNeverCarriesASourceOutsideItsAllowList(t *testing.T) {
 		carried := listed(allow, outer) && listed(allow, from) && !mislabeled
 		switch {
 		case carried && (result.Action != ActionEgress || result.Family != family || !bytes.Equal(result.Inner, inner)):
-			ht.Fatalf("from %s and %s inside %v, Handle returned %v of family %d (%v), want the inner packet of family %d for the egress device",
+			ht.Fatalf("from %s and %s inside %v, Handle returned %v of family %d (%v), want the inner packet of family %d for egress",
 				outer, from, allow, result.Action, result.Family, result.Err, family)
 		case !carried && (result.Action != ActionDrop || !errors.Is(result.Err, ErrSourceRefused)):
 			ht.Fatalf("from %s and %s against %v, announced as %d, Handle returned %v (%v), want a refusal of the source",

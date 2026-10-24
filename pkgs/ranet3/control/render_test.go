@@ -180,7 +180,7 @@ func TestStatusSaysTheRoleInWords(t *testing.T) {
 }
 
 // the segment line always names forwarded, delivered and dropped
-// and names answered, egressed, refused, not ready and drained only while each is above 0
+// and names answered, egressed, refused and not ready only while each is above 0
 func TestStatusSegmentLineRendersAsTheGoldenFile(t *testing.T) {
 	status := downStatus()
 	status.Down = nil
@@ -188,7 +188,7 @@ func TestStatusSegmentLineRendersAsTheGoldenFile(t *testing.T) {
 	var out strings.Builder
 	for _, counters := range []SegmentCounters{
 		{Forwarded: 7, Delivered: 5, Dropped: 4},
-		{Forwarded: 7, Delivered: 5, Dropped: 4, Answered: 1, Egressed: 33, Refused: 2, NotReady: 3, Drained: 6},
+		{Forwarded: 7, Delivered: 5, Dropped: 4, Answered: 1, Egressed: 33, Refused: 2, NotReady: 3},
 	} {
 		status.SegmentCounters = counters
 		RenderStatus(&out, status)
@@ -217,28 +217,29 @@ func TestStatusTransitLineRendersAsTheGoldenFile(t *testing.T) {
 	goldenJSON(t, "status-transit.json", every)
 }
 
-// the egress line names the egress device and the families it carries, and
-// says the ones it does not carry yet in the voice of a withheld prefix
+// the egress line names the families an egress segment's packets leave in,
+// says the ones they do not leave in yet in the voice of a withheld prefix,
+// and names neither on a node whose egress segments nothing judged
 func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 	var out strings.Builder
 	for _, ready := range [][]string{nil, {"ipv6"}, {"ipv4", "ipv6"}} {
-		out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3, ip6 ranet3", Device: "ranet3e", Ready: ready}) + "\n")
+		out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3, ip6 ranet3", Ready: ready}) + "\n")
 	}
-	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3, ip6 ranet3", Device: "ranet3e",
-		Unready: "the egress device is gone, the kernel lists no link named ranet3e"}) + "\n")
+	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3, ip6 ranet3",
+		Unready: "the host does not forward ipv4 or ipv6"}) + "\n")
 	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3", Installed: 1}) + "\n")
 	golden(t, "status-egress.txt", []byte(out.String()))
 }
 
 // the border row follows the egress row, naming where the chain is, what it
 // accepts and what each drop counted, or that it is not installed and why, and
-// the egress line names the border when it holds the device back
+// the egress line names the border when it holds the egress segments back
 func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	status := downStatus()
 	status.Down = nil
 	status.Border = &BorderStatus{
 		Where:  "nftables table inet ranet3 chain border",
-		Inside: []string{"ranet3", "ranet3e", "lo", "gravity"},
+		Inside: []string{"ranet3", "lo", "gravity"},
 		Overlay: []netip.Prefix{
 			netip.MustParsePrefix("23.161.104.0/24"), netip.MustParsePrefix("192.104.136.0/24"), netip.MustParsePrefix("204.115.20.0/23"),
 			netip.MustParsePrefix("2602:f590::/36"), netip.MustParsePrefix("2a0c:b641:69c::/48"),
@@ -260,7 +261,7 @@ func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	} {
 		out.WriteString(borderLine(border) + "\n")
 	}
-	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3, ip6 ranet3", Device: "ranet3e", Unready: "until the border filter is read back"}) + "\n")
+	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3, ip6 ranet3", Unready: "until the border filter is read back"}) + "\n")
 	golden(t, "status-border.txt", []byte(out.String()))
 }
 

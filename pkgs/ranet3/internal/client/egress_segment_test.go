@@ -51,8 +51,8 @@ func sidOriginated(c *Client, sid string) bool {
 	return slices.ContainsFunc(c.speaker.Originated(), func(route babel.OriginatedRoute) bool { return route.Destination == host })
 }
 
-// the egress device, its rule and its readiness are made at startup, so the
-// first egress segment and the last are a restart, and a segment changing
+// the translator's families are fixed at startup, so the first egress segment
+// and the last are a restart, and a segment changing
 // its SID or the order of its allow list is not
 func TestEgressSegmentsComeAndGoOnlyByRestart(t *testing.T) {
 	node := func(segments ...srv6.Segment) *config.Config {
@@ -270,7 +270,7 @@ func TestReloadMovesTheOriginatedSIDWithTheSegment(t *testing.T) {
 	speakerRecording(t, c, bus)
 	c.SetEgressReady(true, true, true)
 	if !sidOriginated(c, old) {
-		t.Fatal("a ready egress device left its SID unoriginated")
+		t.Fatal("ready egress segments left their SID unoriginated")
 	}
 
 	reordered := *c.config()

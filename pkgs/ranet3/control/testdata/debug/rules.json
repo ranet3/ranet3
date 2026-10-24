@@ -33,7 +33,7 @@
     {
       "family": "ipv4",
       "priority": 120,
-      "iif": "ranet3e",
+      "iif": "eth1",
       "action": "lookup",
       "table": 254,
       "protocol": 155,
@@ -101,7 +101,7 @@
     {
       "family": "ipv6",
       "priority": 120,
-      "iif": "ranet3e",
+      "iif": "eth1",
       "action": "lookup",
       "table": 254,
       "protocol": 155,
@@ -119,14 +119,6 @@
     "rules": [
       {
         "spec": "accept via ranet3",
-        "verdict": "accept",
-        "reason": "inside",
-        "held": true,
-        "packets": 0,
-        "bytes": 0
-      },
-      {
-        "spec": "accept via ranet3e",
         "verdict": "accept",
         "reason": "inside",
         "held": true,

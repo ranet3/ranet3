@@ -76,7 +76,7 @@ type Mesh struct {
 	// everything this file does not touch stays in segments.go with the code
 	// that does.
 	segmentCounters
-	egressSlot
+	egressReadiness
 	answerState
 	transitState
 }
@@ -201,7 +201,7 @@ func NewNamed(mtu int, name string, events func(kind, peer string, attrs ...slog
 		}
 		return nil, fmt.Errorf("netstack: create tun device: %w", err)
 	}
-	if err := bringTUNUp(actualName, 0); err != nil {
+	if err := bringTUNUp(actualName); err != nil {
 		_ = dev.Close()
 		return nil, fmt.Errorf("netstack: bring tun device up: %w", err)
 	}
@@ -800,7 +800,6 @@ func hashBytes(raw []byte) uint64 {
 func (m *Mesh) Close() {
 	m.closeOnce.Do(func() {
 		close(m.closed)
-		m.SetEgress(nil)
 		if m.dev != nil {
 			_ = m.dev.Close()
 		}

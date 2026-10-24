@@ -3,7 +3,7 @@ Policy rules, ipv4
   0         all                   local    kernel
   40        fwmark 0x726c/0xffff  main     ranet3
   100       to 23.161.104.0/24    200      protocol 4
-  120       iif ranet3e           main     ranet3
+  120       iif eth1              main     ranet3
   150       from 23.161.104.0/24  main     protocol 4
   32766     all                   main     kernel
   32767     all                   default  kernel
@@ -12,11 +12,10 @@ Policy rules, ipv6
   0         all           local        kernel
   200       not iif eth0  unreachable  protocol 4
   32766     all           main         kernel
-Wanted and missing: ipv6 priority 120 iif ranet3e main
+Wanted and missing: ipv6 priority 120 iif eth1 main
 
 Border filter, nftables table inet ranet3 chain border, prerouting at priority -300, read 3 seconds ago, ready
   accept  via ranet3
-  accept  via ranet3e
   accept  via lo
   drop    ipv4 source 23.161.104.0/24             12 packets, 720 B
   drop    ipv6 source 2602:f590::/36              0 packets, 0 B

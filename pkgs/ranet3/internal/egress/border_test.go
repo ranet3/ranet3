@@ -590,7 +590,7 @@ func TestRetryBacksOffUpToTheSweepAndStartsOverAfterAPass(t *testing.T) {
 }
 
 // A filter that stops reports the border not ready before its table goes,
-// so the egress device stops before a forged source can pass, and Run
+// so the egress segments stop before a forged source can pass, and Run
 // returns the withdrawal's error
 func TestBorderStopsNotReadyBeforeItWithdraws(t *testing.T) {
 	for _, failing := range []bool{false, true} {

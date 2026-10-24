@@ -69,9 +69,6 @@ type borderLab struct {
 //   - with the tun and the uplink in a VRF, the first and fourth arms again,
 //     so a packet meeting prerouting a second time as the master passes
 //   - shutdown leaves no inet table of the border
-//
-// The egress device's place inside is the egress lab's steered packet, which
-// runs with the border built.
 func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
@@ -219,9 +216,9 @@ func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 	})
 }
 
-// an exit whose border's chain is not read back writes neither family into a
-// real egress device, whatever the translator holds, and with the chain read
-// back it writes each family the translator holds
+// an exit whose border's chain is not read back egresses neither family of an
+// egress segment into its tun, whatever the translator holds, and with the
+// chain read back it egresses each family the translator holds
 func TestTUNEgressCarriesNothingWhileTheBorderIsNotReady(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
@@ -246,8 +243,8 @@ func TestTUNEgressCarriesNothingWhileTheBorderIsNotReady(t *testing.T) {
 }
 
 // meshCarrying gives c a mesh on a tun in a namespace of its own, holding the
-// tables of its cap.segment and writing into a real egress device, and returns
-// the families of a steered packet to labSID the mesh writes into the device
+// tables of its cap.segment, and returns the families of a steered packet to
+// labSID the mesh egresses into the tun
 func meshCarrying(t *testing.T, c *Client) func() [2]bool {
 	t.Helper()
 	segments, steering, err := c.config().SegmentTables()
@@ -259,14 +256,8 @@ func meshCarrying(t *testing.T, c *Client) func() [2]bool {
 		if err != nil {
 			return err
 		}
-		device, err := netstack.NewEgressDevice(labEgress, netstack.DefaultMTU)
-		if err != nil {
-			mesh.Close()
-			return err
-		}
 		mesh.SetSegments(segments)
 		mesh.SetSteering(steering)
-		mesh.SetEgress(device)
 		// the egress segment egresses an inner source only where the mesh routes a reply to it, here through a synthetic leaf
 		leaf := netstack.NewPeer("example/leaf", func(int) (netstack.BatchSealer, error) {
 			return nil, errors.New("the leaf is synthetic")
@@ -278,7 +269,7 @@ func meshCarrying(t *testing.T, c *Client) func() [2]bool {
 		c.Mesh = mesh
 		return nil
 	}); err != nil {
-		t.Fatalf("open the mesh and its egress device: %v", err)
+		t.Fatalf("open the mesh: %v", err)
 	}
 	t.Cleanup(c.Mesh.Close)
 	return func() (families [2]bool) {

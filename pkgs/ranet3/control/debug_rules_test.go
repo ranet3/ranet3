@@ -22,11 +22,11 @@ func rulesFixture() RulesInfo {
 	to := lookup("ipv4", 100, 200, 4, false)
 	to.To = netip.MustParsePrefix("23.161.104.0/24")
 	iif := lookup("ipv4", 120, 254, 155, true)
-	iif.IIF = "ranet3e"
+	iif.IIF = "eth1"
 	from := lookup("ipv4", 150, 254, 4, false)
 	from.From = netip.MustParsePrefix("23.161.104.0/24")
 	unreachable := PolicyRule{Family: "ipv6", Priority: 200, Invert: true, IIF: "eth0", Action: "unreachable", Protocol: 4}
-	wanted := PolicyRule{Family: "ipv6", Priority: 120, IIF: "ranet3e", Action: "lookup", Table: 254, Protocol: 155, Owned: true, Wanted: true}
+	wanted := PolicyRule{Family: "ipv6", Priority: 120, IIF: "eth1", Action: "lookup", Table: 254, Protocol: 155, Owned: true, Wanted: true}
 	return RulesInfo{
 		Policy: []PolicyRule{
 			lookup("ipv4", 0, 255, 2, false), mark, to, iif, from, lookup("ipv4", 32766, 254, 2, false), lookup("ipv4", 32767, 253, 2, false),
@@ -42,7 +42,6 @@ func rulesFixture() RulesInfo {
 			Ready:    true,
 			Rules: []BorderChainRule{
 				{Spec: "accept via ranet3", Verdict: "accept", Reason: "inside", Held: true},
-				{Spec: "accept via ranet3e", Verdict: "accept", Reason: "inside", Held: true},
 				{Spec: "accept via lo", Verdict: "accept", Reason: "inside", Held: true},
 				{Spec: "drop ipv4 source 23.161.104.0/24", Verdict: "drop", Reason: "overlay_source", Family: "ipv4", Held: true, Packets: 12, Bytes: 720},
 				{Spec: "drop ipv6 source 2602:f590::/36", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true},

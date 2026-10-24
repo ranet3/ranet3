@@ -95,8 +95,9 @@ let
   # priority, ahead of main's.
   segmentTable = 88;
   # The egress segment's SID, announced by the client only while its egress
-  # device is ready, and the device named after the client's tun. The
-  # gateway's outside address is in neither prefix the allow list names.
+  # segments are ready, and the name the rule cap.table holds for them is
+  # keyed on. The gateway's outside address is in neither prefix the allow
+  # list names.
   clientEgressSID = "fd00:88::6:3";
   clientEgressDevice = "${clientDevice}e";
   gatewayOutside = "fd00:77::1";
@@ -797,8 +798,8 @@ testers.runNixOSTest {
                       priority = 100;
                     }
                   ]
-                  # what leaves the egress device follows main, after the to
-                  # rules so a mesh destination still goes to the mesh
+                  # the rule the configuration of an egress segment still
+                  # asks for, after the to rules
                   ++ pkgs.lib.optional egressSegment {
                     iif = clientEgressDevice;
                     table = "main";
@@ -1135,14 +1136,10 @@ testers.runNixOSTest {
             client.wait_for_unit("ranet3.service")
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
 
-            # the device exists with no address, and the SID reaches the gateway once both families are ready
+            # the SID reaches the gateway once both families are ready
             client.wait_until_succeeds(
                 "ranet3 status --json | jq -e '.egress.ready == [\"ipv4\", \"ipv6\"]'", timeout=timeout)
-            device = client.succeed("ip -d addr show dev ${clientEgressDevice}")
-            print(device)
-            assert "inet" not in device, f"the egress device carries an address:\n{device}"
             gateway.wait_until_succeeds("ip -6 route show ${clientEgressSID} | grep -q swan0", timeout=timeout)
-            print(client.execute("journalctl -u ranet3.service --no-pager | grep -F 'egress device'")[1])
 
             # the kernel builds the header from the address the tunnel source names, which the allow list covers
             gateway.succeed("ip sr tunsrc set ${gatewayTunnel}")
@@ -1175,7 +1172,7 @@ testers.runNixOSTest {
             assert after["egressed"] == before["egressed"], f"a source outside the list was egressed: {after}"
 
             metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics")
-            for want in ['ranet3_egress_device_ready{family="ipv4"} 1', 'ranet3_egress_device_ready{family="ipv6"} 1', "ranet3_border_ready 1"]:
+            for want in ['ranet3_egress_ready{family="ipv4"} 1', 'ranet3_egress_ready{family="ipv6"} 1', "ranet3_border_ready 1"]:
                 assert want in metrics, f"the scrape does not carry {want}:\n{metrics}"
 
             # behind is on the client's link and outside the mesh, so a mesh source, a type 4 routing
@@ -1234,23 +1231,13 @@ testers.runNixOSTest {
             gateway.succeed("ip -6 route show ${clientEgressSID} | grep -q swan0")
             client.succeed("sysctl -w net.ipv6.conf.all.forwarding=1")
             client.wait_until_succeeds("ranet3 status --json | jq -e '.egress.ready | length == 2'", timeout=timeout)
-
-            # a family the host forwards and the device cannot pass withdraws the SID, and putting it right brings it back
-            client.succeed("sysctl -w net.ipv4.conf.all.rp_filter=2")
-            client.wait_until_succeeds("ranet3 status --json | jq -e '.egress.ready == [\"ipv6\"]'", timeout=timeout)
-            print(status()["egress"])
-            gateway.wait_until_fails("ip -6 route show ${clientEgressSID} | grep -q swan0", timeout=timeout)
-            client.succeed("sysctl -w net.ipv4.conf.all.rp_filter=0")
-            gateway.wait_until_succeeds("ip -6 route show ${clientEgressSID} | grep -q swan0", timeout=timeout)
             gateway.wait_until_succeeds("ping -c 1 -W 2 -I ${gatewayTunnel} ${behindV6}", timeout=timeout)
 
-            # shutdown takes the device and the tables with it
+            # shutdown takes the tables with it
             client.succeed("systemctl stop ranet3.service")
             assert client.succeed("systemctl show -p Result --value ranet3.service").strip() == "success"
-            client.fail("ip link show ${clientEgressDevice}")
             left = client.succeed("nft list tables").strip()
             assert left == "", f"shutdown left tables behind: {left}"
-            client.succeed("journalctl -u ranet3.service --no-pager | grep -F 'egress device withdrawn'")
         finally:
             print(client.execute("ranet3 status")[1])
             print(client.execute("nft list ruleset")[1])

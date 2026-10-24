@@ -162,8 +162,9 @@ func egressLine(e EgressStatus) string {
 		// to learn that.
 		line += ", withholding " + strings.Join(withheld, " ") + " until its rule is installed and the kernel forwards it"
 	}
-	if e.Device != "" {
-		line += ", egress device " + e.Device + egressDeviceText(e.Ready, e.Unready)
+	// only a node whose egress segments the translator judges reports a family ready or a reason
+	if len(e.Ready) != 0 || e.Unready != "" {
+		line += egressReadyText(e.Ready, e.Unready)
 	}
 	if len(e.Conflicts) > 0 {
 		line += fmt.Sprintf(", sharing the hook with %s", strings.Join(e.Conflicts, "; "))
@@ -202,7 +203,7 @@ func borderLine(b BorderStatus) string {
 		b.Dropped.OverlaySourceIPv4+b.Dropped.OverlaySourceIPv6, b.Dropped.RoutingHeader, b.Dropped.SIDDestination)
 }
 
-func egressDeviceText(ready []string, unready string) string {
+func egressReadyText(ready []string, unready string) string {
 	var notReady []string
 	for _, family := range []string{"ipv4", "ipv6"} {
 		if !slices.Contains(ready, family) {
@@ -211,15 +212,15 @@ func egressDeviceText(ready []string, unready string) string {
 	}
 	var parts []string
 	if len(ready) > 0 {
-		parts = append(parts, " ready for "+strings.Join(ready, " "))
+		parts = append(parts, "ready for "+strings.Join(ready, " "))
 	}
 	switch {
 	case len(notReady) > 0 && unready != "":
-		parts = append(parts, " not ready for "+strings.Join(notReady, " ")+", "+unready)
+		parts = append(parts, "not ready for "+strings.Join(notReady, " ")+", "+unready)
 	case len(notReady) > 0:
-		parts = append(parts, " not ready for "+strings.Join(notReady, " ")+" until its rule is installed and the kernel forwards it")
+		parts = append(parts, "not ready for "+strings.Join(notReady, " ")+" until its rule is installed and the kernel forwards it")
 	}
-	return strings.Join(parts, ",")
+	return ", egress " + strings.Join(parts, ", ")
 }
 
 // disabledLine names the stopped subsystems and says the state goes away by
@@ -276,7 +277,6 @@ func segmentLine(s Status) string {
 		{s.SegmentCounters.Egressed, "egressed"},
 		{s.SegmentCounters.Refused, "refused"},
 		{s.SegmentCounters.NotReady, "not ready"},
-		{s.SegmentCounters.Drained, "drained"},
 	} {
 		if count.n > 0 {
 			line += fmt.Sprintf(", %d %s", count.n, count.name)

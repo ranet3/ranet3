@@ -321,8 +321,7 @@ type Down struct {
 // packets an End.DT46 took the outer header off and handed to the mesh's
 // forwarding decision, counted before it writes them to the tun, forwards,
 // answers or drops them, and Dropped is packets addressed to one of this node's
-// segments that it would not act on, and egress packets the egress device
-// refused while open.
+// segments that it would not act on.
 type SegmentCounters struct {
 	Forwarded uint64 `json:"forwarded"`
 	Delivered uint64 `json:"delivered"`
@@ -339,14 +338,12 @@ type SegmentCounters struct {
 	// Answered counts the ICMP errors sent for dropped packets, which is the
 	// half of Dropped whose sender was told why.
 	Answered uint64 `json:"answered"`
-	// Egressed counts the packets the egress device accepted
+	// Egressed counts the inner packets an egress segment handed to the mesh tun
 	Egressed uint64 `json:"egressed"`
 	// Refused counts the packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for a source outside its allow list, an inner source it cannot read, an inner packet no router forwards or one the mesh routes no reply to, a part of Dropped never answered
 	Refused uint64 `json:"refused"`
-	// NotReady counts the egress results dropped with no egress device installed, closed under the write or not ready for their family, which is not in Dropped
+	// NotReady counts the egress results dropped as not ready for their family, which is not in Dropped
 	NotReady uint64 `json:"not_ready"`
-	// Drained counts the packets a route sent into the egress device, read off it and thrown away
-	Drained uint64 `json:"drained"`
 }
 
 // TransitCounters counts the forwarding decision's outcomes since startup
@@ -447,10 +444,9 @@ type EgressStatus struct {
 	Enabled bool `json:"enabled"`
 	// Where names the tables this node owns, as the backend spells them.
 	Where string `json:"where,omitempty"`
-	// Device names the egress device an egress segment's inner packets leave
-	// through, Ready the families it carries out translated, ipv4 and ipv6,
-	// and Unready the reason the last pass found a family not ready
-	Device  string   `json:"device,omitempty"`
+	// Ready is the families an egress segment's inner packets leave the mesh
+	// tun translated in, ipv4 and ipv6, and Unready the reason the last pass
+	// found a family not ready
 	Ready   []string `json:"ready,omitempty"`
 	Unready string   `json:"unready,omitempty"`
 	// Source4 and Source6 are the address a translated packet leaves under,
@@ -488,7 +484,7 @@ type BorderStatus struct {
 	Overlay []netip.Prefix `json:"overlay"`
 	SIDs    []netip.Addr   `json:"sids,omitempty"`
 	// Ready is whether the last pass read the chain back as written, which
-	// every family of the egress device waits for, and Unready why it did not
+	// every family of the egress segments waits for, and Unready why it did not
 	Ready   bool   `json:"ready"`
 	Unready string `json:"unready,omitempty"`
 	// PassAt is zero until the first pass has run

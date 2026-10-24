@@ -33,7 +33,7 @@ var transitStranger = map[int]netip.Addr{4: segAddr("203.0.113.66"), 6: segAddr(
 
 // an exit egresses through every way of advertising the internet, a default, a pair of halves and four quarters, each counting as a default
 // a packet from a source the mesh routes reaches the tun, from a peer's source, from inside a hold, from its own LAN or from an address cap.table assigns it, while its family's translation is ready
-// and while it is not, one through a prefix cap.egress advertises is dropped and counted not ready, whatever the egress device's readiness says
+// and while it is not, one through a prefix cap.egress advertises is dropped and counted not ready, whatever the egress segments' readiness says
 // where cap.route announces the prefix instead it reaches the tun whatever the readiness, since no translation stands behind it
 // an overlay address inside the prefix that no route holds is answered as no route and never egressed
 // a packet from a source the mesh routes no reply to is dropped and counted with no answer
@@ -83,7 +83,7 @@ func TestDecisionEgressesAtAnExit(t *testing.T) {
 							n.m.SetEgressPrefixes(shape.prefixes[family])
 						}
 						n.m.SetTransit(!c.transitOff)
-						// the egress device's word says the opposite, which the decision does not read
+						// the egress segments' word says the opposite, which the decision does not read
 						n.m.SetAdvertisedReady(c.ready, c.ready)
 						n.m.SetEgressReady(!c.ready, !c.ready)
 						raw := udpPacket(c.from, c.to, 200, true)

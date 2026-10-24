@@ -291,7 +291,7 @@ func TestCapAndShardsSitOnLinesOfTheirOwn(t *testing.T) {
 		before, after string
 		end, start    uintptr
 	}{
-		{"segmentsDrained", "the cap", unsafe.Offsetof(c.segmentsDrained) + unsafe.Sizeof(c.segmentsDrained), node},
+		{"segmentsNotReady", "the cap", unsafe.Offsetof(c.segmentsNotReady) + unsafe.Sizeof(c.segmentsNotReady), node},
 		{"the cap", "the first shard", node + unsafe.Sizeof(c.icmpLimit.node), shards},
 		{"a shard's counts", "the next shard", shards + used, shards + unsafe.Sizeof(s)},
 		{"the last shard's counts", "withheldBySource", last + used, unsafe.Offsetof(c.withheldBySource)},

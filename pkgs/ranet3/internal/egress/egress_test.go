@@ -20,7 +20,6 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"ranet3.com/pkgs/ranet3/internal/events"
-	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -168,9 +167,6 @@ func translator(t *testing.T, cfg Egress, rt Runtime, be backend) *Translator {
 	if rt.Interface == "" {
 		rt.Interface = "ranet0"
 	}
-	if rt.Device == nil {
-		rt.Device = func() (error, error) { return nil, nil }
-	}
 	return newTranslator(cfg, rt, be)
 }
 
@@ -272,21 +268,18 @@ func TestReturnRuleForADefaultCarriesNoPrefixMatch(t *testing.T) {
 	}
 }
 
-// An exit serving only the traffic steered to its egress segment advertises
-// nothing and translates what arrives on the egress device in both families,
-// since End.DT46 delivers either. Nothing arriving on the mesh device is
-// translated, because no prefix offered to the mesh draws any here.
-func TestSIDOnlyExitTranslatesTheEgressDeviceInBothFamilies(t *testing.T) {
+// an exit serving only the traffic steered to its egress segment advertises nothing and translates what arrives on the tun in both families, since End.DT46 delivers either
+func TestSIDOnlyExitTranslatesTheTunInBothFamilies(t *testing.T) {
 	var announced [][]netip.Prefix
-	rt := Runtime{Egress: "ranet0e", Announce: func(p []netip.Prefix) { announced = append(announced, p) }}
+	rt := Runtime{Steered: true, Announce: func(p []netip.Prefix) { announced = append(announced, p) }}
 	be := &fakeBackend{}
 	tr := translator(t, Egress{}, rt, be)
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
-		"out via ranet0e not ranet0 ipv4 masquerade",
-		"out via ranet0e not ranet0 ipv6 masquerade",
+		"out via ranet0 ipv4 masquerade",
+		"out via ranet0 ipv6 masquerade",
 	}
 	if got := be.specs(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
@@ -296,19 +289,15 @@ func TestSIDOnlyExitTranslatesTheEgressDeviceInBothFamilies(t *testing.T) {
 	}
 }
 
-// An exit that advertises and holds an egress segment keys one Out rule on each
-// device, under the same configured source, since source4 and source6 belong
-// to the node rather than to a path. A family it does not advertise is
-// translated off the egress device alone, with no return rule however return
-// is set, and the return rule leaves out what arrives on the egress device,
-// which came out of the mesh rather than from behind this node.
-func TestExitKeysOneRuleOnEachDevice(t *testing.T) {
+// an exit that advertises and holds an egress segment keys one Out rule per family on the tun, under the configured source
+// a family it does not advertise is translated all the same, with no return rule however return is set
+func TestSteeredExitKeysOneRulePerFamilyOnTheTun(t *testing.T) {
 	cfg := Egress{
 		Return:    true,
 		Advertise: prefixes(t, "198.51.100.0/24"),
 		Source4:   Source{Addr: netip.MustParseAddr("198.51.100.7")},
 	}
-	rt := Runtime{Egress: "ranet0e", MeshAddresses: []netip.Addr{netip.MustParseAddr("10.88.0.2")}}
+	rt := Runtime{Steered: true, MeshAddresses: []netip.Addr{netip.MustParseAddr("192.0.2.2")}}
 	be := &fakeBackend{}
 	tr := translator(t, cfg, rt, be)
 	for range 2 {
@@ -318,9 +307,8 @@ func TestExitKeysOneRuleOnEachDevice(t *testing.T) {
 	}
 	want := []string{
 		"out via ranet0 ipv4 source 198.51.100.7",
-		"out via ranet0e not ranet0 ipv4 source 198.51.100.7",
-		"in via ranet0 not ranet0e ipv4 from 198.51.100.0/24 source 198.51.100.7",
-		"out via ranet0e not ranet0 ipv6 masquerade",
+		"in via ranet0 ipv4 from 198.51.100.0/24 source 198.51.100.7",
+		"out via ranet0 ipv6 masquerade",
 	}
 	if got := be.specs(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
@@ -334,10 +322,10 @@ func TestExitKeysOneRuleOnEachDevice(t *testing.T) {
 }
 
 // An empty advertise list is an exit serving only steered traffic, which only
-// a node holding an egress device can be. Without one the capability would
+// a node holding an egress segment can be. Without one the capability would
 // translate nothing and offer nothing, and New refuses it before it opens
 // anything.
-func TestEmptyAdvertiseNeedsAnEgressDevice(t *testing.T) {
+func TestEmptyAdvertiseNeedsAnEgressSegment(t *testing.T) {
 	if err := (Egress{}).Validate(); err != nil {
 		t.Fatalf("a capability advertising nothing was refused on its own: %v", err)
 	}
@@ -353,10 +341,6 @@ func TestEmptyAdvertiseNeedsAnEgressDevice(t *testing.T) {
 	}
 	if errors.Is(err, ErrUnsupported) {
 		t.Error("the platform was consulted before the capability was judged")
-	}
-	_, err = New(Egress{}, Runtime{Interface: "ranet0", Egress: "ranet0", Forwarding: func() (bool, bool) { return true, true }})
-	if err == nil || !strings.Contains(err.Error(), "is the mesh device") {
-		t.Errorf("an egress device that is the mesh device was refused with %v", err)
 	}
 }
 
@@ -543,7 +527,7 @@ func TestAnotherWritersRuleInAChainHoldsItsFamilyNotReady(t *testing.T) {
 func TestTranslatorRewritesATableOrChainReadingBackOtherThanWritten(t *testing.T) {
 	cfg := Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}
 	be := &fakeBackend{}
-	tr := translator(t, cfg, Runtime{Interface: "ranet0", Egress: "ranet0e", Forwarding: func() (bool, bool) { return true, true }, Device: func() (error, error) { return nil, nil }}, be)
+	tr := translator(t, cfg, Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }}, be)
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -618,16 +602,16 @@ func TestShutdownRetractsBeforeItWithdraws(t *testing.T) {
 	}
 }
 
-// readyLog is a translator beside an egress device whose Ready and Announce
+// readyLog is a translator beside an egress segment whose Ready and Announce
 // calls go into its backend's log between the listings, applies and
 // withdrawals, and whose egress.ready events go to bus
 func readyLog(t *testing.T, cfg Egress, bus *events.Bus) (*Translator, *fakeBackend) {
 	t.Helper()
 	be := &fakeBackend{changed: make(chan struct{}, 1), missed: make(chan struct{}, 1)}
 	rt := Runtime{
-		Egress: "ranet0e",
-		Events: bus,
-		Ready:  func(v4, v6, serves bool) { be.record(fmt.Sprintf("ready %v %v sid %v", v4, v6, serves)) },
+		Steered: true,
+		Events:  bus,
+		Ready:   func(v4, v6, serves bool) { be.record(fmt.Sprintf("ready %v %v sid %v", v4, v6, serves)) },
 		Announce: func(p []netip.Prefix) {
 			if len(p) == 0 {
 				be.record("retract")
@@ -637,10 +621,10 @@ func readyLog(t *testing.T, cfg Egress, bus *events.Bus) (*Translator, *fakeBack
 	return translator(t, cfg, rt, be), be
 }
 
-// A translator beside an egress device that stops, or is stopped, tells the
-// mesh to stop writing into the device before it retracts and before the
-// rules go, since a packet written after them leaves untranslated
-func TestStoppingReportsTheEgressDeviceNotReadyFirst(t *testing.T) {
+// A translator beside an egress segment that stops, or is stopped, tells the
+// mesh to stop egressing before it retracts and before the rules go, since a
+// packet written after them leaves untranslated
+func TestStoppingReportsTheEgressSegmentsNotReadyFirst(t *testing.T) {
 	for name, stop := range map[string]func(*Translator) error{
 		"shutdown": func(tr *Translator) error {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -679,7 +663,7 @@ func TestStoppingReportsTheEgressDeviceNotReadyFirst(t *testing.T) {
 }
 
 // Another writer changing the translator's table, a firewall reload flushing
-// the ruleset for one, wakes the translator, which reports the egress device
+// the ruleset for one, wakes the translator, which reports the egress segments
 // not ready before the pass that puts the rules back and ready again after
 // it, with no sweep due
 func TestAnotherWritersChangeStopsTheMeshUntilThePassRestoresIt(t *testing.T) {
@@ -725,7 +709,7 @@ func TestAnotherWritersChangeStopsTheMeshUntilThePassRestoresIt(t *testing.T) {
 
 // Notifications the backend lost, which another table's large transaction
 // overflows the socket with as readily as a flush of this one, wake a pass
-// with no sweep due and leave the egress device ready, since that pass reads
+// with no sweep due and leave the egress segments ready, since that pass reads
 // the rules back and finds whatever a lost deletion took
 func TestMissedNotificationsWakeAPassAndLeaveReadinessAlone(t *testing.T) {
 	bus := events.New()
@@ -764,14 +748,15 @@ func TestMissedNotificationsWakeAPassAndLeaveReadinessAlone(t *testing.T) {
 	}
 }
 
-// A host that stops forwarding a family whose egress device is already not
-// ready leaves the readiness pair as it was, and the translator still hands
-// Ready the SID decision that the change moved, both ways
+// A host that stops forwarding a family whose egress segments are already not
+// ready, its table here left dormant, leaves the readiness pair as it was, and
+// the translator still hands Ready the SID decision that the change moved,
+// both ways
 func TestForwardingMovingAloneHandsReadyTheSIDDecision(t *testing.T) {
 	tr, be := readyLog(t, Egress{}, events.New())
 	forwards4 := true
 	tr.rt.Forwarding = func() (bool, bool) { return forwards4, true }
-	tr.rt.Device = func() (error, error) { return errors.New("net.ipv4.conf.all.rp_filter is 2"), nil }
+	be.faults, be.stuck = map[uint8]string{FamilyIPv4: "its table carries flags 0x1, where none are written and 0x1 is dormant"}, true
 	for _, step := range []struct {
 		forwards4 bool
 		want      string
@@ -796,73 +781,6 @@ func TestForwardingMovingAloneHandsReadyTheSIDDecision(t *testing.T) {
 			t.Errorf("a pass with IPv4 forwarding %v handed Ready %q, want %q", step.forwards4, moved, step.want)
 		}
 	}
-}
-
-// An egress device whose link went takes both families down, says why once
-// for each family in the log and in Stats, and both come back with the
-// device, while a device that refuses one family takes that family down alone
-func TestEgressDeviceGoneTakesBothFamiliesDown(t *testing.T) {
-	var lines strings.Builder
-	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
-	tr, be := readyLog(t, Egress{}, events.New())
-	var device, device6 error
-	forwards4 := true
-	tr.rt.Forwarding = func() (bool, bool) { return forwards4, true }
-	tr.rt.Device = func() (error, error) {
-		if errors.Is(device, ErrDeviceGone) {
-			return device, device
-		}
-		return device, device6
-	}
-	pass := func(want, unready string) {
-		t.Helper()
-		mark := len(be.entries())
-		if err := tr.reconcile(); err != nil {
-			t.Fatal(err)
-		}
-		var moved []string
-		for _, entry := range be.entries()[mark:] {
-			if strings.HasPrefix(entry, "ready") {
-				moved = append(moved, entry)
-			}
-		}
-		if want != "" && !slices.Equal(moved, []string{want}) || want == "" && len(moved) != 0 {
-			t.Errorf("the pass with the device answering %v moved readiness %q, want %q", device, moved, want)
-		}
-		if got := tr.Stats().Unready; got != unready {
-			t.Errorf("the pass with the device answering %v reports the reason %q, want %q", device, got, unready)
-		}
-	}
-	pass("ready true true sid true", "")
-	device = fmt.Errorf("ranet0e: %w", ErrDeviceGone)
-	pass("ready false false sid false", "ranet0e: the egress device is gone")
-	pass("", "ranet0e: the egress device is gone")
-	// the device gone is the reason ahead of a family the host stopped forwarding
-	forwards4 = false
-	pass("", "ranet0e: the egress device is gone")
-	forwards4 = true
-	// and ahead of its rule keyed on the device missing, here from a host that will not take it back
-	be.mu.Lock()
-	be.held, be.failApply = nil, true
-	be.mu.Unlock()
-	if err := tr.reconcile(); err == nil {
-		t.Fatal("a pass the host refused the rules of reported no error")
-	}
-	if got := tr.Stats().Unready; got != "ranet0e: the egress device is gone" {
-		t.Errorf("the pass with the device gone and its rule missing reports the reason %q, want the device gone", got)
-	}
-	be.mu.Lock()
-	be.failApply = false
-	be.mu.Unlock()
-	if got := strings.Count(lines.String(), "egress segments not ready"); got != 2 || strings.Count(lines.String(), "the egress device is gone") != 2 {
-		t.Errorf("the device going was logged %d times, want once for each family naming it:\n%s", got, lines.String())
-	}
-	device = nil
-	pass("ready true true sid true", "")
-	device = errors.New("net.ipv4.conf.all.rp_filter is 2")
-	pass("ready false true sid false", "net.ipv4.conf.all.rp_filter is 2")
-	device, device6 = nil, errors.New("net.ipv6.conf.ranet0e.disable_ipv6 is 1 and could not be put back to 0")
-	pass("ready true false sid false", "net.ipv6.conf.ranet0e.disable_ipv6 is 1 and could not be put back to 0")
 }
 
 // Another writer's translation is named rather than removed. Several chains
@@ -1129,15 +1047,6 @@ func TestSourceRefusesWhatIsNeitherAutoNorAnAddress(t *testing.T) {
 	err = decodeTOML([]byte("source4 = \"eth0\"\n"), &cfg)
 	if err == nil || !strings.Contains(err.Error(), "auto or an address") {
 		t.Fatalf("toml refused with %v, want a message naming both spellings", err)
-	}
-}
-
-// a translator beside an egress device needs the reader of what the device
-// passes, and New refuses one without it before it opens anything
-func TestNewRefusesAnEgressDeviceWithNoReader(t *testing.T) {
-	_, err := New(Egress{}, Runtime{Interface: "ranet0", Egress: "ranet0e", Forwarding: func() (bool, bool) { return true, true }})
-	if err == nil || !strings.Contains(err.Error(), "the egress device needs a reader of what it passes") {
-		t.Fatalf("New returned %v, want the missing reader refused", err)
 	}
 }
 

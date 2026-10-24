@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
@@ -144,7 +145,6 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 		"ranet3_segments_egressed_total 0",
 		"ranet3_segments_refused_total 0",
 		"ranet3_segments_not_ready_total 0",
-		"ranet3_segments_drained_total 0",
 		"ranet3_steered_total 0",
 		// The two ways this node's own steering loses a packet are one series
 		// with a reason, since an alert wants their sum and a reader wants
@@ -155,6 +155,9 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 		if !strings.Contains(segments.String(), want) {
 			t.Errorf("the scrape does not carry %q:\n%s", want, segments.String())
 		}
+	}
+	if strings.Contains(segments.String(), "ranet3_segments_drained_total") {
+		t.Errorf("the scrape still carries the drained series:\n%s", segments.String())
 	}
 
 	pass := time.Date(2026, 9, 21, 19, 3, 0, 0, time.UTC)
@@ -235,24 +238,31 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 		"ranet3_egress_conflicts 1",
 		fmt.Sprintf("ranet3_egress_pass_timestamp_seconds %d", pass.Unix()),
 		"ranet3_egress_pass_failed 0",
+		`ranet3_egress_ready{family="ipv4"} 0`,
+		`ranet3_egress_ready{family="ipv6"} 0`,
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the scrape does not carry %q:\n%s", want, out.String())
 		}
 	}
 
-	if strings.Contains(out.String(), "ranet3_egress_device_ready") {
-		t.Errorf("a node with no egress device wrote its readiness:\n%s", out.String())
-	}
+	// the gauge is the translator's judgment, which the border's hold on the egress segments does not narrow
+	cfg := &config.Config{}
+	egressNode(cfg, egressSegment("3fff:1:69c:8c6::3", "3fff:a::/32"))
+	c.cfg.Store(cfg)
+	c.borderHeld.Store(true)
 	c.SetEgressStatus(func() control.EgressStatus {
-		return control.EgressStatus{Enabled: true, Device: "ranet3e", Ready: []string{"ipv6"}}
+		return control.EgressStatus{Enabled: true, Ready: []string{"ipv6"}}
 	})
-	var device strings.Builder
-	c.renderEgress(&device)
-	for _, want := range []string{`ranet3_egress_device_ready{family="ipv4"} 0`, `ranet3_egress_device_ready{family="ipv6"} 1`} {
-		if !strings.Contains(device.String(), want) {
-			t.Errorf("the scrape of a node with an egress device does not carry %q:\n%s", want, device.String())
+	var ready strings.Builder
+	c.renderEgress(&ready)
+	for _, want := range []string{`ranet3_egress_ready{family="ipv4"} 0`, `ranet3_egress_ready{family="ipv6"} 1`} {
+		if !strings.Contains(ready.String(), want) {
+			t.Errorf("the scrape of an exit ready for IPv6 alone does not carry %q:\n%s", want, ready.String())
 		}
+	}
+	if strings.Contains(ready.String(), "ranet3_egress_device_ready") {
+		t.Errorf("the scrape still carries the egress device's gauge:\n%s", ready.String())
 	}
 
 	// A node that carries nothing for anybody writes none of it, rather than

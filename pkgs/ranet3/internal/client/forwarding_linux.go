@@ -6,15 +6,8 @@
 package client
 
 import (
-	"errors"
-	"fmt"
-	"io/fs"
-	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
-
-	"ranet3.com/pkgs/ranet3/internal/egress"
 )
 
 // forwardingEnabled reports whether this host forwards, per family
@@ -44,60 +37,6 @@ func sysctlIsOne(path string) bool {
 func l3mdevAccept() bool {
 	return sysctlIsOne("/proc/sys/net/ipv4/tcp_l3mdev_accept") &&
 		sysctlIsOne("/proc/sys/net/ipv4/udp_l3mdev_accept")
-}
-
-func egressDeviceReader(name string) func() (v4, v6 error) {
-	return (&egressDeviceCheck{root: sysctlRoot, name: name}).check
-}
-
-// the kernel takes the larger of conf.all.rp_filter and the device's own
-type egressDeviceCheck struct {
-	root, name string
-	// warned is the nonzero conf.all.rp_filter last warned about, so the warning comes once per change
-	warned string
-}
-
-func (e *egressDeviceCheck) check() (v4, v6 error) {
-	// every link has a conf directory while it exists, so a missing one is the
-	// link deleted under the mesh, which neither family survives
-	if _, err := os.Stat(filepath.Join(e.root, "net/ipv4/conf", e.name)); errors.Is(err, fs.ErrNotExist) {
-		gone := fmt.Errorf("%w, the kernel lists no link named %s", egress.ErrDeviceGone, e.name)
-		return gone, gone
-	}
-	return e.checkIPv4(), e.putBack("ipv6", "disable_ipv6")
-}
-
-func (e *egressDeviceCheck) putBack(family, key string) error {
-	path := filepath.Join(e.root, "net", family, "conf", e.name, key)
-	was := readSysctl(path)
-	if was == "" || was == "0" {
-		return nil
-	}
-	if err := os.WriteFile(path, []byte("0\n"), 0o644); err != nil {
-		return fmt.Errorf("net.%s.conf.%s.%s is %s and could not be put back to 0: %w", family, e.name, key, was, err)
-	}
-	slog.Info("egress device "+key+" put back to 0", "name", e.name, "was", was)
-	return nil
-}
-
-func (e *egressDeviceCheck) checkIPv4() error {
-	if err := e.putBack("ipv4", "rp_filter"); err != nil {
-		return err
-	}
-	all := readSysctl(filepath.Join(e.root, "net/ipv4/conf/all/rp_filter"))
-	if all == "" || all == "0" {
-		e.warned = ""
-	} else {
-		if all != e.warned {
-			slog.Warn("egress device takes rp_filter "+all+" from net.ipv4.conf.all.rp_filter", "name", e.name)
-			e.warned = all
-		}
-		return fmt.Errorf("net.ipv4.conf.all.rp_filter is %s, and the kernel takes it over the device's 0", all)
-	}
-	if readSysctl(filepath.Join(e.root, "net/ipv4/conf", e.name, "forwarding")) == "0" {
-		return fmt.Errorf("net.ipv4.conf.%s.forwarding is 0", e.name)
-	}
-	return nil
 }
 
 func readSysctl(path string) string {

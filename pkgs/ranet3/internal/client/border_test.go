@@ -66,7 +66,7 @@ func (b *borderRecord) calls() int {
 	return b.handed
 }
 
-func (*borderRecord) Inside() []string { return []string{"ranet3", "ranet3e", "lo"} }
+func (*borderRecord) Inside() []string { return []string{"ranet3", "lo"} }
 
 func (*borderRecord) Where() string { return "nftables table inet ranet3 chain border" }
 
@@ -94,7 +94,7 @@ func TestEgressStopsWhileTheBorderIsNotReady(t *testing.T) {
 	segmentsOf(t, c)
 	speakerRecording(t, c, bus)
 	c.SetEgressStatus(func() control.EgressStatus {
-		return control.EgressStatus{Enabled: true, Device: "ranet3e", Ready: []string{"ipv4", "ipv6"}}
+		return control.EgressStatus{Enabled: true, Ready: []string{"ipv4", "ipv6"}}
 	})
 	c.SetEgressReady(true, true, true)
 	for _, ready := range []bool{false, true, false, true} {
@@ -191,14 +191,23 @@ func TestRepublishRacingAFallLeavesTheSIDWithdrawn(t *testing.T) {
 	}
 }
 
-// the translator's own reason stays beside the border's
+// the translator's own reason stays beside the border's, and a node with no
+// egress segment is not held, since the hold covers the egress segments alone
 func TestEgressStatusKeepsTheTranslatorsReasonBesideTheBorders(t *testing.T) {
+	const reason = "net.ipv4.ip_forward is 0"
 	c := &Client{}
+	c.cfg.Store(&config.Config{})
 	c.borderHeld.Store(true)
 	c.SetEgressStatus(func() control.EgressStatus {
-		return control.EgressStatus{Enabled: true, Device: "ranet3e", Ready: []string{"ipv6"}, Unready: "the egress device is gone"}
+		return control.EgressStatus{Enabled: true, Ready: []string{"ipv6"}, Unready: reason}
 	})
-	if got := c.egress().Unready; got != "the egress device is gone, and until the border filter is read back" {
+	if got := c.egress(); len(got.Ready) != 1 || got.Unready != reason {
+		t.Errorf("a node with no egress segment reads ready %v, unready %q, want the translator's word alone", got.Ready, got.Unready)
+	}
+	cfg := &config.Config{}
+	egressNode(cfg, egressSegment("3fff:1:69c:8c6::3", "3fff:a::/32"))
+	c.cfg.Store(cfg)
+	if got := c.egress().Unready; got != reason+", and until the border filter is read back" {
 		t.Errorf("the egress status reads unready %q", got)
 	}
 }
@@ -384,26 +393,32 @@ func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 	}
 }
 
-// the border accepts the mesh tun, the egress device, lo and the VRF master,
-// each only where the node has one
+// the border accepts the mesh tun, lo and the VRF master where the node has
+// one, and an exit's egress leaves through the mesh tun, so it adds nothing
 func TestBorderInsideIsEveryDeviceTheMeshArrivesOn(t *testing.T) {
 	for name, node := range map[string]struct {
-		egress, vrf string
-		want        []string
+		exit bool
+		vrf  string
+		want []string
 	}{
-		"a leaf":                     {"", "", []string{"ranet3", "lo"}},
-		"an exit":                    {"ranet3e", "", []string{"ranet3", "ranet3e", "lo"}},
-		"a server in a vrf":          {"", "gravity", []string{"ranet3", "lo", "gravity"}},
-		"an exit of a server in one": {"ranet3e", "gravity", []string{"ranet3", "ranet3e", "lo", "gravity"}},
+		"a leaf":                     {false, "", []string{"ranet3", "lo"}},
+		"an exit":                    {true, "", []string{"ranet3", "lo"}},
+		"a server in a vrf":          {false, "gravity", []string{"ranet3", "lo", "gravity"}},
+		"an exit of a server in one": {true, "gravity", []string{"ranet3", "lo", "gravity"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
+				if node.exit {
+					egressNode(cfg, egressSegment("3fff:1:69c:8c6::3", "3fff:a::/32"))
+				}
 				if node.vrf != "" {
-					cfg.Cap.Table = &kernel.Table{VRF: &kernel.VRF{Name: node.vrf}}
+					if cfg.Cap.Table == nil {
+						cfg.Cap.Table = &kernel.Table{}
+					}
+					cfg.Cap.Table.VRF = &kernel.VRF{Name: node.vrf}
 				}
 			})
 			c.Mesh = &netstack.Mesh{Name: "ranet3"}
-			c.egressDevice = node.egress
 			if got := c.BorderRuntime().Inside; !slices.Equal(got, node.want) {
 				t.Errorf("the border accepts %v, want %v", got, node.want)
 			}
@@ -434,7 +449,7 @@ func TestStatusReportsTheBorderOnlyWhereItRuns(t *testing.T) {
 	c.SetBorder(&borderRecord{border: *borderOf("3fff::/20", "198.18.0.0/15"), sids: sids})
 	status := c.Status().Border
 	want := control.BorderDrops{OverlaySourceIPv4: 3, RoutingHeader: 1}
-	if status == nil || !status.Ready || status.Installed != 7 || status.Dropped != want || len(status.Overlay) != 2 || len(status.Inside) != 3 {
+	if status == nil || !status.Ready || status.Installed != 7 || status.Dropped != want || len(status.Overlay) != 2 || len(status.Inside) != 2 {
 		t.Errorf("the border reported %+v", status)
 	}
 	if status != nil && !slices.Equal(status.SIDs, []netip.Addr{sids[1], sids[0]}) {
@@ -477,18 +492,18 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		cfg.Cap.Table = &kernel.Table{Proto: ownProto, Rules: []kernel.Rule{
 			{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: kernel.FamilyIPv4},
 			{To: schema.MustPrefix("198.18.104.0/24"), Table: kernel.DefaultTable, Priority: 100},
-			{IIF: "ranet3e", Table: schema.TableMain, Priority: 120, Family: kernel.FamilyBoth},
+			{IIF: "eth1", Table: schema.TableMain, Priority: 120, Family: kernel.FamilyBoth},
 		}}
 	})
 	held := []kernel.DumpedRule{
 		{Family: kernel.FamilyIPv4, Priority: 0, Action: "lookup", Table: 255, Protocol: 2},
 		{Family: kernel.FamilyIPv4, Priority: 40, FWMark: 0x726c, FWMask: ^uint32(0), Action: "lookup", Table: 254, Protocol: ownProto},
 		{Family: kernel.FamilyIPv4, Priority: 100, To: netip.MustParsePrefix("198.18.104.0/24"), Action: "lookup", Table: uint32(kernel.DefaultTable), Protocol: ownProto},
-		{Family: kernel.FamilyIPv4, Priority: 120, IIF: "ranet3e", Action: "lookup", Table: 254, Protocol: ownProto},
-		{Family: kernel.FamilyIPv4, Priority: 130, IIF: "ranet3e", Action: "lookup", Table: 254, Protocol: ownProto},
+		{Family: kernel.FamilyIPv4, Priority: 120, IIF: "eth1", Action: "lookup", Table: 254, Protocol: ownProto},
+		{Family: kernel.FamilyIPv4, Priority: 130, IIF: "eth1", Action: "lookup", Table: 254, Protocol: ownProto},
 		// the default protocol, which a reconciler naming another does not own
 		{Family: kernel.FamilyIPv4, Priority: 150, From: netip.MustParsePrefix("198.18.104.0/24"), Action: "lookup", Table: 254, Protocol: kernel.DefaultProtocol},
-		{Family: kernel.FamilyIPv6, Priority: 120, IIF: "ranet3e", Action: "lookup", Table: 254, Protocol: 4},
+		{Family: kernel.FamilyIPv6, Priority: 120, IIF: "eth1", Action: "lookup", Table: 254, Protocol: 4},
 	}
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return held, nil }
 	info := c.DebugRules()
@@ -502,7 +517,7 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 			t.Errorf("rule %d %+v reads owned %v, wanted %v, want %+v", i, rule, rule.Owned, rule.Wanted, want[i])
 		}
 	}
-	missing := control.PolicyRule{Family: "ipv6", Priority: 120, IIF: "ranet3e", Action: "lookup", Table: 254, Protocol: ownProto, Owned: true, Wanted: true}
+	missing := control.PolicyRule{Family: "ipv6", Priority: 120, IIF: "eth1", Action: "lookup", Table: 254, Protocol: ownProto, Owned: true, Wanted: true}
 	if !slices.Equal(info.Missing, []control.PolicyRule{missing}) {
 		t.Errorf("debug rules names missing %+v, want %+v alone", info.Missing, missing)
 	}

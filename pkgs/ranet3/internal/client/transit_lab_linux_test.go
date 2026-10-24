@@ -455,7 +455,7 @@ func labErrorTo(destination netip.Addr) func([]byte) bool {
 	}
 }
 
-// a node with cap.egress and no egress segment has no egress device, and its mode 2 egress through the prefixes cap.egress advertises reaches its tun
+// a node with cap.egress and no egress segment egresses mode 2 through the prefixes cap.egress advertises into its tun
 // for each family the translator lets it announce as Republish last read, and is dropped and counted not ready for a family it does not
 // whatever the border's chain reads back, which holds the egress SIDs alone
 func TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment(t *testing.T) {

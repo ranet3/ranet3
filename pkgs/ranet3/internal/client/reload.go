@@ -397,7 +397,7 @@ func reloadable(old, next *config.Config) error {
 		// a new block applied here would leave the host holding rules from a configuration nothing runs any more
 		return fmt.Errorf("config: cap.egress changed, restart to apply")
 	case len(old.Segments().Egress()) == 0 && len(next.Segments().Egress()) > 0:
-		// the egress device, the translator's rule keyed on it and its readiness are made at startup
+		// the translator's families are fixed at startup, and a first egress segment has it translate a family it advertises nothing for
 		return fmt.Errorf("config: cap.segment adds the first egress segment, restart to apply")
 	case len(old.Segments().Egress()) > 0 && len(next.Segments().Egress()) == 0:
 		return fmt.Errorf("config: cap.segment removes the last egress segment, restart to apply")

@@ -38,7 +38,7 @@ func setTUNMTU(name string, mtu int) error {
 	return unix.IoctlIfreq(fd, unix.SIOCSIFMTU, ifr)
 }
 
-func bringTUNUp(name string, clear uint16) error {
+func bringTUNUp(name string) error {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return err
@@ -51,7 +51,7 @@ func bringTUNUp(name string, clear uint16) error {
 	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
 		return err
 	}
-	ifr.SetUint16(ifr.Uint16()&^clear | unix.IFF_UP)
+	ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
 	return unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr)
 }
 

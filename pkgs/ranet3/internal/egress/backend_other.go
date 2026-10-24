@@ -27,7 +27,7 @@ func newBackend(cfg Egress, rt Runtime) (backend, error) {
 // refuses such a capability before this, so the nil backend that arm hands
 // back reaches no caller.
 func refuseWhatThisPlatformLacks(cfg Egress, rt Runtime) error {
-	if len(cfg.translated(rt.Egress)) == 0 {
+	if len(cfg.translated(rt.Steered)) == 0 {
 		return nil
 	}
 	return fmt.Errorf("%w: cap.egress asks this node to translate a source address, and nftables is a linux facility", ErrUnsupported)
