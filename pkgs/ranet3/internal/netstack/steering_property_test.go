@@ -36,6 +36,7 @@ func TestSteeringLeavesTheReadAsItWasRead(t *testing.T) {
 		peer.SetMTU(0xffff)
 		m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 		m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+		ownHosts(m, unclaimed, tooBigSource)
 
 		count := hegel.Draw(ht, pbt.Spanning(1, 8))
 		packets, policies := make([][]byte, count), make([]*srv6.Policy, count)

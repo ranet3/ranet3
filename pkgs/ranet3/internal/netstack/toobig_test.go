@@ -115,6 +115,7 @@ func readOff(tb testing.TB, raw []byte, steering *srv6.SteerTable, mtu int, sour
 	peer.SetMTU(mtu)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	ownSources(m, raw)
 	b, written := classifyOne(m, dev, raw)
 	return b, peer, written
 }
@@ -522,6 +523,7 @@ func TestPeerAnsweredForEveryPacketIsAskedForNoPlace(t *testing.T) {
 		m.setDevice(dev)
 		m.startSegmentReports()
 		m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
+		ownHosts(m, tooBigSource)
 		m.startOutboundPipeline()
 		t.Cleanup(m.Close)
 		dev.reads <- scriptedRead{packets: [][]byte{udpPacket(source, destination, DefaultMTU, false)}}
@@ -564,6 +566,7 @@ func TestFragmentsForAPeerThatRefusesItsReservationAreDropped(t *testing.T) {
 		m.setDevice(dev)
 		m.startSegmentReports()
 		m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+		ownHosts(m, tooBigSource)
 		m.startOutboundPipeline()
 		t.Cleanup(m.Close)
 		dev.reads <- scriptedRead{packets: [][]byte{udpPacket(source, destination, 2000, false)}}
@@ -595,6 +598,7 @@ func TestBatchCutsEveryReadIntoTheStorageOfItsFirst(t *testing.T) {
 	peer := (&recordingPeer{}).peer(t, "peer")
 	peer.SetMTU(srv6.MinimumIPv6MTU)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	ownHosts(m, tooBigSource)
 	b := newOutboundBatch(1)
 	cut := udpPacket(tooBigSource[4], tooBigDestination[4], 2000, false)
 	held := 0
@@ -629,6 +633,7 @@ func TestPacketsPastTheirSessionAreAnsweredUnderTheCapAlone(t *testing.T) {
 	peer.SetMTU(srv6.MinimumIPv6MTU)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	ownHosts(m, tooBigSource)
 	b := newOutboundBatch(flood)
 	packets := make([][]byte, flood)
 	for i := range packets {
@@ -681,6 +686,7 @@ func TestReaderSendsTheFragmentsItCutToThePeer(t *testing.T) {
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 	m.setDevice(dev)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	ownHosts(m, tooBigSource)
 	m.startOutboundPipeline()
 	t.Cleanup(m.Close)
 
@@ -777,6 +783,7 @@ func TestPacketsPastTheirSessionWithOptionsThatDoNotFrameAreAnsweredAtABoundedRa
 	peer := (&recordingPeer{}).peer(t, "peer")
 	peer.SetMTU(srv6.MinimumIPv6MTU)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	ownHosts(m, tooBigSource)
 	b := newOutboundBatch(flood)
 	fill(b, slices.Repeat([][]byte{misframed}, flood)...)
 	m.classify(b)
@@ -806,6 +813,7 @@ func TestICMPv4AnswersCarryTheTTLTheMeshHolds(t *testing.T) {
 			peer := (&recordingPeer{}).peer(t, "peer")
 			peer.SetMTU(srv6.MinimumIPv6MTU)
 			m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+			ownHosts(m, tooBigSource)
 			b := newOutboundBatch(1)
 			fill(b, inner)
 			m.classify(b)

@@ -17,9 +17,14 @@ import (
 
 // the tun reads' sources by family, beside the decision's tests' addresses
 // assigned is an address cap.table assigns this node, and internet a host outside the overlay that a reply of the exit's egress comes from
+// lan is a host on a link of this node's the mesh routes nothing to, neighbor a host on its uplink, and subnet a network beyond another node the mesh routes
 var (
-	edgeAssigned = map[int]netip.Addr{4: segAddr("192.0.2.6"), 6: segAddr("3fff::6")}
-	edgeInternet = transitNowhere
+	edgeAssigned   = map[int]netip.Addr{4: segAddr("192.0.2.6"), 6: segAddr("3fff::6")}
+	edgeInternet   = transitNowhere
+	edgeLAN        = map[int]netip.Addr{4: segAddr("198.51.100.20"), 6: segAddr("2001:db8:100::20")}
+	edgeNeighbor   = map[int]netip.Addr{4: segAddr("198.51.100.30"), 6: segAddr("2001:db8:100::30")}
+	edgeSubnet     = map[int]netip.Prefix{4: segPrefix("203.0.113.128/25"), 6: segPrefix("2001:db8:5::/48")}
+	edgeSubnetHost = map[int]netip.Addr{4: segAddr("203.0.113.130"), 6: segAddr("2001:db8:5::1")}
 )
 
 // edgeMesh is a mesh with no tun, the overlay of the decision's tests and a peer that every address the decision's tests name as another node's routes to
@@ -40,20 +45,44 @@ func edgeMesh(tb testing.TB) (*Mesh, *Peer) {
 	return m, peer
 }
 
-// readSent classifies b, which holds packets as one read off the tun, and reports which of them went to peer
-func readSent(m *Mesh, b *outboundBatch, peer *Peer, packets ...[]byte) []bool {
-	fill(b, packets...)
-	m.classify(b)
-	sent := make([]bool, len(packets))
-	for i := range packets {
-		sent[i] = b.peers[i] == peer
+// ownHosts gives m a host route of this node's own for each address, so a read off the tun from it toward a default comes from this node
+func ownHosts(m *Mesh, addresses ...map[int]netip.Addr) {
+	for _, byFamily := range addresses {
+		for _, address := range byFamily {
+			m.Routes.Set(netip.Prefix{}, hostPrefix(address), Local)
+		}
 	}
-	return sent
 }
 
-// classified is readSent over a read of its own
-func classified(m *Mesh, peer *Peer, packets ...[]byte) []bool {
-	return readSent(m, newOutboundBatch(len(packets)), peer, packets...)
+// ownSources is ownHosts for the source of each packet
+func ownSources(m *Mesh, packets ...[]byte) {
+	for _, raw := range packets {
+		if source, _, _, ok := addrsOf(raw); ok {
+			m.Routes.Set(netip.Prefix{}, hostPrefix(source), Local)
+		}
+	}
+}
+
+// classifiedTo classifies packets as one read off the tun and reports the peer each went to, nil for none
+func classifiedTo(m *Mesh, packets ...[]byte) []*Peer {
+	b := newOutboundBatch(len(packets))
+	fill(b, packets...)
+	m.classify(b)
+	return slices.Clone(b.peers[:len(packets)])
+}
+
+// edgeLeaf is edgeMesh at a leaf that learned prefixes from an exit, which it returns beside the peer, and the peer's subnet
+func edgeLeaf(tb testing.TB, prefixes ...string) (*Mesh, *Peer, *Peer) {
+	tb.Helper()
+	m, peer := edgeMesh(tb)
+	exit := (&recordingPeer{}).peer(tb, "exit")
+	for _, prefix := range prefixes {
+		m.Routes.Set(netip.Prefix{}, segPrefix(prefix), exit)
+	}
+	for _, family := range []int{4, 6} {
+		m.Routes.Set(netip.Prefix{}, edgeSubnet[family], peer)
+	}
+	return m, peer, exit
 }
 
 // withRouting is raw, an IPv6 packet, with a routing header of kind between its fixed header and what followed it, segments left 0
@@ -87,11 +116,11 @@ func TestTUNReadFromASourceOfAnotherNodeIsForged(t *testing.T) {
 		for _, c := range cases {
 			packets = append(packets, udpPacket(c.source, transitFar[family], 100, false))
 		}
-		sent := classified(m, peer, packets...)
+		went := classifiedTo(m, packets...)
 		forged := uint64(0)
 		for i, c := range cases {
-			if sent[i] == c.forged {
-				t.Errorf("IPv%d from %s, %s, went to the peer %t, want %t", family, c.source, c.name, sent[i], !c.forged)
+			if sent := went[i] == peer; sent == c.forged {
+				t.Errorf("IPv%d from %s, %s, went to the peer %t, want %t", family, c.source, c.name, sent, !c.forged)
 			}
 			if c.forged {
 				forged++
@@ -109,30 +138,32 @@ func TestTUNReadWithNoOverlayIsForgedByTheTableAlone(t *testing.T) {
 	for _, family := range []int{4, 6} {
 		m, peer := edgeMesh(t)
 		m.SetOverlay(nil)
-		sent := classified(m, peer,
+		went := classifiedTo(m,
 			udpPacket(transitUnrouted[family], transitFar[family], 100, false),
 			udpPacket(transitSender[family], transitFar[family], 100, false),
 			udpPacket(transitHeldHost[family], transitFar[family], 100, false),
 		)
-		if want := []bool{true, false, false}; !slices.Equal(sent, want) {
-			t.Errorf("with no overlay IPv%d reads from an unrouted overlay address, another node's and a held one went to the peer %v, want %v", family, sent, want)
+		if want := []*Peer{peer, nil, nil}; !slices.Equal(went, want) {
+			t.Errorf("with no overlay IPv%d reads from an unrouted overlay address, another node's and a held one went to %v, want %v", family, went, want)
 		}
 	}
+}
+
+// countedShapes are the ways an exit advertises the internet, each entry of them counting as a default
+var countedShapes = []struct {
+	name     string
+	prefixes []string
+}{
+	{"a default", []string{"0.0.0.0/0", "::/0"}},
+	{"a pair of halves", []string{"0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"}},
+	{"four quarters", []string{"0.0.0.0/2", "64.0.0.0/2", "128.0.0.0/2", "192.0.0.0/2", "::/2", "4000::/2", "8000::/2", "c000::/2"}},
 }
 
 // an exit's egress replies carry the internet's sources, which another exit's default, its /1 halves or four /2s route to a peer
 // an entry counting as a default makes no source another node's, so the replies pass at an exit that learned them, toward a leaf's address
 // and an overlay source this node does not own is forged though the exit's own default covers it, since a default makes no source this node's
 func TestTUNReadPassesOverEntriesCountingAsADefault(t *testing.T) {
-	shapes := []struct {
-		name     string
-		prefixes []string
-	}{
-		{"a default", []string{"0.0.0.0/0", "::/0"}},
-		{"a pair of halves", []string{"0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"}},
-		{"four quarters", []string{"0.0.0.0/2", "64.0.0.0/2", "128.0.0.0/2", "192.0.0.0/2", "::/2", "4000::/2", "8000::/2", "c000::/2"}},
-	}
-	for _, shape := range shapes {
+	for _, shape := range countedShapes {
 		for _, family := range []int{4, 6} {
 			m, peer := edgeMesh(t)
 			other := (&recordingPeer{}).peer(t, "other exit")
@@ -142,14 +173,14 @@ func TestTUNReadPassesOverEntriesCountingAsADefault(t *testing.T) {
 			// this node is an exit of its own
 			m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), Local)
 			m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), Local)
-			sent := classified(m, peer,
+			went := classifiedTo(m,
 				udpPacket(edgeInternet[family], transitFar[family], 100, false),
 				udpPacket(transitUnrouted[family], transitFar[family], 100, false),
 			)
-			if !sent[0] {
+			if went[0] != peer {
 				t.Errorf("%s of IPv%d learned from another exit forged an egress reply from %s", shape.name, family, edgeInternet[family])
 			}
-			if sent[1] {
+			if went[1] != nil {
 				t.Errorf("under %s of IPv%d and this node's own default an overlay source no entry of its own covers went to the peer", shape.name, family)
 			}
 			if got := m.TransitCounters().Forged; got != 1 {
@@ -159,27 +190,98 @@ func TestTUNReadPassesOverEntriesCountingAsADefault(t *testing.T) {
 	}
 }
 
-// a source's answer is the route a reply to the packet takes, so a route announced from a source prefix covers a source only for replies to that prefix
-// within one read, in either order, the packet to the prefix the route is announced from is forged and the one to elsewhere passes
-// which an answer kept per source alone, or looked up with no source, would give both packets the same verdict
-func TestTUNReadAnswersASourceForEachDestination(t *testing.T) {
+// at a leaf that learned an exit's default, its /1 halves or four /2s, a read toward the internet leaves the mesh only from a source of this node's own
+// its own overlay address and one cap.table assigns it reach the exit, a host on its LAN and a neighbor on its uplink are dropped
+// and replies toward an overlay address and toward a subnet the mesh routes pass whatever their source
+func TestTUNReadThroughAnEntryCountingAsADefaultComesFromThisNode(t *testing.T) {
+	for _, shape := range countedShapes {
+		for _, family := range []int{4, 6} {
+			m, peer, exit := edgeLeaf(t, shape.prefixes...)
+			cases := []struct {
+				name        string
+				source, to  netip.Addr
+				destination *Peer
+			}{
+				{"this node's overlay address to the internet", transitOwn[family], edgeInternet[family], exit},
+				{"an address cap.table assigns to the internet", edgeAssigned[family], edgeInternet[family], exit},
+				{"a host on its LAN to the internet", edgeLAN[family], edgeInternet[family], nil},
+				{"a neighbor to the internet", edgeNeighbor[family], edgeInternet[family], nil},
+				{"a host on its LAN to an overlay address", edgeLAN[family], transitFar[family], peer},
+				{"a neighbor to a subnet the mesh routes", edgeNeighbor[family], edgeSubnetHost[family], peer},
+			}
+			var packets [][]byte
+			for _, c := range cases {
+				packets = append(packets, udpPacket(c.source, c.to, 100, false))
+			}
+			went := classifiedTo(m, packets...)
+			for i, c := range cases {
+				if went[i] != c.destination {
+					t.Errorf("under %s of IPv%d a read from %s, %s, went to %v, want %v", shape.name, family, c.source, c.name, went[i], c.destination)
+				}
+			}
+			if got := m.TransitCounters(); got != (TransitCounters{UnownedSource: 2}) {
+				t.Errorf("under %s of IPv%d the read counted %+v, want 2 from an unowned source", shape.name, family, got)
+			}
+		}
+	}
+}
+
+// this node's own default from a source prefix counts as a default, so it makes no address it covers this node's
+// a host's packet toward the internet through the exit's default is dropped though a reply to it would take this node's own entry
+func TestTUNReadFromASourceUnderAnEntryOfThisNodeCountingAsADefaultIsNotOwned(t *testing.T) {
+	from := map[int]string{4: "203.0.113.0/24", 6: "2001:db8::/48"}
+	unspecified := map[int]string{4: "0.0.0.0/0", 6: "::/0"}
 	for _, family := range []int{4, 6} {
-		m, peer := edgeMesh(t)
+		m, _, _ := edgeLeaf(t, "0.0.0.0/0", "::/0")
+		m.Routes.Set(segPrefix(from[family]), segPrefix(unspecified[family]), Local)
+		if went := classifiedTo(m, udpPacket(edgeLAN[family], edgeInternet[family], 100, false)); went[0] != nil {
+			t.Errorf("IPv%d from a host on its LAN to the internet went to %v under this node's own default from %s", family, went[0], from[family])
+		}
+		if got := m.TransitCounters(); got != (TransitCounters{UnownedSource: 1}) {
+			t.Errorf("IPv%d the read counted %+v", family, got)
+		}
+	}
+}
+
+// a source's answer is the route a reply to the packet takes, kept for each source and destination of a read, and the owned-source rule is judged for each packet by its own destination
+// so of one read from one source to two destinations, in either order, the packet each rule drops is dropped and the other passes
+// a route announced from a source prefix covers a source only for replies to that prefix, which an answer kept per source alone, or looked up with no source, would give both packets
+// and a host on its LAN reaches a subnet the mesh routes but not the internet through an exit's default
+func TestTUNReadJudgesEachPacketOfASourceByItsOwnDestination(t *testing.T) {
+	for _, family := range []int{4, 6} {
+		announced, peer := edgeMesh(t)
 		// another node announces transitUnrouted's network from the network transitFar lies in
 		from, to := hostPrefix(transitFar[family]), netip.PrefixFrom(transitUnrouted[family], transitUnrouted[family].BitLen()-2)
-		m.SetOverlay(nil)
-		m.Routes.Set(from, to.Masked(), (&recordingPeer{}).peer(t, "another node"))
-		m.Routes.Set(netip.Prefix{}, hostPrefix(transitNowhere[family]), peer)
-		toFar := udpPacket(transitUnrouted[family], transitFar[family], 100, false)
-		elsewhere := udpPacket(transitUnrouted[family], transitNowhere[family], 100, false)
-		for _, order := range [][2]bool{{true, false}, {false, true}} {
-			packets := [][]byte{toFar, elsewhere}
-			if !order[0] {
-				packets = [][]byte{elsewhere, toFar}
+		announced.SetOverlay(nil)
+		announced.Routes.Set(from, to.Masked(), (&recordingPeer{}).peer(t, "another node"))
+		announced.Routes.Set(netip.Prefix{}, hostPrefix(transitNowhere[family]), peer)
+		leaf, leafPeer, _ := edgeLeaf(t, "0.0.0.0/0", "::/0")
+		for _, c := range []struct {
+			name            string
+			m               *Mesh
+			peer            *Peer
+			passes, dropped []byte
+			want            TransitCounters
+		}{
+			{
+				"from a source another node announces from a source prefix", announced, peer,
+				udpPacket(transitUnrouted[family], transitNowhere[family], 100, false), udpPacket(transitUnrouted[family], transitFar[family], 100, false),
+				TransitCounters{Forged: 2},
+			},
+			{
+				"from a host on its LAN", leaf, leafPeer,
+				udpPacket(edgeLAN[family], edgeSubnetHost[family], 100, false), udpPacket(edgeLAN[family], edgeInternet[family], 100, false),
+				TransitCounters{UnownedSource: 2},
+			},
+		} {
+			if went := classifiedTo(c.m, c.passes, c.dropped); went[0] != c.peer || went[1] != nil {
+				t.Errorf("IPv%d a read %s, first where it passes, went to %v", family, c.name, went)
 			}
-			sent := classified(m, peer, packets...)
-			if sent[0] != !order[0] || sent[1] != !order[1] {
-				t.Errorf("IPv%d from %s to %s and elsewhere, in the order %v, went to the peer %v", family, transitUnrouted[family], transitFar[family], order, sent)
+			if went := classifiedTo(c.m, c.dropped, c.passes); went[0] != nil || went[1] != c.peer {
+				t.Errorf("IPv%d a read %s, first where it is dropped, went to %v", family, c.name, went)
+			}
+			if got := c.m.TransitCounters(); got != c.want {
+				t.Errorf("IPv%d the two reads %s counted %+v, want %+v", family, c.name, got, c.want)
 			}
 		}
 	}
@@ -191,13 +293,17 @@ func TestTUNReadAnswersFromTheTableAsItIsAtTheRead(t *testing.T) {
 		m, peer := edgeMesh(t)
 		raw := udpPacket(transitNowhere[family], transitFar[family], 100, false)
 		b := newOutboundBatch(2)
-		if sent := readSent(m, b, peer, raw, raw); !sent[0] || !sent[1] {
-			t.Fatalf("IPv%d from %s, which nothing routes, went to the peer %v", family, transitNowhere[family], sent)
+		fill(b, raw, raw)
+		m.classify(b)
+		if went := b.peers[:2]; went[0] != peer || went[1] != peer {
+			t.Fatalf("IPv%d from %s, which nothing routes, went to %v", family, transitNowhere[family], went)
 		}
 		b.reset()
 		m.Routes.Set(netip.Prefix{}, hostPrefix(transitNowhere[family]), (&recordingPeer{}).peer(t, "another node"))
-		if sent := readSent(m, b, peer, raw, raw); sent[0] || sent[1] {
-			t.Errorf("IPv%d from %s, routed to another node since the last read, went to the peer %v", family, transitNowhere[family], sent)
+		fill(b, raw, raw)
+		m.classify(b)
+		if went := b.peers[:2]; went[0] != nil || went[1] != nil {
+			t.Errorf("IPv%d from %s, routed to another node since the last read, went to %v", family, transitNowhere[family], went)
 		}
 	}
 }
@@ -216,7 +322,7 @@ func TestTUNReadWithARoutingHeaderIsDropped(t *testing.T) {
 	plain := udpPacket(transitOwn[6], transitFar[6], 100, false)
 	cut := withRouting(plain, 2)
 	cut[41] = 255
-	sent := classified(m, peer,
+	went := classifiedTo(m,
 		withRouting(plain, 4),
 		withRouting(withRouting(plain, 0), 2),
 		withRouting(plain, 2),
@@ -224,8 +330,8 @@ func TestTUNReadWithARoutingHeaderIsDropped(t *testing.T) {
 		withRouting(udpPacket(transitSender[6], transitFar[6], 100, false), 4),
 		withRouting(udpPacket(transitOwn[6], sid, 100, false), 4),
 	)
-	if want := []bool{false, false, true, false, false, false}; !slices.Equal(sent, want) {
-		t.Errorf("reads with an SRH, a type 0 behind a type 2, a type 2, a chain cut short, an SRH from another node's address and one to this node's SID went to the peer %v, want %v", sent, want)
+	if want := []*Peer{nil, nil, peer, nil, nil, nil}; !slices.Equal(went, want) {
+		t.Errorf("reads with an SRH, a type 0 behind a type 2, a type 2, a chain cut short, an SRH from another node's address and one to this node's SID went to %v, want %v", went, want)
 	}
 	if got := m.TransitCounters(); got != (TransitCounters{RoutingHeader: 4, Invalid: 1}) {
 		t.Errorf("the read counted %+v", got)
@@ -250,7 +356,7 @@ func TestTUNReadToASIDOfThisNodeIsDropped(t *testing.T) {
 		m.SetSegments(segments)
 		m.Routes.Set(netip.Prefix{}, segPrefix("3fff:5::/64"), peer)
 		m.Routes.Set(netip.Prefix{}, segPrefix("3fff:6::/64"), Local)
-		sent := classified(m, peer,
+		went := classifiedTo(m,
 			udpPacket(transitOwn[6], learned, 100, false),
 			udpPacket(transitOwn[6], owned, 100, false),
 			udpPacket(transitSender[6], learned, 100, false),
@@ -259,8 +365,8 @@ func TestTUNReadToASIDOfThisNodeIsDropped(t *testing.T) {
 		if segments == nil {
 			sid, forged, counted = 0, 1, true
 		}
-		if sent[0] != counted || sent[2] {
-			t.Errorf("with segments %v reads to %s under a learned route from this node's own address and another node's went to the peer %v", segments.Segments(), learned, sent)
+		if (went[0] == peer) != counted || went[2] != nil {
+			t.Errorf("with segments %v reads to %s under a learned route from this node's own address and another node's went to %v", segments.Segments(), learned, []*Peer{went[0], went[2]})
 		}
 		if got := m.TransitCounters(); got.SID != sid || got.Forged != forged {
 			t.Errorf("with segments %v the read counted %d to a SID and %d forged, want %d and %d", segments.Segments(), got.SID, got.Forged, sid, forged)
@@ -269,34 +375,56 @@ func TestTUNReadToASIDOfThisNodeIsDropped(t *testing.T) {
 }
 
 // a packet a policy steers is checked as it was read, before the steer wraps it in a routing header the edge would refuse
-// so of two packets the policy claims, the one from this node's own source is steered and the one from another node's is dropped before any steer
+// so of the packets a policy claims, one from this node's own address is steered and one from another node's is dropped as forged before any steer
+// and a host's packet is judged by the destination it was read with, dropped toward the internet where a learned default covers it and steered toward an overlay address
 func TestTUNReadIsCheckedBeforeItIsSteered(t *testing.T) {
-	m, peer := edgeMesh(t)
-	m.SetSteering(steerBothFrom(t, 1))
-	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1::/64"), peer)
-	m.Routes.Set(netip.Prefix{}, hostPrefix(tooBigSource[6]), Local)
-	m.Routes.Set(netip.Prefix{}, hostPrefix(tooBigSource[4]), (&recordingPeer{}).peer(t, "another node"))
-	sent := classified(m, peer,
-		udpPacket(tooBigSource[6], tooBigDestination[6], 100, false),
-		udpPacket(tooBigSource[4], tooBigDestination[4], 100, false),
-	)
-	if !sent[0] || sent[1] {
-		t.Errorf("a steered read from this node's own source and one from another node's went to the peer %v, want true and false", sent)
-	}
-	if got := m.SegmentCounters().Steered; got != 1 {
-		t.Errorf("the read steered %d packets, want 1", got)
-	}
-	if got := m.TransitCounters(); got != (TransitCounters{Forged: 1}) {
-		t.Errorf("the read counted %+v", got)
+	for _, family := range []int{4, 6} {
+		m, peer, _ := edgeLeaf(t, "0.0.0.0/0", "::/0")
+		var steers []srv6.Steer
+		for _, source := range []netip.Addr{transitOwn[family], transitSender[family], edgeLAN[family]} {
+			steers = append(steers, srv6.Steer{From: schema.PrefixFrom(hostPrefix(source)), Via: []schema.Addr{schema.MustAddr("3fff:1::1")}})
+		}
+		steering, err := srv6.NewSteerTable(steers, schema.MustAddr("3fff:1:69c:8c0::1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.SetSteering(steering)
+		m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1::/64"), peer)
+		cases := []struct {
+			name                string
+			source, destination netip.Addr
+			want                *Peer
+		}{
+			{"from this node's own address", transitOwn[family], transitFar[family], peer},
+			{"from another node's address", transitSender[family], transitFar[family], nil},
+			{"from a host on its LAN to the internet", edgeLAN[family], edgeInternet[family], nil},
+			{"from a host on its LAN to an overlay address", edgeLAN[family], transitFar[family], peer},
+		}
+		var packets [][]byte
+		for _, c := range cases {
+			packets = append(packets, udpPacket(c.source, c.destination, 100, false))
+		}
+		went := classifiedTo(m, packets...)
+		for i, c := range cases {
+			if went[i] != c.want {
+				t.Errorf("IPv%d a steered read %s went to %v, want %v", family, c.name, went[i], c.want)
+			}
+		}
+		if got := m.SegmentCounters().Steered; got != 2 {
+			t.Errorf("IPv%d the read steered %d packets, want 2", family, got)
+		}
+		if got := m.TransitCounters(); got != (TransitCounters{Forged: 1, UnownedSource: 1}) {
+			t.Errorf("IPv%d the read counted %+v", family, got)
+		}
 	}
 }
 
 // a tun read's drop reports through the decision's report, with the event naming its reason, source and destination
 func TestTUNReadDropRecordsTheEvent(t *testing.T) {
-	m, peer := edgeMesh(t)
+	m, _ := edgeMesh(t)
 	bus := events.New()
 	m.events = bus.Emit
-	classified(m, peer, udpPacket(transitSender[6], transitFar[6], 100, false))
+	classifiedTo(m, udpPacket(transitSender[6], transitFar[6], 100, false))
 	recorded := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "netstack.transit.dropped" }, 0)
 	if len(recorded) != 1 {
 		t.Fatalf("a forged read recorded %d drop events", len(recorded))

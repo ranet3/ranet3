@@ -52,6 +52,8 @@ const (
 	transitRoutingHeader
 	// transitOwnSID counts reads off the tun to a SID of this node's, which acts only on what a session delivers
 	transitOwnSID
+	// transitUnownedSource counts reads off the tun through an entry counting as a default from a source this node does not own, which would leave the mesh through an exit
+	transitUnownedSource
 	transitAnswered
 	transitReasonCount
 )
@@ -74,6 +76,7 @@ var transitReasonNames = [transitReasonCount]string{
 	transitForged:         "forged",
 	transitRoutingHeader:  "routing_header",
 	transitOwnSID:         "sid",
+	transitUnownedSource:  "unowned_source",
 	transitAnswered:       "answered",
 }
 
@@ -140,8 +143,8 @@ type TransitCounters struct {
 	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady and TooBig count the packets a session delivered that were dropped, by reason
 	// Invalid counting as well the reads off the tun whose extension headers the walk cannot finish
 	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig uint64
-	// Multicast, Forged, RoutingHeader and SID count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
-	Multicast, Forged, RoutingHeader, SID uint64
+	// Multicast, Forged, RoutingHeader, SID and UnownedSource count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
+	Multicast, Forged, RoutingHeader, SID, UnownedSource uint64
 	// Answered counts the ICMP errors sent about dropped packets
 	// Unanswered counts the dropped packets the decision would answer that find no address of their family to come from
 	// counted before the rules that keep an error from answering a packet and before the rate
@@ -167,6 +170,7 @@ func (m *Mesh) TransitCounters() TransitCounters {
 		Forged:         count(transitForged),
 		RoutingHeader:  count(transitRoutingHeader),
 		SID:            count(transitOwnSID),
+		UnownedSource:  count(transitUnownedSource),
 		Answered:       count(transitAnswered),
 		Unanswered:     m.unanswered.Load(),
 	}

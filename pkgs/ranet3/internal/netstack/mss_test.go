@@ -115,6 +115,7 @@ func TestReaderCountsTheSYNsItClamps(t *testing.T) {
 	peer.SetMTU(session)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	ownHosts(m, tooBigSource)
 	var syns [][]byte
 	for _, family := range []int{4, 6} {
 		for _, mss := range []uint16{1460, 536} {

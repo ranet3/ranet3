@@ -313,6 +313,12 @@ func TestTUNExitEgressesEachShapeOfTheInternetTranslated(t *testing.T) {
 				})
 			}
 			stranger := map[int]netip.Addr{4: netip.MustParseAddr("203.0.113.66"), 6: netip.MustParseAddr("2001:db8:66::6")}
+			// l holds the stranger's address as its own, which l's tun reads would otherwise drop before e, and announces nothing of it
+			for _, address := range stranger {
+				host := netip.PrefixFrom(address, address.BitLen())
+				l.client.Mesh.Routes.Set(netip.Prefix{}, host, netstack.Assigned)
+				t.Cleanup(func() { l.client.Mesh.Routes.Remove(netip.Prefix{}, host) })
+			}
 			t.Run("from a source the mesh routes no reply to", func(t *testing.T) {
 				for _, family := range labFamilies {
 					payload := []byte("from a stranger over " + family.name)

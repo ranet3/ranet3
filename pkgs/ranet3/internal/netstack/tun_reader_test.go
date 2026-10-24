@@ -90,6 +90,7 @@ func TestReaderKeepsReadingPastACutGSOFrame(t *testing.T) {
 		plainV6(source, destination, "last segment the read held"),
 		plainV6(source, destination, "next read"),
 	}
+	ownSources(m, want...)
 	dev.reads <- scriptedRead{packets: want[:2], err: tun.ErrTooManySegments}
 	dev.reads <- scriptedRead{packets: want[2:]}
 
@@ -324,6 +325,7 @@ func TestTunReaderOutlivesARefusedFrame(t *testing.T) {
 	t.Cleanup(m.Close)
 
 	want := plainV6(segAddr("fd00::1"), segAddr("fd00::2"), "after the refused frame")
+	ownSources(m, want)
 	dev.reads <- scriptedRead{err: errRefusedFrame}
 	dev.reads <- scriptedRead{packets: [][]byte{want}}
 	waitUntil(t, "the packet after the refused frame to reach the peer", func() bool { return len(sent.packets(t)) > 0 })

@@ -84,8 +84,12 @@ func layOut(slab []byte, reads []tun.ReadPacket, packets [][]byte) int {
 }
 
 // fill makes packets the read b holds
+// a batch no reader has handed answers keeps its own, as a reader would from one of its reads to the next
 func fill(b *outboundBatch, packets ...[]byte) {
 	b.n = layOut(b.slab, b.reads, packets)
+	if b.answers == nil {
+		b.answers = new(keptAnswers)
+	}
 }
 
 // espTrailer stands for the ESP trailer and ICV a datagram holds behind its packet, RFC 4303 section 2

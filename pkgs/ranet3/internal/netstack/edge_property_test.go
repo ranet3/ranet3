@@ -49,8 +49,9 @@ func (m *routeModel) forged(source, destination netip.Addr) (forged, owned, othe
 
 // over drawn tables of learned routes, holds and this node's own entries of both kinds, with and without source prefixes, long and short enough to count as a default, and drawn overlays
 // a read off the tun carrying packets between the entries' edges and addresses drawn inside them and anywhere is forged exactly where a model passing over every counted entry says
+// and dropped for its source otherwise exactly where its destination resolves through an entry counting as a default and no uncounted entry of this node's own covers the source
 // a source an entry of this node's own covers always passes, one the table routes to a peer or holds never does, whatever the read's other packets
-func TestTUNReadIsForgedExactlyWhereTheModelSkippingCountedEntriesSays(t *testing.T) {
+func TestTUNReadIsDroppedExactlyWhereTheModelSkippingCountedEntriesSays(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		anchors4 := hegel.Draw(ht, hegel.Lists(hegel.IPAddresses().IPv4()).MinSize(1).MaxSize(3))
 		anchors6 := hegel.Draw(ht, hegel.Lists(hegel.IPAddresses().IPv6()).MinSize(1).MaxSize(3))
@@ -102,13 +103,20 @@ func TestTUNReadIsForgedExactlyWhereTheModelSkippingCountedEntriesSays(t *testin
 			if source.Is4() {
 				family = esp.NextHeaderIPv4
 			}
-			reason, dropped := m.edgeCheck(&kept, nil, udpPacket(source, destination, 100, false), family, source, destination)
+			_, _, match := m.Routes.Resolve(source, destination)
+			reason, dropped := m.edgeCheck(&kept, nil, udpPacket(source, destination, 100, false), family, source, destination, match.Counted)
 			forged, owned, others := model.forged(source, destination)
+			_, _, toward := model.answer(source, destination)
+			want, drop := transitReason(0), false
 			switch {
-			case dropped && reason != transitForged:
-				ht.Fatalf("a read from %v to %v was dropped for reason %d", source, destination, reason)
-			case dropped != forged:
-				ht.Fatalf("a read from %v to %v was dropped %t, the model forges it %t, in %#v under the overlay %v", source, destination, dropped, forged, model.entries, model.overlay)
+			case forged:
+				want, drop = transitForged, true
+			case toward.Counted && !owned:
+				want, drop = transitUnownedSource, true
+			}
+			switch {
+			case dropped != drop || dropped && reason != want:
+				ht.Fatalf("a read from %v to %v was dropped %t for reason %d, the model drops it %t for reason %d, in %#v under the overlay %v", source, destination, dropped, reason, drop, want, model.entries, model.overlay)
 			case owned && dropped, others && !dropped:
 				ht.Fatalf("a read from %v to %v that an entry of this node's covers %t or another node's %t was dropped %t", source, destination, owned, others, dropped)
 			}

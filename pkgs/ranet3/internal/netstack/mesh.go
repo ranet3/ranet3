@@ -102,8 +102,8 @@ type outboundBatch struct {
 	peerOrder []*Peer
 	// cut holds the fragments of the read's packets too large for their peers' sessions
 	cut fragmentList
-	// answers keeps the answers its reads looked up for their sources, for the checks of a read off the tun
-	answers keptAnswers
+	// answers is the answers the reader whose read the batch holds keeps from one of its reads to the next, for the checks of a read off the tun
+	answers *keptAnswers
 	// free is the pool the batch goes back to once sealed, nil for a tun reader's, which goes back to outboundFree
 	free chan *outboundBatch
 }
@@ -334,6 +334,9 @@ func newForwardBatch(size int, free chan *outboundBatch) *outboundBatch {
 // encrypt later batches, so the ordered sender can restore per-flow FIFO.
 func (m *Mesh) outboundReader(queue tun.Queue) {
 	defer m.outboundReaderWG.Done()
+	// the reader keeps the answers rather than a batch, which the readers of every queue take in turn
+	// the kernel holds each flow to one queue at a time, so the answers are for the flows this queue reads
+	var answers keptAnswers
 	for {
 		var b *outboundBatch
 		select {
@@ -356,7 +359,7 @@ func (m *Mesh) outboundReader(queue tun.Queue) {
 			m.noteDeviceGone(err)
 			return
 		}
-		b.n = n
+		b.n, b.answers = n, &answers
 		m.classify(b)
 		if len(b.peerOrder) == 0 {
 			b.reset()
@@ -389,13 +392,13 @@ func (m *Mesh) classify(b *outboundBatch) {
 			tally.add(transitMulticast)
 			continue
 		}
-		if reason, dropped := m.edgeCheck(&b.answers, segments, raw, nh, src, dst); dropped {
+		// the checks judge a steered packet by the destination it was read with
+		peer, verdict, match := m.Routes.Resolve(src, dst)
+		if reason, dropped := m.edgeCheck(b.answers, segments, raw, nh, src, dst, match.Counted); dropped {
 			m.dropTransit(&tally, reason, src, dst)
 			continue
 		}
-		// Steering happens before the route lookup, because a steered
-		// packet is routed by the segment it is going to rather than by
-		// the address it was addressed to.
+		// a steered packet is routed by the segment it is going to rather than by the address it was read with
 		sent, policy := raw, m.steerPolicy(src, dst)
 		if policy != nil {
 			if b.steered[i], ok = m.steer(b.steered[i][:0], raw, policy); !ok {
@@ -405,8 +408,8 @@ func (m *Mesh) classify(b *outboundBatch) {
 			if src, dst, nh, ok = addrsOf(sent); !ok {
 				continue
 			}
+			peer, verdict, _ = m.Routes.Resolve(src, dst)
 		}
-		peer, verdict, match := m.Routes.Resolve(src, dst)
 		if verdict != RoutePeer {
 			if policy != nil {
 				m.segmentsUnrouted.Add(1)

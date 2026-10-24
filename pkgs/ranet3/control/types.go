@@ -348,7 +348,7 @@ type SegmentCounters struct {
 
 // TransitCounters counts the forwarding decision's outcomes since startup
 // Forwarded counts the packets a session delivered that went on to a peer, and Delivered the ones written to the tun or handed to the exit
-// the fields from Expired to SID count the packets dropped, by reason, Multicast, Forged, RoutingHeader and SID counting reads off the tun, and Invalid both
+// the fields from Expired to UnownedSource count the packets dropped, by reason, Multicast, Forged, RoutingHeader, SID and UnownedSource counting reads off the tun, and Invalid both
 // Answered counts the ICMP errors sent about dropped packets, and Unanswered the dropped packets the decision would answer that find no address of their family to come from
 // counted before the rules that keep an error from answering a packet and before the rate
 type TransitCounters struct {
@@ -368,6 +368,7 @@ type TransitCounters struct {
 	Forged         uint64 `json:"forged"`
 	RoutingHeader  uint64 `json:"routing_header"`
 	SID            uint64 `json:"sid"`
+	UnownedSource  uint64 `json:"unowned_source"`
 	Answered       uint64 `json:"answered"`
 	Unanswered     uint64 `json:"unanswered"`
 }
@@ -389,6 +390,7 @@ func (c TransitCounters) Drops() []TransitDrop {
 		{"forged", "forged", c.Forged},
 		{"routing_header", "routing header", c.RoutingHeader},
 		{"sid", "SID", c.SID},
+		{"unowned_source", "unowned source", c.UnownedSource},
 	}
 }
 

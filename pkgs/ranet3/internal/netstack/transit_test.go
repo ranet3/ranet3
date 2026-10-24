@@ -1166,6 +1166,7 @@ func TestReaderDropsWhatIsForAGroup(t *testing.T) {
 		destination := segAddr(to)
 		reads = append(reads, udpPacket(transitSender[familyOf(destination)], destination, 100, false))
 	}
+	ownSources(m, reads...)
 	b := newOutboundBatch(len(reads))
 	fill(b, reads...)
 	m.classify(b)
@@ -1177,5 +1178,28 @@ func TestReaderDropsWhatIsForAGroup(t *testing.T) {
 	}
 	if got := m.TransitCounters(); got != (TransitCounters{Multicast: 6}) {
 		t.Errorf("a read of five packets for groups and one for the limited broadcast counted %+v", got)
+	}
+}
+
+// a read to a group or the limited broadcast is counted multicast before the checks of what enters the mesh, whatever its source or headers
+// so at a leaf under an exit's default a host's mDNS from a link-local address and its DHCP broadcast from no address count as the multicast reads they are
+// and not as sources this node does not own, and so do one from another node's address and one behind a routing header the edge refuses
+func TestReaderCountsAGroupOrTheLimitedBroadcastBeforeTheChecks(t *testing.T) {
+	m, _, _ := edgeLeaf(t, "0.0.0.0/0", "::/0")
+	reads := [][]byte{
+		udpPacket(segAddr("fe80::1"), segAddr("ff02::fb"), 100, false),
+		udpPacket(segAddr("0.0.0.0"), segAddr("255.255.255.255"), 100, false),
+		udpPacket(transitSender[6], segAddr("ff0e::1"), 100, false),
+		udpPacket(transitSender[4], segAddr("239.1.1.1"), 100, false),
+		withRouting(udpPacket(transitOwn[6], segAddr("ff0e::1"), 100, false), 4),
+	}
+	for i, peer := range classifiedTo(m, reads...) {
+		if peer != nil {
+			_, destination, _ := packet.Addrs(reads[i])
+			t.Errorf("a read to %s went to %s", destination, peer.ID)
+		}
+	}
+	if got := m.TransitCounters(); got != (TransitCounters{Multicast: uint64(len(reads))}) {
+		t.Errorf("a read of %d packets for groups and the limited broadcast counted %+v", len(reads), got)
 	}
 }

@@ -75,8 +75,8 @@ func (m *Mesh) answerFor(kept *keptAnswers, source, destination netip.Addr) sour
 // edgeCheck checks raw, one packet of family the tun handed this node from source to destination, before it is steered
 // and reports true with the reason for a packet it drops
 // everything entering the mesh through this node is read off the tun, the host's own packets and what its kernel forwards from its other links alike
-// segments is this node's own SIDs
-func (m *Mesh) edgeCheck(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr) (transitReason, bool) {
+// segments is this node's own SIDs, and counted is the entry the destination resolves through counting as a default
+func (m *Mesh) edgeCheck(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr, counted bool) (transitReason, bool) {
 	if family == esp.NextHeaderIPv6 {
 		switch verdict, _, _ := srv6.WalkEdge(raw); verdict {
 		case srv6.EdgeRoutingHeader:
@@ -89,8 +89,13 @@ func (m *Mesh) edgeCheck(kept *keptAnswers, segments *srv6.LocalTable, raw []byt
 			return transitOwnSID, true
 		}
 	}
-	if m.answerFor(kept, source, destination).forged() {
+	answer := m.answerFor(kept, source, destination)
+	if answer.forged() {
 		return transitForged, true
+	}
+	// a packet leaving the mesh through an exit comes from this node, so a host's neighbor reaches no exit through it
+	if counted && !answer.owned() {
+		return transitUnownedSource, true
 	}
 	return 0, false
 }

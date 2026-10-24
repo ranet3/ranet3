@@ -34,8 +34,8 @@ func unroutedMesh(tb testing.TB, set func(*RouteTable)) (*Mesh, *recordingDevice
 
 // a packet the host routes into the tun toward a destination no route reaches,
 // or a hold holds, is answered back into the tun from that destination,
-// whether its source is this node's own or an uplink address the mesh holds no
-// route to
+// whether its source is this node's own or, toward a destination no entry
+// counting as a default covers, an uplink address the mesh holds no route to
 // over IPv4 a hold counting as a default, and no route, answer network
 // unreachable outside the overlay, and a hold that does not count, or the
 // overlay, host
@@ -47,21 +47,28 @@ func TestTunReadNoRouteReachesIsAnsweredIntoTheTun(t *testing.T) {
 		family      int
 		destination netip.Addr
 		set         func(*RouteTable)
-		code        byte
+		// counted is the destination's entry counting as a default, where the
+		// edge drops a read from a source no entry of this node's own covers
+		counted bool
+		code    byte
 	}{
 		"ipv4 under a counted hold": {4, segAddr("203.0.113.9"), func(r *RouteTable) {
 			r.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), Unreachable)
-		}, netUnreachable},
+		}, true, netUnreachable},
 		"ipv4 under a hold that does not count": {4, segAddr("203.0.113.9"), func(r *RouteTable) {
 			r.Set(netip.Prefix{}, segPrefix("203.0.113.0/24"), Unreachable)
-		}, hostUnreachable},
-		"ipv4 with no route":                {4, segAddr("203.0.113.9"), nil, netUnreachable},
-		"ipv4 inside the overlay, no route": {4, segAddr("192.0.2.9"), nil, hostUnreachable},
-		"ipv6 under a counted hold":         {6, segAddr("2001:db8:c::9"), func(r *RouteTable) { r.Set(netip.Prefix{}, segPrefix("::/0"), Unreachable) }, 0},
-		"ipv6 with no route":                {6, segAddr("2001:db8:c::9"), nil, 0},
-		"ipv6 inside the overlay, no route": {6, segAddr("3fff::9"), nil, 0},
+		}, false, hostUnreachable},
+		"ipv4 with no route":                {4, segAddr("203.0.113.9"), nil, false, netUnreachable},
+		"ipv4 inside the overlay, no route": {4, segAddr("192.0.2.9"), nil, false, hostUnreachable},
+		"ipv6 under a counted hold":         {6, segAddr("2001:db8:c::9"), func(r *RouteTable) { r.Set(netip.Prefix{}, segPrefix("::/0"), Unreachable) }, true, 0},
+		"ipv6 with no route":                {6, segAddr("2001:db8:c::9"), nil, false, 0},
+		"ipv6 inside the overlay, no route": {6, segAddr("3fff::9"), nil, false, 0},
 	} {
-		for sourceName, source := range map[string]netip.Addr{"own": ownSource[read.family], "uplink": uplinkSource[read.family]} {
+		sources := map[string]netip.Addr{"own": ownSource[read.family]}
+		if !read.counted {
+			sources["uplink"] = uplinkSource[read.family]
+		}
+		for sourceName, source := range sources {
 			t.Run(name+" from an "+sourceName+" source", func(t *testing.T) {
 				m, dev := unroutedMesh(t, read.set)
 				raw := udpPacket(source, read.destination, 200, false)
@@ -78,6 +85,22 @@ func TestTunReadNoRouteReachesIsAnsweredIntoTheTun(t *testing.T) {
 					t.Errorf("the answer was counted %d times, want once", got)
 				}
 			})
+		}
+	}
+}
+
+// a read toward a hold counting as a default from an uplink address, which no
+// entry of this node's own covers, is dropped at the edge as unowned_source and
+// never reaches the answer
+func TestTunReadUnderACountedHoldFromAnUplinkSourceIsDroppedUnanswered(t *testing.T) {
+	for family, hold := range map[int]string{4: "0.0.0.0/0", 6: "::/0"} {
+		m, dev := unroutedMesh(t, func(r *RouteTable) { r.Set(netip.Prefix{}, segPrefix(hold), Unreachable) })
+		destination := map[int]netip.Addr{4: segAddr("203.0.113.9"), 6: segAddr("2001:db8:c::9")}[family]
+		if _, written := classifyOne(m, dev, udpPacket(uplinkSource[family], destination, 200, false)); len(written) != 0 {
+			t.Errorf("ipv%d: the read put %d packets into the tun, want none", family, len(written))
+		}
+		if dropped, answered := m.transitCounts[transitUnownedSource].Load(), m.transitCounts[transitAnswered].Load(); dropped != 1 || answered != 0 {
+			t.Errorf("ipv%d: the read was counted %d times as unowned_source and %d as answered, want once and never", family, dropped, answered)
 		}
 	}
 }
