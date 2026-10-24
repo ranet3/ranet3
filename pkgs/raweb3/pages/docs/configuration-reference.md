@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-10-21
+updated: 2026-10-25
 order: 35
 ---
 
@@ -532,14 +532,18 @@ sequence numbers with none replacing it, closes the IKE SA. The session logs
 Delete for the IKE SA and ends, and the node that dialed it dials again. A rekey
 still under way at the lifetime may yet replace the SA, and the IKE SA closes
 only if that rekey fails. A peer that answers this end's rekeys on 1 IKE SA with
-`TEMPORARY_FAILURE` for 5 minutes closes it the same way.
+`TEMPORARY_FAILURE` for 5 minutes closes it the same way. A rekey of the IKE SA
+or the Child SA that completes, whichever end started it, ends those 5 minutes,
+and the next `TEMPORARY_FAILURE` starts them again.
 
 ### `cap.crypto.rekey.retry`
 
 A rekey that fails is retried with capped exponential backoff. For the Child SA
 the backoff holds back the next rekey whichever path asks for it: the schedule,
 the ask as the sequence numbers near their end, the replacement of a Child SA
-the peer deleted, or `ranet3 rekey`. The retries stop at the SA's lifetime.
+the peer deleted, or `ranet3 rekey`. The retries stop at the SA's lifetime, or
+once a rekey the peer starts replaces the SA, whose next rekey then counts from
+the SA the peer made.
 
 | Key     | Value    | Default | Meaning       |
 | ------- | -------- | ------- | ------------- |

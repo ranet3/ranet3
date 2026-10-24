@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-22
+updated: 2026-10-25
 order: 30
 ---
 
@@ -375,7 +375,8 @@ still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an
 `ike.sa.closed` is `lifetime` when the SA named by `sa` reached its lifetime
 with no rekey replacing it, `sequence space` when the Child SA ran out of
 sequence numbers with none replacing it, `temporary failure` when the peer had
-answered this end's rekeys with `TEMPORARY_FAILURE` for 5 minutes,
+answered this end's rekeys with `TEMPORARY_FAILURE` for 5 minutes with no rekey
+of the IKE SA or the Child SA completed by either end in between,
 `invalid syntax` when the peer answered a request of this end's on the current
 IKE SA with `INVALID_SYNTAX`, which ends it without a Delete, and
 `local failure` when this node failed on its own side, as when its dataplane

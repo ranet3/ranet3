@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6 and ICMP specifications on purpose."
 created: 2026-08-23
-updated: 2026-10-22
+updated: 2026-10-25
 order: 20
 ---
 
@@ -274,8 +274,9 @@ the peer's own rekey of the same IKE SA crossed this node's and this node
 answered it, its SA is held, and ranet3 takes that SA, as it does after any
 error notify but `INVALID_SYNTAX`. Otherwise ranet3 keeps the old SA and retries
 the rekey on its backoff, from 5 seconds up to 5 minutes at the defaults, until
-the SA's lifetime ends and the IKE SA is deleted with it. Only
-`CHILD_SA_NOT_FOUND` makes it create a new Child SA from scratch.
+the SA's lifetime ends and the IKE SA is deleted with it, or until a rekey the
+peer starts replaces the SA. Only `CHILD_SA_NOT_FOUND` makes it create a new
+Child SA from scratch.
 
 [RFC 7296 section 2.25.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.25.2)
 asks an end that receives a rekey of an IKE SA it is rekeying itself to reply as
