@@ -1611,13 +1611,12 @@ func TestRuleValidationRefusesWhatReadsWrong(t *testing.T) {
 		})
 	}
 	for name, rule := range map[string]Rule{
-		"an address rule": {Family: FamilyIPv6, From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150},
-		"a mark rule":     {Family: FamilyIPv4, FWMark: 0x726c, Table: 254, Priority: 40},
-		"a masked mark":   {Family: FamilyIPv6, FWMark: 0x726c, FWMask: 0xffff, Table: 254, Priority: 40},
-		// iif ranet0e lookup main, which an exit owns so that its egress traffic leaves by the uplink
-		"a device rule":            {Family: FamilyIPv4, IIF: "ranet0e", Table: 254, Priority: 60},
+		"an address rule":          {Family: FamilyIPv6, From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150},
+		"a mark rule":              {Family: FamilyIPv4, FWMark: 0x726c, Table: 254, Priority: 40},
+		"a masked mark":            {Family: FamilyIPv6, FWMark: 0x726c, FWMask: 0xffff, Table: 254, Priority: 40},
+		"a device rule":            {Family: FamilyIPv4, IIF: "eth1", Table: 254, Priority: 60},
 		"the longest device name":  {Family: FamilyIPv6, IIF: strings.Repeat("r", ifNameSize-1), Table: 254, Priority: 60},
-		"a device beside a source": {Family: FamilyIPv6, IIF: "ranet0e", From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150},
+		"a device beside a source": {Family: FamilyIPv6, IIF: "eth1", From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150},
 		// the kernel takes these, U+00E1 in UTF-8 and a dot that is not the whole name
 		"a device name with a byte 0xa1": {Family: FamilyIPv4, IIF: "ranet\xc3\xa1", Table: 254, Priority: 60},
 		"a device name with a dot":       {Family: FamilyIPv4, IIF: "ranet0.100", Table: 254, Priority: 60},
@@ -1667,14 +1666,14 @@ func TestFamilyBothInstallsOneRulePerFamily(t *testing.T) {
 // are two rules, and they normalize to one order whichever way a file lists
 // them, or a reload between the two spellings reads as a change.
 func TestDeviceRuleNamesItsFamilyAndSortsOneWay(t *testing.T) {
-	bare := Rule{IIF: "ranet0e", Table: schema.TableMain, Priority: 60}
+	bare := Rule{IIF: "eth1", Table: schema.TableMain, Priority: 60}
 	err := Table{Rules: []Rule{bare}}.Validate()
 	if err == nil || !strings.Contains(err.Error(), "has to name family") {
 		t.Fatalf("a device rule naming no family was refused with %v", err)
 	}
 	first, second := bare, bare
 	first.Family, second.Family = FamilyBoth, FamilyBoth
-	second.IIF = "ranet1e"
+	second.IIF = "eth2"
 	written := Table{Rules: []Rule{first, second}}
 	if err := written.Validate(); err != nil {
 		t.Fatalf("two rules apart in their device were refused: %v", err)
@@ -1684,7 +1683,7 @@ func TestDeviceRuleNamesItsFamilyAndSortsOneWay(t *testing.T) {
 		t.Errorf("one rule set normalized to %v and to %v", want, got)
 	}
 	// every refusal and log line names a rule by String, and two rules apart only in their device read alike without it
-	if got := first.String(); !strings.Contains(got, "iif ranet0e") {
+	if got := first.String(); !strings.Contains(got, "iif eth1") {
 		t.Errorf("the rule reads %q, which does not name its device", got)
 	}
 }
@@ -1807,7 +1806,7 @@ func TestRuleSelectsAMarkAsTheKernelCompares(t *testing.T) {
 		{Rule{FWMark: 0x726c, FWMask: 0xffffffff}, []bool{true, false, false, false}},
 		{Rule{FWMark: 0x10000, FWMask: 0xff0000}, []bool{false, false, true, true}},
 		{Rule{FWMark: 0x726c, IIF: "lo"}, []bool{true, false, false, false}},
-		{Rule{FWMark: 0x726c, IIF: "ranet0e"}, []bool{false, false, false, false}},
+		{Rule{FWMark: 0x726c, IIF: "eth1"}, []bool{false, false, false, false}},
 		{Rule{FWMark: 0x726c, FWMask: 0xff0000, IIF: "eth0"}, []bool{false, false, false, false}},
 	} {
 		for i, mark := range marks {

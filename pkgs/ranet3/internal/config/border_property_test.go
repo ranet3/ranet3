@@ -165,7 +165,6 @@ func TestBorderLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 				Border: border,
 				Table: &kernel.Table{Rules: []kernel.Rule{
 					{To: schema.MustPrefix("10.66.0.0/16"), Table: kernel.DefaultTable, Priority: 100},
-					{IIF: "ranet3e", Table: schema.TableMain, Priority: 120, Family: kernel.FamilyBoth},
 					{From: schema.MustPrefix("10.66.0.0/16"), Table: kernel.DefaultTable, Priority: 150},
 				}},
 				Segment: &srv6.Segments{Local: segments},

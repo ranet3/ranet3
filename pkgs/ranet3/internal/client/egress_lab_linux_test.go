@@ -31,17 +31,14 @@ import (
 )
 
 const (
-	// labTUN is the exit's mesh tun, and labEgress the name cap.table's rule for an egress segment is keyed on
-	labTUN    = "lab0"
-	labEgress = "lab0e"
+	// labTUN is the exit's mesh tun
+	labTUN = "lab0"
 	// labPort is the far host's listening port, and labLeafPort the port the leaf sends from
 	labPort     = 9000
 	labLeafPort = 40000
 	// labRetry is how long one read waits before a packet is sent again, and labQuiet how long a packet that must not arrive is waited for
 	labRetry = 250 * time.Millisecond
 	labQuiet = time.Second
-	// labIIFPriority is the priority of that rule, between the to rules at 100 and the from rule at 150
-	labIIFPriority = 120
 )
 
 var (
@@ -358,8 +355,8 @@ func readiness(bus *events.Bus) []string {
 }
 
 // labConfig is the reload fixture's node made an exit with the egress segment,
-// cap.egress and a cap.table holding the to rules, the rule an egress segment's
-// configuration asks for and from rules for the leaves into the mesh table
+// cap.egress and a cap.table holding the to and from rules for the leaves into
+// the mesh table
 func labConfig(t *testing.T) *config.Config {
 	t.Helper()
 	fixture, _ := reloadFixture(t)
@@ -371,7 +368,6 @@ func labConfig(t *testing.T) *config.Config {
 	cfg.Cap.Table = &kernel.Table{ID: kernel.DefaultTable, Rules: []kernel.Rule{
 		{To: schema.MustPrefix(labLeaves[0]), Table: kernel.DefaultTable, Priority: 100},
 		{To: schema.MustPrefix(labLeaves[1]), Table: kernel.DefaultTable, Priority: 100},
-		{IIF: labEgress, Table: schema.TableMain, Priority: labIIFPriority, Family: kernel.FamilyBoth},
 		{From: schema.MustPrefix(labLeaves[0]), Table: kernel.DefaultTable, Priority: 150},
 		{From: schema.MustPrefix(labLeaves[1]), Table: kernel.DefaultTable, Priority: 150},
 	}}

@@ -56,7 +56,7 @@ func masks() hegel.Generator[uint32] {
 // devices draws an input device a rule selects on, the longest name a device
 // can carry among them.
 func devices() hegel.Generator[string] {
-	return hegel.SampledFrom([]string{"ranet0e", "lo", "eth0", strings.Repeat("r", 15)})
+	return hegel.SampledFrom([]string{"eth1", "lo", "eth0", strings.Repeat("r", 15)})
 }
 
 // writtenRules draws one rule in a shape a file writes: on addresses, which
