@@ -32,7 +32,7 @@ const (
 	// transitRefused counts packets for another node while cap.transit is off
 	transitRefused
 	// transitInvalid counts what is not one IP packet, an IPv4 header failing RFC 1812 section 5.2.2's checks, IPv4 options RFC 791 cannot read
-	// and a read off the tun whose extension headers srv6.WalkEdge cannot finish
+	// and a read off the tun whose extension headers srv6.WalkEdge cannot finish, or the header of whose carried packet cannot be read
 	transitInvalid
 	// transitMartian counts packets from or to an address no router forwards, but for those to a destination linkScoped takes to the tun
 	transitMartian
@@ -54,6 +54,8 @@ const (
 	transitOwnSID
 	// transitUnownedSource counts reads off the tun through an entry counting as a default from a source this node does not own, which would leave the mesh through an exit
 	transitUnownedSource
+	// transitNested counts IPv6 reads off the tun whose carried packet carries another, past the one level the checks open
+	transitNested
 	transitAnswered
 	transitReasonCount
 )
@@ -77,6 +79,7 @@ var transitReasonNames = [transitReasonCount]string{
 	transitRoutingHeader:  "routing_header",
 	transitOwnSID:         "sid",
 	transitUnownedSource:  "unowned_source",
+	transitNested:         "nested",
 	transitAnswered:       "answered",
 }
 
@@ -141,10 +144,10 @@ type TransitCounters struct {
 	// Forwarded counts packets a session delivered that went on to a peer, and Delivered the ones written to the tun or handed to the exit
 	Forwarded, Delivered uint64
 	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady and TooBig count the packets a session delivered that were dropped, by reason
-	// Invalid counting as well the reads off the tun whose extension headers the walk cannot finish
+	// Invalid counting as well the reads off the tun whose extension headers the walk cannot finish or whose carried packet's header cannot be read
 	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig uint64
-	// Multicast, Forged, RoutingHeader, SID and UnownedSource count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
-	Multicast, Forged, RoutingHeader, SID, UnownedSource uint64
+	// Multicast, Forged, RoutingHeader, SID, UnownedSource and Nested count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
+	Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested uint64
 	// Answered counts the ICMP errors sent about dropped packets
 	// Unanswered counts the dropped packets the decision would answer that find no address of their family to come from
 	// counted before the rules that keep an error from answering a packet and before the rate
@@ -171,6 +174,7 @@ func (m *Mesh) TransitCounters() TransitCounters {
 		RoutingHeader:  count(transitRoutingHeader),
 		SID:            count(transitOwnSID),
 		UnownedSource:  count(transitUnownedSource),
+		Nested:         count(transitNested),
 		Answered:       count(transitAnswered),
 		Unanswered:     m.unanswered.Load(),
 	}

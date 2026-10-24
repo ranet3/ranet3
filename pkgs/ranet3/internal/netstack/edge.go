@@ -7,6 +7,7 @@ import (
 	"net/netip"
 
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
@@ -76,26 +77,55 @@ func (m *Mesh) answerFor(kept *keptAnswers, source, destination netip.Addr) sour
 // and reports true with the reason for a packet it drops
 // everything entering the mesh through this node is read off the tun, the host's own packets and what its kernel forwards from its other links alike
 // segments is this node's own SIDs, and counted is the entry the destination resolves through counting as a default
+// an IPv4 or IPv6 packet an IPv6 one carries meets the same checks, one level deep, since another node's End.DT46 SID would deliver it into the mesh
+// and this node keeps no list of other nodes' SIDs to tell a packet to one apart
 func (m *Mesh) edgeCheck(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr, counted bool) (transitReason, bool) {
+	reason, dropped, carried, offset := m.checkPacket(kept, segments, raw, family, source, destination, counted)
+	// no SID takes an IPv4 packet, so what one carries reaches no decapsulation
+	if dropped || carried == 0 || family != esp.NextHeaderIPv6 {
+		return reason, dropped
+	}
+	inner := raw[offset:]
+	innerSource, innerDestination, version := packet.Addrs(inner)
+	if version == 0 || (version == 4) != (carried == esp.NextHeaderIPv4) {
+		return transitInvalid, true
+	}
+	_, _, match := m.Routes.Resolve(innerSource, innerDestination)
+	reason, dropped, carried, _ = m.checkPacket(kept, segments, inner, carried, innerSource, innerDestination, match.Counted)
+	if !dropped && carried != 0 {
+		return transitNested, true
+	}
+	return reason, dropped
+}
+
+// checkPacket is edgeCheck's checks of one packet, leaving what it carries unread
+// and reports the family of an IPv4 or IPv6 packet it carries, 0 for none, and for an IPv6 packet where in raw the walk found it
+func (m *Mesh) checkPacket(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr, counted bool) (reason transitReason, dropped bool, carried byte, offset int) {
+	next := raw[9]
 	if family == esp.NextHeaderIPv6 {
-		switch verdict, _, _ := srv6.WalkEdge(raw); verdict {
+		var verdict srv6.EdgeVerdict
+		verdict, next, offset = srv6.WalkEdge(raw)
+		switch verdict {
 		case srv6.EdgeRoutingHeader:
-			return transitRoutingHeader, true
+			return transitRoutingHeader, true, 0, 0
 		case srv6.EdgeInvalid:
-			return transitInvalid, true
+			return transitInvalid, true, 0, 0
 		}
 		// RFC 8754 section 5.1 level 1, a packet entering the SR domain to one of its SIDs is dropped
 		if segments.Holds(destination) {
-			return transitOwnSID, true
+			return transitOwnSID, true, 0, 0
 		}
 	}
 	answer := m.answerFor(kept, source, destination)
 	if answer.forged() {
-		return transitForged, true
+		return transitForged, true, 0, 0
 	}
 	// a packet leaving the mesh through an exit comes from this node, so a host's neighbor reaches no exit through it
 	if counted && !answer.owned() {
-		return transitUnownedSource, true
+		return transitUnownedSource, true, 0, 0
 	}
-	return 0, false
+	if next == esp.NextHeaderIPv4 || next == esp.NextHeaderIPv6 {
+		return 0, false, next, offset
+	}
+	return 0, false, 0, 0
 }

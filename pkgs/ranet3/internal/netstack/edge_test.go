@@ -10,6 +10,7 @@ import (
 	"slices"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -85,12 +86,129 @@ func edgeLeaf(tb testing.TB, prefixes ...string) (*Mesh, *Peer, *Peer) {
 	return m, peer, exit
 }
 
-// withRouting is raw, an IPv6 packet, with a routing header of kind between its fixed header and what followed it, segments left 0
-func withRouting(raw []byte, kind byte) []byte {
-	out := slices.Concat(raw[:40], []byte{raw[6], 0, kind, 0, 0, 0, 0, 0}, raw[40:])
-	out[6] = 43
+// withHeader is raw, an IPv6 packet, with an extension header of next between its fixed header and what followed it, body following its first two octets
+func withHeader(raw []byte, next byte, body ...byte) []byte {
+	out := slices.Concat(raw[:40], []byte{raw[6], 0}, body, raw[40:])
+	out[6] = next
 	binary.BigEndian.PutUint16(out[4:], uint16(len(out)-40))
 	return out
+}
+
+// withRouting is withHeader with a routing header of kind, segments left 0
+func withRouting(raw []byte, kind byte) []byte { return withHeader(raw, 43, kind, 0, 0, 0, 0, 0) }
+
+// withDestinationOptions is withHeader with a destination options header holding one PadN option, RFC 8200 section 4.2
+func withDestinationOptions(raw []byte) []byte {
+	return withHeader(raw, destinationOptions, 1, 4, 0, 0, 0, 0)
+}
+
+// edgeOtherSID is an End.DT46 SID of another node's, which a learned route carries to the peer, and edgeOwnSID one of this node's
+var edgeOtherSID, edgeOwnSID = segAddr("3fff:7::46"), segAddr("3fff:6::1")
+
+// carriedLeaf is edgeLeaf under an exit's default with a route to edgeOtherSID through the peer and edgeOwnSID in cap.segment.local
+func carriedLeaf(tb testing.TB) (*Mesh, *Peer) {
+	tb.Helper()
+	m, peer, _ := edgeLeaf(tb, "0.0.0.0/0", "::/0")
+	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:7::/64"), peer)
+	segments, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(edgeOwnSID), Behavior: srv6.BehaviorEndDT46}}, transitOverlay)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	m.SetSegments(segments)
+	return m, peer
+}
+
+// a packet an IPv6 read off the tun carries to another node's End.DT46 SID meets the read's checks with its own source, destination and answer
+// though the read comes from this node's own address, the carried packet is dropped from a forged source, toward a default from a host on its LAN
+// behind a routing header the edge refuses and to this node's own SID, while one from this node's own address passes, in each family it applies to
+// a carried packet behind a destination options header or a type 2 routing header of the read, which the walk passes, meets the same checks
+func TestTUNReadCarriedPacketMeetsTheChecksOfTheRead(t *testing.T) {
+	type carriedCase struct {
+		name string
+		// front puts an extension header of the read between its fixed header and the carried packet, nil for none
+		front func([]byte) []byte
+		inner []byte
+		want  TransitCounters
+	}
+	typeTwo := func(raw []byte) []byte { return withRouting(raw, 2) }
+	for _, family := range []int{4, 6} {
+		own, forged := udpPacket(transitOwn[family], transitFar[family], 100, false), udpPacket(transitSender[family], transitFar[family], 100, false)
+		cases := []carriedCase{
+			{"from this node's own address", nil, own, TransitCounters{}},
+			{"from another node's address", nil, forged, TransitCounters{Forged: 1}},
+			{"from an overlay address no node announces", nil, udpPacket(transitUnrouted[family], transitFar[family], 100, false), TransitCounters{Forged: 1}},
+			{"from a host on its LAN to the internet", nil, udpPacket(edgeLAN[family], edgeInternet[family], 100, false), TransitCounters{UnownedSource: 1}},
+			{"from this node's own address behind the read's destination options header", withDestinationOptions, own, TransitCounters{}},
+			{"from another node's address behind the read's destination options header", withDestinationOptions, forged, TransitCounters{Forged: 1}},
+			{"from this node's own address behind the read's type 2 routing header", typeTwo, own, TransitCounters{}},
+			{"from another node's address behind the read's type 2 routing header", typeTwo, forged, TransitCounters{Forged: 1}},
+		}
+		if family == 6 {
+			cases = append(cases,
+				carriedCase{"with an SRH", nil, withRouting(udpPacket(transitOwn[6], transitFar[6], 100, false), 4), TransitCounters{RoutingHeader: 1}},
+				carriedCase{"to this node's SID", nil, udpPacket(transitOwn[6], edgeOwnSID, 100, false), TransitCounters{SID: 1}},
+			)
+		}
+		for _, c := range cases {
+			m, peer := carriedLeaf(t)
+			want := peer
+			if c.want != (TransitCounters{}) {
+				want = nil
+			}
+			read := encapsulated(transitOwn[6], edgeOtherSID, c.inner)
+			if c.front != nil {
+				read = c.front(read)
+			}
+			if went := classifiedTo(m, read); went[0] != want {
+				t.Errorf("an IPv%d packet %s carried to another node's SID went to %v, want %v", family, c.name, went[0], want)
+			}
+			if got := m.TransitCounters(); got != c.want {
+				t.Errorf("an IPv%d packet %s carried to another node's SID counted %+v, want %+v", family, c.name, got, c.want)
+			}
+		}
+	}
+}
+
+// the checks open one level: a carried packet that itself carries one is dropped, counted nested, in each family of the carried packet
+// a carried packet whose header cannot be read, cut short or of a version its next header does not name, is dropped, counted invalid
+// an IPv6 packet named IPv4 would otherwise pass unwalked, its routing header with it
+func TestTUNReadCarryingAPacketInACarriedOneIsDropped(t *testing.T) {
+	m, peer := carriedLeaf(t)
+	plain := map[int][]byte{4: udpPacket(transitOwn[4], transitFar[4], 100, false), 6: udpPacket(transitOwn[6], transitFar[6], 100, false)}
+	namedIPv6 := encapsulated(transitOwn[6], edgeOtherSID, plain[4])
+	namedIPv6[6] = esp.NextHeaderIPv6
+	namedIPv4 := encapsulated(transitOwn[6], edgeOtherSID, withRouting(plain[6], 4))
+	namedIPv4[6] = esp.NextHeaderIPv4
+	went := classifiedTo(m,
+		encapsulated(transitOwn[6], edgeOtherSID, encapsulated(transitOwn[4], transitFar[4], plain[6])),
+		encapsulated(transitOwn[6], edgeOtherSID, encapsulated(transitOwn[6], transitFar[6], plain[4])),
+		encapsulated(transitOwn[6], edgeOtherSID, plain[6][:30]),
+		encapsulated(transitOwn[6], edgeOtherSID, plain[4][:12]),
+		namedIPv6,
+		namedIPv4,
+		encapsulated(transitOwn[6], edgeOtherSID, plain[4]),
+	)
+	if want := []*Peer{nil, nil, nil, nil, nil, nil, peer}; !slices.Equal(went, want) {
+		t.Errorf("reads carrying a packet in a carried IPv4 and IPv6 one, two cut short, two mislabeled and one plain went to %v, want %v", went, want)
+	}
+	if got := m.TransitCounters(); got != (TransitCounters{Nested: 2, Invalid: 4}) {
+		t.Errorf("the read counted %+v", got)
+	}
+}
+
+// an IPv4 read off the tun is not opened, since no SID takes an IPv4 packet, so what it carries reaches no decapsulation
+func TestTUNReadOfIPv4IsNotOpened(t *testing.T) {
+	m, peer := carriedLeaf(t)
+	went := classifiedTo(m,
+		encapsulated(transitOwn[4], transitFar[4], udpPacket(transitSender[4], transitFar[4], 100, false)),
+		encapsulated(transitOwn[4], transitFar[4], udpPacket(transitSender[6], transitFar[6], 100, false)),
+	)
+	if went[0] != peer || went[1] != peer {
+		t.Errorf("IPv4 reads carrying packets from another node's addresses went to %v, want the peer", went)
+	}
+	if got := m.TransitCounters(); got != (TransitCounters{}) {
+		t.Errorf("the read counted %+v", got)
+	}
 }
 
 // a read off the tun is dropped as forged when the mesh routes its source to another node or holds it, the table rule
