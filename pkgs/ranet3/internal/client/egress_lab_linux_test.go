@@ -14,7 +14,6 @@ import (
 	"net/netip"
 	"os"
 	"slices"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -32,7 +31,7 @@ import (
 )
 
 const (
-	// labTUN is the exit's mesh tun, and labEgress the egress device named after it
+	// labTUN is the exit's mesh tun, and labEgress the name cap.table's rule for an egress segment is keyed on
 	labTUN    = "lab0"
 	labEgress = "lab0e"
 	// labPort is the far host's listening port, and labLeafPort the port the leaf sends from
@@ -41,7 +40,7 @@ const (
 	// labRetry is how long one read waits before a packet is sent again, and labQuiet how long a packet that must not arrive is waited for
 	labRetry = 250 * time.Millisecond
 	labQuiet = time.Second
-	// labIIFPriority is the priority of the egress device's rule, between the to rules at 100 and the from rule at 150
+	// labIIFPriority is the priority of that rule, between the to rules at 100 and the from rule at 150
 	labIIFPriority = 120
 )
 
@@ -62,8 +61,8 @@ var (
 // An exit node in a namespace of its own, started through New with the
 // border, the reconciler and the translator main builds, carries a synthetic
 // leaf's steered packets out of a veth uplink to a far host in another
-// namespace. They leave the egress device with the leaf's source, so they
-// reach the far host only while the border accepts the device.
+// namespace. They leave through the mesh tun with the leaf's source, so they
+// reach the far host only while the border accepts the tun.
 func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
@@ -97,13 +96,12 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 	}
 
 	// the replies leave through the mesh tun by a route the reconciler installs for the leaf's prefixes, as babel would select it
-	// and the mesh carries a route covering the far host too, which the from rules would send a steered packet into without the egress device's rule
 	// the route to the leaf's prefixes is also the reply route the egress segment needs for an inner source before it egresses anything
 	leaf := netstack.NewPeer("example/leaf", func(int) (netstack.BatchSealer, error) {
 		return nil, errors.New("the leaf is synthetic")
 	}, func([][]byte) error { return nil }, nil)
 	t.Cleanup(leaf.Close)
-	for _, prefix := range append([]netip.Prefix{labFar4.Masked(), labFar6.Masked()}, labLeafPrefixes()...) {
+	for _, prefix := range labLeafPrefixes() {
 		node.Mesh.Routes.Set(netip.Prefix{}, prefix, leaf)
 	}
 
@@ -124,7 +122,6 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 		if routes, err = kernel.New(*cfg.Cap.Table, node.KernelRuntime(), node.Mesh.Routes); err != nil {
 			return err
 		}
-		reader := node.EgressDeviceReader()
 		// the sysctls are read in the exit's namespace, which the translator's own goroutine is not in
 		translator, err = egress.New(*cfg.Egress(), egress.Runtime{
 			Interface:     node.Mesh.Name,
@@ -132,8 +129,7 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 			Forwarding:    func() (v4, v6 bool) { inExit(func() { v4, v6 = Forwarding() }); return v4, v6 },
 			Announce:      func([]netip.Prefix) { node.Republish() },
 			Events:        bus,
-			Egress:        node.EgressDevice(),
-			Device:        func() (v4, v6 error) { inExit(func() { v4, v6 = reader() }); return v4, v6 },
+			Steered:       true,
 			Ready:         node.SetEgressReady,
 		})
 		return err
@@ -157,10 +153,9 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 			t.Errorf("the border: %v", err)
 		}
 	})
-	waitFor(t, convergeBudget, "the egress device ready for both families, its rule installed and the mesh table covering the far host", func() bool {
+	waitFor(t, convergeBudget, "both families ready and the mesh table covering the leaves", func() bool {
 		stats := translator.Stats()
-		return stats.Ready4 && stats.Ready6 && labRuleHeld(t, exit, unix.AF_INET) && labRuleHeld(t, exit, unix.AF_INET6) &&
-			labMeshRoute(t, exit, labFar4.Masked()) && labMeshRoute(t, exit, labFar6.Masked())
+		return stats.Ready4 && stats.Ready6 && labMeshRoute(t, exit, labLeafPrefixes()[0]) && labMeshRoute(t, exit, labLeafPrefixes()[1])
 	})
 
 	var listeners [2]*net.UDPConn
@@ -230,47 +225,17 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 		labQuietFor(t, listeners[0], payload)
 	})
 
-	t.Run("another writer deleting the egress device's rule", func(t *testing.T) {
-		for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
-			if err := exit.do(func() error { return labDeleteRule(family) }); err != nil {
-				t.Fatalf("delete the egress device's rule: %v", err)
-			}
-		}
-		waitFor(t, convergeBudget, "the reconciler to put the egress device's rule back", func() bool {
-			return labRuleHeld(t, exit, unix.AF_INET) && labRuleHeld(t, exit, unix.AF_INET6)
-		})
-	})
-
 	t.Run("another writer deleting the ip table", func(t *testing.T) {
 		mark := len(readiness(bus))
 		if err := exit.do(func() error { return labDeleteTable(unix.NFPROTO_IPV4, egress.TableName) }); err != nil {
 			t.Fatalf("delete the ip table: %v", err)
 		}
-		waitFor(t, convergeBudget, "the translator to report the device not ready and then ready again", func() bool {
+		waitFor(t, convergeBudget, "the translator to report the egress segments not ready and then ready again", func() bool {
 			moved := readiness(bus)[mark:]
 			down := slices.Index(moved, "false false")
 			return down >= 0 && slices.Contains(moved[down:], "true true")
 		})
 		carry(t, labLeaf4, labFar4.Addr(), labExit4.Addr(), listeners[0], "steered after the table came back")
-	})
-
-	// IPv6 coming back on has the kernel send its MLD reports out of the device, which the drain reads and leaves uncounted
-	t.Run("another writer turning IPv6 off on the egress device", func(t *testing.T) {
-		path := "/proc/sys/net/ipv6/conf/" + labEgress + "/disable_ipv6"
-		if err := exit.do(func() error { return os.WriteFile(path, []byte("1\n"), 0o644) }); err != nil {
-			t.Fatalf("turn IPv6 off on the egress device: %v", err)
-		}
-		waitFor(t, convergeBudget, "a pass to put the egress device's disable_ipv6 back to 0", func() bool {
-			var body []byte
-			if err := exit.do(func() (err error) { body, err = os.ReadFile(path); return err }); err != nil {
-				t.Fatalf("read %s: %v", path, err)
-			}
-			return strings.TrimSpace(string(body)) == "0"
-		})
-		carry(t, labHeadend, labFar6.Addr(), labExit6.Addr(), listeners[1], "steered after IPv6 came back on")
-		if drained := node.Mesh.SegmentCounters().Drained; drained != 0 {
-			t.Errorf("drained reads %d after disable_ipv6 was put back, want 0", drained)
-		}
 	})
 
 	t.Run("a packet from the far host to the SID", func(t *testing.T) {
@@ -313,49 +278,10 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 		}
 	})
 
-	t.Run("the egress device deleted under the mesh", func(t *testing.T) {
-		waitFor(t, convergeBudget, "the SID's /128 originated", func() bool { return sidOriginated(node, labSID.String()) })
-		if err := exit.do(func() error {
-			link, err := net.InterfaceByName(labEgress)
-			if err != nil {
-				return err
-			}
-			netlink, err := openNetlinkRoute()
-			if err != nil {
-				return err
-			}
-			defer netlink.close()
-			return netlink.request(unix.RTM_DELLINK, 0, ifinfo(link.Index, 0))
-		}); err != nil {
-			t.Fatalf("delete the egress device: %v", err)
-		}
-		waitFor(t, convergeBudget, "both families not ready and the SID's /128 withdrawn", func() bool {
-			stats := translator.Stats()
-			return !stats.Ready4 && !stats.Ready6 && !sidOriginated(node, labSID.String())
-		})
-		if got := translator.Stats().Unready; !strings.Contains(got, "the egress device is gone") {
-			t.Errorf("the translator reports the reason %q, want the device gone", got)
-		}
-		before := node.Mesh.SegmentCounters()
-		steer(udpPacket(labHeadend, labFar6.Addr(), labLeafPort, labPort, []byte("after the device went")))
-		if got := node.Mesh.SegmentCounters(); got.NotReady != before.NotReady+1 {
-			t.Errorf("an egress result after the device went counted %+v, want one more not ready", got)
-		}
-	})
-
 	stop()
-	var actions []string
-	for _, event := range recorded(bus, "egress.device") {
-		actions = append(actions, event.Attrs["name"]+" "+event.Attrs["action"])
-	}
-	if want := []string{labEgress + " created", labEgress + " withdrawn"}; !slices.Equal(actions, want) {
-		t.Errorf("the egress device was recorded as %q, want %q", actions, want)
-	}
 	if err := exit.do(func() error {
-		for _, name := range []string{labEgress, labTUN} {
-			if _, err := net.InterfaceByName(name); err == nil {
-				return fmt.Errorf("%s outlived the node", name)
-			}
+		if _, err := net.InterfaceByName(labTUN); err == nil {
+			return fmt.Errorf("%s outlived the node", labTUN)
 		}
 		rules, err := dumpRules()
 		if err != nil {
@@ -379,7 +305,7 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 
 // the mesh takes the readiness before the announcement is rebuilt, so the
 // SID's /128 follows the word just given and never the one before it, the
-// mesh's word read by what it writes into a real egress device
+// mesh's word read by what it egresses into a real tun
 func TestTUNSetEgressReadyMovesTheMeshBeforeTheAnnouncement(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
@@ -432,15 +358,15 @@ func readiness(bus *events.Bus) []string {
 }
 
 // labConfig is the reload fixture's node made an exit with the egress segment,
-// cap.egress and a cap.table holding the to rules, the egress device's rule
-// and from rules for the leaves into the mesh table
+// cap.egress and a cap.table holding the to rules, the rule an egress segment's
+// configuration asks for and from rules for the leaves into the mesh table
 func labConfig(t *testing.T) *config.Config {
 	t.Helper()
 	fixture, _ := reloadFixture(t)
 	cfg := *fixture.config()
 	cfg.Link.TUN = labTUN
 	egressNode(&cfg, egressSegment(labSID.String(), labLeaves...))
-	// a deleted device is noticed at the next sweep
+	// a deleted table is noticed at the next sweep
 	cfg.Cap.Egress.Sweep = schema.Duration(time.Second)
 	cfg.Cap.Table = &kernel.Table{ID: kernel.DefaultTable, Rules: []kernel.Rule{
 		{To: schema.MustPrefix(labLeaves[0]), Table: kernel.DefaultTable, Priority: 100},
@@ -457,7 +383,7 @@ func labConfig(t *testing.T) *config.Config {
 
 // labUplink makes the veth pair from the exit's namespace to the far host's,
 // addresses both ends and turns forwarding on at the exit before any device
-// of the node exists, so the egress device takes it from conf.default. Where
+// of the node exists, so the mesh tun takes it from conf.default. Where
 // master is not empty, a VRF of that name bound to the mesh table is made
 // first and the exit's end joins it before it is addressed. A kernel with no
 // VRF support skips the test, as the reconciler's own VRF test does.
@@ -689,35 +615,6 @@ func labUDPOf(raw []byte) (netip.Addr, uint16, []byte, bool) {
 		return netip.Addr{}, 0, nil, false
 	}
 	return to, binary.BigEndian.Uint16(raw[offset+2:]), raw[offset+8:], true
-}
-
-// labRuleHeader is a fib_rule_hdr of family sending to the main table
-func labRuleHeader(family uint8) []byte {
-	return []byte{family, 0, 0, 0, unix.RT_TABLE_MAIN, 0, 0, unix.FR_ACT_TO_TBL, 0, 0, 0, 0}
-}
-
-// labDeleteRule deletes the egress device's rule of family as another writer would, in the calling thread's namespace
-func labDeleteRule(family uint8) error {
-	netlink, err := openNetlinkRoute()
-	if err != nil {
-		return err
-	}
-	defer netlink.close()
-	return netlink.request(unix.RTM_DELRULE, 0, slices.Concat(labRuleHeader(family),
-		rtattr(unix.FRA_IIFNAME, cstring(labEgress)), rtattr(unix.FRA_PRIORITY, u32(labIIFPriority))))
-}
-
-// labRuleHeld reports a rule of family in the exit's namespace sending what arrives on the egress device to the main table at its priority
-func labRuleHeld(t testing.TB, exit *namespaceThread, family uint8) bool {
-	t.Helper()
-	var rules []kernelRule
-	if err := exit.do(func() (err error) {
-		rules, err = dumpRules()
-		return err
-	}); err != nil {
-		t.Fatalf("list the rules: %v", err)
-	}
-	return slices.Contains(rules, kernelRule{family: family, iif: labEgress, table: unix.RT_TABLE_MAIN, priority: labIIFPriority, protocol: kernel.DefaultProtocol})
 }
 
 // labMeshRoute reports a route to prefix in the mesh table of the exit's namespace

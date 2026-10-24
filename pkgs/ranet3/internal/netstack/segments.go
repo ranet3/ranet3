@@ -109,16 +109,13 @@ type SegmentCounters struct {
 	// Answered counts the ICMP errors sent for dropped packets, which is the
 	// half of Dropped a sender was told about.
 	Answered uint64
-	// Egressed counts the packets the egress device accepted
+	// Egressed counts the inner packets an egress segment handed to the tun
 	Egressed uint64
 	// Refused counts the packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for a source outside its allow list, an inner source it cannot read, an inner packet no router forwards or one the mesh routes no reply to, a part of Dropped never answered
 	Refused uint64
-	// NotReady counts the egress results dropped with no egress device installed, closed under the write or not ready for their family
+	// NotReady counts the egress results dropped as not ready for their family
 	// it is this node's own state, so it is not in Dropped
 	NotReady uint64
-	// Drained counts the packets read off the egress device and thrown away, each one a route into the wrong device
-	// a packet to an IPv6 multicast address of interface-local or link-local scope is the kernel's own and not counted
-	Drained uint64
 }
 
 func (m *Mesh) SegmentCounters() SegmentCounters {
@@ -133,7 +130,6 @@ func (m *Mesh) SegmentCounters() SegmentCounters {
 		Egressed:  m.segmentsEgressed.Load(),
 		Refused:   m.segmentsRefused.Load(),
 		NotReady:  m.segmentsNotReady.Load(),
-		Drained:   m.segmentsDrained.Load(),
 	}
 }
 
@@ -235,7 +231,10 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 		}
 	}
 	m.forwardSegments(forward)
-	m.writeEgress(egress)
+	if len(egress) != 0 {
+		m.segmentsEgressed.Add(uint64(len(egress)))
+		m.egress(egress)
+	}
 	if routed == nil {
 		return frames, nil
 	}
@@ -592,7 +591,6 @@ type segmentCounters struct {
 	segmentsEgressed  atomic.Uint64
 	segmentsRefused   atomic.Uint64
 	segmentsNotReady  atomic.Uint64
-	segmentsDrained   atomic.Uint64
 	// icmpLimit holds back the ICMP errors past their limits, its clock nanoseconds since segmentsStarted
 	icmpLimit icmpLimit
 	// withheldBySource and withheldByNode space the reports of the answers a source's bucket and the node's cap withheld, which the limit's shards count as IcmpOutRateLimitHost and IcmpOutRateLimitGlobal count them

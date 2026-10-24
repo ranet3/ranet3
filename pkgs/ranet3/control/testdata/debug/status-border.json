@@ -2,7 +2,6 @@
   "where": "nftables table inet ranet3 chain border",
   "inside": [
     "ranet3",
-    "ranet3e",
     "lo",
     "gravity"
   ],

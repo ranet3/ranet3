@@ -15,7 +15,7 @@ const (
 	// it holds every segment of the largest GSO frame a tun whose gso_max_segs is the read batch hands over, ReadPacketSpacing around each, as TestSlabHoldsTheLargestGSOFrame computes
 	// so it holds a packet of 65535 bytes whatever the device's MTU
 	outboundSlabSize = 2 * 65535
-	// inboundWriteBatchSize is the most packets one write to the mesh tun or the egress device carries
+	// inboundWriteBatchSize is the most packets one write to the mesh tun carries
 	// wireguard-go's tun write sizes its GRO tables for that many
 	inboundWriteBatchSize = 128
 	// inboundWriteQueueSize is the batches one inbound writer lane queues before a delivery to it waits
@@ -114,10 +114,6 @@ const segmentDropInterval = 30 * time.Second
 // egressPairs is how many source and destination pairs a batch keeps the egress check's answer for, each pair past them looked up again
 // a batch carries a few flows, and a search of the kept pairs costs less than the lookup it saves only while they are few
 const egressPairs = 8
-
-// egressDrainRetry is how long the egress device's drain waits after a read that failed other than by closing
-// it keeps a device that fails every read from spinning a core
-const egressDrainRetry = 100 * time.Millisecond
 
 // the intervals, the burst and the cap of the ICMP error limits are the Linux kernel's defaults, and the bound on the sources held and their shards are this node's own
 const (

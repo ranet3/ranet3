@@ -121,25 +121,34 @@ func TestSegmentsOfOursThatCannotBeActedOnAreDropped(t *testing.T) {
 		t.Errorf("a finished path at a waypoint returned %v (%v)", result.Action, result.Err)
 	}
 
-	// An exit reached with segments still to go.
-	exitSID := addr("3fff:1:69c:98d6::1")
-	exit, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(exitSID), Behavior: BehaviorEndDT46}}, everySource)
-	if err != nil {
-		t.Fatal(err)
-	}
-	midPath, err := Encapsulate(innerV6("payload"), addr("3fff:1:69c:8c0::1"),
-		[]netip.Addr{exitSID, addr("3fff:1:69c:29a6::1")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result := exit.Handle(midPath); result.Action != ActionDrop {
-		t.Errorf("an exit in the middle of a path returned %v", result.Action)
+	// An exit reached with segments still to go, from sources an egress
+	// segment allows, which is dropped and neither refused nor answered.
+	exitSID, source := addr("3fff:1:69c:98d6::1"), addr("3fff:1:69c:8c0::1")
+	for name, segment := range map[string]Segment{
+		"delivering to the mesh": {SID: schema.AddrFrom(exitSID), Behavior: BehaviorEndDT46},
+		"egress": {SID: schema.AddrFrom(exitSID), Behavior: BehaviorEndDT46, Deliver: DeliverEgress,
+			Allow: []schema.Prefix{schema.MustPrefix("3fff:1:69c:8c0::/60"), schema.MustPrefix("3fff:a::/64")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			exit, err := NewLocalTable([]Segment{segment}, everySource)
+			if err != nil {
+				t.Fatal(err)
+			}
+			midPath, err := Encapsulate(innerV6("payload"), source, []netip.Addr{exitSID, addr("3fff:1:69c:29a6::1")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := exit.Handle(midPath)
+			if result.Action != ActionDrop || errors.Is(result.Err, ErrSourceRefused) || errors.Is(result.Err, ErrHeaderInvalid) || errors.Is(result.Err, ErrHopLimit) {
+				t.Errorf("an exit in the middle of a path returned %v (%v), want a drop that is neither refused nor answered", result.Action, result.Err)
+			}
+		})
 	}
 }
 
-// An egress segment hands the egress device only a packet whose outer and inner
+// An egress segment hands egress only a packet whose outer and inner
 // sources both lie in its allow list, so it is never an open proxy. The inner
-// source is the one the device's stack reads, by the packet's own version, and
+// source is the one the host's stack reads, by the packet's own version, and
 // a sender outside the list is refused before its header is parsed, so it is
 // never answered about the header.
 func TestEgressSegmentCarriesOnlyTheSourcesItAllows(t *testing.T) {
@@ -193,7 +202,7 @@ func TestEgressSegmentCarriesOnlyTheSourcesItAllows(t *testing.T) {
 			case c.family == 0 && (result.Action != ActionDrop || !errors.Is(result.Err, ErrSourceRefused)):
 				t.Errorf("Handle returned %v (%v), want a refusal of the source", result.Action, result.Err)
 			case c.family != 0 && (result.Action != ActionEgress || result.Family != c.family || !bytes.Equal(result.Inner, inner)):
-				t.Errorf("Handle returned %v of family %d (%v), want the inner packet of family %d for the egress device",
+				t.Errorf("Handle returned %v of family %d (%v), want the inner packet of family %d for egress",
 					result.Action, result.Family, result.Err, c.family)
 			}
 		})

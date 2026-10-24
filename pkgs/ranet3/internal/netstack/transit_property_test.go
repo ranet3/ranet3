@@ -200,7 +200,7 @@ func towards(links [][]int, targets []int) []int {
 }
 
 // exactnessProbe is one packet the property sends from node from, as a read off its tun
-// mode 3 steers it to holder's egress SID, and want is the node whose tun or egress device it must reach alone, -1 for none
+// mode 3 steers it to holder's egress SID, and want is the node whose tun it must reach alone, -1 for none
 type exactnessProbe struct {
 	from, holder, want int
 	raw                []byte
@@ -208,8 +208,9 @@ type exactnessProbe struct {
 
 // a mesh of meshes joined by in-memory sessions over a drawn topology, its exits advertising drawn overlapping prefixes and its nodes holding drawn ones
 // a packet a node reads off its tun for a destination outside the overlay reaches the tun of exactly the node whose own entry the path's longest matches lead to, and of no other
-// a packet steered to an egress SID reaches the egress device of exactly the node holding the SID, and no tun, whatever the tables say of its inner destination
-// and no node writes to its tun a packet it does not resolve as its own
+// a packet steered to an egress SID reaches the tun of exactly the node holding the SID as an egressed write, whatever the tables say of its inner destination
+// and no node writes to its tun a packet it does not resolve as its own but as an egressed write at its egress SID
+// a write is told egressed from the probe it carries, a probe steered to the writing node's SID, and the holder's Egressed counts each one
 func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		n := hegel.Draw(ht, pbt.Spanning(2, 6))
@@ -275,7 +276,6 @@ func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
 		var handoffs atomic.Int64
 		meshes := make([]*Mesh, n)
 		tuns := make([]*scriptedDevice, n)
-		egresses := make([]*fakeEgress, n)
 		peers := make([]map[int]*Peer, n)
 		var all []*Peer
 		for i := range n {
@@ -294,8 +294,6 @@ func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
 					ht.Fatal(err)
 				}
 				m.SetSegments(table)
-				egresses[i] = newFakeEgress()
-				m.SetEgress(egresses[i])
 				m.SetEgressReady(true, true)
 			}
 			meshes[i], peers[i] = m, make(map[int]*Peer)
@@ -319,6 +317,17 @@ func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
 				}
 				meshes[i].Routes.Set(netip.Prefix{}, entry.prefix, value)
 			}
+		}
+		// each exit advertises what it originates through cap.egress, so a verdict through a prefix counting as a default is handed to egress
+		advertised := make([][]netip.Prefix, n)
+		for prefix, exits := range originators {
+			for _, exit := range exits {
+				advertised[exit] = append(advertised[exit], prefix)
+			}
+		}
+		for i, prefixes := range advertised {
+			meshes[i].SetEgressPrefixes(prefixes)
+			meshes[i].SetAdvertisedReady(true, true)
 		}
 
 		// the path a packet the model's tables send, from the read off from's tun, ends at the node that holds its destination as its own
@@ -390,26 +399,26 @@ func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
 
 		reached := make(map[[2]int][]string)
 		for i := range n {
+			var egressed uint64
 			for _, write := range tunWrites(&tuns[i].recordingDevice) {
 				for _, raw := range write {
+					id, ok := probeOf(raw)
+					if ok && probes[id].holder == i {
+						egressed++
+						reached[[2]int{id, i}] = append(reached[[2]int{id, i}], "egress")
+						continue
+					}
 					src, dst, _ := packet.Addrs(raw)
 					if _, verdict, _ := meshes[i].Routes.Resolve(src, dst); verdict != RouteLocal && !linkScoped(dst) {
 						ht.Fatalf("node %d wrote to its tun a packet from %s to %s it resolves as verdict %d", i, src, dst, verdict)
 					}
-					if id, ok := probeOf(raw); ok {
+					if ok {
 						reached[[2]int{id, i}] = append(reached[[2]int{id, i}], "tun")
 					}
 				}
 			}
-			if egresses[i] == nil {
-				continue
-			}
-			for _, write := range egresses[i].accepted() {
-				for _, raw := range write {
-					if id, ok := probeOf(raw); ok {
-						reached[[2]int{id, i}] = append(reached[[2]int{id, i}], "egress")
-					}
-				}
+			if got := meshes[i].SegmentCounters().Egressed; got != egressed {
+				ht.Fatalf("node %d counted %d egressed and wrote %d probes steered to its SID to its tun", i, got, egressed)
 			}
 		}
 		for id, probe := range probes {

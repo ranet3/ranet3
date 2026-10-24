@@ -50,7 +50,7 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	}
 	rt := Runtime{
 		Interface:     "ranet0",
-		Egress:        "ranet0e",
+		Steered:       true,
 		MeshAddresses: []netip.Addr{netip.MustParseAddr("10.88.0.2"), netip.MustParseAddr("2001:db8::2")},
 		Forwarding:    func() (bool, bool) { return true, true },
 	}
@@ -63,8 +63,8 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 
 	tr := newTranslator(cfg, rt, be)
 	desired := tr.desired()
-	if len(desired) != 7 {
-		t.Fatalf("the configuration asks for %d rules, want two out of the mesh device, two out of the egress device and three in", len(desired))
+	if len(desired) != 5 {
+		t.Fatalf("the configuration asks for %d rules, want two out of the mesh device and three in", len(desired))
 	}
 	if err := be.Apply(desired, nil); err != nil {
 		t.Fatalf("install %d rules: %v", len(desired), err)
@@ -163,7 +163,7 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 		t.Errorf("withdrawing an empty host failed: %v", err)
 	}
 
-	// an exit advertising nothing still owns a table in each family, for what arrives on its egress device
+	// an exit advertising nothing still owns a table in each family, for what its egress segment writes to the tun
 	steered, err := newBackend(Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend for an exit advertising nothing: %v", err)
@@ -207,7 +207,7 @@ func TestNftablesNotifiesAnotherWritersChange(t *testing.T) {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	enterThrowawayNamespace(t)
-	rt := Runtime{Interface: "ranet0", Egress: "ranet0e"}
+	rt := Runtime{Interface: "ranet0", Steered: true}
 	be, err := newBackend(Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -307,9 +307,8 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	enterThrowawayNamespace(t)
 	rt := Runtime{
 		Interface:  "ranet0",
-		Egress:     "ranet0e",
+		Steered:    true,
 		Forwarding: func() (bool, bool) { return true, true },
-		Device:     func() (error, error) { return nil, nil },
 	}
 	be, err := newBackend(Egress{}, rt)
 	if err != nil {
@@ -393,9 +392,8 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 	}
 	rt := Runtime{
 		Interface:  "ranet0",
-		Egress:     "ranet0e",
+		Steered:    true,
 		Forwarding: func() (bool, bool) { return true, true },
-		Device:     func() (error, error) { return nil, nil },
 		Ready: func(v4, v6, _ bool) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -569,7 +567,7 @@ func TestNftablesWakesMissedOnAnOverflow(t *testing.T) {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	enterThrowawayNamespace(t)
-	be, err := newBackend(Egress{}, Runtime{Interface: "ranet0", Egress: "ranet0e"})
+	be, err := newBackend(Egress{}, Runtime{Interface: "ranet0", Steered: true})
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
 	}

@@ -224,11 +224,14 @@ func hasOptions(raw []byte) bool { return raw[0]&0x0f > 5 }
 // decide runs the forwarding decision over frames, which a session delivered and no segment of this node took, in the order they came
 // granted marks the frames an End.DT46 delivering to the mesh took out of their outer headers, which go on whatever cap.transit says, nil where there are none
 // from is the peer of the session they came through, nil for frames of no session
-// it returns the frames for the tun in the order they came, filtered in place
+// it returns the frames for the tun in the order they came, filtered in place, and hands egress the ones through a prefix cap.egress advertises that counts as a default
 // the checks run in RFC 1812's order for IPv6 as for IPv4, each before any answer, so a malformed packet draws none
 func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 	transit := m.transitOn.Load()
 	var tally transitTally
+	var egressed [][]byte
+	// declared first so it runs after the tally is added, and a reader that has the frame finds it counted
+	defer func() { m.egress(egressed) }()
 	defer m.addTally(&tally)
 	out := frames[:0]
 	var b *outboundBatch
@@ -276,6 +279,15 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 					m.dropTransit(&tally, reason, src, dst)
 					continue
 				}
+			}
+			// a counted announcement of cap.route has no translator behind it, so only cap.egress's are handed to egress
+			if match.Counted && match.Egress {
+				if egressed == nil {
+					egressed = make([][]byte, 0, len(frames)-i)
+				}
+				egressed = append(egressed, frame)
+				tally[transitDelivered]++
+				continue
 			}
 			out = append(out, frame)
 			tally[transitDelivered]++
@@ -374,7 +386,7 @@ func (m *Mesh) replyRoute(source, destination netip.Addr) (*Peer, Verdict, Match
 	return m.Routes.Resolve(destination, source)
 }
 
-// readyFor reports the translation of family, an srv6 next header, ready, through the egress device or for an advertised prefix as advertised says
+// readyFor reports the translation of family, an srv6 next header, ready, for the egress segments or for an advertised prefix as advertised says
 // both words are read once a batch
 func (m *Mesh) readyFor(check *egressCheck, family uint8, advertised bool) bool {
 	if !check.readyRead {

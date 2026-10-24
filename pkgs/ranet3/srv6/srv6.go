@@ -28,7 +28,7 @@
 //     the [Segment] list and the overlay every SID admits an outer source
 //     from, and [LocalTable.Handle] returns a [Result] saying whether to pass
 //     the packet on untouched, forward it to the [Result.Next] segment,
-//     deliver the [Result.Inner] packet to the mesh or to the egress device,
+//     deliver the [Result.Inner] packet to the mesh or out of it to egress,
 //     or drop it. [End] and [Decap] are End and End.DT46 on their own.
 //   - Choosing. [NewSteerTable] takes the [Steer] list and [SteerTable.Lookup]
 //     answers which [Policy], if any, one of this node's own packets takes.
@@ -49,11 +49,12 @@
 //
 // # What it does not read
 //
-// A routing header is found behind the hop-by-hop and destination options
-// headers RFC 8200 section 4.1 allows ahead of it, as ipv6_find_hdr walks to
-// it. A packet whose routing header lies behind a fragment header is refused
-// rather than reassembled, and so is one with more extension headers ahead of
-// it than this package walks.
+// A routing header is found behind hop-by-hop and destination options headers
+// in any order, and behind no other kind, so one behind an authentication
+// header is not found, where ipv6_find_hdr walks past an authentication header
+// to it. Neither kind's options are read. A packet whose routing header lies
+// behind a fragment header is refused rather than reassembled, and so is one
+// with more extension headers ahead of it than this package walks.
 //
 // [RFC 8754]: https://www.rfc-editor.org/rfc/rfc8754
 // [RFC 8986]: https://www.rfc-editor.org/rfc/rfc8986
@@ -80,8 +81,9 @@ const (
 	// Next Header values, from the IANA protocol registry. Routing is the
 	// SRH's own, and the two below it announce an encapsulated inner packet.
 	nextHeaderRouting = 43
-	// The headers RFC 8200 section 4.1 allows in front of a routing header,
-	// and the fragment header, which findRouting refuses rather than walks.
+	// The kinds findRouting passes on its way to a routing header, which
+	// RFC 8200 section 4.1's order puts ahead of it, and the fragment header,
+	// which it refuses rather than walks.
 	nextHeaderHopByHop  = 0
 	nextHeaderDestOpts  = 60
 	nextHeaderFragment  = 44
@@ -153,8 +155,8 @@ type Header struct {
 	// packet is NextHeaderIPv4 or NextHeaderIPv6.
 	NextHeader uint8
 	// Offset is where the routing header starts, which is not always straight
-	// after the fixed header: RFC 8200 section 4.1 puts a hop-by-hop header in
-	// front of it and allows destination options there too.
+	// after the fixed header: hop-by-hop and destination options headers may
+	// come ahead of it, as RFC 8200 section 4.1's order puts them.
 	Offset int
 }
 
@@ -309,9 +311,9 @@ func writeOuter(out, inner []byte, source netip.Addr, path []netip.Addr) {
 }
 
 // DefaultHopLimit is the outer budget an IPv4 inner packet gets, since its TTL
-// is not an IPv6 hop limit to copy. It takes the RFC 8200 recommended default
-// rather than a mesh-sized number, so a segment list that loops dies at the
-// same count anything else does.
+// is not an IPv6 hop limit to copy. It takes 64, the hop limit linux gives the
+// packets it sends (IPV6_DEFAULT_HOPLIMIT), rather than a mesh-sized number,
+// so a segment list that loops dies at the same count anything else does.
 const DefaultHopLimit = 64
 
 // Parse reads the routing header of an IPv6 packet, and reports
@@ -384,10 +386,10 @@ func Parse(raw []byte) (Header, error) {
 	return header, nil
 }
 
-// findRouting walks the extension header chain to the routing header. RFC 8200
-// section 4.1 puts a hop-by-hop header ahead of it and allows destination
-// options there as well, and ipv6_find_hdr walks the same chain, so a header a
-// kernel acts on is one this node finds rather than passes over.
+// findRouting walks the extension header chain to the routing header. It
+// passes hop-by-hop and destination options headers, the kinds RFC 8200
+// section 4.1's order puts ahead of it, in any order, and no other kind, so a
+// routing header behind an authentication header, say, is not found.
 //
 // A fragment is refused rather than walked past, because a segment list spread
 // across fragments needs reassembly this package does not do. The number of

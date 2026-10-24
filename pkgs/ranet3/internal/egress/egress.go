@@ -52,8 +52,8 @@
 // closes that. BorderFilter owns a second table of this tool's name, inet
 // rather than ip and ip6, holding one filter chain at prerouting and priority
 // raw, before conntrack, so a forged packet creates no connection entry. It
-// accepts whatever arrives on a device inside the mesh, the tun, the egress
-// device, lo and the VRF master the tun is enslaved to, then drops a source
+// accepts whatever arrives on a device inside the mesh, the tun, lo and the
+// VRF master the tun is enslaved to, then drops a source
 // in the mesh's own prefixes, any routing header and this node's own SIDs as
 // destinations, in that order, each drop counted. The routing header rule
 // takes every type, since nf_tables finds only the first routing header of a
@@ -70,8 +70,8 @@
 // table. The filter keeps its table through `ranet3 down`, since it guards
 // the host's links rather than the mesh, and withdraws it last at shutdown,
 // after nothing routes into the tun. Its readiness is a condition of every
-// family on the egress device, so an exit whose border is down stops
-// egressing until a pass puts it back.
+// family the egress segments carry, so an exit whose border is down stops
+// egressing them until a pass puts it back.
 package egress
 
 import (
@@ -103,10 +103,6 @@ const (
 // and is not written yet.
 var ErrUnsupported = errors.New("egress: source translation is unsupported on this platform")
 
-// ErrDeviceGone is wrapped by a Runtime.Device error saying the egress device
-// no longer exists, which leaves neither family a device to leave by
-var ErrDeviceGone = errors.New("the egress device is gone")
-
 // Egress is the cap.egress capability: this node carries other nodes' traffic
 // out of the mesh, the one action behind an exit node and a subnet router.
 // Writing the block turns it on. There is no enable field to forget.
@@ -118,8 +114,8 @@ type Egress struct {
 	// carry is one it has no reason to translate out of the mesh.
 	Advertise []schema.Prefix `yaml:"advertise,omitempty" json:"advertise,omitempty" toml:"advertise,omitempty"`
 	// Source4 and Source6 are the address a translated packet leaves under,
-	// per family, out of the mesh device and out of the egress device alike:
-	// a property of the node rather than of the path a packet took. See
+	// per family, whether it came through an advertised prefix or an egress
+	// segment: a property of the node rather than of the path a packet took. See
 	// Source: "auto" is the address this node's own routes would have used,
 	// which is the only answer available to a deployment that owns no address
 	// block.
@@ -148,12 +144,10 @@ type Runtime struct {
 	// advertised family, while one arriving on it and leaving by it again is
 	// mesh transit and is left alone.
 	Interface string
-	// Egress is the egress device, named as the kernel named it: the second
-	// tun a local segment delivering to egress writes steered traffic into.
-	// A packet arriving on it and leaving by any link but the mesh device is
-	// translated, in both families, since End.DT46 delivers either. Empty
-	// where no segment delivers there.
-	Egress string
+	// Steered is whether a local segment delivers to egress, writing its inner
+	// packets to the mesh device. Both families are then translated, since
+	// End.DT46 delivers either, whatever the advertised prefixes cover.
+	Steered bool
 	// MeshAddresses are the addresses this node carries on the mesh, which
 	// "auto" resolves to for the return direction. They have to be unique per
 	// node and routable within the mesh, which a mesh address already is.
@@ -167,19 +161,10 @@ type Runtime struct {
 	// empty list while nothing may be advertised. Nil means the caller does
 	// not announce, which only a test does.
 	Announce func([]netip.Prefix)
-	// Device reports per family why the egress device cannot pass it, nil
-	// while it can: the kernel forwards an IPv4 packet arriving on it only
-	// while its effective rp_filter is 0 and its own forwarding is on, and
-	// discards every IPv6 packet arriving on it while its disable_ipv6 is set.
-	// An error wrapping ErrDeviceGone holds its family not ready ahead of
-	// every other reason. Read on every pass beside Forwarding, and required
-	// with Egress.
-	Device func() (v4, v6 error)
-	// Ready receives the egress device's readiness per family, and whether
+	// Ready receives the egress segments' readiness per family, and whether
 	// the egress SIDs are served, whenever one of the three moves, starting
-	// from none. A family is ready while its chain, which holds its rule
-	// keyed on the egress device, reads back exactly as written, the host
-	// forwards it and Device passes it, and is reported not ready before the
+	// from none. A family is ready while its chain reads back exactly as
+	// written and the host forwards it, and is reported not ready before the
 	// tables are withdrawn. The SIDs are served
 	// while at least one family is ready and every family the host forwards
 	// is. Nil where nothing reads it, which only a test does.
@@ -283,9 +268,9 @@ func (e Egress) Serves(steered bool) error {
 }
 
 // translated is the address families a translator of this capability covers:
-// those it advertises, and both beside an egress device.
-func (e Egress) translated(egress string) []uint8 {
-	if egress != "" {
+// those it advertises, and both beside an egress segment.
+func (e Egress) translated(steered bool) []uint8 {
+	if steered {
 		return []uint8{FamilyIPv4, FamilyIPv6}
 	}
 	return e.families()
@@ -355,12 +340,6 @@ type Rule struct {
 	Direction Direction
 	// Interface is the mesh device the direction is relative to.
 	Interface string
-	// Egress keys an Out rule on the egress device in place of the mesh
-	// device: a packet arriving on it and leaving by any link but the mesh
-	// device is translated. Empty keys the rule on the mesh device. On an In
-	// rule it is excluded as an arrival, since what the egress device carries
-	// came out of the mesh and never from behind this node.
-	Egress string
 	// Source is the address to translate to. An invalid address means the
 	// backend lets the host pick, which is nftables masquerade: the address of
 	// the link the packet is leaving by, chosen per packet.
@@ -379,14 +358,7 @@ func (r Rule) String() string {
 	if r.Source.IsValid() {
 		source = "source " + r.Source.String()
 	}
-	parts := []string{r.Direction.String(), "via", r.Interface}
-	switch {
-	case r.Egress != "" && r.Direction == In:
-		parts = append(parts, "not", r.Egress)
-	case r.Egress != "":
-		parts = []string{r.Direction.String(), "via", r.Egress, "not", r.Interface}
-	}
-	parts = append(parts, familyName(r.Family))
+	parts := []string{r.Direction.String(), "via", r.Interface, familyName(r.Family)}
 	if r.From.IsValid() {
 		parts = append(parts, "from", r.From.String())
 	}
@@ -470,7 +442,7 @@ type Stats struct {
 	Announced []netip.Prefix
 	Conflicts []string
 	Err       string
-	// Ready4 and Ready6 are false on a node with no egress device, and
+	// Ready4 and Ready6 are false on a node with no egress segment, and
 	// Unready is empty while both are ready
 	Ready4, Ready6 bool
 	Unready        string
@@ -518,20 +490,14 @@ func New(cfg Egress, rt Runtime) (*Translator, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	if err := cfg.Serves(rt.Egress != ""); err != nil {
+	if err := cfg.Serves(rt.Steered); err != nil {
 		return nil, err
 	}
 	if rt.Interface == "" {
 		return nil, errors.New("egress: the mesh interface is required")
 	}
-	if rt.Egress == rt.Interface {
-		return nil, fmt.Errorf("egress: the egress device %s is the mesh device, whose traffic out of the mesh its own rule translates", rt.Egress)
-	}
 	if rt.Forwarding == nil {
 		return nil, errors.New("egress: a forwarding reader is required")
-	}
-	if rt.Egress != "" && rt.Device == nil {
-		return nil, errors.New("egress: the egress device needs a reader of what it passes")
 	}
 	// Resolved before the backend is opened, so a return direction with no
 	// mesh address to translate to is refused with nothing to clean up.
@@ -672,7 +638,7 @@ func (t *Translator) Announce() []netip.Prefix {
 // Run returns the withdrawal error, never a reconcile error: a failed pass is
 // logged, costs the advertisement, and is retried.
 func (t *Translator) Run(ctx context.Context) error {
-	slog.Info("egress translator started", "interface", t.rt.Interface, "egress", t.rt.Egress, "where", t.Where(),
+	slog.Info("egress translator started", "interface", t.rt.Interface, "steered", t.rt.Steered, "where", t.Where(),
 		"advertise", len(t.cfg.Advertise))
 	ticker := time.NewTicker(t.cfg.sweep())
 	defer ticker.Stop()
@@ -831,7 +797,7 @@ func (t *Translator) reconcile() error {
 			announced = append(announced, entry.Prefix)
 		}
 	}
-	if t.rt.Egress != "" {
+	if t.rt.Steered {
 		t.setSteeredReady(unwritten, forwards)
 	}
 	moved := t.publish(announced)
@@ -907,21 +873,12 @@ func sameFamilyRules(held []Installed, desired []Rule, family uint8) bool {
 // one family at a time, and a list ordered any other way would never compare
 // equal to its own readback and would be rewritten on every pass forever.
 //
-// Within a family the Out rules come first, the one keyed on the mesh device
-// where the family is advertised and the one keyed on the egress device where
-// there is one, because a chain reads top to bottom.
+// Within a family the one Out rule comes first, because a chain reads top to
+// bottom.
 func (t *Translator) desired() []Rule {
 	var out []Rule
-	for _, family := range t.cfg.translated(t.rt.Egress) {
-		rule := Rule{Family: family, Direction: Out, Interface: t.rt.Interface, Source: t.cfg.source(family).Addr}
-		if slices.Contains(t.cfg.families(), family) {
-			out = append(out, rule)
-		}
-		if t.rt.Egress != "" {
-			steered := rule
-			steered.Egress = t.rt.Egress
-			out = append(out, steered)
-		}
+	for _, family := range t.cfg.translated(t.rt.Steered) {
+		out = append(out, Rule{Family: family, Direction: Out, Interface: t.rt.Interface, Source: t.cfg.source(family).Addr})
 		if !t.cfg.Return {
 			continue
 		}
@@ -936,7 +893,7 @@ func (t *Translator) desired() []Rule {
 			if addressFamily(prefix.Addr()) != family {
 				continue
 			}
-			inbound := Rule{Family: family, Direction: In, Interface: t.rt.Interface, Egress: t.rt.Egress, Source: source}
+			inbound := Rule{Family: family, Direction: In, Interface: t.rt.Interface, Source: source}
 			// A prefix covering every address narrows nothing, and a rule
 			// carrying it would encode a mask no packet fails, so it is left
 			// off and the rule selects on the direction alone.
@@ -974,26 +931,21 @@ func (t *Translator) publish(prefixes []netip.Prefix) bool {
 	return true
 }
 
-// setSteeredReady judges each family beside an egress device. Every family's
-// chain then holds a rule keyed on the device, so a chain reading back as
-// written, with no entry in unwritten, covers that rule.
+// setSteeredReady judges each family beside an egress segment. Every family's
+// chain then holds its rule keyed on the mesh device, so a chain reading back
+// as written, with no entry in unwritten, covers that rule.
 func (t *Translator) setSteeredReady(unwritten map[uint8]string, forwards map[uint8]bool) {
-	judge := func(family uint8, device error) (bool, string) {
+	judge := func(family uint8) (bool, string) {
 		switch {
-		case errors.Is(device, ErrDeviceGone):
-			return false, device.Error()
 		case unwritten[family] != "":
 			return false, unwritten[family]
 		case !forwards[family]:
 			return false, "the kernel does not forward " + familyName(family)
-		case device != nil:
-			return false, device.Error()
 		}
 		return true, ""
 	}
-	device4, device6 := t.rt.Device()
-	ready4, why4 := judge(FamilyIPv4, device4)
-	ready6, why6 := judge(FamilyIPv6, device6)
+	ready4, why4 := judge(FamilyIPv4)
+	ready6, why6 := judge(FamilyIPv6)
 	t.forwards4, t.forwards6 = forwards[FamilyIPv4], forwards[FamilyIPv6]
 	t.setReady(ready4, ready6, why4, why6)
 }
@@ -1013,9 +965,9 @@ func (t *Translator) setReady(v4, v6 bool, why4, why6 string) {
 		switch {
 		case moved.was == moved.ready:
 		case moved.ready:
-			slog.Info("egress segments ready", "family", familyName(moved.family), "device", t.rt.Egress)
+			slog.Info("egress segments ready", "family", familyName(moved.family))
 		default:
-			slog.Warn("egress segments not ready", "family", familyName(moved.family), "device", t.rt.Egress, "detail", moved.why)
+			slog.Warn("egress segments not ready", "family", familyName(moved.family), "detail", moved.why)
 		}
 	}
 	t.ready4, t.ready6, t.serves = v4, v6, serves

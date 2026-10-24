@@ -61,7 +61,7 @@ func (b Border) Validate() error {
 // BorderRuntime holds what the command resolves at startup for the filter
 type BorderRuntime struct {
 	// Inside names the devices whose traffic the filter takes whatever it
-	// carries: the mesh tun, the egress device, lo and the VRF master the tun
+	// carries: the mesh tun, lo and the VRF master the tun
 	// is enslaved to, which a packet arriving on the tun meets prerouting as a
 	// second time
 	Inside []string
@@ -249,7 +249,7 @@ type borderConfig struct {
 }
 
 // BorderFilter owns the border chain on one node: its table, its readback and
-// the readiness the egress device's families wait for
+// the readiness the egress segments' families wait for
 type BorderFilter struct {
 	rt    BorderRuntime
 	be    borderBackend
@@ -391,7 +391,7 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 		case <-f.wake:
 			f.trigger = "reload"
 		case <-f.be.Changed():
-			// the chain may be gone or bypassed already, so the egress device stops before the pass that puts it back
+			// the chain may be gone or bypassed already, so the egress segments stop before the pass that puts it back
 			f.trigger = "changed"
 			f.setReady(false, "another writer changed its table")
 		case <-f.be.Missed():

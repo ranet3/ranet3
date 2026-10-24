@@ -55,11 +55,11 @@ func tagged(raw []byte, frames int) (int, bool) {
 
 // a drawn batch mixes passed packets, packets for an End.DT46 to the mesh, a waypoint and an egress segment
 // egress packets with both sources in the allow list, with the outer or the inner one outside it, of either inner family
-// and headers the waypoint refuses, with an egress device installed or none, and each family ready to egress or not
-// every frame ends in exactly one place, the mesh tun, the egress device, the forward path or a counter alone
-// the place is the one its kind names, and an allowed egress packet with no device or of a family not ready is counted not ready
-// so no packet with a source outside the allow list reaches the egress device or the mesh tun
-// each destination takes its frames in batch order, the egress device in at most one write
+// and headers the waypoint refuses, with each family ready to egress or not
+// every frame ends in exactly one place, the tun as a delivery, the tun as an egress result, the forward path or a counter alone
+// the place is the one its kind names, and an allowed egress packet of a family not ready is counted not ready
+// so no packet with a source outside the allow list reaches the tun
+// each place takes its frames in batch order, the egress results in one write of their own ahead of the deliveries
 // an answer quotes only a refused header, never a refused source
 // and each counter counts exactly the frames of the kinds it names
 func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
@@ -78,7 +78,7 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 			if kinds[i] == kindInnerOutside {
 				source = stranger[family]
 			}
-			inner := plainV6(source, segAddr("2001:4860:4860::8888"), string(frameTag(i)))
+			inner := plainV6(source, segAddr("2001:db8:4860::8888"), string(frameTag(i)))
 			if family == 4 {
 				inner = udpPacket(source, tooBigDestination[4], 20+8+len(frameTag(i)), false)
 				copy(inner[20+8:], frameTag(i))
@@ -98,7 +98,6 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 				frames[i] = plainV6(headend, egressWaypoint, string(frameTag(i)))
 			}
 		}
-		present := hegel.Draw(ht, hegel.Booleans())
 		ready := map[int]bool{4: hegel.Draw(ht, hegel.Booleans()), 6: hegel.Draw(ht, hegel.Booleans())}
 
 		m, meshTUN := egressMesh(ht)
@@ -108,10 +107,6 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 		answers := back.peer(ht, "back")
 		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(headend, 128), answers)
 		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(stranger[6], 128), answers)
-		dev := newFakeEgress()
-		if present {
-			m.SetEgress(dev)
-		}
 		m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
 
 		reached := make([][]segmentPlace, len(kinds))
@@ -124,15 +119,16 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 			reached[i] = append(reached[i], place)
 			order[place] = append(order[place], i)
 		}
-		for _, write := range tunWrites(meshTUN) {
-			for _, raw := range write {
-				receive(placeTUN, raw)
+		// a write is the egress results' where it carries one, which the frame's kind tells, and the first such write must be the tun's first
+		var egressWrites []int
+		for w, write := range tunWrites(meshTUN) {
+			place := placeTUN
+			if i, ok := tagged(write[0], len(kinds)); ok && kinds[i] == kindEgress {
+				place = placeEgress
+				egressWrites = append(egressWrites, w)
 			}
-		}
-		writes := dev.accepted()
-		for _, write := range writes {
 			for _, raw := range write {
-				receive(placeEgress, raw)
+				receive(place, raw)
 			}
 		}
 		for _, raw := range next.packets(ht) {
@@ -152,7 +148,7 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 				place = placeForward
 				want.Forwarded++
 			case kindEgress:
-				if present && ready[families[i]] {
+				if ready[families[i]] {
 					place = placeEgress
 					want.Egressed++
 				} else {
@@ -169,7 +165,7 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 				wantReached = []segmentPlace{place}
 			}
 			if !slices.Equal(reached[i], wantReached) {
-				ht.Fatalf("frame %d of kind %d and family %d with the device present %v and ready %v reached %v, want %v", i, kind, families[i], present, ready, reached[i], wantReached)
+				ht.Fatalf("frame %d of kind %d and family %d with ready %v reached %v, want %v", i, kind, families[i], ready, reached[i], wantReached)
 			}
 		}
 		for place, frames := range order {
@@ -179,8 +175,8 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 				}
 			}
 		}
-		if len(writes) > 1 {
-			ht.Fatalf("the egress device took %d writes from one batch", len(writes))
+		if len(egressWrites) > 1 || len(egressWrites) == 1 && egressWrites[0] != 0 {
+			ht.Fatalf("the egress results reached the tun as its writes %v, want one write ahead of the deliveries", egressWrites)
 		}
 		sent := back.packets(ht)
 		for _, answer := range sent {
@@ -190,7 +186,7 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 		}
 		want.Answered = uint64(len(sent))
 		if got := m.SegmentCounters(); got != want {
-			ht.Fatalf("the batch %v of families %v with the device present %v and ready %v counted %+v, want %+v", kinds, families, present, ready, got, want)
+			ht.Fatalf("the batch %v of families %v with ready %v counted %+v, want %+v", kinds, families, ready, got, want)
 		}
 	})
 }

@@ -472,8 +472,8 @@ func oversizedV6() []byte {
 	return append(raw, make([]byte, 0xffff-len(raw))...)
 }
 
-// RFC 8200 section 4.1 puts a hop-by-hop header ahead of the routing header
-// and allows destination options there too, and ipv6_find_hdr walks to it. A
+// RFC 8200 section 4.1's order puts hop-by-hop and destination options headers
+// ahead of the routing header, and ipv6_find_hdr walks past them to it. A
 // parser that reads only the byte after the fixed header sees no segment list
 // in a packet a kernel acts on, and refuses it as addressed to one of this
 // node's own segments with nothing in it.

@@ -29,7 +29,6 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 	"ranet3.com/pkgs/ranet3/transport"
-	"ranet3.com/pkgs/wireguard/tun"
 )
 
 type Client struct {
@@ -102,14 +101,10 @@ type Client struct {
 	// a running node.
 	egressStatus   atomic.Pointer[func() control.EgressStatus]
 	egressAnnounce atomic.Pointer[func() []netip.Prefix]
-	// egressDevice is set once by New and empty on a node with no egress device
-	egressDevice string
-	// egressWithdrawn makes Close report the device's removal once
-	egressWithdrawn atomic.Bool
 	// egressServes is the translator's last word on whether the egress SIDs are served
 	egressServes atomic.Bool
 	// borderHeld is a cap.border whose chain is not read back, which holds
-	// both families of the egress device and the egress SIDs back
+	// both families of the egress segments and the egress SIDs back
 	borderHeld atomic.Bool
 	// republishMu runs one republish at a time, each reading the stored
 	// configuration, egressServes and borderHeld once it holds it, so the last
@@ -227,16 +222,8 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	if err != nil {
 		return nil, err
 	}
-	// before the mesh tun, so a platform with no egress device refuses with nothing made
-	egressName, egressDevice, err := newEgressDevice(cfg, mtu)
-	if err != nil {
-		return nil, err
-	}
 	mesh, err := netstack.NewNamed(mtu, cfg.Link.TUN, bus.Emit)
 	if err != nil {
-		if egressDevice != nil {
-			_ = egressDevice.Close()
-		}
 		return nil, err
 	}
 	mesh.SetSegments(segments)
@@ -246,38 +233,7 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 			mesh.Close()
 		}
 	}()
-	if egressDevice != nil {
-		// the mesh owns the device from here and closes it with itself, which removes the link
-		mesh.SetEgress(egressDevice)
-		slog.Info("egress device created", "name", egressName, "mtu", mtu)
-		bus.Emit("egress.device", "", slog.String("name", egressName), slog.String("action", "created"))
-	}
-	c, err := newClient(cfg, privateKey, x, mesh, nil, bus)
-	if err != nil {
-		return nil, err
-	}
-	c.egressDevice = egressName
-	return c, nil
-}
-
-func newEgressDevice(cfg *config.Config, mtu int) (string, tun.Device, error) {
-	segments := cfg.Segments().Egress()
-	if len(segments) == 0 {
-		return "", nil, nil
-	}
-	name, err := netstack.EgressName(cfg.Link.TUN)
-	if err != nil {
-		return "", nil, fmt.Errorf("config: %w", err)
-	}
-	device, err := netstack.NewEgressDevice(name, mtu)
-	return name, device, egressDeviceRefusal(segments[0], err)
-}
-
-func egressDeviceRefusal(segment srv6.Segment, err error) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("cap.segment local %s delivers to egress: %w", segment.SID, err)
+	return newClient(cfg, privateKey, x, mesh, nil, bus)
 }
 
 // steeredMTU is the device MTU for sessions carrying packets of up to largest bytes
@@ -464,23 +420,9 @@ func (c *Client) Close() {
 		_ = c.network.Close()
 	}
 	c.Mesh.Close()
-	if c.egressDevice != "" && c.egressWithdrawn.CompareAndSwap(false, true) {
-		slog.Info("egress device withdrawn", "name", c.egressDevice)
-		c.events.Emit("egress.device", "", slog.String("name", c.egressDevice), slog.String("action", "withdrawn"))
-	}
 }
 
-func (c *Client) EgressDevice() string { return c.egressDevice }
-
-// EgressDeviceReader is nil on a node with no egress device
-func (c *Client) EgressDeviceReader() func() (v4, v6 error) {
-	if c.egressDevice == "" {
-		return nil
-	}
-	return egressDeviceReader(c.egressDevice)
-}
-
-// SetEgressReady takes the translator's readiness of the egress device per
+// SetEgressReady takes the translator's readiness of the egress segments per
 // family and its word on whether the egress SIDs are served. The mesh learns
 // it before the SID's /128 is originated or retracted: a packet the /128
 // attracts finds the mesh writing, and a packet arriving after the
@@ -495,7 +437,7 @@ func (c *Client) SetEgressReady(v4, v6, serves bool) {
 }
 
 // SetBorderReady takes whether the border filter's chain reads back as the
-// configuration asks. Neither family of the egress device is ready, and no
+// configuration asks. Neither family of the egress segments is ready, and no
 // egress SID is served, while it does not, in the order SetEgressReady keeps.
 func (c *Client) SetBorderReady(ok bool) {
 	c.egressMu.Lock()
@@ -530,16 +472,12 @@ type borderFilter interface {
 func (c *Client) SetBorder(f borderFilter) { c.border.Store(&f) }
 
 // BorderInside is the devices the border filter accepts whatever they carry:
-// the mesh tun, the egress device where one exists, lo, through which a packet
-// this host sends to its own address meets prerouting, and the VRF master the
-// tun is enslaved to, as which a packet arriving on the tun meets prerouting a
-// second time. A reload moves none of them.
+// the mesh tun, lo, through which a packet this host sends to its own address
+// meets prerouting, and the VRF master the tun is enslaved to, as which a
+// packet arriving on the tun meets prerouting a second time. A reload moves
+// none of them.
 func (c *Client) BorderInside() []string {
-	inside := []string{c.Mesh.Name}
-	if c.egressDevice != "" {
-		inside = append(inside, c.egressDevice)
-	}
-	inside = append(inside, "lo")
+	inside := []string{c.Mesh.Name, "lo"}
 	if table := c.config().Cap.Table; table != nil && table.Name() != "" {
 		inside = append(inside, table.Name())
 	}
@@ -548,7 +486,7 @@ func (c *Client) BorderInside() []string {
 
 // BorderRuntime hands the border filter what the node resolves at startup: the
 // devices inside the mesh, the SIDs of the configuration in force, the
-// readiness the egress device's families wait for and the bus
+// readiness the egress segments' families wait for and the bus
 func (c *Client) BorderRuntime() egress.BorderRuntime {
 	return egress.BorderRuntime{Inside: c.BorderInside(), SIDs: borderSIDs(c.config()), Ready: c.SetBorderReady, Events: c.events}
 }

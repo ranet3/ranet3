@@ -29,7 +29,7 @@ func newBackend(cfg Egress, rt Runtime) (backend, error) {
 	if err != nil {
 		return nil, err
 	}
-	be := &natTables{conn: conn, families: cfg.translated(rt.Egress)}
+	be := &natTables{conn: conn, families: cfg.translated(rt.Steered)}
 	// A table this tool left behind in a family the configuration no longer
 	// covers would go on translating under the old rules for as long as the
 	// node ran, and nothing else here would ever look at it: every dump below
@@ -262,15 +262,8 @@ func flushChain(family uint8) nftables.Request { return postrouting.Flush(nftFam
 
 // newRule's expressions come in the order `nft list ruleset` prints them
 func newRule(rule Rule) (nftables.Request, error) {
-	for _, name := range []string{rule.Interface, rule.Egress} {
-		if err := nftables.DeviceName(name); err != nil {
-			return nftables.Request{}, err
-		}
-	}
-	// a steered packet routed back into the mesh keeps its source, so departure is still tested against the mesh device
-	arrival := rule.Interface
-	if rule.Egress != "" && rule.Direction == Out {
-		arrival = rule.Egress
+	if err := nftables.DeviceName(rule.Interface); err != nil {
+		return nftables.Request{}, err
 	}
 	inbound, outbound := unix.NFT_CMP_EQ, unix.NFT_CMP_NEQ
 	if rule.Direction == In {
@@ -291,11 +284,8 @@ func newRule(rule Rule) (nftables.Request, error) {
 		// thing on a kernel that breaks the rule instead: a locally generated
 		// packet reads as interface zero either way.
 		expressions = append(expressions, nftables.MetaCompareValue(unix.NFT_META_IIF, unix.NFT_CMP_NEQ, make([]byte, 4))...)
-		if rule.Egress != "" {
-			expressions = append(expressions, nftables.MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_NEQ, rule.Egress)...)
-		}
 	}
-	expressions = append(expressions, nftables.MetaCompare(unix.NFT_META_IIFNAME, inbound, arrival)...)
+	expressions = append(expressions, nftables.MetaCompare(unix.NFT_META_IIFNAME, inbound, rule.Interface)...)
 	expressions = append(expressions, nftables.MetaCompare(unix.NFT_META_OIFNAME, outbound, rule.Interface)...)
 	if rule.From.IsValid() {
 		expressions = append(expressions, nftables.SourcePrefix(rule.From)...)

@@ -59,11 +59,6 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			[]string{"meta", "cmp", "meta", "cmp", "counter", "immediate", "nat"},
 		},
 		{
-			"out of the egress device",
-			Rule{Family: FamilyIPv6, Direction: Out, Interface: "ranet0", Egress: "ranet0e"},
-			[]string{"meta", "cmp", "meta", "cmp", "counter", "masq"},
-		},
-		{
 			"into the mesh from one prefix",
 			Rule{Family: FamilyIPv4, Direction: In, Interface: "ranet0",
 				From: netip.MustParsePrefix("198.51.100.0/24"), Source: netip.MustParseAddr("10.88.0.2")},
@@ -200,14 +195,13 @@ func TestDirectionInvertsBothInterfaceTests(t *testing.T) {
 	}
 }
 
-// A rule whose spec runs past nft's comment limit is refused, since nft -f will
-// not load back a listing that holds it.
-func TestRuleWithAnOversizedCommentIsRefused(t *testing.T) {
+// the longest spec a translator writes, an In rule from a /128 under the longest device name and the longest IPv6 spelling, fits nft's comment limit
+// so no configuration reaches the refusal of a longer one, which nft -f would not load back
+func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 	address := netip.MustParseAddr("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff")
-	_, err := newRule(Rule{Family: FamilyIPv6, Direction: In, Interface: strings.Repeat("r", unix.IFNAMSIZ-1),
-		Egress: strings.Repeat("e", unix.IFNAMSIZ-1), From: netip.PrefixFrom(address, 128), Source: address})
-	if err == nil || !strings.Contains(err.Error(), "comment") {
-		t.Fatalf("refused with %v, want a message naming the limit", err)
+	if _, err := newRule(Rule{Family: FamilyIPv6, Direction: In, Interface: strings.Repeat("r", unix.IFNAMSIZ-1),
+		From: netip.PrefixFrom(address, 128), Source: address}); err != nil {
+		t.Fatalf("the longest rule was refused: %v", err)
 	}
 }
 

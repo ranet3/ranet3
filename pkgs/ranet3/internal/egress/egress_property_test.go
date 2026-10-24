@@ -6,8 +6,6 @@
 package egress
 
 import (
-	"errors"
-	"fmt"
 	"maps"
 	"net/netip"
 	"slices"
@@ -28,8 +26,8 @@ type exit struct {
 }
 
 // exits draws an exit: a few prefixes of each family, a default among them,
-// return on or off, a source written or left to the host, and an egress device
-// or none. The empty advertise list and the egress device are each drawn
+// return on or off, a source written or left to the host, and an egress segment
+// or none. The empty advertise list and the egress segment are each drawn
 // outright half the time.
 func exits() hegel.Generator[exit] {
 	pool := []schema.Prefix{
@@ -56,10 +54,7 @@ func exits() hegel.Generator[exit] {
 			Interface:     "ranet0",
 			MeshAddresses: []netip.Addr{netip.MustParseAddr("10.88.0.2"), netip.MustParseAddr("2001:db8::2")},
 			Forwarding:    func() (bool, bool) { return true, true },
-			Device:        func() (error, error) { return nil, nil },
-		}
-		if hegel.Draw(tc, hegel.Booleans()) {
-			rt.Egress = "ranet0e"
+			Steered:       hegel.Draw(tc, hegel.Booleans()),
 		}
 		return exit{cfg, rt}
 	})
@@ -67,17 +62,16 @@ func exits() hegel.Generator[exit] {
 
 // For every capability New takes, the rules a pass installs follow a model
 // written per family: one Out rule keyed on the mesh device where the family
-// is advertised, one keyed on the egress device where there is one, whatever
-// is advertised, and with return one In rule per advertised prefix of the
-// family, keyed on the mesh device and excluding the egress device where there
-// is one. A second pass writes nothing, so the
-// host holds the order it reads back, and only advertised prefixes are
-// announced.
-func TestRulesFollowWhatIsAdvertisedAndTheEgressDevice(t *testing.T) {
+// is advertised or an egress segment steers to this node, whatever is
+// advertised, under the family's source, and with return one In rule per
+// advertised prefix of the family, keyed on the mesh device alone. A second
+// pass writes nothing, so the host holds the order it reads back, and only
+// advertised prefixes are announced.
+func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		drawn := hegel.Draw(ht, exits())
 		cfg, rt := drawn.cfg, drawn.rt
-		ht.Assume(cfg.Validate() == nil && cfg.Serves(rt.Egress != "") == nil)
+		ht.Assume(cfg.Validate() == nil && cfg.Serves(rt.Steered) == nil)
 		be := &fakeBackend{}
 		tr := newTranslator(cfg, rt, be)
 		for range 2 {
@@ -88,39 +82,38 @@ func TestRulesFollowWhatIsAdvertisedAndTheEgressDevice(t *testing.T) {
 		if be.applied != 1 {
 			ht.Fatalf("%+v under %+v wrote the ruleset %d times over two passes, want once", cfg, rt, be.applied)
 		}
-		desired := tr.desired()
+		var want []Rule
 		for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
-			advertised := 0
+			var advertised []netip.Prefix
 			for _, prefix := range cfg.Advertise {
 				if addressFamily(prefix.Addr()) == family {
-					advertised++
+					advertised = append(advertised, prefix.Prefix)
 				}
 			}
-			var meshOut, egressOut, in int
-			for _, rule := range desired {
-				switch {
-				case rule.Family != family:
-				case rule.Direction == In && rule.Egress == rt.Egress:
-					in++
-				case rule.Direction == Out && rule.Egress == "":
-					meshOut++
-				case rule.Direction == Out && rule.Egress == rt.Egress:
-					egressOut++
-				default:
-					ht.Fatalf("%+v under %+v asks for %s, which is keyed on neither device", cfg, rt, rule)
+			if len(advertised) == 0 && !rt.Steered {
+				continue
+			}
+			source := cfg.Source4.Addr
+			if family == FamilyIPv6 {
+				source = cfg.Source6.Addr
+			}
+			want = append(want, Rule{Family: family, Direction: Out, Interface: "ranet0", Source: source})
+			if !cfg.Return {
+				continue
+			}
+			for _, prefix := range advertised {
+				in := Rule{Family: family, Direction: In, Interface: "ranet0", Source: source}
+				if !source.IsValid() {
+					in.Source = map[uint8]netip.Addr{FamilyIPv4: netip.MustParseAddr("10.88.0.2"), FamilyIPv6: netip.MustParseAddr("2001:db8::2")}[family]
 				}
+				if prefix.Bits() > 0 {
+					in.From = prefix
+				}
+				want = append(want, in)
 			}
-			wantMesh, wantEgress, wantIn := min(advertised, 1), 0, 0
-			if rt.Egress != "" {
-				wantEgress = 1
-			}
-			if cfg.Return {
-				wantIn = advertised
-			}
-			if meshOut != wantMesh || egressOut != wantEgress || in != wantIn {
-				ht.Fatalf("%+v under %+v asks in %s for %d out of the mesh, %d out of the egress device and %d in, want %d, %d and %d",
-					cfg, rt, familyName(family), meshOut, egressOut, in, wantMesh, wantEgress, wantIn)
-			}
+		}
+		if got := tr.desired(); !slices.Equal(got, want) {
+			ht.Fatalf("%+v under %+v asks for %v, want %v", cfg, rt, got, want)
 		}
 		if got, want := tr.Announce(), plain(cfg.Advertise); !slices.Equal(got, want) {
 			ht.Fatalf("%+v under %+v announced %v, want %v", cfg, rt, got, want)
@@ -128,21 +121,18 @@ func TestRulesFollowWhatIsAdvertisedAndTheEgressDevice(t *testing.T) {
 	})
 }
 
-// step is one pass of a translator beside an egress device, on a host drawn
+// step is one pass of a translator beside an egress segment, on a host drawn
 // for that pass
 type step struct {
-	enabled       bool
-	failRules     bool
-	failApply     bool
-	held          []Installed
-	faults        map[uint8]string
-	remake        map[uint8]bool
-	stuck         bool
-	forward4      bool
-	forward6      bool
-	devicePasses4 bool
-	devicePasses6 bool
-	deviceGone    bool
+	enabled   bool
+	failRules bool
+	failApply bool
+	held      []Installed
+	faults    map[uint8]string
+	remake    map[uint8]bool
+	stuck     bool
+	forward4  bool
+	forward6  bool
 }
 
 // steps draws what the host holds before each pass. In each family's chain it
@@ -151,25 +141,21 @@ type step struct {
 // one the translator never writes. A family the translator writes now and
 // then reads back with its table or chain set otherwise, in a way a rewrite
 // puts back in place, one only a remade table puts back, or one nothing puts
-// back. Beside the chains it draws forwarding and the egress device's state
-// per family, a listing or an apply that fails, and now and then a translator
-// stopped.
+// back. Beside the chains it draws forwarding per family, a listing or an
+// apply that fails, and now and then a translator stopped.
 func steps(desired []Rule) hegel.Generator[step] {
-	foreign := []string{"", "out via ranet0e not ranet0 ipv4 source 192.0.2.1"}
+	foreign := []string{"", "out via ranet1 ipv4 source 192.0.2.1"}
 	faults := []string{
 		"its table carries flags 0x1, where none are written and 0x1 is dormant",
 		`its chain reads back as type "nat" at hook 4, priority 0, policy 1, where a nat chain at hook 4, priority 100, policy accept was written`,
 	}
 	return hegel.Composite(func(tc hegel.TestCase) step {
 		s := step{
-			enabled:       hegel.Draw(tc, hegel.WeightedBooleans(7.0/8)),
-			failRules:     hegel.Draw(tc, hegel.WeightedBooleans(1.0/8)),
-			failApply:     hegel.Draw(tc, hegel.Booleans()),
-			forward4:      hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)),
-			forward6:      hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)),
-			devicePasses4: hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)),
-			devicePasses6: hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)),
-			deviceGone:    hegel.Draw(tc, hegel.WeightedBooleans(1.0/8)),
+			enabled:   hegel.Draw(tc, hegel.WeightedBooleans(7.0/8)),
+			failRules: hegel.Draw(tc, hegel.WeightedBooleans(1.0/8)),
+			failApply: hegel.Draw(tc, hegel.Booleans()),
+			forward4:  hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)),
+			forward6:  hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)),
 		}
 		for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
 			var chain []Installed
@@ -205,23 +191,10 @@ func (now step) load(be *fakeBackend) {
 	be.faults, be.remake, be.stuck = maps.Clone(now.faults), now.remake, now.stuck
 }
 
-// onHost points rt's forwarding and egress device readers at the host now
-// describes, read at each call
+// onHost points rt's forwarding reader at the host now describes, read at each
+// call
 func onHost(rt *Runtime, now *step) {
 	rt.Forwarding = func() (bool, bool) { return now.forward4, now.forward6 }
-	rt.Device = func() (v4, v6 error) {
-		if now.deviceGone {
-			gone := fmt.Errorf("ranet0e: %w", ErrDeviceGone)
-			return gone, gone
-		}
-		if !now.devicePasses4 {
-			v4 = errors.New("rp_filter")
-		}
-		if !now.devicePasses6 {
-			v6 = errors.New("disable_ipv6")
-		}
-		return v4, v6
-	}
 }
 
 // writtenAfter is whether each family's chain reads back as the translator
@@ -263,9 +236,9 @@ func writtenAfter(now step, desired []Rule) map[uint8]bool {
 }
 
 // readyAfter is the model's readiness per family once a pass over now has
-// run: a family is ready while the pass read back its chain as written, the
-// rule keyed on the egress device among it, the host forwards it and the
-// device passes it, and neither is ready once the translator is stopped
+// run: a family is ready while the pass read back its chain as written, its
+// rule keyed on the tun among it, and the host forwards it, and neither is
+// ready once the translator is stopped
 func readyAfter(cfg Egress, rt Runtime, desired []Rule, now step) [2]bool {
 	var want [2]bool
 	if !now.enabled {
@@ -273,10 +246,9 @@ func readyAfter(cfg Egress, rt Runtime, desired []Rule, now step) [2]bool {
 	}
 	written := writtenAfter(now, desired)
 	for i, family := range []uint8{FamilyIPv4, FamilyIPv6} {
-		steered := Rule{Family: family, Direction: Out, Interface: rt.Interface, Egress: rt.Egress, Source: cfg.source(family).Addr}
+		steered := Rule{Family: family, Direction: Out, Interface: rt.Interface, Source: cfg.source(family).Addr}
 		forwards := []bool{now.forward4, now.forward6}[i]
-		passes := []bool{now.devicePasses4, now.devicePasses6}[i]
-		want[i] = written[family] && slices.Contains(desired, steered) && forwards && !now.deviceGone && passes
+		want[i] = written[family] && slices.Contains(desired, steered) && forwards
 	}
 	return want
 }
@@ -287,11 +259,11 @@ func readyAfter(cfg Egress, rt Runtime, desired []Rule, now step) [2]bool {
 // chain reads back as written and which the host forwards. Ready is told only
 // of a change, never what it already holds, and the pair is false in both
 // whenever the tables are withdrawn.
-func TestEgressDeviceReadinessFollowsWhatThePassReadBack(t *testing.T) {
+func TestEgressSegmentsReadinessFollowsWhatThePassReadBack(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		drawn := hegel.Draw(ht, exits())
 		cfg, rt := drawn.cfg, drawn.rt
-		rt.Egress = "ranet0e"
+		rt.Steered = true
 		ht.Assume(cfg.Validate() == nil)
 		be := &fakeBackend{}
 		var now step
@@ -368,7 +340,7 @@ func TestSIDIsOriginatedExactlyWhileEveryForwardedFamilyServes(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		drawn := hegel.Draw(ht, exits())
 		cfg, rt := drawn.cfg, drawn.rt
-		rt.Egress = "ranet0e"
+		rt.Steered = true
 		ht.Assume(cfg.Validate() == nil)
 		var now step
 		onHost(&rt, &now)

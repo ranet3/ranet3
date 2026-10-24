@@ -61,7 +61,7 @@ func TestNetlinkRestoresADeletedRuleWithinASecond(t *testing.T) {
 	const device = "ranetrule0"
 	createTUN(t, device)
 
-	// an address rule, and the rule an exit owns for its egress device, on a device that does not exist yet
+	// an address rule, and a rule keyed on an arriving device that does not exist yet
 	installed := []Rule{
 		{To: schema.MustPrefix("198.18.104.0/24"), Table: DefaultTable, Priority: 100, Family: FamilyIPv4},
 		{IIF: device + "e", Table: schema.TableMain, Priority: 60, Family: FamilyIPv6},

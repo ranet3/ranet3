@@ -23,8 +23,7 @@ import (
 // decrypted the packet. Here the same decision is made one step earlier, on
 // the decrypted packet before it reaches the tun, which is the only place the
 // other three platforms have. The two interoperate: a packet this node
-// encapsulates is the same bytes the kernel would have produced, and one the
-// kernel acts on is one this table would have acted on the same way.
+// encapsulates is the same bytes the kernel would have produced.
 
 // Behavior names the action a node takes on a packet addressed to one of its
 // own segments, RFC 8986. Only the two this mesh uses are implemented, and a
@@ -85,7 +84,7 @@ const (
 	// DeliverMesh hands it to the mesh's forwarding decision, which writes it to the tun, forwards it to a peer whatever cap.transit says, answers it or drops it
 	// a file omitting deliver means it
 	DeliverMesh Delivery = iota
-	// DeliverEgress hands it to the egress device, whose traffic the kernel
+	// DeliverEgress hands it to the mesh tun to leave the mesh, which the kernel
 	// routes out of the uplink under cap.egress's translation, and only for a
 	// packet whose outer and inner sources both lie in Allow
 	DeliverEgress
@@ -344,7 +343,7 @@ func (t *LocalTable) Handle(raw []byte) Result {
 	return Result{Action: ActionDrop, Err: fmt.Errorf("srv6: %s carries an unimplemented behavior", destination)}
 }
 
-// innerSource reads the source the egress device's stack will read, which
+// innerSource reads the source the host's stack will read off the tun, which
 // takes the family from the version nibble rather than from the next header
 func innerSource(inner []byte, family uint8) (netip.Addr, bool) {
 	if version, err := innerNextHeader(inner); err != nil || version != family {

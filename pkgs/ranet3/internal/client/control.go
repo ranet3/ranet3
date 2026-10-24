@@ -134,7 +134,6 @@ func segmentCounters(counters netstack.SegmentCounters) control.SegmentCounters 
 		Egressed:  counters.Egressed,
 		Refused:   counters.Refused,
 		NotReady:  counters.NotReady,
-		Drained:   counters.Drained,
 	}
 }
 
@@ -202,21 +201,25 @@ func (c *Client) kernel() control.KernelStatus {
 // failed validation never became a translator and reporting its fields would
 // describe rules nobody installed.
 //
-// The translator reports the families it holds ready, and the egress device
-// carries neither while the border's chain is not read back, so the status
+// The translator reports the families it holds ready, and the egress segments
+// carry neither while the border's chain is not read back, so the status
 // says what the mesh holds.
 func (c *Client) egress() control.EgressStatus {
-	read := c.egressStatus.Load()
-	if read == nil {
-		return control.EgressStatus{}
-	}
-	status := (*read)()
-	if status.Device != "" && c.borderHeld.Load() {
+	status := c.translatorStatus()
+	if status.Enabled && c.borderHeld.Load() && len(c.config().Segments().Egress()) != 0 {
 		status.Ready = nil
 		reasons := slices.DeleteFunc([]string{status.Unready, "until the border filter is read back"}, func(reason string) bool { return reason == "" })
 		status.Unready = strings.Join(reasons, ", and ")
 	}
 	return status
+}
+
+func (c *Client) translatorStatus() control.EgressStatus {
+	read := c.egressStatus.Load()
+	if read == nil {
+		return control.EgressStatus{}
+	}
+	return (*read)()
 }
 
 // borderStatus reports the border filter, and nil on a node with no cap.border
