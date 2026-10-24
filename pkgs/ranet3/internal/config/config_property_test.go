@@ -30,7 +30,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
-	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -886,16 +885,6 @@ func configurations() hegel.Generator[Config] {
 		if mark := c.Link.Underlay.Mark; mark != 0 && c.Cap.Table != nil && !c.Cap.Table.ReadsMark(mark) {
 			c.Cap.Table.Rules = append(c.Cap.Table.Rules, kernel.Rule{
 				FWMark:   mark,
-				Table:    schema.TableMain,
-				Priority: hegel.Draw(tc, edges[uint32](1, math.MaxUint32)),
-				Family:   kernel.FamilyBoth,
-			})
-		}
-		// an egress segment needs the rule sending its device to the main table, which a node with a table carries
-		if device, err := netstack.EgressName(c.Link.TUN); err == nil && c.Cap.Table != nil && c.Cap.Segment != nil &&
-			slices.ContainsFunc(c.Cap.Segment.Local, func(segment srv6.Segment) bool { return segment.Deliver == srv6.DeliverEgress }) {
-			c.Cap.Table.Rules = append(c.Cap.Table.Rules, kernel.Rule{
-				IIF:      device,
 				Table:    schema.TableMain,
 				Priority: hegel.Draw(tc, edges[uint32](1, math.MaxUint32)),
 				Family:   kernel.FamilyBoth,

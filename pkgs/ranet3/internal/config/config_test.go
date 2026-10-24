@@ -795,21 +795,21 @@ func TestTOMLRefusesAKeyThatDiffersOnlyInCase(t *testing.T) {
 	}
 }
 
-// The rule an exit owns for its egress device, written under the key the
+// A rule keyed on the device a packet arrives on, written under the key the
 // configuration reference names, reaches the reconciler as that device. The
 // encoder round trip cannot pin the spelling, since it writes and reads by one
 // tag.
 func TestRuleInputDeviceLoadsUnderItsDocumentedKey(t *testing.T) {
 	for extension, body := range map[string]string{
-		".toml": nodeTOML + "[cap.table]\nrules = [{ iif = \"ranet0e\", table = \"main\", priority = 60, family = \"both\" }]\n",
-		".yaml": nodeYAML + "cap:\n  table:\n    rules: [{ iif: ranet0e, table: main, priority: 60, family: both }]\n",
+		".toml": nodeTOML + "[cap.table]\nrules = [{ iif = \"eth1\", table = \"main\", priority = 60, family = \"both\" }]\n",
+		".yaml": nodeYAML + "cap:\n  table:\n    rules: [{ iif: eth1, table: main, priority: 60, family: both }]\n",
 	} {
 		cfg, err := load(t, extension, body)
 		if err != nil {
 			t.Errorf("%s: the rule was refused: %v", extension, err)
 			continue
 		}
-		if rules := cfg.Cap.Table.Rules; len(rules) != 1 || rules[0].IIF != "ranet0e" {
+		if rules := cfg.Cap.Table.Rules; len(rules) != 1 || rules[0].IIF != "eth1" {
 			t.Errorf("%s: the rules loaded as %v", extension, rules)
 		}
 	}
@@ -955,8 +955,8 @@ func TestUnderlayMarkNeedsTheRuleThatReadsIt(t *testing.T) {
 		},
 		// a socket's own output arrives on lo, so a rule on another input device never sees its mark
 		"a rule reads it only on an input device": {
-			asYAML: "cap:\n  table:\n    rules: [{ fwmark: 0x726c, iif: ranet0e, table: main, priority: 40, family: both }]\n",
-			asTOML: "[cap.table]\nrules = [{ fwmark = 0x726c, iif = \"ranet0e\", table = \"main\", priority = 40, family = \"both\" }]\n",
+			asYAML: "cap:\n  table:\n    rules: [{ fwmark: 0x726c, iif: eth1, table: main, priority: 40, family: both }]\n",
+			asTOML: "[cap.table]\nrules = [{ fwmark = 0x726c, iif = \"eth1\", table = \"main\", priority = 40, family = \"both\" }]\n",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1286,7 +1286,7 @@ func fullConfig() Config {
 					From:     schema.MustPrefix("3fff:a::/32"),
 					FWMark:   0x726c,
 					FWMask:   0xffff,
-					IIF:      "ranet0e",
+					IIF:      "eth1",
 					Table:    schema.TableMain,
 					Priority: 40,
 				}, {
@@ -1300,12 +1300,6 @@ func fullConfig() Config {
 					FWMark:   0x726c,
 					Table:    100,
 					Priority: 42,
-					Family:   kernel.FamilyBoth,
-				}, {
-					// the rule the egress segment below needs
-					IIF:      "ranet0e",
-					Table:    schema.TableMain,
-					Priority: 43,
 					Family:   kernel.FamilyBoth,
 				}},
 			},

@@ -87,8 +87,8 @@ func TestRuleMessageCarriesTheMarkAndItsMask(t *testing.T) {
 // kernel compares, and a rule naming none carries no such attribute.
 func TestRuleMessageCarriesTheInputDevice(t *testing.T) {
 	plat, _ := writePlatform(t)
-	_, attrs := ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv6, IIF: "ranet0e", Table: 254, Priority: 60}))
-	if name := attrs[unix.FRA_IIFNAME]; string(name) != "ranet0e\x00" {
+	_, attrs := ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv6, IIF: "eth1", Table: 254, Priority: 60}))
+	if name := attrs[unix.FRA_IIFNAME]; string(name) != "eth1\x00" {
 		t.Errorf("FRA_IIFNAME is %q", name)
 	}
 	_, attrs = ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv6, FWMark: 0x726c, Table: 254, Priority: 40}))
@@ -106,7 +106,7 @@ func TestRuleRoundTripsThroughItsOwnEncoding(t *testing.T) {
 		"a source rule":      {Family: FamilyIPv6, From: schema.MustPrefix("3fff:1:69c::/48"), Table: 200, Priority: 150},
 		"a mark rule":        {Family: FamilyIPv6, FWMark: 0x726c, Table: 254, Priority: 40},
 		"both selectors":     {Family: FamilyIPv4, To: schema.MustPrefix("10.0.0.0/8"), From: schema.MustPrefix("10.1.0.0/16"), Table: 7, Priority: 90},
-		"a device rule":      {Family: FamilyIPv4, IIF: "ranet0e", Table: 254, Priority: 60},
+		"a device rule":      {Family: FamilyIPv4, IIF: "eth1", Table: 254, Priority: 60},
 	} {
 		t.Run(name, func(t *testing.T) {
 			conn.replies = []nlMessage{{Kind: unix.RTM_NEWRULE, Data: plat.ruleMessage(rule)}}

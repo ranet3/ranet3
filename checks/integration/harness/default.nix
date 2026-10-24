@@ -95,11 +95,9 @@ let
   # priority, ahead of main's.
   segmentTable = 88;
   # The egress segment's SID, announced by the client only while its egress
-  # segments are ready, and the name the rule cap.table holds for them is
-  # keyed on. The gateway's outside address is in neither prefix the allow
-  # list names.
+  # segments are ready. The gateway's outside address is in neither prefix
+  # the allow list names.
   clientEgressSID = "fd00:88::6:3";
-  clientEgressDevice = "${clientDevice}e";
   gatewayOutside = "fd00:77::1";
   # Mesh sources behind forges from the client's link, inside the border's
   # overlay and owned by nobody on the mesh.
@@ -797,15 +795,7 @@ testers.runNixOSTest {
                       table = kernelTable;
                       priority = 100;
                     }
-                  ]
-                  # the rule the configuration of an egress segment still
-                  # asks for, after the to rules
-                  ++ pkgs.lib.optional egressSegment {
-                    iif = clientEgressDevice;
-                    table = "main";
-                    priority = 120;
-                    family = "both";
-                  };
+                  ];
                 }
               );
             };
