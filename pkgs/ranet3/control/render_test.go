@@ -217,9 +217,12 @@ func TestStatusTransitLineRendersAsTheGoldenFile(t *testing.T) {
 	goldenJSON(t, "status-transit.json", every)
 }
 
-// the egress line names the families an egress segment's packets leave in,
-// says the ones they do not leave in yet in the voice of a withheld prefix,
-// and names neither on a node whose egress segments nothing judged
+// the egress line names the families that are ready and the ones that are
+// not, with the reason for one this node translates, names neither before the
+// first pass, and says what the route lookups left out and why: a family held
+// by a forward lookup that failed, its prefix withheld, one held by a reply
+// lookup leaving by the uplink, a family with no member to read from and a
+// prefix with no address to read
 func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 	var out strings.Builder
 	for _, ready := range [][]string{nil, {"ipv6"}, {"ipv4", "ipv6"}} {
@@ -228,6 +231,29 @@ func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3, ip6 ranet3",
 		Unready: "the host does not forward ipv4 or ipv6"}) + "\n")
 	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3", Installed: 1}) + "\n")
+	advertise := []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("::/0")}
+	linkLocal := []netip.Prefix{advertise[0], advertise[1], netip.MustParsePrefix("fe80::/10")}
+	for _, judged := range []EgressStatus{
+		{
+			Advertise: advertise, Ready: []string{"ipv6"}, Announced: advertise[1:],
+			Unready: "the lookup of 198.51.100.128 for 198.51.100.0/24 from 192.0.2.1 arriving on ranet3 failed: no route to host, with net.ipv4.conf.ranet3.forwarding at 0",
+		},
+		{
+			Advertise: advertise, Ready: []string{"ipv4"}, Announced: advertise[:1],
+			Unready: "the reply lookup of 3fff:20::1 for ::/0 from 8000:: arriving on eth0 leaves by eth0 rather than ranet3",
+		},
+		{
+			Advertise: advertise, Ready: []string{"ipv4", "ipv6"}, Announced: advertise,
+			Skipped: "lookup skipped, the mesh routes no other node's ipv6 prefix inside cap.border.overlay",
+		},
+		{
+			Advertise: linkLocal, Ready: []string{"ipv4", "ipv6"}, Announced: linkLocal,
+			Skipped: "lookup skipped for fe80::/10, which holds no address the kernel takes as a unicast destination",
+		},
+	} {
+		judged.Enabled, judged.Where, judged.Installed = true, "nftables ip ranet3, ip6 ranet3", 2
+		out.WriteString(egressLine(judged) + "\n")
+	}
 	golden(t, "status-egress.txt", []byte(out.String()))
 }
 
@@ -325,8 +351,8 @@ func TestKernelLineNamesTheCoveredFamilies(t *testing.T) {
 
 // The egress line leads with the prefixes being announced rather than with the
 // ones configured. The two differ exactly when the capability is not working,
-// since a prefix is announced only while its rule is installed and the kernel
-// forwards it, and that difference is the reason to read the line at all.
+// since a prefix is announced only while its family is ready, and that
+// difference is the reason to read the line at all.
 func TestEgressLineNamesTheWithheldPrefixes(t *testing.T) {
 	carried := netip.MustParsePrefix("198.51.100.0/24")
 	withheld := netip.MustParsePrefix("2001:db8:1::/48")

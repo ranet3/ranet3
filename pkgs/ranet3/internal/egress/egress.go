@@ -37,11 +37,12 @@
 // An exit whose rule will not install, or whose kernel will not forward, would
 // therefore attract traffic and drop it with nothing to tell the sender. So the
 // advertisement is published by this package rather than by the configuration:
-// Runtime.Announce is called with the prefixes of each family whose chain
-// reads back as written and which the kernel forwards, and with nothing at all
-// while no family is both. It is the same fact internal/client warns about
-// for transit, read from the same place, and acted on here because this end
-// is the only one that knows.
+// Runtime.Announce is called with the prefixes of each family that is ready,
+// whose chain reads back as written, which the kernel forwards and whose route
+// lookups take a translated packet's path, and with nothing at all while no
+// family is. Forwarding is the same fact internal/client warns about for
+// transit, read from the same place, and acted on here because this end is the
+// only one that knows.
 //
 // # The border filter
 //
@@ -129,8 +130,8 @@ type Egress struct {
 	// nothing sits behind it to start a flow.
 	Return bool `yaml:"return,omitempty" json:"return,omitempty" toml:"return,omitempty"`
 	// Sweep is the periodic pass. It reinstalls a table somebody removed and
-	// re-reads the forwarding sysctls, which is the half of readiness that
-	// changes under a running node. Zero uses DefaultSweep.
+	// reads the forwarding sysctls and the route lookups again, the parts of
+	// readiness that change under a running node. Zero uses DefaultSweep.
 	Sweep schema.Duration `yaml:"sweep,omitempty" json:"sweep,omitempty" toml:"sweep,omitempty"`
 }
 
@@ -156,16 +157,28 @@ type Runtime struct {
 	// rather than read here so that the node has one answer to the question
 	// and not two: internal/client owns the reading.
 	Forwarding func() (v4, v6 bool)
+	// Lookup answers a pass's route lookups in one batch, and Sysctl reads a
+	// setting under /proc/sys by its path there, the empty string where it
+	// cannot. Both are supplied as Forwarding is, so this package makes no
+	// system call of its own.
+	Lookup func([]Lookup) ([]Answer, error)
+	Sysctl func(path string) string
+	// Members is the prefixes inside cap.border.overlay that this node's table
+	// routes by the tun to other nodes, none of them overlapping one of this
+	// node's own, read on each pass. A family's lookups read from a member's
+	// address, and a family with no member skips them. Nil reads none.
+	Members func() []netip.Prefix
 	// Announce publishes the prefixes this node may advertise right now. It is
 	// called once per pass whose answer differs from the last, and with an
 	// empty list while nothing may be advertised. Nil means the caller does
 	// not announce, which only a test does.
 	Announce func([]netip.Prefix)
-	// Ready receives the egress segments' readiness per family, and whether
-	// the egress SIDs are served, whenever one of the three moves, starting
-	// from none. A family is ready while its chain reads back exactly as
-	// written and the host forwards it, and is reported not ready before the
-	// tables are withdrawn. The SIDs are served
+	// Ready receives each family's readiness, and whether the egress SIDs are
+	// served, whenever one of the three moves, starting from none. A family is
+	// ready while this node translates it, its chain reads back exactly as
+	// written, the host forwards it, and the kernel's lookups route a translated
+	// packet and its reply the way the translation needs (see judge). It is
+	// reported not ready before the tables are withdrawn. The SIDs are served
 	// while at least one family is ready and every family the host forwards
 	// is. Nil where nothing reads it, which only a test does.
 	Ready func(v4, v6, serves bool)
@@ -442,10 +455,12 @@ type Stats struct {
 	Announced []netip.Prefix
 	Conflicts []string
 	Err       string
-	// Ready4 and Ready6 are false on a node with no egress segment, and
-	// Unready is empty while both are ready
-	Ready4, Ready6 bool
-	Unready        string
+	// Ready4 and Ready6 are each family's readiness, false for a family this
+	// node does not translate. Unready says why a family it translates is not
+	// ready, and Skipped what the lookups left out and why, each empty where
+	// there is nothing to say
+	Ready4, Ready6   bool
+	Unready, Skipped string
 }
 
 // Translator owns the capability on one node: the rules, the tables they live
@@ -476,11 +491,12 @@ type Translator struct {
 	wake      chan struct{}
 	withdrawn bool
 	// ready4, ready6 and serves hold what Runtime.Ready was last given,
-	// forwards4 and forwards6 the forwarding the last pass read, and unready
-	// the reason a family is not, all of them the run goroutine's
+	// forwards4 and forwards6 the forwarding the last pass read, unready the
+	// reason a family is not ready and skipped what its lookups left out, all
+	// of them the run goroutine's
 	ready4, ready6, serves bool
 	forwards4, forwards6   bool
-	unready                string
+	unready, skipped       string
 }
 
 // New validates the capability against the platform and opens whatever the
@@ -503,6 +519,9 @@ func New(cfg Egress, rt Runtime) (*Translator, error) {
 	// mesh address to translate to is refused with nothing to clean up.
 	if _, err := cfg.ReturnSources(rt.MeshAddresses); err != nil {
 		return nil, err
+	}
+	if rt.Lookup == nil || rt.Sysctl == nil {
+		return nil, errors.New("egress: a route lookup and a sysctl reader are required")
 	}
 	be, err := newBackend(cfg, rt)
 	if err != nil {
@@ -621,10 +640,10 @@ func (t *Translator) Stats() Stats {
 }
 
 // Announce is the prefixes this node may advertise right now: the configured
-// list narrowed to the families whose chain reads back as written and whose
-// forwarding is on, and nothing at all before the first pass has run. A caller announces
-// from this rather than from the configuration, which is how an exit that
-// cannot translate refuses to advertise rather than advertising and dropping.
+// list narrowed to the families that are ready, and nothing at all before the
+// first pass has run. A caller announces from this rather than from the
+// configuration, which is how an exit that cannot translate refuses to
+// advertise rather than advertising and dropping.
 func (t *Translator) Announce() []netip.Prefix {
 	if prefixes := t.announced.Load(); prefixes != nil {
 		return slices.Clone(*prefixes)
@@ -686,7 +705,7 @@ func (t *Translator) Run(ctx context.Context) error {
 			// the steered rule may be gone or bypassed already, so the mesh stops writing before the pass that puts it back
 			t.trigger = "changed"
 			const why = "another writer changed its table"
-			t.setReady(false, false, why, why)
+			t.setReady(false, false, why, why, "")
 		case <-t.be.Missed():
 			// another table's large transaction overflows the socket as readily as a flush of this one, so only the pass's readback decides
 			t.trigger = "missed"
@@ -697,7 +716,7 @@ func (t *Translator) Run(ctx context.Context) error {
 	// whose traffic leaves untranslated, and babel's own retraction is the
 	// only thing that can tell it otherwise.
 	const why = "the translator is stopping"
-	t.setReady(false, false, why, why)
+	t.setReady(false, false, why, why, "")
 	t.publish(nil)
 	return errors.Join(t.withdraw(), t.be.Close())
 }
@@ -773,9 +792,10 @@ func (t *Translator) reconcile() error {
 	t.reportConflicts(conflicts)
 
 	// Readiness is per family and is read from the host on every pass rather
-	// than captured at startup, because both halves of it change under a
-	// running node: a table can be flushed by somebody else and a forwarding
-	// sysctl can be turned on after this process started. A family's chain
+	// than captured at startup, because each part of it changes under a
+	// running node: a table can be flushed by somebody else, a forwarding
+	// sysctl can be turned on after this process started, and a route can send
+	// a translated packet or its reply another way. A family's chain
 	// counts only while it and its table read back exactly as written, since
 	// another writer's rule among this tool's, a dormant table or a chain at
 	// another hook, which an apply that failed leaves in place, changes what
@@ -791,15 +811,16 @@ func (t *Translator) reconcile() error {
 			unwritten[family] = "its chain does not read back as written"
 		}
 	}
+	judged := t.judge(unwritten, forwards)
 	announced := make([]netip.Prefix, 0, len(t.cfg.Advertise))
 	for _, entry := range t.cfg.Advertise {
-		if family := addressFamily(entry.Addr()); unwritten[family] == "" && forwards[family] {
+		if judged[addressFamily(entry.Addr())].ready {
 			announced = append(announced, entry.Prefix)
 		}
 	}
-	if t.rt.Steered {
-		t.setSteeredReady(unwritten, forwards)
-	}
+	t.forwards4, t.forwards6 = v4, v6
+	j4, j6 := judged[FamilyIPv4], judged[FamilyIPv6]
+	t.setReady(j4.ready, j6.ready, j4.why, j6.why, skippedText(j4, j6))
 	moved := t.publish(announced)
 
 	var flows, bytes uint64
@@ -811,7 +832,7 @@ func (t *Translator) reconcile() error {
 		At: time.Now(), Desired: len(desired), Installed: len(held),
 		Flows: flows, Bytes: bytes,
 		Announced: announced, Conflicts: conflicts,
-		Ready4: t.ready4, Ready6: t.ready6, Unready: t.unready,
+		Ready4: t.ready4, Ready6: t.ready6, Unready: t.unready, Skipped: t.skipped,
 	}
 	if err != nil {
 		stats.Err = err.Error()
@@ -923,7 +944,7 @@ func (t *Translator) publish(prefixes []netip.Prefix) bool {
 		// the advertisement is a customer's exit node going away and the
 		// counters alone would not name it.
 		slog.Warn("egress advertisement changed", "prefixes", len(prefixes),
-			"was", len(*previous), "detail", "a family is advertised only while its chain reads back as written and the kernel forwards it")
+			"was", len(*previous), "detail", "a family is advertised only while it is ready, as ranet3 status says")
 	}
 	if t.rt.Announce != nil {
 		t.rt.Announce(slices.Clone(prefixes))
@@ -931,52 +952,42 @@ func (t *Translator) publish(prefixes []netip.Prefix) bool {
 	return true
 }
 
-// setSteeredReady judges each family beside an egress segment. Every family's
-// chain then holds its rule keyed on the mesh device, so a chain reading back
-// as written, with no entry in unwritten, covers that rule.
-func (t *Translator) setSteeredReady(unwritten map[uint8]string, forwards map[uint8]bool) {
-	judge := func(family uint8) (bool, string) {
-		switch {
-		case unwritten[family] != "":
-			return false, unwritten[family]
-		case !forwards[family]:
-			return false, "the kernel does not forward " + familyName(family)
-		}
-		return true, ""
-	}
-	ready4, why4 := judge(FamilyIPv4)
-	ready6, why6 := judge(FamilyIPv6)
-	t.forwards4, t.forwards6 = forwards[FamilyIPv4], forwards[FamilyIPv6]
-	t.setReady(ready4, ready6, why4, why6)
-}
-
-func (t *Translator) setReady(v4, v6 bool, why4, why6 string) {
+// setReady records each family's readiness, why a family is not ready and
+// what the lookups skipped. Ready is told when either family or whether the
+// SIDs are served moves, and the egress.ready event is recorded when any of
+// them or the skip does
+func (t *Translator) setReady(v4, v6 bool, why4, why6, skipped string) {
 	t.unready = unreadyText(v4, v6, why4, why6)
 	// a leaf reads the SID's /128 as the exit's liveness, so a family the host forwards and cannot carry out withdraws it
 	serves := (v4 || v6) && (v4 || !t.forwards4) && (v6 || !t.forwards6)
-	if v4 == t.ready4 && v6 == t.ready6 && serves == t.serves {
+	moved := v4 != t.ready4 || v6 != t.ready6 || serves != t.serves
+	if !moved && skipped == t.skipped {
 		return
 	}
-	for _, moved := range []struct {
+	for _, family := range []struct {
 		family     uint8
 		was, ready bool
 		why        string
 	}{{FamilyIPv4, t.ready4, v4, why4}, {FamilyIPv6, t.ready6, v6, why6}} {
 		switch {
-		case moved.was == moved.ready:
-		case moved.ready:
-			slog.Info("egress segments ready", "family", familyName(moved.family))
+		case family.was == family.ready:
+		case family.ready:
+			slog.Info("egress ready", "family", familyName(family.family))
 		default:
-			slog.Warn("egress segments not ready", "family", familyName(moved.family), "detail", moved.why)
+			slog.Warn("egress not ready", "family", familyName(family.family), "detail", family.why)
 		}
 	}
-	t.ready4, t.ready6, t.serves = v4, v6, serves
-	if t.rt.Ready != nil {
+	t.ready4, t.ready6, t.serves, t.skipped = v4, v6, serves, skipped
+	if moved && t.rt.Ready != nil {
 		t.rt.Ready(v4, v6, serves)
 	}
-	t.rt.Events.Emit("egress.ready", "", slog.Bool("ipv4", v4), slog.Bool("ipv6", v6), slog.Bool("sid", serves))
+	t.rt.Events.Emit("egress.ready", "", slog.Bool("ipv4", v4), slog.Bool("ipv6", v6), slog.Bool("sid", serves),
+		slog.String("reason", t.unready), slog.String("skipped", skipped))
 }
 
+// unreadyText is why the families not ready are not, a family this node does
+// not translate giving no reason, and each reason named by its family where
+// both families are not ready
 func unreadyText(v4, v6 bool, why4, why6 string) string {
 	switch {
 	case v4 && v6:
@@ -987,6 +998,10 @@ func unreadyText(v4, v6 bool, why4, why6 string) string {
 		return why6
 	case why4 == why6:
 		return why4
+	case why6 == "":
+		return "ipv4 " + why4
+	case why4 == "":
+		return "ipv6 " + why6
 	}
 	return "ipv4 " + why4 + ", ipv6 " + why6
 }
@@ -1013,7 +1028,7 @@ func (t *Translator) reportConflicts(conflicts []string) {
 func (t *Translator) stop() error {
 	started := time.Now()
 	const why = "the translator is stopped"
-	t.setReady(false, false, why, why)
+	t.setReady(false, false, why, why, "")
 	t.publish(nil)
 	err := t.withdraw()
 	stats := Stats{At: time.Now()}

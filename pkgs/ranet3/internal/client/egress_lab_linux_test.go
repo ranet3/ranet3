@@ -66,6 +66,30 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 	}
 	exit, far := startNamespaceThread(t), startNamespaceThread(t)
 	labUplink(t, exit, far, "")
+	// the exit routes every other destination out of its uplink to the far host, as an exit does, which the translator's lookups read
+	if err := exit.do(func() error {
+		netlink, err := openNetlinkRoute()
+		if err != nil {
+			return err
+		}
+		defer netlink.close()
+		uplink, err := net.InterfaceByName("labx")
+		if err != nil {
+			return err
+		}
+		for _, gateway := range []netip.Addr{labFar4.Addr(), labFar6.Addr()} {
+			every := netip.PrefixFrom(netip.IPv6Unspecified(), 0)
+			if gateway.Is4() {
+				every = netip.PrefixFrom(netip.IPv4Unspecified(), 0)
+			}
+			if err := labRouteVia(netlink, uplink.Index, every, gateway); err != nil {
+				return fmt.Errorf("route %s through the far host: %w", every, err)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("route the exit's default out of its uplink: %v", err)
+	}
 	cfg := labConfig(t)
 	bus := events.New()
 	var node *Client
@@ -119,15 +143,21 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 		if routes, err = kernel.New(*cfg.Cap.Table, node.KernelRuntime(), node.Mesh.Routes); err != nil {
 			return err
 		}
-		// the sysctls are read in the exit's namespace, which the translator's own goroutine is not in
+		// the sysctls and the route lookups are read in the exit's namespace, which the translator's own goroutine is not in
 		translator, err = egress.New(*cfg.Egress(), egress.Runtime{
 			Interface:     node.Mesh.Name,
 			MeshAddresses: MeshAddresses(cfg),
 			Forwarding:    func() (v4, v6 bool) { inExit(func() { v4, v6 = Forwarding() }); return v4, v6 },
-			Announce:      func([]netip.Prefix) { node.Republish() },
-			Events:        bus,
-			Steered:       true,
-			Ready:         node.SetEgressReady,
+			Lookup: func(lookups []egress.Lookup) (answers []egress.Answer, err error) {
+				inExit(func() { answers, err = RouteLookups(lookups) })
+				return answers, err
+			},
+			Sysctl:   func(path string) (value string) { inExit(func() { value = Sysctl(path) }); return value },
+			Members:  node.EgressMembers,
+			Announce: func([]netip.Prefix) { node.Republish() },
+			Events:   bus,
+			Steered:  true,
+			Ready:    node.SetEgressReady,
 		})
 		return err
 	}); err != nil {
@@ -150,9 +180,10 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 			t.Errorf("the border: %v", err)
 		}
 	})
-	waitFor(t, convergeBudget, "both families ready and the mesh table covering the leaves", func() bool {
+	// the leaf's prefixes are the members the lookups read from, so a pass skipping them has not read the path at all
+	waitFor(t, convergeBudget, "both families ready by their lookups and the mesh table covering the leaves", func() bool {
 		stats := translator.Stats()
-		return stats.Ready4 && stats.Ready6 && labMeshRoute(t, exit, labLeafPrefixes()[0]) && labMeshRoute(t, exit, labLeafPrefixes()[1])
+		return stats.Ready4 && stats.Ready6 && stats.Skipped == "" && labMeshRoute(t, exit, labLeafPrefixes()[0]) && labMeshRoute(t, exit, labLeafPrefixes()[1])
 	})
 
 	var listeners [2]*net.UDPConn

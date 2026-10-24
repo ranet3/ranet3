@@ -444,11 +444,16 @@ type EgressStatus struct {
 	Enabled bool `json:"enabled"`
 	// Where names the tables this node owns, as the backend spells them.
 	Where string `json:"where,omitempty"`
-	// Ready is the families an egress segment's inner packets leave the mesh
-	// tun translated in, ipv4 and ipv6, and Unready the reason the last pass
-	// found a family not ready
+	// Ready is the families the last pass judged ready, ipv4 and ipv6, by the
+	// route lookups where they ran and, on a node with egress segments, while
+	// the border filter reads back, and Unready why a family it translates is
+	// not. Skipped names the route
+	// lookups the pass left out and why: those of a family no other node's
+	// prefix inside cap.border.overlay gives a source to read from, and that of
+	// a prefix holding no address to read
 	Ready   []string `json:"ready,omitempty"`
 	Unready string   `json:"unready,omitempty"`
+	Skipped string   `json:"skipped,omitempty"`
 	// Source4 and Source6 are the address a translated packet leaves under,
 	// or "auto" where the host's own routes decide it per packet.
 	Source4 string `json:"source4,omitempty"`
