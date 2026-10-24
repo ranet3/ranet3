@@ -234,6 +234,15 @@ func localEntries(segments []Segment) (map[netip.Addr]Segment, error) {
 	return entries, nil
 }
 
+// Holds reports whether address is one of the table's SIDs
+func (t *LocalTable) Holds(address netip.Addr) bool {
+	if t == nil {
+		return false
+	}
+	_, ok := t.entries[address]
+	return ok
+}
+
 // Segments is the table in a stable order, for a diagnostic to print.
 func (t *LocalTable) Segments() []Segment {
 	if t == nil {

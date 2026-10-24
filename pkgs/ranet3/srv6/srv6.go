@@ -17,7 +17,7 @@
 //
 // # What a caller uses
 //
-// Three entry points, one per direction a packet takes.
+// Four entry points, one per direction a packet takes.
 //
 //   - Sending. [AppendEncapsulated] appends an inner packet behind an outer
 //     IPv6 header and a routing header to a buffer the caller owns, and
@@ -32,6 +32,9 @@
 //     or drop it. [End] and [Decap] are End and End.DT46 on their own.
 //   - Choosing. [NewSteerTable] takes the [Steer] list and [SteerTable.Lookup]
 //     answers which [Policy], if any, one of this node's own packets takes.
+//   - Entering. [WalkEdge] reads a packet entering the domain from outside it
+//     for a routing header the domain's edge refuses, and [LocalTable.Holds]
+//     names a SID of this node's.
 //
 // A nil [LocalTable] or [SteerTable] answers for nothing rather than panicking,
 // which is the node configuring no segment routing, so a caller never has to
@@ -84,11 +87,14 @@ const (
 	// The kinds findRouting passes on its way to a routing header, which
 	// RFC 8200 section 4.1's order puts ahead of it, and the fragment header,
 	// which it refuses rather than walks.
-	nextHeaderHopByHop  = 0
-	nextHeaderDestOpts  = 60
-	nextHeaderFragment  = 44
-	extensionUnit       = 8
+	nextHeaderHopByHop = 0
+	nextHeaderDestOpts = 60
+	nextHeaderFragment = 44
+	extensionUnit      = 8
+	// maxExtensionHeaders bounds the headers findRouting and carriesUnanswerable read of one packet, so a sender sets no cost per packet past it
 	maxExtensionHeaders = 8
+	// maxEdgeHeaders bounds the hop-by-hop, destination options and routing headers WalkEdge reads of a packet entering the mesh, four times the most RFC 8200 section 4.1 has one packet carry, a hop-by-hop, two destination options and a routing header
+	maxEdgeHeaders = 16
 	// nextHeaderAuth is the authentication header of RFC 4302, which may sit
 	// between the routing header and the upper-layer header.
 	nextHeaderAuth = 51
