@@ -147,6 +147,9 @@ func transitCounters(counters netstack.TransitCounters) control.TransitCounters 
 		NotReady:       counters.NotReady,
 		TooBig:         counters.TooBig,
 		Multicast:      counters.Multicast,
+		Forged:         counters.Forged,
+		RoutingHeader:  counters.RoutingHeader,
+		SID:            counters.SID,
 		Answered:       counters.Answered,
 		Unanswered:     counters.Unanswered,
 	}

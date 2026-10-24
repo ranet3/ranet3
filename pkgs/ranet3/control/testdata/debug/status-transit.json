@@ -12,6 +12,9 @@
   "not_ready": 13,
   "too_big": 8,
   "multicast": 9,
+  "forged": 14,
+  "routing_header": 15,
+  "sid": 16,
   "answered": 10,
   "unanswered": 11
 }

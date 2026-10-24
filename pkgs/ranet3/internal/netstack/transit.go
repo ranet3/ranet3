@@ -31,7 +31,8 @@ const (
 	transitHeld
 	// transitRefused counts packets for another node while cap.transit is off
 	transitRefused
-	// transitInvalid counts what is not one IP packet, an IPv4 header failing RFC 1812 section 5.2.2's checks, and IPv4 options RFC 791 cannot read
+	// transitInvalid counts what is not one IP packet, an IPv4 header failing RFC 1812 section 5.2.2's checks, IPv4 options RFC 791 cannot read
+	// and a read off the tun whose extension headers srv6.WalkEdge cannot finish
 	transitInvalid
 	// transitMartian counts packets from or to an address no router forwards, but for those to a destination linkScoped takes to the tun
 	transitMartian
@@ -45,6 +46,12 @@ const (
 	transitTooBig
 	// transitMulticast counts reads off the tun to a multicast destination or the limited broadcast, which the mesh routes none of
 	transitMulticast
+	// transitForged counts reads off the tun from a source the mesh routes to another node or holds through an entry that does not count as a default, or one inside cap.border's overlay this node does not own
+	transitForged
+	// transitRoutingHeader counts reads off the tun carrying a routing header of a type the mesh's edge refuses
+	transitRoutingHeader
+	// transitOwnSID counts reads off the tun to a SID of this node's, which acts only on what a session delivers
+	transitOwnSID
 	transitAnswered
 	transitReasonCount
 )
@@ -64,6 +71,9 @@ var transitReasonNames = [transitReasonCount]string{
 	transitNotReady:       "not_ready",
 	transitTooBig:         "too_big",
 	transitMulticast:      "multicast",
+	transitForged:         "forged",
+	transitRoutingHeader:  "routing_header",
+	transitOwnSID:         "sid",
 	transitAnswered:       "answered",
 }
 
@@ -93,13 +103,16 @@ func (m *Mesh) SetTransit(on bool) { m.transitOn.Store(on) }
 // SetOverlay sets cap.border's overlay as written, the mesh's own address space, nil for none
 // an IPv4 packet no route reaches inside it is answered host unreachable, since other hosts of the overlay may be reachable
 // and every entry of the table is flagged again for whether it counts as a default with it
+// calls never overlap, the client making them from New and then under reloadMu
+// two at once could leave one call's overlay in place with the other's flags on the table's entries
 func (m *Mesh) SetOverlay(overlay []schema.Prefix) {
-	m.Routes.SetOverlay(overlay)
+	// in place before the table's generation moves, so no source's answer is kept under the new generation from the old overlay
 	if overlay == nil {
 		m.overlay.Store(nil)
-		return
+	} else {
+		m.overlay.Store(&overlay)
 	}
-	m.overlay.Store(&overlay)
+	m.Routes.SetOverlay(overlay)
 }
 
 // SetEgressPrefixes sets the prefixes cap.egress advertises, which flags this node's own entries for them
@@ -125,9 +138,10 @@ type TransitCounters struct {
 	// Forwarded counts packets a session delivered that went on to a peer, and Delivered the ones written to the tun or handed to the exit
 	Forwarded, Delivered uint64
 	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady and TooBig count the packets a session delivered that were dropped, by reason
+	// Invalid counting as well the reads off the tun whose extension headers the walk cannot finish
 	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig uint64
-	// Multicast counts reads off the tun to a multicast destination or the limited broadcast, dropped
-	Multicast uint64
+	// Multicast, Forged, RoutingHeader and SID count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
+	Multicast, Forged, RoutingHeader, SID uint64
 	// Answered counts the ICMP errors sent about dropped packets
 	// Unanswered counts the dropped packets the decision would answer that find no address of their family to come from
 	// counted before the rules that keep an error from answering a packet and before the rate
@@ -150,6 +164,9 @@ func (m *Mesh) TransitCounters() TransitCounters {
 		NotReady:       count(transitNotReady),
 		TooBig:         count(transitTooBig),
 		Multicast:      count(transitMulticast),
+		Forged:         count(transitForged),
+		RoutingHeader:  count(transitRoutingHeader),
+		SID:            count(transitOwnSID),
 		Answered:       count(transitAnswered),
 		Unanswered:     m.unanswered.Load(),
 	}
@@ -157,10 +174,23 @@ func (m *Mesh) TransitCounters() TransitCounters {
 
 // transitTally is one batch's counts, added to the mesh's once the batch is decided
 // so the emitters of several sessions share no counter per packet
-type transitTally [transitReasonCount]uint32
+type transitTally struct {
+	counts [transitReasonCount]uint32
+	// nonzero is any count taken, so addTally passes over a batch with none, as most reads off the tun are
+	nonzero bool
+}
+
+// add is the only way a count is taken, so nonzero misses none
+func (t *transitTally) add(reason transitReason) {
+	t.counts[reason]++
+	t.nonzero = true
+}
 
 func (m *Mesh) addTally(tally *transitTally) {
-	for reason, n := range tally {
+	if !tally.nonzero {
+		return
+	}
+	for reason, n := range tally.counts {
 		if n != 0 {
 			m.transitCounts[reason].Add(uint64(n))
 		}
@@ -169,7 +199,7 @@ func (m *Mesh) addTally(tally *transitTally) {
 
 // dropTransit counts a packet from src to dst dropped for reason in tally, and reports it
 func (m *Mesh) dropTransit(tally *transitTally, reason transitReason, src, dst netip.Addr) {
-	tally[reason]++
+	tally.add(reason)
 	m.reportTransitDrop(reason, src, dst)
 }
 
@@ -248,7 +278,7 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 		src, dst := addressesOf(raw, version)
 		if linkScoped(dst) {
 			out = append(out, frame)
-			tally[transitDelivered]++
+			tally.add(transitDelivered)
 			continue
 		}
 		if invalid := martianDestination(dst); packet.InvalidSource(src) || invalid {
@@ -286,11 +316,11 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 					egressed = make([][]byte, 0, len(frames)-i)
 				}
 				egressed = append(egressed, frame)
-				tally[transitDelivered]++
+				tally.add(transitDelivered)
 				continue
 			}
 			out = append(out, frame)
-			tally[transitDelivered]++
+			tally.add(transitDelivered)
 			continue
 		case RouteNone, RouteHeld:
 			reason := transitNoRoute
@@ -326,7 +356,7 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 		if reason := m.forwardOne(b, raw, version, peer); reason != transitForwarded {
 			m.dropTransit(&tally, reason, src, dst)
 		} else {
-			tally[transitForwarded]++
+			tally.add(transitForwarded)
 		}
 		if b.n == len(b.packets) {
 			m.submitForward(b)
