@@ -30,12 +30,12 @@ version = 'v1.0.10'
 hash = 'sha256-uDPnWjHpSrzXr17KEYEA1yAbizfcsfo5AyztY2tS6ZU='
 
 [mod.'github.com/tdewolff/minify/v2']
-version = 'v2.24.22'
-hash = 'sha256-7gsV6LfmpgpYpJqflSJ5Ixrtq4D0Dbyyo/A/66b2sUY='
+version = 'v2.24.23'
+hash = 'sha256-u2hhcafRkgOSRYb3ox5fPs+gIGaQunqYHeI1qvgGFgw='
 
 [mod.'github.com/tdewolff/parse/v2']
-version = 'v2.8.19'
-hash = 'sha256-zRP1y9UFZ/c3g7sooImn/WahlrLyTfEEvnUaaJ9F0bg='
+version = 'v2.8.20'
+hash = 'sha256-i3dL4AAO862cghwnezQjH0VoH33XCvL9I0/h6dh2jdM='
 
 [mod.'github.com/yuin/goldmark']
 version = 'v1.8.6'
