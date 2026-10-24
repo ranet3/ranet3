@@ -731,6 +731,39 @@ func TestReloadLeavesARekeyBackingOffToItsRetry(t *testing.T) {
 	}
 }
 
+// a reload that leaves out the suite of an SA the peer's rekey made rekeys that SA at once, though its schedule counted from the SA the peer's rekey replaced
+func TestReloadRekeysAnSAThePeerRekeyed(t *testing.T) {
+	for _, tc := range []struct {
+		sa    string
+		lists Crypto
+		suite string
+	}{
+		{"child", Crypto{ESP: ESPSuites{Cipher: []string{"aes128gcm"}}}, "aes128gcm"},
+		{"ike", Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm"}}}, "aes128gcm/sha384/x25519"},
+	} {
+		t.Run(tc.sa, func(t *testing.T) {
+			dialed := &recorder{}
+			h := newResponderHarness(t, nil)
+			cfg, dialing := listedConfig(h, dialed.record)
+			// the schedules' own rekeys fall due long after the test
+			cfg.ChildRekeyInterval, cfg.IKERekeyInterval, cfg.RekeyMargin = time.Hour, time.Hour, time.Minute
+			initiator, responder, _, _ := dialSuited(t, h, cfg, nil)
+			rekey := responder.RekeyChild
+			if tc.sa == "ike" {
+				rekey = responder.RekeyIKE
+			}
+			if err := rekey(); err != nil {
+				t.Fatalf("the peer's rekey failed: %v", err)
+			}
+			lists := suitesOf(t, tc.lists)
+			dialing.Store(&lists)
+			// one check, since a second would force the rekey again and hide one the first check's forced rekey dropped
+			initiator.SuitesChanged()
+			awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa="+tc.sa+" suite="+tc.suite)
+		})
+	}
+}
+
 // a reload at both ends leaving out the PRF of their IKE SA sends two Deletes that cross
 // and each session ends for a new handshake, so each dialer dials again at once
 func TestReloadAtBothEndsEndsEachSessionForANewHandshake(t *testing.T) {
