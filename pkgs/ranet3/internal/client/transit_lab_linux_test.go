@@ -578,11 +578,17 @@ func labTranslate(t *testing.T, node *labNode) {
 		translator, err = egress.New(*cfg.Egress(), egress.Runtime{
 			Interface:     node.client.Mesh.Name,
 			MeshAddresses: MeshAddresses(cfg),
-			// the sysctls are read in node's namespace, which the translator's own goroutine is not in
+			// the sysctls and the route lookups are read in node's namespace, which the translator's own goroutine is not in
 			Forwarding: func() (v4, v6 bool) { in(func() { v4, v6 = Forwarding() }); return v4, v6 },
-			Announce:   func([]netip.Prefix) { node.client.Republish() },
-			Events:     node.events,
-			Ready:      node.client.SetEgressReady,
+			Lookup: func(lookups []egress.Lookup) (answers []egress.Answer, err error) {
+				in(func() { answers, err = RouteLookups(lookups) })
+				return answers, err
+			},
+			Sysctl:   func(path string) (value string) { in(func() { value = Sysctl(path) }); return value },
+			Members:  node.client.EgressMembers,
+			Announce: func([]netip.Prefix) { node.client.Republish() },
+			Events:   node.events,
+			Ready:    node.client.SetEgressReady,
 		})
 		return err
 	}); err != nil {

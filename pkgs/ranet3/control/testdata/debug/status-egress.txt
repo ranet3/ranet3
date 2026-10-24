@@ -1,5 +1,9 @@
 nftables ip ranet3, ip6 ranet3, 0 rules, 0 flows, no pass yet
-nftables ip ranet3, ip6 ranet3, 0 rules, 0 flows, egress ready for ipv6, not ready for ipv4 until its rule is installed and the kernel forwards it, no pass yet
+nftables ip ranet3, ip6 ranet3, 0 rules, 0 flows, egress ready for ipv6, not ready for ipv4, no pass yet
 nftables ip ranet3, ip6 ranet3, 0 rules, 0 flows, egress ready for ipv4 ipv6, no pass yet
 nftables ip ranet3, ip6 ranet3, 0 rules, 0 flows, egress not ready for ipv4 ipv6, the host does not forward ipv4 or ipv6, no pass yet
 nftables ip ranet3, 1 rules, 0 flows, no pass yet
+nftables ip ranet3, ip6 ranet3, 2 rules, 0 flows, announcing ::/0, withholding 198.51.100.0/24 until its family is ready, egress ready for ipv6, not ready for ipv4, the lookup of 198.51.100.128 for 198.51.100.0/24 from 192.0.2.1 arriving on ranet3 failed: no route to host, with net.ipv4.conf.ranet3.forwarding at 0, no pass yet
+nftables ip ranet3, ip6 ranet3, 2 rules, 0 flows, announcing 198.51.100.0/24, withholding ::/0 until its family is ready, egress ready for ipv4, not ready for ipv6, the reply lookup of 3fff:20::1 for ::/0 from 8000:: arriving on eth0 leaves by eth0 rather than ranet3, no pass yet
+nftables ip ranet3, ip6 ranet3, 2 rules, 0 flows, announcing 198.51.100.0/24 ::/0, egress ready for ipv4 ipv6, lookup skipped, the mesh routes no other node's ipv6 prefix inside cap.border.overlay, no pass yet
+nftables ip ranet3, ip6 ranet3, 2 rules, 0 flows, announcing 198.51.100.0/24 ::/0 fe80::/10, egress ready for ipv4 ipv6, lookup skipped for fe80::/10, which holds no address the kernel takes as a unicast destination, no pass yet

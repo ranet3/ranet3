@@ -39,6 +39,10 @@ func l3mdevAccept() bool {
 		sysctlIsOne("/proc/sys/net/ipv4/udp_l3mdev_accept")
 }
 
+// Sysctl reads a setting by its path under /proc/sys, the empty string where it
+// cannot, which the egress translator names a failed lookup's setting from
+func Sysctl(path string) string { return readSysctl("/proc/sys/" + path) }
+
 func readSysctl(path string) string {
 	body, err := os.ReadFile(path)
 	if err != nil {

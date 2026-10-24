@@ -160,11 +160,14 @@ func egressLine(e EgressStatus) string {
 		// failure: a prefix is withheld because announcing it would attract
 		// traffic this node would drop, and babel gives a peer no other way
 		// to learn that.
-		line += ", withholding " + strings.Join(withheld, " ") + " until its rule is installed and the kernel forwards it"
+		line += ", withholding " + strings.Join(withheld, " ") + " until its family is ready"
 	}
-	// only a node whose egress segments the translator judges reports a family ready or a reason
+	// a node before its first pass reports no family ready and no reason
 	if len(e.Ready) != 0 || e.Unready != "" {
 		line += egressReadyText(e.Ready, e.Unready)
+	}
+	if e.Skipped != "" {
+		line += ", " + e.Skipped
 	}
 	if len(e.Conflicts) > 0 {
 		line += fmt.Sprintf(", sharing the hook with %s", strings.Join(e.Conflicts, "; "))
@@ -214,11 +217,12 @@ func egressReadyText(ready []string, unready string) string {
 	if len(ready) > 0 {
 		parts = append(parts, "ready for "+strings.Join(ready, " "))
 	}
+	// a family this node does not translate is not ready with no reason of its own
 	switch {
 	case len(notReady) > 0 && unready != "":
 		parts = append(parts, "not ready for "+strings.Join(notReady, " ")+", "+unready)
 	case len(notReady) > 0:
-		parts = append(parts, "not ready for "+strings.Join(notReady, " ")+" until its rule is installed and the kernel forwards it")
+		parts = append(parts, "not ready for "+strings.Join(notReady, " "))
 	}
 	return ", egress " + strings.Join(parts, ", ")
 }

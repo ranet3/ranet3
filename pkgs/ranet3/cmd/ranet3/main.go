@@ -347,6 +347,9 @@ func runDaemon(opts options) int {
 			Interface:     mesh.Name,
 			MeshAddresses: client.MeshAddresses(cfg),
 			Forwarding:    client.Forwarding,
+			Lookup:        client.RouteLookups,
+			Sysctl:        client.Sysctl,
+			Members:       node.EgressMembers,
 			// Published through the runtime rather than read out of the
 			// config, which is how an exit whose chain does not read back as
 			// written withholds its advertisement instead of attracting
@@ -552,6 +555,7 @@ func egressStatus(translator *egress.Translator) control.EgressStatus {
 		Where:     translator.Where(),
 		Ready:     ready,
 		Unready:   stats.Unready,
+		Skipped:   stats.Skipped,
 		Source4:   cfg.Source4.String(),
 		Source6:   cfg.Source6.String(),
 		Return:    cfg.Return,

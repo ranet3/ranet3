@@ -174,9 +174,11 @@ func (c *Client) renderPathMTU(w io.Writer) {
 //
 // The advertised and announced counts are separate series rather than one
 // gauge and a label, because their difference is the alert: a prefix is
-// announced only while its chain reads back as written and the kernel
-// forwards its family, so announced below advertised is this node declining
-// to attract traffic it would drop, and no peer can see that from its own end.
+// announced only while its family is ready, its chain reading back as written,
+// the kernel forwarding it and routing a translated packet and its reply the
+// way the translation needs, so announced below advertised is this node
+// declining to attract traffic it would drop, and no peer can see that from its
+// own end.
 func (c *Client) renderEgress(w io.Writer) {
 	egress := c.egress()
 	if !egress.Enabled {
@@ -185,7 +187,7 @@ func (c *Client) renderEgress(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_egress_rules_installed Source translation rules the host holds for this node as of its last pass.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_rules_installed gauge\n")
 	fmt.Fprintf(w, "ranet3_egress_rules_installed %d\n", egress.Installed)
-	fmt.Fprint(w, "# HELP ranet3_egress_prefixes Prefixes this node offers to carry, and the ones it is announcing: announcing fewer is this node withholding a prefix whose rule is not installed or whose family the kernel will not forward.\n")
+	fmt.Fprint(w, "# HELP ranet3_egress_prefixes Prefixes this node offers to carry, and the ones it is announcing: announcing fewer is this node withholding the prefixes of a family that is not ready, for the reason ranet3 status gives.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_prefixes gauge\n")
 	fmt.Fprintf(w, "ranet3_egress_prefixes{state=\"advertised\"} %d\n", len(egress.Advertise))
 	fmt.Fprintf(w, "ranet3_egress_prefixes{state=\"announced\"} %d\n", len(egress.Announced))

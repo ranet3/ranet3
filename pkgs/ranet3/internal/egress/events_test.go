@@ -48,7 +48,7 @@ func TestTranslatorRecordsThePassesThatDidSomething(t *testing.T) {
 	tr.reconcile()
 
 	var got [][]string
-	for _, event := range bus.Recorded(func(string, string, []slog.Attr) bool { return true }, 0) {
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.pass" }, 0) {
 		if event.Attrs["took"] == "" || event.Attrs["trigger"] != "sweep" {
 			t.Errorf("a pass was recorded without its trigger or duration: %+v", event)
 		}

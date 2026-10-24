@@ -21,7 +21,10 @@ import (
 // rule on darwin to avoid.
 func TestUnsupportedPlatformRefusesTheCapabilityByName(t *testing.T) {
 	cfg := Egress{Advertise: []schema.Prefix{schema.MustPrefix("0.0.0.0/0")}}
-	_, err := New(cfg, Runtime{Interface: "ranet0", Forwarding: func() (bool, bool) { return true, true }})
+	forwarding := func() (bool, bool) { return true, true }
+	lookup := func([]Lookup) ([]Answer, error) { return nil, nil }
+	sysctl := func(string) string { return "" }
+	_, err := New(cfg, Runtime{Interface: "ranet0", Forwarding: forwarding, Lookup: lookup, Sysctl: sysctl})
 	if !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("New returned %v, want the unsupported sentinel", err)
 	}
@@ -32,7 +35,7 @@ func TestUnsupportedPlatformRefusesTheCapabilityByName(t *testing.T) {
 		t.Errorf("the refusal %q does not say what is missing", err)
 	}
 	// an exit advertising nothing still asks to translate what its egress segment carries
-	_, err = New(Egress{}, Runtime{Interface: "utun9", Steered: true, Forwarding: func() (bool, bool) { return true, true }})
+	_, err = New(Egress{}, Runtime{Interface: "utun9", Steered: true, Forwarding: forwarding, Lookup: lookup, Sysctl: sysctl})
 	if !errors.Is(err, ErrUnsupported) {
 		t.Errorf("New returned %v for an exit advertising nothing, want the unsupported sentinel", err)
 	}
