@@ -65,7 +65,7 @@ type rekeySchedule struct {
 	established func() (time.Time, bool)
 	timer       *time.Timer
 	deadline    time.Time
-	// countedFrom is the establishment the interval's rekey was last counted from
+	// countedFrom is the establishment the schedule counted its rekey from, or the time it counted from while no SA was made
 	countedFrom time.Time
 	due         bool
 	failures    uint
@@ -85,7 +85,7 @@ func (r *rekeySchedule) outlived(now time.Time) bool {
 	return ok && !now.Before(end)
 }
 
-// replaced reports an SA established since the schedule counted its rekey, by a rekey on any path, the peer's among them
+// replaced reports that the SA is not the one the schedule counted its rekey from
 func (r *rekeySchedule) replaced() bool {
 	established, ok := r.established()
 	return ok && !established.Equal(r.countedFrom)
@@ -435,23 +435,18 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		resuiteDue = true
 		return nil
 	}
-	// a forced rekey falling due, after its delay or after a failure's backoff, runs only while the lists still leave out its SA
-	// any other rekey falling due runs only while its SA is the one the schedule counted it from, since a scheduled rekey counts from its SA's establishment
-	// otherwise its schedule goes back to the rekey its interval gives, or to none
 	startDueRekey := func() {
 		if ending != nil || replacing {
 			return
 		}
 		for schedule := nextDueRekey(schedules, running); schedule != nil; schedule = nextDueRekey(schedules, running) {
 			child, ikeSA, _ := s.unlisted()
-			if !schedule.forced && !schedule.replaced() || schedule == ikeSchedule && ikeSA != "" || schedule == childSchedule && child != "" {
+			// an unforced rekey falling due runs while its SA is the one the schedule counted it from, since a scheduled rekey counts from its SA's establishment
+			// any rekey falling due runs while the lists leave out its SA, forced or not, since force leaves an SA whose schedule is due or backing off to that schedule
+			// otherwise its schedule goes back to the rekey its interval gives, or to none
+			if (!schedule.forced && !schedule.replaced()) || schedule == ikeSchedule && ikeSA != "" || schedule == childSchedule && child != "" {
 				startRekey(schedule)
 				return
-			}
-			if schedule.replaced() {
-				// RFC 7296 section 2.25: "If a peer continues to receive TEMPORARY_FAILURE on the same IKE SA after several minutes, it SHOULD conclude that the state information is out of sync and close the IKE SA."
-				// the refusals end with the rekey they refused, and the peer's rekey replaced its SA
-				s.temporary = temporaryStreak{}
 			}
 			if err := s.rearm(schedule); err != nil {
 				end(schedule, "local failure", err)
