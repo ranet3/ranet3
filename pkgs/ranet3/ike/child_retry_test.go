@@ -286,6 +286,41 @@ func TestPeerRekeyResetsTheSchedule(t *testing.T) {
 	}
 }
 
+// a peer's rekey of the SA a failed rekey backs off from drops the retry, and the schedule's next rekey counts from the peer's SA
+func TestPeerRekeyDropsTheRetryOfTheSAItReplaced(t *testing.T) {
+	var allow func()
+	pair := dialRefusing(t, func(cfg *PeerConfig) {
+		cfg.ChildRekeyInterval, cfg.RekeyMargin = time.Hour, time.Hour-scheduleAhead
+		cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, 4*retryDelay
+	}, func(initiator, responder *Session) {
+		initiator.rekeyJitterSource = unjittered
+		initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
+		allow = refuseEveryRekey(t, initiator, responder)
+	})
+	for deadline := time.Now().Add(answerBudget); childRekeyLines(pair, "ike.rekey.failed") == 0; time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the scheduled rekey never failed, the session recorded %q", pair.dialed.recorded())
+		}
+	}
+	failed := time.Now()
+	allow()
+	time.Sleep(time.Until(failed.Add(retryDelay / 2)))
+	if err := pair.responder.RekeyChild(); err != nil {
+		t.Fatalf("the peer's rekey failed: %v", err)
+	}
+	rekeyed := time.Now()
+	// the retry was due retryDelay after the failure, which this is past
+	time.Sleep(time.Until(rekeyed.Add(scheduleAhead * 3 / 4)))
+	if got := childRekeyLines(pair, "ike.rekey.started"); got != 1 {
+		t.Fatalf("%d Child SA rekeys started by %s after the peer's, want the failed one alone, the session recorded %q", got, scheduleAhead*3/4, pair.dialed.recorded())
+	}
+	for deadline := time.Now().Add(answerBudget); childRekeyLines(pair, "ike.rekey.started") < 2; time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the schedule never rekeyed the SA the peer's rekey made, the session recorded %q", pair.dialed.recorded())
+		}
+	}
+}
+
 // RFC 7296 section 2.25: "If a peer continues to receive TEMPORARY_FAILURE on the same IKE SA after several minutes, it SHOULD conclude that the state information is out of sync and close the IKE SA."
 // a peer's rekey of the SA a refused rekey backs off from ends the refusals, so one refusal of a later rekey on the same IKE SA starts a new run rather than closing it
 func TestPeerRekeyEndsTheTemporaryFailureRun(t *testing.T) {
