@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"ranet3.com/pkgs/ranet3/sadr"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -27,6 +28,9 @@ type RouteTable struct {
 	overlay []schema.Prefix
 	// egress is the prefixes cap.egress advertises, masked
 	egress []netip.Prefix
+	// generation moves under mu once a write that can change a lookup's verdict or Counted flag is in the table
+	// so an answer looked up after reading it holds until it moves, SetEgress changing neither
+	generation atomic.Uint64
 }
 
 // routeEntry is one entry's value, with the flags Resolve answers beside its verdict
@@ -53,6 +57,7 @@ func (rt *RouteTable) SetOverlay(overlay []schema.Prefix) {
 	defer rt.mu.Unlock()
 	rt.overlay = slices.Clone(overlay)
 	rt.reflagLocked()
+	rt.generation.Add(1)
 }
 
 // SetEgress flags every entry again under the prefixes cap.egress advertises
@@ -146,6 +151,7 @@ func (rt *RouteTable) notify() {
 func (rt *RouteTable) Set(src, dst netip.Prefix, peer *Peer) {
 	rt.mu.Lock()
 	rt.table.Set(src, dst, rt.flaggedLocked(src, dst, peer))
+	rt.generation.Add(1)
 	rt.mu.Unlock()
 	rt.notify()
 }
@@ -153,6 +159,7 @@ func (rt *RouteTable) Set(src, dst netip.Prefix, peer *Peer) {
 func (rt *RouteTable) Remove(src, dst netip.Prefix) {
 	rt.mu.Lock()
 	rt.table.Remove(src, dst)
+	rt.generation.Add(1)
 	rt.mu.Unlock()
 	rt.notify()
 }
@@ -160,6 +167,7 @@ func (rt *RouteTable) Remove(src, dst netip.Prefix) {
 func (rt *RouteTable) RemovePeer(peer *Peer) {
 	rt.mu.Lock()
 	rt.table.RemoveFunc(func(entry routeEntry) bool { return entry.peer == peer })
+	rt.generation.Add(1)
 	rt.mu.Unlock()
 	rt.notify()
 }

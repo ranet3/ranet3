@@ -102,6 +102,8 @@ type outboundBatch struct {
 	peerOrder []*Peer
 	// cut holds the fragments of the read's packets too large for their peers' sessions
 	cut fragmentList
+	// answers keeps the answers its reads looked up for their sources, for the checks of a read off the tun
+	answers keptAnswers
 	// free is the pool the batch goes back to once sealed, nil for a tun reader's, which goes back to outboundFree
 	free chan *outboundBatch
 }
@@ -365,10 +367,15 @@ func (m *Mesh) outboundReader(queue tun.Queue) {
 	}
 }
 
-// classify picks the peer of every packet of a read and holds each packet to the largest its peer's session carries
+// classify picks the peer of every packet of a read that passes the checks of what enters the mesh, and holds each packet to the largest its peer's session carries
 // a packet past that is answered, cut into fragments or dropped rather than sent, and a SYN within it has its MSS clamped to it
 // an unsteered packet no route reaches, or a hold holds, is answered as answerUnroutedRead says, and a steered one is counted unrouted
 func (m *Mesh) classify(b *outboundBatch) {
+	var tally transitTally
+	defer m.addTally(&tally)
+	segments := m.segmentTable.Load()
+	// read once a read, so every change in force as the read begins reaches each of its packets
+	b.answers.keepFor(m.Routes.generation.Load())
 	for i := range b.n {
 		r := b.reads[i]
 		raw := b.slab[r.Offset : r.Offset+r.Size : r.Offset+r.Size]
@@ -379,7 +386,11 @@ func (m *Mesh) classify(b *outboundBatch) {
 		// the mesh routes no group and forwards no limited broadcast, RFC 1812 section 5.3.5.1
 		// and a covering unicast route, a default among them, would carry either to one peer
 		if dst.IsMulticast() || dst == packet.LimitedBroadcast {
-			m.transitCounts[transitMulticast].Add(1)
+			tally.add(transitMulticast)
+			continue
+		}
+		if reason, dropped := m.edgeCheck(&b.answers, segments, raw, nh, src, dst); dropped {
+			m.dropTransit(&tally, reason, src, dst)
 			continue
 		}
 		// Steering happens before the route lookup, because a steered

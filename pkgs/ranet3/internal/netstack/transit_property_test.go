@@ -148,6 +148,14 @@ func exactnessSID(i int) netip.Addr {
 	return netip.AddrFrom16([16]byte{0x3f, 0xff, 0, 5, 15: byte(i + 1)})
 }
 
+// exactnessSteered is node i's own address of family whose packets its policy steers to holder's egress SID, inside the overlay
+func exactnessSteered(i, holder, family int) netip.Addr {
+	if family == 4 {
+		return netip.AddrFrom4([4]byte{192, 0, 2, byte(200 + 8*holder + i)})
+	}
+	return netip.AddrFrom16([16]byte{0x3f, 0xff, 13: 2, 14: byte(holder), 15: byte(i)})
+}
+
 // exactnessEntry is one entry of a node's table in the property's model, where next is the neighbor it forwards to
 // and from the source prefix it is announced from, none for most
 type exactnessEntry struct {
@@ -202,7 +210,7 @@ func towards(links [][]int, targets []int) []int {
 }
 
 // exactnessProbe is one packet the property sends from node from, as a read off its tun
-// mode 3 steers it to holder's egress SID, and want is the node whose tun it must reach alone, -1 for none
+// mode 3 steers it to holder's egress SID, by the policy of the node reading it or by a routing header the host built, and want is the node whose tun it must reach alone, -1 for none
 type exactnessProbe struct {
 	from, holder, want int
 	raw                []byte
@@ -210,8 +218,9 @@ type exactnessProbe struct {
 
 // a mesh of meshes joined by in-memory sessions over a drawn topology, its exits advertising drawn overlapping prefixes and its nodes holding drawn ones
 // a packet a node reads off its tun for a destination outside the overlay reaches the tun of exactly the node whose own entry the path's longest matches lead to, and of no other
-// a packet steered to an egress SID reaches the tun of exactly the node holding the SID as an egressed write, whatever the other nodes' tables say of its inner destination
+// a packet a node's policy steers to an egress SID reaches the tun of exactly the node holding the SID as an egressed write, whatever the other nodes' tables say of its inner destination
 // and of none where the holder's own table routes that destination, as egressRefused says
+// one the host steers itself, its routing header read off the tun, reaches nothing
 // and no node writes to its tun a packet it does not resolve as its own but as an egressed write at its egress SID
 // a write is told egressed from the probe it carries, a probe steered to the writing node's SID, and the holder's Egressed counts each one
 func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
@@ -264,6 +273,11 @@ func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
 		}
 		for _, holder := range holders {
 			route(hostPrefix(exactnessSID(holder)), []int{holder}, never)
+			for i := range n {
+				for _, family := range []int{4, 6} {
+					route(hostPrefix(exactnessSteered(i, holder, family)), []int{i}, never)
+				}
+			}
 		}
 		for _, prefix := range exactnessPrefixes {
 			if targets := originators[prefix]; len(targets) > 0 {
@@ -293,6 +307,17 @@ func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
 			m.SetTransit(true)
 			m.SetOverlay(transitOverlay)
 			m.SetAnswerSources(AnswerSources{Router4: exactnessHost(i, 4), Router6: exactnessHost(i, 6)})
+			var policies []srv6.Steer
+			for _, holder := range holders {
+				for _, family := range []int{4, 6} {
+					policies = append(policies, srv6.Steer{From: schema.PrefixFrom(hostPrefix(exactnessSteered(i, holder, family))), Via: []schema.Addr{schema.AddrFrom(exactnessSID(holder))}})
+				}
+			}
+			steering, err := srv6.NewSteerTable(policies, schema.AddrFrom(exactnessHost(i, 6)))
+			if err != nil {
+				ht.Fatal(err)
+			}
+			m.SetSteering(steering)
 			if slices.Contains(holders, i) {
 				table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(exactnessSID(i)), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: allow}}, everySource)
 				if err != nil {
@@ -359,21 +384,28 @@ func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
 			}
 			from := hegel.Draw(ht, hegel.Integers(0, n-1))
 			destination := hegel.Draw(ht, hegel.SampledFrom(exactnessDestinations[family]))
-			inner := udpPacket(exactnessHost(from, family), destination, 100, false)
 			marker := map[int]int{4: 28, 6: 48}[family]
-			inner[marker], inner[marker+1] = 0xc2, byte(id)
-			probe := exactnessProbe{from: from, holder: -1, want: walk(from, destination), raw: inner}
+			marked := func(source netip.Addr) []byte {
+				raw := udpPacket(source, destination, 100, false)
+				raw[marker], raw[marker+1] = 0xc2, byte(id)
+				return raw
+			}
+			probe := exactnessProbe{from: from, holder: -1, want: walk(from, destination), raw: marked(exactnessHost(from, family))}
 			if hegel.Draw(ht, hegel.Booleans()) {
 				probe.holder = hegel.Draw(ht, hegel.SampledFrom(holders))
 				probe.want = -1
-				if walk(from, exactnessSID(probe.holder)) == probe.holder && !egressRefused(tables[probe.holder], transitOverlay, exactnessHost(from, family), destination) {
+				if walk(from, exactnessSID(probe.holder)) == probe.holder && !egressRefused(tables[probe.holder], transitOverlay, exactnessSteered(from, probe.holder, family), destination) {
 					probe.want = probe.holder
 				}
-				outer, err := srv6.Encapsulate(inner, exactnessHost(from, 6), []netip.Addr{exactnessSID(probe.holder)})
-				if err != nil {
-					ht.Fatal(err)
+				probe.raw = marked(exactnessSteered(from, probe.holder, family))
+				// a routing header the host built is dropped as the tun hands it over
+				if hegel.Draw(ht, hegel.Booleans()) {
+					outer, err := srv6.Encapsulate(marked(exactnessHost(from, family)), exactnessHost(from, 6), []netip.Addr{exactnessSID(probe.holder)})
+					if err != nil {
+						ht.Fatal(err)
+					}
+					probe.raw, probe.want = outer, -1
 				}
-				probe.raw = outer
 			}
 			probes = append(probes, probe)
 		}

@@ -13,5 +13,8 @@ ranet3_transit_packets_total{decision="dropped",reason="unrouted_source"} 12
 ranet3_transit_packets_total{decision="dropped",reason="not_ready"} 13
 ranet3_transit_packets_total{decision="dropped",reason="too_big"} 8
 ranet3_transit_packets_total{decision="dropped",reason="multicast"} 9
+ranet3_transit_packets_total{decision="dropped",reason="forged"} 14
+ranet3_transit_packets_total{decision="dropped",reason="routing_header"} 15
+ranet3_transit_packets_total{decision="dropped",reason="sid"} 16
 ranet3_transit_packets_total{decision="answered",reason=""} 10
 ranet3_transit_packets_total{decision="unanswered",reason=""} 11

@@ -201,14 +201,14 @@ func TestStatusSegmentLineRendersAsTheGoldenFile(t *testing.T) {
 // and names each reason, answered and unanswered only while each is above 0, and --json carries every count under transit
 // the other status goldens hold the line in its place
 func TestStatusTransitLineRendersAsTheGoldenFile(t *testing.T) {
-	every := TransitCounters{Forwarded: 1200, Delivered: 340, Expired: 1, NoRoute: 2, Held: 3, Refused: 4, Invalid: 5, Martian: 6, SourceRoute: 7, UnroutedSource: 12, NotReady: 13, TooBig: 8, Multicast: 9, Answered: 10, Unanswered: 11}
+	every := TransitCounters{Forwarded: 1200, Delivered: 340, Expired: 1, NoRoute: 2, Held: 3, Refused: 4, Invalid: 5, Martian: 6, SourceRoute: 7, UnroutedSource: 12, NotReady: 13, TooBig: 8, Multicast: 9, Forged: 14, RoutingHeader: 15, SID: 16, Answered: 10, Unanswered: 11}
 	for _, c := range []struct {
 		counters TransitCounters
 		want     string
 	}{
 		{TransitCounters{}, "0 forwarded, 0 delivered, 0 dropped"},
 		{TransitCounters{Forwarded: 1200, Delivered: 340, NoRoute: 2, Answered: 2}, "1200 forwarded, 340 delivered, 2 dropped (2 no route), 2 answered"},
-		{every, "1200 forwarded, 340 delivered, 70 dropped (1 expired, 2 no route, 3 held, 4 refused, 5 invalid, 6 martian, 7 source route, 12 unrouted source, 13 not ready, 8 too big, 9 multicast), 10 answered, 11 unanswered"},
+		{every, "1200 forwarded, 340 delivered, 115 dropped (1 expired, 2 no route, 3 held, 4 refused, 5 invalid, 6 martian, 7 source route, 12 unrouted source, 13 not ready, 8 too big, 9 multicast, 14 forged, 15 routing header, 16 SID), 10 answered, 11 unanswered"},
 	} {
 		if got := transitLine(c.counters); got != c.want {
 			t.Errorf("the transit line of %+v reads %q, want %q", c.counters, got, c.want)

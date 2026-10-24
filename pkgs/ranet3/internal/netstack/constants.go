@@ -4,7 +4,11 @@
 
 package netstack
 
-import "time"
+import (
+	"time"
+
+	"ranet3.com/pkgs/wireguard/conn"
+)
 
 // DefaultMTU is link.mtu where the file leaves it out, the largest inner packet a session carries
 // a 1500 byte path carries it in one ESP-in-UDP datagram over IPv4 and over IPv6
@@ -107,6 +111,10 @@ const segmentDropInterval = 30 * time.Second
 // egressPairs is how many source and destination pairs a batch keeps the egress check's answers for, each pair past them looked up again
 // a batch carries a few flows, and a search of the kept pairs costs less than the lookup it saves only while they are few
 const egressPairs = 8
+
+// keptPairs is how many source and destination pairs the answers kept from one read off the tun to the next hold
+// twice the most packets a read holds, a pair for each packet and for the packet it carries, so no read alone brings more pairs than the bound
+const keptPairs = 2 * conn.IdealBatchSize
 
 // the intervals, the burst and the cap of the ICMP error limits are the Linux kernel's defaults, and the bound on the sources held and their shards are this node's own
 const (
