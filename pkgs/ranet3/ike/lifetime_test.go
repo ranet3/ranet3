@@ -705,7 +705,7 @@ func TestTemporaryFailureForTheSpanClosesTheIKESA(t *testing.T) {
 				tc.set(cfg)
 				cfg.RekeyRetryInitial, cfg.RekeyRetryMax = answerBudget, answerBudget
 			}, func(initiator, responder *Session) {
-				initiator.temporary = temporaryStreak{on: initiator.current, since: time.Now().Add(-temporaryFailureSpan)}
+				initiator.temporary = seededStreak(initiator, time.Now().Add(-temporaryFailureSpan))
 				refuseRekeys(initiator, responder)
 			})
 			if tc.ask != nil {
@@ -756,7 +756,7 @@ func TestRekeySucceedingInsideTheSpanStartsTheStreakOver(t *testing.T) {
 				cfg.RekeyMargin = time.Hour - 300*time.Millisecond
 				cfg.RekeyRetryInitial, cfg.RekeyRetryMax = 100*time.Millisecond, 100*time.Millisecond
 			}, func(initiator, _ *Session) {
-				initiator.temporary = temporaryStreak{on: initiator.current, since: time.Now().Add(-temporaryFailureSpan)}
+				initiator.temporary = seededStreak(initiator, time.Now().Add(-temporaryFailureSpan))
 			})
 			tc.succeed(t, pair)
 			refuseRekeys(pair.initiator, pair.responder)
@@ -787,30 +787,36 @@ func TestRekeySucceedingInsideTheSpanStartsTheStreakOver(t *testing.T) {
 	}
 }
 
-// RFC 7296 section 2.25 counts TEMPORARY_FAILURE "on the same IKE SA", so a refusal of any other kind leaves the streak as it was and one on another IKE SA starts it over
-func TestTemporaryFailureStreakSpansOneIKESA(t *testing.T) {
+// RFC 7296 section 2.25 counts TEMPORARY_FAILURE "on the same IKE SA", so a refusal of any other kind leaves the streak as it was
+// and a rekey completed on the IKE SA ends the streak whichever end started it, so one under another IKE SA or another Child SA starts it over
+func TestTemporaryFailureStreakSpansOneIKESAAndChildSA(t *testing.T) {
 	first, second := &ikeContext{}, &ikeContext{}
+	start := time.Now()
+	made, remade := start.Add(-time.Hour), start.Add(-time.Minute)
 	temporary := &rejectedError{exchange: "Child SA negotiation", notify: Notify{Type: N_TEMPORARY_FAILURE}}
 	noProposal := &rejectedError{exchange: "Child SA negotiation", notify: Notify{Type: N_NO_PROPOSAL_CHOSEN}}
-	start := time.Now()
 	var streak temporaryStreak
 	for _, step := range []struct {
 		on    *ikeContext
+		child time.Time
 		err   error
 		at    time.Duration
 		close bool
 	}{
-		{first, temporary, 0, false},
-		{first, temporary, temporaryFailureSpan - time.Nanosecond, false},
-		{first, noProposal, temporaryFailureSpan, false},
-		{first, errors.New("ike: peer unresponsive after 2 attempts"), temporaryFailureSpan, false},
-		{first, temporary, temporaryFailureSpan, true},
-		{second, temporary, temporaryFailureSpan + time.Second, false},
-		{second, temporary, 2*temporaryFailureSpan + time.Second - time.Nanosecond, false},
-		{second, temporary, 2*temporaryFailureSpan + time.Second, true},
+		{first, made, temporary, 0, false},
+		{first, made, temporary, temporaryFailureSpan - time.Nanosecond, false},
+		{first, made, noProposal, temporaryFailureSpan, false},
+		{first, made, errors.New("ike: peer unresponsive after 2 attempts"), temporaryFailureSpan, false},
+		{first, made, temporary, temporaryFailureSpan, true},
+		{second, made, temporary, temporaryFailureSpan + time.Second, false},
+		{second, made, temporary, 2*temporaryFailureSpan + time.Second - time.Nanosecond, false},
+		{second, made, temporary, 2*temporaryFailureSpan + time.Second, true},
+		{second, remade, temporary, 2*temporaryFailureSpan + 2*time.Second, false},
+		{second, remade, temporary, 3*temporaryFailureSpan + 2*time.Second - time.Nanosecond, false},
+		{second, remade, temporary, 3*temporaryFailureSpan + 2*time.Second, true},
 	} {
-		if got := streak.outlasted(step.on, step.err, start.Add(step.at)); got != step.close {
-			t.Errorf("%v at %s on IKE SA %p closes %v, want %v", step.err, step.at, step.on, got, step.close)
+		if got := streak.outlasted(step.on, step.child, step.err, start.Add(step.at)); got != step.close {
+			t.Errorf("%v at %s on IKE SA %p and the Child SA made %s closes %v, want %v", step.err, step.at, step.on, step.child.Format(time.StampMicro), got, step.close)
 		}
 	}
 }
