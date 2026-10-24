@@ -704,7 +704,14 @@ testers.runNixOSTest {
                 rekey = {
                   # each rekey starts the margin before the lifetime stops its SA
                   # and the margin covers a Delete of a replaced IKE SA on the teardown budget, then a rekey's three lost sends
-                  child = if profile then 0 else "24s";
+                  # in meet the ML-KEM-768 Child SA of strongSwan's rekey lasts until ranet3's own rekey, child less margin after it, and the check of its key exchanges must come first
+                  child =
+                    if profile then
+                      0
+                    else if mlkem == "meet" then
+                      "32s"
+                    else
+                      "24s";
                   ike = if profile then 0 else "34s";
                   margin = "22s";
                   jitter = 0;
@@ -1680,7 +1687,7 @@ testers.runNixOSTest {
             ]:
                 chained(peer_rekey(sa, made, done), "request")
                 client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
-            # the Child SA of strongSwan's rekey shows the entry of its key exchanges until ranet3's own rekey replaces it a rekey interval later
+            # the Child SA of strongSwan's rekey shows the entry of its key exchanges until ranet3's own rekey replaces it, child less margin after strongSwan made it
             session_runs({"ike_cipher": "aes256gcm", "ike_prf": "sha384", "ike_kex": "x25519+mlkem768", "esp_cipher": "aes256gcm", "esp_kex": "x25519+mlkem768"})
 
             assert ike_sas_closed() == [], f"ranet3 closed IKE SAs for {ike_sas_closed()}"
