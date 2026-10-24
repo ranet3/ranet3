@@ -591,6 +591,25 @@ testers.runNixOSTest {
               prefixLength = 64;
             }
           ];
+          # An exit routes every other destination out of its uplink. An exit
+          # for an egress segment alone advertises nothing, so the translator
+          # judges each family by the kernel's lookup of a translated packet to
+          # an address of the family's default, which needs this route to be
+          # ready.
+          ipv4.routes = pkgs.lib.optionals egressSegment [
+            {
+              address = "0.0.0.0";
+              prefixLength = 0;
+              via = behindV4;
+            }
+          ];
+          ipv6.routes = pkgs.lib.optionals egressSegment [
+            {
+              address = "::";
+              prefixLength = 0;
+              via = behindV6;
+            }
+          ];
         };
 
         environment.systemPackages =
