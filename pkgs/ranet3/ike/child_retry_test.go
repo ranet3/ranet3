@@ -50,6 +50,12 @@ func dialRefusing(t *testing.T, configure func(*PeerConfig), seed func(initiator
 	return pair
 }
 
+// seededStreak is a run of refusals begun at since under the IKE SA and the Child SA s holds
+func seededStreak(s *Session, since time.Time) temporaryStreak {
+	child, _ := s.childEstablishedAt()
+	return temporaryStreak{on: s.current, child: child, since: since}
+}
+
 // refuseRekeys has the responder answer every rekey with TEMPORARY_FAILURE, as it answers one that finds its own Child SA rekey running
 func refuseRekeys(_, responder *Session) { responder.childRekeying.Store(true) }
 
@@ -277,6 +283,246 @@ func TestPeerRekeyResetsTheSchedule(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// RFC 7296 section 2.25: "If a peer continues to receive TEMPORARY_FAILURE on the same IKE SA after several minutes, it SHOULD conclude that the state information is out of sync and close the IKE SA."
+// a peer's rekey of the SA a refused rekey backs off from ends the refusals, so one refusal of a later rekey on the same IKE SA starts a new run rather than closing it
+func TestPeerRekeyEndsTheTemporaryFailureRun(t *testing.T) {
+	const lead = 3 * time.Second
+	pair := dialRefusing(t, func(cfg *PeerConfig) {
+		cfg.ChildRekeyInterval, cfg.RekeyMargin = time.Hour, time.Hour-lead
+		cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
+	}, func(initiator, responder *Session) {
+		initiator.rekeyJitterSource = unjittered
+		initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
+		// the run of refusals began so long ago that the one at the scheduled rekey leaves it open and one past the retry closes it
+		initiator.temporary = seededStreak(initiator, time.Now().Add(-temporaryFailureSpan+lead+retryDelay))
+		refuseRekeys(initiator, responder)
+	})
+	for deadline := time.Now().Add(answerBudget); childRekeyLines(pair, "ike.rekey.failed") == 0; time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the scheduled rekey never failed, the session recorded %q", pair.dialed.recorded())
+		}
+	}
+	failed := time.Now()
+	pair.responder.childRekeying.Store(false)
+	if err := pair.responder.RekeyChild(); err != nil {
+		t.Fatalf("the peer's rekey failed: %v", err)
+	}
+	// a retry, where one runs, is answered
+	time.Sleep(time.Until(failed.Add(retryDelay + retryDelay/2)))
+	pair.responder.childRekeying.Store(true)
+	// past the rekey the peer's SA gives and its retry
+	time.Sleep(time.Until(failed.Add(2*lead + retryDelay)))
+	recorded := pair.dialed.recorded()
+	if slices.Contains(recorded, "ike.sa.closed "+dialedPair+" sa=child reason=temporary failure") {
+		t.Fatalf("one TEMPORARY_FAILURE after the peer's rekey closed the IKE SA, the session recorded %q", recorded)
+	}
+	if got := childRekeyLines(pair, "ike.rekey.failed"); got < 2 {
+		t.Fatalf("%d Child SA rekeys failed, want the scheduled one and one after the peer's rekey, the session recorded %q", got, recorded)
+	}
+}
+
+// a rekey a reload forced that is refused, and whose SA the peer's rekey then replaces with a listed cipher, as a peer that reloaded the same lists does, ends the run
+// since the next refusal is counted under the Child SA the peer made, and so starts a new run rather than closing the IKE SA
+func TestPeerRekeyEndsTheTemporaryFailureRunOfAForcedRekey(t *testing.T) {
+	// the seeded run's span ends this long after the seed
+	const spanLeft = 2 * time.Second
+	dialing := new(atomic.Pointer[Suites])
+	dialing.Store(&Suites{})
+	var seeded time.Time
+	pair := dialRefusing(t, func(cfg *PeerConfig) {
+		cfg.Suites = func() Suites { return *dialing.Load() }
+		cfg.ChildRekeyInterval, cfg.RekeyMargin = time.Hour, time.Minute
+		cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
+	}, func(initiator, responder *Session) {
+		initiator.rekeyJitterSource = unjittered
+		initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
+		seeded = time.Now()
+		// the run of refusals began so long ago that the forced rekey's refusal leaves it open and one past spanLeft closes it
+		initiator.temporary = seededStreak(initiator, seeded.Add(-temporaryFailureSpan+spanLeft))
+		refuseRekeys(initiator, responder)
+	})
+	aes128 := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{"aes128gcm"}}})
+	dialing.Store(&aes128)
+	pair.initiator.SuitesChanged()
+	for deadline := time.Now().Add(answerBudget); childRekeyLines(pair, "ike.rekey.failed") == 0; time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the forced rekey never failed, the session recorded %q", pair.dialed.recorded())
+		}
+	}
+	failed := time.Now()
+	// the peer's lists leave out the cipher as well, so its rekey makes a Child SA of a listed cipher
+	pair.h.lists.Store(&aes128)
+	pair.responder.childRekeying.Store(false)
+	if err := pair.responder.RekeyChild(); err != nil {
+		t.Fatalf("the peer's rekey failed: %v", err)
+	}
+	pair.responder.childRekeying.Store(true)
+	if got := pair.initiator.Suite().ESP(); got != "aes128gcm" {
+		t.Fatalf("the peer's rekey made a Child SA of %s, want aes128gcm", got)
+	}
+	// past the forced rekey's retry and past the seeded run's span
+	wake := seeded.Add(spanLeft)
+	if retried := failed.Add(retryDelay); retried.After(wake) {
+		wake = retried
+	}
+	time.Sleep(time.Until(wake.Add(retryDelay / 2)))
+	if err := pair.initiator.RekeyChildProactively(); err == nil {
+		t.Fatal("a rekey the peer refuses succeeded")
+	}
+	time.Sleep(quietPeriod)
+	recorded := pair.dialed.recorded()
+	if slices.Contains(recorded, "ike.sa.closed "+dialedPair+" sa=child reason=temporary failure") {
+		t.Fatalf("one TEMPORARY_FAILURE after the peer's rekey replaced the SA of the refused forced rekey closed the IKE SA, the session recorded %q", recorded)
+	}
+	if got := childRekeyLines(pair, "ike.rekey.failed"); got < 2 {
+		t.Fatalf("%d Child SA rekeys failed, want the forced one and the one asked for after the peer's rekey, the session recorded %q", got, recorded)
+	}
+}
+
+// RFC 7296 section 2.25 counts the refusals on the same IKE SA, so the run is the IKE SA's, and a rekey completed on it ends the run whichever end started that rekey
+// a peer's Child SA rekey therefore ends a run of refusals of the IKE SA's own rekey, which nothing replaced, and the next refusal starts a new run and closes nothing
+// whether the Child SA schedule falls due with the IKE SA's rekey or long after it, as it does once the two SAs were made at different times
+func TestPeerChildSARekeyEndsTheTemporaryFailureRunOfTheIKESA(t *testing.T) {
+	const lead = 3 * time.Second
+	for _, tc := range []struct {
+		name  string
+		child time.Duration
+	}{
+		{"child schedule due with the IKE SA's", time.Hour},
+		{"child schedule due an hour after the IKE SA's", 2 * time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now()
+			pair := dialRefusing(t, func(cfg *PeerConfig) {
+				cfg.ChildRekeyInterval, cfg.IKERekeyInterval, cfg.RekeyMargin = tc.child, time.Hour, time.Hour-lead
+				cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
+			}, func(initiator, responder *Session) {
+				initiator.rekeyJitterSource = unjittered
+				initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
+				// the run's span ends half a retry delay after the IKE SA's scheduled rekey falls due, so that rekey's retry closes the run unless the peer's Child SA rekey ended it
+				initiator.temporary = seededStreak(initiator, time.Now().Add(-temporaryFailureSpan+lead+retryDelay/2))
+			})
+			time.Sleep(time.Until(start.Add(lead / 3)))
+			if err := pair.responder.RekeyChild(); err != nil {
+				t.Fatalf("the peer's Child SA rekey failed: %v", err)
+			}
+			// from here the peer refuses every rekey, the IKE SA's among them
+			pair.responder.childRekeying.Store(true)
+			time.Sleep(time.Until(start.Add(lead + 2*retryDelay + retryDelay/2)))
+			recorded := pair.dialed.recorded()
+			for _, sa := range []string{"child", "ike"} {
+				if slices.Contains(recorded, "ike.sa.closed "+dialedPair+" sa="+sa+" reason=temporary failure") {
+					t.Fatalf("a refusal on the IKE SA after the peer's Child SA rekey closed it, the session recorded %q", recorded)
+				}
+			}
+			ikeFailed := 0
+			for _, line := range recorded {
+				if line == "ike.rekey.failed "+dialedPair+" sa=ike" {
+					ikeFailed++
+				}
+			}
+			if ikeFailed < 2 {
+				t.Fatalf("%d IKE SA rekeys failed, want the scheduled one and a retry past the seeded run's span, the session recorded %q", ikeFailed, recorded)
+			}
+		})
+	}
+}
+
+// a peer's Child SA rekey ends the run though a reload then leaves out the cipher of the SA it made, so the rekey the reload forces runs at once on that SA
+// and its first refusal past the span of the run the peer's rekey ended starts a new run rather than closing the IKE SA
+func TestPeerRekeyEndsTheTemporaryFailureRunBeforeAReloadRekeysItsSA(t *testing.T) {
+	// the seeded run's span ends this long after the seed
+	const spanLeft = 2 * time.Second
+	dialing := new(atomic.Pointer[Suites])
+	dialing.Store(&Suites{})
+	var seeded time.Time
+	pair := dialRefusing(t, func(cfg *PeerConfig) {
+		cfg.Suites = func() Suites { return *dialing.Load() }
+		cfg.ChildRekeyInterval, cfg.RekeyMargin = time.Hour, time.Minute
+		cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
+	}, func(initiator, responder *Session) {
+		initiator.rekeyJitterSource = unjittered
+		initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
+		seeded = time.Now()
+		initiator.temporary = seededStreak(initiator, seeded.Add(-temporaryFailureSpan+spanLeft))
+	})
+	if err := pair.responder.RekeyChild(); err != nil {
+		t.Fatalf("the peer's rekey failed: %v", err)
+	}
+	if got := pair.initiator.Suite().ESP(); got == "aes128gcm" {
+		t.Fatalf("the peer's rekey made a Child SA of %s, want one the reload leaves out", got)
+	}
+	time.Sleep(time.Until(seeded.Add(spanLeft + retryDelay/2)))
+	// from here the peer refuses every rekey
+	pair.responder.childRekeying.Store(true)
+	aes128 := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{"aes128gcm"}}})
+	dialing.Store(&aes128)
+	pair.initiator.SuitesChanged()
+	for deadline := time.Now().Add(answerBudget); childRekeyLines(pair, "ike.rekey.failed") == 0; time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the forced rekey never failed, the session recorded %q", pair.dialed.recorded())
+		}
+	}
+	time.Sleep(quietPeriod)
+	recorded := pair.dialed.recorded()
+	if slices.Contains(recorded, "ike.sa.closed "+dialedPair+" sa=child reason=temporary failure") {
+		t.Fatalf("the first refusal of the forced rekey of the SA the peer's rekey made closed the IKE SA, the session recorded %q", recorded)
+	}
+}
+
+// a reload makes no exchange and replaces no SA, so a rekey it forces that a second reload calls off before it starts ends no run
+// and one refusal past the run's span then closes the IKE SA
+func TestReloadEndsNoTemporaryFailureRun(t *testing.T) {
+	// the seeded run's span ends this long after the seed
+	const spanLeft = 2 * time.Second
+	dialing := new(atomic.Pointer[Suites])
+	dialing.Store(&Suites{})
+	var seeded time.Time
+	pair := dialRefusing(t, func(cfg *PeerConfig) {
+		cfg.Suites = func() Suites { return *dialing.Load() }
+		cfg.ChildRekeyInterval, cfg.RekeyMargin = time.Hour, time.Minute
+		cfg.RekeyJitter = forcedJitter
+		cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
+	}, func(initiator, responder *Session) {
+		// a forced rekey waits forcedDelay, and every other draw is none
+		initiator.rekeyJitterSource = func(max time.Duration) (time.Duration, error) {
+			if max == forcedJitter {
+				return forcedDelay, nil
+			}
+			return 0, nil
+		}
+		initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
+		seeded = time.Now()
+		initiator.temporary = seededStreak(initiator, seeded.Add(-temporaryFailureSpan+spanLeft))
+		refuseRekeys(initiator, responder)
+	})
+	aes128 := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{"aes128gcm"}}})
+	dialing.Store(&aes128)
+	pair.initiator.SuitesChanged()
+	const unlisted = "ike.suite.unlisted " + dialedPair + " sa=child suite=aes256gcm action=rekey"
+	for deadline := time.Now().Add(answerBudget); !slices.Contains(pair.dialed.recorded(), unlisted); time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the reload forced no rekey, the session recorded %q", pair.dialed.recorded())
+		}
+	}
+	// the lists hold the Child SA's cipher again before the forced rekey's delay runs out, so its schedule falls due on the SA it counted from
+	dialing.Store(&Suites{})
+	pair.initiator.SuitesChanged()
+	time.Sleep(time.Until(seeded.Add(spanLeft + quietPeriod)))
+	if got := childRekeyLines(pair, "ike.rekey.started"); got != 0 {
+		t.Fatalf("%d Child SA rekeys started after the second reload listed the cipher again, want none, the session recorded %q", got, pair.dialed.recorded())
+	}
+	if err := pair.initiator.RekeyChildProactively(); err == nil {
+		t.Fatal("a rekey the peer refuses succeeded")
+	}
+	closed := "ike.sa.closed " + dialedPair + " sa=child reason=temporary failure"
+	for deadline := time.Now().Add(answerBudget); !slices.Contains(pair.dialed.recorded(), closed); time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatalf("one refusal past the span of a run only reloads followed did not close the IKE SA, the session recorded %q", pair.dialed.recorded())
+		}
 	}
 }
 

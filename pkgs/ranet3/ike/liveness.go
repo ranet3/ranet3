@@ -104,18 +104,22 @@ func (s *Session) ikeExpired(ctx *ikeContext) bool {
 	return s.ikeRekeyInterval > 0 && !time.Now().Before(ctx.established.Add(s.ikeRekeyInterval))
 }
 
+// temporaryStreak is a run of TEMPORARY_FAILURE refusals, with the IKE SA and the Child SA's establishment it began under
 type temporaryStreak struct {
 	on    *ikeContext
+	child time.Time
 	since time.Time
 }
 
-func (t *temporaryStreak) outlasted(on *ikeContext, err error, now time.Time) bool {
+func (t *temporaryStreak) outlasted(on *ikeContext, child time.Time, err error, now time.Time) bool {
 	rejected, ok := errors.AsType[*rejectedError](err)
 	if !ok || rejected.notify.Type != N_TEMPORARY_FAILURE {
 		return false
 	}
-	if t.on != on {
-		*t = temporaryStreak{on: on, since: now}
+	// RFC 7296 section 2.25: "If a peer continues to receive TEMPORARY_FAILURE on the same IKE SA after several minutes, it SHOULD conclude that the state information is out of sync and close the IKE SA."
+	// the run is the IKE SA's, and a rekey completed on it ends the run whichever end started that rekey, so a refusal under another IKE SA or Child SA starts a new one
+	if t.on != on || !t.child.Equal(child) {
+		*t = temporaryStreak{on: on, child: child, since: now}
 		return false
 	}
 	return !now.Before(t.since.Add(temporaryFailureSpan))
@@ -397,7 +401,8 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		}
 		if err != nil {
 			schedule.failures, schedule.lastErr = schedule.failures+1, err
-			if s.temporary.outlasted(s.currentContext(), err, time.Now()) {
+			child, _ := s.childEstablishedAt()
+			if s.temporary.outlasted(s.currentContext(), child, err, time.Now()) {
 				end(schedule, "temporary failure", fmt.Errorf("ike: the peer answered TEMPORARY_FAILURE for %s: %w", temporaryFailureSpan, err))
 				return time.Time{}, nil
 			}
@@ -408,7 +413,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			return next, nil
 		}
 		slog.Info("ike rekey completed", "sa", schedule.name)
-		s.temporary = temporaryStreak{}
+		// a success is settled once the SA it made is in place, so the next refusal starts a new run
 		return time.Time{}, s.rearm(schedule)
 	}
 	// a rekey that ended is checked against the lists once its outcome is settled, since a check while it ran left its SA to it
@@ -442,6 +447,11 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			if !schedule.forced && !schedule.replaced() || schedule == ikeSchedule && ikeSA != "" || schedule == childSchedule && child != "" {
 				startRekey(schedule)
 				return
+			}
+			if schedule.replaced() {
+				// RFC 7296 section 2.25: "If a peer continues to receive TEMPORARY_FAILURE on the same IKE SA after several minutes, it SHOULD conclude that the state information is out of sync and close the IKE SA."
+				// the refusals end with the rekey they refused, and the peer's rekey replaced its SA
+				s.temporary = temporaryStreak{}
 			}
 			if err := s.rearm(schedule); err != nil {
 				end(schedule, "local failure", err)
