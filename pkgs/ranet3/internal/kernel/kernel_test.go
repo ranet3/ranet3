@@ -1072,7 +1072,7 @@ const (
 	waitPoll   = time.Millisecond
 )
 
-func waitFor(t *testing.T, done func() bool) {
+func waitFor(t testing.TB, done func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(waitBudget)
 	for time.Now().Before(deadline) {

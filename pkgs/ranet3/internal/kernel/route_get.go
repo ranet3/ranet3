@@ -42,13 +42,21 @@ type NextHop struct {
 // later. Reverse path filtering answers EXDEV before Linux 6.13 and EINVAL
 // from 6.13 on, the errno a martian source and a blackhole route answer too
 func RouteGet(src, dst netip.Addr, iif string) (MatchedRoute, error) {
-	switch {
-	case !dst.IsValid():
-		return MatchedRoute{}, fmt.Errorf("kernel: no route lookup to an invalid destination")
-	case dst.Zone() != "":
-		return MatchedRoute{}, fmt.Errorf("kernel: no route lookup to %s, whose zone the lookup does not take", dst)
-	case src.IsValid() && src.Is4() != dst.Is4():
-		return MatchedRoute{}, fmt.Errorf("kernel: no route lookup from %s to %s, which are not of one family", src, dst)
+	if err := refuseRouteLookup(src, dst); err != nil {
+		return MatchedRoute{}, err
 	}
 	return routeGet(src, dst, iif)
+}
+
+// refuseRouteLookup refuses a pair no platform looks up, before any is asked
+func refuseRouteLookup(src, dst netip.Addr) error {
+	switch {
+	case !dst.IsValid():
+		return fmt.Errorf("kernel: no route lookup to an invalid destination")
+	case dst.Zone() != "":
+		return fmt.Errorf("kernel: no route lookup to %s, whose zone the lookup does not take", dst)
+	case src.IsValid() && src.Is4() != dst.Is4():
+		return fmt.Errorf("kernel: no route lookup from %s to %s, which are not of one family", src, dst)
+	}
+	return nil
 }
