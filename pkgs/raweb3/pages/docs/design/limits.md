@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-21
+updated: 2026-10-25
 order: 10
 ---
 
@@ -415,7 +415,7 @@ can configure are in
 | Reconnect delay                                | 10 seconds                                                                              | A dialer whose session ended waits this long before it dials again                                     |
 | Sends of the Delete that ends an IKE SA        | 2, waiting 2 and 4 seconds after each                                                   | The IKE SA is deemed failed after 6 seconds                                                            |
 | SA lifetime                                    | `cap.crypto.rekey.child` and `cap.crypto.rekey.ike`                                     | The SA is no longer used, and without a rekey replacing it the IKE SA is deleted                       |
-| `TEMPORARY_FAILURE` answers on 1 IKE SA        | 5 minutes                                                                               | The IKE SA is deleted, and the session ends                                                            |
+| `TEMPORARY_FAILURE` answers on 1 IKE SA        | 5 minutes with no rekey of either SA completed by either end                            | The IKE SA is deleted, and the session ends                                                            |
 | Peer rekeys                                    | 1 per second for each kind of SA                                                        | A faster rekey is answered `TEMPORARY_FAILURE`                                                         |
 | Replaced Child SA awaiting the peer's Delete   | up to 30 seconds, then this end deletes it                                              | Every Child SA rekey in either direction, and a peer's IKE SA rekey, is refused meanwhile              |
 | Replaced IKE SA awaiting the peer's Delete     | up to 2 minutes, and no longer than its lifetime                                        | A peer's IKE SA rekey is answered `TEMPORARY_FAILURE` meanwhile                                        |
@@ -483,13 +483,14 @@ the SA and ignores a resend, as
 [RFC 7296 section 2.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.1)
 asks of a responder that has forgotten its response. They are the sends of a
 session that ends its IKE SA itself once it runs, at a lifetime, after 5 minutes
-of `TEMPORARY_FAILURE` or on a failure of its own, of either end of an
-`IKE_AUTH` whose Child SA the responder refused, of a rekey's Delete of the
-replaced or redundant IKE SA, of the Delete of an IKE SA whose PRF a reload left
-out, as [reloading](../reloading.md#capcrypto) describes, and of a node closing
-a session. A session whose dataplane refuses its first Child SA has not started
-to run, and sends its Delete once without waiting for an answer. The session's
-own Delete waits for an exchange already out. A node closing a session, as at
+of `TEMPORARY_FAILURE` with no rekey completed by either end in between, or on a
+failure of its own, of either end of an `IKE_AUTH` whose Child SA the responder
+refused, of a rekey's Delete of the replaced or redundant IKE SA, of the Delete
+of an IKE SA whose PRF a reload left out, as
+[reloading](../reloading.md#capcrypto) describes, and of a node closing a
+session. A session whose dataplane refuses its first Child SA has not started to
+run, and sends its Delete once without waiting for an answer. The session's own
+Delete waits for an exchange already out. A node closing a session, as at
 shutdown, waits 2 seconds for its Delete to be answered. Once a Delete of the
 session's IKE SA has gone out, whoever sent it, the session starts no other
 request or liveness check on that IKE SA, and sends no Delete of its own when it
