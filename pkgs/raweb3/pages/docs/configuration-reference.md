@@ -385,18 +385,6 @@ configure.
 - A `cap.segment.local` SID that is also an address this block assigns is
   refused at load.
 
-### `cap.table.vrf`
-
-Linux only. The daemon refuses the block at startup on other platforms.
-
-| Key      | Value   | Default  | Meaning                                               |
-| -------- | ------- | -------- | ----------------------------------------------------- |
-| `name`   | string  | required | VRF device the tun is enslaved to                     |
-| `create` | boolean | `false`  | Create the VRF, bound to `id`, when it does not exist |
-
-- The tun is enslaved only while it has no master.
-- A VRF the daemon created is removed at shutdown.
-
 ### `cap.table.rules`
 
 Policy rules the reconciler owns. Linux only, and the daemon refuses them at

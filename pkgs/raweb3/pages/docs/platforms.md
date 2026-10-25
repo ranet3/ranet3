@@ -25,7 +25,7 @@ setting or skips a route instead.
 | Sockets connected to 1 peer          | 1 per busy address pair, up to 256, batched like the shared ones          | 1 per busy address pair, up to 256, 1 datagram per call |
 | Keeping the underlay out of the mesh | `link.underlay.mark` with a `cap.table.rules` entry                       | `link.underlay.bind`                                    |
 | Route ownership                      | the table `cap.table.id` and the protocol `cap.table.proto`               | the utun and the shape of the routes ranet3 installs    |
-| `cap.table.rules`, `cap.table.vrf`   | supported                                                                 | refused                                                 |
+| `cap.table.rules`                    | supported                                                                 | refused                                                 |
 | `cap.table.prefsrc4`                 | supported                                                                 | refused                                                 |
 | `cap.table.metric`                   | supported                                                                 | ignored                                                 |
 | `cap.egress`                         | the kernel exit, translating with nftables                                | refused, naming the platform                            |
@@ -84,48 +84,22 @@ stay apart. `cap.table.prefsrc4` takes an IPv4 address in its plain spelling.
 The IPv4-mapped one, `::ffff:203.0.113.5` for instance, is refused with the
 spelling to write instead.
 
-`cap.table.vrf.create` makes the master device the mesh table is bound to when
-no device of that name exists. One this process created is removed again at
-shutdown, found by the index it was created under, so a device somebody else
-made under the same name in the meantime stays with everything in its table. A
-VRF the process found is left alone, whatever table it is bound to. If it is
-bound to another table, the tun's lookups go to that table instead of
-`cap.table.id`. A device of another kind holding the name is refused by name
-rather than answered with a bare errno.
-
-Every pass that finds the tun in the VRF reads which table the VRF is bound to,
-and warns once per change when that is another table than `cap.table.id`, so a
-VRF made or remade while ranet3 runs is reported as well as one made before it.
-Traffic inside the VRF is looked up in the VRF's own table and falls through to
-main wherever nothing there matches, so it reaches the mesh's routes only
-through a policy rule, and a ping that leaves by the uplink proves nothing.
-
-The warning's `fix` attribute offers 2 changes: bind the VRF to `cap.table.id`
-in whatever creates it, or set `cap.table.id` to the VRF's table. `cap.table.id`
-refuses 253 to 255, so the second is offered only for another table. The warning
-never suggests deleting the device. Deleting it would detach the VRF's other
-links, and the device recreated in its place would be one this process removes
-at shutdown.
-
-3 more behaviors are Linux only:
+2 more behaviors are Linux only:
 
 - At startup the reconciler warns when another routing protocol writes its
   table. An install refuses a key another writer already holds, so where both
   write a prefix, the first writer keeps it.
-- With the mesh in a VRF, the node warns when `net.ipv4.tcp_l3mdev_accept` or
-  `net.ipv4.udp_l3mdev_accept` is off. A socket outside the VRF then misses
-  every reply that arrives through it.
 - A deleted rule that carries `cap.table.proto` wakes the reconciler, and the
   next pass puts the rule back. systemd-networkd deletes such rules when it
   configures a link.
 
 ## macOS
 
-macOS has 1 forwarding table and lacks policy rules and VRFs. Its reconciler
-refuses `cap.table.rules`, `cap.table.vrf` and `cap.table.prefsrc4` by name. It
-also refuses any `cap.table.id` or `cap.table.proto` other than the defaults,
-200 and 155. It takes `cap.table.metric` and ignores it, because a macOS route
-carries no metric.
+macOS has 1 forwarding table and lacks policy rules. Its reconciler refuses
+`cap.table.rules` and `cap.table.prefsrc4` by name. It also refuses any
+`cap.table.id` or `cap.table.proto` other than the defaults, 200 and 155. It
+takes `cap.table.metric` and ignores it, because a macOS route carries no
+metric.
 
 A route belongs to the reconciler when it leaves the utun with the shape ranet3
 installs, a prefix route whose gateway is the interface itself. The reconciler

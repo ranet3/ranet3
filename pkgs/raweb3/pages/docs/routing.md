@@ -300,7 +300,7 @@ node originates as a hold, but for one that
 assigns gets no route there unless this node originates it too, since the host's
 kernel holds it as one of its own already. Every route other than a hold leaves
 through the tun. The reconciler also assigns the tun's addresses. On Linux it
-also installs policy rules and enslaves the tun to a VRF.
+also installs policy rules.
 
 ### What it installs
 
@@ -330,8 +330,8 @@ The mesh's own table still forwards both kinds.
 
 ### When a pass runs
 
-A pass applies, in order, the VRF, the enslaving, the addresses, the routes and
-the rules. It removes what the mesh no longer wants before it installs.
+A pass applies, in order, the addresses, the routes and the rules. It removes
+what the mesh no longer wants before it installs.
 
 - A change in the mesh, or a kernel notification, starts a pass 250 milliseconds
   later. Changes in that window join the same pass.
@@ -343,9 +343,8 @@ the rules. It removes what the mesh no longer wants before it installs.
   `ranet3 disable reconciler` start a pass too.
 
 `ranet3 disable reconciler` withdraws every route, address and rule the
-reconciler installed. It also takes the tun out of a VRF the reconciler enslaved
-it to, and removes a VRF the reconciler created. `ranet3 enable reconciler` puts
-them back. Both are refused on a node with no `cap.table`.
+reconciler installed. `ranet3 enable reconciler` puts them back. Both are
+refused on a node with no `cap.table`.
 
 ### Routes that count as a default
 
@@ -427,7 +426,7 @@ utun. [Sharing a host](coexistence.md) describes the rules in full.
 | A route covering a listed literal endpoint address | installed                      | scoped to the utun, with or without `link.underlay.bind`                                                           |
 | A `/0` default                                     | installed                      | scoped to the utun. With `link.underlay.bind`, installed as its zero-free cover, unscoped                          |
 | Any other route that counts as a default           | installed                      | scoped to the utun. With `link.underlay.bind`, scoped when it covers a listed endpoint address, otherwise unscoped |
-| VRF, rules, `prefsrc4`                             | supported                      | refused at startup                                                                                                 |
+| Rules, `prefsrc4`                                  | supported                      | refused at startup                                                                                                 |
 | `where` in the logs                                | `table 200 protocol 155`       | `interface utun6`, for example                                                                                     |
 
 On macOS a scoped route reaches only a socket bound to the utun. A listed

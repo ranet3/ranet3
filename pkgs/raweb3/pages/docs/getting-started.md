@@ -5,7 +5,7 @@
 title: "Getting started"
 description: "Building the binary, the binary cache, and running a node by hand."
 created: 2026-08-17
-updated: 2026-10-21
+updated: 2026-10-25
 order: 20
 ---
 
@@ -75,9 +75,8 @@ With `cap.table`, the node installs its routes itself. It assigns the addresses
 `cap.table.addresses` lists, and with `cap.table.assign_announced` the prefixes
 it announces. On Linux the routes go into table `cap.table.id`, 200 unless set.
 The host reads that table only through a policy rule, such as a
-`cap.table.rules` entry, or through a VRF. The line then names where the node
-reconciles, such as `table 200 protocol 155` on Linux or `interface utun6` on
-macOS.
+`cap.table.rules` entry. The line then names where the node reconciles, such as
+`table 200 protocol 155` on Linux or `interface utun6` on macOS.
 
 `daemon` is the node. Most other subcommands speak to a running daemon over its
 control socket, and they ship in the same binary. Most of them ask a question,

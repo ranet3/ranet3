@@ -110,14 +110,14 @@ unless run as root.
     egresses into a real tun while the announcement is rebuilt, and checks that
     it already follows the readiness just given.
   - `TestTUNBorderDropsAForgedSourceAtTheUplink` runs an exit node with
-    `cap.border` and a far host behind a veth pair, in the host's own tables and
-    in a VRF. A packet from beyond the uplink with a source outside the overlay
-    crosses the mesh tun, while one with a source inside it, a type 4 routing
-    header alone or behind one of type 0 or 2, or the local SID never crosses it
-    and is counted. A packet to another node's SID from outside the overlay
-    crosses the tun and is refused at that SID. The mesh's own packets leave
-    through the tun, nothing crosses once the border is withdrawn and forwarding
-    is off, and no table is left behind.
+    `cap.border` and a far host behind a veth pair. A packet from beyond the
+    uplink with a source outside the overlay crosses the mesh tun, while one
+    with a source inside it, a type 4 routing header alone or behind one of type
+    0 or 2, or the local SID never crosses it and is counted. A packet to
+    another node's SID from outside the overlay crosses the tun and is refused
+    at that SID. The mesh's own packets leave through the tun, a packet the exit
+    sends to its own mesh address arrives through lo, nothing crosses once the
+    border is withdrawn and forwarding is off, and no table is left behind.
   - `TestTUNEgressCarriesNothingWhileTheBorderIsNotReady` and
     `TestTUNEgressFollowsTheTranslatorOnlyWhileTheBorderReadsBack` read what the
     mesh egresses into a real tun, and check that an egress segment carries a
