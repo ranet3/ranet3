@@ -97,7 +97,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 			if gateway.Is4() {
 				every = netip.PrefixFrom(netip.IPv4Unspecified(), 0)
 			}
-			if err := labRouteVia(netlink, uplink.Index, every, gateway); err != nil {
+			if err := netlink.RouteVia(uplink.Index, every, gateway); err != nil {
 				return fmt.Errorf("route %s through the far host: %w", every, err)
 			}
 		}
@@ -475,7 +475,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if err := labRouteVia(netlink, uplink.Index, netip.PrefixFrom(labSID, 128), labExit6.Addr()); err != nil {
+			if err := netlink.RouteVia(uplink.Index, netip.PrefixFrom(labSID, 128), labExit6.Addr()); err != nil {
 				return err
 			}
 			conn, err := net.DialUDP("udp6", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(labSID, labPort)))
@@ -797,7 +797,7 @@ func labUplink(t *testing.T, exit, far *netnstest.Thread, master string) {
 				return fmt.Errorf("the uplink is enslaved to %q (%v), want %s", held, err, master)
 			}
 		}
-		return labAddress(netlink, "labx", labExit4, labExit6)
+		return netlink.AddAddresses("labx", labExit4, labExit6)
 	}); err != nil {
 		t.Fatalf("make the exit's end of the uplink: %v", err)
 	}
@@ -810,7 +810,7 @@ func labUplink(t *testing.T, exit, far *netnstest.Thread, master string) {
 			return err
 		}
 		defer netlink.Close()
-		return labAddress(netlink, "labf", labFar4, labFar6)
+		return netlink.AddAddresses("labf", labFar4, labFar6)
 	}); err != nil {
 		t.Fatalf("address the far host's end of the uplink: %v", err)
 	}
@@ -852,31 +852,6 @@ func labMaster(name string) (string, error) {
 		return "", nil
 	}
 	return "", fmt.Errorf("the link dump holds no %s", name)
-}
-
-func labAddress(netlink netnstest.Netlink, name string, addresses ...netip.Prefix) error {
-	link, err := net.InterfaceByName(name)
-	if err != nil {
-		return err
-	}
-	for _, address := range addresses {
-		if err := netlink.AddAddress(link.Index, address); err != nil {
-			return fmt.Errorf("add %s to %s: %w", address, name, err)
-		}
-	}
-	return nil
-}
-
-// labRouteVia routes to through gateway on link index in the main table, in
-// the family of to
-func labRouteVia(netlink netnstest.Netlink, index int, to netip.Prefix, gateway netip.Addr) error {
-	family := byte(unix.AF_INET6)
-	if to.Addr().Is4() {
-		family = unix.AF_INET
-	}
-	header := []byte{family, byte(to.Bits()), 0, 0, unix.RT_TABLE_MAIN, unix.RTPROT_BOOT, unix.RT_SCOPE_UNIVERSE, unix.RTN_UNICAST, 0, 0, 0, 0}
-	body := slices.Concat(header, netnstest.Attr(unix.RTA_DST, to.Addr().AsSlice()), netnstest.Attr(unix.RTA_GATEWAY, gateway.AsSlice()), netnstest.Attr(unix.RTA_OIF, netnstest.U32(uint32(index))))
-	return netlink.Request(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, body)
 }
 
 // labReceive calls send until listener reads payload, and returns where it came from

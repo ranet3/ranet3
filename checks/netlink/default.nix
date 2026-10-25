@@ -27,6 +27,7 @@ let
     buildPhase = ''
       go test -c -o netlink-tests ./internal/kernel/
       go test -c -o egress-tests ./internal/egress/kernel/
+      go test -c -o suite-tests ./internal/egress/egresstest/
       go test -c -o netstack-tests ./internal/netstack/
       go test -c -o client-tests ./internal/client/
       go test -c -o transport-tests ./transport/
@@ -34,6 +35,7 @@ let
     installPhase = ''
       install -Dm755 netlink-tests "$out/bin/netlink-tests"
       install -Dm755 egress-tests "$out/bin/egress-tests"
+      install -Dm755 suite-tests "$out/bin/suite-tests"
       install -Dm755 netstack-tests "$out/bin/netstack-tests"
       install -Dm755 client-tests "$out/bin/client-tests"
       install -Dm755 transport-tests "$out/bin/transport-tests"
@@ -103,6 +105,29 @@ testers.runNixOSTest {
     assert "--- PASS: TestBorderRoundTrip" in out, f"the border filter's round trip did not run:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 7, f"only {ran} nftables round trips ran:\n{out}"
+
+    # the exit behavior suite against the kernel exit under each class: rows 1 to 5 and Egress from several sessions in
+    # both families, the withdrawal and restore, another writer's change and the stop
+    # a leaf, the exit, a router and a server in namespaces of their own
+    out = machine.succeed(
+        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestKernelExitPassesTheExitBehaviorSuite$' 2>&1"
+    )
+    print(out)
+    assert "SKIP" not in out, f"the exit behavior suite skipped itself under root:\n{out}"
+    assert "--- PASS: TestKernelExitPassesTheExitBehaviorSuite" in out, f"the exit behavior suite did not pass:\n{out}"
+    ran = out.count("--- PASS")
+    assert ran >= 115, f"only {ran} of the exit behavior suite's tests ran:\n{out}"
+
+    # the suite's own fakes of the backends no real one stands for yet, one mapping the leaf's ports and one ending its TCP
+    out = machine.succeed(
+        "${netlinkTests}/bin/suite-tests -test.v -test.run '^Test(PortMappingBackendMeetsTheRowsThatReadTheMapping|TerminatingBackendMeetsThePathMTURow)$' 2>&1"
+    )
+    print(out)
+    assert "SKIP" not in out, f"the suite's fakes skipped themselves under root:\n{out}"
+    assert "--- PASS: TestPortMappingBackendMeetsTheRowsThatReadTheMapping" in out, f"the port mapping fake did not pass:\n{out}"
+    assert "--- PASS: TestTerminatingBackendMeetsThePathMTURow" in out, f"the terminating fake did not pass:\n{out}"
+    ran = out.count("--- PASS")
+    assert ran >= 52, f"only {ran} of the suite's fake tests ran:\n{out}"
 
     # the tun round trips create a device, attach to one and read its gso limit back
     # refuse a mesh under the default name where a device of that name is there

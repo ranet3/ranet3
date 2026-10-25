@@ -364,7 +364,7 @@ func TestTUNExitEgressesEachShapeOfTheInternetTranslated(t *testing.T) {
 						return err
 					}
 					defer netlink.Close()
-					return labAddress(netlink, "vdb", netip.PrefixFrom(linkLocal, 64))
+					return netlink.AddAddresses("vdb", netip.PrefixFrom(linkLocal, 64))
 				}); err != nil {
 					t.Fatalf("give i %s: %v", linkLocal, err)
 				}
@@ -543,7 +543,7 @@ func labExitUplink(t *testing.T, e *labNode) (*labNode, int) {
 				return err
 			}
 			defer netlink.Close()
-			if err := labAddress(netlink, uplink[side], exitUplink[side][1]); err != nil || side == 1 {
+			if err := netlink.AddAddresses(uplink[side], exitUplink[side][1]); err != nil || side == 1 {
 				return err
 			}
 			link, err := net.InterfaceByName(uplink[0])
@@ -555,7 +555,7 @@ func labExitUplink(t *testing.T, e *labNode) (*labNode, int) {
 				if gateway.Addr().Is4() {
 					every = netip.PrefixFrom(netip.IPv4Unspecified(), 0)
 				}
-				if err := labRouteVia(netlink, link.Index, every, gateway.Addr()); err != nil {
+				if err := netlink.RouteVia(link.Index, every, gateway.Addr()); err != nil {
 					return fmt.Errorf("route %s through i: %w", every, err)
 				}
 			}
@@ -920,7 +920,7 @@ func startLab(t *testing.T, specs []labSpec, links []labLink) []*labNode {
 				return err
 			}
 			defer netlink.Close()
-			if err := labAddress(netlink, meshes[i].Name, spec.hosts...); err != nil {
+			if err := netlink.AddAddresses(meshes[i].Name, spec.hosts...); err != nil {
 				return err
 			}
 			for _, prefix := range labOverlay {
@@ -953,18 +953,6 @@ func startLab(t *testing.T, specs []labSpec, links []labLink) []*labNode {
 func labPair(t *testing.T, here, there *labNode, link labLink) {
 	t.Helper()
 	names := [2]string{fmt.Sprintf("v%c%c", 'a'+link.places[0], 'a'+link.places[1]), fmt.Sprintf("v%c%c", 'a'+link.places[1], 'a'+link.places[0])}
-	var mtu []byte
-	if link.mtu != 0 {
-		mtu = netnstest.Attr(unix.IFLA_MTU, netnstest.U32(uint32(link.mtu)))
-	}
-	other, err := unix.Open(there.ns.Path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		t.Fatalf("open %s's namespace: %v", there.name, err)
-	}
-	defer unix.Close(other)
-	peer := slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString(names[1])), mtu, netnstest.Attr(unix.IFLA_NET_NS_FD, netnstest.U32(uint32(other))))
-	kind := slices.Concat(netnstest.Attr(unix.IFLA_INFO_KIND, netnstest.CString("veth")), netnstest.Attr(unix.IFLA_INFO_DATA, netnstest.Attr(netnstest.VethPeer, peer)))
-	pair := slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString(names[0])), mtu, netnstest.Attr(unix.IFLA_LINKINFO, kind))
 	for side, end := range []*labNode{here, there} {
 		if err := end.ns.Do(func() error {
 			netlink, err := netnstest.OpenNetlink()
@@ -973,11 +961,11 @@ func labPair(t *testing.T, here, there *labNode, link labLink) {
 			}
 			defer netlink.Close()
 			if side == 0 {
-				if err := netlink.Request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL, pair); err != nil {
+				if err := netlink.AddVeth(names[0], names[1], link.mtu, there.ns.Path); err != nil {
 					return fmt.Errorf("make the veth pair: %w", err)
 				}
 			}
-			return labAddress(netlink, names[side], link.ends[side])
+			return netlink.AddAddresses(names[side], link.ends[side])
 		}); err != nil {
 			t.Fatalf("join %s to %s: %v", here.name, there.name, err)
 		}
