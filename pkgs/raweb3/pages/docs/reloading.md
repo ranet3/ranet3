@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-22
+updated: 2026-10-25
 order: 70
 ---
 
@@ -184,8 +184,9 @@ plus the steering header in force stays within the larger of the old and the new
 `link.mtu`. A steering stopped with `ranet3 disable steering` stays stopped with
 the new table installed.
 
-The egress device, the translator's rule keyed on it and its readiness are made
-at startup. A reload adding the first egress segment is refused with
+The families the translator translates are fixed at startup, and a node with an
+egress segment translates both, whatever it advertises. A reload adding the
+first egress segment is refused with
 `config: cap.segment adds the first egress segment, restart to apply`, and one
 removing the last with
 `config: cap.segment removes the last egress segment, restart to apply`. A
@@ -323,7 +324,7 @@ keeps signing with the key it started with until a restart.
 
 `cap.egress` is read once at startup as well. The capability owns the tables it
 created under the families it translated at startup, the advertised ones and
-both beside an egress device. A new block applied here would leave the host
+both beside an egress segment. A new block applied here would leave the host
 holding rules from a configuration nothing is running.
 
 `cap.border` appearing or going is refused with
@@ -376,9 +377,7 @@ an unknown key is refused whole. The checks across blocks run again:
   tun
 - a `cap.route` announcement must not equal a `cap.egress.advertise` prefix,
   which it would announce whether or not the translation rule is installed
-- an egress segment needs `cap.egress`, `cap.table` with the egress device's
-  rule placed between the `to` and `from` rules into the mesh table, and a
-  `link.tun` naming the egress device, and `cap.route` must not announce its
+- an egress segment needs `cap.egress`, and `cap.route` must not announce its
   SID's `/128`
 - an egress segment needs `cap.border`, whose `overlay` covers every entry of
   its `allow` list, and a `cap.egress.advertise` entry longer than 0 bits must

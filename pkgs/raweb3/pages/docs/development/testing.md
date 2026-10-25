@@ -77,21 +77,7 @@ unless run as root.
   as a session's datagrams do, and checks that the tun's GRO coalesces them and
   that the socket reads back the bytes sent. 2 more check that a lane's write
   into the tun allocates nothing and keeps no reference to the frames it wrote,
-  whether its packets go alone or coalesce. 5 run the egress device:
-  `TestTUNEgressDeviceCarriesAndDrains` carries an egress segment's inner packet
-  whole through it to a kernel socket and drains a packet the kernel routes into
-  it, and `TestTUNEgressWritesMoreFlowsThanABatch` writes more flows into it
-  than 1 batch holds. `TestTUNEgressDeviceIsMadeWithNoAddress` makes it up, with
-  no address, router advertisements refused and `rp_filter` off, and refuses a
-  device of its name already there, held open or left persistent.
-  `TestTUNEgressDeviceTakesIPv6WhereTheHostTurnsItOffForNewLinks` makes it on a
-  host whose new links take `disable_ipv6` 1, and checks that the kernel takes a
-  steered IPv6 packet from it rather than discard it.
-  `TestTUNEgressDrainCountsOnlyWhatARouteSends` makes it on a host forwarding
-  IPv6 and checks that the kernel's MLD reports at start and after a
-  `disable_ipv6` put-back, and a packet to a link-local multicast address, leave
-  the drained count alone, while a packet to a multicast address of wider scope
-  and a unicast packet each count.
+  whether its packets go alone or coalesce.
 - `internal/client` has tests under the same prefix that run a node on a real
   TUN device:
   - A SYN arriving through a session between 2 nodes on loopback reaches the tun
@@ -103,17 +89,25 @@ unless run as root.
   - A Babel packet sent in fragments reaches the speaker whole, and the tun
     never sees it. A fragment of ordinary traffic on the same session reaches
     the tun as sent.
-  - `TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink` runs an exit node
-    with an egress segment and a far host behind a veth pair. Steered IPv4 and
-    IPv6 leave under the uplink's address and the replies come back through the
-    mesh tun, while a source outside the allow list is refused. The node puts
-    back a rule and a table another writer deleted and the device's
-    `disable_ipv6` another writer set, and when the egress device is deleted
-    under it, both families go not ready and the SID's /128 is withdrawn. It
-    leaves no link, rule or table behind.
+  - `TestTUNExitEgressesBothModesThroughItsOneTun` runs an exit node with an
+    egress segment and a default of each family, in a namespace holding only its
+    tun, its uplink to a far host and the loopback. A leaf's IPv4 and IPv6,
+    steered through the SID and sent through the default, leave the uplink under
+    its address and the replies come back through the mesh tun, while a source
+    outside the allow list is refused. A route sending a lookup back into the
+    tun, a rule sending the leaf's address out of the uplink, and IPv4
+    `forwarding` off on the tun each hold their family not ready with a reason
+    naming it, retract the default and the SID's /128, and let nothing reach the
+    far host, until the change goes. With strict reverse path filtering on the
+    tun, the rule holds IPv4 by its forward lookup instead, and the reason names
+    the filter. An inner packet for the leaf at the SID is refused and counted.
+    With no IPv6 prefix of the leaf's inside the overlay, the IPv6 lookups are
+    skipped and say so, and IPv6 still egresses. The node puts back an nftables
+    table another writer deleted, and the border drops a packet from the far
+    host to the SID.
   - `TestTUNSetEgressReadyMovesTheMeshBeforeTheAnnouncement` reads what the mesh
-    writes into a real egress device while the announcement is rebuilt, and
-    checks that it already follows the readiness just given.
+    egresses into a real tun while the announcement is rebuilt, and checks that
+    it already follows the readiness just given.
   - `TestTUNBorderDropsAForgedSourceAtTheUplink` runs an exit node with
     `cap.border` and a far host behind a veth pair, in the host's own tables and
     in a VRF. A packet from beyond the uplink with a source outside the overlay
@@ -125,8 +119,9 @@ unless run as root.
     is off, and no table is left behind.
   - `TestTUNEgressCarriesNothingWhileTheBorderIsNotReady` and
     `TestTUNEgressFollowsTheTranslatorOnlyWhileTheBorderReadsBack` read what the
-    mesh writes into a real egress device, and check that it carries a family
-    only while the translator holds it ready and the border's chain reads back.
+    mesh egresses into a real tun, and check that an egress segment carries a
+    family only while the translator holds it ready and the border's chain reads
+    back.
   - `TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter` runs 3
     nodes in a line, each in a namespace of its own, with transit on at the
     middle one, whose kernel forwards neither family and whose tun holds no
@@ -462,13 +457,15 @@ leaves no nftables table behind. A start after the stop installs the tables
 again.
 
 `integration-egress-segment` gives the exit node an egress segment instead of an
-advertisement. It asserts that the egress device is ready for both families with
-no address and that BIRD holds the SID's /128. The gateway then steers its IPv6
-traffic to the SID, and the machine behind the exit sees the exit's own address.
-A source outside the allow list is refused. Turning IPv6 forwarding off keeps
-the SID, since a family the host does not forward is not waited for, and
-`net.ipv4.conf.all.rp_filter=2` withdraws it until it is 0 again. A stop removes
-the device and the tables.
+advertisement. It asserts that the exit is ready for both families and that the
+gateway holds the SID's /128, that the exit holds its mesh tun as its only tun,
+no routing rule keyed on an arrival device and a translation rule keyed on the
+tun in both families, and that its lookups ran rather than being skipped. The
+gateway then steers its IPv6 traffic to the SID, and the machine behind the exit
+sees the exit's own address. A source outside the allow list is refused, and so
+is an inner packet for a destination the mesh routes, which the gateway never
+gets back through the mesh. Turning IPv6 forwarding off keeps the SID, since a
+family the host does not forward is not waited for. A stop removes the tables.
 
 `integration-segments` steers 1 destination through a segment routing header
 (RFC 8754). The gateway's own kernel removes the header with End.DT6, and a

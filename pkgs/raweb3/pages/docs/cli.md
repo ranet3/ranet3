@@ -58,11 +58,11 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
 
 ### Signals
 
-| Signal              | Effect                                                                                                                                                                                                                                                                               |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `SIGHUP`            | Reloads the file `--config` names and the trust document it names. A refusal goes to the log as `reload: <reason>`, and the node runs on as before. See [reloading](reloading.md).                                                                                                   |
-| `SIGINT`, `SIGTERM` | Starts a clean shutdown. The daemon closes every session with a Delete, withdraws the routes, rules, addresses and egress tables it installed, removes the egress device, waits for every dialer, and then withdraws the border filter. A second signal exits at once with status 1. |
-| `SIGUSR1`           | Writes the mesh route table to the log.                                                                                                                                                                                                                                              |
+| Signal              | Effect                                                                                                                                                                                                                                                    |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SIGHUP`            | Reloads the file `--config` names and the trust document it names. A refusal goes to the log as `reload: <reason>`, and the node runs on as before. See [reloading](reloading.md).                                                                        |
+| `SIGINT`, `SIGTERM` | Starts a clean shutdown. The daemon closes every session with a Delete, withdraws the routes, rules, addresses and egress tables it installed, waits for every dialer, and then withdraws the border filter. A second signal exits at once with status 1. |
+| `SIGUSR1`           | Writes the mesh route table to the log.                                                                                                                                                                                                                   |
 
 ## Reading state
 
@@ -87,6 +87,13 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
   on its `Transit` line: the packets sessions delivered that went on to a peer
   or to the tun, those dropped with each reason above 0, and the ICMP errors
   answered and unanswered about them. `--json` carries them under `transit`.
+- `status` on a node with `cap.egress` names, on its `nftables` line, the
+  families the exit is [ready](exit-nodes.md#readiness) for and, for a family
+  that is not, the reason, such as
+  `the lookup of 198.51.100.128 for 198.51.100.0/24 from 192.0.2.1 arriving on ranet3 failed: no route to host, with net.ipv4.conf.ranet3.forwarding at 0`.
+  A lookup the exit had no address to make says so, as
+  `lookup skipped, the mesh routes no other node's ipv6 prefix inside cap.border.overlay`.
+  `--json` carries them under `egress`, in `ready`, `unready` and `skipped`.
 - `sessions` names the transforms of each IKE SA and of its Child SA by their
   `cap.crypto` names. A Child SA the peer's creation or rekey keyed with key
   exchanges of its own has their kex entry after its cipher, such as

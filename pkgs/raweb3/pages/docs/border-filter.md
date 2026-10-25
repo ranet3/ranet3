@@ -4,7 +4,7 @@
 title: "The border filter"
 description: "Dropping what arrives from outside the mesh carrying a mesh source, a routing header or one of this node's SIDs."
 created: 2026-10-19
-updated: 2026-10-21
+updated: 2026-10-25
 order: 55
 ---
 
@@ -106,10 +106,9 @@ source on to every SID in the mesh. So a file with a local segment needs
 The filter accepts whatever arrives on a device inside the mesh, before any
 drop. The list is derived and has no setting:
 
-1. the mesh tun
-2. the egress device, on a node with an egress segment
-3. `lo`, through which a packet this host sends to its own address arrives
-4. the VRF master the tun is enslaved to, named by `cap.table.vrf.name`
+1. the mesh tun, through which an egress segment's inner packets arrive as well
+2. `lo`, through which a packet this host sends to its own address arrives
+3. the VRF master the tun is enslaved to, named by `cap.table.vrf.name`
 
 A packet arriving on a device enslaved to a VRF meets prerouting twice: once
 with the device itself as its input, then again with the VRF master, after the
@@ -176,9 +175,12 @@ The filter is ready while its chain reads back as the configuration asks,
 holding nothing else, at its hook, priority and policy, in a table with no
 flags. An [egress segment](exit-nodes.md#readiness) serves a family only while
 the filter is ready, beside what the translator holds: neither family of the
-egress device is ready while the chain is not read back, and the SID's `/128` is
-withdrawn. An exit relays other nodes' traffic out of the mesh, and an exit
-whose filter is down stops doing that until the pass restores it.
+egress segments is ready while the chain is not read back, and the SID's `/128`
+is withdrawn. An egress segment relays other nodes' traffic out of the mesh, and
+an exit whose filter is down stops doing that until the pass restores it. The
+hold covers the egress segments alone. Traffic through an advertised prefix or a
+steered default keeps leaving by the translator's own readiness, which
+`ranet3_egress_ready` reports.
 
 A node with no egress segment keeps forwarding while its filter is down. The
 pass retries, the log warns, `ranet3_border_ready` reads 0, and `status` and
@@ -221,7 +223,7 @@ chain, the devices inside, the overlay prefixes and SIDs it holds, and the
 packets each kind of drop counted as of the last pass. A filter whose chain is
 not read back reads `not installed`, with the reason, also where the chain is
 there and holds another writer's rule or sits in a dormant table. The egress
-line of an exit whose filter holds the egress device back says
+line of an exit whose filter holds its egress segments back says
 `until the border filter is read back`.
 
 `ranet3 debug rules` reads the chain now, through a socket of its own, so an

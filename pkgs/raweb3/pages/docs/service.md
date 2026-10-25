@@ -4,7 +4,7 @@
 title: "Running it as a service"
 description: "Running ranet3 from the NixOS and nix-darwin modules."
 created: 2026-09-22
-updated: 2026-10-20
+updated: 2026-10-25
 order: 40
 ---
 
@@ -208,10 +208,12 @@ routes, its translation rules and, last, its border filter. It then exits 1, and
 the unit starts it again 5 seconds later, which opens the tun anew. On macOS
 launchd starts it again through `KeepAlive`. A single frame the tun hands over
 that cannot be read as packets costs that frame alone, as
-[metrics](metrics.md#tun-reads) describes. The egress device going away does not
-stop the daemon. It holds both families not ready instead and withdraws the
-egress SIDs, as [exit nodes](exit-nodes.md#readiness) says, until a restart
-makes the device again.
+[metrics](metrics.md#tun-reads) describes. An exit's egress segments write to
+the same tun, so they have no device of their own to lose. An uplink going away
+does not stop the daemon either. The lookups of
+[readiness](exit-nodes.md#readiness) then fail, so the exit holds each family
+the uplink carried not ready, and withdraws its egress SIDs, until the kernel
+routes the family out again.
 
 dhcpcd and NetworkManager are told to leave the tun alone. The module adds
 `ranet*` to `networking.dhcpcd.denyInterfaces`, and as an `interface-name:`

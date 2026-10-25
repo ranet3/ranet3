@@ -14,7 +14,7 @@ mesh. 1 action covers both features a customer asks for: an exit node advertises
 each ends at the same operation. A packet arrives on the tun, its source is
 translated to an address the far side can answer, and the host forwards it by
 its ordinary routes. An [egress segment](#egress-segments) ends at the same
-operation, with its packets arriving on a second tun, the egress device.
+operation, its inner packets arriving on the same tun.
 
 `cap.egress` works on Linux only. On any other platform the daemon refuses it at
 startup with `egress: source translation is unsupported on this platform`. A
@@ -76,20 +76,19 @@ it with an empty interface name. The inbound rule therefore also requires an
 arrival interface index other than 0. Without that test, this node's own traffic
 into the mesh would leave under the return source.
 
-| Direction | Installed                 | Matches                                                                                                                |
-| --------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| out       | in each advertised family | arrives on the tun, leaves by another interface                                                                        |
-| out       | beside an egress device   | arrives on the egress device, leaves by any interface but the tun                                                      |
-| in        | with `return`             | arrives on an interface other than the tun or the egress device, leaves by the tun, source inside an advertised prefix |
+| Direction | Installed                                                       | Matches                                                                                           |
+| --------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| out       | in each advertised family, and in both beside an egress segment | arrives on the tun, leaves by another interface                                                   |
+| in        | with `return`                                                   | arrives on an interface other than the tun, leaves by the tun, source inside an advertised prefix |
 
 `source4` and `source6` say what the source becomes, per family, for every out
-rule. They are a property of the node, so a packet from the tun and one from an
-[egress segment](#egress-segments) leave under the same address. Omitted, or
-written as `auto`, the out rule masquerades: the host picks the address of the
-link each packet leaves by. The in rule translates to this node's own mesh
-address. The translator picks that address once at startup, among the host
-prefixes (`/32`, `/128`) that `cap.route` announces and `cap.table` assigns,
-keeping global unicast and private addresses only.
+rule. They are a property of the node, so a packet through an advertised prefix
+and one from an [egress segment](#egress-segments) leave by the same rule, under
+the same address. Omitted, or written as `auto`, the out rule masquerades: the
+host picks the address of the link each packet leaves by. The in rule translates
+to this node's own mesh address. The translator picks that address once at
+startup, among the host prefixes (`/32`, `/128`) that `cap.route` announces and
+`cap.table` assigns, keeping global unicast and private addresses only.
 
 An address written out is used unchanged in both directions. A deployment with
 its own address block uses it to pin the address return traffic comes back to.
@@ -97,9 +96,8 @@ Writing out the address is the only way to make a reply land on a chosen node.
 
 `return = true` translates the other direction as well, which a subnet router
 needs where the mesh holds no route back to the network behind it. An exit node
-does not, since nothing sits behind it to start a flow. A packet arriving on the
-egress device carries a mesh node's traffic, never traffic from behind this
-node, so the in rule never matches it.
+does not, since nothing sits behind it to start a flow. An egress segment's
+packet arrives on the tun, so the in rule never matches it.
 
 With `return` set and an `auto` source, each advertised family needs exactly 1
 candidate mesh address. A family with none or with several is refused at
@@ -161,21 +159,22 @@ translates it and forwards it out of its uplink, only where 3 checks pass:
   node. A packet from any other source is dropped with no answer and counted as
   `unrouted source`, since no reply to it could come back.
 - For a prefix `cap.egress` advertises, the packet's family is one the node
-  announces some prefix of, as [refusing to advertise](#refusing-to-advertise)
-  describes. A packet of another family is dropped with no answer and counted as
-  `not ready`. The node takes the families it announces before the speaker
-  announces or retracts them, so a fresh announcement attracts no packet before
-  its family is ready, and a packet of a family that went is dropped before the
-  retraction reaches anyone. Once the speaker retracts the prefix, the decision
-  treats a packet for it as [retracted routes](routing.md#retracted-routes)
-  describe. The border filter takes no part: it holds back the egress SIDs and
-  the egress device alone.
+  announces some prefix of, which it does only while the family is
+  [ready](#readiness). A packet of another family is dropped with no answer and
+  counted as `not ready`. The node takes the families it announces before the
+  speaker announces or retracts them, so a fresh announcement attracts no packet
+  before its family is ready, and a packet of a family that went is dropped
+  before the retraction reaches anyone. Once the speaker retracts the prefix,
+  the decision treats a packet for it as
+  [retracted routes](routing.md#retracted-routes) describe. The border filter
+  takes no part: it holds back the egress segments alone.
 
 A packet through a prefix counting as a default that `cap.route` announces meets
 the first 2 checks, and past them goes to the tun with no readiness to wait on,
 since no translation of this node stands behind it. An
 [egress segment](#egress-segments)'s inner packet meets the second check after
-its `allow` list.
+its `allow` list, and is then refused where the mesh routes its destination, as
+[segment routing](segment-routing.md#egress-segments) describes.
 
 ## Refusing to advertise
 
@@ -187,15 +186,16 @@ attract traffic and drop it without telling the sender.
 The capability publishes the advertisement per family on every pass. A prefix is
 announced only while its family's chain reads back exactly as the node wrote it,
 every rule in order and no other writer's among them, at its hook, priority and
-policy in a table with no flags, and the host forwards that family. Each pass
-first rewrites a chain that reads back otherwise, such as one missing a rule,
-holding another writer's or in a dormant table. nf_tables clears no table flag
-in place but dormant, and changes no chain's type, hook or priority, so when one
-of those differs the pass deletes the family's table, and any chain another
-writer put in it, then makes it again in the same transaction. When the chain
-still does not read back as written, or the host stops forwarding the family,
-that pass retracts the prefix. A pass runs at least every `sweep` (30 seconds by
-default).
+policy in a table with no flags, the host forwards that family and the kernel
+routes a translated packet of it and its reply, as [readiness](#readiness)
+describes. Each pass first rewrites a chain that reads back otherwise, such as
+one missing a rule, holding another writer's or in a dormant table. nf_tables
+clears no table flag in place but dormant, and changes no chain's type, hook or
+priority, so when one of those differs the pass deletes the family's table, and
+any chain another writer put in it, then makes it again in the same transaction.
+When the chain still does not read back as written, the host stops forwarding
+the family or a lookup fails, that pass retracts the prefix. A pass runs at
+least every `sweep` (30 seconds by default).
 
 The node reads forwarding from `/proc/sys/net/ipv4/ip_forward` and
 `/proc/sys/net/ipv6/conf/all/forwarding`. Any value other than `0` counts as on,
@@ -206,10 +206,98 @@ between sessions needs neither setting, since the mesh forwards it itself.
 `status` names the prefixes it announces and the ones it withholds. The scrape
 carries the advertised and the announced counts as `ranet3_egress_prefixes`.
 
+## Readiness
+
+A family is ready while its chain reads back as written with its table, the host
+forwards it, and the kernel routes a translated packet of the family and its
+reply the way the translation needs. Every node with `cap.egress` judges each
+family it translates on every pass, and both modes wait for the judgment: a
+packet through an advertised prefix waits for the families the node announces,
+and an egress segment's packet for the families ready, as
+[what an exit carries out](#what-an-exit-carries-out) and
+[egress segments](#egress-segments) describe. A family this node does not
+translate is not ready.
+
+The kernel's routes are read from its own route lookups, all of a pass in 1
+batch through 1 netlink socket:
+
+- **The forward lookup**, for each prefix the family advertises, or for the
+  family's default (`0.0.0.0/0` or `::/0`) where it advertises none beside an
+  egress segment: a packet arriving on the tun from a member's address to the
+  prefix's read address has to leave by a device other than the tun.
+- **The reply lookup**, 1 a family: the translated reply, arriving on the device
+  the family's first forward lookup left by, from that read address back to the
+  member's address, has to leave by the tun. It catches an exit whose replies
+  would leave by its uplink, such as one missing the `to` rules of
+  [the return path](#the-return-path). With strict reverse path filtering on the
+  tun, or loose filtering on a tun with no IPv4 address, such an exit fails its
+  IPv4 forward lookup first, since the kernel checks the forwarded packet's
+  source against the same route.
+
+A lookup holds its family not ready when it fails, finds a route of a type other
+than `unicast`, finds no live next hop, or leaves by the wrong device, a forward
+lookup with any live hop on the tun and a reply lookup with any live hop off it.
+A hop the kernel marks dead or link-down is not live, and a route naming a
+nexthop object that holds no hop counts as a failed lookup.
+
+**The source** of both lookups is a member's address: the read address of a
+prefix the mesh routes by the tun to another node, inside `cap.border.overlay`,
+overlapping none of this node's own prefixes, taking the lowest base address
+first and then the longest prefix. A correctly configured exit routes its
+members' addresses into the tun, so a lookup from one reads the path a real
+reply takes, where an unused overlay address would meet the overlay's hold.
+
+**The read address** of a prefix is its own address for a host route, and
+otherwise the first of these that the kernel's input path takes as a unicast
+destination: its middle address, the base with the bit after the length set,
+then its base plus 1, then its last address less 1. The middle alone would not
+do, since `192.0.0.0/2`'s is `224.0.0.0`, a group. IPv4 refuses the limited
+broadcast, `0.0.0.0`, the loopback addresses and the multicast addresses, and
+IPv6 the unspecified, loopback, multicast and link-local addresses. Linux 4.20
+to 5.2 also refuse `0.0.0.0/8` as a destination, where a lookup of a prefix
+inside it fails and holds its family not ready.
+
+**The skip.** The lookups of a family are skipped, and the family judged by its
+chain and its forwarding alone, where the mesh routes no member of it, as before
+any member is learned, in a mesh of 1, or with no `cap.border.overlay` prefix of
+the family. A prefix holding no address the kernel takes, such as `127.0.0.0/8`
+or `fe80::/10`, has its lookup skipped as well, since the kernel forwards
+nothing to it either way. A family whose every prefix is skipped is judged as
+one with no member. `status` and the `egress.ready` event say what was skipped:
+
+- `lookup skipped, the mesh routes no other node's ipv6 prefix inside cap.border.overlay`
+- `lookup skipped for fe80::/10, which holds no address the kernel takes as a unicast destination`
+
+**The reason** a family is not ready names the lookup, the prefix, the read
+address, the source and the device the packet arrived on, and what the kernel
+answered, such as
+`the lookup of 198.51.100.128 for 198.51.100.0/24 from 192.0.2.1 arriving on ranet3 failed: no route to host, with net.ipv4.conf.ranet3.forwarding at 0`
+or
+`the reply lookup of 3fff:20::1 for 2001:db8::/32 from 2001:db8:8000:: arriving on eth0 leaves by eth0 rather than ranet3`.
+A failed IPv4 lookup names the setting of the device it arrived on that refuses
+it, the tun's for a forward lookup and the uplink's for a reply: the device's
+own `forwarding` at 0, or reverse path filtering, the larger of
+`net.ipv4.conf.all.rp_filter` and the device's own. The kernel answers these
+with errnos it answers for other causes too, `EHOSTUNREACH` for forwarding off
+and `EXDEV`, or `EINVAL` from Linux 6.13 on, for reverse path filtering, so the
+reason reads the settings rather than the errno. The daemon reads them and
+changes none. An IPv6 lookup with forwarding off answers its route, and the
+host's forwarding check stands for it.
+
+Another writer adding, changing or deleting part of the `ranet3` tables, such as
+a `nftables.service` reload that flushes the ruleset, a rule put in a `ranet3`
+chain or a table set dormant, holds both families not ready until the pass it
+wakes restores them, rather than until the next sweep. The daemon's own writes
+wake nothing. Notifications the daemon lost, which another table's large
+transaction can overflow its socket with, wake a pass too and leave readiness as
+it was, since that pass reads the rules back. A pass that reads another writer's
+change back and cannot undo it holds that family not ready, with the change
+named, and its prefixes withheld until a later pass does.
+
 ## The nftables tables
 
 The translator owns 1 table named `ranet3` in each family it translates, `ip`
-and `ip6`: each advertised family, and both beside an egress device, whatever
+and `ip6`: each advertised family, and both beside an egress segment, whatever
 `advertise` holds, since an egress segment carries both families. Each table
 holds 1 chain:
 
@@ -226,11 +314,7 @@ identity as its comment, which `nft list ruleset` shows:
 
 - `out via ranet3 ipv4 masquerade`
 - `out via ranet3 ipv6 source 2001:db8::1`
-- `out via ranet3e not ranet3 ipv4 masquerade`, the rule keyed on the egress
-  device
 - `in via ranet3 ipv4 from 198.51.100.0/24 source 203.0.113.10`
-- `in via ranet3 not ranet3e ipv4 from 198.51.100.0/24 source 203.0.113.10`, the
-  same rule on a node with an egress device
 
 An in rule carries `from` unless its prefix covers every address. A nat chain is
 consulted once per connection, so the rule counters count flows, not packets.
@@ -244,13 +328,13 @@ exit by its segment list rather than by the default route Babel selects.
 [Segment routing](segment-routing.md#egress-segments) describes the segment and
 its `allow` list. This page covers what the exit does with the inner packet.
 
-The daemon makes the egress device at startup, a tun named `link.tun` plus `e`,
-`ranet3e` by default. It carries no address, takes no router advertisement, runs
-with `rp_filter` 0, `disable_ipv6` 0 and multicast off, and is removed at
-shutdown. The mesh writes each inner packet into it. The kernel forwards the
-packet from there by its own routes, and the out rule keyed on the device
-translates it. Nothing is routed into the device, and a packet the kernel sends
-there anyway is read and dropped.
+The mesh writes each inner packet into the tun, as it writes a packet the
+forwarding decision egresses, and the kernel forwards it by its own routes,
+translated by the out rule keyed on the tun. A node with an egress segment
+translates both families, whatever `advertise` holds. An inner packet whose
+destination the mesh routes itself, to another node, into a hold or to this
+node, is refused rather than written, as
+[segment routing](segment-routing.md#egress-segments) describes.
 
 An exit that serves only egress segments writes `cap.egress` with an empty
 `advertise`. It then attracts no default route, and only a leaf naming its SID
@@ -276,68 +360,11 @@ egress segment and no `cap.border`, or with an `allow` entry the overlay does
 not cover. The list names mesh sources, which a host on a link of any forwarding
 node could otherwise forge and send through that node to the SID.
 
-### The egress device's rule
-
-A steered packet keeps the leaf's mesh source, and its destination is anywhere.
-A `cap.table.rules` entry has to send what arrives on the egress device to the
-main table. Its place among the rules into the mesh table decides where the
-packet goes:
-
-- After every `to` rule into the mesh table, so a steered packet for a mesh
-  destination still goes to the mesh rather than out of the uplink.
-- Before every `from` rule into the mesh table, since such a rule takes the
-  leaf's source to the mesh table's default and out of another exit.
-
-```toml
-[[cap.table.rules]]
-iif = "ranet3e"
-table = "main"
-priority = 120
-family = "both"
-```
-
-The daemon refuses a file with an egress segment and no such rule, or with the
-rule on the wrong side of a `to` or `from` rule, and the error names the rule
-and a priority that fits. A missing `to` or `from` rule bounds nothing. With no
-`from` rule any priority after the `to` rule fits, up to 4294967295, and with no
-`to` rule any priority from 1 to just before the `from` rule. Where a `from`
-rule sits at or below a `to` rule, or directly above it, no priority fits, and
-the error says so and names both. A lone `to` rule at 4294967295 or a lone
-`from` rule at 1 leaves no priority either, and the error names that rule. It
-cannot see rules another writer installs, such as networkd's, so a priority
-between those is the operator's to choose. The reconciler installs the rule and
-puts it back when another writer deletes it.
-
-### Readiness
-
-The mesh writes into the egress device only for a family that is ready, and
-counts an egress segment's packet of another family as not ready. A family is
-ready while its chain, which holds its rule keyed on the egress device, reads
-back exactly as written with its table, the host forwards the family, the border
-filter's chain reads back and the kernel would take the family from the device.
-The border is 1 chain for both families, so while it is not read back neither
-family is ready. The kernel takes the larger of `net.ipv4.conf.all.rp_filter`
-and the device's own, and an address-less device fails even loose mode. Each
-pass therefore puts the device's own `rp_filter` back to 0 when another writer
-set it, as systemd-sysctl does for each new link on a host shipping its
-`50-default.conf`. A nonzero `conf.all.rp_filter` is host policy the daemon
-leaves alone, and holds IPv4 not ready until it is 0. The device's own IPv4
-forwarding off does the same. For IPv6, the kernel discards every packet
-arriving on a device whose `disable_ipv6` is 1. The daemon makes the device with
-it at 0, whatever `net.ipv6.conf.default.disable_ipv6` holds, and each pass puts
-it back to 0 when another writer set it. IPv6 is not ready while it still
-reads 1. The device gone, for example deleted by another writer, holds both
-families not ready.
-
-Another writer adding, changing or deleting part of the `ranet3` tables, such as
-a `nftables.service` reload that flushes the ruleset, a rule put in a `ranet3`
-chain or a table set dormant, holds both families not ready until the pass it
-wakes restores them, rather than until the next sweep. The daemon's own writes
-wake nothing. Notifications the daemon lost, which another table's large
-transaction can overflow its socket with, wake a pass too and leave readiness as
-it was, since that pass reads the rules back. A pass that reads another writer's
-change back and cannot undo it holds that family not ready, with the change
-named, and its prefixes withheld until a later pass does.
+An egress segment needs no `cap.table`, though its replies take the `to` rules
+of [the return path](#the-return-path), which the reply lookup reads. Its
+packets wait for their family's [readiness](#readiness), and the mesh counts one
+of a family not ready as not ready. Both families also wait while the border
+filter's chain is not read back, since the border is 1 chain for both.
 
 The node originates each egress SID as a `/128` while at least 1 family is ready
 and every family the host forwards is. A leaf reads the `/128` as the exit's
@@ -355,10 +382,10 @@ A reload refuses a change to `cap.egress` with
 `"auto"` for a source and writing out the default `sweep` are not changes. A
 reload is also refused when `cap.route` or `cap.table` moves the mesh address an
 `auto` return source resolved to. The first egress segment and the last are a
-restart, since the egress device is made at startup. A reload moving an egress
-segment to another SID or editing its `allow` list applies in place, and the
-originated `/128` moves with the SID. [Reloading](reloading.md) lists what else
-a reload applies.
+restart, since the families the translator translates are fixed at startup. A
+reload moving an egress segment to another SID or editing its `allow` list
+applies in place, and the originated `/128` moves with the SID.
+[Reloading](reloading.md) lists what else a reload applies.
 
 `ranet3 down` retracts the advertisement and removes the tables. `ranet3 up`
 installs them again on the next pass, and the advertisement follows.
@@ -366,51 +393,45 @@ installs them again on the next pass, and the advertisement follows.
 ## Watching it
 
 `status` prints 1 line for the translator: where it writes, the rules, the
-flows, what it announces, what it withholds "until its rule is installed and the
-kernel forwards it", the egress device and the families it is ready for, any
-chain it shares the hook with, the time since the last pass and the last error.
-The withholding clause reads the same where the rule is installed and the chain
-still does not read back as written, such as one holding another writer's rule.
-A family not ready is named with the reason the last pass found, or in the
-withholding clause's words before the first pass and while the translator is
-stopped. While the border filter holds the device back, the line says
-`until the border filter is read back`.
+flows, what it announces, what it withholds "until its family is ready", the
+families it is ready for and the reason the others are not, what the lookups
+skipped, any chain it shares the hook with, the time since the last pass and the
+last error. A family not ready is named with the reason the last pass found, and
+a family the node does not translate with none. Before the first pass the line
+names no family. While the border filter holds the egress segments back, the
+line says `until the border filter is read back`.
 
-| Log line                                                             | Level | When                                                                                                               |
-| -------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------ |
-| `egress translating for N prefixes in <where>`                       | info  | the daemon starts the translator                                                                                   |
-| `egress translator started`                                          | info  | the translator starts, with the egress device as `egress`, empty for none                                          |
-| `egress device created`                                              | info  | the daemon made the egress device, with `name` and `mtu`                                                           |
-| `egress device withdrawn`                                            | info  | the daemon removed it at shutdown                                                                                  |
-| `egress segments ready`                                              | info  | a family went ready, with `family`                                                                                 |
-| `egress segments not ready`                                          | warn  | a family stopped being ready, with `family` and the reason as `detail`                                             |
-| `egress device rp_filter put back to 0`                              | info  | another writer set the device's own, with `was`                                                                    |
-| `egress device disable_ipv6 put back to 0`                           | info  | another writer turned IPv6 off on the device, with `was`                                                           |
-| `egress device takes rp_filter <n> from net.ipv4.conf.all.rp_filter` | warn  | IPv4 cannot be ready, once per value                                                                               |
-| `egress stopped reading nf_tables notifications`                     | warn  | a read of the notification socket failed, with `err`, after which another writer's change waits for the next sweep |
-| `egress rules installed`                                             | info  | a pass wrote the chain                                                                                             |
-| `egress advertisement changed`                                       | warn  | the announced prefixes changed after the first pass                                                                |
-| `egress is sharing the source translation hook with another writer`  | warn  | a new chain appears at the same hook, once each                                                                    |
-| `egress pass failed, retrying`                                       | warn  | a pass failed, retried with backoff                                                                                |
-| `egress translator withdrawn`                                        | info  | the tables are removed, at shutdown or at `ranet3 down`                                                            |
-| `egress could not withdraw its tables, retrying`                     | warn  | `ranet3 down` could not remove the tables                                                                          |
-| `egress translator started again`                                    | info  | the first pass after `ranet3 up`                                                                                   |
+| Log line                                                            | Level | When                                                                                                               |
+| ------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------ |
+| `egress translating for N prefixes in <where>`                      | info  | the daemon starts the translator                                                                                   |
+| `egress translator started`                                         | info  | the translator starts, with the tun as `interface` and whether the node holds an egress segment as `steered`       |
+| `egress ready`                                                      | info  | a family went ready, with `family`                                                                                 |
+| `egress not ready`                                                  | warn  | a family stopped being ready, with `family` and the reason as `detail`                                             |
+| `egress stopped reading nf_tables notifications`                    | warn  | a read of the notification socket failed, with `err`, after which another writer's change waits for the next sweep |
+| `egress rules installed`                                            | info  | a pass wrote the chain                                                                                             |
+| `egress advertisement changed`                                      | warn  | the announced prefixes changed after the first pass                                                                |
+| `egress is sharing the source translation hook with another writer` | warn  | a new chain appears at the same hook, once each                                                                    |
+| `egress pass failed, retrying`                                      | warn  | a pass failed, retried with backoff                                                                                |
+| `egress translator withdrawn`                                       | info  | the tables are removed, at shutdown or at `ranet3 down`                                                            |
+| `egress could not withdraw its tables, retrying`                    | warn  | `ranet3 down` could not remove the tables                                                                          |
+| `egress translator started again`                                   | info  | the first pass after `ranet3 up`                                                                                   |
 
 A pass that writes the chain, changes the announced prefixes or fails records an
 `egress.pass` event. So does `ranet3 down`. The event carries `trigger`, `took`,
-`installed`, `announced` and, on failure, `err`. A change of the egress device's
-readiness, or of whether its SIDs are served, records `egress.ready` with
-`ipv4`, `ipv6` and `sid`, and the device's creation and removal record
-`egress.device`.
+`installed`, `announced` and, on failure, `err`. A change of a family's
+readiness, of whether the egress SIDs are served or of what the lookups skipped
+records `egress.ready` with `ipv4`, `ipv6`, `sid`, the reason as `reason` and
+the skip as `skipped`. A reason that changes while nothing else moves reaches
+`status` and not the event.
 
-| Metric                                 | Meaning                                                        |
-| -------------------------------------- | -------------------------------------------------------------- |
-| `ranet3_egress_rules_installed`        | rules the host holds for this node                             |
-| `ranet3_egress_prefixes{state}`        | `advertised` and `announced` prefix counts                     |
-| `ranet3_egress_flows_total`            | connections the rules have translated                          |
-| `ranet3_egress_conflicts`              | other nat postrouting chains at the same hook                  |
-| `ranet3_egress_pass_timestamp_seconds` | when the last pass finished                                    |
-| `ranet3_egress_pass_failed`            | whether the last pass reported an error                        |
-| `ranet3_egress_device_ready{family}`   | whether the egress device is ready, 1 or 0, on a node with one |
+| Metric                                 | Meaning                                                                                                       |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `ranet3_egress_rules_installed`        | rules the host holds for this node                                                                            |
+| `ranet3_egress_prefixes{state}`        | `advertised` and `announced` prefix counts                                                                    |
+| `ranet3_egress_flows_total`            | connections the rules have translated                                                                         |
+| `ranet3_egress_conflicts`              | other nat postrouting chains at the same hook                                                                 |
+| `ranet3_egress_pass_timestamp_seconds` | when the last pass finished                                                                                   |
+| `ranet3_egress_pass_failed`            | whether the last pass reported an error                                                                       |
+| `ranet3_egress_ready{family}`          | whether the family is [ready](#readiness), 1 or 0, the translator's judgment without the border filter's hold |
 
 [Metrics](metrics.md) describes the scrape.

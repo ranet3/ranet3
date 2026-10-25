@@ -1410,7 +1410,9 @@ broadcast or IPv6 link-local destination to the tun whatever its source, and
 answers an IPv6 link-local source to a wider unicast destination a router
 forwards with code 2 on the session it came from. Past its allow list, the
 segment sends a packet from a source a router forwards to the limited broadcast
-or a multicast destination on to its reply check.
+or a multicast destination on to its reply check. Past that check it also drops
+with no answer every inner packet whose destination the mesh routes itself, to
+another node, into a hold or to this node, which egress does not carry.
 [The border filter](../border-filter.md#watching-it) counts each drop,
 [segment routing](../segment-routing.md#watching-it) counts each refusal, and
 `ranet3 status` counts an exit's 2 as `unrouted source` and `not ready`.
