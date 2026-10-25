@@ -1087,7 +1087,7 @@ func refuseWhatThePlatformLacks(t Table, plat platform) error {
 
 // rulesUnavailable says what a platform without rules does instead, so the
 // refusal answers the next question as well as the current one.
-const rulesUnavailable = "an announced default and a source-specific route are installed scoped to the tun instead, which keeps both off every unbound socket, and the underlay stays out of the mesh without needing a mark"
+const rulesUnavailable = "every route that counts as a default and every source-specific route are installed scoped to the tun instead, which keeps them off every unbound socket, and the underlay stays out of the mesh without needing a mark"
 
 // canonicalRules is the configured rules in the spelling the kernel reports
 // back, in a copy: New is handed the caller's slice and a reload compares one

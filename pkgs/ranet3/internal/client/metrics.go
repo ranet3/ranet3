@@ -224,7 +224,7 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_segments_forwarded_total Packets an End behavior sent on to their next segment.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_forwarded_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_forwarded_total %d\n", segments.Forwarded)
-	fmt.Fprint(w, "# HELP ranet3_segments_delivered_total Packets an End.DT46 behavior took the outer header off and handed to the stack through the mesh tun.\n")
+	fmt.Fprint(w, "# HELP ranet3_segments_delivered_total Packets an End.DT46 behavior took the outer header off and handed to the forwarding decision, counted before it writes them to the tun, forwards, answers or drops them.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_delivered_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_delivered_total %d\n", segments.Delivered)
 	fmt.Fprint(w, "# HELP ranet3_segments_dropped_total Packets addressed to one of this node's segments that it would not act on.\n")
