@@ -171,6 +171,52 @@ func TestNetlinkPassConvergesOnTheDerivedRules(t *testing.T) {
 	}
 }
 
+// The mirror's rows of routing.md's table reach a real kernel and read back as the
+// pass wanted them: this node's own prefix outside the overlay as a throw,
+// inside it as the hold, and the overlay's holds. The next pass moves none.
+func TestNetlinkMirrorReadsBackTheThrowAndTheOverlayHolds(t *testing.T) {
+	const device = "ranetmirror0"
+	plat := rootRulePlatform(t, device)
+	tbl, rt := platformFor(device)
+	rt.Overlay = []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("198.18.0.0/15")}
+	routes := netstack.NewRouteTable()
+	routes.Set(netip.Prefix{}, prefix("3fff:1::/48"), netstack.Local)
+	routes.Set(netip.Prefix{}, prefix("192.0.2.0/24"), netstack.Local)
+	routes.Set(netip.Prefix{}, prefix("2001:db8:1::/48"), netstack.Local)
+	reconciler := newReconciler(tbl.Normalized(), rt, nil, nil, routes, plat)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := []Route{
+		{Destination: prefix("3fff:1::/48"), Metric: holdMetric, Unreachable: true},
+		{Destination: prefix("192.0.2.0/24"), Metric: holdMetric, Throw: true},
+		{Destination: prefix("2001:db8:1::/48"), Metric: holdMetric, Throw: true},
+		{Destination: prefix("3fff::/20"), Metric: holdMetric, Unreachable: true},
+		{Destination: prefix("198.18.0.0/15"), Metric: holdMetric, Unreachable: true},
+	}
+	slices.SortFunc(want, compareRoutes)
+	got, err := plat.Routes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.SortFunc(got, compareRoutes)
+	if !slices.Equal(got, want) {
+		t.Fatalf("the table holds\n%v\nwant\n%v", got, want)
+	}
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if stats := reconciler.Stats(); stats.Added != 0 || stats.Removed != 0 {
+		t.Errorf("a second pass added %d routes and removed %d", stats.Added, stats.Removed)
+	}
+	if err := reconciler.withdraw(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := plat.Routes(); err != nil || len(got) != 0 {
+		t.Fatalf("after withdrawal the table holds %v (err %v)", got, err)
+	}
+}
+
 // A throw route of either family reaches a real kernel at the hold's metric
 // and reads back as itself, the IPv6 one dumped with lo as its device.
 func TestNetlinkThrowRouteReadsBack(t *testing.T) {

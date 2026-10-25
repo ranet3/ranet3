@@ -111,6 +111,35 @@ func TestReloadHandsTheReconcilerWhatAssignAnnouncedExpandsInto(t *testing.T) {
 	}
 }
 
+// a reload whose announcements make this node an exit, or stop making it one,
+// hands them to the reconciler, whose exit rule reads them, though the table
+// and the addresses it assigns stay as they were
+func TestReloadHandsTheReconcilerTheAnnouncementsThatMoveItsExit(t *testing.T) {
+	for name, move := range map[string]struct {
+		before, after []string
+	}{
+		"announcing a default":    {[]string{"2001:db8:1::1/64"}, []string{"2001:db8:1::1/64", "::/0"}},
+		"announcing a split":      {[]string{"2001:db8:1::1/64"}, []string{"2001:db8:1::1/64", "2000::/3"}},
+		"withdrawing the default": {[]string{"2001:db8:1::1/64", "::/0"}, []string{"2001:db8:1::1/64"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, path, reconciler, _ := reloadOf(t, func(old *config.Config) {
+				old.Cap.Table = &kernel.Table{}
+				old.Cap.Route = &babel.Routes{Announce: announce(move.before...)}
+			})
+			next := *c.config()
+			next.Cap.Route = &babel.Routes{Announce: announce(move.after...)}
+			writeConfig(t, path, &next)
+			if err := c.ReloadFrom(path); err != nil {
+				t.Fatalf("the reload was refused: %v", err)
+			}
+			if len(reconciler.tables) != 1 || !slices.Equal(reconciler.announced[0], next.Routes().Announced()) {
+				t.Errorf("the reconciler was handed the announcements %v, want %v once", reconciler.announced, next.Routes().Announced())
+			}
+		})
+	}
+}
+
 func TestReloadHandsAChangedTableToTheReconciler(t *testing.T) {
 	c, path, reconciler, bus := reloadOf(t, func(old *config.Config) {
 		old.Cap.Table = &kernel.Table{
@@ -273,6 +302,27 @@ func TestKernelRuntimeCarriesTheOverlay(t *testing.T) {
 	c.Mesh = netstack.NewRoutesOnly()
 	if got := c.KernelRuntime().Overlay; !slices.Equal(got, overlay) {
 		t.Errorf("the reconciler's runtime carries the overlay %v, want %v", got, overlay)
+	}
+}
+
+// the reconciler is handed cap.egress's LANs masked, which it leaves out of this node's own prefixes, and whether an egress segment makes the node an exit
+func TestKernelRuntimeCarriesTheEgressLANsAndTheEgressSegment(t *testing.T) {
+	for _, segments := range [][]srv6.Segment{nil, {egressSegment("3fff:1:69c:8c6::3", "3fff:a::/32")}} {
+		c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
+			egressNode(cfg, segments...)
+			if len(segments) == 0 {
+				cfg.Cap.Segment = nil
+			}
+			cfg.Cap.Egress.Advertise = []schema.Prefix{schema.MustPrefix("192.0.2.0/24")}
+		})
+		c.Mesh = netstack.NewRoutesOnly()
+		rt := c.KernelRuntime()
+		if want := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}; !slices.Equal(rt.Advertised, want) {
+			t.Errorf("the reconciler's runtime carries the LANs %v, want %v", rt.Advertised, want)
+		}
+		if rt.EgressSegment != (len(segments) > 0) {
+			t.Errorf("with %d egress segments the runtime says EgressSegment %v", len(segments), rt.EgressSegment)
+		}
 	}
 }
 

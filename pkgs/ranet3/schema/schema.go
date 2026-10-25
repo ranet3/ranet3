@@ -271,6 +271,12 @@ func CapturesTheMachine(prefix netip.Prefix, overlay []Prefix) bool {
 	return prefix.Bits() < floor && !insideOverlay(prefix.Masked(), overlay)
 }
 
+// InsideOverlay reports each address of prefix lying in some entry of the
+// overlay, the test CapturesTheMachine makes
+func InsideOverlay(prefix netip.Prefix, overlay []Prefix) bool {
+	return insideOverlay(prefix.Masked(), overlay)
+}
+
 // insideOverlay reports each address of a masked prefix lying in some entry of
 // the overlay
 func insideOverlay(prefix netip.Prefix, overlay []Prefix) bool {

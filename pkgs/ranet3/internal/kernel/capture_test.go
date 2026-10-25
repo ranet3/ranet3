@@ -230,7 +230,8 @@ func TestReconcileHoldsBackARetractedDefaultToo(t *testing.T) {
 // This node's own prefix that counts, an exit's default from its transit
 // prefix and a split internet it originates among them, never reaches the
 // kernel, with nothing live or with a session live, while its own prefix that
-// does not count goes in as the hold.
+// does not count goes in as the throw, outside the overlay and on a platform
+// with the policy rules.
 func TestReconcileNeverInstallsThisNodesOwnCountedPrefix(t *testing.T) {
 	live := 0
 	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return live }})
@@ -240,7 +241,7 @@ func TestReconcileNeverInstallsThisNodesOwnCountedPrefix(t *testing.T) {
 	}
 	table.Set(prefix("2001:db8:a::/48"), prefix("::/0"), netstack.Local)
 	table.Set(netip.Prefix{}, prefix("2001:db8:a::/48"), netstack.Local)
-	want := []Route{{Destination: prefix("2001:db8:a::/48"), Metric: holdMetric, Unreachable: true}}
+	want := []Route{{Destination: prefix("2001:db8:a::/48"), Metric: holdMetric, Throw: true}}
 	for _, live = range []int{0, 1} {
 		if err := reconciler.reconcile(); err != nil {
 			t.Fatal(err)
