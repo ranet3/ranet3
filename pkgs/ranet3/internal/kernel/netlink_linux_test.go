@@ -60,8 +60,7 @@ func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
 		t.Fatalf("a fresh table holds %v (err %v)", routes, err)
 	}
 
-	// RTA_PREFSRC is only accepted for an address the box actually has, so
-	// the address assignment has to land first.
+	// an address of each family on the tun, which reads back as assigned
 	local4, local6 := prefix("10.99.0.1/32"), prefix("3fff:a:1::1/128")
 	for _, address := range []netip.Prefix{local4, local6} {
 		if err := plat.AddAddr(address); err != nil {
@@ -81,7 +80,7 @@ func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
 	// IPv6 carries the kernel's own default metric explicitly, so a dump
 	// reports back exactly the route that was installed.
 	want := []Route{
-		{Destination: prefix("10.0.0.0/8"), PrefSrc: local4.Addr()},
+		{Destination: prefix("10.0.0.0/8")},
 		{Destination: prefix("::/0"), Source: prefix("3fff:a:1::/48"), Metric: defaultIPv6Metric},
 		{Destination: prefix("3fff:a::/36"), Metric: defaultIPv6Metric},
 	}
@@ -246,11 +245,11 @@ func TestNetlinkReportsOccupiedRoute(t *testing.T) {
 	}
 }
 
-// a reload against a real kernel, IPv4 alone
-// the preferred source moves at an unchanged metric and a rule is replaced
+// a reload against a real kernel, the tun's addresses IPv4 alone
+// a new overlay moves the rule that sends it to the table
 // then the tun is renumbered and the metric moves
 // each takes the one pass that follows it
-func TestNetlinkReloadRenumbersTheTunAndReplacesARule(t *testing.T) {
+func TestNetlinkReloadRenumbersTheTunAndMovesTheRules(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
 	}
@@ -270,20 +269,29 @@ func TestNetlinkReloadRenumbersTheTunAndReplacesARule(t *testing.T) {
 	setLinkFlags(t, conn, tun.index, unix.IFF_UP)
 
 	first, second, third := prefix("10.99.0.1/32"), prefix("10.99.0.2/32"), prefix("10.99.0.3/32")
-	before := Rule{To: schema.MustPrefix("198.18.104.0/24"), Table: DefaultTable, Priority: 100}
-	after := Rule{To: schema.MustPrefix("198.18.105.0/24"), Table: DefaultTable, Priority: 100}
-	installed := func(rule Rule) Rule { rule.Family = FamilyIPv4; return rule }
+	before, after := []schema.Prefix{schema.MustPrefix("198.18.104.0/24")}, []schema.Prefix{schema.MustPrefix("198.18.105.0/24")}
 	mesh := netstack.NewRouteTable()
 	mesh.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
-	r, err := New(Table{Addresses: prefixes(first, second), PrefSrc4: schema.AddrFrom(first.Addr()), Rules: []Rule{before}},
-		Runtime{Interface: device}, mesh)
+	r, err := New(Table{Addresses: prefixes(first, second)}, Runtime{Interface: device, Overlay: before}, mesh)
 	if err != nil {
 		t.Fatalf("start the reconciler: %v", err)
 	}
 	t.Cleanup(func() { _ = r.plat.Close() })
 	plat := r.plat.(*netlinkPlatform)
-	// a dump of a family this kernel lacks answers with the other one's entries, so each is read as a set of IPv4 entries
-	holds := func(step string, addresses []netip.Prefix, route Route, rule Rule) {
+	step := func(next Table, overlay []schema.Prefix) {
+		t.Helper()
+		if err := r.SetTable(next, overlay, nil); err != nil {
+			t.Fatalf("the reload was refused: %v", err)
+		}
+		if !r.adopt() {
+			t.Fatal("an accepted reload handed the loop nothing")
+		}
+		if err := r.reconcile(); err != nil {
+			t.Fatalf("the pass after the reload: %v", err)
+		}
+	}
+	// a dump of a family this kernel lacks answers with the other one's entries, so each is read as a set
+	holds := func(step string, addresses []netip.Prefix, route Route, overlay []schema.Prefix) {
 		t.Helper()
 		assigned, err := plat.Addrs()
 		if err != nil {
@@ -301,25 +309,24 @@ func TestNetlinkReloadRenumbersTheTunAndReplacesARule(t *testing.T) {
 		if want := slices.SortedFunc(slices.Values(addresses), comparePrefixes); !slices.Equal(got, want) {
 			t.Errorf("%s: the tun carries %v, want %v", step, got, want)
 		}
+		routes = slices.DeleteFunc(routes, func(route Route) bool { return route.Metric == holdMetric })
 		if got := slices.Compact(slices.SortedFunc(slices.Values(routes), compareRoutes)); !slices.Equal(got, []Route{route}) {
-			t.Errorf("%s: the table holds %v with preferred sources %v, want %s with %s", step, got, prefSrcs(got), route, route.PrefSrc)
+			t.Errorf("%s: the table holds %v beside the holds, want %s", step, got, route)
 		}
-		derived := derivedRules(DefaultTable, nil, nil)
-		configured := slices.DeleteFunc(slices.Compact(rules), func(rule Rule) bool { return slices.Contains(derived, rule) })
-		if !slices.Equal(configured, []Rule{rule}) {
-			t.Errorf("%s: the configured rules are %v, want %s", step, configured, rule)
+		if got, want := slices.Compact(sortedByText(rules)), sortedByText(derivedRules(DefaultTable, overlay, nil)); !slices.Equal(got, want) {
+			t.Errorf("%s: the rules are %v, want %v", step, got, want)
 		}
 	}
 	if err := r.reconcile(); err != nil {
 		t.Fatalf("the first pass: %v", err)
 	}
-	holds("the first pass", []netip.Prefix{first, second}, Route{Destination: prefix("10.0.0.0/8"), PrefSrc: first.Addr()}, installed(before))
+	holds("the first pass", []netip.Prefix{first, second}, Route{Destination: prefix("10.0.0.0/8")}, before)
 
-	reload(t, r, Table{Addresses: prefixes(first, second), PrefSrc4: schema.AddrFrom(second.Addr()), Rules: []Rule{after}})
-	holds("a new preferred source and rule", []netip.Prefix{first, second}, Route{Destination: prefix("10.0.0.0/8"), PrefSrc: second.Addr()}, installed(after))
+	step(Table{Addresses: prefixes(first, second)}, after)
+	holds("a new overlay", []netip.Prefix{first, second}, Route{Destination: prefix("10.0.0.0/8")}, after)
 
-	reload(t, r, Table{Addresses: prefixes(second, third), PrefSrc4: schema.AddrFrom(second.Addr()), Metric: 32, Rules: []Rule{after}})
-	holds("a renumbered tun and a new metric", []netip.Prefix{second, third}, Route{Destination: prefix("10.0.0.0/8"), PrefSrc: second.Addr(), Metric: 32}, installed(after))
+	step(Table{Addresses: prefixes(second, third), Metric: 32}, after)
+	holds("a renumbered tun and a new metric", []netip.Prefix{second, third}, Route{Destination: prefix("10.0.0.0/8"), Metric: 32}, after)
 
 	if err := r.withdraw(); err != nil {
 		t.Fatalf("withdraw: %v", err)
@@ -355,10 +362,7 @@ func TestNetlinkReloadRenumberingTheOnlyAddressKeepsAnotherWritersRoutes(t *test
 		// promote_secondaries is off on the tun before the reconciler starts
 		noPromotion bool
 	}{
-		"no preferred source": {Table{Addresses: prefixes(first)}, Table{Addresses: prefixes(second)}, second, "0", "0", false},
-		"the preferred source moving": {
-			Table{Addresses: prefixes(first), PrefSrc4: schema.AddrFrom(first.Addr())},
-			Table{Addresses: prefixes(second), PrefSrc4: schema.AddrFrom(second.Addr())}, second, "1", "1", false},
+		"another address":       {Table{Addresses: prefixes(first)}, Table{Addresses: prefixes(second)}, second, "0", "0", false},
 		"another prefix length": {Table{Addresses: prefixes(first)}, Table{Addresses: prefixes(subnet)}, subnet, "0", "0", false},
 		"within the subnet with promote_secondaries off": {
 			Table{Addresses: prefixes(subnet)}, Table{Addresses: prefixes(renumbered)}, renumbered, "0", "0", true},
@@ -657,8 +661,8 @@ func TestNetlinkRulesInNetworkNamespace(t *testing.T) {
 	want := []Rule{
 		{Family: FamilyIPv4, To: schema.MustPrefix("198.18.104.0/24"), Table: DefaultTable, Priority: 100},
 		{Family: FamilyIPv6, From: schema.MustPrefix("3fff:1:69c::/48"), Table: DefaultTable, Priority: 150},
-		{Family: FamilyIPv4, FWMark: 0x726c, Table: 254, Priority: 40},
-		{Family: FamilyIPv6, FWMark: 0x726c, Table: 254, Priority: 40},
+		{Family: FamilyIPv4, FWMark: 0x72, Table: 254, Priority: 40},
+		{Family: FamilyIPv6, FWMark: 0x72, Table: 254, Priority: 40},
 		// one on a device that exists and one on a device that does not yet, which the kernel holds detached
 		{Family: FamilyIPv6, IIF: device, Table: 254, Priority: 60},
 		{Family: FamilyIPv4, IIF: device + "e", Table: 254, Priority: 60},

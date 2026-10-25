@@ -384,7 +384,7 @@ func exactKeysIn(written any, field reflect.Type, path string) error {
 		}
 	case []map[string]any:
 		// An array of tables, which is how the decoder hands over
-		// [[cap.table.rules]].
+		// [[cap.segment.steer]].
 		if field.Kind() != reflect.Slice {
 			return nil
 		}

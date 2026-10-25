@@ -126,8 +126,6 @@ cap:
   table:
     id: 200
     addresses: ["10.66.0.5/32"]
-    rules:
-      - { fwmark: 0x726c, table: main, priority: 40, family: both }
   segment:
     source: "3fff:1:69c:8c0::1"
     local:
@@ -155,7 +153,6 @@ max = "1024ms"
 [cap.table]
 id = 200
 addresses = ["10.66.0.5/32"]
-rules = [{ fwmark = 0x726c, table = "main", priority = 40, family = "both" }]
 [cap.segment]
 source = "3fff:1:69c:8c0::1"
 local = [{ sid = "3fff:1:69c:8c6::1", behavior = "End.DT46" }]
@@ -240,13 +237,6 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 			asYAML: "cap:\n  table:\n    addresses: [\"2001:db8::1/0\"]\n",
 			asTOML: "[cap.table]\naddresses = [\"2001:db8::1/0\"]\n",
 		},
-		// RTA_PREFSRC is stamped on IPv4 routes alone, and IPv6 carries no
-		// preferred source at all, so an address of the other family is a
-		// setting the reconciler would take and never apply.
-		"a preferred source of the other family": {
-			asYAML: "cap:\n  table:\n    prefsrc4: \"2001:db8::1\"\n",
-			asTOML: "[cap.table]\nprefsrc4 = \"2001:db8::1\"\n",
-		},
 		// An interface cannot carry the unspecified address, and Assigned
 		// skips it, so taking the entry is the one outcome that leaves the
 		// operator an address they wrote and this node never assigned. The
@@ -266,42 +256,6 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 		"a negative capture grace": {
 			asYAML: "cap:\n  table:\n    capture_grace: -1s\n",
 			asTOML: "[cap.table]\ncapture_grace = \"-1s\"\n",
-		},
-		// A mask with no mark reaches the kernel as a rule matching every
-		// packet whose mark is zero under it, which on this fleet is the
-		// unmarked traffic the rule was written to leave alone.
-		"a rule carrying a mark mask and no mark": {
-			asYAML: "cap:\n  table:\n    rules: [{ fwmask: 0xffffffff, to: \"10.0.0.0/8\", table: 200, priority: 40 }]\n",
-			asTOML: "[cap.table]\nrules = [{ fwmask = 0xffffffff, to = \"10.0.0.0/8\", table = 200, priority = 40 }]\n",
-		},
-		"a rule selecting on a mark with no family": {
-			asYAML: "cap:\n  table:\n    rules: [{ fwmark: 0x726c, table: main, priority: 40 }]\n",
-			asTOML: "[cap.table]\nrules = [{ fwmark = 0x726c, table = \"main\", priority = 40 }]\n",
-		},
-		"a rule naming a family and an address": {
-			asYAML: "cap:\n  table:\n    rules: [{ to: \"10.0.0.0/8\", table: 200, priority: 40, family: ipv6 }]\n",
-			asTOML: "[cap.table]\nrules = [{ to = \"10.0.0.0/8\", table = 200, priority = 40, family = \"ipv6\" }]\n",
-		},
-		"a rule at the local table's priority": {
-			asYAML: "cap:\n  table:\n    rules: [{ to: \"10.0.0.0/8\", table: 200, priority: 0 }]\n",
-			asTOML: "[cap.table]\nrules = [{ to = \"10.0.0.0/8\", table = 200, priority = 0 }]\n",
-		},
-		"two rules that are one rule": {
-			asYAML: "cap:\n  table:\n    rules:\n      - { to: \"10.0.0.0/8\", table: 200, priority: 40 }\n      - { to: \"10.0.0.0/8\", table: 200, priority: 40 }\n",
-			asTOML: "[cap.table]\nrules = [{ to = \"10.0.0.0/8\", table = 200, priority = 40 }, { to = \"10.0.0.0/8\", table = 200, priority = 40 }]\n",
-		},
-		// The kernel reads an all-ones mask and an absent one alike, so these
-		// two entries install one rule. Compared as written they looked
-		// different, and every pass reported EEXIST on the second and retried.
-		"two rules one mask apart": {
-			asYAML: "cap:\n  table:\n    rules:\n      - { fwmark: 0x726c, table: main, priority: 40, family: both }\n      - { fwmark: 0x726c, fwmask: 0xffffffff, table: main, priority: 40, family: both }\n",
-			asTOML: "[cap.table]\nrules = [{ fwmark = 0x726c, table = \"main\", priority = 40, family = \"both\" }, { fwmark = 0x726c, fwmask = 0xffffffff, table = \"main\", priority = 40, family = \"both\" }]\n",
-		},
-		// And one entry written for both families expanded into two that are
-		// one rule each, which the comparison also has to see.
-		"one family written twice": {
-			asYAML: "cap:\n  table:\n    rules:\n      - { fwmark: 0x726c, table: main, priority: 40, family: both }\n      - { fwmark: 0x726c, table: main, priority: 40, family: ipv6 }\n",
-			asTOML: "[cap.table]\nrules = [{ fwmark = 0x726c, table = \"main\", priority = 40, family = \"both\" }, { fwmark = 0x726c, table = \"main\", priority = 40, family = \"ipv6\" }]\n",
 		},
 		"a negative rekey interval": {
 			asYAML: "cap:\n  crypto:\n    rekey: { child: -1s }\n",
@@ -427,6 +381,46 @@ func TestLoaderRefusesTheVRFKeyAsUnknown(t *testing.T) {
 				t.Errorf("cap.table with vrf loaded with %v, want it refused as %s", err, test.refusal)
 			}
 		})
+	}
+}
+
+// a file writing cap.table rules or prefsrc4 is refused as an unknown key
+// under every decoder, since the reconciler derives its rules and stamps no
+// preferred source
+// the same block without the key loads, so the refusal is the key's
+func TestLoaderRefusesTheRulesAndThePreferredSourceAsUnknown(t *testing.T) {
+	const asJSON = `{"node":"example/laptop","auth":{"key":"key.pem","trust":"trust.json"},` +
+		`"link":{"port":13000,"endpoints":[{"serial":"0","family":"ip4"}]},"dial":{"to":["example/gateway"]},` +
+		`"cap":{"table":{"id":200%s}}}`
+	type spelling struct{ extension, with, refusal string }
+	without := map[string]string{
+		".toml": nodeTOML + "[cap.table]\nid = 200\n",
+		".yaml": nodeYAML + "cap:\n  table:\n    id: 200\n",
+		".json": fmt.Sprintf(asJSON, ""),
+	}
+	for key, spellings := range map[string][]spelling{
+		"rules": {
+			{".toml", nodeTOML + "[cap.table]\nid = 200\nrules = [{ fwmark = 0x72, table = \"main\", priority = 40, family = \"ipv4\" }]\n", `unknown field "cap.table.rules"`},
+			{".toml", nodeTOML + "[cap.table]\nid = 200\n[[cap.table.rules]]\nto = \"10.0.0.0/8\"\ntable = 200\npriority = 100\n", `unknown field "cap.table.rules"`},
+			{".yaml", nodeYAML + "cap:\n  table:\n    id: 200\n    rules: [{ to: \"10.0.0.0/8\", table: 200, priority: 100 }]\n", "field rules not found in type kernel.Table"},
+			{".json", fmt.Sprintf(asJSON, `,"rules":[{"to":"10.0.0.0/8","table":200,"priority":100}]`), "field rules not found in type kernel.Table"},
+		},
+		"prefsrc4": {
+			{".toml", nodeTOML + "[cap.table]\nid = 200\nprefsrc4 = \"10.66.0.5\"\n", `unknown field "cap.table.prefsrc4"`},
+			{".yaml", nodeYAML + "cap:\n  table:\n    id: 200\n    prefsrc4: 10.66.0.5\n", "field prefsrc4 not found in type kernel.Table"},
+			{".json", fmt.Sprintf(asJSON, `,"prefsrc4":"10.66.0.5"`), "field prefsrc4 not found in type kernel.Table"},
+		},
+	} {
+		for _, test := range spellings {
+			t.Run(key+test.extension, func(t *testing.T) {
+				if _, err := load(t, test.extension, without[test.extension]); err != nil {
+					t.Fatalf("cap.table without %s was refused: %v", key, err)
+				}
+				if _, err := load(t, test.extension, test.with); err == nil || !strings.Contains(err.Error(), test.refusal) {
+					t.Errorf("cap.table with %s loaded with %v, want it refused as %s", key, err, test.refusal)
+				}
+			})
+		}
 	}
 }
 
@@ -717,27 +711,12 @@ func TestRefusalsNameTheBlockTheOperatorWrote(t *testing.T) {
 			body:  "cap:\n  segment:\n    local:\n      - { sid: \"3fff:1:69c:8c6::1\", behavior: End }\n      - { sid: \"3fff:1:69c:8c6::1\", behavior: \"End.DT46\" }\n",
 			names: []string{"cap.segment local", "3fff:1:69c:8c6::1"},
 		},
-		"a rule at the local table's priority": {
-			body:  "cap:\n  table:\n    rules: [{ fwmark: 0x726c, table: main, priority: 0, family: both }]\n",
-			names: []string{"cap.table rules", "lookup main", "family ipv4", "0x726c"},
-		},
-		"two rules the kernel reads as one": {
-			body:  "cap:\n  table:\n    rules:\n      - { fwmark: 0x726c, table: main, priority: 40, family: both }\n      - { fwmark: 0x726c, fwmask: 0xffffffff, table: main, priority: 40, family: both }\n",
-			names: []string{"cap.table rules", "lookup main", "family ipv4"},
-		},
 		// The entry's own source or the block's, and the refusal says so:
 		// without the check the path check below answers instead, and it
 		// describes the segment list rather than the field that is missing.
 		"a steering entry with no source anywhere": {
 			body:  "cap:\n  segment:\n    steer: [{ from: \"3fff:a::1/128\", via: [\"3fff:1:69c::1\"] }]\n",
 			names: []string{"cap.segment steer", "names no source", "3fff:a::1/128"},
-		},
-		// The word, not the shape: a family the decoder took and expansion
-		// then refused answers an operator who wrote "ipv7" by telling them
-		// to name a family, which they did.
-		"a family that is none of the three": {
-			body:  "cap:\n  table:\n    rules: [{ fwmark: 0x726c, table: main, priority: 40, family: ipv7 }]\n",
-			names: []string{"ipv7", "ipv4, ipv6 or both"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -756,7 +735,7 @@ func TestRefusalsNameTheBlockTheOperatorWrote(t *testing.T) {
 
 // a number that is not whole is refused with its line, where the yaml decoder cut it to a whole one
 // 13000.5, 1.3e4 and 13000.0 became 13000 and -0 became 0, and encoding/json refuses all four
-// the field is found by its position in a list, behind a pointer and in a block of its own, since the walk takes each differently
+// the field is found behind a pointer and in a block of its own, and a merge key by its position in a list, since the walk takes each differently
 // the number is also found through an anchor and its alias, and under a key written as an alias or as !!binary, which the decoder reads through
 // a merge key is refused whatever it merges, since the walk does not follow it and toml and json cannot spell it
 func TestIntegerFieldRefusesANumberThatIsNotWhole(t *testing.T) {
@@ -781,8 +760,6 @@ func TestIntegerFieldRefusesANumberThatIsNotWhole(t *testing.T) {
 			"a port in a json file": {".json", fmt.Sprintf(asJSON, written), `"port"`},
 			"a replay window, behind a pointer": {
 				".yaml", nodeYAML + "cap:\n  crypto:\n    replay: " + written + "\n", "replay:"},
-			"a rule priority, in a list": {
-				".yaml", nodeYAML + "cap:\n  table:\n    rules:\n      - to: 10.0.0.0/8\n        table: 200\n        priority: " + written + "\n", "priority:"},
 			// the anchor sits on a field that takes any text, and the alias carries the number into one that takes a whole one
 			"a port read through an alias": {
 				".yaml", strings.NewReplacer("key: key.pem", "key: &n "+written, "port: 13000", "port: *n").Replace(nodeYAML), "&n"},
@@ -812,7 +789,7 @@ func TestIntegerFieldRefusesANumberThatIsNotWhole(t *testing.T) {
 		"a merge key in a nested block": {
 			".yaml", nodeYAML + "cap:\n  crypto:\n    <<: { replay: 4096.7 }\n", "<<"},
 		"a merge key in a list": {
-			".yaml", nodeYAML + "cap:\n  table:\n    rules:\n      - <<: { priority: 100.5 }\n        to: 10.0.0.0/8\n        table: 200\n", "<<"},
+			".yaml", nodeYAML + "cap:\n  segment:\n    source: \"3fff:1:69c:8c0::1\"\n    steer:\n      - <<: { from: \"3fff:a::1/128\" }\n        via: [\"3fff:1:69c::1\"]\n", "<<"},
 		"a merge key at the top of the file": {
 			".yaml", "<<: { dial: { all: true } }\n" + nodeYAML, "<<"},
 	} {
@@ -832,8 +809,8 @@ func TestTOMLRefusesAKeyThatDiffersOnlyInCase(t *testing.T) {
 	for name, body := range map[string]string{
 		"a capability's field":          "[cap.route]\nANNOUNCE = [\"10.66.0.5/32\"]\n",
 		"a nested block":                "[cap.crypto.REKEY]\nchild = \"1h\"\n",
-		"a field inside a list":         "[cap.table]\nrules = [{ FWMARK = 0x726c, table = \"main\", priority = 40, family = \"both\" }]\n",
-		"a field in an array of tables": "[[cap.table.rules]]\nFWMARK = 0x726c\ntable = \"main\"\npriority = 40\nfamily = \"both\"\n",
+		"a field inside a list":         "[cap.segment]\nsource = \"3fff:1:69c:8c0::1\"\nsteer = [{ FROM = \"3fff:a::1/128\", via = [\"3fff:1:69c::1\"] }]\n",
+		"a field in an array of tables": "[cap.segment]\nsource = \"3fff:1:69c:8c0::1\"\n[[cap.segment.steer]]\nFROM = \"3fff:a::1/128\"\nvia = [\"3fff:1:69c::1\"]\n",
 		// Both spellings in one document, where the folded one used to win or
 		// lose depending on the run.
 		"one written twice": "[cap.route]\nannounce = [\"10.66.0.5/32\"]\nANNOUNCE = [\"10.66.0.6/32\"]\n",
@@ -850,28 +827,8 @@ func TestTOMLRefusesAKeyThatDiffersOnlyInCase(t *testing.T) {
 	}
 	// The same keys spelled right are still taken, so the check refuses the
 	// case rather than the key.
-	if _, err := loadTOML(t, nodeTOML+"[cap.table]\nrules = [{ fwmark = 0x726c, table = \"main\", priority = 40, family = \"both\" }]\n[cap.crypto.rekey]\nchild = \"1h\"\n"); err != nil {
+	if _, err := loadTOML(t, nodeTOML+"[cap.segment]\nsource = \"3fff:1:69c:8c0::1\"\nsteer = [{ from = \"3fff:a::1/128\", via = [\"3fff:1:69c::1\"] }]\n[cap.crypto.rekey]\nchild = \"1h\"\n"); err != nil {
 		t.Errorf("the keys as the tags spell them were refused: %v", err)
-	}
-}
-
-// A rule keyed on the device a packet arrives on, written under the key the
-// configuration reference names, reaches the reconciler as that device. The
-// encoder round trip cannot pin the spelling, since it writes and reads by one
-// tag.
-func TestRuleInputDeviceLoadsUnderItsDocumentedKey(t *testing.T) {
-	for extension, body := range map[string]string{
-		".toml": nodeTOML + "[cap.table]\nrules = [{ iif = \"eth1\", table = \"main\", priority = 60, family = \"both\" }]\n",
-		".yaml": nodeYAML + "cap:\n  table:\n    rules: [{ iif: eth1, table: main, priority: 60, family: both }]\n",
-	} {
-		cfg, err := load(t, extension, body)
-		if err != nil {
-			t.Errorf("%s: the rule was refused: %v", extension, err)
-			continue
-		}
-		if rules := cfg.Cap.Table.Rules; len(rules) != 1 || rules[0].IIF != "eth1" {
-			t.Errorf("%s: the rules loaded as %v", extension, rules)
-		}
 	}
 }
 
@@ -974,7 +931,6 @@ func TestValidateRefusesAStringThatIsNotText(t *testing.T) {
 		"auth.key":              func(c *Config) { c.Auth.Key = "key\xfe.pem" },
 		"link.tun":              func(c *Config) { c.Link.TUN = "ranet\xff" },
 		"link.endpoints.serial": func(c *Config) { c.Link.Endpoints[0].Serial = "\xc3" },
-		"cap.table.rules.iif":   func(c *Config) { c.Cap.Table.Rules[0].IIF = "ranet0\xff" },
 	} {
 		t.Run(path, func(t *testing.T) {
 			cfg := fullConfig()
@@ -1233,34 +1189,10 @@ func fullConfig() Config {
 				ID:              200,
 				Proto:           155,
 				Metric:          64,
-				PrefSrc4:        schema.MustAddr("10.66.0.5"),
 				Addresses:       []schema.Prefix{schema.MustPrefix("10.66.0.5/32")},
 				AssignAnnounced: true,
 				Reconcile:       schema.Duration(30 * time.Second),
 				CaptureGrace:    schema.Duration(10 * time.Second),
-				// a rule naming an address is refused for also naming the family the address says
-				// so no one rule carries every field
-				Rules: []kernel.Rule{{
-					To:       schema.MustPrefix("3fff:1:69c::/48"),
-					From:     schema.MustPrefix("3fff:a::/32"),
-					FWMark:   0x726c,
-					FWMask:   0xffff,
-					IIF:      "eth1",
-					Table:    schema.TableMain,
-					Priority: 40,
-				}, {
-					FWMark:   0x726c,
-					FWMask:   0xffff,
-					Table:    schema.TableMain,
-					Priority: 41,
-					Family:   kernel.FamilyIPv6,
-				}, {
-					// family both and a table by number, spellings the two above leave out
-					FWMark:   0x726c,
-					Table:    100,
-					Priority: 42,
-					Family:   kernel.FamilyBoth,
-				}},
 			},
 			Segment: &srv6.Segments{
 				Source: schema.MustAddr("3fff:1:69c:8c0::1"),
@@ -1467,9 +1399,9 @@ func unwritten(value reflect.Value, path string) []string {
 	case reflect.Slice:
 		// A list carries a set of entries rather than one entry holding one of
 		// every field, so a field any entry writes is a field this case
-		// covers. cap.table rules is why: a rule naming an address may not
-		// also name a family, and demanding both of one entry would demand a
-		// rule the loader refuses.
+		// covers. cap.segment local is why: a segment delivering to the mesh
+		// may not carry an allow list, and demanding every field of one entry
+		// would demand a segment the loader refuses.
 		missing := unwritten(value.Index(0), path)
 		for i := 1; i < value.Len() && len(missing) > 0; i++ {
 			next := unwritten(value.Index(i), path)
@@ -1570,13 +1502,6 @@ func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 			Source4: egress.Source{Addr: netip.MustParseAddr("198.51.100.7")},
 			Source6: egress.Source{Auto: true},
 		},
-		"cap.table prefsrc4": kernel.Table{PrefSrc4: schema.MustAddr("10.66.0.5")},
-		"cap.table rule selectors": kernel.Table{Rules: []kernel.Rule{{
-			To:       schema.MustPrefix("3fff:1:69c::/48"),
-			From:     schema.MustPrefix("3fff:a::/32"),
-			Table:    schema.TableMain,
-			Priority: 40,
-		}}},
 		"auth aliases": Auth{Aliases: ike.Aliases{Local: map[string]ike.LocalAlias{"example/gateway": {Email: "laptop@example.net"}}}},
 		"auth aliases remote": ike.Aliases{Remote: ike.RemoteAliases{
 			KeyID: map[string]identity.Identity{"0a1b2c3d": identity.MustParse("example/gateway:1")},

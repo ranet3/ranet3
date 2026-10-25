@@ -331,6 +331,7 @@ func runDaemon(opts options) int {
 		log.Printf("tun device %s ready with %d queues, reconciling its routes into %s",
 			mesh.Name, mesh.QueueCount(), routes.Where())
 		node.SetKernelStatus(func() control.KernelStatus { return kernelStatus(routes) })
+		node.SetReconcilerRules(routes.DerivedRules)
 		node.SetReconcilerTable(routes.SetTable)
 	} else {
 		log.Printf("tun device %s ready with %d queues, configure its addresses and kernel routes externally",

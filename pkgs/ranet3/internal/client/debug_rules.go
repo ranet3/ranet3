@@ -5,12 +5,18 @@ package client
 
 import (
 	"errors"
+	"slices"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 )
+
+// SetReconcilerRules hands the debug view the rules the route reconciler derived, as SetKernelStatus hands it the reconciler's status
+func (c *Client) SetReconcilerRules(read func() []kernel.DumpedRule) {
+	c.reconcilerRules.Store(&read)
+}
 
 // DebugRules reads every policy rule the kernel holds and the border filter's
 // chain, each through a socket of its own, so neither the reconciler's nor the
@@ -28,21 +34,26 @@ func (c *Client) DebugRules() control.RulesInfo {
 	case err != nil:
 		info.PolicyErr = err.Error()
 	}
-	proto, wanted := uint8(kernel.DefaultProtocol), []kernel.Rule(nil)
+	proto := uint8(kernel.DefaultProtocol)
 	if table := c.config().Cap.Table; table != nil {
-		normalized := table.Normalized()
-		proto, wanted = normalized.Proto, normalized.Rules
+		proto = table.Normalized().Proto
+	}
+	var wanted []kernel.DumpedRule
+	if read := c.reconcilerRules.Load(); read != nil {
+		wanted = (*read)()
 	}
 	for _, rule := range held {
 		policy := policyRule(rule)
 		policy.Owned = rule.Protocol == proto
-		policy.Wanted = policy.Owned && wantsRule(wanted, rule)
+		policy.Wanted = policy.Owned && slices.Contains(wanted, rule)
 		info.Policy = append(info.Policy, policy)
 	}
 	if info.PolicyErr == "" {
 		for _, rule := range wanted {
-			if !holdsRule(held, rule, proto) {
-				info.Missing = append(info.Missing, wantedRule(rule, proto))
+			if !slices.Contains(held, rule) {
+				missing := policyRule(rule)
+				missing.Owned, missing.Wanted = true, true
+				info.Missing = append(info.Missing, missing)
 			}
 		}
 	}
@@ -53,57 +64,16 @@ func (c *Client) DebugRules() control.RulesInfo {
 }
 
 func policyRule(rule kernel.DumpedRule) control.PolicyRule {
-	return control.PolicyRule{
+	policy := control.PolicyRule{
 		Family: string(rule.Family), Priority: rule.Priority,
 		To: rule.To, From: rule.From, IIF: rule.IIF, OIF: rule.OIF,
 		FWMark: rule.FWMark, FWMask: rule.FWMask, L3mdev: rule.L3mdev, Invert: rule.Invert,
-		Action: rule.Action, Table: rule.Table, Protocol: rule.Protocol,
+		Action: rule.Action, Table: rule.Table, Goto: rule.Goto, Protocol: rule.Protocol,
 	}
-}
-
-func wantedRule(rule kernel.Rule, proto uint8) control.PolicyRule {
-	return control.PolicyRule{
-		Family: string(rule.Family), Priority: rule.Priority,
-		To: rule.To.Prefix, From: rule.From.Prefix, IIF: rule.IIF,
-		FWMark: rule.FWMark, FWMask: rule.FWMask,
-		Action: "lookup", Table: uint32(rule.Table), Protocol: proto, Owned: true, Wanted: true,
+	if bits, ok := rule.Suppress.Bits(); ok {
+		policy.Suppress = &bits
 	}
-}
-
-// heldAs reports a dumped rule holding what a rule cap.table asks for does,
-// with a mask of all ones read as the absent mask the kernel stores it as
-func heldAs(held kernel.DumpedRule, rule kernel.Rule) bool {
-	mask := held.FWMask
-	if mask == ^uint32(0) {
-		mask = 0
-	}
-	want := rule.FWMask
-	if want == ^uint32(0) {
-		want = 0
-	}
-	return held.Family == rule.Family && held.Priority == rule.Priority &&
-		held.To == rule.To.Prefix && held.From == rule.From.Prefix &&
-		held.IIF == rule.IIF && held.OIF == "" && !held.Invert &&
-		held.FWMark == rule.FWMark && mask == want &&
-		held.Action == "lookup" && held.Table == uint32(rule.Table)
-}
-
-func wantsRule(wanted []kernel.Rule, held kernel.DumpedRule) bool {
-	for _, rule := range wanted {
-		if heldAs(held, rule) {
-			return true
-		}
-	}
-	return false
-}
-
-func holdsRule(held []kernel.DumpedRule, rule kernel.Rule, proto uint8) bool {
-	for _, dumped := range held {
-		if dumped.Protocol == proto && heldAs(dumped, rule) {
-			return true
-		}
-	}
-	return false
+	return policy
 }
 
 // borderChain is the border filter's chain as the wire carries it

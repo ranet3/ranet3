@@ -792,34 +792,12 @@ testers.runNixOSTest {
                 ];
                 sweep = "2s";
               };
-              table = pkgs.lib.mkIf (kernel || egress) (
-                {
-                  id = kernelTable;
-                  proto = kernelProtocol;
-                  metric = 32;
-                  prefsrc4 = clientTunnelV4;
-                  reconcile = "2s";
-                }
-                # A reply to a translated flow has its destination put back
-                # before the forwarding lookup runs, so the route to the peer
-                # has to be in a table that lookup consults. The mesh's routes
-                # are in a table of the reconciler's own, and a rule is how
-                # anything else reaches them.
-                // pkgs.lib.optionalAttrs egress {
-                  rules = [
-                    {
-                      to = "10.99.0.0/24";
-                      table = kernelTable;
-                      priority = 100;
-                    }
-                    {
-                      to = "fd00:99::/64";
-                      table = kernelTable;
-                      priority = 100;
-                    }
-                  ];
-                }
-              );
+              table = pkgs.lib.mkIf (kernel || egress) {
+                id = kernelTable;
+                proto = kernelProtocol;
+                metric = 32;
+                reconcile = "2s";
+              };
             };
           };
         };
@@ -864,7 +842,6 @@ testers.runNixOSTest {
         fqdn_enabled = ${if fqdn then "True" else "False"}
         kernel_table = "${toString kernelTable}"
         kernel_protocol = "${toString kernelProtocol}"
-        client_tunnel_v4 = "${clientTunnelV4}"
         client_device = "${clientDevice}"
 
         def journal_after(machine, unit):
@@ -1413,7 +1390,7 @@ testers.runNixOSTest {
             if kernel_enabled:
                 # What replaces kbabel4 and kbabel6 on a fleet node: a route babel
                 # learned has to be in the kernel table the policy rules look up,
-                # carrying this reconciler's protocol and the configured prefsrc.
+                # carrying this reconciler's protocol.
                 client.wait_until_succeeds(f"ip -4 route show table {kernel_table} | grep -q '10.99.0.0/24'", timeout=timeout)
                 client.wait_until_succeeds(f"ip -6 route show table {kernel_table} | grep -q 'fd00:99::/64'", timeout=timeout)
                 v4 = client.succeed(f"ip -4 route show table {kernel_table}")
@@ -1421,7 +1398,6 @@ testers.runNixOSTest {
                 print(v4)
                 print(v6)
                 assert f"proto {kernel_protocol}" in v4, v4
-                assert f"src {client_tunnel_v4}" in v4, v4
                 assert f"dev {client_device}" in v4, v4
                 # The main table is not this reconciler's to write.
                 leaked = client.succeed(f"ip -4 route show proto {kernel_protocol}")

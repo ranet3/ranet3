@@ -66,10 +66,7 @@ func TestReconcilerRecordsThePassesThatDidSomething(t *testing.T) {
 // a pass that wrote a rule or an address changed the kernel, and is recorded though no route moved
 func TestReconcilerRecordsAPassThatMovedNoRoute(t *testing.T) {
 	bus := events.New()
-	reconciler, _, fake := harness(t, Table{
-		Rules:     []Rule{{Family: FamilyIPv4, FWMark: 0x726c, Table: 254, Priority: 40}},
-		Addresses: prefixes(prefix("192.0.2.1/24")),
-	}, Runtime{Events: bus})
+	reconciler, _, fake := harness(t, Table{Addresses: prefixes(prefix("192.0.2.1/24"))}, Runtime{Events: bus})
 	reconciler.trigger = "sweep"
 	passes := func() int {
 		return len(bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "kernel.pass" }, 0))

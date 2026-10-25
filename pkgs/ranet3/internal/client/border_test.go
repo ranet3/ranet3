@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -470,29 +471,30 @@ func TestMetricsExposeTheBorderOnlyWhereItRuns(t *testing.T) {
 }
 
 // debug rules reads every policy rule the dump finds, an l3mdev rule as one,
-// marks the reconciler's by the protocol cap.table names and the ones
-// cap.table asks for, a mark written with no mask among them, lists what
-// cap.table asks for that the host does not hold, and carries the border's
-// chain
+// marks the reconciler's by the protocol cap.table names and the ones the
+// reconciler derived, a goto and a suppress length among them, lists what it
+// derived that the host does not hold, and carries the border's chain
 func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 	const ownProto = kernel.DefaultProtocol + 1
 	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
-		cfg.Cap.Table = &kernel.Table{Proto: ownProto, Rules: []kernel.Rule{
-			{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: kernel.FamilyIPv4},
-			{To: schema.MustPrefix("198.18.104.0/24"), Table: kernel.DefaultTable, Priority: 100},
-			{IIF: "eth1", Table: schema.TableMain, Priority: 120, Family: kernel.FamilyBoth},
-		}}
+		cfg.Cap.Table = &kernel.Table{Proto: ownProto}
 	})
+	derived := []kernel.DumpedRule{
+		{Family: kernel.FamilyIPv4, Priority: 5100, FWMark: 0x72, FWMask: ^uint32(0), Action: "goto", Goto: 5190, Protocol: ownProto},
+		{Family: kernel.FamilyIPv4, Priority: 5110, To: netip.MustParsePrefix("198.18.0.0/15"), Action: "lookup", Table: uint32(kernel.DefaultTable), Protocol: ownProto},
+		{Family: kernel.FamilyIPv4, Priority: 5190, Action: "nop", Protocol: ownProto},
+		{Family: kernel.FamilyIPv6, Priority: 5410, Action: "lookup", Table: 254, Suppress: kernel.SuppressUpTo(0), Protocol: ownProto},
+	}
+	c.SetReconcilerRules(func() []kernel.DumpedRule { return derived })
 	held := []kernel.DumpedRule{
 		{Family: kernel.FamilyIPv4, Priority: 0, Action: "lookup", Table: 255, Protocol: 2},
-		{Family: kernel.FamilyIPv4, Priority: 40, FWMark: 0x726c, FWMask: ^uint32(0), Action: "lookup", Table: 254, Protocol: ownProto},
-		{Family: kernel.FamilyIPv4, Priority: 100, To: netip.MustParsePrefix("198.18.104.0/24"), Action: "lookup", Table: uint32(kernel.DefaultTable), Protocol: ownProto},
-		{Family: kernel.FamilyIPv4, Priority: 120, IIF: "eth1", Action: "lookup", Table: 254, Protocol: ownProto},
-		{Family: kernel.FamilyIPv4, Priority: 130, IIF: "eth1", Action: "lookup", Table: 254, Protocol: ownProto},
+		derived[0], derived[1], derived[2],
+		// the reconciler's protocol on a rule it did not derive
+		{Family: kernel.FamilyIPv4, Priority: 5120, IIF: "eth1", Action: "lookup", Table: 254, Protocol: ownProto},
 		// the default protocol, which a reconciler naming another does not own
-		{Family: kernel.FamilyIPv4, Priority: 150, From: netip.MustParsePrefix("198.18.104.0/24"), Action: "lookup", Table: 254, Protocol: kernel.DefaultProtocol},
+		{Family: kernel.FamilyIPv4, Priority: 5150, From: netip.MustParsePrefix("198.18.104.0/24"), Action: "lookup", Table: 254, Protocol: kernel.DefaultProtocol},
 		{Family: kernel.FamilyIPv4, Priority: 1000, L3mdev: true, Action: "lookup", Protocol: 2},
-		{Family: kernel.FamilyIPv6, Priority: 120, IIF: "eth1", Action: "lookup", Table: 254, Protocol: 4},
+		{Family: kernel.FamilyIPv6, Priority: 5410, Action: "lookup", Table: 254, Protocol: 4},
 	}
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return held, nil }
 	info := c.DebugRules()
@@ -509,8 +511,12 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 	if !info.Policy[6].L3mdev {
 		t.Errorf("debug rules reads the l3mdev rule as %+v", info.Policy[6])
 	}
-	missing := control.PolicyRule{Family: "ipv6", Priority: 120, IIF: "eth1", Action: "lookup", Table: 254, Protocol: ownProto, Owned: true, Wanted: true}
-	if !slices.Equal(info.Missing, []control.PolicyRule{missing}) {
+	if info.Policy[1].Goto != 5190 || info.Policy[1].Suppress != nil {
+		t.Errorf("debug rules reads the mark's goto as %+v", info.Policy[1])
+	}
+	zero := 0
+	missing := control.PolicyRule{Family: "ipv6", Priority: 5410, Action: "lookup", Table: 254, Suppress: &zero, Protocol: ownProto, Owned: true, Wanted: true}
+	if len(info.Missing) != 1 || !reflect.DeepEqual(info.Missing[0], missing) {
 		t.Errorf("debug rules names missing %+v, want %+v alone", info.Missing, missing)
 	}
 	if info.PolicyErr != "" || info.Border != nil {

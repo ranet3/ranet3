@@ -68,7 +68,7 @@ func coverDefaults(desired []Route, unmet func(Route) bool) []Route {
 			if withheld(member, desired, unmet) {
 				continue
 			}
-			covering := Route{Destination: member, PrefSrc: r.PrefSrc, Metric: r.Metric, Cover: true}
+			covering := Route{Destination: member, Metric: r.Metric, Cover: true}
 			if !slices.Contains(out, covering) {
 				out = append(out, covering)
 			}

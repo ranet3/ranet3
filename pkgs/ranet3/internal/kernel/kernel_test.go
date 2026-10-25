@@ -252,7 +252,7 @@ func harness(t *testing.T, tbl Table, runtime ...Runtime) (*Reconciler, *netstac
 	tbl = tbl.Normalized()
 	table := netstack.NewRouteTable()
 	fake := newFakeKernel(t)
-	return newReconciler(tbl, rt, tbl.Rules, tbl.Assigned(rt.Announced), table, fake), table, fake
+	return newReconciler(tbl, rt, tbl.Assigned(rt.Announced), table, fake), table, fake
 }
 
 // platformFor is the pair newPlatform takes, for a test that varies only the
@@ -297,7 +297,7 @@ func TestAssignedAddressesExpandWhatIsAnnounced(t *testing.T) {
 }
 
 func TestReconcileInstallsSnapshotRoutes(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{PrefSrc4: schema.MustAddr("198.18.104.5")})
+	reconciler, table, fake := harness(t, Table{})
 	table.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
 	table.Set(netip.Prefix{}, prefix("3fff:a::/36"), nil)
 	table.Set(prefix("3fff:a:1::/48"), prefix("::/0"), nil)
@@ -308,7 +308,7 @@ func TestReconcileInstallsSnapshotRoutes(t *testing.T) {
 	// an unset metric is the kernel's own default, which is 0 for IPv4 and
 	// IP6_RT_PRIO_USER for IPv6.
 	want := []Route{
-		{Destination: prefix("10.0.0.0/8"), PrefSrc: addr("198.18.104.5")},
+		{Destination: prefix("10.0.0.0/8")},
 		{Destination: prefix("::/0"), Source: prefix("3fff:a:1::/48"), Metric: defaultIPv6Metric},
 		{Destination: prefix("3fff:a::/36"), Metric: defaultIPv6Metric},
 	}
@@ -705,9 +705,10 @@ func TestRunWithdrawsOnCancel(t *testing.T) {
 	}
 }
 
-// A rule pass deletes every rule carrying this reconciler's protocol that the
-// configuration does not name, so claiming RTPROT_STATIC would delete every
-// static rule on the host, since systemd-networkd stamps it on its own.
+// A rule pass deletes every rule carrying this reconciler's protocol that it
+// does not derive and could have written, so claiming RTPROT_STATIC would
+// delete every such static rule on the host, since systemd-networkd stamps it
+// on its own.
 func TestNewRejectsReservedProtocol(t *testing.T) {
 	for _, protocol := range []uint8{2, protocolStatic} {
 		_, err := New(Table{Proto: protocol}, Runtime{Interface: "ranet0"}, netstack.NewRouteTable())
@@ -720,40 +721,18 @@ func TestNewRejectsReservedProtocol(t *testing.T) {
 // A prefix that is set and is not one, an entry left at zero or an address
 // under a length it cannot carry, has no spelling in any file, so a capability
 // built with one is refused here rather than taken and rendered into a file
-// that does not load. Assigned skipped such an address without a word, and a
-// rule read such a selector as no selector at all.
+// that does not load. Assigned skipped such an address without a word.
 func TestValidateRefusesAPrefixThatIsNotOne(t *testing.T) {
 	notOne := schema.PrefixFrom(netip.PrefixFrom(addr("2001:db8::"), 200))
 	for name, table := range map[string]Table{
 		"an address left at zero":                   {Addresses: []schema.Prefix{schema.MustPrefix("10.66.0.5/32"), {}}},
 		"an address under a length it cannot carry": {Addresses: []schema.Prefix{notOne}},
-		"a destination that is not a prefix":        {Rules: []Rule{{To: notOne, FWMark: 0x726c, Family: FamilyIPv6, Table: 200, Priority: 40}}},
-		"a source that is not a prefix":             {Rules: []Rule{{From: notOne, FWMark: 0x726c, Family: FamilyIPv6, Table: 200, Priority: 40}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := table.Validate(); err == nil || !strings.Contains(err.Error(), "not a prefix") {
 				t.Errorf("refused with %v, want it refused as not a prefix", err)
 			}
 		})
-	}
-}
-
-// a preferred source is an IPv4 address and is taken in that spelling alone
-// the refusal of any other spelling names the one to write
-// the mapped spelling, a zone on it or not, put sixteen bytes of RTA_PREFSRC on every IPv4 route
-// such a route never read back equal
-func TestValidateRefusesAPreferredSourceWrittenAsIPv6(t *testing.T) {
-	for _, written := range []string{"::ffff:198.18.104.5", "::ffff:198.18.104.5%eth0"} {
-		err := (Table{PrefSrc4: schema.AddrFrom(addr(written))}).Validate()
-		if err == nil || !strings.Contains(err.Error(), "prefsrc4") || !strings.Contains(err.Error(), "write it as 198.18.104.5") {
-			t.Errorf("prefsrc4 %s was refused with %v, want the plain spelling named", written, err)
-		}
-	}
-	if err := (Table{PrefSrc4: schema.MustAddr("2001:db8::1")}).Validate(); err == nil || !strings.Contains(err.Error(), "not an IPv4 address") {
-		t.Errorf("an IPv6 preferred source was refused with %v", err)
-	}
-	if err := (Table{PrefSrc4: schema.MustAddr("198.18.104.5")}).Validate(); err != nil {
-		t.Errorf("the plain spelling was refused: %v", err)
 	}
 }
 
@@ -862,14 +841,14 @@ func TestSkippedRoutesAreNotCountedAndDoNotFailPass(t *testing.T) {
 		t.Fatalf("the occupied route was not among the desired ones: %v", r.desired(table.Snapshot()))
 	}
 
-	if err := r.applyRoutes(); err != nil {
+	if err := r.applyRoutes(r.src.Snapshot()); err != nil {
 		t.Fatalf("a refused route failed the whole pass: %v", err)
 	}
 	if kernel.adds != 1 {
 		t.Fatalf("the kernel took %d routes, want 1", kernel.adds)
 	}
 	// Still wanted, so the next pass tries again rather than forgetting it.
-	if err := r.applyRoutes(); err != nil {
+	if err := r.applyRoutes(r.src.Snapshot()); err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
 	if kernel.adds != 1 {
@@ -890,12 +869,12 @@ func TestRetractedPrefixIsHeldInKernelTable(t *testing.T) {
 	retracted := prefix("2001:db8:1::/48")
 	table.Set(netip.Prefix{}, covering, peer)
 	table.Set(netip.Prefix{}, retracted, peer)
-	if err := r.applyRoutes(); err != nil {
+	if err := r.applyRoutes(r.src.Snapshot()); err != nil {
 		t.Fatal(err)
 	}
 
 	table.Set(netip.Prefix{}, retracted, netstack.Unreachable)
-	if err := r.applyRoutes(); err != nil {
+	if err := r.applyRoutes(r.src.Snapshot()); err != nil {
 		t.Fatal(err)
 	}
 	routes, err := kernel.Routes()
@@ -933,7 +912,7 @@ func TestRetractedPrefixIsHeldInKernelTable(t *testing.T) {
 	// And it goes when the hold is flushed, rather than staying an error route
 	// nothing announces.
 	table.Remove(netip.Prefix{}, retracted)
-	if err := r.applyRoutes(); err != nil {
+	if err := r.applyRoutes(r.src.Snapshot()); err != nil {
 		t.Fatal(err)
 	}
 	routes, err = kernel.Routes()
@@ -948,10 +927,11 @@ func TestRetractedPrefixIsHeldInKernelTable(t *testing.T) {
 }
 
 // This node's own entry inside the overlay goes into the kernel exactly as a
-// hold does, and outside it as a throw at the hold's metric with no preferred
-// source, whatever its key: a prefix, a host route, a source-specific route,
-// and an IPv4 prefix and host route under a preferred source. The overlay's
-// own holds are taken out, so each pass compares the entries alone.
+// hold does, and outside it, on a platform with the policy rules, as a throw at
+// the hold's metric, whatever its key: a prefix, a host route, a
+// source-specific route, and an IPv4 prefix and host route. The overlay's own
+// holds are taken out, so each pass compares the
+// entries alone.
 func TestLocalIsInstalledAsTheHoldInsideTheOverlayAndAsAThrowOutside(t *testing.T) {
 	keys := []struct{ source, destination netip.Prefix }{
 		{netip.Prefix{}, prefix("2001:db8:1::/48")},
@@ -962,11 +942,11 @@ func TestLocalIsInstalledAsTheHoldInsideTheOverlayAndAsAThrowOutside(t *testing.
 	}
 	overlay := []schema.Prefix{schema.MustPrefix("2001:db8::/32"), schema.MustPrefix("192.0.0.0/8"), schema.MustPrefix("198.51.100.0/24")}
 	installed := func(value *netstack.Peer, overlay []schema.Prefix) []Route {
-		r, table, kernel := harness(t, Table{PrefSrc4: schema.AddrFrom(addr("192.0.2.1"))}, Runtime{Overlay: overlay})
+		r, table, kernel := harness(t, Table{}, Runtime{Overlay: overlay})
 		for _, key := range keys {
 			table.Set(key.source, key.destination, value)
 		}
-		if err := r.applyRoutes(); err != nil {
+		if err := r.applyRoutes(r.src.Snapshot()); err != nil {
 			t.Fatal(err)
 		}
 		return slices.DeleteFunc(kernel.snapshot(), func(route Route) bool {
@@ -990,7 +970,7 @@ func TestLocalIsInstalledAsTheHoldInsideTheOverlayAndAsAThrowOutside(t *testing.
 		t.Fatalf("this node's own entries outside the overlay installed as %v, want one route for each of %d keys", outside, len(keys))
 	}
 	for _, route := range outside {
-		if !route.Throw || route.Unreachable || route.Metric != holdMetric || route.PrefSrc.IsValid() {
+		if !route.Throw || route.Unreachable || route.Metric != holdMetric {
 			t.Errorf("this node's own entry outside the overlay installed as %v, want a throw at the hold's metric", route)
 		}
 	}
@@ -1053,7 +1033,7 @@ func TestPrefixesTheMeshCannotCarryAreNotInstalled(t *testing.T) {
 	for _, p := range append(refused, wanted) {
 		table.Set(netip.Prefix{}, p, peer)
 	}
-	if err := r.applyRoutes(); err != nil {
+	if err := r.applyRoutes(r.src.Snapshot()); err != nil {
 		t.Fatal(err)
 	}
 	installed := kernel.snapshot()
@@ -1247,10 +1227,22 @@ func (f *fakeKernel) configuredRules(r *Reconciler) map[Rule]bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	held := maps.Clone(f.rules)
-	for _, rule := range derivedRules(r.table.ID, r.rt.Overlay, r.own) {
+	for _, rule := range derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(r.src.Snapshot())) {
 		delete(held, rule)
 	}
 	return held
+}
+
+// holdsDerived is whether the fake holds every rule r derives
+func (f *fakeKernel) holdsDerived(r *Reconciler) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, rule := range derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(r.src.Snapshot())) {
+		if !f.rules[rule] {
+			return false
+		}
+	}
+	return true
 }
 
 func (f *fakeKernel) AddRule(rule Rule) error {
@@ -1289,235 +1281,47 @@ func (p routesOnly) Notify() <-chan struct{}           { return p.inner.Notify()
 func (p routesOnly) retable(t Table)                   { p.inner.retable(t) }
 func (p routesOnly) Close() error                      { return p.inner.Close() }
 
-// A platform with no policy engine refuses a configuration that asks for one,
-// rather than coming up with a working mesh and no steering at all.
-func TestPlatformWithoutRulesRefusesThemByName(t *testing.T) {
-	plat := routesOnly{inner: newFakeKernel(t)}
-	rule := Rule{Family: FamilyIPv6, From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150}
-	err := refuseWhatThePlatformLacks(Table{Rules: []Rule{rule}}, plat)
-	if err == nil {
-		t.Fatal("a rule was accepted on a platform that cannot install one")
+// A rule an earlier instance left behind under this reconciler's protocol is
+// adopted by the readback and withdrawn, the pass publishes the rules it
+// derived as a dump of them reads, and a withdrawal takes every rule and
+// publishes none.
+func TestRulePassWithdrawsWhatItDoesNotDeriveAndPublishesWhatItDoes(t *testing.T) {
+	overlay := prefixes(prefix("192.0.2.0/24"))
+	reconciler, _, fake := harness(t, Table{}, Runtime{Overlay: overlay})
+	if got := reconciler.DerivedRules(); got != nil {
+		t.Fatalf("a reconciler that ran no pass publishes %v", got)
 	}
-	if !strings.Contains(err.Error(), "scoped") {
-		t.Errorf("the refusal reads %q, want it to say what the platform does instead", err)
-	}
-	// The same configuration on a platform that has rules is accepted.
-	if err := refuseWhatThePlatformLacks(Table{Rules: []Rule{rule}}, newFakeKernel(t)); err != nil {
-		t.Errorf("a platform with rules refused them: %v", err)
-	}
-}
-
-// A rule the kernel would take and an operator would not recognize afterward
-// is refused at startup, because the alternative is finding it in a rule list
-// on a live node.
-func TestRuleValidationRefusesWhatReadsWrong(t *testing.T) {
-	for name, rule := range map[string]Rule{
-		// On a mark, so nothing else in validate answers for it: an address
-		// rule with no family is refused by the family-of-the-address check
-		// below instead, and the case would pass with this one deleted.
-		"no family":        {FWMark: 0x726c, Table: 200, Priority: 100},
-		"the wrong family": {Family: FamilyIPv6, To: schema.MustPrefix("10.0.0.0/8"), Table: 200, Priority: 100},
-		"host bits":        {Family: FamilyIPv4, To: schema.MustPrefix("10.1.2.3/8"), Table: 200, Priority: 100},
-		"no selector":      {Family: FamilyIPv4, Table: 200, Priority: 100},
-		// With a selector of its own, so the check for a rule selecting
-		// nothing does not answer for this one: without the destination the
-		// case passes with the mark-mask check deleted.
-		"a mask with no mark": {Family: FamilyIPv4, FWMask: 0xffff, To: schema.MustPrefix("10.0.0.0/8"), Table: 200, Priority: 100},
-		"the local priority":  {Family: FamilyIPv4, To: schema.MustPrefix("10.0.0.0/8"), Table: 200},
-		"no table":            {Family: FamilyIPv4, To: schema.MustPrefix("10.0.0.0/8"), Priority: 100},
-		// each device name beside a mark, so the check for a rule selecting nothing does not answer for it
-		"a device name past IFNAMSIZ":          {Family: FamilyIPv4, FWMark: 0x726c, IIF: strings.Repeat("r", ifNameSize), Table: 254, Priority: 60},
-		"a device name of one dot":             {Family: FamilyIPv4, FWMark: 0x726c, IIF: ".", Table: 254, Priority: 60},
-		"a device name of two dots":            {Family: FamilyIPv4, FWMark: 0x726c, IIF: "..", Table: 254, Priority: 60},
-		"a device name with a slash":           {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0/e", Table: 254, Priority: 60},
-		"a device name with a colon":           {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0:e", Table: 254, Priority: 60},
-		"a device name with a NUL":             {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0\x00e", Table: 254, Priority: 60},
-		"a device name of a NUL":               {Family: FamilyIPv4, FWMark: 0x726c, IIF: "\x00", Table: 254, Priority: 60},
-		"a device name with a space":           {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0 e", Table: 254, Priority: 60},
-		"a device name with a tab":             {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0\te", Table: 254, Priority: 60},
-		"a device name with a newline":         {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0\ne", Table: 254, Priority: 60},
-		"a device name with a vertical tab":    {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0\ve", Table: 254, Priority: 60},
-		"a device name with a form feed":       {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0\fe", Table: 254, Priority: 60},
-		"a device name with a carriage return": {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet0\re", Table: 254, Priority: 60},
-		// c3 a0 is U+00E0 in UTF-8, and the kernel's isspace counts its byte 0xa0
-		"a device name with a byte 0xa0": {Family: FamilyIPv4, FWMark: 0x726c, IIF: "ranet\xc3\xa0", Table: 254, Priority: 60},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := rule.validate(); err == nil {
-				t.Errorf("%s was accepted: %s", name, rule)
-			}
-		})
-	}
-	for name, rule := range map[string]Rule{
-		"an address rule":          {Family: FamilyIPv6, From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150},
-		"a mark rule":              {Family: FamilyIPv4, FWMark: 0x726c, Table: 254, Priority: 40},
-		"a masked mark":            {Family: FamilyIPv6, FWMark: 0x726c, FWMask: 0xffff, Table: 254, Priority: 40},
-		"a device rule":            {Family: FamilyIPv4, IIF: "eth1", Table: 254, Priority: 60},
-		"the longest device name":  {Family: FamilyIPv6, IIF: strings.Repeat("r", ifNameSize-1), Table: 254, Priority: 60},
-		"a device beside a source": {Family: FamilyIPv6, IIF: "eth1", From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150},
-		// the kernel takes these, U+00E1 in UTF-8 and a dot that is not the whole name
-		"a device name with a byte 0xa1": {Family: FamilyIPv4, IIF: "ranet\xc3\xa1", Table: 254, Priority: 60},
-		"a device name with a dot":       {Family: FamilyIPv4, IIF: "ranet0.100", Table: 254, Priority: 60},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := rule.validate(); err != nil {
-				t.Errorf("%s was refused: %v", name, err)
-			}
-		})
-	}
-}
-
-// One entry spelled "family = both" installs two rules, one per family, alike
-// in everything else. The doubling is there because keeping an underlay out of
-// a mesh table needs both halves and writing them by hand is how one of the
-// two goes missing: the fleet's own rule would silently become IPv4 only, and
-// every IPv6 datagram this node's transport sends would follow the mesh table
-// into the tunnel it is carrying.
-func TestFamilyBothInstallsOneRulePerFamily(t *testing.T) {
-	underlay := Rule{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: FamilyBoth}
-	expanded, err := expandRules([]Rule{underlay})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []Rule{
-		{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: FamilyIPv4},
-		{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: FamilyIPv6},
-	}
-	if !slices.Equal(expanded, want) {
-		t.Fatalf("one entry expanded to %v, want %v", expanded, want)
-	}
-	// And the pass installs both, since an expansion nothing installs is the
-	// same missing rule one layer up.
-	reconciler, _, fake := harness(t, Table{Rules: []Rule{underlay}})
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	for _, rule := range want {
-		if !fake.rules[rule.canonical()] {
-			t.Errorf("the pass did not install %s, so that family still follows the mesh table", rule)
-		}
-	}
-}
-
-// A device belongs to no address family, so a rule selecting on one alone
-// names its family as a mark rule does. Two rules apart only in their device
-// are two rules, and they normalize to one order whichever way a file lists
-// them, or a reload between the two spellings reads as a change.
-func TestDeviceRuleNamesItsFamilyAndSortsOneWay(t *testing.T) {
-	bare := Rule{IIF: "eth1", Table: schema.TableMain, Priority: 60}
-	err := Table{Rules: []Rule{bare}}.Validate()
-	if err == nil || !strings.Contains(err.Error(), "has to name family") {
-		t.Fatalf("a device rule naming no family was refused with %v", err)
-	}
-	first, second := bare, bare
-	first.Family, second.Family = FamilyBoth, FamilyBoth
-	second.IIF = "eth2"
-	written := Table{Rules: []Rule{first, second}}
-	if err := written.Validate(); err != nil {
-		t.Fatalf("two rules apart in their device were refused: %v", err)
-	}
-	reversed := Table{Rules: []Rule{second, first}}
-	if got, want := reversed.Normalized().Rules, written.Normalized().Rules; !slices.Equal(got, want) {
-		t.Errorf("one rule set normalized to %v and to %v", want, got)
-	}
-	// every refusal and log line names a rule by String, and two rules apart only in their device read alike without it
-	if got := first.String(); !strings.Contains(got, "iif eth1") {
-		t.Errorf("the rule reads %q, which does not name its device", got)
-	}
-}
-
-// The rule pass installs what is configured, removes what is not, and does
-// neither twice. The second half is the one that matters: a rule read back in
-// a different spelling than it was written in would be deleted and reinstalled
-// on every pass, at four passes a second on a busy node.
-func TestRulePassInstallsOnceAndWithdrawsWhatIsGone(t *testing.T) {
-	underlay := Rule{Family: FamilyIPv4, FWMark: 0x726c, Table: 254, Priority: 40}
-	mesh := Rule{From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150}
-	reconciler, _, fake := harness(t, Table{Rules: []Rule{underlay, mesh}})
-
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if got := fake.configuredRules(reconciler); len(got) != 2 {
-		t.Fatalf("the first pass installed %v of the configured rules, want both", slices.Collect(maps.Keys(got)))
-	}
-
-	adds, dels := fake.ruleAdds, fake.ruleDels
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if fake.ruleAdds != adds || fake.ruleDels != dels {
-		t.Fatalf("a second pass over an unchanged configuration moved %d adds and %d dels",
-			fake.ruleAdds-adds, fake.ruleDels-dels)
-	}
-
-	// A rule an earlier instance left behind is adopted by the readback and
-	// withdrawn, rather than left for somebody to find later.
 	stale := Rule{Family: FamilyIPv4, To: schema.MustPrefix("10.0.0.0/8"), Table: 200, Priority: 100}
 	fake.rules[stale] = true
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if got := fake.configuredRules(reconciler); len(got) != 2 || got[stale] {
-		t.Fatalf("a stale rule survived the pass: %v", slices.Collect(maps.Keys(got)))
+	derived := derivedRules(DefaultTable, overlay, nil)
+	if got := fake.configuredRules(reconciler); len(got) != 0 {
+		t.Fatalf("the pass left %v beside the derived rules", slices.Collect(maps.Keys(got)))
 	}
-
+	var want []DumpedRule
+	for _, rule := range derived {
+		if !fake.rules[rule] {
+			t.Errorf("the pass did not install %s", rule)
+		}
+		want = append(want, rule.dumped(DefaultProtocol))
+	}
+	if got := reconciler.DerivedRules(); !slices.Equal(got, want) {
+		t.Errorf("the reconciler publishes\n%v\nwant\n%v", got, want)
+	}
+	marked := slices.IndexFunc(want, func(rule DumpedRule) bool { return rule.Priority == priorityUnderlayPastOverlay })
+	if rule := want[marked]; rule.FWMask != ^uint32(0) || rule.Action != "goto" || rule.Goto != priorityOverlayEnd || rule.Table != 0 {
+		t.Errorf("the goto at 5100 reads %+v, want the all-ones mask the kernel dumps and no table", rule)
+	}
 	if err := reconciler.withdraw(); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := fake.Rules(); len(got) != 0 {
 		t.Errorf("shutdown left %v behind", got)
 	}
-}
-
-// Two spellings the kernel stores as one rule have to reach the diff as one
-// rule. A mark with no mask is stored and reported back with a mask of all
-// ones, and a prefix of length zero is reported back as no prefix at all, so a
-// configuration holding either spelling never matches its own readback: every
-// pass deletes the rule and installs it again, with a window each time in
-// which the traffic it steers is unsteered.
-func TestRulesAreCanonicalizedToWhatTheKernelReportsBack(t *testing.T) {
-	masked := Rule{Family: FamilyIPv4, FWMark: 0x726c, FWMask: ^uint32(0), Table: 254, Priority: 40}
-	if got := masked.canonical(); got.FWMask != 0 {
-		t.Errorf("an all-ones mask survived canonicalization as %#x", got.FWMask)
-	}
-	// The other spelling a dump does not return is refused rather than folded,
-	// so that the message names the field as the operator wrote it instead of
-	// the empty rule canonicalization would have left.
-	wide := Rule{To: schema.MustPrefix("::/0"), FWMark: 1, Table: 200, Priority: 100}
-	// Through the family the expansion would have resolved, since validate
-	// judges an installed rule and every one of those names a family.
-	resolved := wide
-	resolved.Family = FamilyIPv6
-	err := resolved.validate()
-	if err == nil {
-		t.Fatal("a zero-length selector was accepted")
-	}
-	if !strings.Contains(err.Error(), "::/0") {
-		t.Errorf("the refusal reads %q, want it to name the prefix that was written", err)
-	}
-
-	// The reconciler holds the canonical form, so the diff compares the dump
-	// against what the kernel would report rather than against the spelling.
-	reconciler, _, fake := harness(t, Table{Rules: []Rule{masked}})
-	if got := reconciler.ruleSet[0].FWMask; got != 0 {
-		t.Fatalf("the reconciler kept mask %#x", got)
-	}
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	adds, dels := fake.ruleAdds, fake.ruleDels
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if fake.ruleAdds != adds || fake.ruleDels != dels {
-		t.Errorf("a second pass moved %d adds and %d deletes", fake.ruleAdds-adds, fake.ruleDels-dels)
-	}
-
-	// And New refuses it too, rather than installing a rule that matches
-	// everything and never matches its own readback.
-	if _, err := New(Table{Rules: []Rule{wide}}, Runtime{Interface: "ranet0"}, netstack.NewRouteTable()); err == nil {
-		t.Error("a rule selecting every address was accepted")
+	if got := reconciler.DerivedRules(); got != nil {
+		t.Errorf("a withdrawn reconciler publishes %v", got)
 	}
 }
 
@@ -1525,8 +1329,7 @@ func TestRulesAreCanonicalizedToWhatTheKernelReportsBack(t *testing.T) {
 // applyRoutes counts, so a node whose rules fail on every pass would
 // otherwise report a clean route count and no error at all.
 func TestStatsCarryTheWholePassError(t *testing.T) {
-	rule := Rule{Family: FamilyIPv6, From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150}
-	reconciler, _, fake := harness(t, Table{Rules: []Rule{rule}})
+	reconciler, _, fake := harness(t, Table{})
 	fake.failRules = errors.New("no permission to read the rules")
 
 	if err := reconciler.reconcile(); err == nil {
@@ -1544,9 +1347,8 @@ func TestStatsCarryTheWholePassError(t *testing.T) {
 // An address that cannot be assigned stops neither routes nor rules, and a
 // route that cannot be installed does not stop rules
 func TestFailingStepLeavesTheLaterStepsToRun(t *testing.T) {
-	rule := Rule{Family: FamilyIPv6, From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150}
 	route := Route{Destination: prefix("10.0.0.0/8")}
-	reconciler, table, fake := harness(t, Table{Addresses: prefixes(prefix("198.18.104.5/32")), Rules: []Rule{rule}})
+	reconciler, table, fake := harness(t, Table{Addresses: prefixes(prefix("198.18.104.5/32"))})
 	table.Set(netip.Prefix{}, route.Destination, nil)
 	fake.failAddrs = errors.New("the link refuses the address")
 	if err := reconciler.reconcile(); err == nil {
@@ -1555,18 +1357,18 @@ func TestFailingStepLeavesTheLaterStepsToRun(t *testing.T) {
 	if !fake.has(route) {
 		t.Error("a failing address step stopped the route step")
 	}
-	if got := fake.configuredRules(reconciler); len(got) != 1 {
-		t.Errorf("a failing address step left %d of the configured rules installed, want 1", len(got))
+	if !fake.holdsDerived(reconciler) {
+		t.Errorf("a failing address step left the derived rules out: %v", fake.rules)
 	}
 
-	reconciler, table, fake = harness(t, Table{Rules: []Rule{rule}})
+	reconciler, table, fake = harness(t, Table{})
 	table.Set(netip.Prefix{}, route.Destination, nil)
 	fake.failAdd[route] = errors.New("netlink says no")
 	if err := reconciler.reconcile(); err == nil {
 		t.Fatal("a failing route did not fail the pass")
 	}
-	if got := fake.configuredRules(reconciler); len(got) != 1 {
-		t.Errorf("a failing route left %d of the configured rules installed, want 1", len(got))
+	if !fake.holdsDerived(reconciler) {
+		t.Errorf("a failing route left the derived rules out: %v", fake.rules)
 	}
 }
 

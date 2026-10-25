@@ -37,7 +37,10 @@ import (
 // The kernel's own entries for the interface are excluded by shape. An address
 // creates a host route whose gateway is the address, and the per-interface
 // broadcast and multicast entries carry RTF_BROADCAST or RTF_MULTICAST.
-// Nothing outside the mesh device is read, written or deleted.
+// Nothing outside the mesh device is written, deleted or taken for ours. The
+// rest of the table is read only to be filtered out, to name the holder of a
+// key the kernel refused and, with link.underlay.bind, to wake a pass when a
+// route of another interface changes.
 //
 // # What the darwin FIB cannot hold
 //
@@ -45,14 +48,16 @@ import (
 // this interface's own addresses is installed as an interface-scoped route
 // (see scopeRoute). Any other source prefix is reported once and skipped,
 // because flattening it would turn an exit's "::/0 from <prefix>" into a plain
-// default route out of the tun. An announced default is scoped for a different
-// reason, that it would otherwise capture the ESP underlay, and the two share
-// the one scoped slot a destination has.
+// default route out of the tun. Without link.underlay.bind an announced
+// default is scoped for a different reason, that it would otherwise capture
+// the ESP underlay, and the two share the one scoped slot a destination has.
+// With it the default goes in unscoped as its zero-free cover (see
+// coverDefaults).
 //
-// There is no per-route metric and no preferred source either, so Route.Metric
-// and Route.PrefSrc are mirrored from the configuration into every dump. Both
-// are diff key fields computed from that same configuration, and reporting
-// anything else would make every pass add and delete the same route forever.
+// There is no per-route metric either, so Route.Metric is mirrored from the
+// configuration into every dump. It is a diff key field computed from that
+// same configuration, and reporting anything else would make every pass add
+// and delete the same route forever.
 type routePlatform struct {
 	table Table
 	rt    Runtime
@@ -167,14 +172,6 @@ func refuseMeaningless(t Table) error {
 	if t.Proto != DefaultProtocol {
 		return fmt.Errorf("kernel: darwin has no route protocol, protocol %d has no meaning here", t.Proto)
 	}
-	if t.PrefSrc4.IsValid() {
-		// The same reasoning as the two above. There is no RTA_PREFSRC here,
-		// and the address a route prefers is whichever one the interface
-		// carries, so a configuration that names one is asking for something
-		// this platform decides for itself. Put the address on the tun with
-		// cap.table addresses and source selection reaches the same answer.
-		return fmt.Errorf("kernel: darwin has no preferred source, prefsrc4 %s has no meaning here", t.PrefSrc4)
-	}
 	return nil
 }
 
@@ -213,17 +210,6 @@ func (p *routePlatform) Close() error {
 		p.sock = nil
 	}
 	return errors.Join(errs...)
-}
-
-// prefSrc mirrors what desired puts on an IPv4 route. It is not a property of
-// a darwin route, so a dump takes it from the configuration, the way
-// routeMetric answers for the metric. Without that the diff key differs from
-// what the reconciler asked for on every pass.
-func (p *routePlatform) prefSrc(destination netip.Prefix) netip.Addr {
-	if destination.Addr().Is4() && p.table.PrefSrc4.IsValid() {
-		return p.table.PrefSrc4.Addr
-	}
-	return netip.Addr{}
 }
 
 // rotateWarnings ends one deduplication window and starts the next. A window
@@ -434,9 +420,8 @@ func (p *routePlatform) decodeRoute(message route.Message) (Route, bool) {
 		Destination: prefix,
 		// The kernel keeps no source, so a scoped route's source comes back
 		// from what this process installed for that destination.
-		Source:  source,
-		PrefSrc: p.prefSrc(prefix),
-		Metric:  routeMetric(p.table.Metric, prefix, rm.Flags&unix.RTF_REJECT != 0),
+		Source: source,
+		Metric: routeMetric(p.table.Metric, prefix, rm.Flags&unix.RTF_REJECT != 0),
 		// Read back rather than re-derived, because the kernel keys on it: an
 		// unscoped default and a scoped one are two routes, and a withdrawal
 		// that guessed from the destination would take out the wrong one and

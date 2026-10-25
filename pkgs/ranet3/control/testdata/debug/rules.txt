@@ -1,19 +1,22 @@
 Policy rules, ipv4
-  Priority  Selects               Table    Owner
-  0         all                   local    kernel
-  40        fwmark 0x726c/0xffff  main     ranet3
-  100       to 23.161.104.0/24    200      protocol 4
-  120       iif eth1              main     ranet3
-  150       from 23.161.104.0/24  main     protocol 4
-  1000      l3mdev                0        kernel
-  32766     all                   main     kernel
-  32767     all                   default  kernel
+  Priority  Selects               Table                         Owner
+  0         all                   local                         kernel
+  100       to 198.51.100.0/24    200                           protocol 4
+  120       iif eth1              main                          ranet3
+  150       from 198.51.100.0/24  main                          protocol 4
+  1000      l3mdev                0                             kernel
+  5100      fwmark 0x72           goto 5190                     ranet3
+  5110      to 192.0.2.0/24       200                           ranet3
+  5190      all                   nop                           ranet3
+  5410      all                   main suppress_prefixlength 0  ranet3
+  32766     all                   main                          kernel
+  32767     all                   default                       kernel
 Policy rules, ipv6
   Priority  Selects       Table        Owner
   0         all           local        kernel
   200       not iif eth0  unreachable  protocol 4
   32766     all           main         kernel
-Wanted and missing: ipv6 priority 120 iif eth1 main
+Wanted and missing: ipv6 priority 5420 all 200 suppress_prefixlength 15
 
 Border filter, nftables table inet ranet3 chain border, prerouting at priority -300, read 3 seconds ago, ready
   accept  via ranet3

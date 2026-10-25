@@ -17,7 +17,6 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
-	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // testIndex is the interface index every test in this file pretends to own.
@@ -297,7 +296,7 @@ func TestDarwinAnnouncedDefaultDoesNotCaptureUnderlay(t *testing.T) {
 }
 
 func TestDarwinDumpKeepsOnlyRoutesItOwns(t *testing.T) {
-	plat, _ := testPlatform(t, Table{PrefSrc4: schema.MustAddr("198.51.100.1")}, Runtime{})
+	plat, _ := testPlatform(t, Table{}, Runtime{})
 	elsewhere := &route.LinkAddr{Index: testIndex + 1}
 	// the host route an interface address creates: its gateway is the address,
 	// so it is the kernel's record of the address rather than a route.
@@ -330,11 +329,11 @@ func TestDarwinDumpKeepsOnlyRoutesItOwns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode the dump: %v", err)
 	}
-	// the metric and the preferred source are mirrored from the configuration,
-	// because the darwin FIB holds neither and the diff key needs both.
+	// the metric is mirrored from the configuration, because the darwin FIB
+	// holds none and the diff key needs it.
 	want := []Route{
-		{Destination: prefix("198.51.100.0/24"), PrefSrc: addr("198.51.100.1")},
-		{Destination: prefix("198.51.100.42/32"), PrefSrc: addr("198.51.100.1")},
+		{Destination: prefix("198.51.100.0/24")},
+		{Destination: prefix("198.51.100.42/32")},
 		{Destination: prefix("2001:db8::/48"), Metric: defaultIPv6Metric},
 	}
 	slices.SortFunc(got, compareRoutes)
@@ -344,11 +343,11 @@ func TestDarwinDumpKeepsOnlyRoutesItOwns(t *testing.T) {
 	}
 }
 
-// The mirroring makes a pass converge: a dump that reported a metric
-// or a preferred source the reconciler did not ask for would leave every route
-// on both the add list and the delete list forever.
+// The mirroring makes a pass converge: a dump that reported a metric the
+// reconciler did not ask for would leave every route on both the add list and
+// the delete list forever.
 func TestDarwinDumpMirrorsDiffKeyFields(t *testing.T) {
-	plat, _ := testPlatform(t, Table{Metric: 32, PrefSrc4: schema.MustAddr("198.51.100.1")}, Runtime{})
+	plat, _ := testPlatform(t, Table{Metric: 32}, Runtime{})
 	rib := dumpRIB(t,
 		dumpEntry{index: testIndex, flags: unix.RTF_UP, dst: prefix("198.51.100.0/24"), gateway: ourGateway()},
 		dumpEntry{index: testIndex, flags: unix.RTF_UP, dst: prefix("2001:db8::/48"), gateway: ourGateway()},
@@ -358,7 +357,7 @@ func TestDarwinDumpMirrorsDiffKeyFields(t *testing.T) {
 		t.Fatalf("decode the dump: %v", err)
 	}
 	want := []Route{
-		{Destination: prefix("198.51.100.0/24"), PrefSrc: addr("198.51.100.1"), Metric: 32},
+		{Destination: prefix("198.51.100.0/24"), Metric: 32},
 		{Destination: prefix("2001:db8::/48"), Metric: 32},
 	}
 	slices.SortFunc(got, compareRoutes)
@@ -1413,15 +1412,11 @@ func TestDarwinNamesTheTwoSourceRefusalsApart(t *testing.T) {
 
 // A linux-shaped configuration names things this platform does not have. Each
 // is refused by name before the interface is even looked up, so a deployment
-// carrying one is wrong at startup rather than looking like it works. prefsrc4
-// was the one that was silently accepted and quietly did nothing: darwin has
-// no RTA_PREFSRC, and the address a route prefers is whichever one the tun
-// carries.
+// carrying one is wrong at startup rather than looking like it works.
 func TestDarwinRefusesSettingsItCannotHonor(t *testing.T) {
 	for name, mutate := range map[string]func(*Table){
 		"table":    func(c *Table) { c.ID = DefaultTable + 1 },
 		"protocol": func(c *Table) { c.Proto = DefaultProtocol + 1 },
-		"prefsrc4": func(c *Table) { c.PrefSrc4 = schema.MustAddr("198.18.104.117") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			// Deliberately a device that does not exist: each refusal has to

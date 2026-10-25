@@ -154,7 +154,7 @@ func (p *netlinkPlatform) decodeRoute(message nlMessage) (Route, bool) {
 	if family != unix.AF_INET && family != unix.AF_INET6 {
 		return Route{}, false
 	}
-	var destination, source, prefsrc netip.Addr
+	var destination, source netip.Addr
 	var oif, metric uint32
 	for attr, value := range message.attributes(unix.SizeofRtMsg) {
 		switch attr {
@@ -167,8 +167,6 @@ func (p *netlinkPlatform) decodeRoute(message nlMessage) (Route, bool) {
 			destination, _ = addressFromBytes(value)
 		case unix.RTA_SRC:
 			source, _ = addressFromBytes(value)
-		case unix.RTA_PREFSRC:
-			prefsrc, _ = addressFromBytes(value)
 		case unix.RTA_OIF:
 			if len(value) == 4 {
 				oif = binary.NativeEndian.Uint32(value)
@@ -196,7 +194,7 @@ func (p *netlinkPlatform) decodeRoute(message nlMessage) (Route, bool) {
 		return Route{}, false
 	}
 	decoded := Route{
-		Destination: prefix, PrefSrc: prefsrc, Metric: metric,
+		Destination: prefix, Metric: metric,
 		Unreachable: kind == unix.RTN_UNREACHABLE, Throw: kind == unix.RTN_THROW,
 	}
 	if srcLen > 0 {
@@ -263,9 +261,6 @@ func (p *netlinkPlatform) routeMessage(route Route, del bool) []byte {
 	if !route.Unreachable && !route.Throw {
 		body = putAttrU32(body, unix.RTA_OIF, p.index)
 	}
-	if route.PrefSrc.IsValid() {
-		body = putAttr(body, unix.RTA_PREFSRC, addressBytes(route.PrefSrc))
-	}
 	// the metric is always explicit: leaving it out would let the kernel pick
 	// its own, and a delete has to name the same one to match the route.
 	body = putAttrU32(body, unix.RTA_PRIORITY, route.Metric)
@@ -280,10 +275,6 @@ func (p *netlinkPlatform) where(t Table) string {
 
 func (p *netlinkPlatform) retable(t Table) { p.table = t }
 
-// refuseMeaningless refuses nothing
-// every cap.table setting means something on linux
-func refuseMeaningless(Table) error { return nil }
-
 func (p *netlinkPlatform) AddRoute(route Route) error {
 	// EXCL rather than REPLACE. A replace takes over whatever sits first at the
 	// same prefix, tos and priority no matter who wrote it: fib_table_insert
@@ -292,14 +283,14 @@ func (p *netlinkPlatform) AddRoute(route Route) error {
 	// it back, because DelRoute matches on our protocol.
 	//
 	// Refusing instead costs an update that changes only a non-key attribute,
-	// a preferred source at an unchanged metric. applyRoutes withdraws before
-	// it installs so that case arrives here as a plain add.
+	// the type at an unchanged metric. applyRoutes withdraws before it installs
+	// so that case arrives here as a plain add.
 	flags := uint16(unix.NLM_F_CREATE | unix.NLM_F_EXCL | unix.NLM_F_ACK)
 	_, err := p.conn.execute(unix.RTM_NEWROUTE, flags, p.routeMessage(route, false))
 	if errors.Is(err, unix.EEXIST) {
 		// Keyed by the route rather than by its printed form, which omits the
-		// preferred source and the scope: two routes differing only there
-		// would otherwise share one record.
+		// scope: two routes differing only there would otherwise share one
+		// record.
 		p.refused[route] = true
 		if !p.occupied[route] {
 			p.occupied[route] = true
@@ -311,20 +302,6 @@ func (p *netlinkPlatform) AddRoute(route Route) error {
 		// the whole pass into backoff over a key no retry can free, once per
 		// pass, forever.
 		return errRouteSkipped
-	}
-	if errors.Is(err, unix.EINVAL) && route.PrefSrc.IsValid() {
-		// The one EINVAL with a cause an operator can act on, and the reason
-		// this names it rather than leaving "invalid argument" to be guessed
-		// at: the kernel refuses RTA_PREFSRC that is not a local address in
-		// the route's own table or in the local table, and every IPv4 route
-		// this reconciler installs carries the configured prefsrc4. So one
-		// wrong address in the config file takes out IPv4 routing entirely,
-		// on every pass, for the life of the process. It stays a retried
-		// failure rather than a startup refusal because the address is
-		// normally the node's own mesh address, which this same reconciler
-		// assigns, so the first passes can legitimately run before it is
-		// there.
-		err = fmt.Errorf("%w (prefsrc %s is not a local address in table %d or in the local table)", err, route.PrefSrc, uint32(p.table.ID))
 	}
 	if err == nil {
 		delete(p.occupied, route)

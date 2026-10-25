@@ -28,7 +28,7 @@ const ruleRestoreBudget = time.Second
 func TestRouteMonitorWakesOnlyOnADeletedRuleItOwns(t *testing.T) {
 	plat, _ := writePlatform(t)
 	wakesOn := reconcilerWakes(uint32(plat.table.ID), plat.table.Proto)
-	owned := plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x726c, Table: schema.TableMain, Priority: 40})
+	owned := plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x72, Table: schema.TableMain, Priority: 40})
 	for name, arm := range map[string]struct {
 		kind uint16
 		body []byte
@@ -61,14 +61,10 @@ func TestNetlinkRestoresADeletedRuleWithinASecond(t *testing.T) {
 	const device = "ranetrule0"
 	createTUN(t, device)
 
-	// an address rule, and a rule keyed on an arriving device that does not exist yet
-	installed := []Rule{
-		{To: schema.MustPrefix("198.18.104.0/24"), Table: DefaultTable, Priority: 100, Family: FamilyIPv4},
-		{IIF: device + "e", Table: schema.TableMain, Priority: 60, Family: FamilyIPv6},
-	}
-	written := slices.Clone(installed)
-	written[0].Family = FamilyUnset
-	r, err := New(Table{Rules: written}, Runtime{Interface: device}, netstack.NewRouteTable())
+	// the rules derived from an overlay of each family
+	overlay := []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff::/20")}
+	installed := derivedRules(DefaultTable, overlay, nil)
+	r, err := New(Table{}, Runtime{Interface: device, Overlay: overlay}, netstack.NewRouteTable())
 	if err != nil {
 		t.Fatalf("start the reconciler: %v", err)
 	}

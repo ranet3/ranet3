@@ -6,6 +6,7 @@
 package kernel
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -28,8 +29,6 @@ import (
 // af is one rule's family as this backend writes it into the header. It lives
 // with the netlink encoder rather than beside the Family type, because a
 // family is a word everywhere else in this tree and a number only here.
-// af never sees an unresolved family: expandRules names one on every rule and
-// validate refuses anything else.
 func (f Family) af() uint8 {
 	if f == FamilyIPv4 {
 		return unix.AF_INET
@@ -75,6 +74,9 @@ func (p *netlinkPlatform) ruleMessage(rule Rule) []byte {
 	}
 	// body[4] is the legacy table field, left at RT_TABLE_UNSPEC.
 	body[7] = rule.action.frAction()
+	if rule.invert {
+		binary.NativeEndian.PutUint32(body[8:], unix.FIB_RULE_INVERT)
+	}
 	body = putAttrU32(body, unix.FRA_PRIORITY, rule.Priority)
 	switch rule.action {
 	case ActionLookup:
@@ -100,6 +102,12 @@ func (p *netlinkPlatform) ruleMessage(rule Rule) []byte {
 	}
 	if rule.IIF != "" {
 		body = putAttrString(body, unix.FRA_IIFNAME, rule.IIF)
+	}
+	if rule.oif != "" {
+		body = putAttrString(body, unix.FRA_OIFNAME, rule.oif)
+	}
+	if rule.l3mdev {
+		body = putAttr(body, unix.FRA_L3MDEV, []byte{1})
 	}
 	return body
 }
@@ -137,6 +145,7 @@ func (p *netlinkPlatform) decodeRule(message nlMessage) (Rule, bool) {
 	rule := Rule{
 		Family: held.Family, To: schema.PrefixFrom(held.To), From: schema.PrefixFrom(held.From),
 		FWMark: held.FWMark, FWMask: held.FWMask, IIF: held.IIF, Priority: held.Priority, suppress: held.Suppress,
+		invert: held.Invert, oif: held.OIF, l3mdev: held.L3mdev,
 	}
 	// Only the actions this file writes, each in the shape it writes it. A
 	// rule that blackholes is not one of ours however it is marked, and

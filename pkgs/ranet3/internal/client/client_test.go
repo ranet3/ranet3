@@ -1271,11 +1271,6 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 		// what turns it on and adding one is a change by itself.
 		Cap: config.Caps{Table: &kernel.Table{}},
 	}
-	marked := kernel.Rule{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: kernel.FamilyBoth}
-	masked := marked
-	masked.FWMask = ^uint32(0)
-	markedIPv4, markedIPv6 := marked, marked
-	markedIPv4.Family, markedIPv6.Family = kernel.FamilyIPv4, kernel.FamilyIPv6
 	exit := []schema.Prefix{schema.MustPrefix("0.0.0.0/0")}
 	first, second := schema.MustPrefix("10.0.0.1/32"), schema.MustPrefix("10.0.0.2/32")
 	source := schema.MustAddr("3fff:1:69c:8c0::1")
@@ -1337,7 +1332,7 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 			c.Cap.Crypto = &ike.Crypto{Rekey: ike.Rekey{Retry: ike.Retry{Max: durationOf(ike.DefaultRetryMax)}}}
 		},
 		"an empty address list": func(c *config.Config) {
-			c.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{}, Rules: []kernel.Rule{}}
+			c.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{}}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1364,21 +1359,6 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 			{Segment: &srv6.Segments{Source: source, Steer: []srv6.Steer{steered}}},
 			{Segment: &srv6.Segments{Source: source, Steer: []srv6.Steer{
 				{From: steered.From, Source: source, Via: steered.Via}}}},
-		},
-		"a mark mask the kernel reports as none": {
-			{Table: &kernel.Table{Rules: []kernel.Rule{marked}}},
-			{Table: &kernel.Table{Rules: []kernel.Rule{masked}}},
-		},
-		// One rule written for both families against the same rule written
-		// once per family. The reconciler expands the first into the second
-		// before it installs anything, so the two files run one ruleset.
-		"a family written once against the same rule written twice": {
-			{Table: &kernel.Table{Rules: []kernel.Rule{marked}}},
-			{Table: &kernel.Table{Rules: []kernel.Rule{markedIPv4, markedIPv6}}},
-		},
-		"the same two rules in the other order": {
-			{Table: &kernel.Table{Rules: []kernel.Rule{markedIPv4, markedIPv6}}},
-			{Table: &kernel.Table{Rules: []kernel.Rule{markedIPv6, markedIPv4}}},
 		},
 		"the same addresses in the other order": {
 			{Table: &kernel.Table{Addresses: []schema.Prefix{first, second}}},
@@ -1428,14 +1408,12 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 		t.Error("a segment list visited in the other order was taken as the same steering")
 	}
 
-	// And two rules that differ in more than their order are still two rules.
-	elsewhereRule := marked
-	elsewhereRule.Table = 201
+	// And two address lists that differ in more than their order are still two lists.
 	differs, differsToo := *base, *base
-	differs.Cap = config.Caps{Table: &kernel.Table{Rules: []kernel.Rule{marked}}}
-	differsToo.Cap = config.Caps{Table: &kernel.Table{Rules: []kernel.Rule{elsewhereRule}}}
+	differs.Cap = config.Caps{Table: &kernel.Table{Addresses: []schema.Prefix{first}}}
+	differsToo.Cap = config.Caps{Table: &kernel.Table{Addresses: []schema.Prefix{second}}}
 	if sameTable(&differs, &differsToo) {
-		t.Error("two rules looking up different tables compared as one, so the reconciler is never handed the second")
+		t.Error("two address lists naming different addresses compared as one, so the reconciler is never handed the second")
 	}
 
 	// A real change still applies, or the comparison would be useless.
