@@ -256,16 +256,16 @@ func TestEachIKESARekeyDrawsItsOwnNonceAndItsRetryKeepsIt(t *testing.T) {
 	for range 2 {
 		done := make(chan error, 1)
 		go func() { done <- s.RekeyIKE() }()
-		first := <-s.requests
+		first := requested(t, s, done, CREATE_CHILD_SA)
 		nonce := nonceOf(first)
 		nonces = append(nonces, nonce)
 		first.result <- requestResult{inner: []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INVALID_KE_PAYLOAD, Data: invalidKENotifyData(DH_ECP_256)})}}}
-		retry := <-s.requests
+		retry := requested(t, s, done, CREATE_CHILD_SA)
 		if again := nonceOf(retry); !bytes.Equal(again, nonce) {
 			t.Errorf("the retry in the group INVALID_KE_PAYLOAD named sent nonce %x, want the failed attempt's %x", again, nonce)
 		}
 		retry.result <- requestResult{inner: []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NO_PROPOSAL_CHOSEN})}}}
-		if err := <-done; err == nil {
+		if err := ended(t, s, done); err == nil {
 			t.Fatal("RekeyIKE took an answer of NO_PROPOSAL_CHOSEN")
 		}
 	}
