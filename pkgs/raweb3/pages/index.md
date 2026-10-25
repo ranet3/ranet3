@@ -37,7 +37,7 @@ layout: bare
 </div>
 
 <div class="split mt-24">
-<h2 class="title">Why ranet3</h2>
+<h2 class="title">We bring ISP grade networking magic to everyone</h2>
 <div class="flex flex-col border-t border-line">
 <details class="fold">
 <summary class="row"><span class="text-mute">01</span><span>Interoperability<small>Peers only need standard IKEv2, ESP, Babel and SRv6.</small></span></summary>
