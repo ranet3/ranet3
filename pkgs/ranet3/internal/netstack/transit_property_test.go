@@ -149,8 +149,10 @@ func exactnessSID(i int) netip.Addr {
 }
 
 // exactnessEntry is one entry of a node's table in the property's model, where next is the neighbor it forwards to
+// and from the source prefix it is announced from, none for most
 type exactnessEntry struct {
 	prefix  netip.Prefix
+	from    netip.Prefix
 	verdict Verdict
 	next    int
 }
@@ -208,7 +210,8 @@ type exactnessProbe struct {
 
 // a mesh of meshes joined by in-memory sessions over a drawn topology, its exits advertising drawn overlapping prefixes and its nodes holding drawn ones
 // a packet a node reads off its tun for a destination outside the overlay reaches the tun of exactly the node whose own entry the path's longest matches lead to, and of no other
-// a packet steered to an egress SID reaches the tun of exactly the node holding the SID as an egressed write, whatever the tables say of its inner destination
+// a packet steered to an egress SID reaches the tun of exactly the node holding the SID as an egressed write, whatever the other nodes' tables say of its inner destination
+// and of none where the holder's own table routes that destination, as egressRefused says
 // and no node writes to its tun a packet it does not resolve as its own but as an egressed write at its egress SID
 // a write is told egressed from the probe it carries, a probe steered to the writing node's SID, and the holder's Egressed counts each one
 func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
@@ -361,7 +364,7 @@ func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
 			if hegel.Draw(ht, hegel.Booleans()) {
 				probe.holder = hegel.Draw(ht, hegel.SampledFrom(holders))
 				probe.want = -1
-				if walk(from, exactnessSID(probe.holder)) == probe.holder {
+				if walk(from, exactnessSID(probe.holder)) == probe.holder && !egressRefused(tables[probe.holder], transitOverlay, exactnessHost(from, family), destination) {
 					probe.want = probe.holder
 				}
 				outer, err := srv6.Encapsulate(inner, exactnessHost(from, 6), []netip.Addr{exactnessSID(probe.holder)})

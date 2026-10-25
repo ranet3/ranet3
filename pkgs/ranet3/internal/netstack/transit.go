@@ -351,33 +351,44 @@ func (m *Mesh) unreachable(verdict Verdict, match Match, destination netip.Addr)
 }
 
 // egressCheck keeps one batch's egress lookups
-// each pair's answer for the batch, and the readiness words read once
+// each pair's answers for the batch, and the readiness words read once
 type egressCheck struct {
 	pairs      [egressPairs][2]netip.Addr
-	routed     [egressPairs]bool
+	answers    [egressPairs]egressAnswer
 	kept       int
 	ready      uint32
 	advertised uint32
 	readyRead  bool
 }
 
-// routed reports whether the mesh routes a reply to a packet from source to destination
-// the reply's route reaching a peer, a hold or this node's own entry, its LAN or an address of its own, entries counting as a default passed over
-// a route announced from a source prefix decides it, so the answer is kept per pair rather than per source
-func (m *Mesh) routed(check *egressCheck, source, destination netip.Addr) bool {
+// egressAnswer holds the mesh's answers for a packet's pair of addresses
+// routed is whether it routes a reply, and forMesh, which only an egress segment asks, whether it routes the destination itself
+type egressAnswer struct{ routed, forMesh bool }
+
+// pairAnswer is the mesh's egressAnswer for a packet from source to destination, its forMesh asked where segment says
+// a batch asks its check one way throughout, so a kept answer holds what each of its packets asks
+// a route announced from a source prefix decides each answer, so they are kept per pair rather than per source or destination
+// a reply's route reaches a peer, a hold or this node's own entry, its LAN or an address of its own
+// and the destination's entries counting as a default are passed over, so a destination only this node's default or another exit's covers egresses
+func (m *Mesh) pairAnswer(check *egressCheck, source, destination netip.Addr, segment bool) egressAnswer {
 	pair := [2]netip.Addr{source, destination}
 	for i := range check.kept {
 		if check.pairs[i] == pair {
-			return check.routed[i]
+			return check.answers[i]
 		}
 	}
 	_, verdict, match := m.replyRoute(source, destination)
 	routed := !match.Counted && (verdict == RoutePeer || verdict == RouteHeld || verdict == RouteLocal)
+	answer := egressAnswer{routed: routed}
+	if segment {
+		_, verdict, match = m.Routes.Resolve(source, destination)
+		answer.forMesh = !match.Counted && verdict != RouteNone
+	}
 	if check.kept < egressPairs {
-		check.pairs[check.kept], check.routed[check.kept] = pair, routed
+		check.pairs[check.kept], check.answers[check.kept] = pair, answer
 		check.kept++
 	}
-	return routed
+	return answer
 }
 
 // replyRoute resolves the route a reply to a packet from source to destination takes, from destination to source
@@ -403,7 +414,7 @@ func (m *Mesh) readyFor(check *egressCheck, family uint8, advertised bool) bool 
 // a packet the mesh routes no reply to is dropped with no answer, since nothing routes one back
 // and a prefix cap.egress advertises waits on its family's readiness, which a counted cap.route announcement has none of
 func (m *Mesh) egresses(check *egressCheck, source, destination netip.Addr, version byte, match Match) (transitReason, bool) {
-	if !m.routed(check, source, destination) {
+	if !m.pairAnswer(check, source, destination, false).routed {
 		return transitUnroutedSource, false
 	}
 	family := uint8(srv6.NextHeaderIPv6)

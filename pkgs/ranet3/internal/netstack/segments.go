@@ -111,7 +111,7 @@ type SegmentCounters struct {
 	Answered uint64
 	// Egressed counts the inner packets an egress segment handed to the tun
 	Egressed uint64
-	// Refused counts the packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for a source outside its allow list, an inner source it cannot read, an inner packet no router forwards or one the mesh routes no reply to, a part of Dropped never answered
+	// Refused counts the packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for a source outside its allow list, an inner source it cannot read, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself, a part of Dropped never answered
 	Refused uint64
 	// NotReady counts the egress results dropped as not ready for their family
 	// it is this node's own state, so it is not in Dropped
@@ -191,19 +191,23 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 			source, destination := addressesOf(result.Inner, version)
 			// the host forwards what the uplink takes, so the martians the decision drops are dropped here too
 			if martian(source, destination) {
-				m.segmentsDropped.Add(1)
-				m.segmentsRefused.Add(1)
-				if m.segmentDropDue() {
+				if m.refuseEgress() {
 					slog.Warn("an egress segment refused an inner packet no router forwards", "interface", m.Name, "source", source, "destination", destination)
 				}
 				continue
 			}
-			if !m.routed(&check, source, destination) {
-				m.segmentsDropped.Add(1)
-				m.segmentsRefused.Add(1)
-				// the source is boxed only for the one refusal an interval reports
-				if m.segmentDropDue() {
+			answer := m.pairAnswer(&check, source, destination, true)
+			if !answer.routed {
+				if m.refuseEgress() {
 					slog.Warn("an egress segment refused an inner source the mesh routes no reply to", "interface", m.Name, "source", source)
+				}
+				continue
+			}
+			// egress carries nothing for the mesh, so a destination the mesh routes to another node or holds is refused
+			// and so is one of this node's own, which is the decision's to deliver rather than egress
+			if answer.forMesh {
+				if m.refuseEgress() {
+					slog.Warn("an egress segment refused an inner destination the mesh routes", "interface", m.Name, "destination", destination)
 				}
 				continue
 			}
@@ -244,6 +248,14 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 // martian is a packet no router forwards by its source, or by a destination other than the limited broadcast and multicast, the test the decision applies past its link-scoped destinations
 func martian(source, destination netip.Addr) bool {
 	return packet.InvalidSource(source) || martianDestination(destination)
+}
+
+// refuseEgress counts an egress segment's refusal of a packet, dropped and refused, and claims the interval's report as segmentDropDue does
+// so a caller boxes the addresses it reports only for the one line an interval writes
+func (m *Mesh) refuseEgress() bool {
+	m.segmentsDropped.Add(1)
+	m.segmentsRefused.Add(1)
+	return m.segmentDropDue()
 }
 
 // actLocally runs this node's own segments until the packet is going somewhere
