@@ -44,7 +44,8 @@ names another interval.
 
 With transit off, a node advertises only the prefixes it announces and never
 relays one it learned. A packet for another node that reaches it all the same is
-answered administratively prohibited. Transit is off unless
+answered administratively prohibited, unless an End.DT46 SID of this node
+delivering to the mesh took it out of its outer header. Transit is off unless
 [`cap.transit`](../configuration-reference.md) writes `enable = true`, and a
 leaf leaves it out. Refusing to advertise cannot close a loop, so this only
 narrows what the feasibility condition already bounds.

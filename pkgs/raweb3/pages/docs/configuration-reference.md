@@ -457,12 +457,16 @@ The segments this node answers for.
 | ---------- | ------------------- | -------- | -------------------------------------------------------- |
 | `sid`      | address             | required | The segment identifier                                   |
 | `behavior` | `End` or `End.DT46` | required | What this node does with the packet                      |
-| `deliver`  | `mesh` or `egress`  | `mesh`   | Where `End.DT46` writes the inner packet                 |
+| `deliver`  | `mesh` or `egress`  | `mesh`   | Where `End.DT46` hands the inner packet                  |
 | `allow`    | list of prefixes    | none     | Sources an egress segment carries, outer and inner alike |
 
 - `End` sends the packet to its next segment. `End.DT46` removes the outer
-  header and delivers the inner packet, to the mesh tun or, with
-  `deliver = "egress"`, to the egress device.
+  header and delivers the inner packet, to the mesh's
+  [forwarding decision](routing.md#transit) or, with `deliver = "egress"`, to
+  the egress device. The decision writes it to the tun where its destination is
+  this node's own, and otherwise forwards or answers it as a session's packet.
+  An inner packet an End.DT46 delivers to the mesh takes that path whatever
+  `cap.transit` says.
 - `behavior` is read in any case.
 - A SID written twice is refused.
 - `deliver = "egress"` is refused on `End`, and `allow` on anything but an

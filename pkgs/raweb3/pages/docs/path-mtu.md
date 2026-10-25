@@ -179,8 +179,9 @@ the segment reached and an IPv4 answer from the address the carried packet was
 going to. A Parameter Problem for options that cannot be read comes from the
 same address as a fragmentation needed would. The
 [forwarding decision](routing.md#transit) answers a transit packet too large for
-its next session from the router-id of its family as well, and from the address
-the packet was going to where the node holds none.
+its next session from the router-id of its family as well. Where the node holds
+none, an IPv6 answer comes from the answer SID below and, with no SID either,
+from the address the packet was going to, and an IPv4 answer from that address.
 [Protocol deviations](design/protocol-deviations.md#icmp-answers) gives the
 reasons.
 
