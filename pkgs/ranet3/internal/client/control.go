@@ -152,6 +152,7 @@ func transitCounters(counters netstack.TransitCounters) control.TransitCounters 
 		SID:            counters.SID,
 		UnownedSource:  counters.UnownedSource,
 		Nested:         counters.Nested,
+		Looped:         counters.Looped,
 		Answered:       counters.Answered,
 		Unanswered:     counters.Unanswered,
 	}

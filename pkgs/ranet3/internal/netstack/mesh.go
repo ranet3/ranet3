@@ -411,10 +411,14 @@ func (m *Mesh) classify(b *outboundBatch) {
 			peer, verdict, _ = m.Routes.Resolve(src, dst)
 		}
 		if verdict != RoutePeer {
-			if policy != nil {
+			switch {
+			// a steered packet is answered at its first segment, so even this node's own there is its steering's failure rather than a loop
+			case policy != nil:
 				m.segmentsUnrouted.Add(1)
 				m.reportSegmentDrop("no route to the first segment of a steered packet", "segment", dst)
-			} else {
+			case verdict == RouteLocal:
+				m.dropTransit(&tally, transitLooped, src, dst)
+			default:
 				m.answerUnroutedRead(raw, verdict, match, src, dst)
 			}
 			continue
@@ -443,11 +447,8 @@ func (m *Mesh) classify(b *outboundBatch) {
 // answerUnroutedRead answers raw, where an ICMP error may answer it and as src's bucket and the node's cap allow, a packet the host routed into the tun from src to dst, where the table, answering verdict and match, reaches dst by no route or holds it
 // the answer is the one unreachable gives, from dst, and goes back into the tun, the one link the packet came by, whatever src is
 // answer's reply route is a session's, and would send the answer to a host packet from an uplink address out through the mesh or nowhere
-// a read the table answers as this node's own goes unanswered
+// verdict is RouteNone or RouteHeld, since the caller has taken a read the table answers with a peer or as this node's own
 func (m *Mesh) answerUnroutedRead(raw []byte, verdict Verdict, match Match, src, dst netip.Addr) {
-	if verdict != RouteNone && verdict != RouteHeld {
-		return
-	}
 	kind := m.unreachable(verdict, match, dst)
 	if out := buildAnswer(raw, raw[0]>>4, kind, 0, dst, m.AnswerTTL(), m.allowAnswer(src)); out != nil {
 		m.writeHostPacket(out)

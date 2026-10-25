@@ -492,6 +492,48 @@ func TestTUNReadToASIDOfThisNodeIsDropped(t *testing.T) {
 	}
 }
 
+// a read off the tun the table answers this node's own is dropped and counted looped, since the mesh could only hand it back to the tun
+// to a host route of its own, to an address cap.table assigns it and toward the internet through its own default, while one into a hold is answered and counted so
+// and a steered packet whose first segment is this node's own counts as its steering's failure, unrouted, and not as looped
+func TestTUNReadToThisNodeIsCountedLooped(t *testing.T) {
+	for _, family := range []int{4, 6} {
+		m, _ := edgeMesh(t)
+		m.SetAnswerTTL(64)
+		// this node is an exit of its own
+		m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), Local)
+		m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), Local)
+		went := classifiedTo(m,
+			udpPacket(edgeAssigned[family], transitOwn[family], 100, false),
+			udpPacket(transitOwn[family], edgeAssigned[family], 100, false),
+			udpPacket(transitOwn[family], edgeInternet[family], 100, false),
+			udpPacket(transitOwn[family], transitHeldHost[family], 100, false),
+		)
+		if !slices.Equal(went, make([]*Peer, 4)) {
+			t.Errorf("IPv%d reads to its own host route, its assigned address, the internet through its own default and a hold went to %v, want none", family, went)
+		}
+		if got := m.TransitCounters(); got != (TransitCounters{Looped: 3, Answered: 1}) {
+			t.Errorf("IPv%d the read counted %+v, want 3 looped and 1 answered", family, got)
+		}
+
+		steered, _ := edgeMesh(t)
+		steering, err := srv6.NewSteerTable([]srv6.Steer{{From: schema.PrefixFrom(hostPrefix(transitOwn[family])), Via: []schema.Addr{schema.AddrFrom(edgeOwnSID)}}}, schema.MustAddr("3fff:1:69c:8c0::1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		steered.SetSteering(steering)
+		steered.Routes.Set(netip.Prefix{}, segPrefix("3fff:6::/64"), Local)
+		if went := classifiedTo(steered, udpPacket(transitOwn[family], transitFar[family], 100, false)); went[0] != nil {
+			t.Errorf("IPv%d a read steered to a first segment of this node's own went to %v", family, went[0])
+		}
+		if got := steered.SegmentCounters(); got.Steered != 1 || got.Unrouted != 1 {
+			t.Errorf("IPv%d a read steered to a first segment of this node's own counted %+v, want one steered and unrouted", family, got)
+		}
+		if got := steered.TransitCounters(); got != (TransitCounters{}) {
+			t.Errorf("IPv%d a read steered to a first segment of this node's own counted %+v", family, got)
+		}
+	}
+}
+
 // a packet a policy steers is checked as it was read, before the steer wraps it in a routing header the edge would refuse
 // so of the packets a policy claims, one from this node's own address is steered and one from another node's is dropped as forged before any steer
 // and a host's packet is judged by the destination it was read with, dropped toward the internet where a learned default covers it and steered toward an overlay address
@@ -537,20 +579,36 @@ func TestTUNReadIsCheckedBeforeItIsSteered(t *testing.T) {
 	}
 }
 
-// a tun read's drop reports through the decision's report, with the event naming its reason, source and destination
+// a tun read's drop reports through the decision's report, with the event naming its reason and the read's source and destination
+// for each reason the checks and a read to this node's own count, a carried packet's drop naming the read that carries it
 func TestTUNReadDropRecordsTheEvent(t *testing.T) {
-	m, _ := edgeMesh(t)
-	bus := events.New()
-	m.events = bus.Emit
-	classifiedTo(m, udpPacket(transitSender[6], transitFar[6], 100, false))
-	recorded := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "netstack.transit.dropped" }, 0)
-	if len(recorded) != 1 {
-		t.Fatalf("a forged read recorded %d drop events", len(recorded))
-	}
-	want := map[string]string{"reason": "forged", "src": transitSender[6].String(), "dst": transitFar[6].String()}
-	for key, value := range want {
-		if got := recorded[0].Attrs[key]; got != value {
-			t.Errorf("the drop's event holds %s %v, want %s", key, got, value)
+	plain := udpPacket(transitOwn[6], transitFar[6], 100, false)
+	for _, c := range []struct {
+		reason string
+		raw    []byte
+	}{
+		{"forged", udpPacket(transitSender[6], transitFar[6], 100, false)},
+		{"routing_header", withRouting(plain, 4)},
+		{"sid", udpPacket(transitOwn[6], edgeOwnSID, 100, false)},
+		{"unowned_source", udpPacket(edgeLAN[6], edgeInternet[6], 100, false)},
+		{"nested", encapsulated(transitOwn[6], edgeOtherSID, encapsulated(transitOwn[6], transitFar[6], plain))},
+		{"looped", udpPacket(edgeAssigned[6], transitOwn[6], 100, false)},
+	} {
+		m, _ := carriedLeaf(t)
+		bus := events.New()
+		m.events = bus.Emit
+		classifiedTo(m, c.raw)
+		source, destination, _, _ := addrsOf(c.raw)
+		recorded := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "netstack.transit.dropped" }, 0)
+		if len(recorded) != 1 {
+			t.Errorf("a read dropped as %s recorded %d drop events", c.reason, len(recorded))
+			continue
+		}
+		want := map[string]string{"reason": c.reason, "src": source.String(), "dst": destination.String()}
+		for key, value := range want {
+			if got := recorded[0].Attrs[key]; got != value {
+				t.Errorf("the event of a read dropped as %s holds %s %v, want %s", c.reason, key, got, value)
+			}
 		}
 	}
 }

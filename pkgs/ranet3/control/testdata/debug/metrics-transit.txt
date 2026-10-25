@@ -18,5 +18,6 @@ ranet3_transit_packets_total{decision="dropped",reason="routing_header"} 15
 ranet3_transit_packets_total{decision="dropped",reason="sid"} 16
 ranet3_transit_packets_total{decision="dropped",reason="unowned_source"} 17
 ranet3_transit_packets_total{decision="dropped",reason="nested"} 18
+ranet3_transit_packets_total{decision="dropped",reason="looped"} 19
 ranet3_transit_packets_total{decision="answered",reason=""} 10
 ranet3_transit_packets_total{decision="unanswered",reason=""} 11

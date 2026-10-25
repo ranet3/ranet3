@@ -56,6 +56,8 @@ const (
 	transitUnownedSource
 	// transitNested counts IPv6 reads off the tun whose carried packet carries another, past the one level the checks open
 	transitNested
+	// transitLooped counts reads off the tun to a destination of this node's own, which the mesh could only hand back to the tun
+	transitLooped
 	transitAnswered
 	transitReasonCount
 )
@@ -80,6 +82,7 @@ var transitReasonNames = [transitReasonCount]string{
 	transitOwnSID:         "sid",
 	transitUnownedSource:  "unowned_source",
 	transitNested:         "nested",
+	transitLooped:         "looped",
 	transitAnswered:       "answered",
 }
 
@@ -146,8 +149,8 @@ type TransitCounters struct {
 	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady and TooBig count the packets a session delivered that were dropped, by reason
 	// Invalid counting as well the reads off the tun whose extension headers the walk cannot finish or whose carried packet's header cannot be read
 	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig uint64
-	// Multicast, Forged, RoutingHeader, SID, UnownedSource and Nested count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
-	Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested uint64
+	// Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested and Looped count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
+	Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested, Looped uint64
 	// Answered counts the ICMP errors sent about dropped packets
 	// Unanswered counts the dropped packets the decision would answer that find no address of their family to come from
 	// counted before the rules that keep an error from answering a packet and before the rate
@@ -175,6 +178,7 @@ func (m *Mesh) TransitCounters() TransitCounters {
 		SID:            count(transitOwnSID),
 		UnownedSource:  count(transitUnownedSource),
 		Nested:         count(transitNested),
+		Looped:         count(transitLooped),
 		Answered:       count(transitAnswered),
 		Unanswered:     m.unanswered.Load(),
 	}
