@@ -99,6 +99,9 @@ let
   # the allow list names.
   clientEgressSID = "fd00:88::6:3";
   gatewayOutside = "fd00:77::1";
+  # Inside the gateway's tunnel prefix and held by nobody, so the client's mesh
+  # routes it to the gateway and the egress segment refuses it.
+  meshDestination = "fd00:99::5";
   # Mesh sources behind forges from the client's link, inside the border's
   # overlay and owned by nobody on the mesh.
   borderForged4 = "10.99.0.77";
@@ -1150,6 +1153,26 @@ testers.runNixOSTest {
                 "ranet3 status --json | jq -e '.egress.ready == [\"ipv4\", \"ipv6\"]'", timeout=timeout)
             gateway.wait_until_succeeds("ip -6 route show ${clientEgressSID} | grep -q swan0", timeout=timeout)
 
+            # the translator reads the mesh's members at each pass, and its passes run on the sweep rather than when a
+            # route comes in, so the lookups read from a member of each family once a sweep after the gateway's routes has run
+            client.wait_until_succeeds(
+                "ranet3 status --json | jq -e '.egress.skipped == null and .egress.ready == [\"ipv4\", \"ipv6\"]'", timeout=timeout)
+
+            # the exit egresses through its one tun: no other tun, no rule keyed on an arrival device,
+            # and the translator's rule keyed on the tun in both families
+            tuns = client.succeed("ip -o link show type tun")
+            print(tuns)
+            assert [line.split(": ")[1] for line in tuns.splitlines()] == [client_device], f"the exit holds another tun:\n{tuns}"
+            for family in ["-4", "-6"]:
+                rules = client.succeed(f"ip {family} rule show")
+                print(rules)
+                assert " iif " not in rules, f"the exit holds a rule keyed on an arrival device:\n{rules}"
+            for family in ["ip", "ip6"]:
+                table = client.succeed(f"nft list table {family} ranet3")
+                print(table)
+                for want in ["masquerade", f'iifname "{client_device}"', f'oifname != "{client_device}"']:
+                    assert want in table, f"the {family} table does not carry {want}:\n{table}"
+
             # the kernel builds the header from the address the tunnel source names, which the allow list covers
             gateway.succeed("ip sr tunsrc set ${gatewayTunnel}")
             gateway.succeed(
@@ -1179,6 +1202,24 @@ testers.runNixOSTest {
             after = counters()
             assert after["refused"] >= before["refused"] + 3, f"a source outside the list was not refused: {before} then {after}"
             assert after["egressed"] == before["egressed"], f"a source outside the list was egressed: {after}"
+
+            # an inner packet for a destination the mesh routes is refused at the SID, answered with nothing
+            # and never handed back to the gateway through the mesh
+            gateway.succeed("ip -6 route replace ${meshDestination}/128 encap seg6 mode encap segs ${clientEgressSID} dev swan0")
+            gateway.succeed("rm -f /tmp/mesh.pcap /tmp/mesh.log")
+            # the kill would lose the block libpcap holds, and a packet handed back with it
+            gateway.execute("tcpdump --immediate-mode -ni swan0 -Q in -w /tmp/mesh.pcap 'ip6 dst ${meshDestination}' >/tmp/mesh.log 2>&1 &")
+            gateway.wait_until_succeeds("grep -q 'listening on' /tmp/mesh.log", timeout=timeout)
+            before = counters()
+            gateway.fail("ping -c 3 -i 0.3 -W 1 -I ${gatewayTunnel} ${meshDestination}")
+            after = counters()
+            gateway.succeed("pkill -x tcpdump")
+            gateway.wait_until_fails("pgrep -x tcpdump", timeout=timeout)
+            capture = gateway.succeed("tcpdump -nr /tmp/mesh.pcap 2>/dev/null").strip()
+            gateway.succeed("ip -6 route del ${meshDestination}/128")
+            assert capture == "", f"the exit handed the gateway back a packet it took at its egress SID:\n{capture}"
+            assert after["refused"] >= before["refused"] + 3, f"an inner packet for the mesh was not refused: {before} then {after}"
+            assert after["egressed"] == before["egressed"], f"an inner packet for the mesh was egressed: {after}"
 
             metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics")
             for want in ['ranet3_egress_ready{family="ipv4"} 1', 'ranet3_egress_ready{family="ipv6"} 1', "ranet3_border_ready 1"]:
