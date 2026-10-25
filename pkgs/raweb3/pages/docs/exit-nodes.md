@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-10-22
+updated: 2026-10-25
 order: 50
 ---
 
@@ -156,8 +156,9 @@ translates it and forwards it out of its uplink, only where 3 checks pass:
   up as a reply from the packet's destination is routed, so a route announced
   from a source prefix covers the source only where that prefix covers the
   destination, and it passes over every route that counts as a default, another
-  exit's among them. The reply's route has to reach a peer or a held prefix. A
-  packet from any other source is dropped with no answer and counted as
+  exit's among them. The reply's route has to reach a peer, a held prefix, or a
+  network or address of this node's own, such as a LAN it shares with another
+  node. A packet from any other source is dropped with no answer and counted as
   `unrouted source`, since no reply to it could come back.
 - For a prefix `cap.egress` advertises, the packet's family is one the node
   announces some prefix of, as [refusing to advertise](#refusing-to-advertise)

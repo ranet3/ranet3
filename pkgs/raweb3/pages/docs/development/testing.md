@@ -133,10 +133,12 @@ unless run as root.
     address. Datagrams of both families cross it, and it answers from its
     router-id: Time Exceeded at a hop limit of 1, Packet Too Big and
     Fragmentation Needed with its next session's size, which the sender caches,
-    and Destination Unreachable inside a prefix it holds. With no address of
-    either family it answers IPv4 from `192.0.0.8`, a Packet Too Big from the
-    packet's destination and IPv6's Time Exceeded not at all. Its kernel
-    forwards nothing and reads nothing from its tun throughout.
+    and Destination Unreachable inside a prefix it holds unreachable. An IPv6
+    datagram from a link-local source draws a beyond scope answer back on its
+    session. With no address of either family it answers IPv4 from `192.0.0.8`,
+    a Packet Too Big from the packet's destination and IPv6's Time Exceeded not
+    at all. Its kernel forwards nothing and reads nothing from its tun
+    throughout.
   - `TestTUNLineRefusesTransitWhileItIsOffButNotThroughAnEndDT46SID` runs the
     line with transit off at the middle node, which answers administratively
     prohibited, and still carries what the sender steers through its End.DT46

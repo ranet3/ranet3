@@ -869,9 +869,9 @@ address
 names no host by. Record Route and Timestamp insert the same address, where
 [RFC 1812 section 4.2.2.2](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.2.2.2)
 asks for "its router-id", since a node with no IPv4 address has none to give.
-With no IPv6 router-id they come from the node's first `End` SID, an address of
-the node the mesh routes to it, and with no SID they are not sent and are
-counted unanswered.
+With no IPv6 router-id they come from the node's first `End` SID that an
+announced prefix covers, an address of the node the mesh routes to it, and with
+no SID they are not sent and are counted unanswered.
 [RFC 4443 section 3.3](https://www.rfc-editor.org/rfc/rfc4443.html#section-3.3)
 says a router "MUST discard the packet and originate an ICMPv6 Time Exceeded
 message", and nothing of such a node could be that message's source: IPv6 has no
@@ -902,9 +902,10 @@ Parameter Problem among them, and the drop is counted under its reason alone, as
 a drop whose answer finds no route back is. The mesh routes no reply to such a
 source, and the host would send the answer out of its uplink from another node's
 address. The one exception is the Destination Unreachable with code 2 that
-answers an IPv6 packet from a link-local source to a wider destination, RFC 4443
-section 3.1. It goes back on the session the packet came by, never by a reply
-route, so it reaches the source's own link and no stranger.
+answers an IPv6 packet from a link-local source to a wider unicast destination a
+router forwards, RFC 4443 section 3.1. It goes back on the session the packet
+came by, never by a reply route, so it reaches the source's own link and no
+stranger.
 
 A session's packet to an address the host holds that no route of this node
 covers, an underlay address for one, is decided as one to any address this node
@@ -1302,6 +1303,9 @@ drops:
   forwards without `cap.border`, and the segment cannot tell such a packet from
   a mesh node's, so an answer could reach the mesh node the source names rather
   than the host that sent the packet.
+- For code 5, an egress segment past its allow list also refuses an inner source
+  the mesh routes no reply to, as the exit's check below does. No route would
+  carry an answer back to that source either.
 - For code 1, the border filter drops a routing header arriving from outside the
   mesh. An answer would tell its sender that this node is the edge of the mesh's
   segment routing domain.
@@ -1344,11 +1348,19 @@ The same section says:
 
 For the drops above these messages are always off, an exit's 2 among them. For
 the drops the forwarding decision answers, no route, a hold, transit off and a
-link-local source to a wider destination, they are always on.
-[Transit answers](#transit-answers) gives the decision's drops that send none, a
-truncated packet and a source route among them, and
+link-local source to a wider unicast destination a router forwards, they are
+always on. [Transit answers](#transit-answers) gives the decision's drops that
+send none, a truncated packet and a source route among them, and
 [routing](../routing.md#transit) lists the rest, a malformed header and a source
-or destination no router forwards.
+or destination no router forwards. An egress segment drops with no answer every
+inner packet whose source no router forwards, and every one whose destination no
+router forwards but the limited broadcast and multicast, and the decision treats
+some of them otherwise. The decision writes a packet to a multicast, limited
+broadcast or IPv6 link-local destination to the tun whatever its source, and
+answers an IPv6 link-local source to a wider unicast destination a router
+forwards with code 2 on the session it came from. Past its allow list, the
+segment sends a packet from a source a router forwards to the limited broadcast
+or a multicast destination on to its reply check.
 [The border filter](../border-filter.md#watching-it) counts each drop,
 [segment routing](../segment-routing.md#watching-it) counts each refusal, and
 `ranet3 status` counts an exit's 2 as `unrouted source` and `not ready`.

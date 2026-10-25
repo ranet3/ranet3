@@ -223,8 +223,8 @@ a malformed packet draws none:
 3. A source or destination no router forwards is dropped, an IPv4-mapped
    destination in `::ffff:0:0/96` among them, which
    [RFC 6890 section 2.2.3](https://www.rfc-editor.org/rfc/rfc6890.html#section-2.2.3)
-   marks not forwardable. An IPv6 link-local source with a wider destination is
-   answered on the session it came from.
+   marks not forwardable. An IPv6 link-local source with a wider destination a
+   router forwards is answered on the session it came from.
 4. The table answers the packet as [route selection](#route-selection) leaves
    it. An IPv4 header failing RFC 1812 section 5.2.2's checks is then dropped
    with no answer, unless an entry of this node's own holds the destination, in
@@ -262,17 +262,18 @@ a malformed packet draws none:
 | Link-local source              | Destination Unreachable, code 2 | none                                                                                                                                                                                                    |
 
 An answer comes from the node's router-id of the family. With no IPv4 router-id
-it comes from `192.0.0.8`, and with no IPv6 one from the node's first `End` SID,
-or not at all. A Packet Too Big with no IPv6 router-id and no SID, and a
-Fragmentation Needed with no IPv4 router-id, come from the packet's destination.
-An answer to a packet from this host or a network behind it, a source an entry
-of this node's own reaches that does not count as a default, goes into the tun
-instead, from the answered packet's destination, the one source every reverse
-path check of the host takes. A source only this node's own default reaches gets
-no answer, but for the beyond scope answer to an IPv6 link-local source, which
-goes back on the session the packet came by.
-[Path MTU](path-mtu.md#packets-that-do-not-fit) gives the rate limits the
-answers draw on, and
+it comes from `192.0.0.8`, and with no IPv6 one from the answer SID, the first
+`End` SID an announced prefix covers as
+[path MTU](path-mtu.md#where-answers-come-from) describes, or not at all. A
+Packet Too Big with no IPv6 router-id and no SID, and a Fragmentation Needed
+with no IPv4 router-id, come from the packet's destination. An answer to a
+packet from this host or a network behind it, a source an entry of this node's
+own reaches that does not count as a default, goes into the tun instead, from
+the answered packet's destination, the one source every reverse path check of
+the host takes. A source only this node's own default reaches gets no answer,
+but for the beyond scope answer to an IPv6 link-local source, which goes back on
+the session the packet came by. [Path MTU](path-mtu.md#packets-that-do-not-fit)
+gives the rate limits the answers draw on, and
 [the protocol deviations](design/protocol-deviations.md#icmp-answers) say where
 each departs from the RFCs.
 

@@ -4,7 +4,7 @@
 title: "Repository layout"
 description: "Where everything lives in the repository."
 created: 2026-10-03
-updated: 2026-10-22
+updated: 2026-10-25
 order: 10
 ---
 
@@ -55,7 +55,7 @@ program's own. Go commands run from `pkgs/ranet3`.
 | `identity`               | the name of a node and of each of its endpoints                                                                                        |
 | `ike`                    | an IKEv2 initiator and responder in the minimal shape of RFC 7815                                                                      |
 | `sadr`                   | source address dependent routing tables                                                                                                |
-| `schema`                 | the scalar spellings a config file is written in                                                                                       |
+| `schema`                 | the scalar spellings a config file is written in, and which routes count as a default                                                  |
 | `srv6`                   | SRv6 in userspace: the routing header (RFC 8754), H.Encaps, End and End.DT46 (RFC 8986)                                                |
 | `transport`              | the UDP sockets on 1 port for both IKE and ESP                                                                                         |
 | `examples`               | `config.toml`, `config.json` and `config.yaml`, which the `internal/config` tests parse                                                |
@@ -69,12 +69,13 @@ program's own. Go commands run from `pkgs/ranet3`.
 | `internal/config`        | reads the config file                                                                                                                  |
 | `internal/egress`        | source address translation for exit nodes and subnet routers, and the border filter                                                    |
 | `internal/events`        | the event recorder behind `debug events`                                                                                               |
+| `internal/goldentest`    | holds a test's output to its golden file, which `-update` rewrites, imported by test files alone                                       |
 | `internal/kernel`        | the route reconciler, the host network watch, and on macOS the scoped default route a bound underlay socket can need                   |
 | `internal/logtest`       | swaps the default logger for 1 test, imported by test files alone                                                                      |
-| `internal/netstack`      | moves packets between the tun and the sessions                                                                                         |
+| `internal/netstack`      | moves packets between the tun and the sessions, and decides each packet a session delivers, forwarding transit between sessions        |
 | `internal/nftables`      | writes, reads back and watches the translator's and the border filter's nf_tables tables, chains and rules over netlink                |
 | `internal/notices`       | the third-party notice the binary embeds and `ranet3 licenses` prints                                                                  |
-| `internal/packet`        | checks the IP envelope of packets from the tun and from ESP                                                                            |
+| `internal/packet`        | checks the IP envelope of packets, and what a router does with an IPv4 header it forwards: its checks, TTL, options and ICMPv4 errors  |
 | `internal/pbt`           | the settings every property test runs under                                                                                            |
 | `internal/registry`      | reads ranet's `registry.json` and Ed25519 key files, with a fixture in `testdata`                                                      |
 | `internal/version`       | the build's version and revision                                                                                                       |
