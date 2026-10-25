@@ -793,7 +793,7 @@ func (s *Session) answerRepeat(ctx *ikeContext, raw []byte, m *Message, source t
 		}
 		fit = message.largest
 	}
-	threshold, size := s.cutFor(a.response, fit)
+	threshold, size, at := s.cutFor(a.response, fit)
 	if from == nil {
 		a.answers++
 	} else {
@@ -804,7 +804,7 @@ func (s *Session) answerRepeat(ctx *ikeContext, raw []byte, m *Message, source t
 		}
 		from.octets -= spent
 	}
-	_, _ = s.sendCut(a.response, threshold, size, s.to(source))
+	_, _ = s.sendCut(a.response, threshold, size, at, s.to(source))
 	return nil
 }
 
