@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-25
+updated: 2026-10-26
 order: 20
 ---
 
@@ -154,6 +154,23 @@ unless run as root.
     with `cap.egress` and no egress segment a real tun, and checks that its
     egress through a default reaches the tun for each family it announces and is
     counted not ready for the others, whatever the border's chain reads back.
+  - `TestTUNDerivedRulesSendEachSocketWhereModeOffSays` runs a leaf with its
+    tun, an uplink to a far host, another program's link and the loopback, and
+    the reconciler over the mesh's table. For each state of the table, a learned
+    default, its retraction, half defaults, a split internet and its retraction,
+    a route at the floor, this node's own prefix inside the overlay, another
+    program's table at 5270 and an exit holding another exit's halves, the
+    kernel holds the routes the reconciler derives and its rules at 5430 for
+    this node's own prefixes. UDP, TCP and echo in both families, from sockets
+    unbound, bound to the overlay address, bound to the uplink's address or
+    device, carrying the underlay's mark, or that and bound to the overlay
+    address, then leave into the tun, out of the uplink or into the other
+    program's link, or are refused by their route, as
+    [where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) gives, the
+    socket bound to the uplink's device passing the holds as rows B1 and B2
+    give. A packet a peer delivers to the exit's LAN outside the overlay leaves
+    by the uplink, one to this node's own prefix inside it goes nowhere, and a
+    clean stop leaves no rule or route of protocol 155.
 
 The `internal/client` tests `TestNodeGoingDownLeavesItsPeerAndItsKernelAtOnce`,
 `TestNodeRestartedWhileDownInstallsNothingUntilUp`,
@@ -166,6 +183,21 @@ address or a route. Run them in an empty namespace:
 
 ```sh
 unshare -rn go test ./internal/client -run '^TestNode(GoingDown|RestartedWhileDown)|^TestSession(MovedUnderTheFloorHandsItsFragmentingOver|LowersItsBudgetAtTheRefusalOfItsOwnData)'
+```
+
+`internal/registry`'s `TestResolverQueryFollowsTheOverlayResolveRemoteIsHanded`
+and `internal/client`'s `TestEndpointQueryFollowsTheOverlayInForceAcrossReloads`
+look a name up through Go's resolver as the daemon does, and check the mark of
+each query by the overlay the lookup is handed. Go's resolver reads
+`/etc/resolv.conf` from whatever thread looks the name up, so each test starts a
+nameserver on lo through `internal/dnstest` and binds a resolv.conf naming it
+over `/etc/resolv.conf` in a mount namespace the whole process runs in. They
+skip without root and refuse to start in init's network or mount namespace. Run
+them in namespaces of their own:
+
+```sh
+unshare -rmn go test ./internal/registry -run '^TestResolver'
+unshare -rmn go test ./internal/client -run '^TestEndpointQueryFollowsTheOverlayInForceAcrossReloads$'
 ```
 
 ## The exit behavior suite
@@ -369,10 +401,13 @@ The `netlink` check runs these root tests: the `internal/kernel` tests whose
 names start with `TestNetlink`, the 7 `internal/egress/kernel` tests, the exit
 behavior suite and its 2 fakes, the `TestTUN` tests of `internal/netstack` and
 `internal/client`, the 3 `transport` sends, and the 4 `internal/client` tests
-above under `unshare -n`, and every test of the `tun` and `conn` packages of
-`pkgs/wireguard`. It fails if any of them skips. It then checks that no rule,
-link, xfrm state or policy, or nftables table of theirs is left on the host. The
-`internal/kernel` tests `TestNetworkWatchInNetworkNamespace` and
+above under `unshare -n`, the `internal/registry` tests whose names start with
+`TestResolver` and the client's resolver test above under `unshare -mn`, and
+every test of the `tun` and `conn` packages of `pkgs/wireguard`. It fails if any
+of them skips. It then checks that no rule, link, xfrm state or policy, or
+nftables table of theirs is left on the host, and that the host's
+`/etc/resolv.conf` is as it was. The `internal/kernel` tests
+`TestNetworkWatchInNetworkNamespace` and
 `TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault` need root and run in
 no check, and so do the 7 `transport` tests of the sockets connected to 1 peer
 and the 3 of a session's fallback from its address.

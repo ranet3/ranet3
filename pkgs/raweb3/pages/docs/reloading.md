@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-25
+updated: 2026-10-26
 order: 70
 ---
 
@@ -34,33 +34,32 @@ A key marked "refused when its effective value changes" can be written out as
 its default, or reordered, without a restart. A refused reload changes nothing,
 as [what a reload refuses](#what-a-reload-refuses) describes.
 
-| Key                                                                  | Reload                                   | Notes                                                                                                                                                                                                              |
-| -------------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `node`                                                               | refused                                  |                                                                                                                                                                                                                    |
-| `auth.key`                                                           | refused when the key changes             | A new path to a file holding the same key is applied.                                                                                                                                                              |
-| `auth.trust`                                                         | applied                                  | The path and the document. The new document is checked as [checks against the trust document](#checks-against-the-trust-document) describes.                                                                       |
-| `auth.aliases.remote`, `auth.aliases.local`                          | applied                                  | To the handshakes after the reload. A session already up keeps its peer. An empty table and none are the same.                                                                                                     |
-| `link.port`                                                          | refused                                  |                                                                                                                                                                                                                    |
-| `link.endpoints`                                                     | refused                                  | Compared as a set, so a new order is no change.                                                                                                                                                                    |
-| `link.listen`                                                        | applied                                  |                                                                                                                                                                                                                    |
-| `link.tun`                                                           | refused                                  | Compared as written. Writing the default name where the file left it out is a change.                                                                                                                              |
-| `link.mtu`                                                           | applied                                  | Refused when the tun cannot move. An omitted `mtu` and `1400` are the same.                                                                                                                                        |
-| `link.underlay.mark`, `link.underlay.bind`                           | refused                                  |                                                                                                                                                                                                                    |
-| `dial.all`, `dial.to`                                                | applied                                  |                                                                                                                                                                                                                    |
-| `cap.route.announce`                                                 | applied                                  | Refused when it moves the address `cap.egress.return` translates to. A prefix it drops is retracted and held, as [routing](routing.md#retracted-routes) describes.                                                 |
-| `cap.transit`, written, removed, or `enable`                         | refused when its effective value changes | A left-out block and `enable = false` are the same.                                                                                                                                                                |
-| `cap.babel` and every key under it                                   | applied                                  |                                                                                                                                                                                                                    |
-| `cap.table`, written or removed                                      | refused                                  |                                                                                                                                                                                                                    |
-| `cap.table.id`, `cap.table.proto`                                    | refused when its effective value changes |                                                                                                                                                                                                                    |
-| `cap.table.metric`, `cap.table.reconcile`, `cap.table.capture_grace` | applied                                  |                                                                                                                                                                                                                    |
-| `cap.table.addresses`, `cap.table.assign_announced`                  | applied                                  | Refused when it moves the address `cap.egress.return` translates to.                                                                                                                                               |
-| `cap.table.prefsrc4`, `cap.table.rules`                              | applied                                  | Refused on macOS, as at startup.                                                                                                                                                                                   |
-| `cap.segment` and every key under it                                 | applied                                  | Refused when the tun cannot move, and when it adds the first egress segment or removes the last.                                                                                                                   |
-| `cap.crypto.ike`, `cap.crypto.esp` and every key under them          | applied                                  | To each exchange after it. An SA holding a transform they leave out is rekeyed or replaced, as [`cap.crypto`](#capcrypto) says.                                                                                    |
-| `cap.crypto.replay`, `cap.crypto.rekey` and every key under it       | refused when its effective value changes |                                                                                                                                                                                                                    |
-| `cap.egress`, written, removed, or any key under it                  | refused when its effective value changes | A new order of `advertise`, `sweep` written as its default and `"auto"` written out for `source4` or `source6` are no change.                                                                                      |
-| `cap.border`, written or removed                                     | refused                                  |                                                                                                                                                                                                                    |
-| `cap.border.overlay`                                                 | applied                                  | The filter rewrites its chain on the pass the reload wakes, and the forwarding decision answers by the new overlay at once, every route judged again for whether it counts as a default. A new order is no change. |
+| Key                                                                  | Reload                                   | Notes                                                                                                                                                                                                                                                                                                            |
+| -------------------------------------------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node`                                                               | refused                                  |                                                                                                                                                                                                                                                                                                                  |
+| `auth.key`                                                           | refused when the key changes             | A new path to a file holding the same key is applied.                                                                                                                                                                                                                                                            |
+| `auth.trust`                                                         | applied                                  | The path and the document. The new document is checked as [checks against the trust document](#checks-against-the-trust-document) describes.                                                                                                                                                                     |
+| `auth.aliases.remote`, `auth.aliases.local`                          | applied                                  | To the handshakes after the reload. A session already up keeps its peer. An empty table and none are the same.                                                                                                                                                                                                   |
+| `link.port`                                                          | refused                                  |                                                                                                                                                                                                                                                                                                                  |
+| `link.endpoints`                                                     | refused                                  | Compared as a set, so a new order is no change.                                                                                                                                                                                                                                                                  |
+| `link.listen`                                                        | applied                                  |                                                                                                                                                                                                                                                                                                                  |
+| `link.tun`                                                           | refused                                  | Compared as written. Writing the default name where the file left it out is a change.                                                                                                                                                                                                                            |
+| `link.mtu`                                                           | applied                                  | Refused when the tun cannot move. An omitted `mtu` and `1400` are the same.                                                                                                                                                                                                                                      |
+| `link.underlay.bind`                                                 | refused                                  |                                                                                                                                                                                                                                                                                                                  |
+| `dial.all`, `dial.to`                                                | applied                                  |                                                                                                                                                                                                                                                                                                                  |
+| `cap.route.announce`                                                 | applied                                  | Refused when it moves the address `cap.egress.return` translates to. A prefix it drops is retracted and held, as [routing](routing.md#retracted-routes) describes. A default it starts announcing makes this node an [exit](exit-nodes.md#an-exits-own-traffic) from the reconciler's next pass.                 |
+| `cap.transit`, written, removed, or `enable`                         | refused when its effective value changes | A left-out block and `enable = false` are the same.                                                                                                                                                                                                                                                              |
+| `cap.babel` and every key under it                                   | applied                                  |                                                                                                                                                                                                                                                                                                                  |
+| `cap.table`, written or removed                                      | refused                                  |                                                                                                                                                                                                                                                                                                                  |
+| `cap.table.id`, `cap.table.proto`                                    | refused when its effective value changes |                                                                                                                                                                                                                                                                                                                  |
+| `cap.table.metric`, `cap.table.reconcile`, `cap.table.capture_grace` | applied                                  |                                                                                                                                                                                                                                                                                                                  |
+| `cap.table.addresses`, `cap.table.assign_announced`                  | applied                                  | Refused when it moves the address `cap.egress.return` translates to.                                                                                                                                                                                                                                             |
+| `cap.segment` and every key under it                                 | applied                                  | Refused when the tun cannot move, and when it adds the first egress segment or removes the last.                                                                                                                                                                                                                 |
+| `cap.crypto.ike`, `cap.crypto.esp` and every key under them          | applied                                  | To each exchange after it. An SA holding a transform they leave out is rekeyed or replaced, as [`cap.crypto`](#capcrypto) says.                                                                                                                                                                                  |
+| `cap.crypto.replay`, `cap.crypto.rekey` and every key under it       | refused when its effective value changes |                                                                                                                                                                                                                                                                                                                  |
+| `cap.egress`, written, removed, or any key under it                  | refused when its effective value changes | A new order of `advertise`, `sweep` written as its default and `"auto"` written out for `source4` or `source6` are no change.                                                                                                                                                                                    |
+| `cap.border`, written or removed                                     | refused                                  |                                                                                                                                                                                                                                                                                                                  |
+| `cap.border.overlay`                                                 | applied                                  | The filter rewrites its chain on the pass the reload wakes, and the forwarding decision answers by the new overlay at once, every route judged again for whether it counts as a default. With `cap.table`, the reconciler's pass moves its rules at 5110 and its holds of the overlay. A new order is no change. |
 
 ## Sessions the trust document no longer admits
 
@@ -110,42 +109,55 @@ describes.
 ## `cap.table`
 
 A reload hands a changed `cap.table` to the running reconciler. It takes a new
-`metric`, `prefsrc4`, `addresses`, `assign_announced` with the `cap.route`
-announcements it expands into, `rules`, `reconcile` and `capture_grace`. The
-reconciler checks the block as it would at startup and runs a pass at once. From
-then on the periodic pass runs every `reconcile`, and an announced default
-outlives the last live session by `capture_grace`. A reload that moves
-`cap.border.overlay` hands the reconciler the new overlay with its block too,
-and its pass judges again which routes
-[count as a default](routing.md#routes-that-count-as-a-default).
+`metric`, `addresses`, `assign_announced` with the `cap.route` announcements it
+expands into, `reconcile` and `capture_grace`. The reconciler checks the block
+as it would at startup and runs a pass at once. From then on the periodic pass
+runs every `reconcile`, and an announced default outlives the last live session
+by `capture_grace`. A reload that moves `cap.border.overlay` hands the
+reconciler the new overlay with its block too, and its pass judges again which
+routes [count as a default](routing.md#routes-that-count-as-a-default).
 
-That first pass moves every route to the new metric and preferred source. It
-deletes the rules the block no longer names and installs the new ones. It takes
-off the tun each address it added that the block no longer assigns. An address
-another writer put on the tun stays, named or not. The mesh's own table holds
-each newly assigned address as this node's at once, and gives back each one the
-block no longer assigns at once too, unless this node still announces its host
-route. An address given back is held only while an update this node sent naming
-it reachable has yet to expire at a neighbor, as
+A reload also hands the reconciler the prefixes `cap.route` announces, with its
+block, whenever they start or stop making this node an
+[exit](exit-nodes.md#an-exits-own-traffic). A reload announcing a default
+therefore makes the node an exit from the next pass, which withholds every route
+that counts as a default, a learned one already installed among them. A reload
+that stops making the node an exit lets the next pass install them again while a
+session is live and, on macOS with `link.underlay.bind`, one installed as the
+zero-free cover or unscoped holding its family's zero address while its family
+has the fallback [routing](routing.md#the-zero-free-cover-on-macos) and
+[sharing a host](coexistence.md#the-underlay-default-on-macos) describe.
+
+On Linux that first pass moves every route but a hold or a throw to the new
+metric, which macOS does not store. It derives the policy rules again, as
+[routing](routing.md#policy-rules-on-linux) lists them, from the new overlay and
+this node's own prefixes, deletes the ones it no longer derives and installs the
+new ones. It takes off the tun each address it added that the block no longer
+assigns. An address another writer put on the tun stays, named or not. The
+mesh's own table holds each newly assigned address as this node's at once, and
+gives back each one the block no longer assigns at once too, unless this node
+still announces its host route. An address given back is held only while an
+update this node sent naming it reachable has yet to expire at a neighbor, as
 [routing](routing.md#retracted-routes) describes.
 
-The tun keeps an IPv4 address throughout, because Linux drops every IPv4 route
-through a device left with none, another writer's included. A new prefix length
-of an IPv4 address goes on before the old one comes off. The reconciler turns on
-`promote_secondaries` for the tun when it starts, so a new address within the
-old one's subnet takes its place instead of leaving with it.
+On Linux the tun keeps an IPv4 address throughout, because Linux drops every
+IPv4 route through a device left with none, another writer's included. There a
+new prefix length of an IPv4 address goes on before the old one comes off, and
+the reconciler turns on `promote_secondaries` for the tun when it starts, so a
+new address within the old one's subnet takes its place instead of leaving with
+it. On macOS the old prefix length of an address comes off before the new one
+goes on.
 
 A reconciler stopped with `ranet3 disable reconciler` takes the block as well,
-and installs it once it is started again. A running exit takes a new priority
-rule, a renumbered tun or another metric without dropping a session or
-withdrawing the mesh table from the rest of the fleet. [Routing](routing.md)
-describes the reconciler.
+and installs it once it is started again. A running exit takes a new overlay, a
+renumbered tun or another metric without dropping a session or withdrawing the
+mesh table from the rest of the fleet. [Routing](routing.md) describes the
+reconciler.
 
 A change to `cap.table.id` or `cap.table.proto` is refused by name, and so is
 writing the block where there was none or taking it out. The reconciler reads
 and writes its routes and rules in the table and under the protocol it started
-with, so a restart applies them. A reload asking for something the platform does
-not have is refused as a startup is, such as rules or `prefsrc4` on macOS.
+with, so a restart applies them.
 
 ## `cap.babel`
 
@@ -279,14 +291,15 @@ this end's own rekey or replacement of it.
 
 A reload is recorded as a `daemon.reload` event that names the file in `path`.
 Its `applied` lists the blocks the reload changed among `auth.aliases.local`,
-`auth.aliases.remote`, `cap.babel`, `cap.crypto.esp.cipher`,
+`auth.aliases.remote`, `cap.babel`, `cap.border`, `cap.crypto.esp.cipher`,
 `cap.crypto.ike.cipher`, `cap.crypto.ike.kex`, `cap.crypto.ike.prf`,
 `cap.route`, `cap.segment`, `cap.table`, `link.listen` and `link.mtu`, comma
 separated, such as `applied=cap.table` for one that changed the table. A reload
 that changed only the trust document or the peers dialed carries no `applied`. A
 refused reload carries `err` instead. `cap.route` is listed when `announce`
-changed. `cap.transit` is never listed, since a reload that would change it is
-refused, and writing out the value in force changes nothing.
+changed, and `cap.border` when its `overlay` did. `cap.transit` is never listed,
+since a reload that would change it is refused, and writing out the value in
+force changes nothing.
 
 The speaker records a `babel.config.applied` with the intervals and the cost it
 took, and a `babel.neighbor.extra` for each neighbor whose amount the reload
@@ -368,8 +381,6 @@ which happens only to a device on its way out.
 A reload loads the file as a startup does. A file that fails to parse or names
 an unknown key is refused whole. The checks across blocks run again:
 
-- a `link.underlay.mark` needs a `cap.table` rule that selects it, where
-  `cap.table` is written
 - the longest `cap.segment` steer list must leave the tun at 1280 bytes or more
 - a `cap.segment.local` SID must not be an address `cap.table` assigns to the
   tun

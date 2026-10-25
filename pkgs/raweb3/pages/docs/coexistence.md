@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-10-25
+updated: 2026-10-27
 order: 110
 ---
 
@@ -18,9 +18,10 @@ follows the same rules in the host's packet filter, see below.
 
 On Linux the reconciler reads back only the routes in its own table that carry
 its own `rt_proto`. Of those, it keeps the unicast routes out of its own tun and
-the unreachable holds it installs, which name no device. A delete list therefore
-never contains another writer's route. `RTM_DELROUTE` carries `rtm_protocol` as
-well, so the kernel refuses too.
+the unreachable holds and throw routes it installs, which name no device, though
+an IPv6 one reads back as `dev lo`. A delete list therefore never contains
+another writer's route. `RTM_DELROUTE` carries `rtm_protocol` as well, so the
+kernel refuses too.
 
 The reconciler writes routes only into its own table. Its policy rules carry the
 same protocol as `FRA_PROTOCOL`, and it reads back and removes only those. It
@@ -31,7 +32,8 @@ configures a link, on resume, on a `.network` change and on its own restart. The
 reconciler's route monitor also listens for rule notifications, and a deleted
 rule carrying its protocol wakes it, so the pass after the 250 millisecond
 settle puts the rule back. A rule another writer adds or deletes for itself
-wakes nothing.
+wakes nothing. `ManageForeignRoutingPolicyRules=no` in `networkd.conf` keeps
+networkd from removing the rules at all.
 
 Installing is where a router daemon usually takes over from its neighbors, and
 this one does not. It asks for the route exclusively, and a key something else
@@ -44,11 +46,123 @@ At startup, before its first pass, the reconciler logs
 protocol writes its table. The warning's `fix` attribute says to give the
 reconciler a table of its own. The check counts unicast routes only.
 
-A node that sets `link.underlay.mark` and writes `cap.table` is refused at load
-unless a `cap.table.rules` entry sends that mark to a table other than
-`cap.table.id`. Without such a rule, the marked socket follows the mesh table
-like any other socket. The error names the entry to add, for example
-`{ fwmark = 0x726c, table = "main", priority = 40, family = "both" }`.
+The reconciler writes its rules in 2 blocks, 5100 to 5190 and 5400 to 5490, on
+either side of Tailscale's 5210 to 5270, which Tailscale uses at its default
+base of 5200, as [routing](routing.md#policy-rules-on-linux) lists them.
+[Where a lookup ends](routing.md#where-a-lookup-ends-on-linux) gives where each
+lookup ends while no rule of another program is in the policy database.
+
+### The underlay's mark
+
+Every underlay socket on Linux carries the mark 0x72 where the process may set
+it, so a lookup of ranet3's own ESP and IKE bound to no device ends at row L1 or
+L2 and never follows the mesh's table into its tun. The endpoint resolver marks
+its query to a nameserver outside `cap.border.overlay` too, where the process
+may set the mark, a nameserver in a subnet another node announces among them, so
+where `cap.table` is written the query ends at row L1 or L2 and never waits on a
+session that only the name it asks for can dial. A nameserver on the host
+itself, such as systemd-resolved's `127.0.0.53`, takes the query at row L1, and
+its own query upstream carries no mark, so it can wait on such a session. Its
+query to a nameserver inside the overlay carries no mark, whatever zone
+`/etc/resolv.conf` writes after the address, and where `cap.table` is written
+ends as any other program's does, rows L1 to L5. A link-local nameserver lies
+outside an overlay of the mesh's own prefixes, so its query carries the mark
+where the process may set it. An IPv6 one ends by main's route out of the link
+its zone names, and an IPv4 one at row L2 by main's route for it. The mark is a
+constant, with no key to set it. Setting it takes `CAP_NET_ADMIN` or
+`CAP_NET_RAW`. A process that holds neither logs
+`transport leaves the underlay sockets unmarked` once, at info, and sends its
+underlay datagrams and its resolver queries unmarked, which end as an unmarked
+lookup does in [where a lookup ends](routing.md#where-a-lookup-ends-on-linux).
+Without `CAP_NET_ADMIN` no rule reads the mark either: a node with `cap.table`
+refuses to start, since the reconciler cannot set `promote_secondaries` on the
+tun, and a node without it writes no rule at all.
+
+Other programs mark packets too, and their rules select a value of the mark read
+under a mask. Under each mask these programs read at their defaults, 0x72 reads
+as 0, as an unmarked packet's mark does, but under Cilium's 0xfffffeff, where it
+reads as 0x72, a value none of Cilium's rules selects:
+
+- Kubernetes: kube-proxy masquerades a packet carrying 0x4000, its
+  `masqueradeBit` of 14
+  ([defaults.go](https://github.com/kubernetes/kubernetes/blob/master/pkg/proxy/apis/config/v1alpha1/defaults.go)),
+  and the kubelet's drop mark is 0x8000, its `iptablesDropBit` of 15
+  ([defaults.go](https://github.com/kubernetes/kubernetes/blob/master/pkg/kubelet/apis/config/v1beta1/defaults.go)).
+- Cilium reads three masks
+  ([mark.go](https://github.com/cilium/cilium/blob/main/pkg/datapath/linux/linux_defaults/mark.go)):
+  0x0f00, its `MagicMarkHostMask`, under which its rules select 0x200 for
+  traffic to its proxy and 0xa00 and 0xb00 for traffic from it. It reads 0x0e00,
+  its `MagicMarkProxyMask`, for 0xa00 and 0x800, and 0xfffffeff, its
+  `MagicMarkProxyNoIDMask`, for 0xa00 on the proxy's replies. Its rule
+  `fwmark 0x200/0xf00 lookup 2004` sends a lookup marked for its L7 proxy to a
+  table whose default delivers on the host itself
+  ([routes.go](https://github.com/cilium/cilium/blob/main/pkg/proxy/routes.go),
+  the rule as [cilium/cilium#32932](https://github.com/cilium/cilium/pull/32932)
+  quotes it).
+- Tailscale reads 0xff0000, its `LinuxFwmarkMask`
+  ([linuxfw.go](https://github.com/tailscale/tailscale/blob/main/tsconst/linuxfw.go)).
+- The CNI portmap plugin masquerades a packet carrying 0x2000, its `markMasqBit`
+  of 13
+  ([main.go](https://github.com/containernetworking/plugins/blob/main/plugins/meta/portmap/main.go)).
+- mwan3 reads 0x3f00, its `mmx_mask`
+  ([common.sh](https://github.com/openwrt/packages/blob/master/net/mwan3/files/lib/mwan3/common.sh)).
+- The Amazon VPC CNI plugin marks connections with 0x80, its
+  `AWS_VPC_K8S_CNI_CONNMARK`
+  ([network.go](https://github.com/aws/amazon-vpc-cni-k8s/blob/master/pkg/networkutils/network.go)).
+- Calico reads 0xffff0000, Felix's `IptablesMarkMask`
+  ([Felix configuration](https://docs.tigera.io/calico/latest/reference/felix/configuration)).
+
+A program set to another mask, or one that selects by an inverted mark, can
+still meet 0x72, as [another program's rules](#another-programs-rules) gives.
+
+### Another program's rules
+
+ranet3 leaves another program's rules alone, and they share the policy database
+with its own. The kernel walks the rules in priority order, and a rule of
+another program that the walk meets before the rule of ranet3's that would
+answer a lookup it selects changes where the lookup ends:
+
+- A lookup of another table ends at that table's longest match, unless the
+  rule's own `suppress_prefixlength` skips that match, the match is a throw, or
+  the table holds nothing for the destination, and the walk then goes on.
+- A rule whose action is `unreachable`, `blackhole` or `prohibit` refuses the
+  lookup.
+- A `goto` jumps to the first rule at its target priority and goes on from
+  there, and one whose target holds no rule is passed over.
+
+A rule selects a marked lookup too unless it selects by mark. One selecting
+another mark, such as Tailscale's `0x80000/0xff0000`, leaves 0x72 out, and one
+selecting by an inverted mark, such as wg-quick's `not fwmark 0xca6c`, takes it.
+The gotos at 5100 and 5400 jump to the first rule at 5190 and 5490, so another
+program's rule at 5101 to 5189 or 5401 to 5489 meets only unmarked lookups, and
+one at 5190 or 5490 added before the reconciler's `nop` is the rule the `goto`
+lands on. The kernel puts a new rule after those already at its priority, so
+another program's rule comes ahead of ranet3's at the same priority whenever it
+was added first, such as before the reconciler adds its own at a start. A rule
+added with no priority goes to the second rule's priority less one, 5099 while
+no rule sits between local's and 5100.
+
+Measured layouts, each in a network namespace holding the reconciler's rules and
+table, with the host's own addresses at row L1 ahead of every one:
+
+- **Tailscale at its default base** puts its rules at 5210 to 5270, after 5110
+  and before 5410. A lookup of table 52 at 5270 leaves an overlay destination
+  5110 answers to 5110, a live one into the tun and a held one refused, and
+  takes every other destination table 52 covers, one 5110 passes on as row L5
+  gives and a marked one among them, ahead of main's routes longer than /0 at
+  5410.
+- **Tailscale on OpenWrt with mwan3** moves its rules to 1310 to 1370, ahead of
+  5100. A lookup of table 52 ahead of 5100 takes every destination table 52
+  covers, an overlay destination live or held and a marked one among them, so
+  while Tailscale uses an exit node, that exit's default takes them all. ranet3
+  does not handle that case.
+- **A full tunnel of wg-quick** adds 2 rules with no priority, so added after
+  the reconciler's, with no rule between local's and 5100, they go to 5099 and
+  5098: `lookup main suppress_prefixlength 0` at 5098 and
+  `not fwmark 0xca6c lookup 51820` at 5099. A route of main longer than /0 that
+  covers the destination answers at 5098. WireGuard's table, which holds a
+  default, takes every other lookup at 5099 but one carrying WireGuard's own
+  mark, an overlay destination live or held and one marked 0x72 among them.
 
 ## Routes on macOS
 
@@ -82,8 +196,9 @@ the utun.
   that draws the distinction a source prefix draws.
 - An unreachable hold. macOS has 1 forwarding table, and an unscoped hold would
   shadow every other way to its prefix.
-- A route that covers a literal endpoint address the trust document lists.
-  Unscoped, it would carry this node's own ESP to that peer into the tunnel.
+- A route that covers a literal endpoint address the trust document lists, but
+  for a member of the zero-free cover. Unscoped, it would carry this node's own
+  ESP to that peer into the tunnel.
 - A route that would carry the host's own traffic, unless `link.underlay.bind`
   is set. Such a route is one that
   [counts as a default](routing.md#routes-that-count-as-a-default).
@@ -146,12 +261,15 @@ while such a route is in the table:
   default.
 
 The reconciler checks on every pass, and the transport before it moves the
-socket onto another interface. A route change anywhere on the host wakes a pass
-after a 250 millisecond settle, so another program's capture strands the socket
-for that settle and 1 pass at most. The first check that finds the last such
-route gone withdraws the default. With only the cover installed, nothing is
-written, and the host's own router selection (RFC 4861 section 6.3.6) stays in
-charge of its default. ranet3 never touches the other program's route.
+socket onto another interface. A route change on any interface wakes the
+reconciler, where `cap.table` runs one, and one another process makes on any
+interface but the utun wakes the transport, each after a 250 millisecond settle,
+so another program's capture strands the socket for that settle and 1 check at
+most. With `cap.table` written, the first pass that finds the last such route
+gone withdraws the default, and without it the default stays until the socket
+moves onto another interface or the daemon stops. With only the cover installed,
+nothing is written, and the host's own router selection (RFC 4861 section 6.3.6)
+stays in charge of its default. ranet3 never touches the other program's route.
 
 The ownership rules of this default are narrower than the utun's:
 
@@ -234,13 +352,14 @@ translates. It leaves out chains in `inet` tables.
 
 The kernel settings an exit's traffic crosses stay the host's. The translator
 writes no routing rule and no sysctl, neither the mesh tun's nor an uplink's, so
-the rules of `cap.table` and of other programs, the host's routes, `forwarding`
-and reverse path filtering decide where a packet goes. It asks the kernel where
-an exit's packets would go and back instead. A family the answer does not carry
-out of the tun and back again is [not ready](exit-nodes.md#readiness), and the
-reason names the device's IPv4 `forwarding` at 0 or reverse path filtering, the
-larger of `net.ipv4.conf.all.rp_filter` and the device's own, when either is set
-where the lookup failed.
+the rules the reconciler derives and those of other programs, the host's routes,
+`forwarding` and reverse path filtering decide where a packet goes. It asks the
+kernel where an exit's packets would go and back instead. A family the answer
+does not carry out of the tun and back again is
+[not ready](exit-nodes.md#readiness), and the reason names the device's IPv4
+`forwarding` at 0 or reverse path filtering, the larger of
+`net.ipv4.conf.all.rp_filter` and the device's own, when either is set where the
+lookup failed.
 
 `cap.border` adds a third table under the same name, `inet ranet3`, holding 1
 filter chain at prerouting, priority `raw` (-300).

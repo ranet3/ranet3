@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-10-26
+updated: 2026-10-27
 order: 50
 ---
 
@@ -110,36 +110,54 @@ change after an unrelated edit.
 ## The return path
 
 Conntrack reverses the translation before the reply is routed. The reply is then
-addressed to a mesh node, and the forwarding lookup has to find the route to it.
-With the mesh's routes in the reconciler's own table, that takes a
-`cap.table.rules` entry with `to` set to the mesh prefix, 1 per family. A rule
-that selects on this node's own source does not match a reply.
-
-Without the `to` rule, the outbound half works and the translation counter
-moves. No reply reaches the mesh, so the exit looks like one that answers
-nothing rather than like a missing rule. This example sends replies for
-`203.0.113.0/25` and `3fff:a::/64` to the mesh table:
+addressed to a mesh node, and the forwarding lookup has to find a route to it
+into the tun, which with `cap.table` is in the reconciler's own table. The rules
+the reconciler derives find it there: a reply to an address inside
+`cap.border.overlay` ends as rows L3 to L5 of
+[where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give, and a reply
+to another address as rows L6 to L12 give, after main's route longer than /0. An
+exit therefore writes the overlay its members' addresses lie in:
 
 ```toml
 [cap.table]
 id = 200
 
-[[cap.table.rules]]
-to = "203.0.113.0/25"
-table = 200
-priority = 100
-
-[[cap.table.rules]]
-to = "3fff:a::/64"
-table = 200
-priority = 100
+[cap.border]
+overlay = ["203.0.113.0/24", "3fff:a::/36"]
 ```
+
+Without it, a reply to a member whose address a route of main longer than /0
+covers, a LAN holding the same addresses among them, leaves by that route, row
+L6. Another program's rule ahead takes a reply either way, as
+[sharing a host](coexistence.md#another-programs-rules) describes. The outbound
+half works and the translation counter moves, but no reply reaches the mesh, so
+the exit looks like one that answers nothing.
 
 An exit or subnet router set up this way can carry transit. With `cap.transit`
 on, a packet another node sends through it for a prefix a third node announces,
 such as the subnet behind another subnet router, goes on through the mesh by the
 mesh's own table, as [routing](routing.md#transit) describes. It never reaches
-the tun, so the `to` rules and the host's routes out of the uplink never see it.
+the tun, so the reconciler's rules and the host's routes out of the uplink never
+see it.
+
+## An exit's own traffic
+
+An exit's reconciler installs no route that
+[counts as a default](routing.md#routes-that-count-as-a-default), whatever it
+learns and whether a session is live or not, so its own traffic never follows
+another exit's default out of the reconciler's table. A node is an exit while
+`cap.egress` advertises, or `cap.route` announces, a prefix that counts, or
+while it holds an egress segment. Another exit's default in its table would
+carry the exit's own traffic from an address of its own into the tun, row L11 of
+[where a lookup ends](routing.md#where-a-lookup-ends-on-linux), and out of that
+exit. A socket bound to the tun still hands its IPv4 packets to the mesh, row
+B3, which forwards them by its own table, by another exit's default where it
+holds one, as an exit by an egress segment alone can. Over IPv6 such a socket
+reaches the mesh only for a destination a route out of the tun covers, and is
+refused otherwise, row B4. The head of that account says what another program's
+rule or another writer's route in the table does. The mesh still forwards other
+nodes' packets by every route it selects. A reload that starts announcing a
+default makes the node an exit from the next pass.
 
 ## What an exit carries out
 
@@ -236,11 +254,16 @@ batch through 1 netlink socket:
 - **The reply lookup**, 1 a family: the translated reply, arriving on the device
   the family's first forward lookup left by, from that read address back to the
   member's address, has to leave by the tun. It catches an exit whose replies
-  would leave by its uplink, such as one missing the `to` rules of
-  [the return path](#the-return-path). With strict reverse path filtering on the
-  tun, or loose filtering on a tun with no IPv4 address, such an exit fails its
-  IPv4 forward lookup first, since the kernel checks the forwarded packet's
-  source against the same route.
+  would leave by its uplink, such as one where another program's rule ahead, as
+  [sharing a host](coexistence.md#another-programs-rules) describes, takes the
+  reply out of the uplink, where that rule selects the lookup too: the lookup
+  carries no mark and the read address as its source. With strict reverse path
+  filtering on the tun, or loose filtering on a tun with no IPv4 address, such
+  an exit fails its IPv4 forward lookup first, since the kernel checks the
+  forwarded packet's source against the same route. An exit whose
+  `cap.border.overlay` leaves its members out has no member to read from, so
+  both its lookups are skipped, as the skip below says, and its replies leave as
+  [the return path](#the-return-path) describes.
 
 A lookup holds its family not ready when it fails, finds a route of a type other
 than `unicast`, finds no live next hop, or leaves by the wrong device, a forward
@@ -253,7 +276,9 @@ prefix the mesh routes by the tun to another node, inside `cap.border.overlay`,
 overlapping none of this node's own prefixes, taking the lowest base address
 first and then the longest prefix. A correctly configured exit routes its
 members' addresses into the tun, so a lookup from one reads the path a real
-reply takes, where an unused overlay address would meet the overlay's hold.
+reply takes, where a lookup to an overlay address no route of the mesh covers
+would end, where `cap.table` is written, as rows L4 and L5 of
+[where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give.
 
 **The read address** of a prefix is its own address for a host route, and
 otherwise the first of these that the kernel's input path takes as a unicast
@@ -369,11 +394,12 @@ egress segment and no `cap.border`, or with an `allow` entry the overlay does
 not cover. The list names mesh sources, which a host on a link of any forwarding
 node could otherwise forge and send through that node to the SID.
 
-An egress segment needs no `cap.table`, though its replies take the `to` rules
-of [the return path](#the-return-path), which the reply lookup reads. Its
-packets wait for their family's [readiness](#readiness), and the mesh counts one
-of a family not ready as not ready. Both families also wait while the border
-filter's chain is not read back, since the border is 1 chain for both.
+An egress segment needs no `cap.table`, though its replies need a route back
+into the tun, such as the one `cap.table` gives by the rules of
+[the return path](#the-return-path), and the reply lookup reads it. Its packets
+wait for their family's [readiness](#readiness), and the mesh counts one of a
+family not ready as not ready. Both families also wait while the border filter's
+chain is not read back, since the border is 1 chain for both.
 
 The node originates each egress SID as a `/128` while at least 1 family is ready
 and every family the host forwards is. A leaf reads the `/128` as the exit's

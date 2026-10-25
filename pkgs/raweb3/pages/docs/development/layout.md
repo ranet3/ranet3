@@ -4,7 +4,7 @@
 title: "Repository layout"
 description: "Where everything lives in the repository."
 created: 2026-10-03
-updated: 2026-10-25
+updated: 2026-10-26
 order: 10
 ---
 
@@ -67,6 +67,7 @@ program's own. Go commands run from `pkgs/ranet3`.
 | `internal/cmd/gendn`         | test tool: prints the strongSwan `asn1dn:#hex` identity for an organization, common name and serial number                             |
 | `internal/cmd/iketest`       | test tool: runs 1 IKEv2 initiator handshake against a strongSwan responder and prints the negotiated Child SA                          |
 | `internal/config`            | reads the config file                                                                                                                  |
+| `internal/dnstest`           | a nameserver on lo recording each query's mark, behind a resolv.conf of the test's own, imported by test files alone                   |
 | `internal/egress`            | the `cap.egress` and `cap.border` capabilities, the `Exit` every exit backend sits behind, and the border filter's reports             |
 | `internal/egress/kernel`     | the kernel exit, which translates the source of what exit nodes and subnet routers carry with nftables, and the border filter          |
 | `internal/egress/egresstest` | the exit behavior suite every exit backend passes, imported by test files alone                                                        |

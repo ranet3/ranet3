@@ -126,7 +126,9 @@ delivered that no segment of this node took, and each read off the tun it
 dropped for a multicast destination or the limited broadcast. `decision` is
 `forwarded`, `delivered`, `dropped`, `answered` or `unanswered`, and `reason`
 names why a packet was dropped and is empty for every other decision. The
-dropped series sum to the packets dropped.
+dropped series sum to the packets dropped. `answered` also counts each answer to
+a read off the tun that no route reaches or a hold holds, a read counted under
+no other decision.
 
 | `decision`   | `reason`          | Counts                                                                                                                                                                                                           |
 | ------------ | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
