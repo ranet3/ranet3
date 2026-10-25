@@ -304,8 +304,10 @@ func TestNetlinkReloadRenumbersTheTunAndReplacesARule(t *testing.T) {
 		if got := slices.Compact(slices.SortedFunc(slices.Values(routes), compareRoutes)); !slices.Equal(got, []Route{route}) {
 			t.Errorf("%s: the table holds %v with preferred sources %v, want %s with %s", step, got, prefSrcs(got), route, route.PrefSrc)
 		}
-		if got := slices.Compact(rules); !slices.Equal(got, []Rule{rule}) {
-			t.Errorf("%s: the rules are %v, want %s", step, got, rule)
+		derived := derivedRules(DefaultTable, nil, nil)
+		configured := slices.DeleteFunc(slices.Compact(rules), func(rule Rule) bool { return slices.Contains(derived, rule) })
+		if !slices.Equal(configured, []Rule{rule}) {
+			t.Errorf("%s: the configured rules are %v, want %s", step, configured, rule)
 		}
 	}
 	if err := r.reconcile(); err != nil {

@@ -236,10 +236,11 @@ func BelowSourceFloor(prefix netip.Prefix) bool {
 //     length only at 32 and 128. A prefix inside the overlay, each address of
 //     it in some entry, counts nothing under this arm: the overlay is the space
 //     the mesh numbers its own nodes from, and a route inside it carries traffic
-//     to mesh addresses alone, however wide. The design's later rule sending the
-//     overlay to the mesh's table ahead of the host's routes is not installed
-//     yet, and until it is, such a route goes into the kernel as any subnet
-//     does. The border filter reads the overlay as the same union.
+//     to mesh addresses alone, however wide. On linux the policy rule at 5110
+//     looks the overlay up in the mesh's table, ahead of the reconciler's
+//     lookup of main at 5410, and routing.md's "Where a lookup ends on Linux"
+//     gives where such a lookup ends. The border filter reads the overlay as
+//     the same union.
 //
 //   - Any prefix containing the family's unspecified address, however small,
 //     inside the overlay or not. That is the darwin kernel's own trigger,

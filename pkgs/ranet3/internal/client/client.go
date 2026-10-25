@@ -535,11 +535,12 @@ func (c *Client) CaptureRoutes() kernel.CaptureRoutes { return c.capture }
 func (c *Client) KernelRuntime() kernel.Runtime {
 	cfg := c.config()
 	return kernel.Runtime{
-		Interface: c.Mesh.Name,
-		Underlay:  c.Underlay,
-		Announced: cfg.Routes().Announced(),
-		Overlay:   cfg.Overlay(),
-		Sessions:  c.LiveSessions,
+		Interface:  c.Mesh.Name,
+		Underlay:   c.Underlay,
+		Announced:  cfg.Routes().Announced(),
+		Overlay:    cfg.Overlay(),
+		Advertised: egressAdvertised(cfg),
+		Sessions:   c.LiveSessions,
 		// One setting decides both halves, so they cannot be set against each
 		// other: the transport binds its socket off the forwarding table, and
 		// the reconciler stops hiding an announced default from every socket
@@ -549,6 +550,18 @@ func (c *Client) KernelRuntime() kernel.Runtime {
 		Host:          c.host,
 		Events:        c.events,
 	}
+}
+
+// egressAdvertised is the prefixes cap.egress advertises, masked, nil without the block
+func egressAdvertised(cfg *config.Config) []netip.Prefix {
+	if cfg.Egress() == nil {
+		return nil
+	}
+	out := make([]netip.Prefix, 0, len(cfg.Egress().Advertise))
+	for _, prefix := range cfg.Egress().Advertise {
+		out = append(out, prefix.Masked())
+	}
+	return out
 }
 
 // LiveSessions is how many of this node's sessions have recently proved their

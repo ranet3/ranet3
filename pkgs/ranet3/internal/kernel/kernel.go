@@ -5,21 +5,26 @@
 // table, taking over from the BIRD kernel protocols a ranet deployment runs
 // today. It is a one-way reconciler: internal/netstack keeps owning the
 // forwarding decision and this package only teaches the kernel which packets
-// to hand to the TUN, so every route it installs points at the device
-// and the peer in a snapshot entry never selects a kernel next hop.
+// to hand to the TUN, so every route it installs points at the device, but
+// for the holds and throw routes on linux, which name no device of the
+// mesh's, an IPv6 one dumping lo, and the peer in a snapshot entry never
+// selects a kernel next hop.
 //
 // # Ownership
 //
-// On linux, every route this package installs lives in the table cap.table names,
-// carries its rt_proto and points out of the mesh device. Those three
-// together are the ownership marker. darwin has neither tables nor rt_proto,
-// so ownership there is the interface and the shape of the route. See
-// platform_darwin.go. The reconciler reads back only routes matching
-// all three, deletes only routes it read back that way, and stamps
+// On linux, every route this package installs lives in the table cap.table
+// names and carries its rt_proto, and each points out of the mesh device but
+// for the holds and throw routes, which name no device of the mesh's, an IPv6
+// one dumping lo. Those together are the ownership marker. darwin has neither
+// tables nor rt_proto, so ownership there is the interface and the shape of
+// the route. See platform_darwin.go. The reconciler reads back only routes
+// matching that marker, deletes only routes it read back that way, and stamps
 // rtm_protocol on every RTM_DELROUTE so the kernel itself refuses to remove a
-// route belonging to another protocol. It never touches another table, a
-// route written by another protocol, a route out of another device, a policy
-// rule, a neighbor entry, or anything at all in the main table. Routes a
+// route belonging to another protocol. The policy rules it writes are the ones
+// it derives, each carrying the same rt_proto as FRA_PROTOCOL, and it reads
+// back and deletes only those. It never touches another table, a route written
+// by another protocol, a route out of another device, a policy rule of another
+// protocol, a neighbor entry, or anything at all in the main table. Routes a
 // previous instance of this process left behind carry the same marker and are
 // therefore adopted, then withdrawn on the first pass if the mesh no longer
 // wants them.
@@ -173,6 +178,12 @@ type Runtime struct {
 	// schema.CapturesTheMachine reads to tell a route that counts as a default
 	// from a subnet. SetTable replaces it on a reload.
 	Overlay []schema.Prefix
+	// Advertised is the prefixes cap.egress advertises for the LANs behind
+	// this node, masked, which the speaker originates beside cap.route's while
+	// cap.egress stands behind them, and which are no prefixes of this node's
+	// own. A reload never changes it, since it refuses every change of
+	// cap.egress.
+	Advertised []netip.Prefix
 	// BoundUnderlay says the transport's own socket no longer consults the
 	// forwarding table, because it is bound to the interface the host's
 	// default route leaves by. The darwin backend then installs an announced
@@ -752,6 +763,9 @@ type Reconciler struct {
 	rt        Runtime
 	ruleSet   []Rule
 	addresses []netip.Prefix
+	// own is this node's own prefixes as the pass's snapshot holds them, which
+	// applyRoutes takes and applyRules derives the rules from
+	own []netip.Prefix
 
 	src  RouteSource
 	plat platform
@@ -1391,10 +1405,11 @@ func (r *Reconciler) audit() {
 	}
 }
 
-// applyRules brings the policy rules to the configured set. It removes before
-// it installs for the same reason applyRoutes does, and it reads the kernel
-// back rather than trusting a record, so rules an earlier instance left behind
-// are adopted and then withdrawn rather than duplicated.
+// applyRules brings the policy rules to the derived and the configured set. It
+// removes before it installs for the same reason applyRoutes does, and it
+// reads the kernel back rather than trusting a record, so rules an earlier
+// instance left behind are adopted and then withdrawn rather than duplicated.
+// It adds in the set's order, which puts each nop ahead of its goto.
 func (r *Reconciler) applyRules() error {
 	if r.rules == nil {
 		return nil
@@ -1403,10 +1418,11 @@ func (r *Reconciler) applyRules() error {
 	if err != nil {
 		return fmt.Errorf("list rules: %w", err)
 	}
+	ruleSet := slices.Concat(derivedRules(r.table.ID, r.rt.Overlay, r.own), r.ruleSet)
 	var errs []error
 	added, removed := 0, 0
-	wanted := make(map[Rule]bool, len(r.ruleSet))
-	for _, rule := range r.ruleSet {
+	wanted := make(map[Rule]bool, len(ruleSet))
+	for _, rule := range ruleSet {
 		wanted[rule] = true
 	}
 	for _, rule := range actual {
@@ -1423,7 +1439,7 @@ func (r *Reconciler) applyRules() error {
 	for _, rule := range actual {
 		held[rule] = true
 	}
-	for _, rule := range r.ruleSet {
+	for _, rule := range ruleSet {
 		if held[rule] {
 			continue
 		}
@@ -1446,11 +1462,13 @@ func (r *Reconciler) applyRoutes() error {
 	// Cleared first, so a pass that fails before it can count anything reports
 	// nothing rather than the counts of the last pass that succeeded.
 	r.routePass = Stats{}
+	snapshot := r.src.Snapshot()
+	r.own = r.ownPrefixes(snapshot)
 	actual, err := r.plat.Routes()
 	if err != nil {
 		return fmt.Errorf("list routes: %w", err)
 	}
-	desired := r.desired(r.src.Snapshot())
+	desired := r.desired(snapshot)
 	// Before the diff, not after it: a route whose family lacks the fallback
 	// it needs leaves what this pass wants, which withdraws a copy already in
 	// the kernel as well as holding back a new one.

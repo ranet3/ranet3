@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -56,6 +57,8 @@ type fakeKernel struct {
 	rules    map[Rule]bool
 	ruleAdds int
 	ruleDels int
+	// ruleAdded is every rule added, in the order it was
+	ruleAdded []Rule
 
 	failAdd     map[Route]error
 	failDel     map[Route]error
@@ -553,6 +556,10 @@ func TestReconcileCountsOnlyAppliedRoutes(t *testing.T) {
 	fake.failDel[retained] = syscall.EPERM
 	table.Set(netip.Prefix{}, installed.Destination, nil)
 	table.Set(netip.Prefix{}, occupied.Destination, nil)
+	// the derived rules are in place, so the one line a pass logs is the route count
+	for _, rule := range derivedRules(reconciler.table.ID, nil, nil) {
+		fake.rules[rule] = true
+	}
 	for pass := range 2 {
 		logs.Reset()
 		err := reconciler.reconcile()
@@ -1219,6 +1226,17 @@ func (f *fakeKernel) Rules() ([]Rule, error) {
 	return out, nil
 }
 
+// configuredRules holds the fake's rules but for those r derives
+func (f *fakeKernel) configuredRules(r *Reconciler) map[Rule]bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	held := maps.Clone(f.rules)
+	for _, rule := range derivedRules(r.table.ID, r.rt.Overlay, r.own) {
+		delete(held, rule)
+	}
+	return held
+}
+
 func (f *fakeKernel) AddRule(rule Rule) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1226,6 +1244,7 @@ func (f *fakeKernel) AddRule(rule Rule) error {
 		return err
 	}
 	f.ruleAdds++
+	f.ruleAdded = append(f.ruleAdded, rule)
 	f.rules[rule] = true
 	return nil
 }
@@ -1403,8 +1422,8 @@ func TestRulePassInstallsOnceAndWithdrawsWhatIsGone(t *testing.T) {
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := fake.Rules(); err != nil || len(got) != 2 {
-		t.Fatalf("the first pass installed %v (%v), want both rules", got, err)
+	if got := fake.configuredRules(reconciler); len(got) != 2 {
+		t.Fatalf("the first pass installed %v of the configured rules, want both", slices.Collect(maps.Keys(got)))
 	}
 
 	adds, dels := fake.ruleAdds, fake.ruleDels
@@ -1423,8 +1442,8 @@ func TestRulePassInstallsOnceAndWithdrawsWhatIsGone(t *testing.T) {
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := fake.Rules(); len(got) != 2 || slices.Contains(got, stale) {
-		t.Fatalf("a stale rule survived the pass: %v", got)
+	if got := fake.configuredRules(reconciler); len(got) != 2 || got[stale] {
+		t.Fatalf("a stale rule survived the pass: %v", slices.Collect(maps.Keys(got)))
 	}
 
 	if err := reconciler.withdraw(); err != nil {
@@ -1520,8 +1539,8 @@ func TestFailingStepLeavesTheLaterStepsToRun(t *testing.T) {
 	if !fake.has(route) {
 		t.Error("a failing address step stopped the route step")
 	}
-	if fake.ruleAdds != 1 {
-		t.Errorf("a failing address step left %d rules installed, want 1", fake.ruleAdds)
+	if got := fake.configuredRules(reconciler); len(got) != 1 {
+		t.Errorf("a failing address step left %d of the configured rules installed, want 1", len(got))
 	}
 
 	reconciler, table, fake = harness(t, Table{Rules: []Rule{rule}})
@@ -1530,8 +1549,8 @@ func TestFailingStepLeavesTheLaterStepsToRun(t *testing.T) {
 	if err := reconciler.reconcile(); err == nil {
 		t.Fatal("a failing route did not fail the pass")
 	}
-	if fake.ruleAdds != 1 {
-		t.Errorf("a failing route left %d rules installed, want 1", fake.ruleAdds)
+	if got := fake.configuredRules(reconciler); len(got) != 1 {
+		t.Errorf("a failing route left %d of the configured rules installed, want 1", len(got))
 	}
 }
 
