@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -25,6 +26,21 @@ var memberPool = []netip.Prefix{
 	netip.MustParsePrefix("3fff:20::/48"), netip.MustParsePrefix("3fff:20::1/128"), netip.MustParsePrefix("2001:db8:5::/48"),
 }
 
+// moved is members with each family's moved, so a family that had members has
+// none and one that had none has some of its part of the pool
+func moved(tc hegel.TestCase, members []netip.Prefix) []netip.Prefix {
+	var out []netip.Prefix
+	for _, is4 := range []bool{true, false} {
+		of := func(prefix netip.Prefix) bool { return prefix.Addr().Is4() == is4 }
+		if slices.ContainsFunc(members, of) {
+			continue
+		}
+		pool := slices.DeleteFunc(slices.Clone(memberPool), func(prefix netip.Prefix) bool { return !of(prefix) })
+		out = append(out, pbt.Subset(tc, pool, 1, len(pool))...)
+	}
+	return out
+}
+
 // lookupErrors answers a lookup the kernel refuses: the errnos of forwarding
 // off, of reverse path filtering before and after Linux 6.13 and of no route,
 // and the batch's own error for a nexthop object holding no hop
@@ -33,15 +49,20 @@ var lookupErrors = []error{
 	errors.New("kernel: the route to 198.51.100.0/24 names nexthop object 7 without its hops"),
 }
 
-// hostRoute draws a route a lookup finds: unicast three times in four and
-// otherwise of another type ip-route(8) names, with up to three hops, none
-// among them as often as a nexthop object holding none would read, each on the
-// tun or another device and now and then dead or link-down
-func hostRoute(tc hegel.TestCase, tun string) Route {
-	route := Route{Type: "unicast"}
+// routeType draws a route's type: unicast three times in four and otherwise
+// another type ip-route(8) names
+func routeType(tc hegel.TestCase) string {
 	if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
-		route.Type = hegel.Draw(tc, hegel.SampledFrom([]string{"blackhole", "unreachable", "prohibit", "throw", "local"}))
+		return hegel.Draw(tc, hegel.SampledFrom([]string{"blackhole", "unreachable", "prohibit", "throw", "local"}))
 	}
+	return "unicast"
+}
+
+// hostRoute draws a route a lookup finds, of a drawn type, with up to three
+// hops, none among them as often as a nexthop object holding none would read,
+// each on the tun or another device and now and then dead or link-down
+func hostRoute(tc hegel.TestCase, tun string) Route {
+	route := Route{Type: routeType(tc)}
 	for range hegel.Draw(tc, pbt.Spanning(0, 3)) {
 		route.Hops = append(route.Hops, Hop{
 			Device:   hegel.Draw(tc, hegel.SampledFrom([]string{tun, "eth0", "eth1"})),
@@ -59,15 +80,32 @@ type hostAnswer struct {
 	err, replyErr error
 }
 
-// hostAnswers draws a host's answer to one destination, the forward route
-// leaving by the uplink and the reply by the tun each half the time, and
-// otherwise a drawn route or error
+// notLive is each way the kernel marks a hop that carries nothing
+var notLive = []Hop{{Dead: true}, {LinkDown: true}, {Dead: true, LinkDown: true}}
+
+// beside is route with, half the time, another hop on device, marked in one of
+// the notLive ways, so the route still takes a packet only where it did
+func beside(tc hegel.TestCase, route Route, device string) Route {
+	if hegel.Draw(tc, hegel.Booleans()) {
+		hop := hegel.Draw(tc, hegel.SampledFrom(notLive))
+		hop.Device = device
+		route.Hops = append(slices.Clone(route.Hops), hop)
+	}
+	return route
+}
+
+// hostAnswers draws a host's answer to one destination: the forward route
+// leaving by the uplink and the reply by the tun each half the time, half of
+// those with a hop on the other device beside it that is not live, and
+// otherwise a drawn route or error. Such a hop is the nearest miss, since
+// taken as live it sends a translated packet or its reply the wrong way, and
+// so is a route of another type whose hops pass, which the type is drawn for
 func hostAnswers(tun string) hegel.Generator[hostAnswer] {
 	return hegel.Composite(func(tc hegel.TestCase) hostAnswer {
 		var a hostAnswer
 		switch {
 		case hegel.Draw(tc, hegel.Booleans()):
-			a.route = Route{Type: "unicast", Hops: []Hop{{Device: "eth0"}}}
+			a.route = beside(tc, Route{Type: routeType(tc), Hops: []Hop{{Device: "eth0"}}}, tun)
 		case hegel.Draw(tc, hegel.WeightedBooleans(1.0/3)):
 			a.err = hegel.Draw(tc, hegel.SampledFrom(lookupErrors))
 		default:
@@ -75,7 +113,7 @@ func hostAnswers(tun string) hegel.Generator[hostAnswer] {
 		}
 		switch {
 		case hegel.Draw(tc, hegel.Booleans()):
-			a.reply = Route{Type: "unicast", Hops: []Hop{{Device: tun}}}
+			a.reply = beside(tc, Route{Type: routeType(tc), Hops: []Hop{{Device: tun}}}, "eth0")
 		case hegel.Draw(tc, hegel.WeightedBooleans(1.0/3)):
 			a.replyErr = hegel.Draw(tc, hegel.SampledFrom(lookupErrors))
 		default:
@@ -126,8 +164,9 @@ func modelLive(route Route) []string {
 // first member of the family, by lowest base and then longest prefix, that
 // holds one, to the read address of each prefix it advertises, or of its
 // default where it advertises none, each arriving on the tun, the first asking
-// for its reply. A family with no such member reads nothing
-func modelLookups(cfg Egress, tun string, members []netip.Prefix, family uint8) []Lookup {
+// for its reply, with the prefix each reads. A family with no such member reads
+// nothing
+func modelLookups(cfg Egress, tun string, members []netip.Prefix, family uint8) ([]Lookup, []netip.Prefix) {
 	of := func(prefix netip.Prefix) bool { return prefix.Addr().Is4() == (family == FamilyIPv4) }
 	ordered := slices.SortedFunc(slices.Values(slices.DeleteFunc(slices.Clone(members), func(p netip.Prefix) bool { return !of(p) })),
 		func(a, b netip.Prefix) int { return cmp.Or(a.Addr().Compare(b.Addr()), b.Bits()-a.Bits()) })
@@ -139,7 +178,7 @@ func modelLookups(cfg Egress, tun string, members []netip.Prefix, family uint8) 
 		}
 	}
 	if !source.IsValid() {
-		return nil
+		return nil, nil
 	}
 	var prefixes []netip.Prefix
 	for _, prefix := range cfg.Advertise {
@@ -151,40 +190,92 @@ func modelLookups(cfg Egress, tun string, members []netip.Prefix, family uint8) 
 		prefixes = map[uint8][]netip.Prefix{FamilyIPv4: {netip.MustParsePrefix("0.0.0.0/0")}, FamilyIPv6: {netip.MustParsePrefix("::/0")}}[family]
 	}
 	var lookups []Lookup
+	var read []netip.Prefix
 	for _, prefix := range prefixes {
 		if address, ok := readAddress(prefix); ok {
 			lookups = append(lookups, Lookup{Source: source, Destination: address, IIF: tun, Reply: len(lookups) == 0})
+			read = append(read, prefix)
 		}
 	}
-	return lookups
+	return lookups, read
 }
 
-// modelPasses is whether a family's lookups take a translated packet's path
-// on host: every forward lookup finds a unicast route with a live hop and none
-// of its live hops on the tun, and the first one's reply a unicast route whose
-// live hops, at least one, are all the tun
-func modelPasses(lookups []Lookup, host map[netip.Addr]hostAnswer, tun string) bool {
-	for _, lookup := range lookups {
+// modelUnusable is how the reason of a lookup ends where its answer carries
+// nothing whatever its devices: an error, as the kernel words it, since the
+// property's host holds no setting that names one, a type other than unicast,
+// or no live hop, naming the devices of the hops there are
+func modelUnusable(route Route, err error) string {
+	switch {
+	case err != nil:
+		return " failed: " + err.Error()
+	case route.Type != "unicast":
+		return " found a route of type " + route.Type
+	case len(modelLive(route)) > 0:
+		return ""
+	case len(route.Hops) == 0:
+		return " found no live next hop"
+	}
+	var devices []string
+	for _, hop := range route.Hops {
+		devices = append(devices, hop.Device)
+	}
+	return " found no live next hop among " + strings.Join(devices, " ")
+}
+
+// modelFailure is the reason of the first of a family's lookups that does not
+// take a translated packet's path on host, read for prefixes in order, and
+// empty where every lookup takes it. Each forward lookup, in order, must find
+// a unicast route with a live hop and none of its live hops on the tun, and
+// then the first one's reply, arriving on that lookup's first live hop, a
+// unicast route whose live hops, at least one, are all the tun
+func modelFailure(lookups []Lookup, prefixes []netip.Prefix, host map[netip.Addr]hostAnswer, tun string) string {
+	for i, lookup := range lookups {
 		a := host[lookup.Destination]
-		if live := modelLive(a.route); a.err != nil || a.route.Type != "unicast" || len(live) == 0 || slices.Contains(live, tun) {
-			return false
+		named := "the lookup of " + lookup.Destination.String() + " for " + prefixes[i].String() + " from " + lookup.Source.String() + " arriving on " + tun
+		if why := modelUnusable(a.route, a.err); why != "" {
+			return named + why
+		}
+		if slices.Contains(modelLive(a.route), tun) {
+			return named + " leaves by " + tun + " again"
 		}
 	}
 	first := host[lookups[0].Destination]
-	live := modelLive(first.reply)
-	return first.replyErr == nil && first.reply.Type == "unicast" && len(live) > 0 &&
-		!slices.ContainsFunc(live, func(device string) bool { return device != tun })
+	named := "the reply lookup of " + lookups[0].Source.String() + " for " + prefixes[0].String() + " from " + lookups[0].Destination.String() +
+		" arriving on " + modelLive(first.route)[0]
+	if why := modelUnusable(first.reply, first.replyErr); why != "" {
+		return named + why
+	}
+	if other := slices.DeleteFunc(modelLive(first.reply), func(device string) bool { return device == tun }); len(other) > 0 {
+		return named + " leaves by " + strings.Join(other, " ") + " rather than " + tun
+	}
+	return ""
 }
 
-// Over a run of passes on a host drawn anew for each, the rule and forwarding
-// drawn as the egress segments' property draws them, the members drawn from a
-// pool, none at all among them, and each destination's forward and reply
-// answers drawn, the batch now and then failing whole or answering short: a
-// family is ready exactly when the model says, the lookups handed to the batch
-// are the model's, and the readiness kept in Stats, the prefixes announced and
-// the pair and SID word handed to Ready move together. A family the model
-// reads no lookup for, with no member to read from, is judged by its rule and
-// forwarding alone, and the pass says what it skipped
+// holdsReason reports unready holding why as one family's whole reason in each
+// form unreadyText writes: alone, after its family's name, or as the IPv4 or the
+// IPv6 one of both
+func holdsReason(unready, why string) bool {
+	return unready == why || unready == "ipv4 "+why || unready == "ipv6 "+why ||
+		strings.HasPrefix(unready, "ipv4 "+why+", ipv6 ") || strings.HasSuffix(unready, ", ipv6 "+why)
+}
+
+// Over a run of pairs of passes, the first of each on a host drawn anew, the
+// rule and forwarding drawn as the egress segments' property draws them, the
+// members drawn from a pool, none at all among them, and each destination's
+// forward and reply answers drawn, the batch now and then failing whole or
+// answering short: a family is ready exactly when the model says, the lookups
+// handed to the batch are the model's, and the readiness kept in Stats, the
+// prefixes announced and the pair and SID word handed to Ready move together.
+// A family the model reads no lookup for, with no member to read from, is
+// judged by its rule and forwarding alone, and the pass says what it skipped.
+//
+// A family the lookups hold not ready gives the whole reason of the first
+// lookup the model finds failing, so a lookup judged wrongly shows even where a
+// later one fails as well, as the reply does after a forward route with no live
+// hop, and so does a reason right in its first words alone.
+// The second pass of a pair runs over the host, the answers and the batch of
+// the first with each family's members moved, so the skip moves and, where the
+// lookups of the families moved pass, nothing else does
 func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		drawn := hegel.Draw(ht, exits())
@@ -228,20 +319,24 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 				destinations = append(destinations, address)
 			}
 		}
-		for pass := range hegel.Draw(ht, pbt.Spanning(1, 4)) {
-			now = hegel.Draw(ht, steps(desired))
-			now.load(be)
-			members = pbt.Subset(ht, memberPool, 0, 4)
-			host = map[netip.Addr]hostAnswer{}
-			for _, destination := range destinations {
-				host[destination] = hegel.Draw(ht, hostAnswers(tun))
-			}
-			whole, short = nil, false
-			if hegel.Draw(ht, hegel.WeightedBooleans(1.0/12)) {
-				whole = errors.New("kernel: open a netlink socket: too many open files")
+		for pass := range 2 * hegel.Draw(ht, pbt.Spanning(1, 4)) {
+			if pass%2 == 0 {
+				now = hegel.Draw(ht, steps(desired))
+				host = map[netip.Addr]hostAnswer{}
+				for _, destination := range destinations {
+					host[destination] = hegel.Draw(ht, hostAnswers(tun))
+				}
+				whole, short = nil, false
+				if hegel.Draw(ht, hegel.WeightedBooleans(1.0/12)) {
+					whole = errors.New("kernel: open a netlink socket: too many open files")
+				} else {
+					short = hegel.Draw(ht, hegel.WeightedBooleans(1.0/12))
+				}
+				members = pbt.Subset(ht, memberPool, 0, 4)
 			} else {
-				short = hegel.Draw(ht, hegel.WeightedBooleans(1.0/12))
+				members = moved(ht, members)
 			}
+			now.load(be)
 			asked = nil
 			if now.enabled {
 				_ = tr.reconcile()
@@ -252,6 +347,7 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 			written := writtenAfter(now, desired)
 			var want [2]bool
 			var wantAsked []Lookup
+			var named []string
 			skips := false
 			for i, family := range []uint8{FamilyIPv4, FamilyIPv6} {
 				advertised := slices.ContainsFunc(plain(cfg.Advertise), func(prefix netip.Prefix) bool { return prefix.Addr().Is4() == (i == 0) })
@@ -259,13 +355,20 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 				if !now.enabled || !(rt.Steered || advertised) || !written[family] || !forwards {
 					continue
 				}
-				lookups := modelLookups(cfg, tun, members, family)
+				lookups, prefixes := modelLookups(cfg, tun, members, family)
 				if len(lookups) == 0 {
 					want[i], skips = true, true
 					continue
 				}
 				wantAsked = append(wantAsked, lookups...)
-				want[i] = whole == nil && !short && modelPasses(lookups, host, tun)
+				failed := modelFailure(lookups, prefixes, host, tun)
+				switch {
+				case whole != nil || short:
+				case failed != "":
+					named = append(named, failed)
+				default:
+					want[i] = true
+				}
 			}
 			if !slices.Equal(asked, wantAsked) {
 				ht.Fatalf("pass %d over %+v with members %v asked for %v, want %v", pass, now, members, asked, wantAsked)
@@ -274,6 +377,12 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 			if [2]bool{stats.Ready4, stats.Ready6} != want {
 				ht.Fatalf("pass %d over %+v with members %v and %v reports ready %v and %v (%q), want %v",
 					pass, now, members, host, stats.Ready4, stats.Ready6, stats.Unready, want)
+			}
+			for _, why := range named {
+				if !holdsReason(stats.Unready, why) {
+					ht.Fatalf("pass %d over %+v with members %v and %v gives the reason %q, which does not hold %q whole",
+						pass, now, members, host, stats.Unready, why)
+				}
 			}
 			var announced []netip.Prefix
 			for _, prefix := range plain(cfg.Advertise) {
