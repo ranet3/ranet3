@@ -173,6 +173,40 @@ func BenchmarkDecideEgressed(b *testing.B) {
 	}
 }
 
+// BenchmarkApplySegmentsEgress takes batches of inboundWriteBatchSize packets through an egress segment to the tun, past its reply and mesh checks
+// from one source to one destination, whose answers a batch keeps, and to 64 destinations, past the pairs it keeps
+func BenchmarkApplySegmentsEgress(b *testing.B) {
+	for _, c := range []struct{ family, destinations int }{{4, 1}, {4, 64}, {6, 1}, {6, 64}} {
+		b.Run(fmt.Sprintf("IPv%d destinations=%d", c.family, c.destinations), func(b *testing.B) {
+			m := ownEgressOwned(&Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})})
+			m.setDevice(&discardDevice{})
+			m.SetSegments(egressTable(b))
+			m.SetEgressReady(true, true)
+			routeLeaf(b, m, tooBigSource[c.family])
+			b.Cleanup(m.Close)
+			packets := make([][]byte, inboundWriteBatchSize)
+			for i := range packets {
+				last := byte(i%c.destinations + 1)
+				destination := netip.AddrFrom4([4]byte{203, 0, 113, last})
+				if c.family == 6 {
+					destination = netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 0x48, 0x60, 15: last})
+				}
+				packets[i] = steered(b, udpPacket(tooBigSource[c.family], destination, 100, false), headend, egressExit)
+			}
+			frames := framed(packets...)
+			m.applySegments(frames, DefaultMTU)
+			if got := m.SegmentCounters().Egressed; got != inboundWriteBatchSize {
+				b.Fatalf("%d of the batch's %d packets took the egress segment, so this measures another path", got, inboundWriteBatchSize)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				m.applySegments(frames, DefaultMTU)
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*inboundWriteBatchSize), "ns/packet")
+		})
+	}
+}
+
 // BenchmarkOptionStage is the stage the decision runs on a forwarded IPv4 header for its options
 // against the call that reads the clock and the router-id for every header
 func BenchmarkOptionStage(b *testing.B) {

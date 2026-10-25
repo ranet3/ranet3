@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"log/slog"
 	"math"
 	"net/netip"
@@ -31,6 +32,8 @@ var (
 	egressAllow    = []netip.Prefix{segPrefix("3fff:1:69c::/48"), segPrefix("3fff:a::/32"), segPrefix("10.0.0.0/8"), segPrefix("192.0.2.64/26")}
 	headend        = segAddr("3fff:1:69c:98d0::1")
 	stranger       = map[int]netip.Addr{4: segAddr("192.0.2.1"), 6: segAddr("2001:db8:bad::1")}
+	// egressOwned are egressMesh's own destinations, which the tests deliver to and never egress to
+	egressOwned = []netip.Addr{segAddr("2001:db8::a"), segAddr("2001:db8::b"), segAddr("3fff:a::2"), segAddr("3fff:a::3"), segAddr("192.0.2.70")}
 )
 
 func egressTable(tb testing.TB) *srv6.LocalTable {
@@ -60,19 +63,42 @@ func steered(tb testing.TB, inner []byte, source netip.Addr, path ...netip.Addr)
 }
 
 // egressMesh is a mesh of one tun lane recording its writes, holding egressTable, with both families ready to egress
-// every destination is its own, so whatever no segment takes goes to the tun
-// and the inner sources tcpPacket writes are a leaf's, which an egress segment asks of what it egresses
+// egressOwned are its own, so a packet no segment takes goes to the tun where it is for one of them
+// the inner sources tcpPacket writes are a leaf's, a source the mesh routes a reply to, which an egress segment asks of what it egresses
+// and nothing else is routed, so no egress segment's result is for the mesh
 // its drop reports are not spaced, so every one reaches the log
 func egressMesh(tb testing.TB) (*Mesh, *recordingDevice) {
 	tb.Helper()
-	dev := &recordingDevice{writes: make(chan recordedWrite, 16)}
-	m := ownEverything(&Mesh{Name: "test0", closed: make(chan struct{})})
+	dev := &boundedDevice{recordingDevice: recordingDevice{writes: make(chan recordedWrite, 16)}, tb: tb}
+	m := ownEgressOwned(&Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})})
 	m.setDevice(dev)
 	m.SetSegments(egressTable(tb))
 	m.SetEgressReady(true, true)
 	routeLeaf(tb, m, tooBigSource[4], tooBigSource[6])
 	tb.Cleanup(m.Close)
-	return m, dev
+	return m, &dev.recordingDevice
+}
+
+// boundedDevice is a tun of one lane recording its writes, which fails the test at a write past its writes' capacity rather than block it
+type boundedDevice struct {
+	recordingDevice
+	tb testing.TB
+}
+
+func (d *boundedDevice) Write(bufs [][]byte, offset int) (int, error) {
+	if len(d.writes) == cap(d.writes) {
+		d.tb.Errorf("the tun was written more than the %d times it records", cap(d.writes))
+		return 0, errors.New("the recording is full")
+	}
+	return d.recordingDevice.Write(bufs, offset)
+}
+
+// ownEgressOwned makes each of egressOwned m's own as a host route
+func ownEgressOwned(m *Mesh) *Mesh {
+	for _, own := range egressOwned {
+		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(own, own.BitLen()), Local)
+	}
+	return m
 }
 
 // routeLeaf routes each of sources to a leaf of m's, a source the mesh routes
@@ -320,22 +346,22 @@ type discardDevice struct{ recordingDevice }
 
 func (*discardDevice) Write(bufs [][]byte, _ int) (int, error) { return len(bufs), nil }
 
-// a batch of egress results allocates at most once more than the same batch delivered to the mesh tun, its egress list sized once
+// a batch of egress results allocates at most once more than a batch of as many packets delivered to the mesh tun, its egress list sized once
 func TestEgressBatchAllocatesOnceMoreThanADelivery(t *testing.T) {
-	m := ownEverything(&Mesh{Name: "test0", closed: make(chan struct{})})
+	m := ownEgressOwned(&Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})})
 	m.setDevice(&discardDevice{})
 	m.SetSegments(egressTable(t))
 	m.SetEgressReady(true, true)
 	routeLeaf(t, m, tooBigSource[6])
 	t.Cleanup(m.Close)
-	batch := func(exit netip.Addr) [][]byte {
+	batch := func(exit, destination netip.Addr) [][]byte {
 		frames := make([][]byte, inboundWriteBatchSize)
 		for i := range frames {
-			frames[i] = steered(t, plainV6(segAddr("3fff:a::1"), segAddr("2001:db8:4860::8888"), "payload"), headend, exit)
+			frames[i] = steered(t, plainV6(segAddr("3fff:a::1"), destination, "payload"), headend, exit)
 		}
 		return framed(frames...)
 	}
-	delivered, egressed := batch(meshExit), batch(egressExit)
+	delivered, egressed := batch(meshExit, egressOwned[2]), batch(egressExit, segAddr("2001:db8:4860::8888"))
 	m.applySegments(egressed, DefaultMTU)
 	if got := m.SegmentCounters().Egressed; got != inboundWriteBatchSize {
 		t.Fatalf("%d of the batch's %d packets took the egress segment, so this proves nothing", got, inboundWriteBatchSize)
@@ -414,6 +440,7 @@ func TestEgressRefusedSourceIsCountedAndNeverAnswered(t *testing.T) {
 // and stays out of the tun and the answers to its sender
 func TestEgressSegmentRefusesAnInnerPacketTheMeshRoutesNoReplyTo(t *testing.T) {
 	m, meshTUN := egressMesh(t)
+	ownEverything(m)
 	m.SetOverlay(nil)
 	allow := []schema.Prefix{schema.MustPrefix("169.254.0.0/16")}
 	for _, prefix := range egressAllow {
@@ -486,38 +513,171 @@ func TestEgressSegmentRefusesAnInnerPacketTheMeshRoutesNoReplyTo(t *testing.T) {
 	}
 }
 
-// a batch of egress results refused for an inner source the mesh routes no reply to allocates at most once more than the same batch delivered to the mesh tun
-// since the source is boxed only for the one refusal an interval reports
+// a batch of egress results refused for an inner source the mesh routes no reply to, or for an inner destination the mesh routes, allocates at most once more than the same batch delivered to the mesh tun
+// since the address is boxed only for the one refusal an interval reports
 func TestEgressRefusalAllocatesOnceMoreThanADelivery(t *testing.T) {
 	lines := logLines(t)
 	m, _ := egressMesh(t)
+	ownEverything(m)
 	m.SetOverlay(nil)
 	m.startSegmentReports()
-	batch := func(source, exit netip.Addr) [][]byte {
+	batch := func(source, destination, exit netip.Addr) [][]byte {
 		frames := make([][]byte, inboundWriteBatchSize)
 		for i := range frames {
-			frames[i] = steered(t, plainV6(source, segAddr("2001:db8::5"), "payload"), headend, exit)
+			frames[i] = steered(t, plainV6(source, destination, "payload"), headend, exit)
 		}
 		return framed(frames...)
 	}
-	delivered, refused := batch(tooBigSource[6], meshExit), batch(segAddr("3fff:a::99"), egressExit)
-	count := func() uint64 {
-		before := m.SegmentCounters().Refused
-		m.applySegments(refused, DefaultMTU)
-		return m.SegmentCounters().Refused - before
-	}
-	if got := count(); got != inboundWriteBatchSize {
-		t.Fatalf("%d of the batch's %d packets were refused for their source, so this proves nothing", got, inboundWriteBatchSize)
-	}
+	delivered := batch(tooBigSource[6], segAddr("2001:db8::5"), meshExit)
 	deliver := leastAllocs(func() { m.applySegments(delivered, DefaultMTU) })
-	if refuse := leastAllocs(func() { m.applySegments(refused, DefaultMTU) }); refuse > deliver+1 {
-		t.Errorf("a batch of %d refused egress results allocated %.0f times, want at most one more than the %.0f of delivering it", inboundWriteBatchSize, refuse, deliver)
-	}
-	if got := count(); got != inboundWriteBatchSize {
-		t.Errorf("after the runs %d of the batch's %d packets were refused, so the runs measured another path", got, inboundWriteBatchSize)
+	for _, refusal := range []struct {
+		name   string
+		frames [][]byte
+	}{
+		{"for their source", batch(segAddr("3fff:a::99"), segAddr("2001:db8::5"), egressExit)},
+		{"for their destination", batch(tooBigSource[6], egressOwned[0], egressExit)},
+	} {
+		count := func() uint64 {
+			before := m.SegmentCounters().Refused
+			m.applySegments(refusal.frames, DefaultMTU)
+			return m.SegmentCounters().Refused - before
+		}
+		if got := count(); got != inboundWriteBatchSize {
+			t.Fatalf("%d of the batch's %d packets were refused %s, so this proves nothing", got, inboundWriteBatchSize, refusal.name)
+		}
+		if refuse := leastAllocs(func() { m.applySegments(refusal.frames, DefaultMTU) }); refuse > deliver+1 {
+			t.Errorf("a batch of %d egress results refused %s allocated %.0f times, want at most one more than the %.0f of delivering it", inboundWriteBatchSize, refusal.name, refuse, deliver)
+		}
+		if got := count(); got != inboundWriteBatchSize {
+			t.Errorf("after the runs %d of the batch's %d packets were refused %s, so the runs measured another path", got, inboundWriteBatchSize, refusal.name)
+		}
 	}
 	if got := lines(); len(got) != 1 {
 		t.Errorf("the refusals were reported as %q, want one line", got)
+	}
+}
+
+// past the reply check an egress segment refuses an inner packet whose destination the mesh routes itself, in either family
+// to another node, into a hold, to a prefix of this node's own or to an address cap.table assigns it, or by a route announced from a source prefix holding the packet's source
+// counted refused and dropped, with no answer and nothing at any peer
+// a destination only another exit's halves cover egresses, and so does one the source-prefixed route covers from a source outside its prefix
+// a packet for a destination the mesh routes that the martian test or the reply check refuses first is counted once
+// and one whose family is not ready is counted refused, not not ready, since the refusal comes ahead of the readiness read
+func TestEgressSegmentRefusesAnInnerDestinationTheMeshRoutes(t *testing.T) {
+	m, meshTUN := egressMesh(t)
+	back, other, exit := &recordingPeer{}, &recordingPeer{}, &recordingPeer{}
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(headend, 128), back.peer(t, "headend"))
+	toOther, toExit := other.peer(t, "other"), exit.peer(t, "exit")
+	// the third source of each family lies in the allow list and only the halves reach it
+	sources := map[int][3]netip.Addr{4: {segAddr("192.0.2.65"), segAddr("192.0.2.67"), segAddr("192.0.2.99")}, 6: {segAddr("3fff:a::5"), segAddr("3fff:a::6"), segAddr("3fff:a::99")}}
+	routeLeaf(t, m, sources[4][0], sources[4][1], sources[6][0], sources[6][1])
+	for _, entry := range []struct {
+		from, to string
+		peer     *Peer
+	}{
+		{"", "0.0.0.0/1", toExit}, {"", "128.0.0.0/1", toExit}, {"", "::/1", toExit}, {"", "8000::/1", toExit},
+		{"", "203.0.113.0/26", toOther}, {"", "2001:db8:1::/48", toOther},
+		{"", "169.254.0.0/16", toOther}, {"", "fe80::/10", toOther},
+		{"", "203.0.113.64/26", Unreachable}, {"", "2001:db8:2::/48", Unreachable},
+		{"", "203.0.113.128/26", Local}, {"", "2001:db8:3::/48", Local},
+		{"", "203.0.113.200/32", Assigned}, {"", "2001:db8:4::4/128", Assigned},
+		{"192.0.2.65/32", "203.0.113.224/27", toOther}, {"3fff:a::5/128", "2001:db8:5::/48", toOther},
+	} {
+		var from netip.Prefix
+		if entry.from != "" {
+			from = segPrefix(entry.from)
+		}
+		m.Routes.Set(from, segPrefix(entry.to), entry.peer)
+	}
+	var frames, want [][]byte
+	var refused uint64
+	for _, c := range []struct {
+		family, source int
+		destination    string
+		egresses       bool
+	}{
+		{4, 0, "203.0.113.5", false}, {4, 0, "203.0.113.70", false}, {4, 0, "203.0.113.130", false}, {4, 0, "203.0.113.200", false},
+		{4, 0, "198.51.100.9", true}, {4, 0, "203.0.113.230", false}, {4, 1, "203.0.113.230", true},
+		{6, 0, "2001:db8:1::5", false}, {6, 0, "2001:db8:2::5", false}, {6, 0, "2001:db8:3::5", false}, {6, 0, "2001:db8:4::4", false},
+		{6, 0, "2001:db8:9::9", true}, {6, 0, "2001:db8:5::5", false}, {6, 1, "2001:db8:5::5", true},
+		{4, 0, "169.254.169.254", false}, {6, 0, "fe80::5", false}, {4, 2, "203.0.113.5", false}, {6, 2, "2001:db8:1::5", false},
+	} {
+		inner := udpPacket(sources[c.family][c.source], segAddr(c.destination), 64, false)
+		frames = append(frames, steered(t, inner, headend, egressExit))
+		if c.egresses {
+			want = append(want, inner)
+		} else {
+			refused++
+		}
+	}
+	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+	if writes := tunWrites(meshTUN); len(writes) != 1 || !slices.EqualFunc(writes[0], want, bytes.Equal) {
+		t.Errorf("the tun took %q, want the packets for destinations the mesh does not route of each family", writes)
+	}
+	if counters := m.SegmentCounters(); counters.Refused != refused || counters.Dropped != refused || counters.Egressed != uint64(len(want)) || counters.Answered != 0 {
+		t.Errorf("%d packets for the mesh counted %+v, want each refused and dropped and %d egressed", refused, counters, len(want))
+	}
+	for _, peer := range []*recordingPeer{back, other, exit} {
+		if sent := peer.packets(t); len(sent) != 0 {
+			t.Errorf("a peer was sent %q, want nothing sent for a packet an egress segment took", sent)
+		}
+	}
+
+	for _, family := range []int{4, 6} {
+		m.SetEgressReady(family == 6, family == 4)
+		mesh := udpPacket(sources[family][0], segAddr(map[int]string{4: "203.0.113.5", 6: "2001:db8:1::5"}[family]), 64, false)
+		elsewhere := udpPacket(sources[family][0], segAddr(map[int]string{4: "198.51.100.9", 6: "2001:db8:9::9"}[family]), 64, false)
+		before := m.SegmentCounters()
+		m.DeliverInboundBatch(framed(steered(t, mesh, headend, egressExit), steered(t, elsewhere, headend, egressExit)), DefaultMTU, nil)
+		if got := m.SegmentCounters(); got.Refused != before.Refused+1 || got.Dropped != before.Dropped+1 || got.NotReady != before.NotReady+1 || got.Egressed != before.Egressed {
+			t.Errorf("with IPv%d not ready a packet for the mesh and one past it moved the counters from %+v to %+v, want one refused and dropped and one not ready", family, before, got)
+		}
+	}
+	if writes := tunWrites(meshTUN); len(writes) != 0 {
+		t.Errorf("with a family not ready the tun took %q", writes)
+	}
+}
+
+// an egress segment answers each packet of a batch as the first of its source and destination pair, each pair looked up once
+// a pair the mesh routes no reply to, one for a destination the mesh routes, one that egresses, and a destination a route from one source's prefix covers sent from that source and from another
+// each sent twice, so an answer kept for the wrong pair or holding the wrong check egresses or refuses a packet the first of its pair did not
+func TestEgressSegmentAnswersEachPacketAsTheFirstOfItsPair(t *testing.T) {
+	m, meshTUN := egressMesh(t)
+	// the unrouted source lies in the allow list and no route reaches it
+	routed, other, unrouted := segAddr("3fff:a::5"), segAddr("3fff:a::6"), segAddr("3fff:a::99")
+	routeLeaf(t, m, routed, other)
+	peer := (&recordingPeer{}).peer(t, "other")
+	m.Routes.Set(netip.Prefix{}, segPrefix("2001:db8:1::/48"), peer)
+	m.Routes.Set(hostPrefix(routed), segPrefix("2001:db8:5::/48"), peer)
+	pairs := []struct {
+		source, destination netip.Addr
+		egresses            bool
+	}{
+		{unrouted, segAddr("2001:db8:9::9"), false},
+		{routed, segAddr("2001:db8:1::5"), false},
+		{routed, segAddr("2001:db8:9::9"), true},
+		{routed, segAddr("2001:db8:5::5"), false},
+		{other, segAddr("2001:db8:5::5"), true},
+	}
+	var frames, want [][]byte
+	var refused uint64
+	for range 2 {
+		for _, pair := range pairs {
+			inner := plainV6(pair.source, pair.destination, string(rune('a'+len(frames))))
+			frames = append(frames, steered(t, inner, headend, egressExit))
+			if pair.egresses {
+				want = append(want, inner)
+			} else {
+				refused++
+			}
+		}
+	}
+	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+	if writes := tunWrites(meshTUN); len(writes) != 1 || !slices.EqualFunc(writes[0], want, bytes.Equal) {
+		t.Errorf("the tun took %q, want both packets of each pair that egresses, in order", writes)
+	}
+	if counters := m.SegmentCounters(); counters.Refused != refused || counters.Dropped != refused || counters.Egressed != uint64(len(want)) {
+		t.Errorf("%d packets of pairs refused and %d egressing counted %+v", refused, len(want), counters)
 	}
 }
 
