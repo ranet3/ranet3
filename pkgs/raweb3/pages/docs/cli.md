@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-10-26
+updated: 2026-10-27
 order: 75
 ---
 
@@ -85,8 +85,9 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
 
 - `status` shows the counters of the [forwarding decision](routing.md#transit)
   on its `Transit` line: the packets sessions delivered that went on to a peer
-  or to the tun, those dropped with each reason above 0, and the ICMP errors
-  answered and unanswered about them. `--json` carries them under `transit`.
+  or to the tun, those and the reads off the tun it dropped with each reason
+  above 0, and the ICMP errors answered and unanswered about them. `--json`
+  carries them under `transit`.
 - `status` on a node with `cap.egress` names, on its `nftables` line, the
   families the exit is [ready](exit-nodes.md#readiness) for and, for a family
   that is not, the reason, such as

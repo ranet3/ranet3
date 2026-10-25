@@ -4,7 +4,7 @@
 title: "The border filter"
 description: "Dropping what arrives from outside the mesh carrying a mesh source, a routing header or one of this node's SIDs."
 created: 2026-10-19
-updated: 2026-10-26
+updated: 2026-10-27
 order: 55
 ---
 
@@ -40,6 +40,18 @@ exit itself protects the exit's own SID from its own links, the host's services
 from a forged mesh source, and every other exit from a forged allowed source
 sent through this node. Another node's SID that delivers to the mesh is
 protected by that node, as [below](#what-it-drops) describes.
+
+The filter guards the mesh's edge on the links outside it. A packet this host's
+own kernel routes into the tun enters the mesh by the other side of that edge,
+where the
+[forwarding decision checks what the tun hands this
+node](segment-routing.md#at-the-border-of-the-mesh): it drops a read from a
+source the table routes to another node or holds unreachable, through a route
+that does not count as a default, or from an overlay source this node does not
+own, one carrying a routing header the mesh refuses, one to one of this node's
+own SIDs, one bound through an exit from a source this node does not own, or one
+whose inner packet fails the same checks. Those reads count on the `Transit`
+line, not among the border's drops.
 
 ## What it drops
 
