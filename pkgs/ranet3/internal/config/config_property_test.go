@@ -829,11 +829,8 @@ func nodes() hegel.Generator[Config] {
 				Listen:    hegel.Draw(tc, hegel.Booleans()),
 				// from the least IPv6 requires to the most one ESP-in-UDP datagram carries over IPv4
 				// a steering list drawn beside it can take the least of these out of bounds, which Validate refuses
-				MTU: hegel.Draw(tc, unset(edges[uint16](1280, 65470))),
-				Underlay: transport.Underlay{
-					Mark: hegel.Draw(tc, unset(edges[uint32](1, math.MaxUint32))),
-					Bind: hegel.Draw(tc, hegel.Booleans()),
-				},
+				MTU:      hegel.Draw(tc, unset(edges[uint16](1280, 65470))),
+				Underlay: transport.Underlay{Bind: hegel.Draw(tc, hegel.Booleans())},
 			},
 			Dial: Dial{
 				All: hegel.Draw(tc, hegel.Booleans()),
@@ -876,16 +873,6 @@ func configurations() hegel.Generator[Config] {
 		// now and then cost.extra charges the node itself, which Validate refuses
 		if c.Cap.Babel != nil && hegel.Draw(tc, hegel.WeightedBooleans(0.05)) {
 			c.Cap.Babel.Cost.Extra.Node = map[string]uint16{c.Node.String(): hegel.Draw(tc, edges[uint16](0, math.MaxUint16))}
-		}
-		// a mark needs a rule reading it wherever this file writes rules, so a
-		// marked node with a table carries the rule its refusal spells out
-		if mark := c.Link.Underlay.Mark; mark != 0 && c.Cap.Table != nil && !c.Cap.Table.ReadsMark(mark) {
-			c.Cap.Table.Rules = append(c.Cap.Table.Rules, kernel.Rule{
-				FWMark:   mark,
-				Table:    schema.TableMain,
-				Priority: hegel.Draw(tc, edges[uint32](1, math.MaxUint32)),
-				Family:   kernel.FamilyBoth,
-			})
 		}
 		return c
 	})

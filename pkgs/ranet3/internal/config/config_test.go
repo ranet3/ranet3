@@ -364,6 +364,41 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 	}
 }
 
+// a file writing link.underlay mark is refused as an unknown key under every
+// decoder, since on linux every underlay socket carries, where the process
+// may set it, one mark that no key sets
+// the same block without the key loads, so the refusal is the key's
+func TestLoaderRefusesTheUnderlayMarkAsUnknown(t *testing.T) {
+	const asJSON = `{"node":"example/laptop","auth":{"key":"key.pem","trust":"trust.json"},` +
+		`"link":{"port":13000,"endpoints":[{"serial":"0","family":"ip4"}],"underlay":{%s}},"dial":{"to":["example/gateway"]}}`
+	underlaidYAML := func(block string) string {
+		return strings.Replace(nodeYAML, "  endpoints:", "  underlay: "+block+"\n  endpoints:", 1)
+	}
+	for name, test := range map[string]struct{ extension, with, without, refusal string }{
+		"toml": {".toml",
+			nodeTOML + "[link.underlay]\nmark = 0x726c\n",
+			nodeTOML + "[link.underlay]\n",
+			`unknown field "link.underlay.mark"`},
+		"yaml": {".yaml",
+			underlaidYAML("{ mark: 0x726c }"),
+			underlaidYAML("{}"),
+			"field mark not found in type transport.Underlay"},
+		"json": {".json",
+			fmt.Sprintf(asJSON, `"mark":29292`),
+			fmt.Sprintf(asJSON, ""),
+			"field mark not found in type transport.Underlay"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := load(t, test.extension, test.without); err != nil {
+				t.Fatalf("link.underlay without mark was refused: %v", err)
+			}
+			if _, err := load(t, test.extension, test.with); err == nil || !strings.Contains(err.Error(), test.refusal) {
+				t.Errorf("link.underlay with mark loaded with %v, want it refused as %s", err, test.refusal)
+			}
+		})
+	}
+}
+
 // a file writing cap.table vrf is refused as an unknown key under every decoder
 // the same block without the key loads, so the refusal is the key's
 func TestLoaderRefusesTheVRFKeyAsUnknown(t *testing.T) {
@@ -951,82 +986,6 @@ func TestValidateRefusesAStringThatIsNotText(t *testing.T) {
 	}
 }
 
-// link.underlay mark and cap.table rules are two halves of one setting, in two
-// blocks, with nothing in either to say the other is missing. A node that sets
-// the mark and forgets the rule marks its ESP socket, nothing reads the mark,
-// and the underlay follows the mesh table: on a live leaf that put this node's
-// own IKE into the tun carrying it, 52 datagrams in eight seconds, with no
-// message. The refusal names both halves and writes the rule out.
-func TestUnderlayMarkNeedsTheRuleThatReadsIt(t *testing.T) {
-	// The mark goes inside the link block the base node already writes, since
-	// a second "link:" key is a different refusal entirely.
-	markedYAML := strings.Replace(nodeYAML, "  endpoints:", "  underlay: { mark: 0x726c }\n  endpoints:", 1)
-	markedTOML := nodeTOML + "[link.underlay]\nmark = 0x726c\n"
-	for name, pair := range map[string]struct{ asYAML, asTOML string }{
-		"no rule selects on it": {
-			asYAML: "cap:\n  table: {}\n",
-			asTOML: "[cap.table]\n",
-		},
-		"a rule sends it back into the mesh table": {
-			asYAML: "cap:\n  table:\n    id: 200\n    rules: [{ fwmark: 0x726c, table: 200, priority: 40, family: both }]\n",
-			asTOML: "[cap.table]\nid = 200\nrules = [{ fwmark = 0x726c, table = 200, priority = 40, family = \"both\" }]\n",
-		},
-		// The mask compares the third byte alone, and this rule takes the
-		// marks whose third byte is 1, so the socket's 0x726c is not among
-		// them.
-		"a rule's mask selects another mark": {
-			asYAML: "cap:\n  table:\n    rules: [{ fwmark: 0x10000, fwmask: 0xff0000, table: main, priority: 40, family: both }]\n",
-			asTOML: "[cap.table]\nrules = [{ fwmark = 0x10000, fwmask = 0xff0000, table = \"main\", priority = 40, family = \"both\" }]\n",
-		},
-		// a socket's own output arrives on lo, so a rule on another input device never sees its mark
-		"a rule reads it only on an input device": {
-			asYAML: "cap:\n  table:\n    rules: [{ fwmark: 0x726c, iif: eth1, table: main, priority: 40, family: both }]\n",
-			asTOML: "[cap.table]\nrules = [{ fwmark = 0x726c, iif = \"eth1\", table = \"main\", priority = 40, family = \"both\" }]\n",
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			for extension, body := range map[string]string{
-				".yaml": markedYAML + pair.asYAML,
-				".toml": markedTOML + pair.asTOML,
-			} {
-				_, err := load(t, extension, body)
-				if err == nil {
-					t.Fatalf("%s took a mark nothing selects on", extension)
-				}
-				for _, named := range []string{"link.underlay mark", "cap.table rules", "0x726c", `table = "main"`} {
-					if !strings.Contains(err.Error(), named) {
-						t.Errorf("%s: the refusal reads %q and does not name %s", extension, err, named)
-					}
-				}
-			}
-		})
-	}
-	// The rule examples/config.toml documents satisfies it, whichever spelling
-	// the table is written in.
-	for _, table := range []string{"main", "254"} {
-		body := markedYAML + "cap:\n  table:\n    rules: [{ fwmark: 0x726c, table: " + table + ", priority: 40, family: both }]\n"
-		if _, err := loadYAML(t, body); err != nil {
-			t.Errorf("the documented rule was refused with table %s: %v", table, err)
-		}
-	}
-	// So does a rule whose mark has bits outside its mask, when the bits it
-	// compares agree: the kernel takes every mark whose third byte is zero
-	// under 0x726c/0xff0000, the socket's included.
-	if _, err := loadYAML(t, markedYAML+"cap:\n  table:\n    rules: [{ fwmark: 0x726c, fwmask: 0xff0000, table: main, priority: 40, family: both }]\n"); err != nil {
-		t.Errorf("a rule the kernel matches the mark against was refused: %v", err)
-	}
-	// And a rule naming lo, the device a socket's own output arrives on.
-	if _, err := loadTOML(t, markedTOML+"[cap.table]\nrules = [{ fwmark = 0x726c, iif = \"lo\", table = \"main\", priority = 40, family = \"both\" }]\n"); err != nil {
-		t.Errorf("a rule reading the mark on lo was refused: %v", err)
-	}
-	// A node that writes no cap.table writes no rules either, so the rule is
-	// installed by whatever configures its routes and this file cannot see it.
-	// Refusing here would refuse a fleet node that works.
-	if _, err := loadYAML(t, markedYAML); err != nil {
-		t.Errorf("a mark on a node that configures its routes elsewhere was refused: %v", err)
-	}
-}
-
 // The link cost surface exists so a node can look as expensive as the speaker
 // it replaces. Nothing else reads these four fields, so without this they
 // could all be dropped with every other check still green, and a node
@@ -1245,7 +1204,7 @@ func fullConfig() Config {
 			Listen:    true,
 			TUN:       "ranet0",
 			MTU:       8918,
-			Underlay:  transport.Underlay{Mark: 0x726c, Bind: true},
+			Underlay:  transport.Underlay{Bind: true},
 		},
 		Dial: Dial{All: true, To: []identity.Identity{identity.MustParse("example/gateway:1")}},
 		Cap: Caps{
@@ -1595,7 +1554,7 @@ func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 		"cap":                    Config{Node: laptop, Link: oneEndpoint(), Cap: Caps{Crypto: &ike.Crypto{Replay: &replay}}},
 		"link underlay": Config{Node: laptop, Link: Link{
 			Endpoints: oneEndpoint().Endpoints,
-			Underlay:  transport.Underlay{Mark: 0x726c},
+			Underlay:  transport.Underlay{Bind: true},
 		}},
 		"cap.route announce from": babel.Routes{Announce: []schema.Announce{
 			{Prefix: schema.MustPrefix("::/0"), From: schema.MustPrefix("2001:db8:1::/48")},

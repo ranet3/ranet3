@@ -81,16 +81,10 @@ endpoints = [{ serial = "0", family = "ip4" }]
 # mtu = 1400
 
 # Keep the one UDP socket carrying IKE and ESP out of the reach of the routes
-# the mesh installs. One block for both platforms, because it is one idea: a
-# node holding an address an exit announces ends up with a route out of its own
-# tun covering the peers it reaches that tun through, and an underlay following
-# it is a tunnel running inside itself. Set one of the two on any node that
-# takes an exit-announced default. Each is refused by name on the platform that
-# has no meaning for it.
-#
-# mark is SO_MARK on the socket, linux only. The reconciler writes the matching
-# rule itself, see cap.table.rules below, and a mark no rule there selects on is
-# refused: a marked socket nothing reads follows the mesh table anyway.
+# the mesh installs. A node holding an address an exit announces ends up with a
+# route out of its own tun covering the peers it reaches that tun through, and
+# an underlay following it is a tunnel running inside itself. On linux every
+# underlay socket carries the mark 0x726c, which no key sets.
 #
 # bind is IP_BOUND_IF and IPV6_BOUND_IF on the interface the host's own default
 # route leaves by, darwin only. It also gives that interface a default of its
@@ -98,9 +92,8 @@ endpoints = [{ serial = "0", family = "ip4" }]
 # interface, follows both when the machine moves between wifi, ethernet and a
 # dock, and tells the reconciler to install an announced default as a real
 # default rather than scoping it out of every socket's reach, without which
-# this machine cannot use a mesh exit at all.
+# this machine cannot use a mesh exit at all. It is refused on linux.
 # [link.underlay]
-# mark = 0x726c
 # bind = true
 
 [dial]
