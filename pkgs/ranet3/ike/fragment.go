@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/netip"
 	"slices"
 	"strconv"
 	"time"
@@ -85,10 +86,42 @@ func (o *outbound) fragments(size int) ([][]byte, error) {
 	return datagrams, nil
 }
 
-// path is the threshold of a send to the peer now, the largest IP datagram it goes in, and the octets of IKE message one datagram carries within it
+// path is the threshold of a send to the peer now, the largest IP datagram it goes in, the octets of IKE message one datagram carries within it, and at, the path the send reads
+// RFC 7383 section 2.5.2: "In subsequent exchanges, the node should start with the current value of the fragmentation threshold."
+// so it is the family's floor where at is the path stepped records, and a record of another path is dropped
+// the record is loaded before the path is read, so no record is judged against a path read before it was stored
+func (s *Session) path() (threshold, room int, at pathRead) {
+	stepped := s.stepped.Load()
+	endpoint := s.mux.Endpoint().AddrPort()
+	threshold, room = s.reading(endpoint)
+	at = pathRead{endpoint: endpoint, read: threshold, probed: s.probed.Load()}
+	switch {
+	case stepped == nil:
+	case *stepped == at:
+		threshold, room = floorOf(endpoint)
+	default:
+		s.forget(stepped)
+	}
+	return threshold, room, at
+}
+
+// pathRead is the path a send to the peer reads: the peer's endpoint, the threshold the host's reading gives, and the times the session was asked to probe its path by then
+type pathRead struct {
+	endpoint netip.AddrPort
+	read     int
+	probed   uint64
+}
+
+// forget drops the record stepped, and keeps one a step stored in its place since
+func (s *Session) forget(stepped *pathRead) {
+	s.stepped.CompareAndSwap(stepped, nil)
+}
+
+// reading is the threshold the floor of endpoint and the host's path MTU give a send, and its room
+// the path MTU is the host's for the peer's endpoint at the read, which a move since endpoint was taken makes another endpoint than endpoint
 // RFC 7383 section 2.5.1: "If the sender has information about the PMTU size, it SHOULD use it."
-func (s *Session) path() (threshold, room int) {
-	threshold, room = s.floor()
+func (s *Session) reading(endpoint netip.AddrPort) (threshold, room int) {
+	threshold, room = floorOf(endpoint)
 	read := s.pathMTU
 	if read == nil {
 		read = s.mux.PathMTU
@@ -101,20 +134,24 @@ func (s *Session) path() (threshold, room int) {
 }
 
 // floor is the smallest threshold of a send to the peer, and the octets of IKE message one datagram carries within it
+func (s *Session) floor() (threshold, room int) {
+	return floorOf(s.mux.Endpoint().AddrPort())
+}
+
+// floorOf is the floor of a send to a peer at endpoint
 // RFC 7383 section 2.5.1: "Otherwise, for messages to be sent over IPv6, it is RECOMMENDED that a value of 1280 bytes as a maximum IP datagram size be used ([RFC2460]). For messages to be sent over IPv4, it is RECOMMENDED that a value of 576 bytes as a maximum IP datagram size be used."
 // the two are the floor, since IPv6 carries 1280 on every link and RFC 7383 section 2.5.1 says of 576 that "the value is large enough for the presented solution and small enough to avoid IP fragmentation in most situations"
-func (s *Session) floor() (threshold, room int) {
-	endpoint := s.mux.Endpoint()
+func floorOf(endpoint netip.AddrPort) (threshold, room int) {
 	threshold = 1280
-	if endpoint.AddrPort().Addr().Is4() {
+	if endpoint.Addr().Is4() {
 		threshold = 576
 	}
 	return threshold, threshold - around(endpoint)
 }
 
 // around is the octets an IP datagram to or from endpoint carries past its octets of IKE message: an IP header without options of endpoint's family, the UDP header and the non-ESP marker
-func around(endpoint transport.Endpoint) int {
-	if endpoint.AddrPort().Addr().Is4() {
+func around(endpoint netip.AddrPort) int {
+	if endpoint.Addr().Is4() {
 		return 20 + 8 + NonESPMarkerLen
 	}
 	return 40 + 8 + NonESPMarkerLen
@@ -122,26 +159,27 @@ func around(endpoint transport.Endpoint) int {
 
 // onWire is the octets of the IP datagrams to or from endpoint that carry octets of IKE message in datagrams of them, each counted as path counts one of this end's
 func onWire(endpoint transport.Endpoint, datagrams, octets int) int {
-	return octets + datagrams*around(endpoint)
+	return octets + datagrams*around(endpoint.AddrPort())
 }
 
 // Fragments reports whether both ends said they support IKE fragmentation, and where they did the path's threshold now, the largest IP datagram this end cuts a new message to fit
-// a request stepped down to its family's floor, and an answer cut within the datagrams of the request or repeat it answers, go below it
+// it is the family's floor from a step that cuts a request down to it, taken on the path the request was readied or last cut on, which every send of it went on since, the step's own included, until a reset, and an answer cut within the datagrams of the request or repeat it answers goes below it
 func (s *Session) Fragments() (bool, int) {
 	if !s.fragments {
 		return false, 0
 	}
-	threshold, _ := s.path()
+	threshold, _, _ := s.path()
 	return true, threshold
 }
 
 // transmission is a message this end sends, as the datagrams that carry it now
-// threshold is the one they were cut under, sends the sends of them a request's backoff scheduled, total their Total Fragments, zero for the message whole, and request the Total Fragments of the request the message answers, which a repeat of that request is read against
+// threshold is the one they were cut under, sends the sends of them a request's backoff scheduled, start the path read the message was readied or last cut on, zeroed once a send of a request reads another, total their Total Fragments, zero for the message whole, and request the Total Fragments of the request the message answers, which a repeat of that request is read against
 type transmission struct {
 	message   *outbound
 	datagrams [][]byte
 	threshold int
 	sends     int
+	start     pathRead
 	total     int
 	request   uint16
 }
@@ -163,13 +201,13 @@ func (s *Session) transmit(message *outbound, request form) (*transmission, erro
 	if !s.fragments {
 		return t, nil
 	}
-	threshold, room := s.path()
+	threshold, room, at := s.path()
 	threshold, room = s.within(threshold, room, request.largest)
-	t.threshold = threshold
+	t.threshold, t.start = threshold, at
 	if len(message.whole) <= room && request.total == 0 {
 		return t, nil
 	}
-	if err := s.cut(t, threshold, message.capacity(room)); err != nil {
+	if err := s.cut(t, threshold, message.capacity(room), at); err != nil {
 		return nil, err
 	}
 	return t, nil
@@ -197,27 +235,40 @@ func (s *Session) sealRequest(ctx *ikeContext, header Header, inner []RawPayload
 }
 
 // resend sends t through send once more, cut again first where cutFor says, and reports whether it was cut again
-// every send of a message goes through it unless it is a first send right after the cut, so no send carries a cut the path no longer takes
+// every send of a request sealRequest readied goes through it unless it is a first send right after the readying, and an answer transmit readied goes first right after its readying and then at each repeat that draws it through cutFor and sendCut
+// so no send carries a cut the path no longer takes
 // fit is cutFor's
 // RFC 7383 section 2.5.2: "it MUST start from larger values and refragment the original message"
+// a step that cuts a request down to its family's floor, taken on the path the request was readied or last cut on, which every send of it went on since, the step's own included, is recorded for path to give the exchanges after it
+// a step that cuts nothing records nothing, since a request that fits the floor whole says nothing of larger datagrams
 func (s *Session) resend(t *transmission, fit int, send func([]byte) error) (bool, error) {
-	threshold, size := s.cutFor(t, fit)
-	return s.sendCut(t, threshold, size, send)
+	threshold, size, at := s.cutFor(t, fit)
+	stepped := !t.message.header.IsResponse() && size > 0 && t.start == at
+	// the zero start matches no path a send reads, whose read is never under its family's floor, so a count with a send on another path carries nothing until a cut starts it again
+	if t.start != at {
+		t.start = pathRead{}
+	}
+	again, err := s.sendCut(t, threshold, size, at, send)
+	if stepped && again {
+		record := at
+		s.stepped.Store(&record)
+	}
+	return again, err
 }
 
 // retransmit is resend for a send of a request that its backoff schedules, the first send included, and only such a send counts toward stepDownSends
-// so a probe, which a network change asks for at any time, steps a request down only once the backoff's own sends under its cut reached stepDownSends, and a step that cuts the request starts the backoff over
+// so a probe, which a network change or an operator asks for at any time, steps a request down only once the backoff's own sends under its cut reached stepDownSends, and a step that cuts the request starts the backoff over
 func (s *Session) retransmit(t *transmission, send func([]byte) error) (bool, error) {
 	again, err := s.resend(t, 0, send)
 	t.sends++
 	return again, err
 }
 
-// sendCut sends t through send once more under threshold, cut first into fragments of size plaintext octets where size is not zero, and reports whether it was cut again
-func (s *Session) sendCut(t *transmission, threshold, size int, send func([]byte) error) (bool, error) {
+// sendCut sends t through send once more under threshold, cut first into fragments of size plaintext octets on the path at where size is not zero, and reports whether it was cut again
+func (s *Session) sendCut(t *transmission, threshold, size int, at pathRead, send func([]byte) error) (bool, error) {
 	again := false
 	if size > 0 {
-		again = s.cut(t, threshold, size) == nil
+		again = s.cut(t, threshold, size, at) == nil
 	} else {
 		t.threshold = threshold
 	}
@@ -234,31 +285,32 @@ func (s *Session) sendCut(t *transmission, threshold, size int, send func([]byte
 // RFC 7383 section 2.5.1: "The responder in the exchange may use the maximum size of the received IKE Fragment message IP datagrams as a threshold when constructing a fragmented response."
 // so an answer follows the initiator's probe down and probes nothing of its own, and one whose datagrams fit the repeat's stays as it is
 // RFC 7383 section 2.5.2: "When selecting the next smaller value for the fragmentation threshold, the sender MUST ensure that the value in the Total Fragments field is really increased."
-func (s *Session) cutFor(t *transmission, fit int) (threshold, size int) {
+// at is the path the send reads
+func (s *Session) cutFor(t *transmission, fit int) (threshold, size int, at pathRead) {
 	if !s.fragments {
-		return t.threshold, 0
+		return t.threshold, 0, at
 	}
-	threshold, room := s.path()
-	if floor, floorRoom := s.floor(); !t.message.header.IsResponse() && t.sends >= stepDownSends && floor < min(threshold, t.threshold) {
+	threshold, room, at := s.path()
+	if floor, floorRoom := floorOf(at.endpoint); !t.message.header.IsResponse() && t.sends >= stepDownSends && floor < min(threshold, t.threshold) {
 		threshold, room = floor, floorRoom
 	}
 	switch lower, inside := s.within(threshold, room, fit); {
 	case inside < room && largest(t.datagrams) > inside:
 		threshold, room = lower, inside
 	case threshold >= t.threshold:
-		return t.threshold, 0
+		return t.threshold, 0, at
 	}
 	size = t.message.capacity(room)
 	switch {
 	case t.total == 0 && len(t.message.whole) <= room:
-		return threshold, 0
+		return threshold, 0, at
 	case t.total > 0:
 		size = min(size, len(t.message.inner)/(t.total+1))
 	}
 	if size <= 0 {
-		return t.threshold, 0
+		return t.threshold, 0, at
 	}
-	return threshold, size
+	return threshold, size, at
 }
 
 // carried is the datagrams t goes in at a send that cuts it into fragments of size plaintext octets, or as it stands where size is zero, and the octets of IKE message they carry in all
@@ -280,13 +332,13 @@ func largest(datagrams [][]byte) int {
 	return n
 }
 
-// cut seals t's message in fragments of at most size plaintext octets for threshold
-func (s *Session) cut(t *transmission, threshold, size int) error {
+// cut seals t's message in fragments of at most size plaintext octets for threshold, on the path at, which a request's sends count from again
+func (s *Session) cut(t *transmission, threshold, size int, at pathRead) error {
 	datagrams, err := t.message.fragments(size)
 	if err != nil {
 		return err
 	}
-	t.datagrams, t.threshold, t.sends, t.total = datagrams, threshold, 0, len(datagrams)
+	t.datagrams, t.threshold, t.sends, t.start, t.total = datagrams, threshold, 0, at, len(datagrams)
 	header := t.message.header
 	slog.Debug("ike sending a message in fragments", "exchange", exchangeName(header.ExchangeType), "message_id", header.MessageID,
 		"octets", len(t.message.whole), "fragments", t.total, "threshold", threshold)

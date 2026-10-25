@@ -797,7 +797,9 @@ func (s *Session) startLiveness() (*pendingRequest, error) {
 
 // Probe asks Run to prove the path to the peer now, and never blocks
 // probes Run has not acted on yet count as one
+// it ends the floor a request carried to later exchanges, and a step of a request readied or last cut before it carries none, since what asks for it, a network change or an operator, may come after the path widened where the host's reading stays the same
 func (s *Session) Probe() {
+	s.probed.Add(1)
 	select {
 	case s.probes <- struct{}{}:
 	default:

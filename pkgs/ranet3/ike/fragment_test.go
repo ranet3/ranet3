@@ -222,7 +222,7 @@ func TestThresholdIsThePathMTUOrTheFloorOfItsFamily(t *testing.T) {
 			}
 			t.Cleanup(func() { mux.Close() })
 			s := &Session{mux: mux, fragments: true, pathMTU: test.mtu}
-			if threshold, room := s.path(); threshold != test.threshold || room != test.room {
+			if threshold, room, _ := s.path(); threshold != test.threshold || room != test.room {
 				t.Errorf("the threshold is %d with room for %d octets, want %d and %d", threshold, room, test.threshold, test.room)
 			}
 			ctx := testContext()
@@ -260,7 +260,7 @@ func TestThresholdIsThePathMTUTheHostHolds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	threshold, room := s.path()
+	threshold, room, _ := s.path()
 	if threshold != mtu || len(message.whole) > room {
 		t.Fatalf("the threshold is %d with room for %d octets, want the host's path MTU of %d with room for a message of %d", threshold, room, mtu, len(message.whole))
 	}
@@ -688,7 +688,7 @@ func TestSplitAgainGrowsTotalFragmentsDownToTheFloor(t *testing.T) {
 		mtu = step.path
 		before, at := sent.total, sent.threshold
 		recut := recutAt(sent)
-		threshold, room := s.path()
+		threshold, room, _ := s.path()
 		if recut != step.recut || recut && (sent.total <= before || sent.threshold != threshold) || !recut && (sent.total != before || sent.threshold != at) {
 			t.Fatalf("at a threshold of %d the request went from %d fragments at %d to %d at %d, cut again %v, want %v and more fragments where cut", threshold, before, at, sent.total, sent.threshold, recut, step.recut)
 		}
@@ -971,6 +971,357 @@ func TestDialStepsARequestDownToTheFloorOnAPathNarrowerThanItsMTU(t *testing.T) 
 	}
 }
 
+// a dial of two additional key exchanges over a path that drops every datagram above the IPv4 floor while both ends' path MTU stays at 1500 steps the first IKE_INTERMEDIATE request down to the floor
+// and sends the second cut for the floor from its first send
+// RFC 7383 section 2.5.2: "In subsequent exchanges, the node should start with the current value of the fragmentation threshold."
+func TestLaterExchangeStartsAtTheThresholdAnEarlierSteppedDownTo(t *testing.T) {
+	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) {
+		cfg.HandshakeTimeout = answerBudget
+		cfg.pathMTU = pathMTUOf(1500)
+	})
+	lists := Suites{kex: []kexEntry{entry768And1024}}
+	h.lists.Store(&lists)
+	var mu sync.Mutex
+	// the sends of each IKE_INTERMEDIATE request by Message ID whose first datagram, the message whole or fragment 1, the path dropped
+	lost := map[uint32]int{}
+	cfg := h.peerConfig()
+	cfg.Suites = func() Suites { return lists }
+	cfg.pathMTU = pathMTUOf(1500)
+	cfg.RemotePort = relay(t, h.remotePort, func(fromInitiator bool, header *Header, raw []byte) bool {
+		m, err := DecodeMessage(raw)
+		if err != nil || !fromInitiator || header.ExchangeType != IKE_INTERMEDIATE || len(raw) <= floorRoom {
+			return len(raw) <= floorRoom
+		}
+		if fragment(m) {
+			if number, _ := fragmentNumbers(m); number != 1 {
+				return false
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		lost[header.MessageID]++
+		return false
+	})
+	initiator, responder := dialPaused(t, h, cfg)
+	for _, s := range []*Session{initiator, responder} {
+		t.Cleanup(func() { s.Mux().Close() })
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if lost[1] != stepDownSends || lost[2] != 0 {
+		t.Errorf("the path dropped %d sends of the first IKE_INTERMEDIATE request and %d of the second, want %d of the first and the second cut for the floor from its first send", lost[1], lost[2], stepDownSends)
+	}
+}
+
+// unansweredSession is a fragmentingSession under the path MTU it returns, 1500 at first, whose request of inner went unanswered stepDownSends times there, so that its next send steps it down to the IPv4 floor, the request still pending
+// amid, where not nil, runs before each of those sends after the first
+func unansweredSession(t *testing.T, inner []RawPayload, amid func(s *Session, hub *transport.Hub, mtu *int)) (*Session, *transport.Hub, *pendingRequest, *int) {
+	t.Helper()
+	s, _, hub := fragmentingSessionAt(t, &recorder{})
+	mtu := 1500
+	s.pathMTU = func() (int, error) { return mtu, nil }
+	s.retransmitAfter = time.Minute
+	pending, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, inner: inner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for pending.sends < stepDownSends {
+		if amid != nil {
+			amid(s, hub, &mtu)
+		}
+		s.sendPending(pending)
+	}
+	if pending.threshold != 1500 || s.stepped.Load() != nil {
+		t.Fatalf("the request sent %d times under 1500 is under %d with a record %v, want under 1500 with none", pending.sends, pending.threshold, s.stepped.Load())
+	}
+	return s, hub, pending, &mtu
+}
+
+// steppedSession is an unansweredSession whose request of 2000 octets of status stepped down to the IPv4 floor at its next send, the request still pending
+func steppedSession(t *testing.T) (*Session, *transport.Hub, *pendingRequest, *int) {
+	t.Helper()
+	s, hub, pending, mtu := unansweredSession(t, []RawPayload{bulkyStatus(2000)}, nil)
+	s.sendPending(pending)
+	if pending.threshold != 576 || pending.total < 2 {
+		t.Fatalf("the request sent %d times under 1500 went in %d fragments under %d, want it stepped down to the floor", stepDownSends+1, pending.total, pending.threshold)
+	}
+	return s, hub, pending, mtu
+}
+
+// firstCut is how s readies a new message of 2000 octets of status on its current IKE SA with flags for its first send, a request or an answer to a request that came whole
+func firstCut(t *testing.T, s *Session, flags uint8) *transmission {
+	t.Helper()
+	return firstCutFor(t, s, flags, form{})
+}
+
+// firstCutFor is firstCut for an answer to a request that came as request says
+func firstCutFor(t *testing.T, s *Session, flags uint8, request form) *transmission {
+	t.Helper()
+	ctx := s.current
+	message, err := ctx.seal(ctx.skei, Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL, Flags: flags}, []RawPayload{bulkyStatus(2000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent, err := s.transmit(message, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sent
+}
+
+// once a request stepped down to the IPv4 floor, a later request and an answer to a later request that came whole are cut for the floor at their first send, on another current IKE SA too, as a rekey of the IKE SA makes, and the session tells the floor as its threshold
+// a request's sends count from its last cut, so one cut again for a path MTU that fell steps on that path and carries the floor
+// an answer to a request in fragments larger than the floor's is cut for the floor too, and so is an answer cut before the step at the repeat whole that draws it after the step
+// RFC 7383 section 2.5.2: "In subsequent exchanges, the node should start with the current value of the fragmentation threshold."
+func TestLaterMessageIsCutForTheFloorARequestSteppedDownTo(t *testing.T) {
+	for name, flags := range map[string]uint8{"request": FlagInitiator, "answer to a request that came whole": FlagInitiator | FlagResponse} {
+		t.Run(name, func(t *testing.T) {
+			s, _, _, _ := steppedSession(t)
+			for _, sa := range []string{"the IKE SA the request stepped on", "another current IKE SA"} {
+				sent := firstCut(t, s, flags)
+				if sent.threshold != 576 || sent.total < 2 {
+					t.Errorf("on %s the %s went in %d fragments under %d, want it cut for the floor", sa, name, sent.total, sent.threshold)
+				}
+				wantFits(t, sent.datagrams, floorRoom)
+				if _, threshold := s.Fragments(); threshold != 576 {
+					t.Errorf("on %s the session tells a threshold of %d, want the floor", sa, threshold)
+				}
+				s.current = testContext()
+			}
+		})
+	}
+	t.Run("request stepped down on the path MTU it was cut again for", func(t *testing.T) {
+		s, _ := fragmentingSession(t, &recorder{})
+		mtu := 1500
+		s.pathMTU = func() (int, error) { return mtu, nil }
+		sent := firstCut(t, s, FlagInitiator)
+		mtu = 1400
+		for range stepDownSends + 1 {
+			if _, err := s.retransmit(sent, func([]byte) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if sent.threshold != 576 {
+			t.Fatalf("the request cut again for 1400 and sent %d times there went under %d, want it stepped down to the floor", stepDownSends, sent.threshold)
+		}
+		if next := firstCut(t, s, FlagInitiator); next.threshold != 576 {
+			t.Errorf("a later request went in %d fragments under %d, want it cut for the floor", next.total, next.threshold)
+		}
+	})
+	t.Run("answer to a request in fragments of 1000 octets", func(t *testing.T) {
+		s, _, _, _ := steppedSession(t)
+		sent := firstCutFor(t, s, FlagInitiator|FlagResponse, form{total: 2, largest: 1000})
+		if sent.threshold != 576 {
+			t.Errorf("the answer went in %d fragments under %d, want it cut for the floor", sent.total, sent.threshold)
+		}
+		wantFits(t, sent.datagrams, floorRoom)
+	})
+	t.Run("answer cut before the step and drawn again by a repeat whole", func(t *testing.T) {
+		s, _, pending, _ := unansweredSession(t, []RawPayload{bulkyStatus(2000)}, nil)
+		answer := firstCut(t, s, FlagInitiator|FlagResponse)
+		before := answer.total
+		s.sendPending(pending)
+		if again, err := s.resend(answer, 0, func([]byte) error { return nil }); err != nil || !again || answer.threshold != 576 || answer.total <= before {
+			t.Errorf("the answer went from %d fragments to %d under %d at the repeat, cut again %v, %v, want it cut again for the floor in more", before, answer.total, answer.threshold, again, err)
+		}
+		wantFits(t, answer.datagrams, floorRoom)
+	})
+}
+
+// the floor a request stepped down to holds while the path the host reads stays as it was, and ends for good once the reading rises or falls, the peer's endpoint moves, or the session is asked to probe its path
+// a reading that comes back to the one the step was taken under takes the floor back for no later exchange
+func TestCarriedFloorEndsWhereThePathMayHaveChanged(t *testing.T) {
+	for name, test := range map[string]struct {
+		change    func(t *testing.T, s *Session, hub *transport.Hub, mtu *int)
+		threshold int
+	}{
+		"the reading rises": {func(_ *testing.T, _ *Session, _ *transport.Hub, mtu *int) { *mtu = 9000 }, 9000},
+		"the reading falls": {func(_ *testing.T, _ *Session, _ *transport.Hub, mtu *int) { *mtu = 1400 }, 1400},
+		"the peer moves": {func(t *testing.T, s *Session, hub *transport.Hub, _ *int) {
+			moved, _ := observedPeerFrom(t, hub, 0x8182838485868788, net.IPv4(127, 0, 0, 1))
+			if !s.mux.AdoptEndpoint(moved) {
+				t.Fatal("the mux did not move")
+			}
+		}, 1500},
+		"the session probes": {func(_ *testing.T, s *Session, _ *transport.Hub, _ *int) { s.Probe() }, 1500},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, hub, _, mtu := steppedSession(t)
+			test.change(t, s, hub, mtu)
+			if sent := firstCut(t, s, FlagInitiator); sent.threshold != test.threshold {
+				t.Errorf("a request after the change went in %d fragments under %d, want under %d", sent.total, sent.threshold, test.threshold)
+			}
+			if *mtu == 1500 {
+				return
+			}
+			*mtu = 1500
+			if sent := firstCut(t, s, FlagInitiator); sent.threshold != 1500 {
+				t.Errorf("a request once the reading came back to 1500 went in %d fragments under %d, want under 1500", sent.total, sent.threshold)
+			}
+		})
+	}
+}
+
+// a reset after a request went unanswered stepDownSends times and before its next send steps it down to the IPv4 floor holds for the exchanges after it
+// the request still steps, since its own sends went unanswered, and carries the floor to no later exchange, since some of its unanswered sends went on a path that may since have changed
+// so does a change that one of those sends finds and that is undone by the step, since that send went on another path than the step
+// RFC 7383 section 2.5.2: "Implementations MUST be prepared to probe in every exchange that utilizes IKE fragmentation to deal with possible changes in path MTU over time."
+func TestResetBeforeARequestStepsHoldsForTheExchangesAfterIt(t *testing.T) {
+	probed := func(t *testing.T, s *Session, _ *transport.Hub, pending *pendingRequest, _ *int) {
+		s.Probe()
+		if _, err := s.probe(pending); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, test := range map[string]struct {
+		inner     []RawPayload
+		change    func(t *testing.T, s *Session, hub *transport.Hub, pending *pendingRequest, mtu *int)
+		threshold int
+	}{
+		"the session probes and its probe steps a request":        {[]RawPayload{bulkyStatus(2000)}, probed, 1500},
+		"the session probes and its probe steps a liveness check": {nil, probed, 1500},
+		"the session probes and the next scheduled send steps a request": {[]RawPayload{bulkyStatus(2000)}, func(_ *testing.T, s *Session, _ *transport.Hub, pending *pendingRequest, _ *int) {
+			s.Probe()
+			s.sendPending(pending)
+		}, 1500},
+		"the peer moves and the next scheduled send steps a request": {[]RawPayload{bulkyStatus(2000)}, func(t *testing.T, s *Session, hub *transport.Hub, pending *pendingRequest, _ *int) {
+			moved, _ := observedPeerFrom(t, hub, 0x8182838485868788, net.IPv4(127, 0, 0, 1))
+			if !s.mux.AdoptEndpoint(moved) {
+				t.Fatal("the mux did not move")
+			}
+			s.sendPending(pending)
+		}, 1500},
+		"the reading rises and the next scheduled send steps a request": {[]RawPayload{bulkyStatus(2000)}, func(_ *testing.T, s *Session, _ *transport.Hub, pending *pendingRequest, mtu *int) {
+			*mtu = 9000
+			s.sendPending(pending)
+		}, 9000},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, hub, pending, mtu := unansweredSession(t, test.inner, nil)
+			test.change(t, s, hub, pending, mtu)
+			if pending.threshold != 576 {
+				t.Fatalf("the request went under %d at its send after the reset, want it stepped down to the floor", pending.threshold)
+			}
+			if sent := firstCut(t, s, FlagInitiator); sent.threshold != test.threshold {
+				t.Errorf("a later request went in %d fragments under %d, want under %d", sent.total, sent.threshold, test.threshold)
+			}
+		})
+	}
+	for name, change := range map[string]func(t *testing.T, s *Session, hub *transport.Hub, mtu *int) (back func()){
+		"the reading rises and falls back": func(_ *testing.T, _ *Session, _ *transport.Hub, mtu *int) func() {
+			*mtu = 9000
+			return func() { *mtu = 1500 }
+		},
+		"the peer moves and moves back": func(t *testing.T, s *Session, hub *transport.Hub, _ *int) func() {
+			first := s.mux.Endpoint()
+			moved, _ := observedPeerFrom(t, hub, 0x8182838485868788, net.IPv4(127, 0, 0, 1))
+			if !s.mux.AdoptEndpoint(moved) {
+				t.Fatal("the mux did not move")
+			}
+			return func() {
+				if !s.mux.AdoptEndpoint(first) {
+					t.Fatal("the mux did not move back")
+				}
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var back func()
+			s, _, pending, _ := unansweredSession(t, []RawPayload{bulkyStatus(2000)}, func(s *Session, hub *transport.Hub, mtu *int) {
+				if back == nil {
+					back = change(t, s, hub, mtu)
+				}
+			})
+			back()
+			s.sendPending(pending)
+			if pending.threshold != 576 {
+				t.Fatalf("the request went under %d at its send after the change was undone, want it stepped down to the floor", pending.threshold)
+			}
+			if sent := firstCut(t, s, FlagInitiator); sent.threshold != 1500 {
+				t.Errorf("a later request went in %d fragments under %d, want under 1500", sent.total, sent.threshold)
+			}
+		})
+	}
+}
+
+// a request that fits its family's floor whole, such as a liveness check, steps down to the IPv4 floor at its send after stepDownSends unanswered ones and carries the floor to no exchange after it
+// RFC 7383 section 2.4: "IKE fragmentation SHOULD NOT be used in cases where IP-layer fragmentation of both the request and response messages is unlikely. For example, there is no point in fragmenting liveness check messages."
+// so its sends going unanswered says nothing of datagrams larger than the floor
+func TestRequestThatFitsTheFloorWholeCarriesNothing(t *testing.T) {
+	s, _, pending, _ := unansweredSession(t, nil, nil)
+	s.sendPending(pending)
+	if pending.threshold != 576 || len(pending.datagrams) != 1 {
+		t.Fatalf("the liveness check went in %d datagrams under %d at its send after stepDownSends, want it whole under the floor", len(pending.datagrams), pending.threshold)
+	}
+	if sent := firstCut(t, s, FlagInitiator); sent.threshold != 1500 {
+		t.Errorf("a later request went in %d fragments under %d, want under 1500", sent.total, sent.threshold)
+	}
+}
+
+// a request cut again for a path MTU that fell above the IPv4 floor carries nothing to the exchanges after it, and neither does an answer a smaller repeat cuts again for the floor, nor a stepped request sent again at the floor after a reset
+// RFC 7383 section 2.5.2: "It is the initiator of the exchange who performs PMTU discovery."
+func TestOnlyARequestsStepCarriesTheFloor(t *testing.T) {
+	t.Run("a request cut again for 1400", func(t *testing.T) {
+		s, _ := fragmentingSession(t, &recorder{})
+		mtu := 1500
+		s.pathMTU = func() (int, error) { return mtu, nil }
+		sent := firstCut(t, s, FlagInitiator)
+		mtu = 1400
+		if again, err := s.retransmit(sent, func([]byte) error { return nil }); err != nil || !again || sent.threshold != 1400 {
+			t.Fatalf("the request went in %d fragments under %d after the fall, cut again %v, %v, want it cut again for 1400", sent.total, sent.threshold, again, err)
+		}
+		if next := firstCut(t, s, FlagInitiator); next.threshold != 1400 {
+			t.Errorf("a later request went in %d fragments under %d, want under 1400", next.total, next.threshold)
+		}
+	})
+	t.Run("an answer cut again for the floor", func(t *testing.T) {
+		s, _ := fragmentingSession(t, &recorder{})
+		s.pathMTU = pathMTUOf(1500)
+		answer := firstCut(t, s, FlagInitiator|FlagResponse)
+		if again, err := s.resend(answer, 100, func([]byte) error { return nil }); err != nil || !again || answer.threshold != 576 {
+			t.Fatalf("the answer went in %d fragments under %d for a repeat of 100 octets, cut again %v, %v, want it cut again for the floor", answer.total, answer.threshold, again, err)
+		}
+		if next := firstCut(t, s, FlagInitiator); next.threshold != 1500 {
+			t.Errorf("a later request went in %d fragments under %d, want under 1500", next.total, next.threshold)
+		}
+	})
+	t.Run("a stepped request sent again at the floor after a reset", func(t *testing.T) {
+		s, _, pending, _ := steppedSession(t)
+		s.Probe()
+		s.sendPending(pending)
+		if next := firstCut(t, s, FlagInitiator); next.threshold != 1500 {
+			t.Errorf("a later request went in %d fragments under %d, want under 1500", next.total, next.threshold)
+		}
+	})
+}
+
+// a status read keeps the record a step stores while the read waits on the host's path MTU, as a step on Run's goroutine does during a stalled read
+func TestStatusReadKeepsTheRecordAStepStoresDuringIt(t *testing.T) {
+	s, _ := fragmentingSession(t, &recorder{})
+	newer := &pathRead{endpoint: s.mux.Endpoint().AddrPort(), read: 1400}
+	s.pathMTU = func() (int, error) {
+		s.stepped.Store(newer)
+		return 1500, nil
+	}
+	s.Fragments()
+	if kept := s.stepped.Load(); kept != newer {
+		t.Errorf("the record after the status read is %p, want %p, the one of the reading 1400 a step stored during it", kept, newer)
+	}
+}
+
+// dropping a record path read as stale keeps the one a step stored since, as where a status read finds the old record while a send steps on Run's goroutine
+func TestDroppedRecordKeepsTheOneAStepStoredSince(t *testing.T) {
+	s := &Session{}
+	s.stepped.Store(&pathRead{read: 1500})
+	stale := s.stepped.Load()
+	newer := &pathRead{read: 9000}
+	s.stepped.Store(newer)
+	s.forget(stale)
+	if kept := s.stepped.Load(); kept != newer {
+		t.Errorf("the record after the stale one was dropped is %+v, want the newer %+v", kept, newer)
+	}
+}
+
 // a responder whose path drops its datagrams over the IPv4 floor while its path MTU stays at 1500, as on darwin behind a narrower hop or where ICMP is filtered, answers the IKE_INTERMEDIATE request whole until the initiator steps down to the floor
 // and then cut again within the fragment 1 that drew the answer, in more fragments, and the exchange completes
 // RFC 7383 section 2.5.1: "The responder in the exchange may use the maximum size of the received IKE Fragment message IP datagrams as a threshold when constructing a fragmented response."
@@ -1059,7 +1410,7 @@ func TestRunStepsARequestDownToTheFloorAndSendsItThereUntilItsBudgetEnds(t *test
 	}
 }
 
-// two probes right after the first send of an IKE_FOLLOWUP_KE request of ML-KEM-768, which a path MTU of 1500 carries whole and the IPv4 floor does not, send it whole again and leave its cut as it was, as a network change asks for them
+// two probes right after the first send of an IKE_FOLLOWUP_KE request of ML-KEM-768, which a path MTU of 1500 carries whole and the IPv4 floor does not, send it whole again and leave its cut as it was, as a network change or an operator asks for them
 // the backoff's own sends then step it to the floor after stepDownSends of them, as they would without the probes
 // the send after them steps it, the backoff's or a probe's, and starts its backoff over
 // RFC 7383 section 2.5.2: "While doing probes, it MUST start from larger values and refragment the original message, using the next smaller value of the threshold if it did not receive a response in a reasonable time after several retransmissions."
@@ -1111,24 +1462,18 @@ func TestProbesCountNoSendTowardTheStepToTheFloor(t *testing.T) {
 // a request sent stepDownSends times under a path MTU above its family's floor goes under the floor at its next send, and an answer resent as often goes under the path's threshold still
 // RFC 7383 section 2.5.2: "It is the initiator of the exchange who performs PMTU discovery."
 func TestOnlyARequestStepsDownToTheFloor(t *testing.T) {
-	s, _ := fragmentingSession(t, &recorder{})
-	s.pathMTU = pathMTUOf(1500)
-	ctx := s.current
 	for _, test := range []struct {
 		name  string
 		flags uint8
 		steps bool
 	}{{"request", FlagInitiator, true}, {"answer", FlagInitiator | FlagResponse, false}} {
-		message, err := ctx.seal(ctx.skei, Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL, Flags: test.flags}, []RawPayload{bulkyStatus(2000)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		sent, err := s.transmit(message, form{})
-		if err != nil {
-			t.Fatal(err)
-		}
+		// a session of its own, since the request's step carries the floor to every message after it
+		s, _ := fragmentingSession(t, &recorder{})
+		s.pathMTU = pathMTUOf(1500)
+		sent := firstCut(t, s, test.flags)
 		cut := sent.total
 		again := false
+		var err error
 		for range stepDownSends + 1 {
 			if again, err = s.retransmit(sent, func([]byte) error { return nil }); err != nil {
 				t.Fatal(err)
@@ -1188,7 +1533,7 @@ func TestClosingSendOfAnUnansweredRequestIsCutForThePath(t *testing.T) {
 func TestRunCutsTheAnswerToAWholeRequestThatDoesNotFitThePath(t *testing.T) {
 	s, _ := fragmentingSession(t, &recorder{})
 	s.pathMTU = pathMTUOf(1280)
-	_, room := s.path()
+	_, room, _ := s.path()
 	ctx := s.current
 	for _, test := range []struct {
 		octets int
