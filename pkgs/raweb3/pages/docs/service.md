@@ -210,10 +210,12 @@ launchd starts it again through `KeepAlive`. A single frame the tun hands over
 that cannot be read as packets costs that frame alone, as
 [metrics](metrics.md#tun-reads) describes. An exit's egress segments write to
 the same tun, so they have no device of their own to lose. An uplink going away
-does not stop the daemon either. The lookups of
-[readiness](exit-nodes.md#readiness) then fail, so the exit holds each family
-the uplink carried not ready, and withdraws its egress SIDs, until the kernel
-routes the family out again.
+does not stop the daemon either. Where the lookups of
+[readiness](exit-nodes.md#readiness) run, on an exit with `cap.border.overlay`
+and a member of the family, they then fail, so the exit holds each family the
+uplink carried not ready, and withdraws its egress SIDs, until the kernel routes
+the family out again. A family whose lookups are skipped is judged by its chain
+and its forwarding alone, and stays ready.
 
 dhcpcd and NetworkManager are told to leave the tun alone. The module adds
 `ranet*` to `networking.dhcpcd.denyInterfaces`, and as an `interface-name:`

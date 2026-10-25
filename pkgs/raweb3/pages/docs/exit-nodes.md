@@ -149,7 +149,10 @@ translates it and forwards it out of its uplink, only where 3 checks pass:
 
 - A destination inside `cap.border.overlay` belongs to the mesh. One that no
   node announces is answered as a destination no route holds, IPv6 code 0 and
-  IPv4 Host Unreachable, and never sent out of the uplink.
+  IPv4 Host Unreachable, and never sent out of the uplink. An exit without
+  `cap.border` has no overlay, so this check passes every packet, and it sends
+  an address no node announces out of the uplink as any other destination
+  outside the mesh.
 - The mesh routes a reply to the packet's source. The decision looks the source
   up as a reply from the packet's destination is routed, so a route announced
   from a source prefix covers the source only where that prefix covers the
@@ -173,7 +176,8 @@ A packet through a prefix counting as a default that `cap.route` announces meets
 the first 2 checks, and past them goes to the tun with no readiness to wait on,
 since no translation of this node stands behind it. An
 [egress segment](#egress-segments)'s inner packet meets the second check after
-its `allow` list, and is then refused where the mesh routes its destination, as
+its `allow` list, and is then refused where its destination lies inside
+`cap.border.overlay`, announced or not, or the mesh routes it, as
 [segment routing](segment-routing.md#egress-segments) describes.
 
 ## Refusing to advertise
@@ -332,8 +336,8 @@ The mesh writes each inner packet into the tun, as it writes a packet the
 forwarding decision egresses, and the kernel forwards it by its own routes,
 translated by the out rule keyed on the tun. A node with an egress segment
 translates both families, whatever `advertise` holds. An inner packet whose
-destination the mesh routes itself, to another node, into a hold or to this
-node, is refused rather than written, as
+destination lies inside `cap.border.overlay`, or that the mesh routes itself, to
+another node, into a hold or to this node, is refused rather than written, as
 [segment routing](segment-routing.md#egress-segments) describes.
 
 An exit that serves only egress segments writes `cap.egress` with an empty
