@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-10-21
+updated: 2026-10-25
 order: 75
 ---
 
@@ -87,7 +87,9 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
   `cap.crypto` names. A Child SA the peer's creation or rekey keyed with key
   exchanges of its own has their kex entry after its cipher, such as
   `aes256gcm/x25519+mlkem768`, until this node's own rekey of it, which runs
-  none.
+  none. Its Fragments column is `no` where the 2 ends did not both say they
+  support the IKE fragmentation of RFC 7383, and otherwise the path's threshold,
+  the largest IP datagram this node cuts a new IKE message to fit.
 - `whois` takes 1 address. It prints the longest prefix that covers the address,
   then the shorter ones it falls back to.
 - `ip` prints the host prefixes this node announces, 1 address per line.

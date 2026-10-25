@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-22
+updated: 2026-10-25
 order: 20
 ---
 
@@ -283,9 +283,10 @@ the only places where a real kernel takes the `nf_tables` encoding. Elsewhere
 the encoding meets only the decoder written beside it.
 `internal/egress/testdata/messages.golden` holds the kind, flags and body of
 every request in the transactions the translator and the border filter write, in
-the order each transaction sends them. It holds neither their dumps nor what a
-batch adds on the wire, its markers, sequence numbers and acknowledgment flag,
-and `go test ./internal/egress -update` rewrites it on Linux.
+the order each transaction sends them. It holds neither the dumps the translator
+and the border filter read with, nor the netlink header, sequence numbers, batch
+markers and acknowledgment flag that sending adds.
+`go test ./internal/egress -update` rewrites it on Linux.
 
 `nix fmt` rewrites the tree in place. It runs `deno fmt` on the Markdown, the
 example JSON and the site, then `nixfmt-tree`, then `go fmt`, `go vet`,
@@ -327,6 +328,7 @@ nix build .#checks.x86_64-linux.integration-mlkem-apart-responder -L
 nix build .#checks.x86_64-linux.integration-mlkem-fallback -L
 nix build .#checks.x86_64-linux.integration-mlkem-optional -L
 nix build .#checks.x86_64-linux.integration-mlkem-none -L
+nix build .#checks.x86_64-linux.integration-mlkem-fragment -L
 ```
 
 `integration-responder` inverts the exchange: strongSwan dials and ranet3
@@ -359,9 +361,14 @@ ranet3 dialing, and in `mlkem-meet-responder` with strongSwan dialing. Each
 asserts from strongSwan's log the `IKE_INTERMEDIATE` exchange at Message ID 1
 and `IKE_AUTH` at 2, and that `ranet3 sessions --json` names `x25519+mlkem768`
 and `swanctl --list-sas` `KE1_ML_KEM_768`. Each then waits for ranet3's own
-scheduled rekey of the IKE SA, and strongSwan rekeys the IKE SA and the Child SA
-right after it. Each asserts from strongSwan's log that ranet3's rekey of the
-IKE SA, strongSwan's of the IKE SA and strongSwan's of the Child SA each run
+scheduled rekey of the IKE SA. After it the check asks strongSwan for a rekey of
+the IKE SA and then of the Child SA, each right after strongSwan answers
+ranet3's Delete of a Child SA ranet3 rekeyed, which puts each between 2 of
+ranet3's Child SA rekeys. It asks again the same way after strongSwan's request
+drew `TEMPORARY_FAILURE` or strongSwan logs that it lost an IKE SA rekey
+collision, and waits for strongSwan's own exchange by the name strongSwan gives
+the new SA. Each asserts from strongSwan's log that ranet3's rekey of the IKE
+SA, strongSwan's of the IKE SA and strongSwan's of the Child SA each run
 ML-KEM-768 in an `IKE_FOLLOWUP_KE` exchange whose request echoes the link of the
 `CREATE_CHILD_SA` response, that a ping crosses each, and that
 `ranet3 sessions --json` names no kex entry for the Child SA of `IKE_AUTH` and
@@ -381,6 +388,39 @@ exchange. It lists `x25519` alone in `mlkem-none`, answers with `NONE` written
 out, runs no `IKE_INTERMEDIATE` and rekeys its IKE SA in `x25519`. strongSwan
 logs at level 2 for its `cfg` group in these checks, so its journal shows the
 proposals it received from ranet3, a `NONE` among them.
+
+`integration-mlkem-fragment` has ranet3 dial over links too narrow for its
+ML-KEM messages, and each end cuts them into the fragments of RFC 7383. Vlan 1
+has an MTU of 1280 and carries IPv6. Vlan 2 carries IPv4 with a route MTU of 576
+at each end, since Linux takes IPv6 off a device under 1280, and the gateway's
+kernel then builds no route for IPv6 in an SA over it. strongSwan cuts its own
+messages at its `fragment_size` of 1280 on both, and on vlan 2 the kernel splits
+those fragments into IP fragments. The check runs 4 phases: `x25519+mlkem768`
+over IPv6, `p384+mlkem1024` over IPv6, `x25519+mlkem768` over IPv4 and
+`p384+mlkem1024` over IPv4, each later one entered through a `specialisation` of
+the client. Where a phase keeps the family, the switch reloads the `kex` list,
+which rekeys the IKE SA to the new entry through `IKE_FOLLOWUP_KE` cut both ways
+with the session kept, and a restart then dials with it. Each phase asserts that
+`ranet3 sessions --json` names the entry and the remote, `ike_fragments` true
+and `ike_fragment_threshold` at the phase's threshold, 1280 or 576, and that
+`swanctl --list-sas` names the entry. For each `IKE_INTERMEDIATE` and
+`IKE_FOLLOWUP_KE` it asserts ranet3's `ike sending a message in fragments` line
+and `ike.message.fragmented` event at that threshold and strongSwan's
+`reassembled fragmented IKE message`. For ML-KEM-1024, whose answers pass
+strongSwan's `fragment_size`, it also asserts strongSwan's
+`splitting IKE message (... bytes) into N fragments` and ranet3's
+`ike reassembled a message from fragments`. A ping crosses each phase in both
+families. At the end it asserts that each log holds none of these lines:
+
+- ranet3's: `no matching inbound ESP SA`,
+  `ike stopping ESP on a Child SA past its lifetime` and
+  `ike dropped the fragments of a message the peer left incomplete`
+- strongSwan's: `integrity check failed`, `no CHILD_SA built` and
+  `AUTHENTICATION_FAILED`
+
+The checks that write no `kex` list, all but `suites-meet` and the `mlkem-*`
+ones, run its default: ranet3 offers `x25519+mlkem768` first, and a strongSwan
+whose proposals hold no ML-KEM takes a classical entry.
 
 `integration-egress` makes the client an exit node and boots a third machine
 behind it, holding prefixes the gateway can reach through the mesh and no other
@@ -442,8 +482,11 @@ rekeys from the peer.
 
 The checks give the Child SA a lifetime of 24 seconds and the IKE SA one of 34
 seconds, with a margin of 22 seconds and no jitter, so each SA rekeys soon after
-it is made. The margin covers the unanswered Delete of a replaced IKE SA, which
-holds the session's next request, and then a rekey's 3 lost sends. The script of
+it is made. The 2 `mlkem-meet` checks give the Child SA 32 seconds. The
+ML-KEM-768 Child SA of strongSwan's rekey thereby lasts until ranet3's own rekey
+10 seconds after it is made, past the check of its key exchanges. The margin
+covers the unanswered Delete of a replaced IKE SA, which holds the session's
+next request, and then a rekey's 3 lost sends. The script of
 `integration-initiator` and `integration-kernel` also has the gateway drop the
 client's IKE for 5 seconds while iperf3 runs, which outlasts a rekey's first
 send, and asserts that a Child SA rekey completed and that no Child SA reached

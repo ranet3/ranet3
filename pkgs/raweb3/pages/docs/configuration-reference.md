@@ -560,24 +560,25 @@ The IKE SA's transforms, each list most preferred first.
 | -------- | --------------- | ------------------------------------------------ | -------------- |
 | `cipher` | list of names   | `["aes256gcm", "aes128gcm", "chacha20poly1305"]` | IKE SA ciphers |
 | `prf`    | list of names   | `["sha384", "sha256"]`                           | IKE SA PRFs    |
-| `kex`    | list of entries | `["x25519", "p384", "p256"]`                     | Key exchanges  |
+| `kex`    | list of entries | `["x25519+mlkem768", "x25519", "p384", "p256"]`  | Key exchanges  |
 
 - `aes256gcm` and `aes128gcm` are AES-GCM with a 16-octet tag and a 256 or
   128-bit key, and `chacha20poly1305` is ChaCha20-Poly1305. `sha384` and
   `sha256` are HMAC-SHA2-384 and HMAC-SHA2-256. `x25519`, `p384` and `p256` are
-  Curve25519 and the NIST curves P-384 and P-256, and `mlkem768` is ML-KEM-768
-  of FIPS 203.
-- A list left out holds every name in the default's order. An empty list, an
-  entry written twice and a name not in the default, other than `mlkem768`
-  joined in a `kex` entry, are refused, and names are lowercase.
+  Curve25519 and the NIST curves P-384 and P-256, and `mlkem768` and `mlkem1024`
+  are ML-KEM-768 and ML-KEM-1024 of FIPS 203.
+- A list left out holds the default above, which for `cipher` and `prf` is every
+  name the list takes. An empty list, an entry written twice and a name not in
+  the default, other than `mlkem1024` joined in a `kex` entry, are refused, and
+  names are lowercase.
 - A `kex` entry is a classical key exchange, alone or joined with `+` by
-  `mlkem768`, as in `x25519+mlkem768`. At setup the classical key exchange runs
-  in `IKE_SA_INIT`, and ML-KEM-768 runs after it in an `IKE_INTERMEDIATE`
-  exchange of its own, as
+  `mlkem768` or `mlkem1024`, as in `x25519+mlkem768`. At setup the classical key
+  exchange runs in `IKE_SA_INIT`, and the ML-KEM method runs after it in an
+  `IKE_INTERMEDIATE` exchange of its own, as
   [RFC 9370 section 2.2](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2)
   and [RFC 9242](https://www.rfc-editor.org/rfc/rfc9242.html) describe. In a
-  rekey the classical key exchange runs in `CREATE_CHILD_SA`, and ML-KEM-768
-  after it in an `IKE_FOLLOWUP_KE` exchange of its own, as
+  rekey the classical key exchange runs in `CREATE_CHILD_SA`, and the ML-KEM
+  method after it in an `IKE_FOLLOWUP_KE` exchange of its own, as
   [section 2.2.4](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2.4)
   describes. The SA's keys come from both.
 - The load refuses these `kex` entries, and its error names the entry:
@@ -585,26 +586,28 @@ The IKE SA's transforms, each list most preferred first.
     `mlkem768`, since ML-KEM runs only after a classical key exchange.
   - An entry that joins a classical name, such as `x25519+p256`.
   - An entry that joins more than 1 name.
-  - An entry that joins `mlkem1024`, whose `IKE_INTERMEDIATE` messages pass 1500
-    octets and need the IKE fragmentation of RFC 7383, which ranet3 does not
-    implement.
   - An entry that names `mlkem512` or any other name `kex` does not take.
 - A peer's Child SA creation or rekey may run any entry of `kex`, a joined
-  entry's ML-KEM-768 in `IKE_FOLLOWUP_KE`. A proposal that offers `NONE` for an
-  additional key exchange the entry does not use gets `NONE` back. A Child SA
+  entry's ML-KEM method in `IKE_FOLLOWUP_KE`. A proposal that offers `NONE` for
+  an additional key exchange the entry does not use gets `NONE` back. A Child SA
   rekey this node starts runs no key exchange.
 
-A list of joined entries alone, such as `["x25519+mlkem768"]`, refuses every
-peer without ML-KEM-768. A list that also holds a classical entry lets a session
-fall back to it. Between 2 nodes that both list a classical entry, an attacker
-on the path who can break the classical key exchange while the handshake runs
-can steer them to that entry.
+A node that writes no `kex` offers X25519 with ML-KEM-768 first, and a peer
+without ML-KEM takes a classical entry from a later proposal. A list of joined
+entries alone, such as `["x25519+mlkem768"]`, refuses every peer without
+ML-KEM-768. A list that also holds a classical entry lets a session fall back to
+it. Between 2 nodes that both list a classical entry, an attacker on the path
+who can break the classical key exchange while the handshake runs can steer them
+to that entry.
 [The ML-KEM draft's section 3](https://datatracker.ietf.org/doc/html/draft-ietf-ipsecme-ikev2-mlkem-09#section-3)
 says "The simplest way to prevent such active attacks is to disable support for
 traditional-only sequences of key exchanges whenever possible." List only joined
 entries for peers known to run ML-KEM-768. The `IKE_INTERMEDIATE` request of
-ML-KEM-768 needs a path of 1281 bytes over IPv4 and 1301 over IPv6, and the
-`IKE_FOLLOWUP_KE` request of a rekey 1297 and 1317, as
+ML-KEM-768 is a datagram of 1281 bytes over IPv4 and 1301 over IPv6, and the
+`IKE_FOLLOWUP_KE` request of a rekey 1297 and 1317. The requests of ML-KEM-1024
+pass 1500 bytes. A message larger than the path goes in the fragments of
+[RFC 7383](https://www.rfc-editor.org/rfc/rfc7383.html) to a peer that supports
+them, and needs the whole path with one that does not, as
 [limits](design/limits.md#ml-kem-and-the-path) describes.
 
 ### `cap.crypto.esp`
@@ -620,7 +623,8 @@ of `cap.crypto.ike.cipher`.
 
 A dialing node offers 1 proposal for each `kex` entry, in the list's order, each
 holding every listed cipher and PRF, and sends its key exchange in the group of
-the first entry. An offer holding a joined entry also asks the peer for
+the first entry. With the default `kex` that is 4 proposals and a key exchange
+in X25519. An offer holding a joined entry also asks the peer for
 `IKE_INTERMEDIATE`. A proposal holds an entry when it offers the entry's group
 and its ML-KEM method, and `NONE` in any additional key exchange type the entry
 does not use. An answering node takes the first entry of its own `kex` that a
