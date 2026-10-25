@@ -270,6 +270,8 @@ func meshCarrying(t *testing.T, c *Client) func() [2]bool {
 		for _, prefix := range labLeafPrefixes() {
 			mesh.Routes.Set(netip.Prefix{}, prefix, leaf)
 		}
+		// the exit writes into the tun, as the kernel exit does
+		mesh.SetExit(&fakeExit{write: mesh.WriteHost})
 		c.Mesh = mesh
 		return nil
 	}); err != nil {

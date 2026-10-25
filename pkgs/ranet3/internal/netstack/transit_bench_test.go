@@ -64,6 +64,21 @@ func BenchmarkResolve(b *testing.B) {
 func benchTransitMesh(b *testing.B) *Mesh {
 	b.Helper()
 	m, _ := startTransitMesh(nil)
+	return benchRouted(b, m)
+}
+
+// the tun keeps nothing, so it takes every batch an exit writes for as long as a benchmark runs, where startTransitMesh's recording tun holds 64
+func benchEgressMesh(b *testing.B) *Mesh {
+	b.Helper()
+	m := &Mesh{Name: "bench0", Routes: NewRouteTable(), closed: make(chan struct{})}
+	m.setDevice(&discardDevice{})
+	m.SetTransit(true)
+	m.SetOverlay(transitOverlay)
+	return benchRouted(b, m)
+}
+
+func benchRouted(b *testing.B, m *Mesh) *Mesh {
+	b.Helper()
 	b.Cleanup(m.Close)
 	peer := benchPeer(b)
 	for _, family := range []int{4, 6} {
@@ -152,13 +167,17 @@ func BenchmarkDecideWithheld(b *testing.B) {
 	}
 }
 
-// BenchmarkDecideEgressed takes every packet out through an entry of this node's counting as a default, past the egress check
+// BenchmarkDecideEgressed takes every packet out through an entry of this node's counting as a default that cap.egress advertises, past the egress check, to the exit
+// which writes each batch to a tun of one lane that keeps nothing, as the kernel exit writes them
 // from one source to one destination, whose answer a batch keeps, and to as many destinations as a batch holds packets, past what it keeps
 func BenchmarkDecideEgressed(b *testing.B) {
 	for _, c := range []struct{ family, destinations int }{{4, 1}, {4, decideBatch}, {6, 1}, {6, decideBatch}} {
 		b.Run(fmt.Sprintf("IPv%d destinations=%d", c.family, c.destinations), func(b *testing.B) {
-			m := benchTransitMesh(b)
+			m := benchEgressMesh(b)
+			m.SetExit(tunExit{m.WriteHost})
 			m.Routes.Set(netip.Prefix{}, exitShapes[0].prefixes[c.family][0], Local)
+			m.SetEgressPrefixes(exitShapes[0].prefixes[c.family])
+			m.SetAdvertisedReady(true, true)
 			source := map[int]netip.Addr{4: segAddr("192.0.2.129"), 6: segAddr("3fff:0:0:1::1")}[c.family]
 			packets := make([][]byte, c.destinations)
 			for i := range packets {
@@ -173,13 +192,14 @@ func BenchmarkDecideEgressed(b *testing.B) {
 	}
 }
 
-// BenchmarkApplySegmentsEgress takes batches of inboundWriteBatchSize packets through an egress segment to the tun, past its reply and mesh checks
+// BenchmarkApplySegmentsEgress takes batches of inboundWriteBatchSize packets through an egress segment to an exit writing to the tun, past its reply and mesh checks
 // from one source to one destination, whose answers a batch keeps, and to 64 destinations, past the pairs it keeps
 func BenchmarkApplySegmentsEgress(b *testing.B) {
 	for _, c := range []struct{ family, destinations int }{{4, 1}, {4, 64}, {6, 1}, {6, 64}} {
 		b.Run(fmt.Sprintf("IPv%d destinations=%d", c.family, c.destinations), func(b *testing.B) {
 			m := ownEgressOwned(&Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})})
 			m.setDevice(&discardDevice{})
+			m.SetExit(tunExit{m.WriteHost})
 			m.SetSegments(egressTable(b))
 			m.SetEgressReady(true, true)
 			routeLeaf(b, m, tooBigSource[c.family])
@@ -203,6 +223,36 @@ func BenchmarkApplySegmentsEgress(b *testing.B) {
 				m.applySegments(frames, DefaultMTU)
 			}
 			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*inboundWriteBatchSize), "ns/packet")
+		})
+	}
+}
+
+// BenchmarkSegmentsEgressed takes a batch of decideBatch packets steered to an egress segment through the segments' actions to the exit
+// which writes them to a tun of one lane that keeps nothing, as the kernel exit writes them
+func BenchmarkSegmentsEgressed(b *testing.B) {
+	for _, family := range []int{4, 6} {
+		b.Run(fmt.Sprintf("IPv%d", family), func(b *testing.B) {
+			m := &Mesh{Name: "bench0", Routes: NewRouteTable(), closed: make(chan struct{})}
+			m.setDevice(&discardDevice{})
+			m.SetExit(tunExit{m.WriteHost})
+			m.SetSegments(egressTable(b))
+			m.SetEgressReady(true, true)
+			routeLeaf(b, m, tooBigSource[family])
+			b.Cleanup(m.Close)
+			inner := udpPacket(tooBigSource[family], transitNowhere[family], 100, false)
+			batch := make([][]byte, decideBatch)
+			for i := range batch {
+				batch[i] = steered(b, inner, headend, egressExit)
+			}
+			frames := framed(batch...)
+			b.ReportAllocs()
+			for b.Loop() {
+				m.applySegments(frames, DefaultMTU)
+			}
+			if got, want := m.SegmentCounters().Egressed, uint64(b.N*decideBatch); got != want {
+				b.Fatalf("%d packets took the egress segment, want each of the %d handed it", got, want)
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*decideBatch), "ns/packet")
 		})
 	}
 }

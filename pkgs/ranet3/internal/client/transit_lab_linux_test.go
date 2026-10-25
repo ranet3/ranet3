@@ -458,7 +458,7 @@ func labErrorTo(destination netip.Addr) func([]byte) bool {
 }
 
 // a node with cap.egress and no egress segment egresses mode 2 through the prefixes cap.egress advertises into its tun
-// for each family the translator lets it announce as Republish last read, and is dropped and counted not ready for a family it does not
+// for each family the exit holds ready and lets it announce as Republish last read, and is dropped and counted not ready for a family it does not
 // whatever the border's chain reads back, which holds the egress SIDs alone
 func TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment(t *testing.T) {
 	if os.Getuid() != 0 {
@@ -503,6 +503,11 @@ func TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment(t *testing.T)
 		}
 		return families
 	}
+	// the exit writes into the tun, as the kernel exit does
+	var announced []netip.Prefix
+	c.SetExit(&fakeExit{announce: func() []netip.Prefix { return announced }, write: c.Mesh.WriteHost})
+	// the exit holds both families ready, as it does for every family it lets the node announce
+	c.SetEgressReady(true, true, false)
 	for _, step := range []struct {
 		announced []netip.Prefix
 		border    bool
@@ -514,7 +519,7 @@ func TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment(t *testing.T)
 		{[]netip.Prefix{every[4]}, false},
 		{nil, false},
 	} {
-		c.SetEgressAnnounce(func() []netip.Prefix { return step.announced })
+		announced = step.announced
 		c.SetBorderReady(step.border)
 		want := [2]bool{slices.Contains(step.announced, every[4]), slices.Contains(step.announced, every[6])}
 		if got := egressed(t); got != want {
@@ -570,7 +575,7 @@ func labExitUplink(t *testing.T, e *labNode) (*labNode, int) {
 	return i, capture
 }
 
-// labTranslator builds the translator main builds for client's cap.egress, in ns, and hands client its announcement
+// labTranslator builds the exit the command builds for client's cap.egress, in ns, and hands it to client
 func labTranslator(t *testing.T, ns *netnstest.Thread, client *Client, bus *events.Bus) *kernelexit.Translator {
 	t.Helper()
 	cfg := client.config()
@@ -586,22 +591,21 @@ func labTranslator(t *testing.T, ns *netnstest.Thread, client *Client, bus *even
 				in(func() { answers, err = RouteLookups(lookups) })
 				return answers, err
 			},
-			Sysctl:   func(path string) (value string) { in(func() { value = Sysctl(path) }); return value },
-			Members:  client.EgressMembers,
-			Announce: func([]netip.Prefix) { client.Republish() },
-			Events:   bus,
-			Steered:  len(cfg.Segments().Egress()) != 0,
-			Ready:    client.SetEgressReady,
+			Sysctl:  func(path string) (value string) { in(func() { value = Sysctl(path) }); return value },
+			Members: client.EgressMembers,
+			Write:   client.Mesh.WriteHost,
+			Steered: len(cfg.Segments().Egress()) != 0,
+			Hooks:   egress.Hooks{Ready: client.SetEgressReady, Republish: client.Republish, Events: bus},
 		})
 		return err
 	}); err != nil {
 		t.Fatalf("build the translator: %v", err)
 	}
-	client.SetEgressAnnounce(translator.Announce)
+	client.SetExit(translator)
 	return translator
 }
 
-// labTranslate runs labTranslator's translator for node until the test ends
+// labTranslate runs labTranslator's exit for node until the test ends
 func labTranslate(t *testing.T, node *labNode) {
 	t.Helper()
 	translator := labTranslator(t, node.ns, node.client, node.events)

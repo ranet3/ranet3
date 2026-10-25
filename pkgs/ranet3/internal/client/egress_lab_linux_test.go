@@ -27,6 +27,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
@@ -185,7 +186,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	})
 	// the leaf's prefixes are the members the lookups read from, so a pass skipping them has not read the path at all
 	serving := func() bool {
-		stats := translator.Stats()
+		stats := translator.Status()
 		return stats.Ready4 && stats.Ready6 && stats.Skipped == "" && labOriginated(node, labDefaults[4]) && labOriginated(node, labDefaults[6]) && sidOriginated(node, labSID.String())
 	}
 	waitFor(t, convergeBudget, "both families ready by their lookups, the defaults and the SID's /128 originated and the mesh table covering the leaves", func() bool {
@@ -342,7 +343,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 			t.Fatalf("hold %s: %v", arm.name, err)
 		}
 		waitFor(t, convergeBudget, arm.name+" not ready by "+reason+", its default and the SID's /128 retracted", func() bool {
-			stats := translator.Stats()
+			stats := translator.Status()
 			ready := map[int]bool{4: stats.Ready4, 6: stats.Ready6}[arm.family]
 			return !ready && strings.Contains(stats.Unready, reason) && !labOriginated(node, labDefaults[arm.family]) && !sidOriginated(node, labSID.String())
 		})
@@ -428,7 +429,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 		node.Mesh.Routes.Remove(netip.Prefix{}, inside)
 		node.Mesh.Routes.Set(netip.Prefix{}, outside, leaf)
 		waitFor(t, convergeBudget, "the IPv6 lookups skipped and said so, both families ready", func() bool {
-			stats := translator.Stats()
+			stats := translator.Status()
 			return stats.Ready4 && stats.Ready6 && stats.Skipped == labSkipped6 && slices.Contains(skips(bus), labSkipped6)
 		})
 		carry(t, send, delivered, outside.Addr().Next(), labFar6.Addr(), labExit6.Addr(), listeners[1], "sent from outside the overlay with the IPv6 lookups skipped")
@@ -536,10 +537,10 @@ func TestTUNSetEgressReadyMovesTheMeshBeforeTheAnnouncement(t *testing.T) {
 	carried := meshCarrying(t, c)
 	speakerRecording(t, c, bus)
 	var rebuiltWith [2]bool
-	c.SetEgressAnnounce(func() []netip.Prefix {
+	c.SetExit(&fakeExit{announce: func() []netip.Prefix {
 		rebuiltWith = carried()
 		return nil
-	})
+	}, write: c.Mesh.WriteHost})
 	for _, step := range []struct {
 		v4, v6, serves bool
 	}{
@@ -559,6 +560,93 @@ func TestTUNSetEgressReadyMovesTheMeshBeforeTheAnnouncement(t *testing.T) {
 		if got := sidOriginated(c, labSID.String()); got != step.serves {
 			t.Errorf("after SetEgressReady(%v, %v, %v) the SID's /128 is originated %v", step.v4, step.v6, step.serves, got)
 		}
+	}
+}
+
+// egress through an advertised default waits on the exit's Ready as well as
+// on its announcement: a family Ready takes away stops before the
+// announcement is rebuilt, though Announce still answers it, as after another
+// writer's change until the exit's next pass, and a family Announce leaves out
+// stops though Ready holds it, the mesh's word read by what it delivers to the
+// exit
+func TestTUNAdvertisedEgressWaitsOnReadyAndTheAnnouncement(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("creating a tun needs root on linux")
+	}
+	both := []netip.Prefix{labDefaults[4], labDefaults[6]}
+	c, _, _, bus := reloadOf(t, func(cfg *config.Config) {
+		cfg.Cap.Egress = &egress.Egress{}
+		for _, prefix := range both {
+			cfg.Cap.Egress.Advertise = append(cfg.Cap.Egress.Advertise, schema.PrefixFrom(prefix))
+		}
+	})
+	speakerRecording(t, c, bus)
+	sent := meshSending(t, c, both)
+	var announced []netip.Prefix
+	var rebuiltWith [2]bool
+	c.SetExit(&fakeExit{announce: func() []netip.Prefix {
+		rebuiltWith = sent()
+		return announced
+	}, write: c.Mesh.WriteHost})
+	for _, step := range []struct {
+		v4, v6    bool
+		announced []netip.Prefix
+	}{
+		{true, true, both},
+		{false, true, both},
+		{true, true, both[1:]},
+		{true, false, both},
+		{false, false, both},
+		{true, true, both},
+	} {
+		announced = step.announced
+		c.SetEgressReady(step.v4, step.v6, false)
+		if rebuiltWith[0] && !step.v4 || rebuiltWith[1] && !step.v6 {
+			t.Errorf("SetEgressReady(%v, %v) rebuilt the announcement while the mesh egressed %v through the defaults", step.v4, step.v6, rebuiltWith)
+		}
+		want := [2]bool{step.v4 && slices.Contains(step.announced, labDefaults[4]), step.v6 && slices.Contains(step.announced, labDefaults[6])}
+		if got := sent(); got != want {
+			t.Errorf("with Ready holding %v %v and Announce answering %v the mesh egresses %v through the defaults, want %v", step.v4, step.v6, step.announced, got, want)
+		}
+	}
+}
+
+func meshSending(t *testing.T, c *Client, advertised []netip.Prefix) func() [2]bool {
+	t.Helper()
+	if err := netnstest.StartThread(t).Do(func() error {
+		mesh, err := netstack.NewNamed(0, labTUN, nil)
+		if err != nil {
+			return err
+		}
+		// egress through a default leaves only from a source the mesh routes a reply to, here through a synthetic leaf
+		leaf := netstack.NewPeer("example/leaf", func(int) (netstack.BatchSealer, error) {
+			return nil, errors.New("the leaf is synthetic")
+		}, func([][]byte) error { return nil }, nil)
+		t.Cleanup(leaf.Close)
+		for _, prefix := range labLeafPrefixes() {
+			mesh.Routes.Set(netip.Prefix{}, prefix, leaf)
+		}
+		for _, prefix := range advertised {
+			mesh.Routes.Set(netip.Prefix{}, prefix, netstack.Local)
+		}
+		mesh.SetEgressPrefixes(advertised)
+		c.Mesh = mesh
+		return nil
+	}); err != nil {
+		t.Fatalf("open the mesh: %v", err)
+	}
+	t.Cleanup(c.Mesh.Close)
+	return func() (families [2]bool) {
+		t.Helper()
+		for i, inner := range [][]byte{
+			udpPacket(labLeaf4, labFar4.Addr(), labLeafPort, labPort, []byte("sent IPv4")),
+			udpPacket(labHeadend, labFar6.Addr(), labLeafPort, labPort, []byte("sent IPv6")),
+		} {
+			delivered := c.Mesh.TransitCounters().Delivered
+			c.Mesh.DeliverInbound(inner, 0)
+			families[i] = c.Mesh.TransitCounters().Delivered > delivered
+		}
+		return families
 	}
 }
 

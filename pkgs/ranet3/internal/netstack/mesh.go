@@ -641,7 +641,7 @@ func (m *Mesh) DeliverInboundBatch(frames [][]byte, mtu int, from *Peer) {
 		return
 	}
 	routed, granted := m.applySegments(frames, mtu)
-	m.writeHost(m.decide(routed, granted, from))
+	m.WriteHost(m.decide(routed, granted, from))
 }
 
 // writeHostPacket writes one packet to the tun, copied into a frame of its own
@@ -651,12 +651,14 @@ func (m *Mesh) writeHostPacket(raw []byte) {
 	}
 	frame := make([]byte, TUNHeadroom+len(raw))
 	copy(frame[TUNHeadroom:], raw)
-	m.writeHost([][]byte{frame})
+	m.WriteHost([][]byte{frame})
 }
 
-// writeHost writes frames to the tun, on a multiqueue tun each to the persistent writer lane of its inner flow
+// WriteHost writes frames to the tun, on a multiqueue tun each to the persistent writer lane of its inner flow
 // which keeps each flow's order and lets the kernel take unrelated flows in parallel
-func (m *Mesh) writeHost(frames [][]byte) {
+// each frame is TUNHeadroom bytes and then the packet, the mesh's until a lane has written it
+// the kernel exit writes what it egresses through it, as the mesh writes what it delivers
+func (m *Mesh) WriteHost(frames [][]byte) {
 	if len(frames) == 0 {
 		return
 	}

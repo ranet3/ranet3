@@ -1,4 +1,4 @@
-# HELP ranet3_transit_packets_total Packets the forwarding decision forwarded to a peer, delivered to the tun or dropped, by reason, and the ICMP errors it answered or could not answer them with.
+# HELP ranet3_transit_packets_total Packets the forwarding decision forwarded to a peer, delivered to the tun or handed to the exit, or dropped, by reason, and the ICMP errors it answered or could not answer them with.
 # TYPE ranet3_transit_packets_total counter
 ranet3_transit_packets_total{decision="forwarded",reason=""} 1200
 ranet3_transit_packets_total{decision="delivered",reason=""} 340

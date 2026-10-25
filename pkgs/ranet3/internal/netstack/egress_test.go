@@ -72,6 +72,7 @@ func egressMesh(tb testing.TB) (*Mesh, *recordingDevice) {
 	dev := &boundedDevice{recordingDevice: recordingDevice{writes: make(chan recordedWrite, 16)}, tb: tb}
 	m := ownEgressOwned(&Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})})
 	m.setDevice(dev)
+	m.SetExit(tunExit{m.WriteHost})
 	m.SetSegments(egressTable(tb))
 	m.SetEgressReady(true, true)
 	routeLeaf(tb, m, tooBigSource[4], tooBigSource[6])
@@ -91,6 +92,36 @@ func (d *boundedDevice) Write(bufs [][]byte, offset int) (int, error) {
 		return 0, errors.New("the recording is full")
 	}
 	return d.recordingDevice.Write(bufs, offset)
+}
+
+// tunExit hands what it takes to write, the mesh's tun writer as the kernel exit's Runtime holds it
+type tunExit struct{ write func(frames [][]byte) }
+
+func (e tunExit) Egress(frames [][]byte) { e.write(frames) }
+
+// recordingExit keeps each batch it takes, every packet copied out of its frame
+type recordingExit struct {
+	mu      sync.Mutex
+	batches [][][]byte
+}
+
+func (e *recordingExit) Egress(frames [][]byte) {
+	batch := make([][]byte, len(frames))
+	for i, frame := range frames {
+		batch[i] = slices.Clone(frame[TUNHeadroom:])
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.batches = append(e.batches, batch)
+}
+
+// taken is the batches the exit took since the last call
+func (e *recordingExit) taken() [][][]byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	batches := e.batches
+	e.batches = nil
+	return batches
 }
 
 // ownEgressOwned makes each of egressOwned m's own as a host route
@@ -170,10 +201,10 @@ func flowPacket(source, destination netip.Addr, port uint16, seq byte) []byte {
 	return raw
 }
 
-// both egress hand-offs reach the tun's lanes, an egress segment's inner packet and the decision's verdict through a prefix cap.egress advertises, in both families
+// both egress hand-offs reach the tun's lanes through an exit writing as the kernel exit does, an egress segment's inner packet and the decision's verdict through a prefix cap.egress advertises, in both families
 // each flow reaches the one lane its hash names, in the order it came, its packets counted egressed or delivered
 // and a family whose word is not ready is dropped and counted not ready, the egress segments' word for the first and advertisedReady for the second
-func TestBothEgressHandOffsReachTheTunsLanesInFlowOrder(t *testing.T) {
+func TestEgressThroughTheTunWriterKeepsEachFlowOnItsLaneInOrder(t *testing.T) {
 	const flows, packets = 6, 3
 	lanes := make([]*recordingDevice, egressLanes)
 	devices := make([]tun.Device, egressLanes)
@@ -183,6 +214,7 @@ func TestBothEgressHandOffsReachTheTunsLanesInFlowOrder(t *testing.T) {
 	}
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 	m.setDevice(lanesOf(devices...))
+	m.SetExit(tunExit{m.WriteHost})
 	m.startInboundWriters()
 	t.Cleanup(m.Close)
 	m.SetTransit(true)
@@ -286,6 +318,80 @@ func TestBothEgressHandOffsReachTheTunsLanesInFlowOrder(t *testing.T) {
 	run(func(family int, mode3 bool) bool { return mode3 == (family == 6) })
 }
 
+// both egress hand-offs hand their batches to the exit and never to the tun, in both families
+// an egress segment's inner packets in a batch of their own, then the decision's verdicts through a prefix cap.egress advertises in another, each in the order they came
+// each counted egressed or delivered, and a family whose word is not ready dropped and counted not ready by its own mode's word, the egress segments' for mode 3 and advertisedReady for mode 2
+func TestBothEgressHandOffsReachTheExit(t *testing.T) {
+	dev := &recordingDevice{writes: make(chan recordedWrite, 16)}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+	m.setDevice(dev)
+	exit := &recordingExit{}
+	m.SetExit(exit)
+	t.Cleanup(m.Close)
+	m.SetTransit(true)
+	m.SetOverlay(transitOverlay)
+	m.SetSegments(egressTable(t))
+	defaults := []netip.Prefix{segPrefix("0.0.0.0/0"), segPrefix("::/0")}
+	for _, prefix := range defaults {
+		m.Routes.Set(netip.Prefix{}, prefix, Local)
+	}
+	m.SetEgressPrefixes(defaults)
+	routeLeaf(t, m, tooBigSource[4], tooBigSource[6])
+
+	// mode 3's packets are of the families 4, 6, 4 and mode 2's of 6, 4, 6, interleaved
+	var mode3, mode2, frames [][]byte
+	for i, family := range []int{4, 6, 4} {
+		other := map[int]int{4: 6, 6: 4}[family]
+		segment := flowPacket(tooBigSource[family], transitNowhere[family], uint16(40000+i), 3)
+		decided := flowPacket(tooBigSource[other], transitNowhere[other], uint16(41000+i), 2)
+		mode3, mode2 = append(mode3, segment), append(mode2, decided)
+		frames = append(frames, steered(t, segment, headend, egressExit), decided)
+	}
+	ready := func(packets [][]byte, v4, v6 bool) [][]byte {
+		var out [][]byte
+		for _, raw := range packets {
+			if raw[0]>>4 == 4 && v4 || raw[0]>>4 == 6 && v6 {
+				out = append(out, raw)
+			}
+		}
+		return out
+	}
+	for _, c := range []struct {
+		name                               string
+		egress4, egress6, advert4, advert6 bool
+	}{
+		{"with every family ready", true, true, true, true},
+		{"with IPv4 of the egress segments and IPv6 of the advertised prefixes not ready", false, true, true, false},
+		{"with no family ready", false, false, false, false},
+	} {
+		m.SetEgressReady(c.egress4, c.egress6)
+		m.SetAdvertisedReady(c.advert4, c.advert6)
+		segments, decisions := m.SegmentCounters(), m.TransitCounters()
+		m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+		want3, want2 := ready(mode3, c.egress4, c.egress6), ready(mode2, c.advert4, c.advert6)
+		var want [][][]byte
+		for _, batch := range [][][]byte{want3, want2} {
+			if len(batch) != 0 {
+				want = append(want, batch)
+			}
+		}
+		if got := exit.taken(); !slices.EqualFunc(got, want, func(a, b [][]byte) bool { return slices.EqualFunc(a, b, bytes.Equal) }) {
+			t.Errorf("%s the exit took %d batches %q, want mode 3's %d packets and then mode 2's %d, each in order", c.name, len(got), got, len(want3), len(want2))
+		}
+		if writes := tunWrites(dev); len(writes) != 0 {
+			t.Errorf("%s the tun took %q, want nothing", c.name, writes)
+		}
+		after := m.SegmentCounters()
+		if egressed, notReady := after.Egressed-segments.Egressed, after.NotReady-segments.NotReady; egressed != uint64(len(want3)) || notReady != uint64(len(mode3)-len(want3)) {
+			t.Errorf("%s the egress segment counted %d egressed and %d not ready, want %d and %d", c.name, egressed, notReady, len(want3), len(mode3)-len(want3))
+		}
+		decided := m.TransitCounters()
+		if delivered, notReady := decided.Delivered-decisions.Delivered, decided.NotReady-decisions.NotReady; delivered != uint64(len(want2)) || notReady != uint64(len(mode2)-len(want2)) {
+			t.Errorf("%s the decision counted %d delivered and %d not ready, want %d and %d", c.name, delivered, notReady, len(want2), len(mode2)-len(want2))
+		}
+	}
+}
+
 // note files packets, a write to lane, under their flows' ports in got, and fails the test where a flow reaches a lane other than its hash names
 func note(t *testing.T, got map[uint16][][]byte, lane int, packets [][]byte) int {
 	t.Helper()
@@ -350,6 +456,7 @@ func (*discardDevice) Write(bufs [][]byte, _ int) (int, error) { return len(bufs
 func TestEgressBatchAllocatesOnceMoreThanADelivery(t *testing.T) {
 	m := ownEgressOwned(&Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})})
 	m.setDevice(&discardDevice{})
+	m.SetExit(tunExit{m.WriteHost})
 	m.SetSegments(egressTable(t))
 	m.SetEgressReady(true, true)
 	routeLeaf(t, m, tooBigSource[6])

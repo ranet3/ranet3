@@ -25,6 +25,40 @@ type natTables struct {
 	families []uint8
 }
 
+// New validates the capability and opens the tables the backend owns, so a
+// deployment that cannot have it fails at startup rather than on the first
+// packet. It installs nothing. Run does that.
+func New(cfg egress.Egress, rt Runtime) (*Translator, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Serves(rt.Steered); err != nil {
+		return nil, err
+	}
+	if rt.Interface == "" {
+		return nil, errors.New("egress: the mesh interface is required")
+	}
+	if rt.Forwarding == nil {
+		return nil, errors.New("egress: a forwarding reader is required")
+	}
+	// Resolved before the backend is opened, so a return direction with no
+	// mesh address to translate to is refused with nothing to clean up.
+	if _, err := cfg.ReturnSources(rt.MeshAddresses); err != nil {
+		return nil, err
+	}
+	if rt.Lookup == nil || rt.Sysctl == nil {
+		return nil, errors.New("egress: a route lookup and a sysctl reader are required")
+	}
+	if rt.Write == nil {
+		return nil, errors.New("egress: the mesh's tun writer is required")
+	}
+	be, err := newBackend(cfg, rt)
+	if err != nil {
+		return nil, err
+	}
+	return newTranslator(cfg, rt, be), nil
+}
+
 func newBackend(cfg egress.Egress, rt Runtime) (backend, error) {
 	conn, err := nftables.Dial()
 	if err != nil {

@@ -37,12 +37,12 @@
 // An exit whose rule will not install, or whose kernel will not forward, would
 // therefore attract traffic and drop it with nothing to tell the sender. So the
 // advertisement is published by this package rather than by the configuration:
-// Runtime.Announce is called with the prefixes of each family that is ready,
-// whose chain reads back as written, which the kernel forwards and whose route
-// lookups take a translated packet's path, and with nothing at all while no
-// family is. Forwarding is the same fact internal/client warns about for
-// transit, read from the same place, and acted on here because this end is the
-// only one that knows.
+// Announce answers the prefixes of each family that is ready, whose chain
+// reads back as written, which the kernel forwards and whose route lookups
+// take a translated packet's path, and nothing at all while no family is, and
+// Republish says when that answer moves. Forwarding is the same fact
+// internal/client warns about for transit, read from the same place, and acted
+// on here because this end is the only one that knows.
 //
 // # The border filter
 //
@@ -87,7 +87,6 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
-	"ranet3.com/pkgs/ranet3/internal/events"
 )
 
 // Runtime holds the values the command resolves at startup rather than the
@@ -123,23 +122,17 @@ type Runtime struct {
 	// node's own, read on each pass. A family's lookups read from a member's
 	// address, and a family with no member skips them. Nil reads none.
 	Members func() []netip.Prefix
-	// Announce publishes the prefixes this node may advertise right now. It is
-	// called once per pass whose answer differs from the last, and with an
-	// empty list while nothing may be advertised. Nil means the caller does
-	// not announce, which only a test does.
-	Announce func([]netip.Prefix)
-	// Ready receives each family's readiness, and whether the egress SIDs are
-	// served, whenever one of the three moves, starting from none. A family is
-	// ready while this node translates it, its chain reads back exactly as
-	// written, the host forwards it, and the kernel's lookups route a translated
-	// packet and its reply the way the translation needs (see judge). It is
-	// reported not ready before the tables are withdrawn. The SIDs are served
-	// while at least one family is ready and every family the host forwards
-	// is. Nil where nothing reads it, which only a test does.
-	Ready func(v4, v6, serves bool)
-	// Events records every pass that rewrote the rules, moved the announcement or failed
-	// nil records nothing
-	Events *events.Bus
+	// Write is the mesh's tun writer, which Egress hands its frames to, so each
+	// flow keeps its lane and its order and the host routes and translates what
+	// the tun delivers
+	Write func(frames [][]byte)
+	// Hooks report what every exit reports. Republish is called once per pass
+	// whose announcement differs from the last. A family is ready while this
+	// node translates it, its chain reads back exactly as written, the host
+	// forwards it, and the kernel's lookups route a translated packet and its
+	// reply the way the translation needs (see judge). The SIDs are served
+	// while at least one family is ready and every family the host forwards is.
+	egress.Hooks
 }
 
 // Direction says which way through this node a packet is going, which decides
@@ -253,10 +246,10 @@ type backend interface {
 	where(egress.Egress) string
 }
 
-// Stats is one finished pass as an operator reads it. Installed counts the
+// passStats is one finished pass, which Status reports. Installed counts the
 // rules the host holds for this translator once the pass has applied, and
 // Announced the prefixes it is willing to advertise as a result.
-type Stats struct {
+type passStats struct {
 	At        time.Time
 	Desired   int
 	Installed int
@@ -286,10 +279,10 @@ type Translator struct {
 	// stats is the last pass as a reader takes it. The single run goroutine
 	// publishes a whole value and a reader takes one, so this needs no lock
 	// and a reader can never see half a pass.
-	stats atomic.Pointer[Stats]
-	// announced holds the prefixes Runtime.Announce was last given, so a pass
-	// that changes nothing does not republish and a caller reading it directly
-	// gets the same answer the speaker has.
+	stats atomic.Pointer[passStats]
+	// announced holds the prefixes Announce answers, stored before Republish
+	// is called, so a pass that changes nothing does not republish and a
+	// caller reading it directly gets the same answer the speaker has.
 	announced atomic.Pointer[[]netip.Prefix]
 	// warned holds the conflicts already reported, so a shared host costs one
 	// log line per new conflict rather than one per pass.
@@ -303,7 +296,7 @@ type Translator struct {
 	enabled   atomic.Bool
 	wake      chan struct{}
 	withdrawn bool
-	// ready4, ready6 and serves hold what Runtime.Ready was last given,
+	// ready4, ready6 and serves hold what Ready was last given,
 	// forwards4 and forwards6 the forwarding the last pass read, unready the
 	// reason a family is not ready and skipped what its lookups left out, all
 	// of them the run goroutine's
@@ -312,36 +305,7 @@ type Translator struct {
 	unready, skipped       string
 }
 
-// New validates the capability against the platform and opens whatever the
-// backend needs, so a deployment that cannot have it fails at startup rather
-// than on the first packet. It installs nothing. Run does that.
-func New(cfg egress.Egress, rt Runtime) (*Translator, error) {
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-	if err := cfg.Serves(rt.Steered); err != nil {
-		return nil, err
-	}
-	if rt.Interface == "" {
-		return nil, errors.New("egress: the mesh interface is required")
-	}
-	if rt.Forwarding == nil {
-		return nil, errors.New("egress: a forwarding reader is required")
-	}
-	// Resolved before the backend is opened, so a return direction with no
-	// mesh address to translate to is refused with nothing to clean up.
-	if _, err := cfg.ReturnSources(rt.MeshAddresses); err != nil {
-		return nil, err
-	}
-	if rt.Lookup == nil || rt.Sysctl == nil {
-		return nil, errors.New("egress: a route lookup and a sysctl reader are required")
-	}
-	be, err := newBackend(cfg, rt)
-	if err != nil {
-		return nil, err
-	}
-	return newTranslator(cfg, rt, be), nil
-}
+var _ egress.Exit = (*Translator)(nil)
 
 // newTranslator is a translator over a backend that is already open, writing to the host until SetEnabled stops it
 func newTranslator(cfg egress.Egress, rt Runtime, be backend) *Translator {
@@ -357,7 +321,7 @@ func newTranslator(cfg egress.Egress, rt Runtime, be backend) *Translator {
 //
 // The work runs on the run goroutine, which owns every field it touches. This
 // records the request and wakes it, so a caller returns before the host has
-// caught up and reads Stats to see that it has.
+// caught up and reads Status to see that it has.
 func (t *Translator) SetEnabled(on bool) {
 	t.enabled.Store(on)
 	select {
@@ -366,20 +330,36 @@ func (t *Translator) SetEnabled(on bool) {
 	}
 }
 
-// Capability is the block this translator is running, as the file spelled it.
-func (t *Translator) Capability() egress.Egress { return t.cfg }
+// Egress hands the frames to the mesh's tun writer, whose lanes keep each
+// flow in order, and the host routes and translates what the tun delivers
+func (t *Translator) Egress(frames [][]byte) { t.rt.Write(frames) }
 
-// Where names the space this translator owns, for an operator reading a log
-// line.
-func (t *Translator) Where() string { return t.be.where(t.cfg) }
+// Status is the last pass, the capability's translation and the rules the
+// host holds for this translator
+func (t *Translator) Status() egress.Status {
+	stats := t.lastPass()
+	advertise := make([]netip.Prefix, 0, len(t.cfg.Advertise))
+	for _, entry := range t.cfg.Advertise {
+		advertise = append(advertise, entry.Prefix)
+	}
+	return egress.Status{
+		Backend: "nftables", Where: t.where(),
+		Ready4: stats.Ready4, Ready6: stats.Ready6, Unready: stats.Unready, Skipped: stats.Skipped,
+		Advertise: advertise, Announced: stats.Announced,
+		Source4: t.cfg.Source4, Source6: t.cfg.Source6, Return: t.cfg.Return,
+		PassAt: stats.At, Err: stats.Err,
+		Rules: &egress.Rules{Installed: stats.Installed, Flows: stats.Flows, Bytes: stats.Bytes, Conflicts: stats.Conflicts},
+	}
+}
 
-// Stats reports the last pass, and the zero value before the first one has
-// run. A caller that wants to tell those apart reads At.
-func (t *Translator) Stats() Stats {
+func (t *Translator) where() string { return t.be.where(t.cfg) }
+
+// lastPass is the last pass, and the zero value before the first has run, which At tells apart
+func (t *Translator) lastPass() passStats {
 	if s := t.stats.Load(); s != nil {
 		return *s
 	}
-	return Stats{}
+	return passStats{}
 }
 
 // Announce is the prefixes this node may advertise right now: the configured
@@ -400,7 +380,7 @@ func (t *Translator) Announce() []netip.Prefix {
 // Run returns the withdrawal error, never a reconcile error: a failed pass is
 // logged, costs the advertisement, and is retried.
 func (t *Translator) Run(ctx context.Context) error {
-	slog.Info("egress translator started", "interface", t.rt.Interface, "steered", t.rt.Steered, "where", t.Where(),
+	slog.Info("egress translator started", "interface", t.rt.Interface, "steered", t.rt.Steered, "where", t.where(),
 		"advertise", len(t.cfg.Advertise))
 	ticker := time.NewTicker(t.cfg.SweepInterval())
 	defer ticker.Stop()
@@ -424,7 +404,7 @@ func (t *Translator) Run(ctx context.Context) error {
 			// the record of a stop lasts until the next pass, whatever woke it
 			if t.withdrawn {
 				t.withdrawn = false
-				slog.Info("egress translator started again", "where", t.Where())
+				slog.Info("egress translator started again", "where", t.where())
 			}
 			if err := t.reconcile(); err != nil {
 				slog.Warn("egress pass failed, retrying", "err", err, "retry_in", retry.failed())
@@ -519,7 +499,7 @@ func (t *Translator) reconcile() error {
 			err = fmt.Errorf("install rules: %w", applyErr)
 		} else {
 			applied = true
-			slog.Info("egress rules installed", "rules", len(desired), "replaced", len(held), "where", t.Where())
+			slog.Info("egress rules installed", "rules", len(desired), "replaced", len(held), "where", t.where())
 			// Read back rather than assumed. The counters below are the
 			// host's, and a rule the kernel accepted under a spelling other
 			// than the one asked for has to fail the readiness test rather
@@ -571,7 +551,7 @@ func (t *Translator) reconcile() error {
 		flows += rule.Packets
 		bytes += rule.Bytes
 	}
-	stats := Stats{
+	stats := passStats{
 		At: time.Now(), Desired: len(desired), Installed: len(held),
 		Flows: flows, Bytes: bytes,
 		Announced: announced, Conflicts: conflicts,
@@ -689,8 +669,8 @@ func (t *Translator) publish(prefixes []netip.Prefix) bool {
 		slog.Warn("egress advertisement changed", "prefixes", len(prefixes),
 			"was", len(*previous), "detail", "a family is advertised only while it is ready, as ranet3 status says")
 	}
-	if t.rt.Announce != nil {
-		t.rt.Announce(slices.Clone(prefixes))
+	if t.rt.Republish != nil {
+		t.rt.Republish()
 	}
 	return true
 }
@@ -774,7 +754,7 @@ func (t *Translator) stop() error {
 	t.setReady(false, false, why, why, "")
 	t.publish(nil)
 	err := t.withdraw()
-	stats := Stats{At: time.Now()}
+	stats := passStats{At: time.Now()}
 	attrs := []slog.Attr{slog.String("trigger", t.trigger), slog.Duration("took", time.Since(started)),
 		slog.Int("installed", 0), slog.Int("announced", 0)}
 	if err != nil {
@@ -791,8 +771,8 @@ func (t *Translator) stop() error {
 // table that is already gone is not an error.
 func (t *Translator) withdraw() error {
 	if err := t.be.Withdraw(); err != nil {
-		return fmt.Errorf("withdraw %s: %w", t.Where(), err)
+		return fmt.Errorf("withdraw %s: %w", t.where(), err)
 	}
-	slog.Info("egress translator withdrawn", "where", t.Where())
+	slog.Info("egress translator withdrawn", "where", t.where())
 	return nil
 }

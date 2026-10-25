@@ -150,7 +150,7 @@ func (r *upDownRig) start(model upDownModel) {
 	flag := filepath.Join(r.dir, downFlag)
 	r.reconciler, r.translator = &switchRecord{flag: flag}, &switchRecord{flag: flag}
 	c.SetReconcilerEnable(r.reconciler.set)
-	c.SetEgressEnable(r.translator.set)
+	c.SetExit(&fakeExit{enable: r.translator.set})
 	r.sessions = holdSessions(c)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -176,7 +176,7 @@ func (r *upDownRig) restart(model upDownModel) {
 	r.start(model)
 }
 
-// effective is where a switch stands, a new one standing on as kernel.New and egress.New leave theirs
+// effective is where a switch stands, a new one standing on as kernel.New and the exit's constructor leave theirs
 func effective(s *switchRecord) bool {
 	on, _ := s.calls()
 	return len(on) == 0 || on[len(on)-1]

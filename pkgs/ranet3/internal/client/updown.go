@@ -49,17 +49,6 @@ func (c *Client) SetStateDir(dir string) error {
 	return nil
 }
 
-// SetEgressEnable hands down and up the egress translator's own stop and start, as SetReconcilerEnable hands the reconciler's
-// a node that starts down hands the translator its stop here, before its first pass
-func (c *Client) SetEgressEnable(set func(bool)) {
-	c.runningMu.Lock()
-	defer c.runningMu.Unlock()
-	c.egressEnable.Store(&set)
-	if c.downSince.Load() != nil {
-		set(false)
-	}
-}
-
 // Down takes the node off the mesh until Up puts it back, through every restart and reboot between
 func (c *Client) Down(ctx context.Context) (result control.Result, err error) {
 	defer func() { c.noteVerb(ctx, "down", "", result, err) }()
@@ -114,7 +103,7 @@ func (c *Client) Up(ctx context.Context) (result control.Result, err error) {
 	return control.Result{Detail: "This node is back on the mesh"}, nil
 }
 
-// applyInstalledLocked hands the reconciler and the translator what the node's place on the mesh asks of them
+// applyInstalledLocked hands the reconciler and the exit what the node's place on the mesh asks of them
 // a down node holds nothing in the host but the border filter, and an up one what its file and the stopped set say
 // the border stays, since a down node's kernel still forwards and its services still trust mesh sources
 // c.runningMu is held
@@ -123,8 +112,8 @@ func (c *Client) applyInstalledLocked() {
 	if set := c.reconcilerEnable.Load(); set != nil {
 		(*set)(up && c.running[control.SubsystemReconciler])
 	}
-	if set := c.egressEnable.Load(); set != nil {
-		(*set)(up)
+	if exit := c.exit.Load(); exit != nil {
+		(*exit).SetEnabled(up)
 	}
 }
 

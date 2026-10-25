@@ -326,3 +326,33 @@ func TestOversizedInterfaceNameIsRefused(t *testing.T) {
 		t.Errorf("the longest name a device can have was refused: %v", err)
 	}
 }
+
+// An empty advertise list is an exit serving only steered traffic, which only
+// a node holding an egress segment can be. Without one the capability would
+// translate nothing and offer nothing, and New refuses it before it opens
+// anything.
+func TestEmptyAdvertiseNeedsAnEgressSegment(t *testing.T) {
+	if err := (egress.Egress{}).Validate(); err != nil {
+		t.Fatalf("a capability advertising nothing was refused on its own: %v", err)
+	}
+	if err := (egress.Egress{}).Serves(true); err != nil {
+		t.Errorf("an exit with an egress segment was refused: %v", err)
+	}
+	if err := (egress.Egress{}).Serves(false); err == nil || !strings.Contains(err.Error(), "advertise is empty") {
+		t.Errorf("an exit with nothing to carry was refused with %v", err)
+	}
+	_, err := New(egress.Egress{}, Runtime{Interface: "ranet0", Forwarding: func() (bool, bool) { return true, true }})
+	if err == nil || !strings.Contains(err.Error(), "advertise is empty") {
+		t.Fatalf("New returned %v, want the refusal of a capability carrying nothing", err)
+	}
+}
+
+// New refuses before it opens anything, so a capability that names a source
+// the return direction cannot resolve fails with nothing to clean up.
+func TestNewRefusesAnUnresolvableReturnBeforeOpeningTheBackend(t *testing.T) {
+	cfg := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24")}
+	_, err := New(cfg, Runtime{Interface: "ranet0", Forwarding: func() (bool, bool) { return true, true }})
+	if err == nil || !strings.Contains(err.Error(), "egress.source4") {
+		t.Fatalf("New returned %v, want a refusal naming the field that settles it", err)
+	}
+}

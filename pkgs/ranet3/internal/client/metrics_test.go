@@ -17,6 +17,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
@@ -216,18 +217,16 @@ func TestMetricsExposeTheTransitCountersAsTheGoldenFile(t *testing.T) {
 // advertised is this node declining to attract traffic it would drop, and no
 // peer can see that from its own end.
 func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
-	c := &Client{}
+	c := &Client{Mesh: &netstack.Mesh{}}
 	pass := time.Date(2026, 9, 21, 19, 3, 0, 0, time.UTC)
 	carried := netip.MustParsePrefix("198.51.100.0/24")
 	withheld := netip.MustParsePrefix("2001:db8:1::/48")
-	c.SetEgressStatus(func() control.EgressStatus {
-		return control.EgressStatus{
-			Enabled: true, Installed: 3, Flows: 91, PassAt: pass,
-			Advertise: []netip.Prefix{carried, withheld},
-			Announced: []netip.Prefix{carried},
-			Conflicts: []string{"ip table nat chain POSTROUTING at priority 100"},
-		}
-	})
+	c.SetExit(&fakeExit{status: egress.Status{
+		PassAt:    pass,
+		Advertise: []netip.Prefix{carried, withheld},
+		Announced: []netip.Prefix{carried},
+		Rules:     &egress.Rules{Installed: 3, Flows: 91, Conflicts: []string{"ip table nat chain POSTROUTING at priority 100"}},
+	}})
 	var out strings.Builder
 	c.renderEgress(&out)
 	for _, want := range []string{
@@ -246,14 +245,12 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 		}
 	}
 
-	// the gauge is the translator's judgment, which the border's hold on the egress segments does not narrow
+	// the gauge is the exit's judgment, which the border's hold on the egress segments does not narrow
 	cfg := &config.Config{}
 	egressNode(cfg, egressSegment("3fff:1:69c:8c6::3", "3fff:a::/32"))
 	c.cfg.Store(cfg)
 	c.borderHeld.Store(true)
-	c.SetEgressStatus(func() control.EgressStatus {
-		return control.EgressStatus{Enabled: true, Ready: []string{"ipv6"}}
-	})
+	c.SetExit(&fakeExit{status: egress.Status{Ready6: true}})
 	var ready strings.Builder
 	c.renderEgress(&ready)
 	for _, want := range []string{`ranet3_egress_ready{family="ipv4"} 0`, `ranet3_egress_ready{family="ipv6"} 1`} {
@@ -267,9 +264,8 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 
 	// A node that carries nothing for anybody writes none of it, rather than
 	// zeroes that read as an exit node translating nothing.
-	c.SetEgressStatus(func() control.EgressStatus { return control.EgressStatus{} })
 	var off strings.Builder
-	c.renderEgress(&off)
+	(&Client{}).renderEgress(&off)
 	if off.Len() != 0 {
 		t.Errorf("a node with no egress capability wrote %q", off.String())
 	}
