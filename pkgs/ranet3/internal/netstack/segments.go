@@ -111,7 +111,7 @@ type SegmentCounters struct {
 	Answered uint64
 	// Egressed counts the inner packets an egress segment handed to the tun
 	Egressed uint64
-	// Refused counts the packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for a source outside its allow list, an inner source it cannot read, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself, a part of Dropped never answered
+	// Refused counts the packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for a source outside its allow list, an inner source it cannot read, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or cap.border overlay holds, a part of Dropped never answered
 	Refused uint64
 	// NotReady counts the egress results dropped as not ready for their family
 	// it is this node's own state, so it is not in Dropped
@@ -204,10 +204,12 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 				continue
 			}
 			// egress carries nothing for the mesh, so a destination the mesh routes to another node or holds is refused
-			// and so is one of this node's own, which is the decision's to deliver rather than egress
+			// and so is one of this node's own, which is the decision's to deliver rather than egress, and one inside the overlay, which no node whose cap.border sets it egresses
+			// where no node announces it, an exit with cap.border whose table selects its own entry counting as a default answers it as no route, and a node whose table selects that exit's entry routes it there
+			// an exit without cap.border has no overlay, so its decision egresses such an address as any destination outside the mesh
 			if answer.forMesh {
 				if m.refuseEgress() {
-					slog.Warn("an egress segment refused an inner destination the mesh routes", "interface", m.Name, "destination", destination)
+					slog.Warn("an egress segment refused an inner destination the mesh routes or its overlay holds", "interface", m.Name, "destination", destination)
 				}
 				continue
 			}

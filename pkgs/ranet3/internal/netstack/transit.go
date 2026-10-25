@@ -362,7 +362,7 @@ type egressCheck struct {
 }
 
 // egressAnswer holds the mesh's answers for a packet's pair of addresses
-// routed is whether it routes a reply, and forMesh, which only an egress segment asks, whether it routes the destination itself
+// routed is whether it routes a reply, and forMesh, which only an egress segment asks, whether it routes the destination itself or holds it in cap.border's overlay
 type egressAnswer struct{ routed, forMesh bool }
 
 // pairAnswer is the mesh's egressAnswer for a packet from source to destination, its forMesh asked where segment says
@@ -370,6 +370,9 @@ type egressAnswer struct{ routed, forMesh bool }
 // a route announced from a source prefix decides each answer, so they are kept per pair rather than per source or destination
 // a reply's route reaches a peer, a hold or this node's own entry, its LAN or an address of its own
 // and the destination's entries counting as a default are passed over, so a destination only this node's default or another exit's covers egresses
+// unless the overlay holds it, which no node whose cap.border sets it egresses
+// where no node announces it, an exit with cap.border whose table selects its own entry counting as a default answers it as no route, and a node whose table selects that exit's entry routes it there
+// an exit without cap.border has no overlay, so its decision egresses such an address as any destination outside the mesh
 func (m *Mesh) pairAnswer(check *egressCheck, source, destination netip.Addr, segment bool) egressAnswer {
 	pair := [2]netip.Addr{source, destination}
 	for i := range check.kept {
@@ -382,7 +385,7 @@ func (m *Mesh) pairAnswer(check *egressCheck, source, destination netip.Addr, se
 	answer := egressAnswer{routed: routed}
 	if segment {
 		_, verdict, match = m.Routes.Resolve(source, destination)
-		answer.forMesh = !match.Counted && verdict != RouteNone
+		answer.forMesh = !match.Counted && verdict != RouteNone || m.inOverlay(destination)
 	}
 	if check.kept < egressPairs {
 		check.pairs[check.kept], check.answers[check.kept] = pair, answer

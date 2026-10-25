@@ -198,9 +198,12 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 }
 
 // egressRefused is the rule an egress segment refuses an inner packet by, at a node holding entries under overlay
-// some entry holds destination, and source where it is announced from a source prefix, and schema.CapturesTheMachine does not count it as a default
+// the destination lies inside overlay, or some entry holds it, and source where it is announced from a source prefix, and schema.CapturesTheMachine does not count it as a default
 // each entry is another node's, a hold or this node's own, and one counting as a default counts every entry covering it, so the entry the mesh prefers is such an entry exactly where one is
 func egressRefused(entries []exactnessEntry, overlay []schema.Prefix, source, destination netip.Addr) bool {
+	if slices.ContainsFunc(overlay, func(prefix schema.Prefix) bool { return prefix.Contains(destination) }) {
+		return true
+	}
 	return slices.ContainsFunc(entries, func(entry exactnessEntry) bool {
 		return entry.prefix.Contains(destination) && (!entry.from.IsValid() || entry.from.Contains(source)) && !schema.CapturesTheMachine(entry.prefix, overlay)
 	})
@@ -220,16 +223,19 @@ var (
 		6: {segAddr("2001:db8::5"), segAddr("2001:db8::9"), segAddr("2001:db8:8000::5"), segAddr("2001:db8:4000::5"), segAddr("3fff:b::9")},
 	}
 	refusalSources = map[int][]netip.Addr{4: {segAddr("192.0.2.65"), segAddr("192.0.2.67")}, 6: {segAddr("3fff:a::5"), segAddr("3fff:a::6")}}
+	// refusalOverlay is the overlay's entries the property draws from, the sources' and one under each family's longer documentation prefixes
+	refusalOverlay = append(slices.Clone(transitOverlay), schema.PrefixFrom(segPrefix("203.0.113.128/25")), schema.PrefixFrom(segPrefix("2001:db8:8000::/33")))
 )
 
-// over a drawn table of entries counting as a default and not, another node's, holds, this node's own and addresses cap.table assigns it, some announced from a source the batch sends from
+// over a drawn overlay, a drawn table of entries counting as a default and not, another node's, holds, this node's own and addresses cap.table assigns it, some announced from a source the batch sends from
 // and a drawn batch of inner packets to an egress segment from sources the mesh routes a reply to, more pairs than a batch keeps answers for among them
-// an inner packet reaches the tun exactly where its pair does not resolve, ignoring the entries counting as a default, to another node, a hold or this node, as egressRefused says
+// an inner packet reaches the tun exactly where its destination lies outside the overlay and its pair does not resolve, ignoring the entries counting as a default, to another node, a hold or this node, as egressRefused says
 // in batch order in one write, and every one refused is counted refused and dropped
 func TestEgressSegmentEgressesNothingTheMeshRoutes(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		m, meshTUN := egressMesh(ht)
-		m.SetOverlay(transitOverlay)
+		overlay := pbt.Subset(ht, refusalOverlay, 0, len(refusalOverlay))
+		m.SetOverlay(overlay)
 		other := (&recordingPeer{}).peer(ht, "other")
 		values := map[Verdict]*Peer{RoutePeer: other, RouteHeld: Unreachable, RouteLocal: Local}
 		var entries []exactnessEntry
@@ -282,7 +288,7 @@ func TestEgressSegmentEgressesNothingTheMeshRoutes(t *testing.T) {
 				copy(inner[20+8:], frameTag(i))
 			}
 			frames = append(frames, steered(ht, inner, headend, egressExit))
-			if egressRefused(entries, transitOverlay, source, destination) {
+			if egressRefused(entries, overlay, source, destination) {
 				refused++
 				continue
 			}
