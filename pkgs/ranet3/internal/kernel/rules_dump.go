@@ -28,6 +28,10 @@ type DumpedRule struct {
 	// Table is the table a lookup rule reads, as the kernel holds it whatever
 	// the action
 	Table uint32
+	// Goto is FRA_GOTO, the priority a goto jumps to, zero where the rule names none
+	Goto uint32
+	// Suppress is FRA_SUPPRESS_PREFIXLEN
+	Suppress Suppress
 	// Protocol is FRA_PROTOCOL, zero where the kernel holds none
 	Protocol uint8
 }

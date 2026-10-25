@@ -14,7 +14,7 @@ import (
 )
 
 // DumpRules reads every policy rule of both families through a socket of its
-// own, so a reader off the reconcile loop never shares the loop's
+// own, so a reader off the reconcile loop never shares the loop's socket.
 func DumpRules() ([]DumpedRule, error) {
 	conn, err := dialNetlink()
 	if err != nil {
@@ -58,7 +58,7 @@ func decodeDumpedRule(message nlMessage) (DumpedRule, bool) {
 	rule.Invert = binary.NativeEndian.Uint32(message.Data[8:])&unix.FIB_RULE_INVERT != 0
 	for kind, value := range message.attributes(sizeofFibRuleHdr) {
 		switch kind {
-		case unix.FRA_PRIORITY, unix.FRA_TABLE, unix.FRA_FWMARK, unix.FRA_FWMASK:
+		case unix.FRA_PRIORITY, unix.FRA_TABLE, unix.FRA_FWMARK, unix.FRA_FWMASK, unix.FRA_GOTO, unix.FRA_SUPPRESS_PREFIXLEN:
 			if len(value) != 4 {
 				continue
 			}
@@ -72,6 +72,13 @@ func decodeDumpedRule(message nlMessage) (DumpedRule, bool) {
 				rule.FWMark = number
 			case unix.FRA_FWMASK:
 				rule.FWMask = number
+			case unix.FRA_GOTO:
+				rule.Goto = number
+			case unix.FRA_SUPPRESS_PREFIXLEN:
+				// the kernel dumps it on every rule, -1 where none was asked
+				if number != ^uint32(0) {
+					rule.Suppress = Suppress{set: true, bits: number}
+				}
 			}
 		case unix.FRA_DST:
 			if address, ok := addressFromBytes(value); ok {

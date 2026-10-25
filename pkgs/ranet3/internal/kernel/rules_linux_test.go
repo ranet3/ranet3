@@ -29,10 +29,9 @@ func ruleAttrs(t *testing.T, body []byte) (hdr []byte, attrs map[uint16][]byte) 
 }
 
 // Every rule carries the reconciler's protocol, the table goes in FRA_TABLE
-// rather than in the header's one byte, and the action is the only one this
-// backend writes. The first is the ownership marker, the second is how a table
-// above 255 reaches the kernel at all, and the third keeps a mistaken rule a
-// lookup in the wrong table rather than a black hole.
+// rather than in the header's one byte, and a lookup goes out as
+// FR_ACT_TO_TBL. The first is the ownership marker and the second is how a
+// table above 255 reaches the kernel at all.
 func TestRuleMessageCarriesTheOwnershipMarker(t *testing.T) {
 	plat, _ := writePlatform(t)
 	rule := Rule{Family: FamilyIPv6, From: schema.MustPrefix("3fff:a::/36"), Table: 200, Priority: 150}
@@ -48,7 +47,7 @@ func TestRuleMessageCarriesTheOwnershipMarker(t *testing.T) {
 		t.Errorf("the legacy table byte is %d, want RT_TABLE_UNSPEC so FRA_TABLE decides", hdr[4])
 	}
 	if hdr[7] != unix.FR_ACT_TO_TBL {
-		t.Errorf("action is %d, want the only one this backend writes", hdr[7])
+		t.Errorf("action is %d, want FR_ACT_TO_TBL", hdr[7])
 	}
 	protocol, ok := attrs[unix.FRA_PROTOCOL]
 	if !ok || len(protocol) != 1 || protocol[0] != DefaultProtocol {
@@ -143,7 +142,7 @@ func TestExactMarkReadsBackAsTheRuleThatWasWritten(t *testing.T) {
 }
 
 // A dump holds every rule on the box. Anything without this reconciler's
-// protocol, and anything whose action is not the one this backend writes, is
+// protocol, and anything whose action is not one this backend writes, is
 // somebody else's: a delete list that contained one would be a delete list
 // that takes the machine's own routing apart.
 func TestRuleDumpKeepsOnlyWhatThisReconcilerOwns(t *testing.T) {
