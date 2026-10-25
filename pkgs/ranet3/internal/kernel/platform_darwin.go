@@ -327,11 +327,11 @@ func (p *routePlatform) ownedRoutes(rib []byte) ([]Route, error) {
 // did not create.
 //
 // Neither RTF_REJECT nor RTF_IFSCOPE is among them: both are shapes this
-// reconciler installs, the first for a held prefix and the second for an
-// announced default or a source-specific route, so a route out of our own
-// interface carrying either is one of ours by the same argument as every other
-// route out of it. RTF_IFSCOPE is then checked again once the destination is
-// known, because other daemons scope routes of their own.
+// reconciler installs, the first for a held prefix and the second for a route
+// that counts as a default or a source-specific route, so a route out of our
+// own interface carrying either is one of ours by the same argument as every
+// other route out of it. RTF_IFSCOPE is then checked again once the
+// destination is known, because other daemons scope routes of their own.
 const skipRouteFlags = unix.RTF_MULTICAST | unix.RTF_BROADCAST |
 	unix.RTF_LOCAL | unix.RTF_WASCLONED | unix.RTF_LLINFO |
 	unix.RTF_BLACKHOLE | unix.RTF_GATEWAY
