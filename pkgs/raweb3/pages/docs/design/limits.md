@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-25
+updated: 2026-10-26
 order: 10
 ---
 
@@ -367,18 +367,33 @@ message larger than the path goes in the fragments of
 threshold: the path MTU the host holds for the peer, or 1280 bytes for IPv6 and
 576 for IPv4 where the host knows none or a smaller one. `IKE_SA_INIT` always
 goes whole. A request that goes unanswered twice under a threshold above its
-family's floor steps to the floor at its next send, the schedule's or a probe's
-after a network change, and stays there until its exchange ends. A request too
-large to go whole at the floor is cut for it at the step, and its waits start
-over. A request that fits the floor whole, such as a liveness check, only moves
-its threshold and keeps its 5 sends over 62 seconds. A narrower hop that sends
-no ICMP message, or one beyond the interface on macOS, which reads only the
-interface's MTU, then delays a dial by 6 seconds instead of failing it. An
-answer never steps down by itself. It is cut for the path at each send, and
-within the largest datagram of the peer's request in fragments, or of the repeat
-that draws it again, where that is smaller, never under the floor. A responder
-behind such a hop thereby follows the initiator's step, and the first answer to
-a request in fragments already fits the datagrams that request came in.
+family's floor steps to the floor at its next send, the schedule's or a probe's,
+as a network change or `ranet3 debug probe` asks for one. A request too large to
+go whole at the floor is cut for it at the step, and its waits start over. A
+request that fits the floor whole, such as a liveness check, only moves its
+threshold and keeps its 5 sends over 62 seconds. From a step that cuts a request
+down to the floor, taken on the path the request was readied or last cut on,
+which every send of it went on since, the step's own included, the session's
+threshold is the floor for every later message, request or answer, across rekeys
+of its IKE SA. That lasts until a send or a status read finds the peer's address
+or port or the path MTU the host reads changed since the step, or until the
+session is asked to probe its path, as each network change asks. A step that
+cuts nothing leaves later messages at the path's threshold, since its sends were
+no larger than the floor. So does a step where a send of the request since its
+readying or its last cut, the step's own included, found that the peer moved,
+that the path MTU the host reads changed or that the session probed its path,
+even where the step finds the path as it was then, since that send went on a
+path that may have differed. A path that widens where the host sees no change
+keeps the floor until one of those comes or the session ends, the suboptimal
+fragmentation the downward search of RFC 7383 section 2.5.2 accepts. A narrower
+hop that sends no ICMP message, or one beyond the interface on macOS, which
+reads only the interface's MTU, then delays a session by 6 seconds once instead
+of failing it, and its later exchanges start at the floor. An answer never steps
+down by itself. It is cut for the path's threshold at each send, and within the
+largest datagram of the peer's request in fragments, or of the repeat that draws
+it again, where that is smaller, never under the floor. A responder behind such
+a hop thereby follows the initiator's step, and the first answer to a request in
+fragments already fits the datagrams that request came in.
 
 ## ML-KEM and the path
 
@@ -520,8 +535,8 @@ on the request whole as it came or on its fragment 1, at most 20 times in each
 exchange, the bound on the sends of 1 request that ranet3 counts. Every counted
 repeat of a peer that resends as ranet3 does is answered, the 7 sends of a
 request that the step cuts for its family's floor among them. A probe that cuts
-nothing resends a request without counting it, which lets a peer that sees many
-network changes in 1 exchange send more, and its repeats past the 20 draw
+nothing resends a request without counting it, which lets a peer asked to probe
+its path many times in 1 exchange send more, and its repeats past the 20 draw
 nothing. From any other address and port, only the request whole as it came, or
 the whole set of its fragments from there reassembled to the request's content,
 draws the answer, which goes there. It draws it only within the bytes that
@@ -583,21 +598,23 @@ cut for the floor at the step as
 [paths under 1280 bytes](#paths-under-1280-bytes) describes. It is sent 7 times,
 at 0, 2, 6, 8, 12, 20 and 36 seconds, and fails after 68 seconds. A request
 whose threshold is already the floor takes no step. That covers an IPv6 path of
-1280 bytes, an IPv4 path of 576 and a path whose MTU the host cannot read, as on
-FreeBSD and OpenBSD. Such a request, where it is too large to go whole, is cut
-for the floor at its first send. It keeps its 5 sends over 62 seconds, as does a
-request that fits the floor whole, such as a liveness check, through any step.
-Each cut again for a path MTU that fell starts its waits over, up to 20 sends,
-which bound the sends of every request this end counts however it is cut. A
-request is sent up to 20 times while the peer's authenticated traffic has
-arrived within the last 10 seconds. The exchange holds the only outstanding
-request this end allows. Rekeys, Deletes and liveness checks wait until it ends.
-A liveness check and a Delete of an IKE SA never take the longer schedule, and
-neither does an exchange still outstanding when its IKE SA reaches its lifetime.
-A request on the session's current IKE SA waits behind the Delete of a replaced
-or redundant IKE SA for at most 6 seconds. Behind a liveness check left on an
-IKE SA the peer rekeyed, it waits for that check's 5 sends, up to 62 seconds,
-unless the peer's Delete of that IKE SA ends the check first.
+1280 bytes, an IPv4 path of 576, a path whose MTU the host cannot read, as on
+FreeBSD and OpenBSD, and a session an earlier step holds at the floor, as that
+section says, until the floor ends there. Such a request, where it is too large
+to go whole, is cut for the floor at its first send. It keeps its 5 sends over
+62 seconds, as does a request that fits the floor whole, such as a liveness
+check, through any step. Each cut again for a path MTU that fell starts its
+waits over, up to 20 sends, which bound the sends of every request this end
+counts however it is cut. A request is sent up to 20 times while the peer's
+authenticated traffic has arrived within the last 10 seconds. The exchange holds
+the only outstanding request this end allows. Rekeys, Deletes and liveness
+checks wait until it ends. A liveness check and a Delete of an IKE SA never take
+the longer schedule, and neither does an exchange still outstanding when its IKE
+SA reaches its lifetime. A request on the session's current IKE SA waits behind
+the Delete of a replaced or redundant IKE SA for at most 6 seconds. Behind a
+liveness check left on an IKE SA the peer rekeyed, it waits for that check's 5
+sends, up to 62 seconds, unless the peer's Delete of that IKE SA ends the check
+first.
 
 Every Delete of an IKE SA has the 2 sends, since a peer that took it has deleted
 the SA and ignores a resend, as
