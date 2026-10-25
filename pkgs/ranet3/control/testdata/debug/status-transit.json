@@ -17,6 +17,7 @@
   "sid": 16,
   "unowned_source": 17,
   "nested": 18,
+  "looped": 19,
   "answered": 10,
   "unanswered": 11
 }
