@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-26
+updated: 2026-10-27
 order: 10
 ---
 
@@ -61,23 +61,48 @@ it, so dialing a few exits reaches those exits and nothing behind them.
 
 ## The underlay socket
 
-A node that takes an exit-announced default should set `link.underlay`. The
-block keeps the UDP sockets that carry IKE and ESP out of reach of the routes
-the mesh installs, on Linux and macOS alike. The transport binds the wildcard
-address and lets the kernel pick each datagram's source by route. On a node
-whose mesh address is its only global address of a family, the kernel picks that
-address. A `from <mesh address>` policy rule then sends the datagram to the mesh
-table, where an exit-announced default routes the ESP underlay into the tun that
-carries it.
+On Linux the UDP sockets that carry IKE and ESP stay out of reach of the routes
+the mesh installs where the process may set the mark: a marked datagram bound to
+no device ends at row L1 or L2 of
+[where a lookup ends on Linux](../routing.md#where-a-lookup-ends-on-linux), an
+IPv4 reply pinned to the interface its request arrived on as row B1 gives, and
+an IPv6 one, which also names the address its request arrived at, as row L2
+gives. The head of that account says what another program's rule or another
+writer's route does. On macOS with `link.underlay.bind` they stay out of reach
+as row D4 of
+[where a lookup ends on macOS](../routing.md#where-a-lookup-ends-on-macos)
+gives. On macOS without it, the reconciler scopes a route of the mesh covering a
+literal endpoint address the trust document lists, while an endpoint written as
+a hostname has no listed address, so a route of the mesh covering the address it
+resolves to goes in unscoped unless it is a hold, carries a source prefix or
+counts as a default, row D5. The transport binds the wildcard address, and for a
+session this node dialed it lets the kernel pick each datagram's source by
+route. On a node whose mesh address is its only global address of a family, the
+kernel picks that address. An unmarked datagram looked up from it, as on a
+socket connected from it, would end as rows L6 to L12 give, and where that is
+row L11, the ESP underlay would go into the tun that carries it.
 
-`link.underlay.mark` is `SO_MARK`, Linux only. The rule matching it goes under
-`cap.table.rules`, such as
-`{ fwmark = 0x726c, table = "main", priority = 40, family = "both" }`, and the
-reconciler installs it. The mark and its rule are 1 setting written in 2 blocks.
-A node that writes `cap.table` without that rule is refused by name, because a
-marked socket that no rule selects follows the mesh table like any other socket.
-A node configuring its routes elsewhere writes no `cap.table`, and the rule goes
-wherever those routes do.
+On Linux every underlay socket carries `SO_MARK` 0x72, a constant no key sets,
+where the process may set it, as
+[sharing a host](../coexistence.md#the-underlays-mark) says. The mark and the
+rules that read it come from 1 constant, so neither can name a mark the other
+does not. A node configuring its routes elsewhere writes no `cap.table`, and a
+rule reading the mark goes wherever those routes do.
+
+On Linux the endpoint resolver marks its query the same way, where the process
+may set the mark, when the nameserver lies outside `cap.border.overlay`. Where
+`cap.table` is written the query then ends at row L1 or L2, on the host or by
+its own routes, so it never waits on a session that only the name it asks for
+can dial. A nameserver in a subnet another node announces outside the overlay
+keeps the mark for that reason, since the subnet is reached through a session. A
+nameserver on the host itself, such as systemd-resolved's `127.0.0.53`, takes
+the query at row L1, and its own query upstream carries no mark, so it can wait
+on such a session. A query to a nameserver inside the overlay carries no mark,
+whatever zone follows its address in `/etc/resolv.conf`, and where `cap.table`
+is written ends as rows L1 to L5 give. A link-local nameserver lies outside an
+overlay of the mesh's own prefixes, so its query is marked where the process may
+set the mark. An IPv6 one ends by main's route out of the link its zone names,
+and an IPv4 one at row L2 by main's route for it.
 
 `link.underlay.bind` is `IP_BOUND_IF` and `IPV6_BOUND_IF`, macOS only. It binds
 the socket to the interface the host's own default route leaves by. When that
@@ -90,11 +115,11 @@ With `bind` set, the reconciler installs a plain `/0` as its zero-free cover, 8
 unscoped routes per family that hold every address but `0.0.0.0/8` and `::/8`,
 as [routing](../routing.md#the-zero-free-cover-on-macos) describes. Any other
 route that carries the host's own traffic is installed unscoped too, unless it
-covers a literal endpoint address the trust document lists. Without `bind`, the
-reconciler scopes every route that counts as a default to the tun, as
-[platforms](../platforms.md#macos) describes. No unbound socket selects a scoped
-route. A node without `bind` can hold an exit-announced address and still cannot
-send its traffic through the exit.
+covers a literal endpoint address the trust document lists or carries a source
+prefix. Without `bind`, the reconciler scopes every route that counts as a
+default to the tun, as [platforms](../platforms.md#macos) describes. No unbound
+socket selects a scoped route. A node without `bind` can hold an exit-announced
+address and still cannot send its traffic through the exit.
 
 ## The scoped default on macOS
 
@@ -200,7 +225,21 @@ back until at least 1 session is live. It is withdrawn once none has been live
 for `cap.table.capture_grace` (10 seconds by default), and restored on the next
 live session. Such a route is one that
 [counts as a default](../routing.md#routes-that-count-as-a-default). A hold of
-such a route, and this node's own prefix that counts, are never installed.
+such a route, and this node's own prefix that counts, are never installed, and
+an [exit](../exit-nodes.md#an-exits-own-traffic) installs no such route at all,
+live session or not.
+
+On Linux the kernel's holds do not refuse a socket bound to the uplink's device,
+as rows B1 and B2 of
+[where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) give. Its
+packet to a held subnet outside the overlay leaves by a route of main longer
+than /0 out of the uplink where one covers it. Otherwise, and to an overlay
+address under the overlay's hold, an unmarked one goes over IPv4 onto the
+uplink's link for the destination itself, where before ranet3 it went by main's
+route, and a host of that link holding the address receives it, and over IPv6 by
+main's route out of the uplink, where it went before ranet3. A marked one, such
+as ranet3's own paired IPv4 socket, goes by main's route, as rows L2 and B1
+give. None of it enters the mesh.
 
 The rule about the unspecified address follows the macOS kernel. A bound
 socket's lookup falls back to the route for the unspecified address of its
@@ -248,8 +287,13 @@ to.** It creates the device and brings it up. On Linux it attaches instead to an
 existing device that `link.tun` names, but never to one of the default name
 `ranet3`. An optional reconciler, `internal/kernel`, mirrors the learned routes
 into 1 routing table it owns, or on macOS into the single table that platform
-has. It scopes the routes that would otherwise capture the host, and it can
-assign the configured addresses. The `cap.table` block in
+has. On macOS without `link.underlay.bind` it scopes the routes that would
+otherwise capture the host, on Linux its policy rules give a route that counts
+as a default by its length the traffic from this node's own prefixes to a
+destination outside the overlay, for a lookup bound to no device where the rows
+before it pass the lookup on, as rows L6 to L12 of
+[where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) give, and it
+can assign the configured addresses. The `cap.table` block in
 [the configuration reference](../configuration-reference.md) turns it on. It is
 off unless enabled. Without it, another program assigns the addresses and
 installs the kernel routes.
@@ -333,15 +377,15 @@ first, so queued and reordered packets can drain during a rekey.
 
 ## Paths under 1280 bytes
 
-ranet3 does not let its own datagrams fragment, outside 1 case. Each session
-searches its path for the largest packet it carries, between 1280 and
-`link.mtu`, and a larger packet is answered with Packet Too Big or fragmentation
-needed, or cut when it is IPv4 without DF, or dropped where it cannot be cut, as
-[path MTU](../path-mtu.md) describes. A path that cannot carry 1280 bytes in 1
-datagram is under the floor. 1280 bytes is the least IPv6 asks of any link. An
-IPv4 path is under the floor below 1344 bytes, and an IPv6 path below 1364
-bytes. A session on such a path holds its budget at 1280 and lets the host
-fragment its datagrams.
+On Linux and macOS ranet3 does not let its own datagrams fragment, outside 1
+case. There each session searches its path for the largest packet it carries,
+between 1280 and `link.mtu`, and a larger packet is answered with Packet Too Big
+or fragmentation needed, or cut when it is IPv4 without DF, or dropped where it
+cannot be cut, as [path MTU](../path-mtu.md) describes. A path that cannot carry
+1280 bytes in 1 datagram is under the floor. 1280 bytes is the least IPv6 asks
+of any link. An IPv4 path is under the floor below 1344 bytes, and an IPv6 path
+below 1364 bytes. A session on such a path holds its budget at 1280 and lets the
+host fragment its datagrams.
 
 On Linux, while any session of a family is under the floor, that family's
 sockets let the host fragment their datagrams, the shared one and each one

@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-10-25
+updated: 2026-10-26
 order: 30
 ---
 
@@ -113,18 +113,33 @@ Every other key has a default. A left-out `cap.route`, `cap.babel` or
 off. A node with no `cap.babel` sends Hellos every 4 seconds and updates every
 16 seconds (RFC 8966 Appendix B). A node with no `cap.route` announces nothing.
 
+A node that installs the mesh's routes itself adds `cap.table`, and on Linux
+`cap.border` with the prefixes the mesh numbers its nodes from. On Linux the
+reconciler derives its policy rules from that overlay and this node's own
+prefixes, and a lookup bound to no device for an overlay destination ends as
+rows L1 to L5 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)
+give:
+
+```toml
+[cap.table]
+addresses = ["203.0.113.10/32"]   # assigned to the tun
+
+[cap.border]
+overlay = ["203.0.113.0/24"]
+```
+
 ### Capabilities
 
-| Block         | What it turns on                                                              |
-| ------------- | ----------------------------------------------------------------------------- |
-| `cap.route`   | What this node announces                                                      |
-| `cap.transit` | Whether this node relays the routes it learns, and so other nodes' traffic    |
-| `cap.babel`   | The speaker's timers, link quality estimator and costs                        |
-| `cap.table`   | The route reconciler: a routing table, addresses and policy rules             |
-| `cap.segment` | Segment routing (RFC 8986): the SIDs this node answers for and what it steers |
-| `cap.crypto`  | The transforms, the replay window and the rekey timers                        |
-| `cap.egress`  | Source translation for an exit node or a subnet router, Linux only            |
-| `cap.border`  | A filter for forged mesh traffic arriving from other links, Linux only        |
+| Block         | What it turns on                                                                            |
+| ------------- | ------------------------------------------------------------------------------------------- |
+| `cap.route`   | What this node announces                                                                    |
+| `cap.transit` | Whether this node relays the routes it learns, and so other nodes' traffic                  |
+| `cap.babel`   | The speaker's timers, link quality estimator and costs                                      |
+| `cap.table`   | The route reconciler: a routing table, addresses and, on Linux, the policy rules it derives |
+| `cap.segment` | Segment routing (RFC 8986): the SIDs this node answers for and what it steers               |
+| `cap.crypto`  | The transforms, the replay window and the rekey timers                                      |
+| `cap.egress`  | Source translation for an exit node or a subnet router, Linux only                          |
+| `cap.border`  | A filter for forged mesh traffic arriving from other links, Linux only                      |
 
 [Routing](routing.md), [segment routing](segment-routing.md),
 [exit nodes](exit-nodes.md) and [the border filter](border-filter.md) describe

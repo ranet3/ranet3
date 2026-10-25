@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-10-26
+updated: 2026-10-27
 order: 35
 ---
 
@@ -13,8 +13,8 @@ This page lists every key the configuration file takes.
 [Reloading](reloading.md) says which keys a reload applies and which need a
 restart.
 
-Keys are written as TOML paths, such as `cap.table.rules`. YAML and JSON nest
-the same names. A key not listed here is refused when the file loads.
+Keys are written as TOML paths, such as `cap.table.addresses`. YAML and JSON
+nest the same names. A key not listed here is refused when the file loads.
 
 ## When a value is checked
 
@@ -38,7 +38,7 @@ the same names. A key not listed here is refused when the file loads.
 | prefix   | an address and a length                                            | `"2001:db8::/48"`            |
 | address  | no length and no zone                                              | `"2001:db8::1"`              |
 | table    | a number, or `main` (254), `local` (255) or `default` (253)        | `200`, `"main"`              |
-| integer  | whole digits, and hex in TOML and YAML                             | `13000`, `0x726c`            |
+| integer  | whole digits, and hex in TOML and YAML                             | `13000`, `0xc8`              |
 | name     | `organization/name`, or `organization/name:serial` for an endpoint | `"example/gateway:0"`        |
 
 - JSON has no hex spelling. A `.json` file writes the decimal number.
@@ -167,21 +167,20 @@ handshake reads an ID.
 ### `link.underlay`
 
 This block keeps the socket that carries IKE and ESP out of the routes the mesh
-installs. A node that takes an exit's default route needs the key for its
-platform. `mark` is refused at startup on every platform but Linux, and `bind`
-on every platform but macOS.
+installs on macOS. A Mac that takes an exit's default route needs it. `bind` is
+refused at startup on every platform but macOS.
 
-| Key    | Value   | Default    | Meaning                                                                  |
-| ------ | ------- | ---------- | ------------------------------------------------------------------------ |
-| `mark` | integer | `0` (none) | Linux only. `SO_MARK` on the socket                                      |
-| `bind` | boolean | `false`    | macOS only. Bind the socket to the interface of the host's default route |
+| Key    | Value   | Default | Meaning                                                                  |
+| ------ | ------- | ------- | ------------------------------------------------------------------------ |
+| `bind` | boolean | `false` | macOS only. Bind the socket to the interface of the host's default route |
 
-- `mark` does nothing until a policy rule sends marked packets to a table the
-  mesh does not write. Write that rule under `cap.table.rules`, for example
-  `{ fwmark = 0x726c, table = "main", priority = 40, family = "both" }`.
-- When `cap.table` is written and none of its rules selects `mark` and looks up
-  a table other than `id`, the file is refused at load. A rule with an `iif`
-  other than `lo` does not count, since the socket's own packets arrive on `lo`.
+- On Linux the block takes no key. Every underlay socket carries the mark 0x72
+  where the process may set it. A marked lookup bound to no device ends as rows
+  L1 and L2 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)
+  give, an IPv4 reply pinned to the interface its request arrived on as row B1
+  gives, and an IPv6 one, which also names the address its request arrived at,
+  as row L2 gives. [Sharing a host](coexistence.md#the-underlays-mark) says what
+  a process the kernel refuses the mark does.
 - `bind` sets `IP_BOUND_IF` and `IPV6_BOUND_IF`. The socket follows the default
   route's interface as it changes.
 - With `bind`, the reconciler installs a plain `/0` that Babel selects as its
@@ -191,13 +190,16 @@ on every platform but macOS.
   a Mac with `bind` set takes whichever `/0` Babel selects.
 - With `bind`, any other route that carries this host's own traffic is installed
   unscoped too, except one that covers an endpoint address listed in the trust
-  document, which stays scoped to the tun.
+  document, which stays scoped to the tun, and a source-specific IPv6 one,
+  scoped to the tun where its source prefix holds an address of the tun and
+  otherwise not installed, while a source-specific IPv4 one is never installed.
 - With `bind`, the daemon writes a default scoped to the socket's interface only
   for a family whose zero address an unscoped route out of another interface
   holds: a real lower half, `0.0.0.0/1` or `::/1`, or a route like `0.0.0.0/24`
-  the mesh installs, or another program's, such as a full-tunnel VPN's. It
-  withdraws it once no such route is left. With only the cover installed it
-  writes nothing outside the tun.
+  the mesh installs, or another program's, such as a full-tunnel VPN's. With
+  `cap.table` written it withdraws it once no such route is left, and without it
+  the default stays until the socket moves onto another interface or the daemon
+  stops. With only the cover installed it writes nothing outside the tun.
 
 ## `dial`
 
@@ -351,7 +353,6 @@ configure.
 | `id`               | table            | `200`          | The table the reconciler owns                                                    |
 | `proto`            | integer          | `155`          | Route protocol that marks what the reconciler owns                               |
 | `metric`           | integer          | kernel default | Priority of every installed route                                                |
-| `prefsrc4`         | IPv4 address     | none           | Linux only. Preferred source on every IPv4 route                                 |
 | `addresses`        | list of prefixes | none           | Addresses assigned to the tun                                                    |
 | `assign_announced` | boolean          | `false`        | Also assign every prefix `cap.route` announces                                   |
 | `reconcile`        | duration         | `"30s"`        | Interval of the periodic pass that corrects drift                                |
@@ -365,12 +366,16 @@ configure.
   does not take over a route another writer holds under the same key. A table
   shared with BIRD needs a metric BIRD does not use.
 - macOS has 1 forwarding table and no route protocol. It refuses at startup an
-  `id` or `proto` other than the default, and refuses `prefsrc4`. It ignores
-  `metric`.
-- `prefsrc4` written as an IPv4-mapped IPv6 address is refused.
+  `id` or `proto` other than the default. It ignores `metric`.
+- On Linux the reconciler derives its policy rules from `cap.border.overlay` and
+  this node's own prefixes, and no key writes a rule.
+  [Routing](routing.md#policy-rules-on-linux) lists them. macOS installs none.
 - An `addresses` entry is assigned when missing and removed at shutdown or when
   a reload drops it. The reconciler removes only addresses it added. Each entry
   needs a length above 0.
+- On Linux an IPv4 route through the tun names no source, so the kernel picks
+  one of the tun's own IPv4 addresses for a socket bound to no address, or
+  another link's address where the tun has none.
 - The mesh's own table holds each address this block assigns as this node's, at
   its host route, and announces it only if it originates that route too. A route
   a neighbor offers for that host route never replaces it, as
@@ -380,42 +385,11 @@ configure.
 - A route that [counts as a default](routing.md#routes-that-count-as-a-default),
   such as a default or `2000::/3` a neighbor announces, is installed only after
   a session has been live, and its hold never. This node's own prefix that
-  counts is never installed. A `capture_grace` of `0` takes the default. Any
+  counts is never installed, and an [exit](exit-nodes.md#an-exits-own-traffic)
+  installs no such route at all. A `capture_grace` of `0` takes the default. Any
   other value under 1 second is refused.
 - A `cap.segment.local` SID that is also an address this block assigns is
   refused at load.
-
-### `cap.table.rules`
-
-Policy rules the reconciler owns. Linux only, and the daemon refuses them at
-startup on other platforms. Each rule carries `proto` and is removed at
-shutdown. The reconciler installs the rules in order of `priority`, not in the
-order written. A rule only selects a table to look up.
-
-| Key        | Value                    | Default             | Meaning                                 |
-| ---------- | ------------------------ | ------------------- | --------------------------------------- |
-| `to`       | prefix                   | none                | Destination the rule matches            |
-| `from`     | prefix                   | none                | Source the rule matches                 |
-| `fwmark`   | integer                  | `0` (none)          | Packet mark the rule matches            |
-| `fwmask`   | integer                  | `0` (whole mark)    | Mask applied to the mark                |
-| `iif`      | device name              | none                | Device the packet arrived on            |
-| `table`    | table                    | required            | Table to look up                        |
-| `priority` | integer                  | required            | Position of the rule                    |
-| `family`   | `ipv4`, `ipv6` or `both` | from `to` or `from` | Address family of a rule with no prefix |
-
-- A rule must match on `to`, `from`, `fwmark` or `iif`.
-- A `to` or `from` prefix with bits set below its length, of length 0, or of the
-  other family is refused.
-- `fwmask` without `fwmark` is refused.
-- `iif` longer than 15 bytes, `.`, `..`, or a name holding `/`, `:`, a NUL,
-  ASCII whitespace or the byte `0xa0` is refused. The kernel refuses such a name
-  for a device, and cuts a name at its first NUL.
-- `iif` may name a device that does not exist yet. The kernel holds the rule and
-  applies it once the device appears.
-- `priority = 0` is refused. It belongs to the `local` table.
-- `family` is required on a rule that has neither `to` nor `from`, and refused
-  on a rule with `to` or `from`. `both` installs the rule once per family.
-- 2 entries that install the same rule are refused.
 
 ## `cap.segment`
 
@@ -662,7 +636,7 @@ whose PRF they leave out is deleted, and a new handshake replaces it.
 
 Carry other nodes' traffic out of the mesh, as an exit node or a subnet router.
 Linux only, and the daemon refuses it at startup on other platforms.
-[Exit nodes](exit-nodes.md) describes the translation and the policy rules it
+[Exit nodes](exit-nodes.md) describes the translation and the return path it
 needs.
 
 | Key         | Value             | Default | Meaning                                                           |
@@ -748,6 +722,11 @@ daemon refuses it at startup on other platforms.
   decision egresses none, and an egress segment refuses one. An exit without
   `cap.border` sends an address no node announces out of its uplink as any other
   destination outside the mesh.
+- With `cap.table` on Linux, each prefix gets a policy rule at 5110 that reads
+  the mesh's table for its destinations and, unless it holds its family's
+  unspecified address or the mesh cannot carry it, an unreachable hold in that
+  table. A lookup bound to no device for an overlay address then ends as rows L1
+  to L5 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give.
 - A file with a local segment and no `cap.border` is refused, and so is one
   whose `overlay` holds no IPv6 prefix, since every local SID acts only on an
   outer source in those prefixes. An egress segment's `allow` entry no `overlay`

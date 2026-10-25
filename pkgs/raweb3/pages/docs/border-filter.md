@@ -4,7 +4,7 @@
 title: "The border filter"
 description: "Dropping what arrives from outside the mesh carrying a mesh source, a routing header or one of this node's SIDs."
 created: 2026-10-19
-updated: 2026-10-25
+updated: 2026-10-26
 order: 55
 ---
 
@@ -176,8 +176,9 @@ steered default keeps leaving by the translator's own readiness, which
 
 A node with no egress segment keeps forwarding while its filter is down. The
 pass retries, the log warns, `ranet3_border_ready` reads 0, and `status` and
-`ranet3 debug rules` say why. Only `ranet3 down` stops the kernel forwarding
-into the tun.
+`ranet3 debug rules` say why. Only `ranet3 down` or `ranet3 disable reconciler`
+stops the kernel forwarding into the tun, and only where `cap.table` installed
+the routes into it.
 
 At startup the daemon refuses to start when the first pass cannot install the
 chain and read it back, which on a host means a kernel without nf_tables or a
@@ -205,8 +206,10 @@ The block appearing or going is a restart, refused by a reload with
 `config: cap.border added, restart to apply` or
 `config: cap.border removed, restart to apply`. A changed `overlay` list, or a
 local segment moving to another SID, applies in place: the reload hands both to
-the filter, which rewrites its chain on the pass the reload wakes. Reordering
-the list is no change.
+the filter, which rewrites its chain on the pass the reload wakes. With
+`cap.table`, the reconciler's pass moves the policy rules and holds it derives
+from the overlay too, as [routing](routing.md#policy-rules-on-linux) lists them.
+Reordering the list is no change.
 
 ## Watching it
 
@@ -221,7 +224,8 @@ line of an exit whose filter holds its egress segments back says
 `ranet3 debug rules` reads the chain now, through a socket of its own, so an
 operator who sends a test packet reads the counters of that moment rather than
 of the last pass. It lists every policy rule the kernel holds beside the chain,
-as [the debug page](development/debug.md) describes.
+and the rules the reconciler derives from the overlay, as
+[the debug page](development/debug.md) describes.
 
 | Log line                                         | Level | When                                                                                                                        |
 | ------------------------------------------------ | ----- | --------------------------------------------------------------------------------------------------------------------------- |

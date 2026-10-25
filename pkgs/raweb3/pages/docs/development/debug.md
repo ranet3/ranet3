@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-25
+updated: 2026-10-26
 order: 30
 ---
 
@@ -114,11 +114,13 @@ These commands take flags of their own:
 - `debug runtime` is the daemon's process: its version and revision, the Go
   version, GOMAXPROCS and the CPUs, goroutines, the OS threads the runtime has
   started, open descriptors against `RLIMIT_NOFILE`, the heap and the collector,
-  uptime, and the resolver a lookup can reach. `cgo` there means a lookup may go
-  to the C library, which holds an OS thread for as long as it takes. The view
-  is read without stopping the daemon's goroutines, so polling it leaves the
-  data path running. It also shows the memory taken from the system, the total
-  pause of the collector, and whether the build's tree had uncommitted changes.
+  uptime, and the resolver an endpoint's hostname goes through, the daemon's one
+  lookup. `go` there means Go's own resolver answers it, which on Linux it
+  always does, and `cgo` that the lookup may go to the C library, which holds an
+  OS thread for as long as it takes. The view is read without stopping the
+  daemon's goroutines, so polling it leaves the data path running. It also shows
+  the memory taken from the system, the total pause of the collector, and
+  whether the build's tree had uncommitted changes.
 - `debug buildinfo` prints this binary's own Go build information.
 - `debug netmon` is the host's network as the node's watch last read it: for
   each family the default route, its interface and gateway, and the global
@@ -126,14 +128,16 @@ These commands take flags of their own:
   out, then the last change the watch acted on and what moved in it. A platform
   without a watch says so. Linux and macOS have a watch.
 - `debug rules` is every policy rule the kernel holds, whoever wrote it, in a
-  table per family with its priority, its selectors, the table it reads or its
-  action, and its owner: `ranet3` for a rule carrying `cap.table.proto`,
-  `kernel` for the kernel's own, and the protocol number for anybody else's.
-  Then the rules `cap.table` asks for that the kernel does not hold, and on a
-  node with `cap.border` the border filter's chain: its table and hook, when its
-  last pass read it and whether it is ready, then each rule with the packets and
-  bytes each drop counted, any rule the chain does not hold yet, and any rule it
-  holds that the filter did not write, by its comment or as
+  table per family with its priority, its selectors, the table it reads with any
+  `suppress_prefixlength`, or its action, such as `goto 5190` or `nop`, and its
+  owner: `ranet3` for a rule carrying `cap.table.proto`, `kernel` for the
+  kernel's own, and the protocol number for anybody else's. Then, as
+  `Wanted and missing`, the rules the reconciler's last pass derived that the
+  kernel does not hold, as [routing](../routing.md#policy-rules-on-linux) lists
+  them, and on a node with `cap.border` the border filter's chain: its table and
+  hook, when its last pass read it and whether it is ready, then each rule with
+  the packets and bytes each drop counted, any rule the chain does not hold yet,
+  and any rule it holds that the filter did not write, by its comment or as
   `a rule with no comment`. The dump and the chain are each read now through a
   socket of their own, so an operator who sends a test packet reads the counters
   of that moment, and neither the reconciler's socket nor the filter's serves a

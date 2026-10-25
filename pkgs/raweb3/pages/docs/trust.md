@@ -4,7 +4,7 @@
 title: "Trust document and keys"
 description: "The document naming who may join the mesh, and the key files nodes authenticate with."
 created: 2026-10-16
-updated: 2026-10-17
+updated: 2026-10-27
 order: 38
 ---
 
@@ -78,7 +78,22 @@ The node's full name is `organization/common_name`, written as
 | `port`           | The UDP port peers dial                                               |
 
 - A literal address of another family is never dialed.
-- A hostname is resolved on every dial, filtered to the endpoint's family.
+- A hostname is resolved on every dial, filtered to the endpoint's family. On
+  Linux ranet3 resolves it with Go's own resolver, from `/etc/hosts` and the
+  nameservers `/etc/resolv.conf` lists, and asks no NSS module, so a name only
+  such a module answers, a `.local` name through nss-mdns among them, does not
+  resolve. Its query to a nameserver outside `cap.border.overlay`, one in a
+  subnet another node announces included, carries the underlay's mark where the
+  process may set it, so where `cap.table` is written it ends at row L1 or L2 of
+  [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) and never waits
+  on a session that only the name can dial. A nameserver on the host itself,
+  such as systemd-resolved's `127.0.0.53`, takes the query at row L1, and its
+  own query upstream carries no mark, so it can wait on such a session. A query
+  to a nameserver inside the overlay carries none, whatever zone follows its
+  address, and where `cap.table` is written ends as rows L1 to L5 give. A
+  link-local nameserver lies outside an overlay of the mesh's own prefixes, so
+  its query carries the mark where the process may set it.
+  [Sharing a host](coexistence.md#the-underlays-mark) describes the mark.
 - An endpoint with no address, an empty one, or a name holding `:`, `/` or a
   space is never dialed. Its node can still dial out and be answered.
 - Peers dial the `port` listed here. Keep it equal to the node's own

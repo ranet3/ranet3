@@ -5,7 +5,7 @@
 title: "Getting started"
 description: "Building the binary, the binary cache, and running a node by hand."
 created: 2026-08-17
-updated: 2026-10-25
+updated: 2026-10-26
 order: 20
 ---
 
@@ -73,10 +73,24 @@ ip route add 203.0.113.0/24 dev ranet3
 
 With `cap.table`, the node installs its routes itself. It assigns the addresses
 `cap.table.addresses` lists, and with `cap.table.assign_announced` the prefixes
-it announces. On Linux the routes go into table `cap.table.id`, 200 unless set.
-The host reads that table only through a policy rule, such as a
-`cap.table.rules` entry. The line then names where the node reconciles, such as
-`table 200 protocol 155` on Linux or `interface utun6` on macOS.
+it announces, but for one written with its family's unspecified address, such as
+a default. On Linux the routes go into table `cap.table.id`, 200 unless set. The
+node writes the policy rules the host reads that table through itself.
+`cap.border.overlay`, Linux only, names the prefixes the mesh numbers its nodes
+from, and a lookup bound to no device for one of their addresses then ends as
+rows L1 to L5 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)
+give:
+
+```toml
+[cap.table]
+addresses = ["203.0.113.10/32"]
+
+[cap.border]
+overlay = ["203.0.113.0/24"]
+```
+
+The line then names where the node reconciles, such as `table 200 protocol 155`
+on Linux or `interface utun6` on macOS.
 
 `daemon` is the node. Most other subcommands speak to a running daemon over its
 control socket, and they ship in the same binary. Most of them ask a question,
