@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-10-22
+updated: 2026-10-25
 order: 110
 ---
 
@@ -216,7 +216,7 @@ tunnel is using.
 
 `cap.egress` writes into the packet filter, where the same 3 rules hold. It
 creates 1 nftables table named after this tool for each address family it
-translates, the advertised ones and both beside an egress device, `ip ranet3`
+translates, the advertised ones and both beside an egress segment, `ip ranet3`
 and `ip6 ranet3`, each holding 1 nat postrouting chain. That name is the whole
 of its ownership claim, as `rt_proto` is the reconciler's. It writes only inside
 those tables and reads back every rule of their chains, with the tables' flags
@@ -254,6 +254,16 @@ device in both directions.
 The scrape counts the other chains as `ranet3_egress_conflicts`. The report
 covers nat postrouting chains in `ip` and `ip6` tables of the families it
 translates. It leaves out chains in `inet` tables.
+
+The kernel settings an exit's traffic crosses stay the host's. The translator
+writes no routing rule and no sysctl, neither the mesh tun's nor an uplink's, so
+the rules of `cap.table` and of other programs, the host's routes, `forwarding`
+and reverse path filtering decide where a packet goes. It asks the kernel where
+an exit's packets would go and back instead. A family the answer does not carry
+out of the tun and back again is [not ready](exit-nodes.md#readiness), and the
+reason names the device's IPv4 `forwarding` at 0 or reverse path filtering, the
+larger of `net.ipv4.conf.all.rp_filter` and the device's own, when either is set
+where the lookup failed.
 
 `cap.border` adds a third table under the same name, `inet ranet3`, holding 1
 filter chain at prerouting, priority `raw` (-300).

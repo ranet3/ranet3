@@ -160,10 +160,6 @@ handshake reads an ID.
   otherwise. The default `ranet3` is never attached to: the daemon refuses to
   start when a device called `ranet3` exists. On macOS, `tun` takes only `utun`
   and `utunN`, and the daemon refuses any other name at startup.
-- A node with an egress segment names its egress device `tun` plus `e`,
-  `ranet3e` by default, and always creates it. The load refuses a `tun` longer
-  than 14 bytes or holding `%`, since the device's name has to be known before
-  the daemon starts.
 - The device runs at `mtu` less the header of the longest `cap.segment.steer`
   list. A value that leaves the device under 1280 bytes, or a value over 65470,
   is refused at load. [Path MTU](path-mtu.md) describes how sessions use it.
@@ -432,11 +428,6 @@ order written. A rule only selects a table to look up.
 - `family` is required on a rule that has neither `to` nor `from`, and refused
   on a rule with `to` or `from`. `both` installs the rule once per family.
 - 2 entries that install the same rule are refused.
-- A node with an egress segment needs, in each family, a rule with `iif` naming
-  the egress device, `table = "main"` and nothing else to match on. It sits
-  after every `to` rule into `id` and before every `from` rule into it, and the
-  load refuses a file where it is missing or misplaced.
-  [Exit nodes](exit-nodes.md#the-egress-devices-rule) describes why.
 
 ## `cap.segment`
 
@@ -462,11 +453,12 @@ The segments this node answers for.
 
 - `End` sends the packet to its next segment. `End.DT46` removes the outer
   header and delivers the inner packet, to the mesh's
-  [forwarding decision](routing.md#transit) or, with `deliver = "egress"`, to
-  the egress device. The decision writes it to the tun where its destination is
-  this node's own, and otherwise forwards or answers it as a session's packet.
-  An inner packet an End.DT46 delivers to the mesh takes that path whatever
-  `cap.transit` says.
+  [forwarding decision](routing.md#transit) or, with `deliver = "egress"`, into
+  the mesh tun for the host to carry out of the mesh, refusing an inner
+  destination the mesh routes itself. The decision writes it to the tun where
+  its destination is this node's own, and otherwise forwards or answers it as a
+  session's packet. An inner packet an End.DT46 delivers to the mesh takes that
+  path whatever `cap.transit` says.
 - `behavior` is read in any case.
 - A SID written twice is refused.
 - `deliver = "egress"` is refused on `End`, and `allow` on anything but an
@@ -477,9 +469,9 @@ The segments this node answers for.
   a list with no IPv6 entry are refused. The order does not matter.
 - Every segment needs `cap.border` with an IPv6 prefix in its `overlay`, and
   acts only on a packet whose outer source lies in those prefixes.
-- An egress segment needs `cap.egress`, which may advertise nothing, `cap.table`
-  with the egress device's rule, and `cap.border` whose `overlay` covers every
-  `allow` entry. `cap.route` may not announce its SID's `/128`, which the node
+- An egress segment needs `cap.egress`, which may advertise nothing, and
+  `cap.border` whose `overlay` covers every `allow` entry. It needs no
+  `cap.table`. `cap.route` may not announce its SID's `/128`, which the node
   originates while the exit is ready.
 
 ### `cap.segment.steer`
@@ -703,9 +695,17 @@ needs.
   [counts as a default](routing.md#routes-that-count-as-a-default) makes this
   node an exit for its family, as under `cap.route`, and loads with a warning
   unless it is a default.
-- A prefix is announced only while its family's translation chain reads back
-  exactly as written, with no other writer's rule among it, and the host
-  forwards that family.
+- A prefix is announced only while its family is
+  [ready](exit-nodes.md#readiness): its translation chain reads back exactly as
+  written, with no other writer's rule among it, the host forwards that family,
+  and the kernel's lookups of a translated packet and its reply pass.
+- The lookups read from the address of a mesh member inside
+  `cap.border.overlay`. A node with no `cap.border`, or whose mesh routes no
+  other node's prefix of a family inside the overlay, skips that family's
+  lookups and judges it by its chain and its forwarding alone, and `status` says
+  so.
+- A node with an egress segment translates both families, whatever `advertise`
+  holds.
 - An `advertise` prefix with bits set below its length, written as IPv4-mapped
   IPv6, or written twice is refused at load.
 - At startup and on every reload, an `advertise` prefix that `cap.route` also
@@ -750,6 +750,9 @@ daemon refuses it at startup on other platforms.
   as IPv6 and an entry written twice are refused. The order does not matter.
 - Every node of the mesh writes the same list, which covers every exit's `allow`
   list.
+- On an exit, the list enables the kernel lookups of its
+  [readiness](exit-nodes.md#readiness), which read from a member's address
+  inside it. A family with no prefix in it skips them.
 - A file with a local segment and no `cap.border` is refused, and so is one
   whose `overlay` holds no IPv6 prefix, since every local SID acts only on an
   outer source in those prefixes. An egress segment's `allow` entry no `overlay`
