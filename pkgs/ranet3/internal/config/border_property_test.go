@@ -161,12 +161,9 @@ func TestBorderLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 			Link: Link{Port: 13000, Endpoints: []Endpoint{{Serial: "0", Family: "ip6"}}},
 			Dial: Dial{All: true},
 			Cap: Caps{
-				Egress: &egress.Egress{Advertise: advertise},
-				Border: border,
-				Table: &kernel.Table{Rules: []kernel.Rule{
-					{To: schema.MustPrefix("10.66.0.0/16"), Table: kernel.DefaultTable, Priority: 100},
-					{From: schema.MustPrefix("10.66.0.0/16"), Table: kernel.DefaultTable, Priority: 150},
-				}},
+				Egress:  &egress.Egress{Advertise: advertise},
+				Border:  border,
+				Table:   &kernel.Table{},
 				Segment: &srv6.Segments{Local: segments},
 			},
 		}

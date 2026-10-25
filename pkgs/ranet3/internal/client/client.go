@@ -122,6 +122,8 @@ type Client struct {
 	border atomic.Pointer[borderFilter]
 	// ruleDump reads every policy rule the host holds, and nil means kernel.DumpRules
 	ruleDump func() ([]kernel.DumpedRule, error)
+	// reconcilerRules reads the rules the route reconciler derived, supplied as kernelStatus is and nil on a node with no cap.table
+	reconcilerRules atomic.Pointer[func() []kernel.DumpedRule]
 
 	// running is the control socket's write path state: whether each named
 	// subsystem is acting. It is the record rather than the mechanism, since

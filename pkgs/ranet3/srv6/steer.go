@@ -141,23 +141,21 @@ func NewSteerTable(entries []Steer, source schema.Addr) (*SteerTable, error) {
 			if prefix.Addr().Is4In6() {
 				return nil, fmt.Errorf("srv6: cap.segment steer %s %s is a v4-mapped prefix, which no packet is looked up under", named.field, prefix)
 			}
-			// Refused rather than masked, as kernel.Rule.validate refuses the
-			// same typo. Masking a host address written with the wrong length
-			// steers a whole prefix where one address was meant, and says
-			// nothing.
+			// Refused rather than masked. Masking a host address written with
+			// the wrong length steers a whole prefix where one address was
+			// meant, and says nothing.
 			if prefix.Masked() != prefix {
 				return nil, fmt.Errorf("srv6: cap.segment steer %s %s has bits set below its prefix length", named.field, prefix)
 			}
-			// A zero-length selector claims every address of its family, so an
-			// entry carrying one steers every packet this node sends of that
-			// family, the babel traffic carrying the mesh's own routing
-			// included. The check above it tests whether a selector was
-			// written rather than what it covers, so "from: ::/0" walked past
-			// it. It is also the spelling an omitted field already has, and
-			// the trie stores the two under one key, so a second entry
-			// replaced the first while Entries, which the control socket
-			// serves, went on reporting both. kernel.Rule.validate refuses the
-			// identical typo.
+			// A zero-length selector claims every address of its family on its
+			// side, so an entry carrying one and no narrower selector beside it
+			// steers every packet of that family the host routes into the
+			// tun. The check above it tests whether a selector was written
+			// rather than what it covers, so "from: ::/0" walked past it.
+			// It is also the spelling an omitted
+			// field already has, and the trie stores the two under one key,
+			// so a second entry replaced the first while Entries, which the
+			// control socket serves, went on reporting both.
 			if prefix.Bits() == 0 {
 				return nil, fmt.Errorf("srv6: cap.segment steer %s %s selects every address of its family, the same as leaving %s out: name the prefix this entry steers", named.field, prefix, named.field)
 			}

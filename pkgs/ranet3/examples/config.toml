@@ -172,35 +172,21 @@ update = "16s"
 # id = 200
 # proto = 155
 # metric = 64                      # BIRD's kbabel uses 32, so not 32 beside it
-# prefsrc4 = "203.0.113.10"        # linux only, refused on darwin
 # addresses = ["203.0.113.10/32"]  # assigned to the device, removed at exit
 # assign_announced = false         # also assign what cap.route announces
 # reconcile = "30s"
 # capture_grace = "10s"            # how long an announced default outlives the last live session, 1s floor
-
-# The policy rules the reconciler owns, linux only, in the order written. Each
-# carries the protocol above, so a dump reads back only these and a delete can
-# never reach another writer's rule, and they are withdrawn at shutdown with
-# the routes. darwin scopes an announced default and a source-specific route to
-# the tun instead, which reaches the same two ends.
 #
-# A rule naming an address takes that address's family. One selecting on a mark
-# or on iif, the device a packet arrived on, says which family it is for, and
-# "both" installs it once per family, which keeping the underlay out of the
-# mesh table needs. table takes a number or one of main, local and default.
-# [[cap.table.rules]]
-# fwmark = 0x726c
-# table = "main"
-# priority = 40
-# family = "both"
-# [[cap.table.rules]]
-# to = "3fff:b::/48"
-# table = 200
-# priority = 100
-# [[cap.table.rules]]
-# from = "203.0.113.10/32"
-# table = 200
-# priority = 150
+# On linux the reconciler derives its policy rules, at priorities 5100 to 5490
+# and carrying the protocol above, from cap.border's overlay and this node's own
+# prefixes, which are the addresses above and what cap.route announces that
+# counts as no default. The overlay is looked up in this table, then main for
+# every route but its defaults, then this table for every route that counts as
+# no default, and all of it for a source among this node's own prefixes. A
+# packet of the underlay's sockets, which carry the mark 0x72, passes all of
+# them. A dump reads back only these, a delete never reaches another writer's
+# rule, and they are withdrawn at shutdown with the routes. darwin installs no
+# policy rule.
 
 # Segment routing, RFC 8986, performed in this process rather than by a kernel,
 # so steering works the same on every platform: darwin has no segment routing
@@ -310,13 +296,6 @@ update = "16s"
 # of a translated packet and its reply pass, so an exit that cannot translate
 # stops attracting traffic it would drop. Do not name one of these under
 # cap.route as well, which would announce it either way.
-#
-# A node that translates needs both of the cap.table.rules shapes above, not
-# only the "from" one: conntrack reverses the translation before the reply is
-# routed, so the reply is addressed to the mesh and has to find a rule sending
-# it to the mesh table. Without the "to" rule the outbound half works, the
-# nftables counter moves, and every reply leaves by the physical uplink and is
-# lost, which reads as a dead exit rather than as a missing rule.
 # [cap.egress]
 # advertise = ["198.51.100.0/24", "2001:db8:2::/48"]
 

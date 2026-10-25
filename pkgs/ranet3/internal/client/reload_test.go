@@ -144,17 +144,14 @@ func TestReloadHandsAChangedTableToTheReconciler(t *testing.T) {
 	c, path, reconciler, bus := reloadOf(t, func(old *config.Config) {
 		old.Cap.Table = &kernel.Table{
 			Addresses: []schema.Prefix{schema.MustPrefix("10.66.0.5/32")},
-			Rules:     []kernel.Rule{{To: schema.MustPrefix("198.18.104.0/24"), Table: kernel.DefaultTable, Priority: 100}},
 		}
 		old.Cap.Route = &babel.Routes{Announce: announce("fd00:1::1/64")}
 	})
 	next := *c.config()
 	next.Cap.Table = &kernel.Table{
 		Metric:          64,
-		PrefSrc4:        schema.MustAddr("10.66.0.6"),
 		Addresses:       []schema.Prefix{schema.MustPrefix("10.66.0.6/32")},
 		AssignAnnounced: true,
-		Rules:           []kernel.Rule{{To: schema.MustPrefix("198.18.105.0/24"), Table: kernel.DefaultTable, Priority: 100}},
 		Reconcile:       schema.Duration(time.Minute),
 		CaptureGrace:    schema.Duration(20 * time.Second),
 	}

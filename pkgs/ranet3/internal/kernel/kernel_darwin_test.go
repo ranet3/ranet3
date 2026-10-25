@@ -6,38 +6,25 @@
 package kernel
 
 import (
-	"strings"
 	"testing"
 
 	"ranet3.com/pkgs/ranet3/internal/netstack"
-	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// darwin has no policy routing, and New refuses a configuration carrying cap.table rules there by name
-// nothing else on darwin refuses rules
-// a node taking one came up with a working mesh and no steering, and said nothing
+// darwin has no policy routing, and New takes a capability there with no rule
+// pass, which leaves the mirror's throw rows and overlay holds out too
 // the loopback stands in for the tun
 // New installs nothing and opens only route sockets, which need no root
-func TestNewRefusesRulesOnAPlatformWithoutThem(t *testing.T) {
-	rule := Rule{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: FamilyIPv4}
-	reconciler, err := New(Table{Rules: []Rule{rule}}, Runtime{Interface: "lo0"}, netstack.NewRouteTable())
-	if err == nil {
-		_ = reconciler.plat.Close()
-		t.Fatal("a configuration carrying a rule was taken on a platform with no policy routing")
+func TestNewOnAPlatformWithoutRulesRunsNoRulePass(t *testing.T) {
+	reconciler, err := New(Table{}, Runtime{Interface: "lo0", Overlay: prefixes(prefix("192.0.2.0/24"))}, netstack.NewRouteTable())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "cap.table rules") {
-		t.Errorf("the refusal reads %q, want it to name the rules", err)
+	defer reconciler.plat.Close()
+	if reconciler.rules != nil {
+		t.Fatal("darwin's platform answers for policy rules")
 	}
-}
-
-// a reload is refused what New refuses here, a preferred source darwin has no way to honor among it
-func TestDarwinRefusesAReloadNamingAPreferredSource(t *testing.T) {
-	reconciler, _, _ := harness(t, Table{}, Runtime{Interface: "utun9"})
-	err := reconciler.SetTable(Table{PrefSrc4: schema.MustAddr("198.18.104.117")}, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "prefsrc4") {
-		t.Errorf("a reload naming a preferred source was refused with %v", err)
-	}
-	if reconciler.adopt() {
-		t.Error("the refused reload was handed to the loop")
+	if err := reconciler.applyRules(reconciler.src.Snapshot()); err != nil || reconciler.DerivedRules() != nil {
+		t.Errorf("a rule pass on darwin answered %v and published %v", err, reconciler.DerivedRules())
 	}
 }

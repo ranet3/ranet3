@@ -125,7 +125,7 @@ func TestMirrorIsSectionOneThreesTable(t *testing.T) {
 			plat = routesOnly{inner: plat.(*fakeKernel)}
 		}
 		routes := netstack.NewRouteTable()
-		r := newReconciler(Table{}.Normalized(), rt, nil, nil, routes, plat)
+		r := newReconciler(Table{}.Normalized(), rt, nil, routes, plat)
 		r.capture = hegel.Draw(ht, hegel.Booleans())
 		for _, entry := range hegel.Draw(ht, mirrorEntries()) {
 			routes.Set(entry.source, entry.destination, entry.value)

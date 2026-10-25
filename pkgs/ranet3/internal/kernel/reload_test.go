@@ -71,30 +71,28 @@ func TestReloadMovesTheRoutesToTheNewMetric(t *testing.T) {
 	}
 }
 
-// a pass over an empty rule set withdraws every configured rule rather than skipping the step, and keeps the derived ones
-func TestReloadReplacesTheRulesAndWithdrawsTheLastOfThem(t *testing.T) {
-	underlay := Rule{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: FamilyBoth}
-	mesh := Rule{From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150}
-	moved := Rule{From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 160}
-	r, _, fake := harness(t, Table{Rules: []Rule{underlay, mesh}})
+// the pass after a reload that moves cap.border's overlay holds the rules the new overlay derives and none of the old one's
+func TestReloadMovesTheRulesWithTheOverlay(t *testing.T) {
+	before, after := prefixes(prefix("192.0.2.0/24")), prefixes(prefix("3fff::/20"))
+	r, _, fake := harness(t, Table{}, Runtime{Overlay: before})
 	if err := r.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	reload(t, r, Table{Rules: []Rule{underlay, moved}})
-	want := map[Rule]bool{
-		{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: FamilyIPv4}:               true,
-		{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: FamilyIPv6}:               true,
-		{From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 160, Family: FamilyIPv6}: true,
+	if err := r.SetTable(Table{}, after, nil); err != nil {
+		t.Fatal(err)
 	}
-	if got := fake.configuredRules(r); !maps.Equal(got, want) {
-		t.Fatalf("the pass after the reload left the rules %v, want %v", slices.Collect(maps.Keys(got)), slices.Collect(maps.Keys(want)))
+	if !r.adopt() {
+		t.Fatal("the reload was not adopted")
 	}
-	reload(t, r, Table{})
-	if got := fake.configuredRules(r); len(got) != 0 {
-		t.Errorf("a reload naming no rule left %v", slices.Collect(maps.Keys(got)))
+	if err := r.reconcile(); err != nil {
+		t.Fatal(err)
 	}
-	if got := len(fake.heldRules()); got != len(derivedRules(r.table.ID, r.rt.Overlay, r.own)) {
-		t.Errorf("a reload naming no rule left %d rules, want the derived ones alone", got)
+	want := map[Rule]bool{}
+	for _, rule := range derivedRules(DefaultTable, after, nil) {
+		want[rule] = true
+	}
+	if got := fake.heldRules(); !maps.Equal(got, want) {
+		t.Errorf("the pass after the reload left the rules %v, want %v", slices.Collect(maps.Keys(got)), slices.Collect(maps.Keys(want)))
 	}
 }
 
@@ -155,7 +153,7 @@ func TestReloadGivingAnAddressAnotherLengthOnAPlatformKeyingByAddressKeepsIt(t *
 	short, long := prefix("198.18.104.7/32"), prefix("198.18.104.7/24")
 	table := Table{Addresses: prefixes(short)}.Normalized()
 	fake := newFakeKernel(t)
-	r := newReconciler(table, Runtime{Interface: "ranet0"}, nil, table.Assigned(nil), netstack.NewRouteTable(), struct{ platform }{fake})
+	r := newReconciler(table, Runtime{Interface: "ranet0"}, table.Assigned(nil), netstack.NewRouteTable(), struct{ platform }{fake})
 	if _, ok := r.plat.(lengthKeyer); ok {
 		t.Fatal("the platform still keys addresses by length")
 	}
@@ -222,7 +220,6 @@ func TestReloadWithdrawsTheCaptureOnTheNewGrace(t *testing.T) {
 // the loop takes the second reload only once it has finished with the first, so the kernel read after it shows whether the first installed anything
 func TestStoppedReconcilerTakesAReloadAndInstallsItOnlyOnceStarted(t *testing.T) {
 	route := prefix("10.0.0.0/8")
-	rule := Rule{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: FamilyIPv4}
 	r, table, fake := harness(t, Table{Addresses: prefixes(prefix("198.18.104.5/32"))})
 	table.Set(netip.Prefix{}, route, nil)
 	<-table.Changed()
@@ -237,7 +234,7 @@ func TestStoppedReconcilerTakesAReloadAndInstallsItOnlyOnceStarted(t *testing.T)
 	r.SetEnabled(false)
 	waitFor(t, func() bool { return len(fake.snapshot()) == 0 && len(fake.heldAddresses()) == 0 })
 
-	next := Table{Metric: 32, Addresses: prefixes(prefix("198.18.104.6/32")), Rules: []Rule{rule}}
+	next := Table{Metric: 32, Addresses: prefixes(prefix("198.18.104.6/32"))}
 	if err := r.SetTable(next, nil, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -255,14 +252,13 @@ func TestStoppedReconcilerTakesAReloadAndInstallsItOnlyOnceStarted(t *testing.T)
 	r.SetEnabled(true)
 	waitFor(t, func() bool {
 		return fake.has(Route{Destination: route, Metric: 32}) && slices.Equal(fake.heldAddresses(), []netip.Prefix{prefix("198.18.104.6/32")}) &&
-			fake.heldRules()[rule]
+			fake.holdsDerived(r)
 	})
 }
 
 // a reload is refused before anything is handed to the loop, so the capability in force, the platform and the kernel stay as they were
 func TestReloadRefusesWhatTheReconcilerCannotTake(t *testing.T) {
-	underlay := Rule{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: FamilyBoth}
-	start := Table{Rules: []Rule{underlay}, Addresses: prefixes(prefix("198.18.104.5/32"))}
+	start := Table{Addresses: prefixes(prefix("198.18.104.5/32"))}
 	for name, refused := range map[string]struct {
 		next   Table
 		naming string
@@ -271,7 +267,6 @@ func TestReloadRefusesWhatTheReconcilerCannotTake(t *testing.T) {
 		"another proto":      {Table{Proto: DefaultProtocol + 1}, "cap.table proto changed"},
 		"a reserved proto":   {Table{Proto: protocolStatic}, "is reserved"},
 		"a negative sweep":   {Table{Reconcile: -1}, "not an interval"},
-		"one rule twice":     {Table{Rules: []Rule{underlay, underlay}}, "configured twice"},
 		"an address at zero": {Table{Addresses: []schema.Prefix{{}}}, "not a prefix"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -298,14 +293,6 @@ func TestReloadRefusesWhatTheReconcilerCannotTake(t *testing.T) {
 				t.Errorf("a refused reload left the reconciler on %+v", got)
 			}
 		})
-	}
-	// a platform with no policy routing refuses a reload that asks for a rule, as New refuses one
-	r := newReconciler(Table{}.Normalized(), Runtime{Interface: "utun9"}, nil, nil, netstack.NewRouteTable(), routesOnly{inner: newFakeKernel(t)})
-	if err := r.SetTable(Table{Rules: []Rule{underlay}}, nil, nil); err == nil || !strings.Contains(err.Error(), "no policy routing") {
-		t.Errorf("a rule on a platform without them was refused with %v", err)
-	}
-	if r.adopt() {
-		t.Error("a refused reload handed the loop a capability")
 	}
 }
 

@@ -45,7 +45,7 @@ const (
 	// labRetry is how long one read waits before a packet is sent again, and labQuiet how long a packet that must not arrive is waited for
 	labRetry = 250 * time.Millisecond
 	labQuiet = time.Second
-	// labAheadPriority is a rule's the lab puts ahead of labConfig's to rules
+	// labAheadPriority is a rule's the lab puts ahead of every rule the reconciler derives
 	labAheadPriority = 50
 	// labSkipped6 is the translator's word for an exit whose mesh routes no IPv6 member
 	labSkipped6 = "lookup skipped, the mesh routes no other node's ipv6 prefix inside cap.border.overlay"
@@ -724,8 +724,8 @@ func labRuleToMain(netlink netnstest.Netlink, kind uint16, iif string, to netip.
 }
 
 // labConfig is the reload fixture's node made an exit with the egress segment,
-// cap.egress and a cap.table holding the to and from rules for the leaves into
-// the mesh table
+// cap.egress and a cap.table, whose rule for cap.border's overlay sends the
+// leaves into the mesh table
 func labConfig(t *testing.T) *config.Config {
 	t.Helper()
 	fixture, _ := reloadFixture(t)
@@ -734,12 +734,7 @@ func labConfig(t *testing.T) *config.Config {
 	egressNode(&cfg, egressSegment(labSID.String(), labLeaves...))
 	// a deleted table is noticed at the next sweep
 	cfg.Cap.Egress.Sweep = schema.Duration(time.Second)
-	cfg.Cap.Table = &kernel.Table{ID: kernel.DefaultTable, Rules: []kernel.Rule{
-		{To: schema.MustPrefix(labLeaves[0]), Table: kernel.DefaultTable, Priority: 100},
-		{To: schema.MustPrefix(labLeaves[1]), Table: kernel.DefaultTable, Priority: 100},
-		{From: schema.MustPrefix(labLeaves[0]), Table: kernel.DefaultTable, Priority: 150},
-		{From: schema.MustPrefix(labLeaves[1]), Table: kernel.DefaultTable, Priority: 150},
-	}}
+	cfg.Cap.Table = &kernel.Table{ID: kernel.DefaultTable}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("the exit's configuration is refused: %v", err)
 	}

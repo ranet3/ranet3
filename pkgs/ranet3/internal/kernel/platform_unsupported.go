@@ -20,8 +20,6 @@ import (
 // that installs nothing and reports no error.
 func newPlatform(Table, Runtime) (platform, error) { return nil, ErrUnsupported }
 
-func refuseMeaningless(Table) error { return ErrUnsupported }
-
 // WatchNetwork has no routing table to read here, for the same reason
 func WatchNetwork(Host, string) (*NetworkWatch, error) { return nil, ErrUnsupported }
 

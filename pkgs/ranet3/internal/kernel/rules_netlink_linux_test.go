@@ -144,7 +144,7 @@ func TestNetlinkPassConvergesOnTheDerivedRules(t *testing.T) {
 	routes.Set(netip.Prefix{}, prefix("3fff:1::/48"), netstack.Local)
 	routes.Set(netip.Prefix{}, prefix("192.0.2.0/24"), netstack.Local)
 	routes.Set(netip.Prefix{}, prefix("198.18.104.5/32"), netstack.Assigned)
-	reconciler := newReconciler(tbl.Normalized(), rt, nil, nil, routes, plat)
+	reconciler := newReconciler(tbl.Normalized(), rt, nil, routes, plat)
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestNetlinkMirrorReadsBackTheThrowAndTheOverlayHolds(t *testing.T) {
 	routes.Set(netip.Prefix{}, prefix("3fff:1::/48"), netstack.Local)
 	routes.Set(netip.Prefix{}, prefix("192.0.2.0/24"), netstack.Local)
 	routes.Set(netip.Prefix{}, prefix("2001:db8:1::/48"), netstack.Local)
-	reconciler := newReconciler(tbl.Normalized(), rt, nil, nil, routes, plat)
+	reconciler := newReconciler(tbl.Normalized(), rt, nil, routes, plat)
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}

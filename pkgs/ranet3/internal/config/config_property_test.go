@@ -341,15 +341,6 @@ func speakers() hegel.Generator[babel.Config] {
 	})
 }
 
-// tables draws a table a rule looks up: one of the reserved names or any
-// number either side of them.
-func tables() hegel.Generator[schema.TableID] {
-	return hegel.Map(hegel.OneOf(
-		hegel.SampledFrom([]uint32{uint32(schema.TableMain), uint32(schema.TableLocal), uint32(schema.TableDefault)}),
-		edges[uint32](1, math.MaxUint32),
-	), func(n uint32) schema.TableID { return schema.TableID(n) })
-}
-
 // owned draws the table cap.table owns, which is never a reserved one, or
 // leaves it to the default.
 func owned() hegel.Generator[schema.TableID] {
@@ -358,46 +349,6 @@ func owned() hegel.Generator[schema.TableID] {
 		edges[uint32](1, uint32(schema.TableDefault)-1),
 		edges[uint32](uint32(schema.TableLocal)+1, math.MaxUint32),
 	), func(n uint32) schema.TableID { return schema.TableID(n) })
-}
-
-// rules draws one cap.table rules entry in either shape a file writes: one
-// selecting on addresses, which take their family from the address, and one
-// selecting on a mark or an input device alone, which names its family. Such
-// a rule now and then carries a selector that is set and is not a prefix,
-// which Validate refuses.
-func rules() hegel.Generator[kernel.Rule] {
-	return hegel.Composite(func(tc hegel.TestCase) kernel.Rule {
-		rule := kernel.Rule{
-			Table:    hegel.Draw(tc, tables()),
-			Priority: hegel.Draw(tc, edges[uint32](1, math.MaxUint32)),
-		}
-		marked := hegel.Draw(tc, hegel.Booleans())
-		if marked {
-			rule.FWMark = hegel.Draw(tc, edges[uint32](1, math.MaxUint32))
-			rule.FWMask = hegel.Draw(tc, edges[uint32](0, math.MaxUint32))
-		}
-		if hegel.Draw(tc, hegel.Booleans()) {
-			rule.IIF = hegel.Draw(tc, names())
-		}
-		if (marked || rule.IIF != "") && hegel.Draw(tc, hegel.Booleans()) {
-			rule.Family = hegel.Draw(tc, hegel.SampledFrom([]kernel.Family{kernel.FamilyIPv4, kernel.FamilyIPv6, kernel.FamilyBoth}))
-			if hegel.Draw(tc, hegel.WeightedBooleans(0.1)) {
-				rule.To = hegel.Draw(tc, malformed())
-			}
-			return rule
-		}
-		v6 := hegel.Draw(tc, hegel.Booleans())
-		switch hegel.Draw(tc, hegel.Integers(0, 2)) {
-		case 0:
-			rule.To = hegel.Draw(tc, prefixOf(v6, true))
-		case 1:
-			rule.From = hegel.Draw(tc, prefixOf(v6, true))
-		default:
-			rule.To = hegel.Draw(tc, prefixOf(v6, true))
-			rule.From = hegel.Draw(tc, prefixOf(v6, true))
-		}
-		return rule
-	})
 }
 
 // reconcilers draws cap.table. Now and then an address entry has no spelling,
@@ -410,12 +361,8 @@ func reconcilers() hegel.Generator[kernel.Table] {
 			Metric:          hegel.Draw(tc, edges[uint32](0, math.MaxUint32)),
 			Addresses:       hegel.Draw(tc, hegel.Lists(eitherFamily(false)).MaxSize(3)),
 			AssignAnnounced: hegel.Draw(tc, hegel.Booleans()),
-			Rules:           hegel.Draw(tc, hegel.Lists(rules()).MaxSize(4)),
 			Reconcile:       hegel.Draw(tc, unset(between(time.Millisecond, time.Hour))),
 			CaptureGrace:    hegel.Draw(tc, unset(between(kernel.MinCaptureGrace, time.Hour))),
-		}
-		if hegel.Draw(tc, hegel.Booleans()) {
-			table.PrefSrc4 = schema.AddrFrom(hegel.Draw(tc, hegel.IPAddresses().IPv4()))
 		}
 		if hegel.Draw(tc, hegel.WeightedBooleans(0.1)) {
 			table.Addresses = append(table.Addresses, hegel.Draw(tc, notPrefixes()))

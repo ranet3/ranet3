@@ -182,6 +182,42 @@ func TestRuleDumpKeepsOnlyWhatThisReconcilerOwns(t *testing.T) {
 	}
 }
 
+// A rule of this reconciler's protocol that another writer gave a selector no
+// derived rule holds, an inverted match, an output device or an l3mdev lookup,
+// reads back unequal to the derived rule it otherwise is, so the pass deletes
+// it and adds its own, and the delete names the device and the l3mdev, which
+// the kernel compares on a delete
+func TestRuleReadBackKeepsWhatNoDerivedRuleHolds(t *testing.T) {
+	plat, _ := writePlatform(t)
+	underlay := Rule{Family: FamilyIPv4, Priority: 5100, FWMark: 0x726c, action: ActionGoto, target: 5190}
+	inverted := plat.ruleMessage(underlay)
+	binary.NativeEndian.PutUint32(inverted[8:], unix.FIB_RULE_INVERT)
+	for name, c := range map[string]struct {
+		body []byte
+		kind uint16
+	}{
+		"an inverted match": {body: inverted},
+		"an output device":  {body: putAttrString(plat.ruleMessage(underlay), unix.FRA_OIFNAME, "eth0"), kind: unix.FRA_OIFNAME},
+		"an l3mdev lookup":  {body: putAttr(plat.ruleMessage(underlay), unix.FRA_L3MDEV, []byte{1}), kind: unix.FRA_L3MDEV},
+	} {
+		got, ok := plat.decodeRule(nlMessage{Kind: unix.RTM_NEWRULE, Data: c.body})
+		if !ok {
+			t.Errorf("%s: a rule of this reconciler's protocol is read as another writer's", name)
+			continue
+		}
+		if got == underlay {
+			t.Errorf("%s: read back as the derived %s", name, underlay)
+		}
+		hdr, attrs := ruleAttrs(t, plat.ruleMessage(got))
+		if _, carried := attrs[c.kind]; c.kind != 0 && !carried {
+			t.Errorf("%s: the delete of %s leaves out attribute %d", name, got, c.kind)
+		}
+		if c.kind == 0 && binary.NativeEndian.Uint32(hdr[8:])&unix.FIB_RULE_INVERT == 0 {
+			t.Errorf("%s: the delete of %s leaves out the inversion", name, got)
+		}
+	}
+}
+
 // replaceProtocol and stripProtocol rewrite one attribute of an encoded rule,
 // so a test can build the messages another writer would have produced without
 // a second encoder to keep in step with the first.

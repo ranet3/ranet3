@@ -63,7 +63,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go.yaml.in/yaml/v3"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/sadr"
@@ -122,10 +121,6 @@ type Table struct {
 	// writer holds rather than taking it over, whichever daemon got there
 	// first keeps the prefix and the other loses it quietly.
 	Metric uint32 `yaml:"metric,omitempty" json:"metric,omitempty" toml:"metric,omitempty"`
-	// PrefSrc4 is RTA_PREFSRC on every installed IPv4 route, the attribute
-	// BIRD sets from krt_prefsrc. IPv6 routes carry no preferred source, but
-	// source-specific IPv6 routes carry RTA_SRC instead.
-	PrefSrc4 schema.Addr `yaml:"prefsrc4,omitempty" json:"prefsrc4,omitzero" toml:"prefsrc4,omitempty"`
 	// Addresses are assigned to the device when absent and removed again at
 	// shutdown or when a reload stops assigning them. Only addresses the
 	// reconciler added itself are ever removed.
@@ -134,16 +129,6 @@ type Table struct {
 	// is the locally originated address an operator otherwise configures by
 	// hand. A default is announced and never assigned, so it is skipped.
 	AssignAnnounced bool `yaml:"assign_announced,omitempty" json:"assign_announced,omitempty" toml:"assign_announced,omitempty"`
-	// Rules are the policy rules this reconciler owns, in the order written.
-	// Each carries Proto in FRA_PROTOCOL, the same ownership marker routes
-	// carry, so a dump reads back only these and a delete can never reach
-	// another writer's. They are withdrawn at shutdown as the routes are: a
-	// rule pointing into an empty table costs only a lookup, and one left
-	// behind sends traffic to a table nothing is writing any more. linux only:
-	// darwin has one forwarding table and no rules, and a mobile tunnel
-	// provider is handed a route list rather than a table, so a configuration
-	// asking for one there is refused by name.
-	Rules []Rule `yaml:"rules,omitempty" json:"rules,omitempty" toml:"rules,omitempty"`
 	// Reconcile is the periodic sweep correcting drift nothing announced.
 	// Zero uses DefaultReconcileInterval.
 	Reconcile schema.Duration `yaml:"reconcile,omitempty" json:"reconcile,omitempty" toml:"reconcile,omitempty"`
@@ -268,8 +253,9 @@ func (t Table) Validate() error {
 		// boot, and 4 is the static protocol systemd-networkd stamps on the
 		// rules it installs. Claiming any of them makes this reconciler's
 		// routes indistinguishable from somebody else's, and since a rule pass
-		// deletes every rule carrying this protocol that the config does not
-		// name, claiming 4 deletes every static rule on the host.
+		// deletes every rule carrying this protocol that it does not derive and
+		// could have written, claiming 4 deletes every such static rule on the
+		// host.
 		return fmt.Errorf("kernel: cap.table proto %d is reserved for the kernel and for networkd, use 5 through 255", t.Proto)
 	}
 	if id := uint32(t.ID); id >= reservedTable && id <= lastByteTable {
@@ -283,14 +269,6 @@ func (t Table) Validate() error {
 		// the kernel's own entries in main out of its report, and that report
 		// is the one warning that would have said so.
 		return fmt.Errorf("kernel: cap.table id %d is reserved, use anything else from 1 to %d", id, ^uint32(0))
-	}
-	// the mapped spelling would reach the kernel as sixteen bytes on every IPv4 route
-	// a route carrying them never reads back equal
-	if address := t.PrefSrc4; address.Is4In6() {
-		return fmt.Errorf("kernel: cap.table prefsrc4 %s is an IPv4 address written as IPv6, so write it as %s", address, address.Unmap())
-	}
-	if address := t.PrefSrc4; address.IsValid() && !address.Is4() {
-		return fmt.Errorf("kernel: cap.table prefsrc4 %s is not an IPv4 address", address)
 	}
 	for i, prefix := range t.Addresses {
 		// An entry left at zero, or an address under a length it cannot
@@ -322,32 +300,6 @@ func (t Table) Validate() error {
 		return fmt.Errorf("kernel: cap.table capture_grace %s is shorter than %s, which the reconciler cannot honor: the gate is sampled once a pass and a pass reads the routing table",
 			t.CaptureGrace, MinCaptureGrace)
 	}
-	expanded, err := expandRules(t.Rules)
-	if err != nil {
-		return err
-	}
-	for _, rule := range expanded {
-		if err := rule.validate(); err != nil {
-			return err
-		}
-	}
-	// Canonicalized before the comparison, because that is the spelling the
-	// kernel holds: an all-ones mask and a bare mark are one rule to it, as a
-	// real kernel confirms. Two entries spelled those two ways install the
-	// same rule, AddRule sends NLM_F_EXCL, and every pass reports EEXIST on
-	// the second and retries over a rule already there.
-	//
-	// Through a set rather than a scan over what came before: one entry
-	// written "family = both" expands to two, so the list grows with the
-	// fleet's, and the scan cost 1.5 seconds at sixteen thousand rules.
-	seen := make(map[Rule]struct{}, len(expanded))
-	for _, rule := range expanded {
-		rule = rule.canonical()
-		if _, twice := seen[rule]; twice {
-			return fmt.Errorf("kernel: cap.table rules %s is configured twice", rule)
-		}
-		seen[rule] = struct{}{}
-	}
 	return nil
 }
 
@@ -372,8 +324,6 @@ type Route struct {
 	// Source is RTA_SRC, invalid for an ordinary route. IPv6 only, because
 	// the IPv4 FIB has no source-specific lookup.
 	Source netip.Prefix
-	// PrefSrc is RTA_PREFSRC, invalid when unset.
-	PrefSrc netip.Addr
 	// Metric is RTA_PRIORITY as the kernel holds it, never the zero that
 	// means "your default" on the way in.
 	Metric uint32
@@ -429,14 +379,18 @@ type auditor interface {
 // ruler is implemented by a platform that has a policy routing engine. linux
 // has FIB rules and 2^32 tables. darwin has one FIB and neither. A mobile
 // tunnel provider is handed a list of routes to include and exclude and never
-// sees a table at all. A platform without one does not implement this, and New
-// refuses a configuration that asks for rules there by name rather than
-// accepting it and quietly doing nothing.
+// sees a table at all. A platform without one does not implement this, and its
+// reconciler writes no rule and leaves out the routes only a rule reads: the
+// throw rows and the overlay holds.
 //
-// What the rules express is portable even where the mechanism is not: keeping
-// the underlay out of the mesh, and sending traffic from an address into it.
-// Each backend reaches those its own way, and the ones that cannot take a rule
-// list say so. See the platform notes in pkgs/raweb3/pages/docs/platforms.md.
+// What the rules express is portable even where the mechanism is not: the
+// underlay set apart, on linux by a mark the derived rules read, and the
+// overlay and this node's own sources sent into the mesh, as routing.md's
+// "Where a lookup ends on Linux" gives. darwin installs a source-specific route
+// only where its source prefix holds an address of the tun, and that one, and
+// without link.underlay.bind every route schema.CapturesTheMachine counts,
+// scoped to the tun instead, which keeps them off every unbound socket. See
+// the platform notes in pkgs/raweb3/pages/docs/platforms.md.
 type ruler interface {
 	// Rules returns only the rules carrying this reconciler's protocol.
 	Rules() ([]Rule, error)
@@ -470,16 +424,17 @@ type platform interface {
 	Close() error
 }
 
-// Rule is one policy rule. It is compared with ==, so every field is part of
-// the key: the kernel matches a delete against the selectors it is given, and
-// two rules differing in any of them are two entries.
+// Rule is one policy rule the reconciler derives, in one family. It is
+// compared with ==, so every field is part of the key: the kernel matches a
+// delete against the selectors it is given, and two rules differing in any of
+// them are two entries, but for a goto's target, the invert flag and an exact
+// mark's mask spelled as all ones, which the kernel does not tell apart.
 //
 // A rule this reconciler owns looks up a table, jumps to a later priority or
 // does nothing, so no rule of its own refuses an address, only an unreachable,
 // blackhole or prohibit route of a table it looks up.
 type Rule struct {
-	// action is the rule's FR_ACT, a lookup in Table at its zero value. It,
-	// target and suppress are no file's to write.
+	// action is the rule's FR_ACT, a lookup in Table at its zero value
 	action RuleAction
 	// target is FRA_GOTO, the priority a goto continues at, and zero for any other action.
 	target uint32
@@ -487,33 +442,29 @@ type Rule struct {
 	// that length or shorter, but never an unreachable, blackhole or prohibit
 	// one.
 	suppress Suppress
-	// To is FRA_DST and From is FRA_SRC, each optional. A rule naming neither
-	// selects on a mark or a device and has to name its Family, because
-	// neither belongs to an address family.
-	To   schema.Prefix `yaml:"to,omitempty" json:"to,omitzero" toml:"to,omitempty"`
-	From schema.Prefix `yaml:"from,omitempty" json:"from,omitzero" toml:"from,omitempty"`
+	// invert is FIB_RULE_INVERT, oif FRA_OIFNAME and l3mdev FRA_L3MDEV, which
+	// no derived rule holds. A rule of this reconciler's protocol another writer
+	// gave one reads back unequal to every derived rule, so the pass deletes it,
+	// naming the device and the l3mdev the kernel compares on a delete. The
+	// kernel compares no invert flag there, so where an inverted copy sits behind
+	// the derived rule the delete takes the derived rule, and the next pass
+	// deletes the copy and adds the derived rule back.
+	invert bool
+	oif    string
+	l3mdev bool
+	// To is FRA_DST and From is FRA_SRC, each optional
+	To, From schema.Prefix
 	// FWMark and FWMask are FRA_FWMARK and FRA_FWMASK. A zero mark means the
 	// rule does not select on one, and a zero mask with a nonzero mark is an
-	// exact match, which is how the kernel reads an absent FRA_FWMASK. A hex
-	// literal is ordinary in both file formats, so fwmark: 0x726c is written
-	// as it reads elsewhere.
-	FWMark uint32 `yaml:"fwmark,omitempty" json:"fwmark,omitempty" toml:"fwmark,omitempty"`
-	FWMask uint32 `yaml:"fwmask,omitempty" json:"fwmask,omitempty" toml:"fwmask,omitempty"`
-	// IIF is FRA_IIFNAME, the device a packet arrived on, empty for any. Like
-	// a mark it belongs to no address family.
-	IIF string `yaml:"iif,omitempty" json:"iif,omitempty" toml:"iif,omitempty"`
-	// Table is the table to look up, as a number or as one of the three names
-	// the kernel reserves: a rule pointing at main is ordinary, and keeps an
-	// underlay out of a mesh table.
-	Table schema.TableID `yaml:"table" json:"table" toml:"table"`
-	// Priority is FRA_PRIORITY, the rule's position in the list. It is
-	// required: leaving it to the kernel puts the rule just above the last
-	// one, which is a different place on every node.
-	Priority uint32 `yaml:"priority" json:"priority" toml:"priority"`
-	// Family is needed only when neither To nor From says which, and "both"
-	// installs the rule once per family. An installed rule always names one,
-	// because expandRules resolves this before anything reaches the kernel.
-	Family Family `yaml:"family,omitempty" json:"family,omitempty" toml:"family,omitempty"`
+	// exact match, which is how the kernel reads an absent FRA_FWMASK.
+	FWMark, FWMask uint32
+	// IIF is FRA_IIFNAME, the device a packet arrived on, empty for any
+	IIF string
+	// Table is the table a lookup reads
+	Table schema.TableID
+	// Priority is FRA_PRIORITY, the rule's position in the list
+	Priority uint32
+	Family   Family
 }
 
 // RuleAction is a rule's FR_ACT, as far as this reconciler writes one.
@@ -527,6 +478,17 @@ const (
 	// ActionNop is FR_ACT_NOP, a rule a goto lands on.
 	ActionNop
 )
+
+// String is the action as `ip rule` spells it
+func (a RuleAction) String() string {
+	switch a {
+	case ActionGoto:
+		return "goto"
+	case ActionNop:
+		return "nop"
+	}
+	return "lookup"
+}
 
 // Suppress is a rule's FRA_SUPPRESS_PREFIXLEN. The zero value suppresses
 // nothing, which the kernel holds as -1 and tells apart from a length of 0.
@@ -542,95 +504,25 @@ func SuppressUpTo(bits int) Suppress { return Suppress{set: true, bits: uint32(b
 // Bits is the length, and whether the rule suppresses at all.
 func (s Suppress) Bits() (int, bool) { return int(s.bits), s.set }
 
-// Family is the address family a rule belongs to, spelled as an operator
-// writes it rather than as AF_INET and AF_INET6, which are numbers on one
-// platform and absent on the others.
+// Family is an address family, spelled as `ip -4` and `ip -6` name it rather
+// than as AF_INET and AF_INET6, which are numbers on one platform and absent
+// on the others.
 type Family string
 
 const (
-	// FamilyUnset is a rule taking its family from the address it selects on.
-	FamilyUnset Family = ""
-	FamilyIPv4  Family = "ipv4"
-	FamilyIPv6  Family = "ipv6"
-	// FamilyBoth is written once and installed twice, because keeping an
-	// underlay out of a mesh table needs both and writing them by hand is how
-	// one of the two goes missing.
-	FamilyBoth Family = "both"
+	FamilyIPv4 Family = "ipv4"
+	FamilyIPv6 Family = "ipv6"
 )
 
-func (f *Family) UnmarshalText(text []byte) error {
-	switch Family(strings.ToLower(string(text))) {
-	case FamilyUnset:
-		*f = FamilyUnset
-	case FamilyIPv4:
-		*f = FamilyIPv4
-	case FamilyIPv6:
-		*f = FamilyIPv6
-	case FamilyBoth:
-		*f = FamilyBoth
-	default:
-		return fmt.Errorf("kernel: family %q is not ipv4, ipv6 or both", text)
-	}
-	return nil
-}
-
-func (f Family) MarshalText() ([]byte, error) { return []byte(f), nil }
-
-func (f *Family) UnmarshalYAML(value *yaml.Node) error {
-	return schema.Scalar(value, "a family, ipv4, ipv6 or both", f)
-}
-
-func (f Family) MarshalYAML() (any, error) { return string(f), nil }
-
-// expandRules resolves each configured rule's address family, so that
-// everything below this point names exactly one. A rule that names neither a
-// destination nor a source selects on a mark or a device, which belong to no
-// family, so it says which one it is for: "both" is written once and installed
-// twice.
-//
-// Everything the reconciler itself judges is left to Rule.validate, so the one
-// place deciding what a rule may say is the one that installs it.
-func expandRules(rules []Rule) ([]Rule, error) {
-	var out []Rule
-	for _, rule := range rules {
-		addressed := rule.To.IsValid() || rule.From.IsValid()
-		if addressed && rule.Family != FamilyUnset {
-			return nil, fmt.Errorf("kernel: cap.table rules at priority %d names family %q and an address, which already says which family it is", rule.Priority, rule.Family)
-		}
-		if addressed {
-			address := rule.To.Addr()
-			if !rule.To.IsValid() {
-				address = rule.From.Addr()
-			}
-			rule.Family = FamilyIPv4
-			if !address.Is4() {
-				rule.Family = FamilyIPv6
-			}
-			out = append(out, rule)
-			continue
-		}
-		switch rule.Family {
-		case FamilyIPv4, FamilyIPv6:
-			out = append(out, rule)
-		case FamilyBoth:
-			rule.Family = FamilyIPv4
-			out = append(out, rule)
-			rule.Family = FamilyIPv6
-			out = append(out, rule)
-		default:
-			return nil, fmt.Errorf("kernel: cap.table rules at priority %d selects on no address, so it has to name family: ipv4, ipv6 or both", rule.Priority)
-		}
-	}
-	return out, nil
-}
-
-// String is the rule as an operator wrote it, which is how every refusal and
-// every log line names one. The table is spelled the way the file spells it,
-// since an operator who wrote "main" does not recognize 254, and the family is
-// there because a message about two rules that differ only in it identifies
-// neither without it.
+// String is the rule as `ip rule` spells it, with its family, which is how
+// every log line names one. The table is spelled by name where the kernel
+// reserves one, and the family is there because a message about two rules
+// that differ only in it identifies neither without it.
 func (r Rule) String() string {
 	parts := []string{fmt.Sprintf("priority %d", r.Priority)}
+	if r.invert {
+		parts = append(parts, "not")
+	}
 	if r.From.IsValid() {
 		parts = append(parts, "from "+r.From.String())
 	}
@@ -647,9 +539,13 @@ func (r Rule) String() string {
 	if r.IIF != "" {
 		parts = append(parts, "iif "+r.IIF)
 	}
-	if r.Family != FamilyUnset {
-		parts = append(parts, "family "+string(r.Family))
+	if r.oif != "" {
+		parts = append(parts, "oif "+r.oif)
 	}
+	if r.l3mdev {
+		parts = append(parts, "l3mdev")
+	}
+	parts = append(parts, "family "+string(r.Family))
 	switch r.action {
 	case ActionGoto:
 		parts = append(parts, fmt.Sprintf("goto %d", r.target))
@@ -664,92 +560,22 @@ func (r Rule) String() string {
 	return strings.Join(parts, " ")
 }
 
-// canonical is the rule as the kernel reports it back. Two spellings can reach
-// the kernel as one rule while only one of them survives a dump, and a diff
-// holding the other deletes and reinstalls that rule on every pass, with a
-// window each time in which it is not there.
-//
-// A mark with no mask matches every bit, which the kernel stores and reports
-// as a mask of all ones: `ip rule add fwmark X` and `ip rule add fwmark
-// X/0xffffffff` answer EEXIST to each other. The other spelling that does not
-// survive a dump, a zero-length selector, is refused by validate instead, so
-// that the refusal can name the field the operator wrote.
-func (r Rule) canonical() Rule {
-	if r.FWMark != 0 && r.FWMask == ^uint32(0) {
-		r.FWMask = 0
+// dumped is the rule as a dump of the kernel holding it reads, carrying proto:
+// a mark with no mask matches every bit, which the kernel stores and dumps as
+// a mask of all ones, and a goto or a nop reads no table
+func (r Rule) dumped(proto uint8) DumpedRule {
+	held := DumpedRule{
+		Family: r.Family, Priority: r.Priority, To: r.To.Prefix, From: r.From.Prefix, IIF: r.IIF, OIF: r.oif,
+		FWMark: r.FWMark, FWMask: r.FWMask, L3mdev: r.l3mdev, Invert: r.invert,
+		Action: r.action.String(), Goto: r.target, Suppress: r.suppress, Protocol: proto,
 	}
-	return r
-}
-
-// validate refuses a rule the kernel would accept and an operator would not
-// recognize afterward. It runs at startup, so a mistake costs a refusal to
-// start rather than a rule installed against a live fleet.
-func (r Rule) validate() error {
-	if r.Family != FamilyIPv4 && r.Family != FamilyIPv6 {
-		return fmt.Errorf("kernel: cap.table rules %s: family must be ipv4 or ipv6", r)
+	if r.FWMark != 0 && r.FWMask == 0 {
+		held.FWMask = ^uint32(0)
 	}
-	for _, named := range []struct {
-		name   string
-		prefix netip.Prefix
-	}{{"to", r.To.Prefix}, {"from", r.From.Prefix}} {
-		if named.prefix == (netip.Prefix{}) {
-			continue
-		}
-		if !named.prefix.IsValid() {
-			// An address under a length it cannot carry was read as no
-			// selector at all, which no file can write.
-			return fmt.Errorf("kernel: cap.table rules %s: %s is set and is not a prefix", r, named.name)
-		}
-		if familyOf(named.prefix.Addr()) != r.Family {
-			return fmt.Errorf("kernel: cap.table rules %s: %s %s is not of the rule's family", r, named.name, named.prefix)
-		}
-		if named.prefix.Masked() != named.prefix {
-			return fmt.Errorf("kernel: cap.table rules %s: %s %s has bits set below its prefix length", r, named.name, named.prefix)
-		}
-		if named.prefix.Bits() == 0 {
-			// The kernel emits no FRA_DST or FRA_SRC for a zero-length
-			// selector, so a rule carrying one never matches its own readback
-			// and the pass reinstalls it forever. Whatever else the rule
-			// selects on is the honest way to write it.
-			return fmt.Errorf("kernel: cap.table rules %s: %s %s selects every address, which the kernel reports back as no selector at all", r, named.name, named.prefix)
-		}
+	if r.action == ActionLookup {
+		held.Table = uint32(r.Table)
 	}
-	if !r.To.IsValid() && !r.From.IsValid() && r.FWMark == 0 && r.IIF == "" {
-		return fmt.Errorf("kernel: cap.table rules %s selects nothing, so it would match every packet", r)
-	}
-	if len(r.IIF) >= ifNameSize {
-		return fmt.Errorf("kernel: cap.table rules %s: iif %q is %d bytes, and a device name is at most %d", r, r.IIF, len(r.IIF), ifNameSize-1)
-	}
-	if r.IIF != "" && !deviceName(r.IIF) {
-		return fmt.Errorf("kernel: cap.table rules %s: iif %q is not a name a device can carry", r, r.IIF)
-	}
-	if r.FWMark == 0 && r.FWMask != 0 {
-		return fmt.Errorf("kernel: cap.table rules %s carries a mark mask and no mark", r)
-	}
-	if r.Priority == 0 {
-		return fmt.Errorf("kernel: cap.table rules %s: priority 0 belongs to the local table", r)
-	}
-	if r.Table == 0 {
-		return fmt.Errorf("kernel: cap.table rules %s: table is required", r)
-	}
-	return nil
-}
-
-// deviceName is whether the kernel's dev_valid_name takes name, whose isspace
-// counts 0xa0 beside the six ASCII spaces. No device carries a name it refuses,
-// and the kernel reads FRA_IIFNAME only up to its first NUL, so a rule holding
-// either is installed as another rule than the one written.
-func deviceName(name string) bool {
-	if name == "." || name == ".." {
-		return false
-	}
-	for i := range len(name) {
-		switch name[i] {
-		case 0, '/', ':', '\t', '\n', '\v', '\f', '\r', ' ', 0xa0:
-			return false
-		}
-	}
-	return true
+	return held
 }
 
 func familyOf(address netip.Addr) Family {
@@ -761,16 +587,14 @@ func familyOf(address netip.Addr) Family {
 
 type Reconciler struct {
 	// table is the capability with its defaults filled in, rt what the caller
-	// resolved, and rules and addresses what New or SetTable made of the two:
-	// the rules with their families expanded and the address set the device is
-	// to carry.
+	// resolved, and addresses what New or SetTable made of the two: the address
+	// set the device is to carry.
 	table     Table
 	rt        Runtime
-	ruleSet   []Rule
 	addresses []netip.Prefix
-	// own is this node's own prefixes as the pass's snapshot holds them, which
-	// applyRoutes takes and applyRules derives the rules from
-	own []netip.Prefix
+	// derived is the rules the last rule pass derived, as another goroutine
+	// reads them, and nil while the reconciler holds none
+	derived atomic.Pointer[[]Rule]
 
 	src  RouteSource
 	plat platform
@@ -801,8 +625,7 @@ type Reconciler struct {
 	want Covered
 
 	// rules is the optional half of the platform, nil where it has no policy
-	// engine. New and SetTable refuse a configuration that needs one on such a
-	// platform, so nil here means the configuration asked for no rules.
+	// engine
 	rules ruler
 
 	// gate holds back the routes that would carry this machine's own traffic
@@ -889,10 +712,9 @@ func New(t Table, rt Runtime, src RouteSource) (*Reconciler, error) {
 	if src == nil {
 		return nil, errors.New("kernel: route source is required")
 	}
-	// Checked as written and canonicalized afterward, so a refusal names the
-	// field an operator can find in their own file rather than the one
-	// canonicalization left behind. The loader has already run this, but a caller
-	// that built the capability by hand has not.
+	// Checked as written and normalized afterward, so a refusal names the
+	// field an operator can find in their own file. The loader has already run
+	// this, but a caller that built the capability by hand has not.
 	if err := t.Validate(); err != nil {
 		return nil, err
 	}
@@ -915,13 +737,7 @@ func New(t Table, rt Runtime, src RouteSource) (*Reconciler, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := refuseWhatThePlatformLacks(t, plat); err != nil {
-		plat.Close()
-		return nil, err
-	}
-	// The rules as Normalized left them: expanded, canonical and in one order,
-	// which is the form the reconciler installs and diffs against the kernel.
-	return newReconciler(t, rt, t.Rules, addresses, src, plat), nil
+	return newReconciler(t, rt, addresses, src, plat), nil
 }
 
 // resolveAddresses is the address set a reconciler of t carries on the device, given the prefixes cap.route announces
@@ -938,21 +754,13 @@ func resolveAddresses(t Table, announced []netip.Prefix) ([]netip.Prefix, error)
 }
 
 // Normalized is the capability as the reconciler runs it: every field the file
-// left out filled in with the default it stands for, every rule expanded to
-// the one family it installs under and spelled the way the kernel reports it
-// back, and every list the reconciler reads as a set in one order. New
-// resolves a capability through this and hands the rules straight on, and a
-// reload compares two through it rather than as they were written, so neither
-// a field written out as its own default nor a second spelling of one ruleset
-// is a change. Leaving either out refuses a reload over nothing, and a restart
-// drops every SA on the node.
-//
-// Both lists here are read as sets. applyRules diffs what the kernel holds
-// against the rules by value, and the kernel orders them by the priority each
-// one carries rather than by the order they arrived in. The addresses are
-// assigned to one device. So "family = both" and the same rule written once
-// per family describe one reconciler, as do two files listing the same
-// addresses in different orders.
+// left out filled in with the default it stands for, and the addresses, which
+// are assigned to one device and read as a set, in one order. A reload
+// compares two capabilities through it rather than as they were written, so
+// neither a field written out as its own default nor a second order of the
+// addresses is a change. Leaving either out refuses a reload over nothing
+// where the field is the id or the proto, or where no reconciler runs to take
+// the block, and a restart drops every SA on the node.
 func (t Table) Normalized() Table {
 	if t.ID == 0 {
 		t.ID = DefaultTable
@@ -971,43 +779,7 @@ func (t Table) Normalized() Table {
 	} else {
 		t.Addresses = slices.SortedFunc(slices.Values(t.Addresses), schema.ComparePrefix)
 	}
-	switch expanded, err := expandRules(t.Rules); {
-	case len(t.Rules) == 0:
-		t.Rules = nil
-	case err != nil:
-		// A rule expansion refuses is one Validate refuses, and New runs
-		// Validate first, so this answers a caller comparing two capabilities
-		// neither of which will ever run. Left as written, such a rule still
-		// compares equal to itself.
-		t.Rules = canonicalRules(t.Rules)
-	default:
-		t.Rules = sortedRules(canonicalRules(expanded))
-	}
 	return t
-}
-
-// sortedRules puts a rule set in one order, in place, over the copy
-// canonicalRules already made. The order is the whole rule rather than the
-// priority alone, so two rules sharing a priority still sort the same way
-// every time.
-func sortedRules(rules []Rule) []Rule {
-	slices.SortFunc(rules, func(a, b Rule) int {
-		return cmp.Or(
-			cmp.Compare(a.Priority, b.Priority),
-			cmp.Compare(a.Family, b.Family),
-			cmp.Compare(a.action, b.action),
-			cmp.Compare(a.target, b.target),
-			cmp.Compare(boolOrder(a.suppress.set), boolOrder(b.suppress.set)),
-			cmp.Compare(a.suppress.bits, b.suppress.bits),
-			cmp.Compare(a.Table, b.Table),
-			cmp.Compare(a.FWMark, b.FWMark),
-			cmp.Compare(a.FWMask, b.FWMask),
-			cmp.Compare(a.IIF, b.IIF),
-			schema.ComparePrefix(a.From, b.From),
-			schema.ComparePrefix(a.To, b.To),
-		)
-	})
-	return rules
 }
 
 // Unreloadable names the setting next changes that a reconciler running t keeps for its life, or is empty
@@ -1023,41 +795,9 @@ func (t Table) Unreloadable(next Table) string {
 	return ""
 }
 
-// refuseWhatThePlatformLacks stops a startup or a reload that asked for a
-// facility this platform does not have. It is one place rather than one per
-// backend, so a refusal says what the platform does instead as well as what it
-// will not do.
-//
-// Refusing matters more than it looks. Policy rules are the steering a fleet
-// node needs, and a platform that accepted the configuration and reconciled
-// only the routes would come up with a working mesh and no steering at all,
-// which is the shape of outage that reads as a routing problem for a day.
-func refuseWhatThePlatformLacks(t Table, plat platform) error {
-	if _, ok := plat.(ruler); !ok && len(t.Rules) > 0 {
-		return fmt.Errorf("kernel: %d cap.table rules are configured and this platform has no policy routing: %s", len(t.Rules), rulesUnavailable)
-	}
-	return nil
-}
-
-// rulesUnavailable says what a platform without rules does instead, so the
-// refusal answers the next question as well as the current one.
-const rulesUnavailable = "every route that counts as a default and every source-specific route are installed scoped to the tun instead, which keeps them off every unbound socket, and the underlay stays out of the mesh without needing a mark"
-
-// canonicalRules is the configured rules in the spelling the kernel reports
-// back, in a copy: New is handed the caller's slice and a reload compares one
-// capability against another, so rewriting in place would change what that
-// comparison reads. See Rule.canonical.
-func canonicalRules(rules []Rule) []Rule {
-	out := slices.Clone(rules)
-	for i := range out {
-		out[i] = out[i].canonical()
-	}
-	return out
-}
-
-func newReconciler(t Table, rt Runtime, rules []Rule, addresses []netip.Prefix, src RouteSource, plat platform) *Reconciler {
+func newReconciler(t Table, rt Runtime, addresses []netip.Prefix, src RouteSource, plat platform) *Reconciler {
 	r := &Reconciler{
-		table: t, rt: rt, ruleSet: rules, addresses: addresses,
+		table: t, rt: rt, addresses: addresses,
 		src: src, plat: plat,
 		owned:       make(map[netip.Prefix]bool),
 		warnedAddrs: make(map[netip.Prefix]bool),
@@ -1069,8 +809,6 @@ func newReconciler(t Table, rt Runtime, rules []Rule, addresses []netip.Prefix, 
 	}
 	r.enabled.Store(true)
 	r.inForce.Store(&t)
-	// Nil on a platform without them, which New has already refused to
-	// configure, so every use below is reached only where the backend answers.
 	r.rules, _ = plat.(ruler)
 	return r
 }
@@ -1085,6 +823,21 @@ func (r *Reconciler) Where() string { return r.plat.where(r.Table()) }
 // caller's is not the one in force and a diagnostic reporting that one names a
 // table of zero on every deployment that left it out.
 func (r *Reconciler) Table() Table { return *r.inForce.Load() }
+
+// DerivedRules is the rules the last rule pass derived, each as a dump of the
+// kernel holding it reads, and none before the first pass, after a withdrawal
+// or on a platform with no policy rules
+func (r *Reconciler) DerivedRules() []DumpedRule {
+	derived := r.derived.Load()
+	if derived == nil {
+		return nil
+	}
+	out := make([]DumpedRule, 0, len(*derived))
+	for _, rule := range *derived {
+		out = append(out, rule.dumped(r.Table().Proto))
+	}
+	return out
+}
 
 // SetEnabled stops or starts this reconciler while it runs, which is the
 // `birdc disable` a kernel protocol took while Babel lived in BIRD. Stopping
@@ -1127,12 +880,6 @@ func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []neti
 	if setting := r.Table().Unreloadable(t); setting != "" {
 		return fmt.Errorf("kernel: cap.table %s changed, restart to apply", setting)
 	}
-	if err := refuseMeaningless(t); err != nil {
-		return err
-	}
-	if err := refuseWhatThePlatformLacks(t, r.plat); err != nil {
-		return err
-	}
 	addresses, err := resolveAddresses(t, announced)
 	if err != nil {
 		return err
@@ -1151,7 +898,7 @@ func (r *Reconciler) adopt() bool {
 	if next == nil {
 		return false
 	}
-	r.table, r.ruleSet, r.addresses, r.rt.Overlay, r.rt.Announced = next.table, next.table.Rules, next.addresses, next.overlay, next.announced
+	r.table, r.addresses, r.rt.Overlay, r.rt.Announced = next.table, next.addresses, next.overlay, next.announced
 	r.gate.grace = next.table.CaptureGrace.Duration()
 	r.plat.retable(next.table)
 	r.inForce.Store(&next.table)
@@ -1309,16 +1056,15 @@ func stopTimer(t *time.Timer) {
 // The pass is recorded here rather than inside applyRoutes, so that what a
 // diagnostic reports is the error Run logged rather than part of it: a
 // node whose rules fail on every pass would otherwise answer `ranet3 status`
-// with a clean route count and no error at all. See
-// refuseWhatThePlatformLacks for why that particular silence is the expensive
-// one.
+// with a clean route count and no error at all.
 func (r *Reconciler) reconcile() error {
 	started := time.Now()
 	// Sampled once for the whole pass, before any of the steps: a route
 	// installed under one answer and withdrawn under another would leave the
 	// kernel holding a key the diff never names again.
 	r.sampleCapture()
-	err := errors.Join(r.applyAddresses(), r.applyRoutes(), r.applyRules())
+	snapshot := r.src.Snapshot()
+	err := errors.Join(r.applyAddresses(), r.applyRoutes(snapshot), r.applyRules(snapshot))
 	r.recordPass(err, time.Since(started))
 	return err
 }
@@ -1411,20 +1157,21 @@ func (r *Reconciler) audit() {
 	}
 }
 
-// applyRules brings the policy rules to the derived and the configured set. It
-// removes before it installs for the same reason applyRoutes does, and it
-// reads the kernel back rather than trusting a record, so rules an earlier
-// instance left behind are adopted and then withdrawn rather than duplicated.
-// It adds in the set's order, which puts each nop ahead of its goto.
-func (r *Reconciler) applyRules() error {
+// applyRules brings the policy rules to the derived set. It removes before it
+// installs for the same reason applyRoutes does, and it reads the kernel back
+// rather than trusting a record, so rules an earlier instance left behind are
+// adopted, and withdrawn where no longer derived, rather than duplicated. It
+// adds in the set's order, which puts each nop ahead of its goto.
+func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer]) error {
 	if r.rules == nil {
 		return nil
 	}
+	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(snapshot))
+	r.derived.Store(&ruleSet)
 	actual, err := r.rules.Rules()
 	if err != nil {
 		return fmt.Errorf("list rules: %w", err)
 	}
-	ruleSet := slices.Concat(derivedRules(r.table.ID, r.rt.Overlay, r.own), r.ruleSet)
 	var errs []error
 	added, removed := 0, 0
 	wanted := make(map[Rule]bool, len(ruleSet))
@@ -1464,12 +1211,10 @@ func (r *Reconciler) applyRules() error {
 
 // applyRoutes removes before it installs, so a changed non-key attribute does
 // not collide with the old route under the exclusive-install policy.
-func (r *Reconciler) applyRoutes() error {
+func (r *Reconciler) applyRoutes(snapshot []sadr.Route[*netstack.Peer]) error {
 	// Cleared first, so a pass that fails before it can count anything reports
 	// nothing rather than the counts of the last pass that succeeded.
 	r.routePass = Stats{}
-	snapshot := r.src.Snapshot()
-	r.own = r.ownPrefixes(snapshot)
 	actual, err := r.plat.Routes()
 	if err != nil {
 		return fmt.Errorf("list routes: %w", err)
@@ -1541,7 +1286,7 @@ func (r *Reconciler) applyRoutes() error {
 	}
 	// An install refuses a key another writer already holds rather than
 	// taking it over, so a route of ours that changed only in an attribute
-	// the kernel does not key on, a preferred source at an unchanged metric,
+	// the kernel does not key on, its type at an unchanged metric,
 	// has to leave before its replacement arrives. Both lists are this
 	// reconciler's own routes, so the gap is within one pass and touches
 	// nothing else.
@@ -1827,9 +1572,6 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer]) []Route {
 			}
 			route.Source = source
 		}
-		if destination.Addr().Is4() && r.table.PrefSrc4.IsValid() && !route.Throw {
-			route.PrefSrc = r.table.PrefSrc4.Addr
-		}
 		out = append(out, route)
 	}
 	r.warned = warned
@@ -1853,9 +1595,6 @@ func (r *Reconciler) overlayHolds(out []Route) []Route {
 			continue
 		}
 		hold := Route{Destination: destination, Metric: holdMetric, Unreachable: true}
-		if destination.Addr().Is4() && r.table.PrefSrc4.IsValid() {
-			hold.PrefSrc = r.table.PrefSrc4.Addr
-		}
 		if !r.captures(hold) && !slices.Contains(out, hold) {
 			out = append(out, hold)
 		}
@@ -1981,7 +1720,6 @@ func compareRoutes(a, b Route) int {
 	return cmp.Or(
 		comparePrefixes(a.Destination, b.Destination),
 		compareSourceSpecificity(a.Source, b.Source),
-		a.PrefSrc.Compare(b.PrefSrc),
 		cmp.Compare(a.Metric, b.Metric),
 		cmp.Compare(boolOrder(a.Unreachable), boolOrder(b.Unreachable)),
 		cmp.Compare(boolOrder(a.Throw), boolOrder(b.Throw)),
@@ -2139,6 +1877,7 @@ func (r *Reconciler) withdraw() error {
 	// leaves with them.
 	rules := 0
 	if r.rules != nil {
+		r.derived.Store(nil)
 		held, err := r.rules.Rules()
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list rules: %w", err))

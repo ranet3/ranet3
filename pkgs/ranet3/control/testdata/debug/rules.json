@@ -11,19 +11,8 @@
     },
     {
       "family": "ipv4",
-      "priority": 40,
-      "fwmark": 29292,
-      "fwmask": 65535,
-      "action": "lookup",
-      "table": 254,
-      "protocol": 155,
-      "owned": true,
-      "wanted": true
-    },
-    {
-      "family": "ipv4",
       "priority": 100,
-      "to": "23.161.104.0/24",
+      "to": "198.51.100.0/24",
       "action": "lookup",
       "table": 200,
       "protocol": 4,
@@ -38,12 +27,12 @@
       "table": 254,
       "protocol": 155,
       "owned": true,
-      "wanted": true
+      "wanted": false
     },
     {
       "family": "ipv4",
       "priority": 150,
-      "from": "23.161.104.0/24",
+      "from": "198.51.100.0/24",
       "action": "lookup",
       "table": 254,
       "protocol": 4,
@@ -58,6 +47,45 @@
       "protocol": 2,
       "owned": false,
       "wanted": false
+    },
+    {
+      "family": "ipv4",
+      "priority": 5100,
+      "fwmark": 114,
+      "fwmask": 4294967295,
+      "action": "goto",
+      "goto": 5190,
+      "protocol": 155,
+      "owned": true,
+      "wanted": true
+    },
+    {
+      "family": "ipv4",
+      "priority": 5110,
+      "to": "192.0.2.0/24",
+      "action": "lookup",
+      "table": 200,
+      "protocol": 155,
+      "owned": true,
+      "wanted": true
+    },
+    {
+      "family": "ipv4",
+      "priority": 5190,
+      "action": "nop",
+      "protocol": 155,
+      "owned": true,
+      "wanted": true
+    },
+    {
+      "family": "ipv4",
+      "priority": 5410,
+      "action": "lookup",
+      "table": 254,
+      "suppress_prefixlength": 0,
+      "protocol": 155,
+      "owned": true,
+      "wanted": true
     },
     {
       "family": "ipv4",
@@ -109,10 +137,10 @@
   "missing": [
     {
       "family": "ipv6",
-      "priority": 120,
-      "iif": "eth1",
+      "priority": 5420,
       "action": "lookup",
-      "table": 254,
+      "table": 200,
+      "suppress_prefixlength": 15,
       "protocol": 155,
       "owned": true,
       "wanted": true

@@ -51,9 +51,6 @@ const (
 	fibRuleHeader = 12
 )
 
-// kernelMeshPrefix holds the host address of each node, and each node's rule sends it to that node's table
-var kernelMeshPrefix = netip.MustParsePrefix("10.77.0.0/24")
-
 var (
 	// namespaceOnce claims the namespace for the first test that asks, and its verdict stands for every later one
 	namespaceOnce sync.Once
@@ -253,13 +250,12 @@ func tunAddresses(device string) ([]netip.Prefix, error) {
 }
 
 // kernelNode is one of two nodes on real tuns in the namespace, each with a reconciler of its own
-// the two own a table, a protocol and a rule priority apiece, so the protocol alone tells one node's routes and rules from the other's
+// the two own a table and a protocol apiece, so the protocol alone tells one node's routes and rules from the other's
 type kernelNode struct {
 	loopbackNode
 	tun      string
 	table    uint32
 	protocol uint8
-	priority uint32
 	stateDir string
 	// retry is the node's dial retry, zero for the default
 	retry  time.Duration
@@ -269,7 +265,7 @@ type kernelNode struct {
 }
 
 // newKernelMesh writes the files of two nodes that dial and answer each other over the loopback, each on a tun of its own
-// each announces a host address and carries it on its tun, and its rule sends kernelMeshPrefix to its table
+// each announces a host address and carries it on its tun, and its derived rules send to its table
 func newKernelMesh(t *testing.T) (alpha, bravo *kernelNode) {
 	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
@@ -287,11 +283,11 @@ func newKernelMesh(t *testing.T) (alpha, bravo *kernelNode) {
 	mesh := meshCounter.Add(1)
 	alpha = &kernelNode{
 		loopbackNode: loopbackNode{name: fmt.Sprintf("alpha-%d", mesh), port: freeUDPPort(t), prefix: netip.MustParsePrefix("10.77.0.1/32")},
-		tun:          "updown0", table: 100, protocol: 200, priority: 1000,
+		tun:          "updown0", table: 100, protocol: 200,
 	}
 	bravo = &kernelNode{
 		loopbackNode: loopbackNode{name: fmt.Sprintf("bravo-%d", mesh), port: freeUDPPort(t), prefix: netip.MustParsePrefix("10.77.0.2/32")},
-		tun:          "updown1", table: 101, protocol: 201, priority: 1001,
+		tun:          "updown1", table: 101, protocol: 201,
 	}
 	nodes := []*kernelNode{alpha, bravo}
 	loopback := "127.0.0.1"
@@ -350,12 +346,8 @@ cap:
     id: %d
     proto: %d
     assign_announced: true
-    rules:
-      - to: %s
-        table: %d
-        priority: %d
 `, node.name, keyPath, registryPath, node.port, node.tun, peer.name, kernelHello, 2*kernelHello,
-		node.prefix.String(), node.table, node.protocol, kernelMeshPrefix, node.table, node.priority)
+		node.prefix.String(), node.table, node.protocol)
 	if err := os.WriteFile(node.configPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +453,7 @@ func (n *kernelNode) installed(t *testing.T) string {
 	return strings.Join(held, ", ")
 }
 
-// restored reports whether n carries its address on its tun and holds its rule, the two a down takes away beside the routes
+// restored reports whether n carries its address on its tun and holds a rule sending to its table, the two a down takes away beside the routes
 func (n *kernelNode) restored(t *testing.T) bool {
 	t.Helper()
 	addresses, err := tunAddresses(n.tun)
@@ -472,8 +464,10 @@ func (n *kernelNode) restored(t *testing.T) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rule := kernelRule{family: unix.AF_INET, destination: kernelMeshPrefix, table: n.table, priority: n.priority, protocol: n.protocol}
-	return slices.Contains(addresses, n.prefix) && slices.Contains(rules, rule)
+	toTable := func(rule kernelRule) bool {
+		return rule.family == unix.AF_INET && rule.table == n.table && rule.protocol == n.protocol
+	}
+	return slices.Contains(addresses, n.prefix) && slices.ContainsFunc(rules, toTable)
 }
 
 // converged reports whether each node holds one session and its kernel forwards to the other node

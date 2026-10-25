@@ -14,7 +14,7 @@ import (
 )
 
 // PathDebugRules is the host's policy rules beside the ones the reconciler
-// wants, and the border filter's chain with its counters
+// derives, and the border filter's chain with its counters
 const PathDebugRules = PathDebug + "rules"
 
 func init() {
@@ -26,8 +26,8 @@ type RulesSource interface {
 	DebugRules() RulesInfo
 }
 
-// RulesInfo is every policy rule the kernel holds, the reconciler's rules it
-// does not, and the border filter's chain
+// RulesInfo is every policy rule the kernel holds, the rules the reconciler
+// derives that it does not, and the border filter's chain
 type RulesInfo struct {
 	Policy []PolicyRule `json:"policy"`
 	// PolicyErr says why Policy is empty: a platform with no policy rules, or
@@ -39,7 +39,7 @@ type RulesInfo struct {
 }
 
 // PolicyRule is one policy rule, as the kernel holds it or as the reconciler
-// wants it
+// derives it
 type PolicyRule struct {
 	Family   string       `json:"family"`
 	Priority uint32       `json:"priority"`
@@ -55,10 +55,14 @@ type PolicyRule struct {
 	Action string `json:"action"`
 	// Table is the table a lookup reads, as the kernel holds it whatever the
 	// action, absent where it holds none
-	Table    uint32 `json:"table,omitempty"`
-	Protocol uint8  `json:"protocol"`
-	// Owned is a rule carrying the reconciler's protocol, and Wanted one the
-	// reconciler's cap.table asks for
+	Table uint32 `json:"table,omitempty"`
+	// Goto is the priority a goto jumps to, absent for any other action
+	Goto uint32 `json:"goto,omitempty"`
+	// Suppress is the suppress length the kernel stores with the rule, which only a lookup reads, absent where it stores none
+	Suppress *int  `json:"suppress_prefixlength,omitempty"`
+	Protocol uint8 `json:"protocol"`
+	// Owned is a rule carrying the reconciler's protocol, the default one on a
+	// node with no cap.table, and Wanted one the reconciler derives
 	Owned  bool `json:"owned"`
 	Wanted bool `json:"wanted"`
 }
@@ -200,11 +204,17 @@ func (r PolicyRule) selects() string {
 	return strings.Join(parts, " ")
 }
 
-// target is the table a lookup reads, by name where it has one, or the action
-// where the rule reads no table
+// target is the table a lookup reads, by name where it has one, with the
+// suppress length the kernel stores with the rule, the priority a goto jumps
+// to, or the action where the rule reads no table
 func (r PolicyRule) target() string {
-	if r.Action != "lookup" {
+	switch {
+	case r.Action == "goto":
+		return fmt.Sprintf("goto %d", r.Goto)
+	case r.Action != "lookup":
 		return r.Action
+	case r.Suppress != nil:
+		return fmt.Sprintf("%s suppress_prefixlength %d", schema.TableID(r.Table), *r.Suppress)
 	}
 	return schema.TableID(r.Table).String()
 }

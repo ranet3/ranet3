@@ -38,12 +38,12 @@ func coverOf(family bool, except ...string) []string {
 	return out
 }
 
-// A plain default goes in as the members of its family, carrying its metric
-// and preferred source, and leaves every member's zero address out.
+// Where the platform covers a default, darwin with link.underlay.bind, a plain
+// default goes in as the members of its family, carrying its metric, and
+// leaves every member's zero address out.
 func TestPlainDefaultBecomesItsZeroFreeCover(t *testing.T) {
-	src := addr("198.18.104.117")
 	got := coverDefaults([]Route{
-		{Destination: prefix("0.0.0.0/0"), Metric: 7, PrefSrc: src},
+		{Destination: prefix("0.0.0.0/0"), Metric: 7},
 		{Destination: prefix("::/0"), Metric: defaultIPv6Metric},
 	}, nil)
 	if want := append(coverOf(true), coverOf(false)...); !slices.Equal(destinations(got), sortedCopy(want)) {
@@ -56,8 +56,8 @@ func TestPlainDefaultBecomesItsZeroFreeCover(t *testing.T) {
 		if schema.HoldsUnspecified(r.Destination) {
 			t.Errorf("%s holds its family's zero address", r.Destination)
 		}
-		if r.Destination.Addr().Is4() && (r.Metric != 7 || r.PrefSrc != src) {
-			t.Errorf("%s did not carry the default's metric and source: %+v", r.Destination, r)
+		if r.Destination.Addr().Is4() && r.Metric != 7 {
+			t.Errorf("%s did not carry the default's metric: %+v", r.Destination, r)
 		}
 		if r.Destination.Addr().Is6() && r.Metric != defaultIPv6Metric {
 			t.Errorf("%s did not carry the default's metric: %+v", r.Destination, r)

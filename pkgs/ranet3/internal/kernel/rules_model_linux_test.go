@@ -10,6 +10,7 @@ import (
 	"errors"
 	"maps"
 	"math"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -170,8 +171,32 @@ func (r kernelRule) exists(request kernelRule) bool {
 		r.proto == request.proto && r.addresses(request)
 }
 
+// allOnes is the mask the kernel stores for a mark written without one.
+const allOnes = ^uint32(0)
+
+// masks draws a mark's mask, the two spellings of an exact match more often
+// than any other value.
+func masks() hegel.Generator[uint32] {
+	return hegel.OneOf(hegel.Integers[uint32](1, math.MaxUint32), hegel.Just(uint32(0)), hegel.Just(allOnes))
+}
+
+// devices draws an input device a rule selects on, the longest name a device
+// can carry among them.
+func devices() hegel.Generator[string] {
+	return hegel.SampledFrom([]string{"eth1", "lo", "eth0", strings.Repeat("r", 15)})
+}
+
+// asHeld is rule as the readback decodes it, an all-ones mask on a marked rule
+// read as the absent mask it matches the same packets as
+func asHeld(rule Rule) Rule {
+	if rule.FWMark != 0 && rule.FWMask == ^uint32(0) {
+		rule.FWMask = 0
+	}
+	return rule
+}
+
 // ownedRules draws a rule of any action this reconciler writes, on any
-// selectors, in either family, as canonical as the reconciler holds it
+// selectors, in either family, as the readback decodes it
 func ownedRules() hegel.Generator[Rule] {
 	return hegel.Composite(func(tc hegel.TestCase) Rule {
 		v6 := hegel.Draw(tc, hegel.Booleans())
@@ -203,7 +228,7 @@ func ownedRules() hegel.Generator[Rule] {
 		if hegel.Draw(tc, hegel.Booleans()) {
 			rule.From = hegel.Draw(tc, selectors(v6))
 		}
-		return rule.canonical()
+		return asHeld(rule)
 	})
 }
 
@@ -240,7 +265,7 @@ func variant(tc hegel.TestCase, base Rule) Rule {
 			base.From = other.From
 		}
 	}
-	return base.canonical()
+	return asHeld(base)
 }
 
 // The kernel stores what the encoder writes for a rule of every action and
@@ -361,8 +386,8 @@ func TestRuleMessageCarriesTheGotoAndTheSuppressLength(t *testing.T) {
 }
 
 // The kernel takes every derived rule beside the others, reads each back as
-// itself, and a delete of one takes that one, whatever the others at its
-// priority select
+// itself, both to the pass and to debug rules, and a delete of one takes that
+// one, whatever the others at its priority select
 func TestEveryDerivedRuleIsStoredAndDeletedAsItself(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		id := schema.TableID(hegel.Draw(ht, edges[uint32](1, math.MaxUint32)))
@@ -381,6 +406,9 @@ func TestEveryDerivedRuleIsStoredAndDeletedAsItself(t *testing.T) {
 			}
 			if got, ok := plat.decodeRule(stored.dump()); !ok || got != rule {
 				ht.Fatalf("%s read back from the kernel's dump of it as %s (kept %v)", rule, got, ok)
+			}
+			if got, ok := decodeDumpedRule(stored.dump()); !ok || got != rule.dumped(plat.table.Proto) {
+				ht.Fatalf("debug rules reads %s off the kernel as %+v and wants it as %+v", rule, got, rule.dumped(plat.table.Proto))
 			}
 			held = append(held, stored)
 		}
