@@ -531,6 +531,95 @@ func TestSeqnoRequestStopsAtHopCount(t *testing.T) {
 	}
 }
 
+// RFC 8966 section 4.1.3: "A router-id MUST NOT consist of either all binary
+// zeroes (0000000000000000 hexadecimal) or all binary ones (FFFFFFFFFFFFFFFF
+// hexadecimal)." A seqno request naming one is answered as any other, from a
+// selected route under another router-id, and never forwarded, since the
+// forwarded request would carry it.
+func TestSeqnoRequestUnderAnInvalidRouterIDIsAnsweredButNeverForwarded(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		id        [8]byte
+		forwarded int
+	}{
+		{"the origin's", routerID("c"), 1},
+		{"all zeroes", [8]byte{}, 0},
+		{"all ones", [8]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fabric := newMeshFabric(t, Config{}, "a-b", "b-c")
+			dest := netip.MustParsePrefix("fd00:c::/64")
+			key := routeKey{dest: dest}
+			fabric.cost("b", "c", 1000)
+			fabric.speakers["a"].Originate(dest)
+			fabric.speakers["c"].Originate(dest)
+			fabric.flush("a", "c", "b")
+			if got := fabric.nextHop("b", key); got != "a" {
+				t.Fatalf("b reaches dest via %q, want a", got)
+			}
+			request := EncodeSeqnoRequest(SeqnoRequest{AE: AEIPv6, Prefix: dest, Seqno: 5, HopCount: 64, RouterID: test.id})
+
+			// split horizon keeps b from answering a, so the request can only go on to c
+			fabric.reset()
+			fabric.inject("b", "a", request)
+			if got := seqnoRequestsFor(t, fabric.tlvs("b", "c"), dest); len(got) != test.forwarded {
+				t.Errorf("b forwarded %d requests under router-id %x to c, want %d", len(got), test.id, test.forwarded)
+			}
+
+			fabric.reset()
+			fabric.inject("b", "c", request)
+			if updates := updatesFor(t, fabric.tlvs("b", "c"), dest); len(updates) != 1 || updates[0].Metric == MetricInfinity {
+				t.Errorf("b answered c's request under router-id %x with %v, want one finite update", test.id, updates)
+			}
+		})
+	}
+}
+
+// RFC 8966 section 3.8.1.2 has a node with no feasible route but the
+// requester's forward a seqno request to an unfeasible route's next hop, and a
+// request naming a router-id of all zeroes or all ones goes there no more than
+// to a feasible one's.
+func TestSeqnoRequestUnderAnInvalidRouterIDIsNotForwardedToAnUnfeasibleRoute(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		id        [8]byte
+		forwarded int
+	}{
+		{"the origin's", routerID("o"), 1},
+		{"all zeroes", [8]byte{}, 0},
+		{"all ones", [8]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fabric := newMeshFabric(t, Config{}, "a-b", "b-c")
+			dest := netip.MustParsePrefix("fd00:c::/64")
+			key := routeKey{dest: dest}
+			offer := func(peer string, metric uint16) {
+				fabric.inject("b", peer,
+					EncodeRouterID(routerID("o")),
+					EncodeUpdate(Update{AE: AEIPv6, Plen: dest.Bits(), Prefix: dest.Addr().AsSlice(),
+						Interval: 6000, Seqno: 1, Metric: metric}))
+			}
+			// b selects through a and advertises it, c's route arrives below that
+			// distance and is kept, then rises past it and stays as an unfeasible one
+			offer("a", 10)
+			fabric.flush("b")
+			offer("c", 20)
+			offer("c", 900)
+			b := fabric.speakers["b"]
+			viaC := b.routes.entries[key].routes[fabric.neighbor("b", "c")]
+			if got := fabric.nextHop("b", key); got != "a" || viaC == nil || b.routes.feasible(key, viaC.advertised(), "c") {
+				t.Fatalf("b selects via %q and holds %v via c, want a selected and an unfeasible route via c, so this proves nothing", got, viaC)
+			}
+
+			fabric.reset()
+			fabric.inject("b", "a", EncodeSeqnoRequest(SeqnoRequest{AE: AEIPv6, Prefix: dest, Seqno: 5, HopCount: 64, RouterID: test.id}))
+			if got := seqnoRequestsFor(t, fabric.tlvs("b", "c"), dest); len(got) != test.forwarded {
+				t.Errorf("b forwarded %d requests under router-id %x to c, want %d", len(got), test.id, test.forwarded)
+			}
+		})
+	}
+}
+
 func TestSourceTableGarbageCollection(t *testing.T) {
 	rt := newRouteTable(func(routeKey, routeSelection) {})
 	key := routeKey{dest: netip.MustParsePrefix("10.0.0.0/24")}
