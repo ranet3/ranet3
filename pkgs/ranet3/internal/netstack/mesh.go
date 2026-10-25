@@ -367,6 +367,7 @@ func (m *Mesh) outboundReader(queue tun.Queue) {
 
 // classify picks the peer of every packet of a read and holds each packet to the largest its peer's session carries
 // a packet past that is answered, cut into fragments or dropped rather than sent, and a SYN within it has its MSS clamped to it
+// an unsteered packet no route reaches, or a hold holds, is answered as answerUnroutedRead says, and a steered one is counted unrouted
 func (m *Mesh) classify(b *outboundBatch) {
 	for i := range b.n {
 		r := b.reads[i]
@@ -394,11 +395,13 @@ func (m *Mesh) classify(b *outboundBatch) {
 				continue
 			}
 		}
-		peer, verdict, _ := m.Routes.Resolve(src, dst)
+		peer, verdict, match := m.Routes.Resolve(src, dst)
 		if verdict != RoutePeer {
 			if policy != nil {
 				m.segmentsUnrouted.Add(1)
 				m.reportSegmentDrop("no route to the first segment of a steered packet", "segment", dst)
+			} else {
+				m.answerUnroutedRead(raw, verdict, match, src, dst)
 			}
 			continue
 		}
@@ -420,6 +423,21 @@ func (m *Mesh) classify(b *outboundBatch) {
 			share.bytes += len(sent)
 		}
 		b.shares[peer] = share
+	}
+}
+
+// answerUnroutedRead answers raw, where an ICMP error may answer it and as src's bucket and the node's cap allow, a packet the host routed into the tun from src to dst, where the table, answering verdict and match, reaches dst by no route or holds it
+// the answer is the one unreachable gives, from dst, and goes back into the tun, the one link the packet came by, whatever src is
+// answer's reply route is a session's, and would send the answer to a host packet from an uplink address out through the mesh or nowhere
+// a read the table answers as this node's own goes unanswered
+func (m *Mesh) answerUnroutedRead(raw []byte, verdict Verdict, match Match, src, dst netip.Addr) {
+	if verdict != RouteNone && verdict != RouteHeld {
+		return
+	}
+	kind := m.unreachable(verdict, match, dst)
+	if out := buildAnswer(raw, raw[0]>>4, kind, 0, dst, m.AnswerTTL(), m.allowAnswer(src)); out != nil {
+		m.writeHostPacket(out)
+		m.noteAnswered(kind)
 	}
 }
 

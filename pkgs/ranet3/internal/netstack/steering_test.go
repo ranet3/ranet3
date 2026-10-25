@@ -59,7 +59,8 @@ func TestOutboundSeamRoutesBySegmentRatherThanByDestination(t *testing.T) {
 
 // A steered packet whose first segment the mesh cannot reach is gone at the
 // route lookup. Without a counter there the steered figure climbs while the
-// traffic disappears and nothing anywhere says so.
+// traffic disappears and nothing anywhere says so. It gets no answer in the
+// tun.
 func TestSteeredPacketWithNoRouteIsCounted(t *testing.T) {
 	table, err := srv6.NewSteerTable([]srv6.Steer{{
 		From: schema.PrefixFrom(segPrefix("3fff:a::17/128")),
@@ -68,32 +69,21 @@ func TestSteeredPacketWithNoRouteIsCounted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dev := &scriptedDevice{reads: make(chan scriptedRead, 1), closed: make(chan struct{})}
-	m := &Mesh{Routes: NewRouteTable(), closed: make(chan struct{})}
-	m.setDevice(dev)
-	m.startSegmentReports()
+	m, dev := recordingMesh(t)
 	m.SetSteering(table)
-	m.startOutboundPipeline()
-	t.Cleanup(m.Close)
-
-	dev.reads <- scriptedRead{packets: [][]byte{plainV6(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), "payload")}}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		// Unrouted rather than Dropped: this is a packet of this node's own
-		// that its steering could not deliver, not one a peer addressed to a
-		// segment here, and status reports the two on different lines.
-		if counters := m.SegmentCounters(); counters.Unrouted > 0 {
-			if counters.Steered != 1 {
-				t.Errorf("the packet was counted steered %d times", counters.Steered)
-			}
-			if counters.Dropped != 0 {
-				t.Errorf("this node's own steering was counted against its segment table %d times", counters.Dropped)
-			}
-			return
-		}
-		time.Sleep(time.Millisecond)
+	if _, written := classifyOne(m, dev, plainV6(segAddr("3fff:a::17"), segAddr("2001:db8:c::9"), "payload")); len(written) != 0 {
+		t.Errorf("a steered packet with nowhere to go put %d packets into the tun", len(written))
 	}
-	t.Fatalf("a steered packet with nowhere to go was not counted: %+v", m.SegmentCounters())
+	// Unrouted rather than Dropped: this is a packet of this node's own that
+	// its steering could not deliver, not one a peer addressed to a segment
+	// here, and status reports the two on different lines.
+	counters := m.SegmentCounters()
+	if counters.Unrouted != 1 || counters.Steered != 1 {
+		t.Errorf("the packet was counted unrouted %d and steered %d times, want once each", counters.Unrouted, counters.Steered)
+	}
+	if counters.Dropped != 0 {
+		t.Errorf("this node's own steering was counted against its segment table %d times", counters.Dropped)
+	}
 }
 
 // sealingPeer records what a peer was handed, so a test can tell which peer a
