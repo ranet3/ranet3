@@ -148,7 +148,7 @@ func (p *netlinkPlatform) decodeRoute(message nlMessage) (Route, bool) {
 	}
 	family, dstLen, srcLen := message.Data[0], message.Data[1], message.Data[2]
 	table, protocol, kind := uint32(message.Data[4]), message.Data[5], message.Data[7]
-	if protocol != p.table.Proto || (kind != unix.RTN_UNICAST && kind != unix.RTN_UNREACHABLE) {
+	if protocol != p.table.Proto || (kind != unix.RTN_UNICAST && kind != unix.RTN_UNREACHABLE && kind != unix.RTN_THROW) {
 		return Route{}, false
 	}
 	if family != unix.AF_INET && family != unix.AF_INET6 {
@@ -179,8 +179,9 @@ func (p *netlinkPlatform) decodeRoute(message nlMessage) (Route, bool) {
 			}
 		}
 	}
-	// An unreachable hold names no device, so only the table and the protocol
-	// identify it. Both are this reconciler's own marker.
+	// A hold or a throw names no device of ours, an IPv6 one dumping lo, so
+	// only the table and the protocol identify it. Both are this reconciler's
+	// own marker.
 	if table != uint32(p.table.ID) || (kind == unix.RTN_UNICAST && oif != p.index) {
 		return Route{}, false
 	}
@@ -196,7 +197,7 @@ func (p *netlinkPlatform) decodeRoute(message nlMessage) (Route, bool) {
 	}
 	decoded := Route{
 		Destination: prefix, PrefSrc: prefsrc, Metric: metric,
-		Unreachable: kind == unix.RTN_UNREACHABLE,
+		Unreachable: kind == unix.RTN_UNREACHABLE, Throw: kind == unix.RTN_THROW,
 	}
 	if srcLen > 0 {
 		if !source.IsValid() {
@@ -225,6 +226,10 @@ func (p *netlinkPlatform) routeMessage(route Route, del bool) []byte {
 		// own: fib_check_nh is not consulted for a route that resolves to an
 		// error, and naming a device would make the kernel reject it.
 		kind, scope = unix.RTN_UNREACHABLE, unix.RT_SCOPE_UNIVERSE
+	}
+	if route.Throw {
+		// as a hold, a route with no device
+		kind, scope = unix.RTN_THROW, unix.RT_SCOPE_UNIVERSE
 	}
 	if del {
 		// RT_SCOPE_NOWHERE and RTN_UNSPEC are the kernel's wildcards in a
@@ -255,7 +260,7 @@ func (p *netlinkPlatform) routeMessage(route Route, del bool) []byte {
 	if srcLen > 0 {
 		body = putAttr(body, unix.RTA_SRC, addressBytes(route.Source.Addr()))
 	}
-	if !route.Unreachable {
+	if !route.Unreachable && !route.Throw {
 		body = putAttrU32(body, unix.RTA_OIF, p.index)
 	}
 	if route.PrefSrc.IsValid() {

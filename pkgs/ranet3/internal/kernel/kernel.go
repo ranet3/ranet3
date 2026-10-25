@@ -373,6 +373,10 @@ type Route struct {
 	// prefix follows a shorter one instead, which on a node holding a default
 	// is straight back out to the neighbor that just retracted it.
 	Unreachable bool
+	// Throw is RTN_THROW, which ends the lookup in this table with no answer,
+	// so the rule walk goes on to the next rule. It is never set with
+	// Unreachable.
+	Throw bool
 	// Cover marks a member of a plain default's zero-free cover (see
 	// coverDefaults). It is never scoped, and a dump reads it back only for a
 	// member this process installed.
@@ -383,6 +387,9 @@ func (r Route) String() string {
 	kind := ""
 	if r.Unreachable {
 		kind = " unreachable"
+	}
+	if r.Throw {
+		kind = " throw"
 	}
 	if r.Cover {
 		kind = " cover"
@@ -451,11 +458,19 @@ type platform interface {
 // the key: the kernel matches a delete against the selectors it is given, and
 // two rules differing in any of them are two entries.
 //
-// A rule selects a lookup table and nothing else. This reconciler installs no
-// action but FR_ACT_TO_TBL, so a rule it owns sends traffic to another table
-// and can never make an address unreachable, which keeps the worst outcome of
-// a mistaken rule a lookup in the wrong table rather than a black hole.
+// A rule this reconciler owns looks up a table, jumps to a later priority or
+// does nothing, so no rule of its own refuses an address, only an unreachable,
+// blackhole or prohibit route of a table it looks up.
 type Rule struct {
+	// action is the rule's FR_ACT, a lookup in Table at its zero value. It,
+	// target and suppress are no file's to write.
+	action RuleAction
+	// target is FRA_GOTO, the priority a goto continues at, and zero for any other action.
+	target uint32
+	// suppress is FRA_SUPPRESS_PREFIXLEN, which refuses a lookup's answer of
+	// that length or shorter, but never an unreachable, blackhole or prohibit
+	// one.
+	suppress Suppress
 	// To is FRA_DST and From is FRA_SRC, each optional. A rule naming neither
 	// selects on a mark or a device and has to name its Family, because
 	// neither belongs to an address family.
@@ -484,6 +499,32 @@ type Rule struct {
 	// because expandRules resolves this before anything reaches the kernel.
 	Family Family `yaml:"family,omitempty" json:"family,omitempty" toml:"family,omitempty"`
 }
+
+// RuleAction is a rule's FR_ACT, as far as this reconciler writes one.
+type RuleAction uint8
+
+const (
+	// ActionLookup is FR_ACT_TO_TBL, a lookup in the rule's table.
+	ActionLookup RuleAction = iota
+	// ActionGoto is FR_ACT_GOTO, the walk continuing at the rule's target.
+	ActionGoto
+	// ActionNop is FR_ACT_NOP, a rule a goto lands on.
+	ActionNop
+)
+
+// Suppress is a rule's FRA_SUPPRESS_PREFIXLEN. The zero value suppresses
+// nothing, which the kernel holds as -1 and tells apart from a length of 0.
+type Suppress struct {
+	set  bool
+	bits uint32
+}
+
+// SuppressUpTo refuses a lookup's answer whose prefix is bits long or shorter,
+// but never an unreachable, blackhole or prohibit one.
+func SuppressUpTo(bits int) Suppress { return Suppress{set: true, bits: uint32(bits)} }
+
+// Bits is the length, and whether the rule suppresses at all.
+func (s Suppress) Bits() (int, bool) { return int(s.bits), s.set }
 
 // Family is the address family a rule belongs to, spelled as an operator
 // writes it rather than as AF_INET and AF_INET6, which are numbers on one
@@ -593,7 +634,18 @@ func (r Rule) String() string {
 	if r.Family != FamilyUnset {
 		parts = append(parts, "family "+string(r.Family))
 	}
-	return strings.Join(append(parts, "lookup "+r.Table.String()), " ")
+	switch r.action {
+	case ActionGoto:
+		parts = append(parts, fmt.Sprintf("goto %d", r.target))
+	case ActionNop:
+		parts = append(parts, "nop")
+	default:
+		parts = append(parts, "lookup "+r.Table.String())
+	}
+	if bits, ok := r.suppress.Bits(); ok {
+		parts = append(parts, fmt.Sprintf("suppress_prefixlength %d", bits))
+	}
+	return strings.Join(parts, " ")
 }
 
 // canonical is the rule as the kernel reports it back. Two spellings can reach
@@ -646,7 +698,7 @@ func (r Rule) selectsMark(mark uint32) bool {
 }
 
 func (r Rule) canonical() Rule {
-	if r.FWMask == ^uint32(0) {
+	if r.FWMark != 0 && r.FWMask == ^uint32(0) {
 		r.FWMask = 0
 	}
 	return r
@@ -963,6 +1015,10 @@ func sortedRules(rules []Rule) []Rule {
 		return cmp.Or(
 			cmp.Compare(a.Priority, b.Priority),
 			cmp.Compare(a.Family, b.Family),
+			cmp.Compare(a.action, b.action),
+			cmp.Compare(a.target, b.target),
+			cmp.Compare(boolOrder(a.suppress.set), boolOrder(b.suppress.set)),
+			cmp.Compare(a.suppress.bits, b.suppress.bits),
 			cmp.Compare(a.Table, b.Table),
 			cmp.Compare(a.FWMark, b.FWMark),
 			cmp.Compare(a.FWMask, b.FWMask),
@@ -1886,6 +1942,7 @@ func compareRoutes(a, b Route) int {
 		a.PrefSrc.Compare(b.PrefSrc),
 		cmp.Compare(a.Metric, b.Metric),
 		cmp.Compare(boolOrder(a.Unreachable), boolOrder(b.Unreachable)),
+		cmp.Compare(boolOrder(a.Throw), boolOrder(b.Throw)),
 		cmp.Compare(boolOrder(a.Scoped), boolOrder(b.Scoped)),
 	)
 }

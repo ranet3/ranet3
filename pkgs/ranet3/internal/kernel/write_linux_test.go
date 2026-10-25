@@ -94,6 +94,35 @@ func TestLinuxInstallsHoldAsUnreachableRoute(t *testing.T) {
 	}
 }
 
+// a throw route goes out as RTN_THROW with no device, and reads back as itself
+// from the dump of either family, an IPv6 one naming lo as its device
+func TestLinuxWritesAndReadsAThrowRoute(t *testing.T) {
+	for _, destination := range []string{"203.0.113.128/25", "2001:db8:c:8000::/49"} {
+		plat, conn := writePlatform(t)
+		thrown := Route{Destination: netip.MustParsePrefix(destination), Throw: true, Metric: holdMetric}
+		if err := plat.AddRoute(thrown); err != nil {
+			t.Fatalf("install the throw route: %v", err)
+		}
+		sent := conn.sent[0].body
+		if sent[7] != unix.RTN_THROW {
+			t.Errorf("%s was written as route type %d, want RTN_THROW", thrown, sent[7])
+		}
+		dumped := slices.Clone(sent)
+		for attr := range (nlMessage{Kind: unix.RTM_NEWROUTE, Data: sent}).attributes(unix.SizeofRtMsg) {
+			if attr == unix.RTA_OIF {
+				t.Errorf("%s names an output device", thrown)
+			}
+		}
+		if thrown.Destination.Addr().Is6() {
+			dumped = putAttrU32(dumped, unix.RTA_OIF, 1)
+		}
+		got, ok := plat.decodeRoute(nlMessage{Kind: unix.RTM_NEWROUTE, Data: dumped})
+		if !ok || got != thrown {
+			t.Errorf("%s read back as %v (kept %v)", thrown, got, ok)
+		}
+	}
+}
+
 // A prefix another writer already holds is reported as skipped rather than as
 // a failure. Reported as a failure it would put the whole pass into backoff
 // over a key no retry can free, once per pass, for the life of the process.

@@ -46,7 +46,7 @@ func TestNetlinkDumpRulesReadsEveryOwner(t *testing.T) {
 
 	for _, rule := range []Rule{
 		{Family: FamilyIPv4, To: schema.MustPrefix("198.18.104.0/24"), Table: DefaultTable, Priority: 100},
-		{Family: FamilyIPv6, FWMark: 0x726c, FWMask: 0xffff, Table: schema.TableMain, Priority: 40},
+		{Family: FamilyIPv6, FWMark: 0x72, FWMask: 0xffff, Table: schema.TableMain, Priority: 40},
 	} {
 		if err := plat.AddRule(rule); err != nil {
 			t.Fatalf("install %s: %v", rule, err)
@@ -81,7 +81,7 @@ func TestNetlinkDumpRulesReadsEveryOwner(t *testing.T) {
 		{Family: FamilyIPv6, Priority: 0, Action: "lookup", Table: unix.RT_TABLE_LOCAL, Protocol: unix.RTPROT_KERNEL},
 		{Family: FamilyIPv6, Priority: 32766, Action: "lookup", Table: unix.RT_TABLE_MAIN, Protocol: unix.RTPROT_KERNEL},
 		{Family: FamilyIPv4, Priority: 100, To: netip.MustParsePrefix("198.18.104.0/24"), Action: "lookup", Table: uint32(DefaultTable), Protocol: DefaultProtocol},
-		{Family: FamilyIPv6, Priority: 40, FWMark: 0x726c, FWMask: 0xffff, Action: "lookup", Table: unix.RT_TABLE_MAIN, Protocol: DefaultProtocol},
+		{Family: FamilyIPv6, Priority: 40, FWMark: 0x72, FWMask: 0xffff, Action: "lookup", Table: unix.RT_TABLE_MAIN, Protocol: DefaultProtocol},
 		{Family: FamilyIPv6, Priority: 101, From: netip.MustParsePrefix("3fff:1::/32"), Action: "lookup", Table: 300, Protocol: unix.RTPROT_STATIC},
 		{Family: FamilyIPv4, Priority: 200, IIF: device, Invert: true, Action: "unreachable", Protocol: unix.RTPROT_STATIC},
 		{Family: FamilyIPv6, Priority: 1000, L3mdev: true, Action: "lookup", Protocol: unix.RTPROT_KERNEL},

@@ -43,11 +43,27 @@ func (f Family) af() uint8 {
 // written by hand, as routeMessage writes rtmsg.
 const sizeofFibRuleHdr = 12
 
-// ruleMessage is the body of an RTM_NEWRULE or RTM_DELRULE for one rule.
+// frAction is the FR_ACT a rule of this action carries.
+func (a RuleAction) frAction() uint8 {
+	switch a {
+	case ActionGoto:
+		return unix.FR_ACT_GOTO
+	case ActionNop:
+		return unix.FR_ACT_NOP
+	}
+	return unix.FR_ACT_TO_TBL
+}
+
+// ruleMessage is the body of an RTM_NEWRULE or RTM_DELRULE for one rule. It
+// carries every selector the rule holds, since a delete compares the mark and
+// the suppress length only where it carries them, the mask wherever it carries
+// a mark, and otherwise takes the first rule its other selectors match.
 //
 // The table goes in FRA_TABLE rather than in the one-byte header field, and
 // the header field stays RT_TABLE_UNSPEC, which is how a table number above
-// 255 reaches the kernel at all. routeMessage splits it the same way.
+// 255 reaches the kernel at all. routeMessage carries the table in RTA_TABLE
+// the same way, and in the header byte as well for one up to 255. Only a
+// lookup names a table.
 func (p *netlinkPlatform) ruleMessage(rule Rule) []byte {
 	body := make([]byte, sizeofFibRuleHdr)
 	body[0] = rule.Family.af()
@@ -58,9 +74,17 @@ func (p *netlinkPlatform) ruleMessage(rule Rule) []byte {
 		body[2] = uint8(rule.From.Bits())
 	}
 	// body[4] is the legacy table field, left at RT_TABLE_UNSPEC.
-	body[7] = unix.FR_ACT_TO_TBL
+	body[7] = rule.action.frAction()
 	body = putAttrU32(body, unix.FRA_PRIORITY, rule.Priority)
-	body = putAttrU32(body, unix.FRA_TABLE, uint32(rule.Table))
+	switch rule.action {
+	case ActionLookup:
+		body = putAttrU32(body, unix.FRA_TABLE, uint32(rule.Table))
+	case ActionGoto:
+		body = putAttrU32(body, unix.FRA_GOTO, rule.target)
+	}
+	if bits, ok := rule.suppress.Bits(); ok {
+		body = putAttrU32(body, unix.FRA_SUPPRESS_PREFIXLEN, uint32(bits))
+	}
 	body = putAttr(body, unix.FRA_PROTOCOL, []byte{p.table.Proto})
 	if rule.To.IsValid() {
 		body = putAttr(body, unix.FRA_DST, addressBytes(rule.To.Addr()))
@@ -102,25 +126,37 @@ func (p *netlinkPlatform) Rules() ([]Rule, error) {
 
 // decodeRule reads one dumped rule through the dump's decoder, and reports
 // false for anything this reconciler does not own or could not have written.
-// Everything it accepts has to compare equal to the configured rule it came
-// from, or the diff installs a duplicate on every pass.
+// Everything it accepts has to compare equal to the rule it came from, or
+// each pass deletes the rule and installs it again, and a rule of ours it
+// drops is never withdrawn.
 func (p *netlinkPlatform) decodeRule(message nlMessage) (Rule, bool) {
 	held, ok := decodeDumpedRule(message)
-	// Only the action this file writes. A rule that blackholes or that reaches
-	// a goto target is not one of ours however it is marked, and deleting it
-	// on the strength of a protocol byte alone would be taking somebody's
-	// word for what it does.
-	if !ok || held.Action != actionName(unix.FR_ACT_TO_TBL) || held.Protocol != p.table.Proto || held.Table == 0 || held.Priority == 0 {
+	if !ok || held.Protocol != p.table.Proto || held.Priority == 0 {
 		return Rule{}, false
 	}
 	rule := Rule{
 		Family: held.Family, To: schema.PrefixFrom(held.To), From: schema.PrefixFrom(held.From),
-		FWMark: held.FWMark, FWMask: held.FWMask, IIF: held.IIF, Table: schema.TableID(held.Table), Priority: held.Priority,
+		FWMark: held.FWMark, FWMask: held.FWMask, IIF: held.IIF, Priority: held.Priority, suppress: held.Suppress,
 	}
-	// A mask the kernel reports as all ones is the exact match an absent
-	// FRA_FWMASK asks for, so the two spellings compare equal rather than
-	// making every pass delete and reinstall the same rule.
-	if rule.FWMask == ^uint32(0) {
+	// Only the actions this file writes, each in the shape it writes it. A
+	// rule that blackholes is not one of ours however it is marked, and
+	// deleting it on the strength of a protocol byte alone would be taking
+	// somebody's word for what it does. The kernel dumps FRA_TABLE 0 for a
+	// goto and a nop.
+	switch {
+	case held.Action == actionName(unix.FR_ACT_TO_TBL) && held.Table != 0 && held.Goto == 0:
+		rule.action, rule.Table = ActionLookup, schema.TableID(held.Table)
+	case held.Action == actionName(unix.FR_ACT_GOTO) && held.Table == 0 && held.Goto > held.Priority:
+		rule.action, rule.target = ActionGoto, held.Goto
+	case held.Action == actionName(unix.FR_ACT_NOP) && held.Table == 0 && held.Goto == 0:
+		rule.action = ActionNop
+	default:
+		return Rule{}, false
+	}
+	// A mask the kernel reports as all ones on a marked rule is the exact
+	// match an absent FRA_FWMASK asks for, so the two spellings compare equal
+	// rather than making every pass delete and reinstall the same rule.
+	if rule.FWMark != 0 && rule.FWMask == ^uint32(0) {
 		rule.FWMask = 0
 	}
 	return rule, true

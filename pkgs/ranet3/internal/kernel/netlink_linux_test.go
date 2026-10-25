@@ -618,10 +618,11 @@ func TestNetlinkHoldsRetractedPrefix(t *testing.T) {
 	}
 }
 
-// The policy engine against a real kernel. Everything else about rules is
-// checked against an encoder, which proves the bytes and not that the kernel
-// takes them: FRA_PROTOCOL is the whole ownership story and a kernel that
-// ignored it would leave this reconciler deleting other people's rules.
+// The policy engine against a real kernel, beside the rule tests of
+// rules_netlink_linux_test.go and monitor_linux_test.go. An encoder alone
+// proves the bytes and not that the kernel takes them: FRA_PROTOCOL is the
+// whole ownership story and a kernel that ignored it would hand back none of
+// this reconciler's rules, which it would never withdraw.
 func TestNetlinkRulesInNetworkNamespace(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real netlink path needs root on linux")
