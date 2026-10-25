@@ -203,8 +203,8 @@ func (c *Client) renderEgress(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_egress_pass_failed Whether the last pass reported an error.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_pass_failed gauge\n")
 	fmt.Fprintf(w, "ranet3_egress_pass_failed %d\n", boolValue(egress.Err != ""))
-	// the translator's own judgment, since ranet3_border_ready reports the border's hold on the egress segments
-	ready := c.translatorStatus().Ready
+	// the exit's own judgment, since ranet3_border_ready reports the border's hold on the egress segments
+	ready := c.exitStatus().Ready
 	fmt.Fprint(w, "# HELP ranet3_egress_ready Whether this node carries a family out of the mesh translated, which egress of that family waits for in both modes.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_ready gauge\n")
 	fmt.Fprintf(w, "ranet3_egress_ready{family=\"ipv4\"} %d\n", boolValue(slices.Contains(ready, "ipv4")))
@@ -233,7 +233,7 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_segments_answered_total ICMP errors sent for dropped packets, which is the half of the dropped ones whose sender was told why.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_answered_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_answered_total %d\n", segments.Answered)
-	fmt.Fprint(w, "# HELP ranet3_segments_egressed_total Packets an egress segment handed to the mesh tun to leave the mesh.\n")
+	fmt.Fprint(w, "# HELP ranet3_segments_egressed_total Packets an egress segment handed to the exit to leave the mesh.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_egressed_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_egressed_total %d\n", segments.Egressed)
 	fmt.Fprint(w, "# HELP ranet3_segments_refused_total Packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for a source outside its allow list, an inner source it cannot read, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or cap.border overlay holds, which are among the dropped ones and never answered.\n")
@@ -258,7 +258,7 @@ func (c *Client) renderTransitCounters(w io.Writer) {
 }
 
 func writeTransitCounters(w io.Writer, transit control.TransitCounters) {
-	fmt.Fprint(w, "# HELP ranet3_transit_packets_total Packets the forwarding decision forwarded to a peer, delivered to the tun or dropped, by reason, and the ICMP errors it answered or could not answer them with.\n")
+	fmt.Fprint(w, "# HELP ranet3_transit_packets_total Packets the forwarding decision forwarded to a peer, delivered to the tun or handed to the exit, or dropped, by reason, and the ICMP errors it answered or could not answer them with.\n")
 	fmt.Fprint(w, "# TYPE ranet3_transit_packets_total counter\n")
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"forwarded\",reason=\"\"} %d\n", transit.Forwarded)
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"delivered\",reason=\"\"} %d\n", transit.Delivered)

@@ -29,6 +29,9 @@ const (
 	kindOuterOutside
 	kindInnerOutside
 	kindRefusedHeader
+	// kindCounted is a packet the decision takes to an entry of this node's counting as a default, and kindSubnet one to an entry counting as none
+	kindCounted
+	kindSubnet
 	kindCount
 )
 
@@ -38,9 +41,12 @@ type segmentPlace int
 const (
 	placeCounter segmentPlace = iota
 	placeTUN
-	placeEgress
+	placeExit
 	placeForward
 )
+
+// decidedSubnets are the entries counting as no default the property draws, a subnet router's LAN of each family
+var decidedSubnets = map[int]netip.Prefix{4: segPrefix("198.51.100.0/24"), 6: segPrefix("2001:db8:5::/48")}
 
 // frameTag marks the payload of frame i, which every place a frame can reach carries whole
 func frameTag(i int) []byte { return fmt.Appendf(nil, "frame%02d", i) }
@@ -56,15 +62,26 @@ func tagged(raw []byte, frames int) (int, bool) {
 
 // a drawn batch mixes passed packets, packets for an End.DT46 to the mesh, a waypoint and an egress segment
 // egress packets with both sources in the allow list, with the outer or the inner one outside it, of either inner family
-// and headers the waypoint refuses, with each family ready to egress or not
-// every frame ends in exactly one place, the tun as a delivery, the tun as an egress result, the forward path or a counter alone
-// the place is the one its kind names, and an allowed egress packet of a family not ready is counted not ready
-// so no packet with a source outside the allow list reaches the tun
-// each place takes its frames in batch order, the egress results in one write of their own ahead of the deliveries
+// headers the waypoint refuses, and packets the decision takes to an entry of this node's counting as a default or to a subnet's counting as none
+// over a drawn table, each family's counted entry a default, a pair of halves or four quarters, it and the subnet each advertised by cap.egress or announced by cap.route
+// with each family ready or not by the egress segments' word and by the advertised prefixes' word
+// every frame ends in exactly one place, the tun as a delivery, the exit, the forward path or a counter alone
+// the place is the one its kind names, so the exit takes exactly the egress segments' allowed packets and the decision's counted cap.egress verdicts of a ready family
+// and an allowed packet of a family not ready is counted not ready by its own mode's word
+// so no packet with a source outside the allow list, of a subnet or of a cap.route announcement reaches the exit, and none of the exit's reaches the tun
+// each place takes its frames in batch order, the exit mode 3's in one batch and then mode 2's in another
 // an answer quotes only a refused header, never a refused source
 // and each counter counts exactly the frames of the kinds it names
 func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
+		// the table first, by family: the counted entry's shape and who advertises it and the subnet
+		shape := map[int]int{}
+		countedByEgress, subnetByEgress := map[int]bool{}, map[int]bool{}
+		for _, family := range []int{4, 6} {
+			shape[family] = hegel.Draw(ht, pbt.Spanning(0, len(exitShapes)-1))
+			countedByEgress[family] = hegel.Draw(ht, hegel.Booleans())
+			subnetByEgress[family] = hegel.Draw(ht, hegel.Booleans())
+		}
 		kinds := make([]segmentKind, hegel.Draw(ht, pbt.Spanning(1, 10)))
 		frames := make([][]byte, len(kinds))
 		families := make([]int, len(kinds))
@@ -79,10 +96,15 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 			if kinds[i] == kindInnerOutside {
 				source = stranger[family]
 			}
-			// a delivery goes to one of the node's own destinations, and everything else to one no route covers
+			// a delivery goes to one of the node's own destinations, the decision's to its entries, and everything else to one no route covers
 			destination := map[int]netip.Addr{4: tooBigDestination[4], 6: segAddr("2001:db8:4860::8888")}[family]
-			if kinds[i] == kindDeliver {
+			switch kinds[i] {
+			case kindDeliver:
 				destination = map[int]netip.Addr{4: egressOwned[4], 6: egressOwned[2]}[family]
+			case kindCounted:
+				destination = transitNowhere[family]
+			case kindSubnet:
+				destination = decidedSubnets[family].Addr().Next()
 			}
 			inner := plainV6(source, destination, string(frameTag(i)))
 			if family == 4 {
@@ -102,12 +124,32 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 				frames[i] = steered(ht, inner, stranger[6], egressExit)
 			case kindRefusedHeader:
 				frames[i] = plainV6(headend, egressWaypoint, string(frameTag(i)))
+			case kindCounted, kindSubnet:
+				frames[i] = inner
 			}
 		}
 		ready := map[int]bool{4: hegel.Draw(ht, hegel.Booleans()), 6: hegel.Draw(ht, hegel.Booleans())}
+		advertisedReady := map[int]bool{4: hegel.Draw(ht, hegel.Booleans()), 6: hegel.Draw(ht, hegel.Booleans())}
 
 		m, meshTUN := egressMesh(ht)
+		exit := &recordingExit{}
+		m.SetExit(exit)
+		var advertised []netip.Prefix
+		for _, family := range []int{4, 6} {
+			counted := exitShapes[shape[family]].prefixes[family]
+			for _, prefix := range append(slices.Clone(counted), decidedSubnets[family]) {
+				m.Routes.Set(netip.Prefix{}, prefix, Local)
+			}
+			if countedByEgress[family] {
+				advertised = append(advertised, counted...)
+			}
+			if subnetByEgress[family] {
+				advertised = append(advertised, decidedSubnets[family])
+			}
+		}
+		m.SetEgressPrefixes(advertised)
 		m.SetEgressReady(ready[4], ready[6])
+		m.SetAdvertisedReady(advertisedReady[4], advertisedReady[6])
 		next, back := &recordingPeer{}, &recordingPeer{}
 		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(egressNext, 128), next.peer(ht, "next"))
 		answers := back.peer(ht, "back")
@@ -125,16 +167,27 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 			reached[i] = append(reached[i], place)
 			order[place] = append(order[place], i)
 		}
-		// a write is the egress results' where it carries one, which the frame's kind tells, and the first such write must be the tun's first
-		var egressWrites []int
-		for w, write := range tunWrites(meshTUN) {
-			place := placeTUN
-			if i, ok := tagged(write[0], len(kinds)); ok && kinds[i] == kindEgress {
-				place = placeEgress
-				egressWrites = append(egressWrites, w)
-			}
+		for _, write := range tunWrites(meshTUN) {
 			for _, raw := range write {
-				receive(place, raw)
+				receive(placeTUN, raw)
+			}
+		}
+		// each batch the exit took holds one mode's frames in batch order, told by their kind
+		var modes []segmentKind
+		for _, batch := range exit.taken() {
+			last := -1
+			for _, raw := range batch {
+				i, ok := tagged(raw, len(kinds))
+				if !ok {
+					ht.Fatalf("the exit took %x, which carries no frame's tag", raw)
+				}
+				if last >= 0 && (i <= last || kinds[i] != kinds[last]) {
+					ht.Fatalf("the exit took frame %d of kind %d after frame %d of kind %d in one batch", i, kinds[i], last, kinds[last])
+				}
+				reached[i], last = append(reached[i], placeExit), i
+			}
+			if last >= 0 {
+				modes = append(modes, kinds[last])
 			}
 		}
 		for _, raw := range next.packets(ht) {
@@ -142,20 +195,24 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 		}
 
 		var want SegmentCounters
+		var wantDecided TransitCounters
+		var wantModes []segmentKind
 		for i, kind := range kinds {
 			place := placeCounter
 			switch kind {
 			case kindPass:
 				place = placeTUN
+				wantDecided.Delivered++
 			case kindDeliver:
 				place = placeTUN
 				want.Delivered++
+				wantDecided.Delivered++
 			case kindForward:
 				place = placeForward
 				want.Forwarded++
 			case kindEgress:
 				if ready[families[i]] {
-					place = placeEgress
+					place = placeExit
 					want.Egressed++
 				} else {
 					want.NotReady++
@@ -165,14 +222,36 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 				want.Dropped++
 			case kindRefusedHeader:
 				want.Dropped++
+			case kindCounted:
+				switch {
+				case !countedByEgress[families[i]]:
+					place = placeTUN
+					wantDecided.Delivered++
+				case advertisedReady[families[i]]:
+					place = placeExit
+					wantDecided.Delivered++
+				default:
+					wantDecided.NotReady++
+				}
+			case kindSubnet:
+				place = placeTUN
+				wantDecided.Delivered++
 			}
 			var wantReached []segmentPlace
 			if place != placeCounter {
 				wantReached = []segmentPlace{place}
 			}
 			if !slices.Equal(reached[i], wantReached) {
-				ht.Fatalf("frame %d of kind %d and family %d with ready %v reached %v, want %v", i, kind, families[i], ready, reached[i], wantReached)
+				ht.Fatalf("frame %d of kind %d and family %d with ready %v and advertised ready %v reached %v, want %v", i, kind, families[i], ready, advertisedReady, reached[i], wantReached)
 			}
+			if place == placeExit && !slices.Contains(wantModes, kind) {
+				wantModes = append(wantModes, kind)
+			}
+		}
+		// kindEgress sorts ahead of kindCounted, as mode 3's batch goes ahead of mode 2's
+		slices.Sort(wantModes)
+		if !slices.Equal(modes, wantModes) {
+			ht.Fatalf("the exit took batches of the kinds %v, want %v, mode 3's ahead of mode 2's", modes, wantModes)
 		}
 		for place, frames := range order {
 			for j := 1; j < len(frames); j++ {
@@ -180,9 +259,6 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 					ht.Fatalf("%v took the frames %v, out of batch order", place, frames)
 				}
 			}
-		}
-		if len(egressWrites) > 1 || len(egressWrites) == 1 && egressWrites[0] != 0 {
-			ht.Fatalf("the egress results reached the tun as its writes %v, want one write ahead of the deliveries", egressWrites)
 		}
 		sent := back.packets(ht)
 		for _, answer := range sent {
@@ -193,6 +269,9 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 		want.Answered = uint64(len(sent))
 		if got := m.SegmentCounters(); got != want {
 			ht.Fatalf("the batch %v of families %v with ready %v counted %+v, want %+v", kinds, families, ready, got, want)
+		}
+		if got := m.TransitCounters(); got != wantDecided {
+			ht.Fatalf("the batch %v of families %v with advertised ready %v had the decision count %+v, want %+v", kinds, families, advertisedReady, got, wantDecided)
 		}
 	})
 }

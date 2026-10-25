@@ -94,13 +94,12 @@ type Client struct {
 	// that built it. Nil until then, and nil forever on a node whose routes
 	// are configured externally.
 	kernelStatus atomic.Pointer[func() control.KernelStatus]
-	// egressStatus and egressAnnounce are the egress capability's, supplied
-	// the same way. The second is read on every republication rather than
-	// captured, because an exit withholds its advertisement whenever its chain
-	// does not read back as written and the set it may announce changes under
-	// a running node.
-	egressStatus   atomic.Pointer[func() control.EgressStatus]
-	egressAnnounce atomic.Pointer[func() []netip.Prefix]
+	// exit carries cap.egress, handed over by the command that built it and
+	// nil on a node with no cap.egress. Its announcement is read on every
+	// republication rather than captured, because an exit withholds a family
+	// whenever it is not ready and the set it may announce changes under a
+	// running node.
+	exit atomic.Pointer[egress.Exit]
 	// egressServes is the translator's last word on whether the egress SIDs are served
 	egressServes atomic.Bool
 	// borderHeld is a cap.border whose chain is not read back, which holds
@@ -109,13 +108,15 @@ type Client struct {
 	// republishMu runs one republish at a time, each reading the stored
 	// configuration, egressServes and borderHeld once it holds it, so the last
 	// to finish reads the last of all three
-	// it is taken after reloadMu and before the speaker's own
+	// it is taken after reloadMu and before egressMu and the speaker's own
 	republishMu sync.Mutex
 	// egressMu orders the mesh's moves of egress readiness, each computed from
-	// the translator's pair and borderHeld, so the mesh holds the last of both
+	// the translator's pair, borderHeld and the families the last republish
+	// found advertised, so the mesh holds the last of all three
 	// it never wraps a republish
 	egressMu                 sync.Mutex
 	translator4, translator6 bool
+	advertised4, advertised6 bool
 	// border is the border filter, handed over by the command that built it
 	// and nil on a node with no cap.border
 	border atomic.Pointer[borderFilter]
@@ -135,8 +136,6 @@ type Client struct {
 	reconcilerEnable atomic.Pointer[func(bool)]
 	// reconcilerTable hands the route reconciler a reloaded cap.table and cap.border overlay, supplied as reconcilerEnable is
 	reconcilerTable atomic.Pointer[func(kernel.Table, []schema.Prefix, []netip.Prefix) error]
-	// egressEnable stops and starts the egress translator, supplied as reconcilerEnable is and nil on a node with no cap.egress
-	egressEnable atomic.Pointer[func(bool)]
 	// configPath is where the daemon read this node's configuration, so the
 	// reload verb re-reads the same file SIGHUP does. Empty on a client a test
 	// built by hand, where the verb says so rather than guessing at a path.
@@ -422,11 +421,29 @@ func (c *Client) Close() {
 	c.Mesh.Close()
 }
 
-// SetEgressReady takes the translator's readiness of the egress segments per
-// family and its word on whether the egress SIDs are served. The mesh learns
-// it before the SID's /128 is originated or retracted: a packet the /128
-// attracts finds the mesh writing, and a packet arriving after the
-// translation went is dropped before the retraction reaches anyone.
+// SetExit hands the node and the mesh the exit the command built, before the
+// sessions start and before the exit's first pass. The mesh reads the exit only
+// once a readiness word names a family ready, and the exit's hooks set those
+// words after SetExit, so a session that delivers earlier finds no family ready
+// and leaves the exit unread. The mesh hands it both egress verdicts' batches,
+// Republish reads its announcement, the status renders its Status, and down and
+// up reach its SetEnabled, a node that starts down handing it its stop here.
+func (c *Client) SetExit(exit egress.Exit) {
+	c.runningMu.Lock()
+	defer c.runningMu.Unlock()
+	c.Mesh.SetExit(exit)
+	c.exit.Store(&exit)
+	if c.downSince.Load() != nil {
+		exit.SetEnabled(false)
+	}
+}
+
+// SetEgressReady takes the translator's readiness per family, which egress
+// through the egress segments and through the prefixes it advertises both wait
+// on, and its word on whether the egress SIDs are served. The mesh learns
+// it before a SID's /128 or an advertised prefix is originated or retracted: a
+// packet either attracts finds the mesh writing, and a packet arriving after
+// the translation went is dropped before the retraction reaches anyone.
 func (c *Client) SetEgressReady(v4, v6, serves bool) {
 	c.egressMu.Lock()
 	c.translator4, c.translator6 = v4, v6
@@ -447,11 +464,15 @@ func (c *Client) SetBorderReady(ok bool) {
 	c.Republish()
 }
 
-// moveMeshEgressLocked hands the mesh each family the translator and the
-// border both hold ready, with c.egressMu held
+// moveMeshEgressLocked runs with c.egressMu held. The advertised prefixes'
+// word takes the translator's pair as well as the families the last republish
+// found advertised, since an exit whose translation another writer took goes
+// on announcing until its next pass, and a frame egressed then leaves
+// untranslated.
 func (c *Client) moveMeshEgressLocked() {
 	held := c.borderHeld.Load()
 	c.Mesh.SetEgressReady(c.translator4 && !held, c.translator6 && !held)
+	c.Mesh.SetAdvertisedReady(c.translator4 && c.advertised4, c.translator6 && c.advertised6)
 }
 
 // borderFilter is the border filter as the node reloads and reports it. The

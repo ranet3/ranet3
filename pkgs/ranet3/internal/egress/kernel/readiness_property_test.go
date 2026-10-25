@@ -265,7 +265,7 @@ func holdsReason(unready, why string) bool {
 // members drawn from a pool, none at all among them, and each destination's
 // forward and reply answers drawn, the batch now and then failing whole or
 // answering short: a family is ready exactly when the model says, the lookups
-// handed to the batch are the model's, and the readiness kept in Stats, the
+// handed to the batch are the model's, and the readiness kept for Status, the
 // prefixes announced and the pair and SID word handed to Ready move together.
 // A family the model reads no lookup for, with no member to read from, is
 // judged by its rule and forwarding alone, and the pass says what it skipped.
@@ -374,7 +374,7 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 			if !slices.Equal(asked, wantAsked) {
 				ht.Fatalf("pass %d over %+v with members %v asked for %v, want %v", pass, now, members, asked, wantAsked)
 			}
-			stats := tr.Stats()
+			stats := tr.lastPass()
 			if [2]bool{stats.Ready4, stats.Ready6} != want {
 				ht.Fatalf("pass %d over %+v with members %v and %v reports ready %v and %v (%q), want %v",
 					pass, now, members, host, stats.Ready4, stats.Ready6, stats.Unready, want)

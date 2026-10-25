@@ -69,12 +69,14 @@ var (
 
 // transitNode is a mesh deciding what a session delivers, with a tun of one lane recording its writes and its outbound pipeline running
 // from is the peer of the session the frames come through, which the sender's address routes back to, and out the peer far's address routes to
+// exit is the exit the decision egresses to
 type transitNode struct {
 	m         *Mesh
 	tun       *scriptedDevice
 	from, out *recordingPeer
 	fromPeer  *Peer
 	outPeer   *Peer
+	exit      *recordingExit
 }
 
 // newTransitNode is a transitNode with cap.transit on, the router-id of each family held, an answer TTL of 64, the overlay above, and outMTU the largest packet out carries
@@ -88,7 +90,8 @@ func newRecordingTransitNode(tb testing.TB, outMTU int, events func(kind, peer s
 	tb.Helper()
 	m, dev := startTransitMesh(events)
 	tb.Cleanup(m.Close)
-	n := &transitNode{m: m, tun: dev, from: &recordingPeer{}, out: &recordingPeer{}}
+	n := &transitNode{m: m, tun: dev, from: &recordingPeer{}, out: &recordingPeer{}, exit: &recordingExit{}}
+	m.SetExit(n.exit)
 	n.fromPeer = n.from.peer(tb, "from")
 	n.outPeer = n.out.peer(tb, "out")
 	n.outPeer.SetMTU(outMTU)
@@ -148,6 +151,9 @@ func (n *transitNode) deliver(tb testing.TB, packets ...[]byte) (tun, out, back 
 	}
 	return tun, n.out.packets(tb), n.from.packets(tb)
 }
+
+// egressed is every packet the exit took since the last call, in the order it took them
+func (n *transitNode) egressed() [][]byte { return slices.Concat(n.exit.taken()...) }
 
 // icmpAnswer is an ICMP error as its receiver reads it
 type icmpAnswer struct {

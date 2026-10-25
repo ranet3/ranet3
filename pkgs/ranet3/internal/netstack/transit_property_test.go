@@ -285,6 +285,8 @@ func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
 			tuns[i] = &scriptedDevice{recordingDevice: recordingDevice{writes: make(chan recordedWrite, 4096)}, reads: make(chan scriptedRead), closed: make(chan struct{})}
 			m := &Mesh{Name: fmt.Sprint("node", i), Routes: NewRouteTable(), closed: make(chan struct{})}
 			m.setDevice(tuns[i])
+			// an exit's egress reaches its tun, as the kernel exit's does
+			m.SetExit(tunExit{m.WriteHost})
 			m.startSegmentReports()
 			m.startOutboundPipeline()
 			defer m.Close()

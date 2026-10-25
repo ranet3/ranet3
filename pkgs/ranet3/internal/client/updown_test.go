@@ -45,7 +45,7 @@ func verbGolden(t *testing.T, name string, got []byte) {
 	goldentest.Check(t, "./internal/client", filepath.Join("..", "..", "control", "testdata", "debug", name), got)
 }
 
-// switchRecord is a reconciler or a translator as down and up drive one
+// switchRecord is a reconciler or an exit as down and up drive one
 // it records each stop and start with whether the flag was there at the moment
 type switchRecord struct {
 	mu      sync.Mutex
@@ -83,7 +83,7 @@ func downable(t *testing.T, dir string) (*Client, *switchRecord, *switchRecord) 
 	}
 	reconciler, translator := &switchRecord{flag: flagOf(c)}, &switchRecord{flag: flagOf(c)}
 	c.SetReconcilerEnable(reconciler.set)
-	c.SetEgressEnable(translator.set)
+	c.SetExit(&fakeExit{enable: translator.set})
 	return c, reconciler, translator
 }
 

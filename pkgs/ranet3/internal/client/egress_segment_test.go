@@ -115,13 +115,13 @@ type heldRepublish struct {
 
 func holdRepublish(c *Client) *heldRepublish {
 	h := &heldRepublish{entered: make(chan struct{}), release: make(chan struct{})}
-	c.SetEgressAnnounce(func() []netip.Prefix {
+	c.SetExit(&fakeExit{announce: func() []netip.Prefix {
 		if h.armed.CompareAndSwap(true, false) {
 			close(h.entered)
 			<-h.release
 		}
 		return nil
-	})
+	}})
 	return h
 }
 

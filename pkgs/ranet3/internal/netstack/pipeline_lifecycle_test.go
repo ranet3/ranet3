@@ -266,7 +266,7 @@ func TestSingleQueueInboundSplitsLargeBatches(t *testing.T) {
 	for i := range packets {
 		packets[i] = []byte{byte(i)}
 	}
-	m.writeHost(framed(packets...))
+	m.WriteHost(framed(packets...))
 	if len(dev.writes) != 2 {
 		t.Fatalf("got %d TUN writes, want two bounded batches", len(dev.writes))
 	}

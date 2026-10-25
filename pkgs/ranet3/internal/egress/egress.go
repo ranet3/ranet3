@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
 // Package egress holds the cap.egress and cap.border capabilities as a file
-// writes them and the node validates them, and the reports the node reads from
-// the border filter. cap.egress is the one action behind an exit node and a
-// subnet router: an exit advertises a default and a subnet router the prefixes
-// behind it, and both end at the same translation. Nothing here makes a system
-// call or imports a backend.
+// writes them and the node validates them, the Exit every backend carrying
+// cap.egress sits behind, and the reports the node reads from the border
+// filter. cap.egress is the one action behind an exit node and a subnet
+// router: an exit advertises a default and a subnet router the prefixes behind
+// it, and both end at the same translation. Nothing here makes a system call
+// or imports a backend.
 package egress
 
 import (
@@ -28,11 +29,6 @@ const (
 	FamilyIPv4 uint8 = 2
 	FamilyIPv6 uint8 = 10
 )
-
-// ErrUnsupported is returned by New on every platform with no backend, which
-// is everything but linux today. A pf anchor on darwin is the second backend
-// and is not written yet.
-var ErrUnsupported = errors.New("egress: source translation is unsupported on this platform")
 
 // Egress is the cap.egress capability: this node carries other nodes' traffic
 // out of the mesh, the one action behind an exit node and a subnet router.

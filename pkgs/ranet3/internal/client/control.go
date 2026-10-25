@@ -12,6 +12,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/babel"
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/version"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -32,14 +33,6 @@ import (
 // is the honest answer for a node configuring its routes externally.
 func (c *Client) SetKernelStatus(read func() control.KernelStatus) {
 	c.kernelStatus.Store(&read)
-}
-
-// SetEgressStatus does the same for the egress capability, which the command
-// builds for the same reason: it owns a table in the host's packet filter and
-// this owns the mesh. Without it the capability reports as off, which is the
-// honest answer for a node that carries nothing for anybody else.
-func (c *Client) SetEgressStatus(read func() control.EgressStatus) {
-	c.egressStatus.Store(&read)
 }
 
 // Forwarding reports whether this host forwards, per family
@@ -196,16 +189,16 @@ func (c *Client) kernel() control.KernelStatus {
 }
 
 // egress reports the exit node capability, or that there is none. As with the
-// reconciler, the configured half comes from the command through
-// SetEgressStatus rather than from the config file, because a block that
-// failed validation never became a translator and reporting its fields would
+// reconciler, the configured half comes from the exit the command handed over
+// through SetExit rather than from the config file, because a block that
+// failed validation never became an exit and reporting its fields would
 // describe rules nobody installed.
 //
-// The translator reports the families it holds ready, and the egress segments
+// The exit reports the families it holds ready, and the egress segments
 // carry neither while the border's chain is not read back, so the status
 // says what the mesh holds.
 func (c *Client) egress() control.EgressStatus {
-	status := c.translatorStatus()
+	status := c.exitStatus()
 	if status.Enabled && c.borderHeld.Load() && len(c.config().Segments().Egress()) != 0 {
 		status.Ready = nil
 		reasons := slices.DeleteFunc([]string{status.Unready, "until the border filter is read back"}, func(reason string) bool { return reason == "" })
@@ -214,12 +207,42 @@ func (c *Client) egress() control.EgressStatus {
 	return status
 }
 
-func (c *Client) translatorStatus() control.EgressStatus {
-	read := c.egressStatus.Load()
-	if read == nil {
+func (c *Client) exitStatus() control.EgressStatus {
+	exit := c.exit.Load()
+	if exit == nil {
 		return control.EgressStatus{}
 	}
-	return (*read)()
+	return egressStatus((*exit).Status())
+}
+
+// egressStatus is an exit's Status as the control surface reports it, the
+// detail of a backend holding rules in the host's packet filter among it
+func egressStatus(status egress.Status) control.EgressStatus {
+	var ready []string
+	if status.Ready4 {
+		ready = append(ready, "ipv4")
+	}
+	if status.Ready6 {
+		ready = append(ready, "ipv6")
+	}
+	out := control.EgressStatus{
+		Enabled:   true,
+		Where:     status.Where,
+		Ready:     ready,
+		Unready:   status.Unready,
+		Skipped:   status.Skipped,
+		Source4:   status.Source4.String(),
+		Source6:   status.Source6.String(),
+		Return:    status.Return,
+		Advertise: status.Advertise,
+		Announced: status.Announced,
+		PassAt:    status.PassAt,
+		Err:       status.Err,
+	}
+	if rules := status.Rules; rules != nil {
+		out.Installed, out.Flows, out.Bytes, out.Conflicts = rules.Installed, rules.Flows, rules.Bytes, rules.Conflicts
+	}
+	return out
 }
 
 // borderStatus reports the border filter, and nil on a node with no cap.border

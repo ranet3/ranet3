@@ -65,10 +65,10 @@ func readingExit(t *testing.T, cfg egress.Egress, host *lookupHost, members *[]n
 	t.Helper()
 	rt := Runtime{
 		Interface: readTUN,
-		Events:    bus,
 		Lookup:    host.lookup,
 		Sysctl:    host.sysctl,
 		Members:   func() []netip.Prefix { return slices.Clone(*members) },
+		Hooks:     egress.Hooks{Events: bus},
 	}
 	return translator(t, cfg, rt, &fakeBackend{})
 }
@@ -132,7 +132,7 @@ func TestEachLookupNamesWhatHoldsItsFamilyNotReady(t *testing.T) {
 			if err := tr.reconcile(); err != nil {
 				t.Fatal(err)
 			}
-			stats := tr.Stats()
+			stats := tr.lastPass()
 			if stats.Ready4 == test.read.Is4() || stats.Ready6 == test.read.Is6() || stats.Unready != test.want {
 				t.Errorf("the pass reports ready %v and %v with the reason %q, want the family of %s alone not ready with %q",
 					stats.Ready4, stats.Ready6, stats.Unready, test.read, test.want)
@@ -197,7 +197,7 @@ func TestFailedLookupNamesTheSettingWhateverTheErrno(t *testing.T) {
 				if err := tr.reconcile(); err != nil {
 					t.Fatal(err)
 				}
-				if got, want := tr.Stats().Unready, lookup+" failed: "+errno.Error()+setting.want; got != want {
+				if got, want := tr.lastPass().Unready, lookup+" failed: "+errno.Error()+setting.want; got != want {
 					t.Errorf("errno %d with the settings %v reads %q, want %q", errno, setting.tree, got, want)
 				}
 			}
@@ -231,7 +231,7 @@ func TestFamilyWithNoMemberSkipsItsLookupsAndSaysSo(t *testing.T) {
 		t.Fatal(err)
 	}
 	const skipped = "lookup skipped, the mesh routes no other node's ipv6 prefix inside cap.border.overlay"
-	if stats := tr.Stats(); !stats.Ready4 || !stats.Ready6 || stats.Skipped != skipped {
+	if stats := tr.lastPass(); !stats.Ready4 || !stats.Ready6 || stats.Skipped != skipped {
 		t.Errorf("with no IPv6 member the pass reports ready %v and %v, skipping %q, want both ready, skipping %q", stats.Ready4, stats.Ready6, stats.Skipped, skipped)
 	}
 	if want := []Lookup{{Source: readMembers[0].Addr(), Destination: read4, IIF: readTUN, Reply: true}}; len(host.asked) != 1 || !slices.Equal(host.asked[0], want) {
@@ -246,7 +246,7 @@ func TestFamilyWithNoMemberSkipsItsLookupsAndSaysSo(t *testing.T) {
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if stats := tr.Stats(); !stats.Ready4 || !stats.Ready6 || stats.Skipped != "" {
+	if stats := tr.lastPass(); !stats.Ready4 || !stats.Ready6 || stats.Skipped != "" {
 		t.Errorf("with a member of each family the pass reports ready %v and %v, skipping %q, want both ready, skipping nothing", stats.Ready4, stats.Ready6, stats.Skipped)
 	}
 	want := [][4]string{{"true", "true", "", skipped}, {"true", "true", "", ""}}
@@ -293,7 +293,7 @@ func TestReasonNamesTheFamilyEachPartHolds(t *testing.T) {
 			if err := tr.reconcile(); err != nil {
 				t.Fatal(err)
 			}
-			if stats := tr.Stats(); stats.Ready4 || stats.Ready6 || stats.Unready != test.want {
+			if stats := tr.lastPass(); stats.Ready4 || stats.Ready6 || stats.Unready != test.want {
 				t.Errorf("advertising %v the pass reports ready %v and %v with the reason %q, want neither ready with %q",
 					test.advertise, stats.Ready4, stats.Ready6, stats.Unready, test.want)
 			}
@@ -320,7 +320,7 @@ func TestReasonFollowsAPassThatMovesNoFamily(t *testing.T) {
 		t.Fatal(err)
 	}
 	const want = "the reply lookup of 192.0.2.1 for 198.51.100.0/24 from 198.51.100.128 arriving on eth0 leaves by eth1 rather than ranet3"
-	if stats := tr.Stats(); stats.Ready4 || !stats.Ready6 || stats.Unready != want || calls != 1 {
+	if stats := tr.lastPass(); stats.Ready4 || !stats.Ready6 || stats.Unready != want || calls != 1 {
 		t.Errorf("the second pass reports ready %v and %v with the reason %q after %d calls of Ready, want IPv4 alone not ready with %q after one",
 			stats.Ready4, stats.Ready6, stats.Unready, calls, want)
 	}
@@ -339,7 +339,7 @@ func TestPrefixWithNoReadAddressSkipsItsLookupAndIsNamed(t *testing.T) {
 		t.Fatal(err)
 	}
 	const skipped = "lookup skipped for fe80::/10, which holds no address the kernel takes as a unicast destination"
-	if stats := tr.Stats(); !stats.Ready4 || !stats.Ready6 || stats.Skipped != skipped {
+	if stats := tr.lastPass(); !stats.Ready4 || !stats.Ready6 || stats.Skipped != skipped {
 		t.Errorf("the pass reports ready %v and %v, skipping %q, want both ready, skipping %q", stats.Ready4, stats.Ready6, stats.Skipped, skipped)
 	}
 	want := []Lookup{
@@ -358,7 +358,7 @@ func TestPrefixWithNoReadAddressSkipsItsLookupAndIsNamed(t *testing.T) {
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if stats := tr.Stats(); stats.Ready4 || !stats.Ready6 || stats.Skipped != skipped || len(alone.asked) != 0 {
+	if stats := tr.lastPass(); stats.Ready4 || !stats.Ready6 || stats.Skipped != skipped || len(alone.asked) != 0 {
 		t.Errorf("advertising fe80::/10 alone the pass reports ready %v and %v, skipping %q, after asking for %v, want IPv6 alone ready, skipping %q and asking nothing",
 			stats.Ready4, stats.Ready6, stats.Skipped, alone.asked, skipped)
 	}
@@ -419,7 +419,7 @@ func TestFailedBatchHoldsEveryFamilyItRead(t *testing.T) {
 			if err := tr.reconcile(); err != nil {
 				t.Fatal(err)
 			}
-			if stats := tr.Stats(); stats.Ready4 || !stats.Ready6 || stats.Unready != test.want {
+			if stats := tr.lastPass(); stats.Ready4 || !stats.Ready6 || stats.Unready != test.want {
 				t.Errorf("the pass reports ready %v and %v with the reason %q, want IPv4 alone not ready with %q", stats.Ready4, stats.Ready6, stats.Unready, test.want)
 			}
 		})

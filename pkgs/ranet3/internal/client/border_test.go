@@ -93,9 +93,7 @@ func TestEgressStopsWhileTheBorderIsNotReady(t *testing.T) {
 	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
 	segmentsOf(t, c)
 	speakerRecording(t, c, bus)
-	c.SetEgressStatus(func() control.EgressStatus {
-		return control.EgressStatus{Enabled: true, Ready: []string{"ipv4", "ipv6"}}
-	})
+	c.SetExit(&fakeExit{status: egress.Status{Ready4: true, Ready6: true}})
 	c.SetEgressReady(true, true, true)
 	for _, ready := range []bool{false, true, false, true} {
 		c.SetBorderReady(ready)
@@ -195,12 +193,10 @@ func TestRepublishRacingAFallLeavesTheSIDWithdrawn(t *testing.T) {
 // egress segment is not held, since the hold covers the egress segments alone
 func TestEgressStatusKeepsTheTranslatorsReasonBesideTheBorders(t *testing.T) {
 	const reason = "net.ipv4.ip_forward is 0"
-	c := &Client{}
+	c := &Client{Mesh: &netstack.Mesh{}}
 	c.cfg.Store(&config.Config{})
 	c.borderHeld.Store(true)
-	c.SetEgressStatus(func() control.EgressStatus {
-		return control.EgressStatus{Enabled: true, Ready: []string{"ipv6"}, Unready: reason}
-	})
+	c.SetExit(&fakeExit{status: egress.Status{Ready6: true, Unready: reason}})
 	if got := c.egress(); len(got.Ready) != 1 || got.Unready != reason {
 		t.Errorf("a node with no egress segment reads ready %v, unready %q, want the translator's word alone", got.Ready, got.Unready)
 	}

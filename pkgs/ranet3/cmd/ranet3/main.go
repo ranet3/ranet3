@@ -20,7 +20,6 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
-	"net/netip"
 	"os"
 	"os/signal"
 	"runtime"
@@ -339,45 +338,27 @@ func runDaemon(opts options) int {
 	}
 
 	// cap.egress is written or absent the same way, and is built after the
-	// reconciler because the two share a shutdown order: the translator
-	// withdraws its tables while the tun still exists, as the reconciler
-	// withdraws its routes.
-	if exit := cfg.Egress(); exit != nil {
-		translator, err := kernelexit.New(*exit, kernelexit.Runtime{
-			Interface:     mesh.Name,
-			MeshAddresses: client.MeshAddresses(cfg),
-			Forwarding:    client.Forwarding,
-			Lookup:        client.RouteLookups,
-			Sysctl:        client.Sysctl,
-			Members:       node.EgressMembers,
-			// Published through the runtime rather than read out of the
-			// config, which is how an exit whose chain does not read back as
-			// written withholds its advertisement instead of attracting
-			// traffic it would drop. The prefixes are read back from the
-			// translator, so this callback only has to say that they changed.
-			Announce: func([]netip.Prefix) { node.Republish() },
-			Events:   bus,
-			Steered:  len(cfg.Segments().Egress()) != 0,
-			Ready:    node.SetEgressReady,
-		})
+	// reconciler because the two share a shutdown order: the exit withdraws
+	// what it holds while the tun still exists, as the reconciler withdraws
+	// its routes. Each platform's build carries one exit, or refuses here.
+	if block := cfg.Egress(); block != nil {
+		exit, err := newExit(cfg, node, bus)
 		if err != nil {
 			return refuseToStart(err)
 		}
-		node.SetEgressAnnounce(translator.Announce)
-		node.SetEgressStatus(func() control.EgressStatus { return egressStatus(translator) })
 		// handed over before the first pass, as the reconciler's is
-		node.SetEgressEnable(translator.SetEnabled)
+		node.SetExit(exit)
 		reconciler.Go(func() {
 			// As with the reconciler, this error is the withdrawal failing as
 			// often as the pass: a translation rule left in the host's packet
 			// filter after shutdown must never be reported to an operator as a
 			// clean exit.
-			if err := translator.Run(ctx); err != nil {
+			if err := exit.Run(ctx); err != nil {
 				log.Printf("egress: %v", err)
 				failed.Store(true)
 			}
 		})
-		log.Printf("egress translating for %d prefixes in %s", len(exit.Advertise), translator.Where())
+		log.Printf("egress translating for %d prefixes in %s", len(block.Advertise), exit.Status().Where)
 	}
 
 	// The control socket is bound rather than served here, so a path an
@@ -531,41 +512,4 @@ func coverNames(families []kernel.Family) []string {
 		names = append(names, string(family))
 	}
 	return names
-}
-
-// egressStatus is the egress capability as the control surface reports it. The
-// configured half comes from the translator rather than from the config file,
-// so a block that never became a translator reports as off rather than
-// describing rules nobody installed.
-func egressStatus(translator *kernelexit.Translator) control.EgressStatus {
-	cfg, stats := translator.Capability(), translator.Stats()
-	advertise := make([]netip.Prefix, 0, len(cfg.Advertise))
-	for _, entry := range cfg.Advertise {
-		advertise = append(advertise, entry.Prefix)
-	}
-	var ready []string
-	if stats.Ready4 {
-		ready = append(ready, "ipv4")
-	}
-	if stats.Ready6 {
-		ready = append(ready, "ipv6")
-	}
-	return control.EgressStatus{
-		Enabled:   true,
-		Where:     translator.Where(),
-		Ready:     ready,
-		Unready:   stats.Unready,
-		Skipped:   stats.Skipped,
-		Source4:   cfg.Source4.String(),
-		Source6:   cfg.Source6.String(),
-		Return:    cfg.Return,
-		Advertise: advertise,
-		Announced: stats.Announced,
-		PassAt:    stats.At,
-		Installed: stats.Installed,
-		Flows:     stats.Flows,
-		Bytes:     stats.Bytes,
-		Conflicts: stats.Conflicts,
-		Err:       stats.Err,
-	}
 }

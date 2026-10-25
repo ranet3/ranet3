@@ -586,15 +586,11 @@ func (c *Client) announced(cfg *config.Config, advertised []netip.Prefix) []babe
 	return routes
 }
 
-// SetEgressAnnounce hands the runtime cap.egress's own view of what it may
-// advertise. See announced.
-func (c *Client) SetEgressAnnounce(read func() []netip.Prefix) {
-	c.egressAnnounce.Store(&read)
-}
-
+// egressAdvertised is the prefixes the exit may advertise now, and none on a
+// node with no exit. See announced.
 func (c *Client) egressAdvertised() []netip.Prefix {
-	if read := c.egressAnnounce.Load(); read != nil {
-		return (*read)()
+	if exit := c.exit.Load(); exit != nil {
+		return (*exit).Announce()
 	}
 	return nil
 }
@@ -605,7 +601,7 @@ func (c *Client) egressAdvertised() []netip.Prefix {
 // how an exit whose rule stopped being installed retracts rather than going on
 // attracting traffic it would have to drop.
 // the mesh takes the families cap.egress may advertise before the speaker announces or retracts them, both from one read
-// so no prefix is announced while the mesh's word for its family is unset
+// so a family Ready holds has its word set before its prefix is announced
 // and mode 2 egress of a family that went is dropped before its retraction reaches anyone
 func (c *Client) Republish() {
 	c.republishMu.Lock()
@@ -616,7 +612,10 @@ func (c *Client) Republish() {
 	for _, prefix := range advertised {
 		v4, v6 = v4 || prefix.Addr().Is4(), v6 || prefix.Addr().Is6()
 	}
-	c.Mesh.SetAdvertisedReady(v4, v6)
+	c.egressMu.Lock()
+	c.advertised4, c.advertised6 = v4, v6
+	c.moveMeshEgressLocked()
+	c.egressMu.Unlock()
 	c.speaker.SetOriginated(c.announced(cfg, advertised))
 	c.Mesh.SetAnswerSources(answerSources(cfg))
 }

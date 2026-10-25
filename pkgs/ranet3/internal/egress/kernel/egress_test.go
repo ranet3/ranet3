@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -268,9 +269,11 @@ func TestReturnRuleForADefaultCarriesNoPrefixMatch(t *testing.T) {
 // an exit serving only the traffic steered to its egress segment advertises nothing and translates what arrives on the tun in both families, since End.DT46 delivers either
 func TestSIDOnlyExitTranslatesTheTunInBothFamilies(t *testing.T) {
 	var announced [][]netip.Prefix
-	rt := Runtime{Steered: true, Announce: func(p []netip.Prefix) { announced = append(announced, p) }}
+	var tr *Translator
+	rt := Runtime{Steered: true}
+	rt.Republish = func() { announced = append(announced, tr.Announce()) }
 	be := &fakeBackend{}
-	tr := translator(t, egress.Egress{}, rt, be)
+	tr = translator(t, egress.Egress{}, rt, be)
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -315,29 +318,6 @@ func TestSteeredExitKeysOneRulePerFamilyOnTheTun(t *testing.T) {
 	}
 	if got := tr.Announce(); !slices.Equal(got, plain(cfg.Advertise)) {
 		t.Errorf("announced %v, want %v", got, cfg.Advertise)
-	}
-}
-
-// An empty advertise list is an exit serving only steered traffic, which only
-// a node holding an egress segment can be. Without one the capability would
-// translate nothing and offer nothing, and New refuses it before it opens
-// anything.
-func TestEmptyAdvertiseNeedsAnEgressSegment(t *testing.T) {
-	if err := (egress.Egress{}).Validate(); err != nil {
-		t.Fatalf("a capability advertising nothing was refused on its own: %v", err)
-	}
-	if err := (egress.Egress{}).Serves(true); err != nil {
-		t.Errorf("an exit with an egress segment was refused: %v", err)
-	}
-	if err := (egress.Egress{}).Serves(false); err == nil || !strings.Contains(err.Error(), "advertise is empty") {
-		t.Errorf("an exit with nothing to carry was refused with %v", err)
-	}
-	_, err := New(egress.Egress{}, Runtime{Interface: "ranet0", Forwarding: func() (bool, bool) { return true, true }})
-	if err == nil || !strings.Contains(err.Error(), "advertise is empty") {
-		t.Fatalf("New returned %v, want the refusal of a capability carrying nothing", err)
-	}
-	if errors.Is(err, egress.ErrUnsupported) {
-		t.Error("the platform was consulted before the capability was judged")
 	}
 }
 
@@ -387,7 +367,7 @@ func TestUnchangedRulesAreNotRewritten(t *testing.T) {
 	if be.applied != 1 {
 		t.Errorf("wrote the ruleset %d times, want once", be.applied)
 	}
-	if got := tr.Stats().Flows; got != 11 {
+	if got := tr.lastPass().Flows; got != 11 {
 		t.Errorf("reported %d flows, want the counter the host holds", got)
 	}
 }
@@ -399,8 +379,10 @@ func TestNothingIsAnnouncedWhileTheRuleWillNotInstall(t *testing.T) {
 	cfg := egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}
 	be := &fakeBackend{failApply: true}
 	var announced [][]netip.Prefix
-	rt := Runtime{Announce: func(p []netip.Prefix) { announced = append(announced, p) }}
-	tr := translator(t, cfg, rt, be)
+	var tr *Translator
+	rt := Runtime{}
+	rt.Republish = func() { announced = append(announced, tr.Announce()) }
+	tr = translator(t, cfg, rt, be)
 	if err := tr.reconcile(); err == nil {
 		t.Fatal("a pass that could not install reported success")
 	}
@@ -483,7 +465,7 @@ func TestAnotherWritersRuleInAChainHoldsItsFamilyNotReady(t *testing.T) {
 	if got := be.specs(); !slices.Equal(got, append([]string{""}, written...)) {
 		t.Fatalf("the host holds %q, want another writer's rule ahead of every rule the translator wrote, %q", got, written)
 	}
-	if stats := tr.Stats(); stats.Ready4 || !stats.Ready6 || stats.Unready != "its chain does not read back as written" {
+	if stats := tr.lastPass(); stats.Ready4 || !stats.Ready6 || stats.Unready != "its chain does not read back as written" {
 		t.Errorf("with another writer's rule in the ip chain the pass reports ready %v and %v with the reason %q, want IPv4 alone not ready for its chain",
 			stats.Ready4, stats.Ready6, stats.Unready)
 	}
@@ -499,7 +481,7 @@ func TestAnotherWritersRuleInAChainHoldsItsFamilyNotReady(t *testing.T) {
 	if got := be.specs(); !slices.Equal(got, written) {
 		t.Errorf("the pass the host took left %q, want %q", got, written)
 	}
-	if stats := tr.Stats(); !stats.Ready4 || !stats.Ready6 {
+	if stats := tr.lastPass(); !stats.Ready4 || !stats.Ready6 {
 		t.Errorf("once the chain was rewritten the pass reports ready %v and %v, want both", stats.Ready4, stats.Ready6)
 	}
 	if got, want := tr.Announce(), plain(cfg.Advertise); !slices.Equal(got, want) {
@@ -544,7 +526,7 @@ func TestTranslatorRewritesATableOrChainReadingBackOtherThanWritten(t *testing.T
 		if err := tr.reconcile(); err != nil {
 			t.Fatalf("%s: %v", change.name, err)
 		}
-		if got, stats := be.entries(), tr.Stats(); !slices.Equal(got, change.pass) || !stats.Ready4 || !stats.Ready6 {
+		if got, stats := be.entries(), tr.lastPass(); !slices.Equal(got, change.pass) || !stats.Ready4 || !stats.Ready6 {
 			t.Errorf("%s: the pass went %q and left ready %v and %v, want %q and both ready", change.name, got, stats.Ready4, stats.Ready6, change.pass)
 		}
 	}
@@ -554,7 +536,7 @@ func TestTranslatorRewritesATableOrChainReadingBackOtherThanWritten(t *testing.T
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if stats := tr.Stats(); !stats.Ready4 || stats.Ready6 || stats.Unready != dormant {
+	if stats := tr.lastPass(); !stats.Ready4 || stats.Ready6 || stats.Unready != dormant {
 		t.Errorf("an ip6 table the rewrite leaves dormant reads ready %v and %v, unready %q", stats.Ready4, stats.Ready6, stats.Unready)
 	}
 	if got, want := tr.Announce(), plain(prefixes(t, "0.0.0.0/0")); !slices.Equal(got, want) {
@@ -570,8 +552,8 @@ func TestShutdownRetractsBeforeItWithdraws(t *testing.T) {
 	be := &fakeBackend{}
 	tr := translator(t, cfg, Runtime{}, be)
 	withdrawnWhenRetracted := -1
-	tr.rt.Announce = func(p []netip.Prefix) {
-		if len(p) == 0 {
+	tr.rt.Republish = func() {
+		if len(tr.Announce()) == 0 {
 			withdrawnWhenRetracted = be.withdrawn
 		}
 	}
@@ -599,23 +581,24 @@ func TestShutdownRetractsBeforeItWithdraws(t *testing.T) {
 	}
 }
 
-// readyLog is a translator beside an egress segment whose Ready and Announce
+// readyLog is a translator beside an egress segment whose Ready and Republish
 // calls go into its backend's log between the listings, applies and
 // withdrawals, and whose egress.ready events go to bus
 func readyLog(t *testing.T, cfg egress.Egress, bus *events.Bus) (*Translator, *fakeBackend) {
 	t.Helper()
 	be := &fakeBackend{changed: make(chan struct{}, 1), missed: make(chan struct{}, 1)}
-	rt := Runtime{
-		Steered: true,
-		Events:  bus,
-		Ready:   func(v4, v6, serves bool) { be.record(fmt.Sprintf("ready %v %v sid %v", v4, v6, serves)) },
-		Announce: func(p []netip.Prefix) {
-			if len(p) == 0 {
+	var tr *Translator
+	rt := Runtime{Steered: true, Hooks: egress.Hooks{
+		Events: bus,
+		Ready:  func(v4, v6, serves bool) { be.record(fmt.Sprintf("ready %v %v sid %v", v4, v6, serves)) },
+		Republish: func() {
+			if len(tr.Announce()) == 0 {
 				be.record("retract")
 			}
 		},
-	}
-	return translator(t, cfg, rt, be), be
+	}}
+	tr = translator(t, cfg, rt, be)
+	return tr, be
 }
 
 // A translator beside an egress segment that stops, or is stopped, tells the
@@ -790,7 +773,7 @@ func TestConflictsAreReportedRatherThanRemoved(t *testing.T) {
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if got := tr.Stats().Conflicts; !slices.Equal(got, be.conflicts) {
+	if got := tr.lastPass().Conflicts; !slices.Equal(got, be.conflicts) {
 		t.Errorf("reported %q, want %q", got, be.conflicts)
 	}
 	if got := tr.Announce(); len(got) != 1 {
@@ -798,15 +781,52 @@ func TestConflictsAreReportedRatherThanRemoved(t *testing.T) {
 	}
 }
 
-// New refuses before it opens anything, so a capability that names a source
-// the return direction cannot resolve fails with nothing to clean up.
-func TestNewRefusesAnUnresolvableReturnBeforeOpeningTheBackend(t *testing.T) {
-	cfg := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24")}
-	_, err := New(cfg, Runtime{Interface: "ranet0", Forwarding: func() (bool, bool) { return true, true }})
-	if err == nil || !strings.Contains(err.Error(), "egress.source4") {
-		t.Fatalf("New returned %v, want a refusal naming the field that settles it", err)
+// Status is the last pass beside the capability's translation, with the rules
+// the host holds, their counters and the conflicts as the backend's detail
+func TestStatusIsTheLastPassWithTheRulesAsItsDetail(t *testing.T) {
+	cfg := egress.Egress{
+		Return:    true,
+		Advertise: prefixes(t, "198.51.100.0/24", "::/0"),
+		Source4:   egress.Source{Addr: netip.MustParseAddr("198.51.100.7")},
 	}
-	if errors.Is(err, egress.ErrUnsupported) {
-		t.Error("the platform was consulted before the capability was judged")
+	be := &fakeBackend{flows: 3, conflicts: []string{"ip table nat chain POSTROUTING at priority 100"}}
+	rt := Runtime{
+		MeshAddresses: []netip.Addr{netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("3fff::2")},
+		Forwarding:    func() (bool, bool) { return true, false },
+	}
+	tr := translator(t, cfg, rt, be)
+	if got := tr.Status(); got.Backend != "nftables" || got.Where != "a fake host" || !got.PassAt.IsZero() || got.Ready4 || got.Ready6 || len(got.Announced) != 0 {
+		t.Errorf("before the first pass Status is %+v, want the backend named and nothing ready or announced", got)
+	}
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	stats := tr.lastPass()
+	want := egress.Status{
+		Backend: "nftables", Where: "a fake host",
+		Ready4: true, Unready: stats.Unready, Skipped: stats.Skipped,
+		Advertise: plain(cfg.Advertise), Announced: plain(cfg.Advertise[:1]),
+		Source4: cfg.Source4, Return: true,
+		PassAt: stats.At,
+		// two rules a family, each read back with the three flows the fake host counts
+		Rules: &egress.Rules{Installed: 4, Flows: 12, Conflicts: be.conflicts},
+	}
+	if got := tr.Status(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Status is\n%+v\nwant\n%+v", got, want)
+	}
+	if stats.Unready == "" {
+		t.Error("the family the host does not forward is not ready with no reason given")
+	}
+}
+
+// Egress hands the frames, headroom and all, to the mesh's tun writer as they came
+func TestEgressHandsTheFramesToTheTunWriter(t *testing.T) {
+	var written [][][]byte
+	rt := Runtime{Write: func(frames [][]byte) { written = append(written, frames) }}
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0")}, rt, &fakeBackend{})
+	frames := [][]byte{{1, 2, 3}, {4, 5}}
+	tr.Egress(frames)
+	if len(written) != 1 || len(written[0]) != 2 || &written[0][0][0] != &frames[0][0] || &written[0][1][0] != &frames[1][0] {
+		t.Errorf("the writer took %v, want the two frames as Egress was handed them", written)
 	}
 }

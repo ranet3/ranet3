@@ -255,7 +255,7 @@ func readyAfter(cfg egress.Egress, rt Runtime, desired []Rule, now step) [2]bool
 }
 
 // Over a run of passes on a host drawn anew for each, the readiness handed to
-// Ready and kept in Stats is readyAfter's, and neither is ready after a
+// Ready and kept for Status is readyAfter's, and neither is ready after a
 // listing that failed. The prefixes announced are those of each family whose
 // chain reads back as written and which the host forwards. Ready is told only
 // of a change, never what it already holds, and the pair is false in both
@@ -306,10 +306,10 @@ func TestEgressSegmentsReadinessFollowsWhatThePassReadBack(t *testing.T) {
 			if got != want {
 				ht.Fatalf("after %+v Ready last held %v, want %v", now, got, want)
 			}
-			if stats := tr.Stats(); stats.Ready4 != want[0] || stats.Ready6 != want[1] {
+			if stats := tr.lastPass(); stats.Ready4 != want[0] || stats.Ready6 != want[1] {
 				ht.Fatalf("after %+v the pass reports ready %v and %v, want %v", now, stats.Ready4, stats.Ready6, want)
 			}
-			if stats := tr.Stats(); now.enabled && (stats.Unready == "") != (want == [2]bool{true, true}) {
+			if stats := tr.lastPass(); now.enabled && (stats.Unready == "") != (want == [2]bool{true, true}) {
 				ht.Fatalf("after %+v the pass reports ready %v with the reason %q", now, want, stats.Unready)
 			}
 		}

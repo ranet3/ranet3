@@ -139,18 +139,18 @@ func TestEgressPrefixAnnouncedUnconditionallyIsRefused(t *testing.T) {
 	}
 }
 
-// The capability announces nothing until the translator says it may, so a node
+// The capability announces nothing until the exit says it may, so a node
 // whose command never built one announces exactly what cap.route names.
 func TestAnnouncementTakesTheEgressPrefixesFromTheTranslator(t *testing.T) {
 	cfg := &config.Config{Cap: config.Caps{
 		Route: &babel.Routes{Announce: []schema.Announce{{Prefix: schema.MustPrefix("10.88.0.2/32")}}},
 	}}
-	c := &Client{}
+	c := &Client{Mesh: &netstack.Mesh{}}
 	if routes := c.announced(cfg, c.egressAdvertised()); len(routes) != 1 {
-		t.Fatalf("announced %v with no translator, want cap.route alone", routes)
+		t.Fatalf("announced %v with no exit, want cap.route alone", routes)
 	}
 	exit := netip.MustParsePrefix("0.0.0.0/0")
-	c.SetEgressAnnounce(func() []netip.Prefix { return []netip.Prefix{exit} })
+	c.SetExit(&fakeExit{announce: func() []netip.Prefix { return []netip.Prefix{exit} }})
 	routes := c.announced(cfg, c.egressAdvertised())
 	if len(routes) != 2 || routes[1].Destination != exit {
 		t.Errorf("announced %v, want cap.route's list and the exit's own prefix", routes)

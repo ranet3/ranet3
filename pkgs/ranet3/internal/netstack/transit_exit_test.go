@@ -32,13 +32,13 @@ var exitShapes = []struct {
 var transitStranger = map[int]netip.Addr{4: segAddr("203.0.113.66"), 6: segAddr("2001:db8:66::6")}
 
 // an exit egresses through every way of advertising the internet, a default, a pair of halves and four quarters, each counting as a default
-// a packet from a source the mesh routes reaches the tun, from a peer's source, from inside a hold, from its own LAN or from an address cap.table assigns it, while its family's translation is ready
+// a packet from a source the mesh routes reaches the exit and never the tun, from a peer's source, from inside a hold, from its own LAN or from an address cap.table assigns it, while its family's translation is ready
 // and while it is not, one through a prefix cap.egress advertises is dropped and counted not ready, whatever the egress segments' readiness says
-// where cap.route announces the prefix instead it reaches the tun whatever the readiness, since no translation stands behind it
+// where cap.route announces the prefix instead it reaches the tun and never the exit whatever the readiness, since no translation stands behind it
 // an overlay address inside the prefix that no route holds is answered as no route and never egressed
 // a packet from a source the mesh routes no reply to is dropped and counted with no answer
 // and so is every packet from it this node answers, expired, refused, held or for an overlay address, since only the exit's default reaches the source
-// an IPv4 link-local destination is a martian, never in the tun, and an IPv6 one goes to the tun as link scope does
+// an IPv4 link-local destination is a martian, never in the tun, and an IPv6 one goes to the tun as link scope does and never to the exit
 func TestDecisionEgressesAtAnExit(t *testing.T) {
 	for _, family := range []int{4, 6} {
 		hostCode := map[int]byte{4: 1, 6: 0}[family]
@@ -49,27 +49,28 @@ func TestDecisionEgressesAtAnExit(t *testing.T) {
 		for _, shape := range exitShapes {
 			for _, advertised := range []bool{true, false} {
 				for _, c := range []struct {
-					name        string
-					from, to    netip.Addr
-					hops        byte
-					transitOff  bool
-					ready       bool
-					tun, answer bool
-					want        TransitCounters
+					name            string
+					from, to        netip.Addr
+					hops            byte
+					transitOff      bool
+					ready           bool
+					carried, answer bool
+					linkScope       bool
+					want            TransitCounters
 				}{
-					{name: "from a peer's source", from: transitSender[family], to: transitNowhere[family], ready: true, tun: true, want: TransitCounters{Delivered: 1}},
-					{name: "from inside a hold", from: transitHeldHost[family], to: transitNowhere[family], ready: true, tun: true, want: TransitCounters{Delivered: 1}},
-					{name: "from its own LAN", from: onTheLAN, to: transitNowhere[family], ready: true, tun: true, want: TransitCounters{Delivered: 1}},
-					{name: "from an address cap.table assigns it", from: assigned, to: transitNowhere[family], ready: true, tun: true, want: TransitCounters{Delivered: 1}},
+					{name: "from a peer's source", from: transitSender[family], to: transitNowhere[family], ready: true, carried: true, want: TransitCounters{Delivered: 1}},
+					{name: "from inside a hold", from: transitHeldHost[family], to: transitNowhere[family], ready: true, carried: true, want: TransitCounters{Delivered: 1}},
+					{name: "from its own LAN", from: onTheLAN, to: transitNowhere[family], ready: true, carried: true, want: TransitCounters{Delivered: 1}},
+					{name: "from an address cap.table assigns it", from: assigned, to: transitNowhere[family], ready: true, carried: true, want: TransitCounters{Delivered: 1}},
 					{name: "to an overlay address no route holds", from: transitSender[family], to: transitUnrouted[family], ready: true, answer: true, want: TransitCounters{NoRoute: 1, Answered: 1}},
 					{name: "from a source the mesh routes no reply to", from: transitStranger[family], to: transitNowhere[family], ready: true, want: TransitCounters{UnroutedSource: 1}},
 					{name: "expired from a source the mesh routes no reply to", from: transitStranger[family], to: transitFar[family], hops: 1, ready: true, want: TransitCounters{Expired: 1}},
 					{name: "refused from a source the mesh routes no reply to", from: transitStranger[family], to: transitFar[family], transitOff: true, ready: true, want: TransitCounters{Refused: 1}},
 					{name: "held from a source the mesh routes no reply to", from: transitStranger[family], to: transitHeldHost[family], ready: true, want: TransitCounters{Held: 1}},
 					{name: "to an overlay address no route holds from a source the mesh routes no reply to", from: transitStranger[family], to: transitUnrouted[family], ready: true, want: TransitCounters{NoRoute: 1}},
-					{name: "to a link-local address", from: transitSender[family], to: linkLocal, ready: true, tun: family == 6,
+					{name: "to a link-local address", from: transitSender[family], to: linkLocal, ready: true, linkScope: family == 6,
 						want: map[int]TransitCounters{4: {Martian: 1}, 6: {Delivered: 1}}[family]},
-					{name: "while the translation is not ready", from: transitSender[family], to: transitNowhere[family], tun: !advertised,
+					{name: "while the translation is not ready", from: transitSender[family], to: transitNowhere[family], carried: !advertised,
 						want: map[bool]TransitCounters{true: {NotReady: 1}, false: {Delivered: 1}}[advertised]},
 				} {
 					t.Run(fmt.Sprintf("IPv%d %s advertised %t %s", family, shape.name, advertised, c.name), func(t *testing.T) {
@@ -91,8 +92,14 @@ func TestDecisionEgressesAtAnExit(t *testing.T) {
 							raw = withTTL(raw, c.hops)
 						}
 						tun, out, back := n.deliver(t, raw)
-						if c.tun != (len(tun) == 1) || c.tun && !bytes.Equal(tun[0], raw) || len(out) != 0 {
-							t.Errorf("the tun took %x and the next hop was sent %x, want the packet in the tun %v", tun, out, c.tun)
+						egressed := n.egressed()
+						// a counted prefix cap.egress advertises is carried by the exit, and one cap.route announces by the tun
+						atExit, atTUN := c.carried && advertised, c.linkScope || c.carried && !advertised
+						if atTUN != (len(tun) == 1) || atTUN && !bytes.Equal(tun[0], raw) || len(out) != 0 {
+							t.Errorf("the tun took %x and the next hop was sent %x, want the packet in the tun %v", tun, out, atTUN)
+						}
+						if atExit != (len(egressed) == 1) || atExit && !bytes.Equal(egressed[0], raw) {
+							t.Errorf("the exit took %x, want the packet at the exit %v", egressed, atExit)
 						}
 						if c.answer != (len(back) == 1) {
 							t.Fatalf("the sender was sent %x, want an answer %v", back, c.answer)
@@ -106,6 +113,34 @@ func TestDecisionEgressesAtAnExit(t *testing.T) {
 					})
 				}
 			}
+		}
+	}
+}
+
+// a subnet router's LAN, a prefix cap.egress advertises that counts as no default, is delivered to the tun and never handed the exit, C35
+// whatever the readiness of either word, since the kernel forwards it into the LAN and its translation is the kernel's
+func TestDecisionDeliversASubnetToTheTunAndNeverTheExit(t *testing.T) {
+	subnets := map[int]netip.Prefix{4: segPrefix("198.51.100.0/24"), 6: segPrefix("2001:db8:5::/48")}
+	for _, family := range []int{4, 6} {
+		for _, ready := range []bool{true, false} {
+			t.Run(fmt.Sprintf("IPv%d ready %t", family, ready), func(t *testing.T) {
+				n := newTransitNode(t, DefaultMTU)
+				n.m.Routes.Set(netip.Prefix{}, subnets[family], Local)
+				n.m.SetEgressPrefixes([]netip.Prefix{subnets[family]})
+				n.m.SetAdvertisedReady(ready, ready)
+				n.m.SetEgressReady(ready, ready)
+				raw := udpPacket(transitSender[family], subnets[family].Addr().Next(), 200, true)
+				tun, out, back := n.deliver(t, raw)
+				if len(tun) != 1 || !bytes.Equal(tun[0], raw) || len(out) != 0 || len(back) != 0 {
+					t.Errorf("the tun took %x, the next hop was sent %x and the sender %x, want the packet in the tun alone", tun, out, back)
+				}
+				if egressed := n.egressed(); len(egressed) != 0 {
+					t.Errorf("the exit took %x, want nothing", egressed)
+				}
+				if got, want := n.m.TransitCounters(), (TransitCounters{Delivered: 1}); got != want {
+					t.Errorf("the decision counted %+v, want %+v", got, want)
+				}
+			})
 		}
 	}
 }

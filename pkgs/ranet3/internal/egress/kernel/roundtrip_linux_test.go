@@ -357,7 +357,7 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("after the next pass the kernel holds %q, want only the translator's %q", got, want)
 	}
-	if s := tr.Stats(); !s.Ready4 || !s.Ready6 {
+	if s := tr.lastPass(); !s.Ready4 || !s.Ready6 {
 		t.Errorf("after the next pass the translator reads %+v, want both families ready", s)
 	}
 }
@@ -395,11 +395,11 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 		Interface:  "ranet0",
 		Steered:    true,
 		Forwarding: func() (bool, bool) { return true, true },
-		Ready: func(v4, v6, _ bool) {
+		Hooks: egress.Hooks{Ready: func(v4, v6, _ bool) {
 			mu.Lock()
 			defer mu.Unlock()
 			told = append(told, fmt.Sprintf("ready %v %v", v4, v6))
-		},
+		}},
 	}
 	// no sweep comes within notificationWait, so only a wake explains a pass
 	cfg := egress.Egress{Sweep: schema.Duration(lateSweep)}
