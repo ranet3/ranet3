@@ -1154,12 +1154,13 @@ func TestHeldPrefixStaysHeldWhenAnUnselectableRouteForItGoes(t *testing.T) {
 			speaker.mu.Lock()
 			other := speaker.neighbors["other"]
 			speaker.mu.Unlock()
-			offered := time.Now()
 			speaker.handlePacket(other, EncodePacket([]RawTLV{
 				EncodeRouterID([8]byte{2}),
 				EncodeUpdate(Update{AE: AEIPv6, Plen: specific.Bits(), Prefix: specific.Addr().AsSlice(),
 					Interval: test.interval, Seqno: 1, Metric: 64}),
 			}))
+			// read after the update, whose expiry starts at handlePacket's own reading of the clock
+			offered := time.Now()
 			speaker.mu.Lock()
 			_, learned := speaker.routes.entries[key]
 			speaker.mu.Unlock()
@@ -1547,11 +1548,12 @@ func TestFlushedPrefixThisNodeRelayedIsHeldUntilItsUpdatesExpire(t *testing.T) {
 
 			// a route at a 1 second interval is held at infinity for 3.5
 			// seconds once retracted or expired, and the next sweep flushes it
-			start := time.Now()
-			flushAt := start.Add(3600 * time.Millisecond)
 			if retracted {
 				offer(MetricInfinity)
-			} else {
+			}
+			// read after the retraction, whose hold starts at handlePacket's own reading of the clock
+			flushAt := time.Now().Add(3600 * time.Millisecond)
+			if !retracted {
 				speaker.mu.Lock()
 				speaker.sweepExpiredLocked(flushAt)
 				speaker.mu.Unlock()
