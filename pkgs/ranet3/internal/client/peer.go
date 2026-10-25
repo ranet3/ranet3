@@ -18,6 +18,7 @@ import (
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/registry"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // reconnectDelay is how long a dialer waits between attempts. A test that has
@@ -123,7 +124,7 @@ func (f *repeatedFailure) alreadySaid(err error) bool {
 }
 
 // resolveEndpoint returns the address it resolved with the endpoint, since resolving a name again costs a resolver round trip
-func resolveEndpoint(ctx context.Context, x *registry.Index, peer identity.Identity, family string) (registry.Target, net.IP, error) {
+func resolveEndpoint(ctx context.Context, x *registry.Index, overlay []schema.Prefix, peer identity.Identity, family string) (registry.Target, net.IP, error) {
 	targets := x.Targets(peer)
 	if peer != peer.Node() {
 		if len(targets) == 0 {
@@ -132,7 +133,7 @@ func resolveEndpoint(ctx context.Context, x *registry.Index, peer identity.Ident
 		if targets[0].AddressFamily != family {
 			return registry.Target{}, nil, fmt.Errorf("endpoint %s is %s, want %s", peer, targets[0].AddressFamily, family)
 		}
-		address, err := targets[0].ResolveRemote(ctx)
+		address, err := targets[0].ResolveRemote(ctx, overlay)
 		if err != nil {
 			return registry.Target{}, nil, err
 		}
@@ -142,7 +143,7 @@ func resolveEndpoint(ctx context.Context, x *registry.Index, peer identity.Ident
 		if target.AddressFamily != family || !target.Dialable() {
 			continue
 		}
-		if address, err := target.ResolveRemote(ctx); err == nil {
+		if address, err := target.ResolveRemote(ctx, overlay); err == nil {
 			return target, address, nil
 		}
 	}
@@ -163,7 +164,7 @@ func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
 	}()
 	cfg, x := c.config(), c.index()
 	crypto := cfg.Crypto()
-	ep, remoteIP, err := resolveEndpoint(ctx, x, d.peer, d.local.Family)
+	ep, remoteIP, err := resolveEndpoint(ctx, x, cfg.Overlay(), d.peer, d.local.Family)
 	if err != nil {
 		return err
 	}

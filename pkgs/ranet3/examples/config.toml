@@ -84,7 +84,7 @@ endpoints = [{ serial = "0", family = "ip4" }]
 # the mesh installs. A node holding an address an exit announces ends up with a
 # route out of its own tun covering the peers it reaches that tun through, and
 # an underlay following it is a tunnel running inside itself. On linux every
-# underlay socket carries the mark 0x726c, which no key sets.
+# underlay socket carries the mark 0x72, which no key sets.
 #
 # bind is IP_BOUND_IF and IPV6_BOUND_IF on the interface the host's own default
 # route leaves by, darwin only. It also gives that interface a default of its

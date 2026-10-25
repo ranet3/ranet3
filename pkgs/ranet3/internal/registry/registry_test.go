@@ -39,7 +39,7 @@ func TestLoadRegistry(t *testing.T) {
 	if ep.Address != nil {
 		t.Fatalf("expected nil address, got %v", *ep.Address)
 	}
-	if _, err := ep.ResolveRemote(t.Context()); err == nil {
+	if _, err := ep.ResolveRemote(t.Context(), nil); err == nil {
 		t.Fatal("expected ResolveRemote to fail for a nil address")
 	}
 
@@ -49,7 +49,7 @@ func TestLoadRegistry(t *testing.T) {
 	if ep.Address == nil || *ep.Address != "" {
 		t.Fatalf("expected empty-string address, got %v", ep.Address)
 	}
-	if _, err := ep.ResolveRemote(t.Context()); err == nil {
+	if _, err := ep.ResolveRemote(t.Context(), nil); err == nil {
 		t.Fatal("expected ResolveRemote to fail for an empty-string address")
 	}
 
@@ -70,7 +70,7 @@ func TestLoadRegistry(t *testing.T) {
 	onlyTarget(t, x, "example/non-sequential-serials:6")
 
 	// A literal (non-hostname) address should resolve directly without DNS.
-	ip, err := onlyTarget(t, x, "other-org/literal-address:0").ResolveRemote(t.Context())
+	ip, err := onlyTarget(t, x, "other-org/literal-address:0").ResolveRemote(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("ResolveRemote: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestResolveRemoteStopsWhenTheContextDoes(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	start := time.Now()
-	if _, err := ep.ResolveRemote(ctx); err == nil {
+	if _, err := ep.ResolveRemote(ctx, nil); err == nil {
 		t.Fatal("a canceled lookup reported an address")
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {

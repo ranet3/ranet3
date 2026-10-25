@@ -2129,7 +2129,7 @@ func TestResolveEndpointAnswersWithTheAddress(t *testing.T) {
 	}}}}})
 	for name, peer := range map[string]string{"pinned to a serial": "example/gateway:1", "unpinned": "example/gateway"} {
 		t.Run(name, func(t *testing.T) {
-			endpoint, resolved, err := resolveEndpoint(context.Background(), x, identity.MustParse(peer), "ip4")
+			endpoint, resolved, err := resolveEndpoint(context.Background(), x, nil, identity.MustParse(peer), "ip4")
 			if err != nil {
 				t.Fatalf("resolving an endpoint carrying a literal: %v", err)
 			}

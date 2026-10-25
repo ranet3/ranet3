@@ -47,8 +47,8 @@ type RuntimeInfo struct {
 	// LastGC is how long before the answer the last cycle ended, zero before the first
 	LastGC Duration `json:"last_gc"`
 	Uptime Duration `json:"uptime"`
-	// Resolver is go where only the go resolver can run
-	// cgo where a lookup may go to the C library, which holds an OS thread for as long as it takes
+	// Resolver is go where the endpoint resolver runs only the go resolver
+	// cgo where an endpoint's lookup may go to the C library, which holds an OS thread for as long as it takes
 	Resolver string `json:"resolver"`
 }
 
