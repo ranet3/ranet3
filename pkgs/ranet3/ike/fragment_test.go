@@ -1342,7 +1342,7 @@ func TestFragmentWhoseICVFailsIsDiscarded(t *testing.T) {
 
 // fragments of a message left incomplete for reassemblyTimeout go, as one that comes after starts the queue over alone and Run's sweep drops what the queue holds
 // reassemblyTimeout is requestBudget, the time the sends of one cut of a request take before this end as initiator gives up, and followupWait the same budget
-// a request that steps to its family's floor or is cut again starts its waits over and gives up later, which the shorter timeout RFC 7383 allows covers
+// a request cut for its family's floor at the step, or cut again, starts its waits over and gives up later, which the shorter timeout RFC 7383 allows covers
 // RFC 7383 section 2.6: "If the receiver does not get all IKE fragments needed to reassemble the original message within a timeout interval, it MUST discard all IKE Fragment messages received so far for the exchange."
 // RFC 7383 section 2.6: "It is RECOMMENDED that the reassembling timeout for the responder be equal to the time interval that the implementation waits before completely giving up when acting as the initiator of an exchange."
 // and: "Implementations can use a shorter timeout to conserve memory."
@@ -2875,7 +2875,7 @@ func TestFragmentNumberZeroOfAnAnsweredRequestDrawsNothing(t *testing.T) {
 	}
 }
 
-// the backoff sends a request that steps to its family's floor stepDownSends+maxRetransmits times on a path that holds, 7, at 0, 2, 6, 8, 12, 20 and 36 s
+// the backoff sends a request that its step cuts for its family's floor stepDownSends+maxRetransmits times on a path that holds
 // so at each site that resends a kept answer, each of the endpoint's repeats of it past the send that drew the answer draws the answer: the request whole as it came, then fragment 1 of a cut into fragments, as the step makes
 func TestEveryRepeatOfARequestThatStepsDrawsTheAnswer(t *testing.T) {
 	for name, take := range repeatSites() {

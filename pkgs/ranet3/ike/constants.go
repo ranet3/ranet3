@@ -47,7 +47,7 @@ const (
 	// a peer-initiated IKE SA rekey costs a key exchange on the goroutine that runs the session, and a legitimate one is minutes apart
 	minPeerIKERekeyInterval = time.Second
 	// requestBudget is the sends of one cut of a request, the time this end resends it under one threshold to a silent peer before it deems the IKE SA failed
-	// a request that steps to its family's floor starts its waits over at the step, as one cut again for a path MTU that fell does, so its sends run past the budget
+	// a request too large to go whole at its family's floor is cut for it at the step and starts its waits over there, as one cut again for a path MTU that fell does, so its sends run past the budget
 	// the sends of a step and of one or two falls still come within it, and a chain of falls can carry the last past it
 	requestBudget = requestTimeout * (1<<maxRetransmits - 1)
 	// RFC 9370 section 2.2.4: "The responder MUST handle this situation gracefully and delete the associated state if it does not receive the next expected IKE_FOLLOWUP_KE request after some reasonable period of time."
@@ -72,7 +72,7 @@ const (
 	movedCredits = 4
 	// RFC 7383 section 2.5.2: "Performing a few retries within several seconds for each probe seems appropriate, but different environments may require different rules."
 	// the backoff's sends under the path's threshold then span its first two intervals, and one lost datagram moves no threshold
-	// a send that comes after them, the backoff's or a probe's, steps the request and starts the backoff over
+	// a send that comes after them, the backoff's or a probe's, steps the request, and starts the backoff over where the step cuts it
 	stepDownSends = 2
 
 	// handshakeTimeout bounds a responder's whole handshake, the life of the cheapest state an unauthenticated peer can make it hold
