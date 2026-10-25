@@ -108,25 +108,38 @@ func holding(held map[int]bool) AnswerSources {
 // it returns the read, the peer, and what the mesh wrote into its tun on the way
 func readOff(tb testing.TB, raw []byte, steering *srv6.SteerTable, mtu int, sources AnswerSources) (*outboundBatch, *Peer, [][]byte) {
 	tb.Helper()
-	dev := &recordingDevice{writes: make(chan recordedWrite, 1)}
-	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
-	m.setDevice(dev)
-	m.startSegmentReports()
+	m, dev := recordingMesh(tb)
 	m.SetSteering(steering)
 	m.SetAnswerSources(sources)
-	m.SetAnswerTTL(64)
 	peer := (&recordingPeer{}).peer(tb, "peer")
 	peer.SetMTU(mtu)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
 	m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+	b, written := classifyOne(m, dev, raw)
+	return b, peer, written
+}
+
+// recordingMesh is a mesh on a recording tun with an empty table, answering at a TTL of 64
+func recordingMesh(tb testing.TB) (*Mesh, *recordingDevice) {
+	tb.Helper()
+	dev := &recordingDevice{writes: make(chan recordedWrite, 1)}
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+	m.setDevice(dev)
+	m.startSegmentReports()
+	m.SetAnswerTTL(64)
+	return m, dev
+}
+
+// classifyOne runs classify over one read of raw and returns the read and what the mesh wrote into its tun on the way
+func classifyOne(m *Mesh, dev *recordingDevice, raw []byte) (*outboundBatch, [][]byte) {
 	b := newOutboundBatch(1)
 	fill(b, raw)
 	m.classify(b)
 	select {
 	case write := <-dev.writes:
-		return b, peer, write.packets
+		return b, write.packets
 	default:
-		return b, peer, nil
+		return b, nil
 	}
 }
 
