@@ -160,8 +160,9 @@ it replaced, then flushed. While it is held, the forwarding entry answers
 instead of following a shorter covering route, such as a default another node
 carries. The [forwarding decision](#transit) answers one a peer sends with
 Destination Unreachable, and ranet3 answers one the tun hands it the same way,
-back into the tun, unless a steering policy takes it, as [transit](#transit)
-says. The reconciler installs the same hold in the kernel, but for a route that
+back into the tun, unless a steering policy takes it or the checks at the mesh's
+edge drop it, as [transit](#transit) says. The reconciler installs the same hold
+in the kernel, but for a route that
 [counts as a default](#routes-that-count-as-a-default). Once the route is
 flushed, the prefix stays held until the latest time any update this node sent
 naming it reachable expires at a neighbor, if that is later, as the next
@@ -212,9 +213,9 @@ and that traffic ends as
 [where a lookup ends on Linux](#where-a-lookup-ends-on-linux) and
 [on macOS](#where-a-lookup-ends-on-macos) give for the routes left: by the
 host's own routes, or by a shorter route of the mesh back into the tun, where
-ranet3 answers it as a [read off the tun](#transit). A leaf holding no other
-feasible default holds its own for its own hold time, 56 seconds at the
-defaults.
+ranet3 answers it, or drops it at the mesh's edge, as a
+[read off the tun](#transit). A leaf holding no other feasible default holds its
+own for its own hold time, 56 seconds at the defaults.
 
 ## Transit
 
@@ -297,14 +298,33 @@ route is looked up or it is steered. The mesh routes no multicast, and
 says "Limited broadcasts MUST NOT be forwarded", where a covering route such as
 a default would carry either to the one peer it names.
 
-A read off the tun that no steering policy takes, whose destination no entry
-holds or that lies inside a held prefix, is answered as the table above gives
-for that destination. The answer goes back into the tun from the packet's
-destination, whatever the packet's source, since the tun is the one link the
-packet came by: an uplink address the mesh routes nothing to is answered too. It
-draws on the same rate limits. A steered packet goes by its first segment, and
-one whose first segment has no route is counted and gets no answer. A read whose
-destination is this node's own goes unanswered.
+A read off the tun is also checked at the mesh's edge before it enters, since a
+node that forwards for others can put a packet into the tun with a source or a
+header of their choosing. The decision drops a read from a source the table
+routes to another node or holds unreachable, through a route that does not count
+as a default, or from an overlay source this node does not own (`forged`), one
+carrying an IPv6 routing header the mesh refuses (`routing_header`), one to this
+node's own SIDs (`sid`), or one bound toward an exit's default from a source
+this node does not own (`unowned_source`). Every IPv6 read whose walk ends at an
+inner IPv4 or IPv6 packet has that packet checked one level deep, whatever its
+destination, since the mesh cannot tell another node's SID from any other
+address, as [the limits](design/limits.md#transit) say. An inner packet that is
+itself encapsulated is dropped (`nested`). A read the table answers as this
+node's own, which the mesh could only hand back to the tun, is dropped
+(`looped`). None of these is answered, as [the border filter](border-filter.md)
+and [segment routing](segment-routing.md#at-the-border-of-the-mesh) describe for
+the mesh's edge.
+
+A read off the tun that passes those checks and that no steering policy takes,
+whose destination no entry holds or that lies inside a held prefix, is answered
+as the table above gives for that destination. The answer goes back into the tun
+from the packet's destination, whatever the packet's source, since the tun is
+the one link the packet came by: an uplink address the mesh routes nothing to is
+answered too, unless the destination lies under an entry that
+[counts as a default](#routes-that-count-as-a-default), where the check above
+drops the read as `unowned_source`. It draws on the same rate limits. A steered
+packet goes by its first segment, and one whose first segment has no route is
+counted and gets no answer.
 
 `ranet3 status` counts each outcome on its `Transit` line, and
 `ranet3_transit_packets_total` exports the same counts. A dropped packet also
@@ -590,14 +610,14 @@ in the kernel would answer the host's own traffic it covers with an error while
 other sessions stay live, and a retracted split internet would cut the host off.
 The mesh's own table keeps the hold, and a packet the tun hands ranet3 for an
 address inside it is answered unreachable rather than following a shorter route
-(RFC 8966 section 3.5.4), unless a steering policy takes it, as
-[transit](#transit) says. A peer's packet for such an address never reaches the
-host, and the [forwarding decision](#transit) answers it unreachable. A packet
-the host sends or forwards for one ends as
+(RFC 8966 section 3.5.4), unless a steering policy takes it or the checks at the
+mesh's edge drop it, as [transit](#transit) says. A peer's packet for such an
+address never reaches the host, and the [forwarding decision](#transit) answers
+it unreachable. A packet the host sends or forwards for one ends as
 [where a lookup ends on Linux](#where-a-lookup-ends-on-linux) and
 [on macOS](#where-a-lookup-ends-on-macos) give for the routes left: by the
 host's own routes, or by a shorter route of the mesh back into the tun, where
-ranet3 answers it the same way.
+ranet3 answers or drops it the same way.
 [The protocol deviations](design/protocol-deviations.md) list the departure.
 
 A node whose `cap.route` announces, or whose `cap.egress` advertises, a prefix

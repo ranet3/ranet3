@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-10-26
+updated: 2026-10-27
 order: 60
 ---
 
@@ -183,11 +183,21 @@ The mesh is the segment routing domain, and a node with
 [the border filter](border-filter.md) is its edge, as RFC 8754 section 5.1 asks.
 A packet arriving on a link outside the mesh with a routing header of any type,
 or addressed to one of this node's own SIDs, is dropped there before the routing
-decision. One that arrives through the mesh tun passes, since the tun is inside
-the mesh. One addressed to another node's SID with no routing header passes too,
-and that node refuses it where its outer source lies outside the overlay, as
-[local segments](#local-segments) describe. A node that transits another segment
-routing domain between 2 links outside the mesh would lose that traffic, which
+decision. A packet read from the tun crosses the same edge the other way, and
+the forwarding decision checks it beside the border filter: a routing header of
+type 0, 1 or 4, or a type the mesh does not recognize, is dropped and counted
+`routing_header`, and one of this node's own SIDs is dropped and counted `sid`.
+The host's own kernel never writes a routing header into the tun to steer a
+packet through a waypoint, since the edge would drop it: a host steers with
+[`cap.segment.steer`](#steering), which puts the segments on inside the mesh,
+after the checks. A packet read from the tun addressed to another node's SID
+with no routing header passes the routing header and SID checks, its source
+meets the same source checks as any read, and the IPv4 or IPv6 packet it carries
+meets every check one level deep as a read of its own, as
+[routing](routing.md#transit) lists. What passes, that node refuses where its
+outer source lies outside the overlay, as [local segments](#local-segments)
+describe. A node that transits another segment routing domain between 2 links
+outside the mesh would lose that traffic, which
 [the deviations](design/protocol-deviations.md#the-border-filter) list.
 
 ## Steering
@@ -368,11 +378,22 @@ packet arriving with nothing coming out of it.
 
 In the other direction, the gateway's kernel encapsulates with
 `encap seg6 mode encap segs` toward a SID the client answers for with
-`End.DT46`. The check requires the client's delivered count to rise and its
-dropped count to stay where it was. No VM arm configures `End`. Unit tests in
-`srv6` check that an encapsulation copies the traffic class, flow label and hop
-limit as `__seg6_do_srh_encap` does. They also check that `End` forwards the
-reduced header `encap.red` writes.
+`End.DT46`. The header the kernel builds leaves through the gateway's IPsec
+session, and the client decrypts it and acts on it as on any packet a session
+delivers, so it never crosses the client's tun. The check requires the client's
+delivered count to rise and its dropped count to stay where it was. No VM arm
+configures `End`. Unit tests in `srv6` check that an encapsulation copies the
+traffic class, flow label and hop limit as `__seg6_do_srh_encap` does. They also
+check that `End` forwards the reduced header `encap.red` writes.
+
+A Linux host that encapsulates into ranet3's own tun, with an `encap seg6` route
+on the tun device, loses those packets wherever the kernel writes a segment
+routing header. That header is a type 4 routing header, which the tun read's
+checks drop and count `routing_header`, as
+[at the border of the mesh](#at-the-border-of-the-mesh) describes. A one-segment
+`encap.red`, which writes none, reaches the SID with the packet it carries
+checked as a read of its own. The loss is by design, and such a host steers with
+`cap.segment.steer` instead.
 
 The `egress-segment` VM check makes the gateway a kernel leaf of an egress
 segment on the client. The gateway's `encap seg6 mode encap` route steers a ping

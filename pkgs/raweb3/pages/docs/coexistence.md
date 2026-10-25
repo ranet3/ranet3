@@ -374,3 +374,39 @@ firewall reload that flushes the whole ruleset deletes the table, and the filter
 puts it back on the pass the deletion wakes. A table or chain another writer
 changed in a way nf_tables will not undo in place is deleted and made again in 1
 transaction, any chain another writer put in the table with it.
+
+## What forwarded traffic meets
+
+A node that forwards for others routes a neighbor's packet by its destination,
+and a mesh destination leads into the tun. The host's own kernel, a Docker
+bridge, or a LAN behind a subnet router can put a packet into the tun this way.
+The forwarding decision checks what the tun hands this node before the packet
+enters the mesh, as [the border filter](border-filter.md) checks what arrives on
+the links outside the mesh. A drop sends no answer and counts on the `Transit`
+line, as [metrics](metrics.md#transit-counters) lists.
+
+- A read from a source the table routes to another node or holds unreachable,
+  through a route that does not count as a default, or from an overlay source
+  this node does not own, is dropped and counted `forged`. A host beside a
+  forwarding node cannot put a mesh node's address into the mesh.
+- A read carrying an IPv6 routing header of type 0, 1 or 4, or a type the mesh
+  does not recognize, is dropped and counted `routing_header`, and one addressed
+  to this node's own SID is dropped and counted `sid`. A neighbor cannot steer
+  through the mesh by writing a segment list of its own.
+- Every IPv6 read whose walk ends at an inner IPv4 or IPv6 packet has that
+  packet checked one level deep with the inner source and destination, whatever
+  the read's destination. The mesh cannot tell another node's SID, an `End.DT46`
+  that node would decapsulate, from any other address. The inner packet meets
+  every check here, and one that is itself encapsulated is dropped and counted
+  `nested`. [The limits](design/limits.md#transit) say what this costs a host's
+  own tunnel.
+- A read toward an exit's default from a source this node does not own is
+  dropped and counted `unowned_source`, the owned-source rule. Only this node's
+  own traffic leaves the mesh through its exits.
+
+Replies to the mesh's overlay and to subnets the mesh routes are untouched by
+the owned-source rule: an exit's egress replies, translated back by the kernel,
+carry the internet's sources and are bound for a leaf's overlay address, out of
+that rule's reach. A host tunneling its LAN through the mesh announces the LAN's
+prefix, which makes its sources this node's own, or carries the tunnel in UDP.
+[The limits](design/limits.md#transit) say so.

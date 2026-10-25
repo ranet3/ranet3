@@ -51,6 +51,44 @@ delivering to the mesh took it out of its outer header. Transit is off unless
 leaf leaves it out. Refusing to advertise cannot close a loop, so this only
 narrows what the feasibility condition already bounds.
 
+**A host's own tunnel through the mesh has its inner sources checked.** The
+forwarding decision opens every IPv6 read off the tun that ends at an inner IPv4
+or IPv6 packet, one level deep, since the mesh keeps no registry of other nodes'
+SIDs to tell a host's own IP-in-IPv6 or 6in6 tunnel from a packet steered to a
+SID. A tunnel to a peer's overlay address, carrying traffic a host forwards for
+a LAN, therefore has its inner sources judged as the host's own: a LAN source
+the node does not own is dropped toward a default as `unowned_source`, and one
+the table routes to another node is `forged`. An operator tunneling a LAN
+through the mesh announces the LAN's prefix, which makes its sources the node's
+own, or carries the tunnel in UDP, which the walk does not open.
+
+**The inner check covers what ranet3's own SIDs decapsulate.** The walk stops at
+a fragment header or an authentication header without opening what follows, and
+ranet3's own `End.DT46` decapsulates no packet behind either. An `End.DT46` of
+another implementation processes the extension headers before the upper-layer
+header, as
+[RFC 8986 section 4.8](https://www.rfc-editor.org/rfc/rfc8986.html#section-4.8)
+has it, and may decapsulate a packet behind them. A packet carried that way to
+such a SID passes this node with its inner packet unchecked.
+
+**A prefix only one of two nodes announces is dropped at the other.** A packet
+from a subnet two nodes can reach, announced by only one of them, has at the
+other a source the table routes to the announcing node, so a read of it is
+dropped there as `forged`, whatever its destination. An anycast source a node
+does not announce is dropped there the same way, as `forged` where another node
+announces it or it lies in the overlay, and otherwise as `unowned_source` toward
+a route that counts as a default. Both are fixed by announcing the prefix at the
+node that drops them.
+
+**A steered packet is checked before it is steered.** A packet
+[`cap.segment.steer`](../segment-routing.md#steering) steers is judged by the
+destination it was read with, before the steer puts its segment list on. It is
+dropped as `forged` wherever any read would be, and a steered packet whose
+source this node does not own is otherwise dropped, as `unowned_source`, only
+where a route counting as a default covers that destination. A steer toward a
+destination no route covers has no owned-source check yet. The arm that would
+add it waits for the steering mode that carries such a packet.
+
 ## Who a node dials
 
 `dial.all` dials every other node the trust document names. Entries in `dial.to`
