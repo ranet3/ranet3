@@ -5,14 +5,16 @@
 
 // Package netnstest holds what a root test needs to build a network of its own
 // in network namespaces: a thread in a new and empty namespace, and the route
-// netlink requests that make links, addresses and routes there. Test files
-// import it and nothing else does.
+// netlink requests that make links, addresses and routes there. Test files and
+// the test-support package internal/egress/egresstest import it, and nothing
+// the binary links does.
 package netnstest
 
 import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"runtime"
@@ -199,10 +201,49 @@ func (n Netlink) AddAddress(index int, address netip.Prefix) error {
 	return n.Request(unix.RTM_NEWLINK, 0, IfInfo(index, unix.IFF_UP))
 }
 
-// RouteThrough routes the IPv6 prefix to over link index in the main table
-func (n Netlink) RouteThrough(index int, to netip.Prefix) error {
-	header := []byte{unix.AF_INET6, byte(to.Bits()), 0, 0, unix.RT_TABLE_MAIN, unix.RTPROT_BOOT, unix.RT_SCOPE_UNIVERSE, unix.RTN_UNICAST, 0, 0, 0, 0}
-	body := slices.Concat(header, Attr(unix.RTA_DST, to.Addr().AsSlice()), Attr(unix.RTA_OIF, U32(uint32(index))))
+// AddAddresses gives the link name each of addresses as AddAddress does
+func (n Netlink) AddAddresses(name string, addresses ...netip.Prefix) error {
+	link, err := net.InterfaceByName(name)
+	if err != nil {
+		return err
+	}
+	for _, address := range addresses {
+		if err := n.AddAddress(link.Index, address); err != nil {
+			return fmt.Errorf("add %s to %s: %w", address, name, err)
+		}
+	}
+	return nil
+}
+
+// AddVeth makes the veth pair of name here and peer in the namespace at path, each end of mtu where it is not zero
+func (n Netlink) AddVeth(name, peer string, mtu int, path string) error {
+	other, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(other)
+	var size []byte
+	if mtu != 0 {
+		size = Attr(unix.IFLA_MTU, U32(uint32(mtu)))
+	}
+	end := slices.Concat(IfInfo(0, 0), Attr(unix.IFLA_IFNAME, CString(peer)), size, Attr(unix.IFLA_NET_NS_FD, U32(uint32(other))))
+	kind := slices.Concat(Attr(unix.IFLA_INFO_KIND, CString("veth")), Attr(unix.IFLA_INFO_DATA, Attr(VethPeer, end)))
+	return n.Request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL, slices.Concat(IfInfo(0, 0), Attr(unix.IFLA_IFNAME, CString(name)), size, Attr(unix.IFLA_LINKINFO, kind)))
+}
+
+// RouteVia routes to over link index in the main table, in the family of to,
+// through gateway where it is valid and to a neighbor on the link where it is not
+func (n Netlink) RouteVia(index int, to netip.Prefix, gateway netip.Addr) error {
+	family := byte(unix.AF_INET6)
+	if to.Addr().Is4() {
+		family = unix.AF_INET
+	}
+	header := []byte{family, byte(to.Bits()), 0, 0, unix.RT_TABLE_MAIN, unix.RTPROT_BOOT, unix.RT_SCOPE_UNIVERSE, unix.RTN_UNICAST, 0, 0, 0, 0}
+	var through []byte
+	if gateway.IsValid() {
+		through = Attr(unix.RTA_GATEWAY, gateway.AsSlice())
+	}
+	body := slices.Concat(header, Attr(unix.RTA_DST, to.Addr().AsSlice()), through, Attr(unix.RTA_OIF, U32(uint32(index))))
 	return n.Request(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, body)
 }
 

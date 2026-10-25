@@ -269,7 +269,7 @@ func addressEnds(first func(netnstest.Netlink) error, veth string, underlay neti
 		}
 		if end.name == tun {
 			prefix := netip.PrefixFrom(other.Addr(), 64).Masked()
-			if err := netlink.RouteThrough(link.Index, prefix); err != nil {
+			if err := netlink.RouteVia(link.Index, prefix, netip.Addr{}); err != nil {
 				return fmt.Errorf("route %s through %s: %w", prefix, end.name, err)
 			}
 		}
@@ -375,7 +375,7 @@ func TestSessionLowersItsBudgetAtTheRefusalOfItsOwnData(t *testing.T) {
 	if err := netlink.AddAddress(tun.Index, bravoHost); err != nil {
 		t.Fatalf("add %s to bravo's tun: %v", bravoHost, err)
 	}
-	if err := netlink.RouteThrough(tun.Index, alpha.prefix); err != nil {
+	if err := netlink.RouteVia(tun.Index, alpha.prefix, netip.Addr{}); err != nil {
 		t.Fatalf("route %s through bravo's tun: %v", alpha.prefix, err)
 	}
 	loopback, err := net.InterfaceByName("lo")

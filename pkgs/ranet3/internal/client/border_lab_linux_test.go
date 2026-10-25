@@ -370,7 +370,7 @@ func startBorderLab(t *testing.T, master string) *borderLab {
 			return err
 		}
 		defer netlink.Close()
-		if err := labAddress(netlink, "labf", labForged4, labForged6); err != nil {
+		if err := netlink.AddAddresses("labf", labForged4, labForged6); err != nil {
 			return err
 		}
 		uplink, err := net.InterfaceByName("labf")
@@ -381,7 +381,7 @@ func startBorderLab(t *testing.T, master string) *borderLab {
 			to      netip.Prefix
 			gateway netip.Addr
 		}{{labLeafPrefixes()[1], labExit4.Addr()}, {labLeafPrefixes()[0], labExit6.Addr()}} {
-			if err := labRouteVia(netlink, uplink.Index, leaves.to, leaves.gateway); err != nil {
+			if err := netlink.RouteVia(uplink.Index, leaves.to, leaves.gateway); err != nil {
 				return fmt.Errorf("route %s through the exit: %w", leaves.to, err)
 			}
 		}
@@ -476,7 +476,7 @@ func (lab *borderLab) routeFar(t *testing.T, to netip.Prefix, gateway netip.Addr
 		if err != nil {
 			return err
 		}
-		return labRouteVia(netlink, uplink.Index, to, gateway)
+		return netlink.RouteVia(uplink.Index, to, gateway)
 	}); err != nil {
 		t.Fatalf("route %s through %s at the far host: %v", to, gateway, err)
 	}
