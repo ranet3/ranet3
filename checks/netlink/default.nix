@@ -10,6 +10,7 @@
 # internal/netstack's tun round trips run here for the same reason
 # and so does transport's send through a path whose mtu is locked
 # and the tun and conn packages of pkgs/wireguard
+# and internal/registry's and internal/client's tests of the endpoint resolver's mark, through a resolv.conf of their own
 {
   lib,
   iproute2,
@@ -31,6 +32,7 @@ let
       go test -c -o netstack-tests ./internal/netstack/
       go test -c -o client-tests ./internal/client/
       go test -c -o transport-tests ./transport/
+      go test -c -o registry-tests ./internal/registry/
     '';
     installPhase = ''
       install -Dm755 netlink-tests "$out/bin/netlink-tests"
@@ -39,6 +41,7 @@ let
       install -Dm755 netstack-tests "$out/bin/netstack-tests"
       install -Dm755 client-tests "$out/bin/client-tests"
       install -Dm755 transport-tests "$out/bin/transport-tests"
+      install -Dm755 registry-tests "$out/bin/registry-tests"
     '';
   });
   wireguardTests = wireguard.overrideAttrs (prev: {
@@ -147,6 +150,7 @@ testers.runNixOSTest {
     # and an exit carrying transit in process, with nothing out of its uplink
     # and the same exit egressing each shape of the internet it advertises translated, a stranger's source refused
     # and an exit egressing both modes through its one tun, held not ready by each kernel lookup that fails and refusing a mesh destination at its SID
+    # and a leaf's sockets of every kind sent where the derived rules and the mirror send them, beside another program's table, as an exit, and nothing left after a stop
     out = machine.succeed(
         "${netlinkTests}/bin/client-tests -test.v -test.run 'TestTUN' 2>&1"
     )
@@ -159,8 +163,9 @@ testers.runNixOSTest {
     assert "--- PASS: TestTUNExitEgressesEachShapeOfTheInternetTranslated" in out, f"the exit's egress lab did not run:\n{out}"
     assert "--- PASS: TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment" in out, f"mode 2 egress at a node with no egress segment did not run:\n{out}"
     assert "--- PASS: TestTUNExitEgressesBothModesThroughItsOneTun" in out, f"the egress lab did not run:\n{out}"
+    assert "--- PASS: TestTUNDerivedRulesSendEachSocketWhereModeOffSays" in out, f"the derived rules' socket lab did not run:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 10, f"only {ran} of the client's tun round trips ran:\n{out}"
+    assert ran >= 11, f"only {ran} of the client's tun round trips ran:\n{out}"
 
     # every datagram sent with DF and the path mtu a refused one reports, against linux itself
     # and a family's socket fragmenting past the path only while a session of the family asks
@@ -185,6 +190,25 @@ testers.runNixOSTest {
     assert "SKIP" not in out, f"the client's round trips in a namespace of their own skipped themselves under root:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 4, f"only {ran} of the client's round trips in a namespace of their own ran:\n{out}"
+
+    # the endpoint resolver's sockets carrying the underlay's mark, and its query marked by the overlay a lookup is handed
+    # and a dial's query following the overlay of the config in force across reloads
+    # Go's resolver reads /etc/resolv.conf from whatever thread looks a name up, so each test binds its own over it in a
+    # mount namespace the whole process runs in, beside a network namespace for its nameserver on lo, and refuses init's
+    resolv = machine.succeed("cat /etc/resolv.conf")
+    out = machine.succeed(
+        "unshare -mn ${netlinkTests}/bin/registry-tests -test.v -test.run '^TestResolver' 2>&1"
+    )
+    print(out)
+    assert "SKIP" not in out, f"the registry's resolver tests skipped themselves under root:\n{out}"
+    assert "--- PASS: TestResolverSocketsCarryTheUnderlayMark" in out, f"the resolver's socket marks did not pass:\n{out}"
+    assert "--- PASS: TestResolverQueryFollowsTheOverlayResolveRemoteIsHanded" in out, f"the registry's hand-over did not pass:\n{out}"
+    out = machine.succeed(
+        "unshare -mn ${netlinkTests}/bin/client-tests -test.v -test.run '^TestEndpointQueryFollowsTheOverlayInForceAcrossReloads$' 2>&1"
+    )
+    print(out)
+    assert "--- PASS: TestEndpointQueryFollowsTheOverlayInForceAcrossReloads" in out, f"the client's hand-over did not pass:\n{out}"
+    assert machine.succeed("cat /etc/resolv.conf") == resolv, "a resolver test's resolv.conf reached the host's mount namespace"
 
     out = machine.succeed(
         "${wireguardTests}/bin/tun-tests -test.v 2>&1"

@@ -153,6 +153,15 @@ func dumpRoutes() ([]kernelRoute, error) {
 				}
 			}
 		}
+		// a default carries no RTA_DST, and reads as its family's zero address at length 0
+		if !route.destination.IsValid() && message.Data[1] == 0 {
+			switch message.Data[0] {
+			case syscall.AF_INET:
+				route.destination = netip.PrefixFrom(netip.IPv4Unspecified(), 0)
+			case syscall.AF_INET6:
+				route.destination = netip.PrefixFrom(netip.IPv6Unspecified(), 0)
+			}
+		}
 		routes = append(routes, route)
 	}
 	return routes, nil
@@ -162,6 +171,7 @@ func dumpRoutes() ([]kernelRoute, error) {
 type kernelRule struct {
 	family      uint8
 	destination netip.Prefix
+	source      netip.Prefix
 	// iif is the name of the link the rule matches arrivals on, empty for a rule matching any
 	iif      string
 	table    uint32
@@ -170,7 +180,7 @@ type kernelRule struct {
 }
 
 func (r kernelRule) String() string {
-	return fmt.Sprintf("family %d to %s iif %q table %d priority %d proto %d", r.family, r.destination, r.iif, r.table, r.priority, r.protocol)
+	return fmt.Sprintf("family %d from %s to %s iif %q table %d priority %d proto %d", r.family, r.source, r.destination, r.iif, r.table, r.priority, r.protocol)
 }
 
 // dumpRules reads every policy rule of every family in the namespace
@@ -200,6 +210,10 @@ func dumpRules() ([]kernelRule, error) {
 			case unix.FRA_DST:
 				if address, ok := netip.AddrFromSlice(value); ok {
 					rule.destination = netip.PrefixFrom(address, int(message.Data[1]))
+				}
+			case unix.FRA_SRC:
+				if address, ok := netip.AddrFromSlice(value); ok {
+					rule.source = netip.PrefixFrom(address, int(message.Data[2]))
 				}
 			case unix.FRA_IIFNAME:
 				rule.iif = strings.TrimRight(string(value), "\x00")
