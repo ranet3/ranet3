@@ -6,12 +6,14 @@
 package kernel
 
 import (
+	"net/netip"
 	"os"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -109,6 +111,60 @@ func TestNetlinkRuleActionsReadBackAndDeleteExactly(t *testing.T) {
 		if err := plat.DelRule(rule); err != nil {
 			t.Fatalf("delete %s: %v", rule, err)
 		}
+	}
+	if got, err := plat.Rules(); err != nil || len(got) != 0 {
+		t.Fatalf("after withdrawal the kernel holds %v (err %v)", got, err)
+	}
+}
+
+// countingRules is a netlink platform that counts the rules written through it
+type countingRules struct {
+	*netlinkPlatform
+	writes int
+}
+
+func (c *countingRules) AddRule(rule Rule) error {
+	c.writes++
+	return c.netlinkPlatform.AddRule(rule)
+}
+
+func (c *countingRules) DelRule(rule Rule) error {
+	c.writes++
+	return c.netlinkPlatform.DelRule(rule)
+}
+
+// A pass installs the derived rules in a real kernel, which reads them back as
+// derived, so the next pass writes none, and the withdrawal takes them all.
+func TestNetlinkPassConvergesOnTheDerivedRules(t *testing.T) {
+	const device = "ranetderived0"
+	plat := &countingRules{netlinkPlatform: rootRulePlatform(t, device)}
+	tbl, rt := platformFor(device)
+	rt.Overlay = []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("198.18.0.0/15")}
+	routes := netstack.NewRouteTable()
+	routes.Set(netip.Prefix{}, prefix("3fff:1::/48"), netstack.Local)
+	routes.Set(netip.Prefix{}, prefix("192.0.2.0/24"), netstack.Local)
+	routes.Set(netip.Prefix{}, prefix("198.18.104.5/32"), netstack.Assigned)
+	reconciler := newReconciler(tbl.Normalized(), rt, nil, nil, routes, plat)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := derivedRules(DefaultTable, rt.Overlay, []netip.Prefix{prefix("3fff:1::/48"), prefix("192.0.2.0/24"), prefix("198.18.104.5/32")})
+	got, err := plat.Rules()
+	if err != nil {
+		t.Fatalf("list rules: %v", err)
+	}
+	if !slices.Equal(sortedByText(got), sortedByText(want)) {
+		t.Fatalf("the kernel holds\n%v\nwant\n%v", sortedByText(got), sortedByText(want))
+	}
+	writes := plat.writes
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if plat.writes != writes {
+		t.Errorf("a second pass wrote %d rules", plat.writes-writes)
+	}
+	if err := reconciler.withdraw(); err != nil {
+		t.Fatal(err)
 	}
 	if got, err := plat.Rules(); err != nil || len(got) != 0 {
 		t.Fatalf("after withdrawal the kernel holds %v (err %v)", got, err)

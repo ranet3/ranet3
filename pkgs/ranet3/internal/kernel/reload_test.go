@@ -71,7 +71,7 @@ func TestReloadMovesTheRoutesToTheNewMetric(t *testing.T) {
 	}
 }
 
-// a pass over an empty rule set withdraws every rule rather than skipping the step
+// a pass over an empty rule set withdraws every configured rule rather than skipping the step, and keeps the derived ones
 func TestReloadReplacesTheRulesAndWithdrawsTheLastOfThem(t *testing.T) {
 	underlay := Rule{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: FamilyBoth}
 	mesh := Rule{From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 150}
@@ -86,12 +86,15 @@ func TestReloadReplacesTheRulesAndWithdrawsTheLastOfThem(t *testing.T) {
 		{FWMark: 0x726c, Table: schema.TableMain, Priority: 40, Family: FamilyIPv6}:               true,
 		{From: schema.MustPrefix("2001:db8::/32"), Table: 200, Priority: 160, Family: FamilyIPv6}: true,
 	}
-	if got := fake.heldRules(); !maps.Equal(got, want) {
+	if got := fake.configuredRules(r); !maps.Equal(got, want) {
 		t.Fatalf("the pass after the reload left the rules %v, want %v", slices.Collect(maps.Keys(got)), slices.Collect(maps.Keys(want)))
 	}
 	reload(t, r, Table{})
-	if got := fake.heldRules(); len(got) != 0 {
+	if got := fake.configuredRules(r); len(got) != 0 {
 		t.Errorf("a reload naming no rule left %v", slices.Collect(maps.Keys(got)))
+	}
+	if got := len(fake.heldRules()); got != len(derivedRules(r.table.ID, r.rt.Overlay, r.own)) {
+		t.Errorf("a reload naming no rule left %d rules, want the derived ones alone", got)
 	}
 }
 

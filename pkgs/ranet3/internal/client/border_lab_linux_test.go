@@ -156,7 +156,7 @@ func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 		lab.node.Mesh.SetSegments(table)
 		defer lab.node.Mesh.SetSegments(held)
 		// the inner packet's destination is an address of the owner's host, as one cap.table assigns, so its mesh writes it to the tun
-		// and the reconciler writes nothing for it into the kernel
+		// and the reconciler writes no route for it into the kernel, only its rule at 5430 from it
 		owned := netip.PrefixFrom(labExit4.Addr(), 32)
 		lab.node.Mesh.Routes.Set(netip.Prefix{}, owned, netstack.Assigned)
 		defer lab.node.Mesh.Routes.Remove(netip.Prefix{}, owned)
@@ -393,8 +393,8 @@ func startBorderLab(t *testing.T) *borderLab {
 // written sends a packet of each family from a leaf's address through the
 // mesh into the tun, as a session would deliver it, and reads it at the far
 // host: the border accepts the tun
-// the mesh writes a packet to the tun only for a destination it holds as this node's
-// so the far host's addresses are held as addresses cap.table assigns, which the reconciler leaves out of the kernel
+// the mesh writes a packet to the tun for a destination it holds as this node's, or carries out as egress,
+// so the far host's addresses are held as addresses cap.table assigns, for which the reconciler writes no route, only a rule at 5430 from each
 func (lab *borderLab) written(t *testing.T) {
 	t.Helper()
 	for _, far := range []netip.Addr{labFar4.Addr(), labFar6.Addr()} {

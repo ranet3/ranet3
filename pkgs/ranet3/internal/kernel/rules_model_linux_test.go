@@ -359,3 +359,44 @@ func TestRuleMessageCarriesTheGotoAndTheSuppressLength(t *testing.T) {
 		t.Errorf("FRA_SUPPRESS_PREFIXLEN is %v, want 0", length)
 	}
 }
+
+// The kernel takes every derived rule beside the others, reads each back as
+// itself, and a delete of one takes that one, whatever the others at its
+// priority select
+func TestEveryDerivedRuleIsStoredAndDeletedAsItself(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		id := schema.TableID(hegel.Draw(ht, edges[uint32](1, math.MaxUint32)))
+		derived := derivedRules(id, prefixes(hegel.Draw(ht, anyPrefixes())...), hegel.Draw(ht, anyPrefixes()))
+		plat, conn := writePlatform(t)
+		held := make([]kernelRule, 0, len(derived))
+		for _, rule := range derived {
+			stored, err := kernelParse(sent(ht, conn, plat.AddRule, rule))
+			if err != nil {
+				ht.Fatalf("the kernel refuses %s: %v", rule, err)
+			}
+			for i, other := range held {
+				if other.exists(stored) {
+					ht.Fatalf("the kernel takes %s for %s, which it holds already", rule, derived[i])
+				}
+			}
+			if got, ok := plat.decodeRule(stored.dump()); !ok || got != rule {
+				ht.Fatalf("%s read back from the kernel's dump of it as %s (kept %v)", rule, got, ok)
+			}
+			held = append(held, stored)
+		}
+		deleted := hegel.Draw(ht, hegel.Integers(0, len(derived)-1))
+		request, err := kernelParse(sent(ht, conn, plat.DelRule, derived[deleted]))
+		if err != nil {
+			ht.Fatalf("the kernel refuses the delete of %s: %v", derived[deleted], err)
+		}
+		for i, stored := range held {
+			if stored.found(request) {
+				if i != deleted {
+					ht.Fatalf("a delete of %s took %s", derived[deleted], derived[i])
+				}
+				return
+			}
+		}
+		ht.Fatalf("a delete of %s took nothing", derived[deleted])
+	})
+}
