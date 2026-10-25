@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-package egress
+package kernel
 
 import (
 	"cmp"
@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"ranet3.com/pkgs/ranet3/internal/egress"
 )
 
 // Lookup is one of the kernel's route lookups a pass reads, for a packet from
@@ -78,13 +80,13 @@ func (t *Translator) judge(unwritten map[uint8]string, forwards map[uint8]bool) 
 	}
 	families := map[uint8]familyReads{}
 	var lookups []Lookup
-	for _, family := range t.cfg.translated(t.rt.Steered) {
+	for _, family := range t.cfg.Translated(t.rt.Steered) {
 		switch {
 		case unwritten[family] != "":
 			judged[family] = judgment{why: unwritten[family]}
 			continue
 		case !forwards[family]:
-			judged[family] = judgment{why: "the kernel does not forward " + familyName(family)}
+			judged[family] = judgment{why: "the kernel does not forward " + egress.FamilyName(family)}
 			continue
 		}
 		source, ok := memberSource(members, family)
@@ -129,7 +131,7 @@ func (t *Translator) judge(unwritten map[uint8]string, forwards map[uint8]bool) 
 }
 
 func memberSource(members []netip.Prefix, family uint8) (netip.Addr, bool) {
-	members = slices.DeleteFunc(slices.Clone(members), func(member netip.Prefix) bool { return addressFamily(member.Addr()) != family })
+	members = slices.DeleteFunc(slices.Clone(members), func(member netip.Prefix) bool { return egress.AddressFamily(member.Addr()) != family })
 	slices.SortFunc(members, func(a, b netip.Prefix) int {
 		return cmp.Or(a.Masked().Addr().Compare(b.Masked().Addr()), cmp.Compare(b.Bits(), a.Bits()))
 	})
@@ -147,13 +149,13 @@ func memberSource(members []netip.Prefix, family uint8) (netip.Addr, bool) {
 func (t *Translator) readPrefixes(family uint8) []netip.Prefix {
 	var prefixes []netip.Prefix
 	for _, entry := range t.cfg.Advertise {
-		if addressFamily(entry.Addr()) == family {
+		if egress.AddressFamily(entry.Addr()) == family {
 			prefixes = append(prefixes, entry.Prefix)
 		}
 	}
 	if len(prefixes) == 0 {
 		unspecified := netip.IPv6Unspecified()
-		if family == FamilyIPv4 {
+		if family == egress.FamilyIPv4 {
 			unspecified = netip.IPv4Unspecified()
 		}
 		prefixes = []netip.Prefix{netip.PrefixFrom(unspecified, 0)}

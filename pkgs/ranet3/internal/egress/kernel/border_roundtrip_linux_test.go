@@ -3,7 +3,7 @@
 
 //go:build linux && !android
 
-package egress
+package kernel
 
 import (
 	"context"

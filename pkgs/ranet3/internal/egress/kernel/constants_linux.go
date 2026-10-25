@@ -3,7 +3,7 @@
 
 //go:build linux && !android
 
-package egress
+package kernel
 
 const (
 	// natSrcPriority is NF_IP_PRI_NAT_SRC, where source translation runs.

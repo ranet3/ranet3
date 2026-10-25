@@ -3,7 +3,7 @@
 
 //go:build linux && !android
 
-package egress
+package kernel
 
 import (
 	"context"
@@ -21,6 +21,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -44,7 +45,7 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	}
 	enterThrowawayNamespace(t)
 
-	cfg := Egress{
+	cfg := egress.Egress{
 		Return:    true,
 		Advertise: prefixes(t, "198.51.100.0/24", "2001:db8:1::/48", "0.0.0.0/0"),
 	}
@@ -120,7 +121,7 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	if !slices.Equal(got, append([]string{""}, want...)) {
 		t.Errorf("with another writer's uncommented rule at the head of the ip chain the readback holds %q, want it ahead of %q", got, want)
 	}
-	if v4, v6 := sameFamilyRules(withOther, desired, FamilyIPv4), sameFamilyRules(withOther, desired, FamilyIPv6); v4 || !v6 {
+	if v4, v6 := sameFamilyRules(withOther, desired, egress.FamilyIPv4), sameFamilyRules(withOther, desired, egress.FamilyIPv6); v4 || !v6 {
 		t.Errorf("with another writer's rule in the ip chain alone the ip readback reads as written %v and the ip6 one %v, want false and true", v4, v6)
 	}
 
@@ -164,12 +165,12 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	}
 
 	// an exit advertising nothing still owns a table in each family, for what its egress segment writes to the tun
-	steered, err := newBackend(Egress{}, rt)
+	steered, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend for an exit advertising nothing: %v", err)
 	}
 	t.Cleanup(func() { _ = steered.Close() })
-	only := newTranslator(Egress{}, rt, steered).desired()
+	only := newTranslator(egress.Egress{}, rt, steered).desired()
 	if err := steered.Apply(only, nil); err != nil {
 		t.Fatalf("install %d rules: %v", len(only), err)
 	}
@@ -208,7 +209,7 @@ func TestNftablesNotifiesAnotherWritersChange(t *testing.T) {
 	}
 	enterThrowawayNamespace(t)
 	rt := Runtime{Interface: "ranet0", Steered: true}
-	be, err := newBackend(Egress{}, rt)
+	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
 	}
@@ -222,7 +223,7 @@ func TestNftablesNotifiesAnotherWritersChange(t *testing.T) {
 		case <-time.After(quietFor):
 		}
 	}
-	rules := newTranslator(Egress{}, rt, be).desired()
+	rules := newTranslator(egress.Egress{}, rt, be).desired()
 	install := func() {
 		t.Helper()
 		if err := be.Apply(rules, nil); err != nil {
@@ -244,7 +245,7 @@ func TestNftablesNotifiesAnotherWritersChange(t *testing.T) {
 	}{
 		{"inserted an accept at the head of the ip6 chain", anotherWritersAccept(unix.NFPROTO_IPV6, ChainName)},
 		{"set the ip table dormant", dormantTable(unix.NFPROTO_IPV4)},
-		{"deleted the ip6 table", delTable(FamilyIPv6)},
+		{"deleted the ip6 table", delTable(egress.FamilyIPv6)},
 	} {
 		if err := another.Batch([]nftables.Request{change.request}); err != nil {
 			t.Fatalf("another writer %s: %v", change.name, err)
@@ -310,13 +311,13 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 		Steered:    true,
 		Forwarding: func() (bool, bool) { return true, true },
 	}
-	be, err := newBackend(Egress{}, rt)
+	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
 	}
 	t.Cleanup(func() { _ = be.Close() })
 	requireEmptyRuleset(t, be)
-	tr := newTranslator(Egress{}, rt, be)
+	tr := newTranslator(egress.Egress{}, rt, be)
 	if err := tr.reconcile(); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
@@ -329,7 +330,7 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	if err := another.Batch([]nftables.Request{anotherWritersAccept(unix.NFPROTO_IPV6, ChainName)}); err != nil {
 		t.Fatalf("insert another writer's accept rule: %v", err)
 	}
-	if read, err := be.Rules(); err != nil || !slices.ContainsFunc(read[FamilyIPv6].rules, func(rule Installed) bool { return rule.Spec == "" }) {
+	if read, err := be.Rules(); err != nil || !slices.ContainsFunc(read[egress.FamilyIPv6].rules, func(rule Installed) bool { return rule.Spec == "" }) {
 		t.Errorf("with another writer's accept rule at the head of the ip6 chain the readback holds %v (%v), want that rule with no comment among them", read, err)
 	}
 
@@ -342,7 +343,7 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	}
 	// read through the other socket, so the chain compared holds every rule the kernel does, whatever this tool's readback keeps
 	var got []string
-	for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		replies, err := another.Dump(nftables.Command(unix.NFT_MSG_GETRULE), nftables.PutNfgenmsg(nil, nftFamily(family)))
 		if err != nil {
 			t.Fatalf("dump the %s rules: %v", tableFamilyName(family), err)
@@ -401,7 +402,7 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 		},
 	}
 	// no sweep comes within notificationWait, so only a wake explains a pass
-	cfg := Egress{Sweep: schema.Duration(lateSweep)}
+	cfg := egress.Egress{Sweep: schema.Duration(lateSweep)}
 	be, err := newBackend(cfg, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -567,7 +568,7 @@ func TestNftablesWakesMissedOnAnOverflow(t *testing.T) {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	enterThrowawayNamespace(t)
-	be, err := newBackend(Egress{}, Runtime{Interface: "ranet0", Steered: true})
+	be, err := newBackend(egress.Egress{}, Runtime{Interface: "ranet0", Steered: true})
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
 	}

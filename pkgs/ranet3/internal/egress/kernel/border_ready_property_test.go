@@ -3,7 +3,7 @@
 
 //go:build linux || darwin
 
-package egress
+package kernel
 
 import (
 	"slices"
@@ -11,6 +11,7 @@ import (
 
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -127,7 +128,7 @@ func TestBorderReadinessFollowsWhatThePassReadBack(t *testing.T) {
 		var calls []bool
 		rt := borderRuntime(be, nil, sids...)
 		rt.Ready = func(ok bool) { calls = append(calls, ok) }
-		cfg := Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff::/20")}}
+		cfg := egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff::/20")}}
 		f := newBorderFilter(cfg, rt, be)
 		desired := f.desired()
 		ready := false

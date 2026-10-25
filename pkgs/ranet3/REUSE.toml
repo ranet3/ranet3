@@ -22,7 +22,7 @@ SPDX-License-Identifier = "MIT"
 [[annotations]]
 path = [
   "control/testdata/debug/**",
-  "internal/egress/testdata/**",
+  "internal/egress/kernel/testdata/**",
   "internal/packet/testdata/answers/**",
   "srv6/testdata/answers/**",
 ]

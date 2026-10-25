@@ -33,6 +33,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
@@ -570,18 +571,18 @@ func labExitUplink(t *testing.T, e *labNode) (*labNode, int) {
 }
 
 // labTranslator builds the translator main builds for client's cap.egress, in ns, and hands client its announcement
-func labTranslator(t *testing.T, ns *netnstest.Thread, client *Client, bus *events.Bus) *egress.Translator {
+func labTranslator(t *testing.T, ns *netnstest.Thread, client *Client, bus *events.Bus) *kernelexit.Translator {
 	t.Helper()
 	cfg := client.config()
 	in := func(f func()) { _ = ns.Do(func() error { f(); return nil }) }
-	var translator *egress.Translator
+	var translator *kernelexit.Translator
 	if err := ns.Do(func() (err error) {
-		translator, err = egress.New(*cfg.Egress(), egress.Runtime{
+		translator, err = kernelexit.New(*cfg.Egress(), kernelexit.Runtime{
 			Interface:     client.Mesh.Name,
 			MeshAddresses: MeshAddresses(cfg),
 			// the sysctls and the route lookups are read in ns, which the translator's own goroutine is not in
 			Forwarding: func() (v4, v6 bool) { in(func() { v4, v6 = Forwarding() }); return v4, v6 },
-			Lookup: func(lookups []egress.Lookup) (answers []egress.Answer, err error) {
+			Lookup: func(lookups []kernelexit.Lookup) (answers []kernelexit.Answer, err error) {
 				in(func() { answers, err = RouteLookups(lookups) })
 				return answers, err
 			},

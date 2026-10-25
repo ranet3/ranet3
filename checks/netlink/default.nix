@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: FSL-1.1-ALv2
 
-# The netlink round trips in internal/kernel and internal/egress need root and
+# The netlink round trips in internal/kernel and internal/egress/kernel need root and
 # a network namespace to make a mess in, so they skip themselves under the go
 # check, which builds as an unprivileged user. That left every rule and VRF
 # write, the FRA_PROTOCOL ownership they rest on, and every byte of the
@@ -26,7 +26,7 @@ let
     nativeBuildInputs = prev.nativeBuildInputs ++ [ writableTmpDirAsHomeHook ];
     buildPhase = ''
       go test -c -o netlink-tests ./internal/kernel/
-      go test -c -o egress-tests ./internal/egress/
+      go test -c -o egress-tests ./internal/egress/kernel/
       go test -c -o netstack-tests ./internal/netstack/
       go test -c -o client-tests ./internal/client/
       go test -c -o transport-tests ./transport/

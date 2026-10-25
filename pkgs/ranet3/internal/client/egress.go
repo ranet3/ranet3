@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"slices"
 
-	"ranet3.com/pkgs/ranet3/internal/egress"
+	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/sadr"
@@ -17,7 +17,7 @@ import (
 // RouteLookups answers the egress translator's route lookups through the
 // kernel's batch, one socket a pass, so the translator makes no system call of
 // its own and imports nothing of the kernel's
-func RouteLookups(lookups []egress.Lookup) ([]egress.Answer, error) {
+func RouteLookups(lookups []kernelexit.Lookup) ([]kernelexit.Answer, error) {
 	reads := make([]kernel.RouteRead, len(lookups))
 	for i, lookup := range lookups {
 		reads[i] = kernel.RouteRead{Source: lookup.Source, Destination: lookup.Destination, IIF: lookup.IIF, Reply: lookup.Reply}
@@ -26,9 +26,9 @@ func RouteLookups(lookups []egress.Lookup) ([]egress.Answer, error) {
 	if err != nil {
 		return nil, err
 	}
-	answers := make([]egress.Answer, len(batch))
+	answers := make([]kernelexit.Answer, len(batch))
 	for i, answer := range batch {
-		answers[i] = egress.Answer{
+		answers[i] = kernelexit.Answer{
 			Route:    lookupRoute(answer.Route),
 			Err:      answer.Err,
 			ReplyIIF: answer.ReplyIIF,
@@ -39,12 +39,12 @@ func RouteLookups(lookups []egress.Lookup) ([]egress.Answer, error) {
 	return answers, nil
 }
 
-func lookupRoute(route kernel.MatchedRoute) egress.Route {
-	hops := make([]egress.Hop, len(route.NextHops))
+func lookupRoute(route kernel.MatchedRoute) kernelexit.Route {
+	hops := make([]kernelexit.Hop, len(route.NextHops))
 	for i, hop := range route.NextHops {
-		hops[i] = egress.Hop{Device: hop.Device, Dead: hop.Dead, LinkDown: hop.LinkDown}
+		hops[i] = kernelexit.Hop{Device: hop.Device, Dead: hop.Dead, LinkDown: hop.LinkDown}
 	}
-	return egress.Route{Type: route.Type, Hops: hops}
+	return kernelexit.Route{Type: route.Type, Hops: hops}
 }
 
 // EgressMembers is the prefixes the egress translator's lookups read from, out

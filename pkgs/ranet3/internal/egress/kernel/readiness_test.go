@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-package egress
+package kernel
 
 import (
 	"errors"
@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 )
 
@@ -60,7 +61,7 @@ func passingAnswer() Answer {
 
 // readingExit is a translator advertising cfg on the tun readTUN, reading its
 // lookups from host and its members from members at each pass
-func readingExit(t *testing.T, cfg Egress, host *lookupHost, members *[]netip.Prefix, bus *events.Bus) *Translator {
+func readingExit(t *testing.T, cfg egress.Egress, host *lookupHost, members *[]netip.Prefix, bus *events.Bus) *Translator {
 	t.Helper()
 	rt := Runtime{
 		Interface: readTUN,
@@ -127,7 +128,7 @@ func TestEachLookupNamesWhatHoldsItsFamilyNotReady(t *testing.T) {
 			host.answers[test.read] = changed
 			members := readMembers
 			bus := events.New()
-			tr := readingExit(t, Egress{Advertise: prefixes(t, "198.51.100.0/24", "::/0")}, host, &members, bus)
+			tr := readingExit(t, egress.Egress{Advertise: prefixes(t, "198.51.100.0/24", "::/0")}, host, &members, bus)
 			if err := tr.reconcile(); err != nil {
 				t.Fatal(err)
 			}
@@ -192,7 +193,7 @@ func TestFailedLookupNamesTheSettingWhateverTheErrno(t *testing.T) {
 				}
 				host := &lookupHost{answers: map[netip.Addr]Answer{read4: answer}, tree: setting.tree}
 				members := readMembers[:1]
-				tr := readingExit(t, Egress{Advertise: prefixes(t, "198.51.100.0/24", "::/0")}, host, &members, events.New())
+				tr := readingExit(t, egress.Egress{Advertise: prefixes(t, "198.51.100.0/24", "::/0")}, host, &members, events.New())
 				if err := tr.reconcile(); err != nil {
 					t.Fatal(err)
 				}
@@ -224,7 +225,7 @@ func TestFamilyWithNoMemberSkipsItsLookupsAndSaysSo(t *testing.T) {
 	host := &lookupHost{answers: map[netip.Addr]Answer{read4: passingAnswer(), read6: {Err: syscall.ENETUNREACH}}}
 	members := readMembers[:1]
 	var calls int
-	tr := readingExit(t, Egress{Advertise: prefixes(t, "198.51.100.0/24", "::/0")}, host, &members, bus)
+	tr := readingExit(t, egress.Egress{Advertise: prefixes(t, "198.51.100.0/24", "::/0")}, host, &members, bus)
 	tr.rt.Ready = func(bool, bool, bool) { calls++ }
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
@@ -288,7 +289,7 @@ func TestReasonNamesTheFamilyEachPartHolds(t *testing.T) {
 			uplinked.Reply.Hops = []Hop{{Device: "eth0"}}
 			host := &lookupHost{answers: map[netip.Addr]Answer{read4: blackholed, read6: uplinked}, err: test.err}
 			members := readMembers
-			tr := readingExit(t, Egress{Advertise: prefixes(t, test.advertise...)}, host, &members, events.New())
+			tr := readingExit(t, egress.Egress{Advertise: prefixes(t, test.advertise...)}, host, &members, events.New())
 			if err := tr.reconcile(); err != nil {
 				t.Fatal(err)
 			}
@@ -309,7 +310,7 @@ func TestReasonFollowsAPassThatMovesNoFamily(t *testing.T) {
 	host := &lookupHost{answers: map[netip.Addr]Answer{read4: blackholed, read6: passingAnswer()}}
 	members := readMembers
 	var calls int
-	tr := readingExit(t, Egress{Advertise: prefixes(t, "198.51.100.0/24", "::/0")}, host, &members, events.New())
+	tr := readingExit(t, egress.Egress{Advertise: prefixes(t, "198.51.100.0/24", "::/0")}, host, &members, events.New())
 	tr.rt.Ready = func(bool, bool, bool) { calls++ }
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
@@ -332,7 +333,7 @@ func TestReasonFollowsAPassThatMovesNoFamily(t *testing.T) {
 func TestPrefixWithNoReadAddressSkipsItsLookupAndIsNamed(t *testing.T) {
 	host := &lookupHost{answers: map[netip.Addr]Answer{read4: passingAnswer(), read6: passingAnswer()}}
 	members := readMembers
-	cfg := Egress{Advertise: prefixes(t, "198.51.100.0/24", "fe80::/10", "::/0")}
+	cfg := egress.Egress{Advertise: prefixes(t, "198.51.100.0/24", "fe80::/10", "::/0")}
 	tr := readingExit(t, cfg, host, &members, events.New())
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
@@ -353,7 +354,7 @@ func TestPrefixWithNoReadAddressSkipsItsLookupAndIsNamed(t *testing.T) {
 	}
 
 	alone := &lookupHost{}
-	tr = readingExit(t, Egress{Advertise: prefixes(t, "fe80::/10")}, alone, &members, events.New())
+	tr = readingExit(t, egress.Egress{Advertise: prefixes(t, "fe80::/10")}, alone, &members, events.New())
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -372,12 +373,12 @@ func TestLookupsReadFromTheFirstMemberHoldingAReadAddress(t *testing.T) {
 		family  uint8
 		want    string
 	}{
-		{[]string{"203.0.113.0/24", "192.0.2.64/26", "192.0.2.0/24"}, FamilyIPv4, "192.0.2.128"},
-		{[]string{"192.0.2.0/24", "192.0.2.0/25"}, FamilyIPv4, "192.0.2.64"},
-		{[]string{"192.0.2.7/32", "0.0.0.0/32", "3fff:20::1/128"}, FamilyIPv4, "192.0.2.7"},
-		{[]string{"3fff:20::1/128", "::1/128", "3fff:20::/48"}, FamilyIPv6, "3fff:20:0:8000::"},
-		{[]string{"192.0.2.7/32"}, FamilyIPv6, ""},
-		{nil, FamilyIPv4, ""},
+		{[]string{"203.0.113.0/24", "192.0.2.64/26", "192.0.2.0/24"}, egress.FamilyIPv4, "192.0.2.128"},
+		{[]string{"192.0.2.0/24", "192.0.2.0/25"}, egress.FamilyIPv4, "192.0.2.64"},
+		{[]string{"192.0.2.7/32", "0.0.0.0/32", "3fff:20::1/128"}, egress.FamilyIPv4, "192.0.2.7"},
+		{[]string{"3fff:20::1/128", "::1/128", "3fff:20::/48"}, egress.FamilyIPv6, "3fff:20:0:8000::"},
+		{[]string{"192.0.2.7/32"}, egress.FamilyIPv6, ""},
+		{nil, egress.FamilyIPv4, ""},
 	} {
 		var members []netip.Prefix
 		for _, member := range test.members {
@@ -385,7 +386,7 @@ func TestLookupsReadFromTheFirstMemberHoldingAReadAddress(t *testing.T) {
 		}
 		got, ok := memberSource(members, test.family)
 		if want, err := netip.ParseAddr(test.want); got != want || ok != (err == nil) {
-			t.Errorf("the members %v read %s's lookups from %s (%v), want %q", test.members, familyName(test.family), got, ok, test.want)
+			t.Errorf("the members %v read %s's lookups from %s (%v), want %q", test.members, egress.FamilyName(test.family), got, ok, test.want)
 		}
 	}
 }
@@ -413,7 +414,7 @@ func TestFailedBatchHoldsEveryFamilyItRead(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			host := &lookupHost{answers: map[netip.Addr]Answer{read4: passingAnswer()}}
 			members := readMembers[:1]
-			tr := readingExit(t, Egress{Advertise: prefixes(t, "198.51.100.0/24", "::/0")}, host, &members, events.New())
+			tr := readingExit(t, egress.Egress{Advertise: prefixes(t, "198.51.100.0/24", "::/0")}, host, &members, events.New())
 			tr.rt.Lookup = test.answer(host)
 			if err := tr.reconcile(); err != nil {
 				t.Fatal(err)

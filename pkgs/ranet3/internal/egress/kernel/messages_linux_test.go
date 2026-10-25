@@ -3,7 +3,7 @@
 
 //go:build linux && !android
 
-package egress
+package kernel
 
 import (
 	"bytes"
@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
@@ -31,14 +32,14 @@ var golden []byte
 func everyTranslation() []Rule {
 	v4, v6 := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")
 	return []Rule{
-		{Family: FamilyIPv4, Direction: Out, Interface: "ranet3"},
-		{Family: FamilyIPv4, Direction: Out, Interface: "ranet3", Source: v4},
-		{Family: FamilyIPv4, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.0/24"), Source: v4},
-		{Family: FamilyIPv4, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.7/32"), Source: v4},
-		{Family: FamilyIPv4, Direction: In, Interface: "ranet3"},
-		{Family: FamilyIPv6, Direction: Out, Interface: "ranet3"},
-		{Family: FamilyIPv6, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("2001:db8:1::/48"), Source: v6},
-		{Family: FamilyIPv6, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("2001:db8:1::7/128")},
+		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3"},
+		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Source: v4},
+		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.0/24"), Source: v4},
+		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.7/32"), Source: v4},
+		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3"},
+		{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet3"},
+		{Family: egress.FamilyIPv6, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("2001:db8:1::/48"), Source: v6},
+		{Family: egress.FamilyIPv6, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("2001:db8:1::7/128")},
 	}
 }
 
@@ -57,18 +58,18 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 			fmt.Fprintf(&out, "  kind %#06x flags %#06x body %x\n", request.Kind, request.Flags, request.Body)
 		}
 	}
-	both, rules := []uint8{FamilyIPv4, FamilyIPv6}, everyTranslation()
+	both, rules := []uint8{egress.FamilyIPv4, egress.FamilyIPv6}, everyTranslation()
 	requests, err := translatorBatch(both, rules, nil)
 	write("translator in both families", requests, err)
 	requests, err = translatorBatch(both, rules, both)
 	write("translator remaking both families", requests, err)
-	requests, err = translatorBatch([]uint8{FamilyIPv6}, rules, []uint8{FamilyIPv6})
+	requests, err = translatorBatch([]uint8{egress.FamilyIPv6}, rules, []uint8{egress.FamilyIPv6})
 	write("translator remaking ipv6 alone", requests, err)
-	requests, err = translatorBatch([]uint8{FamilyIPv4}, nil, nil)
+	requests, err = translatorBatch([]uint8{egress.FamilyIPv4}, nil, nil)
 	write("translator in ipv4 with no rule", requests, err)
-	write("translator withdrawal", []nftables.Request{delTable(FamilyIPv4), delTable(FamilyIPv6)}, nil)
+	write("translator withdrawal", []nftables.Request{delTable(egress.FamilyIPv4), delTable(egress.FamilyIPv6)}, nil)
 
-	rt := BorderRuntime{Inside: []string{"ranet3", "lo"}, SIDs: []netip.Addr{netip.MustParseAddr("2001:db8:a::1")}}
+	rt := egress.BorderRuntime{Inside: []string{"ranet3", "lo"}, SIDs: []netip.Addr{netip.MustParseAddr("2001:db8:a::1")}}
 	desired := newBorderFilter(overlay(t, "192.0.2.0/24", "2001:db8:1::7/128"), rt, &fakeBorder{}).desired()
 	requests, err = borderBatch(desired, false)
 	write("border", requests, err)

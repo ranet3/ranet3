@@ -1,11 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-package egress
+package kernel
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,8 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"go.yaml.in/yaml/v3"
-
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -155,8 +153,8 @@ func (f *fakeBorder) setCount(spec string, packets uint64) {
 
 // borderRuntime is a filter's runtime over the mesh tun and lo, whose
 // readiness goes into be's log between its listings and applies
-func borderRuntime(be *fakeBorder, bus *events.Bus, sids ...string) BorderRuntime {
-	rt := BorderRuntime{Inside: []string{"ranet0", "lo"}, Events: bus, Ready: func(ok bool) { be.record(fmt.Sprintf("ready %v", ok)) }}
+func borderRuntime(be *fakeBorder, bus *events.Bus, sids ...string) egress.BorderRuntime {
+	rt := egress.BorderRuntime{Inside: []string{"ranet0", "lo"}, Events: bus, Ready: func(ok bool) { be.record(fmt.Sprintf("ready %v", ok)) }}
 	for _, sid := range sids {
 		rt.SIDs = append(rt.SIDs, netip.MustParseAddr(sid))
 	}
@@ -164,12 +162,12 @@ func borderRuntime(be *fakeBorder, bus *events.Bus, sids ...string) BorderRuntim
 }
 
 // overlay is a valid overlay list of both families
-func overlay(t *testing.T, raw ...string) Border {
+func overlay(t *testing.T, raw ...string) egress.Border {
 	t.Helper()
 	if len(raw) == 0 {
 		raw = []string{"198.18.0.0/15", "3fff::/20"}
 	}
-	return Border{Overlay: prefixes(t, raw...)}
+	return egress.Border{Overlay: prefixes(t, raw...)}
 }
 
 // runBorder runs f until the test ends
@@ -237,13 +235,13 @@ func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 func TestBorderRefusesWhatWouldNotFilter(t *testing.T) {
 	for _, one := range []struct {
 		name string
-		cfg  Border
+		cfg  egress.Border
 		sids []string
 		want string
 	}{
-		{"an empty overlay", Border{}, nil, "overlay is empty, so the filter would pass every forged mesh source"},
-		{"an entry that is not a prefix", Border{Overlay: []schema.Prefix{{}}}, nil, "is not a prefix"},
-		{"bits below the length", Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.1/15")}}, nil, "has bits set below its prefix length"},
+		{"an empty overlay", egress.Border{}, nil, "overlay is empty, so the filter would pass every forged mesh source"},
+		{"an entry that is not a prefix", egress.Border{Overlay: []schema.Prefix{{}}}, nil, "is not a prefix"},
+		{"bits below the length", egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.1/15")}}, nil, "has bits set below its prefix length"},
 		{"an IPv4 prefix written as IPv6", overlay(t, "::ffff:198.18.0.0/111"), nil, "written as IPv6, so write it as 198.18.0.0/15"},
 		{"every IPv4 address", overlay(t, "0.0.0.0/0"), nil, "covers every address of its family"},
 		{"every IPv6 address", overlay(t, "::/0"), nil, "covers every address of its family"},
@@ -283,41 +281,9 @@ func TestBorderRefusesWhatWouldNotFilter(t *testing.T) {
 // The filter runs only with a device inside the mesh, the tun at least, since
 // a chain with no accept would drop the mesh's own traffic on every hop
 func TestBorderNeedsTheDevicesInsideTheMesh(t *testing.T) {
-	_, err := NewBorderFilter(overlay(t), BorderRuntime{})
+	_, err := NewBorderFilter(overlay(t), egress.BorderRuntime{})
 	if err == nil || !strings.Contains(err.Error(), "needs the devices inside the mesh") {
 		t.Fatalf("NewBorderFilter returned %v, want the missing inside list refused", err)
-	}
-}
-
-// The block written in a file and the one sent on the wire are the same
-func TestBorderRoundTripsThroughEverySerialization(t *testing.T) {
-	want := overlay(t, "198.18.0.0/15", "3fff::/20")
-	for _, one := range []struct {
-		name    string
-		encode  func(any) ([]byte, error)
-		decode  func([]byte, any) error
-		written string
-	}{
-		{"yaml", yaml.Marshal, yaml.Unmarshal, "overlay:"},
-		{"json", json.Marshal, json.Unmarshal, `"overlay":["198.18.0.0/15","3fff::/20"]`},
-		{"toml", encodeTOML, decodeTOML, `overlay = ["198.18.0.0/15", "3fff::/20"]`},
-	} {
-		t.Run(one.name, func(t *testing.T) {
-			raw, err := one.encode(want)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(string(raw), one.written) {
-				t.Errorf("wrote %s, which does not carry %s", raw, one.written)
-			}
-			var got Border
-			if err := one.decode(raw, &got); err != nil {
-				t.Fatalf("%s: %v", raw, err)
-			}
-			if !slices.Equal(plain(got.Overlay), plain(want.Overlay)) {
-				t.Errorf("came back as %v, want %v", got.Overlay, want.Overlay)
-			}
-		})
 	}
 }
 
@@ -413,7 +379,7 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	if n := strings.Count(lines.String(), "border filter dropped packets"); n != 2 {
 		t.Errorf("logged the drops %d times, want twice:\n%s", n, lines.String())
 	}
-	if want := (BorderDrops{Source4: 5, Source6: 2, RoutingHeader: 1, Destination: 7}); f.Stats().Dropped != want {
+	if want := (egress.BorderDrops{Source4: 5, Source6: 2, RoutingHeader: 1, Destination: 7}); f.Stats().Dropped != want {
 		t.Errorf("the last pass reports %+v dropped, want %+v", f.Stats().Dropped, want)
 	}
 }
@@ -421,9 +387,9 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 // A counter below its last reading is a chain rewritten in between, which
 // starts its counters from zero, so what it reads is all new
 func TestBorderDropsAfterARewriteCountFromZero(t *testing.T) {
-	was := BorderDrops{Source4: 10, RoutingHeader: 4}
-	now := BorderDrops{Source4: 2, RoutingHeader: 6}
-	if got, want := now.since(was), (BorderDrops{Source4: 2, RoutingHeader: 2}); got != want {
+	was := egress.BorderDrops{Source4: 10, RoutingHeader: 4}
+	now := egress.BorderDrops{Source4: 2, RoutingHeader: 6}
+	if got, want := dropsSince(now, was), (egress.BorderDrops{Source4: 2, RoutingHeader: 2}); got != want {
 		t.Errorf("read %+v since %+v as %+v, want %+v", now, was, got, want)
 	}
 }
