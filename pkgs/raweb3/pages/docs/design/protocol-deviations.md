@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: MIT AND CC-BY-4.0
 title: "Deliberate protocol deviations"
-description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6 and ICMP specifications on purpose."
+description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6, ICMP and NAT specifications on purpose."
 created: 2026-08-23
 updated: 2026-10-26
 order: 20
@@ -77,6 +77,14 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 1812 section 5.3.8                                       | Have source address validation off by default (MUST)                                                                                             | An exit always drops a packet it would egress, and the mesh routes no reply to                                                                                                             | The check is loose, so an asymmetric path passes it, a LAN the exit shares with another node among them                        |
 | RFC 4443 section 3.1                                         | Answer a packet that cannot be delivered with Destination Unreachable (SHOULD)                                                                   | An exit drops a packet for a family it stopped announcing with no answer, until it retracts the prefix                                                                                     | The retraction decides the packets after it                                                                                    |
 | RFC 4443 section 3.1                                         | Answer a packet that cannot be delivered with Destination Unreachable (SHOULD)                                                                   | An egress segment drops a packet of a family not ready with no answer, until the node withdraws the SID's `/128`, or while the other family is ready if the host does not forward this one | The withdrawal decides the packets after it, and none holds while the `/128` stays, see Drops with no answer                   |
+| RFC 4787 sections 4.1 and 8, RFC 5382 section 4.1            | Map 1 external port to each inside endpoint whatever the destination, and change that mapping under no conditions                                | The kernel exit takes another port once another inside host holds that port toward the same destination                                                                                    | conntrack maps per connection, and no nf_tables statement pins 1 external port per inside endpoint, see Exit translation       |
+| RFC 5508 section 3.1                                         | Map an ICMP query identifier the same toward every external host (SHOULD)                                                                        | The kernel exit takes another identifier once another inside host holds that identifier toward the same host                                                                               | conntrack maps an identifier as it maps a port, see Exit translation                                                           |
+| RFC 5508 section 4.1                                         | Drop an ICMP error whose embedded IP checksum fails to validate (SHOULD)                                                                         | The kernel exit translates the error and passes it on                                                                                                                                      | Linux checks only the outer ICMP checksum, see Exit translation                                                                |
+| RFC 4787 section 4.2.2                                       | Map an even port to an even port and an odd port to an odd port (RECOMMENDED)                                                                    | The kernel exit keeps parity only while it keeps the port, and a port it takes on a clash has either parity                                                                                | No nf_tables statement keeps parity, see Exit translation                                                                      |
+| RFC 5382 section 5                                           | An idle TCP session is kept at least 2 hours 4 minutes once established, and at least 4 minutes while it opens or closes                         | The kernel exit keeps one at most 2 minutes while it opens or closes, and 5 minutes while data it carried is unacknowledged                                                                | A known gap, see Exit translation                                                                                              |
+| RFC 4787 section 4.3                                         | An idle UDP mapping is kept at least 2 minutes, and 5 minutes or more by default (RECOMMENDED)                                                   | The kernel exit keeps a UDP flow 30 seconds until it has a reply and a packet more than 2 seconds after its first, and 2 minutes from then on                                              | A known gap, see Exit translation                                                                                              |
+| RFC 5508 section 3.2                                         | An idle ICMP query session is kept at least 60 seconds                                                                                           | The kernel exit keeps one 30 seconds after its last packet                                                                                                                                 | A known gap, see Exit translation                                                                                              |
+| RFC 5508 section 6                                           | Answer a new flow the NAT cannot set up with an ICMP destination unreachable, code 13 (SHOULD)                                                   | The kernel exit drops the packet with no answer                                                                                                                                            | The drop happens inside connection tracking, where no rule sees it, see Exit translation                                       |
 | RFC 4443 section 3.1                                         | Answer a packet a firewall refuses with Destination Unreachable, code 1                                                                          | The border filter drops a routing header from outside the mesh with no answer                                                                                                              | An answer tells the sender this node is the mesh's edge                                                                        |
 | RFC 4443 section 3.1                                         | Answer a packet a firewall refuses with Destination Unreachable, code 1                                                                          | The border filter drops a SID of this node from outside the mesh with no answer                                                                                                            | An answer tells the sender which addresses are SIDs                                                                            |
 | RFC 4443 section 3.1                                         | Answer a packet with no route with Destination Unreachable, code 0                                                                               | A packet the host itself routes into the tun inside a hold that counts as a default is dropped with no answer                                                                              | That hold cuts the host off, and no held tun read is answered                                                                  |
@@ -1806,6 +1814,126 @@ prefix list describes them. That keeps a forged mesh source out of the mesh, and
 it is not BCP 38's filter, so section 7 is met in part. The permit half, taking
 from each peer only the prefixes it holds, needs first-hop source validation,
 which this version does not have.
+
+## Exit translation
+
+The kernel exit translates with the host's connection tracking, which maps each
+connection on its own. A new connection from an inside address and port takes
+the external port that endpoint already holds, so toward two destinations it
+leaves from 1 port, until another inside host holds that port toward the
+destination first. Leaf A holds port 4000 toward one server, leaf B then takes
+port 4000 toward a second, and A's next connection from port 4000 to the second
+server leaves from another port. No nf_tables statement pins 1 external port per
+inside endpoint.
+[RFC 4787 section 4.1](https://www.rfc-editor.org/rfc/rfc4787.html#section-4.1)
+says "A NAT MUST have an "Endpoint-Independent Mapping" behavior",
+[RFC 5382 section 4.1](https://www.rfc-editor.org/rfc/rfc5382.html#section-4.1)
+asks the same for TCP, and
+[RFC 4787 section 8](https://www.rfc-editor.org/rfc/rfc4787.html#section-8)
+says:
+
+> A NAT MUST have deterministic behavior, i.e., it MUST NOT change the NAT
+> translation (Section 4) or the Filtering (Section 5) Behavior at any point in
+> time, or under any particular conditions.
+
+An echo identifier is mapped as a port is, so the same clash departs from
+[RFC 5508 section 3.1](https://www.rfc-editor.org/rfc/rfc5508.html#section-3.1),
+which says "NAT mapping of ICMP Query Identifiers SHOULD be external-host
+independent".
+
+[RFC 5508 section 4.1](https://www.rfc-editor.org/rfc/rfc5508.html#section-4.1)
+says "If the IP checksum of the embedded packet fails to validate, the NAT
+SHOULD silently drop the Error packet". The kernel exit translates such an error
+and passes it on, since Linux checks only the outer ICMP checksum.
+
+A connection whose inside port is free toward its destination leaves from that
+port, so the port keeps its parity. On a clash the kernel exit takes another
+port, starting at a random offset in the range the inside port falls in, and
+that port has either parity. No nf_tables statement asks for a port of the same
+parity.
+[RFC 4787 section 4.2.2](https://www.rfc-editor.org/rfc/rfc4787.html#section-4.2.2)
+says:
+
+> REQ-4: It is RECOMMENDED that a NAT have a "Port parity preservation" behavior
+> of "Yes".
+
+The section gives parity for RTP implementations that do not read an RTCP port
+their peer names separately, and says "It is expected that this issue will fade
+away with time, as implementations improve".
+
+[RFC 5382 section 5](https://www.rfc-editor.org/rfc/rfc5382.html#section-5)
+says:
+
+> REQ-5: If a NAT cannot determine whether the endpoints of a TCP connection are
+> active, it MAY abandon the session if it has been idle for some time. In such
+> cases, the value of the "established connection idle-timeout" MUST NOT be less
+> than 2 hours 4 minutes. The value of the "transitory connection idle-timeout"
+> MUST NOT be less than 4 minutes.
+
+The kernel exit keeps the host's connection tracking timeouts and sets none of
+its own. An idle established connection is kept 5 days, but 5 minutes while data
+it carried is unacknowledged or a window is closed. An opening connection is
+kept 2 minutes after its SYN and 60 seconds after the answer, and a closing one
+2 minutes, 60 seconds or 30 seconds, as far as the close has gone. A connection
+in TIME_WAIT or reset is outside the requirement, which leaves both unspecified.
+A known gap: a connection tracking timeout policy on the exit's own connections
+could hold the requirement, and the exit installs none.
+
+[RFC 4787 section 4.3](https://www.rfc-editor.org/rfc/rfc4787.html#section-4.3)
+says:
+
+> REQ-5: A NAT UDP mapping timer MUST NOT expire in less than two minutes,
+> unless REQ-5a applies.
+
+Its item c says "A default value of five minutes or more for the NAT UDP mapping
+timer is RECOMMENDED." The kernel exit keeps the host's connection tracking
+timeouts for UDP as for TCP, and sets none of its own. At the kernel's defaults,
+a UDP flow with no reply yet is kept 30 seconds after its last packet, and so is
+one whose packets all came within 2 seconds of its first. Once a reply has come,
+a packet more than 2 seconds after the first keeps the flow 2 minutes, and so
+does every packet after it. The timeouts are the same for every port, so
+REQ-5a's shorter timers for well-known destination ports do not cover the 30
+seconds. A known gap: a connection tracking timeout policy on the exit's own
+connections could hold the requirement, and the exit installs none.
+
+[RFC 5508 section 3.2](https://www.rfc-editor.org/rfc/rfc5508.html#section-3.2)
+says:
+
+> REQ-2: An ICMP Query session timer MUST NOT expire in less than 60 seconds.
+
+The kernel exit keeps the host's ICMP and ICMPv6 timeouts and sets none of its
+own. At the kernel's defaults, a query session, an echo among them, is kept 30
+seconds after its last request or reply. A known gap: a connection tracking
+timeout policy on the exit's own connections could hold the requirement, and the
+exit installs none.
+
+[RFC 5508 section 6](https://www.rfc-editor.org/rfc/rfc5508.html#section-6)
+says:
+
+> REQ-8: When a NAT device is unable to establish a NAT Session for a new
+> transport-layer (TCP, UDP, ICMP, etc.) flow due to resource constraints or
+> administrative restrictions, the NAT device SHOULD send an ICMP destination
+> unreachable message, with a code of 13 (Communication administratively
+> prohibited) to the sender, and drop the original packet.
+
+When the host's connection table is full, connection tracking first evicts a
+connection that is not yet assured, from the 8 hash buckets the new one starts
+at, and with none to evict it drops the packet with no answer. A new connection
+whose translated ports are still taken when it is confirmed, in a clash the
+kernel cannot resolve, is dropped the same way. Both drops happen inside
+connection tracking, so no rule of the exit's sees the packet to answer it. The
+section says the requirement "is meant primarily for future use. Current
+applications do not require this for them to work correctly." The eviction is
+the design the same section discourages:
+
+> Some NAT designers opt to never reject an outbound flow. When a NAT runs short
+> of resources, they prefer to steal a resource from an existing NAT Session
+> rather than reject the outbound flow. Such a design choice may appear
+> conformant to REQ-8 below. However, the design choice is in violation of the
+> spirit of both REQ-8 and REQ-2. Such a design choice is strongly discouraged.
+
+The packets the exit refuses itself are under
+[Drops with no answer](#drops-with-no-answer).
 
 ## Drops with no answer
 

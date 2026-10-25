@@ -23,8 +23,8 @@ func sysctlIsOne(name string) bool {
 	return value != 0
 }
 
-// Sysctl reads no setting, since the paths the egress translator names are
-// linux's and the translator refuses cap.egress here
+// Sysctl reads no setting, since the paths the kernel exit names are linux's
+// and this build carries no exit
 func Sysctl(string) string { return "" }
 
 // l3mdevAccept is a linux question. darwin has no VRFs, and the reconciler

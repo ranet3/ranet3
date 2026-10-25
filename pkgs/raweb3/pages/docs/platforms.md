@@ -28,7 +28,7 @@ setting or skips a route instead.
 | `cap.table.rules`, `cap.table.vrf`   | supported                                                                 | refused                                                 |
 | `cap.table.prefsrc4`                 | supported                                                                 | refused                                                 |
 | `cap.table.metric`                   | supported                                                                 | ignored                                                 |
-| `cap.egress`                         | nftables                                                                  | refused                                                 |
+| `cap.egress`                         | the kernel exit, translating with nftables                                | refused, naming the platform                            |
 | Egress segments                      | the mesh tun, translated by `cap.egress`                                  | refused                                                 |
 | `cap.border`                         | an nftables chain at prerouting                                           | refused                                                 |
 | Network watch                        | rtnetlink                                                                 | routing socket                                          |
@@ -45,6 +45,15 @@ On macOS `cap.border` is refused at startup with
 `egress: cap.border is an nftables chain, which darwin does not have, so this node cannot filter what enters the mesh from its other links`,
 and a Mac that forwards gets the warning instead. The caller's credentials
 decide who may use the debug paths beyond the read paths.
+
+The exit a build carries is chosen when it is built, and no setting names it. A
+Linux build carries the kernel exit, which writes what it carries into the tun
+and translates it with nftables on the way out of the host. Every other build
+carries none and refuses `cap.egress` at startup with
+`egress: cap.egress asks this node to carry other nodes' traffic out of the mesh, and this build for darwin carries no exit`,
+naming its own platform where this one names `darwin`. A node that accepted the
+block and carried nothing would advertise an exit and drop every flow that took
+it. A node on any platform still uses an exit.
 
 ## The tun device
 
@@ -180,7 +189,8 @@ an error.
 On a platform other than Linux and macOS:
 
 - `cap.table` fails the start with `kernel: unsupported on this platform`.
-- `cap.egress`, `cap.border` and both `link.underlay` settings are refused.
+- `cap.egress`, `cap.border` and both `link.underlay` settings are refused,
+  `cap.egress` and `cap.border` in words that name the platform.
 - An egress segment fails the start, since it needs `cap.egress` and
   `cap.border`, which are refused.
 - The node has no network watch, so a moved host waits for each session's own
@@ -195,6 +205,10 @@ On a platform other than Linux and macOS:
 - Datagrams leave without DF, as [path MTU](#path-mtu) below describes.
 - Answers leave from the kernel's choice of source, not the address the request
   reached.
+
+An Android build, which Go makes with the `linux` build tag, and an iOS build,
+which it makes with the `darwin` one, refuse `cap.egress` and `cap.border` at
+startup in the same words, naming `android` or `ios`.
 
 ## Moving hosts
 
