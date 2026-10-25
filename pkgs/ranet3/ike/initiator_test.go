@@ -398,7 +398,7 @@ func TestSessionRekeyIKE(t *testing.T) {
 	const oldSPIi = 0x0102030405060708
 	const oldSPIr = 0x1112131415161718
 	const newSPIr = 0x2122232425262728
-	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519}
 	old := &ikeContext{suite: suite, spiI: oldSPIi, spiR: oldSPIr, authMID: 1, nextLocalMID: 2,
 		skD: []byte("old IKE rekey SK_d material-------"), skei: make([]byte, 20), sker: make([]byte, 20)}
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
@@ -566,24 +566,37 @@ func TestSessionRekeyIKE(t *testing.T) {
 
 	runDone := make(chan error, 1)
 	go func() { runDone <- s.Run(context.Background()) }()
+	stop := stopRun(mux, runDone)
 	if err := s.RekeyIKE(); err != nil {
+		stop()
 		t.Fatalf("RekeyIKE: %v", err)
 	}
 	<-peerDone
 	current, retained := s.contexts()
 	if current == old || current.spiR != newSPIr || current.suite.DHGroup != DH_ECP_256 || retained != nil {
+		stop()
 		t.Fatalf("IKE contexts not promoted and retired: current=%#v old=%#v", current, retained)
 	}
 	if got := s.currentChild(); got.EncrID != child.EncrID || got.EncrKeyBits != child.EncrKeyBits || got.LocalSPI != child.LocalSPI || got.RemoteSPI != child.RemoteSPI || len(got.InboundKey) != 0 || len(got.OutboundKey) != 0 {
+		stop()
 		t.Fatalf("Child SA changed during IKE rekey: %#v, want %#v", got, child)
 	}
 	if s.contextForHeader(&Header{SPIInitiator: oldSPIi, SPIResponder: oldSPIr}) != nil {
+		stop()
 		t.Fatal("old IKE context is still retained")
 	}
-	_ = mux.Close()
-	if err := <-runDone; err == nil {
+	if err := stop(); err == nil {
 		t.Fatal("Run returned nil after mux close")
 	}
+}
+
+// stopRun ends the Run whose result runDone carries by closing mux, and gives that result, once however often it is called
+// a failure calls it first, so it formats no context Run still writes and leaves no Run going into the next iteration
+func stopRun(mux *transport.Mux, runDone <-chan error) func() error {
+	return sync.OnceValue(func() error {
+		_ = mux.Close()
+		return <-runDone
+	})
 }
 
 func TestSessionHandlesPeerIKERekey(t *testing.T) {
@@ -799,7 +812,7 @@ func TestSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 	const oldSPIi = 0x0102030405060708
 	const oldSPIr = 0x1112131415161718
 	const peerSPIi = 0x2122232425262728
-	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
+	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519}
 	old := &ikeContext{suite: suite, spiI: oldSPIi, spiR: oldSPIr, authMID: 1, nextLocalMID: 2,
 		skD: []byte("old IKE rekey SK_d material-------"), skei: make([]byte, 20), sker: make([]byte, 20)}
 	localNonce := make([]byte, 32)
@@ -810,7 +823,8 @@ func TestSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 	for i := range peerNonce {
 		peerNonce[i] = 1
 	}
-	s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }, ikeRekeyNonce: func(n []byte) error {
+	events := &recorder{}
+	s := &Session{mux: mux, current: old, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }, events: events.record, ikeRekeyNonce: func(n []byte) error {
 		copy(n, localNonce)
 		return nil
 	}}
@@ -1005,7 +1019,9 @@ func TestSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 
 	runDone := make(chan error, 1)
 	go func() { runDone <- s.Run(context.Background()) }()
+	stop := stopRun(mux, runDone)
 	if err := s.RekeyIKE(); err != nil {
+		stop()
 		t.Fatalf("RekeyIKE: %v", err)
 	}
 	<-peerDone
@@ -1015,14 +1031,19 @@ func TestSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 	collision := s.collision
 	s.stateMu.RUnlock()
 	if current == old || current.spiI != localSPIi || retained != nil || collision != nil {
+		stop()
 		t.Fatalf("collision contexts = current %#v old %#v collision %#v", current, retained, collision)
 	}
 	if s.contextForHeader(&Header{SPIInitiator: oldSPIi, SPIResponder: oldSPIr}) != nil {
+		stop()
 		t.Fatal("replaced IKE context remains routed")
 	}
-	_ = mux.Close()
-	if err := <-runDone; err == nil {
+	if err := stop(); err == nil {
 		t.Fatal("Run returned nil after mux close")
+	}
+	// Run joins every rekey it started before it returns, so a rekey of its own beside the test's is counted here
+	if got := recordedKind(events, "ike.rekey.started"); got != 1 {
+		t.Errorf("the session started %d IKE SA rekeys, want the test's one", got)
 	}
 }
 
