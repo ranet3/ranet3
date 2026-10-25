@@ -6,23 +6,19 @@
 package client
 
 import (
-	"encoding/binary"
-	"errors"
 	"fmt"
 	"math"
 	"net"
 	"net/netip"
-	"os"
-	"runtime"
 	"slices"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -48,8 +44,6 @@ const (
 	streamFlowing = 1 << 20
 	// streamWait bounds each wait for the stream or the budget once the stream runs
 	streamWait = 60 * time.Second
-	// vethPeer is VETH_INFO_PEER of linux/veth.h, which describes the other end of a new pair
-	vethPeer = 1
 	// handoverMTU is the MTU of the dummy link a session moves across under the floor
 	// a path of it is under the floor in either family
 	handoverMTU = 1300
@@ -73,8 +67,8 @@ var (
 // a veth passes a segmented send whole whatever the size of its segments, so the near end takes one segment at a time and linux cuts a segmented send into datagrams first
 // the searches read their routes on threads outside both namespaces, where a read fails or names another path, and either leaves the target past what the hole carries
 func TestTUNStreamKeepsFlowingThroughABlackHole(t *testing.T) {
-	enterEmptyNamespace(t)
-	far := startNamespaceThread(t)
+	netnstest.EnterEmpty(t)
+	far := netnstest.StartThread(t)
 	alpha, bravo, farLink := newHoleMesh(t, far)
 	t.Cleanup(func() { t.Logf("alpha's search: %q", searchRecord(alpha.events)) })
 	run(t, alpha, bravo)
@@ -94,7 +88,7 @@ func TestTUNStreamKeepsFlowingThroughABlackHole(t *testing.T) {
 	waitFor(t, convergeBudget, fmt.Sprintf("alpha's session to bravo to settle at %d", settled), settledAt(settled))
 
 	var listener net.Listener
-	if err := far.do(func() (err error) {
+	if err := far.Do(func() (err error) {
 		listener, err = net.Listen("tcp6", netip.AddrPortFrom(bravoHost.Addr(), streamPort).String())
 		return err
 	}); err != nil {
@@ -154,7 +148,7 @@ func TestTUNStreamKeepsFlowingThroughABlackHole(t *testing.T) {
 	}
 	flowing("the stream to carry a mebibyte through the hole")
 
-	if err := far.do(func() error { return setLinkMTU(farLink, holeNarrowed-vlanSlack) }); err != nil {
+	if err := far.Do(func() error { return netnstest.SetLinkMTU(farLink, holeNarrowed-vlanSlack) }); err != nil {
 		t.Fatalf("narrow the hole: %v", err)
 	}
 	narrowed := esp.Inner(holeNarrowed, 20)
@@ -176,7 +170,7 @@ func TestTUNStreamKeepsFlowingThroughABlackHole(t *testing.T) {
 
 // newHoleMesh builds alpha on a tun in the test's namespace and bravo on a tun in far's, joined by the veth pair holePair makes
 // it returns the two nodes, not yet running, and the index of bravo's end of the pair
-func newHoleMesh(t *testing.T, far *namespaceThread) (alpha, bravo *loopbackNode, farLink int) {
+func newHoleMesh(t *testing.T, far *netnstest.Thread) (alpha, bravo *loopbackNode, farLink int) {
 	t.Helper()
 	nodes, private, reg := writeMesh(t, [2]uint16{holePort, holePort}, [2]string{holeAlpha.Addr().String(), holeBravo.Addr().String()})
 	alpha, bravo = nodes[0], nodes[1]
@@ -188,7 +182,7 @@ func newHoleMesh(t *testing.T, far *namespaceThread) (alpha, bravo *loopbackNode
 	}
 	t.Cleanup(alphaMesh.Close)
 	var bravoMesh *netstack.Mesh
-	if err := far.do(func() (err error) {
+	if err := far.Do(func() (err error) {
 		bravoMesh, err = netstack.NewNamed(0, "bhbravo", nil)
 		return err
 	}); err != nil {
@@ -201,7 +195,7 @@ func newHoleMesh(t *testing.T, far *namespaceThread) (alpha, bravo *loopbackNode
 	if alpha.client, err = newClient(alpha.cfg, private, x, alphaMesh, nil, alpha.events); err != nil {
 		t.Fatalf("build alpha: %v", err)
 	}
-	if err := far.do(func() (err error) {
+	if err := far.Do(func() (err error) {
 		bravo.client, err = newClient(bravo.cfg, private, x, bravoMesh, nil, bravo.events)
 		return err
 	}); err != nil {
@@ -217,25 +211,25 @@ func newHoleMesh(t *testing.T, far *namespaceThread) (alpha, bravo *loopbackNode
 // holePair makes the veth pair between the test's namespace and far's, alpha's end at holeNear and bravo's dropping IPv4 packets past holeWire
 // alpha's end takes one segment at a time, and each end and each tun gets its address, each namespace a route to the other node's prefix through its tun
 // it returns the index of bravo's end
-func holePair(t *testing.T, far *namespaceThread, alphaTUN, bravoTUN string) int {
+func holePair(t *testing.T, far *netnstest.Thread, alphaTUN, bravoTUN string) int {
 	t.Helper()
-	other, err := unix.Open(far.path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	other, err := unix.Open(far.Path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		t.Fatalf("open bravo's namespace: %v", err)
 	}
 	defer unix.Close(other)
-	peer := slices.Concat(ifinfo(0, 0), rtattr(unix.IFLA_IFNAME, cstring("bhb")), rtattr(unix.IFLA_MTU, u32(holeWire-vlanSlack)),
-		rtattr(unix.IFLA_NET_NS_FD, u32(uint32(other))))
-	kind := slices.Concat(rtattr(unix.IFLA_INFO_KIND, cstring("veth")), rtattr(unix.IFLA_INFO_DATA, rtattr(vethPeer, peer)))
-	pair := slices.Concat(ifinfo(0, 0), rtattr(unix.IFLA_IFNAME, cstring("bha")), rtattr(unix.IFLA_MTU, u32(holeNear)),
-		rtattr(unix.IFLA_GSO_MAX_SEGS, u32(1)), rtattr(unix.IFLA_LINKINFO, kind))
-	if err := addressEnds(func(netlink netlinkRoute) error {
-		return netlink.request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL, pair)
+	peer := slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString("bhb")), netnstest.Attr(unix.IFLA_MTU, netnstest.U32(holeWire-vlanSlack)),
+		netnstest.Attr(unix.IFLA_NET_NS_FD, netnstest.U32(uint32(other))))
+	kind := slices.Concat(netnstest.Attr(unix.IFLA_INFO_KIND, netnstest.CString("veth")), netnstest.Attr(unix.IFLA_INFO_DATA, netnstest.Attr(netnstest.VethPeer, peer)))
+	pair := slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString("bha")), netnstest.Attr(unix.IFLA_MTU, netnstest.U32(holeNear)),
+		netnstest.Attr(unix.IFLA_GSO_MAX_SEGS, netnstest.U32(1)), netnstest.Attr(unix.IFLA_LINKINFO, kind))
+	if err := addressEnds(func(netlink netnstest.Netlink) error {
+		return netlink.Request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL, pair)
 	}, "bha", holeAlpha, alphaTUN, alphaHost, bravoHost); err != nil {
 		t.Fatalf("make and address alpha's end: %v", err)
 	}
 	var farLink int
-	if err := far.do(func() error {
+	if err := far.Do(func() error {
 		link, err := net.InterfaceByName("bhb")
 		if err != nil {
 			return err
@@ -251,12 +245,12 @@ func holePair(t *testing.T, far *namespaceThread, alphaTUN, bravoTUN string) int
 // addressEnds runs first, then gives the link named veth the address underlay and brings it up
 // and gives the tun named tun the address host and a route to the prefix of the other node's address through it
 // in the namespace of the calling thread
-func addressEnds(first func(netlinkRoute) error, veth string, underlay netip.Prefix, tun string, host, other netip.Prefix) error {
-	netlink, err := openNetlinkRoute()
+func addressEnds(first func(netnstest.Netlink) error, veth string, underlay netip.Prefix, tun string, host, other netip.Prefix) error {
+	netlink, err := netnstest.OpenNetlink()
 	if err != nil {
 		return err
 	}
-	defer netlink.close()
+	defer netlink.Close()
 	if first != nil {
 		if err := first(netlink); err != nil {
 			return err
@@ -270,27 +264,17 @@ func addressEnds(first func(netlinkRoute) error, veth string, underlay netip.Pre
 		if err != nil {
 			return err
 		}
-		if err := netlink.addAddress(link.Index, end.address); err != nil {
+		if err := netlink.AddAddress(link.Index, end.address); err != nil {
 			return fmt.Errorf("add %s to %s: %w", end.address, end.name, err)
 		}
 		if end.name == tun {
 			prefix := netip.PrefixFrom(other.Addr(), 64).Masked()
-			if err := netlink.routeThrough(link.Index, prefix); err != nil {
+			if err := netlink.RouteThrough(link.Index, prefix); err != nil {
 				return fmt.Errorf("route %s through %s: %w", prefix, end.name, err)
 			}
 		}
 	}
 	return nil
-}
-
-// setLinkMTU sets the MTU of the link at index in the namespace of the calling thread
-func setLinkMTU(index, mtu int) error {
-	netlink, err := openNetlinkRoute()
-	if err != nil {
-		return err
-	}
-	defer netlink.close()
-	return netlink.request(unix.RTM_NEWLINK, 0, slices.Concat(ifinfo(index, 0), rtattr(unix.IFLA_MTU, u32(uint32(mtu)))))
 }
 
 // IKE moves a session under the floor to an endpoint of the other family
@@ -303,14 +287,14 @@ func setLinkMTU(index, mtu int) error {
 // the test holds the namespace kernelNamespace claims for the whole process
 func TestSessionMovedUnderTheFloorHandsItsFragmentingOver(t *testing.T) {
 	kernelNamespace(t)
-	netlink, err := openNetlinkRoute()
+	netlink, err := netnstest.OpenNetlink()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(netlink.close)
-	kind := rtattr(unix.IFLA_INFO_KIND, cstring("dummy"))
-	link := slices.Concat(ifinfo(0, 0), rtattr(unix.IFLA_IFNAME, cstring("narrow")), rtattr(unix.IFLA_MTU, u32(handoverMTU)), rtattr(unix.IFLA_LINKINFO, kind))
-	if err := netlink.request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL, link); err != nil {
+	t.Cleanup(netlink.Close)
+	kind := netnstest.Attr(unix.IFLA_INFO_KIND, netnstest.CString("dummy"))
+	link := slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString("narrow")), netnstest.Attr(unix.IFLA_MTU, netnstest.U32(handoverMTU)), netnstest.Attr(unix.IFLA_LINKINFO, kind))
+	if err := netlink.Request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL, link); err != nil {
 		t.Fatalf("make the dummy link: %v", err)
 	}
 	narrow, err := net.InterfaceByName("narrow")
@@ -319,12 +303,12 @@ func TestSessionMovedUnderTheFloorHandsItsFragmentingOver(t *testing.T) {
 	}
 	// the tests after it in the process find the namespace as the claim left it
 	t.Cleanup(func() {
-		if err := netlink.request(unix.RTM_DELLINK, 0, ifinfo(narrow.Index, 0)); err != nil {
+		if err := netlink.Request(unix.RTM_DELLINK, 0, netnstest.IfInfo(narrow.Index, 0)); err != nil {
 			t.Errorf("delete the dummy link: %v", err)
 		}
 	})
 	for _, address := range []string{"192.0.2.1/24", "2001:db8::1/64"} {
-		if err := netlink.addAddress(narrow.Index, netip.MustParsePrefix(address)); err != nil {
+		if err := netlink.AddAddress(narrow.Index, netip.MustParsePrefix(address)); err != nil {
 			t.Fatalf("add %s to the dummy link: %v", address, err)
 		}
 	}
@@ -379,31 +363,31 @@ func TestSessionLowersItsBudgetAtTheRefusalOfItsOwnData(t *testing.T) {
 		return verdict == netstack.RoutePeer && peer != nil && peer.MTU() == netstack.DefaultMTU
 	})
 
-	netlink, err := openNetlinkRoute()
+	netlink, err := netnstest.OpenNetlink()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer netlink.close()
+	defer netlink.Close()
 	tun, err := net.InterfaceByName(mesh.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := netlink.addAddress(tun.Index, bravoHost); err != nil {
+	if err := netlink.AddAddress(tun.Index, bravoHost); err != nil {
 		t.Fatalf("add %s to bravo's tun: %v", bravoHost, err)
 	}
-	if err := netlink.routeThrough(tun.Index, alpha.prefix); err != nil {
+	if err := netlink.RouteThrough(tun.Index, alpha.prefix); err != nil {
 		t.Fatalf("route %s through bravo's tun: %v", alpha.prefix, err)
 	}
 	loopback, err := net.InterfaceByName("lo")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := setLinkMTU(loopback.Index, narrowedLoopback); err != nil {
+	if err := netnstest.SetLinkMTU(loopback.Index, narrowedLoopback); err != nil {
 		t.Fatalf("narrow loopback: %v", err)
 	}
 	// the tests after it in the process find loopback as the claim left it
 	t.Cleanup(func() {
-		if err := setLinkMTU(loopback.Index, loopback.MTU); err != nil {
+		if err := netnstest.SetLinkMTU(loopback.Index, loopback.MTU); err != nil {
 			t.Errorf("widen loopback again: %v", err)
 		}
 	})
@@ -421,136 +405,3 @@ func TestSessionLowersItsBudgetAtTheRefusalOfItsOwnData(t *testing.T) {
 		return slices.Contains(searchRecord(bravo.events), refusal)
 	})
 }
-
-// namespaceThread runs functions on a thread of its own, in a network namespace of its own that held nothing, whose loopback is up
-// the thread stays locked, and the runtime retires it and its hold on the namespace with the goroutine
-type namespaceThread struct {
-	// path opens the namespace from another thread
-	path string
-	work chan func()
-}
-
-func startNamespaceThread(t *testing.T) *namespaceThread {
-	t.Helper()
-	n := &namespaceThread{work: make(chan func())}
-	started := make(chan error, 1)
-	go func() {
-		runtime.LockOSThread()
-		err := enterEmptyNetwork()
-		n.path = fmt.Sprintf("/proc/%d/task/%d/ns/net", os.Getpid(), unix.Gettid())
-		started <- err
-		if err != nil {
-			return
-		}
-		for f := range n.work {
-			f()
-		}
-	}()
-	if err := <-started; err != nil {
-		t.Fatalf("start a thread in a network namespace of its own: %v", err)
-	}
-	t.Cleanup(func() { close(n.work) })
-	return n
-}
-
-// do runs f on the namespace's thread and returns what it returned
-func (n *namespaceThread) do(f func() error) error {
-	done := make(chan error, 1)
-	n.work <- func() { done <- f() }
-	return <-done
-}
-
-// netlinkRoute is a route netlink socket in the network namespace of the thread that opened it
-type netlinkRoute int
-
-func openNetlinkRoute() (netlinkRoute, error) {
-	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
-	if err != nil {
-		return -1, fmt.Errorf("open route netlink: %w", err)
-	}
-	return netlinkRoute(fd), nil
-}
-
-func (n netlinkRoute) close() { _ = unix.Close(int(n)) }
-
-// request sends one message and answers the error the kernel acknowledged it with
-func (n netlinkRoute) request(kind, flags uint16, body []byte) error {
-	return acknowledged(int(n), netlinkMessage(kind, flags|unix.NLM_F_ACK, body))
-}
-
-// netlinkMessage is one netlink request of kind carrying body, with flags added
-func netlinkMessage(kind, flags uint16, body []byte) []byte {
-	message := make([]byte, unix.NLMSG_HDRLEN, unix.NLMSG_HDRLEN+len(body))
-	message = append(message, body...)
-	binary.NativeEndian.PutUint32(message[0:], uint32(len(message)))
-	binary.NativeEndian.PutUint16(message[4:], kind)
-	binary.NativeEndian.PutUint16(message[6:], flags|unix.NLM_F_REQUEST)
-	return message
-}
-
-// acknowledged sends the messages in raw, one of them asking for an acknowledgment, on the netlink socket fd and answers the error the kernel acknowledged it with
-func acknowledged(fd int, raw []byte) error {
-	if err := unix.Sendto(fd, raw, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
-		return err
-	}
-	reply := make([]byte, os.Getpagesize())
-	got, _, err := unix.Recvfrom(fd, reply, 0)
-	if err != nil {
-		return err
-	}
-	messages, err := syscall.ParseNetlinkMessage(reply[:got])
-	if err != nil {
-		return err
-	}
-	if len(messages) != 1 || messages[0].Header.Type != unix.NLMSG_ERROR || len(messages[0].Data) < 4 {
-		return errors.New("the kernel answered with something other than an acknowledgment")
-	}
-	if errno := -int32(binary.NativeEndian.Uint32(messages[0].Data)); errno != 0 {
-		return unix.Errno(errno)
-	}
-	return nil
-}
-
-// addAddress gives link index address without duplicate address detection, then brings the link up
-func (n netlinkRoute) addAddress(index int, address netip.Prefix) error {
-	family := byte(unix.AF_INET6)
-	if address.Addr().Is4() {
-		family = unix.AF_INET
-	}
-	header := []byte{family, byte(address.Bits()), unix.IFA_F_NODAD, unix.RT_SCOPE_UNIVERSE, 0, 0, 0, 0}
-	binary.NativeEndian.PutUint32(header[4:], uint32(index))
-	raw := address.Addr().AsSlice()
-	if err := n.request(unix.RTM_NEWADDR, unix.NLM_F_CREATE|unix.NLM_F_EXCL, slices.Concat(header, rtattr(unix.IFA_LOCAL, raw), rtattr(unix.IFA_ADDRESS, raw))); err != nil {
-		return err
-	}
-	return n.request(unix.RTM_NEWLINK, 0, ifinfo(index, unix.IFF_UP))
-}
-
-// routeThrough routes the IPv6 prefix to over link index in the main table
-func (n netlinkRoute) routeThrough(index int, to netip.Prefix) error {
-	header := []byte{unix.AF_INET6, byte(to.Bits()), 0, 0, unix.RT_TABLE_MAIN, unix.RTPROT_BOOT, unix.RT_SCOPE_UNIVERSE, unix.RTN_UNICAST, 0, 0, 0, 0}
-	body := slices.Concat(header, rtattr(unix.RTA_DST, to.Addr().AsSlice()), rtattr(unix.RTA_OIF, u32(uint32(index))))
-	return n.request(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, body)
-}
-
-// ifinfo is an ifinfomsg for link index that sets flags and changes nothing else
-func ifinfo(index int, flags uint32) []byte {
-	message := make([]byte, unix.SizeofIfInfomsg)
-	binary.NativeEndian.PutUint32(message[4:], uint32(index))
-	binary.NativeEndian.PutUint32(message[8:], flags)
-	binary.NativeEndian.PutUint32(message[12:], flags)
-	return message
-}
-
-func rtattr(kind uint16, value []byte) []byte {
-	length := unix.SizeofRtAttr + len(value)
-	encoded := make([]byte, (length+unix.RTA_ALIGNTO-1)&^(unix.RTA_ALIGNTO-1))
-	binary.NativeEndian.PutUint16(encoded[0:], uint16(length))
-	binary.NativeEndian.PutUint16(encoded[2:], kind)
-	copy(encoded[unix.SizeofRtAttr:], value)
-	return encoded
-}
-
-func u32(value uint32) []byte { return binary.NativeEndian.AppendUint32(nil, value) }
-
-func cstring(value string) []byte { return append([]byte(value), 0) }

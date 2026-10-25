@@ -30,6 +30,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 )
 
@@ -101,7 +102,7 @@ func claimNamespace() (string, error) {
 	if len(routes) != 0 {
 		return "", fmt.Errorf("refusing to start: this network namespace holds %d routes, so it was not made for this process, and unshare -rn makes one that was", len(routes))
 	}
-	return "", bringUp("lo")
+	return "", netnstest.BringUp("lo")
 }
 
 // kernelRoute is one route a dump of the namespace reads back

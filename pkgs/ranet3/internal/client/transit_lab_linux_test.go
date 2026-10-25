@@ -34,6 +34,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -151,7 +152,7 @@ func TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter(t *testing
 	t.Run("an IPv6 link-local source", func(t *testing.T) {
 		// RFC 4443 section 3.1 code 2, beyond the scope of the source, sent back on the session the packet came through
 		var capture int
-		if err := a.ns.do(func() (err error) {
+		if err := a.ns.Do(func() (err error) {
 			capture, err = openCapture(a.client.Mesh.Name, labRetry)
 			return err
 		}); err != nil {
@@ -164,7 +165,7 @@ func TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter(t *testing
 		copy(raw[8:], linkLocal.AsSlice())
 		copy(raw[24:], lineC[6].AsSlice())
 		fd := -1
-		if err := a.ns.do(func() (err error) {
+		if err := a.ns.Do(func() (err error) {
 			fd, err = unix.Socket(unix.AF_INET6, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_RAW)
 			return err
 		}); err != nil {
@@ -185,7 +186,7 @@ func TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter(t *testing
 		bare := *b.cfg
 		bare.Cap.Route = nil
 		writeConfig(t, b.configPath, &bare)
-		if err := b.ns.do(func() error { return b.client.ReloadFrom(b.configPath) }); err != nil {
+		if err := b.ns.Do(func() error { return b.client.ReloadFrom(b.configPath) }); err != nil {
 			t.Fatalf("b's reload to announce nothing was refused: %v", err)
 		}
 		if got := b.client.Mesh.AnswerSources(); got != (netstack.AnswerSources{}) {
@@ -356,19 +357,19 @@ func TestTUNExitEgressesEachShapeOfTheInternetTranslated(t *testing.T) {
 				labRouteTUN(t, l, netip.PrefixFrom(linkLocal, linkLocal.BitLen()))
 				labRoutes(t, l, metadata, linkLocal)
 				// i holds the IPv6 one on its end of the uplink, so a datagram e's host forwarded there would reach the capture
-				if err := i.ns.do(func() error {
-					netlink, err := openNetlinkRoute()
+				if err := i.ns.Do(func() error {
+					netlink, err := netnstest.OpenNetlink()
 					if err != nil {
 						return err
 					}
-					defer netlink.close()
+					defer netlink.Close()
 					return labAddress(netlink, "vdb", netip.PrefixFrom(linkLocal, 64))
 				}); err != nil {
 					t.Fatalf("give i %s: %v", linkLocal, err)
 				}
 				control := []byte("from e's host to i's link-local address")
 				labReceive(t, listener, control, func() {
-					if err := e.ns.do(func() error {
+					if err := e.ns.Do(func() error {
 						conn, err := net.DialUDP("udp6", nil, &net.UDPAddr{IP: linkLocal.AsSlice(), Port: lineListen, Zone: "vbd"})
 						if err != nil {
 							return err
@@ -381,7 +382,7 @@ func TestTUNExitEgressesEachShapeOfTheInternetTranslated(t *testing.T) {
 					}
 				})
 				var zone uint32
-				if err := l.ns.do(func() error {
+				if err := l.ns.Do(func() error {
 					link, err := net.InterfaceByName(l.client.Mesh.Name)
 					if err == nil {
 						zone = uint32(link.Index)
@@ -429,7 +430,7 @@ func labSendRaw(t *testing.T, node *labNode, raw []byte, to netip.Addr, zone uin
 	if to.Is4() {
 		domain, address = unix.AF_INET, &unix.SockaddrInet4{Addr: to.As4()}
 	}
-	if err := node.ns.do(func() error {
+	if err := node.ns.Do(func() error {
 		fd, err := unix.Socket(domain, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_RAW)
 		if err != nil {
 			return err
@@ -471,7 +472,7 @@ func TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment(t *testing.T)
 			cfg.Cap.Border.Overlay = append(cfg.Cap.Border.Overlay, schema.PrefixFrom(prefix))
 		}
 	})
-	if err := startNamespaceThread(t).do(func() (err error) {
+	if err := netnstest.StartThread(t).Do(func() (err error) {
 		c.Mesh, err = netstack.NewNamed(0, labTUN, nil)
 		return err
 	}); err != nil {
@@ -525,17 +526,17 @@ func TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment(t *testing.T)
 // and returns i and a capture of i's end of it
 func labExitUplink(t *testing.T, e *labNode) (*labNode, int) {
 	t.Helper()
-	i := &labNode{loopbackNode: &loopbackNode{name: "lab-i"}, ns: startNamespaceThread(t)}
+	i := &labNode{loopbackNode: &loopbackNode{name: "lab-i"}, ns: netnstest.StartThread(t)}
 	labPair(t, e, i, labLink{places: [2]int{1, 3}, ends: [2]netip.Prefix{exitUplink[0][0], exitUplink[1][0]}})
 	// as labPair names the two ends of the pair joining places 1 and 3
 	uplink := [2]string{"vbd", "vdb"}
 	for side, end := range []*labNode{e, i} {
-		if err := end.ns.do(func() error {
-			netlink, err := openNetlinkRoute()
+		if err := end.ns.Do(func() error {
+			netlink, err := netnstest.OpenNetlink()
 			if err != nil {
 				return err
 			}
-			defer netlink.close()
+			defer netlink.Close()
 			if err := labAddress(netlink, uplink[side], exitUplink[side][1]); err != nil || side == 1 {
 				return err
 			}
@@ -558,7 +559,7 @@ func labExitUplink(t *testing.T, e *labNode) (*labNode, int) {
 		}
 	}
 	var capture int
-	if err := i.ns.do(func() (err error) {
+	if err := i.ns.Do(func() (err error) {
 		capture, err = openCapture(uplink[1], labRetry)
 		return err
 	}); err != nil {
@@ -569,12 +570,12 @@ func labExitUplink(t *testing.T, e *labNode) (*labNode, int) {
 }
 
 // labTranslator builds the translator main builds for client's cap.egress, in ns, and hands client its announcement
-func labTranslator(t *testing.T, ns *namespaceThread, client *Client, bus *events.Bus) *egress.Translator {
+func labTranslator(t *testing.T, ns *netnstest.Thread, client *Client, bus *events.Bus) *egress.Translator {
 	t.Helper()
 	cfg := client.config()
-	in := func(f func()) { _ = ns.do(func() error { f(); return nil }) }
+	in := func(f func()) { _ = ns.Do(func() error { f(); return nil }) }
 	var translator *egress.Translator
-	if err := ns.do(func() (err error) {
+	if err := ns.Do(func() (err error) {
 		translator, err = egress.New(*cfg.Egress(), egress.Runtime{
 			Interface:     client.Mesh.Name,
 			MeshAddresses: MeshAddresses(cfg),
@@ -619,7 +620,7 @@ func labTranslate(t *testing.T, node *labNode) {
 // labForwardedNothing fails the test where node's kernel forwarded a packet of either family or read one from node's tun
 func labForwardedNothing(t *testing.T, node *labNode) {
 	t.Helper()
-	if err := node.ns.do(func() error {
+	if err := node.ns.Do(func() error {
 		for _, counter := range []struct{ file, name string }{
 			{"/proc/thread-self/net/snmp", "ForwDatagrams"},
 			{"/proc/thread-self/net/snmp6", "Ip6OutForwDatagrams"},
@@ -703,7 +704,7 @@ func TestTUNLineRefusesTransitWhileItIsOffButNotThroughAnEndDT46SID(t *testing.T
 		moved := *b.cfg
 		moved.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.PrefixFrom(labOverlay[1])}}
 		writeConfig(t, b.configPath, &moved)
-		if err := b.ns.do(func() error { return b.client.ReloadFrom(b.configPath) }); err != nil {
+		if err := b.ns.Do(func() error { return b.client.ReloadFrom(b.configPath) }); err != nil {
 			t.Fatalf("b's reload moving its overlay off IPv4 was refused: %v", err)
 		}
 		if got := answer(); got.kind != v4.unreachable || got.code != networkUnreachable || got.from != lineB[4] {
@@ -782,7 +783,7 @@ type labLink struct {
 // labNode is a lab mesh's node, built on a tun of its own in the namespace ns holds
 type labNode struct {
 	*loopbackNode
-	ns *namespaceThread
+	ns *netnstest.Thread
 }
 
 // startLab builds a node for each of specs, not yet running, joined by links
@@ -806,13 +807,13 @@ func startLab(t *testing.T, specs []labSpec, links []labLink) []*labNode {
 	// serials[i][j] is the serial of i's endpoint on its link to j
 	serials := make([]map[int]string, len(specs))
 	for i := range specs {
-		nodes[i] = &labNode{loopbackNode: &loopbackNode{name: fmt.Sprintf("lab-%c-%d", 'a'+i, mesh), port: labMeshPort, events: events.New()}, ns: startNamespaceThread(t)}
+		nodes[i] = &labNode{loopbackNode: &loopbackNode{name: fmt.Sprintf("lab-%c-%d", 'a'+i, mesh), port: labMeshPort, events: events.New()}, ns: netnstest.StartThread(t)}
 		serials[i] = map[int]string{}
 		value := []byte("0\n")
 		if specs[i].forwards {
 			value = []byte("1\n")
 		}
-		if err := nodes[i].ns.do(func() error {
+		if err := nodes[i].ns.Do(func() error {
 			for _, path := range []string{"/proc/sys/net/ipv4/ip_forward", "/proc/sys/net/ipv6/conf/all/forwarding"} {
 				if err := os.WriteFile(path, value, 0o644); err != nil {
 					return err
@@ -891,7 +892,7 @@ func startLab(t *testing.T, specs []labSpec, links []labLink) []*labNode {
 		if err != nil {
 			t.Fatalf("%s: %v", node.name, err)
 		}
-		if err := node.ns.do(func() (err error) {
+		if err := node.ns.Do(func() (err error) {
 			meshes[i], err = netstack.NewNamed(mtu, fmt.Sprintf("mesh%c", 'a'+i), node.events.Emit)
 			return err
 		}); err != nil {
@@ -908,12 +909,12 @@ func startLab(t *testing.T, specs []labSpec, links []labLink) []*labNode {
 		if len(spec.hosts) == 0 {
 			continue
 		}
-		if err := nodes[i].ns.do(func() error {
-			netlink, err := openNetlinkRoute()
+		if err := nodes[i].ns.Do(func() error {
+			netlink, err := netnstest.OpenNetlink()
 			if err != nil {
 				return err
 			}
-			defer netlink.close()
+			defer netlink.Close()
 			if err := labAddress(netlink, meshes[i].Name, spec.hosts...); err != nil {
 				return err
 			}
@@ -929,7 +930,7 @@ func startLab(t *testing.T, specs []labSpec, links []labLink) []*labNode {
 	}
 	x := trust(t, registry.Registry{org})
 	for i, node := range nodes {
-		if err := node.ns.do(func() (err error) {
+		if err := node.ns.Do(func() (err error) {
 			node.client, err = newClient(node.cfg, private, x, meshes[i], nil, node.events)
 			return err
 		}); err != nil {
@@ -949,25 +950,25 @@ func labPair(t *testing.T, here, there *labNode, link labLink) {
 	names := [2]string{fmt.Sprintf("v%c%c", 'a'+link.places[0], 'a'+link.places[1]), fmt.Sprintf("v%c%c", 'a'+link.places[1], 'a'+link.places[0])}
 	var mtu []byte
 	if link.mtu != 0 {
-		mtu = rtattr(unix.IFLA_MTU, u32(uint32(link.mtu)))
+		mtu = netnstest.Attr(unix.IFLA_MTU, netnstest.U32(uint32(link.mtu)))
 	}
-	other, err := unix.Open(there.ns.path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	other, err := unix.Open(there.ns.Path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		t.Fatalf("open %s's namespace: %v", there.name, err)
 	}
 	defer unix.Close(other)
-	peer := slices.Concat(ifinfo(0, 0), rtattr(unix.IFLA_IFNAME, cstring(names[1])), mtu, rtattr(unix.IFLA_NET_NS_FD, u32(uint32(other))))
-	kind := slices.Concat(rtattr(unix.IFLA_INFO_KIND, cstring("veth")), rtattr(unix.IFLA_INFO_DATA, rtattr(vethPeer, peer)))
-	pair := slices.Concat(ifinfo(0, 0), rtattr(unix.IFLA_IFNAME, cstring(names[0])), mtu, rtattr(unix.IFLA_LINKINFO, kind))
+	peer := slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString(names[1])), mtu, netnstest.Attr(unix.IFLA_NET_NS_FD, netnstest.U32(uint32(other))))
+	kind := slices.Concat(netnstest.Attr(unix.IFLA_INFO_KIND, netnstest.CString("veth")), netnstest.Attr(unix.IFLA_INFO_DATA, netnstest.Attr(netnstest.VethPeer, peer)))
+	pair := slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString(names[0])), mtu, netnstest.Attr(unix.IFLA_LINKINFO, kind))
 	for side, end := range []*labNode{here, there} {
-		if err := end.ns.do(func() error {
-			netlink, err := openNetlinkRoute()
+		if err := end.ns.Do(func() error {
+			netlink, err := netnstest.OpenNetlink()
 			if err != nil {
 				return err
 			}
-			defer netlink.close()
+			defer netlink.Close()
 			if side == 0 {
-				if err := netlink.request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL, pair); err != nil {
+				if err := netlink.Request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL, pair); err != nil {
 					return fmt.Errorf("make the veth pair: %w", err)
 				}
 			}
@@ -981,12 +982,12 @@ func labPair(t *testing.T, here, there *labNode, link labLink) {
 // labRouteTUN routes to through node's tun in its namespace
 func labRouteTUN(t *testing.T, node *labNode, to netip.Prefix) {
 	t.Helper()
-	if err := node.ns.do(func() error {
-		netlink, err := openNetlinkRoute()
+	if err := node.ns.Do(func() error {
+		netlink, err := netnstest.OpenNetlink()
 		if err != nil {
 			return err
 		}
-		defer netlink.close()
+		defer netlink.Close()
 		return labRouteDevice(netlink, unix.RTM_NEWROUTE, node.client.Mesh.Name, to)
 	}); err != nil {
 		t.Fatalf("route %s through %s's tun: %v", to, node.name, err)
@@ -1020,7 +1021,7 @@ func labSession(t *testing.T, node *labNode, address netip.Addr, mtu int) {
 func labListen(t *testing.T, node *labNode) *net.UDPConn {
 	t.Helper()
 	var listener *net.UDPConn
-	if err := node.ns.do(func() (err error) {
+	if err := node.ns.Do(func() (err error) {
 		listener, err = net.ListenUDP("udp", &net.UDPAddr{Port: lineListen})
 		return err
 	}); err != nil {
@@ -1090,7 +1091,7 @@ func labDatagrams(t *testing.T, node *labNode, family labFamily, to netip.Addr, 
 		options[family.hops] = hops
 	}
 	fd := -1
-	if err := node.ns.do(func() (err error) {
+	if err := node.ns.Do(func() (err error) {
 		if fd, err = unix.Socket(family.domain, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0); err != nil {
 			return err
 		}

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-//go:build linux
+//go:build linux && !android
 
 package client
 
@@ -9,13 +9,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"net"
 	"net/netip"
-	"os"
-	"runtime"
 	"slices"
-	"syscall"
 	"testing"
 	"time"
 
@@ -24,6 +20,7 @@ import (
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -48,7 +45,7 @@ const synPort = 443
 // and bravo counts the clamp, at the session for a SYN it carries bare and at the End.DT46 for a steered one
 func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 	const session = 1300
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	mesh, err := netstack.NewNamed(0, "synclamp0", nil)
 	if err != nil {
 		t.Fatalf("open bravo's mesh: %v", err)
@@ -131,7 +128,7 @@ func TestTUNFollowsAReloadOfLinkMTUOrTheSteering(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			enterEmptyNamespace(t)
+			netnstest.EnterEmpty(t)
 			c, path := startOnTUN(t, move.old)
 			if got := linkMTU(t, c.Mesh.Name); got != move.from {
 				t.Fatalf("New opened the tun at %d bytes, want %d", got, move.from)
@@ -321,73 +318,4 @@ func linkMTU(t *testing.T, name string) int {
 		t.Fatalf("look up %s: %v", name, err)
 	}
 	return link.MTU
-}
-
-// enterEmptyNamespace moves the test's thread into a network namespace of its own and brings its loopback up
-// and refuses to go on unless that namespace is new and held no route before
-// the tun, the sockets and the capture a test opens on its own goroutine live there
-// the thread stays locked
-// and the runtime retires it with the test rather than run another goroutine in the namespace
-func enterEmptyNamespace(t *testing.T) {
-	t.Helper()
-	if os.Getuid() != 0 {
-		t.Skip("creating a tun needs root on linux")
-	}
-	runtime.LockOSThread()
-	if err := enterEmptyNetwork(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// enterEmptyNetwork moves the calling thread, which its caller locked, into a new network namespace and brings its loopback up
-// and refuses to go on unless the namespace changed and holds no route
-func enterEmptyNetwork() error {
-	var before, after unix.Stat_t
-	if err := unix.Stat("/proc/thread-self/ns/net", &before); err != nil {
-		return fmt.Errorf("stat this thread's network namespace: %w", err)
-	}
-	if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
-		return fmt.Errorf("unshare a network namespace: %w", err)
-	}
-	if err := unix.Stat("/proc/thread-self/ns/net", &after); err != nil {
-		return fmt.Errorf("stat this thread's network namespace: %w", err)
-	}
-	if after.Ino == before.Ino {
-		return errors.New("refusing to continue: the network namespace did not change")
-	}
-	rib, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_UNSPEC)
-	if err != nil {
-		return fmt.Errorf("dump the routes of the new namespace: %w", err)
-	}
-	messages, err := syscall.ParseNetlinkMessage(rib)
-	if err != nil {
-		return fmt.Errorf("parse the route dump: %w", err)
-	}
-	for _, message := range messages {
-		if message.Header.Type == syscall.RTM_NEWROUTE {
-			return errors.New("refusing to continue: this network namespace already holds routes")
-		}
-	}
-	return bringUp("lo")
-}
-
-// bringUp sets the up flag of the link name, as netstack does for a tun it opens
-func bringUp(name string) error {
-	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		return fmt.Errorf("open a socket to bring %s up: %w", name, err)
-	}
-	defer unix.Close(fd)
-	ifr, err := unix.NewIfreq(name)
-	if err != nil {
-		return err
-	}
-	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
-		return fmt.Errorf("read the flags of %s: %w", name, err)
-	}
-	ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
-	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
-		return fmt.Errorf("bring %s up: %w", name, err)
-	}
-	return nil
 }

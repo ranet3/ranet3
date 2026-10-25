@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
+//go:build linux && !android
+
 package client
 
 import (
@@ -28,6 +30,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -75,15 +78,15 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
 	}
-	exit, far := startNamespaceThread(t), startNamespaceThread(t)
+	exit, far := netnstest.StartThread(t), netnstest.StartThread(t)
 	labUplink(t, exit, far, "")
 	// the exit routes every other destination out of its uplink to the far host, as an exit does, which the translator's lookups read
-	if err := exit.do(func() error {
-		netlink, err := openNetlinkRoute()
+	if err := exit.Do(func() error {
+		netlink, err := netnstest.OpenNetlink()
 		if err != nil {
 			return err
 		}
-		defer netlink.close()
+		defer netlink.Close()
 		uplink, err := net.InterfaceByName("labx")
 		if err != nil {
 			return err
@@ -110,7 +113,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	}
 	bus := events.New()
 	var node *Client
-	if err := exit.do(func() (err error) {
+	if err := exit.Do(func() (err error) {
 		node, err = New(cfg, bus)
 		return err
 	}); err != nil {
@@ -154,7 +157,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 
 	var routes *kernel.Reconciler
 	var border *egress.BorderFilter
-	if err := exit.do(func() (err error) {
+	if err := exit.Do(func() (err error) {
 		if border, err = egress.NewBorderFilter(*cfg.Cap.Border, node.BorderRuntime()); err != nil {
 			return err
 		}
@@ -191,7 +194,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 
 	t.Run("the exit's links", func(t *testing.T) {
 		var names []string
-		if err := exit.do(func() error {
+		if err := exit.Do(func() error {
 			links, err := net.Interfaces()
 			for _, link := range links {
 				names = append(names, link.Name)
@@ -207,7 +210,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	})
 
 	var listeners [2]*net.UDPConn
-	if err := far.do(func() error {
+	if err := far.Do(func() error {
 		for i, address := range []netip.Addr{labFar4.Addr(), labFar6.Addr()} {
 			conn, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(address, labPort)))
 			if err != nil {
@@ -223,7 +226,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 		t.Cleanup(func() { _ = conn.Close() })
 	}
 	var capture int
-	if err := exit.do(func() (err error) {
+	if err := exit.Do(func() (err error) {
 		capture, err = openCapture(node.Mesh.Name, labRetry)
 		return err
 	}); err != nil {
@@ -231,7 +234,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = unix.Close(capture) })
 	var uplink int
-	if err := far.do(func() (err error) {
+	if err := far.Do(func() (err error) {
 		uplink, err = openCapture("labf", labRetry)
 		return err
 	}); err != nil {
@@ -314,13 +317,13 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	// the lookups read each default at its read address, 128.0.0.0 and 8000::, from the read address of the leaf's prefix of its family
 	back := map[int]netip.Prefix{4: netip.MustParsePrefix("128.0.0.0/1"), 6: netip.MustParsePrefix("8000::/1")}
 	member := map[int]netip.Prefix{4: netip.MustParsePrefix("198.18.104.128/32"), 6: netip.MustParsePrefix("3fff:a:8000::/128")}
-	inNetlink := func(f func(netlinkRoute) error) func() error {
+	inNetlink := func(f func(netnstest.Netlink) error) func() error {
 		return func() error {
-			netlink, err := openNetlinkRoute()
+			netlink, err := netnstest.OpenNetlink()
 			if err != nil {
 				return err
 			}
-			defer netlink.close()
+			defer netlink.Close()
 			return f(netlink)
 		}
 	}
@@ -332,10 +335,10 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 		undone := false
 		t.Cleanup(func() {
 			if !undone {
-				_ = exit.do(undo)
+				_ = exit.Do(undo)
 			}
 		})
-		if err := exit.do(change); err != nil {
+		if err := exit.Do(change); err != nil {
 			t.Fatalf("hold %s: %v", arm.name, err)
 		}
 		waitFor(t, convergeBudget, arm.name+" not ready by "+reason+", its default and the SID's /128 retracted", func() bool {
@@ -348,7 +351,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 		send(udpPacket(arm.leaf, arm.far, labLeafPort, labPort, payload))
 		labQuietFor(t, arm.listener, payload)
 		undone = true
-		if err := exit.do(undo); err != nil {
+		if err := exit.Do(undo); err != nil {
 			t.Fatalf("undo the hold of %s: %v", arm.name, err)
 		}
 		waitFor(t, convergeBudget, "both families served again once the hold of "+arm.name+" went", serving)
@@ -356,10 +359,10 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	for _, arm := range arms {
 		t.Run(arm.name+" lookup sent back into the tun", func(t *testing.T) {
 			held(t, arm, "leaves by "+labTUN+" again",
-				inNetlink(func(netlink netlinkRoute) error {
+				inNetlink(func(netlink netnstest.Netlink) error {
 					return labRouteDevice(netlink, unix.RTM_NEWROUTE, labTUN, back[arm.family])
 				}),
-				inNetlink(func(netlink netlinkRoute) error {
+				inNetlink(func(netlink netnstest.Netlink) error {
 					return labRouteDevice(netlink, unix.RTM_DELROUTE, labTUN, back[arm.family])
 				}))
 		})
@@ -378,7 +381,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				rule := func(kind uint16) func() error {
-					return inNetlink(func(netlink netlinkRoute) error {
+					return inNetlink(func(netlink netnstest.Netlink) error {
 						return labRuleToMain(netlink, kind, "labx", member[arm.family], labAheadPriority)
 					})
 				}
@@ -446,7 +449,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 
 	t.Run("another writer deleting the ip table", func(t *testing.T) {
 		mark := len(readiness(bus))
-		if err := exit.do(func() error { return labDeleteTable(unix.NFPROTO_IPV4, egress.TableName) }); err != nil {
+		if err := exit.Do(func() error { return labDeleteTable(unix.NFPROTO_IPV4, egress.TableName) }); err != nil {
 			t.Fatalf("delete the ip table: %v", err)
 		}
 		waitFor(t, convergeBudget, "the translator to report the egress segments not ready and then ready again", func() bool {
@@ -461,12 +464,12 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 		spec := "drop ipv6 destination " + labSID.String()
 		dropped := borderDropped(t, exit, border, spec)
 		before := node.Mesh.SegmentCounters()
-		if err := far.do(func() error {
-			netlink, err := openNetlinkRoute()
+		if err := far.Do(func() error {
+			netlink, err := netnstest.OpenNetlink()
 			if err != nil {
 				return err
 			}
-			defer netlink.close()
+			defer netlink.Close()
 			uplink, err := net.InterfaceByName("labf")
 			if err != nil {
 				return err
@@ -498,7 +501,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	})
 
 	stop()
-	if err := exit.do(func() error {
+	if err := exit.Do(func() error {
 		if _, err := net.InterfaceByName(labTUN); err == nil {
 			return fmt.Errorf("%s outlived the node", labTUN)
 		}
@@ -593,7 +596,7 @@ func labOriginated(c *Client, prefix netip.Prefix) bool {
 }
 
 // labRouteDevice adds or deletes, as kind says, the route to through the link name in the main table of the calling thread's namespace, with no gateway
-func labRouteDevice(netlink netlinkRoute, kind uint16, name string, to netip.Prefix) error {
+func labRouteDevice(netlink netnstest.Netlink, kind uint16, name string, to netip.Prefix) error {
 	link, err := net.InterfaceByName(name)
 	if err != nil {
 		return err
@@ -603,31 +606,31 @@ func labRouteDevice(netlink netlinkRoute, kind uint16, name string, to netip.Pre
 		family, scope = unix.AF_INET, unix.RT_SCOPE_LINK
 	}
 	header := []byte{family, byte(to.Bits()), 0, 0, unix.RT_TABLE_MAIN, unix.RTPROT_BOOT, scope, unix.RTN_UNICAST, 0, 0, 0, 0}
-	body := slices.Concat(header, rtattr(unix.RTA_DST, to.Addr().AsSlice()), rtattr(unix.RTA_OIF, u32(uint32(link.Index))))
+	body := slices.Concat(header, netnstest.Attr(unix.RTA_DST, to.Addr().AsSlice()), netnstest.Attr(unix.RTA_OIF, netnstest.U32(uint32(link.Index))))
 	var flags uint16
 	if kind == unix.RTM_NEWROUTE {
 		flags = unix.NLM_F_CREATE | unix.NLM_F_EXCL
 	}
-	if err := netlink.request(kind, flags, body); err != nil {
+	if err := netlink.Request(kind, flags, body); err != nil {
 		return fmt.Errorf("route %s through %s: %w", to, name, err)
 	}
 	return nil
 }
 
 // labRuleToMain adds or deletes, as kind says, the rule sending a packet arriving on iif for to to the main table at priority, in the calling thread's namespace
-func labRuleToMain(netlink netlinkRoute, kind uint16, iif string, to netip.Prefix, priority uint32) error {
+func labRuleToMain(netlink netnstest.Netlink, kind uint16, iif string, to netip.Prefix, priority uint32) error {
 	family := byte(unix.AF_INET6)
 	if to.Addr().Is4() {
 		family = unix.AF_INET
 	}
 	// struct fib_rule_hdr of include/uapi/linux/fib_rules.h
 	header := []byte{family, byte(to.Bits()), 0, 0, unix.RT_TABLE_MAIN, 0, 0, unix.FR_ACT_TO_TBL, 0, 0, 0, 0}
-	body := slices.Concat(header, rtattr(unix.FRA_IIFNAME, cstring(iif)), rtattr(unix.FRA_DST, to.Addr().AsSlice()), rtattr(unix.FRA_PRIORITY, u32(priority)))
+	body := slices.Concat(header, netnstest.Attr(unix.FRA_IIFNAME, netnstest.CString(iif)), netnstest.Attr(unix.FRA_DST, to.Addr().AsSlice()), netnstest.Attr(unix.FRA_PRIORITY, netnstest.U32(priority)))
 	var flags uint16
 	if kind == unix.RTM_NEWRULE {
 		flags = unix.NLM_F_CREATE | unix.NLM_F_EXCL
 	}
-	if err := netlink.request(kind, flags, body); err != nil {
+	if err := netlink.Request(kind, flags, body); err != nil {
 		return fmt.Errorf("rule for %s arriving on %s: %w", to, iif, err)
 	}
 	return nil
@@ -662,25 +665,25 @@ func labConfig(t *testing.T) *config.Config {
 // master is not empty, a VRF of that name bound to the mesh table is made
 // first and the exit's end joins it before it is addressed. A kernel with no
 // VRF support skips the test, as the reconciler's own VRF test does.
-func labUplink(t *testing.T, exit, far *namespaceThread, master string) {
+func labUplink(t *testing.T, exit, far *netnstest.Thread, master string) {
 	t.Helper()
 	var unsupported error
-	if err := exit.do(func() error {
+	if err := exit.Do(func() error {
 		for _, path := range []string{"/proc/sys/net/ipv4/ip_forward", "/proc/sys/net/ipv6/conf/all/forwarding"} {
 			if err := os.WriteFile(path, []byte("1\n"), 0o644); err != nil {
 				return err
 			}
 		}
-		netlink, err := openNetlinkRoute()
+		netlink, err := netnstest.OpenNetlink()
 		if err != nil {
 			return err
 		}
-		defer netlink.close()
+		defer netlink.Close()
 		var enslave []byte
 		if master != "" {
-			vrf := slices.Concat(rtattr(unix.IFLA_INFO_KIND, cstring("vrf")), rtattr(unix.IFLA_INFO_DATA, rtattr(unix.IFLA_VRF_TABLE, u32(kernel.DefaultTable))))
-			if err := netlink.request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL,
-				slices.Concat(ifinfo(0, unix.IFF_UP), rtattr(unix.IFLA_IFNAME, cstring(master)), rtattr(unix.IFLA_LINKINFO, vrf))); err != nil {
+			vrf := slices.Concat(netnstest.Attr(unix.IFLA_INFO_KIND, netnstest.CString("vrf")), netnstest.Attr(unix.IFLA_INFO_DATA, netnstest.Attr(unix.IFLA_VRF_TABLE, netnstest.U32(kernel.DefaultTable))))
+			if err := netlink.Request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL,
+				slices.Concat(netnstest.IfInfo(0, unix.IFF_UP), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString(master)), netnstest.Attr(unix.IFLA_LINKINFO, vrf))); err != nil {
 				unsupported = err
 				return nil
 			}
@@ -688,17 +691,17 @@ func labUplink(t *testing.T, exit, far *namespaceThread, master string) {
 			if err != nil {
 				return err
 			}
-			enslave = rtattr(unix.IFLA_MASTER, u32(uint32(link.Index)))
+			enslave = netnstest.Attr(unix.IFLA_MASTER, netnstest.U32(uint32(link.Index)))
 		}
-		other, err := unix.Open(far.path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		other, err := unix.Open(far.Path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 		if err != nil {
 			return err
 		}
 		defer unix.Close(other)
-		peer := slices.Concat(ifinfo(0, 0), rtattr(unix.IFLA_IFNAME, cstring("labf")), rtattr(unix.IFLA_NET_NS_FD, u32(uint32(other))))
-		kind := slices.Concat(rtattr(unix.IFLA_INFO_KIND, cstring("veth")), rtattr(unix.IFLA_INFO_DATA, rtattr(vethPeer, peer)))
-		if err := netlink.request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL,
-			slices.Concat(ifinfo(0, 0), rtattr(unix.IFLA_IFNAME, cstring("labx")), enslave, rtattr(unix.IFLA_LINKINFO, kind))); err != nil {
+		peer := slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString("labf")), netnstest.Attr(unix.IFLA_NET_NS_FD, netnstest.U32(uint32(other))))
+		kind := slices.Concat(netnstest.Attr(unix.IFLA_INFO_KIND, netnstest.CString("veth")), netnstest.Attr(unix.IFLA_INFO_DATA, netnstest.Attr(netnstest.VethPeer, peer)))
+		if err := netlink.Request(unix.RTM_NEWLINK, unix.NLM_F_CREATE|unix.NLM_F_EXCL,
+			slices.Concat(netnstest.IfInfo(0, 0), netnstest.Attr(unix.IFLA_IFNAME, netnstest.CString("labx")), enslave, netnstest.Attr(unix.IFLA_LINKINFO, kind))); err != nil {
 			return fmt.Errorf("make the veth pair: %w", err)
 		}
 		if master != "" {
@@ -713,12 +716,12 @@ func labUplink(t *testing.T, exit, far *namespaceThread, master string) {
 	if unsupported != nil {
 		t.Skipf("no vrf support in this kernel: %v", unsupported)
 	}
-	if err := far.do(func() error {
-		netlink, err := openNetlinkRoute()
+	if err := far.Do(func() error {
+		netlink, err := netnstest.OpenNetlink()
 		if err != nil {
 			return err
 		}
-		defer netlink.close()
+		defer netlink.Close()
 		return labAddress(netlink, "labf", labFar4, labFar6)
 	}); err != nil {
 		t.Fatalf("address the far host's end of the uplink: %v", err)
@@ -763,13 +766,13 @@ func labMaster(name string) (string, error) {
 	return "", fmt.Errorf("the link dump holds no %s", name)
 }
 
-func labAddress(netlink netlinkRoute, name string, addresses ...netip.Prefix) error {
+func labAddress(netlink netnstest.Netlink, name string, addresses ...netip.Prefix) error {
 	link, err := net.InterfaceByName(name)
 	if err != nil {
 		return err
 	}
 	for _, address := range addresses {
-		if err := netlink.addAddress(link.Index, address); err != nil {
+		if err := netlink.AddAddress(link.Index, address); err != nil {
 			return fmt.Errorf("add %s to %s: %w", address, name, err)
 		}
 	}
@@ -778,14 +781,14 @@ func labAddress(netlink netlinkRoute, name string, addresses ...netip.Prefix) er
 
 // labRouteVia routes to through gateway on link index in the main table, in
 // the family of to
-func labRouteVia(netlink netlinkRoute, index int, to netip.Prefix, gateway netip.Addr) error {
+func labRouteVia(netlink netnstest.Netlink, index int, to netip.Prefix, gateway netip.Addr) error {
 	family := byte(unix.AF_INET6)
 	if to.Addr().Is4() {
 		family = unix.AF_INET
 	}
 	header := []byte{family, byte(to.Bits()), 0, 0, unix.RT_TABLE_MAIN, unix.RTPROT_BOOT, unix.RT_SCOPE_UNIVERSE, unix.RTN_UNICAST, 0, 0, 0, 0}
-	body := slices.Concat(header, rtattr(unix.RTA_DST, to.Addr().AsSlice()), rtattr(unix.RTA_GATEWAY, gateway.AsSlice()), rtattr(unix.RTA_OIF, u32(uint32(index))))
-	return netlink.request(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, body)
+	body := slices.Concat(header, netnstest.Attr(unix.RTA_DST, to.Addr().AsSlice()), netnstest.Attr(unix.RTA_GATEWAY, gateway.AsSlice()), netnstest.Attr(unix.RTA_OIF, netnstest.U32(uint32(index))))
+	return netlink.Request(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, body)
 }
 
 // labReceive calls send until listener reads payload, and returns where it came from
@@ -911,10 +914,10 @@ func labUDPOf(raw []byte) (netip.Addr, uint16, []byte, bool) {
 }
 
 // labMeshRoute reports a route to prefix in the mesh table of the exit's namespace
-func labMeshRoute(t testing.TB, exit *namespaceThread, prefix netip.Prefix) bool {
+func labMeshRoute(t testing.TB, exit *netnstest.Thread, prefix netip.Prefix) bool {
 	t.Helper()
 	var routes []kernelRoute
-	if err := exit.do(func() (err error) {
+	if err := exit.Do(func() (err error) {
 		routes, err = dumpRoutes()
 		return err
 	}); err != nil {
@@ -932,11 +935,11 @@ func labDeleteTable(family uint8, name string) error {
 		return err
 	}
 	defer unix.Close(fd)
-	return acknowledged(fd, slices.Concat(
-		netlinkMessage(unix.NFNL_MSG_BATCH_BEGIN, 0, labNfgen(unix.AF_UNSPEC, unix.NFNL_SUBSYS_NFTABLES)),
-		netlinkMessage(unix.NFNL_SUBSYS_NFTABLES<<8|unix.NFT_MSG_DELTABLE, unix.NLM_F_ACK,
-			slices.Concat(labNfgen(family, 0), rtattr(unix.NFTA_TABLE_NAME, cstring(name)))),
-		netlinkMessage(unix.NFNL_MSG_BATCH_END, 0, labNfgen(unix.AF_UNSPEC, unix.NFNL_SUBSYS_NFTABLES))))
+	return netnstest.Acknowledged(fd, slices.Concat(
+		netnstest.Message(unix.NFNL_MSG_BATCH_BEGIN, 0, labNfgen(unix.AF_UNSPEC, unix.NFNL_SUBSYS_NFTABLES)),
+		netnstest.Message(unix.NFNL_SUBSYS_NFTABLES<<8|unix.NFT_MSG_DELTABLE, unix.NLM_F_ACK,
+			slices.Concat(labNfgen(family, 0), netnstest.Attr(unix.NFTA_TABLE_NAME, netnstest.CString(name)))),
+		netnstest.Message(unix.NFNL_MSG_BATCH_END, 0, labNfgen(unix.AF_UNSPEC, unix.NFNL_SUBSYS_NFTABLES))))
 }
 
 func labNfgen(family uint8, resource uint16) []byte {

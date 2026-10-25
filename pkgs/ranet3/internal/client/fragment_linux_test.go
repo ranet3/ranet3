@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-//go:build linux
+//go:build linux && !android
 
 package client
 
@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -23,7 +24,7 @@ import (
 // a fragment of ordinary traffic to an address of bravo's, sent over the same session after them, reaches the tun as alpha sent it
 // alpha hands each fragment straight to its session, and a capture on bravo's tun reads every packet the mesh writes into it
 func TestTUNTakesFragmentsOfOrdinaryTrafficAndNoneOfABabelPacket(t *testing.T) {
-	enterEmptyNamespace(t)
+	netnstest.EnterEmpty(t)
 	mesh, err := netstack.NewNamed(0, "babelfrag0", nil)
 	if err != nil {
 		t.Fatalf("open bravo's mesh: %v", err)
