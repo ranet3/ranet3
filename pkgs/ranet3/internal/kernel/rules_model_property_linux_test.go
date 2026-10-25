@@ -209,9 +209,9 @@ func ownedRules() hegel.Generator[Rule] {
 		case 0:
 			rule.Table = schema.TableID(hegel.Draw(tc, edges[uint32](1, math.MaxUint32)))
 		case 1:
-			rule.action, rule.target = ActionGoto, hegel.Draw(tc, edges(rule.Priority+1, math.MaxUint32))
+			rule.action, rule.target = actionGoto, hegel.Draw(tc, edges(rule.Priority+1, math.MaxUint32))
 		default:
-			rule.action = ActionNop
+			rule.action = actionNop
 		}
 		if hegel.Draw(tc, hegel.Booleans()) {
 			rule.suppress = SuppressUpTo(hegel.Draw(tc, edges(0, width)))
@@ -253,7 +253,7 @@ func variant(tc hegel.TestCase, base Rule) Rule {
 		base.IIF = other.IIF
 	case 4:
 		base.action, base.Table, base.target = other.action, other.Table, max(other.target, base.Priority+1)
-		if base.action != ActionGoto {
+		if base.action != actionGoto {
 			base.target = 0
 		}
 	case 5:
@@ -348,7 +348,7 @@ func holdsEverySelectorOf(rule, deleted Rule) bool {
 	}
 	_, suppresses := deleted.suppress.Bits()
 	return rule.Family == deleted.Family && rule.Priority == deleted.Priority && rule.action == deleted.action &&
-		(deleted.action != ActionLookup || rule.Table == deleted.Table) &&
+		(deleted.action != actionLookup || rule.Table == deleted.Table) &&
 		(deleted.IIF == "" || rule.IIF == deleted.IIF) &&
 		(deleted.FWMark == 0 || (rule.FWMark == deleted.FWMark && mask(rule) == mask(deleted))) &&
 		(!suppresses || rule.suppress == deleted.suppress) &&
@@ -360,7 +360,7 @@ func holdsEverySelectorOf(rule, deleted Rule) bool {
 // of 0 goes out as itself
 func TestRuleMessageCarriesTheGotoAndTheSuppressLength(t *testing.T) {
 	plat, _ := writePlatform(t)
-	hdr, attrs := ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x726c, action: ActionGoto, target: 5190, Priority: 5100}))
+	hdr, attrs := ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x72, action: actionGoto, target: 5190, Priority: 5100}))
 	if hdr[7] != unix.FR_ACT_GOTO {
 		t.Errorf("a goto went out as action %d", hdr[7])
 	}
@@ -370,7 +370,7 @@ func TestRuleMessageCarriesTheGotoAndTheSuppressLength(t *testing.T) {
 	if _, ok := attrs[unix.FRA_TABLE]; ok {
 		t.Error("a goto names a table")
 	}
-	hdr, attrs = ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv6, action: ActionNop, Priority: 5190}))
+	hdr, attrs = ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv6, action: actionNop, Priority: 5190}))
 	if hdr[7] != unix.FR_ACT_NOP {
 		t.Errorf("a nop went out as action %d", hdr[7])
 	}

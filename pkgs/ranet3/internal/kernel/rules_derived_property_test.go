@@ -28,12 +28,12 @@ func modeOff(id schema.TableID, overlay, own []netip.Prefix) map[Rule]bool {
 			family, suppressed = FamilyIPv4, 7
 		}
 		for _, rule := range []Rule{
-			{Family: family, Priority: 5100, FWMark: 0x726c, action: ActionGoto, target: 5190},
-			{Family: family, Priority: 5190, action: ActionNop},
-			{Family: family, Priority: 5400, FWMark: 0x726c, action: ActionGoto, target: 5490},
+			{Family: family, Priority: 5100, action: actionGoto, target: 5190},
+			{Family: family, Priority: 5190, action: actionNop},
+			{Family: family, Priority: 5400, action: actionGoto, target: 5490},
 			{Family: family, Priority: 5410, Table: 254, suppress: SuppressUpTo(0)},
 			{Family: family, Priority: 5420, Table: id, suppress: SuppressUpTo(suppressed)},
-			{Family: family, Priority: 5490, action: ActionNop},
+			{Family: family, Priority: 5490, action: actionNop},
 		} {
 			// each goto selects exactly the underlay's mark
 			if rule.target != 0 {
@@ -79,7 +79,7 @@ func TestDerivedRulesAreModeOffAndEachNopPrecedesItsGoto(t *testing.T) {
 				ht.Fatalf("%s is derived twice", rule)
 			}
 			got[rule] = true
-			if rule.action == ActionGoto && !slices.Contains(derived[:i], Rule{Family: rule.Family, Priority: rule.target, action: ActionNop}) {
+			if rule.action == actionGoto && !slices.Contains(derived[:i], Rule{Family: rule.Family, Priority: rule.target, action: actionNop}) {
 				ht.Fatalf("%s comes ahead of the nop it lands on in %v", rule, derived)
 			}
 		}

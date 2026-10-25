@@ -107,11 +107,11 @@ func decodeDumpedRule(message nlMessage) (DumpedRule, bool) {
 func actionName(action uint8) string {
 	switch action {
 	case unix.FR_ACT_TO_TBL:
-		return "lookup"
+		return actionLookup.String()
 	case unix.FR_ACT_GOTO:
-		return "goto"
+		return actionGoto.String()
 	case unix.FR_ACT_NOP:
-		return "nop"
+		return actionNop.String()
 	case unix.FR_ACT_BLACKHOLE:
 		return "blackhole"
 	case unix.FR_ACT_UNREACHABLE:

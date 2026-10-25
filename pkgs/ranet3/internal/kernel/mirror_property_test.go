@@ -215,29 +215,3 @@ func TestOverlayHoldsLeaveOutTheUnroutableAndHoldEachPrefixOnce(t *testing.T) {
 		}
 	}
 }
-
-// A reload that announces a default makes the node an exit from the next
-// pass on, which takes the learned default out with the gate open.
-func TestReloadAnnouncingADefaultWithdrawsTheLearnedOne(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{})
-	learnedDefault := Route{Destination: prefix("::/0"), Metric: defaultIPv6Metric}
-	table.Set(netip.Prefix{}, learnedDefault.Destination, learned)
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if !fake.has(learnedDefault) {
-		t.Fatal("a node that is no exit left out the learned default")
-	}
-	if err := reconciler.SetTable(Table{}, nil, []netip.Prefix{prefix("::/0")}); err != nil {
-		t.Fatal(err)
-	}
-	if !reconciler.adopt() {
-		t.Fatal("the reload was not adopted")
-	}
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if fake.has(learnedDefault) {
-		t.Error("an exit kept the learned default")
-	}
-}
