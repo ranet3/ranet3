@@ -368,6 +368,11 @@ func (s *Speaker) seqnoReply(n *neighborState, request SeqnoRequest, now time.Ti
 	if request.RouterID == s.routerID || request.HopCount < 2 {
 		return nil // no other node can raise this node's sequence number
 	}
+	// RFC 8966 section 4.1.3: "A router-id MUST NOT consist of either all
+	// binary zeroes ... or all binary ones", and a forwarded request carries it
+	if !ValidRouterID(request.RouterID) {
+		return nil
+	}
 	target := s.forwardTarget(key, n)
 	if target == nil {
 		return nil
