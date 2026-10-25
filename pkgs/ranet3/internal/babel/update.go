@@ -34,7 +34,7 @@ type Update struct {
 	Metric   uint16 // MetricInfinity means "route retracted"
 	Prefix   net.IP
 	// RouterID is derived from Prefix when the R flag is set. HasRouterID
-	// distinguishes the valid all-zero-derived IPv4 form from no R flag.
+	// tells an R flag that derived all zeroes from no R flag.
 	RouterID    [8]byte
 	HasRouterID bool
 

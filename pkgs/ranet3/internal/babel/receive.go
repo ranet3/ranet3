@@ -181,8 +181,10 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 		case TLVRouterID:
 			// The parser state is set even when the TLV is ignored, which the
 			// second result reports. Only a malformed TLV leaves it alone.
+			// An id of all zeroes or all ones names no router, so the Updates
+			// after it have none to take, as after no Router-Id at all.
 			if id, _, err := DecodeRouterID(t.Body); err == nil {
-				routerID, haveRouterID = id, true
+				routerID, haveRouterID = id, ValidRouterID(id)
 			}
 
 		case TLVUpdate:
@@ -195,7 +197,7 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 				continue
 			}
 			if u.HasRouterID {
-				routerID, haveRouterID = u.RouterID, true
+				routerID, haveRouterID = u.RouterID, ValidRouterID(u.RouterID)
 			}
 			if u.Ignore {
 				continue // compression state still follows the ignored Update
