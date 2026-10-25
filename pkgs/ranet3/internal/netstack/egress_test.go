@@ -559,12 +559,14 @@ func TestEgressRefusalAllocatesOnceMoreThanADelivery(t *testing.T) {
 
 // past the reply check an egress segment refuses an inner packet whose destination the mesh routes itself, in either family
 // to another node, into a hold, to a prefix of this node's own or to an address cap.table assigns it, or by a route announced from a source prefix holding the packet's source
+// and one inside cap.border's overlay that only another exit's halves cover, which this node's decision routes to that exit, whose own decision answers it as no route where its cap.border sets the overlay and egresses it where it has no cap.border
 // counted refused and dropped, with no answer and nothing at any peer
 // a destination only another exit's halves cover egresses, and so does one the source-prefixed route covers from a source outside its prefix
 // a packet for a destination the mesh routes that the martian test or the reply check refuses first is counted once
 // and one whose family is not ready is counted refused, not not ready, since the refusal comes ahead of the readiness read
 func TestEgressSegmentRefusesAnInnerDestinationTheMeshRoutes(t *testing.T) {
 	m, meshTUN := egressMesh(t)
+	m.SetOverlay(transitOverlay)
 	back, other, exit := &recordingPeer{}, &recordingPeer{}, &recordingPeer{}
 	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(headend, 128), back.peer(t, "headend"))
 	toOther, toExit := other.peer(t, "other"), exit.peer(t, "exit")
@@ -601,6 +603,7 @@ func TestEgressSegmentRefusesAnInnerDestinationTheMeshRoutes(t *testing.T) {
 		{6, 0, "2001:db8:1::5", false}, {6, 0, "2001:db8:2::5", false}, {6, 0, "2001:db8:3::5", false}, {6, 0, "2001:db8:4::4", false},
 		{6, 0, "2001:db8:9::9", true}, {6, 0, "2001:db8:5::5", false}, {6, 1, "2001:db8:5::5", true},
 		{4, 0, "169.254.169.254", false}, {6, 0, "fe80::5", false}, {4, 2, "203.0.113.5", false}, {6, 2, "2001:db8:1::5", false},
+		{4, 0, "192.0.2.200", false}, {6, 0, "3fff:0:99::1", false},
 	} {
 		inner := udpPacket(sources[c.family][c.source], segAddr(c.destination), 64, false)
 		frames = append(frames, steered(t, inner, headend, egressExit))
