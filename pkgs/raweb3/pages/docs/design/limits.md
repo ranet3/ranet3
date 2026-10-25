@@ -361,34 +361,61 @@ until they expire, in both families. A steered IPv6 packet of 1280 bytes through
 a narrow session is lost too, as [segment routing](../segment-routing.md)
 describes.
 
+An IKE message does not wait for the host to fragment it. Where both ends sent
+`IKEV2_FRAGMENTATION_SUPPORTED` in `IKE_SA_INIT`, as ranet3 always does, a
+message larger than the path goes in the fragments of
+[RFC 7383](https://www.rfc-editor.org/rfc/rfc7383.html), each cut to fit the
+threshold: the path MTU the host holds for the peer, or 1280 bytes for IPv6 and
+576 for IPv4 where the host knows none or a smaller one. `IKE_SA_INIT` always
+goes whole. A request that goes unanswered twice under a threshold above its
+family's floor steps to the floor at its next send, the schedule's or a probe's
+after a network change, and stays there until its exchange ends. A request too
+large to go whole at the floor is cut for it at the step, and its waits start
+over. A request that fits the floor whole, such as a liveness check, only moves
+its threshold and keeps its 5 sends over 62 seconds. A narrower hop that sends
+no ICMP message, or one beyond the interface on macOS, which reads only the
+interface's MTU, then delays a dial by 6 seconds instead of failing it. An
+answer never steps down by itself. It is cut for the path at each send, and
+within the largest datagram of the peer's request in fragments, or of the repeat
+that draws it again, where that is smaller, never under the floor. A responder
+behind such a hop thereby follows the initiator's step, and the first answer to
+a request in fragments already fits the datagrams that request came in.
+
 ## ML-KEM and the path
 
-A kex entry joined by `mlkem768` adds 1 `IKE_INTERMEDIATE` exchange to the
-handshake, as [`cap.crypto.ike`](../configuration-reference.md#capcryptoike)
-describes. Its request carries the ML-KEM-768 encapsulation key in an IKE
-message of 1249 octets, a datagram of 1281 bytes over IPv4 and 1301 over IPv6
-with the Non-ESP Marker and the UDP and IP headers. Its response carries the
-ciphertext in 1153 octets, a datagram of 1185 and 1205 bytes. `IKE_SA_INIT`
-carries no ML-KEM key. A joined entry adds to the `IKE_SA_INIT` request a
-proposal of its own, which holds an `ADDKE1` transform of 8 octets, and an
-`INTERMEDIATE_EXCHANGE_SUPPORTED` notify of 8 octets.
+A kex entry joined by `mlkem768` or `mlkem1024` adds 1 `IKE_INTERMEDIATE`
+exchange to the handshake, as
+[`cap.crypto.ike`](../configuration-reference.md#capcryptoike) describes. Its
+request carries the ML-KEM-768 encapsulation key in an IKE message of 1249
+octets, a datagram of 1281 bytes over IPv4 and 1301 over IPv6 with the Non-ESP
+Marker and the UDP and IP headers. Its response carries the ciphertext in 1153
+octets, a datagram of 1185 and 1205 bytes. ML-KEM-1024's key makes the request
+1633 octets, a datagram of 1665 bytes over IPv4 and 1685 over IPv6.
+`IKE_SA_INIT` carries no ML-KEM key. A joined entry adds to the `IKE_SA_INIT`
+request a proposal of its own, which holds an `ADDKE1` transform of 8 octets,
+and an `INTERMEDIATE_EXCHANGE_SUPPORTED` notify of 8 octets.
 
 An IKE SA rekey that runs a joined entry, either end's, and a peer's Child SA
 creation or rekey that runs one add 1 `IKE_FOLLOWUP_KE` exchange after the
 `CREATE_CHILD_SA`. Its request carries the same key and the 16-octet
 `ADDITIONAL_KEY_EXCHANGE` notify that links it to the `CREATE_CHILD_SA`, an IKE
 message of 1265 octets, a datagram of 1297 bytes over IPv4 and 1317 over IPv6.
-Its response carries the ciphertext in 1153 octets, as above.
+Its response carries the ciphertext in 1153 octets, as above. With ML-KEM-1024
+the request is the 1265 octets with the 384 more that its key adds, 1649 octets,
+a datagram of 1681 bytes over IPv4 and 1701 over IPv6.
 
-Linux and macOS send IKE with DF, so a path that carries less than the request,
-such as an IPv6 path at the 1280-byte minimum or a tunnel of 1280 bytes, loses
-it. The handshake then fails, and a rekey's `IKE_FOLLOWUP_KE` goes unanswered
-until the IKE SA is deemed failed and the session ends. The one exception is a
-family whose sockets let the host fragment while a session of that family is
-under the floor, as above. ranet3 does not implement the IKE fragmentation of
-[RFC 7383](https://www.rfc-editor.org/rfc/rfc7383.html), which would split the
-message, and it refuses a kex entry joining `mlkem1024`, whose messages of 1633
-octets pass a 1500-byte path.
+Linux and macOS send IKE with DF, so a message larger than the path never
+arrives whole. To a peer that supports RFC 7383 it goes in fragments, as
+[paths under 1280 bytes](#paths-under-1280-bytes) describes. The ML-KEM-768
+request of 1301 bytes over IPv6 crosses a 1280-byte path that way, and the
+requests of ML-KEM-1024 cross a 1500-byte one, in a rekey's `IKE_FOLLOWUP_KE`
+too and at the IPv4 floor of 576 bytes as well. A peer without RFC 7383 still
+needs the whole path. There a path that carries less than the request, such as
+an IPv6 path at the 1280-byte minimum or a tunnel of 1280 bytes, loses it. The
+handshake then fails, and a rekey's `IKE_FOLLOWUP_KE` goes unanswered until the
+IKE SA is deemed failed and the session ends. The one exception is a family
+whose sockets let the host fragment while a session of that family is under the
+floor, as above.
 
 ## Limits by area
 
@@ -408,7 +435,7 @@ can configure are in
 | Wait for a peer's next `IKE_FOLLOWUP_KE`       | 62 seconds from this end's last answer in the rekey                                     | The peer's rekey is dropped, and its next `IKE_FOLLOWUP_KE` is answered `STATE_NOT_FOUND`              |
 | Rekeys in a row answered `STATE_NOT_FOUND`     | 3                                                                                       | The IKE SA is deleted, and the session ends                                                            |
 | Canceled dial's wait for its `IKE_AUTH` answer | 2 seconds                                                                               | The dial ends, and a peer whose answer is late keeps its session until liveness fails                  |
-| Sends of a request                             | 5, waiting 2, 4, 8, 16 and 32 seconds after each                                        | The exchange fails after 62 seconds, and its IKE SA is deemed failed                                   |
+| Sends of a request not cut again               | 5, waiting 2, 4, 8, 16 and 32 seconds after each                                        | The exchange fails after 62 seconds, and its IKE SA is deemed failed                                   |
 | Sends while the peer's other traffic continues | 20, about 9 minutes in all                                                              | The exchange fails, and its IKE SA is deemed failed though the peer's ESP still arrives                |
 | Silence before a liveness check                | 10 seconds                                                                              | The session sends an `INFORMATIONAL` request, retransmitted on the schedule above                      |
 | Live session                                   | 20 seconds since the peer's last authenticated IKE, 20 to 30 seconds since its last ESP | The session no longer counts as live                                                                   |
@@ -419,6 +446,11 @@ can configure are in
 | Peer rekeys                                    | 1 per second for each kind of SA                                                        | A faster rekey is answered `TEMPORARY_FAILURE`                                                         |
 | Replaced Child SA awaiting the peer's Delete   | up to 30 seconds, then this end deletes it                                              | Every Child SA rekey in either direction, and a peer's IKE SA rekey, is refused meanwhile              |
 | Replaced IKE SA awaiting the peer's Delete     | up to 2 minutes, and no longer than its lifetime                                        | A peer's IKE SA rekey is answered `TEMPORARY_FAILURE` meanwhile                                        |
+| Messages in reassembly                         | 1 for each direction of an IKE SA, beside the repeats below                             | A fragment of another message drops the fragments held                                                 |
+| Fragments of 1 message in reassembly           | 16 KiB of the IKE messages they came in                                                 | The IKE SA ends, and a dial fails                                                                      |
+| Wait for the rest of a message's fragments     | 62 seconds from the first fragment of its cut                                           | The fragments held are dropped                                                                         |
+| Answers to the peer's repeats of 1 request     | 20 from the peer's own address and port                                                 | A further repeat from there draws nothing                                                              |
+| Other addresses repeating 1 request            | 4, each with a credit of the bytes it sent repeating it                                 | A newcomer takes the place of the one heard from least recently                                        |
 
 The second row holds even for a request with a valid cookie. More than 16 nodes
 behind 1 NAT that restart at once therefore wait for their retransmissions.
@@ -442,33 +474,123 @@ within the reconnect delay.
 No ML-KEM key travels in `IKE_SA_INIT`. A responder runs ML-KEM only for an
 initiator that holds a half-open slot, past the cookies. The responder's 30
 seconds for a handshake cover its `IKE_INTERMEDIATE` exchange. A half-open SA
-that has answered one keeps the response, 1153 octets for ML-KEM-768, to answer
-a retransmitted request, with a digest of the request and the 2 values of
-IntAuth. The 256 half-open SAs keep under 512 KiB of it whatever the initiators
-send.
+that has answered one keeps the answer as it was sent, to answer a retransmitted
+request: the sealed message, its inner payloads in plaintext and its datagrams,
+with digests of the request and the 2 values of IntAuth. That is 2249 octets for
+an ML-KEM-768 answer sent whole (1153 and 1096), 3528 for one cut at the IPv4
+floor, and 5029 for an ML-KEM-1024 answer cut at the IPv4 floor (1633, 1576 and
+1820 in 4 datagrams). The 256 half-open SAs keep up to 1,287,424 octets of it,
+under 1.25 MiB, whatever the initiators send.
 
-The wait for a peer's next `IKE_FOLLOWUP_KE` is the time this end resends a
-request to a silent peer, and each answer in the peer's rekey starts it again. A
-peer's new rekey of the same SA drops the earlier one before its wait ends.
-Either way the dropped rekey records `ike.followup.dropped`, as
+An IKE SA gathers 1 message of the peer's in fragments for each direction, the
+peer's requests and its answers to this end's. The fragments of a message are
+held only within 16 KiB, counted as the IKE messages they carry, headers, IV and
+ICV included, rather than as their decrypted content. Past that limit:
+
+- an established session closes without a Delete, logs a warning and records
+  `ike.sa.closed` with the reason `fragment limit`
+- a replaced or redundant IKE SA still kept for a Delete ends alone
+- a half-open SA ends
+- a dial fails
+
+Fragments left incomplete go after 62 seconds, the sends of one cut of a
+request. That is shorter than the 68 seconds of a request that the step cuts for
+its family's floor, as
+[RFC 7383 section 2.6](https://www.rfc-editor.org/rfc/rfc7383.html#section-2.6)
+allows: "Implementations can use a shorter timeout to conserve memory." Each new
+cut, which comes with a larger Total Fragments, starts the message over. A
+half-open SA's fragments go with the SA at the 30 seconds of its handshake,
+before that.
+
+Beside its own queues, the exchange an IKE SA last answered holds up to 4
+repeats from other addresses in reassembly, 1 for each credit below, each within
+the 16 KiB and gone at the next exchange, after the 62 seconds or with the SA.
+An established IKE SA thus holds at most 6 messages in reassembly, a half-open
+SA 5, since it takes no answer, and the 256 half-open SAs at most 20 MiB of
+fragments. Fragments from a peer that did not send
+`IKEV2_FRAGMENTATION_SUPPORTED` are dropped before anything of them is held.
+
+A peer's repeat of a request this end has answered draws the kept answer again
+under 1 rule wherever it comes: in a half-open SA's wait for `IKE_AUTH`, whose
+initiator holds the keys before it has authenticated, and past `IKE_AUTH`, where
+anyone who captured a fragment of the request can replay it from any address.
+The origin is the peer's own address and port: in a half-open SA the one the
+`IKE_SA_INIT` came from, and past `IKE_AUTH` the session's endpoint, where the
+peer's last fresh request came from. From the origin a repeat draws the answer
+on the request whole as it came or on its fragment 1, at most 20 times in each
+exchange, the bound on the sends of 1 request that ranet3 counts. Every counted
+repeat of a peer that resends as ranet3 does is answered, the 7 sends of a
+request that the step cuts for its family's floor among them. A probe that cuts
+nothing resends a request without counting it, which lets a peer that sees many
+network changes in 1 exchange send more, and its repeats past the 20 draw
+nothing. From any other address and port, only the request whole as it came, or
+the whole set of its fragments from there reassembled to the request's content,
+draws the answer, which goes there. It draws it only within the bytes that
+address sent repeating the request in the exchange, each datagram counted with
+its IP header, UDP header and Non-ESP Marker. Each answer there spends its
+datagrams as that send cuts them. An answer the credit does not cover draws
+nothing, a later repeat adds to the credit, and the answer spends that address's
+credit alone and nothing of the origin's 20. The exchange keeps such a credit,
+with that address's repeat in fragments, for at most 4 addresses. A newcomer
+past them takes the place of the one whose last datagram came least recently,
+and the exchange forgets them all at the next one. A repeat never touches the
+queue the next request is gathered in.
+
+So an address that never proved it receives draws no more bytes than were sent
+in its name, a moved initiator is answered 1 retransmission later, and a
+datagram replayed from a third address takes nothing from it or from the origin.
+To hold a moved initiator, an observer has to send from more than 3 fresh
+addresses between every 2 of its datagrams, and one that keeps up that rate can
+hold it until its exchange times out. A datagram replayed in the origin's own
+address and port spends the origin's count, so a captured fragment 1 can aim at
+most 20 answers an exchange at the origin: 38,960 bytes on the wire for an
+ML-KEM-1024 answer at the IPv4 floor. When the path MTU falls before every
+answer, the 20 come to up to 78,020 bytes over IPv4 and up to 83,500 over IPv6.
+An ML-KEM-1024 answer is kept in at most 4 datagrams at or above the IPv4 floor
+and in at most 2 at or above the IPv6 floor, and each fall cuts it into 2 more.
+Its 20 answers then run from 6 to 44 datagrams over IPv4 and from 4 to 42 over
+IPv6, where each datagram's IP header takes 40 bytes against IPv4's 20.
+
+The wait for a peer's next `IKE_FOLLOWUP_KE` is the time this end resends 1 cut
+of a request to a silent peer, 62 seconds, and each answer in the peer's rekey
+starts it again. A peer's new rekey of the same SA drops the earlier one before
+its wait ends. Either way the dropped rekey records `ike.followup.dropped`, as
 [debugging](../development/debug.md#events) describes. This end's own
 `IKE_FOLLOWUP_KE` is resent as any request is, until it is answered or the IKE
-SA is deemed failed, and its answer settles the rekey whenever it comes. A
+SA is deemed failed, and its answer settles the rekey whenever it comes. Through
+a step to the floor and 1 or 2 falls of the path MTU its sends still come within
+the peer's wait. The last comes at most 40 seconds after the answer before it
+where the schedule's own sends see the falls, and at most 52 where probes see
+them, since each cut starts the count of sends toward the step over and a
+probe's send adds nothing to it. A chain of falls can carry the last send past
+it: 4 falls that probes see, or 13 that the schedule's sends see. A
 `STATE_NOT_FOUND` that answers a send made 62 seconds or more after the answer
 before it fails the rekey without counting toward the 3 in a row, since the peer
 was free to drop the rekey by then. The schedule retries a failed rekey after
-its backoff. A session sends no liveness check, not even when asked to probe its
-path, while its own rekey may run `IKE_FOLLOWUP_KE` exchanges, nor while it
-waits for the peer's after losing a simultaneous rekey to it. That wait ends
-when the peer's rekey replaces the IKE SA or is dropped, or when the IKE SA
-starts to close.
+its backoff, and no SA is lost. A session sends no liveness check, not even when
+asked to probe its path, while its own rekey may run `IKE_FOLLOWUP_KE`
+exchanges, nor while it waits for the peer's after losing a simultaneous rekey
+to it. That wait ends when the peer's rekey replaces the IKE SA or is dropped,
+or when the IKE SA starts to close.
 
 An IKE SA deemed failed ends the session when it is the session's current IKE
 SA, and the node that dialed it dials again. A replaced or redundant IKE SA
 still kept for a Delete holds no Child SA once the rekey has moved them to its
 successor. It alone ends, and the session goes on.
 
-A request is sent up to 20 times while the peer's authenticated traffic has
+The 5 sends of a request are those of 1 cut. A request that steps to its
+family's floor from a threshold above it, and is too large to go whole there, is
+cut for the floor at the step as
+[paths under 1280 bytes](#paths-under-1280-bytes) describes. It is sent 7 times,
+at 0, 2, 6, 8, 12, 20 and 36 seconds, and fails after 68 seconds. A request
+whose threshold is already the floor takes no step. That covers an IPv6 path of
+1280 bytes, an IPv4 path of 576 and a path whose MTU the host cannot read, as on
+FreeBSD and OpenBSD. Such a request, where it is too large to go whole, is cut
+for the floor at its first send. It keeps its 5 sends over 62 seconds, as does a
+request that fits the floor whole, such as a liveness check, through any step.
+Each cut again for a path MTU that fell starts its waits over, up to 20 sends,
+which bound the sends of every request this end counts however it is cut. A
+request is sent up to 20 times while the peer's authenticated traffic has
 arrived within the last 10 seconds. The exchange holds the only outstanding
 request this end allows. Rekeys, Deletes and liveness checks wait until it ends.
 A liveness check and a Delete of an IKE SA never take the longer schedule, and

@@ -4,7 +4,7 @@
 title: "ranet3"
 description: "High performance policy routed IPsec mesh SD-WAN with userspace ESP, IKEv2, an embedded Babel speaker and SRv6 steering."
 created: 2026-10-06
-updated: 2026-10-22
+updated: 2026-10-25
 vetted: 2026-10-22
 layout: bare
 ---
@@ -112,11 +112,11 @@ layout: bare
 <dt>Authentication</dt>
 <dd>Ed25519 signatures</dd>
 <dt>Key exchange</dt>
-<dd>X25519, <span class="whitespace-nowrap">P-256</span> or <span class="whitespace-nowrap">P-384</span>, alone or followed by <span class="whitespace-nowrap">ML-KEM-768</span></dd>
+<dd>X25519, <span class="whitespace-nowrap">P-256</span> or <span class="whitespace-nowrap">P-384</span>, alone or followed by <span class="whitespace-nowrap">ML-KEM-768</span> or <span class="whitespace-nowrap">ML-KEM-1024</span></dd>
 <dt>Ciphers</dt>
 <dd><span class="whitespace-nowrap">AES-GCM</span> or ChaCha20-Poly1305</dd>
 </dl>
-<p class="note"><span class="whitespace-nowrap">ML-KEM-768</span> is opt-in per node.</p>
+<p class="note">A node offers X25519 with <span class="whitespace-nowrap">ML-KEM-768</span> first unless it lists its own key exchanges.</p>
 </div>
 </details>
 <details class="fold">

@@ -252,6 +252,7 @@ connections to the reads.
 | `ike.endpoint.moved`                  | a session moved to the addresses of its peer's latest fresh request          |
 | `ike.send.failed`, `.recovered`       | a session's sends to its peer began to fail, and one went out again          |
 | `ike.probe`                           | asked to prove its path, a session started a check or resent its request     |
+| `ike.message.fragmented`              | a session cut an IKE message into the fragments of RFC 7383                  |
 | `babel.neighbor.up`, `.down`          | a neighbor's Hellos started arriving, or stopped or its session ended        |
 | `babel.neighbor.fragmented`           | a neighbor's first Babel packet in fragments was read whole, with its size   |
 | `babel.request.sent`                  | this node asked a neighbor that came up for its whole table                  |
@@ -325,6 +326,7 @@ Each kind carries these attributes:
 | `ike.send.failed`                             | `err`                                                                                                                                       |
 | `ike.send.recovered`                          | `failed`                                                                                                                                    |
 | `ike.probe`                                   | `action`, `message_id`                                                                                                                      |
+| `ike.message.fragmented`                      | `exchange`, `message_id`, `fragments`, `threshold`                                                                                          |
 | `babel.neighbor.up`, `.down`                  | none                                                                                                                                        |
 | `babel.neighbor.fragmented`                   | `size`                                                                                                                                      |
 | `babel.request.sent`                          | none                                                                                                                                        |
@@ -378,7 +380,9 @@ sequence numbers with none replacing it, `temporary failure` when the peer had
 answered this end's rekeys with `TEMPORARY_FAILURE` for 5 minutes with no rekey
 of the IKE SA or the Child SA completed by either end in between,
 `invalid syntax` when the peer answered a request of this end's on the current
-IKE SA with `INVALID_SYNTAX`, which ends it without a Delete, and
+IKE SA with `INVALID_SYNTAX`, which ends it without a Delete, `fragment limit`
+when the peer's fragments of 1 message passed the reassembly limit
+[limits](../design/limits.md#ike) gives, which ends it without a Delete too, and
 `local failure` when this node failed on its own side, as when its dataplane
 refused a change to a Child SA. An IKE SA rekey of this node's that runs
 `IKE_FOLLOWUP_KE` adds 3 more: `rekey answer refused` when this node refused the
@@ -430,18 +434,18 @@ new handshake, as [reloading](../reloading.md#capcrypto) describes.
 An `ike.kex.rejected` is recorded when this node refuses the peer's side of an
 ML-KEM key exchange. Its `exchange` is `IKE_INTERMEDIATE` in a handshake and
 `IKE_FOLLOWUP_KE` after a `CREATE_CHILD_SA`, its `method` the ML-KEM method by
-its `cap.crypto` name, `mlkem768`, and its `side` what was refused. `side=key`
-names the encapsulation key of the peer that sent the request, which the check
-of FIPS 203 section 7.2 refused, and the answer is `INVALID_SYNTAX`. In a
-handshake the answer ends the handshake, and the event carries the source in
-`from`. It is recorded beside the `ike.handshake.failed` that follows and as
-often as that one, since anyone past `IKE_SA_INIT` can send such a key. In an
-`IKE_FOLLOWUP_KE` the `INVALID_SYNTAX` ends the IKE SA without a Delete.
-`side=ciphertext` names the ciphertext of the peer that answered, which the
-check of section 7.3 refused, or a response whose KE payload is missing, appears
-twice or names another method. A dial then ends without `IKE_AUTH`, and an IKE
-SA rekey ends the IKE SA with a Delete and records `ike.sa.closed` with the
-reason `kex rejected`.
+its `cap.crypto` name, `mlkem768` or `mlkem1024`, and its `side` what was
+refused. `side=key` names the encapsulation key of the peer that sent the
+request, which the check of FIPS 203 section 7.2 refused, and the answer is
+`INVALID_SYNTAX`. In a handshake the answer ends the handshake, and the event
+carries the source in `from`. It is recorded beside the `ike.handshake.failed`
+that follows and as often as that one, since anyone past `IKE_SA_INIT` can send
+such a key. In an `IKE_FOLLOWUP_KE` the `INVALID_SYNTAX` ends the IKE SA without
+a Delete. `side=ciphertext` names the ciphertext of the peer that answered,
+which the check of section 7.3 refused, or a response whose KE payload is
+missing, appears twice or names another method. A dial then ends without
+`IKE_AUTH`, and an IKE SA rekey ends the IKE SA with a Delete and records
+`ike.sa.closed` with the reason `kex rejected`.
 
 An `ike.followup.dropped` is recorded once for each rekey of the peer's that
 this node drops before its last `IKE_FOLLOWUP_KE`. Its `sa` names the SA the
@@ -452,6 +456,21 @@ it ran on was replaced, or this node's own rekey won a simultaneous rekey
 against it. The peer's next `IKE_FOLLOWUP_KE` for a dropped rekey is answered
 `STATE_NOT_FOUND`, or `TEMPORARY_FAILURE` where that exchange is the one that
 found this node's own rekey had won.
+
+An `ike.message.fragmented` is recorded each time a session cuts an IKE message
+into fragments, a request cut again for a smaller threshold included, as
+[limits](../design/limits.md#paths-under-1280-bytes) describes. Its `exchange`
+names the exchange, such as `IKE_INTERMEDIATE` or `IKE_FOLLOWUP_KE`, as in
+`ike.kex.rejected`, its `message_id` the message, its `fragments` their count
+and its `threshold` the largest IP datagram they were cut to fit. A half-open SA
+has no recorder, so the answers of a responder's handshake record none. The
+session also logs `ike sending a message in fragments` and
+`ike reassembled a message from fragments` at debug level, each with the
+exchange, the Message ID and the fragments,
+`ike dropped the fragments of a message the peer left incomplete` at info level,
+and
+`ike the peer's fragments of one message passed the reassembly limit, which ends the IKE SA`
+as a warning.
 
 A `transport.pair.connected` names in `local` the address the socket bound and
 in `remote` the peer it is connected to. The `reason` of a
