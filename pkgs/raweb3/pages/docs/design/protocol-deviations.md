@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6 and ICMP specifications on purpose."
 created: 2026-08-23
-updated: 2026-10-25
+updated: 2026-10-26
 order: 20
 ---
 
@@ -463,10 +463,29 @@ and macOS ranet3 tries 2: the path MTU the host holds, read again at each send,
 and the family's floor once the schedule's sends under a larger threshold went
 unanswered twice, taken at the next send, the schedule's or a probe's. Where the
 host's path MTU cannot be read, as on FreeBSD and OpenBSD, whose IKE leaves
-without DF, only the floor is tried. A request that fits the floor whole only
-moves its threshold at the step and keeps its schedule. Each new cut is the
-original message cut again, with a larger Total Fragments, as the section asks,
-so a retransmission after it is not bitwise identical to the first send, which
+without DF, only the floor is tried. After a step that cuts a request down to
+the floor, taken on the path the request was readied or last cut on, which every
+send of it went on since, the step's own included, the session's later
+exchanges, its answers included, start at the floor, as the section's "In
+subsequent exchanges, the node should start with the current value of the
+fragmentation threshold" asks, across rekeys of the IKE SA. They start from the
+path MTU the host reads again once a send or a status read finds the peer's
+address or port or that reading changed since the step, or once the session is
+asked to probe its path, as a network change or `ranet3 debug probe` asks. A
+step carries nothing to later exchanges where a send of the request since its
+readying or its last cut, the step's own included, found that the peer moved,
+that the reading changed or that the session probed, even where the step finds
+the path as it was then. Nor does a request that fits the floor whole, which
+only moves its threshold at the step and keeps its schedule, since its lost
+sends say nothing of larger datagrams and
+[section 2.4](https://www.rfc-editor.org/rfc/rfc7383.html#section-2.4) finds "no
+point in fragmenting liveness check messages". A path that widens where the host
+sees no change keeps the floor until one of those comes or the session ends,
+which the section's search, "performed downward", accepts: "Using these values
+could lead to suboptimal fragmentation, but it is acceptable given the amount of
+traffic IKE produces." Each new cut is the original message cut again, with a
+larger Total Fragments, as the section asks, so a retransmission after it is not
+bitwise identical to the first send, which
 [RFC 7296 section 2.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.1)
 requires. Each new cut also starts the retransmission waits over, as section
 2.5.2 requires ("the timers will start over"), where
@@ -480,10 +499,15 @@ Fragment message IP datagrams as a threshold when constructing a fragmented
 response", for the first answer to a request in fragments and for a kept answer
 a repeat draws again, never under the floor, with Total Fragments grown as
 section 2.5.2 asks. A repeat whole carries no size and leaves the answer as it
-stands. An answer cut for a wider path to a request that came whole thus never
-shrinks for a repeat whole, and where a hop narrower than the path the host
-reads drops its datagrams and sends no ICMP message, the exchange runs to its
-budget. That stays because an answer no larger than a request that came whole
+stands, unless the session's threshold fell since the answer's cut, by a fall of
+the path MTU or a request of ranet3's own stepping down to the floor, and the
+answer is then cut again for that threshold with Total Fragments grown. An
+answer cut for a wider path to a request that came whole thus never shrinks for
+a repeat whole while the session's threshold holds, and where a hop narrower
+than the path the host reads drops its datagrams and sends no ICMP message, the
+exchange runs to its budget, unless an earlier step of a request of ranet3's own
+holds the session at the floor, as above, after which its answers start at the
+floor too. That stays because an answer no larger than a request that came whole
 goes in datagrams no larger than that request, which the hop carried, and with
 ML-KEM the request is at least as large as the answer in every exchange ranet3
 runs. Elsewhere an answer passes its request by a few octets at most.
@@ -495,8 +519,8 @@ answer again. ranet3 answers a repeat of a request it has answered under 1 rule,
 in a half-open SA, an established session and the wait after `IKE_AUTH` alike,
 as [limits](limits.md#ike) gives it in full. From the origin, the peer's own
 address and port, it answers at most 20 repeats of each exchange, every counted
-send of a peer that resends as ranet3 does. A peer that sees many network
-changes in 1 exchange can send more, since a probe that cuts nothing resends a
+send of a peer that resends as ranet3 does. A peer asked to probe its path many
+times in 1 exchange can send more, since a probe that cuts nothing resends a
 request uncounted, and its repeats past the 20 draw nothing. A repeat from any
 other address and port is answered only once the whole request has come from
 there, and only within the bytes on the wire that address sent repeating it in

@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-10-22
+updated: 2026-10-26
 order: 100
 ---
 
@@ -236,12 +236,12 @@ the routing socket. 250 milliseconds after a notification it reads, for each
 family, the host's own default route, its interface and gateway, and the global
 unicast addresses of the interfaces that are up. The mesh's own device is left
 out of both, so the reconciler's writes to its table and to the tun never count.
-When the reading differs from the last one acted on, every session sends a
-liveness check at once, every dialer that is waiting out its reconnect delay
-dials again, and a `network.changed` event records what moved. A dialer that
-finds its session healthy stands down as it does after any wake. A change the
-host shows nowhere, such as a captive portal that lets nothing through, needs
-`ranet3 redial --all` instead.
+When the reading differs from the last one acted on, every session is asked to
+prove its path at once, as `ranet3 debug probe` asks it, every dialer that is
+waiting out its reconnect delay dials again, and a `network.changed` event
+records what moved. A dialer that finds its session healthy stands down as it
+does after any wake. A change the host shows nowhere, such as a captive portal
+that lets nothing through, needs `ranet3 redial --all` instead.
 
 ## Sockets connected to 1 peer
 

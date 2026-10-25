@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-10-25
+updated: 2026-10-26
 order: 75
 ---
 
@@ -93,7 +93,12 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
   `aes256gcm/x25519+mlkem768`, until this node's own rekey of it, which runs
   none. Its Fragments column is `no` where the 2 ends did not both say they
   support the IKE fragmentation of RFC 7383, and otherwise the path's threshold,
-  the largest IP datagram this node cuts a new IKE message to fit.
+  the largest IP datagram this node cuts a new IKE message to fit. That is the
+  family's floor, 576 or 1280, once a step cut a request of the session down to
+  it, taken on the path the request was readied or last cut on, which every send
+  of it went on since, the step's own included, until a send or this read finds
+  that the peer moved or that the path MTU the host reads changed, or the
+  session is asked to probe its path.
 - `whois` takes 1 address. It prints the longest prefix that covers the address,
   then the shorter ones it falls back to.
 - `ip` prints the host prefixes this node announces, 1 address per line.
