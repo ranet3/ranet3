@@ -55,7 +55,8 @@ type keyEntry struct {
 	routes   map[*neighborState]*routeInfo
 	selected routeSelection
 	// The origin of the last selected route, so a withdrawal can be advertised
-	// as an explicit retraction instead of going silent.
+	// as an explicit retraction instead of going silent. All zeroes until a
+	// route is selected, which no stored route's router-id is.
 	retractID    [8]byte
 	retractSeqno uint16
 }

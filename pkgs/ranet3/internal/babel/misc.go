@@ -12,6 +12,14 @@ import (
 	"time"
 )
 
+// ValidRouterID reports whether id may be a router-id, of which RFC 8966
+// section 4.1.3 says "A router-id MUST NOT consist of either all binary zeroes
+// (0000000000000000 hexadecimal) or all binary ones (FFFFFFFFFFFFFFFF
+// hexadecimal)."
+func ValidRouterID(id [8]byte) bool {
+	return id != [8]byte{} && id != [8]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+}
+
 // RouterID TLV, RFC 8966 section 4.6.7: Reserved(2) + 8-byte Router-Id.
 func EncodeRouterID(id [8]byte) RawTLV {
 	body := make([]byte, 10)

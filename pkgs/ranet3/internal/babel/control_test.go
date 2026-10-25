@@ -179,6 +179,67 @@ func TestIPv4UpdateWithNoNextHopIsIgnored(t *testing.T) {
 	}
 }
 
+// RFC 8966 section 4.1.3 has "A router-id MUST NOT consist of either all binary
+// zeroes ... or all binary ones", and a route taken under one would be relayed
+// under it. An Update after one, from a Router-Id TLV or the R flag of section
+// 4.6.9, has no router-id, as after none at all, so a finite one is not taken.
+func TestUpdateUnderAnInvalidRouterIDIsNotTaken(t *testing.T) {
+	update := func(dest netip.Prefix, flags byte) RawTLV {
+		tlv := EncodeUpdate(Update{AE: AEIPv6, Plen: dest.Bits(), Prefix: dest.Addr().AsSlice(),
+			Seqno: 1, Metric: 20, Interval: 1000})
+		tlv.Body[1] |= flags
+		return tlv
+	}
+	short := netip.MustParsePrefix("2001:db8:5::/48")
+	for _, test := range []struct {
+		name string
+		tlvs []RawTLV
+	}{
+		{"all zeroes", []RawTLV{EncodeRouterID([8]byte{}), update(short, 0)}},
+		{"all ones", []RawTLV{EncodeRouterID([8]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}), update(short, 0)}},
+		{"all zeroes after a valid one", []RawTLV{EncodeRouterID([8]byte{1}), EncodeRouterID([8]byte{}), update(short, 0)}},
+		{"R flag deriving all zeroes", []RawTLV{update(short, updateFlagRouterID)}},
+		{"R flag deriving all zeroes after a valid one", []RawTLV{EncodeRouterID([8]byte{1}), update(short, updateFlagRouterID)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, _, _ := captureSpeaker(t, Config{})
+			a := addReachablePeer(t, s, "a", 100)
+			s.Receive(a, buildPacket(netip.MustParseAddr("fe80::2"), multicastGroup, EncodePacket(test.tlvs)))
+			s.mu.Lock()
+			_, learned := s.routes.entries[routeKey{dest: short}]
+			s.mu.Unlock()
+			if learned {
+				t.Error("a route was taken under a router-id of all zeroes or all ones, and is relayed under it")
+			}
+		})
+	}
+}
+
+// A retraction after a router-id of all zeroes has no router-id, as after none
+// at all, and retracts the route its neighbor last advertised under that
+// route's origin.
+func TestRetractionUnderAnInvalidRouterIDKeepsTheRoutesOrigin(t *testing.T) {
+	short := netip.MustParsePrefix("2001:db8:5::/48")
+	s, _, _ := captureSpeaker(t, Config{})
+	a := addReachablePeer(t, s, "a", 100)
+	s.Receive(a, routePacket(short, 1, 20, 1000))
+	s.Receive(a, buildPacket(netip.MustParseAddr("fe80::2"), multicastGroup, EncodePacket([]RawTLV{
+		EncodeRouterID([8]byte{}),
+		EncodeUpdate(Update{AE: AEIPv6, Plen: short.Bits(), Prefix: short.Addr().AsSlice(),
+			Seqno: 1, Metric: MetricInfinity, Interval: 1000}),
+	})))
+	s.mu.Lock()
+	var left routeInfo
+	route := s.routes.route(s.neighbors["a"], routeKey{dest: short})
+	if route != nil {
+		left = *route
+	}
+	s.mu.Unlock()
+	if route == nil || left.rxMetric != MetricInfinity || left.routerID != ([8]byte{1}) {
+		t.Errorf("a retraction under an invalid router-id left the route at metric %d under %x, want it at infinity under its origin", left.rxMetric, left.routerID)
+	}
+}
+
 // RFC 8966 section 4.6.6 on the IHU's Interval: "An upper bound, expressed in
 // centiseconds, on the time after which the sending node will send a new IHU", and
 // "this MUST NOT be 0." The hold is computed from it, so honoring a zero puts

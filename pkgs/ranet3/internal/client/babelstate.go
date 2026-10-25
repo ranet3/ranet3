@@ -104,9 +104,8 @@ func parseBabelState(body []byte) (babelState, error) {
 	if err != nil || len(raw) != 8 {
 		return babelState{}, fmt.Errorf("router_id %q is not 16 hex digits", file.RouterID)
 	}
-	// a router id is neither all zeros nor all ones, RFC 8966 section 4.6.7
 	id := [8]byte(raw)
-	if id == [8]byte{} || id == [8]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff} {
+	if !babel.ValidRouterID(id) {
 		return babelState{}, fmt.Errorf("router_id %s is all zeros or all ones", file.RouterID)
 	}
 	return babelState{node: node, origin: babel.Origin{RouterID: id, Limit: *file.Limit}}, nil

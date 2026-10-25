@@ -1950,6 +1950,78 @@ func TestRetractionForUnadvertisedPrefixCostsNothing(t *testing.T) {
 	}
 }
 
+// A route request for a prefix whose only route was never selected, its
+// neighbor's link not yet usable, draws a retraction as one for a prefix this
+// node knows nothing about does, under this node's own router-id. No selection
+// has named an origin to retract under, and RFC 8966 section 4.1.3 has "A
+// router-id MUST NOT consist of either all binary zeroes ... or all binary
+// ones".
+func TestRetractionOfAPrefixNeverSelectedCarriesThisNodesRouterID(t *testing.T) {
+	speaker, neighbor, _ := captureSpeaker(t, Config{})
+	specific := netip.MustParsePrefix("fd00:1::/64")
+	updateFrom(speaker, neighbor, 1, specific, 64)
+	id, update := requestedRetraction(t, speaker, routeKey{dest: specific})
+	if id != speaker.routerID || update.Seqno != speaker.originSeqno {
+		t.Errorf("the retraction carries router-id %x seqno %d, want this node's %x and %d",
+			id, update.Seqno, speaker.routerID, speaker.originSeqno)
+	}
+}
+
+// RFC 8966 section 3.5.3: "If the update caused the router-id of the entry to
+// change, an update (possibly a retraction) MUST be sent in a timely manner".
+// A prefix whose selected route is lost is retracted under that route's
+// origin, so a neighbor holding the route keeps its router-id and owes no
+// update of its own.
+func TestRetractionOfAPrefixOnceSelectedCarriesItsLastOrigin(t *testing.T) {
+	speaker, neighbor, _ := captureSpeaker(t, Config{})
+	makeNeighborReachable(neighbor)
+	specific := netip.MustParsePrefix("fd00:1::/64")
+	key := routeKey{dest: specific}
+	advertise := func(metric uint16) {
+		speaker.handlePacket(neighbor, EncodePacket([]RawTLV{
+			EncodeRouterID([8]byte{1}),
+			EncodeUpdate(Update{AE: AEIPv6, Plen: specific.Bits(), Prefix: specific.Addr().AsSlice(),
+				Interval: 6000, Seqno: 5, Metric: metric}),
+		}))
+	}
+	advertise(64)
+	speaker.mu.Lock()
+	entry := speaker.routes.entries[key]
+	selected := entry != nil && entry.selected.neighbor != nil
+	speaker.mu.Unlock()
+	if !selected {
+		t.Fatal("the route was not selected, so this proves nothing")
+	}
+	advertise(MetricInfinity)
+	id, update := requestedRetraction(t, speaker, key)
+	if id != ([8]byte{1}) || update.Seqno != 5 {
+		t.Errorf("the retraction carries router-id %x seqno %d, want the origin's %x and 5", id, update.Seqno, [8]byte{1})
+	}
+}
+
+// requestedRetraction answers a route request for key from a new neighbor and
+// returns the router-id and the Update of the retraction it draws. key must
+// have an entry with no selected route.
+func requestedRetraction(t *testing.T, speaker *Speaker, key routeKey) ([8]byte, Update) {
+	t.Helper()
+	speaker.AddPeer(newHeldPeer(t, "other", nil).Peer, identity.Identity{})
+	speaker.mu.Lock()
+	defer speaker.mu.Unlock()
+	if entry := speaker.routes.entries[key]; entry == nil || entry.selected.neighbor != nil {
+		t.Fatal("the route entry is missing or selected, so this proves nothing")
+	}
+	tlvs, _ := speaker.advertiseTo(speaker.neighbors["other"], key, true, time.Now())
+	updates := updatesFor(t, tlvs, key.dest)
+	if len(tlvs) != 2 || tlvs[0].Type != TLVRouterID || len(updates) != 1 || updates[0].Metric != MetricInfinity {
+		t.Fatalf("the answer is %v, want a Router-Id and a retraction", tlvs)
+	}
+	id, _, err := DecodeRouterID(tlvs[0].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id, updates[0]
+}
+
 // A Hello is multicast, like the dump, so ordering a pass by destination put
 // it behind every unicast request the same pass decided, and coalesce had
 // already merged it into the dump's action. Three lost Hellos withdraw every

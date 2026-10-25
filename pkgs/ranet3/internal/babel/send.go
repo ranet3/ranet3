@@ -441,6 +441,10 @@ func (s *Speaker) advertisementFor(key routeKey) (advertisement, *neighborState,
 	if sel := entry.selected; sel.neighbor != nil {
 		return advertisement{routerID: sel.routerID, seqno: sel.seqno, metric: sel.cost}, sel.neighbor, true
 	}
+	if entry.retractID == ([8]byte{}) {
+		// no selection of this entry named an origin to retract under, so it is retracted as an unknown key is
+		return advertisement{}, nil, false
+	}
 	return advertisement{routerID: entry.retractID, seqno: entry.retractSeqno, metric: MetricInfinity}, nil, true
 }
 
