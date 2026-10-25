@@ -455,10 +455,10 @@ The segments this node answers for.
   header and delivers the inner packet, to the mesh's
   [forwarding decision](routing.md#transit) or, with `deliver = "egress"`, into
   the mesh tun for the host to carry out of the mesh, refusing an inner
-  destination the mesh routes itself. The decision writes it to the tun where
-  its destination is this node's own, and otherwise forwards or answers it as a
-  session's packet. An inner packet an End.DT46 delivers to the mesh takes that
-  path whatever `cap.transit` says.
+  destination inside `cap.border.overlay` or that the mesh routes itself. The
+  decision writes it to the tun where its destination is this node's own, and
+  otherwise forwards or answers it as a session's packet. An inner packet an
+  End.DT46 delivers to the mesh takes that path whatever `cap.transit` says.
 - `behavior` is read in any case.
 - A SID written twice is refused.
 - `deliver = "egress"` is refused on `End`, and `allow` on anything but an
@@ -753,6 +753,11 @@ daemon refuses it at startup on other platforms.
 - On an exit, the list enables the kernel lookups of its
   [readiness](exit-nodes.md#readiness), which read from a member's address
   inside it. A family with no prefix in it skips them.
+- On an exit, the list also keeps an address inside it off the uplink, as
+  [exit nodes](exit-nodes.md#what-an-exit-carries-out) describe: the forwarding
+  decision egresses none, and an egress segment refuses one. An exit without
+  `cap.border` sends an address no node announces out of its uplink as any other
+  destination outside the mesh.
 - A file with a local segment and no `cap.border` is refused, and so is one
   whose `overlay` holds no IPv6 prefix, since every local SID acts only on an
   outer source in those prefixes. An egress segment's `allow` entry no `overlay`
