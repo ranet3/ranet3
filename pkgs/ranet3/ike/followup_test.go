@@ -1244,6 +1244,26 @@ func (p *collisionPeer) next(what string, exchange ExchangeType, response bool) 
 	if !ok {
 		p.t.FailNow()
 	}
+	return p.opened(what, message, raw, exchange, response)
+}
+
+// nextPast is next past the resends of the session's request answered, which left before the peer's answer to it arrived
+func (p *collisionPeer) nextPast(answered *Header, what string, exchange ExchangeType, response bool) (*Header, []RawPayload) {
+	p.t.Helper()
+	for {
+		message, raw, ok := p.read(what)
+		if !ok {
+			p.t.FailNow()
+		}
+		if h := message.Header; h.IsResponse() || h.SPIInitiator != answered.SPIInitiator || h.ExchangeType != answered.ExchangeType || h.MessageID != answered.MessageID {
+			return p.opened(what, message, raw, exchange, response)
+		}
+	}
+}
+
+// opened is message, read as raw, decrypted on the old SA, which must be of exchange and a response where response holds
+func (p *collisionPeer) opened(what string, message *Message, raw []byte, exchange ExchangeType, response bool) (*Header, []RawPayload) {
+	p.t.Helper()
 	inner, err := DecryptMessage(p.old.suite, p.old.skei, raw, message)
 	if err != nil || message.Header.ExchangeType != exchange || message.Header.IsResponse() != response {
 		p.t.Fatalf("%s is exchange %d response %v, %v, want exchange %d response %v", what, message.Header.ExchangeType, message.Header.IsResponse(), err, exchange, response)
@@ -1778,7 +1798,7 @@ func TestFollowupIsResentUntilAnsweredAndALateStateNotFoundIsNotCounted(t *testi
 	answer, _ := answerRekey(t, create, 0, []byte("link1"), nil)
 	p.reply(CREATE_CHILD_SA, header.MessageID, answer)
 	// the sends within the wait are lost, and the last resend, the first past it, reaches the peer, which dropped the chain
-	followup, _ := p.next("the IKE_FOLLOWUP_KE", IKE_FOLLOWUP_KE, false)
+	followup, _ := p.nextPast(header, "the IKE_FOLLOWUP_KE", IKE_FOLLOWUP_KE, false)
 	for range maxRetransmits {
 		if resent, _ := p.next("a resend of the IKE_FOLLOWUP_KE", IKE_FOLLOWUP_KE, false); resent.MessageID != followup.MessageID {
 			t.Fatalf("a resend of the IKE_FOLLOWUP_KE at Message ID %d went at %d", followup.MessageID, resent.MessageID)
@@ -1786,7 +1806,7 @@ func TestFollowupIsResentUntilAnsweredAndALateStateNotFoundIsNotCounted(t *testi
 	}
 	p.reply(IKE_FOLLOWUP_KE, followup.MessageID, notifyAnswer(N_STATE_NOT_FOUND))
 	awaitRecorded(t, events, "ike.rekey.failed > sa=ike")
-	header, create = p.next("the retried rekey", CREATE_CHILD_SA, false)
+	header, create = p.nextPast(followup, "the retried rekey", CREATE_CHILD_SA, false)
 	if header.MessageID != followup.MessageID+1 {
 		t.Errorf("the retried rekey went at Message ID %d after the IKE_FOLLOWUP_KE answered at %d", header.MessageID, followup.MessageID)
 	}
@@ -1795,9 +1815,9 @@ func TestFollowupIsResentUntilAnsweredAndALateStateNotFoundIsNotCounted(t *testi
 	}
 	answer, _ = answerRekey(t, create, 0, []byte("link1"), nil)
 	p.reply(CREATE_CHILD_SA, header.MessageID, answer)
-	header, _ = p.next("the retried IKE_FOLLOWUP_KE", IKE_FOLLOWUP_KE, false)
+	header, _ = p.nextPast(header, "the retried IKE_FOLLOWUP_KE", IKE_FOLLOWUP_KE, false)
 	p.reply(IKE_FOLLOWUP_KE, header.MessageID, notifyAnswer(N_STATE_NOT_FOUND))
-	header, deletion := p.next("the Delete", INFORMATIONAL, false)
+	header, deletion := p.nextPast(header, "the Delete", INFORMATIONAL, false)
 	if payload := findType(deletion, PayloadD); payload == nil || header.SPIInitiator != collisionOldSPIi {
 		t.Fatalf("the request after the STATE_NOT_FOUND within the wait carries %v on SPI %016x, want the Delete of the IKE SA", payloadTypes(deletion), header.SPIInitiator)
 	}
@@ -2197,14 +2217,14 @@ func TestLateAnswerToTheLastFollowupCompletesTheRekey(t *testing.T) {
 	header, create := p.next("the rekey", CREATE_CHILD_SA, false)
 	answer, peer := answerRekey(t, create, 0, []byte("link1"), nil)
 	p.reply(CREATE_CHILD_SA, header.MessageID, answer)
-	followup, request := p.next("the IKE_FOLLOWUP_KE", IKE_FOLLOWUP_KE, false)
+	followup, request := p.nextPast(header, "the IKE_FOLLOWUP_KE", IKE_FOLLOWUP_KE, false)
 	last := peer.answerFollowup(t, request, ML_KEM_768, nil)
 	for range maxRetransmits {
 		p.next("a resend of the IKE_FOLLOWUP_KE", IKE_FOLLOWUP_KE, false)
 	}
 	// RFC 7296 section 2.1: "The responder MUST remember each response until it receives a request whose sequence number is larger than or equal to the sequence number in the response plus its window size"
 	p.reply(IKE_FOLLOWUP_KE, followup.MessageID, last)
-	header, deletion := p.next("the Delete of the old SA", INFORMATIONAL, false)
+	header, deletion := p.nextPast(followup, "the Delete of the old SA", INFORMATIONAL, false)
 	if findType(deletion, PayloadD) == nil || header.SPIInitiator != collisionOldSPIi || header.MessageID != followup.MessageID+1 {
 		t.Errorf("the request after the late answer carries %v at Message ID %d on SPI %016x, want the Delete of the old SA at %d", payloadTypes(deletion), header.MessageID, header.SPIInitiator, followup.MessageID+1)
 	}
