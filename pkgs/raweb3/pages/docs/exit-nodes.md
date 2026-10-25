@@ -16,10 +16,12 @@ translated to an address the far side can answer, and the host forwards it by
 its ordinary routes. An [egress segment](#egress-segments) ends at the same
 operation, its inner packets arriving on the same tun.
 
-`cap.egress` works on Linux only. On any other platform the daemon refuses it at
-startup with `egress: source translation is unsupported on this platform`. A
-node that accepted the configuration and translated nothing would advertise
-itself and then drop every flow that took it.
+`cap.egress` works on Linux only, whose builds carry the kernel exit this page
+describes. A build for any other platform, Android and iOS among them, carries
+no exit, and the daemon refuses `cap.egress` at startup in words that name the
+platform, as [Platforms](platforms.md#at-a-glance) quotes them. A node that
+accepted the configuration and carried nothing would advertise itself and then
+drop every flow that took it.
 
 [The configuration reference](configuration-reference.md) lists every key and
 its default.
@@ -161,16 +163,17 @@ translates it and forwards it out of its uplink, only where 3 checks pass:
   network or address of this node's own, such as a LAN it shares with another
   node. A packet from any other source is dropped with no answer and counted as
   `unrouted source`, since no reply to it could come back.
-- For a prefix `cap.egress` advertises, the packet's family is one the node
-  announces some prefix of, which it does only while the family is
-  [ready](#readiness). A packet of another family is dropped with no answer and
-  counted as `not ready`. The node takes the families it announces before the
-  speaker announces or retracts them, so a fresh announcement attracts no packet
-  before its family is ready, and a packet of a family that went is dropped
-  before the retraction reaches anyone. Once the speaker retracts the prefix,
-  the decision treats a packet for it as
-  [retracted routes](routing.md#retracted-routes) describe. The border filter
-  takes no part: it holds back the egress segments alone.
+- For a prefix `cap.egress` advertises, the packet's family is one the exit
+  holds [ready](#readiness) and the node announces some prefix of. A packet of
+  any other family is dropped with no answer and counted as `not ready`. The
+  node takes the families it announces before the speaker announces or retracts
+  them, so a fresh announcement attracts no packet before its family is ready,
+  and a packet of a family that went is dropped before the retraction reaches
+  anyone. A family whose translation another writer took stays announced until
+  the exit's next pass, and its packets are dropped from the moment the exit
+  holds it not ready. Once the speaker retracts the prefix, the decision treats
+  a packet for it as [retracted routes](routing.md#retracted-routes) describe.
+  The border filter takes no part: it holds back the egress segments alone.
 
 A packet through a prefix counting as a default that `cap.route` announces meets
 the first 2 checks, and past them goes to the tun with no readiness to wait on,
@@ -216,8 +219,8 @@ A family is ready while its chain reads back as written with its table, the host
 forwards it, and the kernel routes a translated packet of the family and its
 reply the way the translation needs. Every node with `cap.egress` judges each
 family it translates on every pass, and both modes wait for the judgment: a
-packet through an advertised prefix waits for the families the node announces,
-and an egress segment's packet for the families ready, as
+packet through an advertised prefix waits for the families ready that the node
+announces, and an egress segment's packet for the families ready, as
 [what an exit carries out](#what-an-exit-carries-out) and
 [egress segments](#egress-segments) describe. A family this node does not
 translate is not ready.

@@ -5,6 +5,6 @@
 
 package kernel
 
-// RouteGetBatch has no batch to read here. It reads for the translator alone,
-// which refuses cap.egress off linux, so no configuration reaches it
+// RouteGetBatch has no batch to read here. It reads for the kernel exit alone,
+// which this build does not carry, so no configuration reaches it
 func RouteGetBatch(reads []RouteRead) ([]BatchAnswer, error) { return nil, ErrUnsupported }

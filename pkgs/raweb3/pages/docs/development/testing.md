@@ -23,24 +23,25 @@ unshares a network namespace, refuses to continue unless it is empty, and skips
 unless run as root.
 
 - `internal/kernel` has tests that write to a real routing table.
-- `internal/egress` has 7 that write into a real packet filter. One round trips
-  the translator's rules, another checks that the kernel tells the backend when
-  another writer adds a rule to its chain, sets its table dormant or deletes it,
-  and that its own writes tell it nothing, and a third checks that another
-  writer's transactions overflowing the notification socket reach the backend as
-  lost notifications. The fourth checks that another writer's uncommented rule
-  at the head of the translator's chain is read back, and that the next pass
-  leaves only the translator's rules. The fifth runs the translator while
-  another writer sets a table dormant or makes a chain again at another priority
-  or as a regular chain, and checks that each holds both families not ready
-  until the pass it wakes writes the table back and reads them ready. The other
-  2 round trip the border filter's chain. One puts it back on the pass another
-  writer wakes by deleting the table, adding a rule or setting the table
-  dormant, and leaves no table behind. The other writes it back after another
-  writer adds a rule to it, sets its table dormant, turns its policy to drop,
-  makes the chain again at another priority or as a regular chain, or makes the
-  table again with a flag nf_tables will not clear in place, the last 3 by
-  deleting and making the table again.
+- `internal/egress/kernel` has 7 that write into a real packet filter. One round
+  trips the translator's rules, another checks that the kernel tells the backend
+  when another writer adds a rule to its chain, sets its table dormant or
+  deletes it, and that its own writes tell it nothing, and a third checks that
+  another writer's transactions overflowing the notification socket reach the
+  backend as lost notifications. The fourth checks that another writer's
+  uncommented rule at the head of the translator's chain is read back, and that
+  the next pass leaves only the translator's rules. The fifth runs the
+  translator while another writer sets a table dormant or makes a chain again at
+  another priority or as a regular chain, and checks that each holds both
+  families not ready until the pass it wakes writes the table back and reads
+  them ready. The other 2 round trip the border filter's chain. One puts it back
+  on the pass another writer wakes by deleting the table, adding a rule or
+  setting the table dormant, and leaves no table behind. The other writes it
+  back after another writer adds a rule to it, sets its table dormant, turns its
+  policy to drop, makes the chain again at another priority or as a regular
+  chain, or makes the table again with a flag nf_tables will not clear in place,
+  the last 3 by deleting and making the table again. It also runs the
+  [exit behavior suite](#the-exit-behavior-suite) against the kernel exit.
 - `transport` has 2 that send through a veth pair to a peer in a second
   namespace, behind a route with a locked path MTU. They check that the kernel
   refuses what the path cannot carry, segmented or single, and reports the path
@@ -167,6 +168,79 @@ address or a route. Run them in an empty namespace:
 unshare -rn go test ./internal/client -run '^TestNode(GoingDown|RestartedWhileDown)|^TestSession(MovedUnderTheFloorHandsItsFragmentingOver|LowersItsBudgetAtTheRefusalOfItsOwnData)'
 ```
 
+## The exit behavior suite
+
+`internal/egress/egresstest` holds what every exit backend owes a leaf, whatever
+platform carries it. It drives a backend through `egress.Exit` as the dataplane
+does for a prefix `cap.egress` advertises: it hands the leaf's packets to
+`Egress` while their family is ready and announced, reads what comes back toward
+the leaf, and plays the server beyond the exit's uplink. A backend's tests run
+it with an arm, which builds the backend, names the source classes it carries
+and says whether it ends the leaf's TCP. Each class runs on a network of its
+own, and each row in both families:
+
+1. What the server sees: the class's address, from whatever port the backend
+   chose, the bytes intact both ways, a half-close and a reset each way, and an
+   echo answered.
+2. Errors toward the leaf: a closed UDP port answered Port Unreachable from the
+   server, a closed TCP port refused, and an unreachable host and network
+   answered by the router beyond the exit, each error quoting the source,
+   destination, protocol and transport header of the leaf's packet as the leaf
+   sent it. The leaf's own Port Unreachable reaches the server from the class's
+   address, quoting the server's datagram, and a packet of protocol 253 is
+   carried to the server and answered by nothing.
+3. Path MTU: a datagram past the exit's uplink answered from an address of the
+   exit with the uplink's MTU, an IPv4 datagram without DF past it reaching the
+   server whole, the router's answer for a narrower link reaching the leaf
+   translated, and a TCP transfer completing over an uplink below the mesh's
+   MTU. A backend that forwards the leaf's segments, rather than ending its TCP,
+   also answers one of them too big, with the uplink's MTU.
+4. Hop limits: a TTL or hop limit of 1 answered Time Exceeded from an address of
+   the exit.
+5. Port reuse: a reconnect from one port just after the server closed first
+   connects at once, and one leaf port or echo identifier toward 2 servers is
+   read by both as 1 outside port or identifier, in UDP, in TCP and in echo.
+
+In each family the suite also calls `Egress` from several goroutines at once, as
+each session's receive path does, and the server reads every datagram. Then it
+takes the backend off with `SetEnabled` and puts it back. Readiness has to go
+false in both families and the announcement empty while the backend still holds
+what carries them, `Status` has to read neither family ready, and once enabled
+again both are ready and carried. For an arm that can make one, another writer
+then takes the backend's translation away. The backend has to say the families
+are not ready, a datagram the leaf sends meanwhile reaches the server not at
+all, and once the translation is back the same flow reaches the server
+translated. Last the suite stops the backend, which withdraws as `SetEnabled`
+does, and once `Run` returns the backend holds nothing.
+
+`TestKernelExitPassesTheExitBehaviorSuite` in `internal/egress/kernel` runs the
+kernel exit's arm, which carries `auto` and an address, every protocol and every
+row, with no limit of its own. Its other writer deletes both its tables, and its
+stop leaves no table named `ranet3` in either family. No real backend maps the
+leaf's ports or ends its TCP yet, so the suite's own tests stand in for both: a
+fake that maps every port into a range of its own meets rows 1, 3 and 5, and a
+fake that ends the leaf's TCP and opens its own toward the server meets row 3
+without a too-big answer of its own.
+
+On Linux the suite builds 4 network namespaces, each new and empty and held by a
+thread of its own:
+
+- the leaf, behind a tun of its own whose packets the suite hands the exit
+- the exit, with the mesh's tun, a peer the mesh routes the leaf's addresses to,
+  which writes what it carries into the leaf's tun, and an uplink with an MTU of
+  1340 to the router
+- the router, routing the exit's addresses and the server's and nothing else,
+  with 2 links to the server, one with an MTU of 1280, and its IPv4 reverse path
+  filter off, so a packet the exit leaves untranslated reaches the server
+- the server
+
+It skips without root. Run it in a namespace of its own:
+
+```sh
+unshare -rn go test ./internal/egress/kernel -run '^TestKernelExitPassesTheExitBehaviorSuite$'
+unshare -rn go test ./internal/egress/egresstest
+```
+
 ## Root tests on macOS
 
 On macOS the tests below run as root, and only with `RANET3_DARWIN_NETTEST=1`
@@ -221,9 +295,9 @@ The packages that read bytes a peer or a file chooses also carry property tests,
 in files ending in `_property_test.go`: `esp`, `ike`, `identity`, `transport`,
 `sadr`, `srv6`, `internal/babel`, `internal/packet`, `internal/netstack`,
 `schema`, `internal/config`, `internal/registry`, `internal/client`,
-`internal/kernel`, `internal/egress`, `internal/nftables` and `control`. They
-run with the rest of `go test`, under hegel-go through `internal/pbt`, whose
-`Check` gives every property the same terms: 200 cases, or 10 under
+`internal/kernel`, `internal/egress/kernel`, `internal/nftables` and `control`.
+They run with the rest of `go test`, under hegel-go through `internal/pbt`,
+whose `Check` gives every property the same terms: 200 cases, or 10 under
 `go test -short`, where hegel replaces the count `Check` sets, no example
 database, and a derandomized engine. hegel seeds the labels of nested generators
 per process, so two runs need not draw the same sample, and a boundary the code
@@ -247,11 +321,12 @@ fails if a test wrote hegel's cache under the check's home directory anyway.
 Property tests build on Linux and macOS alone. `internal/pbt` and every property
 test carry a build constraint that names them. The `transport` properties of its
 sends and of the source a socket connected to 1 peer binds, the
-`internal/kernel` netlink and rule message properties, the `internal/egress`
-nftables and border chain properties and the `internal/nftables` properties
-build on Linux alone, and the `transport` property of the address an answer
-leaves from builds on macOS alone. The `go-lint` check vets the tree for
-FreeBSD, which fails on a property test without the constraint.
+`internal/kernel` netlink and rule message properties, the
+`internal/egress/kernel` nftables and border chain properties and the
+`internal/nftables` properties build on Linux alone, and the `transport`
+property of the address an answer leaves from builds on macOS alone. The
+`go-lint` check vets the tree for FreeBSD, which fails on a property test
+without the constraint.
 
 ## Nix checks
 
@@ -291,13 +366,13 @@ the `kvm` system feature has no `checks.aarch64-linux.<name>` line in the
 exist, and when it finds no `aarch64-linux` check that requires `kvm` at all.
 
 The `netlink` check runs these root tests: the `internal/kernel` tests whose
-names start with `TestNetlink`, the 7 `internal/egress` tests, the `TestTUN`
-tests of `internal/netstack` and `internal/client`, the 3 `transport` sends, and
-the 4 `internal/client` tests above under `unshare -n`, and every test of the
-`tun` and `conn` packages of `pkgs/wireguard`. It fails if any of them skips. It
-then checks that no rule, link, xfrm state or policy, or nftables table of
-theirs is left on the host. The `internal/kernel` tests
-`TestNetworkWatchInNetworkNamespace` and
+names start with `TestNetlink`, the 7 `internal/egress/kernel` tests, the exit
+behavior suite and its 2 fakes, the `TestTUN` tests of `internal/netstack` and
+`internal/client`, the 3 `transport` sends, and the 4 `internal/client` tests
+above under `unshare -n`, and every test of the `tun` and `conn` packages of
+`pkgs/wireguard`. It fails if any of them skips. It then checks that no rule,
+link, xfrm state or policy, or nftables table of theirs is left on the host. The
+`internal/kernel` tests `TestNetworkWatchInNetworkNamespace` and
 `TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault` need root and run in
 no check, and so do the 7 `transport` tests of the sockets connected to 1 peer
 and the 3 of a session's fallback from its address.
@@ -305,12 +380,12 @@ and the 3 of a session's fallback from its address.
 The `netlink` check, `integration-egress` and `integration-egress-segment` are
 the only places where a real kernel takes the `nf_tables` encoding. Elsewhere
 the encoding meets only the decoder written beside it.
-`internal/egress/testdata/messages.golden` holds the kind, flags and body of
-every request in the transactions the translator and the border filter write, in
-the order each transaction sends them. It holds neither the dumps the translator
-and the border filter read with, nor the netlink header, sequence numbers, batch
-markers and acknowledgment flag that sending adds.
-`go test ./internal/egress -update` rewrites it on Linux.
+`internal/egress/kernel/testdata/messages.golden` holds the kind, flags and body
+of every request in the transactions the translator and the border filter write,
+in the order each transaction sends them. It holds neither the dumps the
+translator and the border filter read with, nor the netlink header, sequence
+numbers, batch markers and acknowledgment flag that sending adds.
+`go test ./internal/egress/kernel -update` rewrites it on Linux.
 
 `nix fmt` rewrites the tree in place. It runs `deno fmt` on the Markdown, the
 example JSON and the site, then `nixfmt-tree`, then `go fmt`, `go vet`,

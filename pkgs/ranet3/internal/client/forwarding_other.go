@@ -9,8 +9,8 @@ package client
 // and a warning this node cannot substantiate is worse than silence.
 func forwardingEnabled() (v4, v6 bool) { return true, true }
 
-// Sysctl reads no setting, since the paths the egress translator names are
-// linux's and the translator refuses cap.egress here
+// Sysctl reads no setting, since the paths the kernel exit names are linux's
+// and this build carries no exit
 func Sysctl(string) string { return "" }
 
 // l3mdevAccept cannot be answered here either. See forwardingEnabled.
