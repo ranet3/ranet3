@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
+//go:build linux && !android
+
 package client
 
 import (
@@ -21,6 +23,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -39,7 +42,7 @@ const labVRF = "labv"
 // border built as main builds them, a far host beyond the uplink, and a
 // capture of the mesh tun
 type borderLab struct {
-	exit, far *namespaceThread
+	exit, far *netnstest.Thread
 	node      *Client
 	border    *egress.BorderFilter
 	capture   int
@@ -158,7 +161,7 @@ func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 			lab.node.Mesh.Routes.Set(netip.Prefix{}, owned, netstack.Assigned)
 			defer lab.node.Mesh.Routes.Remove(netip.Prefix{}, owned)
 			var listener *net.UDPConn
-			if err := lab.exit.do(func() (err error) {
+			if err := lab.exit.Do(func() (err error) {
 				listener, err = net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(labExit4.Addr(), labPort)))
 				return err
 			}); err != nil {
@@ -182,7 +185,7 @@ func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 		t.Run("forwarding off with the border withdrawn", func(t *testing.T) {
 			lab.stopBorder()
 			lab.withoutTable(t)
-			if err := lab.exit.do(func() error {
+			if err := lab.exit.Do(func() error {
 				for _, path := range []string{"/proc/sys/net/ipv4/ip_forward", "/proc/sys/net/ipv6/conf/all/forwarding"} {
 					if err := os.WriteFile(path, []byte("0\n"), 0o644); err != nil {
 						return err
@@ -251,7 +254,7 @@ func meshCarrying(t *testing.T, c *Client) func() [2]bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := startNamespaceThread(t).do(func() error {
+	if err := netnstest.StartThread(t).Do(func() error {
 		mesh, err := netstack.NewNamed(0, labTUN, nil)
 		if err != nil {
 			return err
@@ -295,14 +298,14 @@ func meshCarrying(t *testing.T, c *Client) func() [2]bool {
 // the exit's node, reconciler and border with the leaves' routes in the mesh
 func startBorderLab(t *testing.T, master string) *borderLab {
 	t.Helper()
-	lab := &borderLab{exit: startNamespaceThread(t), far: startNamespaceThread(t)}
+	lab := &borderLab{exit: netnstest.StartThread(t), far: netnstest.StartThread(t)}
 	labUplink(t, lab.exit, lab.far, master)
 	cfg := labConfig(t)
 	if master != "" {
 		cfg.Cap.Table.VRF = &kernel.VRF{Name: master}
 	}
 	bus := events.New()
-	if err := lab.exit.do(func() (err error) {
+	if err := lab.exit.Do(func() (err error) {
 		lab.node, err = New(cfg, bus)
 		return err
 	}); err != nil {
@@ -316,7 +319,7 @@ func startBorderLab(t *testing.T, master string) *borderLab {
 		lab.node.Mesh.Routes.Set(netip.Prefix{}, prefix, leaf)
 	}
 	var routes *kernel.Reconciler
-	if err := lab.exit.do(func() (err error) {
+	if err := lab.exit.Do(func() (err error) {
 		if routes, err = kernel.New(*cfg.Cap.Table, lab.node.KernelRuntime(), lab.node.Mesh.Routes); err != nil {
 			return err
 		}
@@ -358,12 +361,12 @@ func startBorderLab(t *testing.T, master string) *borderLab {
 		return labMeshRoute(t, lab.exit, labLeafPrefixes()[0]) && labMeshRoute(t, lab.exit, labLeafPrefixes()[1])
 	})
 
-	if err := lab.far.do(func() error {
-		netlink, err := openNetlinkRoute()
+	if err := lab.far.Do(func() error {
+		netlink, err := netnstest.OpenNetlink()
 		if err != nil {
 			return err
 		}
-		defer netlink.close()
+		defer netlink.Close()
 		if err := labAddress(netlink, "labf", labForged4, labForged6); err != nil {
 			return err
 		}
@@ -393,7 +396,7 @@ func startBorderLab(t *testing.T, master string) *borderLab {
 	for _, conn := range lab.listeners {
 		t.Cleanup(func() { _ = conn.Close() })
 	}
-	if err := lab.exit.do(func() (err error) {
+	if err := lab.exit.Do(func() (err error) {
 		lab.capture, err = openCapture(lab.node.Mesh.Name, labRetry)
 		return err
 	}); err != nil {
@@ -428,7 +431,7 @@ func (lab *borderLab) written(t *testing.T) {
 func (lab *borderLab) sender(t *testing.T, source, leaf netip.Addr, payload []byte) func() {
 	t.Helper()
 	var conn *net.UDPConn
-	if err := lab.far.do(func() (err error) {
+	if err := lab.far.Do(func() (err error) {
 		conn, err = net.DialUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(source, 0)), net.UDPAddrFromAddrPort(netip.AddrPortFrom(leaf, labLeafPort)))
 		return err
 	}); err != nil {
@@ -444,7 +447,7 @@ func (lab *borderLab) sender(t *testing.T, source, leaf netip.Addr, payload []by
 // raw sends packet, an IPv6 packet with its own header, from the far host to destination
 func (lab *borderLab) raw(t *testing.T, destination netip.Addr, packet []byte) {
 	t.Helper()
-	if err := lab.far.do(func() error {
+	if err := lab.far.Do(func() error {
 		// IPPROTO_RAW over IPv6 takes the header from the packet
 		fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_RAW)
 		if err != nil {
@@ -460,12 +463,12 @@ func (lab *borderLab) raw(t *testing.T, destination netip.Addr, packet []byte) {
 // routeFar routes to through gateway at the far host
 func (lab *borderLab) routeFar(t *testing.T, to netip.Prefix, gateway netip.Addr) {
 	t.Helper()
-	if err := lab.far.do(func() error {
-		netlink, err := openNetlinkRoute()
+	if err := lab.far.Do(func() error {
+		netlink, err := netnstest.OpenNetlink()
 		if err != nil {
 			return err
 		}
-		defer netlink.close()
+		defer netlink.Close()
 		uplink, err := net.InterfaceByName("labf")
 		if err != nil {
 			return err
@@ -484,10 +487,10 @@ func (lab *borderLab) dropped(t *testing.T, spec string) uint64 {
 
 // borderDropped is the packets border's rule spec has counted, read now in
 // the exit's namespace, where the debug read opens its socket
-func borderDropped(t *testing.T, exit *namespaceThread, border *egress.BorderFilter, spec string) uint64 {
+func borderDropped(t *testing.T, exit *netnstest.Thread, border *egress.BorderFilter, spec string) uint64 {
 	t.Helper()
 	var debug egress.BorderDebug
-	_ = exit.do(func() error {
+	_ = exit.Do(func() error {
 		debug = border.Debug()
 		return nil
 	})
@@ -544,7 +547,7 @@ func labOuter(source, destination netip.Addr, routing []uint8, payload []byte) [
 // binary's name in a family the binary writes
 func (lab *borderLab) withoutTable(t *testing.T) {
 	t.Helper()
-	if err := lab.exit.do(func() error {
+	if err := lab.exit.Do(func() error {
 		for _, family := range []uint8{unix.NFPROTO_INET, unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
 			if err := labDeleteTable(family, egress.TableName); !errors.Is(err, unix.ENOENT) {
 				return fmt.Errorf("deleting the exit's table of family %d answered %v, want it gone", family, err)
