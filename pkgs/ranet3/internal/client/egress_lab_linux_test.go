@@ -14,13 +14,16 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
@@ -39,6 +42,10 @@ const (
 	// labRetry is how long one read waits before a packet is sent again, and labQuiet how long a packet that must not arrive is waited for
 	labRetry = 250 * time.Millisecond
 	labQuiet = time.Second
+	// labAheadPriority is a rule's the lab puts ahead of labConfig's to rules
+	labAheadPriority = 50
+	// labSkipped6 is the translator's word for an exit whose mesh routes no IPv6 member
+	labSkipped6 = "lookup skipped, the mesh routes no other node's ipv6 prefix inside cap.border.overlay"
 )
 
 var (
@@ -53,14 +60,18 @@ var (
 	labFar6  = netip.MustParsePrefix("2001:db8:f::2/64")
 	// labLeaves is the allow list, and the prefixes the to rules send into the mesh table
 	labLeaves = []string{"3fff:a::/32", "198.18.104.0/24"}
+	// labDefaults is the default of each family the exit of the egress lab advertises
+	labDefaults = map[int]netip.Prefix{4: netip.MustParsePrefix("0.0.0.0/0"), 6: netip.MustParsePrefix("::/0")}
 )
 
-// An exit node in a namespace of its own, started through New with the
-// border, the reconciler and the translator main builds, carries a synthetic
-// leaf's steered packets out of a veth uplink to a far host in another
-// namespace. They leave through the mesh tun with the leaf's source, so they
-// reach the far host only while the border accepts the tun.
-func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
+// an exit in a namespace of its own, started through New with the border, the reconciler and the translator main builds, holds the tun, the uplink and the loopback and no other link
+// a synthetic leaf's packets of each family, steered through its egress SID and sent through the default it advertises, leave its one tun and its uplink translated to the exit's uplink address
+// a route sending a lookup's address back into the tun, a rule sending the leaf's address out of the uplink and IPv4 forwarding off on the tun each hold their family not ready with the reason naming it
+// and the rule with strict reverse path filtering on the tun holds IPv4 by its forward lookup, naming the filter
+// its default and the SID's /128 retracted and nothing of it reaching the far host, until the change goes
+// an inner packet to the leaf at the SID is refused and counted, with nothing at the far host or the leaf
+// and with the leaf's IPv6 prefix gone the IPv6 lookups are skipped, said so, and IPv6 egresses from a network of the leaf's outside the overlay
+func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
 	}
@@ -91,6 +102,12 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 		t.Fatalf("route the exit's default out of its uplink: %v", err)
 	}
 	cfg := labConfig(t)
+	for _, prefix := range labDefaults {
+		cfg.Cap.Egress.Advertise = append(cfg.Cap.Egress.Advertise, schema.PrefixFrom(prefix))
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("the exit advertising a default of each family is refused: %v", err)
+	}
 	bus := events.New()
 	var node *Client
 	if err := exit.do(func() (err error) {
@@ -118,7 +135,10 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 
 	// the replies leave through the mesh tun by a route the reconciler installs for the leaf's prefixes, as babel would select it
 	// the route to the leaf's prefixes is also the reply route the egress segment needs for an inner source before it egresses anything
-	leaf := netstack.NewPeer("example/leaf", func(int) (netstack.BatchSealer, error) {
+	// handed counts the packets the mesh tried to send the leaf
+	var handed atomic.Int64
+	leaf := netstack.NewPeer("example/leaf", func(count int) (netstack.BatchSealer, error) {
+		handed.Add(int64(count))
 		return nil, errors.New("the leaf is synthetic")
 	}, func([][]byte) error { return nil }, nil)
 	t.Cleanup(leaf.Close)
@@ -133,38 +153,18 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 	}
 
 	var routes *kernel.Reconciler
-	var translator *egress.Translator
 	var border *egress.BorderFilter
-	inExit := func(f func()) { _ = exit.do(func() error { f(); return nil }) }
 	if err := exit.do(func() (err error) {
 		if border, err = egress.NewBorderFilter(*cfg.Cap.Border, node.BorderRuntime()); err != nil {
 			return err
 		}
-		if routes, err = kernel.New(*cfg.Cap.Table, node.KernelRuntime(), node.Mesh.Routes); err != nil {
-			return err
-		}
-		// the sysctls and the route lookups are read in the exit's namespace, which the translator's own goroutine is not in
-		translator, err = egress.New(*cfg.Egress(), egress.Runtime{
-			Interface:     node.Mesh.Name,
-			MeshAddresses: MeshAddresses(cfg),
-			Forwarding:    func() (v4, v6 bool) { inExit(func() { v4, v6 = Forwarding() }); return v4, v6 },
-			Lookup: func(lookups []egress.Lookup) (answers []egress.Answer, err error) {
-				inExit(func() { answers, err = RouteLookups(lookups) })
-				return answers, err
-			},
-			Sysctl:   func(path string) (value string) { inExit(func() { value = Sysctl(path) }); return value },
-			Members:  node.EgressMembers,
-			Announce: func([]netip.Prefix) { node.Republish() },
-			Events:   bus,
-			Steered:  true,
-			Ready:    node.SetEgressReady,
-		})
+		routes, err = kernel.New(*cfg.Cap.Table, node.KernelRuntime(), node.Mesh.Routes)
 		return err
 	}); err != nil {
-		t.Fatalf("build the border, the reconciler and the translator: %v", err)
+		t.Fatalf("build the border and the reconciler: %v", err)
 	}
+	translator := labTranslator(t, exit, node, bus)
 	node.SetBorder(border)
-	node.SetEgressAnnounce(translator.Announce)
 	runs.Go(func() {
 		if err := routes.Run(ctx); err != nil {
 			t.Errorf("the reconciler: %v", err)
@@ -181,9 +181,29 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 		}
 	})
 	// the leaf's prefixes are the members the lookups read from, so a pass skipping them has not read the path at all
-	waitFor(t, convergeBudget, "both families ready by their lookups and the mesh table covering the leaves", func() bool {
+	serving := func() bool {
 		stats := translator.Stats()
-		return stats.Ready4 && stats.Ready6 && stats.Skipped == "" && labMeshRoute(t, exit, labLeafPrefixes()[0]) && labMeshRoute(t, exit, labLeafPrefixes()[1])
+		return stats.Ready4 && stats.Ready6 && stats.Skipped == "" && labOriginated(node, labDefaults[4]) && labOriginated(node, labDefaults[6]) && sidOriginated(node, labSID.String())
+	}
+	waitFor(t, convergeBudget, "both families ready by their lookups, the defaults and the SID's /128 originated and the mesh table covering the leaves", func() bool {
+		return serving() && labMeshRoute(t, exit, labLeafPrefixes()[0]) && labMeshRoute(t, exit, labLeafPrefixes()[1])
+	})
+
+	t.Run("the exit's links", func(t *testing.T) {
+		var names []string
+		if err := exit.do(func() error {
+			links, err := net.Interfaces()
+			for _, link := range links {
+				names = append(names, link.Name)
+			}
+			return err
+		}); err != nil {
+			t.Fatalf("list the exit's links: %v", err)
+		}
+		slices.Sort(names)
+		if want := []string{labTUN, "labx", "lo"}; !slices.Equal(names, want) {
+			t.Errorf("the exit holds the links %v, want %v, the tun, the uplink and the loopback alone", names, want)
+		}
 	})
 
 	var listeners [2]*net.UDPConn
@@ -210,38 +230,209 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 		t.Fatalf("capture the mesh tun: %v", err)
 	}
 	t.Cleanup(func() { _ = unix.Close(capture) })
+	var uplink int
+	if err := far.do(func() (err error) {
+		uplink, err = openCapture("labf", labRetry)
+		return err
+	}); err != nil {
+		t.Fatalf("capture the far host's end of the uplink: %v", err)
+	}
+	t.Cleanup(func() { _ = unix.Close(uplink) })
 
-	arms := []struct {
+	type labArm struct {
 		name            string
+		family          int
 		leaf, far, exit netip.Addr
 		listener        *net.UDPConn
-	}{
-		{"IPv4", labLeaf4, labFar4.Addr(), labExit4.Addr(), listeners[0]},
-		{"IPv6", labHeadend, labFar6.Addr(), labExit6.Addr(), listeners[1]},
 	}
-	carry := func(t *testing.T, leafAddr, farAddr, exitAddr netip.Addr, listener *net.UDPConn, payload string) netip.AddrPort {
+	arms := []labArm{
+		{"IPv4", 4, labLeaf4, labFar4.Addr(), labExit4.Addr(), listeners[0]},
+		{"IPv6", 6, labHeadend, labFar6.Addr(), labExit6.Addr(), listeners[1]},
+	}
+	// send hands the exit a leaf's packet as the leaf's session delivers it, for the default the exit advertises
+	send := func(inner []byte) { node.Mesh.DeliverInbound(inner, 0) }
+	egressed := func() uint64 { return node.Mesh.SegmentCounters().Egressed }
+	delivered := func() uint64 { return node.Mesh.TransitCounters().Delivered }
+	// carry hands the exit a leaf's packet for the far host through hand until the far host reads it, which must be from the exit's uplink address and counted
+	carry := func(t *testing.T, hand func([]byte), counted func() uint64, leafAddr, farAddr, exitAddr netip.Addr, listener *net.UDPConn, payload string) netip.AddrPort {
 		t.Helper()
-		egressed := node.Mesh.SegmentCounters().Egressed
-		from := labReceive(t, listener, []byte(payload), func() { steer(udpPacket(leafAddr, farAddr, labLeafPort, labPort, []byte(payload))) })
+		before := counted()
+		from := labReceive(t, listener, []byte(payload), func() { hand(udpPacket(leafAddr, farAddr, labLeafPort, labPort, []byte(payload))) })
 		if from.Addr().Unmap() != exitAddr {
-			t.Errorf("the far host read the steered packet from %s, want the exit's uplink address %s", from, exitAddr)
+			t.Errorf("the far host read %q from %s, want the exit's uplink address %s", payload, from, exitAddr)
 		}
-		if node.Mesh.SegmentCounters().Egressed <= egressed {
-			t.Error("the steered packet reached the far host and no egress was counted")
+		if counted() <= before {
+			t.Errorf("the far host read %q and the exit counted nothing for it", payload)
 		}
 		return from
 	}
+	// replies counts the replies the capture read crossing the tun, which the mesh reads off it and hands the leaf's peer later
+	var replies int64
 	for _, arm := range arms {
 		t.Run(arm.name, func(t *testing.T) {
-			from := carry(t, arm.leaf, arm.far, arm.exit, arm.listener, "steered "+arm.name)
-			reply := []byte("reply " + arm.name)
-			labCaptureReply(t, capture, arm.leaf, reply, func() {
-				if _, err := arm.listener.WriteToUDPAddrPort(reply, from); err != nil {
-					t.Fatalf("reply from the far host: %v", err)
-				}
-			})
+			for _, mode := range []struct {
+				name    string
+				hand    func([]byte)
+				counted func() uint64
+			}{{"steered", steer, egressed}, {"sent", send, delivered}} {
+				from := carry(t, mode.hand, mode.counted, arm.leaf, arm.far, arm.exit, arm.listener, mode.name+" "+arm.name)
+				reply := []byte("reply to " + mode.name + " " + arm.name)
+				labCaptureReply(t, capture, arm.leaf, reply, func() {
+					if _, err := arm.listener.WriteToUDPAddrPort(reply, from); err != nil {
+						t.Fatalf("reply from the far host: %v", err)
+					}
+				})
+				// a reply sent again before the capture read the first crossed the tun too
+				replies += 1 + int64(labCount(capture, labReplyTo(arm.leaf, reply)))
+			}
 		})
 	}
+
+	t.Run("an inner packet for the leaf", func(t *testing.T) {
+		waitFor(t, convergeBudget, "the replies the capture read handed to the leaf's peer", func() bool { return handed.Load() >= replies })
+		for i, arm := range arms {
+			destination := labLeafPrefixes()[1-i].Addr().Next().Next()
+			payload := []byte("for the leaf over " + arm.name)
+			before, handedBefore := node.Mesh.SegmentCounters(), handed.Load()
+			steer(udpPacket(arm.leaf, destination, labLeafPort, labPort, payload))
+			got := node.Mesh.SegmentCounters()
+			if got.Refused != before.Refused+1 || got.Dropped != before.Dropped+1 || got.Egressed != before.Egressed || got.Forwarded != before.Forwarded {
+				t.Errorf("an %s inner packet for the leaf's %s counted %+v after %+v, want one more refused and dropped and nothing egressed or forwarded", arm.name, destination, got, before)
+			}
+			if labCaptured(uplink, func(packet []byte) bool {
+				_, _, carried, ok := labUDPOf(packet)
+				return ok && bytes.Equal(carried, payload)
+			}) {
+				t.Errorf("the far host's link carried the %s inner packet for the leaf", arm.name)
+			}
+			if got := handed.Load(); got != handedBefore {
+				t.Errorf("the mesh tried to send the leaf %d packets around the %s inner packet for it, want none", got-handedBefore, arm.name)
+			}
+		}
+	})
+
+	// the lookups read each default at its read address, 128.0.0.0 and 8000::, from the read address of the leaf's prefix of its family
+	back := map[int]netip.Prefix{4: netip.MustParsePrefix("128.0.0.0/1"), 6: netip.MustParsePrefix("8000::/1")}
+	member := map[int]netip.Prefix{4: netip.MustParsePrefix("198.18.104.128/32"), 6: netip.MustParsePrefix("3fff:a:8000::/128")}
+	inNetlink := func(f func(netlinkRoute) error) func() error {
+		return func() error {
+			netlink, err := openNetlinkRoute()
+			if err != nil {
+				return err
+			}
+			defer netlink.close()
+			return f(netlink)
+		}
+	}
+	// held makes change in the exit's namespace and waits for arm's family not ready by a reason holding reason, with its default and the SID's /128 retracted
+	// then hands the exit a packet of the family in each mode, which the far host must not read, undoes the change and waits for both families served again
+	// a hold that fails is undone all the same, so the arms after it start from an exit serving both families
+	held := func(t *testing.T, arm labArm, reason string, change, undo func() error) {
+		t.Helper()
+		undone := false
+		t.Cleanup(func() {
+			if !undone {
+				_ = exit.do(undo)
+			}
+		})
+		if err := exit.do(change); err != nil {
+			t.Fatalf("hold %s: %v", arm.name, err)
+		}
+		waitFor(t, convergeBudget, arm.name+" not ready by "+reason+", its default and the SID's /128 retracted", func() bool {
+			stats := translator.Stats()
+			ready := map[int]bool{4: stats.Ready4, 6: stats.Ready6}[arm.family]
+			return !ready && strings.Contains(stats.Unready, reason) && !labOriginated(node, labDefaults[arm.family]) && !sidOriginated(node, labSID.String())
+		})
+		payload := []byte("held " + arm.name)
+		steer(udpPacket(arm.leaf, arm.far, labLeafPort, labPort, payload))
+		send(udpPacket(arm.leaf, arm.far, labLeafPort, labPort, payload))
+		labQuietFor(t, arm.listener, payload)
+		undone = true
+		if err := exit.do(undo); err != nil {
+			t.Fatalf("undo the hold of %s: %v", arm.name, err)
+		}
+		waitFor(t, convergeBudget, "both families served again once the hold of "+arm.name+" went", serving)
+	}
+	for _, arm := range arms {
+		t.Run(arm.name+" lookup sent back into the tun", func(t *testing.T) {
+			held(t, arm, "leaves by "+labTUN+" again",
+				inNetlink(func(netlink netlinkRoute) error {
+					return labRouteDevice(netlink, unix.RTM_NEWROUTE, labTUN, back[arm.family])
+				}),
+				inNetlink(func(netlink netlinkRoute) error {
+					return labRouteDevice(netlink, unix.RTM_DELROUTE, labTUN, back[arm.family])
+				}))
+		})
+		// the reverse path check of an IPv4 forward lookup reads the member's route arriving on the uplink, as the reply lookup does
+		// so with reverse path filtering on the tun the forward lookup fails first, and off it the reply lookup is the one to say so
+		type filtered struct{ filter, reason string }
+		filters := []filtered{{"", "leaves by labx rather than " + labTUN}}
+		if arm.family == 4 {
+			filters = []filtered{{"0", "leaves by labx rather than " + labTUN}, {"1", "with reverse path filtering at 1 on " + labTUN}}
+		}
+		for _, f := range filters {
+			filter, reason := f.filter, f.reason
+			name := arm.name + " reply sent out of the uplink"
+			if filter != "" {
+				name += " with rp_filter " + filter
+			}
+			t.Run(name, func(t *testing.T) {
+				rule := func(kind uint16) func() error {
+					return inNetlink(func(netlink netlinkRoute) error {
+						return labRuleToMain(netlink, kind, "labx", member[arm.family], labAheadPriority)
+					})
+				}
+				saved := map[string][]byte{}
+				held(t, arm, reason,
+					func() error {
+						for _, device := range []string{"all", labTUN} {
+							if filter == "" {
+								break
+							}
+							path := "/proc/sys/net/ipv4/conf/" + device + "/rp_filter"
+							was, err := os.ReadFile(path)
+							if err != nil {
+								return err
+							}
+							saved[path] = was
+							if err := os.WriteFile(path, []byte(filter+"\n"), 0o644); err != nil {
+								return err
+							}
+						}
+						return rule(unix.RTM_NEWRULE)()
+					},
+					func() error {
+						err := rule(unix.RTM_DELRULE)()
+						for path, was := range saved {
+							err = errors.Join(err, os.WriteFile(path, was, 0o644))
+						}
+						return err
+					})
+			})
+		}
+	}
+	t.Run("IPv4 forwarding off on the tun", func(t *testing.T) {
+		path := "/proc/sys/net/ipv4/conf/" + labTUN + "/forwarding"
+		held(t, arms[0], "with net.ipv4.conf."+labTUN+".forwarding at 0",
+			func() error { return os.WriteFile(path, []byte("0\n"), 0o644) },
+			func() error { return os.WriteFile(path, []byte("1\n"), 0o644) })
+	})
+
+	t.Run("no IPv6 prefix of the leaf's inside the overlay", func(t *testing.T) {
+		inside := labLeafPrefixes()[0]
+		// a network of the leaf's outside the overlay, whose hosts the mesh routes a reply to and the lookups never read from
+		outside := netip.MustParsePrefix("2001:db8:a::/48")
+		node.Mesh.Routes.Remove(netip.Prefix{}, inside)
+		node.Mesh.Routes.Set(netip.Prefix{}, outside, leaf)
+		waitFor(t, convergeBudget, "the IPv6 lookups skipped and said so, both families ready", func() bool {
+			stats := translator.Stats()
+			return stats.Ready4 && stats.Ready6 && stats.Skipped == labSkipped6 && slices.Contains(skips(bus), labSkipped6)
+		})
+		carry(t, send, delivered, outside.Addr().Next(), labFar6.Addr(), labExit6.Addr(), listeners[1], "sent from outside the overlay with the IPv6 lookups skipped")
+		node.Mesh.Routes.Remove(netip.Prefix{}, outside)
+		node.Mesh.Routes.Set(netip.Prefix{}, inside, leaf)
+		waitFor(t, convergeBudget, "the IPv6 lookups read again", serving)
+	})
 
 	t.Run("a source outside the allow list", func(t *testing.T) {
 		before := node.Mesh.SegmentCounters()
@@ -263,7 +454,7 @@ func TestTUNEgressSegmentCarriesSteeredTrafficOutOfTheUplink(t *testing.T) {
 			down := slices.Index(moved, "false false")
 			return down >= 0 && slices.Contains(moved[down:], "true true")
 		})
-		carry(t, labLeaf4, labFar4.Addr(), labExit4.Addr(), listeners[0], "steered after the table came back")
+		carry(t, steer, egressed, labLeaf4, labFar4.Addr(), labExit4.Addr(), listeners[0], "steered after the table came back")
 	})
 
 	t.Run("a packet from the far host to the SID", func(t *testing.T) {
@@ -383,6 +574,63 @@ func readiness(bus *events.Bus) []string {
 		out = append(out, event.Attrs["ipv4"]+" "+event.Attrs["ipv6"])
 	}
 	return out
+}
+
+// skips is every egress.ready recorded on bus, as what it says the lookups skipped
+func skips(bus *events.Bus) []string {
+	var out []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.ready" }, 0) {
+		out = append(out, event.Attrs["skipped"])
+	}
+	return out
+}
+
+// labOriginated reports the speaker originating prefix with no source prefix
+func labOriginated(c *Client, prefix netip.Prefix) bool {
+	return slices.ContainsFunc(c.speaker.Originated(), func(route babel.OriginatedRoute) bool {
+		return route.Destination == prefix && !route.Source.IsValid()
+	})
+}
+
+// labRouteDevice adds or deletes, as kind says, the route to through the link name in the main table of the calling thread's namespace, with no gateway
+func labRouteDevice(netlink netlinkRoute, kind uint16, name string, to netip.Prefix) error {
+	link, err := net.InterfaceByName(name)
+	if err != nil {
+		return err
+	}
+	family, scope := byte(unix.AF_INET6), byte(unix.RT_SCOPE_UNIVERSE)
+	if to.Addr().Is4() {
+		family, scope = unix.AF_INET, unix.RT_SCOPE_LINK
+	}
+	header := []byte{family, byte(to.Bits()), 0, 0, unix.RT_TABLE_MAIN, unix.RTPROT_BOOT, scope, unix.RTN_UNICAST, 0, 0, 0, 0}
+	body := slices.Concat(header, rtattr(unix.RTA_DST, to.Addr().AsSlice()), rtattr(unix.RTA_OIF, u32(uint32(link.Index))))
+	var flags uint16
+	if kind == unix.RTM_NEWROUTE {
+		flags = unix.NLM_F_CREATE | unix.NLM_F_EXCL
+	}
+	if err := netlink.request(kind, flags, body); err != nil {
+		return fmt.Errorf("route %s through %s: %w", to, name, err)
+	}
+	return nil
+}
+
+// labRuleToMain adds or deletes, as kind says, the rule sending a packet arriving on iif for to to the main table at priority, in the calling thread's namespace
+func labRuleToMain(netlink netlinkRoute, kind uint16, iif string, to netip.Prefix, priority uint32) error {
+	family := byte(unix.AF_INET6)
+	if to.Addr().Is4() {
+		family = unix.AF_INET
+	}
+	// struct fib_rule_hdr of include/uapi/linux/fib_rules.h
+	header := []byte{family, byte(to.Bits()), 0, 0, unix.RT_TABLE_MAIN, 0, 0, unix.FR_ACT_TO_TBL, 0, 0, 0, 0}
+	body := slices.Concat(header, rtattr(unix.FRA_IIFNAME, cstring(iif)), rtattr(unix.FRA_DST, to.Addr().AsSlice()), rtattr(unix.FRA_PRIORITY, u32(priority)))
+	var flags uint16
+	if kind == unix.RTM_NEWRULE {
+		flags = unix.NLM_F_CREATE | unix.NLM_F_EXCL
+	}
+	if err := netlink.request(kind, flags, body); err != nil {
+		return fmt.Errorf("rule for %s arriving on %s: %w", to, iif, err)
+	}
+	return nil
 }
 
 // labConfig is the reload fixture's node made an exit with the egress segment,
@@ -607,6 +855,24 @@ func labCaptured(capture int, match func(packet []byte) bool) bool {
 		}
 		if match(buf[:n]) {
 			return true
+		}
+	}
+}
+
+// labCount reads the capture until a read times out, and counts the packets match takes
+func labCount(capture int, match func(packet []byte) bool) int {
+	buf := make([]byte, 1<<16)
+	count := 0
+	for {
+		n, _, err := unix.Recvfrom(capture, buf, 0)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return count
+		}
+		if match(buf[:n]) {
+			count++
 		}
 	}
 }

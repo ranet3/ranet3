@@ -568,33 +568,41 @@ func labExitUplink(t *testing.T, e *labNode) (*labNode, int) {
 	return i, capture
 }
 
-// labTranslate runs the translator main builds for node's cap.egress, in node's namespace, until the test ends
-func labTranslate(t *testing.T, node *labNode) {
+// labTranslator builds the translator main builds for client's cap.egress, in ns, and hands client its announcement
+func labTranslator(t *testing.T, ns *namespaceThread, client *Client, bus *events.Bus) *egress.Translator {
 	t.Helper()
-	cfg := node.client.config()
-	in := func(f func()) { _ = node.ns.do(func() error { f(); return nil }) }
+	cfg := client.config()
+	in := func(f func()) { _ = ns.do(func() error { f(); return nil }) }
 	var translator *egress.Translator
-	if err := node.ns.do(func() (err error) {
+	if err := ns.do(func() (err error) {
 		translator, err = egress.New(*cfg.Egress(), egress.Runtime{
-			Interface:     node.client.Mesh.Name,
+			Interface:     client.Mesh.Name,
 			MeshAddresses: MeshAddresses(cfg),
-			// the sysctls and the route lookups are read in node's namespace, which the translator's own goroutine is not in
+			// the sysctls and the route lookups are read in ns, which the translator's own goroutine is not in
 			Forwarding: func() (v4, v6 bool) { in(func() { v4, v6 = Forwarding() }); return v4, v6 },
 			Lookup: func(lookups []egress.Lookup) (answers []egress.Answer, err error) {
 				in(func() { answers, err = RouteLookups(lookups) })
 				return answers, err
 			},
 			Sysctl:   func(path string) (value string) { in(func() { value = Sysctl(path) }); return value },
-			Members:  node.client.EgressMembers,
-			Announce: func([]netip.Prefix) { node.client.Republish() },
-			Events:   node.events,
-			Ready:    node.client.SetEgressReady,
+			Members:  client.EgressMembers,
+			Announce: func([]netip.Prefix) { client.Republish() },
+			Events:   bus,
+			Steered:  len(cfg.Segments().Egress()) != 0,
+			Ready:    client.SetEgressReady,
 		})
 		return err
 	}); err != nil {
-		t.Fatalf("build %s's translator: %v", node.name, err)
+		t.Fatalf("build the translator: %v", err)
 	}
-	node.client.SetEgressAnnounce(translator.Announce)
+	client.SetEgressAnnounce(translator.Announce)
+	return translator
+}
+
+// labTranslate runs labTranslator's translator for node until the test ends
+func labTranslate(t *testing.T, node *labNode) {
+	t.Helper()
+	translator := labTranslator(t, node.ns, node.client, node.events)
 	ctx, cancel := context.WithCancel(context.Background())
 	var runs sync.WaitGroup
 	runs.Go(func() {
@@ -910,7 +918,7 @@ func startLab(t *testing.T, specs []labSpec, links []labLink) []*labNode {
 				return err
 			}
 			for _, prefix := range labOverlay {
-				if err := labRouteOver(netlink, meshes[i].Name, prefix); err != nil {
+				if err := labRouteDevice(netlink, unix.RTM_NEWROUTE, meshes[i].Name, prefix); err != nil {
 					return err
 				}
 			}
@@ -970,24 +978,6 @@ func labPair(t *testing.T, here, there *labNode, link labLink) {
 	}
 }
 
-// labRouteOver routes to through the link name in the main table of the calling thread's namespace, with no gateway
-func labRouteOver(netlink netlinkRoute, name string, to netip.Prefix) error {
-	link, err := net.InterfaceByName(name)
-	if err != nil {
-		return err
-	}
-	family, scope := byte(unix.AF_INET6), byte(unix.RT_SCOPE_UNIVERSE)
-	if to.Addr().Is4() {
-		family, scope = unix.AF_INET, unix.RT_SCOPE_LINK
-	}
-	header := []byte{family, byte(to.Bits()), 0, 0, unix.RT_TABLE_MAIN, unix.RTPROT_BOOT, scope, unix.RTN_UNICAST, 0, 0, 0, 0}
-	body := slices.Concat(header, rtattr(unix.RTA_DST, to.Addr().AsSlice()), rtattr(unix.RTA_OIF, u32(uint32(link.Index))))
-	if err := netlink.request(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, body); err != nil {
-		return fmt.Errorf("route %s through %s: %w", to, name, err)
-	}
-	return nil
-}
-
 // labRouteTUN routes to through node's tun in its namespace
 func labRouteTUN(t *testing.T, node *labNode, to netip.Prefix) {
 	t.Helper()
@@ -997,7 +987,7 @@ func labRouteTUN(t *testing.T, node *labNode, to netip.Prefix) {
 			return err
 		}
 		defer netlink.close()
-		return labRouteOver(netlink, node.client.Mesh.Name, to)
+		return labRouteDevice(netlink, unix.RTM_NEWROUTE, node.client.Mesh.Name, to)
 	}); err != nil {
 		t.Fatalf("route %s through %s's tun: %v", to, node.name, err)
 	}
