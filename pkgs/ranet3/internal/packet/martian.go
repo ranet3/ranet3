@@ -15,7 +15,7 @@ func InvalidSource(address netip.Addr) bool {
 	return address.IsUnspecified() || address.IsLoopback() || address.IsMulticast() || address.IsLinkLocalUnicast()
 }
 
-// InvalidDestination reports whether a router forwards no packet to address
+// InvalidDestination reports whether address is a destination other than the limited broadcast and multicast that no router forwards
 // IPv4 network 0, network 127 and class E but the limited broadcast, RFC 1812 section 5.3.7, and link-local, RFC 3927 section 7
 // IPv6 unspecified and loopback, RFC 4291 sections 2.5.2 and 2.5.3, and link-local, section 2.5.6
 func InvalidDestination(address netip.Addr) bool {
