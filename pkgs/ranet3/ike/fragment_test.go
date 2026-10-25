@@ -1322,6 +1322,73 @@ func TestDroppedRecordKeepsTheOneAStepStoredSince(t *testing.T) {
 	}
 }
 
+// the maxRetransmitsWhileBusy answers to the origin's repeats of one exchange draw at most the bound on the wire, counted as onWire counts them, an ML-KEM-1024 answer at its largest
+// over every start of the path MTU from the family's floor to 2000 and every 50 to 9000, and the answer kept for the path alone or within a request in fragments of the floor's room or of the path's
+// the path MTU falls by 1 before each answer, never under the floor, and each fall cuts the kept answer into more fragments
+// a start at the floor stands for a session that carries the floor a request stepped down to, since path then gives the floor and within never goes under it
+// the limits and protocol deviations pages give the bounds, the datagrams the answer is kept in at the most, and for IPv4 quiet, what the answers draw at the floor with no fall
+func TestRepeatsOfOneExchangeDrawAtMostTheBoundOnTheWire(t *testing.T) {
+	for _, family := range []struct {
+		name                      string
+		peer                      net.IP
+		floor, kept, bound, quiet int
+	}{{"IPv4", net.IPv4(127, 0, 0, 1), 576, 4, 78020, 38960}, {"IPv6", net.IPv6loopback, 1280, 2, 83500, 36040}} {
+		t.Run(family.name, func(t *testing.T) {
+			mux, err := transport.Dial(":0", family.peer, 4500)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { mux.Close() })
+			mtu := 0
+			s := &Session{mux: mux, current: testContext(), fragments: true, pathMTU: func() (int, error) { return mtu, nil }}
+			edge := around(mux.Endpoint().AddrPort())
+			// answers gives the datagrams the answer is kept in and the octets on the wire of the origin's answers, from a start of the path MTU that falls by fall before each
+			answers := func(start, fit, fall int) (kept, all int) {
+				mtu = start
+				ctx := s.current
+				response, err := ctx.seal(ctx.localEncryptionKey(), Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: IKE_INTERMEDIATE, Flags: FlagResponse, MessageID: 1}, []RawPayload{{Type: PayloadKE, Body: EncodeKE(ML_KEM_1024, make([]byte, 1568))}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := form{}
+				if fit > 0 {
+					request = form{total: 2, largest: fit}
+				}
+				sent, err := s.transmit(response, request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				kept = len(sent.datagrams)
+				for range maxRetransmitsWhileBusy {
+					mtu = max(family.floor, mtu-fall)
+					threshold, size, at := s.cutFor(sent, 0)
+					if _, err := s.sendCut(sent, threshold, size, at, func([]byte) error { return nil }); err != nil {
+						t.Fatal(err)
+					}
+					all += onWire(mux.Endpoint(), len(sent.datagrams), octetsOf(sent.datagrams))
+				}
+				return kept, all
+			}
+			most, mostKept := 0, 0
+			for start := family.floor; start <= 9000; start++ {
+				if start > 2000 && start%50 != 0 {
+					continue
+				}
+				for _, fit := range []int{0, family.floor - edge, start - edge} {
+					kept, all := answers(start, fit, 1)
+					most, mostKept = max(most, all), max(mostKept, kept)
+				}
+			}
+			if most != family.bound || mostKept != family.kept {
+				t.Errorf("the %d answers drew up to %d octets on the wire, the answer kept in up to %d datagrams, want %d and %d", maxRetransmitsWhileBusy, most, mostKept, family.bound, family.kept)
+			}
+			if _, all := answers(family.floor, 0, 0); all != family.quiet {
+				t.Errorf("the %d answers at the floor with no fall drew %d octets on the wire, want %d", maxRetransmitsWhileBusy, all, family.quiet)
+			}
+		})
+	}
+}
+
 // a responder whose path drops its datagrams over the IPv4 floor while its path MTU stays at 1500, as on darwin behind a narrower hop or where ICMP is filtered, answers the IKE_INTERMEDIATE request whole until the initiator steps down to the floor
 // and then cut again within the fragment 1 that drew the answer, in more fragments, and the exchange completes
 // RFC 7383 section 2.5.1: "The responder in the exchange may use the maximum size of the received IKE Fragment message IP datagrams as a threshold when constructing a fragmented response."
