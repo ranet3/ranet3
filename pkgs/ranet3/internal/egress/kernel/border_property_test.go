@@ -3,7 +3,7 @@
 
 //go:build linux && !android
 
-package egress
+package kernel
 
 import (
 	"bytes"
@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -337,7 +338,7 @@ func (p drawnPacket) wire() borderPacket {
 // the overlay, then a routing header of any type among the first
 // kernelHeaderSearch extension headers, then one of this node's SIDs as the
 // destination is dropped under that reason, and anything else passes
-func borderModel(inside []string, cfg Border, sids []netip.Addr, p drawnPacket) (accept bool, reason string) {
+func borderModel(inside []string, cfg egress.Border, sids []netip.Addr, p drawnPacket) (accept bool, reason string) {
 	if slices.Contains(inside, p.iif) {
 		return true, ""
 	}
@@ -411,7 +412,7 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 			size := hegel.Draw(ht, pbt.Spanning(1, unix.IFNAMSIZ))
 			inside = append(inside, hegel.Draw(ht, hegel.Text().Alphabet("ranet3").MinSize(size).MaxSize(size)))
 		}
-		cfg := Border{Overlay: hegel.Draw(ht, overlayPrefixes())}
+		cfg := egress.Border{Overlay: hegel.Draw(ht, overlayPrefixes())}
 		if err := cfg.Validate(); err != nil {
 			ht.Fatalf("drew an overlay Validate refuses: %v", err)
 		}
@@ -419,7 +420,7 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 		for range hegel.Draw(ht, pbt.Spanning(0, 3)) {
 			sids = append(sids, hegel.Draw(ht, unmappedIPv6()))
 		}
-		desired := newBorderFilter(cfg, BorderRuntime{Inside: inside, SIDs: sids}, &fakeBorder{}).desired()
+		desired := newBorderFilter(cfg, egress.BorderRuntime{Inside: inside, SIDs: sids}, &fakeBorder{}).desired()
 		requests, err := borderBatch(desired, false)
 		refused := slices.ContainsFunc(inside, func(name string) bool { return len(name) >= unix.IFNAMSIZ })
 		if refused != (err != nil) {

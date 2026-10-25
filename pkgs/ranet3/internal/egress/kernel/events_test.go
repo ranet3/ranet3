@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-package egress
+package kernel
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -34,7 +35,7 @@ func TestTranslatorRecordsThePassesThatDidSomething(t *testing.T) {
 	bus := events.New()
 	be := &fakeBackend{}
 	forwards := true
-	tr := translator(t, Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")},
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")},
 		Runtime{Events: bus, Forwarding: func() (bool, bool) { return forwards, true }}, be)
 	tr.trigger = "sweep"
 	tr.reconcile()
@@ -68,7 +69,7 @@ func TestTranslatorRecordsThePassesThatDidSomething(t *testing.T) {
 // a running translator names what woke it for each pass it records, its first pass and the retry of a failed one
 func TestTranslatorNamesWhatWokeIt(t *testing.T) {
 	bus := events.New()
-	tr := translator(t, Egress{Advertise: prefixes(t, "0.0.0.0/0")}, Runtime{Events: bus}, &fakeBackend{failApply: true})
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0")}, Runtime{Events: bus}, &fakeBackend{failApply: true})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- tr.Run(ctx) }()
@@ -95,7 +96,7 @@ func TestTranslatorNamesWhatWokeIt(t *testing.T) {
 func TestStoppedTranslatorWithdrawsUntilItIsStartedAgain(t *testing.T) {
 	bus := events.New()
 	be := &fakeBackend{}
-	tr := translator(t, Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweepEvery)}, Runtime{Events: bus}, be)
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweepEvery)}, Runtime{Events: bus}, be)
 	var mu sync.Mutex
 	withdrawnWhenRetracted := -1
 	tr.rt.Announce = func(p []netip.Prefix) {
@@ -168,7 +169,7 @@ func TestStoppedTranslatorWithdrawsUntilItIsStartedAgain(t *testing.T) {
 // enabled is stored without the wake, which is how the select leaves a start whose wake it passed over for the tick
 func TestStartTheSweepReachedFirstIsStoppedAgain(t *testing.T) {
 	be := &fakeBackend{}
-	tr := translator(t, Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweepEvery)}, Runtime{Events: events.New()}, be)
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweepEvery)}, Runtime{Events: events.New()}, be)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- tr.Run(ctx) }()
@@ -215,7 +216,7 @@ func TestStartTheSweepReachedFirstIsStoppedAgain(t *testing.T) {
 // only the retry a failed pass takes can then withdraw the tables within it
 func TestStoppedTranslatorRetriesAWithdrawalThatFailed(t *testing.T) {
 	be := &fakeBackend{}
-	tr := translator(t, Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(lateSweep)}, Runtime{Events: events.New()}, be)
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(lateSweep)}, Runtime{Events: events.New()}, be)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- tr.Run(ctx) }()
@@ -254,7 +255,7 @@ func TestStoppedTranslatorRetriesAWithdrawalThatFailed(t *testing.T) {
 func TestTranslatorNamesTheSweep(t *testing.T) {
 	bus := events.New()
 	be := &fakeBackend{}
-	tr := translator(t, Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweepEvery)}, Runtime{Events: bus}, be)
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweepEvery)}, Runtime{Events: bus}, be)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- tr.Run(ctx) }()

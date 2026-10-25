@@ -3,7 +3,7 @@
 
 //go:build linux || darwin
 
-package egress
+package kernel
 
 import (
 	"math/big"

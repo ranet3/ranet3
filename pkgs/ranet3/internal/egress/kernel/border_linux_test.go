@@ -3,7 +3,7 @@
 
 //go:build linux && !android
 
-package egress
+package kernel
 
 import (
 	"net/netip"
@@ -13,14 +13,15 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
 // borderChain encodes the chain the filter asks for over cfg, the mesh tun
 // ranet3 and lo, and sids
-func borderChain(t *testing.T, cfg Border, sids ...string) ([]BorderRule, []nftables.Request) {
+func borderChain(t *testing.T, cfg egress.Border, sids ...string) ([]BorderRule, []nftables.Request) {
 	t.Helper()
-	rt := BorderRuntime{Inside: []string{"ranet3", "lo"}}
+	rt := egress.BorderRuntime{Inside: []string{"ranet3", "lo"}}
 	for _, sid := range sids {
 		rt.SIDs = append(rt.SIDs, netip.MustParseAddr(sid))
 	}
@@ -128,9 +129,9 @@ func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 	if fault, remake := prerouting.Fault(nftables.Message{Data: requests[1].Body}); fault != "" || remake {
 		t.Errorf("the chain the batch writes reads back with the fault %q, remade %v", fault, remake)
 	}
-	for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		if fault, remake := postrouting.Fault(nftables.Message{Data: newChain(family).Body}); fault != "" || remake {
-			t.Errorf("the translator's %s chain reads back with the fault %q, remade %v", familyName(family), fault, remake)
+			t.Errorf("the translator's %s chain reads back with the fault %q, remade %v", egress.FamilyName(family), fault, remake)
 		}
 	}
 	chain := func(table, name, kind string, hook uint32, priority int32, policy uint32) nftables.Message {

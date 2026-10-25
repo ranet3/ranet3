@@ -3,7 +3,7 @@
 
 //go:build linux && !android
 
-package egress
+package kernel
 
 import (
 	"bytes"
@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
@@ -149,13 +150,13 @@ func deviceNames() hegel.Generator[string] {
 func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		rule := Rule{
-			Family:    hegel.Draw(ht, hegel.SampledFrom([]uint8{FamilyIPv4, FamilyIPv6})),
+			Family:    hegel.Draw(ht, hegel.SampledFrom([]uint8{egress.FamilyIPv4, egress.FamilyIPv6})),
 			Direction: Direction(hegel.Draw(ht, pbt.Spanning(uint8(Out), uint8(In)))),
 			Interface: hegel.Draw(ht, deviceNames()),
 		}
 		other := hegel.Draw(ht, deviceNames())
 		source, from := netip.MustParseAddr("198.51.100.7"), netip.MustParsePrefix("198.51.100.0/24")
-		if rule.Family == FamilyIPv6 {
+		if rule.Family == egress.FamilyIPv6 {
 			source, from = netip.MustParseAddr("2001:db8::7"), netip.MustParsePrefix("2001:db8:1::/48")
 		}
 		if hegel.Draw(ht, hegel.Booleans()) {

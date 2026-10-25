@@ -3,7 +3,7 @@
 
 //go:build linux && !android
 
-package egress
+package kernel
 
 import (
 	"encoding/binary"
@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
@@ -50,17 +51,17 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 	}{
 		{
 			"out of the mesh under the host's own address",
-			Rule{Family: FamilyIPv4, Direction: Out, Interface: "ranet0"},
+			Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0"},
 			[]string{"meta", "cmp", "meta", "cmp", "counter", "masq"},
 		},
 		{
 			"out of the mesh under a configured address",
-			Rule{Family: FamilyIPv6, Direction: Out, Interface: "ranet0", Source: netip.MustParseAddr("2001:db8::1")},
+			Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet0", Source: netip.MustParseAddr("2001:db8::1")},
 			[]string{"meta", "cmp", "meta", "cmp", "counter", "immediate", "nat"},
 		},
 		{
 			"into the mesh from one prefix",
-			Rule{Family: FamilyIPv4, Direction: In, Interface: "ranet0",
+			Rule{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet0",
 				From: netip.MustParsePrefix("198.51.100.0/24"), Source: netip.MustParseAddr("10.88.0.2")},
 			// The leading pair is the local-origin test an inbound rule
 			// carries. See TestInboundRuleExcludesThisNodesOwnTraffic.
@@ -68,7 +69,7 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 		},
 		{
 			"into the mesh from one host",
-			Rule{Family: FamilyIPv4, Direction: In, Interface: "ranet0",
+			Rule{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet0",
 				From: netip.MustParsePrefix("198.51.100.7/32"), Source: netip.MustParseAddr("10.88.0.2")},
 			// No bitwise: a prefix as long as the address masks nothing.
 			[]string{"meta", "cmp", "meta", "cmp", "meta", "cmp", "payload", "cmp", "counter", "immediate", "nat"},
@@ -97,7 +98,7 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 // A shorter comparison matches every device whose name starts the same way, so
 // a rule for "ranet0" would also claim traffic on "ranet01".
 func TestInterfaceComparisonCoversTheWholePaddedName(t *testing.T) {
-	request, err := newRule(Rule{Family: FamilyIPv4, Direction: Out, Interface: "ranet0"})
+	request, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +159,7 @@ func TestDirectionInvertsBothInterfaceTests(t *testing.T) {
 		{In, []uint32{unix.NFT_CMP_NEQ, unix.NFT_CMP_NEQ, unix.NFT_CMP_EQ}},
 	} {
 		t.Run(one.direction.String(), func(t *testing.T) {
-			request, err := newRule(Rule{Family: FamilyIPv4, Direction: one.direction, Interface: "ranet0"})
+			request, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: one.direction, Interface: "ranet0"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -199,7 +200,7 @@ func TestDirectionInvertsBothInterfaceTests(t *testing.T) {
 // so no configuration reaches the refusal of a longer one, which nft -f would not load back
 func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 	address := netip.MustParseAddr("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff")
-	if _, err := newRule(Rule{Family: FamilyIPv6, Direction: In, Interface: strings.Repeat("r", unix.IFNAMSIZ-1),
+	if _, err := newRule(Rule{Family: egress.FamilyIPv6, Direction: In, Interface: strings.Repeat("r", unix.IFNAMSIZ-1),
 		From: netip.PrefixFrom(address, 128), Source: address}); err != nil {
 		t.Fatalf("the longest rule was refused: %v", err)
 	}
@@ -210,7 +211,7 @@ func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 // uses would not avoid the overlap, only decide whether this node translates
 // before or after whatever the operator arranged on purpose.
 func TestChainIsNatAtTheSourceTranslationHook(t *testing.T) {
-	request := newChain(FamilyIPv4)
+	request := newChain(egress.FamilyIPv4)
 	table, chain, kind, hook, priority := nftables.DecodeChain(nftables.Message{Data: request.Body})
 	if table != TableName || chain != ChainName {
 		t.Errorf("created %s/%s, want %s/%s", table, chain, TableName, ChainName)
@@ -230,7 +231,7 @@ func TestChainIsNatAtTheSourceTranslationHook(t *testing.T) {
 // reads as every rule in that chain. It can reach no other table, which is the
 // ownership claim this package makes.
 func TestFlushNamesOnlyThisToolsOwnChain(t *testing.T) {
-	request := flushChain(FamilyIPv6)
+	request := flushChain(egress.FamilyIPv6)
 	var table, chain string
 	handles := 0
 	for kind, value := range (nftables.Message{Data: request.Body}).Attributes() {
@@ -259,7 +260,7 @@ func TestFlushNamesOnlyThisToolsOwnChain(t *testing.T) {
 // interface index, which reads as zero for a locally generated packet on every
 // kernel that answers the question at all.
 func TestInboundRuleExcludesThisNodesOwnTraffic(t *testing.T) {
-	inbound, err := newRule(Rule{Family: FamilyIPv4, Direction: In, Interface: "ranet0",
+	inbound, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet0",
 		Source: netip.MustParseAddr("10.88.0.2")})
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +272,7 @@ func TestInboundRuleExcludesThisNodesOwnTraffic(t *testing.T) {
 
 	// An outbound rule needs none of it: a locally generated packet fails
 	// "iifname is the mesh device" whichever way the kernel answers.
-	outbound, err := newRule(Rule{Family: FamilyIPv4, Direction: Out, Interface: "ranet0"})
+	outbound, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,11 +318,11 @@ func metaKeys(t *testing.T, body []byte) []uint32 {
 // sixteen byte comparison without one can never equal it: the rule would
 // install and then match nothing, or in the inbound direction everything.
 func TestOversizedInterfaceNameIsRefused(t *testing.T) {
-	_, err := newRule(Rule{Family: FamilyIPv4, Direction: Out, Interface: strings.Repeat("r", unix.IFNAMSIZ)})
+	_, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: strings.Repeat("r", unix.IFNAMSIZ)})
 	if err == nil || !strings.Contains(err.Error(), "device name is at most") {
 		t.Fatalf("refused with %v, want a message naming the limit", err)
 	}
-	if _, err := newRule(Rule{Family: FamilyIPv4, Direction: Out, Interface: strings.Repeat("r", unix.IFNAMSIZ-1)}); err != nil {
+	if _, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: strings.Repeat("r", unix.IFNAMSIZ-1)}); err != nil {
 		t.Errorf("the longest name a device can have was refused: %v", err)
 	}
 }

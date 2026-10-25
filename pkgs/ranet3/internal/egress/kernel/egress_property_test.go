@@ -3,7 +3,7 @@
 
 //go:build linux || darwin
 
-package egress
+package kernel
 
 import (
 	"maps"
@@ -15,13 +15,14 @@ import (
 
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // exit is a capability and the runtime it runs under.
 type exit struct {
-	cfg Egress
+	cfg egress.Egress
 	rt  Runtime
 }
 
@@ -35,7 +36,7 @@ func exits() hegel.Generator[exit] {
 		schema.MustPrefix("::/0"), schema.MustPrefix("2001:db8:1::/48"),
 	}
 	return hegel.Composite(func(tc hegel.TestCase) exit {
-		var cfg Egress
+		var cfg egress.Egress
 		if hegel.Draw(tc, hegel.Booleans()) {
 			for _, prefix := range hegel.Draw(tc, hegel.Lists(hegel.SampledFrom(pool)).MaxSize(4)) {
 				if !slices.Contains(cfg.Advertise, prefix) {
@@ -45,10 +46,10 @@ func exits() hegel.Generator[exit] {
 		}
 		cfg.Return = hegel.Draw(tc, hegel.Booleans())
 		if hegel.Draw(tc, hegel.Booleans()) {
-			cfg.Source4 = Source{Addr: netip.MustParseAddr("198.51.100.7")}
+			cfg.Source4 = egress.Source{Addr: netip.MustParseAddr("198.51.100.7")}
 		}
 		if hegel.Draw(tc, hegel.Booleans()) {
-			cfg.Source6 = Source{Addr: netip.MustParseAddr("2001:db8::7")}
+			cfg.Source6 = egress.Source{Addr: netip.MustParseAddr("2001:db8::7")}
 		}
 		rt := Runtime{
 			Interface:     "ranet0",
@@ -83,10 +84,10 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 			ht.Fatalf("%+v under %+v wrote the ruleset %d times over two passes, want once", cfg, rt, be.applied)
 		}
 		var want []Rule
-		for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
+		for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 			var advertised []netip.Prefix
 			for _, prefix := range cfg.Advertise {
-				if addressFamily(prefix.Addr()) == family {
+				if egress.AddressFamily(prefix.Addr()) == family {
 					advertised = append(advertised, prefix.Prefix)
 				}
 			}
@@ -94,7 +95,7 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 				continue
 			}
 			source := cfg.Source4.Addr
-			if family == FamilyIPv6 {
+			if family == egress.FamilyIPv6 {
 				source = cfg.Source6.Addr
 			}
 			want = append(want, Rule{Family: family, Direction: Out, Interface: "ranet0", Source: source})
@@ -104,7 +105,7 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 			for _, prefix := range advertised {
 				in := Rule{Family: family, Direction: In, Interface: "ranet0", Source: source}
 				if !source.IsValid() {
-					in.Source = map[uint8]netip.Addr{FamilyIPv4: netip.MustParseAddr("10.88.0.2"), FamilyIPv6: netip.MustParseAddr("2001:db8::2")}[family]
+					in.Source = map[uint8]netip.Addr{egress.FamilyIPv4: netip.MustParseAddr("10.88.0.2"), egress.FamilyIPv6: netip.MustParseAddr("2001:db8::2")}[family]
 				}
 				if prefix.Bits() > 0 {
 					in.From = prefix
@@ -157,7 +158,7 @@ func steps(desired []Rule) hegel.Generator[step] {
 			forward4:  hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)),
 			forward6:  hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)),
 		}
-		for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
+		for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 			var chain []Installed
 			for _, rule := range desired {
 				if rule.Family == family && hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)) {
@@ -218,7 +219,7 @@ func writtenAfter(now step, desired []Rule) map[uint8]bool {
 		}
 	}
 	written := map[uint8]bool{}
-	for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		var got, want []string
 		for _, rule := range held {
 			if rule.Family == family {
@@ -239,14 +240,14 @@ func writtenAfter(now step, desired []Rule) map[uint8]bool {
 // run: a family is ready while the pass read back its chain as written, its
 // rule keyed on the tun among it, and the host forwards it, and neither is
 // ready once the translator is stopped
-func readyAfter(cfg Egress, rt Runtime, desired []Rule, now step) [2]bool {
+func readyAfter(cfg egress.Egress, rt Runtime, desired []Rule, now step) [2]bool {
 	var want [2]bool
 	if !now.enabled {
 		return want
 	}
 	written := writtenAfter(now, desired)
-	for i, family := range []uint8{FamilyIPv4, FamilyIPv6} {
-		steered := Rule{Family: family, Direction: Out, Interface: rt.Interface, Source: cfg.source(family).Addr}
+	for i, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
+		steered := Rule{Family: family, Direction: Out, Interface: rt.Interface, Source: cfg.SourceOf(family).Addr}
 		forwards := []bool{now.forward4, now.forward6}[i]
 		want[i] = written[family] && slices.Contains(desired, steered) && forwards
 	}
@@ -284,14 +285,14 @@ func TestEgressSegmentsReadinessFollowsWhatThePassReadBack(t *testing.T) {
 			if now.enabled {
 				_ = tr.reconcile()
 				written := writtenAfter(now, desired)
-				carried[FamilyIPv4] = written[FamilyIPv4] && now.forward4
-				carried[FamilyIPv6] = written[FamilyIPv6] && now.forward6
+				carried[egress.FamilyIPv4] = written[egress.FamilyIPv4] && now.forward4
+				carried[egress.FamilyIPv6] = written[egress.FamilyIPv6] && now.forward6
 			} else {
 				_ = tr.stop()
 			}
 			var announced []netip.Prefix
 			for _, prefix := range cfg.Advertise {
-				if carried[addressFamily(prefix.Addr())] {
+				if carried[egress.AddressFamily(prefix.Addr())] {
 					announced = append(announced, prefix.Prefix)
 				}
 			}

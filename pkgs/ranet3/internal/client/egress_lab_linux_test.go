@@ -27,7 +27,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
-	"ranet3.com/pkgs/ranet3/internal/egress"
+	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
@@ -156,9 +156,9 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	}
 
 	var routes *kernel.Reconciler
-	var border *egress.BorderFilter
+	var border *kernelexit.BorderFilter
 	if err := exit.Do(func() (err error) {
-		if border, err = egress.NewBorderFilter(*cfg.Cap.Border, node.BorderRuntime()); err != nil {
+		if border, err = kernelexit.NewBorderFilter(*cfg.Cap.Border, node.BorderRuntime()); err != nil {
 			return err
 		}
 		routes, err = kernel.New(*cfg.Cap.Table, node.KernelRuntime(), node.Mesh.Routes)
@@ -449,7 +449,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 
 	t.Run("another writer deleting the ip table", func(t *testing.T) {
 		mark := len(readiness(bus))
-		if err := exit.Do(func() error { return labDeleteTable(unix.NFPROTO_IPV4, egress.TableName) }); err != nil {
+		if err := exit.Do(func() error { return labDeleteTable(unix.NFPROTO_IPV4, kernelexit.TableName) }); err != nil {
 			t.Fatalf("delete the ip table: %v", err)
 		}
 		waitFor(t, convergeBudget, "the translator to report the egress segments not ready and then ready again", func() bool {
@@ -515,7 +515,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 			}
 		}
 		for _, family := range []uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
-			if err := labDeleteTable(family, egress.TableName); !errors.Is(err, unix.ENOENT) {
+			if err := labDeleteTable(family, kernelexit.TableName); !errors.Is(err, unix.ENOENT) {
 				return fmt.Errorf("deleting the translator's table of family %d once it stopped answered %v, want it gone", family, err)
 			}
 		}

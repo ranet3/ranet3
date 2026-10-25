@@ -21,6 +21,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
@@ -44,7 +45,7 @@ const labVRF = "labv"
 type borderLab struct {
 	exit, far *netnstest.Thread
 	node      *Client
-	border    *egress.BorderFilter
+	border    *kernelexit.BorderFilter
 	capture   int
 	listeners [2]*net.UDPConn
 	// stopBorder withdraws the border alone, and stop the border, the reconciler and the node
@@ -323,7 +324,7 @@ func startBorderLab(t *testing.T, master string) *borderLab {
 		if routes, err = kernel.New(*cfg.Cap.Table, lab.node.KernelRuntime(), lab.node.Mesh.Routes); err != nil {
 			return err
 		}
-		lab.border, err = egress.NewBorderFilter(*cfg.Cap.Border, lab.node.BorderRuntime())
+		lab.border, err = kernelexit.NewBorderFilter(*cfg.Cap.Border, lab.node.BorderRuntime())
 		return err
 	}); err != nil {
 		lab.node.Close()
@@ -487,7 +488,7 @@ func (lab *borderLab) dropped(t *testing.T, spec string) uint64 {
 
 // borderDropped is the packets border's rule spec has counted, read now in
 // the exit's namespace, where the debug read opens its socket
-func borderDropped(t *testing.T, exit *netnstest.Thread, border *egress.BorderFilter, spec string) uint64 {
+func borderDropped(t *testing.T, exit *netnstest.Thread, border *kernelexit.BorderFilter, spec string) uint64 {
 	t.Helper()
 	var debug egress.BorderDebug
 	_ = exit.Do(func() error {
@@ -549,7 +550,7 @@ func (lab *borderLab) withoutTable(t *testing.T) {
 	t.Helper()
 	if err := lab.exit.Do(func() error {
 		for _, family := range []uint8{unix.NFPROTO_INET, unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
-			if err := labDeleteTable(family, egress.TableName); !errors.Is(err, unix.ENOENT) {
+			if err := labDeleteTable(family, kernelexit.TableName); !errors.Is(err, unix.ENOENT) {
 				return fmt.Errorf("deleting the exit's table of family %d answered %v, want it gone", family, err)
 			}
 		}

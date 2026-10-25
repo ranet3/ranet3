@@ -3,7 +3,7 @@
 
 //go:build linux && !android
 
-package egress
+package kernel
 
 import (
 	"errors"
@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
@@ -24,12 +25,12 @@ type natTables struct {
 	families []uint8
 }
 
-func newBackend(cfg Egress, rt Runtime) (backend, error) {
+func newBackend(cfg egress.Egress, rt Runtime) (backend, error) {
 	conn, err := nftables.Dial()
 	if err != nil {
 		return nil, err
 	}
-	be := &natTables{conn: conn, families: cfg.translated(rt.Steered)}
+	be := &natTables{conn: conn, families: cfg.Translated(rt.Steered)}
 	// A table this tool left behind in a family the configuration no longer
 	// covers would go on translating under the old rules for as long as the
 	// node ran, and nothing else here would ever look at it: every dump below
@@ -60,7 +61,7 @@ var (
 )
 
 // where names the tables this backend owns, for a log line.
-func (n *natTables) where(Egress) string {
+func (n *natTables) where(egress.Egress) string {
 	names := make([]string, 0, len(n.families))
 	for _, family := range n.families {
 		names = append(names, tableFamilyName(family))
@@ -73,7 +74,7 @@ func (n *natTables) where(Egress) string {
 // nftables did, and a node whose kernel predates it would refuse the chain
 // rather than the capability.
 func tableFamilyName(family uint8) string {
-	if family == FamilyIPv4 {
+	if family == egress.FamilyIPv4 {
 		return "ip"
 	}
 	return "ip6"
@@ -81,7 +82,7 @@ func tableFamilyName(family uint8) string {
 
 // nftFamily is the NFPROTO_ value for one of this package's families.
 func nftFamily(family uint8) uint8 {
-	if family == FamilyIPv4 {
+	if family == egress.FamilyIPv4 {
 		return unix.NFPROTO_IPV4
 	}
 	return unix.NFPROTO_IPV6
@@ -191,7 +192,7 @@ func (n *natTables) removeTables(match func(uint8) bool) error {
 		return err
 	}
 	var requests []nftables.Request
-	for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		if _, ok := held[nftFamily(family)]; ok && match(family) {
 			requests = append(requests, delTable(family))
 		}
@@ -223,9 +224,9 @@ func (n *natTables) Conflicts() ([]string, error) {
 		var family uint8
 		switch reply.Data[0] {
 		case unix.NFPROTO_IPV4:
-			family = FamilyIPv4
+			family = egress.FamilyIPv4
 		case unix.NFPROTO_IPV6:
-			family = FamilyIPv6
+			family = egress.FamilyIPv6
 		default:
 			// An inet, bridge, arp or netdev chain cannot carry a nat hook
 			// this node's forwarded traffic would meet before its own.

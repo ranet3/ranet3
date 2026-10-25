@@ -3,7 +3,7 @@
 
 //go:build linux || darwin
 
-package egress
+package kernel
 
 import (
 	"cmp"
@@ -16,6 +16,7 @@ import (
 
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
@@ -166,8 +167,8 @@ func modelLive(route Route) []string {
 // default where it advertises none, each arriving on the tun, the first asking
 // for its reply, with the prefix each reads. A family with no such member reads
 // nothing
-func modelLookups(cfg Egress, tun string, members []netip.Prefix, family uint8) ([]Lookup, []netip.Prefix) {
-	of := func(prefix netip.Prefix) bool { return prefix.Addr().Is4() == (family == FamilyIPv4) }
+func modelLookups(cfg egress.Egress, tun string, members []netip.Prefix, family uint8) ([]Lookup, []netip.Prefix) {
+	of := func(prefix netip.Prefix) bool { return prefix.Addr().Is4() == (family == egress.FamilyIPv4) }
 	ordered := slices.SortedFunc(slices.Values(slices.DeleteFunc(slices.Clone(members), func(p netip.Prefix) bool { return !of(p) })),
 		func(a, b netip.Prefix) int { return cmp.Or(a.Addr().Compare(b.Addr()), b.Bits()-a.Bits()) })
 	var source netip.Addr
@@ -187,7 +188,7 @@ func modelLookups(cfg Egress, tun string, members []netip.Prefix, family uint8) 
 		}
 	}
 	if len(prefixes) == 0 {
-		prefixes = map[uint8][]netip.Prefix{FamilyIPv4: {netip.MustParsePrefix("0.0.0.0/0")}, FamilyIPv6: {netip.MustParsePrefix("::/0")}}[family]
+		prefixes = map[uint8][]netip.Prefix{egress.FamilyIPv4: {netip.MustParsePrefix("0.0.0.0/0")}, egress.FamilyIPv6: {netip.MustParsePrefix("::/0")}}[family]
 	}
 	var lookups []Lookup
 	var read []netip.Prefix
@@ -349,7 +350,7 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 			var wantAsked []Lookup
 			var named []string
 			skips := false
-			for i, family := range []uint8{FamilyIPv4, FamilyIPv6} {
+			for i, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 				advertised := slices.ContainsFunc(plain(cfg.Advertise), func(prefix netip.Prefix) bool { return prefix.Addr().Is4() == (i == 0) })
 				forwards := []bool{now.forward4, now.forward6}[i]
 				if !now.enabled || !(rt.Steered || advertised) || !written[family] || !forwards {

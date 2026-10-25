@@ -34,7 +34,7 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/client"
 	"ranet3.com/pkgs/ranet3/internal/config"
-	"ranet3.com/pkgs/ranet3/internal/egress"
+	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/version"
@@ -213,7 +213,7 @@ func runDaemon(opts options) int {
 	// services still trust mesh sources.
 	stopBorder := func() {}
 	if block := cfg.Cap.Border; block != nil {
-		border, err := egress.NewBorderFilter(*block, node.BorderRuntime())
+		border, err := kernelexit.NewBorderFilter(*block, node.BorderRuntime())
 		if err != nil {
 			return refuseToStart(err)
 		}
@@ -343,7 +343,7 @@ func runDaemon(opts options) int {
 	// withdraws its tables while the tun still exists, as the reconciler
 	// withdraws its routes.
 	if exit := cfg.Egress(); exit != nil {
-		translator, err := egress.New(*exit, egress.Runtime{
+		translator, err := kernelexit.New(*exit, kernelexit.Runtime{
 			Interface:     mesh.Name,
 			MeshAddresses: client.MeshAddresses(cfg),
 			Forwarding:    client.Forwarding,
@@ -537,7 +537,7 @@ func coverNames(families []kernel.Family) []string {
 // configured half comes from the translator rather than from the config file,
 // so a block that never became a translator reports as off rather than
 // describing rules nobody installed.
-func egressStatus(translator *egress.Translator) control.EgressStatus {
+func egressStatus(translator *kernelexit.Translator) control.EgressStatus {
 	cfg, stats := translator.Capability(), translator.Stats()
 	advertise := make([]netip.Prefix, 0, len(cfg.Advertise))
 	for _, entry := range cfg.Advertise {

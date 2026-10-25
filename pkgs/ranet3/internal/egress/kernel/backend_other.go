@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-//go:build !linux
+//go:build !linux || android
 
-package egress
+package kernel
 
 import (
 	"fmt"
 	"runtime"
+
+	"ranet3.com/pkgs/ranet3/internal/egress"
 )
 
 // newBackend refuses the capability by name where there is nothing to install
@@ -18,7 +20,7 @@ import (
 //
 // iOS and android have no packet filter a process may write at all, and a
 // phone has to use an exit node rather than be one.
-func newBackend(cfg Egress, rt Runtime) (backend, error) {
+func newBackend(cfg egress.Egress, rt Runtime) (backend, error) {
 	return nil, refuseWhatThisPlatformLacks(cfg, rt)
 }
 
@@ -26,11 +28,11 @@ func newBackend(cfg Egress, rt Runtime) (backend, error) {
 // translating nothing is not refused for a facility it never named. New
 // refuses such a capability before this, so the nil backend that arm hands
 // back reaches no caller.
-func refuseWhatThisPlatformLacks(cfg Egress, rt Runtime) error {
-	if len(cfg.translated(rt.Steered)) == 0 {
+func refuseWhatThisPlatformLacks(cfg egress.Egress, rt Runtime) error {
+	if len(cfg.Translated(rt.Steered)) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w: cap.egress asks this node to translate a source address, and nftables is a linux facility", ErrUnsupported)
+	return fmt.Errorf("%w: cap.egress asks this node to translate a source address, and nftables is a linux facility", egress.ErrUnsupported)
 }
 
 // errNoBorder refuses cap.border by name, as newBackend refuses cap.egress: a
