@@ -114,7 +114,7 @@ type routeTable struct {
 	// its own routes rather than to what it advertises.
 	cost    CostParams
 	install func(routeKey, routeSelection)
-	// forget writes the forwarding entry of a key the table holds no route
+	// forget writes the forwarding entry of a key the table has no route
 	// for, unreachable while held is true and none otherwise
 	forget func(key routeKey, held bool)
 	// updateExpiry is how long an update this node sends now stays selectable

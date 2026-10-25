@@ -639,7 +639,7 @@ func TestStalledNeighborDoesNotHoldOthers(t *testing.T) {
 }
 
 // Four things reach the route table only through New: writing the forwarding
-// entry of a key it holds no route for, how long an update this node sends
+// entry of a key it has no route for, how long an update this node sends
 // stays selectable at a neighbor, and the smoothing time constant of RFC 8966
 // Appendix A.3 and the triggered-update threshold of section 3.7.2, the last
 // three of which the config decides.
