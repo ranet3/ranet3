@@ -23,6 +23,8 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 type udpEndpoint struct {
@@ -130,16 +132,41 @@ func (b *udpBind) Close() error {
 	return errors.Join(errs...)
 }
 
-// linux keeps the underlay out of the mesh's routing with a socket mark and a
-// policy rule, so it marks and does not bind. Underlay.refuse reads these.
-const (
-	marksSockets = true
-	bindsSockets = false
-)
+// linux sets the underlay's sockets apart, where the process may set it, with
+// a mark the reconciler's derived rules read, so it marks and does not bind.
+// Underlay.refuse reads this.
+const bindsSockets = false
+
+// underlayMark is the mark every underlay socket of this process carries,
+// schema.UnderlayMark, or none where the process may not set one. SO_MARK
+// needs CAP_NET_ADMIN or CAP_NET_RAW in the socket's network namespace, and a
+// policy rule needs CAP_NET_ADMIN there, so a process that cannot mark its
+// sockets writes no rule that reads the mark.
+var underlayMark = sync.OnceValue(func() uint32 {
+	var fd int
+	var err error
+	for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
+		if fd, err = unix.Socket(family, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0); err == nil {
+			break
+		}
+	}
+	if err != nil {
+		// the listener's own open reports what keeps a socket from opening
+		return schema.UnderlayMark
+	}
+	defer unix.Close(fd)
+	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(schema.UnderlayMark)); errors.Is(err, unix.EPERM) {
+		slog.Info("transport leaves the underlay sockets unmarked", "err", err,
+			"detail", "this process holds neither CAP_NET_ADMIN nor CAP_NET_RAW, and without CAP_NET_ADMIN it writes no policy rule that reads the mark")
+		return 0
+	}
+	return schema.UnderlayMark
+})
 
 // openPacketBind takes the one socket this node's IKE and ESP share. index
 // names an interface to bind it to, which this platform never asks for.
-func openPacketBind(port uint16, underlay Underlay, index int, routed bool, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
+func openPacketBind(port uint16, _ Underlay, index int, routed bool, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
+	mark := underlayMark()
 	// The port selected by the IPv4 bind may already be occupied on IPv6.
 	// Retry ephemeral allocation, but an explicitly requested port still fails.
 	var err error
@@ -147,7 +174,7 @@ func openPacketBind(port uint16, underlay Underlay, index int, routed bool, even
 		var bind packetBind
 		var receivers []receiveFunc
 		var bound uint16
-		bind, receivers, bound, err = listenPacketBind(port, underlay.Mark, events)
+		bind, receivers, bound, err = listenPacketBind(port, mark, events)
 		if port != 0 || !errors.Is(err, unix.EADDRINUSE) {
 			return bind, receivers, bound, err
 		}
@@ -215,11 +242,8 @@ func socketControl(ipv6 bool, fwmark uint32, buffer int, reusePort bool) func(st
 				optionErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 			}
 			if fwmark != 0 && optionErr == nil {
-				// Reported rather than ignored like the tuning above. The
-				// mark exists to keep this socket's datagrams out of a
-				// table that would route them into our own tun, so a
-				// silent failure here is an underlay that disappears into
-				// the overlay carrying it.
+				// Reported rather than ignored like the tuning above: an
+				// unmarked datagram can follow the mesh's table into our own tun.
 				optionErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(fwmark))
 			}
 			if optionErr == nil {

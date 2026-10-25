@@ -11,37 +11,35 @@ import (
 )
 
 // Underlay is how this node keeps the UDP sockets carrying IKE and ESP out of
-// the reach of the routes the mesh installs.
+// the reach of the routes the mesh installs, on darwin where Bind is set.
+// linux keeps them out with a mark and no setting, as below, within the scope
+// routing.md's "Where a lookup ends on Linux" states.
 //
-// It is one idea with two spellings, which is why it is one block rather than
-// a setting per platform. A node that holds an address an exit announces ends
-// up with a route out of its own tun covering the peers it reaches that tun
-// through, and an underlay that follows it is a tunnel running inside itself.
-// linux answers with a mark: the datagrams carry Mark, and a policy rule the
-// operator owns sends marked traffic to a table that is not the mesh's. darwin
-// has no marks, no rules and one forwarding table, and answers by binding the
-// socket to the interface the host's own default route leaves by, which scopes
-// its route lookups to that interface. On that platform the interface also
-// needs a default of its own scoped to it while an unscoped route out of
-// another interface holds its family's zero address, and internal/kernel
-// writes it then, and before the reconciler installs such a route of its own.
-// See UnderlayDefaults there for the measurement and for the ownership rules
-// that keep it off the host's own default.
+// It holds darwin's setting alone. A node that holds an address an exit
+// announces ends up with a route out of its own tun covering the peers it
+// reaches that tun through, and an underlay that follows it is a tunnel running
+// inside itself. linux needs no setting: every underlay socket carries
+// schema.UnderlayMark where the process may set it, as underlayMark says, which
+// the reconciler's derived rules read (routing.md, where a lookup ends on
+// Linux). darwin has no marks, no rules and one forwarding table, and answers
+// by binding the socket to the interface the host's own default route leaves
+// by, which scopes its route lookups to that interface. On that platform the
+// interface also needs a default of its own scoped to it while an unscoped
+// route out of another interface holds its family's zero address, and
+// internal/kernel writes it then, and before the reconciler installs such a
+// route of its own. See UnderlayDefaults there for the measurement and for the
+// ownership rules that keep it off the host's own default.
 //
-// Either one makes a real default out of the tun safe, and an exit-node client
-// installs a real default. Without one the route has to go where no ordinary
-// socket can see it, leaving a node that can hold a mesh address and cannot
-// send its traffic through a mesh exit.
+// Either one makes a real default out of the tun safe, on linux within that
+// scope, and an exit-node client installs a real default. On darwin without
+// Bind the route has to go where no ordinary socket can see it, scoped to the
+// tun, leaving a node that can hold a mesh address and cannot send its traffic
+// through a mesh exit.
 //
-// The fields are refused by name on the platform that has no meaning for them,
-// rather than accepted and ignored: a configuration written to keep the
-// underlay out that quietly does nothing is the failure this exists to stop.
+// Bind is refused by name on a platform that has no meaning for it, rather
+// than accepted and ignored: a configuration written to keep the underlay out
+// that quietly does nothing is the failure this exists to stop.
 type Underlay struct {
-	// Mark is SO_MARK on every socket, linux only, and zero for none. Pick a
-	// mark nothing else on the host uses, and install the matching rule, such
-	// as { fwmark = 0x726c, table = "main", priority = 40, family = "both" },
-	// under cap.table.rules: this package writes none itself.
-	Mark uint32 `yaml:"mark,omitempty" json:"mark,omitempty" toml:"mark,omitempty"`
 	// Bind sets IP_BOUND_IF and IPV6_BOUND_IF to the interface the host's own
 	// default route leaves by, darwin only. It needs Runtime.Links to say
 	// which interface that is and to say when it changes, because a laptop
@@ -108,15 +106,12 @@ type LinkSource interface {
 	Changed() <-chan struct{}
 }
 
-// refuse reports why this platform cannot apply u, or nil. Both spellings are
-// platform facilities and each is refused by name where it does not exist,
-// rather than accepted and ignored: a node configured to keep its underlay out
-// of the mesh's routing and silently not doing it is a tunnel running inside
-// itself, which reads as a peer that will not connect.
+// refuse reports why this platform cannot apply u, or nil. Binding is a
+// platform facility and is refused by name where it does not exist, rather
+// than accepted and ignored: a node configured to keep its underlay out of the
+// mesh's routing and silently not doing it is a tunnel running inside itself,
+// which reads as a peer that will not connect.
 func (u Underlay) refuse() error {
-	if u.Mark != 0 && !marksSockets {
-		return errors.New("a socket mark is a linux facility and is set on no other platform")
-	}
 	if u.Bind && !bindsSockets {
 		return errors.New("binding the underlay socket to an interface is a darwin facility and is set on no other platform")
 	}

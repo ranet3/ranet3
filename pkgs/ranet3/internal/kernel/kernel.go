@@ -658,45 +658,6 @@ func (r Rule) String() string {
 // X/0xffffffff` answer EEXIST to each other. The other spelling that does not
 // survive a dump, a zero-length selector, is refused by validate instead, so
 // that the refusal can name the field the operator wrote.
-// ReadsMark reports a rule here that selects packets carrying mark and looks
-// them up somewhere other than this reconciler's own table. It answers for
-// link.underlay mark, whose whole effect is that some rule selects on it: a
-// marked socket that no rule reads follows the mesh table exactly as an
-// unmarked one would.
-//
-// A rule sending the mark back into the mesh table does not count. It reads
-// the mark and still leaves the socket on the routes the mesh installed, which
-// is the state it was set to get out of.
-func (t Table) ReadsMark(mark uint32) bool {
-	normalized := t.Normalized()
-	for _, rule := range normalized.Rules {
-		if rule.selectsMark(mark) && rule.Table != normalized.ID {
-			return true
-		}
-	}
-	return false
-}
-
-// selectsMark reports a rule that selects on a mark and takes this one by the
-// kernel's own comparison, fib_rule_match's ((mark ^ FRA_FWMARK) &
-// FRA_FWMASK) == 0, with an absent mask read as all ones, which is how a rule
-// written with a mark and no mask matches. The bits of the rule's mark outside
-// its mask are never compared: fwmark 0x726c/0xff0000 takes every mark whose
-// third byte is zero, unmarked packets among them. A rule selecting on no
-// mark does not count, since it reads none, and neither does one naming an
-// input device other than lo, which is the only one a socket's own output
-// arrives on.
-func (r Rule) selectsMark(mark uint32) bool {
-	if r.FWMark == 0 || (r.IIF != "" && r.IIF != "lo") {
-		return false
-	}
-	mask := r.FWMask
-	if mask == 0 {
-		mask = ^uint32(0)
-	}
-	return (mark^r.FWMark)&mask == 0
-}
-
 func (r Rule) canonical() Rule {
 	if r.FWMark != 0 && r.FWMask == ^uint32(0) {
 		r.FWMask = 0

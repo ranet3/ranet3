@@ -44,13 +44,10 @@ func (b *portableBind) Send(packets [][]byte, endpoint Endpoint) error {
 	return b.Bind.Send(packets, endpoint.(*portableEndpoint).Endpoint, 0)
 }
 
-// This platform has neither facility, so Underlay.refuse turns down every
-// configuration that asks for one by name rather than opening a socket that
-// quietly does nothing about the underlay.
-const (
-	marksSockets = false
-	bindsSockets = false
-)
+// This platform cannot bind the socket to an interface, so Underlay.refuse
+// turns down a configuration that asks for it by name rather than opening a
+// socket that quietly does nothing about the underlay.
+const bindsSockets = false
 
 func openPacketBind(port uint16, underlay Underlay, index int, routed bool, _ func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	b := &portableBind{conn.NewStdNetBind()}

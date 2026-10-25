@@ -121,18 +121,15 @@ type Link struct {
 	// zero takes netstack.DefaultMTU, see SessionMTU
 	MTU uint16 `yaml:"mtu,omitempty" json:"mtu,omitempty" toml:"mtu,omitempty"`
 	// Underlay keeps the UDP sockets carrying IKE and ESP out of the reach
-	// of the routes the mesh installs, which lets an exit-announced default be
-	// a real default rather than one no ordinary socket can see.
-	// Needed on a node whose mesh address is the only global address of its
-	// family: the kernel then sources these sockets from it, a "from <mesh
-	// address>" rule sends them to the mesh table, and an exit-announced default
-	// there routes the underlay into the tun carrying it.
-	//
-	// One block for both platforms because it is one idea, spelled two ways:
-	// the type in transport says which field each of them reads, and
-	// each is refused by name on the platform that has no meaning for it. That
-	// refusal is at startup rather than at load, as cap.table's rules are, so
-	// one file can carry a fleet's settings and a laptop's.
+	// of the routes the mesh installs on darwin, where bind is set, which lets
+	// an exit-announced default be a real default rather than one no ordinary
+	// socket can see. Linux needs no setting: every underlay socket carries
+	// schema.UnderlayMark where the process may set it, as transport's
+	// underlayMark says, and routing.md's "Where a lookup ends on Linux" gives
+	// where a marked lookup ends. The block holds darwin's bind alone, which
+	// the type in transport describes. Every other platform refuses bind by
+	// name, at startup rather than at load, so one file can carry a fleet's
+	// settings and a laptop's.
 	Underlay transport.Underlay `yaml:"underlay,omitempty" json:"underlay,omitzero" toml:"underlay,omitempty"`
 }
 
@@ -820,9 +817,6 @@ func (c *Config) validateAcrossCapabilities() error {
 	if err := c.validateBorder(); err != nil {
 		return err
 	}
-	if err := c.validateUnderlayMark(); err != nil {
-		return err
-	}
 	if err := c.validateSteeredMTU(); err != nil {
 		return err
 	}
@@ -924,25 +918,4 @@ func (c *Config) validateSteeredMTU() error {
 		return fmt.Errorf("config: link.mtu %d: %w", c.Link.SessionMTU(), err)
 	}
 	return nil
-}
-
-// validateUnderlayMark refuses a mark nothing looks at. The two halves of the
-// setting are written in different blocks: link.underlay mark puts SO_MARK on
-// every socket carrying IKE and ESP, and a cap.table rules entry selecting
-// that mark sends it to a table the mesh does not write. With only the first,
-// the marked socket follows the mesh table exactly as an unmarked one
-// would, and a default an exit announced there routes this node's own IKE into
-// the tun carrying it. Measured on a live leaf: 52 IKE datagrams entered the
-// tun in eight seconds, none of those sessions could establish, and nothing
-// said so.
-//
-// Only where cap.table is written, because that is the only place this file
-// can put a rule. A deployment configuring its routes elsewhere writes the
-// rule elsewhere too, and refusing that would refuse a node that works.
-func (c *Config) validateUnderlayMark() error {
-	mark := c.Link.Underlay.Mark
-	if mark == 0 || c.Cap.Table == nil || c.Cap.Table.ReadsMark(mark) {
-		return nil
-	}
-	return fmt.Errorf("config: link.underlay mark %#x is selected by no cap.table rules entry, so the marked socket still follows the mesh table: add { fwmark = %#x, table = \"main\", priority = 40, family = \"both\" } to cap.table rules, or take the mark out", mark, mark)
 }

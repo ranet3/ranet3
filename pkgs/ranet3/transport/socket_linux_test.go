@@ -7,7 +7,6 @@ package transport
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -17,6 +16,8 @@ import (
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 type scriptedUDP struct {
@@ -302,32 +303,29 @@ func TestTruncatedGROReadIsCountedInDatagrams(t *testing.T) {
 	}
 }
 
-// The mark keeps this socket's datagrams out of a table that would route them
-// into the tun they are carrying, so a mark the kernel refused must not look
-// like one it took. SO_MARK needs CAP_NET_ADMIN, which the sandbox does not
-// grant and the VM checks do, so both outcomes are asserted rather than one
-// skipped.
-func TestFWMarkIsEitherSetOrReported(t *testing.T) {
-	const mark = 0x5115
-	bind, _, _, err := listenPacketBind(0, mark, nil)
-	if err != nil {
+// The listener's sockets carry the underlay's mark wherever the process may
+// set one, root among them, and none where it may not. SO_MARK needs
+// CAP_NET_ADMIN or CAP_NET_RAW, which the sandbox does not grant and the root
+// tests' namespace does, so both outcomes are asserted rather than one skipped.
+func TestListenerCarriesTheUnderlayMarkWhereTheProcessMaySetOne(t *testing.T) {
+	want := schema.UnderlayMark
+	if underlayMark() == 0 {
 		if os.Geteuid() == 0 {
-			t.Fatalf("root could not set a mark: %v", err)
+			t.Fatal("root could not set the underlay's mark")
 		}
-		if !errors.Is(err, unix.EPERM) {
-			t.Fatalf("binding with a mark failed with %v, want EPERM or success", err)
-		}
-		// Unprivileged, and it failed loudly rather than returning a socket
-		// carrying no mark. Checking the euid keeps a root run from reaching
-		// here and passing without ever reading a mark back.
-		return
+		want = 0
+	}
+	bind, _, _, err := openPacketBind(0, Underlay{}, 0, false, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = bind.Close() })
-	sockets := bind.(*udpBind)
-	for name, socket := range map[string]*udpSocket{"udp4": sockets.v4, "udp6": sockets.v6} {
+	checked := 0
+	for name, socket := range map[string]*udpSocket{"udp4": bind.(*udpBind).v4, "udp6": bind.(*udpBind).v6} {
 		if socket == nil {
 			continue
 		}
+		checked++
 		var got int
 		var readErr error
 		if err := socket.raw.Control(func(fd uintptr) {
@@ -338,14 +336,16 @@ func TestFWMarkIsEitherSetOrReported(t *testing.T) {
 		if readErr != nil {
 			t.Fatal(readErr)
 		}
-		if got != mark {
-			t.Errorf("%s carries mark %#x, want %#x", name, got, mark)
+		if uint32(got) != want {
+			t.Errorf("%s carries mark %#x, want %#x", name, got, want)
 		}
+	}
+	if checked == 0 {
+		t.Fatal("the bind produced no socket of either family")
 	}
 }
 
-// Zero asks for nothing and must not touch the socket, so a host with no rule
-// for any mark keeps the behavior it had before this option existed.
+// Zero asks for nothing and must not touch the socket.
 func TestNoFWMarkLeavesTheSocketUnmarked(t *testing.T) {
 	bind, _, _, err := listenPacketBind(0, 0, nil)
 	if err != nil {

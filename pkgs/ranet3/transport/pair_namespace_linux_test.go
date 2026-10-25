@@ -187,7 +187,7 @@ func TestPairSocketLeavesAnAddressTheHostLost(t *testing.T) {
 // the hub's mark routes the far end through the locked route
 func TestPairSocketFollowsItsFamilyAcrossALockedPath(t *testing.T) {
 	far, _ := lockedFarEnd(t)
-	hub, err := NewHub(":0", Underlay{Mark: testMark}, Runtime{})
+	hub, err := NewHub(":0", Underlay{}, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +445,7 @@ func TestPairBindsTheSourceOfTheRouteTheUnderlayMarkSelects(t *testing.T) {
 			t.Fatalf("route %s over the dummy link: %v", to, err)
 		}
 	}
-	hub, err := NewHub(":0", Underlay{Mark: testMark}, Runtime{})
+	hub, err := NewHub(":0", Underlay{}, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}

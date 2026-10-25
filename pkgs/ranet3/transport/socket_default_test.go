@@ -10,16 +10,13 @@ import (
 	"testing"
 )
 
-// Both spellings of keeping the underlay out are platform facilities: SO_MARK
-// is linux, IP_BOUND_IF is darwin. A platform with neither must refuse the
+// IP_BOUND_IF is a darwin facility. A platform without it must refuse the
 // configuration rather than ignore it, because what asked for it was written
 // to keep the underlay out of a table, and a setting that never takes effect
 // is worse than an error at startup.
 func TestUnderlayIsolationIsRefusedWhereItCannotBeSet(t *testing.T) {
 	for name, underlay := range map[string]Underlay{
-		"a socket mark":                {Mark: 0x5115},
-		"an interface binding":         {Bind: true},
-		"a mark and a binding at once": {Mark: 0x5115, Bind: true},
+		"an interface binding": {Bind: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := NewHub(":0", underlay, Runtime{})

@@ -24,6 +24,8 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // vethInfoPeer is VETH_INFO_PEER of linux/veth.h, which describes the other end of a new pair
@@ -33,8 +35,8 @@ const vethInfoPeer = 1
 // datagrams of 1400 bytes exceed it alone or as segments, and the veth under it carries 1500
 const lockedPathMTU = 1280
 
-// testMark is the mark of the bind whose datagrams a rule routes by it
-const testMark = 0x2a
+// testMark is the underlay's mark, which a rule routes the bind's datagrams by
+const testMark = schema.UnderlayMark
 
 // markRule is a rule's match of the datagrams testMark marks
 var markRule = slices.Concat(attribute(unix.FRA_FWMARK, word(testMark)), attribute(unix.FRA_FWMASK, word(^uint32(0))))

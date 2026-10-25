@@ -472,7 +472,7 @@ func TestReloadRefusesChangesItCannotApply(t *testing.T) {
 	// policies at the same time.
 	for name, change := range map[string]func(*config.Config){
 		"node":     func(c *config.Config) { c.Node = identity.MustParse("example/other") },
-		"underlay": func(c *config.Config) { c.Link.Underlay.Mark = 0x726c },
+		"underlay": func(c *config.Config) { c.Link.Underlay.Bind = true },
 		"port":     func(c *config.Config) { c.Link.Port = 14000 },
 		"tun":      func(c *config.Config) { c.Link.TUN = "ranet9" },
 		"endpoints": func(c *config.Config) {

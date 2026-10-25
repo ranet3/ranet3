@@ -144,7 +144,7 @@ func capabilities(rules hegel.Generator[Rule]) hegel.Generator[Table] {
 // Canonicalizing a rule that is already canonical changes nothing, and the
 // same holds for a whole capability as the reconciler runs it, its rules
 // expanded, canonicalized and put in order. New keeps the capability already
-// normalized, while ReadsMark and a reload normalize whatever they are handed,
+// normalized, while a reload normalizes whatever it is handed,
 // so a form that moved when normalized again would make one capability compare
 // unequal to itself: a reload refused over nothing, which is a restart that
 // drops every SA on the node.

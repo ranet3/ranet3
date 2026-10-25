@@ -237,19 +237,6 @@ func TestUnderlayKeepsItsBindingWhenTheDefaultRouteGoes(t *testing.T) {
 	}
 }
 
-// SO_MARK is a linux facility. Asking for one here has to be refused by name
-// rather than ignored: what asked for it was written to keep the underlay out
-// of the mesh's routing, and darwin does that by binding instead.
-func TestSocketMarkIsRefusedOnDarwin(t *testing.T) {
-	_, err := NewHub(":0", Underlay{Mark: 0x5115}, Runtime{})
-	if err == nil {
-		t.Fatal("a mark this platform cannot set was accepted")
-	}
-	if got := err.Error(); !strings.Contains(got, "mark") || strings.Count(got, "transport:") != 1 {
-		t.Errorf("the refusal reads %q", got)
-	}
-}
-
 // The reachability probe runs on every binding, so it has to answer for both
 // families without reaching for the wrong one: netip.Addr.As4 panics on an
 // IPv6 address, and this runs on the goroutine that follows link changes.

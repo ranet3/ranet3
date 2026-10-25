@@ -30,17 +30,20 @@
 // # Keeping the sockets out of their own tunnel
 //
 // [Underlay] and [Runtime] are the one setting that keeps these sockets off the
-// routes a mesh running over it installs, a mark on linux and an interface
-// binding on darwin. [Underlay] is a plain value a config file or a control
-// plane can produce whole, and [Runtime] carries what the caller has to
-// resolve at startup, so a caller that wants neither passes both zero.
+// routes a mesh running over it installs on darwin, an interface binding. On
+// linux no setting does it: every socket carries schema.UnderlayMark where the
+// process may set it, which the reconciler's derived rules read to keep them
+// off, as routing.md's "Where a lookup ends on Linux" gives with its scope.
+// [Underlay] is a plain value a config file or a control plane can produce
+// whole, and [Runtime] carries what the caller has to resolve at startup, so a
+// caller that wants neither passes both zero.
 //
 // # What it does not do
 //
 // Nothing here encrypts, authenticates or parses a payload: an IKE message
 // leaves and arrives as bytes, and an ESP packet is opaque. Nothing here
-// writes a policy rule either, including the one that has to match
-// [Underlay.Mark].
+// writes a policy rule either, including the ones that match
+// [schema.UnderlayMark].
 package transport
 
 import (

@@ -21,3 +21,6 @@ const (
 	MinSubnetBits4 = 8
 	MinSubnetBits6 = 16
 )
+
+// UnderlayMark is SO_MARK on every socket carrying IKE and ESP, on linux.
+const UnderlayMark uint32 = 0x726c

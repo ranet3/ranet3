@@ -47,14 +47,12 @@ link:
   # device runs at this less the longest cap.segment steer list.
   # mtu: 1400
   # Keep the one socket carrying IKE and ESP out of the reach of the routes the
-  # mesh installs. mark is SO_MARK plus a rule under cap.table.rules, linux
-  # only, and a mark no rule there selects on is refused, while bind is IP_BOUND_IF on
-  # the interface the host's own default leaves by plus a default scoped to that
-  # interface while a route over a zero address leaves by another, darwin only,
-  # and it also makes an announced default install plain rather than scoped.
-  # Each is refused by name on the platform that has no meaning for it.
+  # mesh installs. On linux every underlay socket carries the mark 0x726c, which
+  # no key sets. bind is IP_BOUND_IF on the interface the host's own default leaves by plus a default
+  # scoped to that interface while a route over a zero address leaves by
+  # another, darwin only, and it also makes an announced default install plain
+  # rather than scoped. It is refused on linux.
   # underlay:
-  #   mark: 0x726c
   #   bind: true
 
 # Who this node dials, each as organization/name or organization/name:serial.

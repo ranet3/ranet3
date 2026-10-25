@@ -726,12 +726,9 @@ func (s *darwinSocket) replyEndpoint(from netip.AddrPort, control []byte, flags 
 	return pinnedEndpoint(from, source, index), nil
 }
 
-// darwin has no packet marks and no policy rules, and binds instead.
-// Underlay.refuse reads these.
-const (
-	marksSockets = false
-	bindsSockets = true
-)
+// darwin has no packet marks and no policy rules, and binds instead where
+// link.underlay.bind asks it to. Underlay.refuse reads this.
+const bindsSockets = true
 
 // openPacketBind takes the one socket this node's IKE and ESP share. index
 // binds it to that interface, and zero leaves it following the forwarding

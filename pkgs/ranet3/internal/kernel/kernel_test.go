@@ -1435,45 +1435,6 @@ func TestRulePassInstallsOnceAndWithdrawsWhatIsGone(t *testing.T) {
 	}
 }
 
-// A rule selects a packet by its mark the way the kernel's fib rule match
-// does, ((mark ^ fwmark) & fwmask) == 0 with an absent mask read as all ones,
-// so the bits of the rule's own mark outside its mask are never compared:
-// fwmark 0x726c/0xff0000 takes the marks whose third byte is zero, the
-// unmarked packet among them, and not 0x1726c. A socket's own output arrives
-// on lo, so a rule naming any other input device reads no socket's mark.
-func TestRuleSelectsAMarkAsTheKernelCompares(t *testing.T) {
-	marks := []uint32{0x726c, 0x0, 0x1726c, 0x10000}
-	for _, one := range []struct {
-		rule  Rule
-		takes []bool
-	}{
-		{Rule{FWMark: 0x726c, FWMask: 0xff0000}, []bool{true, true, false, false}},
-		// A mask equal to the mark, which compares the mark's own bits and
-		// none above them.
-		{Rule{FWMark: 0x726c, FWMask: 0x726c}, []bool{true, false, true, false}},
-		// A wider mask covering the mark, and the bits above it not compared.
-		{Rule{FWMark: 0x726c, FWMask: 0xffff}, []bool{true, false, true, false}},
-		// No mask, which the kernel reads as all ones, and all ones written.
-		{Rule{FWMark: 0x726c}, []bool{true, false, false, false}},
-		{Rule{FWMark: 0x726c, FWMask: 0xffffffff}, []bool{true, false, false, false}},
-		{Rule{FWMark: 0x10000, FWMask: 0xff0000}, []bool{false, false, true, true}},
-		{Rule{FWMark: 0x726c, IIF: "lo"}, []bool{true, false, false, false}},
-		{Rule{FWMark: 0x726c, IIF: "eth1"}, []bool{false, false, false, false}},
-		{Rule{FWMark: 0x726c, FWMask: 0xff0000, IIF: "eth0"}, []bool{false, false, false, false}},
-	} {
-		for i, mark := range marks {
-			if got := one.rule.selectsMark(mark); got != one.takes[i] {
-				t.Errorf("fwmark %#x/%#x iif %q on mark %#x: %v, and the kernel says %v", one.rule.FWMark, one.rule.FWMask, one.rule.IIF, mark, got, one.takes[i])
-			}
-		}
-	}
-	// And ReadsMark answers for link.underlay mark by the same comparison.
-	table := Table{Rules: []Rule{{FWMark: 0x726c, FWMask: 0xff0000, Table: schema.TableMain, Priority: 40, Family: FamilyBoth}}}
-	if !table.ReadsMark(0x726c) {
-		t.Error("a rule the kernel matches mark 0x726c against was not counted as reading it")
-	}
-}
-
 // Two spellings the kernel stores as one rule have to reach the diff as one
 // rule. A mark with no mask is stored and reported back with a mask of all
 // ones, and a prefix of length zero is reported back as no prefix at all, so a
