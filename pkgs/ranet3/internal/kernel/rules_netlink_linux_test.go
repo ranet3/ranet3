@@ -60,8 +60,8 @@ func TestNetlinkRuleActionsReadBackAndDeleteExactly(t *testing.T) {
 			overlay, floor = schema.MustPrefix("3fff::/20"), 15
 		}
 		want = append(want,
-			Rule{Family: family, action: ActionNop, Priority: 5190},
-			Rule{Family: family, FWMark: 0x726c, action: ActionGoto, target: 5190, Priority: 5100},
+			Rule{Family: family, action: actionNop, Priority: 5190},
+			Rule{Family: family, FWMark: 0x72, action: actionGoto, target: 5190, Priority: 5100},
 			Rule{Family: family, To: overlay, Table: DefaultTable, Priority: 5110},
 			Rule{Family: family, Table: 254, suppress: SuppressUpTo(0), Priority: 5410},
 			Rule{Family: family, Table: DefaultTable, suppress: SuppressUpTo(floor), Priority: 5420},
@@ -85,7 +85,7 @@ func TestNetlinkRuleActionsReadBackAndDeleteExactly(t *testing.T) {
 	plain := Rule{Family: FamilyIPv4, Table: DefaultTable, Priority: 5500}
 	suppressing := plain
 	suppressing.suppress = SuppressUpTo(7)
-	exact := Rule{Family: FamilyIPv6, FWMark: 0x726c, Table: 254, Priority: 5600}
+	exact := Rule{Family: FamilyIPv6, FWMark: 0x72, Table: 254, Priority: 5600}
 	masked := exact
 	masked.FWMask = 0xffff
 	for _, rule := range []Rule{plain, suppressing, exact, masked} {

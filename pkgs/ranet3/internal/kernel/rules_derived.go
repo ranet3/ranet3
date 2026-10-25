@@ -32,15 +32,15 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 			floor = schema.MinSubnetBits6
 		}
 		out = append(out,
-			Rule{Family: family, Priority: priorityOverlayEnd, action: ActionNop},
-			Rule{Family: family, Priority: priorityMeshEnd, action: ActionNop},
-			Rule{Family: family, Priority: priorityUnderlayPastOverlay, FWMark: schema.UnderlayMark, action: ActionGoto, target: priorityOverlayEnd},
+			Rule{Family: family, Priority: priorityOverlayEnd, action: actionNop},
+			Rule{Family: family, Priority: priorityMeshEnd, action: actionNop},
+			Rule{Family: family, Priority: priorityUnderlayPastOverlay, FWMark: schema.UnderlayMark, action: actionGoto, target: priorityOverlayEnd},
 		)
 		for _, prefix := range familyPrefixes(family, schemaPrefixes(overlay)) {
 			out = append(out, Rule{Family: family, Priority: priorityOverlay, To: schema.PrefixFrom(prefix), Table: id})
 		}
 		out = append(out,
-			Rule{Family: family, Priority: priorityUnderlayPastMesh, FWMark: schema.UnderlayMark, action: ActionGoto, target: priorityMeshEnd},
+			Rule{Family: family, Priority: priorityUnderlayPastMesh, FWMark: schema.UnderlayMark, action: actionGoto, target: priorityMeshEnd},
 			Rule{Family: family, Priority: priorityMain, Table: schema.TableMain, suppress: SuppressUpTo(0)},
 			Rule{Family: family, Priority: priorityMesh, Table: id, suppress: SuppressUpTo(floor - 1)},
 		)

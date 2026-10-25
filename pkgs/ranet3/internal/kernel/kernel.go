@@ -435,8 +435,8 @@ type platform interface {
 // blackhole or prohibit route of a table it looks up.
 type Rule struct {
 	// action is the rule's FR_ACT, a lookup in Table at its zero value
-	action RuleAction
-	// target is FRA_GOTO, the priority a goto continues at, and zero for any other action.
+	action ruleAction
+	// target is FRA_GOTO, the priority a goto jumps to, and zero for any other action.
 	target uint32
 	// suppress is FRA_SUPPRESS_PREFIXLEN, which refuses a lookup's answer of
 	// that length or shorter, but never an unreachable, blackhole or prohibit
@@ -467,24 +467,24 @@ type Rule struct {
 	Family   Family
 }
 
-// RuleAction is a rule's FR_ACT, as far as this reconciler writes one.
-type RuleAction uint8
+// ruleAction is a rule's FR_ACT, as far as this reconciler writes one.
+type ruleAction uint8
 
 const (
-	// ActionLookup is FR_ACT_TO_TBL, a lookup in the rule's table.
-	ActionLookup RuleAction = iota
-	// ActionGoto is FR_ACT_GOTO, the walk continuing at the rule's target.
-	ActionGoto
-	// ActionNop is FR_ACT_NOP, a rule a goto lands on.
-	ActionNop
+	// actionLookup is FR_ACT_TO_TBL, a lookup in the rule's table.
+	actionLookup ruleAction = iota
+	// actionGoto is FR_ACT_GOTO, a jump to the rule's target.
+	actionGoto
+	// actionNop is FR_ACT_NOP, a rule a goto lands on.
+	actionNop
 )
 
 // String is the action as `ip rule` spells it
-func (a RuleAction) String() string {
+func (a ruleAction) String() string {
 	switch a {
-	case ActionGoto:
+	case actionGoto:
 		return "goto"
-	case ActionNop:
+	case actionNop:
 		return "nop"
 	}
 	return "lookup"
@@ -547,12 +547,12 @@ func (r Rule) String() string {
 	}
 	parts = append(parts, "family "+string(r.Family))
 	switch r.action {
-	case ActionGoto:
-		parts = append(parts, fmt.Sprintf("goto %d", r.target))
-	case ActionNop:
-		parts = append(parts, "nop")
+	case actionGoto:
+		parts = append(parts, fmt.Sprintf("%s %d", r.action, r.target))
+	case actionNop:
+		parts = append(parts, r.action.String())
 	default:
-		parts = append(parts, "lookup "+r.Table.String())
+		parts = append(parts, r.action.String()+" "+r.Table.String())
 	}
 	if bits, ok := r.suppress.Bits(); ok {
 		parts = append(parts, fmt.Sprintf("suppress_prefixlength %d", bits))
@@ -572,7 +572,7 @@ func (r Rule) dumped(proto uint8) DumpedRule {
 	if r.FWMark != 0 && r.FWMask == 0 {
 		held.FWMask = ^uint32(0)
 	}
-	if r.action == ActionLookup {
+	if r.action == actionLookup {
 		held.Table = uint32(r.Table)
 	}
 	return held

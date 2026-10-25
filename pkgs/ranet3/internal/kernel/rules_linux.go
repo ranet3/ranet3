@@ -43,11 +43,11 @@ func (f Family) af() uint8 {
 const sizeofFibRuleHdr = 12
 
 // frAction is the FR_ACT a rule of this action carries.
-func (a RuleAction) frAction() uint8 {
+func (a ruleAction) frAction() uint8 {
 	switch a {
-	case ActionGoto:
+	case actionGoto:
 		return unix.FR_ACT_GOTO
-	case ActionNop:
+	case actionNop:
 		return unix.FR_ACT_NOP
 	}
 	return unix.FR_ACT_TO_TBL
@@ -79,9 +79,9 @@ func (p *netlinkPlatform) ruleMessage(rule Rule) []byte {
 	}
 	body = putAttrU32(body, unix.FRA_PRIORITY, rule.Priority)
 	switch rule.action {
-	case ActionLookup:
+	case actionLookup:
 		body = putAttrU32(body, unix.FRA_TABLE, uint32(rule.Table))
-	case ActionGoto:
+	case actionGoto:
 		body = putAttrU32(body, unix.FRA_GOTO, rule.target)
 	}
 	if bits, ok := rule.suppress.Bits(); ok {
@@ -153,12 +153,12 @@ func (p *netlinkPlatform) decodeRule(message nlMessage) (Rule, bool) {
 	// somebody's word for what it does. The kernel dumps FRA_TABLE 0 for a
 	// goto and a nop.
 	switch {
-	case held.Action == actionName(unix.FR_ACT_TO_TBL) && held.Table != 0 && held.Goto == 0:
-		rule.action, rule.Table = ActionLookup, schema.TableID(held.Table)
-	case held.Action == actionName(unix.FR_ACT_GOTO) && held.Table == 0 && held.Goto > held.Priority:
-		rule.action, rule.target = ActionGoto, held.Goto
-	case held.Action == actionName(unix.FR_ACT_NOP) && held.Table == 0 && held.Goto == 0:
-		rule.action = ActionNop
+	case held.Action == actionLookup.String() && held.Table != 0 && held.Goto == 0:
+		rule.action, rule.Table = actionLookup, schema.TableID(held.Table)
+	case held.Action == actionGoto.String() && held.Table == 0 && held.Goto > held.Priority:
+		rule.action, rule.target = actionGoto, held.Goto
+	case held.Action == actionNop.String() && held.Table == 0 && held.Goto == 0:
+		rule.action = actionNop
 	default:
 		return Rule{}, false
 	}

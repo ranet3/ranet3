@@ -68,15 +68,15 @@ func TestRuleMessageCarriesTheOwnershipMarker(t *testing.T) {
 // from a prefix, and the mask is sent only when there is one.
 func TestRuleMessageCarriesTheMarkAndItsMask(t *testing.T) {
 	plat, _ := writePlatform(t)
-	_, attrs := ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x726c, Table: 254, Priority: 40}))
-	if mark := attrs[unix.FRA_FWMARK]; len(mark) != 4 || binary.NativeEndian.Uint32(mark) != 0x726c {
+	_, attrs := ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x72, Table: 254, Priority: 40}))
+	if mark := attrs[unix.FRA_FWMARK]; len(mark) != 4 || binary.NativeEndian.Uint32(mark) != 0x72 {
 		t.Errorf("FRA_FWMARK is %v", mark)
 	}
 	if _, ok := attrs[unix.FRA_FWMASK]; ok {
 		t.Error("a rule with no mask carried FRA_FWMASK, which the kernel reads as an exact match anyway")
 	}
 
-	_, attrs = ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x726c, FWMask: 0xffff, Table: 254, Priority: 40}))
+	_, attrs = ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv4, FWMark: 0x72, FWMask: 0xffff, Table: 254, Priority: 40}))
 	if mask := attrs[unix.FRA_FWMASK]; len(mask) != 4 || binary.NativeEndian.Uint32(mask) != 0xffff {
 		t.Errorf("FRA_FWMASK is %v", mask)
 	}
@@ -90,7 +90,7 @@ func TestRuleMessageCarriesTheInputDevice(t *testing.T) {
 	if name := attrs[unix.FRA_IIFNAME]; string(name) != "eth1\x00" {
 		t.Errorf("FRA_IIFNAME is %q", name)
 	}
-	_, attrs = ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv6, FWMark: 0x726c, Table: 254, Priority: 40}))
+	_, attrs = ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv6, FWMark: 0x72, Table: 254, Priority: 40}))
 	if _, ok := attrs[unix.FRA_IIFNAME]; ok {
 		t.Error("a rule naming no device carried FRA_IIFNAME")
 	}
@@ -103,7 +103,7 @@ func TestRuleRoundTripsThroughItsOwnEncoding(t *testing.T) {
 	for name, rule := range map[string]Rule{
 		"a destination rule": {Family: FamilyIPv4, To: schema.MustPrefix("198.18.104.0/24"), Table: 200, Priority: 100},
 		"a source rule":      {Family: FamilyIPv6, From: schema.MustPrefix("3fff:1:69c::/48"), Table: 200, Priority: 150},
-		"a mark rule":        {Family: FamilyIPv6, FWMark: 0x726c, Table: 254, Priority: 40},
+		"a mark rule":        {Family: FamilyIPv6, FWMark: 0x72, Table: 254, Priority: 40},
 		"both selectors":     {Family: FamilyIPv4, To: schema.MustPrefix("10.0.0.0/8"), From: schema.MustPrefix("10.1.0.0/16"), Table: 7, Priority: 90},
 		"a device rule":      {Family: FamilyIPv4, IIF: "eth1", Table: 254, Priority: 60},
 	} {
@@ -128,7 +128,7 @@ func TestRuleRoundTripsThroughItsOwnEncoding(t *testing.T) {
 // same rule.
 func TestExactMarkReadsBackAsTheRuleThatWasWritten(t *testing.T) {
 	plat, conn := writePlatform(t)
-	rule := Rule{Family: FamilyIPv4, FWMark: 0x726c, Table: 254, Priority: 40}
+	rule := Rule{Family: FamilyIPv4, FWMark: 0x72, Table: 254, Priority: 40}
 	body := plat.ruleMessage(rule)
 	body = putAttrU32(body, unix.FRA_FWMASK, ^uint32(0))
 	conn.replies = []nlMessage{{Kind: unix.RTM_NEWRULE, Data: body}}
@@ -189,7 +189,7 @@ func TestRuleDumpKeepsOnlyWhatThisReconcilerOwns(t *testing.T) {
 // the kernel compares on a delete
 func TestRuleReadBackKeepsWhatNoDerivedRuleHolds(t *testing.T) {
 	plat, _ := writePlatform(t)
-	underlay := Rule{Family: FamilyIPv4, Priority: 5100, FWMark: 0x726c, action: ActionGoto, target: 5190}
+	underlay := Rule{Family: FamilyIPv4, Priority: 5100, FWMark: 0x72, action: actionGoto, target: 5190}
 	inverted := plat.ruleMessage(underlay)
 	binary.NativeEndian.PutUint32(inverted[8:], unix.FIB_RULE_INVERT)
 	for name, c := range map[string]struct {
