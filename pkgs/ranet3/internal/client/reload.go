@@ -600,7 +600,7 @@ func (c *Client) egressAdvertised() []netip.Prefix {
 }
 
 // Republish rebuilds the announcement set and hands it to the speaker, and the router-ids and the answer SID to the mesh,
-// which End's answers to a packet past its session and transit's errors come from, as netstack's answerTooBig and errorSource say.
+// which End's answers to a packet past its session and transit's errors come from, as netstack's AnswerSources says.
 // cap.egress calls it whenever the prefixes it may advertise change, which is
 // how an exit whose rule stopped being installed retracts rather than going on
 // attracting traffic it would have to drop.

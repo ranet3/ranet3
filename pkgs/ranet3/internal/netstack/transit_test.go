@@ -302,11 +302,11 @@ func TestDecisionWritesLinkScopeToTheTun(t *testing.T) {
 	}
 }
 
-// a source or destination no router forwards is dropped and counted martian, RFC 1812 section 5.3.7, RFC 3927 section 7 and RFC 4291 sections 2.5.2, 2.5.3 and 2.5.6
+// a source or destination no router forwards is dropped and counted martian, past the destinations linkScoped takes to the tun, RFC 1812 section 5.3.7, RFC 3927 section 7 and RFC 4291 sections 2.5.2, 2.5.3 and 2.5.6
 // an IPv4 link-local destination among them, which never reaches the tun, as a cloud's metadata address would from a host forwarding it
 // and an IPv4-mapped destination, which RFC 6890 has no router forward, whatever its IPv4 form
-// an IPv6 link-local source to a wider destination is answered beyond the scope of the source, RFC 4443 section 3.1 code 2, on the session it came through
-// and nothing else is answered, an IPv4 link-local source among them
+// an IPv6 link-local source to a wider unicast destination a router forwards is answered beyond the scope of the source, RFC 4443 section 3.1 code 2, on the session it came through
+// and none of the other cases is answered, an IPv4 link-local source among them
 func TestDecisionDropsMartians(t *testing.T) {
 	for _, c := range []struct {
 		from, to string

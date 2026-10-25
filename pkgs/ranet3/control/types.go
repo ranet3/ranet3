@@ -318,8 +318,9 @@ type Down struct {
 
 // SegmentCounters is this node's segment routing, counted since startup.
 // Forwarded is packets an End sent on to their next segment, Delivered is
-// packets an End.DT46 took the outer header off and handed to the stack
-// through the mesh tun, and Dropped is packets addressed to one of this node's
+// packets an End.DT46 took the outer header off and handed to the mesh's
+// forwarding decision, counted before it writes them to the tun, forwards,
+// answers or drops them, and Dropped is packets addressed to one of this node's
 // segments that it would not act on, and egress packets the egress device
 // refused while open.
 type SegmentCounters struct {
@@ -340,7 +341,7 @@ type SegmentCounters struct {
 	Answered uint64 `json:"answered"`
 	// Egressed counts the packets the egress device accepted
 	Egressed uint64 `json:"egressed"`
-	// Refused counts the packets a local SID refused for their source, an outer source outside cap.border overlay at any SID or, at an egress segment, a source outside its allow list, an inner source it cannot read, an inner packet no router forwards or one the mesh routes no reply to, a part of Dropped never answered
+	// Refused counts the packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for a source outside its allow list, an inner source it cannot read, an inner packet no router forwards or one the mesh routes no reply to, a part of Dropped never answered
 	Refused uint64 `json:"refused"`
 	// NotReady counts the egress results dropped with no egress device installed, closed under the write or not ready for their family, which is not in Dropped
 	NotReady uint64 `json:"not_ready"`
