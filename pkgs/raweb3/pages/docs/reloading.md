@@ -52,7 +52,6 @@ as [what a reload refuses](#what-a-reload-refuses) describes.
 | `cap.babel` and every key under it                                   | applied                                  |                                                                                                                                                                                                                    |
 | `cap.table`, written or removed                                      | refused                                  |                                                                                                                                                                                                                    |
 | `cap.table.id`, `cap.table.proto`                                    | refused when its effective value changes |                                                                                                                                                                                                                    |
-| `cap.table.vrf.name`, `cap.table.vrf.create`                         | refused                                  |                                                                                                                                                                                                                    |
 | `cap.table.metric`, `cap.table.reconcile`, `cap.table.capture_grace` | applied                                  |                                                                                                                                                                                                                    |
 | `cap.table.addresses`, `cap.table.assign_announced`                  | applied                                  | Refused when it moves the address `cap.egress.return` translates to.                                                                                                                                               |
 | `cap.table.prefsrc4`, `cap.table.rules`                              | applied                                  | Refused on macOS, as at startup.                                                                                                                                                                                   |
@@ -142,12 +141,11 @@ rule, a renumbered tun or another metric without dropping a session or
 withdrawing the mesh table from the rest of the fleet. [Routing](routing.md)
 describes the reconciler.
 
-A change to `cap.table.id`, `cap.table.proto` or `cap.table.vrf` is refused by
-name, and so is writing the block where there was none or taking it out. The
-reconciler reads and writes its routes and rules in the table and under the
-protocol it started with, and its tun is bound to the VRF, so a restart applies
-them. A reload asking for something the platform does not have is refused as a
-startup is, such as rules or `prefsrc4` on macOS.
+A change to `cap.table.id` or `cap.table.proto` is refused by name, and so is
+writing the block where there was none or taking it out. The reconciler reads
+and writes its routes and rules in the table and under the protocol it started
+with, so a restart applies them. A reload asking for something the platform does
+not have is refused as a startup is, such as rules or `prefsrc4` on macOS.
 
 ## `cap.babel`
 

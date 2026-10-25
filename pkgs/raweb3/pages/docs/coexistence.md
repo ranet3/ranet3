@@ -35,24 +35,14 @@ wakes nothing.
 
 Installing is where a router daemon usually takes over from its neighbors, and
 this one does not. It asks for the route exclusively, and a key something else
-already holds is left alone and reported once.
-
-Exclusive installs matter most in a VRF table. The kernel files its own local
-and connected entries there for every address on an enslaved link. A replace
-compares neither the protocol nor the route type, so it would displace those
-entries. An IPv4 route with no configured metric sits at the same priority as
-they do.
+already holds is left alone and reported once. A replace compares neither the
+protocol nor the route type, so it would take the route from the writer that
+holds it.
 
 At startup, before its first pass, the reconciler logs
 `kernel is sharing its table with another routing protocol` when another
-protocol writes its table. The warning's `fix` attribute names the change the
-node can make. On a node with a VRF, which looks that table up, the fix is to
-stop the other writer exporting into the table. On any other node, the fix is to
-give the reconciler a table of its own.
-
-The check counts unicast routes only. When the reconciler's own VRF is bound to
-its table, the check leaves out the kernel's own entries there, which carry the
-protocol `kernel`.
+protocol writes its table. The warning's `fix` attribute says to give the
+reconciler a table of its own. The check counts unicast routes only.
 
 A node that sets `link.underlay.mark` and writes `cap.table` is refused at load
 unless a `cap.table.rules` entry sends that mark to a table other than
@@ -175,11 +165,11 @@ The ownership rules of this default are narrower than the utun's:
   the record, the interface name still has the recorded index, and that
   interface still carries the host's own default.
 
-## Addresses and the VRF
+## Addresses and the tun
 
-Addresses are narrower still: only an address this process added is ever
-removed, and one already on the link belongs to whoever put it there. An address
-the link already holds at another prefix length is left alone and reported as
+Only an address this process added is ever removed, and one already on the link
+belongs to whoever put it there. An address the link already holds at another
+prefix length is left alone and reported as
 `kernel is leaving an address another writer holds`. An address the reconciler
 added is removed only while the link still holds it at the length it was added
 with.
@@ -194,19 +184,6 @@ On Linux the reconciler turns on `promote_secondaries` for the tun at start.
 When a primary IPv4 address comes off the tun, the kernel promotes the next
 address of that subnet instead of removing it too. A tun with no IPv4 address
 loses every IPv4 route through it, another writer's among them.
-
-The tun is enslaved to a VRF only while it has no master at all, so
-systemd-networkd keeps whatever it already claimed. Enslaving cycles the device.
-The kernel then removes every route out of the tun, in every table and whoever
-wrote it. A route out of the VRF device itself stays. The startup report of
-other writers therefore runs before the first pass, which enslaves.
-
-With `cap.table.vrf.create` set, the reconciler creates the VRF only when no
-device of that name exists. A VRF that already exists keeps the table it is
-bound to, and the reconciler never rebinds it. When that table is not
-`cap.table.id`, the reconciler logs
-`kernel's vrf is bound to another table than the one it writes`. At shutdown it
-removes only a VRF it created, found by the index it was created under.
 
 Under the default name the device itself is only ever created: a `ranet3` that
 already exists is refused rather than joined, so it never takes a device another

@@ -54,7 +54,7 @@ and `cap.transit` until it writes `enable = true`. `cap.route`, `cap.babel` and
 | `cap.route`   | Names the prefixes this node announces                                                                                 |
 | `cap.transit` | Relays the routes this node learns, and so carries other nodes' traffic                                                |
 | `cap.babel`   | Sets the Babel timers, the link quality estimator and the link costs                                                   |
-| `cap.table`   | Runs the route reconciler, which installs routes, addresses, policy rules and a VRF in the kernel                      |
+| `cap.table`   | Runs the route reconciler, which installs routes, addresses and policy rules in the kernel                             |
 | `cap.segment` | Steers traffic by source and destination prefix through SRv6 waypoints, and lists the segments this node answers for   |
 | `cap.egress`  | Translates source addresses for exit nodes and subnet routers, on Linux                                                |
 | `cap.border`  | Drops what arrives from outside the mesh with a mesh source, a routing header of any type or this node's SID, on Linux |

@@ -108,14 +108,6 @@ drop. The list is derived and has no setting:
 
 1. the mesh tun, through which an egress segment's inner packets arrive as well
 2. `lo`, through which a packet this host sends to its own address arrives
-3. the VRF master the tun is enslaved to, named by `cap.table.vrf.name`
-
-A packet arriving on a device enslaved to a VRF meets prerouting twice: once
-with the device itself as its input, then again with the VRF master, after the
-kernel switches the packet into the VRF. Every packet seen with the master as
-its input passed the first time on its real device, where the filter judged it.
-Without the master in the list, every mesh packet on a node in a VRF would be
-dropped the second time.
 
 A deployment that carries mesh sources on another link, a subnet router of
 mesh-numbered hosts, is refused at load: a `cap.egress` `advertise` entry that
