@@ -474,10 +474,7 @@ func TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment(t *testing.T)
 	internet := map[int]netip.Addr{4: netip.MustParseAddr("203.0.113.9"), 6: netip.MustParseAddr("2001:db8::9")}
 	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
 		cfg.Cap.Egress = &egress.Egress{Advertise: []schema.Prefix{schema.PrefixFrom(every[4]), schema.PrefixFrom(every[6])}}
-		cfg.Cap.Border = &egress.Border{}
-		for _, prefix := range labOverlay {
-			cfg.Cap.Border.Overlay = append(cfg.Cap.Border.Overlay, schema.PrefixFrom(prefix))
-		}
+		labBorder(cfg)
 	})
 	if err := netnstest.StartThread(t).Do(func() (err error) {
 		c.Mesh, err = netstack.NewNamed(0, labTUN, nil)
@@ -754,10 +751,7 @@ func lineSpecs(transit bool) []labSpec {
 	b.announce = append(b.announce, lineCover[4].String(), lineCover[6].String(), lineSIDs.String())
 	b.change = func(cfg *config.Config) {
 		cfg.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{{SID: schema.AddrFrom(lineSID), Behavior: srv6.BehaviorEndDT46}}}
-		cfg.Cap.Border = &egress.Border{}
-		for _, prefix := range labOverlay {
-			cfg.Cap.Border.Overlay = append(cfg.Cap.Border.Overlay, schema.PrefixFrom(prefix))
-		}
+		labBorder(cfg)
 	}
 	a.change = func(cfg *config.Config) {
 		via := []schema.Addr{schema.AddrFrom(lineSID)}
@@ -1214,4 +1208,255 @@ func labTUNReceived(name string) (uint64, error) {
 		return 0, err
 	}
 	return 0, fmt.Errorf("/proc/net/dev holds no %s", name)
+}
+
+// the edge labs' addresses, beside the line's
+var (
+	// edgeLink is the veth between c at place 2 and x at place 3, each end with an address of each family
+	edgeLink = [2][2]netip.Prefix{
+		{netip.MustParsePrefix("198.51.100.13/30"), netip.MustParsePrefix("2001:db8:ce::1/64")},
+		{netip.MustParsePrefix("198.51.100.14/30"), netip.MustParsePrefix("2001:db8:ce::2/64")},
+	}
+	// edgeUnannounced is an overlay address no node announces, forged by the overlay rule
+	edgeUnannounced = map[int]netip.Addr{4: netip.MustParseAddr("192.0.2.233"), 6: netip.MustParseAddr("3fff:0:1::1")}
+	// edgeOutside is an address outside the overlay that nothing routes, owned by no rule and forged by none
+	edgeOutside = map[int]netip.Addr{4: netip.MustParseAddr("203.0.113.7"), 6: netip.MustParseAddr("2001:db8::7")}
+)
+
+// labVeth is the name of the veth end in the namespace of the node at from, on its link to the node at to, as labPair names it
+func labVeth(from, to int) string { return fmt.Sprintf("v%c%c", 'a'+from, 'a'+to) }
+
+// labForwardingNeighbor joins a bare host at hostPlace to node at nodePlace over a dual-family veth, ends being the node's and the host's addresses, and routes each of routes from the host via node
+// it returns the host, a namespace of its own whose kernel sends the crafted packets labSendRaw sends from it
+func labForwardingNeighbor(t *testing.T, node *labNode, name string, nodePlace, hostPlace int, ends [2][2]netip.Prefix, routes []netip.Prefix) *labNode {
+	t.Helper()
+	host := &labNode{loopbackNode: &loopbackNode{name: name}, ns: netnstest.StartThread(t)}
+	labPair(t, node, host, labLink{places: [2]int{nodePlace, hostPlace}, ends: [2]netip.Prefix{ends[0][0], ends[1][0]}})
+	names := [2]string{labVeth(nodePlace, hostPlace), labVeth(hostPlace, nodePlace)}
+	for side, end := range []*labNode{node, host} {
+		if err := end.ns.Do(func() error {
+			netlink, err := netnstest.OpenNetlink()
+			if err != nil {
+				return err
+			}
+			defer netlink.Close()
+			if err := netlink.AddAddresses(names[side], ends[side][1]); err != nil {
+				return err
+			}
+			if side == 0 {
+				return nil
+			}
+			link, err := net.InterfaceByName(names[1])
+			if err != nil {
+				return err
+			}
+			for _, prefix := range routes {
+				gateway := ends[0][1].Addr()
+				if prefix.Addr().Is4() {
+					gateway = ends[0][0].Addr()
+				}
+				if err := netlink.RouteVia(link.Index, prefix, gateway); err != nil {
+					return fmt.Errorf("route %s from %s: %w", prefix, name, err)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("join %s to %s: %v", name, node.name, err)
+		}
+	}
+	return host
+}
+
+// labBorder writes labOverlay as cfg's cap.border overlay
+func labBorder(cfg *config.Config) {
+	cfg.Cap.Border = &egress.Border{}
+	for _, prefix := range labOverlay {
+		cfg.Cap.Border.Overlay = append(cfg.Cap.Border.Overlay, schema.PrefixFrom(prefix))
+	}
+}
+
+// labRoutingHeader is raw, an IPv6 packet, with a routing header of kind between its fixed header and what followed it, segments left 0
+// it mirrors internal/netstack's withRouting, which this package cannot import from a test
+func labRoutingHeader(raw []byte, kind byte) []byte {
+	out := slices.Concat(raw[:40], []byte{raw[6], 0, kind, 0, 0, 0, 0, 0}, raw[40:])
+	out[6] = 43
+	binary.BigEndian.PutUint16(out[4:], uint16(len(out)-40))
+	return out
+}
+
+// labEncap carries inner, an IPv4 or IPv6 packet, in an IPv6 packet from src to dst whose next header names inner's family
+// it mirrors the IPv6 arm of internal/netstack's encapsulated
+func labEncap(src, dst netip.Addr, inner []byte) []byte {
+	next := byte(esp.NextHeaderIPv6)
+	if inner[0]>>4 == 4 {
+		next = esp.NextHeaderIPv4
+	}
+	out := make([]byte, 40, 40+len(inner))
+	out[0] = 0x60
+	binary.BigEndian.PutUint16(out[4:], uint16(len(inner)))
+	out[6], out[7] = next, 64
+	copy(out[8:], src.AsSlice())
+	copy(out[24:], dst.AsSlice())
+	return append(out, inner...)
+}
+
+// a-b-c in a line, c's kernel forwarding a host x's packets for the overlay into its tun, so c reads them off it and the checks of what enters the mesh run on each
+// x forges a mesh source the table routes to b and an overlay source no node announces, counted forged at c, and sends a type 4 and a type 0 routing header toward b, counted routing_header, while a type 2 reaches b
+// x sends IP-in-IPv6 from c's own address, which b's SID admits, to b's End.DT46 SID with the inner source forged, counted forged at c with b's segment counters unmoved
+// and an inner that carries another packet, counted nested
+// the node each dropped packet is addressed to delivers none of them, which its delivered counter staying put shows
+func TestTUNEdgeChecksAHostsPacketsForwardedIntoTheTun(t *testing.T) {
+	specs := lineSpecs(true)
+	specs[2].forwards = true
+	specs[2].change = labBorder
+	bTransit := specs[1].change
+	specs[1].announce = append(specs[1].announce, lineSIDs.String())
+	specs[1].change = func(cfg *config.Config) {
+		bTransit(cfg)
+		cfg.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{{SID: schema.AddrFrom(lineSID), Behavior: srv6.BehaviorEndDT46}}}
+		labBorder(cfg)
+	}
+	nodes := startLab(t, specs, lineLinks)
+	a, b, c := nodes[0], nodes[1], nodes[2]
+	x := labForwardingNeighbor(t, c, "lab-x", 2, 3, edgeLink, labOverlay)
+	run(t, a.loopbackNode, b.loopbackNode, c.loopbackNode)
+	// c learns a route to b, so a packet its checks pass reaches b
+	labRoutes(t, c, lineB[4], lineB[6])
+
+	// drop sends raw from x toward dst, an address of node to, until c counts one more of reason
+	// then fails the test unless to delivered none and b's segment counters did not move
+	drop := func(t *testing.T, name string, reason func(netstack.TransitCounters) uint64, to *labNode, dst netip.Addr, raw []byte) {
+		t.Helper()
+		before := reason(c.client.Mesh.TransitCounters())
+		delivered := to.client.Mesh.TransitCounters().Delivered
+		segments := b.client.Mesh.SegmentCounters()
+		waitFor(t, convergeBudget, "c to count "+name, func() bool {
+			labSendRaw(t, x, raw, dst, 0)
+			return reason(c.client.Mesh.TransitCounters()) > before
+		})
+		if got := to.client.Mesh.TransitCounters().Delivered; got != delivered {
+			t.Errorf("%s: %s delivered %d packets, want %d, so it read one the checks drop", name, to.name, got, delivered)
+		}
+		if got := b.client.Mesh.SegmentCounters(); got != segments {
+			t.Errorf("%s: b's segment counters moved to %+v", name, got)
+		}
+	}
+	forged := func(c netstack.TransitCounters) uint64 { return c.Forged }
+	routingHeader := func(c netstack.TransitCounters) uint64 { return c.RoutingHeader }
+	nested := func(c netstack.TransitCounters) uint64 { return c.Nested }
+
+	for _, family := range []int{4, 6} {
+		v := family
+		port := func(source, dst netip.Addr) []byte {
+			return udpPacket(source, dst, labLeafPort, lineListen, []byte(fmt.Sprintf("edge %d", v)))
+		}
+		drop(t, fmt.Sprintf("a forged mesh source over IPv%d", v), forged, a, lineA[v], port(lineB[v], lineA[v]))
+		drop(t, fmt.Sprintf("an unannounced overlay source over IPv%d", v), forged, a, lineA[v], port(edgeUnannounced[v], lineA[v]))
+	}
+
+	drop(t, "a type 4 routing header", routingHeader, b, lineB[6], labRoutingHeader(port6(edgeOutside[6], lineB[6], "edge srh"), 4))
+	drop(t, "a type 0 routing header", routingHeader, b, lineB[6], labRoutingHeader(port6(edgeOutside[6], lineB[6], "edge rh0"), 0))
+	drop(t, "a forged inner source to b's SID", forged, b, lineSID, labEncap(lineC[6], lineSID, port6(lineB[6], lineA[6], "edge inner")))
+	drop(t, "an inner that carries another packet", nested, b, lineSID, labEncap(lineC[6], lineSID, labEncap(lineC[6], lineA[6], port6(lineC[6], lineA[6], "edge nested"))))
+
+	// a type 2 routing header passes the checks, which b delivering it to its tun shows
+	t.Run("a type 2 routing header reaches b", func(t *testing.T) {
+		before := b.client.Mesh.TransitCounters().Delivered
+		raw := labRoutingHeader(port6(edgeOutside[6], lineB[6], "edge type two"), 2)
+		waitFor(t, convergeBudget, "b to deliver a type 2 routing header", func() bool {
+			labSendRaw(t, x, raw, lineB[6], 0)
+			return b.client.Mesh.TransitCounters().Delivered > before
+		})
+	})
+}
+
+// port6 is a UDP packet over IPv6 from source to destination carrying note, for the edge lab's crafted reads
+func port6(source, destination netip.Addr, note string) []byte {
+	return udpPacket(source, destination, labLeafPort, lineListen, []byte(note))
+}
+
+// neighborInternet is the internet host i on e's uplink the neighbor lab reaches, e's far end of exitUplink
+var neighborInternet = map[int]netip.Addr{4: exitUplink[1][0].Addr(), 6: exitUplink[1][1].Addr()}
+
+// neighborLink is the veth between l at place 0 and its neighbor n at place 4, each end with an address of each family
+var neighborLink = [2][2]netip.Prefix{
+	{netip.MustParsePrefix("198.51.100.21/30"), netip.MustParsePrefix("2001:db8:ac::1/64")},
+	{netip.MustParsePrefix("198.51.100.22/30"), netip.MustParsePrefix("2001:db8:ac::2/64")},
+}
+
+// neighborSource is n's own address of each family, which l owns none of
+var neighborSource = map[int]netip.Addr{4: neighborLink[1][0].Addr(), 6: neighborLink[1][1].Addr()}
+
+// l learned exit e's default of each family, then its /1 pairs, with a neighbor n on l's uplink and the internet host i on e's
+// l's kernel sends l's forwarded traffic for the internet into its tun, as mode 2 with n's link in cap.exit.share would
+// n's pings to i come from a source l owns none of toward a destination a learned default counts, so l drops each as unowned_source and none reaches e or i, e's transit counters staying put
+// while l's own overlay-sourced datagram reaches i through e's egress
+// with the owned-source rule reverted l forwards n's pings and e refuses them for a source the mesh routes no reply to, so i stays clear and the revert shows on l's counter rather than i's capture
+func TestTUNNeighborOnAForwardingLeafReachesNoExit(t *testing.T) {
+	for _, shape := range []struct {
+		name     string
+		prefixes []string
+	}{
+		{"a default", []string{"0.0.0.0/0", "::/0"}},
+		{"a pair of halves", []string{"0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"}},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			specs := lineSpecs(true)
+			specs[0].forwards = true
+			specs[1].forwards = true
+			transit := specs[1].change
+			specs[1].change = func(cfg *config.Config) {
+				transit(cfg)
+				cfg.Cap.Egress = &egress.Egress{}
+				for _, prefix := range shape.prefixes {
+					cfg.Cap.Egress.Advertise = append(cfg.Cap.Egress.Advertise, schema.MustPrefix(prefix))
+				}
+			}
+			nodes := startLab(t, specs, lineLinks)
+			l, e := nodes[0], nodes[1]
+			i, capture := labExitUplink(t, e)
+			for _, prefix := range labOverlay {
+				labRouteTUN(t, e, prefix)
+			}
+			n := labForwardingNeighbor(t, l, "lab-n", 0, 4, neighborLink,
+				[]netip.Prefix{netip.PrefixFrom(neighborInternet[4], 32), netip.PrefixFrom(neighborInternet[6], 128)})
+			run(t, l.loopbackNode, e.loopbackNode, nodes[2].loopbackNode)
+			labTranslate(t, e)
+			for _, address := range neighborInternet {
+				labRouteTUN(t, l, netip.PrefixFrom(address, address.BitLen()))
+			}
+			labRoutes(t, l, neighborInternet[4], neighborInternet[6])
+			listener := labListen(t, i)
+
+			for _, family := range labFamilies {
+				v := family.version
+				t.Run(family.name, func(t *testing.T) {
+					// l's own datagram, from an address l announces, reaches i through e's egress
+					own := []byte("the leaf itself over " + family.name)
+					labReceive(t, listener, own, labWrite(labDatagrams(t, l, family, neighborInternet[v], 0), own))
+
+					// n's ping is dropped at l for its unowned source and never reaches i
+					payload := []byte("the neighbor over " + family.name)
+					raw := udpPacket(neighborSource[v], neighborInternet[v], labLeafPort, lineListen, payload)
+					before := l.client.Mesh.TransitCounters().UnownedSource
+					exit := e.client.Mesh.TransitCounters()
+					waitFor(t, convergeBudget, "l to drop n's "+family.name+" ping as an unowned source", func() bool {
+						labSendRaw(t, n, raw, neighborInternet[v], 0)
+						return l.client.Mesh.TransitCounters().UnownedSource > before
+					})
+					labQuietFor(t, listener, payload)
+					// l's own datagram moves e's delivered count, so e's other counters are the ones n's pings would move
+					if got := e.client.Mesh.TransitCounters(); got.Forwarded != exit.Forwarded || got.UnroutedSource != exit.UnroutedSource {
+						t.Errorf("e forwarded %d and refused %d for an unrouted source across n's %s pings, want %d and %d, so one reached e", got.Forwarded, got.UnroutedSource, family.name, exit.Forwarded, exit.UnroutedSource)
+					}
+					if labCaptured(capture, func(packet []byte) bool {
+						_, _, carried, ok := labUDPOf(packet)
+						return ok && string(carried) == string(payload)
+					}) {
+						t.Errorf("i read n's %s ping on e's uplink", family.name)
+					}
+				})
+			}
+		})
+	}
 }
