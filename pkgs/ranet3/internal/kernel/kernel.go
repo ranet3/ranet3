@@ -172,7 +172,8 @@ type Runtime struct {
 	Underlay func() []netip.Addr
 	// Announced carries the prefixes cap.route announces, which
 	// Table.AssignAnnounced puts on the device beside the addresses written
-	// here.
+	// here, and one schema.CapturesTheMachine counts makes this node an exit.
+	// SetTable replaces it on a reload.
 	Announced []netip.Prefix
 	// Overlay is cap.border's overlay, nil without the block, which
 	// schema.CapturesTheMachine reads to tell a route that counts as a default
@@ -184,6 +185,10 @@ type Runtime struct {
 	// own. A reload never changes it, since it refuses every change of
 	// cap.egress.
 	Advertised []netip.Prefix
+	// EgressSegment says cap.segment holds an egress segment, which makes this
+	// node an exit. A reload never changes it, since it refuses adding the
+	// first egress segment and removing the last.
+	EgressSegment bool
 	// BoundUnderlay says the transport's own socket no longer consults the
 	// forwarding table, because it is bound to the interface the host's
 	// default route leaves by. The darwin backend then installs an announced
@@ -1107,6 +1112,7 @@ func (r *Reconciler) Enabled() bool { return r.enabled.Load() }
 type accepted struct {
 	table     Table
 	overlay   []schema.Prefix
+	announced []netip.Prefix
 	addresses []netip.Prefix
 }
 
@@ -1131,7 +1137,7 @@ func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []neti
 	if err != nil {
 		return err
 	}
-	r.next.Store(&accepted{table: t, overlay: overlay, addresses: addresses})
+	r.next.Store(&accepted{table: t, overlay: overlay, announced: announced, addresses: addresses})
 	select {
 	case r.reload <- struct{}{}:
 	default:
@@ -1145,7 +1151,7 @@ func (r *Reconciler) adopt() bool {
 	if next == nil {
 		return false
 	}
-	r.table, r.ruleSet, r.addresses, r.rt.Overlay = next.table, next.table.Rules, next.addresses, next.overlay
+	r.table, r.ruleSet, r.addresses, r.rt.Overlay, r.rt.Announced = next.table, next.table.Rules, next.addresses, next.overlay, next.announced
 	r.gate.grace = next.table.CaptureGrace.Duration()
 	r.plat.retable(next.table)
 	r.inForce.Store(&next.table)
@@ -1738,8 +1744,11 @@ func (r *Reconciler) covered(desired []Route) ([]Route, error) {
 // goes, because the mesh picks the peer after the kernel hands over the
 // packet.
 func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer]) []Route {
-	out := make([]Route, 0, len(snapshot))
+	out := make([]Route, 0, len(snapshot)+len(r.rt.Overlay))
 	warned := make(map[Route]bool, len(r.warned))
+	// the throw rows and the overlay holds stand with the policy rules that
+	// read them, which linux alone has
+	exit, policy := r.exit(), r.rules != nil
 	for _, entry := range snapshot {
 		// The host's kernel holds every address cap.table assigns as one of its
 		// own already, so the mirror installs nothing for one this node does not
@@ -1760,8 +1769,9 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer]) []Route {
 			warned[key] = true
 			continue
 		}
-		// Local is installed exactly as the hold is, so the kernel holds the
-		// same route for a key whichever of the two the mesh's entry carries.
+		// Local inside the overlay is installed exactly as the hold is, so the
+		// kernel holds the same route for a key whichever of the two the mesh's
+		// entry carries.
 		unreachable := entry.Value == netstack.Unreachable || entry.Value == netstack.Local
 		route := Route{
 			Destination: destination,
@@ -1770,17 +1780,35 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer]) []Route {
 		}
 		// Left out of the pass rather than reported as skipped: skipped counts
 		// what the mesh wanted and the kernel would not take, and this is the
-		// reconciler declining to ask. A hold or this node's own entry that
-		// counts is declined whatever the gate says: it would answer with an
-		// error every lookup of the host's own traffic it covers, which cuts the
-		// host off while other sessions are live. RFC 8966 section 3.5.4's
+		// reconciler declining to ask. A hold that counts is declined whatever
+		// the gate says, and this node's own entry that counts with it: on
+		// linux the hold would answer with an error every lookup of the host's
+		// own traffic that reaches it, which cuts the host off while other
+		// sessions are live. RFC 8966 section 3.5.4's
 		// "packets destined to an address within P MUST NOT be forwarded by
 		// following a route for a shorter prefix" is kept by the mesh's own
 		// lookup, which answers RouteHeld or RouteLocal on every tun read inside
-		// the entry, while the host's own and forwarded traffic there takes the
-		// host's routes, the departure the protocol deviations page lists.
-		if r.captures(route) && (unreachable || !r.capture) {
+		// the entry, while the kernel holds nothing for it, and the host's own
+		// and forwarded traffic there ends by the routes and rules left
+		// (routing.md, where a lookup ends on Linux), the departure the
+		// protocol deviations page lists.
+		// An exit declines every route that counts, whatever the gate says:
+		// with another exit's default in this table, on linux the exit's own
+		// traffic from its own prefixes would take it into the tun at 5430 and
+		// out of that exit (routing.md, where a lookup ends on Linux).
+		if r.captures(route) && (unreachable || !r.capture || exit) {
 			continue
+		}
+		// This node's own prefix outside the overlay that counts as no default
+		// is a throw, which ends the lookup in this table so the rules after
+		// the one that looked it up decide (routing.md, where a lookup ends on
+		// Linux). Inside the overlay it stays the hold. Without the policy
+		// rules nothing reads a throw, so the prefix gets no route at all.
+		if entry.Value == netstack.Local && !schema.InsideOverlay(destination, r.rt.Overlay) {
+			if !policy {
+				continue
+			}
+			route.Unreachable, route.Throw = false, true
 		}
 		if entry.Source.IsValid() {
 			source, ok := canonicalPrefix(entry.Source)
@@ -1799,13 +1827,48 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer]) []Route {
 			}
 			route.Source = source
 		}
-		if destination.Addr().Is4() && r.table.PrefSrc4.IsValid() {
+		if destination.Addr().Is4() && r.table.PrefSrc4.IsValid() && !route.Throw {
 			route.PrefSrc = r.table.PrefSrc4.Addr
 		}
 		out = append(out, route)
 	}
 	r.warned = warned
+	if policy {
+		out = r.overlayHolds(out)
+	}
 	return out
+}
+
+// overlayHolds adds an unreachable hold to the pass's routes, once, for each
+// prefix of the overlay that the mesh can carry and that holds no unspecified
+// address. A lookup the walk ends at the hold is refused (routing.md, where a
+// lookup ends on Linux), where without it an overlay destination no route of
+// the mesh covers would follow an exit's default into the mesh, or leave by
+// main, which on a host whose uplink shares the space carries it to a stranger
+// holding the same address.
+func (r *Reconciler) overlayHolds(out []Route) []Route {
+	for _, entry := range r.rt.Overlay {
+		destination, ok := canonicalPrefix(entry.Prefix)
+		if !ok || unroutable(destination) != "" {
+			continue
+		}
+		hold := Route{Destination: destination, Metric: holdMetric, Unreachable: true}
+		if destination.Addr().Is4() && r.table.PrefSrc4.IsValid() {
+			hold.PrefSrc = r.table.PrefSrc4.Addr
+		}
+		if !r.captures(hold) && !slices.Contains(out, hold) {
+			out = append(out, hold)
+		}
+	}
+	return out
+}
+
+// exit reports whether this node is an exit: cap.egress advertises or
+// cap.route announces a prefix schema.CapturesTheMachine counts, or cap.segment
+// holds an egress segment
+func (r *Reconciler) exit() bool {
+	counts := func(prefix netip.Prefix) bool { return schema.CapturesTheMachine(prefix, r.rt.Overlay) }
+	return r.rt.EgressSegment || slices.ContainsFunc(r.rt.Advertised, counts) || slices.ContainsFunc(r.rt.Announced, counts)
 }
 
 // limitedBroadcast is the one entry the darwin kernel installs that carries no

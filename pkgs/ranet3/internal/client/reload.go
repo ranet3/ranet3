@@ -118,7 +118,8 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	}
 	// the last refusal
 	// the reconciler takes a table it accepts at once
-	if !sameTable(old, cfg) || cfg.Cap.Table != nil && !sameOverlay(old, cfg) {
+	// with the overlay and the announcements its exit rule reads
+	if !sameTable(old, cfg) || cfg.Cap.Table != nil && (!sameOverlay(old, cfg) || !sameExit(old, cfg)) {
 		if err := c.retable(old, cfg); err != nil {
 			return err
 		}
@@ -198,8 +199,12 @@ func (c *Client) retable(old, next *config.Config) error {
 	set := c.reconcilerTable.Load()
 	if set == nil {
 		moved := "cap.table"
-		if sameTable(old, next) {
+		switch {
+		case !sameTable(old, next):
+		case !sameOverlay(old, next):
 			moved = "cap.border overlay"
+		default:
+			moved = "cap.route announce"
 		}
 		return fmt.Errorf("config: %s changed and no reconciler is running to take it, restart to apply", moved)
 	}
@@ -538,6 +543,15 @@ func sameTable(old, next *config.Config) bool {
 	return slices.Equal(
 		sortedPrefixes(old.Cap.Table.Assigned(old.Routes().Announced())),
 		sortedPrefixes(next.Cap.Table.Assigned(next.Routes().Announced())))
+}
+
+// sameExit reports that next's announcements make this node an exit exactly
+// where old's do, judged under next's overlay. The reconciler reads the
+// announcements for that alone beyond the addresses sameTable compares, so an
+// announcement that counts as no default moves nothing it holds.
+func sameExit(old, next *config.Config) bool {
+	counts := func(prefix netip.Prefix) bool { return schema.CapturesTheMachine(prefix, next.Overlay()) }
+	return slices.ContainsFunc(old.Routes().Announced(), counts) == slices.ContainsFunc(next.Routes().Announced(), counts)
 }
 
 // sortedEndpoints puts the local endpoints in one order, for the same reason
