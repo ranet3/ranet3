@@ -376,15 +376,15 @@ func TestLoaderRefusesTheUnderlayMarkAsUnknown(t *testing.T) {
 	}
 	for name, test := range map[string]struct{ extension, with, without, refusal string }{
 		"toml": {".toml",
-			nodeTOML + "[link.underlay]\nmark = 0x726c\n",
+			nodeTOML + "[link.underlay]\nmark = 0x72\n",
 			nodeTOML + "[link.underlay]\n",
 			`unknown field "link.underlay.mark"`},
 		"yaml": {".yaml",
-			underlaidYAML("{ mark: 0x726c }"),
+			underlaidYAML("{ mark: 0x72 }"),
 			underlaidYAML("{}"),
 			"field mark not found in type transport.Underlay"},
 		"json": {".json",
-			fmt.Sprintf(asJSON, `"mark":29292`),
+			fmt.Sprintf(asJSON, `"mark":114`),
 			fmt.Sprintf(asJSON, ""),
 			"field mark not found in type transport.Underlay"},
 	} {

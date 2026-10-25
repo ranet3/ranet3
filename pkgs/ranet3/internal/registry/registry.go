@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 type Registry []Organization
@@ -230,7 +231,11 @@ func (o Organization) publicKey() (ed25519.PublicKey, error) {
 // The context makes shutdown prompt: a hostname whose resolver is
 // unreachable otherwise holds the dialer for the resolver's own timeout, and
 // the client waits for every dialer before it returns.
-func (e Endpoint) ResolveRemote(ctx context.Context) (net.IP, error) {
+//
+// overlay is cap.border.overlay as the dial reads it, which a reload moves,
+// and on linux, where the process may set the mark, decides which nameservers
+// the query reaches unmarked.
+func (e Endpoint) ResolveRemote(ctx context.Context, overlay []schema.Prefix) (net.IP, error) {
 	if e.Address == nil {
 		return nil, fmt.Errorf("registry: endpoint %s has no address", e.SerialNumber)
 	}
@@ -240,7 +245,7 @@ func (e Endpoint) ResolveRemote(ctx context.Context) (net.IP, error) {
 		}
 		return ip, nil
 	}
-	ips, err := net.DefaultResolver.LookupIP(ctx, resolverNetwork(e.AddressFamily), *e.Address)
+	ips, err := resolverFor(overlay).LookupIP(ctx, resolverNetwork(e.AddressFamily), *e.Address)
 	if err != nil {
 		return nil, fmt.Errorf("registry: resolve %s: %w", *e.Address, err)
 	}

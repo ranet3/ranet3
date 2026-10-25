@@ -520,7 +520,7 @@ func TestRefusedFirstChildSADeletesTheIKESA(t *testing.T) {
 	ctx, _ := run(t, alpha, bravo)
 	x := alpha.client.index()
 	d := dials(alpha.cfg, x)[0]
-	ep, remoteIP, err := resolveEndpoint(ctx, x, d.peer, d.local.Family)
+	ep, remoteIP, err := resolveEndpoint(ctx, x, nil, d.peer, d.local.Family)
 	if err != nil {
 		t.Fatal(err)
 	}

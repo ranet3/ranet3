@@ -22,5 +22,10 @@ const (
 	MinSubnetBits6 = 16
 )
 
-// UnderlayMark is SO_MARK on every socket carrying IKE and ESP, on linux.
-const UnderlayMark uint32 = 0x726c
+// UnderlayMark is SO_MARK, on linux and wherever the process may set it, on
+// every socket carrying IKE and ESP and on a socket resolving an endpoint's
+// name through a nameserver outside the overlay. Under each mask another
+// program's rules read at its defaults it reads as an unmarked packet's mark
+// does, or as a value none of those rules selects, as coexistence.md's "The
+// underlay's mark" lists them.
+const UnderlayMark uint32 = 0x72

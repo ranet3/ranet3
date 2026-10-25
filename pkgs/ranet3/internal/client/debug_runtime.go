@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/internal/version"
 )
 
@@ -59,14 +60,18 @@ func (c *Client) DebugRuntime() control.RuntimeInfo {
 	if build, ok := debug.ReadBuildInfo(); ok {
 		settings = build.Settings
 	}
-	info.Resolver = resolver(runtime.GOOS, settings, os.Getenv("GODEBUG"))
+	info.Resolver = resolver(registry.PrefersGo, runtime.GOOS, settings, os.Getenv("GODEBUG"))
 	return info
 }
 
-// resolver names what a lookup can reach, by the rules the net package applies at startup
-// go where only the go resolver runs, cgo where a lookup may go to the C library
+// resolver names what the endpoint resolver, the daemon's one lookup, can reach
+// go where it runs go's own resolver alone, cgo where it may go to the C library
+// one that prefers go runs it whatever the build, and the rest follow the rules the net package applies at startup
 // darwin reaches the system resolver through libSystem with or without cgo
-func resolver(goos string, settings []debug.BuildSetting, godebug string) string {
+func resolver(prefersGo bool, goos string, settings []debug.BuildSetting, godebug string) string {
+	if prefersGo {
+		return "go"
+	}
 	library, netgo, defaults := goos == "darwin", false, ""
 	for _, setting := range settings {
 		switch setting.Key {
