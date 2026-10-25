@@ -111,7 +111,7 @@ type SegmentCounters struct {
 	Answered uint64
 	// Egressed counts the packets the egress device accepted
 	Egressed uint64
-	// Refused counts the packets a local SID refused for their source, an outer source outside cap.border overlay at any SID or, at an egress segment, a source outside its allow list, an inner source it cannot read, an inner packet no router forwards or one the mesh routes no reply to, a part of Dropped never answered
+	// Refused counts the packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for a source outside its allow list, an inner source it cannot read, an inner packet no router forwards or one the mesh routes no reply to, a part of Dropped never answered
 	Refused uint64
 	// NotReady counts the egress results dropped with no egress device installed, closed under the write or not ready for their family
 	// it is this node's own state, so it is not in Dropped
@@ -242,7 +242,7 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 	return routed, granted
 }
 
-// martian is a packet the decision drops as one no router forwards, by its source or by its destination
+// martian is a packet no router forwards by its source, or by a destination other than the limited broadcast and multicast, the test the decision applies past its link-scoped destinations
 func martian(source, destination netip.Addr) bool {
 	return packet.InvalidSource(source) || martianDestination(destination)
 }

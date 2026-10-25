@@ -23,7 +23,7 @@ type transitReason uint8
 const (
 	// transitForwarded counts packets sent on to a peer, one cut into fragments once
 	transitForwarded transitReason = iota
-	// transitDelivered counts packets written to the tun, for this node's own destinations, link scope, multicast and the limited broadcast
+	// transitDelivered counts packets written to the tun, for this node's own destinations and the ones linkScoped takes
 	transitDelivered
 	transitExpired
 	transitNoRoute
@@ -33,7 +33,7 @@ const (
 	transitRefused
 	// transitInvalid counts what is not one IP packet, an IPv4 header failing RFC 1812 section 5.2.2's checks, and IPv4 options RFC 791 cannot read
 	transitInvalid
-	// transitMartian counts packets from or to an address no router forwards
+	// transitMartian counts packets from or to an address no router forwards, but for those to a destination linkScoped takes to the tun
 	transitMartian
 	// transitSourceRoute counts IPv4 packets carrying a loose or strict source route
 	transitSourceRoute

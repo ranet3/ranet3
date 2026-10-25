@@ -5,10 +5,12 @@
 // Package netstack wires a real Linux TUN device to the ranet mesh: outbound
 // packets the kernel routes to it are forwarded to whichever peer's Child SA
 // can reach the destination (see RouteTable), and inbound packets decrypted
-// from any peer are written back to the device as if they'd arrived over any
-// other interface. It knows nothing about ESP or IKE directly: peers are
-// just a send function plus routes, so this package is testable without real
-// crypto.
+// from any peer are decided in the same table, and are written back to the
+// device as if they'd arrived over any other interface where they are this
+// node's, sent on to the next peer, or answered as a router answers (see
+// DeliverInboundBatch).
+// It knows nothing about ESP or IKE directly: peers are just a send function
+// plus routes, so this package is testable without real crypto.
 //
 // This package never touches the device's address or route configuration:
 // creating it, bringing it up and, on linux, setting its gso_max_segs is all it does. Assigning an address,

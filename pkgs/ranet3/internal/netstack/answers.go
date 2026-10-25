@@ -13,7 +13,11 @@ import (
 var dummyIPv4 = netip.AddrFrom4([4]byte{192, 0, 0, 8})
 
 // AnswerSources are the addresses that End's answers to a packet past its session and transit's errors come from, each invalid where the node holds none
-// answerTooBig says where each answer to a packet past its session comes from, errorSource where transit's errors do, and every other answer comes from the packet it answers
+// answerTooBig and answerOptions pick the source of End's and a tun read's answers to a packet past its session, and answer that of transit's, forwardOne's too-big among them
+// answer sends none where the source's reply route is an entry of this node's own counting as a default, into the tun from the answered packet's destination where it is any other entry of this node's own,
+// and otherwise through the mesh from answerSource's pick, or none where that pick has none
+// answerBeyondScope answers from errorSource's, and forwardOptions records errorSource's IPv4 address in Record Route and Timestamp
+// every other answer comes from the packet it answers
 type AnswerSources struct {
 	// Router4 and Router6 are the router-id of each family, RFC 1812 section 2.2.7
 	Router4, Router6 netip.Addr

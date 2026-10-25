@@ -24,7 +24,7 @@ var phaseNames = [...]string{
 }
 
 // DebugPMTU reads link.mtu, the tun, the counts of answers and clamps and the router-ids and answer SID, each from its owner, and the search of each session peer names
-// End's answers to a packet past its session and transit's errors come from the router-ids and the answer SID as netstack's answerTooBig and errorSource say
+// End's answers to a packet past its session and transit's errors come from the router-ids and the answer SID as netstack's AnswerSources says
 // a peer is named the way redial names one, and an empty one names every session
 func (c *Client) DebugPMTU(peer string) control.PMTUInfo {
 	sources := c.Mesh.AnswerSources()
