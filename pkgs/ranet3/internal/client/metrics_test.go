@@ -224,7 +224,7 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 		PassAt:    pass,
 		Advertise: []netip.Prefix{carried, withheld},
 		Announced: []netip.Prefix{carried},
-		Rules:     &egress.Rules{Installed: 3, Flows: 91, Conflicts: []string{"ip table nat chain POSTROUTING at priority 100"}},
+		Rules:     &egress.Rules{Installed: 3, Flows: 91, Untranslated: 17, Conflicts: []string{"ip table nat chain POSTROUTING at priority 100"}},
 	}})
 	var out strings.Builder
 	c.renderEgress(&out)
@@ -233,6 +233,7 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 		`ranet3_egress_prefixes{state="advertised"} 2`,
 		`ranet3_egress_prefixes{state="announced"} 1`,
 		"ranet3_egress_flows_total 91",
+		"ranet3_egress_untranslated_flows_total 17",
 		"ranet3_egress_conflicts 1",
 		fmt.Sprintf("ranet3_egress_pass_timestamp_seconds %d", pass.Unix()),
 		"ranet3_egress_pass_failed 0",

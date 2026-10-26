@@ -461,10 +461,10 @@ type EgressStatus struct {
 	Ready   []string `json:"ready,omitempty"`
 	Unready string   `json:"unready,omitempty"`
 	Skipped string   `json:"skipped,omitempty"`
-	// Source4 and Source6 are the address a translated packet leaves under,
-	// or "auto" where the host's own routes decide it per packet.
-	Source4 string `json:"source4,omitempty"`
-	Source6 string `json:"source6,omitempty"`
+	// Translate is cap.egress translate's classes as written: the sources of
+	// each From leave under its To, and a source no class covers under auto,
+	// which the host's own routes decide per packet.
+	Translate []EgressClass `json:"translate,omitempty"`
 	// Return is whether this node also translates into the mesh, which a
 	// subnet router needs and an exit node does not.
 	Return    bool           `json:"return,omitempty"`
@@ -475,14 +475,23 @@ type EgressStatus struct {
 	Installed int       `json:"installed"`
 	// Flows counts the connections the rules have translated. A nat chain is
 	// consulted once per connection and never again, so this is flows rather
-	// than packets, and Bytes is the first packet of each.
-	Flows uint64 `json:"flows"`
-	Bytes uint64 `json:"bytes"`
+	// than packets, and Bytes is the first packet of each. Untranslated counts
+	// the connections a class of none left under their own source.
+	Flows        uint64 `json:"flows"`
+	Bytes        uint64 `json:"bytes"`
+	Untranslated uint64 `json:"untranslated"`
 	// Conflicts names other source translation at the same hook, which is
 	// reported rather than fought over: the first chain to translate a
 	// connection keeps it.
 	Conflicts []string `json:"conflicts,omitempty"`
 	Err       string   `json:"err,omitempty"`
+}
+
+// EgressClass is one class of cap.egress translate, To none, auto or an
+// address
+type EgressClass struct {
+	From netip.Prefix `json:"from"`
+	To   string       `json:"to"`
 }
 
 // BorderStatus is the border filter: the chain dropping what arrives from

@@ -6,9 +6,8 @@
 package kernel
 
 import (
-	"bytes"
-	"encoding/binary"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -18,119 +17,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
-
-// crossing holds the two devices a rule's interface tests read of a packet at
-// postrouting: the one it arrived on, empty for one this host sent, and the
-// one it leaves by.
-type crossing struct {
-	arrival, departure string
-}
-
-// interfaceTest is one cmp made against a meta load.
-type interfaceTest struct {
-	key   uint32
-	op    uint32
-	value []byte
-}
-
-// interfaceTests reads a rule's expressions as nf_tables runs them, register 1
-// holding what the last meta or payload expression loaded, and keeps every cmp
-// made against a meta load.
-func interfaceTests(body []byte) []interfaceTest {
-	var out []interfaceTest
-	var key uint32
-	meta := false
-	for kind, value := range (nftables.Message{Data: body}).Attributes() {
-		if kind != unix.NFTA_RULE_EXPRESSIONS {
-			continue
-		}
-		for _, element := range nftables.Nested(value) {
-			var name string
-			var data []byte
-			for _, field := range nftables.Nested(element.Value) {
-				switch field.Kind {
-				case unix.NFTA_EXPR_NAME:
-					name = unix.ByteSliceToString(field.Value)
-				case unix.NFTA_EXPR_DATA:
-					data = field.Value
-				}
-			}
-			switch name {
-			case "meta":
-				meta = false
-				for _, field := range nftables.Nested(data) {
-					if field.Kind == unix.NFTA_META_KEY && len(field.Value) == 4 {
-						key, meta = binary.BigEndian.Uint32(field.Value), true
-					}
-				}
-			case "cmp":
-				if !meta {
-					continue
-				}
-				test := interfaceTest{key: key}
-				for _, field := range nftables.Nested(data) {
-					switch field.Kind {
-					case unix.NFTA_CMP_OP:
-						test.op = binary.BigEndian.Uint32(field.Value)
-					case unix.NFTA_CMP_DATA:
-						for _, inner := range nftables.Nested(field.Value) {
-							if inner.Kind == unix.NFTA_DATA_VALUE {
-								test.value = inner.Value
-							}
-						}
-					}
-				}
-				out = append(out, test)
-			default:
-				meta = false
-			}
-		}
-	}
-	return out
-}
-
-// holds evaluates the test as the kernel does: meta iifname and oifname load
-// the name NUL-padded to IFNAMSIZ, meta iif loads the arrival index, zero for
-// a packet this host sent, and cmp compares the leading bytes of the register
-// its value covers.
-func (test interfaceTest) holds(packet crossing) bool {
-	register := make([]byte, unix.IFNAMSIZ)
-	switch test.key {
-	case unix.NFT_META_IIFNAME:
-		copy(register, packet.arrival)
-	case unix.NFT_META_OIFNAME:
-		copy(register, packet.departure)
-	case unix.NFT_META_IIF:
-		var index uint32
-		if packet.arrival != "" {
-			index = 7
-		}
-		register = binary.NativeEndian.AppendUint32(nil, index)
-	default:
-		return false
-	}
-	if len(test.value) > len(register) {
-		return false
-	}
-	equal := bytes.Equal(register[:len(test.value)], test.value)
-	switch test.op {
-	case unix.NFT_CMP_EQ:
-		return equal
-	case unix.NFT_CMP_NEQ:
-		return !equal
-	}
-	return false
-}
-
-// meant is which packets a rule translates by its definition: out of the mesh
-// what arrives on the mesh device and leaves by another, and into the mesh what
-// arrives from elsewhere, not from this host, and leaves by the mesh device
-func meant(rule Rule, packet crossing) bool {
-	if rule.Direction == Out {
-		return packet.arrival == rule.Interface && packet.departure != rule.Interface
-	}
-	return packet.arrival != "" && packet.arrival != rule.Interface && packet.departure == rule.Interface
-}
 
 // deviceNames draws a device name from one to IFNAMSIZ bytes, one past the
 // longest a device carries, over few letters so that two draws often agree or
@@ -142,28 +28,36 @@ func deviceNames() hegel.Generator[string] {
 	})
 }
 
-// Every rule encodes to interface tests that take exactly the packets the rule
-// is meant for, evaluated over the mesh device, two devices whose names start
-// like it, a drawn link whose name often shares a prefix with it, another
-// link and this host itself. A rule is refused exactly when its name is too
-// long for a device.
+// Every rule of each direction and translation encodes to expressions that,
+// run as nf_tables runs them, take exactly the packets the rule is meant for
+// and translate each as the rule says: masquerade, a source nat to its
+// address, or for none a source nat to the source the packet carries. The
+// packets arrive on and leave by the mesh device, two devices whose names
+// start like it, a drawn link whose name often shares a prefix with it,
+// another link and this host itself, from sources on either side of each edge
+// of the rule's From and one drawn anywhere in its family. A rule is refused
+// exactly when its name is too long for a device.
 func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		rule := Rule{
 			Family:    hegel.Draw(ht, hegel.SampledFrom([]uint8{egress.FamilyIPv4, egress.FamilyIPv6})),
-			Direction: Direction(hegel.Draw(ht, pbt.Spanning(uint8(Out), uint8(In)))),
+			Direction: Direction(hegel.Draw(ht, pbt.Spanning(uint8(Out), uint8(Local)))),
 			Interface: hegel.Draw(ht, deviceNames()),
 		}
 		other := hegel.Draw(ht, deviceNames())
-		source, from := netip.MustParseAddr("198.51.100.7"), netip.MustParsePrefix("198.51.100.0/24")
+		var addresses hegel.Generator[netip.Addr] = hegel.IPAddresses().IPv4()
+		bits, destination := 32, netip.MustParseAddr("203.0.113.9")
 		if rule.Family == egress.FamilyIPv6 {
-			source, from = netip.MustParseAddr("2001:db8::7"), netip.MustParsePrefix("2001:db8:1::/48")
+			addresses, bits, destination = unmappedIPv6(), 128, netip.MustParseAddr("2001:db8:ffff::9")
 		}
-		if hegel.Draw(ht, hegel.Booleans()) {
-			rule.Source = source
+		switch hegel.Draw(ht, pbt.Spanning(0, 2)) {
+		case 1:
+			rule.Source = hegel.Draw(ht, addresses)
+		case 2:
+			rule.None = true
 		}
-		if rule.Direction == In && hegel.Draw(ht, hegel.Booleans()) {
-			rule.From = from
+		if hegel.Draw(ht, hegel.WeightedBooleans(3.0/4)) {
+			rule.From = netip.PrefixFrom(hegel.Draw(ht, addresses), hegel.Draw(ht, pbt.Spanning(1, bits))).Masked()
 		}
 
 		request, err := newRule(rule)
@@ -174,17 +68,28 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 		if refused {
 			return
 		}
-		tests := interfaceTests(request.Body)
+		sources := []netip.Addr{hegel.Draw(ht, addresses)}
+		if rule.From.IsValid() {
+			first, last := rule.From.Addr(), lastAddress(rule.From)
+			sources = append(sources, first, last, first.Prev(), last.Next())
+		}
+		sources = slices.DeleteFunc(sources, func(a netip.Addr) bool { return !a.IsValid() })
 		devices := []string{rule.Interface, rule.Interface + "1", rule.Interface + "e", other, "eth0"}
 		for _, arrival := range append([]string{""}, devices...) {
 			for _, departure := range devices {
-				packet := crossing{arrival, departure}
-				took := true
-				for _, test := range tests {
-					took = took && test.holds(packet)
-				}
-				if want := meant(rule, packet); took != want {
-					ht.Fatalf("%s takes a packet arriving on %q and leaving by %q: %v, want %v, from tests %+v", rule, arrival, departure, took, want, tests)
+				for _, source := range sources {
+					packet := crossing{arrival, departure, source}
+					wire := drawnPacket{iif: arrival, source: source, destination: destination}.wire()
+					wire.oif = departure
+					run := runChain(ht, []nftables.Request{request}, wire)
+					taken, want := meant(rule, packet), translation{}
+					if taken {
+						want = translation{masquerade: !rule.None && !rule.Source.IsValid(), to: leavesUnder(rule, packet)}
+					}
+					if (run.rule == 0) != taken || run.translation != want {
+						ht.Fatalf("%s takes a packet from %s arriving on %q and leaving by %q: %v as %+v, want %v as %+v",
+							rule, source, arrival, departure, run.rule == 0, run.translation, taken, want)
+					}
 				}
 			}
 		}

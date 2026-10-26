@@ -194,8 +194,8 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 			asTOML: "unknown = true\n",
 		},
 		"an unknown capability": {
-			asYAML: "cap:\n  egres:\n    source4: auto\n",
-			asTOML: "[cap.egres]\nsource4 = \"auto\"\n",
+			asYAML: "cap:\n  egres:\n    return: true\n",
+			asTOML: "[cap.egres]\nreturn = true\n",
 		},
 		"a negative hello interval": {
 			asYAML: "cap:\n  babel:\n    hello: -1s\n",
@@ -278,16 +278,28 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 			asTOML: "[cap.table]\naddresses = [\"3fff:1:69c:8c6::1/128\"]\n[cap.segment]\nlocal = [{ sid = \"3fff:1:69c:8c6::1\", behavior = \"End\" }]\n[cap.border]\noverlay = [\"3fff::/20\"]\n",
 		},
 		"an exit that advertises nothing": {
-			asYAML: "cap:\n  egress:\n    source4: auto\n",
-			asTOML: "[cap.egress]\nsource4 = \"auto\"\n",
+			asYAML: "cap:\n  egress:\n    translate: [{ from: \"0.0.0.0/0\", to: auto }]\n",
+			asTOML: "[cap.egress]\ntranslate = [{ from = \"0.0.0.0/0\", to = \"auto\" }]\n",
 		},
 		"an advertised prefix with host bits": {
 			asYAML: "cap:\n  egress:\n    advertise: [\"198.51.100.7/24\"]\n",
 			asTOML: "[cap.egress]\nadvertise = [\"198.51.100.7/24\"]\n",
 		},
-		"an egress source of the other family": {
-			asYAML: "cap:\n  egress:\n    advertise: [\"0.0.0.0/0\"]\n    source4: \"2001:db8::1\"\n",
-			asTOML: "[cap.egress]\nadvertise = [\"0.0.0.0/0\"]\nsource4 = \"2001:db8::1\"\n",
+		"an egress class translating to the other family": {
+			asYAML: "cap:\n  egress:\n    advertise: [\"0.0.0.0/0\"]\n    translate: [{ from: \"0.0.0.0/0\", to: \"2001:db8::1\" }]\n",
+			asTOML: "[cap.egress]\nadvertise = [\"0.0.0.0/0\"]\ntranslate = [{ from = \"0.0.0.0/0\", to = \"2001:db8::1\" }]\n",
+		},
+		"an egress class leaving every source untranslated": {
+			asYAML: "cap:\n  egress:\n    advertise: [\"::/0\"]\n    translate: [{ from: \"::/0\", to: none }]\n",
+			asTOML: "[cap.egress]\nadvertise = [\"::/0\"]\ntranslate = [{ from = \"::/0\", to = \"none\" }]\n",
+		},
+		"an egress class with a field it does not have": {
+			asYAML: "cap:\n  egress:\n    advertise: [\"0.0.0.0/0\"]\n    translate: [{ from: \"198.51.100.0/24\", to: none, via: \"198.51.100.1\" }]\n",
+			asTOML: "[cap.egress]\nadvertise = [\"0.0.0.0/0\"]\ntranslate = [{ from = \"198.51.100.0/24\", to = \"none\", via = \"198.51.100.1\" }]\n",
+		},
+		"an egress class naming no to": {
+			asYAML: "cap:\n  egress:\n    advertise: [\"0.0.0.0/0\"]\n    translate: [{ from: \"198.51.100.0/24\" }]\n",
+			asTOML: "[cap.egress]\nadvertise = [\"0.0.0.0/0\"]\ntranslate = [{ from = \"198.51.100.0/24\" }]\n",
 		},
 		// The device comes down by the longest segment list, and a list long
 		// enough to take it under the 1280 RFC 8200 requires of every link is
@@ -302,9 +314,9 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 			asYAML: "cap:\n  segment:\n    source: \"3fff:1:69c:8c0::1\"\n    steer: [{ from: \"::/0\", via: [\"3fff:1:69c::1\"] }]\n",
 			asTOML: "[cap.segment]\nsource = \"3fff:1:69c:8c0::1\"\nsteer = [{ from = \"::/0\", via = [\"3fff:1:69c::1\"] }]\n",
 		},
-		"an egress source nothing can reply to": {
-			asYAML: "cap:\n  egress:\n    advertise: [\"0.0.0.0/0\"]\n    source4: 127.0.0.1\n",
-			asTOML: "[cap.egress]\nadvertise = [\"0.0.0.0/0\"]\nsource4 = \"127.0.0.1\"\n",
+		"an egress class translating to an address nothing can reply to": {
+			asYAML: "cap:\n  egress:\n    advertise: [\"0.0.0.0/0\"]\n    translate: [{ from: \"0.0.0.0/0\", to: 127.0.0.1 }]\n",
+			asTOML: "[cap.egress]\nadvertise = [\"0.0.0.0/0\"]\ntranslate = [{ from = \"0.0.0.0/0\", to = \"127.0.0.1\" }]\n",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1241,12 +1253,15 @@ func fullConfig() Config {
 			},
 			Egress: &egress.Egress{
 				Advertise: []schema.Prefix{schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0")},
-				// one of each spelling a source takes
-				// so the address form and the word both cross every encoder in this one case
-				Source4: egress.Source{Addr: netip.MustParseAddr("198.51.100.7")},
-				Source6: egress.Source{Auto: true},
-				Return:  true,
-				Sweep:   schema.Duration(45 * time.Second),
+				// one of each spelling a to takes, out of the order the translator runs them
+				// so the address form and both words cross every encoder in this one case
+				Translate: []egress.Class{
+					{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Addr: netip.MustParseAddr("198.51.100.7")}},
+					{From: schema.MustPrefix("198.51.100.0/24"), To: egress.Translation{None: true}},
+					{From: schema.MustPrefix("3fff::/20"), To: egress.Translation{Auto: true}},
+				},
+				Return: true,
+				Sweep:  schema.Duration(45 * time.Second),
 			},
 			// covering the egress segment's allow list, which the loader asks of it
 			Border: &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("198.18.0.0/15")}},
@@ -1498,10 +1513,10 @@ func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 			Source: schema.MustAddr("3fff:1:69c:8c0::2"),
 			Via:    []schema.Addr{schema.MustAddr("3fff:1:69c:98d6::1")},
 		}}},
-		"cap.egress source": egress.Egress{
-			Source4: egress.Source{Addr: netip.MustParseAddr("198.51.100.7")},
-			Source6: egress.Source{Auto: true},
-		},
+		"cap.egress translate to": egress.Class{From: schema.MustPrefix("3fff::/20"), To: egress.Translation{None: true}},
+		"cap.egress translate": egress.Egress{Translate: []egress.Class{
+			{From: schema.MustPrefix("198.51.100.0/24"), To: egress.Translation{Addr: netip.MustParseAddr("198.51.100.7")}},
+		}},
 		"auth aliases": Auth{Aliases: ike.Aliases{Local: map[string]ike.LocalAlias{"example/gateway": {Email: "laptop@example.net"}}}},
 		"auth aliases remote": ike.Aliases{Remote: ike.RemoteAliases{
 			KeyID: map[string]identity.Identity{"0a1b2c3d": identity.MustParse("example/gateway:1")},

@@ -24,10 +24,12 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// borderPacket is one packet as the border chain reads it at prerouting
-type borderPacket struct {
-	iif     string
-	nfproto uint8
+// chainPacket is one packet as a chain reads it: the device it arrived on,
+// empty for one this host sent, the one it leaves by, empty before routing,
+// and its nf_tables family
+type chainPacket struct {
+	iif, oif string
+	nfproto  uint8
 	// network is the network header and everything after it
 	network []byte
 }
@@ -38,22 +40,39 @@ type chainRun struct {
 	rule    int
 	accept  bool
 	counted bool
+	// translation records the nat statement ending the rule, the zero value
+	// where none did
+	translation translation
+}
+
+// translation is a nat statement's work on a packet's source: masquerade, or
+// a source nat to the address to
+type translation struct {
+	masquerade bool
+	to         netip.Addr
+}
+
+// ruleRun records one interpreted rule's work on a packet it decided
+type ruleRun struct {
+	code        uint32
+	counted     bool
+	translation translation
 }
 
 // runChain evaluates the encoded rules in order against packet, as
 // nf_tables does: the first rule to reach a verdict decides, and a packet no
 // rule decides meets the chain's accept policy
-func runChain(t testing.TB, rules []nftables.Request, packet borderPacket) chainRun {
+func runChain(t testing.TB, rules []nftables.Request, packet chainPacket) chainRun {
 	t.Helper()
 	for i, rule := range rules {
-		code, counted, decided := runRule(t, rule.Body, packet)
+		run, decided := runRule(t, rule.Body, packet)
 		if !decided {
 			continue
 		}
-		if code != nftables.Accept && code != verdictDrop {
-			t.Fatalf("rule %d ends with verdict %d, neither accept nor drop", i, code)
+		if run.code != nftables.Accept && run.code != verdictDrop {
+			t.Fatalf("rule %d ends with verdict %d, neither accept nor drop", i, run.code)
 		}
-		return chainRun{rule: i, accept: code == nftables.Accept, counted: counted}
+		return chainRun{rule: i, accept: run.code == nftables.Accept, counted: run.counted, translation: run.translation}
 	}
 	return chainRun{rule: -1, accept: true}
 }
@@ -61,8 +80,9 @@ func runChain(t testing.TB, rules []nftables.Request, packet borderPacket) chain
 // runRule executes one rule's expression bytes against packet over register
 // 1, failing the test on any expression, attribute or register it does not
 // model rather than guessing at it. A load or a comparison that fails ends
-// the rule undecided, which is NFT_BREAK.
-func runRule(t testing.TB, body []byte, packet borderPacket) (code uint32, counted, decided bool) {
+// the rule undecided, which is NFT_BREAK, and a nat statement ends it with
+// the packet accepted as translated.
+func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decided bool) {
 	t.Helper()
 	var register []byte
 	for kind, value := range (nftables.Message{Data: body}).Attributes() {
@@ -94,6 +114,17 @@ func runRule(t testing.TB, body []byte, packet borderPacket) (code uint32, count
 				case unix.NFT_META_IIFNAME:
 					register = make([]byte, unix.IFNAMSIZ)
 					copy(register, packet.iif)
+				case unix.NFT_META_OIFNAME:
+					register = make([]byte, unix.IFNAMSIZ)
+					copy(register, packet.oif)
+				case unix.NFT_META_IIF:
+					// a device's index is above zero, any device's alike to a
+					// rule comparing it with zero
+					var index uint32
+					if packet.iif != "" {
+						index = 7
+					}
+					register = binary.NativeEndian.AppendUint32(nil, index)
 				case unix.NFT_META_NFPROTO:
 					register = []byte{packet.nfproto}
 				default:
@@ -106,7 +137,7 @@ func runRule(t testing.TB, body []byte, packet borderPacket) (code uint32, count
 				}
 				offset, length := int(be32(t, fields[unix.NFTA_PAYLOAD_OFFSET])), int(be32(t, fields[unix.NFTA_PAYLOAD_LEN]))
 				if offset+length > len(packet.network) {
-					return 0, false, false
+					return ruleRun{}, false
 				}
 				register = slices.Clone(packet.network[offset : offset+length])
 			case "bitwise":
@@ -130,11 +161,11 @@ func runRule(t testing.TB, body []byte, packet borderPacket) (code uint32, count
 				switch be32(t, fields[unix.NFTA_CMP_OP]) {
 				case unix.NFT_CMP_EQ:
 					if !equal {
-						return 0, false, false
+						return ruleRun{}, false
 					}
 				case unix.NFT_CMP_NEQ:
 					if equal {
-						return 0, false, false
+						return ruleRun{}, false
 					}
 				default:
 					t.Fatalf("cmp with operator %d, which the interpreter does not model", be32(t, fields[unix.NFTA_CMP_OP]))
@@ -145,7 +176,7 @@ func runRule(t testing.TB, body []byte, packet borderPacket) (code uint32, count
 					t.Fatalf("exthdr names its header in %d bytes, not one", len(fields[unix.NFTA_EXTHDR_TYPE]))
 				}
 				if packet.nfproto != unix.NFPROTO_IPV6 {
-					return 0, false, false
+					return ruleRun{}, false
 				}
 				start, found := findExtension(packet.network, fields[unix.NFTA_EXTHDR_TYPE][0])
 				offset, length := int(be32(t, fields[unix.NFTA_EXTHDR_OFFSET])), int(be32(t, fields[unix.NFTA_EXTHDR_LEN]))
@@ -161,14 +192,19 @@ func runRule(t testing.TB, body []byte, packet borderPacket) (code uint32, count
 					continue
 				}
 				if !found || start+offset+length > len(packet.network) {
-					return 0, false, false
+					return ruleRun{}, false
 				}
 				register = slices.Clone(packet.network[start+offset : start+offset+length])
 			case "counter":
-				counted = true
+				run.counted = true
 			case "immediate":
-				if be32(t, fields[unix.NFTA_IMMEDIATE_DREG]) != unix.NFT_REG_VERDICT {
-					t.Fatalf("immediate loads register %d rather than the verdict", be32(t, fields[unix.NFTA_IMMEDIATE_DREG]))
+				switch be32(t, fields[unix.NFTA_IMMEDIATE_DREG]) {
+				case unix.NFT_REG_1:
+					register = slices.Clone(dataValue(fields[unix.NFTA_IMMEDIATE_DATA]))
+					continue
+				case unix.NFT_REG_VERDICT:
+				default:
+					t.Fatalf("immediate loads register %d, neither register 1 nor the verdict", be32(t, fields[unix.NFTA_IMMEDIATE_DREG]))
 				}
 				for _, data := range nftables.Nested(fields[unix.NFTA_IMMEDIATE_DATA]) {
 					if data.Kind != unix.NFTA_DATA_VERDICT {
@@ -176,22 +212,42 @@ func runRule(t testing.TB, body []byte, packet borderPacket) (code uint32, count
 					}
 					for _, field := range nftables.Nested(data.Value) {
 						if field.Kind == unix.NFTA_VERDICT_CODE {
-							return be32(t, field.Value), counted, true
+							run.code = be32(t, field.Value)
+							return run, true
 						}
 					}
 				}
 				t.Fatal("immediate carries no verdict code")
+			case "masq":
+				run.code, run.translation = nftables.Accept, translation{masquerade: true}
+				return run, true
+			case "nat":
+				requireRegister(t, name, fields, unix.NFTA_NAT_REG_ADDR_MIN)
+				if kind, family := be32(t, fields[unix.NFTA_NAT_TYPE]), be32(t, fields[unix.NFTA_NAT_FAMILY]); kind != unix.NFT_NAT_SNAT || family != uint32(packet.nfproto) {
+					t.Fatalf("nat of type %d in family %d, where the interpreter models a source nat of the packet's family %d", kind, family, packet.nfproto)
+				}
+				size := 4
+				if packet.nfproto == unix.NFPROTO_IPV6 {
+					size = 16
+				}
+				if len(register) < size {
+					t.Fatalf("nat reads a %d byte address from a %d byte register", size, len(register))
+				}
+				to, _ := netip.AddrFromSlice(register[:size])
+				run.code, run.translation = nftables.Accept, translation{to: to}
+				return run, true
 			default:
 				t.Fatalf("the rule holds a %q expression, which the interpreter does not model", name)
 			}
 		}
 	}
-	return 0, false, false
+	return ruleRun{}, false
 }
 
 // modeled is the attributes the interpreter reads of each expression. Any
-// other, an exthdr operation, a bitwise operation, a payload checksum, changes
-// what the expression does, so it fails the test.
+// other, an exthdr operation, a bitwise operation, a payload checksum, a nat
+// range's maximum or flags, changes what the expression does, so it fails the
+// test.
 var modeled = map[string][]uint16{
 	"meta":      {unix.NFTA_META_KEY, unix.NFTA_META_DREG},
 	"payload":   {unix.NFTA_PAYLOAD_DREG, unix.NFTA_PAYLOAD_BASE, unix.NFTA_PAYLOAD_OFFSET, unix.NFTA_PAYLOAD_LEN},
@@ -200,6 +256,8 @@ var modeled = map[string][]uint16{
 	"exthdr":    {unix.NFTA_EXTHDR_DREG, unix.NFTA_EXTHDR_TYPE, unix.NFTA_EXTHDR_OFFSET, unix.NFTA_EXTHDR_LEN, unix.NFTA_EXTHDR_FLAGS},
 	"counter":   {},
 	"immediate": {unix.NFTA_IMMEDIATE_DREG, unix.NFTA_IMMEDIATE_DATA},
+	"masq":      {},
+	"nat":       {unix.NFTA_NAT_TYPE, unix.NFTA_NAT_FAMILY, unix.NFTA_NAT_REG_ADDR_MIN},
 }
 
 func requireRegister(t testing.TB, name string, fields map[uint16][]byte, kind uint16) {
@@ -284,7 +342,7 @@ func isRouting(header string) bool { return strings.HasPrefix(header, "routing")
 
 // wire is the packet's bytes from its network header on, with eight bytes of
 // UDP after the headers
-func (p drawnPacket) wire() borderPacket {
+func (p drawnPacket) wire() chainPacket {
 	if p.source.Is4() {
 		header := make([]byte, 20+8)
 		header[0], header[8], header[9] = 0x45, 64, unix.IPPROTO_UDP
@@ -292,7 +350,7 @@ func (p drawnPacket) wire() borderPacket {
 		source, destination := p.source.As4(), p.destination.As4()
 		copy(header[12:], source[:])
 		copy(header[16:], destination[:])
-		return borderPacket{iif: p.iif, nfproto: unix.NFPROTO_IPV4, network: header}
+		return chainPacket{iif: p.iif, nfproto: unix.NFPROTO_IPV4, network: header}
 	}
 	codes := map[string]uint8{"hop": unix.IPPROTO_HOPOPTS, "dest": unix.IPPROTO_DSTOPTS, "fragment": unix.IPPROTO_FRAGMENT}
 	nexts := make([]uint8, 0, len(p.headers)+1)
@@ -330,7 +388,7 @@ func (p drawnPacket) wire() borderPacket {
 	}
 	out = append(out, make([]byte, 8)...)
 	binary.BigEndian.PutUint16(out[4:], uint16(len(out)-40))
-	return borderPacket{iif: p.iif, nfproto: unix.NFPROTO_IPV6, network: out}
+	return chainPacket{iif: p.iif, nfproto: unix.NFPROTO_IPV6, network: out}
 }
 
 // borderModel gives the verdict the chain means for a packet: whatever

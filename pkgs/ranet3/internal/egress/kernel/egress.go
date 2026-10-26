@@ -104,7 +104,9 @@ type Runtime struct {
 	Steered bool
 	// MeshAddresses are the addresses this node carries on the mesh, which
 	// "auto" resolves to for the return direction. They have to be unique per
-	// node and routable within the mesh, which a mesh address already is.
+	// node and routable within the mesh, which a mesh address already is. What
+	// this node sends from one of them out of another link leaves under that
+	// address's class.
 	MeshAddresses []netip.Addr
 	// Forwarding reports whether the host forwards, per family. It is supplied
 	// rather than read here so that the node has one answer to the question
@@ -147,11 +149,19 @@ const (
 	// to come back through the mesh, so the source is this node's mesh
 	// address.
 	In
+	// Local is a packet this node sends from one of its own mesh addresses,
+	// leaving by another link, which takes its address's class's translation
+	// as a leaf's packet from that address would. The drop of a packet no flow
+	// is tracked for is the forward hook's, which meets forwarded packets alone.
+	Local
 )
 
 func (d Direction) String() string {
-	if d == In {
+	switch d {
+	case In:
 		return "in"
+	case Local:
+		return "local"
 	}
 	return "out"
 }
@@ -169,9 +179,14 @@ type Rule struct {
 	// backend lets the host pick, which is nftables masquerade: the address of
 	// the link the packet is leaving by, chosen per packet.
 	Source netip.Addr
-	// From narrows an In rule to one advertised prefix. It is never set on an
-	// Out rule, which selects on the direction alone, and it is left invalid
-	// for a prefix covering every address, which selects nothing extra.
+	// None binds the connection to the source it carries in place of a
+	// translation, for a class of none, so no chain after this one at the hook
+	// translates it. Source is then left invalid.
+	None bool
+	// From narrows a rule to the sources of one prefix: an In rule's advertised
+	// prefix, an Out rule's class and a Local rule's own address. It is left
+	// invalid for a prefix covering every address, which selects nothing
+	// extra.
 	From netip.Prefix
 }
 
@@ -180,7 +195,10 @@ type Rule struct {
 // changed source or prefix reads back as a different rule and is replaced.
 func (r Rule) String() string {
 	source := "masquerade"
-	if r.Source.IsValid() {
+	switch {
+	case r.None:
+		source = "untranslated"
+	case r.Source.IsValid():
 		source = "source " + r.Source.String()
 	}
 	parts := []string{r.Direction.String(), "via", r.Interface, egress.FamilyName(r.Family)}
@@ -254,12 +272,14 @@ type passStats struct {
 	Installed int
 	// Flows counts the connections the rules have translated, and Bytes the
 	// first packet of each. A nat chain is consulted once per connection and
-	// never again, so neither is a packet count.
-	Flows     uint64
-	Bytes     uint64
-	Announced []netip.Prefix
-	Conflicts []string
-	Err       string
+	// never again, so neither is a packet count. Untranslated counts those the
+	// rules of a class of none bound to their own source.
+	Flows        uint64
+	Bytes        uint64
+	Untranslated uint64
+	Announced    []netip.Prefix
+	Conflicts    []string
+	Err          string
 	// Ready4 and Ready6 are each family's readiness, false for a family this
 	// node does not translate. Unready says why a family it translates is not
 	// ready, and Skipped what the lookups left out and why, each empty where
@@ -345,9 +365,9 @@ func (t *Translator) Status() egress.Status {
 		Backend: "nftables", Where: t.where(),
 		Ready4: stats.Ready4, Ready6: stats.Ready6, Unready: stats.Unready, Skipped: stats.Skipped,
 		Advertise: advertise, Announced: stats.Announced,
-		Source4: t.cfg.Source4, Source6: t.cfg.Source6, Return: t.cfg.Return,
+		Translate: t.cfg.Translate, Return: t.cfg.Return,
 		PassAt: stats.At, Err: stats.Err,
-		Rules: &egress.Rules{Installed: stats.Installed, Flows: stats.Flows, Bytes: stats.Bytes, Conflicts: stats.Conflicts},
+		Rules: &egress.Rules{Installed: stats.Installed, Flows: stats.Flows, Bytes: stats.Bytes, Untranslated: stats.Untranslated, Conflicts: stats.Conflicts},
 	}
 }
 
@@ -545,14 +565,22 @@ func (t *Translator) reconcile() error {
 	t.setReady(j4.ready, j6.ready, j4.why, j6.why, skippedText(j4, j6))
 	moved := t.publish(announced)
 
-	var flows, bytes uint64
+	binding := map[string]bool{}
+	for _, rule := range desired {
+		binding[rule.String()] = rule.None
+	}
+	var flows, bytes, untranslated uint64
 	for _, rule := range held {
+		if binding[rule.Spec] {
+			untranslated += rule.Packets
+			continue
+		}
 		flows += rule.Packets
 		bytes += rule.Bytes
 	}
 	stats := passStats{
 		At: time.Now(), Desired: len(desired), Installed: len(held),
-		Flows: flows, Bytes: bytes,
+		Flows: flows, Bytes: bytes, Untranslated: untranslated,
 		Announced: announced, Conflicts: conflicts,
 		Ready4: t.ready4, Ready6: t.ready6, Unready: t.unready, Skipped: t.skipped,
 	}
@@ -616,35 +644,65 @@ func sameFamilyRules(held []Installed, desired []Rule, family uint8) bool {
 // one family at a time, and a list ordered any other way would never compare
 // equal to its own readback and would be rewritten on every pass forever.
 //
-// Within a family the one Out rule comes first, because a chain reads top to
-// bottom.
+// Within a family the Out rules come first, a rule per class in the order
+// Classes gives, the longest From first, since a chain reads top to bottom and
+// the first translation ends it. Where no class covers every source, a rule of
+// auto for the rest ends them. The In rules follow, then one Local rule per
+// mesh source of the family under its class, which no packet arriving on the
+// mesh device reaches past the Out rules.
 func (t *Translator) desired() []Rule {
 	var out []Rule
 	for _, family := range t.cfg.Translated(t.rt.Steered) {
-		out = append(out, Rule{Family: family, Direction: Out, Interface: t.rt.Interface, Source: t.cfg.SourceOf(family).Addr})
-		if !t.cfg.Return {
-			continue
-		}
-		// Resolved again rather than remembered, and its error dropped,
-		// because New refused every advertised family that cannot answer it
-		// and a family advertising nothing has no prefix to write a rule for.
-		source, err := t.cfg.ReturnSource(family, t.rt.MeshAddresses)
-		if err != nil || !source.IsValid() {
-			continue
-		}
-		for _, prefix := range t.cfg.Advertise {
-			if egress.AddressFamily(prefix.Addr()) != family {
-				continue
-			}
-			inbound := Rule{Family: family, Direction: In, Interface: t.rt.Interface, Source: source}
+		covered := false
+		for _, class := range t.cfg.Classes(family) {
+			rule := t.rule(family, Out, class.To)
 			// A prefix covering every address narrows nothing, and a rule
-			// carrying it would encode a mask no packet fails, so it is left
-			// off and the rule selects on the direction alone.
-			if prefix.Bits() > 0 {
-				inbound.From = prefix.Prefix
+			// carrying it would encode a mask no packet fails, so it is left off
+			// and the rule selects on the direction alone.
+			if class.From.Bits() > 0 {
+				rule.From = class.From.Prefix
 			}
-			out = append(out, inbound)
+			covered = covered || class.From.Bits() == 0
+			out = append(out, rule)
 		}
+		if !covered {
+			out = append(out, t.rule(family, Out, egress.Translation{Auto: true}))
+		}
+		out = append(out, t.inbound(family)...)
+		for _, address := range egress.MeshSources(family, t.rt.MeshAddresses) {
+			rule := t.rule(family, Local, t.cfg.ClassOf(address).To)
+			rule.From = netip.PrefixFrom(address, address.BitLen())
+			out = append(out, rule)
+		}
+	}
+	return out
+}
+
+// rule is the rule of family and direction translating as to says
+func (t *Translator) rule(family uint8, direction Direction, to egress.Translation) Rule {
+	return Rule{Family: family, Direction: direction, Interface: t.rt.Interface, Source: to.Addr, None: to.None}
+}
+
+// inbound is family's In rules, one per advertised prefix of the family, and
+// none without return
+func (t *Translator) inbound(family uint8) []Rule {
+	// Resolved again rather than remembered, and its error dropped, because New
+	// refused every advertised family that cannot answer it and a family
+	// advertising nothing has no prefix to write a rule for.
+	source, err := t.cfg.ReturnSource(family, t.rt.MeshAddresses)
+	if err != nil || !source.IsValid() {
+		return nil
+	}
+	var out []Rule
+	for _, prefix := range t.cfg.Advertise {
+		if egress.AddressFamily(prefix.Addr()) != family {
+			continue
+		}
+		rule := Rule{Family: family, Direction: In, Interface: t.rt.Interface, Source: source}
+		if prefix.Bits() > 0 {
+			rule.From = prefix.Prefix
+		}
+		out = append(out, rule)
 	}
 	return out
 }

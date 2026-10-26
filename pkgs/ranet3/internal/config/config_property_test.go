@@ -654,28 +654,51 @@ func TestEmptyCryptoListIsRefusedInEveryFormat(t *testing.T) {
 	}
 }
 
-// sources draws an egress source of one family: absent, the word auto, an
-// address, or one of the three a file cannot write and Validate refuses by
-// name: an IPv4 address in the IPv4-mapped spelling, an address carrying a
-// zone, and a source that is both auto and an address. The mapped spelling is
-// drawn on its own because the address generator lands in that range too
-// seldom to be counted on.
-func sources(v6 bool) hegel.Generator[egress.Source] {
-	unwritable := hegel.OneOf(
-		hegel.Map(hegel.IPAddresses().IPv4(), func(address netip.Addr) egress.Source {
-			return egress.Source{Addr: netip.AddrFrom16(address.As16())}
-		}),
-		hegel.Composite(func(tc hegel.TestCase) egress.Source {
-			return egress.Source{Addr: hegel.Draw(tc, hegel.IPAddresses().IPv6()).WithZone(hegel.Draw(tc, names()))}
-		}),
-		hegel.Map(family(v6), func(address netip.Addr) egress.Source { return egress.Source{Auto: true, Addr: address} }),
-	)
-	return hegel.OneOf(
-		hegel.Just(egress.Source{}),
-		hegel.Just(egress.Source{Auto: true}),
-		hegel.Map(family(v6), func(address netip.Addr) egress.Source { return egress.Source{Addr: address} }),
-		unwritable,
-	)
+// classes draws cap.egress translate: up to three classes, each from a prefix
+// of either family with no host bits, a zero length among them, to none, auto
+// or an address of its family. A quarter of the time one class is drawn as one
+// a file cannot write and Validate refuses by name: a to in the IPv4-mapped
+// spelling, a to carrying a zone, a to of two kinds at once, a to naming
+// nothing, or a from written twice. The mapped spelling is drawn on its own
+// because the address generator lands in that range too seldom to be counted
+// on.
+func classes() hegel.Generator[[]egress.Class] {
+	return hegel.Composite(func(tc hegel.TestCase) []egress.Class {
+		var out []egress.Class
+		for range hegel.Draw(tc, hegel.Integers(0, 3)) {
+			v6 := hegel.Draw(tc, hegel.Booleans())
+			every := schema.MustPrefix("0.0.0.0/0")
+			if v6 {
+				every = schema.MustPrefix("::/0")
+			}
+			out = append(out, egress.Class{
+				From: hegel.Draw(tc, hegel.OneOf(hegel.Just(every), prefixOf(v6, true))),
+				To: hegel.Draw(tc, hegel.OneOf(
+					hegel.Just(egress.Translation{None: true}),
+					hegel.Just(egress.Translation{Auto: true}),
+					hegel.Map(family(v6), func(address netip.Addr) egress.Translation { return egress.Translation{Addr: address} }),
+				)),
+			})
+		}
+		if len(out) == 0 || !hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
+			return out
+		}
+		i := hegel.Draw(tc, hegel.Integers(0, len(out)-1))
+		address := hegel.Draw(tc, family(out[i].From.Addr().Is6()))
+		switch hegel.Draw(tc, hegel.Integers(0, 4)) {
+		case 0:
+			out[i].To = egress.Translation{Addr: netip.AddrFrom16(hegel.Draw(tc, hegel.IPAddresses().IPv4()).As16())}
+		case 1:
+			out[i].To = egress.Translation{Addr: hegel.Draw(tc, hegel.IPAddresses().IPv6()).WithZone(hegel.Draw(tc, names()))}
+		case 2:
+			out[i].To = hegel.Draw(tc, hegel.SampledFrom([]egress.Translation{{None: true, Auto: true}, {None: true, Addr: address}, {Auto: true, Addr: address}}))
+		case 3:
+			out[i].To = egress.Translation{}
+		default:
+			out = append(out, egress.Class{From: out[i].From, To: egress.Translation{Addr: address}})
+		}
+		return out
+	})
 }
 
 // exits draws cap.egress. An advertised prefix is written once, since a prefix
@@ -695,8 +718,7 @@ func exits() hegel.Generator[egress.Egress] {
 		}
 		return egress.Egress{
 			Advertise: advertise,
-			Source4:   hegel.Draw(tc, sources(false)),
-			Source6:   hegel.Draw(tc, sources(true)),
+			Translate: hegel.Draw(tc, classes()),
 			Return:    hegel.Draw(tc, hegel.Booleans()),
 			Sweep:     hegel.Draw(tc, unset(between(time.Second, time.Hour))),
 		}
@@ -798,8 +820,9 @@ func nodes() hegel.Generator[Config] {
 // The rest falls in three classes. One is a collision between two drawn
 // values, a duplicate or a segment the table also assigns. One is a node with
 // nothing to dial. The last is a value an ordinary branch of a helper draws
-// and the block's own validation refuses. For example, an egress source may
-// be one nothing can reply to, such as a loopback or multicast address, a
+// and the block's own validation refuses. For example, an egress class may
+// translate to an address nothing can reply to, such as a loopback or
+// multicast address, or leave every source of a family untranslated, a
 // cap.table address may be the unspecified address, a cap.segment steering
 // selector may be a v4-mapped prefix, and an email address under auth.aliases
 // may end at its last @.
@@ -843,13 +866,12 @@ func TestGeneratedConfigurationSurvivesEachEncoder(t *testing.T) {
 	})
 }
 
-// The same for a node whose only block is cap.egress, which draws a source in
-// each spelling far more often than a whole configuration does. Validate took
-// three sources whose file did not read back: an IPv4-mapped source6, which
-// the decoder unmapped and then refused, one carrying a zone, which the
-// decoder refused, and one both auto and an address, which read back as the
-// address alone. Shrunk: advertise 0.0.0.0/0 with source6 ::ffff:0.0.0.1.
-func TestValidatedEgressSourceReadsBackFromItsFile(t *testing.T) {
+// The same for a node whose only block is cap.egress, which draws its classes
+// in each spelling far more often than a whole configuration does. A to in
+// the IPv4-mapped spelling would read back unmapped, one carrying a zone
+// would be refused by the decoder, and one of two kinds at once would read
+// back as one of them, so each is a to Validate refuses.
+func TestValidatedEgressClassesReadBackFromTheirFile(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		drawn := hegel.Draw(ht, nodes())
 		drawn.Dial.All = true

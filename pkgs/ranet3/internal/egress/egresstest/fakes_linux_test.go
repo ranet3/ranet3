@@ -200,7 +200,7 @@ func (f *fakeExit) translation(proto, family uint8) [][]byte {
 	if f.maps {
 		expressions = append(expressions, immediate(unix.NFT_REG_2, port(mappedLow)), immediate(unix.NFT_REG_3, port(mappedHigh)))
 	}
-	source := f.cfg.SourceOf(family).Addr
+	source := f.source(family)
 	if !source.IsValid() {
 		var masq []byte
 		if f.maps {
@@ -219,6 +219,16 @@ func (f *fakeExit) translation(proto, family uint8) [][]byte {
 		nat = nftables.PutAttrBE32(nat, unix.NFTA_NAT_REG_PROTO_MAX, unix.NFT_REG_3)
 	}
 	return append(expressions, immediate(unix.NFT_REG_1, nftables.AddressBytes(source)), nftables.Expression("nat", nat))
+}
+
+// source is the address the fake translates every source of family to, that
+// of the class covering the unspecified address, invalid for auto
+func (f *fakeExit) source(family uint8) netip.Addr {
+	unspecified := netip.IPv4Unspecified()
+	if family == egress.FamilyIPv6 {
+		unspecified = netip.IPv6Unspecified()
+	}
+	return f.cfg.ClassOf(unspecified).To.Addr
 }
 
 func (f *fakeExit) termination() [][]byte {
@@ -247,7 +257,7 @@ func (f *fakeExit) relay(leaf *net.TCPConn) {
 		return
 	}
 	dialer := net.Dialer{Timeout: stepBudget}
-	if source := f.cfg.SourceOf(egress.AddressFamily(to.Addr())).Addr; source.IsValid() {
+	if source := f.source(egress.AddressFamily(to.Addr())); source.IsValid() {
 		dialer.LocalAddr = net.TCPAddrFromAddrPort(netip.AddrPortFrom(source, 0))
 	}
 	var server *net.TCPConn

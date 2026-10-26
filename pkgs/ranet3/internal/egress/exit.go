@@ -73,9 +73,9 @@ type Status struct {
 	// Advertise is the prefixes the capability advertises, and Announced
 	// those of the families ready at the last pass
 	Advertise, Announced []netip.Prefix
-	// Source4, Source6 and Return are the capability's translation
-	Source4, Source6 Source
-	Return           bool
+	// Translate and Return are the capability's translation
+	Translate []Class
+	Return    bool
 	// PassAt is the last pass, zero before the first, and Err its error
 	PassAt time.Time
 	Err    string
@@ -89,8 +89,9 @@ type Rules struct {
 	Installed int
 	// Flows counts the connections the rules have translated, and Bytes the
 	// first packet of each, since a translation rule is consulted once per
-	// connection
-	Flows, Bytes uint64
+	// connection. Untranslated counts those the rules of a class of none bound
+	// to the source they carry.
+	Flows, Bytes, Untranslated uint64
 	// Conflicts names the other source translation on the host this node's
 	// traffic can meet
 	Conflicts []string

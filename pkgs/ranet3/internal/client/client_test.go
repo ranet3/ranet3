@@ -1350,10 +1350,22 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 	// The same, one capability at a time, for the two blocks whose defaults
 	// live outside cap.table.
 	for name, pair := range map[string][2]config.Caps{
-		"an egress source written as the auto it means": {
+		"an egress class from every source written as the auto it means": {
 			{Egress: &egress.Egress{Advertise: exit}},
-			{Egress: &egress.Egress{Advertise: exit, Source4: egress.Source{Auto: true},
-				Source6: egress.Source{Auto: true}, Sweep: schema.Duration(egress.DefaultSweep)}},
+			{Egress: &egress.Egress{Advertise: exit, Translate: []egress.Class{
+				{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Auto: true}},
+				{From: schema.MustPrefix("::/0"), To: egress.Translation{Auto: true}},
+			}, Sweep: schema.Duration(egress.DefaultSweep)}},
+		},
+		"the same egress classes in the other order": {
+			{Egress: &egress.Egress{Advertise: exit, Translate: []egress.Class{
+				{From: schema.MustPrefix("198.51.100.0/24"), To: egress.Translation{None: true}},
+				{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Addr: netip.MustParseAddr("198.51.100.7")}},
+			}}},
+			{Egress: &egress.Egress{Advertise: exit, Translate: []egress.Class{
+				{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Addr: netip.MustParseAddr("198.51.100.7")}},
+				{From: schema.MustPrefix("198.51.100.0/24"), To: egress.Translation{None: true}},
+			}}},
 		},
 		"a steering source repeated on the entry that inherits it": {
 			{Segment: &srv6.Segments{Source: source, Steer: []srv6.Steer{steered}}},
