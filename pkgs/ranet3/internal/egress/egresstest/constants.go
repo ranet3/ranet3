@@ -96,16 +96,25 @@ const (
 	limitPort        = 10100
 	limitTCPPort     = 10101
 	limitRefusedPort = 10102
-	leafPathPort     = 40300
-	leafHopPort      = 40400
-	leafReusePort    = 40500
-	leafPairPort     = 40501
-	leafSessionsPort = 40600
-	leafWindowPort   = 40800
-	// the spare address's two flows past its limit, and the first of the ports
-	// its admitted flows leave from, one a flow
+	// the server's port a mapping is opened toward and the other it sends to
+	// the mapping from, and the hairpinned mapping's
+	filteringPort      = 10200
+	filteringOtherPort = 10201
+	hairpinPort        = 10202
+	leafPathPort       = 40300
+	leafHopPort        = 40400
+	leafReusePort      = 40500
+	leafPairPort       = 40501
+	leafSessionsPort   = 40600
+	leafFilteringPort  = 40700
+	leafHairpinPort    = 40701
+	leafWindowPort     = 40800
+	// the spare address's two flows past its limit and its datagram to the
+	// hairpinned mapping, and the first of the ports its admitted flows leave
+	// from, one a flow
 	spareRefusedPort = 40900
 	spareFurtherPort = 40901
+	spareHairpinPort = 40902
 	spareFillPort    = 41000
 
 	// the leaf's port a connection into the mesh no flow is tracked for a

@@ -132,3 +132,21 @@ func TestArmWithNoClassIsRefused(t *testing.T) {
 		t.Errorf("an arm with a class was refused: %v", err)
 	}
 }
+
+// a limit is declared with its reason and its deviations row, or Run refuses the arm
+func TestArmDeclaringALimitWithoutItsReasonOrRowIsRefused(t *testing.T) {
+	for _, c := range []struct {
+		declared Declared
+		taken    bool
+	}{
+		{Declared{}, false},
+		{Declared{Reason: "the platform's reason"}, false},
+		{Declared{Row: "RFC 4787 section 6"}, false},
+		{Declared{Reason: "the platform's reason", Row: "RFC 4787 section 6"}, true},
+	} {
+		err := (Arm{Classes: []Class{Auto}, Limits: map[Limit]Declared{NoHairpinning: c.declared}}).check()
+		if taken := err == nil; taken != c.taken {
+			t.Errorf("an arm declaring %s as %+v was taken %v (%v), want %v", NoHairpinning, c.declared, taken, err, c.taken)
+		}
+	}
+}

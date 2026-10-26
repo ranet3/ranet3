@@ -116,9 +116,12 @@ testers.runNixOSTest {
     assert ran >= 11, f"only {ran} nftables round trips ran:\n{out}"
 
     # the exit behavior suite against the kernel exit under each class: rows 1 to 5, Egress from several sessions, the
-    # idle timers read from conntrack's listing and row 6's limit on a source's flows in both families, the withdrawal
-    # and restore, another writer's change, another writer's translation and the stop, a leaf, the exit, a router and a
-    # server in namespaces of their own
+    # packets no flow is tracked for out of the mesh and into it, the idle timers read from conntrack's listing, the
+    # return direction's and an answered flow's among them,
+    # filtering and hairpinning as it declares them under the classes that translate, and row 6's limit on a source's
+    # flows in both families, the withdrawal and restore, another writer's change, another writer's translation at
+    # srcnat made after the exit's and one ahead of it, and the stop, a leaf, the exit, a router and a server in
+    # namespaces of their own
     out = machine.succeed(
         "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestKernelExitPassesTheExitBehaviorSuite$' 2>&1"
     )
@@ -127,7 +130,7 @@ testers.runNixOSTest {
     assert "--- PASS: TestKernelExitPassesTheExitBehaviorSuite" in out, f"the exit behavior suite did not pass:\n{out}"
     assert "--- PASS: TestKernelExitPassesTheExitBehaviorSuite/a_share_the_capability_names" in out, f"row 6 at a share the capability names did not pass:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 277, f"only {ran} of the exit behavior suite's tests ran:\n{out}"
+    assert ran >= 343, f"only {ran} of the exit behavior suite's tests ran:\n{out}"
 
     # the kernel exit held not ready while the host does not hold an address its classes translate to, in a namespace of
     # its own, each family's taken off lo and put back

@@ -17,17 +17,12 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 )
 
-// limit is row 6, RFC 6888 REQ-4 and REQ-11. Status says the flows a source
-// holds, the share the capability runs. The spare address, of whose flows the
-// backend counts none when the row begins, opens that many flows, each a
-// datagram the server never answers. Its next new flow is refused from the
-// exit, host unreachable in IPv4 and administratively prohibited in IPv6, and
-// dropped, a later datagram of a flow it holds passes right after, a further
-// flow is refused as well, and a TCP connection from it fails at once. The
-// leaf's own address opens its flow beside it, and Status counts every packet
-// the limit refused. Where Status reads conntrack's table, the row reports its
-// count against its maximum and refuses to fill it.
-func (r *rows) limit(t *testing.T) {
+// sourceLimit is row 6, RFC 6888 REQ-4 and REQ-11: a source holds at most the
+// share Status says the capability runs, a new flow past it is refused from the
+// exit and dropped while the flows it holds and another source's go on, and
+// Status counts each refusal. The row will not fill conntrack's table where
+// Status reads it.
+func (r *rows) sourceLimit(t *testing.T) {
 	status := r.exit.Status()
 	limit := status.FlowsPerSource
 	switch {

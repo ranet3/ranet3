@@ -49,6 +49,7 @@ type rows struct {
 	exit       *running
 	terminates bool
 	flows      func(Host) ([]Flow, error)
+	limits     map[Limit]Declared
 }
 
 func (r *rows) v6() bool { return r.family.Leaf.Is6() }
@@ -189,22 +190,7 @@ func (r *rows) closedUDP(t *testing.T) {
 	port := addrPort(leaf.LocalAddr()).Port()
 	sent := []byte("to a closed port over " + r.family.Name)
 	handed, back := r.exit.handedCount(), len(r.network.Back())
-	buf := make([]byte, readSize)
-	refused := false
-	if !until(func() {
-		_, err := leaf.Write(sent)
-		refused = refused || errors.Is(err, syscall.ECONNREFUSED)
-	}, func(by time.Time) bool {
-		if refused {
-			return true
-		}
-		if err := leaf.SetReadDeadline(by); err != nil {
-			t.Fatal(err)
-		}
-		_, err := leaf.Read(buf)
-		refused = errors.Is(err, syscall.ECONNREFUSED)
-		return refused
-	}) {
+	if !refusedOn(t, leaf, sent) {
 		t.Fatalf("the leaf's socket to %s was not refused within %s, the answers being %s", to, stepBudget, answersIn(r.network.Back()[back:]))
 	}
 	var datagrams [][]byte
@@ -805,6 +791,29 @@ func readOnce(conn *net.UDPConn, data []byte, wait time.Duration) (netip.AddrPor
 			return from, true
 		}
 	}
+}
+
+// refusedOn sends data on the connected conn until the socket reads as
+// refused, which a port unreachable answering one of its datagrams makes it,
+// within stepBudget
+func refusedOn(t *testing.T, conn *net.UDPConn, data []byte) bool {
+	t.Helper()
+	buf := make([]byte, readSize)
+	refused := false
+	return until(func() {
+		_, err := conn.Write(data)
+		refused = refused || errors.Is(err, syscall.ECONNREFUSED)
+	}, func(by time.Time) bool {
+		if refused {
+			return true
+		}
+		if err := conn.SetReadDeadline(by); err != nil {
+			t.Fatal(err)
+		}
+		_, err := conn.Read(buf)
+		refused = errors.Is(err, syscall.ECONNREFUSED)
+		return refused
+	})
 }
 
 // reuse lets the leaf's sockets share one local port, as row 5 asks of them
