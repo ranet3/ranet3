@@ -27,8 +27,9 @@ const (
 	viaOtherFamily
 )
 
-// corruptedHopsDeadline bounds the read of a corrupted answer's hops, which
-// ends at once unless the read stops advancing
+// corruptedHopsDeadline bounds each read of an answer's hops, corrupted or
+// ending in a last hop of unaligned length, which ends at once unless the read
+// stops advancing
 const corruptedHopsDeadline = 2 * time.Second
 
 func drawAddress(tc hegel.TestCase, width int) netip.Addr {
