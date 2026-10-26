@@ -89,8 +89,8 @@ const (
 )
 
 // ErrUnsupported is a platform's refusal of what it does not implement, New and
-// WatchNetwork everywhere but linux and darwin, DumpRules everywhere but linux,
-// and the route lookups RouteGet does not make
+// WatchNetwork everywhere but linux and darwin, DumpRules and RouteGetBatch
+// everywhere but linux, and the route lookups RouteGet does not make
 var ErrUnsupported = errors.New("kernel: unsupported on this platform")
 
 // errRouteSkipped distinguishes a route that was deliberately not installed
