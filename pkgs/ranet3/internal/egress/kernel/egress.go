@@ -120,8 +120,8 @@ type Runtime struct {
 	Sysctl func(path string) string
 	// Members is the prefixes inside cap.border.overlay that this node's table
 	// routes by the tun to other nodes, none of them overlapping one of this
-	// node's own, read on each pass. A family's lookups read from a member's
-	// address, and a family with no member skips them. Nil reads none.
+	// node's own, read on each pass. A family's forward lookups read from a
+	// member's address, and a family with no member skips them. Nil reads none.
 	Members func() []netip.Prefix
 	// Write is the mesh's tun writer, which Egress hands its frames to, so each
 	// flow keeps its lane and its order and the host routes and translates what
@@ -130,9 +130,10 @@ type Runtime struct {
 	// Hooks report what every exit reports. Republish is called once per pass
 	// whose announcement differs from the last. A family is ready while this
 	// node translates it, its chain reads back exactly as written, the host
-	// forwards it, and the kernel's lookups route a translated packet and its
-	// reply the way the translation needs (see judge). The SIDs are served
-	// while at least one family is ready and every family the host forwards is.
+	// forwards it, the host holds every address its classes translate to, and
+	// the kernel's lookups route a translated packet and its reply the way the
+	// translation needs (see judge). The SIDs are served while at least one
+	// family is ready and every family the host forwards is.
 	egress.Hooks
 }
 

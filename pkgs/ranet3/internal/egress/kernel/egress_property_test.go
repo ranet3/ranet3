@@ -81,6 +81,7 @@ func exits() hegel.Generator[exit] {
 			Interface:     "ranet0",
 			MeshAddresses: mesh,
 			Forwarding:    func() (bool, bool) { return true, true },
+			Lookup:        holdsEvery,
 			Steered:       hegel.Draw(tc, hegel.Booleans()),
 		}
 		return exit{cfg, rt}

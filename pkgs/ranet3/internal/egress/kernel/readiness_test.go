@@ -14,6 +14,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // readTUN is the tun of the exits these tests read for, read4 and read6 the
@@ -153,6 +154,65 @@ func TestEachLookupNamesWhatHoldsItsFamilyNotReady(t *testing.T) {
 			}
 			if len(host.asked) != 1 || !slices.Equal(host.asked[0], want) {
 				t.Errorf("the pass asked for %v, want one batch of %v", host.asked, want)
+			}
+		})
+	}
+}
+
+// A family whose classes translate to an address is ready only while the host
+// holds it, read in the pass's one batch by a lookup from no source arriving on
+// no device, an address two classes name read once, ahead of the family's
+// forward lookups and in a family with no member to read those from as well.
+// An address the lookup answers with a route of another type, or a lookup that
+// fails, holds its family not ready under the address's name, and the next pass
+// finding it held makes the family ready again
+func TestClassAddressTheHostDoesNotHoldHoldsItsFamilyNotReady(t *testing.T) {
+	class4, class6 := netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("2001:db8::7")
+	cfg := egress.Egress{
+		Advertise: prefixes(t, "198.51.100.0/24", "::/0"),
+		Translate: []egress.Class{
+			{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Addr: class4}},
+			{From: schema.MustPrefix("192.0.2.0/25"), To: egress.Translation{Addr: class4}},
+			{From: schema.MustPrefix("192.0.2.128/25"), To: egress.Translation{None: true}},
+			{From: schema.MustPrefix("3fff::/20"), To: egress.Translation{Addr: class6}},
+		},
+	}
+	held := Answer{Route: Route{Type: "local", Hops: []Hop{{Device: "lo"}}}}
+	for _, test := range []struct {
+		name    string
+		address netip.Addr
+		answer  Answer
+		want    string
+	}{
+		{"routed out of the uplink", class4, Answer{Route: Route{Type: "unicast", Hops: []Hop{{Device: "eth0"}}}},
+			"the lookup of 198.51.100.7, an address cap.egress translate names, found a route of type unicast, so this host does not hold it"},
+		{"failing", class4, Answer{Err: fmt.Errorf("kernel: look up the route: %w", syscall.ENETUNREACH)},
+			"the lookup of 198.51.100.7, an address cap.egress translate names, failed: network is unreachable"},
+		{"in a family with no member", class6, Answer{Route: Route{Type: "unreachable"}},
+			"the lookup of 2001:db8::7, an address cap.egress translate names, found a route of type unreachable, so this host does not hold it"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host := &lookupHost{answers: map[netip.Addr]Answer{read4: passingAnswer(), class4: held, class6: held}}
+			host.answers[test.address] = test.answer
+			members := readMembers[:1]
+			tr := readingExit(t, cfg, host, &members, events.New())
+			if err := tr.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			if stats := tr.lastPass(); stats.Ready4 == test.address.Is4() || stats.Ready6 == test.address.Is6() || stats.Unready != test.want {
+				t.Errorf("the pass reports ready %v and %v with the reason %q, want the family of %s alone not ready with %q",
+					stats.Ready4, stats.Ready6, stats.Unready, test.address, test.want)
+			}
+			want := []Lookup{{Destination: class4}, {Source: readMembers[0].Addr(), Destination: read4, IIF: readTUN, Reply: true}, {Destination: class6}}
+			if len(host.asked) != 1 || !slices.Equal(host.asked[0], want) {
+				t.Errorf("the pass asked for %v, want one batch of %v", host.asked, want)
+			}
+			host.answers[test.address] = held
+			if err := tr.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			if stats := tr.lastPass(); !stats.Ready4 || !stats.Ready6 || stats.Unready != "" {
+				t.Errorf("once the host holds %s the pass reports ready %v and %v with the reason %q, want both ready", test.address, stats.Ready4, stats.Ready6, stats.Unready)
 			}
 		})
 	}

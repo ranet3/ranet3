@@ -124,6 +124,50 @@ func hostAnswers(tun string) hegel.Generator[hostAnswer] {
 	})
 }
 
+// heldAnswers draws a host's answer to the lookup of an address a class
+// translates to: its local route three times in four, and otherwise an error
+// or a route of a drawn type, local among them
+func heldAnswers() hegel.Generator[Answer] {
+	return hegel.Composite(func(tc hegel.TestCase) Answer {
+		switch {
+		case hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)):
+			return Answer{Route: Route{Type: "local", Hops: []Hop{{Device: "lo"}}}}
+		case hegel.Draw(tc, hegel.Booleans()):
+			return Answer{Err: hegel.Draw(tc, hegel.SampledFrom(lookupErrors))}
+		}
+		return Answer{Route: hostRoute(tc, "lo")}
+	})
+}
+
+// modelClassAddresses is the addresses the classes of family translate to,
+// each once, in order
+func modelClassAddresses(cfg egress.Egress, family uint8) []netip.Addr {
+	var out []netip.Addr
+	for _, class := range cfg.Translate {
+		if egress.AddressFamily(class.From.Addr()) == family && class.To.Addr.IsValid() && !slices.Contains(out, class.To.Addr) {
+			out = append(out, class.To.Addr)
+		}
+	}
+	slices.SortFunc(out, netip.Addr.Compare)
+	return out
+}
+
+// modelUnheld is the reason of the first of addresses the host does not hold,
+// whose lookup failed or found a route of a type other than local, and empty
+// where it holds each
+func modelUnheld(addresses []netip.Addr, held map[netip.Addr]Answer) string {
+	for _, address := range addresses {
+		named := "the lookup of " + address.String() + ", an address cap.egress translate names,"
+		switch answer := held[address]; {
+		case answer.Err != nil:
+			return named + " failed: " + answer.Err.Error()
+		case answer.Route.Type != "local":
+			return named + " found a route of type " + answer.Route.Type + ", so this host does not hold it"
+		}
+	}
+	return ""
+}
+
 // answer is a lookup's Answer from the host, as the batch gives it: the reply
 // lookup arrives on the forward route's first hop neither dead nor link-down,
 // and has an error of its own where the forward lookup failed or found none
@@ -262,21 +306,23 @@ func holdsReason(unready, why string) bool {
 
 // Over a run of pairs of passes, the first of each on a host drawn anew, the
 // rule and forwarding drawn as the egress segments' property draws them, the
-// members drawn from a pool, none at all among them, and each destination's
-// forward and reply answers drawn, the batch now and then failing whole or
+// members drawn from a pool, none at all among them, each destination's
+// forward and reply answers drawn and so the answer to the lookup of each
+// address a class translates to, the batch now and then failing whole or
 // answering short: a family is ready exactly when the model says, the lookups
 // handed to the batch are the model's, and the readiness kept for Status, the
 // prefixes announced and the pair and SID word handed to Ready move together.
-// A family the model reads no lookup for, with no member to read from, is
-// judged by its rule and forwarding alone, and the pass says what it skipped.
+// A family the model reads no lookup for, with no address of a class and no
+// member to read from, is judged by its rule and forwarding alone, and a pass
+// with no member of a family says it skipped that family's forward lookups.
 //
 // A family the lookups hold not ready gives the whole reason of the first
-// lookup the model finds failing, so a lookup judged wrongly shows even where a
-// later one fails as well, as the reply does after a forward route with no live
-// hop, and so does a reason right in its first words alone.
-// The second pass of a pair runs over the host, the answers and the batch of
-// the first with each family's members moved, so the skip moves and, where the
-// lookups of the families moved pass, nothing else does
+// lookup the model finds failing, a class's address first, so a lookup judged
+// wrongly shows even where a later one fails as well, as the reply does after a
+// forward route with no live hop, and so does a reason right in its first words
+// alone. The second pass of a pair runs over the host, the answers and the
+// batch of the first with each family's members moved, so the skip moves and,
+// where the lookups of the families moved pass, nothing else does
 func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		drawn := hegel.Draw(ht, exits())
@@ -288,6 +334,7 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 		onHost(&rt, &now)
 		var members []netip.Prefix
 		var host map[netip.Addr]hostAnswer
+		var held map[netip.Addr]Answer
 		var whole error
 		var short bool
 		var asked []Lookup
@@ -303,6 +350,10 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 			}
 			answers := make([]Answer, len(lookups))
 			for i, lookup := range lookups {
+				if !lookup.Source.IsValid() {
+					answers[i] = held[lookup.Destination]
+					continue
+				}
 				answers[i] = host[lookup.Destination].answer(lookup)
 			}
 			if short {
@@ -326,6 +377,12 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 				host = map[netip.Addr]hostAnswer{}
 				for _, destination := range destinations {
 					host[destination] = hegel.Draw(ht, hostAnswers(tun))
+				}
+				held = map[netip.Addr]Answer{}
+				for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
+					for _, address := range modelClassAddresses(cfg, family) {
+						held[address] = hegel.Draw(ht, heldAnswers())
+					}
 				}
 				whole, short = nil, false
 				if hegel.Draw(ht, hegel.WeightedBooleans(1.0/12)) {
@@ -356,14 +413,20 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 				if !now.enabled || !(rt.Steered || advertised) || !written[family] || !forwards {
 					continue
 				}
-				lookups, prefixes := modelLookups(cfg, tun, members, family)
-				if len(lookups) == 0 {
-					want[i], skips = true, true
-					continue
+				addresses := modelClassAddresses(cfg, family)
+				for _, address := range addresses {
+					wantAsked = append(wantAsked, Lookup{Destination: address})
 				}
+				lookups, prefixes := modelLookups(cfg, tun, members, family)
 				wantAsked = append(wantAsked, lookups...)
-				failed := modelFailure(lookups, prefixes, host, tun)
+				skips = skips || len(lookups) == 0
+				failed := modelUnheld(addresses, held)
+				if failed == "" && len(lookups) > 0 {
+					failed = modelFailure(lookups, prefixes, host, tun)
+				}
 				switch {
+				case len(addresses) == 0 && len(lookups) == 0:
+					want[i] = true
 				case whole != nil || short:
 				case failed != "":
 					named = append(named, failed)
@@ -376,13 +439,13 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 			}
 			stats := tr.lastPass()
 			if [2]bool{stats.Ready4, stats.Ready6} != want {
-				ht.Fatalf("pass %d over %+v with members %v and %v reports ready %v and %v (%q), want %v",
-					pass, now, members, host, stats.Ready4, stats.Ready6, stats.Unready, want)
+				ht.Fatalf("pass %d over %+v with members %v, %v and %v reports ready %v and %v (%q), want %v",
+					pass, now, members, host, held, stats.Ready4, stats.Ready6, stats.Unready, want)
 			}
 			for _, why := range named {
 				if !holdsReason(stats.Unready, why) {
-					ht.Fatalf("pass %d over %+v with members %v and %v gives the reason %q, which does not hold %q whole",
-						pass, now, members, host, stats.Unready, why)
+					ht.Fatalf("pass %d over %+v with members %v, %v and %v gives the reason %q, which does not hold %q whole",
+						pass, now, members, host, held, stats.Unready, why)
 				}
 			}
 			var announced []netip.Prefix

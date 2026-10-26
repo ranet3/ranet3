@@ -188,17 +188,27 @@ func Acknowledged(fd int, raw []byte) error {
 
 // AddAddress gives link index address without duplicate address detection, then brings the link up
 func (n Netlink) AddAddress(index int, address netip.Prefix) error {
+	if err := n.Request(unix.RTM_NEWADDR, unix.NLM_F_CREATE|unix.NLM_F_EXCL, addressMessage(index, address, unix.IFA_F_NODAD)); err != nil {
+		return err
+	}
+	return n.Request(unix.RTM_NEWLINK, 0, IfInfo(index, unix.IFF_UP))
+}
+
+// DelAddress takes address off link index
+func (n Netlink) DelAddress(index int, address netip.Prefix) error {
+	return n.Request(unix.RTM_DELADDR, 0, addressMessage(index, address, 0))
+}
+
+// addressMessage is an ifaddrmsg for address on link index carrying flags, with address as its local and its peer
+func addressMessage(index int, address netip.Prefix, flags uint8) []byte {
 	family := byte(unix.AF_INET6)
 	if address.Addr().Is4() {
 		family = unix.AF_INET
 	}
-	header := []byte{family, byte(address.Bits()), unix.IFA_F_NODAD, unix.RT_SCOPE_UNIVERSE, 0, 0, 0, 0}
+	header := []byte{family, byte(address.Bits()), flags, unix.RT_SCOPE_UNIVERSE, 0, 0, 0, 0}
 	binary.NativeEndian.PutUint32(header[4:], uint32(index))
 	raw := address.Addr().AsSlice()
-	if err := n.Request(unix.RTM_NEWADDR, unix.NLM_F_CREATE|unix.NLM_F_EXCL, slices.Concat(header, Attr(unix.IFA_LOCAL, raw), Attr(unix.IFA_ADDRESS, raw))); err != nil {
-		return err
-	}
-	return n.Request(unix.RTM_NEWLINK, 0, IfInfo(index, unix.IFF_UP))
+	return slices.Concat(header, Attr(unix.IFA_LOCAL, raw), Attr(unix.IFA_ADDRESS, raw))
 }
 
 // AddAddresses gives the link name each of addresses as AddAddress does
