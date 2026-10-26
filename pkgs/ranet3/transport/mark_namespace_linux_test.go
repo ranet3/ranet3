@@ -94,7 +94,7 @@ func TestUnderlayLeavesByTheUplinkPastRulesReadingOtherBitsOfItsMark(t *testing.
 		}
 		sent("the pair's socket")
 	}
-	read, err := natChain.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET)
+	read, err := nftables.Contents{Chains: []nftables.Chain{natChain}}.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET)
 	if err != nil {
 		t.Fatal(err)
 	}
