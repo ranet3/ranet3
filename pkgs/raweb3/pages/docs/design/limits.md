@@ -38,9 +38,10 @@ the answers and their codes.
 [`cap.egress`](../exit-nodes.md) still reads the host's forwarding, for what an
 exit sends out of its uplink. A prefix an exit node offers to carry is
 advertised only while its family's translation chain reads back exactly as
-written and the host forwards the family. It is retracted on the first pass that
-finds either untrue. A pass runs every 30 seconds unless `cap.egress.sweep`
-names another interval.
+written, the host forwards the family and, where they run, the kernel's lookups
+of a translated packet and its reply pass. It is retracted on the first pass
+that finds any of them untrue. A pass runs every 30 seconds unless
+`cap.egress.sweep` names another interval.
 
 With transit off, a node advertises only the prefixes it announces and never
 relays one it learned. A packet for another node that reaches it all the same is
@@ -335,11 +336,12 @@ first, so queued and reordered packets can drain during a rekey.
 ranet3 does not let its own datagrams fragment, outside 1 case. Each session
 searches its path for the largest packet it carries, between 1280 and
 `link.mtu`, and a larger packet is answered with Packet Too Big or fragmentation
-needed, or cut when it is IPv4 without DF, as [path MTU](../path-mtu.md)
-describes. A path that cannot carry 1280 bytes in 1 datagram is under the floor.
-1280 bytes is the least IPv6 asks of any link. An IPv4 path is under the floor
-below 1344 bytes, and an IPv6 path below 1364 bytes. A session on such a path
-holds its budget at 1280 and lets the host fragment its datagrams.
+needed, or cut when it is IPv4 without DF, or dropped where it cannot be cut, as
+[path MTU](../path-mtu.md) describes. A path that cannot carry 1280 bytes in 1
+datagram is under the floor. 1280 bytes is the least IPv6 asks of any link. An
+IPv4 path is under the floor below 1344 bytes, and an IPv6 path below 1364
+bytes. A session on such a path holds its budget at 1280 and lets the host
+fragment its datagrams.
 
 On Linux, while any session of a family is under the floor, that family's
 sockets let the host fragment their datagrams, the shared one and each one

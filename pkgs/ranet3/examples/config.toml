@@ -224,8 +224,8 @@ update = "16s"
 # A packet arriving for a local segment is acted on before it reaches the
 # device. End sends it to its next segment, End.DT46 strips the outer header
 # and hands what was inside to the mesh's forwarding decision, which writes it
-# to the tun where it is this node's and otherwise sends it on, answers it or
-# drops it, whatever cap.transit says. The spelling is the one
+# to the tun, hands it to the exit, sends it on, answers it or drops it,
+# whatever cap.transit says. The spelling is the one
 # `ip route ... encap seg6local action` takes. A local segment needs
 # cap.border below, which makes it linux only. It acts only on a packet whose
 # outer source lies in the overlay's IPv6 prefixes, which means a host beyond
@@ -320,9 +320,10 @@ update = "16s"
 # defaults, a subnet router the prefixes behind it, and both end at the same
 # source translation. linux only, refused by name elsewhere. A prefix here is
 # announced only while its family's chain reads back exactly as the node wrote
-# it and the kernel forwards the family, so an exit that cannot translate stops
-# attracting traffic it would drop. Do not name one of these under cap.route as
-# well, which would announce it either way.
+# it, the kernel forwards the family and, where they run, the kernel's lookups
+# of a translated packet and its reply pass, so an exit that cannot translate
+# stops attracting traffic it would drop. Do not name one of these under
+# cap.route as well, which would announce it either way.
 #
 # A node that translates needs both of the cap.table.rules shapes above, not
 # only the "from" one: conntrack reverses the translation before the reply is

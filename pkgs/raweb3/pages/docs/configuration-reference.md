@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-10-25
+updated: 2026-10-26
 order: 35
 ---
 
@@ -453,12 +453,13 @@ The segments this node answers for.
 
 - `End` sends the packet to its next segment. `End.DT46` removes the outer
   header and delivers the inner packet, to the mesh's
-  [forwarding decision](routing.md#transit) or, with `deliver = "egress"`, into
-  the mesh tun for the host to carry out of the mesh, refusing an inner
-  destination inside `cap.border.overlay` or that the mesh routes itself. The
-  decision writes it to the tun where its destination is this node's own, and
-  otherwise forwards or answers it as a session's packet. An inner packet an
-  End.DT46 delivers to the mesh takes that path whatever `cap.transit` says.
+  [forwarding decision](routing.md#transit) or, with `deliver = "egress"`, to
+  the exit, which writes it into the mesh tun for the host to carry out of the
+  mesh, refusing an inner destination inside `cap.border.overlay` or that the
+  mesh routes itself. The decision writes it to the tun, hands it to the exit,
+  forwards it, answers it or drops it, as it does a session's packet and as
+  [routing](routing.md#transit) lists. An inner packet an End.DT46 delivers to
+  the mesh takes that path whatever `cap.transit` says.
 - `behavior` is read in any case.
 - A SID written twice is refused.
 - `deliver = "egress"` is refused on `End`, and `allow` on anything but an
@@ -698,7 +699,8 @@ needs.
 - A prefix is announced only while its family is
   [ready](exit-nodes.md#readiness): its translation chain reads back exactly as
   written, with no other writer's rule among it, the host forwards that family,
-  and the kernel's lookups of a translated packet and its reply pass.
+  and, where they run, the kernel's lookups of a translated packet and its reply
+  pass.
 - The lookups read from the address of a mesh member inside
   `cap.border.overlay`. A node with no `cap.border`, or whose mesh routes no
   other node's prefix of a family inside the overlay, skips that family's

@@ -28,7 +28,7 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 7296 section 2.8                                         | A rekeyed Child SA keeps the algorithms of the old one                                                                                           | A Child SA rekey may move to another listed cipher                                                                                                                                         | Either end's lists left the old cipher out                                                                                     |
 | RFC 7296 section 2.8                                         | A rekeyed Child SA keeps the algorithms of the old one                                                                                           | This end's own Child SA rekey drops the key exchanges a peer's rekey ran                                                                                                                   | No Child SA key exchange of its own, see Rekeying                                                                              |
 | RFC 7296 section 1.3.1                                       | A failed Child SA does not tear down the IKE SA                                                                                                  | When the Child SA in `IKE_AUTH` fails, both ends delete the IKE SA                                                                                                                         | An IKE SA carries nothing without its Child SA                                                                                 |
-| RFC 7296 section 2.4                                         | Send a Delete for an IKE SA closed while the peer still answers                                                                                  | None when a Message ID space is spent or a message cannot be built                                                                                                                         | A Delete needs a Message ID and the same encoding                                                                              |
+| RFC 7296 section 2.4                                         | Send a Delete for an IKE SA closed while the peer still answers                                                                                  | None when a Message ID space is spent, a message cannot be built, or the peer's fragments of 1 message pass the reassembly limit                                                           | A Delete needs a Message ID and the same encoding, and RFC 7383 section 5 drops the connection, see Closing SAs                |
 | RFC 7296 section 2.1                                         | A retransmission is bitwise identical to the original request                                                                                    | A request cut again for a smaller threshold is not                                                                                                                                         | RFC 7383 section 2.5.2 has it refragmented, see IKE fragmentation                                                              |
 | RFC 7296 section 2.4                                         | Retransmission times increase exponentially                                                                                                      | Each new cut of a request starts them over                                                                                                                                                 | RFC 7383 section 2.5.2 has the timers start over                                                                               |
 | RFC 7296 section 2.11                                        | Answer a request at the address and port it came from                                                                                            | A repeat from another address draws the answer only within the bytes it sent                                                                                                               | A replayed fragment would aim answers at any address                                                                           |
@@ -47,7 +47,7 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 3948 section 2.1                                         | Send the IPv4 UDP checksum as zero                                                                                                               | Every IPv4 datagram carries a computed checksum                                                                                                                                            | Linux refuses segmented sends without one                                                                                      |
 | RFC 3948 section 4                                           | Send NAT keepalives                                                                                                                              | None are sent                                                                                                                                                                              | Hellos and IKE liveness checks keep the mapping open                                                                           |
 | RFC 4443 section 2.2                                         | Answer from an address of the node's own                                                                                                         | A tun read's Packet Too Big comes from the packet's destination                                                                                                                            | Only the destination passes every check, see ICMP answers                                                                      |
-| RFC 4443 sections 2.4 and 3.2                                | Answer the packet that could not be forwarded, to its source                                                                                     | `End` answers the packet a segment it admits carries, to that packet's source                                                                                                              | The headend relays no answer to the sender, see ICMP answers                                                                   |
+| RFC 4443 sections 2.4 and 3.2                                | Answer the packet that could not be forwarded, to its source                                                                                     | `End` answers a segment it admits too large for its next session about the packet it carries, to that packet's source                                                                      | The headend relays no answer to the sender, see ICMP answers                                                                   |
 | RFC 1812 sections 4.2.2.11 and 4.3.2.4                       | Originate from an address of the router's own, of the interface the answer leaves by                                                             | An ICMPv4 answer to a tun read comes from the packet's destination                                                                                                                         | Only the destination passes `rp_filter` 1 and a strict chain                                                                   |
 | RFC 1812 sections 4.2.2.11 and 4.3.2.4                       | Originate from an address of the router's own, of the interface the answer leaves by                                                             | With no IPv4 router-id, `End`'s IPv4 answer comes from the packet's destination                                                                                                            | `rp_filter` 1 and a strict chain drop it from 192.0.0.8                                                                        |
 | RFC 1812 section 4.3.2.6                                     | Reverse a source route the packet carries into the error, unless a policy known to the router would keep the error from its sender               | No ICMPv4 answer carries a source route                                                                                                                                                    | A Linux or macOS host drops a source-routed packet at its defaults, see ICMP answers                                           |
@@ -67,7 +67,7 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 1812 section 5.2.2                                       | Answer a truncated packet with Parameter Problem (SHOULD)                                                                                        | A truncated transit IPv4 packet is dropped and counted with no answer                                                                                                                      | Linux's `ip_rcv_core` drops it the same way                                                                                    |
 | RFC 1812 section 5.3.13.4                                    | Support source route options, with any discarding option off by default                                                                          | A transit IPv4 packet carrying a source route is dropped                                                                                                                                   | Source routing bypasses controls, see ICMP answers                                                                             |
 | RFC 1812 section 5.2.2                                       | Answer a strict source route for another node with Parameter Problem (SHOULD)                                                                    | It is dropped and counted with no answer                                                                                                                                                   | Linux's `ip_rcv_options` drops it the same way                                                                                 |
-| RFC 4443 section 3.1                                         | Allow sending Destination Unreachable to be disabled, preferably per interface (SHOULD)                                                          | The forwarding decision's cannot be turned off, and each draws on its source's bucket and the node's cap                                                                                   | It goes only to a source the node's table routes, see Transit answers                                                          |
+| RFC 4443 section 3.1                                         | Allow sending Destination Unreachable to be disabled, preferably per interface (SHOULD)                                                          | The forwarding decision's cannot be turned off, and each draws on its source's bucket and the node's cap                                                                                   | It goes only to a source the node's table routes, or for code 2 back on its session, see Transit answers                       |
 | RFC 4443 section 3.1                                         | Answer a packet refused for its source with Destination Unreachable, code 5                                                                      | The border filter drops a mesh source from outside the mesh with no answer                                                                                                                 | The source is forged, so an answer would reach a bystander                                                                     |
 | RFC 4443 section 3.1                                         | Answer a packet refused for its source with Destination Unreachable, code 5                                                                      | A SID drops an outer source outside the overlay with no answer                                                                                                                             | An answer tells the sender which addresses are SIDs                                                                            |
 | RFC 4443 section 3.1                                         | Answer a packet refused for its source with Destination Unreachable, code 5                                                                      | An egress segment drops a source outside its allow list with no answer                                                                                                                     | A source may be forged, so an answer could reach a bystander                                                                   |
@@ -75,7 +75,7 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 4443 section 3.1, RFC 1812 section 5.3.9                 | Answer a packet a firewall refuses with Destination Unreachable, code 1, over IPv4 code 13                                                       | An egress segment drops an inner packet for a destination the mesh routes itself with no answer                                                                                            | A source may be forged, so an answer could reach a bystander                                                                   |
 | RFC 4443 section 3.1                                         | Answer a packet refused for its source with Destination Unreachable, code 5                                                                      | An exit drops a packet it would egress, and the mesh routes no reply to, with no answer                                                                                                    | No route would carry the answer back either                                                                                    |
 | RFC 1812 section 5.3.8                                       | Have source address validation off by default (MUST)                                                                                             | An exit always drops a packet it would egress, and the mesh routes no reply to                                                                                                             | The check is loose, so an asymmetric path passes it, a LAN the exit shares with another node among them                        |
-| RFC 4443 section 3.1                                         | Answer a packet that cannot be delivered with Destination Unreachable (SHOULD)                                                                   | An exit drops a packet for a family it stopped announcing with no answer, until it retracts the prefix                                                                                     | The retraction decides the packets after it                                                                                    |
+| RFC 4443 section 3.1                                         | Answer a packet that cannot be delivered with Destination Unreachable (SHOULD)                                                                   | An exit drops a packet for a family it stopped announcing or holds not ready with no answer, until the family is ready or it retracts the prefix                                           | The retraction decides the packets after it                                                                                    |
 | RFC 4443 section 3.1                                         | Answer a packet that cannot be delivered with Destination Unreachable (SHOULD)                                                                   | An egress segment drops a packet of a family not ready with no answer, until the node withdraws the SID's `/128`, or while the other family is ready if the host does not forward this one | The withdrawal decides the packets after it, and none holds while the `/128` stays, see Drops with no answer                   |
 | RFC 4787 sections 4.1 and 8, RFC 5382 section 4.1            | Map 1 external port to each inside endpoint whatever the destination, and change that mapping under no conditions                                | The kernel exit takes another port once another inside host holds that port toward the same destination                                                                                    | conntrack maps per connection, and no nf_tables statement pins 1 external port per inside endpoint, see Exit translation       |
 | RFC 5508 section 3.1                                         | Map an ICMP query identifier the same toward every external host (SHOULD)                                                                        | The kernel exit takes another identifier once another inside host holds that identifier toward the same host                                                                               | conntrack maps an identifier as it maps a port, see Exit translation                                                           |
@@ -103,7 +103,7 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 8200 section 4.5                                         | Wait 60 seconds for fragments, and answer errors with ICMP                                                                                       | Wait 16 seconds, send no ICMP, drop more                                                                                                                                                   | Fragments of 1 packet cross 1 session together                                                                                 |
 | RFC 5095 section 4.2                                         | A firewall forwards by default every routing header but type 0                                                                                   | The border filter drops a routing header of any type arriving from outside                                                                                                                 | A first header of type 0 or 2 hides an SRH from nf_tables                                                                      |
 | RFC 8754 section 4.2                                         | A transit node forwards an SRH it is not the destination of                                                                                      | The border filter drops a routing header of any type arriving from outside                                                                                                                 | The mesh is the SR domain and this node its edge, section 5.1                                                                  |
-| RFC 8754 section 5.4                                         | Handle errors as RFC 2473 does, and send them to sources in the SR domain                                                                        | `End` answers the packet a segment it admits carries to its source, in the mesh or not                                                                                                     | The headend relays no answer to the sender, see ICMP answers                                                                   |
+| RFC 8754 section 5.4                                         | Handle errors as RFC 2473 does, and send them to sources in the SR domain                                                                        | `End` answers a segment it admits too large for its next session about the packet it carries, to that packet's source, in the mesh or not                                                  | The headend relays no answer to the sender, see ICMP answers                                                                   |
 | RFC 8754 section 5.4                                         | Handle the errors an encapsulated packet meets as RFC 2473 does                                                                                  | A headend writes an ICMPv6 error about its encapsulation into its tun                                                                                                                      | A known gap, see ICMP answers                                                                                                  |
 | RFC 8986 section 4.8                                         | Answer an `End.DT46` reached with segments left with Parameter Problem, code 0, pointing at Segments Left                                        | Such a packet is dropped with no answer, whichever the SID delivers to                                                                                                                     | None holds, since the SID answers the header refusals beside it, see ICMP answers                                              |
 | RFC 8986 sections 4.8 and 4.1.1                              | Answer an upper-layer header `End.DT46` does not process with Parameter Problem, code 4, wherever it sits                                        | Such a packet is dropped with no answer, whichever the SID delivers to                                                                                                                     | None holds, since the SID answers the header refusals beside it, see ICMP answers                                              |
@@ -114,7 +114,7 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 8986 section 4.1                                         | With segments left, answer a spent hop limit with Time Exceeded before checking Last Entry and Segments Left                                     | In a packet it admits, `End` answers an SRH whose last entry runs past its length, or Segments Left past a list of at most 16 segments, with Parameter Problem, code 0, at hop limit 1 too | None holds: every SID takes RFC 8754 section 4.3.1.1's order, and the two differ only for a packet malformed and out of hops   |
 | RFC 8200 sections 4.5 and 5                                  | Reassemble fragments at the destination, and process an atomic fragment as a whole packet                                                        | `End.DT46` drops a fragment with no answer, an atomic fragment included, and `End` one whose Fragment header precedes the SRH                                                              | None for an atomic fragment, and a larger packet's fragment needs reassembly the SID does not do, see ICMP answers             |
 | RFC 8200 section 4.1                                         | Accept and attempt to process extension headers in any order, occurring any number of times                                                      | `End` drops an SRH behind an authentication header with no answer                                                                                                                          | None holds, see ICMP answers                                                                                                   |
-| RFC 8200 section 4.1                                         | Accept and attempt to process extension headers in any order, occurring any number of times                                                      | `End` and `End.DT46` drop an SRH behind 8 or more hop-by-hop and destination options headers with no answer                                                                                | A sender cannot choose what one packet costs, which covers the drop but not `End`'s silence, see ICMP answers                  |
+| RFC 8200 section 4.1                                         | Accept and attempt to process extension headers in any order, occurring any number of times                                                      | `End` and `End.DT46` drop an SRH behind 8 or more hop-by-hop and destination options headers with no answer                                                                                | A sender cannot choose what one packet costs, which covers the drop at both SIDs but not the silence, see ICMP answers         |
 | RFC 8986 section 4.1, RFC 8754 section 4.3.1.1               | Forward a packet with segments left, answering a spent hop limit or a header that does not describe itself                                       | `End` drops an SRH holding more than 16 segments with no answer, with segments left, at hop limit 1 too and with Segments Left past its last entry                                         | A sender cannot choose the list a waypoint carries on, which covers the drop but not the silence, see ICMP answers             |
 | RFC 8986 section 4.1, RFC 4443 section 3.1                   | Submit the packet to the FIB lookup for its new destination, and answer a packet with no route with Destination Unreachable, code 0              | `End` drops with no answer a packet whose next segment is no SID of this node and that the mesh routes to no other node: no route, a hold or this node's own                               | None holds, see ICMP answers                                                                                                   |
 | RFC 8754 section 4.3.2                                       | At a local interface that is no SID, process the next header at segments left 0, and answer Parameter Problem, code 0, with segments left        | `End` drops with no answer a packet whose next segment is an address assigned to this node, whatever its Segments Left                                                                     | None holds, see ICMP answers                                                                                                   |
@@ -803,8 +803,9 @@ an extension header, as [Drops with no answer](#drops-with-no-answer) lists, so
 each answer of a SID this section names is to a packet it admits, sent through a
 session and within the limits this section gives below.
 
-`End` answers the packet its segment carries, to that packet's source, rather
-than the segment it could not forward, to the headend.
+`End` answers a segment too large for its next session about the packet the
+segment carries, to that packet's source, rather than about the segment it could
+not forward, to the headend.
 [RFC 4443 section 2.4](https://www.rfc-editor.org/rfc/rfc4443.html#section-2.4)
 says an error "MUST include as much of the IPv6 offending (invoking) packet (the
 packet that caused the error) as possible", section 3.2 sends a Packet Too Big
@@ -821,8 +822,8 @@ address that is not this node's, so
 
 RFC 8754 section 5.4 also says "ICMP error packets generated within the SR
 domain are sent to source nodes within the SR domain." The carried packet's
-source can lie outside the mesh, behind the headend, and `End`'s answer goes to
-it all the same.
+source can lie outside the mesh, behind the headend, and `End`'s answer about
+that packet goes to it all the same.
 
 The headend's half of RFC 2473's handling is a known gap. A ranet3 headend
 writes an ICMPv6 error about its own encapsulation into its tun, and the sender
@@ -834,9 +835,11 @@ the next link with a Packet Too Big to the outer source
 (net/ipv6/seg6_local.c:405-416 and net/ipv6/ip6_output.c:669-672 at Linux
 `940de590`).
 
-The Time Exceeded and Parameter Problem a refused segment gets come from the
-segment's destination. That address is one of this node's SIDs, which is within
-the RFC. An IPv4 answer quotes as much of the packet as fits 576 bytes
+The Time Exceeded and Parameter Problem a refused segment gets quote the
+segment, go to its outer source, the headend, as RFC 2473 has a tunnel's node
+answer, and come from the segment's destination. That address is one of this
+node's SIDs, which is within the RFC. An IPv4 answer quotes as much of the
+packet as fits 576 bytes
 ([RFC 1812 section 4.3.2.3](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.3.2.3)),
 and an IPv6 answer as much as fits 1280 bytes
 ([RFC 4443 section 2.4](https://www.rfc-editor.org/rfc/rfc4443.html#section-2.4)).
@@ -856,10 +859,11 @@ and at segments left 0 it departs, as below. It drops every other packet with no
 answer, among them a fragment and a packet whose segment routing header holds
 more than 16 segments, whatever its Segments Left. That drop departs from each
 requirement below. No reason holds for any of them but the drop of a fragment of
-a larger packet and that of a segment routing header behind 8 or more hop-by-hop
-and destination options headers, since the SID answers the header refusals
-beside them with a Parameter Problem from the segment's destination, within the
-same limits.
+a larger packet, since the SID answers the header refusals beside them with a
+Parameter Problem from the segment's destination, within the same limits. For a
+segment routing header behind 8 or more hop-by-hop and destination options
+headers, the bound on the headers the SID walks covers the drop and not the
+silence, as below.
 
 Three of the requirements are answers.
 [RFC 8986 section 4.8](https://www.rfc-editor.org/rfc/rfc8986.html#section-4.8)
@@ -1039,9 +1043,9 @@ a segment routing header behind as many as 11 of them, and drops one behind more
 with no answer (`IP6_MAX_EXT_HDRS_CNT`, include/net/ipv6.h:94, read at
 net/ipv6/exthdrs_core.c:223-224, `seg6_get_srh`, net/ipv6/seg6.c:84-85, and
 `input_action_end_core`, net/ipv6/seg6_local.c:410-412 and 418-420). That reason
-covers the drop at both SIDs, and not the silence of an `End`, which answers a
-spent hop limit and a header that does not describe itself beside it, as above.
-No reason holds for that silence.
+covers the drop at both SIDs, and not the silence at either, since each answers
+a header that does not describe itself beside it, and an `End` a spent hop limit
+too, as above. No reason holds for that silence.
 
 An `End` drops with no answer a packet whose segment routing header holds more
 than 16 segments, with segments left, at hop limit 1 too, and with a Segments
@@ -1445,11 +1449,12 @@ rather than cut it to its header, where Linux's `ip6_rcv_core` cuts it to its
 header unless a hop-by-hop header follows (net/ipv6/ip6_input.c:308-317 at Linux
 `940de590`). That covers the drop at 0, and not the silence. Linux drops a
 packet whose Payload Length runs past its octets with no answer too (:309-314).
-No reason holds for the silence. An egress segment writes such an inner packet
+No reason holds for the silence. An egress segment hands such an inner packet
 that passes the checks of
-[egress segments](../segment-routing.md#egress-segments) into the tun as it
-came, and the host's `ip6_rcv_core` then drops one whose Payload Length runs
-past its octets and cuts one of length 0 to its header, as above.
+[egress segments](../segment-routing.md#egress-segments) to the exit as it came.
+The exit writes it into the tun, and the host's `ip6_rcv_core` then drops one
+whose Payload Length runs past its octets and cuts one of length 0 to its
+header, as above.
 
 A transit IPv4 packet carrying a loose or strict source route is dropped and
 counted.
@@ -1470,14 +1475,15 @@ also says "For security reasons, it is recommended that implementations SHOULD
 allow sending of ICMP destination unreachable messages to be disabled,
 preferably on a per-interface basis". The forwarding decision's cannot be turned
 off. Each answers a packet one of the node's sessions delivered, so its sender
-is a peer that authenticated, and each goes only to that packet's source where
-the node's table routes it. It goes into the tun where the source is this host
-or a network behind it, a source an entry of this node's own reaches that does
-not count as a default. Those are the only receivers a tun-bound answer has.
-Otherwise it goes through the peer the table routes the source to, so only to an
-address some node announces a route for, another exit's default among them. A
-source the table routes nowhere gets no answer, nor does one that only this
-node's own default reaches, and neither does an exit's packet that
+is a peer that authenticated, and each goes only to that packet's source: the
+code 2 answer back on the session the packet came by, as above, and any other
+where the node's table routes it. It goes into the tun where the source is this
+host or a network behind it, a source an entry of this node's own reaches that
+does not count as a default. Those are the only receivers a tun-bound answer
+has. Otherwise it goes through the peer the table routes the source to, so only
+to an address some node announces a route for, another exit's default among
+them. A source the table routes nowhere gets no answer, nor does one that only
+this node's own default reaches, and neither does an exit's packet that
 [Drops with no answer](#drops-with-no-answer) lists. The packets whose answer
 would show the mesh to a sender outside it never reach the decision: the border
 filter and the SIDs drop them first, with no answer, as
@@ -2025,9 +2031,14 @@ drops:
   the tun, and the [forwarding decision](#transit-answers) answers it.
 - With no code named for it, an exit drops a packet it would egress through a
   prefix `cap.egress` advertises while it announces no prefix of the packet's
-  family. That lasts from the moment the node takes the family's withdrawal
-  until the speaker retracts the prefix, after which the decision treats a
-  packet for it as [the routing page](../routing.md#retracted-routes) says.
+  family, or holds that family not [ready](../exit-nodes.md#readiness). From the
+  moment the node takes the family's withdrawal, the drop lasts until the
+  speaker retracts the prefix. From the moment the exit holds the family not
+  ready, it lasts until a pass finds the family ready again or the speaker
+  retracts the prefix. After the retraction the decision treats a packet for it
+  as [the routing page](../routing.md#retracted-routes) says. A family whose
+  translation another writer took is held not ready at once, and stays announced
+  until the exit's next pass.
 
 An egress segment drops with no answer, too, a packet its allow list and its
 checks let through whose family is not [ready](../exit-nodes.md#readiness), and
