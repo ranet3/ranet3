@@ -118,10 +118,10 @@ Past the checks of [local segments](#local-segments) and those below, an
 `End.DT46` with `deliver = "egress"` hands its inner packet to the exit rather
 than to the forwarding decision. The exit writes it into the mesh tun for the
 host to carry out of the mesh, and the host forwards it out of the uplink under
-the exit's translated source. A leaf steering to the SID picks this exit by its
-segment list. `deliver = "mesh"`, the default, is the forwarding decision.
-[Exit nodes](exit-nodes.md#egress-segments) describes the translation and when
-the exit is ready.
+the source the exit's class for its source gives. A leaf steering to the SID
+picks this exit by its segment list. `deliver = "mesh"`, the default, is the
+forwarding decision. [Exit nodes](exit-nodes.md#egress-segments) describes the
+translation and when the exit is ready.
 
 ```toml
 [[cap.segment.local]]

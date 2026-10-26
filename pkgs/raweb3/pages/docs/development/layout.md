@@ -4,7 +4,7 @@
 title: "Repository layout"
 description: "Where everything lives in the repository."
 created: 2026-10-03
-updated: 2026-10-26
+updated: 2026-10-27
 order: 10
 ---
 
@@ -47,42 +47,42 @@ the ones another program can import: `control`, `esp`, `identity`, `ike`,
 `sadr`, `schema`, `srv6` and `transport`. Everything under `internal/` is this
 program's own. Go commands run from `pkgs/ranet3`.
 
-| Directory                    | What it holds                                                                                                                          |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `cmd/ranet3`                 | the `ranet3` binary: `ranet3 daemon` and every command that asks a running node                                                        |
-| `control`                    | the control socket's wire format, its client and server, the text renderers and the debug views, with golden files in `testdata/debug` |
-| `esp`                        | userspace ESP (RFC 4303) in tunnel mode, carried in UDP (RFC 3948)                                                                     |
-| `identity`                   | the name of a node and of each of its endpoints                                                                                        |
-| `ike`                        | an IKEv2 initiator and responder in the minimal shape of RFC 7815                                                                      |
-| `sadr`                       | source address dependent routing tables                                                                                                |
-| `schema`                     | the scalar spellings a config file is written in, and which routes count as a default                                                  |
-| `srv6`                       | SRv6 in userspace: the routing header (RFC 8754), H.Encaps, End and End.DT46 (RFC 8986)                                                |
-| `transport`                  | the UDP sockets on 1 port for both IKE and ESP                                                                                         |
-| `examples`                   | `config.toml`, `config.json` and `config.yaml`, which the `internal/config` tests parse                                                |
-| `internal/babel`             | the Babel speaker (RFC 8966)                                                                                                           |
-| `internal/client`            | the mesh runtime: peers, sessions, reload, path MTU, up and down, metrics and the daemon's side of the debug views                     |
-| `internal/cmd/notices`       | writes `internal/notices/third_party.md`                                                                                               |
-| `internal/cmd/babeltest`     | test tool: runs the client stack against a strongSwan responder and a Babel peer such as BIRD, and reports the routes it learns        |
-| `internal/cmd/esptest`       | test tool: sends 1 ICMP echo sealed in ESP to a strongSwan responder's kernel, to check the ESP framing                                |
-| `internal/cmd/gendn`         | test tool: prints the strongSwan `asn1dn:#hex` identity for an organization, common name and serial number                             |
-| `internal/cmd/iketest`       | test tool: runs 1 IKEv2 initiator handshake against a strongSwan responder and prints the negotiated Child SA                          |
-| `internal/config`            | reads the config file                                                                                                                  |
-| `internal/dnstest`           | a nameserver on lo recording each query's mark, behind a resolv.conf of the test's own, imported by test files alone                   |
-| `internal/egress`            | the `cap.egress` and `cap.border` capabilities, the `Exit` every exit backend sits behind, and the border filter's reports             |
-| `internal/egress/kernel`     | the kernel exit, which translates the source of what exit nodes and subnet routers carry with nftables, and the border filter          |
-| `internal/egress/egresstest` | the exit behavior suite every exit backend passes, imported by test files alone                                                        |
-| `internal/events`            | the event recorder behind `debug events`                                                                                               |
-| `internal/goldentest`        | holds a test's output to its golden file, which `-update` rewrites, imported by test files alone                                       |
-| `internal/kernel`            | the route reconciler, the host network watch, and on macOS the scoped default route a bound underlay socket can need                   |
-| `internal/logtest`           | swaps the default logger for 1 test, imported by test files alone                                                                      |
-| `internal/netnstest`         | the network namespaces, links, addresses and routes of the Linux root tests, imported by test files and `internal/egress/egresstest`   |
-| `internal/netstack`          | moves packets between the tun and the sessions, and decides each packet a session delivers, forwarding transit between sessions        |
-| `internal/nftables`          | writes, reads back and watches the translator's and the border filter's nf_tables tables, chains and rules over netlink                |
-| `internal/notices`           | the third-party notice the binary embeds and `ranet3 licenses` prints                                                                  |
-| `internal/packet`            | checks the IP envelope of packets, and what a router does with an IPv4 header it forwards: its checks, TTL, options and ICMPv4 errors  |
-| `internal/pbt`               | the settings every property test runs under                                                                                            |
-| `internal/registry`          | reads ranet's `registry.json` and Ed25519 key files, with a fixture in `testdata`                                                      |
-| `internal/version`           | the build's version and revision                                                                                                       |
+| Directory                    | What it holds                                                                                                                                  |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cmd/ranet3`                 | the `ranet3` binary: `ranet3 daemon` and every command that asks a running node                                                                |
+| `control`                    | the control socket's wire format, its client and server, the text renderers and the debug views, with golden files in `testdata/debug`         |
+| `esp`                        | userspace ESP (RFC 4303) in tunnel mode, carried in UDP (RFC 3948)                                                                             |
+| `identity`                   | the name of a node and of each of its endpoints                                                                                                |
+| `ike`                        | an IKEv2 initiator and responder in the minimal shape of RFC 7815                                                                              |
+| `sadr`                       | source address dependent routing tables                                                                                                        |
+| `schema`                     | the scalar spellings a config file is written in, and which routes count as a default                                                          |
+| `srv6`                       | SRv6 in userspace: the routing header (RFC 8754), H.Encaps, End and End.DT46 (RFC 8986)                                                        |
+| `transport`                  | the UDP sockets on 1 port for both IKE and ESP                                                                                                 |
+| `examples`                   | `config.toml`, `config.json` and `config.yaml`, which the `internal/config` tests parse                                                        |
+| `internal/babel`             | the Babel speaker (RFC 8966)                                                                                                                   |
+| `internal/client`            | the mesh runtime: peers, sessions, reload, path MTU, up and down, metrics and the daemon's side of the debug views                             |
+| `internal/cmd/notices`       | writes `internal/notices/third_party.md`                                                                                                       |
+| `internal/cmd/babeltest`     | test tool: runs the client stack against a strongSwan responder and a Babel peer such as BIRD, and reports the routes it learns                |
+| `internal/cmd/esptest`       | test tool: sends 1 ICMP echo sealed in ESP to a strongSwan responder's kernel, to check the ESP framing                                        |
+| `internal/cmd/gendn`         | test tool: prints the strongSwan `asn1dn:#hex` identity for an organization, common name and serial number                                     |
+| `internal/cmd/iketest`       | test tool: runs 1 IKEv2 initiator handshake against a strongSwan responder and prints the negotiated Child SA                                  |
+| `internal/config`            | reads the config file                                                                                                                          |
+| `internal/dnstest`           | a nameserver on lo recording each query's mark, behind a resolv.conf of the test's own, imported by test files alone                           |
+| `internal/egress`            | the `cap.egress` and `cap.border` capabilities, the `Exit` every exit backend sits behind, and the border filter's reports                     |
+| `internal/egress/kernel`     | the kernel exit, which translates the source of what exit nodes and subnet routers carry with nftables, and the border filter                  |
+| `internal/egress/egresstest` | the exit behavior suite every exit backend passes, imported by test files alone                                                                |
+| `internal/events`            | the event recorder behind `debug events`                                                                                                       |
+| `internal/goldentest`        | holds a test's output to its golden file, which `-update` rewrites, imported by test files alone                                               |
+| `internal/kernel`            | the route reconciler, the host network watch, and on macOS the scoped default route a bound underlay socket can need                           |
+| `internal/logtest`           | swaps the default logger for 1 test, imported by test files alone                                                                              |
+| `internal/netnstest`         | the network namespaces, links, addresses and routes of the Linux root tests, imported by test files and `internal/egress/egresstest`           |
+| `internal/netstack`          | moves packets between the tun and the sessions, and decides each packet a session delivers, forwarding transit between sessions                |
+| `internal/nftables`          | writes, reads back and watches the translator's and the border filter's nf_tables tables, chains, rules, sets and timeout objects over netlink |
+| `internal/notices`           | the third-party notice the binary embeds and `ranet3 licenses` prints                                                                          |
+| `internal/packet`            | checks the IP envelope of packets, and what a router does with an IPv4 header it forwards: its checks, TTL, options and ICMPv4 errors          |
+| `internal/pbt`               | the settings every property test runs under                                                                                                    |
+| `internal/registry`          | reads ranet's `registry.json` and Ed25519 key files, with a fixture in `testdata`                                                              |
+| `internal/version`           | the build's version and revision                                                                                                               |
 
 Beside the packages, `pkgs/ranet3` holds `go.mod` and `go.sum`, `gomod2nix.toml`
 for the Nix build, `version.txt` with the release version, a `license.txt` and a

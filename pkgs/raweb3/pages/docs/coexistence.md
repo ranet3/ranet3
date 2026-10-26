@@ -316,17 +316,22 @@ tunnel is using.
 `cap.egress` writes into the packet filter, where the same 3 rules hold. It
 creates 1 nftables table named after this tool for each address family it
 translates, the advertised ones and both beside an egress segment, `ip ranet3`
-and `ip6 ranet3`, each holding 1 nat postrouting chain. That name is the whole
-of its ownership claim, as `rt_proto` is the reconciler's. It writes only inside
-those tables and reads back every rule of their chains, with the tables' flags
-and the chains' type, hook, priority and policy, so a rule another writer puts
-in one or a table it sets dormant, which changes what the chain does to a
-packet, is undone by the next pass. It reads other writers' tables, chains and
-rules to find its own and to report conflicts, and writes, replaces or deletes
-nothing outside its own tables. It replaces the chain's contents in 1
-transaction, so no packet is ever evaluated against half a ruleset, and deletes
-and makes a table again in that transaction where nf_tables will not change it
-in place, any chain another writer put in the table with it.
+and `ip6 ranet3`. Each holds a nat chain at postrouting, a filter chain at
+forward, the set that chain counts each mesh source's flows in and the timeout
+objects of the flows it translates. That name is the whole of its ownership
+claim, as `rt_proto` is the reconciler's. It writes only inside those tables and
+reads back every rule of its 2 chains, with the tables' flags, the chains' type,
+hook, priority and policy, the set's key, flags, size and comment and the
+objects' values, so a rule another writer puts in one or a table it sets
+dormant, which changes what the chain does to a packet, is undone by the next
+pass. It does not read back the set's counts, so a count another writer changes
+or removes stays as that writer left it, and another chain in its table is
+neither read nor removed until the table is made again. It reads other writers'
+tables, chains and rules to find its own and to report conflicts, and writes,
+replaces or deletes nothing outside its own tables. It replaces the chains'
+rules in 1 transaction, so no packet is ever evaluated against half a ruleset,
+and deletes and makes a table again in that transaction where nf_tables will not
+change it in place, any chain another writer put in the table with it.
 
 It removes its tables at shutdown and at `ranet3 down`, with any chain another
 writer put in them. A table left behind by an earlier instance carries the same
@@ -342,28 +347,57 @@ conflict report below for the same reason.
 
 Other source translation at the same hook is reported rather than fought over.
 Several nat postrouting chains coexist at `srcnat` priority, Docker's and
-Tailscale's among them, and the first one to translate a connection keeps it for
-that connection's lifetime. Deleting a neighbor's rule to win that race would
-break whatever installed it.
+Tailscale's among them, and the first one to translate a connection
+[keeps it](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_nat_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n929)
+for that connection's lifetime. The translator's chain is at priority 99, 1
+below `srcnat`, so it runs ahead of every chain at `srcnat` whatever order the
+chains were made in. An operator who wants to translate a mesh flow itself
+writes a chain below 99, or one at 99 made after the translator's. A flow such a
+chain translates leaves without this node's translation, its timeouts and its
+count of translated flows, and the limit still holds it to its source's share.
+Deleting a neighbor's rule instead would break whatever installed it.
 
 `status` and the log name the other chains instead and leave them alone. Their
 rules and this one are usually disjoint, since this one matches on the mesh
 device in both directions.
 
 The scrape counts the other chains as `ranet3_egress_conflicts`. The report
-covers nat postrouting chains in `ip` and `ip6` tables of the families it
-translates. It leaves out chains in `inet` tables.
+covers nat postrouting chains at priority 99 or below, which can run ahead of
+the translator's, in `ip` and `ip6` tables of the families it translates. It
+leaves out chains in `inet` tables and chains past 99, which run after it.
 
-The kernel settings an exit's traffic crosses stay the host's. The translator
-writes no routing rule and no sysctl, neither the mesh tun's nor an uplink's, so
-the rules the reconciler derives and those of other programs, the host's routes,
-`forwarding` and reverse path filtering decide where a packet goes. It asks the
-kernel where an exit's packets would go and back instead. A family the answer
-does not carry out of the tun and back again is
-[not ready](exit-nodes.md#readiness), and the reason names the device's IPv4
-`forwarding` at 0 or reverse path filtering, the larger of
+A class of `none` binds its flows to the source they carry in the translator's
+chain, at priority 99, so a host's masquerade at `srcnat` or after leaves them
+alone, and a chain below 99, or one at 99 made after the translator's, still
+translates them.
+
+The filter chain at forward, priority 0, runs beside the host's own filter
+chains at that hook: a packet passes only where no chain drops it, so its
+refusal of a flow past its source's share, and its drop of a packet no flow is
+tracked for out of the mesh under a class that translates or into it under
+`return`, end that packet whatever the others say. A packet a host rule exempts
+from connection tracking, such as a `notrack` in a raw chain, counts as one no
+flow is tracked for, and leaves the mesh only under a class of `none`.
+
+The kernel settings an exit's traffic crosses stay the host's, but for the
+connection tracking timeouts of the flows it translates. The translator writes
+no routing rule and no sysctl, neither the mesh tun's nor an uplink's, so the
+rules the reconciler derives and those of other programs, the host's routes,
+`forwarding` and reverse path filtering decide where a packet goes. It reads
+`net.netfilter.nf_conntrack_count` and `nf_conntrack_max` and writes neither.
+Its timeout objects set the timeouts of its translated flows alone, and every
+other connection keeps the host's. It asks the kernel where an exit's packets
+would go and back instead. A family the answer does not carry out of the tun and
+back again is [not ready](exit-nodes.md#readiness), and the reason names the
+device's IPv4 `forwarding` at 0 or reverse path filtering, the larger of
 `net.ipv4.conf.all.rp_filter` and the device's own, when either is set where the
 lookup failed.
+
+While the exit runs, `nft list ruleset` lists its ICMP timeout objects in a form
+nft 1.1.7 does not load back, so a full listing saved then fails to load whole.
+Save the ruleset table by table with `nft list table <family> <name>`, leaving
+out the tables named `ranet3`, which the translator makes again on the pass a
+load wakes.
 
 `cap.border` adds a third table under the same name, `inet ranet3`, holding 1
 filter chain at prerouting, priority `raw` (-300).

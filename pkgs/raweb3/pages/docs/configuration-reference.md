@@ -653,13 +653,13 @@ Linux only, and the daemon refuses it at startup on other platforms.
 [Exit nodes](exit-nodes.md) describes the translation and the return path it
 needs.
 
-| Key         | Value             | Default | Meaning                                                           |
-| ----------- | ----------------- | ------- | ----------------------------------------------------------------- |
-| `advertise` | list of prefixes  | none    | Prefixes this node offers to carry                                |
-| `source4`   | `auto` or address | `auto`  | IPv4 source of a translated packet                                |
-| `source6`   | `auto` or address | `auto`  | IPv6 source of a translated packet                                |
-| `return`    | boolean           | `false` | Also translate traffic from the advertised prefixes into the mesh |
-| `sweep`     | duration          | `"30s"` | Interval of the periodic pass                                     |
+| Key                | Value            | Default | Meaning                                                             |
+| ------------------ | ---------------- | ------- | ------------------------------------------------------------------- |
+| `advertise`        | list of prefixes | none    | Prefixes this node offers to carry                                  |
+| `translate`        | list of classes  | none    | What the source of a packet leaving the mesh becomes, by its source |
+| `return`           | boolean          | `false` | Also translate traffic from the advertised prefixes into the mesh   |
+| `flows_per_source` | integer          | `4096`  | The most flows 1 mesh source address holds open in a family         |
+| `sweep`            | duration         | `"30s"` | Interval of the periodic pass                                       |
 
 - `advertise` is required unless the node has an egress segment, where it may be
   empty or left out unless `return` is set. Such a node serves that segment
@@ -689,18 +689,45 @@ needs.
 - At startup and on every reload, an `advertise` prefix that `cap.route` also
   announces is refused. That announcement would go out whether or not the rule
   is installed.
+- Each class of `translate` is a `from` prefix and a `to` of `none`, `auto` or
+  an address of `from`'s family, such as
+  `{ from = "3fff:a::/32", to = "none" }`. A source takes the class of the
+  longest `from` covering it, and `auto` where none covers it, so the order does
+  not matter and a class of `auto` from `0.0.0.0/0` or `::/0` says what leaving
+  it out says. The classes decide for traffic an egress segment carries as for
+  traffic from an advertised prefix, and for this node's own traffic from its
+  mesh addresses out of another link, as [exit nodes](exit-nodes.md#classes)
+  describes.
 - For traffic leaving the mesh, `auto` uses the address of the link the packet
-  leaves by. The host's routes pick it for each packet. Traffic an egress
-  segment carries leaves under the same source as traffic from the tun.
-- For traffic entering the mesh, `auto` uses this node's mesh address. The
-  daemon picks it once at startup, from the host prefixes `cap.route` announces
-  and `cap.table` assigns.
-- A written `source4` or `source6` is used in both directions. It must be global
-  unicast or private.
+  leaves by. The host's routes pick it for each packet. An address is used
+  unchanged, and `none` leaves the source as the packet carries it, under the
+  conditions [exit nodes](exit-nodes.md#none) lists.
+- A family whose classes name an address is ready only while the host holds that
+  address, on any link or `lo`.
+- A `from` with bits set below its length, written as IPv4-mapped IPv6, or
+  written twice is refused at load, and so is a class that names no `to`, an
+  address of the other family, one with a zone, one written as IPv4-mapped IPv6,
+  or one no reply can be sent to, global unicast and private addresses being the
+  ones it can. A class of `none` from `0.0.0.0/0` or `::/0` is refused, since it
+  would relay every mesh source onto the upstream untranslated.
+- For traffic entering the mesh, under `return`, the source is the address of
+  the family's class from `0.0.0.0/0` or `::/0` where that class names one, and
+  this node's mesh address where it is `auto` or absent. The daemon picks that
+  address once at startup, from the host prefixes `cap.route` announces and
+  `cap.table` assigns.
 - A subnet router needs `return` when the mesh has no route back to its LAN.
-  With `return`, each advertised family whose source is `auto` needs exactly 1
-  global unicast or private mesh address of that family. The daemon refuses to
-  start with none or with more than 1.
+  With `return`, each advertised family whose class from `0.0.0.0/0` or `::/0`
+  is `auto` or absent needs exactly 1 global unicast or private mesh address of
+  that family. The daemon refuses to start with none or with more than 1, and
+  asks for the address as that class's `to`.
+- `flows_per_source` is each mesh source address's share of the flows through
+  this node in each family, every protocol's together, past which its next new
+  flow is refused, as
+  [exit nodes](exit-nodes.md#each-sources-share-of-the-flows) describes. `0` or
+  leaving it out is the default, and a value past 2147483647, the most entries
+  `net.netfilter.nf_conntrack_max` can be set to, is refused. The shares come
+  out of the host's connection tracking table, which ranet3 never sizes, so size
+  the two together.
 - The periodic pass reinstalls a removed table and reads the forwarding sysctls
   again. `sweep` also caps the delay between retries of a failed pass. A
   negative `sweep` is refused.
