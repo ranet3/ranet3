@@ -81,12 +81,12 @@ type Segment struct {
 type Delivery uint8
 
 const (
-	// DeliverMesh hands it to the mesh's forwarding decision, which writes it to the tun, forwards it to a peer whatever cap.transit says, answers it or drops it
+	// DeliverMesh hands it to the mesh's forwarding decision, which writes it to the tun, hands it to the exit, forwards it to a peer whatever cap.transit says, answers it or drops it
 	// a file omitting deliver means it
 	DeliverMesh Delivery = iota
-	// DeliverEgress hands it to the mesh tun to leave the mesh, which the kernel
-	// routes out of the uplink under cap.egress's translation, and only for a
-	// packet whose outer and inner sources both lie in Allow
+	// DeliverEgress hands it to the node's exit to leave the mesh under
+	// cap.egress's translation, and only for a packet whose outer and inner
+	// sources both lie in Allow
 	DeliverEgress
 )
 
