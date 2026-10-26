@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"math"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -197,6 +198,109 @@ func TestRequestsReadBackAsWritten(t *testing.T) {
 		rule := framed(written)
 		if gotTable, gotName, gotSpec, gotPackets, gotBytes := DecodeRule(rule); gotTable != table || gotName != name || gotSpec != spec || gotPackets != packets || gotBytes != octets {
 			ht.Fatalf("a rule %q of %s %s with %d packets and %d bytes reads back as %q of %s %s with %d and %d", spec, table, name, packets, octets, gotSpec, gotTable, gotName, gotPackets, gotBytes)
+		}
+	})
+}
+
+// A set and a ct timeout object read back as written: each decodes to its
+// fields, carries no fault against itself, carries one against another of its
+// name exactly where a field differs, remade where nf_tables would not change
+// it in place, and passes one of another name or type
+func TestSetsAndTimeoutsReadBackAsWritten(t *testing.T) {
+	names := hegel.Text().Alphabet("ranet3-flows46").MinSize(1).MaxSize(unix.NFT_NAME_MAXLEN - 1)
+	sets := func(table, name string) hegel.Generator[Set] {
+		return hegel.Composite(func(tc hegel.TestCase) Set {
+			return Set{
+				Table:   table,
+				Name:    name,
+				ID:      hegel.Draw(tc, hegel.Integers[uint32](0, math.MaxUint32)),
+				KeyType: hegel.Draw(tc, hegel.SampledFrom([]uint32{TypeIPv4Addr, TypeIPv6Addr})),
+				KeyLen:  hegel.Draw(tc, hegel.SampledFrom([]uint32{4, 16})),
+				Flags:   hegel.Draw(tc, hegel.SampledFrom([]uint32{0, unix.NFT_SET_EVAL, unix.NFT_SET_EVAL | unix.NFT_SET_TIMEOUT})),
+				Size:    hegel.Draw(tc, pbt.Spanning[uint32](0, math.MaxUint32)),
+				Comment: hegel.Draw(tc, hegel.Text().Alphabet("limit 0123456789").MaxSize(udataCommentMax)),
+			}
+		})
+	}
+	timeouts := func(table, name string) hegel.Generator[Timeout] {
+		return hegel.Composite(func(tc hegel.TestCase) Timeout {
+			policy := make([]uint32, hegel.Draw(tc, hegel.Integers(1, 11)))
+			for i := range policy {
+				policy[i] = hegel.Draw(tc, pbt.Spanning[uint32](0, math.MaxUint32))
+			}
+			return Timeout{
+				Table:   table,
+				Name:    name,
+				L3Proto: hegel.Draw(tc, hegel.SampledFrom([]uint16{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6})),
+				L4Proto: hegel.Draw(tc, hegel.SampledFrom([]uint8{unix.IPPROTO_TCP, unix.IPPROTO_UDP, unix.IPPROTO_ICMP, unix.IPPROTO_ICMPV6})),
+				Policy:  policy,
+			}
+		})
+	}
+	pbt.Check(t, func(ht *hegel.T) {
+		proto := hegel.Draw(ht, hegel.SampledFrom([]uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6}))
+		table, name := hegel.Draw(ht, names), hegel.Draw(ht, names)
+		conn := &Conn{pid: hegel.Draw(ht, hegel.Integers[uint32](0, math.MaxUint32))}
+		framed := func(request Request) Message {
+			messages, err := parseMessages(conn.appendMessage(nil, request.Kind, request.Flags, 1, request.Body))
+			if err != nil || len(messages) != 1 || !bytes.Equal(messages[0].Data, request.Body) || messages[0].Data[0] != proto {
+				ht.Fatalf("a request of kind %#x reads back as %d messages: %v", request.Kind, len(messages), err)
+			}
+			return messages[0]
+		}
+
+		madeSet := func(s Set) Message {
+			request, err := s.Create(proto)
+			if err != nil {
+				ht.Fatalf("%+v was refused: %v", s, err)
+			}
+			return framed(request)
+		}
+		s := hegel.Draw(ht, sets(table, name))
+		created := madeSet(s)
+		if got := DecodeSet(created); got != (Set{Table: s.Table, Name: s.Name, KeyType: s.KeyType, KeyLen: s.KeyLen, Flags: s.Flags, Size: s.Size, Comment: s.Comment}) {
+			ht.Fatalf("%+v reads back as %+v", s, got)
+		}
+		if fault, remake := s.Fault(created); fault != "" || remake {
+			ht.Fatalf("%+v reads back against itself with the fault %q, remade %v", s, fault, remake)
+		}
+		other := hegel.Draw(ht, sets(table, name))
+		kept := other.KeyType != s.KeyType || other.KeyLen != s.KeyLen || other.Flags != s.Flags || other.Comment != s.Comment
+		if fault, remake := s.Fault(madeSet(other)); (fault != "") != (kept || other.Size != s.Size) || remake != kept {
+			ht.Fatalf("%+v reads back against %+v with the fault %q, remade %v", other, s, fault, remake)
+		}
+		// a set drawn whole rarely differs in its size alone, the one difference
+		// Fault leaves to the next Create
+		resized := s
+		resized.Size = hegel.Draw(ht, pbt.Spanning[uint32](0, math.MaxUint32))
+		if fault, remake := s.Fault(madeSet(resized)); (fault != "") != (resized.Size != s.Size) || remake {
+			ht.Fatalf("%+v reads back against %+v with the fault %q, remade %v", resized, s, fault, remake)
+		}
+		if fault, _ := (Set{Table: table, Name: name + "x"}).Fault(created); fault != "" {
+			ht.Fatalf("a set of another name reads back with the fault %q", fault)
+		}
+
+		o := hegel.Draw(ht, timeouts(table, name))
+		made := framed(o.Create(proto))
+		if got, ok := DecodeTimeout(made); !ok || got.Table != o.Table || got.Name != o.Name || got.L3Proto != o.L3Proto || got.L4Proto != o.L4Proto || !slices.Equal(got.Policy, o.Policy) {
+			ht.Fatalf("%+v reads back as %+v, a ct timeout %v", o, got, ok)
+		}
+		if fault, remake := o.Fault(made); fault != "" || remake {
+			ht.Fatalf("%+v reads back against itself with the fault %q, remade %v", o, fault, remake)
+		}
+		differ := hegel.Draw(ht, timeouts(table, name))
+		differs := differ.L3Proto != o.L3Proto || differ.L4Proto != o.L4Proto || !slices.Equal(differ.Policy, o.Policy)
+		if fault, remake := o.Fault(framed(differ.Create(proto))); (fault != "") != differs || remake != differs {
+			ht.Fatalf("%+v reads back against %+v with the fault %q, remade %v", differ, o, fault, remake)
+		}
+		counter := made
+		counter.Data = PutAttrString(PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_OBJ_TABLE, table), unix.NFTA_OBJ_NAME, name)
+		counter.Data = PutAttrBE32(counter.Data, unix.NFTA_OBJ_TYPE, unix.NFT_OBJECT_COUNTER)
+		if _, ok := DecodeTimeout(counter); ok {
+			ht.Fatal("a counter of its name decodes as a ct timeout")
+		}
+		if fault, _ := o.Fault(counter); fault != "" {
+			ht.Fatalf("a counter of its name reads back with the fault %q", fault)
 		}
 	})
 }

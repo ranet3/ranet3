@@ -121,7 +121,7 @@ func (c Chain) Rule(proto uint8, spec string, expressions [][]byte) (Request, er
 	body = PutAttrString(body, unix.NFTA_RULE_TABLE, c.Table)
 	body = PutAttrString(body, unix.NFTA_RULE_CHAIN, c.Name)
 	body = PutAttr(body, unix.NFTA_RULE_EXPRESSIONS|unix.NLA_F_NESTED, slices.Concat(expressions...))
-	body = PutAttr(body, unix.NFTA_RULE_USERDATA, userdata(spec))
+	body = PutAttr(body, unix.NFTA_RULE_USERDATA, userdata(udataComment, spec))
 	return Request{Kind: Command(unix.NFT_MSG_NEWRULE), Flags: unix.NLM_F_CREATE | unix.NLM_F_APPEND, Body: body}, nil
 }
 
@@ -157,43 +157,74 @@ type Installed struct {
 	Bytes   uint64
 }
 
-// Readback is a chain and the table holding it in one nf_tables family, as a
-// dump finds them
+// Contents names the chains, sets and ct timeout objects one owner writes in a
+// table of its own in one nf_tables family, each read back by its name. Any
+// other in the table is another writer's.
+type Contents struct {
+	Chains   []Chain
+	Sets     []Set
+	Timeouts []Timeout
+}
+
+// Readback is a table and what Contents holds of it in one nf_tables family,
+// as a dump finds them
 type Readback struct {
-	// Rules is every rule of the chain in order
+	// Rules is every rule of each chain in order, the chains in the order
+	// Contents lists them
 	Rules []Installed
-	// Fault names how the table or the chain differs from what NewTable and
-	// Create write, empty where neither does
+	// Fault names the first way the table, a chain, a set or an object differs
+	// from what NewTable and the Create methods write, a missing set or object
+	// among them, empty where none does
 	Fault string
-	// Remake holds where the table or the chain differs in what nf_tables
-	// will not change in place, a table flag other than dormant, or the
-	// chain's type, hook or priority or a hook at all, so its owner deletes
-	// the table and makes it again in one transaction
+	// Remake holds where one differs in what nf_tables will not change in
+	// place, so its owner deletes the table and makes it again in one
+	// transaction
 	Remake bool
 }
 
 // Read takes tables as Tables read them
-func (c Chain) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readback, error) {
+func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readback, error) {
 	flags, held := tables[proto]
 	if !held {
 		return Readback{}, nil
 	}
 	var read Readback
-	if flags != 0 {
-		read.Fault = fmt.Sprintf("its table carries flags %#x, where none are written and 0x1 is dormant", flags)
+	note := func(fault string, remake bool) {
+		if read.Fault == "" {
+			read.Fault = fault
+		}
+		read.Remake = read.Remake || remake
 	}
-	// nf_tables clears no flag of a table in place but dormant
-	read.Remake = flags&^unix.NFT_TABLE_F_DORMANT != 0
+	if flags != 0 {
+		// nf_tables clears no flag of a table in place but dormant
+		note(fmt.Sprintf("its table carries flags %#x, where none are written and 0x1 is dormant", flags), flags&^unix.NFT_TABLE_F_DORMANT != 0)
+	}
 	chains, err := conn.Dump(Command(unix.NFT_MSG_GETCHAIN), PutNfgenmsg(nil, proto))
 	if err != nil {
 		return Readback{}, fmt.Errorf("dump chains: %w", err)
 	}
 	for _, reply := range chains {
-		fault, remake := c.Fault(reply)
-		if read.Fault == "" {
-			read.Fault = fault
+		for _, chain := range c.Chains {
+			note(chain.Fault(reply))
 		}
-		read.Remake = read.Remake || remake
+	}
+	if len(c.Sets) > 0 {
+		sets, err := conn.Dump(Command(unix.NFT_MSG_GETSET), PutNfgenmsg(nil, proto))
+		if err != nil {
+			return Readback{}, fmt.Errorf("dump sets: %w", err)
+		}
+		for _, set := range c.Sets {
+			note(readSet(set, sets))
+		}
+	}
+	if len(c.Timeouts) > 0 {
+		objects, err := conn.Dump(Command(unix.NFT_MSG_GETOBJ), PutNfgenmsg(nil, proto))
+		if err != nil {
+			return Readback{}, fmt.Errorf("dump objects: %w", err)
+		}
+		for _, timeout := range c.Timeouts {
+			note(readTimeout(timeout, objects))
+		}
 	}
 	if read.Rules, err = c.rules(conn, proto); err != nil {
 		return Readback{}, fmt.Errorf("dump rules: %w", err)
@@ -201,15 +232,17 @@ func (c Chain) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readback,
 	return read, nil
 }
 
-func (c Chain) rules(conn *Conn, proto uint8) ([]Installed, error) {
+func (c Contents) rules(conn *Conn, proto uint8) ([]Installed, error) {
 	replies, err := conn.Dump(Command(unix.NFT_MSG_GETRULE), PutNfgenmsg(nil, proto))
 	if err != nil {
 		return nil, err
 	}
 	var out []Installed
-	for _, reply := range replies {
-		if table, name, spec, packets, bytes := DecodeRule(reply); table == c.Table && name == c.Name {
-			out = append(out, Installed{Spec: spec, Packets: packets, Bytes: bytes})
+	for _, chain := range c.Chains {
+		for _, reply := range replies {
+			if table, name, spec, packets, bytes := DecodeRule(reply); table == chain.Table && name == chain.Name {
+				out = append(out, Installed{Spec: spec, Packets: packets, Bytes: bytes})
+			}
 		}
 	}
 	return out, nil
@@ -258,7 +291,7 @@ func DecodeRule(message Message) (table, chain, spec string, packets, bytes uint
 		case unix.NFTA_RULE_CHAIN:
 			chain = unix.ByteSliceToString(value)
 		case unix.NFTA_RULE_USERDATA:
-			spec = comment(value)
+			spec = comment(udataComment, value)
 		case unix.NFTA_RULE_EXPRESSIONS:
 			packets, bytes = counters(value)
 		}
@@ -266,16 +299,16 @@ func DecodeRule(message Message) (table, chain, spec string, packets, bytes uint
 	return table, chain, spec, packets, bytes
 }
 
-// comment is the rule's identity out of the libnftnl userdata format: a
-// sequence of type, length and value triples, of which Rule writes exactly
-// one
-func comment(userdata []byte) string {
+// comment is the comment of type kind out of the libnftnl userdata format: a
+// sequence of type, length and value triples, of which Rule and Set.Create
+// write exactly one
+func comment(kind byte, userdata []byte) string {
 	for len(userdata) >= 2 {
-		kind, length := userdata[0], int(userdata[1])
+		held, length := userdata[0], int(userdata[1])
 		if len(userdata) < 2+length {
 			return ""
 		}
-		if kind == udataComment {
+		if held == kind {
 			return strings.TrimRight(string(userdata[2:2+length]), "\x00")
 		}
 		userdata = userdata[2+length:]
@@ -319,11 +352,11 @@ func counters(expressions []byte) (packets, bytes uint64) {
 	return packets, bytes
 }
 
-// userdata is the comment in the format libnftnl reads, so `nft list ruleset`
-// prints it beside the rule
-func userdata(spec string) []byte {
-	value := append([]byte(spec), 0)
-	return append([]byte{udataComment, byte(len(value))}, value...)
+// userdata is the comment of type kind in the format libnftnl reads, so `nft
+// list ruleset` prints it beside the rule or the set
+func userdata(kind byte, text string) []byte {
+	value := append([]byte(text), 0)
+	return append([]byte{kind, byte(len(value))}, value...)
 }
 
 // DeviceName refuses a name too long to be a device's. The kernel caps one at
@@ -353,30 +386,101 @@ func MetaCompareValue(key uint32, op int, value []byte) [][]byte {
 }
 
 func SourcePrefix(prefix netip.Prefix) [][]byte {
-	offset, length := uint32(ipv6SourceOffset), uint32(net.IPv6len)
+	proto := uint8(unix.NFPROTO_IPV6)
 	if prefix.Addr().Is4() {
-		offset, length = ipv4SourceOffset, net.IPv4len
+		proto = unix.NFPROTO_IPV4
 	}
-	out := [][]byte{NetworkLoad(offset, length)}
-	if int(prefix.Bits()) < int(length)*8 {
-		mask := prefixMask(prefix)
-		bitwise := PutAttrBE32(nil, unix.NFTA_BITWISE_SREG, unix.NFT_REG_1)
-		bitwise = PutAttrBE32(bitwise, unix.NFTA_BITWISE_DREG, unix.NFT_REG_1)
-		bitwise = PutAttrBE32(bitwise, unix.NFTA_BITWISE_LEN, length)
-		bitwise = PutAttr(bitwise, unix.NFTA_BITWISE_MASK|unix.NLA_F_NESTED, PutAttr(nil, unix.NFTA_DATA_VALUE, mask))
-		bitwise = PutAttr(bitwise, unix.NFTA_BITWISE_XOR|unix.NLA_F_NESTED,
-			PutAttr(nil, unix.NFTA_DATA_VALUE, make([]byte, length)))
-		out = append(out, Expression("bitwise", bitwise))
+	out := [][]byte{SourceLoad(proto)}
+	if mask := prefixMask(prefix); prefix.Bits() < len(mask)*8 {
+		out = append(out, Bitwise(mask))
 	}
 	return append(out, Expression("cmp", Compare(unix.NFT_CMP_EQ, AddressBytes(prefix.Masked().Addr()))))
 }
 
+// SourceLoad loads a packet's source address into register 1, of the
+// nf_tables family proto
+func SourceLoad(proto uint8) []byte {
+	if proto == unix.NFPROTO_IPV4 {
+		return NetworkLoad(ipv4SourceOffset, net.IPv4len)
+	}
+	return NetworkLoad(ipv6SourceOffset, net.IPv6len)
+}
+
 func NetworkLoad(offset, length uint32) []byte {
+	return payloadLoad(unix.NFT_PAYLOAD_NETWORK_HEADER, offset, length)
+}
+
+func TransportLoad(offset, length uint32) []byte {
+	return payloadLoad(unix.NFT_PAYLOAD_TRANSPORT_HEADER, offset, length)
+}
+
+func payloadLoad(base, offset, length uint32) []byte {
 	load := PutAttrBE32(nil, unix.NFTA_PAYLOAD_DREG, unix.NFT_REG_1)
-	load = PutAttrBE32(load, unix.NFTA_PAYLOAD_BASE, unix.NFT_PAYLOAD_NETWORK_HEADER)
+	load = PutAttrBE32(load, unix.NFTA_PAYLOAD_BASE, base)
 	load = PutAttrBE32(load, unix.NFTA_PAYLOAD_OFFSET, offset)
 	load = PutAttrBE32(load, unix.NFTA_PAYLOAD_LEN, length)
 	return Expression("payload", load)
+}
+
+// Bitwise masks register 1 by mask, of the register's length
+func Bitwise(mask []byte) []byte {
+	bitwise := PutAttrBE32(nil, unix.NFTA_BITWISE_SREG, unix.NFT_REG_1)
+	bitwise = PutAttrBE32(bitwise, unix.NFTA_BITWISE_DREG, unix.NFT_REG_1)
+	bitwise = PutAttrBE32(bitwise, unix.NFTA_BITWISE_LEN, uint32(len(mask)))
+	bitwise = PutAttr(bitwise, unix.NFTA_BITWISE_MASK|unix.NLA_F_NESTED, PutAttr(nil, unix.NFTA_DATA_VALUE, mask))
+	bitwise = PutAttr(bitwise, unix.NFTA_BITWISE_XOR|unix.NLA_F_NESTED, PutAttr(nil, unix.NFTA_DATA_VALUE, make([]byte, len(mask))))
+	return Expression("bitwise", bitwise)
+}
+
+// CTMatch takes a packet whose connection's key, NFT_CT_STATE or
+// NFT_CT_STATUS, has a bit of mask set for NFT_CMP_NEQ, or none of them for
+// NFT_CMP_EQ. Both keys are host order words.
+func CTMatch(key, mask uint32, op int) [][]byte {
+	ct := PutAttrBE32(nil, unix.NFTA_CT_DREG, unix.NFT_REG_1)
+	ct = PutAttrBE32(ct, unix.NFTA_CT_KEY, key)
+	return [][]byte{
+		Expression("ct", ct),
+		Bitwise(binary.NativeEndian.AppendUint32(nil, mask)),
+		Expression("cmp", Compare(op, make([]byte, 4))),
+	}
+}
+
+// ObjectReference applies the object of objType named name to the packet
+func ObjectReference(objType uint32, name string) []byte {
+	objref := PutAttrBE32(nil, unix.NFTA_OBJREF_IMM_TYPE, objType)
+	objref = PutAttrString(objref, unix.NFTA_OBJREF_IMM_NAME, name)
+	return Expression("objref", objref)
+}
+
+// ConnectionsOver adds the key register 1 holds to the named set, counting the
+// connections each key's packets open, and goes on only while that count is
+// over limit. A full set adds no key, which ends the rule as a count within
+// the limit does.
+func ConnectionsOver(set string, limit uint32) []byte {
+	connlimit := PutAttrBE32(nil, connlimitCount, limit)
+	connlimit = PutAttrBE32(connlimit, connlimitFlags, connlimitInvert)
+	dynset := PutAttrBE32(nil, unix.NFTA_DYNSET_SREG_KEY, unix.NFT_REG_1)
+	dynset = PutAttrBE32(dynset, unix.NFTA_DYNSET_OP, unix.NFT_DYNSET_OP_ADD)
+	dynset = PutAttrString(dynset, unix.NFTA_DYNSET_SET_NAME, set)
+	dynset = PutAttr(dynset, unix.NFTA_DYNSET_EXPR|unix.NLA_F_NESTED, expressionBody("connlimit", connlimit))
+	return Expression("dynset", dynset)
+}
+
+// RejectUnreachable answers a packet with a destination unreachable of code,
+// of ICMP in an ip table and of ICMPv6 in an ip6 one, and drops it
+func RejectUnreachable(code uint8) []byte {
+	reject := PutAttrBE32(nil, unix.NFTA_REJECT_TYPE, unix.NFT_REJECT_ICMP_UNREACH)
+	reject = PutAttr(reject, unix.NFTA_REJECT_ICMP_CODE, []byte{code})
+	return Expression("reject", reject)
+}
+
+// SourceNAT translates a connection's source to the address register 1 holds,
+// of the nf_tables family proto
+func SourceNAT(proto uint8) []byte {
+	nat := PutAttrBE32(nil, unix.NFTA_NAT_TYPE, unix.NFT_NAT_SNAT)
+	nat = PutAttrBE32(nat, unix.NFTA_NAT_FAMILY, uint32(proto))
+	nat = PutAttrBE32(nat, unix.NFTA_NAT_REG_ADDR_MIN, unix.NFT_REG_1)
+	return Expression("nat", nat)
 }
 
 func prefixMask(prefix netip.Prefix) []byte {
@@ -408,9 +512,14 @@ func Compare(op int, value []byte) []byte {
 // Expression emits the data attribute even when empty, as libnftnl does, so
 // an expression carrying no parameters still reads as one
 func Expression(name string, data []byte) []byte {
+	return PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, expressionBody(name, data))
+}
+
+// expressionBody is an expression without the list element a rule wraps it
+// in, as dynset takes the one it attaches to each key
+func expressionBody(name string, data []byte) []byte {
 	body := PutAttrString(nil, unix.NFTA_EXPR_NAME, name)
-	body = PutAttr(body, unix.NFTA_EXPR_DATA|unix.NLA_F_NESTED, data)
-	return PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, body)
+	return PutAttr(body, unix.NFTA_EXPR_DATA|unix.NLA_F_NESTED, data)
 }
 
 // AddressBytes is the wire form of an address, four bytes or sixteen, never

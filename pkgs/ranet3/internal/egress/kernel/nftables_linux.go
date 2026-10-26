@@ -138,7 +138,7 @@ func (n *natTables) Rules() (map[uint8]chainReadback, error) {
 	}
 	out := make(map[uint8]chainReadback, len(n.families))
 	for _, family := range n.families {
-		read, err := postrouting.Read(n.conn, tables, nftFamily(family))
+		read, err := nftables.Contents{Chains: []nftables.Chain{postrouting}}.Read(n.conn, tables, nftFamily(family))
 		if err != nil {
 			return nil, fmt.Errorf("egress: read table %s %s: %w", tableFamilyName(family), TableName, err)
 		}
@@ -340,8 +340,5 @@ func translate(rule Rule) [][]byte {
 	immediate := nftables.PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_1)
 	immediate = nftables.PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED,
 		nftables.PutAttr(nil, unix.NFTA_DATA_VALUE, nftables.AddressBytes(rule.Source)))
-	nat := nftables.PutAttrBE32(nil, unix.NFTA_NAT_TYPE, unix.NFT_NAT_SNAT)
-	nat = nftables.PutAttrBE32(nat, unix.NFTA_NAT_FAMILY, uint32(nftFamily(rule.Family)))
-	nat = nftables.PutAttrBE32(nat, unix.NFTA_NAT_REG_ADDR_MIN, unix.NFT_REG_1)
-	return [][]byte{nftables.Expression("immediate", immediate), nftables.Expression("nat", nat)}
+	return [][]byte{nftables.Expression("immediate", immediate), nftables.SourceNAT(nftFamily(rule.Family))}
 }

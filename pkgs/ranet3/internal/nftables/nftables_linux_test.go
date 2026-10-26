@@ -6,7 +6,9 @@
 package nftables
 
 import (
+	"cmp"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -49,21 +51,26 @@ func TestPrefixMaskCoversExactlyThePrefixLength(t *testing.T) {
 }
 
 // A rule's identity travels in its own comment, so the diff reads back the
-// spelling it wrote rather than re-deriving it from the expressions.
+// spelling it wrote rather than re-deriving it from the expressions, and a
+// set's comment travels under a type of its own.
 func TestCommentRoundTripsThroughUserdata(t *testing.T) {
 	const spec = "ipv4 out via ranet0 masquerade"
-	if got := comment(userdata(spec)); got != spec {
+	if got := comment(udataComment, userdata(udataComment, spec)); got != spec {
 		t.Errorf("read back %q, want %q", got, spec)
 	}
 	// Another writer's userdata comes first in the same blob. Skipping it by
 	// its length rather than assuming the comment is first is the difference
 	// between a rule its owner recognizes and one it reinstalls forever.
-	blob := append([]byte{7, 3, 'a', 'b', 'c'}, userdata(spec)...)
-	if got := comment(blob); got != spec {
+	blob := append([]byte{7, 3, 'a', 'b', 'c'}, userdata(udataComment, spec)...)
+	if got := comment(udataComment, blob); got != spec {
 		t.Errorf("read back %q past another writer's entry, want %q", got, spec)
 	}
-	if got := comment([]byte{0, 9, 'a'}); got != "" {
+	if got := comment(udataComment, []byte{0, 9, 'a'}); got != "" {
 		t.Errorf("a truncated entry read as %q", got)
+	}
+	blob = append(userdata(udataComment, spec), userdata(udataSetComment, "limit 4096")...)
+	if got := comment(udataSetComment, blob); got != "limit 4096" {
+		t.Errorf("a set's comment read back as %q past a rule's, want %q", got, "limit 4096")
 	}
 }
 
@@ -81,6 +88,23 @@ func TestRuleTakesOnlyASpecItsCommentHolds(t *testing.T) {
 	}
 	if _, _, got, _, _ := DecodeRule(Message{Data: request.Body}); got != spec {
 		t.Errorf("a spec of %d bytes reads back as %d bytes", len(spec), len(got))
+	}
+}
+
+// A set's comment a byte past nft's comment limit is refused, and one at the
+// limit is written and reads back as itself
+func TestSetTakesOnlyACommentNftLoadsBack(t *testing.T) {
+	s := Set{Table: "ranet3", Name: "flows4", Comment: strings.Repeat("x", udataCommentMax+1)}
+	if _, err := s.Create(unix.NFPROTO_IPV4); err == nil {
+		t.Errorf("a comment of %d bytes was written", udataCommentMax+1)
+	}
+	s.Comment = strings.Repeat("x", udataCommentMax)
+	request, err := s.Create(unix.NFPROTO_IPV4)
+	if err != nil {
+		t.Fatalf("a comment of %d bytes was refused: %v", len(s.Comment), err)
+	}
+	if got := DecodeSet(Message{Data: request.Body}).Comment; got != s.Comment {
+		t.Errorf("a comment of %d bytes reads back as %d bytes", len(s.Comment), len(got))
 	}
 }
 
@@ -102,6 +126,101 @@ func beBytes(value uint64) []byte {
 	var raw [8]byte
 	binary.BigEndian.PutUint64(raw[:], value)
 	return raw[:]
+}
+
+// Each expression a translator's chains take encodes as the kernel dumps the
+// rule nft 1.1.7 writes for the case's name: the connection state and status
+// tests of the forward chain, its per-source count and answer, a ct timeout's
+// reference, a transport port's load and the translation to an address a
+// register holds. The dump adds what the kernel fills in itself, a dynset's
+// timeout and flags at 0, and a nat's address maximum in the register of its
+// minimum, with its flags at NF_NAT_RANGE_MAP_IPS.
+func TestExpressionsCarryTheAttributesNftWrites(t *testing.T) {
+	host := func(value uint32) string { return fmt.Sprintf("%x", binary.NativeEndian.AppendUint32(nil, value)) }
+	for _, c := range []struct {
+		name        string
+		expressions [][]byte
+		want        []string
+	}{
+		{"ct state new", CTMatch(unix.NFT_CT_STATE, CTStateNew, unix.NFT_CMP_NEQ), []string{
+			"ct 1=00000001 2=00000000",
+			"bitwise 1=00000001 2=00000001 3=00000004 4{1=" + host(8) + "} 5{1=00000000}",
+			"cmp 1=00000001 2=00000001 3{1=00000000}",
+		}},
+		{"ct status ! confirmed", CTMatch(unix.NFT_CT_STATUS, CTStatusConfirmed, unix.NFT_CMP_EQ), []string{
+			"ct 1=00000001 2=00000002",
+			"bitwise 1=00000001 2=00000001 3=00000004 4{1=" + host(8) + "} 5{1=00000000}",
+			"cmp 1=00000001 2=00000000 3{1=00000000}",
+		}},
+		{"add @flows4 { ip saddr ct count over 4096 }", [][]byte{SourceLoad(unix.NFPROTO_IPV4), ConnectionsOver("flows4", 4096)}, []string{
+			"payload 1=00000001 2=00000001 3=0000000c 4=00000004",
+			`dynset 1="flows4" 3=00000000 4=00000001 7{1="connlimit" 2{1=00001000 2=00000001}}`,
+		}},
+		{"ip6 saddr", [][]byte{SourceLoad(unix.NFPROTO_IPV6)}, []string{"payload 1=00000001 2=00000001 3=00000008 4=00000010"}},
+		{"reject with icmp admin-prohibited", [][]byte{RejectUnreachable(13)}, []string{"reject 1=00000000 2=0d"}},
+		{`ct timeout set "translated-udp"`, [][]byte{ObjectReference(unix.NFT_OBJECT_CT_TIMEOUT, "translated-udp")}, []string{`objref 1=00000007 2="translated-udp"`}},
+		{"udp dport", [][]byte{TransportLoad(2, 2)}, []string{"payload 1=00000001 2=00000002 3=00000002 4=00000002"}},
+		{"snat to ip saddr", [][]byte{SourceNAT(unix.NFPROTO_IPV4)}, []string{"nat 1=00000000 2=00000002 3=00000001"}},
+	} {
+		var got []string
+		for _, expression := range c.expressions {
+			got = append(got, rendered(t, expression))
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%s encodes as\n%s\nwant\n%s", c.name, strings.Join(got, "\n"), strings.Join(c.want, "\n"))
+		}
+	}
+}
+
+func rendered(t *testing.T, element []byte) string {
+	t.Helper()
+	outer := Nested(element)
+	if len(outer) != 1 || outer[0].Kind != unix.NFTA_LIST_ELEM {
+		t.Fatalf("%x is not one expression", element)
+	}
+	var name string
+	var data []byte
+	for _, field := range Nested(outer[0].Value) {
+		switch field.Kind {
+		case unix.NFTA_EXPR_NAME:
+			name = unix.ByteSliceToString(field.Value)
+		case unix.NFTA_EXPR_DATA:
+			data = field.Value
+		}
+	}
+	return name + " " + renderedAttributes(data)
+}
+
+func renderedAttributes(data []byte) string {
+	var out []string
+	for len(data) >= unix.SizeofRtAttr {
+		length, kind := int(binary.NativeEndian.Uint16(data)), binary.NativeEndian.Uint16(data[2:])
+		value := data[unix.SizeofRtAttr:length]
+		switch {
+		case kind&unix.NLA_F_NESTED != 0:
+			out = append(out, fmt.Sprintf("%d{%s}", kind&nlaTypeMask, renderedAttributes(value)))
+		case len(value) > 1 && value[len(value)-1] == 0 && strings.Trim(string(value[:len(value)-1]), "abcdefghijklmnopqrstuvwxyz0123456789-") == "":
+			out = append(out, fmt.Sprintf("%d=%q", kind, value[:len(value)-1]))
+		default:
+			out = append(out, fmt.Sprintf("%d=%x", kind, value))
+		}
+		data = data[rtaAlign(length):]
+	}
+	slices.SortFunc(out, func(a, b string) int {
+		return cmp.Compare(leadingNumber(a), leadingNumber(b))
+	})
+	return strings.Join(out, " ")
+}
+
+func leadingNumber(text string) int {
+	n := 0
+	for _, r := range text {
+		if r < '0' || r > '9' {
+			break
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
 }
 
 // A datagram whose message claims to run past its end is an error rather than

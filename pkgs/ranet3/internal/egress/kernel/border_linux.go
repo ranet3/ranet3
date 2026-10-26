@@ -63,7 +63,7 @@ func readBorder(conn *nftables.Conn) (chainReadback, error) {
 	if err != nil {
 		return chainReadback{}, err
 	}
-	read, err := prerouting.Read(conn, tables, unix.NFPROTO_INET)
+	read, err := nftables.Contents{Chains: []nftables.Chain{prerouting}}.Read(conn, tables, unix.NFPROTO_INET)
 	if err != nil {
 		return chainReadback{}, fmt.Errorf("egress: read table inet %s: %w", TableName, err)
 	}
