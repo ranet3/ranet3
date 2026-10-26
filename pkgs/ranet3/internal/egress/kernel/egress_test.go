@@ -36,7 +36,8 @@ type fakeBackend struct {
 	// failWithdraw makes a host that will not let the tables go, which a stop tries again rather than records as done
 	failWithdraw bool
 	// flows is added to each rule's counter on every readback, so a test can
-	// tell a rule the pass rewrote from one it left alone.
+	// tell a rule the pass rewrote from one it left alone. A timeout rule has
+	// no counter, as newRule writes it.
 	flows uint64
 	// changed stands for another writer's changes to the tables and missed
 	// for notifications lost, nil for none
@@ -77,7 +78,9 @@ func (f *fakeBackend) Rules() (map[uint8]chainReadback, error) {
 		read := chainReadback{fault: f.faults[family], remake: f.faults[family] != "" && f.remake[family]}
 		for _, rule := range f.held {
 			if rule.Family == family {
-				rule.Packets += f.flows
+				if !timeoutRule(rule.Spec) {
+					rule.Packets += f.flows
+				}
 				read.rules = append(read.rules, rule)
 			}
 		}
@@ -155,6 +158,16 @@ func (f *fakeBackend) specs() []string {
 	return out
 }
 
+// translations is specs without the timeout rules, for a test of what each
+// rule translates to. TestClassesAreWrittenLongestFromFirst holds where the
+// timeout rules go.
+func (f *fakeBackend) translations() []string {
+	return slices.DeleteFunc(f.specs(), timeoutRule)
+}
+
+// timeoutRule reports whether spec is a timeout rule's, as Rule.String spells it
+func timeoutRule(spec string) bool { return strings.Contains(spec, " timeouts ") }
+
 // translator builds one around a fake backend, bypassing New so that a test
 // does not need a packet filter to reach the portable half.
 func translator(t *testing.T, cfg egress.Egress, rt Runtime, be backend) *Translator {
@@ -222,7 +235,7 @@ func TestRulesMatchBothInterfacesSoTransitIsNotTranslated(t *testing.T) {
 		"out via ranet0 ipv4 masquerade",
 		"out via ranet0 ipv6 masquerade",
 	}
-	if got := be.specs(); !slices.Equal(got, want) {
+	if got := be.translations(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
 	}
 }
@@ -240,16 +253,19 @@ func TestConfiguredSourceReplacesTheHostsOwnChoice(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"out via ranet0 ipv4 source 198.51.100.7"}
-	if got := be.specs(); !slices.Equal(got, want) {
+	if got := be.translations(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
 	}
 }
 
-// Each class is a rule of its own, the longest From first since the first
-// translation ends the chain, and a class of none binds its sources to
-// themselves. A family no class covers whole ends in a rule of auto. Each of
-// this node's own mesh addresses but the link-local one takes the class it
-// falls in, in a rule after those a leaf's packet meets.
+// Each class's rules come together, the longest From first since the first
+// translation ends the chain. A class that translates attaches the exit's
+// timeouts first, by a rule for UDP, for TCP and for the family's ICMP, keyed
+// as its translation is, and a class of none binds its sources to themselves
+// alone, so its flows keep the host's timeouts. A family no class covers whole
+// ends in the rules of auto. Each of this node's own mesh addresses but the
+// link-local one takes the class it falls in, in rules after those a leaf's
+// packet meets.
 func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 	cfg := egress.Egress{
 		Advertise: prefixes(t, "0.0.0.0/0", "::/0"),
@@ -268,13 +284,31 @@ func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
+		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts udp",
+		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts tcp",
+		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts icmp",
 		"out via ranet0 ipv4 from 192.0.2.128/25 masquerade",
 		"out via ranet0 ipv4 from 192.0.2.0/24 untranslated",
+		"out via ranet0 ipv4 timeouts udp",
+		"out via ranet0 ipv4 timeouts tcp",
+		"out via ranet0 ipv4 timeouts icmp",
 		"out via ranet0 ipv4 source 198.51.100.7",
 		"local via ranet0 ipv4 from 192.0.2.1/32 untranslated",
+		"local via ranet0 ipv4 from 192.0.2.200/32 timeouts udp",
+		"local via ranet0 ipv4 from 192.0.2.200/32 timeouts tcp",
+		"local via ranet0 ipv4 from 192.0.2.200/32 timeouts icmp",
 		"local via ranet0 ipv4 from 192.0.2.200/32 masquerade",
+		"out via ranet0 ipv6 from 3fff::/20 timeouts udp",
+		"out via ranet0 ipv6 from 3fff::/20 timeouts tcp",
+		"out via ranet0 ipv6 from 3fff::/20 timeouts icmpv6",
 		"out via ranet0 ipv6 from 3fff::/20 source 2001:db8::7",
+		"out via ranet0 ipv6 timeouts udp",
+		"out via ranet0 ipv6 timeouts tcp",
+		"out via ranet0 ipv6 timeouts icmpv6",
 		"out via ranet0 ipv6 masquerade",
+		"local via ranet0 ipv6 from 3fff::1/128 timeouts udp",
+		"local via ranet0 ipv6 from 3fff::1/128 timeouts tcp",
+		"local via ranet0 ipv6 from 3fff::1/128 timeouts icmpv6",
 		"local via ranet0 ipv6 from 3fff::1/128 source 2001:db8::7",
 	}
 	if got := be.specs(); !slices.Equal(got, want) {
@@ -313,7 +347,7 @@ func TestReturnDirectionTranslatesUnderTheMeshAddress(t *testing.T) {
 			if err := translator(t, cfg, rt, be).reconcile(); err != nil {
 				t.Fatal(err)
 			}
-			if got := be.specs(); !slices.Equal(got, c.want) {
+			if got := be.translations(); !slices.Equal(got, c.want) {
 				t.Errorf("installed %q, want %q", got, c.want)
 			}
 		})
@@ -335,8 +369,35 @@ func TestReturnRuleForADefaultCarriesNoPrefixMatch(t *testing.T) {
 		"in via ranet0 ipv4 source 192.0.2.2",
 		"local via ranet0 ipv4 from 192.0.2.2/32 masquerade",
 	}
-	if got := be.specs(); !slices.Equal(got, want) {
+	if got := be.translations(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
+	}
+}
+
+// The return direction translates a LAN's flows into the mesh, a NAT as a
+// class's is, so the rule of each advertised prefix attaches the exit's
+// timeouts first, by a rule for UDP, for TCP and for the family's ICMP keyed as
+// it is.
+func TestReturnDirectionAttachesTheExitsTimeouts(t *testing.T) {
+	cfg := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24", "2001:db8:1::/48")}
+	rt := Runtime{MeshAddresses: []netip.Addr{netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("3fff::2")}}
+	be := &fakeBackend{}
+	if err := translator(t, cfg, rt, be).reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"in via ranet0 ipv4 from 198.51.100.0/24 timeouts udp",
+		"in via ranet0 ipv4 from 198.51.100.0/24 timeouts tcp",
+		"in via ranet0 ipv4 from 198.51.100.0/24 timeouts icmp",
+		"in via ranet0 ipv4 from 198.51.100.0/24 source 192.0.2.2",
+		"in via ranet0 ipv6 from 2001:db8:1::/48 timeouts udp",
+		"in via ranet0 ipv6 from 2001:db8:1::/48 timeouts tcp",
+		"in via ranet0 ipv6 from 2001:db8:1::/48 timeouts icmpv6",
+		"in via ranet0 ipv6 from 2001:db8:1::/48 source 3fff::2",
+	}
+	inbound := slices.DeleteFunc(be.specs(), func(spec string) bool { return !strings.HasPrefix(spec, "in ") })
+	if !slices.Equal(inbound, want) {
+		t.Errorf("installed the In rules %q, want %q", inbound, want)
 	}
 }
 
@@ -355,7 +416,7 @@ func TestSIDOnlyExitTranslatesTheTunInBothFamilies(t *testing.T) {
 		"out via ranet0 ipv4 masquerade",
 		"out via ranet0 ipv6 masquerade",
 	}
-	if got := be.specs(); !slices.Equal(got, want) {
+	if got := be.translations(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
 	}
 	if len(announced) != 1 || len(announced[0]) != 0 {
@@ -385,7 +446,7 @@ func TestSteeredExitKeysOneRulePerFamilyOnTheTun(t *testing.T) {
 		"local via ranet0 ipv4 from 192.0.2.2/32 source 198.51.100.7",
 		"out via ranet0 ipv6 masquerade",
 	}
-	if got := be.specs(); !slices.Equal(got, want) {
+	if got := be.translations(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
 	}
 	if be.applied != 1 {
@@ -420,7 +481,7 @@ func TestRulesAreGroupedByFamilyAsTheyAreReadBack(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := be.specs(); !slices.Equal(got, want) {
+	if got := be.translations(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
 	}
 	if be.applied != 1 {
@@ -889,11 +950,16 @@ func TestStatusIsTheLastPassWithTheRulesAsItsDetail(t *testing.T) {
 		Advertise: plain(cfg.Advertise), Announced: plain(cfg.Advertise[:1]),
 		Translate: cfg.Translate, Return: true,
 		PassAt: stats.At,
-		// in ip the two classes, the return and the own address under none, in
-		// ip6 the catch-all, the return and the own address, each read back with
-		// the three flows the fake host counts
-		Rules: &egress.Rules{Installed: 7, Flows: 15, Untranslated: 6, Conflicts: be.conflicts},
+		// in ip the two classes, the address's with its three timeout rules, the
+		// return and the own address under none, in ip6 the catch-all and the
+		// own address, each with its three timeout rules, and the return, each
+		// rule but a timeout rule, which has no counter, read back with the three
+		// flows the fake host counts
+		Rules: &egress.Rules{Installed: 16, Flows: 15, Untranslated: 6, Conflicts: be.conflicts},
 	}
+	// and the return's three timeout rules in each family, ahead of its
+	// translation
+	want.Rules.Installed += 6
 	if got := tr.Status(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Status is\n%+v\nwant\n%+v", got, want)
 	}

@@ -30,8 +30,12 @@ import (
 type chainPacket struct {
 	iif, oif string
 	nfproto  uint8
-	// network is the network header and everything after it
-	network []byte
+	// network is the network header and everything after it, and transport
+	// the header of l4proto, the protocol the kernel finds past the network
+	// headers, and everything after it
+	network   []byte
+	l4proto   uint8
+	transport []byte
 }
 
 // chainRun records the verdict an interpreted chain gave one packet
@@ -43,6 +47,9 @@ type chainRun struct {
 	// translation records the nat statement ending the rule, the zero value
 	// where none did
 	translation translation
+	// timeouts names the last timeout object a rule on the way attached, empty
+	// where none did
+	timeouts string
 }
 
 // translation is a nat statement's work on a packet's source: masquerade, or
@@ -52,38 +59,50 @@ type translation struct {
 	to         netip.Addr
 }
 
-// ruleRun records one interpreted rule's work on a packet it decided
+// ruleRun records one interpreted rule's work on a packet: the verdict of one
+// it decided, and the timeout object one attached, decided or not
 type ruleRun struct {
 	code        uint32
 	counted     bool
 	translation translation
+	timeouts    string
 }
 
 // runChain evaluates the encoded rules in order against packet, as
 // nf_tables does: the first rule to reach a verdict decides, and a packet no
-// rule decides meets the chain's accept policy
+// rule decides meets the chain's accept policy. A rule attaching a timeout
+// object attaches it on the way, the last one to attach overriding those
+// before it.
 func runChain(t testing.TB, rules []nftables.Request, packet chainPacket) chainRun {
 	t.Helper()
+	var timeouts string
 	for i, rule := range rules {
 		run, decided := runRule(t, rule.Body, packet)
+		if run.timeouts != "" {
+			timeouts = run.timeouts
+		}
 		if !decided {
 			continue
 		}
 		if run.code != nftables.Accept && run.code != verdictDrop {
 			t.Fatalf("rule %d ends with verdict %d, neither accept nor drop", i, run.code)
 		}
-		return chainRun{rule: i, accept: run.code == nftables.Accept, counted: run.counted, translation: run.translation}
+		return chainRun{rule: i, accept: run.code == nftables.Accept, counted: run.counted, translation: run.translation, timeouts: timeouts}
 	}
-	return chainRun{rule: -1, accept: true}
+	return chainRun{rule: -1, accept: true, timeouts: timeouts}
 }
 
 // runRule executes one rule's expression bytes against packet over register
 // 1, failing the test on any expression, attribute or register it does not
 // model rather than guessing at it. A load or a comparison that fails ends
 // the rule undecided, which is NFT_BREAK, and a nat statement ends it with
-// the packet accepted as translated.
+// the packet accepted as translated. An objref of a timeout object attaches it
+// and goes on, and a rule ending past its last expression is undecided, which
+// is NFT_CONTINUE.
 func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decided bool) {
 	t.Helper()
+	// what a rule ending undecided leaves is the timeout object it attached
+	undecided := func() (ruleRun, bool) { return ruleRun{timeouts: run.timeouts}, false }
 	var register []byte
 	for kind, value := range (nftables.Message{Data: body}).Attributes() {
 		if kind != unix.NFTA_RULE_EXPRESSIONS {
@@ -127,19 +146,27 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 					register = binary.NativeEndian.AppendUint32(nil, index)
 				case unix.NFT_META_NFPROTO:
 					register = []byte{packet.nfproto}
+				case unix.NFT_META_L4PROTO:
+					// one byte, in a register the kernel zeroes whole
+					register = []byte{packet.l4proto, 0, 0, 0}
 				default:
 					t.Fatalf("meta loads key %d, which the interpreter does not model", be32(t, fields[unix.NFTA_META_KEY]))
 				}
 			case "payload":
 				requireRegister(t, name, fields, unix.NFTA_PAYLOAD_DREG)
-				if be32(t, fields[unix.NFTA_PAYLOAD_BASE]) != unix.NFT_PAYLOAD_NETWORK_HEADER {
-					t.Fatalf("payload loads from base %d, not the network header", be32(t, fields[unix.NFTA_PAYLOAD_BASE]))
+				from := packet.network
+				switch base := be32(t, fields[unix.NFTA_PAYLOAD_BASE]); base {
+				case unix.NFT_PAYLOAD_NETWORK_HEADER:
+				case unix.NFT_PAYLOAD_TRANSPORT_HEADER:
+					from = packet.transport
+				default:
+					t.Fatalf("payload loads from base %d, neither the network header nor the transport one", base)
 				}
 				offset, length := int(be32(t, fields[unix.NFTA_PAYLOAD_OFFSET])), int(be32(t, fields[unix.NFTA_PAYLOAD_LEN]))
-				if offset+length > len(packet.network) {
-					return ruleRun{}, false
+				if offset+length > len(from) {
+					return undecided()
 				}
-				register = slices.Clone(packet.network[offset : offset+length])
+				register = slices.Clone(from[offset : offset+length])
 			case "bitwise":
 				requireRegister(t, name, fields, unix.NFTA_BITWISE_SREG)
 				requireRegister(t, name, fields, unix.NFTA_BITWISE_DREG)
@@ -161,11 +188,11 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 				switch be32(t, fields[unix.NFTA_CMP_OP]) {
 				case unix.NFT_CMP_EQ:
 					if !equal {
-						return ruleRun{}, false
+						return undecided()
 					}
 				case unix.NFT_CMP_NEQ:
 					if equal {
-						return ruleRun{}, false
+						return undecided()
 					}
 				default:
 					t.Fatalf("cmp with operator %d, which the interpreter does not model", be32(t, fields[unix.NFTA_CMP_OP]))
@@ -176,7 +203,7 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 					t.Fatalf("exthdr names its header in %d bytes, not one", len(fields[unix.NFTA_EXTHDR_TYPE]))
 				}
 				if packet.nfproto != unix.NFPROTO_IPV6 {
-					return ruleRun{}, false
+					return undecided()
 				}
 				start, found := findExtension(packet.network, fields[unix.NFTA_EXTHDR_TYPE][0])
 				offset, length := int(be32(t, fields[unix.NFTA_EXTHDR_OFFSET])), int(be32(t, fields[unix.NFTA_EXTHDR_LEN]))
@@ -192,7 +219,7 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 					continue
 				}
 				if !found || start+offset+length > len(packet.network) {
-					return ruleRun{}, false
+					return undecided()
 				}
 				register = slices.Clone(packet.network[start+offset : start+offset+length])
 			case "counter":
@@ -236,12 +263,17 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 				to, _ := netip.AddrFromSlice(register[:size])
 				run.code, run.translation = nftables.Accept, translation{to: to}
 				return run, true
+			case "objref":
+				if kind := be32(t, fields[unix.NFTA_OBJREF_IMM_TYPE]); kind != unix.NFT_OBJECT_CT_TIMEOUT {
+					t.Fatalf("objref names an object of type %d, where the interpreter models a ct timeout's", kind)
+				}
+				run.timeouts = unix.ByteSliceToString(fields[unix.NFTA_OBJREF_IMM_NAME])
 			default:
 				t.Fatalf("the rule holds a %q expression, which the interpreter does not model", name)
 			}
 		}
 	}
-	return ruleRun{}, false
+	return undecided()
 }
 
 // modeled is the attributes the interpreter reads of each expression. Any
@@ -258,6 +290,7 @@ var modeled = map[string][]uint16{
 	"immediate": {unix.NFTA_IMMEDIATE_DREG, unix.NFTA_IMMEDIATE_DATA},
 	"masq":      {},
 	"nat":       {unix.NFTA_NAT_TYPE, unix.NFTA_NAT_FAMILY, unix.NFTA_NAT_REG_ADDR_MIN},
+	"objref":    {unix.NFTA_OBJREF_IMM_TYPE, unix.NFTA_OBJREF_IMM_NAME},
 }
 
 func requireRegister(t testing.TB, name string, fields map[uint16][]byte, kind uint16) {
@@ -341,16 +374,24 @@ type drawnPacket struct {
 func isRouting(header string) bool { return strings.HasPrefix(header, "routing") }
 
 // wire is the packet's bytes from its network header on, with eight bytes of
-// UDP after the headers
-func (p drawnPacket) wire() chainPacket {
+// UDP to port 0 after the headers
+func (p drawnPacket) wire() chainPacket { return p.carrying(unix.IPPROTO_UDP, 0) }
+
+// carrying is the packet's bytes from its network header on, with eight bytes
+// of protocol after the headers whose destination port, the third and fourth
+// of UDP's and TCP's, is port
+func (p drawnPacket) carrying(protocol uint8, port uint16) chainPacket {
+	transport := binary.BigEndian.AppendUint16(make([]byte, 2, 8), port)
+	transport = append(transport, make([]byte, 4)...)
 	if p.source.Is4() {
-		header := make([]byte, 20+8)
-		header[0], header[8], header[9] = 0x45, 64, unix.IPPROTO_UDP
+		header := make([]byte, 20, 20+len(transport))
+		header[0], header[8], header[9] = 0x45, 64, protocol
+		header = append(header, transport...)
 		binary.BigEndian.PutUint16(header[2:], uint16(len(header)))
 		source, destination := p.source.As4(), p.destination.As4()
 		copy(header[12:], source[:])
 		copy(header[16:], destination[:])
-		return chainPacket{iif: p.iif, nfproto: unix.NFPROTO_IPV4, network: header}
+		return chainPacket{iif: p.iif, nfproto: unix.NFPROTO_IPV4, network: header, l4proto: protocol, transport: header[20:]}
 	}
 	codes := map[string]uint8{"hop": unix.IPPROTO_HOPOPTS, "dest": unix.IPPROTO_DSTOPTS, "fragment": unix.IPPROTO_FRAGMENT}
 	nexts := make([]uint8, 0, len(p.headers)+1)
@@ -361,7 +402,7 @@ func (p drawnPacket) wire() chainPacket {
 			nexts = append(nexts, codes[header])
 		}
 	}
-	nexts = append(nexts, unix.IPPROTO_UDP)
+	nexts = append(nexts, protocol)
 	out := make([]byte, 40)
 	out[0], out[6], out[7] = 0x60, nexts[0], 64
 	source, destination := p.source.As16(), p.destination.As16()
@@ -386,9 +427,10 @@ func (p drawnPacket) wire() chainPacket {
 			out = append(out, nexts[i+1], 0, 0, 1, 0, 0, 0x2a, 0x2a)
 		}
 	}
-	out = append(out, make([]byte, 8)...)
+	start := len(out)
+	out = append(out, transport...)
 	binary.BigEndian.PutUint16(out[4:], uint16(len(out)-40))
-	return chainPacket{iif: p.iif, nfproto: unix.NFPROTO_IPV6, network: out}
+	return chainPacket{iif: p.iif, nfproto: unix.NFPROTO_IPV6, network: out, l4proto: protocol, transport: out[start:]}
 }
 
 // borderModel gives the verdict the chain means for a packet: whatever
