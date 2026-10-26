@@ -1357,6 +1357,10 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 				{From: schema.MustPrefix("::/0"), To: egress.Translation{Auto: true}},
 			}, Sweep: schema.Duration(egress.DefaultSweep)}},
 		},
+		"the egress share of flows written as the default it means": {
+			{Egress: &egress.Egress{Advertise: exit}},
+			{Egress: &egress.Egress{Advertise: exit, FlowsPerSource: egress.DefaultFlowsPerSource}},
+		},
 		"the same egress classes in the other order": {
 			{Egress: &egress.Egress{Advertise: exit, Translate: []egress.Class{
 				{From: schema.MustPrefix("198.51.100.0/24"), To: egress.Translation{None: true}},

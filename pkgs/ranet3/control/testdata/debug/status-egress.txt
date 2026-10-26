@@ -7,3 +7,8 @@ nftables ip ranet3, ip6 ranet3, 2 rules, 0 flows, announcing ::/0, withholding 1
 nftables ip ranet3, ip6 ranet3, 2 rules, 0 flows, announcing 198.51.100.0/24, withholding ::/0 until its family is ready, egress ready for ipv4, not ready for ipv6, the reply lookup of 3fff:20::1 for ::/0 from 8000:: arriving on eth0 leaves by eth0 rather than ranet3, no pass yet
 nftables ip ranet3, ip6 ranet3, 2 rules, 0 flows, announcing 198.51.100.0/24 ::/0, egress ready for ipv4 ipv6, lookup skipped, the mesh routes no other node's ipv6 prefix inside cap.border.overlay, no pass yet
 nftables ip ranet3, ip6 ranet3, 2 rules, 0 flows, announcing 198.51.100.0/24 ::/0 fe80::/10, egress ready for ipv4 ipv6, lookup skipped for fe80::/10, which holds no address the kernel takes as a unicast destination, no pass yet
+nftables ip ranet3, ip6 ranet3, 20 rules, 4100 flows, conntrack holding 9000 of 262144 entries, no pass yet
+nftables ip ranet3, ip6 ranet3, 20 rules, 4100 flows, 12 ipv4 packets refused past 4096 a source, conntrack holding 9000 of 262144 entries, no pass yet
+nftables ip ranet3, ip6 ranet3, 20 rules, 4100 flows, 12 ipv4 and 3 ipv6 packets refused past 4096 a source, 2 ipv6 packets dropped with no tracked flow, conntrack holding 9000 entries, no pass yet
+nftables ip ranet3, ip6 ranet3, 20 rules, 4100 flows, 3 ipv6 packets refused past 4096 a source, no pass yet
+nftables ip ranet3, ip6 ranet3, 20 rules, 4100 flows, 5 ipv4 and 2 ipv6 packets dropped with no tracked flow, no pass yet

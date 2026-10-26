@@ -137,6 +137,15 @@ func egressLine(e EgressStatus) string {
 		return "off, this node carries no traffic for others"
 	}
 	line := fmt.Sprintf("%s, %d rules, %d flows", e.Where, e.Installed, e.Flows)
+	if refused := packetsText(e.Refused); refused != "" {
+		line += fmt.Sprintf(", %s refused past %d a source", refused, e.FlowsPerSource)
+	}
+	if dropped := packetsText(e.Dropped); dropped != "" {
+		line += fmt.Sprintf(", %s dropped with no tracked flow", dropped)
+	}
+	if e.ConntrackCount != nil {
+		line += ", " + conntrackText(*e.ConntrackCount, e.ConntrackMax)
+	}
 	withheld := make([]string, 0, len(e.Advertise))
 	for _, prefix := range e.Advertise {
 		if !slices.Contains(e.Announced, prefix) {
@@ -175,6 +184,27 @@ func egressLine(e EgressStatus) string {
 		line += ", " + e.Err
 	}
 	return line
+}
+
+func packetsText(r EgressPackets) string {
+	var families []string
+	if r.IPv4 != 0 {
+		families = append(families, fmt.Sprintf("%d ipv4", r.IPv4))
+	}
+	if r.IPv6 != 0 {
+		families = append(families, fmt.Sprintf("%d ipv6", r.IPv6))
+	}
+	if len(families) == 0 {
+		return ""
+	}
+	return strings.Join(families, " and ") + " packets"
+}
+
+func conntrackText(count uint64, most *uint64) string {
+	if most == nil {
+		return fmt.Sprintf("conntrack holding %d entries", count)
+	}
+	return fmt.Sprintf("conntrack holding %d of %d entries", count, *most)
 }
 
 // borderLine leads with where the chain is and what it accepts, then the drops

@@ -117,7 +117,7 @@ func TestBorderChainFiltersAtPreroutingBeforeConntrack(t *testing.T) {
 
 // The border chain reads back as written only as the filter chain at
 // prerouting, priority raw, accepting by default, that the batch creates, and
-// the translator's only as the nat chain it creates. Another type, hook,
+// the translator's only as the chains it creates. Another type, hook,
 // priority or policy, or a regular chain of its name, is a fault, all but the
 // policy one nf_tables will not change in place, and a chain of another name
 // or in another table is none of the filter's business.
@@ -130,8 +130,10 @@ func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 		t.Errorf("the chain the batch writes reads back with the fault %q, remade %v", fault, remake)
 	}
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
-		if fault, remake := postrouting.Fault(nftables.Message{Data: newChain(family).Body}); fault != "" || remake {
-			t.Errorf("the translator's %s chain reads back with the fault %q, remade %v", egress.FamilyName(family), fault, remake)
+		for _, written := range translatorChains {
+			if fault, remake := written.Fault(nftables.Message{Data: written.Create(nftFamily(family)).Body}); fault != "" || remake {
+				t.Errorf("the translator's %s chain %s reads back with the fault %q, remade %v", egress.FamilyName(family), written.Name, fault, remake)
+			}
 		}
 	}
 	chain := func(table, name, kind string, hook uint32, priority int32, policy uint32) nftables.Message {

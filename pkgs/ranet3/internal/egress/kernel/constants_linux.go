@@ -6,9 +6,18 @@
 package kernel
 
 const (
-	// natSrcPriority is NF_IP_PRI_NAT_SRC, where source translation runs.
-	// Chains of several writers coexist there. See Conflicts.
-	natSrcPriority = 100
+	// natPriority is one below NF_IP_PRI_NAT_SRC, where a host's own source
+	// translation runs, so this chain runs ahead of every chain there whatever
+	// order they were made in. See Conflicts.
+	natPriority = 99
+	// filterPriority is NF_IP_PRI_FILTER, where the limit's chain runs
+	filterPriority = 0
+	// flowsSet starts the name of the set LimitChain counts each source's flows
+	// in, the family's digit ending it
+	flowsSet = "flows"
+	// setSize is the most sources a family's set of flows holds. The set then
+	// takes no new one, and LimitChain leaves that source's flows uncounted.
+	setSize = 65535
 	// verdictDrop is NF_DROP, which a border chain drop rule ends with
 	verdictDrop = 0
 	// ipv6DestinationOffset is where the destination sits in an IPv6 header

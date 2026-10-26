@@ -63,7 +63,7 @@ func TestTerminatingBackendMeetsThePathMTURow(t *testing.T) {
 // names
 func fakeRows(t *testing.T, arm Arm, run func(t *testing.T, r *rows)) {
 	network := Namespaces(t)
-	exit := start(t, network, arm, Auto)
+	exit := start(t, network, arm, Auto, 0)
 	for _, v6 := range []bool{false, true} {
 		r := &rows{network: network, family: network.Family(v6), class: Auto, exit: exit, terminates: arm.Terminates}
 		t.Run(r.family.Name, func(t *testing.T) { run(t, r) })

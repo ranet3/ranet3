@@ -36,6 +36,8 @@ type chainPacket struct {
 	network   []byte
 	l4proto   uint8
 	transport []byte
+	// ctState is the packet's state as ct state reads it, one NF_CT_STATE_ bit
+	ctState uint32
 }
 
 // chainRun records the verdict an interpreted chain gave one packet
@@ -152,6 +154,12 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 				default:
 					t.Fatalf("meta loads key %d, which the interpreter does not model", be32(t, fields[unix.NFTA_META_KEY]))
 				}
+			case "ct":
+				requireRegister(t, name, fields, unix.NFTA_CT_DREG)
+				if key := be32(t, fields[unix.NFTA_CT_KEY]); key != unix.NFT_CT_STATE {
+					t.Fatalf("ct loads key %d, where the interpreter models ct state", key)
+				}
+				register = binary.NativeEndian.AppendUint32(nil, packet.ctState)
 			case "payload":
 				requireRegister(t, name, fields, unix.NFTA_PAYLOAD_DREG)
 				from := packet.network
@@ -282,6 +290,7 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 // test.
 var modeled = map[string][]uint16{
 	"meta":      {unix.NFTA_META_KEY, unix.NFTA_META_DREG},
+	"ct":        {unix.NFTA_CT_KEY, unix.NFTA_CT_DREG},
 	"payload":   {unix.NFTA_PAYLOAD_DREG, unix.NFTA_PAYLOAD_BASE, unix.NFTA_PAYLOAD_OFFSET, unix.NFTA_PAYLOAD_LEN},
 	"bitwise":   {unix.NFTA_BITWISE_SREG, unix.NFTA_BITWISE_DREG, unix.NFTA_BITWISE_LEN, unix.NFTA_BITWISE_MASK, unix.NFTA_BITWISE_XOR},
 	"cmp":       {unix.NFTA_CMP_SREG, unix.NFTA_CMP_OP, unix.NFTA_CMP_DATA},

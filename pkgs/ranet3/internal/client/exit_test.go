@@ -52,10 +52,13 @@ func (f *fakeExit) Status() egress.Status { return f.status }
 
 // The status renders an exit's Status field for field, its families ready
 // from the exit's own word rather than from what the capability advertises,
-// and the rules' counters from the backend's detail, zero where it has none
+// the limit, its refusals and the packets dropped with no tracked flow from
+// every exit's part, and the rules' counters and the host's connection table
+// from the backend's detail, zero or left out where it has none
 func TestStatusRendersTheExitsStatusFieldForField(t *testing.T) {
 	passAt := time.Date(2026, 10, 25, 7, 0, 0, 0, time.UTC)
 	advertise := []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}
+	count, most := uint64(9000), uint64(262144)
 	status := egress.Status{
 		Backend: "nftables", Where: "nftables table ip and ip6 ranet3 chain egress",
 		Ready4: true, Unready: "ipv6 is not forwarded", Skipped: "ipv6 has no member to read from",
@@ -64,9 +67,13 @@ func TestStatusRendersTheExitsStatusFieldForField(t *testing.T) {
 			{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Addr: netip.MustParseAddr("198.51.100.7")}},
 			{From: schema.MustPrefix("198.51.100.0/24"), To: egress.Translation{None: true}},
 		},
-		Return: true,
+		Return:         true,
+		FlowsPerSource: 1000, Refused4: 7, Refused6: 1, Dropped4: 4, Dropped6: 2,
 		PassAt: passAt, Err: "list rules: no",
-		Rules: &egress.Rules{Installed: 3, Flows: 5, Bytes: 420, Untranslated: 2, Conflicts: []string{"ip table nat chain POSTROUTING at priority 100"}},
+		Rules: &egress.Rules{
+			Installed: 3, Flows: 5, Bytes: 420, Untranslated: 2, ConntrackCount: &count, ConntrackMax: &most,
+			Conflicts: []string{"ip table nat chain POSTROUTING at priority 100"},
+		},
 	}
 	want := control.EgressStatus{
 		Enabled: true, Where: status.Where,
@@ -77,7 +84,8 @@ func TestStatusRendersTheExitsStatusFieldForField(t *testing.T) {
 		},
 		Return:    true,
 		Advertise: advertise, Announced: advertise[:1],
-		PassAt: passAt, Installed: 3, Flows: 5, Bytes: 420, Untranslated: 2,
+		FlowsPerSource: 1000, Refused: control.EgressPackets{IPv4: 7, IPv6: 1}, Dropped: control.EgressPackets{IPv4: 4, IPv6: 2},
+		PassAt: passAt, Installed: 3, Flows: 5, Bytes: 420, Untranslated: 2, ConntrackCount: &count, ConntrackMax: &most,
 		Conflicts: status.Rules.Conflicts, Err: status.Err,
 	}
 	c := writable(t)
@@ -91,6 +99,7 @@ func TestStatusRendersTheExitsStatusFieldForField(t *testing.T) {
 	}
 	exit.status.Ready4, exit.status.Ready6, exit.status.Rules = false, true, nil
 	want.Ready, want.Installed, want.Flows, want.Bytes, want.Untranslated, want.Conflicts = []string{"ipv6"}, 0, 0, 0, 0, nil
+	want.ConntrackCount, want.ConntrackMax = nil, nil
 	if got := c.exitStatus(); !reflect.DeepEqual(got, want) {
 		t.Errorf("an exit holding no rules renders\n%+v\nwant\n%+v", got, want)
 	}

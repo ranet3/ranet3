@@ -54,15 +54,120 @@ func TestTranslatorRecordsThePassesThatDidSomething(t *testing.T) {
 		}
 		got = append(got, []string{event.Kind, event.Attrs["installed"], event.Attrs["announced"], event.Attrs["err"]})
 	}
-	// each family's masquerade with its three timeout rules
+	// each family's drop of what no flow is tracked for, its limit, and its
+	// masquerade with its three timeout rules
 	want := [][]string{
-		{"egress.pass", "8", "2", ""},
-		{"egress.pass", "8", "2", ""},
-		{"egress.pass", "8", "1", ""},
+		{"egress.pass", "12", "2", ""},
+		{"egress.pass", "12", "2", ""},
+		{"egress.pass", "12", "1", ""},
 		{"egress.pass", "0", "0", "install rules: no"},
 	}
 	if !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("the translator recorded %q, want %q", got, want)
+	}
+}
+
+// a pass whose limit counted refused packets records how many in each family
+// since the last pass, from zero where the pass wrote the chains or where the
+// counter went back, and a pass the counter did not move for records nothing
+func TestTranslatorRecordsThePacketsTheLimitRefused(t *testing.T) {
+	bus := events.New()
+	be := &fakeBackend{flows: 3}
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{Hooks: egress.Hooks{Events: bus}}, be)
+	var want []string
+	for _, step := range []struct {
+		name    string
+		flows   uint64
+		flushed bool
+		since   string
+	}{
+		{"the first pass, which writes the chains", 3, false, "3"},
+		{"a pass the counters did not move for", 3, false, ""},
+		{"a pass after two more were refused", 5, false, "2"},
+		{"a pass after the counters were reset and one was refused", 1, false, "1"},
+		{"a pass after another writer flushed the chains", 4, true, "4"},
+	} {
+		be.mu.Lock()
+		be.flows = step.flows
+		if step.flushed {
+			be.held = nil
+		}
+		be.mu.Unlock()
+		if err := tr.reconcile(); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		if step.since != "" {
+			want = append(want, "ipv4 "+step.since, "ipv6 "+step.since)
+		}
+	}
+	var got []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.refused" }, 0) {
+		got = append(got, event.Attrs["family"]+" "+event.Attrs["refused"])
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("the translator recorded the refused packets %q, want %q", got, want)
+	}
+}
+
+// a pass that cannot read the rules back keeps the last pass's refusals, drops
+// and flows in Status rather than reading as a reset, and the pass after it
+// records no refusal a pass before it recorded. A pass that rewrote the chains
+// and cannot read them back counts from zero, as the chains it wrote do, and
+// the pass after it records the refusals since the rewrite alone.
+func TestFailedReadbackKeepsTheLastPassCounts(t *testing.T) {
+	bus := events.New()
+	be := &fakeBackend{flows: 3}
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{Hooks: egress.Hooks{Events: bus}}, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	counts := func(s egress.Status) [7]uint64 {
+		return [7]uint64{s.Refused4, s.Refused6, s.Dropped4, s.Dropped6, s.Rules.Flows, s.Rules.Bytes, s.Rules.Untranslated}
+	}
+	want := counts(tr.Status())
+	be.mu.Lock()
+	be.failRules = true
+	be.mu.Unlock()
+	if err := tr.reconcile(); err == nil {
+		t.Fatal("a pass that could not list the rules reported no error")
+	}
+	if got := counts(tr.Status()); got != want {
+		t.Errorf("after a pass that could not list the rules Status counts %v, want the last pass's %v", got, want)
+	}
+	be.mu.Lock()
+	be.failRules = false
+	be.mu.Unlock()
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	refusals := func() []string {
+		var got []string
+		for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.refused" }, 0) {
+			got = append(got, event.Attrs["family"]+" "+event.Attrs["refused"])
+		}
+		return got
+	}
+	if got, want := refusals(), []string{"ipv4 3", "ipv6 3"}; !slices.Equal(got, want) {
+		t.Errorf("the translator recorded the refusals %q, want the first pass's %q alone", got, want)
+	}
+
+	be.mu.Lock()
+	be.held, be.failReadback = nil, true
+	be.mu.Unlock()
+	if err := tr.reconcile(); err == nil {
+		t.Fatal("a pass that could not read back the chains it wrote reported no error")
+	}
+	if got := counts(tr.Status()); got != [7]uint64{} {
+		t.Errorf("after a pass that rewrote the chains and could not read them back Status counts %v, want zero", got)
+	}
+	be.mu.Lock()
+	be.flows, be.failReadback = 2, false
+	be.mu.Unlock()
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := refusals(), []string{"ipv4 3", "ipv6 3", "ipv4 2", "ipv6 2"}; !slices.Equal(got, want) {
+		t.Errorf("the translator recorded the refusals %q, want the first pass's and those since the rewrite, %q", got, want)
 	}
 }
 

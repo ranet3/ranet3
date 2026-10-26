@@ -318,6 +318,14 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 			asYAML: "cap:\n  egress:\n    advertise: [\"0.0.0.0/0\"]\n    translate: [{ from: \"0.0.0.0/0\", to: 127.0.0.1 }]\n",
 			asTOML: "[cap.egress]\nadvertise = [\"0.0.0.0/0\"]\ntranslate = [{ from = \"0.0.0.0/0\", to = \"127.0.0.1\" }]\n",
 		},
+		"a negative share of an exit's flows": {
+			asYAML: "cap:\n  egress:\n    advertise: [\"0.0.0.0/0\"]\n    flows_per_source: -1\n",
+			asTOML: "[cap.egress]\nadvertise = [\"0.0.0.0/0\"]\nflows_per_source = -1\n",
+		},
+		"a share of an exit's flows past any connection table": {
+			asYAML: "cap:\n  egress:\n    advertise: [\"0.0.0.0/0\"]\n    flows_per_source: 2147483648\n",
+			asTOML: "[cap.egress]\nadvertise = [\"0.0.0.0/0\"]\nflows_per_source = 2147483648\n",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadYAML(t, nodeYAML+pair.asYAML); err == nil {
@@ -729,6 +737,10 @@ func TestRefusalsNameTheBlockTheOperatorWrote(t *testing.T) {
 		"a steering entry with no source anywhere": {
 			body:  "cap:\n  segment:\n    steer: [{ from: \"3fff:a::1/128\", via: [\"3fff:1:69c::1\"] }]\n",
 			names: []string{"cap.segment steer", "names no source", "3fff:a::1/128"},
+		},
+		"a share of an exit's flows past any connection table": {
+			body:  "cap:\n  egress:\n    advertise: [\"0.0.0.0/0\"]\n    flows_per_source: 2147483648\n",
+			names: []string{"cap.egress flows_per_source", "2147483648", "2147483647"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1260,8 +1272,9 @@ func fullConfig() Config {
 					{From: schema.MustPrefix("198.51.100.0/24"), To: egress.Translation{None: true}},
 					{From: schema.MustPrefix("3fff::/20"), To: egress.Translation{Auto: true}},
 				},
-				Return: true,
-				Sweep:  schema.Duration(45 * time.Second),
+				Return:         true,
+				FlowsPerSource: 2048,
+				Sweep:          schema.Duration(45 * time.Second),
 			},
 			// covering the egress segment's allow list, which the loader asks of it
 			Border: &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("198.18.0.0/15")}},

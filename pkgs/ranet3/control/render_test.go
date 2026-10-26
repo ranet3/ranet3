@@ -222,7 +222,9 @@ func TestStatusTransitLineRendersAsTheGoldenFile(t *testing.T) {
 // first pass, and says what the route lookups left out and why: a family held
 // by a forward lookup that failed, its prefix withheld, one held by a reply
 // lookup leaving by the uplink, a family with no member to read from and a
-// prefix with no address to read
+// prefix with no address to read. It names the flows each family's limit
+// refused where any were, against the limit, and the host's connection table
+// against its maximum, as far as the pass read them.
 func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 	var out strings.Builder
 	for _, ready := range [][]string{nil, {"ipv6"}, {"ipv4", "ipv6"}} {
@@ -253,6 +255,17 @@ func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 	} {
 		judged.Enabled, judged.Where, judged.Installed = true, "nftables ip ranet3, ip6 ranet3", 2
 		out.WriteString(egressLine(judged) + "\n")
+	}
+	count, most := uint64(9000), uint64(262144)
+	for _, limited := range []EgressStatus{
+		{FlowsPerSource: 4096, ConntrackCount: &count, ConntrackMax: &most},
+		{FlowsPerSource: 4096, Refused: EgressPackets{IPv4: 12}, ConntrackCount: &count, ConntrackMax: &most},
+		{FlowsPerSource: 4096, Refused: EgressPackets{IPv4: 12, IPv6: 3}, Dropped: EgressPackets{IPv6: 2}, ConntrackCount: &count},
+		{FlowsPerSource: 4096, Refused: EgressPackets{IPv6: 3}},
+		{FlowsPerSource: 4096, Dropped: EgressPackets{IPv4: 5, IPv6: 2}},
+	} {
+		limited.Enabled, limited.Where, limited.Installed, limited.Flows = true, "nftables ip ranet3, ip6 ranet3", 20, 4100
+		out.WriteString(egressLine(limited) + "\n")
 	}
 	golden(t, "status-egress.txt", []byte(out.String()))
 }

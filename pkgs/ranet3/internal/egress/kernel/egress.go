@@ -10,8 +10,10 @@
 // # Ownership
 //
 // On linux the translation is an nftables table named after this tool, one per
-// address family, holding one nat postrouting chain. That name is the ownership
-// marker, the way Table.Proto is the reconciler's in internal/kernel. This
+// address family, holding a nat postrouting chain that translates, the timeout
+// objects it attaches, and a filter forward chain with a set that holds each
+// mesh source to its share of the flows. That name is the ownership marker, the
+// way Table.Proto is the reconciler's in internal/kernel. This
 // package creates the table, writes only inside it and withdraws it whole at
 // shutdown. It reads other writers' tables, chains and rules to find its own
 // and to report conflicts, and writes, replaces or deletes nothing outside its
@@ -37,7 +39,7 @@
 // An exit whose rule will not install, or whose kernel will not forward, would
 // therefore attract traffic and drop it with nothing to tell the sender. So the
 // advertisement is published by this package rather than by the configuration:
-// Announce answers the prefixes of each family that is ready, whose chain
+// Announce answers the prefixes of each family that is ready, whose table
 // reads back as written, which the kernel forwards and whose route lookups
 // take a translated packet's path, and nothing at all while no family is, and
 // Republish says when that answer moves. Forwarding is the same fact
@@ -81,6 +83,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -129,7 +132,7 @@ type Runtime struct {
 	Write func(frames [][]byte)
 	// Hooks report what every exit reports. Republish is called once per pass
 	// whose announcement differs from the last. A family is ready while this
-	// node translates it, its chain reads back exactly as written, the host
+	// node translates it, its table reads back exactly as written, the host
 	// forwards it, the host holds every address its classes translate to, and
 	// the kernel's lookups route a translated packet and its reply the way the
 	// translation needs (see judge). The SIDs are served while at least one
@@ -196,10 +199,11 @@ func (t Timeouts) String() string {
 	return ""
 }
 
-// Rule is one rule this node installs, a translation or the timeouts ahead of
-// one, and simultaneously the diff key: the backend writes String into the
-// rule's own comment and reads it back, so two rules with equal fields are the
-// same rule whatever the kernel does to the expressions in between.
+// Rule is one rule this node installs, a translation, the timeouts ahead of
+// one or the limit on each source's flows, and simultaneously the diff key: the
+// backend writes String into the rule's own comment and reads it back, so two
+// rules with equal fields are the same rule whatever the kernel does to the
+// expressions in between.
 type Rule struct {
 	Family    uint8
 	Direction Direction
@@ -223,6 +227,15 @@ type Rule struct {
 	// unset. Such rules come ahead of each rule that translates, an In rule's
 	// among them, keyed as it is.
 	Timeouts Timeouts
+	// Limit makes the rule its family's one Out rule of the limit's chain,
+	// which refuses a source's new flow while the source holds Limit, with
+	// every field but Family, Direction and Interface left unset
+	Limit int
+	// Untracked makes the rule an Out or In rule of the limit's chain, ahead of
+	// the limit, that takes a packet from From no flow is tracked for and drops
+	// it, or passes an Out one on where None is set. nf_nat leaves such a packet
+	// as it is, so a rule that translates would send it on under its own source.
+	Untracked bool
 }
 
 // String is the rule as an operator reads it in `nft list ruleset` and as the
@@ -231,6 +244,12 @@ type Rule struct {
 func (r Rule) String() string {
 	action := "masquerade"
 	switch {
+	case r.Limit != 0:
+		action = fmt.Sprintf("limit %d", r.Limit)
+	case r.Untracked && r.None:
+		action = "untracked passed"
+	case r.Untracked:
+		action = "untracked dropped"
 	case r.Timeouts != NoTimeouts:
 		action = "timeouts " + r.Timeouts.String()
 	case r.None:
@@ -263,8 +282,9 @@ type Installed struct {
 // chainReadback is nftables.Readback with each rule placed in its family. It
 // lives here rather than there because this file builds on every platform.
 type chainReadback struct {
-	// rules is every rule of the chain in order, one carrying no comment as an
-	// empty spec, which no rule this package writes has
+	// rules is every rule of the family's chains in order, the chains in the
+	// order desired writes them, one carrying no comment as an empty spec,
+	// which no rule this package writes has
 	rules  []Installed
 	fault  string
 	remake bool
@@ -274,12 +294,12 @@ type chainReadback struct {
 // portable and syscall-free, so the diff and the refusal rules are testable
 // against a fake.
 type backend interface {
-	// Rules reads back this tool's own chain and the table holding it in each
-	// family it owns, keyed by family.
+	// Rules reads back this tool's own chains and the table holding them in
+	// each family it owns, keyed by family.
 	Rules() (map[uint8]chainReadback, error)
-	// Apply brings this tool's own chain to rules, deleting the table of each
-	// family in remake first. It replaces the chain's contents in one
-	// transaction rather than editing it, because nftables commits a batch
+	// Apply brings this tool's own chains to rules, deleting the table of each
+	// family in remake first. It replaces the chains' contents in one
+	// transaction rather than editing them, because nftables commits a batch
 	// atomically and a chain rewritten rule by rule has a window in which a
 	// packet leaves untranslated.
 	Apply(rules []Rule, remake []uint8) error
@@ -314,9 +334,16 @@ type passStats struct {
 	Flows        uint64
 	Bytes        uint64
 	Untranslated uint64
-	Announced    []netip.Prefix
-	Conflicts    []string
-	Err          string
+	// Refused4 and Refused6 count each family's packets the limit refused, each
+	// retry of a refused flow among them, Dropped4 and Dropped6 those dropped
+	// for want of a tracked flow, and ConntrackCount and ConntrackMax are the
+	// host's table, nil where unread
+	Refused4, Refused6           uint64
+	Dropped4, Dropped6           uint64
+	ConntrackCount, ConntrackMax *uint64
+	Announced                    []netip.Prefix
+	Conflicts                    []string
+	Err                          string
 	// Ready4 and Ready6 are each family's readiness, false for a family this
 	// node does not translate. Unready says why a family it translates is not
 	// ready, and Skipped what the lookups left out and why, each empty where
@@ -403,8 +430,13 @@ func (t *Translator) Status() egress.Status {
 		Ready4: stats.Ready4, Ready6: stats.Ready6, Unready: stats.Unready, Skipped: stats.Skipped,
 		Advertise: advertise, Announced: stats.Announced,
 		Translate: t.cfg.Translate, Return: t.cfg.Return,
+		FlowsPerSource: t.cfg.SourceLimit(), Refused4: stats.Refused4, Refused6: stats.Refused6,
+		Dropped4: stats.Dropped4, Dropped6: stats.Dropped6,
 		PassAt: stats.At, Err: stats.Err,
-		Rules: &egress.Rules{Installed: stats.Installed, Flows: stats.Flows, Bytes: stats.Bytes, Untranslated: stats.Untranslated, Conflicts: stats.Conflicts},
+		Rules: &egress.Rules{
+			Installed: stats.Installed, Flows: stats.Flows, Bytes: stats.Bytes, Untranslated: stats.Untranslated,
+			ConntrackCount: stats.ConntrackCount, ConntrackMax: stats.ConntrackMax, Conflicts: stats.Conflicts,
+		},
 	}
 }
 
@@ -547,6 +579,7 @@ func (t *Translator) reconcile() error {
 	desired := t.desired()
 	applied := false
 	read, err := t.be.Rules()
+	unread := err != nil
 	held, faulted, remake := flatten(read)
 	if err != nil {
 		err = fmt.Errorf("list rules: %w", err)
@@ -574,11 +607,11 @@ func (t *Translator) reconcile() error {
 	// than captured at startup, because each part of it changes under a
 	// running node: a table can be flushed by somebody else, a forwarding
 	// sysctl can be turned on after this process started, and a route can send
-	// a translated packet or its reply another way. A family's chain
-	// counts only while it and its table read back exactly as written, since
+	// a translated packet or its reply another way. A family's chains
+	// count only while they and their table read back exactly as written, since
 	// another writer's rule among this tool's, a dormant table or a chain at
 	// another hook, which an apply that failed leaves in place, changes what
-	// the chain does to a packet.
+	// a chain does to a packet.
 	v4, v6 := t.rt.Forwarding()
 	forwards := map[uint8]bool{egress.FamilyIPv4: v4, egress.FamilyIPv6: v6}
 	unwritten := map[uint8]string{}
@@ -587,7 +620,7 @@ func (t *Translator) reconcile() error {
 		case read[family].fault != "":
 			unwritten[family] = read[family].fault
 		case !sameFamilyRules(held, desired, family):
-			unwritten[family] = "its chain does not read back as written"
+			unwritten[family] = "its chains do not read back as written"
 		}
 	}
 	judged := t.judge(unwritten, forwards)
@@ -602,28 +635,51 @@ func (t *Translator) reconcile() error {
 	t.setReady(j4.ready, j6.ready, j4.why, j6.why, skippedText(j4, j6))
 	moved := t.publish(announced)
 
-	binding := map[string]bool{}
+	kinds := map[string]Rule{}
 	for _, rule := range desired {
-		binding[rule.String()] = rule.None
+		kinds[rule.String()] = rule
 	}
 	var flows, bytes, untranslated uint64
+	refused, dropped := map[uint8]uint64{}, map[uint8]uint64{}
 	for _, rule := range held {
-		if binding[rule.Spec] {
+		switch kind := kinds[rule.Spec]; {
+		case kind.Limit != 0:
+			refused[rule.Family] += rule.Packets
+		case kind.Untracked:
+			dropped[rule.Family] += rule.Packets
+		case kind.None:
 			untranslated += rule.Packets
-			continue
+		default:
+			flows += rule.Packets
+			bytes += rule.Bytes
 		}
-		flows += rule.Packets
-		bytes += rule.Bytes
+	}
+	// the counters are the host's, and a pass that could not read them keeps the
+	// last pass's rather than reading as a reset. One that rewrote the chains
+	// starts from zero as their counters do, whether or not it read them back.
+	if unread {
+		last := t.lastPass()
+		flows, bytes, untranslated = last.Flows, last.Bytes, last.Untranslated
+		refused[egress.FamilyIPv4], refused[egress.FamilyIPv6] = last.Refused4, last.Refused6
+		dropped[egress.FamilyIPv4], dropped[egress.FamilyIPv6] = last.Dropped4, last.Dropped6
 	}
 	stats := passStats{
 		At: time.Now(), Desired: len(desired), Installed: len(held),
 		Flows: flows, Bytes: bytes, Untranslated: untranslated,
+		Refused4: refused[egress.FamilyIPv4], Refused6: refused[egress.FamilyIPv6],
+		Dropped4: dropped[egress.FamilyIPv4], Dropped6: dropped[egress.FamilyIPv6],
+		ConntrackCount: t.conntrack("count"), ConntrackMax: t.conntrack("max"),
 		Announced: announced, Conflicts: conflicts,
 		Ready4: t.ready4, Ready6: t.ready6, Unready: t.unready, Skipped: t.skipped,
 	}
 	if err != nil {
 		stats.Err = err.Error()
 	}
+	last := t.lastPass()
+	if applied {
+		last = passStats{}
+	}
+	t.reportRefused(last, stats)
 	t.stats.Store(&stats)
 	if applied || moved || err != nil {
 		attrs := []slog.Attr{slog.String("trigger", t.trigger), slog.Duration("took", time.Since(started)),
@@ -634,6 +690,34 @@ func (t *Translator) reconcile() error {
 		t.rt.Events.Emit("egress.pass", "", attrs...)
 	}
 	return err
+}
+
+// conntrack reads conntrack's setting of that name, nil where it cannot, as
+// before conntrack has loaded
+func (t *Translator) conntrack(setting string) *uint64 {
+	value, err := strconv.ParseUint(t.rt.Sysctl("net/netfilter/nf_conntrack_"+setting), 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &value
+}
+
+// reportRefused records egress.refused for each family whose count of refused
+// packets moved from last to now, with the packets refused since. A count below
+// the last, which a reset of the rule's counter leaves, counts from zero.
+func (t *Translator) reportRefused(last, now passStats) {
+	for _, family := range []struct {
+		family    uint8
+		was, held uint64
+	}{{egress.FamilyIPv4, last.Refused4, now.Refused4}, {egress.FamilyIPv6, last.Refused6, now.Refused6}} {
+		since := family.held
+		if family.held >= family.was {
+			since -= family.was
+		}
+		if since != 0 {
+			t.rt.Events.Emit("egress.refused", "", slog.String("family", egress.FamilyName(family.family)), slog.Uint64("refused", since))
+		}
+	}
 }
 
 // sameRules compares what the host holds against what the configuration asks
@@ -680,16 +764,13 @@ func sameFamilyRules(held []Installed, desired []Rule, family uint8) bool {
 // presentation: each family is a table of its own, so a backend reads them back
 // one family at a time, and a list ordered any other way would never compare
 // equal to its own readback and would be rewritten on every pass forever.
-//
-// Within a family the Out rules come first, each class's in the order Classes
-// gives, the longest From first, since a chain reads top to bottom and the
-// first translation ends it. Where no class covers every source, the rules of
-// auto for the rest end them. The In rules follow, then the rules of each mesh
-// source of the family under its class, which no packet arriving on the mesh
-// device reaches past the Out rules.
+// Within a family the forward hook's chain comes first, as a forwarded packet
+// meets it before the translation's.
 func (t *Translator) desired() []Rule {
 	var out []Rule
 	for _, family := range t.cfg.Translated(t.rt.Steered) {
+		out = append(out, t.untracked(family)...)
+		out = append(out, Rule{Family: family, Direction: Out, Interface: t.rt.Interface, Limit: t.cfg.SourceLimit()})
 		covered := false
 		for _, class := range t.cfg.Classes(family) {
 			covered = covered || class.From.Bits() == 0
@@ -731,6 +812,32 @@ func (t *Translator) classRules(family uint8, direction Direction, from netip.Pr
 		out = append(out, rule)
 	}
 	return append(out, translation)
+}
+
+// untracked is the rules taking a packet out of the mesh no flow is tracked
+// for, as the class of its source says: each class's in the order Classes
+// gives up to the last class of none, then one from every source, since past
+// that last class of none every class translates. A drop into the mesh from
+// each prefix an In rule translates follows, since every In rule translates.
+func (t *Translator) untracked(family uint8) []Rule {
+	classes := t.cfg.Classes(family)
+	last := -1
+	for i, class := range classes {
+		if class.To.None {
+			last = i
+		}
+	}
+	var out []Rule
+	for _, class := range classes[:last+1] {
+		out = append(out, Rule{Family: family, Direction: Out, Interface: t.rt.Interface, From: class.From.Prefix, None: class.To.None, Untracked: true})
+	}
+	out = append(out, Rule{Family: family, Direction: Out, Interface: t.rt.Interface, Untracked: true})
+	for _, rule := range t.inbound(family) {
+		if rule.Timeouts == NoTimeouts {
+			out = append(out, Rule{Family: family, Direction: In, Interface: t.rt.Interface, From: rule.From, Untracked: true})
+		}
+	}
+	return out
 }
 
 func familyTimeouts(family uint8) []Timeouts {
@@ -836,10 +943,11 @@ func unreadyText(v4, v6 bool, why4, why6 string) string {
 	return "ipv4 " + why4 + ", ipv6 " + why6
 }
 
-// reportConflicts names other source translation on this host once per new
-// entry. It is a report rather than an action: several nat postrouting chains
-// coexist, the first to translate a connection wins it, and taking another
-// writer's rule away to win that race would break whatever installed it.
+// reportConflicts names, once per new entry, other source translation on this
+// host that can run ahead of this node's. It is a report rather than an
+// action: several nat postrouting chains coexist, the first to translate a
+// connection wins it, and taking another writer's rule away to win that race
+// would break whatever installed it.
 func (t *Translator) reportConflicts(conflicts []string) {
 	for _, conflict := range conflicts {
 		if slices.Contains(t.warned, conflict) {
@@ -847,7 +955,7 @@ func (t *Translator) reportConflicts(conflicts []string) {
 		}
 		slog.Warn("egress is sharing the source translation hook with another writer",
 			"other", conflict,
-			"detail", "the first chain to translate a connection keeps it, so a flow this node meant to translate may leave under that writer's address instead")
+			"detail", "a chain at this node's priority or below can run ahead of this node's, and the first chain to translate a connection keeps it, so a flow this node meant to translate may leave under that writer's address instead")
 	}
 	t.warned = slices.Clone(conflicts)
 }

@@ -53,16 +53,24 @@ type Egress struct {
 	// that advertises a prefix the far end does not hold a route for. An exit
 	// node does not: nothing sits behind it to start a flow.
 	Return bool `yaml:"return,omitempty" json:"return,omitempty" toml:"return,omitempty"`
+	// FlowsPerSource is the most flows one mesh source address holds open
+	// through this node in each family, every protocol's, past which its next
+	// new flow is refused, RFC 6888 REQ-4, and each address of a routed prefix
+	// holds a share of its own. Zero uses DefaultFlowsPerSource. A host whose
+	// connection table holds less than a share for each source it serves takes
+	// a smaller one, and an exit serving a leaf that translates a LAN behind
+	// its one mesh address a larger.
+	FlowsPerSource uint32 `yaml:"flows_per_source,omitempty" json:"flows_per_source,omitempty" toml:"flows_per_source,omitempty"`
 	// Sweep is the periodic pass. It reinstalls a table somebody removed and
 	// reads the forwarding sysctls and the route lookups again, the parts of
 	// readiness that change under a running node. Zero uses DefaultSweep.
 	Sweep schema.Duration `yaml:"sweep,omitempty" json:"sweep,omitempty" toml:"sweep,omitempty"`
 }
 
-// Normalized is the capability as the translator runs it: the sweep the file
-// left out filled in, an omitted list and an empty one the same, the
-// advertised prefixes and the classes each in one order, and a class of auto
-// from 0.0.0.0/0 or ::/0 left out, since leaving it out says the same. Two
+// Normalized is the capability as the translator runs it: the share and the
+// sweep the file left out filled in, an omitted list and an empty one the
+// same, the advertised prefixes and the classes each in one order, and a class
+// of auto from 0.0.0.0/0 or ::/0 left out, since leaving it out says the same. Two
 // configurations are compared through this rather than as they were written,
 // so neither such a class nor the order either list was written in is a
 // change, and neither costs a restart.
@@ -76,6 +84,9 @@ func (e Egress) Normalized() Egress {
 		e.Advertise = nil
 	} else {
 		e.Advertise = slices.SortedFunc(slices.Values(e.Advertise), schema.ComparePrefix)
+	}
+	if e.FlowsPerSource == 0 {
+		e.FlowsPerSource = DefaultFlowsPerSource
 	}
 	if e.Sweep == 0 {
 		e.Sweep = schema.Duration(DefaultSweep)
@@ -116,6 +127,10 @@ func (e Egress) Validate() error {
 		if err := class.check(); err != nil {
 			return err
 		}
+	}
+	if e.FlowsPerSource > MaxFlowsPerSource {
+		return fmt.Errorf("egress: cap.egress flows_per_source %d is past %d, the most entries the host's connection table can be set to hold, so it would refuse nothing",
+			e.FlowsPerSource, MaxFlowsPerSource)
 	}
 	if e.Sweep < 0 {
 		return fmt.Errorf("egress: cap.egress sweep %s is negative", e.Sweep)
@@ -158,6 +173,15 @@ func (e Egress) families() []uint8 {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// SourceLimit is the share in force, FlowsPerSource with its default applied,
+// which every backend writes and reports
+func (e Egress) SourceLimit() int {
+	if e.FlowsPerSource == 0 {
+		return DefaultFlowsPerSource
+	}
+	return int(e.FlowsPerSource)
 }
 
 // SweepInterval is the interval with its default applied.

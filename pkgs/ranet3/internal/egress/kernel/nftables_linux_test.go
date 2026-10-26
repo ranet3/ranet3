@@ -44,7 +44,8 @@ func expressionNames(t *testing.T, body []byte) []string {
 // A rule reaches the kernel as the expressions its comment describes, in the
 // order a packet meets them: both interfaces, then the narrowing, then the
 // counter and the translation, or for a timeout rule its protocol and its
-// object.
+// object, and for the limit's rule the connection's state and status first and
+// the count, the counter and the answer last, in the limit's chain
 func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 	for _, one := range []struct {
 		name string
@@ -100,6 +101,22 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			Rule{Family: egress.FamilyIPv6, Direction: Local, Interface: "ranet0", From: netip.MustParsePrefix("3fff::1/128"), Timeouts: ICMPv6Timeouts},
 			[]string{"meta", "cmp", "payload", "cmp", "meta", "cmp", "objref"},
 		},
+		{
+			"the limit on each source's flows out of the mesh",
+			Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet0", Limit: egress.DefaultFlowsPerSource},
+			[]string{"ct", "bitwise", "cmp", "ct", "bitwise", "cmp", "meta", "cmp", "meta", "cmp", "payload", "dynset", "counter", "reject"},
+		},
+		{
+			"the drop of what no flow is tracked for out of the mesh",
+			Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", From: netip.MustParsePrefix("192.0.2.128/25"), Untracked: true},
+			// The state first, then the direction and the class, then the counted drop.
+			[]string{"ct", "bitwise", "cmp", "meta", "cmp", "meta", "cmp", "payload", "bitwise", "cmp", "counter", "immediate"},
+		},
+		{
+			"the pass of what no flow is tracked for from a class of none",
+			Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet0", From: netip.MustParsePrefix("3fff::/20"), None: true, Untracked: true},
+			[]string{"ct", "bitwise", "cmp", "meta", "cmp", "meta", "cmp", "payload", "bitwise", "cmp", "immediate"},
+		},
 	} {
 		t.Run(one.name, func(t *testing.T) {
 			request, err := newRule(one.rule)
@@ -109,9 +126,13 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			if got := expressionNames(t, request.Body); !slices.Equal(got, one.want) {
 				t.Errorf("encoded %q, want %q", got, one.want)
 			}
+			want := ChainName
+			if one.rule.Limit != 0 || one.rule.Untracked {
+				want = LimitChain
+			}
 			table, chain, spec, _, _ := nftables.DecodeRule(nftables.Message{Data: request.Body})
-			if table != TableName || chain != ChainName {
-				t.Errorf("wrote into %s/%s, want %s/%s", table, chain, TableName, ChainName)
+			if table != TableName || chain != want {
+				t.Errorf("wrote into %s/%s, want %s/%s", table, chain, TableName, want)
 			}
 			if spec != one.rule.String() {
 				t.Errorf("the rule reads back as %q, want %q, so the diff would rewrite it forever", spec, one.rule.String())
@@ -223,12 +244,12 @@ func TestDirectionInvertsBothInterfaceTests(t *testing.T) {
 }
 
 // the longest spec of each direction a translator writes, from a /128 to an address under the longest device name and the longest IPv6 spelling, fits nft's comment limit
-// and so does its longest timeout rule's, so no configuration reaches the refusal of a longer one, which nft -f would not load back
+// and so do its longest timeout rule's, its limit rule's, at the largest limit a capability names, and its rules' taking what no flow is tracked for, so no configuration reaches the refusal of a longer one, which nft -f would not load back
 func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 	address := netip.MustParseAddr("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff")
+	device := strings.Repeat("r", unix.IFNAMSIZ-1)
 	for _, direction := range []Direction{Out, In, Local} {
-		rule := Rule{Family: egress.FamilyIPv6, Direction: direction, Interface: strings.Repeat("r", unix.IFNAMSIZ-1),
-			From: netip.PrefixFrom(address, 128), Source: address}
+		rule := Rule{Family: egress.FamilyIPv6, Direction: direction, Interface: device, From: netip.PrefixFrom(address, 128), Source: address}
 		timeouts := rule
 		timeouts.Source, timeouts.Timeouts = netip.Addr{}, ICMPv6Timeouts
 		for _, rule := range []Rule{rule, timeouts} {
@@ -237,51 +258,71 @@ func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 			}
 		}
 	}
-}
-
-// The chain is a nat base chain at the source translation hook, which is where
-// every other source translation on the host runs too. A number nothing else
-// uses would not avoid the overlap, only decide whether this node translates
-// before or after whatever the operator arranged on purpose.
-func TestChainIsNatAtTheSourceTranslationHook(t *testing.T) {
-	request := newChain(egress.FamilyIPv4)
-	table, chain, kind, hook, priority := nftables.DecodeChain(nftables.Message{Data: request.Body})
-	if table != TableName || chain != ChainName {
-		t.Errorf("created %s/%s, want %s/%s", table, chain, TableName, ChainName)
+	if _, err := newRule(Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: device, Limit: egress.MaxFlowsPerSource}); err != nil {
+		t.Errorf("the longest limit rule was refused: %v", err)
 	}
-	if kind != "nat" {
-		t.Errorf("created a %q chain, want nat", kind)
+	for _, none := range []bool{false, true} {
+		if _, err := newRule(Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: device, From: netip.PrefixFrom(address, 128), None: none, Untracked: true}); err != nil {
+			t.Errorf("the longest rule taking what no flow is tracked for was refused: %v", err)
+		}
 	}
-	if hook != unix.NF_INET_POST_ROUTING {
-		t.Errorf("hooked at %d, want postrouting (%d)", hook, unix.NF_INET_POST_ROUTING)
-	}
-	if priority != natSrcPriority {
-		t.Errorf("hooked at priority %d, want %d", priority, natSrcPriority)
+	if _, err := flowSet(egress.FamilyIPv6, egress.MaxFlowsPerSource).Create(unix.NFPROTO_IPV6); err != nil {
+		t.Errorf("the set of the largest limit was refused: %v", err)
 	}
 }
 
-// Emptying the chain names a table and a chain and no handle, which nf_tables
+// The translating chain is a nat base chain at the source translation hook,
+// one below the priority the host's own source translation runs at, so it
+// runs ahead of every chain there whatever order they were made in. The
+// limit's chain filters at the forward hook, where a forwarded packet meets it
+// before the translation, as the host's own filters do.
+func TestChainsHookWhereTheirRulesAct(t *testing.T) {
+	for _, want := range []struct {
+		chain, kind string
+		hook        uint32
+		priority    int32
+	}{
+		{ChainName, "nat", unix.NF_INET_POST_ROUTING, 99},
+		{LimitChain, "filter", unix.NF_INET_FORWARD, filterPriority},
+	} {
+		index := slices.IndexFunc(translatorChains, func(c nftables.Chain) bool { return c.Name == want.chain })
+		if index < 0 {
+			t.Errorf("the translator writes no chain %s", want.chain)
+			continue
+		}
+		request := translatorChains[index].Create(unix.NFPROTO_IPV4)
+		table, chain, kind, hook, priority := nftables.DecodeChain(nftables.Message{Data: request.Body})
+		if table != TableName || chain != want.chain || kind != want.kind || hook != want.hook || priority != want.priority {
+			t.Errorf("created %s/%s, a %s chain at hook %d, priority %d, want %s/%s, a %s chain at hook %d, priority %d",
+				table, chain, kind, hook, priority, TableName, want.chain, want.kind, want.hook, want.priority)
+		}
+	}
+}
+
+// Emptying a chain names a table and a chain and no handle, which nf_tables
 // reads as every rule in that chain. It can reach no other table, which is the
 // ownership claim this package makes.
 func TestFlushNamesOnlyThisToolsOwnChain(t *testing.T) {
-	request := flushChain(egress.FamilyIPv6)
-	var table, chain string
-	handles := 0
-	for kind, value := range (nftables.Message{Data: request.Body}).Attributes() {
-		switch kind {
-		case unix.NFTA_RULE_TABLE:
-			table = unix.ByteSliceToString(value)
-		case unix.NFTA_RULE_CHAIN:
-			chain = unix.ByteSliceToString(value)
-		case unix.NFTA_RULE_HANDLE:
-			handles++
+	for _, written := range translatorChains {
+		request := written.Flush(unix.NFPROTO_IPV6)
+		var table, chain string
+		handles := 0
+		for kind, value := range (nftables.Message{Data: request.Body}).Attributes() {
+			switch kind {
+			case unix.NFTA_RULE_TABLE:
+				table = unix.ByteSliceToString(value)
+			case unix.NFTA_RULE_CHAIN:
+				chain = unix.ByteSliceToString(value)
+			case unix.NFTA_RULE_HANDLE:
+				handles++
+			}
 		}
-	}
-	if table != TableName || chain != ChainName {
-		t.Errorf("would empty %s/%s, want %s/%s", table, chain, TableName, ChainName)
-	}
-	if handles != 0 {
-		t.Errorf("named %d handles, which would delete one rule rather than the chain", handles)
+		if table != TableName || chain != written.Name {
+			t.Errorf("would empty %s/%s, want %s/%s", table, chain, TableName, written.Name)
+		}
+		if handles != 0 {
+			t.Errorf("named %d handles, which would delete one rule rather than the chain", handles)
+		}
 	}
 }
 

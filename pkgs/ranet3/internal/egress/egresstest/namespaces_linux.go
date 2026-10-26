@@ -23,9 +23,10 @@ import (
 // plan is the Linux network's prefixes in one family
 type plan struct {
 	name string
-	// leaf is the leaf's prefix on its tun, mesh the exit's on the mesh's tun,
-	// uplink the exit's on its uplink and class the address it holds beside it
-	leaf, mesh, uplink, class netip.Prefix
+	// leaf is the leaf's prefix on its tun and spare its second address there,
+	// mesh the exit's on the mesh's tun, uplink the exit's on its uplink and
+	// class the address it holds beside it
+	leaf, spare, mesh, uplink, class netip.Prefix
 	// up, far and narrow are the router's prefixes on its links to the exit
 	// and to the server, farEnd and narrowEnd the server's ends of the last
 	// two, and served the addresses the server holds behind them
@@ -43,7 +44,7 @@ type plan struct {
 var plans = [2]plan{
 	{
 		name: "ipv4",
-		leaf: netip.MustParsePrefix("192.0.2.2/24"), mesh: netip.MustParsePrefix("192.0.2.1/24"),
+		leaf: netip.MustParsePrefix("192.0.2.2/24"), spare: netip.MustParsePrefix("192.0.2.3/24"), mesh: netip.MustParsePrefix("192.0.2.1/24"),
 		uplink: netip.MustParsePrefix("198.51.100.1/28"), class: netip.MustParsePrefix("198.51.100.17/32"),
 		up: netip.MustParsePrefix("198.51.100.2/28"), far: netip.MustParsePrefix("203.0.113.1/28"), narrow: netip.MustParsePrefix("203.0.113.33/28"),
 		farEnd: netip.MustParsePrefix("203.0.113.2/28"), narrowEnd: netip.MustParsePrefix("203.0.113.34/28"),
@@ -53,7 +54,7 @@ var plans = [2]plan{
 	},
 	{
 		name: "ipv6",
-		leaf: netip.MustParsePrefix("3fff::2/64"), mesh: netip.MustParsePrefix("3fff::1/64"),
+		leaf: netip.MustParsePrefix("3fff::2/64"), spare: netip.MustParsePrefix("3fff::3/64"), mesh: netip.MustParsePrefix("3fff::1/64"),
 		uplink: netip.MustParsePrefix("2001:db8:1::1/64"), class: netip.MustParsePrefix("2001:db8:1:1::1/128"),
 		up: netip.MustParsePrefix("2001:db8:1::2/64"), far: netip.MustParsePrefix("2001:db8:2::1/64"), narrow: netip.MustParsePrefix("2001:db8:4::1/64"),
 		farEnd: netip.MustParsePrefix("2001:db8:2::2/64"), narrowEnd: netip.MustParsePrefix("2001:db8:4::2/64"),
@@ -65,7 +66,7 @@ var plans = [2]plan{
 
 func (p plan) family() Family {
 	return Family{
-		Name: p.name, Leaf: p.leaf.Addr(), Overlay: p.leaf.Masked(), Exit: []netip.Addr{p.mesh.Addr(), p.uplink.Addr(), p.class.Addr()},
+		Name: p.name, Leaf: p.leaf.Addr(), Spare: p.spare.Addr(), Overlay: p.leaf.Masked(), Exit: []netip.Addr{p.mesh.Addr(), p.uplink.Addr(), p.class.Addr()},
 		Uplink: p.uplink.Addr(), Class: p.class.Addr(),
 		Server: p.served[0].Addr(), Transfer: p.served[1].Addr(), Second: p.served[2].Addr(),
 		Router: p.up.Addr(), Narrow: p.narrowEnd.Addr(), NoHost: p.noHost, NoNetwork: p.noNetwork,
@@ -134,8 +135,8 @@ func Namespaces(t testing.TB) Network {
 		}
 	}
 	n.peer = netstack.NewPeer("example/leaf", func(int) (netstack.BatchSealer, error) { return seal, nil }, n.transmit, nil)
-	for _, p := range plans {
-		n.mesh.Routes.Set(netip.Prefix{}, host(p.leaf), n.peer)
+	for _, prefix := range leafHosts() {
+		n.mesh.Routes.Set(netip.Prefix{}, prefix, n.peer)
 	}
 	n.running.Go(n.readLeaf)
 	return n
@@ -149,11 +150,10 @@ func (n *namespaces) Family(v6 bool) Family {
 }
 
 func (n *namespaces) Exit() Host {
-	members := []netip.Prefix{host(plans[0].leaf), host(plans[1].leaf)}
 	return Host{
 		Do: n.exit.Do, TUN: n.mesh.Name, Write: n.mesh.WriteHost,
 		Mesh:    []netip.Addr{plans[0].mesh.Addr(), plans[1].mesh.Addr()},
-		Members: func() []netip.Prefix { return slices.Clone(members) },
+		Members: leafHosts,
 	}
 }
 
@@ -195,6 +195,7 @@ func (n *namespaces) Back() [][]byte {
 // leaf's own addresses, which a mesh carries, and none its stack sends from a
 // link-local or unspecified source, which stays on the link
 func (n *namespaces) readLeaf() {
+	leaf := leafHosts()
 	buf := make([]byte, readSize)
 	for {
 		size, err := n.tun.Read(buf)
@@ -202,7 +203,7 @@ func (n *namespaces) readLeaf() {
 			return
 		}
 		p, ok := parse(buf[:size])
-		if !ok || p.src != plans[0].leaf.Addr() && p.src != plans[1].leaf.Addr() {
+		if !ok || !slices.ContainsFunc(leaf, func(own netip.Prefix) bool { return own.Addr() == p.src }) {
 			continue
 		}
 		select {
@@ -348,10 +349,25 @@ func (n *namespaces) addressServer(netlink netnstest.Netlink) error {
 	return nil
 }
 
+// addressLeaf gives the leaf's tun its addresses, each spare after the leaf's
+// own, so that a socket bound to neither takes the leaf's own as its source:
+// IPv4 makes a later address of a subnet secondary, and IPv6 has a source
+// avoid a deprecated address, RFC 6724 section 5's rule 3
 func (n *namespaces) addressLeaf(netlink netnstest.Netlink) error {
+	link, err := net.InterfaceByName(leafLink)
+	if err != nil {
+		return err
+	}
 	for _, p := range plans {
-		if err := netlink.AddAddresses(leafLink, p.leaf); err != nil {
-			return err
+		spare := netlink.AddAddress
+		if p.spare.Addr().Is6() {
+			spare = netlink.AddDeprecated
+		}
+		if err := netlink.AddAddress(link.Index, p.leaf); err != nil {
+			return fmt.Errorf("add %s to %s: %w", p.leaf, leafLink, err)
+		}
+		if err := spare(link.Index, p.spare); err != nil {
+			return fmt.Errorf("add %s to %s: %w", p.spare, leafLink, err)
 		}
 	}
 	return nil
@@ -437,4 +453,14 @@ func forward() error {
 // host is prefix's address alone
 func host(prefix netip.Prefix) netip.Prefix {
 	return netip.PrefixFrom(prefix.Addr(), prefix.Addr().BitLen())
+}
+
+// leafHosts is each of the leaf's addresses alone, which the exit's mesh
+// routes to the leaf
+func leafHosts() []netip.Prefix {
+	var out []netip.Prefix
+	for _, p := range plans {
+		out = append(out, host(p.leaf), host(p.spare))
+	}
+	return out
 }

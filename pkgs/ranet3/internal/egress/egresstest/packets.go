@@ -6,6 +6,7 @@ package egresstest
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"net/netip"
 	"slices"
 	"syscall"
@@ -66,18 +67,53 @@ func sized(from, to netip.AddrPort, size int) []byte {
 
 // echo is an echo request from src to dst under id, carrying data
 func echo(src, dst netip.Addr, id uint16, data []byte) []byte {
+	return query(src, dst, byte(ipv4.ICMPTypeEcho), byte(ipv6.ICMPTypeEchoRequest), id, data)
+}
+
+// query is an ICMP query from src to dst of type kind4 over IPv4 and kind6
+// over IPv6, under id, carrying data
+func query(src, dst netip.Addr, kind4, kind6 byte, id uint16, data []byte) []byte {
 	message := make([]byte, 8, 8+len(data))
 	binary.BigEndian.PutUint16(message[4:], id)
 	binary.BigEndian.PutUint16(message[6:], 1)
 	message = append(message, data...)
 	if src.Is4() {
-		message[0] = byte(ipv4.ICMPTypeEcho)
+		message[0] = kind4
 		binary.BigEndian.PutUint16(message[2:], ^uint16(packet.Sum(0, message)))
 		return ipPacket(src, dst, syscall.IPPROTO_ICMP, leafTTL, message)
 	}
-	message[0] = byte(ipv6.ICMPTypeEchoRequest)
+	message[0] = kind6
 	binary.BigEndian.PutUint16(message[2:], checksum(src, dst, syscall.IPPROTO_ICMPV6, message))
 	return ipPacket(src, dst, syscall.IPPROTO_ICMPV6, leafTTL, message)
+}
+
+// icmpError is the error m from src to dst carrying quote, the start of the
+// packet it answers
+func icmpError(src, dst netip.Addr, m message, quote []byte) []byte {
+	message := append(make([]byte, 8, 8+len(quote)), quote...)
+	if src.Is4() {
+		message[0], message[1] = m.kind4, m.code4
+		binary.BigEndian.PutUint16(message[2:], ^uint16(packet.Sum(0, message)))
+		return ipPacket(src, dst, syscall.IPPROTO_ICMP, leafTTL, message)
+	}
+	message[0], message[1] = m.kind6, m.code6
+	binary.BigEndian.PutUint16(message[2:], checksum(src, dst, syscall.IPPROTO_ICMPV6, message))
+	return ipPacket(src, dst, syscall.IPPROTO_ICMPV6, leafTTL, message)
+}
+
+// segment is a TCP segment from from to to with seq, ack and flags, carrying
+// payload, in a header of RFC 9293 section 3.1 with no options
+func segment(from, to netip.AddrPort, seq, ack uint32, flags byte, payload []byte) []byte {
+	tcp := make([]byte, 20, 20+len(payload))
+	binary.BigEndian.PutUint16(tcp[0:], from.Port())
+	binary.BigEndian.PutUint16(tcp[2:], to.Port())
+	binary.BigEndian.PutUint32(tcp[4:], seq)
+	binary.BigEndian.PutUint32(tcp[8:], ack)
+	tcp[12], tcp[13] = 5<<4, flags
+	binary.BigEndian.PutUint16(tcp[14:], math.MaxUint16)
+	tcp = append(tcp, payload...)
+	binary.BigEndian.PutUint16(tcp[16:], checksum(from.Addr(), to.Addr(), syscall.IPPROTO_TCP, tcp))
+	return ipPacket(from.Addr(), to.Addr(), syscall.IPPROTO_TCP, leafTTL, tcp)
 }
 
 // checksum is the checksum of segment, whose own checksum field reads zero,

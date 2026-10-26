@@ -10,8 +10,11 @@ const (
 	// ownership claim. It is the binary's own name so that an operator reading
 	// `nft list ruleset` on a shared host can tell at a glance who wrote it.
 	TableName = "ranet3"
-	// ChainName is the one chain in that table, a nat postrouting base chain.
+	// ChainName is the table's nat postrouting base chain, which translates.
 	ChainName = "postrouting"
+	// LimitChain is the table's filter forward base chain beside it, which
+	// refuses a mesh source's new flow past its share of the flows
+	LimitChain = "forward"
 	// BorderChain is the border filter's one chain, in the inet table of the
 	// same name, so the translator's ip and ip6 tables and the filter's table
 	// never hold each other's chains

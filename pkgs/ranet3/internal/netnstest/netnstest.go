@@ -188,7 +188,21 @@ func Acknowledged(fd int, raw []byte) error {
 
 // AddAddress gives link index address without duplicate address detection, then brings the link up
 func (n Netlink) AddAddress(index int, address netip.Prefix) error {
-	if err := n.Request(unix.RTM_NEWADDR, unix.NLM_F_CREATE|unix.NLM_F_EXCL, addressMessage(index, address, unix.IFA_F_NODAD)); err != nil {
+	return n.addAddress(index, address, nil)
+}
+
+// AddDeprecated gives link index address as AddAddress does, deprecated from
+// the start and valid for good, so the kernel takes it as the source of no
+// socket that does not bind to it
+func (n Netlink) AddDeprecated(index int, address netip.Prefix) error {
+	// struct ifa_cacheinfo, its preferred and valid lifetimes first, the valid
+	// one the kernel's INFINITY_LIFE_TIME (include/net/addrconf.h), which never
+	// runs out
+	return n.addAddress(index, address, Attr(unix.IFA_CACHEINFO, slices.Concat(U32(0), U32(^uint32(0)), U32(0), U32(0))))
+}
+
+func (n Netlink) addAddress(index int, address netip.Prefix, attributes []byte) error {
+	if err := n.Request(unix.RTM_NEWADDR, unix.NLM_F_CREATE|unix.NLM_F_EXCL, slices.Concat(addressMessage(index, address, unix.IFA_F_NODAD), attributes)); err != nil {
 		return err
 	}
 	return n.Request(unix.RTM_NEWLINK, 0, IfInfo(index, unix.IFF_UP))

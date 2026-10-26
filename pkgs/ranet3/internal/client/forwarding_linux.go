@@ -25,7 +25,8 @@ func sysctlIsOne(path string) bool {
 }
 
 // Sysctl reads a setting by its path under /proc/sys, the empty string where it
-// cannot, which the egress translator names a failed lookup's setting from
+// cannot, which the egress translator names a failed lookup's setting from and
+// reads the host's connection table from
 func Sysctl(path string) string { return readSysctl("/proc/sys/" + path) }
 
 func readSysctl(path string) string {

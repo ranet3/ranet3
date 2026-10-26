@@ -339,7 +339,6 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 		var short bool
 		var asked []Lookup
 		rt.Members = func() []netip.Prefix { return slices.Clone(members) }
-		rt.Sysctl = func(string) string { return "" }
 		rt.Lookup = func(lookups []Lookup) ([]Answer, error) {
 			if asked != nil {
 				ht.Fatalf("a pass asked for lookups twice, %v and then %v", asked, lookups)
