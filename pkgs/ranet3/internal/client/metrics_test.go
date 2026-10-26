@@ -212,10 +212,9 @@ func TestMetricsExposeTheTransitCountersAsTheGoldenFile(t *testing.T) {
 }
 
 // The advertised and announced prefix counts are separate series, because
-// their difference is the alert: a prefix is announced only while its rule is
-// installed and the kernel forwards its family, so announcing fewer than are
-// advertised is this node declining to attract traffic it would drop, and no
-// peer can see that from its own end.
+// their difference is the alert: announcing fewer than are advertised is this
+// node declining to attract traffic it would drop, and no peer can see that
+// from its own end.
 func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 	c := &Client{Mesh: &netstack.Mesh{}}
 	pass := time.Date(2026, 9, 21, 19, 3, 0, 0, time.UTC)

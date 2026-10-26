@@ -442,8 +442,9 @@ func (c *Client) SetExit(exit egress.Exit) {
 // through the egress segments and through the prefixes it advertises both wait
 // on, and its word on whether the egress SIDs are served. The mesh learns
 // it before a SID's /128 or an advertised prefix is originated or retracted: a
-// packet either attracts finds the mesh writing, and a packet arriving after
-// the translation went is dropped before the retraction reaches anyone.
+// packet either attracts finds the mesh handing it to the exit, and a packet
+// arriving after the translation went is dropped before the retraction reaches
+// anyone.
 func (c *Client) SetEgressReady(v4, v6, serves bool) {
 	c.egressMu.Lock()
 	c.translator4, c.translator6 = v4, v6

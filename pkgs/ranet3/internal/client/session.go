@@ -101,7 +101,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 		var dropped int
 		var lastError error
 		for _, result := range results {
-			// each datagram is this session's alone once received, so the packet goes to the tun or on to a peer in the datagram it was decrypted in
+			// each datagram is this session's alone once received, so each packet the loop keeps goes on as a slice of the datagram it was decrypted in, and the loop copies nothing itself
 			frame, nextHeader, err := result.Frame(netstack.TUNHeadroom)
 			if err != nil {
 				dropped, lastError = dropped+1, err
