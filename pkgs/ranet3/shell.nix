@@ -17,6 +17,7 @@
   iputils,
   pprof,
   python3,
+  shellcheck,
   strongswan,
   util-linux,
 }:
@@ -33,6 +34,7 @@ mkShell {
     gopls
     pprof
     python3
+    shellcheck
   ]
   ++ lib.optionals stdenv.hostPlatform.isLinux [
     bird3
