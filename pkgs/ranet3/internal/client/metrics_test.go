@@ -214,17 +214,26 @@ func TestMetricsExposeTheTransitCountersAsTheGoldenFile(t *testing.T) {
 // The advertised and announced prefix counts are separate series, because
 // their difference is the alert: announcing fewer than are advertised is this
 // node declining to attract traffic it would drop, and no peer can see that
-// from its own end.
+// from its own end. Beside them are the flows each family's limit refused, the
+// packets it dropped with no tracked flow and the host's connection table, the
+// table's series left out where the pass could not read it.
 func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 	c := &Client{Mesh: &netstack.Mesh{}}
 	pass := time.Date(2026, 9, 21, 19, 3, 0, 0, time.UTC)
 	carried := netip.MustParsePrefix("198.51.100.0/24")
 	withheld := netip.MustParsePrefix("2001:db8:1::/48")
+	count, most := uint64(9000), uint64(262144)
 	c.SetExit(&fakeExit{status: egress.Status{
 		PassAt:    pass,
+		Ready4:    true,
 		Advertise: []netip.Prefix{carried, withheld},
 		Announced: []netip.Prefix{carried},
-		Rules:     &egress.Rules{Installed: 3, Flows: 91, Untranslated: 17, Conflicts: []string{"ip table nat chain POSTROUTING at priority 100"}},
+		Refused4:  7, Refused6: 1,
+		Dropped4: 4, Dropped6: 2,
+		Rules: &egress.Rules{
+			Installed: 3, Flows: 91, Untranslated: 17, ConntrackCount: &count, ConntrackMax: &most,
+			Conflicts: []string{"ip table nat chain POSTROUTING at priority 100"},
+		},
 	}})
 	var out strings.Builder
 	c.renderEgress(&out)
@@ -234,10 +243,16 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 		`ranet3_egress_prefixes{state="announced"} 1`,
 		"ranet3_egress_flows_total 91",
 		"ranet3_egress_untranslated_flows_total 17",
+		`ranet3_egress_refused_total{family="ipv4"} 7`,
+		`ranet3_egress_refused_total{family="ipv6"} 1`,
+		`ranet3_egress_dropped_total{family="ipv4"} 4`,
+		`ranet3_egress_dropped_total{family="ipv6"} 2`,
+		"ranet3_egress_conntrack_entries 9000",
+		"ranet3_egress_conntrack_max 262144",
 		"ranet3_egress_conflicts 1",
 		fmt.Sprintf("ranet3_egress_pass_timestamp_seconds %d", pass.Unix()),
 		"ranet3_egress_pass_failed 0",
-		`ranet3_egress_ready{family="ipv4"} 0`,
+		`ranet3_egress_ready{family="ipv4"} 1`,
 		`ranet3_egress_ready{family="ipv6"} 0`,
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -260,6 +275,9 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 	}
 	if strings.Contains(ready.String(), "ranet3_egress_device_ready") {
 		t.Errorf("the scrape still carries the egress device's gauge:\n%s", ready.String())
+	}
+	if strings.Contains(ready.String(), "ranet3_egress_conntrack") {
+		t.Errorf("the scrape of an exit that read no connection table carries one:\n%s", ready.String())
 	}
 
 	// A node that carries nothing for anybody writes none of it, rather than

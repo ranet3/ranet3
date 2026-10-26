@@ -84,10 +84,13 @@ type Family struct {
 	// Name names the family in a test's name
 	Name string
 	// Leaf is the leaf's address, inside the mesh's Overlay, and Exit every
-	// address the exit holds
-	Leaf    netip.Addr
-	Overlay netip.Prefix
-	Exit    []netip.Addr
+	// address the exit holds. Spare is a second address of the leaf's inside
+	// Overlay, which no socket of the leaf's takes as its source unless it binds
+	// to it and no row but the limit's sends from, so a backend counts none of
+	// its flows when that row begins.
+	Leaf, Spare netip.Addr
+	Overlay     netip.Prefix
+	Exit        []netip.Addr
 	// Uplink is the exit's address on the link it sends out of, which Auto
 	// translates to, and Class one of its others, which Address translates to
 	Uplink, Class netip.Addr
@@ -138,9 +141,10 @@ type Network interface {
 }
 
 // Arm is a backend as the suite runs it. The suite holds every arm to all
-// five rows in both families, to carrying every protocol, to Egress from
-// several sessions at once and to a withdrawal and a restore by SetEnabled,
-// and an arm that reads its flows to the idle timers it keeps them to.
+// six rows in both families, to carrying every protocol, to Egress from
+// several sessions at once, to a withdrawal and a restore by SetEnabled, and
+// to the share of flows its capability names, and an arm that reads its flows
+// to the idle timers it keeps them to.
 type Arm struct {
 	// Classes are the source classes the backend carries, at least one
 	Classes []Class
@@ -155,16 +159,11 @@ type Arm struct {
 	// Remove takes what carries the backend's translation off host as another
 	// writer would, nil for a backend nothing else on the host can change
 	Remove func(host Host) error
-	// Overtake has another writer masquerade every packet leaving host, in a
-	// translation at the backend's own place made after the backend's, which the
-	// host then runs ahead of it until the backend makes its own again, and
-	// returns what takes it away. It is nil for a backend whose host orders no
-	// two translations by when they were made.
-	Overtake func(host Host) (undo func() error, err error)
-	// Masquerade has another writer masquerade every packet leaving host, in a
-	// translation the host runs behind the backend's, or ahead of it where
-	// ahead is set, and returns what takes it away again. It is nil for a
-	// backend whose translation no other writer's can meet.
+	// Masquerade has another writer masquerade every packet leaving host, made
+	// after the backend's translation, where the host's own source translation
+	// runs, or where ahead is set at a place the host runs ahead of the
+	// backend's, and returns what takes it away again. It is nil for a backend
+	// whose translation no other writer's can meet.
 	Masquerade func(host Host, ahead bool) (undo func() error, err error)
 	// Flows reads every flow the backend tracks on host, nil for a backend
 	// that cannot read how long it keeps each
@@ -188,11 +187,13 @@ func every(prefix netip.Prefix) netip.Prefix {
 	return defaults[1]
 }
 
-// Run runs rows 1 to 5, Egress from several sessions and the idle timers
-// where the arm reads its flows, in both families, then the withdrawal and
-// restore, another writer's change and another writer's translation where the
-// arm can make them, and the stop, for each of arm's classes on a network of
-// its own that build makes
+// Run runs rows 1 to 5, Egress from several sessions, the idle timers where
+// the arm reads its flows and row 6 last, since it leaves the spare address
+// at its limit, in both families, then the withdrawal and restore, another
+// writer's change and another writer's translation where the arm can make
+// them, and the stop, for each of arm's classes on a network of its own that
+// build makes. Row 6 runs again in both families on one more network, under
+// arm's first class and a share its capability names.
 func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 	if err := arm.check(); err != nil {
 		t.Fatal(err)
@@ -200,7 +201,7 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 	for _, class := range arm.Classes {
 		t.Run(class.String(), func(t *testing.T) {
 			network := build(t)
-			exit := start(t, network, arm, class)
+			exit := start(t, network, arm, class, 0)
 			for _, v6 := range []bool{false, true} {
 				r := &rows{network: network, family: network.Family(v6), class: class, exit: exit, terminates: arm.Terminates, flows: arm.Flows}
 				t.Run(r.family.Name, func(t *testing.T) {
@@ -210,9 +211,12 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 					t.Run("hop limits", r.hopLimits)
 					t.Run("port reuse", r.portReuse)
 					t.Run("egress from several sessions at once", r.sessions)
+					t.Run("packets no flow is tracked for", r.untracked)
+					t.Run("packets into the mesh no flow is tracked for", r.untrackedInto)
 					if arm.Flows != nil {
 						t.Run("idle timers", r.timers)
 					}
+					t.Run("the limit on a source's flows", r.limit)
 				})
 			}
 			t.Run("disabled and enabled", func(t *testing.T) { exit.disable(t, network, class) })
@@ -222,17 +226,26 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 			if arm.Masquerade != nil {
 				t.Run("another writer's translation", func(t *testing.T) { exit.masqueraded(t, network, class, arm.Masquerade) })
 			}
-			if arm.Overtake != nil {
-				t.Run("another writer's translation made later", func(t *testing.T) { exit.overtaken(t, network, class, arm.Overtake) })
-			}
 			t.Run("stop", exit.stop)
 		})
 	}
+	t.Run("a share the capability names", func(t *testing.T) {
+		class := arm.Classes[0]
+		network := build(t)
+		exit := start(t, network, arm, class, namedLimit)
+		for _, v6 := range []bool{false, true} {
+			r := &rows{network: network, family: network.Family(v6), class: class, exit: exit, terminates: arm.Terminates, flows: arm.Flows}
+			t.Run(r.family.Name, r.limit)
+		}
+		t.Run("stop", exit.stop)
+	})
 }
 
-// running is a backend under test, with what its hooks were told
+// running is a backend under test, built for cfg, with what its hooks were
+// told
 type running struct {
 	egress.Exit
+	cfg    egress.Egress
 	host   Host
 	holds  func(Host) ([]string, error)
 	cancel context.CancelFunc
@@ -277,9 +290,12 @@ type withdrawal struct {
 	err                          error
 }
 
-func start(t *testing.T, network Network, arm Arm, class Class) *running {
+// start builds arm's backend for class on network and runs it until both
+// families are ready, under the share of flows flows names, the default where
+// it is zero
+func start(t *testing.T, network Network, arm Arm, class Class, flows uint32) *running {
 	t.Helper()
-	cfg := egress.Egress{Translate: class.classes(network.Family(false), network.Family(true))}
+	cfg := egress.Egress{Translate: class.classes(network.Family(false), network.Family(true)), FlowsPerSource: flows, Sweep: schema.Duration(suiteSweep)}
 	for _, prefix := range defaults {
 		cfg.Advertise = append(cfg.Advertise, schema.PrefixFrom(prefix))
 	}
@@ -289,7 +305,7 @@ func start(t *testing.T, network Network, arm Arm, class Class) *running {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("the capability is refused: %v", err)
 	}
-	r := &running{host: network.Exit(), holds: arm.Holds, done: make(chan struct{})}
+	r := &running{cfg: cfg, host: network.Exit(), holds: arm.Holds, done: make(chan struct{})}
 	r.Exit = arm.New(t, r.host, cfg, egress.Hooks{Ready: r.ready, Republish: r.republish})
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
@@ -601,17 +617,18 @@ func (r *running) overwritten(t *testing.T, network Network, class Class, remove
 	}
 }
 
-// masqueraded has another writer masquerade every packet, behind the backend's
-// translation and then ahead of it. Behind it, a new flow of the leaf's reaches
-// the server from the class's address, the leaf's own under none, since the
-// first translation to bind a connection is the one it keeps. Ahead of it, the
+// masqueraded has another writer masquerade every packet, where the host's own
+// source translation runs and made after the backend's translation, then ahead
+// of it. At the host's own place, a new flow of the leaf's reaches the server
+// from the class's address, the leaf's own under none, since the first
+// translation to bind a connection is the one it keeps. Ahead of it, the
 // server reads the other writer's, the exit's uplink address.
 func (r *running) masqueraded(t *testing.T, network Network, class Class, masquerade func(Host, bool) (func() error, error)) {
 	for _, step := range []struct {
 		where string
 		ahead bool
 		port  uint16
-	}{{"behind", false, behindPort}, {"ahead of", true, aheadPort}} {
+	}{{"at the host's own place made after", false, behindPort}, {"ahead of", true, aheadPort}} {
 		undo, err := masquerade(r.host, step.ahead)
 		if err != nil {
 			t.Fatalf("masquerade as another writer %s the backend's translation: %v", step.where, err)
@@ -633,60 +650,4 @@ func (r *running) masqueraded(t *testing.T, network Network, class Class, masque
 			t.Fatalf("take another writer's masquerade away: %v", err)
 		}
 	}
-}
-
-// overtaken has another writer masquerade every packet at the backend's own
-// place, made after the backend's translation. A new flow of the leaf's then
-// reaches the server from the other writer's address, the exit's uplink, under
-// every class, none's among them. Once the backend is taken off and put back,
-// which makes its translation again, a new flow reaches the server from the
-// class's address, the leaf's own under none.
-func (r *running) overtaken(t *testing.T, network Network, class Class, overtake func(Host) (func() error, error)) {
-	undo, err := overtake(r.host)
-	if err != nil {
-		t.Fatalf("masquerade as another writer after the backend's translation: %v", err)
-	}
-	for _, step := range []struct {
-		what   string
-		remade bool
-		port   uint16
-	}{{"made after the backend's translation", false, laterPort}, {"once the backend made its translation again", true, remadePort}} {
-		if step.remade {
-			r.remake(t)
-		}
-		for _, v6 := range []bool{false, true} {
-			family := &rows{network: network, family: network.Family(v6), class: class, exit: r}
-			want := family.family.Uplink
-			if step.remade {
-				want = family.seen()
-			}
-			to := netip.AddrPortFrom(family.family.Server, step.port)
-			server, leaf := family.listenUDP(t, to), family.dialUDP(t, to)
-			sent := []byte("a datagram beside another writer's masquerade " + step.what + " over " + family.family.Name)
-			if from := receiveFrom(t, udpReader(server), sent, func() { _, _ = leaf.Write(sent) }); from.Addr() != want {
-				t.Errorf("with another writer's masquerade %s the server read the datagram from %s, want %s", step.what, from, want)
-			}
-		}
-	}
-	if err := undo(); err != nil {
-		t.Fatalf("take another writer's masquerade away: %v", err)
-	}
-}
-
-// remake takes the backend off and puts it back, as down and up do, which
-// makes its translation again
-func (r *running) remake(t *testing.T) {
-	t.Helper()
-	r.SetEnabled(false)
-	for deadline := time.Now().Add(stopBudget); ; time.Sleep(pollInterval) {
-		held, err := r.holds(r.host)
-		if err == nil && len(held) == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("within %s of SetEnabled(false) the backend held %v (%v)", stopBudget, held, err)
-		}
-	}
-	r.SetEnabled(true)
-	r.awaitReady(t)
 }

@@ -699,6 +699,26 @@ func TestReloadRefusesMovingAMeshAddressCapEgressTranslatesUnder(t *testing.T) {
 	}
 }
 
+// a reload naming another share of flows is refused as any change to cap.egress is
+// the translator wrote the share into each family's limit and set at startup, and each source's count holds it
+func TestReloadRefusesAnotherShareOfFlows(t *testing.T) {
+	exit := func(flows uint32) *config.Config {
+		return &config.Config{Cap: config.Caps{Egress: &egress.Egress{Advertise: []schema.Prefix{schema.MustPrefix("198.51.100.0/24")}, FlowsPerSource: flows}}}
+	}
+	const changed = "config: cap.egress changed, restart to apply"
+	for name, move := range map[string][2]uint32{
+		"a share named":            {0, 1024},
+		"another share":            {1024, 2048},
+		"the share left out again": {1024, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := reloadable(exit(move[0]), exit(move[1])); err == nil || !strings.Contains(err.Error(), changed) {
+				t.Errorf("the reload from %d to %d was refused with %v, want it to say %q", move[0], move[1], err, changed)
+			}
+		})
+	}
+}
+
 // a reload making cap.route announce a prefix cap.egress advertises is refused, as a startup on that file is, and changes nothing
 func TestReloadRefusesAnnouncingAPrefixCapEgressAdvertises(t *testing.T) {
 	exit := &egress.Egress{Advertise: []schema.Prefix{schema.MustPrefix("198.51.100.0/24")}}

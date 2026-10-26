@@ -36,14 +36,16 @@ type fakeBackend struct {
 	// failWithdraw makes a host that will not let the tables go, which a stop tries again rather than records as done
 	failWithdraw bool
 	// flows is added to each rule's counter on every readback, so a test can
-	// tell a rule the pass rewrote from one it left alone. A timeout rule has
-	// no counter, as newRule writes it.
+	// tell a rule the pass rewrote from one it left alone, but an uncounted
+	// one's, as newRule writes it.
 	flows uint64
 	// changed stands for another writer's changes to the tables and missed
 	// for notifications lost, nil for none
 	changed, missed chan struct{}
-	// failRules makes a host whose rules cannot be listed
-	failRules bool
+	// failRules makes a host whose rules cannot be listed, and failReadback one
+	// whose rules cannot be listed right after an apply, which readback is due
+	// for
+	failRules, failReadback, readback bool
 	// faults is how a family's table or chain differs from what Apply writes.
 	// An apply clears it unless stuck holds it, or remake names the family and
 	// the apply does not delete its table first.
@@ -70,7 +72,9 @@ func (f *fakeBackend) Rules() (map[uint8]chainReadback, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log = append(f.log, "rules")
-	if f.failRules {
+	readback := f.readback
+	f.readback = false
+	if f.failRules || f.failReadback && readback {
 		return nil, errors.New("no")
 	}
 	out := map[uint8]chainReadback{}
@@ -78,7 +82,7 @@ func (f *fakeBackend) Rules() (map[uint8]chainReadback, error) {
 		read := chainReadback{fault: f.faults[family], remake: f.faults[family] != "" && f.remake[family]}
 		for _, rule := range f.held {
 			if rule.Family == family {
-				if !timeoutRule(rule.Spec) {
+				if !uncounted(rule.Spec) {
 					rule.Packets += f.flows
 				}
 				read.rules = append(read.rules, rule)
@@ -106,6 +110,7 @@ func (f *fakeBackend) Apply(rules []Rule, remake []uint8) error {
 		return errors.New("no")
 	}
 	f.applied++
+	f.readback = true
 	for family := range f.faults {
 		if !f.stuck && (!f.remake[family] || slices.Contains(remake, family)) {
 			delete(f.faults, family)
@@ -158,15 +163,20 @@ func (f *fakeBackend) specs() []string {
 	return out
 }
 
-// translations is specs without the timeout rules, for a test of what each
-// rule translates to. TestClassesAreWrittenLongestFromFirst holds where the
-// timeout rules go.
+// translations is specs without the timeout rules and the limit's chain's, for
+// a test of what each rule translates to. TestClassesAreWrittenLongestFromFirst
+// holds where the others go.
 func (f *fakeBackend) translations() []string {
-	return slices.DeleteFunc(f.specs(), timeoutRule)
+	return slices.DeleteFunc(f.specs(), func(spec string) bool {
+		return strings.Contains(spec, " timeouts ") || strings.Contains(spec, " limit ") || strings.Contains(spec, " untracked ")
+	})
 }
 
-// timeoutRule reports whether spec is a timeout rule's, as Rule.String spells it
-func timeoutRule(spec string) bool { return strings.Contains(spec, " timeouts ") }
+// uncounted is whether newRule writes the rule spelled spec with no counter: a
+// timeout rule, and one passing a class of none's packet no flow is tracked for
+func uncounted(spec string) bool {
+	return strings.Contains(spec, " timeouts ") || strings.HasSuffix(spec, " untracked passed")
+}
 
 // translator builds one around a fake backend, bypassing New so that a test
 // does not need a packet filter to reach the portable half.
@@ -181,8 +191,15 @@ func translator(t *testing.T, cfg egress.Egress, rt Runtime, be backend) *Transl
 	if rt.Lookup == nil {
 		rt.Lookup = holdsEvery
 	}
+	if rt.Sysctl == nil {
+		rt.Sysctl = readsNothing
+	}
 	return newTranslator(cfg, rt, be)
 }
+
+// readsNothing is a Runtime.Sysctl that reads no setting, as on a host whose
+// conntrack has not loaded
+func readsNothing(string) string { return "" }
 
 // holdsEvery answers a pass's lookups as a host holding every address a class
 // translates to does: a lookup from no source finds its local route. A lookup
@@ -258,14 +275,18 @@ func TestConfiguredSourceReplacesTheHostsOwnChoice(t *testing.T) {
 	}
 }
 
-// Each class's rules come together, the longest From first since the first
-// translation ends the chain. A class that translates attaches the exit's
-// timeouts first, by a rule for UDP, for TCP and for the family's ICMP, keyed
-// as its translation is, and a class of none binds its sources to themselves
-// alone, so its flows keep the host's timeouts. A family no class covers whole
-// ends in the rules of auto. Each of this node's own mesh addresses but the
-// link-local one takes the class it falls in, in rules after those a leaf's
-// packet meets.
+// Each family's rules open with those taking a packet out of the mesh no flow
+// is tracked for, which drop it under a class that translates and pass it
+// under none, a rule for each class up to the last of none, the longest From
+// first, then one from every source, and the limit on each source's flows,
+// which no class changes. Each class's rules come together, the longest From first
+// since the first translation ends the chain. A class that translates attaches
+// the exit's timeouts first, by a rule for UDP, for TCP and for the family's
+// ICMP, keyed as its translation is, and a class of none binds its sources to
+// themselves alone, so its flows keep the host's timeouts. A family no class
+// covers whole ends in the rules of auto. Each of this node's own mesh
+// addresses but the link-local one takes the class it falls in, in rules after
+// those a leaf's packet meets.
 func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 	cfg := egress.Egress{
 		Advertise: prefixes(t, "0.0.0.0/0", "::/0"),
@@ -284,6 +305,10 @@ func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
+		"out via ranet0 ipv4 from 192.0.2.128/25 untracked dropped",
+		"out via ranet0 ipv4 from 192.0.2.0/24 untracked passed",
+		"out via ranet0 ipv4 untracked dropped",
+		"out via ranet0 ipv4 limit 4096",
 		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts udp",
 		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts tcp",
 		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts icmp",
@@ -298,6 +323,8 @@ func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 		"local via ranet0 ipv4 from 192.0.2.200/32 timeouts tcp",
 		"local via ranet0 ipv4 from 192.0.2.200/32 timeouts icmp",
 		"local via ranet0 ipv4 from 192.0.2.200/32 masquerade",
+		"out via ranet0 ipv6 untracked dropped",
+		"out via ranet0 ipv6 limit 4096",
 		"out via ranet0 ipv6 from 3fff::/20 timeouts udp",
 		"out via ranet0 ipv6 from 3fff::/20 timeouts tcp",
 		"out via ranet0 ipv6 from 3fff::/20 timeouts icmpv6",
@@ -313,6 +340,36 @@ func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 	}
 	if got := be.specs(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
+	}
+}
+
+// Each family's limit is the share cap.egress flows_per_source names, the
+// default where it names none, and Status reports it as the limit in force
+func TestEachFamilysLimitIsTheShareTheCapabilityNames(t *testing.T) {
+	for name, one := range map[string]struct {
+		named uint32
+		want  int
+	}{
+		"named":     {300, 300},
+		"left out":  {0, egress.DefaultFlowsPerSource},
+		"the least": {1, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0"), FlowsPerSource: one.named}
+			be := &fakeBackend{}
+			tr := translator(t, cfg, Runtime{}, be)
+			if err := tr.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			limits := slices.DeleteFunc(be.specs(), func(spec string) bool { return !strings.Contains(spec, " limit ") })
+			want := []string{fmt.Sprintf("out via ranet0 ipv4 limit %d", one.want), fmt.Sprintf("out via ranet0 ipv6 limit %d", one.want)}
+			if !slices.Equal(limits, want) {
+				t.Errorf("installed the limits %q, want %q", limits, want)
+			}
+			if got := tr.Status().FlowsPerSource; got != one.want {
+				t.Errorf("Status reads a limit of %d flows a source, want %d", got, one.want)
+			}
+		})
 	}
 }
 
@@ -395,9 +452,43 @@ func TestReturnDirectionAttachesTheExitsTimeouts(t *testing.T) {
 		"in via ranet0 ipv6 from 2001:db8:1::/48 timeouts icmpv6",
 		"in via ranet0 ipv6 from 2001:db8:1::/48 source 3fff::2",
 	}
-	inbound := slices.DeleteFunc(be.specs(), func(spec string) bool { return !strings.HasPrefix(spec, "in ") })
+	inbound := slices.DeleteFunc(be.specs(), func(spec string) bool {
+		return !strings.HasPrefix(spec, "in ") || strings.Contains(spec, " untracked ")
+	})
 	if !slices.Equal(inbound, want) {
 		t.Errorf("installed the In rules %q, want %q", inbound, want)
+	}
+}
+
+// Under return the limit's chain drops a packet into the mesh no flow is
+// tracked for from each advertised prefix, since the In rules translate
+// whatever they take, after the drops out of the mesh and ahead of the limit,
+// and Status counts what it drops with them
+func TestReturnDropsWhatNoFlowIsTrackedForIntoTheMesh(t *testing.T) {
+	cfg := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24", "0.0.0.0/0", "2001:db8:1::/48")}
+	rt := Runtime{MeshAddresses: []netip.Addr{netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("3fff::2")}}
+	be := &fakeBackend{flows: 3}
+	tr := translator(t, cfg, rt, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"out via ranet0 ipv4 untracked dropped",
+		"in via ranet0 ipv4 from 198.51.100.0/24 untracked dropped",
+		"in via ranet0 ipv4 untracked dropped",
+		"out via ranet0 ipv4 limit 4096",
+		"out via ranet0 ipv6 untracked dropped",
+		"in via ranet0 ipv6 from 2001:db8:1::/48 untracked dropped",
+		"out via ranet0 ipv6 limit 4096",
+	}
+	forward := slices.DeleteFunc(be.specs(), func(spec string) bool {
+		return !strings.Contains(spec, " untracked ") && !strings.Contains(spec, " limit ")
+	})
+	if !slices.Equal(forward, want) {
+		t.Errorf("installed the limit's chains %q, want %q", forward, want)
+	}
+	if s := tr.Status(); s.Dropped4 != 9 || s.Dropped6 != 6 {
+		t.Errorf("Status counts %d and %d packets dropped, want the fake host's three for each drop rule, 9 and 6", s.Dropped4, s.Dropped6)
 	}
 }
 
@@ -603,7 +694,7 @@ func TestAnotherWritersRuleInAChainHoldsItsFamilyNotReady(t *testing.T) {
 	if got := be.specs(); !slices.Equal(got, append([]string{""}, written...)) {
 		t.Fatalf("the host holds %q, want another writer's rule ahead of every rule the translator wrote, %q", got, written)
 	}
-	if stats := tr.lastPass(); stats.Ready4 || !stats.Ready6 || stats.Unready != "its chain does not read back as written" {
+	if stats := tr.lastPass(); stats.Ready4 || !stats.Ready6 || stats.Unready != "its chains do not read back as written" {
 		t.Errorf("with another writer's rule in the ip chain the pass reports ready %v and %v with the reason %q, want IPv4 alone not ready for its chain",
 			stats.Ready4, stats.Ready6, stats.Unready)
 	}
@@ -919,9 +1010,12 @@ func TestConflictsAreReportedRatherThanRemoved(t *testing.T) {
 	}
 }
 
-// Status is the last pass beside the capability's translation, with the rules
-// the host holds, their counters and the conflicts as the backend's detail.
-// The flows a class of none carries are counted apart from those translated.
+// Status is the last pass beside the capability's translation and the limit on
+// each source's flows, with the packets the limit refused and those dropped
+// with no tracked flow in each family, and
+// with the rules the host holds, their counters, the host's connection table
+// and the conflicts as the backend's detail. The flows a class of none carries
+// are counted apart from those translated.
 func TestStatusIsTheLastPassWithTheRulesAsItsDetail(t *testing.T) {
 	cfg := egress.Egress{
 		Return:    true,
@@ -932,9 +1026,11 @@ func TestStatusIsTheLastPassWithTheRulesAsItsDetail(t *testing.T) {
 		},
 	}
 	be := &fakeBackend{flows: 3, conflicts: []string{"ip table nat chain POSTROUTING at priority 100"}}
+	settings := map[string]string{"net/netfilter/nf_conntrack_count": "12", "net/netfilter/nf_conntrack_max": "262144"}
 	rt := Runtime{
 		MeshAddresses: []netip.Addr{netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("3fff::2")},
 		Forwarding:    func() (bool, bool) { return true, false },
+		Sysctl:        func(path string) string { return settings[path] },
 	}
 	tr := translator(t, cfg, rt, be)
 	if got := tr.Status(); got.Backend != "nftables" || got.Where != "a fake host" || !got.PassAt.IsZero() || got.Ready4 || got.Ready6 || len(got.Announced) != 0 {
@@ -944,27 +1040,35 @@ func TestStatusIsTheLastPassWithTheRulesAsItsDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats := tr.lastPass()
+	count, most := uint64(12), uint64(262144)
 	want := egress.Status{
 		Backend: "nftables", Where: "a fake host",
 		Ready4: true, Unready: stats.Unready, Skipped: stats.Skipped,
 		Advertise: plain(cfg.Advertise), Announced: plain(cfg.Advertise[:1]),
 		Translate: cfg.Translate, Return: true,
+		FlowsPerSource: egress.DefaultFlowsPerSource, Refused4: 3, Refused6: 3, Dropped4: 6, Dropped6: 6,
 		PassAt: stats.At,
-		// in ip the two classes, the address's with its three timeout rules, the
-		// return and the own address under none, in ip6 the catch-all and the
-		// own address, each with its three timeout rules, and the return, each
-		// rule but a timeout rule, which has no counter, read back with the three
-		// flows the fake host counts
-		Rules: &egress.Rules{Installed: 16, Flows: 15, Untranslated: 6, Conflicts: be.conflicts},
+		// in each family the drops of what no flow is tracked for out of the mesh,
+		// after ip's pass of none's, and into it, and the limit, in ip the two
+		// classes, the address's with its three timeout rules, the return with its
+		// three and the own address under none, in ip6 the catch-all, the return
+		// and the own address, each with its three timeout rules, each rule but a
+		// timeout rule and the pass, which have no counter, read back with the
+		// three flows the fake host counts
+		Rules: &egress.Rules{Installed: 29, Flows: 15, Untranslated: 6, ConntrackCount: &count, ConntrackMax: &most, Conflicts: be.conflicts},
 	}
-	// and the return's three timeout rules in each family, ahead of its
-	// translation
-	want.Rules.Installed += 6
 	if got := tr.Status(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Status is\n%+v\nwant\n%+v", got, want)
 	}
 	if stats.Unready == "" {
 		t.Error("the family the host does not forward is not ready with no reason given")
+	}
+	clear(settings)
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.Status().Rules; got.ConntrackCount != nil || got.ConntrackMax != nil {
+		t.Errorf("with conntrack's settings unread Status reads its table at %v of %v, want neither", got.ConntrackCount, got.ConntrackMax)
 	}
 }
 

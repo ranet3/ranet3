@@ -470,6 +470,15 @@ type EgressStatus struct {
 	Return    bool           `json:"return,omitempty"`
 	Advertise []netip.Prefix `json:"advertise,omitempty"`
 	Announced []netip.Prefix `json:"announced,omitempty"`
+	// FlowsPerSource is cap.egress flows_per_source in force, the most flows
+	// one source address of one family holds open through this node, and
+	// Refused the packets refused past it, each retry of a refused flow counted.
+	// Dropped is the packets out of the mesh, and into it under return,
+	// dropped for want of a tracked flow, which a rule that translates would
+	// otherwise send on under their own source.
+	FlowsPerSource int           `json:"flows_per_source"`
+	Refused        EgressPackets `json:"refused"`
+	Dropped        EgressPackets `json:"dropped"`
 	// PassAt is zero until the first pass has run.
 	PassAt    time.Time `json:"pass_at,omitzero"`
 	Installed int       `json:"installed"`
@@ -480,11 +489,24 @@ type EgressStatus struct {
 	Flows        uint64 `json:"flows"`
 	Bytes        uint64 `json:"bytes"`
 	Untranslated uint64 `json:"untranslated"`
-	// Conflicts names other source translation at the same hook, which is
+	// ConntrackCount and ConntrackMax are the host's connection tracking
+	// table, the entries it holds and the most it takes, each left out where
+	// the last pass could not read it.
+	ConntrackCount *uint64 `json:"conntrack_count,omitempty"`
+	ConntrackMax   *uint64 `json:"conntrack_max,omitempty"`
+	// Conflicts names other source translation at the same hook at the
+	// translator's priority or below, which can run ahead of it and is
 	// reported rather than fought over: the first chain to translate a
 	// connection keeps it.
 	Conflicts []string `json:"conflicts,omitempty"`
 	Err       string   `json:"err,omitempty"`
+}
+
+// EgressPackets is a count of packets in each family as the last pass read
+// it. A rewrite of the rules starts it from zero.
+type EgressPackets struct {
+	IPv4 uint64 `json:"ipv4"`
+	IPv6 uint64 `json:"ipv6"`
 }
 
 // EgressClass is one class of cap.egress translate, To none, auto or an

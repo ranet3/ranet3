@@ -325,6 +325,15 @@ update = "16s"
 # the to of the class from 0.0.0.0/0 or ::/0.
 # return = true
 
+# The most flows one mesh source address holds open through this node in each
+# family, every protocol's, past which its next new flow is refused, so that
+# the open flows one source holds through this node take at most that much of
+# the connection table the host shares. Its flows to this node itself are not
+# bounded by it. Each address of a routed prefix holds a share of its own. A
+# share is part of the table the host's net.netfilter.nf_conntrack_max sizes,
+# which ranet3 never writes, so size the two together. Omitted it is 4096.
+# flows_per_source = 4096
+
 # The periodic pass, which reinstalls a table somebody removed and re-reads the
 # forwarding sysctls. Omitted it is 30s.
 # sweep = "30s"

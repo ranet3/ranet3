@@ -76,6 +76,17 @@ type Status struct {
 	// Translate and Return are the capability's translation
 	Translate []Class
 	Return    bool
+	// FlowsPerSource is the limit in force on the flows one source address of
+	// one family holds open, and Refused4 and Refused6 the packets refused past
+	// it in each family, each retry of a refused flow counted, from zero again
+	// wherever the backend wrote what counts them anew
+	FlowsPerSource     int
+	Refused4, Refused6 uint64
+	// Dropped4 and Dropped6 are the packets out of the mesh, and into it under
+	// return, dropped in each family for want of a tracked flow, which a rule
+	// that translates would otherwise send on under their own source, counted
+	// as Refused4 and Refused6 are
+	Dropped4, Dropped6 uint64
 	// PassAt is the last pass, zero before the first, and Err its error
 	PassAt time.Time
 	Err    string
@@ -92,6 +103,10 @@ type Rules struct {
 	// connection. Untranslated counts those the rules of a class of none bound
 	// to the source they carry.
 	Flows, Bytes, Untranslated uint64
+	// ConntrackCount and ConntrackMax are the host's connection tracking
+	// table, the entries it holds and the most it takes, which the limit's
+	// shares come out of. Each is nil where the pass could not read it.
+	ConntrackCount, ConntrackMax *uint64
 	// Conflicts names the other source translation on the host this node's
 	// traffic can meet
 	Conflicts []string

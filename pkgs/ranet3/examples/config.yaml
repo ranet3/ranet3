@@ -118,6 +118,7 @@ cap:
   #     - { from: "0.0.0.0/0", to: auto }
   #     - { from: "::/0", to: auto }
   #   return: true
+  #   flows_per_source: 4096
   #   sweep: 30s
   # border:                       # every local segment needs it, and acts only on an outer source in overlay
   #   overlay: ["3fff::/20", "203.0.113.0/24"]

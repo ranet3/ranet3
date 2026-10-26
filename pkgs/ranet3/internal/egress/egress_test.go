@@ -158,6 +158,11 @@ func TestValidateRefusesWhatCannotBeTranslated(t *testing.T) {
 			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(-time.Second)},
 			"is negative",
 		},
+		{
+			"a share past any connection table",
+			Egress{Advertise: prefixes(t, "0.0.0.0/0"), FlowsPerSource: MaxFlowsPerSource + 1},
+			"egress: cap.egress flows_per_source 2147483648 is past 2147483647",
+		},
 	} {
 		t.Run(one.name, func(t *testing.T) {
 			err := one.cfg.Validate()
@@ -250,9 +255,10 @@ func TestCapabilityRoundTripsThroughEverySerialization(t *testing.T) {
 	want := Egress{
 		Advertise: prefixes(t, "0.0.0.0/0", "2001:db8:1::/48"),
 		// one of each spelling a to takes, so each crosses every encoder in this one case
-		Translate: []Class{class(t, "198.51.100.0/24", "none"), class(t, "0.0.0.0/0", "auto"), class(t, "::/0", "2001:db8::1")},
-		Return:    true,
-		Sweep:     schema.Duration(90 * time.Second),
+		Translate:      []Class{class(t, "198.51.100.0/24", "none"), class(t, "0.0.0.0/0", "auto"), class(t, "::/0", "2001:db8::1")},
+		Return:         true,
+		FlowsPerSource: 1000,
+		Sweep:          schema.Duration(90 * time.Second),
 	}
 	for _, one := range []struct {
 		name    string
@@ -307,7 +313,7 @@ func sameCapability(a, b Egress) bool {
 			return false
 		}
 	}
-	return slices.Equal(a.Translate, b.Translate) && a.Return == b.Return && a.Sweep == b.Sweep
+	return slices.Equal(a.Translate, b.Translate) && a.Return == b.Return && a.FlowsPerSource == b.FlowsPerSource && a.Sweep == b.Sweep
 }
 
 // An absent translate list asks for auto from every source, and reads back as
@@ -354,6 +360,24 @@ func TestTranslationRefusesWhatIsNeitherNoneAutoNorAnAddress(t *testing.T) {
 	err = decodeTOML([]byte("translate = [{ from = \"198.51.100.0/24\", to = \"eth0\" }]\n"), &cfg)
 	if err == nil || !strings.Contains(err.Error(), "none, auto or an address") {
 		t.Fatalf("toml refused with %v, want a message naming the three spellings", err)
+	}
+}
+
+// A share left out runs the default, so it and one written as the default are
+// one capability as the translator runs it, and SourceLimit reads the share in
+// force either way and the one named where a file names another
+func TestShareLeftOutIsTheDefault(t *testing.T) {
+	written := Egress{FlowsPerSource: DefaultFlowsPerSource}
+	if left, full := (Egress{}).Normalized(), written.Normalized(); left.FlowsPerSource != full.FlowsPerSource {
+		t.Errorf("a share left out normalized to %d and one written as the default to %d, want one", left.FlowsPerSource, full.FlowsPerSource)
+	}
+	for _, e := range []Egress{{}, written, (Egress{}).Normalized()} {
+		if got := e.SourceLimit(); got != DefaultFlowsPerSource {
+			t.Errorf("%+v runs a share of %d, want the default %d", e, got, DefaultFlowsPerSource)
+		}
+	}
+	if got := (Egress{FlowsPerSource: 300}).SourceLimit(); got != 300 {
+		t.Errorf("a share of 300 runs as %d", got)
 	}
 }
 

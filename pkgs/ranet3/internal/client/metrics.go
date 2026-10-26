@@ -184,7 +184,7 @@ func (c *Client) renderEgress(w io.Writer) {
 	if !egress.Enabled {
 		return
 	}
-	fmt.Fprint(w, "# HELP ranet3_egress_rules_installed Source translation rules the host holds for this node as of its last pass.\n")
+	fmt.Fprint(w, "# HELP ranet3_egress_rules_installed Rules the host holds in this node's limit and translation chains as of its last pass.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_rules_installed gauge\n")
 	fmt.Fprintf(w, "ranet3_egress_rules_installed %d\n", egress.Installed)
 	fmt.Fprint(w, "# HELP ranet3_egress_prefixes Prefixes this node offers to carry, and the ones it is announcing: announcing fewer is this node withholding the prefixes of a family that is not ready, for the reason ranet3 status gives.\n")
@@ -197,7 +197,26 @@ func (c *Client) renderEgress(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_egress_untranslated_flows_total Connections a class of none left under the source they carry, counted once per connection as the flows are.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_untranslated_flows_total counter\n")
 	fmt.Fprintf(w, "ranet3_egress_untranslated_flows_total %d\n", egress.Untranslated)
-	fmt.Fprint(w, "# HELP ranet3_egress_conflicts Other source translation at the same hook, which the first chain to claim a connection keeps.\n")
+	fmt.Fprint(w, "# HELP ranet3_egress_refused_total Packets refused because their source already held as many flows open through this node as cap.egress flows_per_source lets one source hold, each retry of a refused flow counted, answered host unreachable over IPv4 and administratively prohibited over IPv6.\n")
+	fmt.Fprint(w, "# TYPE ranet3_egress_refused_total counter\n")
+	fmt.Fprintf(w, "ranet3_egress_refused_total{family=\"ipv4\"} %d\n", egress.Refused.IPv4)
+	fmt.Fprintf(w, "ranet3_egress_refused_total{family=\"ipv6\"} %d\n", egress.Refused.IPv6)
+	fmt.Fprint(w, "# HELP ranet3_egress_dropped_total Packets out of the mesh, and into it under return, dropped because no flow is tracked for them, which a rule that translates would otherwise send on under their own source.\n")
+	fmt.Fprint(w, "# TYPE ranet3_egress_dropped_total counter\n")
+	fmt.Fprintf(w, "ranet3_egress_dropped_total{family=\"ipv4\"} %d\n", egress.Dropped.IPv4)
+	fmt.Fprintf(w, "ranet3_egress_dropped_total{family=\"ipv6\"} %d\n", egress.Dropped.IPv6)
+	// each left out while the host's connection tracking is unread, as before its module has loaded
+	if egress.ConntrackCount != nil {
+		fmt.Fprint(w, "# HELP ranet3_egress_conntrack_entries Entries the host's connection tracking table holds, which each source's share of the flows comes out of.\n")
+		fmt.Fprint(w, "# TYPE ranet3_egress_conntrack_entries gauge\n")
+		fmt.Fprintf(w, "ranet3_egress_conntrack_entries %d\n", *egress.ConntrackCount)
+	}
+	if egress.ConntrackMax != nil {
+		fmt.Fprint(w, "# HELP ranet3_egress_conntrack_max The most entries the host's connection tracking table takes. A new flow past it evicts the flows conntrack has not marked assured from a few hash buckets beside its own and is dropped where they hold none, after which the kernel also evicts such flows, and those their protocol has closing, while the table stays near this.\n")
+		fmt.Fprint(w, "# TYPE ranet3_egress_conntrack_max gauge\n")
+		fmt.Fprintf(w, "ranet3_egress_conntrack_max %d\n", *egress.ConntrackMax)
+	}
+	fmt.Fprint(w, "# HELP ranet3_egress_conflicts Other source translation at the same hook at this node's priority or below, which can run ahead of this node's, and the first chain to claim a connection keeps it.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_conflicts gauge\n")
 	fmt.Fprintf(w, "ranet3_egress_conflicts %d\n", len(egress.Conflicts))
 	fmt.Fprint(w, "# HELP ranet3_egress_pass_timestamp_seconds When the last pass finished, and zero before the first one has.\n")
@@ -227,7 +246,7 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_segments_forwarded_total Packets an End behavior sent on to their next segment.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_forwarded_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_forwarded_total %d\n", segments.Forwarded)
-	fmt.Fprint(w, "# HELP ranet3_segments_delivered_total Packets an End.DT46 behavior took the outer header off and handed to the forwarding decision, counted before it writes them to the tun, forwards, answers or drops them.\n")
+	fmt.Fprint(w, "# HELP ranet3_segments_delivered_total Packets an End.DT46 behavior took the outer header off and handed to the forwarding decision, counted before it writes them to the tun, hands them to the exit, forwards, answers or drops them.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_delivered_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_delivered_total %d\n", segments.Delivered)
 	fmt.Fprint(w, "# HELP ranet3_segments_dropped_total Packets addressed to one of this node's segments that it would not act on.\n")

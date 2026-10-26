@@ -25,13 +25,15 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
-// the kernel exit meets rows 1 to 5 of the exit behavior suite in both
+// the kernel exit meets rows 1 to 6 of the exit behavior suite in both
 // families, translating to its uplink's address under auto and to an address
 // of its own under the address class, and leaving the leaf's own address under
-// none, and carries every protocol with no limit of its own
+// none, and carries every protocol, holding each source to the share of flows
+// its capability names, the default or another, with no total of its own
+// beside conntrack's table
 // its stop leaves no table of its name in either family
 // another writer's deletion of its tables is the change it is held to notice
-// another writer's masquerade is a nat chain one priority behind srcnat or ahead of it
+// another writer's masquerade is a nat chain at srcnat made after the exit's, or one below the exit's
 // the idle timers are each flow's conntrack entry as the namespace lists it
 func TestKernelExitPassesTheExitBehaviorSuite(t *testing.T) {
 	egresstest.Run(t, egresstest.Namespaces, egresstest.Arm{
@@ -39,7 +41,6 @@ func TestKernelExitPassesTheExitBehaviorSuite(t *testing.T) {
 		New:        newKernelExit,
 		Holds:      kernelExitTables,
 		Remove:     deleteKernelExitTables,
-		Overtake:   overtakeAsAnotherWriter,
 		Masquerade: masqueradeAsAnotherWriter,
 		Flows:      conntrackFlows,
 	})
@@ -121,23 +122,19 @@ func conntrackFlow(fields []string) (egresstest.Flow, error) {
 	}, nil
 }
 
-// srcnat is NF_IP_PRI_NAT_SRC, the priority source translation runs at, which
-// the kernel exit's chain is held to here by a chain one either side of it and
-// one at it, which the kernel runs ahead of every chain at srcnat made before it
+// srcnat is NF_IP_PRI_NAT_SRC, the priority a host's source translation runs
+// at, where the kernel runs a chain made later ahead of those made before it,
+// and the kernel exit's chain is one below it
 const srcnat = 100
 
 // masqueradeAsAnotherWriter adds another writer's table in each family whose
-// nat chain masquerades every packet at postrouting, one priority behind
-// srcnat or ahead of it, and returns what deletes the tables
+// nat chain masquerades every packet at postrouting, at srcnat, made after the
+// exit's chain, or ahead of it below the exit's chain, where an operator who
+// translates a mesh flow itself puts one, and returns what deletes the tables
 func masqueradeAsAnotherWriter(host egresstest.Host, ahead bool) (func() error, error) {
 	if ahead {
-		return masqueradeAt(host, srcnat-1)
+		return masqueradeAt(host, srcnat-2)
 	}
-	return masqueradeAt(host, srcnat+1)
-}
-
-// overtakeAsAnotherWriter is masqueradeAsAnotherWriter at srcnat itself
-func overtakeAsAnotherWriter(host egresstest.Host) (func() error, error) {
 	return masqueradeAt(host, srcnat)
 }
 

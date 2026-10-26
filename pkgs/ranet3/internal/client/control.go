@@ -222,22 +222,26 @@ func egressStatus(status egress.Status) control.EgressStatus {
 		ready = append(ready, "ipv6")
 	}
 	out := control.EgressStatus{
-		Enabled:   true,
-		Where:     status.Where,
-		Ready:     ready,
-		Unready:   status.Unready,
-		Skipped:   status.Skipped,
-		Return:    status.Return,
-		Advertise: status.Advertise,
-		Announced: status.Announced,
-		PassAt:    status.PassAt,
-		Err:       status.Err,
+		Enabled:        true,
+		Where:          status.Where,
+		Ready:          ready,
+		Unready:        status.Unready,
+		Skipped:        status.Skipped,
+		Return:         status.Return,
+		Advertise:      status.Advertise,
+		Announced:      status.Announced,
+		FlowsPerSource: status.FlowsPerSource,
+		Refused:        control.EgressPackets{IPv4: status.Refused4, IPv6: status.Refused6},
+		Dropped:        control.EgressPackets{IPv4: status.Dropped4, IPv6: status.Dropped6},
+		PassAt:         status.PassAt,
+		Err:            status.Err,
 	}
 	for _, class := range status.Translate {
 		out.Translate = append(out.Translate, control.EgressClass{From: class.From.Prefix, To: class.To.String()})
 	}
 	if rules := status.Rules; rules != nil {
 		out.Installed, out.Flows, out.Bytes, out.Untranslated, out.Conflicts = rules.Installed, rules.Flows, rules.Bytes, rules.Untranslated, rules.Conflicts
+		out.ConntrackCount, out.ConntrackMax = rules.ConntrackCount, rules.ConntrackMax
 	}
 	return out
 }

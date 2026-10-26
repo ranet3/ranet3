@@ -717,10 +717,11 @@ func exits() hegel.Generator[egress.Egress] {
 			}
 		}
 		return egress.Egress{
-			Advertise: advertise,
-			Translate: hegel.Draw(tc, classes()),
-			Return:    hegel.Draw(tc, hegel.Booleans()),
-			Sweep:     hegel.Draw(tc, unset(between(time.Second, time.Hour))),
+			Advertise:      advertise,
+			Translate:      hegel.Draw(tc, classes()),
+			Return:         hegel.Draw(tc, hegel.Booleans()),
+			FlowsPerSource: hegel.Draw(tc, unset(edges[uint32](1, egress.MaxFlowsPerSource))),
+			Sweep:          hegel.Draw(tc, unset(between(time.Second, time.Hour))),
 		}
 	})
 }

@@ -33,6 +33,10 @@ var (
 	hostUnreachable = message{3, 1, 1, 3}
 	portUnreachable = message{3, 3, 1, 4}
 	tooBig          = message{3, 4, 2, 0}
+	// destination unreachable for a flow past its source's limit, host
+	// unreachable in IPv4 as RFC 6888 REQ-11 asks and administratively
+	// prohibited in IPv6, RFC 4443 section 3.1's code 1
+	pastTheLimit = message{3, 1, 1, 1}
 	// time exceeded in transit, RFC 792's and RFC 4443 section 3.3's
 	hopExceeded = message{11, 0, 3, 0}
 )

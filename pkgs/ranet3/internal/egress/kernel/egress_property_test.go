@@ -44,10 +44,10 @@ var (
 )
 
 // exits draws an exit: a few prefixes of each family, a default among them,
-// return on or off, nested classes of each kind in any order, mesh addresses
-// of each family, one now and then written twice, and an egress segment or
-// none. The empty advertise list and the egress segment are each drawn
-// outright half the time.
+// return on or off, nested classes of each kind in any order, a share of flows
+// left out or named, mesh addresses of each family, one now and then written
+// twice, and an egress segment or none. The empty advertise list and the
+// egress segment are each drawn outright half the time.
 func exits() hegel.Generator[exit] {
 	pool := []schema.Prefix{
 		schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("198.51.100.0/24"), schema.MustPrefix("192.0.2.5/32"),
@@ -74,6 +74,7 @@ func exits() hegel.Generator[exit] {
 			}
 			cfg.Translate = append(cfg.Translate, egress.Class{From: from, To: hegel.Draw(tc, hegel.SampledFrom(translations))})
 		}
+		cfg.FlowsPerSource = hegel.Draw(tc, hegel.OneOf(hegel.Just[uint32](0), pbt.Spanning[uint32](1, egress.MaxFlowsPerSource)))
 		mesh := pbt.Subset(tc, meshPool, 0, 4)
 		if len(mesh) > 0 && hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
 			mesh = append(mesh, mesh[0])
@@ -83,6 +84,7 @@ func exits() hegel.Generator[exit] {
 			MeshAddresses: mesh,
 			Forwarding:    func() (bool, bool) { return true, true },
 			Lookup:        holdsEvery,
+			Sysctl:        readsNothing,
 			Steered:       hegel.Draw(tc, hegel.Booleans()),
 		}
 		return exit{cfg, rt}
@@ -94,15 +96,16 @@ func (e exit) takes() bool {
 	return e.cfg.Validate() == nil && e.cfg.Serves(e.rt.Steered) == nil && e.cfg.CheckReturn(e.rt.MeshAddresses) == nil
 }
 
-// crossing is a packet at postrouting as a rule reads it: the device it
-// arrived on, empty for one this host sent, the one it leaves by, its source,
-// and the protocol it carries with that protocol's destination port, 0 for one
-// with none
+// crossing is a packet as a rule reads it: the device it arrived on, empty
+// for one this host sent, the one it leaves by, its source, the protocol it
+// carries with that protocol's destination port, 0 for one with none, and
+// whether no flow is tracked for it
 type crossing struct {
 	arrival, departure string
 	source             netip.Addr
 	protocol           uint8
 	port               uint16
+	untracked          bool
 }
 
 // carried is each protocol and port a property sends a packet of: UDP to the
@@ -118,9 +121,10 @@ var carried = []struct {
 // arrives on the mesh device and leaves by another, into the mesh what arrives
 // from elsewhere, not from this host, and leaves by the mesh device, and for
 // this node's own address what leaves by another link. A timeout rule takes
-// those of its protocol alone, UDP's but to the DNS port.
+// those of its protocol alone, UDP's but to the DNS port, and a rule taking
+// what no flow is tracked for those no flow is tracked for alone.
 func meant(rule Rule, packet crossing) bool {
-	if egress.AddressFamily(packet.source) != rule.Family || rule.From.IsValid() && !rule.From.Contains(packet.source) {
+	if egress.AddressFamily(packet.source) != rule.Family || rule.From.IsValid() && !rule.From.Contains(packet.source) || rule.Untracked && !packet.untracked {
 		return false
 	}
 	switch rule.Timeouts {
@@ -206,9 +210,14 @@ func translatedTimeouts(packet crossing) Timeouts {
 // host. Each packet a rule translates takes its protocol's timeouts on the way,
 // and one under a class of none takes none. With return, one entering the mesh from an
 // advertised prefix leaves under the return source, and every other packet
-// entering the mesh, or crossing it, is taken by no rule. A second pass writes
-// nothing, so the host holds the order it reads back, and only advertised
-// prefixes are announced.
+// entering the mesh, or crossing it, is taken by no rule. A packet out of the
+// mesh in a family translated meets that family's limit at the forward hook,
+// the share the capability names, and no other packet meets a limit. One no
+// flow is tracked for is dropped there exactly when it comes out of the mesh in
+// a family translated and the class of its source translates, or enters the
+// mesh where a packet is taken to leave under the return source. A second pass
+// writes nothing, so the host holds the order it reads back, and only
+// advertised prefixes are announced.
 func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 	sources := []netip.Addr{
 		netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("198.51.100.8"), netip.MustParseAddr("198.51.100.200"),
@@ -231,11 +240,13 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 		}
 		desired := tr.desired()
 		// walk is the rule a packet meets first that translates it, and the
-		// timeouts the last of the timeout rules it meets on the way attaches
+		// timeouts the last of the timeout rules it meets on the way attaches.
+		// A limit and a rule taking what no flow is tracked for are in the
+		// forward chain, which translates nothing.
 		walk := func(packet crossing) (rule Rule, taken bool, attached Timeouts) {
 			for _, rule := range desired {
 				switch {
-				case !meant(rule, packet):
+				case !meant(rule, packet), rule.Limit != 0, rule.Untracked:
 				case rule.Timeouts != NoTimeouts:
 					attached = rule.Timeouts
 				default:
@@ -243,6 +254,30 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 				}
 			}
 			return Rule{}, false, attached
+		}
+		// limits is how many limits a packet meets at the forward hook, each of
+		// which has to be the share the capability names
+		limits := func(packet crossing) int {
+			met := 0
+			for _, rule := range desired {
+				if rule.Limit != 0 && meant(rule, packet) {
+					if rule.Limit != cfg.SourceLimit() {
+						ht.Fatalf("%+v under %+v holds a packet to a limit of %d flows a source, want the share %d", cfg, rt, rule.Limit, cfg.SourceLimit())
+					}
+					met++
+				}
+			}
+			return met
+		}
+		// drops is whether the first rule taking what no flow is tracked for a
+		// packet meets drops it, where the rest of the forward chain is passed
+		drops := func(packet crossing) bool {
+			for _, rule := range desired {
+				if rule.Untracked && meant(rule, packet) {
+					return !rule.None
+				}
+			}
+			return false
 		}
 		drawnSources := append(slices.Clone(sources), rt.MeshAddresses...)
 		for range hegel.Draw(ht, pbt.Spanning(1, 4)) {
@@ -254,20 +289,24 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 			mine := slices.Contains(egress.MeshSources(family, rt.MeshAddresses), source)
 			inbound, _ := cfg.ReturnSource(family, rt.MeshAddresses)
 			advertised := slices.ContainsFunc(cfg.Advertise, func(prefix schema.Prefix) bool { return prefix.Contains(source) })
+			returned := translated && inbound.IsValid() && advertised
 			for _, carry := range carried {
 				for _, c := range []struct {
 					what   string
 					packet crossing
 					taken  bool
 					want   netip.Addr
-					// timed is whether the class's timeouts attach to a packet taken
-					timed bool
+					// timed is whether the class's timeouts attach to a packet taken,
+					// limited whether it meets its family's limit, and dropped whether
+					// it is dropped where no flow is tracked for it
+					timed, limited, dropped bool
 				}{
-					{"out of the mesh", crossing{"ranet0", "eth0", source, carry.protocol, carry.port}, translated, classSource(cfg, source), true},
-					{"from this node", crossing{"", "eth0", source, carry.protocol, carry.port}, translated && mine, classSource(cfg, source), true},
-					{"into the mesh", crossing{"eth1", "ranet0", source, carry.protocol, carry.port}, translated && inbound.IsValid() && advertised, inbound, false},
-					{"from this node into the mesh", crossing{"", "ranet0", source, carry.protocol, carry.port}, false, netip.Addr{}, false},
-					{"across the mesh", crossing{"ranet0", "ranet0", source, carry.protocol, carry.port}, false, netip.Addr{}, false},
+					{"out of the mesh", crossing{"ranet0", "eth0", source, carry.protocol, carry.port, false}, translated, classSource(cfg, source), true, translated,
+						translated && !cfg.ClassOf(source).To.None},
+					{"from this node", crossing{"", "eth0", source, carry.protocol, carry.port, false}, translated && mine, classSource(cfg, source), true, false, false},
+					{"into the mesh", crossing{"eth1", "ranet0", source, carry.protocol, carry.port, false}, returned, inbound, false, false, returned},
+					{"from this node into the mesh", crossing{"", "ranet0", source, carry.protocol, carry.port, false}, false, netip.Addr{}, false, false, false},
+					{"across the mesh", crossing{"ranet0", "ranet0", source, carry.protocol, carry.port, false}, false, netip.Addr{}, false, false, false},
 				} {
 					rule, taken, attached := walk(c.packet)
 					timeouts := NoTimeouts
@@ -281,6 +320,19 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 					if taken != c.taken || taken && leavesUnder(rule, c.packet) != c.want || attached != timeouts {
 						ht.Fatalf("%+v under %+v takes a packet %s from %s of protocol %d to port %d by %v (%v) to leave under %v with timeouts %q, want taken %v under %v with %q, in %v",
 							cfg, rt, c.what, source, carry.protocol, carry.port, rule, taken, leavesUnder(rule, c.packet), attached, c.taken, c.want, timeouts, desired)
+					}
+					want := 0
+					if c.limited {
+						want = 1
+					}
+					if met := limits(c.packet); met != want {
+						ht.Fatalf("%+v under %+v holds a packet %s from %s to %d limits, want %d, in %v", cfg, rt, c.what, source, met, want, desired)
+					}
+					untracked := c.packet
+					untracked.untracked = true
+					if dropped := drops(untracked); dropped != c.dropped {
+						ht.Fatalf("%+v under %+v drops a packet %s from %s of protocol %d no flow is tracked for %v, want %v, in %v",
+							cfg, rt, c.what, source, carry.protocol, dropped, c.dropped, desired)
 					}
 				}
 			}

@@ -71,8 +71,8 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 
 	tr := newTranslator(cfg, rt, be)
 	desired := tr.desired()
-	if len(desired) != 21 {
-		t.Fatalf("the configuration asks for %d rules, want four out of the mesh device, three in and two from this node's own addresses, with twelve timeout rules", len(desired))
+	if len(desired) != 38 {
+		t.Fatalf("the configuration asks for %d rules, want three taking what no flow is tracked for out of the mesh device and three into it, a limit in each family, four out of the mesh device, three in and two from this node's own addresses, with twenty-one timeout rules", len(desired))
 	}
 	if err := be.Apply(desired, nil); err != nil {
 		t.Fatalf("install %d rules: %v", len(desired), err)
@@ -81,7 +81,8 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	// The whole round trip in one assertion: the kernel took every expression,
 	// kept the rules in the order they were written, and handed back the
 	// spelling this package wrote into each one's comment. A mismatch here is
-	// a ruleset the reconcile loop would rewrite on every pass forever.
+	// a ruleset the reconcile loop would rewrite on every pass forever. Each
+	// table, its two chains, its set and its objects read back as written.
 	read, err := be.Rules()
 	if err != nil {
 		t.Fatalf("read the rules back: %v", err)
@@ -132,14 +133,15 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	for _, rule := range withOther {
 		got = append(got, rule.Spec)
 	}
-	if !slices.Equal(got, append([]string{""}, want...)) {
-		t.Errorf("with another writer's uncommented rule at the head of the ip chain the readback holds %q, want it ahead of %q", got, want)
+	// behind the ip limit's chain, which reads back first, holding five rules
+	if !slices.Equal(got, slices.Insert(slices.Clone(want), 5, "")) {
+		t.Errorf("with another writer's uncommented rule at the head of the ip chain the readback holds %q, want it ahead of the ip translation's rules in %q", got, want)
 	}
 	if v4, v6 := sameFamilyRules(withOther, desired, egress.FamilyIPv4), sameFamilyRules(withOther, desired, egress.FamilyIPv6); v4 || !v6 {
 		t.Errorf("with another writer's rule in the ip chain alone the ip readback reads as written %v and the ip6 one %v, want false and true", v4, v6)
 	}
 
-	// A counter in every rule but the timeout rules, at zero, since nothing has
+	// A counter in every rule but the timeout rules and the pass, at zero, since nothing has
 	// crossed this namespace. Reading it back at all is the part that can
 	// break: it is a 64-bit attribute the kernel aligns with a padding
 	// attribute of its own.
@@ -313,11 +315,12 @@ func dormantTable(proto uint8) nftables.Request {
 	return nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE, Body: body}
 }
 
-// A rule with no comment that another writer inserts at the head of the
-// translator's own chain is read back with it, so the next pass rewrites the
-// chain and leaves only the translator's rules, in the table it found, so with
-// the timeout objects in it, which a deletion would detach from every flow they
-// time
+// A rule with no comment that another writer inserts at the head of one of the
+// translator's own chains is read back with it, so the next pass rewrites the
+// chains and leaves only the translator's rules, in the table it found, so
+// with the timeout objects in it, which a deletion would detach from every
+// flow they time, and the set, which a deletion would empty of every source's
+// count
 func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
@@ -327,6 +330,7 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 		Interface:  "ranet0",
 		Steered:    true,
 		Forwarding: func() (bool, bool) { return true, true },
+		Sysctl:     readsNothing,
 	}
 	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
@@ -344,11 +348,15 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = another.Close() })
-	if err := another.Batch([]nftables.Request{anotherWritersAccept(unix.NFPROTO_IPV6, ChainName)}); err != nil {
-		t.Fatalf("insert another writer's accept rule: %v", err)
+	if err := another.Batch([]nftables.Request{anotherWritersAccept(unix.NFPROTO_IPV6, ChainName), anotherWritersAccept(unix.NFPROTO_IPV4, LimitChain)}); err != nil {
+		t.Fatalf("insert another writer's accept rules: %v", err)
 	}
-	if read, err := be.Rules(); err != nil || !slices.ContainsFunc(read[egress.FamilyIPv6].rules, func(rule Installed) bool { return rule.Spec == "" }) {
-		t.Errorf("with another writer's accept rule at the head of the ip6 chain the readback holds %v (%v), want that rule with no comment among them", read, err)
+	read, err := be.Rules()
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
+		if err != nil || !slices.ContainsFunc(read[family].rules, func(rule Installed) bool { return rule.Spec == "" }) {
+			t.Errorf("with another writer's accept rule at the head of the ip forward and ip6 postrouting chains the %s readback holds %v (%v), want that rule with no comment among them",
+				tableFamilyName(family), read[family], err)
+		}
 	}
 	handles := tableHandles(t, another)
 
@@ -363,16 +371,18 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	for _, rule := range tr.desired() {
 		want = append(want, rule.String())
 	}
-	// read through the other socket, so the chain compared holds every rule the kernel does, whatever this tool's readback keeps
+	// read through the other socket, so the chains compared hold every rule the kernel does, whatever this tool's readback keeps
 	var got []string
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		replies, err := another.Dump(nftables.Command(unix.NFT_MSG_GETRULE), nftables.PutNfgenmsg(nil, nftFamily(family)))
 		if err != nil {
 			t.Fatalf("dump the %s rules: %v", tableFamilyName(family), err)
 		}
-		for _, reply := range replies {
-			if table, chain, spec, _, _ := nftables.DecodeRule(reply); table == TableName && chain == ChainName {
-				got = append(got, spec)
+		for _, written := range translatorChains {
+			for _, reply := range replies {
+				if table, chain, spec, _, _ := nftables.DecodeRule(reply); table == TableName && chain == written.Name {
+					got = append(got, spec)
+				}
 			}
 		}
 	}
@@ -393,7 +403,7 @@ func TestNftablesRemakesATableHoldingAStaleTimeout(t *testing.T) {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	enterThrowawayNamespace(t)
-	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
 	be, err := newBackend(egress.Egress{}, rt)
 	if err != nil {
 		t.Fatalf("open the nftables backend: %v", err)
@@ -424,6 +434,204 @@ func TestNftablesRemakesATableHoldingAStaleTimeout(t *testing.T) {
 	}
 	if s := tr.lastPass(); !s.Ready4 || !s.Ready6 {
 		t.Errorf("after the pass the translator reads %+v, want both families ready", s)
+	}
+}
+
+// A set another writer resized reads back as a fault the next pass writes
+// back without remaking the table, and every pass keeps each set's elements,
+// each source's count of flows, which a remake would empty
+func TestNftablesKeepsTheSetsCountsAcrossARewrite(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Fatal("another writer's changes are made through nft, which is not on the path")
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command(nft, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("nft %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	be, err := newBackend(egress.Egress{}, rt)
+	if err != nil {
+		t.Fatalf("open the nftables backend: %v", err)
+	}
+	t.Cleanup(func() { _ = be.Close() })
+	requireEmptyRuleset(t, be)
+	tr := newTranslator(egress.Egress{}, rt, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatalf("the first pass: %v", err)
+	}
+	another, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = another.Close() })
+	// an element for a source in each family's set, with no count, which the
+	// set's collection would take once it read zero
+	counted := []struct {
+		family uint8
+		source string
+	}{{egress.FamilyIPv4, "192.0.2.2"}, {egress.FamilyIPv6, "3fff::2"}}
+	for _, c := range counted {
+		run("add", "element", tableFamilyName(c.family), TableName, flowSet(c.family, egress.DefaultFlowsPerSource).Name, "{ "+c.source+" }")
+	}
+	run("add", "set", "ip6", TableName, flowSet(egress.FamilyIPv6, egress.DefaultFlowsPerSource).Name, "{ type ipv6_addr; size 100; flags dynamic; }")
+	read, err := be.Rules()
+	if err != nil || read[egress.FamilyIPv6].fault == "" || read[egress.FamilyIPv6].remake || read[egress.FamilyIPv4].fault != "" {
+		t.Errorf("with the ip6 set resized the tables read back as %+v (%v), want the ip6 table alone at fault, with no remake", read, err)
+	}
+	handles := tableHandles(t, another)
+	if err := tr.reconcile(); err != nil {
+		t.Fatalf("the pass after the resize: %v", err)
+	}
+	if got := tableHandles(t, another); len(got) != 2 || !maps.Equal(got, handles) {
+		t.Errorf("after the pass wrote the set back the tables have the handles %v, want the ones they had, %v", got, handles)
+	}
+	read, err = be.Rules()
+	if held, faulted, remake := flatten(read); err != nil || faulted || len(remake) != 0 || !sameRules(held, tr.desired()) {
+		t.Errorf("after the pass the tables read back as %+v (%v), want both as written", read, err)
+	}
+	for _, c := range counted {
+		if listing := run("list", "set", tableFamilyName(c.family), TableName, flowSet(c.family, egress.DefaultFlowsPerSource).Name); !strings.Contains(listing, "elements = { "+c.source+" }") {
+			t.Errorf("after the pass the %s set no longer holds %s's element:\n%s", tableFamilyName(c.family), c.source, listing)
+		}
+	}
+	if s := tr.lastPass(); !s.Ready4 || !s.Ready6 {
+		t.Errorf("after the pass the translator reads %+v, want both families ready", s)
+	}
+}
+
+// A table an instance of another limit left behind, as one that stopped
+// without withdrawing would, reads back with each set at a fault that remakes
+// it, since each element keeps the limit it was added under. After the pass
+// each table is a new one, its set holding no element and reading back under
+// the translator's limit, and both families are ready.
+func TestNftablesRemakesATableWhoseSetCountsAnotherLimit(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Fatal("another writer's changes are made through nft, which is not on the path")
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command(nft, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("nft %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	earlier, later := egress.Egress{FlowsPerSource: 64}, egress.Egress{}
+	before, err := newBackend(earlier, rt)
+	if err != nil {
+		t.Fatalf("open the nftables backend: %v", err)
+	}
+	requireEmptyRuleset(t, before)
+	if err := newTranslator(earlier, rt, before).reconcile(); err != nil {
+		t.Fatalf("the earlier instance's pass: %v", err)
+	}
+	counted := map[uint8]string{egress.FamilyIPv4: "192.0.2.2", egress.FamilyIPv6: "3fff::2"}
+	for family, source := range counted {
+		run("add", "element", tableFamilyName(family), TableName, flowSet(family, earlier.SourceLimit()).Name, "{ "+source+" }")
+	}
+	if err := before.Close(); err != nil {
+		t.Fatal(err)
+	}
+	be, err := newBackend(later, rt)
+	if err != nil {
+		t.Fatalf("open the nftables backend again: %v", err)
+	}
+	t.Cleanup(func() { _ = be.Close() })
+	read, err := be.Rules()
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
+		if err != nil || !strings.Contains(read[family].fault, "limit 64") || !read[family].remake {
+			t.Errorf("with the earlier instance's set the %s table reads back as %+v (%v), want a fault naming its limit that remakes it", tableFamilyName(family), read[family], err)
+		}
+	}
+	another, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = another.Close() })
+	handles := tableHandles(t, another)
+	tr := newTranslator(later, rt, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatalf("the pass: %v", err)
+	}
+	after := tableHandles(t, another)
+	if len(after) != 2 {
+		t.Errorf("after the pass the tables have the handles %v, want one table in each family", after)
+	}
+	for family, handle := range after {
+		if handle == handles[family] {
+			t.Errorf("after the pass the %s table has the handle %d it had, so it was not remade", tableFamilyName(family), handle)
+		}
+	}
+	read, err = be.Rules()
+	if held, faulted, remake := flatten(read); err != nil || faulted || len(remake) != 0 || !sameRules(held, tr.desired()) {
+		t.Errorf("after the pass the tables read back as %+v (%v), want both as written", read, err)
+	}
+	for family, source := range counted {
+		listing := run("list", "set", tableFamilyName(family), TableName, flowSet(family, later.SourceLimit()).Name)
+		if strings.Contains(listing, source) || !strings.Contains(listing, fmt.Sprintf("comment %q", flowSet(family, later.SourceLimit()).Comment)) {
+			t.Errorf("after the pass the %s set lists, want it without %s's element and under its comment:\n%s", tableFamilyName(family), source, listing)
+		}
+	}
+	if s := tr.lastPass(); !s.Ready4 || !s.Ready6 {
+		t.Errorf("after the pass the translator reads %+v, want both families ready", s)
+	}
+}
+
+// Another writer's nat chains at the source translation hook are reported at
+// natPriority and below, where they may translate a flow ahead of the exit's,
+// and not at srcnat, past it, in each family
+func TestNftablesReportsTheNatChainsAtItsPriorityOrBelow(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Fatal("another writer's chains are made through nft, which is not on the path")
+	}
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	be, err := newBackend(egress.Egress{}, rt)
+	if err != nil {
+		t.Fatalf("open the nftables backend: %v", err)
+	}
+	t.Cleanup(func() { _ = be.Close() })
+	requireEmptyRuleset(t, be)
+	var want []string
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
+		name := tableFamilyName(family)
+		if out, err := exec.Command(nft, "add", "table", name, "other").CombinedOutput(); err != nil {
+			t.Fatalf("make another writer's %s table: %v\n%s", name, err, out)
+		}
+		for _, priority := range []int{natPriority - 1, natPriority, natPriority + 1} {
+			chain := fmt.Sprintf("at%d", priority)
+			spec := fmt.Sprintf("{ type nat hook postrouting priority %d ; }", priority)
+			if out, err := exec.Command(nft, "add", "chain", name, "other", chain, spec).CombinedOutput(); err != nil {
+				t.Fatalf("make another writer's %s chain at %d: %v\n%s", name, priority, err, out)
+			}
+			if priority <= natPriority {
+				want = append(want, fmt.Sprintf("%s table other chain %s at priority %d", name, chain, priority))
+			}
+		}
+	}
+	slices.Sort(want)
+	if got, err := be.Conflicts(); err != nil || !slices.Equal(got, want) {
+		t.Errorf("beside another writer's nat chains at %d, %d and %d the backend reports %q (%v), want %q",
+			natPriority-1, natPriority, natPriority+1, got, err, want)
 	}
 }
 
@@ -475,11 +683,11 @@ func tableHandles(t *testing.T, conn *nftables.Conn) map[uint8]uint64 {
 	return handles
 }
 
-// Another writer setting a family's table dormant, or making its chain again
-// at another priority or as a regular chain, wakes the translator, which
+// Another writer setting a family's table dormant, or making one of its chains
+// again at another priority or as a regular chain, wakes the translator, which
 // reports both families not ready until the pass that follows, with no sweep
-// due, writes the table back, deleting and making it again in the second and
-// third case, and reads both ready
+// due, writes the table back, deleting and making it again but in the first
+// case, and reads both ready
 func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
@@ -508,6 +716,7 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 		Interface:  "ranet0",
 		Steered:    true,
 		Forwarding: func() (bool, bool) { return true, true },
+		Sysctl:     readsNothing,
 		Hooks: egress.Hooks{Ready: func(v4, v6, _ bool) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -556,10 +765,13 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 		{"the ip6 table set dormant", "ip6", fmt.Sprintf("add table ip6 %s { flags dormant; }", TableName), "flags dormant"},
 		{"the ip chain made again at priority 0", "ip",
 			fmt.Sprintf("delete chain ip %[1]s %[2]s; add chain ip %[1]s %[2]s { type nat hook postrouting priority 0; policy accept; }", TableName, ChainName),
-			"priority filter;"},
+			"hook postrouting priority filter;"},
 		{"the ip6 chain made again as a regular chain", "ip6",
 			fmt.Sprintf("delete chain ip6 %[1]s %[2]s; add chain ip6 %[1]s %[2]s", TableName, ChainName),
 			fmt.Sprintf("chain %s {\n\t}", ChainName)},
+		{"the ip limit's chain made again at priority 10", "ip",
+			fmt.Sprintf("delete chain ip %[1]s %[2]s; add chain ip %[1]s %[2]s { type filter hook forward priority 10; policy accept; }", TableName, LimitChain),
+			"hook forward priority filter + 10;"},
 	} {
 		mark := len(entries())
 		run(change.command)

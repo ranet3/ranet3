@@ -49,6 +49,17 @@ const (
 	// resolverPort is a resolver's, whose UDP flows RFC 4787 REQ-5a lets a NAT
 	// keep below udpFloor, as a well-known destination port's
 	resolverPort = 53
+	// suiteSweep is the backend's sweep, so Status reads what a step counted
+	// within the step
+	suiteSweep = time.Second
+	// fillBatch is the most of the spare address's flows handed at once, each
+	// batch read at the server before the next, which its socket's default
+	// buffer holds
+	fillBatch = 128
+	// namedLimit is the share of flows the suite's last exit runs at, below
+	// egress.DefaultFlowsPerSource so a backend that kept the default admits
+	// the flow past it, and no whole number of fill batches
+	namedLimit = 200
 )
 
 // the ports of each row and step, the server's and the leaf's, apart so no exchange meets another's state at the exit
@@ -67,8 +78,8 @@ const (
 	sessionsPort     = 9600
 	enabledPort      = 9700
 	windowPort       = 9800
-	laterPort        = 9898
-	remadePort       = 9899
+	untrackedPort    = 9850
+	untrackedEchoID  = 9851
 	behindPort       = 9900
 	aheadPort        = 9901
 	unansweredPort   = 10000
@@ -82,10 +93,26 @@ const (
 	intoEchoID       = 10009
 	answeredPort     = 10010
 	ownAddressPort   = 10006
+	limitPort        = 10100
+	limitTCPPort     = 10101
+	limitRefusedPort = 10102
 	leafPathPort     = 40300
 	leafHopPort      = 40400
 	leafReusePort    = 40500
 	leafPairPort     = 40501
 	leafSessionsPort = 40600
 	leafWindowPort   = 40800
+	// the spare address's two flows past its limit, and the first of the ports
+	// its admitted flows leave from, one a flow
+	spareRefusedPort = 40900
+	spareFurtherPort = 40901
+	spareFillPort    = 41000
+
+	// the leaf's port a connection into the mesh no flow is tracked for a
+	// segment of opens to, its extended echo's identifier, and the ends of the
+	// datagram no flow carried that its port unreachable quotes
+	intoUntrackedPort   = 10011
+	intoUntrackedEchoID = 10012
+	unmatchedPort       = 10013
+	leafUnmatchedPort   = 40801
 )
