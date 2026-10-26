@@ -48,11 +48,15 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	cfg := egress.Egress{
 		Return:    true,
 		Advertise: prefixes(t, "198.51.100.0/24", "2001:db8:1::/48", "0.0.0.0/0"),
+		Translate: []egress.Class{
+			{From: schema.MustPrefix("192.0.2.0/24"), To: egress.Translation{None: true}},
+			{From: schema.MustPrefix("3fff::/20"), To: egress.Translation{Addr: netip.MustParseAddr("2001:db8::7")}},
+		},
 	}
 	rt := Runtime{
 		Interface:     "ranet0",
 		Steered:       true,
-		MeshAddresses: []netip.Addr{netip.MustParseAddr("10.88.0.2"), netip.MustParseAddr("2001:db8::2")},
+		MeshAddresses: []netip.Addr{netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("3fff::2")},
 		Forwarding:    func() (bool, bool) { return true, true },
 	}
 	be, err := newBackend(cfg, rt)
@@ -64,8 +68,8 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 
 	tr := newTranslator(cfg, rt, be)
 	desired := tr.desired()
-	if len(desired) != 5 {
-		t.Fatalf("the configuration asks for %d rules, want two out of the mesh device and three in", len(desired))
+	if len(desired) != 9 {
+		t.Fatalf("the configuration asks for %d rules, want four out of the mesh device, three in and two from this node's own addresses", len(desired))
 	}
 	if err := be.Apply(desired, nil); err != nil {
 		t.Fatalf("install %d rules: %v", len(desired), err)

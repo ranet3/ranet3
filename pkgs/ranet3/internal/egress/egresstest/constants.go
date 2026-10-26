@@ -48,6 +48,10 @@ const (
 	sessionsPort     = 9600
 	enabledPort      = 9700
 	windowPort       = 9800
+	laterPort        = 9898
+	remadePort       = 9899
+	behindPort       = 9900
+	aheadPort        = 9901
 	leafPathPort     = 40300
 	leafHopPort      = 40400
 	leafReusePort    = 40500

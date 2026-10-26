@@ -110,7 +110,7 @@ testers.runNixOSTest {
     assert ran >= 7, f"only {ran} nftables round trips ran:\n{out}"
 
     # the exit behavior suite against the kernel exit under each class: rows 1 to 5 and Egress from several sessions in
-    # both families, the withdrawal and restore, another writer's change and the stop
+    # both families, the withdrawal and restore, another writer's change, another writer's translation and the stop
     # a leaf, the exit, a router and a server in namespaces of their own
     out = machine.succeed(
         "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestKernelExitPassesTheExitBehaviorSuite$' 2>&1"
@@ -119,7 +119,7 @@ testers.runNixOSTest {
     assert "SKIP" not in out, f"the exit behavior suite skipped itself under root:\n{out}"
     assert "--- PASS: TestKernelExitPassesTheExitBehaviorSuite" in out, f"the exit behavior suite did not pass:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 115, f"only {ran} of the exit behavior suite's tests ran:\n{out}"
+    assert ran >= 175, f"only {ran} of the exit behavior suite's tests ran:\n{out}"
 
     # the suite's own fakes of the backends no real one stands for yet, one mapping the leaf's ports and one ending its TCP
     out = machine.succeed(

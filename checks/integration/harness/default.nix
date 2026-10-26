@@ -1053,7 +1053,11 @@ testers.runNixOSTest {
             status = json.loads(client.succeed("ranet3 status --json"))["egress"]
             print(json.dumps(status, indent=2))
             assert status["enabled"], status
-            assert status["installed"] == 2, status
+            # the rules the translator writes for this configuration, which
+            # advertises without return: in each family a masquerade for the
+            # catch-all auto class and one for the local rule of the client's
+            # one mesh address, so a stale or doubled rule shows
+            assert status["installed"] == 4, status
             assert sorted(status["announced"]) == sorted(status["advertise"]), status
             assert status["flows"] > 0, status
             assert not status.get("err"), status

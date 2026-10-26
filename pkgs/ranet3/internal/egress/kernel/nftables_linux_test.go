@@ -16,6 +16,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // expressionNames is the rule's expression list in order, the sequence a
@@ -73,6 +74,18 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 				From: netip.MustParsePrefix("198.51.100.7/32"), Source: netip.MustParseAddr("10.88.0.2")},
 			// No bitwise: a prefix as long as the address masks nothing.
 			[]string{"meta", "cmp", "meta", "cmp", "meta", "cmp", "payload", "cmp", "counter", "immediate", "nat"},
+		},
+		{
+			"out of the mesh from a class of none",
+			Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", From: netip.MustParsePrefix("192.0.2.0/24"), None: true},
+			// The second payload loads the source the nat binds the connection to.
+			[]string{"meta", "cmp", "meta", "cmp", "payload", "bitwise", "cmp", "counter", "payload", "nat"},
+		},
+		{
+			"from this node's own mesh address",
+			Rule{Family: egress.FamilyIPv6, Direction: Local, Interface: "ranet0",
+				From: netip.MustParsePrefix("3fff::1/128"), Source: netip.MustParseAddr("2001:db8::7")},
+			[]string{"meta", "cmp", "payload", "cmp", "counter", "immediate", "nat"},
 		},
 	} {
 		t.Run(one.name, func(t *testing.T) {
@@ -196,13 +209,16 @@ func TestDirectionInvertsBothInterfaceTests(t *testing.T) {
 	}
 }
 
-// the longest spec a translator writes, an In rule from a /128 under the longest device name and the longest IPv6 spelling, fits nft's comment limit
+// the longest spec of each direction a translator writes, from a /128 to an address under the longest device name and the longest IPv6 spelling, fits nft's comment limit
 // so no configuration reaches the refusal of a longer one, which nft -f would not load back
 func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 	address := netip.MustParseAddr("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff")
-	if _, err := newRule(Rule{Family: egress.FamilyIPv6, Direction: In, Interface: strings.Repeat("r", unix.IFNAMSIZ-1),
-		From: netip.PrefixFrom(address, 128), Source: address}); err != nil {
-		t.Fatalf("the longest rule was refused: %v", err)
+	for _, direction := range []Direction{Out, In, Local} {
+		rule := Rule{Family: egress.FamilyIPv6, Direction: direction, Interface: strings.Repeat("r", unix.IFNAMSIZ-1),
+			From: netip.PrefixFrom(address, 128), Source: address}
+		if _, err := newRule(rule); err != nil {
+			t.Errorf("the longest %s rule was refused: %v", direction, err)
+		}
 	}
 }
 
@@ -347,12 +363,21 @@ func TestEmptyAdvertiseNeedsAnEgressSegment(t *testing.T) {
 	}
 }
 
-// New refuses before it opens anything, so a capability that names a source
-// the return direction cannot resolve fails with nothing to clean up.
+// New refuses before it opens anything, so a capability whose return direction
+// cannot resolve a source fails with nothing to clean up. Only an address
+// class from every source settles it for a node with no mesh address.
 func TestNewRefusesAnUnresolvableReturnBeforeOpeningTheBackend(t *testing.T) {
-	cfg := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24")}
-	_, err := New(cfg, Runtime{Interface: "ranet0", Forwarding: func() (bool, bool) { return true, true }})
-	if err == nil || !strings.Contains(err.Error(), "egress.source4") {
-		t.Fatalf("New returned %v, want a refusal naming the field that settles it", err)
+	for name, translate := range map[string][]egress.Class{
+		"no class":                      nil,
+		"auto from every source":        {{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Auto: true}}},
+		"an address from fewer of them": {{From: schema.MustPrefix("192.0.2.0/24"), To: egress.Translation{Addr: netip.MustParseAddr("198.51.100.7")}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24"), Translate: translate}
+			_, err := New(cfg, Runtime{Interface: "ranet0", Forwarding: func() (bool, bool) { return true, true }})
+			if err == nil || !strings.Contains(err.Error(), "in cap.egress translate as the to of the class from 0.0.0.0/0") {
+				t.Fatalf("New returned %v, want a refusal naming the field that settles it", err)
+			}
+		})
 	}
 }

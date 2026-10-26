@@ -65,7 +65,7 @@ var plans = [2]plan{
 
 func (p plan) family() Family {
 	return Family{
-		Name: p.name, Leaf: p.leaf.Addr(), Exit: []netip.Addr{p.mesh.Addr(), p.uplink.Addr(), p.class.Addr()},
+		Name: p.name, Leaf: p.leaf.Addr(), Overlay: p.leaf.Masked(), Exit: []netip.Addr{p.mesh.Addr(), p.uplink.Addr(), p.class.Addr()},
 		Uplink: p.uplink.Addr(), Class: p.class.Addr(),
 		Server: p.served[0].Addr(), Transfer: p.served[1].Addr(), Second: p.served[2].Addr(),
 		Router: p.up.Addr(), Narrow: p.narrowEnd.Addr(), NoHost: p.noHost, NoNetwork: p.noNetwork,
@@ -110,7 +110,6 @@ func Namespaces(t testing.TB) Network {
 		{"give the exit's links their addresses at once", n.exit, atOnce},
 		{"give the router's links their addresses at once", n.router, atOnce},
 		{"give the server's links their addresses at once", n.server, atOnce},
-		{"have the router pass on what the exit leaves untranslated", n.router, passUntranslated},
 		{"make the exit's uplink and the mesh's tun", n.exit, n.makeExit},
 		{"make the router's links to the server", n.router, n.makeRouter},
 		{"make the leaf's tun", n.leaf, n.makeLeaf},
@@ -368,12 +367,16 @@ func (n *namespaces) routeExit(netlink netnstest.Netlink) error {
 	return nil
 }
 
-// routeRouter routes the exit's class addresses to the exit and the server's
-// addresses to the server, and nothing else beyond its own links
+// routeRouter routes the exit's class addresses and the leaf's overlay prefix
+// to the exit and the server's addresses to the server, and nothing else beyond
+// its own links. The overlay is the None class's way back, and under a class
+// that translates, nothing is addressed to it.
 func (n *namespaces) routeRouter(netlink netnstest.Netlink) error {
 	for _, p := range plans {
-		if err := via(netlink, routerUplink, p.classes, p.uplink.Addr()); err != nil {
-			return err
+		for _, to := range []netip.Prefix{p.classes, p.leaf.Masked()} {
+			if err := via(netlink, routerUplink, to, p.uplink.Addr()); err != nil {
+				return err
+			}
 		}
 		if err := via(netlink, routerFar, p.serving, p.farEnd.Addr()); err != nil {
 			return err
@@ -421,20 +424,6 @@ func atOnce(netnstest.Netlink) error {
 	return os.WriteFile("/proc/sys/net/ipv6/conf/default/accept_dad", []byte("0\n"), 0o644)
 }
 
-// passUntranslated turns IPv4's reverse path filter off for every link made
-// here from now on. A namespace starts with the host's IPv4 settings, and a
-// filter on the router would drop a packet from the leaf's own address, which
-// it routes nowhere, so a packet the exit left untranslated would never reach
-// the server to be seen. IPv6 has no such filter.
-func passUntranslated(netnstest.Netlink) error {
-	for _, conf := range []string{"all", "default"} {
-		if err := os.WriteFile("/proc/sys/net/ipv4/conf/"+conf+"/rp_filter", []byte("0\n"), 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // forward turns forwarding on in both families
 func forward() error {
 	for _, path := range []string{"/proc/sys/net/ipv4/ip_forward", "/proc/sys/net/ipv6/conf/all/forwarding"} {
@@ -448,12 +437,4 @@ func forward() error {
 // host is prefix's address alone
 func host(prefix netip.Prefix) netip.Prefix {
 	return netip.PrefixFrom(prefix.Addr(), prefix.Addr().BitLen())
-}
-
-// every is the default of prefix's family
-func every(prefix netip.Prefix) netip.Prefix {
-	if prefix.Addr().Is4() {
-		return netip.PrefixFrom(netip.IPv4Unspecified(), 0)
-	}
-	return netip.PrefixFrom(netip.IPv6Unspecified(), 0)
 }

@@ -227,16 +227,17 @@ func egressStatus(status egress.Status) control.EgressStatus {
 		Ready:     ready,
 		Unready:   status.Unready,
 		Skipped:   status.Skipped,
-		Source4:   status.Source4.String(),
-		Source6:   status.Source6.String(),
 		Return:    status.Return,
 		Advertise: status.Advertise,
 		Announced: status.Announced,
 		PassAt:    status.PassAt,
 		Err:       status.Err,
 	}
+	for _, class := range status.Translate {
+		out.Translate = append(out.Translate, control.EgressClass{From: class.From.Prefix, To: class.To.String()})
+	}
 	if rules := status.Rules; rules != nil {
-		out.Installed, out.Flows, out.Bytes, out.Conflicts = rules.Installed, rules.Flows, rules.Bytes, rules.Conflicts
+		out.Installed, out.Flows, out.Bytes, out.Untranslated, out.Conflicts = rules.Installed, rules.Flows, rules.Bytes, rules.Untranslated, rules.Conflicts
 	}
 	return out
 }

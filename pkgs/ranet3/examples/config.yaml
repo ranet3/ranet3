@@ -113,8 +113,10 @@ cap:
   #     cipher: [aes256gcm, aes128gcm, chacha20poly1305]
   # egress:
   #   advertise: ["198.51.100.0/24", "2001:db8:2::/48"]
-  #   source4: auto
-  #   source6: auto
+  #   translate:
+  #     - { from: "3fff:a::/32", to: none }
+  #     - { from: "0.0.0.0/0", to: auto }
+  #     - { from: "::/0", to: auto }
   #   return: true
   #   sweep: 30s
   # border:                       # every local segment needs it, and acts only on an outer source in overlay

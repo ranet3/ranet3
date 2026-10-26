@@ -43,7 +43,7 @@ func New(cfg egress.Egress, rt Runtime) (*Translator, error) {
 	}
 	// Resolved before the backend is opened, so a return direction with no
 	// mesh address to translate to is refused with nothing to clean up.
-	if _, err := cfg.ReturnSources(rt.MeshAddresses); err != nil {
+	if err := cfg.CheckReturn(rt.MeshAddresses); err != nil {
 		return nil, err
 	}
 	if rt.Lookup == nil || rt.Sysctl == nil {
@@ -288,7 +288,10 @@ func delTable(family uint8) nftables.Request {
 // the priority every other source translation on the host also runs at. A
 // different priority would not avoid the overlap, only reorder it, and a
 // number nothing else uses would put this node's translation either before or
-// after whatever the operator arranged on purpose.
+// after whatever the operator arranged on purpose. At one priority the host
+// runs the chain made last first, so a host chain at 100 made after this one,
+// as a firewall's reload or a container runtime's restart makes one, translates
+// the mesh flows its rules match ahead of it until this chain is made again.
 var postrouting = nftables.Chain{Table: TableName, Name: ChainName, Type: "nat", Hook: unix.NF_INET_POST_ROUTING, Priority: natSrcPriority}
 
 func newChain(family uint8) nftables.Request { return postrouting.Create(nftFamily(family)) }
@@ -300,16 +303,17 @@ func newRule(rule Rule) (nftables.Request, error) {
 	if err := nftables.DeviceName(rule.Interface); err != nil {
 		return nftables.Request{}, err
 	}
-	inbound, outbound := unix.NFT_CMP_EQ, unix.NFT_CMP_NEQ
-	if rule.Direction == In {
-		inbound, outbound = unix.NFT_CMP_NEQ, unix.NFT_CMP_EQ
-	}
-	// Both interfaces are matched, never one. An outbound rule that checked
-	// only the arrival interface would also translate mesh transit, which
-	// arrives on the mesh device and leaves by it again, and would rewrite a
-	// relayed packet's source to this node.
+	// Out and In match both interfaces, never one. An outbound rule that
+	// checked only the arrival interface would also translate mesh transit,
+	// which arrives on the mesh device and leaves by it again, and would
+	// rewrite a relayed packet's source to this node. A Local rule matches the
+	// departure and its own address, and a packet arriving on the mesh device
+	// from that address has met the Out rules first.
 	var expressions [][]byte
-	if rule.Direction == In {
+	switch rule.Direction {
+	case Out:
+		expressions = append(expressions, nftables.MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, rule.Interface)...)
+	case In:
 		// A packet this host generated itself has no arrival interface, which
 		// nf_tables reports as the empty name rather than as a failure to
 		// read, so "iifname != the mesh device" is true of it. Left at that,
@@ -319,9 +323,13 @@ func newRule(rule Rule) (nftables.Request, error) {
 		// thing on a kernel that breaks the rule instead: a locally generated
 		// packet reads as interface zero either way.
 		expressions = append(expressions, nftables.MetaCompareValue(unix.NFT_META_IIF, unix.NFT_CMP_NEQ, make([]byte, 4))...)
+		expressions = append(expressions, nftables.MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_NEQ, rule.Interface)...)
 	}
-	expressions = append(expressions, nftables.MetaCompare(unix.NFT_META_IIFNAME, inbound, rule.Interface)...)
-	expressions = append(expressions, nftables.MetaCompare(unix.NFT_META_OIFNAME, outbound, rule.Interface)...)
+	departure := unix.NFT_CMP_NEQ
+	if rule.Direction == In {
+		departure = unix.NFT_CMP_EQ
+	}
+	expressions = append(expressions, nftables.MetaCompare(unix.NFT_META_OIFNAME, departure, rule.Interface)...)
 	if rule.From.IsValid() {
 		expressions = append(expressions, nftables.SourcePrefix(rule.From)...)
 	}
@@ -332,13 +340,24 @@ func newRule(rule Rule) (nftables.Request, error) {
 
 // translate is the statement that rewrites the source: the address written in
 // the configuration, or the one the host's own routes would have used, which
-// nf_tables spells as masquerade and decides per packet.
+// nf_tables spells as masquerade and decides per packet. A class of none
+// translates the source to itself, the binding nf_nat makes for a connection
+// no chain at the hook translated, made here so that a chain that runs after
+// this one cannot translate it. The first chain to translate a flow keeps it,
+// so one that runs before this one takes the flows its rules match whatever
+// their class: one at a lower priority, and one at this chain's priority made
+// after it, since the kernel runs a chain made later ahead of those made before
+// it at one priority. Making these tables again puts this chain ahead again.
 func translate(rule Rule) [][]byte {
-	if !rule.Source.IsValid() {
+	proto := nftFamily(rule.Family)
+	switch {
+	case rule.None:
+		return [][]byte{nftables.SourceLoad(proto), nftables.SourceNAT(proto)}
+	case !rule.Source.IsValid():
 		return [][]byte{nftables.Expression("masq", nil)}
 	}
 	immediate := nftables.PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_1)
 	immediate = nftables.PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED,
 		nftables.PutAttr(nil, unix.NFTA_DATA_VALUE, nftables.AddressBytes(rule.Source)))
-	return [][]byte{nftables.Expression("immediate", immediate), nftables.SourceNAT(nftFamily(rule.Family))}
+	return [][]byte{nftables.Expression("immediate", immediate), nftables.SourceNAT(proto)}
 }

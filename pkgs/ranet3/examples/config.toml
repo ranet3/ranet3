@@ -300,20 +300,29 @@ update = "16s"
 # [cap.egress]
 # advertise = ["198.51.100.0/24", "2001:db8:2::/48"]
 
-# The address a translated packet leaves under, per family. Omitted, or written
-# as auto, this node's own routes decide it per packet, which is the only
-# answer a deployment owning no address block has: leaving the mesh that is the
-# address of the link the packet goes out by, and entering it, this node's own
-# mesh address. An address written out is used unchanged in both directions.
-# An egress segment's packets leave under the same source as the tun's.
-# source4 = "auto"
-# source6 = "auto"
+# The address a translated packet leaves under, by class of its source: a
+# source takes the class of the longest from covering it, and one no class
+# covers takes auto. auto lets this node's own routes decide per packet, which
+# is the only answer a deployment owning no address block has: leaving the mesh
+# that is the address of the link the packet goes out by, and entering it, this
+# node's own mesh address. An address written out is used unchanged, in both
+# directions for a class from 0.0.0.0/0 or ::/0. none leaves a source as it
+# is, for a block the upstream routes back to the mesh on its own, and is
+# refused from 0.0.0.0/0 or ::/0, which would relay every mesh source onto the
+# upstream. An egress segment's packets, and this node's own from its mesh
+# addresses, take the same classes.
+# translate = [
+#   { from = "3fff:a::/32", to = "none" },
+#   { from = "0.0.0.0/0", to = "auto" },
+#   { from = "::/0", to = "auto" },
+# ]
 
 # Translate the other direction too, so a packet from one of the prefixes above
 # enters the mesh under this node's own mesh address. A subnet router needs it
 # where the mesh holds no route back to the LAN. An exit node does not: nothing
 # sits behind it to start a flow. A node carrying more than one mesh address of
-# a family is refused rather than picked from, so name the one to use above.
+# a family is refused rather than picked from, so name the one to use above, as
+# the to of the class from 0.0.0.0/0 or ::/0.
 # return = true
 
 # The periodic pass, which reinstalls a table somebody removed and re-reads the

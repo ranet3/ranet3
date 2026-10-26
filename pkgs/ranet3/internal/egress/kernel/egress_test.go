@@ -210,11 +210,12 @@ func TestRulesMatchBothInterfacesSoTransitIsNotTranslated(t *testing.T) {
 	}
 }
 
-// A configured source is used unchanged, which is how a deployment that owns
-// an address block pins the address return traffic comes back to.
+// A class from every source to an address is used unchanged, which is how a
+// deployment that owns an address block pins the address return traffic comes
+// back to.
 func TestConfiguredSourceReplacesTheHostsOwnChoice(t *testing.T) {
 	cfg := egress.Egress{
-		Source4:   egress.Source{Addr: netip.MustParseAddr("198.51.100.7")},
+		Translate: []egress.Class{{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Addr: netip.MustParseAddr("198.51.100.7")}}},
 		Advertise: prefixes(t, "0.0.0.0/0"),
 	}
 	be := &fakeBackend{}
@@ -227,23 +228,78 @@ func TestConfiguredSourceReplacesTheHostsOwnChoice(t *testing.T) {
 	}
 }
 
-// A subnet router also translates the other way, under the one mesh address
-// this node holds, and narrows that rule to the prefixes it claimed rather
-// than to every packet that happens to reach the mesh device.
-func TestReturnDirectionTranslatesUnderTheMeshAddress(t *testing.T) {
-	cfg := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24", "192.0.2.5/32")}
-	rt := Runtime{MeshAddresses: []netip.Addr{netip.MustParseAddr("10.88.0.2")}}
+// Each class is a rule of its own, the longest From first since the first
+// translation ends the chain, and a class of none binds its sources to
+// themselves. A family no class covers whole ends in a rule of auto. Each of
+// this node's own mesh addresses but the link-local one takes the class it
+// falls in, in a rule after those a leaf's packet meets.
+func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
+	cfg := egress.Egress{
+		Advertise: prefixes(t, "0.0.0.0/0", "::/0"),
+		Translate: []egress.Class{
+			{From: schema.MustPrefix("192.0.2.0/24"), To: egress.Translation{None: true}},
+			{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Addr: netip.MustParseAddr("198.51.100.7")}},
+			{From: schema.MustPrefix("192.0.2.128/25"), To: egress.Translation{Auto: true}},
+			{From: schema.MustPrefix("3fff::/20"), To: egress.Translation{Addr: netip.MustParseAddr("2001:db8::7")}},
+		},
+	}
+	rt := Runtime{MeshAddresses: []netip.Addr{
+		netip.MustParseAddr("192.0.2.200"), netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("3fff::1"), netip.MustParseAddr("fe80::1"),
+	}}
 	be := &fakeBackend{}
 	if err := translator(t, cfg, rt, be).reconcile(); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
-		"out via ranet0 ipv4 masquerade",
-		"in via ranet0 ipv4 from 198.51.100.0/24 source 10.88.0.2",
-		"in via ranet0 ipv4 from 192.0.2.5/32 source 10.88.0.2",
+		"out via ranet0 ipv4 from 192.0.2.128/25 masquerade",
+		"out via ranet0 ipv4 from 192.0.2.0/24 untranslated",
+		"out via ranet0 ipv4 source 198.51.100.7",
+		"local via ranet0 ipv4 from 192.0.2.1/32 untranslated",
+		"local via ranet0 ipv4 from 192.0.2.200/32 masquerade",
+		"out via ranet0 ipv6 from 3fff::/20 source 2001:db8::7",
+		"out via ranet0 ipv6 masquerade",
+		"local via ranet0 ipv6 from 3fff::1/128 source 2001:db8::7",
 	}
 	if got := be.specs(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
+	}
+}
+
+// A subnet router also translates the other way, under the one mesh address
+// this node holds, or the address its class from every source names, and
+// narrows that rule to the prefixes it claimed rather than to every packet
+// that happens to reach the mesh device. What it sends from that address
+// itself out of another link leaves under its class.
+func TestReturnDirectionTranslatesUnderTheMeshAddress(t *testing.T) {
+	rt := Runtime{MeshAddresses: []netip.Addr{netip.MustParseAddr("192.0.2.2")}}
+	for _, c := range []struct {
+		name      string
+		translate []egress.Class
+		want      []string
+	}{
+		{"under auto", nil, []string{
+			"out via ranet0 ipv4 masquerade",
+			"in via ranet0 ipv4 from 198.51.100.0/24 source 192.0.2.2",
+			"in via ranet0 ipv4 from 192.0.2.5/32 source 192.0.2.2",
+			"local via ranet0 ipv4 from 192.0.2.2/32 masquerade",
+		}},
+		{"under an address from every source", []egress.Class{{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Addr: netip.MustParseAddr("198.51.100.7")}}}, []string{
+			"out via ranet0 ipv4 source 198.51.100.7",
+			"in via ranet0 ipv4 from 198.51.100.0/24 source 198.51.100.7",
+			"in via ranet0 ipv4 from 192.0.2.5/32 source 198.51.100.7",
+			"local via ranet0 ipv4 from 192.0.2.2/32 source 198.51.100.7",
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24", "192.0.2.5/32"), Translate: c.translate}
+			be := &fakeBackend{}
+			if err := translator(t, cfg, rt, be).reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			if got := be.specs(); !slices.Equal(got, c.want) {
+				t.Errorf("installed %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 
@@ -252,14 +308,15 @@ func TestReturnDirectionTranslatesUnderTheMeshAddress(t *testing.T) {
 // fails.
 func TestReturnRuleForADefaultCarriesNoPrefixMatch(t *testing.T) {
 	cfg := egress.Egress{Return: true, Advertise: prefixes(t, "0.0.0.0/0")}
-	rt := Runtime{MeshAddresses: []netip.Addr{netip.MustParseAddr("10.88.0.2")}}
+	rt := Runtime{MeshAddresses: []netip.Addr{netip.MustParseAddr("192.0.2.2")}}
 	be := &fakeBackend{}
 	if err := translator(t, cfg, rt, be).reconcile(); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
 		"out via ranet0 ipv4 masquerade",
-		"in via ranet0 ipv4 source 10.88.0.2",
+		"in via ranet0 ipv4 source 192.0.2.2",
+		"local via ranet0 ipv4 from 192.0.2.2/32 masquerade",
 	}
 	if got := be.specs(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
@@ -289,13 +346,13 @@ func TestSIDOnlyExitTranslatesTheTunInBothFamilies(t *testing.T) {
 	}
 }
 
-// an exit that advertises and holds an egress segment keys one Out rule per family on the tun, under the configured source
+// an exit that advertises and holds an egress segment keys one Out rule per family on the tun, under the class from every source
 // a family it does not advertise is translated all the same, with no return rule however return is set
 func TestSteeredExitKeysOneRulePerFamilyOnTheTun(t *testing.T) {
 	cfg := egress.Egress{
 		Return:    true,
 		Advertise: prefixes(t, "198.51.100.0/24"),
-		Source4:   egress.Source{Addr: netip.MustParseAddr("198.51.100.7")},
+		Translate: []egress.Class{{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Addr: netip.MustParseAddr("198.51.100.7")}}},
 	}
 	rt := Runtime{Steered: true, MeshAddresses: []netip.Addr{netip.MustParseAddr("192.0.2.2")}}
 	be := &fakeBackend{}
@@ -308,6 +365,7 @@ func TestSteeredExitKeysOneRulePerFamilyOnTheTun(t *testing.T) {
 	want := []string{
 		"out via ranet0 ipv4 source 198.51.100.7",
 		"in via ranet0 ipv4 from 198.51.100.0/24 source 198.51.100.7",
+		"local via ranet0 ipv4 from 192.0.2.2/32 source 198.51.100.7",
 		"out via ranet0 ipv6 masquerade",
 	}
 	if got := be.specs(); !slices.Equal(got, want) {
@@ -328,15 +386,17 @@ func TestSteeredExitKeysOneRulePerFamilyOnTheTun(t *testing.T) {
 func TestRulesAreGroupedByFamilyAsTheyAreReadBack(t *testing.T) {
 	cfg := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24", "2001:db8:1::/48")}
 	rt := Runtime{MeshAddresses: []netip.Addr{
-		netip.MustParseAddr("10.88.0.2"), netip.MustParseAddr("2001:db8::2"),
+		netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("3fff::2"),
 	}}
 	be := &fakeBackend{}
 	tr := translator(t, cfg, rt, be)
 	want := []string{
 		"out via ranet0 ipv4 masquerade",
-		"in via ranet0 ipv4 from 198.51.100.0/24 source 10.88.0.2",
+		"in via ranet0 ipv4 from 198.51.100.0/24 source 192.0.2.2",
+		"local via ranet0 ipv4 from 192.0.2.2/32 masquerade",
 		"out via ranet0 ipv6 masquerade",
-		"in via ranet0 ipv6 from 2001:db8:1::/48 source 2001:db8::2",
+		"in via ranet0 ipv6 from 2001:db8:1::/48 source 3fff::2",
+		"local via ranet0 ipv6 from 3fff::2/128 masquerade",
 	}
 	for range 3 {
 		if err := tr.reconcile(); err != nil {
@@ -782,12 +842,16 @@ func TestConflictsAreReportedRatherThanRemoved(t *testing.T) {
 }
 
 // Status is the last pass beside the capability's translation, with the rules
-// the host holds, their counters and the conflicts as the backend's detail
+// the host holds, their counters and the conflicts as the backend's detail.
+// The flows a class of none carries are counted apart from those translated.
 func TestStatusIsTheLastPassWithTheRulesAsItsDetail(t *testing.T) {
 	cfg := egress.Egress{
 		Return:    true,
 		Advertise: prefixes(t, "198.51.100.0/24", "::/0"),
-		Source4:   egress.Source{Addr: netip.MustParseAddr("198.51.100.7")},
+		Translate: []egress.Class{
+			{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Addr: netip.MustParseAddr("198.51.100.7")}},
+			{From: schema.MustPrefix("192.0.2.0/24"), To: egress.Translation{None: true}},
+		},
 	}
 	be := &fakeBackend{flows: 3, conflicts: []string{"ip table nat chain POSTROUTING at priority 100"}}
 	rt := Runtime{
@@ -806,10 +870,12 @@ func TestStatusIsTheLastPassWithTheRulesAsItsDetail(t *testing.T) {
 		Backend: "nftables", Where: "a fake host",
 		Ready4: true, Unready: stats.Unready, Skipped: stats.Skipped,
 		Advertise: plain(cfg.Advertise), Announced: plain(cfg.Advertise[:1]),
-		Source4: cfg.Source4, Return: true,
+		Translate: cfg.Translate, Return: true,
 		PassAt: stats.At,
-		// two rules a family, each read back with the three flows the fake host counts
-		Rules: &egress.Rules{Installed: 4, Flows: 12, Conflicts: be.conflicts},
+		// in ip the two classes, the return and the own address under none, in
+		// ip6 the catch-all, the return and the own address, each read back with
+		// the three flows the fake host counts
+		Rules: &egress.Rules{Installed: 7, Flows: 15, Untranslated: 6, Conflicts: be.conflicts},
 	}
 	if got := tr.Status(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Status is\n%+v\nwant\n%+v", got, want)

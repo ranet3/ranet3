@@ -27,8 +27,9 @@ var update = flag.Bool("update", false, "rewrite testdata/messages.golden from w
 var golden []byte
 
 // every shape of translation rule in both families: out of the mesh under the
-// host's address and a configured one, and into the mesh from a prefix, from
-// one host and from anywhere
+// host's address and a configured one, from a class under an address and
+// under none, into the mesh from a prefix, from one host and from anywhere,
+// and from this node's own address under the host's address and under none
 func everyTranslation() []Rule {
 	v4, v6 := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")
 	return []Rule{
@@ -37,9 +38,14 @@ func everyTranslation() []Rule {
 		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.0/24"), Source: v4},
 		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.7/32"), Source: v4},
 		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3"},
+		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.128/25"), None: true},
+		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.0/24"), Source: netip.MustParseAddr("198.51.100.7")},
+		{Family: egress.FamilyIPv4, Direction: Local, Interface: "ranet3", From: netip.MustParsePrefix("192.0.2.1/32")},
 		{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet3"},
 		{Family: egress.FamilyIPv6, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("2001:db8:1::/48"), Source: v6},
 		{Family: egress.FamilyIPv6, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("2001:db8:1::7/128")},
+		{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("3fff::/20"), Source: v6},
+		{Family: egress.FamilyIPv6, Direction: Local, Interface: "ranet3", From: netip.MustParsePrefix("3fff::1/128"), None: true},
 	}
 }
 

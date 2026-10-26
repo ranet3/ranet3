@@ -412,7 +412,7 @@ func reloadable(old, next *config.Config) error {
 	case old.Cap.Border != nil && next.Cap.Border == nil:
 		return fmt.Errorf("config: cap.border removed, restart to apply")
 	}
-	return sameReturnSources(old, next)
+	return sameMeshSources(old, next)
 }
 
 // reborder hands the running border filter the overlay and the SIDs next
@@ -456,24 +456,23 @@ func sortedAddrs(addrs []netip.Addr) []netip.Addr {
 	return slices.SortedFunc(slices.Values(addrs), netip.Addr.Compare)
 }
 
-// sameReturnSources refuses a reload whose mesh addresses resolve another return source than the running translator's, or fail to resolve one
-// the translator resolved an auto source of each family it advertises among the mesh addresses once, at startup
-// the capability itself is unchanged, since sameEgress refuses a reload that changes it
-func sameReturnSources(old, next *config.Config) error {
+// sameMeshSources refuses a reload that moves a mesh source of a family cap.egress translates, which the translator read once, at startup
+// they are the source the In direction translates to where no class names one, and those this node's own traffic out of another link leaves from under their class
+// the capability and the families it translates are unchanged, since sameEgress and the egress segments' checks refuse a reload that changes them
+// so with the sources unchanged the return source resolves as it did at startup
+// a file whose addresses resolve no return source is refused as a restart on it would be, by the reason naming what settles it
+func sameMeshSources(old, next *config.Config) error {
 	exit := next.Egress()
 	if exit == nil {
 		return nil
 	}
-	running, err := exit.ReturnSources(MeshAddresses(old))
-	if err != nil {
+	if err := exit.CheckReturn(MeshAddresses(next)); err != nil {
 		return err
 	}
-	sources, err := exit.ReturnSources(MeshAddresses(next))
-	if err != nil {
-		return err
-	}
-	if !slices.Equal(running, sources) {
-		return errors.New("config: cap.route or cap.table moved the mesh address cap.egress return translates to, restart to apply")
+	for _, family := range exit.Translated(len(next.Segments().Egress()) != 0) {
+		if !slices.Equal(egress.MeshSources(family, MeshAddresses(old)), egress.MeshSources(family, MeshAddresses(next))) {
+			return errors.New("config: cap.route or cap.table moved a mesh address cap.egress translates under, restart to apply")
+		}
 	}
 	return nil
 }
