@@ -6,8 +6,15 @@
 package kernel_test
 
 import (
+	"errors"
+	"fmt"
+	"net/netip"
+	"os"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -25,6 +32,7 @@ import (
 // its stop leaves no table of its name in either family
 // another writer's deletion of its tables is the change it is held to notice
 // another writer's masquerade is a nat chain one priority behind srcnat or ahead of it
+// the idle timers are each flow's conntrack entry as the namespace lists it
 func TestKernelExitPassesTheExitBehaviorSuite(t *testing.T) {
 	egresstest.Run(t, egresstest.Namespaces, egresstest.Arm{
 		Classes:    []egresstest.Class{egresstest.Auto, egresstest.Address, egresstest.None},
@@ -33,7 +41,84 @@ func TestKernelExitPassesTheExitBehaviorSuite(t *testing.T) {
 		Remove:     deleteKernelExitTables,
 		Overtake:   overtakeAsAnotherWriter,
 		Masquerade: masqueradeAsAnotherWriter,
+		Flows:      conntrackFlows,
 	})
+}
+
+// phases is RFC 5382 section 5's phase of each TCP state conntrack lists:
+// opening until each end's SYN is acknowledged, established until a FIN has
+// gone each way, so in FIN_WAIT and CLOSE_WAIT with one, and closing in
+// LAST_ACK, with TIME_WAIT and CLOSE outside REQ-5
+var phases = map[string]egresstest.Phase{
+	"SYN_SENT": egresstest.Opening, "SYN_RECV": egresstest.Opening, "SYN_SENT2": egresstest.Opening,
+	"ESTABLISHED": egresstest.Established, "FIN_WAIT": egresstest.Established, "CLOSE_WAIT": egresstest.Established,
+	"LAST_ACK": egresstest.Closing,
+}
+
+// conntrackFlows reads the exit's conntrack table from the listing /proc keeps
+// of it, which holds each entry's state and seconds left as a ctnetlink dump
+// does, with no module to load for it
+func conntrackFlows(host egresstest.Host) ([]egresstest.Flow, error) {
+	var listing []byte
+	if err := host.Do(func() (err error) {
+		listing, err = os.ReadFile("/proc/thread-self/net/nf_conntrack")
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	var flows []egresstest.Flow
+	for line := range strings.Lines(string(listing)) {
+		flow, err := conntrackFlow(strings.Fields(line))
+		if err != nil {
+			return nil, fmt.Errorf("conntrack lists %q: %w", line, err)
+		}
+		flows = append(flows, flow)
+	}
+	return flows, nil
+}
+
+// conntrackFlow reads one entry of the listing: its family's name and number,
+// its protocol's name and number, the seconds left, a TCP entry's state, then
+// the original direction's addresses and ports ahead of the reply's, an echo's
+// identifier in place of the ports, and no port for a protocol without them
+func conntrackFlow(fields []string) (egresstest.Flow, error) {
+	if len(fields) < 6 {
+		return egresstest.Flow{}, errors.New("too few fields")
+	}
+	original := map[string]string{}
+	for _, field := range fields[5:] {
+		if key, value, ok := strings.Cut(field, "="); ok {
+			if _, seen := original[key]; !seen {
+				original[key] = value
+			}
+		}
+	}
+	port := func(key string) (uint64, error) {
+		if value, ok := original[key]; ok {
+			return strconv.ParseUint(value, 10, 16)
+		}
+		return 0, nil
+	}
+	sport, dport := "sport", "dport"
+	if _, ok := original["id"]; ok {
+		sport, dport = "id", "id"
+	}
+	protocol, errProtocol := strconv.ParseUint(fields[3], 10, 8)
+	seconds, errSeconds := strconv.ParseUint(fields[4], 10, 32)
+	from, errFrom := netip.ParseAddr(original["src"])
+	to, errTo := netip.ParseAddr(original["dst"])
+	fromPort, errFromPort := port(sport)
+	toPort, errToPort := port(dport)
+	if err := errors.Join(errProtocol, errSeconds, errFrom, errTo, errFromPort, errToPort); err != nil {
+		return egresstest.Flow{}, err
+	}
+	return egresstest.Flow{
+		Protocol: byte(protocol),
+		From:     netip.AddrPortFrom(from, uint16(fromPort)),
+		To:       netip.AddrPortFrom(to, uint16(toPort)),
+		Phase:    phases[fields[5]],
+		Left:     time.Duration(seconds) * time.Second,
+	}, nil
 }
 
 // srcnat is NF_IP_PRI_NAT_SRC, the priority source translation runs at, which

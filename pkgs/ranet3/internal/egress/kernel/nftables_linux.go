@@ -6,6 +6,7 @@
 package kernel
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
@@ -138,7 +139,7 @@ func (n *natTables) Rules() (map[uint8]chainReadback, error) {
 	}
 	out := make(map[uint8]chainReadback, len(n.families))
 	for _, family := range n.families {
-		read, err := nftables.Contents{Chains: []nftables.Chain{postrouting}}.Read(n.conn, tables, nftFamily(family))
+		read, err := nftables.Contents{Chains: []nftables.Chain{postrouting}, Timeouts: timeoutObjects(family)}.Read(n.conn, tables, nftFamily(family))
 		if err != nil {
 			return nil, fmt.Errorf("egress: read table %s %s: %w", tableFamilyName(family), TableName, err)
 		}
@@ -162,7 +163,13 @@ func readback(read nftables.Readback, family uint8) chainReadback {
 // the alternative is a window in which a flow leaves untranslated and
 // conntrack then holds that decision for its whole lifetime. The table of a
 // family in remake is deleted first in the same transaction, with every chain
-// in it, and made again.
+// and timeout object in it, and made again.
+//
+// The timeout objects are written on every apply and changed by none, since
+// nf_tables has no update for one: a write of an object that exists leaves it
+// as it is. A deleted object detaches from every flow it timed, which then
+// takes the host's timeouts, so only a remake deletes one, and one that reads
+// back other than written asks for that remake.
 func (n *natTables) Apply(rules []Rule, remake []uint8) error {
 	requests, err := translatorBatch(n.families, rules, remake)
 	if err != nil {
@@ -178,8 +185,11 @@ func translatorBatch(families []uint8, rules []Rule, remake []uint8) ([]nftables
 		if slices.Contains(remake, family) {
 			requests = append(requests, delTable(family))
 		}
+		requests = append(requests, nftables.NewTable(nftFamily(family), TableName))
+		for _, object := range timeoutObjects(family) {
+			requests = append(requests, object.Create(nftFamily(family)))
+		}
 		requests = append(requests,
-			nftables.NewTable(nftFamily(family), TableName),
 			newChain(family),
 			// No handle, which is how nf_tables spells "every rule in this
 			// chain". It reaches only the chain named here, in the table named
@@ -333,9 +343,56 @@ func newRule(rule Rule) (nftables.Request, error) {
 	if rule.From.IsValid() {
 		expressions = append(expressions, nftables.SourcePrefix(rule.From)...)
 	}
+	if rule.Timeouts != NoTimeouts {
+		// no counter, so a flow is counted once, by the translation after it
+		expressions = append(expressions, attachTimeouts(rule.Timeouts)...)
+		return postrouting.Rule(nftFamily(rule.Family), rule.String(), expressions)
+	}
 	expressions = append(expressions, nftables.Expression("counter", nil))
 	expressions = append(expressions, translate(rule)...)
 	return postrouting.Rule(nftFamily(rule.Family), rule.String(), expressions)
+}
+
+// attachTimeouts matches a timeout rule's protocol and attaches its object,
+// which the kernel does on a flow's first packet alone, leaving a confirmed
+// flow's timeouts as they are. UDP to port 53 is not matched, so a query keeps
+// the host's timeout, as RFC 4787 REQ-5a lets it.
+func attachTimeouts(timeouts Timeouts) [][]byte {
+	protocol, _ := timeoutPolicy(timeouts)
+	out := nftables.MetaCompareValue(unix.NFT_META_L4PROTO, unix.NFT_CMP_EQ, []byte{protocol})
+	if timeouts == UDPTimeouts {
+		out = append(out, nftables.TransportLoad(udpDestinationOffset, 2),
+			nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_NEQ, binary.BigEndian.AppendUint16(nil, 53))))
+	}
+	return append(out, nftables.ObjectReference(unix.NFT_OBJECT_CT_TIMEOUT, timeoutObject+timeouts.String()))
+}
+
+func timeoutObjects(family uint8) []nftables.Timeout {
+	var out []nftables.Timeout
+	for _, timeouts := range familyTimeouts(family) {
+		protocol, policy := timeoutPolicy(timeouts)
+		out = append(out, nftables.Timeout{
+			Table: TableName, Name: timeoutObject + timeouts.String(), L3Proto: uint16(nftFamily(family)), L4Proto: protocol, Policy: policy,
+		})
+	}
+	return out
+}
+
+// timeoutPolicy is the protocol timeouts names and the seconds of each of its
+// states in the order of their CTA_TIMEOUT_ attributes: for TCP SYN_SENT,
+// SYN_RECV, ESTABLISHED, FIN_WAIT, CLOSE_WAIT, LAST_ACK, TIME_WAIT, CLOSE,
+// SYN_SENT2, RETRANS and UNACK, and for UDP UNREPLIED and REPLIED
+func timeoutPolicy(timeouts Timeouts) (protocol uint8, policy []uint32) {
+	switch timeouts {
+	case UDPTimeouts:
+		return unix.IPPROTO_UDP, []uint32{udpUnrepliedTimeout, udpRepliedTimeout}
+	case TCPTimeouts:
+		return unix.IPPROTO_TCP, []uint32{transitoryTimeout, transitoryTimeout, establishedTimeout, establishedFloor, establishedFloor,
+			transitoryTimeout, timeWaitTimeout, closeTimeout, transitoryTimeout, establishedFloor, establishedFloor}
+	case ICMPTimeouts:
+		return unix.IPPROTO_ICMP, []uint32{icmpTimeout}
+	}
+	return unix.IPPROTO_ICMPV6, []uint32{icmpTimeout}
 }
 
 // translate is the statement that rewrites the source: the address written in

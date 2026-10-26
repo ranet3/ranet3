@@ -101,17 +101,19 @@ testers.runNixOSTest {
     # hands back for a diff to compare against, is checked here and nowhere
     # else short of the full exit node arm.
     out = machine.succeed(
-        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestNftables(RoundTrip|NotifiesAnotherWritersChange|RewritesAnotherWritersRuleInItsChain|WakesMissedOnAnOverflow|PutsBackAnotherWritersChangeToItsTable)|^TestBorderRoundTrip(PutsBackWhatAnotherWriterChanged)?$' 2>&1"
+        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestNftables(RoundTrip|NotifiesAnotherWritersChange|RewritesAnotherWritersRuleInItsChain|RemakesATableHoldingAStaleTimeout|WakesMissedOnAnOverflow|PutsBackAnotherWritersChangeToItsTable)|^TestBorderRoundTrip(PutsBackWhatAnotherWriterChanged)?$' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the nftables round trips skipped themselves under root:\n{out}"
     assert "--- PASS: TestBorderRoundTrip" in out, f"the border filter's round trip did not run:\n{out}"
+    assert "--- PASS: TestNftablesRemakesATableHoldingAStaleTimeout" in out, f"the stale timeout's remake did not run:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 7, f"only {ran} nftables round trips ran:\n{out}"
+    assert ran >= 8, f"only {ran} nftables round trips ran:\n{out}"
 
-    # the exit behavior suite against the kernel exit under each class: rows 1 to 5 and Egress from several sessions in
-    # both families, the withdrawal and restore, another writer's change, another writer's translation and the stop
-    # a leaf, the exit, a router and a server in namespaces of their own
+    # the exit behavior suite against the kernel exit under each class: rows 1 to 5, Egress from several sessions and
+    # the idle timers read from conntrack's listing in both families, the withdrawal and restore, another writer's
+    # change, another writer's translation and the stop, a leaf, the exit, a router and a server in namespaces of their
+    # own
     out = machine.succeed(
         "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestKernelExitPassesTheExitBehaviorSuite$' 2>&1"
     )
@@ -119,7 +121,7 @@ testers.runNixOSTest {
     assert "SKIP" not in out, f"the exit behavior suite skipped itself under root:\n{out}"
     assert "--- PASS: TestKernelExitPassesTheExitBehaviorSuite" in out, f"the exit behavior suite did not pass:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 175, f"only {ran} of the exit behavior suite's tests ran:\n{out}"
+    assert ran >= 229, f"only {ran} of the exit behavior suite's tests ran:\n{out}"
 
     # the kernel exit held not ready while the host does not hold an address its classes translate to, in a namespace of
     # its own, each family's taken off lo and put back

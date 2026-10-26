@@ -167,10 +167,39 @@ func (d Direction) String() string {
 	return "out"
 }
 
-// Rule is one translation this node installs, and simultaneously the diff key:
-// the backend writes String into the rule's own comment and reads it back, so
-// two rules with equal fields are the same rule whatever the kernel does to
-// the expressions in between.
+// Timeouts is the protocol whose new flows a rule attaches this exit's own
+// timeouts to, on a rule that goes on to the next, and NoTimeouts on a rule
+// that translates, binds or returns
+type Timeouts uint8
+
+const (
+	NoTimeouts Timeouts = iota
+	// UDPTimeouts takes UDP to any destination port but a resolver's, 53
+	UDPTimeouts
+	TCPTimeouts
+	// ICMPTimeouts is IPv4's, and ICMPv6Timeouts IPv6's
+	ICMPTimeouts
+	ICMPv6Timeouts
+)
+
+func (t Timeouts) String() string {
+	switch t {
+	case UDPTimeouts:
+		return "udp"
+	case TCPTimeouts:
+		return "tcp"
+	case ICMPTimeouts:
+		return "icmp"
+	case ICMPv6Timeouts:
+		return "icmpv6"
+	}
+	return ""
+}
+
+// Rule is one rule this node installs, a translation or the timeouts ahead of
+// one, and simultaneously the diff key: the backend writes String into the
+// rule's own comment and reads it back, so two rules with equal fields are the
+// same rule whatever the kernel does to the expressions in between.
 type Rule struct {
 	Family    uint8
 	Direction Direction
@@ -189,24 +218,31 @@ type Rule struct {
 	// invalid for a prefix covering every address, which selects nothing
 	// extra.
 	From netip.Prefix
+	// Timeouts makes the rule one that attaches this exit's timeouts to a new
+	// flow of its protocol and translates nothing, with Source and None left
+	// unset. Such rules come ahead of each rule that translates, an In rule's
+	// among them, keyed as it is.
+	Timeouts Timeouts
 }
 
 // String is the rule as an operator reads it in `nft list ruleset` and as the
 // diff compares it. Every field that changes what the rule does is in it, so a
 // changed source or prefix reads back as a different rule and is replaced.
 func (r Rule) String() string {
-	source := "masquerade"
+	action := "masquerade"
 	switch {
+	case r.Timeouts != NoTimeouts:
+		action = "timeouts " + r.Timeouts.String()
 	case r.None:
-		source = "untranslated"
+		action = "untranslated"
 	case r.Source.IsValid():
-		source = "source " + r.Source.String()
+		action = "source " + r.Source.String()
 	}
 	parts := []string{r.Direction.String(), "via", r.Interface, egress.FamilyName(r.Family)}
 	if r.From.IsValid() {
 		parts = append(parts, "from", r.From.String())
 	}
-	return strings.Join(append(parts, source), " ")
+	return strings.Join(append(parts, action), " ")
 }
 
 // Installed is one rule as the backend read it back: the spelling it was
@@ -645,47 +681,65 @@ func sameFamilyRules(held []Installed, desired []Rule, family uint8) bool {
 // one family at a time, and a list ordered any other way would never compare
 // equal to its own readback and would be rewritten on every pass forever.
 //
-// Within a family the Out rules come first, a rule per class in the order
-// Classes gives, the longest From first, since a chain reads top to bottom and
-// the first translation ends it. Where no class covers every source, a rule of
-// auto for the rest ends them. The In rules follow, then one Local rule per
-// mesh source of the family under its class, which no packet arriving on the
-// mesh device reaches past the Out rules.
+// Within a family the Out rules come first, each class's in the order Classes
+// gives, the longest From first, since a chain reads top to bottom and the
+// first translation ends it. Where no class covers every source, the rules of
+// auto for the rest end them. The In rules follow, then the rules of each mesh
+// source of the family under its class, which no packet arriving on the mesh
+// device reaches past the Out rules.
 func (t *Translator) desired() []Rule {
 	var out []Rule
 	for _, family := range t.cfg.Translated(t.rt.Steered) {
 		covered := false
 		for _, class := range t.cfg.Classes(family) {
-			rule := t.rule(family, Out, class.To)
-			// A prefix covering every address narrows nothing, and a rule
-			// carrying it would encode a mask no packet fails, so it is left off
-			// and the rule selects on the direction alone.
-			if class.From.Bits() > 0 {
-				rule.From = class.From.Prefix
-			}
 			covered = covered || class.From.Bits() == 0
-			out = append(out, rule)
+			out = append(out, t.classRules(family, Out, class.From.Prefix, class.To)...)
 		}
 		if !covered {
-			out = append(out, t.rule(family, Out, egress.Translation{Auto: true}))
+			out = append(out, t.classRules(family, Out, netip.Prefix{}, egress.Translation{Auto: true})...)
 		}
 		out = append(out, t.inbound(family)...)
 		for _, address := range egress.MeshSources(family, t.rt.MeshAddresses) {
-			rule := t.rule(family, Local, t.cfg.ClassOf(address).To)
-			rule.From = netip.PrefixFrom(address, address.BitLen())
-			out = append(out, rule)
+			out = append(out, t.classRules(family, Local, netip.PrefixFrom(address, address.BitLen()), t.cfg.ClassOf(address).To)...)
 		}
 	}
 	return out
 }
 
-// rule is the rule of family and direction translating as to says
-func (t *Translator) rule(family uint8, direction Direction, to egress.Translation) Rule {
-	return Rule{Family: family, Direction: direction, Interface: t.rt.Interface, Source: to.Addr, None: to.None}
+// classRules is the rules taking the new flows of family from from, keyed on
+// direction, as to says. A translation is a NAT the three RFCs on timeouts
+// cover, the return direction's included, so the exit's timeouts attach to its
+// flows first, and a class of none binds its flows alone, so they keep the
+// host's timeouts.
+func (t *Translator) classRules(family uint8, direction Direction, from netip.Prefix, to egress.Translation) []Rule {
+	// A prefix covering every address narrows nothing, and a rule carrying it
+	// would encode a mask no packet fails, so it is left off and the rules
+	// select on the direction alone.
+	if from.Bits() == 0 {
+		from = netip.Prefix{}
+	}
+	keyed := Rule{Family: family, Direction: direction, Interface: t.rt.Interface, From: from}
+	translation := keyed
+	translation.Source, translation.None = to.Addr, to.None
+	if to.None {
+		return []Rule{translation}
+	}
+	var out []Rule
+	for _, timeouts := range familyTimeouts(family) {
+		rule := keyed
+		rule.Timeouts = timeouts
+		out = append(out, rule)
+	}
+	return append(out, translation)
 }
 
-// inbound is family's In rules, one per advertised prefix of the family, and
-// none without return
+func familyTimeouts(family uint8) []Timeouts {
+	if family == egress.FamilyIPv6 {
+		return []Timeouts{UDPTimeouts, TCPTimeouts, ICMPv6Timeouts}
+	}
+	return []Timeouts{UDPTimeouts, TCPTimeouts, ICMPTimeouts}
+}
+
 func (t *Translator) inbound(family uint8) []Rule {
 	// Resolved again rather than remembered, and its error dropped, because New
 	// refused every advertised family that cannot answer it and a family
@@ -696,14 +750,9 @@ func (t *Translator) inbound(family uint8) []Rule {
 	}
 	var out []Rule
 	for _, prefix := range t.cfg.Advertise {
-		if egress.AddressFamily(prefix.Addr()) != family {
-			continue
+		if egress.AddressFamily(prefix.Addr()) == family {
+			out = append(out, t.classRules(family, In, prefix.Prefix, egress.Translation{Addr: source})...)
 		}
-		rule := Rule{Family: family, Direction: In, Interface: t.rt.Interface, Source: source}
-		if prefix.Bits() > 0 {
-			rule.From = prefix.Prefix
-		}
-		out = append(out, rule)
 	}
 	return out
 }

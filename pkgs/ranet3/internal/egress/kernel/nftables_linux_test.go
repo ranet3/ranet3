@@ -43,7 +43,8 @@ func expressionNames(t *testing.T, body []byte) []string {
 
 // A rule reaches the kernel as the expressions its comment describes, in the
 // order a packet meets them: both interfaces, then the narrowing, then the
-// counter, then the translation.
+// counter and the translation, or for a timeout rule its protocol and its
+// object.
 func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 	for _, one := range []struct {
 		name string
@@ -86,6 +87,18 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			Rule{Family: egress.FamilyIPv6, Direction: Local, Interface: "ranet0",
 				From: netip.MustParsePrefix("3fff::1/128"), Source: netip.MustParseAddr("2001:db8::7")},
 			[]string{"meta", "cmp", "payload", "cmp", "counter", "immediate", "nat"},
+		},
+		{
+			"timeouts for UDP out of the mesh",
+			Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", From: netip.MustParsePrefix("198.51.100.0/24"), Timeouts: UDPTimeouts},
+			// The protocol, then the destination port that is not DNS's, then
+			// the object, with no counter and no verdict.
+			[]string{"meta", "cmp", "meta", "cmp", "payload", "bitwise", "cmp", "meta", "cmp", "payload", "cmp", "objref"},
+		},
+		{
+			"timeouts for ICMPv6 from this node's own mesh address",
+			Rule{Family: egress.FamilyIPv6, Direction: Local, Interface: "ranet0", From: netip.MustParsePrefix("3fff::1/128"), Timeouts: ICMPv6Timeouts},
+			[]string{"meta", "cmp", "payload", "cmp", "meta", "cmp", "objref"},
 		},
 	} {
 		t.Run(one.name, func(t *testing.T) {
@@ -210,14 +223,18 @@ func TestDirectionInvertsBothInterfaceTests(t *testing.T) {
 }
 
 // the longest spec of each direction a translator writes, from a /128 to an address under the longest device name and the longest IPv6 spelling, fits nft's comment limit
-// so no configuration reaches the refusal of a longer one, which nft -f would not load back
+// and so does its longest timeout rule's, so no configuration reaches the refusal of a longer one, which nft -f would not load back
 func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 	address := netip.MustParseAddr("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff")
 	for _, direction := range []Direction{Out, In, Local} {
 		rule := Rule{Family: egress.FamilyIPv6, Direction: direction, Interface: strings.Repeat("r", unix.IFNAMSIZ-1),
 			From: netip.PrefixFrom(address, 128), Source: address}
-		if _, err := newRule(rule); err != nil {
-			t.Errorf("the longest %s rule was refused: %v", direction, err)
+		timeouts := rule
+		timeouts.Source, timeouts.Timeouts = netip.Addr{}, ICMPv6Timeouts
+		for _, rule := range []Rule{rule, timeouts} {
+			if _, err := newRule(rule); err != nil {
+				t.Errorf("the longest %s rule was refused: %v", direction, err)
+			}
 		}
 	}
 }

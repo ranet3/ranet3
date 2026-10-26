@@ -54,10 +54,11 @@ func TestTranslatorRecordsThePassesThatDidSomething(t *testing.T) {
 		}
 		got = append(got, []string{event.Kind, event.Attrs["installed"], event.Attrs["announced"], event.Attrs["err"]})
 	}
+	// each family's masquerade with its three timeout rules
 	want := [][]string{
-		{"egress.pass", "2", "2", ""},
-		{"egress.pass", "2", "2", ""},
-		{"egress.pass", "2", "1", ""},
+		{"egress.pass", "8", "2", ""},
+		{"egress.pass", "8", "2", ""},
+		{"egress.pass", "8", "1", ""},
 		{"egress.pass", "0", "0", "install rules: no"},
 	}
 	if !slices.EqualFunc(got, want, slices.Equal) {

@@ -44,6 +44,7 @@ type rows struct {
 	class      Class
 	exit       *running
 	terminates bool
+	flows      func(Host) ([]Flow, error)
 }
 
 func (r *rows) v6() bool { return r.family.Leaf.Is6() }

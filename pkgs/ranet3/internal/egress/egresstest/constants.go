@@ -30,6 +30,25 @@ const (
 	// with sessionDatagrams datagrams of a flow of its own
 	concurrentSessions = 4
 	sessionDatagrams   = 16
+	// the least a NAT keeps a flow idle: a UDP mapping by RFC 4787 REQ-5, a
+	// TCP connection opening or closing and one established by RFC 5382 REQ-5,
+	// and an ICMP query by RFC 5508 REQ-2
+	udpFloor         = 2 * time.Minute
+	transitoryFloor  = 4 * time.Minute
+	establishedFloor = 2*time.Hour + 4*time.Minute
+	queryFloor       = time.Minute
+	// leftRounding is the second Flow.Left is rounded down to
+	leftRounding = time.Second
+	// answeredAge is how long an answered UDP flow lasts before the leaf sends
+	// again, past the two seconds after which Linux's connection tracking keeps
+	// such a flow under its replied timeout rather than its unreplied one
+	answeredAge = 3 * time.Second
+	// unansweredDial is how long a connect whose answers are lost waits, past
+	// which its SYN has crossed the exit
+	unansweredDial = 300 * time.Millisecond
+	// resolverPort is a resolver's, whose UDP flows RFC 4787 REQ-5a lets a NAT
+	// keep below udpFloor, as a well-known destination port's
+	resolverPort = 53
 )
 
 // the ports of each row and step, the server's and the leaf's, apart so no exchange meets another's state at the exit
@@ -52,6 +71,17 @@ const (
 	remadePort       = 9899
 	behindPort       = 9900
 	aheadPort        = 9901
+	unansweredPort   = 10000
+	openingPort      = 10001
+	unackedPort      = 10002
+	halfClosedPort   = 10003
+	closingPort      = 10004
+	timersEchoID     = 10005
+	intoPort         = 10007
+	intoOpeningPort  = 10008
+	intoEchoID       = 10009
+	answeredPort     = 10010
+	ownAddressPort   = 10006
 	leafPathPort     = 40300
 	leafHopPort      = 40400
 	leafReusePort    = 40500

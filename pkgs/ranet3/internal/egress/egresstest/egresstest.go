@@ -139,7 +139,8 @@ type Network interface {
 
 // Arm is a backend as the suite runs it. The suite holds every arm to all
 // five rows in both families, to carrying every protocol, to Egress from
-// several sessions at once and to a withdrawal and a restore by SetEnabled.
+// several sessions at once and to a withdrawal and a restore by SetEnabled,
+// and an arm that reads its flows to the idle timers it keeps them to.
 type Arm struct {
 	// Classes are the source classes the backend carries, at least one
 	Classes []Class
@@ -165,6 +166,9 @@ type Arm struct {
 	// ahead is set, and returns what takes it away again. It is nil for a
 	// backend whose translation no other writer's can meet.
 	Masquerade func(host Host, ahead bool) (undo func() error, err error)
+	// Flows reads every flow the backend tracks on host, nil for a backend
+	// that cannot read how long it keeps each
+	Flows func(host Host) ([]Flow, error)
 }
 
 func (a Arm) check() error {
@@ -184,10 +188,11 @@ func every(prefix netip.Prefix) netip.Prefix {
 	return defaults[1]
 }
 
-// Run runs rows 1 to 5 and Egress from several sessions in both families, then
-// the withdrawal and restore, another writer's change and another writer's
-// translation where the arm can make them, and the stop, for each of arm's
-// classes on a network of its own that build makes
+// Run runs rows 1 to 5, Egress from several sessions and the idle timers
+// where the arm reads its flows, in both families, then the withdrawal and
+// restore, another writer's change and another writer's translation where the
+// arm can make them, and the stop, for each of arm's classes on a network of
+// its own that build makes
 func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 	if err := arm.check(); err != nil {
 		t.Fatal(err)
@@ -197,7 +202,7 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 			network := build(t)
 			exit := start(t, network, arm, class)
 			for _, v6 := range []bool{false, true} {
-				r := &rows{network: network, family: network.Family(v6), class: class, exit: exit, terminates: arm.Terminates}
+				r := &rows{network: network, family: network.Family(v6), class: class, exit: exit, terminates: arm.Terminates, flows: arm.Flows}
 				t.Run(r.family.Name, func(t *testing.T) {
 					t.Run("what the server sees", r.serverSees)
 					t.Run("errors toward the leaf", r.errorsTowardTheLeaf)
@@ -205,6 +210,9 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 					t.Run("hop limits", r.hopLimits)
 					t.Run("port reuse", r.portReuse)
 					t.Run("egress from several sessions at once", r.sessions)
+					if arm.Flows != nil {
+						t.Run("idle timers", r.timers)
+					}
 				})
 			}
 			t.Run("disabled and enabled", func(t *testing.T) { exit.disable(t, network, class) })
@@ -252,6 +260,9 @@ type running struct {
 	// dropped is called on Ready's caller with the families the word stopped
 	// carrying because Ready took them, nil while no step watches for it
 	dropped func(v4, v6 bool)
+	// withheld matches the leaf's packets hand loses, as a path losing them
+	// would, nil while no step loses any
+	withheld func(packet []byte) bool
 }
 
 type readiness struct{ v4, v6, serves bool }
@@ -272,6 +283,9 @@ func start(t *testing.T, network Network, arm Arm, class Class) *running {
 	for _, prefix := range defaults {
 		cfg.Advertise = append(cfg.Advertise, schema.PrefixFrom(prefix))
 	}
+	// the server's flows toward the leaf are then translated into the mesh, as a
+	// subnet router's LAN's are, which the idle timers read
+	cfg.Return = true
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("the capability is refused: %v", err)
 	}
@@ -312,10 +326,16 @@ func announcesDefaults(announced []netip.Prefix) bool {
 
 // hand is the dataplane's hand-off for a prefix cap.egress advertises
 func (r *running) hand(packets [][]byte) {
+	r.mu.Lock()
+	withheld := r.withheld
+	r.mu.Unlock()
 	frames := make([][]byte, 0, len(packets))
 	var handed [][]byte
 	for _, packet := range packets {
 		if v6 := packet[0]>>4 == 6; v6 && !r.carries6.Load() || !v6 && !r.carries4.Load() {
+			continue
+		}
+		if withheld != nil && withheld(packet) {
 			continue
 		}
 		frame := make([]byte, netstack.TUNHeadroom+len(packet))

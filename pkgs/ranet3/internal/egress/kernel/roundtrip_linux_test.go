@@ -7,10 +7,13 @@ package kernel
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"os/exec"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -68,8 +71,8 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 
 	tr := newTranslator(cfg, rt, be)
 	desired := tr.desired()
-	if len(desired) != 9 {
-		t.Fatalf("the configuration asks for %d rules, want four out of the mesh device, three in and two from this node's own addresses", len(desired))
+	if len(desired) != 21 {
+		t.Fatalf("the configuration asks for %d rules, want four out of the mesh device, three in and two from this node's own addresses, with twelve timeout rules", len(desired))
 	}
 	if err := be.Apply(desired, nil); err != nil {
 		t.Fatalf("install %d rules: %v", len(desired), err)
@@ -101,6 +104,13 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	if !sameRules(held, desired) {
 		t.Error("a pass would rewrite rules the kernel already holds")
 	}
+	// each table holds the timeout objects its rules name, every state at the
+	// seconds it was written with
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
+		if got, want := heldTimeouts(t, be.(*natTables).conn, family), timeoutObjects(family); !reflect.DeepEqual(got, want) {
+			t.Errorf("the %s table holds the timeout objects %+v, want %+v", tableFamilyName(family), got, want)
+		}
+	}
 
 	// A rule with no comment in this tool's chain is another writer's, and the
 	// readback holds it where the kernel does, in the family it was read from,
@@ -129,9 +139,10 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 		t.Errorf("with another writer's rule in the ip chain alone the ip readback reads as written %v and the ip6 one %v, want false and true", v4, v6)
 	}
 
-	// A counter in every rule, at zero, since nothing has crossed this
-	// namespace. Reading it back at all is the part that can break: it is a
-	// 64-bit attribute the kernel aligns with a padding attribute of its own.
+	// A counter in every rule but the timeout rules, at zero, since nothing has
+	// crossed this namespace. Reading it back at all is the part that can
+	// break: it is a 64-bit attribute the kernel aligns with a padding
+	// attribute of its own.
 	for i, rule := range held {
 		if rule.Packets != 0 || rule.Bytes != 0 {
 			t.Errorf("rule %d came back with %d flows and %d bytes in an empty namespace", i, rule.Packets, rule.Bytes)
@@ -304,7 +315,9 @@ func dormantTable(proto uint8) nftables.Request {
 
 // A rule with no comment that another writer inserts at the head of the
 // translator's own chain is read back with it, so the next pass rewrites the
-// chain and leaves only the translator's rules
+// chain and leaves only the translator's rules, in the table it found, so with
+// the timeout objects in it, which a deletion would detach from every flow they
+// time
 func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
@@ -337,9 +350,14 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	if read, err := be.Rules(); err != nil || !slices.ContainsFunc(read[egress.FamilyIPv6].rules, func(rule Installed) bool { return rule.Spec == "" }) {
 		t.Errorf("with another writer's accept rule at the head of the ip6 chain the readback holds %v (%v), want that rule with no comment among them", read, err)
 	}
+	handles := tableHandles(t, another)
 
 	if err := tr.reconcile(); err != nil {
 		t.Fatalf("second pass: %v", err)
+	}
+	// a table made again takes a handle the namespace has not given before
+	if got := tableHandles(t, another); len(got) != 2 || !maps.Equal(got, handles) {
+		t.Errorf("after the pass rewrote the chains the tables have the handles %v, want the ones they had, %v", got, handles)
 	}
 	want := make([]string, 0, len(tr.desired()))
 	for _, rule := range tr.desired() {
@@ -364,6 +382,97 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	if s := tr.lastPass(); !s.Ready4 || !s.Ready6 {
 		t.Errorf("after the next pass the translator reads %+v, want both families ready", s)
 	}
+}
+
+// A timeout object the table holds with other seconds than this build writes,
+// as an earlier build may have left it, reads back as a fault that remakes the
+// table, since nf_tables changes no ct timeout in place, and after the pass
+// every object reads back as written and both families are ready
+func TestNftablesRemakesATableHoldingAStaleTimeout(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }}
+	be, err := newBackend(egress.Egress{}, rt)
+	if err != nil {
+		t.Fatalf("open the nftables backend: %v", err)
+	}
+	t.Cleanup(func() { _ = be.Close() })
+	requireEmptyRuleset(t, be)
+	another, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = another.Close() })
+	stale := nftables.Timeout{Table: TableName, Name: timeoutObject + UDPTimeouts.String(), L3Proto: unix.NFPROTO_IPV4, L4Proto: unix.IPPROTO_UDP,
+		Policy: []uint32{2 * udpUnrepliedTimeout, 2 * udpRepliedTimeout}}
+	if err := another.Batch([]nftables.Request{nftables.NewTable(unix.NFPROTO_IPV4, TableName), stale.Create(unix.NFPROTO_IPV4)}); err != nil {
+		t.Fatalf("leave a stale timeout object: %v", err)
+	}
+	if read, err := be.Rules(); err != nil || read[egress.FamilyIPv4].fault == "" || !read[egress.FamilyIPv4].remake {
+		t.Errorf("with a stale timeout object the ip table reads back as %+v (%v), want a fault that remakes it", read[egress.FamilyIPv4], err)
+	}
+	tr := newTranslator(egress.Egress{}, rt, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatalf("the pass: %v", err)
+	}
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
+		if got, want := heldTimeouts(t, another, family), timeoutObjects(family); !reflect.DeepEqual(got, want) {
+			t.Errorf("after the pass the %s table holds the timeout objects %+v, want %+v", tableFamilyName(family), got, want)
+		}
+	}
+	if s := tr.lastPass(); !s.Ready4 || !s.Ready6 {
+		t.Errorf("after the pass the translator reads %+v, want both families ready", s)
+	}
+}
+
+// heldTimeouts is the timeout objects this tool's table of family holds, in
+// the order the kernel dumps them, which is the order they were made in
+func heldTimeouts(t *testing.T, conn *nftables.Conn, family uint8) []nftables.Timeout {
+	t.Helper()
+	replies, err := conn.Dump(nftables.Command(unix.NFT_MSG_GETOBJ), nftables.PutNfgenmsg(nil, nftFamily(family)))
+	if err != nil {
+		t.Fatalf("dump the %s objects: %v", tableFamilyName(family), err)
+	}
+	var held []nftables.Timeout
+	for _, reply := range replies {
+		if object, ok := nftables.DecodeTimeout(reply); ok && object.Table == TableName {
+			held = append(held, object)
+		}
+	}
+	return held
+}
+
+// tableHandle is NFTA_TABLE_HANDLE, the attribute of a table's handle in a
+// dump, which x/sys does not carry
+const tableHandle = 4
+
+// tableHandles is the handle of this tool's table in each nf_tables family
+// that holds one
+func tableHandles(t *testing.T, conn *nftables.Conn) map[uint8]uint64 {
+	t.Helper()
+	replies, err := conn.Dump(nftables.Command(unix.NFT_MSG_GETTABLE), nftables.PutNfgenmsg(nil, unix.NFPROTO_UNSPEC))
+	if err != nil {
+		t.Fatalf("dump the tables: %v", err)
+	}
+	handles := map[uint8]uint64{}
+	for _, reply := range replies {
+		var name string
+		var handle uint64
+		for kind, value := range reply.Attributes() {
+			switch {
+			case kind == unix.NFTA_TABLE_NAME:
+				name = unix.ByteSliceToString(value)
+			case kind == tableHandle && len(value) == 8:
+				handle = binary.BigEndian.Uint64(value)
+			}
+		}
+		if name == TableName && len(reply.Data) >= nftables.SizeofNfgenmsg {
+			handles[reply.Data[0]] = handle
+		}
+	}
+	return handles
 }
 
 // Another writer setting a family's table dormant, or making its chain again

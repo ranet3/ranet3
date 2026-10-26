@@ -28,15 +28,17 @@ func deviceNames() hegel.Generator[string] {
 	})
 }
 
-// Every rule of each direction and translation encodes to expressions that,
-// run as nf_tables runs them, take exactly the packets the rule is meant for
-// and translate each as the rule says: masquerade, a source nat to its
-// address, or for none a source nat to the source the packet carries. The
-// packets arrive on and leave by the mesh device, two devices whose names
-// start like it, a drawn link whose name often shares a prefix with it,
-// another link and this host itself, from sources on either side of each edge
-// of the rule's From and one drawn anywhere in its family. A rule is refused
-// exactly when its name is too long for a device.
+// Every rule of each direction, translation and timeouts encodes to
+// expressions that, run as nf_tables runs them, take exactly the packets the
+// rule is meant for and do to each what the rule says: masquerade, a source nat
+// to its address, for none a source nat to the source the packet carries, each
+// counted, and for a timeout rule its object attached with no count and the
+// chain going on past it. The packets arrive on and leave by the mesh device,
+// two devices whose names start like it, a drawn link whose name often shares
+// a prefix with it, another link and this host itself, from sources on either
+// side of each edge of the rule's From and one drawn anywhere in its family,
+// carrying each protocol carried names. A rule is refused exactly when its name
+// is too long for a device.
 func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		rule := Rule{
@@ -50,11 +52,13 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 		if rule.Family == egress.FamilyIPv6 {
 			addresses, bits, destination = unmappedIPv6(), 128, netip.MustParseAddr("2001:db8:ffff::9")
 		}
-		switch hegel.Draw(ht, pbt.Spanning(0, 2)) {
+		switch hegel.Draw(ht, pbt.Spanning(0, 3)) {
 		case 1:
 			rule.Source = hegel.Draw(ht, addresses)
 		case 2:
 			rule.None = true
+		case 3:
+			rule.Timeouts = Timeouts(hegel.Draw(ht, pbt.Spanning(uint8(UDPTimeouts), uint8(ICMPv6Timeouts))))
 		}
 		if hegel.Draw(ht, hegel.WeightedBooleans(3.0/4)) {
 			rule.From = netip.PrefixFrom(hegel.Draw(ht, addresses), hegel.Draw(ht, pbt.Spanning(1, bits))).Masked()
@@ -78,17 +82,24 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 		for _, arrival := range append([]string{""}, devices...) {
 			for _, departure := range devices {
 				for _, source := range sources {
-					packet := crossing{arrival, departure, source}
-					wire := drawnPacket{iif: arrival, source: source, destination: destination}.wire()
-					wire.oif = departure
-					run := runChain(ht, []nftables.Request{request}, wire)
-					taken, want := meant(rule, packet), translation{}
-					if taken {
-						want = translation{masquerade: !rule.None && !rule.Source.IsValid(), to: leavesUnder(rule, packet)}
-					}
-					if (run.rule == 0) != taken || run.translation != want {
-						ht.Fatalf("%s takes a packet from %s arriving on %q and leaving by %q: %v as %+v, want %v as %+v",
-							rule, source, arrival, departure, run.rule == 0, run.translation, taken, want)
+					for _, carry := range carried {
+						packet := crossing{arrival, departure, source, carry.protocol, carry.port}
+						wire := drawnPacket{iif: arrival, source: source, destination: destination}.carrying(carry.protocol, carry.port)
+						wire.oif = departure
+						run := runChain(ht, []nftables.Request{request}, wire)
+						want := chainRun{rule: -1, accept: true}
+						switch {
+						case !meant(rule, packet):
+						case rule.Timeouts != NoTimeouts:
+							want.timeouts = timeoutObject + rule.Timeouts.String()
+						default:
+							want = chainRun{accept: true, counted: true,
+								translation: translation{masquerade: !rule.None && !rule.Source.IsValid(), to: leavesUnder(rule, packet)}}
+						}
+						if run != want {
+							ht.Fatalf("%s runs a packet from %s of protocol %d to port %d arriving on %q and leaving by %q as %+v, want %+v",
+								rule, source, carry.protocol, carry.port, arrival, departure, run, want)
+						}
 					}
 				}
 			}

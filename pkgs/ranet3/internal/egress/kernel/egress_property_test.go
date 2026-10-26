@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/unix"
 	"hegel.dev/go/hegel"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
@@ -94,21 +95,51 @@ func (e exit) takes() bool {
 }
 
 // crossing is a packet at postrouting as a rule reads it: the device it
-// arrived on, empty for one this host sent, the one it leaves by and its
-// source
+// arrived on, empty for one this host sent, the one it leaves by, its source,
+// and the protocol it carries with that protocol's destination port, 0 for one
+// with none
 type crossing struct {
 	arrival, departure string
 	source             netip.Addr
+	protocol           uint8
+	port               uint16
 }
+
+// carried is each protocol and port a property sends a packet of: UDP to the
+// DNS port and to another, TCP to the DNS port, ICMP, ICMPv6, and GRE, which no
+// rule names
+var carried = []struct {
+	protocol uint8
+	port     uint16
+}{{unix.IPPROTO_UDP, 53}, {unix.IPPROTO_UDP, 9}, {unix.IPPROTO_TCP, 53}, {unix.IPPROTO_ICMP, 0}, {unix.IPPROTO_ICMPV6, 0}, {unix.IPPROTO_GRE, 0}}
 
 // meant is which packets a rule takes by its definition, each of its family
 // and from a source its From covers where it has one: out of the mesh what
 // arrives on the mesh device and leaves by another, into the mesh what arrives
 // from elsewhere, not from this host, and leaves by the mesh device, and for
-// this node's own address what leaves by another link
+// this node's own address what leaves by another link. A timeout rule takes
+// those of its protocol alone, UDP's but to the DNS port.
 func meant(rule Rule, packet crossing) bool {
 	if egress.AddressFamily(packet.source) != rule.Family || rule.From.IsValid() && !rule.From.Contains(packet.source) {
 		return false
+	}
+	switch rule.Timeouts {
+	case UDPTimeouts:
+		if packet.protocol != unix.IPPROTO_UDP || packet.port == 53 {
+			return false
+		}
+	case TCPTimeouts:
+		if packet.protocol != unix.IPPROTO_TCP {
+			return false
+		}
+	case ICMPTimeouts:
+		if packet.protocol != unix.IPPROTO_ICMP {
+			return false
+		}
+	case ICMPv6Timeouts:
+		if packet.protocol != unix.IPPROTO_ICMPV6 {
+			return false
+		}
 	}
 	switch rule.Direction {
 	case Out:
@@ -139,16 +170,45 @@ func classSource(cfg egress.Egress, source netip.Addr) netip.Addr {
 	return to.Addr
 }
 
+// classTimeouts is the timeouts the class model attaches to a packet leaving
+// under the class of its source: none under a class of none, and otherwise
+// translatedTimeouts
+func classTimeouts(cfg egress.Egress, packet crossing) Timeouts {
+	if cfg.ClassOf(packet.source).To.None {
+		return NoTimeouts
+	}
+	return translatedTimeouts(packet)
+}
+
+// translatedTimeouts is the timeouts a packet a rule translates takes: its
+// protocol's, for UDP to any port but the DNS port, TCP and the ICMP of its
+// family
+func translatedTimeouts(packet crossing) Timeouts {
+	switch {
+	case packet.protocol == unix.IPPROTO_UDP && packet.port != 53:
+		return UDPTimeouts
+	case packet.protocol == unix.IPPROTO_TCP:
+		return TCPTimeouts
+	case packet.protocol == unix.IPPROTO_ICMP && packet.source.Is4():
+		return ICMPTimeouts
+	case packet.protocol == unix.IPPROTO_ICMPV6 && packet.source.Is6():
+		return ICMPv6Timeouts
+	}
+	return NoTimeouts
+}
+
 // For every capability New takes, the rules a pass installs, read top to
 // bottom in each family's chain as nf_tables reads one, take each packet as
 // the class model says. A packet from the mesh device out of another link, in
 // a family advertised or steered, leaves under the class of its source. One
 // this node sends from a mesh source of its own out of another link leaves
 // under that address's class, and one from any other address is left to the
-// host. With return, one entering the mesh from an advertised prefix leaves
-// under the return source, and every other packet entering the mesh, or
-// crossing it, is taken by no rule. A second pass writes nothing, so the host
-// holds the order it reads back, and only advertised prefixes are announced.
+// host. Each packet a rule translates takes its protocol's timeouts on the way,
+// and one under a class of none takes none. With return, one entering the mesh from an
+// advertised prefix leaves under the return source, and every other packet
+// entering the mesh, or crossing it, is taken by no rule. A second pass writes
+// nothing, so the host holds the order it reads back, and only advertised
+// prefixes are announced.
 func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 	sources := []netip.Addr{
 		netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("198.51.100.8"), netip.MustParseAddr("198.51.100.200"),
@@ -170,14 +230,19 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 			ht.Fatalf("%+v under %+v wrote the ruleset %d times over two passes, want once", cfg, rt, be.applied)
 		}
 		desired := tr.desired()
-		// first is the rule a packet meets first that takes it
-		first := func(packet crossing) (Rule, bool) {
+		// walk is the rule a packet meets first that translates it, and the
+		// timeouts the last of the timeout rules it meets on the way attaches
+		walk := func(packet crossing) (rule Rule, taken bool, attached Timeouts) {
 			for _, rule := range desired {
-				if meant(rule, packet) {
-					return rule, true
+				switch {
+				case !meant(rule, packet):
+				case rule.Timeouts != NoTimeouts:
+					attached = rule.Timeouts
+				default:
+					return rule, true, attached
 				}
 			}
-			return Rule{}, false
+			return Rule{}, false, attached
 		}
 		drawnSources := append(slices.Clone(sources), rt.MeshAddresses...)
 		for range hegel.Draw(ht, pbt.Spanning(1, 4)) {
@@ -189,22 +254,34 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 			mine := slices.Contains(egress.MeshSources(family, rt.MeshAddresses), source)
 			inbound, _ := cfg.ReturnSource(family, rt.MeshAddresses)
 			advertised := slices.ContainsFunc(cfg.Advertise, func(prefix schema.Prefix) bool { return prefix.Contains(source) })
-			for _, c := range []struct {
-				what   string
-				packet crossing
-				taken  bool
-				want   netip.Addr
-			}{
-				{"out of the mesh", crossing{"ranet0", "eth0", source}, translated, classSource(cfg, source)},
-				{"from this node", crossing{"", "eth0", source}, translated && mine, classSource(cfg, source)},
-				{"into the mesh", crossing{"eth1", "ranet0", source}, translated && inbound.IsValid() && advertised, inbound},
-				{"from this node into the mesh", crossing{"", "ranet0", source}, false, netip.Addr{}},
-				{"across the mesh", crossing{"ranet0", "ranet0", source}, false, netip.Addr{}},
-			} {
-				rule, taken := first(c.packet)
-				if taken != c.taken || taken && leavesUnder(rule, c.packet) != c.want {
-					ht.Fatalf("%+v under %+v takes a packet %s from %s by %v (%v) to leave under %v, want taken %v under %v, in %v",
-						cfg, rt, c.what, source, rule, taken, leavesUnder(rule, c.packet), c.taken, c.want, desired)
+			for _, carry := range carried {
+				for _, c := range []struct {
+					what   string
+					packet crossing
+					taken  bool
+					want   netip.Addr
+					// timed is whether the class's timeouts attach to a packet taken
+					timed bool
+				}{
+					{"out of the mesh", crossing{"ranet0", "eth0", source, carry.protocol, carry.port}, translated, classSource(cfg, source), true},
+					{"from this node", crossing{"", "eth0", source, carry.protocol, carry.port}, translated && mine, classSource(cfg, source), true},
+					{"into the mesh", crossing{"eth1", "ranet0", source, carry.protocol, carry.port}, translated && inbound.IsValid() && advertised, inbound, false},
+					{"from this node into the mesh", crossing{"", "ranet0", source, carry.protocol, carry.port}, false, netip.Addr{}, false},
+					{"across the mesh", crossing{"ranet0", "ranet0", source, carry.protocol, carry.port}, false, netip.Addr{}, false},
+				} {
+					rule, taken, attached := walk(c.packet)
+					timeouts := NoTimeouts
+					if c.taken && c.timed {
+						timeouts = classTimeouts(cfg, c.packet)
+					}
+					// one entering the mesh leaves under no class, and takes its protocol's
+					if c.taken && c.packet.departure == rt.Interface {
+						timeouts = translatedTimeouts(c.packet)
+					}
+					if taken != c.taken || taken && leavesUnder(rule, c.packet) != c.want || attached != timeouts {
+						ht.Fatalf("%+v under %+v takes a packet %s from %s of protocol %d to port %d by %v (%v) to leave under %v with timeouts %q, want taken %v under %v with %q, in %v",
+							cfg, rt, c.what, source, carry.protocol, carry.port, rule, taken, leavesUnder(rule, c.packet), attached, c.taken, c.want, timeouts, desired)
+					}
 				}
 			}
 		}
