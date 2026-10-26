@@ -32,10 +32,10 @@ and the same code runs on every platform.
 `cap.segment.local` names the addresses this node answers for. Past the checks
 below, `End` moves a packet to its next segment and sends it on, and `End.DT46`
 strips the outer header and hands the inner packet, IPv4 or IPv6, to the mesh's
-[forwarding decision](routing.md#transit), which writes it to the tun where its
-destination is this node's own and sends it on to the node that holds it
-otherwise. The SID grants what arrives through it transit, so the inner packet
-goes on with `cap.transit` off too. It takes no table. The spelling is the one
+forwarding decision, which writes it to the tun, hands it to the exit, sends it
+on to another node, answers it or drops it, as [routing](routing.md#transit)
+lists. The SID grants what arrives through it transit, so the inner packet goes
+on with `cap.transit` off too. It takes no table. The spelling is the one
 `ip route ... encap seg6local action` takes, so a fleet's own SIDs move across
 unchanged.
 
@@ -115,11 +115,11 @@ describes.
 ## Egress segments
 
 Past the checks of [local segments](#local-segments) and those below, an
-`End.DT46` with `deliver = "egress"` writes its inner packet into the mesh tun
-for the host to carry out of the mesh, rather than handing it to the forwarding
-decision, and the host forwards it out of the uplink under the exit's translated
-source. A leaf steering to the SID picks this exit by its segment list.
-`deliver = "mesh"`, the default, is the forwarding decision.
+`End.DT46` with `deliver = "egress"` hands its inner packet to the exit rather
+than to the forwarding decision. The exit writes it into the mesh tun for the
+host to carry out of the mesh, and the host forwards it out of the uplink under
+the exit's translated source. A leaf steering to the SID picks this exit by its
+segment list. `deliver = "mesh"`, the default, is the forwarding decision.
 [Exit nodes](exit-nodes.md#egress-segments) describes the translation and when
 the exit is ready.
 
@@ -336,7 +336,7 @@ Steering line lists the entries with the steered count, and the count for each
 reason a steered packet was lost once it is above 0.
 
 An egress segment's packets are counted 3 ways. Egressed is a packet handed to
-the mesh tun. Refused is a packet whose outer or inner source is outside the
+the exit. Refused is a packet whose outer or inner source is outside the
 segment's allow list, whose inner source it cannot read, whose inner source no
 router forwards, whose inner destination no router forwards but the limited
 broadcast and multicast, an IPv4 link-local one among them, whose inner packet

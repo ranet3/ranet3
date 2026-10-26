@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-10-25
+updated: 2026-10-26
 order: 90
 ---
 
@@ -112,10 +112,11 @@ than a measurement, and the neighbor view shows it apart, in the Extra column of
 `ranet3 neighbors` and in the `extra` field of `/v0/neighbors`.
 
 `ranet3_egress_ready` takes the place of `ranet3_egress_device_ready`, which is
-gone together with `ranet3_segments_drained_total`: an egress segment writes its
-inner packets to the mesh tun, so no device of its own is left to report on. A
-query naming the old gauge reads no series, and one reading the new gauge sees
-it on every node with `cap.egress`, since readiness holds back both modes.
+gone together with `ranet3_segments_drained_total`: an egress segment hands its
+inner packets to the exit, which writes them into the mesh tun, so no device of
+its own is left to report on. A query naming the old gauge reads no series, and
+one reading the new gauge sees it on every node with `cap.egress`, since
+readiness holds back both modes.
 
 ## Transit counters
 

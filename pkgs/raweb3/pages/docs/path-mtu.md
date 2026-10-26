@@ -4,14 +4,14 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-10-25
+updated: 2026-10-26
 order: 65
 ---
 
 On Linux and macOS each session searches its path for the largest packet it
-carries, its **budget**. A packet larger than the budget is answered or cut
-before it enters the tunnel. TCP connections through the mesh have their MSS
-lowered to fit.
+carries, its **budget**. A packet larger than the budget is answered, cut or
+dropped before it enters the tunnel. TCP connections through the mesh have their
+MSS lowered to fit.
 
 ## The link MTU
 
@@ -105,10 +105,13 @@ A packet larger than its session's budget is never sent as it is.
   the steering header the packet would take. The sending host matches the answer
   by the packet it quotes and records the smaller path MTU for that destination.
 - **IPv4 without DF**: the packet is cut into fragments that fit, as a router
-  does (RFC 791). Its destination reassembles it. A packet whose header fails
-  the checks of RFC 1812 section 5.2.2, a bad checksum among them, is dropped
-  without an answer. A packet whose options cannot be read is dropped and
-  answered with ICMP Parameter Problem, which names the octet at fault.
+  does (RFC 791). Its destination reassembles it. Where a packet's data, from
+  its fragment offset, runs past 65535 octets, it cannot be cut, and is dropped
+  without an answer, counted [`too_big`](metrics.md#transit-counters) when it is
+  in transit. A packet whose header fails the checks of RFC 1812 section 5.2.2,
+  a bad checksum among them, is dropped without an answer. A packet whose
+  options cannot be read is dropped and answered with ICMP Parameter Problem,
+  which names the octet at fault.
 
 A node that moves a steered packet on to its next segment does the same when the
 session to that segment carries less, as [segment routing](segment-routing.md)

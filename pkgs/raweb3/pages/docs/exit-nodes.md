@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-10-25
+updated: 2026-10-26
 order: 50
 ---
 
@@ -146,8 +146,9 @@ the tun, so the `to` rules and the host's routes out of the uplink never see it.
 A packet a session delivers for a destination this node holds through a route
 that [counts as a default](routing.md#routes-that-count-as-a-default), such as
 the `0.0.0.0/0` and `::/0` it advertises, is egress. The
-[forwarding decision](routing.md#transit) hands it to the tun, where the host
-translates it and forwards it out of its uplink, only where 3 checks pass:
+[forwarding decision](routing.md#transit) hands it to the exit, which writes it
+into the tun, where the host translates it and forwards it out of its uplink,
+only where 3 checks pass:
 
 - A destination inside `cap.border.overlay` belongs to the mesh. One that no
   node announces is answered as a destination no route holds, IPv6 code 0 and
@@ -193,16 +194,16 @@ attract traffic and drop it without telling the sender.
 The capability publishes the advertisement per family on every pass. A prefix is
 announced only while its family's chain reads back exactly as the node wrote it,
 every rule in order and no other writer's among them, at its hook, priority and
-policy in a table with no flags, the host forwards that family and the kernel
-routes a translated packet of it and its reply, as [readiness](#readiness)
-describes. Each pass first rewrites a chain that reads back otherwise, such as
-one missing a rule, holding another writer's or in a dormant table. nf_tables
-clears no table flag in place but dormant, and changes no chain's type, hook or
-priority, so when one of those differs the pass deletes the family's table, and
-any chain another writer put in it, then makes it again in the same transaction.
-When the chain still does not read back as written, the host stops forwarding
-the family or a lookup fails, that pass retracts the prefix. A pass runs at
-least every `sweep` (30 seconds by default).
+policy in a table with no flags, the host forwards that family and, where its
+lookups run, the kernel routes a translated packet of it and its reply, as
+[readiness](#readiness) describes. Each pass first rewrites a chain that reads
+back otherwise, such as one missing a rule, holding another writer's or in a
+dormant table. nf_tables clears no table flag in place but dormant, and changes
+no chain's type, hook or priority, so when one of those differs the pass deletes
+the family's table, and any chain another writer put in it, then makes it again
+in the same transaction. When the chain still does not read back as written, the
+host stops forwarding the family or a lookup fails, that pass retracts the
+prefix. A pass runs at least every `sweep` (30 seconds by default).
 
 The node reads forwarding from `/proc/sys/net/ipv4/ip_forward` and
 `/proc/sys/net/ipv6/conf/all/forwarding`. Any value other than `0` counts as on,
@@ -216,12 +217,12 @@ carries the advertised and the announced counts as `ranet3_egress_prefixes`.
 ## Readiness
 
 A family is ready while its chain reads back as written with its table, the host
-forwards it, and the kernel routes a translated packet of the family and its
-reply the way the translation needs. Every node with `cap.egress` judges each
-family it translates on every pass, and both modes wait for the judgment: a
-packet through an advertised prefix waits for the families ready that the node
-announces, and an egress segment's packet for the families ready, as
-[what an exit carries out](#what-an-exit-carries-out) and
+forwards it, and, where its lookups run, the kernel routes a translated packet
+of the family and its reply the way the translation needs. Every node with
+`cap.egress` judges each family it translates on every pass, and both modes wait
+for the judgment: a packet through an advertised prefix waits for the families
+ready that the node announces, and an egress segment's packet for the families
+ready, as [what an exit carries out](#what-an-exit-carries-out) and
 [egress segments](#egress-segments) describe. A family this node does not
 translate is not ready.
 
@@ -335,12 +336,13 @@ exit by its segment list rather than by the default route Babel selects.
 [Segment routing](segment-routing.md#egress-segments) describes the segment and
 its `allow` list. This page covers what the exit does with the inner packet.
 
-The mesh writes each inner packet into the tun, as it writes a packet the
-forwarding decision egresses, and the kernel forwards it by its own routes,
-translated by the out rule keyed on the tun. A node with an egress segment
-translates both families, whatever `advertise` holds. An inner packet whose
-destination lies inside `cap.border.overlay`, or that the mesh routes itself, to
-another node, into a hold or to this node, is refused rather than written, as
+The mesh hands each inner packet to the exit, as it hands a packet the
+forwarding decision egresses, and the exit writes it into the tun. The kernel
+forwards it by its own routes, translated by the out rule keyed on the tun. A
+node with an egress segment translates both families, whatever `advertise`
+holds. An inner packet whose destination lies inside `cap.border.overlay`, or
+that the mesh routes itself, to another node, into a hold or to this node, is
+refused rather than handed to the exit, as
 [segment routing](segment-routing.md#egress-segments) describes.
 
 An exit that serves only egress segments writes `cap.egress` with an empty

@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-10-25
+updated: 2026-10-26
 order: 45
 ---
 
@@ -234,9 +234,9 @@ a malformed packet draws none:
    [counts as a default](#routes-that-count-as-a-default) is egress, which an
    exit carries out as [exit nodes](exit-nodes.md#what-an-exit-carries-out)
    describe: one inside `cap.border.overlay` is answered as one no entry holds,
-   and any other goes to the tun only where the mesh routes a reply to its
-   source, through a peer, a held prefix, or a network or address of this node's
-   own.
+   and any other goes to the exit, or to the tun through a route `cap.route`
+   announces, only where the mesh routes a reply to its source, through a peer,
+   a held prefix, or a network or address of this node's own.
 5. With `cap.transit` off, a packet for another node is answered
    administratively prohibited, unless an End.DT46 SID of this node delivering
    to the mesh took it out of its outer header.
@@ -247,7 +247,9 @@ a malformed packet draws none:
    be read are answered Parameter Problem.
 8. A packet larger than the next session carries is answered Packet Too Big, or
    Fragmentation Needed where it sets DF, naming that session's size. An IPv4
-   packet without DF is cut into fragments. Any other packet has its hop limit
+   packet without DF is cut into fragments, or dropped with no answer and
+   counted [`too_big`](metrics.md#transit-counters) where its data, from its
+   fragment offset, runs past 65535 octets. Any other packet has its hop limit
    or TTL taken down and a TCP SYN's MSS lowered to the next session's, and goes
    on.
 
