@@ -23,25 +23,30 @@ unshares a network namespace, refuses to continue unless it is empty, and skips
 unless run as root.
 
 - `internal/kernel` has tests that write to a real routing table.
-- `internal/egress/kernel` has 7 that write into a real packet filter. One round
-  trips the translator's rules, another checks that the kernel tells the backend
-  when another writer adds a rule to its chain, sets its table dormant or
-  deletes it, and that its own writes tell it nothing, and a third checks that
-  another writer's transactions overflowing the notification socket reach the
-  backend as lost notifications. The fourth checks that another writer's
-  uncommented rule at the head of the translator's chain is read back, and that
-  the next pass leaves only the translator's rules. The fifth runs the
-  translator while another writer sets a table dormant or makes a chain again at
-  another priority or as a regular chain, and checks that each holds both
-  families not ready until the pass it wakes writes the table back and reads
-  them ready. The other 2 round trip the border filter's chain. One puts it back
-  on the pass another writer wakes by deleting the table, adding a rule or
-  setting the table dormant, and leaves no table behind. The other writes it
-  back after another writer adds a rule to it, sets its table dormant, turns its
-  policy to drop, makes the chain again at another priority or as a regular
-  chain, or makes the table again with a flag nf_tables will not clear in place,
-  the last 3 by deleting and making the table again. It also runs the
-  [exit behavior suite](#the-exit-behavior-suite) against the kernel exit.
+- `internal/egress/kernel` has 10 that write into a real packet filter. One
+  round trips the translator's tables, chains, set and timeout objects, another
+  checks that the kernel tells the backend when another writer adds a rule to
+  its chain, sets its table dormant or deletes it, and that its own writes tell
+  it nothing, and a third checks that another writer's transactions overflowing
+  the notification socket reach the backend as lost notifications. The fourth
+  checks that another writer's uncommented rule at the head of the translator's
+  chain is read back, and that the next pass leaves only the translator's rules.
+  The fifth runs the translator while another writer sets a table dormant or
+  makes a chain again at another priority or as a regular chain, and checks that
+  each holds both families not ready until the pass it wakes writes the table
+  back and reads them ready. The sixth makes a table again whose timeout object
+  holds other seconds than the translator writes, and the seventh rewrites the
+  chains and finds the set's counts kept. The eighth takes the address a class
+  translates to off `lo` in each family and reads that family alone not ready,
+  with the address named, until it is back. The other 2 round trip the border
+  filter's chain. One puts it back on the pass another writer wakes by deleting
+  the table, adding a rule or setting the table dormant, and leaves no table
+  behind. The other writes it back after another writer adds a rule to it, sets
+  its table dormant, turns its policy to drop, makes the chain again at another
+  priority or as a regular chain, or makes the table again with a flag nf_tables
+  will not clear in place, the last 3 by deleting and making the table again. It
+  also runs the [exit behavior suite](#the-exit-behavior-suite) against the
+  kernel exit.
 - `transport` has 2 that send through a veth pair to a peer in a second
   namespace, behind a route with a locked path MTU. They check that the kernel
   refuses what the path cannot carry, segmented or single, and reports the path
@@ -220,13 +225,15 @@ platform carries it. It drives a backend through `egress.Exit` as the dataplane
 does for a prefix `cap.egress` advertises: it hands the leaf's packets to
 `Egress` while their family is ready and announced, reads what comes back toward
 the leaf, and plays the server beyond the exit's uplink. A backend's tests run
-it with an arm, which builds the backend, names the source classes it carries
+it with an arm, which builds the backend, names the source classes it carries,
+declares the NAT behaviors it lacks by its nature, each with its reason and the
+row of [protocol deviations](../design/protocol-deviations.md) that records it,
 and says whether it ends the leaf's TCP. Each class runs on a network of its
 own, and each row in both families:
 
-1. What the server sees: the class's address, from whatever port the backend
-   chose, the bytes intact both ways, a half-close and a reset each way, and an
-   echo answered.
+1. What the server sees: the class's address, the leaf's own under `none`, from
+   whatever port the backend chose, the bytes intact both ways, a half-close and
+   a reset each way, and an echo answered.
 2. Errors toward the leaf: a closed UDP port answered Port Unreachable from the
    server, a closed TCP port refused, and an unreachable host and network
    answered by the router beyond the exit, each error quoting the source,
@@ -245,38 +252,84 @@ own, and each row in both families:
 5. Port reuse: a reconnect from one port just after the server closed first
    connects at once, and one leaf port or echo identifier toward 2 servers is
    read by both as 1 outside port or identifier, in UDP, in TCP and in echo.
+6. Each source's share of the flows, last, since it leaves the leaf's second
+   address at its share: that address opens as many UDP flows as `Status` gives
+   as the share, toward a server that answers none, and its next flow is
+   answered Host Unreachable over IPv4 and administratively prohibited over IPv6
+   from the exit, its datagram never reaching the server. A later datagram of
+   the first flow passes right after, a further flow is refused, a TCP
+   connection from the address fails at once, and the leaf's own address opens
+   its flow. `Status` counts every refused packet. The row reads the host's
+   connection table against its maximum where the backend reports them, and
+   refuses to run where its flows would reach the maximum.
 
 In each family the suite also calls `Egress` from several goroutines at once, as
-each session's receive path does, and the server reads every datagram. Then it
-takes the backend off with `SetEnabled` and puts it back. Readiness has to go
-false in both families and the announcement empty while the backend still holds
-what carries them, `Status` has to read neither family ready, and once enabled
-again both are ready and carried. For an arm that can make one, another writer
-then takes the backend's translation away. The backend has to say the families
-are not ready, a datagram the leaf sends meanwhile reaches the server not at
-all, and once the translation is back the same flow reaches the server
-translated. Last the suite stops the backend, which withdraws as `SetEnabled`
-does, and once `Run` returns the backend holds nothing.
+each session's receive path does, and the server reads every datagram. Then the
+leaf sends 2 packets connection tracking keeps no flow for, an RFC 8335 extended
+echo request and a segment of a live TCP connection 2^30 past its next sequence
+number. Under a class that translates the server reads neither, the connection
+carries data after the segment, and `Status` counts both dropped. Under `none`
+the server reads both from the leaf's own address. The server, standing for a
+host behind the exit under `return`, then sends into the mesh an extended echo
+request, a Port Unreachable about a datagram no flow carried and a segment of a
+live TCP connection 2^30 past its next sequence number. Under every class the
+leaf reads none of them, the connection carries data after the segment, and
+`Status` counts the 3 dropped. For an arm that reads the flows its backend
+tracks, the idle timers follow: a datagram the server never answers, one to UDP
+port 53, under a class that translates one the server answered and the leaf
+sends again 3 seconds on, a SYN to an address nothing holds, a connection whose
+data the leaf's path never acknowledges, one the server half closed, one closed
+each way but for the leaf's last acknowledgment, an echo and a datagram from the
+exit's own mesh address, each flow's timer held to its requirement where the
+class translates, and below it to port 53 and under `none`. Under a class that
+translates, filtering and hairpinning follow: a datagram to the leaf's mapping
+from the server's other port and from its other address reaches the leaf, and
+one from the leaf's second address to the leaf's mapping on the exit's address
+reaches the leaf from the second address's mapping, unless the arm declares the
+limit, where the row holds the backend to refusing each.
+
+Then the suite takes the backend off with `SetEnabled` and puts it back.
+Readiness has to go false in both families and the announcement empty while the
+backend still holds what carries them, `Status` has to read neither family
+ready, and once enabled again both are ready and carried. For an arm that can
+make one, another writer then takes the backend's translation away. The backend
+has to say the families are not ready, a datagram the leaf sends meanwhile
+reaches the server not at all, and once the translation is back the same flow
+reaches the server translated. For an arm that can make one, another writer then
+masquerades every packet, in a translation made after the backend's where the
+host's own source translation runs and then in one ahead of the backend's: at
+the host's own place a new flow reaches the server under the class, the leaf's
+own address under `none`, and ahead of it under the other writer's, the exit's
+uplink address. Last the suite stops the backend, which withdraws as
+`SetEnabled` does, and once `Run` returns the backend holds nothing. Row 6 runs
+once more on a network of its own under the arm's first class, with
+`cap.egress.flows_per_source` set below the default, so a backend keeping the
+default fails it.
 
 `TestKernelExitPassesTheExitBehaviorSuite` in `internal/egress/kernel` runs the
-kernel exit's arm, which carries `auto` and an address, every protocol and every
-row, with no limit of its own. Its other writer deletes both its tables, and its
-stop leaves no table named `ranet3` in either family. No real backend maps the
-leaf's ports or ends its TCP yet, so the suite's own tests stand in for both: a
-fake that maps every port into a range of its own meets rows 1, 3 and 5, and a
-fake that ends the leaf's TCP and opens its own toward the server meets row 3
-without a too-big answer of its own.
+kernel exit's arm, which carries `auto`, an address and `none`, every protocol
+and every row. It declares port dependent filtering and no hairpinning, reads
+each flow's timer from conntrack's listing in the exit's namespace, and its
+other writer's masquerade sits at `srcnat`, made after the exit's chain at 99,
+and at `srcnat` minus 2. Its other writer deletes both its tables, and its stop
+leaves no table named `ranet3` in either family. No real backend maps the leaf's
+ports or ends its TCP yet, so the suite's own tests stand in for both: a fake
+that maps every port into a range of its own meets rows 1, 3 and 5, and a fake
+that ends the leaf's TCP and opens its own toward the server meets row 3 without
+a too-big answer of its own.
 
 On Linux the suite builds 4 network namespaces, each new and empty and held by a
 thread of its own:
 
-- the leaf, behind a tun of its own whose packets the suite hands the exit
+- the leaf, behind a tun of its own whose packets the suite hands the exit, with
+  a second address in each family for row 6 and hairpinning, which no unbound
+  socket takes as its source
 - the exit, with the mesh's tun, a peer the mesh routes the leaf's addresses to,
   which writes what it carries into the leaf's tun, and an uplink with an MTU of
   1340 to the router
-- the router, routing the exit's addresses and the server's and nothing else,
-  with 2 links to the server, one with an MTU of 1280, and its IPv4 reverse path
-  filter off, so a packet the exit leaves untranslated reaches the server
+- the router, routing the exit's addresses, the leaf's overlay prefix back to
+  the exit for `none`, and the server's addresses, and nothing else, with 2
+  links to the server, one with an MTU of 1280
 - the server
 
 It skips without root. Run it in a namespace of its own:
@@ -340,17 +393,18 @@ The packages that read bytes a peer or a file chooses also carry property tests,
 in files ending in `_property_test.go`: `esp`, `ike`, `identity`, `transport`,
 `sadr`, `srv6`, `internal/babel`, `internal/packet`, `internal/netstack`,
 `schema`, `internal/config`, `internal/registry`, `internal/client`,
-`internal/kernel`, `internal/egress/kernel`, `internal/nftables` and `control`.
-They run with the rest of `go test`, under hegel-go through `internal/pbt`,
-whose `Check` gives every property the same terms: 200 cases, or 10 under
-`go test -short`, where hegel replaces the count `Check` sets, no example
-database, and a derandomized engine. hegel seeds the labels of nested generators
-per process, so two runs need not draw the same sample, and a boundary the code
-branches on is drawn outright, with `pbt.Spanning` or by name, rather than left
-to the sample. A failing property prints the smallest input it found. hegel is a
-test dependency only: `internal/notices` fails when a non-test file outside
-`internal/pbt` imports it, or when a non-test file imports `internal/pbt`, so it
-never reaches the binary or its notices.
+`internal/kernel`, `internal/egress`, `internal/egress/kernel`,
+`internal/nftables` and `control`. They run with the rest of `go test`, under
+hegel-go through `internal/pbt`, whose `Check` gives every property the same
+terms: 200 cases, or 10 under `go test -short`, where hegel replaces the count
+`Check` sets, no example database, and a derandomized engine. hegel seeds the
+labels of nested generators per process, so two runs need not draw the same
+sample, and a boundary the code branches on is drawn outright, with
+`pbt.Spanning` or by name, rather than left to the sample. A failing property
+prints the smallest input it found. hegel is a test dependency only:
+`internal/notices` fails when a non-test file outside `internal/pbt` imports it,
+or when a non-test file imports `internal/pbt`, so it never reaches the binary
+or its notices.
 
 hegel-go runs on a library of its own. With `HEGEL_LIBHEGEL_PATH` set it loads
 that file and no other. Otherwise it writes the copy it embeds into the user
@@ -411,7 +465,7 @@ the `kvm` system feature has no `checks.aarch64-linux.<name>` line in the
 exist, and when it finds no `aarch64-linux` check that requires `kvm` at all.
 
 The `netlink` check runs these root tests: the `internal/kernel` tests whose
-names start with `TestNetlink`, the 7 `internal/egress/kernel` tests, the exit
+names start with `TestNetlink`, the 10 `internal/egress/kernel` tests, the exit
 behavior suite and its 2 fakes, the `TestTUN` tests of `internal/netstack` and
 `internal/client`, the 3 `transport` sends, and the 4 `internal/client` tests
 above under `unshare -n`, the `internal/registry` tests whose names start with

@@ -47,17 +47,17 @@ as [what a reload refuses](#what-a-reload-refuses) describes.
 | `link.mtu`                                                           | applied                                  | Refused when the tun cannot move. An omitted `mtu` and `1400` are the same.                                                                                                                                                                                                                                      |
 | `link.underlay.bind`                                                 | refused                                  |                                                                                                                                                                                                                                                                                                                  |
 | `dial.all`, `dial.to`                                                | applied                                  |                                                                                                                                                                                                                                                                                                                  |
-| `cap.route.announce`                                                 | applied                                  | Refused when it moves the address `cap.egress.return` translates to. A prefix it drops is retracted and held, as [routing](routing.md#retracted-routes) describes. A default it starts announcing makes this node an [exit](exit-nodes.md#an-exits-own-traffic) from the reconciler's next pass.                 |
+| `cap.route.announce`                                                 | applied                                  | Refused when it moves a mesh address of a family `cap.egress` translates. A prefix it drops is retracted and held, as [routing](routing.md#retracted-routes) describes. A default it starts announcing makes this node an [exit](exit-nodes.md#an-exits-own-traffic) from the reconciler's next pass.            |
 | `cap.transit`, written, removed, or `enable`                         | refused when its effective value changes | A left-out block and `enable = false` are the same.                                                                                                                                                                                                                                                              |
 | `cap.babel` and every key under it                                   | applied                                  |                                                                                                                                                                                                                                                                                                                  |
 | `cap.table`, written or removed                                      | refused                                  |                                                                                                                                                                                                                                                                                                                  |
 | `cap.table.id`, `cap.table.proto`                                    | refused when its effective value changes |                                                                                                                                                                                                                                                                                                                  |
 | `cap.table.metric`, `cap.table.reconcile`, `cap.table.capture_grace` | applied                                  |                                                                                                                                                                                                                                                                                                                  |
-| `cap.table.addresses`, `cap.table.assign_announced`                  | applied                                  | Refused when it moves the address `cap.egress.return` translates to.                                                                                                                                                                                                                                             |
+| `cap.table.addresses`, `cap.table.assign_announced`                  | applied                                  | Refused when it moves a mesh address of a family `cap.egress` translates.                                                                                                                                                                                                                                        |
 | `cap.segment` and every key under it                                 | applied                                  | Refused when the tun cannot move, and when it adds the first egress segment or removes the last.                                                                                                                                                                                                                 |
 | `cap.crypto.ike`, `cap.crypto.esp` and every key under them          | applied                                  | To each exchange after it. An SA holding a transform they leave out is rekeyed or replaced, as [`cap.crypto`](#capcrypto) says.                                                                                                                                                                                  |
 | `cap.crypto.replay`, `cap.crypto.rekey` and every key under it       | refused when its effective value changes |                                                                                                                                                                                                                                                                                                                  |
-| `cap.egress`, written, removed, or any key under it                  | refused when its effective value changes | A new order of `advertise`, `sweep` written as its default and `"auto"` written out for `source4` or `source6` are no change.                                                                                                                                                                                    |
+| `cap.egress`, written, removed, or any key under it                  | refused when its effective value changes | A new order of `advertise` or `translate`, a class of `auto` from `0.0.0.0/0` or `::/0`, and `flows_per_source` or `sweep` written as its default are no change.                                                                                                                                                 |
 | `cap.border`, written or removed                                     | refused                                  |                                                                                                                                                                                                                                                                                                                  |
 | `cap.border.overlay`                                                 | applied                                  | The filter rewrites its chain on the pass the reload wakes, and the forwarding decision answers by the new overlay at once, every route judged again for whether it counts as a default. With `cap.table`, the reconciler's pass moves its rules at 5110 and its holds of the overlay. A new order is no change. |
 
@@ -357,17 +357,19 @@ reload of a node whose host forwards and whose file writes no `cap.border` logs
 the warning [the border filter](border-filter.md#nodes-that-forward-without-it)
 describes.
 
-With `cap.egress.return` set, the daemon also picks a return source at startup
-for each advertised family that has no `source4` or `source6`. It picks among
-this node's mesh addresses, the host prefixes `cap.route` announces and those
-`cap.table` assigns. A reload whose addresses would pick another source is
-refused, naming the blocks. One that leaves none or more than 1 to pick from is
-refused as a startup would be. That refusal names the key `egress.source4` or
-`egress.source6`, which the file writes as `cap.egress.source4` or
-`cap.egress.source6`. A reload that moves only addresses the pick does not
-consider is applied: any of them under a written source, one of a family the
-node does not advertise, a link-local one, or one assigned under a prefix
-shorter than a host prefix, `203.0.113.7/24` for instance.
+The daemon reads this node's global unicast and private mesh addresses of each
+family `cap.egress` translates once at startup, among the host prefixes
+`cap.route` announces and those `cap.table` assigns. The In direction translates
+to one of them where no class names its source, and this node's own traffic from
+each leaves under that address's class. A reload that moves one is refused with
+`config: cap.route or cap.table moved a mesh address cap.egress translates under, restart to apply`.
+With `cap.egress.return` set, a reload that leaves none or more than 1 to pick
+from, in a family whose class from `0.0.0.0/0` or `::/0` names no address, is
+refused as a startup would be, and the refusal asks for the address as the `to`
+of that class in `cap.egress translate`. A reload that moves only other
+addresses is applied: one of a family the node does not translate, a link-local
+one, or one assigned under a prefix shorter than a host prefix, `203.0.113.7/24`
+for instance.
 
 The rekey and replay settings are captured by a session when it is created.
 Applying them to new sessions alone would run 2 policies at once, so a change to

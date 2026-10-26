@@ -277,6 +277,7 @@ connections to the reads.
 | `kernel.cover`                        | a family's zero-free cover went into the kernel or came out, on macOS        |
 | `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed       |
 | `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved                  |
+| `egress.refused`                      | a pass read a family's count of packets refused past a source's share move   |
 | `border.pass`                         | a border filter pass that rewrote its chain or failed                        |
 | `border.ready`                        | the border filter's chain went ready or not ready, with `ready`              |
 | `border.dropped`                      | a pass read a drop counter that moved, at most once per pass                 |
@@ -296,7 +297,7 @@ connections to the reads.
 | `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit |
 | `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                       |
 
-`egress.pass`, `egress.ready`, the 3 `border` kinds and
+`egress.pass`, `egress.ready`, `egress.refused`, the 3 `border` kinds and
 `transport.endpoint.unsegmented` are recorded on Linux alone, and
 `transport.endpoint.unpinned` on Linux and macOS alone, the platforms that
 answer from the address a request reached. `transport.underlay.bound` is
@@ -355,6 +356,7 @@ Each kind carries these attributes:
 | `kernel.cover`                                | `family`, `installed`                                                                                                                       |
 | `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                          |
 | `egress.ready`                                | `ipv4`, `ipv6`, `sid`, `reason` (why a family is not ready), `skipped` (the lookups left out and why)                                       |
+| `egress.refused`                              | `family`, `refused` (the packets refused since the pass before, from zero after a pass that rewrote the chains)                             |
 | `border.pass`                                 | `trigger`, `took`, `installed`, `err`                                                                                                       |
 | `border.ready`                                | `ready`                                                                                                                                     |
 | `border.dropped`                              | `overlay_source_ipv4`, `overlay_source_ipv6`, `routing_header`, `sid_destination`, each the packets since the pass before                   |
