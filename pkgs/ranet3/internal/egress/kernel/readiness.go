@@ -19,7 +19,9 @@ import (
 // Lookup is one of the kernel's route lookups a pass reads, for a packet from
 // Source to Destination arriving on IIF. Reply asks for the lookup of its
 // reply as well, from Destination to Source, arriving on the device of the
-// answer's first live hop
+// answer's first live hop. A lookup from no source arriving on no device reads
+// the route this host itself sends to Destination by, its local route where it
+// holds the address.
 type Lookup struct {
 	Source, Destination netip.Addr
 	IIF                 string
@@ -64,6 +66,10 @@ type forwardRead struct {
 }
 
 type familyReads struct {
+	// held is the addresses the family's classes translate to, and heldAt
+	// where the first of their lookups sits in the pass's batch
+	held   []netip.Addr
+	heldAt int
 	source netip.Addr
 	reads  []forwardRead
 	// first is where the first of reads sits in the pass's batch
@@ -89,24 +95,28 @@ func (t *Translator) judge(unwritten map[uint8]string, forwards map[uint8]bool) 
 			judged[family] = judgment{why: "the kernel does not forward " + egress.FamilyName(family)}
 			continue
 		}
+		reads := familyReads{held: t.classAddresses(family), heldAt: len(lookups)}
+		for _, address := range reads.held {
+			lookups = append(lookups, Lookup{Destination: address})
+		}
 		source, ok := memberSource(members, family)
 		if !ok {
 			judged[family] = judgment{ready: true, noMember: true}
-			continue
-		}
-		reads := familyReads{source: source, first: len(lookups)}
-		var unread []netip.Prefix
-		for _, prefix := range t.readPrefixes(family) {
-			address, ok := readAddress(prefix)
-			if !ok {
-				unread = append(unread, prefix)
-				continue
+		} else {
+			reads.source, reads.first = source, len(lookups)
+			var unread []netip.Prefix
+			for _, prefix := range t.readPrefixes(family) {
+				address, ok := readAddress(prefix)
+				if !ok {
+					unread = append(unread, prefix)
+					continue
+				}
+				lookups = append(lookups, Lookup{Source: source, Destination: address, IIF: t.rt.Interface, Reply: len(reads.reads) == 0})
+				reads.reads = append(reads.reads, forwardRead{prefix, address})
 			}
-			lookups = append(lookups, Lookup{Source: source, Destination: address, IIF: t.rt.Interface, Reply: len(reads.reads) == 0})
-			reads.reads = append(reads.reads, forwardRead{prefix, address})
+			judged[family] = judgment{ready: true, unread: unread}
 		}
-		judged[family] = judgment{ready: true, unread: unread}
-		if len(reads.reads) > 0 {
+		if len(reads.held) > 0 || len(reads.reads) > 0 {
 			families[family] = reads
 		}
 	}
@@ -122,12 +132,45 @@ func (t *Translator) judge(unwritten map[uint8]string, forwards map[uint8]bool) 
 		case len(answers) != len(lookups):
 			j.why = fmt.Sprintf("the route lookups answered %d of %d", len(answers), len(lookups))
 		default:
-			j.why = t.readsFail(reads, answers[reads.first:reads.first+len(reads.reads)])
+			j.why = t.unheld(reads.held, answers[reads.heldAt:reads.heldAt+len(reads.held)])
+			if j.why == "" && len(reads.reads) > 0 {
+				j.why = t.readsFail(reads, answers[reads.first:reads.first+len(reads.reads)])
+			}
 		}
 		j.ready = j.why == ""
 		judged[family] = j
 	}
 	return judged
+}
+
+func (t *Translator) classAddresses(family uint8) []netip.Addr {
+	var out []netip.Addr
+	for _, class := range t.cfg.Classes(family) {
+		if class.To.Addr.IsValid() {
+			out = append(out, class.To.Addr)
+		}
+	}
+	slices.SortFunc(out, netip.Addr.Compare)
+	return slices.Compact(out)
+}
+
+// unheld is why a family is not ready while this host does not hold an address
+// its classes translate to, the first in order, and empty where it holds each.
+// The kernel answers the lookup of an address it holds with the address's local
+// route, whatever the state of its link, and of a tentative IPv6 address with
+// another route until duplicate address detection has ended. A reply to an
+// address answered otherwise is not delivered here
+func (t *Translator) unheld(held []netip.Addr, answers []Answer) string {
+	for i, address := range held {
+		lookup := "the lookup of " + address.String() + ", an address cap.egress translate names,"
+		switch answer := answers[i]; {
+		case answer.Err != nil:
+			return lookup + " failed" + t.failure(address, "", answer.Err)
+		case answer.Route.Type != "local":
+			return lookup + " found a route of type " + answer.Route.Type + ", so this host does not hold it"
+		}
+	}
+	return ""
 }
 
 func memberSource(members []netip.Prefix, family uint8) (netip.Addr, bool) {

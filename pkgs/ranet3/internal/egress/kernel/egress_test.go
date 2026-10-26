@@ -165,7 +165,24 @@ func translator(t *testing.T, cfg egress.Egress, rt Runtime, be backend) *Transl
 	if rt.Interface == "" {
 		rt.Interface = "ranet0"
 	}
+	if rt.Lookup == nil {
+		rt.Lookup = holdsEvery
+	}
 	return newTranslator(cfg, rt, be)
+}
+
+// holdsEvery answers a pass's lookups as a host holding every address a class
+// translates to does: a lookup from no source finds its local route. A lookup
+// from a member fails, since a runtime it answers for holds none
+func holdsEvery(lookups []Lookup) ([]Answer, error) {
+	answers := make([]Answer, len(lookups))
+	for i, lookup := range lookups {
+		answers[i] = Answer{Route: Route{Type: "local", Hops: []Hop{{Device: "lo"}}}}
+		if lookup.Source.IsValid() {
+			answers[i] = Answer{Err: errors.New("a lookup from " + lookup.Source.String() + ", a member of a runtime holding none")}
+		}
+	}
+	return answers, nil
 }
 
 func prefixes(t *testing.T, raw ...string) []schema.Prefix {

@@ -121,6 +121,15 @@ testers.runNixOSTest {
     ran = out.count("--- PASS")
     assert ran >= 175, f"only {ran} of the exit behavior suite's tests ran:\n{out}"
 
+    # the kernel exit held not ready while the host does not hold an address its classes translate to, in a namespace of
+    # its own, each family's taken off lo and put back
+    out = machine.succeed(
+        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestClassAddressTakenOffLoopbackHoldsItsFamilyNotReady$' 2>&1"
+    )
+    print(out)
+    assert "SKIP" not in out, f"the class address's readiness skipped itself under root:\n{out}"
+    assert "--- PASS: TestClassAddressTakenOffLoopbackHoldsItsFamilyNotReady" in out, f"the class address's readiness did not pass:\n{out}"
+
     # the suite's own fakes of the backends no real one stands for yet, one mapping the leaf's ports and one ending its TCP
     out = machine.succeed(
         "${netlinkTests}/bin/suite-tests -test.v -test.run '^Test(PortMappingBackendMeetsTheRowsThatReadTheMapping|TerminatingBackendMeetsThePathMTURow)$' 2>&1"
