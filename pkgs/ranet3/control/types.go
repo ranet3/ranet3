@@ -319,9 +319,9 @@ type Down struct {
 // SegmentCounters is this node's segment routing, counted since startup.
 // Forwarded is packets an End sent on to their next segment, Delivered is
 // packets an End.DT46 took the outer header off and handed to the mesh's
-// forwarding decision, counted before it writes them to the tun, forwards,
-// answers or drops them, and Dropped is packets addressed to one of this node's
-// segments that it would not act on.
+// forwarding decision, counted before it writes them to the tun, hands them to
+// the exit, forwards, answers or drops them, and Dropped is packets addressed
+// to one of this node's segments that it would not act on.
 type SegmentCounters struct {
 	Forwarded uint64 `json:"forwarded"`
 	Delivered uint64 `json:"delivered"`
@@ -338,7 +338,7 @@ type SegmentCounters struct {
 	// Answered counts the ICMP errors sent for dropped packets, which is the
 	// half of Dropped whose sender was told why.
 	Answered uint64 `json:"answered"`
-	// Egressed counts the inner packets an egress segment handed to the mesh tun
+	// Egressed counts the inner packets an egress segment handed to the exit
 	Egressed uint64 `json:"egressed"`
 	// Refused counts the packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for a source outside its allow list, an inner source it cannot read, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or cap.border overlay holds, a part of Dropped never answered
 	Refused uint64 `json:"refused"`
@@ -347,7 +347,7 @@ type SegmentCounters struct {
 }
 
 // TransitCounters counts the forwarding decision's outcomes since startup
-// Forwarded counts the packets a session delivered that went on to a peer, and Delivered the ones written to the tun
+// Forwarded counts the packets a session delivered that went on to a peer, and Delivered the ones written to the tun or handed to the exit
 // the fields from Expired to Multicast count the packets dropped, by reason, Multicast counting reads off the tun
 // Answered counts the ICMP errors sent about dropped packets, and Unanswered the dropped packets the decision would answer that find no address of their family to come from
 // counted before the rules that keep an error from answering a packet and before the rate
@@ -436,10 +436,12 @@ type KernelStatus struct {
 //
 // Advertise and Announced are separate fields because they disagree exactly
 // when something is wrong. A prefix is announced only while its family's
-// translation chain reads back as written and the kernel forwards the family,
-// so a configured prefix missing from Announced is this node declining to
-// attract traffic it would have to drop, and it is the line to read when a
-// customer's exit node has stopped being selected.
+// translation chain reads back as written, the kernel forwards the family and
+// its route lookups, where they run, find a translated packet and its reply
+// leaving by the devices the translation needs, so a configured prefix missing
+// from Announced is this node declining to attract traffic it would have to
+// drop, and it is the line to read when a customer's exit node has stopped
+// being selected.
 type EgressStatus struct {
 	Enabled bool `json:"enabled"`
 	// Where names the tables this node owns, as the backend spells them.
@@ -447,10 +449,9 @@ type EgressStatus struct {
 	// Ready is the families the last pass judged ready, ipv4 and ipv6, by the
 	// route lookups where they ran and, on a node with egress segments, while
 	// the border filter reads back, and Unready why a family it translates is
-	// not. Skipped names the route
-	// lookups the pass left out and why: those of a family no other node's
-	// prefix inside cap.border.overlay gives a source to read from, and that of
-	// a prefix holding no address to read
+	// not. Skipped names the route lookups the pass left out and why: those of
+	// a family no other node's prefix inside cap.border.overlay gives a source
+	// to read from, and that of a prefix holding no address to read
 	Ready   []string `json:"ready,omitempty"`
 	Unready string   `json:"unready,omitempty"`
 	Skipped string   `json:"skipped,omitempty"`
