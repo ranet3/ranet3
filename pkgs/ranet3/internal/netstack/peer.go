@@ -121,7 +121,7 @@ func NewPeer(id string, reserveFn func(count int) (BatchSealer, error), transmit
 func (p *Peer) SetMTU(mtu int) { p.mtu.Store(int64(mtu)) }
 
 // MTU is the largest inner packet the peer's session carries
-// the mesh answers a packet past it, or cuts it into fragments, rather than send it
+// the mesh answers a packet past it, cuts it into fragments or drops it, rather than send it
 func (p *Peer) MTU() int { return int(p.mtu.Load()) }
 
 // TakeSent reports whether the sender handed the transport a data packet since the last call

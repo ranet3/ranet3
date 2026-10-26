@@ -23,7 +23,7 @@ type transitReason uint8
 const (
 	// transitForwarded counts packets sent on to a peer, one cut into fragments once
 	transitForwarded transitReason = iota
-	// transitDelivered counts packets written to the tun, for this node's own destinations and the ones linkScoped takes
+	// transitDelivered counts packets written to the tun, for this node's own destinations and the ones linkScoped takes, and those handed to the exit through a prefix cap.egress advertises that counts as a default
 	transitDelivered
 	transitExpired
 	transitNoRoute
@@ -122,7 +122,7 @@ func (m *Mesh) inOverlay(address netip.Addr) bool {
 
 // TransitCounters counts the forwarding decision's outcomes since startup
 type TransitCounters struct {
-	// Forwarded counts packets a session delivered that went on to a peer, and Delivered the ones written to the tun
+	// Forwarded counts packets a session delivered that went on to a peer, and Delivered the ones written to the tun or handed to the exit
 	Forwarded, Delivered uint64
 	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady and TooBig count the packets a session delivered that were dropped, by reason
 	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig uint64
@@ -453,7 +453,7 @@ func (m *Mesh) ownAddress(address netip.Addr) bool {
 }
 
 // forwardOne puts raw, one packet of version, into b for peer, and reports what became of it
-// a packet larger than peer's session is answered over IPv6 and with DF, quoting it as it arrived, and cut into fragments otherwise
+// a packet larger than peer's session is answered over IPv6 and with DF, quoting it as it arrived, and cut into fragments otherwise, or dropped with no answer as too big where its data from its fragment offset runs past 65535 octets, which AppendFragments refuses to cut
 // anything else has its hop limit or TTL taken down and its MSS clamped to peer's session
 func (m *Mesh) forwardOne(b *outboundBatch, raw []byte, version byte, peer *Peer) transitReason {
 	share, seen := b.shares[peer]

@@ -366,7 +366,7 @@ func (m *Mesh) outboundReader(queue tun.Queue) {
 }
 
 // classify picks the peer of every packet of a read and holds each packet to the largest its peer's session carries
-// a packet past that is answered or cut into fragments rather than sent, and a SYN within it has its MSS clamped to it
+// a packet past that is answered, cut into fragments or dropped rather than sent, and a SYN within it has its MSS clamped to it
 func (m *Mesh) classify(b *outboundBatch) {
 	for i := range b.n {
 		r := b.reads[i]
