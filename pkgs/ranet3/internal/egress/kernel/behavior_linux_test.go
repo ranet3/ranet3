@@ -31,13 +31,24 @@ import (
 // none, and carries every protocol, holding each source to the share of flows
 // its capability names, the default or another, with no total of its own
 // beside conntrack's table
+// it declares that it filters by address and port and does not hairpin
 // its stop leaves no table of its name in either family
 // another writer's deletion of its tables is the change it is held to notice
 // another writer's masquerade is a nat chain at srcnat made after the exit's, or one below the exit's
 // the idle timers are each flow's conntrack entry as the namespace lists it
 func TestKernelExitPassesTheExitBehaviorSuite(t *testing.T) {
 	egresstest.Run(t, egresstest.Namespaces, egresstest.Arm{
-		Classes:    []egresstest.Class{egresstest.Auto, egresstest.Address, egresstest.None},
+		Classes: []egresstest.Class{egresstest.Auto, egresstest.Address, egresstest.None},
+		Limits: map[egresstest.Limit]egresstest.Declared{
+			egresstest.PortDependentFiltering: {
+				Reason: "conntrack admits only the replies of a tracked flow, and wider filtering needs a destination translation per mapping, which no nf_tables statement makes",
+				Row:    "RFC 4787 section 5, RFC 5382 section 4.3",
+			},
+			egresstest.NoHairpinning: {
+				Reason: "a hairpin needs a destination translation per mapping, which no nf_tables statement makes, and leaves reach each other over the mesh at their overlay addresses",
+				Row:    "RFC 4787 section 6, RFC 5382 section 7.2, RFC 5508 section 5",
+			},
+		},
 		New:        newKernelExit,
 		Holds:      kernelExitTables,
 		Remove:     deleteKernelExitTables,

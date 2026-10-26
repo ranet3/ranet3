@@ -15,6 +15,7 @@ package egresstest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"slices"
@@ -140,14 +141,49 @@ type Network interface {
 	Back() [][]byte
 }
 
+// Limit is a behavior an RFC asks of a NAT that a backend lacks by its nature.
+// Its arm declares it with the platform's reason and the deviations row that
+// records it, and the row holds the backend to what it does instead.
+type Limit int
+
+const (
+	// PortDependentFiltering admits to a mapping only the replies of the flow
+	// that opened it, where RFC 4787 REQ-8 recommends endpoint independent
+	// filtering and allows address dependent, each of which admits a datagram
+	// from the mapped server's address at another port
+	PortDependentFiltering Limit = iota
+	// NoHairpinning takes a packet to a mapping on the exit's own address as
+	// the exit's, where RFC 4787 REQ-9 and RFC 5382 REQ-8 have the exit carry
+	// it to the leaf that holds the mapping
+	NoHairpinning
+)
+
+func (l Limit) String() string {
+	switch l {
+	case PortDependentFiltering:
+		return "port dependent filtering"
+	case NoHairpinning:
+		return "no hairpinning"
+	}
+	return fmt.Sprintf("limit %d", int(l))
+}
+
+// Declared is a limit's reason on its platform, and the row of the deviations
+// page that records it, named as the page's first column names it
+type Declared struct{ Reason, Row string }
+
 // Arm is a backend as the suite runs it. The suite holds every arm to all
 // six rows in both families, to carrying every protocol, to Egress from
-// several sessions at once, to a withdrawal and a restore by SetEnabled, and
-// to the share of flows its capability names, and an arm that reads its flows
-// to the idle timers it keeps them to.
+// several sessions at once, to filtering and hairpinning as RFC 4787 asks or
+// as its arm declares it does instead, to a withdrawal and a restore by
+// SetEnabled, and to the share of flows its capability names, and an arm that
+// reads its flows to the idle timers it keeps them to.
 type Arm struct {
 	// Classes are the source classes the backend carries, at least one
 	Classes []Class
+	// Limits names each behavior the backend lacks by its nature, with its
+	// reason and deviations row
+	Limits map[Limit]Declared
 	// Terminates is set for a backend that ends the leaf's TCP at the exit and
 	// opens its own toward the server, which forwards none of the leaf's
 	// segments and so owes no too big for them
@@ -174,6 +210,11 @@ func (a Arm) check() error {
 	if len(a.Classes) == 0 {
 		return errors.New("the arm names no class it carries, so no row would run")
 	}
+	for limit, declared := range a.Limits {
+		if declared.Reason == "" || declared.Row == "" {
+			return fmt.Errorf("the arm declares %s without its reason and its deviations row", limit)
+		}
+	}
 	return nil
 }
 
@@ -187,13 +228,10 @@ func every(prefix netip.Prefix) netip.Prefix {
 	return defaults[1]
 }
 
-// Run runs rows 1 to 5, Egress from several sessions, the idle timers where
-// the arm reads its flows and row 6 last, since it leaves the spare address
-// at its limit, in both families, then the withdrawal and restore, another
-// writer's change and another writer's translation where the arm can make
-// them, and the stop, for each of arm's classes on a network of its own that
-// build makes. Row 6 runs again in both families on one more network, under
-// arm's first class and a share its capability names.
+// Run holds arm to every row and step in both families under each of its
+// classes, each on a network of its own that build makes, and to row 6 again
+// under its first class at a share its capability names. Row 6 comes last in a
+// family, since it leaves the spare address at its limit.
 func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 	if err := arm.check(); err != nil {
 		t.Fatal(err)
@@ -203,7 +241,7 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 			network := build(t)
 			exit := start(t, network, arm, class, 0)
 			for _, v6 := range []bool{false, true} {
-				r := &rows{network: network, family: network.Family(v6), class: class, exit: exit, terminates: arm.Terminates, flows: arm.Flows}
+				r := &rows{network: network, family: network.Family(v6), class: class, exit: exit, terminates: arm.Terminates, flows: arm.Flows, limits: arm.Limits}
 				t.Run(r.family.Name, func(t *testing.T) {
 					t.Run("what the server sees", r.serverSees)
 					t.Run("errors toward the leaf", r.errorsTowardTheLeaf)
@@ -216,7 +254,11 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 					if arm.Flows != nil {
 						t.Run("idle timers", r.timers)
 					}
-					t.Run("the limit on a source's flows", r.limit)
+					if class != None {
+						t.Run("filtering", r.filtering)
+						t.Run("hairpinning", r.hairpinning)
+					}
+					t.Run("the limit on a source's flows", r.sourceLimit)
 				})
 			}
 			t.Run("disabled and enabled", func(t *testing.T) { exit.disable(t, network, class) })
@@ -234,8 +276,8 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 		network := build(t)
 		exit := start(t, network, arm, class, namedLimit)
 		for _, v6 := range []bool{false, true} {
-			r := &rows{network: network, family: network.Family(v6), class: class, exit: exit, terminates: arm.Terminates, flows: arm.Flows}
-			t.Run(r.family.Name, r.limit)
+			r := &rows{network: network, family: network.Family(v6), class: class, exit: exit, terminates: arm.Terminates, flows: arm.Flows, limits: arm.Limits}
+			t.Run(r.family.Name, r.sourceLimit)
 		}
 		t.Run("stop", exit.stop)
 	})
