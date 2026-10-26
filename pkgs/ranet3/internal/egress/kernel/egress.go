@@ -425,7 +425,7 @@ func (t *Translator) Run(ctx context.Context) error {
 				t.trigger = "enable"
 			}
 		case <-t.be.Changed():
-			// the steered rule may be gone or bypassed already, so the mesh stops writing before the pass that puts it back
+			// the steered rule may be gone or bypassed already, so the mesh stops handing this exit its packets before the pass that puts it back
 			t.trigger = "changed"
 			const why = "another writer changed its table"
 			t.setReady(false, false, why, why, "")
