@@ -17,8 +17,9 @@ const (
 	// on the box survives when no notification announces it.
 	DefaultReconcileInterval = 30 * time.Second
 
-	// minRetryInterval is the first delay after a failed pass, and it doubles
-	// up to the reconcile interval.
+	// minRetryInterval is the first delay after a failed pass or withdrawal,
+	// and it doubles up to the reconcile interval. A reconcile interval below
+	// it is every delay.
 	minRetryInterval = time.Second
 	// settleDelay absorbs the rest of a burst of changes, including the route
 	// notifications the reconciler's own writes generate, so one batch of
