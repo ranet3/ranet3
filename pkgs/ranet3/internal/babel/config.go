@@ -24,7 +24,8 @@ type Config struct {
 	Update schema.Duration `yaml:"update,omitempty" json:"update,omitempty" toml:"update,omitempty"`
 	// Quality names the estimator turning Hello loss into a cost, spelled as
 	// BIRD spells it: "etx", which the fleet runs on these same tunnels, or
-	// "none" to cost every live link alike however much it drops.
+	// "none" to leave this node's own Hello loss out of the rxcost it advertises
+	// and of the cost it takes from each neighbor's report.
 	Quality LinkQuality `yaml:"quality,omitempty" json:"quality,omitempty" toml:"quality,omitempty"`
 	// Cost is the link cost, named after the BIRD babel interface options it
 	// mirrors: a fixed rx cost plus up to rtt.weight scaled linearly between
