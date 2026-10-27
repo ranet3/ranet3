@@ -172,7 +172,8 @@ func loadPages(dir string) ([]*page, error) {
 	return ps, nil
 }
 
-// order is a page's place in its directory, before every page that has none.
+// order is a page's place in its directory, 0 for a page that has none, so
+// that it comes before every page of a positive order.
 func order(p *page) int {
 	if p.front.Order == nil {
 		return 0
@@ -452,7 +453,7 @@ func pagePath(src string) string {
 }
 
 // docsNav is the docs navigation as current sees it, the pages under docsDir
-// in their order with the top level first.
+// in the order loadPages sorts them, by directory and so the top level first.
 func docsNav(ps []*page, current *page) []pages.Section {
 	var docs []*page
 	for _, p := range ps {
@@ -466,9 +467,6 @@ func docsNav(ps []*page, current *page) []pages.Section {
 		}
 		return ""
 	}
-	slices.SortStableFunc(docs, func(a, b *page) int {
-		return cmp.Compare(section(a), section(b))
-	})
 	var out []pages.Section
 	for i, p := range docs {
 		if i == 0 || section(p) != section(docs[i-1]) {
