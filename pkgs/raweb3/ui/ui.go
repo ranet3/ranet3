@@ -16,6 +16,8 @@ type Site struct {
 	Analytics Analytics
 	// Nav are the links of every page's header
 	Nav []Link
+	// Feed is the absolute path of the site's Atom feed, empty when it has none
+	Feed string
 	// Footer ends every page, with CTA's button beside its title
 	CTA    Link
 	Footer Footer

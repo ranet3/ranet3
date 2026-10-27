@@ -27,6 +27,8 @@ const (
 	// sitemapFile and robotsFile are served at the root, where crawlers look
 	sitemapFile = "sitemap.xml"
 	robotsFile  = "robots.txt"
+	// feedFile is the Atom feed of the news posts
+	feedFile = newsDir + "/atom.xml"
 	// pageSuffix marks a page's source file
 	pageSuffix = ".md"
 	// pageIndex is the stem of the page a directory serves at its own path
