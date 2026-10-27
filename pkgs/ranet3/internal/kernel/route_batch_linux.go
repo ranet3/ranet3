@@ -23,6 +23,11 @@ func RouteGetBatch(reads []RouteRead) ([]BatchAnswer, error) {
 		return nil, err
 	}
 	defer conn.Close()
+	return routeGetBatch(conn, reads)
+}
+
+// routeGetBatch is RouteGetBatch on a socket the caller holds
+func routeGetBatch(conn netlinkConn, reads []RouteRead) ([]BatchAnswer, error) {
 	arrivals := make(map[string]uint32)
 	for _, read := range reads {
 		if _, ok := arrivals[read.IIF]; ok || read.IIF == "" {
@@ -38,7 +43,7 @@ func RouteGetBatch(reads []RouteRead) ([]BatchAnswer, error) {
 	unnamed := make([]batchIndexes, len(reads))
 	for i, read := range reads {
 		answer, indexes := &answers[i], &unnamed[i]
-		answer.Route, indexes.route, answer.Err = conn.batchRead(read.Source, read.Destination, arrivals[read.IIF])
+		answer.Route, indexes.route, answer.Err = batchRead(conn, read.Source, read.Destination, arrivals[read.IIF], read.Mark)
 		if !read.Reply {
 			continue
 		}
@@ -50,13 +55,13 @@ func RouteGetBatch(reads []RouteRead) ([]BatchAnswer, error) {
 			answer.ReplyErr = fmt.Errorf("kernel: no reply lookup from %s to %s: the route to %s has no live next hop", read.Destination, read.Source, read.Destination)
 		default:
 			indexes.arrival = indexes.route[live]
-			answer.Reply, indexes.reply, answer.ReplyErr = conn.batchRead(read.Destination, read.Source, indexes.arrival)
+			answer.Reply, indexes.reply, answer.ReplyErr = batchRead(conn, read.Destination, read.Source, indexes.arrival, 0)
 		}
 	}
 	if !slices.ContainsFunc(unnamed, func(indexes batchIndexes) bool { return len(indexes.route) > 0 }) {
 		return answers, nil
 	}
-	names, err := conn.linkNames()
+	names, err := linkNames(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -88,18 +93,18 @@ type batchIndexes struct {
 	arrival      uint32
 }
 
-func (c *nlConn) batchRead(src, dst netip.Addr, arrival uint32) (MatchedRoute, []uint32, error) {
+func batchRead(c netlinkConn, src, dst netip.Addr, arrival, mark uint32) (MatchedRoute, []uint32, error) {
 	if err := refuseRouteLookup(src, dst); err != nil {
 		return MatchedRoute{}, nil, err
 	}
-	return c.matchedRoute(src, dst, arrival)
+	return matchedRoute(c, src, dst, arrival, mark)
 }
 
 func replyUnread(read RouteRead) error {
 	return fmt.Errorf("kernel: no reply lookup from %s to %s: the forward lookup failed", read.Destination, read.Source)
 }
 
-func (c *nlConn) linkNames() (map[uint32]string, error) {
+func linkNames(c netlinkConn) (map[uint32]string, error) {
 	replies, err := c.execute(unix.RTM_GETLINK, unix.NLM_F_DUMP, make([]byte, unix.SizeofIfInfomsg))
 	if err != nil {
 		return nil, fmt.Errorf("kernel: dump links: %w", err)

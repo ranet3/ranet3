@@ -29,7 +29,7 @@ func routeGet(src, dst netip.Addr, iif string) (MatchedRoute, error) {
 		}
 		arrival = link.index
 	}
-	route, indexes, err := conn.matchedRoute(src, dst, arrival)
+	route, indexes, err := matchedRoute(conn, src, dst, arrival, 0)
 	if err != nil {
 		return MatchedRoute{}, err
 	}
@@ -44,10 +44,10 @@ func routeGet(src, dst netip.Addr, iif string) (MatchedRoute, error) {
 }
 
 // matchedRoute is one RTM_GETROUTE under RTM_F_FIB_MATCH, for a packet from src
-// to dst arriving on the device of index arrival, or this host's own for 0. It
-// answers each next hop's interface index at its place in NextHops, whose
-// Device it leaves empty
-func (c *nlConn) matchedRoute(src, dst netip.Addr, arrival uint32) (MatchedRoute, []uint32, error) {
+// to dst arriving on the device of index arrival, or this host's own for 0,
+// carrying mark where it is nonzero. It answers each next hop's interface index
+// at its place in NextHops, whose Device it leaves empty
+func matchedRoute(c netlinkConn, src, dst netip.Addr, arrival, mark uint32) (MatchedRoute, []uint32, error) {
 	body := make([]byte, unix.SizeofRtMsg)
 	body[0] = unix.AF_INET6
 	flags := uint32(unix.RTM_F_FIB_MATCH)
@@ -67,6 +67,9 @@ func (c *nlConn) matchedRoute(src, dst netip.Addr, arrival uint32) (MatchedRoute
 	}
 	if arrival != 0 {
 		body = putAttrU32(body, unix.RTA_IIF, arrival)
+	}
+	if mark != 0 {
+		body = putAttrU32(body, unix.RTA_MARK, mark)
 	}
 	replies, err := c.execute(unix.RTM_GETROUTE, 0, body)
 	if err != nil {
