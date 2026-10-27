@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/a-h/templ"
 	"github.com/tdewolff/minify/v2"
@@ -105,27 +106,33 @@ func Build(ctx context.Context, root, dir, out string, tools Tools) error {
 			return fmt.Errorf("%s: %w", file, err)
 		}
 	}
-	err = fs.WalkDir(s.static, ".", func(p string, e fs.DirEntry, err error) error {
-		if err != nil || e.IsDir() {
-			return err
-		}
-		if _, ok := files[p]; ok {
-			return fmt.Errorf("%s/%s: the site serves another file at %s", staticDir, p, p)
-		}
-		b, err := fs.ReadFile(s.static, p)
+	for _, src := range []struct {
+		dir   string
+		fsys  fs.FS
+		pages bool
+	}{{staticDir, s.static, false}, {dir, s.files, true}} {
+		err = fs.WalkDir(src.fsys, ".", func(p string, e fs.DirEntry, err error) error {
+			if err != nil || e.IsDir() || src.pages && strings.HasSuffix(p, pageSuffix) {
+				return err
+			}
+			if _, ok := files[p]; ok {
+				return fmt.Errorf("%s/%s: the site serves another file at %s", src.dir, p, p)
+			}
+			b, err := fs.ReadFile(src.fsys, p)
+			if err != nil {
+				return err
+			}
+			if kind := mime.TypeByExtension(path.Ext(p)); kind == "image/svg+xml" {
+				if b, err = m.Bytes(kind, b); err != nil {
+					return fmt.Errorf("%s/%s: %w", src.dir, p, err)
+				}
+			}
+			files[p] = b
+			return nil
+		})
 		if err != nil {
 			return err
 		}
-		if kind := mime.TypeByExtension(path.Ext(p)); kind == "image/svg+xml" {
-			if b, err = m.Bytes(kind, b); err != nil {
-				return fmt.Errorf("%s/%s: %w", staticDir, p, err)
-			}
-		}
-		files[p] = b
-		return nil
-	})
-	if err != nil {
-		return err
 	}
 	if err := os.Mkdir(out, dirMode); err != nil {
 		return err

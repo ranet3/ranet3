@@ -42,8 +42,10 @@ type config struct {
 type Site struct {
 	ui    ui.Site
 	pages []*page
-	// static holds the files served as they are
+	// static holds the files served as they are, and so does files, beside
+	// the pages
 	static fs.FS
+	files  fs.FS
 }
 
 // Load reads site.yaml under root and every page under dir, a path relative
@@ -55,7 +57,7 @@ func Load(root, dir string) (*Site, error) {
 	if err := errors.Join(cerr, perr); err != nil {
 		return nil, err
 	}
-	s := &Site{static: os.DirFS(filepath.Join(root, staticDir)), pages: ps, ui: ui.Site{
+	s := &Site{static: os.DirFS(filepath.Join(root, staticDir)), files: os.DirFS(filepath.Join(root, dir)), pages: ps, ui: ui.Site{
 		Name:      c.Title,
 		URL:       c.URL,
 		Analytics: c.Analytics,
@@ -211,7 +213,21 @@ func (s *Site) serves(rendered map[string][]byte, link string) bool {
 	if _, ok := rendered[file]; ok || file == styleOutput {
 		return true
 	}
-	return fs.ValidPath(file) && isFile(s.static, file)
+	return s.file(file) != nil
+}
+
+// file is the file system that holds the file served as it is at name, nil
+// when there is none.
+func (s *Site) file(name string) fs.FS {
+	switch {
+	case !fs.ValidPath(name):
+		return nil
+	case isFile(s.static, name):
+		return s.static
+	case !strings.HasSuffix(name, pageSuffix) && isFile(s.files, name):
+		return s.files
+	}
+	return nil
 }
 
 // mediaType is the type of a file the site renders.

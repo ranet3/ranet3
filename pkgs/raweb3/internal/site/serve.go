@@ -66,8 +66,8 @@ func Handler(root, dir string, tools Tools) http.Handler {
 			// as GitHub Pages answers a directory asked for without its slash
 			http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
 			return
-		case fs.ValidPath(file) && isFile(s.static, file):
-			http.ServeFileFS(w, r, s.static, file)
+		case s.file(file) != nil:
+			http.ServeFileFS(w, r, s.file(file), file)
 			return
 		default:
 			status, page = http.StatusNotFound, files[notFoundFile]
