@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-26
+updated: 2026-10-27
 order: 30
 ---
 
@@ -128,7 +128,8 @@ These commands take flags of their own:
   out, then the last change the watch acted on and what moved in it. A platform
   without a watch says so. Linux and macOS have a watch.
 - `debug rules` is every policy rule the kernel holds, whoever wrote it, in a
-  table per family with its priority, its selectors, the table it reads with any
+  table per family with its priority, its selectors, the table it names, shown
+  as `0` for an `l3mdev` rule, which names no table, with any
   `suppress_prefixlength`, or its action, such as `goto 5190` or `nop`, and its
   owner: `ranet3` for a rule carrying `cap.table.proto`, `kernel` for the
   kernel's own, and the protocol number for anybody else's. Then, as
@@ -514,7 +515,9 @@ how many sessions this node had answered and closed with a Delete. A
 causes reads `trigger=reload` and is recorded whether or not it moved anything.
 A reconciler stopped with `disable` runs no pass when it takes a reload, and the
 pass that installs the block once it is enabled again reads `trigger=enable`.
-The same holds for a reconciler `ranet3 down` stopped, until `ranet3 up`.
+The same holds for a reconciler `ranet3 down` stopped, until `ranet3 up`. The
+withdrawal such a stop runs records a `kernel.pass` only when it fails, and no
+`kernel.cover` for the cover it takes out.
 
 A `daemon.ttl` is recorded when a reload cannot read the host's default TTL,
 `net.ipv4.ip_default_ttl` on Linux or `net.inet.ip.ttl` on macOS. Its `ttl` is
@@ -611,25 +614,28 @@ request arriving on another interface records it too. Its `endpoint` names the
 peer's address and port, which in these two cases can be the same as before. A
 session whose sends fell back from an address that is gone names no address, and
 its next fresh request records an `ike.endpoint.moved` wherever it arrives. A
-session that fell back from an address with no route to the peer moves back to
-it, recording an `ike.endpoint.moved`, only at the first fresh request 1 minute
-or more after the fallback.
+session that fell back after the kernel refused its address with `EHOSTUNREACH`
+moves back to it, recording an `ike.endpoint.moved`, only at the first fresh
+request 1 minute or more after the fallback, and one that fell back after any
+other refusal at its next fresh request that reaches the address, as
+[moving hosts](../platforms.md#moving-hosts) describes.
 
 A `transport.endpoint` event carries the peer's `endpoint` and the `errno` the
 kernel refused the send with. An `unpinned` event is recorded once for an
 endpoint, at its first fallback. Every answer is sent to its request's own
-endpoint. While a session's address has no route to the peer, each answer to a
-request that reaches the address therefore records an `unpinned` event, and the
-session's own sends record at most one every minute. An `unsegmented` one is
-recorded each time segmentation stops, which for a route that keeps refusing
-segments is at most once every 10 minutes. A send refused only for its size
-records none, since it lowers that session's budget instead. On a socket that
-fragments, a segmented message refused with `EMSGSIZE` twice in a row records an
-`unsegmented` one with that `errno`, as [platforms](../platforms.md#path-mtu)
-describes. An `ike.send.failed` carries the error of the first send that failed,
-and its `ike.send.recovered` how many failed before one went out. A reply to a
-retransmitted request counts toward neither, since a replay can come from any
-address.
+endpoint. While the kernel refuses sends from a session's address, each answer
+to a request that reaches the address therefore records an `unpinned` event, and
+a fresh request that moves the session back to the address records one between
+its answer and the session's sends, at most one every minute after
+`EHOSTUNREACH`. An `unsegmented` one is recorded each time segmentation stops,
+which for a route that keeps refusing segments is at most once every 10 minutes.
+A send refused only for its size records none, since it lowers that session's
+budget instead. On a socket that fragments, a segmented message refused with
+`EMSGSIZE` twice in a row records an `unsegmented` one with that `errno`, as
+[platforms](../platforms.md#path-mtu) describes. An `ike.send.failed` carries
+the error of the first send that failed, and its `ike.send.recovered` how many
+failed before one went out. A reply to a retransmitted request counts toward
+neither, since a replay can come from any address.
 
 A `netstack.codel` event carries the `sojourn` of the batch that changed the
 state, how long that batch had waited since it was reserved, and the `target`. A

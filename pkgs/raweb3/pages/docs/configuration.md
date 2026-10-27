@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-10-26
+updated: 2026-10-27
 order: 30
 ---
 
@@ -111,7 +111,9 @@ Every other key has a default. A left-out `cap.route`, `cap.babel` or
 `cap.crypto` runs its defaults. A left-out `cap.table`, `cap.segment`,
 `cap.egress`, `cap.border` or [`cap.transit`](configuration-reference.md) is
 off. A node with no `cap.babel` sends Hellos every 4 seconds and updates every
-16 seconds (RFC 8966 Appendix B). A node with no `cap.route` announces nothing.
+16 seconds (RFC 8966 Appendix B). A node with no `cap.route` announces nothing
+but what `cap.egress` and an egress segment add, as
+[routing](routing.md#what-a-node-announces) describes.
 
 A node that installs the mesh's routes itself adds `cap.table`, and on Linux
 `cap.border` with the prefixes the mesh numbers its nodes from. On Linux the

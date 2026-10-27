@@ -185,19 +185,25 @@ refused at startup on every platform but macOS.
   route's interface as it changes.
 - With `bind`, the reconciler installs a plain `/0` that Babel selects as its
   zero-free cover, 8 unscoped routes per family that hold every address but
-  `0.0.0.0/8` and `::/8`, so other sockets use the mesh exit. `64:ff9b::/96`
-  lies in `::/8` and stays on the host's own route. Until exit selection exists,
-  a Mac with `bind` set takes whichever `/0` Babel selects.
+  `0.0.0.0/8` and `::/8`, so other sockets use the mesh exit. It installs a
+  family's cover only once the host has a default of its own in that family.
+  `64:ff9b::/96` lies in `::/8` and stays on the host's own route. Until exit
+  selection exists, a Mac with `bind` set takes whichever `/0` Babel selects.
 - With `bind`, any other route that carries this host's own traffic is installed
   unscoped too, except one that covers an endpoint address listed in the trust
   document, which stays scoped to the tun, and a source-specific IPv6 one,
   scoped to the tun where its source prefix holds an address of the tun and
   otherwise not installed, while a source-specific IPv4 one is never installed.
+  One installed unscoped that holds its family's zero address goes in only once
+  the socket has a route of that family to fall back on. That route is the
+  default scoped to the socket's interface, described next.
 - With `bind`, the daemon writes a default scoped to the socket's interface only
   for a family whose zero address an unscoped route out of another interface
   holds: a real lower half, `0.0.0.0/1` or `::/1`, or a route like `0.0.0.0/24`
-  the mesh installs, or another program's, such as a full-tunnel VPN's. With
-  `cap.table` written it withdraws it once no such route is left, and without it
+  the mesh installs, or another program's, such as a full-tunnel VPN's. For a
+  route of the mesh's own that holds the zero address it writes the default in
+  the pass that installs the route, before the route goes in. With `cap.table`
+  written it withdraws the default once no such route is left, and without it
   the default stays until the socket moves onto another interface or the daemon
   stops. With only the cover installed it writes nothing outside the tun.
 
@@ -224,15 +230,17 @@ refused at startup on every platform but macOS.
 ## `cap.route`
 
 What this node puts into the mesh. Without this block, the node announces
-nothing.
+nothing but what [`cap.egress`](#capegress) and an egress segment add, as
+[routing](routing.md#what-a-node-announces) describes.
 
 | Key        | Value | Default | Meaning                           |
 | ---------- | ----- | ------- | --------------------------------- |
 | `announce` | list  | none    | The prefixes this node originates |
 
 - An `announce` entry is a prefix, `"203.0.113.10/32"`, or a prefix and the
-  source it serves, `{ prefix = "::/0", from = "2001:db8:1::/48" }`. An exit
-  announces its default in the second form.
+  source it serves, `{ prefix = "::/0", from = "2001:db8:1::/48" }`, such as a
+  default for 1 source prefix alone. `cap.egress` announces an exit's prefixes
+  with no source.
 - A source-specific entry is IPv6 only. Its `from` is in the same family as its
   `prefix`. A `from` of length 0 is refused.
 - A prefix of length 0 with host bits set, such as `"2001:db8::/0"`, is refused
@@ -282,8 +290,10 @@ values of RFC 8966 Appendix B.
 
 - Each interval is between 10 milliseconds and 655.35 seconds. An omitted
   `update` is capped at 655.35 seconds.
-- `quality = "none"` stops Hello loss from raising a link's cost. The round-trip
-  penalty of `cap.babel.cost` still applies.
+- `quality = "none"` keeps the rxcost this node advertises unscaled by its Hello
+  loss, and takes the cost a neighbor reports without scaling it by this node's
+  own Hello loss. A neighbor that measures loss still raises what it reports.
+  The round-trip penalty of `cap.babel.cost` still applies.
 
 ### `cap.babel.cost`
 
@@ -352,7 +362,7 @@ configure.
 | ------------------ | ---------------- | -------------- | -------------------------------------------------------------------------------- |
 | `id`               | table            | `200`          | The table the reconciler owns                                                    |
 | `proto`            | integer          | `155`          | Route protocol that marks what the reconciler owns                               |
-| `metric`           | integer          | kernel default | Priority of every installed route                                                |
+| `metric`           | integer          | kernel default | Priority of every installed route but a hold or a throw, which sits last         |
 | `addresses`        | list of prefixes | none           | Addresses assigned to the tun                                                    |
 | `assign_announced` | boolean          | `false`        | Also assign every prefix `cap.route` announces                                   |
 | `reconcile`        | duration         | `"30s"`        | Interval of the periodic pass that corrects drift                                |
@@ -491,17 +501,18 @@ lists leave out, as [how the lists are used](#how-the-lists-are-used) describes.
 
 An SA's lifetime starts when the SA is made, and its rekey counts from there, so
 `margin` is the time the rekey has before the lifetime ends however late the
-last rekey finished. At the end of its lifetime an SA is no longer used. A Child
-SA's keys leave the dataplane then, whatever exchange is under way. An SA that
-reaches its lifetime with no rekey replacing it, or a Child SA that runs out of
-sequence numbers with none replacing it, closes the IKE SA. The session logs
-`ike deleting the IKE SA` with the reason, records `ike.sa.closed`, sends a
-Delete for the IKE SA and ends, and the node that dialed it dials again. A rekey
-still under way at the lifetime may yet replace the SA, and the IKE SA closes
-only if that rekey fails. A peer that answers this end's rekeys on 1 IKE SA with
-`TEMPORARY_FAILURE` for 5 minutes closes it the same way. A rekey of the IKE SA
-or the Child SA that completes, whichever end started it, ends those 5 minutes,
-and the next `TEMPORARY_FAILURE` starts them again.
+last rekey finished. At the end of its lifetime a Child SA is no longer used,
+and an IKE SA starts nothing but its Delete. A Child SA's keys leave the
+dataplane then, whatever exchange is under way. An SA that reaches its lifetime
+with no rekey replacing it, or a Child SA that runs out of sequence numbers with
+none replacing it, closes the IKE SA. The session logs `ike deleting the IKE SA`
+with the reason, records `ike.sa.closed`, sends a Delete for the IKE SA and
+ends, and the node that dialed it dials again. A rekey still under way at the
+lifetime may yet replace the SA, and the IKE SA closes only if that rekey fails.
+A peer that answers this end's rekeys on 1 IKE SA with `TEMPORARY_FAILURE` for 5
+minutes closes it the same way. A rekey of the IKE SA or the Child SA that
+completes, whichever end started it, ends those 5 minutes, and the next
+`TEMPORARY_FAILURE` starts them again.
 
 ### `cap.crypto.rekey.retry`
 
@@ -613,24 +624,27 @@ its lists do not hold.
 
 A Child SA rekey this node starts offers only the cipher of the SA it replaces
 while `esp.cipher` holds it. Answering a peer's Child SA rekey, it takes that
-cipher first when the offer holds it. An IKE SA rekey keeps the PRF and takes
-the cipher as a new IKE SA does. While `kex` holds the IKE SA's entry, either
-end's rekey of the SA may run only an entry that keeps each ML-KEM method of it,
-so an IKE SA of `x25519+mlkem768` keeps ML-KEM-768 across its rekeys and an IKE
-SA of a classical entry may move to a joined one. A peer's rekey that offers no
-such entry is refused with `NO_PROPOSAL_CHOSEN`. Once a reload leaves the SA's
-entry out, a rekey may run any entry of `kex`. An IKE SA rekey this node starts
-runs its key exchange in the SA's group while one of the entries it may run has
-that group, and a peer's rekey whose key exchange is in the SA's group keeps the
-SA's entry while `kex` holds it. `ranet3 sessions` and the
-`ike.session.established` event name the transforms each session runs, an IKE
-SA's joined entry with its `+`, such as `x25519+mlkem768`.
+cipher first when the offer and `esp.cipher` both hold it. An IKE SA rekey keeps
+the PRF and takes the cipher as a new IKE SA does. While `kex` holds the IKE
+SA's entry, either end's rekey of the SA may run only an entry that keeps each
+ML-KEM method of it, so an IKE SA of `x25519+mlkem768` keeps ML-KEM-768 across
+its rekeys and an IKE SA of a classical entry may move to a joined one. A peer's
+rekey that offers no such entry is refused with `NO_PROPOSAL_CHOSEN`. Once a
+reload leaves the SA's entry out, a rekey may run any entry of `kex`. An IKE SA
+rekey this node starts runs its key exchange in the SA's group while one of the
+entries it may run has that group, and a peer's rekey whose key exchange is in
+the SA's group keeps the SA's entry while `kex` holds it. `ranet3 sessions` and
+the `ike.session.established` event name the transforms each session runs, an
+IKE SA's joined entry with its `+`, such as `x25519+mlkem768`.
 
 A reload applies the lists to the next exchange, as
 [reloading](reloading.md#capcrypto) describes. An SA holding a cipher or a kex
 entry the new lists leave out is rekeyed under them after a delay drawn up to
-`cap.crypto.rekey.jitter`, and no later than its scheduled rekey. An IKE SA
-whose PRF they leave out is deleted, and a new handshake replaces it.
+`cap.crypto.rekey.jitter`, and no later than its scheduled rekey, unless a rekey
+of it is already due, under way or backing off, which goes on its own timer
+under the lists then in force. A Child SA whose IKE SA is rekeyed for the same
+reload waits for that rekey to end or fail. An IKE SA whose PRF they leave out
+is deleted, and a new handshake replaces it.
 
 ## `cap.egress`
 

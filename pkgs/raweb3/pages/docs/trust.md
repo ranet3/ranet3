@@ -134,12 +134,13 @@ the document holds.
 On the wire, each side of a handshake names an endpoint in an ID payload. A
 ranet3 node names itself by an X.501 distinguished name of O, CN and
 serialNumber (`ID_DER_ASN1_DN`), unless `auth.aliases.local` gives it another ID
-toward that peer. The other side reads the endpoint the ID names, looks it up in
-the document and verifies the signature with that node's key (RFC 7427 with
-Ed25519, RFC 8420). The ID only selects the endpoint, and the key always comes
-from the document. An initiator that refuses the responder's ID or signature
-says so with `AUTHENTICATION_FAILED` in the exchange that follows, and a ranet3
-responder then ends the session it had opened.
+toward that peer, and a responder sends back the ID asked for, as below. The
+other side reads the endpoint the ID names, looks it up in the document and
+verifies the signature with that node's key (RFC 7427 with Ed25519, RFC 8420).
+The ID only selects the endpoint, and the key always comes from the document. An
+initiator that refuses the responder's ID or signature says so with
+`AUTHENTICATION_FAILED` in the exchange that follows, and a ranet3 responder
+then ends the session it had opened.
 
 An ID names an endpoint when it is:
 

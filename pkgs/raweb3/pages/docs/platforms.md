@@ -24,7 +24,7 @@ setting or skips a route instead.
 | Underlay sockets                                       | 1 per family, batched with `recvmmsg`, `UDP_GRO` and `UDP_SEGMENT`                                                                                                                                                                 | 1 per family, 1 datagram per call                                                                                                                        |
 | Sockets connected to 1 peer                            | 1 per busy address pair, up to 256, batched like the shared ones                                                                                                                                                                   | 1 per busy address pair, up to 256, 1 datagram per call                                                                                                  |
 | Keeping the underlay out of the mesh                   | [the mark 0x72](coexistence.md#the-underlays-mark) on every underlay socket where the process may set it, which ends a lookup bound to no device at row L1 or L2 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) | `link.underlay.bind`, see [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos)                                                        |
-| Route ownership                                        | the table `cap.table.id` and the protocol `cap.table.proto`                                                                                                                                                                        | the utun and the shape of the routes ranet3 installs                                                                                                     |
+| Route ownership                                        | the table `cap.table.id` and the protocol `cap.table.proto`                                                                                                                                                                        | the utun and the shape of the routes ranet3 installs, and with `link.underlay.bind` the scoped default it records writing                                |
 | Policy rules                                           | derived from `cap.border.overlay` and this node's own prefixes                                                                                                                                                                     | none                                                                                                                                                     |
 | An own prefix this node originates outside the overlay | a throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, row L10 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)                                               | nothing, row D2 of [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) for a socket bound to no interface and no address of the utun |
 | Hold of each overlay prefix                            | installed for each that holds no unspecified address and that the mesh can carry                                                                                                                                                   | none, since `cap.border` is refused                                                                                                                      |
@@ -34,7 +34,7 @@ setting or skips a route instead.
 | `cap.border`                                           | an nftables chain at prerouting                                                                                                                                                                                                    | refused                                                                                                                                                  |
 | Network watch                                          | rtnetlink                                                                                                                                                                                                                          | routing socket                                                                                                                                           |
 | Don't fragment                                         | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO`                                                                                                                                                                                               | `IP_DONTFRAG`, `IPV6_DONTFRAG`                                                                                                                           |
-| Path MTU a search starts from                          | the route's MTU, including a path MTU the host learned                                                                                                                                                                             | the MTU of the interface the session sends through                                                                                                       |
+| Route MTU a path search takes                          | the route's MTU, including a path MTU the host learned                                                                                                                                                                             | the MTU of the interface the session sends through                                                                                                       |
 | Forwarding read from                                   | `/proc/sys/net/ipv4/ip_forward`, `/proc/sys/net/ipv6/conf/all/forwarding`                                                                                                                                                          | `net.inet.ip.forwarding`, `net.inet6.ip6.forwarding`                                                                                                     |
 | Control socket caller                                  | `SO_PEERCRED`                                                                                                                                                                                                                      | `LOCAL_PEERCRED`, `LOCAL_PEERPID`                                                                                                                        |
 | Default state directory                                | `/var/lib/ranet3`                                                                                                                                                                                                                  | `/var/db/ranet3`                                                                                                                                         |
@@ -87,8 +87,9 @@ stay apart.
 2 more behaviors are Linux only:
 
 - At startup the reconciler warns when another routing protocol writes its
-  table. An install refuses a key another writer already holds, so where both
-  write a prefix, the first writer keeps it.
+  table. The reconciler's install refuses a key another writer already holds, so
+  it never takes another writer's route, while a writer that replaces a key can
+  take the reconciler's.
 - A deleted rule that carries `cap.table.proto` wakes the reconciler, and the
   next pass puts the rule back. systemd-networkd deletes such rules when it
   configures a link.
@@ -132,9 +133,9 @@ routes scoped to the tun, where no unbound socket can select them:
 
 A source-specific route is installed only when its source prefix holds an
 address on the tun, because interface scope stands in for "from an address of
-ours". A destination holds 1 scoped route, the one with the most specific
-source. The reconciler skips every other scoped route to that destination and
-logs it once.
+ours". A destination holds 1 scoped route. A scoped route a pass still wants
+keeps its destination. Otherwise the pass installs the route with the most
+specific source, and skips and logs the rest once.
 
 macOS has no rule to select a mark, so its underlay sockets carry none, and
 `link.underlay.bind` keeps them out of the mesh instead. It binds the underlay
@@ -151,9 +152,11 @@ describes. A Mac with `bind` set takes a mesh exit through the cover.
 The daemon gives the socket's interface a default scoped to it only while an
 unscoped route out of another interface holds that family's zero address, such
 as a real `0.0.0.0/1` the mesh installs or another program's full-tunnel route.
-With `cap.table` written it withdraws it once no such route is left, without it
-the default stays until the socket moves onto another interface or the daemon
-stops, and with only the cover installed it writes nothing outside the tun.
+For a route of the mesh's own that holds the zero address it writes the default
+in the pass that installs the route, before the route goes in. With `cap.table`
+written it withdraws the default once no such route is left, without it the
+default stays until the socket moves onto another interface or the daemon stops,
+and with only the cover installed it writes nothing outside the tun.
 `/var/run/ranet3/underlay.json` records the scoped defaults it writes, and the
 next start with `bind` set withdraws the ones an earlier run recorded that still
 match the record, as
@@ -218,16 +221,18 @@ kernel refuses a send from it, the session sends from the kernel's choice until
 a later request moves it to the address that one arrived on. On other platforms
 but iOS and Android the kernel always chooses.
 
-Where the host still holds the address but has no route from it to the peer, the
-session's traffic leaves from the kernel's choice too. A fresh request to the
-address within 1 minute of the fallback changes nothing, and the session keeps
-sending from the kernel's choice. The first one after that minute, which a peer
-sends once that traffic is lost, moves the session back to the address. If the
-address still has no route, the session falls back again, at most once every
-minute. Where the session's traffic from the other address still reaches the
-peer, the session works, and it stays there until the peer's next request, such
-as a rekey. Each answer to a request that reaches the address is sent from the
-address itself first, so answers leave from it as soon as it routes again.
+The session falls back to the kernel's choice whenever the kernel refuses a send
+from the address with `ENETUNREACH`, `EHOSTUNREACH`, `EINVAL`, `ENODEV` or
+`EADDRNOTAVAIL`. Once a send from the kernel's choice has gone after
+`EHOSTUNREACH`, a fresh request to the address within 1 minute changes nothing,
+and the session keeps sending from the kernel's choice. The first one after that
+minute moves the session back to the address, and a send refused with
+`EHOSTUNREACH` again falls back again, at most once every minute. After any of
+the other refusals, the next request that reaches the address moves the session
+back at once. Where the session's traffic from the other address still reaches
+the peer, the session works, and it stays there until the peer's next request,
+such as a rekey. Each answer to a request that reaches the address is sent from
+the address itself first, so answers leave from it as soon as it routes again.
 
 A session that cannot send at all, because the host has no route to the peer,
 holds while its liveness check retransmits on the usual schedule, and ends once
@@ -253,10 +258,11 @@ that lets nothing through, needs `ranet3 redial --all` instead.
 
 On Linux and macOS the transport listens on 1 UDP socket per family, bound to
 the wildcard address on `link.port`, and every peer starts on it. A busy peer
-then gets a socket of its own. The kernel keeps a socket's datagrams on 1
-transmit queue only while the socket is connected. A busy peer's ESP sent from
-the shared socket leaves over as many queues as its sender visits CPUs, arrives
-reordered, and makes the TCP inside it retransmit.
+then gets a socket of its own, connected to it, whose sends keep 1 cached route.
+On Linux that cached route holds the socket's datagrams to 1 transmit queue, as
+the kernel's queue selection in
+[dev.c](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/core/dev.c)
+chooses it.
 
 The transport counts the bytes each address pair carries, sent and received
 together. A pair is this host's address and the peer's address and port. On
@@ -276,13 +282,13 @@ pair past the cap stays on the shared socket.
 
 On Linux the socket of a session a peer opened also leaves by the interface the
 peer's request arrived on, as the shared socket's replies do. An IPv4 socket
-binds to that interface with `SO_BINDTOIFINDEX`, which Linux allows a process
-without `CAP_NET_RAW` from 5.7. On an older kernel the bind is refused, and such
-a session stays on the shared socket. An IPv6 socket names the interface with
-`IPV6_UNICAST_IF`, which like the reply's own choice prefers that interface only
-among the routes of the lowest metric. A link-local address binds on that
-interface alone. On macOS a link-local peer's socket binds on the interface the
-peer's zone names.
+binds to that interface with `SO_BINDTOIFINDEX`, which Linux has from 5.1 and
+allows a process without `CAP_NET_RAW` from 5.7. Where the kernel refuses the
+bind, such a session stays on the shared socket. An IPv6 socket names the
+interface with `IPV6_UNICAST_IF`, which like the reply's own choice prefers that
+interface only among the routes of the lowest metric. A link-local address binds
+on that interface alone. On macOS a link-local peer's socket binds on the
+interface the peer's zone names.
 
 A socket connected to 1 peer closes:
 
@@ -292,18 +298,19 @@ A socket connected to 1 peer closes:
   busy pair connects again at its next send, from the address its pair names
   then.
 - on macOS, when the underlay socket moves onto another interface.
-- when a send or a read on it fails, other than for an ICMP error, as below, or
-  for a refusal of its segments, as [path MTU](#path-mtu) describes. Its
-  datagrams then leave the shared socket, and the pair waits for the next sweep
-  before it connects again.
+- when a read on it fails other than for an ICMP error, or a send fails other
+  than once for an ICMP error, as below, or for a refusal of its segments, as
+  [path MTU](#path-mtu) describes. Its datagrams then leave the shared socket,
+  and the pair waits for the next sweep before it connects again.
 
 The kernel hands a connected socket the ICMP errors its datagrams draw, such as
 a port unreachable from a peer that restarted or a smaller path MTU from a hop
-on the way. The next read or send on the socket reports such an error, and none
-of them closes the socket. The read goes on reading, and the send goes again
-with its datagrams. A datagram past the path MTU is refused on that socket too.
-It then goes to the shared socket, whose refusal reports the path to the
-session's search, and the socket stays.
+on the way. The next read or send on the socket reports such an error. A read
+goes on past it. A send that reports one is written once more on the socket,
+which stays when that succeeds or is refused for size, and closes when it fails
+again. A datagram past the path MTU is refused on that socket too. It then goes
+to the shared socket, whose refusal reports the path to the session's search,
+and the socket stays.
 
 A connected socket keeps the source address it bound. On Linux an IPv4 send from
 an address the host lost is refused, and the socket closes at once. An IPv6 send
@@ -320,10 +327,10 @@ On Linux each socket connected to 1 peer reads 4 messages of 64 KiB at once,
 which is 256 KiB of buffers per socket and 64 MiB at the cap, and asks the
 kernel for 4 MiB of socket buffer each way. Before Linux 6.13 the kernel matches
 each datagram to an address on the port against every socket bound to that
-address, up to 256, before it reaches the listener. From 6.13 a datagram from a
-peer with a socket of its own finds that socket at once, and the others still
-pass every socket bound to their address. On macOS each socket reads 1 datagram
-of 64 KiB at a time.
+address, up to 256, before it reaches the listener. From 6.13, on a kernel built
+without `CONFIG_BASE_SMALL`, a datagram from a peer with a socket of its own
+finds that socket at once, and the others still pass every socket bound to their
+address. On macOS each socket reads 1 datagram of 64 KiB at a time.
 
 Sharing the port takes `SO_REUSEPORT` on Linux. The listener binds without it
 and sets it once bound. A socket connected to 1 peer sets it before it binds 1
@@ -336,18 +343,9 @@ root under the [service](service.md), can still bind the port when it sets
 datagrams the listener would get. On 1 of the host's addresses it takes every
 datagram to that address from a peer without a socket of its own.
 
-macOS needs no option on the listener. A socket connected to 1 peer sets
-`SO_REUSEADDR` and binds 1 address beside the wildcard listener, which macOS
-allows for a specific address. macOS refuses a bind to a port that a socket of
-another user holds, unless the process binding is root's. A process running as
-the daemon's own user, which is root under launchd, can still bind 1 of the
-host's addresses on the port with `SO_REUSEADDR`. It then takes every datagram
-to that address from a peer without a socket of its own. That holds with or
-without sockets connected to 1 peer. macOS reads a held socket's options at each
-later bind, and skips the user check for 2 binds of the wildcard address when
-the held socket has `SO_REUSEPORT`. A listener that set it after its bind would
-let a process of any user share the wildcard address, so ranet3 leaves it unset
-there.
+On macOS the listener binds with neither `SO_REUSEADDR` nor `SO_REUSEPORT`. A
+socket connected to 1 peer sets `SO_REUSEADDR` before it binds 1 address on the
+listener's port beside it. No socket sets `SO_REUSEPORT`.
 
 ## Path MTU
 
@@ -358,8 +356,9 @@ host tells that search.
 On Linux every datagram leaves with `IP_PMTUDISC_DO` or `IPV6_PMTUDISC_DO` while
 no session of its family fragments. The host refuses a datagram past the path
 MTU its route holds, including a smaller one learned from an ICMP answer. The
-session then reads that MTU and lowers its budget to it, and the datagrams
-within it still go.
+session then reads that MTU and lowers its budget to the largest packet it
+leaves room for, as [path MTU](path-mtu.md) describes, and the datagrams within
+it still go.
 
 A batch of ESP for 1 peer goes out as segmented messages where it can. Linux can
 refuse a segmented message where it takes single datagrams. This happens on a
@@ -375,15 +374,16 @@ second refusal stops the segments. A
 stays open. The stop holds for that peer on the shared socket and on its own
 alike.
 
-On macOS every datagram leaves with `IP_DONTFRAG` or `IPV6_DONTFRAG`. The host
-refuses one past the MTU of the interface it leaves by, rather than past a path
-MTU it learned. A socket that `link.underlay.bind` holds to an interface sends
-through it. Otherwise a session the peer opened sends through the interface
-holding the address it sends from, the one the peer's latest request reached
-until a send from it falls back, as [moving hosts](#moving-hosts) describes. Any
-other session, one whose send fell back included, sends through the interface
-its route leaves by. A session's search starts from the MTU of the interface it
-sends through, and the probes alone find a narrower hop beyond it.
+On macOS every datagram leaves with `IP_DONTFRAG` or `IPV6_DONTFRAG`, but for
+those the host fragments for a session under the floor, as below. A send refused
+for its size reads the MTU of the interface it sends through, and the session's
+search takes that as its route's MTU. A socket that `link.underlay.bind` holds
+to an interface sends through it. Otherwise a session the peer opened sends
+through the interface holding the address it sends from, the one the peer's
+latest request reached until a send from it falls back, as
+[moving hosts](#moving-hosts) describes. Any other session, one whose send fell
+back included, sends through the interface its route leaves by. The search reads
+the same MTU when it starts, and the probes alone find a narrower hop beyond it.
 
 A session on a path under the floor fragments on either platform as
 [the design's limits](design/limits.md) describe. While one does, Linux lets the

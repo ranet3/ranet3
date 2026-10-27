@@ -47,11 +47,12 @@ link:
   # device runs at this less the longest cap.segment steer list.
   # mtu: 1400
   # Keep the one socket carrying IKE and ESP out of the reach of the routes the
-  # mesh installs. On linux every underlay socket carries the mark 0x72, which
-  # no key sets. bind is IP_BOUND_IF on the interface the host's own default leaves by plus a default
-  # scoped to that interface while a route over a zero address leaves by
-  # another, darwin only, and it also makes an announced default install plain
-  # rather than scoped. It is refused on linux.
+  # mesh installs. On linux every underlay socket carries the mark 0x72,
+  # which no key sets, where the process may set it. bind is IP_BOUND_IF on the
+  # interface the host's own default leaves by plus a default scoped to that
+  # interface while a route over a zero address leaves by another, darwin only,
+  # and it also makes an announced default install plain rather than scoped. It
+  # is refused on linux.
   # underlay:
   #   bind: true
 
@@ -65,7 +66,9 @@ dial:
 cap:
   route:
     # Either a bare prefix or a prefix and the source it is reachable from,
-    # which is how an exit announces a default out of its transit prefix.
+    # such as { prefix: "::/0", from: "2001:db8:1::/48" }, a default for 1
+    # source prefix alone. cap.egress below announces an exit's prefixes with no
+    # source.
     announce:
       - "203.0.113.10/32"
       # - { prefix: "::/0", from: "2001:db8:1::/48" }

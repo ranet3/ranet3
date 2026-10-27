@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-26
+updated: 2026-10-27
 order: 70
 ---
 
@@ -140,13 +140,15 @@ still announces its host route. An address given back is held only while an
 update this node sent naming it reachable has yet to expire at a neighbor, as
 [routing](routing.md#retracted-routes) describes.
 
-On Linux the tun keeps an IPv4 address throughout, because Linux drops every
-IPv4 route through a device left with none, another writer's included. There a
-new prefix length of an IPv4 address goes on before the old one comes off, and
-the reconciler turns on `promote_secondaries` for the tun when it starts, so a
-new address within the old one's subnet takes its place instead of leaving with
-it. On macOS the old prefix length of an address comes off before the new one
-goes on.
+On Linux the tun keeps an IPv4 address throughout while the new block assigns
+one, because Linux drops every IPv4 route through a device left with none,
+another writer's included. A block that assigns none removes the last address
+this node added, and the IPv4 routes through the tun go with it. A new prefix
+length of an IPv4 address goes on before the old one comes off, and the
+reconciler turns on `promote_secondaries` for the tun when it starts, so a new
+address within the old one's subnet takes its place instead of leaving with it.
+On macOS the old prefix length of an address comes off before the new one goes
+on.
 
 A reconciler stopped with `ranet3 disable reconciler` takes the block as well,
 and installs it once it is started again. A running exit takes a new overlay, a

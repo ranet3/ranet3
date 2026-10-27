@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-26
+updated: 2026-10-27
 order: 20
 ---
 
@@ -57,7 +57,7 @@ unless run as root.
   in `unpin_namespace_linux_test.go`, check that an answer from an address with
   no route to the peer leaves from the kernel's choice, and that the session
   returns to its address once the host holds it again, or 1 minute after a
-  fallback for want of a route, once it routes again.
+  fallback from `EHOSTUNREACH`, once it routes again.
 - `internal/netstack` has tests whose names start with `TestTUN` that create and
   attach to a real TUN device. They read its `gso_max_segs` back, open several
   queues as 1 device and no more than the kernel attaches, and refuse a mesh
@@ -150,6 +150,19 @@ unless run as root.
     of both families reach the fourth namespace from the exit's uplink address,
     and a datagram from a source the mesh routes no reply to is counted at the
     exit and never reaches the uplink.
+  - `TestTUNEdgeChecksAHostsPacketsForwardedIntoTheTun` runs the line with a
+    host beside its last node, whose kernel forwards the host's packets for the
+    overlay into its tun. The host's forged mesh sources, its routing headers of
+    type 0 and 4, and its IP-in-IPv6 to the middle node's End.DT46 SID with a
+    forged inner source or an inner packet carrying another are counted at the
+    last node as `forged`, `routing_header` and `nested`, and none is delivered
+    at the node it is addressed to, while a routing header of type 2 reaches it.
+  - `TestTUNNeighborOnAForwardingLeafReachesNoExit` runs a leaf that learned an
+    exit's default of each family, then its `/1` halves, with a neighbor on the
+    leaf's uplink whose packets for the internet the leaf's kernel sends into
+    its tun. The neighbor's pings to a host beyond the exit's uplink are counted
+    `unowned_source` at the leaf and none reaches the exit or that host, while
+    the leaf's own datagram from its overlay address does.
   - `TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment` gives a node
     with `cap.egress` and no egress segment a real tun, and checks that its
     egress through a default reaches the tun for each family it announces and is

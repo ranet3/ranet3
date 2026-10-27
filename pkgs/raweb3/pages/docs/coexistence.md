@@ -189,16 +189,16 @@ keeps no source with a route, so a source-specific route an earlier instance
 left behind is withdrawn and installed again.
 
 The reconciler installs 4 kinds of route scoped to the utun. A scoped route is
-invisible to an ordinary lookup and visible to a socket bound to an address on
-the utun.
+invisible to an ordinary lookup and visible to a socket bound to the utun or to
+an address on it.
 
 - A source-specific route. Interface scope is the only thing on this platform
   that draws the distinction a source prefix draws.
 - An unreachable hold. macOS has 1 forwarding table, and an unscoped hold would
   shadow every other way to its prefix.
 - A route that covers a literal endpoint address the trust document lists, but
-  for a member of the zero-free cover. Unscoped, it would carry this node's own
-  ESP to that peer into the tunnel.
+  for a member of the zero-free cover. Unscoped, it would carry an unbound
+  socket's ESP to that peer into the tunnel.
 - A route that would carry the host's own traffic, unless `link.underlay.bind`
   is set. Such a route is one that
   [counts as a default](routing.md#routes-that-count-as-a-default).
@@ -228,9 +228,11 @@ a scoped route means `bind()` to an address on the tun or `IP_BOUND_IF` to the
 tun itself, per application, and ranet3 provides neither.
 
 There is a second-order effect too. On an IPv4-only network the mesh address can
-be the host's only global IPv6 address. RFC 6724 rule 5 then makes it a
-candidate source for traffic outside the mesh. Those packets die at the first
-BCP 38 filter, and nothing on the host shows why.
+be the host's only global IPv6 address. The host's own source address selection
+([RFC 6724 section 5](https://www.rfc-editor.org/rfc/rfc6724.html#section-5))
+picks the source for traffic outside the mesh, and ranet3 takes no part in it. A
+packet the host sends from the mesh address dies at the first BCP 38 filter, and
+nothing on the host shows why.
 
 An install that collides with a route another program holds is reported once and
 left alone. macOS has no route replace, and the collision does not resolve
@@ -251,7 +253,9 @@ does not own, scoped to the physical interface the underlay socket is bound to.
 A socket bound with `IP_BOUND_IF` falls back to a longest-prefix match on its
 family's zero address, so an unscoped route out of another interface that holds
 that address takes the fallback away. The default is written for a family only
-while such a route is in the table:
+while such a route is in the table. For a route of the mesh's own that holds the
+zero address ranet3 writes the default in the pass that installs the route,
+before the route goes in. Such a route is:
 
 - one the reconciler installs that is not a cover member, a real `0.0.0.0/1` or
   a `0.0.0.0/24` out of the utun, or
@@ -388,7 +392,8 @@ line, as [metrics](metrics.md#transit-counters) lists.
 - A read from a source the table routes to another node or holds unreachable,
   through a route that does not count as a default, or from an overlay source
   this node does not own, is dropped and counted `forged`. A host beside a
-  forwarding node cannot put a mesh node's address into the mesh.
+  forwarding node cannot put another node's address into the mesh, though it can
+  put that forwarding node's own.
 - A read carrying an IPv6 routing header of type 0, 1 or 4, or a type the mesh
   does not recognize, is dropped and counted `routing_header`, and one addressed
   to this node's own SID is dropped and counted `sid`. A neighbor cannot steer
