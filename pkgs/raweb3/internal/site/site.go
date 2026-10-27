@@ -69,6 +69,9 @@ func Load(root, dir string) (*Site, error) {
 	for _, name := range slices.Sorted(maps.Keys(c.Metas)) {
 		s.ui.Metas = append(s.ui.Metas, ui.Meta{Name: name, Content: c.Metas[name]})
 	}
+	if s.news() != nil {
+		s.ui.Feed = "/" + feedFile
+	}
 	return s, nil
 }
 
@@ -149,7 +152,9 @@ func (s *Site) Pages() map[string]templ.Component {
 		case layoutBare:
 			page = pages.Bare(s.ui, c)
 		case layoutNews:
-			c.Posts = s.posts()
+			for _, p := range s.posts() {
+				c.Posts = append(c.Posts, pages.Post{Title: p.front.Title, Description: p.front.Description, Path: p.path, Image: imagePath(p), Published: p.front.Created})
+			}
 			page = pages.News(s.ui, c)
 		case layoutPost:
 			c.Published, c.Authors, c.Minutes = p.front.Created, p.front.Authors, p.minutes
@@ -165,8 +170,18 @@ func (s *Site) Pages() map[string]templ.Component {
 	return out
 }
 
+// news is the page that lists the news posts, nil on a site without news.
+func (s *Site) news() *page {
+	for _, p := range s.pages {
+		if p.layout == layoutNews {
+			return p
+		}
+	}
+	return nil
+}
+
 // posts are the news posts, newest first.
-func (s *Site) posts() []pages.Post {
+func (s *Site) posts() []*page {
 	var ps []*page
 	for _, p := range s.pages {
 		if p.layout == layoutPost {
@@ -176,11 +191,7 @@ func (s *Site) posts() []pages.Post {
 	slices.SortFunc(ps, func(a, b *page) int {
 		return cmp.Or(b.front.Created.Compare(a.front.Created), cmp.Compare(a.src, b.src))
 	})
-	var out []pages.Post
-	for _, p := range ps {
-		out = append(out, pages.Post{Title: p.front.Title, Description: p.front.Description, Path: p.path, Image: imagePath(p), Published: p.front.Created})
-	}
-	return out
+	return ps
 }
 
 // imagePath is the absolute path of a page's Open Graph image.
@@ -203,8 +214,8 @@ func (s *Site) Images() map[string]templ.Component {
 // siteLink is an href or src that leads to a path on the site.
 var siteLink = regexp.MustCompile(`\s(?:href|src)="(/|/[^/"][^"]*)"`)
 
-// Render renders every page of the site, the sitemap and robots.txt to the
-// file each is served from. It fails where a link leads to a path the site
+// Render renders every page of the site, the sitemap, robots.txt and the
+// news feed to the file each is served from. It fails where a link leads to a path the site
 // serves nothing at. Loading checks the links of the markdown, and only this
 // checks those of the layouts, of site.yaml and of the HTML in a page.
 func (s *Site) Render(ctx context.Context) (map[string][]byte, error) {
@@ -222,6 +233,11 @@ func (s *Site) Render(ctx context.Context) (map[string][]byte, error) {
 	}
 	out[sitemapFile] = sitemap
 	out[robotsFile] = s.robots()
+	if news := s.news(); news != nil {
+		if out[feedFile], err = s.feed(news); err != nil {
+			return nil, fmt.Errorf("%s: %w", feedFile, err)
+		}
+	}
 	var errs []error
 	for _, file := range slices.Sorted(maps.Keys(out)) {
 		for _, m := range siteLink.FindAllSubmatch(out[file], -1) {
