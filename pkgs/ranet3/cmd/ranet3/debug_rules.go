@@ -16,7 +16,7 @@ func (r *reader) rulesCommand() *cobra.Command {
 		Use:   "rules",
 		Short: "Show the host's policy rules and the border filter's chain",
 		Long: `The output covers every policy rule the kernel holds, whoever wrote it, the
-rules cap.table asks for that the kernel does not hold, and, on a node with
+rules the reconciler derives that the kernel does not hold, and, on a node with
 cap.border, the border filter's chain with the packets each drop counted.`,
 		Args:              noArguments,
 		ValidArgsFunction: cobra.NoFileCompletions,
