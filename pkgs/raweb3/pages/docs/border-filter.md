@@ -26,20 +26,30 @@ key and its refusals.
 ## What it defends
 
 A node that forwards takes a packet from any of its links and routes it by its
-destination. A mesh destination leads into the tun, and every peer then takes
-the packet as the mesh's own. A host on the same link as such a node can
-therefore put a packet into the mesh with any source it likes.
+destination. Where the host routes a mesh destination into the tun, as
+[where a lookup ends on Linux](routing.md#where-a-lookup-ends-on-linux) gives,
+every peer then takes the packet as the mesh's own. A host on the same link as
+such a node can therefore put a packet into the mesh with any source the
+[checks at the mesh's edge](routing.md#transit) pass, such as one no route of
+the mesh covers or, on a node without `cap.border`, an overlay address no node
+announces.
 
 An [egress segment](segment-routing.md#egress-segments) carries out of the mesh
 only the sources its `allow` list names. The list is authorization, and a host
-beside a forwarding node can forge every mesh source it names. A forged allowed
-source sent to an exit's SID through that node would leave the exit translated,
-so the exit would relay traffic for someone who is not on the mesh. The filter
-on the node in front of the exit drops it at the first hop. The filter on the
-exit itself protects the exit's own SID from its own links, the host's services
-from a forged mesh source, and every other exit from a forged allowed source
-sent through this node. Another node's SID that delivers to the mesh is
-protected by that node, as [below](#what-it-drops) describes.
+beside a forwarding node without `cap.border` can forge each source it names
+that those checks pass and the exit routes a reply to, such as an address the
+forwarding node itself announces. An allowed address no node announces does not
+leave the exit. The forwarding node drops it as `unowned_source` where its table
+routes the inner destination by a route that counts as a default, and otherwise
+the exit refuses it as an inner source the mesh routes no reply to. A forged
+allowed source the exit routes a reply to, sent to its SID through that node,
+would leave the exit translated, so the exit would relay traffic for someone who
+is not on the mesh. The filter on the node in front of the exit drops it at the
+first hop. The filter on the exit itself protects the exit's own SID from its
+own links, the host's services from a forged mesh source, and every other exit
+from a forged allowed source sent through this node. Another node's SID that
+delivers to the mesh is protected by that node, as [below](#what-it-drops)
+describes.
 
 The filter guards the mesh's edge on the links outside it. A packet this host's
 own kernel routes into the tun enters the mesh by the other side of that edge,
@@ -109,9 +119,11 @@ per-node list of RFC 8754 section 5.1, as
 [segment routing](segment-routing.md#local-segments) describes. Between them a
 host beyond the mesh reaches no SID through a node with the filter. A node that
 forwards without `cap.border` is only warned, as
-[below](#nodes-that-forward-without-it) describes, and passes a forged overlay
-source on to every SID in the mesh. So a file with a local segment needs
-`cap.border`, with an IPv6 prefix in its overlay.
+[below](#nodes-that-forward-without-it) describes, and passes on to every SID in
+the mesh a packet with a forged overlay source, such as an overlay address no
+node announces, when its host routes the packet into the tun and the
+[tun read's checks](routing.md#transit) pass it. So a file with a local segment
+needs `cap.border`, with an IPv6 prefix in its overlay.
 
 ## Which devices are inside
 
@@ -149,8 +161,9 @@ conntrack entry. Each rule carries its spelling as its comment, which
 The filter needs no forwarding. With forwarding off the kernel routes nothing
 from the node's links into the tun, but a forged mesh source to the node's own
 address still reaches the host's services, and a host firewall's reverse path
-check in loose mode finds a route back to it through the tun and passes it. The
-filter drops that packet too, so it runs wherever `cap.border` is written.
+check in loose mode passes it wherever it finds a route back to that source
+through the tun, as for a live node's address. The filter drops that packet too,
+so it runs wherever `cap.border` is written.
 
 A pass reads the chain back whole: every rule in order, whoever wrote it, the
 table's flags, and the chain's type, hook, priority and policy. When anything

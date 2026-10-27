@@ -25,8 +25,11 @@ ranet3 forwards transit itself. A packet a session delivers goes to the next
 session by the mesh's own route table, with its hop limit or TTL taken down, and
 never through the host. A relay needs its tun and nothing more: the host's
 forwarding settings, its firewall's forward chain and its kernel tables play no
-part in transit, and the tun carries only this host's own traffic. An exit or a
-subnet router carries transit the same way, so transit for a prefix another node
+part in transit. The tun carries what the mesh delivers to this host and the
+networks behind it, what the host sends or its kernel forwards into it from its
+other links, which [the checks at the mesh's edge](../routing.md#transit) meet,
+and, on an exit, the egress it hands the host to carry out. An exit or a subnet
+router carries transit the same way, so transit for a prefix another node
 announces never leaves by the uplink.
 
 A packet this node does not forward is answered as a router answers it, from the
@@ -539,7 +542,7 @@ can configure are in
 | Live session                                   | 20 seconds since the peer's last authenticated IKE, 20 to 30 seconds since its last ESP | The session no longer counts as live                                                                   |
 | Reconnect delay                                | 10 seconds                                                                              | A dialer whose session ended waits this long before it dials again                                     |
 | Sends of the Delete that ends an IKE SA        | 2, waiting 2 and 4 seconds after each                                                   | The IKE SA is deemed failed after 6 seconds                                                            |
-| SA lifetime                                    | `cap.crypto.rekey.child` and `cap.crypto.rekey.ike`                                     | The SA is no longer used, and without a rekey replacing it the IKE SA is deleted                       |
+| SA lifetime                                    | `cap.crypto.rekey.child` and `cap.crypto.rekey.ike`                                     | A Child SA goes unused and an IKE SA starts only its Delete, and with no rekey the IKE SA is deleted   |
 | `TEMPORARY_FAILURE` answers on 1 IKE SA        | 5 minutes with no rekey of either SA completed by either end                            | The IKE SA is deleted, and the session ends                                                            |
 | Peer rekeys                                    | 1 per second for each kind of SA                                                        | A faster rekey is answered `TEMPORARY_FAILURE`                                                         |
 | Replaced Child SA awaiting the peer's Delete   | up to 30 seconds, then this end deletes it                                              | Every Child SA rekey in either direction, and a peer's IKE SA rekey, is refused meanwhile              |

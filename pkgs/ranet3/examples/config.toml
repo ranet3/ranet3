@@ -84,7 +84,8 @@ endpoints = [{ serial = "0", family = "ip4" }]
 # the mesh installs. A node holding an address an exit announces ends up with a
 # route out of its own tun covering the peers it reaches that tun through, and
 # an underlay following it is a tunnel running inside itself. On linux every
-# underlay socket carries the mark 0x72, which no key sets.
+# underlay socket carries the mark 0x72, which no key sets, where the process
+# may set it.
 #
 # bind is IP_BOUND_IF and IPV6_BOUND_IF on the interface the host's own default
 # route leaves by, darwin only. It also gives that interface a default of its
@@ -114,11 +115,10 @@ to = ["example/gateway:0"]
 # What this node puts into the mesh. A node that announces nothing consumes
 # routes and originates none.
 [cap.route]
-# Either a bare prefix or a prefix and the source it is reachable from. The
-# second spelling is how an exit announces a default out of its own transit
-# prefix. An exit node adds { prefix = "::/0", from = "2001:db8:1::/48" } to
-# the list beside its own address, while an ordinary node announces its own address
-# and nothing else, as this file does.
+# Either a bare prefix or a prefix and the source it is reachable from, such as
+# { prefix = "::/0", from = "2001:db8:1::/48" }, a default for 1 source prefix
+# alone. cap.egress below announces an exit's prefixes with no source. An
+# ordinary node announces its own address and nothing else, as this file does.
 announce = ["203.0.113.10/32"]
 
 # Whether this node relays the routes it learns. A node that does carries other
@@ -137,7 +137,8 @@ update = "16s"
 
 # How a link's Hello loss becomes a cost, RFC 8966 Appendix A.2, spelled the
 # way BIRD spells it: "etx", which the fleet runs on these same tunnels, or
-# "none" to cost every live link alike however much it drops.
+# "none" to leave this node's own Hello loss out of the cost, taking what each
+# neighbor reports as it comes.
 # quality = "etx"
 
 # A fixed rx cost plus up to rtt.weight more, scaled linearly between rtt.min
@@ -180,11 +181,9 @@ update = "16s"
 # On linux the reconciler derives its policy rules, at priorities 5100 to 5490
 # and carrying the protocol above, from cap.border's overlay and this node's own
 # prefixes, which are the addresses above and what cap.route announces that
-# counts as no default. The overlay is looked up in this table, then main for
-# every route but its defaults, then this table for every route that counts as
-# no default, and all of it for a source among this node's own prefixes. A
-# packet of the underlay's sockets, which carry the mark 0x72, passes all of
-# them. A dump reads back only these, a delete never reaches another writer's
+# counts as no default. A packet carrying the underlay's mark skips every lookup
+# of this table. The routing page's "Policy rules on Linux" lists each rule and
+# where a lookup ends under them. A dump reads back only these, a delete never reaches another writer's
 # rule, and they are withdrawn at shutdown with the routes. darwin installs no
 # policy rule.
 
@@ -277,7 +276,9 @@ update = "16s"
 # the path no classical exchange to steer two nodes to. A reload applies the
 # lists to the next exchange. It rekeys an SA whose cipher or kex entry it
 # removed after a delay drawn within the rekey jitter, and no later than the
-# SA's scheduled rekey. It replaces through a new handshake an IKE SA whose PRF
+# SA's scheduled rekey, unless a rekey of it is already due, under way or
+# backing off, and a Child SA whose IKE SA rekeys for the same reload waits for
+# that rekey. It replaces through a new handshake an IKE SA whose PRF
 # it removed, since no rekey changes the PRF.
 # [cap.crypto.ike]
 # cipher = ["aes256gcm", "aes128gcm", "chacha20poly1305"]

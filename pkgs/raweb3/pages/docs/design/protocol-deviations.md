@@ -226,12 +226,13 @@ holds the address, or holds it with no route from it to the peer, the kernel
 refuses a send from it, and the send goes again from the kernel's choice of
 source. Without that resend the answer would not leave at all.
 
-Where the address has no route, each answer still tries it first, so answers
-leave from it again as soon as a route returns. The session's own sends stay on
-the kernel's choice until a fresh request after 1 minute, which a peer sends
-once that traffic is lost. Where the session's ESP from the other address still
-reaches the peer, the peer has no cause to probe, and the session stays there
-until the peer's next request, such as a rekey.
+Each answer still tries the address first, so answers leave from it again as
+soon as the kernel takes a send from it. The session's own sends stay on the
+kernel's choice until a fresh request moves them back, as
+[moving hosts](../platforms.md#moving-hosts) gives, which a peer sends once that
+traffic is lost. Where the session's ESP from the other address still reaches
+the peer, the peer has no cause to probe, and the session stays there until the
+peer's next request, such as a rekey.
 
 On FreeBSD and OpenBSD the socket keeps no source, so every answer leaves from
 the kernel's choice. Neither platform is supported beyond building.
@@ -338,13 +339,13 @@ A Child SA rekey this node starts offers only the cipher of the SA it replaces
 while `cap.crypto.esp.cipher` holds it, as
 [RFC 7296 section 2.8](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8)
 asks. Answering a peer's Child SA rekey, ranet3 takes that cipher when the offer
-holds it, and otherwise the first other cipher of its list that the offer holds.
-A peer whose own lists left the cipher out offers only the others, and refusing
-them would keep its SA on a cipher it removed. A reload whose list leaves the
-cipher out moves the SA to a listed cipher at the rekey it forces. Both depart
-from the same SHOULD NOT. Section 3.3.4 says "The implementation MUST reject SA
-proposals that are not authorized by these IKE suite controls", which rules out
-keeping a cipher the lists left out.
+and its list both hold it, and otherwise the first cipher of its list that the
+offer holds. A peer whose own lists left the cipher out offers only the others,
+and refusing them would keep its SA on a cipher it removed. A reload whose list
+leaves the cipher out moves the SA to a listed cipher at the rekey it forces.
+Both depart from the same SHOULD NOT. Section 3.3.4 says "The implementation
+MUST reject SA proposals that are not authorized by these IKE suite controls",
+which rules out keeping a cipher the lists left out.
 
 When a peer refuses a rekey with `NO_ADDITIONAL_SAS`,
 [RFC 7296 section 4](https://www.rfc-editor.org/rfc/rfc7296.html#section-4)
@@ -770,11 +771,11 @@ depart.
 
 A tun read's answer comes from the packet's destination because, where the host
 routes that destination into the tun, that is the one source every check of the
-sending host takes. The host drops an arriving packet from one of its own
-addresses. Over IPv4 the kernel drops it unless `accept_local` is set, whatever
-`rp_filter` holds (`fib_validate_source`, net/ipv4/fib_frontend.c:402-409 and
-456-471 at Linux `940de590`). A reverse path check on nftables' `fib` finds no
-interface for such a source in either family
+sending host takes. The host's checks can refuse an arriving packet from one of
+its own addresses. Over IPv4 the kernel drops it unless `accept_local` is set,
+whatever `rp_filter` holds (`fib_validate_source`,
+net/ipv4/fib_frontend.c:402-409 and 456-471 at Linux `940de590`). A reverse path
+check on nftables' `fib` finds no interface for such a source in either family
 (net/ipv6/netfilter/nft_fib_ipv6.c:244 and
 net/ipv4/netfilter/nft_fib_ipv4.c:139-140), and xt_rpfilter refuses it unless
 `--accept-local` is given (net/ipv6/netfilter/ip6t_rpfilter.c:70-71 and
@@ -798,9 +799,10 @@ An IPv4 answer does not come from 192.0.0.8 either, the dummy address
 [RFC 7600 section 4.8](https://www.rfc-editor.org/rfc/rfc7600.html#section-4.8)
 has a translator answer from. `rp_filter` 1 drops an answer from it unless the
 host routes 192.0.0.8 into the tun, and so does NixOS's strict chain.
-`rp_filter` 2 takes it where the host has any route to 192.0.0.8, a default
-route among them, and drops it where the host has none
-(net/ipv4/fib_frontend.c:400-401 and 425-438). Every setting takes an answer
+`rp_filter` 2 takes it where the host's route to 192.0.0.8 is a unicast route, a
+default route among them, and drops it where the host has none or where that
+route refuses, such as a hold or an unreachable default
+(net/ipv4/fib_frontend.c:400-406 and 425-438). Every setting takes an answer
 from the destination where the host routes that destination into the tun. A
 socket bound to the tun can send a packet past the kernel's hold into the tun,
 as rows B3 and B4 of
@@ -2073,8 +2075,9 @@ drops:
   SHOULD allow an appropriate ICMP unreachable message to be sent when a packet
   is discarded", with code 13. The reason is the allow list's above. Each packet
   passed the SID's overlay check and the allow list, so its sources are overlay
-  addresses, which a host beyond the mesh can forge through a node without
-  `cap.border`, and an answer could reach the mesh node the source names.
+  addresses, some of which a host beyond the mesh can forge through a node
+  without `cap.border`, and an answer could reach the mesh node the source
+  names.
 - For code 0, an egress segment past its reply check refuses an inner packet
   whose destination lies inside `cap.border.overlay`, the mesh's own address
   space. No node whose `cap.border` sets that overlay egresses such a

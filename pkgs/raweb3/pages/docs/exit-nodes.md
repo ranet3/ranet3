@@ -391,8 +391,9 @@ allow = ["203.0.113.0/25", "3fff:a::/64"]
 An egress segment needs [the border filter](border-filter.md), and its `allow`
 list lies inside the filter's `overlay`. The daemon refuses a file with an
 egress segment and no `cap.border`, or with an `allow` entry the overlay does
-not cover. The list names mesh sources, which a host on a link of any forwarding
-node could otherwise forge and send through that node to the SID.
+not cover. The list names mesh sources, which a host on a link of a forwarding
+node could otherwise forge, among them that node's own, and send through that
+node to the SID.
 
 An egress segment needs no `cap.table`, though its replies need a route back
 into the tun, such as the one `cap.table` gives by the rules of

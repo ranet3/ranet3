@@ -10,12 +10,14 @@ order: 45
 
 Babel (RFC 8966) decides which neighbor carries each prefix. ranet3 forwards by
 those decisions in its own table, keyed by source and destination prefix. The
-route reconciler copies the same decisions into a kernel routing table, so the
-host sends mesh traffic into the tun. Without `cap.table`, the reconciler does
-not run, and the host routes into the tun however it is configured to. On macOS,
-`link.underlay.bind` still writes a default scoped to the underlay's interface
-for a family whose zero address another program's route takes.
-[Sharing a host](coexistence.md) describes that route.
+route reconciler copies the same decisions into a kernel routing table, out of
+the tun, and each lookup the host makes ends as
+[where a lookup ends on Linux](#where-a-lookup-ends-on-linux) and
+[on macOS](#where-a-lookup-ends-on-macos) give. Without `cap.table`, the
+reconciler does not run, and the host routes into the tun however it is
+configured to. On macOS, `link.underlay.bind` still writes a default scoped to
+the underlay's interface for a family whose zero address another program's route
+takes. [Sharing a host](coexistence.md) describes that route.
 
 [The configuration reference](configuration-reference.md) lists every key under
 `cap.route`, `cap.babel` and `cap.table`.
@@ -90,9 +92,11 @@ organization's node, which stays the fallback, since 1024 is far from either
 bound above. A node name is only as strong as its organization's key, since
 every holder of that key can claim any of its names.
 
-With `cap.babel.quality` set to `"none"`, reception does not scale the cost. A
-route's metric is the link cost, at least 1, plus the metric the neighbor
-advertises. A metric of 65535 is infinite and means unreachable.
+With `cap.babel.quality` set to `"none"`, this node's own reception does not
+scale the cost, and the receive cost a neighbor reports, which that neighbor may
+scale by its own loss, is taken as it comes. A route's metric is the link cost,
+at least 1, plus the metric the neighbor advertises. A metric of 65535 is
+infinite and means unreachable.
 
 ## What a node announces
 
@@ -193,20 +197,20 @@ the retraction, since this node cannot know that they did. A prefix that no
 update from this node named reachable in that time is not held, and a covering
 route serves it at once.
 
-A hold costs transit what it costs this host's own traffic. A retracted prefix
-covered by a shorter route is answered unreachable until the latest update this
-node sent for it expires, 60 seconds at the defaults. An exit whose readiness
-withdraws its default holds that default the same way. While it originates its
-own default it holds no other exit's, since it drops every update for a prefix
-it originates. With another exit's default on offer, its transit for the
-internet moves to that exit once that exit's next update arrives, within 16
-seconds at the defaults. With none, it answers that transit unreachable, IPv6
-code 0 and IPv4 Network Unreachable, until the hold ends. The kernel's copy of a
-hold refuses the traffic this host sends or forwards into it only where the
-lookup ends at it, as rows L4 and L9 of
+A hold refuses transit for as long as it lasts. The kernel's copy of a hold
+refuses the traffic this host sends or forwards into it only where the lookup
+ends at it, as rows L4 and L9 of
 [where a lookup ends on Linux](#where-a-lookup-ends-on-linux) and row D3 of
 [where a lookup ends on macOS](#where-a-lookup-ends-on-macos) give, and any
-other lookup ends where those tables give.
+other lookup ends where those tables give. A retracted prefix covered by a
+shorter route is answered unreachable until the latest update this node sent for
+it expires, 60 seconds at the defaults. An exit whose readiness withdraws its
+default holds that default the same way. While it originates its own default it
+holds no other exit's, since it drops every update for a prefix it originates.
+With another exit's default on offer, its transit for the internet moves to that
+exit once that exit's next update arrives, within 16 seconds at the defaults.
+With none, it answers that transit unreachable, IPv6 code 0 and IPv4 Network
+Unreachable, until the hold ends.
 [The protocol deviations](design/protocol-deviations.md#updates-and-requests)
 list the departure. Where the hold counts as a default the kernel keeps none,
 and that traffic ends as
@@ -222,9 +226,13 @@ own for its own hold time, 56 seconds at the defaults.
 ranet3 decides each packet a session delivers in its own table, after this
 node's [segments](segment-routing.md) take the ones addressed to them. Nothing
 of the host takes part: its forwarding settings, its firewall's forward chain
-and its kernel tables do not, and the tun carries only this host's own traffic.
-The checks run in RFC 1812's order for both families, each before any answer, so
-a malformed packet draws none:
+and its kernel tables do not. The tun carries what the mesh delivers to this
+host and the networks behind it, what the host sends or its kernel forwards into
+it from its other links, which the checks at the mesh's edge below meet, and, on
+an exit, the egress it hands the host to carry out, as
+[exit nodes](exit-nodes.md#what-an-exit-carries-out) describe. The checks run in
+RFC 1812's order for both families, each before any answer, so a malformed
+packet draws none:
 
 1. A frame that holds no whole IP packet is dropped with no answer.
 2. A multicast, limited broadcast or IPv6 link-local destination goes to the
@@ -354,7 +362,7 @@ Linux it also installs the [policy rules](#policy-rules-on-linux) it derives.
 | Metric      | `cap.table.metric`, or 0 for IPv4 and 1024 for IPv6                                                                                             |
 | Hold        | an `unreachable` route at metric 4294967295, with no device, read back over IPv6 as `dev lo`, on Linux, and a reject route on the utun on macOS |
 | Throw       | a `throw` route at metric 4294967295, with no device, read back over IPv6 as `dev lo`, on Linux only                                            |
-| IPv6 source | a source-specific route carries its source prefix                                                                                               |
+| IPv6 source | on Linux a source-specific route carries its source prefix, and on macOS it is scoped to the utun instead                                       |
 | IPv4 source | none written, so the kernel picks the tun's own IPv4 address, or another link's where the tun has none                                          |
 
 Each entry of the mesh's table becomes:
@@ -606,14 +614,17 @@ and the restore logs
 
 The reconciler never installs a hold of a route that counts, nor this node's own
 prefix that counts, whatever the sessions. An `unreachable` route of that width
-in the kernel would answer the host's own traffic it covers with an error while
-other sessions stay live, and a retracted split internet would cut the host off.
-The mesh's own table keeps the hold, and a packet the tun hands ranet3 for an
-address inside it is answered unreachable rather than following a shorter route
-(RFC 8966 section 3.5.4), unless a steering policy takes it or the checks at the
-mesh's edge drop it, as [transit](#transit) says. A peer's packet for such an
-address never reaches the host, and the [forwarding decision](#transit) answers
-it unreachable. A packet the host sends or forwards for one ends as
+in the kernel would answer with an error every lookup of the host's own traffic
+that ends at it, as
+[where a lookup ends on Linux](#where-a-lookup-ends-on-linux) and
+[on macOS](#where-a-lookup-ends-on-macos) give, while other sessions stay live,
+and a retracted split internet would cut the host off there. The mesh's own
+table keeps the hold, and a packet the tun hands ranet3 for an address inside it
+is answered unreachable rather than following a shorter route (RFC 8966 section
+3.5.4), unless a steering policy takes it or the checks at the mesh's edge drop
+it, as [transit](#transit) says. A peer's packet for such an address never
+reaches the host, and the [forwarding decision](#transit) answers it
+unreachable. A packet the host sends or forwards for one ends as
 [where a lookup ends on Linux](#where-a-lookup-ends-on-linux) and
 [on macOS](#where-a-lookup-ends-on-macos) give for the routes left: by the
 host's own routes, or by a shorter route of the mesh back into the tun, where
@@ -661,10 +672,11 @@ its own utun. [Sharing a host](coexistence.md) describes the rules in full.
 
 On both platforms a route that counts as a default, the `/0` default among them,
 goes in only once a session has been live, and never on an exit, as
-[what it installs](#what-it-installs) says. On macOS a scoped route reaches only
-a socket bound to the utun. A listed endpoint address is a literal address of a
-node's endpoint in the trust document. An endpoint written as a hostname does
-not count.
+[what it installs](#what-it-installs) says. On macOS a route scoped to the utun
+reaches a socket bound to the utun or to an address of it, as
+[where a lookup ends on macOS](#where-a-lookup-ends-on-macos) says. A listed
+endpoint address is a literal address of a node's endpoint in the trust
+document. An endpoint written as a hostname does not count.
 
 iOS and Android have no reconciler. [Platforms](platforms.md) covers each
 platform in full.
@@ -754,10 +766,12 @@ judges the `/0`, so the cover waits for a live session and leaves when no
 session has been live for `capture_grace`. Its family also waits for the host's
 own default of that family, and while it waits the reconciler logs
 `kernel is holding back a route that would carry this machine's own traffic`.
-Each family's cover going in or out logs
+Each family's cover a pass puts in or takes out logs
 `kernel changed the cover a plain default is installed as` and records a
-`kernel.cover` event. The Kernel line of `ranet3 status` names the covered
-families.
+`kernel.cover` event, which the withdrawal of `ranet3 down` or
+`ranet3 disable reconciler` does not, as
+[debugging](development/debug.md#events) says. The Kernel line of
+`ranet3 status` names the covered families.
 
 A member that another program's route at its key refuses, or that fails to
 install, takes its family's cover out whole, since part of a cover would split
@@ -821,7 +835,9 @@ The 2 route lines share 1 limit of 1 line per second. Each carries
 `changes_since_last`, the number of changes since the last line. The events
 `babel.neighbor.up`, `babel.neighbor.down`, `babel.route.selected` and
 `babel.route.retracted` record each change. `kernel.pass` records each pass that
-changed the kernel, met a newly refused route, failed or followed a reload.
+changed the kernel, met a newly refused route, failed or followed a reload, and
+a withdrawal only when it fails, as [debugging](development/debug.md#events)
+says.
 
 | Metric                                 | Meaning                                                                                    |
 | -------------------------------------- | ------------------------------------------------------------------------------------------ |

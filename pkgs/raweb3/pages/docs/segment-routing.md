@@ -187,18 +187,20 @@ decision. A packet read from the tun crosses the same edge the other way, and
 the forwarding decision checks it beside the border filter: a routing header of
 type 0, 1 or 4, or a type the mesh does not recognize, is dropped and counted
 `routing_header`, and one of this node's own SIDs is dropped and counted `sid`.
-The host's own kernel never writes a routing header into the tun to steer a
-packet through a waypoint, since the edge would drop it: a host steers with
-[`cap.segment.steer`](#steering), which puts the segments on inside the mesh,
-after the checks. A packet read from the tun addressed to another node's SID
-with no routing header passes the routing header and SID checks, its source
-meets the same source checks as any read, and the IPv4 or IPv6 packet it carries
-meets every check one level deep as a read of its own, as
-[routing](routing.md#transit) lists. What passes, that node refuses where its
-outer source lies outside the overlay, as [local segments](#local-segments)
-describe. A node that transits another segment routing domain between 2 links
-outside the mesh would lose that traffic, which
-[the deviations](design/protocol-deviations.md#the-border-filter) list.
+A host steers with [`cap.segment.steer`](#steering), which puts the segments on
+inside the mesh, after the checks, since the checks drop the segment routing
+header an `encap seg6` route on the tun writes
+([seg6_iptunnel.c](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/seg6_iptunnel.c#L141)),
+as [interoperation with the Linux kernel](#interoperation-with-the-linux-kernel)
+says. A packet read from the tun addressed to another node's SID with no routing
+header passes the routing header and SID checks, its source meets the same
+source checks as any read, and the IPv4 or IPv6 packet it carries meets every
+check one level deep as a read of its own, as [routing](routing.md#transit)
+lists. What passes, that node refuses where its outer source lies outside the
+overlay, as [local segments](#local-segments) describe. A node that transits
+another segment routing domain between 2 links outside the mesh would lose that
+traffic, which [the deviations](design/protocol-deviations.md#the-border-filter)
+list.
 
 ## Steering
 
