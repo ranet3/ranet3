@@ -7,6 +7,7 @@ package site
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -138,7 +139,7 @@ func (s *Site) Pages() map[string]templ.Component {
 			Title:       p.front.Title,
 			Description: p.front.Description,
 			Path:        p.path,
-			Image:       p.path + ogFile,
+			Image:       imagePath(p),
 			Updated:     p.front.Updated,
 			Unvetted:    p.front.unvetted(),
 			Body:        p.html,
@@ -147,6 +148,12 @@ func (s *Site) Pages() map[string]templ.Component {
 		switch p.layout {
 		case layoutBare:
 			page = pages.Bare(s.ui, c)
+		case layoutNews:
+			c.Posts = s.posts()
+			page = pages.News(s.ui, c)
+		case layoutPost:
+			c.Published, c.Authors, c.Minutes = p.front.Created, p.front.Authors, p.minutes
+			page = pages.Article(s.ui, c)
 		case layoutDocs:
 			c.Nav = docsNav(s.pages, p)
 			page = pages.Docs(s.ui, c)
@@ -158,12 +165,37 @@ func (s *Site) Pages() map[string]templ.Component {
 	return out
 }
 
-// Images maps the Open Graph image of each page, relative to the site's root,
-// to the SVG it is drawn from.
+// posts are the news posts, newest first.
+func (s *Site) posts() []pages.Post {
+	var ps []*page
+	for _, p := range s.pages {
+		if p.layout == layoutPost {
+			ps = append(ps, p)
+		}
+	}
+	slices.SortFunc(ps, func(a, b *page) int {
+		return cmp.Or(b.front.Created.Compare(a.front.Created), cmp.Compare(a.src, b.src))
+	})
+	var out []pages.Post
+	for _, p := range ps {
+		out = append(out, pages.Post{Title: p.front.Title, Description: p.front.Description, Path: p.path, Image: imagePath(p), Published: p.front.Created})
+	}
+	return out
+}
+
+// imagePath is the absolute path of a page's Open Graph image.
+func imagePath(p *page) string {
+	return cmp.Or(p.image, p.path+ogFile)
+}
+
+// Images maps each Open Graph image the site draws, relative to its root, to
+// the SVG it is drawn from. A page that names a file of its own has none.
 func (s *Site) Images() map[string]templ.Component {
 	out := map[string]templ.Component{}
 	for _, p := range s.pages {
-		out[strings.TrimPrefix(p.path, "/")+ogFile] = ui.OG(s.ui, p.card)
+		if p.image == "" {
+			out[strings.TrimPrefix(imagePath(p), "/")] = ui.OG(s.ui, p.card)
+		}
 	}
 	return out
 }
@@ -211,6 +243,9 @@ func (s *Site) serves(rendered map[string][]byte, link string) bool {
 		file += indexFile
 	}
 	if _, ok := rendered[file]; ok || file == styleOutput {
+		return true
+	}
+	if _, ok := s.Images()[file]; ok {
 		return true
 	}
 	return s.file(file) != nil

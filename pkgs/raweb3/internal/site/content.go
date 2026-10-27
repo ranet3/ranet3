@@ -9,6 +9,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	img "image"
+	_ "image/jpeg"
+	_ "image/png"
 	"io/fs"
 	"net/url"
 	"os"
@@ -47,6 +50,8 @@ type frontmatter struct {
 	// takes the docs layout and any other the page layout, unless this names
 	// another
 	Layout string `yaml:"layout"`
+	// Authors wrote a news post, which names at least one
+	Authors []string `yaml:"authors"`
 	// Vetted is the day a person last read the page in full, set by hand
 	// only and never shown. A page without it, or changed since, carries a
 	// notice that it may contain unreviewed machine generated text
@@ -57,6 +62,9 @@ type frontmatter struct {
 		Label string `yaml:"label"`
 		Title string `yaml:"title"`
 		Meta  string `yaml:"meta"`
+		// Image names a file beside the page, 1200 by 630, used in place of
+		// the drawn one
+		Image string `yaml:"image"`
 	} `yaml:"og"`
 }
 
@@ -73,8 +81,12 @@ type page struct {
 	layout string
 	front  frontmatter
 	html   string
-	// card is the text drawn on the page's Open Graph image
-	card ui.Card
+	// card is the text drawn on the page's Open Graph image, and image the
+	// path of the file used in its place, if any
+	card  ui.Card
+	image string
+	// minutes is how long the page takes to read
+	minutes int
 
 	body []byte
 	root ast.Node
@@ -184,11 +196,17 @@ func parsePage(src, file string) (*page, error) {
 	if err := p.check(); err != nil {
 		return nil, fmt.Errorf("%s: %w", src, err)
 	}
-	label := p.front.OG.Label
-	if label == "" && p.layout == layoutDocs {
-		label = "Docs"
+	// at 200 words a minute, markup counted as words
+	p.minutes = max(1, (len(bytes.Fields(body))+100)/200)
+	label, meta := p.front.OG.Label, p.front.OG.Meta
+	switch p.layout {
+	case layoutDocs:
+		label = cmp.Or(label, "Docs")
+	case layoutPost:
+		label = cmp.Or(label, "News")
+		meta = cmp.Or(meta, fmt.Sprintf("%s \u00b7 %d min read", p.front.Created.Format(pages.DateFormat), p.minutes))
 	}
-	if p.card, err = ui.NewCard(label, cmp.Or(p.front.OG.Title, p.front.Title), p.front.OG.Meta); err != nil {
+	if p.card, err = ui.NewCard(label, cmp.Or(p.front.OG.Title, p.front.Title), meta); err != nil {
 		return nil, fmt.Errorf("%s: %w", src, err)
 	}
 	p.root = markdown.Parser().Parse(text.NewReader(body), parser.WithContext(parser.NewContext()))
@@ -208,6 +226,15 @@ func parsePage(src, file string) (*page, error) {
 // frontmatter names.
 func layoutOf(src, named string) (string, error) {
 	inDocs := strings.HasPrefix(src, docsDir+"/")
+	if strings.HasPrefix(src, newsDir+"/") {
+		switch {
+		case named != "":
+			return "", fmt.Errorf("layout %s under %s/, where the place of a page decides it", named, newsDir)
+		case src == newsDir+"/"+pageIndex+pageSuffix:
+			return layoutNews, nil
+		}
+		return layoutPost, nil
+	}
 	switch named {
 	case "":
 		if inDocs {
@@ -241,6 +268,9 @@ func (p *page) check() error {
 	}
 	if p.front.Updated.Before(p.front.Created) {
 		errs = append(errs, fmt.Errorf("updated %s before created %s", p.front.Updated.Format(time.DateOnly), p.front.Created.Format(time.DateOnly)))
+	}
+	if p.layout == layoutPost && len(p.front.Authors) == 0 {
+		errs = append(errs, errors.New("authors missing"))
 	}
 	if p.layout == layoutDocs && p.front.Order == nil {
 		errs = append(errs, errors.New("order missing, which places a docs page in the navigation"))
@@ -287,7 +317,31 @@ func (p *page) render(bySrc map[string]*page, files fs.FS) []error {
 		errs = append(errs, fmt.Errorf("%s: %w", p.src, err))
 	}
 	p.html = out
+	if p.front.OG.Image != "" {
+		if err := p.imageOf(bySrc, files); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	return errs
+}
+
+// imageOf resolves the file the page's frontmatter names as its Open Graph
+// image and checks its size.
+func (p *page) imageOf(bySrc map[string]*page, files fs.FS) error {
+	image, err := p.resolve(p.front.OG.Image, bySrc, files)
+	if err != nil {
+		return fmt.Errorf("%s: og.image: %w", p.src, err)
+	}
+	f, err := files.Open(strings.TrimPrefix(image, "/"))
+	if err != nil {
+		return fmt.Errorf("%s: og.image: %w", p.src, err)
+	}
+	defer f.Close()
+	if c, _, err := img.DecodeConfig(f); err != nil || c.Width != 1200 || c.Height != 630 {
+		return fmt.Errorf("%s: og.image %s is no PNG or JPEG of 1200 by 630", p.src, image)
+	}
+	p.image = image
+	return nil
 }
 
 // place renders each component the page's HTML names in place of its
