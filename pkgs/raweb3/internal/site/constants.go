@@ -17,6 +17,8 @@ const (
 	docsDir = "docs"
 	// indexFile is the file a directory path serves
 	indexFile = "index.html"
+	// ogFile is a page's Open Graph image, beside its indexFile
+	ogFile = "og.png"
 	// notFoundFile is the page GitHub Pages serves for a path it has no file for
 	notFoundFile = "404.html"
 	// sitemapFile and robotsFile are served at the root, where crawlers look

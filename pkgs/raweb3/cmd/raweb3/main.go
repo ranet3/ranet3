@@ -24,9 +24,9 @@ func main() {
 
 // sources are the flags every command reads the sources through.
 type sources struct {
-	root     string
-	pages    string
-	tailwind string
+	root  string
+	pages string
+	tools site.Tools
 }
 
 func newRoot() *cobra.Command {
@@ -43,10 +43,14 @@ serve command renders it from the sources on each request.`,
 	flags := root.PersistentFlags()
 	flags.StringVar(&src.root, "root", defaultRoot, "Directory that holds site.yaml, static and ui")
 	flags.StringVar(&src.pages, "pages", defaultPages, "Directory of the markdown pages, relative to the root")
-	flags.StringVar(&src.tailwind, "tailwind", defaultTailwind, "Tailwind binary that compiles the stylesheet")
+	flags.StringVar(&src.tools.Tailwind, "tailwind", defaultTailwind, "Tailwind binary that compiles the stylesheet")
+	flags.StringVar(&src.tools.Resvg, "resvg", defaultResvg, "resvg binary that draws the Open Graph images")
+	flags.StringVar(&src.tools.Font, "font", os.Getenv(fontEnv), "Noto Sans Mono font file the Open Graph images are drawn in, $"+fontEnv+" by default")
 	root.MarkPersistentFlagDirname("root")
 	root.MarkPersistentFlagDirname("pages")
 	root.MarkPersistentFlagFilename("tailwind")
+	root.MarkPersistentFlagFilename("resvg")
+	root.MarkPersistentFlagFilename("font", "ttf")
 	root.AddCommand(buildCommand(&src), serveCommand(&src))
 	return root
 }
@@ -61,7 +65,7 @@ in it. Every page, the stylesheet and the static files are minified.`,
 		Args:              cobra.NoArgs,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return site.Build(cmd.Context(), src.root, src.pages, out, site.Tailwind{Bin: src.tailwind})
+			return site.Build(cmd.Context(), src.root, src.pages, out, src.tools)
 		},
 	}
 	cmd.Flags().StringVar(&out, "out", "", "Directory to write the site to")
@@ -83,7 +87,7 @@ needs the command restarted, which templ generate --watch --cmd does.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			server := &http.Server{
 				Addr:              listen,
-				Handler:           site.Handler(src.root, src.pages, site.Tailwind{Bin: src.tailwind}),
+				Handler:           site.Handler(src.root, src.pages, src.tools),
 				ReadHeaderTimeout: readHeaderTimeout,
 			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "Serving on http://%s\n", listen)

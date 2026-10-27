@@ -6,7 +6,9 @@ package site
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"mime"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/a-h/templ"
 	"github.com/tdewolff/minify/v2"
 	"github.com/tdewolff/minify/v2/css"
 	"github.com/tdewolff/minify/v2/html"
@@ -23,26 +26,47 @@ import (
 	"github.com/tdewolff/minify/v2/xml"
 )
 
-// Tailwind compiles the site's stylesheet with the tailwind binary at Bin.
-type Tailwind struct {
-	Bin string
+// Tools are the programs the site is built with and the font they read.
+type Tools struct {
+	// Tailwind compiles the stylesheet
+	Tailwind string
+	// Resvg turns each Open Graph image into a PNG, in the font at Font
+	Resvg string
+	Font  string
 }
 
-func (t Tailwind) compile(ctx context.Context, root string, minified bool) ([]byte, error) {
+func (t Tools) style(ctx context.Context, root string, minified bool) ([]byte, error) {
 	args := []string{"--input", styleInput}
 	if minified {
 		args = append(args, "--minify")
 	}
-	cmd := exec.CommandContext(ctx, t.Bin, args...)
-	cmd.Dir = root
+	return run(ctx, root, nil, t.Tailwind, args...)
+}
+
+func (t Tools) png(ctx context.Context, image templ.Component) ([]byte, error) {
+	if t.Font == "" {
+		return nil, errors.New("no font to draw the Open Graph images in")
+	}
+	var svg bytes.Buffer
+	if err := image.Render(ctx, &svg); err != nil {
+		return nil, err
+	}
+	return run(ctx, "", &svg, t.Resvg, "--skip-system-fonts", "--use-font-file", t.Font, "-", "-c")
+}
+
+// run runs bin in dir with stdin and returns what it writes to stdout.
+func run(ctx context.Context, dir string, stdin io.Reader, bin string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir = dir
+	cmd.Stdin = stdin
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
 		if msg := bytes.TrimSpace(stderr.Bytes()); len(msg) > 0 {
-			return nil, fmt.Errorf("%s: %w: %s", t.Bin, err, msg)
+			return nil, fmt.Errorf("%s: %w: %s", bin, err, msg)
 		}
-		return nil, fmt.Errorf("%s: %w", t.Bin, err)
+		return nil, fmt.Errorf("%s: %w", bin, err)
 	}
 	return out, nil
 }
@@ -51,7 +75,7 @@ func (t Tailwind) compile(ctx context.Context, root string, minified bool) ([]by
 // to out, minified as it is served. out must not exist yet, so nothing of an
 // earlier build survives in it, and it is made only once every file is
 // ready, so a build that fails leaves none behind.
-func Build(ctx context.Context, root, dir, out string, tw Tailwind) error {
+func Build(ctx context.Context, root, dir, out string, tools Tools) error {
 	s, err := Load(root, dir)
 	if err != nil {
 		return err
@@ -73,8 +97,13 @@ func Build(ctx context.Context, root, dir, out string, tw Tailwind) error {
 			return fmt.Errorf("%s: %w", file, err)
 		}
 	}
-	if files[styleOutput], err = tw.compile(ctx, root, true); err != nil {
+	if files[styleOutput], err = tools.style(ctx, root, true); err != nil {
 		return err
+	}
+	for file, image := range s.Images() {
+		if files[file], err = tools.png(ctx, image); err != nil {
+			return fmt.Errorf("%s: %w", file, err)
+		}
 	}
 	err = fs.WalkDir(s.static, ".", func(p string, e fs.DirEntry, err error) error {
 		if err != nil || e.IsDir() {

@@ -280,7 +280,7 @@ templ notice() {
 
 // Bare is a page whose markdown lays itself out, full width.
 templ Bare(site ui.Site, c Content) {
-	@frame(site, ui.Page{Title: pageTitle(site, c), Description: c.Description, Path: c.Path}, c.Unvetted, "font-mono text-[15px] leading-[1.55]") {
+	@frame(site, ui.Page{Title: pageTitle(site, c), Description: c.Description, Path: c.Path, Image: c.Image}, c.Unvetted, "font-mono text-[15px] leading-[1.55]") {
 		<main id="main">
 			@templ.Raw(c.Body)
 		</main>

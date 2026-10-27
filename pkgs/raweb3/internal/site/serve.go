@@ -13,10 +13,10 @@ import (
 // unminified. It loads and renders them again on each request, so an edit to
 // a page, site.yaml or the stylesheet shows on the next reload. A templ
 // component needs the server rebuilt.
-func Handler(root, dir string, tw Tailwind) http.Handler {
+func Handler(root, dir string, tools Tools) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/"+styleOutput {
-			style, err := tw.compile(r.Context(), root, false)
+			style, err := tools.style(r.Context(), root, false)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -30,14 +30,25 @@ func Handler(root, dir string, tw Tailwind) http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		file := strings.TrimPrefix(r.URL.Path, "/")
+		if file == "" || strings.HasSuffix(file, "/") {
+			file += indexFile
+		}
+		// only the image asked for is drawn, as each takes a resvg run
+		if image, ok := s.Images()[file]; ok {
+			png, err := tools.png(r.Context(), image)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "image/png")
+			w.Write(png)
+			return
+		}
 		files, err := s.Render(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
-		}
-		file := strings.TrimPrefix(r.URL.Path, "/")
-		if file == "" || strings.HasSuffix(file, "/") {
-			file += indexFile
 		}
 		status := http.StatusOK
 		page, ok := files[file]

@@ -11,7 +11,7 @@ import (
 
 // Docs is one docs page.
 templ Docs(site ui.Site, doc Content) {
-	@frame(site, ui.Page{Title: docsTitle(site, doc), Description: doc.Description, Path: doc.Path}, doc.Unvetted, "") {
+	@frame(site, ui.Page{Title: docsTitle(site, doc), Description: doc.Description, Path: doc.Path, Image: doc.Image}, doc.Unvetted, "") {
 		<div class="mx-auto flex max-w-6xl gap-12 px-4 md:px-6">
 			<nav class="hidden w-56 shrink-0 py-10 md:block" aria-label="Docs">
 				@navList(doc.Nav)
