@@ -61,7 +61,12 @@ var (
 	_ auditor     = (*netlinkPlatform)(nil)
 	_ ruler       = (*netlinkPlatform)(nil)
 	_ lengthKeyer = (*netlinkPlatform)(nil)
+	_ looker      = (*netlinkPlatform)(nil)
 )
+
+func (p *netlinkPlatform) lookups(reads []RouteRead) ([]BatchAnswer, error) {
+	return routeGetBatch(p.conn, reads)
+}
 
 // ipv4DevconfPromoteSecondaries is IPV4_DEVCONF_PROMOTE_SECONDARIES of linux/ip.h, which x/sys does not carry
 const ipv4DevconfPromoteSecondaries = 20

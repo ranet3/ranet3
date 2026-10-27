@@ -64,21 +64,6 @@ func coverCases() hegel.Generator[coverCase] {
 	})
 }
 
-func lastAddress(p netip.Prefix) netip.Addr {
-	raw := p.Addr().AsSlice()
-	for i := range raw {
-		keep := p.Bits() - 8*i
-		switch {
-		case keep <= 0:
-			raw[i] = 0xff
-		case keep < 8:
-			raw[i] |= 0xff >> keep
-		}
-	}
-	last, _ := netip.AddrFromSlice(raw)
-	return last
-}
-
 // inHole is an address no member holds, which stays on the host's own route.
 func inHole(a netip.Addr) bool {
 	if a.Is4() {
