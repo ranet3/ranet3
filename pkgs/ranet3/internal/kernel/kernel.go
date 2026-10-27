@@ -416,8 +416,10 @@ type platform interface {
 	Addrs() ([]netip.Prefix, error)
 	AddAddr(netip.Prefix) error
 	DelAddr(netip.Prefix) error
-	// Notify carries one coalesced wake-up per batch of kernel route
-	// notifications in the reconciler's table.
+	// Notify carries one coalesced wake-up per batch of kernel notifications
+	// touching what the reconciler holds: on linux a route in its table or a
+	// deleted rule of its protocol, on darwin a route of its interface, or of
+	// any interface with link.underlay.bind.
 	Notify() <-chan struct{}
 	// retable takes the capability a reload installed, on the id and proto the platform was opened with
 	retable(Table)
@@ -1144,9 +1146,7 @@ func (r *Reconciler) audit() {
 	}
 	// An install refuses a key another writer already holds, so sharing a table
 	// with another daemon means the routes it refuses are routes the mesh
-	// wanted. Say so once at startup: on a fleet node mid-migration the other
-	// writer is BIRD in table 200, which is the intended overlap and still
-	// worth seeing.
+	// wanted.
 	if writers, err := audit.foreignWriters(); err != nil {
 		slog.Warn("kernel could not check the table for other writers", "err", err)
 	} else if len(writers) > 0 {
@@ -1523,20 +1523,11 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer]) []Route {
 			Metric:      routeMetric(r.table.Metric, destination, unreachable),
 			Unreachable: unreachable,
 		}
-		// Left out of the pass rather than reported as skipped: skipped counts
-		// what the mesh wanted and the kernel would not take, and this is the
-		// reconciler declining to ask. A hold that counts is declined whatever
-		// the gate says, and this node's own entry that counts with it: on
-		// linux the hold would answer with an error every lookup of the host's
-		// own traffic that reaches it, which cuts the host off while other
-		// sessions are live. RFC 8966 section 3.5.4's
-		// "packets destined to an address within P MUST NOT be forwarded by
-		// following a route for a shorter prefix" is kept by the mesh's own
-		// lookup, which answers RouteHeld or RouteLocal on every tun read inside
-		// the entry, while the kernel holds nothing for it, and the host's own
-		// and forwarded traffic there ends by the routes and rules left
-		// (routing.md, where a lookup ends on Linux), the departure the
-		// protocol deviations page lists.
+		// A hold or this node's own entry that counts as a default is declined,
+		// since an unreachable route of that width would answer every lookup of
+		// the host's own traffic that ends at it with an error. RFC 8966 section
+		// 3.5.4 is kept for it by the mesh's own lookup, for each tun read no
+		// steering policy takes past it.
 		// An exit declines every route that counts, whatever the gate says:
 		// with another exit's default in this table, on linux the exit's own
 		// traffic from its own prefixes would take it into the tun at 5430 and
