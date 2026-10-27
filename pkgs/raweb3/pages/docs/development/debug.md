@@ -135,7 +135,13 @@ These commands take flags of their own:
   kernel's own, and the protocol number for anybody else's. Then, as
   `Wanted and missing`, the rules the reconciler's last pass derived that the
   kernel does not hold, as [routing](../routing.md#policy-rules-on-linux) lists
-  them, and on a node with `cap.border` the border filter's chain: its table and
+  them. Then, under `Lookups`, each lookup the reconciler last asked to find
+  another program's rule ahead of its own, as
+  [sharing a host](../coexistence.md#another-programs-rules) describes, with its
+  kind, `overlay` or `underlay`, its family, the overlay prefix, the address
+  asked, whether it is taken and the kernel's answer, also when the dump failed,
+  or `Lookups: none` where the dump answered and the reconciler asked none.
+  Then, on a node with `cap.border`, the border filter's chain: its table and
   hook, when its last pass read it and whether it is ready, then each rule with
   the packets and bytes each drop counted, any rule the chain does not hold yet,
   and any rule it holds that the filter did not write, by its comment or as
@@ -275,6 +281,7 @@ connections to the reads.
 | `babel.state.unsaved`, `.unreadable`  | a seqno limit could not be saved, or the state file not read at start        |
 | `kernel.pass`                         | a reconciler pass that took a reload, changed, skipped anew or failed        |
 | `kernel.cover`                        | a family's zero-free cover went into the kernel or came out, on macOS        |
+| `kernel.taken`                        | a reconciler lookup became taken or not, or changed its answer, on Linux     |
 | `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed       |
 | `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved                  |
 | `egress.refused`                      | a pass read a family's count of packets refused past a source's share move   |
@@ -354,6 +361,7 @@ Each kind carries these attributes:
 | `babel.state.unreadable`                      | `file`, `err`                                                                                                                               |
 | `kernel.pass`                                 | `trigger`, `took`, `added`, `removed`, `skipped`, `installed`, `err`                                                                        |
 | `kernel.cover`                                | `family`, `installed`                                                                                                                       |
+| `kernel.taken`                                | `family`, `lookup` (`overlay` or `underlay`), `prefix` and `address` for an overlay lookup or `endpoint`, `answer`, `taken`                 |
 | `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                          |
 | `egress.ready`                                | `ipv4`, `ipv6`, `sid`, `reason` (why a family is not ready), `skipped` (the lookups left out and why)                                       |
 | `egress.refused`                              | `family`, `refused` (the packets refused since the pass before, from zero after a pass that rewrote the chains)                             |
@@ -519,7 +527,8 @@ A reconciler stopped with `disable` runs no pass when it takes a reload, and the
 pass that installs the block once it is enabled again reads `trigger=enable`.
 The same holds for a reconciler `ranet3 down` stopped, until `ranet3 up`. The
 withdrawal such a stop runs records a `kernel.pass` only when it fails, and no
-`kernel.cover` for the cover it takes out.
+`kernel.cover` for the cover it takes out. It records a `kernel.taken` with
+`taken=false` for each lookup the reconciler last found taken.
 
 A `daemon.ttl` is recorded when a reload cannot read the host's default TTL,
 `net.ipv4.ip_default_ttl` on Linux or `net.inet.ip.ttl` on macOS. Its `ttl` is

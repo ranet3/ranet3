@@ -89,7 +89,7 @@ reconciler's rules, and a delete can never reach another writer's.
 systemd-networkd stamps `RTPROT_STATIC` on the rules it writes, so the 2 sets
 stay apart.
 
-2 more behaviors are Linux only:
+3 more behaviors are Linux only:
 
 - At startup the reconciler warns when another routing protocol writes its
   table. The reconciler's install refuses a key another writer already holds, so
@@ -98,6 +98,9 @@ stay apart.
 - A deleted rule that carries `cap.table.proto` wakes the reconciler, and the
   next pass puts the rule back. systemd-networkd deletes such rules when it
   configures a link.
+- The reconciler asks the lookups
+  [sharing a host](coexistence.md#another-programs-rules) describes. macOS has
+  no policy rules and asks none.
 
 ## macOS
 
