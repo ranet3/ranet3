@@ -307,7 +307,7 @@ func (s *scripted) silent() bool {
 // moved is a mux of the same SPIs on another local port, where the initiator's datagrams come from once its NAT mapping moved
 func (s *scripted) moved() *transport.Mux {
 	s.t.Helper()
-	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	hub, err := testNetwork(s.t).NewHub()
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -853,7 +853,7 @@ func TestHalfOpenSAsKeepABoundedIntermediateStateEach(t *testing.T) {
 // played is a responder the test plays to one ranet3 dial, every key and IntAuth the model's
 type played struct {
 	t                  *testing.T
-	peer               *net.UDPConn
+	peer               *transport.MemoryConn
 	from               *net.UDPAddr
 	model              *setupModel
 	spiI, spiR         uint64
@@ -899,7 +899,7 @@ func dialPlayedWith(t *testing.T, lists Suites, events Recorder, configure func(
 	cfg := PeerConfig{
 		Local: identity.MustParse("ranet-test/initiator:1"), LocalPrivateKey: dialerKey,
 		Remote: identity.MustParse("ranet-test/responder:2"), RemotePublicKey: public,
-		RemoteAddr: at.IP, RemotePort: at.Port,
+		RemoteAddr: at.IP, RemotePort: at.Port, Hub: listenHub(t),
 		Suites: func() Suites { return lists },
 		Events: events,
 	}

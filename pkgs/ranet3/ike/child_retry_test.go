@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
 // refusingPair is a session dialed to the harness responder, with Run going at both ends
@@ -146,7 +148,7 @@ func TestFailedChildSAExchangeHoldsTheNextOnEveryPath(t *testing.T) {
 		}, askFailing},
 		{"proactive with no interval", 0, 0, refuseEveryRekey, askFailing},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.name, bubble.Run(func(t *testing.T) {
 			var allow func()
 			draws := &retryDraws{}
 			pair := dialRefusing(t, func(cfg *PeerConfig) {
@@ -196,7 +198,7 @@ func TestFailedChildSAExchangeHoldsTheNextOnEveryPath(t *testing.T) {
 				t.Errorf("the session ended after its retry succeeded: %v", err)
 			default:
 			}
-		})
+		}))
 	}
 }
 
@@ -253,7 +255,7 @@ func TestChildSARekeySucceedingOnAnyPathResetsTheSchedule(t *testing.T) {
 // a rekey the peer starts puts the schedule's next one an interval ahead of the SA it made, as one this end starts does
 func TestPeerRekeyResetsTheSchedule(t *testing.T) {
 	for _, sa := range []string{"child", "ike"} {
-		t.Run(sa, func(t *testing.T) {
+		t.Run(sa, bubble.Run(func(t *testing.T) {
 			pair := dialRefusing(t, func(cfg *PeerConfig) {
 				if sa == "child" {
 					cfg.ChildRekeyInterval = time.Hour
@@ -282,7 +284,7 @@ func TestPeerRekeyResetsTheSchedule(t *testing.T) {
 					t.Fatalf("the schedule never rekeyed the SA the peer's rekey made, the session recorded %q", pair.dialed.recorded())
 				}
 			}
-		})
+		}))
 	}
 }
 
@@ -324,6 +326,10 @@ func TestPeerRekeyDropsTheRetryOfTheSAItReplaced(t *testing.T) {
 // RFC 7296 section 2.25: "If a peer continues to receive TEMPORARY_FAILURE on the same IKE SA after several minutes, it SHOULD conclude that the state information is out of sync and close the IKE SA."
 // a peer's rekey of the SA a refused rekey backs off from ends the refusals, so one refusal of a later rekey on the same IKE SA starts a new run rather than closing it
 func TestPeerRekeyEndsTheTemporaryFailureRun(t *testing.T) {
+	bubble.Run(testPeerRekeyEndsTheTemporaryFailureRun)(t)
+}
+
+func testPeerRekeyEndsTheTemporaryFailureRun(t *testing.T) {
 	const lead = 3 * time.Second
 	pair := dialRefusing(t, func(cfg *PeerConfig) {
 		cfg.ChildRekeyInterval, cfg.RekeyMargin = time.Hour, time.Hour-lead
@@ -429,7 +435,7 @@ func TestPeerChildSARekeyEndsTheTemporaryFailureRunOfTheIKESA(t *testing.T) {
 		{"child schedule due with the IKE SA's", time.Hour},
 		{"child schedule due an hour after the IKE SA's", 2 * time.Hour},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.name, bubble.Run(func(t *testing.T) {
 			start := time.Now()
 			pair := dialRefusing(t, func(cfg *PeerConfig) {
 				cfg.ChildRekeyInterval, cfg.IKERekeyInterval, cfg.RekeyMargin = tc.child, time.Hour, time.Hour-lead
@@ -462,7 +468,7 @@ func TestPeerChildSARekeyEndsTheTemporaryFailureRunOfTheIKESA(t *testing.T) {
 			if ikeFailed < 2 {
 				t.Fatalf("%d IKE SA rekeys failed, want the scheduled one and a retry past the seeded run's span, the session recorded %q", ikeFailed, recorded)
 			}
-		})
+		}))
 	}
 }
 

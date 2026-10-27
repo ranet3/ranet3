@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
 
@@ -102,7 +103,7 @@ func TestRekeyOutstandingAtTheLifetime(t *testing.T) {
 	for _, sa := range []string{"child", "ike"} {
 		t.Run(sa, func(t *testing.T) {
 			for _, answer := range []string{"succeeds", "fails", "never comes"} {
-				t.Run(answer, func(t *testing.T) {
+				t.Run(answer, bubble.Run(func(t *testing.T) {
 					var (
 						established, late time.Time
 						spiI              uint64
@@ -217,8 +218,8 @@ func TestRekeyOutstandingAtTheLifetime(t *testing.T) {
 					if removed < 0 || slices.ContainsFunc(changes[removed+1:], func(change keyChange) bool { return change.spi == old }) {
 						t.Fatalf("the dataplane saw %+v, want the expired Child SA's keys out once", changes)
 					}
-					if at := changes[removed].at; at.Before(established.Add(lifetime)) || !at.Before(late) {
-						t.Errorf("the expired Child SA's keys came out %s into its life, want at its lifetime of %s, before the answer %s later", at.Sub(established), lifetime, answerLate)
+					if at := changes[removed].at; !at.Equal(established.Add(lifetime)) {
+						t.Errorf("the expired Child SA's keys came out %s into its life, want at its lifetime of %s", at.Sub(established), lifetime)
 					}
 					if added := slices.IndexFunc(changes, func(change keyChange) bool { return !change.removed }); (answer == "succeeds") != (added > removed) {
 						t.Errorf("the dataplane saw %+v, want the new SA's keys in after the expired SA's came out, and only on a rekey that succeeds", changes)
@@ -235,7 +236,7 @@ func TestRekeyOutstandingAtTheLifetime(t *testing.T) {
 					if err := other.RegisterESP(old); err != nil {
 						t.Errorf("the session still routes the expired Child SA's SPI after its Delete: %v", err)
 					}
-				})
+				}))
 			}
 		})
 	}
@@ -247,7 +248,7 @@ func TestRekeyOutstandingAtTheLifetime(t *testing.T) {
 func TestProactiveRekeyOutstandingAtTheChildSALifetime(t *testing.T) {
 	const lifetime = time.Second
 	for _, answer := range []string{"succeeds", "fails"} {
-		t.Run(answer, func(t *testing.T) {
+		t.Run(answer, bubble.Run(func(t *testing.T) {
 			var established, late time.Time
 			pair := dialRefusing(t, func(cfg *PeerConfig) {
 				cfg.ChildRekeyInterval = lifetime
@@ -313,7 +314,7 @@ func TestProactiveRekeyOutstandingAtTheChildSALifetime(t *testing.T) {
 			if failed := slices.Index(got, "ike.rekey.failed "+ends); failed < 0 || slices.IndexFunc(got, closed) < failed || got[len(got)-1] != "ike.sa.closed "+ends+" reason=lifetime" {
 				t.Errorf("the session recorded %q, want the rekey failing and only then the IKE SA closed at the Child SA's lifetime", got)
 			}
-		})
+		}))
 	}
 }
 
@@ -552,7 +553,7 @@ func TestIKESADeleteAtALifetimeWaitsForTheOutstandingLivenessCheck(t *testing.T)
 		at     time.Time
 	}
 	for _, sa := range []struct{ name, short string }{{"Child SA", "child"}, {"IKE SA", "ike"}} {
-		t.Run(sa.short, func(t *testing.T) {
+		t.Run(sa.short, bubble.Run(func(t *testing.T) {
 			var (
 				mu                       sync.Mutex
 				requests, answers        []relayed
@@ -632,7 +633,7 @@ func TestIKESADeleteAtALifetimeWaitsForTheOutstandingLivenessCheck(t *testing.T)
 			if got := pair.dialed.recorded(); len(got) == 0 || slices.Contains(got, "ike.rekey.started "+ends) || got[len(got)-1] != "ike.sa.closed "+ends+" reason=lifetime" {
 				t.Errorf("the session recorded %q, want no rekey and the IKE SA closed at the %s's lifetime", got, sa.name)
 			}
-		})
+		}))
 	}
 }
 
@@ -965,7 +966,7 @@ func TestSessionKeepsItsSAsAcrossTheirLifetimes(t *testing.T) {
 		t.Fatalf("a delay of %s against a margin of %s, and rekeys %s apart, prove nothing about the rekey's start", keptLate, keptMargin, keptLifetime-keptMargin)
 	}
 	for _, sa := range []string{"child", "ike"} {
-		t.Run(sa, func(t *testing.T) {
+		t.Run(sa, bubble.Run(func(t *testing.T) {
 			pair := dialRefusing(t, func(cfg *PeerConfig) {
 				if sa == "child" {
 					cfg.ChildRekeyInterval = keptLifetime
@@ -1001,7 +1002,7 @@ func TestSessionKeepsItsSAsAcrossTheirLifetimes(t *testing.T) {
 			}) {
 				t.Errorf("over %d lifetimes the session recorded %q, want a rekey completed in each and none failed or closed", keptLifetimes, got)
 			}
-		})
+		}))
 	}
 }
 

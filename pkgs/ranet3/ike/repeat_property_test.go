@@ -17,6 +17,7 @@ import (
 
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/transport"
 )
@@ -120,7 +121,7 @@ type repeatSite struct {
 	site       string
 	s          *Session
 	places     []transport.Endpoint
-	conns      []*net.UDPConn
+	conns      []*transport.MemoryConn
 	negotiated bool
 	room       int
 	now        time.Time
@@ -460,12 +461,20 @@ var repeatKinds = []string{
 // RFC 7383 section 2.4: "IKE fragmentation MUST NOT be used unless both peers have indicated their support for it."
 // RFC 7383 section 5: "In either case, the receiver SHOULD drop the connection and discard all the received fragments."
 func TestHalfOpenRepeatsDrawTheAnswerAsTheModelDoes(t *testing.T) {
+	bubble.Run(testHalfOpenRepeatsDrawTheAnswerAsTheModelDoes)(t)
+}
+
+func testHalfOpenRepeatsDrawTheAnswerAsTheModelDoes(t *testing.T) {
 	repeatsAsTheModelDraws(t, []string{halfOpenSite}, []bool{false}, false)
 }
 
 // the repeat property over an initiator that moved: its repeats come from the places other than the origin alone, none to the limit, with fragmentation negotiated, a path wider than the IPv4 floor and requests of 900 octets or more
 // and every repeat of the second exchange comes from the place a repeat of the first last came from, so the credit's bounds, its start over at the next exchange and the answer's recut come up in most cases
 func TestHalfOpenRepeatsOfAMovedInitiatorDrawTheAnswerAsTheModelDoes(t *testing.T) {
+	bubble.Run(testHalfOpenRepeatsOfAMovedInitiatorDrawTheAnswerAsTheModelDoes)(t)
+}
+
+func testHalfOpenRepeatsOfAMovedInitiatorDrawTheAnswerAsTheModelDoes(t *testing.T) {
 	repeatsAsTheModelDraws(t, []string{halfOpenSite}, []bool{true}, false)
 }
 
@@ -474,6 +483,10 @@ func TestHalfOpenRepeatsOfAMovedInitiatorDrawTheAnswerAsTheModelDoes(t *testing.
 // RFC 7296 section 2.1: "The responder MUST never retransmit a response unless it receives a retransmission of the request."
 // RFC 7383 section 2.6.1: "that event MUST only trigger a retransmission of the response message (fragmented or not) if the Fragment Number field in the received fragment is set to 1"
 func TestRepeatsPastIKEAuthDrawTheAnswerAsTheModelDoes(t *testing.T) {
+	bubble.Run(testRepeatsPastIKEAuthDrawTheAnswerAsTheModelDoes)(t)
+}
+
+func testRepeatsPastIKEAuthDrawTheAnswerAsTheModelDoes(t *testing.T) {
 	repeatsAsTheModelDraws(t, slices.Sorted(maps.Keys(takers)), []bool{false, true}, false)
 }
 
@@ -485,6 +498,10 @@ func TestRepeatsPastIKEAuthDrawTheAnswerAsTheModelDoes(t *testing.T) {
 // RFC 7383 section 2.6: "check that the Fragment Number and the Total Fragments fields contain non-zero values"
 // RFC 7383 section 2.6: "If any of these tests fail, the message MUST be silently discarded."
 func TestRepeatsAtTheBoundsOfTheRuleDrawTheAnswerAsTheModelDoes(t *testing.T) {
+	bubble.Run(testRepeatsAtTheBoundsOfTheRuleDrawTheAnswerAsTheModelDoes)(t)
+}
+
+func testRepeatsAtTheBoundsOfTheRuleDrawTheAnswerAsTheModelDoes(t *testing.T) {
 	repeatsAsTheModelDraws(t, slices.Sorted(maps.Keys(repeatSites())), []bool{false}, true)
 }
 
@@ -495,7 +512,7 @@ func repeatsAsTheModelDraws(t *testing.T, sites []string, moves []bool, atBounds
 	// the first place is the address and port the IKE_SA_INIT answer went to, which is the session's endpoint past IKE_AUTH
 	// the others outnumber movedCredits, so a newcomer takes the place of a credit
 	var places []transport.Endpoint
-	var conns []*net.UDPConn
+	var conns []*transport.MemoryConn
 	for _, spi := range []uint64{0x71, 0x72, 0x73, 0x74, 0x75, 0x76} {
 		place, conn := observedPeerFrom(t, hub, spi, net.IPv4(127, 0, 0, 1))
 		places, conns = append(places, place), append(conns, conn)

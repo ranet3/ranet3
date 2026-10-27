@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -247,7 +248,12 @@ func TestThresholdIsThePathMTUOrTheFloorOfItsFamily(t *testing.T) {
 // a session that sets no path MTU of its own takes the one the host holds for the path its mux sends on, and sends whole a message that path carries though the family's floor would cut it
 // RFC 7383 section 2.5.1: "If the sender has information about the PMTU size, it SHOULD use it."
 func TestThresholdIsThePathMTUTheHostHolds(t *testing.T) {
-	s, _ := fragmentingSession(t, &recorder{})
+	mux, err := transport.Dial(":0", net.IPv4(127, 0, 0, 1), 4500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	s := &Session{mux: mux, current: testContext(), fragments: true}
 	mtu, err := s.mux.PathMTU()
 	if errors.Is(err, errors.ErrUnsupported) {
 		t.Skip("the host sends without DF and holds no path MTU")
@@ -836,9 +842,13 @@ func TestProbeCutsTheRequestAgainOnceThePathMTUFalls(t *testing.T) {
 // an exchange that cuts its request again sends it once more than its attempts allow, after the first interval of its backoff
 // RFC 7383 section 2.5.2: "When starting a new probe, the node MUST reset its retransmission timers so that if it employs exponential back-off the timers will start over."
 func TestExchangeStartsItsBackoffOverWhenItCutsTheRequestAgain(t *testing.T) {
+	bubble.Run(testExchangeStartsItsBackoffOverWhenItCutsTheRequestAgain)(t)
+}
+
+func testExchangeStartsItsBackoffOverWhenItCutsTheRequestAgain(t *testing.T) {
 	peer := listenPeer(t)
 	at := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", at.IP, at.Port)
+	mux, err := testNetwork(t).Dial(at.IP, at.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -874,7 +884,7 @@ func TestExchangeStartsItsBackoffOverWhenItCutsTheRequestAgain(t *testing.T) {
 			t.Fatalf("the exchange sent %d times with two attempts and a cut, want three", len(sends))
 		}
 	}
-	if gap := sends[2].Sub(sends[1]); gap > requestTimeout+requestTimeout/2 {
+	if gap := sends[2].Sub(sends[1]); gap != requestTimeout {
 		t.Errorf("the send after the cut came %s after the one before, want the first interval of %s", gap, requestTimeout)
 	}
 	mux.Close()
@@ -887,7 +897,7 @@ func TestSplitAgainStartsNoRequestOverPastTheBusyBound(t *testing.T) {
 	t.Run("exchange", func(t *testing.T) {
 		peer := listenPeer(t)
 		at := peer.LocalAddr().(*net.UDPAddr)
-		mux, err := transport.Dial("127.0.0.1:0", at.IP, at.Port)
+		mux, err := testNetwork(t).Dial(at.IP, at.Port)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -927,6 +937,10 @@ func TestSplitAgainStartsNoRequestOverPastTheBusyBound(t *testing.T) {
 // RFC 7383 section 2.5.2: "When starting a new probe, the node MUST reset its retransmission timers so that if it employs exponential back-off the timers will start over."
 // RFC 7383 section 2.5.2: "When selecting the next smaller value for the fragmentation threshold, the sender MUST ensure that the value in the Total Fragments field is really increased."
 func TestDialStepsARequestDownToTheFloorOnAPathNarrowerThanItsMTU(t *testing.T) {
+	bubble.Run(testDialStepsARequestDownToTheFloorOnAPathNarrowerThanItsMTU)(t)
+}
+
+func testDialStepsARequestDownToTheFloorOnAPathNarrowerThanItsMTU(t *testing.T) {
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.HandshakeTimeout = answerBudget })
 	lists := Suites{kex: []kexEntry{entry768}}
 	h.lists.Store(&lists)
@@ -966,7 +980,7 @@ func TestDialStepsARequestDownToTheFloorOnAPathNarrowerThanItsMTU(t *testing.T) 
 	if whole != stepDownSends || len(firsts) < 2 || totals[0] < 2 || totals[1] != totals[0] {
 		t.Fatalf("the request went whole %d times and then in fragments from fragment 1 of %v, want whole %d times and then cut once", whole, totals, stepDownSends)
 	}
-	if gap := firsts[1].Sub(firsts[0]); gap > requestTimeout+requestTimeout/2 {
+	if gap := firsts[1].Sub(firsts[0]); gap != requestTimeout {
 		t.Errorf("the send after the first under the floor came %s after it, want the first interval of %s", gap, requestTimeout)
 	}
 }
@@ -975,6 +989,10 @@ func TestDialStepsARequestDownToTheFloorOnAPathNarrowerThanItsMTU(t *testing.T) 
 // and sends the second cut for the floor from its first send
 // RFC 7383 section 2.5.2: "In subsequent exchanges, the node should start with the current value of the fragmentation threshold."
 func TestLaterExchangeStartsAtTheThresholdAnEarlierSteppedDownTo(t *testing.T) {
+	bubble.Run(testLaterExchangeStartsAtTheThresholdAnEarlierSteppedDownTo)(t)
+}
+
+func testLaterExchangeStartsAtTheThresholdAnEarlierSteppedDownTo(t *testing.T) {
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) {
 		cfg.HandshakeTimeout = answerBudget
 		cfg.pathMTU = pathMTUOf(1500)
@@ -1333,8 +1351,8 @@ func TestRepeatsOfOneExchangeDrawAtMostTheBoundOnTheWire(t *testing.T) {
 		peer                      net.IP
 		floor, kept, bound, quiet int
 	}{{"IPv4", net.IPv4(127, 0, 0, 1), 576, 4, 78020, 38960}, {"IPv6", net.IPv6loopback, 1280, 2, 83500, 36040}} {
-		t.Run(family.name, func(t *testing.T) {
-			mux, err := transport.Dial(":0", family.peer, 4500)
+		t.Run(family.name, bubble.Run(func(t *testing.T) {
+			mux, err := testNetwork(t).Dial(family.peer, 4500)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1385,7 +1403,7 @@ func TestRepeatsOfOneExchangeDrawAtMostTheBoundOnTheWire(t *testing.T) {
 			if _, all := answers(family.floor, 0, 0); all != family.quiet {
 				t.Errorf("the %d answers at the floor with no fall drew %d octets on the wire, want %d", maxRetransmitsWhileBusy, all, family.quiet)
 			}
-		})
+		}))
 	}
 }
 
@@ -1396,6 +1414,10 @@ func TestRepeatsOfOneExchangeDrawAtMostTheBoundOnTheWire(t *testing.T) {
 // RFC 7383 section 2.5.2: "When selecting the next smaller value for the fragmentation threshold, the sender MUST ensure that the value in the Total Fragments field is really increased."
 // RFC 7383 section 2.6.1: "that event MUST only trigger a retransmission of the response message (fragmented or not) if the Fragment Number field in the received fragment is set to 1"
 func TestResponderCutsItsAnswerForTheRepeatOnAPathNarrowerThanItsMTU(t *testing.T) {
+	bubble.Run(testResponderCutsItsAnswerForTheRepeatOnAPathNarrowerThanItsMTU)(t)
+}
+
+func testResponderCutsItsAnswerForTheRepeatOnAPathNarrowerThanItsMTU(t *testing.T) {
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) {
 		cfg.HandshakeTimeout = answerBudget
 		cfg.pathMTU = pathMTUOf(1500)
@@ -1630,14 +1652,14 @@ func TestRunCutsTheAnswerToAWholeRequestThatDoesNotFitThePath(t *testing.T) {
 }
 
 // fragmentingSession is a session of testContext's SA whose ends negotiated IKE fragmentation, recording into events, and the socket of its peer
-func fragmentingSession(t *testing.T, events *recorder) (*Session, *net.UDPConn) {
+func fragmentingSession(t *testing.T, events *recorder) (*Session, *transport.MemoryConn) {
 	t.Helper()
 	s, peer, _ := fragmentingSessionAt(t, events)
 	return s, peer
 }
 
 // fragmentingSessionAt is fragmentingSession with the hub its mux is on, where datagrams from another address arrive
-func fragmentingSessionAt(t *testing.T, events *recorder) (*Session, *net.UDPConn, *transport.Hub) {
+func fragmentingSessionAt(t *testing.T, events *recorder) (*Session, *transport.MemoryConn, *transport.Hub) {
 	t.Helper()
 	peer := listenPeer(t)
 	at := peer.LocalAddr().(*net.UDPAddr)
@@ -1694,7 +1716,7 @@ func peerRequestWhole(t *testing.T, s *Session, mid uint32, inner []RawPayload) 
 }
 
 // peerTakes is the next n datagrams peer takes, each within answerBudget, their non-ESP markers taken off
-func peerTakes(t *testing.T, peer *net.UDPConn, n int) [][]byte {
+func peerTakes(t *testing.T, peer *transport.MemoryConn, n int) [][]byte {
 	t.Helper()
 	buf := make([]byte, 65536)
 	got := make([][]byte, 0, n)
@@ -1712,7 +1734,7 @@ func peerTakes(t *testing.T, peer *net.UDPConn, n int) [][]byte {
 }
 
 // peerReads is each datagram peer takes until it waits for one in vain, its non-ESP marker taken off
-func peerReads(t *testing.T, peer *net.UDPConn, wait time.Duration) [][]byte {
+func peerReads(t *testing.T, peer *transport.MemoryConn, wait time.Duration) [][]byte {
 	t.Helper()
 	buf := make([]byte, 65536)
 	var got [][]byte
@@ -1949,7 +1971,7 @@ const halfOpenSite = "half-open wait"
 // and: "otherwise, it MUST be ignored."
 func TestOnlyFragmentOneOfAnAnsweredRequestDrawsTheAnswerAgain(t *testing.T) {
 	for name, take := range takers {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer := fragmentingSession(t, &recorder{})
 			request := peerRequest(t, s, 0, 1200, 500)
 			for _, raw := range request {
@@ -1972,9 +1994,9 @@ func TestOnlyFragmentOneOfAnAnsweredRequestDrawsTheAnswerAgain(t *testing.T) {
 					t.Errorf("a repeat of fragment %d drew %d datagrams, want the answer again %v", i+1, len(again), i == 0)
 				}
 			}
-		})
+		}))
 	}
-	t.Run("half-open wait", func(t *testing.T) {
+	t.Run("half-open wait", bubble.Run(func(t *testing.T) {
 		h := newResponderHarness(t, nil)
 		h.lists.Store(&Suites{kex: []kexEntry{entry768}})
 		s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)), []RawPayload{fragmentationSupported}, true)
@@ -2002,7 +2024,7 @@ func TestOnlyFragmentOneOfAnAnsweredRequestDrawsTheAnswerAgain(t *testing.T) {
 			t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 		}
 		s.accepted(2, []uint16{ML_KEM_768})
-	})
+	}))
 }
 
 // an answer kept for a repeat of its request goes again cut for the path at that send, in more fragments that fit a path MTU that fell since it went, in Run, in the wait after IKE_AUTH and in the half-open wait
@@ -2116,7 +2138,7 @@ func TestKeptAnswerIsCutAgainWithinASmallerRepeatAndNoFurther(t *testing.T) {
 		}
 	}
 	for name, take := range takers {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer := fragmentingSession(t, &recorder{})
 			s.pathMTU = pathMTUOf(9000)
 			ctx := s.current
@@ -2165,9 +2187,9 @@ func TestKeptAnswerIsCutAgainWithinASmallerRepeatAndNoFurther(t *testing.T) {
 			if again := peerReads(t, peer, answerBudget); len(went) != 1 || !slices.EqualFunc(again, went, bytes.Equal) {
 				t.Errorf("a repeat whole of %d octets drew %d datagrams of at most %d octets, want the answer whole as it went in %d", len(whole), len(again), largest(again), len(went))
 			}
-		})
+		}))
 	}
-	t.Run("half-open wait", func(t *testing.T) {
+	t.Run("half-open wait", bubble.Run(func(t *testing.T) {
 		entry1024 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024}}
 		h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = pathMTUOf(9000) })
 		h.lists.Store(&Suites{kex: []kexEntry{entry1024}})
@@ -2204,7 +2226,7 @@ func TestKeptAnswerIsCutAgainWithinASmallerRepeatAndNoFurther(t *testing.T) {
 			t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 		}
 		s.accepted(2, []uint16{ML_KEM_1024})
-	})
+	}))
 }
 
 // heard is each datagram mux takes until it waits quietPeriod in vain
@@ -2565,7 +2587,7 @@ func TestReplayFromAThirdAddressHoldsNoMovedInitiator(t *testing.T) {
 		sends      int
 	}{{"the request whole", 0, 2}, {"the request cut again for the floor", 483, 1}} {
 		for _, replayed := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s, replayed %v", c.name, replayed), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s, replayed %v", c.name, replayed), bubble.Run(func(t *testing.T) {
 				h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = noPathMTU })
 				h.lists.Store(&Suites{kex: []kexEntry{entry1024}})
 				s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_1024)), []RawPayload{fragmentationSupported}, true)
@@ -2612,7 +2634,7 @@ func TestReplayFromAThirdAddressHoldsNoMovedInitiator(t *testing.T) {
 				}
 				s.authenticate(2, 2)
 				s.accepted(2, []uint16{ML_KEM_1024})
-			})
+			}))
 		}
 	}
 }
@@ -2635,12 +2657,12 @@ func repeatSites() map[string]func(s *Session, raw []byte, source transport.Endp
 func TestMovedRepeatOutlastsNewcomersUpToTheBound(t *testing.T) {
 	for name, take := range repeatSites() {
 		for _, newcomers := range []int{movedCredits - 1, movedCredits} {
-			t.Run(fmt.Sprintf("%s, %d newcomers", name, newcomers), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s, %d newcomers", name, newcomers), bubble.Run(func(t *testing.T) {
 				s, peer, hub := fragmentingSessionAt(t, &recorder{})
 				s.pathMTU = noPathMTU
 				ctx := s.current
 				moved, movedAt := observedPeerFrom(t, hub, 0x8182838485868788, net.IPv4(127, 0, 0, 1))
-				sources, others := make([]transport.Endpoint, newcomers), make([]*net.UDPConn, newcomers)
+				sources, others := make([]transport.Endpoint, newcomers), make([]*transport.MemoryConn, newcomers)
 				for i := range newcomers {
 					sources[i], others[i] = observedPeerFrom(t, hub, 0x9192939495969700+uint64(i), net.IPv4(127, 0, 0, 1))
 				}
@@ -2676,7 +2698,7 @@ func TestMovedRepeatOutlastsNewcomersUpToTheBound(t *testing.T) {
 				if got := peerReads(t, peer, quietPeriod); len(got) != 0 {
 					t.Errorf("the endpoint drew %d datagrams", len(got))
 				}
-			})
+			}))
 		}
 	}
 }
@@ -2685,12 +2707,12 @@ func TestMovedRepeatOutlastsNewcomersUpToTheBound(t *testing.T) {
 // so the moved peer's repeat draws the answer there, and only the key holder, or a replay of what it sent, makes or moves a credit
 func TestFragmentsThatDoNotAuthenticateTakeNoCredit(t *testing.T) {
 	for name, take := range repeatSites() {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer, hub := fragmentingSessionAt(t, &recorder{})
 			s.pathMTU = noPathMTU
 			ctx := s.current
 			moved, movedAt := observedPeerFrom(t, hub, 0x8182838485868788, net.IPv4(127, 0, 0, 1))
-			sources, others := make([]transport.Endpoint, movedCredits), make([]*net.UDPConn, movedCredits)
+			sources, others := make([]transport.Endpoint, movedCredits), make([]*transport.MemoryConn, movedCredits)
 			for i := range movedCredits {
 				sources[i], others[i] = observedPeerFrom(t, hub, 0x9192939495969700+uint64(i), net.IPv4(127, 0, 0, 1))
 			}
@@ -2726,7 +2748,7 @@ func TestFragmentsThatDoNotAuthenticateTakeNoCredit(t *testing.T) {
 			if got := peerReads(t, peer, quietPeriod); len(got) != 0 {
 				t.Errorf("the endpoint drew %d datagrams", len(got))
 			}
-		})
+		}))
 	}
 }
 
@@ -2734,7 +2756,7 @@ func TestFragmentsThatDoNotAuthenticateTakeNoCredit(t *testing.T) {
 // so fragment 1 from one address and the rest of the request from a second draw nothing at either, and the first, sending the rest, draws the answer there
 func TestRepeatsFromTwoAddressesAreGatheredApart(t *testing.T) {
 	for name, take := range repeatSites() {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer, hub := fragmentingSessionAt(t, &recorder{})
 			s.pathMTU = noPathMTU
 			ctx := s.current
@@ -2769,7 +2791,7 @@ func TestRepeatsFromTwoAddressesAreGatheredApart(t *testing.T) {
 			if got := peerReads(t, peer, quietPeriod); len(got) != 0 {
 				t.Errorf("the endpoint drew %d datagrams", len(got))
 			}
-		})
+		}))
 	}
 }
 
@@ -3023,7 +3045,7 @@ func TestRepeatIsReadAgainstTheTotalFragmentsOfTheAnsweredRequest(t *testing.T) 
 // RFC 7383 section 2.6.1: "that event MUST only trigger a retransmission of the response message (fragmented or not) if the Fragment Number field in the received fragment is set to 1"
 func TestRepeatPastIKEAuthIsAnsweredAsInTheHalfOpenWait(t *testing.T) {
 	for name, take := range takers {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer, hub := fragmentingSessionAt(t, &recorder{})
 			s.pathMTU = noPathMTU
 			ctx := s.current
@@ -3044,10 +3066,10 @@ func TestRepeatPastIKEAuthIsAnsweredAsInTheHalfOpenWait(t *testing.T) {
 				return request, slices.Clone(sent.datagrams)
 			}
 			// took reads the datagrams each of the three addresses took, the endpoint, the replaying one and the third, waiting for the answer at the one that draws it
-			took := func(draws *net.UDPConn) [3][][]byte {
+			took := func(draws *transport.MemoryConn) [3][][]byte {
 				t.Helper()
 				var got [3][][]byte
-				for i, place := range []*net.UDPConn{peer, replayedAt, movedAt} {
+				for i, place := range []*transport.MemoryConn{peer, replayedAt, movedAt} {
 					wait := quietPeriod
 					if place == draws {
 						wait = answerBudget
@@ -3071,7 +3093,7 @@ func TestRepeatPastIKEAuthIsAnsweredAsInTheHalfOpenWait(t *testing.T) {
 					take(s, raw, moved)
 				}
 				draws := set == 1
-				var at *net.UDPConn
+				var at *transport.MemoryConn
 				if draws {
 					at = movedAt
 				}
@@ -3094,7 +3116,7 @@ func TestRepeatPastIKEAuthIsAnsweredAsInTheHalfOpenWait(t *testing.T) {
 			if got := took(peer); !slices.EqualFunc(got[0], answer, bytes.Equal) {
 				t.Errorf("the endpoint's repeat of fragment 1 in the next exchange drew %d datagrams, want its answer", len(got[0]))
 			}
-		})
+		}))
 	}
 }
 

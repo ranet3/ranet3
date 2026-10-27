@@ -560,7 +560,7 @@ func TestInitiatorRefusesAnIKESAInitAnswerOutsideItsLists(t *testing.T) {
 	session, err := InitiateContext(ctx, PeerConfig{
 		Local: identity.MustParse("testorg/client:2"), LocalPrivateKey: local,
 		Remote: identity.MustParse("testorg/server:1"), RemotePublicKey: remote,
-		RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port,
+		RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port, Hub: listenHub(t),
 		Suites: func() Suites { return lists },
 	})
 	if err == nil {

@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
 // heldRetransmit spaces the sends of a Delete whose first send is lost, so the session has started ending well before the second
@@ -60,7 +62,7 @@ func TestSessionEndingBehindADeleteOfTheIKESASendsNoDeleteOfItsOwn(t *testing.T)
 		"the caller closes the mux":                    {closeAfter: true},
 		"a lifetime falls once the Delete is answered": {lifetime: true},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			h := newResponderHarness(t, nil)
 			events := &recorder{}
 			var mu sync.Mutex
@@ -139,6 +141,6 @@ func TestSessionEndingBehindADeleteOfTheIKESASendsNoDeleteOfItsOwn(t *testing.T)
 			if len(sends) != 1 {
 				t.Errorf("the initiator sent %v by exchange and Message ID, want the Delete of the IKE SA alone", sends)
 			}
-		})
+		}))
 	}
 }

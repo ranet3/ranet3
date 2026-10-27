@@ -21,7 +21,7 @@ import (
 func TestInitiateCancellationLeavesSharedHubOpen(t *testing.T) {
 	peer := listenPeer(t)
 	address := peer.LocalAddr().(*net.UDPAddr)
-	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestInitiateCancellationLeavesSharedHubOpen(t *testing.T) {
 func TestClosedMuxEndsTheExchangeWithoutRetransmitting(t *testing.T) {
 	peer := listenPeer(t)
 	address := peer.LocalAddr().(*net.UDPAddr)
-	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestFullRangeSelectorSemantics(t *testing.T) {
 func TestSendRecvReportsTheBudgetItSpent(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestSendRecvReportsTheBudgetItSpent(t *testing.T) {
 func TestSendRecvSendsAnUnansweredRequestAgain(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestSendRecvSendsAnUnansweredRequestAgain(t *testing.T) {
 func TestExchangeAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}

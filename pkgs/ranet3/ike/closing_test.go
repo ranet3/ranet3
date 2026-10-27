@@ -194,7 +194,7 @@ func childRekeyRequest(remoteSPI uint32) []RawPayload {
 
 // closingPeer stands in for a responder past IKE_AUTH, on the IKE SA the initiator holds
 type closingPeer struct {
-	conn *net.UDPConn
+	conn *transport.MemoryConn
 	held *ikeContext
 	to   *net.UDPAddr
 }
@@ -219,7 +219,7 @@ func closingAfterAuthThrough(t *testing.T, pass func(fromInitiator bool, header 
 	if pass != nil {
 		port = relay(t, addr.Port, pass)
 	}
-	mux, err := transport.Dial("127.0.0.1:0", addr.IP, port)
+	mux, err := testNetwork(t).Dial(addr.IP, port)
 	if err != nil {
 		t.Fatal(err)
 	}

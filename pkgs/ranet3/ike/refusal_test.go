@@ -9,11 +9,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"log/slog"
-	"net"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // RFC 7296 section 3.10.1: "An implementation receiving a Notify payload with one of these types that it does not recognize in a response MUST assume that the corresponding request has failed entirely."
@@ -41,7 +42,7 @@ func awaitLine(t *testing.T, lines *lineRecorder, level slog.Level, message stri
 }
 
 // readOwnRequest reads the next request s sends peer on the IKE SA it holds
-func readOwnRequest(t *testing.T, s *Session, peer *net.UDPConn) ([]byte, Header, []RawPayload) {
+func readOwnRequest(t *testing.T, s *Session, peer *transport.MemoryConn) ([]byte, Header, []RawPayload) {
 	t.Helper()
 	buf := make([]byte, 2048)
 	if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
@@ -64,7 +65,7 @@ func readOwnRequest(t *testing.T, s *Session, peer *net.UDPConn) ([]byte, Header
 }
 
 // answerOwnRequest has peer answer the request s sent at msgID with inner
-func answerOwnRequest(t *testing.T, s *Session, peer *net.UDPConn, request Header, inner []RawPayload) {
+func answerOwnRequest(t *testing.T, s *Session, peer *transport.MemoryConn, request Header, inner []RawPayload) {
 	t.Helper()
 	held := s.current
 	answer, err := EncryptMessage(held.suite, held.sker, Header{SPIInitiator: held.spiI, SPIResponder: held.spiR,

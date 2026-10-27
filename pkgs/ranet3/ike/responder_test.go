@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/transport"
 )
@@ -42,7 +43,7 @@ type responderHarness struct {
 
 // newResponderHarness runs a Responder on one hub and hands back everything
 // needed to dial it from another, so a handshake in these tests is a real
-// exchange over loopback rather than hand-built messages.
+// exchange over the test's network in memory rather than hand-built messages.
 // answerBudget is how long a test waits for an answer it expects to arrive. It
 // is generous because a loaded machine is not a failing implementation: an
 // answer that never comes still fails, just later, while a budget tuned to an
@@ -107,12 +108,12 @@ func newConfiguredResponderHarness(t *testing.T, local map[identity.Identity]Fam
 	if err != nil {
 		t.Fatal(err)
 	}
-	responderHub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	responderHub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { responderHub.Close() })
-	initiatorHub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	initiatorHub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,6 +306,10 @@ const cancelInAuthTimer = requestTimeout / 2
 // RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
 // a cancel keeps the IKE_AUTH exchange for the wait, so with its answer withheld the request goes out again unchanged and nothing past it does
 func TestCanceledInitiatorRetransmitsItsIKEAuthUnchanged(t *testing.T) {
+	bubble.Run(testCanceledInitiatorRetransmitsItsIKEAuthUnchanged)(t)
+}
+
+func testCanceledInitiatorRetransmitsItsIKEAuthUnchanged(t *testing.T) {
 	if canceledAuthWait+cancelInAuthTimer <= retransmitDelay(requestTimeout, 1) {
 		t.Fatalf("a wait of %s from a cancel %s into IKE_AUTH ends before its first retransmission at %s", canceledAuthWait, cancelInAuthTimer, retransmitDelay(requestTimeout, 1))
 	}
@@ -428,7 +433,13 @@ func relay(t *testing.T, responderPort int, pass func(fromInitiator bool, header
 	t.Helper()
 	conn := listenPeer(t)
 	responder := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: responderPort}
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		conn.Close()
+		<-done
+	})
 	go func() {
+		defer close(done)
 		var initiator *net.UDPAddr
 		buf := make([]byte, 65536)
 		for {
@@ -480,7 +491,7 @@ func idBody(text string) []byte {
 	return body
 }
 
-// an initiator and a responder complete a handshake over loopback, and each end's Child SA mirrors the other's
+// an initiator and a responder complete a handshake, and each end's Child SA mirrors the other's
 func TestResponderCompletesHandshakeWithInitiator(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	initiator, err := h.dial(t)
@@ -876,6 +887,10 @@ func TestResponderDoesNotReflectOnSPIAlone(t *testing.T) {
 // one proves execution reached selectIKEProposal. With every slot taken that
 // answer must not come, because the refusal happens first.
 func TestResponderTakesSlotBeforeKeyExchange(t *testing.T) {
+	bubble.Run(testResponderTakesSlotBeforeKeyExchange)(t)
+}
+
+func testResponderTakesSlotBeforeKeyExchange(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
 	if err != nil {
@@ -896,21 +911,10 @@ func TestResponderTakesSlotBeforeKeyExchange(t *testing.T) {
 		{Type: TransPRF, ID: PRF_HMAC_SHA2_256},
 		{Type: TransDH, ID: DH_CURVE25519},
 	}}
-	// drain clears anything an earlier attempt left in the queue, so a late
-	// reply is never read as the answer to the next request.
-	drain := func() {
-		for {
-			if _, err := mux.RecvIKEUntil(time.Now()); err != nil {
-				return
-			}
-		}
-	}
 	// offer sends the request and answers a cookie challenge if one comes,
 	// which it does above cookieThreshold and may do at any time, so whether
-	// the responder demanded return routability is outside this test. It
-	// retries, because these are datagrams on a loopback socket shared with
-	// every other test in this package and one of them can be dropped.
-	offer := func(wait time.Duration, attempts int) (Notify, bool) {
+	// the responder demanded return routability is outside this test.
+	offer := func(wait time.Duration) (Notify, bool) {
 		t.Helper()
 		send := func(ahead []RawPayload) ([]byte, bool) {
 			if err := mux.SendIKE(encodeTestSAInit(t, spiI, ni, unacceptable, ahead)); err != nil {
@@ -919,27 +923,23 @@ func TestResponderTakesSlotBeforeKeyExchange(t *testing.T) {
 			reply, err := mux.RecvIKEUntil(time.Now().Add(wait))
 			return reply, err == nil
 		}
-		for range attempts {
-			drain()
-			reply, ok := send(nil)
-			if !ok {
-				continue
-			}
-			answer := firstTestNotify(t, reply)
-			if answer.Type != N_COOKIE {
-				return answer, true
-			}
-			cookie := []RawPayload{{Type: PayloadN, Body: EncodeNotify(answer)}}
-			if reply, ok := send(cookie); ok {
-				return firstTestNotify(t, reply), true
-			}
+		reply, ok := send(nil)
+		if !ok {
+			return Notify{}, false
+		}
+		answer := firstTestNotify(t, reply)
+		if answer.Type != N_COOKIE {
+			return answer, true
+		}
+		if reply, ok := send([]RawPayload{{Type: PayloadN, Body: EncodeNotify(answer)}}); ok {
+			return firstTestNotify(t, reply), true
 		}
 		return Notify{}, false
 	}
 
 	// With the slots free the responder does answer, which gives the silence
 	// below its meaning.
-	answer, answered := offer(answerBudget, 4)
+	answer, answered := offer(answerBudget)
 	if !answered {
 		t.Fatal("an unacceptable offer drew no answer at all")
 	}
@@ -969,31 +969,23 @@ func TestResponderTakesSlotBeforeKeyExchange(t *testing.T) {
 		}
 	}
 
-	if answer, answered := offer(2*time.Second, 2); answered {
+	if answer, answered := offer(2 * time.Second); answered {
 		t.Fatalf("with every half-open slot taken the responder still answered notify %d, so it parsed the offer before it checked whether it had room for one",
 			answer.Type)
 	}
 }
 
-// statelessAnswer sends one request and returns the answer, retrying the send
-// these are datagrams on a loopback socket shared with every other test in the package
-// and one of them can be dropped
-// the answers reached this way are stateless or retransmission-safe
-// so a repeat draws another
-// without the retry a loaded machine turns them into false reds
-// and the VM arm of the flake check has done that twice
+// statelessAnswer sends one request and returns the answer
 func statelessAnswer(t testing.TB, mux *transport.Mux, request []byte, why string) []byte {
 	t.Helper()
-	for range 4 {
-		if err := mux.SendIKE(request); err != nil {
-			t.Fatal(err)
-		}
-		if reply, err := mux.RecvIKEUntil(time.Now().Add(answerBudget)); err == nil {
-			return reply
-		}
+	if err := mux.SendIKE(request); err != nil {
+		t.Fatal(err)
 	}
-	t.Fatalf("%s after four attempts", why)
-	return nil
+	reply, err := mux.RecvIKEUntil(time.Now().Add(answerBudget))
+	if err != nil {
+		t.Fatalf("%s: %v", why, err)
+	}
+	return reply
 }
 
 // firstTestNotify reads the single notify out of a stateless answer
@@ -1219,15 +1211,50 @@ func TestAnsweredExchangeRefreshesLivenessClock(t *testing.T) {
 		if time.Now().After(answered) {
 			t.Fatal("an answered exchange left the responder's liveness clock untouched")
 		}
+		time.Sleep(recordPoll)
 	}
 	if !responder.Active() {
 		t.Error("the responder reads as dead after answering")
 	}
 }
 
+// networks holds the network in memory of each test that opened a hub or a socket, by its testing.TB
+var networks sync.Map
+
+// testNetwork is t's network in memory, on which every hub and socket of the test opens
+// a test in a synctest bubble asks for it in the bubble, whose clock its hubs and sockets then wait on
+// and which then holds the limit on error answers in the clear full, as freshStatelessErrors says
+// a test whose session has a request wait for requestMu while another holds it across a retransmission runs on the real clock
+// since a bubble's clock stands still while a goroutine waits for a mutex
+func testNetwork(t testing.TB) *transport.MemoryNetwork {
+	if network, ok := networks.Load(t); ok {
+		return network.(*transport.MemoryNetwork)
+	}
+	freshStatelessErrors(t)
+	network := transport.NewMemoryNetwork()
+	networks.Store(t, network)
+	t.Cleanup(func() { networks.Delete(t) })
+	return network
+}
+
+// freshStatelessErrors fills the one limit on error answers in the clear at the test's now, and puts it back as it was at cleanup
+// a bubble's clock starts in 2000, before a limit filled on the real clock, and such a limit gives the bubble nothing
+func freshStatelessErrors(t testing.TB) {
+	statelessErrors.mu.Lock()
+	defer statelessErrors.mu.Unlock()
+	tokens, filled, held, said := statelessErrors.tokens, statelessErrors.filled, statelessErrors.held, statelessErrors.said
+	now := time.Now()
+	statelessErrors.tokens, statelessErrors.filled, statelessErrors.held, statelessErrors.said = statelessErrors.burst, now, 0, now.Add(-statelessHeldReport)
+	t.Cleanup(func() {
+		statelessErrors.mu.Lock()
+		defer statelessErrors.mu.Unlock()
+		statelessErrors.tokens, statelessErrors.filled, statelessErrors.held, statelessErrors.said = tokens, filled, held, said
+	})
+}
+
 func listenHub(t *testing.T) *transport.Hub {
 	t.Helper()
-	hub, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{})
+	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1244,8 +1271,7 @@ func observedEndpoint(t *testing.T, hub *transport.Hub, spi uint64) transport.En
 
 // observedEndpointFrom is the same with the peer's own source address chosen,
 // so a test can put two addresses rather than two ports through a record keyed
-// on the address. Both loopback addresses exist on both platforms, while
-// 127.0.0.2 is assigned on linux and not on darwin.
+// on the address.
 func observedEndpointFrom(t *testing.T, hub *transport.Hub, spi uint64, source net.IP) transport.Endpoint {
 	t.Helper()
 	endpoint, _ := observedPeerFrom(t, hub, spi, source)
@@ -1253,7 +1279,7 @@ func observedEndpointFrom(t *testing.T, hub *transport.Hub, spi uint64, source n
 }
 
 // observedPeerFrom is observedEndpointFrom with the socket behind the endpoint, which reads what the hub sends there
-func observedPeerFrom(t *testing.T, hub *transport.Hub, spi uint64, source net.IP) (transport.Endpoint, *net.UDPConn) {
+func observedPeerFrom(t *testing.T, hub *transport.Hub, spi uint64, source net.IP) (transport.Endpoint, *transport.MemoryConn) {
 	t.Helper()
 	mux, err := hub.NewMux(source, 4500)
 	if err != nil {
@@ -1262,7 +1288,7 @@ func observedPeerFrom(t *testing.T, hub *transport.Hub, spi uint64, source net.I
 	if err := mux.RegisterIKE(spi); err != nil {
 		t.Fatal(err)
 	}
-	peer, err := net.ListenUDP("udp", &net.UDPAddr{IP: source})
+	peer, err := testNetwork(t).ListenUDP(source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1285,7 +1311,7 @@ func observedPeerFrom(t *testing.T, hub *transport.Hub, spi uint64, source net.I
 // it an off-path source can make the responder allocate for an address it
 // never has to receive at.
 func TestResponderDemandsCookieUnderPressure(t *testing.T) {
-	hub, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{})
+	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1316,7 +1342,7 @@ func TestResponderDemandsCookieUnderPressure(t *testing.T) {
 }
 
 func TestResponderRefusesCookieItDidNotIssue(t *testing.T) {
-	hub, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{})
+	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1405,7 +1431,7 @@ func TestResponderRefusesCookieItDidNotIssue(t *testing.T) {
 // section 2.6.1 on a responder that does not: "For instance, if the responder includes the KEi payloads in cookie calculation, it will reject the request by sending a new cookie."
 // under pressure the cookie a request draws is taken back in the request repeated and in the retry an INVALID_KE_PAYLOAD asks for, whose KE payload is in another group
 func TestResponderTakesItsCookieInTheRetryWithAnotherGroup(t *testing.T) {
-	hub, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{})
+	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1661,6 +1687,10 @@ func TestTrafficPostponesDeadPeerDetection(t *testing.T) {
 // takes another sixteen slots, which is the partition the share exists to
 // prevent: sixteen ports from one address hold all 256.
 func TestHalfOpenShareIsPerAddressNotPerFlow(t *testing.T) {
+	bubble.Run(testHalfOpenShareIsPerAddressNotPerFlow)(t)
+}
+
+func testHalfOpenShareIsPerAddressNotPerFlow(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	loopback := netip.MustParseAddr("127.0.0.1")
 	// Everything one address is allowed, spent before either dial.
@@ -1686,7 +1716,7 @@ func TestHalfOpenShareIsPerAddressNotPerFlow(t *testing.T) {
 	}
 	// A second hub on the same machine is the same address and a different
 	// source port, which is all an attacker has to vary.
-	other, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{})
+	other, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1747,7 +1777,7 @@ func TestResponderRefusesOfferItCannotAuthenticate(t *testing.T) {
 // threshold, at sixteen packets every thirty seconds, and the victim is then
 // refused in silence for as long as the attacker keeps it up.
 func TestOneAddressCannotSpendItsShareWithoutCookie(t *testing.T) {
-	hub, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{})
+	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1795,7 +1825,7 @@ func TestOneAddressCannotSpendItsShareWithoutCookie(t *testing.T) {
 // makes "under pressure" the ordinary state for any address holding two
 // half-open exchanges, so the rotation is no longer a load condition.
 func TestCookieSurvivesRotationThatFollowsIt(t *testing.T) {
-	hub, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{})
+	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1941,6 +1971,10 @@ func TestResponderAnswersTheDeleteCrossingItsOwn(t *testing.T) {
 
 // a responder whose Delete goes unanswered sends it teardownRetransmits times and then lets the IKE SA go, well inside the ordinary budget
 func TestResponderGivesUpItsUnansweredDeleteAfterTheTeardownBudget(t *testing.T) {
+	bubble.Run(testResponderGivesUpItsUnansweredDeleteAfterTheTeardownBudget)(t)
+}
+
+func testResponderGivesUpItsUnansweredDeleteAfterTheTeardownBudget(t *testing.T) {
 	refused := &recorder{}
 	h := childRefusedHarness(t, refused.record)
 	mux := childRefusedMux(t, h)
@@ -2217,40 +2251,25 @@ func TestResponderChecksTheNonceAgainstTheNegotiatedPRF(t *testing.T) {
 		return Proposal{Number: p.Number, Protocol: p.Protocol,
 			Transforms: append(p.Transforms, Transform{Type: TransPRF, ID: prf})}
 	}
-	// offer retries, because these are datagrams on a loopback socket shared
-	// with every other test in this package, and answers a cookie challenge if
-	// one comes: whether return routability was demanded is not under test.
+	// offer answers a cookie challenge if one comes: whether return
+	// routability was demanded is not under test.
 	offer := func(t *testing.T, proposal Proposal) Notify {
 		t.Helper()
-		for range 4 {
-			for {
-				if _, err := mux.RecvIKEUntil(time.Now()); err != nil {
-					break
-				}
+		send := func(ahead []RawPayload) Notify {
+			if err := mux.SendIKE(encodeTestSAInit(t, spiI, short, proposal, ahead)); err != nil {
+				t.Fatal(err)
 			}
-			send := func(ahead []RawPayload) (Notify, bool) {
-				if err := mux.SendIKE(encodeTestSAInit(t, spiI, short, proposal, ahead)); err != nil {
-					t.Fatal(err)
-				}
-				reply, err := mux.RecvIKEUntil(time.Now().Add(answerBudget))
-				if err != nil {
-					return Notify{}, false
-				}
-				return firstTestNotify(t, reply), true
+			reply, err := mux.RecvIKEUntil(time.Now().Add(answerBudget))
+			if err != nil {
+				t.Fatalf("the responder never answered: %v", err)
 			}
-			answer, ok := send(nil)
-			if !ok {
-				continue
-			}
-			if answer.Type != N_COOKIE {
-				return answer
-			}
-			if answer, ok := send([]RawPayload{{Type: PayloadN, Body: EncodeNotify(answer)}}); ok {
-				return answer
-			}
+			return firstTestNotify(t, reply)
 		}
-		t.Fatal("the responder never answered")
-		return Notify{}
+		answer := send(nil)
+		if answer.Type != N_COOKIE {
+			return answer
+		}
+		return send([]RawPayload{{Type: PayloadN, Body: EncodeNotify(answer)}})
 	}
 
 	if got := offer(t, withPRF(PRF_HMAC_SHA2_384)).Type; got != N_NO_PROPOSAL_CHOSEN {
@@ -2267,12 +2286,12 @@ func TestResponderChecksTheNonceAgainstTheNegotiatedPRF(t *testing.T) {
 // acting on one would end a handshake this end paid a key exchange for, the cheapest way to stop every session a node opens
 // the deadline alone ends the wait
 func TestUndecryptableDatagramDoesNotEndTheHandshake(t *testing.T) {
-	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer hub.Close()
-	peerHub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	peerHub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2511,6 +2530,19 @@ func spendStatelessErrors(t *testing.T) {
 		statelessErrors.tokens, statelessErrors.perSecond, statelessErrors.filled = statelessErrors.burst, perSecond, time.Now()
 		statelessErrors.mu.Unlock()
 	})
+}
+
+// a test on a fake clock takes the limit on error answers in the clear full though the real clock's test before it spent it
+func TestStatelessErrorLimitStartsFullOnATestsOwnClock(t *testing.T) {
+	spendStatelessErrors(t)
+	bubble.Run(func(t *testing.T) {
+		testNetwork(t)
+		for i := range statelessErrorBurst {
+			if !statelessErrors.take() {
+				t.Fatalf("the limit held back answer %d of its burst of %d", i+1, statelessErrorBurst)
+			}
+		}
+	})(t)
 }
 
 // a limit spent holds every answer back until it refills, one line an interval tells how many it held since the line before, and a refill stops at the burst
