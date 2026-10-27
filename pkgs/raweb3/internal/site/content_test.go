@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/alecthomas/chroma/v2"
+
+	"ranet3.com/pkgs/raweb3/ui"
 )
 
 func TestPagePathServesEveryPageAsADirectory(t *testing.T) {
@@ -221,6 +223,40 @@ func TestLoadPagesRefusesBrokenSources(t *testing.T) {
 				t.Fatalf("loadPages error %v, want one containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestRenderListsEveryPageInTheSitemapThatRobotsNames(t *testing.T) {
+	ps, err := loadPages(writePages(t, map[string]string{
+		"index.md":      landing,
+		"docs/index.md": front,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Site{pages: ps, static: fstest.MapFS{"favicon.svg": {Data: []byte("<svg/>")}}, ui: ui.Site{URL: "https://example.com"}}
+	files, err := s.Render(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"<url>\n    <loc>https://example.com/</loc>\n    <lastmod>2026-10-02</lastmod>\n  </url>",
+		"<loc>https://example.com/docs/</loc>",
+	} {
+		if !strings.Contains(string(files[sitemapFile]), want) {
+			t.Errorf("sitemap lacks %s:\n%s", want, files[sitemapFile])
+		}
+	}
+	if strings.Contains(string(files[sitemapFile]), notFoundFile) {
+		t.Errorf("sitemap lists the 404 page:\n%s", files[sitemapFile])
+	}
+	if want := "Sitemap: https://example.com/sitemap.xml\n"; !strings.Contains(string(files[robotsFile]), want) {
+		t.Errorf("robots.txt lacks %s:\n%s", want, files[robotsFile])
+	}
+	for file := range files {
+		if _, err := mediaType(file); err != nil {
+			t.Error(err)
+		}
 	}
 }
 
