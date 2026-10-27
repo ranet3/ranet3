@@ -194,6 +194,9 @@ type Runtime struct {
 	// sessions. It is here rather than in the capability because no operator
 	// writes it down.
 	Sessions func() int
+	// Endpoints reports the addresses the live sessions send their underlay
+	// to now. Nil reports none
+	Endpoints func() []netip.Addr
 	// Capture holds the rest of the routing a route over a zero address needs
 	// to be safe, which on darwin is a default scoped to the underlay interface.
 	// Nil where the platform needs nothing, which is everywhere but there.
@@ -397,6 +400,12 @@ type ruler interface {
 	AddRule(Rule) error
 	// DelRule treats a rule that is already gone as success.
 	DelRule(Rule) error
+}
+
+// looker is implemented by a platform that answers route lookups in the
+// namespace it writes, as RouteGetBatch does, which is linux alone
+type looker interface {
+	lookups([]RouteRead) ([]BatchAnswer, error)
 }
 
 // platform is the kernel surface the reconciler drives. Everything above it is
@@ -629,6 +638,15 @@ type Reconciler struct {
 	// rules is the optional half of the platform, nil where it has no policy
 	// engine
 	rules ruler
+	// look is the platform's lookups, nil where it answers none. lookups is
+	// what the last pass whose batch answered found, lookFailed whether the
+	// last batch failed, and installed what the kernel held for this
+	// reconciler once the last route pass had applied. All four belong to the
+	// reconcile goroutine
+	look       looker
+	lookups    []Lookup
+	lookFailed bool
+	installed  map[Route]bool
 
 	// gate holds back the routes that would carry this machine's own traffic
 	// until the mesh has proved it can carry them. Only the reconcile
@@ -691,7 +709,10 @@ type Stats struct {
 	// Cover is the families whose plain default this pass left installed as
 	// its zero-free cover.
 	Cover []Family
-	Err   string
+	// Lookups holds the lookups the last pass whose batch answered asked of
+	// the kernel to find another program's rule ahead of the mesh's
+	Lookups []Lookup
+	Err     string
 }
 
 // Stats reports the last route pass, and the zero value before the first one
@@ -812,6 +833,7 @@ func newReconciler(t Table, rt Runtime, addresses []netip.Prefix, src RouteSourc
 	r.enabled.Store(true)
 	r.inForce.Store(&t)
 	r.rules, _ = plat.(ruler)
+	r.look, _ = plat.(looker)
 	return r
 }
 
@@ -1067,6 +1089,10 @@ func (r *Reconciler) reconcile() error {
 	r.sampleCapture()
 	snapshot := r.src.Snapshot()
 	err := errors.Join(r.applyAddresses(), r.applyRoutes(snapshot), r.applyRules(snapshot))
+	// a pass missing a rule or a hold would find its own fault, which err reports
+	if err == nil {
+		r.lookUp()
+	}
 	r.recordPass(err, time.Since(started))
 	return err
 }
@@ -1117,7 +1143,7 @@ func (r *Reconciler) captureDeadline() (time.Time, bool) {
 // read as a reconciler that is keeping up.
 func (r *Reconciler) recordPass(err error, took time.Duration) {
 	stats := r.routePass
-	stats.At = time.Now()
+	stats.At, stats.Lookups = time.Now(), r.lookups
 	if err != nil {
 		stats.Err = err.Error()
 	}
@@ -1385,6 +1411,7 @@ func (r *Reconciler) applyRoutes(snapshot []sadr.Route[*netstack.Peer]) error {
 	// Installed is counted rather than re-listed: the kernel held len(actual)
 	// when the pass started and every add and delete above was confirmed, so
 	// the sum is exact and costs no second dump.
+	r.installed = held
 	r.routePass = Stats{
 		Desired:   desiredCount,
 		Installed: len(actual) - removed + added,
@@ -1825,6 +1852,7 @@ func (r *Reconciler) applyAddresses() error {
 // read back rather than remembered, so routes an earlier crashed instance left
 // behind go with them.
 func (r *Reconciler) withdraw() error {
+	r.report(nil)
 	var errs []error
 	routes, err := r.plat.Routes()
 	if err != nil {
