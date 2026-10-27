@@ -66,4 +66,6 @@ type Page struct {
 	// Path is the page's absolute path on the site, empty for a page that has
 	// no address of its own and must not be indexed, such as the 404 page
 	Path string
+	// Image is the absolute path of the page's Open Graph image, 1200 by 630
+	Image string
 }

@@ -11,7 +11,9 @@ type Content struct {
 	Title       string
 	Description string
 	// Path is the page's absolute path on the site
-	Path    string
+	Path string
+	// Image is the absolute path of the page's Open Graph image
+	Image   string
 	Updated time.Time
 	// Unvetted puts the notice that the page may contain unreviewed machine
 	// generated text on it

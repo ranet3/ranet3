@@ -136,6 +136,7 @@ func (s *Site) Pages() map[string]templ.Component {
 			Title:       p.front.Title,
 			Description: p.front.Description,
 			Path:        p.path,
+			Image:       p.path + ogFile,
 			Updated:     p.front.Updated,
 			Unvetted:    p.front.unvetted(),
 			Body:        p.html,
@@ -151,6 +152,16 @@ func (s *Site) Pages() map[string]templ.Component {
 			page = pages.Page(s.ui, c)
 		}
 		out[strings.TrimPrefix(p.path, "/")+indexFile] = page
+	}
+	return out
+}
+
+// Images maps the Open Graph image of each page, relative to the site's root,
+// to the SVG it is drawn from.
+func (s *Site) Images() map[string]templ.Component {
+	out := map[string]templ.Component{}
+	for _, p := range s.pages {
+		out[strings.TrimPrefix(p.path, "/")+ogFile] = ui.OG(s.ui, p.card)
 	}
 	return out
 }

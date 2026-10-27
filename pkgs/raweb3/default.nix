@@ -6,12 +6,18 @@
   stdenv,
   buildGoApplication,
   go,
+  noto-fonts,
+  resvg,
   runCommand,
   tailwindcss_4,
   templ,
 }:
 
 let
+  # the Open Graph images are drawn in it, the one font of the family they need
+  notoSansMono = noto-fonts.override { variants = [ "NotoSansMono" ]; };
+  font = "${notoSansMono}/share/fonts/noto/NotoSansMono.ttf";
+
   generator = buildGoApplication {
     pname = "raweb3";
     version = "0-unstable-2026-10-21";
@@ -70,6 +76,7 @@ runCommand "ranet3.com"
 
     nativeBuildInputs = [
       generator
+      resvg
       tailwindcss_4
     ];
 
@@ -79,7 +86,7 @@ runCommand "ranet3.com"
       BUN_JSC_useJIT = "0";
     };
 
-    passthru = { inherit generator; };
+    passthru = { inherit generator font; };
 
     meta.license = with lib.licenses; [
       cc-by-40
@@ -87,5 +94,5 @@ runCommand "ranet3.com"
     ];
   }
   ''
-    raweb3 build --root "$src" --out "$out"
+    raweb3 build --root "$src" --out "$out" --font ${font}
   ''

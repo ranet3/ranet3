@@ -8,6 +8,7 @@
   go-tools,
   gomod2nix,
   gopls,
+  resvg,
   tailwindcss_4,
 }:
 
@@ -21,6 +22,9 @@ mkShell {
     go-tools
     gomod2nix
     gopls
+    resvg
     tailwindcss_4
   ];
+
+  RAWEB3_FONT = raweb3.font;
 }

@@ -51,6 +51,13 @@ type frontmatter struct {
 	// only and never shown. A page without it, or changed since, carries a
 	// notice that it may contain unreviewed machine generated text
 	Vetted time.Time `yaml:"vetted"`
+	// OG overrides the text of the page's Open Graph image, a field left
+	// empty taking what the page derives
+	OG struct {
+		Label string `yaml:"label"`
+		Title string `yaml:"title"`
+		Meta  string `yaml:"meta"`
+	} `yaml:"og"`
 }
 
 // unvetted says whether the page carries the notice.
@@ -66,6 +73,8 @@ type page struct {
 	layout string
 	front  frontmatter
 	html   string
+	// card is the text drawn on the page's Open Graph image
+	card ui.Card
 
 	body []byte
 	root ast.Node
@@ -175,6 +184,13 @@ func parsePage(src, file string) (*page, error) {
 		return nil, fmt.Errorf("%s: %w", src, err)
 	}
 	if err := p.check(); err != nil {
+		return nil, fmt.Errorf("%s: %w", src, err)
+	}
+	label := p.front.OG.Label
+	if label == "" && p.layout == layoutDocs {
+		label = "Docs"
+	}
+	if p.card, err = ui.NewCard(label, cmp.Or(p.front.OG.Title, p.front.Title), p.front.OG.Meta); err != nil {
 		return nil, fmt.Errorf("%s: %w", src, err)
 	}
 	p.root = markdown.Parser().Parse(text.NewReader(body), parser.WithContext(parser.NewContext()))
