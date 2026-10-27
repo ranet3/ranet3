@@ -15,6 +15,9 @@ const (
 	// docsDir is the directory of the pages directory whose pages take the
 	// docs layout and make up its navigation
 	docsDir = "docs"
+	// newsDir is the directory of the pages directory whose index is the
+	// news and whose every other page a post
+	newsDir = "news"
 	// indexFile is the file a directory path serves
 	indexFile = "index.html"
 	// ogFile is a page's Open Graph image, beside its indexFile
@@ -48,4 +51,10 @@ const (
 	layoutBare = "bare"
 	layoutPage = "page"
 	layoutDocs = "docs"
+)
+
+// layouts the place of a page decides
+const (
+	layoutNews = "news"
+	layoutPost = "post"
 )

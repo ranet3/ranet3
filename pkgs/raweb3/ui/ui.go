@@ -5,6 +5,8 @@
 // shares, whichever site or service renders it.
 package ui
 
+import "time"
+
 // Site holds what every page says about the site it belongs to.
 type Site struct {
 	Name string
@@ -68,4 +70,6 @@ type Page struct {
 	Path string
 	// Image is the absolute path of the page's Open Graph image, 1200 by 630
 	Image string
+	// Published is the day an article was published, zero on any other page
+	Published time.Time
 }

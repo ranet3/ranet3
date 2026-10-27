@@ -1,0 +1,61 @@
+// SPDX-FileCopyrightText: 2026 Yifei Sun
+// SPDX-License-Identifier: FSL-1.1-ALv2
+
+package pages
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"ranet3.com/pkgs/raweb3/ui"
+)
+
+// News lists every post, newest first, each under its Open Graph image.
+templ News(site ui.Site, c Content) {
+	@frame(site, ui.Page{Title: pageTitle(site, c), Description: c.Description, Path: c.Path, Image: c.Image}, c.Unvetted, "") {
+		<main id="main" class="mx-auto max-w-6xl px-4 py-10 md:px-6">
+			<div class="prose prose-theme max-w-3xl">
+				<h1 class="font-mono">{ c.Title }</h1>
+				<p class="lead">{ c.Description }</p>
+				@templ.Raw(c.Body)
+			</div>
+			<ul class="mt-10 grid gap-x-8 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
+				for _, p := range c.Posts {
+					<li>
+						<a href={ templ.SafeURL(p.Path) } class="group block">
+							// the image repeats the title, which follows
+							<img src={ p.Image } alt="" width="1200" height="630" loading="lazy" class="h-auto w-full border border-line"/>
+							<p class="mt-4 font-mono text-[13px] text-mute">
+								@date(p.Published)
+							</p>
+							<h2 class="mt-1 font-mono text-lg font-bold text-balance text-fg group-hover:text-acc">{ p.Title }</h2>
+						</a>
+						<p class="mt-2 text-fg2">{ p.Description }</p>
+					</li>
+				}
+			</ul>
+		</main>
+	}
+}
+
+// Article is one news post, its day, authors and reading time under the title.
+templ Article(site ui.Site, c Content) {
+	@frame(site, ui.Page{Title: pageTitle(site, c), Description: c.Description, Path: c.Path, Image: c.Image, Published: c.Published}, c.Unvetted, "") {
+		<main id="main" class="mx-auto max-w-6xl px-4 py-10 md:px-6">
+			<article class="prose prose-theme max-w-3xl">
+				<h1 class="font-mono">{ c.Title }</h1>
+				<p class="not-prose font-mono text-[13px] text-mute">
+					@date(c.Published)
+					{ fmt.Sprintf(" \u00b7 %s \u00b7 %d min read", strings.Join(c.Authors, ", "), c.Minutes) }
+				</p>
+				<p class="lead">{ c.Description }</p>
+				@templ.Raw(c.Body)
+			</article>
+		</main>
+	}
+}
+
+templ date(day time.Time) {
+	<time datetime={ day.Format(time.DateOnly) }>{ day.Format(DateFormat) }</time>
+}

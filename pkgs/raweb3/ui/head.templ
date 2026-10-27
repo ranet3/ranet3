@@ -3,6 +3,8 @@
 
 package ui
 
+import "time"
+
 // Head is the inside of a page's head element. Children go after the metas
 // and before the analytics script.
 templ Head(site Site, page Page) {
@@ -22,7 +24,12 @@ templ Head(site Site, page Page) {
 	<meta name="theme-color" content="#2E3440" media="(prefers-color-scheme: dark)"/>
 	<meta name="theme-color" content="#ECEFF4" media="(prefers-color-scheme: light)"/>
 	<meta name="color-scheme" content="light dark"/>
-	<meta property="og:type" content="website"/>
+	if page.Published.IsZero() {
+		<meta property="og:type" content="website"/>
+	} else {
+		<meta property="og:type" content="article"/>
+		<meta property="article:published_time" content={ page.Published.Format(time.DateOnly) }/>
+	}
 	<meta property="og:site_name" content={ site.Name }/>
 	<meta property="og:title" content={ page.Title }/>
 	<meta property="og:description" content={ page.Description }/>

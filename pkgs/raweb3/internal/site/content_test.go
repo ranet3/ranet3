@@ -213,6 +213,14 @@ func TestLoadPagesRefusesBrokenSources(t *testing.T) {
 			map[string]string{"index.md": landing + "<ui-ascii-mark>x</ui-ascii-mark>\n"},
 			"a component takes none",
 		},
+		"news post without authors": {
+			map[string]string{"index.md": landing, "news/index.md": front, "news/a.md": front},
+			"authors missing",
+		},
+		"layout named under news": {
+			map[string]string{"index.md": landing, "news/a.md": landing},
+			"layout bare under news/",
+		},
 		"no front page": {
 			map[string]string{"a.md": front},
 			"no index.md for the front page",

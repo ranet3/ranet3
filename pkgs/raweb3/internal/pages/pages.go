@@ -22,7 +22,24 @@ type Content struct {
 	Body string
 	// Nav is the docs navigation, for a docs page only
 	Nav []Section
+	// Published, Authors and Minutes are a news post's, and Posts the news'
+	Published time.Time
+	Authors   []string
+	Minutes   int
+	Posts     []Post
 }
+
+// Post is a news post as the news lists it.
+type Post struct {
+	Title       string
+	Description string
+	Path        string
+	Image       string
+	Published   time.Time
+}
+
+// DateFormat is how a page writes a day.
+const DateFormat = "Jan 2, 2006"
 
 // Section is one group of the docs navigation, the top level when Title is empty.
 type Section struct {
