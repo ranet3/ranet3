@@ -71,9 +71,10 @@ func writePages(t *testing.T, files map[string]string) string {
 
 func TestLoadPagesPointsLinksAtServedPaths(t *testing.T) {
 	dir := writePages(t, map[string]string{
-		"index.md":         landing,
-		"docs/index.md":    front + "[a](design/x.md#heading-one) [b](#local) [c](https://example.com/x.md)\n\n## Local\n",
-		"docs/design/x.md": front + "## Heading one\n\n[back](../index.md)\n",
+		"index.md":          landing,
+		"docs/index.md":     front + "[a](design/x.md#heading-one) [b](#local) [c](https://example.com/x.md) ![d](design/d.png)\n\n## Local\n",
+		"docs/design/d.png": "",
+		"docs/design/x.md":  front + "## Heading one\n\n[back](../index.md)\n",
 	})
 	ps, err := loadPages(dir)
 	if err != nil {
@@ -84,7 +85,7 @@ func TestLoadPagesPointsLinksAtServedPaths(t *testing.T) {
 		html[p.src] = p.html
 	}
 	for src, want := range map[string][]string{
-		"docs/index.md":    {`href="/docs/design/x/#heading-one"`, `href="#local"`, `href="https://example.com/x.md"`},
+		"docs/index.md":    {`href="/docs/design/x/#heading-one"`, `href="#local"`, `href="https://example.com/x.md"`, `src="/docs/design/d.png"`},
 		"docs/design/x.md": {`href="/docs/"`},
 	} {
 		for _, w := range want {
@@ -184,9 +185,9 @@ func TestLoadPagesRefusesBrokenSources(t *testing.T) {
 			map[string]string{"index.md": landing, "docs/a.md": front + "[x](b.md#nope)\n", "docs/b.md": front + "## Yes\n"},
 			"names no heading of docs/b.md",
 		},
-		"relative link to a file that is no page": {
+		"relative link to a file outside the pages": {
 			map[string]string{"index.md": landing, "docs/a.md": front + "[x](../../license.txt)\n"},
-			"only .md files are served",
+			`link "../../license.txt" names no file beside the pages`,
 		},
 		"page and directory index on one path": {
 			map[string]string{"index.md": landing, "about.md": front, "about/index.md": front},
@@ -234,7 +235,7 @@ func TestRenderListsEveryPageInTheSitemapThatRobotsNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Site{pages: ps, static: fstest.MapFS{"favicon.svg": {Data: []byte("<svg/>")}}, ui: ui.Site{URL: "https://example.com"}}
+	s := &Site{pages: ps, static: fstest.MapFS{"favicon.svg": {Data: []byte("<svg/>")}}, files: fstest.MapFS{}, ui: ui.Site{URL: "https://example.com"}}
 	files, err := s.Render(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -268,7 +269,7 @@ func TestRenderRefusesLinksToPathsTheSiteServesNothingAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Site{pages: ps, static: fstest.MapFS{"favicon.svg": {Data: []byte("<svg/>")}}}
+	s := &Site{pages: ps, static: fstest.MapFS{"favicon.svg": {Data: []byte("<svg/>")}}, files: fstest.MapFS{}}
 	_, err = s.Render(context.Background())
 	if err == nil || !strings.Contains(err.Error(), `index.html: link "/nope/" leads to nothing`) {
 		t.Fatalf("Render error %v, want one for /nope/", err)

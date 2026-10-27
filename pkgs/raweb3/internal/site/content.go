@@ -102,12 +102,12 @@ var componentTag = regexp.MustCompile(`<ui-([a-z0-9-]+)></ui-([a-z0-9-]+)>`)
 
 // loadPages reads and renders every page under dir. Every page is parsed
 // before any is rendered, since a link is checked against the headings of the
-// page it names.
+// page it names. A file under dir that is no page is served as it is.
 func loadPages(dir string) ([]*page, error) {
 	var ps []*page
 	var errs []error
 	err := filepath.WalkDir(dir, func(p string, e fs.DirEntry, err error) error {
-		if err != nil || e.IsDir() {
+		if err != nil || e.IsDir() || !strings.HasSuffix(p, pageSuffix) {
 			return err
 		}
 		rel, err := filepath.Rel(dir, p)
@@ -137,8 +137,9 @@ func loadPages(dir string) ([]*page, error) {
 	if byPath["/"] == nil {
 		errs = append(errs, fmt.Errorf("%s: no %s%s for the front page", dir, pageIndex, pageSuffix))
 	}
+	files := os.DirFS(dir)
 	for _, pg := range ps {
-		errs = append(errs, pg.render(bySrc)...)
+		errs = append(errs, pg.render(bySrc, files)...)
 	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
@@ -163,9 +164,6 @@ func order(p *page) int {
 
 // parsePage reads one page and parses its frontmatter and markdown.
 func parsePage(src, file string) (*page, error) {
-	if !strings.HasSuffix(src, pageSuffix) {
-		return nil, fmt.Errorf("%s: not a %s page", src, pageSuffix)
-	}
 	b, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
@@ -253,8 +251,9 @@ func (p *page) check() error {
 // render points every link of the page at where its target is served, makes
 // every table focusable, since a table wider than the page scrolls and a
 // keyboard has to reach it, and renders the page. A relative link must name
-// another page by its file, and a fragment one of that page's headings.
-func (p *page) render(bySrc map[string]*page) []error {
+// another page by its file, and a fragment one of that page's headings, or
+// one of the files beside the pages.
+func (p *page) render(bySrc map[string]*page, files fs.FS) []error {
 	var errs []error
 	ast.Walk(p.root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		var dest *[]byte
@@ -271,7 +270,7 @@ func (p *page) render(bySrc map[string]*page) []error {
 		if !entering || dest == nil {
 			return ast.WalkContinue, nil
 		}
-		resolved, err := p.resolve(string(*dest), bySrc)
+		resolved, err := p.resolve(string(*dest), bySrc, files)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", p.src, err))
 			return ast.WalkContinue, nil
@@ -319,7 +318,7 @@ func place(rendered string) (string, error) {
 	return out, errors.Join(errs...)
 }
 
-func (p *page) resolve(dest string, bySrc map[string]*page) (string, error) {
+func (p *page) resolve(dest string, bySrc map[string]*page, files fs.FS) (string, error) {
 	u, err := url.Parse(dest)
 	if err != nil {
 		return "", fmt.Errorf("link %q: %w", dest, err)
@@ -329,11 +328,15 @@ func (p *page) resolve(dest string, bySrc map[string]*page) (string, error) {
 	}
 	target := p
 	if u.Path != "" {
-		if !strings.HasSuffix(u.Path, pageSuffix) {
-			return "", fmt.Errorf("link %q names no page, only %s files are served", dest, pageSuffix)
+		file := path.Join(path.Dir(p.src), u.Path)
+		if !strings.HasSuffix(file, pageSuffix) {
+			if !fs.ValidPath(file) || !isFile(files, file) {
+				return "", fmt.Errorf("link %q names no file beside the pages", dest)
+			}
+			return "/" + file, nil
 		}
 		var ok bool
-		if target, ok = bySrc[path.Join(path.Dir(p.src), u.Path)]; !ok {
+		if target, ok = bySrc[file]; !ok {
 			return "", fmt.Errorf("link %q names no page", dest)
 		}
 	}
