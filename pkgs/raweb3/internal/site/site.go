@@ -213,14 +213,13 @@ func (s *Site) Images() map[string]templ.Component {
 	return out
 }
 
-// siteLink is an href or src that leads to a path on the site.
-var siteLink = regexp.MustCompile(`\s(?:href|src)="(/|/[^/"][^"]*)"`)
+// attrLink is the value of an href or src attribute.
+var attrLink = regexp.MustCompile(`\s(?:href|src)="([^"]*)"`)
 
 // Render renders every page of the site, the sitemap, robots.txt and the
-// news feed to the file each is served from. It fails where a link leads to
-// a path the site serves nothing at. Loading checks the links of the
-// markdown, and only this checks those of the layouts, of site.yaml and of the
-// HTML in a page.
+// news feed to the file each is served from. It fails where a link of the
+// layouts, of site.yaml or of the HTML in a page leads nowhere, which loading
+// checks for the markdown only.
 func (s *Site) Render(ctx context.Context) (map[string][]byte, error) {
 	out := map[string][]byte{}
 	for file, page := range s.Pages() {
@@ -244,32 +243,52 @@ func (s *Site) Render(ctx context.Context) (map[string][]byte, error) {
 	var errs []error
 	images := s.Images()
 	for _, file := range slices.Sorted(maps.Keys(out)) {
-		for _, m := range siteLink.FindAllSubmatch(out[file], -1) {
-			if !s.serves(out, images, string(m[1])) {
-				errs = append(errs, fmt.Errorf("%s: link %q leads to nothing the site serves", file, m[1]))
+		for _, m := range attrLink.FindAllSubmatch(out[file], -1) {
+			if err := s.check(out, images, file, html.UnescapeString(string(m[1]))); err != nil {
+				errs = append(errs, fmt.Errorf("%s: link %q %w", file, m[1], err))
 			}
 		}
 	}
 	return out, errors.Join(errs...)
 }
 
-// serves says whether the site serves anything at the path link leads to,
-// given its rendered pages and images. The link is as it stands in an
-// attribute, escaped for HTML and for a URL.
-func (s *Site) serves(rendered map[string][]byte, images map[string]templ.Component, link string) bool {
-	p, _, _ := strings.Cut(html.UnescapeString(link), "#")
-	p, _, _ = strings.Cut(p, "?")
-	p, err := url.PathUnescape(p)
+// check says why a link in the rendered file from leads nowhere: to a path
+// the site serves nothing at, to a fragment no element of its page has as
+// id, or by a relative path, which a browser resolves against the directory
+// every page is served as.
+func (s *Site) check(rendered map[string][]byte, images map[string]templ.Component, from, link string) error {
+	u, err := url.Parse(link)
 	if err != nil {
-		return false
+		return err
 	}
+	if u.Scheme != "" || u.Host != "" {
+		return nil
+	}
+	file := from
+	if u.Path != "" {
+		if !strings.HasPrefix(u.Path, "/") {
+			return errors.New("is relative to the page's directory")
+		}
+		file = servedFile(u.Path)
+	}
+	page, ok := rendered[file]
+	if _, image := images[file]; !ok && !image && file != styleOutput && s.file(file) == nil {
+		return errors.New("leads to nothing the site serves")
+	}
+	if ok && u.Fragment != "" && !bytes.Contains(page, []byte(` id="`+u.Fragment+`"`)) {
+		return errors.New("names no element of its page")
+	}
+	return nil
+}
+
+// servedFile is the file the site serves at an absolute path, a directory's
+// index for a path that ends in a slash.
+func servedFile(p string) string {
 	file := strings.TrimPrefix(p, "/")
 	if file == "" || strings.HasSuffix(file, "/") {
 		file += indexFile
 	}
-	_, page := rendered[file]
-	_, image := images[file]
-	return page || image || file == styleOutput || s.file(file) != nil
+	return file
 }
 
 // file is the file system that holds the file served as it is at name, nil
