@@ -372,7 +372,6 @@ func (m *Mesh) outboundReader(queue tun.Queue) {
 
 // classify picks the peer of every packet of a read that passes the checks of what enters the mesh, and holds each packet to the largest its peer's session carries
 // a packet past that is answered, cut into fragments or dropped rather than sent, and a SYN within it has its MSS clamped to it
-// an unsteered packet no route reaches, or a hold holds, is answered as answerUnroutedRead says, and a steered one is counted unrouted
 func (m *Mesh) classify(b *outboundBatch) {
 	var tally transitTally
 	defer m.addTally(&tally)

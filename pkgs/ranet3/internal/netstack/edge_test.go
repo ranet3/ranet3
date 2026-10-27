@@ -86,7 +86,7 @@ func edgeLeaf(tb testing.TB, prefixes ...string) (*Mesh, *Peer, *Peer) {
 	return m, peer, exit
 }
 
-// withHeader is raw, an IPv6 packet, with an extension header of next between its fixed header and what followed it, body following its first two octets
+// withHeader is raw, an IPv6 packet, with an 8-octet extension header of next between its fixed header and what followed it, body being the 6 octets after its first two, since its length octet is 0
 func withHeader(raw []byte, next byte, body ...byte) []byte {
 	out := slices.Concat(raw[:40], []byte{raw[6], 0}, body, raw[40:])
 	out[6] = next
