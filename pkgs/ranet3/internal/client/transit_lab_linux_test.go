@@ -1388,7 +1388,7 @@ var neighborLink = [2][2]netip.Prefix{
 var neighborSource = map[int]netip.Addr{4: neighborLink[1][0].Addr(), 6: neighborLink[1][1].Addr()}
 
 // l learned exit e's default of each family, then its /1 pairs, with a neighbor n on l's uplink and the internet host i on e's
-// l's kernel sends l's forwarded traffic for the internet into its tun, as mode 2 with n's link in cap.exit.share would
+// l's kernel forwards and the test writes routes that send l's forwarded traffic for the internet into its tun, which no key of the config does
 // n's pings to i come from a source l owns none of toward a destination a learned default counts, so l drops each as unowned_source and none reaches e or i, e's transit counters staying put
 // while l's own overlay-sourced datagram reaches i through e's egress
 // with the owned-source rule reverted l forwards n's pings and e refuses them for a source the mesh routes no reply to, so i stays clear and the revert shows on l's counter rather than i's capture
