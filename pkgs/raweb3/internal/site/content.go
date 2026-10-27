@@ -114,13 +114,19 @@ var componentTag = regexp.MustCompile(`<ui-([a-z0-9-]+)></ui-([a-z0-9-]+)>`)
 
 // loadPages reads and renders every page under dir. Every page is parsed
 // before any is rendered, since a link is checked against the headings of the
-// page it names. A file under dir that is no page is served as it is.
+// page it names. A file under dir that is no page is served as it is, and a
+// hidden file or directory is skipped.
 func loadPages(dir string) ([]*page, error) {
 	var ps []*page
 	var errs []error
 	err := filepath.WalkDir(dir, func(p string, e fs.DirEntry, err error) error {
-		if err != nil || e.IsDir() || !strings.HasSuffix(p, pageSuffix) {
+		switch {
+		case err != nil:
 			return err
+		case p != dir && strings.HasPrefix(e.Name(), ".") && e.IsDir():
+			return fs.SkipDir
+		case strings.HasPrefix(e.Name(), ".") || e.IsDir() || !strings.HasSuffix(p, pageSuffix):
+			return nil
 		}
 		rel, err := filepath.Rel(dir, p)
 		if err != nil {
