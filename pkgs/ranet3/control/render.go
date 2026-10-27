@@ -121,6 +121,13 @@ func kernelLine(k KernelStatus) string {
 	default:
 		line += fmt.Sprintf(", last pass %s ago", sinceText(since))
 	}
+	for _, taken := range k.Taken {
+		if taken.Endpoint != "" {
+			line += fmt.Sprintf(", the underlay's mark taken by %s toward %s", taken.Answer, taken.Endpoint)
+		} else {
+			line += fmt.Sprintf(", overlay %s taken by %s", taken.Prefix, taken.Answer)
+		}
+	}
 	if k.Err != "" {
 		line += ", " + k.Err
 	}

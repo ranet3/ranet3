@@ -12,7 +12,8 @@ import (
 )
 
 // rulesFixture is a node's derived rules beside networkd's, a VRF's and one of
-// its own protocol it does not derive, one derived rule missing, and its border
+// its own protocol it does not derive, one derived rule missing, its last
+// pass's lookups with wg-quick's table taking the IPv4 overlay, and its border
 // chain read three seconds after its last pass with one forged source dropped
 func rulesFixture() RulesInfo {
 	lookup := func(family string, priority uint32, table uint32, protocol uint8, owned bool) PolicyRule {
@@ -43,6 +44,12 @@ func rulesFixture() RulesInfo {
 			lookup("ipv6", 0, 255, 2, false), unreachable, lookup("ipv6", 32766, 254, 2, false),
 		},
 		Missing: []PolicyRule{wanted},
+		Lookups: []RuleLookup{
+			{Lookup: "overlay", Family: "ipv4", Prefix: netip.MustParsePrefix("192.0.2.0/24"), Address: netip.MustParseAddr("192.0.2.2"), Answer: "table 51820 dev wg0", Taken: true},
+			{Lookup: "overlay", Family: "ipv6", Prefix: netip.MustParsePrefix("3fff::/20"), Address: netip.MustParseAddr("3fff::2"), Answer: "a refusal (no route to host)"},
+			{Lookup: "underlay", Family: "ipv4", Address: netip.MustParseAddr("198.51.100.77"), Answer: "table 51820 dev wg0"},
+			{Lookup: "underlay", Family: "ipv4", Address: netip.MustParseAddr("203.0.113.70"), Answer: "table 51820 dev wg0"},
+		},
 		Border: &BorderChain{
 			Where:    "nftables table inet ranet3 chain border",
 			Hook:     "prerouting",
@@ -73,6 +80,14 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 	out.Reset()
 	RenderRules(&out, RulesInfo{PolicyErr: "this platform has no policy rules"})
 	golden(t, "rules-darwin.txt", []byte(out.String()))
+
+	// a pass that asked nothing, and a dump that failed beside the lookups
+	out.Reset()
+	RenderRules(&out, RulesInfo{Policy: info.Policy[:1]})
+	golden(t, "rules-unasked.txt", []byte(out.String()))
+	out.Reset()
+	RenderRules(&out, RulesInfo{PolicyErr: "kernel: dump rules: permission denied", Lookups: info.Lookups})
+	golden(t, "rules-undumped.txt", []byte(out.String()))
 }
 
 // rulesSource serves the rules view

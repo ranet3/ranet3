@@ -19,6 +19,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/transport"
@@ -194,6 +195,45 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 	c.renderKernel(&first)
 	if !strings.Contains(first.String(), "ranet3_kernel_pass_timestamp_seconds 0") {
 		t.Errorf("before the first pass the scrape reads:\n%s", first.String())
+	}
+}
+
+// each taken gauge holds the lookups the reconciler's last pass found taken in
+// a family it asked in, and writes no series for a family or a kind of lookup
+// it did not ask
+func TestMetricsCountTheLookupsTakenInEachFamilyAsked(t *testing.T) {
+	c := &Client{Mesh: &netstack.Mesh{Routes: netstack.NewRouteTable()}}
+	c.SetKernelStatus(func() control.KernelStatus { return control.KernelStatus{Enabled: true} })
+	var none strings.Builder
+	c.renderKernel(&none)
+	if strings.Contains(none.String(), "_taken") {
+		t.Errorf("a reconciler that asked nothing wrote a taken series:\n%s", none.String())
+	}
+	c.SetReconcilerLookups(func() []kernel.Lookup {
+		return []kernel.Lookup{
+			{Family: kernel.FamilyIPv4, Prefix: netip.MustParsePrefix("192.0.2.0/24"), Taken: true},
+			{Family: kernel.FamilyIPv4, Prefix: netip.MustParsePrefix("198.51.100.0/24")},
+			{Family: kernel.FamilyIPv6, Prefix: netip.MustParsePrefix("3fff::/20")},
+			{Family: kernel.FamilyIPv4, Address: netip.MustParseAddr("198.51.100.77"), Taken: true},
+			{Family: kernel.FamilyIPv4, Address: netip.MustParseAddr("203.0.113.70"), Taken: true},
+			{Family: kernel.FamilyIPv4, Address: netip.MustParseAddr("203.0.113.71")},
+		}
+	})
+	var taken strings.Builder
+	c.renderKernel(&taken)
+	for _, want := range []string{
+		"# TYPE ranet3_kernel_overlay_taken gauge",
+		`ranet3_kernel_overlay_taken{family="ipv4"} 1`,
+		`ranet3_kernel_overlay_taken{family="ipv6"} 0`,
+		"# TYPE ranet3_kernel_underlay_taken gauge",
+		`ranet3_kernel_underlay_taken{family="ipv4"} 2`,
+	} {
+		if !strings.Contains(taken.String(), want) {
+			t.Errorf("the scrape does not carry %q:\n%s", want, taken.String())
+		}
+	}
+	if strings.Contains(taken.String(), `ranet3_kernel_underlay_taken{family="ipv6"}`) {
+		t.Errorf("the scrape carries the underlay's IPv6 series, which the pass did not ask:\n%s", taken.String())
 	}
 }
 

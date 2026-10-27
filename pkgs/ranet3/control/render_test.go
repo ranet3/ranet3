@@ -323,6 +323,27 @@ func TestShortDurationRoundsToWhatIsReadable(t *testing.T) {
 	}
 }
 
+// The kernel line names each overlay prefix another program's rule takes and
+// each endpoint the underlay's mark is answered through the tun toward, each by
+// the answer that took it, ahead of the pass's error.
+func TestKernelLineNamesWhatAnotherProgramsRuleTakes(t *testing.T) {
+	status := KernelStatus{
+		Enabled: true, Where: "table 200 protocol 155", Table: 200, Protocol: 155, Installed: 6,
+		Taken: []KernelTaken{
+			{Family: "ipv4", Prefix: "192.0.2.0/24", Address: "192.0.2.2", Answer: "table 51820 dev wg0"},
+			{Family: "ipv6", Prefix: "3fff::/20", Address: "3fff::2", Answer: "a refusal (permission denied)"},
+			{Family: "ipv4", Endpoint: "198.51.100.77", Answer: "table 200 dev ranet0"},
+			{Family: "ipv4", Endpoint: "203.0.113.70", Answer: "table 200 dev ranet0"},
+		},
+		Err: "add rule priority 5110: file exists",
+	}
+	golden(t, "kernel-taken.txt", []byte(kernelLine(status)+"\n"))
+	goldenJSON(t, "kernel-taken.json", status)
+	if line := kernelLine(KernelStatus{Enabled: true, Where: "table 200 protocol 155"}); strings.Contains(line, "taken") {
+		t.Errorf("the kernel line reads %q with nothing taken, want no taken clause", line)
+	}
+}
+
 // The kernel line names the families whose default went in as the zero-free
 // cover, since `ranet3 routes` shows the /0 and the kernel holds other routes
 // in its place.

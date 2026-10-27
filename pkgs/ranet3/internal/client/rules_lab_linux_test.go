@@ -23,6 +23,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
@@ -138,7 +139,11 @@ type rulesArm struct {
 	// own is every prefix the rule at 5430 selects a source from beside the tun's addresses
 	own []string
 	// other is the prefixes another program routes over its link from its table, through its rule, none without its rule
-	other    []netip.Prefix
+	other []netip.Prefix
+	// wgQuick adds wg-quick's full tunnel, its two rules with no priority and a default of its table over the other program's link
+	wgQuick bool
+	// taken holds the lookups the daemon's status reports another program's rule takes
+	taken    []control.KernelTaken
 	probes   []rulesProbe
 	forwards []rulesForward
 }
@@ -269,8 +274,25 @@ func rulesArms(learned *netstack.Peer) []rulesArm {
 			{netip.MustParseAddr("192.0.2.5"), netip.MustParseAddr("203.0.113.9"), up},
 			{netip.MustParseAddr("3fff::5"), netip.MustParseAddr("2001:db8:c::9"), up},
 		},
+	}, {
+		// wg-quick's rules land ahead of 5100 and its table takes every socket to the overlay and to the mesh's subnets,
+		// which the reconciler reports for each overlay hold, while the underlay's mark leaves through its table too, which it does not
+		name:    "beside wg-quick's full tunnel",
+		entries: with(map[string]*netstack.Peer{"203.0.113.192/26": learned, "2001:db8:e::/48": learned}),
+		table:   slices.Concat(peerRoutes, []string{"unicast 203.0.113.192/26", "unicast 2001:db8:e::/48"}),
+		wgQuick: true,
+		taken: []control.KernelTaken{
+			{Family: "ipv4", Prefix: "192.0.2.0/24", Address: "192.0.2.2", Answer: "table 51820 dev " + rulesOther},
+			{Family: "ipv6", Prefix: "3fff::/20", Address: "3fff::2", Answer: "table 51820 dev " + rulesOther},
+		},
+		probes: slices.Concat(
+			rulesRow("192.0.2.5", other, other, other, other, other), rulesRow("3fff::5", other, other, other, other, other),
+			rulesRow("203.0.113.200", other, other, other, other, other), rulesRow("2001:db8:e::9", other, other, other, other, other)),
 	}}
 }
+
+// rulesEndpoints are the peer endpoints the leaf's reconciler asks under the underlay's mark, inside the mesh's subnets of the last arm
+var rulesEndpoints = []netip.Addr{netip.MustParseAddr("203.0.113.200"), netip.MustParseAddr("2001:db8:e::9")}
 
 // a leaf in a namespace of its own holds its tun, an uplink to a far host and the loopback, and runs the reconciler main builds over the mesh's table
 // for each arm the reconciler installs the mirror's routes and the rules of mode off it derives
@@ -278,6 +300,7 @@ func rulesArms(learned *netstack.Peer) []rulesArm {
 // over UDP, TCP and echo in both families, leaves into the tun, out of the uplink or into another program's link, or is refused by its route or sent nowhere, where the arm says
 // while no hold refuses the socket bound to the uplink's device, the declared limit of mode off
 // and a packet a peer delivers to this node's own prefix is forwarded out of the uplink outside the overlay and held inside it
+// and the daemon's status and scrape report what another program's rule takes, nothing but under wg-quick's full tunnel
 // and a clean stop leaves no rule or route of the reconciler's protocol
 func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 	if os.Getuid() != 0 {
@@ -305,11 +328,14 @@ func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 		rt := node.KernelRuntime()
 		// a session counts as live throughout, so the gate is open and a route that counts as a default, unless it is a hold or this node is an exit, is the mirror's to install
 		rt.Sessions = func() int { return 1 }
+		rt.Endpoints = func() []netip.Addr { return rulesEndpoints }
 		routes, err = kernel.New(*cfg.Cap.Table, rt, node.Mesh.Routes)
 		return err
 	}); err != nil {
 		t.Fatalf("build the reconciler: %v", err)
 	}
+	node.SetKernelStatus(func() control.KernelStatus { return control.KernelStatus{Enabled: true, Where: routes.Where()} })
+	node.SetReconcilerLookups(func() []kernel.Lookup { return routes.Stats().Lookups })
 	ctx, cancel := context.WithCancel(context.Background())
 	var runs sync.WaitGroup
 	stop := sync.OnceFunc(func() {
@@ -354,6 +380,16 @@ func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 					}
 				})
 			}
+			if arm.wgQuick {
+				if err := leaf.Do(func() error { return rulesWGQuick(unix.RTM_NEWRULE, unix.RTM_NEWROUTE) }); err != nil {
+					t.Fatalf("write wg-quick's rules and route: %v", err)
+				}
+				t.Cleanup(func() {
+					if err := leaf.Do(func() error { return rulesWGQuick(unix.RTM_DELRULE, unix.RTM_DELROUTE) }); err != nil {
+						t.Errorf("delete wg-quick's rules and route: %v", err)
+					}
+				})
+			}
 			if err := routes.SetTable(*cfg.Cap.Table, cfg.Overlay(), arm.announced); err != nil {
 				t.Fatalf("hand the reconciler the announcements %v: %v", arm.announced, err)
 			}
@@ -364,6 +400,32 @@ func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 				return ok
 			})
 			t.Logf("the kernel holds %s", held)
+			var status control.Status
+			waitFor(t, rulesSettle, "the daemon's status to report what another program's rule takes", func() bool {
+				status = node.Status()
+				return slices.Equal(status.Kernel.Taken, arm.taken)
+			})
+			var line, scrape strings.Builder
+			control.RenderStatus(&line, status)
+			node.Metrics(&scrape)
+			t.Logf("lookups %+v, status %s", routes.Stats().Lookups, line.String())
+			if arm.wgQuick {
+				for _, want := range []string{
+					"overlay 192.0.2.0/24 taken by table 51820 dev " + rulesOther, "overlay 3fff::/20 taken by table 51820 dev " + rulesOther,
+				} {
+					if !strings.Contains(line.String(), want) {
+						t.Errorf("the status does not say %q:\n%s", want, line.String())
+					}
+				}
+				for _, want := range []string{
+					`ranet3_kernel_overlay_taken{family="ipv4"} 1`, `ranet3_kernel_overlay_taken{family="ipv6"} 1`,
+					`ranet3_kernel_underlay_taken{family="ipv4"} 0`, `ranet3_kernel_underlay_taken{family="ipv6"} 0`,
+				} {
+					if !strings.Contains(scrape.String(), want) {
+						t.Errorf("the scrape does not carry %q", want)
+					}
+				}
+			}
 
 			type sent struct {
 				probe    rulesProbe
@@ -580,6 +642,51 @@ func rulesOtherProgram(ruleKind, routeKind uint16, prefixes []netip.Prefix) erro
 		body := slices.Concat(header, netnstest.Attr(unix.RTA_DST, prefix.Addr().AsSlice()), netnstest.Attr(unix.RTA_OIF, netnstest.U32(uint32(link.Index))))
 		if err := netlink.Request(routeKind, flags, body); err != nil {
 			return fmt.Errorf("the route to %s: %w", prefix, err)
+		}
+	}
+	return nil
+}
+
+// rulesWGQuick adds or deletes, as ruleKind and routeKind say, wg-quick's full tunnel in the calling thread's namespace: its rule looking up 51820
+// for a packet not carrying the mark 51820 and its rule looking up main with suppress_prefixlength 0, both with no priority, so the kernel puts
+// them ahead of the first rule but one, and a default over the other program's link in 51820, as wireguard-tools 1.0.20260223 writes them
+// each carries protocol boot, so a delete never takes the reconciler's own rule looking up main
+func rulesWGQuick(ruleKind, routeKind uint16) error {
+	netlink, err := netnstest.OpenNetlink()
+	if err != nil {
+		return err
+	}
+	defer netlink.Close()
+	link, err := net.InterfaceByName(rulesOther)
+	if err != nil {
+		return err
+	}
+	var flags uint16
+	if ruleKind == unix.RTM_NEWRULE {
+		flags = unix.NLM_F_CREATE | unix.NLM_F_EXCL
+	}
+	const table = 51820
+	boot := netnstest.Attr(unix.FRA_PROTOCOL, []byte{unix.RTPROT_BOOT})
+	for _, family := range []byte{unix.AF_INET, unix.AF_INET6} {
+		// struct fib_rule_hdr of include/uapi/linux/fib_rules.h, its flags FIB_RULE_INVERT
+		inverted := []byte{family, 0, 0, 0, 0, 0, 0, unix.FR_ACT_TO_TBL}
+		inverted = binary.NativeEndian.AppendUint32(inverted, unix.FIB_RULE_INVERT)
+		if err := netlink.Request(ruleKind, flags, slices.Concat(inverted, boot,
+			netnstest.Attr(unix.FRA_TABLE, netnstest.U32(table)), netnstest.Attr(unix.FRA_FWMARK, netnstest.U32(table)))); err != nil {
+			return fmt.Errorf("the rule looking up %d: %w", table, err)
+		}
+		suppressing := []byte{family, 0, 0, 0, unix.RT_TABLE_MAIN, 0, 0, unix.FR_ACT_TO_TBL, 0, 0, 0, 0}
+		if err := netlink.Request(ruleKind, flags, slices.Concat(suppressing, boot, netnstest.Attr(unix.FRA_SUPPRESS_PREFIXLEN, netnstest.U32(0)))); err != nil {
+			return fmt.Errorf("the rule looking up main: %w", err)
+		}
+		scope := byte(unix.RT_SCOPE_UNIVERSE)
+		if family == unix.AF_INET {
+			scope = unix.RT_SCOPE_LINK
+		}
+		header := []byte{family, 0, 0, 0, 0, unix.RTPROT_BOOT, scope, unix.RTN_UNICAST, 0, 0, 0, 0}
+		body := slices.Concat(header, netnstest.Attr(unix.RTA_TABLE, netnstest.U32(table)), netnstest.Attr(unix.RTA_OIF, netnstest.U32(uint32(link.Index))))
+		if err := netlink.Request(routeKind, flags, body); err != nil {
+			return fmt.Errorf("the default in %d: %w", table, err)
 		}
 	}
 	return nil

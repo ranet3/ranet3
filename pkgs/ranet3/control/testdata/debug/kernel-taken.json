@@ -1,0 +1,35 @@
+{
+  "enabled": true,
+  "where": "table 200 protocol 155",
+  "table": 200,
+  "protocol": 155,
+  "installed": 6,
+  "skipped": 0,
+  "added": 0,
+  "removed": 0,
+  "taken": [
+    {
+      "family": "ipv4",
+      "prefix": "192.0.2.0/24",
+      "address": "192.0.2.2",
+      "answer": "table 51820 dev wg0"
+    },
+    {
+      "family": "ipv6",
+      "prefix": "3fff::/20",
+      "address": "3fff::2",
+      "answer": "a refusal (permission denied)"
+    },
+    {
+      "family": "ipv4",
+      "endpoint": "198.51.100.77",
+      "answer": "table 200 dev ranet0"
+    },
+    {
+      "family": "ipv4",
+      "endpoint": "203.0.113.70",
+      "answer": "table 200 dev ranet0"
+    }
+  ],
+  "err": "add rule priority 5110: file exists"
+}

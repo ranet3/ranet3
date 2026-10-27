@@ -1,0 +1,1 @@
+table 200 protocol 155, 6 installed, no pass yet, overlay 192.0.2.0/24 taken by table 51820 dev wg0, overlay 3fff::/20 taken by a refusal (permission denied), the underlay's mark taken by table 200 dev ranet0 toward 198.51.100.77, the underlay's mark taken by table 200 dev ranet0 toward 203.0.113.70, add rule priority 5110: file exists

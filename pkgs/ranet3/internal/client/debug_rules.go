@@ -18,6 +18,22 @@ func (c *Client) SetReconcilerRules(read func() []kernel.DumpedRule) {
 	c.reconcilerRules.Store(&read)
 }
 
+// SetReconcilerLookups hands the status, the debug view and the metrics the
+// lookups the route reconciler's last pass whose batch answered asked, as
+// SetReconcilerRules hands its rules
+func (c *Client) SetReconcilerLookups(read func() []kernel.Lookup) {
+	c.reconcilerLookups.Store(&read)
+}
+
+// lookups reads the lookups through the reader SetReconcilerLookups took, and
+// none on a node with no cap.table
+func (c *Client) lookups() []kernel.Lookup {
+	if read := c.reconcilerLookups.Load(); read != nil {
+		return (*read)()
+	}
+	return nil
+}
+
 // DebugRules reads every policy rule the kernel holds and the border filter's
 // chain, each through a socket of its own, so neither the reconciler's nor the
 // filter's run goroutine shares one with a reader
@@ -47,6 +63,15 @@ func (c *Client) DebugRules() control.RulesInfo {
 		policy.Owned = rule.Protocol == proto
 		policy.Wanted = policy.Owned && slices.Contains(wanted, rule)
 		info.Policy = append(info.Policy, policy)
+	}
+	for _, lookup := range c.lookups() {
+		kind := "overlay"
+		if lookup.Underlay() {
+			kind = "underlay"
+		}
+		info.Lookups = append(info.Lookups, control.RuleLookup{
+			Lookup: kind, Family: string(lookup.Family), Prefix: lookup.Prefix, Address: lookup.Address, Answer: lookup.Answer, Taken: lookup.Taken,
+		})
 	}
 	if info.PolicyErr == "" {
 		for _, rule := range wanted {

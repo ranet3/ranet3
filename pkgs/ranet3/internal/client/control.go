@@ -181,7 +181,17 @@ func (c *Client) kernel() control.KernelStatus {
 	if read == nil {
 		return control.KernelStatus{}
 	}
-	return (*read)()
+	status := (*read)()
+	for _, lookup := range c.lookups() {
+		switch {
+		case !lookup.Taken:
+		case lookup.Underlay():
+			status.Taken = append(status.Taken, control.KernelTaken{Family: string(lookup.Family), Endpoint: lookup.Address.String(), Answer: lookup.Answer})
+		default:
+			status.Taken = append(status.Taken, control.KernelTaken{Family: string(lookup.Family), Prefix: lookup.Prefix.String(), Address: lookup.Address.String(), Answer: lookup.Answer})
+		}
+	}
+	return status
 }
 
 // egress reports the exit node capability, or that there is none. As with the

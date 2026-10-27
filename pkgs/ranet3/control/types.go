@@ -433,7 +433,23 @@ type KernelStatus struct {
 	// Cover names the families whose plain default the last pass left
 	// installed as its zero-free cover, on macOS under a bound underlay.
 	Cover []string `json:"cover,omitempty"`
-	Err   string   `json:"err,omitempty"`
+	// Taken is each lookup of the last pass whose batch answered that another
+	// program's rule takes, on linux alone
+	Taken []KernelTaken `json:"taken,omitempty"`
+	Err   string        `json:"err,omitempty"`
+}
+
+// KernelTaken is one lookup another program's rule takes: an overlay prefix
+// whose address the kernel answers outside the tun and its hold, or a peer's
+// endpoint whose lookup under the underlay's mark the kernel answers through
+// the tun
+type KernelTaken struct {
+	Family   string `json:"family"`
+	Prefix   string `json:"prefix,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+	// Address is the address asked inside Prefix
+	Address string `json:"address,omitempty"`
+	Answer  string `json:"answer"`
 }
 
 // EgressStatus is the exit node and subnet router capability: what this node
