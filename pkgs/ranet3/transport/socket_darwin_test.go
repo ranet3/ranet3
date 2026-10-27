@@ -1600,7 +1600,7 @@ func TestDarwinReplyWithNoRouteFromThePinFallsBack(t *testing.T) {
 	}
 }
 
-// a session whose pin fell back for want of a route stays on the kernel's choice while unroutedHold lasts, through a fresh request to the pin once it routes again
+// a session whose pin fell back after EHOSTUNREACH stays on the kernel's choice while unroutedHold lasts, through a fresh request to the pin once it routes again
 // after the hold, a fresh request to the pin moves the session back onto it, and its ESP leaves from the pin
 // the hub records the fallback once
 // the test deletes the pin's scoped route and adds it back, as configd withdraws and restores a service's scoped default while its address stays

@@ -110,7 +110,7 @@ func (e *darwinEndpoint) AddrPort() netip.AddrPort {
 	return netip.AddrPortFrom(e.addr.Addr().WithZone(""), e.addr.Port())
 }
 
-// sameDestination compares the pin each endpoint arrived with, which a fallback drops except for unroutedHold after the kernel refused the pin for want of a route
+// sameDestination compares the pin each endpoint arrived with, which a fallback drops except for unroutedHold after the kernel refused the pin with EHOSTUNREACH
 func (e *darwinEndpoint) sameDestination(other Endpoint) bool {
 	o, ok := other.(*darwinEndpoint)
 	return ok && e.addr == o.addr && bytes.Equal(e.arrival(e.control), o.arrival(o.control))
