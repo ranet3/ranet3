@@ -7,6 +7,8 @@ created: 2026-10-06
 updated: 2026-10-25
 vetted: 2026-10-25
 layout: bare
+og:
+  title: "Mesh network, reimagined."
 ---
 
 <div class="hero items-end gap-x-14 pb-18 text-fg">
