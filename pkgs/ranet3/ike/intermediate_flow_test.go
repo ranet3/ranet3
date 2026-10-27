@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -448,7 +449,7 @@ func TestResponderRunsAnExchangeForEachAdditionItAnswers(t *testing.T) {
 			methods: []uint16{ML_KEM_768}, suite: "aes256gcm/sha384/x25519+mlkem768",
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			h := newResponderHarness(t, nil)
 			h.lists.Store(&Suites{kex: test.entries})
 			s, refused := openScripted(t, h, test.offer, true)
@@ -477,7 +478,7 @@ func TestResponderRunsAnExchangeForEachAdditionItAnswers(t *testing.T) {
 			if got := s.accepted(authMID, test.methods).Suite().IKE(); got != test.suite {
 				t.Errorf("the responder's IKE SA runs %s, want %s", got, test.suite)
 			}
-		})
+		}))
 	}
 }
 
@@ -503,7 +504,7 @@ func TestOfferNoEntryMeetsDrawsNoProposalChosen(t *testing.T) {
 		"an addition the responder lists, without the notify":                              {entries: []kexEntry{entry768}, offer: hybrid},
 		"an addition the responder lists, without the notify, beside a classical proposal": {entries: []kexEntry{entry768, entryX25519}, offer: beside, answered: 2},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			h := newResponderHarness(t, nil)
 			h.lists.Store(&Suites{kex: test.entries})
 			s, refused := openScripted(t, h, test.offer, test.notify)
@@ -523,7 +524,7 @@ func TestOfferNoEntryMeetsDrawsNoProposalChosen(t *testing.T) {
 			if carriesNotify(s.answer, N_INTERMEDIATE_EXCHANGE_SUPPORTED) {
 				t.Error("the answer to a request without INTERMEDIATE_EXCHANGE_SUPPORTED carries it")
 			}
-		})
+		}))
 	}
 }
 
@@ -531,6 +532,10 @@ func TestOfferNoEntryMeetsDrawsNoProposalChosen(t *testing.T) {
 // RFC 9242 section 3.2: "Implementations MUST verify that Message IDs in the IKE_INTERMEDIATE messages they receive actually follow this rule."
 // RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
 func TestResponderTakesIntermediateExchangesInMessageIDOrder(t *testing.T) {
+	bubble.Run(testResponderTakesIntermediateExchangesInMessageIDOrder)(t)
+}
+
+func testResponderTakesIntermediateExchangesInMessageIDOrder(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	h.lists.Store(&Suites{kex: []kexEntry{entry768And1024}})
 	s, refused := openScripted(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)), true)
@@ -570,7 +575,7 @@ func TestResponderTakesIntermediateExchangesInMessageIDOrder(t *testing.T) {
 // RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
 func TestResponderAnswersAnIntermediateWhereItCameFrom(t *testing.T) {
 	for name, refused := range map[string]bool{"answered": false, "refused": true} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			h := newResponderHarness(t, nil)
 			h.lists.Store(&Suites{kex: []kexEntry{entry768}})
 			s, notify := openScripted(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)), true)
@@ -605,7 +610,7 @@ func TestResponderAnswersAnIntermediateWhereItCameFrom(t *testing.T) {
 			if got, err := DecodeNotify(answer[0].Body); err != nil || got.Type != N_INVALID_SYNTAX {
 				t.Errorf("the refusal of a request without a KE payload holds notify %d (%v), want INVALID_SYNTAX", got.Type, err)
 			}
-		})
+		}))
 	}
 }
 
@@ -620,7 +625,7 @@ func TestResponderEndsAHandshakeOutOfItsExchangeOrder(t *testing.T) {
 		"IKE_AUTH ahead of the IKE_INTERMEDIATE exchange": {0, IKE_AUTH},
 		"a second IKE_INTERMEDIATE exchange":              {1, IKE_INTERMEDIATE},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			refused := &recorder{}
 			h := childRefusedHarness(t, refused.record)
 			h.lists.Store(&Suites{kex: []kexEntry{entry768}})
@@ -649,7 +654,7 @@ func TestResponderEndsAHandshakeOutOfItsExchangeOrder(t *testing.T) {
 				t.Errorf("the answer holds notify %d (%v), want INVALID_SYNTAX", notify.Type, err)
 			}
 			awaitHandshakeEnd(t, h, refused, s.spiI)
-		})
+		}))
 	}
 }
 
@@ -668,7 +673,7 @@ func TestResponderRefusesAnAuthOverOtherOctets(t *testing.T) {
 			return s.model.signed(s.message1, s.model.nr, skpi0, scriptedIDi, 2)
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			refused := &recorder{}
 			h := childRefusedHarness(t, refused.record)
 			h.lists.Store(&Suites{kex: []kexEntry{entry768}})
@@ -690,7 +695,7 @@ func TestResponderRefusesAnAuthOverOtherOctets(t *testing.T) {
 				t.Errorf("the answer holds notify %d (%v), want AUTHENTICATION_FAILED", got.Type, err)
 			}
 			awaitHandshakeEnd(t, h, refused, s.spiI)
-		})
+		}))
 	}
 }
 
@@ -698,6 +703,10 @@ func TestResponderRefusesAnAuthOverOtherOctets(t *testing.T) {
 // the IKE SA that stands then goes with a Delete, the responder's own first request at Message ID 0
 // RFC 7296 section 1.2: "If creating the Child SA during the IKE_AUTH exchange fails for some reason, the IKE SA is still created as usual."
 func TestResponderAnswersARefusedChildAtTheAuthMessageID(t *testing.T) {
+	bubble.Run(testResponderAnswersARefusedChildAtTheAuthMessageID)(t)
+}
+
+func testResponderAnswersARefusedChildAtTheAuthMessageID(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	h.lists.Store(&Suites{kex: []kexEntry{entry768}})
 	s, notify := openScripted(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)), true)
@@ -760,7 +769,7 @@ func TestResponderAnswersAKEPayloadItRefusesWithItsNotifyAlone(t *testing.T) {
 		"a critical payload of an unassigned type": {inner: []RawPayload{ke(ML_KEM_768, key), {Type: unassigned, Critical: true}},
 			notify: N_UNSUPPORTED_CRITICAL_PAYLOAD, data: []byte{byte(unassigned)}},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			refused := &recorder{}
 			h := childRefusedHarness(t, refused.record)
 			h.lists.Store(&Suites{kex: []kexEntry{entry768}})
@@ -793,7 +802,7 @@ func TestResponderAnswersAKEPayloadItRefusesWithItsNotifyAlone(t *testing.T) {
 			if !slices.Equal(rejections, want) {
 				t.Errorf("the responder recorded %q, want %q", rejections, want)
 			}
-		})
+		}))
 	}
 }
 
@@ -1136,7 +1145,7 @@ func TestDialRunsAnExchangeForEachAdditionAgreed(t *testing.T) {
 		"x25519 answered beside x25519+mlkem768": {entries: []kexEntry{entry768, entryX25519}, number: 2, answer: modelBase, asks: true, suite: "aes256gcm/sha384/x25519"},
 		"x25519 alone":                           {entries: []kexEntry{entryX25519}, number: 1, answer: modelBase, suite: "aes256gcm/sha384/x25519"},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			p := dialPlayed(t, Suites{kex: test.entries}, nil)
 			if got := carriesNotify(p.request, N_INTERMEDIATE_EXCHANGE_SUPPORTED); got != test.asks {
 				t.Errorf("the IKE_SA_INIT request carries INTERMEDIATE_EXCHANGE_SUPPORTED %v, want %v", got, test.asks)
@@ -1168,12 +1177,16 @@ func TestDialRunsAnExchangeForEachAdditionAgreed(t *testing.T) {
 			if !bytes.Equal(child.OutboundKey, initiatorKey) || !bytes.Equal(child.InboundKey, responderKey) {
 				t.Error("the dial's Child SA keys are not KEYMAT from the model's last SK_d")
 			}
-		})
+		}))
 	}
 }
 
 // a datagram at an IKE_INTERMEDIATE response's Message ID that does not decrypt is passed over, and the dial takes the response after it
 func TestDialWaitsPastAnIntermediateResponseThatDoesNotDecrypt(t *testing.T) {
+	bubble.Run(testDialWaitsPastAnIntermediateResponseThatDoesNotDecrypt)(t)
+}
+
+func testDialWaitsPastAnIntermediateResponseThatDoesNotDecrypt(t *testing.T) {
 	p := dialPlayed(t, Suites{kex: []kexEntry{entry768}}, nil)
 	p.forge = true
 	p.answerSAInit(1, slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768)), true)
@@ -1187,6 +1200,10 @@ func TestDialWaitsPastAnIntermediateResponseThatDoesNotDecrypt(t *testing.T) {
 // a dial refuses an answer agreeing on additional key exchanges that carries no INTERMEDIATE_EXCHANGE_SUPPORTED, and sends nothing more
 // RFC 9370 section 2.2.1: "If the IKE_INTERMEDIATE exchange is not negotiated, then the peers MUST treat any ADDKE Transform Types in the IKE_SA_INIT exchange messages as unknown transform types and skip the proposals they appear in."
 func TestDialRefusesAdditionsAgreedWithoutTheNotify(t *testing.T) {
+	bubble.Run(testDialRefusesAdditionsAgreedWithoutTheNotify)(t)
+}
+
+func testDialRefusesAdditionsAgreedWithoutTheNotify(t *testing.T) {
 	p := dialPlayed(t, Suites{kex: []kexEntry{entry768}}, nil)
 	p.answerSAInit(1, slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768)), false)
 	if !p.quiet() {
@@ -1202,7 +1219,7 @@ func TestDialRefusesAdditionsAgreedWithoutTheNotify(t *testing.T) {
 func TestIntermediateNotifyWithDataNegotiatesTheExchange(t *testing.T) {
 	data := []byte{0x52, 0x33, 0x00}
 	hybrid := slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768))
-	t.Run("responder", func(t *testing.T) {
+	t.Run("responder", bubble.Run(func(t *testing.T) {
 		h := newResponderHarness(t, nil)
 		h.lists.Store(&Suites{kex: []kexEntry{entry768}})
 		s, refused := openScripted(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)), true, data...)
@@ -1220,8 +1237,8 @@ func TestIntermediateNotifyWithDataNegotiatesTheExchange(t *testing.T) {
 			t.Fatalf("the responder answered IKE_AUTH with exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 		}
 		s.accepted(2, []uint16{ML_KEM_768})
-	})
-	t.Run("dial", func(t *testing.T) {
+	}))
+	t.Run("dial", bubble.Run(func(t *testing.T) {
 		p := dialPlayed(t, Suites{kex: []kexEntry{entry768}}, nil)
 		p.answerSAInit(1, hybrid, true, data...)
 		p.answerIntermediate(1, ML_KEM_768, nil)
@@ -1229,7 +1246,7 @@ func TestIntermediateNotifyWithDataNegotiatesTheExchange(t *testing.T) {
 		if _, err := p.ended(); err != nil {
 			t.Fatalf("the dial refused an answer whose notify carries data: %v", err)
 		}
-	})
+	}))
 }
 
 // a dial refuses an IKE_INTERMEDIATE response whose KE payload is missing, names another method or holds a ciphertext of another length, records ike.kex.rejected naming the exchange, the method and the ciphertext, and sends neither the next IKE_INTERMEDIATE nor IKE_AUTH
@@ -1258,7 +1275,7 @@ func TestDialRejectsAnIntermediateResponseItCannotTake(t *testing.T) {
 			return append(ke(ML_KEM_768, c), RawPayload{Type: PayloadType(200), Critical: true})
 		}, false},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			dialed := &recorder{}
 			p := dialPlayed(t, Suites{kex: []kexEntry{entry768And1024}}, dialed.record)
 			p.answerSAInit(1, slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)), true)
@@ -1277,7 +1294,7 @@ func TestDialRejectsAnIntermediateResponseItCannotTake(t *testing.T) {
 			if got := recordedKind(dialed, "ike.kex.rejected"); got != want {
 				t.Errorf("the dial recorded %d rejections, want %d: %q", got, want, dialed.recorded())
 			}
-		})
+		}))
 	}
 }
 
@@ -1297,7 +1314,7 @@ func TestDialRefusesAResponderAuthOverOtherOctets(t *testing.T) {
 			return p.model.signed(p.message2, p.model.ni, skpr0, playedIDr, 2)
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			p := dialPlayed(t, Suites{kex: []kexEntry{entry768}}, nil)
 			p.answerSAInit(1, slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768)), true)
 			skpr0 := p.model.keys[4]
@@ -1314,12 +1331,16 @@ func TestDialRefusesAResponderAuthOverOtherOctets(t *testing.T) {
 			if _, err := p.ended(); err == nil {
 				t.Error("the dial took the responder's AUTH")
 			}
-		})
+		}))
 	}
 }
 
 // a cancel while an IKE_INTERMEDIATE exchange waits ends the dial at once and sends nothing more, since only a half-open SA stands at the responder
 func TestCancelDuringAnIntermediateExchangeEndsTheDialAtOnce(t *testing.T) {
+	bubble.Run(testCancelDuringAnIntermediateExchangeEndsTheDialAtOnce)(t)
+}
+
+func testCancelDuringAnIntermediateExchangeEndsTheDialAtOnce(t *testing.T) {
 	p := dialPlayed(t, Suites{kex: []kexEntry{entry768}}, nil)
 	p.answerSAInit(1, slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768)), true)
 	p.open(IKE_INTERMEDIATE, 1)
@@ -1340,6 +1361,10 @@ func TestCancelDuringAnIntermediateExchangeEndsTheDialAtOnce(t *testing.T) {
 // two ends listing x25519+mlkem768+mlkem1024 run both exchanges at Message IDs 1 and 2 and IKE_AUTH at 3, and hold the same keys after it
 // the dial's next request, a rekey of the Child SA, goes at Message ID 4 and completes
 func TestTwoEndsOfTwoAdditionsAgreeOnEveryGeneration(t *testing.T) {
+	bubble.Run(testTwoEndsOfTwoAdditionsAgreeOnEveryGeneration)(t)
+}
+
+func testTwoEndsOfTwoAdditionsAgreeOnEveryGeneration(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	lists := Suites{kex: []kexEntry{entry768And1024, entryX25519}}
 	h.lists.Store(&lists)

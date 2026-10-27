@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
 // refusals keeps the err of each ike.handshake.failed a responder records
@@ -211,7 +212,7 @@ func TestHandshakeResolvesAnAliasOfEachKindEachWay(t *testing.T) {
 			dialed:   "type=keyid id=" + hex.EncodeToString([]byte("testorg/server:1")) + " sent=keyid",
 			answered: "type=keyid id=" + hex.EncodeToString([]byte("testorg/client:2")) + " sent=keyid"},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			dialed, answered := &recorder{}, &recorder{}
 			h := newResponderHarness(t, nil, answered.record)
 			clientPresents, listsClient := aliasOf(test.kind, test.clientID, client)
@@ -247,12 +248,16 @@ func TestHandshakeResolvesAnAliasOfEachKindEachWay(t *testing.T) {
 			if got, want := answered.recorded(), []string{"ike.id.resolved testorg/server:1>testorg/client:2 " + test.answered}; !slices.Equal(got, want) {
 				t.Errorf("the answered session recorded %q, want %q", got, want)
 			}
-		})
+		}))
 	}
 }
 
 // an IDi no alias names is refused as an unknown identity is, and the responder reads auth.aliases for each handshake, which lets an alias stored between two dials admit the second
 func TestResponderReadsItsAliasesForEachHandshake(t *testing.T) {
+	bubble.Run(testResponderReadsItsAliasesForEachHandshake)(t)
+}
+
+func testResponderReadsItsAliasesForEachHandshake(t *testing.T) {
 	client := identity.MustParse("testorg/client:2")
 	failures := &refusals{}
 	h := newResponderHarness(t, nil, failures.record)
@@ -297,7 +302,7 @@ func TestInitiatorRefusesAnIDrNamingNoneOrAnotherEndpoint(t *testing.T) {
 			remote: RemoteAliases{IP: twice, FQDN: map[string]identity.Identity{"server.testorg.example": identity.MustParse("testorg/server:3")}},
 			want:   "the responder's IDr names testorg/server:3, and this node dialed testorg/server:1"},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			h := newResponderHarness(t, nil)
 			h.aliases.Store(&Aliases{Local: map[string]LocalAlias{"testorg/client:2": {FQDN: "server.testorg.example"}}})
 			ended := serveResponder(t, h)
@@ -318,7 +323,7 @@ func TestInitiatorRefusesAnIDrNamingNoneOrAnotherEndpoint(t *testing.T) {
 			case <-time.After(answerBudget):
 				t.Fatal("the responder still held the SA its initiator refused when the budget ran out")
 			}
-		})
+		}))
 	}
 }
 
@@ -352,7 +357,7 @@ func TestResponderAnswersTheIDrAskedFor(t *testing.T) {
 			want: "IKE_AUTH request names testorg/server:9, which we do not answer as"},
 		"by another FQDN": {idr: fqdn("nobody.testorg.example"), want: `IKE_AUTH request names fqdn ID "nobody.testorg.example", which we do not answer to`},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			x := asked
 			x.requestIDr = test.idr
 			inner, accepted, err := responderExchange(t, x, nil)
@@ -369,9 +374,9 @@ func TestResponderAnswersTheIDrAskedFor(t *testing.T) {
 			if refusal := findType(inner, PayloadN); refusal == nil || findType(inner, PayloadIDr) != nil {
 				t.Errorf("the responder answered %v, want its refusal alone", inner)
 			}
-		})
+		}))
 	}
-	t.Run("by its DN", func(t *testing.T) {
+	t.Run("by its DN", bubble.Run(func(t *testing.T) {
 		second := identity.MustParse("testorg/server:2")
 		h := newResponderHarnessAs(t, []identity.Identity{server, second}, nil)
 		h.aliases.Store(&presents)
@@ -390,7 +395,7 @@ func TestResponderAnswersTheIDrAskedFor(t *testing.T) {
 		if accepted := <-h.identities; accepted.Local != second {
 			t.Errorf("the responder answered as %s, want %s", accepted.Local, second)
 		}
-	})
+	}))
 }
 
 // RFC 7296 section 3.5 has RESERVED "MUST be sent as zero" and "MUST be ignored on receipt."
@@ -413,7 +418,7 @@ func TestResponderSendsReservedZeroInTheIDrItWasAskedFor(t *testing.T) {
 		},
 	} {
 		for answered, offer := range map[string][]Proposal{"beside the Child SA": nil, "beside NO_PROPOSAL_CHOSEN": unacceptable} {
-			t.Run(name+" "+answered, func(t *testing.T) {
+			t.Run(name+" "+answered, bubble.Run(func(t *testing.T) {
 				inner, accepted, err := responderExchange(t, payloadExchange{
 					initiator: client, responder: server, responderAliases: aliases, childOffer: offer,
 					idi: hex.EncodeToString(idi), initiatorAuth: goldenInitiatorAuth(idi), requestIDr: hex.EncodeToString(asked),
@@ -432,13 +437,17 @@ func TestResponderSendsReservedZeroInTheIDrItWasAskedFor(t *testing.T) {
 					}
 				}
 				samePayload(t, "IDr", findType(inner, PayloadIDr), hex.EncodeToString(answer))
-			})
+			}))
 		}
 	}
 }
 
 // a KEY_ID spelling an endpoint names it as IDi without an alias, and asked for as IDr
 func TestResponderAnswersAKeyIDTextFormIDr(t *testing.T) {
+	bubble.Run(testResponderAnswersAKeyIDTextFormIDr)(t)
+}
+
+func testResponderAnswersAKeyIDTextFormIDr(t *testing.T) {
 	client, server := identity.MustParse("testorg/client:2"), identity.MustParse("testorg/server:1")
 	idi := EncodeID(ID_KEY_ID, []byte(client.String()))
 	_, accepted, err := responderExchange(t, payloadExchange{
@@ -454,6 +463,10 @@ func TestResponderAnswersAKeyIDTextFormIDr(t *testing.T) {
 // both ends carry one auth.aliases.remote written for the whole fleet, which names the responder's first ip4 endpoint by an FQDN
 // the responder has a second ip4 endpoint, and answers as the one the table names, which the initiator asks for in IDr
 func TestResponderWithTwoEndpointsInAFamilyAnswersAsTheOneItsTableNames(t *testing.T) {
+	bubble.Run(testResponderWithTwoEndpointsInAFamilyAnswersAsTheOneItsTableNames)(t)
+}
+
+func testResponderWithTwoEndpointsInAFamilyAnswersAsTheOneItsTableNames(t *testing.T) {
 	first, second := identity.MustParse("testorg/server:1"), identity.MustParse("testorg/server:3")
 	fleet := RemoteAliases{FQDN: map[string]identity.Identity{
 		"server.testorg.example": first, "client.testorg.example": identity.MustParse("testorg/client:2"),
@@ -488,7 +501,7 @@ func TestInitiatorAsksInIDrForTheOneIDItsTablesName(t *testing.T) {
 		"by one":     {RemoteAliases{FQDN: map[string]identity.Identity{"server.testorg.example": server}}, fqdn},
 		"by several": {RemoteAliases{FQDN: map[string]identity.Identity{"server.testorg.example": server}, IP: map[string]identity.Identity{"192.0.2.1": server}}, ""},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			inner, _ := initiatorExchange(t, payloadExchange{initiator: identity.MustParse("testorg/client:2"), responder: server,
 				initiatorAliases: Aliases{Remote: test.remote}, idr: fqdn}, nil)
 			idr := findType(inner, PayloadIDr)
@@ -498,7 +511,7 @@ func TestInitiatorAsksInIDrForTheOneIDItsTablesName(t *testing.T) {
 			case test.want != "":
 				samePayload(t, "IDr", idr, test.want)
 			}
-		})
+		}))
 	}
 }
 
@@ -523,7 +536,7 @@ func TestResponderRefusesAnIDiOfAnotherFamily(t *testing.T) {
 			aliases: Aliases{Remote: RemoteAliases{FQDN: map[string]identity.Identity{"client.testorg.example": client}}},
 			want:    "IDi names testorg/client:2, an endpoint of the IPv6 family, and the request arrived in IPv4"},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			events := &recorder{}
 			inner, accepted, err := responderExchange(t, payloadExchange{
 				initiator: client, responder: server, over: test.over, initiatorFamily: test.family, families: map[identity.Identity]Family{server: test.family},
@@ -538,13 +551,17 @@ func TestResponderRefusesAnIDiOfAnotherFamily(t *testing.T) {
 			if got := events.recorded(); len(got) != 0 {
 				t.Errorf("the responder recorded %q", got)
 			}
-		})
+		}))
 	}
 }
 
 // a node whose auth.aliases.local entry is keyed by the responder's node presents one ID from each of its endpoints
 // the responder's table names that ID's endpoint in IPv6, and the handshake from the IPv4 one is refused with nothing recorded under the IPv6 one
 func TestNodeKeyedAliasFromAnotherEndpointIsRefused(t *testing.T) {
+	bubble.Run(testNodeKeyedAliasFromAnotherEndpointIsRefused)(t)
+}
+
+func testNodeKeyedAliasFromAnotherEndpointIsRefused(t *testing.T) {
 	v4, v6 := identity.MustParse("testorg/client:1"), identity.MustParse("testorg/client:2")
 	key := new(atomic.Pointer[ed25519.PublicKey])
 	events := &recorder{}
@@ -591,7 +608,7 @@ func TestResponderRefusesAnIDrNamingItsEndpointOfAnotherFamily(t *testing.T) {
 			Local:  map[string]LocalAlias{"testorg/client": {FQDN: "server6.testorg.example"}},
 		}},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			inner, _, err := responderExchange(t, payloadExchange{
 				initiator: client, responder: v4, otherLocal: []identity.Identity{v6}, families: map[identity.Identity]Family{v4: IPv4, v6: IPv6},
 				responderAliases: test.aliases, idi: hex.EncodeToString(idi), initiatorAuth: goldenInitiatorAuth(idi), requestIDr: hex.EncodeToString(test.idr),
@@ -602,7 +619,7 @@ func TestResponderRefusesAnIDrNamingItsEndpointOfAnotherFamily(t *testing.T) {
 			if findType(inner, PayloadN) == nil || findType(inner, PayloadIDr) != nil {
 				t.Errorf("the responder answered %v, want its refusal alone", inner)
 			}
-		})
+		}))
 	}
 }
 
@@ -666,7 +683,7 @@ func TestDualStackResponderAnswersAsTheEndpointOfTheFamilyReached(t *testing.T) 
 	} {
 		client := clients[test.family]
 		alias := map[Family]string{IPv4: "client4.testorg.example", IPv6: "client6.testorg.example"}[test.family]
-		t.Run(name+" asked for its alias", func(t *testing.T) {
+		t.Run(name+" asked for its alias", bubble.Run(func(t *testing.T) {
 			h := newResponderHarnessIn(t, families, nil)
 			h.aliases.Store(&presents)
 			cfg := h.peerConfig()
@@ -687,8 +704,8 @@ func TestDualStackResponderAnswersAsTheEndpointOfTheFamilyReached(t *testing.T) 
 			if accepted := <-h.identities; accepted.Local != test.want {
 				t.Errorf("the responder answered a request over %s as %s, want %s", test.over, accepted.Local, test.want)
 			}
-		})
-		t.Run(name+" with no IDr", func(t *testing.T) {
+		}))
+		t.Run(name+" with no IDr", bubble.Run(func(t *testing.T) {
 			idi := EncodeID(ID_FQDN, []byte(alias))
 			inner, accepted, err := responderExchange(t, payloadExchange{
 				initiator: client, responder: v4, otherLocal: []identity.Identity{v6}, families: families, over: test.over,
@@ -703,7 +720,7 @@ func TestDualStackResponderAnswersAsTheEndpointOfTheFamilyReached(t *testing.T) 
 			if idr, want := findType(inner, PayloadIDr), EncodeID(ID_FQDN, []byte("server.testorg.example")); idr == nil || !slices.Equal(idr.Body, want) {
 				t.Errorf("the responder answered a request over %s with IDr %v, want the alias it presents the caller %x", test.over, idr, want)
 			}
-		})
+		}))
 	}
 }
 
@@ -724,7 +741,7 @@ func TestResponderRefusesWhereTheFamilyHoldsNotOneEndpoint(t *testing.T) {
 			"0 of our 2 are of the IPv6 family it arrived in"},
 	} {
 		for asked, idr := range map[string]string{"with no IDr": "", "asked for its alias": "02000000" + hex.EncodeToString([]byte("server.testorg.example"))} {
-			t.Run(name+" "+asked, func(t *testing.T) {
+			t.Run(name+" "+asked, bubble.Run(func(t *testing.T) {
 				inner, _, err := responderExchange(t, payloadExchange{
 					initiator: client, responder: first, otherLocal: test.others, families: test.families, over: test.over,
 					responderAliases: dualStackPresents, idi: hex.EncodeToString(idi), initiatorAuth: goldenInitiatorAuth(idi),
@@ -736,7 +753,7 @@ func TestResponderRefusesWhereTheFamilyHoldsNotOneEndpoint(t *testing.T) {
 				if findType(inner, PayloadN) == nil || findType(inner, PayloadIDr) != nil {
 					t.Errorf("the responder answered %v, want its refusal alone", inner)
 				}
-			})
+			}))
 		}
 	}
 }
@@ -754,7 +771,7 @@ func TestOneEndpointResponderAnswersInItsFamilyAlone(t *testing.T) {
 		"in the other family": {net.IPv6loopback, "0 of our 1 are of the IPv6 family it arrived in"},
 	} {
 		for asked, idr := range map[string]string{"with no IDr": "", "asked for its alias": "02000000" + hex.EncodeToString([]byte("server.testorg.example"))} {
-			t.Run(name+" "+asked, func(t *testing.T) {
+			t.Run(name+" "+asked, bubble.Run(func(t *testing.T) {
 				inner, accepted, err := responderExchange(t, payloadExchange{
 					initiator: client, responder: server, families: map[identity.Identity]Family{server: IPv4}, over: test.over,
 					responderAliases: dualStackPresents, idi: hex.EncodeToString(idi), initiatorAuth: goldenInitiatorAuth(idi),
@@ -772,13 +789,17 @@ func TestOneEndpointResponderAnswersInItsFamilyAlone(t *testing.T) {
 				if findType(inner, PayloadN) == nil || findType(inner, PayloadIDr) != nil || !accepted.Peer.IsZero() {
 					t.Errorf("the responder answered %v and accepted %+v, want its refusal alone", inner, accepted)
 				}
-			})
+			}))
 		}
 	}
 }
 
 // a responder refuses to start with an endpoint of no family, which no request could arrive in
 func TestResponderNeedsAFamilyForEachEndpoint(t *testing.T) {
+	bubble.Run(testResponderNeedsAFamilyForEachEndpoint)(t)
+}
+
+func testResponderNeedsAFamilyForEachEndpoint(t *testing.T) {
 	_, err := NewResponder(ResponderConfig{
 		Hub: listenHub(t), LocalPrivateKey: make(ed25519.PrivateKey, ed25519.PrivateKeySize), Trust: trustsNobody,
 		Local: map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4, identity.MustParse("testorg/server:2"): 0},

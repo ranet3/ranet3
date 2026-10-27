@@ -17,6 +17,7 @@ import (
 	"hegel.dev/go/hegel"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
@@ -36,6 +37,10 @@ var loopbacks = map[Family]net.IP{IPv4: net.IPv4(127, 0, 0, 1), IPv6: net.IPv6lo
 // with one that names an endpoint, by its DN, its KEY_ID text or auth.aliases.remote, it is that endpoint, and with any other IDr there is none
 // the IDr sent is this node's DN where a DN is asked for or nothing is presented, and otherwise the type and data asked for or presented with RESERVED zero
 func TestResponderAnswersAsTheEndpointTheIDrAndTheFamilyName(t *testing.T) {
+	bubble.Run(testResponderAnswersAsTheEndpointTheIDrAndTheFamilyName)(t)
+}
+
+func testResponderAnswersAsTheEndpointTheIDrAndTheFamilyName(t *testing.T) {
 	client, other, server := identity.MustParse("testorg/client:2"), identity.MustParse("testorg/other:1"), identity.MustParse("testorg/server")
 	otherFamily := map[Family]Family{IPv4: IPv6, IPv6: IPv4}
 	idi := idBody(client.String())

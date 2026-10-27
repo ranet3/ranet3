@@ -281,6 +281,10 @@ func TestThresholdIsThePathMTUTheHostHolds(t *testing.T) {
 
 // a session tells whether its ends both said they support IKE fragmentation, and where they did the threshold it cuts its messages for now
 func TestSessionTellsTheThresholdItCutsFor(t *testing.T) {
+	bubble.Run(testSessionTellsTheThresholdItCutsFor)(t)
+}
+
+func testSessionTellsTheThresholdItCutsFor(t *testing.T) {
 	s, _ := fragmentingSession(t, &recorder{})
 	s.pathMTU = pathMTUOf(1400)
 	if supported, threshold := s.Fragments(); !supported || threshold != 1400 {
@@ -303,7 +307,7 @@ func bulkyStatus(size int) RawPayload {
 // RFC 7383 section 2.4: "If either peer has information that a part of the transaction is likely to be fragmented at the IP layer, causing interference with the IKE exchange, that peer SHOULD use IKE fragmentation."
 func TestDialCutsARequestOnlyOnceTheResponderSaysItSupportsFragments(t *testing.T) {
 	for name, supports := range map[string]bool{"responder with the notify": true, "responder without the notify": false} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			p := dialPlayedWith(t, Suites{kex: []kexEntry{entry768}}, nil, func(cfg *PeerConfig) { cfg.pathMTU = noPathMTU })
 			wantFragmentationSupported(t, p.request)
 			p.fragments = supports
@@ -326,7 +330,7 @@ func TestDialCutsARequestOnlyOnceTheResponderSaysItSupportsFragments(t *testing.
 			if ctx := session.current; !slices.EqualFunc([][]byte{ctx.skD, ctx.skei, ctx.sker, ctx.skpi, ctx.skpr}, p.model.keys[:], bytes.Equal) {
 				t.Error("the dial's IKE SA keys are not those of the model's last generation")
 			}
-		})
+		}))
 	}
 }
 
@@ -339,7 +343,7 @@ func TestDialCutsARequestOnlyOnceTheResponderSaysItSupportsFragments(t *testing.
 // RFC 9242 section 3.3.2: "The prf calculations MUST be applied to whole messages only, before possible IKE fragmentation."
 func TestResponderCutsAnAnswerOnlyWhereTheInitiatorSaidItSupportsFragments(t *testing.T) {
 	for name, supports := range map[string]bool{"initiator with the notify": true, "initiator without the notify": false} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = noPathMTU })
 			h.lists.Store(&Suites{kex: []kexEntry{entry768}})
 			var extra []RawPayload
@@ -367,7 +371,7 @@ func TestResponderCutsAnAnswerOnlyWhereTheInitiatorSaidItSupportsFragments(t *te
 				t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 			}
 			s.accepted(2, []uint16{ML_KEM_768})
-		})
+		}))
 	}
 }
 
@@ -379,7 +383,7 @@ func TestResponderCutsAnAnswerOnlyWhereTheInitiatorSaidItSupportsFragments(t *te
 func TestResponderAnswersARequestInItsFormWhereTheAnswerFits(t *testing.T) {
 	for name, cut := range map[string]int{"request whole": 0, "request in fragments": 1200} {
 		for _, refuse := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s, IKE_AUTH refused %v", name, refuse), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s, IKE_AUTH refused %v", name, refuse), bubble.Run(func(t *testing.T) {
 				h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = pathMTUOf(9000) })
 				h.lists.Store(&Suites{kex: []kexEntry{entry768}})
 				s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)), []RawPayload{fragmentationSupported}, true)
@@ -412,7 +416,7 @@ func TestResponderAnswersARequestInItsFormWhereTheAnswerFits(t *testing.T) {
 				}
 				inForm("IKE_AUTH")
 				s.accepted(2, []uint16{ML_KEM_768})
-			})
+			}))
 		}
 	}
 }
@@ -421,6 +425,10 @@ func TestResponderAnswersARequestInItsFormWhereTheAnswerFits(t *testing.T) {
 // RFC 7383 section 2.5.1: "For messages to be sent over IPv4, it is RECOMMENDED that a value of 576 bytes as a maximum IP datagram size be used."
 // RFC 7383 section 2.5.1: "Implementations may use other values if they are appropriate in the current environment."
 func TestResponderTakesFragmentsCutFor1280OverIPv4AndCutsItsOwnFor576(t *testing.T) {
+	bubble.Run(testResponderTakesFragmentsCutFor1280OverIPv4AndCutsItsOwnFor576)(t)
+}
+
+func testResponderTakesFragmentsCutFor1280OverIPv4AndCutsItsOwnFor576(t *testing.T) {
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = noPathMTU })
 	h.lists.Store(&Suites{kex: []kexEntry{entry768}})
 	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)), []RawPayload{fragmentationSupported}, true)
@@ -446,6 +454,10 @@ func TestResponderTakesFragmentsCutFor1280OverIPv4AndCutsItsOwnFor576(t *testing
 // a responder under a path MTU of 1500 answers an ML-KEM-1024 request strongSwan cut for 1280 octets in fragments no larger than the request's, where its path alone would have it send one of 1500
 // RFC 7383 section 2.5.1: "The responder in the exchange may use the maximum size of the received IKE Fragment message IP datagrams as a threshold when constructing a fragmented response."
 func TestResponderAnswersARequestCutFor1280WithinItsDatagrams(t *testing.T) {
+	bubble.Run(testResponderAnswersARequestCutFor1280WithinItsDatagrams)(t)
+}
+
+func testResponderAnswersARequestCutFor1280WithinItsDatagrams(t *testing.T) {
 	entry1024 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024}}
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = pathMTUOf(1500) })
 	h.lists.Store(&Suites{kex: []kexEntry{entry1024}})
@@ -471,7 +483,7 @@ func TestResponderAnswersARequestCutFor1280WithinItsDatagrams(t *testing.T) {
 // RFC 7383 section 2.5.1: "The responder in the exchange may use the maximum size of the received IKE Fragment message IP datagrams as a threshold when constructing a fragmented response."
 func TestFirstAnswerKeepsTheRequestsThresholdOnceThePathFalls(t *testing.T) {
 	for name, take := range takers {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer := fragmentingSession(t, &recorder{})
 			mtu := 1500
 			s.pathMTU = func() (int, error) { return mtu, nil }
@@ -489,7 +501,7 @@ func TestFirstAnswerKeepsTheRequestsThresholdOnceThePathFalls(t *testing.T) {
 			if again := peerReads(t, peer, answerBudget); !slices.EqualFunc(again, answer, bytes.Equal) {
 				t.Errorf("with the path at 1280, fragment 1 drew %d datagrams of at most %d octets, want the answer as it went in %d of at most %d", len(again), largest(again), len(answer), largest(answer))
 			}
-		})
+		}))
 	}
 }
 
@@ -497,6 +509,10 @@ func TestFirstAnswerKeepsTheRequestsThresholdOnceThePathFalls(t *testing.T) {
 // so once the path falls to 1280, which is still over that threshold, fragment 1 draws it as it went
 // RFC 7383 section 2.5.1: "The responder in the exchange may use the maximum size of the received IKE Fragment message IP datagrams as a threshold when constructing a fragmented response."
 func TestIKEAuthAnswerKeepsTheRequestsThresholdOnceThePathFalls(t *testing.T) {
+	bubble.Run(testIKEAuthAnswerKeepsTheRequestsThresholdOnceThePathFalls)(t)
+}
+
+func testIKEAuthAnswerKeepsTheRequestsThresholdOnceThePathFalls(t *testing.T) {
 	var mtu atomic.Int64
 	mtu.Store(1500)
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) {
@@ -527,6 +543,10 @@ func TestIKEAuthAnswerKeepsTheRequestsThresholdOnceThePathFalls(t *testing.T) {
 // over a path of 9000 it goes in fragments within that datagram
 // RFC 7383 section 2.5.1: "The responder in the exchange may use the maximum size of the received IKE Fragment message IP datagrams as a threshold when constructing a fragmented response."
 func TestIKEAuthAnswerOfALongIdentityGoesWithinTheRequestsDatagrams(t *testing.T) {
+	bubble.Run(testIKEAuthAnswerOfALongIdentityGoesWithinTheRequestsDatagrams)(t)
+}
+
+func testIKEAuthAnswerOfALongIdentityGoesWithinTheRequestsDatagrams(t *testing.T) {
 	local := identity.MustParse("testorg/server" + strings.Repeat("x", 300) + ":1")
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{local: IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = pathMTUOf(9000) })
 	h.lists.Store(&Suites{kex: []kexEntry{entry768}})
@@ -557,6 +577,10 @@ func TestIKEAuthAnswerOfALongIdentityGoesWithinTheRequestsDatagrams(t *testing.T
 // the dialing end records how many fragments each of its messages took and the threshold it cut them for, and a half-open SA records nothing
 // the Child SA rekey after IKE_AUTH completes
 func TestTwoEndsCutEachMessageThePathCannotCarryAndAgree(t *testing.T) {
+	bubble.Run(testTwoEndsCutEachMessageThePathCannotCarryAndAgree)(t)
+}
+
+func testTwoEndsCutEachMessageThePathCannotCarryAndAgree(t *testing.T) {
 	dialed, answered := &recorder{}, &recorder{}
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = noPathMTU }, answered.record)
 	lists := Suites{kex: []kexEntry{entry768And1024, entryX25519}}
@@ -619,6 +643,10 @@ func TestTwoEndsCutEachMessageThePathCannotCarryAndAgree(t *testing.T) {
 // RFC 7383 section 2.5.2: "the initiator SHOULD stop retransmitting the probe and SHOULD select a new value for the fragmentation threshold that is less than or equal to the value from the ICMP message"
 // RFC 7383 section 2.5.2: "Implementations MUST be prepared to probe in every exchange that utilizes IKE fragmentation to deal with possible changes in path MTU over time."
 func TestRetransmissionCutsTheRequestAgainOnceThePathMTUFalls(t *testing.T) {
+	bubble.Run(testRetransmissionCutsTheRequestAgainOnceThePathMTUFalls)(t)
+}
+
+func testRetransmissionCutsTheRequestAgainOnceThePathMTUFalls(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	lists := Suites{kex: []kexEntry{entry768}}
 	h.lists.Store(&lists)
@@ -667,6 +695,10 @@ func TestRetransmissionCutsTheRequestAgainOnceThePathMTUFalls(t *testing.T) {
 // RFC 7383 section 2.5.2: "When selecting the next smaller value for the fragmentation threshold, the sender MUST ensure that the value in the Total Fragments field is really increased."
 // RFC 7383 section 2.5.2: "After reaching the smallest allowed value for the fragmentation threshold, an implementation MUST continue retransmitting until the exchange either completes or times out using some timeout interval as discussed in Section 2.4 of [RFC7296]."
 func TestSplitAgainGrowsTotalFragmentsDownToTheFloor(t *testing.T) {
+	bubble.Run(testSplitAgainGrowsTotalFragmentsDownToTheFloor)(t)
+}
+
+func testSplitAgainGrowsTotalFragmentsDownToTheFloor(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	mtu := func() (int, error) { return 9000, nil }
 	s := &Session{mux: mux, fragments: true, pathMTU: func() (int, error) { return mtu() }}
@@ -720,6 +752,10 @@ func TestSplitAgainGrowsTotalFragmentsDownToTheFloor(t *testing.T) {
 // Run sends a request it cut again after the first interval of its backoff, so the timers start over
 // RFC 7383 section 2.5.2: "When starting a new probe, the node MUST reset its retransmission timers so that if it employs exponential back-off the timers will start over."
 func TestRunStartsARequestsBackoffOverWhenItCutsItAgain(t *testing.T) {
+	bubble.Run(testRunStartsARequestsBackoffOverWhenItCutsItAgain)(t)
+}
+
+func testRunStartsARequestsBackoffOverWhenItCutsItAgain(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	mtu := 9000
 	s := &Session{mux: mux, current: testContext(), fragments: true, retransmitAfter: time.Minute, pathMTU: func() (int, error) { return mtu, nil }}
@@ -744,6 +780,10 @@ func TestRunStartsARequestsBackoffOverWhenItCutsItAgain(t *testing.T) {
 // RFC 7383 section 2.4: "If either peer has information that a part of the transaction is likely to be fragmented at the IP layer, causing interference with the IKE exchange, that peer SHOULD use IKE fragmentation."
 // RFC 7383 section 2.5.1: "the sender SHOULD choose their size so that the resulting IP datagrams will be smaller than some fragmentation threshold."
 func TestRunCutsARequestThePathCannotCarryFromItsFirstSend(t *testing.T) {
+	bubble.Run(testRunCutsARequestThePathCannotCarryFromItsFirstSend)(t)
+}
+
+func testRunCutsARequestThePathCannotCarryFromItsFirstSend(t *testing.T) {
 	s, peer := fragmentingSession(t, &recorder{})
 	s.pathMTU = noPathMTU
 	if _, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, inner: []RawPayload{bulkyStatus(2000)}}); err != nil {
@@ -759,6 +799,10 @@ func TestRunCutsARequestThePathCannotCarryFromItsFirstSend(t *testing.T) {
 // an IKE_FOLLOWUP_KE request of ML-KEM-768, larger than an IPv4 path of 576 octets carries, goes in fragments, and the peer's answer in fragments is reassembled
 // the event of the cut and the two debug lines name the exchange IKE_FOLLOWUP_KE
 func TestFragmentedFollowupNamesItsExchange(t *testing.T) {
+	bubble.Run(testFragmentedFollowupNamesItsExchange)(t)
+}
+
+func testFragmentedFollowupNamesItsExchange(t *testing.T) {
 	lines := recordLines(t)
 	events := &recorder{}
 	s, peer := fragmentingSession(t, events)
@@ -801,6 +845,10 @@ func TestFragmentedFollowupNamesItsExchange(t *testing.T) {
 // RFC 7383 section 2.5.2: "While doing probes, it MUST start from larger values and refragment the original message, using the next smaller value of the threshold if it did not receive a response in a reasonable time after several retransmissions."
 // RFC 7383 section 2.5.2: "When starting a new probe, the node MUST reset its retransmission timers so that if it employs exponential back-off the timers will start over."
 func TestProbeCutsTheRequestAgainOnceThePathMTUFalls(t *testing.T) {
+	bubble.Run(testProbeCutsTheRequestAgainOnceThePathMTUFalls)(t)
+}
+
+func testProbeCutsTheRequestAgainOnceThePathMTUFalls(t *testing.T) {
 	s, peer := fragmentingSession(t, &recorder{})
 	mtu := 9000
 	s.pathMTU = func() (int, error) { return mtu, nil }
@@ -894,7 +942,7 @@ func testExchangeStartsItsBackoffOverWhenItCutsTheRequestAgain(t *testing.T) {
 // a split again starts a request's attempts over, and its sends stop at maxRetransmitsWhileBusy all the same, in an exchange and in Run
 // so a path MTU that falls before every send holds the one outstanding request no longer than a busy peer does
 func TestSplitAgainStartsNoRequestOverPastTheBusyBound(t *testing.T) {
-	t.Run("exchange", func(t *testing.T) {
+	t.Run("exchange", bubble.Run(func(t *testing.T) {
 		peer := listenPeer(t)
 		at := peer.LocalAddr().(*net.UDPAddr)
 		mux, err := testNetwork(t).Dial(at.IP, at.Port)
@@ -915,8 +963,8 @@ func TestSplitAgainStartsNoRequestOverPastTheBusyBound(t *testing.T) {
 		if _, err := sendRecvWithin(mux, &transmission{datagrams: [][]byte{request}}, maxRetransmits, unansweredRetransmit, resend, nil, nil); err == nil || sends != maxRetransmitsWhileBusy {
 			t.Errorf("an exchange whose every send cut the request again sent it %d times and ended with %v, want %d sends and a failure", sends, err, maxRetransmitsWhileBusy)
 		}
-	})
-	t.Run("Run", func(t *testing.T) {
+	}))
+	t.Run("Run", bubble.Run(func(t *testing.T) {
 		for _, test := range []struct {
 			attempts, sent int
 			exhausted      bool
@@ -929,7 +977,7 @@ func TestSplitAgainStartsNoRequestOverPastTheBusyBound(t *testing.T) {
 				t.Errorf("a request at attempt %d after %d sends is spent %v, want %v", test.attempts, test.sent, exhausted, test.exhausted)
 			}
 		}
-	})
+	}))
 }
 
 // a dial over a path that drops datagrams above the IPv4 floor while the host's path MTU stays at 1500, as on darwin behind a narrower hop or where ICMP is filtered, sends its IKE_INTERMEDIATE request whole twice and then cut for the floor, starting its backoff over, and completes
@@ -1093,7 +1141,7 @@ func firstCutFor(t *testing.T, s *Session, flags uint8, request form) *transmiss
 // RFC 7383 section 2.5.2: "In subsequent exchanges, the node should start with the current value of the fragmentation threshold."
 func TestLaterMessageIsCutForTheFloorARequestSteppedDownTo(t *testing.T) {
 	for name, flags := range map[string]uint8{"request": FlagInitiator, "answer to a request that came whole": FlagInitiator | FlagResponse} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _, _, _ := steppedSession(t)
 			for _, sa := range []string{"the IKE SA the request stepped on", "another current IKE SA"} {
 				sent := firstCut(t, s, flags)
@@ -1106,9 +1154,9 @@ func TestLaterMessageIsCutForTheFloorARequestSteppedDownTo(t *testing.T) {
 				}
 				s.current = testContext()
 			}
-		})
+		}))
 	}
-	t.Run("request stepped down on the path MTU it was cut again for", func(t *testing.T) {
+	t.Run("request stepped down on the path MTU it was cut again for", bubble.Run(func(t *testing.T) {
 		s, _ := fragmentingSession(t, &recorder{})
 		mtu := 1500
 		s.pathMTU = func() (int, error) { return mtu, nil }
@@ -1125,16 +1173,16 @@ func TestLaterMessageIsCutForTheFloorARequestSteppedDownTo(t *testing.T) {
 		if next := firstCut(t, s, FlagInitiator); next.threshold != 576 {
 			t.Errorf("a later request went in %d fragments under %d, want it cut for the floor", next.total, next.threshold)
 		}
-	})
-	t.Run("answer to a request in fragments of 1000 octets", func(t *testing.T) {
+	}))
+	t.Run("answer to a request in fragments of 1000 octets", bubble.Run(func(t *testing.T) {
 		s, _, _, _ := steppedSession(t)
 		sent := firstCutFor(t, s, FlagInitiator|FlagResponse, form{total: 2, largest: 1000})
 		if sent.threshold != 576 {
 			t.Errorf("the answer went in %d fragments under %d, want it cut for the floor", sent.total, sent.threshold)
 		}
 		wantFits(t, sent.datagrams, floorRoom)
-	})
-	t.Run("answer cut before the step and drawn again by a repeat whole", func(t *testing.T) {
+	}))
+	t.Run("answer cut before the step and drawn again by a repeat whole", bubble.Run(func(t *testing.T) {
 		s, _, pending, _ := unansweredSession(t, []RawPayload{bulkyStatus(2000)}, nil)
 		answer := firstCut(t, s, FlagInitiator|FlagResponse)
 		before := answer.total
@@ -1143,7 +1191,7 @@ func TestLaterMessageIsCutForTheFloorARequestSteppedDownTo(t *testing.T) {
 			t.Errorf("the answer went from %d fragments to %d under %d at the repeat, cut again %v, %v, want it cut again for the floor in more", before, answer.total, answer.threshold, again, err)
 		}
 		wantFits(t, answer.datagrams, floorRoom)
-	})
+	}))
 }
 
 // the floor a request stepped down to holds while the path the host reads stays as it was, and ends for good once the reading rises or falls, the peer's endpoint moves, or the session is asked to probe its path
@@ -1163,7 +1211,7 @@ func TestCarriedFloorEndsWhereThePathMayHaveChanged(t *testing.T) {
 		}, 1500},
 		"the session probes": {func(_ *testing.T, s *Session, _ *transport.Hub, _ *int) { s.Probe() }, 1500},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, hub, _, mtu := steppedSession(t)
 			test.change(t, s, hub, mtu)
 			if sent := firstCut(t, s, FlagInitiator); sent.threshold != test.threshold {
@@ -1176,7 +1224,7 @@ func TestCarriedFloorEndsWhereThePathMayHaveChanged(t *testing.T) {
 			if sent := firstCut(t, s, FlagInitiator); sent.threshold != 1500 {
 				t.Errorf("a request once the reading came back to 1500 went in %d fragments under %d, want under 1500", sent.total, sent.threshold)
 			}
-		})
+		}))
 	}
 }
 
@@ -1214,7 +1262,7 @@ func TestResetBeforeARequestStepsHoldsForTheExchangesAfterIt(t *testing.T) {
 			s.sendPending(pending)
 		}, 9000},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, hub, pending, mtu := unansweredSession(t, test.inner, nil)
 			test.change(t, s, hub, pending, mtu)
 			if pending.threshold != 576 {
@@ -1223,7 +1271,7 @@ func TestResetBeforeARequestStepsHoldsForTheExchangesAfterIt(t *testing.T) {
 			if sent := firstCut(t, s, FlagInitiator); sent.threshold != test.threshold {
 				t.Errorf("a later request went in %d fragments under %d, want under %d", sent.total, sent.threshold, test.threshold)
 			}
-		})
+		}))
 	}
 	for name, change := range map[string]func(t *testing.T, s *Session, hub *transport.Hub, mtu *int) (back func()){
 		"the reading rises and falls back": func(_ *testing.T, _ *Session, _ *transport.Hub, mtu *int) func() {
@@ -1243,7 +1291,7 @@ func TestResetBeforeARequestStepsHoldsForTheExchangesAfterIt(t *testing.T) {
 			}
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			var back func()
 			s, _, pending, _ := unansweredSession(t, []RawPayload{bulkyStatus(2000)}, func(s *Session, hub *transport.Hub, mtu *int) {
 				if back == nil {
@@ -1258,7 +1306,7 @@ func TestResetBeforeARequestStepsHoldsForTheExchangesAfterIt(t *testing.T) {
 			if sent := firstCut(t, s, FlagInitiator); sent.threshold != 1500 {
 				t.Errorf("a later request went in %d fragments under %d, want under 1500", sent.total, sent.threshold)
 			}
-		})
+		}))
 	}
 }
 
@@ -1266,6 +1314,10 @@ func TestResetBeforeARequestStepsHoldsForTheExchangesAfterIt(t *testing.T) {
 // RFC 7383 section 2.4: "IKE fragmentation SHOULD NOT be used in cases where IP-layer fragmentation of both the request and response messages is unlikely. For example, there is no point in fragmenting liveness check messages."
 // so its sends going unanswered says nothing of datagrams larger than the floor
 func TestRequestThatFitsTheFloorWholeCarriesNothing(t *testing.T) {
+	bubble.Run(testRequestThatFitsTheFloorWholeCarriesNothing)(t)
+}
+
+func testRequestThatFitsTheFloorWholeCarriesNothing(t *testing.T) {
 	s, _, pending, _ := unansweredSession(t, nil, nil)
 	s.sendPending(pending)
 	if pending.threshold != 576 || len(pending.datagrams) != 1 {
@@ -1279,7 +1331,7 @@ func TestRequestThatFitsTheFloorWholeCarriesNothing(t *testing.T) {
 // a request cut again for a path MTU that fell above the IPv4 floor carries nothing to the exchanges after it, and neither does an answer a smaller repeat cuts again for the floor, nor a stepped request sent again at the floor after a reset
 // RFC 7383 section 2.5.2: "It is the initiator of the exchange who performs PMTU discovery."
 func TestOnlyARequestsStepCarriesTheFloor(t *testing.T) {
-	t.Run("a request cut again for 1400", func(t *testing.T) {
+	t.Run("a request cut again for 1400", bubble.Run(func(t *testing.T) {
 		s, _ := fragmentingSession(t, &recorder{})
 		mtu := 1500
 		s.pathMTU = func() (int, error) { return mtu, nil }
@@ -1291,8 +1343,8 @@ func TestOnlyARequestsStepCarriesTheFloor(t *testing.T) {
 		if next := firstCut(t, s, FlagInitiator); next.threshold != 1400 {
 			t.Errorf("a later request went in %d fragments under %d, want under 1400", next.total, next.threshold)
 		}
-	})
-	t.Run("an answer cut again for the floor", func(t *testing.T) {
+	}))
+	t.Run("an answer cut again for the floor", bubble.Run(func(t *testing.T) {
 		s, _ := fragmentingSession(t, &recorder{})
 		s.pathMTU = pathMTUOf(1500)
 		answer := firstCut(t, s, FlagInitiator|FlagResponse)
@@ -1302,19 +1354,23 @@ func TestOnlyARequestsStepCarriesTheFloor(t *testing.T) {
 		if next := firstCut(t, s, FlagInitiator); next.threshold != 1500 {
 			t.Errorf("a later request went in %d fragments under %d, want under 1500", next.total, next.threshold)
 		}
-	})
-	t.Run("a stepped request sent again at the floor after a reset", func(t *testing.T) {
+	}))
+	t.Run("a stepped request sent again at the floor after a reset", bubble.Run(func(t *testing.T) {
 		s, _, pending, _ := steppedSession(t)
 		s.Probe()
 		s.sendPending(pending)
 		if next := firstCut(t, s, FlagInitiator); next.threshold != 1500 {
 			t.Errorf("a later request went in %d fragments under %d, want under 1500", next.total, next.threshold)
 		}
-	})
+	}))
 }
 
 // a status read keeps the record a step stores while the read waits on the host's path MTU, as a step on Run's goroutine does during a stalled read
 func TestStatusReadKeepsTheRecordAStepStoresDuringIt(t *testing.T) {
+	bubble.Run(testStatusReadKeepsTheRecordAStepStoresDuringIt)(t)
+}
+
+func testStatusReadKeepsTheRecordAStepStoresDuringIt(t *testing.T) {
 	s, _ := fragmentingSession(t, &recorder{})
 	newer := &pathRead{endpoint: s.mux.Endpoint().AddrPort(), read: 1400}
 	s.pathMTU = func() (int, error) {
@@ -1466,6 +1522,10 @@ func testResponderCutsItsAnswerForTheRepeatOnAPathNarrowerThanItsMTU(t *testing.
 // it goes on sending the floor's cut until its budget ends
 // RFC 7383 section 2.5.2: "After reaching the smallest allowed value for the fragmentation threshold, an implementation MUST continue retransmitting until the exchange either completes or times out using some timeout interval as discussed in Section 2.4 of [RFC7296]."
 func TestRunStepsARequestDownToTheFloorAndSendsItThereUntilItsBudgetEnds(t *testing.T) {
+	bubble.Run(testRunStepsARequestDownToTheFloorAndSendsItThereUntilItsBudgetEnds)(t)
+}
+
+func testRunStepsARequestDownToTheFloorAndSendsItThereUntilItsBudgetEnds(t *testing.T) {
 	s, _ := fragmentingSession(t, &recorder{})
 	mtu := 9000
 	s.pathMTU = func() (int, error) { return mtu, nil }
@@ -1505,7 +1565,7 @@ func TestRunStepsARequestDownToTheFloorAndSendsItThereUntilItsBudgetEnds(t *test
 // RFC 7383 section 2.5.2: "While doing probes, it MUST start from larger values and refragment the original message, using the next smaller value of the threshold if it did not receive a response in a reasonable time after several retransmissions."
 func TestProbesCountNoSendTowardTheStepToTheFloor(t *testing.T) {
 	for name, probed := range map[string]bool{"the backoff's send": false, "a probe": true} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := fragmentingSession(t, &recorder{})
 			s.pathMTU = pathMTUOf(1500)
 			s.retransmitAfter = time.Minute
@@ -1544,13 +1604,17 @@ func TestProbesCountNoSendTowardTheStepToTheFloor(t *testing.T) {
 				t.Fatalf("%s after %d of the backoff went in %d fragments under %d at attempt %d and waits until %s after it, want it cut for the floor of 576 and its backoff started over", name, stepDownSends, pending.total, pending.threshold, pending.attempts, pending.deadline.Sub(at))
 			}
 			wantFits(t, pending.datagrams, floorRoom)
-		})
+		}))
 	}
 }
 
 // a request sent stepDownSends times under a path MTU above its family's floor goes under the floor at its next send, and an answer resent as often goes under the path's threshold still
 // RFC 7383 section 2.5.2: "It is the initiator of the exchange who performs PMTU discovery."
 func TestOnlyARequestStepsDownToTheFloor(t *testing.T) {
+	bubble.Run(testOnlyARequestStepsDownToTheFloor)(t)
+}
+
+func testOnlyARequestStepsDownToTheFloor(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		flags uint8
@@ -1577,6 +1641,10 @@ func TestOnlyARequestStepsDownToTheFloor(t *testing.T) {
 // an INFORMATIONAL request whose mux closed unanswered goes once more after the exchange, and that send is cut for the path as it stands then
 // RFC 7383 section 2.5.2: "it MUST start from larger values and refragment the original message"
 func TestClosingSendOfAnUnansweredRequestIsCutForThePath(t *testing.T) {
+	bubble.Run(testClosingSendOfAnUnansweredRequestIsCutForThePath)(t)
+}
+
+func testClosingSendOfAnUnansweredRequestIsCutForThePath(t *testing.T) {
 	s, peer := fragmentingSession(t, &recorder{})
 	wide := pathMTUOf(9000)
 	s.pathMTU = func() (int, error) {
@@ -1620,6 +1688,10 @@ func TestClosingSendOfAnUnansweredRequestIsCutForThePath(t *testing.T) {
 // the answer Run keeps for a request that came whole goes whole where it fits the path, and in fragments that fit where it does not
 // RFC 7383 section 2.4: "If either peer has information that a part of the transaction is likely to be fragmented at the IP layer, causing interference with the IKE exchange, that peer SHOULD use IKE fragmentation."
 func TestRunCutsTheAnswerToAWholeRequestThatDoesNotFitThePath(t *testing.T) {
+	bubble.Run(testRunCutsTheAnswerToAWholeRequestThatDoesNotFitThePath)(t)
+}
+
+func testRunCutsTheAnswerToAWholeRequestThatDoesNotFitThePath(t *testing.T) {
 	s, _ := fragmentingSession(t, &recorder{})
 	s.pathMTU = pathMTUOf(1280)
 	_, room, _ := s.path()
@@ -1754,6 +1826,10 @@ func peerReads(t *testing.T, peer *transport.MemoryConn, wait time.Duration) [][
 // a fragment whose ICV fails is discarded, and the request it belongs to waits for the fragment that authenticates
 // RFC 7383 section 2.6: "If the ICV check fails, the message MUST be silently discarded."
 func TestFragmentWhoseICVFailsIsDiscarded(t *testing.T) {
+	bubble.Run(testFragmentWhoseICVFailsIsDiscarded)(t)
+}
+
+func testFragmentWhoseICVFailsIsDiscarded(t *testing.T) {
 	s, peer := fragmentingSession(t, &recorder{})
 	request := peerRequest(t, s, 0, 1200, 500)
 	var pending *pendingRequest
@@ -1856,6 +1932,10 @@ func sendsOf(t *testing.T, mtu func(send int) int) (last, gives time.Duration) {
 // and a chain of such falls carries its last send past requestBudget
 // RFC 9370 section 2.2.4: "The responder MUST handle this situation gracefully and delete the associated state if it does not receive the next expected IKE_FOLLOWUP_KE request after some reasonable period of time."
 func TestRequestBudgetHoldsTheLastSendThroughAStepAndTwoFalls(t *testing.T) {
+	bubble.Run(testRequestBudgetHoldsTheLastSendThroughAStepAndTwoFalls)(t)
+}
+
+func testRequestBudgetHoldsTheLastSendThroughAStepAndTwoFalls(t *testing.T) {
 	// falls is the path MTU at each send of n falls, one at each send from the second, the first from 1500 to 1290 and each after it 50 lower
 	falls := func(n int) func(send int) int {
 		return func(send int) int {
@@ -1922,6 +2002,10 @@ const (
 // Run wakes for the fragments it holds at their timeout and drops them, though no other work wakes it before then
 // RFC 7383 section 2.6: "If the receiver does not get all IKE fragments needed to reassemble the original message within a timeout interval, it MUST discard all IKE Fragment messages received so far for the exchange."
 func TestRunSweepsFragmentsAtTheirTimeout(t *testing.T) {
+	bubble.Run(testRunSweepsFragmentsAtTheirTimeout)(t)
+}
+
+func testRunSweepsFragmentsAtTheirTimeout(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	initiator, responder := dialPaused(t, h, h.peerConfig())
 	t.Cleanup(func() { initiator.Mux().Close(); responder.Mux().Close() })
@@ -2033,7 +2117,7 @@ func TestOnlyFragmentOneOfAnAnsweredRequestDrawsTheAnswerAgain(t *testing.T) {
 // RFC 7383 section 2.5.2: "Implementations MUST be prepared to probe in every exchange that utilizes IKE fragmentation to deal with possible changes in path MTU over time."
 func TestKeptAnswerGoesAgainCutForThePathAtItsSend(t *testing.T) {
 	for name, take := range takers {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer := fragmentingSession(t, &recorder{})
 			mtu := 9000
 			s.pathMTU = func() (int, error) { return mtu, nil }
@@ -2064,9 +2148,9 @@ func TestKeptAnswerGoesAgainCutForThePathAtItsSend(t *testing.T) {
 					t.Error("a repeat under the same path MTU drew datagrams other than the last send's")
 				}
 			}
-		})
+		}))
 	}
-	t.Run("half-open wait", func(t *testing.T) {
+	t.Run("half-open wait", bubble.Run(func(t *testing.T) {
 		var mtu atomic.Int64
 		mtu.Store(1500)
 		h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) {
@@ -2107,7 +2191,7 @@ func TestKeptAnswerGoesAgainCutForThePathAtItsSend(t *testing.T) {
 			t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 		}
 		s.accepted(2, []uint16{ML_KEM_768})
-	})
+	}))
 }
 
 // an answer kept for a repeat of its request goes again cut within the repeat's fragment 1 where a datagram of the answer is larger, in more fragments, and as it stands where its datagrams fit, in Run, in the wait after IKE_AUTH and in the half-open wait
@@ -2248,6 +2332,10 @@ func heard(mux *transport.Mux) [][]byte {
 // RFC 7383 section 2.6.1: "that event MUST only trigger a retransmission of the response message (fragmented or not) if the Fragment Number field in the received fragment is set to 1"
 // RFC 7383 section 2.5.1: "The responder in the exchange may use the maximum size of the received IKE Fragment message IP datagrams as a threshold when constructing a fragmented response."
 func TestHalfOpenRepeatFromAnotherAddressDrawsNoMoreOctetsThanItSent(t *testing.T) {
+	bubble.Run(testHalfOpenRepeatFromAnotherAddressDrawsNoMoreOctetsThanItSent)(t)
+}
+
+func testHalfOpenRepeatFromAnotherAddressDrawsNoMoreOctetsThanItSent(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	h.lists.Store(&Suites{kex: []kexEntry{entry768}})
 	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)), []RawPayload{fragmentationSupported}, true)
@@ -2371,7 +2459,7 @@ func TestMovedSetDrawsNoMoreOctetsThanItSent(t *testing.T) {
 		{"ML-KEM-1024 under a path MTU of 1500", entry1024, ML_KEM_1024, pathMTUOf(1500)},
 		{"ML-KEM-1024 under a path MTU of 1280", entry1024, ML_KEM_1024, pathMTUOf(1280)},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		t.Run(test.name, bubble.Run(func(t *testing.T) {
 			h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = test.mtu })
 			h.lists.Store(&Suites{kex: []kexEntry{test.entry}})
 			s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, test.method)), []RawPayload{fragmentationSupported}, true)
@@ -2386,13 +2474,17 @@ func TestMovedSetDrawsNoMoreOctetsThanItSent(t *testing.T) {
 				t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 			}
 			s.accepted(2, []uint16{test.method})
-		})
+		}))
 	}
 }
 
 // the same for a request whole under a path MTU of 1500, whose answer goes in fragments, and the repeat whole from another address
 // RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
 func TestMovedWholeRepeatDrawsNoMoreOctetsThanItSent(t *testing.T) {
+	bubble.Run(testMovedWholeRepeatDrawsNoMoreOctetsThanItSent)(t)
+}
+
+func testMovedWholeRepeatDrawsNoMoreOctetsThanItSent(t *testing.T) {
 	entry1024 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024}}
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = pathMTUOf(1500) })
 	h.lists.Store(&Suites{kex: []kexEntry{entry1024}})
@@ -2415,6 +2507,10 @@ func TestMovedWholeRepeatDrawsNoMoreOctetsThanItSent(t *testing.T) {
 // so the request whole from another address draws nothing there, and the same once more draws the answer as it went, since a credit counts each datagram on the wire as path counts one
 // RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
 func TestMovedWholeRepeatIsReadOnTheWire(t *testing.T) {
+	bubble.Run(testMovedWholeRepeatIsReadOnTheWire)(t)
+}
+
+func testMovedWholeRepeatIsReadOnTheWire(t *testing.T) {
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = pathMTUOf(1500) })
 	h.lists.Store(&Suites{kex: []kexEntry{entry768}})
 	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)), []RawPayload{fragmentationSupported}, true)
@@ -2493,6 +2589,10 @@ func movedRepeats(t *testing.T, s *scripted, request, answer [][]byte) {
 // so the set draws nothing there, and the same set once more draws the answer cut again, never more octets on the wire than the sets sent
 // RFC 7383 section 2.5.1: "The responder in the exchange may use the maximum size of the received IKE Fragment message IP datagrams as a threshold when constructing a fragmented response."
 func TestMovedFinerSetIsReadAgainstTheAnswerCutAgain(t *testing.T) {
+	bubble.Run(testMovedFinerSetIsReadAgainstTheAnswerCutAgain)(t)
+}
+
+func testMovedFinerSetIsReadAgainstTheAnswerCutAgain(t *testing.T) {
 	entry1024 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024}}
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = pathMTUOf(1500) })
 	h.lists.Store(&Suites{kex: []kexEntry{entry1024}})
@@ -2541,6 +2641,10 @@ func TestMovedFinerSetIsReadAgainstTheAnswerCutAgain(t *testing.T) {
 // in the half-open wait the octets another address sent repeating a request count in that exchange alone
 // at the IPv4 floor a moved initiator's repeat of the first IKE_INTERMEDIATE request draws nothing there, its answer taking more octets on the wire, and neither does its repeat of the second, which the octets of both would cover
 func TestOctetsFromAnotherAddressCountInTheirExchangeAlone(t *testing.T) {
+	bubble.Run(testOctetsFromAnotherAddressCountInTheirExchangeAlone)(t)
+}
+
+func testOctetsFromAnotherAddressCountInTheirExchangeAlone(t *testing.T) {
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = noPathMTU })
 	h.lists.Store(&Suites{kex: []kexEntry{entry768And1024}})
 	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)), []RawPayload{fragmentationSupported}, true)
@@ -2804,7 +2908,7 @@ func TestRepeatFromAnotherAddressKeepsTheNextRequest(t *testing.T) {
 	for name, methods := range map[string][]uint16{"IKE_INTERMEDIATE": {ML_KEM_768, ML_KEM_1024}, "IKE_AUTH": {ML_KEM_768}} {
 		// the number of the request's fragment repeated, zero for the request whole
 		for number, repeat := range []string{"the request whole", "fragment 1", "fragment 2"} {
-			t.Run(fmt.Sprintf("%s after %s", name, repeat), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s after %s", name, repeat), bubble.Run(func(t *testing.T) {
 				h := newResponderHarness(t, nil)
 				entry, offer := entry768, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768))
 				if len(methods) == 2 {
@@ -2839,7 +2943,7 @@ func TestRepeatFromAnotherAddressKeepsTheNextRequest(t *testing.T) {
 					t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at %d", header.ExchangeType, header.MessageID, authMID)
 				}
 				s.accepted(authMID, methods)
-			})
+			}))
 		}
 	}
 }
@@ -2847,6 +2951,10 @@ func TestRepeatFromAnotherAddressKeepsTheNextRequest(t *testing.T) {
 // in the half-open wait the repeats of a request that the address the IKE SA was set up from sends draw the answer at most maxRetransmitsWhileBusy times in each exchange, the most sends this end makes of one request
 // the repeat is the shortest fragment 1 that authenticates, which a request that came whole lets through, and the answer it draws is cut for the family's floor and no smaller
 func TestHalfOpenAnswersAtMostMaxRetransmitsWhileBusyRepeatsOfEachExchange(t *testing.T) {
+	bubble.Run(testHalfOpenAnswersAtMostMaxRetransmitsWhileBusyRepeatsOfEachExchange)(t)
+}
+
+func testHalfOpenAnswersAtMostMaxRetransmitsWhileBusyRepeatsOfEachExchange(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	h.lists.Store(&Suites{kex: []kexEntry{entry768And1024}})
 	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)), []RawPayload{fragmentationSupported}, true)
@@ -2890,6 +2998,10 @@ func TestHalfOpenAnswersAtMostMaxRetransmitsWhileBusyRepeatsOfEachExchange(t *te
 // in the half-open wait of a responder whose initiator did not say it supports IKE fragmentation, all of the request in fragments from another address draws nothing however often it comes
 // RFC 7383 section 2.4: "IKE fragmentation MUST NOT be used unless both peers have indicated their support for it."
 func TestHalfOpenRepeatInFragmentsFromAnotherAddressIsDiscardedWithoutTheNotify(t *testing.T) {
+	bubble.Run(testHalfOpenRepeatInFragmentsFromAnotherAddressIsDiscardedWithoutTheNotify)(t)
+}
+
+func testHalfOpenRepeatInFragmentsFromAnotherAddressIsDiscardedWithoutTheNotify(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	h.lists.Store(&Suites{kex: []kexEntry{entry768}})
 	s, refused := openScripted(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)), true)
@@ -2922,6 +3034,10 @@ func TestHalfOpenRepeatInFragmentsFromAnotherAddressIsDiscardedWithoutTheNotify(
 // in the half-open wait a fragment of a repeat of the first IKE_INTERMEDIATE request from another address, left alone when the second request comes whole, keeps out no repeat of the second in fragments
 // all of the second request in fragments from a place of its own draws the answer there
 func TestRepeatLeftIncompleteKeepsOutNoRepeatOfTheNextExchange(t *testing.T) {
+	bubble.Run(testRepeatLeftIncompleteKeepsOutNoRepeatOfTheNextExchange)(t)
+}
+
+func testRepeatLeftIncompleteKeepsOutNoRepeatOfTheNextExchange(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	h.lists.Store(&Suites{kex: []kexEntry{entry768And1024}})
 	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)), []RawPayload{fragmentationSupported}, true)
@@ -2965,7 +3081,7 @@ func TestRepeatIsReadAgainstTheTotalFragmentsOfTheAnsweredRequest(t *testing.T) 
 		draws bool
 	}
 	for name, take := range takers {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer := fragmentingSession(t, &recorder{})
 			ctx := s.current
 			request := peerRequest(t, s, 0, 1200, 500)
@@ -2990,9 +3106,9 @@ func TestRepeatIsReadAgainstTheTotalFragmentsOfTheAnsweredRequest(t *testing.T) 
 					t.Errorf("a repeat %s of a request in %d fragments drew %d datagrams, want the answer again %v", r.name, len(request), len(again), r.draws)
 				}
 			}
-		})
+		}))
 	}
-	t.Run("half-open wait", func(t *testing.T) {
+	t.Run("half-open wait", bubble.Run(func(t *testing.T) {
 		h := newResponderHarness(t, nil)
 		h.lists.Store(&Suites{kex: []kexEntry{entry768}})
 		s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)), []RawPayload{fragmentationSupported}, true)
@@ -3034,7 +3150,7 @@ func TestRepeatIsReadAgainstTheTotalFragmentsOfTheAnsweredRequest(t *testing.T) 
 			t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 		}
 		s.accepted(2, []uint16{ML_KEM_768})
-	})
+	}))
 }
 
 // in Run and in the wait after IKE_AUTH a repeat is answered as in the half-open wait, the session's endpoint standing for the origin
@@ -3124,7 +3240,7 @@ func TestRepeatPastIKEAuthIsAnsweredAsInTheHalfOpenWait(t *testing.T) {
 // the request whole from an arrival address that went away draws the answer there, since its octets cover the answer's, and that send fails
 func TestRepeatWhoseAnswerCannotGoEndsNothing(t *testing.T) {
 	for name, take := range repeatSites() {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer := fragmentingSession(t, &recorder{})
 			ctx := s.current
 			unreachable := unsendableMux(t).Endpoint()
@@ -3147,7 +3263,7 @@ func TestRepeatWhoseAnswerCannotGoEndsNothing(t *testing.T) {
 			if got := peerReads(t, peer, answerBudget); !slices.EqualFunc(got, sent.datagrams, bytes.Equal) {
 				t.Errorf("the endpoint's repeat after one whose answer could not go drew %d datagrams, want the answer's %d", len(got), len(sent.datagrams))
 			}
-		})
+		}))
 	}
 }
 
@@ -3156,7 +3272,7 @@ func TestRepeatWhoseAnswerCannotGoEndsNothing(t *testing.T) {
 // RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
 func TestReplaysFromAnotherAddressSpendNothingOfTheEndpointsAnswers(t *testing.T) {
 	for name, take := range repeatSites() {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer, hub := fragmentingSessionAt(t, &recorder{})
 			s.pathMTU = noPathMTU
 			ctx := s.current
@@ -3187,7 +3303,7 @@ func TestReplaysFromAnotherAddressSpendNothingOfTheEndpointsAnswers(t *testing.T
 			if got := peerReads(t, peer, quietPeriod); len(got) != 0 {
 				t.Errorf("the endpoint's repeat %d drew %d datagrams, want none", maxRetransmitsWhileBusy+1, len(got))
 			}
-		})
+		}))
 	}
 }
 
@@ -3196,7 +3312,7 @@ func TestReplaysFromAnotherAddressSpendNothingOfTheEndpointsAnswers(t *testing.T
 // RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
 func TestRepeatFromAnotherAddressIsAnsweredOnceTheEndpointsAnswersAreSpent(t *testing.T) {
 	for name, take := range repeatSites() {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer, hub := fragmentingSessionAt(t, &recorder{})
 			s.pathMTU = noPathMTU
 			ctx := s.current
@@ -3225,7 +3341,7 @@ func TestRepeatFromAnotherAddressIsAnsweredOnceTheEndpointsAnswersAreSpent(t *te
 			if got := peerTakes(t, movedAt, len(sent.datagrams)); !slices.EqualFunc(got, sent.datagrams, bytes.Equal) {
 				t.Errorf("the request repeated from another address after the endpoint's %d answers drew %d datagrams there, want the answer", maxRetransmitsWhileBusy, len(got))
 			}
-		})
+		}))
 	}
 }
 
@@ -3235,7 +3351,7 @@ func TestRepeatFromAnotherAddressIsAnsweredOnceTheEndpointsAnswersAreSpent(t *te
 // RFC 7383 section 2.6: "If any of these tests fail, the message MUST be silently discarded."
 func TestFragmentOneOfTotalZeroOfAnAnsweredRequestDrawsNothing(t *testing.T) {
 	for name, take := range repeatSites() {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer := fragmentingSession(t, &recorder{})
 			s.pathMTU = noPathMTU
 			ctx := s.current
@@ -3265,7 +3381,7 @@ func TestFragmentOneOfTotalZeroOfAnAnsweredRequestDrawsNothing(t *testing.T) {
 					t.Errorf("fragment 1 of Total Fragments 1 drew %d datagrams, want the answer", len(got))
 				}
 			}
-		})
+		}))
 	}
 }
 
@@ -3275,7 +3391,7 @@ func TestFragmentOneOfTotalZeroOfAnAnsweredRequestDrawsNothing(t *testing.T) {
 // RFC 7383 section 2.6: "If any of these tests fail, the message MUST be silently discarded."
 func TestFragmentNumberZeroOfAnAnsweredRequestDrawsNothing(t *testing.T) {
 	for name, take := range repeatSites() {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer := fragmentingSession(t, &recorder{})
 			s.pathMTU = noPathMTU
 			ctx := s.current
@@ -3305,7 +3421,7 @@ func TestFragmentNumberZeroOfAnAnsweredRequestDrawsNothing(t *testing.T) {
 					t.Errorf("fragment 1 of Total Fragments 1 drew %d datagrams, want the answer", len(got))
 				}
 			}
-		})
+		}))
 	}
 }
 
@@ -3313,7 +3429,7 @@ func TestFragmentNumberZeroOfAnAnsweredRequestDrawsNothing(t *testing.T) {
 // so at each site that resends a kept answer, each of the endpoint's repeats of it past the send that drew the answer draws the answer: the request whole as it came, then fragment 1 of a cut into fragments, as the step makes
 func TestEveryRepeatOfARequestThatStepsDrawsTheAnswer(t *testing.T) {
 	for name, take := range repeatSites() {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer := fragmentingSession(t, &recorder{})
 			s.pathMTU = noPathMTU
 			ctx := s.current
@@ -3335,7 +3451,7 @@ func TestEveryRepeatOfARequestThatStepsDrawsTheAnswer(t *testing.T) {
 					t.Fatalf("repeat %d of %d from the endpoint drew %d datagrams, want the answer", i+1, len(repeats), len(got))
 				}
 			}
-		})
+		}))
 	}
 }
 
@@ -3343,7 +3459,7 @@ func TestEveryRepeatOfARequestThatStepsDrawsTheAnswer(t *testing.T) {
 // RFC 7383 section 2.4: "IKE fragmentation MUST NOT be used unless both peers have indicated their support for it."
 func TestFragmentsFromAPeerThatDidNotNegotiateThemAreDiscarded(t *testing.T) {
 	for name, negotiated := range map[string]bool{"negotiated": true, "not negotiated": false} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer := fragmentingSession(t, &recorder{})
 			s.fragments = negotiated
 			var pending *pendingRequest
@@ -3356,7 +3472,7 @@ func TestFragmentsFromAPeerThatDidNotNegotiateThemAreDiscarded(t *testing.T) {
 			if answered := len(peerReads(t, peer, quietPeriod)) > 0; answered != negotiated {
 				t.Errorf("the request in fragments drew an answer %v, want %v", answered, negotiated)
 			}
-		})
+		}))
 	}
 }
 
@@ -3364,7 +3480,7 @@ func TestFragmentsFromAPeerThatDidNotNegotiateThemAreDiscarded(t *testing.T) {
 // RFC 7383 section 5: "it is RECOMMENDED that the receiver limit the number of fragments it stores in the reassembling queue so that the sum of the sizes of Encrypted Fragment payload contents (after decryption) for fragments that are already placed into the reassembling queue is less than some value that is reasonable for the implementation."
 // RFC 7383 section 5: "In either case, the receiver SHOULD drop the connection and discard all the received fragments."
 func TestFragmentsPastTheLimitEndTheSA(t *testing.T) {
-	t.Run("Run", func(t *testing.T) {
+	t.Run("Run", bubble.Run(func(t *testing.T) {
 		events := &recorder{}
 		s, _ := fragmentingSession(t, events)
 		var pending *pendingRequest
@@ -3374,9 +3490,9 @@ func TestFragmentsPastTheLimitEndTheSA(t *testing.T) {
 		if closed := events.recorded(); !s.mux.IsClosed() || len(closed) != 1 || !strings.HasPrefix(closed[0], "ike.sa.closed ") || !strings.Contains(closed[0], "reason=fragment limit") {
 			t.Errorf("fragments past the limit left the IKE SA open %v and recorded %q, want it closed for the fragment limit", !s.mux.IsClosed(), closed)
 		}
-	})
+	}))
 	// RFC 7296 section 2.8: "An IKE SA so created inherits all of the original IKE SA's Child SAs", so the retained IKE SA holds none and goes alone
-	t.Run("Run on a retained IKE SA", func(t *testing.T) {
+	t.Run("Run on a retained IKE SA", bubble.Run(func(t *testing.T) {
 		events := &recorder{}
 		s, _ := fragmentingSession(t, events)
 		current := s.current
@@ -3393,15 +3509,15 @@ func TestFragmentsPastTheLimitEndTheSA(t *testing.T) {
 		if now, retained := s.contexts(); s.mux.IsClosed() || now != current || retained != nil || len(events.recorded()) != 0 {
 			t.Errorf("fragments past the limit on the retained IKE SA closed the session %v, left current %p and retained %p, and recorded %q, want the retained IKE SA gone alone", s.mux.IsClosed(), now, retained, events.recorded())
 		}
-	})
-	t.Run("wait after IKE_AUTH", func(t *testing.T) {
+	}))
+	t.Run("wait after IKE_AUTH", bubble.Run(func(t *testing.T) {
 		s, _ := fragmentingSession(t, &recorder{})
 		ends := slices.ContainsFunc(peerRequest(t, s, 0, reassemblyLimit, 4000), func(raw []byte) bool { return s.answerAfterAuth(s.current, raw, s.mux.Endpoint()) })
 		if !ends {
 			t.Error("fragments past the limit left the wait after IKE_AUTH going")
 		}
-	})
-	t.Run("half-open wait", func(t *testing.T) {
+	}))
+	t.Run("half-open wait", bubble.Run(func(t *testing.T) {
 		answered := &recorder{}
 		h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.HandshakeTimeout = 4 * answerBudget }, answered.record)
 		h.lists.Store(&Suites{kex: []kexEntry{entry768}})
@@ -3416,8 +3532,8 @@ func TestFragmentsPastTheLimitEndTheSA(t *testing.T) {
 				t.Fatalf("the half-open SA outlived fragments past the limit, recording only %q", answered.recorded())
 			}
 		}
-	})
-	t.Run("half-open wait, a repeat from another address", func(t *testing.T) {
+	}))
+	t.Run("half-open wait, a repeat from another address", bubble.Run(func(t *testing.T) {
 		answered := &recorder{}
 		h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.HandshakeTimeout = 4 * answerBudget }, answered.record)
 		h.lists.Store(&Suites{kex: []kexEntry{entry768}})
@@ -3438,8 +3554,8 @@ func TestFragmentsPastTheLimitEndTheSA(t *testing.T) {
 				t.Fatalf("the half-open SA outlived a repeat's fragments past the limit, recording only %q", answered.recorded())
 			}
 		}
-	})
-	t.Run("dial", func(t *testing.T) {
+	}))
+	t.Run("dial", bubble.Run(func(t *testing.T) {
 		p := dialPlayed(t, Suites{kex: []kexEntry{entry768}}, nil)
 		p.fragments, p.cut = true, 4000
 		p.answerSAInit(1, slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768)), true)
@@ -3449,7 +3565,7 @@ func TestFragmentsPastTheLimitEndTheSA(t *testing.T) {
 		if _, err := p.ended(); !errors.Is(err, errFragmentLimit) {
 			t.Errorf("the dial ended with %v, want the limit's", err)
 		}
-	})
+	}))
 }
 
 // reassemblyLimit is under 64 KB and holds the fragments of the largest message a peer sends, its ML-KEM-1024 IKE_INTERMEDIATE request, cut for an IPv4 path of 576 octets
@@ -3521,6 +3637,10 @@ const halfOpenWait = time.Second
 
 // a half-open SA holding fragment 1 of an IKE_INTERMEDIATE request whose other fragments never come ends at its handshake timeout, and its queue with it, where reassemblyTimeout would hold the fragment on
 func TestHalfOpenSAHoldingAFragmentEndsAtItsHandshakeTimeout(t *testing.T) {
+	bubble.Run(testHalfOpenSAHoldingAFragmentEndsAtItsHandshakeTimeout)(t)
+}
+
+func testHalfOpenSAHoldingAFragmentEndsAtItsHandshakeTimeout(t *testing.T) {
 	answered := &recorder{}
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.HandshakeTimeout = halfOpenWait }, answered.record)
 	h.lists.Store(&Suites{kex: []kexEntry{entry768}})

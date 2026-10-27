@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
 // errRefused is the refusal of the dataplane or the random source a test breaks
@@ -46,6 +48,10 @@ func failingDraws(after int32) func(time.Duration) (time.Duration, error) {
 // a Child SA whose keys the dataplane refuses to give up at its lifetime closes the IKE SA with a Delete
 // the Delete's answer is held, so the loop wakes for its retransmissions and finds the keys refused again, which records no second close
 func TestRefusedWithdrawalAtTheLifetimeDeletesTheIKESA(t *testing.T) {
+	bubble.Run(testRefusedWithdrawalAtTheLifetimeDeletesTheIKESA)(t)
+}
+
+func testRefusedWithdrawalAtTheLifetimeDeletesTheIKESA(t *testing.T) {
 	const lifetime = time.Second
 	pair := dialRefusing(t, func(cfg *PeerConfig) {
 		cfg.ChildRekeyInterval, cfg.RekeyMargin = lifetime, lifetime-scheduleDue
@@ -67,6 +73,10 @@ func TestRefusedWithdrawalAtTheLifetimeDeletesTheIKESA(t *testing.T) {
 // a replaced Child SA whose keys the dataplane refuses to give up at its own lifetime closes the IKE SA with a Delete
 // the Delete's answer is held, and the lifetime already past does not wake the loop meanwhile, so the dataplane is asked once
 func TestRefusedWithdrawalOfAReplacedChildSAIsAskedOnce(t *testing.T) {
+	bubble.Run(testRefusedWithdrawalOfAReplacedChildSAIsAskedOnce)(t)
+}
+
+func testRefusedWithdrawalOfAReplacedChildSAIsAskedOnce(t *testing.T) {
 	const retiringSPI = 0x11111111
 	var asked atomic.Int32
 	pair := dialRefusing(t, func(cfg *PeerConfig) {
@@ -95,6 +105,10 @@ func TestRefusedWithdrawalOfAReplacedChildSAIsAskedOnce(t *testing.T) {
 
 // a random source that refuses the draw that times the next rekey after a Child SA rekey closes the IKE SA with a Delete
 func TestRefusedDrawAfterAChildSARekeyDeletesTheIKESA(t *testing.T) {
+	bubble.Run(testRefusedDrawAfterAChildSARekeyDeletesTheIKESA)(t)
+}
+
+func testRefusedDrawAfterAChildSARekeyDeletesTheIKESA(t *testing.T) {
 	pair := dialRefusing(t, func(cfg *PeerConfig) { cfg.ChildRekeyInterval = time.Hour }, func(initiator, _ *Session) {
 		initiator.rekeyJitterSource = failingDraws(1)
 	})
@@ -106,6 +120,10 @@ func TestRefusedDrawAfterAChildSARekeyDeletesTheIKESA(t *testing.T) {
 
 // a replaced Child SA the dataplane refuses to retire after this end's Delete for it at the deadline closes the IKE SA with a Delete
 func TestRefusedRetirementAfterTheOverdueDeleteDeletesTheIKESA(t *testing.T) {
+	bubble.Run(testRefusedRetirementAfterTheOverdueDeleteDeletesTheIKESA)(t)
+}
+
+func testRefusedRetirementAfterTheOverdueDeleteDeletesTheIKESA(t *testing.T) {
 	pair := dialRefusing(t, func(*PeerConfig) {}, func(initiator, _ *Session) {
 		initiator.retiring, initiator.retiringBy = ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}, time.Now().Add(scheduleDue)
 		initiator.childRetireDelay = 0
@@ -116,12 +134,12 @@ func TestRefusedRetirementAfterTheOverdueDeleteDeletesTheIKESA(t *testing.T) {
 
 // a failure handed to either end's session closes the IKE SA with a Delete, which ends the other end's Run
 func TestChildFailedDeletesTheIKESA(t *testing.T) {
-	t.Run("dialed", func(t *testing.T) {
+	t.Run("dialed", bubble.Run(func(t *testing.T) {
 		pair := dialRefusing(t, func(*PeerConfig) {}, func(*Session, *Session) {})
 		pair.initiator.ChildFailed(errRefused)
 		deletedOnFailure(t, pair, "child")
-	})
-	t.Run("answered", func(t *testing.T) {
+	}))
+	t.Run("answered", bubble.Run(func(t *testing.T) {
 		pair := dialRefusing(t, func(*PeerConfig) {}, func(*Session, *Session) {})
 		pair.responder.ChildFailed(errRefused)
 		select {
@@ -137,7 +155,7 @@ func TestChildFailedDeletesTheIKESA(t *testing.T) {
 		case <-time.After(answerBudget):
 			t.Fatal("the dialed session still holds the IKE SA, so no Delete for it reached it")
 		}
-	})
+	}))
 }
 
 // a failure handed to a session that already holds one Run has not taken returns without waiting for Run, which takes the first
@@ -162,6 +180,10 @@ func TestChildFailedNeverBlocks(t *testing.T) {
 
 // a random source that refuses the draw that times the next rekey after an IKE SA rekey closes the IKE SA with a Delete
 func TestRefusedDrawAfterAnIKESARekeyDeletesTheIKESA(t *testing.T) {
+	bubble.Run(testRefusedDrawAfterAnIKESARekeyDeletesTheIKESA)(t)
+}
+
+func testRefusedDrawAfterAnIKESARekeyDeletesTheIKESA(t *testing.T) {
 	pair := dialRefusing(t, func(cfg *PeerConfig) {
 		cfg.IKERekeyInterval, cfg.RekeyMargin = time.Hour, time.Hour-scheduleDue
 	}, func(initiator, _ *Session) {
@@ -172,6 +194,10 @@ func TestRefusedDrawAfterAnIKESARekeyDeletesTheIKESA(t *testing.T) {
 
 // a drained Child SA the dataplane refuses to retire closes the IKE SA with a Delete, and is not asked again
 func TestRefusedRetirementOfADrainedChildSADeletesTheIKESA(t *testing.T) {
+	bubble.Run(testRefusedRetirementOfADrainedChildSADeletesTheIKESA)(t)
+}
+
+func testRefusedRetirementOfADrainedChildSADeletesTheIKESA(t *testing.T) {
 	var asked atomic.Int32
 	pair := dialRefusing(t, func(*PeerConfig) {}, func(initiator, _ *Session) {
 		replaced := initiator.Child.LocalSPI
@@ -195,6 +221,10 @@ func TestRefusedRetirementOfADrainedChildSADeletesTheIKESA(t *testing.T) {
 
 // a Child SA the peer deletes and the dataplane refuses to close is left out of the answer, and the IKE SA's Delete follows it
 func TestRefusedCloseOfAChildSAThePeerDeletedDeletesTheIKESA(t *testing.T) {
+	bubble.Run(testRefusedCloseOfAChildSAThePeerDeletedDeletesTheIKESA)(t)
+}
+
+func testRefusedCloseOfAChildSAThePeerDeletedDeletesTheIKESA(t *testing.T) {
 	pair := dialRefusing(t, func(*PeerConfig) {}, func(initiator, _ *Session) {
 		initiator.SetChildRetireHandler(func(uint32) error { return errRefused })
 	})
@@ -212,6 +242,10 @@ func TestRefusedCloseOfAChildSAThePeerDeletedDeletesTheIKESA(t *testing.T) {
 // RFC 7296 section 1.4.1: "Normally, the response in the INFORMATIONAL exchange will contain Delete payloads for the paired SAs going in the other direction."
 // a peer's Delete naming a replaced Child SA and then the current one, which the dataplane refuses to close, is answered with a Delete payload for the replaced SA it closed
 func TestPeerDeleteAnswersTheChildSAClosedBeforeARefusal(t *testing.T) {
+	bubble.Run(testPeerDeleteAnswersTheChildSAClosedBeforeARefusal)(t)
+}
+
+func testPeerDeleteAnswersTheChildSAClosedBeforeARefusal(t *testing.T) {
 	replaced := ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}
 	pair := dialRefusing(t, func(*PeerConfig) {}, func(initiator, _ *Session) {
 		initiator.retiring, initiator.retiringBy = replaced, time.Now().Add(time.Hour)

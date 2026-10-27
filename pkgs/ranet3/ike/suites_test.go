@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
 // a peer's IKE_SA_INIT offer of every cipher and PRF a node writing none of the cap.crypto lists takes and every classical group, in one proposal with Curve25519 first
@@ -264,12 +265,6 @@ func notifyIn(t testing.TB, payloads []RawPayload) NotifyType {
 // a responder answers an IKE_SA_INIT proposal its lists share no transform of one type with NO_PROPOSAL_CHOSEN
 // RFC 7296 section 3.3.4: "The implementation MUST reject SA proposals that are not authorized by these IKE suite controls."
 func TestResponderRefusesAnIKESAInitItsListsDoNotMeet(t *testing.T) {
-	h := newResponderHarness(t, nil)
-	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { mux.Close() })
 	// encodeTestSAInit writes its KE in X25519, the one group offered
 	offer := Proposal{Number: 1, Protocol: ProtoIKE, Transforms: []Transform{encrAES256, prfSHA384, dhX25519}}
 	for _, test := range []struct {
@@ -282,7 +277,13 @@ func TestResponderRefusesAnIKESAInitItsListsDoNotMeet(t *testing.T) {
 		{"kex", Crypto{IKE: IKESuites{Kex: []string{"p384", "p256"}}}, true},
 		{"none", Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm", "aes256gcm"}, PRF: []string{"sha256", "sha384"}, Kex: []string{"p256", "x25519"}}}, false},
 	} {
-		t.Run("lists apart in "+test.name, func(t *testing.T) {
+		t.Run("lists apart in "+test.name, bubble.Run(func(t *testing.T) {
+			h := newResponderHarness(t, nil)
+			mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { mux.Close() })
 			suites := suitesOf(t, test.lists)
 			h.lists.Store(&suites)
 			spiI := randUint64Nonzero()
@@ -303,7 +304,7 @@ func TestResponderRefusesAnIKESAInitItsListsDoNotMeet(t *testing.T) {
 			if got := firstTestNotify(t, reply); got.Type != N_NO_PROPOSAL_CHOSEN {
 				t.Errorf("lists apart in %s answered notify %d, want NO_PROPOSAL_CHOSEN", test.name, got.Type)
 			}
-		})
+		}))
 	}
 }
 
@@ -311,6 +312,10 @@ func TestResponderRefusesAnIKESAInitItsListsDoNotMeet(t *testing.T) {
 // and an esp cipher list meeting the offer takes the cipher it lists first
 // RFC 7296 section 3.3.4: "The implementation MUST reject SA proposals that are not authorized by these IKE suite controls."
 func TestResponderRefusesAnIKEAuthChildSAItsListsDoNotMeet(t *testing.T) {
+	bubble.Run(testResponderRefusesAnIKEAuthChildSAItsListsDoNotMeet)(t)
+}
+
+func testResponderRefusesAnIKEAuthChildSAItsListsDoNotMeet(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	offer := Proposal{Number: 1, Protocol: ProtoESP, SPI: []byte{0, 0, 0, 9}, Transforms: []Transform{encrAES256, encrChaCha, esnNone}}
 	inner, err := answerIKEAuth(t, h, suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{"aes128gcm"}}}), offer)
@@ -381,7 +386,7 @@ func TestResponderRefusesARekeyItsListsDoNotMeet(t *testing.T) {
 		"a Child SA rekey with a key exchange in a group ike kex holds": {
 			transforms: []Transform{encrAES128, dhX25519, esnNone}, ke: DH_CURVE25519, esp: "aes128gcm/x25519"},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			mux, _ := lifecycleMuxes(t)
 			s := answeringSession(t, mux, suite, old, 0, suitesOf(t, test.lists))
 			ctx := s.current
@@ -404,7 +409,7 @@ func TestResponderRefusesARekeyItsListsDoNotMeet(t *testing.T) {
 			if len(s.rechecks) != 1 {
 				t.Error("a refused rekey left Run to find out about the lists at the next reload")
 			}
-		})
+		}))
 	}
 }
 
@@ -505,6 +510,10 @@ func TestOfferLeadsWithOneProposalInTheKEGroup(t *testing.T) {
 // and ends the handshake on an answer choosing a transform its lists left out
 // RFC 7296 section 3.3.6: "The initiator of an exchange MUST check that the accepted offer is consistent with one of its proposals, and if not MUST terminate the exchange."
 func TestInitiatorRefusesAnIKESAInitAnswerOutsideItsLists(t *testing.T) {
+	bubble.Run(testInitiatorRefusesAnIKESAInitAnswerOutsideItsLists)(t)
+}
+
+func testInitiatorRefusesAnIKESAInitAnswerOutsideItsLists(t *testing.T) {
 	lists := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm"}, Kex: []string{"p256", "x25519"}}})
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
@@ -588,7 +597,7 @@ func TestInitiatorRefusesARekeyAnswerOutsideItsLists(t *testing.T) {
 		"a Child SA rekey while esp cipher holds its cipher":   {[]string{"aes256gcm", "aes128gcm"}, []Transform{encrAES128, esnNone}, encrAES256},
 		"a Child SA rekey once esp cipher left its cipher out": {[]string{"chacha20poly1305", "aes256gcm"}, []Transform{encrChaCha, encrAES256, esnNone}, encrAES128},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s := newRekeyableSession(t, old)
 			lists := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: test.esp}})
 			s.suites = func() Suites { return lists }
@@ -623,10 +632,10 @@ func TestInitiatorRefusesARekeyAnswerOutsideItsLists(t *testing.T) {
 			if s.currentChild().LocalSPI != old.LocalSPI {
 				t.Error("a refused answer replaced the Child SA")
 			}
-		})
+		}))
 	}
 
-	t.Run("an IKE SA rekey of an SA in a group ike kex left out", func(t *testing.T) {
+	t.Run("an IKE SA rekey of an SA in a group ike kex left out", bubble.Run(func(t *testing.T) {
 		mux, _ := lifecycleMuxes(t)
 		ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_ECP_384},
 			spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
@@ -669,9 +678,9 @@ func TestInitiatorRefusesARekeyAnswerOutsideItsLists(t *testing.T) {
 		if current, _ := s.contexts(); current != ctx {
 			t.Error("a refused answer replaced the IKE SA")
 		}
-	})
+	}))
 
-	t.Run("an IKE SA rekey asked to retry in a group ike kex left out", func(t *testing.T) {
+	t.Run("an IKE SA rekey asked to retry in a group ike kex left out", bubble.Run(func(t *testing.T) {
 		mux, _ := lifecycleMuxes(t)
 		ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_ECP_256},
 			spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
@@ -697,13 +706,17 @@ func TestInitiatorRefusesARekeyAnswerOutsideItsLists(t *testing.T) {
 		if current, _ := s.contexts(); current != ctx {
 			t.Error("a refused retry replaced the IKE SA")
 		}
-	})
+	}))
 }
 
 // an IKE SA rekey under lists that left out the SA's PRF sends nothing
 // no rekey changes the PRF
 // so only the replacement Run starts moves the SA off it
 func TestIKESARekeyLeavesAnUnlistedPRFToTheReplacement(t *testing.T) {
+	bubble.Run(testIKESARekeyLeavesAnUnlistedPRFToTheReplacement)(t)
+}
+
+func testIKESARekeyLeavesAnUnlistedPRFToTheReplacement(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519},
 		spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
@@ -726,6 +739,10 @@ func TestIKESARekeyLeavesAnUnlistedPRFToTheReplacement(t *testing.T) {
 // so a peer that chose a group after this end's first takes the rekey in one exchange and keeps the group
 // RFC 7296 section 1.3: "The Diffie-Hellman group of the KEi MUST be an element of the group the initiator expects the responder to accept (additional Diffie-Hellman groups can be proposed)."
 func TestIKESARekeyKeepsTheGroupThePeerChose(t *testing.T) {
+	bubble.Run(testIKESARekeyKeepsTheGroupThePeerChose)(t)
+}
+
+func testIKESARekeyKeepsTheGroupThePeerChose(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	p256 := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"p256"}}})
 	h.lists.Store(&p256)
@@ -838,6 +855,10 @@ func endedWithin(t *testing.T, run <-chan error, which string) error {
 // and the Child SA once the IKE SA it takes SK_d from holds listed transforms
 // the harness runs no jitter, so each rekey starts at once
 func TestReloadRekeysAtOnceAnSAWhoseCipherOrGroupItLeftOut(t *testing.T) {
+	bubble.Run(testReloadRekeysAtOnceAnSAWhoseCipherOrGroupItLeftOut)(t)
+}
+
+func testReloadRekeysAtOnceAnSAWhoseCipherOrGroupItLeftOut(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	cfg, dialing := listedConfig(h, dialed.record)
@@ -880,6 +901,10 @@ func TestReloadRekeysAtOnceAnSAWhoseCipherOrGroupItLeftOut(t *testing.T) {
 // a reload whose lists still hold every transform of the live SAs leaves them be, an entry joining ML-KEM-768 to the IKE SA's group ahead of its own among them
 // and a rekey keeps the cipher of the SA it replaces
 func TestReloadLeavesAnSAWhoseTransformsItStillLists(t *testing.T) {
+	bubble.Run(testReloadLeavesAnSAWhoseTransformsItStillLists)(t)
+}
+
+func testReloadLeavesAnSAWhoseTransformsItStillLists(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	cfg, dialing := listedConfig(h, dialed.record)
@@ -907,6 +932,10 @@ func TestReloadLeavesAnSAWhoseTransformsItStillLists(t *testing.T) {
 // a session whose lists changed between its handshake and the start of its Run checks its SAs when Run starts
 // a reload's sweep of the live sessions misses one adopted after it
 func TestRunChecksTheSAsOfListsChangedBeforeItStarted(t *testing.T) {
+	bubble.Run(testRunChecksTheSAsOfListsChangedBeforeItStarted)(t)
+}
+
+func testRunChecksTheSAsOfListsChangedBeforeItStarted(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	cfg, dialing := listedConfig(h, dialed.record)
@@ -924,7 +953,7 @@ func TestRunChecksTheSAsOfListsChangedBeforeItStarted(t *testing.T) {
 // RFC 7296 section 1.4.1: "Deleting an IKE SA implicitly closes any remaining Child SAs negotiated under it."
 func TestReloadLeavingOutThePRFReplacesTheIKESA(t *testing.T) {
 	for _, reloading := range []string{"dialing", "answering"} {
-		t.Run("the "+reloading+" end", func(t *testing.T) {
+		t.Run("the "+reloading+" end", bubble.Run(func(t *testing.T) {
 			dialed, answered := &recorder{}, &recorder{}
 			h := newResponderHarness(t, nil, answered.record)
 			cfg, dialing := listedConfig(h, dialed.record)
@@ -960,6 +989,6 @@ func TestReloadLeavingOutThePRFReplacesTheIKESA(t *testing.T) {
 			if got := next.Suite().IKEPRF; got != "sha256" {
 				t.Errorf("the next handshake runs %s, want the PRF the lists hold", got)
 			}
-		})
+		}))
 	}
 }

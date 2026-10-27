@@ -20,6 +20,7 @@ import (
 
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
@@ -263,6 +264,10 @@ func TestIKERekeyAnswerIsTakenOnlyAsTheSingleChoiceOfAnOfferedProposal(t *testin
 // RFC 9370 section 2.2.4: "If the responder receives an IKE_FOLLOWUP_KE message for which it does not have a key exchange state, it MUST send back a new error type notification called "STATE_NOT_FOUND"."
 // RFC 7296 section 2.25.1: "If a peer receives a request to rekey the IKE SA, and it is currently creating, rekeying, or closing a Child SA of that IKE SA, it SHOULD reply with TEMPORARY_FAILURE."
 func TestPeerChainsAreAnsweredAsTheModelOfTheChain(t *testing.T) {
+	bubble.Run(testPeerChainsAreAnsweredAsTheModelOfTheChain)(t)
+}
+
+func testPeerChainsAreAnsweredAsTheModelOfTheChain(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	entry1024And768 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024, ML_KEM_768}}
 	// the model's entries, each with the methods of its additional key exchanges in the order they run

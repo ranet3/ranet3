@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
 // a quiet peer's liveness interval falls inside the sends of an unanswered request
@@ -188,6 +190,10 @@ func TestUnansweredDeleteOfARedundantIKESAEndsItAlone(t *testing.T) {
 // a liveness check outstanding on an IKE SA the peer rekeys goes on over the SA it replaced, which this end keeps until the peer's Delete
 // the peer's Delete of that SA and every answer over it are lost, so the check ends that SA alone once its budget is spent, and the session goes on over the SA the peer made
 func TestUnansweredLivenessCheckOnAnIKESAThePeerReplacedEndsItAlone(t *testing.T) {
+	bubble.Run(testUnansweredLivenessCheckOnAnIKESAThePeerReplacedEndsItAlone)(t)
+}
+
+func testUnansweredLivenessCheckOnAnIKESAThePeerReplacedEndsItAlone(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	var replaced atomic.Uint64
 	checking := make(chan struct{})
@@ -260,7 +266,7 @@ func TestDeleteOfTheCurrentIKESAHasTheTeardownBudget(t *testing.T) {
 			s.SuitesChanged()
 		}, ended: ErrPRFUnlisted},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			h := newResponderHarness(t, nil)
 			var deletes atomic.Int32
 			cfg, dialing := listedConfig(h, nil)
@@ -283,7 +289,7 @@ func TestDeleteOfTheCurrentIKESAHasTheTeardownBudget(t *testing.T) {
 			if got := deletes.Load(); got != teardownRetransmits {
 				t.Errorf("the Delete was sent %d times, want %d", got, teardownRetransmits)
 			}
-		})
+		}))
 	}
 }
 
@@ -291,6 +297,10 @@ func TestDeleteOfTheCurrentIKESAHasTheTeardownBudget(t *testing.T) {
 // a Child SA reaches its lifetime while every send of the Delete of the IKE SA a forced rekey replaced is lost
 // that Delete ends the replaced SA alone, and the session then sends the Delete of the IKE SA it holds, which the peer answers, and ends with the lifetime's error
 func TestLifetimeBehindAnUnansweredDeleteOfAReplacedIKESAStillDeletesTheIKESA(t *testing.T) {
+	bubble.Run(testLifetimeBehindAnUnansweredDeleteOfAReplacedIKESAStillDeletesTheIKESA)(t)
+}
+
+func testLifetimeBehindAnUnansweredDeleteOfAReplacedIKESAStillDeletesTheIKESA(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	var replaced atomic.Uint64
 	var replacedSent, currentSent atomic.Int32

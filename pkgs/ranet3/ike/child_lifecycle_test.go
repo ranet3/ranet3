@@ -16,10 +16,15 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
 func TestChildNegotiationUsesRequestIKEKeys(t *testing.T) {
+	bubble.Run(testChildNegotiationUsesRequestIKEKeys)(t)
+}
+
+func testChildNegotiationUsesRequestIKEKeys(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	old := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}, skD: bytes.Repeat([]byte{1}, 32)}
 	s := &Session{mux: mux, current: old, requests: make(chan *localRequest)}
@@ -69,6 +74,10 @@ func lifecycleMuxes(t *testing.T) (*transport.Mux, *transport.Mux) {
 }
 
 func TestReplaceChildRollsBackSPIRegistration(t *testing.T) {
+	bubble.Run(testReplaceChildRollsBackSPIRegistration)(t)
+}
+
+func testReplaceChildRollsBackSPIRegistration(t *testing.T) {
 	mux, other := lifecycleMuxes(t)
 	s := &Session{mux: mux}
 	s.SetChildHandler(func(ChildSA) error { return errors.New("install failed") })
@@ -82,6 +91,10 @@ func TestReplaceChildRollsBackSPIRegistration(t *testing.T) {
 }
 
 func TestReplaceChildDoesNotReuseInstalledSPI(t *testing.T) {
+	bubble.Run(testReplaceChildDoesNotReuseInstalledSPI)(t)
+}
+
+func testReplaceChildDoesNotReuseInstalledSPI(t *testing.T) {
 	for _, draining := range []bool{false, true} {
 		mux, other := lifecycleMuxes(t)
 		s := &Session{mux: mux}
@@ -103,6 +116,10 @@ func TestReplaceChildDoesNotReuseInstalledSPI(t *testing.T) {
 }
 
 func TestRetireChildPreservesRetryableStateOnFailure(t *testing.T) {
+	bubble.Run(testRetireChildPreservesRetryableStateOnFailure)(t)
+}
+
+func testRetireChildPreservesRetryableStateOnFailure(t *testing.T) {
 	mux, other := lifecycleMuxes(t)
 	old := ChildSA{LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
 	if err := mux.RegisterESP(old.LocalSPI); err != nil {
@@ -130,6 +147,10 @@ func TestRetireChildPreservesRetryableStateOnFailure(t *testing.T) {
 }
 
 func TestReplaceChildRejectsOverlappingRetirement(t *testing.T) {
+	bubble.Run(testReplaceChildRejectsOverlappingRetirement)(t)
+}
+
+func testReplaceChildRejectsOverlappingRetirement(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	s := &Session{mux: mux, retiring: ChildSA{LocalSPI: 1, RemoteSPI: 2}}
 	if err := s.replaceChild(ChildSA{LocalSPI: 3, RemoteSPI: 4}); err == nil {
@@ -138,6 +159,10 @@ func TestReplaceChildRejectsOverlappingRetirement(t *testing.T) {
 }
 
 func TestRekeyRetirementAllowsQueuedESPToDrain(t *testing.T) {
+	bubble.Run(testRekeyRetirementAllowsQueuedESPToDrain)(t)
+}
+
+func testRekeyRetirementAllowsQueuedESPToDrain(t *testing.T) {
 	for _, peerDelete := range []bool{false, true} {
 		mux, other := lifecycleMuxes(t)
 		old := ChildSA{LocalSPI: 1, RemoteSPI: 2}
@@ -203,6 +228,10 @@ func TestChildRekeyGuardSerializesAttempts(t *testing.T) {
 }
 
 func TestChildNotFoundRecoveryCreatesNewChild(t *testing.T) {
+	bubble.Run(testChildNotFoundRecoveryCreatesNewChild)(t)
+}
+
+func testChildNotFoundRecoveryCreatesNewChild(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	old := ChildSA{
 		EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128,
@@ -293,6 +322,10 @@ func TestChildNotFoundRecoveryCreatesNewChild(t *testing.T) {
 // the instant it is established runs both at once, as adopt's
 // replace path produces on a simultaneous open.
 func TestLocalMessageIDIsNotAllocatedTwiceAtOnce(t *testing.T) {
+	bubble.Run(testLocalMessageIDIsNotAllocatedTwiceAtOnce)(t)
+}
+
+func testLocalMessageIDIsNotAllocatedTwiceAtOnce(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	s := &Session{
 		mux: mux,
@@ -391,6 +424,10 @@ func newRekeyableSession(t *testing.T, old ChildSA) *Session {
 // leave the replaced SA latched in s.retiring, which locks out every later
 // rekey in both directions for the life of the session.
 func TestCrossedChildDeleteStillRetiresReplacedSA(t *testing.T) {
+	bubble.Run(testCrossedChildDeleteStillRetiresReplacedSA)(t)
+}
+
+func testCrossedChildDeleteStillRetiresReplacedSA(t *testing.T) {
 	old := ChildSA{
 		EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128,
 		LocalSPI: 0x10203040, RemoteSPI: 0x50607080,
@@ -421,6 +458,10 @@ func TestCrossedChildDeleteStillRetiresReplacedSA(t *testing.T) {
 // A failed retire exchange has nobody left to send the Delete either, so the
 // replaced SA still has to come out of s.retiring.
 func TestFailedChildRetireExchangeStillClearsReplacedSA(t *testing.T) {
+	bubble.Run(testFailedChildRetireExchangeStillClearsReplacedSA)(t)
+}
+
+func testFailedChildRetireExchangeStillClearsReplacedSA(t *testing.T) {
 	old := ChildSA{
 		EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128,
 		LocalSPI: 0x11223344, RemoteSPI: 0x55667788,
@@ -465,6 +506,10 @@ func TestPeerChildRekeysAreRateLimited(t *testing.T) {
 // has it carries no Delete payload, and its inbound keys then drain like any
 // other replaced SA's.
 func TestReplacedChildSAThePeerNeverDeletesIsDeletedAtTheDeadline(t *testing.T) {
+	bubble.Run(testReplacedChildSAThePeerNeverDeletesIsDeletedAtTheDeadline)(t)
+}
+
+func testReplacedChildSAThePeerNeverDeletesIsDeletedAtTheDeadline(t *testing.T) {
 	mine, _ := lifecycleMuxes(t)
 	s := &Session{mux: mine, requests: make(chan *localRequest)}
 	replaced := ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}
@@ -535,6 +580,10 @@ func TestReplacedChildSAThePeerNeverDeletesIsDeletedAtTheDeadline(t *testing.T) 
 
 // a session left to its own loop sends that Delete once, at the deadline and not before
 func TestRunDeletesTheReplacedChildSAAtItsDeadline(t *testing.T) {
+	bubble.Run(testRunDeletesTheReplacedChildSAAtItsDeadline)(t)
+}
+
+func testRunDeletesTheReplacedChildSAAtItsDeadline(t *testing.T) {
 	peer, s := closingAfterAuth(t)
 	replaced := ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}
 	s.requests = make(chan *localRequest, 1)
@@ -618,7 +667,7 @@ func TestDeleteCrossingThisEndsOwnIsAnsweredWithoutTheSA(t *testing.T) {
 			return nil
 		}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.name, bubble.Run(func(t *testing.T) {
 			s := newRekeyableSession(t, old)
 			s.current.skei, s.current.sker = make([]byte, 20), make([]byte, 20)
 			if err := tc.delete(t, s, func(own *localRequest) {
@@ -638,7 +687,7 @@ func TestDeleteCrossingThisEndsOwnIsAnsweredWithoutTheSA(t *testing.T) {
 			if s.retiringChild().LocalSPI != 0 {
 				t.Error("the replaced SA is still latched after this end's Delete was answered")
 			}
-		})
+		}))
 	}
 }
 
@@ -668,6 +717,10 @@ func crossingDelete(t *testing.T, s *Session, remoteSPI uint32) []RawPayload {
 // the peer: without that, every attempt leaves one more SA behind at a peer
 // that believes it is carrying traffic.
 func TestRefusedRekeyResponseDeletesTheSAItLeftAtThePeer(t *testing.T) {
+	bubble.Run(testRefusedRekeyResponseDeletesTheSAItLeftAtThePeer)(t)
+}
+
+func testRefusedRekeyResponseDeletesTheSAItLeftAtThePeer(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 1, RemoteSPI: 2}
 	s := &Session{mux: mux, current: &ikeContext{suite: SASuite{PRFID: PRF_HMAC_SHA2_256}},
@@ -771,7 +824,7 @@ func TestRekeyOnTheWireOffersOneCipher(t *testing.T) {
 		{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 256, LocalSPI: 1, RemoteSPI: 2},
 		{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 1, RemoteSPI: 2},
 	} {
-		t.Run(fmt.Sprintf("%d/%d", installed.EncrID, installed.EncrKeyBits), func(t *testing.T) {
+		t.Run(fmt.Sprintf("%d/%d", installed.EncrID, installed.EncrKeyBits), bubble.Run(func(t *testing.T) {
 			wantBits := installed.EncrKeyBits
 			if installed.EncrID == ENCR_CHACHA20_POLY1305 {
 				wantBits = 0
@@ -805,7 +858,7 @@ func TestRekeyOnTheWireOffersOneCipher(t *testing.T) {
 				t.Errorf("the rekey on the wire offers %v, want only %d with %d key bits", ciphers, installed.EncrID, wantBits)
 			}
 			rekey.result <- requestResult{err: errors.New("done with this exchange")}
-		})
+		}))
 	}
 }
 
@@ -815,6 +868,10 @@ func TestRekeyOnTheWireOffersOneCipher(t *testing.T) {
 // left to retire. Reporting that as an error fails the rekey that had already
 // succeeded, and the caller then retries a replacement it has.
 func TestRetiringAChildTwiceIsNotAFailure(t *testing.T) {
+	bubble.Run(testRetiringAChildTwiceIsNotAFailure)(t)
+}
+
+func testRetiringAChildTwiceIsNotAFailure(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	retiring := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 7, RemoteSPI: 8}
 	s := &Session{mux: mux, retiring: retiring, childRetireDelay: time.Millisecond}
@@ -840,6 +897,10 @@ func TestRetiringAChildTwiceIsNotAFailure(t *testing.T) {
 // RFC 7296 section 3.9: "Nonce values MUST NOT be reused."
 // a Child SA negotiation here carries no KE, so its keys come from SK_d and the two nonces alone, and two of them that this end starts on one IKE SA send different nonces
 func TestEachChildSANegotiationDrawsItsOwnNonce(t *testing.T) {
+	bubble.Run(testEachChildSANegotiationDrawsItsOwnNonce)(t)
+}
+
+func testEachChildSANegotiationDrawsItsOwnNonce(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	s := &Session{mux: mux, current: &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}, skD: bytes.Repeat([]byte{1}, 32)},
 		requests: make(chan *localRequest, 1)}
@@ -868,6 +929,10 @@ func TestEachChildSANegotiationDrawsItsOwnNonce(t *testing.T) {
 // RFC 7296 section 3.9: "Nonce values MUST NOT be reused."
 // two Child SA rekeys this end answers, each on an IKE SA keyed alike, answer with different nonces
 func TestEachChildSAAnswerDrawsItsOwnNonce(t *testing.T) {
+	bubble.Run(testEachChildSAAnswerDrawsItsOwnNonce)(t)
+}
+
+func testEachChildSAAnswerDrawsItsOwnNonce(t *testing.T) {
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
 	var nonces [][]byte
 	for range 2 {

@@ -18,11 +18,16 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
 func TestSessionRunStopsOnContextCancellation(t *testing.T) {
+	bubble.Run(testSessionRunStopsOnContextCancellation)(t)
+}
+
+func testSessionRunStopsOnContextCancellation(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	s := &Session{mux: mux}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -38,7 +43,7 @@ func TestSessionRunStopsOnContextCancellation(t *testing.T) {
 
 func TestRequestReturnsWhenTransportCloses(t *testing.T) {
 	for _, waitingForResponse := range []bool{false, true} {
-		t.Run(fmt.Sprint(waitingForResponse), func(t *testing.T) {
+		t.Run(fmt.Sprint(waitingForResponse), bubble.Run(func(t *testing.T) {
 			mux, _ := lifecycleMuxes(t)
 			s := &Session{mux: mux, current: &ikeContext{}, requests: make(chan *localRequest)}
 			done := make(chan error, 1)
@@ -58,7 +63,7 @@ func TestRequestReturnsWhenTransportCloses(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("request remained blocked after transport closed")
 			}
-		})
+		}))
 	}
 }
 
@@ -182,6 +187,10 @@ func TestNoteTrafficCoalescesPacketsUntilRunConsumesThem(t *testing.T) {
 
 // a request whose first send fails is pending with that attempt spent
 func TestStartRequestConsumesMessageIDWhetherOrNotItsSendGoesOut(t *testing.T) {
+	bubble.Run(testStartRequestConsumesMessageIDWhetherOrNotItsSendGoesOut)(t)
+}
+
+func testStartRequestConsumesMessageIDWhetherOrNotItsSendGoesOut(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	ctx := &ikeContext{
 		suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128},
@@ -226,7 +235,7 @@ func unsendableMux(t *testing.T) *transport.Mux {
 }
 
 func TestMessageIDExhaustionCannotWrap(t *testing.T) {
-	t.Run("local request", func(t *testing.T) {
+	t.Run("local request", bubble.Run(func(t *testing.T) {
 		mux, _ := lifecycleMuxes(t)
 		ctx := &ikeContext{nextLocalMID: maxMessageID}
 		s := &Session{mux: mux, current: ctx, requests: make(chan *localRequest, 1)}
@@ -244,9 +253,9 @@ func TestMessageIDExhaustionCannotWrap(t *testing.T) {
 		if !mux.IsClosed() {
 			t.Fatal("IKE SA remained open at local Message ID exhaustion")
 		}
-	})
+	}))
 
-	t.Run("peer request", func(t *testing.T) {
+	t.Run("peer request", bubble.Run(func(t *testing.T) {
 		mux, _ := lifecycleMuxes(t)
 		suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128}
 		ctx := &ikeContext{
@@ -271,7 +280,7 @@ func TestMessageIDExhaustionCannotWrap(t *testing.T) {
 		if !mux.IsClosed() {
 			t.Fatal("IKE SA remained open at peer Message ID exhaustion")
 		}
-	})
+	}))
 }
 
 // acceptedMux is the mux a responder makes from a datagram configured sent
@@ -309,6 +318,10 @@ func recordedKind(r *recorder, kind string) int {
 }
 
 func TestReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
+	bubble.Run(testReplayedRequestDoesNotRefreshOrAdoptEndpoint)(t)
+}
+
+func testReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
 	configured := listenPeer(t)
 	rebound := listenPeer(t)
 
@@ -404,6 +417,10 @@ func TestReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
 // RFC 7296 section 2.3: "This Notify message MUST NOT be sent in a response" and "the invalid request MUST NOT be acknowledged."
 // a request at a Message ID ahead of the window is dropped unanswered and moves the window nowhere, so the request at its next Message ID is the one answered
 func TestRequestAheadOfTheWindowIsNotAcknowledged(t *testing.T) {
+	bubble.Run(testRequestAheadOfTheWindowIsNotAcknowledged)(t)
+}
+
+func testRequestAheadOfTheWindowIsNotAcknowledged(t *testing.T) {
 	s, peer, _ := probedSession(t)
 	held := s.current
 	if err := s.mux.RegisterIKE(held.spiI); err != nil {
@@ -538,6 +555,10 @@ func testContext() *ikeContext {
 }
 
 func TestAuthenticatedMalformedRequestGetsInvalidSyntax(t *testing.T) {
+	bubble.Run(testAuthenticatedMalformedRequestGetsInvalidSyntax)(t)
+}
+
+func testAuthenticatedMalformedRequestGetsInvalidSyntax(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -618,6 +639,10 @@ func TestAuthenticatedMalformedRequestGetsInvalidSyntax(t *testing.T) {
 // section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
 // a request whose SK carries an SK payload after a Delete of the Child SA draws INVALID_SYNTAX and ends the IKE SA, and the Delete is not acted on
 func TestSessionRefusesAnSKPayloadInsideAnotherWithInvalidSyntax(t *testing.T) {
+	bubble.Run(testSessionRefusesAnSKPayloadInsideAnotherWithInvalidSyntax)(t)
+}
+
+func testSessionRefusesAnSKPayloadInsideAnotherWithInvalidSyntax(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -788,7 +813,7 @@ func TestSessionAnswersAMalformedCreateChildSAWithInvalidSyntax(t *testing.T) {
 		"IKE SA rekey offering NONE for Diffie-Hellman":                 {replaced(ikeRekey, offersNoneDH), N_NO_PROPOSAL_CHOSEN},
 		"IKE SA rekey offering NONE beside Curve25519":                  {replaced(ikeRekey, offersNoneBesideAGroup), N_NO_PROPOSAL_CHOSEN},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			mux, _ := lifecycleMuxes(t)
 			ctx := testContext()
 			s := &Session{mux: mux, current: ctx, Child: child}
@@ -798,34 +823,38 @@ func TestSessionAnswersAMalformedCreateChildSAWithInvalidSyntax(t *testing.T) {
 			if test.want == N_CHILD_SA_NOT_FOUND && (notify.Protocol != ProtoAH || !bytes.Equal(notify.SPI, binary.BigEndian.AppendUint32(nil, child.RemoteSPI))) {
 				t.Errorf("CHILD_SA_NOT_FOUND names protocol %d SPI %x, want the REKEY_SA's AH and %08x", notify.Protocol, notify.SPI, child.RemoteSPI)
 			}
-		})
+		}))
 	}
 	// handleRequest takes an SA payload that does not decode or carries no proposal for a Child SA's, so the IKE SA rekey's own refusals are reached directly
 	for name, body := range map[string][]byte{"does not decode": {0}, "carries no proposal": nil} {
-		t.Run("IKE SA rekey whose SA payload "+name, func(t *testing.T) {
+		t.Run("IKE SA rekey whose SA payload "+name, bubble.Run(func(t *testing.T) {
 			mux, _ := lifecycleMuxes(t)
 			ctx := testContext()
 			s := &Session{mux: mux, current: ctx, Child: child}
 			raw, err := s.handleIKERekey(ctx, 5, replaced(ikeRekey, RawPayload{Type: PayloadSA, Body: body}))
 			answered(t, s, ctx, raw, err, N_INVALID_SYNTAX)
-		})
+		}))
 	}
 	// section 2.10's "half the key size of the negotiated pseudorandom function", under an IKE SA whose PRF is HMAC-SHA2-384 and an offer that keeps it
 	for _, size := range []int{16, 23} {
-		t.Run(fmt.Sprintf("IKE SA rekey under PRF_HMAC_SHA2_384 with a nonce of %d octets", size), func(t *testing.T) {
+		t.Run(fmt.Sprintf("IKE SA rekey under PRF_HMAC_SHA2_384 with a nonce of %d octets", size), bubble.Run(func(t *testing.T) {
 			mux, _ := lifecycleMuxes(t)
 			ctx := testContext()
 			ctx.suite.PRFID = PRF_HMAC_SHA2_384
 			s := &Session{mux: mux, current: ctx, Child: child}
 			raw, err := s.handleRequest(ctx, &Header{ExchangeType: CREATE_CHILD_SA, MessageID: 5}, nil, replaced(replaced(ikeRekey, otherPRF), RawPayload{Type: PayloadNonce, Body: make([]byte, size)}))
 			answered(t, s, ctx, raw, err, N_INVALID_SYNTAX)
-		})
+		}))
 	}
 }
 
 // section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
 // a running session answers a CREATE_CHILD_SA request carrying two nonces with INVALID_SYNTAX and ends, and sends nothing after
 func TestSessionEndsWithoutADeleteOnceItAnswersInvalidSyntax(t *testing.T) {
+	bubble.Run(testSessionEndsWithoutADeleteOnceItAnswersInvalidSyntax)(t)
+}
+
+func testSessionEndsWithoutADeleteOnceItAnswersInvalidSyntax(t *testing.T) {
 	peer, s := closingAfterAuth(t)
 	peer.to = muxLoopback(s.mux)
 	done := runSession(t, s)
@@ -853,6 +882,10 @@ func TestSessionEndsWithoutADeleteOnceItAnswersInvalidSyntax(t *testing.T) {
 // RFC 7296 section 2.21.4: "A peer receiving such an unprotected Notify payload MUST NOT respond and MUST NOT change the state of any existing SAs."
 // an INVALID_IKE_SPI in the clear under the IKE SA's SPIs, as the answer to the exchange under way and as a request, settles nothing and draws nothing
 func TestSessionTakesNothingFromANotifyInTheClear(t *testing.T) {
+	bubble.Run(testSessionTakesNothingFromANotifyInTheClear)(t)
+}
+
+func testSessionTakesNothingFromANotifyInTheClear(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -897,6 +930,10 @@ func TestSessionTakesNothingFromANotifyInTheClear(t *testing.T) {
 // section 3.10.1: "Unrecognized error types in a request and status types in a request or response MUST be ignored, and they should be logged."
 // an INFORMATIONAL request telling this end of INVALID_SPI for the SPI its Child SA sends with and of INVALID_IKE_SPI, and carrying an error notify and a status notify of types nothing assigns, is answered empty, and the IKE SA and the Child SA stay
 func TestSessionChangesNothingForTheErrorNotifiesAPeerSends(t *testing.T) {
+	bubble.Run(testSessionChangesNothingForTheErrorNotifiesAPeerSends)(t)
+}
+
+func testSessionChangesNothingForTheErrorNotifiesAPeerSends(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -956,6 +993,10 @@ func TestSessionChangesNothingForTheErrorNotifiesAPeerSends(t *testing.T) {
 // section 2.21.4: "If a response is sent, the response MUST be sent to the IP address and port from where it came with the same IKE SPIs and the Message ID copied."
 // a Delete of the IKE SA at major version 3 that authenticates, sent from an address other than the peer's, is answered so in the clear at that address and not acted on, so the request at version 2.1 with the V bit and every X bit set after it takes the same Message ID
 func TestSessionAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
+	bubble.Run(testSessionAnswersAHigherMajorVersionAndDropsIt)(t)
+}
+
+func testSessionAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -1031,6 +1072,10 @@ func TestSessionAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
 // section 2.21.3 on errors in a response: "Because sending such error messages as an INFORMATIONAL exchange might lead to further errors that could cause loops, such errors SHOULD NOT be sent."
 // so the response refused draws nothing
 func TestSessionHeedsTheCriticalBitOnlyOnAnUnsupportedType(t *testing.T) {
+	bubble.Run(testSessionHeedsTheCriticalBitOnlyOnAnUnsupportedType)(t)
+}
+
+func testSessionHeedsTheCriticalBitOnlyOnAnUnsupportedType(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -1148,7 +1193,7 @@ func TestSessionRefusesACreateChildSAMarkingAnUnsupportedPayloadCritical(t *test
 		"inside SK":    {nil, append(childRekeyRequest(0)[1:], unsupportedCritical)},
 		"in the clear": {[]RawPayload{unsupportedCritical}, childRekeyRequest(0)[1:]},
 	} {
-		t.Run(placement, func(t *testing.T) {
+		t.Run(placement, bubble.Run(func(t *testing.T) {
 			peer := listenPeer(t)
 			peerAddr := peer.LocalAddr().(*net.UDPAddr)
 			mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -1201,13 +1246,17 @@ func TestSessionRefusesACreateChildSAMarkingAnUnsupportedPayloadCritical(t *test
 			if child := s.currentChild(); child.LocalSPI != 0 || mux.IsClosed() {
 				t.Errorf("the refused request left Child SA %08x and the IKE SA closed %v, want no Child SA and the IKE SA open", child.LocalSPI, mux.IsClosed())
 			}
-		})
+		}))
 	}
 }
 
 // RFC 7296 section 2.21.3 on errors in a response: "Because sending such error messages as an INFORMATIONAL exchange might lead to further errors that could cause loops, such errors SHOULD NOT be sent."
 // a response to the exchange under way that authenticates and whose payloads do not parse ends that exchange with an error and draws nothing
 func TestSessionSaysNothingOfAMalformedResponse(t *testing.T) {
+	bubble.Run(testSessionSaysNothingOfAMalformedResponse)(t)
+}
+
+func testSessionSaysNothingOfAMalformedResponse(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -1325,6 +1374,10 @@ func TestChildRequestRejectionNotifications(t *testing.T) {
 }
 
 func TestChildRequestCreatesMissingChild(t *testing.T) {
+	bubble.Run(testChildRequestCreatesMissingChild)(t)
+}
+
+func testChildRequestCreatesMissingChild(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	ikeCtx := &ikeContext{
@@ -1369,6 +1422,10 @@ func TestChildRequestCreatesMissingChild(t *testing.T) {
 }
 
 func TestInformationalDeletesEveryDesignatedChildSA(t *testing.T) {
+	bubble.Run(testInformationalDeletesEveryDesignatedChildSA)(t)
+}
+
+func testInformationalDeletesEveryDesignatedChildSA(t *testing.T) {
 	mux, other := lifecycleMuxes(t)
 	current := ChildSA{LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
 	retiring := ChildSA{LocalSPI: 0x90a0b0c0, RemoteSPI: 0xd0e0f000}
@@ -1632,7 +1689,7 @@ func TestDeleteEndingAnIKESAHasTheTeardownBudget(t *testing.T) {
 func TestRunEndingReturnsWhyItDeletedTheIKESA(t *testing.T) {
 	why := errors.New("the reason to delete")
 	for _, peerDoes := range []string{"answers", "crosses", "stays silent"} {
-		t.Run(peerDoes, func(t *testing.T) {
+		t.Run(peerDoes, bubble.Run(func(t *testing.T) {
 			peer, s := closingAfterAuth(t)
 			events := &recorder{}
 			s.requests, s.events = make(chan *localRequest, 1), events.record
@@ -1686,7 +1743,7 @@ func TestRunEndingReturnsWhyItDeletedTheIKESA(t *testing.T) {
 					break
 				}
 			}
-		})
+		}))
 	}
 }
 
@@ -1695,7 +1752,9 @@ func TestRunEndingReturnsWhyItDeletedTheIKESA(t *testing.T) {
 // brings it around. Everything else the loop waits for on an idle session is
 // dead peer detection ten seconds out, so a replaced inbound SA would sit
 // registered until something unrelated happened to wake the loop.
-func TestRunLoopWakesForRetirement(t *testing.T) {
+func TestRunLoopWakesForRetirement(t *testing.T) { bubble.Run(testRunLoopWakesForRetirement)(t) }
+
+func testRunLoopWakesForRetirement(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	retired := make(chan uint32, 1)
 	s := &Session{mux: mux, current: &ikeContext{}, requests: make(chan *localRequest)}
@@ -1725,7 +1784,9 @@ func TestRunLoopWakesForRetirement(t *testing.T) {
 // answers every peer-initiated rekey with TEMPORARY_FAILURE, so the loop has
 // to wake for its deadline rather than leave it to whatever happens next: a
 // peer that rekeys once and goes quiet produces no other event at all.
-func TestRunLoopWakesForRetainedIKESA(t *testing.T) {
+func TestRunLoopWakesForRetainedIKESA(t *testing.T) { bubble.Run(testRunLoopWakesForRetainedIKESA)(t) }
+
+func testRunLoopWakesForRetainedIKESA(t *testing.T) {
 	mine, theirs := lifecycleMuxes(t)
 	const spi = uint64(0x1122334455667788)
 	replaced := &ikeContext{spiI: spi, spiR: 2}
@@ -1815,6 +1876,10 @@ func unbuildableSession(t *testing.T, dpdEvery time.Duration) (*Session, string)
 // a liveness check that cannot be built ends the session with why
 // retrying it would send nothing for as long as the session stood
 func TestLivenessCheckThatCannotBeBuiltEndsTheSession(t *testing.T) {
+	bubble.Run(testLivenessCheckThatCannotBeBuiltEndsTheSession)(t)
+}
+
+func testLivenessCheckThatCannotBeBuiltEndsTheSession(t *testing.T) {
 	const interval = 20 * time.Millisecond
 	s, want := unbuildableSession(t, interval)
 	select {
@@ -1832,6 +1897,10 @@ func TestLivenessCheckThatCannotBeBuiltEndsTheSession(t *testing.T) {
 
 // a failed send says nothing about the peer, RFC 7296 section 2.4, so only the spent budget ends the session
 func TestSessionThatCannotSendEndsAfterItsBudget(t *testing.T) {
+	bubble.Run(testSessionThatCannotSendEndsAfterItsBudget)(t)
+}
+
+func testSessionThatCannotSendEndsAfterItsBudget(t *testing.T) {
 	levels := captureLevels(t)
 	const interval, first = 20 * time.Millisecond, 10 * time.Millisecond
 	// the check starts an interval in
@@ -1869,7 +1938,9 @@ func TestSessionThatCannotSendEndsAfterItsBudget(t *testing.T) {
 
 // an outage of replies is said once and ended by a reply that goes out
 // a cached reply goes to the address a replay came from, so it neither adds to an outage nor ends one, and one that cannot go out ends nothing
-func TestFailedReplyKeepsTheSession(t *testing.T) {
+func TestFailedReplyKeepsTheSession(t *testing.T) { bubble.Run(testFailedReplyKeepsTheSession)(t) }
+
+func testFailedReplyKeepsTheSession(t *testing.T) {
 	levels := captureLevels(t)
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
@@ -1984,6 +2055,10 @@ func awaitProbes(t *testing.T, events *recorder, count int) {
 
 // the liveness interval here is an hour
 func TestProbeStartsALivenessCheckAtOnce(t *testing.T) {
+	bubble.Run(testProbeStartsALivenessCheckAtOnce)(t)
+}
+
+func testProbeStartsALivenessCheckAtOnce(t *testing.T) {
 	s, peer, events := probedSession(t)
 	runSession(t, s)
 	s.Probe()
@@ -1996,6 +2071,10 @@ func TestProbeStartsALivenessCheckAtOnce(t *testing.T) {
 
 // the retransmission is due an hour later, and RFC 7296 section 2.1 has it sent bit for bit
 func TestProbeRetransmitsTheOutstandingRequestAtOnce(t *testing.T) {
+	bubble.Run(testProbeRetransmitsTheOutstandingRequestAtOnce)(t)
+}
+
+func testProbeRetransmitsTheOutstandingRequestAtOnce(t *testing.T) {
 	s, peer, events := probedSession(t)
 	runSession(t, s)
 	s.Probe()
@@ -2013,6 +2092,10 @@ func TestProbeRetransmitsTheOutstandingRequestAtOnce(t *testing.T) {
 
 // a probe resends the outstanding request bit for bit and leaves its attempts and its backoff to the schedule
 func TestProbeResendsWithoutSpendingAnAttempt(t *testing.T) {
+	bubble.Run(testProbeResendsWithoutSpendingAnAttempt)(t)
+}
+
+func testProbeResendsWithoutSpendingAnAttempt(t *testing.T) {
 	s, peer, _ := probedSession(t)
 	pending, err := s.startLiveness()
 	if err != nil {
@@ -2035,7 +2118,9 @@ func TestProbeResendsWithoutSpendingAnAttempt(t *testing.T) {
 }
 
 // both ends of a real handshake take probes, which the constructors make room for
-func TestProbesRunHasNotGotToAreOne(t *testing.T) {
+func TestProbesRunHasNotGotToAreOne(t *testing.T) { bubble.Run(testProbesRunHasNotGotToAreOne)(t) }
+
+func testProbesRunHasNotGotToAreOne(t *testing.T) {
 	answered, dialed := &recorder{}, &recorder{}
 	h := newResponderHarness(t, nil, answered.record)
 	cfg := h.peerConfig()
@@ -2068,6 +2153,10 @@ func TestProbesRunHasNotGotToAreOne(t *testing.T) {
 // a probe that cannot build the check it asks for ends the session as that check would
 // the liveness interval here is an hour, and only the probe starts a check
 func TestProbeThatCannotBuildACheckEndsTheSession(t *testing.T) {
+	bubble.Run(testProbeThatCannotBuildACheckEndsTheSession)(t)
+}
+
+func testProbeThatCannotBuildACheckEndsTheSession(t *testing.T) {
 	s, want := unbuildableSession(t, time.Hour)
 	done := runSession(t, s)
 	s.Probe()
@@ -2086,6 +2175,10 @@ func TestProbeThatCannotBuildACheckEndsTheSession(t *testing.T) {
 
 // probes resend an unanswered exchange without spending its attempts, so it ends on its schedule and not before
 func TestProbesLeaveAnUnansweredExchangeToItsSchedule(t *testing.T) {
+	bubble.Run(testProbesLeaveAnUnansweredExchangeToItsSchedule)(t)
+}
+
+func testProbesLeaveAnUnansweredExchangeToItsSchedule(t *testing.T) {
 	const first, every = 20 * time.Millisecond, 5 * time.Millisecond
 	s := &Session{mux: unsendableMux(t), current: testContext(), requests: make(chan *localRequest), probes: make(chan struct{}, 1),
 		dpdEvery: time.Hour, retransmitAfter: first}
@@ -2120,6 +2213,10 @@ func TestProbesLeaveAnUnansweredExchangeToItsSchedule(t *testing.T) {
 // RFC 7296 section 2.3: "An IKE endpoint MUST wait for a response to each of its messages before sending a subsequent message unless it has received a SET_WINDOW_SIZE Notify message from its peer informing it that the peer is prepared to maintain state for multiple outstanding messages in order to allow greater throughput."
 // a request queued while a liveness check is out goes out only once the check is answered, at the next Message ID
 func TestLocalRequestWaitsForTheOutstandingExchange(t *testing.T) {
+	bubble.Run(testLocalRequestWaitsForTheOutstandingExchange)(t)
+}
+
+func testLocalRequestWaitsForTheOutstandingExchange(t *testing.T) {
 	s, peer, _ := probedSession(t)
 	s.requests = make(chan *localRequest, 1)
 	held := s.current
@@ -2174,6 +2271,10 @@ func TestLocalRequestWaitsForTheOutstandingExchange(t *testing.T) {
 
 // sessions dialed and answered with no rekey retry configured back off from DefaultRetryFirst to DefaultRetryMax once they run
 func TestSessionsWithNoRetryConfiguredBackOffByTheDefaults(t *testing.T) {
+	bubble.Run(testSessionsWithNoRetryConfiguredBackOffByTheDefaults)(t)
+}
+
+func testSessionsWithNoRetryConfiguredBackOffByTheDefaults(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	initiator, err := h.dial(t)
 	if err != nil {

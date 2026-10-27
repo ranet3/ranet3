@@ -10,12 +10,17 @@ import (
 
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
 // an IKE SA rekey of this end's that crosses the peer's rekey of the same SA, classical or chained, leaves this end current on the SA the model keeps
 // the model is crossedRekeys.keeps'
 func TestCrossingIKESARekeysKeepTheSATheModelKeeps(t *testing.T) {
+	bubble.Run(testCrossingIKESARekeysKeepTheSATheModelKeeps)(t)
+}
+
+func testCrossingIKESARekeysKeepTheSATheModelKeeps(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	pbt.Check(t, func(ht *hegel.T) {
 		c := crossedRekeys{answeredFirst: hegel.Draw(ht, hegel.Booleans()), chained: hegel.Draw(ht, hegel.Booleans())}

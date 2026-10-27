@@ -190,6 +190,10 @@ func (h *responderHarness) dial(t *testing.T) (*Session, error) {
 // profile on. Only the cmd test binaries call it, so without this no test
 // reaches it and it could stop compiling to the same thing.
 func TestInitiateIsInitiateContextWithNoDeadline(t *testing.T) {
+	bubble.Run(testInitiateIsInitiateContextWithNoDeadline)(t)
+}
+
+func testInitiateIsInitiateContextWithNoDeadline(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	session, err := Initiate(h.peerConfig())
 	if err != nil {
@@ -207,6 +211,10 @@ func TestInitiateIsInitiateContextWithNoDeadline(t *testing.T) {
 // the responder's session ends on that Delete instead of holding the SA until its liveness check expires
 // the Delete follows the answer that completes the initial exchanges, and is an exchange that takes its own answer
 func TestCanceledInitiatorDeletesTheSAItsResponderEstablished(t *testing.T) {
+	bubble.Run(testCanceledInitiatorDeletesTheSAItsResponderEstablished)(t)
+}
+
+func testCanceledInitiatorDeletesTheSAItsResponderEstablished(t *testing.T) {
 	ctx, h := canceledHarness(t, func() bool { return true })
 	var answered, early, deleteAnswered atomic.Bool
 	cfg := h.peerConfig()
@@ -271,6 +279,10 @@ const lateAnswer = canceledAuthWait + 500*time.Millisecond
 // RFC 7296 section 2.3: "The window size is always one until the initial exchanges complete."
 // a canceled initiator whose IKE_AUTH goes unanswered for the whole wait therefore sends no request past it, before the late answer or after
 func TestCanceledInitiatorSendsNothingPastAnUnansweredIKEAuth(t *testing.T) {
+	bubble.Run(testCanceledInitiatorSendsNothingPastAnUnansweredIKEAuth)(t)
+}
+
+func testCanceledInitiatorSendsNothingPastAnUnansweredIKEAuth(t *testing.T) {
 	ctx, h := canceledHarness(t, func() bool {
 		time.Sleep(lateAnswer)
 		return true
@@ -363,6 +375,10 @@ func testCanceledInitiatorRetransmitsItsIKEAuthUnchanged(t *testing.T) {
 
 // a responder that refused IKE_AUTH in an answer that decrypted holds no SA, so its canceled initiator sends it no Delete
 func TestCanceledInitiatorSendsNoDeleteToAResponderThatRefusedIt(t *testing.T) {
+	bubble.Run(testCanceledInitiatorSendsNoDeleteToAResponderThatRefusedIt)(t)
+}
+
+func testCanceledInitiatorSendsNoDeleteToAResponderThatRefusedIt(t *testing.T) {
 	ctx, h := canceledHarness(t, func() bool { return false })
 	var informational atomic.Int32
 	cfg := h.peerConfig()
@@ -384,6 +400,10 @@ func TestCanceledInitiatorSendsNoDeleteToAResponderThatRefusedIt(t *testing.T) {
 
 // a canceled initiator whose responder never answers IKE_AUTH gives up after canceledAuthWait instead of its whole retransmission budget
 func TestCanceledInitiatorStopsWaitingForAnAnswerThatNeverComes(t *testing.T) {
+	bubble.Run(testCanceledInitiatorStopsWaitingForAnAnswerThatNeverComes)(t)
+}
+
+func testCanceledInitiatorStopsWaitingForAnAnswerThatNeverComes(t *testing.T) {
 	release := make(chan struct{})
 	ctx, h := canceledHarness(t, func() bool {
 		<-release
@@ -493,6 +513,10 @@ func idBody(text string) []byte {
 
 // an initiator and a responder complete a handshake, and each end's Child SA mirrors the other's
 func TestResponderCompletesHandshakeWithInitiator(t *testing.T) {
+	bubble.Run(testResponderCompletesHandshakeWithInitiator)(t)
+}
+
+func testResponderCompletesHandshakeWithInitiator(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	initiator, err := h.dial(t)
 	if err != nil {
@@ -547,6 +571,10 @@ func TestResponderCompletesHandshakeWithInitiator(t *testing.T) {
 
 // the initiator refuses an IDr other than the endpoint it dialed, so the responder answers as the one asked for
 func TestResponderAnswersAsTheEndpointDialed(t *testing.T) {
+	bubble.Run(testResponderAnswersAsTheEndpointDialed)(t)
+}
+
+func testResponderAnswersAsTheEndpointDialed(t *testing.T) {
 	second := identity.MustParse("testorg/server:2")
 	h := newResponderHarnessAs(t, []identity.Identity{identity.MustParse("testorg/server:1"), second}, nil)
 	cfg := h.peerConfig()
@@ -566,6 +594,10 @@ func TestResponderAnswersAsTheEndpointDialed(t *testing.T) {
 }
 
 func TestResponderRejectsUnknownIdentity(t *testing.T) {
+	bubble.Run(testResponderRejectsUnknownIdentity)(t)
+}
+
+func testResponderRejectsUnknownIdentity(t *testing.T) {
 	h := newResponderHarness(t, trustsNobody)
 	session, err := h.dial(t)
 	if err == nil {
@@ -582,7 +614,9 @@ func TestResponderRejectsUnknownIdentity(t *testing.T) {
 	}
 }
 
-func TestResponderRejectsWrongKey(t *testing.T) {
+func TestResponderRejectsWrongKey(t *testing.T) { bubble.Run(testResponderRejectsWrongKey)(t) }
+
+func testResponderRejectsWrongKey(t *testing.T) {
 	other, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -600,7 +634,9 @@ func TestResponderRejectsWrongKey(t *testing.T) {
 
 // an IDi naming the responder's own node at another serial is refused with AUTHENTICATION_FAILED before the trust is asked
 // the trust here admits anyone under the key both ends hold, as an organization's shared key does for each of its nodes
-func TestResponderRefusesItsOwnNode(t *testing.T) {
+func TestResponderRefusesItsOwnNode(t *testing.T) { bubble.Run(testResponderRefusesItsOwnNode)(t) }
+
+func testResponderRefusesItsOwnNode(t *testing.T) {
 	var key atomic.Pointer[ed25519.PublicKey]
 	h := newResponderHarness(t, trustFunc(func(identity.Identity) (ed25519.PublicKey, Family, error) { return *key.Load(), IPv4, nil }))
 	key.Store(&h.public)
@@ -644,7 +680,7 @@ func TestInitiatorRefusesResponderItCannotAuthenticate(t *testing.T) {
 		"a common name the responder does not hold": {
 			func(cfg *PeerConfig) { cfg.Remote = identity.MustParse("testorg/elsewhere:1") }, fmt.Sprintf("notify type %d", N_AUTHENTICATION_FAILED), false},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			h := newResponderHarness(t, nil)
 			ended := serveResponder(t, h)
 			cfg := h.peerConfig()
@@ -667,7 +703,7 @@ func TestInitiatorRefusesResponderItCannotAuthenticate(t *testing.T) {
 			case <-time.After(answerBudget):
 				t.Fatal("the responder still held the SA its initiator refused when the budget ran out")
 			}
-		})
+		}))
 	}
 }
 
@@ -761,6 +797,10 @@ func TestSelectIKEProposalPrefersOurOrderAndReportsGroup(t *testing.T) {
 // on the queue, not because a timer happened to fire. If that regressed, this
 // would wait out the DPD interval instead.
 func TestLocalRequestIsPickedUpWithoutPolling(t *testing.T) {
+	bubble.Run(testLocalRequestIsPickedUpWithoutPolling)(t)
+}
+
+func testLocalRequestIsPickedUpWithoutPolling(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	initiator, err := h.dial(t)
 	if err != nil {
@@ -804,6 +844,10 @@ func TestLocalRequestIsPickedUpWithoutPolling(t *testing.T) {
 // N(COOKIE) on all its retransmissions and fails. RFC 7296 section 2.6 requires the
 // initiator to retry with the cookie as its first payload.
 func TestInitiatorAnswersCookieChallenge(t *testing.T) {
+	bubble.Run(testInitiatorAnswersCookieChallenge)(t)
+}
+
+func testInitiatorAnswersCookieChallenge(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	// Above the threshold every IKE_SA_INIT is challenged, which is the
 	// condition an unauthenticated flood produces.
@@ -831,6 +875,10 @@ func TestInitiatorAnswersCookieChallenge(t *testing.T) {
 // bare header would turn a 28 byte datagram with a forged source address into
 // the full IKE_SA_INIT response delivered wherever it pointed.
 func TestResponderDoesNotReflectOnSPIAlone(t *testing.T) {
+	bubble.Run(testResponderDoesNotReflectOnSPIAlone)(t)
+}
+
+func testResponderDoesNotReflectOnSPIAlone(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
 	if err != nil {
@@ -1009,6 +1057,10 @@ func firstTestNotify(t testing.TB, raw []byte) Notify {
 // RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected and the response to the IKE request containing that payload MUST include a Notify payload UNSUPPORTED_CRITICAL_PAYLOAD, indicating an unsupported critical payload was included. In that Notify payload, the Notification Data contains the one-octet payload type."
 // the answer is stateless, so it goes out before anything about the peer is known
 func TestResponderRefusesCriticalPayloadItDoesNotImplement(t *testing.T) {
+	bubble.Run(testResponderRefusesCriticalPayloadItDoesNotImplement)(t)
+}
+
+func testResponderRefusesCriticalPayloadItDoesNotImplement(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
 	if err != nil {
@@ -1045,6 +1097,10 @@ func TestResponderRefusesCriticalPayloadItDoesNotImplement(t *testing.T) {
 // hand the initiator a signature over an identity of its choosing, made with
 // this node's key, which is the whole of what authentication here rests on.
 func TestResponderRefusesIdentityItDoesNotAnswerTo(t *testing.T) {
+	bubble.Run(testResponderRefusesIdentityItDoesNotAnswerTo)(t)
+}
+
+func testResponderRefusesIdentityItDoesNotAnswerTo(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1115,6 +1171,10 @@ func encodeTestSAInitOffer(t testing.TB, spiI uint64, ni []byte, offer []Proposa
 // is left holding an SA it keeps transmitting into until its own dead peer
 // detection expires.
 func TestDeleteIKEReachesPeerWithoutRunLoop(t *testing.T) {
+	bubble.Run(testDeleteIKEReachesPeerWithoutRunLoop)(t)
+}
+
+func testDeleteIKEReachesPeerWithoutRunLoop(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	initiator, err := h.dial(t)
 	if err != nil {
@@ -1164,6 +1224,10 @@ func TestDeleteIKEReachesPeerWithoutRunLoop(t *testing.T) {
 // own. Without it Active()'s window silently becomes a function of
 // babel.hello_interval, which nothing validates against it.
 func TestAnsweredExchangeRefreshesLivenessClock(t *testing.T) {
+	bubble.Run(testAnsweredExchangeRefreshesLivenessClock)(t)
+}
+
+func testAnsweredExchangeRefreshesLivenessClock(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	initiator, err := h.dial(t)
 	if err != nil {
@@ -1311,6 +1375,10 @@ func observedPeerFrom(t *testing.T, hub *transport.Hub, spi uint64, source net.I
 // it an off-path source can make the responder allocate for an address it
 // never has to receive at.
 func TestResponderDemandsCookieUnderPressure(t *testing.T) {
+	bubble.Run(testResponderDemandsCookieUnderPressure)(t)
+}
+
+func testResponderDemandsCookieUnderPressure(t *testing.T) {
 	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
@@ -1342,6 +1410,7 @@ func TestResponderDemandsCookieUnderPressure(t *testing.T) {
 }
 
 func TestResponderRefusesCookieItDidNotIssue(t *testing.T) {
+	// on the real clock, since its subtests share the parent's hub, and no answer it reads waits on a timer
 	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
@@ -1431,6 +1500,10 @@ func TestResponderRefusesCookieItDidNotIssue(t *testing.T) {
 // section 2.6.1 on a responder that does not: "For instance, if the responder includes the KEi payloads in cookie calculation, it will reject the request by sending a new cookie."
 // under pressure the cookie a request draws is taken back in the request repeated and in the retry an INVALID_KE_PAYLOAD asks for, whose KE payload is in another group
 func TestResponderTakesItsCookieInTheRetryWithAnotherGroup(t *testing.T) {
+	bubble.Run(testResponderTakesItsCookieInTheRetryWithAnotherGroup)(t)
+}
+
+func testResponderTakesItsCookieInTheRetryWithAnotherGroup(t *testing.T) {
 	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
@@ -1492,6 +1565,10 @@ func TestResponderTakesItsCookieInTheRetryWithAnotherGroup(t *testing.T) {
 // RFC 7296 section 2.6: "Each endpoint chooses one of the two SPIs and MUST choose them so as to be unique identifiers of an IKE SA."
 // two IKE_SA_INIT exchanges at one responder are answered with two nonzero responder SPIs that differ
 func TestResponderGivesEachIKESAItsOwnSPI(t *testing.T) {
+	bubble.Run(testResponderGivesEachIKESAItsOwnSPI)(t)
+}
+
+func testResponderGivesEachIKESAItsOwnSPI(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	var spis []uint64
 	for range 2 {
@@ -1606,6 +1683,10 @@ func TestChaChaChildResponseEchoesNoKeyLength(t *testing.T) {
 // session reads as dead, the path is reported unheld, and the dialer opens
 // another SA over a perfectly good one on every reconnect delay.
 func TestFreshlyEstablishedSessionReadsAsLive(t *testing.T) {
+	bubble.Run(testFreshlyEstablishedSessionReadsAsLive)(t)
+}
+
+func testFreshlyEstablishedSessionReadsAsLive(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	initiator, err := h.dial(t)
 	if err != nil {
@@ -1651,15 +1732,19 @@ func TestTrafficPostponesDeadPeerDetection(t *testing.T) {
 		t.Cleanup(func() { peer.Mux().Close() })
 
 		ctx, cancel := context.WithCancel(context.Background())
-		t.Cleanup(cancel)
-		go func() { _ = initiator.Run(ctx) }()
+		var running sync.WaitGroup
+		t.Cleanup(func() {
+			cancel()
+			running.Wait()
+		})
+		running.Go(func() { _ = initiator.Run(ctx) })
 		if traffic {
-			go func() {
+			running.Go(func() {
 				for ctx.Err() == nil {
 					initiator.NoteTraffic()
 					time.Sleep(200 * time.Millisecond)
 				}
-			}()
+			})
 		}
 		// Nothing runs the responder's own loop, so whatever arrives here is
 		// what the initiator sent unprompted.
@@ -1668,18 +1753,16 @@ func TestTrafficPostponesDeadPeerDetection(t *testing.T) {
 	}
 	// The quiet session is the positive control: without it, a busy session
 	// that is never probed proves nothing about why.
-	t.Run("a quiet session", func(t *testing.T) {
-		t.Parallel()
+	t.Run("a quiet session", bubble.Run(func(t *testing.T) {
 		if !probed(t, false) {
 			t.Error("a session that carried nothing was never probed, so dead peer detection is not running at all")
 		}
-	})
-	t.Run("a session carrying traffic", func(t *testing.T) {
-		t.Parallel()
+	}))
+	t.Run("a session carrying traffic", bubble.Run(func(t *testing.T) {
 		if probed(t, true) {
 			t.Error("a session carrying traffic was probed anyway, so the traffic edge reaches nothing")
 		}
-	})
+	}))
 }
 
 // The share is per address, not per flow. Keyed by the whole endpoint it
@@ -1739,6 +1822,10 @@ func testHalfOpenShareIsPerAddressNotPerFlow(t *testing.T) {
 // AUTHENTICATION_FAILED is defined there as
 // the answer to an IKE_AUTH message, and this exchange has not reached one.
 func TestResponderRefusesOfferItCannotAuthenticate(t *testing.T) {
+	bubble.Run(testResponderRefusesOfferItCannotAuthenticate)(t)
+}
+
+func testResponderRefusesOfferItCannotAuthenticate(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
 	if err != nil {
@@ -1777,6 +1864,10 @@ func TestResponderRefusesOfferItCannotAuthenticate(t *testing.T) {
 // threshold, at sixteen packets every thirty seconds, and the victim is then
 // refused in silence for as long as the attacker keeps it up.
 func TestOneAddressCannotSpendItsShareWithoutCookie(t *testing.T) {
+	bubble.Run(testOneAddressCannotSpendItsShareWithoutCookie)(t)
+}
+
+func testOneAddressCannotSpendItsShareWithoutCookie(t *testing.T) {
 	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
@@ -1825,6 +1916,10 @@ func TestOneAddressCannotSpendItsShareWithoutCookie(t *testing.T) {
 // makes "under pressure" the ordinary state for any address holding two
 // half-open exchanges, so the rotation is no longer a load condition.
 func TestCookieSurvivesRotationThatFollowsIt(t *testing.T) {
+	bubble.Run(testCookieSurvivesRotationThatFollowsIt)(t)
+}
+
+func testCookieSurvivesRotationThatFollowsIt(t *testing.T) {
 	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
@@ -1895,6 +1990,10 @@ func TestTearingDownUnusableIKESADoesNotSpendTheWholeBudget(t *testing.T) {
 // then it deletes the IKE SA in a request at its own first Message ID, which the answer ends
 // an IKE_AUTH retransmitted while that Delete is outstanding draws the answer it had
 func TestResponderDeletesTheIKESAWhoseChildSAItRefused(t *testing.T) {
+	bubble.Run(testResponderDeletesTheIKESAWhoseChildSAItRefused)(t)
+}
+
+func testResponderDeletesTheIKESAWhoseChildSAItRefused(t *testing.T) {
 	refused := &recorder{}
 	h := childRefusedHarness(t, refused.record)
 	mux := childRefusedMux(t, h)
@@ -1936,6 +2035,10 @@ func TestResponderDeletesTheIKESAWhoseChildSAItRefused(t *testing.T) {
 // RFC 7296 section 2.25.2: "If a peer receives a request to close an IKE SA that it is currently trying to close, it SHOULD reply as usual, and forget about its own close request."
 // a ranet3 initiator deletes the IKE SA after the same refusal, so the two Deletes cross, and the initiator's is answered and ends the responder's
 func TestResponderAnswersTheDeleteCrossingItsOwn(t *testing.T) {
+	bubble.Run(testResponderAnswersTheDeleteCrossingItsOwn)(t)
+}
+
+func testResponderAnswersTheDeleteCrossingItsOwn(t *testing.T) {
 	refused := &recorder{}
 	h := childRefusedHarness(t, refused.record)
 	mux := childRefusedMux(t, h)
@@ -2015,7 +2118,7 @@ func TestResponderRefusingIKEAuthSendsNoDelete(t *testing.T) {
 		{"other family", func(h *responderHarness) ed25519.PrivateKey { return h.private }, "testorg/client:3", "testorg/server:1"},
 		{"not ours", func(h *responderHarness) ed25519.PrivateKey { return h.private }, "testorg/client:2", "testorg/server:2"},
 	} {
-		t.Run(refusal.name, func(t *testing.T) {
+		t.Run(refusal.name, bubble.Run(func(t *testing.T) {
 			refused := &recorder{}
 			h := childRefusedHarness(t, refused.record)
 			mux := childRefusedMux(t, h)
@@ -2032,7 +2135,7 @@ func TestResponderRefusingIKEAuthSendsNoDelete(t *testing.T) {
 				t.Errorf("the responder sent %d more bytes after refusing IKE_AUTH, want nothing", len(raw))
 			}
 			awaitHandshakeEnd(t, h, refused, held.spiI)
-		})
+		}))
 	}
 }
 
@@ -2231,6 +2334,10 @@ func awaitHandshakeEnd(t *testing.T, h *responderHarness, refused *recorder, spi
 // unauthenticated peer reaches first, so checking only the length there left
 // it as the one place a short nonce was taken.
 func TestResponderChecksTheNonceAgainstTheNegotiatedPRF(t *testing.T) {
+	bubble.Run(testResponderChecksTheNonceAgainstTheNegotiatedPRF)(t)
+}
+
+func testResponderChecksTheNonceAgainstTheNegotiatedPRF(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
 	if err != nil {
@@ -2286,6 +2393,10 @@ func TestResponderChecksTheNonceAgainstTheNegotiatedPRF(t *testing.T) {
 // acting on one would end a handshake this end paid a key exchange for, the cheapest way to stop every session a node opens
 // the deadline alone ends the wait
 func TestUndecryptableDatagramDoesNotEndTheHandshake(t *testing.T) {
+	bubble.Run(testUndecryptableDatagramDoesNotEndTheHandshake)(t)
+}
+
+func testUndecryptableDatagramDoesNotEndTheHandshake(t *testing.T) {
 	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
@@ -2348,6 +2459,10 @@ func TestUndecryptableDatagramDoesNotEndTheHandshake(t *testing.T) {
 // an IKE_AUTH that decrypts, from another port than IKE_SA_INIT, with a payload chain that does not parse draws INVALID_SYNTAX at Message ID 1 there
 // the half-open SA then goes with nothing more sent
 func TestResponderAnswersAMalformedIKEAuthWithInvalidSyntax(t *testing.T) {
+	bubble.Run(testResponderAnswersAMalformedIKEAuthWithInvalidSyntax)(t)
+}
+
+func testResponderAnswersAMalformedIKEAuthWithInvalidSyntax(t *testing.T) {
 	refused := &recorder{}
 	h := childRefusedHarness(t, refused.record)
 	held, _, _ := initHalfOpen(t, childRefusedMux(t, h), nil)
@@ -2383,6 +2498,10 @@ func TestResponderAnswersAMalformedIKEAuthWithInvalidSyntax(t *testing.T) {
 // RFC 7296 section 2.21.2: "All errors that occur in an IKE_AUTH exchange, causing the authentication to fail for whatever reason (invalid shared secret, invalid ID, untrusted certificate issuer, revoked or expired certificate, etc.) SHOULD result in an AUTHENTICATION_FAILED notification."
 // an IKE_AUTH whose IDi holds no distinguished name draws AUTHENTICATION_FAILED at Message ID 1, and the half-open SA then goes
 func TestResponderAnswersAnIDiItCannotReadWithAuthenticationFailed(t *testing.T) {
+	bubble.Run(testResponderAnswersAnIDiItCannotReadWithAuthenticationFailed)(t)
+}
+
+func testResponderAnswersAnIDiItCannotReadWithAuthenticationFailed(t *testing.T) {
 	refused := &recorder{}
 	h := childRefusedHarness(t, refused.record)
 	mux := childRefusedMux(t, h)
@@ -2412,6 +2531,10 @@ func TestResponderAnswersAnIDiItCannotReadWithAuthenticationFailed(t *testing.T)
 // section 2.6.1: "There are two common reasons why the initiator may have to retry the IKE_SA_INIT exchange: the responder requests a cookie or wants a different Diffie-Hellman group than was included in the KEi payload."
 // the COOKIE that answers such a flood, the INVALID_KE_PAYLOAD that answers a KE in a group the offer leaves out and the answer that carries an IKE_SA_INIT forward are outside the limit
 func TestStatelessErrorAnswersShareOneLimit(t *testing.T) {
+	bubble.Run(testStatelessErrorAnswersShareOneLimit)(t)
+}
+
+func testStatelessErrorAnswersShareOneLimit(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	spendStatelessErrors(t)
 	request := func(proposal Proposal, ahead []RawPayload) (*transport.Mux, []byte) {
@@ -2491,6 +2614,10 @@ func TestStatelessErrorLimitHoldsAFleetRedial(t *testing.T) {
 // RFC 7296 section 3.9: "Nonce values MUST NOT be reused."
 // two IKE_SA_INIT requests are answered with different nonces
 func TestEachIKESAInitAnswerDrawsItsOwnNonce(t *testing.T) {
+	bubble.Run(testEachIKESAInitAnswerDrawsItsOwnNonce)(t)
+}
+
+func testEachIKESAInitAnswerDrawsItsOwnNonce(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	var nonces [][]byte
 	for range 2 {
@@ -2652,6 +2779,10 @@ func (l *lineRecorder) WithGroup(string) slog.Handler      { return l }
 // section 3.1 on the V bit: "Implementations of IKEv2 MUST clear this bit when sending and MUST ignore it in incoming messages."
 // so an IKE_SA_INIT at version 2.1 with the V bit and every X bit set is answered as one at 2.0 is
 func TestResponderAnswersOnlyAHigherMajorVersionWithInvalidMajorVersion(t *testing.T) {
+	bubble.Run(testResponderAnswersOnlyAHigherMajorVersionWithInvalidMajorVersion)(t)
+}
+
+func testResponderAnswersOnlyAHigherMajorVersionWithInvalidMajorVersion(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	// one mux for each SPI, so a late copy of one answer cannot be read as the next
 	muxFor := func(spi uint64) *transport.Mux {
@@ -2699,6 +2830,10 @@ func TestResponderAnswersOnlyAHigherMajorVersionWithInvalidMajorVersion(t *testi
 // section 2.21.4: "If a response is sent, the response MUST be sent to the IP address and port from where it came with the same IKE SPIs and the Message ID copied."
 // an IKE_AUTH at major version 3 that authenticates under the half-open SA is answered so and not taken for the IKE_AUTH, and one in the clear from another address is answered at that address, so the half-open SA answers the one at version 2.1 with the V bit and every X bit set after them
 func TestResponderAnswersAHigherMajorVersionWhileItWaitsForIKEAuth(t *testing.T) {
+	bubble.Run(testResponderAnswersAHigherMajorVersionWhileItWaitsForIKEAuth)(t)
+}
+
+func testResponderAnswersAHigherMajorVersionWhileItWaitsForIKEAuth(t *testing.T) {
 	refused := &recorder{}
 	h := childRefusedHarness(t, refused.record)
 	mux := childRefusedMux(t, h)
@@ -2761,6 +2896,10 @@ func TestResponderAnswersAHigherMajorVersionWhileItWaitsForIKEAuth(t *testing.T)
 // section 2.5: "Payloads sent in IKE response messages MUST NOT have the critical flag set."
 // an initiator marking every payload of both its requests critical, the SK payload and the CERTREQ, CP, EAP and Vendor ID this end skips among them, and adding one of a type nothing assigns unmarked, is answered and taken as one marking none, and the answers mark nothing
 func TestResponderIgnoresTheCriticalBitOnPayloadsItUnderstands(t *testing.T) {
+	bubble.Run(testResponderIgnoresTheCriticalBitOnPayloadsItUnderstands)(t)
+}
+
+func testResponderIgnoresTheCriticalBitOnPayloadsItUnderstands(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
 	if err != nil {
@@ -2806,6 +2945,10 @@ func TestResponderIgnoresTheCriticalBitOnPayloadsItUnderstands(t *testing.T) {
 // RFC 7296 section 3.10.1: "Unrecognized error types in a request and status types in a request or response MUST be ignored, and they should be logged."
 // an initiator adding an error notify and a status notify of types nothing assigns to both its requests is answered and taken as one adding none
 func TestResponderIgnoresNotifiesItDoesNotRecognize(t *testing.T) {
+	bubble.Run(testResponderIgnoresNotifiesItDoesNotRecognize)(t)
+}
+
+func testResponderIgnoresNotifiesItDoesNotRecognize(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
 	if err != nil {
@@ -2850,6 +2993,10 @@ func carriedForward(t *testing.T, h *responderHarness) {
 // section 2.5: "implementations SHOULD send the payloads defined in this specification in the order shown in the figures in Sections 1 and 2"
 // an initiator sending the payloads of both its requests in reverse is answered and taken as one sending them in order, and the answers keep the order of the figures
 func TestResponderTakesPayloadsInAnyOrderAndAnswersInTheFiguresOrder(t *testing.T) {
+	bubble.Run(testResponderTakesPayloadsInAnyOrderAndAnswersInTheFiguresOrder)(t)
+}
+
+func testResponderTakesPayloadsInAnyOrderAndAnswersInTheFiguresOrder(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
 	if err != nil {
@@ -2883,6 +3030,10 @@ func TestResponderTakesPayloadsInAnyOrderAndAnswersInTheFiguresOrder(t *testing.
 // RFC 7296 section 1.2: "Thus, the SA payloads in the IKE_AUTH exchange cannot contain Transform Type 4 (Diffie-Hellman group) with any value other than NONE. Implementations SHOULD omit the whole transform substructure instead of sending value NONE."
 // the Child SA the IKE_AUTH answer selects from an offer naming no Diffie-Hellman transform names none either
 func TestResponderSelectsNoDiffieHellmanTransformInIKEAuth(t *testing.T) {
+	bubble.Run(testResponderSelectsNoDiffieHellmanTransformInIKEAuth)(t)
+}
+
+func testResponderSelectsNoDiffieHellmanTransformInIKEAuth(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
 	if err != nil {
@@ -2923,7 +3074,7 @@ func TestResponderRefusesAnIKEAuthMarkingAnUnsupportedPayloadCritical(t *testing
 		"inside SK":    {nil, []RawPayload{unsupportedCritical}},
 		"in the clear": {[]RawPayload{unsupportedCritical}, nil},
 	} {
-		t.Run(placement, func(t *testing.T) {
+		t.Run(placement, bubble.Run(func(t *testing.T) {
 			refused := &recorder{}
 			h := childRefusedHarness(t, refused.record)
 			mux := childRefusedMux(t, h)
@@ -2943,7 +3094,7 @@ func TestResponderRefusesAnIKEAuthMarkingAnUnsupportedPayloadCritical(t *testing
 					answer.ExchangeType, answer.IsResponse(), answer.MessageID, inner, unsupportedCritical.Type)
 			}
 			awaitHandshakeEnd(t, h, refused, held.spiI)
-		})
+		}))
 	}
 }
 
@@ -2956,6 +3107,10 @@ func TestResponderRefusesAnIKEAuthMarkingAnUnsupportedPayloadCritical(t *testing
 // The limit is per source. See handshakeFailureInterval for the measurement
 // that decides the shape.
 func TestFailedInboundHandshakeIsSaidOncePerSource(t *testing.T) {
+	bubble.Run(testFailedInboundHandshakeIsSaidOncePerSource)(t)
+}
+
+func testFailedInboundHandshakeIsSaidOncePerSource(t *testing.T) {
 	hub := listenHub(t)
 	first := observedEndpoint(t, hub, 0x11)
 	samePort := observedEndpoint(t, hub, 0x22)
@@ -3018,6 +3173,10 @@ func TestFailedInboundHandshakeIsSaidOncePerSource(t *testing.T) {
 // RFC 7296 section 2.21.4: "If the message is marked as a response, the node ... MUST NOT respond."
 // the answer to a Delete whose exchange has ended reaches the responder this way, and it is no failed handshake
 func TestResponderDropsAResponseNoExchangeWaitsFor(t *testing.T) {
+	bubble.Run(testResponderDropsAResponseNoExchangeWaitsFor)(t)
+}
+
+func testResponderDropsAResponseNoExchangeWaitsFor(t *testing.T) {
 	failures := &recorder{}
 	h := newResponderHarness(t, nil, failures.record)
 	peer := listenPeer(t)
@@ -3061,6 +3220,10 @@ func TestResponderDropsAResponseNoExchangeWaitsFor(t *testing.T) {
 // otherwise a host cycling addresses keeps every legitimate peer's first
 // failure at debug for as long as it likes.
 func TestHandshakeFailureRecordIsBounded(t *testing.T) {
+	bubble.Run(testHandshakeFailureRecordIsBounded)(t)
+}
+
+func testHandshakeFailureRecordIsBounded(t *testing.T) {
 	r := newFailureRecorder()
 	for i := range handshakeFailureSources {
 		r.failureReported[netip.AddrFrom4([4]byte{198, 51, byte(i >> 8), byte(i)})] = time.Since(r.started)
@@ -3079,6 +3242,10 @@ func TestHandshakeFailureRecordIsBounded(t *testing.T) {
 // start of this process", which silences everything in the first second of a
 // node's life.
 func TestFirstHandshakeFailureOfANodesLifeIsSaid(t *testing.T) {
+	bubble.Run(testFirstHandshakeFailureOfANodesLifeIsSaid)(t)
+}
+
+func testFirstHandshakeFailureOfANodesLifeIsSaid(t *testing.T) {
 	responder, err := NewResponder(ResponderConfig{
 		Hub: listenHub(t), LocalPrivateKey: make(ed25519.PrivateKey, ed25519.PrivateKeySize),
 		Local: map[identity.Identity]Family{identity.MustParse("example/node:0"): IPv4}, Trust: trustsNobody,
@@ -3094,6 +3261,10 @@ func TestFirstHandshakeFailureOfANodesLifeIsSaid(t *testing.T) {
 // The floor bounds the lines whatever their sources, which the per-source
 // record alone does not: every address a host holds is a fresh entry.
 func TestHandshakeFailuresAreSpacedWhateverTheirSource(t *testing.T) {
+	bubble.Run(testHandshakeFailuresAreSpacedWhateverTheirSource)(t)
+}
+
+func testHandshakeFailuresAreSpacedWhateverTheirSource(t *testing.T) {
 	r := newFailureRecorder()
 	hub := listenHub(t)
 	said := 0

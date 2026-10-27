@@ -13,12 +13,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
 func TestPeerChildRekeyWithPFS(t *testing.T) {
 	for _, group := range []uint16{DH_CURVE25519, DH_ECP_256, DH_ECP_384} {
 		for _, responder := range []bool{false, true} {
-			t.Run(fmt.Sprintf("group=%d/responder=%t", group, responder), func(t *testing.T) {
+			t.Run(fmt.Sprintf("group=%d/responder=%t", group, responder), bubble.Run(func(t *testing.T) {
 				mux, _ := lifecycleMuxes(t)
 				suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 				ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),
@@ -96,7 +98,7 @@ func TestPeerChildRekeyWithPFS(t *testing.T) {
 				if child.RemoteSPI != 32 || child.LocalSPI == old.LocalSPI || s.retiringChild().LocalSPI != old.LocalSPI {
 					t.Fatal("Child SA overlap was not preserved")
 				}
-			})
+			}))
 		}
 	}
 }
@@ -165,6 +167,10 @@ func TestIKERekeyProposalKeepsPRF(t *testing.T) {
 // an answer to this end's IKE SA rekey that chooses a PRF the rekey offer left out
 // is refused and leaves the SA it would have replaced current
 func TestRekeyIKERefusesAPRFItsOfferLeftOut(t *testing.T) {
+	bubble.Run(testRekeyIKERefusesAPRFItsOfferLeftOut)(t)
+}
+
+func testRekeyIKERefusesAPRFItsOfferLeftOut(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
@@ -206,6 +212,10 @@ func TestRekeyIKERefusesAPRFItsOfferLeftOut(t *testing.T) {
 // and: "This means that a successful exchange rekeying the IKE SA always includes the KEi/KEr payloads."
 // an answer to this end's IKE SA rekey that carries no KE payload is refused and leaves the SA it would have replaced current
 func TestRekeyIKERefusesAnAnswerWithoutAKeyExchange(t *testing.T) {
+	bubble.Run(testRekeyIKERefusesAnAnswerWithoutAKeyExchange)(t)
+}
+
+func testRekeyIKERefusesAnAnswerWithoutAKeyExchange(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
@@ -240,6 +250,10 @@ func TestRekeyIKERefusesAnAnswerWithoutAKeyExchange(t *testing.T) {
 // section 2.6.1 gives the IKE_SA_INIT retry after INVALID_KE_PAYLOAD as "HDR(A,0), N(COOKIE), SAi1, KEi', Ni -->", the nonce of the attempt that failed
 // each IKE SA rekey draws its own nonce, and its retry in the group an INVALID_KE_PAYLOAD names sends the nonce of the attempt that failed, from which no key was derived
 func TestEachIKESARekeyDrawsItsOwnNonceAndItsRetryKeepsIt(t *testing.T) {
+	bubble.Run(testEachIKESARekeyDrawsItsOwnNonceAndItsRetryKeepsIt)(t)
+}
+
+func testEachIKESARekeyDrawsItsOwnNonceAndItsRetryKeepsIt(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	s := &Session{mux: mux, current: &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)},
@@ -304,7 +318,7 @@ func TestRekeyIKETakesAnErrorNotifyItDoesNotRecognizeAsARejection(t *testing.T) 
 		}}
 		return s, old, done
 	}
-	t.Run("error", func(t *testing.T) {
+	t.Run("error", bubble.Run(func(t *testing.T) {
 		s, old, done := answered(t, unrecognizedError)
 		select {
 		case err := <-done:
@@ -318,8 +332,8 @@ func TestRekeyIKETakesAnErrorNotifyItDoesNotRecognizeAsARejection(t *testing.T) 
 		if current, _ := s.contexts(); current != old {
 			t.Error("a rejected rekey answer replaced the IKE SA")
 		}
-	})
-	t.Run("status", func(t *testing.T) {
+	}))
+	t.Run("status", bubble.Run(func(t *testing.T) {
 		s, old, done := answered(t, unrecognizedStatus)
 		select {
 		case err := <-done:
@@ -334,7 +348,7 @@ func TestRekeyIKETakesAnErrorNotifyItDoesNotRecognizeAsARejection(t *testing.T) 
 		if current, _ := s.contexts(); current == old {
 			t.Error("the rekey answer carrying a status notify left the old IKE SA current")
 		}
-	})
+	}))
 }
 
 func TestPeerRekeyDefersConflictingTransition(t *testing.T) {
@@ -380,6 +394,10 @@ func TestPeerRekeyDefersConflictingTransition(t *testing.T) {
 
 // while this end rekeys the IKE SA, a peer's Delete of a Child SA is answered as usual, with the Delete of the SA's other half
 func TestChildSADeleteDuringAnIKESARekeyIsAnsweredWithItsDelete(t *testing.T) {
+	bubble.Run(testChildSADeleteDuringAnIKESARekeyIsAnsweredWithItsDelete)(t)
+}
+
+func testChildSADeleteDuringAnIKESARekeyIsAnsweredWithItsDelete(t *testing.T) {
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
 	s := newRekeyableSession(t, child)
 	s.current.skei, s.current.sker = make([]byte, 20), make([]byte, 20)
@@ -397,6 +415,10 @@ func TestChildSADeleteDuringAnIKESARekeyIsAnsweredWithItsDelete(t *testing.T) {
 // RFC 7296 section 2.8: "After the new equivalent IKE SA is created, the initiator deletes the old IKE SA, and the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 // a Child SA exchange queued on an IKE SA that has since been replaced is refused before it takes a Message ID or goes out
 func TestQueuedChildRequestDoesNotUseRetiredIKE(t *testing.T) {
+	bubble.Run(testQueuedChildRequestDoesNotUseRetiredIKE)(t)
+}
+
+func testQueuedChildRequestDoesNotUseRetiredIKE(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	replaced := testContext()
 	s := &Session{mux: mux, current: new(ikeContext)}
@@ -411,6 +433,10 @@ func TestQueuedChildRequestDoesNotUseRetiredIKE(t *testing.T) {
 
 // a peer's second Child SA rekey in one interval is refused with TEMPORARY_FAILURE before the key exchange and the keys it would cost
 func TestHandleChildRekeyRefusesSecondRekeyInSameInterval(t *testing.T) {
+	bubble.Run(testHandleChildRekeyRefusesSecondRekeyInSameInterval)(t)
+}
+
+func testHandleChildRekeyRefusesSecondRekeyInSameInterval(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),
@@ -463,6 +489,10 @@ func TestHandleChildRekeyRefusesSecondRekeyInSameInterval(t *testing.T) {
 
 // the answer to a Child SA rekey in ChaCha20-Poly1305 carries no Key Length attribute
 func TestChaChaChildRekeyResponseEchoesNoKeyLength(t *testing.T) {
+	bubble.Run(testChaChaChildRekeyResponseEchoesNoKeyLength)(t)
+}
+
+func testChaChaChildRekeyResponseEchoesNoKeyLength(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),
@@ -517,6 +547,10 @@ func TestChaChaChildRekeyResponseEchoesNoKeyLength(t *testing.T) {
 // a local failure installing a peer's Child SA rekey answers TEMPORARY_FAILURE and returns no error, which Run would end the session on
 // RFC 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA: there is no reason to lose the work done to set up the IKE SA."
 func TestLocalFailureAnsweringAChildRekeyIsTemporary(t *testing.T) {
+	bubble.Run(testLocalFailureAnsweringAChildRekeyIsTemporary)(t)
+}
+
+func testLocalFailureAnsweringAChildRekeyIsTemporary(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),

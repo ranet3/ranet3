@@ -102,34 +102,8 @@ func answerPeerRekey(t testing.TB, s *Session, ike bool, request []RawPayload) r
 }
 
 // recheck has s check its SAs against the lists in force and returns once it has, or once its Run ended with how it ended
-// Run takes one check at a time, so a second is taken only once the first is done
-func recheck(t testing.TB, s *Session, run <-chan error) (bool, error) {
-	t.Helper()
-	for range 2 {
-		s.SuitesChanged()
-		var ended bool
-		var err error
-		if !waitUntil(func() bool {
-			select {
-			case err = <-run:
-				ended = true
-				return true
-			default:
-				return len(s.rechecks) == 0
-			}
-		}) {
-			t.Fatal("the session never checked its SAs")
-		}
-		if ended {
-			return true, err
-		}
-	}
-	return false, nil
-}
-
-// settledRecheck is recheck for a test in a bubble
 // s.rechecks empties once Run takes the check, before Run runs it, so each look first waits for every other goroutine of the bubble to block
-func settledRecheck(t testing.TB, s *Session, run <-chan error) (bool, error) {
+func recheck(t testing.TB, s *Session, run <-chan error) (bool, error) {
 	t.Helper()
 	s.SuitesChanged()
 	var ended bool
@@ -183,7 +157,7 @@ func TestOfferIsAnsweredInTheFirstListedGroupAnyProposalHolds(t *testing.T) {
 	with := func(transforms []Transform, more ...Transform) []Transform {
 		return slices.Concat(transforms, more)
 	}
-	t.Run("at IKE_SA_INIT", func(t *testing.T) {
+	t.Run("at IKE_SA_INIT", bubble.Run(func(t *testing.T) {
 		for _, test := range cases {
 			var proposals []Proposal
 			for i, transforms := range test.proposals {
@@ -200,14 +174,14 @@ func TestOfferIsAnsweredInTheFirstListedGroupAnyProposalHolds(t *testing.T) {
 				t.Errorf("%s: answered %+v, %v, want proposal %d in %+v and group %d", test.name, selected, err, test.number, test.cipher, test.ke)
 			}
 		}
-	})
+	}))
 	mux, _ := lifecycleMuxes(t)
 	for _, ike := range []bool{true, false} {
 		site := "at a Child SA rekey"
 		if ike {
 			site = "at an IKE SA rekey"
 		}
-		t.Run(site, func(t *testing.T) {
+		t.Run(site, bubble.Run(func(t *testing.T) {
 			for _, test := range cases {
 				// neither SA was keyed in a group the cases name, so no answer keeps a group
 				s := answeringSession(t, mux, SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: 14},
@@ -235,7 +209,7 @@ func TestOfferIsAnsweredInTheFirstListedGroupAnyProposalHolds(t *testing.T) {
 					t.Errorf("%s: answered %+v, want proposal %d in %+v and group %d", test.name, answer, test.number, want, test.ke)
 				}
 			}
-		})
+		}))
 	}
 }
 
@@ -257,7 +231,7 @@ func TestChildSARekeyWithoutAKEPayloadTakesAProposalWithoutAGroup(t *testing.T) 
 		{"a proposal offering only groups before one offering no group", [][]Transform{grouped, {encrAES128, esnNone}}, 0, 2, Transform{}},
 		{"proposals offering only groups", [][]Transform{grouped}, DH_CURVE25519, 0, Transform{}},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		t.Run(test.name, bubble.Run(func(t *testing.T) {
 			s := answeringSession(t, mux, SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519},
 				ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}, 0, Suites{})
 			var proposals []Proposal
@@ -274,7 +248,7 @@ func TestChildSARekeyWithoutAKEPayloadTakesAProposalWithoutAGroup(t *testing.T) 
 			if answer.proposal.Number != test.number || groupIn(answer.proposal) != test.dh {
 				t.Errorf("answered %+v, want proposal %d in %+v", answer, test.number, test.dh)
 			}
-		})
+		}))
 	}
 }
 
@@ -283,7 +257,7 @@ func TestChildSARekeyWithoutAKEPayloadTakesAProposalWithoutAGroup(t *testing.T) 
 // RFC 7296 section 3.3.1: "it is equal to the size, in octets, of the SPI of the corresponding protocol (8 for IKE, 4 for ESP and AH)."
 func TestIKEProposalWithAnSPIOfAnotherSizeIsUnacceptable(t *testing.T) {
 	transforms := []Transform{encrAES256, prfSHA384, dhX25519}
-	t.Run("at IKE_SA_INIT", func(t *testing.T) {
+	t.Run("at IKE_SA_INIT", bubble.Run(func(t *testing.T) {
 		withSPI := Proposal{Number: 1, Protocol: ProtoIKE, SPI: bytes.Repeat([]byte{5}, 8), Transforms: transforms}
 		if selected, _, err := selectIKEProposal(EncodeSA([]Proposal{withSPI}), DH_CURVE25519, Suites{}, false); err == nil {
 			t.Errorf("a proposal with an SPI was answered %+v", selected)
@@ -292,8 +266,8 @@ func TestIKEProposalWithAnSPIOfAnotherSizeIsUnacceptable(t *testing.T) {
 		if selected, _, err := selectIKEProposal(EncodeSA([]Proposal{withSPI, plain}), DH_CURVE25519, Suites{}, false); err != nil || selected.Number != 2 {
 			t.Errorf("a proposal with an SPI before one without was answered %+v, %v, want proposal 2", selected, err)
 		}
-	})
-	t.Run("at an IKE SA rekey", func(t *testing.T) {
+	}))
+	t.Run("at an IKE SA rekey", bubble.Run(func(t *testing.T) {
 		mux, _ := lifecycleMuxes(t)
 		for name, sizes := range map[string][]int{
 			"a proposal with a 4-octet SPI alone":          {4},
@@ -319,7 +293,7 @@ func TestIKEProposalWithAnSPIOfAnotherSizeIsUnacceptable(t *testing.T) {
 				t.Errorf("%s: answered %+v, want proposal %d", name, answer, want)
 			}
 		}
-	})
+	}))
 }
 
 // a peer's rekey whose KE payload is in the group of the SA it replaces is answered in that group while the offer and kex hold it
@@ -328,6 +302,10 @@ func TestIKEProposalWithAnSPIOfAnotherSizeIsUnacceptable(t *testing.T) {
 // a Child SA keeps its cipher alongside, and one keyed from SK_d alone has no group to keep
 // RFC 7296 section 2.8: "Note that, when rekeying, the new Child SA SHOULD NOT have different Traffic Selectors and algorithms than the old one."
 func TestPeerRekeyKeepsTheGroupOfTheSAItReplaces(t *testing.T) {
+	bubble.Run(testPeerRekeyKeepsTheGroupOfTheSAItReplaces)(t)
+}
+
+func testPeerRekeyKeepsTheGroupOfTheSAItReplaces(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_ECP_256}
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
@@ -374,6 +352,10 @@ func TestPeerRekeyKeepsTheGroupOfTheSAItReplaces(t *testing.T) {
 // a peer's IKE SA rekey offering two listed ciphers is answered in the one this end lists first
 // RFC 7296 section 2.7: "The responder MUST choose a single suite, which may be any subset of the SA proposal following the rules below."
 func TestPeerIKESARekeyIsAnsweredInThisEndsCipherOrder(t *testing.T) {
+	bubble.Run(testPeerIKESARekeyIsAnsweredInThisEndsCipherOrder)(t)
+}
+
+func testPeerIKESARekeyIsAnsweredInThisEndsCipherOrder(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	lists := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes256gcm", "chacha20poly1305"}}})
 	s := answeringSession(t, mux, SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519},
@@ -387,6 +369,10 @@ func TestPeerIKESARekeyIsAnsweredInThisEndsCipherOrder(t *testing.T) {
 // two ends whose kex lists order the groups differently rekey their IKE SA from either end in one exchange each
 // and the SA keeps the group its handshake settled
 func TestRekeysBetweenEndsOrderingTheGroupsDifferentlyKeepTheGroup(t *testing.T) {
+	bubble.Run(testRekeysBetweenEndsOrderingTheGroupsDifferentlyKeepTheGroup)(t)
+}
+
+func testRekeysBetweenEndsOrderingTheGroupsDifferentlyKeepTheGroup(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	answering := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"p256", "x25519"}}})
 	h.lists.Store(&answering)
@@ -445,6 +431,10 @@ func TestRekeysBetweenEndsOrderingTheGroupsDifferentlyKeepTheGroup(t *testing.T)
 // and so does its retry in the group INVALID_KE_PAYLOAD names
 // RFC 7296 section 3.4: "This Diffie-Hellman Group Num MUST match a Diffie-Hellman group specified in a proposal in the SA payload that is sent in the same message, and SHOULD match the Diffie-Hellman group in the first group in the first proposal, if such exists."
 func TestIKESARekeyOffersTheGroupOfItsKEPayloadFirst(t *testing.T) {
+	bubble.Run(testIKESARekeyOffersTheGroupOfItsKEPayloadFirst)(t)
+}
+
+func testIKESARekeyOffersTheGroupOfItsKEPayloadFirst(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_ECP_256},
 		spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
@@ -500,6 +490,10 @@ func TestIKESARekeyOffersTheGroupOfItsKEPayloadFirst(t *testing.T) {
 // a reload whose lists leave out a live IKE SA's cipher rekeys it once
 // and a peer that refuses that rekey leaves the next attempt to the retry timer
 func TestRefusedForcedRekeyWaitsForItsRetry(t *testing.T) {
+	bubble.Run(testRefusedForcedRekeyWaitsForItsRetry)(t)
+}
+
+func testRefusedForcedRekeyWaitsForItsRetry(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	aes256 := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes256gcm"}}})
@@ -530,6 +524,10 @@ func TestRefusedForcedRekeyWaitsForItsRetry(t *testing.T) {
 // a reload whose lists leave out a live IKE SA's group and its Child SA's cipher rekeys the Child SA
 // though the peer refuses the IKE SA's rekey, which leaves the IKE SA to its retry timer
 func TestChildSARekeysOnceTheIKESARekeyFailed(t *testing.T) {
+	bubble.Run(testChildSARekeysOnceTheIKESARekeyFailed)(t)
+}
+
+func testChildSARekeysOnceTheIKESARekeyFailed(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	x25519 := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"x25519"}}})
@@ -552,6 +550,10 @@ func TestChildSARekeysOnceTheIKESARekeyFailed(t *testing.T) {
 // a session deleting its IKE SA for an unlisted PRF starts nothing else while the Delete is unanswered
 // neither a second Delete on a later check of its SAs nor a rekey whose timer runs out
 func TestReplacementStartsNothingElseWhileItsDeleteIsUnanswered(t *testing.T) {
+	bubble.Run(testReplacementStartsNothingElseWhileItsDeleteIsUnanswered)(t)
+}
+
+func testReplacementStartsNothingElseWhileItsDeleteIsUnanswered(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	var deleting, released atomic.Bool
@@ -613,6 +615,10 @@ func TestReplacementStartsNothingElseWhileItsDeleteIsUnanswered(t *testing.T) {
 
 // a Child SA a reload left out waits for a rekey under way, and a later check of the SAs meanwhile marks it once
 func TestRecheckWhileARekeyRunsMarksAnUnlistedSAOnce(t *testing.T) {
+	bubble.Run(testRecheckWhileARekeyRunsMarksAnUnlistedSAOnce)(t)
+}
+
+func testRecheckWhileARekeyRunsMarksAnUnlistedSAOnce(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	var rekeying, released atomic.Bool
@@ -685,7 +691,7 @@ func testReloadDuringARekeyChecksTheSAItMade(t *testing.T) {
 	}
 	aes128 := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm"}}})
 	dialing.Store(&aes128)
-	if ended, err := settledRecheck(t, initiator, initiatorRun); ended {
+	if ended, err := recheck(t, initiator, initiatorRun); ended {
 		t.Fatalf("the session ended with %v", err)
 	}
 	released.Store(true)
@@ -701,6 +707,10 @@ func testReloadDuringARekeyChecksTheSAItMade(t *testing.T) {
 
 // a Child SA a reload left out whose scheduled rekey fell due behind a rekey under way is rekeyed by that schedule, not forced as well
 func TestReloadLeavesADueRekeyToItsSchedule(t *testing.T) {
+	bubble.Run(testReloadLeavesADueRekeyToItsSchedule)(t)
+}
+
+func testReloadLeavesADueRekeyToItsSchedule(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	var rekeying, released atomic.Bool
@@ -736,6 +746,10 @@ func TestReloadLeavesADueRekeyToItsSchedule(t *testing.T) {
 
 // a reload that leaves out the IKE SA's cipher while the SA's scheduled rekey backs off from a refusal leaves the rekey to its retry
 func TestReloadLeavesARekeyBackingOffToItsRetry(t *testing.T) {
+	bubble.Run(testReloadLeavesARekeyBackingOffToItsRetry)(t)
+}
+
+func testReloadLeavesARekeyBackingOffToItsRetry(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	cfg, dialing := listedConfig(h, dialed.record)
@@ -769,7 +783,7 @@ func TestReloadRekeysAnSAThePeerRekeyed(t *testing.T) {
 		{"child", Crypto{ESP: ESPSuites{Cipher: []string{"aes128gcm"}}}, "aes128gcm"},
 		{"ike", Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm"}}}, "aes128gcm/sha384/x25519"},
 	} {
-		t.Run(tc.sa, func(t *testing.T) {
+		t.Run(tc.sa, bubble.Run(func(t *testing.T) {
 			dialed := &recorder{}
 			h := newResponderHarness(t, nil)
 			cfg, dialing := listedConfig(h, dialed.record)
@@ -788,13 +802,17 @@ func TestReloadRekeysAnSAThePeerRekeyed(t *testing.T) {
 			// one check, since a second would force the rekey again and hide one the first check's forced rekey dropped
 			initiator.SuitesChanged()
 			awaitRecorded(t, dialed, "ike.rekey.completed "+dialedPair+" sa="+tc.sa+" suite="+tc.suite)
-		})
+		}))
 	}
 }
 
 // a reload at both ends leaving out the PRF of their IKE SA sends two Deletes that cross
 // and each session ends for a new handshake, so each dialer dials again at once
 func TestReloadAtBothEndsEndsEachSessionForANewHandshake(t *testing.T) {
+	bubble.Run(testReloadAtBothEndsEndsEachSessionForANewHandshake)(t)
+}
+
+func testReloadAtBothEndsEndsEachSessionForANewHandshake(t *testing.T) {
 	for run := range 3 {
 		h := newResponderHarness(t, nil)
 		// the dialing Run holds in the event of the liveness check it starts, so the reload's check and the peer's Delete both come while it is busy
@@ -868,6 +886,10 @@ func timedRecorder(r *recorder, kind string, at *atomic.Pointer[time.Time]) Reco
 // so two ends reloading the same lists at once do not both rekey the SA at once and refuse each other's rekey
 // RFC 7296 section 2.8.1: "To reduce the probability of this happening, the timing of rekeying requests SHOULD be jittered (delayed by a random amount of time after the need for rekeying is noticed)."
 func TestForcedRekeyWaitsADelayDrawnWithinTheRekeyJitter(t *testing.T) {
+	bubble.Run(testForcedRekeyWaitsADelayDrawnWithinTheRekeyJitter)(t)
+}
+
+func testForcedRekeyWaitsADelayDrawnWithinTheRekeyJitter(t *testing.T) {
 	dialed := &recorder{}
 	var started atomic.Pointer[time.Time]
 	h := newResponderHarness(t, nil)
@@ -921,7 +943,7 @@ func TestRefusedForcedRekeyStopsOnceTheListsHoldItsSA(t *testing.T) {
 		if due > 0 {
 			name = "a scheduled rekey due " + due.String() + " into the SA"
 		}
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			dialed := &recorder{}
 			var completed atomic.Pointer[time.Time]
 			h := newResponderHarness(t, nil)
@@ -964,13 +986,17 @@ func TestRefusedForcedRekeyStopsOnceTheListsHoldItsSA(t *testing.T) {
 			if at := completed.Load().Sub(established); at < due {
 				t.Errorf("the scheduled rekey completed %s after the IKE SA was made, want no sooner than its deadline %s", at, due)
 			}
-		})
+		}))
 	}
 }
 
 // a forced Child SA rekey the peer refused retries only while the lists still leave out the Child SA's cipher
 // once a reload lists it again the retry runs no rekey
 func TestRefusedForcedChildSARekeyStopsOnceTheListsHoldIt(t *testing.T) {
+	bubble.Run(testRefusedForcedChildSARekeyStopsOnceTheListsHoldIt)(t)
+}
+
+func testRefusedForcedChildSARekeyStopsOnceTheListsHoldIt(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	aes256 := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{"aes256gcm"}}})
@@ -1001,6 +1027,10 @@ func TestRefusedForcedChildSARekeyStopsOnceTheListsHoldIt(t *testing.T) {
 // a forced Child SA rekey whose delay a packet-count rekey overtook starts nothing when that delay runs out, where the Child SA has no interval
 // the packet-count rekey made a Child SA the lists hold, which leaves the schedule nothing to run
 func TestForcedDelayAPacketCountRekeyOvertookStartsNothing(t *testing.T) {
+	bubble.Run(testForcedDelayAPacketCountRekeyOvertookStartsNothing)(t)
+}
+
+func testForcedDelayAPacketCountRekeyOvertookStartsNothing(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	cfg, dialing := listedConfig(h, dialed.record)
@@ -1087,6 +1117,10 @@ func TestScheduleWithNoIntervalPutBackHoldsNothingForTheLoop(t *testing.T) {
 // a forced rekey that falls due once the lists hold its SA again runs nothing, and a rekey due beside it starts at once
 // in a quiet session nothing else wakes Run for that rekey before its SA's lifetime
 func TestDroppedForcedRekeyLeavesTheRekeyDueBesideItToStart(t *testing.T) {
+	bubble.Run(testDroppedForcedRekeyLeavesTheRekeyDueBesideItToStart)(t)
+}
+
+func testDroppedForcedRekeyLeavesTheRekeyDueBesideItToStart(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	cfg, dialing := listedConfig(h, dialed.record)
@@ -1159,13 +1193,13 @@ func TestForcedRekeyStartsNoLaterThanTheRekeyItsScheduleHolds(t *testing.T) {
 			run := runSession(t, initiator)
 			aes128 := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm"}}})
 			dialing.Store(&aes128)
-			if ended, err := settledRecheck(t, initiator, run); ended {
+			if ended, err := recheck(t, initiator, run); ended {
 				t.Fatalf("the session ended with %v", err)
 			}
 			suite := "aes128gcm/sha384/x25519"
 			if c.listed {
 				dialing.Store(&Suites{})
-				if ended, err := settledRecheck(t, initiator, run); ended {
+				if ended, err := recheck(t, initiator, run); ended {
 					t.Fatalf("the session ended with %v", err)
 				}
 				suite = "aes256gcm/sha384/x25519"
@@ -1227,7 +1261,7 @@ func TestReloadDuringAPacketCountRekeyChecksTheChildSAItMade(t *testing.T) {
 			}
 			aes128 := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{"aes128gcm"}}})
 			dialing.Store(&aes128)
-			if ended, err := settledRecheck(t, initiator, run); ended {
+			if ended, err := recheck(t, initiator, run); ended {
 				t.Fatalf("the session ended with %v", err)
 			}
 			// a forced delay of zero runs out with the rekey still under way
@@ -1254,6 +1288,10 @@ func TestReloadDuringAPacketCountRekeyChecksTheChildSAItMade(t *testing.T) {
 // a Child SA reaching its lifetime while the Delete of an IKE SA whose PRF a reload removed is unanswered leaves that Delete the last request the session sends
 // RFC 7296 section 2.8: "the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 func TestReplacementPastAChildSALifetimeSendsNoSecondDelete(t *testing.T) {
+	bubble.Run(testReplacementPastAChildSALifetimeSendsNoSecondDelete)(t)
+}
+
+func testReplacementPastAChildSALifetimeSendsNoSecondDelete(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	var released atomic.Bool
@@ -1358,6 +1396,10 @@ func TestReplacementOfAnIKESAPastItsLifetimeSendsItsDelete(t *testing.T) {
 // the replacement's Delete of an IKE SA whose PRF a reload removed has the budget of the Delete the lifecycle sends
 // and keeps it once a Child SA reaches its lifetime behind it
 func TestReplacementDeleteHasTheTeardownBudget(t *testing.T) {
+	bubble.Run(testReplacementDeleteHasTheTeardownBudget)(t)
+}
+
+func testReplacementDeleteHasTheTeardownBudget(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	var sent atomic.Int32

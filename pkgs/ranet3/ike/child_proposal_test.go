@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
 func encodedChildProposal(encryption Transform) []byte {
@@ -486,6 +488,10 @@ func wantInvalidKE(t *testing.T, answer Notify, group uint16) {
 // an IKE_SA_INIT whose KE is in a group its offer leaves out
 // is told the offered group to retry in
 func TestIKESAInitKEOutsideItsOfferIsAnsweredWithTheGroup(t *testing.T) {
+	bubble.Run(testIKESAInitKEOutsideItsOfferIsAnsweredWithTheGroup)(t)
+}
+
+func testIKESAInitKEOutsideItsOfferIsAnsweredWithTheGroup(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
 	if err != nil {
@@ -615,7 +621,7 @@ func TestPeerRekeyRetriedInTheGroupItWasAskedForIsTaken(t *testing.T) {
 			}
 			return answers
 		}
-		t.Run(name+" retried after INVALID_KE_PAYLOAD", func(t *testing.T) {
+		t.Run(name+" retried after INVALID_KE_PAYLOAD", bubble.Run(func(t *testing.T) {
 			answers := answer(t, test.request(ke(DH_ECP_256)), test.request(ke(DH_CURVE25519)))
 			payload := findType(answers[0], PayloadN)
 			if payload == nil {
@@ -629,8 +635,8 @@ func TestPeerRekeyRetriedInTheGroupItWasAskedForIsTaken(t *testing.T) {
 			if findType(answers[1], PayloadSA) == nil {
 				t.Errorf("the retry in the group asked for was answered notify %d, want the SA", notifyIn(t, answers[1]))
 			}
-		})
-		t.Run(name+" after one whose key exchange failed", func(t *testing.T) {
+		}))
+		t.Run(name+" after one whose key exchange failed", bubble.Run(func(t *testing.T) {
 			answers := answer(t, test.request(failing), test.request(ke(DH_CURVE25519)))
 			if got := notifyIn(t, answers[0]); got != N_INVALID_SYNTAX {
 				t.Errorf("a KE no exchange completes with was answered notify %d, want INVALID_SYNTAX", got)
@@ -638,7 +644,7 @@ func TestPeerRekeyRetriedInTheGroupItWasAskedForIsTaken(t *testing.T) {
 			if got := notifyIn(t, answers[1]); got != N_TEMPORARY_FAILURE {
 				t.Errorf("a rekey at once after one this end ran a key exchange for was answered notify %d, want TEMPORARY_FAILURE", got)
 			}
-		})
+		}))
 	}
 }
 
@@ -646,6 +652,10 @@ func TestPeerRekeyRetriedInTheGroupItWasAskedForIsTaken(t *testing.T) {
 // is answered in NONE without a KE payload
 // RFC 7296 section 3.3.6: "If one of the proposals offered is for the Diffie-Hellman group of NONE, and the responder selects that Diffie-Hellman group, then it MUST ignore the initiator's KE payload and omit the KE payload from the response."
 func TestPeerChildRekeyOfferingNONEIsAnsweredWithoutAKE(t *testing.T) {
+	bubble.Run(testPeerChildRekeyOfferingNONEIsAnsweredWithoutAKE)(t)
+}
+
+func testPeerChildRekeyOfferingNONEIsAnsweredWithoutAKE(t *testing.T) {
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),
 		skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20), responder: true}
@@ -696,7 +706,6 @@ func TestIKEAuthChildProposalNamingOnlyGroupsIsUnacceptable(t *testing.T) {
 	withNone := espProposal([]byte{0, 0, 0, 9})
 	withNone.Transforms = append(withNone.Transforms, dhX25519, Transform{Type: TransDH})
 	plain := espProposal([]byte{0, 0, 0, 9})
-	h := newResponderHarness(t, nil)
 	for name, test := range map[string]struct {
 		offer []Proposal
 		// taken is the number of the proposal the answer takes, zero where it refuses them all
@@ -708,7 +717,8 @@ func TestIKEAuthChildProposalNamingOnlyGroupsIsUnacceptable(t *testing.T) {
 		"a proposal naming NONE beside a group":                {[]Proposal{withNone}, 1, Transform{Type: TransDH}},
 		"a proposal naming only groups before one naming NONE": {[]Proposal{grouped, withNone}, 2, Transform{Type: TransDH}},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
+			h := newResponderHarness(t, nil)
 			offer := slices.Clone(test.offer)
 			for i := range offer {
 				offer[i].Number = uint8(i + 1)
@@ -739,7 +749,7 @@ func TestIKEAuthChildProposalNamingOnlyGroupsIsUnacceptable(t *testing.T) {
 			if dh != test.dh {
 				t.Errorf("the answer took %+v, want %+v", dh, test.dh)
 			}
-		})
+		}))
 	}
 }
 
@@ -750,7 +760,6 @@ func TestChildSAProposalNamingSPIZeroIsRefused(t *testing.T) {
 	zero, valid := espProposal([]byte{0, 0, 0, 0}), espProposal([]byte{0, 0, 0, 9})
 	valid.Number = 2
 	old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
-	h := newResponderHarness(t, nil)
 	for name, test := range map[string]struct {
 		offer []Proposal
 		// taken is the number of the proposal the answer takes
@@ -760,7 +769,8 @@ func TestChildSAProposalNamingSPIZeroIsRefused(t *testing.T) {
 		"a proposal naming SPI zero alone":          {[]Proposal{zero}, 0},
 		"a proposal naming SPI zero before another": {[]Proposal{zero, valid}, valid.Number},
 	} {
-		t.Run(name+" at IKE_AUTH", func(t *testing.T) {
+		t.Run(name+" at IKE_AUTH", bubble.Run(func(t *testing.T) {
+			h := newResponderHarness(t, nil)
 			inner, err := answerIKEAuth(t, h, Suites{}, test.offer...)
 			if (err == nil) != (test.taken != 0) {
 				t.Errorf("the responder's IKE_AUTH ended with %v", err)
@@ -768,8 +778,8 @@ func TestChildSAProposalNamingSPIZeroIsRefused(t *testing.T) {
 			if got := takenProposal(t, inner); got != test.taken {
 				t.Errorf("the answer took proposal %d, want %d", got, test.taken)
 			}
-		})
-		t.Run(name+" at CREATE_CHILD_SA", func(t *testing.T) {
+		}))
+		t.Run(name+" at CREATE_CHILD_SA", bubble.Run(func(t *testing.T) {
 			mux, _ := lifecycleMuxes(t)
 			ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}, spiI: 11, spiR: 12,
 				skD: bytes.Repeat([]byte{1}, 32), skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20), responder: true}
@@ -795,7 +805,7 @@ func TestChildSAProposalNamingSPIZeroIsRefused(t *testing.T) {
 			case test.taken != 0 && child.RemoteSPI != binary.BigEndian.Uint32(valid.SPI):
 				t.Errorf("the rekey left the Child SA sending under SPI %d, want the SPI of the proposal it took", child.RemoteSPI)
 			}
-		})
+		}))
 	}
 }
 
@@ -945,7 +955,6 @@ func answerIKEAuth(t testing.TB, h *responderHarness, lists Suites, children ...
 // an IKE_AUTH whose Child SA offer is refused ends with the error that kept its answer from going, where the answer cannot be sealed or, for a request in fragments, cannot be cut
 // the IV space of the responder's key runs out at the answer's seal or at its first fragment
 func TestRefusedIKEAuthWhoseAnswerCannotGoEndsWithTheAnswersError(t *testing.T) {
-	h := newResponderHarness(t, nil)
 	for name, test := range map[string]struct {
 		// used is the IVs the responder's key used before the answer
 		used uint64
@@ -955,7 +964,8 @@ func TestRefusedIKEAuthWhoseAnswerCannotGoEndsWithTheAnswersError(t *testing.T) 
 		"an answer that cannot be sealed": {math.MaxUint64, 0},
 		"an answer that cannot be cut":    {math.MaxUint64 - 1, 100},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
+			h := newResponderHarness(t, nil)
 			mux, err := h.responder.cfg.Hub.NewMux(net.IPv4(127, 0, 0, 1), h.initiator.LocalAddr().(*net.UDPAddr).Port)
 			if err != nil {
 				t.Fatal(err)
@@ -1006,6 +1016,6 @@ func TestRefusedIKEAuthWhoseAnswerCannotGoEndsWithTheAnswersError(t *testing.T) 
 			if created || err == nil || !strings.Contains(err.Error(), "IV space exhausted") {
 				t.Errorf("an IKE_AUTH in %d datagrams whose refusal could not go ended with %v and created %v, want the IV space's error and no IKE SA", len(request), err, created)
 			}
-		})
+		}))
 	}
 }

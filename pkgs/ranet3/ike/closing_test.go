@@ -15,12 +15,17 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // an initiator whose own Delete is out answers the responder's Delete crossing it as usual and stops waiting for its own answer
 // the responder refuses the Child SA and deletes the IKE SA, and its answer to the initiator's Delete is held back, so only the crossing Delete settles the initiator's exchange
 func TestInitiatorAnswersTheResponderDeleteCrossingItsOwn(t *testing.T) {
+	bubble.Run(testInitiatorAnswersTheResponderDeleteCrossingItsOwn)(t)
+}
+
+func testInitiatorAnswersTheResponderDeleteCrossingItsOwn(t *testing.T) {
 	refused := &recorder{}
 	h := childRefusedHarness(t, refused.record)
 	var answer atomic.Pointer[[]byte]
@@ -76,6 +81,10 @@ func TestInitiatorAnswersTheResponderDeleteCrossingItsOwn(t *testing.T) {
 
 // a request that does not close the IKE SA is answered and leaves the initiator waiting for its own answer, a rekey of the IKE SA being answered with TEMPORARY_FAILURE
 func TestInitiatorClosingAfterAuthAnswersOtherRequestsAndWaitsOn(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthAnswersOtherRequestsAndWaitsOn)(t)
+}
+
+func testInitiatorClosingAfterAuthAnswersOtherRequestsAndWaitsOn(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
 	go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -101,7 +110,7 @@ func TestInitiatorClosingAfterAuthAnswersOtherRequestsAndWaitsOn(t *testing.T) {
 func TestSessionClosingItsIKESARefusesRekeysOfIt(t *testing.T) {
 	why := errors.New("the reason to delete")
 	for _, closer := range []string{"run ending", "DeleteIKE"} {
-		t.Run(closer, func(t *testing.T) {
+		t.Run(closer, bubble.Run(func(t *testing.T) {
 			peer, s := closingAfterAuth(t)
 			s.requests = make(chan *localRequest, 1)
 			s.Child = ChildSA{LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
@@ -145,12 +154,16 @@ func TestSessionClosingItsIKESARefusesRekeysOfIt(t *testing.T) {
 			}
 			peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
 			settled(t, deleted, want)
-		})
+		}))
 	}
 }
 
 // a rekey of the closing IKE SA that carries a critical payload this end does not support is rejected for that payload, not refused with TEMPORARY_FAILURE, and the initiator waits on
 func TestInitiatorClosingAfterAuthRejectsACriticalPayloadBeforeRefusingTheRekey(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthRejectsACriticalPayloadBeforeRefusingTheRekey)(t)
+}
+
+func testInitiatorClosingAfterAuthRejectsACriticalPayloadBeforeRefusingTheRekey(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
 	go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -306,6 +319,10 @@ func (p *closingPeer) unanswered(t *testing.T) {
 
 // a request answered once and retransmitted, its answer lost on the way, draws that answer again bitwise and nothing else, so the next request is answered at the next Message ID and the initiator waits on
 func TestInitiatorClosingAfterAuthAnswersARetransmittedRequestWithItsAnswer(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthAnswersARetransmittedRequestWithItsAnswer)(t)
+}
+
+func testInitiatorClosingAfterAuthAnswersARetransmittedRequestWithItsAnswer(t *testing.T) {
 	var lost atomic.Pointer[[]byte]
 	peer, initiator := closingAfterAuthThrough(t, func(fromInitiator bool, header *Header, raw []byte) bool {
 		if !fromInitiator || header == nil || !header.IsResponse() || lost.Load() != nil {
@@ -344,6 +361,10 @@ func TestInitiatorClosingAfterAuthAnswersARetransmittedRequestWithItsAnswer(t *t
 // RFC 7296 section 2.25.1: "If a peer receives a request to close a Child SA that does not exist, it SHOULD reply without a Delete payload."
 // a Delete of a Child SA closes no IKE SA: the initiator answers it without a Delete payload, since the IKE SA it is closing carries no Child SA, and goes on waiting for its own answer
 func TestInitiatorClosingAfterAuthAnswersAChildSADeleteAndWaitsOn(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthAnswersAChildSADeleteAndWaitsOn)(t)
+}
+
+func testInitiatorClosingAfterAuthAnswersAChildSADeleteAndWaitsOn(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
 	go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -361,6 +382,10 @@ func TestInitiatorClosingAfterAuthAnswersAChildSADeleteAndWaitsOn(t *testing.T) 
 
 // a Delete at the next Message ID that does not authenticate is no request: the initiator neither answers it nor stops waiting for its own answer, and the peer's next request is still answered at that Message ID
 func TestInitiatorClosingAfterAuthIgnoresARequestThatDoesNotAuthenticate(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthIgnoresARequestThatDoesNotAuthenticate)(t)
+}
+
+func testInitiatorClosingAfterAuthIgnoresARequestThatDoesNotAuthenticate(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
 	go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -385,6 +410,10 @@ func TestInitiatorClosingAfterAuthIgnoresARequestThatDoesNotAuthenticate(t *test
 
 // an authenticated Delete of the IKE SA outside the window, at a Message ID answered before the last or at one ahead of the next, is neither answered nor acted on, and the answer kept for a retransmission stays the last one sent
 func TestInitiatorClosingAfterAuthIgnoresADeleteOutsideTheWindow(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthIgnoresADeleteOutsideTheWindow)(t)
+}
+
+func testInitiatorClosingAfterAuthIgnoresADeleteOutsideTheWindow(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
 	go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -422,6 +451,10 @@ var (
 
 // a request that authenticates and does not decode is answered INVALID_SYNTAX at its Message ID, which ends the IKE SA at both ends, so the initiator stops waiting for its own answer
 func TestInitiatorClosingAfterAuthEndsAtARequestThatDoesNotDecode(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthEndsAtARequestThatDoesNotDecode)(t)
+}
+
+func testInitiatorClosingAfterAuthEndsAtARequestThatDoesNotDecode(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
 	go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -442,6 +475,10 @@ func TestInitiatorClosingAfterAuthEndsAtARequestThatDoesNotDecode(t *testing.T) 
 
 // an exchange the wait does not take draws the answer Run gives it, INVALID_SYNTAX, which ends the IKE SA
 func TestInitiatorClosingAfterAuthAnswersAnExchangeItDoesNotTakeAsRunDoes(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthAnswersAnExchangeItDoesNotTakeAsRunDoes)(t)
+}
+
+func testInitiatorClosingAfterAuthAnswersAnExchangeItDoesNotTakeAsRunDoes(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
 	go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -462,6 +499,10 @@ func TestInitiatorClosingAfterAuthAnswersAnExchangeItDoesNotTakeAsRunDoes(t *tes
 // RFC 7296 section 2.21.3: "After the IKE SA is authenticated, all requests having errors MUST result in a response notifying the other end of the error."
 // a Delete payload that does not decode draws the answer Run gives it, INVALID_SYNTAX, which ends the IKE SA, so the initiator stops waiting for its own answer
 func TestInitiatorClosingAfterAuthEndsAtADeleteThatDoesNotDecodeAsRunDoes(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthEndsAtADeleteThatDoesNotDecodeAsRunDoes)(t)
+}
+
+func testInitiatorClosingAfterAuthEndsAtADeleteThatDoesNotDecodeAsRunDoes(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
 	go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -488,7 +529,7 @@ func TestInitiatorClosingAfterAuthRejectsAnUnsupportedCriticalPayloadAsRunDoes(t
 		"inside SK":    {nil, []RawPayload{deletion, unsupportedCritical}},
 		"in the clear": {[]RawPayload{unsupportedCritical}, []RawPayload{deletion}},
 	} {
-		t.Run(placement, func(t *testing.T) {
+		t.Run(placement, bubble.Run(func(t *testing.T) {
 			peer, initiator := closingAfterAuth(t)
 			done := make(chan error, 1)
 			go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -518,7 +559,7 @@ func TestInitiatorClosingAfterAuthRejectsAnUnsupportedCriticalPayloadAsRunDoes(t
 			waitsOn(t, done)
 			peer.send(t, Header{ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: own.Header.MessageID}, nil)
 			settled(t, done, nil)
-		})
+		}))
 	}
 }
 
@@ -526,6 +567,10 @@ func TestInitiatorClosingAfterAuthRejectsAnUnsupportedCriticalPayloadAsRunDoes(t
 // section 2.5: "If the critical flag is not set and the payload type is unsupported, that payload MUST be ignored."
 // a request marking every payload critical, its SK payload and a Vendor ID among them, and adding one of a type nothing assigns unmarked, is answered as Run answers it, and the answer to the initiator's own Delete, marked so and adding the same, settles the wait
 func TestInitiatorClosingAfterAuthIgnoresTheCriticalBitOnPayloadsItUnderstands(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthIgnoresTheCriticalBitOnPayloadsItUnderstands)(t)
+}
+
+func testInitiatorClosingAfterAuthIgnoresTheCriticalBitOnPayloadsItUnderstands(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
 	go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -554,6 +599,10 @@ func TestInitiatorClosingAfterAuthIgnoresTheCriticalBitOnPayloadsItUnderstands(t
 // RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected"
 // an answer to the initiator's own Delete that carries a critical payload of a type nothing assigns ends the Delete with that refusal
 func TestInitiatorClosingAfterAuthRefusesAnAnswerMarkingAnUnsupportedPayloadCritical(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthRefusesAnAnswerMarkingAnUnsupportedPayloadCritical)(t)
+}
+
+func testInitiatorClosingAfterAuthRefusesAnAnswerMarkingAnUnsupportedPayloadCritical(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
 	go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -572,6 +621,10 @@ func TestInitiatorClosingAfterAuthRefusesAnAnswerMarkingAnUnsupportedPayloadCrit
 // RFC 7296 section 3.10.1: "Unrecognized error types in a request and status types in a request or response MUST be ignored, and they should be logged."
 // a request carrying an error notify and a status notify of types nothing assigns is answered empty as Run answers it, and the answer to the initiator's own Delete carrying the status notify settles the wait
 func TestInitiatorClosingAfterAuthIgnoresNotifiesItDoesNotRecognize(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthIgnoresNotifiesItDoesNotRecognize)(t)
+}
+
+func testInitiatorClosingAfterAuthIgnoresNotifiesItDoesNotRecognize(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
 	go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -607,7 +660,7 @@ func TestInitiatorClosingAfterAuthTakesAnErrorNotifyInItsAnswerAsTheDeleteFailin
 			return err != nil && strings.Contains(err.Error(), "short notify payload")
 		}},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			peer, initiator := closingAfterAuth(t)
 			done := make(chan error, 1)
 			go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -621,7 +674,7 @@ func TestInitiatorClosingAfterAuthTakesAnErrorNotifyInItsAnswerAsTheDeleteFailin
 			case <-time.After(answerBudget):
 				t.Fatal("the initiator went on waiting for its own answer")
 			}
-		})
+		}))
 	}
 }
 

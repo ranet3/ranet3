@@ -6,6 +6,8 @@ package ike
 import (
 	"slices"
 	"testing"
+
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
 // a peer's proposal whose ADDKE types each offer NONE, or that leaves one out, is answered with NONE written out for each type it holds
@@ -42,7 +44,7 @@ func TestEachADDKETypeIsAnsweredNoneOrItsProposalIsSkipped(t *testing.T) {
 			{name: "a rekey of the Child SA", base: []Transform{encrAES128, esnNone}},
 			{name: "a rekey of the IKE SA", base: []Transform{encrAES128, prfSHA256, dhX25519}, ike: true},
 		} {
-			t.Run(exchange.name+", "+name, func(t *testing.T) {
+			t.Run(exchange.name+", "+name, bubble.Run(func(t *testing.T) {
 				// alone, and ahead of a proposal of the same transforms without the ADDKE types
 				for _, beside := range []bool{false, true} {
 					offer := []Proposal{{Transforms: slices.Concat(exchange.base, test.offered)}}
@@ -71,7 +73,7 @@ func TestEachADDKETypeIsAnsweredNoneOrItsProposalIsSkipped(t *testing.T) {
 						}
 					}
 				}
-			})
+			}))
 		}
 	}
 }

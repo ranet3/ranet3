@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
 // childOffer is a peer's proposal of a Child SA under AES-GCM with a 128-bit key, keyed by X25519 and ML-KEM-768
@@ -60,7 +62,7 @@ func (p *peerRekey) installed(s *Session) bool {
 func TestChildSAChainOfAppendixA3AsResponder(t *testing.T) {
 	const mlkem512, private = 35, 1025
 	for name, rekey := range map[string]bool{"a rekey of the Child SA": true, "a creation of the Child SA": false} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := answeringChain(t, modelSuite, Suites{kex: []kexEntry{entry768And1024}})
 			if !rekey {
 				s.Child = ChildSA{}
@@ -103,7 +105,7 @@ func TestChildSAChainOfAppendixA3AsResponder(t *testing.T) {
 			if retiring := s.retiringChild(); retiring.LocalSPI != old.LocalSPI {
 				t.Errorf("the responder retires the Child SA of SPI %08x, want %08x", retiring.LocalSPI, old.LocalSPI)
 			}
-		})
+		}))
 	}
 }
 
@@ -121,7 +123,7 @@ func TestPeerChildSARekeyKeepsTheEntryOfTheSAItReplaces(t *testing.T) {
 		"a Child SA of x25519 under kex listing x25519+mlkem768 first": {entryX25519, []kexEntry{entry768, entryX25519}, false},
 		"a Child SA of p256+mlkem768 under a KE payload in x25519":     {kexEntry{group: DH_ECP_256, additions: [addkeTypes]uint16{ML_KEM_768}}, []kexEntry{entryX25519, {group: DH_ECP_256, additions: [addkeTypes]uint16{ML_KEM_768}}}, false},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := answeringChain(t, chainSuite, Suites{kex: test.kex})
 			s.childKex = keyedEntry{spi: s.Child.LocalSPI, entry: test.entry}
 			p, request := newPeerChildRekey(t, s, []Transform{encrAES128, dhX25519, dhP256, {Type: TransADDKE1, ID: ML_KEM_768}, {Type: TransADDKE1}}, drawnOctets(t, 32))
@@ -138,13 +140,17 @@ func TestPeerChildSARekeyKeepsTheEntryOfTheSAItReplaces(t *testing.T) {
 			if p.link != nil || !p.installed(s) || s.Suite().ESPKex != "x25519" {
 				t.Errorf("the rekey drew the link %x and left the Child SA in %s, want no link and the Child SA replaced in x25519", p.link, s.Suite().ESP())
 			}
-		})
+		}))
 	}
 }
 
 // an IKE_FOLLOWUP_KE of a peer's Child SA chain whose key fails the checks of FIPS 203 section 7.2 is answered INVALID_SYNTAX, which ends the IKE SA without a Delete, and recorded as ike.kex.rejected
 // draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the checks fail, the responder MUST reject the initiator's improper public key and SHOULD send a Notify payload of type INVALID_SYNTAX as a response to the request to prevent resource exhaustion or denial of service risks."
 func TestBadKeyInAChildChainIsAnsweredInvalidSyntax(t *testing.T) {
+	bubble.Run(testBadKeyInAChildChainIsAnsweredInvalidSyntax)(t)
+}
+
+func testBadKeyInAChildChainIsAnsweredInvalidSyntax(t *testing.T) {
 	s, events := answeringChain(t, chainSuite, chainLists)
 	ctx := s.current
 	peer, request := newPeerChildRekey(t, s, childOffer, drawnOctets(t, 32))
@@ -166,6 +172,10 @@ func TestBadKeyInAChildChainIsAnsweredInvalidSyntax(t *testing.T) {
 // an INFORMATIONAL beside a peer's open Child SA chain, empty or deleting the Child SA the chain would replace, is answered as ever and leaves the chain open
 // RFC 7296 section 2.1: "Once the IKE SA is set up, either end of the Security Association may initiate requests at any time, and there can be many requests and responses "in flight" at any given moment."
 func TestRequestsDuringAPeersChildChainAreAnsweredAsUsual(t *testing.T) {
+	bubble.Run(testRequestsDuringAPeersChildChainAreAnsweredAsUsual)(t)
+}
+
+func testRequestsDuringAPeersChildChainAreAnsweredAsUsual(t *testing.T) {
 	s, _ := answeringChain(t, chainSuite, chainLists)
 	ctx := s.current
 	peer, request := newPeerChildRekey(t, s, childOffer, drawnOctets(t, 32))
@@ -186,6 +196,10 @@ func TestRequestsDuringAPeersChildChainAreAnsweredAsUsual(t *testing.T) {
 // RFC 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA"
 // RFC 9370 section 2.2.4: "Instead, they would be created only after the series of IKE_FOLLOWUP_KE exchanges is finished."
 func TestRefusedInstallAtAChildChainsLastExchangeIsAnsweredTemporaryFailure(t *testing.T) {
+	bubble.Run(testRefusedInstallAtAChildChainsLastExchangeIsAnsweredTemporaryFailure)(t)
+}
+
+func testRefusedInstallAtAChildChainsLastExchangeIsAnsweredTemporaryFailure(t *testing.T) {
 	s, _ := answeringChain(t, chainSuite, chainLists)
 	ctx, old := s.current, s.currentChild()
 	peer, request := newPeerChildRekey(t, s, childOffer, drawnOctets(t, 32))
@@ -216,7 +230,7 @@ func TestRefusedInstallAtAChildChainsLastExchangeIsAnsweredTemporaryFailure(t *t
 // RFC 7296 section 2.25.1: "If a peer receives a request to rekey the IKE SA, and it is currently creating, rekeying, or closing a Child SA of that IKE SA, it SHOULD reply with TEMPORARY_FAILURE."
 // RFC 7296 section 2.25.2: "If a peer receives a request to create or rekey a Child SA when it is currently rekeying the IKE SA, it SHOULD reply with TEMPORARY_FAILURE."
 func TestRekeyOfTheOtherSADuringAPeersChainDrawsTemporaryFailure(t *testing.T) {
-	t.Run("an IKE SA rekey during a Child SA chain", func(t *testing.T) {
+	t.Run("an IKE SA rekey during a Child SA chain", bubble.Run(func(t *testing.T) {
 		s, _ := answeringChain(t, chainSuite, chainLists)
 		ctx := s.current
 		chain, request := newPeerChildRekey(t, s, childOffer, drawnOctets(t, 32))
@@ -233,8 +247,8 @@ func TestRekeyOfTheOtherSADuringAPeersChainDrawsTemporaryFailure(t *testing.T) {
 		if current, _ := s.contexts(); current != ctx || !chain.installed(s) {
 			t.Error("the session does not hold the IKE SA it had and the Child SA of the chain")
 		}
-	})
-	t.Run("a Child SA rekey during an IKE SA chain", func(t *testing.T) {
+	}))
+	t.Run("a Child SA rekey during an IKE SA chain", bubble.Run(func(t *testing.T) {
 		s, _ := answeringChain(t, chainSuite, chainLists)
 		ctx := s.current
 		chain, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
@@ -251,12 +265,16 @@ func TestRekeyOfTheOtherSADuringAPeersChainDrawsTemporaryFailure(t *testing.T) {
 		if current, _ := s.contexts(); current.spiI != chain.spiI || s.currentChild().LocalSPI != 21 {
 			t.Error("the session does not hold the IKE SA of the chain and the Child SA it had")
 		}
-	})
+	}))
 }
 
 // a peer's Child SA chain is dropped once followupWait passes and by the peer's next rekey of the Child SA, each recorded as ike.followup.dropped of the Child SA
 // RFC 9370 section 2.2.4: "The responder MUST handle this situation gracefully and delete the associated state if it does not receive the next expected IKE_FOLLOWUP_KE request after some reasonable period of time."
 func TestPeerChildChainIsDroppedAtFollowupWaitAndByTheNextRekey(t *testing.T) {
+	bubble.Run(testPeerChildChainIsDroppedAtFollowupWaitAndByTheNextRekey)(t)
+}
+
+func testPeerChildChainIsDroppedAtFollowupWaitAndByTheNextRekey(t *testing.T) {
 	s, events := answeringChain(t, chainSuite, chainLists)
 	ctx := s.current
 	expired, request := newPeerChildRekey(t, s, childOffer, drawnOctets(t, 32))
@@ -290,6 +308,10 @@ func TestPeerChildChainIsDroppedAtFollowupWaitAndByTheNextRekey(t *testing.T) {
 // RFC 7296 section 1.2: "Thus, the SA payloads in the IKE_AUTH exchange cannot contain Transform Type 4 (Diffie-Hellman group) with any value other than NONE."
 // RFC 9370 section 2.2.3: "This exchange is the standard IKE exchange, as described in [RFC7296], with the modification of AUTH payload calculation described in [RFC9242]."
 func TestIKEAuthChildSARunsNoAdditionalKeyExchangeUnderAJoinedEntry(t *testing.T) {
+	bubble.Run(testIKEAuthChildSARunsNoAdditionalKeyExchangeUnderAJoinedEntry)(t)
+}
+
+func testIKEAuthChildSARunsNoAdditionalKeyExchangeUnderAJoinedEntry(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	required := Proposal{Number: 1, Protocol: ProtoESP, SPI: []byte{0, 0, 0, 9}, Transforms: []Transform{encrAES256, esnNone, {Type: TransADDKE1, ID: ML_KEM_768}}}
 	plain := Proposal{Number: 2, Protocol: ProtoESP, SPI: []byte{0, 0, 0, 10}, Transforms: []Transform{encrAES256, esnNone}}
@@ -307,6 +329,10 @@ func TestIKEAuthChildSARunsNoAdditionalKeyExchangeUnderAJoinedEntry(t *testing.T
 // a peer's Child SA chain answered after this end's IKE SA rekey checked for an open chain and before it recorded itself collides with no rekey of the IKE SA, so this end's rekey replaces the SA though its exchange holds the lowest nonce
 // RFC 9370 section 2.2.4: "In a nutshell, IKEv2 follows the rule that, in the case of simultaneous rekeying, if two identical new IKE SAs (or two pairs of Child SAs) are created, then one of them should be deleted."
 func TestPeerChildChainAnsweredAsThisEndsIKESARekeyStartsCollidesWithNone(t *testing.T) {
+	bubble.Run(testPeerChildChainAnsweredAsThisEndsIKESARekeyStartsCollidesWithNone)(t)
+}
+
+func testPeerChildChainAnsweredAsThisEndsIKESARekeyStartsCollidesWithNone(t *testing.T) {
 	lowest, above, answered := bytes.Repeat([]byte{0}, 32), bytes.Repeat([]byte{4}, 32), bytes.Repeat([]byte{6}, 32)
 	s, _ := initiatingSession(t, classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519, entry768}})
 	old := s.current

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -208,8 +209,8 @@ func TestIdentityAndAuthPayloadsKeepTheirBytes(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Run("initiator", func(t *testing.T) { checkInitiatorPayloads(t, x) })
-			t.Run("responder", func(t *testing.T) { checkResponderPayloads(t, x) })
+			t.Run("initiator", bubble.Run(func(t *testing.T) { checkInitiatorPayloads(t, x) }))
+			t.Run("responder", bubble.Run(func(t *testing.T) { checkResponderPayloads(t, x) }))
 		})
 	}
 }
@@ -450,15 +451,15 @@ func TestEachEndVerifiesAUTHOverTheIDPayloadAsItArrived(t *testing.T) {
 			want: "AUTH signature verification failed"},
 		"RESERVED octets the signer set": {sent: fqdn("peer.testorg.example", 1), signed: fqdn("peer.testorg.example", 1)},
 	} {
-		t.Run(name+" in IDr", func(t *testing.T) {
+		t.Run(name+" in IDr", bubble.Run(func(t *testing.T) {
 			_, err := initiatorExchange(t, payloadExchange{
 				initiator: client, responder: server,
 				initiatorAliases: Aliases{Remote: RemoteAliases{FQDN: map[string]identity.Identity{"peer.testorg.example": server}}},
 				idr:              hex.EncodeToString(test.sent), responderAuth: goldenResponderAuth(test.signed),
 			}, nil)
 			takenAsSigned(t, err, test.want)
-		})
-		t.Run(name+" in IDi", func(t *testing.T) {
+		}))
+		t.Run(name+" in IDi", bubble.Run(func(t *testing.T) {
 			_, accepted, err := responderExchange(t, payloadExchange{
 				initiator: client, responder: server, noIDr: true,
 				responderAliases: Aliases{Remote: RemoteAliases{FQDN: map[string]identity.Identity{"peer.testorg.example": client}}},
@@ -468,7 +469,7 @@ func TestEachEndVerifiesAUTHOverTheIDPayloadAsItArrived(t *testing.T) {
 			if test.want == "" && accepted.Peer != client {
 				t.Errorf("the responder accepted %s, want %s", accepted.Peer, client)
 			}
-		})
+		}))
 	}
 }
 
