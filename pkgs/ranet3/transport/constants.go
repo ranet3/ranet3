@@ -54,4 +54,9 @@ const (
 	// a laptop changing its primary service loses the session's ESP from the other address until the session returns
 	// and a pin that still has no route costs one fallback and one move each hold
 	unroutedHold = time.Minute
+	// memoryPortFirst is the first port a memory network draws, the first of linux's default ephemeral range
+	memoryPortFirst = 32768
+	// memoryLoopbackMTU is the MTU linux gives its loopback, the path MTU a mux on a memory network reads for IPv6
+	// IPv4 reads 65535, and the network carries a datagram of any size
+	memoryLoopbackMTU = 65536
 )
