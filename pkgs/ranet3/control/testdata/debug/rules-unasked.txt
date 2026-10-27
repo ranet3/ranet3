@@ -1,0 +1,5 @@
+Policy rules, ipv4
+  Priority  Selects  Table  Owner
+  0         all      local  kernel
+Wanted and missing: none
+Lookups: none

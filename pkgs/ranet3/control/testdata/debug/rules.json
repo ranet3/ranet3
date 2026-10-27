@@ -146,6 +146,38 @@
       "wanted": true
     }
   ],
+  "lookups": [
+    {
+      "lookup": "overlay",
+      "family": "ipv4",
+      "prefix": "192.0.2.0/24",
+      "address": "192.0.2.2",
+      "answer": "table 51820 dev wg0",
+      "taken": true
+    },
+    {
+      "lookup": "overlay",
+      "family": "ipv6",
+      "prefix": "3fff::/20",
+      "address": "3fff::2",
+      "answer": "a refusal (no route to host)",
+      "taken": false
+    },
+    {
+      "lookup": "underlay",
+      "family": "ipv4",
+      "address": "198.51.100.77",
+      "answer": "table 51820 dev wg0",
+      "taken": false
+    },
+    {
+      "lookup": "underlay",
+      "family": "ipv4",
+      "address": "203.0.113.70",
+      "answer": "table 51820 dev wg0",
+      "taken": false
+    }
+  ],
   "border": {
     "where": "nftables table inet ranet3 chain border",
     "hook": "prerouting",

@@ -124,6 +124,8 @@ type Client struct {
 	ruleDump func() ([]kernel.DumpedRule, error)
 	// reconcilerRules reads the rules the route reconciler derived, supplied as kernelStatus is and nil on a node with no cap.table
 	reconcilerRules atomic.Pointer[func() []kernel.DumpedRule]
+	// reconcilerLookups reads the lookups the route reconciler's last pass whose batch answered asked, supplied as reconcilerRules is
+	reconcilerLookups atomic.Pointer[func() []kernel.Lookup]
 
 	// running is the control socket's write path state: whether each named
 	// subsystem is acting. It is the record rather than the mechanism, since
@@ -544,6 +546,7 @@ func (c *Client) KernelRuntime() kernel.Runtime {
 		Advertised:    egressPrefixes(cfg),
 		EgressSegment: len(cfg.Segments().Egress()) > 0,
 		Sessions:      c.LiveSessions,
+		Endpoints:     c.liveEndpoints,
 		// One setting decides both halves, so they cannot be set against each
 		// other: the transport binds its socket off the forwarding table, and
 		// the reconciler stops hiding an announced default from every socket
@@ -571,6 +574,20 @@ func (c *Client) LiveSessions() int {
 		return 0
 	}
 	return c.sessions.liveCount()
+}
+
+func (c *Client) liveEndpoints() []netip.Addr {
+	if c.sessions == nil {
+		return nil
+	}
+	live := c.sessions.snapshot()
+	out := make([]netip.Addr, 0, len(live))
+	for _, session := range live {
+		if endpoint := session.session.Mux().Endpoint(); endpoint != nil {
+			out = append(out, endpoint.AddrPort().Addr())
+		}
+	}
+	return out
 }
 
 // dialer is one running peer loop. It is a pointer so an entry has an identity

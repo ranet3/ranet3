@@ -289,6 +289,22 @@ func TestTwoNodesConvergeOverLoopback(t *testing.T) {
 	stop()
 }
 
+// the reconciler's runtime reads the address each live session sends its
+// underlay to, which its marked lookup asks
+func TestKernelRuntimeHandsTheLiveEndpoints(t *testing.T) {
+	alpha, bravo := newLoopbackMesh(t)
+	_, stop := run(t, alpha, bravo)
+	defer stop()
+	endpoints := alpha.client.KernelRuntime().Endpoints
+	if endpoints == nil {
+		t.Fatal("the reconciler's runtime carries no endpoints, so it asks no marked lookup")
+	}
+	want := []netip.Addr{netip.MustParseAddr("127.0.0.1")}
+	waitFor(t, convergeBudget, fmt.Sprintf("the live endpoints to read %v", want), func() bool {
+		return slices.Equal(endpoints(), want)
+	})
+}
+
 // reaches is whether from forwards to an address in to's prefix through the mesh
 func reaches(from, to *loopbackNode) bool {
 	peer, verdict, _ := from.client.Mesh.Routes.Resolve(netip.Addr{}, to.prefix.Addr().Next())

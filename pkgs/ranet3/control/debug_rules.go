@@ -34,8 +34,25 @@ type RulesInfo struct {
 	// a dump that failed
 	PolicyErr string       `json:"policy_err,omitempty"`
 	Missing   []PolicyRule `json:"missing"`
+	// Lookups is every lookup the reconciler's last pass whose batch answered
+	// asked to find another program's rule ahead of the mesh's, none on a
+	// platform with no policy rules
+	Lookups []RuleLookup `json:"lookups,omitempty"`
 	// Border is absent on a node that writes no cap.border
 	Border *BorderChain `json:"border,omitempty"`
+}
+
+// RuleLookup is one lookup of the reconciler: unmarked, of Address inside the
+// overlay hold Prefix, or of the underlay, under its mark toward the peer
+// endpoint Address. Taken is an overlay lookup answered outside the tun and
+// its hold, or the underlay's answered through the tun
+type RuleLookup struct {
+	Lookup  string       `json:"lookup"`
+	Family  string       `json:"family"`
+	Prefix  netip.Prefix `json:"prefix,omitzero"`
+	Address netip.Addr   `json:"address"`
+	Answer  string       `json:"answer"`
+	Taken   bool         `json:"taken"`
 }
 
 // PolicyRule is one policy rule, as the kernel holds it or as the reconciler
@@ -129,6 +146,25 @@ func RenderRules(w io.Writer, info RulesInfo) {
 			missing = strings.Join(specs, ", ")
 		}
 		fmt.Fprintf(w, "Wanted and missing: %s\n", missing)
+	}
+	if len(info.Lookups) > 0 {
+		rows := make([][]string, 0, len(info.Lookups))
+		for _, lookup := range info.Lookups {
+			prefix, taken := "-", "no"
+			if lookup.Prefix.IsValid() {
+				prefix = lookup.Prefix.String()
+			}
+			if lookup.Taken {
+				taken = "yes"
+			}
+			rows = append(rows, []string{lookup.Lookup, lookup.Family, prefix, lookup.Address.String(), taken, lookup.Answer})
+		}
+		fmt.Fprint(w, "Lookups\n")
+		indented(w, func(w io.Writer) {
+			table(w, []string{"Lookup", "Family", "Prefix", "Address", "Taken", "Answer"}, rows)
+		})
+	} else if info.PolicyErr == "" {
+		fmt.Fprint(w, "Lookups: none\n")
 	}
 	if info.Border == nil {
 		return

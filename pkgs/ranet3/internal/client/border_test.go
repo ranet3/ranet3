@@ -473,7 +473,8 @@ func TestMetricsExposeTheBorderOnlyWhereItRuns(t *testing.T) {
 // debug rules reads every policy rule the dump finds, an l3mdev rule as one,
 // marks the reconciler's by the protocol cap.table names and the ones the
 // reconciler derived, a goto and a suppress length among them, lists what it
-// derived that the host does not hold, and carries the border's chain
+// derived that the host does not hold, and carries the reconciler's lookups by
+// kind and the border's chain
 func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 	const ownProto = kernel.DefaultProtocol + 1
 	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
@@ -497,7 +498,20 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		{Family: kernel.FamilyIPv6, Priority: 5410, Action: "lookup", Table: 254, Protocol: 4},
 	}
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return held, nil }
+	c.SetReconcilerLookups(func() []kernel.Lookup {
+		return []kernel.Lookup{
+			{Family: kernel.FamilyIPv4, Prefix: netip.MustParsePrefix("192.0.2.0/24"), Address: netip.MustParseAddr("192.0.2.2"), Answer: "table 51820 dev wg0", Taken: true},
+			{Family: kernel.FamilyIPv6, Address: netip.MustParseAddr("2001:db8:400::7"), Answer: "table main dev eth0"},
+		}
+	})
 	info := c.DebugRules()
+	lookups := []control.RuleLookup{
+		{Lookup: "overlay", Family: "ipv4", Prefix: netip.MustParsePrefix("192.0.2.0/24"), Address: netip.MustParseAddr("192.0.2.2"), Answer: "table 51820 dev wg0", Taken: true},
+		{Lookup: "underlay", Family: "ipv6", Address: netip.MustParseAddr("2001:db8:400::7"), Answer: "table main dev eth0"},
+	}
+	if !slices.Equal(info.Lookups, lookups) {
+		t.Errorf("debug rules carries the lookups %+v, want %+v", info.Lookups, lookups)
+	}
 	type flags struct{ owned, wanted bool }
 	want := []flags{{false, false}, {true, true}, {true, true}, {true, true}, {true, false}, {false, false}, {false, false}, {false, false}}
 	if len(info.Policy) != len(want) {

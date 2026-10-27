@@ -14,6 +14,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/babel"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 )
 
 // Metrics writes the Prometheus text exposition format, by hand rather than
@@ -312,6 +313,36 @@ func (c *Client) renderKernel(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_kernel_pass_failed Whether the last pass reported an error.\n")
 	fmt.Fprint(w, "# TYPE ranet3_kernel_pass_failed gauge\n")
 	fmt.Fprintf(w, "ranet3_kernel_pass_failed %d\n", boolValue(kernel.Err != ""))
+	writeTaken(w, c.lookups())
+}
+
+func writeTaken(w io.Writer, lookups []kernel.Lookup) {
+	for _, gauge := range []struct {
+		name, help string
+		underlay   bool
+	}{
+		{"ranet3_kernel_overlay_taken", "Overlay holds whose address the last pass whose batch answered found taken, for each family it asked.", false},
+		{"ranet3_kernel_underlay_taken", "Live peer endpoints whose lookup under the underlay's mark the last pass whose batch answered found answered through the tun, for each family it asked.", true},
+	} {
+		asked := map[kernel.Family]bool{}
+		taken := map[kernel.Family]int{}
+		for _, lookup := range lookups {
+			if lookup.Underlay() == gauge.underlay {
+				asked[lookup.Family] = true
+				taken[lookup.Family] += boolValue(lookup.Taken)
+			}
+		}
+		if len(asked) == 0 {
+			continue
+		}
+		fmt.Fprintf(w, "# HELP %s %s\n", gauge.name, gauge.help)
+		fmt.Fprintf(w, "# TYPE %s gauge\n", gauge.name)
+		for _, family := range []kernel.Family{kernel.FamilyIPv4, kernel.FamilyIPv6} {
+			if asked[family] {
+				fmt.Fprintf(w, "%s{family=\"%s\"} %d\n", gauge.name, family, taken[family])
+			}
+		}
+	}
 }
 
 // unixOrZero is the unix time of a pass, and zero rather than a negative
