@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -157,10 +158,10 @@ func (s *Site) Pages() map[string]templ.Component {
 // siteLink is an href or src that leads to a path on the site.
 var siteLink = regexp.MustCompile(`\s(?:href|src)="(/|/[^/"][^"]*)"`)
 
-// Render renders every page of the site to the file it is served from. It
-// fails where a link leads to a path the site serves nothing at. Loading
-// checks the links of the markdown, and only this checks those of the
-// layouts, of site.yaml and of the HTML in a page.
+// Render renders every page of the site, the sitemap and robots.txt to the
+// file each is served from. It fails where a link leads to a path the site
+// serves nothing at. Loading checks the links of the markdown, and only this
+// checks those of the layouts, of site.yaml and of the HTML in a page.
 func (s *Site) Render(ctx context.Context) (map[string][]byte, error) {
 	out := map[string][]byte{}
 	for file, page := range s.Pages() {
@@ -170,6 +171,12 @@ func (s *Site) Render(ctx context.Context) (map[string][]byte, error) {
 		}
 		out[file] = b.Bytes()
 	}
+	sitemap, err := s.sitemap()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", sitemapFile, err)
+	}
+	out[sitemapFile] = sitemap
+	out[robotsFile] = s.robots()
 	var errs []error
 	for _, file := range slices.Sorted(maps.Keys(out)) {
 		for _, m := range siteLink.FindAllSubmatch(out[file], -1) {
@@ -194,4 +201,13 @@ func (s *Site) serves(rendered map[string][]byte, link string) bool {
 		return true
 	}
 	return fs.ValidPath(file) && isFile(s.static, file)
+}
+
+// mediaType is the type of a file the site renders.
+func mediaType(file string) (string, error) {
+	kind, ok := mediaTypes[path.Ext(file)]
+	if !ok {
+		return "", fmt.Errorf("%s: the site renders no %q files", file, path.Ext(file))
+	}
+	return kind, nil
 }

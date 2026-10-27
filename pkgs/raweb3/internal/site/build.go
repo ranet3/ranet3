@@ -20,6 +20,7 @@ import (
 	"github.com/tdewolff/minify/v2/html"
 	"github.com/tdewolff/minify/v2/js"
 	"github.com/tdewolff/minify/v2/svg"
+	"github.com/tdewolff/minify/v2/xml"
 )
 
 // Tailwind compiles the site's stylesheet with the tailwind binary at Bin.
@@ -61,7 +62,14 @@ func Build(ctx context.Context, root, dir, out string, tw Tailwind) error {
 	}
 	m := newMinifier()
 	for file, b := range files {
-		if files[file], err = m.Bytes("text/html", b); err != nil {
+		kind, err := mediaType(file)
+		if err != nil {
+			return err
+		}
+		if kind == "text/plain" {
+			continue
+		}
+		if files[file], err = m.Bytes(kind, b); err != nil {
 			return fmt.Errorf("%s: %w", file, err)
 		}
 	}
@@ -108,6 +116,7 @@ func newMinifier() *minify.M {
 	m.AddFunc("text/css", css.Minify)
 	m.Add("text/html", &html.Minifier{KeepDocumentTags: true, KeepQuotes: true})
 	m.AddFunc("image/svg+xml", svg.Minify)
+	m.AddFunc("application/xml", xml.Minify)
 	m.AddFuncRegexp(regexp.MustCompile(`^(application|text)/(x-)?(java|ecma)script$`), js.Minify)
 	return m
 }

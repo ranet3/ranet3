@@ -19,6 +19,9 @@ const (
 	indexFile = "index.html"
 	// notFoundFile is the page GitHub Pages serves for a path it has no file for
 	notFoundFile = "404.html"
+	// sitemapFile and robotsFile are served at the root, where crawlers look
+	sitemapFile = "sitemap.xml"
+	robotsFile  = "robots.txt"
 	// pageSuffix marks a page's source file
 	pageSuffix = ".md"
 	// pageIndex is the stem of the page a directory serves at its own path
@@ -29,6 +32,14 @@ const (
 	dirMode  = 0o755
 	fileMode = 0o644
 )
+
+// mediaTypes are the types of the files the site renders, by extension. A
+// file of another extension is a bug of the generator.
+var mediaTypes = map[string]string{
+	".html": "text/html",
+	".xml":  "application/xml",
+	".txt":  "text/plain",
+}
 
 // layouts a page's frontmatter may name
 const (

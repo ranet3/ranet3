@@ -43,6 +43,14 @@ func Handler(root, dir string, tw Tailwind) http.Handler {
 		page, ok := files[file]
 		switch {
 		case ok:
+			kind, err := mediaType(file)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", kind+"; charset=utf-8")
+			w.Write(page)
+			return
 		case files[file+"/"+indexFile] != nil:
 			// as GitHub Pages answers a directory asked for without its slash
 			http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
