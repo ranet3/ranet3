@@ -15,10 +15,15 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
 func TestInitiateCancellationLeavesSharedHubOpen(t *testing.T) {
+	bubble.Run(testInitiateCancellationLeavesSharedHubOpen)(t)
+}
+
+func testInitiateCancellationLeavesSharedHubOpen(t *testing.T) {
 	peer := listenPeer(t)
 	address := peer.LocalAddr().(*net.UDPAddr)
 	hub, err := testNetwork(t).NewHub()
@@ -58,6 +63,10 @@ func TestInitiateCancellationLeavesSharedHubOpen(t *testing.T) {
 
 // an exchange whose mux closes ends at once and sends nothing more, since a closed mux still reaches the shared socket
 func TestClosedMuxEndsTheExchangeWithoutRetransmitting(t *testing.T) {
+	bubble.Run(testClosedMuxEndsTheExchangeWithoutRetransmitting)(t)
+}
+
+func testClosedMuxEndsTheExchangeWithoutRetransmitting(t *testing.T) {
 	peer := listenPeer(t)
 	address := peer.LocalAddr().(*net.UDPAddr)
 	hub, err := testNetwork(t).NewHub()
@@ -124,6 +133,10 @@ func TestFullRangeSelectorSemantics(t *testing.T) {
 
 // an exchange's failure names the sends of the budget it spent, which differs from the default for the teardown Delete
 func TestSendRecvReportsTheBudgetItSpent(t *testing.T) {
+	bubble.Run(testSendRecvReportsTheBudgetItSpent)(t)
+}
+
+func testSendRecvReportsTheBudgetItSpent(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -152,6 +165,10 @@ func TestSendRecvReportsTheBudgetItSpent(t *testing.T) {
 // a request whose first copy is lost is sent again within its budget
 // and the answer to the second copy is the one returned
 func TestSendRecvSendsAnUnansweredRequestAgain(t *testing.T) {
+	bubble.Run(testSendRecvSendsAnUnansweredRequestAgain)(t)
+}
+
+func testSendRecvSendsAnUnansweredRequestAgain(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -198,6 +215,10 @@ func TestSendRecvSendsAnUnansweredRequestAgain(t *testing.T) {
 // section 3.1 on the V bit: "Implementations of IKEv2 MUST clear this bit when sending and MUST ignore it in incoming messages."
 // so the request and the response after them, at version 2.1 with the V bit and every X bit set, are handed on and taken
 func TestExchangeAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
+	bubble.Run(testExchangeAnswersAHigherMajorVersionAndDropsIt)(t)
+}
+
+func testExchangeAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)

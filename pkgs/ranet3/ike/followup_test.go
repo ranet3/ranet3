@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -355,6 +356,10 @@ func appendixA3Keys(old *ikeContext, shared, ni, nr []byte, spiI, spiR uint64, s
 // RFC 9370 section 2.2.4: "The initiator MUST send back this notification intact in the request message of the next IKE_FOLLOWUP_KE exchange."
 // RFC 9370 section 2.2.4: "With multiple key exchanges, the SAs are not yet created when the CREATE_CHILD_SA is completed. Instead, they would be created only after the series of IKE_FOLLOWUP_KE exchanges is finished."
 func TestHybridIKESARekeyEchoesTheLinkAndSwitchesAfterTheFollowup(t *testing.T) {
+	bubble.Run(testHybridIKESARekeyEchoesTheLinkAndSwitchesAfterTheFollowup)(t)
+}
+
+func testHybridIKESARekeyEchoesTheLinkAndSwitchesAfterTheFollowup(t *testing.T) {
 	s, events := initiatingSession(t, chainSuite, chainLists)
 	old := s.current
 	done := rekeying(s)
@@ -408,6 +413,10 @@ func TestHybridIKESARekeyEchoesTheLinkAndSwitchesAfterTheFollowup(t *testing.T) 
 // the new SA's keys are SKEYSEED = prf(SK_d, SK(0) | Ni | Nr | SK(1) | SK(2)) through prf+, computed with crypto/hmac
 // RFC 9370 section 2.2.4: "The former "Diffie-Hellman Group Num" (now called "Key Exchange Method") field in the KEi(n) and KEr(n) payloads MUST match the n-th negotiated additional key exchange."
 func TestIKESARekeyOfAppendixA3AsInitiator(t *testing.T) {
+	bubble.Run(testIKESARekeyOfAppendixA3AsInitiator)(t)
+}
+
+func testIKESARekeyOfAppendixA3AsInitiator(t *testing.T) {
 	s, _ := initiatingSession(t, modelSuite, Suites{ikeCipher: []Transform{encrAES256}, kex: []kexEntry{entry768And1024}})
 	old := s.current
 	done := rekeying(s)
@@ -453,6 +462,10 @@ func TestIKESARekeyOfAppendixA3AsInitiator(t *testing.T) {
 // the CREATE_CHILD_SA answer and the first IKE_FOLLOWUP_KE answer each carry a link of their own, the last answer none, and the SA is not replaced until that last exchange
 // RFC 9370 section 2.2.4: "The responder MUST include this notification in a CREATE_CHILD_SA or IKE_FOLLOWUP_KE response message in case the next IKE_FOLLOWUP_KE exchange is expected, filling it with some data that would allow linking the current exchange to the next one."
 func TestIKESARekeyOfAppendixA3AsResponder(t *testing.T) {
+	bubble.Run(testIKESARekeyOfAppendixA3AsResponder)(t)
+}
+
+func testIKESARekeyOfAppendixA3AsResponder(t *testing.T) {
 	const mlkem512, private = 35, 1025
 	s, _ := answeringChain(t, modelSuite, Suites{kex: []kexEntry{entry768And1024}})
 	ctx := s.current
@@ -516,7 +529,7 @@ func TestRefusedRekeyAnswerThatChainsEndsTheIKESA(t *testing.T) {
 		"no additional key exchange and a short nonce": {suite: classicalSuite, lists: classicalLists, edit: short},
 		"NONE in an ADDKE type the offer left out":     {suite: classicalSuite, lists: classicalLists, edit: adding(Transform{Type: TransADDKE1, ID: 0})},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := initiatingSession(t, test.suite, test.lists)
 			old := s.current
 			done := rekeying(s)
@@ -534,7 +547,7 @@ func TestRefusedRekeyAnswerThatChainsEndsTheIKESA(t *testing.T) {
 			if current, _ := s.contexts(); current != old {
 				t.Error("a refused answer replaced the SA")
 			}
-		})
+		}))
 	}
 }
 
@@ -557,7 +570,7 @@ func TestRejectedFollowupCiphertextEndsTheIKESA(t *testing.T) {
 		"no KE payload":                func(*testing.T, *peerRekey, []RawPayload) []RawPayload { return nil },
 		"a KE payload of ML-KEM-1024":  recut(ML_KEM_1024, 0),
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, events := initiatingSession(t, chainSuite, chainLists)
 			old := s.current
 			done := rekeying(s)
@@ -577,13 +590,17 @@ func TestRejectedFollowupCiphertextEndsTheIKESA(t *testing.T) {
 			if want := []string{"ike.kex.rejected > exchange=IKE_FOLLOWUP_KE method=mlkem768 side=ciphertext"}; !slices.Equal(rejected, want) {
 				t.Errorf("the session recorded %q, want %q", rejected, want)
 			}
-		})
+		}))
 	}
 }
 
 // an IKE_FOLLOWUP_KE answer that a further exchange follows and that carries no link ends the IKE SA with a Delete, since the peer may hold a chain waiting on this end
 // RFC 9370 section 2.2.4: "The responder MUST include this notification in a CREATE_CHILD_SA or IKE_FOLLOWUP_KE response message in case the next IKE_FOLLOWUP_KE exchange is expected, filling it with some data that would allow linking the current exchange to the next one."
 func TestFollowupAnswerWithoutTheNextLinkEndsTheIKESA(t *testing.T) {
+	bubble.Run(testFollowupAnswerWithoutTheNextLinkEndsTheIKESA)(t)
+}
+
+func testFollowupAnswerWithoutTheNextLinkEndsTheIKESA(t *testing.T) {
 	s, _ := initiatingSession(t, classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entry768And1024}})
 	done := rekeying(s)
 	create := requested(t, s, done, CREATE_CHILD_SA)
@@ -602,6 +619,10 @@ func TestFollowupAnswerWithoutTheNextLinkEndsTheIKESA(t *testing.T) {
 // RFC 9370 section 2.2.4: "If the initiator receives this notification in response to an IKE_FOLLOWUP_KE exchange performing an additional key exchange, it MUST cancel this exchange and MUST treat the whole series of exchanges started from the CREATE_CHILD_SA exchange as having failed."
 // RFC 9370 section 2.2.4: "If the initiator continues to receive STATE_NOT_FOUND notifications after several retries, it MUST treat this situation as a fatal error and delete the IKE SA by sending a DELETE payload."
 func TestStateNotFoundFailsTheSeriesAndTheThirdInARowEndsTheIKESA(t *testing.T) {
+	bubble.Run(testStateNotFoundFailsTheSeriesAndTheThirdInARowEndsTheIKESA)(t)
+}
+
+func testStateNotFoundFailsTheSeriesAndTheThirdInARowEndsTheIKESA(t *testing.T) {
 	s, _ := initiatingSession(t, chainSuite, chainLists)
 	old := s.current
 	notFound, temporary := notifyAnswer(N_STATE_NOT_FOUND), notifyAnswer(N_TEMPORARY_FAILURE)
@@ -657,7 +678,7 @@ func TestSimultaneousRekeysWithAdditionalKeyExchanges(t *testing.T) {
 			suite: classicalSuite, lists: both, peerOffer: classicalOffer, proposal: 1, link: []byte("link1"), peerNonce: above,
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			var lists atomic.Pointer[Suites]
 			lists.Store(&test.lists)
 			s, events := initiatingSession(t, test.suite, test.lists)
@@ -731,7 +752,7 @@ func TestSimultaneousRekeysWithAdditionalKeyExchanges(t *testing.T) {
 			if s.quiet.Load() {
 				t.Error("the session left its other requests off after the peer's SA replaced the old one")
 			}
-		})
+		}))
 	}
 }
 
@@ -744,7 +765,7 @@ func TestPeerChainEndingBeforeThisEndsAnswerIsHeldAsTheCollision(t *testing.T) {
 		"this end's exchange holding the lowest nonce": above,
 		"the peer's exchange holding the lowest nonce": lowest,
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := initiatingSession(t, chainSuite, chainLists)
 			drawsInTurn(s, below, own)
 			old := s.current
@@ -793,13 +814,17 @@ func TestPeerChainEndingBeforeThisEndsAnswerIsHeldAsTheCollision(t *testing.T) {
 			if current, _ := s.contexts(); collision == nil || current != collision {
 				t.Error("the session is not current on the SA of the peer's chain, which won")
 			}
-		})
+		}))
 	}
 }
 
 // a peer's rekey of the IKE SA while this end's own chain runs is answered TEMPORARY_FAILURE, one with additional key exchanges and one without, and this end's chain goes on
 // RFC 9370 section 2.2.4: "a situation may occur when, due to packet loss, one of the peers receives the CREATE_CHILD_SA message requesting the rekey of an SA that is already being rekeyed by this peer (i.e., the CREATE_CHILD_SA exchange initiated by this peer has already been completed, and the series of IKE_FOLLOWUP_KE exchanges is in progress). In this case, a TEMPORARY_FAILURE notification MUST be sent in response to such a request."
 func TestPeerRekeyDuringThisEndsChainDrawsTemporaryFailure(t *testing.T) {
+	bubble.Run(testPeerRekeyDuringThisEndsChainDrawsTemporaryFailure)(t)
+}
+
+func testPeerRekeyDuringThisEndsChainDrawsTemporaryFailure(t *testing.T) {
 	s, _ := initiatingSession(t, chainSuite, chainLists)
 	old := s.current
 	done := rekeying(s)
@@ -831,7 +856,7 @@ func TestPeerRekeyDuringThisEndsChainDrawsTemporaryFailure(t *testing.T) {
 func TestNoOwnRekeyWhileAPeersChainIsOpen(t *testing.T) {
 	for _, chain := range []string{"ike", "child"} {
 		for _, own := range []string{"ike", "child"} {
-			t.Run("this end's rekey of the "+own+" SA during the peer's chain of the "+chain+" SA", func(t *testing.T) {
+			t.Run("this end's rekey of the "+own+" SA during the peer's chain of the "+chain+" SA", bubble.Run(func(t *testing.T) {
 				s, events := answeringChain(t, chainSuite, chainLists)
 				s.requests = make(chan *localRequest, 1)
 				if chain == "ike" {
@@ -865,7 +890,7 @@ func TestNoOwnRekeyWhileAPeersChainIsOpen(t *testing.T) {
 				if s.chainKind() == "" {
 					t.Error("this end's refused rekey ended the peer's chain")
 				}
-			})
+			}))
 		}
 	}
 }
@@ -881,7 +906,7 @@ func TestPeerRekeyKeepsTheAdditionsWhileTheListsHoldTheEntry(t *testing.T) {
 		"kex holding x25519+mlkem768 and x25519": {lists: Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entry768, entryX25519}}},
 		"kex holding x25519 alone":               {lists: Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519}}, taken: true},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := answeringChain(t, chainSuite, test.lists)
 			ctx := s.current
 			peer, request := newPeerRekey(t, classicalOffer, drawnOctets(t, 32))
@@ -896,13 +921,17 @@ func TestPeerRekeyKeepsTheAdditionsWhileTheListsHoldTheEntry(t *testing.T) {
 			if findType(answer, PayloadSA) == nil || peer.link != nil || current == ctx || current.suite != classicalSuite {
 				t.Errorf("the rekey drew %v with the link %x, want it taken into an SA of x25519 with no link", payloadTypes(answer), peer.link)
 			}
-		})
+		}))
 	}
 }
 
 // an IKE_FOLLOWUP_KE that no open chain links is answered STATE_NOT_FOUND, an error that leaves the IKE SA and any chain as they were
 // RFC 9370 section 2.2.4: "If the responder receives an IKE_FOLLOWUP_KE message for which it does not have a key exchange state, it MUST send back a new error type notification called "STATE_NOT_FOUND". This is an error notification that is not fatal to the IKE SA. Its Notify Message Type value is 47, its Protocol ID and SPI Size are both set to 0, and the data is empty."
 func TestFollowupNoChainLinksDrawsStateNotFound(t *testing.T) {
+	bubble.Run(testFollowupNoChainLinksDrawsStateNotFound)(t)
+}
+
+func testFollowupNoChainLinksDrawsStateNotFound(t *testing.T) {
 	s, _ := answeringChain(t, chainSuite, chainLists)
 	ctx := s.current
 	if answer, err := (&peerRekey{}).followup(t, s, ctx, ML_KEM_768, drawnOctets(t, followupLinkLen)); err != nil || !notified(answer, N_STATE_NOT_FOUND, nil) {
@@ -950,7 +979,7 @@ func TestBadKeyInAFollowupIsAnsweredInvalidSyntax(t *testing.T) {
 			},
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, events := answeringChain(t, chainSuite, chainLists)
 			ctx := s.current
 			peer, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
@@ -966,7 +995,7 @@ func TestBadKeyInAFollowupIsAnsweredInvalidSyntax(t *testing.T) {
 			if test.event == "" && len(rejected) != 0 || test.event != "" && !slices.Equal(rejected, []string{test.event}) {
 				t.Errorf("the session recorded %q, want %q", rejected, test.event)
 			}
-		})
+		}))
 	}
 }
 
@@ -983,7 +1012,7 @@ func TestFollowupOnAClosingIKESADrawsTemporaryFailure(t *testing.T) {
 			return func() { s.ikeRekeyInterval = 0 }
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := answeringChain(t, chainSuite, chainLists)
 			ctx := s.current
 			peer, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
@@ -999,13 +1028,17 @@ func TestFollowupOnAClosingIKESADrawsTemporaryFailure(t *testing.T) {
 			if answer, err := peer.followup(t, s, ctx, ML_KEM_768, peer.link); err != nil || findType(answer, PayloadKE) == nil {
 				t.Errorf("the IKE_FOLLOWUP_KE after the close was called off drew %v, %v, want KEr", payloadTypes(answer), err)
 			}
-		})
+		}))
 	}
 }
 
 // a peer's chain is dropped once followupWait passes after the answer that linked it, with ike.followup.dropped
 // RFC 9370 section 2.2.4: "The responder MUST handle this situation gracefully and delete the associated state if it does not receive the next expected IKE_FOLLOWUP_KE request after some reasonable period of time."
 func TestPeerChainIsDroppedAtFollowupWait(t *testing.T) {
+	bubble.Run(testPeerChainIsDroppedAtFollowupWait)(t)
+}
+
+func testPeerChainIsDroppedAtFollowupWait(t *testing.T) {
 	s, events := answeringChain(t, chainSuite, chainLists)
 	ctx := s.current
 	opened := time.Now()
@@ -1030,6 +1063,10 @@ func TestPeerChainIsDroppedAtFollowupWait(t *testing.T) {
 // each answer that links a further exchange restarts followupWait and draws a link of its own
 // RFC 9370 section 2.2.4: "The responder MUST handle this situation gracefully and delete the associated state if it does not receive the next expected IKE_FOLLOWUP_KE request after some reasonable period of time."
 func TestEachChainAnswerRestartsFollowupWait(t *testing.T) {
+	bubble.Run(testEachChainAnswerRestartsFollowupWait)(t)
+}
+
+func testEachChainAnswerRestartsFollowupWait(t *testing.T) {
 	s, _ := answeringChain(t, classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entry768And1024}})
 	ctx := s.current
 	peer, request := newPeerRekey(t, slices.Concat(classicalOffer, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)), drawnOctets(t, 32))
@@ -1056,6 +1093,10 @@ func TestEachChainAnswerRestartsFollowupWait(t *testing.T) {
 
 // a peer's chain is superseded by the peer's next rekey of the IKE SA and by the IKE SA it runs on ceasing to be current, and links no IKE_FOLLOWUP_KE from then on
 func TestNewPeerRekeySupersedesItsChain(t *testing.T) {
+	bubble.Run(testNewPeerRekeySupersedesItsChain)(t)
+}
+
+func testNewPeerRekeySupersedesItsChain(t *testing.T) {
 	s, events := answeringChain(t, chainSuite, chainLists)
 	ctx := s.current
 	first, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
@@ -1110,6 +1151,10 @@ func TestNewPeerRekeySupersedesItsChain(t *testing.T) {
 // an INFORMATIONAL beside a peer's open chain, empty or deleting the Child SA, is answered as ever and leaves the chain open
 // RFC 7296 section 2.1: "Once the IKE SA is set up, either end of the Security Association may initiate requests at any time, and there can be many requests and responses "in flight" at any given moment."
 func TestRequestsDuringAPeersChainAreAnsweredAsUsual(t *testing.T) {
+	bubble.Run(testRequestsDuringAPeersChainAreAnsweredAsUsual)(t)
+}
+
+func testRequestsDuringAPeersChainAreAnsweredAsUsual(t *testing.T) {
 	s, _ := answeringChain(t, chainSuite, chainLists)
 	ctx := s.current
 	peer, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
@@ -1129,6 +1174,10 @@ func TestRequestsDuringAPeersChainAreAnsweredAsUsual(t *testing.T) {
 // an INFORMATIONAL beside this end's open chain, empty or deleting the Child SA, is answered as ever and leaves the chain open
 // RFC 7296 section 2.1: "Once the IKE SA is set up, either end of the Security Association may initiate requests at any time, and there can be many requests and responses "in flight" at any given moment."
 func TestRequestsDuringThisEndsChainAreAnsweredAsUsual(t *testing.T) {
+	bubble.Run(testRequestsDuringThisEndsChainAreAnsweredAsUsual)(t)
+}
+
+func testRequestsDuringThisEndsChainAreAnsweredAsUsual(t *testing.T) {
 	s, _ := initiatingSession(t, chainSuite, chainLists)
 	s.Child = ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
 	s.SetChildHandler(func(ChildSA) error { return nil })
@@ -1187,6 +1236,10 @@ func TestFollowupWaitIsTheRequestBudget(t *testing.T) {
 // an initiator waiting on its Delete after IKE_AUTH holds no chain, so it answers an IKE_FOLLOWUP_KE with STATE_NOT_FOUND as Run does with none open, and waits on
 // RFC 9370 section 2.2.4: "If the responder receives an IKE_FOLLOWUP_KE message for which it does not have a key exchange state, it MUST send back a new error type notification called "STATE_NOT_FOUND"."
 func TestInitiatorClosingAfterAuthAnswersAFollowupWithStateNotFound(t *testing.T) {
+	bubble.Run(testInitiatorClosingAfterAuthAnswersAFollowupWithStateNotFound)(t)
+}
+
+func testInitiatorClosingAfterAuthAnswersAFollowupWithStateNotFound(t *testing.T) {
 	peer, initiator := closingAfterAuth(t)
 	done := make(chan error, 1)
 	go func() { done <- initiator.deleteAuthenticatedIKE() }()
@@ -1308,6 +1361,10 @@ const followupRetransmit = 20 * time.Millisecond
 // a rekey Run starts whose IKE_FOLLOWUP_KE draws the third STATE_NOT_FOUND in a row ends the IKE SA with the Delete of the teardown, recorded as ike.sa.closed
 // RFC 9370 section 2.2.4: "If the initiator continues to receive STATE_NOT_FOUND notifications after several retries, it MUST treat this situation as a fatal error and delete the IKE SA by sending a DELETE payload."
 func TestStateNotFoundAtTheLimitDeletesTheIKESA(t *testing.T) {
+	bubble.Run(testStateNotFoundAtTheLimitDeletesTheIKESA)(t)
+}
+
+func testStateNotFoundAtTheLimitDeletesTheIKESA(t *testing.T) {
 	p, events := chainPeer(t, rekeyDue())
 	s := p.session
 	s.ikeRekeyInterval, s.rekeyMargin = rekeyLifetime, rekeyMarginOf
@@ -1369,6 +1426,10 @@ func TestChainEndingBehindAReplacementSendsNoSecondDelete(t *testing.T) {
 // Run starts no liveness check while the session is quiet, neither when one falls due nor when one is asked for, and starts the one due once it is not
 // strongSwan destroys an IKE SA that takes any other request while it waits for IKE_FOLLOWUP_KE
 func TestQuietSessionStartsNoLivenessCheck(t *testing.T) {
+	bubble.Run(testQuietSessionStartsNoLivenessCheck)(t)
+}
+
+func testQuietSessionStartsNoLivenessCheck(t *testing.T) {
 	p, _ := chainPeer(t, time.Now())
 	s := p.session
 	s.dpdEvery = dueDPD
@@ -1390,6 +1451,10 @@ func TestQuietSessionStartsNoLivenessCheck(t *testing.T) {
 // Run wakes for the deadline of a peer's chain and drops the chain there, with ike.followup.dropped, so the chain's IKE_FOLLOWUP_KE then draws STATE_NOT_FOUND
 // RFC 9370 section 2.2.4: "The responder MUST handle this situation gracefully and delete the associated state if it does not receive the next expected IKE_FOLLOWUP_KE request after some reasonable period of time."
 func TestRunDropsThePeersChainAtItsDeadline(t *testing.T) {
+	bubble.Run(testRunDropsThePeersChainAtItsDeadline)(t)
+}
+
+func testRunDropsThePeersChainAtItsDeadline(t *testing.T) {
 	p, events := chainPeer(t, time.Now())
 	s := p.session
 	// no liveness check wakes Run in the test
@@ -1420,7 +1485,7 @@ func TestRunDropsThePeersChainAtItsDeadline(t *testing.T) {
 // the answering end sends it for a key failing the checks of FIPS 203 section 7.2, and the rekeying end takes it in the answer to its own
 // RFC 7296 section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
 func TestInvalidSyntaxForAFollowupEndsTheIKESAWithoutADelete(t *testing.T) {
-	t.Run("answering", func(t *testing.T) {
+	t.Run("answering", bubble.Run(func(t *testing.T) {
 		p, events := chainPeer(t, time.Now())
 		run := runSession(t, p.session)
 		peer, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
@@ -1439,8 +1504,8 @@ func TestInvalidSyntaxForAFollowupEndsTheIKESAWithoutADelete(t *testing.T) {
 			t.Error("the session sent a request after its INVALID_SYNTAX")
 		}
 		awaitRecorded(t, events, "ike.kex.rejected > exchange=IKE_FOLLOWUP_KE method=mlkem768 side=key")
-	})
-	t.Run("rekeying", func(t *testing.T) {
+	}))
+	t.Run("rekeying", bubble.Run(func(t *testing.T) {
 		p, _ := chainPeer(t, rekeyDue())
 		s := p.session
 		s.ikeRekeyInterval, s.rekeyMargin = rekeyLifetime, rekeyMarginOf
@@ -1456,7 +1521,7 @@ func TestInvalidSyntaxForAFollowupEndsTheIKESAWithoutADelete(t *testing.T) {
 		if !p.silent(quietPeriod) {
 			t.Error("the session sent a request after the INVALID_SYNTAX it took")
 		}
-	})
+	}))
 }
 
 // peerDeletes hands s the peer's Delete of the IKE SA ctx, which s must answer and outlive
@@ -1481,7 +1546,7 @@ func TestPeerDeleteAdoptingItsRekeyEndsThisEndsRekey(t *testing.T) {
 		"a classical answer":    {suite: classicalSuite, lists: Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519}}, peerOffer: classicalOffer},
 		"an answer that chains": {suite: chainSuite, lists: chainLists, peerOffer: hybridOffer, link: []byte("link1")},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := initiatingSession(t, test.suite, test.lists)
 			old := s.current
 			done := rekeying(s)
@@ -1516,13 +1581,17 @@ func TestPeerDeleteAdoptingItsRekeyEndsThisEndsRekey(t *testing.T) {
 			if current != adopted || retained != nil || collision != nil {
 				t.Error("this end's rekey moved the session off the SA the peer's Delete left current, or kept an SA beside it")
 			}
-		})
+		}))
 	}
 }
 
 // a peer's rekey answered with a link after this end's rekey checked for an open chain and before it recorded itself is settled on the chain's nonces, as one answered later is
 // this end's exchange holds the lowest nonce, so it sends no IKE_FOLLOWUP_KE and waits for the peer's chain, whose last exchange ends this end's rekey
 func TestPeerChainAnsweredAsThisEndsRekeyStartsIsSettledOnItsNonces(t *testing.T) {
+	bubble.Run(testPeerChainAnsweredAsThisEndsRekeyStartsIsSettledOnItsNonces)(t)
+}
+
+func testPeerChainAnsweredAsThisEndsRekeyStartsIsSettledOnItsNonces(t *testing.T) {
 	below, above, own, answered := bytes.Repeat([]byte{2}, 32), bytes.Repeat([]byte{4}, 32), bytes.Repeat([]byte{5}, 32), bytes.Repeat([]byte{6}, 32)
 	s, _ := initiatingSession(t, chainSuite, chainLists)
 	old := s.current
@@ -1578,7 +1647,7 @@ func TestLostRekeyStopsWaitingForThePeersChain(t *testing.T) {
 			return deleted
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := initiatingSession(t, chainSuite, chainLists)
 			s.serving.Store(true)
 			drawsInTurn(s, below, own)
@@ -1616,12 +1685,16 @@ func TestLostRekeyStopsWaitingForThePeersChain(t *testing.T) {
 			if err := <-deleted; err != nil {
 				t.Error(err)
 			}
-		})
+		}))
 	}
 }
 
 // a close Run decides on while this end's rekey that lost waits for the peer's chain ends the wait, so the teardown's Delete goes out at once and not at the chain's deadline
 func TestRunClosingWhileALostRekeyWaitsSendsItsDeleteAtOnce(t *testing.T) {
+	bubble.Run(testRunClosingWhileALostRekeyWaitsSendsItsDeleteAtOnce)(t)
+}
+
+func testRunClosingWhileALostRekeyWaitsSendsItsDeleteAtOnce(t *testing.T) {
 	below, above, own, answered := bytes.Repeat([]byte{2}, 32), bytes.Repeat([]byte{4}, 32), bytes.Repeat([]byte{5}, 32), bytes.Repeat([]byte{6}, 32)
 	p, _ := chainPeer(t, rekeyDue())
 	s := p.session
@@ -1668,7 +1741,7 @@ func TestPeerRekeyAnsweredAsThisEndsChainStartsDrawsTemporaryFailure(t *testing.
 			suite: classicalSuite, lists: Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519, entry768}}, peerOffer: classicalOffer, proposal: 1,
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := initiatingSession(t, test.suite, test.lists)
 			// a second mux on the session's hub alone tells an SPI the session holds from one it released
 			mux, other := lifecycleMuxes(t)
@@ -1709,13 +1782,17 @@ func TestPeerRekeyAnsweredAsThisEndsChainStartsDrawsTemporaryFailure(t *testing.
 			if current, _ := s.contexts(); current.spiI != answering.spiI || current.spiR != answering.spiR {
 				t.Error("the session is not current on the SA its chain made")
 			}
-		})
+		}))
 	}
 }
 
 // an IKE SA rekey keeps the SA's group for its KE payload while an entry it offers has that group, though the lists put an entry of another group first, and leads its offer with that entry
 // RFC 7296 section 1.3: "The Diffie-Hellman group of the KEi MUST be an element of the group the initiator expects the responder to accept (additional Diffie-Hellman groups can be proposed)."
 func TestIKESARekeyKeepsTheSAsGroupWhileAnOfferedEntryHasIt(t *testing.T) {
+	bubble.Run(testIKESARekeyKeepsTheSAsGroupWhileAnOfferedEntryHasIt)(t)
+}
+
+func testIKESARekeyKeepsTheSAsGroupWhileAnOfferedEntryHasIt(t *testing.T) {
 	entryP256And768 := kexEntry{group: DH_ECP_256, additions: [addkeTypes]uint16{ML_KEM_768}}
 	s, _ := initiatingSession(t, chainSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryP256And768, entry768}})
 	done := rekeying(s)
@@ -1738,6 +1815,10 @@ func TestIKESARekeyKeepsTheSAsGroupWhileAnOfferedEntryHasIt(t *testing.T) {
 // a peer's rekey that replaces the SA after this end's rekey started and before it read the SA has this end's rekey replace the peer's SA, keyed from that SA's SK_d, and delete it
 // RFC 7296 section 2.18: "SKEYSEED for the new IKE SA is computed using SK_d from the existing IKE SA as follows:"
 func TestIKESARekeyReplacesThePeersSAMadeAsItStarted(t *testing.T) {
+	bubble.Run(testIKESARekeyReplacesThePeersSAMadeAsItStarted)(t)
+}
+
+func testIKESARekeyReplacesThePeersSAMadeAsItStarted(t *testing.T) {
 	s, _ := initiatingSession(t, classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519}})
 	first := s.current
 	peer, request := newPeerRekey(t, classicalOffer, drawnOctets(t, 32))
@@ -1786,6 +1867,10 @@ const followupRetry = 50 * time.Millisecond
 // RFC 7296 section 2.1: "IKE is a reliable protocol: the initiator MUST retransmit a request until it either receives a corresponding response or deems the IKE SA to have failed."
 // RFC 7296 section 2.3: "An IKE endpoint MUST NOT exceed the peer's stated window size for transmitted IKE requests."
 func TestFollowupIsResentUntilAnsweredAndALateStateNotFoundIsNotCounted(t *testing.T) {
+	bubble.Run(testFollowupIsResentUntilAnsweredAndALateStateNotFoundIsNotCounted)(t)
+}
+
+func testFollowupIsResentUntilAnsweredAndALateStateNotFoundIsNotCounted(t *testing.T) {
 	p, events := chainPeer(t, rekeyDue())
 	s := p.session
 	s.ikeRekeyInterval, s.rekeyMargin = rekeyLifetime, rekeyMarginOf
@@ -1831,7 +1916,7 @@ func TestFollowupIsResentUntilAnsweredAndALateStateNotFoundIsNotCounted(t *testi
 // an answer is late where its request went out at or past the request's lateFrom, a probe's resend among the sends, and not where every send came before it
 func TestAnswerAfterASendPastLateFromIsLate(t *testing.T) {
 	for name, probed := range map[string]bool{"every send before lateFrom": false, "a probe's resend past lateFrom": true} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _, _ := probedSession(t)
 			ctx := s.current
 			pending, err := s.startRequest(&localRequest{exchange: IKE_FOLLOWUP_KE, context: ctx, result: make(chan requestResult, 1)})
@@ -1840,6 +1925,8 @@ func TestAnswerAfterASendPastLateFromIsLate(t *testing.T) {
 			}
 			pending.lateFrom = pending.lastSent.Add(time.Nanosecond)
 			if probed {
+				// the probe's resend goes out at lateFrom, which the clock reaches only by moving
+				time.Sleep(time.Nanosecond)
 				if _, err := s.probe(pending); err != nil {
 					t.Fatal(err)
 				}
@@ -1855,7 +1942,7 @@ func TestAnswerAfterASendPastLateFromIsLate(t *testing.T) {
 			if got := <-result; got.late != probed {
 				t.Errorf("the answer is late %v, want %v", got.late, probed)
 			}
-		})
+		}))
 	}
 }
 
@@ -1871,7 +1958,7 @@ func TestRefusedRekeyAdoptsOnlyThePeersSAHeldForIt(t *testing.T) {
 			t.Error("the refusal replaced the SA or the collision")
 		}
 	}
-	t.Run("the redundant SA of an earlier crossing", func(t *testing.T) {
+	t.Run("the redundant SA of an earlier crossing", bubble.Run(func(t *testing.T) {
 		s, _ := initiatingSession(t, classicalSuite, lists)
 		old, redundant := s.current, chainContext(t, classicalSuite)
 		s.collision = redundant
@@ -1882,8 +1969,8 @@ func TestRefusedRekeyAdoptsOnlyThePeersSAHeldForIt(t *testing.T) {
 			t.Errorf("this end's rekey ended with %v, want TEMPORARY_FAILURE", err)
 		}
 		holds(t, s, old, redundant)
-	})
-	t.Run("an answer this end does not take", func(t *testing.T) {
+	}))
+	t.Run("an answer this end does not take", bubble.Run(func(t *testing.T) {
 		s, _ := initiatingSession(t, classicalSuite, lists)
 		old := s.current
 		done := rekeying(s)
@@ -1903,7 +1990,7 @@ func TestRefusedRekeyAdoptsOnlyThePeersSAHeldForIt(t *testing.T) {
 			t.Errorf("this end's rekey ended with %v, want the answer refused by this end", err)
 		}
 		holds(t, s, old, held)
-	})
+	}))
 }
 
 // a refusal of this end's IKE SA rekey ends the rekey with the decision it takes, adopting or not
@@ -1929,7 +2016,7 @@ func TestRefusedRekeyEndsAtItsDecision(t *testing.T) {
 		return s, old, local, peer
 	}
 	refused := refusal("IKE SA rekey", notifyAnswer(N_TEMPORARY_FAILURE))
-	t.Run("adopting nothing", func(t *testing.T) {
+	t.Run("adopting nothing", bubble.Run(func(t *testing.T) {
 		s, old, local, peer := opened(t)
 		if err := s.refusedIKERekey(local, refused); !rejectedWith(err, N_TEMPORARY_FAILURE) {
 			t.Fatalf("this end's rekey ended with %v, want TEMPORARY_FAILURE", err)
@@ -1947,8 +2034,8 @@ func TestRefusedRekeyEndsAtItsDecision(t *testing.T) {
 			t.Error("the peer's SA is held as the collision of a rekey that ended")
 		}
 		peerDeletes(t, s, old)
-	})
-	t.Run("adopting the held SA", func(t *testing.T) {
+	}))
+	t.Run("adopting the held SA", bubble.Run(func(t *testing.T) {
 		s, old, local, peer := opened(t)
 		if last, err := peer.followup(t, s, old, ML_KEM_768, peer.link); err != nil || findType(last, PayloadKE) == nil {
 			t.Fatalf("the peer's IKE_FOLLOWUP_KE drew %v, %v, want KEr", payloadTypes(last), err)
@@ -1971,7 +2058,7 @@ func TestRefusedRekeyEndsAtItsDecision(t *testing.T) {
 			t.Errorf("the peer's rekey of the adopted SA before its Delete of the SA it replaced drew %v, want TEMPORARY_FAILURE", payloadTypes(answer))
 		}
 		peerDeletes(t, s, old)
-	})
+	}))
 }
 
 // crossingAnswer is the peer's answer to this end's IKE SA rekey that crosses the peer's rekey of the same SA
@@ -2152,7 +2239,7 @@ func deletingUntilEnded(t testing.TB, s *Session, done <-chan error) error {
 // RFC 9370 section 2.2.4: "In this case, a TEMPORARY_FAILURE notification MUST be sent in response to such a request."
 // RFC 7296 section 3.10.1: "An implementation receiving a Notify payload with one of these types that it does not recognize in a response MUST assume that the corresponding request has failed entirely."
 func TestRefusedRekeyAdoptsThePeersSAHeldAsTheCollision(t *testing.T) {
-	t.Run("chained", func(t *testing.T) {
+	t.Run("chained", bubble.Run(func(t *testing.T) {
 		s, _ := initiatingSession(t, chainSuite, chainLists)
 		old := s.current
 		peer, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
@@ -2193,21 +2280,25 @@ func TestRefusedRekeyAdoptsThePeersSAHeldAsTheCollision(t *testing.T) {
 			t.Error("the adopted SA is still held as the collision, which refuses every later peer rekey")
 		}
 		peerDeletes(t, s, old)
-	})
+	}))
 	for _, answer := range crossingAnswers {
 		if !answer.refused {
 			continue
 		}
-		t.Run("classical, "+answer.name, func(t *testing.T) {
+		t.Run("classical, "+answer.name, bubble.Run(func(t *testing.T) {
 			mux, _ := lifecycleMuxes(t)
 			crossedRekeys{answer: answer, answeredFirst: true, nonces: crossingNonces(t, 0)}.keeps(t, mux)
-		})
+		}))
 	}
 }
 
 // a success answering a resend of the last IKE_FOLLOWUP_KE past the peer's wait completes the rekey on the SA the peer made, keyed as the peer keys it, and the old SA's Delete takes the next Message ID
 // RFC 7296 section 2.1: "IKE is a reliable protocol: the initiator MUST retransmit a request until it either receives a corresponding response or deems the IKE SA to have failed."
 func TestLateAnswerToTheLastFollowupCompletesTheRekey(t *testing.T) {
+	bubble.Run(testLateAnswerToTheLastFollowupCompletesTheRekey)(t)
+}
+
+func testLateAnswerToTheLastFollowupCompletesTheRekey(t *testing.T) {
 	p, events := chainPeer(t, rekeyDue())
 	s := p.session
 	s.ikeRekeyInterval, s.rekeyMargin = rekeyLifetime, rekeyMarginOf

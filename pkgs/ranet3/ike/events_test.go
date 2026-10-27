@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
 // recordPoll is how often a test looks again for an event it waits on
@@ -47,7 +48,9 @@ func (r *recorder) recorded() []string {
 
 // both roles record the ID each resolved and the rekeys they start, with the session's two ends, the SA and how it came out
 // a completed rekey names the suite of the SA that replaced the old one, by the names of the lists
-func TestSessionsRecordTheirRekeys(t *testing.T) {
+func TestSessionsRecordTheirRekeys(t *testing.T) { bubble.Run(testSessionsRecordTheirRekeys)(t) }
+
+func testSessionsRecordTheirRekeys(t *testing.T) {
 	answered, dialed := &recorder{}, &recorder{}
 	h := newResponderHarness(t, nil, answered.record)
 	cfg := h.peerConfig()
@@ -100,6 +103,10 @@ func TestSessionsRecordTheirRekeys(t *testing.T) {
 
 // a handshake the responder refuses is recorded where it is said, with no session to name
 func TestResponderRecordsARefusedHandshake(t *testing.T) {
+	bubble.Run(testResponderRecordsARefusedHandshake)(t)
+}
+
+func testResponderRecordsARefusedHandshake(t *testing.T) {
 	answered := &recorder{}
 	h := newResponderHarness(t, trustsNobody, answered.record)
 	if session, err := h.dial(t); err == nil {

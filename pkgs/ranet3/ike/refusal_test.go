@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -81,6 +82,10 @@ func answerOwnRequest(t *testing.T, s *Session, peer *transport.MemoryConn, requ
 // section 2.4: "Receipt of a fresh cryptographically protected message on an IKE SA or any of its Child SAs ensures liveness of the IKE SA and all of its Child SAs."
 // the refused check proves the peer there all the same, and asked for nothing, so its failure changes nothing, and the session tells of it and goes on, its next check at the next Message ID
 func TestSessionTellsOfARefusedLivenessCheckAndGoesOn(t *testing.T) {
+	bubble.Run(testSessionTellsOfARefusedLivenessCheckAndGoesOn)(t)
+}
+
+func testSessionTellsOfARefusedLivenessCheckAndGoesOn(t *testing.T) {
 	lines := recordLines(t)
 	s, peer, _ := probedSession(t)
 	s.started = time.Now().Add(-time.Hour)
@@ -117,6 +122,10 @@ func TestSessionTellsOfARefusedLivenessCheckAndGoesOn(t *testing.T) {
 // RFC 7296 section 1.4.1: "Deleting an IKE SA implicitly closes any remaining Child SAs negotiated under it."
 // the Delete Run sends as it ends the IKE SA, refused, is told of, and Run ends as it would have
 func TestRunTellsOfARefusedDeleteOfTheIKESAAndEnds(t *testing.T) {
+	bubble.Run(testRunTellsOfARefusedDeleteOfTheIKESAAndEnds)(t)
+}
+
+func testRunTellsOfARefusedDeleteOfTheIKESAAndEnds(t *testing.T) {
 	lines := recordLines(t)
 	peer, s := closingAfterAuth(t)
 	why := errors.New("the IKE SA reached its lifetime")
@@ -142,6 +151,10 @@ func TestRunTellsOfARefusedDeleteOfTheIKESAAndEnds(t *testing.T) {
 
 // DeleteIKE, refused while Run serves the session, returns the refusal and tells of it
 func TestDeleteIKEReturnsTheRefusalAndTellsOfIt(t *testing.T) {
+	bubble.Run(testDeleteIKEReturnsTheRefusalAndTellsOfIt)(t)
+}
+
+func testDeleteIKEReturnsTheRefusalAndTellsOfIt(t *testing.T) {
 	lines := recordLines(t)
 	s, peer, _ := probedSession(t)
 	// Run puts a request it wakes for back on the queue, which holds one for it
@@ -180,7 +193,7 @@ func TestDeleteIKEReturnsTheRefusalAndTellsOfIt(t *testing.T) {
 // a rekey has taken effect by the time it deletes the SA it replaced, or the one a collision left redundant, so a refusal of that Delete is told of and the rekey stands
 func TestRekeyIKETellsOfARefusedDeleteOfAnIKESAItLeaves(t *testing.T) {
 	for name, collide := range map[string]bool{"the SA it replaced": false, "the SA a collision left redundant": true} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			lines := recordLines(t)
 			mux, _ := lifecycleMuxes(t)
 			suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
@@ -232,7 +245,7 @@ func TestRekeyIKETellsOfARefusedDeleteOfAnIKESAItLeaves(t *testing.T) {
 			if !toldRefusal(lines, slog.LevelInfo, message) {
 				t.Errorf("the lines told %v, want the refusal once", lines.said(slog.LevelInfo, message, "err"))
 			}
-		})
+		}))
 	}
 }
 
@@ -286,7 +299,7 @@ func TestRefusedChildSADeleteLeavesItsPairHalfClosed(t *testing.T) {
 			return old.LocalSPI, nil
 		}, false},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			lines := recordLines(t)
 			s := newRekeyableSession(t, old)
 			s.current.skei, s.current.sker = make([]byte, 20), make([]byte, 20)
@@ -309,7 +322,7 @@ func TestRefusedChildSADeleteLeavesItsPairHalfClosed(t *testing.T) {
 				t.Errorf("exchange %d followed the refused Delete, want none", again.exchange)
 			case <-time.After(quietPeriod):
 			}
-		})
+		}))
 	}
 }
 
@@ -394,7 +407,7 @@ func TestSessionEndsWithoutADeleteWhenThePeerAnswersInvalidSyntax(t *testing.T) 
 			closing:  true,
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			lines := recordLines(t)
 			s, peer, events := probedSession(t)
 			// Run puts a request it wakes for back on the queue, which holds one for it
@@ -453,7 +466,7 @@ func TestSessionEndsWithoutADeleteWhenThePeerAnswersInvalidSyntax(t *testing.T) 
 			if got, want := closedAtInvalidSyntax(events), map[bool]int{false: 1, true: 0}[test.closing]; got != want {
 				t.Errorf("%d events told of the IKE SA ended at INVALID_SYNTAX, want %d: %v", got, want, events.recorded())
 			}
-		})
+		}))
 	}
 }
 
@@ -465,7 +478,7 @@ func TestInvalidSyntaxEndsTheIKESAWhereverItSitsInTheAnswer(t *testing.T) {
 		"after a status type nothing assigns": {Type: PayloadN, Body: EncodeNotify(Notify{Type: 40000})},
 		"after a notify that does not decode": {Type: PayloadN, Body: []byte{0, 0, 0}},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _, _ := probedSession(t)
 			ctx := s.current
 			pending, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, context: ctx, result: make(chan requestResult, 1)})
@@ -484,12 +497,16 @@ func TestInvalidSyntaxEndsTheIKESAWhereverItSitsInTheAnswer(t *testing.T) {
 			if got := <-result; !s.answeredInvalidSyntax || !errors.Is(got.err, errAnsweredInvalidSyntax) {
 				t.Errorf("Run ends %v, and the caller got %v carrying %v, want Run ended and the caller told %v", s.answeredInvalidSyntax, got.err, got.inner, errAnsweredInvalidSyntax)
 			}
-		})
+		}))
 	}
 }
 
 // an IKE SA a rekey retained is one this end is deleting already, so INVALID_SYNTAX on it deletes it alone, the session goes on with the IKE SA that replaced it, and the request's caller reads the answer as any other refusal
 func TestInvalidSyntaxOnARetainedIKESAEndsItAlone(t *testing.T) {
+	bubble.Run(testInvalidSyntaxOnARetainedIKESAEndsItAlone)(t)
+}
+
+func testInvalidSyntaxOnARetainedIKESAEndsItAlone(t *testing.T) {
 	lines := recordLines(t)
 	s, _, events := probedSession(t)
 	current := s.current
@@ -543,7 +560,7 @@ func TestInvalidSyntaxThisEndSendsOnARetainedIKESAEndsItAlone(t *testing.T) {
 			return EncryptMessage(old.suite, old.sker, header, nil, []RawPayload{{Type: PayloadD, Body: []byte{1}}})
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, peer, events := probedSession(t)
 			current := s.current
 			old := testContext()
@@ -592,6 +609,6 @@ func TestInvalidSyntaxThisEndSendsOnARetainedIKESAEndsItAlone(t *testing.T) {
 			if err != nil || !answer.Header.IsResponse() || answer.Header.SPIInitiator != old.spiI || !notified(inner, N_INVALID_SYNTAX, nil) {
 				t.Errorf("the request drew response %v under SPI %x carrying %v (%v), want INVALID_SYNTAX on the retained IKE SA", answer.Header.IsResponse(), answer.Header.SPIInitiator, inner, err)
 			}
-		})
+		}))
 	}
 }

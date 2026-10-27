@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -58,6 +59,10 @@ func peerLoop(t *testing.T, peer *transport.MemoryConn, body func()) {
 }
 
 func TestSessionScheduledRekeyFailureRetries(t *testing.T) {
+	bubble.Run(testSessionScheduledRekeyFailureRetries)(t)
+}
+
+func testSessionScheduledRekeyFailureRetries(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -176,7 +181,9 @@ func TestRekeyDelay(t *testing.T) {
 	}
 }
 
-func TestSessionScheduledRekeyChild(t *testing.T) {
+func TestSessionScheduledRekeyChild(t *testing.T) { bubble.Run(testSessionScheduledRekeyChild)(t) }
+
+func testSessionScheduledRekeyChild(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -385,7 +392,9 @@ func TestSessionScheduledRekeyChild(t *testing.T) {
 	}
 }
 
-func TestSessionRekeyIKE(t *testing.T) {
+func TestSessionRekeyIKE(t *testing.T) { bubble.Run(testSessionRekeyIKE)(t) }
+
+func testSessionRekeyIKE(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -598,7 +607,9 @@ func stopRun(mux *transport.Mux, runDone <-chan error) func() error {
 	})
 }
 
-func TestSessionHandlesPeerIKERekey(t *testing.T) {
+func TestSessionHandlesPeerIKERekey(t *testing.T) { bubble.Run(testSessionHandlesPeerIKERekey)(t) }
+
+func testSessionHandlesPeerIKERekey(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -800,6 +811,10 @@ func TestPeerIKERekeyInvalidKERequestsPreferredGroup(t *testing.T) {
 }
 
 func TestSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
+	bubble.Run(testSessionRekeyIKECollisionKeepsHigherNonceCandidate)(t)
+}
+
+func testSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -1101,10 +1116,14 @@ func withNonESPMarker(b []byte) []byte {
 }
 
 func TestIKEAuthAuthenticatesBeforeChildFailure(t *testing.T) {
-	testIKEAuthAuthenticatesBeforeChildFailure(t, "ranet-test")
+	bubble.Run(func(t *testing.T) {
+		testIKEAuthAuthenticatesBeforeChildFailure(t, "ranet-test")
+	})(t)
 }
 
-func TestIKEAuthAcrossOrganizations(t *testing.T) {
+func TestIKEAuthAcrossOrganizations(t *testing.T) { bubble.Run(testIKEAuthAcrossOrganizations)(t) }
+
+func testIKEAuthAcrossOrganizations(t *testing.T) {
 	testIKEAuthAuthenticatesBeforeChildFailure(t, "remote-org")
 }
 
@@ -1259,6 +1278,10 @@ func testIKEAuthAuthenticatesBeforeChildFailure(t *testing.T, remoteOrganization
 // the responder holds an authenticated SA until told, so a Delete whose mux closes before its answer arrives goes out once more
 // RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
 func TestAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.T) {
+	bubble.Run(testAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete)(t)
+}
+
+func testAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	hub, err := testNetwork(t).NewHub()
@@ -1497,7 +1520,7 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 		"a cipher the initiator's lists left out": {esp: []string{"aes256gcm", "chacha20poly1305"}, sa: usable, tsi: full, tsr: full,
 			want: "unoffered transform", follow: deletion},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			peer := listenPeer(t)
 			peerAddr := peer.LocalAddr().(*net.UDPAddr)
 			mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -1643,7 +1666,7 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 					t.Errorf("the initiator answered the responder's own refusal with %v", inner)
 				}
 			}
-		})
+		}))
 	}
 }
 
@@ -1653,6 +1676,10 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 // a responder marking every payload of both its answers critical, the SK payload and the CERTREQ, CERT, CP and Vendor ID this end skips among them, and adding one of a type nothing assigns unmarked, is dialed as one marking none
 // section 3.2 on the sender: "MUST be set to zero for payload types defined in this document."
 func TestInitiatorIgnoresTheCriticalBitOnPayloadsItUnderstands(t *testing.T) {
+	bubble.Run(testInitiatorIgnoresTheCriticalBitOnPayloadsItUnderstands)(t)
+}
+
+func testInitiatorIgnoresTheCriticalBitOnPayloadsItUnderstands(t *testing.T) {
 	vendor := RawPayload{Type: PayloadV, Body: []byte("a vendor this end does not know")}
 	marked := func(exchange ExchangeType, payloads []RawPayload) []RawPayload {
 		if exchange == IKE_SA_INIT {
@@ -1691,6 +1718,10 @@ func TestInitiatorIgnoresTheCriticalBitOnPayloadsItUnderstands(t *testing.T) {
 // section 2.5: "implementations SHOULD send the payloads defined in this specification in the order shown in the figures in Sections 1 and 2"
 // a responder answering both requests with their payloads in reverse is dialed as one answering in order, and the requests keep the order of the figures
 func TestInitiatorTakesAnswersInAnyOrderAndAsksInTheFiguresOrder(t *testing.T) {
+	bubble.Run(testInitiatorTakesAnswersInAnyOrderAndAsksInTheFiguresOrder)(t)
+}
+
+func testInitiatorTakesAnswersInAnyOrderAndAsksInTheFiguresOrder(t *testing.T) {
 	reversed := func(_ ExchangeType, payloads []RawPayload) []RawPayload {
 		slices.Reverse(payloads)
 		return payloads
@@ -1714,6 +1745,10 @@ func TestInitiatorTakesAnswersInAnyOrderAndAsksInTheFiguresOrder(t *testing.T) {
 // RFC 7296 section 3.10.1: "Notify payloads with status types MAY be added to any message and MUST be ignored if not recognized."
 // a responder adding a status notify of a type nothing assigns to both its answers is dialed as one adding none
 func TestInitiatorIgnoresStatusNotifiesItDoesNotRecognize(t *testing.T) {
+	bubble.Run(testInitiatorIgnoresStatusNotifiesItDoesNotRecognize)(t)
+}
+
+func testInitiatorIgnoresStatusNotifiesItDoesNotRecognize(t *testing.T) {
 	added := func(_ ExchangeType, payloads []RawPayload) []RawPayload {
 		return append(payloads, unrecognizedStatus)
 	}
@@ -1728,6 +1763,10 @@ func TestInitiatorIgnoresStatusNotifiesItDoesNotRecognize(t *testing.T) {
 // section 3.10.1: "An implementation receiving a Notify payload with one of these types that it does not recognize in a response MUST assume that the corresponding request has failed entirely."
 // IKE_SA_INIT answers that carry an SA beside an error notify of a type nothing assigns, beside NO_PROPOSAL_CHOSEN and beside a notify that does not decode are passed over, and the IKE_AUTH request follows the answer after them, which carries a status notify of a type nothing assigns
 func TestInitiatorPassesOverIKESAInitAnswersCarryingAnErrorNotify(t *testing.T) {
+	bubble.Run(testInitiatorPassesOverIKESAInitAnswersCarryingAnErrorNotify)(t)
+}
+
+func testInitiatorPassesOverIKESAInitAnswersCarryingAnErrorNotify(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	_, localPrivate, err := ed25519.GenerateKey(rand.Reader)
@@ -1938,6 +1977,10 @@ func dialPlayedResponder(t *testing.T, shape func(exchange ExchangeType, payload
 // RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected"
 // an IKE_SA_INIT answer that carries a critical payload of a type nothing assigns ends the dial with that refusal
 func TestInitiatorRefusesAnIKESAInitAnswerMarkingAnUnsupportedPayloadCritical(t *testing.T) {
+	bubble.Run(testInitiatorRefusesAnIKESAInitAnswerMarkingAnUnsupportedPayloadCritical)(t)
+}
+
+func testInitiatorRefusesAnIKESAInitAnswerMarkingAnUnsupportedPayloadCritical(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	peerLoop(t, peer, func() {
@@ -2001,6 +2044,10 @@ func TestInitiatorRefusesAnIKESAInitAnswerMarkingAnUnsupportedPayloadCritical(t 
 // clear in the request) must not abort the exchange: sendRecv must keep
 // waiting and accept the real response that follows.
 func TestSendRecvIgnoresUnauthenticatedErrorNotify(t *testing.T) {
+	bubble.Run(testSendRecvIgnoresUnauthenticatedErrorNotify)(t)
+}
+
+func testSendRecvIgnoresUnauthenticatedErrorNotify(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 
@@ -2072,6 +2119,10 @@ func TestSendRecvIgnoresUnauthenticatedErrorNotify(t *testing.T) {
 // treats the first correlated response as final, matching sendRecv's
 // documented default.
 func TestSendRecvAcceptsNilAsAlwaysTrue(t *testing.T) {
+	bubble.Run(testSendRecvAcceptsNilAsAlwaysTrue)(t)
+}
+
+func testSendRecvAcceptsNilAsAlwaysTrue(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 
@@ -2114,6 +2165,10 @@ func TestSendRecvAcceptsNilAsAlwaysTrue(t *testing.T) {
 }
 
 func TestSessionRequestSerializesLocalMessageIDs(t *testing.T) {
+	bubble.Run(testSessionRequestSerializesLocalMessageIDs)(t)
+}
+
+func testSessionRequestSerializesLocalMessageIDs(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -2191,7 +2246,9 @@ func TestSessionRequestSerializesLocalMessageIDs(t *testing.T) {
 	}
 }
 
-func TestSessionRunUsesOldIKEContext(t *testing.T) {
+func TestSessionRunUsesOldIKEContext(t *testing.T) { bubble.Run(testSessionRunUsesOldIKEContext)(t) }
+
+func testSessionRunUsesOldIKEContext(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -2339,6 +2396,10 @@ func TestFirstErrorNotifyReadsTypesUpTo16383AsErrors(t *testing.T) {
 // RFC 7296 section 2.6: "Each endpoint chooses one of the two SPIs and MUST choose them so as to be unique identifiers of an IKE SA."
 // two dials send their IKE_SA_INIT under two nonzero initiator SPIs that differ
 func TestInitiatorGivesEachIKESAItsOwnSPI(t *testing.T) {
+	bubble.Run(testInitiatorGivesEachIKESAItsOwnSPI)(t)
+}
+
+func testInitiatorGivesEachIKESAItsOwnSPI(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2377,6 +2438,10 @@ func TestInitiatorGivesEachIKESAItsOwnSPI(t *testing.T) {
 // the responder here binds each cookie to the KE group and takes P-256 alone, so the dial meets COOKIE, INVALID_KE_PAYLOAD and COOKIE again
 // past that a third cookie or a second group correction draws no new request, so the far end cannot keep the dial restarting
 func TestInitiatorAnswersTheCookieThatFollowsAGroupChange(t *testing.T) {
+	bubble.Run(testInitiatorAnswersTheCookieThatFollowsAGroupChange)(t)
+}
+
+func testInitiatorAnswersTheCookieThatFollowsAGroupChange(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	cookieFor := func(group uint16) []byte { return fmt.Appendf(nil, "cookie bound to group %d", group) }
@@ -2519,6 +2584,10 @@ func TestInitiatorAnswersTheCookieThatFollowsAGroupChange(t *testing.T) {
 // RFC 7296 section 3.9: "Nonce values MUST NOT be reused."
 // two dials send IKE_SA_INIT requests with different nonces
 func TestEachIKESAInitDrawsItsOwnNonce(t *testing.T) {
+	bubble.Run(testEachIKESAInitDrawsItsOwnNonce)(t)
+}
+
+func testEachIKESAInitDrawsItsOwnNonce(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	seen := map[uint64]bool{}
@@ -2570,6 +2639,10 @@ func TestEachIKESAInitDrawsItsOwnNonce(t *testing.T) {
 // section 1.2: "The initiator MUST again propose its full set of acceptable cryptographic suites because the rejection message was unauthenticated and otherwise an active attacker could trick the endpoints into negotiating a weaker suite than a stronger one that they both prefer."
 // the retry an INVALID_KE_PAYLOAD naming P-256 draws offers P-256 first and the other groups after it in their order, the rest of the offer as before, octet for octet
 func TestInitiatorRetriesWithTheNamedGroupFirst(t *testing.T) {
+	bubble.Run(testInitiatorRetriesWithTheNamedGroupFirst)(t)
+}
+
+func testInitiatorRetriesWithTheNamedGroupFirst(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	peerDone := make(chan struct{})
@@ -2646,6 +2719,10 @@ func TestInitiatorRetriesWithTheNamedGroupFirst(t *testing.T) {
 // RFC 7296 section 1.2: "Thus, the SA payloads in the IKE_AUTH exchange cannot contain Transform Type 4 (Diffie-Hellman group) with any value other than NONE. Implementations SHOULD omit the whole transform substructure instead of sending value NONE."
 // the Child SA offer of the IKE_AUTH request names no Diffie-Hellman transform
 func TestInitiatorOffersNoDiffieHellmanTransformInIKEAuth(t *testing.T) {
+	bubble.Run(testInitiatorOffersNoDiffieHellmanTransformInIKEAuth)(t)
+}
+
+func testInitiatorOffersNoDiffieHellmanTransformInIKEAuth(t *testing.T) {
 	unchanged := func(_ ExchangeType, payloads []RawPayload) []RawPayload { return payloads }
 	asSent := func([]byte) {}
 	_, auth, _, err := dialPlayedResponder(t, unchanged, asSent)

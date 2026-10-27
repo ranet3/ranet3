@@ -52,7 +52,7 @@ func TestSAWhoseRekeyKeepsFailingIsDeletedAtItsLifetime(t *testing.T) {
 		{"child", func(cfg *PeerConfig) { cfg.ChildRekeyInterval = lifetime }, func(s *Session) time.Time { return s.childEstablished }},
 		{"ike", func(cfg *PeerConfig) { cfg.IKERekeyInterval = lifetime }, func(s *Session) time.Time { return s.current.established }},
 	} {
-		t.Run(tc.sa, func(t *testing.T) {
+		t.Run(tc.sa, bubble.Run(func(t *testing.T) {
 			var established time.Time
 			pair := dialRefusing(t, func(cfg *PeerConfig) {
 				tc.set(cfg)
@@ -85,7 +85,7 @@ func TestSAWhoseRekeyKeepsFailingIsDeletedAtItsLifetime(t *testing.T) {
 			again.Mux().Close()
 			(<-pair.h.sessions).Mux().Close()
 			<-pair.h.identities
-		})
+		}))
 	}
 }
 
@@ -322,6 +322,7 @@ func TestProactiveRekeyOutstandingAtTheChildSALifetime(t *testing.T) {
 // a Child SA rekey asked for once the SA's keys have left at its lifetime starts no exchange, so with none running then the IKE SA closes
 // the ask comes as the keys leave, as internal/client's comes from the first batch that finds them gone, and is under way before the session decides on the close
 func TestRekeyAskedForPastTheChildSALifetimeStartsNothing(t *testing.T) {
+	// on the real clock, since its retire handler polls on a timer while the session holds childMu, which the rekey it asks for waits for
 	const lifetime = time.Second
 	asked := make(chan error, 1)
 	pair := dialRefusing(t, func(cfg *PeerConfig) {
@@ -358,6 +359,10 @@ func TestRekeyAskedForPastTheChildSALifetimeStartsNothing(t *testing.T) {
 // an exchange out past its IKE SA's lifetime is retransmitted as to a silent peer however much traffic the peer keeps up, and then the IKE SA is deemed failed as section 2.1 allows
 // the relay drops the rekey of the IKE SA on its way to the responder, while the peer's traffic, noted as internal/client notes ESP, goes on throughout
 func TestExchangeOutstandingPastTheIKESALifetimeHasTheIdleBudget(t *testing.T) {
+	bubble.Run(testExchangeOutstandingPastTheIKESALifetimeHasTheIdleBudget)(t)
+}
+
+func testExchangeOutstandingPastTheIKESALifetimeHasTheIdleBudget(t *testing.T) {
 	const lifetime = time.Second
 	var dropped atomic.Int32
 	pair := dialRefusing(t, func(cfg *PeerConfig) {
@@ -448,6 +453,10 @@ func TestChildSAWithoutALifetimeKeepsItsKeys(t *testing.T) {
 // it is one this end is closing from its lifetime on, so it answers the peer's rekeys with TEMPORARY_FAILURE while its own rekey still holds and no close is decided
 // the initiator's rekey holds before its request until past the lifetime, so nothing is outstanding while the IKE SA is expired
 func TestIKESAPastItsLifetimeStartsNothingButItsDelete(t *testing.T) {
+	bubble.Run(testIKESAPastItsLifetimeStartsNothingButItsDelete)(t)
+}
+
+func testIKESAPastItsLifetimeStartsNothingButItsDelete(t *testing.T) {
 	const lifetime = time.Second
 	var (
 		mu          sync.Mutex
@@ -509,6 +518,10 @@ func TestIKESAPastItsLifetimeStartsNothingButItsDelete(t *testing.T) {
 // a Child SA that reaches its lifetime while the IKE SA's rekey is outstanding ends the IKE SA there, and that Delete waits for the rekey's answer and the replaced IKE SA's own Delete, then goes out on the IKE SA the rekey made
 // the Child SA's rekey cannot start while the IKE SA's runs, so it reaches its lifetime never tried, and the close is decided at that lifetime, before the IKE SA's rekey ends
 func TestIKESADeleteAtAChildSALifetimeWaitsForTheIKESARekey(t *testing.T) {
+	bubble.Run(testIKESADeleteAtAChildSALifetimeWaitsForTheIKESARekey)(t)
+}
+
+func testIKESADeleteAtAChildSALifetimeWaitsForTheIKESARekey(t *testing.T) {
 	// under one margin the IKE SA's shorter lifetime starts its rekey first
 	const ikeLifetime, childLifetime, margin = 2 * time.Second, 2500 * time.Millisecond, 1500 * time.Millisecond
 	pair := dialRefusing(t, func(cfg *PeerConfig) {
@@ -639,6 +652,10 @@ func TestIKESADeleteAtALifetimeWaitsForTheOutstandingLivenessCheck(t *testing.T)
 
 // an SA's lifetime runs from when it is made, in each place one is made: the initial exchanges at both ends, and a rekey at the end that starts it and the end that answers it
 func TestEverySAStartsItsLifetimeWhenItIsMade(t *testing.T) {
+	bubble.Run(testEverySAStartsItsLifetimeWhenItIsMade)(t)
+}
+
+func testEverySAStartsItsLifetimeWhenItIsMade(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	before := time.Now()
 	initiator, err := h.dial(t)
@@ -701,7 +718,7 @@ func TestTemporaryFailureForTheSpanClosesTheIKESA(t *testing.T) {
 		}, nil},
 		{"proactive", "child", func(cfg *PeerConfig) { cfg.ChildRekeyInterval = time.Hour }, (*Session).RekeyChildProactively},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.name, bubble.Run(func(t *testing.T) {
 			pair := dialRefusing(t, func(cfg *PeerConfig) {
 				tc.set(cfg)
 				cfg.RekeyRetryInitial, cfg.RekeyRetryMax = answerBudget, answerBudget
@@ -725,7 +742,7 @@ func TestTemporaryFailureForTheSpanClosesTheIKESA(t *testing.T) {
 			}; !slices.Equal(got, want) {
 				t.Errorf("the session recorded %q, want %q", got, want)
 			}
-		})
+		}))
 	}
 }
 
@@ -746,12 +763,14 @@ func TestRekeySucceedingInsideTheSpanStartsTheStreakOver(t *testing.T) {
 			}
 		}},
 		{"proactive", func(t *testing.T, pair *refusingPair) {
+			// the streak tells a Child SA by when it was made, so the rekey makes its SA an instant after the one it replaces
+			time.Sleep(time.Millisecond)
 			if err := pair.initiator.RekeyChildProactively(); err != nil {
 				t.Fatalf("the rekey asked for failed: %v", err)
 			}
 		}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.name, bubble.Run(func(t *testing.T) {
 			pair := dialRefusing(t, func(cfg *PeerConfig) {
 				cfg.ChildRekeyInterval = time.Hour
 				cfg.RekeyMargin = time.Hour - 300*time.Millisecond
@@ -784,7 +803,7 @@ func TestRekeySucceedingInsideTheSpanStartsTheStreakOver(t *testing.T) {
 				t.Fatalf("the session ended inside the span of its new streak: %v", err)
 			default:
 			}
-		})
+		}))
 	}
 }
 
@@ -836,7 +855,7 @@ func TestSpentSequenceSpaceClosesTheIKESAUnlessARekeyReplacesIt(t *testing.T) {
 		{"running and refused", time.Hour, "refused"},
 		{"running and replacing it", 0, "succeeds"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.name, bubble.Run(func(t *testing.T) {
 			pair := dialRefusing(t, func(cfg *PeerConfig) {
 				cfg.ChildRekeyInterval = tc.interval
 				cfg.RekeyRetryInitial, cfg.RekeyRetryMax = time.Hour, time.Hour
@@ -913,13 +932,17 @@ func TestSpentSequenceSpaceClosesTheIKESAUnlessARekeyReplacesIt(t *testing.T) {
 			if got := pair.dialed.recorded(); !slices.Contains(got, "ike.rekey.failed "+ends) || got[len(got)-1] != closed {
 				t.Errorf("the session recorded %q, want its rekey failing and then %q", got, closed)
 			}
-		})
+		}))
 	}
 }
 
 // RFC 4303 section 3.3.3 has an attempt to transmit past the sequence space "an auditable event"
 // each spent SA is logged once, with the time, the SPI of the outbound SA, both endpoints, the addresses its packets leave from and go to and the sequence number the refused packet needed, however often a send finds it spent
 func TestSpentSequenceSpaceIsLoggedOncePerSA(t *testing.T) {
+	bubble.Run(testSpentSequenceSpaceIsLoggedOncePerSA)(t)
+}
+
+func testSpentSequenceSpaceIsLoggedOncePerSA(t *testing.T) {
 	var logged bytes.Buffer
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	mux, _ := lifecycleMuxes(t)
@@ -1008,6 +1031,10 @@ func TestSessionKeepsItsSAsAcrossTheirLifetimes(t *testing.T) {
 
 // a Child SA replaced a second before its lifetime, its Delete answered at once, drains no longer than that lifetime
 func TestReplacedChildSAKeysLeaveByItsLifetime(t *testing.T) {
+	bubble.Run(testReplacedChildSAKeysLeaveByItsLifetime)(t)
+}
+
+func testReplacedChildSAKeysLeaveByItsLifetime(t *testing.T) {
 	const lifetime = 2 * time.Second
 	var (
 		established time.Time
@@ -1039,6 +1066,10 @@ func TestReplacedChildSAKeysLeaveByItsLifetime(t *testing.T) {
 
 // a Child SA the peer replaced two seconds before its lifetime and has not deleted yet is withdrawn at that lifetime, which the session wakes for, and its SPI stays routed for the Delete
 func TestReplacedChildSAAwaitingItsDeleteIsWithdrawnAtItsLifetime(t *testing.T) {
+	bubble.Run(testReplacedChildSAAwaitingItsDeleteIsWithdrawnAtItsLifetime)(t)
+}
+
+func testReplacedChildSAAwaitingItsDeleteIsWithdrawnAtItsLifetime(t *testing.T) {
 	mux, other := lifecycleMuxes(t)
 	old := ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}
 	if err := mux.RegisterESP(old.LocalSPI); err != nil {
@@ -1105,7 +1136,7 @@ func TestLifetimeEndingWhileAPassRunsIsWaitedFor(t *testing.T) {
 		// acted bounds how long past the end the session takes to act on it, well inside retirementDeadline and the retry delay, which are the next deadlines otherwise
 		acted = 3 * time.Second
 	)
-	t.Run("replaced Child SA", func(t *testing.T) {
+	t.Run("replaced Child SA", bubble.Run(func(t *testing.T) {
 		mux, _ := lifecycleMuxes(t)
 		old := ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}
 		if err := mux.RegisterESP(old.LocalSPI); err != nil {
@@ -1131,8 +1162,8 @@ func TestLifetimeEndingWhileAPassRunsIsWaitedFor(t *testing.T) {
 		if at := changes[slices.IndexFunc(changes, removed)].at; at.Before(ends) {
 			t.Errorf("the replaced Child SA's keys came out %s before its lifetime", ends.Sub(at))
 		}
-	})
-	t.Run("Child SA schedule", func(t *testing.T) {
+	}))
+	t.Run("Child SA schedule", bubble.Run(func(t *testing.T) {
 		mux, _ := lifecycleMuxes(t)
 		events := &recorder{}
 		// the rekey falls due at once and fails, since the SA has no outbound half, and its retry is past the test
@@ -1154,11 +1185,15 @@ func TestLifetimeEndingWhileAPassRunsIsWaitedFor(t *testing.T) {
 		if !slices.Contains(events.recorded(), "ike.rekey.failed "+s.local.String()+">"+s.remote.String()+" sa=child") {
 			t.Errorf("the session recorded %q, want the Child SA's rekey failing before its lifetime", events.recorded())
 		}
-	})
+	}))
 }
 
 // a replaced Child SA whose Delete arrives past its lifetime, before the session has withdrawn it, has nothing left to drain, so its keys leave with the Delete
 func TestReplacedChildSADeletedPastItsLifetimeIsNotDrained(t *testing.T) {
+	bubble.Run(testReplacedChildSADeletedPastItsLifetimeIsNotDrained)(t)
+}
+
+func testReplacedChildSADeletedPastItsLifetimeIsNotDrained(t *testing.T) {
 	mux, other := lifecycleMuxes(t)
 	old := ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}
 	if err := mux.RegisterESP(old.LocalSPI); err != nil {
@@ -1187,7 +1222,7 @@ func TestReplacedChildSADeletedPastItsLifetimeIsNotDrained(t *testing.T) {
 // one this end replaced is kept for its own Delete, the last request section 2.8 has it send there, and takes that Delete's answer past its lifetime
 func TestReplacedIKESAIsDroppedAtItsLifetime(t *testing.T) {
 	for _, ownDelete := range []bool{false, true} {
-		t.Run(fmt.Sprintf("deleted here %v", ownDelete), func(t *testing.T) {
+		t.Run(fmt.Sprintf("deleted here %v", ownDelete), bubble.Run(func(t *testing.T) {
 			mux, other := lifecycleMuxes(t)
 			now := time.Now()
 			old := &ikeContext{spiI: 0x0102030405060708, spiR: 0x1112131415161718, established: now.Add(-time.Hour + 2*time.Second), ownDelete: ownDelete}
@@ -1225,6 +1260,6 @@ func TestReplacedIKESAIsDroppedAtItsLifetime(t *testing.T) {
 			if err := other.RegisterIKE(old.spiI); (err == nil) == ownDelete {
 				t.Errorf("at its lifetime registering the replaced IKE SA's SPI elsewhere returned %v", err)
 			}
-		})
+		}))
 	}
 }

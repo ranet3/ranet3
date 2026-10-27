@@ -16,6 +16,7 @@ import (
 
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
@@ -44,6 +45,10 @@ func firstShared(responder, initiator, every []string) string {
 // two ends apart in one type are refused with NO_PROPOSAL_CHOSEN, in IKE_SA_INIT for a type of the IKE SA and in IKE_AUTH for the Child SA's cipher
 // RFC 7296 section 3.3.4: "The implementation MUST reject SA proposals that are not authorized by these IKE suite controls."
 func TestHandshakeRunsTheResponderFirstChoiceOrIsRefused(t *testing.T) {
+	bubble.Run(testHandshakeRunsTheResponderFirstChoiceOrIsRefused)(t)
+}
+
+func testHandshakeRunsTheResponderFirstChoiceOrIsRefused(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	probe, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
 	if err != nil {

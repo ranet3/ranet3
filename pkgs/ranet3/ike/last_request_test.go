@@ -21,6 +21,10 @@ const heldRetransmit = 500 * time.Millisecond
 // RFC 7296 section 2.8: "the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 // once a Delete of the IKE SA has gone out, a request queued behind it is refused, and neither a probe nor the liveness interval starts a check, so nothing more goes out on that SA
 func TestNothingFollowsADeleteOfTheIKESA(t *testing.T) {
+	bubble.Run(testNothingFollowsADeleteOfTheIKESA)(t)
+}
+
+func testNothingFollowsADeleteOfTheIKESA(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	var requests atomic.Int32
 	cfg := h.peerConfig()

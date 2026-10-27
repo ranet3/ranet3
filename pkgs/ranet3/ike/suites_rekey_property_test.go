@@ -118,6 +118,10 @@ type answered struct {
 // RFC 7296 section 3.3.4: "The implementation MUST reject SA proposals that are not authorized by these IKE suite controls."
 // RFC 7296 section 2.8: "Note that, when rekeying, the new Child SA SHOULD NOT have different Traffic Selectors and algorithms than the old one."
 func TestPeerRekeyIsAnsweredByTheListsOrRefused(t *testing.T) {
+	bubble.Run(testPeerRekeyIsAnsweredByTheListsOrRefused)(t)
+}
+
+func testPeerRekeyIsAnsweredByTheListsOrRefused(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	pbt.Check(t, func(ht *hegel.T) {
 		ike := hegel.Draw(ht, hegel.Booleans())
@@ -284,6 +288,10 @@ func TestPeerRekeyIsAnsweredByTheListsOrRefused(t *testing.T) {
 // and it takes an answer only in transforms its offer holds and in the group of its KE payload
 // RFC 7296 section 3.3.6: "The initiator of an exchange MUST check that the accepted offer is consistent with one of its proposals, and if not MUST terminate the exchange."
 func TestOwnIKESARekeyOffersTheListsAndTakesOnlyWhatTheyOffer(t *testing.T) {
+	bubble.Run(testOwnIKESARekeyOffersTheListsAndTakesOnlyWhatTheyOffer)(t)
+}
+
+func testOwnIKESARekeyOffersTheListsAndTakesOnlyWhatTheyOffer(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	pbt.Check(t, func(ht *hegel.T) {
 		lists := drawnCrypto(ht)
@@ -405,6 +413,10 @@ func TestOwnIKESARekeyOffersTheListsAndTakesOnlyWhatTheyOffer(t *testing.T) {
 // RFC 7296 section 3.4: "This Diffie-Hellman Group Num MUST match a Diffie-Hellman group specified in a proposal in the SA payload that is sent in the same message, and SHOULD match the Diffie-Hellman group in the first group in the first proposal, if such exists."
 // RFC 9370 section 2.2.4: "If the initiator includes any ADDKE Transform Types in the SA payload (along with Transform Type 4), and if the responder agrees to perform additional key exchanges, then the additional key exchanges are performed in a series of new IKE_FOLLOWUP_KE exchanges that follow the CREATE_CHILD_SA exchange."
 func TestOwnIKESARekeyOfAGroupOnlyAJoinedEntryHoldsOffersThatEntryFirst(t *testing.T) {
+	bubble.Run(testOwnIKESARekeyOfAGroupOnlyAJoinedEntryHoldsOffersThatEntryFirst)(t)
+}
+
+func testOwnIKESARekeyOfAGroupOnlyAJoinedEntryHoldsOffersThatEntryFirst(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	lists := Suites{kex: []kexEntry{{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}, {group: DH_ECP_384}}}
 	ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519},
@@ -536,7 +548,7 @@ func testReloadRekeysOrReplacesWhatItLeftOut(t *testing.T) {
 		}
 		next := suitesOf(ht, after)
 		lists.Store(&next)
-		gone, ended := settledRecheck(ht, initiator, initiatorRun)
+		gone, ended := recheck(ht, initiator, initiatorRun)
 		prfOut := !slices.Contains(written(after.IKE.PRF, everyPRF), sa.IKEPRF)
 		ikeOut := !slices.Contains(written(after.IKE.Cipher, everyCipher), sa.IKECipher) || !slices.Contains(written(after.IKE.Kex, everyKex), sa.IKEKex)
 		childOut := !slices.Contains(written(after.ESP.Cipher, everyCipher), sa.ESPCipher)
@@ -587,7 +599,7 @@ func testReloadRekeysOrReplacesWhatItLeftOut(t *testing.T) {
 			childLine := "ike.suite.unlisted " + dialedPair + " sa=child suite=" + sa.ESPCipher + " action=rekey"
 			// a check once the IKE SA's rekey ended marks the Child SA where the rekey's end has not
 			if ikeOut {
-				if gone, ended := settledRecheck(ht, initiator, initiatorRun); gone {
+				if gone, ended := recheck(ht, initiator, initiatorRun); gone {
 					ht.Fatalf("a reload from %+v to %+v ended the session with %v after the IKE SA's rekey", before, after, ended)
 				}
 			}
@@ -604,6 +616,10 @@ func testReloadRekeysOrReplacesWhatItLeftOut(t *testing.T) {
 // key lengths count, so an AES-GCM answer without one, one of a length the lists do not name, and a ChaCha20-Poly1305 answer with one are refused
 // RFC 7296 section 3.3.6: "The initiator of an exchange MUST check that the accepted offer is consistent with one of its proposals, and if not MUST terminate the exchange."
 func TestInitiatorTakesOnlyAnAnswerItsListsOffer(t *testing.T) {
+	bubble.Run(testInitiatorTakesOnlyAnAnswerItsListsOffer)(t)
+}
+
+func testInitiatorTakesOnlyAnAnswerItsListsOffer(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	_, local, err := ed25519.GenerateKey(rand.Reader)

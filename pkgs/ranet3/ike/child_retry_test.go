@@ -232,6 +232,10 @@ func askFailing(t *testing.T, pair *refusingPair) {
 
 // a Child SA rekey that succeeds on any path puts the schedule's next one an interval ahead of the SA it made, as a scheduled success does
 func TestChildSARekeySucceedingOnAnyPathResetsTheSchedule(t *testing.T) {
+	bubble.Run(testChildSARekeySucceedingOnAnyPathResetsTheSchedule)(t)
+}
+
+func testChildSARekeySucceedingOnAnyPathResetsTheSchedule(t *testing.T) {
 	pair := dialRefusing(t, func(cfg *PeerConfig) {
 		cfg.ChildRekeyInterval, cfg.RekeyMargin = time.Hour, time.Hour-scheduleAhead
 	}, func(initiator, _ *Session) { initiator.rekeyJitterSource = unjittered })
@@ -290,6 +294,10 @@ func TestPeerRekeyResetsTheSchedule(t *testing.T) {
 
 // a peer's rekey of the SA a failed rekey backs off from drops the retry, and the schedule's next rekey counts from the peer's SA
 func TestPeerRekeyDropsTheRetryOfTheSAItReplaced(t *testing.T) {
+	bubble.Run(testPeerRekeyDropsTheRetryOfTheSAItReplaced)(t)
+}
+
+func testPeerRekeyDropsTheRetryOfTheSAItReplaced(t *testing.T) {
 	var allow func()
 	pair := dialRefusing(t, func(cfg *PeerConfig) {
 		cfg.ChildRekeyInterval, cfg.RekeyMargin = time.Hour, time.Hour-scheduleAhead
@@ -368,6 +376,10 @@ func testPeerRekeyEndsTheTemporaryFailureRun(t *testing.T) {
 // a rekey a reload forced that is refused, and whose SA the peer's rekey then replaces with a listed cipher, as a peer that reloaded the same lists does, ends the run
 // since the next refusal is counted under the Child SA the peer made, and so starts a new run rather than closing the IKE SA
 func TestPeerRekeyEndsTheTemporaryFailureRunOfAForcedRekey(t *testing.T) {
+	bubble.Run(testPeerRekeyEndsTheTemporaryFailureRunOfAForcedRekey)(t)
+}
+
+func testPeerRekeyEndsTheTemporaryFailureRunOfAForcedRekey(t *testing.T) {
 	// the seeded run's span ends this long after the seed
 	const spanLeft = 2 * time.Second
 	dialing := new(atomic.Pointer[Suites])
@@ -475,6 +487,10 @@ func TestPeerChildSARekeyEndsTheTemporaryFailureRunOfTheIKESA(t *testing.T) {
 // a peer's Child SA rekey ends the run though a reload then leaves out the cipher of the SA it made, so the rekey the reload forces runs at once on that SA
 // and its first refusal past the span of the run the peer's rekey ended starts a new run rather than closing the IKE SA
 func TestPeerRekeyEndsTheTemporaryFailureRunBeforeAReloadRekeysItsSA(t *testing.T) {
+	bubble.Run(testPeerRekeyEndsTheTemporaryFailureRunBeforeAReloadRekeysItsSA)(t)
+}
+
+func testPeerRekeyEndsTheTemporaryFailureRunBeforeAReloadRekeysItsSA(t *testing.T) {
 	// the seeded run's span ends this long after the seed
 	const spanLeft = 2 * time.Second
 	dialing := new(atomic.Pointer[Suites])
@@ -490,6 +506,8 @@ func TestPeerRekeyEndsTheTemporaryFailureRunBeforeAReloadRekeysItsSA(t *testing.
 		seeded = time.Now()
 		initiator.temporary = seededStreak(initiator, seeded.Add(-temporaryFailureSpan+spanLeft))
 	})
+	// the streak tells a Child SA by when it was made, so the peer's rekey makes its SA an instant after the one it replaces
+	time.Sleep(time.Millisecond)
 	if err := pair.responder.RekeyChild(); err != nil {
 		t.Fatalf("the peer's rekey failed: %v", err)
 	}
@@ -517,6 +535,10 @@ func TestPeerRekeyEndsTheTemporaryFailureRunBeforeAReloadRekeysItsSA(t *testing.
 // a reload makes no exchange and replaces no SA, so a rekey it forces that a second reload calls off before it starts ends no run
 // and one refusal past the run's span then closes the IKE SA
 func TestReloadEndsNoTemporaryFailureRun(t *testing.T) {
+	bubble.Run(testReloadEndsNoTemporaryFailureRun)(t)
+}
+
+func testReloadEndsNoTemporaryFailureRun(t *testing.T) {
 	// the seeded run's span ends this long after the seed
 	const spanLeft = 2 * time.Second
 	dialing := new(atomic.Pointer[Suites])
@@ -600,6 +622,10 @@ func TestChildSARekeySucceedingWhileTheScheduleWaitsDropsItsRun(t *testing.T) {
 
 // a failed Child SA exchange holds the next one from its end, before Run has settled it on the schedule, so an ask that comes in between does not retry it at once
 func TestFailedChildSAExchangeHoldsTheNextBeforeRunSettlesIt(t *testing.T) {
+	bubble.Run(testFailedChildSAExchangeHoldsTheNextBeforeRunSettlesIt)(t)
+}
+
+func testFailedChildSAExchangeHoldsTheNextBeforeRunSettlesIt(t *testing.T) {
 	old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
 	s := newRekeyableSession(t, old)
 	done := make(chan error, 1)

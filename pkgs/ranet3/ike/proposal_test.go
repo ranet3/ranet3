@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
 func addUnknownTVAttributeToFirstTransform(raw []byte) []byte {
@@ -156,7 +158,7 @@ func TestIKERekeyProposalRejectsUnexpectedTransformType(t *testing.T) {
 // RFC 7296 section 3.3.6: "If there are multiple proposals, the responder MUST choose a single proposal."
 func TestProposalOfAnotherProtocolIsUnacceptable(t *testing.T) {
 	ikeTransforms := []Transform{encrAES128, prfSHA256, dhX25519}
-	t.Run("at IKE_SA_INIT", func(t *testing.T) {
+	t.Run("at IKE_SA_INIT", bubble.Run(func(t *testing.T) {
 		body := EncodeSA([]Proposal{
 			{Number: 1, Protocol: ProtoESP, Transforms: ikeTransforms},
 			{Number: 2, Protocol: ProtoIKE, Transforms: ikeTransforms},
@@ -165,8 +167,8 @@ func TestProposalOfAnotherProtocolIsUnacceptable(t *testing.T) {
 		if err != nil || selected.Number != 2 {
 			t.Errorf("an ESP proposal ahead of an IKE one was answered with proposal %d, %v, want 2", selected.Number, err)
 		}
-	})
-	t.Run("at IKE_AUTH and CREATE_CHILD_SA", func(t *testing.T) {
+	}))
+	t.Run("at IKE_AUTH and CREATE_CHILD_SA", bubble.Run(func(t *testing.T) {
 		body := EncodeSA([]Proposal{
 			{Number: 1, Protocol: ProtoAH, SPI: []byte{0, 0, 0, 9}, Transforms: []Transform{encrAES128, esnNone}},
 			{Number: 2, Protocol: ProtoESP, SPI: []byte{0, 0, 0, 9}, Transforms: []Transform{encrAES128, esnNone}},
@@ -175,8 +177,8 @@ func TestProposalOfAnotherProtocolIsUnacceptable(t *testing.T) {
 		if err != nil || selection.proposal.Number != 2 {
 			t.Errorf("an AH proposal ahead of an ESP one was answered with proposal %d, %v, want 2", selection.proposal.Number, err)
 		}
-	})
-	t.Run("at an IKE SA rekey", func(t *testing.T) {
+	}))
+	t.Run("at an IKE SA rekey", bubble.Run(func(t *testing.T) {
 		mux, _ := lifecycleMuxes(t)
 		s := answeringSession(t, mux, SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519},
 			ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}, 0, Suites{})
@@ -188,7 +190,7 @@ func TestProposalOfAnotherProtocolIsUnacceptable(t *testing.T) {
 		if answer.proposal.Number != 2 || answer.proposal.Protocol != ProtoIKE {
 			t.Errorf("an ESP proposal ahead of an IKE one was answered %+v, want proposal 2 of IKE", answer)
 		}
-	})
+	}))
 }
 
 func TestSupportsIdentitySignatureHash(t *testing.T) {

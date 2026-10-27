@@ -17,10 +17,15 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
 func TestLosingLocalIKERekeyAcceptsDeleteResponse(t *testing.T) {
+	bubble.Run(testLosingLocalIKERekeyAcceptsDeleteResponse)(t)
+}
+
+func testLosingLocalIKERekeyAcceptsDeleteResponse(t *testing.T) {
 	mux, other := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
@@ -273,6 +278,10 @@ func (p *collisionPeer) collide() bool {
 // RFC 7296 section 2.8: "the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 // the candidate this end's rekey made and lost a collision with is deleted by this end, so it is kept past its lifetime for that Delete, and an answer held past the lifetime is taken and completes the rekey
 func TestLosingCandidateIsKeptPastItsLifetimeForItsDelete(t *testing.T) {
+	bubble.Run(testLosingCandidateIsKeptPastItsLifetimeForItsDelete)(t)
+}
+
+func testLosingCandidateIsKeptPastItsLifetimeForItsDelete(t *testing.T) {
 	const lifetime, margin = 2 * time.Second, time.Second
 	lines := recordLines(t)
 	// the scheduled rekey falls due scheduleDue into the test, well inside the old SA's lifetime
@@ -350,6 +359,10 @@ func TestLosingCandidateIsKeptPastItsLifetimeForItsDelete(t *testing.T) {
 // peer can forget its own rekey attempt." Closing the session instead throws
 // away an SA the peer believes is current.
 func TestOneSidedIKERekeyCollisionAdoptsPeersSA(t *testing.T) {
+	bubble.Run(testOneSidedIKERekeyCollisionAdoptsPeersSA)(t)
+}
+
+func testOneSidedIKERekeyCollisionAdoptsPeersSA(t *testing.T) {
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
 	peerSA := &ikeContext{suite: suite, spiI: 31, spiR: 32, responder: true}
@@ -379,6 +392,10 @@ func TestOneSidedIKERekeyCollisionAdoptsPeersSA(t *testing.T) {
 // The same case driven through the path a real Delete takes, because the
 // resolution above is only reached if dispatch asks for it.
 func TestPeerDeleteOnOneSidedCollisionKeepsSessionOpen(t *testing.T) {
+	bubble.Run(testPeerDeleteOnOneSidedCollisionKeepsSessionOpen)(t)
+}
+
+func testPeerDeleteOnOneSidedCollisionKeepsSessionOpen(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -452,6 +469,10 @@ func TestRequestOnRetiredIKESAFailsRatherThanPends(t *testing.T) {
 // otherwise lock this end out of rekeying for the life of the session, which
 // is the shape retirementDeadline already stops for a Child SA.
 func TestRetainedIKESAThePeerNeverDeletesIsGivenUp(t *testing.T) {
+	bubble.Run(testRetainedIKESAThePeerNeverDeletesIsGivenUp)(t)
+}
+
+func testRetainedIKESAThePeerNeverDeletesIsGivenUp(t *testing.T) {
 	mine, theirs := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	replaced := &ikeContext{suite: suite, spiI: 11, spiR: 12}
@@ -505,7 +526,7 @@ func TestPeerIKERekeyRefusesTheSPIThisEndAlreadyOffered(t *testing.T) {
 		"a retained SA's initiator SPI":  retained,
 		"an SPI nothing else holds":      free,
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			ctx := &ikeContext{suite: suite, spiI: spiI, spiR: spiR,
 				skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
 			mux, _ := lifecycleMuxes(t)
@@ -545,7 +566,7 @@ func TestPeerIKERekeyRefusesTheSPIThisEndAlreadyOffered(t *testing.T) {
 			if offered == free && findType(inner, PayloadSA) == nil {
 				t.Errorf("an SPI nothing else holds drew no SA payload: %v", inner)
 			}
-		})
+		}))
 	}
 }
 
@@ -588,13 +609,13 @@ func TestPeerIKERekeyIsRateLimited(t *testing.T) {
 		return &Session{mux: mux, current: ctx, started: time.Now()}, ctx
 	}
 
-	t.Run("the first is answered", func(t *testing.T) {
+	t.Run("the first is answered", bubble.Run(func(t *testing.T) {
 		s, ctx := session(t)
 		if findType(ask(t, s, ctx), PayloadSA) == nil {
 			t.Error("the first peer rekey was refused, so the arm below proves nothing")
 		}
-	})
-	t.Run("a second inside the interval is refused", func(t *testing.T) {
+	}))
+	t.Run("a second inside the interval is refused", bubble.Run(func(t *testing.T) {
 		s, ctx := session(t)
 		// the time an accepted rekey records and nothing else it leaves, so a refusal is the interval's
 		s.lastPeerIKERekey.Store(int64(time.Since(s.started)) + 1)
@@ -609,7 +630,7 @@ func TestPeerIKERekeyIsRateLimited(t *testing.T) {
 		if notify.Type != N_TEMPORARY_FAILURE {
 			t.Errorf("the refusal is notify type %d, want TEMPORARY_FAILURE", notify.Type)
 		}
-	})
+	}))
 }
 
 // a local failure answering a peer's rekey answers TEMPORARY_FAILURE and returns no error, which Run would end the session on
@@ -641,7 +662,7 @@ func TestLocalFailureAnsweringARekeyIsTemporary(t *testing.T) {
 			}
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			mux, other := lifecycleMuxes(t)
 			ctx := &ikeContext{suite: suite, spiI: spiI, spiR: spiR,
 				skD: make([]byte, 32), skei: make([]byte, 20), sker: make([]byte, 20)}
@@ -671,7 +692,7 @@ func TestLocalFailureAnsweringARekeyIsTemporary(t *testing.T) {
 			if notify.Type != N_TEMPORARY_FAILURE {
 				t.Errorf("the answer is notify type %d, want TEMPORARY_FAILURE", notify.Type)
 			}
-		})
+		}))
 	}
 }
 
@@ -692,7 +713,7 @@ func TestDroppingOneContextKeepsAnSPIAnotherStillUses(t *testing.T) {
 		"a retained context shares the current one's SPI": true,
 		"a retained context has an SPI of its own":        false,
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			mux, other := lifecycleMuxes(t)
 			retained := ctx(0x1111)
 			current := ctx(0x3333)
@@ -713,7 +734,7 @@ func TestDroppingOneContextKeepsAnSPIAnotherStillUses(t *testing.T) {
 			if !shared && err != nil {
 				t.Errorf("dropping a context nothing else shares kept its SPI: %v", err)
 			}
-		})
+		}))
 	}
 
 	// retainOldLocked is the same rule on the other path, where a second rekey
@@ -722,7 +743,7 @@ func TestDroppingOneContextKeepsAnSPIAnotherStillUses(t *testing.T) {
 		"a displaced context shares the replacement's SPI": true,
 		"a displaced context has an SPI of its own":        false,
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, bubble.Run(func(t *testing.T) {
 			mux, other := lifecycleMuxes(t)
 			displaced := ctx(0x4444)
 			replacement := ctx(0x7777)
@@ -741,7 +762,7 @@ func TestDroppingOneContextKeepsAnSPIAnotherStillUses(t *testing.T) {
 			if !shared && err != nil {
 				t.Errorf("displacing a context nothing else shares kept its SPI: %v", err)
 			}
-		})
+		}))
 	}
 }
 
@@ -749,6 +770,10 @@ func TestDroppingOneContextKeepsAnSPIAnotherStillUses(t *testing.T) {
 // a peer that deleted the old SA first refuses that Delete the same way
 // RFC 7296 section 2.8: "After the new equivalent IKE SA is created, the initiator deletes the old IKE SA, and the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 func TestDeleteOfAReplacedIKESAIsBestEffort(t *testing.T) {
+	bubble.Run(testDeleteOfAReplacedIKESAIsBestEffort)(t)
+}
+
+func testDeleteOfAReplacedIKESAIsBestEffort(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}
 	old := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: make([]byte, 32),
