@@ -16,7 +16,7 @@ import (
 
 // an endpoint resolver that prefers go reads go whatever the build and the environment
 // one that does not follows the net package's own startup rules
-// a build without the cgo resolver, the netgo tag and a netdns setting each force go
+// a build without the cgo resolver, the netgo tag and a netdns setting naming go each force go
 // the last netdns setting wins, and one naming a debug level alone names no resolver
 func TestResolverFollowsTheNetPackage(t *testing.T) {
 	cgo := []debug.BuildSetting{{Key: "CGO_ENABLED", Value: "1"}}
