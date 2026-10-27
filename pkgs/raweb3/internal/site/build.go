@@ -72,12 +72,12 @@ func run(ctx context.Context, dir string, stdin io.Reader, bin string, args ...s
 	return out, nil
 }
 
-// Build writes the site from the sources under root, with its pages in dir,
+// Build writes the site from the sources under root,
 // to out, minified as it is served. out must not exist yet, so nothing of an
 // earlier build survives in it, and it is made only once every file is
 // ready, so a build that fails leaves none behind.
-func Build(ctx context.Context, root, dir, out string, tools Tools) error {
-	s, err := Load(root, dir)
+func Build(ctx context.Context, root, out string, tools Tools) error {
+	s, err := Load(root)
 	if err != nil {
 		return err
 	}
@@ -110,7 +110,7 @@ func Build(ctx context.Context, root, dir, out string, tools Tools) error {
 		dir   string
 		fsys  fs.FS
 		pages bool
-	}{{staticDir, s.static, false}, {dir, s.files, true}} {
+	}{{staticDir, s.static, false}, {pagesDir, s.files, true}} {
 		err = fs.WalkDir(src.fsys, ".", func(p string, e fs.DirEntry, err error) error {
 			if err != nil || e.IsDir() || hidden(p) || src.pages && strings.HasSuffix(p, pageSuffix) {
 				return err

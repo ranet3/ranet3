@@ -51,16 +51,15 @@ type Site struct {
 	files  fs.FS
 }
 
-// Load reads site.yaml under root and every page under dir, a path relative
-// to root. It reports every source that does not hold up rather than the
-// first.
-func Load(root, dir string) (*Site, error) {
+// Load reads site.yaml and every page under root. It reports every source
+// that does not hold up rather than the first.
+func Load(root string) (*Site, error) {
 	c, cerr := loadConfig(filepath.Join(root, configFile))
-	ps, perr := loadPages(filepath.Join(root, dir))
+	ps, perr := loadPages(filepath.Join(root, pagesDir))
 	if err := errors.Join(cerr, perr); err != nil {
 		return nil, err
 	}
-	s := &Site{static: os.DirFS(filepath.Join(root, staticDir)), files: os.DirFS(filepath.Join(root, dir)), pages: ps, ui: ui.Site{
+	s := &Site{static: os.DirFS(filepath.Join(root, staticDir)), files: os.DirFS(filepath.Join(root, pagesDir)), pages: ps, ui: ui.Site{
 		Name:      c.Title,
 		URL:       c.URL,
 		Analytics: c.Analytics,
