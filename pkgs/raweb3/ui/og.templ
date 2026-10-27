@@ -37,12 +37,12 @@ templ OG(site Site, c Card) {
 		}
 		<text font-size={ fmt.Sprint(c.Size) } font-weight="700" fill="#ECEFF4">
 			for i, l := range c.Lines {
-				<tspan x="72" y={ c.TitleY(i) }>{ l }</tspan>
+				<tspan x="72" y={ c.titleY(i) }>{ l }</tspan>
 			}
 		</text>
 		<text font-size={ fmt.Sprint(leadSize) } fill="#D8DEE9">
 			for i, l := range c.Lead {
-				<tspan x="72" y={ c.LeadY(i) }>{ l }</tspan>
+				<tspan x="72" y={ c.leadY(i) }>{ l }</tspan>
 			}
 		</text>
 		if c.Meta != "" {

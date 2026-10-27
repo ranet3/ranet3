@@ -3,11 +3,7 @@
 
 package pages
 
-import (
-	"time"
-
-	"ranet3.com/pkgs/raweb3/ui"
-)
+import "ranet3.com/pkgs/raweb3/ui"
 
 // Docs is one docs page.
 templ Docs(site ui.Site, doc Content) {
@@ -28,7 +24,10 @@ templ Docs(site ui.Site, doc Content) {
 					<p class="lead">{ doc.Description }</p>
 					@templ.Raw(doc.Body)
 				</article>
-				<p class="mt-12 font-mono text-sm text-mute">Updated <time datetime={ doc.Updated.Format(time.DateOnly) }>{ doc.Updated.Format(time.DateOnly) }</time></p>
+				<p class="mt-12 font-mono text-sm text-mute">
+					Updated{ " " }
+					@date(doc.Updated)
+				</p>
 			</main>
 		</div>
 	}

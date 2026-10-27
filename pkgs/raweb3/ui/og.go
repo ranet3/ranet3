@@ -78,13 +78,13 @@ func chars(size int) int {
 	return int(cardWidth / (advance * float64(size)))
 }
 
-// TitleY is the baseline of the title's line i.
-func (c Card) TitleY(i int) string {
+// titleY is the baseline of the title's line i.
+func (c Card) titleY(i int) string {
 	return baseline(titleTop, float64(c.Size), titleLeading, i)
 }
 
-// LeadY is the baseline of the lead's line i.
-func (c Card) LeadY(i int) string {
+// leadY is the baseline of the lead's line i.
+func (c Card) leadY(i int) string {
 	return baseline(c.leadTop(), leadSize, leadLeading, i)
 }
 

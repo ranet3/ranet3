@@ -6,7 +6,6 @@ package site
 import (
 	"io/fs"
 	"net/http"
-	"strings"
 )
 
 // Handler serves the site from the sources under root, unminified. It loads and renders them again on each request, so an edit to
@@ -29,10 +28,7 @@ func Handler(root string, tools Tools) http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		file := strings.TrimPrefix(r.URL.Path, "/")
-		if file == "" || strings.HasSuffix(file, "/") {
-			file += indexFile
-		}
+		file := servedFile(r.URL.Path)
 		// only the image asked for is drawn, as each takes a resvg run
 		if image, ok := s.Images()[file]; ok {
 			png, err := tools.png(r.Context(), image)
@@ -49,7 +45,6 @@ func Handler(root string, tools Tools) http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		status := http.StatusOK
 		page, ok := files[file]
 		fsys := s.file(file)
 		switch {
@@ -70,11 +65,10 @@ func Handler(root string, tools Tools) http.Handler {
 			http.ServeFileFS(w, r, fsys, file)
 			return
 		default:
-			status, page = http.StatusNotFound, files[notFoundFile]
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write(files[notFoundFile])
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(status)
-		w.Write(page)
 	})
 }
 
