@@ -112,7 +112,7 @@ func Build(ctx context.Context, root, dir, out string, tools Tools) error {
 		pages bool
 	}{{staticDir, s.static, false}, {dir, s.files, true}} {
 		err = fs.WalkDir(src.fsys, ".", func(p string, e fs.DirEntry, err error) error {
-			if err != nil || e.IsDir() || src.pages && strings.HasSuffix(p, pageSuffix) {
+			if err != nil || e.IsDir() || hidden(p) || src.pages && strings.HasSuffix(p, pageSuffix) {
 				return err
 			}
 			if _, ok := files[p]; ok {
