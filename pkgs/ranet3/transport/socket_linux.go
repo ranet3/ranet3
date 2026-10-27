@@ -60,7 +60,7 @@ func (e *udpEndpoint) pin() []byte {
 func (*udpEndpoint) transportEndpoint() {}
 func (e *udpEndpoint) String() string   { return e.addr.String() }
 
-// sameDestination compares the pin each endpoint arrived with, which a fallback drops except for unroutedHold after the kernel refused the pin for want of a route
+// sameDestination compares the pin each endpoint arrived with, which a fallback drops except for unroutedHold after the kernel refused the pin with EHOSTUNREACH
 func (e *udpEndpoint) sameDestination(other Endpoint) bool {
 	o, ok := other.(*udpEndpoint)
 	return ok && e.addr.IP.Equal(o.addr.IP) && e.addr.Port == o.addr.Port && e.addr.Zone == o.addr.Zone &&

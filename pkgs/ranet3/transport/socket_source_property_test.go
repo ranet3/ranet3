@@ -39,7 +39,7 @@ func receivedAddresses(ipv6 bool) hegel.Generator[netip.Addr] {
 // an answer names the address its request reached, and the interface it arrived on for a link-local IPv6 address alone
 // an IPv6 answer that fragments carries IPV6_DONTFRAG of 0 beside the pin
 // two endpoints are one destination only where the peer and the source and interface sends carry are
-// one whose sends fell back to the kernel's choice is the endpoint without its source, unless the pin fell back for want of a route, where it stays the pinned one until unroutedHold ends
+// one whose sends fell back to the kernel's choice is the endpoint without its source, unless the pin fell back after EHOSTUNREACH, where it stays the pinned one until unroutedHold ends
 // a pair leaves from the pin as the shared socket's sends do, and leaves the source to the route where they carry none
 func TestDarwinRepliesNameTheAddressTheRequestReached(t *testing.T) {
 	bind := &darwinBind{}

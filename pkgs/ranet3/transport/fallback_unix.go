@@ -26,7 +26,7 @@ func unpinnable(err error) bool {
 type pinFallback struct {
 	// unpinned records a fallback that worked and is never cleared
 	unpinned atomic.Bool
-	// unroutedUntil is when unroutedHold ends after the kernel refused the pin for want of a route from it to the peer
+	// unroutedUntil is when unroutedHold ends after the kernel refused the pin with EHOSTUNREACH
 	// it is nil before such a refusal, and set before unpinned
 	unroutedUntil atomic.Pointer[time.Time]
 }
@@ -39,8 +39,8 @@ func (f *pinFallback) unpin(refused error) bool {
 	return f.unpinned.CompareAndSwap(false, true)
 }
 
-// arrival is control while it tells the endpoint apart from others: before a fallback, and until unroutedUntil after one for want of a route
-// a request that reaches a pin with no route to the peer within the hold is the same destination, whose sends would only fall back again
+// arrival is control while it tells the endpoint apart from others: before a fallback, and until unroutedUntil after one from EHOSTUNREACH
+// a request that reaches a pin refused with EHOSTUNREACH within the hold is the same destination, whose sends would only fall back again
 // one after the hold, or one that reaches an address the host lost and holds again, moves the session back onto the pin
 func (f *pinFallback) arrival(control []byte) []byte {
 	if f.unpinned.Load() {

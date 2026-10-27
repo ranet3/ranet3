@@ -196,7 +196,7 @@ type Endpoint interface {
 	// detection has to hash (RFC 7296 section 2.23).
 	AddrPort() netip.AddrPort
 	// sameDestination reports whether other names the same address and port and arrived with the same pin
-	// an endpoint whose sends fell back from its pin counts as one without it, except for unroutedHold after a refusal for want of a route
+	// an endpoint whose sends fell back from its pin counts as one without it, except for unroutedHold after a refusal with EHOSTUNREACH
 	sameDestination(other Endpoint) bool
 	// withoutSource is this endpoint with the source address and interface left to the kernel
 	withoutSource() Endpoint
