@@ -266,6 +266,10 @@ func NewHub(localAddr string, underlay Underlay, rt Runtime) (*Hub, error) {
 			return nil, fmt.Errorf("transport: settle on interface %d: %w", index, err)
 		}
 	}
+	return startHub(bind, fns, port, underlay, index, rt), nil
+}
+
+func startHub(bind packetBind, fns []receiveFunc, port uint16, underlay Underlay, index int, rt Runtime) *Hub {
 	h := &Hub{bind: bind, port: port, underlay: underlay, boundTo: index, events: rt.Events,
 		muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now()}
 	h.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}})
@@ -282,7 +286,7 @@ func NewHub(localAddr string, underlay Underlay, rt Runtime) (*Hub, error) {
 	if underlay.Bind && rt.Links != nil {
 		go h.follow(rt.Links, rt.Routes)
 	}
-	return h, nil
+	return h
 }
 
 // NewMux creates a logical peer channel on this hub.
@@ -626,6 +630,10 @@ func Dial(localAddr string, remoteIP net.IP, remotePort int) (*Mux, error) {
 	if err != nil {
 		return nil, err
 	}
+	return dialOn(h, remoteIP, remotePort)
+}
+
+func dialOn(h *Hub, remoteIP net.IP, remotePort int) (*Mux, error) {
 	m, err := h.NewMux(remoteIP, remotePort)
 	if err != nil {
 		_ = h.Close()
