@@ -16,11 +16,12 @@ func TestNewCardTakesTheLargestSizeThatFitsAndBalancesTheLines(t *testing.T) {
 		lines []string
 	}{
 		{"Configuration reference", 64, []string{"Configuration reference"}},
-		// 23 characters a line at 64px, so greedy would leave "machines" alone
-		{"How ranet3 picks the fastest path between two machines", 64, []string{"How ranet3 picks the", "fastest path between", "two machines"}},
+		// 23 characters a line at 64px, where greedy wrapping leaves "tunnel"
+		// alone on the last line
+		{"Reload the config without dropping a tunnel", 64, []string{"Reload the config", "without dropping", "a tunnel"}},
 		{"One fast, private network for every server, GPU and laptop you run.", 52, []string{"One fast, private network", "for every server, GPU and", "laptop you run."}},
 	} {
-		c, err := NewCard("", tc.title, "")
+		c, err := NewCard("", tc.title, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -28,7 +29,7 @@ func TestNewCardTakesTheLargestSizeThatFitsAndBalancesTheLines(t *testing.T) {
 			t.Errorf("NewCard(%q) = %dpx %q, want %dpx %q", tc.title, c.Size, c.Lines, tc.size, tc.lines)
 		}
 	}
-	if _, err := NewCard("", strings.Repeat("word ", 30), ""); err == nil {
+	if _, err := NewCard("", strings.Repeat("word ", 30), "", ""); err == nil {
 		t.Error("NewCard fits a title of 150 characters")
 	}
 }

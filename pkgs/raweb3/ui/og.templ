@@ -7,8 +7,7 @@ import "fmt"
 
 // OG is a page's Open Graph image, 1200 by 630 in Noto Sans Mono on nord-0.
 // The colors are written out, since resvg, which turns it into a PNG, reads
-// no CSS variable. A baseline sits at its box's top plus the font's ascent,
-// 1.069 em, less half of what line-height takes from the font's 1.362 em.
+// no CSS variable.
 templ OG(site Site, c Card) {
 	<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" font-family="Noto Sans Mono">
 		<defs>
@@ -38,8 +37,12 @@ templ OG(site Site, c Card) {
 		}
 		<text font-size={ fmt.Sprint(c.Size) } font-weight="700" fill="#ECEFF4">
 			for i, l := range c.Lines {
-				// line-height 1.12
-				<tspan x="72" y={ fmt.Sprintf("%.1f", 232+float64(c.Size)*(0.948+1.12*float64(i))) }>{ l }</tspan>
+				<tspan x="72" y={ c.TitleY(i) }>{ l }</tspan>
+			}
+		</text>
+		<text font-size={ fmt.Sprint(leadSize) } fill="#D8DEE9">
+			for i, l := range c.Lead {
+				<tspan x="72" y={ c.LeadY(i) }>{ l }</tspan>
 			}
 		</text>
 		if c.Meta != "" {

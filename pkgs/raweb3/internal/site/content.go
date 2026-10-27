@@ -206,7 +206,7 @@ func parsePage(src, file string) (*page, error) {
 		label = cmp.Or(label, "News")
 		meta = cmp.Or(meta, fmt.Sprintf("%s \u00b7 %d min read", p.front.Created.Format(pages.DateFormat), p.minutes))
 	}
-	if p.card, err = ui.NewCard(label, cmp.Or(p.front.OG.Title, p.front.Title), meta); err != nil {
+	if p.card, err = ui.NewCard(label, cmp.Or(p.front.OG.Title, p.front.Title), p.front.Description, meta); err != nil {
 		return nil, fmt.Errorf("%s: %w", src, err)
 	}
 	p.root = markdown.Parser().Parse(text.NewReader(body), parser.WithContext(parser.NewContext()))
