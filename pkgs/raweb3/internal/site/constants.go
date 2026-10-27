@@ -6,6 +6,9 @@ package site
 const (
 	// configFile names the site's settings, relative to the root
 	configFile = "site.yaml"
+	// pagesDir holds the markdown pages, relative to the root, where the
+	// stylesheet's @source looks for the classes they use
+	pagesDir = "pages"
 	// staticDir holds the files served as they are, relative to the root
 	staticDir = "static"
 	// styleInput is the stylesheet tailwind compiles, relative to the root

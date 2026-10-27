@@ -9,11 +9,10 @@ import (
 	"strings"
 )
 
-// Handler serves the site from the sources under root, with its pages in dir,
-// unminified. It loads and renders them again on each request, so an edit to
+// Handler serves the site from the sources under root, unminified. It loads and renders them again on each request, so an edit to
 // a page, site.yaml or the stylesheet shows on the next reload. A templ
 // component needs the server rebuilt.
-func Handler(root, dir string, tools Tools) http.Handler {
+func Handler(root string, tools Tools) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/"+styleOutput {
 			style, err := tools.style(r.Context(), root, false)
@@ -25,7 +24,7 @@ func Handler(root, dir string, tools Tools) http.Handler {
 			w.Write(style)
 			return
 		}
-		s, err := Load(root, dir)
+		s, err := Load(root)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

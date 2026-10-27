@@ -8,8 +8,6 @@ import "time"
 const (
 	// defaultRoot is the package directory, where the command runs from while writing
 	defaultRoot = "."
-	// defaultPages is the directory of markdown pages, relative to the root
-	defaultPages = "pages"
 	// defaultTailwind finds the tailwind binary on PATH, as the dev shell and the build put it there
 	defaultTailwind = "tailwindcss"
 	// defaultResvg finds resvg on PATH the same way
