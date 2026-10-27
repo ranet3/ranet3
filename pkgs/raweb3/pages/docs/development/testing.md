@@ -16,6 +16,40 @@ everything else from the root of the repository.
 go test ./... -race
 ```
 
+## Tests on a fake clock
+
+Most of `ike`'s tests open their hubs and sockets on `transport`'s network in
+memory rather than on the host's loopback, and run in a
+[`testing/synctest`](https://pkg.go.dev/testing/synctest) bubble, so a
+retransmission timer, a lifetime or a read deadline costs no real time. A bubble
+still running past a bound in real time fails its test by name, so a test that
+never blocks ends there rather than at `go test`'s timeout. The network delivers
+a datagram to what holds the port it is sent to, whole, copied and in order,
+keeps it until it is read, and answers a send to port 0 as the host's loopback
+does: on Linux it
+[refuses](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/udp.c#L1296)
+one from every sender, and on macOS it
+[takes](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/udp_usrreq.c#L1884)
+one from a socket bound to an IPv4 address, delivered nowhere,
+[refuses](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L1556)
+one from a hub, whose IPv4 socket is bound to the wildcard, and
+[refuses](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/udp6_output.c#L287)
+one from an IPv6 socket. A mux on it reads a path MTU of 65535 for IPv4 and
+65536 for IPv6 with DF set, what a mux reads over Linux's
+[loopback](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/drivers/net/loopback.c#L202)
+once IPv4's is
+[capped](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/include/net/ip.h#L500),
+and no send is refused for its size. A property test in `transport` runs drawn
+scripts on the network and on loopback and compares what each hub and socket
+received. GRO and GSO, ICMP errors, the path MTU of a real route, the source an
+endpoint is pinned to, the socket mark and connected sockets stay with
+`transport`'s tests over real sockets, the root tests below and the VM tests. A
+test joins every goroutine it starts at cleanup. A test stays on the real clock
+where a goroutine of its session waits for a lock another holds across a timer,
+or where its subtests share their parent's hub, and on loopback where it reads
+the host's path MTU or the source address the kernel picks. The daemon links
+none of the network, which `go-lint` checks.
+
 ## Root tests on Linux
 
 The unit tests need no privileges, except for the ones below. Each of these
@@ -446,7 +480,7 @@ have commands of their own.
 | Check           | Systems | CI runs it on                    | What it runs                                                                                                                                                                                                                                                   |
 | --------------- | ------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote hegel's cache                                                                                                                                                                  |
-| `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, and `staticcheck ./...`                                                                                                                                                                                      |
+| `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, `staticcheck ./...`, and a build of `cmd/ranet3` that keeps its symbols, which fails where the daemon links `transport`'s network in memory or a non-test file outside it names `NewMemoryNetwork`           |
 | `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `templ fmt -fail`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions the 3 `go.mod` files require, a check of the `aarch64-linux` exclusions in `atelier.toml`, and `reuse lint` |
 | `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                                                                                                                                                                   |
 | `raweb3`        | all 3   | all 3                            | `go vet ./...` and `go test ./...` in `pkgs/raweb3`                                                                                                                                                                                                            |
