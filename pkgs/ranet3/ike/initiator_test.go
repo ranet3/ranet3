@@ -23,18 +23,17 @@ import (
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
-// muxLoopback is the mux's own address with an explicit loopback host. The
-// hub binds the wildcard and reports only a port, and sending to an address
-// with no host reaches the local machine on Linux but is unroutable on darwin.
+// muxLoopback is the mux's own address with 127.0.0.1 as its host, since a hub
+// reports a port alone.
 func muxLoopback(mux *transport.Mux) *net.UDPAddr {
 	return &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: mux.LocalAddr().(*net.UDPAddr).Port}
 }
 
-// listenPeer opens a plain UDP socket standing in for the IKE responder, so
-// sendRecv's behavior can be tested without a real handshake.
-func listenPeer(t *testing.T) *net.UDPConn {
+// listenPeer opens a socket on the test's network standing in for the IKE
+// responder, so sendRecv's behavior can be tested without a real handshake.
+func listenPeer(t *testing.T) *transport.MemoryConn {
 	t.Helper()
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	conn, err := testNetwork(t).ListenUDP(net.ParseIP("127.0.0.1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +47,7 @@ func listenPeer(t *testing.T) *net.UDPConn {
 // finish the test with the goroutine still parked, and its first log line then
 // panics the whole package binary with "Log in goroutine after test completed"
 // instead of printing the failure that caused it.
-func peerLoop(t *testing.T, peer *net.UDPConn, body func()) {
+func peerLoop(t *testing.T, peer *transport.MemoryConn, body func()) {
 	t.Helper()
 	done := make(chan struct{})
 	go func() { defer close(done); body() }()
@@ -61,7 +60,7 @@ func peerLoop(t *testing.T, peer *net.UDPConn, body func()) {
 func TestSessionScheduledRekeyFailureRetries(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +179,7 @@ func TestRekeyDelay(t *testing.T) {
 func TestSessionScheduledRekeyChild(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +388,7 @@ func TestSessionScheduledRekeyChild(t *testing.T) {
 func TestSessionRekeyIKE(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,7 +601,7 @@ func stopRun(mux *transport.Mux, runDone <-chan error) func() error {
 func TestSessionHandlesPeerIKERekey(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -803,7 +802,7 @@ func TestPeerIKERekeyInvalidKERequestsPreferredGroup(t *testing.T) {
 func TestSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1113,7 +1112,7 @@ func testIKEAuthAuthenticatesBeforeChildFailure(t *testing.T, remoteOrganization
 	t.Helper()
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1262,7 +1261,7 @@ func testIKEAuthAuthenticatesBeforeChildFailure(t *testing.T, remoteOrganization
 func TestAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	hub, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{})
+	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1501,7 +1500,7 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			peer := listenPeer(t)
 			peerAddr := peer.LocalAddr().(*net.UDPAddr)
-			mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+			mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1742,7 +1741,7 @@ func TestInitiatorPassesOverIKESAInitAnswersCarryingAnErrorNotify(t *testing.T) 
 	cfg := PeerConfig{
 		Local: identity.MustParse("ranet-test/initiator:1"), LocalPrivateKey: localPrivate,
 		Remote: identity.MustParse("ranet-test/responder:2"), RemotePublicKey: remotePublic,
-		RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port,
+		RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port, Hub: listenHub(t),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), answerBudget)
 	finished := make(chan struct{})
@@ -1834,7 +1833,7 @@ func dialPlayedResponder(t *testing.T, shape func(exchange ExchangeType, payload
 	cfg := PeerConfig{
 		Local: identity.MustParse("ranet-test/initiator:1"), LocalPrivateKey: localPrivate,
 		Remote: identity.MustParse("ranet-test/responder:2"), RemotePublicKey: remotePublic,
-		RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port,
+		RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port, Hub: listenHub(t),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), answerBudget)
 	var dialErr error
@@ -1987,7 +1986,7 @@ func TestInitiatorRefusesAnIKESAInitAnswerMarkingAnUnsupportedPayloadCritical(t 
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), answerBudget)
 	defer cancel()
-	session, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port})
+	session, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port, Hub: listenHub(t)})
 	if err == nil {
 		session.Mux().Close()
 	}
@@ -2005,7 +2004,7 @@ func TestSendRecvIgnoresUnauthenticatedErrorNotify(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2076,7 +2075,7 @@ func TestSendRecvAcceptsNilAsAlwaysTrue(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2117,7 +2116,7 @@ func TestSendRecvAcceptsNilAsAlwaysTrue(t *testing.T) {
 func TestSessionRequestSerializesLocalMessageIDs(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2195,7 +2194,7 @@ func TestSessionRequestSerializesLocalMessageIDs(t *testing.T) {
 func TestSessionRunUsesOldIKEContext(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2350,8 +2349,11 @@ func TestInitiatorGivesEachIKESAItsOwnSPI(t *testing.T) {
 	}()
 	var spis []uint64
 	buf := make([]byte, 4096)
+	hub := listenHub(t)
 	for range 2 {
-		dials.Go(func() { _, _ = InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port}) })
+		dials.Go(func() {
+			_, _ = InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port, Hub: hub})
+		})
 		if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
 			t.Fatal(err)
 		}
@@ -2463,8 +2465,9 @@ func TestInitiatorAnswersTheCookieThatFollowsAGroupChange(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	dialed := make(chan error, 1)
+	hub := listenHub(t)
 	go func() {
-		_, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port})
+		_, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port, Hub: hub})
 		dialed <- err
 	}()
 	<-peerDone
@@ -2519,13 +2522,14 @@ func TestEachIKESAInitDrawsItsOwnNonce(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	seen := map[uint64]bool{}
+	hub := listenHub(t)
 	// dial reads the nonce of the first IKE_SA_INIT one dial sends, and ends the dial
 	dial := func() []byte {
 		t.Helper()
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
-			_, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port})
+			_, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port, Hub: hub})
 			done <- err
 		}()
 		defer func() {
@@ -2622,8 +2626,9 @@ func TestInitiatorRetriesWithTheNamedGroupFirst(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	dialed := make(chan error, 1)
+	hub := listenHub(t)
 	go func() {
-		session, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port, Suites: func() Suites { return classicalLists }})
+		session, err := InitiateContext(ctx, PeerConfig{RemoteAddr: peerAddr.IP, RemotePort: peerAddr.Port, Hub: hub, Suites: func() Suites { return classicalLists }})
 		if err == nil {
 			session.Mux().Close()
 		}

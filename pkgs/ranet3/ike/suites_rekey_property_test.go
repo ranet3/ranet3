@@ -23,8 +23,8 @@ import (
 	"hegel.dev/go/hegel"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
-	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // the answers a peer may send, every transform this end names and the ones near them it must refuse
@@ -491,6 +491,10 @@ func TestUnlistedNamesEachSAOutsideTheLists(t *testing.T) {
 // and leaves an SA they hold every transform of
 // the rekeyed SA runs what a peer listing every name answers the new offer with
 func TestReloadRekeysOrReplacesWhatItLeftOut(t *testing.T) {
+	bubble.Run(testReloadRekeysOrReplacesWhatItLeftOut)(t)
+}
+
+func testReloadRekeysOrReplacesWhatItLeftOut(t *testing.T) {
 	h := newResponderHarness(t, nil)
 	pbt.Check(t, func(ht *hegel.T) {
 		before, after := drawnCrypto(ht), drawnCrypto(ht)
@@ -532,7 +536,7 @@ func TestReloadRekeysOrReplacesWhatItLeftOut(t *testing.T) {
 		}
 		next := suitesOf(ht, after)
 		lists.Store(&next)
-		gone, ended := recheck(ht, initiator, initiatorRun)
+		gone, ended := settledRecheck(ht, initiator, initiatorRun)
 		prfOut := !slices.Contains(written(after.IKE.PRF, everyPRF), sa.IKEPRF)
 		ikeOut := !slices.Contains(written(after.IKE.Cipher, everyCipher), sa.IKECipher) || !slices.Contains(written(after.IKE.Kex, everyKex), sa.IKEKex)
 		childOut := !slices.Contains(written(after.ESP.Cipher, everyCipher), sa.ESPCipher)
@@ -583,7 +587,7 @@ func TestReloadRekeysOrReplacesWhatItLeftOut(t *testing.T) {
 			childLine := "ike.suite.unlisted " + dialedPair + " sa=child suite=" + sa.ESPCipher + " action=rekey"
 			// a check once the IKE SA's rekey ended marks the Child SA where the rekey's end has not
 			if ikeOut {
-				if gone, ended := recheck(ht, initiator, initiatorRun); gone {
+				if gone, ended := settledRecheck(ht, initiator, initiatorRun); gone {
 					ht.Fatalf("a reload from %+v to %+v ended the session with %v after the IKE SA's rekey", before, after, ended)
 				}
 			}
@@ -630,7 +634,7 @@ func TestInitiatorTakesOnlyAnAnswerItsListsOffer(t *testing.T) {
 			ht.Fatalf("a Child SA answer in %+v to an offer of %q was taken as %+v, %v", childAnswer, esp, encr, err)
 		}
 
-		hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+		hub, err := testNetwork(t).NewHub()
 		if err != nil {
 			ht.Fatal(err)
 		}

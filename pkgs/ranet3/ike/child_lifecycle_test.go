@@ -52,7 +52,7 @@ func TestChildNegotiationUsesRequestIKEKeys(t *testing.T) {
 
 func lifecycleMuxes(t *testing.T) (*transport.Mux, *transport.Mux) {
 	t.Helper()
-	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	hub, err := testNetwork(t).NewHub()
 	if err != nil {
 		t.Fatal(err)
 	}

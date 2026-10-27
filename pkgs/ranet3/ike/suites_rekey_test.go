@@ -13,9 +13,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -123,6 +125,28 @@ func recheck(t testing.TB, s *Session, run <-chan error) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// settledRecheck is recheck for a test in a bubble
+// s.rechecks empties once Run takes the check, before Run runs it, so each look first waits for every other goroutine of the bubble to block
+func settledRecheck(t testing.TB, s *Session, run <-chan error) (bool, error) {
+	t.Helper()
+	s.SuitesChanged()
+	var ended bool
+	var err error
+	if !waitUntil(func() bool {
+		synctest.Wait()
+		select {
+		case err = <-run:
+			ended = true
+			return true
+		default:
+			return len(s.rechecks) == 0
+		}
+	}) {
+		t.Fatal("the session never checked its SAs")
+	}
+	return ended, err
 }
 
 // groupIn is the Diffie-Hellman transform of an answered proposal, the zero Transform where it holds none
@@ -626,6 +650,10 @@ func TestRecheckWhileARekeyRunsMarksAnUnlistedSAOnce(t *testing.T) {
 // a reload during a rekey leaves the SA to that rekey and marks nothing while it runs, and the SA the rekey made is checked against the lists once the rekey has ended
 // so an IKE SA rekeyed under the lists from before the reload is marked once and rekeyed again under the new ones
 func TestReloadDuringARekeyChecksTheSAItMade(t *testing.T) {
+	bubble.Run(testReloadDuringARekeyChecksTheSAItMade)(t)
+}
+
+func testReloadDuringARekeyChecksTheSAItMade(t *testing.T) {
 	dialed := &recorder{}
 	h := newResponderHarness(t, nil)
 	var rekeying, released atomic.Bool
@@ -657,7 +685,7 @@ func TestReloadDuringARekeyChecksTheSAItMade(t *testing.T) {
 	}
 	aes128 := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm"}}})
 	dialing.Store(&aes128)
-	if ended, err := recheck(t, initiator, initiatorRun); ended {
+	if ended, err := settledRecheck(t, initiator, initiatorRun); ended {
 		t.Fatalf("the session ended with %v", err)
 	}
 	released.Store(true)
@@ -1109,7 +1137,7 @@ func TestForcedRekeyStartsNoLaterThanTheRekeyItsScheduleHolds(t *testing.T) {
 		{"listed again before it falls due", time.Hour, 10 * time.Minute, 5 * time.Minute, 50*time.Minute - 2*time.Second, []time.Duration{time.Second, 5 * time.Minute, 0}, true},
 		{"listed again under the largest new draw", time.Hour, 10 * time.Minute, 5 * time.Minute, 50*time.Minute - 2*time.Second, []time.Duration{time.Second, 5 * time.Minute, 5 * time.Minute}, true},
 	} {
-		t.Run(c.name, func(t *testing.T) {
+		t.Run(c.name, bubble.Run(func(t *testing.T) {
 			dialed := &recorder{}
 			var started atomic.Pointer[time.Time]
 			h := newResponderHarness(t, nil)
@@ -1131,13 +1159,13 @@ func TestForcedRekeyStartsNoLaterThanTheRekeyItsScheduleHolds(t *testing.T) {
 			run := runSession(t, initiator)
 			aes128 := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm"}}})
 			dialing.Store(&aes128)
-			if ended, err := recheck(t, initiator, run); ended {
+			if ended, err := settledRecheck(t, initiator, run); ended {
 				t.Fatalf("the session ended with %v", err)
 			}
 			suite := "aes128gcm/sha384/x25519"
 			if c.listed {
 				dialing.Store(&Suites{})
-				if ended, err := recheck(t, initiator, run); ended {
+				if ended, err := settledRecheck(t, initiator, run); ended {
 					t.Fatalf("the session ended with %v", err)
 				}
 				suite = "aes256gcm/sha384/x25519"
@@ -1158,7 +1186,7 @@ func TestForcedRekeyStartsNoLaterThanTheRekeyItsScheduleHolds(t *testing.T) {
 			if all := strings.Join(dialed.recorded(), "\n"); strings.Contains(all, "ike.sa.closed "+dialedPair+" sa=ike reason=lifetime") {
 				t.Errorf("the IKE SA closed at its lifetime: %s", all)
 			}
-		})
+		}))
 	}
 }
 
@@ -1172,7 +1200,7 @@ func TestReloadDuringAPacketCountRekeyChecksTheChildSAItMade(t *testing.T) {
 		{"forced delay runs out during the rekey", 0},
 		{"forced delay runs out after the rekey", forcedJitter},
 	} {
-		t.Run(c.name, func(t *testing.T) {
+		t.Run(c.name, bubble.Run(func(t *testing.T) {
 			dialed := &recorder{}
 			h := newResponderHarness(t, nil)
 			var rekeying, released atomic.Bool
@@ -1199,7 +1227,7 @@ func TestReloadDuringAPacketCountRekeyChecksTheChildSAItMade(t *testing.T) {
 			}
 			aes128 := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{"aes128gcm"}}})
 			dialing.Store(&aes128)
-			if ended, err := recheck(t, initiator, run); ended {
+			if ended, err := settledRecheck(t, initiator, run); ended {
 				t.Fatalf("the session ended with %v", err)
 			}
 			// a forced delay of zero runs out with the rekey still under way
@@ -1219,7 +1247,7 @@ func TestReloadDuringAPacketCountRekeyChecksTheChildSAItMade(t *testing.T) {
 				}
 				time.Sleep(recordPoll)
 			}
-		})
+		}))
 	}
 }
 

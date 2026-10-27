@@ -104,7 +104,7 @@ type collisionPeer struct {
 	t       *testing.T
 	session *Session
 	old     *ikeContext
-	conn    *net.UDPConn
+	conn    *transport.MemoryConn
 	buf     []byte
 	// this end's address, from the last datagram read
 	addr *net.UDPAddr
@@ -118,7 +118,7 @@ func newCollisionPeer(t *testing.T, established time.Time) *collisionPeer {
 	t.Helper()
 	conn := listenPeer(t)
 	peerAddr := conn.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestOneSidedIKERekeyCollisionAdoptsPeersSA(t *testing.T) {
 func TestPeerDeleteOnOneSidedCollisionKeepsSessionOpen(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}

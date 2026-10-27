@@ -256,7 +256,7 @@ func checkResponderPayloads(t *testing.T, x payloadExchange) {
 func initiatorExchange(t *testing.T, x payloadExchange, events Recorder) ([]RawPayload, error) {
 	peer := listenPeer(t)
 	at := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", at.IP, at.Port)
+	mux, err := testNetwork(t).Dial(at.IP, at.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func answerExchange(t testing.TB, x payloadExchange, events Recorder, cleanup fu
 	t.Helper()
 	var hubs [2]*transport.Hub
 	for i := range hubs {
-		hub, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{})
+		hub, err := testNetwork(t).NewHub()
 		if err != nil {
 			t.Fatal(err)
 		}

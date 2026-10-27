@@ -275,7 +275,7 @@ func TestMessageIDExhaustionCannotWrap(t *testing.T) {
 }
 
 // acceptedMux is the mux a responder makes from a datagram configured sent
-func acceptedMux(t *testing.T, configured *net.UDPConn, spiI uint64) *transport.Mux {
+func acceptedMux(t *testing.T, configured *transport.MemoryConn, spiI uint64) *transport.Mux {
 	t.Helper()
 	hub := listenHub(t)
 	unclaimed := hub.Listen()
@@ -322,7 +322,7 @@ func TestReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
 	}
 
 	dst := muxLoopback(mux)
-	readIKE := func(peer *net.UDPConn) []byte {
+	readIKE := func(peer *transport.MemoryConn) []byte {
 		t.Helper()
 		buf := make([]byte, 2048)
 		if err := peer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -334,7 +334,7 @@ func TestReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
 		}
 		return append([]byte(nil), buf[4:n]...)
 	}
-	dispatchFrom := func(peer *net.UDPConn, request []byte) bool {
+	dispatchFrom := func(peer *transport.MemoryConn, request []byte) bool {
 		t.Helper()
 		if _, err := peer.WriteToUDP(withNonESPMarker(request), dst); err != nil {
 			t.Fatal(err)
@@ -447,18 +447,27 @@ func TestRequestAheadOfTheWindowIsNotAcknowledged(t *testing.T) {
 // a dialed session follows its peer to where a fresh request that passed its integrity check came from, RFC 7296 section 2.23,
 // and leaves by the kernel's choice of source rather than the address the request arrived on
 // linux holds all of 127.0.0.0/8 and chooses 127.0.0.1 to reach any of it, which tells the two apart
+// so it runs on loopback, whose endpoints keep the address a datagram arrived on where the network in memory keeps none
 func TestDialedSessionFollowsItsPeerFromTheKernelsSource(t *testing.T) {
 	movedTo, arrival := net.IPv4(127, 0, 0, 1), net.IPv4(127, 0, 0, 1)
 	if runtime.GOOS == "linux" {
 		movedTo, arrival = net.IPv4(127, 0, 0, 2), net.IPv4(127, 0, 0, 3)
 	}
-	configured := listenPeer(t)
+	configured, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { configured.Close() })
 	moved, err := net.ListenUDP("udp4", &net.UDPAddr{IP: movedTo})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { moved.Close() })
-	hub := listenHub(t)
+	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { hub.Close() })
 	configuredAddr := configured.LocalAddr().(*net.UDPAddr)
 	mux, err := hub.NewMux(configuredAddr.IP, configuredAddr.Port)
 	if err != nil {
@@ -531,7 +540,7 @@ func testContext() *ikeContext {
 func TestAuthenticatedMalformedRequestGetsInvalidSyntax(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,7 +620,7 @@ func TestAuthenticatedMalformedRequestGetsInvalidSyntax(t *testing.T) {
 func TestSessionRefusesAnSKPayloadInsideAnotherWithInvalidSyntax(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -846,7 +855,7 @@ func TestSessionEndsWithoutADeleteOnceItAnswersInvalidSyntax(t *testing.T) {
 func TestSessionTakesNothingFromANotifyInTheClear(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -890,7 +899,7 @@ func TestSessionTakesNothingFromANotifyInTheClear(t *testing.T) {
 func TestSessionChangesNothingForTheErrorNotifiesAPeerSends(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -949,7 +958,7 @@ func TestSessionChangesNothingForTheErrorNotifiesAPeerSends(t *testing.T) {
 func TestSessionAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1024,7 +1033,7 @@ func TestSessionAnswersAHigherMajorVersionAndDropsIt(t *testing.T) {
 func TestSessionHeedsTheCriticalBitOnlyOnAnUnsupportedType(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1142,7 +1151,7 @@ func TestSessionRefusesACreateChildSAMarkingAnUnsupportedPayloadCritical(t *test
 		t.Run(placement, func(t *testing.T) {
 			peer := listenPeer(t)
 			peerAddr := peer.LocalAddr().(*net.UDPAddr)
-			mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+			mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1201,7 +1210,7 @@ func TestSessionRefusesACreateChildSAMarkingAnUnsupportedPayloadCritical(t *test
 func TestSessionSaysNothingOfAMalformedResponse(t *testing.T) {
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
-	mux, err := transport.Dial("127.0.0.1:0", peerAddr.IP, peerAddr.Port)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1941,7 +1950,7 @@ func TestFailedReplyKeepsTheSession(t *testing.T) {
 }
 
 // probedSession dials a peer socket with its timers an hour out
-func probedSession(t *testing.T) (*Session, *net.UDPConn, *recorder) {
+func probedSession(t *testing.T) (*Session, *transport.MemoryConn, *recorder) {
 	t.Helper()
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
@@ -1955,7 +1964,7 @@ func probedSession(t *testing.T) (*Session, *net.UDPConn, *recorder) {
 }
 
 // readRequest checks the session sent an empty INFORMATIONAL request
-func readRequest(t *testing.T, s *Session, peer *net.UDPConn) []byte {
+func readRequest(t *testing.T, s *Session, peer *transport.MemoryConn) []byte {
 	t.Helper()
 	raw, header, inner := readOwnRequest(t, s, peer)
 	if header.ExchangeType != INFORMATIONAL || len(inner) != 0 {
