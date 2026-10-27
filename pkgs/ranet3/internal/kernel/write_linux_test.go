@@ -355,3 +355,41 @@ func TestLinuxKeepsTheRefusalRecordThroughAFailedDump(t *testing.T) {
 		t.Error("two passes that never dumped emptied the record, so the warning repeats once a pass")
 	}
 }
+
+// a read's mark goes out as RTA_MARK on its own lookup alone, so a marked read
+// walks the rules the underlay's packets walk while its reply read and an
+// unmarked read walk those of every other packet
+func TestBatchSendsAReadsMarkOnItsLookupAlone(t *testing.T) {
+	answer := make([]byte, unix.SizeofRtMsg)
+	answer[0], answer[7] = unix.AF_INET, unix.RTN_UNICAST
+	answer = putAttrU32(answer, unix.RTA_OIF, 3)
+	conn := &fakeNetlink{replies: []nlMessage{{Kind: unix.RTM_NEWROUTE, Data: answer}}}
+	const mark = 0x72
+	reads := []RouteRead{
+		{Source: netip.MustParseAddr("198.51.100.10"), Destination: netip.MustParseAddr("203.0.113.70"), Mark: mark, Reply: true},
+		{Destination: netip.MustParseAddr("192.0.2.2")},
+	}
+	if _, err := routeGetBatch(conn, reads); err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	var lookups [][]byte
+	for _, sent := range conn.sent {
+		if sent.kind == unix.RTM_GETROUTE {
+			lookups = append(lookups, sent.body)
+		}
+	}
+	if len(lookups) != 3 {
+		t.Fatalf("the batch sent %d lookups, want the marked read, its reply and the unmarked read", len(lookups))
+	}
+	for i, want := range []uint32{mark, 0, 0} {
+		var got uint32
+		for attr, value := range (nlMessage{Kind: unix.RTM_GETROUTE, Data: lookups[i]}).attributes(unix.SizeofRtMsg) {
+			if attr == unix.RTA_MARK && len(value) == 4 {
+				got = binary.NativeEndian.Uint32(value)
+			}
+		}
+		if got != want {
+			t.Errorf("lookup %d carried mark %#x, want %#x", i, got, want)
+		}
+	}
+}

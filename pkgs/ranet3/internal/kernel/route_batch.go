@@ -10,6 +10,8 @@ import "net/netip"
 type RouteRead struct {
 	Source, Destination netip.Addr
 	IIF                 string
+	// Mark is the packet's mark, none at zero. The reply read carries none
+	Mark uint32
 	// Reply asks for the lookup of the packet answering this one as well, from
 	// Destination to Source. It arrives on the device of the forward answer's
 	// first live next hop, the first neither Dead nor LinkDown, a device the
