@@ -9,6 +9,9 @@ on:
     paths:
       - .github/workflows/pages.yaml
       - flake.lock
+      - flake.nix
+      - lib/**
+      - modules/flake/**
       - pkgs/raweb3/**
   workflow_dispatch:
 
