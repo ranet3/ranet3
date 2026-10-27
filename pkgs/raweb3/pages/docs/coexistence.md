@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-10-27
+updated: 2026-10-28
 order: 110
 ---
 
@@ -155,7 +155,7 @@ table, with the host's own addresses at row L1 ahead of every one:
   5100. A lookup of table 52 ahead of 5100 takes every destination table 52
   covers, an overlay destination live or held and a marked one among them, so
   while Tailscale uses an exit node, that exit's default takes them all. ranet3
-  does not handle that case.
+  reports each overlay prefix taken, as below.
 - **A full tunnel of wg-quick** adds 2 rules with no priority, so added after
   the reconciler's, with no rule between local's and 5100, they go to 5099 and
   5098: `lookup main suppress_prefixlength 0` at 5098 and
@@ -163,6 +163,57 @@ table, with the host's own addresses at row L1 ahead of every one:
   covers the destination answers at 5098. WireGuard's table, which holds a
   default, takes every other lookup at 5099 but one carrying WireGuard's own
   mark, an overlay destination live or held and one marked 0x72 among them.
+  Added before the reconciler's, with no rule but the kernel's own, they go to
+  32765 and 32764, and 5110 answers every overlay destination ahead of them.
+
+ranet3 takes no lookup back from another program's rule, and reports one that
+takes it. After the passes [when a pass runs](routing.md#when-a-pass-runs)
+names, the reconciler asks the kernel where 2 kinds of lookup end, on the socket
+it writes with:
+
+- An unmarked lookup of one address of each overlay prefix it holds: the first
+  address after the prefix's network address outside every prefix `cap.table`
+  assigns, or where the assigned prefixes leave none, the first that no assigned
+  address equals, or the one address of a full length prefix. The prefix is
+  taken when the answer is anything but a route out of the tun, from any table,
+  or the refusal of an unreachable route, the hold's among them.
+- A lookup marked 0x72 toward every address a live session sends its underlay
+  to, once for each address, in both families. The lookup is taken when the
+  answer is a route out of the tun, from any table but local. Another program's
+  table answering it out of another device is not reported, since ranet3's
+  underlay inside another tunnel is a setup that works.
+
+The reconciler reports a lookup when it becomes taken, when a taken one's answer
+changes and when it stops being taken, in the log, on the Kernel line of
+`ranet3 status`, in 2 gauges and as the `kernel.taken` event, as
+[watching it](routing.md#watching-it) lists. The check has these limits:
+
+- It asks 1 address of each prefix, so a rule that takes only part of a prefix
+  is reported only where that part holds the address, and another program's
+  unreachable route at that address reads as the hold.
+- It asks the addresses live sessions send to, so a rule that takes the underlay
+  toward a peer no session reaches is not reported.
+- ranet3 sends a lookup its destination and, for the underlay, the mark, and
+  nothing else, no interface or source among them. The kernel fills in the rest
+  ([inet_rtm_getroute](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/route.c#L3319),
+  [inet6_rtm_getroute](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/route.c#L6232)),
+  so a rule selecting by anything else meets the lookup as those functions
+  decide, and may take traffic the check never asks about. A session a peer
+  opened sends from the address and interface its peer reached
+  ([the underlay socket](design/limits.md#the-underlay-socket)), and its sends
+  carry that interface into their own lookup
+  ([ip_cmsg_send](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/ip_sockglue.c#L295),
+  [udp_sendmsg](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/udp.c#L1404),
+  [fib_lookup_good_nhc](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/fib_trie.c#L1413)).
+  So a taken lookup toward that peer's endpoint may name traffic that leaves by
+  that interface, and a rule that takes such traffic may not be reported.
+- A route is judged by the first next hop the kernel's answer names, so another
+  hop of a multipath route is not read. Which hop comes first is the kernel's
+  ([fib_add_multipath](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/fib_semantics.c#L1709),
+  [rt6_fill_node](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/route.c#L5902)).
+- Another program's rule wakes no pass, so a rule added between passes is
+  reported by the next periodic pass, `cap.table.reconcile` later at most.
+- macOS has no policy rules and asks nothing.
 
 ## Routes on macOS
 
