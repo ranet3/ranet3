@@ -128,6 +128,10 @@ templ menuScript() {
 			menu.addEventListener("beforetoggle", (e) => {
 				if (e.newState === "closed") setInert(false);
 			});
+			// from sm the sheet is hidden, so an open one would leave the page inert
+			matchMedia("(min-width: 40rem)").addEventListener("change", (e) => {
+				if (e.matches && menu.matches(":popover-open")) menu.hidePopover();
+			});
 		});
 	</script>
 }
