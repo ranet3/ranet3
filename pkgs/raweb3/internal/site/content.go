@@ -196,19 +196,6 @@ func parsePage(src, file string) (*page, error) {
 	if err := p.check(); err != nil {
 		return nil, fmt.Errorf("%s: %w", src, err)
 	}
-	// at 200 words a minute, markup counted as words
-	p.minutes = max(1, (len(bytes.Fields(body))+100)/200)
-	label, meta := p.front.OG.Label, p.front.OG.Meta
-	switch p.layout {
-	case layoutDocs:
-		label = cmp.Or(label, "Docs")
-	case layoutPost:
-		label = cmp.Or(label, "News")
-		meta = cmp.Or(meta, fmt.Sprintf("%s \u00b7 %d min read", p.front.Created.Format(pages.DateFormat), p.minutes))
-	}
-	if p.card, err = ui.NewCard(label, cmp.Or(p.front.OG.Title, p.front.Title), p.front.Description, meta); err != nil {
-		return nil, fmt.Errorf("%s: %w", src, err)
-	}
 	p.root = markdown.Parser().Parse(text.NewReader(body), parser.WithContext(parser.NewContext()))
 	p.ids = map[string]bool{}
 	ast.Walk(p.root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -317,12 +304,40 @@ func (p *page) render(bySrc map[string]*page, files fs.FS) []error {
 		errs = append(errs, fmt.Errorf("%s: %w", p.src, err))
 	}
 	p.html = out
+	if err := p.newCard(); err != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", p.src, err))
+	}
 	if p.front.OG.Image != "" {
 		if err := p.imageOf(bySrc, files); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errs
+}
+
+// tag is an HTML tag, dropped to count the words a page shows
+var tag = regexp.MustCompile(`<[^>]*>`)
+
+// newCard sets the page's reading time, at 200 words a minute of its rendered
+// text, and the text of its Open Graph image. A page of prose and a docs page
+// carry the day they last changed at the bottom, a news post its day and
+// reading time.
+func (p *page) newCard() error {
+	p.minutes = max(1, (len(strings.Fields(tag.ReplaceAllString(p.html, "")))+100)/200)
+	label, meta := p.front.OG.Label, ""
+	switch p.layout {
+	case layoutDocs:
+		label = cmp.Or(label, "Docs")
+		meta = "Updated " + p.front.Updated.Format(pages.DateFormat)
+	case layoutPage:
+		meta = "Updated " + p.front.Updated.Format(pages.DateFormat)
+	case layoutPost:
+		label = cmp.Or(label, "News")
+		meta = fmt.Sprintf("%s \u00b7 %d min read", p.front.Created.Format(pages.DateFormat), p.minutes)
+	}
+	var err error
+	p.card, err = ui.NewCard(label, cmp.Or(p.front.OG.Title, p.front.Title), p.front.Description, cmp.Or(p.front.OG.Meta, meta))
+	return err
 }
 
 // imageOf resolves the file the page's frontmatter names as its Open Graph
