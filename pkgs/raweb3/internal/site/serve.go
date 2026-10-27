@@ -52,6 +52,7 @@ func Handler(root, dir string, tools Tools) http.Handler {
 		}
 		status := http.StatusOK
 		page, ok := files[file]
+		fsys := s.file(file)
 		switch {
 		case ok:
 			kind, err := mediaType(file)
@@ -66,8 +67,8 @@ func Handler(root, dir string, tools Tools) http.Handler {
 			// as GitHub Pages answers a directory asked for without its slash
 			http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
 			return
-		case s.file(file) != nil:
-			http.ServeFileFS(w, r, s.file(file), file)
+		case fsys != nil:
+			http.ServeFileFS(w, r, fsys, file)
 			return
 		default:
 			status, page = http.StatusNotFound, files[notFoundFile]

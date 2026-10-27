@@ -304,26 +304,26 @@ func (p *page) render(bySrc map[string]*page, files fs.FS) []error {
 		errs = append(errs, fmt.Errorf("%s: %w", p.src, err))
 	}
 	p.html = out
-	if err := p.newCard(); err != nil {
-		errs = append(errs, fmt.Errorf("%s: %w", p.src, err))
-	}
+	// at 200 words a minute of the rendered text
+	p.minutes = max(1, (len(strings.Fields(htmlTag.ReplaceAllString(p.html, "")))+100)/200)
 	if p.front.OG.Image != "" {
-		if err := p.imageOf(bySrc, files); err != nil {
-			errs = append(errs, err)
-		}
+		err = p.imageOf(files)
+	} else {
+		err = p.newCard()
+	}
+	if err != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", p.src, err))
 	}
 	return errs
 }
 
-// tag is an HTML tag, dropped to count the words a page shows
-var tag = regexp.MustCompile(`<[^>]*>`)
+// htmlTag is an HTML tag, dropped to count the words a page shows
+var htmlTag = regexp.MustCompile(`<[^>]*>`)
 
-// newCard sets the page's reading time, at 200 words a minute of its rendered
-// text, and the text of its Open Graph image. A page of prose and a docs page
-// carry the day they last changed at the bottom, a news post its day and
-// reading time.
+// newCard sets the text of the page's Open Graph image. A page of prose and a
+// docs page carry the day they last changed at the bottom, a news post its
+// day and reading time.
 func (p *page) newCard() error {
-	p.minutes = max(1, (len(strings.Fields(tag.ReplaceAllString(p.html, "")))+100)/200)
 	label, meta := p.front.OG.Label, ""
 	switch p.layout {
 	case layoutDocs:
@@ -340,22 +340,22 @@ func (p *page) newCard() error {
 	return err
 }
 
-// imageOf resolves the file the page's frontmatter names as its Open Graph
-// image and checks its size.
-func (p *page) imageOf(bySrc map[string]*page, files fs.FS) error {
-	image, err := p.resolve(p.front.OG.Image, bySrc, files)
-	if err != nil {
-		return fmt.Errorf("%s: og.image: %w", p.src, err)
+// imageOf checks the file beside the page its frontmatter names as its Open
+// Graph image, in place of the drawn one.
+func (p *page) imageOf(files fs.FS) error {
+	file := path.Join(path.Dir(p.src), p.front.OG.Image)
+	if !fs.ValidPath(file) || hidden(file) {
+		return fmt.Errorf("og.image %q names no file beside the pages", p.front.OG.Image)
 	}
-	f, err := files.Open(strings.TrimPrefix(image, "/"))
+	f, err := files.Open(file)
 	if err != nil {
-		return fmt.Errorf("%s: og.image: %w", p.src, err)
+		return fmt.Errorf("og.image: %w", err)
 	}
 	defer f.Close()
 	if c, _, err := img.DecodeConfig(f); err != nil || c.Width != 1200 || c.Height != 630 {
-		return fmt.Errorf("%s: og.image %s is no PNG or JPEG of 1200 by 630", p.src, image)
+		return fmt.Errorf("og.image %s is no PNG or JPEG of 1200 by 630", file)
 	}
-	p.image = image
+	p.image = "/" + file
 	return nil
 }
 
@@ -402,7 +402,8 @@ func (p *page) resolve(dest string, bySrc map[string]*page, files fs.FS) (string
 			if !fs.ValidPath(file) || !isFile(files, file) {
 				return "", fmt.Errorf("link %q names no file beside the pages", dest)
 			}
-			return "/" + file, nil
+			u.Path, u.RawPath = "/"+file, ""
+			return u.String(), nil
 		}
 		var ok bool
 		if target, ok = bySrc[file]; !ok {

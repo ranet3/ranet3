@@ -11,8 +11,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"io/fs"
 	"maps"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -43,8 +45,8 @@ type config struct {
 type Site struct {
 	ui    ui.Site
 	pages []*page
-	// static holds the files served as they are, and so does files, beside
-	// the pages
+	// static and files hold the files served as they are, from the static
+	// and the pages directories
 	static fs.FS
 	files  fs.FS
 }
@@ -69,7 +71,7 @@ func Load(root, dir string) (*Site, error) {
 	for _, name := range slices.Sorted(maps.Keys(c.Metas)) {
 		s.ui.Metas = append(s.ui.Metas, ui.Meta{Name: name, Content: c.Metas[name]})
 	}
-	if s.news() != nil {
+	if s.news() != nil && len(s.posts()) > 0 {
 		s.ui.Feed = "/" + feedFile
 	}
 	return s, nil
@@ -152,8 +154,8 @@ func (s *Site) Pages() map[string]templ.Component {
 		case layoutBare:
 			page = pages.Bare(s.ui, c)
 		case layoutNews:
-			for _, p := range s.posts() {
-				c.Posts = append(c.Posts, pages.Post{Title: p.front.Title, Description: p.front.Description, Path: p.path, Image: imagePath(p), Published: p.front.Created})
+			for _, post := range s.posts() {
+				c.Posts = append(c.Posts, pages.Post{Title: post.front.Title, Description: post.front.Description, Path: post.path, Image: imagePath(post), Published: post.front.Created})
 			}
 			page = pages.News(s.ui, c)
 		case layoutPost:
@@ -215,9 +217,10 @@ func (s *Site) Images() map[string]templ.Component {
 var siteLink = regexp.MustCompile(`\s(?:href|src)="(/|/[^/"][^"]*)"`)
 
 // Render renders every page of the site, the sitemap, robots.txt and the
-// news feed to the file each is served from. It fails where a link leads to a path the site
-// serves nothing at. Loading checks the links of the markdown, and only this
-// checks those of the layouts, of site.yaml and of the HTML in a page.
+// news feed to the file each is served from. It fails where a link leads to
+// a path the site serves nothing at. Loading checks the links of the
+// markdown, and only this checks those of the layouts, of site.yaml and of the
+// HTML in a page.
 func (s *Site) Render(ctx context.Context) (map[string][]byte, error) {
 	out := map[string][]byte{}
 	for file, page := range s.Pages() {
@@ -233,15 +236,16 @@ func (s *Site) Render(ctx context.Context) (map[string][]byte, error) {
 	}
 	out[sitemapFile] = sitemap
 	out[robotsFile] = s.robots()
-	if news := s.news(); news != nil {
-		if out[feedFile], err = s.feed(news); err != nil {
+	if s.ui.Feed != "" {
+		if out[feedFile], err = s.feed(s.news()); err != nil {
 			return nil, fmt.Errorf("%s: %w", feedFile, err)
 		}
 	}
 	var errs []error
+	images := s.Images()
 	for _, file := range slices.Sorted(maps.Keys(out)) {
 		for _, m := range siteLink.FindAllSubmatch(out[file], -1) {
-			if !s.serves(out, string(m[1])) {
+			if !s.serves(out, images, string(m[1])) {
 				errs = append(errs, fmt.Errorf("%s: link %q leads to nothing the site serves", file, m[1]))
 			}
 		}
@@ -250,28 +254,29 @@ func (s *Site) Render(ctx context.Context) (map[string][]byte, error) {
 }
 
 // serves says whether the site serves anything at the path link leads to,
-// given its rendered pages.
-func (s *Site) serves(rendered map[string][]byte, link string) bool {
-	p, _, _ := strings.Cut(link, "#")
+// given its rendered pages and images. The link is as it stands in an
+// attribute, escaped for HTML and for a URL.
+func (s *Site) serves(rendered map[string][]byte, images map[string]templ.Component, link string) bool {
+	p, _, _ := strings.Cut(html.UnescapeString(link), "#")
 	p, _, _ = strings.Cut(p, "?")
+	p, err := url.PathUnescape(p)
+	if err != nil {
+		return false
+	}
 	file := strings.TrimPrefix(p, "/")
 	if file == "" || strings.HasSuffix(file, "/") {
 		file += indexFile
 	}
-	if _, ok := rendered[file]; ok || file == styleOutput {
-		return true
-	}
-	if _, ok := s.Images()[file]; ok {
-		return true
-	}
-	return s.file(file) != nil
+	_, page := rendered[file]
+	_, image := images[file]
+	return page || image || file == styleOutput || s.file(file) != nil
 }
 
 // file is the file system that holds the file served as it is at name, nil
 // when there is none.
 func (s *Site) file(name string) fs.FS {
 	switch {
-	case !fs.ValidPath(name):
+	case !fs.ValidPath(name) || hidden(name):
 		return nil
 	case isFile(s.static, name):
 		return s.static
@@ -279,6 +284,12 @@ func (s *Site) file(name string) fs.FS {
 		return s.files
 	}
 	return nil
+}
+
+// hidden says whether name or a directory it is in starts with a dot, as an
+// editor's swap file or a .DS_Store does. The site serves none of them.
+func hidden(name string) bool {
+	return strings.HasPrefix(name, ".") || strings.Contains(name, "/.")
 }
 
 // mediaType is the type of a file the site renders.
